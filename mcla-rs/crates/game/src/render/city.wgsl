@@ -4161,6 +4161,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     // (props at night: the same fade with height, see `prop_n`)
     if (prop_n) { lit = lit * (1.0 + clamp((in.wpos.y - g.ambient_ground.y) * 0.05, 0.0, 1.0) * (g.ambient_ground.z - 1.0)); }
+    // Walkers at night: the characters' VSPedNight + PSMultiLight (characters/0xbd0c6109) know no
+    // lamp grid, no sun and no highlight - diffuse x (gLightAmbient + four lanes), a lane
+    // colour x sat(sat(strength / d^2) x sat(dot(to light, axis) / d + bias) x sat(n.l)). The lanes
+    // are the walker's own (figlight.rs: the cell's lamps eased in, the head lamps / key light laid
+    // over), rows 0..11 of the figure's object, marked in row 0 of the second table. 750: as before.
+    if (mat.mode == 9u && in.uv1.y > 76.5 && in.uv1.y < 77.5 && obj.lamp_b[0].w > 0.5 && !(g.params.w > 749.5 && g.params.w < 750.5)) {
+        var fl = vec3<f32>(0.0);
+        for (var k = 0; k < 4; k = k + 1) {
+            let lp = obj.lamp_a[3 * k];
+            let lc = obj.lamp_a[3 * k + 1];
+            let la = obj.lamp_a[3 * k + 2];
+            let d = lp.xyz - in.wpos;
+            let r = inverseSqrt(max(dot(d, d), 1e-12));
+            let dn = d * r;
+            fl = fl + lc.rgb * clamp(clamp(lp.w * r * r, 0.0, 1.0) * clamp(dot(dn, la.xyz) + la.w, 0.0, 1.0) * clamp(dot(n, dn), 0.0, 1.0), 0.0, 1.0);
+        }
+        lit = albedo.rgb * (hemi + fl);
+    }
     if (mat.mode == 23u) {
         // PSCityStoreInterior: no lighting at all - a quarter of the texture by day, and from
         // 18:00 to 06:00 the lit-up texture times the vertex colour, four times over (here

@@ -204,6 +204,13 @@ pub struct SkinBuffer {
     /// in the cockpit view: its vertices are gathered in the joint)
     pub hide_from: Option<usize>,
     hidden: Vec<bool>,
+    /// the next figure is lit by these four lanes (a walker at night - figlight.rs); taken by `emit`
+    pub next_lanes: Option<[[f32; 4]; 12]>,
+    /// this frame's lit figures' lanes, the figure of each draw (usize::MAX: none) and the
+    /// object uniforms that carry them (one per lit figure, kept from frame to frame)
+    lanes: Vec<[[f32; 4]; 12]>,
+    draw_fig: Vec<usize>,
+    lane_objs: Vec<crate::render::ObjectBinding>,
 }
 
 impl SkinBuffer {
@@ -211,6 +218,8 @@ impl SkinBuffer {
         self.verts.clear();
         self.indices.clear();
         self.draws.clear();
+        self.lanes.clear();
+        self.draw_fig.clear();
     }
 
     /// Skin one character in the given local pose, standing at `root`.
@@ -233,6 +242,13 @@ impl SkinBuffer {
             self.skin.push(if gone { Mat4::from_translation(w.w_axis.truncate()) * Mat4::from_scale(Vec3::ZERO) } else { w * Mat4::from_translation(-b.bind) });
         }
         self.hide_from = None;
+        let fig = match self.next_lanes.take() {
+            Some(l) => {
+                self.lanes.push(l);
+                self.lanes.len() - 1
+            }
+            None => usize::MAX,
+        };
         let parts = (lod.min(2)..3).map(|l| &model.lods[l]).find(|l| !l.is_empty()).unwrap_or(&model.lods[0]);
         // (the night fill light at the figure's place - fillmap.rs: the figures share one buffer
         // and the identity object, so the colour rides in every vertex: color1.rgb = four times
@@ -255,6 +271,7 @@ impl SkinBuffer {
             let first = self.indices.len() as u32;
             self.indices.extend(part.indices.iter().map(|i| i + base));
             self.draws.push((model.binds[part.tex].clone(), first, part.indices.len() as u32));
+            self.draw_fig.push(fig);
         }
     }
 
@@ -277,6 +294,18 @@ impl SkinBuffer {
         }
         gpu.queue.write_buffer(self.vb.as_ref().unwrap(), 0, bytemuck::cast_slice(&self.verts));
         gpu.queue.write_buffer(self.ib.as_ref().unwrap(), 0, bytemuck::cast_slice(&self.indices));
+        // (the lit figures' lanes: rows 0..11 of the object's first lamp table, the mark in row 0
+        // of the second - city.wgsl, the walkers at night)
+        for (i, l) in self.lanes.iter().enumerate() {
+            let mut u = crate::render::ObjectUniform::default();
+            u.lamp_a[..12].copy_from_slice(l);
+            u.lamp_b[0][3] = 1.0;
+            if i < self.lane_objs.len() {
+                gpu.queue.write_buffer(&self.lane_objs[i].buf, 0, bytemuck::bytes_of(&u));
+            } else {
+                self.lane_objs.push(gpu.new_object(&u));
+            }
+        }
     }
 
     /// Draw with the pipeline already set (opaque pass or shadow pass).
@@ -297,10 +326,16 @@ impl SkinBuffer {
         }
         pass.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Object as u32)], &[]);
         let mut last: *const wgpu::BindGroup = std::ptr::null();
-        for (bind, first, count) in &self.draws {
+        let mut obj = usize::MAX;
+        for (k, (bind, first, count)) in self.draws.iter().enumerate() {
             if Arc::as_ptr(bind) != last {
                 pass.set_bind_group(1, bind.as_ref(), &[]);
                 last = Arc::as_ptr(bind);
+            }
+            let fig = self.draw_fig.get(k).copied().unwrap_or(usize::MAX);
+            if fig != obj {
+                pass.set_bind_group(3, self.lane_objs.get(fig).map_or(&gpu.identity_obj.bg, |o| &o.bg), &[]);
+                obj = fig;
             }
             pass.draw_indexed(*first..*first + *count, 0, 0..1);
             *draws += 1;

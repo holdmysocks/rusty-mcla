@@ -1,6 +1,7 @@
 //! Midnight Club: Los Angeles – Rust runtime.
 
 mod ability;
+mod figlight;
 mod hooks;
 mod mc4;
 mod pads;
@@ -6304,6 +6305,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             ls.count[0] = k as u32;
             gpu.write_lights(&ls);
+            // (the walkers' picker at night - figlight.rs: the head lamps as the light set has them
+            // and the key light; by day, in the garage and without the weather's keys none)
+            let hour = globals.sun_color[3];
+            self.peds.night_lights = ((hour > 18.0 || hour < 6.0) && globals.tone[3] > 0.5 && globals.car_amb[3] < 0.5).then(|| {
+                let mut heads = [None; 2];
+                for (h, i) in (0..k).filter(|&i| ls.color[i][3] > 1.5 && ls.color[i][3] < 2.5).take(2).enumerate() {
+                    let (p, c, d) = (ls.pos_range[i], ls.color[i], ls.dir[i]);
+                    heads[h] = Some(render::LampRec { pos: Vec3::new(p[0], p[1], p[2]), color: Vec3::new(c[0], c[1], c[2]), strength: 500.0, back: -Vec3::new(d[0], d[1], d[2]), cone: [4.4696, -2.872] });
+                }
+                let key = Some((Vec3::new(globals.key_col[0], globals.key_col[1], globals.key_col[2]), Vec3::new(globals.key_dir[0], globals.key_dir[1], globals.key_dir[2])));
+                (figlight::Dynamic { heads, key }, dt * 30.0)
+            });
         }
         // (around the city map: the dark of deep water)
         let clear = if map_baked { [0.012, 0.018, 0.028, 1.0] } else { globals.fog_color };
@@ -8603,6 +8616,18 @@ impl ApplicationHandler for App {
             // ... and the lamps of the street light props
             lamps.extend(self.props.prop_lamps.iter().map(|l| render::Lamp { pos: l.pos, color: l.color, intensity: l.intensity, back: l.back, cone: l.cone }));
             gpu.set_lamps(&lamps);
+            // (diagnostics: MCLA_FIGLIGHT_PROBE = "x,y,z;x,y,z..." prints the walkers' four grid lanes
+            // there, as a walker that stood long enough has them - compared with the recordings,
+            // work/lighting2/figprobe.py)
+            if let (Ok(v), Some(t)) = (std::env::var("MCLA_FIGLIGHT_PROBE"), render::LAMP_TABLES.read().ok().and_then(|t| t.clone())) {
+                for q in v.split(';') {
+                    let c: Vec<f32> = q.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if c.len() == 3 {
+                        let p = Vec3::new(c[0], c[1], c[2]);
+                        eprintln!("figlight {} {} {} lanes {:?}", c[0], c[1], c[2], figlight::FigureLight::new(&t, p).lanes(p, &figlight::Dynamic::default()));
+                    }
+                }
+            }
             self.game.gas_stations = self.props.gas_stations.iter().map(|g| g.0).collect();
         }
         self.cp_markers = checkpoints::Markers::new(&self.opt.data_dir);

@@ -723,6 +723,11 @@ pub struct Peds {
     evade_radius: f32,
     voices: Option<HashMap<String, String>>,
     buf: SkinBuffer,
+    /// at night: the lights the walkers' picker lays over their grid lamps, and the 30 Hz frames
+    /// since the last frame (main.rs sets them each frame; None by day - figlight.rs)
+    pub night_lights: Option<(crate::figlight::Dynamic, f32)>,
+    /// each lit walker's eased records (the original's walker + 64)
+    fig_lights: HashMap<(usize, u32), crate::figlight::FigureLight>,
     pub enabled: bool,
     /// the original's navigation mesh; without it the pedestrians follow the kerbs
     mesh: Option<NavMesh>,
@@ -786,6 +791,8 @@ impl Peds {
             evade_radius: std::env::var("MCLA_PED_EVADE").ok().and_then(|v| v.parse().ok()).unwrap_or(2.3),
             voices: None,
             buf: SkinBuffer::default(),
+            night_lights: None,
+            fig_lights: HashMap::new(),
             enabled: true,
             mesh: None,
             island: Vec::new(),
@@ -1731,6 +1738,7 @@ impl Peds {
     /// Skin everything in view into this frame's vertex buffer.
     pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, frustum: &Frustum) {
         self.buf.clear();
+        let tables = self.night_lights.as_ref().and_then(|_| crate::render::LAMP_TABLES.read().ok()?.clone());
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
         for p in self.list.iter_mut() {
             let Some(Some(ty)) = self.types.get(&p.ty) else { continue };
@@ -1752,7 +1760,18 @@ impl Peds {
             } else {
                 2
             };
+            // (at night the four lights of its program, picked and eased as the original's
+            // sub_822F2C48 does at the walker's place - only while it is drawn, as there)
+            if let (Some((dynamic, frames)), Some(t)) = (&self.night_lights, &tables) {
+                let fl = self.fig_lights.entry(p.key).or_insert_with(|| crate::figlight::FigureLight::new(t, p.pos));
+                fl.step(t, p.pos, *frames);
+                self.buf.next_lanes = Some(fl.lanes(p.pos, dynamic));
+            }
             self.buf.emit(&ty.model, lod, &local, Mat4::from_rotation_translation(p.rot, p.pos));
+        }
+        if self.night_lights.is_some() {
+            let alive: HashSet<(usize, u32)> = self.list.iter().map(|p| p.key).collect();
+            self.fig_lights.retain(|k, _| alive.contains(k));
         }
         self.buf.upload(gpu);
     }

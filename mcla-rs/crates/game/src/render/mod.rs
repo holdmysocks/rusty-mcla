@@ -241,6 +241,39 @@ pub const LAMP_SPAN: (f32, f32) = (6320.0, 4463.75);
 /// four texels a lamp (position + intensity, colour, cone axis + scale, cone bias), 256 lamps a row
 pub const LAMP_DATA: (u32, u32) = (1024, 128);
 
+/// A lamp of the night table as the light manager holds it (the walkers' picker reads these):
+/// index 0 is the empty slot (no colour, no strength, at the origin).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LampRec {
+    pub pos: Vec3,
+    pub color: Vec3,
+    pub strength: f32,
+    /// the direction back to the lamp from what it lights, and the cone sat(cos x [0] + [1])
+    pub back: Vec3,
+    pub cone: [f32; 2],
+}
+
+/// The night lamp grid and table on the CPU side (`Gpu::set_lamps` fills it).
+pub struct LampTables {
+    /// four table indices per cell (0 = none), row by row from the grid's origin
+    pub cells: Vec<[u16; 4]>,
+    pub recs: Vec<LampRec>,
+}
+
+impl LampTables {
+    /// The four lamps of the cell under `p` (the programs' cell: uv = (x, z) x (1 / 6320,
+    /// 1 / 4463.75) + (0.5485759, 0.5282554), x (512, 640); clamped to the grid as sub_82303900).
+    pub fn cell(&self, p: Vec3) -> [u16; 4] {
+        let u = p.x * (1.0 / 6320.0) + 0.5485759;
+        let v = p.z * (1.0 / 4463.75) + 0.5282554;
+        let cx = ((u * LAMP_GRID.0 as f32) as i64).clamp(0, LAMP_GRID.0 as i64 - 1) as usize;
+        let cz = ((v * LAMP_GRID.1 as f32) as i64).clamp(0, LAMP_GRID.1 as i64 - 1) as usize;
+        self.cells.get(cz * LAMP_GRID.0 as usize + cx).copied().unwrap_or([0; 4])
+    }
+}
+
+pub static LAMP_TABLES: std::sync::RwLock<Option<Arc<LampTables>>> = std::sync::RwLock::new(None);
+
 /// One of the city's placed lamps: position, colour (as in the light files) and intensity (the
 /// light is `colour / 2 x sat(intensity / distance squared)`, see city.wgsl `grid_lamps`).
 #[derive(Clone, Copy, Debug)]
@@ -1992,6 +2025,15 @@ impl Gpu {
         };
         write(&self.lamp_grid, bytemuck::cast_slice(&grid), LAMP_GRID.0, LAMP_GRID.1, 8);
         write(&self.lamp_data, bytemuck::cast_slice(&data), LAMP_DATA.0, LAMP_DATA.1, 16);
+        // (the same cells on this side, for the walkers' light picker - figlight.rs; the lamps there
+        // as the light manager holds them, not cut down like the tables: the walkers' recorded
+        // lanes settle on strengths 20, 40, 60, 70 exactly)
+        let recs = std::iter::once(LampRec { cone: [0.0, 1.0], ..LampRec::default() })
+            .chain(lamps.iter().map(|l| LampRec { pos: l.pos, strength: l.intensity, color: l.color, back: l.back, cone: l.cone }))
+            .collect();
+        if let Ok(mut t) = LAMP_TABLES.write() {
+            *t = Some(Arc::new(LampTables { cells: best.iter().map(|c| [c[0].1, c[1].1, c[2].1, c[3].1]).collect(), recs }));
+        }
         log::info!("night lamp grid: {} lamps, {} of {} cells lit", lamps.len(), best.iter().filter(|c| c[0].1 != 0).count(), gw * gh);
         // diagnostics: the table as built, for comparison with the original's (work/lighting/gridcmp.py)
         if let Ok(path) = std::env::var("MCLA_LAMP_DUMP") {
