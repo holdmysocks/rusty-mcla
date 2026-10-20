@@ -1157,9 +1157,10 @@ impl Vehicles {
                     }
                     log::info!("trim: part {} shader {} verts {} uv1x10 {:?} tex {:?} params {:?}", part.primary, sname, mesh.positions.len(), u1, sh.map(|s| s.textures().map(|(_, n)| n.to_string()).collect::<Vec<_>>()), sh.map(|s| s.params.iter().filter(|(_, p)| format!("{:?}", p).len() < 90).map(|(h, p)| format!("{:08x}={:?}", h, p)).collect::<Vec<_>>()));
                 }
-                // ambient cars have no cabin: their windows (glass above the belt line) are dark
-                // and opaque, marked per vertex for the shader; lamp lenses stay clear
-                let dark_above = if mode == MatMode::CarGlass && car_is_ambient { Some(0.82) } else { None };
+                // (render only - every traffic car's glass, AmbientCarGlass, is drawn by its own program,
+                // PSAmbientGlassFront: marked per vertex for city.wgsl, which tells windows from lamp
+                // lenses by the zone in uv1.x; until 2026-10-20 only the glass above 0.82 m was marked)
+                let dark_above = if mode == MatMode::CarGlass && car_is_ambient { Some(f32::NEG_INFINITY) } else { None };
                 // pick the colour map by its sampler name; never a normal map
                 const NORMAL_SAMPLERS: [u32; 2] = [0x8ac11cb0, 0x28038e05];
                 // (the traffic lamps' program, PSAmbientCarLight, has ONE texture and it is a colour map - the car's trim sheet - bound to the sampler called NormalSampler)
@@ -3952,5 +3953,28 @@ mod ambient_paint_tests {
         assert!((grey[0] - 4.0 * 0.00631).abs() < 1e-4 && (grey[2] - 4.0 * 0.01323).abs() < 1e-4);
         // (white saturates)
         assert_eq!(super::ambient_paint([1.0, 1.0, 1.0, 1.0]), [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    /// The traffic glass's zones: VSAmbientGlass reads the texcoord as one half4 over uv0 and uv1 (the
+    /// recorded, patched fetch: 16_16_16_16_FLOAT at byte 20 of 32), its zone trunc(uv1.x); 3 and up (the
+    /// lamp lenses) take no tint (city.wgsl). The meshes: windows 0, lenses 4 / 6, one zone per mesh.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR containing Complete Edition vehicle resources"]
+    fn traffic_glass_zones() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR"));
+        let assets = crate::assets::Assets::new(&root);
+        for (name, want) in [("va_chv_cobalt_05", vec![0, 4, 6]), ("va_cad_escalade_03", vec![0, 6]), ("va_350z_04", vec![0, 6])] {
+            let car = crate::vehicle_model::load_car(&assets, &root.join("resources/vehicle").join(name)).unwrap();
+            let mut zones = std::collections::BTreeSet::new();
+            for part in &car.parts {
+                for (mesh, si) in &part.meshes {
+                    if car.shaders.get(*si as usize).map_or(false, |s| s.name.eq_ignore_ascii_case("AmbientCarGlass")) {
+                        assert_eq!(mesh.raw_stride, 32);
+                        zones.extend(mesh.uv1.iter().map(|u| u.x.trunc() as i32));
+                    }
+                }
+            }
+            assert_eq!(zones.into_iter().collect::<Vec<_>>(), want, "{}", name);
+        }
     }
 }

@@ -3565,16 +3565,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             alpha = clamp(alpha + f * 0.5, 0.0, 1.0);
         } else if (mat.mode == 12u) {
             if (in.uv2.x > 0.5 && cp_on) {
-                // Windows of traffic cars: VSAmbientGlass + PSAmbientGlassFront of cars/0xe059357e
-                // run with a capture's constants (work/lighting/aglass.py, exact):
+                // Glass of traffic cars (every AmbientCarGlass mesh): VSAmbientGlass + PSAmbientGlassFront
+                // of cars/0xe059357e (work/lighting/aglass.py, work/trafglass/tg_px.py - the program on
+                // numbers against this, exact):
                 //   rgb   = lerp(tint.rgb x screen(the car's two lights, 2 x ambient), surroundings, f)
                 //   f     = Fmin + (Fmax - Fmin) (1 - |n.v|)^Fexp = 0.025 + 0.825 (1 - |n.v|)^4.5125
-                //   alpha = screen(a0, a0 + (1 - a0 + max(lum - 1, 0)) f), a0 = lerp(tint.a, 1, f)
-                // gCarAmbTintColor (0, 0, 0, 1) in every recording (alpha below 1 only while a car
-                // fades in): black and opaque but for the mirrored surroundings; both faces drawn.
-                // (zones 3 and up of the same meshes take tint alpha 0 - not told apart here)
-                lit = env * (0.025 + 0.825 * pow(1.0 - clamp(abs(dot(n, v)), 0.0, 1.0), 4.5125));
-                alpha = 1.0;
+                //   alpha = sat(a0 + x - sat(a0 x)), x = a0 + (1 - a0 + lum - sat(lum)) f,
+                //           a0 = lerp(t, 1, f), lum = (0.3, 0.59, 0.11) of the surroundings
+                // gCarAmbTintColor c127 (sub_827914B8) = (0, 0, 0, 0.25 + 1.5 sat(min(d / 30, 1) - 0.5)),
+                // d = the camera's distance from the car's origin: see-through within 15 m, opaque
+                // from 30 m (recorded 0.25 .. 1). t = c127.w on zones 0 - 2 (the windows), 0 on zones 3
+                // and up (the lamp lenses); the zone is the vertex's uv1.x (the program's texcoord z:
+                // one half4 fetch over uv0 and uv1). Blended source alpha, both faces drawn.
+                // (the damage term, GlassDmgSampler.w x 8 sat(o2.z), is dead: the fetch writes 0 in that slot)
+                let d12a = min(distance(obj.model[3].xyz, g.cam_pos.xyz) / 30.0, 1.0);
+                let t12a = select(0.0, 0.25 + 1.5 * clamp(d12a - 0.5, 0.0, 1.0), trunc(in.uv1.x) < 3.0);
+                let f12a = 0.025 + 0.825 * pow(1.0 - clamp(abs(dot(n, v)), 0.0, 1.0), 4.5125);
+                let l12a = dot(env, vec3<f32>(0.3, 0.59, 0.11));
+                let a12a = t12a + (1.0 - t12a) * f12a;
+                let x12a = a12a + (1.0 - a12a + l12a - clamp(l12a, 0.0, 1.0)) * f12a;
+                lit = env * f12a;
+                alpha = clamp(a12a + x12a - clamp(a12a * x12a, 0.0, 1.0), 0.0, 1.0);
                 base = vec3<f32>(0.0);
                 spec_k = 0.0;
             } else if (in.uv2.x > 0.5) {
