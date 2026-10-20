@@ -433,6 +433,13 @@ pub struct Rider {
     pub tilt: Tilt,
     rng: u32,
     id: u32,
+    /// the follower's curve speed |dP/dt| (+180) and the lane it was taken on (another
+    /// lane: taken anew, as sub_82798B98 does when it sets a rail)
+    ds: f32,
+    ds_lane: usize,
+    /// the phase on the lane (follower +176): the car's point and heading are the curve's
+    /// there; `link` / `s` are the graph's link holding it
+    t: f32,
     /// (diagnostics) the car ahead last seen: centre distance and margin
     pub ahead: (f32, f32),
     /// (diagnostics) the acceleration asked for (car +408)
@@ -475,11 +482,15 @@ impl Rider {
             tilt: Tilt::default(),
             rng: seed.max(1),
             id: seed,
+            ds: 0.0,
+            ds_lane: usize::MAX,
+            t: 0.0,
             ahead: (0.0, 0.0),
             a: 0.0,
             born: 0.0,
             life: 8.0,
         };
+        r.place(nav, link, s);
         r.life = 8.0 + 4.0 * r.rand();
         r.bonus = r.rand() - 0.5;
         r.gap = 2.0 + 3.0 * r.rand();
@@ -541,26 +552,66 @@ impl Rider {
         self.next = if succ.is_empty() { None } else { Some(succ[(self.rand() * succ.len() as f32) as usize % succ.len()]) };
     }
 
-    /// The link after `k` on the car's way (within the lane, then the chosen next lane).
-    fn after(&self, nav: &NavSys, k: usize) -> Option<usize> {
-        let l = &nav.links[k];
-        match l.next.first() {
-            Some(&n) if nav.links[n].lane == l.lane && n != k => Some(n),
-            _ if l.lane == nav.links[self.link].lane => self.next,
-            _ => l.next.first().copied(),
+    /// The lane's phase where the car is (the follower's +176).
+    fn phase(&self, _nav: &NavSys) -> f32 {
+        self.t
+    }
+
+    /// Onto the lane at `s` metres along `link`: the phase of the curve's point nearest to
+    /// the link's point there (a rail set from a point, as lane slot 3 finds it), and the
+    /// curve speed taken anew.
+    pub fn place(&mut self, nav: &NavSys, link: usize, s: f32) {
+        let l = &nav.links[link];
+        let q = l.a + (l.b - l.a) * (s / l.len.max(1e-3)).clamp(0.0, 1.0);
+        self.link = link;
+        self.s = s.clamp(0.0, l.len);
+        self.t = match nav.curves.get(l.lane) {
+            Some(c) if c.pts.len() >= 2 => c.nearest(q, l.t[0], l.t[1]),
+            _ => l.phase_at(s),
+        };
+        self.ds_lane = usize::MAX;
+    }
+
+    /// The car's point: the lane's curve at its phase (sub_827986C0 -> sub_82586A28).
+    pub fn pos(&self, nav: &NavSys) -> Vec3 {
+        let l = &nav.links[self.link];
+        match nav.curves.get(l.lane) {
+            Some(c) if c.pts.len() >= 2 => c.eval(self.phase(nav)).0,
+            _ => l.a + (l.b - l.a) * (self.s / l.len.max(1e-3)),
         }
     }
 
-    pub fn pos(&self, nav: &NavSys) -> Vec3 {
-        let l = &nav.links[self.link];
-        l.a + (l.b - l.a) * (self.s / l.len.max(1e-3))
-    }
-
-    /// The heading: the lane's tangent where the car is (sub_827986C0: the rail's derivative
-    /// at the phase, normalised).
+    /// The heading: the curve's derivative at the phase, normalised (sub_827986C0).
     pub fn tangent(&self, nav: &NavSys) -> Vec3 {
         let l = &nav.links[self.link];
-        l.tangent_at(self.s / l.len.max(1e-3))
+        let d = nav.curves.get(l.lane).map_or(Vec3::ZERO, |c| c.eval(self.phase(nav)).1);
+        d.normalize_or(l.tangent_at(self.s / l.len.max(1e-3)))
+    }
+
+    /// The pose the follower stores (sub_827986C0): point, heading, and the curve speed
+    /// +180 = the mean of |dP/dt| here and the last value (taken anew on another lane).
+    fn pose(&mut self, nav: &NavSys) -> (Vec3, Vec3) {
+        let l = &nav.links[self.link];
+        let Some(c) = nav.curves.get(l.lane).filter(|c| c.pts.len() >= 2) else { return (self.pos(nav), self.tangent(nav)) };
+        let (p, d) = c.eval(self.phase(nav));
+        let sp = d.length();
+        self.ds = if self.ds_lane == l.lane && self.ds > 0.0 { (sp + self.ds) * 0.5 } else { sp };
+        self.ds_lane = l.lane;
+        (p, d.normalize_or(l.tangent_at(self.s / l.len.max(1e-3))))
+    }
+
+    /// Put the car at phase `t` of its lane: the link holding it and the metres along it.
+    fn set_phase(&mut self, nav: &NavSys, lanes: &Lanes, t: f32) {
+        let ls = &lanes.links[nav.links[self.link].lane];
+        for (i, &k) in ls.iter().enumerate() {
+            let l = &nav.links[k];
+            if t <= l.t[1] || i + 1 == ls.len() {
+                self.link = k;
+                self.s = l.s_at(t);
+                self.t = t;
+                return;
+            }
+        }
     }
 
     /// Off its lane onto a rail.
@@ -1106,27 +1157,46 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         a = -r.ty.max_decel;
     }
     integrate(r, a, dt);
-    // along the lane
-    r.s += r.v * dt;
-    for _ in 0..8 {
-        let len = nav.links[r.link].len;
-        if r.s <= len {
-            break;
+    // along the lane (sub_82798F18): the phase moves by the distance over the curve speed
+    // (+180, from the last pose); past the lane's end the rest of the distance goes on along
+    // the next lane from its start, at that lane's speed there (vfunc 11), clamped to it
+    let d = r.v * dt;
+    if d > 0.0 {
+        let lane = nav.links[r.link].lane;
+        let c = &nav.curves[lane];
+        let t0 = r.phase(nav);
+        if r.ds_lane != lane {
+            r.ds = c.speed(t0);
+            r.ds_lane = lane;
         }
-        let Some(n) = r.after(nav, r.link) else {
-            r.s = len;
-            r.v = 0.0;
-            break;
-        };
-        let new_lane = nav.links[n].lane != nav.links[r.link].lane;
-        r.s -= len;
-        r.link = n;
-        if new_lane {
-            r.choose_next(nav);
+        let t1 = mcla_formats::rage::navsys::LaneCurve::advance(t0, d, r.ds);
+        if t1 <= 1.0 {
+            r.set_phase(nav, env.lanes, t1);
+        } else {
+            let rest = (t1 - 1.0) * d / (t1 - t0).max(1e-6);
+            match r.next {
+                None => {
+                    r.set_phase(nav, env.lanes, 1.0);
+                    r.v = 0.0;
+                }
+                Some(n) => {
+                    r.link = n;
+                    r.s = 0.0;
+                    r.t = 0.0;
+                    r.choose_next(nav);
+                    let nl = nav.links[n].lane;
+                    let c = &nav.curves[nl];
+                    r.ds = c.speed(0.0);
+                    r.ds_lane = nl;
+                    if rest > 0.0 {
+                        let t = mcla_formats::rage::navsys::LaneCurve::advance(0.0, rest, r.ds).clamp(0.0, 1.0);
+                        r.set_phase(nav, env.lanes, t);
+                    }
+                }
+            }
         }
     }
-    let p = r.pos(nav);
-    let f = r.tangent(nav);
+    let (p, f) = r.pose(nav);
     if !env.event {
         after_switch(r, env, me, p, f, &ahead, chosen, cur, upright, dt);
     }
@@ -1265,8 +1335,8 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         } else if let Some((link, s)) = r.path.as_ref().and_then(|p| p.end) {
             r.path = None;
             r.state = 1;
-            r.link = link;
-            r.s = s;
+            // (a rail set anew: its curve speed is taken anew, sub_82798B98)
+            r.place(env.nav, link, s);
             r.on = [false; 3];
             r.choose_next(env.nav);
             return Some((r.pos(env.nav), f));
@@ -1847,7 +1917,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), rng: 7, id: 7, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
