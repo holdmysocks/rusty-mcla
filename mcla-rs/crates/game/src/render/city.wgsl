@@ -3285,7 +3285,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 // 0.125 + 0.875 of it, the mirror and the specular the value itself)
                 // (vehicles.rs hands it on in the second colour's alpha; 1 where a mesh has none)
                 let ao_v = in.color1.a;
-                let aok = 0.125 + 0.875 * ao_v;
+                // (traffic and parked cars - their lamp rows marked ambient, lamp_a[0].w - are drawn by
+                // VSAmbientCarPaint / PSAmbientCarPaint of cars/0xdacfb063 instead: the lights take the
+                // occlusion byte as it is, no 0.125 + 0.875 of it; the rest of their rule below.
+                // MCLA_DEBUG_VIEW 698: traffic through the player's CarPaint rule, with the same paint value)
+                let amb6 = obj.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 697.5 && g.params.w < 698.5);
+                let aok = select(0.125 + 0.875 * ao_v, ao_v, amb6);
                 // The car's two lights: the hour's light (the sun; from dusk to dawn what the
                 // light track holds - the last of the sun, then a faint grey from below) and the
                 // strongest city lamp (nothing by day). Only the FIRST of the two is weighed by the
@@ -3338,6 +3343,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 let m6 = mix(dif, envm, w + obj.fade_min.w);
                 lit = m6 + sp - clamp(m6 * sp, vec3<f32>(0.0), vec3<f32>(1.0));
                 if (g.params.w > 100.5 && g.params.w < 101.5) { lit = m6 + sp; }
+                if (amb6) {
+                    // PSAmbientCarPaint (work/trafpaint/dis/amb_carpaint.txt; docs/LIGHTING.md "Traffic paint:
+                    // the ambient cars' own program"): no flakes, no vinyl, no two-tone - the paint is the
+                    // vertex program's sat(4 x C^2.2), handed in as obj.color (vehicles.rs upload_uniforms).
+                    //   w    = sat(fresnel - [|grad(n.v)| >= 0.125]) x AO, fresnel = DL1.y + (DL1.z - DL1.y) sat(1 - n.v)^DL1.x
+                    //   m    = lerp(paint x light, sharp map, w)               (the map not weighed by k)
+                    //   spec = sat(DL0.y x AO x |soft|^(DL0.w - 1) x lerp(paint x lum(soft), soft, DL4.w) x k)
+                    //   out  = screen(m, spec)
+                    // (soft and sharp maps along the smooth normal's mirror ray; the program interpolates
+                    // the ray and the fresnel from the vertices, the port takes them per pixel)
+                    let ndv_a = dot(n, v);
+                    let edge_a = select(0.0, 1.0, sqrt(dpdx(ndv_a) * dpdx(ndv_a) + dpdy(ndv_a) * dpdy(ndv_a)) >= 0.125);
+                    let fr_a = tb.y + (tb.z - tb.y) * pow(clamp(1.0 - ndv_a, 0.0, 1.0), tb.x);
+                    let w_a = clamp(fr_a - edge_a, 0.0, 1.0) * ao_v;
+                    let m_a = mix(dif, env, w_a);
+                    let soft_a = env_soft(reflect(-v, n));
+                    let sp_a = clamp(mix(base * dot(soft_a, vec3<f32>(0.3, 0.59, 0.11)), soft_a, tc.x) * (ta.y * ao_v * pow(max(length(soft_a), 0.00001), ta.w - 1.0) * kk), vec3<f32>(0.0), vec3<f32>(1.0));
+                    lit = m_a + sp_a - clamp(m_a * sp_a, vec3<f32>(0.0), vec3<f32>(1.0));
+                }
                 // (the damage map's marks on the lit paint, PS_CarPaint: the soot towards (0.22,
                 // 0.22, 0.17) of it, x (1 - rub), the bare metal - the soft surroundings three
                 // quarters grey, to the power 1.5 - by m, x (1 - rub) again)

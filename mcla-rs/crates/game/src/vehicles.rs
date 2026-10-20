@@ -566,6 +566,15 @@ pub const TRAFFIC_PALETTE: [[f32; 4]; 10] = [
     [0.20, 0.22, 0.28, 0.3],
 ];
 
+/// A traffic or parked car's paint as VSAmbientCarPaint hands it to PSAmbientCarPaint: sat(4 x C^2.2),
+/// C = the type's vColors[idx] x fScale (`traffic::AmbType::color`) - sub_827914B8 sets C^2.2 in both
+/// paint rows (c124, c125: recorded (0.21764, 0.13321, 0) for a taxi, work/trafpaint/tp_caps.py), the
+/// vertex program lerps them and takes sat(4 x) of it (work/trafpaint/tp_px.py: o6).
+pub fn ambient_paint(c: [f32; 4]) -> [f32; 4] {
+    let f = |x: f32| (4.0 * x.max(0.0).powf(2.2)).min(1.0);
+    [f(c[0]), f(c[1]), f(c[2]), c[3]]
+}
+
 fn car_mode(shader: &str) -> MatMode {
     let s = shader.to_ascii_lowercase();
     if s.contains("paint") {
@@ -3026,7 +3035,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // slots 0 - 3, damagemap::CarDamage::window)
             let mut body_slots = [[0.0; 4]; 6];
             body_slots[0] = c.state.dmg.windows();
-            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: c.color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(0.0).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
+            // (traffic and parked cars - their lamp rows marked ambient: sub_827914B8 hands the type's
+            // colour C = vColors[idx] x fScale on raised to 2.2 in both paint rows (c124 / c125), and
+            // VSAmbientCarPaint paints with sat(4 x lerp(c124, c125, t)) = sat(4 C^2.2); the shader
+            // takes that as it is - docs/LIGHTING.md "Traffic paint: the ambient cars' own program")
+            let amb_paint = !c.is_player && c.look.is_none() && lamp_rows.0[0][3] > 0.5;
+            let body_color = if amb_paint { ambient_paint(c.color) } else { c.color };
+            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(0.0).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
             gpu.update_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {
@@ -3907,4 +3922,20 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
         }
     }
     Some(WheelModel { batches, spoke_x })
+}
+
+#[cfg(test)]
+mod ambient_paint_tests {
+    /// Traffic paint against the original (work/trafpaint): c124 recorded in the running game, o6 of
+    /// VSAmbientCarPaint run on numbers.
+    #[test]
+    fn taxi_and_dark_sedan() {
+        let taxi = super::ambient_paint([0.5, 0.4, 0.0, 1.0]);
+        // (c124 of the taxi in car_b.gpu.bin: (0.21764, 0.13321, 0); o6 = 4 x that)
+        assert!((taxi[0] - 4.0 * 0.21764).abs() < 1e-4 && (taxi[1] - 4.0 * 0.13321).abs() < 1e-4 && taxi[2] == 0.0);
+        let grey = super::ambient_paint([0.1, 0.12, 0.14, 1.0]);
+        assert!((grey[0] - 4.0 * 0.00631).abs() < 1e-4 && (grey[2] - 4.0 * 0.01323).abs() < 1e-4);
+        // (white saturates)
+        assert_eq!(super::ambient_paint([1.0, 1.0, 1.0, 1.0]), [1.0, 1.0, 1.0, 1.0]);
+    }
 }
