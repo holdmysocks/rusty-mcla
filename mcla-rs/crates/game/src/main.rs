@@ -6193,6 +6193,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         {
             // local lights: headlights of the cars around the camera + nearest street lamps (night only)
+            // the player's lamp table is its garage record's - the save's copy of the set-up it was
+            // made from (bought: `<car>.xcc`, a prize: the reward's set-up) - as the original draws it
+            self.vehicles.player_lamps = self.vehicles.player().and_then(|p| {
+                let rec = self.game.mc4.as_ref()?.car(&p.model.name)?;
+                let v3 = |v: &[mc4::F]| [0, 1, 2].map(|k| v.get(k).map_or(0.0, |x| x.0 as f32));
+                let rows: Vec<_> = rec.visual.lights.iter().map(|l| (v3(&l.LightBulbColor), v3(&l.LightCoverColor))).collect();
+                render::car_lamps::LampRows::from_record(&rows).map(std::sync::Arc::new)
+            });
             let mut ls = render::LightSet::default();
             let dark = 1.0 - globals.sky_zenith[3];
             let mut k = 0usize;
@@ -6248,7 +6256,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let dir = (fwd * 0.7455 - up * 0.6665).normalize();
                         // (their colour is the car's own: 3 x the head lamp's bulb x cover of its set-up's
                         // LightTune - R8 (1.85, 2.39, 3.0), Saleen S281 (2.16, 2.06, 1.86); the same at every hour)
-                        let hl_col = render::car_lamps::for_car(&c.model.name, &c.vinyl_name).map_or_else(|| render::car_lamps::R8.head_light(), |t| t.head_light());
+                        let hl_col = self.vehicles.lamp_rows(c).map_or_else(|| render::car_lamps::R8.head_light(), |t| t.head_light());
                         for side in [-1.0f32, 1.0] {
                             // (where the game puts them, from the lamps' positions in c88..c90 against the
                             // car's own matrix in two captures, fix_night and car_n: 3.2 m ahead of the

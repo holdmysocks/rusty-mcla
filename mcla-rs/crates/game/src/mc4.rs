@@ -1838,10 +1838,13 @@ impl Game {
             return None;
         }
         if m.car(car).is_none() {
-            let dir = std::path::Path::new(&self.data_dir).join("resources/vehicle/configs");
             let cfg = config.map(|s| s.to_string()).unwrap_or_else(|| car.to_string());
             let slot = m.garage.len() as u32;
-            let made = std::fs::read(dir.join(format!("{cfg}.xcc"))).ok().and_then(|b| Car::from_xcc(&b, car, &cfg, slot)).or_else(|| std::fs::read(dir.join(format!("{car}.xcc"))).ok().and_then(|b| Car::from_xcc(&b, car, car, slot)));
+            // (by the set-up's name hash where the install named the file otherwise: the S7's and the
+            // Murcielago DUB's set-ups - render/car_lamps.rs `setup_file`)
+            let root = std::path::Path::new(&self.data_dir);
+            let read = |n: &str| crate::render::car_lamps::setup_file(root, n).and_then(|f| std::fs::read(f).ok());
+            let made = read(&cfg).and_then(|b| Car::from_xcc(&b, car, &cfg, slot)).or_else(|| read(car).and_then(|b| Car::from_xcc(&b, car, car, slot)));
             // (no set-up file at hand: the constructor's record - sub_82395138)
             let made = made.unwrap_or_else(|| {
                 let mut c = Car { slot, TypeName: car.to_string(), vehicle: car.to_ascii_lowercase(), in_garage: 1, source_config: Some(cfg.clone()), source_config_hash: format!("0x{:08x}", joaat(&cfg)), ..Default::default() };

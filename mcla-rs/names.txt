@@ -3,14 +3,12 @@
 0.129257.wtd
 0.2821443379.png
 0.44140625 0.026367188 0.49755859.wtd
-0.5486715436.wav
 0.601049.tune
 0.612060.tex
 0.7409999967.wav
 0.789472.wdr
 0.997324.dds
 1 / 1 0.30187988 0.61714172 / 1 0.808415 0.0017500222 0.58861047 -0.34734955 0.80873376 0.47465566 /.rpf
-1 0 0.82364774 -0.56710166 -0 0.56710166 0.82364774.pt
 1002.0425.car
 1008.265503.cam
 1107.8328.wpfl
@@ -301,7 +299,6 @@ boss
 BoundingSphere -992.819.pak
 BoundingSphere 440.563.cam
 BoundingSphere 948.148.mcd
-BoundingSphere 976.132.xtd
 brakes
 brk_car_base
 brk_car_brembo_base
@@ -2158,6 +2155,8 @@ REPEAT_HANGOUT_WAGER_SC.sco
 REPEAT_HANGOUT_WAGER_SC.xml
 REPEAT_HANGOUT_WAGER_SC.xtd
 REPEAT_HANGOUT_WAGER_SC_READY_TO_START_ON_ENTER.sco
+SC_GH_36_1_vp_chv_cobalt_05.xcc
+SC_GH_36_2_vp_chv_camaro_06.xcc
 repeat_timetrial_beaches.xtd
 repeat_timetrial_beachesb.xtd
 repeat_timetrial_beachesc.xtd
@@ -2779,6 +2778,7 @@ TUNER_REP.sco
 TUNER_REP.xml
 TUNER_REP.xtd
 TUNER_REP_READY_TO_START_ON_ENTER.sco
+timetrial_vp_pon_transam_79.xcc
 tutorial_01.xtd
 tutorial_02.xtd
 tutorial_03.xtd
@@ -3891,6 +3891,7 @@ vp_lam_miura_71_zone.xtd
 vp_lam_murcielago_06
 vp_lam_murcielago_06.xcc
 vp_lam_murcielago_06.xtd
+vp_lam_murcielago_06_DUB.xcc
 vp_lam_murcielago_06_dub
 vp_lam_murcielago_06_DUB.xtd
 vp_lam_murcielago_06_dub_zone.xtd
@@ -3950,20 +3951,26 @@ vp_pon_transam_79.xcc
 vp_pon_transam_79.xtd
 vp_pon_transam_79_zone.xtd
 vp_se_chv_chp_96
+vp_se_chv_chp_96.xcc
 vp_se_chv_chp_96.xtd
 vp_se_chv_plc_96
+vp_se_chv_plc_96.xcc
 vp_se_chv_plc_96.xtd
 vp_se_dge_chp_06
+vp_se_dge_chp_06.xcc
 vp_se_dge_chp_06.xtd
 vp_se_dge_plc_06
+vp_se_dge_plc_06.xcc
 vp_se_dge_plc_06.xtd
 vp_se_dge_ubp_06
+vp_se_dge_ubp_06.xcc
 vp_se_dge_ubp_06.xtd
 vp_sln_s281_06
 vp_sln_s281_06.xcc
 vp_sln_s281_06.xtd
 vp_sln_s281_06_zone.xtd
 vp_sln_s7_06
+vp_sln_s7_06.xcc
 vp_sln_s7_06.xtd
 vp_sln_s7_06_zone.xtd
 vp_vw_golf_07

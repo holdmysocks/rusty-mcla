@@ -73,6 +73,20 @@ impl LampRows {
         Some(r)
     }
 
+    /// The table of a garage vehicle's record (the save's copy of its set-up, `lights`:
+    /// nineteen (bulb, cover) rows); what the original draws the player's car with.
+    pub fn from_record(rows: &[([f32; 3], [f32; 3])]) -> Option<LampRows> {
+        if rows.len() != IDS {
+            return None;
+        }
+        let mut r = LampRows { bulb: [[0.0; 3]; IDS], cover: [[0.0; 3]; IDS], ambient: false };
+        for (i, (b, c)) in rows.iter().enumerate() {
+            r.bulb[i] = *b;
+            r.cover[i] = *c;
+        }
+        Some(r)
+    }
+
     /// The table of a traffic car type (`mcAmbientRenderCarType.xml`).
     pub fn from_traffic_xml(s: &str) -> Option<LampRows> {
         fn vecs(s: &str, tag: &str) -> Vec<[f32; 3]> {
@@ -156,7 +170,38 @@ pub fn config(name: &str) -> Option<Arc<LampRows>> {
     if name.is_empty() || name.contains(['/', '\\', ':']) {
         return None;
     }
-    cached(name, |root| LampRows::from_xcc(&std::fs::read(root.join("resources/vehicle/configs").join(format!("{name}.xcc"))).ok()?))
+    cached(name, |root| LampRows::from_xcc(&std::fs::read(setup_file(root, name)?).ok()?))
+}
+
+/// The file of a set-up (`resources/vehicle/configs/<name>.xcc`), found by its archive name
+/// hash where the extraction named it otherwise: seven set-ups have no name in the install's
+/// name list (`0x2aa070fd`, the police `vp_se_*` ones) and two were given a colliding string
+/// (`vp_sln_s7_06.xcc` as "BoundingSphere 976.132.xtd", `vp_lam_murcielago_06_DUB.xcc` as
+/// "0.5486715436.wav": the same joaat). The archive itself only knows the hash.
+pub fn setup_file(data_dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    if name.is_empty() || name.contains(['/', '\\', ':']) {
+        return None;
+    }
+    let dir = data_dir.join("resources/vehicle/configs");
+    let plain = dir.join(format!("{name}.xcc"));
+    if plain.is_file() {
+        return Some(plain);
+    }
+    static BY_HASH: OnceLock<Mutex<HashMap<std::path::PathBuf, HashMap<u32, std::path::PathBuf>>>> = OnceLock::new();
+    let mut all = BY_HASH.get_or_init(Default::default).lock().ok()?;
+    let table = all.entry(dir.clone()).or_insert_with(|| {
+        let mut t = HashMap::new();
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let f = e.file_name().to_string_lossy().to_string();
+            let h = match f.strip_prefix("0x").and_then(|x| u32::from_str_radix(x, 16).ok()) {
+                Some(h) if f.len() == 10 => h,
+                _ => mcla_formats::hash::joaat(&f),
+            };
+            t.insert(h, e.path());
+        }
+        t
+    });
+    table.get(&mcla_formats::hash::joaat(&format!("{name}.xcc"))).cloned()
 }
 
 /// The table of a traffic car type by model name ("va_taxi_96").

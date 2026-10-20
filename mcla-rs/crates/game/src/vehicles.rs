@@ -430,6 +430,9 @@ pub struct Vehicles {
     glow_count: u32,
     /// rim size chosen in the garage for the player's car (inches; 0 = the car's stock size)
     pub player_rim_inches: u8,
+    /// the player's lamp table: its garage record's (the save's copy of its set-up), which the
+    /// original draws it with; None = by model / set-up as for any car (`lamp_rows`)
+    pub player_lamps: Option<Arc<crate::render::car_lamps::LampRows>>,
     /// traffic density a race script asked for on a road (a point on it, 0..5), not yet resolved
     pub road_density_new: Vec<(Vec3, i32)>,
     /// the same per lane of the road network
@@ -1026,6 +1029,15 @@ impl CarInstance {
 impl Vehicles {
     pub fn new() -> Vehicles {
         Vehicles { traffic_target: 0, rng: 12345, ..Default::default() }
+    }
+
+    /// The lamp table a car is drawn and lit with (render/car_lamps.rs): the player's record's,
+    /// else its set-up's, its traffic type's or its model's own; None = none on disc.
+    pub fn lamp_rows(&self, c: &CarInstance) -> Option<Arc<crate::render::car_lamps::LampRows>> {
+        match (&self.player_lamps, c.is_player) {
+            (Some(t), true) => Some(t.clone()),
+            _ => crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name),
+        }
     }
 
     fn rand(&mut self) -> f32 {
@@ -3021,6 +3033,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// Write every car's transform and lamp state to the GPU.
     pub fn upload_uniforms(&mut self, gpu: &Gpu, night: f32) {
         self.damage_maps(gpu);
+        let player_lamps = self.player_lamps.clone();
         for c in self.cars.iter_mut() {
             let pose = c.render_pose(self.render_alpha);
             let mut m = Mat4::from_rotation_translation(pose.rot, pose.pos);
@@ -3053,7 +3066,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             }
             // (the car's own lamp colours: its set-up's, else its traffic type's, else the Audi R8's - render/car_lamps.rs)
-            let lamp_rows = crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name).map_or_else(|| crate::render::car_lamps::R8.uniform(), |t| t.uniform());
+            let lamp_rows = (if c.is_player { player_lamps.clone() } else { None }).or_else(|| crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name)).map_or_else(|| crate::render::car_lamps::R8.uniform(), |t| t.uniform());
             // (step 19d: a car in a set-up is painted by it, as the player's by its record)
             let s19d_look: (u8, [f32; 4], [f32; 4], [[f32; 4]; 5], [[f32; 4]; 5], [[f32; 4]; 5]) = match (c.is_player, c.look.as_ref()) {
                 (true, _) => (self.player_paint_type.min(5), self.player_paint_b, self.player_tint, self.player_interior, self.player_area_a, self.player_area_b),
@@ -3178,7 +3191,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     continue;
                 }
                 // (the glow takes the lamp's own lit colour - bulb through cover - where the car has a lamp table: render/car_lamps.rs)
-                let col = if matches!(*id, 0 | 1 | 3 | 6 | 12) { crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name).map_or(col, |t| t.lit(*id as usize)) } else { col };
+                let col = if matches!(*id, 0 | 1 | 3 | 6 | 12) { self.lamp_rows(c).map_or(col, |t| t.lit(*id as usize)) } else { col };
                 let p = pose.pos + pose.rot * *local;
                 // (police lights show all round)
                 let facing = if *id >= 13 {
@@ -3253,7 +3266,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             };
             // (the glow's colour is bulb x cover cut at 1, not brought to a full channel: the R8's
             // brake row 3.804 3.8 3.4 x 0.9804 0.0314 0 is recorded as 255 30 0)
-            let rows = crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name);
+            let rows = self.lamp_rows(c);
             let colour = |id: u8, dflt: [f32; 3]| -> [f32; 3] {
                 rows.as_ref().map_or(dflt, |t| {
                     let i = (id as usize).min(crate::render::car_lamps::IDS - 1);
