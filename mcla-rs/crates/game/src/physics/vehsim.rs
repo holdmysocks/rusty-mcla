@@ -5355,12 +5355,13 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     let out = vs.loose.solve_car_island(loose_world.unwrap(), &car_in, &mut body, &mut dynm, &contacts, &city_rows, &loose_ids, dt);
                     impulse = out.impulse;
                     turning = out.turning;
-                    let mut k = 0;
+                    // (each back to its own contact: the island's sort can have moved the car's rows among
+                    // themselves - V s_rtv s333, a separating wall contact warm-started with another's
+                    // multipliers)
                     for (l, t) in out.links.iter().zip(out.touches.iter()) {
                         if l.from.is_none() {
-                            contacts[k].kept = t.kept;
-                            contacts[k].impulse = t.impulse;
-                            k += 1;
+                            contacts[l.car_row].kept = t.kept;
+                            contacts[l.car_row].impulse = t.impulse;
                         } else if t.impulse != Vec3::ZERO {
                             loose_answered = true;
                         }
@@ -5494,11 +5495,9 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 }
             }
             let pushed = vs.loose.push_car_island(&mut out, &body, super::solver::Pushed { push: Vec3::ZERO, turn: turn_left, deep: false }, dt);
-            let mut k = 0;
             for (l, t) in out.links.iter().zip(out.touches.iter()) {
                 if l.from.is_none() {
-                    contacts[k].pushed = t.pushed;
-                    k += 1;
+                    contacts[l.car_row].pushed = t.pushed;
                 }
             }
             Some((pushed, contacts))

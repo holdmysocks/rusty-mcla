@@ -1625,6 +1625,10 @@ pub struct Link {
     pub part_b: u16,
     /// where it is kept: a manifold of this state and its slot, or (None) the car's own
     pub from: Option<(usize, usize)>,
+    /// a contact of the car's own (`from` None): its number among the car's contacts with the city as
+    /// they were handed in - the sort can move it among the car's other rows, and what the solve leaves
+    /// is the contact's own
+    pub car_row: usize,
 }
 
 /// What a car's island came to.
@@ -1706,20 +1710,20 @@ impl LooseState {
         let (mut off_a, mut off_b) = (Vec3::ZERO, Vec3::ZERO);
         let mut list: Vec<((i64, i64, u64, u64), i64, i64, Option<(Link, Touch)>)> = Vec::new();
         let mut next_city = 0;
-        let city_link = |c: &solver::Contact| {
+        let city_link = |(row, c): (usize, &solver::Contact)| {
             let a = Side { body: Some(0), point: c.on_body, local: c.local, rows: car.rows, margin: 0.04, core: Vec3::ZERO };
             let b = Side { body: None, point: c.on_world, local: c.on_world, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
-            (Link { a: Some(Who::Car), b: None, part_a: 0, part_b: 0, from: None }, Touch { depth: c.depth, friction: c.friction, elasticity: c.elasticity, a, b, normal: c.normal, back: Vec3::ZERO - c.normal, pushed: c.pushed, kept: c.kept, target: c.target, impulse: Vec3::ZERO })
+            (Link { a: Some(Who::Car), b: None, part_a: 0, part_b: 0, from: None, car_row: row }, Touch { depth: c.depth, friction: c.friction, elasticity: c.elasticity, a, b, normal: c.normal, back: Vec3::ZERO - c.normal, pushed: c.pushed, kept: c.kept, target: c.target, impulse: Vec3::ZERO })
         };
         if old_order || city_rows.is_empty() {
             for (n, c) in city.iter().enumerate() {
-                list.push(((if old_order { i64::MIN } else { car_order as i64 }, car_level, 0, n as u64), car_addr, city_addr, Some(city_link(c))));
+                list.push(((if old_order { i64::MIN } else { car_order as i64 }, car_level, 0, n as u64), car_addr, city_addr, Some(city_link((n, c)))));
             }
         } else {
             for (n, on) in city_rows.iter().enumerate() {
                 let row = if *on {
                     next_city += 1;
-                    city.get(next_city - 1).map(city_link)
+                    city.get(next_city - 1).map(|c| city_link((next_city - 1, c)))
                 } else {
                     None
                 };
@@ -1787,12 +1791,13 @@ impl LooseState {
                         t.b.core = c;
                     }
                 }
-                list.push((pair, key, key_b, Some((Link { a: Some(m.a), b: Some(m.b), part_a: m.part_a, part_b: m.part_b, from: Some((k, i)) }, t))));
+                list.push((pair, key, key_b, Some((Link { a: Some(m.a), b: Some(m.b), part_a: m.part_a, part_b: m.part_b, car_row: 0, from: Some((k, i)) }, t))));
             }
         }
         list.sort_by_key(|x| x.0);
         if dbg() {
             eprintln!("LOOSEROWS tick {} n {} city_rows {:?} walk {:?}", self.tick, list.len(), city_rows, list.iter().map(|x| (x.0 .0, x.0 .2, x.0 .3, x.1, x.3.is_some())).collect::<Vec<_>>());
+            eprintln!("LOOSEWARM tick {} {:?}", self.tick, list.iter().filter_map(|x| x.3.as_ref().map(|(l, t)| (l.a, l.b, t.depth, t.kept))).collect::<Vec<_>>());
         }
         // (the same walk sorted by instance B's address, the same sort: the list the callbacks' second
         // pass walks, 0x82590DB0 - by the rows' places in the walk)
