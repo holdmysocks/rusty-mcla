@@ -2991,6 +2991,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
             if c.model.bike {
                 m = m * Mat4::from_rotation_z(pose.lean);
             }
+            // (traffic: the body pitched and rolled by its change of velocity, the wheels not -
+            // traffic::Tilt)
+            let wheel_m = m;
+            if let Some(q) = c.rail.as_ref().and_then(|r| r.tilt.quat()) {
+                m = m * Mat4::from_quat(q);
+            }
             // lamp state for the light shader: siren phase (0 off, 1 red, 2 blue) + 4 x reversing
             let siren = if c.cop && self.sirens { 1.0 + ((self.clock * 5.0) as i32 % 2) as f32 } else { 0.0 };
             let reversing = if c.state.gear < 0 { 4.0 } else { 0.0 };
@@ -3063,7 +3069,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 let spin = if c.model.bike { Quat::from_rotation_x(-pose.spin[i]) } else { spin };
                 // (the original draws each axle's own tyre: as wide as fitted, 6.35 mm larger than its physics radius)
                 let (tyre_w, tyre_r) = c.params().veh.as_ref().filter(|v| v.tyre_width[0] > 0.0 && !c.model.bike).map(|v| if i < 2 { (v.tyre_width[0], v.t.wheel_front.radius + 0.00635) } else { (v.tyre_width[1], v.t.wheel_back.radius + 0.00635) }).unwrap_or((c.model.params.wheel_width, c.model.params.wheel_radius));
-                let wm = m * Mat4::from_translation(local) * Mat4::from_quat(steer * flip * spin) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
+                let wm = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * flip * spin) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
                 // (a wheel has no dents: the first three slots carry its rim's finish)
                 let mut finish = [[0.0; 4]; 6];
                 if c.is_player {
@@ -3079,7 +3085,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // both sides (the right ones turned over instead of around)
                 if let (Some(cb), true) = (c.caliper_bindings.get(i), c.model.brakes.is_some() || c.brake.is_some()) {
                     let side = if left { Quat::IDENTITY } else { Quat::from_rotation_y(std::f32::consts::PI) * Quat::from_rotation_x(std::f32::consts::PI) };
-                    let cm = m * Mat4::from_translation(local) * Mat4::from_quat(steer * side) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
+                    let cm = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * side) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
                     gpu.update_object(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], fill: car_fill, ..Default::default() });
                 }
             }

@@ -413,6 +413,8 @@ pub struct Rider {
     /// on the ground (the car update's probe and smoothing, car +1696 .. +2528); None: made
     /// anew from the car's pose
     pub seat: Option<Seat>,
+    /// the drawn body's pitch and roll (sub_82794FA8)
+    pub tilt: Tilt,
     rng: u32,
     id: u32,
     /// (diagnostics) the car ahead last seen: centre distance and margin
@@ -454,6 +456,7 @@ impl Rider {
             rest: 0.0,
             partner: None,
             seat: None,
+            tilt: Tilt::default(),
             rng: seed.max(1),
             id: seed,
             ahead: (0.0, 0.0),
@@ -1287,6 +1290,92 @@ pub struct Seat {
     at: (Vec3, Vec3),
 }
 
+/// The drawn body's pitch and roll from the car's change of velocity (render update
+/// sub_82794FA8): a 30 Hz frame's velocity change dv (car +224: v - v of the last frame, v from
+/// the positions, car +208), within 30 m (horizontal) of the focus pitch = clamp(dv . forward /
+/// fMaxPitchDot) x fMaxPitchAngle (nose up when speeding up), roll = clamp(dv . right /
+/// fMaxRollDot) x fMaxRollAngle (right side up: leaning out of a turn); beyond 30 m (0, 0). The
+/// last ten samples averaged (sub_82794B78); drawn turned about the car's right axis by the
+/// pitch, then its back axis by the roll, within 30 m only; the wheels not turned.
+#[derive(Clone, Debug, Default)]
+pub struct Tilt {
+    /// the position and velocity of the last sample, the time since it
+    prev: Option<(Vec3, Vec3)>,
+    since: f32,
+    ring: [(f32, f32); 10],
+    count: usize,
+    idx: usize,
+    sum: (f32, f32),
+    /// within 30 m at the last sample
+    near: bool,
+}
+
+/// `mcAmbientRenderCarType.xml`: +68 fMaxPitchDot, +72 fMaxRollDot, +76 fMaxPitchAngle, +80
+/// fMaxRollAngle (sub_82792518) - the same for every type.
+const PITCH_DOT: f32 = 0.5;
+const ROLL_DOT: f32 = 0.1;
+const PITCH_ANGLE: f32 = 2.0;
+const ROLL_ANGLE: f32 = 3.0;
+
+impl Tilt {
+    /// One update: the car's position and axes now, its horizontal distance squared to the
+    /// focus, the time step; a sample every 1/30 s (the original's manager frame).
+    pub fn update(&mut self, pos: Vec3, fwd: Vec3, right: Vec3, dist2: f32, dt: f32) {
+        self.since += dt;
+        let frame = 1.0 / 30.0;
+        if self.since < frame - 1e-4 {
+            return;
+        }
+        let t = self.since;
+        self.since = 0.0;
+        let (vel, dv) = match self.prev {
+            Some((p, v0)) => {
+                let v = (pos - p) / t;
+                (v, v - v0)
+            }
+            None => (Vec3::ZERO, Vec3::ZERO),
+        };
+        self.prev = Some((pos, vel));
+        self.near = dist2 < 900.0;
+        let s = if self.near {
+            ((dv.dot(fwd) / PITCH_DOT).clamp(-1.0, 1.0) * PITCH_ANGLE.to_radians(), (dv.dot(right) / ROLL_DOT).clamp(-1.0, 1.0) * ROLL_ANGLE.to_radians())
+        } else {
+            (0.0, 0.0)
+        };
+        if self.count < 10 {
+            self.ring[self.idx] = s;
+            self.count += 1;
+            self.idx += 1;
+        } else {
+            if self.idx == 10 {
+                self.idx = 0;
+            }
+            let o = self.ring[self.idx];
+            self.sum = (self.sum.0 - o.0, self.sum.1 - o.1);
+            self.ring[self.idx] = s;
+            self.idx += 1;
+        }
+        self.sum = (self.sum.0 + s.0, self.sum.1 + s.1);
+    }
+
+    /// (diagnostics) the drawn pitch and roll in degrees
+    pub fn degrees(&self) -> (f32, f32) {
+        match self.quat() {
+            Some(_) => (self.sum.0 / self.count as f32 * 57.29578, self.sum.1 / self.count as f32 * 57.29578),
+            None => (0.0, 0.0),
+        }
+    }
+
+    /// The turn to draw the body with (in the car's frame: x right, y up, -z forward).
+    pub fn quat(&self) -> Option<Quat> {
+        if !self.near || self.count == 0 {
+            return None;
+        }
+        let n = self.count as f32;
+        Some(Quat::from_rotation_x(self.sum.0 / n) * Quat::from_rotation_z(self.sum.1 / n))
+    }
+}
+
 /// Half the probe segment (0x820390F4).
 const PROBE_HALF: f32 = 1.75;
 
@@ -1545,7 +1634,7 @@ impl Vehicles {
             if let Some(w) = trace.as_mut() {
                 use std::io::Write;
                 let (lim, junction) = rail_speed(nav, r.link);
-                let _ = writeln!(w, "{:.2}	{}	{}	{:.2}	{:.2}	{:.2}	{:.3}	{:.2}	{}	{:.0}	{}{}{}	{:.2}	{:.2}	{:.2}	{:.3}	{}	{}	{}	{:.3}", self.clock, r.rng_id(), c.model.name, c.state.pos.x, c.state.pos.y, c.state.pos.z, v, lim, junction as u8, r.off, r.on[0] as u8, r.on[1] as u8, r.on[2] as u8, r.gap, r.ahead.0, r.ahead.1, r.a, r.state, r.obst_id.and_then(|j| others.get(j)).map_or(0, |o| o.key), nav.links[r.link].flags, col.ground(c.state.pos, 3.0, 6.0).map_or(f32::NAN, |g| g.point.y - c.state.pos.y));
+                let _ = writeln!(w, "{:.2}	{}	{}	{:.2}	{:.2}	{:.2}	{:.3}	{:.2}	{}	{:.0}	{}{}{}	{:.2}	{:.2}	{:.2}	{:.3}	{}	{}	{}	{:.3}	{:.2}	{:.2}", self.clock, r.rng_id(), c.model.name, c.state.pos.x, c.state.pos.y, c.state.pos.z, v, lim, junction as u8, r.off, r.on[0] as u8, r.on[1] as u8, r.on[2] as u8, r.gap, r.ahead.0, r.ahead.1, r.a, r.state, r.obst_id.and_then(|j| others.get(j)).map_or(0, |o| o.key), nav.links[r.link].flags, col.ground(c.state.pos, 3.0, 6.0).map_or(f32::NAN, |g| g.point.y - c.state.pos.y), r.tilt.degrees().0, r.tilt.degrees().1);
             }
             c.state.ang_vel = Vec3::ZERO;
             let wr = c.model.params.wheel_radius.max(0.2);
@@ -1559,6 +1648,13 @@ impl Vehicles {
         }
         drop(guard);
         self.tow_trailers(col, dt);
+        // the drawn bodies' pitch and roll (every traffic car, trailers too)
+        for c in self.cars.iter_mut() {
+            let (pos, fwd, right) = (c.state.pos, c.state.forward(), c.state.right());
+            let Some(r) = c.rail.as_mut() else { continue };
+            let dist2 = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length_squared();
+            r.tilt.update(pos, fwd, right, dist2, dt);
+        }
         // (test hook MCLA_TRAFFIC_KNOCK=s: every s seconds the riding car nearest the player
         // within 60 m is knocked sideways - physical - to watch it find its lane again)
         if let Some(every) = std::env::var("MCLA_TRAFFIC_KNOCK").ok().and_then(|x| x.parse::<f32>().ok()) {
@@ -1698,6 +1794,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tilt_of_the_drawn_body() {
+        // speeding up at 3 m/s2 (0.1 m/s a 30 Hz frame): nose up 0.4 degrees; 60 Hz updates
+        let mut t = Tilt::default();
+        let (fwd, right) = (Vec3::NEG_Z, Vec3::X);
+        let (mut p, mut v) = (Vec3::ZERO, 5.0f32);
+        for _ in 0..120 {
+            v += 3.0 / 60.0;
+            p += fwd * v / 60.0;
+            t.update(p, fwd, right, 0.0, 1.0 / 60.0);
+        }
+        let (pitch, roll) = t.degrees();
+        assert!((pitch - 0.4).abs() < 0.02 && roll.abs() < 0.01, "{pitch} {roll}");
+        // a left turn, radius 12 m at 6.7 m/s (3.7 m/s2): leaning out - the right side down, -3
+        let mut t = Tilt::default();
+        for k in 0..120 {
+            let a = k as f32 * 6.7 / 12.0 / 60.0;
+            let fwd = Vec3::new(-a.sin(), 0.0, -a.cos());
+            let right = Vec3::new(a.cos(), 0.0, -a.sin());
+            let p = Vec3::new(-12.0 + 12.0 * a.cos(), 0.0, -12.0 * a.sin());
+            t.update(p, fwd, right, 100.0, 1.0 / 60.0);
+        }
+        let (pitch, roll) = t.degrees();
+        assert!((roll + 3.0).abs() < 0.01 && pitch.abs() < 0.05, "{pitch} {roll}");
+        // beyond 30 m: not turned
+        t.update(Vec3::new(100.0, 0.0, 0.0), Vec3::NEG_Z, Vec3::X, 1000.0, 1.0 / 30.0);
+        assert!(t.quat().is_none());
+    }
+
+    #[test]
     fn needed_acceleration_like_the_original() {
         let ty = AmbType::default();
         let (up, down) = (ty.max_accel, ty.max_decel);
@@ -1713,7 +1838,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, rng: 7, id: 7, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), rng: 7, id: 7, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
