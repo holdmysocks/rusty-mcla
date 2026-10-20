@@ -556,13 +556,15 @@ pub static REPLAY_K: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64
 /// What a stage-R recording logs of the session's physics level (`MCLA_LOOSE_LEVEL` = a file that
 /// `veh_diff.py` writes from the side file): the car's level index and instance address, the
 /// instance address of every prop it logged (by level index), the first address of the pool the
-/// cache entries' instances come from, and per update the head of the level's free index list.
+/// cache entries' instances come from, per update the head of the level's free index list, and the
+/// city's own instance (the B of every contact with the city).
 #[derive(Debug, Default)]
 pub struct LevelHints {
     pub car: (i64, i64),
     pub addr: HashMap<i64, i64>,
     pub pool: Option<i64>,
     pub free: HashMap<i64, Vec<i64>>,
+    pub city: Option<i64>,
 }
 
 pub fn level_hints() -> Option<&'static LevelHints> {
@@ -580,6 +582,7 @@ pub fn level_hints() -> Option<&'static LevelHints> {
                     h.addr.insert(n[0], n[1]);
                 }
                 (Some("pool"), 1..) => h.pool = Some(n[0]),
+                (Some("city"), 1..) => h.city = Some(n[0]),
                 (Some("free"), 2..) => {
                     h.free.insert(n[0], n[1..].to_vec());
                 }
@@ -912,6 +915,11 @@ impl LooseState {
     /// The car's level index and its instance's address (0, 0 where no recording says).
     pub fn car_place(&self) -> (i64, i64) {
         level_hints().filter(|_| !r1()).map_or((0, 0), |h| h.car)
+    }
+
+    /// The city instance's address (below every other where no recording says: the recorded ones are).
+    fn city_addr(&self) -> i64 {
+        level_hints().filter(|_| !r1()).and_then(|h| h.city).unwrap_or(i64::MIN)
     }
 
     /// The instance a new cache entry gets (0x90 bytes each, from the top of their pool downwards).
@@ -1624,6 +1632,13 @@ pub struct IslandOut {
     /// what the car's +368 / +384 gain
     pub impulse: Vec3,
     pub turning: Vec3,
+    /// the rows (numbers into `links`) in the island's second list, sorted by instance B's address
+    /// (0x82594068's list for the B side, island +296)
+    pub by_b: Vec<usize>,
+    /// the car's normals summed over the rows the callbacks disabled, of the car's A run and of its B run
+    /// (mcCarDamage's scrape normal takes every row of its run, 0x82343F8C)
+    pub off_a: Vec3,
+    pub off_b: Vec3,
 }
 
 impl LooseState {
@@ -1680,7 +1695,10 @@ impl LooseState {
         // MCLA_DBG_RA5: pairs by their indices and a stable sort, as before.)
         let old_order = super::vehsim::dbg_flag("MCLA_DBG_RA5");
         let car_order = self.car_city_order.unwrap_or(0);
-        let mut list: Vec<((i64, i64, u64, u64), i64, Option<(Link, Touch)>)> = Vec::new();
+        // (each row: its place in the tree walk, instance A's address, instance B's, the row)
+        let city_addr = self.city_addr();
+        let (mut off_a, mut off_b) = (Vec3::ZERO, Vec3::ZERO);
+        let mut list: Vec<((i64, i64, u64, u64), i64, i64, Option<(Link, Touch)>)> = Vec::new();
         let mut next_city = 0;
         let city_link = |c: &solver::Contact| {
             let a = Side { body: Some(0), point: c.on_body, local: c.local, rows: car.rows, margin: 0.04, core: Vec3::ZERO };
@@ -1689,7 +1707,7 @@ impl LooseState {
         };
         if old_order || city_rows.is_empty() {
             for (n, c) in city.iter().enumerate() {
-                list.push(((if old_order { i64::MIN } else { car_order as i64 }, car_level, 0, n as u64), car_addr, Some(city_link(c))));
+                list.push(((if old_order { i64::MIN } else { car_order as i64 }, car_level, 0, n as u64), car_addr, city_addr, Some(city_link(c))));
             }
         } else {
             for (n, on) in city_rows.iter().enumerate() {
@@ -1699,7 +1717,7 @@ impl LooseState {
                 } else {
                     None
                 };
-                list.push(((car_order as i64, car_level, 0, n as u64), car_addr, row));
+                list.push(((car_order as i64, car_level, 0, n as u64), car_addr, city_addr, row));
             }
         }
         for &k in ids {
@@ -1710,6 +1728,11 @@ impl LooseState {
                 Who::Obj(o) => self.objs[o].addr,
                 _ => car_addr,
             };
+            let key_b = match m.b {
+                Who::Obj(o) => self.objs[o].addr,
+                Who::Car => car_addr,
+                Who::City => city_addr,
+            };
             let rows_of = |w: Who| match w {
                 Who::Car => car.rows,
                 Who::Obj(o) => [self.objs[o].matrix[0], self.objs[o].matrix[1], self.objs[o].matrix[2]],
@@ -1717,8 +1740,13 @@ impl LooseState {
             };
             for (i, s) in m.slots.iter().enumerate() {
                 if !s.enabled {
+                    if m.a == Who::Car {
+                        off_a += s.t.normal;
+                    } else if m.b == Who::Car {
+                        off_b += Vec3::ZERO - s.t.normal;
+                    }
                     if !old_order {
-                        list.push((pair, key, None));
+                        list.push((pair, key, key_b, None));
                     }
                     continue;
                 }
@@ -1753,19 +1781,31 @@ impl LooseState {
                         t.b.core = c;
                     }
                 }
-                list.push((pair, key, Some((Link { a: Some(m.a), b: Some(m.b), part_a: m.part_a, part_b: m.part_b, from: Some((k, i)) }, t))));
+                list.push((pair, key, key_b, Some((Link { a: Some(m.a), b: Some(m.b), part_a: m.part_a, part_b: m.part_b, from: Some((k, i)) }, t))));
             }
         }
         list.sort_by_key(|x| x.0);
         if dbg() {
-            eprintln!("LOOSEROWS tick {} n {} city_rows {:?} walk {:?}", self.tick, list.len(), city_rows, list.iter().map(|x| (x.0 .0, x.0 .2, x.0 .3, x.1, x.2.is_some())).collect::<Vec<_>>());
+            eprintln!("LOOSEROWS tick {} n {} city_rows {:?} walk {:?}", self.tick, list.len(), city_rows, list.iter().map(|x| (x.0 .0, x.0 .2, x.0 .3, x.1, x.3.is_some())).collect::<Vec<_>>());
         }
+        // (the same walk sorted by instance B's address, the same sort: the list the callbacks' second
+        // pass walks, 0x82590DB0 - by the rows' places in the walk)
+        let mut walk_b: Vec<(i64, usize)> = list.iter().enumerate().map(|(n, x)| (x.2, n)).collect();
+        let enabled: Vec<bool> = list.iter().map(|x| x.3.is_some()).collect();
+        let mut tagged: Vec<(i64, usize, Option<(Link, Touch)>)> = list.into_iter().enumerate().map(|(n, x)| (x.1, n, x.3)).collect();
         if old_order {
-            list.sort_by_key(|x| x.1);
+            tagged.sort_by_key(|x| x.0);
+            walk_b.sort_by_key(|x| x.0);
         } else {
-            stl_sort(&mut list, |x| x.1);
+            stl_sort(&mut tagged, |x| x.0);
+            stl_sort(&mut walk_b, |x| x.0);
         }
-        let list: Vec<(Link, Touch)> = list.into_iter().filter_map(|x| x.2).collect();
+        let mut row_of = vec![usize::MAX; enabled.len()];
+        for (r, x) in tagged.iter().filter(|x| x.2.is_some()).enumerate() {
+            row_of[x.1] = r;
+        }
+        let by_b: Vec<usize> = walk_b.iter().filter(|x| enabled[x.1]).map(|x| row_of[x.1]).collect();
+        let list: Vec<(Link, Touch)> = tagged.into_iter().filter_map(|x| x.2).collect();
         let mut links: Vec<Link> = list.iter().map(|x| x.0).collect();
         let mut touches: Vec<Touch> = list.iter().map(|x| x.1).collect();
         let inv_dt = 1.0 / dt;
@@ -1914,7 +1954,7 @@ impl LooseState {
                     }
                 }
             }
-            return IslandOut { impulse: given[0].0, turning: given[0].1, touches, links, bodies, owners, solved };
+            return IslandOut { impulse: given[0].0, turning: given[0].1, touches, links, bodies, owners, solved, by_b, off_a, off_b };
         }
     }
 
@@ -2165,6 +2205,49 @@ impl LooseState {
         self.step_rest(world, &car, dt);
     }
 
+    /// (replay diagnostics, `MCLA_REPLAY_PIECES=<file>`: every loose body put into the recording's state before each
+    /// update - lines "<update> <level index>" and the pool body's place, rows, v, w, P, L, force, torque, the two
+    /// impulse sums, push, turn, its "last" matrix (12) and whether it is set, and the instance's matrix (12), as
+    /// work/proppath/mkpieces.py writes them from the OBJ records - so that each tick is one step from the original's)
+    fn replay_pieces(&mut self) {
+        static P: std::sync::OnceLock<HashMap<(i64, i64), Vec<f32>>> = std::sync::OnceLock::new();
+        let p = P.get_or_init(|| {
+            let Some(path) = std::env::var_os("MCLA_REPLAY_PIECES") else { return HashMap::new() };
+            std::fs::read_to_string(path).unwrap_or_default().lines().filter_map(|l| {
+                let w: Vec<&str> = l.split_whitespace().collect();
+                let (k, lev) = (w.first()?.parse().ok()?, w.get(1)?.parse().ok()?);
+                Some(((k, lev), w[2..].iter().filter_map(|x| x.parse().ok()).collect()))
+            }).collect()
+        });
+        if p.is_empty() {
+            return;
+        }
+        let k = REPLAY_K.load(std::sync::atomic::Ordering::Relaxed);
+        for o in self.objs.iter_mut() {
+            let Some(b) = o.body.as_mut() else { continue };
+            let Some(q) = p.get(&(k, o.level)).filter(|q| q.len() >= 70) else { continue };
+            let v3 = |i: usize| Vec3::new(q[i], q[i + 1], q[i + 2]);
+            b.at = v3(0);
+            b.rows = [v3(3), v3(6), v3(9)];
+            b.v = v3(12);
+            b.w = v3(15);
+            b.p = v3(18);
+            b.l = v3(21);
+            b.force = v3(24);
+            b.torque = v3(27);
+            b.jf = v3(30);
+            b.jt = v3(33);
+            b.push = v3(36);
+            b.turn = v3(39);
+            b.last = [v3(42), v3(45), v3(48), v3(51)];
+            b.last_set = q[54] != 0.0;
+            o.matrix = [v3(55), v3(58), v3(61), v3(64)];
+            b.deep = q[67] != 0.0;
+            b.deep_count = q[68] as u8;
+            b.moves = q[69] as u32;
+        }
+    }
+
     /// The instance's matrix from the body (0x8259D1E8).
     fn matrix_from_body(&mut self, world: &LooseWorld, o: usize) {
         let cg = self.cg_of(world, o);
@@ -2179,6 +2262,7 @@ impl LooseState {
     /// tick's force sums.
     pub fn pre_collide(&mut self, world: &LooseWorld, dt: f32) {
         let rs = super::gjk::rsqrt_as_original;
+        self.replay_pieces();
         self.pieces_wake(dt);
         self.sync_others();
         for o in 0..self.objs.len() {

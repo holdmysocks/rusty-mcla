@@ -5071,6 +5071,9 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // (the body as the tick's solve starts from it: a scrape reads the car's velocities before the impulses)
         let mut solve_body: Option<super::solver::Body> = None;
         let mut loose_answered = false;
+        // (the normals of the car's contacts with the city that the callbacks took from the solver - the wheels'
+        // - which mcCarDamage's scrape normal still sums, 0x82343F8C: every contact of its run)
+        let mut city_off_n = Vec3::ZERO;
         let (mut impulse, mut turning) = (Vec3::ZERO, Vec3::ZERO);
         let mut reordered: Option<Vec<usize>> = None;
         if exact_collide {
@@ -5275,6 +5278,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                             vs.wheels[i].bottomed = false;
                             slot.enabled = false;
                             *city_rows.last_mut().unwrap() = false;
+                            city_off_n += c.normal;
                         }
                         continue;
                     }
@@ -5420,9 +5424,13 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
         // ---- and the second solve, which only moves the body out (0x82591108, 0x8259E920) ----
         let turn_left = if dbg_flag("MCLA_DBG_Y4") { Vec3::ZERO } else { vs.push_turn_left };
-        // (the call's sum of dv, its first point, multiplier, whether any impulse, and for a scrape the
-        // normals' sum and the first other's velocity at the point and at its centre)
-        let mut loose_hit: Option<(Vec3, Vec3, f32, bool, Vec3, Vec3, Vec3)> = None;
+        // (in a tick with something loose in the car's island: mcCarDamage's calls, one per run of the
+        // car's rows in each of the island's two lists - 0x82590DB0 walks the list sorted by instance A,
+        // then the one sorted by instance B, and calls the instance once per run of rows with it on that
+        // side. The car is A against the city and against what has a higher level index, B against what
+        // has a lower one. V work/proppath k311 / k329: the scrape is the A run's, whose first row is a
+        // piece the car is A against, not the city's or the first piece of the island.)
+        let mut loose_runs: Vec<DamageRun> = Vec::new();
         let pushed_now = if let Some((body, mut contacts, mut solved)) = solved_contacts.take() {
             let pushed = super::solver::push(&body, &mut contacts, &mut solved, dt, 1.0 / dt, (0.04, 0.04), false, turn_left);
             if let Some(order) = reordered.take() {
@@ -5433,26 +5441,42 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             }
             Some((pushed, contacts))
         } else if let Some((body, mut contacts, mut out)) = loose_island.take() {
-            // (mcCarDamage's call for the car's contacts with what is loose - props, pieces, other
-            // vehicles: their impulses whole, not fixed (0x82567A08); the first one's point and other)
+            // (mcCarDamage's calls: the car's run of the A-sorted list - its rows with the city and with what it is
+            // A against, in the island's order - then its run of the B-sorted list; each sums the impulses on the car
+            // over its mass, 0.4 of those against the fixed city (0x82567A08), and takes the first row's point and other)
+            let a_rows: Vec<usize> = (0..out.links.len()).filter(|&i| out.links[i].a == Some(super::loose::Who::Car)).collect();
+            let b_rows: Vec<usize> = out.by_b.iter().copied().filter(|&i| out.links[i].b == Some(super::loose::Who::Car)).collect();
+            for (rows, off) in [(a_rows, city_off_n + out.off_a), (b_rows, out.off_b)] {
+                let mut run: Option<DamageRun> = None;
+                for i in rows {
+                    let (l, t) = (&out.links[i], &out.touches[i]);
+                    let car_a = l.a == Some(super::loose::Who::Car);
+                    let other = if car_a { l.b } else { l.a };
+                    let fixed = matches!(other, Some(super::loose::Who::City) | None);
+                    let (mine, point, n_car, other_side) = if car_a { (t.impulse, t.a.point, t.normal, &t.b) } else { (Vec3::ZERO - t.impulse, t.b.point, t.back, &t.a) };
+                    let r = run.get_or_insert_with(|| {
+                        let ob = other_side.body.and_then(|k| out.bodies.get(k));
+                        DamageRun { dv: Vec3::ZERO, first: point, last: point, mult: vs.loose.vehicle_factor(other), any: false, nsum: Vec3::ZERO, n0: n_car, v2: ob.map_or(Vec3::ZERO, |b| b.vel + b.ang.cross(point - b.at)), v2c: ob.map_or(Vec3::ZERO, |b| b.vel) }
+                    });
+                    r.dv += if fixed { mine * body.inv_mass * f32::from_bits(0x3ecc_cccd) } else { mine * body.inv_mass };
+                    r.any |= t.impulse != Vec3::ZERO;
+                    r.nsum += n_car;
+                    r.last = point;
+                }
+                loose_runs.extend(run.map(|mut r| {
+                    r.nsum += off;
+                    r
+                }));
+            }
             for (l, t) in out.links.iter().zip(out.touches.iter()) {
-                let (mine, point, other) = match (l.a, l.b) {
-                    (Some(super::loose::Who::Car), o) => (t.impulse, t.a.point, o),
-                    (o, Some(super::loose::Who::Car)) => (Vec3::ZERO - t.impulse, t.b.point, o),
+                let other = match (l.a, l.b) {
+                    (Some(super::loose::Who::Car), o) => o,
+                    (o, Some(super::loose::Who::Car)) => o,
                     _ => continue,
                 };
                 if l.from.is_none() || matches!(other, Some(super::loose::Who::City) | None) {
                     continue;
                 }
-                let n_car = if matches!(l.a, Some(super::loose::Who::Car)) { t.normal } else { t.back };
-                let e = loose_hit.get_or_insert_with(|| {
-                    let other_side = if matches!(l.a, Some(super::loose::Who::Car)) { &t.b } else { &t.a };
-                    let ob = other_side.body.and_then(|k| out.bodies.get(k));
-                    (Vec3::ZERO, point, vs.loose.vehicle_factor(other), false, Vec3::ZERO, ob.map_or(Vec3::ZERO, |b| b.vel + b.ang.cross(point - b.at)), ob.map_or(Vec3::ZERO, |b| b.vel))
-                });
-                e.0 += mine * body.inv_mass;
-                e.3 |= t.impulse != Vec3::ZERO;
-                e.4 += n_car;
                 // (the collision audio's view of a touch with another car, as the city's below)
                 if let Some(super::loose::Who::Obj(o)) = other {
                     if vs.loose.objs.get(o).is_some_and(|x| x.veh.is_some()) {
@@ -5540,8 +5564,9 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 }
             }
             hull_touched = Some((answered, walls));
-            // (the callback runs only in a tick the solver gave some contact of the car an impulse)
-            if hit_any && !dbg_flag("MCLA_DBG_NOWORLDHIT") {
+            // (the callback runs only in a tick the solver gave some contact of the car an impulse; with something
+            // loose in the island the calls are the runs below)
+            if hit_any && loose_runs.is_empty() && !dbg_flag("MCLA_DBG_NOWORLDHIT") {
                 let at = if st.up().y < f32::from_bits(0x3dcc_cccd) { hit_last } else { hit_first.unwrap_or(hit_last) };
                 // (0x82343378: in the instance's matrix, which the tick's move has already set)
                 let d = at - moved_origin;
@@ -5553,6 +5578,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 // from it - no impulses, no pending forces - and at its centre after the solve; the city's none; the
                 // normals summed, unit over 0.001, else the first's. V work/dmgmap: a 26 m/s head-on 26.08445 |
                 // 26.084 m/s at the point, the scrape then let through by the centre's 4.54 m/s after the solve)
+                let hit_n = hit_n + city_off_n;
                 let n = if hit_n.length() > f32::from_bits(0x3a83_126f) { hit_n.normalize() } else { hit_n0.unwrap_or(Vec3::Y) };
                 let v_pt = start_velocity(solve_body.as_ref(), at).unwrap_or(v1 + w1.cross(at - (at1 - pushed.push)));
                 let scrape = super::car::ScrapeIn { v1: v_pt, v2: Vec3::ZERO, rel: v1, n };
@@ -5561,19 +5587,24 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 }
                 st.world_hit(p, hit_dv.length(), at, local, Some(scrape));
             }
-            // (then the call for what is loose: in a recorded tick with both, mcCarDamage +56 is this
-            // one's sum, exactly - sa.0 k230..k292)
-            if let Some((dv, at, mult, true, nsum, v2, v2c)) = loose_hit.filter(|_| !dbg_flag("MCLA_DBG_NOWORLDHIT")) {
+            // (the island's calls, the A run's first: in a recorded tick with both, mcCarDamage +56 - the last
+            // call's - is the sum of the pieces the car is B against, exactly - sa.0 k230..k292)
+            for r in loose_runs.iter().filter(|r| r.any && !dbg_flag("MCLA_DBG_NOWORLDHIT")) {
+                let at = if st.up().y < f32::from_bits(0x3dcc_cccd) { r.last } else { r.first };
                 let d = at - moved_origin;
                 let local = Vec3::new(d.dot(moved_rows[0]), d.dot(moved_rows[1]), d.dot(moved_rows[2]));
+                let dv = r.dv.length();
                 if dbg_flag("MCLA_DBG_WORLDHIT") {
-                    eprintln!("LOOSEHIT dv {:.6} at local {:.6} {:.6} {:.6} mult {}", dv.length(), local.x, local.y, local.z, mult);
+                    eprintln!("LOOSEHIT dv {:.6} at local {:.6} {:.6} {:.6} mult {}", dv, local.x, local.y, local.z, r.mult);
                 }
-                let n = if nsum.length() > f32::from_bits(0x3a83_126f) { nsum.normalize() } else { nsum };
+                let n = if r.nsum.length() > f32::from_bits(0x3a83_126f) { r.nsum.normalize() } else { r.n0 };
                 // (the car's own velocity at the point as the solve started, as above; the other's after it: I)
                 let v_pt = start_velocity(solve_body.as_ref(), at).unwrap_or(v1 + w1.cross(at - (at1 - pushed.push)));
-                let scrape = super::car::ScrapeIn { v1: v_pt, v2, rel: v1 - v2c, n };
-                st.damage_call(p, dv.length(), mult, at, local, Some(scrape));
+                let scrape = super::car::ScrapeIn { v1: v_pt, v2: r.v2, rel: v1 - r.v2c, n };
+                if dbg_flag("MCLA_DBG_WORLDHIT") {
+                    eprintln!("LOOSESCRAPE t{} dv {:.5} v1 {:.4?} v2 {:.4?} rel {:.4?} n {:.4?} amount {:.6}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), dv, v_pt, r.v2, v1 - r.v2c, n, scrape.amount());
+                }
+                st.damage_call(p, dv, r.mult, at, local, Some(scrape));
             }
             // (0x8259E920: the matrix the next tick's collision takes for the last one)
             let end = [rows1[0], rows1[1], rows1[2], origin1];
@@ -5854,6 +5885,22 @@ fn level_probe(world: &WorldCollider, from: Vec3, to: Vec3) -> Option<(Vec3, Vec
         }
     });
     best.map(|b| (b.1, b.2))
+}
+
+/// One of mcCarDamage's calls in a tick with something loose in the car's island (a run of the car's rows in
+/// one of the island's two lists): the change of velocity, the first and last points, the first other's
+/// multiplier, whether any row has an impulse, the normals' sum and the first's, and the first other's velocity
+/// at the point and at its centre (none for the city).
+struct DamageRun {
+    dv: Vec3,
+    first: Vec3,
+    last: Vec3,
+    mult: f32,
+    any: bool,
+    nsum: Vec3,
+    n0: Vec3,
+    v2: Vec3,
+    v2c: Vec3,
 }
 
 pub(super) fn dbg_flag(name: &'static str) -> bool {
