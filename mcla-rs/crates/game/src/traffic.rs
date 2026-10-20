@@ -625,6 +625,44 @@ impl Rider {
 
 /// The speed of a lane (sub_82245A28 on the lane's owner, flags at owner +4) and whether it is
 /// a junction lane (owner flags & 0x30, or lane flags & 0x1000).
+/// A lane owned by a junction (sub_822452F8: the lane's owner, or the owner's parent, has the
+/// junction flag 4).
+fn junction_lane(l: &mcla_formats::rage::navsys::Link) -> bool {
+    (l.owner_flags | l.parent_flags) & 4 != 0
+}
+
+/// The light a rider obeys (sub_827A29F0 -> sub_827A3570 / sub_827A3458 / sub_8273A178): the
+/// junction lane it is to enter - its next lane when that is a junction lane, else the first
+/// junction lane starting where the next lane ends (sub_822464F0; no further) - and its
+/// junction's state for that lane (`Junction::lane_state`, the lane's first span against the
+/// current arm). Returns (junction, xz metres from `pos` to the junction lane's first point =
+/// the stop line, state 2 green / 1 yellow / 0 red). (Which junction lane sub_822464F0 takes
+/// when several start at that point follows the node's lane order; here the graph's successor
+/// order. The junction is the one whose box holds the lane's control points.)
+fn signal_stop(env: &Env, r: &Rider, pos: Vec3) -> Option<(usize, f32, u8)> {
+    let nav = env.nav;
+    let n = r.next?;
+    let first = if junction_lane(&nav.links[n]) {
+        n
+    } else {
+        let lane = nav.links[n].lane;
+        let mut k = n;
+        while let Some(&m) = nav.links[k].next.iter().find(|&&m| nav.links[m].lane == lane && m != k) {
+            k = m;
+        }
+        *nav.links[k].next.iter().find(|&&m| nav.links[m].lane != lane && junction_lane(&nav.links[m]))?
+    };
+    let c = nav.curves.get(nav.links[first].lane)?;
+    let (p0, p1) = match (c.pts.first(), c.pts.get(1)) {
+        (Some(a), Some(b)) => (*a, *b),
+        _ => (nav.links[first].a, nav.links[first].b),
+    };
+    let mid = c.pts.iter().copied().sum::<Vec3>() / c.pts.len().max(1) as f32;
+    let ji = env.signals.junction_at(if c.pts.is_empty() { p0 } else { mid })?;
+    let d = Vec3::new(p0.x - pos.x, 0.0, p0.z - pos.z).length();
+    Some((ji, d, env.signals.junctions[ji].lane_state(p0 - p1)))
+}
+
 pub fn rail_speed(nav: &NavSys, link: usize) -> (f32, bool) {
     let l = &nav.links[link];
     let f = l.owner_flags;
@@ -1147,7 +1185,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         }
     };
     r.kept = (v == 0.0 && ahead.j != usize::MAX).then(|| (ahead.j, env.others[ahead.j].pos));
-    let stop = env.signals.ahead(pos, nav.links[r.link].dir(), env.clock).filter(|x| x.2 != 2 && x.1 - half_len > -1.0).map(|x| (x.0, x.1));
+    let stop = signal_stop(env, r, pos).filter(|x| x.2 != 2).map(|x| (x.0, x.1));
     let slower = (next_want <= v).then(|| {
         let end = nav.links[r.lane_end(nav)].b;
         (next_want, end.distance(pos))
@@ -1208,7 +1246,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
 #[allow(clippy::too_many_arguments)]
 fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, ahead: &Ahead, chosen: Option<usize>, lane_speed: f32, upright: bool, dt: f32) {
     let semi = r.ty.trailer || (r.ty.cab && r.partner.is_some());
-    let light_near = env.signals.ahead(pos, fwd, env.clock).is_some_and(|x| x.1 < 50.0);
+    let light_near = signal_stop(env, r, pos).is_some_and(|x| x.1 < 50.0);
     let blocker = ahead.blocking.filter(|&b| b == ahead.j);
     // stuck (sub_827A3810): standing more than 2 s behind the blocker that limits us: back
     // up 2 m at 4 m/s, three times at most until it is no longer stuck
@@ -1241,7 +1279,7 @@ fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, ahead
         return;
     }
     // (the next lane's light at stop within 50 m)
-    if env.signals.ahead(pos, fwd, env.clock).is_some_and(|x| x.2 != 2 && x.1 < 50.0) {
+    if signal_stop(env, r, pos).is_some_and(|x| x.2 != 2 && x.1 < 50.0) {
         return;
     }
     if r.v == 0.0 {
@@ -1623,6 +1661,7 @@ impl Vehicles {
             _ => None,
         };
         let mut busy: Vec<Vec3> = Vec::new();
+        let mut waits: Vec<(usize, Vec3)> = Vec::new();
         for i in 0..self.cars.len() {
             let (half, _) = half_size(&self.cars[i]);
             let c = &mut self.cars[i];
@@ -1696,7 +1735,13 @@ impl Vehicles {
                     if (l.owner_flags | l.parent_flags) & 4 != 0 && l.owner_flags & 2 == 0 {
                         busy.push(c.state.pos);
                     }
-                    step(r, &env, i, half, upright, dt)
+                    let p = step(r, &env, i, half, upright, dt);
+                    // refused by the light this frame (the stop entry is made only then): the
+                    // junction counts it as waiting (sub_827A3458)
+                    if let Some(ji) = r.stop_id {
+                        waits.push((ji, c.state.pos));
+                    }
+                    p
                 }
             };
             let (p, f) = pose;
@@ -1757,6 +1802,9 @@ impl Vehicles {
         }
         for p in busy {
             self.signals.occupy(p);
+        }
+        for (ji, p) in waits {
+            self.signals.wait(ji, p);
         }
     }
 
