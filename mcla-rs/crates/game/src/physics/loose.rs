@@ -1218,7 +1218,7 @@ impl LooseState {
             for c in self.parts_of(world, car, Who::Obj(o)) {
                 let Some(s) = self.shape(world, car, Who::Obj(o), c) else { continue };
                 let mut hits: Vec<super::hull::PartHit> = Vec::new();
-                if dbg() && self.objs[o].entry.is_none() {
+                if dbg() {
                     let t = &world.types[self.objs[o].ty];
                     let p = &t.parts[c as usize];
                     if let Some(bd) = p.bound.as_ref() {
@@ -1902,16 +1902,9 @@ impl LooseState {
         // breaking pass's listing (0x825914B8), after the first solve; the recording says the woken body is
         // already in the first solve - s512 / s518 of the long scrape exact only so - so it is done before the
         // rows. Whether the island +75 condition matters is not shown by the recording: the same run without it is
-        // the same, bit for bit.)
-        if links.iter().any(|l| [l.a, l.b].into_iter().any(|w| matches!(w, Some(Who::Obj(o)) if self.breakable(world, o)))) {
-            for l in links.iter() {
-                for who in [l.a, l.b] {
-                    if let Some(Who::Obj(o)) = who {
-                        self.wake_obj(world, o);
-                    }
-                }
-            }
-        }
+        // the same, bit for bit. Every manifold of the island counts, also one whose contacts are all disabled: V s_rtv
+        // s473 / s496, the car's wheel 3 1.1 cm from asleep piece 22360 (contact flags 0x4d) wakes it.)
+        self.wake_island(world, ids);
         loop {
             let (bodies, owners) = self.bodies_of(car, &links, &mut touches);
             let solved = solver::island_solve(&bodies, &touches, dt, inv_dt);
@@ -2283,6 +2276,31 @@ impl LooseState {
         let broken = self.objs.iter().filter_map(|o| Some((o.inst?, o.entry?.absent))).filter(|x| x.1 != 0).collect();
         let moving = self.objs.iter().filter(|o| o.body.is_some() || o.dormant).map(|o| (o.ty, o.entry.map_or(0, |e| e.absent), o.matrix)).collect();
         (broken, moving)
+    }
+
+    /// The wake of an island's inactive objects (0x82590A60 -> 0x8258D3F8): every object of every manifold `ids` - one
+    /// whose contacts are all disabled too - when the island has a prop or piece in it.
+    fn wake_island(&mut self, world: &LooseWorld, ids: &[usize]) {
+        let objs: Vec<usize> = ids.iter().flat_map(|&k| [self.manis[k].a, self.manis[k].b]).filter_map(|w| if let Who::Obj(o) = w { Some(o) } else { None }).collect();
+        if dbg() {
+            eprintln!("LOOSEWAKEISLE tick {} {:?}", self.tick, objs.iter().map(|&o| (o, self.breakable(world, o), self.objs[o].dormant, self.objs[o].hit, self.objs[o].body.is_some())).collect::<Vec<_>>());
+        }
+        // (every island with a prop or piece in it goes to the breaking pass - gjkfix part 10: contact limit +60 = 0,
+        // island +75 set for every island - not only one with something left to break: V s_rtv s473, 22360 a piece of
+        // one group woken by the car's island)
+        if objs.iter().any(|&o| self.objs[o].veh.is_none()) {
+            for o in objs {
+                self.wake_obj(world, o);
+            }
+        }
+    }
+
+    /// The car's island with no loose contact enabled in it: the port solves the car alone (or not at all), the original
+    /// has the car's loose manifolds in the island and wakes what they hold, solved or not (V s_rtv s473: the car's wheel
+    /// 3 1.1 cm from asleep piece 22360, with car x city contacts; s496: wheel 1, none - contact flags 0x4d both times).
+    pub fn wake_car_island(&mut self, world: &LooseWorld) {
+        let ids: Vec<usize> = (0..self.manis.len()).filter(|&k| self.manis[k].island == 0).collect();
+        self.wake_island(world, &ids);
     }
 
     /// The manifolds of the car's island (empty: the car's island is the car and the city).
@@ -3090,7 +3108,13 @@ impl Sleep {
 
 /// The "still" test (0x82595128 -> 0x82594EC0) with the game's tolerances: v^2 and w^2 0.05.
 fn still(b: &PBody, dt: f32, f2: f32) -> bool {
+    let [a, bb, c, d] = still_terms(b, dt, f2);
     let tol = f32::from_bits(0x3d4c_cccd);
+    !(a > tol) && !(bb > tol) && !(c > tol) && !(d > tol)
+}
+
+/// The four terms the still test compares with its tolerances: |w1|^2, |v1|^2, and the growths by the tick's sums.
+fn still_terms(b: &PBody, dt: f32, f2: f32) -> [f32; 4] {
     let invdt = if dt != 0.0 { 1.0 / dt } else { f32::MAX };
     let sq = |x: Vec3| fma(x.x, x.x, fma(x.y, x.y, x.z * x.z));
     // (+432 / +448 hold nothing the port has: zero)
@@ -3105,7 +3129,7 @@ fn still(b: &PBody, dt: f32, f2: f32) -> bool {
     let y = b.force * f2 + b.jf;
     let v2 = y * b.inv_mass + v1;
     let d = sq(v2) - bb;
-    !(a > tol) && !(bb > tol) && !(c > tol) && !(d > tol)
+    [a, bb, c, d]
 }
 
 /// What the bumper's contact callback (sub_8234CF80) reads of one of its contacts this tick: every contact whose
@@ -3325,7 +3349,11 @@ impl LooseState {
             if !self.sleeper(o) {
                 continue;
             }
-            let Some(b) = self.objs[o].body else { continue };
+            // (the Update's test runs before the push solve, and PreCollide's 0x8259E790 has left +432 / +448 zero:
+            // no push or turn enters it - the port's are this tick's push solve's. V s_rtv 22265: not still at s385
+            // by its w alone, asleep at s420 as the original, not s419)
+            let Some(mut b) = self.objs[o].body else { continue };
+            (b.push, b.turn) = (Vec3::ZERO, Vec3::ZERO);
             let s = &mut self.objs[o].sleep;
             if still(&b, dt, dt) {
                 if s.state == 1 {
@@ -3345,6 +3373,10 @@ impl LooseState {
                 s.b = 0;
             } else {
                 s.state = 1;
+            }
+            if dbg() {
+                let s = &self.objs[o].sleep;
+                eprintln!("LOOSESLEEPOBJ tick {} obj {o} state {} a {} b {} still {} terms {:?}", self.tick, s.state, s.a, s.b, still(&b, dt, dt), still_terms(&b, dt, dt));
             }
             if self.objs[o].sleep.state == 2 && !self.manis.iter().any(|m| m.a == Who::Obj(o) || m.b == Who::Obj(o)) {
                 self.deactivate(o);

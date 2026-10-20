@@ -5324,6 +5324,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 m.slots.retain(|s| s.part == 0 || s.enabled);
             }
             vs.manifolds.retain(|m| !m.slots.is_empty());
+            if !loose_touch {
+                if let Some(lw) = loose_world {
+                    vs.loose.wake_car_island(lw);
+                }
+            }
             if !contacts.is_empty() || loose_touch {
                 let mut body = super::solver::Body { at: at1, rows: rows1, vel: if frozen { Vec3::ZERO } else { v_in }, ang: if frozen { Vec3::ZERO } else { w_in }, inv_mass: 1.0 / mass, inv_moments: inverse, force: if frozen { Vec3::ZERO } else { force }, torque: if frozen { Vec3::ZERO } else { torque } };
                 // (the move's turn of the rows, 0x8259D030, ends by taking the turning rate from
