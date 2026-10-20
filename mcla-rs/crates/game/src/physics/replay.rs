@@ -49,6 +49,8 @@ pub fn run(data_dir: &str, spec: &str) -> anyhow::Result<()> {
     if let Some(v) = std::env::var("MCLA_REPLAY_ENGAGE").ok().and_then(|v| v.parse::<f32>().ok()) {
         tune.engine.s.engage_rpm = v;
     }
+    // (the body's centre in the model's frame, for the pose a forced state's wheels see - below)
+    let pivot_local = Vec3::new(tune.s.model_offset_x, tune.s.model_offset_y, tune.s.model_offset_z);
     println!("tune gyro {:?}", tune.gyro);
     println!("tune axle bone {:?} bits {:?}", tune.axle_bone, tune.axle_bone.map(|m| m.map(|r| r.map(f32::to_bits))));
     println!("tune aero {:?}", tune.aero);
@@ -410,6 +412,21 @@ for i in 0..4 {
                     // (the body's momenta and its count of moves: body +304, +320, +664)
                     if q.len() >= 178 {
                         vs.momentum_exact = Some((v(171), v(174), q[177] as u32));
+                    }
+                    // ([196..202]: the push and turn the end of the recorded update gave the body,
+                    // body +432 / +448, 0x8259E790. The sample's chassis block and body place are
+                    // after them; the wheels' contacts the next update reads were found by the
+                    // collision before them, at the pose the port keeps as `BodyExact::seen` - against
+                    // a wall, deep pushes in a row, the front wheels 2.75 mm deeper than from the
+                    // sample's pose (V work/carstep, s_rtv k 558). So the wheels are stood at the
+                    // pose before the push: the push taken off, the turn turned back.)
+                    if q.len() >= 202 {
+                        let (push, turn) = (v(196), v(199));
+                        if let (Some(b), Some(at), true) = (vs.body_exact, vs.body_at_exact, push != Vec3::ZERO || super::solver::turn_applies(turn)) {
+                            let at = at - push;
+                            let rows = super::solver::rows_pushed(&[b[0], b[1], b[2]], Vec3::ZERO - turn);
+                            vs.seen_exact = Some([rows[0], rows[1], rows[2], super::exact::origin_of(at, &rows, pivot_local)]);
+                        }
                     }
                     // (Z3, [178..196]: a motorcycle's gyro - +16, +20, +24, +36, +44, +48, +64..+72, +80..+88,
                     // +96, +100, +108, +112, +116, +120)
