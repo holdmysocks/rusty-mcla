@@ -4,18 +4,24 @@
 //! ```text
 //! +04 flags (1 normal, 0x2001 special)   +08 owner (road section) ptr   +0c length
 //! +10 vec3 bbox min   +20 vec3 bbox max
-//! +4c u16 point count   +4e u16 curve order   +50 -> u16 vertex indices
+//! +30 the lane's curve (rage cvCurve, vtable 0x8202b390): +44 TRange, +48 TMax,
+//!     +4c u16 CVCount - 1, +4e u8 Form, +4f u8 Degree, +50 -> u16 vertex indices
+//!     (CVCount of them), +54 u16 knot vector index
 //! ```
-//! The vertex indices refer to the shared vec4 array at root+0x2c. A lane lists its
-//! points in travel direction **without its final point**: it ends where its successor
-//! starts, which is the bounding-box corner opposite its first point (91 % of all lane
-//! ends match another lane's first vertex within 1 m). Lanes are owned by road
+//! The vertex indices refer to the shared vec4 array at root+0x2c, the knot vectors to the
+//! table at root+0x30 (12 bytes each: vtable, -> f32 knots, count; sub_8224B2B8 stores both
+//! as globals 0x828DA6B4 / 0x828DA6B8 for the lane's vfuncs 2 / 1, sub_82244C80 /
+//! sub_82244C60). A lane is a clamped uniform B-spline of its degree through its first and
+//! last control point (complete edition: 1106 lanes of degree 1, 4291 of 2, 4634 of 3); its
+//! last control point is another lane's first (every lane), and its stored length +0c is
+//! the curve's (sub_82244E10). See [`LaneCurve`]. Lanes are owned by road
 //! sections (0x0047a13c, stride 0xb0: +14 lane array, +18 count, +1c total length,
 //! +24 centre/radius, +90 street name, +94 speed limit in m/s) or junction objects.
 //!
 //! For driving, every lane is split into its straight segments: a [`Link`] is one
 //! segment, chained to the next segment of the lane or to the first segments of the
-//! successor lanes.
+//! successor lanes. [`NavSys::parse`] makes the segments the lane's control polygon;
+//! [`NavSys::curved`] a copy of the graph whose segments follow the curves.
 
 use super::Rd;
 use crate::rsc::Resource;
@@ -64,6 +70,10 @@ pub struct Link {
     /// endpoint node ids (links sharing an endpoint share the node)
     pub node_a: usize,
     pub node_b: usize,
+    /// the lane's unit tangent at `a` and `b` (on a [`NavSys::curved`] graph the curve's;
+    /// else the segment's direction)
+    pub ta: Vec3,
+    pub tb: Vec3,
 }
 
 impl Link {
@@ -72,6 +82,11 @@ impl Link {
     }
     pub fn point_at(&self, t: f32) -> Vec3 {
         self.a.lerp(self.b, t.clamp(0.0, 1.0))
+    }
+    /// the lane's direction at `t` (0 .. 1 along the segment): the tangents at the ends
+    /// blended (on a curved graph the curve's tangent to well under a degree)
+    pub fn tangent_at(&self, t: f32) -> Vec3 {
+        self.ta.lerp(self.tb, t.clamp(0.0, 1.0)).normalize_or(self.dir())
     }
     /// parameter of the closest point on the link to `p`
     pub fn project(&self, p: Vec3) -> f32 {
@@ -123,6 +138,133 @@ pub struct Street {
     pub name: String,
 }
 
+/// A lane's curve (lane +0x30, a rage cvCurve read by sub_82586388: Form, Degree, TRange,
+/// TMax, CVCount): a clamped B-spline of `degree` over its control points with the knot
+/// vector of the shared table.
+#[derive(Debug, Clone, Default)]
+pub struct LaneCurve {
+    pub degree: u8,
+    /// the control points (CVCount: the lane's u16 +0x4c plus one)
+    pub pts: Vec<Vec3>,
+    pub knots: Vec<f32>,
+    pub t_range: f32,
+    pub t_max: f32,
+}
+
+impl LaneCurve {
+    fn linear(&self) -> bool {
+        self.degree <= 1 || self.knots.len() != self.pts.len() + self.degree as usize + 1
+    }
+
+    /// The B-spline basis N(i, k) at u (sub_825870F0, Cox - de Boor; k = degree + 1; a
+    /// zero knot span drops its term) and its derivative.
+    fn basis(&self, i: usize, k: usize, u: f32) -> (f32, f32) {
+        let kn = &self.knots;
+        if k == 1 {
+            return (if kn[i] <= u && u < kn[i + 1] { 1.0 } else { 0.0 }, 0.0);
+        }
+        let (a, b) = (kn[i + k - 1] - kn[i], kn[i + k] - kn[i + 1]);
+        let (mut n, mut d) = (0.0, 0.0);
+        if a != 0.0 {
+            let n0 = self.basis(i, k - 1, u).0;
+            n += (u - kn[i]) / a * n0;
+            d += (k - 1) as f32 / a * n0;
+        }
+        if b != 0.0 {
+            let n1 = self.basis(i + 1, k - 1, u).0;
+            n += (kn[i + k] - u) / b * n1;
+            d -= (k - 1) as f32 / b * n1;
+        }
+        (n, d)
+    }
+
+    /// The point at phase `t` (0 .. 1) and the derivative dP/dt (sub_82586A28; the point as
+    /// sub_82587390): u = min(t x TRange, TMax) in the knot span holding it, the sum of the
+    /// degree + 1 control points weighted by the basis. Degree 1 is the control polygon
+    /// (t x (CVCount - 1), t = 1 read as 0.9999).
+    pub fn eval(&self, t: f32) -> (Vec3, Vec3) {
+        let t = t.clamp(0.0, 1.0);
+        let n = self.pts.len();
+        if n < 2 {
+            return (self.pts.first().copied().unwrap_or(Vec3::ZERO), Vec3::ZERO);
+        }
+        if self.linear() {
+            let t = if t >= 1.0 { 0.9999 } else { t };
+            let f = (n - 1) as f32 * t;
+            let i = (f as usize).min(n - 2);
+            let (a, b) = (self.pts[i], self.pts[i + 1]);
+            return (a + (b - a) * (f - i as f32), (b - a) * (n - 1) as f32);
+        }
+        let d = self.degree as usize;
+        let u = (t * self.t_range).min(self.t_max);
+        // the knot span (sub_82586510): the first j with K[j] <= u < K[j + 1]
+        let kn = &self.knots;
+        let mut j = 0;
+        while j + 2 < kn.len() && !(kn[j] <= u && u < kn[j + 1]) {
+            j += 1;
+        }
+        let j = j.clamp(d, n - 1);
+        let (mut p, mut dp) = (Vec3::ZERO, Vec3::ZERO);
+        for i in j - d..=j {
+            let (w, dw) = self.basis(i, d + 1, u);
+            p += self.pts[i] * w;
+            dp += self.pts[i] * dw;
+        }
+        (p, dp * self.t_range)
+    }
+
+    /// The curve's length as the original measures it (sub_82244E10): 100 chords at
+    /// t = 0.01 k for degree 2 and up, else the control polygon.
+    pub fn length(&self) -> f32 {
+        if self.linear() {
+            return self.pts.windows(2).map(|w| w[0].distance(w[1])).sum();
+        }
+        let mut q = self.eval(0.0).0;
+        let mut len = 0.0;
+        for k in 1..=100 {
+            let r = self.eval(0.01 * k as f32).0;
+            len += q.distance(r);
+            q = r;
+        }
+        len
+    }
+
+    /// Points along the curve and its unit tangents there: the control polygon for degree 1
+    /// (no tangents: the segments' own directions), else the curve's start, every trial point
+    /// (64 a knot span) after which the tangent would have turned more than `max_turn`
+    /// radians since the last point kept, and the last control point (the curve ends there).
+    pub fn samples(&self, max_turn: f32) -> (Vec<Vec3>, Vec<Vec3>) {
+        if self.linear() || self.pts.len() < 2 {
+            return (self.pts.clone(), Vec::new());
+        }
+        let spans = (self.pts.len() - self.degree as usize).max(1);
+        let m = 64 * spans;
+        let at = |t: f32| {
+            let (p, d) = self.eval(t);
+            (p, d.normalize_or(Vec3::ZERO))
+        };
+        let cos_max = max_turn.cos();
+        let (p0, t0) = at(0.0);
+        let (mut pts, mut tans) = (vec![p0], vec![t0]);
+        let mut prev = (p0, t0);
+        for k in 1..m {
+            let cur = at(k as f32 / m as f32);
+            if cur.1.dot(*tans.last().unwrap()) < cos_max && prev.0 != *pts.last().unwrap() {
+                pts.push(prev.0);
+                tans.push(prev.1);
+            }
+            prev = cur;
+        }
+        let end = *self.pts.last().unwrap();
+        let te = at(1.0).1;
+        if pts.last().unwrap().distance(end) > 1e-4 {
+            pts.push(end);
+            tans.push(if te != Vec3::ZERO { te } else { prev.1 });
+        }
+        (pts, tans)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct NavSys {
     pub links: Vec<Link>,
@@ -130,6 +272,11 @@ pub struct NavSys {
     pub streets: Vec<Street>,
     /// number of lanes in the file
     pub lanes: usize,
+    /// every lane's curve, by lane index
+    pub curves: Vec<LaneCurve>,
+    /// the lanes as read and the roads' lane lists (for [`NavSys::curved`])
+    raw: Vec<RawLane>,
+    zone_lanes: Vec<Vec<usize>>,
     grid: HashMap<(i32, i32), Vec<usize>>,
     /// per endpoint node: links starting / ending there
     starts_at: Vec<Vec<usize>>,
@@ -149,8 +296,14 @@ fn xz(a: Vec3, b: Vec3) -> f32 {
     ((a.x - b.x).powi(2) + (a.z - b.z).powi(2)).sqrt()
 }
 
+#[derive(Debug, Clone)]
 struct RawLane {
     pts: Vec<Vec3>,
+    /// unit tangents at `pts` (empty: the segments' directions)
+    tans: Vec<Vec3>,
+    /// the first and last control points' vertex indices
+    vi: (u16, u16),
+    curve: LaneCurve,
     min: Vec3,
     max: Vec3,
     len: f32,
@@ -199,23 +352,43 @@ impl NavSys {
             Some(Vec3::new(rd.f32(v), rd.f32(v + 4), rd.f32(v + 8)))
         };
         let zone_index = |off: usize| zone_offs.binary_search(&off).ok();
+        // the knot vectors (root +0x30, 12 bytes each: vtable, -> knots, count)
+        let knots = |i: usize| -> Vec<f32> {
+            let Some(o) = rd.ptr(0x30).map(|t| t + i * 12).filter(|&o| rd.has(o, 12)) else { return Vec::new() };
+            let n = rd.u32(o + 8) as usize;
+            match rd.ptr(o + 4) {
+                Some(k) if n <= 256 && rd.has(k, n * 4) => (0..n).map(|j| rd.f32(k + j * 4)).collect(),
+                _ => Vec::new(),
+            }
+        };
         let mut raw: Vec<RawLane> = Vec::with_capacity(link_offs.len());
         for &lo in &link_offs {
             let min = Vec3::new(rd.f32(lo + 0x10), rd.f32(lo + 0x14), rd.f32(lo + 0x18));
             let max = Vec3::new(rd.f32(lo + 0x20), rd.f32(lo + 0x24), rd.f32(lo + 0x28));
-            let cnt = rd.u16(lo + 0x4c) as usize;
-            let mut pts = Vec::with_capacity(cnt + 1);
+            // CVCount - 1 at +4c: the lane lists CVCount vertex indices, its last point too
+            let cnt = rd.u16(lo + 0x4c) as usize + 1;
+            let mut pts = Vec::with_capacity(cnt);
+            let mut vi = (u16::MAX, u16::MAX);
             if let Some(arr) = rd.ptr(lo + 0x50) {
-                for k in 0..cnt.min(64) {
-                    if let Some(p) = vert(rd.u16(arr + k * 2) as usize) {
+                for k in 0..cnt.min(65) {
+                    if !rd.has(arr + k * 2, 2) {
+                        break;
+                    }
+                    let ix = rd.u16(arr + k * 2);
+                    if let Some(p) = vert(ix as usize) {
                         pts.push(p);
+                        if k == 0 {
+                            vi.0 = ix;
+                        }
+                        vi.1 = ix;
                     }
                 }
             }
             if pts.is_empty() {
                 pts.push(min);
             }
-            raw.push(RawLane { pts, min, max, len: rd.f32(lo + 0xc), flags: rd.u32(lo + 4), zone: rd.ptr(lo + 8).and_then(zone_index), owner: rd.ptr(lo + 8).filter(|&o| rd.has(o, 0x98)).map_or((0, 0, 0.0, 0), |o| (rd.u32(o + 4), rd.u32(o + 0x10), rd.f32(o + 0x94), rd.ptr(o + 8).filter(|&p| rd.has(p, 8)).map_or(0, |p| rd.u32(p + 4)))), parent_zone: rd.ptr(lo + 8).filter(|&o| rd.has(o, 0x10)).and_then(|o| rd.ptr(o + 8)).and_then(zone_index) });
+            let curve = LaneCurve { degree: rd.u8(lo + 0x4f), pts: pts.clone(), knots: knots(rd.u16(lo + 0x54) as usize), t_range: rd.f32(lo + 0x44), t_max: rd.f32(lo + 0x48) };
+            raw.push(RawLane { pts, tans: Vec::new(), vi, curve, min, max, len: rd.f32(lo + 0xc), flags: rd.u32(lo + 4), zone: rd.ptr(lo + 8).and_then(zone_index), owner: rd.ptr(lo + 8).filter(|&o| rd.has(o, 0x98)).map_or((0, 0, 0.0, 0), |o| (rd.u32(o + 4), rd.u32(o + 0x10), rd.f32(o + 0x94), rd.ptr(o + 8).filter(|&p| rd.has(p, 8)).map_or(0, |p| rd.u32(p + 4)))), parent_zone: rd.ptr(lo + 8).filter(|&o| rd.has(o, 0x10)).and_then(|o| rd.ptr(o + 8)).and_then(zone_index) });
         }
         let link_index = |off: usize| link_offs.binary_search(&off).ok();
         let mut zone_lanes: Vec<Vec<usize>> = Vec::new();
@@ -261,8 +434,37 @@ impl NavSys {
             }
             nav.streets.push(Street { name });
         }
+        nav.curves = raw.iter().map(|l| l.curve.clone()).collect();
+        nav.raw = raw.clone();
+        nav.zone_lanes = zone_lanes.clone();
         nav.build_graph(raw, zone_lanes);
         Ok(nav)
+    }
+
+    /// A copy of the graph whose links follow the lanes' curves (a new point wherever the
+    /// tangent turned more than `max_turn` radians, with the curve's tangents at the points),
+    /// as the original's rail follower rides them (sub_827986C0: the lane's vfunc 9,
+    /// sub_82586A28, at the follower's phase). The lanes, their order and successors are
+    /// those of this graph; the link indices are its own.
+    pub fn curved(&self, max_turn: f32) -> NavSys {
+        let raw: Vec<RawLane> = self
+            .raw
+            .iter()
+            .map(|l| {
+                let (pts, tans) = l.curve.samples(max_turn);
+                if pts.len() < 2 {
+                    return l.clone();
+                }
+                RawLane { pts, tans, ..l.clone() }
+            })
+            .collect();
+        let mut zones = self.zones.clone();
+        for z in &mut zones {
+            z.links.clear();
+        }
+        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), ..Default::default() };
+        nav.build_graph(raw, self.zone_lanes.clone());
+        nav
     }
 
     fn build_graph(&mut self, mut raw: Vec<RawLane>, zone_lanes: Vec<Vec<usize>>) {
@@ -297,6 +499,13 @@ impl NavSys {
             v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
             v
         };
+        // lanes by their first control point's vertex
+        let mut by_first: HashMap<u16, Vec<usize>> = HashMap::new();
+        for (i, l) in raw.iter().enumerate() {
+            if l.vi.0 != u16::MAX {
+                by_first.entry(l.vi.0).or_default().push(i);
+            }
+        }
         // 1. end point of every lane + its successors
         let mut ends: Vec<Vec3> = Vec::with_capacity(n);
         let mut succ: Vec<Vec<usize>> = Vec::with_capacity(n);
@@ -304,11 +513,19 @@ impl NavSys {
             let l = &raw[i];
             let s = l.pts[0];
             let last = *l.pts.last().unwrap();
-            // corner of the bounding box opposite the start
-            let ex = if (s.x - l.min.x).abs() <= (s.x - l.max.x).abs() { l.max.x } else { l.min.x };
-            let ez = if (s.z - l.min.z).abs() <= (s.z - l.max.z).abs() { l.max.z } else { l.min.z };
-            let mut end = Vec3::new(ex, last.y, ez);
-            let mut found: Vec<usize> = starts_near(&raw, end, 1.0, i).into_iter().map(|x| x.1).collect();
+            // the last control point; the successors: the lanes starting at its vertex (the
+            // original's graph node, sub_8273BD80). (Without the index: the corner of the
+            // bounding box opposite the start, and lane starts near it.)
+            let mut end = last;
+            let mut found: Vec<usize> = by_first.get(&l.vi.1).map(|v| v.iter().copied().filter(|&j| j != i).collect()).unwrap_or_default();
+            if found.is_empty() && l.vi.1 == u16::MAX {
+                let ex = if (s.x - l.min.x).abs() <= (s.x - l.max.x).abs() { l.max.x } else { l.min.x };
+                let ez = if (s.z - l.min.z).abs() <= (s.z - l.max.z).abs() { l.max.z } else { l.min.z };
+                end = Vec3::new(ex, last.y, ez);
+            }
+            if found.is_empty() {
+                found = starts_near(&raw, end, 1.0, i).into_iter().map(|x| x.1).collect();
+            }
             if found.is_empty() {
                 // curved lane (the box corner is not on it): look for a lane start ahead of
                 // the last listed point at the distance the remaining length predicts
@@ -368,10 +585,15 @@ impl NavSys {
             if l.pts.len() < 2 {
                 l.pts.push(ends[i] + Vec3::new(0.01, 0.0, 0.0));
             }
+            if l.tans.len() != l.pts.len() {
+                l.tans.clear();
+            }
             first[i] = links.len();
-            for w in l.pts.windows(2) {
+            for (j, w) in l.pts.windows(2).enumerate() {
                 let k = links.len();
-                links.push(Link { a: w[0], b: w[1], len: w[0].distance(w[1]).max(0.01), flags: l.flags, zone: l.zone, owner_flags: l.owner.0, owner_w10: l.owner.1, owner_speed: l.owner.2, parent_flags: l.owner.3, parent_zone: l.parent_zone, lane: i, next: vec![k + 1], prev: Vec::new(), side: Vec::new(), opp: Vec::new(), back: Vec::new(), hop: Vec::new(), hop_a: Vec::new(), node_a: 0, node_b: 0 });
+                let dir = (w[1] - w[0]).normalize_or(-Vec3::Z);
+                let (ta, tb) = if l.tans.is_empty() { (dir, dir) } else { (l.tans[j], l.tans[j + 1]) };
+                links.push(Link { a: w[0], b: w[1], len: w[0].distance(w[1]).max(0.01), flags: l.flags, zone: l.zone, owner_flags: l.owner.0, owner_w10: l.owner.1, owner_speed: l.owner.2, parent_flags: l.owner.3, parent_zone: l.parent_zone, lane: i, next: vec![k + 1], prev: Vec::new(), side: Vec::new(), opp: Vec::new(), back: Vec::new(), hop: Vec::new(), hop_a: Vec::new(), node_a: 0, node_b: 0, ta, tb });
             }
             lastl[i] = links.len() - 1;
         }
@@ -1044,7 +1266,7 @@ mod speed_tests {
             put(&mut data, lane + 0x14, y.to_bits());
             put(&mut data, lane + 0x20, 40.0f32.to_bits());
             put(&mut data, lane + 0x24, y.to_bits());
-            data[lane + 0x4c..lane + 0x4e].copy_from_slice(&2u16.to_be_bytes());
+            data[lane + 0x4c..lane + 0x4e].copy_from_slice(&1u16.to_be_bytes());
             put(&mut data, lane + 0x50, 0x50000600 + (i * 4) as u32);
             for j in 0..2 {
                 let v = i * 2 + j;
@@ -1163,6 +1385,45 @@ mod speed_tests {
         let ys = nav.zones.iter().filter(|z| z.rect_len > 0.0 && !(z.y_range[0] <= z.y_range[1])).count();
         // (the 43 without a rectangle are the ones flagged to have no box)
         assert_eq!((sides, ys, nav.zones.iter().filter(|z| z.no_box).count(), nav.zones.iter().filter(|z| z.no_box && z.rect_len == 0.0).count()), (0, 0, 43, 43));
+    }
+
+    #[test]
+    #[ignore = "requires user's extracted Complete Edition data; set MCLA_DATA_DIR"]
+    fn complete_edition_lane_curves() {
+        let root = std::env::var("MCLA_DATA_DIR").expect("set MCLA_DATA_DIR to extracted/cache");
+        let bytes = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let data = bytes[16..].to_vec();
+        let virtual_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let res = Resource { rtype: 66, flags: 0, virtual_size, physical_size: data.len() - virtual_size, data };
+        let nav = NavSys::parse(&res).unwrap();
+        let mut deg = std::collections::BTreeMap::new();
+        for c in &nav.curves {
+            *deg.entry(c.degree).or_insert(0usize) += 1;
+        }
+        assert_eq!(deg.into_iter().collect::<Vec<_>>(), vec![(1, 1106), (2, 4291), (3, 4634)]);
+        // every curve's length as sub_82244E10 measures it is the stored one (+0c)
+        let worst = nav.raw.iter().map(|l| (l.curve.length() - l.len).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 0.05, "worst length error {worst}");
+        // every lane's last control point is another lane's first
+        assert!(nav.raw.iter().all(|l| nav.raw.iter().any(|m| m.vi.0 == l.vi.1)));
+        // the junction lane seen turning a car 90 degrees at its middle vertex (2026-10-20):
+        // a quadratic arc of 29.45 m from (-604.3, -641.7) to (-622.9, -623.9)
+        let c = nav.curves.iter().find(|c| c.pts.len() == 3 && c.pts[1].distance(Vec3::new(-622.7, 17.8, -641.6)) < 0.05).unwrap();
+        assert_eq!(c.degree, 2);
+        assert!((c.length() - 29.45).abs() < 0.02, "{}", c.length());
+        let (mid, d) = c.eval(0.5);
+        assert!(mid.distance(Vec3::new(-618.15, 0.0, -637.2) + Vec3::Y * mid.y) < 0.1, "{mid:?}");
+        assert!((d.normalize().x + d.normalize().z).abs() < 0.05, "{d:?}");
+        // the curved graph keeps every lane and its successors; its tangents turn under 3
+        // degrees a link (2 and, at a lane's end, one trial step more) but at the cusps of
+        // curves with coincident control points (58 links over 0.25 m of 172905)
+        let cv = nav.curved(2f32.to_radians());
+        assert_eq!(cv.lanes, nav.lanes);
+        let turns = cv.links.iter().filter(|l| l.len > 0.25 && l.ta.dot(l.tb) < 3f32.to_radians().cos()).count();
+        eprintln!("links: control polygon {}, curved {}", nav.links.len(), cv.links.len());
+        assert!(turns < 100, "{turns}");
+        let ends = |g: &NavSys| (0..g.links.len()).filter(|&i| i + 1 == g.links.len() || g.links[i + 1].lane != g.links[i].lane).map(|i| { let mut v: Vec<usize> = g.links[i].next.iter().map(|&k| g.links[k].lane).collect(); v.sort(); v }).collect::<Vec<_>>();
+        assert_eq!(ends(&cv), ends(&nav));
     }
 }
 

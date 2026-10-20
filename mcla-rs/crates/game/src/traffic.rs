@@ -190,7 +190,8 @@ impl Lanes {
             let l = &nav.links[k];
             if s <= l.len || i + 1 == ls.len() {
                 let s = s.clamp(0.0, l.len);
-                return (l.a + (l.b - l.a) * (s / l.len.max(1e-3)), l.dir(), k, s);
+                let t = s / l.len.max(1e-3);
+                return (l.a + (l.b - l.a) * t, l.tangent_at(t), k, s);
             }
             s -= l.len;
         }
@@ -212,6 +213,21 @@ impl Lanes {
         }
         at
     }
+}
+
+/// The road network as the traffic rides it, made once: the lanes' curves (the original's
+/// lanes are B-splines - `navsys::LaneCurve` - and its rail follower takes the car's point and
+/// heading off the curve at its phase, sub_827986C0 -> lane vfunc 9 sub_82245E00 ->
+/// sub_82586A28), cut wherever the tangent has turned 2 degrees, with the curve's tangents.
+/// Traffic keeps to this graph (its own link indices; lanes and successors as the shared one).
+pub fn rail_nav(nav: &NavSys) -> &'static NavSys {
+    static N: std::sync::OnceLock<NavSys> = std::sync::OnceLock::new();
+    N.get_or_init(|| {
+        let t = std::time::Instant::now();
+        let cv = nav.curved(2f32.to_radians());
+        log::info!("traffic: lanes as curves, {} links (control polygon {}), {:.2} s", cv.links.len(), nav.links.len(), t.elapsed().as_secs_f32());
+        cv
+    })
 }
 
 /// The lanes of the city, made once.
@@ -535,24 +551,16 @@ impl Rider {
         }
     }
 
-    /// The point `d` metres ahead along the car's way.
-    fn point_ahead(&self, nav: &NavSys, d: f32) -> Vec3 {
-        let (mut k, mut s) = (self.link, self.s + d);
-        for _ in 0..8 {
-            let l = &nav.links[k];
-            if s <= l.len {
-                return l.a + (l.b - l.a) * (s / l.len.max(1e-3));
-            }
-            let Some(n) = self.after(nav, k) else { return l.b };
-            s -= l.len;
-            k = n;
-        }
-        nav.links[k].b
-    }
-
     pub fn pos(&self, nav: &NavSys) -> Vec3 {
         let l = &nav.links[self.link];
         l.a + (l.b - l.a) * (self.s / l.len.max(1e-3))
+    }
+
+    /// The heading: the lane's tangent where the car is (sub_827986C0: the rail's derivative
+    /// at the phase, normalised).
+    pub fn tangent(&self, nav: &NavSys) -> Vec3 {
+        let l = &nav.links[self.link];
+        l.tangent_at(self.s / l.len.max(1e-3))
     }
 
     /// Off its lane onto a rail.
@@ -1061,7 +1069,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         }
     };
     let pos = r.pos(nav);
-    let fwd = (r.point_ahead(nav, 1.5) - pos).normalize_or(nav.links[r.link].dir());
+    let fwd = r.tangent(nav);
     let lane = nav.links[r.link].lane;
     let next_lane = r.next.map(|n| nav.links[n].lane);
     // the car ahead: kept while both stand (searched again with p = 0.025), else searched
@@ -1118,7 +1126,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         }
     }
     let p = r.pos(nav);
-    let f = (r.point_ahead(nav, 1.5) - p).normalize_or(fwd);
+    let f = r.tangent(nav);
     if !env.event {
         after_switch(r, env, me, p, f, &ahead, chosen, cur, upright, dt);
     }
@@ -1489,6 +1497,7 @@ impl Vehicles {
         if !self.cars.iter().any(|c| c.rail.is_some()) {
             return;
         }
+        let nav = rail_nav(nav);
         let lanes = lanes(nav);
         let others: Vec<Other> = self
             .cars
@@ -1526,7 +1535,7 @@ impl Vehicles {
         let env = Env { nav, lanes, col, others: &others, signals: &self.signals, clock: self.clock, event, hold, parity };
         // MCLA_TRAFFIC_TRACE=file: every riding car ten times a second (time, id, model, x, y,
         // z, speed, lane speed, junction lane, offset, entries on, standing gap, distance and
-        // margin to the car ahead, acceleration, state)
+        // margin to the car ahead, acceleration, state, ...; the last column: the drawn heading in degrees)
         static TRACE: std::sync::Mutex<Option<(std::io::BufWriter<std::fs::File>, f32)>> = std::sync::Mutex::new(None);
         let mut guard = TRACE.lock().unwrap();
         if guard.is_none() {
@@ -1634,7 +1643,7 @@ impl Vehicles {
             if let Some(w) = trace.as_mut() {
                 use std::io::Write;
                 let (lim, junction) = rail_speed(nav, r.link);
-                let _ = writeln!(w, "{:.2}	{}	{}	{:.2}	{:.2}	{:.2}	{:.3}	{:.2}	{}	{:.0}	{}{}{}	{:.2}	{:.2}	{:.2}	{:.3}	{}	{}	{}	{:.3}	{:.2}	{:.2}", self.clock, r.rng_id(), c.model.name, c.state.pos.x, c.state.pos.y, c.state.pos.z, v, lim, junction as u8, r.off, r.on[0] as u8, r.on[1] as u8, r.on[2] as u8, r.gap, r.ahead.0, r.ahead.1, r.a, r.state, r.obst_id.and_then(|j| others.get(j)).map_or(0, |o| o.key), nav.links[r.link].flags, col.ground(c.state.pos, 3.0, 6.0).map_or(f32::NAN, |g| g.point.y - c.state.pos.y), r.tilt.degrees().0, r.tilt.degrees().1);
+                let _ = writeln!(w, "{:.2}	{}	{}	{:.2}	{:.2}	{:.2}	{:.3}	{:.2}	{}	{:.0}	{}{}{}	{:.2}	{:.2}	{:.2}	{:.3}	{}	{}	{}	{:.3}	{:.2}	{:.2}	{:.1}", self.clock, r.rng_id(), c.model.name, c.state.pos.x, c.state.pos.y, c.state.pos.z, v, lim, junction as u8, r.off, r.on[0] as u8, r.on[1] as u8, r.on[2] as u8, r.gap, r.ahead.0, r.ahead.1, r.a, r.state, r.obst_id.and_then(|j| others.get(j)).map_or(0, |o| o.key), nav.links[r.link].flags, col.ground(c.state.pos, 3.0, 6.0).map_or(f32::NAN, |g| g.point.y - c.state.pos.y), r.tilt.degrees().0, r.tilt.degrees().1, c.state.forward().z.atan2(c.state.forward().x).to_degrees());
             }
             c.state.ang_vel = Vec3::ZERO;
             let wr = c.model.params.wheel_radius.max(0.2);
@@ -2113,7 +2122,7 @@ impl Vehicles {
 
     /// The original's traffic spawner and unspawner, run from `manage_traffic`.
     pub(super) fn spawn_traffic(&mut self, gpu: &crate::render::Gpu, world: &crate::world::World, center: Vec3, dt: f32) {
-        let Some(nav) = world.nav.as_ref() else { return };
+        let Some(nav) = world.nav.as_ref().map(rail_nav) else { return };
         if self.spawner.is_none() {
             self.spawner = Some(Spawner::new(nav, &world.assets.root));
         }
@@ -2321,7 +2330,7 @@ impl Vehicles {
             }
             let l = &nav.links[link];
             let pos = l.a + (l.b - l.a) * (s / l.len.max(1e-3));
-            let dir = l.dir();
+            let dir = l.tangent_at(s / l.len.max(1e-3));
             let fw = road.speed >= 29.0129;
             if ty.freeway_only && !fw {
                 sp.why[3] += 1;
