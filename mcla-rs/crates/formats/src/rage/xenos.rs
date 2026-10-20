@@ -173,6 +173,80 @@ fn decode_bc4_block(b: &[u8], out: &mut [u8; 16]) {
     }
 }
 
+/// The Xenos' piecewise-linear gamma to linear (a gamma texture's fetch): slopes 1/4, 1/2, 1, 2 from 0, 64, 96, 192
+/// of 255, with a truncated correction, in 1023ths (as Xenia's `PWLGammaToLinear`; V against the original's damage
+/// map, `Texture::to_rgba8_gpu`).
+pub fn pwl_gamma_to_linear(g: f32) -> f32 {
+    let g = g.clamp(0.0, 1.0);
+    let (scale, offset) = if g >= 96.0 / 255.0 {
+        if g >= 192.0 / 255.0 { (8.0 / 1024.0, -1024.0) } else { (4.0 / 1024.0, -256.0) }
+    } else if g >= 64.0 / 255.0 {
+        (2.0 / 1024.0, -64.0)
+    } else {
+        (1.0 / 1024.0, 0.0)
+    };
+    let mut linear = g * ((255.0 * 1024.0) * scale) + offset;
+    linear += (linear * scale).trunc();
+    linear * (1.0 / 1023.0)
+}
+
+/// A DXT5 level decoded as the GPU's texture unit does (an ATI / AMD one, the Xenos' kind): end points widened by
+/// repeating their top bits, the in-between steps with weights in 64ths, (A e0 + B e1 + 32) >> 6. V: every texel of
+/// the R8's `_maxdamage` layout as the original's damage map holds it after a reset on an AMD GPU (work/dmgmap,
+/// dxtbrute.py); `decode_to_rgba8` rounds its steps differently (up to 2 off).
+pub fn decode_dxt5_gpu(data: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let mix = |e0: u32, e1: u32, a: u32, b: u32| ((a * e0 + b * e1 + 32) >> 6) as u8;
+    let mut out = vec![0u8; w * h * 4];
+    let (bw, bh) = ((w + 3) / 4, (h + 3) / 4);
+    for by in 0..bh {
+        for bx in 0..bw {
+            let o = (by * bw + bx) * 16;
+            let Some(b) = data.get(o..o + 16) else { return out };
+            let (a0, a1) = (b[0] as u32, b[1] as u32);
+            let mut pa = [a0 as u8, a1 as u8, 0, 0, 0, 0, 0, 255];
+            if a0 > a1 {
+                for (k, (wa, wb)) in [(55, 9), (46, 18), (37, 27), (27, 37), (18, 46), (9, 55)].into_iter().enumerate() {
+                    pa[k + 2] = mix(a0, a1, wa, wb);
+                }
+            } else {
+                for (k, (wa, wb)) in [(51, 13), (38, 26), (26, 38), (13, 51)].into_iter().enumerate() {
+                    pa[k + 2] = mix(a0, a1, wa, wb);
+                }
+            }
+            let c0 = u16::from_le_bytes([b[8], b[9]]) as u32;
+            let c1 = u16::from_le_bytes([b[10], b[11]]) as u32;
+            let wide = |c: u32| {
+                let (r, g, bl) = ((c >> 11) & 31, (c >> 5) & 63, c & 31);
+                [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (bl << 3) | (bl >> 2)]
+            };
+            let (e0, e1) = (wide(c0), wide(c1));
+            let mut pc = [[0u8; 3]; 4];
+            for i in 0..3 {
+                pc[0][i] = e0[i] as u8;
+                pc[1][i] = e1[i] as u8;
+                // (c0 <= c1: the half step and black, as BC1 - only flat blocks of that kind in the layouts checked: I)
+                if c0 > c1 {
+                    pc[2][i] = mix(e0[i], e1[i], 43, 21);
+                    pc[3][i] = mix(e0[i], e1[i], 21, 43);
+                } else {
+                    pc[2][i] = mix(e0[i], e1[i], 32, 32);
+                }
+            }
+            let abits = u64::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], 0, 0]);
+            let cbits = u32::from_le_bytes([b[12], b[13], b[14], b[15]]);
+            for k in 0..16 {
+                let (x, y) = (bx * 4 + k % 4, by * 4 + k / 4);
+                if x < w && y < h {
+                    let c = pc[((cbits >> (2 * k)) & 3) as usize];
+                    let p = (y * w + x) * 4;
+                    out[p..p + 4].copy_from_slice(&[c[0], c[1], c[2], pa[((abits >> (3 * k)) & 7) as usize]]);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Decode a tightly packed (untiled, byte-order fixed) level to RGBA8.
 pub fn decode_to_rgba8(fmt: TexFormat, data: &[u8], w: usize, h: usize) -> Vec<u8> {
     let mut out = vec![0u8; w * h * 4];

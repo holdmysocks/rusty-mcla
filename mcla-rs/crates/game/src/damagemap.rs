@@ -174,7 +174,8 @@ impl Shape {
         Shape { w, h, r: px.chunks_exact(4).map(|c| c[0] as f32 / 255.0).collect() }
     }
 
-    /// Bilinear, clamped (the sampler's filter: I).
+    /// Bilinear, clamped (the sampler's filter - V within 1 step in 100 texels of the AMD run, work/dmgmap; weights
+    /// in 1/64 .. 1/512 steps change nothing)
     fn at(&self, u: f32, v: f32) -> f32 {
         let x = (u * self.w as f32 - 0.5).clamp(0.0, (self.w - 1) as f32);
         let y = (v * self.h as f32 - 0.5).clamp(0.0, (self.h - 1) as f32);
@@ -218,9 +219,9 @@ impl MapPixels {
     }
 
     /// The full reset (+2150) with the car's layout texture (raw RGBA8, `w` x `h`; its colour x (0, 1, 0, 1) drawn
-    /// over the whole map under all four masks): (0, layout.g, 0, layout.a). V: the R8's map after the reset is its
-    /// 256 x 256 layout's G and A (work/dmgmap). A smaller layout (11 cars 128, 2 cars 32) is read bilinearly at
-    /// the map's texel centres (the blit's filter: I).
+    /// over the whole map under all four masks): (0, layout.g, 0, layout.a), the layout as the GPU reads it
+    /// (`Texture::to_rgba8_gpu`). V, every texel after the reset (work/dmgmap): the R8 (256, linear), the Challenger
+    /// '70 (256, gamma) and the city bus (32 x 32 RGBA8, stretched bilinearly).
     pub fn with_layout(layout: &[u8], w: usize, h: usize) -> MapPixels {
         if w == 0 || h == 0 || layout.len() != w * h * 4 {
             return MapPixels::new();
@@ -232,11 +233,13 @@ impl MapPixels {
                 if (w, h) == (SIZE, SIZE) {
                     return [at(i, j, 1) as u8, at(i, j, 3) as u8];
                 }
-                let x = ((i as f32 + 0.5) * w as f32 / SIZE as f32 - 0.5).clamp(0.0, (w - 1) as f32);
-                let y = ((j as f32 + 0.5) * h as f32 / SIZE as f32 - 0.5).clamp(0.0, (h - 1) as f32);
-                let (x0, y0) = (x.floor() as usize, y.floor() as usize);
-                let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
-                let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+                // (bilinear at the map's texel centres, the layout repeating - its fetch's address mode: V, the
+                // city bus's 32 x 32 one, every texel (work/dmgmap))
+                let x = (i as f32 + 0.5) * w as f32 / SIZE as f32 - 0.5;
+                let y = (j as f32 + 0.5) * h as f32 / SIZE as f32 - 0.5;
+                let (fx, fy) = (x - x.floor(), y - y.floor());
+                let (x0, y0) = ((x.floor() as isize).rem_euclid(w as isize) as usize, (y.floor() as isize).rem_euclid(h as isize) as usize);
+                let (x1, y1) = ((x0 + 1) % w, (y0 + 1) % h);
                 let f = |c: usize| {
                     let a = at(x0, y0, c) + (at(x1, y0, c) - at(x0, y0, c)) * fx;
                     let b = at(x0, y1, c) + (at(x1, y1, c) - at(x0, y1, c)) * fx;
@@ -288,9 +291,10 @@ impl MapPixels {
                 if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
                     continue;
                 }
-                // (the blend's 8-bit step: a texel gains 1 from 0.555 of a step - fitted to the original's maps, both runs
-                // of work/dmgmap; 0.5 (plain rounding) puts 7 % more into a long scrape's blue. Cause not known: I)
-                let add = (shape.at(u, v) * colour * 255.0 + 0.445).floor() as u32;
+                // (the blend's 8-bit step: rounded to the nearest - V, the original on an AMD GPU (work/dmgmap, s_amd:
+                // 301 texels of 17975 differ); an NVIDIA GPU's blender steps from 0.50 .. 0.56 of a step instead
+                // (blendtest), which is what the recordings on the RTX 3090 show)
+                let add = (shape.at(u, v) * colour * 255.0 + 0.5).floor() as u32;
                 let p = &mut self.px[j * SIZE + i][channel];
                 *p = (*p as u32 + add).min(255) as u8;
             }
@@ -379,11 +383,15 @@ mod tests {
         let shape = |name: &str| {
             let d = std::fs::read(format!("D:/MCLA/extracted/cache/textures/global/cars/globaltex/{name}")).unwrap();
             let t = mcla_formats::dds::parse_dds(name, &d).unwrap();
-            Shape::from_rgba(t.width as usize, t.height as usize, &t.to_rgba8())
+            Shape::from_rgba(t.width as usize, t.height as usize, &t.to_rgba8_gpu())
         };
         set_shapes(shape("dmg_test_4.dds"), shape("dmg_test_3.dds"));
         let mut m = match std::env::var("MCLA_DMG_LAYOUT").ok().and_then(|p| std::fs::read(p).ok()) {
-            Some(l) => MapPixels::with_layout(&l, SIZE, SIZE),
+            // (MCLA_DMG_LAYOUT_W: a square layout's side, 256 when not set)
+            Some(l) => {
+                let w = std::env::var("MCLA_DMG_LAYOUT_W").ok().and_then(|v| v.parse().ok()).unwrap_or(SIZE);
+                MapPixels::with_layout(&l, w, w)
+            }
             None => MapPixels::new(),
         };
         let mut d = CarDamage::default();

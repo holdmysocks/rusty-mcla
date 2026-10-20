@@ -15,6 +15,17 @@ fn main() {
     let res = Resource { rtype, flags, virtual_size: vs, physical_size: data.len() - vs, data };
     let dr = Drawable::parse(&res).expect("drawable");
     let rd = Rd::new(&res);
+    // ("~<suffix>": the textures whose name ends so, found by their name anywhere in the resource - Texture::find_by_suffix)
+    if let Some(sfx) = a[2].strip_prefix("~") {
+        for t in Texture::find_by_suffix(&rd, sfx) {
+            let name = t.name.replace(|c: char| matches!(c, '/' | '\\' | ':'), "_");
+            std::fs::write(format!("{}_{}.rgba", a[3], name), t.to_rgba8()).unwrap();
+            std::fs::write(format!("{}_{}.raw", a[3], name), &t.levels[0]).unwrap();
+            std::fs::write(format!("{}_{}.gpu.rgba", a[3], name), t.to_rgba8_gpu()).unwrap();
+            println!("{} {} {} {:?} fetch {:08x?}", t.name, t.width, t.height, t.format, t.fetch);
+        }
+        return;
+    }
     // ("@<hex offset>": the texture object at that offset of the resource's data instead, e.g. one outside the dictionary)
     let offs: Vec<usize> = match a[2].strip_prefix("@") {
         Some(h) => vec![usize::from_str_radix(h.trim_start_matches("0x"), 16).unwrap()],
@@ -28,6 +39,10 @@ fn main() {
         let px = t.to_rgba8();
         let name = t.name.replace(|c: char| matches!(c, '/' | '\\' | ':'), "_");
         std::fs::write(format!("{}_{}.rgba", a[3], name), &px).unwrap();
+        // (TEX_RAW set: level 0 as stored, untiled - the blocks)
+        if std::env::var_os("TEX_RAW").is_some() {
+            std::fs::write(format!("{}_{}.raw", a[3], name), &t.levels[0]).unwrap();
+        }
         println!("{} {} {} {:?} fetch {:08x?}", t.name, t.width, t.height, t.format, t.fetch);
     }
 }

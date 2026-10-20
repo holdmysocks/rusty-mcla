@@ -5557,7 +5557,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 let v_pt = start_velocity(solve_body.as_ref(), at).unwrap_or(v1 + w1.cross(at - (at1 - pushed.push)));
                 let scrape = super::car::ScrapeIn { v1: v_pt, v2: Vec3::ZERO, rel: v1, n };
                 if dbg_flag("MCLA_DBG_WORLDHIT") {
-                    eprintln!("SCRAPE |v1| {:.5} |rel| {:.4} c {:.4} n {:.4?} amount {:.6}", v_pt.length(), v1.length(), v1.dot(n) / v1.length().max(1e-9), n, scrape.amount());
+                    eprintln!("SCRAPE t{} dv {:.5} |v1| {:.5} |rel| {:.4} c {:.4} n {:.4?} amount {:.6}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), hit_dv.length(), v_pt.length(), v1.length(), v1.dot(n) / v1.length().max(1e-9), n, scrape.amount());
                 }
                 st.world_hit(p, hit_dv.length(), at, local, Some(scrape));
             }

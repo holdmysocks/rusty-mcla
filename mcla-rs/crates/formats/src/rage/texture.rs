@@ -53,9 +53,11 @@ impl Texture {
         let mut at = 0;
         while let Some(k) = d[at..].windows(want.len()).position(|w| w == want.as_slice()) {
             at = at + k + 1;
-            // (the name's first byte: back to the byte after a 0 / 0xCD filler)
+            // (the name's first byte: back to the first byte a texture name cannot hold - a 0 / 0xCD filler, or
+            // whatever the resource packed before it: vp_dge_challenger_70's high .r83 has a "'")
             let mut s = at - 1;
-            while s > 0 && d[s - 1] != 0 && d[s - 1] != 0xCD && at - 1 - s < 128 {
+            let name_byte = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'/' | b'\\' | b':' | b'-');
+            while s > 0 && name_byte(d[s - 1]) && at - 1 - s < 128 {
                 s -= 1;
             }
             for h in (0..d.len().saturating_sub(4)).step_by(4) {
@@ -299,5 +301,47 @@ impl Texture {
     /// Software-decode level 0 to RGBA8 (debug/export).
     pub fn to_rgba8(&self) -> Vec<u8> {
         xenos::decode_to_rgba8(self.format, &self.levels[0], self.width as usize, self.height as usize)
+    }
+
+    /// Level 0 to RGBA8 as the GPU's texture unit reads it and an 8-bit target takes it (DXT5:
+    /// `xenos::decode_dxt5_gpu`; other formats as `to_rgba8`), a component the fetch constant marks gamma (dword 0
+    /// bits 2.. 2 per component, 3 = gamma) through the Xenos' piecewise-linear gamma to linear - for textures the
+    /// game's own draws copy into a map the CPU side keeps (the damage layout). V: vp_dge_challenger_70's layout
+    /// (gamma R G B) as the original's map holds it, every texel (work/dmgmap).
+    pub fn to_rgba8_gpu(&self) -> Vec<u8> {
+        let mut px = match self.format {
+            TexFormat::Dxt5 => xenos::decode_dxt5_gpu(&self.levels[0], self.width as usize, self.height as usize),
+            // (8_8_8_8: the four bytes in the order the level holds them, then the fetch's swizzle - dword 3 bits
+            // 1.., 3 per output: 0 - 3 a component, 4 zero, 5 one. V: the city bus's layout (swizzle z y x w) as
+            // the original's map holds its G and A)
+            TexFormat::Rgba8 => {
+                let n = (self.width * self.height) as usize * 4;
+                let mut raw = self.levels[0].get(..n).map(|d| d.to_vec()).unwrap_or_else(|| vec![0; n]);
+                let sw: Vec<u32> = (0..4).map(|k| (self.fetch[3] >> (1 + 3 * k)) & 7).collect();
+                for p in raw.chunks_exact_mut(4) {
+                    let c = [p[0], p[1], p[2], p[3]];
+                    for k in 0..4 {
+                        p[k] = match sw[k] {
+                            s @ 0..=3 => c[s as usize],
+                            4 => 0,
+                            5 => 255,
+                            _ => c[k],
+                        };
+                    }
+                }
+                raw
+            }
+            _ => self.to_rgba8(),
+        };
+        let gamma: Vec<usize> = (0..4).filter(|c| (self.fetch[0] >> (2 + 2 * c)) & 3 == 3).collect();
+        if !gamma.is_empty() {
+            let lut: Vec<u8> = (0..=255u32).map(|v| (xenos::pwl_gamma_to_linear(v as f32 / 255.0) * 255.0 + 0.5).floor() as u8).collect();
+            for p in px.chunks_exact_mut(4) {
+                for &c in &gamma {
+                    p[c] = lut[p[c] as usize];
+                }
+            }
+        }
+        px
     }
 }

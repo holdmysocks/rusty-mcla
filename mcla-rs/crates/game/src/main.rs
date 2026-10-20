@@ -8237,7 +8237,8 @@ impl ApplicationHandler for App {
             let shape = |name: &str| {
                 let p = world.globaltex.get(&mcla_formats::hash::joaat(name))?;
                 let t = std::fs::read(p).map_err(anyhow::Error::from).and_then(|d| mcla_formats::dds::parse_dds(name, &d)).ok()?;
-                let px = t.to_rgba8();
+                // (as the GPU's texture unit decodes them - xenos::decode_dxt5_gpu)
+                let px = t.to_rgba8_gpu();
                 Some(damagemap::Shape::from_rgba(t.width as usize, t.height as usize, &px))
             };
             match (shape("dmg_test_4.dds"), shape("dmg_test_3.dds")) {

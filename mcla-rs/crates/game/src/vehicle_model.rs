@@ -654,7 +654,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
         let rd = Rd::new(&res);
         for t in Texture::find_by_suffix(&rd, "_maxdamage") {
             if damage_layout.as_ref().map_or(true, |l| t.width > l.0) {
-                damage_layout = Some((t.width, t.height, t.to_rgba8()));
+                damage_layout = Some((t.width, t.height, t.to_rgba8_gpu()));
             }
         }
         for (h, o) in &d.texture_offsets {
