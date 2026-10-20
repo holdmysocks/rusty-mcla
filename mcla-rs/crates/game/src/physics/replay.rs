@@ -419,10 +419,17 @@ for i in 0..4 {
                     // collision before them, at the pose the port keeps as `BodyExact::seen` - against
                     // a wall, deep pushes in a row, the front wheels 2.75 mm deeper than from the
                     // sample's pose (V work/carstep, s_rtv k 558). So the wheels are stood at the
-                    // pose before the push: the push taken off, the turn turned back.)
+                    // pose before the push: the push taken off, the turn turned back. Taking the push
+                    // off a place 800 m out is not exact to the bit (a unit there is 6e-5 m: s_rtv s258,
+                    // a rear wheel 3.9e-5 m deeper than the original's) - so where the port's own last
+                    // tick left the body exactly where the sample has it, the pose its own collision
+                    // saw before the push is the one.)
                     if q.len() >= 202 {
                         let (push, turn) = (v(196), v(199));
-                        if let (Some(b), Some(at), true) = (vs.body_exact, vs.body_at_exact, push != Vec3::ZERO || super::solver::turn_applies(turn)) {
+                        let own = vs.body.filter(|b| Some([b.rows[0], b.rows[1], b.rows[2], b.origin]) == vs.body_exact && Some(b.at) == vs.body_at_exact);
+                        if let (Some(b), true) = (own, push != Vec3::ZERO || super::solver::turn_applies(turn)) {
+                            vs.seen_exact = Some(b.seen);
+                        } else if let (Some(b), Some(at), true) = (vs.body_exact, vs.body_at_exact, push != Vec3::ZERO || super::solver::turn_applies(turn)) {
                             let at = at - push;
                             let rows = super::solver::rows_pushed(&[b[0], b[1], b[2]], Vec3::ZERO - turn);
                             vs.seen_exact = Some([rows[0], rows[1], rows[2], super::exact::origin_of(at, &rows, pivot_local)]);

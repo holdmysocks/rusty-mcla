@@ -4835,7 +4835,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // (mcCarStuck, 0x823509F0, between the car's update and the physics step: a car whose
     // body has touched something and that, 0.3 s on, is still within 3.5 m of where it was,
     // under throttle in a driving gear with a wheel on the ground, is turned by hand - its
-    // matrix, not its turning rate - by 1.05 rad/s times the steering, until it is 5 m from
+    // matrix, not its turning rate - by 1.05 rad/s times the pad's steering (input +24), until it is 5 m from
     // that place, the throttle is let go, or the handbrake is pulled. Recorded on a Range
     // Rover scraping a gate pillar at full lock: 37 ticks in which its heading turns
     // 0.95 rad/s faster than its angular velocity says.)
@@ -4865,14 +4865,16 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 vs.stuck = 0;
                 vs.stuck_timer = 0.0;
             } else {
-                let rate = vs.steer * f32::from_bits(0x3f86_6666);
+                // (the steering of the input object, +24 - the pad's value of the frame, not the
+                // chassis's product with the speed factor: 0x82350F50, V s_rtv s256 - s270)
+                let rate = vs.pad_steer * f32::from_bits(0x3f86_6666);
                 let rate = if vs.gear < 0 { -rate } else { rate };
                 stuck_turn = Some(-(dt * rate));
             }
         }
     }
     if dbg_flag("MCLA_DBG_STUCK") {
-        eprintln!("STUCK state {} timer {:.3} far {:.2} steer {:.2} cg {:.4} walls {}", vs.stuck, vs.stuck_timer, (vs.stuck_at - (st.pos + rm * pivot_local)).length(), vs.steer, vs.cg[0], super::hull::WALLS.with(|t| t.get()));
+        eprintln!("STUCK state {} timer {:.3} far {:.2} steer {:e} turn {:?} cg {:.4} walls {}", vs.stuck, vs.stuck_timer, (vs.stuck_at - (st.pos + rm * pivot_local)).length(), vs.steer, stuck_turn, vs.cg[0], super::hull::WALLS.with(|t| t.get()));
     }
     let frozen = vs.still_timer > 1.0;
     // (R4: and the sums a frozen tick leaves are nothing - what the recorder's hook at the integration reads)
@@ -5640,6 +5642,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         st.pos = origin1;
         st.rot = Quat::from_mat3(&Mat3::from_cols(rows1[0], rows1[1], rows1[2])).normalize();
         vs.body_now = Some([rows1[0], rows1[1], rows1[2], origin1]);
+        if std::env::var_os("MCLA_DBG_POSE").is_some() {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let h = |v: Vec3| format!("{:08x} {:08x} {:08x}", v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
+            eprintln!("POSE {} seen {} {} {} {} after {} {} {} {} at {}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed), h(seen[0]), h(seen[1]), h(seen[2]), h(seen[3]), h(rows1[0]), h(rows1[1]), h(rows1[2]), h(origin1), h(at1));
+        }
         vs.body = Some(BodyExact { rows: rows1, origin: origin1, at: at1, p: pm, l: lm, count, snap: (st.pos, st.rot, st.vel, st.ang_vel), seen });
         (v1 - v_in, w1 - w_in)
     } else {
