@@ -249,6 +249,8 @@ pub struct CarInstance {
     /// step 19d: the factor on the damage this vehicle inflicts on another it hits
     /// (mcCarDamage +20, Racer_SetDamageInflictedFactor; 1 by default)
     pub inflict: f32,
+    /// its number in the session (the order cars are made in: their place among the physics level's indices)
+    pub uid: u32,
     /// one of the payback client's friends (made through the police manager without being
     /// police: no light bar, no siren)
     pub goon: bool,
@@ -404,6 +406,14 @@ impl CarInstance {
     }
 }
 
+/// A car's damage map in the pool (`Vehicles::damage_maps`).
+struct DmgMap {
+    uid: u32,
+    px: crate::damagemap::MapPixels,
+    tex: wgpu::Texture,
+    _view: wgpu::TextureView,
+}
+
 #[derive(Default)]
 pub struct Vehicles {
     pub render_alpha: f32,
@@ -478,6 +488,13 @@ pub struct Vehicles {
     pub pu_glows: Vec<[f32; 8]>,
     /// slipstream strength 0..1 on the player
     pub draft: f32,
+    /// the physics level every car's step meets (physics/loose.rs): the props and pieces that have come
+    /// loose, the other cars as bodies; handed to each car for its step (`level_swap`)
+    pub level: crate::physics::loose::LooseState,
+    next_uid: u32,
+    /// the cars' damage maps (crate::damagemap): the game's pool of 8 render targets, each a car's
+    /// (its uid) for as long as the car is there
+    dmg_maps: Vec<DmgMap>,
     /// district traffic tables (`tune/ambients`) and the hour they are read at
     pub ambient: crate::ambient::Distribution,
     pub hour: f32,
@@ -1632,7 +1649,9 @@ impl Vehicles {
             d.target_speed = 17.88 * (0.86 + self.rand() * 0.14);
             ai = Some(d);
         }
-        self.cars.push(CarInstance { sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None });
+        self.next_uid += 1;
+        let uid = self.next_uid;
+        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None });
         self.cars.len() - 1
     }
 
@@ -2517,7 +2536,23 @@ if keep || c.state.pos.distance(center) < 450.0 {
         if let Some(nav) = world.nav.as_ref() {
             self.ride_traffic(nav, &world.collider, dt.min(1.0 / 30.0));
         }
-        for c in self.cars.iter_mut() {
+        // ---- one physics level for every car (physics/loose.rs): the loose props and pieces once a tick
+        // before and after the cars, each car's step with the cars not yet stepped as bodies of its island
+        // (each pair is solved in the earlier car's step) ----
+        let shared = world.collider.loose.clone().filter(|_| std::env::var_os("MCLA_DBG_NOSHARED").is_none());
+        let step_dt = dt.min(1.0 / 30.0);
+        if let Some(lw) = shared.as_deref() {
+            self.level.live = true;
+            self.level.pre_collide(lw, step_dt);
+        }
+        let mut level_car: Option<usize> = None;
+        let mut level_first = true;
+        for idx in 0..self.cars.len() {
+            if shared.is_some() {
+                self.level_swap(&mut level_car, Some(idx), step_dt, level_first, true);
+                level_first = false;
+            }
+            let c = &mut self.cars[idx];
             if c.rail.as_ref().is_some_and(|r| !r.physical) {
                 continue;
             }
@@ -2625,7 +2660,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             }
         }
-        // car-car separation (soft spheres)
+        if let Some(lw) = shared.as_deref() {
+            self.level_swap(&mut level_car, None, step_dt, false, true);
+            self.level.step_rest_alone(lw, step_dt);
+            self.level.end_tick(lw, step_dt);
+        }
+        // car-car separation (soft spheres): the port's own rule, now only for a pair the shared level does
+        // not take (a car without the original's body: no hull, no simulation tuning; MCLA_DBG_NOSHARED)
         for i in 0..n {
             for j in (i + 1)..n {
                 let r = 2.2;
@@ -2653,20 +2694,27 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     if self.cars[i].pu_ghost || self.cars[j].pu_ghost {
                         continue;
                     }
+                    // (both in the shared level: their pair is the solver's, in the earlier one's step)
+                    let in_level = |c: &CarInstance| c.state.veh.is_some() && c.tuned.as_deref().unwrap_or(&c.model.params).hull.is_some();
+                    let solved = shared.is_some() && in_level(&self.cars[i]) && in_level(&self.cars[j]);
                     if pi || pj {
+                        if solved {
+                            continue;
+                        }
                         // a parked car does not move: the other one takes the whole correction
                         let (mov, sign) = if pi { (j, 1.0) } else { (i, -1.0) };
                         self.cars[mov].state.correct_position(nrm * (r - dist) * sign);
                         let vn = self.cars[mov].state.vel.dot(nrm) * sign;
                         if vn < 0.0 {
                             self.cars[mov].state.vel -= nrm * sign * vn * 1.3;
-                            if -vn > 3.0 {
-                                let p = self.cars[mov].tuned.as_deref().unwrap_or(&self.cars[mov].model.params).clone();
-                                self.cars[mov].state.take_hit(&p, -vn);
-                                let other = if pi { i } else { j };
-                                let at = (self.cars[mov].state.pos + self.cars[other].state.pos) * 0.5 + Vec3::Y * 0.5;
-                                self.cars[mov].state.add_dent(at, -vn);
-                            }
+                            // (mcCarDamage's contact callback, world_damage_rule.md: the change of
+                            // velocity the touch gave it, whole - a parked car is not fixed - times
+                            // the parked car's "damage inflicted" factor)
+                            let p = self.cars[mov].tuned.as_deref().unwrap_or(&self.cars[mov].model.params).clone();
+                            let other = if pi { i } else { j };
+                            let at = (self.cars[mov].state.pos + self.cars[other].state.pos) * 0.5 + Vec3::Y * 0.5;
+                            let mult = self.cars[other].inflict;
+                            self.cars[mov].state.contact_hit(&p, -vn * 1.3, mult, at);
                         }
                         continue;
                     }
@@ -2681,6 +2729,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         self.cars[hit].state.ang_vel += Vec3::new(0.0, 2.5 * sign, 1.0);
                         self.cars[hit].state.damage = (self.cars[hit].state.damage + 0.2).min(1.0);
                         self.cars[hit].stunned = self.cars[hit].stunned.max(2.0);
+                        continue;
+                    }
+                    if solved {
                         continue;
                     }
                     let push = (r - dist) * 0.5;
@@ -2702,31 +2753,29 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         st.touches.push(crate::physics::car::AudioTouch { call: st.touch_calls, pos: at, normal: n, vel: v, own: side, other: side, vehicle: true });
                     }
                     if vi - vj > 0.0 {
-                        let imp = (vi - vj) * 0.5;
-                        self.cars[i].state.vel -= nrm * imp;
-                        self.cars[j].state.vel += nrm * imp;
-                        // (step 19d: what a vehicle takes from another is its change of speed
-                        // times the other's "damage inflicted" factor - mcCarDamage's scale,
-                        // sub_82342EA8: the hitter's +20 times the victim's own +16, which is 1
-                        // without a multiplier flag - and counts above the ImpactThreshold:
-                        // sub_82343378 0x82343498. The payback sets the player's factor to 3,
-                        // the client's to 0.65 and, once he runs, 0.55.)
-                        if imp * self.cars[i].inflict.max(self.cars[j].inflict).max(1.0) > 2.0 {
-                            // (each car's change of speed)
-                            let at = (self.cars[i].state.pos + self.cars[j].state.pos) * 0.5 + Vec3::Y * 0.5;
-                            for (k, o) in [(i, j), (j, i)] {
-                                let mut dmg = self.cars[k].model.params.dmg;
-                                // (the payback's client: Racer_SetFatalBlow(client,
-                                // Racer_GetImpactThreshold(client)) - any blow that counts can
-                                // finish him)
-                                if self.fragile == Some(k) {
-                                    dmg[3] = dmg[2];
-                                }
-                                let p = CarParams { dmg, ..CarParams::default() };
-                                let hit = imp * self.cars[o].inflict;
-                                self.cars[k].state.take_hit(&p, hit);
-                                self.cars[k].state.add_dent(at, imp);
+                        // (the closing speed taken out between the two by their masses, as a solved
+                        // contact without bounce does: each car's change is the impulse over its own mass)
+                        let mass = |c: &CarInstance| c.tuned.as_deref().unwrap_or(&c.model.params).mass.max(1.0);
+                        let (mi, mj) = (mass(&self.cars[i]), mass(&self.cars[j]));
+                        let (dvi, dvj) = ((vi - vj) * mj / (mi + mj), (vi - vj) * mi / (mi + mj));
+                        self.cars[i].state.vel -= nrm * dvi;
+                        self.cars[j].state.vel += nrm * dvj;
+                        // (mcCarDamage's contact callback for each, world_damage_rule.md: its own change
+                        // of velocity, whole - another car is not fixed - over 0.1 m/s to the zones by
+                        // clamp((sqrt dv - 0.5) x 0.2), and dv times the other's "damage inflicted"
+                        // factor, mcCarDamage +20 (0x82342EA8; the payback sets the player's to 3, the
+                        // client's to 0.65 and, once he runs, 0.55), to the points above the
+                        // ImpactThreshold (0x82343378))
+                        let at = (self.cars[i].state.pos + self.cars[j].state.pos) * 0.5 + Vec3::Y * 0.5;
+                        for (k, o, dv) in [(i, j, dvi), (j, i, dvj)] {
+                            let mut p = self.cars[k].tuned.as_deref().unwrap_or(&self.cars[k].model.params).clone();
+                            // (the payback's client: Racer_SetFatalBlow(client,
+                            // Racer_GetImpactThreshold(client)) - any blow that counts can finish him)
+                            if self.fragile == Some(k) {
+                                p.dmg[3] = p.dmg[2];
                             }
+                            let mult = self.cars[o].inflict;
+                            self.cars[k].state.contact_hit(&p, dv, mult, at);
                         }
                     }
                 }
@@ -2742,20 +2791,79 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             let cm = Mat4::from_rotation_translation(st.rot, st.pos);
             // (the repair, sub_8233E1B0, runs where the game fixes the car: here, a car whose damage is all gone)
-            if st.damage == 0.0 && st.zones == [0.0; 4] && st.dents.iter().all(|d| d[3] == 0.0) && st.parts.damaged() {
+            if st.damage == 0.0 && st.zones == [0.0; 4] && st.parts.damaged() {
                 st.parts.repair(&cm);
             }
             let (speed, heavy) = (st.speed(), st.damage > 0.66);
-            // (a torn-off bumper is a body of the car's loose-body level, damageparts.rs)
-            let level = world.collider.loose.as_deref().zip(st.veh.as_deref_mut().map(|v| &mut v.loose));
+            // (a torn-off bumper is a body of the loose-body level, damageparts.rs: the shared one when the cars
+            // share one, else the car's own)
+            let level = match shared.as_deref() {
+                Some(lw) => Some((lw, &mut self.level)),
+                None => world.collider.loose.as_deref().zip(st.veh.as_deref_mut().map(|v| &mut v.loose)),
+            };
             st.parts.tick(cm, speed, heavy, dt, &ground, level);
             if c.is_player {
                 parts_test(st, &cm, self.clock);
             }
         }
         if let Some(lw) = world.collider.loose.as_deref() {
-            torn_pieces(&mut self.cars, lw);
+            torn_pieces(&mut self.cars, lw, shared.is_some().then_some(&mut self.level));
         }
+    }
+
+    /// The shared physics level from car `cur` (its step done) to car `next`: what `cur`'s solves gave the
+    /// other cars goes into their bodies, `cur` keeps its own manifolds; `next` gets its manifolds and the
+    /// cars after it as bodies. `first`: `next` is the tick's first car (it makes the loose bodies' own pairs).
+    fn level_swap(&mut self, cur: &mut Option<usize>, next: Option<usize>, dt: f32, first: bool, _step: bool) {
+        use crate::physics::loose::{static_shape, LiveVeh};
+        if let Some(k) = cur.take() {
+            let mut answers = Vec::new();
+            if let Some(vs) = self.cars.get_mut(k).and_then(|c| c.state.veh.as_deref_mut()) {
+                answers = vs.loose.vehicle_answers();
+                let part = vs.loose.take_car();
+                std::mem::swap(&mut self.level, &mut vs.loose);
+                vs.loose.put_car(part);
+            }
+            for (uid, jf, jt, push, turn) in answers {
+                let Some(o) = self.cars.iter_mut().find(|c| c.uid == uid) else { continue };
+                let p = o.tuned.as_deref().unwrap_or(&o.model.params).clone();
+                if let Some(vt) = p.veh.clone() {
+                    crate::physics::vehsim::take_answer(&mut o.state, &p, &vt, jf, jt, push, turn);
+                }
+            }
+        }
+        let Some(k) = next else { return };
+        let ghost = self.cars[k].pu_ghost;
+        if let Some(vs) = self.cars[k].state.veh.as_deref_mut() {
+            vs.loose.ghost = ghost;
+        }
+        // (a car under MegaStealth meets the map and nothing else: it steps without the level)
+        if self.cars[k].state.veh.is_none() || ghost {
+            return;
+        }
+        let me = self.cars[k].uid;
+        let mut list = Vec::new();
+        for (j, o) in self.cars.iter().enumerate() {
+            // (a car before this one has stepped: their pair was in its step)
+            if j <= k || !o.placed || o.pu_ghost || self.cars[k].pu_ghost {
+                continue;
+            }
+            let p = o.tuned.as_deref().unwrap_or(&o.model.params);
+            let (Some(vt), Some(hull)) = (p.veh.as_ref(), p.hull.as_ref()) else { continue };
+            let Some((body, cg)) = crate::physics::vehsim::island_body(&o.state, p, vt, dt) else { continue };
+            let kinematic = o.parked.is_some() || o.rail.as_ref().is_some_and(|r| !r.physical);
+            list.push(LiveVeh { id: o.uid, shape: static_shape(hull), class: if o.rail.is_some() || o.parked.is_some() { 6 } else { 8 }, gravity: 1.0, cg, level: o.uid as i64 - me as i64, body, inflict: o.inflict, parked: kinematic });
+        }
+        let vs = self.cars[k].state.veh.as_deref_mut().unwrap();
+        let part = vs.loose.take_car();
+        std::mem::swap(&mut self.level, &mut vs.loose);
+        vs.loose.put_car(part);
+        vs.loose.live = true;
+        vs.loose.skip_pre = true;
+        vs.loose.skip_end = true;
+        vs.loose.later = !first;
+        vs.loose.set_vehicles(list);
+        *cur = Some(k);
     }
 
     /// Put a car somewhere by hand (cutscenes): wheels follow, it stands still.
@@ -2789,8 +2897,54 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
     }
 
+    /// The damage maps (0x82309238, once a frame as the car is drawn): a car made while one of the 8
+    /// is free gets it (0x823095A8) and keeps it until it goes; the queued stamps go into it, a car
+    /// without one loses them.
+    fn damage_maps(&mut self, gpu: &Gpu) {
+        let cars = &mut self.cars;
+        self.dmg_maps.retain(|m| cars.iter().any(|c| c.uid == m.uid));
+        for c in cars.iter_mut() {
+            let k = match self.dmg_maps.iter().position(|m| m.uid == c.uid) {
+                Some(k) => Some(k),
+                None if self.dmg_maps.len() < crate::damagemap::POOL => {
+                    let tex = gpu.new_damage_map();
+                    let view = tex.create_view(&Default::default());
+                    let px = crate::damagemap::MapPixels::new();
+                    gpu.write_damage_map(&tex, &px.px);
+                    for b in std::iter::once(&mut c.binding).chain(c.window_bindings.iter_mut()).chain(c.part_bindings.iter_mut()) {
+                        gpu.object_damage_map(b, Some(&view));
+                    }
+                    self.dmg_maps.push(DmgMap { uid: c.uid, px, tex, _view: view });
+                    Some(self.dmg_maps.len() - 1)
+                }
+                None => None,
+            };
+            let d = &mut c.state.dmg;
+            match k {
+                Some(k) => {
+                    let m = &mut self.dmg_maps[k];
+                    if m.px.apply(d) {
+                        gpu.write_damage_map(&m.tex, &m.px.px);
+                        // (diagnostics MCLA_DMG_DUMP=file.png: the player's map after each change)
+                        if c.is_player {
+                            if let Some(path) = std::env::var_os("MCLA_DMG_DUMP") {
+                                m.px.dump(&path.to_string_lossy());
+                            }
+                        }
+                    }
+                }
+                None => {
+                    d.dents.clear();
+                    d.scrapes.clear();
+                    d.repair = false;
+                }
+            }
+        }
+    }
+
     /// Write every car's transform and lamp state to the GPU.
     pub fn upload_uniforms(&mut self, gpu: &Gpu, night: f32) {
+        self.damage_maps(gpu);
         for c in self.cars.iter_mut() {
             let pose = c.render_pose(self.render_alpha);
             let mut m = Mat4::from_rotation_translation(pose.rot, pose.pos);
@@ -2824,7 +2978,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 (false, Some(l)) => (l.paint_type.min(5), l.color2, l.tint, l.interior, l.area_a, l.area_b),
                 (false, None) => (3, [0.0; 4], [0.0; 4], [[0.0; 4]; 5], [[0.0; 4]; 5], [[0.0; 4]; 5]),
             };
-            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: c.color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32], dents: if c.state.damage > 0.0 { c.state.dents } else { [[0.0; 4]; 6] }, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(0.0).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
+            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: c.color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32], dents: [[0.0; 4]; 6], color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(0.0).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
             gpu.update_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {
@@ -3161,7 +3315,29 @@ if keep || c.state.pos.distance(center) < 450.0 {
 /// The cars' torn-off bumpers across the cars' levels (the original has one physics level, the port one per car): a
 /// piece no bumper has any more comes out of the level holding it, each piece goes to the level of the car that reaches
 /// it (`loose::hand_over_pieces`), and every car reads its pieces back from wherever they are (damageparts.rs).
-fn torn_pieces(cars: &mut [CarInstance], world: &crate::physics::loose::LooseWorld) {
+fn torn_pieces(cars: &mut [CarInstance], world: &crate::physics::loose::LooseWorld, shared: Option<&mut crate::physics::loose::LooseState>) {
+    if let Some(level) = shared {
+        // (one level for every car: the pieces are its own, nothing to hand over)
+        let mut dropped = Vec::new();
+        for c in cars.iter_mut() {
+            dropped.extend(c.state.parts.dropped());
+        }
+        for id in &dropped {
+            level.remove_piece(*id);
+        }
+        let mut views: std::collections::HashMap<u64, crate::damageparts::PieceView> = std::collections::HashMap::new();
+        for id in level.piece_ids() {
+            if let Some((matrix, contacts, _)) = level.piece(id) {
+                views.insert(id, crate::damageparts::PieceView { matrix, contacts: contacts.to_vec() });
+            }
+        }
+        for c in cars.iter_mut() {
+            let cm = Mat4::from_rotation_translation(c.state.rot, c.state.pos);
+            c.state.parts.read_pieces(&cm, &|id| views.get(&id).cloned());
+        }
+        let _ = world;
+        return;
+    }
     let mut dropped = Vec::new();
     for c in cars.iter_mut() {
         dropped.extend(c.state.parts.dropped());

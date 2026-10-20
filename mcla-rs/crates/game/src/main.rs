@@ -33,6 +33,7 @@ mod vehicle_pose;
 mod video;
 mod cine;
 mod damageparts;
+mod damagemap;
 mod cutscene;
 mod drivers;
 mod game;
@@ -2172,7 +2173,7 @@ impl App {
             if let Some(c) = self.vehicles.player_mut() {
                 c.state.damage = d;
                 // (and a hard knock on the left front corner and one on the right rear door)
-                if c.state.dents[0][3] == 0.0 {
+                if !c.state.dmg.stamped {
                     let (p, f, r) = (c.state.pos, c.state.forward(), c.state.right());
                     c.state.add_dent(p + f * 1.7 - r * 0.6 + Vec3::Y * 0.5, 20.0);
                     c.state.add_dent(p - f * 0.6 + r * 0.8 + Vec3::Y * 0.6, 12.0);
@@ -3478,6 +3479,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 log::info!("steer dbg: tick {} drive {} menu {} mode {:?} in steer {:.2} thr {:.2} -> car input steer {:?} state steer {:?} veh steer {:?}", self.tick_no, self.drive, menu_open, self.game.mode, player_input.steer, player_input.throttle, self.vehicles.player().map(|c| c.input.steer), self.vehicles.player().map(|c| c.state.steer), self.vehicles.player().and_then(|c| c.state.veh.as_ref().map(|v| (v.pad_steer, v.steer))));
             }
             self.props.collide(&gpu, &world, &mut self.vehicles.cars, sim_dt);
+            // (the loose props as the cars' shared physics level moved them, physics/loose.rs)
+            if let Some(lw) = world.collider.loose.as_deref() {
+                self.props.follow_level(&gpu, &self.vehicles.level, lw);
+            }
             // ---- pulling up at a garage opens it ----
             {
                 let want = std::mem::take(&mut self.enter_garage);
@@ -4227,6 +4232,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.fx_impact = st.last_impact;
                     }
                 }
+                // (a scrape's sparks, damagemap::Sparks: at the point, away from the surface)
+                for c in self.vehicles.cars.iter_mut() {
+                    for k in std::mem::take(&mut c.state.dmg.sparks) {
+                        let n = ((k.amount * 10.0).min(1.0) * 12.0) as usize + 2;
+                        self.fx.sparks(k.at, (k.normal * 0.5 - k.rel.normalize_or_zero() * 0.3).normalize_or(Vec3::Y), n);
+                    }
+                }
                 for h in self.props.hits.iter().filter(|h| h.kind == 8 || h.kind == 0 || h.kind == 3 || h.kind == 10) {
                     self.fx.sparks(h.pos + Vec3::Y * 0.5, Vec3::Y, 10);
                 }
@@ -4396,12 +4408,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.tick_no == 90 {
                     if let Some(c) = self.vehicles.player_mut() {
                         let from = c.state.pos;
-                        for t in self.props.colliders_near(from, kind == "solid", 400.0) {
+                        'found: for t in self.props.colliders_near(from, kind == "solid", 400.0) {
+                          // ("wall": straight at the first loose prop with a clear middle line - the car ends
+                          // against what stands behind or beside it)
+                          let wall = kind == "wall";
+                          for turn in 0..if wall { 1 } else { 8 } {
                             let d = (t - from) * Vec3::new(1.0, 0.0, 1.0);
-                            let dir = d.normalize_or(Vec3::X);
+                            let dir = glam::Quat::from_rotation_y(turn as f32 * std::f32::consts::FRAC_PI_4) * d.normalize_or(Vec3::X);
                             let start = t - dir * 16.0 + Vec3::Y * 0.7;
-                            // need a clear, level run-up
-                            if world.collider.raycast(start, dir, 15.0).is_some() {
+                            // need a clear, level run-up as wide as the car, to and past the prop
+                            let side = Vec3::new(-dir.z, 0.0, dir.x) * 1.1;
+                            if wall && world.collider.raycast(start, dir, 15.0).is_some() {
+                                continue;
+                            }
+                            if !wall && [Vec3::ZERO, side, -side].iter().any(|&o| world.collider.raycast(start + o, dir, 19.0).is_some()) {
                                 continue;
                             }
                             let Some(g) = world.collider.ground(start, 1.0, 2.0) else { continue };
@@ -4412,7 +4432,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             c.state = physics::car::CarState::new(start, yaw);
                             c.pose_history.reset();
                             log::info!("aim-prop: {} prop at {:?}, starting at {:?}", kind, t, start);
-                            break;
+                            break 'found;
+                          }
                         }
                     }
                 }
@@ -4812,7 +4833,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             if let Some(p) = self.vehicles.player_mut() {
                 p.state.damage = 0.0;
-                p.state.dents = Default::default();
+                p.state.dmg.repair();
                 p.state.zones = [0.0; 4];
             }
         }
@@ -4857,7 +4878,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         p.state.nitro_shots = max;
                         if can_fix {
                             p.state.damage = 0.0;
-                            p.state.dents = Default::default();
+                            p.state.dmg.repair();
                 p.state.zones = [0.0; 4];
                             paid = fix_price;
                         }
@@ -8173,6 +8194,19 @@ impl ApplicationHandler for App {
         if let Some(p) = world.globaltex.get(&mcla_formats::hash::joaat("dmg_scrape.dds")) {
             if let Ok(t) = std::fs::read(p).map_err(anyhow::Error::from).and_then(|d| mcla_formats::dds::parse_dds("dmg_scrape.dds", &d)) {
                 gpu.set_scrape(&t.to_rgba8());
+            }
+        }
+        // the damage map's stamps: a dent's shape and a scrape's (damagemap.rs, 0x8288D010 / 0x8288D00C)
+        {
+            let shape = |name: &str| {
+                let p = world.globaltex.get(&mcla_formats::hash::joaat(name))?;
+                let t = std::fs::read(p).map_err(anyhow::Error::from).and_then(|d| mcla_formats::dds::parse_dds(name, &d)).ok()?;
+                let px = t.to_rgba8();
+                Some(damagemap::Shape::from_rgba(t.width as usize, t.height as usize, &px))
+            };
+            match (shape("dmg_test_4.dds"), shape("dmg_test_3.dds")) {
+                (Some(d), Some(s)) => damagemap::set_shapes(d, s),
+                _ => log::warn!("damage map: dmg_test_4.dds / dmg_test_3.dds not found, no dents or scrapes drawn"),
             }
         }
         self.ability.load(&self.opt.data_dir);

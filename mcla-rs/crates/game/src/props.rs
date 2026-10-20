@@ -166,6 +166,10 @@ struct Foot {
     audio: u32,
     /// posts: radius of the wide capsule round them, the zone of the deflection (0: none)
     wide: f32,
+    /// in the physics level FIXED (level state 2, the file's instance word 2: `_static_` props, the
+    /// deflecting posts, trees): mcCarDamage counts a contact with it 0.4 of itself (0x82567A08);
+    /// state 1 (loose, the parked aircraft too) whole
+    fixed: bool,
 }
 
 struct Collider {
@@ -322,6 +326,10 @@ pub struct Props {
     /// props knocked over so far (stat)
     pub knocked: u32,
     rng: u32,
+    /// the loose props are the cars' physics level's (physics/loose.rs): this file's knock leaves them be,
+    /// and they are drawn where their bodies are (`follow_level`); the collider each level instance is
+    level_on: bool,
+    level_map: Option<HashMap<(i32, i32, i32), u32>>,
     /// props a race script may place (ramps, flares): model and its triangles
     race_models: HashMap<String, (usize, Vec<[Vec3; 3]>)>,
     race_buf: Option<wgpu::Buffer>,
@@ -458,7 +466,7 @@ fn physics_foot(prop: &mcla_formats::rage::props::Prop, placed: Option<u32>) -> 
     if let Some(p) = prop.post() {
         let r = ((p.max.x - p.min.x) * 0.5).max(0.04);
         let y0 = p.min.y.max(0.0);
-        return Some(Foot { kind: Solidity::Solid, center: Vec2::new((p.min.x + p.max.x) * 0.5, (p.min.z + p.max.z) * 0.5), half: Vec2::splat(r), y0, height: (p.max.y - y0).max(0.1), mass: prop.mass, snd, audio: mcla_formats::hash::joaat(&name), wide: (prop.parts[0].max.x - prop.parts[0].min.x) * 0.5 });
+        return Some(Foot { kind: Solidity::Solid, center: Vec2::new((p.min.x + p.max.x) * 0.5, (p.min.z + p.max.z) * 0.5), half: Vec2::splat(r), y0, height: (p.max.y - y0).max(0.1), mass: prop.mass, snd, audio: mcla_formats::hash::joaat(&name), wide: (prop.parts[0].max.x - prop.parts[0].min.x) * 0.5, fixed: placed != Some(1) });
     }
     if prop.parts.is_empty() {
         return None;
@@ -491,7 +499,7 @@ fn physics_foot(prop: &mcla_formats::rage::props::Prop, placed: Option<u32>) -> 
         }
     };
     let y0 = lo.max(0.0);
-    Some(Foot { kind, center: (mn + mx) * 0.5, half: ((mx - mn) * 0.5).max(Vec2::splat(0.04)), y0, height: (top - y0).max(0.1), mass: prop.mass.max(1.0), snd, audio: mcla_formats::hash::joaat(&name), wide: 0.0 })
+    Some(Foot { kind, center: (mn + mx) * 0.5, half: ((mx - mn) * 0.5).max(Vec2::splat(0.04)), y0, height: (top - y0).max(0.1), mass: prop.mass.max(1.0), snd, audio: mcla_formats::hash::joaat(&name), wide: 0.0, fixed: placed == Some(2) || (placed.is_none() && kind == Solidity::Solid) })
 }
 
 /// The particle props have no model: each stands for effects of the disc's effect list
@@ -558,7 +566,7 @@ fn prop_mode(shader: &str) -> MatMode {
 
 impl Props {
     pub fn empty() -> Props {
-        Props { impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), knocked: 0, rng: 12345, heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
+        Props { impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
     }
 
     pub fn load(gpu: &mut Gpu, world: &mut World, data_dir: &str) -> Props {
@@ -972,7 +980,7 @@ impl Props {
             race_models.insert(name.to_string(), (mi, tris));
         }
         // collision footprint per model
-        let mut feet: Vec<Foot> = vec![Foot { kind: Solidity::None, center: Vec2::ZERO, half: Vec2::ZERO, y0: 0.0, height: 0.0, mass: 0.0, audio: 0, snd: 0, wide: 0.0 }; models.len()];
+        let mut feet: Vec<Foot> = vec![Foot { kind: Solidity::None, center: Vec2::ZERO, half: Vec2::ZERO, y0: 0.0, height: 0.0, mass: 0.0, audio: 0, snd: 0, wide: 0.0, fixed: false }; models.len()];
         for (&pi, mi) in model_of.iter() {
             let Some(mi) = *mi else { continue };
             let prop = &all[pi];
@@ -1023,7 +1031,7 @@ impl Props {
             let size = prop.max - prop.min;
             // thin panels (fences, signs) are light; boxes heavier
             let mass = (size.x.max(0.05) * size.y.max(0.05) * size.z.max(0.05) * 45.0).clamp(4.0, 350.0);
-            feet[mi] = Foot { kind, center, half: half.max(Vec2::splat(0.04)), y0: prop.min.y, height, mass, snd: crate::sound::prop_sound(&name), audio: mcla_formats::hash::joaat(&name), wide: 0.0 };
+            feet[mi] = Foot { kind, center, half: half.max(Vec2::splat(0.04)), y0: prop.min.y, height, mass, snd: crate::sound::prop_sound(&name), audio: mcla_formats::hash::joaat(&name), wide: 0.0, fixed: kind == Solidity::Solid };
         }
         // ... which is only the fallback: the type's own collision shape and mass where it has one
         for (&pi, mi) in model_of.iter() {
@@ -1255,7 +1263,7 @@ impl Props {
                 let half = Vec2::new((p.max.x - p.min.x) * 0.5, (p.max.z - p.min.z) * 0.5).max(Vec2::splat(0.04));
                 let y0 = p.min.y.max(0.0);
                 let mass = if p.mass > 0.0 { p.mass } else { prop.mass / prop.parts.len() as f32 };
-                let foot = Foot { kind: Solidity::Dynamic, center: Vec2::new((p.min.x + p.max.x) * 0.5, (p.min.z + p.max.z) * 0.5), half, y0, height: (p.max.y - y0).max(0.1), mass, snd, audio: mcla_formats::hash::joaat(&prop.name), wide: 0.0 };
+                let foot = Foot { kind: Solidity::Dynamic, center: Vec2::new((p.min.x + p.max.x) * 0.5, (p.min.z + p.max.z) * 0.5), half, y0, height: (p.max.y - y0).max(0.1), mass, snd, audio: mcla_formats::hash::joaat(&prop.name), wide: 0.0, fixed: false };
                 colliders.push(Collider { inst: u32::MAX, foot, pos: *pos, rot: *rot, scale: 1.0, knocked: false });
             }
         }
@@ -1321,7 +1329,7 @@ impl Props {
             SignalGlows { lit: Vec::new(), buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
         };
         let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types);
-        Props { impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), knocked: 0, rng: 12345, heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
+        Props { impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
     }
 
     /// Keep the effects of the particle props near the camera playing, and the litter on the
@@ -1784,6 +1792,8 @@ impl Props {
     /// Collide the active cars with the props around them and advance knocked-over props.
     pub fn collide(&mut self, gpu: &Gpu, world: &World, cars: &mut [crate::vehicles::CarInstance], dt: f32) {
         self.hits.clear();
+        // (a level without the props - MCLA_NO_LOOSE_PHYSICS, the torn-off bumpers' alone - leaves them to this file)
+        self.level_on = world.collider.loose.as_ref().is_some_and(|l| !l.instances.is_empty());
         if self.colliders.is_empty() || dt <= 0.0 {
             return;
         }
@@ -1792,6 +1802,7 @@ impl Props {
             if car.parked.is_some() || !car.placed || car.pu_ghost {
                 continue;
             }
+            let in_level = self.level_on && car.state.veh.is_some() && car.model.params.hull.is_some();
             let st = &mut car.state;
             let half = car.model.params.body_half;
             let human = car.is_player;
@@ -1805,6 +1816,10 @@ impl Props {
                     let Some(list) = self.col_grid.get(&(cx + dx, cz + dz)) else { continue };
                     for &ci in list {
                         let c = &mut self.colliders[ci as usize];
+                        // (a loose prop - level state 1 - is the physics level's: the car meets it in its own step)
+                        if c.foot.kind == Solidity::Dynamic && c.inst != u32::MAX && in_level {
+                            continue;
+                        }
                         if c.knocked {
                             continue;
                         }
@@ -1895,7 +1910,11 @@ impl Props {
                             self.hits.push(crate::sound::PropHit { pos: c.pos, kind: c.foot.snd, model: c.foot.audio, speed, knocked: true });
                             st.vel *= 1.0 - ratio * 0.9;
                             st.last_impact = st.last_impact.max(speed * ratio * 2.0);
-                            st.damage = (st.damage + speed * ratio * 0.01).min(1.0);
+                            // (mcCarDamage's contact callback, world_damage_rule.md: the change of
+                            // velocity the touch gave the car, whole - a loose prop is not fixed -
+                            // at the first contact's point, times +12 = 1)
+                            let at = Vec3::new(c.pos.x, st.pos.y + 0.5, c.pos.z);
+                            st.contact_hit(car.tuned.as_deref().unwrap_or(&car.model.params), speed * ratio * 0.9, 1.0, at);
                         } else {
                             // immovable: push the car out and bounce it off
                             st.correct_position(n3 * depth);
@@ -1904,13 +1923,18 @@ impl Props {
                             }
                             if vn < 0.0 {
                                 let tang = st.vel - n3 * vn;
+                                let before = st.vel;
                                 st.vel = tang * 0.92 - n3 * vn * 0.18;
+                                // (the callback as above: a fixed prop's contact counts 0.4 of itself,
+                                // a loose one that stands - the parked aircraft - whole)
+                                let at = Vec3::new(cb.x, st.pos.y + 0.5, cb.y);
+                                let k = if c.foot.fixed { f32::from_bits(0x3ecc_cccd) } else { 1.0 };
+                                st.contact_hit(car.tuned.as_deref().unwrap_or(&car.model.params), (st.vel - before).length() * k, 1.0, at);
                                 let arm = Vec3::new(cb.x - st.pos.x, 0.0, cb.y - st.pos.z);
                                 let j = n3 * (-vn);
                                 st.ang_vel.y += (arm.z * j.x - arm.x * j.z) * 0.28;
                                 st.ang_vel.y = st.ang_vel.y.clamp(-6.0, 6.0);
                                 st.last_impact = st.last_impact.max(-vn);
-                                st.damage = (st.damage + (-vn - 4.0).max(0.0) * 0.012).min(1.0);
                             }
                         }
                     }
@@ -1967,6 +1991,52 @@ impl Props {
             } else {
                 i += 1;
             }
+        }
+    }
+}
+
+impl Props {
+    /// The loose props as the cars' shared physics level has them (physics/loose.rs): a prop whose
+    /// instance the level has hit is knocked (its sound once), and drawn at its body's place.
+    pub fn follow_level(&mut self, gpu: &Gpu, level: &crate::physics::loose::LooseState, lw: &crate::physics::loose::LooseWorld) {
+        let key = |p: Vec3| ((p.x * 20.0).round() as i32, (p.y * 20.0).round() as i32, (p.z * 20.0).round() as i32);
+        if self.level_map.is_none() {
+            let mut m = HashMap::new();
+            for (ci, c) in self.colliders.iter().enumerate() {
+                if c.inst != u32::MAX && c.foot.kind == Solidity::Dynamic {
+                    m.insert(key(c.pos), ci as u32);
+                }
+            }
+            self.level_map = Some(m);
+        }
+        let Some(buf) = self.inst_buf.as_ref() else { return };
+        // (a prop that broke: the model follows its heaviest moving piece - the port draws a prop whole,
+        // so the part that stays, a stump at most, is not drawn on its own)
+        let mut best: HashMap<u32, (f32, usize)> = HashMap::new();
+        for (k, o) in level.objs.iter().enumerate() {
+            let (Some(i), Some(b)) = (o.inst.or(o.entry.and_then(|e| e.from)), o.body.as_ref()) else { continue };
+            let Some((fi, _)) = lw.instances.get(i as usize) else { continue };
+            let at = Vec3::new(fi.matrix[3][0], fi.matrix[3][1], fi.matrix[3][2]);
+            let Some(&ci) = self.level_map.as_ref().unwrap().get(&key(at)) else { continue };
+            if best.get(&ci).map_or(true, |&(m, _)| b.mass > m) {
+                best.insert(ci, (b.mass, k));
+            }
+        }
+        for (ci, (_, k)) in best {
+            let (o, b) = (&level.objs[k], level.objs[k].body.as_ref().unwrap());
+            let c = &mut self.colliders[ci as usize];
+            if !c.knocked {
+                c.knocked = true;
+                self.knocked += 1;
+                self.hits.push(crate::sound::PropHit { pos: c.pos, kind: c.foot.snd, model: c.foot.audio, speed: b.v.length(), knocked: true });
+            }
+            let m = o.matrix;
+            let rot = Quat::from_mat3(&glam::Mat3::from_cols(m[0].normalize_or(Vec3::X), m[1].normalize_or(Vec3::Y), m[2].normalize_or(Vec3::Z))).normalize();
+            let mut inst = self.insts[c.inst as usize];
+            inst.pos_scale = [m[3].x, m[3].y, m[3].z, c.scale];
+            inst.rot_tint = [rot.x, rot.y, rot.z, rot.w];
+            self.insts[c.inst as usize] = inst;
+            gpu.queue.write_buffer(buf, c.inst as u64 * std::mem::size_of::<Inst>() as u64, bytemuck::bytes_of(&inst));
         }
     }
 }

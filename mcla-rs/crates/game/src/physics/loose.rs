@@ -124,6 +124,8 @@ pub struct Entry {
     pub inv_mass: f32,
     pub inertia: Vec3,
     pub inv_inertia: Vec3,
+    /// (the port's own: the prop instance a piece broke off, for drawing it, props.rs `follow_level`)
+    pub from: Option<u32>,
 }
 
 fn group_of(t: &FragType, child: usize) -> usize {
@@ -497,6 +499,17 @@ pub struct LooseState {
     car_city_order: Option<usize>,
     /// the car's torn-off bumpers in the level (`add_piece`)
     pub pieces: Vec<Piece>,
+    /// (the game) one level shared by every car: the other cars are given as vehicles before each car's
+    /// step (`set_vehicles`, not integrated here), and the loose bodies' pre-collide and end of tick run
+    /// once a tick - with the first car's step and the last car's (`skip_pre`, `skip_end` for the others)
+    pub live: bool,
+    pub skip_pre: bool,
+    pub skip_end: bool,
+    /// (the game) a car after the tick's first: the loose bodies' own pairs are made already
+    pub later: bool,
+    /// the car is under MegaStealth (vehicles.rs `pu_ghost`, POWERUPS.md): it meets the map and nothing
+    /// loose - its step leaves the level out
+    pub ghost: bool,
 }
 
 /// What a run does not let one derive (the level's indices and the heap's addresses), given per
@@ -1012,8 +1025,11 @@ impl LooseState {
     pub fn collide(&mut self, world: &LooseWorld, car: &CarIn, city: &super::collision::WorldCollider, car_city: bool) {
         // (the manifolds of a pair whose instance broke last tick went with the pair)
         self.manis.retain(|m| !m.stale);
+        // (a level shared by the cars: what is loose meets what is loose and the city once a tick, in the first
+        // car's collide; the later cars' keep those pairs as they are)
+        let shared_later = self.live && self.later;
         for m in self.manis.iter_mut() {
-            m.visited = false;
+            m.visited = shared_later && m.a != Who::Car && m.b != Who::Car;
         }
         // (the level's props about the car and about every loose body)
         let mut about = vec![car.now[3]];
@@ -1070,8 +1086,22 @@ impl LooseState {
                 pairs.push(if self.objs[o].level < self.car_place().0 { (Who::Obj(o), Who::Car) } else { (Who::Car, Who::Obj(o)) });
             }
         }
-        for o1 in 0..n {
-            for o2 in o1 + 1..n {
+        // (a pair is made only with a body in it: walked from the bodies - the level keeps every prop a
+        // car came near - and taken in the order of the two indices, as a walk over every pair would)
+        let mut cand: Vec<(usize, usize)> = Vec::new();
+        for o in 0..if shared_later { 0 } else { n } {
+            if self.objs[o].body.is_none() || self.objs[o].veh.is_some() {
+                continue;
+            }
+            for q in 0..n {
+                if q != o && !(q < o && self.objs[q].body.is_some()) {
+                    cand.push((o.min(q), o.max(q)));
+                }
+            }
+        }
+        cand.sort_unstable();
+        for (o1, o2) in cand {
+            {
                 let (a, b) = (&self.objs[o1], &self.objs[o2]);
                 // (stage R: vehicle x prop, vehicle x vehicle: not ported)
                 if a.veh.is_some() || b.veh.is_some() {
@@ -1101,7 +1131,7 @@ impl LooseState {
             self.pair(world, car, a, b);
         }
         // (every loose body's parts against the city)
-        for o in 0..n {
+        for o in 0..if shared_later { 0 } else { n } {
             // (stage R: a vehicle's own contacts with the city are not made)
             if self.objs[o].body.is_none() || self.objs[o].veh.is_some() {
                 continue;
@@ -1901,7 +1931,7 @@ impl LooseState {
                 obj.hit = true;
                 if obj.body.is_none() {
                     let a = &t.archetype;
-                    let e = Entry { absent: 0, age: 0.0, cg: v(t.cg), mass: a.mass, inv_mass: a.inv_mass, inertia: v(a.inertia), inv_inertia: v(a.inv_inertia) };
+                    let e = Entry { absent: 0, age: 0.0, cg: v(t.cg), mass: a.mass, inv_mass: a.inv_mass, inertia: v(a.inertia), inv_inertia: v(a.inv_inertia), ..Default::default() };
                     obj.body = Some(PBody::new(&obj.matrix, e.cg, &e, a.max_speed, a.max_spin));
                 }
                 return None;
@@ -1936,7 +1966,7 @@ impl LooseState {
             return None;
         }
         // (the new entry: the parent's state, less everything outside the group's own tree)
-        let mut e = Entry { absent: all & !bits, age: parent.age, ..Default::default() };
+        let mut e = Entry { absent: all & !bits, age: parent.age, from: self.objs[w].inst.or(parent.from), ..Default::default() };
         let mass = entry_mass(t, e.absent);
         entry_refresh(t, &mut e, mass);
         let matrix = self.objs[w].matrix;
@@ -2126,6 +2156,15 @@ impl LooseState {
         }
     }
 
+    /// The islands no car is in, for a level shared by the cars (the game: once a tick, after every car).
+    pub fn step_rest_alone(&mut self, world: &LooseWorld, dt: f32) {
+        static NONE: std::sync::OnceLock<HullShape> = std::sync::OnceLock::new();
+        let hull = NONE.get_or_init(|| HullShape::new(vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z], &[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]));
+        let m = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
+        let car = CarIn { hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m, last: m, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
+        self.step_rest(world, &car, dt);
+    }
+
     /// The instance's matrix from the body (0x8259D1E8).
     fn matrix_from_body(&mut self, world: &LooseWorld, o: usize) {
         let cg = self.cg_of(world, o);
@@ -2145,6 +2184,10 @@ impl LooseState {
         for o in 0..self.objs.len() {
             let Some(mut b) = self.objs[o].body else { continue };
             let veh = self.objs[o].veh;
+            // (a live car is moved by its own step; `set_vehicles` hands it in already moved)
+            if veh.is_some() && self.live {
+                continue;
+            }
             let (gravity, damping) = match veh {
                 Some(vh) => (vh.gravity, VEH_DAMPING),
                 None => {
@@ -2213,6 +2256,9 @@ impl LooseState {
         self.pieces_sleep(dt);
         for o in 0..self.objs.len() {
             let Some(mut b) = self.objs[o].body else { continue };
+            if self.objs[o].veh.is_some() && self.live {
+                continue;
+            }
             b.jf = b.force * dt + b.jf;
             b.jt = b.torque * dt + b.jt;
             b.force = Vec3::ZERO;
@@ -2311,6 +2357,8 @@ pub struct VehObj {
     pub index: u32,
     /// it is in this tick's list as an active object
     pub here: bool,
+    /// its mcCarDamage +20, the "damage inflicted" factor a car it hits takes its blow times (0x82342EA8)
+    pub inflict: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -2567,7 +2615,146 @@ fn veh_core(shape: &HullShape, rows: &[Vec3; 3], n: Vec3) -> Vec3 {
     best
 }
 
+/// A car of the session as another car's step meets it (the game; a replay takes them from its file).
+pub struct LiveVeh {
+    /// the car's own number (its place among the session's cars)
+    pub id: u32,
+    pub shape: &'static HullShape,
+    /// 8 a car with a driver (mcCar), 6 ambient traffic
+    pub class: u8,
+    pub gravity: f32,
+    /// its body's place in its own frame (the model offset): the instance matrix's origin from the body
+    pub cg: Vec3,
+    /// its place among the level's indices against the stepping car's (0)
+    pub level: i64,
+    /// its body moved as the tick's pre-collide moves a body (0x8259E768), its last matrix, and its forces
+    pub body: PBody,
+    pub inflict: f32,
+    /// parked: no body - immovable to the solve
+    pub parked: bool,
+}
+
+/// A car hull shape kept for the level's whole life (the vehicle objects hold a plain reference).
+pub fn static_shape(a: &Arc<HullShape>) -> &'static HullShape {
+    use std::sync::Mutex;
+    static KEPT: std::sync::OnceLock<Mutex<HashMap<usize, &'static HullShape>>> = std::sync::OnceLock::new();
+    let mut m = KEPT.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    *m.entry(Arc::as_ptr(a) as usize).or_insert_with(|| Box::leak(Box::new((**a).clone())))
+}
+
+/// What belongs to one car in a shared level: its manifolds (with the city, props, pieces, the other cars)
+/// and its pair with the city's place.
+#[derive(Clone, Debug, Default)]
+pub struct CarPart {
+    manis: Vec<Mani>,
+    car_city_order: Option<usize>,
+}
+
+impl PBody {
+    /// A car's body for another car's island: `at` its place (+256), `rows`, velocities, mass and moments,
+    /// the matrix the last collide had and the one it has now, the tick's force and torque so far.
+    #[allow(clippy::too_many_arguments)]
+    pub fn of_car(at: Vec3, rows: [Vec3; 3], v: Vec3, w: Vec3, mass: f32, inertia: Vec3, last: [Vec3; 4], now: [Vec3; 4], force: Vec3, torque: Vec3) -> PBody {
+        let mut b = PBody {
+            at,
+            rows,
+            v,
+            w,
+            p: v * mass,
+            l: Vec3::ZERO,
+            force,
+            torque,
+            jf: Vec3::ZERO,
+            jt: Vec3::ZERO,
+            push: Vec3::ZERO,
+            turn: Vec3::ZERO,
+            last,
+            prev: now,
+            last_set: true,
+            deep: false,
+            deep_count: 0,
+            mass,
+            inv_mass: recip(mass),
+            inertia,
+            inv_inertia: Vec3::new(recip(inertia.x), recip(inertia.y), recip(inertia.z)),
+            max_speed: 134.1,
+            max_spin: 12.566_371,
+            moves: 0,
+        };
+        b.l = b.momentum_of(w);
+        b
+    }
+}
+
 impl LooseState {
+    /// The stepping car's own part out of the level (before another car steps in it).
+    pub fn take_car(&mut self) -> CarPart {
+        let (mine, rest): (Vec<Mani>, Vec<Mani>) = std::mem::take(&mut self.manis).into_iter().partition(|m| m.a == Who::Car || m.b == Who::Car);
+        self.manis = rest;
+        CarPart { manis: mine, car_city_order: self.car_city_order.take() }
+    }
+
+    /// A car's own part into the level, for its step.
+    pub fn put_car(&mut self, part: CarPart) {
+        self.manis.extend(part.manis);
+        self.car_city_order = part.car_city_order;
+    }
+
+    /// The other cars for this car's step: each an object with a body (none when parked); those not
+    /// listed are not there, and the manifolds with them go.
+    pub fn set_vehicles(&mut self, list: Vec<LiveVeh>) {
+        self.live = true;
+        for o in self.objs.iter_mut() {
+            if let Some(vh) = o.veh.as_mut() {
+                vh.here = false;
+                o.body = None;
+            }
+        }
+        for v in list {
+            let i = match self.objs.iter().position(|o| o.veh.map_or(false, |x| x.index == v.id)) {
+                Some(i) => i,
+                None => {
+                    self.objs.push(Obj { ty: usize::MAX, inst: None, matrix: v.body.prev, entry: None, hit: false, body: None, level: 0, addr: 0, veh: None });
+                    self.objs.len() - 1
+                }
+            };
+            let obj = &mut self.objs[i];
+            obj.level = v.level;
+            obj.addr = v.level;
+            obj.matrix = [v.body.rows[0], v.body.rows[1], v.body.rows[2], ex::origin_of(v.body.at, &v.body.rows, v.cg)];
+            obj.body = if v.parked { None } else { Some(v.body) };
+            obj.veh = Some(VehObj { shape: v.shape, class: v.class, gravity: v.gravity, cg: v.cg, index: v.id, here: true, inflict: v.inflict });
+        }
+        let objs = &self.objs;
+        self.manis.retain(|m| ![m.a, m.b].iter().any(|w| matches!(w, Who::Obj(o) if objs[*o].veh.map_or(false, |x| !x.here))));
+    }
+
+    /// What this step's solves gave each other car: its id, the impulse and its turn about its place (for
+    /// the momenta), and the push solve's move and turn. Taken: the bodies are handed in afresh each step.
+    pub fn vehicle_answers(&mut self) -> Vec<(u32, Vec3, Vec3, Vec3, Vec3)> {
+        let mut out = Vec::new();
+        for o in self.objs.iter_mut() {
+            let (Some(vh), Some(b)) = (o.veh, o.body.as_mut()) else { continue };
+            if b.jf != Vec3::ZERO || b.jt != Vec3::ZERO || b.push != Vec3::ZERO || b.turn != Vec3::ZERO {
+                out.push((vh.index, b.jf, b.jt, b.push, b.turn));
+            }
+            b.jf = Vec3::ZERO;
+            b.jt = Vec3::ZERO;
+            b.push = Vec3::ZERO;
+            b.turn = Vec3::ZERO;
+        }
+        out
+    }
+
+    /// What mcCarDamage multiplies the car's blow from `other` by (0x82342EA8): a vehicle's "damage
+    /// inflicted" factor (its mcCarDamage +20; the car's own +16 is 1), anything else +12 = 1.
+    pub fn vehicle_factor(&self, other: Option<Who>) -> f32 {
+        match other {
+            Some(Who::Obj(o)) => self.objs.get(o).and_then(|o| o.veh).map_or(1.0, |v| v.inflict),
+            _ => 1.0,
+        }
+    }
+
     /// The other vehicles of the tick in hand, as the replay's file has them before it: each an
     /// object with the logged body; those not in the list are gone, and their contacts with them.
     fn sync_others(&mut self) {
@@ -2599,7 +2786,7 @@ impl LooseState {
             obj.addr = v.addr as i64 - ot.car_addr as i64 + car_addr;
             obj.matrix = v.matrix;
             obj.body = Some(v.body);
-            obj.veh = Some(VehObj { shape, class: v.class, gravity: v.gravity, cg: v.cg, index: v.index, here: true });
+            obj.veh = Some(VehObj { shape, class: v.class, gravity: v.gravity, cg: v.cg, index: v.index, here: true, inflict: 1.0 });
         }
         let gone = |w: Who, objs: &Vec<Obj>| matches!(w, Who::Obj(o) if objs[o].veh.map_or(false, |x| !x.here || ot.inject));
         let objs = &self.objs;
@@ -2758,7 +2945,7 @@ impl LooseState {
         let ty = world.piece_type_index()?;
         let t = &world.types[ty];
         let a = &t.archetype;
-        let e = Entry { absent: 0, age: 0.0, cg: self::v(t.cg), mass: a.mass, inv_mass: a.inv_mass, inertia: self::v(a.inertia), inv_inertia: self::v(a.inv_inertia) };
+        let e = Entry { absent: 0, age: 0.0, cg: self::v(t.cg), mass: a.mass, inv_mass: a.inv_mass, inertia: self::v(a.inertia), inv_inertia: self::v(a.inv_inertia), ..Default::default() };
         let mut body = PBody::new(&matrix, e.cg, &e, a.max_speed, a.max_spin);
         body.v = v;
         body.p = v * body.mass;

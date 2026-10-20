@@ -1047,6 +1047,101 @@ fn tire_fric_update(vs: &mut VehState, t: &SimTune, input: CarInput, gear: i32, 
     }
 }
 
+/// The body's moments (body +160).
+pub fn moments(p: &CarParams, t: &SimTune) -> Vec3 {
+    let mass = t.s.mass;
+    // (ambient cars carry no InertiaBox: their body is the box)
+    let body = p.body_half * 2.0;
+    let pick = |tuned: f32, size: f32| if tuned > 0.1 { tuned } else { size.max(0.8) };
+    let b = Vec3::new(pick(t.s.inertia_x, body.x), pick(t.s.inertia_y, body.y), pick(t.s.inertia_z, body.z));
+    // (the body's own numbers, body +160: the mass times the squares' sum, times a twelfth -
+    // in that order; the three recorded cars' nine values agree to the bit)
+    if dbg_flag("MCLA_DBG_OLDSUMS") {
+        let m = mass / 12.0;
+        Vec3::new(m * (b.y * b.y + b.z * b.z), m * (b.x * b.x + b.z * b.z), m * (b.x * b.x + b.y * b.y))
+    } else {
+        let k = 1.0f32 / 12.0;
+        Vec3::new((mass * (b.y * b.y + b.z * b.z)) * k, (mass * (b.x * b.x + b.z * b.z)) * k, (mass * (b.x * b.x + b.y * b.y)) * k)
+    }
+}
+
+/// The car as another car's step meets it in the shared level: its body (place +256, rows, momenta,
+/// mass, moments) moved as a tick's pre-collide moves a body (0x8259E768: by the velocities it has),
+/// the matrix its last collide had, and the forces its last update left. With its place offset.
+pub fn island_body(st: &CarState, p: &CarParams, vt: &VehTune, dt: f32) -> Option<(super::loose::PBody, Vec3)> {
+    use super::exact as ex;
+    let vs = st.veh.as_ref()?;
+    let t = &vt.t;
+    let pivot_local = Vec3::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z);
+    let kept = vs.body.filter(|b| b.snap == (st.pos, st.rot, st.vel, st.ang_vel));
+    let rows = kept.map(|b| b.rows).unwrap_or_else(|| {
+        let m = Mat3::from_quat(st.rot);
+        [m.x_axis, m.y_axis, m.z_axis]
+    });
+    let at = kept.map(|b| b.at).unwrap_or(st.pos + Mat3::from_quat(st.rot) * pivot_local);
+    let now = [rows[0], rows[1], rows[2], st.pos];
+    let last = vs.hull_last.unwrap_or(now);
+    let at = st.vel * dt + at;
+    let turn = st.ang_vel * dt;
+    let rows = if ex::dot3(turn, turn) > f32::from_bits(0x2b8c_bccc) { ex::rows_turned(&rows, turn) } else { rows };
+    let mut b = super::loose::PBody::of_car(at, rows, st.vel, st.ang_vel, t.s.mass, moments(p, t), last, now, vs.last_force, vs.last_torque);
+    if let Some(k) = kept {
+        b.p = k.p;
+        b.l = k.l;
+    }
+    Some((b, pivot_local))
+}
+
+/// What another car's step gave this car (the shared level's solves): the impulse and its turn into the
+/// momenta, the push solve's move and turn into the pose - as the car's own body takes them (0x8259BE30,
+/// 0x8259E790), so the next step keeps its exact body.
+pub fn take_answer(st: &mut CarState, p: &CarParams, vt: &VehTune, jf: Vec3, jt: Vec3, push: Vec3, turn: Vec3) {
+    use super::exact as ex;
+    let t = &vt.t;
+    let mass = t.s.mass;
+    let inertia = moments(p, t);
+    let inverse = Vec3::new(ex::recip(inertia.x), ex::recip(inertia.y), ex::recip(inertia.z));
+    let pivot_local = Vec3::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z);
+    let Some(vs) = st.veh.as_mut() else { return };
+    let kept = vs.body.filter(|b| b.snap == (st.pos, st.rot, st.vel, st.ang_vel));
+    let (mut rows, mut at, mut pm, mut lm, count, seen) = match kept {
+        Some(b) => (b.rows, b.at, b.p, b.l, b.count, b.seen),
+        None => {
+            let m = Mat3::from_quat(st.rot);
+            let rows = [m.x_axis, m.y_axis, m.z_axis];
+            let iw = ex::world_inertia(&rows, inertia);
+            let w = st.ang_vel;
+            let l = Vec3::new(ex::dot3(Vec3::new(iw[0].x, iw[1].x, iw[2].x), w), ex::dot3(Vec3::new(iw[0].y, iw[1].y, iw[2].y), w), ex::dot3(Vec3::new(iw[0].z, iw[1].z, iw[2].z), w));
+            (rows, st.pos + m * pivot_local, st.vel * mass, l, 0, [rows[0], rows[1], rows[2], st.pos])
+        }
+    };
+    pm = pm + jf;
+    lm = lm + jt;
+    let mut v = pm * (1.0 / mass);
+    if v.length_squared() > 134.1 * 134.1 {
+        let k = 134.1 / v.length();
+        v *= k;
+        pm *= k;
+    }
+    let mut w = ex::spin_of(lm, &rows, inverse);
+    if w.length_squared() > 12.566_371 * 12.566_371 {
+        let k = 12.566_371 / w.length();
+        w *= k;
+        lm *= k;
+    }
+    at = at + push;
+    if super::solver::turn_applies(turn) {
+        rows = super::solver::rows_pushed(&rows, turn);
+    }
+    let origin = ex::origin_of(at, &rows, pivot_local);
+    st.vel = v;
+    st.ang_vel = w;
+    st.pos = origin;
+    st.rot = Quat::from_mat3(&Mat3::from_cols(rows[0], rows[1], rows[2])).normalize();
+    vs.body_now = Some([rows[0], rows[1], rows[2], origin]);
+    vs.body = Some(BodyExact { rows, origin, at, p: pm, l: lm, count, snap: (st.pos, st.rot, st.vel, st.ang_vel), seen });
+}
+
 pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, world: &WorldCollider, dt: f32) {
     // (a replay of a recorded computer driver gives the chassis' own pedals: no mapping)
     let replay_ai = REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed);
@@ -2478,21 +2573,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     let rot_in = st.rot;
     // (the body's place as the original has it, body +256: what contact velocities turn about)
     let body_at = vs.body_at_exact.take().or(kept_body.map(|b| b.at)).unwrap_or(pivot);
-    let inertia = {
-        // (ambient cars carry no InertiaBox: their body is the box)
-        let body = p.body_half * 2.0;
-        let pick = |tuned: f32, size: f32| if tuned > 0.1 { tuned } else { size.max(0.8) };
-        let b = Vec3::new(pick(t.s.inertia_x, body.x), pick(t.s.inertia_y, body.y), pick(t.s.inertia_z, body.z));
-        // (the body's own numbers, body +160: the mass times the squares' sum, times a twelfth -
-        // in that order; the three recorded cars' nine values agree to the bit)
-        if dbg_flag("MCLA_DBG_OLDSUMS") {
-            let m = mass / 12.0;
-            Vec3::new(m * (b.y * b.y + b.z * b.z), m * (b.x * b.x + b.z * b.z), m * (b.x * b.x + b.y * b.y))
-        } else {
-            let k = 1.0f32 / 12.0;
-            Vec3::new((mass * (b.y * b.y + b.z * b.z)) * k, (mass * (b.x * b.x + b.z * b.z)) * k, (mass * (b.x * b.x + b.y * b.y)) * k)
-        }
-    };
+    let inertia = moments(p, t);
     // ---- the force and torque sums. The original's body adds every force and torque as it
     // is applied, in single precision, so the sums' last bits depend on the order: the air
     // (vehAero, ahead of the wheels), each wheel in turn - front left, front right, rear
@@ -4995,7 +5076,9 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let last = vs.hull_last.unwrap_or([rows0[0], rows0[1], rows0[2], body_rows[3]]);
             // (stage P: the loose bodies' move, gravity and damping, 0x8259F300)
             if let Some(lw) = world.loose.as_ref().filter(|_| !dbg_flag("MCLA_DBG_P1")) {
-                vs.loose.pre_collide(lw, dt);
+                if !vs.loose.skip_pre {
+                    vs.loose.pre_collide(lw, dt);
+                }
             }
             let bbox = (hull.min - Vec3::splat(0.041), hull.max + Vec3::splat(0.041));
             if dbg_flag("MCLA_DBG_HIT") {
@@ -5116,7 +5199,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let car_city_pair = !vs.manifolds.is_empty();
             super::hull::refresh(&seen, &mut vs.manifolds);
             // (stage P: the hull against the props and pieces about it, their kept contacts, the callbacks)
-            let loose_world = world.loose.as_ref().filter(|_| !dbg_flag("MCLA_DBG_P1"));
+            let loose_world = world.loose.as_ref().filter(|_| !dbg_flag("MCLA_DBG_P1") && !vs.loose.ghost);
             // (RA7: the wheels' parts for the props' side - MCLA_DBG_RA7: the hull alone, as before)
             let mut loose_wheels: Vec<Option<super::loose::WheelIn>> = Vec::new();
             if !dbg_flag("MCLA_DBG_RA7") && wheel_geo.iter().filter(|g| g.is_some()).count() == 4 {
@@ -5301,7 +5384,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 }
             }
             // (the islands the car is not in: loose bodies on their own)
-            if let Some(lw) = loose_world {
+            if let Some(lw) = loose_world.filter(|_| !vs.loose.skip_end) {
                 vs.loose.step_rest(lw, &car_in, dt);
             }
         }
@@ -5328,6 +5411,9 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
         // ---- and the second solve, which only moves the body out (0x82591108, 0x8259E920) ----
         let turn_left = if dbg_flag("MCLA_DBG_Y4") { Vec3::ZERO } else { vs.push_turn_left };
+        // (the call's sum of dv, its first point, multiplier, whether any impulse, and for a scrape the
+        // normals' sum and the first other's velocity at the point and at its centre)
+        let mut loose_hit: Option<(Vec3, Vec3, f32, bool, Vec3, Vec3, Vec3)> = None;
         let pushed_now = if let Some((body, mut contacts, mut solved)) = solved_contacts.take() {
             let pushed = super::solver::push(&body, &mut contacts, &mut solved, dt, 1.0 / dt, (0.04, 0.04), false, turn_left);
             if let Some(order) = reordered.take() {
@@ -5338,6 +5424,36 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             }
             Some((pushed, contacts))
         } else if let Some((body, mut contacts, mut out)) = loose_island.take() {
+            // (mcCarDamage's call for the car's contacts with what is loose - props, pieces, other
+            // vehicles: their impulses whole, not fixed (0x82567A08); the first one's point and other)
+            for (l, t) in out.links.iter().zip(out.touches.iter()) {
+                let (mine, point, other) = match (l.a, l.b) {
+                    (Some(super::loose::Who::Car), o) => (t.impulse, t.a.point, o),
+                    (o, Some(super::loose::Who::Car)) => (Vec3::ZERO - t.impulse, t.b.point, o),
+                    _ => continue,
+                };
+                if l.from.is_none() || matches!(other, Some(super::loose::Who::City) | None) {
+                    continue;
+                }
+                let n_car = if matches!(l.a, Some(super::loose::Who::Car)) { t.normal } else { t.back };
+                let e = loose_hit.get_or_insert_with(|| {
+                    let other_side = if matches!(l.a, Some(super::loose::Who::Car)) { &t.b } else { &t.a };
+                    let ob = other_side.body.and_then(|k| out.bodies.get(k));
+                    (Vec3::ZERO, point, vs.loose.vehicle_factor(other), false, Vec3::ZERO, ob.map_or(Vec3::ZERO, |b| b.vel + b.ang.cross(point - b.at)), ob.map_or(Vec3::ZERO, |b| b.vel))
+                });
+                e.0 += mine * body.inv_mass;
+                e.3 |= t.impulse != Vec3::ZERO;
+                e.4 += n_car;
+                // (the collision audio's view of a touch with another car, as the city's below)
+                if let Some(super::loose::Who::Obj(o)) = other {
+                    if vs.loose.objs.get(o).is_some_and(|x| x.veh.is_some()) {
+                        let (own_side, other_side, n) = if matches!(l.a, Some(super::loose::Who::Car)) { (&t.a, &t.b, t.normal) } else { (&t.b, &t.a, t.back) };
+                        let vel_of = |s: &super::solver::Side| s.body.and_then(|k| out.bodies.get(k)).map_or(Vec3::ZERO, |b| b.vel + b.ang.cross(s.point - b.at));
+                        let side = super::collision::Surface::CarSide;
+                        st.touches.push(super::car::AudioTouch { call: st.touch_calls + 1, pos: own_side.point, normal: Vec3::ZERO - n, vel: vel_of(own_side) - vel_of(other_side), own: side, other: side, vehicle: true });
+                    }
+                }
+            }
             let pushed = vs.loose.push_car_island(&mut out, &body, super::solver::Pushed { push: Vec3::ZERO, turn: turn_left, deep: false }, dt);
             let mut k = 0;
             for (l, t) in out.links.iter().zip(out.touches.iter()) {
@@ -5372,6 +5488,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             // mass, 0.4 of it against the fixed city; the first one's point, the last one's on a car
             // lying over)
             let (mut hit_dv, mut hit_first, mut hit_last, mut hit_any) = (Vec3::ZERO, None, Vec3::ZERO, false);
+            let (mut hit_n, mut hit_n0) = (Vec3::ZERO, None);
             for m in vs.manifolds.iter_mut() {
                 for slot in m.slots.iter_mut() {
                     if !slot.enabled {
@@ -5383,6 +5500,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     hit_any |= c.impulse != Vec3::ZERO;
                     hit_first.get_or_insert(c.on_body);
                     hit_last = c.on_body;
+                    hit_n += c.normal;
+                    hit_n0.get_or_insert(c.normal);
                     // (the collision audio's view of it: sub_82381FB0 reads every enabled contact)
                     st.touches.push(super::car::AudioTouch {
                         call: st.touch_calls,
@@ -5419,9 +5538,25 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 let d = at - moved_origin;
                 let local = Vec3::new(d.dot(moved_rows[0]), d.dot(moved_rows[1]), d.dot(moved_rows[2]));
                 if dbg_flag("MCLA_DBG_WORLDHIT") {
-                    eprintln!("WORLDHIT dv {:.6} at local {:.6} {:.6} {:.6} zones {:?} damage {:.6}", hit_dv.length(), local.x, local.y, local.z, st.zones, st.damage * p.dmg[0]);
+                    eprintln!("WORLDHIT dv {:.6} at local {:.6} {:.6} {:.6} zones {:?} damage {:.6} zone box {:?}", hit_dv.length(), local.x, local.y, local.z, st.zones, st.damage * p.dmg[0], st.zone_half);
                 }
-                st.world_hit(p, hit_dv.length(), at, local);
+                // (a scrape's inputs, 0x82343CA8 .. 0x823441F0: the car's velocity at the point and at its
+                // centre after the solve; the city's none; the normals summed, unit over 0.001, else the first's)
+                let n = if hit_n.length() > f32::from_bits(0x3a83_126f) { hit_n.normalize() } else { hit_n0.unwrap_or(Vec3::Y) };
+                let scrape = super::car::ScrapeIn { v1: v1 + w1.cross(at - (at1 - pushed.push)), v2: Vec3::ZERO, rel: v1, n };
+                st.world_hit(p, hit_dv.length(), at, local, Some(scrape));
+            }
+            // (then the call for what is loose: in a recorded tick with both, mcCarDamage +56 is this
+            // one's sum, exactly - sa.0 k230..k292)
+            if let Some((dv, at, mult, true, nsum, v2, v2c)) = loose_hit.filter(|_| !dbg_flag("MCLA_DBG_NOWORLDHIT")) {
+                let d = at - moved_origin;
+                let local = Vec3::new(d.dot(moved_rows[0]), d.dot(moved_rows[1]), d.dot(moved_rows[2]));
+                if dbg_flag("MCLA_DBG_WORLDHIT") {
+                    eprintln!("LOOSEHIT dv {:.6} at local {:.6} {:.6} {:.6} mult {}", dv.length(), local.x, local.y, local.z, mult);
+                }
+                let n = if nsum.length() > f32::from_bits(0x3a83_126f) { nsum.normalize() } else { nsum };
+                let scrape = super::car::ScrapeIn { v1: v1 + w1.cross(at - (at1 - pushed.push)), v2, rel: v1 - v2c, n };
+                st.damage_call(p, dv.length(), mult, at, local, Some(scrape));
             }
             // (0x8259E920: the matrix the next tick's collision takes for the last one)
             let end = [rows1[0], rows1[1], rows1[2], origin1];
@@ -5443,7 +5578,9 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // (stage P: the loose bodies' integration, their push applied, the entries' ages)
         if exact_collide && !dbg_flag("MCLA_DBG_P1") {
             if let Some(lw) = world.loose.as_ref() {
-                vs.loose.end_tick(lw, dt);
+                if !vs.loose.skip_end {
+                    vs.loose.end_tick(lw, dt);
+                }
             }
         }
         st.vel = v1;

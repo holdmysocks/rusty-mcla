@@ -54,6 +54,40 @@ pub struct CarParams {
 }
 
 impl CarParams {
+    /// Half the width and length of the box the zone damage measures a hit against (0x82356D98):
+    /// the car instance's composite bound box (+0x10 max / +0x20 min), which `sub_82599FB0` makes
+    /// the union of its parts' boxes - the hull's and each fitted wheel bound's at the wheel's place
+    /// (recorded R8: hull x 1.0009, rear wheel 0.7775 + 0.2263 = 1.0038; z 2.1064 .. -2.3572, half
+    /// 2.2318; the same box all through a crash). Without a hull: the body box.
+    pub fn zone_box(&self) -> [f32; 2] {
+        let (lo, hi) = self.composite_box();
+        [(hi.x - lo.x) * 0.5, (hi.z - lo.z) * 0.5]
+    }
+
+    /// The box of the car's composite bound (0x8259ADA8 / 0x82599FB0): the hull's, margin included,
+    /// and the wheels' crowned boxes. (lo, hi) in the car.
+    pub fn composite_box(&self) -> (Vec3, Vec3) {
+        let Some(h) = self.hull.as_ref() else { return (-self.body_half, self.body_half) };
+        // (the hull bound's own box, its 4 cm margin included: R8 1.0009, 2.1064 .. -2.3572)
+        let (mut hi, mut lo) = h.bbox.unwrap_or((h.max + Vec3::splat(0.041), h.min - Vec3::splat(0.041)));
+        if let Some(vt) = self.veh.as_ref() {
+            // (a wheel bound's box: half the crowned shape's width across, its round along - R8
+            // front 0.2024 x 0.3072, rear 0.2263 x 0.3190 - at the wheel's place)
+            let w = &self.wheel_pos;
+            let wheels = if vt.bike { vec![((w[0] + w[1]) * 0.5, 0), ((w[2] + w[3]) * 0.5, 1)] } else { vec![(w[0], 0), (w[1], 0), (w[2], 1), (w[3], 1)] };
+            for (at, k) in wheels {
+                let (radius, width) = (if k == 0 { vt.t.wheel_front.radius } else { vt.t.wheel_back.radius }.max(0.1), vt.tyre_width[k]);
+                if width <= 0.0 {
+                    continue;
+                }
+                let e = Vec3::new(super::vehsim::crown_half_width(radius, width), 0.0, super::vehsim::crown(radius, width, 0.0));
+                lo = lo.min(at - e);
+                hi = hi.max(at + e);
+            }
+        }
+        (lo, hi)
+    }
+
     /// Derive the final drive from top speed / top gear / redline / wheel radius.
     pub fn finalize(&mut self) {
         let top = self.gears[self.gear_count.saturating_sub(1).min(7)].max(0.1);
@@ -225,8 +259,8 @@ pub struct CarState {
     /// are measured against
     pub zones: [f32; 4],
     pub zone_half: [f32; 2],
-    /// where the body has been hit: a point in the car's own space and a depth (0..1)
-    pub dents: [[f32; 4]; 6],
+    /// the deform pieces, the damage map's queued stamps and the hits' effects (crate::damagemap)
+    pub dmg: crate::damagemap::CarDamage,
     /// current engine output multiplier (torque curve x gear ratio), set in `step`
     pub engine_factor: f32,
     /// state of the ported simulation (drivetrain, tyres)
@@ -237,6 +271,35 @@ pub struct CarState {
     pub touch_calls: u32,
     /// the hood, trunk lid and bumpers that come loose (`crate::damageparts`), with this tick's queued hits
     pub parts: crate::damageparts::DamageParts,
+}
+
+/// What the contact callback reads for a scrape (0x82343CA8 .. 0x82344254): the car's velocity at the
+/// point (`v1`) and the other's (`v2`, zero against the city), the centres' velocity difference
+/// (`rel`) and the call's contact normals summed and made unit (`n`).
+#[derive(Clone, Copy, Debug)]
+pub struct ScrapeIn {
+    pub v1: Vec3,
+    pub v2: Vec3,
+    pub rel: Vec3,
+    pub n: Vec3,
+}
+
+impl ScrapeIn {
+    /// The scrape's amount (0x82344254 / 0x82344394): over 3 m/s of closing and along the surface -
+    /// the closing velocity's share against the normal strictly under 0.7 on a floor (n.y over
+    /// 0.5), 0.6 else - the difference of the two points' squared speeds x 0.0001, at most 0.125.
+    pub fn amount(&self) -> f32 {
+        let r = self.rel.length();
+        if r <= 3.0 {
+            return 0.0;
+        }
+        let c = self.rel.dot(self.n) / r;
+        let thr = if self.n.y > 0.5 { f32::from_bits(0x3f33_3333) } else { f32::from_bits(0x3f19_999a) };
+        if !(-thr < c && c < thr) {
+            return 0.0;
+        }
+        ((self.v1.length_squared() - self.v2.length_squared()).abs() * f32::from_bits(0x38d1_b717)).clamp(0.0, 0.125)
+    }
 }
 
 /// A contact of the car as the original's collision audio reads it (sub_82381FB0, docs/reference/audio/COLLISION_AUDIO_RULE.md).
@@ -279,7 +342,7 @@ impl CarState {
             burnout: 0.0,
             launch: 0.0,
             damage: 0.0,
-            last_impact: 0.0, wipeout: 0.0, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dents: [[0.0; 4]; 6],
+            last_impact: 0.0, wipeout: 0.0, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
             engine_factor: 1.0,
             veh: None,
             touches: Vec::new(),
@@ -356,8 +419,6 @@ impl CarState {
         }
     }
 
-    /// A blow of `hit` m/s landed at `point` (world): the body dents there. A blow next to an
-    /// older dent deepens that one; otherwise the shallowest dent makes room.
     /// The mean of the zones (each at most 1).
     pub fn zone_mean(&self) -> f32 {
         self.zones.iter().map(|z| z.min(1.0)).sum::<f32>() / 4.0
@@ -369,12 +430,11 @@ impl CarState {
         self.zones[..3].iter().map(|z| z.min(1.0)).sum::<f32>() / 3.0
     }
 
+    /// A blow of `hit` m/s landed at `point` (world): the zone damage there.
     pub fn add_dent(&mut self, point: Vec3, hit: f32) {
         // ((hit - 0.5) / 5, at most 1)
         let local = self.rot.inverse() * (point - self.pos);
-        if self.zone_hit(point, local, ((hit - 0.5) * 0.2).clamp(0.0, 1.0)) {
-            self.dent(local, hit);
-        }
+        self.zone_hit(point, local, ((hit - 0.5) * 0.2).clamp(0.0, 1.0));
     }
 
     /// What the original's contact callback (mcCarDamage, 0x82343880) does with the tick's
@@ -385,23 +445,73 @@ impl CarState {
     /// car takes nothing more. Over 0.1 m/s the zones and the bumpers' queue take
     /// clamp((sqrt dv - 0.5) x 0.2) at that point (0x82344394, zone damage kind 0); then the
     /// damage points take dv itself (0x82343378: a city hit counts 1.0 of it, mcCarDamage +12).
-    pub(super) fn world_hit(&mut self, p: &CarParams, dv: f32, at: Vec3, local: Vec3) {
+    pub(super) fn world_hit(&mut self, p: &CarParams, dv: f32, at: Vec3, local: Vec3, scrape: Option<ScrapeIn>) {
+        self.damage_call(p, dv, 1.0, at, local, scrape);
+    }
+
+    /// The same callback for the car's contacts with another car or a loose prop (not fixed: their
+    /// impulses count whole, 0x82567A08): `dv` the change of velocity they gave this car, `at` the
+    /// first contact's point (world, in the car's pose now). The damage points take dv x `mult`
+    /// (0x82342EA8): against another car this car's own +16 (1: Racer_SetDamageMultiplierFlag's
+    /// factor, which nothing sets) times the other car's mcCarDamage +20 - its "damage inflicted"
+    /// factor (Racer_SetDamageInflictedFactor; 1 but in a payback); against anything else +12 = 1.
+    /// Recorded: sa.0 (R8 among loose pieces, 40 ticks) and sd.3 (R8 ramming traffic, 340 ticks)
+    /// - mcCarDamage +56 is exactly this dv; the points rise by it x 1.
+    pub fn contact_hit(&mut self, p: &CarParams, dv: f32, mult: f32, at: Vec3) {
+        let local = self.rot.inverse() * (at - self.pos);
+        self.damage_call(p, dv, mult, at, local, None);
+    }
+
+    /// `scrape`: the velocities and normal the callback reads for a scrape (None: the port's own
+    /// contacts, which have none - the soft spheres between cars without the original's body, the
+    /// props that stand fast).
+    pub(super) fn damage_call(&mut self, p: &CarParams, dv: f32, mult: f32, at: Vec3, local: Vec3, scrape: Option<ScrapeIn>) {
         if self.damage >= 1.0 {
             return;
         }
-        let mut counts = true;
         if dv > f32::from_bits(0x3dcc_cccd) {
+            // (kind 1 first, 0x82344254 .. 0x82344470: a scrape along the surface)
+            let amount = scrape.map_or(0.0, |s| s.amount());
+            if amount != 0.0 {
+                self.scrape_hit(at, local, amount, scrape.unwrap());
+            }
             let amount = ((dv.sqrt() - 0.5) * 0.2).clamp(0.0, 1.0);
             if amount != 0.0 {
-                counts = self.zone_hit(at, local, amount);
+                self.zone_hit(at, local, amount);
             }
         }
-        if dv > p.dmg[2] {
-            self.take_hit(p, dv);
-            // (the port's dents stand in for the original's deform pieces, which take the same
-            // gate: a counted blow dents the body where it landed)
-            if counts {
-                self.dent(local, dv);
+        let hit = dv * mult;
+        if hit > p.dmg[2] {
+            self.take_hit(p, hit);
+        }
+    }
+
+    /// The zone damage for a scrape (0x82356D98, kind 1, work/cardmg scrape_rule.md 2): above 0.12
+    /// of the way up, the pieces (1000 on a car upside down) and the bumpers' queue (which take no
+    /// scrape but keep its slot); the sparks; then eight stamps of half the amount into the map's
+    /// blue, every 0.25 m back along the car's own velocity from the point - each that lies above
+    /// 0.12 of the way up.
+    fn scrape_hit(&mut self, point: Vec3, local: Vec3, amount: f32, s: ScrapeIn) {
+        let upside_down = (self.rot * Vec3::Y).y < 0.0;
+        if crate::damageparts::hit_counts(local) {
+            let a = if upside_down { 1000.0 } else { amount };
+            self.dmg.pieces_hit(local, a, 1);
+            self.parts.queue(crate::damageparts::PartHit { point, amount: a, kind: 1 });
+        }
+        // (a car upside down makes them twice, the first with the amount, 0x82356F60 / 0x823571A4;
+        // the port keeps 32 for the effects to take)
+        if self.dmg.sparks.len() >= 32 {
+            self.dmg.sparks.drain(..16);
+        }
+        if upside_down {
+            self.dmg.sparks.push(crate::damagemap::Sparks { at: point, normal: s.n, rel: s.rel, amount });
+        }
+        self.dmg.sparks.push(crate::damagemap::Sparks { at: point, normal: s.n, rel: s.rel, amount: if upside_down { 1.0 } else { amount } });
+        let back = self.rot.inverse() * self.vel.normalize_or_zero();
+        for i in 0..8 {
+            let q = (local - back * (i as f32 * 0.125 * 2.0)).normalize_or_zero();
+            if q.y > f32::from_bits(0x3df5_c28f) {
+                self.dmg.stamp(1, q, amount * 0.5);
             }
         }
     }
@@ -419,6 +529,8 @@ impl CarState {
             return false;
         }
         let upside_down = (self.rot * Vec3::Y).y < 0.0;
+        // (the deform pieces: the windows crack, crate::damagemap)
+        self.dmg.pieces_hit(local, if upside_down { 1000.0 } else { amount }, 0);
         // (to the front or rear zone for a hit in the outer two fifths of the length, to a side
         // zone for one in the outer half of the width; a collision: kind 0 - every caller here is one)
         self.parts.queue(crate::damageparts::PartHit { point, amount: if upside_down { 1000.0 } else { amount }, kind: 0 });
@@ -443,26 +555,9 @@ impl CarState {
         if self.zones[2] >= 1.0 {
             self.parts.hood.loose = true;
         }
+        // (a dent into the damage map's red at the hit's direction, 0x8230A180)
+        self.dmg.stamp(0, local.normalize_or_zero(), amount);
         true
-    }
-
-    /// A dent of a blow of `hit` m/s at `local` (in the car). A blow next to an older dent deepens
-    /// that one; otherwise the shallowest dent makes room.
-    fn dent(&mut self, local: Vec3, hit: f32) {
-        let depth = (hit / 22.0).clamp(0.12, 1.0);
-        let mut slot = 0;
-        for (i, d) in self.dents.iter().enumerate() {
-            if d[3] > 0.0 && Vec3::new(d[0], d[1], d[2]).distance(local) < 0.6 {
-                self.dents[i][3] = (d[3] + depth * 0.6).min(1.0);
-                return;
-            }
-            if d[3] < self.dents[slot][3] {
-                slot = i;
-            }
-        }
-        if depth > self.dents[slot][3] {
-            self.dents[slot] = [local.x, local.y, local.z, depth];
-        }
     }
 
     pub(super) fn resolve_body_pub(&mut self, p: &CarParams, world: &WorldCollider) {
@@ -479,7 +574,7 @@ impl CarState {
     }
 
     pub fn step(&mut self, p: &CarParams, input: CarInput, world: &WorldCollider, dt: f32) {
-        self.zone_half = [p.body_half.x, p.body_half.z];
+        self.zone_half = p.zone_box();
         if let Some(vt) = p.veh.clone() {
             super::vehsim::step(self, p, &vt, input, world, dt);
             return;
@@ -832,7 +927,7 @@ mod tests {
         let mut st = CarState::new(Vec3::ZERO, 0.0);
         st.zone_half = [1.0038, 2.2318];
         let at = Vec3::new(0.807251, 0.431519, -2.352051);
-        st.world_hit(&p, 10.881046, at, at);
+        st.world_hit(&p, 10.881046, at, at, None);
         assert!((st.damage * p.dmg[0] - 10.881046).abs() < 1e-4);
         // (sqrt 10.881046 - 0.5) x 0.2, to the right side and the front
         let a = (10.881046f32.sqrt() - 0.5) * 0.2;
@@ -841,19 +936,70 @@ mod tests {
         assert_eq!(st.parts.hits.len(), 1);
         // a small one adds to the zones but not to the damage points (under ImpactThreshold 2)
         let at = Vec3::new(-0.816284, 0.534737, -2.355713);
-        st.world_hit(&p, 0.334477, at, at);
+        st.world_hit(&p, 0.334477, at, at, None);
         assert!((st.zones[0] - 0.015668).abs() < 1e-5 && (st.zones[2] - a - 0.015668).abs() < 1e-5);
         assert!((st.damage * p.dmg[0] - 10.881046).abs() < 1e-4);
         // under 0.25 m/s (sqrt 0.5) the amount is 0; a hit low on the car (y under 0.12 of the
         // way out) leaves the zones alone
         let z = st.zones;
-        st.world_hit(&p, 0.2, at, at);
-        st.world_hit(&p, 5.0, Vec3::new(0.9, 0.1, -2.3), Vec3::new(0.9, 0.1, -2.3));
+        st.world_hit(&p, 0.2, at, at, None);
+        st.world_hit(&p, 5.0, Vec3::new(0.9, 0.1, -2.3), Vec3::new(0.9, 0.1, -2.3), None);
         assert_eq!(st.zones, z);
         assert!((st.damage * p.dmg[0] - 15.881046).abs() < 1e-3);
         // a wrecked car takes nothing more
         st.damage = 1.0;
-        st.world_hit(&p, 30.0, at, at);
+        st.world_hit(&p, 30.0, at, at, None);
         assert_eq!(st.zones, z);
+    }
+
+    /// The R8 ramming traffic (recording sd.3 of the original): its contacts with another car
+    /// count whole (no 0.4), and the points take |dv| x the other car's "damage inflicted" factor
+    /// (1 here): k650 |dv| 2.998156 at car-local (-0.879272, 0.380019, -2.234070), points 23.848392
+    /// -> 26.846548; k687 2.340403 at (0, 0.532755, -2.355995) -> 29.186951; k688 0.269759 adds none.
+    #[test]
+    fn a_car_hit_counts_as_the_original() {
+        let p = CarParams::default();
+        let max = p.dmg[0];
+        let mut st = CarState::new(Vec3::ZERO, 0.0);
+        st.zone_half = [1.0037985, 2.2318041];
+        st.damage = 23.848392 / max;
+        st.contact_hit(&p, 2.998156, 1.0, Vec3::new(-0.879272, 0.380019, -2.234070));
+        assert!((st.damage * max - 26.846548).abs() < 1e-3);
+        let a = (2.998156f32.sqrt() - 0.5) * 0.2;
+        assert!((st.zones[0] - a).abs() < 1e-6 && (st.zones[2] - a).abs() < 1e-6 && st.zones[1] == 0.0 && st.zones[3] == 0.0);
+        st.contact_hit(&p, 2.340403, 1.0, Vec3::new(0.0, 0.532755, -2.355995));
+        assert!((st.damage * max - 29.186951).abs() < 1e-3);
+        st.contact_hit(&p, 0.269759, 1.0, Vec3::new(0.000061, 0.532799, -2.356178));
+        assert!((st.damage * max - 29.186951).abs() < 1e-3);
+        // the payback's player inflicts 3x: a 1 m/s change, under the threshold alone, counts 3
+        st.contact_hit(&p, 1.0, 3.0, Vec3::new(0.0, 0.53, -2.35));
+        assert!((st.damage * max - 32.186951).abs() < 1e-3);
+    }
+
+    /// The scrape (kind 1, scrape_rule.md): along a wall at 20 m/s the amount is 20^2 x 1e-4; head on,
+    /// or under 3 m/s of closing, none. Its eight stamps go back along the car's way, half the
+    /// amount each; a collision stamps the dent's direction (damagemap.rs).
+    #[test]
+    fn a_scrape_marks_the_map() {
+        let side = ScrapeIn { v1: Vec3::new(0.0, 0.0, -20.0), v2: Vec3::ZERO, rel: Vec3::new(0.0, 0.0, -20.0), n: Vec3::X };
+        assert!((side.amount() - 0.04).abs() < 1e-6);
+        assert_eq!(ScrapeIn { rel: Vec3::new(-20.0, 0.0, -1.0), ..side }.amount(), 0.0);
+        assert_eq!(ScrapeIn { rel: Vec3::new(0.0, 0.0, -2.9), ..side }.amount(), 0.0);
+        // (on a floor - n.y over 0.5 - the share may reach 0.7; capped at 0.125 from 35.4 m/s)
+        let fast = ScrapeIn { v1: Vec3::new(0.0, 0.0, -40.0), rel: Vec3::new(0.0, -26.0, -30.0), n: Vec3::Y, ..side };
+        assert_eq!(fast.amount(), 0.125);
+        let p = CarParams::default();
+        let mut st = CarState::new(Vec3::ZERO, 0.0);
+        st.vel = Vec3::new(0.0, 0.0, -20.0);
+        let at = Vec3::new(-0.95, 0.6, -0.5);
+        st.world_hit(&p, 1.0, at, at, Some(side));
+        assert_eq!(st.dmg.scrapes.len(), 8);
+        assert!(st.dmg.scrapes.iter().all(|s| (s.amount - 0.02).abs() < 1e-6));
+        // (the trail runs back - +z - from the point)
+        assert!(st.dmg.scrapes[7].dir.z > st.dmg.scrapes[0].dir.z);
+        assert_eq!(st.dmg.sparks.len(), 1);
+        // the collision's own stamp: (sqrt 1 - 0.5) x 0.2 at the point's direction
+        assert_eq!(st.dmg.dents.len(), 1);
+        assert!((st.dmg.dents[0].amount - 0.1).abs() < 1e-6 && (st.dmg.dents[0].dir - at.normalize()).length() < 1e-6);
     }
 }

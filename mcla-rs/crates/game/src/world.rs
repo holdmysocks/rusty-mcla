@@ -1080,10 +1080,10 @@ impl World {
         // sectors' triangles instead, as before it was found)
         let mut collider = WorldCollider::default();
         let mut own_bound = false;
-        // (stage P4: MCLA_LOOSE_PHYSICS - the level's loose props are given to the vehicles' physics, which then
-        // meets them as the original does, physics/loose.rs. Off by default: the game's own props.rs still knocks
-        // props about for the cars; both at once would hit a prop twice.)
-        if std::env::var_os("MCLA_LOOSE_PHYSICS").is_some() {
+        // (stage P4: the level's loose props are given to the vehicles' physics, which then meets them as the
+        // original does, physics/loose.rs - one level for every car, vehicles.rs `level_swap`; props.rs leaves
+        // those props to it and draws them where their bodies are. MCLA_NO_LOOSE_PHYSICS: props.rs's own knock.)
+        if std::env::var_os("MCLA_NO_LOOSE_PHYSICS").is_none() {
             collider.loose = crate::physics::loose::LooseWorld::load(&assets.path("resources/prop/0x0e66973c.r131"));
         }
         // (without them the level still holds the cars' torn-off bumpers: their type only, no prop - nothing else

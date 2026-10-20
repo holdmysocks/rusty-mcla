@@ -482,6 +482,8 @@ pub struct Gpu {
     pub mat_layout: wgpu::BindGroupLayout,
     pub mat_bgs: HashMap<u32, wgpu::BindGroup>,
     pub obj_layout: wgpu::BindGroupLayout,
+    /// the object's damage map when it has none (all zero)
+    pub blank_dmg: wgpu::TextureView,
     pub identity_obj: ObjectBinding,
     pub pipeline_opaque: wgpu::RenderPipeline,
     pub pipeline_blend: wgpu::RenderPipeline,
@@ -1128,16 +1130,27 @@ impl Gpu {
             });
             mat_bgs.insert(mode, bg);
         }
+        // (binding 1: a car's vertex damage map, crate::damagemap - DmgTex; everything else has the
+        // empty one, as the original's blank_dmg.dds: all zero)
         let obj_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("obj layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+            ],
         });
-        let identity_obj = make_object_binding(&device, &obj_layout, &ObjectUniform::default());
+        let blank_dmg = damage_map_texture(&device, 1).create_view(&Default::default());
+        let identity_obj = make_object_binding(&device, &obj_layout, &ObjectUniform::default(), &blank_dmg);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("city"),
             source: wgpu::ShaderSource::Wgsl(paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl")].concat()).into()),
@@ -1732,6 +1745,7 @@ impl Gpu {
             mat_layout,
             mat_bgs,
             obj_layout,
+            blank_dmg,
             identity_obj,
             pipeline_opaque,
             pipeline_blend,
@@ -1819,7 +1833,27 @@ impl Gpu {
     }
 
     pub fn new_object(&self, u: &ObjectUniform) -> ObjectBinding {
-        make_object_binding(&self.device, &self.obj_layout, u)
+        make_object_binding(&self.device, &self.obj_layout, u, &self.blank_dmg)
+    }
+
+    /// The object drawn with a damage map (`None`: the empty one) - its uniform kept.
+    pub fn object_damage_map(&self, b: &mut ObjectBinding, map: Option<&wgpu::TextureView>) {
+        b.bg = object_bind_group(&self.device, &self.obj_layout, &b.buf, map.unwrap_or(&self.blank_dmg));
+    }
+
+    /// A car's damage map: 256 x 256 RGBA8, linear (crate::damagemap).
+    pub fn new_damage_map(&self) -> wgpu::Texture {
+        damage_map_texture(&self.device, crate::damagemap::SIZE as u32)
+    }
+
+    pub fn write_damage_map(&self, t: &wgpu::Texture, px: &[[u8; 4]]) {
+        let n = crate::damagemap::SIZE as u32;
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            bytemuck::cast_slice(px),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * n), rows_per_image: Some(n) },
+            wgpu::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        );
     }
 
     pub fn update_object(&self, b: &ObjectBinding, u: &ObjectUniform) {
@@ -2542,18 +2576,36 @@ impl Gpu {
     }
 }
 
-fn make_object_binding(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, u: &ObjectUniform) -> ObjectBinding {
+fn make_object_binding(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, u: &ObjectUniform, dmg: &wgpu::TextureView) -> ObjectBinding {
     let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("object"),
         contents: bytemuck::bytes_of(u),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bg = object_bind_group(device, layout, &buf, dmg);
+    ObjectBinding { buf, bg }
+}
+
+fn object_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, buf: &wgpu::Buffer, dmg: &wgpu::TextureView) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("object bg"),
         layout,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
-    });
-    ObjectBinding { buf, bg }
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(dmg) }],
+    })
+}
+
+/// A damage map's texture (`n` x `n` RGBA8, linear: the map's values are read as they are).
+fn damage_map_texture(device: &wgpu::Device, n: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("damage map"),
+        size: wgpu::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
 }
 
 /// The reflection pass's own bind group (refl.wgsl group 2): its uniform, the sky dome's

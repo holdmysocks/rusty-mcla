@@ -500,6 +500,9 @@ struct Object {
     area_b: array<vec4<f32>, 5>,  // and second colour, w = paint type + 8 x fade
 };
 @group(3) @binding(0) var<uniform> obj: Object;
+// a car's vertex damage map (damagemap.rs, the original's DmgTex): r the dents, g / a the layout,
+// b the scrapes; all zero on everything else
+@group(3) @binding(1) var t_dmg: texture_2d<f32>;
 
 // The paint area (1 doors, 2 hood, 3 front bumper, 4 rear bumper, 5 skirts) whose own paint a
 // fragment of the car's paint takes; 0 = the body's. The part's vertices carry 8 + area in
@@ -563,6 +566,8 @@ struct VsOut {
     @location(13) bflip: f32,
     // car paint: how far the vertex lies in a directional fade, 0 = first colour .. 1 = second (vs_body, paint_fade_s)
     @location(14) paint_s: f32,
+    // car bodies: the damage map at the vertex (vs_body) - x the scrape (sat(b) x a), y the soot
+    @location(15) dmg: vec2<f32>,
 };
 
 // The console's own decoding of a "gamma" texture: not the sRGB curve but four straight pieces
@@ -988,46 +993,30 @@ fn water_program(in: VsOut) -> vec3<f32> {
     return max(xs_water_ps(o).rgb, vec3<f32>(0.0));
 }
 
-fn hash3(p: vec3<f32>) -> f32 {
-    return fract(sin(dot(p, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453);
-}
-
-// smooth value noise, 0..1
-fn vnoise3(p: vec3<f32>) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let u = f * f * (3.0 - 2.0 * f);
-    let a = mix(hash3(i), hash3(i + vec3<f32>(1.0, 0.0, 0.0)), u.x);
-    let b = mix(hash3(i + vec3<f32>(0.0, 1.0, 0.0)), hash3(i + vec3<f32>(1.0, 1.0, 0.0)), u.x);
-    let c = mix(hash3(i + vec3<f32>(0.0, 0.0, 1.0)), hash3(i + vec3<f32>(1.0, 0.0, 1.0)), u.x);
-    let d = mix(hash3(i + vec3<f32>(0.0, 1.0, 1.0)), hash3(i + vec3<f32>(1.0, 1.0, 1.0)), u.x);
-    return mix(mix(a, b, u.y), mix(c, d, u.y), u.z);
-}
-
 fn vs_body(in: VsIn) -> VsOut {
     var o: VsOut;
     var lp = in.pos;
-    // car bodies (params.w carries 16) are pressed in where they were hit (the original stamps
-    // a damage map at each impact and moves the vertices by it); the wear of many hits shows
-    // as shallow ripples all over
-    if (obj.params.w > 15.5 && obj.params.z > 0.0) {
-        var press = 0.0;
-        for (var i = 0; i < 6; i = i + 1) {
-            let d = obj.dents[i];
-            if (d.w > 0.0) {
-                let reach = 0.55 + 0.55 * d.w;
-                let k = 1.0 - smoothstep(0.0, reach, distance(in.pos, d.xyz));
-                press = press + k * k * d.w;
-            }
+    // Car bodies (params.w carries 16): the vertex damage map (damagemap.rs; VS_CarPaint 22 - 49,
+    // the same in every body program). The map is read at the vertex's direction from the car's
+    // origin, (x, z) / |p| x 0.5 + 0.5, one texel; the vertex moves dmgParams.w (0.2) x dent x
+    // layout towards dmgParams.xyz = (0, 1.3, 0). (The normal is bent there by the map's slope
+    // along the vertex's tangent and binormal: the port's vertex has neither - not done.)
+    var dmg = vec2<f32>(0.0);
+    var dmg_d = 0.0;
+    if (obj.params.w > 15.5) {
+        let pl = length(in.pos);
+        let dd = select(vec2<f32>(0.0), in.pos.xz / pl, pl > 1e-6);
+        let ts = textureDimensions(t_dmg);
+        let tx = min(vec2<u32>(max(dd * 0.5 + vec2<f32>(0.5), vec2<f32>(0.0)) * vec2<f32>(ts)), ts - vec2<u32>(1u));
+        let t = textureLoad(t_dmg, tx, 0);
+        let to = vec3<f32>(0.0, 1.3, 0.0) - in.pos;
+        if (dot(to, to) > 1e-12) {
+            lp = lp + normalize(to) * (t.r * t.g * 0.2);
         }
-        let ripple = vnoise3(in.pos * 3.3 + vec3<f32>(11.0, 3.0, 7.0));
-        if (press > 0.0) {
-            // towards the middle of the car, a little crumpled
-            let inward = normalize(vec3<f32>(in.pos.x, (in.pos.y - 0.45) * 0.6, in.pos.z * 0.8) + vec3<f32>(0.0, 0.0001, 0.0));
-            lp = lp - inward * min(press, 1.3) * 0.16 * (0.65 + 0.7 * ripple);
-        }
-        let wear = 0.03 * obj.params.z * smoothstep(0.35, 0.9, ripple);
-        lp = lp - normalize(in.normal) * wear; // (the length carries the tangent's sign on cars: vehicles.rs car_binormal_mark)
+        // (o2.w: the scrape, sat(b) x a; o8.y's first factors: sat(r + b) x sat(1 - 2 p.y) - which
+        // of the position's values it takes is not certain)
+        dmg.x = clamp(t.b, 0.0, 1.0) * t.a;
+        dmg_d = clamp(t.r + t.b, 0.0, 1.0) * clamp(1.0 - 2.0 * in.pos.y, 0.0, 1.0);
     }
     let wp = obj.model * vec4<f32>(lp, 1.0);
     o.clip = g.view_proj * wp;
@@ -1049,6 +1038,9 @@ fn vs_body(in: VsIn) -> VsOut {
     // (car paint's directional fade, per vertex; the material's mode is not visible to this stage -
     // only the paint branch of the pixel stage reads it)
     o.paint_s = paint_fade_s(in.pos, in.uv2.y);
+    // (the soot: x (0.33 + 0.66 (1 - n.v)) at the vertex)
+    dmg.y = dmg_d * (0.33 + 0.66 * (1.0 - clamp(dot(o.normal, normalize(g.cam_pos.xyz - wp.xyz)), 0.0, 1.0)));
+    o.dmg = dmg;
     // Neon signs' highlight of the sun, PER VERTEX as VSCityNeon (city/0x25a6120c) has it - o4.w:
     //   SpecularIntensity x pow(sat(V . (2 (n.l) n - l)), SpecularExponent) x sat(4 n.l)
     // (l towards the light, V towards the camera, both at the vertex; against the program on
@@ -1974,8 +1966,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var spec_k = 1.0;
     var alpha = 1.0;
     var emissive = vec3<f32>(0.0);
-    // paint scraped off (damage): no clear coat there
+    // paint scraped off (damage): no clear coat there - the damage map's bare metal mask (PS_CarPaint's
+    // m); its rubbed paint
     var scraped = 0.0;
+    var rubbed = 0.0;
 
     if (mat.mode == 25u) {
         // PSCityNeonTint: the tube's day colour
@@ -2048,33 +2042,21 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         occ = 1.0;
         // (the damage, looked up here - the flake's normal below needs to know where the paint is
         // gone - and laid on after the paint as before)
-        var rub6 = 0.0;
-        var scrape6 = 0.0;
-        var scraped6 = 0.0;
-        if (obj.params.w > 15.5 && obj.params.z > 0.0) {
-            var near = 0.0;
-            for (var i = 0; i < 6; i = i + 1) {
-                let dn = obj.dents[i];
-                if (dn.w > 0.0) {
-                    near = max(near, (1.0 - smoothstep(0.0, 0.75 + 0.6 * dn.w, distance(in.lpos, dn.xyz))) * (0.45 + 0.55 * dn.w));
-                }
-            }
-            let d = clamp(near + obj.params.z * 0.35, 0.0, 1.0);
-            // (laid over the body from the side and from above, whichever the panel faces)
-            let nl = abs(normalize(cross(dpdx(in.lpos), dpdy(in.lpos))));
-            var suv = in.lpos.zy * 0.55;
-            if (nl.y > 0.7) {
-                suv = in.lpos.zx * 0.55;
-            } else if (nl.z > 0.7) {
-                suv = in.lpos.xy * 0.55;
-            }
-            let sc = textureSample(t_scrape, s_diffuse, suv);
-            rub6 = smoothstep(1.0 - d, 1.25 - d, sc.g * 2.2 + 0.1) * d;
-            scrape6 = smoothstep(1.02 - d * 0.9, 1.1 - d * 0.9, sc.a + 0.12);
-            scraped6 = max(scrape6, rub6 * 0.6);
+        // (PS_CarPaint's scrapes, s = the vertex's scrape: the scrape texture at uv0 x (4, 3) - its
+        // alpha the scratches, its green the rubbed paint; k = sat(2 x scratches x (0.75 s + 0.25
+        // [s > 0.125])) cuts through the livery, m = sat(k - livery's alpha) is bare metal)
+        let s6 = in.dmg.x;
+        var k6 = 0.0;
+        if (s6 > 0.0) {
+            let sc = textureSample(t_scrape, s_diffuse, in.uv0 * vec2<f32>(4.0, 3.0));
+            k6 = clamp(2.0 * sc.a * (0.75 * s6 + 0.25 * select(0.0, 1.0, s6 > 0.125)), 0.0, 1.0);
+            rubbed = sc.g * s6;
         }
         // livery: the vinyl texture lies in the body's unwrap (first UV set)
         let vinyl = textureSample(t_third, s_diffuse, in.uv0);
+        scraped = clamp(k6 - vinyl.a, 0.0, 1.0);
+        // (the flakes: x sat(1 - 2 m))
+        let scraped6 = 1.0 - clamp(1.0 - 2.0 * scraped, 0.0, 1.0);
         // The paint's two colours (PS_CarPaint's DL2 and DL3). Two-tone: the first face-on,
         // the second at a glancing angle, by (n.v)^PaintFalloff. The fades (VS_CarPaint): how
         // far along the body's box the point lies - front to back, left to right or bottom to
@@ -2135,19 +2117,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         // (a part painted by itself carries its colour in the vertex colour, alpha set)
         if (in.color.a > 0.5 && p_area == 0u) { paint = in.color.rgb; }
-        base = mix(paint, vinyl.rgb, vinyl.a);
+        base = mix(paint, vinyl.rgb, clamp(vinyl.a - k6, 0.0, 1.0));
         spec = 1.2;
         gloss = 110.0;
-        // damage: the disc's scrape texture (green = rubbed paint, alpha = scratches down to
-        // the metal), strongest round the dents, thin everywhere on a battered car
-        if (obj.params.w > 15.5 && obj.params.z > 0.0) {
-            let rub = rub6;
-            let scrape = scrape6;
-            base = mix(base, base * 0.55 + vec3<f32>(0.10), rub * 0.7);
-            base = mix(base, vec3<f32>(0.085, 0.082, 0.08), scrape);
-            spec = spec * (1.0 - 0.97 * scrape) * (1.0 - 0.6 * rub);
-            scraped = max(scrape, rub * 0.6);
-        }
     } else if (mat.mode == 7u) {
         // chrome / metal
         occ = 1.0;
@@ -3332,7 +3304,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 let fade = exp2(-2.0 * max(log2(max(tp, 0.0001)) - 1.0, 0.0));
                 let cell = floor(uvn * 128.0);
                 let flake = fract(sin(vec3<f32>(dot(cell, vec2<f32>(127.1, 311.7)), dot(cell, vec2<f32>(269.5, 183.3)), dot(cell, vec2<f32>(419.2, 371.9)))) * 43758.5453) - vec3<f32>(0.5);
-                let nf = normalize(n + flake * tc.z * fade * (1.0 - scraped));
+                let nf = normalize(n + flake * tc.z * fade * clamp(1.0 - 2.0 * scraped, 0.0, 1.0));
                 let soft = env_soft(reflect(-v, nf));
                 let s_lum = dot(soft, vec3<f32>(0.3, 0.59, 0.11));
                 let sp = clamp(mix(base * s_lum, soft, tc.x) * (ta.y * pow(max(length(soft), 0.00001), ta.w - 1.0) * kk * ao_v), vec3<f32>(0.0), vec3<f32>(1.0)) * (1.0 - scraped) * ao_v;
@@ -3346,6 +3318,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 let m6 = mix(dif, envm, w + obj.fade_min.w);
                 lit = m6 + sp - clamp(m6 * sp, vec3<f32>(0.0), vec3<f32>(1.0));
                 if (g.params.w > 100.5 && g.params.w < 101.5) { lit = m6 + sp; }
+                // (the damage map's marks on the lit paint, PS_CarPaint: the soot towards (0.22,
+                // 0.22, 0.17) of it, x (1 - rub), the bare metal - the soft surroundings three
+                // quarters grey, to the power 1.5 - by m, x (1 - rub) again)
+                if (in.dmg.x > 0.0 || in.dmg.y > 0.0) {
+                    lit = mix(lit, lit * vec3<f32>(0.22, 0.22, 0.17), clamp(in.dmg.y, 0.0, 1.0));
+                    lit = lit * (1.0 - rubbed);
+                    let metal = pow(max(mix(soft, vec3<f32>(dot(soft, vec3<f32>(0.3, 0.59, 0.11))), 0.75), vec3<f32>(0.0)), vec3<f32>(1.5));
+                    lit = mix(lit, metal, scraped);
+                    lit = lit * (1.0 - rubbed);
+                }
                 // (diagnostics 26 / 27 / 28 / 29: the diffuse, the mirror, the soft specular alone; the soft map itself)
                 if (g.params.w > 25.5 && g.params.w < 26.5) { lit = dif * (1.0 - w); }
                 if (g.params.w > 26.5 && g.params.w < 27.5) { lit = envm * w; }
