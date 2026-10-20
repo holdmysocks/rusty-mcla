@@ -78,6 +78,8 @@ pub struct CarModel {
     pub batch_window: Vec<u8>,
     /// the side windows' clips (left, right), where the base fragment has them
     pub windows: [Option<vehicle_model::WindowClip>; 2],
+    /// the damage map's layout texture (`<car>_maxdamage`: width, height, RGBA8), when the car has it
+    pub damage_layout: Option<Arc<(u32, u32, Vec<u8>)>>,
     /// the moving damage parts (`damageparts.rs`): the car's movement settings and bumper slot bones, and the bones
     /// the hood (slot "hood", tag 33332) and the trunk lid (`trunk_0`) turn about, in car space
     pub part_rig: crate::damageparts::PartRig,
@@ -751,6 +753,7 @@ pub fn car_params(car: &CarAsset) -> CarParams {
         p.wheel_radius = h.iter().map(|v| v.y).sum::<f32>() / 4.0;
         p.wheel_radius = p.wheel_radius.clamp(0.25, 0.5);
         p.wheel_pos = [h[0], h[1], h[2], h[3]].map(|v| Vec3::new(v.x, v.y + p.susp_rest, v.z));
+        p.hub_bones = Some(h);
     } else {
         p.wheel_radius = (size.y * 0.16).clamp(0.30, 0.40);
         let hub_y = car.min.y + p.wheel_radius;
@@ -1499,7 +1502,7 @@ impl Vehicles {
             }
         };
         let lamps: Vec<(u8, Vec3)> = lamp_acc.iter().map(|((id, _), (sum, n))| (*id as u8, *sum / (*n).max(1) as f32)).collect();
-        let m = Arc::new(CarModel { name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), part_rig, hood_slot, trunk_bone });
+        let m = Arc::new(CarModel { name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -2909,7 +2912,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 None if self.dmg_maps.len() < crate::damagemap::POOL => {
                     let tex = gpu.new_damage_map();
                     let view = tex.create_view(&Default::default());
-                    let px = crate::damagemap::MapPixels::new();
+                    let px = match &c.model.damage_layout {
+                        Some(l) => crate::damagemap::MapPixels::with_layout(&l.2, l.0 as usize, l.1 as usize),
+                        None => crate::damagemap::MapPixels::new(),
+                    };
                     gpu.write_damage_map(&tex, &px.px);
                     for b in std::iter::once(&mut c.binding).chain(c.window_bindings.iter_mut()).chain(c.part_bindings.iter_mut()) {
                         gpu.object_damage_map(b, Some(&view));

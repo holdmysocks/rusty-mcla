@@ -113,6 +113,13 @@ impl CarDamage {
 
     /// Queue a stamp (0x8230A180): 8 of a kind per draw at most.
     pub fn stamp(&mut self, kind: u8, dir: Vec3, amount: f32) {
+        // (diagnostics MCLA_DBG_STAMPS=<file>: every queued stamp, appended - work/dmgmap/stamps_cmp.py)
+        if let Some(p) = std::env::var_os("MCLA_DBG_STAMPS") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+                let _ = writeln!(f, "{kind} {:.6} {:.6} {:.6} {:.7} {}", dir.x, dir.y, dir.z, amount, if kind == 0 { self.dents.len() } else { self.scrapes.len() });
+            }
+        }
         self.stamped = true;
         let q = if kind == 0 { &mut self.dents } else { &mut self.scrapes };
         if q.len() < 8 {
@@ -177,11 +184,13 @@ pub fn set_shapes(dent: Shape, scrape: Shape) {
     let _ = SHAPES.set((dent, scrape));
 }
 
-/// A car's map as the CPU keeps it, RGBA8, texel (i, j) the direction (x, z) = ((i + 0.5) / 128 - 1,
-/// (j + 0.5) / 128 - 1) from the car's origin - the place the car's vertex programs read a vertex
-/// of that direction at.
+/// A car's map as the CPU keeps it, RGBA8 (R dents, G and A the car's layout, B scrapes), the texel (i, j)
+/// read by the car's vertex programs for the direction (x, z) from the car's origin with
+/// i = floor((x + 1) x 128), j = floor((z + 1) x 128); a stamp lands on it as at (i / 128 - 1, j / 128 - 1).
 pub struct MapPixels {
     pub px: Vec<[u8; 4]>,
+    /// the car's layout texture's green and alpha (T+2032, `<car>_maxdamage` of its .r83), what the resets put back
+    pub layout: Vec<[u8; 2]>,
 }
 
 impl Default for MapPixels {
@@ -191,16 +200,47 @@ impl Default for MapPixels {
 }
 
 impl MapPixels {
-    /// The full reset (+2150): the layout - G and A 1 where the car has a surface, taken as 1
-    /// everywhere (the per-car layout texture is not read: I) - and no dents or scrapes.
+    /// The full reset (+2150) of a car without a layout texture: G and A 1 everywhere (I - every car on the disc
+    /// checked has one) and no dents or scrapes.
     pub fn new() -> MapPixels {
-        MapPixels { px: vec![[0, 255, 0, 255]; SIZE * SIZE] }
+        MapPixels { px: vec![[0, 255, 0, 255]; SIZE * SIZE], layout: vec![[255, 255]; SIZE * SIZE] }
     }
 
-    /// The repair (+2149): red, green and alpha from the layout, the blue (scrapes) kept.
+    /// The full reset (+2150) with the car's layout texture (raw RGBA8, `w` x `h`; its colour x (0, 1, 0, 1) drawn
+    /// over the whole map under all four masks): (0, layout.g, 0, layout.a). V: the R8's map after the reset is its
+    /// 256 x 256 layout's G and A (work/dmgmap). A smaller layout (11 cars 128, 2 cars 32) is read bilinearly at
+    /// the map's texel centres (the blit's filter: I).
+    pub fn with_layout(layout: &[u8], w: usize, h: usize) -> MapPixels {
+        if w == 0 || h == 0 || layout.len() != w * h * 4 {
+            return MapPixels::new();
+        }
+        let at = |x: usize, y: usize, c: usize| layout[(y * w + x) * 4 + c] as f32;
+        let layout: Vec<[u8; 2]> = (0..SIZE * SIZE)
+            .map(|k| {
+                let (i, j) = (k % SIZE, k / SIZE);
+                if (w, h) == (SIZE, SIZE) {
+                    return [at(i, j, 1) as u8, at(i, j, 3) as u8];
+                }
+                let x = ((i as f32 + 0.5) * w as f32 / SIZE as f32 - 0.5).clamp(0.0, (w - 1) as f32);
+                let y = ((j as f32 + 0.5) * h as f32 / SIZE as f32 - 0.5).clamp(0.0, (h - 1) as f32);
+                let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+                let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+                let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+                let f = |c: usize| {
+                    let a = at(x0, y0, c) + (at(x1, y0, c) - at(x0, y0, c)) * fx;
+                    let b = at(x0, y1, c) + (at(x1, y1, c) - at(x0, y1, c)) * fx;
+                    (a + (b - a) * fy).round().clamp(0.0, 255.0) as u8
+                };
+                [f(1), f(3)]
+            })
+            .collect();
+        MapPixels { px: layout.iter().map(|l| [0, l[0], 0, l[1]]).collect(), layout }
+    }
+
+    /// The repair (+2149): red, green and alpha from the layout (mask R G A), the blue (scrapes) kept.
     pub fn repair(&mut self) {
-        for p in self.px.iter_mut() {
-            *p = [0, 255, p[2], 255];
+        for (p, l) in self.px.iter_mut().zip(self.layout.iter()) {
+            *p = [0, l[0], p[2], l[1]];
         }
     }
 
@@ -223,19 +263,23 @@ impl MapPixels {
         }
         // (the quad's corners, for the texels it can cover)
         let ext = sx * (t2.0.abs() + t2.1.abs()) + sy * (n2.0.abs() + n2.1.abs());
-        let to_i = |m: f32| ((m + 1.0) * 0.5 * SIZE as f32 - 0.5).floor();
+        // (texel i is drawn at map x = i / 128 - 1: D3D9's pixel centres, half a texel off the texel's middle - V,
+        // work/dmgmap; u runs from the +t side, v from the -nr side: V against the original's maps)
+        let to_i = |m: f32| ((m + 1.0) * 0.5 * SIZE as f32).floor();
         let (i0, i1) = (to_i(c.x - ext).max(0.0) as usize, (to_i(c.x + ext) + 1.0).clamp(0.0, (SIZE - 1) as f32) as usize);
         let (j0, j1) = (to_i(c.y - ext).max(0.0) as usize, (to_i(c.y + ext) + 1.0).clamp(0.0, (SIZE - 1) as f32) as usize);
         for j in j0..=j1 {
             for i in i0..=i1 {
-                let (x, y) = ((i as f32 + 0.5) / (SIZE / 2) as f32 - 1.0, (j as f32 + 0.5) / (SIZE / 2) as f32 - 1.0);
+                let (x, y) = (i as f32 / (SIZE / 2) as f32 - 1.0, j as f32 / (SIZE / 2) as f32 - 1.0);
                 let (qx, qy) = (x - c.x, y - c.y);
-                let u = ((qx * t2.0 + qy * t2.1) / sx + 1.0) * 0.5;
+                let u = (1.0 - (qx * t2.0 + qy * t2.1) / sx) * 0.5;
                 let v = ((qx * n2.0 + qy * n2.1) / (n_len * n_len * sy) + 1.0) * 0.5;
                 if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
                     continue;
                 }
-                let add = (shape.at(u, v) * colour * 255.0).round() as u32;
+                // (the blend's 8-bit step: a texel gains 1 from 0.555 of a step - fitted to the original's maps, both runs
+                // of work/dmgmap; 0.5 (plain rounding) puts 7 % more into a long scrape's blue. Cause not known: I)
+                let add = (shape.at(u, v) * colour * 255.0 + 0.445).floor() as u32;
                 let p = &mut self.px[j * SIZE + i][channel];
                 *p = (*p as u32 + add).min(255) as u8;
             }
@@ -312,6 +356,74 @@ mod tests {
         assert!(b > 100);
         m.repair();
         assert_eq!(at(&m, dir.x, dir.z), [0, 255, b, 255]);
+    }
+
+    /// The original's recorded stamp queues drawn by the port (work/dmgmap/cmpmap.py): MCLA_DMG_STAMPS = lines "D"
+    /// (a draw) and "<kind> x y z a", MCLA_DMG_LAYOUT = the car's layout texture as raw RGBA8 256 x 256,
+    /// MCLA_DMG_OUT = the map after them, raw RGBA8.
+    #[test]
+    #[ignore]
+    fn replay_recorded_stamps() {
+        let (Ok(stamps), Ok(out)) = (std::env::var("MCLA_DMG_STAMPS"), std::env::var("MCLA_DMG_OUT")) else { return };
+        let shape = |name: &str| {
+            let d = std::fs::read(format!("D:/MCLA/extracted/cache/textures/global/cars/globaltex/{name}")).unwrap();
+            let t = mcla_formats::dds::parse_dds(name, &d).unwrap();
+            Shape::from_rgba(t.width as usize, t.height as usize, &t.to_rgba8())
+        };
+        set_shapes(shape("dmg_test_4.dds"), shape("dmg_test_3.dds"));
+        let mut m = match std::env::var("MCLA_DMG_LAYOUT").ok().and_then(|p| std::fs::read(p).ok()) {
+            Some(l) => MapPixels::with_layout(&l, SIZE, SIZE),
+            None => MapPixels::new(),
+        };
+        let mut d = CarDamage::default();
+        for l in std::fs::read_to_string(stamps).unwrap().lines() {
+            let v: Vec<&str> = l.split_whitespace().collect();
+            if v.first() == Some(&"D") {
+                m.apply(&mut d);
+                continue;
+            }
+            let f = |i: usize| v[i].parse::<f32>().unwrap();
+            d.stamp(v[0].parse().unwrap(), Vec3::new(f(1), f(2), f(3)), f(4));
+        }
+        m.apply(&mut d);
+        std::fs::write(out, bytemuck::cast_slice::<[u8; 4], u8>(&m.px)).unwrap();
+    }
+
+    /// The quad's u runs from its +t side (verified against the original's maps, work/dmgmap): with a shape
+    /// that grows with u, a stamp at the map's right edge (t = +z there) is strongest towards -z.
+    #[test]
+    fn a_stamp_is_oriented_as_the_original() {
+        let n = 32;
+        let ramp = Shape { w: n, h: n, r: (0..n * n).map(|k| (k % n) as f32 / (n - 1) as f32).collect() };
+        let mut m = MapPixels::new();
+        m.stamp(0, &ramp, Vec3::new(1.0, 0.2, 0.0).normalize(), (0.4, 0.4), 1.0);
+        let col = |j: usize| (200..256).map(|i| m.px[j * SIZE + i][0] as u32).max().unwrap();
+        assert!(col(128 - 40) > col(128 + 40) + 100, "{} {}", col(128 - 40), col(128 + 40));
+        // (texel i lies at i / 128 - 1: a stamp centred on x = 0 is symmetric about texel 128, not 127.5)
+        let mut m = MapPixels::new();
+        m.stamp(0, &blob(), Vec3::new(0.0, 0.5, 1.0).normalize(), (0.2, 0.2), 1.0);
+        let row = (0..SIZE).map(|j| m.px[j * SIZE + 128][0]).max().unwrap();
+        assert!(row > 0);
+        for d in 1..20 {
+            let at = |i: usize| (0..SIZE).map(|j| m.px[j * SIZE + i][0]).max().unwrap();
+            assert_eq!(at(128 - d), at(128 + d), "texel 128 -+ {d}");
+        }
+    }
+
+    #[test]
+    fn the_layout_comes_back_on_repair() {
+        let mut l = vec![0u8; SIZE * SIZE * 4];
+        for (k, p) in l.chunks_exact_mut(4).enumerate() {
+            p.copy_from_slice(&[9, (k % 251) as u8, 9, (k % 13) as u8]);
+        }
+        let mut m = MapPixels::with_layout(&l, SIZE, SIZE);
+        assert_eq!(m.px[1000], [0, (1000 % 251) as u8, 0, (1000 % 13) as u8]);
+        m.px[1000] = [77, 1, 55, 2];
+        m.repair();
+        assert_eq!(m.px[1000], [0, (1000 % 251) as u8, 55, (1000 % 13) as u8]);
+        // (a 128 x 128 layout is spread over the 256 x 256 map)
+        let small: Vec<u8> = (0..128 * 128).flat_map(|_| [0u8, 200, 0, 100]).collect();
+        assert_eq!(MapPixels::with_layout(&small, 128, 128).px[SIZE * SIZE - 1], [0, 200, 0, 100]);
     }
 
     #[test]

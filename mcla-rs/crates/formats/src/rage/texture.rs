@@ -43,6 +43,40 @@ impl Texture {
         Self::from_fetch(rd, name, fetch)
     }
 
+    /// The textures of the resource whose names end in `suffix`, found by name alone (ones no dictionary lists, e.g.
+    /// a car's `<car>_maxdamage` in its .r83): the texture objects whose name pointer points at such a string.
+    pub fn find_by_suffix(rd: &Rd, suffix: &str) -> Vec<Texture> {
+        let d = rd.data();
+        let mut out = Vec::new();
+        let mut want = suffix.as_bytes().to_vec();
+        want.push(0);
+        let mut at = 0;
+        while let Some(k) = d[at..].windows(want.len()).position(|w| w == want.as_slice()) {
+            at = at + k + 1;
+            // (the name's first byte: back to the byte after a 0 / 0xCD filler)
+            let mut s = at - 1;
+            while s > 0 && d[s - 1] != 0 && d[s - 1] != 0xCD && at - 1 - s < 128 {
+                s -= 1;
+            }
+            for h in (0..d.len().saturating_sub(4)).step_by(4) {
+                if rd.ptr(h) != Some(s) {
+                    continue;
+                }
+                for back in [0x14usize, 0x18] {
+                    if let Some(o) = h.checked_sub(back) {
+                        if let Ok(t) = Texture::parse(rd, o) {
+                            if t.name.ends_with(suffix) {
+                                out.push(t);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn from_fetch(rd: &Rd, name: String, fetch: [u32; 6]) -> Result<Texture> {
         let d0 = fetch[0];
         let d1 = fetch[1];

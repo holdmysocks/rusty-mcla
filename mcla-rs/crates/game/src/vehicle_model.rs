@@ -71,6 +71,9 @@ pub struct CarAsset {
     /// the side windows' roll-down clips (`win_l_open`, `win_r_open` of the base fragment), left
     /// then right
     pub windows: [Option<WindowClip>; 2],
+    /// the damage map's layout (`<car>_maxdamage`, the largest of the car's .r83 files, decoded RGBA8; the map's G
+    /// and A after a reset - damagemap.rs)
+    pub damage_layout: Option<(u32, u32, Vec<u8>)>,
 }
 
 /// A side window's clip as the base fragment holds it: `win_l_open` / `win_r_open`, a plain
@@ -641,6 +644,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     // main: the r83 whose shader group has the most named shaders
     let mut shaders = Vec::new();
     let mut textures: HashMap<u32, Texture> = HashMap::new();
+    let mut damage_layout: Option<(u32, u32, Vec<u8>)> = None;
     for p in &r83 {
         let res = load_resource_file(p)?;
         let d = Drawable::parse(&res)?;
@@ -648,6 +652,11 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
             shaders = d.shader_group.shaders;
         }
         let rd = Rd::new(&res);
+        for t in Texture::find_by_suffix(&rd, "_maxdamage") {
+            if damage_layout.as_ref().map_or(true, |l| t.width > l.0) {
+                damage_layout = Some((t.width, t.height, t.to_rgba8()));
+            }
+        }
         for (h, o) in &d.texture_offsets {
             if let Ok(t) = Texture::parse(&rd, *o) {
                 textures.entry(*h).or_insert(t);
@@ -910,7 +919,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
         max = max.max(p.max);
     }
     log::info!("car {}: {} shaders, {} textures, {} parts ({} stock)", name, shaders.len(), textures.len(), parts.len(), parts.iter().filter(|p| p.stock).count());
-    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows })
+    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows, damage_layout })
 }
 
 /// Display name of a part from its internal names, e.g. "exstPipe05_Borla_single_round"

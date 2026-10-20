@@ -8,6 +8,8 @@ use glam::{Mat3, Quat, Vec3};
 pub struct CarParams {
     pub mass: f32,
     pub wheel_pos: [Vec3; 4], // FL, FR, RL, RR attachment points (local, at ride height)
+    /// the skeleton's `hub_0` .. `hub_3` bones as the model has them (the deform pieces' places, 0x8235CBD0)
+    pub hub_bones: Option<[Vec3; 4]>,
     pub wheel_radius: f32,
     /// tyre width (m)
     pub wheel_width: f32,
@@ -126,6 +128,7 @@ impl Default for CarParams {
     fn default() -> Self {
         CarParams {
             mass: 1300.0,
+            hub_bones: None,
             wheel_pos: [
                 Vec3::new(-0.78, 0.0, -1.35),
                 Vec3::new(0.78, 0.0, -1.35),
@@ -575,6 +578,14 @@ impl CarState {
 
     pub fn step(&mut self, p: &CarParams, input: CarInput, world: &WorldCollider, dt: f32) {
         self.zone_half = p.zone_box();
+        // (the deform pieces' places, once the model is in (0x8235CBD0): the hubs at the skeleton's hub bones,
+        // the windows by the composite bound's box `sub_8255B9A8(car + 8)` - the one the collision's cell test
+        // reads, set up there (vehsim.rs); V: the R8's as the original's DMAP record, test
+        // the_r8_pieces_and_layout_are_the_originals. A car without the original's sim: the body box here.)
+        if !self.dmg.pieces_set && (p.veh.is_none() || p.hull.is_none()) {
+            let (lo, hi) = p.composite_box();
+            self.dmg.set_up(p.hub_bones.unwrap_or(p.wheel_pos), lo, hi);
+        }
         if let Some(vt) = p.veh.clone() {
             super::vehsim::step(self, p, &vt, input, world, dt);
             return;
@@ -915,6 +926,42 @@ impl CarState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The R8's deform pieces where the original has them (work/dmgmap, the DMAP record: hubs (+-0.782, 0.343,
+    /// -+1.325), glass 8 (0, 0.401, -2.357), 9 (0, 0.401, 2.106), 10 / 11 (-+1.004, 0.401, 0)) and its damage
+    /// layout (`vp_aud_r8_08_maxdamage`, 256 x 256).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR containing Complete Edition vehicle resources"]
+    fn the_r8_pieces_and_layout_are_the_originals() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR"));
+        let assets = crate::assets::Assets::new(&root);
+        let car = crate::vehicle_model::load_car(&assets, &root.join("resources/vehicle/vp_aud_r8_08")).unwrap();
+        assert_eq!(car.damage_layout.as_ref().map(|l| (l.0, l.1)), Some((256, 256)));
+        let mut p = crate::vehicles::car_params(&car);
+        // (the hull and tuning as the game sets them, vehicles.rs)
+        let (s, h, hubs) = (car.simtune.as_ref().unwrap(), car.hull.as_ref().unwrap(), car.hubs.unwrap());
+        let mut vt = super::super::vehsim::VehTune::new(s.base.clone());
+        vt.seat((hubs[0].y + hubs[2].y) * 0.5);
+        p.veh = Some(std::sync::Arc::new(vt));
+        p.hull = Some(std::sync::Arc::new(super::super::hull::shaped(h, &s.base, (hubs[0].y + hubs[2].y) * 0.5, car.bike)));
+        let mut world = WorldCollider::default();
+        world.sectors.insert(0, super::super::collision::SectorMesh::build(vec![
+            [Vec3::new(-64.0, 0.0, -64.0), Vec3::new(-64.0, 0.0, 64.0), Vec3::new(64.0, 0.0, -64.0)],
+            [Vec3::new(64.0, 0.0, -64.0), Vec3::new(-64.0, 0.0, 64.0), Vec3::new(64.0, 0.0, 64.0)],
+        ]));
+        let mut st = CarState::new(Vec3::new(0.0, 0.3, 0.0), 0.0);
+        st.step(&p, CarInput::default(), &world, 1.0 / 60.0);
+        assert!(st.dmg.pieces_set);
+        let want = [
+            (0, Vec3::new(-0.782, 0.343, -1.325)), (1, Vec3::new(0.782, 0.343, -1.325)), (2, Vec3::new(-0.782, 0.343, 1.325)), (3, Vec3::new(0.782, 0.343, 1.325)),
+            (8, Vec3::new(0.0, 0.401, -2.357)), (9, Vec3::new(0.0, 0.401, 2.106)), (10, Vec3::new(-1.004, 0.401, 0.0)), (11, Vec3::new(1.004, 0.401, 0.0)),
+        ];
+        for (i, w) in want {
+            let at = st.dmg.pieces[i].local;
+            eprintln!("piece {i}: {at:.4} (original {w:.3})");
+            assert!(at.distance(w) < 0.003, "piece {i}: {at:.4} against {w:.3}");
+        }
+    }
 
     /// The R8 driven head-on into a wall at 26 m/s (recording sa.0 of the original, tick 153):
     /// the contacts change its velocity by 10.881046 m/s, landing at car-local (0.807251,

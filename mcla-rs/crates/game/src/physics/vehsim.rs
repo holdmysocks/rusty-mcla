@@ -5068,6 +5068,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let seen = [rows1[0], rows1[1], rows1[2], origin1];
         let mut solved_contacts: Option<(super::solver::Body, Vec<super::solver::Contact>, super::solver::Solved)> = None;
         let mut loose_island: Option<(super::solver::Body, Vec<super::solver::Contact>, super::loose::IslandOut)> = None;
+        // (the body as the tick's solve starts from it: a scrape reads the car's velocities before the impulses)
+        let mut solve_body: Option<super::solver::Body> = None;
         let mut loose_answered = false;
         let (mut impulse, mut turning) = (Vec3::ZERO, Vec3::ZERO);
         let mut reordered: Option<Vec<usize>> = None;
@@ -5135,6 +5137,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     }
                 }
                 car_box = (lo, hi);
+                // (the deform pieces' places from this box, once (0x8235CBD0, `sub_8255B9A8(car + 8)`): V the R8's
+                // window pieces at mid y 0.4007 of the box -0.4759 .. 1.2772, work/dmgmap)
+                if !st.dmg.pieces_set {
+                    st.dmg.set_up(p.hub_bones.unwrap_or(p.wheel_pos), lo, hi);
+                }
                 if dbg_flag("MCLA_DBG_HIT") {
                     eprintln!("CELLBOX lo {:?} hi {:?} ball {:?} geo {:?} rest {:?} reach {:?}", lo, hi, super::hull::swept_ball(&seen, &last, lo, hi), wheel_geo, wheel_rest, wheel_reach);
                 }
@@ -5351,6 +5358,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     if dbg_flag("MCLA_DBG_HIT") {
                         eprintln!("LOOSEISLAND impulse {:?} turning {:?} momenta {:?} {:?}", impulse, turning, pm, lm);
                     }
+                    solve_body = Some(body);
                     loose_island = Some((body, contacts, out));
                 } else {
                 // (R3: an island of more than 16 contacts is sorted by a sort that does not keep equal keys
@@ -5380,6 +5388,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 if dbg_flag("MCLA_DBG_HIT") {
                     for c in &contacts { eprintln!("HULLIMP multipliers {:?} impulse {:?}", c.kept, c.impulse); }
                 }
+                solve_body = Some(body);
                 solved_contacts = Some((body, contacts, solved));
                 }
             }
@@ -5540,10 +5549,16 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 if dbg_flag("MCLA_DBG_WORLDHIT") {
                     eprintln!("WORLDHIT dv {:.6} at local {:.6} {:.6} {:.6} zones {:?} damage {:.6} zone box {:?}", hit_dv.length(), local.x, local.y, local.z, st.zones, st.damage * p.dmg[0], st.zone_half);
                 }
-                // (a scrape's inputs, 0x82343CA8 .. 0x823441F0: the car's velocity at the point and at its
-                // centre after the solve; the city's none; the normals summed, unit over 0.001, else the first's)
+                // (a scrape's inputs, 0x82343CA8 .. 0x823441F0: the car's velocity at the point as the solve started
+                // from it - no impulses, no pending forces - and at its centre after the solve; the city's none; the
+                // normals summed, unit over 0.001, else the first's. V work/dmgmap: a 26 m/s head-on 26.08445 |
+                // 26.084 m/s at the point, the scrape then let through by the centre's 4.54 m/s after the solve)
                 let n = if hit_n.length() > f32::from_bits(0x3a83_126f) { hit_n.normalize() } else { hit_n0.unwrap_or(Vec3::Y) };
-                let scrape = super::car::ScrapeIn { v1: v1 + w1.cross(at - (at1 - pushed.push)), v2: Vec3::ZERO, rel: v1, n };
+                let v_pt = start_velocity(solve_body.as_ref(), at).unwrap_or(v1 + w1.cross(at - (at1 - pushed.push)));
+                let scrape = super::car::ScrapeIn { v1: v_pt, v2: Vec3::ZERO, rel: v1, n };
+                if dbg_flag("MCLA_DBG_WORLDHIT") {
+                    eprintln!("SCRAPE |v1| {:.5} |rel| {:.4} c {:.4} n {:.4?} amount {:.6}", v_pt.length(), v1.length(), v1.dot(n) / v1.length().max(1e-9), n, scrape.amount());
+                }
                 st.world_hit(p, hit_dv.length(), at, local, Some(scrape));
             }
             // (then the call for what is loose: in a recorded tick with both, mcCarDamage +56 is this
@@ -5555,7 +5570,9 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     eprintln!("LOOSEHIT dv {:.6} at local {:.6} {:.6} {:.6} mult {}", dv.length(), local.x, local.y, local.z, mult);
                 }
                 let n = if nsum.length() > f32::from_bits(0x3a83_126f) { nsum.normalize() } else { nsum };
-                let scrape = super::car::ScrapeIn { v1: v1 + w1.cross(at - (at1 - pushed.push)), v2, rel: v1 - v2c, n };
+                // (the car's own velocity at the point as the solve started, as above; the other's after it: I)
+                let v_pt = start_velocity(solve_body.as_ref(), at).unwrap_or(v1 + w1.cross(at - (at1 - pushed.push)));
+                let scrape = super::car::ScrapeIn { v1: v_pt, v2, rel: v1 - v2c, n };
                 st.damage_call(p, dv.length(), mult, at, local, Some(scrape));
             }
             // (0x8259E920: the matrix the next tick's collision takes for the last one)
@@ -5841,7 +5858,7 @@ fn level_probe(world: &WorldCollider, from: Vec3, to: Vec3) -> Option<(Vec3, Vec
 
 pub(super) fn dbg_flag(name: &'static str) -> bool {
     static FLAGS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    FLAGS.get_or_init(|| ["MCLA_DBG_R1", "MCLA_DBG_R2", "MCLA_DBG_R3", "MCLA_DBG_R4", "MCLA_DBG_RB2", "MCLA_DBG_RB3", "MCLA_DBG_RB4", "MCLA_DBG_RB5", "MCLA_DBG_RB6", "MCLA_DBG_P1", "MCLA_DBG_P2", "MCLA_DBG_P3", "MCLA_DBG_RA1", "MCLA_DBG_RA2", "MCLA_DBG_RA3", "MCLA_DBG_RA4", "MCLA_DBG_RA5", "MCLA_DBG_RA6", "MCLA_DBG_RA7", "MCLA_DBG_RA8", "MCLA_DBG_RB1", "MCLA_DBG_RD1", "MCLA_DBG_A1", "MCLA_DBG_A2", "MCLA_DBG_A3", "MCLA_DBG_A4", "MCLA_DBG_Z1", "MCLA_DBG_Z2", "MCLA_DBG_HIT", "MCLA_DBG_OLDCOLLIDE", "MCLA_DBG_NORESOLVE", "MCLA_DBG_NODAMP", "MCLA_DBG_NOROLLBAR", "MCLA_DBG_YAW", "MCLA_DBG_SPHERES", "MCLA_DBG_RAYWHEEL", "MCLA_DBG_HANG", "MCLA_DBG_GYRO", "MCLA_DBG_NOBOX", "MCLA_DBG_NOSTEEP", "MCLA_DBG_NOCAMBER", "MCLA_DBG_NOLEANPROBE", "MCLA_DBG_OLDWHEEL", "MCLA_DBG_ZEROTYRE", "MCLA_DBG_TERMS", "MCLA_DBG_SUBDAMP", "MCLA_DBG_NOFREEZE", "MCLA_DBG_STEEPWHEEL", "MCLA_DBG_NOPIVOT", "MCLA_DBG_NOSETTLE", "MCLA_DBG_NOSTUCK", "MCLA_DBG_STUCK", "MCLA_DBG_SYMSOLVE", "MCLA_DBG_OLDWHEELPOSE", "MCLA_DBG_OLDSUSP", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDSTEP", "MCLA_DBG_OLDPOSE", "MCLA_DBG_AXLEORDER", "MCLA_DBG_CALLS", "MCLA_DBG_OLDGYRO", "MCLA_DBG_NOBOTTOM", "MCLA_DBG_WHEELORDER", "MCLA_DBG_OLDMELT", "MCLA_DBG_OLDHANG", "MCLA_DBG_GEAR", "MCLA_DBG_OLDORDER", "MCLA_DBG_OLDSTEER", "MCLA_DBG_OLDDOWN", "MCLA_DBG_OLDDRIFT", "MCLA_DBG_NOENGINEROLL", "MCLA_DBG_OLDAUTOBRAKE", "MCLA_DBG_Y1", "MCLA_DBG_Y2", "MCLA_DBG_Y3", "MCLA_DBG_Y4", "MCLA_DBG_Y5", "MCLA_DBG_Y6", "MCLA_DBG_Y7", "MCLA_DBG_Y8", "MCLA_DBG_Y9", "MCLA_DBG_TRACE", "MCLA_DBG_WORLDHIT", "MCLA_DBG_NOWORLDHIT"].into_iter().filter(|n| std::env::var(n).is_ok()).collect()).contains(&name)
+    FLAGS.get_or_init(|| ["MCLA_DBG_R1", "MCLA_DBG_R2", "MCLA_DBG_R3", "MCLA_DBG_R4", "MCLA_DBG_RB2", "MCLA_DBG_RB3", "MCLA_DBG_RB4", "MCLA_DBG_RB5", "MCLA_DBG_RB6", "MCLA_DBG_P1", "MCLA_DBG_P2", "MCLA_DBG_P3", "MCLA_DBG_RA1", "MCLA_DBG_RA2", "MCLA_DBG_RA3", "MCLA_DBG_RA4", "MCLA_DBG_RA5", "MCLA_DBG_RA6", "MCLA_DBG_RA7", "MCLA_DBG_RA8", "MCLA_DBG_RB1", "MCLA_DBG_RD1", "MCLA_DBG_A1", "MCLA_DBG_A2", "MCLA_DBG_A3", "MCLA_DBG_A4", "MCLA_DBG_Z1", "MCLA_DBG_Z2", "MCLA_DBG_HIT", "MCLA_DBG_OLDCOLLIDE", "MCLA_DBG_NORESOLVE", "MCLA_DBG_NODAMP", "MCLA_DBG_NOROLLBAR", "MCLA_DBG_YAW", "MCLA_DBG_SPHERES", "MCLA_DBG_RAYWHEEL", "MCLA_DBG_HANG", "MCLA_DBG_GYRO", "MCLA_DBG_NOBOX", "MCLA_DBG_NOSTEEP", "MCLA_DBG_NOCAMBER", "MCLA_DBG_NOLEANPROBE", "MCLA_DBG_OLDWHEEL", "MCLA_DBG_ZEROTYRE", "MCLA_DBG_TERMS", "MCLA_DBG_SUBDAMP", "MCLA_DBG_NOFREEZE", "MCLA_DBG_STEEPWHEEL", "MCLA_DBG_NOPIVOT", "MCLA_DBG_NOSETTLE", "MCLA_DBG_NOSTUCK", "MCLA_DBG_STUCK", "MCLA_DBG_SYMSOLVE", "MCLA_DBG_OLDWHEELPOSE", "MCLA_DBG_OLDSUSP", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDSTEP", "MCLA_DBG_OLDPOSE", "MCLA_DBG_AXLEORDER", "MCLA_DBG_CALLS", "MCLA_DBG_OLDGYRO", "MCLA_DBG_NOBOTTOM", "MCLA_DBG_WHEELORDER", "MCLA_DBG_OLDMELT", "MCLA_DBG_OLDHANG", "MCLA_DBG_GEAR", "MCLA_DBG_OLDORDER", "MCLA_DBG_OLDSTEER", "MCLA_DBG_OLDDOWN", "MCLA_DBG_OLDDRIFT", "MCLA_DBG_NOENGINEROLL", "MCLA_DBG_OLDAUTOBRAKE", "MCLA_DBG_Y1", "MCLA_DBG_Y2", "MCLA_DBG_Y3", "MCLA_DBG_Y4", "MCLA_DBG_Y5", "MCLA_DBG_Y6", "MCLA_DBG_Y7", "MCLA_DBG_Y8", "MCLA_DBG_Y9", "MCLA_DBG_TRACE", "MCLA_DBG_WORLDHIT", "MCLA_DBG_NOWORLDHIT", "MCLA_DBG_SCRAPEPOST"].into_iter().filter(|n| std::env::var(n).is_ok()).collect()).contains(&name)
 }
 
 fn dbg_angdrag() -> f32 {
@@ -6389,4 +6406,12 @@ mod primitive_reference_tests {
         assert_eq!(counts["displace"].0, 1600);
         assert!(counts.values().all(|c| c.1 == 0), "original-code differences: {counts:?}");
     }
+}
+
+/// A body's velocity at the point `p` as the tick's solve starts from it (its velocity and turning, no contact
+/// impulses, not the tick's pending forces) - what mcCarDamage's contact callback reads at the point from the
+/// collider (0x82343CA8, vslot 21). MCLA_DBG_SCRAPEPOST: the velocity after the solve, as before 2026-10-20.
+fn start_velocity(body: Option<&super::solver::Body>, p: Vec3) -> Option<Vec3> {
+    let b = body.filter(|_| !dbg_flag("MCLA_DBG_SCRAPEPOST"))?;
+    Some(b.vel + b.ang.cross(p - b.at))
 }

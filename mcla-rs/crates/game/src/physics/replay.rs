@@ -233,6 +233,13 @@ pub fn run(data_dir: &str, spec: &str) -> anyhow::Result<()> {
     // physics step, so the contact callbacks of this tick already find the gear the next update drives in)
     let ways: Vec<i32> = ticks.iter().map(|v| v[12] as i32).collect();
     for (n, v) in ticks.into_iter().enumerate() {
+        // (MCLA_DBG_STAMPS: the tick before the damage map stamps it queues, damagemap.rs)
+        if let Some(p) = std::env::var_os("MCLA_DBG_STAMPS") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+                let _ = writeln!(f, "T {n}");
+            }
+        }
         super::loose::REPLAY_TICK.store(n, std::sync::atomic::Ordering::Relaxed);
         super::loose::REPLAY_K.store(n as i64 - 30, std::sync::atomic::Ordering::Relaxed);
         super::vehsim::REPLAY_WAY_AFTER.store(ways.get(n + 1).copied().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
