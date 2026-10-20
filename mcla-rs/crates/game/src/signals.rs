@@ -107,6 +107,8 @@ impl Junction {
 pub struct Signals {
     pub junctions: Vec<Junction>,
     grid: HashMap<(i32, i32), Vec<u32>>,
+    /// junctions whose own lanes carry traffic since the last step (`occupy`)
+    held: Vec<u32>,
 }
 
 const CELL: f32 = 96.0;
@@ -179,6 +181,11 @@ impl Signals {
     pub fn step(&mut self, dt: f32, cars: &[(Vec3, Vec3)], player: Option<(Vec3, Vec3)>, race: Option<(f32, f32)>) {
         let n = self.junctions.len();
         let mut occupied = vec![false; n];
+        for ji in std::mem::take(&mut self.held) {
+            if let Some(o) = occupied.get_mut(ji as usize) {
+                *o = true;
+            }
+        }
         for (pos, vel) in cars {
             let (cx, cz) = cell(*pos);
             for dx in -1..=1 {
@@ -303,7 +310,32 @@ impl Signals {
         for (i, j) in out.iter().enumerate() {
             grid.entry(cell(j.center)).or_default().push(i as u32);
         }
-        (Signals { junctions: out, grid }, of_head)
+        (Signals { junctions: out, grid, held: Vec::new() }, of_head)
+    }
+
+    /// A traffic car on one of a junction's own lanes (its through lanes and connectors): the
+    /// junction near `pos` counts as occupied at its next step - the original holds the phase
+    /// while the junction's lanes carry traffic.
+    pub fn occupy(&mut self, pos: Vec3) {
+        let (cx, cz) = cell(pos);
+        let mut best: Option<(u32, f32)> = None;
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                let Some(list) = self.grid.get(&(cx + dx, cz + dz)) else { continue };
+                for &ji in list {
+                    let j = &self.junctions[ji as usize];
+                    let d = Vec3::new(pos.x - j.center.x, 0.0, pos.z - j.center.z).length();
+                    if (j.center.y - pos.y).abs() < 7.0 && d < j.radius + 12.0 && best.map_or(true, |b| d < b.1) {
+                        best = Some((ji, d));
+                    }
+                }
+            }
+        }
+        if let Some((ji, _)) = best {
+            if !self.held.contains(&ji) {
+                self.held.push(ji);
+            }
+        }
     }
 
     /// The junction a vehicle at `pos` travelling along `heading` is driving up to:

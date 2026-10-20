@@ -8043,18 +8043,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&root)
                 .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.file_name().map_or(false, |n| {
                     let n = n.to_string_lossy();
-                    // the game's ambient traffic set (no trailers / semi cabs for now)
-                    n.starts_with("va_") && !n.contains("semitruck") && !n.contains("limo")
+                    // the game's whole ambient traffic set: the spawner picks any type of the
+                    // district's list (traffic.rs), semi cabs with their trailers
+                    n.starts_with("va_")
                 })).collect())
                 .unwrap_or_default();
             dirs.sort();
-            for (i, d) in dirs.iter().enumerate() {
-                if i % 4 == 1 && self.vehicles.models.len() < 11 {
-                    if let Err(e) = self.vehicles.load_model(gpu, world, d) {
-                        log::warn!("traffic model {}: {:#}", d.display(), e);
-                    }
+            let t0 = std::time::Instant::now();
+            for d in dirs.iter() {
+                if let Err(e) = self.vehicles.load_model(gpu, world, d) {
+                    log::warn!("traffic model {}: {:#}", d.display(), e);
                 }
             }
+            log::info!("traffic models: {} loaded in {:.1} s", dirs.len(), t0.elapsed().as_secs_f32());
         }
     }
 }

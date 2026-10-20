@@ -2199,8 +2199,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
         // AI inputs (with simple car-ahead avoidance)
         let positions: Vec<(Vec3, Vec3, f32)> = self.cars.iter().map(|c| (c.state.pos, c.state.forward(), c.state.speed())).collect();
         for i in 0..n {
-            // (traffic riding its lane has no pedals: traffic.rs)
-            if self.cars[i].rail.as_ref().is_some_and(|r| !r.physical) {
+            // (traffic has no pedals: on its lane it rides, physical it rolls to rest -
+            // traffic.rs; the original's physical ambient car's brakes are not decoded)
+            if let Some(r) = self.cars[i].rail.as_ref() {
+                if r.physical {
+                    self.cars[i].input = CarInput { brake: 1.0, handbrake: true, ai: true, ..Default::default() };
+                }
                 continue;
             }
             let (pos, fwd, _) = positions[i];
@@ -2532,7 +2536,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // Racers outside the streamed-in part of the city have no ground to drive on:
             // move them along the race line until the world around them is loaded.
             // (not on the grid: there the cars stand on their brakes while the world streams in)
-            if !c.is_player && !self.frozen && self.grid_hold.is_none() && c.parked.is_none() && !world.ready_at(c.state.pos) {
+            if !c.is_player && !self.frozen && self.grid_hold.is_none() && c.parked.is_none() && c.rail.is_none() && !world.ready_at(c.state.pos) {
                 if let Some(ai) = c.ai.as_mut() {
                     if ai.path.is_some() {
                         let v = ai.target_speed * 0.8;

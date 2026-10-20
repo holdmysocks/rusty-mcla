@@ -37,6 +37,12 @@ pub struct Link {
     pub owner_w10: u32,
     /// the owner's speed word +94 (m/s; a road section's limit, 0 = the default)
     pub owner_speed: f32,
+    /// the flags of the owner's parent (owner +08 -> +04; sub_82245340 / sub_822452F8 look
+    /// one level up for a road or a junction)
+    pub parent_flags: u32,
+    /// the road the owner belongs to when the owner is not a road itself (a connector lane
+    /// of a road)
+    pub parent_zone: Option<usize>,
     /// index of the lane this segment belongs to
     pub lane: usize,
     /// links that start where this one ends
@@ -90,6 +96,11 @@ pub struct Zone {
     pub rect_len: f32,
     pub mid: Vec3,
     pub dir: Vec3,
+    /// across the road (+70), its height range (+44 .. +48) and the byte that leaves it
+    /// without a box (+4c): the spawner's occlusion box (road vfunc 2, sub_8224D130)
+    pub side: Vec3,
+    pub y_range: [f32; 2],
+    pub no_box: bool,
     /// the road's traffic density index from data (+98; -1: the default, 3)
     pub density: i32,
 }
@@ -145,7 +156,8 @@ struct RawLane {
     len: f32,
     flags: u32,
     zone: Option<usize>,
-    owner: (u32, u32, f32),
+    owner: (u32, u32, f32, u32),
+    parent_zone: Option<usize>,
 }
 
 impl NavSys {
@@ -203,7 +215,7 @@ impl NavSys {
             if pts.is_empty() {
                 pts.push(min);
             }
-            raw.push(RawLane { pts, min, max, len: rd.f32(lo + 0xc), flags: rd.u32(lo + 4), zone: rd.ptr(lo + 8).and_then(zone_index), owner: rd.ptr(lo + 8).filter(|&o| rd.has(o, 0x98)).map_or((0, 0, 0.0), |o| (rd.u32(o + 4), rd.u32(o + 0x10), rd.f32(o + 0x94))) });
+            raw.push(RawLane { pts, min, max, len: rd.f32(lo + 0xc), flags: rd.u32(lo + 4), zone: rd.ptr(lo + 8).and_then(zone_index), owner: rd.ptr(lo + 8).filter(|&o| rd.has(o, 0x98)).map_or((0, 0, 0.0, 0), |o| (rd.u32(o + 4), rd.u32(o + 0x10), rd.f32(o + 0x94), rd.ptr(o + 8).filter(|&p| rd.has(p, 8)).map_or(0, |p| rd.u32(p + 4)))), parent_zone: rd.ptr(lo + 8).filter(|&o| rd.has(o, 0x10)).and_then(|o| rd.ptr(o + 8)).and_then(zone_index) });
         }
         let link_index = |off: usize| link_offs.binary_search(&off).ok();
         let mut zone_lanes: Vec<Vec<usize>> = Vec::new();
@@ -214,6 +226,9 @@ impl NavSys {
             z.rect_len = rd.f32(zo + 0x40);
             z.mid = Vec3::new(rd.f32(zo + 0x50), rd.f32(zo + 0x54), rd.f32(zo + 0x58));
             z.dir = Vec3::new(rd.f32(zo + 0x60), rd.f32(zo + 0x64), rd.f32(zo + 0x68));
+            z.side = Vec3::new(rd.f32(zo + 0x70), rd.f32(zo + 0x74), rd.f32(zo + 0x78));
+            z.y_range = [rd.f32(zo + 0x44), rd.f32(zo + 0x48)];
+            z.no_box = rd.u8(zo + 0x4c) != 0;
             z.density = rd.u32(zo + 0x98) as i32;
             if let Some(np) = rd.ptr(zo + 0x90) {
                 let s = rd.cstr(np);
@@ -356,7 +371,7 @@ impl NavSys {
             first[i] = links.len();
             for w in l.pts.windows(2) {
                 let k = links.len();
-                links.push(Link { a: w[0], b: w[1], len: w[0].distance(w[1]).max(0.01), flags: l.flags, zone: l.zone, owner_flags: l.owner.0, owner_w10: l.owner.1, owner_speed: l.owner.2, lane: i, next: vec![k + 1], prev: Vec::new(), side: Vec::new(), opp: Vec::new(), back: Vec::new(), hop: Vec::new(), hop_a: Vec::new(), node_a: 0, node_b: 0 });
+                links.push(Link { a: w[0], b: w[1], len: w[0].distance(w[1]).max(0.01), flags: l.flags, zone: l.zone, owner_flags: l.owner.0, owner_w10: l.owner.1, owner_speed: l.owner.2, parent_flags: l.owner.3, parent_zone: l.parent_zone, lane: i, next: vec![k + 1], prev: Vec::new(), side: Vec::new(), opp: Vec::new(), back: Vec::new(), hop: Vec::new(), hop_a: Vec::new(), node_a: 0, node_b: 0 });
             }
             lastl[i] = links.len() - 1;
         }
@@ -1123,6 +1138,19 @@ mod speed_tests {
         // the roads' rectangles for the traffic spawner: unit directions, density indices
         // -1 (the default) / 2 / 3 / 5
         let odd: Vec<_> = nav.zones.iter().filter(|z| !((z.dir.length() - 1.0).abs() < 0.01 && z.width > 0.0 && z.rect_len > 0.0)).map(|z| (z.dir, z.width, z.rect_len, z.mid)).collect();
+        let mut parents = std::collections::BTreeMap::new();
+        for l in &nav.links {
+            *parents.entry((l.owner_flags, l.parent_flags)).or_insert(0usize) += 1;
+        }
+        assert_eq!(parents.into_iter().collect::<Vec<_>>(), vec![((2, 128), 23480), ((4, 128), 5060), ((16, 2), 110), ((16, 4), 3511), ((32, 2), 1239), ((32, 4), 1859)]);
+        assert!(nav.links.iter().all(|l| (l.parent_flags == 2) == l.parent_zone.is_some()));
+        // the lanes' own flags (+4): 1, or 0x2001 on some road lanes and road connectors - none
+        // carries 0x1800, the bits the traffic's car-ahead search reads off run-time rails
+        let mut lf = std::collections::BTreeMap::new();
+        for l in &nav.links {
+            *lf.entry((l.owner_flags, l.flags)).or_insert(0usize) += 1;
+        }
+        assert_eq!(lf.into_iter().collect::<Vec<_>>(), vec![((2, 1), 22075), ((2, 0x2001), 1405), ((4, 1), 5060), ((16, 1), 3511), ((16, 0x2001), 110), ((32, 1), 3098)]);
         // (43 roads carry no rectangle at all)
         assert!(odd.len() == 43 && odd.iter().all(|o| o.1 == 0.0 && o.2 == 0.0), "{} odd: {:?}", odd.len(), &odd[..odd.len().min(5)]);
         let mut dens = std::collections::BTreeMap::new();
@@ -1131,6 +1159,10 @@ mod speed_tests {
         }
         assert_eq!(dens.into_iter().collect::<Vec<_>>(), vec![(-1, 756), (2, 140), (3, 516), (5, 251)]);
         assert_eq!(parse_intersections(&res).len(), 351);
+        let sides = nav.zones.iter().filter(|z| z.rect_len > 0.0 && ((z.side.length() - 1.0).abs() > 0.01 || z.side.dot(z.dir).abs() > 0.01)).count();
+        let ys = nav.zones.iter().filter(|z| z.rect_len > 0.0 && !(z.y_range[0] <= z.y_range[1])).count();
+        // (the 43 without a rectangle are the ones flagged to have no box)
+        assert_eq!((sides, ys, nav.zones.iter().filter(|z| z.no_box).count(), nav.zones.iter().filter(|z| z.no_box && z.rect_len == 0.0).count()), (0, 0, 43, 43));
     }
 }
 
