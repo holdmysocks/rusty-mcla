@@ -760,7 +760,15 @@ impl MergeAcc {
             let uv1 = mesh.uv1.get(i).copied().unwrap_or_default();
             let c = mesh.colors.get(i).copied().unwrap_or([255, 255, 255, 255]);
             let c1 = mesh.colors1.get(i).copied().unwrap_or([c[0], 255, 255, 255]); // (no second colour set: its alpha slot carries the first set's alpha, the body's baked occlusion - the lighting reads it there; the first set's own alpha stays the baked-paint flag)
-            self.verts.push(Vertex { pos: pos.to_array(), normal: nrm.to_array(), uv0: uv0.to_array(), uv1: uv1.to_array(), color: [c[1], c[2], c[3], 0], color1: [c1[1], c1[2], c1[3], c1[0]], uv2: [if dark_above.map_or(false, |y| pos.y >= y) { 1.0 } else { 0.0 }, lens] });
+            // (a window of the full glass program, lens -1: its stored tangent in the car's space in the colour,
+            // alpha 255 - VS_Glass's T for the crack map's frame; the window's colour is not read)
+            let tw = if lens < -0.5 { mesh.tangents.get(i).map(|t| xf.transform_vector3(t.truncate()).normalize_or_zero()).filter(|t| *t != Vec3::ZERO) } else { None };
+            let c = match tw {
+                Some(t) => [0, ((t.x * 0.5 + 0.5) * 255.0).round() as u8, ((t.y * 0.5 + 0.5) * 255.0).round() as u8, ((t.z * 0.5 + 0.5) * 255.0).round() as u8],
+                None => c,
+            };
+            let ca = if tw.is_some() { 255 } else { 0 };
+            self.verts.push(Vertex { pos: pos.to_array(), normal: nrm.to_array(), uv0: uv0.to_array(), uv1: uv1.to_array(), color: [c[1], c[2], c[3], ca], color1: [c1[1], c1[2], c1[3], c1[0]], uv2: [if dark_above.map_or(false, |y| pos.y >= y) { 1.0 } else { 0.0 }, lens] });
         }
         for t in mesh.indices.chunks_exact(3) {
             if t.iter().all(|&i| (i as usize) < n) {
@@ -3035,6 +3043,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // slots 0 - 3, damagemap::CarDamage::window)
             let mut body_slots = [[0.0; 4]; 6];
             body_slots[0] = c.state.dmg.windows();
+            // (the fifth: the side windows' clip plane in the world, ClipPlaneEq of sub_82357DB8 - normal the
+            // car's up, through its origin + up x h, h = mcCarModelTune fWindowClipPlaneHeight (-1 on a car
+            // without it: nothing cut); VS_Glass sends its distance for the windows 2 and 3 and
+            // PS_GlassFront drops what is below. The rolled-down glass, moved by its bone, sinks under it.)
+            let up = m.y_axis.truncate().normalize_or(Vec3::Y);
+            let h = c.model.simtunes.as_ref().and_then(|s| s.window_clip).unwrap_or(-1.0);
+            body_slots[4] = up.extend(-up.dot(m.w_axis.truncate() + up * h)).to_array();
             // (traffic and parked cars - their lamp rows marked ambient: sub_827914B8 hands the type's
             // colour C = vColors[idx] x fScale on raised to 2.2 in both paint rows (c124 / c125), and
             // VSAmbientCarPaint paints with sat(4 x lerp(c124, c125, t)) = sat(4 C^2.2); the shader

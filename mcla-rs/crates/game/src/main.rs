@@ -433,6 +433,8 @@ struct App {
     map_vp: Option<glam::Mat4>,
     drivers: drivers::Drivers,
     fx_impact: f32,
+    /// the last drawn frame's view frustum (the glass break plays only for a car in view)
+    last_frustum: Option<Frustum>,
     fx_throttle: f32,
     ability: ability::Abilities,
     fire_ability: bool,
@@ -766,6 +768,7 @@ impl App {
             map_vp: None,
             drivers: drivers::Drivers::default(),
             fx_impact: 0.0,
+            last_frustum: None,
             fx_throttle: 0.0,
             ability: ability::Abilities::new(),
             fire_ability: false,
@@ -4253,15 +4256,25 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 // (a window's hit sum passing 1 or 2 (0x82376B78): `damage_glassbreak` at the window's place,
                 // moving with the car's body - effect +2028 of the car's effects object, started only while
-                // the car is drawn (G+116 > 0: I, here any car); its sound is caraudio's)
+                // the car is drawn (G+116 != 0, sub_8235F738: radius r = the larger of the composite bound box's
+                // full x / z sizes, the car's origin in the viewport's sphere test and no more than 450 m + r from
+                // the camera; here the last frame's view frustum); its sound is caraudio's)
                 let glass_fx = mcla_formats::hash::joaat("damage_glassbreak");
                 let cam_at = self.cam.pos;
+                let view = self.last_frustum;
                 for c in self.vehicles.cars.iter_mut() {
                     let d = &mut c.state.dmg;
                     let seen = d.glass_fx_seen;
+                    if !d.glass.iter().any(|(n, _)| *n > seen) {
+                        continue;
+                    }
+                    let (lo, hi) = c.model.params.composite_box();
+                    let r = (hi.x - lo.x).max(hi.z - lo.z);
+                    let o = c.state.pos;
+                    let drawn = o.distance(cam_at) - r <= 450.0 && view.map_or(true, |f| f.intersects_sphere(o, r));
                     for &(n, local) in d.glass.iter().filter(|(n, _)| *n > seen) {
                         let at = c.state.pos + c.state.rot * local;
-                        let played = self.fx.burst(glass_fx, at, c.state.vel, at.distance(cam_at));
+                        let played = drawn && self.fx.burst(glass_fx, at, c.state.vel, at.distance(cam_at));
                         if std::env::var_os("MCLA_PARTS_LOG").is_some() {
                             log::info!("glass: event {n} at {at:.2?} damage_glassbreak played {played}");
                         }
@@ -5966,6 +5979,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
         let vp = if self.drive && self.vehicles.player().is_some() { self.cam.proj(aspect) * self.chase.view() } else { self.cam.view_proj(aspect) };
         let frustum = Frustum::from_view_proj(vp);
+        self.last_frustum = Some(frustum);
         let occluded = occluder::frame(&self.opt.data_dir, vp, &frustum);
         let mut globals = self.lighting(vp);
         // sun shadow map: an orthographic box around the area in front of the camera

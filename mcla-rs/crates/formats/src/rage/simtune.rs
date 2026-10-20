@@ -257,6 +257,9 @@ pub struct SimTunes {
     /// 1 AllowLoose, 2 AllowBroken), cHoodMovement, cTrunkMovement (+192, +196: 0 NoMovement,
     /// 1 NormalMovement, 2 ReverseMovement) - sub_823404E0 @82340DB8; None without a vehModel
     pub part_movement: Option<[u32; 4]>,
+    /// mcCarModelTune's fWindowClipPlaneHeight (+180): the side windows' clip plane, this high
+    /// along the car's up axis from its origin (sub_82357DB8 -> ClipPlaneEq); None without a vehModel
+    pub window_clip: Option<f32>,
 }
 
 /// What a car's set-up makes of its wheels (`SimTunes::fit`), front and rear.
@@ -331,6 +334,7 @@ impl SimTunes {
             if ty == "vehModel" {
                 out.fender_edge = [[rd.f32(c + 88), rd.f32(c + 92)], [rd.f32(c + 96), rd.f32(c + 100)]];
                 out.part_movement = Some([rd.u32(c + 184), rd.u32(c + 188), rd.u32(c + 192), rd.u32(c + 196)]);
+                out.window_clip = Some(rd.f32(c + 180));
                 continue;
             }
             let set = if nm.ends_with("_mods") { &mut out.mods } else { &mut out.base };
@@ -472,7 +476,7 @@ mod movement_tests {
                 };
                 if let Some(t) = super::SimTunes::parse(&res) {
                     let m = t.part_movement;
-                    println!("{} {:?} damage max {} med {} (base) {} (mods)", e.file_name().to_string_lossy(), m, t.base.damage.max_damage, t.base.damage.med_damage, t.mods.damage.max_damage);
+                    println!("{} {:?} window clip {:?} damage max {} med {} (base) {} (mods)", e.file_name().to_string_lossy(), m, t.window_clip, t.base.damage.max_damage, t.base.damage.med_damage, t.mods.damage.max_damage);
                     if let Some(m) = m {
                         assert!(m.iter().all(|v| *v <= 2), "{m:?}");
                     }

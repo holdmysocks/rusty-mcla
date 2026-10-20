@@ -3517,8 +3517,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             //   rgb   += 1.6 k c A sh x soft(reflect at n') + 6 c A lum(sh x soft(..)) (0.296, 0.431, 0.510)
             //            + 0.01 c A,  sh = 0.25 + sat(collector - 0.25), lum = (0.3, 0.59, 0.11)
             //   alpha x= k
-            // (T here from the derivatives and the stored sign, as the tyres' - the pane's own stored
-            // tangent is not in the port's vertex: I. MCLA_DEBUG_VIEW=697: no damage drawn)
+            // (T the pane's stored tangent, carried in the window vertices' colour, B from it and the stored
+            // sign. MCLA_DEBUG_VIEW=697: no damage drawn; 699: T from the derivatives, as before)
+            // The side windows (2, 3) are cut below the car's clip plane (VS_Glass 70 - 80 -> o6, PS_GlassFront
+            // 8 kill if o6 < 0; the plane in the car body's dents[4], vehicles.rs): a rolled-down pane sinks
+            // into the door.
+            if ((zone == 2 || zone == 3) && dot(obj.dents[4].xyz, in.wpos) + obj.dents[4].w < 0.0) { discard; }
             let wz12 = clamp(zone, 0, 3);
             let ws12 = select(0.0, obj.dents[0][wz12], zone >= 0 && zone <= 3 && in.uv2.y < -0.5 && !(g.params.w > 696.5 && g.params.w < 697.5));
             if (ws12 > 0.0) {
@@ -3529,7 +3533,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 let q2 = cross(tb_dp2, n);
                 let q1 = cross(n, tb_dp1);
                 let tq = q2 * tb_duv1.x + q1 * tb_duv2.x;
-                let tn = tq * inverseSqrt(max(dot(tq, tq), 1e-12));
+                // (the pane's stored tangent where the window carries it - colour alpha 1, vehicles.rs - else
+                // the one the derivatives give)
+                let ts12 = (obj.model * vec4<f32>(in.color.rgb * 2.0 - 1.0, 0.0)).xyz;
+                let tn = select(tq * inverseSqrt(max(dot(tq, tq), 1e-12)), ts12 * inverseSqrt(max(dot(ts12, ts12), 1e-12)), in.color.a > 0.5 && !(g.params.w > 698.5 && g.params.w < 699.5));
                 let bn = cross(tn, n) * ((1.0 - 2.0 * in.bflip) * select(-1.0, 1.0, dot(cross(obj.model[0].xyz, obj.model[1].xyz), obj.model[2].xyz) >= 0.0));
                 let cn = normalize((ck.r * 2.0 - 1.0) * tn + (ck.g * 2.0 - 1.0) * bn + (ck.b * 2.0 - 1.0) * n);
                 var fc12 = 127.0 / 255.0;
