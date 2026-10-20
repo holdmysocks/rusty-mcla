@@ -234,6 +234,10 @@ pub struct CarSounds {
     creak: [Option<Handle>; 2],
     scrape: [(Option<Handle>, f32); 2],
     parts_seen: Option<u64>,
+    /// GLOBAL_CAR_PARTICLES +18 (CAR_BANGERS_GLASS_LARGE): a window cracking or breaking
+    glass_hash: u32,
+    /// the last window event heard (damagemap::CarDamage::glass)
+    glass_seen: Option<u64>,
 }
 
 impl CarSounds {
@@ -285,6 +289,8 @@ impl CarSounds {
             creak: [None; 2],
             scrape: [(None, 0.0); 2],
             parts_seen: None,
+            glass_hash: g.get_name("GLOBAL_CAR_PARTICLES").map_or(0, |o| be_u32(o, 18)),
+            glass_seen: None,
         }
     }
 
@@ -816,6 +822,23 @@ impl CarSounds {
 
     // ---- the moving damage parts (DAMAGE_PARTS_RULE.md): TUNERS_DAMAGE +15 hood / +43 trunk / +71 rear / +99 front
     // bumper records {move threshold, move loop, open-stop threshold, open-stop, shut threshold, shut, break-off}
+    /// A window's hit sum passing 1 or 2 (0x82376B78 -> `sub_82348BD0` on the car's sound entity): the
+    /// entity's GLOBAL_CAR_PARTICLES (+1256) +18 - CAR_BANGERS_GLASS_LARGE - once at the window's place,
+    /// 0 dB, LPF field 23900, flags 4; heard whether or not the car is drawn.
+    pub fn glass(&mut self, lib: &mut SoundLib, dmg: &crate::damagemap::CarDamage, pos: Vec3, rot: glam::Quat) {
+        // (events from before this car's sounds were made are not heard)
+        let seen = *self.glass_seen.get_or_insert(dmg.glass_serial);
+        for &(n, local) in dmg.glass.iter().filter(|(n, _)| *n > seen) {
+            self.glass_seen = Some(n);
+            if !is_null(self.glass_hash) {
+                let h = lib.play_hash(self.glass_hash, self.req(pos + rot * local));
+                if std::env::var_os("MCLA_PARTS_LOG").is_some() {
+                    log::info!("glass: event {n} sound {:08x} started {}", self.glass_hash, h.is_some());
+                }
+            }
+        }
+    }
+
     pub fn damage_parts(&mut self, lib: &mut SoundLib, parts: &crate::damageparts::DamageParts) {
         use crate::damageparts::{DamageParts, PartEvent};
         let d = self.damage_obj.clone();
@@ -1524,6 +1547,7 @@ impl Fleet {
             if let Some(s) = &mut e.sounds {
                 s.update(lib, &self.mats, &c, ctl.cam_mode, dt);
                 s.damage_parts(lib, &p.state.parts);
+                s.glass(lib, &p.state.dmg, p.state.pos, p.state.rot);
                 // a police car's horn button chirps the siren (sub_822A1058)
                 if p.cop && ctl.horn {
                     s.siren_alert(lib, c.pos);
@@ -1647,6 +1671,7 @@ impl Fleet {
             if let Some(s) = &mut e.sounds {
                 s.update(lib, &self.mats, &ci, -1, dt);
                 s.damage_parts(lib, &c.state.parts);
+                s.glass(lib, &c.state.dmg, c.state.pos, c.state.rot);
                 if c.cop && !c.goon {
                     if stop_all {
                         s.siren_stop(lib);

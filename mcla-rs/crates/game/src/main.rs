@@ -2180,6 +2180,25 @@ impl App {
                 }
             }
         }
+        // diagnostics: MCLA_WINDOWS=f,r,l,r (0 whole, 1 cracked, 2 broken) sets the player's windows' hit
+        // sums (4 and 6: damagemap::CarDamage::window) and MCLA_TYRE_DIRT=0..1 its hubs' scrape sums
+        if let Some(c) = self.vehicles.player_mut() {
+            if let Ok(v) = std::env::var("MCLA_WINDOWS") {
+                // (through the pieces' own hit, so the glass effect and sound play as the sums pass 1 and 2)
+                for (i, x) in v.split(',').take(4).enumerate() {
+                    let k = x.trim().parse::<u32>().unwrap_or(0);
+                    let (want, p) = ([0.0, 4.0, 6.0][k.min(2) as usize], c.state.dmg.pieces[8 + i]);
+                    if c.state.dmg.pieces_set && p.hits < want && self.frame_no >= 120 {
+                        c.state.dmg.pieces_hit(p.local, want - p.hits, 0);
+                    }
+                }
+            }
+            if let Some(d) = std::env::var("MCLA_TYRE_DIRT").ok().and_then(|v| v.parse::<f32>().ok()) {
+                for i in 0..4 {
+                    c.state.dmg.pieces[i].scrapes = d;
+                }
+            }
+        }
         // ---- wrecked: the car dies, a moment later it is back on its wheels, repaired ----
         {
             // (slow motion: down to the file's time warp at its fall rate, back up at its rise rate)
@@ -4230,6 +4249,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.fx.sparks(st.pos + st.forward() * h.z * 0.8 + Vec3::Y * 0.4, -st.vel.normalize_or(Vec3::Y) * 0.4 + Vec3::Y * 0.5, n);
                         }
                         self.fx_impact = st.last_impact;
+                    }
+                }
+                // (a window's hit sum passing 1 or 2 (0x82376B78): `damage_glassbreak` at the window's place,
+                // moving with the car's body - effect +2028 of the car's effects object, started only while
+                // the car is drawn (G+116 > 0: I, here any car); its sound is caraudio's)
+                let glass_fx = mcla_formats::hash::joaat("damage_glassbreak");
+                let cam_at = self.cam.pos;
+                for c in self.vehicles.cars.iter_mut() {
+                    let d = &mut c.state.dmg;
+                    let seen = d.glass_fx_seen;
+                    for &(n, local) in d.glass.iter().filter(|(n, _)| *n > seen) {
+                        let at = c.state.pos + c.state.rot * local;
+                        let played = self.fx.burst(glass_fx, at, c.state.vel, at.distance(cam_at));
+                        if std::env::var_os("MCLA_PARTS_LOG").is_some() {
+                            log::info!("glass: event {n} at {at:.2?} damage_glassbreak played {played}");
+                        }
+                        d.glass_fx_seen = n;
                     }
                 }
                 // (a scrape's sparks, damagemap::Sparks: at the point, away from the surface)

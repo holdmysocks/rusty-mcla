@@ -61,8 +61,12 @@ pub struct CarDamage {
     pub stamped: bool,
     /// the respawn's repair (+2149): the dents go at the next draw, the scrapes stay
     pub repair: bool,
-    /// the windows' places (car) where a window cracked or broke this tick: its effect and sound
-    pub glass: Vec<Vec3>,
+    /// a window's hit sum passed 1 or 2 (0x82376B78): the window's place in the car, numbered on
+    /// (`glass_serial`) so the effect and the sound each take every one once; the last 8 kept
+    pub glass: Vec<(u64, Vec3)>,
+    pub glass_serial: u64,
+    /// the last one the effects took (main.rs)
+    pub glass_fx_seen: u64,
     pub sparks: Vec<Sparks>,
 }
 
@@ -106,7 +110,8 @@ impl CarDamage {
                 if self.glass.len() >= 8 {
                     self.glass.remove(0);
                 }
-                self.glass.push(p.local);
+                self.glass_serial += 1;
+                self.glass.push((self.glass_serial, p.local));
             }
         }
     }
@@ -134,7 +139,13 @@ impl CarDamage {
         if s >= 1.5 { 2 } else if s >= 1.0 { 1 } else { 0 }
     }
 
-    /// The wheel i's rim scuff as the wheel draw has it (0x8235A8D0): its hub's scrape sum, at most 1.
+    /// The four windows' states as the glass program takes them (WindowDmgVal slots 0 - 3).
+    pub fn windows(&self) -> [f32; 4] {
+        [0, 1, 2, 3].map(|i| self.window(i) as f32)
+    }
+
+    /// The wheel i's tyre dirt as the wheel draw has it (0x8235A8D0): its hub's scrape sum, at most
+    /// 1 - TireDirtColor.w of the tyre program (handle +40 of the shader variables, `sub_82379270`).
     pub fn rim_scuff(&self, i: usize) -> f32 {
         self.pieces[i.min(3)].scrapes.clamp(0.0, 1.0)
     }
@@ -436,6 +447,9 @@ mod tests {
             assert_eq!(d.window(0), if k >= 5 { 2 } else if k >= 3 { 1 } else { 0 }, "after {}", k + 1);
         }
         assert_eq!(d.glass.len(), 2);
+        // (the effect and the sound take them by number: the first at the sum 1, the second at 2)
+        assert_eq!(d.glass.iter().map(|g| g.0).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(d.windows(), [2.0, 0.0, 0.0, 0.0]);
         // (a scrape by the front left wheel scuffs its rim, not the glass)
         d.pieces_hit(Vec3::new(-1.0, 0.4, -1.2), 0.1, 1);
         assert!((d.rim_scuff(0) - 0.1).abs() < 1e-6 && d.rim_scuff(3) == 0.0);

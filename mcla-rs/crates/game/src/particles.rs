@@ -188,6 +188,9 @@ struct Effect {
     arrow: bool,
     /// the instance's random number for its `ZoomKF` (instance byte 492)
     zr: f32,
+    /// started once and left to run out (`burst`): it plays without being asked again and is
+    /// dropped when it and what it let out are done
+    oneshot: bool,
 }
 
 struct Rng(u32);
@@ -293,7 +296,7 @@ const MAX_RULE: usize = 5000;
 const MAX_EFFECTS: usize = 48;
 /// the effects whose sprites are loaded: the particle props' and the litter's
 // (step 19g: + the power-up shots' sparks, powerup_sparks - sub_82748340)
-const PLAYED: [&str; 9] = ["water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks"];
+const PLAYED: [&str; 10] = ["water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks", "damage_glassbreak"];
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
@@ -510,7 +513,21 @@ impl Particles {
         self.next_id += 1;
         // (for looking at an effect in a screenshot: where in its loop it starts, 0..1)
         let t = std::env::var("MCLA_FX_PHASE").ok().and_then(|v| v.parse::<f32>().ok()).map_or(0.0, |v| v.clamp(0.0, 0.99));
-        self.effects.push(Effect { key, id, effect: ei, pos, rot, vel, moved: Vec3::ZERO, t, dur, rate: if rate > 0.0 { rate } else { 1.0 }, loops: 0, done: false, seen: self.frame, fade, em: Vec::new(), kids: Vec::new(), tint, alpha, shadow, evo, arrow: false, zr });
+        self.effects.push(Effect { key, id, effect: ei, pos, rot, vel, moved: Vec3::ZERO, t, dur, rate: if rate > 0.0 { rate } else { 1.0 }, loops: 0, done: false, seen: self.frame, fade, em: Vec::new(), kids: Vec::new(), tint, alpha, shadow, evo, arrow: false, zr, oneshot: false });
+        true
+    }
+
+    /// Start an effect of the disc's list once at a place, moving with `vel`, and let it run out on
+    /// its own (a one-shot such as `damage_glassbreak`: the game's `sub_8247FEE0` + start, the
+    /// instance not kept). False: the rule cannot be played here.
+    pub fn burst(&mut self, effect: u32, pos: Vec3, vel: Vec3, dist: f32) -> bool {
+        let key = 0x4255_5253_0000_0000 | self.next_id as u64;
+        if !self.play(key, effect, pos, Quat::IDENTITY, vel, dist) {
+            return false;
+        }
+        if let Some(e) = self.effects.iter_mut().find(|e| e.key == key) {
+            e.oneshot = true;
+        }
         true
     }
 
@@ -557,7 +574,7 @@ impl Particles {
                         // where: a point of the event's domain, in the parent's frame
                         let at = domain.as_ref().map_or(Vec3::ZERO, |d| d.centre(0.0) + d.point(0.0, &mut || rng.f()));
                         let id = e.id;
-                        e.kids.push(Effect { key: 0, id, effect: *k, pos: e.pos + e.rot * at, rot: e.rot, vel: e.vel, moved: Vec3::ZERO, t: 0.0, dur: rng.range(kr.duration[0], kr.duration[1]).max(0.01), rate: rng.range(kr.time_scalar[0], kr.time_scalar[1]).max(0.01), loops: 0, done: false, seen: 0, fade: e.fade, em: Vec::new(), kids: Vec::new(), tint: e.tint, alpha: e.alpha, shadow: e.shadow, evo: [0.0; 4], arrow: false, zr: rng.f() });
+                        e.kids.push(Effect { key: 0, id, effect: *k, pos: e.pos + e.rot * at, rot: e.rot, vel: e.vel, moved: Vec3::ZERO, t: 0.0, dur: rng.range(kr.duration[0], kr.duration[1]).max(0.01), rate: rng.range(kr.time_scalar[0], kr.time_scalar[1]).max(0.01), loops: 0, done: false, seen: 0, fade: e.fade, em: Vec::new(), kids: Vec::new(), tint: e.tint, alpha: e.alpha, shadow: e.shadow, evo: [0.0; 4], arrow: false, zr: rng.f(), oneshot: false });
                     }
                     _ => {}
                 }
@@ -951,13 +968,13 @@ impl Particles {
         let frame = self.frame;
         for e in effects.iter_mut() {
             // (asked for in the last ticks: it runs; not any more: what it has let out lives on)
-            let live = frame - e.seen <= 3;
+            let live = frame - e.seen <= 3 || e.oneshot;
             self.step_effect(&fx, e, dt, live);
             if e.moved != Vec3::ZERO {
                 moved.push((e.id, std::mem::take(&mut e.moved)));
             }
         }
-        effects.retain(|e| frame - e.seen <= 3);
+        effects.retain(|e| frame - e.seen <= 3 || (e.oneshot && !(e.done && e.kids.is_empty() && e.em.iter().all(|m| !m.playing))));
         self.effects = effects;
         self.step_rule_particles(&fx, dt, &moved);
         if self.frame % 60 == 0 && std::env::var("MCLA_FX_LOG").is_ok() {

@@ -1017,6 +1017,12 @@ fn vs_body(in: VsIn) -> VsOut {
         // of the position's values it takes is not certain)
         dmg.x = clamp(t.b, 0.0, 1.0) * t.a;
         dmg_d = clamp(t.r + t.b, 0.0, 1.0) * clamp(1.0 - 2.0 * in.pos.y, 0.0, 1.0);
+    } else if (obj.dents[3].y > 0.5) {
+        // A wheel (vehicles.rs: dents[3] = (its hub's scrape sum, 1)): the tyre's dirt as VS_ParallaxRubber2
+        // (cars/0x315a5780, 22 - 34, 47, 70, 76) has it - o7.w = 0.5 x TireDirtColor.w x sqrt(max(t - t^2, 0)),
+        // t = (|p.yz| - 0.406) / 0.095 of the unit wheel model: across the side wall, most in its middle.
+        let tw = (length(in.pos.yz) - 0.406) * 10.526315;
+        dmg.x = 0.5 * obj.dents[3].x * sqrt(max(tw - tw * tw, 0.0));
     }
     let wp = obj.model * vec4<f32>(lp, 1.0);
     o.clip = g.view_proj * wp;
@@ -1703,6 +1709,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (sign_raw) {
         second = vec4<f32>(select(srgb_decode(second.rgb), pwl_decode(second.rgb), vec3<bool>(xenos_gamma_on())), second.a);
     } else if (xg || lod_pwl) { second = vec4<f32>(xenos_gamma(second.rgb), second.a); }
+    // (car windows of the full glass program - vehicles.rs marks them lens -1 - carry the detail mask
+    // (window_detail_mask.dds) and the crack map (glass_test.dds) in the two slots: the pane itself is
+    // drawn white as before; the glass branch below reads the mask's alpha and the crack map)
+    var glass_mask = 1.0;
+    if (mat.mode == 12u && in.uv2.y < -0.5) {
+        glass_mask = albedo.a;
+        albedo = vec4<f32>(1.0);
+        second = vec4<f32>(1.0);
+    }
     let ng = normalize(select(in.normal, vec3<f32>(0.0, 1.0, 0.0), length(in.normal) < 0.01));
     var n = ng;
     // (diagnostics 310: what draws a pixel - red = material mode / 32, green = prop instance, blue = sign lit; alpha-free)
@@ -3084,9 +3099,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             ltt = ltt + amt - clamp(ltt * amt, vec3<f32>(0.0), vec3<f32>(1.0));
             var wt = in.color.a;
             if (g.params.w > 126.5 && g.params.w < 127.5) { wt = 1.0; }
-            let dift = car_raw(albedo.rgb) * ltt;
+            // (the tyre's dirt, TireDirtColor (0.44, 0.35, 0.25) with .w = its hub's scrape sum: m = normal
+            // map alpha x the vertex's dirt (vs_body, VsOut::dmg.x); the colour goes to the dirt by m and the
+            // surroundings' share x sat(1 - 6 m) - PS_ParallaxRubber2_false 17 - 24, 84 - 86, in numpy
+            // work/glassdmg/py/tyre_dirt.py: exact at m = 1)
+            let mt = second.a * in.dmg.x;
+            let dift = mix(car_raw(albedo.rgb), vec3<f32>(0.44, 0.35, 0.25), mt) * ltt;
             let nht = sqrt(clamp(0.5 + 0.5 * dot(n, v), 0.0, 1.0));
-            let envt = pow(max(env_soft(reflect(-v, n)), vec3<f32>(0.000001)), vec3<f32>(2.0 - albedo.a * second.a)) * (albedo.a * albedo.a * (0.125 + 0.875 * (1.0 - nht)));
+            let envt = pow(max(env_soft(reflect(-v, n)), vec3<f32>(0.000001)), vec3<f32>(2.0 - albedo.a * second.a)) * (albedo.a * albedo.a * (0.125 + 0.875 * (1.0 - nht))) * clamp(1.0 - 6.0 * mt, 0.0, 1.0);
             lit = (dift + envt - clamp(dift * envt, vec3<f32>(0.0), vec3<f32>(1.0))) * wt;
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
@@ -3462,7 +3482,44 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let l12 = lh12 + ll12 - clamp(lh12 * ll12, vec3<f32>(0.0), vec3<f32>(1.0));
             let lg12 = l12 + 2.0 * hemi - clamp(l12 * 2.0 * hemi, vec3<f32>(0.0), vec3<f32>(1.0));
             lit = tint4.rgb * lg12 + env * m12;
-            let a12 = clamp(tint4.a + m12, 0.0, 1.0);
+            var a12 = clamp(tint4.a + m12, 0.0, 1.0);
+            // Cracked and broken windows (2026-10-20; PS_GlassFront 9 - 87 with VS_Glass 38 - 43, run in
+            // numpy, work/glassdmg/py g4.py / g5.py; damage_map_rule.md "The windows' look"). s =
+            // WindowDmgVal[zone].x - 0 whole, 1 cracked, 2 broken (damagemap::CarDamage::window, zones 0
+            // - 3 front, rear, left, right; the body's dents[0]); c = sat(s), b = sat(s - 1):
+            //   crack  = glass_test.dds at 1.5 x uv0, base level: rgb the crack's normal in the pane's
+            //            frame n' = normalize((2r-1) T + (2g-1) B + (2b-1) N), B = cross(T, N) x w; a = A
+            //   k      = 1 - b (1 - detail mask alpha): a broken pane keeps its shards only
+            //   rgb   += 1.6 k c A sh x soft(reflect at n') + 6 c A lum(sh x soft(..)) (0.296, 0.431, 0.510)
+            //            + 0.01 c A,  sh = 0.25 + sat(collector - 0.25), lum = (0.3, 0.59, 0.11)
+            //   alpha x= k
+            // (T here from the derivatives and the stored sign, as the tyres' - the pane's own stored
+            // tangent is not in the port's vertex: I. MCLA_DEBUG_VIEW=697: no damage drawn)
+            let wz12 = clamp(zone, 0, 3);
+            let ws12 = select(0.0, obj.dents[0][wz12], zone >= 0 && zone <= 3 && in.uv2.y < -0.5 && !(g.params.w > 696.5 && g.params.w < 697.5));
+            if (ws12 > 0.0) {
+                let c12 = clamp(ws12, 0.0, 1.0);
+                let b12 = clamp(ws12 - 1.0, 0.0, 1.0);
+                let k12 = 1.0 + b12 * (glass_mask - 1.0);
+                let ck = textureSampleLevel(t_second, s_diffuse, in.uv0 * 1.5, 0.0);
+                let q2 = cross(tb_dp2, n);
+                let q1 = cross(n, tb_dp1);
+                let tq = q2 * tb_duv1.x + q1 * tb_duv2.x;
+                let tn = tq * inverseSqrt(max(dot(tq, tq), 1e-12));
+                let bn = cross(tn, n) * ((1.0 - 2.0 * in.bflip) * select(-1.0, 1.0, dot(cross(obj.model[0].xyz, obj.model[1].xyz), obj.model[2].xyz) >= 0.0));
+                let cn = normalize((ck.r * 2.0 - 1.0) * tn + (ck.g * 2.0 - 1.0) * bn + (ck.b * 2.0 - 1.0) * n);
+                var fc12 = 127.0 / 255.0;
+                if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
+                    fc12 = car_collector(in.wpos);
+                } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
+                    fc12 = 1.0;
+                }
+                let sh12 = 0.25 + clamp(fc12 * FC_LIT - 0.25, 0.0, 1.0);
+                let ss12 = env_soft(reflect(-v, cn)) * sh12;
+                let ca12 = c12 * ck.a;
+                lit = lit + ss12 * (1.6 * k12 * ca12) + vec3<f32>(0.29608, 0.43137, 0.5098) * (6.0 * ca12 * dot(ss12, vec3<f32>(0.3, 0.59, 0.11))) + vec3<f32>(0.01 * ca12);
+                a12 = a12 * k12;
+            }
             alpha = select(a12, a12 * (2.0 - a12), lensg && dot(in.normal, v) >= 0.0);
             base = vec3<f32>(0.0);
             spec_k = 0.0;

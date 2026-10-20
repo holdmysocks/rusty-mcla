@@ -687,6 +687,24 @@ fn carbon_weave(gpu: &mut Gpu, world: &World) -> (Arc<GpuTexture>, u32) {
     (gpu.white.clone(), 0)
 }
 
+/// The windows' two global maps (damage_map_rule.md, "The windows' look"): `__detailmasktest`
+/// = window_detail_mask.dds (DetailMaskSampler: its alpha keeps the shards of a broken pane) and
+/// `__glassdmg` = glass_test.dds (GlassDmgSampler: the crack's normal in rgb, the crack in alpha) of
+/// cars/globaltex.list - as stored, not gamma-decoded (a normal map and masks). None when missing.
+fn glass_maps(gpu: &mut Gpu, world: &World) -> Option<((Arc<GpuTexture>, u32), (Arc<GpuTexture>, u32))> {
+    let raw = |gpu: &mut Gpu, name: &str| -> Option<(Arc<GpuTexture>, u32)> {
+        // (kept apart from a gamma-decoded upload of the same file)
+        let key = mcla_formats::hash::joaat(name) ^ 0x0052_4157;
+        if let Some(t) = gpu.textures.get(&key) {
+            return Some((t.clone(), key));
+        }
+        let p = world.globaltex.get(&mcla_formats::hash::joaat(name))?;
+        let t = std::fs::read(p).ok().and_then(|d| mcla_formats::dds::parse_dds(name, &d).ok())?;
+        Some((gpu.upload_texture_raw(key, &t), key))
+    };
+    Some((raw(gpu, "window_detail_mask.dds")?, raw(gpu, "glass_test.dds")?))
+}
+
 /// Normals for a mesh whose vertex format has none (the matte black parts are stored as
 /// positions alone): the area-weighted mean of the faces around each vertex.
 fn face_normals(mesh: &mcla_formats::rage::geometry::Mesh) -> Vec<Vec3> {
@@ -1229,6 +1247,11 @@ impl Vehicles {
                 // (render only, blade round - PS_CarbonFiber's NormalSampler, the weave's normal map, rides as the CarbonFiber
                 // meshes' second texture; city.wgsl reads it in the carbon branch. MCLA_CARBON_OLD=1: none)
                 let (s2, k1) = if sname.eq_ignore_ascii_case("CarbonFiber") && !car_is_ambient && std::env::var("MCLA_CARBON_OLD").is_err() { carbon_weave(gpu, world) } else { (s2, k1) };
+                // (the windows of a car with the full glass program, PS_GlassFront: the detail mask and the
+                // crack map in the two slots, marked by lens -1 below; city.wgsl reads them for a cracked
+                // or broken pane and draws the pane white as before)
+                let win_maps = if sname.eq_ignore_ascii_case("CarGlass") && !car_is_ambient && dn.is_none() && sn.is_none() { glass_maps(gpu, world) } else { None };
+                let ((d, k0), (s2, k1)) = win_maps.clone().unwrap_or(((d, k0), (s2, k1)));
                 // meshes sharing textures and material mode are merged into one draw (the side
                 // windows' glass apart, by side: it moves with its bone)
                 let win_side = if part.is_base { car.windows.iter().position(|w| w.as_ref().map_or(false, |w| part.mesh_tag.get(mi) == Some(&w.tag))).map_or(0, |k| k as u32 + 1) } else { 0 };
@@ -1270,6 +1293,8 @@ impl Vehicles {
                     1.0
                 } else if glass {
                     2.0
+                } else if win_maps.is_some() {
+                    -1.0
                 } else {
                     0.0
                 };
@@ -2991,7 +3016,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (traffic and parked cars: their type's paint, `iPaintType`)
                 (false, None) => (self.amb_types.get(&c.model.name).map_or(3, |t| t.paint_type.min(5)), [0.0; 4], [0.0; 4], [[0.0; 4]; 5], [[0.0; 4]; 5], [[0.0; 4]; 5]),
             };
-            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: c.color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32], dents: [[0.0; 4]; 6], color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(0.0).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
+            // (a body's first dent slot: its four windows' states for the glass program - WindowDmgVal
+            // slots 0 - 3, damagemap::CarDamage::window)
+            let mut body_slots = [[0.0; 4]; 6];
+            body_slots[0] = c.state.dmg.windows();
+            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: c.color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(0.0).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
             gpu.update_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {
@@ -3042,6 +3071,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 } else if let Some(l) = c.look.as_ref() {
                     finish[..3].copy_from_slice(&l.rim_finish);
                 }
+                // (the fourth: the tyre's dirt - TireDirtColor.w, its hub's scrape sum at most 1 - and a
+                // mark that this is a wheel)
+                finish[3] = [c.state.dmg.rim_scuff(i), 1.0, 0.0, 0.0];
                 gpu.update_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: finish, fill: car_fill, ..Default::default() });
                 // the caliper: with the wheel but for its turning, on the rear of the disc on
                 // both sides (the right ones turned over instead of around)
