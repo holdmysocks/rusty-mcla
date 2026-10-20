@@ -55,20 +55,27 @@ pub struct AmbType {
     /// obstacle vfuncs 4 and 6, sub_826D9818); 0: not read
     pub width: f32,
     pub length: f32,
+    /// `mcAmbientCarTypeColor.xml` (render type +236): the 20 colours times `fScale`, and
+    /// `iPaintType` (the CarPaint record: 0 DirtyMatte, 1 Matte, 2 Gloss, 3 Metallic, 4 Pearl,
+    /// 5 Sparkle)
+    pub colors: Option<[[f32; 3]; 20]>,
+    pub paint_type: u8,
 }
 
 impl Default for AmbType {
     fn default() -> Self {
         // (the values every sedan of the set carries)
-        AmbType { max_speed: 40.0, min_accel_band: 1.0, min_accel: 1.0, max_accel: 5.0, min_decel_band: 0.2, min_decel: 3.0, max_decel: 22.5, min_turn: 5.0, pivot_turn: 3.0, instances: 20, bound_group: 0, freeway_only: false, cab: false, trailer: false, width: 0.0, length: 0.0 }
+        AmbType { max_speed: 40.0, min_accel_band: 1.0, min_accel: 1.0, max_accel: 5.0, min_decel_band: 0.2, min_decel: 3.0, max_decel: 22.5, min_turn: 5.0, pivot_turn: 3.0, instances: 20, bound_group: 0, freeway_only: false, cab: false, trailer: false, width: 0.0, length: 0.0, colors: None, paint_type: 2 }
     }
 }
 
 impl AmbType {
     pub fn load(root: &std::path::Path, model: &str) -> AmbType {
+        let _ = DATA_ROOT.set(root.to_path_buf());
         let d = AmbType::default();
         let (width, length) = bound_size(root, model).unwrap_or((0.0, 0.0));
-        let Ok(t) = std::fs::read_to_string(root.join("tune/ambients/traffic").join(model).join("mcAmbientType.xml")) else { return AmbType { width, length, ..d } };
+        let (colors, paint_type) = type_colors(root, model);
+        let Ok(t) = std::fs::read_to_string(root.join("tune/ambients/traffic").join(model).join("mcAmbientType.xml")) else { return AmbType { width, length, colors, paint_type, ..d } };
         let v = |tag: &str, def: f32| crate::ambient::xml_value(&t, tag).unwrap_or(def);
         let flag = |tag: &str| t.contains(&format!("<{tag} value=\"true\""));
         AmbType {
@@ -88,8 +95,42 @@ impl AmbType {
             trailer: flag("bIsTrailer") || TRAILERS.iter().any(|n| n.eq_ignore_ascii_case(model)),
             width,
             length,
+            colors,
+            paint_type,
         }
     }
+
+    /// The colour of colour index `i` (the spawner draws `rand % 20`, sub_826F6920; the
+    /// render instance's +52): `vColors[i] x fScale`, as the player's paint is handed on.
+    pub fn color(&self, i: usize) -> Option<[f32; 4]> {
+        self.colors.map(|c| {
+            let c = c[i % 20];
+            [c[0], c[1], c[2], 1.0]
+        })
+    }
+}
+
+/// The data folder, known once a traffic type was loaded (the parked cars' colours).
+pub static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// `tune/ambients/traffic/<model>/mcAmbientCarTypeColor.xml`: (20 colours x fScale, iPaintType).
+fn type_colors(root: &std::path::Path, model: &str) -> (Option<[[f32; 3]; 20]>, u8) {
+    let Ok(t) = std::fs::read_to_string(root.join("tune/ambients/traffic").join(model).join("mcAmbientCarTypeColor.xml")) else { return (None, 2) };
+    let scale = crate::ambient::xml_value(&t, "fScale").unwrap_or(1.0);
+    let paint = crate::ambient::xml_value(&t, "iPaintType").map_or(2, |v| v as u8);
+    let body = t.find("<vColors").and_then(|i| {
+        let b = &t[i..];
+        Some(&b[b.find('>')? + 1..b.find("</vColors>")?])
+    });
+    let v: Vec<f32> = body.map(|b| b.split_whitespace().filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
+    if v.len() < 60 {
+        return (None, paint);
+    }
+    let mut c = [[0.0f32; 3]; 20];
+    for (i, row) in c.iter_mut().enumerate() {
+        *row = [v[i * 3] * scale, v[i * 3 + 1] * scale, v[i * 3 + 2] * scale];
+    }
+    (Some(c), paint)
 }
 
 /// The type's bound box: `resources/ambients/<model>/*.r155`, the root's +8 bound (a
@@ -369,6 +410,9 @@ pub struct Rider {
     rest: f32,
     /// a cab's trailer or a trailer's cab (their ids, +3604)
     pub partner: Option<u32>,
+    /// on the ground (the car update's probe and smoothing, car +1696 .. +2528); None: made
+    /// anew from the car's pose
+    pub seat: Option<Seat>,
     rng: u32,
     id: u32,
     /// (diagnostics) the car ahead last seen: centre distance and margin
@@ -409,6 +453,7 @@ impl Rider {
             kept: None,
             rest: 0.0,
             partner: None,
+            seat: None,
             rng: seed.max(1),
             id: seed,
             ahead: (0.0, 0.0),
@@ -662,7 +707,7 @@ struct Ahead {
 /// Looks for the car ahead along `rails` (this rail and the next as segments), `lanes` the
 /// lanes those rails are (cars riding them count without a test).
 #[allow(clippy::too_many_arguments)]
-fn find_ahead(nav: &NavSys, me: usize, pos: Vec3, fwd: Vec3, own_wid: f32, moving: bool, rails: &[Vec<(Vec3, Vec3)>], lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, others: &[Other]) -> Ahead {
+fn find_ahead(nav: &NavSys, me: usize, pos: Vec3, fwd: Vec3, own_wid: f32, rails: &[Vec<(Vec3, Vec3)>], lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, others: &[Other]) -> Ahead {
     let mut best: Option<(usize, f32)> = None;
     let mut block: Option<(usize, f32)> = None;
     let mut player_across = false;
@@ -680,7 +725,9 @@ fn find_ahead(nav: &NavSys, me: usize, pos: Vec3, fwd: Vec3, own_wid: f32, movin
         }
         let direct = match o.on {
             Some((ol, onext, _)) => {
-                Some(ol) == lanes.0 || (lanes.1.is_some() && Some(ol) == lanes.1) || (moving && onext.is_some() && onext == lanes.1 && next_start.is_some_and(|s| s.distance_squared(o.pos) <= 5625.0))
+                // (a car merging into our next rail: while it moves - its speed +412 - and we
+                // are within 75 m of that rail's start)
+                Some(ol) == lanes.0 || (lanes.1.is_some() && Some(ol) == lanes.1) || (o.vel != Vec3::ZERO && onext.is_some() && onext == lanes.1 && next_start.is_some_and(|s| s.distance_squared(pos) < 5625.0))
             }
             _ => false,
         };
@@ -1034,7 +1081,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
                 s0 += a.distance(b);
                 keep
             });
-            find_ahead(nav, me, pos, fwd, r.ty.width.max(1.6), v > 0.0, &rails, (Some(lane), next_lane), r.next.map(|n| nav.links[n].a), env.others)
+            find_ahead(nav, me, pos, fwd, r.ty.width.max(1.6), &rails, (Some(lane), next_lane), r.next.map(|n| nav.links[n].a), env.others)
         }
     };
     r.kept = (v == 0.0 && ahead.j != usize::MAX).then(|| (ahead.j, env.others[ahead.j].pos));
@@ -1161,7 +1208,7 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: None, player_across: false }
     } else {
         let segs: Vec<(Vec3, Vec3)> = path.pts.windows(2).zip(path.cum.iter().skip(1)).filter(|(_, &c)| c > path.s).map(|(w, _)| (w[0], w[1])).collect();
-        find_ahead(env.nav, me, q, dir, r.ty.width.max(1.6), r.v > 0.0, &[segs], (None, None), None, env.others)
+        find_ahead(env.nav, me, q, dir, r.ty.width.max(1.6), &[segs], (None, None), None, env.others)
     };
     let want = path.speed;
     let (mut a, _) = control(r, r.v, want, half_len, &ahead, env.others, None, None, dt);
@@ -1217,6 +1264,110 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         }
     }
     Some((p, f))
+}
+
+/// How a riding car stands on the ground (car update sub_826E5D20, decoded 2026-10-20): the
+/// rail gives only x / z and the heading; the height and tilt come from a ground probe
+/// (mask 0x800) set up one frame and read the next, and the up and forward are the means of
+/// the last eight.
+#[derive(Clone, Debug)]
+pub struct Seat {
+    /// the y the rail target takes (car +2324: the car's own y of the last update)
+    y: f32,
+    /// the probe set up last frame: the target then (position, travel direction)
+    pending: Option<(Vec3, Vec3)>,
+    /// what the car takes when no probe result comes (car +2272 .. +2320): position, up, travel
+    raw: (Vec3, Vec3, Vec3),
+    /// the last eight ups and forwards (rings at car +2368 / +2528)
+    ups: [Vec3; 8],
+    fwds: [Vec3; 8],
+    k: usize,
+    frames: u32,
+    /// the car's position and up of the last update (before the drawn 0.025 m drop)
+    at: (Vec3, Vec3),
+}
+
+/// Half the probe segment (0x820390F4).
+const PROBE_HALF: f32 = 1.75;
+
+impl Seat {
+    pub fn new(pos: Vec3, up: Vec3, fwd: Vec3) -> Seat {
+        Seat { y: pos.y, pending: None, raw: (pos, up, fwd), ups: [up; 8], fwds: [fwd; 8], k: 0, frames: 0, at: (pos, up) }
+    }
+}
+
+/// The ground under `p` (the probe: a vertical segment +- 1.75 m round it, the city's bound -
+/// the original's collision class 0x800): contact point and its normal, facing up.
+pub fn probe_ground(col: &WorldCollider, p: Vec3) -> Option<(Vec3, Vec3)> {
+    let h = col.raycast(p + Vec3::Y * PROBE_HALF, Vec3::NEG_Y, 2.0 * PROBE_HALF)?;
+    let n = if h.normal.y < 0.0 { -h.normal } else { h.normal };
+    Some((h.point, n.normalize_or(Vec3::Y)))
+}
+
+/// Should the car set up a probe this frame (sub_826E5D20): trailers every frame; a standing
+/// car never (offline); else on alternate frames by the car's id, every fourth beyond 80 m
+/// from the focus unless it is tilted more than 5 degrees within 120 m.
+fn probe_due(r: &Rider, frame: u32, dist2: f32, up_y: f32) -> bool {
+    if r.ty.trailer {
+        return true;
+    }
+    if r.v == 0.0 {
+        return false;
+    }
+    let slot = r.id >> 5;
+    if dist2 >= 6400.0 && !(up_y < 0.99619 && dist2 < 14400.0) {
+        return (frame.wrapping_add(slot)) & 3 == 0;
+    }
+    (frame ^ slot) & 1 == 0
+}
+
+/// One frame of the seat: `p` / `dir` the rail's target (point, travel direction), `car` the
+/// car's position and up now; `face` the way the car faces (the travel direction, or against
+/// it backing up). Returns the car's position and rotation.
+#[allow(clippy::too_many_arguments)]
+fn seat_car(r: &mut Rider, col: &WorldCollider, p: Vec3, dir: Vec3, face: Vec3, car: (Vec3, Vec3, Vec3), due: bool) -> (Vec3, Quat) {
+    let trailer = r.ty.trailer;
+    let s = r.seat.get_or_insert_with(|| Seat::new(car.0, car.1, car.2));
+    let t_pos = Vec3::new(p.x, s.y, p.z);
+    // last frame's probe, read now
+    let hit = s.pending.take().and_then(|(at, d)| probe_ground(col, at).map(|h| (h, d)));
+    let (pos, up_raw, fwd_raw) = match hit {
+        Some(((q, n), d)) => {
+            let f = (d - n * d.dot(n)).normalize_or(d);
+            // for the frames without a result: the contact moved towards the target in its plane
+            let off = t_pos - q;
+            s.raw = (q + off - n * off.dot(n), n, f);
+            (q, n, f)
+        }
+        None => {
+            let m = s.raw;
+            // the next raw: the car's up kept, sliding to the target in that plane
+            let (cp, cu) = s.at;
+            let u = cu.normalize_or(Vec3::Y);
+            let off = t_pos - cp;
+            let f = (dir - u * dir.dot(u)).normalize_or(dir);
+            s.raw = (cp + off - u * off.dot(u), u, f);
+            m
+        }
+    };
+    if due {
+        s.pending = Some((t_pos, dir));
+    }
+    s.ups[s.k] = up_raw;
+    s.fwds[s.k] = fwd_raw;
+    s.k = (s.k + 1) % 8;
+    let up = s.ups.iter().copied().sum::<Vec3>().normalize_or(Vec3::Y);
+    // (a trailer's forward is not smoothed)
+    let fwd = if trailer { fwd_raw } else { s.fwds.iter().copied().sum::<Vec3>().normalize_or(fwd_raw) };
+    let f = if face.dot(dir) < 0.0 { -fwd } else { fwd };
+    let right = f.cross(up).normalize_or(Vec3::X);
+    let f = up.cross(right).normalize_or(f);
+    s.y = pos.y;
+    s.at = (pos, up);
+    s.frames += 1;
+    // (a car on a rail is drawn 0.025 m lower from its second frame on: skeleton +236)
+    let drawn = if s.frames > 1 { pos - up * 0.025 } else { pos };
+    (drawn, Quat::from_mat3(&glam::Mat3::from_cols(right, up, -f)).normalize())
 }
 
 /// The rotation of a car facing `f` (3D) with the world's up as near up as it goes.
@@ -1280,7 +1431,9 @@ impl Vehicles {
         let hold = self.frozen || self.grid_hold.is_some();
         let event = self.cars.iter().any(|c| c.racer || c.pinned);
         static FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let parity = FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 1 == 1;
+        let frame = FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let parity = frame & 1 == 1;
+        let focus = self.cars.iter().find(|c| c.is_player).map_or(Vec3::ZERO, |c| c.state.pos);
         let env = Env { nav, lanes, col, others: &others, signals: &self.signals, clock: self.clock, event, hold, parity };
         // MCLA_TRAFFIC_TRACE=file: every riding car ten times a second (time, id, model, x, y,
         // z, speed, lane speed, junction lane, offset, entries on, standing gap, distance and
@@ -1295,7 +1448,7 @@ impl Vehicles {
             }
         }
         let mut trace = match guard.as_mut() {
-            Some((w, last)) if self.clock - *last >= 0.1 => {
+            Some((w, last)) if self.clock - *last >= std::env::var("MCLA_TRAFFIC_TRACE_DT").ok().and_then(|x| x.parse::<f32>().ok()).unwrap_or(0.1) => {
                 *last = self.clock;
                 Some(w)
             }
@@ -1381,24 +1534,31 @@ impl Vehicles {
             let (p, f) = pose;
             let v = r.v;
             let back = matches!(r.path.as_ref(), Some(pp) if pp.reverse);
+            // on the ground (sub_826E5D20)
+            let dir = if back { -f } else { f };
+            let dist2 = Vec3::new(c.state.pos.x - focus.x, 0.0, c.state.pos.z - focus.z).length_squared();
+            let due = probe_due(r, frame, dist2, c.state.up().y);
+            let car = (c.state.pos, c.state.up(), dir);
+            let (p, rot) = seat_car(r, col, p, dir, f, car, due);
+            c.state.relocate(p, rot);
+            c.state.vel = dir * v;
             if let Some(w) = trace.as_mut() {
                 use std::io::Write;
                 let (lim, junction) = rail_speed(nav, r.link);
-                let _ = writeln!(w, "{:.2}	{}	{}	{:.2}	{:.2}	{:.2}	{:.3}	{:.2}	{}	{:.0}	{}{}{}	{:.2}	{:.2}	{:.2}	{:.3}	{}	{}	{}", self.clock, r.rng_id(), c.model.name, p.x, p.y, p.z, v, lim, junction as u8, r.off, r.on[0] as u8, r.on[1] as u8, r.on[2] as u8, r.gap, r.ahead.0, r.ahead.1, r.a, r.state, r.obst_id.and_then(|j| others.get(j)).map_or(0, |o| o.key), nav.links[r.link].flags);
+                let _ = writeln!(w, "{:.2}	{}	{}	{:.2}	{:.2}	{:.2}	{:.3}	{:.2}	{}	{:.0}	{}{}{}	{:.2}	{:.2}	{:.2}	{:.3}	{}	{}	{}	{:.3}", self.clock, r.rng_id(), c.model.name, c.state.pos.x, c.state.pos.y, c.state.pos.z, v, lim, junction as u8, r.off, r.on[0] as u8, r.on[1] as u8, r.on[2] as u8, r.gap, r.ahead.0, r.ahead.1, r.a, r.state, r.obst_id.and_then(|j| others.get(j)).map_or(0, |o| o.key), nav.links[r.link].flags, col.ground(c.state.pos, 3.0, 6.0).map_or(f32::NAN, |g| g.point.y - c.state.pos.y));
             }
-            let rot = facing(f);
-            c.state.relocate(p, rot);
-            c.state.vel = f * if back { -v } else { v };
             c.state.ang_vel = Vec3::ZERO;
             let wr = c.model.params.wheel_radius.max(0.2);
             for w in c.state.wheels.iter_mut() {
-                w.spin += if back { -v } else { v } / wr * dt;
+                // (the drawn wheels turn at 0.6 of the rolling rate: sub_82794FA8)
+                w.spin += 0.6 * if back { -v } else { v } / wr * dt;
                 w.steer = 0.0;
                 w.grounded = true;
             }
             c.placed = true;
         }
         drop(guard);
+        self.tow_trailers(col, dt);
         // (test hook MCLA_TRAFFIC_KNOCK=s: every s seconds the riding car nearest the player
         // within 60 m is knocked sideways - physical - to watch it find its lane again)
         if let Some(every) = std::env::var("MCLA_TRAFFIC_KNOCK").ok().and_then(|x| x.parse::<f32>().ok()) {
@@ -1423,7 +1583,6 @@ impl Vehicles {
         for p in busy {
             self.signals.occupy(p);
         }
-        self.tow_trailers(dt);
     }
 
     /// The trailers (slot 28 sub_826FB400): the rear bogie trails the cab's hitch - the
@@ -1431,7 +1590,7 @@ impl Vehicles {
     /// so its hitch is on the cab's. A trailer whose cab is gone is let go (slot 29, reason 16:
     /// the spawner's next step removes it - the cars are not removed in the middle of the
     /// vehicles' update).
-    fn tow_trailers(&mut self, dt: f32) {
+    fn tow_trailers(&mut self, col: &WorldCollider, dt: f32) {
         let ids: hashbrown::HashMap<u32, usize> = self.cars.iter().enumerate().filter_map(|(i, c)| c.rail.as_ref().filter(|r| r.state != 0).map(|r| (r.rng_id(), i))).collect();
         for i in 0..self.cars.len() {
             let Some(r) = self.cars[i].rail.as_mut().filter(|r| r.state == 0) else { continue };
@@ -1448,6 +1607,13 @@ impl Vehicles {
             let z = (tr * Vec3::Z).normalize_or(Vec3::Z);
             let rot = (Quat::from_rotation_arc(z, d) * tr).normalize();
             let pos = h - rot * TRAILER_HITCH;
+            // on the ground as every car (probed every frame, its forward not smoothed)
+            let dir = rot * Vec3::NEG_Z;
+            let car = (tp, tr * Vec3::Y, dir);
+            let (pos, rot) = match t.rail.as_mut() {
+                Some(r) => seat_car(r, col, pos, dir, dir, car, true),
+                None => (pos, rot),
+            };
             let v = if dt > 0.0 { (pos - tp) / dt } else { Vec3::ZERO };
             t.state.relocate(pos, rot);
             t.state.vel = v;
@@ -1471,12 +1637,14 @@ impl Vehicles {
             return;
         }
         let name = TRAILERS[(r.rand() * 5.0) as usize % 5];
+        let shade = (r.rand() * 20.0) as usize % 20;
         let (cab_id, link, s) = (r.rng_id(), r.link, r.s);
         let Some(mi) = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(name)) else { return };
         let (cp, cr) = (self.cars[cab].state.pos, self.cars[cab].state.rot);
         let pos = cp + cr * CAB_HITCH - cr * TRAILER_HITCH;
         let model = self.models[mi].clone();
-        let color = super::TRAFFIC_PALETTE[(self.rand() * super::TRAFFIC_PALETTE.len() as f32) as usize % super::TRAFFIC_PALETTE.len()];
+        let tty = *self.amb_types.entry(model.name.clone()).or_insert_with(|| AmbType::load(root, &model.name));
+        let color = tty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
         let f = cr * Vec3::NEG_Z;
         let idx = self.spawn(gpu, model, pos, (-f.x).atan2(-f.z), color, false);
         self.cars[idx].state.relocate(pos, cr);
@@ -1519,6 +1687,8 @@ impl Vehicles {
         r.then = None;
         r.passing = None;
         r.rest = 0.0;
+        // (back from physics the seat starts from the car's pose, sub_826E5680)
+        r.seat = None;
         c.state.vel = c.state.forward() * if back { -r.v } else { r.v };
     }
 }
@@ -1543,7 +1713,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, rng: 7, id: 7, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, rng: 7, id: 7, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
@@ -1861,7 +2031,7 @@ impl Vehicles {
             if sp.frame % 2 == 1 {
                 self.region_list(&mut sp, nav, center, view, mph, free_fast);
                 if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() && sp.frame % 30 == 1 {
-                    log::info!("traffic regions {} target {:.2} current {} enabled {} mph {:.0} turned down (type, pool, junction, freeway, one way, room, seen) {:?}", sp.list.len(), sp.target, sp.current, enabled, mph, sp.why);
+                    log::info!("traffic regions {} target {:.2} current {} enabled {} mph {:.0} turned down (type, pool, junction, freeway, one way, room, seen, no ground) {:?}", sp.list.len(), sp.target, sp.current, enabled, mph, sp.why);
                 }
             } else if enabled {
                 self.spawn_frame(&mut sp, gpu, world, nav, center, view, mph, player_link);
@@ -2066,13 +2236,25 @@ impl Vehicles {
                     continue;
                 }
             }
+            // on the ground: a probe +- 1.75 m at the point, none - no spawn ("could not spawn
+            // on terrain", sub_826E4A48)
+            let Some((ground, normal)) = probe_ground(&world.collider, pos) else {
+                sp.why[7] += 1;
+                continue;
+            };
             let model = self.models[mi].clone();
-            let color = if model.name.contains("taxi") { [0.95, 0.72, 0.05, 0.0] } else { super::TRAFFIC_PALETTE[(self.rand() * super::TRAFFIC_PALETTE.len() as f32) as usize % super::TRAFFIC_PALETTE.len()] };
+            // its colour: one of the type's twenty (global RNG % 20)
+            let shade = (self.rand() * 20.0) as usize % 20;
+            let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
             let yaw = (-dir.x).atan2(-dir.z);
-            let idx = self.spawn(gpu, model, pos, yaw, color, false);
+            let idx = self.spawn(gpu, model, ground, yaw, color, false);
+            let f = (dir - normal * dir.dot(normal)).normalize_or(dir);
+            let right = f.cross(normal).normalize_or(Vec3::X);
+            self.cars[idx].state.relocate(ground, Quat::from_mat3(&glam::Mat3::from_cols(right, normal, -f)).normalize());
             let seed = (self.rand() * 16777216.0) as u32 | 1;
             let mut rider = Rider::new(nav, ty, link, s, seed);
             rider.born = self.clock;
+            rider.seat = Some(Seat::new(ground, normal, f));
             self.cars[idx].rail = Some(rider);
             if let Some(ai) = self.cars[idx].ai.as_mut() {
                 ai.link = Some(link);

@@ -1908,7 +1908,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         mi = i;
                     }
                     let model = self.models[mi].clone();
-                    let color = if model.name.contains("taxi") { [0.95, 0.72, 0.05, 0.0] } else { TRAFFIC_PALETTE[(h / 7) as usize % TRAFFIC_PALETTE.len()] };
+                    // (its type's own colours, as the traffic's: sub_826F23A0 draws % 20)
+                    let shade = (h / 7) as usize % 20;
+                    let ty = match traffic::DATA_ROOT.get() {
+                        Some(root) => Some(*self.amb_types.entry(model.name.clone()).or_insert_with(|| traffic::AmbType::load(root, &model.name))),
+                        None => self.amb_types.get(&model.name).copied(),
+                    };
+                    let color = ty.and_then(|t| t.color(shade)).unwrap_or(TRAFFIC_PALETTE[shade % TRAFFIC_PALETTE.len()]);
                     // the heading runs from +x towards +z; our yaw has forward = (-sin, 0, -cos)
                     let flip = if (h / 13) % 2 == 0 { 0.0 } else { std::f32::consts::PI };
                     let yaw = -(sp.heading + std::f32::consts::FRAC_PI_2) + flip;
@@ -2982,7 +2988,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let s19d_look: (u8, [f32; 4], [f32; 4], [[f32; 4]; 5], [[f32; 4]; 5], [[f32; 4]; 5]) = match (c.is_player, c.look.as_ref()) {
                 (true, _) => (self.player_paint_type.min(5), self.player_paint_b, self.player_tint, self.player_interior, self.player_area_a, self.player_area_b),
                 (false, Some(l)) => (l.paint_type.min(5), l.color2, l.tint, l.interior, l.area_a, l.area_b),
-                (false, None) => (3, [0.0; 4], [0.0; 4], [[0.0; 4]; 5], [[0.0; 4]; 5], [[0.0; 4]; 5]),
+                // (traffic and parked cars: their type's paint, `iPaintType`)
+                (false, None) => (self.amb_types.get(&c.model.name).map_or(3, |t| t.paint_type.min(5)), [0.0; 4], [0.0; 4], [[0.0; 4]; 5], [[0.0; 4]; 5], [[0.0; 4]; 5]),
             };
             let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: c.color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32], dents: [[0.0; 4]; 6], color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(0.0).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
             gpu.update_object(&c.binding, &body_u);
