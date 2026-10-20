@@ -5972,6 +5972,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         self.vehicles.hide_player = self.hide_player;
+        // (the driver's camera: the original's POV camera sets G+122 of the car it follows - sub_822A9670 -
+        // and its windows take the in-car glass program; damage_map_rule.md Part C 6. As the cockpit's
+        // headless driver: not while looking back, in a replay or the idle camera.)
+        self.vehicles.interior_glass = self.cam_mode == 3 && !self.look_back && self.game.replay.is_none() && self.idle_cam.is_none();
         // (m_NFLFade for the night fill light the traffic cars add to their ambient - fillmap.rs)
         fillmap::set_fade(self.sky_now().tod.map_or(0.0, |t| t.nfl));
         self.vehicles.upload_uniforms(&gpu, night);

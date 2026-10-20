@@ -490,6 +490,8 @@ pub struct Gpu {
     /// car windows: back faces, then front faces, both with depth writes
     pub pipeline_glass_back: wgpu::RenderPipeline,
     pub pipeline_glass_front: wgpu::RenderPipeline,
+    /// the player's windows in the driver's view (interiorwindowglass): the back faces' cull, no depth writes
+    pub pipeline_glass_inner: wgpu::RenderPipeline,
     /// shop panes (PSCityWindowLower and its night program): blended WITH depth writes, like the original's draws
     pub pipeline_pane: wgpu::RenderPipeline,
     pub pipeline_sky: wgpu::RenderPipeline,
@@ -1205,6 +1207,9 @@ impl Gpu {
         let glass_flip = std::env::var("MCLA_GLASS_FLIP").is_err();
         let pipeline_glass_back = make_pipeline_x(true, "vs_main", Some(if glass_flip { wgpu::Face::Back } else { wgpu::Face::Front }), true);
         let pipeline_glass_front = make_pipeline_x(true, "vs_main", Some(if glass_flip { wgpu::Face::Front } else { wgpu::Face::Back }), true);
+        // (the in-car glass: register 0x2205 = 0x19806 as the back faces' pass, depth control 0x00708762 - tested,
+        // not written; recorded in the driver's view, work/intglass cap/pov_noon)
+        let pipeline_glass_inner = make_pipeline_x(true, "vs_main", Some(if glass_flip { wgpu::Face::Back } else { wgpu::Face::Front }), false);
         // (the shop panes: the original draws them blended with depth writes (depth control 0x00708767 on
         // every pane draw, back faces culled), in batch order - a pane behind one drawn earlier is not drawn,
         // so the shop behind an angled entrance shows through ONE pane; back faces go in city.wgsl)
@@ -1751,6 +1756,7 @@ impl Gpu {
             pipeline_blend,
             pipeline_glass_back,
             pipeline_glass_front,
+            pipeline_glass_inner,
             pipeline_pane,
             pipeline_sky,
             sky_hat,

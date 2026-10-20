@@ -1452,6 +1452,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let sg_on = (mat.mode == 5u || mat.mode == 24u) && in.neon_hl > -0.5 && g.tone.w < 1.5 && !(g.params.w > 441.5 && g.params.w < 442.5);
     let sg_dx0 = dpdx(in.uv0) * sg_s;
     let sg_dy0 = dpdy(in.uv0) * sg_s;
+    // (the plain footprint, for fetches made in branches: the in-car glass' noise and mask)
+    let uv0_dx = dpdx(in.uv0);
+    let uv0_dy = dpdy(in.uv0);
     if (sg_on) {
         let dm = vec2<f32>(textureDimensions(t_diffuse));
         let lx = max(length(sg_dx0 * dm), 0.000001);
@@ -3507,6 +3510,50 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let lg12 = l12 + 2.0 * hemi - clamp(l12 * 2.0 * hemi, vec3<f32>(0.0), vec3<f32>(1.0));
             lit = tint4.rgb * lg12 + env * m12;
             var a12 = clamp(tint4.a + m12, 0.0, 1.0);
+            // The driver's camera (2026-10-20, work/intglass; damage_map_rule.md Part C 6): the original's POV
+            // camera sets G+122 of the car it follows (sub_822A9670), and that car's windows are drawn with
+            // technique interiorwindowglass - VS_InteriorGlass + PS_InteriorGlass (recorded in the driver view,
+            // cap/pov_noon), run in numpy against this (ps_check.py, 6e-6):
+            //   sh   = 4/3 sat(collector - 0.25)
+            //   D    = screen(sh x screen(12 L0, 12 L1), 12 ambient)     (L = colour x sat(n.l) x the 0.9)
+            //   z    = (noise.g - 0.5) 0.15 + 0.5,  noise = 2dnoise4.dds at 11 uv0;  q = mask.g + 0.1
+            //   rgb  = lerp(tint.rgb / 12, 0.5, z q / 11) x D + sh f^2 x L0 colour,  f = 4 sat(-v.l0 - 0.8)
+            //   a    = z q / 1.1 + 0.5 sat(tint.a - 0.3)              (x gInvColorExpBias, as above)
+            // (screen(a, b) = a + b - sat(a b); L0 = the car's first light slot, the one the glare takes;
+            // mask = window_detail_mask.dds.) No surroundings, no cracks, no clip plane: WindowDmgVal is 0
+            // while G+123 (sub_82357DB8), so k = 1 - sat(s - 1)(1 - mask.a) = 1 and nothing is cut.
+            // Only the panes' inner side is drawn (cull mode 0x19806 against the body's 0x19802; the pipeline
+            // `pipeline_glass_inner`, without depth writes), and twice in one frame with the same state - here
+            // once with a (2 - a). MCLA_DEBUG_VIEW=730: the outside rule in the driver's view as before.
+            let int12 = (u32(round(obj.params.w)) & 256u) != 0u && !lensg && in.uv2.y < -0.5 && !(g.params.w > 729.5 && g.params.w < 730.5);
+            if (int12) {
+                if (dot(in.normal, v) >= 0.0) { discard; }
+                var fci = 127.0 / 255.0;
+                if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
+                    fci = car_collector(in.wpos);
+                } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
+                    fci = 1.0;
+                }
+                let shi = 4.0 / 3.0 * clamp(fci * FC_LIT - 0.25, 0.0, 1.0);
+                let ai = 12.0 * lh12;
+                let bi = 12.0 * ll12;
+                let oi = ai + bi - clamp(ai * bi, vec3<f32>(0.0), vec3<f32>(1.0));
+                let li = shi * oi;
+                let hi = 12.0 * hemi;
+                let di = li + hi - clamp(li * hi, vec3<f32>(0.0), vec3<f32>(1.0));
+                let nzi = (textureSampleGrad(t_third, s_diffuse, in.uv0 * 11.0, uv0_dx * 11.0, uv0_dy * 11.0).g - 0.5) * 0.15 + 0.5;
+                let qi = textureSampleGrad(t_diffuse, s_diffuse, in.uv0, uv0_dx, uv0_dy).g + 0.1;
+                let ti = tint4.rgb / 12.0;
+                // (the glare: the first slot is the lamp when it came first - car_key_col.w - else the hour's light)
+                let lamp0 = g.car_key_col.w > 0.5;
+                let hn = g.car_key2.w > 0.5;
+                let l0d = select(select(g.sun_dir.xyz, car_kd(), hn), g.car_key.xyz, lamp0);
+                let l0c = select(select(g.sun_color.rgb * g.sun_dir.w, car_kc(), hn), g.car_key_col.rgb, lamp0) * att12;
+                let fi = 4.0 * clamp(-dot(v, l0d) - 0.8, 0.0, 1.0);
+                lit = (ti + (0.5 - ti) * (nzi * qi / 11.0)) * di + l0c * (shi * fi * fi);
+                let ai1 = clamp(nzi * qi / 1.1 + 0.5 * clamp(tint4.a - 0.3, 0.0, 1.0), 0.0, 1.0);
+                a12 = ai1 * (2.0 - ai1);
+            }
             // Cracked and broken windows (2026-10-20; PS_GlassFront 9 - 87 with VS_Glass 38 - 43, run in
             // numpy, work/glassdmg/py g4.py / g5.py; damage_map_rule.md "The windows' look"). s =
             // WindowDmgVal[zone].x - 0 whole, 1 cracked, 2 broken (damagemap::CarDamage::window, zones 0
@@ -3522,9 +3569,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             // The side windows (2, 3) are cut below the car's clip plane (VS_Glass 70 - 80 -> o6, PS_GlassFront
             // 8 kill if o6 < 0; the plane in the car body's dents[4], vehicles.rs): a rolled-down pane sinks
             // into the door.
-            if ((zone == 2 || zone == 3) && dot(obj.dents[4].xyz, in.wpos) + obj.dents[4].w < 0.0) { discard; }
+            if ((zone == 2 || zone == 3) && !int12 && dot(obj.dents[4].xyz, in.wpos) + obj.dents[4].w < 0.0) { discard; }
             let wz12 = clamp(zone, 0, 3);
-            let ws12 = select(0.0, obj.dents[0][wz12], zone >= 0 && zone <= 3 && in.uv2.y < -0.5 && !(g.params.w > 696.5 && g.params.w < 697.5));
+            let ws12 = select(0.0, obj.dents[0][wz12], zone >= 0 && zone <= 3 && in.uv2.y < -0.5 && !int12 && !(g.params.w > 696.5 && g.params.w < 697.5));
             if (ws12 > 0.0) {
                 let c12 = clamp(ws12, 0.0, 1.0);
                 let b12 = clamp(ws12 - 1.0, 0.0, 1.0);

@@ -468,6 +468,9 @@ pub struct Vehicles {
     player_brake_name: String,
     /// the bumper camera sits inside the bodywork: the player's car is not drawn
     pub hide_player: bool,
+    /// the driver's camera (the original's POV view) is on: the player's windows are drawn with the
+    /// in-car glass program (G+123 of the car's draw object; city.wgsl mode 12, `obj.params.w` bit 256)
+    pub interior_glass: bool,
     /// the player's car is driven by the test driver (`--auto`): it passes traffic like the racers
     pub auto_player: bool,
     /// the city's parking spots and a 64 m lookup grid
@@ -712,6 +715,19 @@ fn glass_maps(gpu: &mut Gpu, world: &World) -> Option<((Arc<GpuTexture>, u32), (
         Some((gpu.upload_texture_raw(key, &t), key))
     };
     Some((raw(gpu, "window_detail_mask.dds")?, raw(gpu, "glass_test.dds")?))
+}
+
+/// The in-car glass program's noise (PS_InteriorGlass noiseColoredSampler): `__coloredNoise` of
+/// cars/globaltex.list = 2dnoise4.dds, 128 x 128 A8R8G8B8 with its 8 levels, read as stored (the
+/// bound texture of a recording is this file's green byte for byte). The windows' third texture.
+fn glass_noise(gpu: &mut Gpu, world: &World) -> Option<(Arc<GpuTexture>, u32)> {
+    let key = mcla_formats::hash::joaat("2dnoise4.dds") ^ 0x0052_4157;
+    if let Some(t) = gpu.textures.get(&key) {
+        return Some((t.clone(), key));
+    }
+    let p = world.globaltex.get(&mcla_formats::hash::joaat("2dnoise4.dds"))?;
+    let t = std::fs::read(p).ok().and_then(|d| mcla_formats::dds::parse_dds("2dnoise4.dds", &d).ok())?;
+    Some((gpu.upload_texture_raw(key, &t), key))
 }
 
 /// Normals for a mesh whose vertex format has none (the matte black parts are stored as
@@ -1461,7 +1477,12 @@ impl Vehicles {
             if acc.indices.is_empty() {
                 continue;
             }
-            let bind = gpu.texture_bind_group(&acc.d, &acc.s2, k.0, k.1);
+            // (the windows with the glass maps also carry the in-car program's noise as their third texture)
+            let win_noise = if k.0 == mcla_formats::hash::joaat("window_detail_mask.dds") ^ 0x0052_4157 && acc.mode == MatMode::CarGlass { glass_noise(gpu, world) } else { None };
+            let bind = match win_noise {
+                Some((t3, k2)) => gpu.texture_bind_group3(&acc.d, &acc.s2, &t3, k.0, k.1, k2),
+                None => gpu.texture_bind_group(&acc.d, &acc.s2, k.0, k.1),
+            };
             let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.verts), usage: wgpu::BufferUsages::VERTEX });
             let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.indices), usage: wgpu::BufferUsages::INDEX });
             if k.2 >> 16 != 0 {
@@ -3057,7 +3078,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // takes that as it is - docs/LIGHTING.md "Traffic paint: the ambient cars' own program")
             let amb_paint = !c.is_player && c.look.is_none() && lamp_rows.0[0][3] > 0.5;
             let body_color = if amb_paint { ambient_paint(c.color) } else { c.color };
-            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(0.0).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
+            // (+ 256: the in-car glass, only the player's car - the camera's target, sub_822A9670)
+            let int_glass = if self.interior_glass && c.is_player { 256.0 } else { 0.0 };
+            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(0.0).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
             gpu.update_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {
@@ -3312,8 +3335,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // writes; the lamps' lenses stay in the one pass. MCLA_GLASS_ONEPASS=1: as before. MCLA_GLASS_PASS=b / f:
             // one of the two only, to look at them)
             let glass2 = blend_pass && glass_two_pass() != 0;
+            // (the player's car in the driver's view: interiorwindowglass, drawn twice by the original with the
+            // back faces' cull and no depth writes - here once, city.wgsl blends it as the two draws)
+            let inner = self.interior_glass && c.is_player;
             if glass2 {
-                for (side, pl) in [(1u8, &gpu.pipeline_glass_back), (2u8, &gpu.pipeline_glass_front)] {
+                let passes: &[(u8, &wgpu::RenderPipeline)] = if inner { &[(3u8, &gpu.pipeline_glass_inner)] } else { &[(1u8, &gpu.pipeline_glass_back), (2u8, &gpu.pipeline_glass_front)] };
+                for &(side, pl) in passes {
                     if glass_two_pass() & side == 0 {
                         continue;
                     }
