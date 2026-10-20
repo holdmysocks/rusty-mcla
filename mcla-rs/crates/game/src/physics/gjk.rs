@@ -577,6 +577,16 @@ pub fn loop_pair(shape: &impl Support, by: Vec3, then: Vec3, other: &impl Suppor
 /// `loop_pair` with the direction it starts from handed in and the one it ends with handed back
 /// (the detector object's +16, which the swept test keeps from one call to the next).
 pub fn loop_from(shape: &impl Support, by: Vec3, then: Vec3, other: &impl Support, dir: &mut Vec3, margin_a: f32, margin_b: f32) -> (Option<Nearest>, bool) {
+    let (found, degenerate, _) = loop_ends(shape, by, then, other, dir, margin_a, margin_b);
+    (found, degenerate)
+}
+
+/// The corner numbers of the two shapes the simplex holds (simplex +372 / +392 and its count +412).
+pub type Ends = (([u32; 4], usize), ([u32; 4], usize));
+
+/// `loop_from` that also gives the corners the simplex ended with, whether or not there is an answer: the
+/// simplex buffer is the caller's, and a penetration routine's inner loop leaves its own corners in it.
+fn loop_ends(shape: &impl Support, by: Vec3, then: Vec3, other: &impl Support, dir: &mut Vec3, margin_a: f32, margin_b: f32) -> (Option<Nearest>, bool, Ends) {
     let mut simplex = Simplex::default();
     let mut v = *dir;
     let mut squared = f32::MAX;
@@ -631,22 +641,23 @@ pub fn loop_from(shape: &impl Support, by: Vec3, then: Vec3, other: &impl Suppor
             break;
         }
     }
+    let ends = ((simplex.ids, simplex.count), (simplex.ids_b, simplex.count));
     if !check {
-        return (None, degenerate);
+        return (None, degenerate, ends);
     }
     let len2 = dot(v, v);
     if NEAR2 > len2 {
         degenerate = true;
     }
     if !(len2 > f32::EPSILON) {
-        return (None, degenerate);
+        return (None, degenerate, ends);
     }
     let rs = rsqrt(len2);
     let len = recip(rs);
     let (a, b) = (simplex.p1, simplex.p2);
     let on_a = -(Vec3::splat(margin_a * rs) * v - a);
     let on_b = v * Vec3::splat(margin_b * rs) + b;
-    (Some(Nearest { on_a, on_b, normal: (a - b) * rs, distance: (len - margin_a) - margin_b, degenerate, deep: false, corners: (simplex.ids, simplex.count), corners_b: (simplex.ids_b, simplex.count) }), degenerate)
+    (Some(Nearest { on_a, on_b, normal: (a - b) * rs, distance: (len - margin_a) - margin_b, degenerate, deep: false, corners: ends.0, corners_b: ends.1 }), degenerate, ends)
 }
 
 /// (MCLA_DBG_GJK=<file>: every wheel's call of `contact` is written there as one line of
@@ -695,7 +706,14 @@ pub fn contact_about(shape: &impl Support, tri: &[Vec3; 3], face: Vec3, bisector
             }
         }
         let off = best.0 + ((margin_a + margin_b) + CATCH);
-        if let (Some(r), _) = loop_only(shape, by, best.1 * off, &local, Vec3::Z, margin_a, margin_b) {
+        let mut first = Vec3::Z;
+        let (inner, _, ends) = loop_ends(shape, by, best.1 * off, &Corners(&local), &mut first, margin_a, margin_b);
+        // (the routine's inner detector works in the caller's simplex buffer: the element of whichever answer is
+        // kept is read from the corners that loop ended with, 0x825E1E10 after 0x825E2370)
+        if let Some(r) = result.as_mut() {
+            (r.corners, r.corners_b) = ends;
+        }
+        if let Some(r) = inner {
             let pen = off * dot(best.1, r.normal) - r.distance;
             let b = r.on_b + Vec3::ZERO;
             let a = -(Vec3::splat(pen) * r.normal - b);
@@ -1120,7 +1138,13 @@ pub fn convex_contact(a: &impl Support, margin_a: f32, b: &impl Support, margin_
             off = 0.0;
         }
         let mut v = Vec3::Z;
-        if let (Some(r), _) = loop_from(a, best.1 * off, Vec3::ZERO, b, &mut v, margin_a, margin_b) {
+        let (inner, _, ends) = loop_ends(a, best.1 * off, Vec3::ZERO, b, &mut v, margin_a, margin_b);
+        // (the inner detector works in the caller's simplex buffer: whichever answer is kept, its element is read
+        // from the corners this loop ended with, 0x825E1E10 after 0x825C67E8)
+        if let Some(r) = result.as_mut() {
+            (r.corners, r.corners_b) = ends;
+        }
+        if let Some(r) = inner {
             let pen = off * dot(best.1, r.normal) - r.distance;
             let (oa, ob) = (r.on_b - r.normal * pen, r.on_b);
             let between = ob - oa;
