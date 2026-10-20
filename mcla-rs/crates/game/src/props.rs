@@ -2012,23 +2012,25 @@ impl Props {
         let Some(buf) = self.inst_buf.as_ref() else { return };
         // (a prop that broke: the model follows its heaviest moving piece - the port draws a prop whole,
         // so the part that stays, a stump at most, is not drawn on its own)
+        // (a piece taken out of the simulator asleep, `dormant`, lies at its last matrix and still counts)
         let mut best: HashMap<u32, (f32, usize)> = HashMap::new();
         for (k, o) in level.objs.iter().enumerate() {
-            let (Some(i), Some(b)) = (o.inst.or(o.entry.and_then(|e| e.from)), o.body.as_ref()) else { continue };
+            let Some(i) = o.inst.or(o.entry.and_then(|e| e.from)) else { continue };
+            let Some(mass) = o.body.as_ref().map(|b| b.mass).or(if o.dormant { o.entry.map(|e| e.mass) } else { None }) else { continue };
             let Some((fi, _)) = lw.instances.get(i as usize) else { continue };
             let at = Vec3::new(fi.matrix[3][0], fi.matrix[3][1], fi.matrix[3][2]);
             let Some(&ci) = self.level_map.as_ref().unwrap().get(&key(at)) else { continue };
-            if best.get(&ci).map_or(true, |&(m, _)| b.mass > m) {
-                best.insert(ci, (b.mass, k));
+            if best.get(&ci).map_or(true, |&(m, _)| mass > m) {
+                best.insert(ci, (mass, k));
             }
         }
         for (ci, (_, k)) in best {
-            let (o, b) = (&level.objs[k], level.objs[k].body.as_ref().unwrap());
+            let o = &level.objs[k];
             let c = &mut self.colliders[ci as usize];
             if !c.knocked {
                 c.knocked = true;
                 self.knocked += 1;
-                self.hits.push(crate::sound::PropHit { pos: c.pos, kind: c.foot.snd, model: c.foot.audio, speed: b.v.length(), knocked: true });
+                self.hits.push(crate::sound::PropHit { pos: c.pos, kind: c.foot.snd, model: c.foot.audio, speed: o.body.map_or(0.0, |b| b.v.length()), knocked: true });
             }
             let m = o.matrix;
             let rot = Quat::from_mat3(&glam::Mat3::from_cols(m[0].normalize_or(Vec3::X), m[1].normalize_or(Vec3::Y), m[2].normalize_or(Vec3::Z))).normalize();

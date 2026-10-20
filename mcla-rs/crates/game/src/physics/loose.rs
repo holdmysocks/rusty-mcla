@@ -331,6 +331,10 @@ pub struct Obj {
     pub addr: i64,
     /// (stage R) another vehicle: its bound and what its archetype holds
     pub veh: Option<VehObj>,
+    /// its body's sleep object (body_decode.md 6.1; a torn bumper's is the piece's own)
+    pub sleep: Sleep,
+    /// taken out of the simulator asleep (0x82588D90): inactive at its last matrix until a contact wakes it (`wake_obj`)
+    pub dormant: bool,
 }
 
 /// Who a contact's side is.
@@ -736,7 +740,7 @@ impl LooseState {
             // the heap's)
             let level = 1 + n as i64;
             let addr = h.addr.get(&level).copied().unwrap_or(0xA000_0000 + 0x100 * n as i64);
-            self.objs.push(Obj { ty: *ty, inst: Some(inst), matrix: m4(&fi.matrix), entry: None, hit: false, body: None, level, addr, veh: None });
+            self.objs.push(Obj { ty: *ty, inst: Some(inst), matrix: m4(&fi.matrix), entry: None, hit: false, body: None, level, addr, veh: None, sleep: Sleep::reset(), dormant: false });
             self.by_inst.insert(inst, i);
             return i;
         }
@@ -750,6 +754,8 @@ impl LooseState {
             level: rank('l', i).unwrap_or(if hint("b", n) { 1 + n as i64 } else { -1_000_000_000 + n as i64 }),
             addr: rank('a', i).unwrap_or(if hint("after", n) { 1 + n as i64 } else { -1_000_000_000 + n as i64 }),
             veh: None,
+            sleep: Sleep::reset(),
+            dormant: false,
         });
         self.by_inst.insert(inst, i);
         i
@@ -1810,6 +1816,21 @@ impl LooseState {
         let mut touches: Vec<Touch> = list.iter().map(|x| x.1).collect();
         let inv_dt = 1.0 / dt;
         let mut rounds_left = 64;
+        // (the wake, 0x82590A60 -> 0x8258D3F8: an inactive instance that was hit before, in a contact of an island
+        // with something breakable in it (island +75), gets a new body at rest. The decode has the call in the
+        // breaking pass's listing (0x825914B8), after the first solve; the recording says the woken body is
+        // already in the first solve - s512 / s518 of the long scrape exact only so - so it is done before the
+        // rows. Whether the island +75 condition matters is not shown by the recording: the same run without it is
+        // the same, bit for bit.)
+        if links.iter().any(|l| [l.a, l.b].into_iter().any(|w| matches!(w, Some(Who::Obj(o)) if self.breakable(world, o)))) {
+            for l in links.iter() {
+                for who in [l.a, l.b] {
+                    if let Some(Who::Obj(o)) = who {
+                        self.wake_obj(world, o);
+                    }
+                }
+            }
+        }
         loop {
             let (bodies, owners) = self.bodies_of(car, &links, &mut touches);
             let solved = solver::island_solve(&bodies, &touches, dt, inv_dt);
@@ -1926,8 +1947,8 @@ impl LooseState {
                 continue;
             }
             // (nothing broke: the impulses go to the bodies' accumulators, 0x825A20E8)
-            let (bodies, owners2) = self.bodies_of(car, &links, &mut touches);
-            debug_assert_eq!(owners, owners2);
+            // (a body woken above is in the apply's list now: the owners are the solve's and the woken)
+            let (bodies, owners) = self.bodies_of(car, &links, &mut touches);
             let given = solver::island_apply(&bodies, &touches);
             for (k, o) in owners.iter().enumerate() {
                 let b = self.objs[*o].body.as_mut().unwrap();
@@ -1973,6 +1994,7 @@ impl LooseState {
                     let a = &t.archetype;
                     let e = Entry { absent: 0, age: 0.0, cg: v(t.cg), mass: a.mass, inv_mass: a.inv_mass, inertia: v(a.inertia), inv_inertia: v(a.inv_inertia), ..Default::default() };
                     obj.body = Some(PBody::new(&obj.matrix, e.cg, &e, a.max_speed, a.max_spin));
+                    (obj.sleep, obj.dormant) = (Sleep::reset(), false);
                 }
                 return None;
             }
@@ -1990,6 +2012,7 @@ impl LooseState {
             if obj.body.is_none() {
                 let e = obj.entry.unwrap();
                 obj.body = Some(PBody::new(&obj.matrix, e.cg, &e, max_speed, max_spin));
+                (obj.sleep, obj.dormant) = (Sleep::reset(), false);
             }
             return None;
         }
@@ -2002,6 +2025,7 @@ impl LooseState {
             obj.hit = true;
             if obj.body.is_none() {
                 obj.body = Some(PBody::new(&obj.matrix, parent.cg, &parent, max_speed, max_spin));
+                (obj.sleep, obj.dormant) = (Sleep::reset(), false);
             }
             return None;
         }
@@ -2025,7 +2049,7 @@ impl LooseState {
         let n = self.pieces_made;
         let new = self.objs.len();
         let (inst_addr, index) = (self.entry_instance(), self.new_index());
-        self.objs.push(Obj { ty, inst: None, matrix, entry: Some(e), hit: true, body: Some(body), level: index.unwrap_or(rank('l', new).unwrap_or(if hint("pb", n) { 2_000_000 + n as i64 } else { -1000 - n as i64 })), addr: inst_addr.unwrap_or(rank('a', new).unwrap_or(if hint("pafter", n) { 2_000_000 + n as i64 } else { -1000 - n as i64 })), veh: None });
+        self.objs.push(Obj { ty, inst: None, matrix, entry: Some(e), hit: true, body: Some(body), level: index.unwrap_or(rank('l', new).unwrap_or(if hint("pb", n) { 2_000_000 + n as i64 } else { -1000 - n as i64 })), addr: inst_addr.unwrap_or(rank('a', new).unwrap_or(if hint("pafter", n) { 2_000_000 + n as i64 } else { -1000 - n as i64 })), veh: None, sleep: Sleep::reset(), dormant: false });
         if dbg() {
             eprintln!("LOOSENEW tick {} obj {new} level {} addr {:x}", self.tick, self.objs[new].level, self.objs[new].addr);
         }
@@ -2172,11 +2196,11 @@ impl LooseState {
     }
 
     /// For whoever draws the props (stage P4): the prop instances that have lost groups - the instance's number in
-    /// the file's order and the bit set of the groups gone - and every piece or loose prop that has a body: its
+    /// the file's order and the bit set of the groups gone - and every piece or loose prop that has a body or lies asleep (`dormant`): its
     /// type, the groups it does NOT hold, and its instance's matrix (rows and place).
     pub fn drawn(&self) -> (Vec<(u32, u64)>, Vec<(usize, u64, [Vec3; 4])>) {
         let broken = self.objs.iter().filter_map(|o| Some((o.inst?, o.entry?.absent))).filter(|x| x.1 != 0).collect();
-        let moving = self.objs.iter().filter(|o| o.body.is_some()).map(|o| (o.ty, o.entry.map_or(0, |e| e.absent), o.matrix)).collect();
+        let moving = self.objs.iter().filter(|o| o.body.is_some() || o.dormant).map(|o| (o.ty, o.entry.map_or(0, |e| e.absent), o.matrix)).collect();
         (broken, moving)
     }
 
@@ -2187,7 +2211,11 @@ impl LooseState {
 
     /// Every island the car is not in: its solve, its breaking pass, and its push solve.
     pub fn step_rest(&mut self, world: &LooseWorld, car_in: &CarIn, dt: f32) {
+        let asleep = self.islands_asleep();
         for ids in self.islands().1 {
+            if ids.iter().any(|k| asleep.contains(&self.manis[*k].island)) {
+                continue;
+            }
             let mut none = Body { at: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z], vel: Vec3::ZERO, ang: Vec3::ZERO, inv_mass: 0.0, inv_moments: Vec3::ZERO, force: Vec3::ZERO, torque: Vec3::ZERO };
             let (mut p, mut l) = (Vec3::ZERO, Vec3::ZERO);
             let mut dynm = CarDyn { p: &mut p, l: &mut l, mass: 0.0, inverse: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z] };
@@ -2264,6 +2292,7 @@ impl LooseState {
         let rs = super::gjk::rsqrt_as_original;
         self.replay_pieces();
         self.pieces_wake(dt);
+        self.bodies_wake(dt);
         self.sync_others();
         for o in 0..self.objs.len() {
             let Some(mut b) = self.objs[o].body else { continue };
@@ -2338,6 +2367,7 @@ impl LooseState {
     /// answer into the pose (0x8259E920), and every entry a tick older (0x824AB680).
     pub fn end_tick(&mut self, world: &LooseWorld, dt: f32) {
         self.pieces_sleep(dt);
+        self.bodies_sleep(dt);
         for o in 0..self.objs.len() {
             let Some(mut b) = self.objs[o].body else { continue };
             if self.objs[o].veh.is_some() && self.live {
@@ -2798,7 +2828,7 @@ impl LooseState {
             let i = match self.objs.iter().position(|o| o.veh.map_or(false, |x| x.index == v.id)) {
                 Some(i) => i,
                 None => {
-                    self.objs.push(Obj { ty: usize::MAX, inst: None, matrix: v.body.prev, entry: None, hit: false, body: None, level: 0, addr: 0, veh: None });
+                    self.objs.push(Obj { ty: usize::MAX, inst: None, matrix: v.body.prev, entry: None, hit: false, body: None, level: 0, addr: 0, veh: None, sleep: Sleep::reset(), dormant: false });
                     self.objs.len() - 1
                 }
             };
@@ -2859,7 +2889,7 @@ impl LooseState {
             let i = match self.objs.iter().position(|o| o.veh.map_or(false, |x| x.index == v.index)) {
                 Some(i) => i,
                 None => {
-                    self.objs.push(Obj { ty: usize::MAX, inst: None, matrix: v.matrix, entry: None, hit: false, body: None, level: 0, addr: 0, veh: None });
+                    self.objs.push(Obj { ty: usize::MAX, inst: None, matrix: v.matrix, entry: None, hit: false, body: None, level: 0, addr: 0, veh: None, sleep: Sleep::reset(), dormant: false });
                     self.objs.len() - 1
                 }
             };
@@ -3037,7 +3067,7 @@ impl LooseState {
         body.l = body.momentum_of(w);
         let o = self.objs.len();
         // (inserted after the car: the car is A against it)
-        self.objs.push(Obj { ty, inst: None, matrix, entry: None, hit: true, body: Some(body), level: 3_000_000 + o as i64, addr: 3_000_000 + o as i64, veh: None });
+        self.objs.push(Obj { ty, inst: None, matrix, entry: None, hit: true, body: Some(body), level: 3_000_000 + o as i64, addr: 3_000_000 + o as i64, veh: None, sleep: Sleep::reset(), dormant: false });
         let id = PIECE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.pieces.push(Piece { id, obj: o, sleep: Sleep::reset(), off: false, contacts: Vec::new() });
         Some(id)
@@ -3151,6 +3181,135 @@ impl LooseState {
     }
 }
 
+impl LooseState {
+    /// Has the object a sleep object of the generic kind (a pool body that is no vehicle and no torn bumper)?
+    fn sleeper(&self, o: usize) -> bool {
+        self.objs[o].veh.is_none() && !self.pieces.iter().any(|p| p.obj == o)
+    }
+
+    /// Take an asleep object out of the simulator (0x82588D90): inactive at its last matrix, its entry and
+    /// its "hit" bit kept.
+    fn deactivate(&mut self, o: usize) {
+        let obj = &mut self.objs[o];
+        obj.body = None;
+        obj.dormant = true;
+        if dbg() {
+            eprintln!("LOOSESLEEP tick {} obj {o} level {}", self.tick, obj.level);
+        }
+    }
+
+    /// 0x82590A60 -> 0x8258D3F8: an inactive object that has been hit is activated again with a new body at
+    /// rest (0x8259E648: v = w = 0) and a reset sleep object; one never hit refuses (vtable[28] 0x8248BF08).
+    fn wake_obj(&mut self, world: &LooseWorld, o: usize) {
+        if !self.objs[o].dormant || self.objs[o].body.is_some() || !self.objs[o].hit || !self.sleeper(o) {
+            return;
+        }
+        let t = &world.types[self.objs[o].ty];
+        let obj = &mut self.objs[o];
+        obj.body = Some(match obj.entry {
+            Some(e) => PBody::new(&obj.matrix, e.cg, &e, 500.0, f32::from_bits(0x40c9_0fdb)),
+            None => {
+                let a = &t.archetype;
+                let e = Entry { absent: 0, age: 0.0, cg: v(t.cg), mass: a.mass, inv_mass: a.inv_mass, inertia: v(a.inertia), inv_inertia: v(a.inv_inertia), ..Default::default() };
+                PBody::new(&obj.matrix, e.cg, &e, a.max_speed, a.max_spin)
+            }
+        });
+        (obj.sleep, obj.dormant) = (Sleep::reset(), false);
+        if dbg() {
+            eprintln!("LOOSEWAKE tick {} obj {o} level {}", self.tick, obj.level);
+        }
+    }
+
+    /// PreCollide's sleep test (0x82588490) for every body with a sleep object.
+    fn bodies_wake(&mut self, dt: f32) {
+        for o in 0..self.objs.len() {
+            if !self.sleeper(o) {
+                continue;
+            }
+            let Some(b) = self.objs[o].body.as_ref() else { continue };
+            if self.objs[o].sleep.state != 1 && !still(b, dt, 0.0) {
+                self.objs[o].sleep.state = 1;
+            }
+        }
+    }
+
+    /// The sleep object's update (0x825951D0, in 0x8258A300's loop before the integration) and deactivation A
+    /// (body_decode.md 6.2): asleep with no manifold this tick - not integrated, taken out.
+    fn bodies_sleep(&mut self, dt: f32) {
+        for o in 0..self.objs.len() {
+            if !self.sleeper(o) {
+                continue;
+            }
+            let Some(b) = self.objs[o].body else { continue };
+            let s = &mut self.objs[o].sleep;
+            if still(&b, dt, dt) {
+                if s.state == 1 {
+                    s.a += 1;
+                    if s.a >= 15 {
+                        s.state = 0;
+                    }
+                }
+                if s.state != 1 {
+                    s.b += 1;
+                    if s.b >= 20 {
+                        s.state = 2;
+                    }
+                }
+            } else if s.state == 1 {
+                s.a = 0;
+                s.b = 0;
+            } else {
+                s.state = 1;
+            }
+            if self.objs[o].sleep.state == 2 && !self.manis.iter().any(|m| m.a == Who::Obj(o) || m.b == Who::Obj(o)) {
+                self.deactivate(o);
+            }
+        }
+    }
+
+    /// Deactivation B (0x825DAB28 -> 0x825906D0 / 0x82592A00): an island whose bodies are all asleep is taken
+    /// out before its solve - no breaking, no impulses. A body without a sleep object of this kind (the car, a
+    /// vehicle, a torn bumper - the port keeps the bumper's own rule) keeps its island awake.
+    fn islands_asleep(&mut self) -> Vec<usize> {
+        let mut seen: Vec<usize> = Vec::new();
+        let mut asleep = Vec::new();
+        for k in 0..self.manis.len() {
+            let isl = self.manis[k].island;
+            if isl == 0 || seen.contains(&isl) {
+                continue;
+            }
+            seen.push(isl);
+            let mut bodies: Vec<usize> = Vec::new();
+            let mut all = true;
+            for m in self.manis.iter().filter(|m| m.island == isl) {
+                for w in [m.a, m.b] {
+                    match w {
+                        Who::Car => all = false,
+                        Who::City => {}
+                        Who::Obj(o) => {
+                            if self.objs[o].body.is_none() {
+                                continue;
+                            }
+                            if !self.sleeper(o) || self.objs[o].sleep.state != 2 {
+                                all = false;
+                            } else if !bodies.contains(&o) {
+                                bodies.push(o);
+                            }
+                        }
+                    }
+                }
+            }
+            if all {
+                asleep.push(isl);
+                for o in bodies {
+                    self.deactivate(o);
+                }
+            }
+        }
+        asleep
+    }
+}
+
 /// A piece on its way from one car's level to another's (the original has one level: whichever car reaches the
 /// piece meets it).
 #[derive(Clone, Debug)]
@@ -3196,7 +3355,7 @@ impl LooseState {
             b.last = m.matrix;
             b.last_set = true;
         }
-        self.objs.push(Obj { ty, inst: None, matrix: m.matrix, entry: None, hit: m.hit, body, level: 3_000_000 + o as i64, addr: 3_000_000 + o as i64, veh: None });
+        self.objs.push(Obj { ty, inst: None, matrix: m.matrix, entry: None, hit: m.hit, body, level: 3_000_000 + o as i64, addr: 3_000_000 + o as i64, veh: None, sleep: Sleep::reset(), dormant: false });
         self.pieces.push(Piece { id: m.id, obj: o, sleep: m.sleep, off: m.off, contacts: Vec::new() });
     }
 }
