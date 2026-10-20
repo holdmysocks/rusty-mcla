@@ -18,8 +18,8 @@
 //!   the junction ahead. The vehicles' copy is stepped; the props' copy takes its state
 //!   (`sync_from`).
 //!
-//! Read only in part from the code, so approximate here: what counts as "waiting" and as "in the
-//! box" (see `step`).
+//! Read only in part from the code, so approximate here: what counts as "in the box" for cars
+//! that are not lane traffic (see `step`).
 //! The lamp state reaches the prop shader through the instance scale (see `Props::update_signals`).
 
 use glam::Vec3;
@@ -57,6 +57,9 @@ pub struct Junction {
     pub arms: Vec<Vec3>,
     /// reach of the box from its centre (m)
     pub radius: f32,
+    /// the junction's +0x40 (its second box half extent): a refused car this close to the
+    /// centre counts as waiting (sub_827A3458)
+    pub reach: f32,
     /// held by a race script: -1 free, -2 red all round, otherwise the arm held green
     pub forced: i8,
     /// the arm whose phase runs
@@ -96,6 +99,31 @@ impl Junction {
         }
     }
 
+    /// May traffic enter a junction lane whose first two control points are P0, P1 (`entry` =
+    /// P0 - P1, pointing back out along the street it comes from)? The original's test
+    /// (sub_8273A178 / sub_8273A360): only while the phase is green (timer < 6.5) and the
+    /// current arm lies within 25 degrees of the lane's entry, `dot(arm, level(P0 - P1)) > cos 25`.
+    /// The car's own heading does not count: on a street that bends into the junction it can
+    /// be far off the arm while the lane's first span still runs along it. 2 green, 1 yellow
+    /// (the arm's yellow; traffic stops for it too), 0 red.
+    pub fn lane_state(&self, entry: Vec3) -> u8 {
+        let (current, timer) = match self.forced {
+            -2 => return 0,
+            f if f >= 0 => (f as usize, 0.0),
+            _ => (self.current as usize, self.timer),
+        };
+        match self.arms.get(current) {
+            Some(a) if a.dot(level(entry)) > 0.9063 && timer < GREEN + YELLOW => {
+                if timer < GREEN {
+                    2
+                } else {
+                    1
+                }
+            }
+            _ => 0,
+        }
+    }
+
     /// Signal state for traffic travelling along `heading` towards the junction at time `t`:
     /// the car is on the arm that points back the way it came.
     pub fn state_for(&self, heading: Vec3, t: f32) -> u8 {
@@ -109,6 +137,8 @@ pub struct Signals {
     grid: HashMap<(i32, i32), Vec<u32>>,
     /// junctions whose own lanes carry traffic since the last step (`occupy`)
     held: Vec<u32>,
+    /// (junction, arm) of every traffic car the light refused since the last step (`wait`)
+    waiting: Vec<(u32, u8)>,
 }
 
 const CELL: f32 = 96.0;
@@ -171,10 +201,11 @@ impl Signals {
     /// else the timer runs, and past 10 s the junction switches once its box is clear or 15 s
     /// are up - in the first 1.5 s of a race to the player's arm, otherwise to the arm with the
     /// largest demand, arm 0 if there is none.
-    /// Demand: a car within the junction's reach plus 12 m, slower than 2 m/s, on an arm that is
-    /// not green, adds one a tick (the original counts cars its lane logic refuses; the reach
-    /// and the speed test are this port's stand-in). Box occupied: a car within the box's reach
-    /// less 2 m (the original tests the junction's own lanes).
+    /// Demand: every traffic car the light refused since the last step and within the
+    /// junction's reach adds one to the arm it stands on (`wait`, sub_827A3458). Box occupied:
+    /// traffic on the junction's own lanes (`occupy`), or another car (`cars`: the player,
+    /// racers, police - not lane traffic) within the box's reach less 2 m (a stand-in: the
+    /// original tests the player's lane).
     /// Player priority (sub_8273A540; in a race, faster than 10 m/s, at the junction ahead):
     /// own arm green -> its green is held; another arm green -> that goes yellow now; yellow /
     /// red all round -> cut short; the player's arm gets demand.
@@ -186,7 +217,7 @@ impl Signals {
                 *o = true;
             }
         }
-        for (pos, vel) in cars {
+        for (pos, _vel) in cars {
             let (cx, cz) = cell(*pos);
             for dx in -1..=1 {
                 for dz in -1..=1 {
@@ -200,16 +231,14 @@ impl Signals {
                         let d = off.length();
                         if d < j.radius - 2.0 {
                             occupied[ji as usize] = true;
-                        } else if d < j.radius + 12.0 && vel.length() < 2.0 {
-                            let arm = j.arm_towards(off);
-                            if j.arm_state(arm, 0.0) != 2 {
-                                if let Some(c) = j.demand.get_mut(arm) {
-                                    *c = c.saturating_add(1);
-                                }
-                            }
                         }
                     }
                 }
+            }
+        }
+        for (ji, arm) in std::mem::take(&mut self.waiting) {
+            if let Some(c) = self.junctions.get_mut(ji as usize).and_then(|j| j.demand.get_mut(arm as usize)) {
+                *c = c.saturating_add(1);
             }
         }
         let started = race.map_or(false, |r| r.0 <= 0.0);
@@ -304,13 +333,13 @@ impl Signals {
                 }
             }
             let demand = vec![0; arms.len()];
-            out.push(Junction { center: nj.center, arms, radius: nj.half[0].max(nj.half[1]).clamp(6.0, 40.0), forced: -1, current: 0, timer: START, demand });
+            out.push(Junction { center: nj.center, arms, radius: nj.half[0].max(nj.half[1]).clamp(6.0, 40.0), reach: nj.half[1], forced: -1, current: 0, timer: START, demand });
         }
         let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         for (i, j) in out.iter().enumerate() {
             grid.entry(cell(j.center)).or_default().push(i as u32);
         }
-        (Signals { junctions: out, grid, held: Vec::new() }, of_head)
+        (Signals { junctions: out, grid, held: Vec::new(), waiting: Vec::new() }, of_head)
     }
 
     /// A traffic car on one of a junction's own lanes (its through lanes and connectors): the
@@ -335,6 +364,17 @@ impl Signals {
             if !self.held.contains(&ji) {
                 self.held.push(ji);
             }
+        }
+    }
+
+    /// A traffic car at `pos` that the light of junction `ji` refused this frame (sub_827A3458):
+    /// within the junction's reach of its centre it adds one to the demand of the arm it stands
+    /// on (sub_8273E210: the arm nearest its bearing from the centre), at the next step.
+    pub fn wait(&mut self, ji: usize, pos: Vec3) {
+        let Some(j) = self.junctions.get(ji) else { return };
+        let off = Vec3::new(pos.x - j.center.x, 0.0, pos.z - j.center.z);
+        if off.length_squared() < j.reach * j.reach && !j.arms.is_empty() {
+            self.waiting.push((ji as u32, j.arm_towards(off) as u8));
         }
     }
 
@@ -377,6 +417,26 @@ impl Signals {
         best
     }
 
+    /// The junction whose box holds `p` (a junction lane's control points): the nearest centre
+    /// within its reach plus 12 m and 7 m of height.
+    pub fn junction_at(&self, p: Vec3) -> Option<usize> {
+        let (cx, cz) = cell(p);
+        let mut best: Option<(usize, f32)> = None;
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                let Some(list) = self.grid.get(&(cx + dx, cz + dz)) else { continue };
+                for &ji in list {
+                    let j = &self.junctions[ji as usize];
+                    let d = Vec3::new(p.x - j.center.x, 0.0, p.z - j.center.z).length();
+                    if (j.center.y - p.y).abs() < 7.0 && d < j.radius + 12.0 && best.map_or(true, |b| d < b.1) {
+                        best = Some((ji as usize, d));
+                    }
+                }
+            }
+        }
+        best.map(|b| b.0)
+    }
+
     /// Junction whose box contains `pos`, if any.
     pub fn inside(&self, pos: Vec3) -> Option<usize> {
         let (cx, cz) = cell(pos);
@@ -400,7 +460,7 @@ mod tests {
     use super::*;
 
     fn cross() -> Junction {
-        Junction { center: Vec3::ZERO, arms: vec![Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z], radius: 12.0, forced: -1, current: 0, timer: START, demand: vec![0; 4] }
+        Junction { center: Vec3::ZERO, arms: vec![Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z], radius: 12.0, reach: 12.0, forced: -1, current: 0, timer: START, demand: vec![0; 4] }
     }
 
     fn one() -> Signals {
@@ -436,10 +496,22 @@ mod tests {
     #[test]
     fn demand_box_and_countdown() {
         let mut s = one();
-        let waiting = [(Vec3::new(0.0, 0.0, 18.0), Vec3::ZERO)];
-        run(&mut s, 11.6, &waiting, None);
+        // a car the light refuses at +z, within the reach (12 m): arm 1's demand
+        for _ in 0..(11.6f32 * 60.0).round() as usize {
+            if s.junctions[0].lane_state(Vec3::Z) != 2 {
+                s.wait(0, Vec3::new(0.0, 0.0, 11.0));
+            }
+            s.step(1.0 / 60.0, &[], None, None);
+        }
         // (arm 0 had the first green; the car at +z waited through it)
         assert_eq!((s.junctions[0].current, s.junctions[0].arm_state(1, 0.0)), (1, 2));
+        // beyond the reach it does not count
+        let mut s = one();
+        for _ in 0..(11.6f32 * 60.0).round() as usize {
+            s.wait(0, Vec3::new(0.0, 0.0, 13.0));
+            s.step(1.0 / 60.0, &[], None, None);
+        }
+        assert_eq!(s.junctions[0].current, 0);
         let mut s = one();
         let crossing = [(Vec3::new(1.0, 0.0, 1.0), Vec3::new(5.0, 0.0, 0.0))];
         run(&mut s, 3.0, &crossing, None);
@@ -463,6 +535,25 @@ mod tests {
         assert_eq!((j.state_for(Vec3::X, 2.0), j.state_for(-Vec3::X, 2.0)), (2, 0));
         j.forced = -2;
         assert!((0..4).all(|a| j.arm_state(a, 2.0) == 0));
+    }
+
+    /// The original's lane test (sub_8273A178): the lane's first span (P0 - P1) within 25
+    /// degrees of the current arm, green only before 6.5 s, yellow to 8.5 s.
+    #[test]
+    fn lane_test_reads_the_lanes_first_span() {
+        let mut j = cross();
+        j.timer = 2.0;
+        // a lane entering from arm 0 (+x), its first span 24 and 26 degrees off the arm
+        let at = |deg: f32| Vec3::new(deg.to_radians().cos(), 0.0, deg.to_radians().sin());
+        assert_eq!(j.lane_state(at(24.0)), 2);
+        assert_eq!(j.lane_state(at(26.0)), 0);
+        assert_eq!(j.lane_state(Vec3::Z), 0);
+        j.timer = 7.0;
+        assert_eq!(j.lane_state(at(0.0)), 1);
+        j.timer = 8.6;
+        assert_eq!(j.lane_state(at(0.0)), 0);
+        j.forced = 1;
+        assert_eq!((j.lane_state(Vec3::Z), j.lane_state(Vec3::X)), (2, 0));
     }
 
     /// Heads are taken by the arm they point along; a stray head stays unbound.

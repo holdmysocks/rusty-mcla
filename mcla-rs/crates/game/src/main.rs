@@ -3485,7 +3485,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             {
                 // the junctions' own state (signals.rs): stepped on the vehicles' copy, shown by the props'
-                let cars: Vec<(Vec3, Vec3)> = self.vehicles.cars.iter().filter(|c| c.placed && c.parked.is_none()).map(|c| (c.state.pos, c.state.vel)).collect();
+                // (traffic on lanes reports itself: `Signals::occupy` on a junction lane, `Signals::wait` when the light refuses it)
+                let cars: Vec<(Vec3, Vec3)> = self.vehicles.cars.iter().filter(|c| c.placed && c.parked.is_none() && c.rail.is_none()).map(|c| (c.state.pos, c.state.vel)).collect();
                 let race = self.game.race.as_ref().map(|r| (r.countdown, r.time));
                 let player = self.vehicles.player().map(|c| (c.state.pos, c.state.vel));
                 self.vehicles.signals.step(sim_dt, &cars, player, race);
