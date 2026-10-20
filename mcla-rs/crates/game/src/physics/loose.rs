@@ -57,6 +57,8 @@ impl LooseWorld {
     pub fn new(types: Vec<FragType>, instances: Vec<FragInstance>) -> LooseWorld {
         let by_off: HashMap<usize, usize> = types.iter().enumerate().map(|(i, t)| (t.off, i)).collect();
         let mut out = LooseWorld { types, instances: Vec::new(), cells: HashMap::new() };
+        // (the torn bumpers' own type, made by the game's code rather than read from the file)
+        out.types.push(piece_type());
         for inst in instances {
             let Some(&t) = by_off.get(&inst.frag) else { continue };
             // (state 3 is never put into the level: the glow cards)
@@ -493,6 +495,8 @@ pub struct LooseState {
     indices_taken: (i64, usize),
     /// the place of the car's own pair with the city in its island's tree (None: no such pair this tick)
     car_city_order: Option<usize>,
+    /// the car's torn-off bumpers in the level (`add_piece`)
+    pub pieces: Vec<Piece>,
 }
 
 /// What a run does not let one derive (the level's indices and the heap's addresses), given per
@@ -1390,6 +1394,7 @@ impl LooseState {
                 }
             }
         }
+        self.pieces_touched(car);
     }
 
 }
@@ -1704,6 +1709,18 @@ impl LooseState {
                     if let Some(vh) = self.objs[o].veh {
                         t.b.margin = f32::from_bits(0x3d23_d70a);
                         t.b.core = veh_core(vh.shape, &t.b.rows, t.back);
+                    }
+                }
+                // (a torn bumper's whole bound is its box: the thickness from the corner of the box less its margin
+                // along the normal, 0x825E03D4's support)
+                if let Who::Obj(o) = m.a {
+                    if let Some(c) = piece_core(world, &self.objs[o], &t.a.rows, t.normal) {
+                        t.a.core = c;
+                    }
+                }
+                if let Who::Obj(o) = m.b {
+                    if let Some(c) = piece_core(world, &self.objs[o], &t.b.rows, t.back) {
+                        t.b.core = c;
                     }
                 }
                 list.push((pair, key, Some((Link { a: Some(m.a), b: Some(m.b), part_a: m.part_a, part_b: m.part_b, from: Some((k, i)) }, t))));
@@ -2123,6 +2140,7 @@ impl LooseState {
     /// tick's force sums.
     pub fn pre_collide(&mut self, world: &LooseWorld, dt: f32) {
         let rs = super::gjk::rsqrt_as_original;
+        self.pieces_wake(dt);
         self.sync_others();
         for o in 0..self.objs.len() {
             let Some(mut b) = self.objs[o].body else { continue };
@@ -2192,6 +2210,7 @@ impl LooseState {
     /// After the solves: the forces and impulses into the momenta (0x8259BE30), the push solve's
     /// answer into the pose (0x8259E920), and every entry a tick older (0x824AB680).
     pub fn end_tick(&mut self, world: &LooseWorld, dt: f32) {
+        self.pieces_sleep(dt);
         for o in 0..self.objs.len() {
             let Some(mut b) = self.objs[o].body else { continue };
             b.jf = b.force * dt + b.jf;
@@ -2517,6 +2536,20 @@ fn car_meets_vehicle(car: &CarIn, om: &[Vec3; 4], class: u8, car_is_a: bool, t: 
     }
 }
 
+/// The corner of a box bound the push solve measures a torn bumper's thickness from (type 3: per axis the half size less
+/// the margin, signed by the direction in the box's frame; the box is about its origin). None for anything else.
+fn piece_core(world: &LooseWorld, obj: &Obj, rows: &[Vec3; 3], n: Vec3) -> Option<Vec3> {
+    let t = world.types.get(obj.ty)?;
+    if obj.veh.is_some() || t.off != usize::MAX {
+        return None;
+    }
+    let b = t.parts.first()?.bound.as_ref()?;
+    let h = (v(b.max) - v(b.min)) * 0.5 - Vec3::splat(b.margin);
+    let nl = Vec3::new(dot3(rows[0], n), dot3(rows[1], n), dot3(rows[2], n));
+    let s = |d: f32, x: f32| if d >= 0.0 { x } else { -x };
+    Some(Vec3::new(s(nl.x, h.x), s(nl.y, h.y), s(nl.z, h.z)))
+}
+
 /// The corner of a polyhedron bound the push solve measures a side's thickness from
 /// (0x825DCEB8, type 4: the last scanned corner unless an earlier one lies farther along).
 fn veh_core(shape: &HullShape, rows: &[Vec3; 3], n: Vec3) -> Vec3 {
@@ -2583,6 +2616,418 @@ impl LooseState {
                     None => self.manis.push(Mani { a: Who::Car, b: Who::Obj(o), part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: vec![slot] }),
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// A car's torn-off bumper (docs/reference/audio/DAMAGE_PARTS_RULE.md 2.4, 2.5): the anim object's
+// mcCarAnimBreakablePartInst puts its own phInst into the level when both ends have broken
+// (sub_823414C8 @823417FC -> 0x8258BE48). Its archetype and bound are made by the bumper's
+// constructor (sub_8233C988): a phArchetypePhys (0x8258F538: max speed 500, max spin 2 pi) of mass 4,
+// the angular inertia of a box 1.25 x the bound (0x825A42C8, floored by 0x825A4088), gravity factor
+// 1.5 (vt+56 = 0x8258E6B0 writes archetype +48, the factor pre_collide multiplies gravity by), type /
+// include flags 2 / 0xFFFFBFFF as a prop's; a box bound 1.8 x 0.333 x 0.5 (0x825807E0, full sizes,
+// margin 0.04 from the bound's constructor 0x82583708), centre of gravity (0, 0, 0.15) (0x825832C8:
+// bound +80, flag +6), material "prop" (0x82043524 through the material manager's vt+24, bound vt+52).
+// No damping (a plain phArchetypePhys). It is a pool body with the simulator's sleep object (p1
+// body_decode.md section 6), which the port's props do not have yet: its rule is kept here for the
+// pieces alone.
+
+/// The name the port gives the bumper's type among the level's (it is not in the prop file).
+pub const PIECE_TYPE: &str = "mcCarAnimBreakablePartInst";
+
+/// The bumper's type as the loose bodies read a type.
+pub fn piece_type() -> FragType {
+    let size = Vec3::new(1.8, 0.333, 0.5);
+    let half = size * 0.5;
+    let cg = [0.0, 0.0, 0.15];
+    let radius = half.length();
+    let mass = 4.0f32;
+    // (0x825A42C8: ((y^2 + z^2) m) / 12 ... of the box 1.25 x the bound; 0x825A4088's floor leaves these as they are)
+    let s = size * 1.25;
+    let k = f32::from_bits(0x3daa_aaab);
+    let inertia = [((s.z * s.z + s.y * s.y) * mass) * k, ((s.x * s.x + s.z * s.z) * mass) * k, ((s.x * s.x + s.y * s.y) * mass) * k];
+    let corners: Vec<[f32; 3]> = (0..8).map(|i| [if i & 1 == 0 { -half.x } else { half.x }, if i & 2 == 0 { -half.y } else { half.y }, if i & 4 == 0 { -half.z } else { half.z }]).collect();
+    let bound = FragBound { kind: 3, flag6: true, radius, max: half.to_array(), min: (-half).to_array(), centroid: [0.0; 3], cg, volume: size.x * size.y * size.z, margin: 0.04, verts: corners, ..Default::default() };
+    FragType {
+        off: usize::MAX,
+        name: PIECE_TYPE.to_string(),
+        // (a phInst of its own: no cache entry; activated again by any blow once it has gone to sleep)
+        flags: 0,
+        min_move: 0.0,
+        elasticity: 0.5,
+        archetype: mcla_formats::rage::fragphys::FragArchetype {
+            type_flags: 2,
+            include: 0xFFFF_BFFF,
+            mass,
+            inv_mass: 1.0 / mass,
+            gravity: 1.5,
+            max_speed: 500.0,
+            max_spin: f32::from_bits(0x40c9_0fdb),
+            inertia,
+            inv_inertia: inertia.map(recip),
+        },
+        radius,
+        max: half.to_array(),
+        min: (-half).to_array(),
+        centroid: [0.0; 3],
+        cg,
+        margin: 0.04,
+        parts: vec![mcla_formats::rage::fragphys::FragPart { bound: Some(bound), matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]] }],
+        ..Default::default()
+    }
+}
+
+impl LooseWorld {
+    /// The number of the torn bumper's type (appended by `new`).
+    pub fn piece_type_index(&self) -> Option<usize> {
+        self.types.iter().rposition(|t| t.off == usize::MAX && t.name == PIECE_TYPE)
+    }
+}
+
+/// The simulator's sleep object of a pool body (0x82080724; body_decode.md 6.1): state 1 awake,
+/// 0 settling, 2 asleep; the counters A and B against 15 and 20 ticks.
+#[derive(Clone, Copy, Debug)]
+pub struct Sleep {
+    pub state: u8,
+    pub a: u32,
+    pub b: u32,
+}
+
+impl Sleep {
+    /// 0x82594E80, at every activation: A = 15 - 3, B = 20 - 3, awake.
+    pub fn reset() -> Sleep {
+        Sleep { state: 1, a: 12, b: 17 }
+    }
+}
+
+/// The "still" test (0x82595128 -> 0x82594EC0) with the game's tolerances: v^2 and w^2 0.05.
+fn still(b: &PBody, dt: f32, f2: f32) -> bool {
+    let tol = f32::from_bits(0x3d4c_cccd);
+    let invdt = if dt != 0.0 { 1.0 / dt } else { f32::MAX };
+    let sq = |x: Vec3| fma(x.x, x.x, fma(x.y, x.y, x.z * x.z));
+    // (+432 / +448 hold nothing the port has: zero)
+    let w1 = b.turn * invdt + b.w;
+    let a = sq(w1);
+    let v1 = b.push * invdt + b.v;
+    let bb = sq(v1);
+    let x = b.torque * f2 + b.jt;
+    let m = ex::world_inverse_inertia(&b.rows, b.inv_inertia);
+    let w2 = Vec3::new(dot3(x, Vec3::new(m[0].x, m[1].x, m[2].x)), dot3(x, Vec3::new(m[0].y, m[1].y, m[2].y)), dot3(x, Vec3::new(m[0].z, m[1].z, m[2].z))) + w1;
+    let c = sq(w2) - a;
+    let y = b.force * f2 + b.jf;
+    let v2 = y * b.inv_mass + v1;
+    let d = sq(v2) - bb;
+    !(a > tol) && !(bb > tol) && !(c > tol) && !(d > tol)
+}
+
+/// What the bumper's contact callback (sub_8234CF80) reads of one of its contacts this tick: every contact whose
+/// +165 bit 0x80 is set - the contact's "enabled" bit (set with 0x40 when it is made, 0x825A26B8 / 0x825A2730;
+/// cleared by a callback that takes the contact from the solver, `clrlwi ..,25` in 0x82332AC8, 0x8255D028 ...), which
+/// is the port's `Slot2::enabled`; tested at 0x8234D028.
+#[derive(Clone, Copy, Debug)]
+pub struct PieceContact {
+    /// the relative velocity at the contact (the piece less the other side), the normal as the
+    /// callback turns it (negated when the piece is A of the pair), the place
+    pub v: Vec3,
+    pub n: Vec3,
+    pub point: Vec3,
+}
+
+/// One torn-off bumper in the level.
+#[derive(Clone, Debug)]
+pub struct Piece {
+    pub id: u64,
+    pub obj: usize,
+    pub sleep: Sleep,
+    /// asleep and taken out of the simulator (0x82588D90): an inactive object at its last matrix
+    pub off: bool,
+    /// its contacts as the last refresh had them
+    pub contacts: Vec<PieceContact>,
+}
+
+/// MCLA_DBG_PIECE: every enabled contact of a piece, tick by tick (stderr)
+static DBG_PIECE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static PIECE_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl LooseState {
+    /// Put a torn bumper into the level at `matrix` (its frame: rows and place) moving at `v`, turning
+    /// at `w` (0x8258BE48, then the body's vt+164 / vt+172). None where the level has no such type.
+    pub fn add_piece(&mut self, world: &LooseWorld, matrix: [Vec3; 4], v: Vec3, w: Vec3) -> Option<u64> {
+        let ty = world.piece_type_index()?;
+        let t = &world.types[ty];
+        let a = &t.archetype;
+        let e = Entry { absent: 0, age: 0.0, cg: self::v(t.cg), mass: a.mass, inv_mass: a.inv_mass, inertia: self::v(a.inertia), inv_inertia: self::v(a.inv_inertia) };
+        let mut body = PBody::new(&matrix, e.cg, &e, a.max_speed, a.max_spin);
+        body.v = v;
+        body.p = v * body.mass;
+        body.w = w;
+        body.l = body.momentum_of(w);
+        let o = self.objs.len();
+        // (inserted after the car: the car is A against it)
+        self.objs.push(Obj { ty, inst: None, matrix, entry: None, hit: true, body: Some(body), level: 3_000_000 + o as i64, addr: 3_000_000 + o as i64, veh: None });
+        let id = PIECE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.pieces.push(Piece { id, obj: o, sleep: Sleep::reset(), off: false, contacts: Vec::new() });
+        Some(id)
+    }
+
+    /// Take a piece out of the level (the bumper's reset, sub_8233CF78). The object stays in the
+    /// list (other objects are known by their place in it) far below the city, without a body.
+    pub fn remove_piece(&mut self, id: u64) {
+        let Some(k) = self.pieces.iter().position(|p| p.id == id) else { return };
+        let o = self.pieces.remove(k).obj;
+        let obj = &mut self.objs[o];
+        obj.body = None;
+        obj.hit = true;
+        obj.matrix = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(0.0, -100_000.0, 0.0)];
+        self.manis.retain(|m| m.a != Who::Obj(o) && m.b != Who::Obj(o));
+    }
+
+    /// A piece's matrix as the level has it, its contacts of the last tick and whether it is asleep
+    /// (None: not in this level).
+    pub fn piece(&self, id: u64) -> Option<([Vec3; 4], &[PieceContact], bool)> {
+        let p = self.pieces.iter().find(|p| p.id == id)?;
+        Some((self.objs[p.obj].matrix, &p.contacts, p.off))
+    }
+
+    /// PreCollide's sleep test (0x82588490): a settling or asleep body that is not still wakes up.
+    fn pieces_wake(&mut self, dt: f32) {
+        for p in self.pieces.iter_mut() {
+            let Some(b) = self.objs[p.obj].body.as_ref() else { continue };
+            if p.off {
+                // (hit while inactive: the breaking pass gave it a new body, v = w = 0)
+                p.off = false;
+                p.sleep = Sleep::reset();
+                continue;
+            }
+            if p.sleep.state != 1 && !still(b, dt, 0.0) {
+                p.sleep.state = 1;
+            }
+        }
+    }
+
+    /// The bumper's contact callback's view of its contacts after the refresh (sub_8233C938 -> sub_8234CF80).
+    fn pieces_touched(&mut self, car: &CarIn) {
+        for k in 0..self.pieces.len() {
+            let o = self.pieces[k].obj;
+            let mut out = Vec::new();
+            if let Some(b) = self.objs[o].body {
+                let vel_of = |w: Who, at: Vec3| match w {
+                    Who::Obj(x) => self.objs[x].body.map_or(Vec3::ZERO, |ob| ob.v + cross(ob.w, at - ob.at)),
+                    Who::Car => car.vel,
+                    Who::City => Vec3::ZERO,
+                };
+                for m in self.manis.iter().filter(|m| m.a == Who::Obj(o) || m.b == Who::Obj(o)) {
+                    let piece_is_a = m.a == Who::Obj(o);
+                    let other = if piece_is_a { m.b } else { m.a };
+                    for s in m.slots.iter().filter(|s| s.enabled) {
+                        let at = if piece_is_a { s.t.a.point } else { s.t.b.point };
+                        let v = (b.v + cross(b.w, at - b.at)) - vel_of(other, at);
+                        let n = if piece_is_a { Vec3::ZERO - s.t.normal } else { s.t.normal };
+                        out.push(PieceContact { v, n, point: at });
+                        if *DBG_PIECE.get_or_init(|| std::env::var_os("MCLA_DBG_PIECE").is_some()) {
+                            eprintln!("PIECECON tick {} other {:?} age {} depth {:.4} n {:?} v {:?} at {:?} body v {:?} w {:?}", self.tick, other, s.age, s.t.depth, n, v, at, b.v, b.w);
+                        }
+                    }
+                }
+            }
+            self.pieces[k].contacts = out;
+        }
+    }
+
+    /// The sleep object's update (0x825951D0, after the velocity solves, before the integration) and the
+    /// deactivation of a piece asleep in an island of its own (0x825DAB28 -> 0x82588D90; the car and the
+    /// port's props have no sleep object, so an island with any of them never sleeps).
+    fn pieces_sleep(&mut self, dt: f32) {
+        for k in 0..self.pieces.len() {
+            let o = self.pieces[k].obj;
+            let Some(b) = self.objs[o].body else { continue };
+            if self.pieces[k].sleep.state == 2 {
+                let alone = !self.manis.iter().any(|m| {
+                    (m.a == Who::Obj(o) || m.b == Who::Obj(o)) && [m.a, m.b].into_iter().any(|w| w == Who::Car || matches!(w, Who::Obj(x) if x != o && self.objs[x].body.is_some()))
+                });
+                if alone {
+                    self.pieces[k].off = true;
+                    let obj = &mut self.objs[o];
+                    obj.body = None;
+                    // (an inactive instance the breaking pass may move again)
+                    obj.hit = false;
+                    continue;
+                }
+            }
+            let s = &mut self.pieces[k].sleep;
+            if still(&b, dt, dt) {
+                if s.state == 1 {
+                    s.a += 1;
+                    if s.a >= 15 {
+                        s.state = 0;
+                    }
+                }
+                if s.state != 1 {
+                    s.b += 1;
+                    if s.b >= 20 {
+                        s.state = 2;
+                    }
+                }
+            } else if s.state == 1 {
+                s.a = 0;
+                s.b = 0;
+            } else {
+                s.state = 1;
+            }
+        }
+    }
+}
+
+/// A piece on its way from one car's level to another's (the original has one level: whichever car reaches the
+/// piece meets it).
+#[derive(Clone, Debug)]
+pub struct PieceMove {
+    id: u64,
+    matrix: [Vec3; 4],
+    body: Option<PBody>,
+    hit: bool,
+    sleep: Sleep,
+    off: bool,
+}
+
+impl LooseState {
+    /// Where a piece is and whether it touches this level's car now.
+    pub fn piece_place(&self, id: u64) -> Option<(Vec3, bool)> {
+        let p = self.pieces.iter().find(|p| p.id == id)?;
+        let o = p.obj;
+        let touching = self.manis.iter().any(|m| (m.a == Who::Obj(o) && m.b == Who::Car) || (m.b == Who::Obj(o) && m.a == Who::Car));
+        Some((self.objs[o].matrix[3], touching))
+    }
+
+    /// The ids of the pieces this level holds.
+    pub fn piece_ids(&self) -> Vec<u64> {
+        self.pieces.iter().map(|p| p.id).collect()
+    }
+
+    /// Take a piece out of this level with its body and sleep state, for another car's.
+    pub fn take_piece(&mut self, id: u64) -> Option<PieceMove> {
+        let p = self.pieces.iter().find(|p| p.id == id)?.clone();
+        let obj = &self.objs[p.obj];
+        let out = PieceMove { id, matrix: obj.matrix, body: obj.body, hit: obj.hit, sleep: p.sleep, off: p.off };
+        self.remove_piece(id);
+        Some(out)
+    }
+
+    /// Put a piece taken from another car's level into this one, as it was.
+    pub fn put_piece(&mut self, world: &LooseWorld, m: PieceMove) {
+        let Some(ty) = world.piece_type_index() else { return };
+        let o = self.objs.len();
+        let mut body = m.body;
+        if let Some(b) = body.as_mut() {
+            // (the collide's "last" matrix is this level's from now on)
+            b.last = m.matrix;
+            b.last_set = true;
+        }
+        self.objs.push(Obj { ty, inst: None, matrix: m.matrix, entry: None, hit: m.hit, body, level: 3_000_000 + o as i64, addr: 3_000_000 + o as i64, veh: None });
+        self.pieces.push(Piece { id: m.id, obj: o, sleep: m.sleep, off: m.off, contacts: Vec::new() });
+    }
+}
+
+/// The cars' levels as the pieces see them: each car's place, how far it reaches, and its level.
+pub struct CarLevel<'a> {
+    pub at: Vec3,
+    pub reach: f32,
+    pub level: &'a mut LooseState,
+}
+
+/// Every piece goes to the level of the car that reaches it: a piece its own car neither touches nor reaches moves to
+/// the nearest car that reaches it (two cars at one piece: the one that holds it keeps it).
+pub fn hand_over_pieces(world: &LooseWorld, cars: &mut [CarLevel]) {
+    for i in 0..cars.len() {
+        for id in cars[i].level.piece_ids() {
+            let Some((at, touching)) = cars[i].level.piece_place(id) else { continue };
+            if touching || (at - cars[i].at).length() < cars[i].reach {
+                continue;
+            }
+            let best = (0..cars.len()).filter(|&j| j != i).map(|j| (j, (at - cars[j].at).length())).filter(|&(j, d)| d < cars[j].reach).min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((j, _)) = best {
+                if let Some(m) = cars[i].level.take_piece(id) {
+                    cars[j].level.put_piece(world, m);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod piece_tests {
+    use super::*;
+    use crate::physics::collision::{SectorMesh, WorldCollider};
+
+    /// The bumper's type as sub_8233C988 makes it.
+    #[test]
+    fn the_torn_bumper_is_the_originals_box() {
+        let t = piece_type();
+        let a = &t.archetype;
+        assert_eq!((a.mass, a.gravity, a.max_speed, a.type_flags, a.include), (4.0, 1.5, 500.0, 2, 0xFFFF_BFFF));
+        // (the box 2.25 x 0.41625 x 0.625: (0.4163^2 + 0.625^2) 4 / 12 ...)
+        assert!((a.inertia[0] - 0.187963).abs() < 1e-5 && (a.inertia[1] - 1.817708).abs() < 1e-5 && (a.inertia[2] - 1.745255).abs() < 1e-5, "{:?}", a.inertia);
+        let b = t.parts[0].bound.as_ref().unwrap();
+        assert_eq!((b.kind, b.max, b.margin, b.cg), (3, [0.9, 0.1665, 0.25], 0.04, [0.0, 0.0, 0.15]));
+    }
+
+    /// A piece its car has left goes, body and sleep state and all, to the level of the car that comes to it.
+    #[test]
+    fn a_piece_goes_to_the_car_that_reaches_it() {
+        let world = LooseWorld::new(Vec::new(), Vec::new());
+        let (mut a, mut b) = (LooseState::default(), LooseState::default());
+        let id = a.add_piece(&world, [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(10.0, 0.3, 0.0)], Vec3::new(1.0, 0.0, 0.0), Vec3::ZERO).unwrap();
+        {
+            let mut cars = [CarLevel { at: Vec3::ZERO, reach: 4.0, level: &mut a }, CarLevel { at: Vec3::new(12.0, 0.0, 0.0), reach: 4.0, level: &mut b }];
+            hand_over_pieces(&world, &mut cars);
+        }
+        assert!(a.piece(id).is_none());
+        let (m, _, off) = b.piece(id).unwrap();
+        assert!(m[3] == Vec3::new(10.0, 0.3, 0.0) && !off);
+        assert_eq!(b.objs.last().unwrap().body.unwrap().v, Vec3::new(1.0, 0.0, 0.0));
+        // (the car that holds it and reaches it keeps it)
+        let mut cars = [CarLevel { at: Vec3::new(9.0, 0.0, 0.0), reach: 4.0, level: &mut a }, CarLevel { at: Vec3::new(12.0, 0.0, 0.0), reach: 4.0, level: &mut b }];
+        hand_over_pieces(&world, &mut cars);
+        assert!(b.piece(id).is_some());
+    }
+
+    fn flat() -> WorldCollider {
+        let mut w = WorldCollider::default();
+        let (a, b, c, d) = (Vec3::new(-20.0, 0.0, -20.0), Vec3::new(-20.0, 0.0, 20.0), Vec3::new(20.0, 0.0, -20.0), Vec3::new(20.0, 0.0, 20.0));
+        w.sectors.insert(1, SectorMesh::of_bound(vec![[a, b, c], [c, b, d]], vec![Surface::Road as u8, Surface::Road as u8], &[800.0, 800.0], vec![[None, None, None]; 2]));
+        w
+    }
+
+    /// Dropped from half a metre, the piece comes to rest on the face it lands on, 0.25 m (standing on its 1.8 x
+    /// 0.333 face) or 0.1665 m (lying on 1.8 x 0.5) above the ground, and is put to sleep (taken out of the
+    /// simulator) about a second later.
+    #[test]
+    fn a_dropped_piece_lies_still_and_sleeps() {
+        let world = LooseWorld::new(Vec::new(), Vec::new());
+        let city = flat();
+        let hull = HullShape::new(vec![Vec3::new(-1.0, -0.5, -2.0), Vec3::new(1.0, -0.5, -2.0), Vec3::new(0.0, 0.5, -2.0), Vec3::new(0.0, -0.5, 2.0)], &[[0, 1, 2], [0, 3, 1], [1, 3, 2], [2, 3, 0]]);
+        let away = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(1000.0, 0.0, 1000.0)];
+        let car = CarIn { hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: away, last: away, speed: 0.0, bound: (hull.min, hull.max), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.5, 0.1), wiped: false };
+        for (rows, height) in [([Vec3::X, Vec3::Z, Vec3::NEG_Y], 0.25f32), ([Vec3::X, Vec3::Y, Vec3::Z], 0.1665)] {
+            let mut s = LooseState::default();
+            let id = s.add_piece(&world, [rows[0], rows[1], rows[2], Vec3::new(0.0, height + 0.5, 0.0)], Vec3::ZERO, Vec3::ZERO).unwrap();
+            let dt = 1.0 / 60.0;
+            let mut asleep = None;
+            for k in 0..600 {
+                s.pre_collide(&world, dt);
+                s.collide(&world, &car, &city, false);
+                s.refresh(&world, &car);
+                s.step_rest(&world, &car, dt);
+                s.end_tick(&world, dt);
+                if asleep.is_none() && s.piece(id).unwrap().2 {
+                    asleep = Some(k);
+                }
+            }
+            let (m, _, off) = s.piece(id).unwrap();
+            println!("rest {:?} up rows {:?} asleep at tick {:?}", m[3], (m[0].y, m[1].y, m[2].y), asleep);
+            assert!(off && (m[3].y - height).abs() < 0.01, "{:?}", m);
         }
     }
 }

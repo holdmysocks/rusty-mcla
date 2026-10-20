@@ -1086,6 +1086,11 @@ impl World {
         if std::env::var_os("MCLA_LOOSE_PHYSICS").is_some() {
             collider.loose = crate::physics::loose::LooseWorld::load(&assets.path("resources/prop/0x0e66973c.r131"));
         }
+        // (without them the level still holds the cars' torn-off bumpers: their type only, no prop - nothing else
+        // of the vehicles' physics changes while a car's level has no object, damageparts.rs)
+        if collider.loose.is_none() {
+            collider.loose = Some(std::sync::Arc::new(crate::physics::loose::LooseWorld::new(Vec::new(), Vec::new())));
+        }
         if std::env::var("MCLA_MESH_COLLISION").is_err() {
             if let Some(cells) = city_bound(&assets) {
                 for (i, mesh) in cells.into_iter().enumerate() {

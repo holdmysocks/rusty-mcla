@@ -7,11 +7,14 @@
 //! Matrices: the original's rows-are-axes matrices are glam column matrices here (row0 X = `x_axis`, row3 =
 //! `w_axis`); `C` is the car's world matrix (the port's `rot` / `pos`, the model origin).
 //!
-//! Approximate (written down in the doc): the fallen-off bumper is a small box body of the port's own against the
-//! ground (the original inserts a RAGE physics instance with the city's collision); the gates (car+80)->+41 and the
+//! The fallen-off bumper is a body of the car's loose-body level (`physics/loose.rs` "A car's torn-off bumper": the
+//! original's phInst with its archetype, bound, material and sleep), against the city, the car and what is loose
+//! about it. Approximate (written down in the doc): other cars do not meet it (each car's level holds only its own
+//! pieces), and a car without the exact simulation keeps the small ground-only body below; the gates (car+80)->+41 and the
 //! model-class byte +122 are taken as "on" for every car; repair and teleport are found by what they do to the car
 //! (damage cleared / a jump of the car) rather than called by the game's code.
 
+use crate::physics::loose::{LooseState, LooseWorld, PieceContact};
 use glam::{Mat4, Quat, Vec3};
 
 /// mcCarModelTune +184..+196 defaults when a car has no vehModel (the instance's constructor: bumper max state 2;
@@ -177,10 +180,14 @@ pub struct End {
     pub state: u8,
 }
 
-/// The piece once it has torn off: a box 1.8 x 0.333 x 0.5, mass 4 (the original's archetype; the motion here is
-/// the port's own small body, see the module notes).
+/// The piece once it has torn off: a box 1.8 x 0.333 x 0.5, mass 4. Its frame (pos, rot) is the level's body's
+/// (`level`) or, where the car has no level, the small ground-only body's (`own_body`).
 #[derive(Clone, Copy, Debug)]
 pub struct Loose {
+    /// the piece in the car's level (`LooseState::add_piece`)
+    pub level: Option<u64>,
+    /// moved by `step_loose` (no level took it)
+    pub own_body: bool,
     pub pos: Vec3,
     pub rot: Quat,
     pub vel: Vec3,
@@ -263,7 +270,9 @@ impl Bumper {
         self.a.state = self.a.state.min(self.max_state);
         self.b.state = self.b.state.min(self.max_state);
         if let Some(body) = self.detached.as_mut() {
-            step_loose(body, dt, which, ground, events);
+            if body.own_body {
+                step_loose(body, dt, which, ground, events);
+            }
             // A = (instMatrix * C^-1) * M_rest^-1: the piece's frame in car space
             self.pose = *ci * Mat4::from_rotation_translation(body.rot, body.pos);
             return;
@@ -331,7 +340,7 @@ impl Bumper {
             let vb = self.b.pos - self.b.prev;
             let (_, rot, _) = f.to_scale_rotation_translation();
             let spin = (self.a.pos - self.b.pos).cross(va - vb) * -30.0 + c.transform_vector3(Vec3::new(-3.0, 0.0, 0.0));
-            self.detached = Some(Loose { pos: mid, rot, vel: (va + vb) * 0.5 * 30.0, ang_vel: spin, touching: 0, still: 0.0 });
+            self.detached = Some(Loose { level: None, own_body: false, pos: mid, rot, vel: (va + vb) * 0.5 * 30.0, ang_vel: spin, touching: 0, still: 0.0 });
             events.push(PartEvent::BumperOff { bumper: which, pos: mid });
             self.pose = *ci * f;
             return;
@@ -476,6 +485,8 @@ pub struct DamageParts {
     pub rigged: bool,
     /// game time not yet stepped: the parts move once a game frame (1/30 s, T+8 live) while the port ticks at 60 Hz
     frame_acc: f32,
+    /// the torn bumpers this car has put into its level
+    level_ids: Vec<u64>,
 }
 
 impl Default for DamageParts {
@@ -491,8 +502,16 @@ impl Default for DamageParts {
             placed: false,
             rigged: false,
             frame_acc: 0.0,
+            level_ids: Vec::new(),
         }
     }
+}
+
+/// A torn bumper as the level that holds it has it: its frame (rows, place) and its enabled contacts of the tick.
+#[derive(Clone, Debug)]
+pub struct PieceView {
+    pub matrix: [Vec3; 4],
+    pub contacts: Vec<PieceContact>,
 }
 
 /// What the car's model gives the parts: the movement settings (front bumper, rear bumper, hood, trunk) and the
@@ -550,12 +569,99 @@ impl DamageParts {
     /// (docs/reference/vehicle/bikegyro_pseudo.md, live values).
     pub const FRAME: f32 = 1.0 / 30.0;
 
-    /// Advance by a port tick of `dt`: the parts step once for every whole game frame (1/30 s) that has passed.
-    pub fn tick(&mut self, c: Mat4, speed: f32, heavy: bool, dt: f32, ground: &dyn Fn(Vec3) -> Option<(f32, Vec3)>) {
+    /// Advance by a port tick of `dt`: the parts step once for every whole game frame (1/30 s) that has passed; the
+    /// torn bumper of this frame goes into the car's level (`level`: the level's types and the car's loose bodies,
+    /// None for a car without them); `read_pieces` brings the pieces' frames back every tick.
+    pub fn tick(&mut self, c: Mat4, speed: f32, heavy: bool, dt: f32, ground: &dyn Fn(Vec3) -> Option<(f32, Vec3)>, level: Option<(&LooseWorld, &mut LooseState)>) {
         self.frame_acc += dt;
         if self.frame_acc + 1e-5 >= Self::FRAME {
             self.frame_acc = (self.frame_acc - Self::FRAME).max(0.0);
             self.step(c, speed, heavy, Self::FRAME, ground);
+        }
+        self.pieces(level);
+    }
+
+    /// The torn bumpers and the car's level: a new one goes in at its frame with its velocity and spin (2.4). The
+    /// level may later hand it to another car's (`loose::hand_over_pieces`); `dropped` and `read_pieces` find it there.
+    fn pieces(&mut self, level: Option<(&LooseWorld, &mut LooseState)>) {
+        let Some((world, state)) = level else {
+            for b in self.bumpers.iter_mut().flatten() {
+                if let Some(body) = b.detached.as_mut().filter(|d| d.level.is_none()) {
+                    body.own_body = true;
+                }
+            }
+            return;
+        };
+        for b in self.bumpers.iter_mut().flatten() {
+            let Some(body) = b.detached.as_mut().filter(|d| !d.own_body && d.level.is_none()) else { continue };
+            let f = Mat4::from_rotation_translation(body.rot, body.pos);
+            let m = [f.x_axis.truncate(), f.y_axis.truncate(), f.z_axis.truncate(), f.w_axis.truncate()];
+            match state.add_piece(world, m, body.vel, body.ang_vel) {
+                Some(id) => {
+                    body.level = Some(id);
+                    self.level_ids.push(id);
+                }
+                None => body.own_body = true,
+            }
+        }
+    }
+
+    /// The pieces this car put into a level that its bumpers no longer have (repair, reset): to be taken out of
+    /// whichever car's level holds them now (sub_8233CF78).
+    pub fn dropped(&mut self) -> Vec<u64> {
+        let live: Vec<u64> = self.bumpers.iter().flatten().filter_map(|b| b.detached.and_then(|d| d.level)).collect();
+        let out = self.level_ids.iter().copied().filter(|id| !live.contains(id)).collect();
+        self.level_ids.retain(|id| live.contains(id));
+        out
+    }
+
+    /// Each piece's frame and contacts read back from the level that holds it (`find`, by id), every tick: the drawn
+    /// pose and the impact and scrape sounds (sub_8234CF80, 2.5).
+    pub fn read_pieces(&mut self, c: &Mat4, find: &dyn Fn(u64) -> Option<PieceView>) {
+        let ci = c.inverse();
+        let mut evs = Vec::new();
+        for (i, b) in self.bumpers.iter_mut().enumerate() {
+            let Some(b) = b.as_mut() else { continue };
+            let Some(body) = b.detached.as_mut().filter(|d| !d.own_body) else { continue };
+            let Some(id) = body.level else { continue };
+            let Some(view) = find(id) else {
+                // (no level holds it any more - the cars' levels were made afresh: the piece stays where it was)
+                body.level = None;
+                body.own_body = true;
+                body.still = 1.0;
+                continue;
+            };
+            let m = view.matrix;
+            let f = Mat4::from_cols(m[0].extend(0.0), m[1].extend(0.0), m[2].extend(0.0), m[3].extend(1.0));
+            let (_, rot, pos) = f.to_scale_rotation_translation();
+            body.rot = rot;
+            body.pos = pos;
+            b.pose = ci * f;
+            // (sub_8234CF80: of the piece's enabled contacts this tick, an approach at least 0.1 of the speed is an
+            // impact - the largest counts - any other a slide; the thresholds in mph are the sound's, caraudio.rs)
+            let (mut impact, mut scrape, mut at_i, mut at_s) = (0.0f32, 0.0f32, m[3], m[3]);
+            for k in view.contacts.iter() {
+                let speed = k.v.length();
+                if speed > 0.0 && k.n.dot(k.v / speed) >= 0.1 {
+                    let a = k.v.dot(k.n);
+                    if a > impact {
+                        impact = a;
+                        at_i = k.point;
+                    }
+                } else if speed > scrape {
+                    scrape = speed;
+                    at_s = k.point;
+                }
+            }
+            if impact > 0.0 {
+                evs.push(PartEvent::BumperImpact { bumper: i as u8, speed: impact, pos: at_i });
+            }
+            if scrape > 0.0 {
+                evs.push(PartEvent::BumperScrape { bumper: i as u8, speed: scrape, pos: at_s });
+            }
+        }
+        for e in evs {
+            self.push(e);
         }
     }
 
@@ -843,5 +949,109 @@ mod replay {
         }
         println!("{out}");
         println!("{frames} frames: hood angle max error {hood_err:.6} at tick {hood_at} (deepest rec {hood_min_rec:.5} port {hood_min_port:.5}), trunk {trunk_err:.6}, bumper ends {end_err:.6} m, drawn pose {pose_err:.6}, clock {clock_err:.5}, state mismatches {state_miss}");
+    }
+}
+
+/// The torn bumper against a recording of the original (`work/bumperbody/export_piece.py` writes the file): the
+/// recorded car is carried through its ticks (an immovable body moving as recorded, its hull only), the piece
+/// goes into the car's level at the frame its recorded ends give at the detach, with 2.4's velocity and spin,
+/// and the loose bodies' tick runs as vehsim runs it. Prints the port's piece against the recorded one.
+/// `MCLA_PIECE_REPLAY=<file>;<data dir>;<car>`, `cargo test --release -p mcla piece_against_recording -- --ignored --nocapture`.
+#[cfg(test)]
+mod piece_replay {
+    use crate::physics::loose::{CarDyn, CarIn, LooseState, LooseWorld};
+    use crate::physics::solver::{Body, Pushed};
+    use glam::Vec3;
+
+    fn v3(a: &[f32]) -> Vec3 {
+        Vec3::new(a[0], a[1], a[2])
+    }
+    fn m4(a: &[f32]) -> [Vec3; 4] {
+        [v3(&a[0..3]), v3(&a[3..6]), v3(&a[6..9]), v3(&a[9..12])]
+    }
+
+    #[test]
+    #[ignore]
+    fn piece_against_recording() {
+        let Ok(spec) = std::env::var("MCLA_PIECE_REPLAY") else { return };
+        let f: Vec<&str> = spec.split(';').collect();
+        let (path, data_dir, car_name) = (f[0], f[1], f.get(2).copied().unwrap_or("vp_aud_r8_08"));
+        let assets = crate::assets::Assets::new(data_dir);
+        crate::physics::collision::load_surfaces(data_dir);
+        let mut city = crate::physics::collision::WorldCollider::default();
+        for (i, mesh) in crate::world::city_bound(&assets).expect("city bound").into_iter().enumerate() {
+            city.sectors.insert(crate::world::BOUND_ID + i, mesh);
+        }
+        let world = LooseWorld::load(&assets.path("resources/prop/0x0e66973c.r131")).expect("prop file");
+        let car = crate::vehicle_model::load_car(&assets, &std::path::Path::new(data_dir).join("resources/vehicle").join(car_name)).unwrap();
+        let st = car.simtune.as_ref().unwrap();
+        let tune = mcla_formats::rage::simtune::SimTune::lerp(&st.base, &st.mods, 0.0);
+        let hubs = car.hubs.unwrap();
+        let hull = crate::physics::hull::shaped(car.hull.as_ref().unwrap(), &tune, (hubs[0].y + hubs[2].y) * 0.5, car.bike);
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut lines = text.lines();
+        let d: Vec<f32> = lines.next().unwrap().split_whitespace().skip(1).map(|x| x.parse().unwrap()).collect();
+        let det_tick = d[0] as u32;
+        let (a, ap, b, bp) = (v3(&d[13..16]), v3(&d[16..19]), v3(&d[19..22]), v3(&d[22..25]));
+        let c = m4(&d[25..37]);
+        // (2.3 step 5 and 2.4: the frame of the two ends, the ends' mean velocity and their spin plus -3 rad/s about the car's X)
+        let up = c[1];
+        let mid = (a + b) * 0.5;
+        let x = (mid - b).normalize();
+        let z = x.cross(up).normalize();
+        let y = z.cross(x).normalize();
+        let (va, vb) = (a - ap, b - bp);
+        let vel = (va + vb) * 0.5 * 30.0;
+        let spin = (a - b).cross(va - vb) * -30.0 + c[0] * -3.0;
+        let ticks: Vec<(u32, [Vec3; 4], Vec3, Vec3, Option<[Vec3; 4]>)> = lines
+            .map(|l| {
+                let t: Vec<f32> = l.split_whitespace().skip(1).map(|x| x.parse().unwrap_or(f32::NAN)).collect();
+                (t[0] as u32, m4(&t[1..13]), v3(&t[13..16]), v3(&t[16..19]), t[19].is_finite().then(|| m4(&t[19..31])))
+            })
+            .collect();
+        let mut loose = LooseState::default();
+        let dt = 1.0f32 / 60.0;
+        let mut id = None;
+        let mut out = String::new();
+        let (mut rest_tick, mut last_pos, mut moving_since) = (None::<u32>, Vec3::ZERO, 0u32);
+        for k in 1..ticks.len() {
+            let (tick, now, cv, cw, rec) = ticks[k];
+            let last = ticks[k - 1].1;
+            if tick == det_tick {
+                id = loose.add_piece(&world, [x, y, z, mid], vel, spin);
+            }
+            if tick < det_tick {
+                continue;
+            }
+            let car_in = CarIn { hull: &hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now, last, speed: cv.length(), bound: (hull.min - Vec3::splat(0.041), hull.max + Vec3::splat(0.041)), wheels: Vec::new(), vel: cv, touch: (tune.s.bound_friction, tune.s.bound_elasticity), wiped: false };
+            loose.pre_collide(&world, dt);
+            loose.tick += 1;
+            loose.collide(&world, &car_in, &city, false);
+            loose.refresh(&world, &car_in);
+            let ids = loose.car_island();
+            let mut body = Body { at: now[3] + now[1] * 0.708, rows: [now[0], now[1], now[2]], vel: cv, ang: cw, inv_mass: 0.0, inv_moments: Vec3::ZERO, force: Vec3::ZERO, torque: Vec3::ZERO };
+            if !ids.is_empty() {
+                let (mut p, mut l) = (Vec3::ZERO, Vec3::ZERO);
+                let mut dynm = CarDyn { p: &mut p, l: &mut l, mass: 0.0, inverse: Vec3::ZERO, rows: body.rows };
+                let mut o = loose.solve_car_island(&world, &car_in, &mut body, &mut dynm, &[], &[], &ids, dt);
+                loose.push_car_island(&mut o, &body, Pushed::default(), dt);
+            }
+            loose.step_rest(&world, &car_in, dt);
+            loose.end_tick(&world, dt);
+            let Some((m, contacts, off)) = id.and_then(|i| loose.piece(i)) else { panic!("no piece") };
+            if (m[3] - last_pos).length() > 1e-4 {
+                moving_since = tick;
+                rest_tick = None;
+            } else if rest_tick.is_none() {
+                rest_tick = Some(moving_since);
+            }
+            last_pos = m[3];
+            let ground = city.ground(m[3], 1.0, 3.0).map_or(f32::NAN, |h| m[3].y - h.point.y);
+            let face = if m[2].y.abs() > 0.9 { "1.8x0.333" } else if m[1].y.abs() > 0.9 { "1.8x0.5" } else if m[0].y.abs() > 0.9 { "0.333x0.5" } else { "edge" };
+            let rec_s = rec.map_or("-".to_string(), |r| format!("{:.4} {:.4} {:.4} z.y {:.3} above {:.3} d {:.3}", r[3].x, r[3].y, r[3].z, r[2].y, city.ground(r[3], 1.0, 3.0).map_or(f32::NAN, |h| r[3].y - h.point.y), (r[3] - m[3]).length()));
+            out += &format!("{tick} port {:.4} {:.4} {:.4} z.y {:.3} above {:.3} {face} contacts {} off {off} | rec {rec_s}\n", m[3].x, m[3].y, m[3].z, m[2].y, ground, contacts.len());
+        }
+        println!("{out}");
+        println!("detach {det_tick}: port piece at rest from tick {:?} ({} ticks after the detach)", rest_tick, rest_tick.map_or(-1, |t| t as i64 - det_tick as i64));
     }
 }

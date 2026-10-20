@@ -2742,10 +2742,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 st.parts.repair(&cm);
             }
             let (speed, heavy) = (st.speed(), st.damage > 0.66);
-            st.parts.tick(cm, speed, heavy, dt, &ground);
+            // (a torn-off bumper is a body of the car's loose-body level, damageparts.rs)
+            let level = world.collider.loose.as_deref().zip(st.veh.as_deref_mut().map(|v| &mut v.loose));
+            st.parts.tick(cm, speed, heavy, dt, &ground, level);
             if c.is_player {
                 parts_test(st, &cm, self.clock);
             }
+        }
+        if let Some(lw) = world.collider.loose.as_deref() {
+            torn_pieces(&mut self.cars, lw);
         }
     }
 
@@ -3148,6 +3153,53 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
     }
 }
+
+/// The cars' torn-off bumpers across the cars' levels (the original has one physics level, the port one per car): a
+/// piece no bumper has any more comes out of the level holding it, each piece goes to the level of the car that reaches
+/// it (`loose::hand_over_pieces`), and every car reads its pieces back from wherever they are (damageparts.rs).
+fn torn_pieces(cars: &mut [CarInstance], world: &crate::physics::loose::LooseWorld) {
+    let mut dropped = Vec::new();
+    for c in cars.iter_mut() {
+        dropped.extend(c.state.parts.dropped());
+    }
+    if !dropped.is_empty() {
+        for c in cars.iter_mut() {
+            if let Some(v) = c.state.veh.as_deref_mut() {
+                for id in &dropped {
+                    v.loose.remove_piece(*id);
+                }
+            }
+        }
+    }
+    if cars.iter().any(|c| c.state.veh.as_ref().is_some_and(|v| !v.loose.pieces.is_empty())) {
+        // (how far a car reaches: its hull's farthest corner, the piece's half diagonal 0.95 m and a metre - more than
+        // a fast car closes in a tick)
+        let mut levels: Vec<crate::physics::loose::CarLevel> = cars
+            .iter_mut()
+            .filter_map(|c| {
+                let reach = c.model.params.hull.as_ref().map_or(2.5, |h| h.min.abs().max(h.max.abs()).length()) + 0.95 + 1.0;
+                let at = c.state.pos;
+                c.state.veh.as_deref_mut().map(|v| crate::physics::loose::CarLevel { at, reach, level: &mut v.loose })
+            })
+            .collect();
+        crate::physics::loose::hand_over_pieces(world, &mut levels);
+    }
+    let mut views: std::collections::HashMap<u64, crate::damageparts::PieceView> = std::collections::HashMap::new();
+    for c in cars.iter() {
+        if let Some(v) = c.state.veh.as_deref() {
+            for id in v.loose.piece_ids() {
+                if let Some((matrix, contacts, _)) = v.loose.piece(id) {
+                    views.insert(id, crate::damageparts::PieceView { matrix, contacts: contacts.to_vec() });
+                }
+            }
+        }
+    }
+    for c in cars.iter_mut() {
+        let cm = Mat4::from_rotation_translation(c.state.rot, c.state.pos);
+        c.state.parts.read_pieces(&cm, &|id| views.get(&id).cloned());
+    }
+}
+
 
 /// Test hooks for the moving damage parts on the player's car: MCLA_PARTS_TEST="hood,trunk,frontA,frontB,rearA,rearB"
 /// (loose 0/1, end states 0..2) is put on the car once, two seconds in; MCLA_PARTS_POSE="hood,trunk" holds the
