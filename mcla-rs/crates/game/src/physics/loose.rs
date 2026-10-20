@@ -726,6 +726,58 @@ fn sweep(a: &Core, ma: f32, cga: Vec3, a_now: &[Vec3; 4], a_last: &[Vec3; 4], b:
     Some(Swept { normal: r.normal, local_a: inv(&at(a_now, pa), r.on_a - pa), local_b: inv(&at(b_now, pb), r.on_b - pb), lambda, last: r })
 }
 
+/// The swept test of a convex part against one city polygon (0x825CEE38's swept branch, 0x825D9268 inside): the
+/// part's places now and last taken about the polygon's first corner `origin`, the mesh at rest at the origin
+/// (its move is nil), the polygon `local` about that corner. The detector starts from (1, 0, 0) and keeps its
+/// direction from one call to the next; the touch's normal, the part's point carried to its place now, the
+/// polygon's point, and the distance between them along the normal - about `origin`, as the discrete detector
+/// answers. (No "lambda below 1" test after it here, unlike the part pairs' 0x825CC930.)
+fn sweep_polygon(core: &Core, margin: f32, cg: Vec3, now: &[Vec3; 4], last: &[Vec3; 4], local: &[Vec3; 3], face: Vec3, bisectors: [Vec3; 3], origin: Vec3) -> Option<Nearest> {
+    let now = [now[0], now[1], now[2], now[3] - origin];
+    let last = [last[0], last[1], last[2], last[3] - origin];
+    let da = xf(&now, cg) - xf(&last, cg);
+    let rel = Vec3::ZERO - da;
+    let mut pa = now[3] - da;
+    let mut dir = Vec3::X;
+    let pm = super::hull::POLYGON_MARGIN;
+    let mut r = super::gjk::contact_local(&core.placed(pa), Vec3::ZERO, local, face, bisectors, margin, pm, &mut dir)?;
+    let (mut lambda, mut last_l) = (0.0f32, 0.0f32);
+    let tol = f32::from_bits(0x3a83_126f);
+    let stop = f32::from_bits(0x3ca3_d70a);
+    if r.distance > tol {
+        let mut gap = r.distance;
+        let mut steps = 0;
+        loop {
+            steps += 1;
+            if steps > 32 {
+                return None;
+            }
+            let proj = dot3(rel, r.normal) + 0.0;
+            let step = gap * if proj == 0.0 { f32::MAX } else { recip(proj) };
+            lambda = lambda + step;
+            if 0.0 > step || lambda > 1.0 {
+                return None;
+            }
+            if last_l >= lambda {
+                break;
+            }
+            last_l = lambda;
+            pa = -(da * (1.0 - lambda) - now[3]);
+            r = super::gjk::contact_local(&core.placed(pa), Vec3::ZERO, local, face, bisectors, margin, pm, &mut dir)?;
+            if stop >= r.distance {
+                break;
+            }
+            gap = r.distance - stop;
+            if !(gap > tol) {
+                break;
+            }
+        }
+    }
+    let la = inv(&[now[0], now[1], now[2], pa], r.on_a - pa);
+    let (on_a, on_b) = (xf(&now, la), r.on_b);
+    Some(Nearest { on_a, on_b, distance: 0.0 - dot3(r.normal, on_b - on_a), ..r })
+}
+
 impl LooseState {
     /// The object a prop instance is, made on first need.
     fn obj_of(&mut self, world: &LooseWorld, inst: u32) -> usize {
@@ -909,6 +961,14 @@ impl LooseState {
         }
     }
 
+    /// A loose body's part at the matrix the body had as the tick began (its collider's +32; `PBody::prev`).
+    fn prev_part(&self, world: &LooseWorld, who: Who, part: u16) -> Option<[Vec3; 4]> {
+        let Who::Obj(o) = who else { return None };
+        let b = self.objs[o].body.as_ref()?;
+        let p = world.types[self.objs[o].ty].parts.get(part as usize)?;
+        Some(super::gjk::world_matrix(&m4(&p.matrix), &b.prev))
+    }
+
     fn parts_of(&self, world: &LooseWorld, car: &CarIn, who: Who) -> Vec<u16> {
         match who {
             Who::Obj(o) if self.objs[o].veh.is_some() => vec![0],
@@ -981,8 +1041,13 @@ impl LooseState {
                     self.manis[k].visited = true;
                 }
                 let count = at.map_or(0, |k| self.manis[k].slots.len());
+                // (the instances' last matrices, 0x82589948: the collider's +96 only while the other instance has no
+                // collider record - two bodies in the simulator are each taken at +32, the matrix they had as the tick
+                // began: V s_rtv s390 / s391, 11286 x 22286 / 22320)
+                let both = [a, b].into_iter().all(|w| matches!(w, Who::Obj(o) if self.objs[o].body.is_some() && self.objs[o].veh.is_none()));
+                let (la, lb) = if both { (self.prev_part(world, a, pa).unwrap_or(sa.last), self.prev_part(world, b, pb).unwrap_or(sb.last)) } else { (sa.last, sb.last) };
                 let found: Option<(Vec3, Vec3, Vec3, f32, Nearest)> = if count == 0 && sweeps {
-                    sweep(&sa.core, sa.margin, sa.cg, &sa.now, &sa.last, &sb.core, sb.margin, sb.cg, &sb.now, &sb.last).filter(|s| !(s.lambda >= 1.0)).map(|s| {
+                    sweep(&sa.core, sa.margin, sa.cg, &sa.now, &la, &sb.core, sb.margin, sb.cg, &sb.now, &lb).filter(|s| !(s.lambda >= 1.0)).map(|s| {
                         let (qa, qb) = (xf(&sa.now, s.local_a), xf(&sb.now, s.local_b));
                         (s.normal, qa, qb, 0.0 - dot3(s.normal, qb - qa), s.last)
                     })
@@ -1153,7 +1218,18 @@ impl LooseState {
             for c in self.parts_of(world, car, Who::Obj(o)) {
                 let Some(s) = self.shape(world, car, Who::Obj(o), c) else { continue };
                 let mut hits: Vec<super::hull::PartHit> = Vec::new();
-                super::hull::part_touches(&s.core, s.margin, s.bbox, &s.now, &s.last, city, |h| hits.push(h));
+                if dbg() && self.objs[o].entry.is_none() {
+                    let t = &world.types[self.objs[o].ty];
+                    let p = &t.parts[c as usize];
+                    if let Some(bd) = p.bound.as_ref() {
+                        eprintln!("LOOSESHAPE tick {} obj {o} part {c} kind {} round {:e} len {:e} margin {:e} centroid {:?} min {:?} max {:?} pm {:?} now {:?} last {:?}", self.tick, bd.kind, bd.round, bd.length, bd.margin, bd.centroid, bd.min, bd.max, p.matrix, s.now, s.last);
+                    }
+                }
+                // (pair byte +280: a loose prop's every polygon goes through the swept test - V s_rtv 11286, s386 / s389 /
+                // s391: the city's points lie where the part was first within 2 cm, 4 to 7 cm along the ground)
+                let sweeps = self.objs[o].inst.is_some();
+                let swept = |local: &[Vec3; 3], face: Vec3, bisectors: [Vec3; 3], origin: Vec3| sweep_polygon(&s.core, s.margin, s.cg, &s.now, &s.last, local, face, bisectors, origin);
+                super::hull::part_touches(&s.core, s.margin, s.bbox, &s.now, &s.last, city, if sweeps { Some(&swept) } else { None }, |h| hits.push(h));
                 for m in self.manis.iter_mut() {
                     if m.a == Who::Obj(o) && m.b == Who::City && m.part_a == c {
                         m.visited = true;
@@ -1168,7 +1244,7 @@ impl LooseState {
                         self.manis.len() - 1
                     });
                     if dbg() {
-                        eprintln!("LOOSECITY tick {} obj {o} part {c} cell {} polygon {} depth {:?} n {:?} local {:?}", self.tick, h.cell, h.polygon, h.depth, h.normal, h.local);
+                        eprintln!("LOOSECITY tick {} obj {o} part {c} cell {} polygon {} depth {:?} n {:?} local {:?} on_a {:?} on_b {:?}", self.tick, h.cell, h.polygon, h.depth, h.normal, h.local, h.on_a, h.on_b);
                     }
                     self.manis[k].insert(fresh, 0, h.surface);
                 }
@@ -2333,8 +2409,12 @@ impl LooseState {
             // (gravity, 0x8259D7F0: a force)
             let g = Vec3::new(0.0 * gravity, GRAVITY * gravity, 0.0 * gravity);
             b.force = b.force + g * b.mass;
-            // (damping, 0x8259D880: in the body's axes, of an entry's archetype)
-            if self.objs[o].entry.is_some() || veh.is_some() {
+            // (damping, 0x8259D880: in the body's axes, of an entry's archetype - and of the file's own
+            // archetype for a prop that went loose whole (phArchetypeDamp, vtable[17] true: V s_rtv 11286,
+            // 25.5 kg, in flight from s386 its speed 0.269 % less a tick on every axis, the type's 0.02 /
+            // 0.1 / 0.02 at 2.7 m/s). Not the torn bumper's plain phArchetypePhys.)
+            let file_type = veh.is_none() && world.types[self.objs[o].ty].off != usize::MAX;
+            if self.objs[o].entry.is_some() || veh.is_some() || file_type {
                 let inv_dt = recip(dt);
                 let cols = [Vec3::new(b.rows[0].x, b.rows[1].x, b.rows[2].x), Vec3::new(b.rows[0].y, b.rows[1].y, b.rows[2].y), Vec3::new(b.rows[0].z, b.rows[1].z, b.rows[2].z)];
                 let slow = |x: Vec3, c: Vec3, lin: Vec3, sq: Vec3| {

@@ -1227,7 +1227,7 @@ pub struct Manifold {
     pub slots: Vec<Slot>,
 }
 
-const POLYGON_MARGIN: f32 = f32::from_bits(0x3ba3_d70a);
+pub(crate) const POLYGON_MARGIN: f32 = f32::from_bits(0x3ba3_d70a);
 const PART_MARGIN: f32 = f32::from_bits(0x3d23_d70a);
 const MILLIONTH: f32 = f32::from_bits(0x3586_37bd);
 
@@ -1501,7 +1501,10 @@ pub struct PartHit {
     pub depth: f32,
 }
 
-pub fn part_touches(core: &impl super::gjk::Support, margin: f32, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Vec3; 4], world: &WorldCollider, mut hit: impl FnMut(PartHit)) {
+/// `swept`: the detector to use in place of the discrete one (0x825CEE38's swept branch, taken when the pair's
+/// flag byte is set - a loose prop): handed the polygon about its first corner, its normal, its edges' bisectors
+/// and that corner; it answers about the corner, as the discrete one does.
+pub fn part_touches(core: &impl super::gjk::Support, margin: f32, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Vec3; 4], world: &WorldCollider, swept: Option<&dyn Fn(&[Vec3; 3], Vec3, [Vec3; 3], Vec3) -> Option<super::gjk::Nearest>>, mut hit: impl FnMut(PartHit)) {
     let (mid, half) = ((bbox.0 + bbox.1) * 0.5, (bbox.1 - bbox.0) * 0.5);
     let centre = |m: &[Vec3; 4]| m[3] + m[0] * mid.x + m[1] * mid.y + m[2] * mid.z;
     let reach = {
@@ -1537,8 +1540,13 @@ pub fn part_touches(core: &impl super::gjk::Support, margin: f32, bbox: (Vec3, V
             }
             None => (face, face),
         });
-        let Some(r) = super::gjk::contact_about(core, &tri, face, [edge[0].0, edge[1].0, edge[2].0], margin, POLYGON_MARGIN) else { return };
         let origin = tri[0];
+        let bisectors = [edge[0].0, edge[1].0, edge[2].0];
+        let found = match swept {
+            Some(f) => f(&[Vec3::ZERO, tri[1] - origin, tri[2] - origin], face, bisectors, origin),
+            None => super::gjk::contact_about(core, &tri, face, bisectors, margin, POLYGON_MARGIN),
+        };
+        let Some(r) = found else { return };
         let (on_a, on_b) = (r.on_a + origin, r.on_b + origin);
         let from = on_a - now[3];
         let local = Vec3::new(dot3(now[0], from), dot3(now[1], from), dot3(now[2], from));

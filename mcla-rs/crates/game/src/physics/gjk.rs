@@ -563,10 +563,6 @@ impl Support for Corners<'_> {
     }
 }
 
-fn loop_only(shape: &impl Support, by: Vec3, then: Vec3, tri: &[Vec3; 3], first: Vec3, margin_a: f32, margin_b: f32) -> (Option<Nearest>, bool) {
-    loop_pair(shape, by, then, &Corners(tri), first, margin_a, margin_b)
-}
-
 /// The loop for any two convex cores (0x825E0150): the first's point farthest against `v`, the
 /// second's farthest along it.
 pub fn loop_pair(shape: &impl Support, by: Vec3, then: Vec3, other: &impl Support, first: Vec3, margin_a: f32, margin_b: f32) -> (Option<Nearest>, bool) {
@@ -686,8 +682,15 @@ pub fn contact_about(shape: &impl Support, tri: &[Vec3; 3], face: Vec3, bisector
     // (the original's frame: the world's axes, the polygon's first corner the origin)
     let origin = tri[0];
     let local = [Vec3::ZERO, tri[1] - origin, tri[2] - origin];
-    let by = Vec3::ZERO - origin;
-    let (mut result, degenerate) = loop_only(shape, by, Vec3::ZERO, &local, Vec3::X, margin_a, margin_b);
+    contact_local(shape, Vec3::ZERO - origin, &local, face, bisectors, margin_a, margin_b, &mut Vec3::X)
+}
+
+/// `contact_about` with the polygon already about its first corner (`local`), the shape moved by `by`, and the
+/// detector's direction (+16) handed in and the one it ends with handed back: 0x825CEE38 sets it to (1, 0, 0) per
+/// polygon (0x827D8470), and the swept test keeps it from one of its calls to the next.
+pub fn contact_local(shape: &impl Support, by: Vec3, local: &[Vec3; 3], face: Vec3, bisectors: [Vec3; 3], margin_a: f32, margin_b: f32, dir: &mut Vec3) -> Option<Nearest> {
+    let local = *local;
+    let (mut result, degenerate) = loop_from(shape, by, Vec3::ZERO, &Corners(&local), dir, margin_a, margin_b);
     let catch = degenerate && result.map_or(false, |r| CATCH > (r.distance + margin_a) + margin_b);
     if result.is_none() || catch {
         // the ways out that are tried: the polygon's normal, its edges' bisectors as given
