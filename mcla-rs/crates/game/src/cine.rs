@@ -399,6 +399,12 @@ impl Cine {
         self.playing.as_ref().map(|s| s.movers.iter().map(|m| m.label.clone()).collect()).unwrap_or_default()
     }
 
+    /// The animation that moves a car of the playing scene, and the scene's frame in the world.
+    pub fn mover_anim(&self, label: &str) -> Option<(Arc<Animation>, Mat4)> {
+        let sc = self.playing.as_ref()?;
+        sc.movers.iter().find(|m| m.label == label).map(|m| (m.anim.clone(), sc.origin))
+    }
+
     /// World position and orientation of a moved car at the scene's time.
     pub fn mover(&self, label: &str) -> Option<(Vec3, Quat)> {
         let sc = self.playing.as_ref()?;

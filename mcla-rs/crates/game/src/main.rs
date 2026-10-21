@@ -35,6 +35,7 @@ mod fixed_step;
 mod vehicle_pose;
 mod video;
 mod cine;
+mod cinecar;
 mod damageparts;
 mod damagemap;
 mod cutscene;
@@ -281,6 +282,8 @@ struct App {
     cine_hold: Option<(Option<String>, u32)>,
     /// the running scene keeps its own time (start-line cameras) instead of a story scene's
     cine_free: bool,
+    /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
+    cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
     tips: std::collections::VecDeque<(String, String, String)>,
     /// a mission's reminder (caller, text) waiting for its story scene to end
@@ -737,6 +740,7 @@ impl App {
             cine: Default::default(),
             cine_hold: None,
             cine_free: false,
+            cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
             pending_call: None,
             whoosh: Default::default(),
@@ -3056,7 +3060,15 @@ impl App {
                             a.t = t;
                         }
                     }
-                    // the cars are where the scene puts them
+                    // the cars: where the game's physics runs with the scene, each moved car is driven along its
+                    // mover by its car event and animated brain (cinecar.rs); elsewhere - a story scene stops the
+                    // physics, a race start's scene hands its racers to the grid (not ported: posed) - the car is
+                    // put where the scene has it. (MCLA_CINE_POSE=1: every scene's cars posed, as before)
+                    let drive = self.cine_free && !self.cine_prerace && std::env::var_os("MCLA_CINE_POSE").is_none();
+                    let scene_name = self.cine.playing.as_ref().map(|sc| sc.name.clone()).unwrap_or_default();
+                    if self.cine_events.0 != scene_name {
+                        self.cine_events = (scene_name, Vec::new());
+                    }
                     for label in self.cine.movers() {
                         let Some((pos, rot)) = self.cine.mover(&label) else { continue };
                         let idx = if cine::is_player_car(&label) {
@@ -3068,6 +3080,50 @@ impl App {
                             let tag = format!("cine:{label}");
                             self.vehicles.cars.iter().position(|c| c.driver == tag)
                         };
+                        let driven = idx.filter(|&i| drive && self.vehicles.cars[i].state.veh.is_some() && self.vehicles.cars[i].model.aitunes.is_some());
+                        if let (Some(i), Some((anim, frame))) = (driven, self.cine.mover_anim(&label)) {
+                            let k = match self.cine_events.1.iter().position(|e| e.0 == label) {
+                                Some(k) => k,
+                                None => {
+                                    self.cine_events.1.push((label.clone(), cinecar::CarEvent::default()));
+                                    self.cine_events.1.len() - 1
+                                }
+                            };
+                            let c = &mut self.vehicles.cars[i];
+                            if c.brain.is_none() {
+                                let tune = c.model.aitunes.as_ref().map(|a| Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&a.base, &a.mods, c.perf)));
+                                c.brain = Some(cinecar::AnimBrain { accel: 0.0, curv: 0.0, tune });
+                            }
+                            let ev = &mut self.cine_events.1[k].1;
+                            if !ev.done {
+                                // (the event's update has the time before this frame's step - every port frame:
+                                // updated at 30 Hz with dt 1/30 the drive-out ends 0.46 m off the recording,
+                                // at the port's 60 Hz 0.21 m)
+                                let t0 = (t - dt).max(0.0);
+                                let idle0 = c.brain.as_ref().and_then(|b| b.tune.as_ref()).map_or(0.0, |a| a.idle_speed[0]);
+                                let (accel, curv, snap) = cinecar::update(ev, &anim, frame, t0, dt, &c.state, idle0);
+                                let snapped = snap.is_some();
+                                if let Some(sn) = snap {
+                                    if let Some(vt) = c.params().veh.clone() {
+                                        physics::vehsim::set_pose(&mut c.state, &vt, &world.collider, sn.m, sn.vel, sn.ang_vel);
+                                    }
+                                    c.placed = true;
+                                    c.pose_history.reset();
+                                }
+                                if let Some(b) = c.brain.as_mut() {
+                                    b.accel = accel;
+                                    b.curv = curv;
+                                }
+                                if anim.duration - t <= 0.0 {
+                                    ev.done = true;
+                                }
+                                if std::env::var_os("MCLA_CINE_CAR_TRACE").is_some() {
+                                    let m = glam::Mat3::from_quat(c.state.rot);
+                                    log::info!("cine car: {} t {:.3} snap {} accel {:.3} curv {:.4} in {:?} pos {:.3} {:.3} {:.3} fwd {:.4} {:.4} speed {:.3} mover {:.3} {:.3}", label, t0, snapped, accel, curv, c.input, c.state.pos.x, c.state.pos.y, c.state.pos.z, -m.z_axis.x, -m.z_axis.z, c.state.speed(), pos.x, pos.z);
+                                }
+                            }
+                            continue;
+                        }
                         if let Some(i) = idx {
                             self.vehicles.pose_car(i, pos, rot);
                             // (a replay's opening: nothing is simulated, the pose drawn is this one)
@@ -3979,6 +4035,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.props.emit(&mut self.fx, self.cam.pos, self.tick_no, self.vehicles.player().map(|c| (c.state.pos, c.state.vel)));
             props::set_lens(self.cam.fov_y);
             self.vehicles.hide_player = self.hide_player;
+            // (the scene is over: its animated brains are deleted with it, BrainFactory_DeleteBrain)
+            static AFTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if self.cine.playing.is_none() && !self.cine_events.0.is_empty() {
+                self.cine_events = (String::new(), Vec::new());
+                for c in self.vehicles.cars.iter_mut() {
+                    c.brain = None;
+                }
+                AFTER.store(90, std::sync::atomic::Ordering::Relaxed);
+            }
+            // (MCLA_CINE_CAR_TRACE: the player's car for 1.5 s after a scene)
+            if AFTER.load(std::sync::atomic::Ordering::Relaxed) > 0 && std::env::var_os("MCLA_CINE_CAR_TRACE").is_some() {
+                let left = AFTER.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(c) = self.vehicles.player().filter(|_| left % 10 == 1) {
+                    log::info!("cine car after: {} pos {:.3} {:.3} {:.3} speed {:.3} in {:?}", 90 - left, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.speed(), c.input);
+                }
+            }
             self.vehicles.update(&world, player_input, sim_dt);
             if std::env::var_os("MCLA_STEER_DBG").is_some() && self.tick_no % 30 == 0 {
                 log::info!("steer dbg: tick {} drive {} menu {} mode {:?} in steer {:.2} thr {:.2} -> car input steer {:?} state steer {:?} veh steer {:?}", self.tick_no, self.drive, menu_open, self.game.mode, player_input.steer, player_input.throttle, self.vehicles.player().map(|c| c.input.steer), self.vehicles.player().map(|c| c.state.steer), self.vehicles.player().and_then(|c| c.state.veh.as_ref().map(|v| (v.pad_steer, v.steer))));

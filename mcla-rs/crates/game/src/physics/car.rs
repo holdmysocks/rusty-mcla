@@ -208,6 +208,9 @@ pub struct CarInput {
     /// player's chassis brake is also written 1 by the race code. A computer driver's pedals with it
     /// are the chassis's own (no coasting share).
     pub hold: bool,
+    /// a cine car event's mcBrainAnimated writes the chassis's inputs (sub_822B97E0): as they are - no pad
+    /// code, no computer driver's pedal share - and the gearbox set to first out of reverse or neutral
+    pub animated: bool,
 }
 
 pub const HYD_FITTED: u8 = 0x40;

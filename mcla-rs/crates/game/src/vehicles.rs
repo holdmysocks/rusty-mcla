@@ -239,6 +239,8 @@ pub struct CarInstance {
     pub input: CarInput,
     pub color: [f32; 4],
     pub ai: Option<AiDriver>,
+    /// a cine car event's mcBrainAnimated drives the car (cinecar.rs): from the scene's start to its end
+    pub brain: Option<crate::cinecar::AnimBrain>,
     pub placed: bool,
     pub is_player: bool,
     /// aftermarket wheels fitted in the garage (player only)
@@ -2024,7 +2026,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6] });
+        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6] });
         self.cars.len() - 1
     }
 
@@ -2534,7 +2536,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             let (pos, fwd, _) = positions[i];
             let st = self.cars[i].state.clone();
-            let mut input = if self.cars[i].parked.is_some() {
+            let mut input = if let Some(b) = self.cars[i].brain.as_ref() {
+                // (a scene's car: its animated brain's pedals and steering, cinecar.rs)
+                crate::cinecar::solve(b, &st, self.cars[i].params().veh.as_deref())
+            } else if self.cars[i].parked.is_some() {
                 CarInput { brake: 1.0, handbrake: true, ..Default::default() }
             } else if self.frozen {
                 if let Some(ai) = self.cars[i].ai.as_mut() {

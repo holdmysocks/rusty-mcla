@@ -1161,7 +1161,7 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     // a computer driver asks for a share of the pull; the engine's pedal coasts at one half
     // (on the grid, `hold`, the brain's pedals are written to the chassis as they are: a phase with the
     // throttle up shows +136 = 0 in the recordings, so the coasting share below does not apply)
-    let input = if input.ai && !input.hold {
+    let input = if input.ai && !input.hold && !input.animated {
         let map = |x: f32| if x > 0.01 { 0.5 + 0.5 * x.min(1.0) } else { 0.42 };
         if input.brake > 0.1 && input.throttle < 0.01 { input } else { CarInput { throttle: map(input.throttle), ..input } }
     } else {
@@ -1219,7 +1219,7 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     // Not for computer drivers, replays or the older bike path. MCLA_DBG_A2: the raw triggers and the
     // port's older reverse rule, the pad every tick. ----
     let raw_input = input;
-    let pad_exact = !input_ai && !REPLAY_STEER.load(std::sync::atomic::Ordering::Relaxed) && !bike_old(vt) && !dbg_flag("MCLA_DBG_A2") && !dbg_flag("MCLA_DBG_Z2");
+    let pad_exact = !input_ai && !input.animated && !REPLAY_STEER.load(std::sync::atomic::Ordering::Relaxed) && !bike_old(vt) && !dbg_flag("MCLA_DBG_A2") && !dbg_flag("MCLA_DBG_Z2");
     let mut input = input;
     if pad_exact {
         vs.pad.live = true;
@@ -1317,7 +1317,13 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     let old_gear = vs.gear;
     // (a replay goes the way its recording's gearbox did: choosing reverse is the pad code's)
     let replay_way = REPLAY_WAY.load(std::sync::atomic::Ordering::Relaxed);
-    if replay_way != 0 {
+    if input.animated {
+        // (an mcBrainAnimated writes input +44 = max(gear, first) every time, sub_822B97E0)
+        if vs.gear <= 0 {
+            vs.gear = 1;
+            vs.shift_timer = 0.0;
+        }
+    } else if replay_way != 0 {
         if (replay_way < 0) != (vs.gear < 0) {
             vs.gear = if replay_way < 0 { -1 } else { 1 };
             vs.shift_timer = 0.0;
@@ -1885,7 +1891,10 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     if exact_pad {
         let row2 = vs.body.as_ref().filter(|b| b.snap == (st.pos, st.rot, st.vel, st.ang_vel)).map(|b| b.rows)
             .unwrap_or_else(|| { let m = Mat3::from_quat(st.rot); [m.x_axis, m.y_axis, m.z_axis] });
-        if !input_ai {
+        if input.animated {
+            // (an animated brain writes the steering value itself, sub_822B97E0: no pad code, no rate)
+            vs.pad_steer = input.steer.clamp(-1.0, 1.0);
+        } else if !input_ai {
             let sens = ((f32::from_bits(STEER_SENS.load(std::sync::atomic::Ordering::Relaxed)) - 1.0) / 0.5).clamp(-1.0, 1.0);
             let target = (super::pad::steer_target(input.steer, sens, &t.input) + pull).clamp(-1.0, 1.0);
             let sideways = super::exact::fma(row2[0].x, st.vel.x, super::exact::fma(row2[0].z, st.vel.z, row2[0].y * st.vel.y));
@@ -5987,6 +5996,86 @@ fn suspension_target(rows: [Vec3; 3], n: Vec3, depth: f32, comp: f32) -> Option<
     let over = 1.0 / tilt;
     // (wheel +448 and the global at 0x828DA450 are both nothing in every recording)
     Some(fnms32(over, 0.0, fnms32(up, 0.0, fma32(depth, over, comp) - f32::from_bits(0x3be56042))))
+}
+
+/// A car set down where a cine car event puts it, with a velocity (docs/reference/cutscenes/cine_car_event.md, snap):
+/// sub_822A9930 with its probe - from a metre above the place to three below; on a hit the place is the hit, the up
+/// the polygon's normal and the rows made square about it (as the stand-up, R4) - the velocities as given, the still
+/// timer (chassis +588) 0, a burning nitrous shot and a running slipstream turbo stopped (sub_82345680, sub_82345E20);
+/// then sub_8255A1B0: both shafts and their wheels at the speed along the car (-row 2 . v) over the first wheel's
+/// radius, the differentials even, the gear the one for that speed (sub_82561050: reverse under -1 m/s, first under
+/// 10, else the lowest gear the speed does not over-rev), the engine at the gear's speed held between IdleRPM and the
+/// engine's +72 (the port: the torque curve's peak, else OptRPM - approximate). The car's pairs are made again only
+/// in the next step (0x82588990, as the stand-up).
+pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3; 4], vel: Vec3, ang_vel: Vec3) {
+    use super::exact as ex;
+    let [x0, y0, z0, place] = m;
+    let mut rows = [x0, y0, z0];
+    let mut at = place;
+    let (from, to) = (Vec3::new(place.x, place.y + 1.0, place.z), Vec3::new(place.x, place.y - 3.0, place.z));
+    if let Some((point, normal)) = level_probe(world, from, to) {
+        let unit_or = |v: Vec3, other: Vec3| if ex::dot3(v, v) > f32::from_bits(0x3727_c5ac) { ex::unit_or_zero(v) } else { other };
+        let y = unit_or(normal, Vec3::Y);
+        let x = unit_or(ex::cross(y, z0), Vec3::X);
+        let z = unit_or(ex::cross(x, y), Vec3::Z);
+        rows = [x, y, z];
+        at = point;
+    }
+    st.relocate(at, Quat::from_mat3(&Mat3::from_cols(rows[0], rows[1], rows[2])).normalize());
+    st.vel = vel;
+    st.ang_vel = ang_vel;
+    let Some(vs) = st.veh.as_deref_mut() else { return };
+    vs.manifolds.clear();
+    vs.hull_kept.clear();
+    vs.hull_last = None;
+    vs.last_seen = None;
+    vs.set_down = true;
+    vs.still_timer = 0.0;
+    if vs.nitro_burning {
+        vs.nitro_burning = false;
+        vs.nitro_level = 0.0;
+    }
+    vs.sst_level = 0.0;
+    let t = &vt.t;
+    let e = &t.engine.s;
+    let fwd = -ex::fma(rows[2].x, vel.x, ex::fma(rows[2].z, vel.z, rows[2].y * vel.y));
+    let drive = if vs.drive == 255 { t.drivetrain_type as u8 } else { vs.drive };
+    let (power_r, free_r, all) = match drive {
+        0 => (t.wheel_back.radius, t.wheel_front.radius, false),
+        1 => (t.wheel_front.radius, t.wheel_back.radius, false),
+        _ => (t.wheel_front.radius, 0.0, true),
+    };
+    let power = fwd / power_r;
+    let free = if all { fwd } else { fwd / free_r };
+    vs.omega = [power, free];
+    vs.diff = [1.0, 1.0];
+    for (i, w) in vs.wheels.iter_mut().enumerate() {
+        let front = i < 2;
+        w.spin_rate = if all || (front == (drive == 1)) { power } else { free };
+    }
+    let g = if fwd < -1.0 {
+        -1
+    } else if fwd < 10.0 {
+        1
+    } else {
+        let radii = match t.drivetrain_type {
+            1 | 4 => vec![t.wheel_front.radius; 2],
+            2 | 3 => vec![t.wheel_front.radius, t.wheel_front.radius, t.wheel_back.radius, t.wheel_back.radius],
+            _ => vec![t.wheel_back.radius; 2],
+        };
+        let needed = super::transmission::ratio_for_speed(e.max_rpm * RPM, fwd * 2.237, &radii);
+        let top = vt.ratios.len() as i32 - 1;
+        (1..top).find(|&g| needed > vt.ratios[g as usize]).unwrap_or(top)
+    };
+    if g != vs.gear {
+        let was = vs.gear;
+        vs.gear = g;
+        vs.shift_timer = 0.0;
+        vs.gear_change.start(was, g, e.gcl);
+    }
+    let ratio = if g < 0 { -vt.ratios[0] } else { vt.ratios[g as usize] };
+    let peak = vt.torque_curve.as_ref().map_or(e.opt_rpm * RPM, |c| c.peak().0);
+    vs.engine_w = (ratio * power).min(peak).max(e.idle_rpm * RPM);
 }
 
 /// R4: the level's probe as the stand-up asks it (0x82574418), plainly written: the first polygon of the city

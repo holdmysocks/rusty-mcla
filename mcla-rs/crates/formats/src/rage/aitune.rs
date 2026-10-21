@@ -34,6 +34,12 @@ pub struct AiTune {
     pub speed_low_curv: Vec<f32>,
     /// steering input per unit of curvature, against speed
     pub steer_scalar: Vec<f32>,
+    /// [5..8] DragConstant1..3
+    pub drag: [f32; 3],
+    /// the whole MaxEngineAccelByGear block as the class reads it: rows of 128 from [19], row g - 1
+    /// for gear g (the original's numbering, 2 = first: sub_82549B78 reads [147 + 128 (g - 2) + i]);
+    /// row 0 is the best of rows 1..7 (sub_82549770)
+    pub accel_rows: Vec<Vec<f32>>,
 }
 
 fn sample(table: &[f32], x: f32) -> f32 {
@@ -64,6 +70,8 @@ impl AiTune {
             speed_high_curv: (0..64).map(|i| f(1939 + i)).collect(),
             speed_low_curv: (0..64).map(|i| f(2003 + i)).collect(),
             steer_scalar: (0..128).map(|i| f(2067 + i)).collect(),
+            drag: [f(5), f(6), f(7)],
+            accel_rows: (0..8).map(|g| (0..128).map(|i| f(19 + g * 128 + i)).collect()).collect(),
         };
         let sane = t.max_speed > 5.0 && t.max_speed < 200.0 && t.max_curvature > 0.01 && t.max_curvature < 2.0 && t.max_total_accel > 1.0 && t.speed_high_curv.iter().all(|v| v.is_finite() && *v >= 0.0);
         sane.then_some(t)
@@ -105,7 +113,26 @@ impl AiTune {
             speed_high_curv: lv(&a.speed_high_curv, &b.speed_high_curv),
             speed_low_curv: lv(&a.speed_low_curv, &b.speed_low_curv),
             steer_scalar: lv(&a.steer_scalar, &b.steer_scalar),
+            drag: std::array::from_fn(|i| l(a.drag[i], b.drag[i])),
+            accel_rows: a.accel_rows.iter().zip(&b.accel_rows).map(|(p, q)| lv(p, q)).collect(),
         }
+    }
+
+    /// [11], set again after the lerp (sub_82549770): 127 / MaxSpeed, the speed tables' index per m/s.
+    pub fn speed_index(&self) -> f32 {
+        127.0 / self.max_speed
+    }
+
+    /// A speed table read as the original's class reads it (sub_8254A280, sub_82549B78 / sub_82549C20):
+    /// x = speed * [11], negative to 0; the index floor(min(x, 126)); the fraction x minus that index,
+    /// so beyond the table's end it runs on along its last step.
+    pub fn table_at(&self, table: &[f32], speed: f32) -> f32 {
+        let x = speed * self.speed_index();
+        let x = if x > 0.0 { x } else { 0.0 };
+        let i = x.min(126.0).floor();
+        let k = (i as usize).min(table.len().saturating_sub(2));
+        let (a, b) = (table[k], table[k + 1]);
+        (b - a).mul_add(x - i, a)
     }
 }
 
@@ -137,5 +164,28 @@ impl AiTunes {
         let base = it.next()?;
         let mods = it.next().unwrap_or_else(|| base.clone());
         Some(AiTunes { base, mods })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tune(max_speed: f32) -> AiTune {
+        AiTune {
+            max_speed, min_curvature: 0.0, max_curvature: 0.2, max_total_accel: 10.0, max_brake_decel: 15.0, idle_speed: [0.0; 7],
+            accel: Vec::new(), decel: Vec::new(), speed_high_curv: Vec::new(), speed_low_curv: Vec::new(),
+            steer_scalar: (0..128).map(|i| i as f32).collect(), drag: [0.0; 3], accel_rows: Vec::new(),
+        }
+    }
+
+    /// sub_8254A280's read of a speed table: negative speeds at the start, the index held at 126 but
+    /// the fraction not - past the end the last step runs on.
+    #[test]
+    fn table_read_as_the_class() {
+        let t = tune(127.0);
+        assert_eq!(t.table_at(&t.steer_scalar, -3.0), 0.0);
+        assert!((t.table_at(&t.steer_scalar, 10.25) - 10.25).abs() < 1e-5);
+        assert!((t.table_at(&t.steer_scalar, 130.0) - 130.0).abs() < 1e-4);
     }
 }
