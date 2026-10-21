@@ -103,8 +103,11 @@ pub struct CarModel {
     /// type +164 / +168, sub_82791A50), each with its batches' groups as `batch_window`; empty for other cars
     pub lods: [(Vec<GpuBatch>, Vec<u8>); 2],
     /// the radius the LOD choice adds to the depth (car +492, sub_826EAD00: 0.5 x sqrt 2 x the larger of the
-    /// bound's two sizes)
+    /// bound's width and length - sub_826D9818: its box max - min, x and z; every "car" type, vtable 0x820C0FD4,
+    /// answers 0 to the type's +28, so the 0.5 x width of the "ped" types never applies)
     pub lod_radius: f32,
+    /// the middle of that sphere in the car's space (the bound's centroid, sub_826E9F88)
+    pub lod_centre: Vec3,
 }
 
 pub struct WheelModel {
@@ -1850,7 +1853,8 @@ impl Vehicles {
         let own_wheels = own_hubs.iter().any(|h| h.is_some()).then_some(own_hubs);
         let (bw, bl) = if car_is_ambient { traffic::bound_size(&world.assets.root, &car.name) } else { None }.unwrap_or((car.max.x - car.min.x, car.max.z - car.min.z));
         let lod_radius = 0.5 * std::f32::consts::SQRT_2 * bw.max(bl);
-        let m = Arc::new(CarModel { lods, lod_radius, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone });
+        let lod_centre = if car_is_ambient { traffic::bound_centre(&world.assets.root, &car.name) } else { None }.unwrap_or((car.min + car.max) * 0.5);
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -3921,7 +3925,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let Some((batches, groups)) = self.lod_batches(ci) else { continue };
             let mut wheels_visible = true;
             let pos = c.render_pose(self.render_alpha).pos;
-            if let Some((eye, max)) = range {
+            // (the main view's passes - the ones with a frustum: a traffic car is drawn by its LOD alone, which
+            // has its view, occluder and 500 tests; the reach and box below are the port's, for the other cars)
+            let by_lod = frustum.is_some() && !c.model.lods[0].0.is_empty();
+            if let Some((eye, max)) = range.filter(|_| !by_lod) {
                 let d = pos.distance(eye);
                 if d > max {
                     continue;
@@ -3929,7 +3936,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // wheels are a few pixels beyond this
                 wheels_visible = d < max * 0.6;
             }
-            if let Some(f) = frustum {
+            if let Some(f) = frustum.filter(|_| !by_lod) {
                 let r = Vec3::splat(c.model.params.body_half.length() + 1.0);
                 if !f.intersects_aabb(pos - r, pos + r) {
                     continue;
@@ -4152,18 +4159,24 @@ impl CarInstance {
 }
 
 impl Vehicles {
-    /// The traffic cars' LOD (sub_827902F0, from sub_827932D8 into the instance's +28): the depth is the
-    /// car's bounding sphere's distance in front of the view's near plane plus its radius (sub_8217C1D8; radius
-    /// `CarModel::lod_radius`); not drawn from 500 on (0x82003250), LOD 0 below type +44 x type +40, LOD 1
-    /// below type +48 x type +40, else LOD 2 (every traffic type: +40 = 1, +44 = 40, +48 = 155). The original
-    /// also gives -1 to a car outside the view, which keeps it out of the shadow passes too (sub_82793360) -
-    /// not here: the frustum test stays with each pass. Cars without LODs (set-up cars) keep 0. `full_detail`
+    /// The traffic cars' LOD (sub_827902F0, from sub_827932D8 into the instance's +28, in the main pass
+    /// 0x10000 of sub_82793360): the car's sphere - the bound's centroid through the car's matrix, radius
+    /// `CarModel::lod_radius` - tested against the main view (sub_8217C1D8: outside -> -1) and its occluders
+    /// (sub_82175F20 -> sub_82175238, `occluder::Selected::hides_sphere`: hidden -> -1); the depth is plane 0 of
+    /// the viewport's first block - the near plane, column 2 of view x projection normalised (sub_8217C740) -
+    /// through the centre, plus the radius: the distance ahead of the camera less the near distance (the boom
+    /// file's `CameraNear`), plus the radius. Not drawn from 500 on (0x82003250), LOD 0 below type +44 x type +40,
+    /// LOD 1 below type +48 x type +40, else LOD 2 (every traffic type: +40 = 1, +44 = 40, +48 = 155). The -1
+    /// keeps the car out of every pass: the shadow passes 4 and 8 draw through sub_82791A50, which returns on
+    /// it, and so does the main view's (`lod_batches`). Cars without LODs (set-up cars) keep 0. `full_detail`
     /// (OPTIONS > PERFORMANCE > HIGH-DETAIL TRAFFIC, the port's own - DECISIONS.md D19): LOD 0 wherever the
-    /// original draws the car at all (the 500 limit stays).
-    pub fn pick_lods(&mut self, eye: Vec3, axis: Vec3, near: f32, full_detail: bool) {
+    /// original draws the car at all.
+    pub fn pick_lods(&mut self, eye: Vec3, axis: Vec3, near: f32, full_detail: bool, frustum: &crate::render::Frustum, occluders: &crate::occluder::Selected) {
         let alpha = self.render_alpha;
         // (diagnostics: MCLA_LOD_FORCE=1 / 2 draws every traffic car at that LOD)
         let force = std::env::var("MCLA_LOD_FORCE").ok().and_then(|v| v.parse::<i8>().ok());
+        static FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let log_now = std::env::var("MCLA_LOD_LOG").is_ok() && FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 60 == 0;
         self.lod_pick = self
             .cars
             .iter()
@@ -4174,7 +4187,16 @@ impl Vehicles {
                 if let Some(f) = force {
                     return f;
                 }
-                let d = (c.render_pose(alpha).pos - eye).dot(axis) - near + c.model.lod_radius;
+                let pose = c.render_pose(alpha);
+                let (centre, r) = (pose.pos + pose.rot * c.model.lod_centre, c.model.lod_radius);
+                if !frustum.intersects_sphere(centre, r) || occluders.hides_sphere(centre, r) {
+                    return -1;
+                }
+                let d = (centre - eye).dot(axis) - near + r;
+                // (diagnostics: MCLA_LOD_LOG=1 prints every visible traffic car's depth each second)
+                if log_now {
+                    eprintln!("lodpick {} d {:.1} r {:.2} dist {:.1}", c.model.name, d, r, centre.distance(eye));
+                }
                 if d >= 500.0 {
                     -1
                 } else if d < 40.0 || full_detail {

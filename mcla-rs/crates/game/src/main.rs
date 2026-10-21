@@ -390,6 +390,9 @@ struct App {
     /// the driving cameras of each car (tune/camera) and the camera in use
     booms: std::collections::HashMap<String, Option<Arc<boomcam::BoomSet>>>,
     boom: boomcam::BoomCam,
+    /// the near distance of this frame's view for the traffic's LOD (`Vehicles::pick_lods`): the boom file's
+    /// `CameraNear` (base +172 - viewport +704) while a boom view drives the camera, else the port's own
+    lod_near: f32,
     /// the cinematic view: each car's event camera views, and the camera
     event_views: std::collections::HashMap<String, Option<Arc<boomcam::EventViews>>>,
     event_cam: boomcam::EventCam,
@@ -763,6 +766,7 @@ impl App {
             cam_mode: std::env::var("MCLA_CAM_MODE").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
             booms: Default::default(),
             boom: Default::default(),
+            lod_near: 0.3,
             event_views: Default::default(),
             event_cam: Default::default(),
             cam_switch: Default::default(),
@@ -5469,6 +5473,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 let mut boom_view = false;
+                self.lod_near = self.cam.near;
                 self.boom_up = None;
                 if own_view {
                     // the garage views' roll (`<View>Roll`): the camera's up turned about its line of sight
@@ -5614,6 +5619,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             fixed_mount: !chase,
                             model_offset: car.model.simtunes.as_ref().map_or(Vec3::ZERO, |s| Vec3::new(s.base.s.model_offset_x, s.base.s.model_offset_y, s.base.s.model_offset_z)),
                         };
+                        self.lod_near = tune.near();
                         let out = self.boom.update(tune, &target, dt);
                         let out = self.cam_switch.blend.apply(&boomcam::BoomTarget { pan: (0.0, 0.0), ..target }, out, dt);
                         // the burnout camera: with the CINEMATIC CAMERA option on and a chase view in
@@ -6390,7 +6396,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let (eye, view, vp) = if self.drive && self.vehicles.player().is_some() { (self.chase.pos, self.chase.view(), self.cam.proj(aspect) * self.chase.view()) } else { (self.cam.pos, self.cam.view(), self.cam.view_proj(aspect)) };
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
             self.vehicles.traffic_lamps(eye, axis, &Frustum::from_view_proj(vp), night, sim_dt);
-            self.vehicles.pick_lods(eye, axis, self.cam.near, self.game.opts.hq_traffic);
         }
         // (the set-up cars' lamp states - vehicles.rs `setup_lamps`, sub_82353E38: head lamps due past the
         // light manager's 18.0 or before its 6.0, or in Stormy or Foggy weather weighing over 0.85; in the
@@ -6411,6 +6416,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let frustum = Frustum::from_view_proj(vp);
         self.last_frustum = Some(frustum);
         let occluded = occluder::frame(&self.opt.data_dir, vp, &frustum);
+        // (the traffic cars' LOD for this frame, by the main view - vehicles.rs `pick_lods`: its frustum and
+        // occluders, its camera's axis and the boom file's CameraNear)
+        {
+            let (eye, view) = if self.drive && self.vehicles.player().is_some() { (self.chase.pos, self.chase.view()) } else { (self.cam.pos, self.cam.view()) };
+            let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
+            self.vehicles.pick_lods(eye, axis, self.lod_near, self.game.opts.hq_traffic, &frustum, &occluded);
+        }
         let mut globals = self.lighting(vp);
         // sun shadow map: an orthographic box around the area in front of the camera
         let shadow_on = globals.shadow_params[0] > 0.0 && !self.opt.no_shadows && !map3d && self.game.mode != Mode::Garage;

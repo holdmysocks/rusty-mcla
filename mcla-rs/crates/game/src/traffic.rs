@@ -157,6 +157,22 @@ pub fn bound_size(root: &std::path::Path, model: &str) -> Option<(f32, f32)> {
     None
 }
 
+/// The centre of a traffic model's bound (the root bound's centroid, +0x30), in the car's space: the middle of the
+/// sphere the LOD choice tests (sub_826E9F88: the car's matrix times bound +48).
+pub fn bound_centre(root: &std::path::Path, model: &str) -> Option<glam::Vec3> {
+    for e in std::fs::read_dir(root.join("resources/ambients").join(model)).ok()? {
+        let p = e.ok()?.path();
+        if p.extension().is_some_and(|x| x == "r155") {
+            let res = crate::assets::load_resource_file(&p).ok()?;
+            let rd = mcla_formats::rage::Rd::new(&res);
+            let o = rd.ptr(8)?;
+            let c = glam::Vec3::new(rd.f32(o + 0x30), rd.f32(o + 0x34), rd.f32(o + 0x38));
+            return c.is_finite().then_some(c);
+        }
+    }
+    None
+}
+
 /// The drawn wheels turn only within 75 m of the focus, horizontally (sub_82794FA8: d^2 < 5625).
 pub const SPIN_REACH2: f32 = 5625.0;
 
