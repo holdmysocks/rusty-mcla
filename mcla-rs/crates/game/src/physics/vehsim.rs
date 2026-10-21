@@ -5591,9 +5591,19 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 let hit_n = hit_n + city_off_n;
                 let n = if hit_n.length() > f32::from_bits(0x3a83_126f) { hit_n.normalize() } else { hit_n0.unwrap_or(Vec3::Y) };
                 let v_pt = start_velocity(solve_body.as_ref(), at).unwrap_or(v1 + w1.cross(at - (at1 - pushed.push)));
-                let scrape = super::car::ScrapeIn { v1: v_pt, v2: Vec3::ZERO, rel: v1, n };
+                // (the gate's velocity, 0x823441FC: the car's body +272 as the callback reads it - the solve leaves it as
+                // it began, its impulses go in at the Update (V s_rtv, car forced: of every tick with |dv| over 0.1 the
+                // scrape ticks are the original's exactly - k167 and k224 included - with it and with no other))
+                let v_c = solve_body.filter(|_| !dbg_flag("MCLA_DBG_SCRAPEPOST")).map_or(v1, |b| b.vel);
+                let scrape = super::car::ScrapeIn { v1: v_pt, v2: Vec3::ZERO, rel: v_c, n };
                 if dbg_flag("MCLA_DBG_WORLDHIT") {
-                    eprintln!("SCRAPE t{} dv {:.5} |v1| {:.5} |rel| {:.4} c {:.4} n {:.4?} amount {:.6}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), hit_dv.length(), v_pt.length(), v1.length(), v1.dot(n) / v1.length().max(1e-9), n, scrape.amount());
+                    if let Some(b) = solve_body.as_ref() {
+                        let c = |v: Vec3| (v.length(), v.dot(n) / v.length().max(1e-9));
+                        eprintln!("GATE t{} dv {:.5} start {:?} imp {:?} force {:?} end {:?}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), hit_dv.length(), c(b.vel), c(b.vel + impulse * (1.0 / mass)), c(b.vel + force * (dt / mass)), c(v1));
+                    }
+                }
+                if dbg_flag("MCLA_DBG_WORLDHIT") {
+                    eprintln!("SCRAPE t{} dv {:.5} |v1| {:.5} |rel| {:.4} c {:.4} n {:.4?} amount {:.6}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), hit_dv.length(), v_pt.length(), v_c.length(), v_c.dot(n) / v_c.length().max(1e-9), n, scrape.amount());
                 }
                 st.world_hit(p, hit_dv.length(), at, local, Some(scrape));
             }
@@ -5610,9 +5620,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 let n = if r.nsum.length() > f32::from_bits(0x3a83_126f) { r.nsum.normalize() } else { r.n0 };
                 // (the car's own velocity at the point as the solve started, as above; the other's after it: I)
                 let v_pt = start_velocity(solve_body.as_ref(), at).unwrap_or(v1 + w1.cross(at - (at1 - pushed.push)));
-                let scrape = super::car::ScrapeIn { v1: v_pt, v2: r.v2, rel: v1 - r.v2c, n };
+                let v_c = solve_body.filter(|_| !dbg_flag("MCLA_DBG_SCRAPEPOST")).map_or(v1, |b| b.vel);
+                let scrape = super::car::ScrapeIn { v1: v_pt, v2: r.v2, rel: v_c - r.v2c, n };
                 if dbg_flag("MCLA_DBG_WORLDHIT") {
-                    eprintln!("LOOSESCRAPE t{} dv {:.5} v1 {:.4?} v2 {:.4?} rel {:.4?} n {:.4?} amount {:.6}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), dv, v_pt, r.v2, v1 - r.v2c, n, scrape.amount());
+                    eprintln!("LOOSESCRAPE t{} dv {:.5} v1 {:.4?} v2 {:.4?} rel {:.4?} n {:.4?} amount {:.6}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), dv, v_pt, r.v2, scrape.rel, n, scrape.amount());
                 }
                 st.damage_call(p, dv, r.mult, at, local, Some(scrape));
             }
