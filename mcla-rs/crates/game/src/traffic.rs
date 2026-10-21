@@ -55,6 +55,8 @@ pub struct AmbType {
     pub trailer: bool,
     /// `bIsTaxi` (type +113: never parked, sub_826F23A0)
     pub taxi: bool,
+    /// `bIsProxy` (type +108): the start speed rule never removes such a car (sub_826E7FF8)
+    pub proxy: bool,
     /// the bound's full width and length (the `.r155` root +8 bound, max +0x10 - min +0x20:
     /// obstacle vfuncs 4 and 6, sub_826D9818); 0: not read
     pub width: f32,
@@ -69,7 +71,7 @@ pub struct AmbType {
 impl Default for AmbType {
     fn default() -> Self {
         // (the values every sedan of the set carries)
-        AmbType { max_speed: 40.0, min_accel_band: 1.0, min_accel: 1.0, max_accel: 5.0, min_decel_band: 0.2, min_decel: 3.0, max_decel: 22.5, min_turn: 5.0, pivot_turn: 3.0, instances: 20, bound_group: 0, freeway_only: false, cab: false, trailer: false, taxi: false, width: 0.0, length: 0.0, colors: None, paint_type: 2 }
+        AmbType { max_speed: 40.0, min_accel_band: 1.0, min_accel: 1.0, max_accel: 5.0, min_decel_band: 0.2, min_decel: 3.0, max_decel: 22.5, min_turn: 5.0, pivot_turn: 3.0, instances: 20, bound_group: 0, freeway_only: false, cab: false, trailer: false, taxi: false, proxy: false, width: 0.0, length: 0.0, colors: None, paint_type: 2 }
     }
 }
 
@@ -98,6 +100,7 @@ impl AmbType {
             cab: flag("bIsCab"),
             trailer: flag("bIsTrailer") || TRAILERS.iter().any(|n| n.eq_ignore_ascii_case(model)),
             taxi: flag("bIsTaxi"),
+            proxy: flag("bIsProxy"),
             width,
             length,
             colors,
@@ -546,7 +549,9 @@ pub struct Rider {
     stop_id: Option<usize>,
     obst_id: Option<usize>,
     /// the behaviour's state (sub_827A0138): 0 a trailer (no behaviour), 1 on its lane, 4
-    /// physical, 5 come to rest, 6 on a recovery rail, 7 on a passing rail, 8 backing up
+    /// physical, 5 come to rest, 6 on a recovery rail, 7 on a passing rail, 8 backing up, 9 a
+    /// race path's car on the path's rails, 10 a race path's car let go of by the path's unload
+    /// (no rail: stands, not posed, until the unspawner takes it)
     pub state: u8,
     /// states 4 and 5: the physics has it
     pub physical: bool,
@@ -602,6 +607,9 @@ pub struct Rider {
     pub life: f32,
     /// a race path's car on the path's rails (state 9; racescript.rs, `step_route`)
     pub route: Option<Box<Route>>,
+    /// a race path's bPhysical (path +170): the instance's +140 bit 0x80 (sub_826EAD00 ->
+    /// sub_826FA588), for the car's life
+    pub phys_pair: bool,
 }
 
 impl Rider {
@@ -649,17 +657,29 @@ impl Rider {
             born: 0.0,
             life: 8.0,
             route: None,
+            phys_pair: false,
         };
         r.place(nav, link, s);
         r.life = 8.0 + 4.0 * r.rand();
         r.bonus = r.rand() - 0.5;
         r.gap = 2.0 + 3.0 * r.rand();
         r.wait = r.rand() * 0.8;
-        r.draw_offset();
+        // (the speed offset, car +424, is 0 from the spawn - sub_826EAD00 - until its first draw:
+        // +432 = 3 + 3U s of age, sub_826EA240)
+        r.off = 0.0;
+        r.off_timer = 3.0 + 3.0 * r.rand();
         r.choose_next(nav);
-        // (spawned moving: the rule that sets the first speed is not decoded - the lane's own)
+        // (the lane's speed; the spawner and the race paths set the first speed by the start
+        // speed rule, `Vehicles::path_start_speed`)
         r.v = rail_speed(nav, link).0;
         r
+    }
+
+    /// A bPhysical car (inst +140 bit 0x80) whose pose was written this frame: the follower has
+    /// a rail (sub_827986C0 sets the pose flag only then; car slot 20 sub_826E5D20 ->
+    /// sub_826FA760 puts the inactive instance on the simulator's list, loose.rs `ambient_posed`).
+    pub fn pairs_inactive(&self) -> bool {
+        self.phys_pair && (matches!(self.state, 1 | 9) || (matches!(self.state, 6..=8) && self.path.is_some()))
     }
 
     /// a stable id for traces and for the cab / trailer link
@@ -800,6 +820,91 @@ impl Rider {
 /// junction flag 4).
 fn junction_lane(l: &mcla_formats::rage::navsys::Link) -> bool {
     (l.owner_flags | l.parent_flags) & 4 != 0
+}
+
+/// The junction a junction lane belongs to (sub_822452F8), as the port's signals know it: the
+/// one round the lane's control points (as `signal_stop`).
+fn lane_junction(signals: &crate::signals::Signals, nav: &NavSys, lane: usize) -> Option<usize> {
+    let c = nav.curves.get(lane)?;
+    if c.pts.is_empty() {
+        return None;
+    }
+    let mid = c.pts.iter().copied().sum::<Vec3>() / c.pts.len() as f32;
+    signals.junction_at(mid)
+}
+
+/// A lane's first two control points (sub_8273A178 reads P0 - P1); the link's ends without them.
+fn lane_entry(nav: &NavSys, link: usize) -> (Vec3, Vec3) {
+    let c = nav.curves.get(nav.links[link].lane);
+    match c.and_then(|c| Some((*c.pts.first()?, *c.pts.get(1)?))) {
+        Some(x) => x,
+        None => (nav.links[link].a, nav.links[link].b),
+    }
+}
+
+/// The navsys vertex table (root +0x38: per vertex, the lanes whose first or last control point
+/// it is), keyed by the vertex's place (every lane end's place belongs to one vertex index only,
+/// checked on the city file: 8437 places, none shared).
+fn lane_ends(nav: &NavSys) -> &'static hashbrown::HashMap<[u32; 3], Vec<usize>> {
+    static E: std::sync::OnceLock<hashbrown::HashMap<[u32; 3], Vec<usize>>> = std::sync::OnceLock::new();
+    E.get_or_init(|| {
+        let mut m: hashbrown::HashMap<[u32; 3], Vec<usize>> = hashbrown::HashMap::new();
+        let key = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+        for (lane, c) in nav.curves.iter().enumerate() {
+            let (Some(a), Some(b)) = (c.pts.first(), c.pts.last()) else { continue };
+            m.entry(key(*a)).or_default().push(lane);
+            if key(*b) != key(*a) {
+                m.entry(key(*b)).or_default().push(lane);
+            }
+        }
+        m
+    })
+}
+
+/// A junction's box as sub_8273A848 tests it (mcRnIntersectionAmbient): the centre +0x50 / +0x58,
+/// the axes +0x60 and +0x70 (their y terms times 0), the half extents +0x40 and +0x3c.
+#[derive(Clone, Copy, Debug)]
+struct JunctionBox {
+    c: (f32, f32),
+    a60: [f32; 3],
+    a70: [f32; 3],
+    h3c: f32,
+    h40: f32,
+}
+
+impl JunctionBox {
+    /// |a70 . d| < 0.4 x +0x3c and |a60 . d| < 0.4 x +0x40, d = the place less the centre.
+    fn holds(&self, p: Vec3) -> bool {
+        let (dz, dx) = (p.z - self.c.1, p.x - self.c.0);
+        let k = f32::from_bits(0x3ecc_cccd);
+        let u = self.a70[0].mul_add(dx, self.a70[2].mul_add(dz, self.a70[1] * 0.0));
+        let w = self.a60[0].mul_add(dx, self.a60[2].mul_add(dz, self.a60[1] * 0.0));
+        u.abs() < self.h3c * k && w.abs() < self.h40 * k
+    }
+}
+
+/// The junction boxes, by the junction's centre (+0x80, the signals' `Junction::center`).
+fn junction_box(center: Vec3) -> Option<JunctionBox> {
+    static B: std::sync::OnceLock<hashbrown::HashMap<(u32, u32), JunctionBox>> = std::sync::OnceLock::new();
+    let m = B.get_or_init(|| {
+        let mut m = hashbrown::HashMap::new();
+        let Some(root) = DATA_ROOT.get() else { return m };
+        let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return m };
+        let rd = mcla_formats::rage::Rd::new(&res);
+        let Some(arr) = rd.ptr(0x58) else { return m };
+        let n = (rd.u32(0xc8) as usize).min(4096);
+        for i in 0..n {
+            let o = arr + i * 0xc0;
+            if !rd.has(o, 0xc0) || rd.vtable(o) != 0x0047_a0c4 {
+                continue;
+            }
+            let v3 = |p: usize| [rd.f32(p), rd.f32(p + 4), rd.f32(p + 8)];
+            let b = JunctionBox { c: (rd.f32(o + 0x50), rd.f32(o + 0x58)), a60: v3(o + 0x60), a70: v3(o + 0x70), h3c: rd.f32(o + 0x3c), h40: rd.f32(o + 0x40) };
+            m.insert((rd.f32(o + 0x80).to_bits(), rd.f32(o + 0x88).to_bits()), b);
+        }
+        m
+    });
+    m.get(&(center.x.to_bits(), center.z.to_bits())).copied()
 }
 
 /// The light a rider obeys (sub_827A29F0 -> sub_827A3570 / sub_827A3458 / sub_8273A178): the
@@ -1977,6 +2082,11 @@ impl Vehicles {
                         }
                     }
                 }
+                // a race path's car let go of by its path (unload): no rail, not posed
+                10 => {
+                    c.state.vel = Vec3::ZERO;
+                    continue;
+                }
                 // a race path's car on the path's rails
                 9 => step_route(r, &env, i, half, dt),
                 _ => {
@@ -2307,7 +2417,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
@@ -2315,6 +2425,29 @@ mod tests {
             seen[match r.off as i32 { -6 => 0, 6 => 1, 0 => 2, _ => unreachable!() }] += 1;
         }
         assert!(seen.iter().all(|&n| n > 850 && n < 1150), "{seen:?}");
+    }
+
+    /// sub_8273A848's box: |a70 . d| < 0.4 h3c and |a60 . d| < 0.4 h40, the height left out.
+    #[test]
+    fn the_junction_box_is_four_tenths_of_its_half_extents() {
+        let b = JunctionBox { c: (10.0, -20.0), a60: [1.0, 5.0, 0.0], a70: [0.0, 5.0, 1.0], h3c: 10.0, h40: 20.0 };
+        assert!(b.holds(Vec3::new(10.0, 100.0, -20.0)));
+        assert!(b.holds(Vec3::new(10.0 + 7.9, 0.0, -20.0 + 3.9)));
+        assert!(!b.holds(Vec3::new(10.0 + 8.0, 0.0, -20.0)));
+        assert!(!b.holds(Vec3::new(10.0, 0.0, -20.0 - 4.0)));
+    }
+
+    /// bPhysical (instance +140 bit 0x80) only lets inactive pairs in while the car is posed by
+    /// its rail (slot 20 / sub_826FA760: the follower has a rail).
+    #[test]
+    fn a_physical_path_car_pairs_only_while_on_a_rail() {
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false };
+        assert!(!r.pairs_inactive());
+        r.phys_pair = true;
+        for (state, yes) in [(1u8, true), (9, true), (10, false), (0, false), (4, false), (5, false), (6, false)] {
+            r.state = state;
+            assert_eq!(r.pairs_inactive(), yes, "state {state}");
+        }
     }
 
     #[test]
@@ -2898,6 +3031,20 @@ impl Vehicles {
             let mut rider = Rider::new(nav, ty, link, s, seed);
             rider.born = self.clock;
             rider.seat = Some(Seat::new(ground, normal, f));
+            // the start speed (vfunc 84 sub_826E7FF8, called by the spawn slot 5 sub_826E86C8
+            // for every ambient car, path = none): removed (reason 17) when the rule says so
+            let (hl, hw) = half_size(&self.cars[idx]);
+            match self.path_start_speed(nav, &rider, ground, (2.0 * hw, 2.0 * hl), None, Some(idx)) {
+                Some(v) => rider.v = v,
+                None => {
+                    if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
+                        log::info!("traffic spawn {} removed by the start speed rule", self.cars[idx].model.name);
+                    }
+                    self.cars.remove(idx);
+                    n -= 1;
+                    continue;
+                }
+            }
             self.cars[idx].rail = Some(rider);
             if let Some(ai) = self.cars[idx].ai.as_mut() {
                 ai.link = Some(link);
@@ -2937,10 +3084,26 @@ impl Vehicles {
                 continue;
             }
             let pos = c.state.pos;
+            let Some(r) = c.rail.as_ref() else { continue };
+            if r.state != 1 && r.state != 0 {
+                // (a trailer, state 0, has no behaviour: left to the rule below as before)
+                // not on a navsys lane (sub_826E9870 false: the detached, the physical, the
+                // recovery / passing / backing rails): listed when within +16 (the outer
+                // radius) of the focus, and then kept while seen or young; otherwise removed
+                // (reason 8) - sub_826F4390: remove if !r27 || r24 || stuck || r30 || crowded || !r23
+                let near = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length() < sp.tune.unspawn_outer;
+                if near && (self.clock - r.born < r.life || seen(&sp.tune, focus, view, mph, pos, occ.as_ref())) {
+                    continue;
+                }
+                if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
+                    log::info!("traffic unspawn {} off the lanes (state {}) near {}", c.model.name, r.state, near);
+                }
+                self.cars.remove(i);
+                return;
+            }
             if seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) {
                 continue;
             }
-            let Some(r) = c.rail.as_ref() else { continue };
             let road = self.car_road(sp, nav, i);
             let listed = road.is_some_and(|x| sp.listed[x as usize]);
             let stuck = if r.physical { c.state.speed() < 6.7056 } else { r.v == 0.0 && r.next.is_none() && r.on == [false; 3] };
@@ -3174,6 +3337,8 @@ pub struct PathRails {
     pub speed: f32,
     /// (diagnostics) the most valid lane answers a vertex had; the original keeps 64
     pub hits: usize,
+    /// +170 bPhysical: the car's instance +140 bit 0x80 (`Rider::phys_pair`)
+    pub physical: bool,
 }
 
 /// Path init (sub_827393B8). `snap`: bSnapToRails per vertex (a single-vertex path that is not
@@ -3491,22 +3656,32 @@ impl Vehicles {
         self.ambient.pick(focus, self.hour, r, &ok).map(|s| s.to_string())
     }
 
-    /// The start speed (vfunc 84 sub_826E7FF8, after the route is set): offline and not on a
-    /// junction lane (the rail's owner or its parent flagged 4), the cars on the rail
-    /// (sub_826E7E28 -> sub_8273E108; phase = behaviour +208): the one ahead (the least phase
-    /// ahead, else the least on the next rail) caps it at sqrt(|v_a|^2 + fMaxDecel (gap - 2))
-    /// with our fMaxDecel, the one behind (the greatest phase behind) asks at least
-    /// sqrt(|v_b|^2 - fMaxDecel_b (gap - 2)), gap = the centres' distance less both half lengths.
-    /// Removed (None; sub_826D50E8 reason 17) when either term is negative, the least is over the
-    /// cap or over the wanted speed (rail speed + offset, at least 0), or the speed (`v`, capped)
-    /// is under the least. (Not ported: the light's stopping speed (sub_8273A178 / sub_8273A848),
-    /// the slot test sub_826F5FE0, bIsProxy types never removed.)
-    fn path_start_speed(&self, nav: &NavSys, rider: &Rider, pos: Vec3, half_len: f32, v: f32) -> Option<f32> {
-        let want = match (&rider.route, rider.state) {
+    /// The start speed (car vfunc 84 sub_826E7FF8, called by the spawn slot 5 sub_826E86C8 for
+    /// every ambient car - traffic too - and at a race path's trigger; listings
+    /// work/people2/racepaths/v84.txt, work/people2/racepaths2/m.txt). `start`: the path's
+    /// fPathStartSpeed x 0.44704 (0 when bParked, or referenced and not fired); None for a car
+    /// without a path. f25 = the rail's speed + the car's offset (+424). No rail, a junction lane
+    /// (the rail's owner or its parent flagged 4) or online: v = start, else f25, removed when
+    /// under 0. Else the cars on the rail (sub_826E7E28; phase = behaviour +208): the one ahead
+    /// (least phase ahead, else the least on the next rail) caps it at sqrt(|v_a|^2 + fMaxDecel
+    /// (gap - 2)) with our fMaxDecel, the one behind (greatest phase behind) asks at least
+    /// sqrt(|v_b|^2 - fMaxDecel_b (gap - 2)), gap = the centres' distance less both half lengths,
+    /// a negative term removes; the light (`light_start_cap`); the slot test (`slot_clear`), which
+    /// removes a car that is no cab and no trailer (nor car +500 bit 0x20 - no such car here).
+    /// Then f25 = max(f25, 0); removed when the least is over the cap, over f25 or over the
+    /// light's speed; v = min(start or f25, cap, light), removed when under the least. A bIsProxy
+    /// type (+108) is never removed. Removed: None (sub_826D50E8, reason 17). `size`: the car's
+    /// bound (width, length); `me`: the car's own index when it is in the list already.
+    #[allow(clippy::too_many_arguments)]
+    fn path_start_speed(&self, nav: &NavSys, rider: &Rider, pos: Vec3, size: (f32, f32), start: Option<f32>, me: Option<usize>) -> Option<f32> {
+        let log = std::env::var_os("MCLA_RACEPATH_LOG").is_some() || std::env::var_os("MCLA_START_LOG").is_some();
+        let proxy = rider.ty.proxy;
+        let half_len = size.1 * 0.5;
+        // f25: the rail's speed (vfunc 68) + the offset (+424)
+        let f25 = match (&rider.route, rider.state) {
             (Some(rt), 9) => rt.speed,
             _ => rail_speed(nav, rider.link).0,
         } + rider.off;
-        let want = want.max(0.0);
         // where the car is: (rail key, phase); the next rail
         #[derive(PartialEq, Clone, Copy)]
         enum Key {
@@ -3523,11 +3698,20 @@ impl Vehicles {
                 _ => None,
             }
         };
-        let (here, ph) = key_of(rider)?;
-        if let Key::Lane(_) = here {
-            if junction_lane(&nav.links[rider.link]) {
-                return Some(v);
+        let Some((here, ph)) = key_of(rider) else {
+            // (no rail: f25 is 0)
+            let v = start.unwrap_or(0.0);
+            return (v >= 0.0 || proxy).then_some(v);
+        };
+        if matches!(here, Key::Lane(_)) && junction_lane(&nav.links[rider.link]) {
+            let v = start.unwrap_or(f25);
+            if v < 0.0 && !proxy {
+                if log {
+                    log::info!("  start: on a junction lane at {v:.2} < 0: removed");
+                }
+                return None;
             }
+            return Some(v);
         }
         let next = match (&rider.route, here) {
             (Some(rt), Key::Path(p, i)) => Some(if i + 1 < rt.rails.len() { Key::Path(p, i + 1) } else { Key::Lane(rt.lane) }),
@@ -3535,6 +3719,9 @@ impl Vehicles {
         };
         let (mut ahead, mut ahead_next, mut behind): (Option<(usize, f32)>, Option<(usize, f32)>, Option<(usize, f32)>) = (None, None, None);
         for (j, c) in self.cars.iter().enumerate() {
+            if Some(j) == me {
+                continue;
+            }
             let Some(o) = c.rail.as_ref() else { continue };
             let Some((k, f)) = key_of(o) else { continue };
             if k == here && f > ph && ahead.map_or(true, |a| f < a.1) {
@@ -3546,38 +3733,225 @@ impl Vehicles {
             }
         }
         let gap = |j: usize| self.cars[j].state.pos.distance(pos) - half_len - half_size(&self.cars[j]).0;
-        let (mut lo, mut hi) = (None::<f32>, None::<f32>);
+        let mut why: Option<String> = None;
+        // f24: the car ahead's cap
+        let mut cap = None::<f32>;
         if let Some((j, _)) = ahead.or(ahead_next) {
             let va = self.cars[j].state.vel.length_squared();
             let x = va + rider.ty.max_decel * (gap(j) - 2.0);
             if x < 0.0 {
-                if std::env::var_os("MCLA_RACEPATH_LOG").is_some() {
-                    log::info!("  start: the car ahead {} gap {:.1} speed {:.1}: {x:.1} < 0", self.cars[j].model.name, gap(j), va.sqrt());
-                }
-                return None;
+                why.get_or_insert_with(|| format!("the car ahead {} gap {:.1} speed {:.1}: {x:.1} < 0", self.cars[j].model.name, gap(j), va.sqrt()));
+            } else {
+                cap = Some(x.sqrt());
             }
-            hi = Some(x.sqrt());
         }
+        // f28: what the car behind asks
+        let mut least = None::<f32>;
         if let Some((j, _)) = behind {
             let o = self.cars[j].rail.as_ref().unwrap();
             let x = self.cars[j].state.vel.length_squared() - o.ty.max_decel * (gap(j) - 2.0);
             if x < 0.0 {
-                if std::env::var_os("MCLA_RACEPATH_LOG").is_some() {
-                    log::info!("  start: the car behind {} gap {:.1} speed {:.1}: {x:.1} < 0", self.cars[j].model.name, gap(j), self.cars[j].state.vel.length());
-                }
-                return None;
+                why.get_or_insert_with(|| format!("the car behind {} gap {:.1} speed {:.1}: {x:.1} < 0", self.cars[j].model.name, gap(j), self.cars[j].state.vel.length()));
+            } else {
+                least = Some(x.sqrt());
             }
-            let l = x.sqrt();
-            if hi.is_some_and(|h| l > h) || l > want {
-                return None;
-            }
-            lo = Some(l);
         }
-        let v = hi.map_or(v, |h| v.min(h));
-        if v < lo.unwrap_or(0.0) {
-            return None;
+        // f26: the light
+        let light = self.light_start_cap(nav, rider, pos, half_len, me);
+        // the slot test (exempt: cabs, trailers, car +500 bit 0x20)
+        if !rider.ty.cab && !rider.ty.trailer && !self.slot_clear(nav, rider, size, me) {
+            why.get_or_insert_with(|| "the slot is not clear".to_string());
+        }
+        let want = if f25 <= 0.0 { 0.0 } else { f25 };
+        let mut lo = 0.0f32;
+        if let Some(l) = least {
+            if cap.is_some_and(|c| l > c) {
+                why.get_or_insert_with(|| format!("the car behind asks {l:.2} over the cap {:.2}", cap.unwrap_or(0.0)));
+            }
+            if l > want {
+                why.get_or_insert_with(|| format!("the car behind asks {l:.2} over the wanted {want:.2}"));
+            }
+            if light.is_some_and(|s| s < l) {
+                why.get_or_insert_with(|| format!("the car behind asks {l:.2} over the light's {:.2}", light.unwrap_or(0.0)));
+            }
+            lo = l;
+        }
+        let mut v = start.unwrap_or(want);
+        if let Some(c) = cap {
+            if v - c >= 0.0 {
+                v = c;
+            }
+        }
+        if let Some(s) = light {
+            if v - s >= 0.0 {
+                v = s;
+            }
+        }
+        if v < lo {
+            why.get_or_insert_with(|| format!("{v:.2} under the least {lo:.2}"));
+        }
+        if let Some(w) = why {
+            if log {
+                log::info!("  start: {w}{}", if proxy { " (bIsProxy: kept)" } else { ": removed" });
+            }
+            if !proxy {
+                return None;
+            }
         }
         Some(v)
+    }
+
+    /// The light's start speed (sub_826E7FF8 at 0x826E8394): when the next rail (behaviour +192)
+    /// is a junction lane (sub_82245218: its owner or the owner's parent flagged 4), its junction
+    /// J (sub_822452F8) lets the car go when the lane is green (sub_8273A178: the lane's first
+    /// span within 25 degrees of the current arm, timer < 6.5 s; `Junction::lane_state` 2) and J
+    /// is not blocked (sub_8273A848, `junction_blocked`). d = |the lane's first control point (rail
+    /// vfunc 12) - the car| less half its length, at least 0; v = sqrt(vn^2 + 2 (fMaxDecel / 2) d),
+    /// vn the lane's speed when the car may go, else 0: the speed that still stops at the line
+    /// (or reaches the lane's speed there). None: no such lane. (The port's junction of a lane is
+    /// the signals' junction round its control points, as `signal_stop` finds it; none found: no
+    /// cap.)
+    fn light_start_cap(&self, nav: &NavSys, rider: &Rider, pos: Vec3, half_len: f32, me: Option<usize>) -> Option<f32> {
+        let nlink = match (&rider.route, rider.state) {
+            (Some(rt), 9) => {
+                if rt.i + 1 < rt.rails.len() {
+                    return None;
+                }
+                lane_link_at(nav, lanes(nav), rt.lane, rt.lane_t)?.0
+            }
+            (None, 1) => rider.next?,
+            _ => return None,
+        };
+        if !junction_lane(&nav.links[nlink]) {
+            return None;
+        }
+        let lane = nav.links[nlink].lane;
+        let ji = lane_junction(&self.signals, nav, lane)?;
+        let (p0, p1) = lane_entry(nav, nlink);
+        let go = self.signals.junctions[ji].lane_state(p0 - p1) == 2 && !self.junction_blocked(nav, ji, me);
+        let d = (p0 - pos).length() - half_len;
+        let dist = if -d >= 0.0 { 0.0 } else { d };
+        let vn = if go { rail_speed(nav, nlink).0 } else { 0.0 };
+        let x = vn * vn + 2.0 * (rider.ty.max_decel * 0.5) * dist;
+        if std::env::var_os("MCLA_START_LOG").is_some() {
+            log::info!("  start light: junction {ji} lane {lane} go {go} d {dist:.1} vn {vn:.2} -> {:.2}", x.max(0.0).sqrt());
+        }
+        (x >= 0.0).then(|| x.sqrt())
+    }
+
+    /// sub_8273A848: is junction `ji` blocked for a car to enter? (1) A driver's car (the vehicle
+    /// manager 0x82874374's list: the player, racers, police) whose lane (+640, its obstacle's
+    /// lane query) is one of the junction's lanes and within (4.5 x 0.667)^2 squared metres
+    /// (+644); (2) of the ambient cars on the junction's lanes (sub_8273C1B8: the junction and its
+    /// connectors' rails, at most 64), not trailers, the car itself left out: one whose lane is
+    /// not green (sub_8273A178) and that moves (+412 not 0); or one standing inside the junction's
+    /// box (centre +0x50 / +0x58, |axis +0x70 . d| < 0.4 x +0x3c and |axis +0x60 . d| < 0.4 x +0x40)
+    /// that has no next rail, or whose next rail is the junction's and not green, or that is
+    /// headed (its forward, sub_826DDD90) off the green arm (sub_8273A360). (The port's driver lane
+    /// is `driver_lane`, its junction the signals' junction round the lane, as `signal_stop`.)
+    fn junction_blocked(&self, nav: &NavSys, ji: usize, me: Option<usize>) -> bool {
+        let j = &self.signals.junctions[ji];
+        let near = 4.5f32 * f32::from_bits(0x3f2a_7efa);
+        for (k, c) in self.cars.iter().enumerate() {
+            if Some(k) == me || c.rail.is_some() || c.parked.is_some() {
+                continue;
+            }
+            let Some((link, d)) = Self::driver_lane(nav, c) else { continue };
+            if d * d < near * near && junction_lane(&nav.links[link]) && lane_junction(&self.signals, nav, nav.links[link].lane) == Some(ji) {
+                return true;
+            }
+        }
+        let jb = junction_box(j.center);
+        let mut listed = 0;
+        for (k, x) in self.cars.iter().enumerate() {
+            let Some(r) = x.rail.as_ref().filter(|r| r.state == 1 && r.route.is_none()) else { continue };
+            if !junction_lane(&nav.links[r.link]) || lane_junction(&self.signals, nav, nav.links[r.link].lane) != Some(ji) {
+                continue;
+            }
+            listed += 1;
+            if listed > 64 {
+                break;
+            }
+            if Some(k) == me || r.ty.trailer {
+                continue;
+            }
+            let (p0, p1) = lane_entry(nav, r.link);
+            if j.lane_state(p0 - p1) == 2 {
+                continue;
+            }
+            if r.v != 0.0 {
+                return true;
+            }
+            if !jb.is_some_and(|b| b.holds(x.state.pos)) {
+                continue;
+            }
+            let Some(nl) = r.next else { return true };
+            if junction_lane(&nav.links[nl]) && lane_junction(&self.signals, nav, nav.links[nl].lane) == Some(ji) {
+                let (q0, q1) = lane_entry(nav, nl);
+                if j.lane_state(q0 - q1) != 2 {
+                    return true;
+                }
+            } else if j.lane_state(x.state.forward()) != 2 {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The slot test sub_826F5FE0 (with sub_826F3A40), only on a navsys lane (rail flags & 0x1800
+    /// == 0; the path's rails pass): P = the lane's point at the car's phase (rail vfunc 7). The
+    /// lanes of the navsys vertex table (root +0x38) at the lane's last control point's vertex -
+    /// the lane itself among them - and at its first one but the lane itself: every ambient car
+    /// registered on such a lane (its follower's rail, lane +96), the car itself left out, within
+    /// 5 m of P in height, blocks when its xz distance to P is under the mean of the two cars'
+    /// lengths - for this lane and a lane joined head to tail (one's first control point the
+    /// other's last) - or of their widths (any other lane). True: clear.
+    fn slot_clear(&self, nav: &NavSys, rider: &Rider, size: (f32, f32), me: Option<usize>) -> bool {
+        if rider.state != 1 || rider.route.is_some() {
+            return true;
+        }
+        let lane = nav.links[rider.link].lane;
+        let Some(c) = nav.curves.get(lane).filter(|c| !c.pts.is_empty()) else { return true };
+        let (first, last) = (c.pts[0], *c.pts.last().unwrap());
+        let p = rider.pos(nav);
+        let ends = lane_ends(nav);
+        let key = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+        let mut rails: Vec<usize> = ends.get(&key(last)).cloned().unwrap_or_default();
+        rails.extend(ends.get(&key(first)).map_or(&[][..], |v| v.as_slice()).iter().copied().filter(|&o| o != lane));
+        for o in rails {
+            let oc = &nav.curves[o];
+            let joined = o == lane || oc.pts.first() == Some(&last) || oc.pts.last() == Some(&first);
+            for (k, x) in self.cars.iter().enumerate() {
+                if Some(k) == me || !x.rail.as_ref().is_some_and(|r| r.state == 1 && r.route.is_none() && nav.links[r.link].lane == o) {
+                    continue;
+                }
+                let q = x.state.pos;
+                if (q.y - p.y).abs() > 5.0 {
+                    continue;
+                }
+                let d2 = (q.x - p.x) * (q.x - p.x) + (q.z - p.z) * (q.z - p.z);
+                let (hl, hw) = half_size(x);
+                let (f1, f0) = if joined { (2.0 * hl, size.1) } else { (2.0 * hw, size.0) };
+                let m = (f1 + f0) * 0.5;
+                if d2 < m * m {
+                    if std::env::var_os("MCLA_START_LOG").is_some() {
+                        log::info!("  slot: {} on lane {o} ({}) {:.2} m from the spot", x.model.name, if joined { "joined" } else { "beside" }, d2.sqrt());
+                    }
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// A driver's car's lane (sub_826D99B8 on its obstacle, kept at car +640 / +644): the nearest
+    /// within the chassis bound's half diagonal + 2.25 m, and its distance. (The original keeps a
+    /// list changed by one random check a frame; the nearest is taken here at once.)
+    fn driver_lane(nav: &NavSys, c: &super::CarInstance) -> Option<(usize, f32)> {
+        let b = c.model.params.body_half;
+        let r = (b.x * b.x + b.z * b.z).sqrt() + 2.25;
+        let p = c.state.pos;
+        nav.links_near(p, r).map(|k| (k, nav.links[k].point_at(nav.links[k].project(p)).distance(p))).filter(|x| x.1 < r).min_by(|a, b| a.1.total_cmp(&b.1))
     }
 
     /// The rider of a race path's car on its route (state 9; on the lane at once when the route
@@ -3599,6 +3973,7 @@ impl Vehicles {
             r.route = Some(Box::new(route));
             r.state = 9;
         }
+        r.phys_pair = pr.physical;
         Some(r)
     }
 
@@ -3617,9 +3992,9 @@ impl Vehicles {
         let ty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(&world.assets.root, &mname));
         let Some(mut rider) = self.path_rider(nav, ty, pr, path) else { return PathSpawn::Removed };
         let model = self.models[mi].clone();
-        let half = if ty.length > 0.0 { ty.length * 0.5 } else { (model.max.z - model.min.z) * 0.5 };
+        let size = (if ty.width > 0.0 { ty.width } else { model.max.x - model.min.x }, if ty.length > 0.0 { ty.length } else { model.max.z - model.min.z });
         let v = if standing { 0.0 } else { start_mph * MPH };
-        let Some(v) = self.path_start_speed(nav, &rider, pr.spawn, half, v) else {
+        let Some(v) = self.path_start_speed(nav, &rider, pr.spawn, size, Some(v), None) else {
             if std::env::var_os("MCLA_RACEPATH_LOG").is_some() { log::info!("race path {path}: car removed at its start (the car ahead or behind)"); }
             return PathSpawn::Removed;
         };
@@ -3730,8 +4105,8 @@ impl Vehicles {
                 },
             };
             let pos = self.cars[k].state.pos;
-            let half = half_size(&self.cars[k]).0;
-            match self.path_start_speed(nav, &rider, pos, half, start_mph * MPH) {
+            let (hl, hw) = half_size(&self.cars[k]);
+            match self.path_start_speed(nav, &rider, pos, (2.0 * hw, 2.0 * hl), Some(start_mph * MPH), Some(k)) {
                 Some(v) => rider.v = v,
                 None => {
                     if std::env::var_os("MCLA_RACEPATH_LOG").is_some() { log::info!("race path {path}: fired car removed (the car ahead or behind)"); }
@@ -3772,10 +4147,14 @@ impl Vehicles {
                 c.item = None;
                 if let Some(r) = c.rail.as_mut() {
                     if r.route.take().is_some() || r.state == 9 {
-                        // (what the behaviour does with no rail was not traced: it stands, the
-                        // port's state 6 with no rail - the recovery try's)
-                        r.state = 6;
+                        // behaviour vfunc 11 sub_8279F650 clears the follower's rails that were
+                        // the path's (sub_82798C98, sub_827986A8): with no current rail
+                        // sub_82798F18 does not advance and sub_827986C0 leaves the pose flag
+                        // 0x80 clear, so the car is not posed (slot 20 / sub_826FA760 skipped)
+                        // and stands; nothing recovers it - the unspawner takes it (off a lane)
+                        r.state = 10;
                         r.path = None;
+                        r.v = 0.0;
                     }
                 }
             }

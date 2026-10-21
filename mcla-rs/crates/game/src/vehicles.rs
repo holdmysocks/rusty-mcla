@@ -3228,6 +3228,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let partner = if r.state == 0 { r.partner.and_then(|p| cabs.get(&p)).copied() } else if r.ty.cab { trailers.get(&r.rng_id()).copied() } else { None };
             let m = traffic::instance_matrix(c);
             self.level.ambient_place(c.uid, &tune, m, partner, c.inflict, dt);
+            if r.pairs_inactive() {
+                self.level.ambient_posed(c.uid);
+            }
             let uid = c.uid;
             let r = self.cars[k].rail.as_mut().unwrap();
             r.in_level = true;

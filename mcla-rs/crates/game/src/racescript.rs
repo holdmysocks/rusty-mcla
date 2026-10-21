@@ -770,7 +770,9 @@ impl Runtime {
         for i in 0..self.d.paths.len() {
             let p = self.d.paths[i].clone();
             let ty = (!p.type_name.is_empty()).then(|| traffic::AmbType::load(&root, &p.type_name));
-            let pr = traffic::path_rails(nav, &p.verts, &p.snap, p.parked, ty.map(|t| t.min_turn), p.pos, p.row2, p.speed[1]);
+            let mut pr = traffic::path_rails(nav, &p.verts, &p.snap, p.parked, ty.map(|t| t.min_turn), p.pos, p.row2, p.speed[1]);
+            // bPhysical (path +170): instance +140 bit 0x80 for the car's life (sub_826FA588)
+            pr.physical = p.physical;
             most = most.max(pr.hits);
             let mut referenced = false;
             let mut chosen = false;

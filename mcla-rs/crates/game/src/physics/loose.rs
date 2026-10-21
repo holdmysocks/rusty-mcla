@@ -1064,7 +1064,17 @@ impl LooseState {
                 // collider record - two bodies in the simulator are each taken at +32, the matrix they had as the tick
                 // began: V s_rtv s390 / s391, 11286 x 22286 / 22320)
                 let both = [a, b].into_iter().all(|w| matches!(w, Who::Obj(o) if self.objs[o].body.is_some() && self.objs[o].veh.is_none()));
-                let (la, lb) = if both { (self.prev_part(world, a, pa).unwrap_or(sa.last), self.prev_part(world, b, pb).unwrap_or(sb.last)) } else { (sa.last, sb.last) };
+                // (and an active side at +32 when the other is inactive with level byte bit 8 - manifold +1249 / +1250,
+                // an ambient car with inst +140 bit 0x80 moved this frame)
+                let posed = |w: Who| matches!(w, Who::Obj(o) if self.objs[o].body.is_none() && self.objs[o].amb.as_ref().is_some_and(|x| x.posed));
+                let prop_body = |w: Who| matches!(w, Who::Obj(o) if self.objs[o].body.is_some() && self.objs[o].veh.is_none());
+                let (la, lb) = if both {
+                    (self.prev_part(world, a, pa).unwrap_or(sa.last), self.prev_part(world, b, pb).unwrap_or(sb.last))
+                } else {
+                    let la = if posed(b) && prop_body(a) { self.prev_part(world, a, pa).unwrap_or(sa.last) } else { sa.last };
+                    let lb = if posed(a) && prop_body(b) { self.prev_part(world, b, pb).unwrap_or(sb.last) } else { sb.last };
+                    (la, lb)
+                };
                 let found: Option<(Vec3, Vec3, Vec3, f32, Nearest)> = if count == 0 && sweeps {
                     sweep(&sa.core, sa.margin, sa.cg, &sa.now, &la, &sb.core, sb.margin, sb.cg, &sb.now, &lb).filter(|s| !(s.lambda >= 1.0)).map(|s| {
                         let (qa, qb) = (xf(&sa.now, s.local_a), xf(&sb.now, s.local_b));
@@ -1140,7 +1150,8 @@ impl LooseState {
         }
         // (the level's props about the car and about every loose body)
         let mut about = vec![car.now[3]];
-        about.extend(self.objs.iter().filter(|o| o.body.is_some()).map(|o| o.matrix[3]));
+        // (and about an inactive ambient car with level byte bit 8: its pairs with inactive props)
+        about.extend(self.objs.iter().filter(|o| o.body.is_some() || o.amb.as_ref().is_some_and(|a| a.posed)).map(|o| o.matrix[3]));
         for (k, p) in about.into_iter().enumerate() {
             for inst in world.near(p, 8.0) {
                 let (fi, ty) = &world.instances[inst as usize];
@@ -1203,14 +1214,18 @@ impl LooseState {
             }
         }
         // (a pair is made only with a body in it: walked from the bodies - the level keeps every prop a
-        // car came near - and taken in the order of the two indices, as a walk over every pair would)
+        // car came near - and taken in the order of the two indices, as a walk over every pair would;
+        // two inactive objects only when one has level byte bit 8, 0x8258D9F0: an ambient car with
+        // inst +140 bit 0x80 moved this frame, `ambient_posed`)
+        let posed = |o: &Obj| o.body.is_none() && o.amb.as_ref().is_some_and(|a| a.posed);
+        let start = |o: &Obj| o.body.is_some() || posed(o);
         let mut cand: Vec<(usize, usize)> = Vec::new();
         for o in 0..if shared_later { 0 } else { n } {
-            if self.objs[o].body.is_none() || (self.objs[o].veh.is_some() && self.objs[o].amb.is_none()) {
+            if !start(&self.objs[o]) || (self.objs[o].veh.is_some() && self.objs[o].amb.is_none()) {
                 continue;
             }
             for q in 0..n {
-                if q != o && !(q < o && self.objs[q].body.is_some()) {
+                if q != o && !(q < o && start(&self.objs[q])) {
                     cand.push((o.min(q), o.max(q)));
                 }
             }
@@ -1224,7 +1239,7 @@ impl LooseState {
                 if (a.veh.is_some() && a.amb.is_none()) || (b.veh.is_some() && b.amb.is_none()) {
                     continue;
                 }
-                if a.body.is_none() && b.body.is_none() {
+                if a.body.is_none() && b.body.is_none() && !posed(a) && !posed(b) {
                     continue;
                 }
                 let ((ca, ra), (cb, rb)) = (ball(a), ball(b));
@@ -1296,6 +1311,14 @@ impl LooseState {
         let woken: Vec<usize> = self.manis.iter().filter(|m| !m.rope).flat_map(|m| [m.a, m.b]).filter_map(|w| if let Who::Obj(o) = w { Some(o) } else { None }).filter(|&o| self.objs[o].amb.is_some() && self.objs[o].body.is_none()).collect();
         for o in woken {
             self.ambient_activate(o);
+        }
+        // (the simulator's list emptied after the collide: level byte bit 8 cleared, sub_8258E4D0 -> sub_82588220)
+        if !shared_later {
+            for o in self.objs.iter_mut() {
+                if let Some(a) = o.amb.as_mut() {
+                    a.posed = false;
+                }
+            }
         }
         // (the islands, 0x825D80E0 at the end of the collide: every pair that holds a contact NOW joins its
         // two objects - a contact that the update's refresh then drops has still joined them. The pairs come
@@ -3216,6 +3239,11 @@ pub struct Amb {
     pub woke: bool,
     pub slept: bool,
     last_at: Option<Vec3>,
+    /// level byte bit 8 for this update's collide: the instance has +140 bit 0x80 (a race path's
+    /// bPhysical, path +170 -> sub_826EAD00 -> sub_826FA588) and its matrix was moved this frame
+    /// while inactive (sub_826FA760 -> sub_825880D8: the simulator's list, at most 120); the list
+    /// is emptied after the collide (sub_8258E4D0 -> sub_82588220)
+    pub posed: bool,
 }
 
 /// A constraint between two ambient cars (rage::phConstraint, max distance: sub_825B6D18): the
@@ -3256,7 +3284,7 @@ impl LooseState {
             Some(o) => o,
             None => {
                 let veh = VehObj { shape: tune.shape, shape2: tune.shape2, class: 6, gravity: tune.gravity, cg: tune.cg, index: uid, here: true, inflict };
-                let amb = Amb { uid, tune: tune.clone(), wheels: [AmbWheel::default(); 6], count: 0, moved: Vec3::ZERO, turn: Vec3::ZERO, partner, woke: false, slept: false, last_at: None };
+                let amb = Amb { uid, tune: tune.clone(), wheels: [AmbWheel::default(); 6], count: 0, moved: Vec3::ZERO, turn: Vec3::ZERO, partner, woke: false, slept: false, last_at: None, posed: false };
                 // (its level index: above the stepping cars' 0 - the car is A against it)
                 let level = 1_000_000 + uid as i64;
                 let obj = Obj { ty: usize::MAX, inst: None, matrix, entry: None, hit: false, body: None, level, addr: level, veh: Some(veh), sleep: Sleep::reset(), dormant: false, amb: Some(amb) };
@@ -3284,6 +3312,23 @@ impl LooseState {
             _ => Vec3::ZERO,
         };
         a.last_at = Some(matrix[3]);
+    }
+
+    /// A car whose instance has +140 bit 0x80 had its matrix moved this frame (sub_826FA760, after
+    /// `ambient_place`): while it is inactive (level state 1) sub_825880D8 puts it on the
+    /// simulator's list (at most 120) and sets its level byte bit 8 until the collide; the
+    /// collision pass (sub_8258D9F0) then takes a pair of two inactive objects when either one has
+    /// bit 8 - such a car meets riding / parked cars and knockable props while it is kinematic, and
+    /// a contact activates both inactive sides (0x8258E07C -> 0x8258D3F8).
+    pub fn ambient_posed(&mut self, uid: u32) {
+        let Some(o) = self.amb_obj(uid) else { return };
+        if self.objs[o].body.is_some() {
+            return;
+        }
+        let listed = self.objs.iter().filter(|x| x.amb.as_ref().is_some_and(|a| a.posed)).count();
+        if listed < 120 {
+            self.objs[o].amb.as_mut().unwrap().posed = true;
+        }
     }
 
     /// The ambient cars the session no longer has go from the level, with their pairs and constraints.
