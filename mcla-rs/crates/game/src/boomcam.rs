@@ -39,6 +39,10 @@ impl BoomTune {
             _ => Vec3::ZERO,
         }
     }
+    /// CollideType (camBoomCS tune +132; 2 in every shipped file)
+    pub fn collide_type(&self) -> i32 {
+        self.s("CollideType") as i32
+    }
     fn range(&self, k: &str, i: usize) -> f32 {
         self.f.get(k).and_then(|v| v.get(i)).copied().unwrap_or(0.0)
     }
@@ -91,8 +95,12 @@ pub struct BoomTarget {
     /// a running special ability's change to the lens (degrees) and to the distance (scale)
     pub ability: (f32, f32),
     /// the look-back camera's turn about the car: yaw and pitch, radians (camBoomCS +452 /
-    /// +456, set by mcPlayerCamera; 0 for the other views)
+    /// +456, set by mcPlayerCamera: the look-back's turn, or the look-around's)
     pub pan: (f32, f32),
+    /// the look-around's rise (+460, m)
+    pub rise: f32,
+    /// the bumper and cockpit mounts (+668): they turn in place
+    pub fixed_mount: bool,
 }
 
 pub struct BoomOut {
@@ -128,6 +136,8 @@ pub struct BoomCam {
     last_gear: i32,
     gz: f32,
     nitro: f32,
+    /// the move-speed limit in use (+656)
+    rate: f32,
 }
 
 fn norm_range(v: f32, range: f32) -> f32 {
@@ -149,6 +159,71 @@ impl BoomCam {
         self.started = false;
     }
 
+    /// Where the camera's collision probe starts (sub_8231E700): the file's Collide point in
+    /// this frame's boom frame, P = origin + frame * (Collide - Center), origin = the car's
+    /// place + car * Center. Call after `update`.
+    pub fn collide_from(&self, t: &BoomTune, car: &BoomTarget) -> Vec3 {
+        let car_m = Mat3::from_quat(car.rot);
+        let x = self.up.cross(self.dir).normalize_or(car_m.x_axis);
+        let z = x.cross(self.up);
+        let frame = Mat3::from_cols(x, self.up, z);
+        car.pos + car_m * t.v3("Center") + frame * (t.v3("Collide") - t.v3("Center"))
+    }
+}
+
+/// The boom camera's collision (camBoomCS CollideType 2, sub_8231FD60 -> sub_8231E700 for the
+/// chase and reverse views, sub_8231EC50 for POV / bumper; rule in
+/// `docs/reference/cameras/boom_collision_rule.md`). A ball the size of the near plane's corner
+/// (near * sqrt(tanX^2 + tanY^2), + 0.01; POV / bumper twice the corner) goes from the probe
+/// point `p` to the camera `c`; on a touch the camera stands where the ball stopped, held its
+/// radius off the surface, and the focus moves with it (the look keeps its direction). If the
+/// probe point is already inside something the camera goes to the ball's place pushed out of
+/// it. Every frame, no smoothing, no minimum distance; the boom's own state is not changed.
+/// `test(centre, r)` is the world's sphere test (deepest contact: depth, normal). Returns the
+/// camera's move, or None when it is clear. (approx.: the original keeps up to ten contacts at
+/// P and sums their pushes - here the deepest one, repeated; it also hits other cars - here the
+/// city only.)
+pub fn boom_collide(p: Vec3, c: Vec3, r: f32, inside_car: bool, test: impl Fn(Vec3, f32) -> Option<(f32, Vec3)>) -> Option<Vec3> {
+    if !inside_car {
+        if test(p, r).is_some() {
+            let mut q = p;
+            for _ in 0..4 {
+                match test(q, r) {
+                    Some((pen, n)) => q += n * (pen + 1e-3),
+                    None => break,
+                }
+            }
+            return Some(q - c);
+        }
+    }
+    let d = c - p;
+    let len = d.length();
+    if len < 1e-4 {
+        return None;
+    }
+    let n = ((len / (r * 0.5).max(0.02)).ceil() as usize).clamp(1, 256);
+    let mut free = 0.0f32;
+    for i in 1..=n {
+        let s = i as f32 / n as f32;
+        if test(p + d * s, r).is_some() {
+            // the touch, between the last free step and this one
+            let (mut lo, mut hi) = (free, s);
+            for _ in 0..10 {
+                let m = (lo + hi) * 0.5;
+                if test(p + d * m, r).is_some() {
+                    hi = m;
+                } else {
+                    lo = m;
+                }
+            }
+            return Some(p + d * lo - c);
+        }
+        free = s;
+    }
+    None
+}
+
+impl BoomCam {
     pub fn update(&mut self, t: &BoomTune, car: &BoomTarget, dt: f32) -> BoomOut {
         let dt = dt.clamp(1.0 / 600.0, 0.1);
         // the filters are per frame at 60 Hz
@@ -303,11 +378,18 @@ impl BoomCam {
         }
         off += d_off;
         let mut foc_target = foc0 + d_foc;
-        // and turns its boom about the car: pitch about x, then yaw about y (0x82320EFC..0x82320F80)
+        // the look-around's rise lifts camera and focus together (+460)
+        off.y += car.rise;
+        foc_target.y += car.rise;
+        // and turns its boom: pitch about x, then yaw about y (0x82320ED0..0x82320F80), about a
+        // point on the car for the chase views (approx.: the frame's origin; the original's
+        // chassis +368 -> +32 was not identified), in place for the bumper and the cockpit
+        // (last frame's place, +416)
         if pan_yaw != 0.0 || pan_pitch != 0.0 {
             let r = Mat3::from_rotation_y(pan_yaw) * Mat3::from_rotation_x(pan_pitch);
-            off = r * off;
-            foc_target = r * foc_target;
+            let pivot = if car.fixed_mount && self.started { self.off } else { Vec3::ZERO };
+            off = pivot + r * (off - pivot);
+            foc_target = pivot + r * (foc_target - pivot);
         }
         // on a slope the boom swings up to keep the road in view
         let slope = z.y.clamp(-1.0, 1.0).asin();
@@ -331,8 +413,15 @@ impl BoomCam {
                 let homed = last + (off - last) * h;
                 off = homed.normalize_or(off.normalize_or(Vec3::Z)) * len;
             }
-            // and nothing moves faster than the approach rate
-            let rate = t.s("ApproachRate");
+            // and nothing moves faster than the approach rate (+656: 25 m/s while the camera is
+            // turned, else the file's ApproachRate, moving there at 50 per second; none when the
+            // file has none - 0x823210A0)
+            let file_rate = t.s("ApproachRate");
+            let goal = if pan_yaw != 0.0 || pan_pitch != 0.0 { 25.0 } else { file_rate };
+            // (approx.: a fresh camera starts at the file's rate)
+            let cur = if self.rate > 0.0 { self.rate } else { file_rate };
+            self.rate = if file_rate > 0.0 { cur + (goal - cur).clamp(-50.0 * dt, 50.0 * dt) } else { 0.0 };
+            let rate = self.rate;
             if rate > 0.0 {
                 let step = rate * dt;
                 let mut share = 1.0f32;
@@ -610,11 +699,21 @@ pub struct CamFx {
     pub idle_delay: f32,
     /// yaw rate (rad/s) that makes a burnout the Burnout view (+44)
     pub burnout_turn: f32,
+    /// the look-around (sub_822B2AB0): the chase views' yaw at full stick left / right (+60,
+    /// +64), the cockpit's (+68, +72) and its pitch limits up / down (+76, +80), the chase
+    /// views' rise at full CAMERA_UP (+16, m), the cockpit's lens at full CAMERA_UP (+32,
+    /// degrees; not in the file: the constructor's 15) and the ease per call (+48, 0.2: idem)
+    pub pan: (f32, f32),
+    pub limit: (f32, f32, f32, f32),
+    pub rise_up: f32,
+    pub zoom_in: f32,
+    pub look_lerp: f32,
 }
 
 impl Default for CamFx {
     fn default() -> CamFx {
-        CamFx { idle_delay: 60.0, burnout_turn: 1.5 }
+        // (the constructor's defaults, sub_82314C30)
+        CamFx { idle_delay: 10.0, burnout_turn: 1.5, pan: (1.0472, 1.0472), limit: (1.0, 1.0, 0.471_239, 0.471_239), rise_up: 0.75, zoom_in: 15.0, look_lerp: 0.2 }
     }
 }
 
@@ -628,10 +727,274 @@ impl CamFx {
             match (it.next(), it.next().and_then(|v| v.parse::<f32>().ok())) {
                 (Some("IdleDelayTime"), Some(v)) => fx.idle_delay = v,
                 (Some("BurnoutTurnThreshold"), Some(v)) => fx.burnout_turn = v,
+                (Some("CamRiseUp"), Some(v)) => fx.rise_up = v,
+                (Some("CamZoomIn"), Some(v)) => fx.zoom_in = v,
+                (Some("LookaroundLerpFactor"), Some(v)) => fx.look_lerp = v,
+                (Some("LookaroundPanLeft"), Some(v)) => fx.pan.0 = v,
+                (Some("LookaroundPanRight"), Some(v)) => fx.pan.1 = v,
+                (Some("LookaroundLimitLeft"), Some(v)) => fx.limit.0 = v,
+                (Some("LookaroundLimitRight"), Some(v)) => fx.limit.1 = v,
+                (Some("LookaroundLimitUp"), Some(v)) => fx.limit.2 = v,
+                (Some("LookaroundLimitDown"), Some(v)) => fx.limit.3 = v,
                 _ => {}
             }
         }
         fx
+    }
+}
+
+/// One of camFX's five shake blocks (camFX + 96 + 224 i: Shake, Rumble, DrivingRumble,
+/// BurnoutRumble, DriftRumble; rule in `docs/reference/cameras/shake_rule.md`).
+#[derive(Clone, Debug, Default)]
+struct ShakeBlock {
+    /// CarRot, Rot, Tran: amplitude, frequency (rad/s), random, phase
+    parts: [[Vec3; 4]; 3],
+    timer: f32,
+    magnitude: f32,
+    scale: f32,
+    /// 0 off, 1 one-shot (the timer runs down), 2 continuous
+    state: u8,
+}
+
+/// The camera shake (camFX blocks, sub_82315000 applied to the camera in use each frame).
+#[derive(Clone, Debug, Default)]
+pub struct CamShake {
+    blocks: Vec<ShakeBlock>,
+    rng: (u32, u32),
+}
+
+pub const SHAKE_DRIVING: usize = 2;
+pub const SHAKE_BURNOUT: usize = 3;
+pub const SHAKE_DRIFT: usize = 4;
+
+impl CamShake {
+    pub fn load(data_dir: &str) -> CamShake {
+        let h = mcla_formats::hash::joaat("default.camfx");
+        let text = std::fs::read_to_string(Path::new(data_dir).join("tune/camera").join(format!("0x{h:08x}"))).unwrap_or_default();
+        // (the constructor's: frequency 50, magnitude 3; mcPlayerCamera puts 0.01 into Rumble and
+        // DrivingRumble before the file)
+        let blocks = ["Shake", "Rumble", "DrivingRumble", "BurnoutRumble", "DriftRumble"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let b = track_block(&text, Some(name));
+                let v = |k: &str, d: f32| b.get(k).filter(|v| v.len() >= 3).map_or(Vec3::splat(d), |v| Vec3::new(v[0], v[1], v[2]));
+                let part = |p: &str| [v(&format!("{p}Amp"), 0.0), v(&format!("{p}Freq"), 50.0), v(&format!("{p}Random"), 0.0), Vec3::ZERO];
+                let mag = b.get("Magnitude").and_then(|v| v.first()).copied().unwrap_or(if i == 1 || i == 2 { 0.01 } else { 3.0 });
+                ShakeBlock { parts: [part("CarRot"), part("Rot"), part("Tran")], magnitude: mag, scale: 2.0, ..Default::default() }
+            })
+            .collect();
+        CamShake { blocks, rng: (0x1234_5678, 0) }
+    }
+
+    /// Every block off (sub_82314790: the phases are kept).
+    pub fn reset(&mut self) {
+        for b in &mut self.blocks {
+            b.timer = 0.0;
+            b.state = 0;
+        }
+    }
+
+    /// A one-shot on the Shake block (sub_822AFA88 -> sub_823147F0): `fixed_mount` (bumper /
+    /// cockpit) takes 0.4 of the scale; a stronger shake still running is kept.
+    pub fn jolt(&mut self, duration: f32, scale: f32, fixed_mount: bool) {
+        let scale = if fixed_mount { scale * 0.4 } else { scale };
+        let Some(b) = self.blocks.get_mut(0) else { return };
+        if b.magnitude * duration * scale <= b.magnitude * b.scale * b.timer {
+            return;
+        }
+        b.state = 1;
+        b.scale = scale;
+        b.timer = duration;
+    }
+
+    /// A continuous block's strength (sub_823147C0).
+    pub fn set(&mut self, i: usize, scale: f32) {
+        if let Some(b) = self.blocks.get_mut(i) {
+            b.timer = 1.0;
+            b.scale = scale;
+            b.state = 2;
+        }
+    }
+
+    /// 23 bits of the game's multiply-with-carry generator (0x82860880).
+    fn rand23(&mut self) -> f32 {
+        let x = self.rng.0 as u64 * 0x5CDC_FAA7 + self.rng.1 as u64;
+        self.rng = (x as u32, (x >> 32) as u32);
+        (self.rng.0 & 0x7F_FFFF) as f32 * (1.0 / 8_388_608.0)
+    }
+
+    /// Shakes the camera (eye `pos`, `look`, `up`) about the car at `car` (sub_82315000).
+    pub fn apply(&mut self, dt: f32, pos: &mut Vec3, look: &mut Vec3, up: &mut Vec3, car: Vec3) {
+        let reach = pos.distance(*look).max(0.1);
+        // the camera's rows: a right, b up, c back
+        let mut c = (*pos - *look).normalize_or(Vec3::Z);
+        let mut a = up.cross(c).normalize_or(Vec3::X);
+        let mut b = c.cross(a);
+        let mut d = *pos;
+        for i in 0..self.blocks.len() {
+            if self.blocks[i].state == 0 {
+                continue;
+            }
+            if self.blocks[i].state == 1 {
+                self.blocks[i].timer -= dt;
+                if self.blocks[i].timer <= 0.0 {
+                    self.blocks[i].state = 0;
+                    continue;
+                }
+            }
+            let m = self.blocks[i].scale * self.blocks[i].magnitude * self.blocks[i].timer;
+            if m == 0.0 {
+                continue;
+            }
+            // the oscillator (sub_82314E58): phase += freq dt; (amp sin phase + uniform(-r, r)) m
+            let mut out = [Vec3::ZERO; 3];
+            for k in 0..3 {
+                let [amp, freq, rnd, ph] = self.blocks[i].parts[k];
+                let ph = ph + freq * dt;
+                self.blocks[i].parts[k][3] = ph;
+                let u = Vec3::new(self.rand23(), self.rand23(), self.rand23());
+                out[k] = (amp * Vec3::new(ph.x.sin(), ph.y.sin(), ph.z.sin()) + (-rnd + rnd * 2.0 * u)) * m;
+            }
+            let [cr, rt, tr] = out;
+            // CarRot: the camera orbits the car, turning with it
+            if cr.length_squared() != 0.0 && (d - car).length_squared() > 0.02 {
+                // (F = look-at frame along car - camera, world up: its c from the camera to the car)
+                let dist = (car - d).length();
+                let fc = (car - d).normalize_or(-c);
+                let fa = Vec3::Y.cross(fc).normalize_or(a);
+                let fb = fc.cross(fa);
+                let (mut fa, mut fb, mut fc) = (fa, fb, fc);
+                let rot_local_x = |b: &mut Vec3, c: &mut Vec3, t: f32| {
+                    let (s, co) = t.sin_cos();
+                    let (nb, nc) = (*b * co + *c * s, *c * co - *b * s);
+                    *b = nb;
+                    *c = nc;
+                };
+                let rot_local_z = |a: &mut Vec3, b: &mut Vec3, t: f32| {
+                    let (s, co) = t.sin_cos();
+                    let (na, nb) = (*a * co + *b * s, *b * co - *a * s);
+                    *a = na;
+                    *b = nb;
+                };
+                let ry = |v: Vec3, t: f32| {
+                    let (s, co) = t.sin_cos();
+                    Vec3::new(co, 0.0, -s) * v.x + Vec3::Y * v.y + Vec3::new(s, 0.0, co) * v.z
+                };
+                rot_local_x(&mut fb, &mut fc, cr.x);
+                rot_local_z(&mut fa, &mut fb, cr.z);
+                fc = ry(fc, cr.y);
+                let _ = (fa, fb);
+                a = ry(a, cr.y);
+                b = ry(b, cr.y);
+                c = ry(c, cr.y);
+                rot_local_z(&mut a, &mut b, -cr.z);
+                rot_local_x(&mut b, &mut c, -cr.x);
+                d = car - fc * dist;
+            }
+            // Rot and Tran in the camera's own frame (EulerXYZ, sub_821B4B00)
+            d += tr.x * a + tr.y * b + tr.z * c;
+            let (sx, cx) = rt.x.sin_cos();
+            let (sy, cy) = rt.y.sin_cos();
+            let (sz, cz) = rt.z.sin_cos();
+            let s0 = Vec3::new(cz * cy, sz * cy, -sy);
+            let s1 = Vec3::new(cz * sy * sx - sz * cx, sz * sy * sx + cz * cx, cy * sx);
+            let s2 = Vec3::new(cz * sy * cx + sz * sx, sz * sy * cx - cz * sx, cy * cx);
+            let (na, nb, nc) = (s0.x * a + s0.y * b + s0.z * c, s1.x * a + s1.y * b + s1.z * c, s2.x * a + s2.y * b + s2.z * c);
+            a = na;
+            b = nb;
+            c = nc;
+        }
+        *pos = d;
+        *look = d - c * reach;
+        *up = b;
+    }
+}
+
+/// The original's dead zone with rescale (sub_8260C5C8).
+fn dead_zone(v: f32, d: f32) -> f32 {
+    if v > d {
+        (v - d) / (1.0 - d)
+    } else if v < -d {
+        (v + d) / (1.0 - d)
+    } else {
+        0.0
+    }
+}
+
+/// The driving camera's look-around (mcPlayerCamera sub_822B2AB0, once a game frame; rule in
+/// `docs/reference/cameras/lookaround_rule.md`): the stick's CAMERA_LEFT / CAMERA_RIGHT set a
+/// yaw goal (a place, not a rate: full stick = PanLeft / PanRight in the chase views, the
+/// cockpit's LimitLeft / LimitRight, 45 degrees on the bumper), CAMERA_UP raises a chase
+/// camera by CamRiseUp or pitches and narrows the cockpit's; the camera's yaw, pitch, rise
+/// and lens offset ease to their goals by LookaroundLerpFactor a call.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct LookAround {
+    /// the camera's +452 yaw, +456 pitch, +460 rise (m), +224 lens offset (degrees)
+    pub yaw: f32,
+    pub pitch: f32,
+    pub rise: f32,
+    pub fov: f32,
+    /// mcPlayerCamera +108 / +116: the held yaw and pitch (they run back to 0)
+    held_yaw: f32,
+    held_pitch: f32,
+}
+
+impl LookAround {
+    pub fn reset(&mut self) {
+        *self = LookAround::default();
+    }
+
+    /// One frame. `view`: the original's view index (0 bumper, 1 cockpit, 2..4 chase);
+    /// `side` = CAMERA_RIGHT - CAMERA_LEFT, `up` = CAMERA_UP (0..1); `input`: the pad reaches
+    /// the camera (else every goal is 0); `held`: looking back on this very camera (bumper or
+    /// cockpit): nothing is written. (approx.: the original's ease is per 30 Hz game frame,
+    /// taken here as 1 - 0.8^(dt*30); the cockpit's parked free look on the left stick after
+    /// LookaroundDelayTime is not ported)
+    pub fn frame(&mut self, fx: &CamFx, view: u8, bike: bool, side: f32, up: f32, input: bool, held: bool, dt: f32) {
+        if held {
+            return;
+        }
+        let (l, r) = match view {
+            0 => (std::f32::consts::FRAC_PI_4, std::f32::consts::FRAC_PI_4),
+            1 => (fx.limit.0, fx.limit.1),
+            _ => fx.pan,
+        };
+        let (mut yaw_in, mut rise_in, mut fov_in) = (0.0, 0.0, 0.0);
+        if input {
+            if view >= 2 || !bike {
+                let s = -dead_zone(side, 0.4);
+                yaw_in = if s > 0.0 { s * l } else { s * r };
+            }
+            match view {
+                0 => {}
+                1 => {
+                    let v = dead_zone(up, 0.2);
+                    if v > 0.0 {
+                        self.held_pitch = (-fx.limit.3 * v).clamp(-fx.limit.3, fx.limit.2);
+                        fov_in = -fx.zoom_in * v;
+                    }
+                }
+                _ => {
+                    let v = dead_zone(up, 0.4);
+                    if v > 0.0 {
+                        rise_in = fx.rise_up * v;
+                    }
+                }
+            }
+        }
+        // (the held angles run back to 0 at 1.5 and 0.75 rad/s)
+        let step = |a: f32, rate: f32| if a > 0.0 { (a - rate * dt).max(0.0) } else { (a + rate * dt).min(0.0) };
+        self.held_yaw = step(self.held_yaw, 1.5);
+        self.held_pitch = step(self.held_pitch, 0.75);
+        let yaw_goal = (self.held_yaw + yaw_in).clamp(-r, l);
+        let pitch_goal = self.held_pitch;
+        let k = 1.0 - (1.0 - fx.look_lerp.clamp(0.0, 1.0)).powf(dt * 30.0);
+        let a = wrap_pi(self.yaw);
+        self.yaw = a + (yaw_goal - a) * k;
+        self.pitch += (pitch_goal - self.pitch) * k;
+        self.rise += (rise_in - self.rise) * k;
+        self.fov += (fov_in - self.fov) * k;
     }
 }
 
@@ -718,6 +1081,10 @@ pub struct TrackTune {
     pub app_inc: f32,
     pub app_dec: f32,
     pub app_pos_min: f32,
+    /// the hill angle (sub_8231A468): HillMin, HillMax, HillLerp of the base block; the
+    /// event's ApproachOn (off: no hill, the car's own frame)
+    pub hill: (f32, f32, f32),
+    pub approach_on: bool,
 }
 
 impl TrackTune {
@@ -753,6 +1120,8 @@ impl TrackTune {
             app_inc: f(&b, "AppInc", 3.0),
             app_dec: f(&b, "AppDec", 8.0),
             app_pos_min: f(&b, "AppPosMin", 0.25),
+            hill: (f(&b, "HillMin", 0.0), f(&b, "HillMax", 0.0), f(&b, "HillLerp", 0.0)),
+            approach_on: f(&e, "ApproachOn", 1.0) != 0.0,
         })
     }
 }
@@ -770,6 +1139,26 @@ pub struct TrackCar {
     pub steer: f32,
     /// the front axle's z in the car (the first wheel of the chassis' held list, wheel +392)
     pub front_z: f32,
+    /// the ground's slope along the car: the mean over the wheels on the ground of the y of
+    /// the car's back axis laid into each wheel's ground plane (wheel +352 / +356); None with
+    /// no wheel down
+    pub slope: Option<f32>,
+}
+
+impl TrackCar {
+    /// The slope under a car's wheels (see `slope`).
+    pub fn slope_of(rot: Quat, wheels: &[crate::physics::car::WheelState]) -> Option<f32> {
+        let back = rot * Vec3::Z;
+        let ys: Vec<f32> = wheels
+            .iter()
+            .filter(|w| w.grounded)
+            .map(|w| {
+                let n = w.normal.normalize_or(Vec3::Y);
+                (back - n * back.dot(n)).normalize_or(back).y
+            })
+            .collect();
+        (!ys.is_empty()).then(|| ys.iter().sum::<f32>() / ys.len() as f32)
+    }
 }
 
 /// camTrackCS' approach step (sub_823223E8): `cur` goes towards `tgt` by s * rate * dt, s the
@@ -826,6 +1215,8 @@ struct TrackCam {
     /// the place's XZ approach rate (+276; not touched by the reset) and the per-axis lag (+416)
     app_xz: f32,
     st_pos: [f32; 3],
+    /// the hill angle (+616; not touched by the reset either)
+    hill: f32,
 }
 
 impl TrackCam {
@@ -842,8 +1233,8 @@ impl TrackCam {
             track.x = -track.x;
             offset.x = -offset.x;
         }
-        let app_xz = self.app_xz;
-        *self = TrackCam { snap: true, track, offset, speed: if car.reverse_gear { 0.0 } else { car.speed }, app_xz, ..Default::default() };
+        let (app_xz, hill) = (self.app_xz, self.hill);
+        *self = TrackCam { snap: true, track, offset, speed: if car.reverse_gear { 0.0 } else { car.speed }, app_xz, hill, ..Default::default() };
     }
 
     /// Where the camera wants to stand (sub_8231C4F8): the Offset in the car's level heading
@@ -873,7 +1264,25 @@ impl TrackCam {
         // the point it tracks: TrackTo through the whole car matrix
         let m = Mat3::from_quat(car.rot);
         let at = car.pos + m * self.track;
+        // the hill angle (sub_8231A468): the slope under the wheels (its sign turned for a
+        // camera ahead of the car), eased per frame by HillLerp into asin(s * HillMax) up or
+        // asin(s * HillMin) down; none without ApproachOn. (approx.: HillLerp taken per 30 Hz
+        // frame - the game halves it when a frame-mode flag is 1, read as 60 Hz)
+        let (h_min, h_max, h_lerp) = t.hill;
+        if !t.approach_on || h_lerp <= 0.0 || h_max <= h_min {
+            self.hill = 0.0;
+        } else {
+            let s = car.slope.unwrap_or(0.0) * if self.offset.z < 0.0 { -1.0 } else { 1.0 };
+            let goal = if s < 0.0 { -(s * h_min).min(0.9).asin() } else { (s * h_max).min(0.9).asin() };
+            let l = 1.0 - (1.0 - h_lerp.min(1.0)).powf(frames * 0.5);
+            self.hill += (goal - self.hill) * l;
+        }
+        // the place, turned about the point by the hill angle round the camera's level right
+        // axis (sub_8231C4F8: rows * R(A, -pitch))
         let want = self.place(car, at);
+        let rel = want - at;
+        let a = Vec3::Y.cross(rel.normalize_or(Vec3::Z)).normalize_or(Vec3::X);
+        let want = if self.hill != 0.0 { at + Quat::from_axis_angle(a, -self.hill) * rel } else { want };
         // the place's approach rates (sub_8231B368): over the speed range, the XZ one moving
         // towards its goal at AppInc / AppDec a second, in reverse gear RevAppXZPos
         let s = car.speed;
@@ -1284,7 +1693,7 @@ mod tests {
         assert!(!burnout_ends(&fx, 1.0, 0.6, 0.8) && burnout_ends(&fx, 1.0, 0.6, 0.7) && burnout_ends(&fx, 0.0, 1.0, 2.0));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 25.0 };
-        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3 };
+        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0) };
         let o = d.frame(&data, "vp_aud_r8_08", true, 1.0, 1.0, 2.0, 0.0, &car, BoomOut { ..chase }, 1.0 / 60.0);
         assert!(d.running());
         // (blending in: between the chase view and the event view)
@@ -1305,6 +1714,54 @@ mod tests {
         assert!(!d.running());
     }
 
+    /// The look-around with the file's camFX: full stick left in a chase view goes to +1.25 rad
+    /// (0.2 of the way a 30 Hz frame), right in the cockpit to -0.9, the bumper 45 degrees; let
+    /// go it comes back; CAMERA_UP lifts a chase camera 0.75 m; inside the dead zone nothing.
+    #[test]
+    fn look_around() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let fx = CamFx::load(&data);
+        if fx.idle_delay != 60.0 {
+            return;
+        }
+        assert_eq!((fx.pan, fx.limit, fx.rise_up, fx.zoom_in, fx.look_lerp), ((1.25, 1.25), (0.75, 0.9, 0.1, 0.1), 0.75, 15.0, 0.2));
+        let dt = 1.0 / 30.0;
+        let mut l = LookAround::default();
+        l.frame(&fx, 3, false, -1.0, 0.0, true, false, dt);
+        assert!((l.yaw - 0.25).abs() < 1e-4, "{}", l.yaw);
+        for _ in 0..60 {
+            l.frame(&fx, 3, false, -1.0, 1.0, true, false, dt);
+        }
+        assert!((l.yaw - 1.25).abs() < 1e-3 && (l.rise - 0.75).abs() < 1e-3);
+        for _ in 0..60 {
+            l.frame(&fx, 3, false, 0.0, 0.0, true, false, dt);
+        }
+        assert!(l.yaw.abs() < 1e-3 && l.rise.abs() < 1e-3);
+        let mut c = LookAround::default();
+        for _ in 0..60 {
+            c.frame(&fx, 1, false, 1.0, 0.0, true, false, dt);
+        }
+        assert!((c.yaw + 0.9).abs() < 1e-3);
+        let mut b = LookAround::default();
+        for _ in 0..60 {
+            b.frame(&fx, 0, false, 0.3, 0.0, true, false, dt);
+        }
+        assert_eq!(b.yaw, 0.0);
+    }
+
+    /// The boom collision: a wall 5 m behind the probe point stops the camera r off it; a clear
+    /// line leaves it; a probe point inside the wall is pushed out.
+    #[test]
+    fn boom_collision() {
+        let wall = |c: Vec3, r: f32| (c.z + r > 5.0).then(|| (c.z + r - 5.0, Vec3::NEG_Z));
+        let m = boom_collide(Vec3::new(0.0, 1.2, 0.0), Vec3::new(0.0, 2.0, 8.0), 0.27, false, wall).unwrap();
+        let cam = Vec3::new(0.0, 2.0, 8.0) + m;
+        assert!((cam.z - 4.73).abs() < 0.01 && cam.y < 2.0, "{cam:?}");
+        assert!(boom_collide(Vec3::new(0.0, 1.2, 0.0), Vec3::new(0.0, 2.0, 4.0), 0.27, false, wall).is_none());
+        let m = boom_collide(Vec3::new(0.0, 1.2, 4.9), Vec3::new(0.0, 2.0, 8.0), 0.27, false, wall).unwrap();
+        assert!(((Vec3::new(0.0, 2.0, 8.0) + m).z - 4.73).abs() < 0.01);
+    }
+
     /// The Idle view on the R8's file: nothing before camFX IdleDelayTime (60 s); then in over
     /// 1.5 s to TrackTo + Offset ((0, 0.895, 0.55) + (+-2.525, 0, -9): ahead of the car, to one
     /// side), lens 25; a standing car's camera does not move; out at a touch.
@@ -1315,7 +1772,7 @@ mod tests {
         assert_eq!((t.offset, t.blend, t.dist, t.app_xz), (Vec3::new(-2.525, 0.0, -9.0), 1.5, (5.0, 10.0), (4.0, 9.0)));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3 };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0) };
         let o = d.frame(&data, "vp_aud_r8_08", true, 0.0, 0.0, 0.0, 59.9, &car, BoomOut { ..chase }, 1.0 / 60.0);
         assert!(!d.idle() && o.pos == chase.pos);
         let mut held = Vec::new();
@@ -1331,5 +1788,19 @@ mod tests {
         assert!(held.iter().all(|o| o.pos.distance(p) < 1e-4 && (o.fov - 25.0).abs() < 1e-3));
         d.frame(&data, "vp_aud_r8_08", true, 0.0, 0.0, 0.0, 0.0, &car, BoomOut { ..chase }, 1.0 / 60.0);
         assert!(!d.running());
+        // on a hill (the car's back axis 0.2 up the slope: facing downhill) the Idle camera's
+        // place, ahead of the car, turns down with the ground by asin(0.2 * 0.8) about the
+        // point; the view's AppYPos are 0, so only the level part is followed: it comes in to
+        // |rel| cos(hill) and keeps its height
+        let car = TrackCar { slope: Some(0.2), ..car };
+        let mut d = EventDirector::default();
+        let mut o = BoomOut { ..chase };
+        for i in 0..600 {
+            o = d.frame(&data, "vp_aud_r8_08", true, 0.0, 0.0, 0.0, 60.0 + i as f32 / 60.0, &car, BoomOut { ..chase }, 1.0 / 60.0);
+        }
+        let at = Vec3::new(0.0, 0.895, 0.55);
+        let rel = Vec3::new(2.525, 0.0, 9.0).length();
+        let level = Vec3::new(o.pos.x - at.x, 0.0, o.pos.z - at.z).length();
+        assert!((level - rel * (0.2f32 * 0.8).asin().cos()).abs() < 0.01 && (o.pos.y - at.y).abs() < 0.2, "{:?} {}", o.pos, level);
     }
 }

@@ -369,11 +369,12 @@ struct App {
     replay_wall: f32,
     /// camera shake: time left and length of the running impact shake, its strength, the clock
     /// of the noise, and the impact value seen last frame
-    shake_left: f32,
-    shake_len: f32,
-    shake_amp: f32,
-    shake_clock: f32,
+    /// the camera shake (boomcam::CamShake, camFX's blocks), the last impact seen, the time in
+    /// the air, a wipeout already shaken for
+    shake: Option<boomcam::CamShake>,
     shake_impact: f32,
+    shake_air: f32,
+    shake_wipe: bool,
     district_timer: f32,
     flash: bool,
     enter_garage: bool,
@@ -403,7 +404,11 @@ struct App {
     cruise_limit_mph: f32,
     cruise_on: bool,
     cruise_hold: bool,
-    look_side: f32,
+    /// the driving camera's look-around (boomcam::LookAround) and CAMERA_UP from the pad
+    look: boomcam::LookAround,
+    pad_look_up: f32,
+    /// tune/camera/default.camfx, read once
+    cam_fx: Option<boomcam::CamFx>,
     pad_horn: bool,
     /// the pad's actions that were down a frame ago (by the active map), a shift asked for and
     /// not yet handed to the car, and the last shift with its time
@@ -728,11 +733,10 @@ impl App {
             replay_shot_t: f32::MIN,
             replay_prerace: None,
             replay_wall: 0.0,
-            shake_left: 0.0,
-            shake_len: 0.0,
-            shake_amp: 0.0,
-            shake_clock: 0.0,
+            shake: None,
             shake_impact: 0.0,
+            shake_air: 0.0,
+            shake_wipe: false,
             district_timer: 0.0,
             flash: false,
             enter_garage: false,
@@ -754,7 +758,9 @@ impl App {
             cruise_limit_mph: 40.0,
             cruise_on: false,
             cruise_hold: false,
-            look_side: 0.0,
+            look: Default::default(),
+            pad_look_up: 0.0,
+            cam_fx: None,
             pad_horn: false,
             pad_act_prev: 0,
             pad_shift: 0,
@@ -1563,6 +1569,7 @@ impl App {
         let hit = (now & !self.pad_prev) | pressed;
         self.pad_prev = now;
         self.pad_look = look;
+        self.pad_look_up = 0.0;
         self.pad_horn = now >> 9 & 1 != 0;
         let p = |i: u32| hit >> i & 1 != 0;
         if hit != 0 {
@@ -1621,6 +1628,7 @@ impl App {
             let (left, right) = (crate::mc4::pad_analog(&st, &live, "CAMERA_LEFT"), crate::mc4::pad_analog(&st, &live, "CAMERA_RIGHT"));
             let back = down >> 19 & 1 != 0 || (crate::mc4::pad_down(&st, &slots, "CAMERA_LEFT") && crate::mc4::pad_down(&st, &slots, "CAMERA_RIGHT"));
             self.pad_look = (right - left, if back { -1.0 } else { 0.0 });
+            self.pad_look_up = crate::mc4::pad_analog(&st, &live, "CAMERA_UP");
             self.pad_horn = down >> 18 & 1 != 0;
             self.pad_pending |= acted & 127;
             if !self.drive {
@@ -5492,6 +5500,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // CINEMATIC CAMERA option turns the look back of a moving car to one side)
                         let cinematic = self.game.mc4.as_ref().map_or(true, |m| m.options.idle_camera);
                         self.cam_switch.frame(&set, mode, self.look_back, backing, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
+                        // the look-around (sub_822B2AB0): the stick turns the view camera, CAMERA_UP
+                        // lifts it; looking back from a chase view is the reverse camera's own turn
+                        let chase = boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2;
+                        let fx = self.cam_fx.get_or_insert_with(|| boomcam::CamFx::load(&data_dir)).clone();
+                        let input = self.drive && !self.game.in_menu() && self.game.replay.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
+                        let (side, up) = if self.look_back && chase { (0.0, 0.0) } else { (self.pad_look.0, self.pad_look_up) };
+                        self.look.frame(&fx, boomcam::VIEW_OF_PORT[(mode as usize).min(5)] as u8, car.model.bike, side, up, input, self.look_back && !chase, dt);
                         let target = boomcam::BoomTarget {
                             pos: render_state.pos,
                             rot: render_state.rot,
@@ -5508,7 +5523,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 (None, _) => (13.0, 0.5, 1.0),
                             },
                             ability: self.ability.camera(),
-                            pan: self.cam_switch.pan_for(mode, self.look_back),
+                            pan: if self.look_back && chase { self.cam_switch.pan_for(mode, true) } else { (self.look.yaw, self.look.pitch) },
+                            rise: if self.look_back && chase { 0.0 } else { self.look.rise },
+                            fixed_mount: !chase,
                         };
                         let out = self.boom.update(tune, &target, dt);
                         let out = self.cam_switch.blend.apply(&boomcam::BoomTarget { pan: (0.0, 0.0), ..target }, out, dt);
@@ -5531,6 +5548,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             reverse_gear: render_state.gear < 0,
                             steer: car.input.steer,
                             front_z: if front_z.is_finite() { front_z } else { 0.0 },
+                            slope: boomcam::TrackCar::slope_of(render_state.rot, &render_state.wheels),
                         };
                         let charge = render_state.veh.as_ref().map_or(0.0, |v| v.burn);
                         let out = self.event_dir.frame(&data_dir, &car.model.name, allowed, if car.input.handbrake { 1.0 } else { 0.0 }, charge, render_state.ang_vel.y, self.idle_time, &track_car, out, dt);
@@ -5539,16 +5557,24 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         self.chase.pos = out.pos;
                         self.chase.look = out.look;
-                        // (the right stick swings the camera around the car, up to a side view -
-                        // CAMERA_LEFT / CAMERA_RIGHT of the pad layout; eased so it does not snap)
-                        let want = if self.pad_look.0.abs() > 0.25 && !self.look_back { self.pad_look.0 } else { 0.0 };
-                        self.look_side += (want - self.look_side) * (dt * 8.0).min(1.0);
-                        if self.look_side.abs() > 0.01 && view < 3 {
-                            let q = glam::Quat::from_axis_angle(Vec3::Y, -self.look_side * std::f32::consts::FRAC_PI_2);
-                            self.chase.pos = out.look + q * (out.pos - out.look);
+                        // the camera kept out of walls (camBoomCS CollideType 2, sub_8231FD60): a ball
+                        // of the near plane's corner from the file's Collide point on the car to the
+                        // camera; the camera stops where it touches, the look keeps its direction
+                        // (the event camera has its own, not ported)
+                        if tune.collide_type() & 2 != 0 && !self.event_dir.running() {
+                            let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
+                            let ty = (out.fov.to_radians() * 0.5).tan();
+                            let corner = tune.near() * (ty * ty + (ty * aspect) * (ty * aspect)).sqrt();
+                            let inside_car = boomcam::VIEW_OF_PORT[(mode as usize).min(5)] < 2 && !self.look_back;
+                            let r = if inside_car { corner * 2.0 } else { corner + 0.01 };
+                            let from = self.boom.collide_from(tune, &target);
+                            if let Some(m) = boomcam::boom_collide(from, self.chase.pos, r, inside_car, |c, r| world.collider.sphere(c, r).map(|(d, n, _)| (d, n))) {
+                                self.chase.pos += m;
+                                self.chase.look += m;
+                            }
                         }
                         self.boom_up = Some(out.up);
-                        self.cam.fov_y = out.fov.to_radians();
+                        self.cam.fov_y = (out.fov + if self.event_dir.running() { 0.0 } else { self.look.fov }).to_radians();
                         boom_view = true;
                         if let Some(d) = self.game.replay.as_mut().and_then(|p| p.director.as_mut()) {
                             d.drive_eye = Some(self.chase.pos);
@@ -5561,48 +5587,91 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.boom.reset();
                     self.cam_switch.reset();
                     self.event_dir.reset();
+                    self.look.reset();
                     self.view_mode = if own_view { 255 } else { self.cam_mode };
                 }
                 // the HUD's camera bar shows the view in use (sub_8223D450: the list place; the
                 // overhead camera of the race editor would be 5) and a cut puts the mask up
                 self.game.hud_camera = boomcam::VIEW_OF_PORT[(self.cam_mode as usize).min(5)] as i32;
                 self.game.cut_mask = self.cam_switch.mask.update(dt);
-                // camera shake (mcCarCamShakeTune): a rumble that grows between two shares of the top
-                // speed, and a jolt on every impact - the harder, the stronger and longer
-                if boom_view {
+                // camera shake (camFX's blocks, sub_822B4C98 / sub_82315000; rule in
+                // docs/reference/cameras/shake_rule.md): one-shots on impacts, landings and wipeouts
+                // from the car's vehCamShake, the driving, burnout and drift rumbles each frame; only
+                // with the CAMERA SHAKE option, not in a replay
+                let shake_on = boom_view && self.game.opts.shake && self.game.replay.is_none() && self.game.mode != Mode::Garage;
+                if shake_on {
+                    let data_dir = self.opt.data_dir.clone();
+                    let sh = self.shake.get_or_insert_with(|| boomcam::CamShake::load(&data_dir));
                     let st = car.model.simtunes.as_ref().map(|s| s.base.cam_shake.clone()).unwrap_or_default();
-                    let mult = if !self.game.opts.shake { 0.0 } else if st.magnitude_multiplier > 0.0 { st.magnitude_multiplier } else { 1.5 };
-                    let (lo, hi) = (if st.rumble_max_shake_speed_pct > 0.0 { st.rumble_threshold_speed_pct } else { 0.3 }, if st.rumble_max_shake_speed_pct > 0.0 { st.rumble_max_shake_speed_pct } else { 0.75 });
-                    let top = car.model.params.veh.as_ref().map_or(60.0, |v| v.top_speed.max(20.0));
-                    let pct = render_state.speed() / top;
-                    let rumble = ((pct - lo) / (hi - lo).max(0.05)).clamp(0.0, 1.0);
+                    let dm = car.model.simtunes.as_ref().map(|s| s.base.damage.clone()).unwrap_or_default();
+                    let fixed = boomcam::VIEW_OF_PORT[(self.view_mode as usize).min(5)] < 2;
+                    let lerp = |a: f32, b: f32, k: f32| a + (b - a) * k;
+                    let speed = render_state.speed();
+                    // an impact (sub_82343880): over a threshold that goes from JoltThreshold to
+                    // ImpactThreshold between 5 and 30 m/s, k = the excess over FatalBlow.
+                    // (approx.: the impact's size is the port's speed lost, m/s)
                     let impact = render_state.last_impact;
-                    if impact > self.shake_impact + 0.05 && self.game.mode != Mode::Garage {
-                        // (an impact's value is the speed lost, m/s)
-                        let k = ((impact - 1.0) / 12.0).clamp(0.0, 1.0);
-                        let (a0, a1) = (if st.impact_amplitude_max > 0.0 { st.impact_amplitude_min } else { 0.2 }, if st.impact_amplitude_max > 0.0 { st.impact_amplitude_max } else { 0.4 });
-                        let (d0, d1) = (if st.impact_duration_max > 0.0 { st.impact_duration_min } else { 0.4 }, if st.impact_duration_max > 0.0 { st.impact_duration_max } else { 0.8 });
-                        self.shake_amp = a0 + (a1 - a0) * k;
-                        self.shake_len = d0 + (d1 - d0) * k;
-                        self.shake_left = self.shake_len;
+                    if impact > self.shake_impact + 0.05 {
+                        let s5 = ((speed - 5.0) * 0.04).clamp(0.0, 1.0);
+                        let thr = lerp(dm.jolt_threshold, dm.impact_threshold, s5);
+                        if impact > thr && dm.fatal_blow > 0.0 {
+                            let k = ((impact - thr) / dm.fatal_blow).clamp(0.0, 1.0);
+                            sh.jolt(lerp(st.impact_duration_min, st.impact_duration_max, k), lerp(st.impact_amplitude_min, st.impact_amplitude_max, k), fixed);
+                        }
                     }
                     self.shake_impact = impact;
-                    self.shake_left = (self.shake_left - dt).max(0.0);
-                    self.shake_clock += dt;
-                    let jolt = if self.shake_len > 0.0 { self.shake_amp * (self.shake_left / self.shake_len).powi(2) } else { 0.0 };
-                    // degrees of wobble: the jolt as tuned, the rumble a twentieth of a degree at most
-                    let amp = (jolt + rumble * 0.05) * mult;
-                    if amp > 1e-4 && sim_dt > 0.0 {
-                        let t = self.shake_clock;
-                        let (nx, ny) = ((t * 61.0).sin() * 0.6 + (t * 97.3).sin() * 0.4, (t * 73.1).cos() * 0.6 + (t * 113.7).sin() * 0.4);
-                        let view = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
-                        let side = view.cross(Vec3::Y).normalize_or(Vec3::X);
-                        let up = side.cross(view);
-                        let reach = self.chase.look.distance(self.chase.pos).max(1.0);
-                        let off = (side * nx + up * ny) * (amp.to_radians() * reach);
-                        self.chase.look += off;
-                        self.chase.pos += (side * ny - up * nx) * (amp * 0.02);
+                    // a landing after more than half a second in the air (sub_82336128). (approx.:
+                    // once, not held while the wheels settle)
+                    let down = render_state.wheels.iter().any(|w| w.grounded);
+                    if down {
+                        if self.shake_air > 0.5 {
+                            sh.jolt(st.impact_duration_max, st.impact_amplitude_max, fixed);
+                        }
+                        self.shake_air = 0.0;
+                    } else {
+                        self.shake_air += dt;
                     }
+                    // a wipeout or wreck begins (sub_823429B0), and its camera (sub_822AFF10: the
+                    // blocks off, then its own jolt 0.75 s, 0.6)
+                    let wiping = self.wipe_time > 0.0 || self.wreck_timer > 0.0;
+                    if wiping && !self.shake_wipe {
+                        sh.reset();
+                        sh.jolt(0.75, 0.6, fixed);
+                        sh.jolt(st.impact_duration_max, st.impact_amplitude_max, fixed);
+                    }
+                    self.shake_wipe = wiping;
+                    // the rumbles (sub_822B4C98): driving between the tune's two shares of the top
+                    // gear's speed, times MagnitudeMultiplier, none in the air
+                    let top = car.model.params.veh.as_ref().map_or(60.0, |v| v.top_speed.max(1.0));
+                    let pct = (speed / top).clamp(0.0, 1.0);
+                    let (thr, max) = (st.rumble_threshold_speed_pct, st.rumble_max_shake_speed_pct);
+                    let mut r = 0.0;
+                    if pct > thr {
+                        let range = if max - thr <= 0.0 { 0.01 } else { max - thr };
+                        r = ((pct - thr).clamp(0.0, 1.0) / range).min(1.0);
+                    }
+                    r *= st.magnitude_multiplier;
+                    if self.shake_air > 0.1 {
+                        r = 0.0;
+                    }
+                    sh.set(boomcam::SHAKE_DRIVING, if fixed { r * 0.4 } else { r });
+                    // burnout: the burnout charge. (approx.: the tyre and the other flag of the
+                    // original's three sources are not read)
+                    let b = render_state.veh.as_ref().map_or(0.0, |v| v.burn.max(0.0));
+                    sh.set(boomcam::SHAKE_BURNOUT, if fixed { b * 0.2 } else { b });
+                    // drift: above 20 m/s the most sliding wheel, ramped in up to 30 m/s.
+                    // (approx.: the port's wheel slip stands for the original's wheel +520)
+                    let mut d = 0.0;
+                    if speed > 20.0 {
+                        let m = render_state.wheels.iter().map(|w| ((w.slip - 0.5) * 2.0).clamp(0.0, 1.0)).fold(0.0, f32::max);
+                        d = (m * 2.0).clamp(0.0, 1.0);
+                        if speed - 20.0 < 10.0 {
+                            d *= (speed - 20.0) * 0.1;
+                        }
+                    }
+                    sh.set(boomcam::SHAKE_DRIFT, if fixed { d * 0.08 } else { d });
+                } else if let Some(sh) = self.shake.as_mut() {
+                    sh.reset();
                 }
                 // the seconds the car is left alone: the event camera's Idle view comes after camFX
                 // IdleDelayTime (60 s; boomcam::EventDirector) and goes at a touch (approx.: the
@@ -5641,7 +5710,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.hide_player = boom_view && self.view_mode == 4 && !self.look_back;
                 // keep the camera out of walls and hillsides (camBoomCS CollideType): pull it in
                 // along the line from the car to where it wants to be
-                if (self.view_mode < 3 || self.view_mode == 5 || self.game.mode == Mode::Garage) && !own_view {
+                // (the driving views have the original's collision in the boom section; this
+                // ray rule is the port's own, left for the garage's camera)
+                if self.game.mode == Mode::Garage && !own_view {
                     let from = render_state.pos + Vec3::Y * 1.1;
                     let to = self.chase.pos;
                     let d = to - from;
@@ -5674,6 +5745,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.chase.pos = from + dir * t + Vec3::Y * ((len - t) * 0.2).min(1.4);
                             }
                         }
+                    }
+                }
+                // (the shake on the camera in use, after its collision - see CAMERAS_REPLAY.md)
+                if shake_on && sim_dt > 0.0 {
+                    if let Some(sh) = self.shake.as_mut() {
+                        let mut up = self.boom_up.unwrap_or(Vec3::Y);
+                        sh.apply(dt, &mut self.chase.pos, &mut self.chase.look, &mut up, render_state.pos);
+                        self.boom_up = Some(up);
                     }
                 }
                 // cheat: the race seen from straight above
