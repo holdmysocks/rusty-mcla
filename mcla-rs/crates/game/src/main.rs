@@ -4765,7 +4765,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (a tournament race pays points by place; the event is decided after its last race)
                     let order: Vec<String> = res.iter().map(|r| if r.0.starts_with("YOU") { "YOU".to_string() } else { r.0.clone() }).collect();
                     // (step 21b: a pink slip race is the wager core's own, no event's leg)
+                    // (form 49's standings are the last tournament race's: none after any other)
+                    self.game.career.tour_table = None;
                     let tournament = if self.game.mc4_pink_was() { None } else { self.game.career.tournament_race(&race_id, &order).or_else(|| order.first().and_then(|w| self.game.career.series_race(&race_id, w))) };
+                    // (TournamentCore's EndOfRaceSequence: the standings (form 49) after every race,
+                    // before REWARDS, until CONTINUE - as a series' results)
+                    if self.game.career.tour_table.is_some() {
+                        self.game.series_first = true;
+                    }
                     self.game.career.event(career::Ev::Race { district: &district, place, hookman, class: &class, race: &race_id, beat_goal });
                     // (a finished race is an unlocked race: `mc4`)
                     self.game.mc4_race_finished(&race_id);
@@ -8058,6 +8065,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.goal_attack = false;
                 self.game.series = None;
                 self.game.series_first = false;
+                self.game.career.tour_table = None;
                 self.game.series_ask = None;
                 self.game.wager = None;
                 self.game.race = None;
@@ -8541,6 +8549,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     _ => Mode::MainMenu,
                 };
                 self.game.menu_sel = 0;
+            }
+            MenuAction::RestartTournament => {
+                if self.game.tournament_restart() {
+                    self.pending_action = MenuAction::StartRace;
+                }
             }
             MenuAction::GasStation(fix) => {
                 // (FULL FIX: the car seated upright where it stands and fully repaired, no money taken

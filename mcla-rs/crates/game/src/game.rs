@@ -348,6 +348,8 @@ pub enum MenuAction {
     QuitRace,
     /// the showroom's TEST DRIVE: out of the garage in the vehicle looked at
     TestDrive,
+    /// RESTART TOURNAMENT on the race-over menu: `Game::tournament_restart`
+    RestartTournament,
     /// the SERVICE STATION menu's FULL FIX (true) or REFILL NITRO (false), then back to the
     /// world (mcGasStationMenuForm, sub_826414A8)
     GasStation(bool),
@@ -7209,6 +7211,23 @@ impl Game {
                         (s("pause_go_to_garage", "GO TO GARAGE"), 13),
                     ]);
                 }
+                // (a tournament's - mcTournamentMenu, sub_82663C10 / sub_82664270: CONTINUE TOURNAMENT,
+                // QUIT TOURNAMENT, RESTART TOURNAMENT, TOURNAMENT STANDINGS, ...; after its last race
+                // RETURN TO CRUISE and RESTART TOURNAMENT, no CONTINUE)
+                if let (true, Some(t)) = (movie, self.career.tour_table.as_ref()) {
+                    let fav = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| self.race_favs.iter().any(|f| f.eq_ignore_ascii_case(&d.id)));
+                    ro = if t.last {
+                        vec![(s("pause_continue_to_cruise", "RETURN TO CRUISE"), 2), (s("pause_rerace_tournament", "RESTART TOURNAMENT"), 14)]
+                    } else {
+                        vec![(s("pause_next_tournament", "CONTINUE TOURNAMENT"), 0), (s("pause_quit_tournament", "QUIT TOURNAMENT"), 2), (s("pause_restart_tournament", "RESTART TOURNAMENT"), 14)]
+                    };
+                    ro.extend([
+                        (s("pause_tournament_standings", "TOURNAMENT STANDINGS"), 9),
+                        (if fav { s("pause_remove_favorites", "REMOVE RACE FROM FAVORITES") } else { s("pause_add_favorites", "ADD RACE TO FAVORITES") }, 11),
+                        (s("pause_view_replay", "VIEW REPLAY"), 12),
+                        (s("pause_go_to_garage", "GO TO GARAGE"), 13),
+                    ]);
+                }
                 // (the place splash stands by itself for a moment)
                 let splash_on = match self.place_splash {
                     Some((p, left)) if movie && left > 0.0 => {
@@ -7242,8 +7261,11 @@ impl Game {
                             1 => action = MenuAction::StartFreeRoam,
                             // RACE BACK (Dialog_Title_RaceBack): the race back (althk.rs)
                             3 => self.althk.back_req = true,
-                            // RETURN TO CRUISE of a decided series
-                            4 => action = MenuAction::StartFreeRoam,
+                            // RETURN TO CRUISE of a decided series or tournament; QUIT TOURNAMENT
+                            4 | 7 => action = MenuAction::StartFreeRoam,
+                            // RESTART TOURNAMENT: every point at nought, from its first race
+                            // (TournamentCore `restart`, 0x571)
+                            8 => action = MenuAction::RestartTournament,
                             // RESTART SERIES / RACE SERIES AGAIN: from its first race, every tally at
                             // nought (OrderedSeriesCore `restart`, 0x247c)
                             2 | 5 => {
@@ -7408,6 +7430,21 @@ impl Game {
                     }
                     // (NEXT RACE IN SERIES asks every time: the series handler has no damage test - form
                     // 71, Dialog_Title_NextSeries, sub_826624C8)
+                    // (a tournament's rows: CONTINUE `Dialog_Title_NextTournament`, QUIT
+                    // `Dialog_Title_QuitTournament`, RESTART `Dlg_Title_Tourn_Restart`, after the last
+                    // race RETURN TO CRUISE)
+                    Some(0) if movie && self.career.tour_table.is_some() => {
+                        self.series_ask_kind = 6;
+                        self.series_ask = Some(0);
+                    }
+                    Some(2) if movie && self.career.tour_table.is_some() => {
+                        self.series_ask_kind = if self.career.tour_table.as_ref().map_or(false, |t| t.last) { 4 } else { 7 };
+                        self.series_ask = Some(0);
+                    }
+                    Some(14) if movie && self.career.tour_table.is_some() => {
+                        self.series_ask_kind = 8;
+                        self.series_ask = Some(0);
+                    }
                     Some(0) if movie && self.series.is_some() => {
                         self.series_ask_kind = 0;
                         self.series_ask = Some(0);
@@ -11564,9 +11601,9 @@ impl Game {
             }
         } else if let Some(cur) = self.series_ask {
             MenuPage {
-                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc"][self.series_ask_kind.min(5) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
+                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc", "Dialog_Description_NextTournament", "Dialog_Description_QuitTournament", "Dlg_Desc_Tourn_Restart"][self.series_ask_kind.min(8) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
                 icon: std::env::var("MCLA_RES_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(13),
-                title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK"), st("Dialog_Title_ReturnToCruise", "RETURN TO CRUISE"), st("Dlg_RaceAgainSeries_Title", "RACE AGAIN")][self.series_ask_kind.min(5) as usize].clone(),
+                title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK"), st("Dialog_Title_ReturnToCruise", "RETURN TO CRUISE"), st("Dlg_RaceAgainSeries_Title", "RACE AGAIN"), st("Dialog_Title_NextTournament", "CONTINUE TOURNAMENT"), st("Dialog_Title_QuitTournament", "QUIT TOURNAMENT"), st("Dlg_Title_Tourn_Restart", "RESTART TOURNAMENT")][self.series_ask_kind.min(8) as usize].clone(),
                 rows: vec![MenuRow { label: st("Common_Yes", "YES"), value: String::new(), enabled: true, part: None }, MenuRow { label: st("Common_No", "NO"), value: String::new(), enabled: true, part: None }],
                 select: cur,
                 prompts: vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("prompt_back", "BACK"), ICON_B)],
@@ -11674,24 +11711,42 @@ impl Game {
             // (a series: POS., NAME, TIME and WINS - "1 / 3" -, titled RACE RESULTS with the
             // series' flags: `sr_results`)
             let series = self.series.clone();
-            let cells: Vec<Vec<String>> = match series.as_ref() {
-                Some(sr) => cells
-                    .into_iter()
-                    .zip(self.last_results.iter())
-                    .enumerate()
-                    .map(|(i, (c, r))| {
-                        let who = if r.0.starts_with("YOU") { "YOU" } else { r.0.as_str() };
-                        let w = sr.wins.iter().find(|w| w.0 == who).map_or(0, |w| w.1);
-                        vec![(i + 1).to_string(), c[0].clone(), c[1].clone(), format!("{} / {}", w, SERIES_WINS)]
-                    })
-                    .collect(),
-                None => cells,
+            let tour = self.career.tour_table.clone();
+            // (both sorted - sub_826C8688 the series by wins, sub_826CA1E8 the tournament by the total -,
+            // ties by the finishing time, a racer who did not finish after one who did)
+            let time_of = |k: usize| self.last_results.get(k).and_then(|r| r.1).unwrap_or(f32::MAX);
+            let cells: Vec<Vec<String>> = if let Some(t) = tour.as_ref() {
+                let mut idx: Vec<(usize, i32, i32)> = (0..cells.len()).map(|k| t.rows.get(k).map_or((k, 0, 0), |r| (k, r.1, r.2))).collect();
+                idx.sort_by(|a, b| b.2.cmp(&a.2).then(time_of(a.0).partial_cmp(&time_of(b.0)).unwrap_or(std::cmp::Ordering::Equal)));
+                idx.iter().map(|&(k, pts, total)| vec![cells[k][0].clone(), cells[k][1].clone(), pts.to_string(), total.to_string()]).collect()
+            } else {
+                match series.as_ref() {
+                    Some(sr) => {
+                        let wins = |k: usize| {
+                            let r = &self.last_results[k];
+                            let who = if r.0.starts_with("YOU") { "YOU" } else { r.0.as_str() };
+                            sr.wins.iter().find(|w| w.0 == who).map_or(0, |w| w.1)
+                        };
+                        let mut idx: Vec<usize> = (0..cells.len()).collect();
+                        idx.sort_by(|&a, &b| wins(b).cmp(&wins(a)).then(time_of(a).partial_cmp(&time_of(b)).unwrap_or(std::cmp::Ordering::Equal)));
+                        idx.iter().enumerate().map(|(i, &k)| vec![(i + 1).to_string(), cells[k][0].clone(), cells[k][1].clone(), format!("{} / {}", wins(k), SERIES_WINS)]).collect()
+                    }
+                    None => cells,
+                }
             };
-            let headers = if series.is_some() { vec![st("Leaderboard_Pos", "POS."), st("Leaderboard_Name", "NAME"), st("Leaderboard_Time", "TIME"), st("Leaderboard_Wins", "WINS")] } else { vec![st("Leaderboard_Name", "NAME"), st("Leaderboard_Time", "TIME")] };
+            // (the states' fs_headers in RaceoverMenu.sc.xml: Series_RESULTS POS. NAME TIME WINS,
+            // Tournament_RESULTS NAME TIME POINTS - this race's - TOTAL)
+            let headers = if tour.is_some() {
+                vec![st("NAME_HEADER", "NAME"), st("TIME_HEADER", "TIME"), st("POINTS_HEADER", "POINTS"), st("TOTAL_HEADER", "TOTAL")]
+            } else if series.is_some() {
+                vec![st("CURRENT_HEADER", "POS."), st("NAME_HEADER", "NAME"), st("TIME_HEADER", "TIME"), st("WINS_HEADER", "WINS")]
+            } else {
+                vec![st("Leaderboard_Name", "NAME"), st("Leaderboard_Time", "TIME")]
+            };
             MenuPage {
                 layout: MenuLayout::Results { headers, cells: cells.clone() },
                 icon: std::env::var("MCLA_RES_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(if series.is_some() { HANGOUT_ICON } else { 13 }),
-                title: if series.is_some() { st("pause_race_results", "RACE RESULTS") } else { st("resultsTitle", "RESULTS") },
+                title: if tour.is_some() { st("pause_tournament_standings", "TOURNAMENT STANDINGS") } else if series.is_some() { st("pause_race_results", "RACE RESULTS") } else { st("resultsTitle", "RESULTS") },
                 // (the rows' own first text is the name; the player's row is the list's chosen one)
                 rows: cells.iter().map(|c| MenuRow { label: c[0].clone(), value: String::new(), enabled: true, part: None }).collect(),
                 // (no cursor: the player's own line is written in the title's yellow, below)
@@ -11777,6 +11832,17 @@ pub struct Series {
 }
 
 impl Game {
+    /// RESTART TOURNAMENT (TournamentCore `restart`, 0x571): every point of the tournament the
+    /// race just run belongs to at nought, its first race next. True when that race is found.
+    pub fn tournament_restart(&mut self) -> bool {
+        let id = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| d.id.clone()).unwrap_or_default();
+        let Some(first) = self.career.tournament_restart(&id) else { return false };
+        self.career.tour_table = None;
+        self.next_event_race = None;
+        self.current_race = self.race_defs.iter().position(|d| d.id.to_ascii_lowercase().ends_with(&first));
+        self.current_race.is_some()
+    }
+
     /// The series under way is won or lost for good: a racer has its wins (sub_826CA568's
     /// bComplete / bFailure).
     pub fn series_decided(&self) -> bool {

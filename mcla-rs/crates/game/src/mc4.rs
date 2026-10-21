@@ -15611,6 +15611,39 @@ mod tests {
         assert!(c.unstarted().is_empty(), "{:?}", c.unstarted());
     }
 
+    /// A tournament's standings after each race (form 49: this race's points 7 / 4 / 2 / 1 and the
+    /// total, decided only with its last race) and RESTART TOURNAMENT (every point at nought, its
+    /// first race again).
+    #[test]
+    fn tournament_standings_and_restart() {
+        use crate::career::{Career, MState, SaveState, Stage};
+        if !std::path::Path::new(&data_dir()).join("tune/career").is_dir() {
+            return;
+        }
+        let mut c = Career::load(&data_dir());
+        let mut s = SaveState::default();
+        s.missions.insert("RACE_GH_06".into(), MState { stage: Stage::Complete, ..Default::default() });
+        s.missions.insert("TOURNAMENT_BEACHES".into(), MState { stage: Stage::Active, ..Default::default() });
+        c.restore(&s);
+        let title = c.title_of("TOURNAMENT_BEACHES").unwrap_or_default();
+        let races: Vec<String> = c.mission_races().into_iter().filter(|(_, t)| *t == title).map(|(r, _)| r).collect();
+        assert!(races.len() >= 2, "{races:?}");
+        let order = |me: usize| -> Vec<String> {
+            let mut o = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+            o.insert(me, "YOU".to_string());
+            o
+        };
+        c.tournament_race(&format!("game/race/{}", races[0]), &order(1)).unwrap();
+        let t = c.tour_table.clone().unwrap();
+        assert_eq!((t.rows[0].clone(), t.rows[1].clone(), t.decided, t.last), (("A".to_string(), 7, 7), ("YOU".to_string(), 4, 4), None, false));
+        c.tournament_race(&format!("game/race/{}", races[1]), &order(0)).unwrap();
+        let t = c.tour_table.clone().unwrap();
+        assert_eq!(t.rows[0], ("YOU".to_string(), 7, 11));
+        assert_eq!(t.last, races.len() == 2);
+        assert_eq!(c.tournament_restart(&format!("game/race/{}", races[1])), Some(races[0].clone()));
+        assert_eq!(c.mission_races().into_iter().filter(|(_, t)| *t == title).count(), races.len());
+    }
+
     /// CareerSetup_SC (`sc/career/0x70e862b0`): a mission at CHECKING_PREREQUISITES whose
     /// missions are complete goes to READY_TO_START; one whose missions are not stays.
     #[test]

@@ -259,6 +259,8 @@ pub struct Career {
     /// the last race decided a tournament: won (bComplete) or lost (bFailure) - the caller
     /// takes it for form 56's banner
     pub tour_decided: Option<bool>,
+    /// the standings after the last race of a tournament (form 49); None after any other race
+    pub tour_table: Option<TourTable>,
     /// the body part types the last race's class point unlocked: the rewards screen lists them
     pub unlocked_now: Vec<String>,
     /// the performance levels the last race's experience unlocked and the ability levels it
@@ -1182,6 +1184,10 @@ impl Career {
             for (p, who) in order.iter().enumerate() {
                 *st.pts.entry(who.clone()).or_default() += POINTS.get(p).copied().unwrap_or(0);
             }
+            let rows = order.iter().enumerate().map(|(p, who)| (who.clone(), POINTS.get(p).copied().unwrap_or(0), st.pts.get(who).copied().unwrap_or(0))).collect();
+            let last = st.won.len() >= races.len();
+            self.tour_table = Some(TourTable { rows, decided: None, last });
+            let st = &mut self.state[i];
             let mine = st.pts.get("YOU").copied().unwrap_or(0);
             let rival = st.pts.iter().filter(|(k, _)| k.as_str() != "YOU").map(|(_, v)| *v).max().unwrap_or(0);
             let set = |st: &mut MState, v: u32| {
@@ -1213,13 +1219,41 @@ impl Career {
                     }
                 }
                 self.tour_decided = Some(true);
+                if let Some(t) = self.tour_table.as_mut() {
+                    t.decided = Some(true);
+                }
                 return Some(format!("TOURNAMENT WON   {} POINTS TO {}", mine, rival));
             }
             st.won.clear();
             st.pts.clear();
             set(st, 0);
             self.tour_decided = Some(false);
+            if let Some(t) = self.tour_table.as_mut() {
+                t.decided = Some(false);
+            }
             return Some(format!("TOURNAMENT LOST   {} POINTS TO {}", mine, rival));
+        }
+        None
+    }
+
+    /// RESTART TOURNAMENT (TournamentCore `restart`, 0x571): the tournament race `race_id` is
+    /// part of starts again - no race run, every point at nought; its first race.
+    pub fn tournament_restart(&mut self, race_id: &str) -> Option<String> {
+        let l = race_id.to_ascii_lowercase();
+        for k in 0..self.order.len() {
+            let i = self.order[k];
+            let Some(oi) = self.missions[i].objectives.iter().position(|r| matches!(r.conds.first(), Some(Cond::Event { event, .. }) if event.starts_with("TOURNAMENT_COMPLETE"))) else { continue };
+            let Some(races) = self.event_of(&self.missions[i]).map(|e| e.races.clone()) else { continue };
+            if !races.iter().any(|r| l.ends_with(r.as_str())) {
+                continue;
+            }
+            let st = &mut self.state[i];
+            st.won.clear();
+            st.pts.clear();
+            if let Some(p) = st.progress.get_mut(oi) {
+                *p = 0;
+            }
+            return races.first().cloned();
         }
         None
     }
@@ -1847,6 +1881,17 @@ pub struct MissionExt {
 /// step back when the series is not won (Satisfy(0, 0), AlwaysHide(1, 1), Hide(1, 1)):
 /// `Game/Career/Story/<ID>_CORE.sco` (BESTOF_SH_05 0x8bf..0x8ed / 0x123d..0x126b, CITY_CHAMP,
 /// BEAT_SH_02_EXOTIC; RACE_SH_01's is on no mission list).
+/// The standings after a tournament's race (mcTournamentResultsForm, form 49, filled by
+/// sub_826CA1E8): each racer's name ("YOU" the player), this race's points and the total, in
+/// the race's order; `decided` won / lost with this race (only its last: sub_826CA6D8), `last`
+/// the event's last race was run.
+#[derive(Clone, Debug, Default)]
+pub struct TourTable {
+    pub rows: Vec<(String, i32, i32)>,
+    pub decided: Option<bool>,
+    pub last: bool,
+}
+
 pub const STORY_SECOND_OBJECTIVE: [&str; 4] = ["BEAT_SH_02_EXOTIC", "BESTOF_SH_05", "CITY_CHAMP", "RACE_SH_01"];
 
 /// `sc/Career/CareerSetup_SC` (`sc/career/0x70e862b0`): the mission and the missions it
