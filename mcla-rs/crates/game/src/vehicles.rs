@@ -638,6 +638,9 @@ pub struct Vehicles {
     pub wheels: Option<Arc<WheelModel>>,
     pub cars: Vec<CarInstance>,
     pub traffic_target: usize,
+    /// the ambient manager's traffic density scale (+0x64240; None = its 1.0): an ARCADE race's
+    /// TRAFFIC row, 0.5 for low (sub_8265D2B8); it multiplies the region list's target
+    pub density_scale: Option<f32>,
     /// solid props around the racing cars (centre, radius), refreshed by the game a few times a second
     pub solids: Vec<(Vec3, f32)>,
     /// the glows of the cars' lamps this frame (instances of the glow pipeline)
@@ -2882,6 +2885,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 continue;
             }
             if let Some((p, yaw)) = c.ai.as_mut().and_then(|a| a.reset_to.take()) {
+                // (the car holds the shared level while it steps - `level_swap`: it goes back first,
+                // not away with the old state; the reset car's own pairs with it are dropped)
+                if level_car == Some(idx) {
+                    if let Some(v) = c.state.veh.as_deref_mut() {
+                        let mut l = std::mem::take(&mut v.loose);
+                        l.take_car();
+                        self.level = l;
+                    }
+                    level_car = None;
+                }
                 c.state = CarState::new(p, yaw);
                 c.pose_history.reset();
                 c.placed = false;
@@ -2905,6 +2918,14 @@ if keep || c.state.pos.distance(center) < 450.0 {
                             if d.length() > 1e-3 {
                                 let dir = d.normalize();
                                 let gear = c.state.gear;
+                                if level_car == Some(idx) {
+                                    if let Some(v) = c.state.veh.as_deref_mut() {
+                                        let mut l = std::mem::take(&mut v.loose);
+                                        l.take_car();
+                                        self.level = l;
+                                    }
+                                    level_car = None;
+                                }
                                 c.state = CarState::new(p, (-dir.x).atan2(-dir.z));
                                 c.pose_history.reset();
                                 c.state.vel = dir * v;
