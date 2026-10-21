@@ -157,6 +157,18 @@ pub fn bound_size(root: &std::path::Path, model: &str) -> Option<(f32, f32)> {
     None
 }
 
+/// A traffic type's two LOD steps, `tune/ambients/traffic/<model>/mcAmbientRenderType.xml` (the render type's
+/// parser table 0x82830414, filled by sub_82790530: fLodSwitchScale at +40, fHighToMedSwitch at +44,
+/// fMedToLowSwitch at +48): LOD 0 below +44 x +40, LOD 1 below +48 x +40 (sub_827902F0). Every type has the file;
+/// the steps differ by type (40 / 155 for most cars, 40 / 250 for buses and service trucks, 180 / 250 for the
+/// flatbed semis, 50 / 155 and 40 / 200 for one type each).
+pub fn lod_steps(root: &std::path::Path, model: &str) -> Option<[f32; 2]> {
+    let t = std::fs::read_to_string(root.join("tune/ambients/traffic").join(model).join("mcAmbientRenderType.xml")).ok()?;
+    let v = |tag: &str| crate::ambient::xml_value(&t, tag);
+    let scale = v("fLodSwitchScale")?;
+    Some([v("fHighToMedSwitch")? * scale, v("fMedToLowSwitch")? * scale])
+}
+
 /// The centre of a traffic model's bound (the root bound's centroid, +0x30), in the car's space: the middle of the
 /// sphere the LOD choice tests (sub_826E9F88: the car's matrix times bound +48).
 pub fn bound_centre(root: &std::path::Path, model: &str) -> Option<glam::Vec3> {

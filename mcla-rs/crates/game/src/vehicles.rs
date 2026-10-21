@@ -108,6 +108,8 @@ pub struct CarModel {
     pub lod_radius: f32,
     /// the middle of that sphere in the car's space (the bound's centroid, sub_826E9F88)
     pub lod_centre: Vec3,
+    /// the depths of the LOD 0 -> 1 and 1 -> 2 steps (the type's `mcAmbientRenderType.xml`, `traffic::lod_steps`)
+    pub lod_steps: [f32; 2],
 }
 
 pub struct WheelModel {
@@ -1854,7 +1856,8 @@ impl Vehicles {
         let (bw, bl) = if car_is_ambient { traffic::bound_size(&world.assets.root, &car.name) } else { None }.unwrap_or((car.max.x - car.min.x, car.max.z - car.min.z));
         let lod_radius = 0.5 * std::f32::consts::SQRT_2 * bw.max(bl);
         let lod_centre = if car_is_ambient { traffic::bound_centre(&world.assets.root, &car.name) } else { None }.unwrap_or((car.min + car.max) * 0.5);
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone });
+        let lod_steps = if car_is_ambient { traffic::lod_steps(&world.assets.root, &car.name) } else { None }.unwrap_or([40.0, 155.0]);
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -4166,7 +4169,7 @@ impl Vehicles {
     /// the viewport's first block - the near plane, column 2 of view x projection normalised (sub_8217C740) -
     /// through the centre, plus the radius: the distance ahead of the camera less the near distance (the boom
     /// file's `CameraNear`), plus the radius. Not drawn from 500 on (0x82003250), LOD 0 below type +44 x type +40,
-    /// LOD 1 below type +48 x type +40, else LOD 2 (every traffic type: +40 = 1, +44 = 40, +48 = 155). The -1
+    /// LOD 1 below type +48 x type +40, else LOD 2 (per type: `CarModel::lod_steps`). The -1
     /// keeps the car out of every pass: the shadow passes 4 and 8 draw through sub_82791A50, which returns on
     /// it, and so does the main view's (`lod_batches`). Cars without LODs (set-up cars) keep 0. `full_detail`
     /// (OPTIONS > PERFORMANCE > HIGH-DETAIL TRAFFIC, the port's own - DECISIONS.md D19): LOD 0 wherever the
@@ -4199,9 +4202,9 @@ impl Vehicles {
                 }
                 if d >= 500.0 {
                     -1
-                } else if d < 40.0 || full_detail {
+                } else if d < c.model.lod_steps[0] || full_detail {
                     0
-                } else if d < 155.0 {
+                } else if d < c.model.lod_steps[1] {
                     1
                 } else {
                     2
