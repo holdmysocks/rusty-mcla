@@ -345,6 +345,29 @@ pub struct NavSys {
     /// per endpoint node: links starting / ending there
     starts_at: Vec<Vec<usize>>,
     ends_at: Vec<Vec<usize>>,
+    /// per lane, the junction it belongs to (sub_822452F8: the lane's owner +08 when the owner's
+    /// flags +04 have bit 4, else the owner's parent +08 when its flags have bit 4), as an index
+    /// into the junction array (root +58, 0xc0 bytes each, count root +c8)
+    pub lane_junction: Vec<Option<usize>>,
+    /// per junction of that array: its centre (+80) and its rails as sub_8273C1B8 walks them -
+    /// its own lanes (+14 array, +18 u16 count), then its first child (+0c) and, below the
+    /// junction, each node's next sibling (+10), depth first
+    pub junction_centers: Vec<Vec3>,
+    pub junction_lanes: Vec<Vec<usize>>,
+    /// the lane quadtree (root +130; node class 0x47b4dc), node 0 the root
+    pub quad: Vec<QuadNode>,
+}
+
+/// A node of the lane quadtree (root +130): +04 -> its lanes, +08 u16 their number, +1c .. +28
+/// the four children, +2c / +30 the x / z it is split at, +34 / +38 the box's least x / z, +3c /
+/// +40 its greatest x / z.
+#[derive(Debug, Clone, Default)]
+pub struct QuadNode {
+    pub lanes: Vec<usize>,
+    pub kids: [Option<usize>; 4],
+    pub split: [f32; 2],
+    pub min: [f32; 2],
+    pub max: [f32; 2],
 }
 
 const LINK_VT: u32 = 0x00479f0c;
@@ -503,6 +526,77 @@ impl NavSys {
         nav.curves = raw.iter().map(|l| l.curve.clone()).collect();
         nav.raw = raw.clone();
         nav.zone_lanes = zone_lanes.clone();
+        // the lanes' junctions (sub_822452F8) and the junctions' rails (sub_8273C1B8)
+        let jarr = rd.ptr(0x58);
+        let jn = (rd.u32(0xc8) as usize).min(4096);
+        let jindex = |o: usize| -> Option<usize> {
+            let a = jarr?;
+            (o >= a && (o - a) % 0xc0 == 0 && (o - a) / 0xc0 < jn).then(|| (o - a) / 0xc0)
+        };
+        nav.lane_junction = link_offs
+            .iter()
+            .map(|&lo| {
+                let ow = rd.ptr(lo + 8)?;
+                let j = if rd.u32(ow + 4) & 4 != 0 { ow } else { rd.ptr(ow + 8).filter(|&p| rd.u32(p + 4) & 4 != 0)? };
+                jindex(j)
+            })
+            .collect();
+        fn walk(rd: &Rd, node: usize, mut below: bool, li: &dyn Fn(usize) -> Option<usize>, out: &mut Vec<usize>, depth: usize) {
+            let mut n = Some(node);
+            while let Some(o) = n {
+                if depth > 64 {
+                    return;
+                }
+                if let Some(a) = rd.ptr(o + 0x14) {
+                    for k in 0..rd.u16(o + 0x18) as usize {
+                        if let Some(l) = rd.ptr(a + k * 4).and_then(li) {
+                            out.push(l);
+                        }
+                    }
+                }
+                if below {
+                    if let Some(s) = rd.ptr(o + 0x10) {
+                        walk(rd, s, true, li, out, depth + 1);
+                    }
+                }
+                n = rd.ptr(o + 0x0c);
+                below = true;
+            }
+        }
+        for i in 0..jn {
+            let Some(o) = jarr.map(|a| a + i * 0xc0).filter(|&o| rd.has(o, 0xc0)) else { break };
+            nav.junction_centers.push(Vec3::new(rd.f32(o + 0x80), rd.f32(o + 0x84), rd.f32(o + 0x88)));
+            let mut out = Vec::new();
+            walk(&rd, o, false, &link_index, &mut out, 0);
+            nav.junction_lanes.push(out);
+        }
+        // the lane quadtree (root +130)
+        fn quad(rd: &Rd, o: usize, li: &dyn Fn(usize) -> Option<usize>, out: &mut Vec<QuadNode>, depth: usize) -> usize {
+            let me = out.len();
+            let mut q = QuadNode { split: [rd.f32(o + 0x2c), rd.f32(o + 0x30)], min: [rd.f32(o + 0x34), rd.f32(o + 0x38)], max: [rd.f32(o + 0x3c), rd.f32(o + 0x40)], ..Default::default() };
+            if let Some(a) = rd.ptr(o + 4) {
+                for k in 0..rd.u16(o + 8) as usize {
+                    if let Some(l) = rd.ptr(a + k * 4).and_then(li) {
+                        q.lanes.push(l);
+                    }
+                }
+            }
+            out.push(q);
+            if depth < 32 {
+                for k in 0..4 {
+                    if let Some(c) = rd.ptr(o + 0x1c + k * 4).filter(|&c| rd.has(c, 0x44)) {
+                        let ci = quad(rd, c, li, out, depth + 1);
+                        out[me].kids[k] = Some(ci);
+                    }
+                }
+            }
+            me
+        }
+        if let Some(r) = rd.ptr(0x130).filter(|&r| rd.has(r, 0x44)) {
+            let mut q = Vec::new();
+            quad(&rd, r, &link_index, &mut q, 0);
+            nav.quad = q;
+        }
         nav.build_graph(raw, zone_lanes);
         Ok(nav)
     }
@@ -528,7 +622,7 @@ impl NavSys {
         for z in &mut zones {
             z.links.clear();
         }
-        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), ..Default::default() };
+        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), lane_junction: self.lane_junction.clone(), junction_centers: self.junction_centers.clone(), junction_lanes: self.junction_lanes.clone(), quad: self.quad.clone(), ..Default::default() };
         nav.build_graph(raw, self.zone_lanes.clone());
         nav
     }
@@ -846,6 +940,62 @@ impl NavSys {
     }
 
     /// (lanes, links, links with a successor)
+    /// The lanes near `p` as the lane quadtree answers (sub_82246DB8, from sub_82249210): a node
+    /// is entered when the x / z distance from `p` to its box, squared, is at most w^2
+    /// (sub_82246B78); its children first, in the order of the table at 0x827DC710 by p's
+    /// quadrant (q = 1 when p.z - split z > -1e-6, + 2 when p.x - split x > -1e-6; q 0: 0 1 2 3,
+    /// 1: 1 3 0 2, 2: 2 0 3 1, 3: 3 2 1 0), then its own lanes whose flags (+4) meet `mask` and
+    /// whose box (+10 / +20) is within w in 3D (lane slot 5 sub_82244DC0: w^2 > the squared
+    /// distance), until `max` are found.
+    pub fn lanes_near(&self, p: Vec3, w: f32, mask: u32, max: usize) -> Vec<usize> {
+        const ORDER: [[usize; 4]; 4] = [[0, 1, 2, 3], [1, 3, 0, 2], [2, 0, 3, 1], [3, 2, 1, 0]];
+        fn go(nav: &NavSys, n: usize, p: Vec3, w: f32, mask: u32, max: usize, out: &mut Vec<usize>) {
+            let q = &nav.quad[n];
+            let mut d = 0.0f32;
+            if p.x < q.min[0] {
+                d = (p.x - q.min[0]) * (p.x - q.min[0]);
+            } else if p.x > q.max[0] {
+                d = (p.x - q.max[0]) * (p.x - q.max[0]);
+            }
+            if p.z < q.min[1] {
+                d = (p.z - q.min[1]).mul_add(p.z - q.min[1], d);
+            } else if p.z > q.max[1] {
+                d = (p.z - q.max[1]).mul_add(p.z - q.max[1], d);
+            }
+            if d > w * w {
+                return;
+            }
+            let k = -9.999_999_7e-7f32;
+            let quad = (if p.z - q.split[1] > k { 1 } else { 0 }) | (if p.x - q.split[0] > k { 2 } else { 0 });
+            for &slot in &ORDER[quad] {
+                if out.len() >= max {
+                    break;
+                }
+                if let Some(c) = q.kids[slot] {
+                    go(nav, c, p, w, mask, max, out);
+                }
+            }
+            for &l in &q.lanes {
+                if out.len() >= max {
+                    break;
+                }
+                let r = &nav.raw[l];
+                if r.flags & mask == 0 {
+                    continue;
+                }
+                let e = (r.min - p).max(p - r.max).max(Vec3::ZERO);
+                if w * w > e.length_squared() {
+                    out.push(l);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if !self.quad.is_empty() {
+            go(self, 0, p, w, mask, max, &mut out);
+        }
+        out
+    }
+
     pub fn stats(&self) -> (usize, usize, usize) {
         (self.lanes, self.links.len(), self.links.iter().filter(|l| !l.next.is_empty()).count())
     }
@@ -1435,6 +1585,42 @@ mod speed_tests {
         }
         assert_eq!(parents.into_iter().collect::<Vec<_>>(), vec![((2, 128), 23480), ((4, 128), 5060), ((16, 2), 110), ((16, 4), 3511), ((32, 2), 1239), ((32, 4), 1859)]);
         assert!(nav.links.iter().all(|l| (l.parent_flags == 2) == l.parent_zone.is_some()));
+        // a lane's junction (sub_822452F8) for exactly the lanes flagged so, and every junction's
+        // walked rails (sub_8273C1B8) are the lanes whose junction it is
+        assert!(nav.links.iter().all(|l| ((l.owner_flags | l.parent_flags) & 4 != 0) == nav.lane_junction[l.lane].is_some()));
+        assert_eq!(nav.junction_centers.len(), 351);
+        for (j, ls) in nav.junction_lanes.iter().enumerate() {
+            let mut a = ls.clone();
+            a.sort();
+            let b: Vec<usize> = (0..nav.lanes).filter(|&l| nav.lane_junction[l] == Some(j)).collect();
+            assert_eq!(a, b);
+        }
+        assert_eq!(nav.junction_lanes.iter().filter(|l| !l.is_empty()).count(), 339);
+        // the quadtree holds every lane once
+        let mut seen = vec![0u8; nav.lanes];
+        for q in &nav.quad {
+            for &l in &q.lanes {
+                seen[l] += 1;
+            }
+        }
+        assert!(seen.iter().all(|&c| c == 1));
+        // the quadtree's answer is every lane with flags & 1 whose box is within w (3D), in the
+        // tree's order; the cap keeps its head
+        let mut most = 0;
+        for k in [0usize, 997, 2500, 4999, 7777, 10000] {
+            let p = nav.curves[k].pts[0] + Vec3::new(1.5, 0.5, -2.0);
+            for w in [6.0f32, 30.0, 120.0] {
+                let all = nav.lanes_near(p, w, 1, usize::MAX);
+                let mut a = all.clone();
+                a.sort();
+                let b: Vec<usize> = (0..nav.lanes).filter(|&l| nav.raw[l].flags & 1 != 0 && w * w > (nav.raw[l].min - p).max(p - nav.raw[l].max).max(Vec3::ZERO).length_squared()).collect();
+                assert_eq!(a, b, "{p} {w}");
+                let head = nav.lanes_near(p, w, 1, 48);
+                assert_eq!(&all[..all.len().min(48)], &head[..]);
+                most = most.max(all.len());
+            }
+        }
+        assert!(most > 48, "{most}");
         // the lanes' own flags (+4): 1, or 0x2001 on some road lanes and road connectors - none
         // carries 0x1800, the bits the traffic's car-ahead search reads off run-time rails
         let mut lf = std::collections::BTreeMap::new();

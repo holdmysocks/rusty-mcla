@@ -658,6 +658,8 @@ pub struct Vehicles {
     pub amb_types: hashbrown::HashMap<String, traffic::AmbType>,
     /// the original's traffic spawner (traffic.rs; made with the road network)
     pub spawner: Option<traffic::Spawner>,
+    /// the driver cars' lanes (sub_826D99B8 on the racer's obstacle; racer +640 / +644), by uid
+    pub driver_lanes: hashbrown::HashMap<u32, traffic::DriverLanes>,
     /// a scene or the vehicle pick: physics and AI are held
     pub frozen: bool,
     /// the race's grid hold (N-VP-1): seconds to GO. The cars simulate, held by their brakes - the
