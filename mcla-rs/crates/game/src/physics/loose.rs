@@ -335,6 +335,8 @@ pub struct Obj {
     pub sleep: Sleep,
     /// taken out of the simulator asleep (0x82588D90): inactive at its last matrix until a contact wakes it (`wake_obj`)
     pub dormant: bool,
+    /// an ambient (traffic) car of the session (`Amb`)
+    pub amb: Option<Amb>,
 }
 
 /// Who a contact's side is.
@@ -356,6 +358,8 @@ pub struct Slot2 {
     pub element: u16,
     /// what the city's polygon is made of
     pub surface: Surface,
+    /// what side A is made of, where A is an ambient car (its triangle's material)
+    pub surface_a: Surface,
 }
 
 /// The contacts of one part of an object with one part of the car (a sub-manifold).
@@ -375,13 +379,15 @@ pub struct Mani {
     pub island: usize,
     pub order: usize,
     pub slots: Vec<Slot2>,
+    /// a constraint's manifold (0x82591210): its one contact made afresh every update
+    pub rope: bool,
 }
 
 impl Mani {
     /// A new contact into the manifold (0x825C65E8 -> 0x825A37A8, 0x825A3028 / 0x825A3838): it
     /// takes the place of the kept one within 2 cm of it, by A's point, that a refresh has seen -
     /// and its multipliers, and its element if that one was the deeper - or is added.
-    fn insert(&mut self, fresh: Touch, element: u16, surface: Surface) {
+    fn insert(&mut self, fresh: Touch, element: u16, surface: Surface, surface_a: Surface) {
         let mut nearest = (f32::from_bits(0x39d1_b717), None);
         for (i, s) in self.slots.iter().enumerate() {
             let d = s.t.a.local - fresh.a.local;
@@ -390,11 +396,11 @@ impl Mani {
                 nearest = (d2, Some(i));
             }
         }
-        let slot = Slot2 { t: fresh, age: 0, enabled: true, element, surface };
+        let slot = Slot2 { t: fresh, age: 0, enabled: true, element, surface, surface_a };
         match nearest.1 {
             Some(i) => {
                 let old = self.slots[i];
-                self.slots[i] = Slot2 { t: Touch { kept: old.t.kept, pushed: old.t.pushed, ..fresh }, element: if old.t.depth >= fresh.depth { old.element } else { element }, surface: if old.t.depth >= fresh.depth { old.surface } else { surface }, ..slot };
+                self.slots[i] = Slot2 { t: Touch { kept: old.t.kept, pushed: old.t.pushed, ..fresh }, element: if old.t.depth >= fresh.depth { old.element } else { element }, surface: if old.t.depth >= fresh.depth { old.surface } else { surface }, surface_a: if old.t.depth >= fresh.depth { old.surface_a } else { surface_a }, ..slot };
             }
             None if self.slots.len() < 6 => self.slots.push(slot),
             // (the seventh, 0x825A32C0)
@@ -514,6 +520,8 @@ pub struct LooseState {
     /// the car is under MegaStealth (vehicles.rs `pu_ghost`, POWERUPS.md): it meets the map and nothing
     /// loose - its step leaves the level out
     pub ghost: bool,
+    /// the constraints of the semis' cabs and trailers (sub_826E7340), in the update's list order
+    pub ropes: Vec<Rope>,
 }
 
 /// What a run does not let one derive (the level's indices and the heap's addresses), given per
@@ -792,7 +800,7 @@ impl LooseState {
             // the heap's)
             let level = 1 + n as i64;
             let addr = h.addr.get(&level).copied().unwrap_or(0xA000_0000 + 0x100 * n as i64);
-            self.objs.push(Obj { ty: *ty, inst: Some(inst), matrix: m4(&fi.matrix), entry: None, hit: false, body: None, level, addr, veh: None, sleep: Sleep::reset(), dormant: false });
+            self.objs.push(Obj { ty: *ty, inst: Some(inst), matrix: m4(&fi.matrix), entry: None, hit: false, body: None, level, addr, veh: None, sleep: Sleep::reset(), dormant: false, amb: None });
             self.by_inst.insert(inst, i);
             return i;
         }
@@ -808,6 +816,7 @@ impl LooseState {
             veh: None,
             sleep: Sleep::reset(),
             dormant: false,
+            amb: None,
         });
         self.by_inst.insert(inst, i);
         i
@@ -837,7 +846,11 @@ impl LooseState {
     fn whole_bound(&self, world: &LooseWorld, o: usize) -> (Vec3, Vec3, Vec3, f32) {
         let obj = &self.objs[o];
         if let Some(vh) = obj.veh {
-            let (lo, hi) = (vh.shape.min - Vec3::splat(0.041), vh.shape.max + Vec3::splat(0.041));
+            let (mut lo, mut hi) = (vh.shape.min - Vec3::splat(0.041), vh.shape.max + Vec3::splat(0.041));
+            if let Some(h) = vh.shape2 {
+                lo = lo.min(h.min - Vec3::splat(0.041));
+                hi = hi.max(h.max + Vec3::splat(0.041));
+            }
             let c = (hi + lo) * 0.5;
             return (lo, hi, c, (hi - c).length());
         }
@@ -934,13 +947,15 @@ impl LooseState {
             Who::Obj(o) => {
                 let obj = &self.objs[o];
                 if let Some(vh) = obj.veh {
-                    // (stage R: a vehicle's one polyhedron, 0x825E0418 as the car's hull)
-                    if part != 0 || !vh.here {
+                    // (stage R: a vehicle's one polyhedron, 0x825E0418 as the car's hull; an ambient
+                    // trailer's composite: each of its two, at the identity part matrix)
+                    if part >= vh.parts() || !vh.here {
                         return None;
                     }
                     let now = obj.matrix;
-                    let core = Core::Hull(HullCore { corners: vh.shape.scanned(), rows: [now[0], now[1], now[2]], at: now[3] });
-                    return Some(Shape { core, margin: f32::from_bits(0x3d23_d70a), cg: vh.cg, bbox: (vh.shape.min - Vec3::splat(0.041), vh.shape.max + Vec3::splat(0.041)), now, last: obj.body.map_or(obj.matrix, |b| b.last) });
+                    let h = vh.part(part);
+                    let core = Core::Hull(HullCore { corners: h.scanned(), rows: [now[0], now[1], now[2]], at: now[3] });
+                    return Some(Shape { core, margin: f32::from_bits(0x3d23_d70a), cg: vh.cg, bbox: (h.min - Vec3::splat(0.041), h.max + Vec3::splat(0.041)), now, last: obj.body.map_or(obj.matrix, |b| b.last) });
                 }
                 let t = &world.types[obj.ty];
                 if !part_present(t, obj.entry.map_or(0, |e| e.absent), part as usize) {
@@ -971,7 +986,7 @@ impl LooseState {
 
     fn parts_of(&self, world: &LooseWorld, car: &CarIn, who: Who) -> Vec<u16> {
         match who {
-            Who::Obj(o) if self.objs[o].veh.is_some() => vec![0],
+            Who::Obj(o) if self.objs[o].veh.is_some() => (0..self.objs[o].veh.unwrap().parts()).collect(),
             Who::Obj(o) => (0..world.types[self.objs[o].ty].parts.len() as u16).collect(),
             Who::Car => (0..=car.wheels.len() as u16).collect(),
             _ => vec![0],
@@ -1083,17 +1098,22 @@ impl LooseState {
                 }
                 // (stage R: and which of a vehicle's - side B: the direction +n in its frame)
                 let veh_surface = match (a, b) {
-                    (_, Who::Obj(o)) if self.objs[o].veh.is_some() => Some(self.objs[o].veh.unwrap().shape).map(|h| h.surface_of(h.element(&r.corners_b.0[..r.corners_b.1], inv(&sb.now, normal)))),
-                    (Who::Obj(o), _) if self.objs[o].veh.is_some() => Some(self.objs[o].veh.unwrap().shape).map(|h| h.surface_of(h.element(&r.corners.0[..r.corners.1], inv(&sa.now, Vec3::ZERO - normal)))),
+                    (_, Who::Obj(o)) if self.objs[o].veh.is_some() => Some(self.objs[o].veh.unwrap().part(pb)).map(|h| h.surface_of(h.element(&r.corners_b.0[..r.corners_b.1], inv(&sb.now, normal)))),
+                    (Who::Obj(o), _) if self.objs[o].veh.is_some() && self.objs[o].amb.is_none() => Some(self.objs[o].veh.unwrap().part(pa)).map(|h| h.surface_of(h.element(&r.corners.0[..r.corners.1], inv(&sa.now, Vec3::ZERO - normal)))),
+                    _ => None,
+                };
+                // (an ambient car as A: its own triangle's material, kept apart from B's)
+                let amb_surface = match a {
+                    Who::Obj(o) if self.objs[o].amb.is_some() => Some(self.objs[o].veh.unwrap().part(pa)).map(|h| h.surface_of(h.element(&r.corners.0[..r.corners.1], inv(&sa.now, Vec3::ZERO - normal)))),
                     _ => None,
                 };
                 let side = |local: Vec3, point: Vec3| Side { body: None, point, local, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
                 let fresh = Touch { depth: 0.0 - dist, a: side(local_a, qa), b: side(local_b, qb), normal, back: Vec3::ZERO - normal, ..Default::default() };
                 let k = at.unwrap_or_else(|| {
-                    self.manis.push(Mani { a, b, part_a: pa, part_b: pb, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: Vec::new() });
+                    self.manis.push(Mani { a, b, part_a: pa, part_b: pb, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: Vec::new(), rope: false });
                     self.manis.len() - 1
                 });
-                self.manis[k].insert(fresh, element, veh_surface.unwrap_or(Surface::Prop));
+                self.manis[k].insert(fresh, element, veh_surface.unwrap_or(Surface::Prop), amb_surface.unwrap_or(Surface::Prop));
             }
         }
     }
@@ -1109,6 +1129,10 @@ impl LooseState {
         let shared_later = self.live && self.later;
         for m in self.manis.iter_mut() {
             m.visited = shared_later && m.a != Who::Car && m.b != Who::Car;
+        }
+        // (the constraints first, once an update: 0x82591210 ahead of the collide)
+        if !shared_later {
+            self.ropes_touch();
         }
         // (the level's props about the car and about every loose body)
         let mut about = vec![car.now[3]];
@@ -1134,6 +1158,15 @@ impl LooseState {
         let n = self.objs.len();
         let mut pairs: Vec<(Who, Who)> = Vec::new();
         let ball = |o: &Obj| {
+            // (an ambient car: its bound's box)
+            if let Some(vh) = o.veh {
+                let (mut lo, mut hi) = (vh.shape.min, vh.shape.max);
+                if let Some(h) = vh.shape2 {
+                    lo = lo.min(h.min);
+                    hi = hi.max(h.max);
+                }
+                return (xf(&o.matrix, (lo + hi) * 0.5), ((hi - lo) * 0.5).length());
+            }
             let t = &world.types[o.ty];
             (xf(&o.matrix, v(t.centroid)), t.radius)
         };
@@ -1169,7 +1202,7 @@ impl LooseState {
         // car came near - and taken in the order of the two indices, as a walk over every pair would)
         let mut cand: Vec<(usize, usize)> = Vec::new();
         for o in 0..if shared_later { 0 } else { n } {
-            if self.objs[o].body.is_none() || self.objs[o].veh.is_some() {
+            if self.objs[o].body.is_none() || (self.objs[o].veh.is_some() && self.objs[o].amb.is_none()) {
                 continue;
             }
             for q in 0..n {
@@ -1182,8 +1215,9 @@ impl LooseState {
         for (o1, o2) in cand {
             {
                 let (a, b) = (&self.objs[o1], &self.objs[o2]);
-                // (stage R: vehicle x prop, vehicle x vehicle: not ported)
-                if a.veh.is_some() || b.veh.is_some() {
+                // (stage R: vehicle x prop, vehicle x vehicle: not ported - but an ambient car's, with what is
+                // loose and with another ambient car, active or not)
+                if (a.veh.is_some() && a.amb.is_none()) || (b.veh.is_some() && b.amb.is_none()) {
                     continue;
                 }
                 if a.body.is_none() && b.body.is_none() {
@@ -1211,14 +1245,14 @@ impl LooseState {
         }
         // (every loose body's parts against the city)
         for o in 0..if shared_later { 0 } else { n } {
-            // (stage R: a vehicle's own contacts with the city are not made)
-            if self.objs[o].body.is_none() || self.objs[o].veh.is_some() {
+            // (stage R: a vehicle's own contacts with the city are not made - an ambient car's are)
+            if self.objs[o].body.is_none() || (self.objs[o].veh.is_some() && self.objs[o].amb.is_none()) {
                 continue;
             }
             for c in self.parts_of(world, car, Who::Obj(o)) {
                 let Some(s) = self.shape(world, car, Who::Obj(o), c) else { continue };
                 let mut hits: Vec<super::hull::PartHit> = Vec::new();
-                if dbg() {
+                if dbg() && self.objs[o].veh.is_none() {
                     let t = &world.types[self.objs[o].ty];
                     let p = &t.parts[c as usize];
                     if let Some(bd) = p.bound.as_ref() {
@@ -1235,22 +1269,30 @@ impl LooseState {
                         m.visited = true;
                     }
                 }
+                let own = self.objs[o].veh.filter(|_| self.objs[o].amb.is_some()).map(|vh| vh.part(c));
                 for h in hits {
+                    let surface_a = own.map_or(Surface::Prop, |sh| sh.surface_of(sh.element(&h.corners.0[..h.corners.1], inv(&s.now, Vec3::ZERO - h.normal))));
                     let a = Side { body: None, point: h.on_a, local: h.local, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
                     let b = Side { body: None, point: h.on_b, local: h.on_b, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
                     let fresh = Touch { depth: h.depth, a, b, normal: h.normal, back: Vec3::ZERO - h.normal, ..Default::default() };
                     let k = self.manis.iter().position(|m| m.a == Who::Obj(o) && m.b == Who::City && m.part_a == c && m.cell == h.cell).unwrap_or_else(|| {
-                        self.manis.push(Mani { a: Who::Obj(o), b: Who::City, part_a: c, part_b: 0, cell: h.cell, stale: false, visited: true, island: 0, order: 0, slots: Vec::new() });
+                        self.manis.push(Mani { a: Who::Obj(o), b: Who::City, part_a: c, part_b: 0, cell: h.cell, stale: false, visited: true, island: 0, order: 0, slots: Vec::new(), rope: false });
                         self.manis.len() - 1
                     });
                     if dbg() {
                         eprintln!("LOOSECITY tick {} obj {o} part {c} cell {} polygon {} depth {:?} n {:?} local {:?} on_a {:?} on_b {:?}", self.tick, h.cell, h.polygon, h.depth, h.normal, h.local, h.on_a, h.on_b);
                     }
-                    self.manis[k].insert(fresh, 0, h.surface);
+                    self.manis[k].insert(fresh, 0, h.surface, surface_a);
                 }
             }
         }
         self.manis.retain(|m| m.visited && !m.slots.is_empty());
+        // (an inactive ambient car in a manifold with contacts is activated - no threshold, before the
+        // islands and the solver: 0x8258D9F0 at 0x8258E07C -> 0x8258D3F8)
+        let woken: Vec<usize> = self.manis.iter().filter(|m| !m.rope).flat_map(|m| [m.a, m.b]).filter_map(|w| if let Who::Obj(o) = w { Some(o) } else { None }).filter(|&o| self.objs[o].amb.is_some() && self.objs[o].body.is_none()).collect();
+        for o in woken {
+            self.ambient_activate(o);
+        }
         // (the islands, 0x825D80E0 at the end of the collide: every pair that holds a contact NOW joins its
         // two objects - a contact that the update's refresh then drops has still joined them. The pairs come
         // in the cache's order, (lower, higher level index); each is a node of a union-find forest whose
@@ -1266,7 +1308,7 @@ impl LooseState {
         if car_city {
             pairs.push(((i64::MIN, self.car_place().0), Who::Car, Who::City));
         }
-        for m in self.manis.iter() {
+        for m in self.manis.iter().filter(|m| !m.rope) {
             let (la, lb) = (self.level(m.a), self.level(m.b));
             let key = (la.min(lb), la.max(lb));
             if !pairs.iter().any(|p| p.0 == key) {
@@ -1274,6 +1316,18 @@ impl LooseState {
             }
         }
         pairs.sort_by_key(|p| p.0);
+        // (the constraints' unions come first: 0x82591210 joins its pair before the collide)
+        let mut first: Vec<((i64, i64), Who, Who)> = Vec::new();
+        for m in self.manis.iter().filter(|m| m.rope) {
+            let (la, lb) = (self.level(m.a), self.level(m.b));
+            let key = (la.min(lb), la.max(lb));
+            if !first.iter().any(|p| p.0 == key) {
+                first.push((key, m.a, m.b));
+            }
+        }
+        pairs.retain(|p| !first.iter().any(|q| q.0 == p.0));
+        first.extend(pairs);
+        let pairs = first;
         let np = pairs.len();
         let mut parent: Vec<Option<usize>> = vec![None; np];
         let mut kids: Vec<Vec<usize>> = vec![Vec::new(); np];
@@ -1396,6 +1450,14 @@ impl LooseState {
             let (ma, mb) = (self.part_matrix(world, self.manis[k].a, self.manis[k].part_a, car), self.part_matrix(world, self.manis[k].b, self.manis[k].part_b, car));
             let m = &mut self.manis[k];
             let city = m.b == Who::City;
+            if m.rope {
+                // (0x825A28C8 on a contact of age 0: its points and depth left; +144 zeroed, age 1)
+                for s in m.slots.iter_mut() {
+                    s.t.target = Vec3::ZERO;
+                    s.age = 1;
+                }
+                continue;
+            }
             for s in m.slots.iter_mut().rev() {
                 if s.age != 0 {
                     s.t.a.point = xf(&ma, s.t.a.local);
@@ -1433,7 +1495,24 @@ impl LooseState {
         }
         self.manis.retain(|m| !m.slots.is_empty());
         let prop = surface_touch(Surface::Prop);
+        let partners = |a: Who, b: Who, objs: &Vec<Obj>| match (a, b) {
+            (Who::Obj(x), Who::Obj(y)) => match (objs[x].amb.as_ref(), objs[y].amb.as_ref()) {
+                (Some(p), Some(q)) => p.partner == Some(q.uid) || q.partner == Some(p.uid),
+                _ => false,
+            },
+            _ => false,
+        };
         for m in self.manis.iter_mut() {
+            // (a constraint's contact: no material, 0x825A2C88 for kind != 0 zeroes +112 only)
+            if m.rope {
+                for s in m.slots.iter_mut() {
+                    s.t.impulse = Vec3::ZERO;
+                    s.enabled = true;
+                }
+                continue;
+            }
+            // (a semi's cab and its trailer: their contacts are off every solve - slot 23, sub_826FAC50)
+            let off = partners(m.a, m.b, &self.objs);
             let (who_a, who_b) = (m.a, m.b);
             let car_is_a = who_a == Who::Car;
             let with_car = car_is_a || who_b == Who::Car;
@@ -1447,6 +1526,7 @@ impl LooseState {
             for s in m.slots.iter_mut() {
                 let of = |w: Who| match w {
                     Who::Car => surface_touch(car.hull.surface_of(s.element)),
+                    Who::Obj(o) if self.objs[o].amb.is_some() && w == who_a => surface_touch(s.surface_a),
                     Who::Obj(o) if self.objs[o].veh.is_some() => surface_touch(s.surface),
                     Who::Obj(_) => prop,
                     Who::City => surface_touch(s.surface),
@@ -1458,7 +1538,7 @@ impl LooseState {
                 s.t.elasticity = if e - 1.0 >= 0.0 { 1.0 } else { e };
                 s.t.impulse = Vec3::ZERO;
                 s.enabled = true;
-                if wheel {
+                if wheel || off {
                     s.enabled = false;
                     continue;
                 }
@@ -1789,7 +1869,7 @@ impl LooseState {
         let city_link = |(row, c): (usize, &solver::Contact)| {
             let a = Side { body: Some(0), point: c.on_body, local: c.local, rows: car.rows, margin: 0.04, core: Vec3::ZERO };
             let b = Side { body: None, point: c.on_world, local: c.on_world, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
-            (Link { a: Some(Who::Car), b: None, part_a: 0, part_b: 0, from: None, car_row: row }, Touch { depth: c.depth, friction: c.friction, elasticity: c.elasticity, a, b, normal: c.normal, back: Vec3::ZERO - c.normal, pushed: c.pushed, kept: c.kept, target: c.target, impulse: Vec3::ZERO })
+            (Link { a: Some(Who::Car), b: None, part_a: 0, part_b: 0, from: None, car_row: row }, Touch { depth: c.depth, friction: c.friction, elasticity: c.elasticity, a, b, normal: c.normal, back: Vec3::ZERO - c.normal, pushed: c.pushed, kept: c.kept, target: c.target, impulse: Vec3::ZERO, kind: 0 })
         };
         if old_order || city_rows.is_empty() {
             for (n, c) in city.iter().enumerate() {
@@ -1843,14 +1923,15 @@ impl LooseState {
                 t.a.margin = 0.04;
                 t.b.margin = 0.04;
                 // (stage R: a vehicle's whole bound is its polyhedron - the thickness from a corner of it)
+                // (an ambient trailer's whole bound is its composite: margin +112, no core)
                 if let Who::Obj(o) = m.a {
-                    if let Some(vh) = self.objs[o].veh {
+                    if let Some(vh) = self.objs[o].veh.filter(|v| v.shape2.is_none()) {
                         t.a.margin = f32::from_bits(0x3d23_d70a);
                         t.a.core = veh_core(vh.shape, &t.a.rows, t.normal);
                     }
                 }
                 if let Who::Obj(o) = m.b {
-                    if let Some(vh) = self.objs[o].veh {
+                    if let Some(vh) = self.objs[o].veh.filter(|v| v.shape2.is_none()) {
                         t.b.margin = f32::from_bits(0x3d23_d70a);
                         t.b.core = veh_core(vh.shape, &t.b.rows, t.back);
                     }
@@ -2123,7 +2204,7 @@ impl LooseState {
         let n = self.pieces_made;
         let new = self.objs.len();
         let (inst_addr, index) = (self.entry_instance(), self.new_index());
-        self.objs.push(Obj { ty, inst: None, matrix, entry: Some(e), hit: true, body: Some(body), level: index.unwrap_or(rank('l', new).unwrap_or(if hint("pb", n) { 2_000_000 + n as i64 } else { -1000 - n as i64 })), addr: inst_addr.unwrap_or(rank('a', new).unwrap_or(if hint("pafter", n) { 2_000_000 + n as i64 } else { -1000 - n as i64 })), veh: None, sleep: Sleep::reset(), dormant: false });
+        self.objs.push(Obj { ty, inst: None, matrix, entry: Some(e), hit: true, body: Some(body), level: index.unwrap_or(rank('l', new).unwrap_or(if hint("pb", n) { 2_000_000 + n as i64 } else { -1000 - n as i64 })), addr: inst_addr.unwrap_or(rank('a', new).unwrap_or(if hint("pafter", n) { 2_000_000 + n as i64 } else { -1000 - n as i64 })), veh: None, sleep: Sleep::reset(), dormant: false, amb: None });
         if dbg() {
             eprintln!("LOOSENEW tick {} obj {new} level {} addr {:x}", self.tick, self.objs[new].level, self.objs[new].addr);
         }
@@ -2396,8 +2477,9 @@ impl LooseState {
         for o in 0..self.objs.len() {
             let Some(mut b) = self.objs[o].body else { continue };
             let veh = self.objs[o].veh;
-            // (a live car is moved by its own step; `set_vehicles` hands it in already moved)
-            if veh.is_some() && self.live {
+            // (a live car is moved by its own step; `set_vehicles` hands it in already moved - an ambient
+            // car's body is the level's)
+            if veh.is_some() && self.live && self.objs[o].amb.is_none() {
                 continue;
             }
             let (gravity, damping) = match veh {
@@ -2469,11 +2551,17 @@ impl LooseState {
     /// After the solves: the forces and impulses into the momenta (0x8259BE30), the push solve's
     /// answer into the pose (0x8259E920), and every entry a tick older (0x824AB680).
     pub fn end_tick(&mut self, world: &LooseWorld, dt: f32) {
+        self.end_tick_with(world, dt, None)
+    }
+
+    /// `end_tick`, with the city an ambient car's wheels probe (slot 14, after the integration and
+    /// before the push goes into the pose: sub_826FA0F8, then the base 0x8259E920).
+    pub fn end_tick_with(&mut self, world: &LooseWorld, dt: f32, city: Option<&super::collision::WorldCollider>) {
         self.pieces_sleep(dt);
         self.bodies_sleep(dt);
         for o in 0..self.objs.len() {
             let Some(mut b) = self.objs[o].body else { continue };
-            if self.objs[o].veh.is_some() && self.live {
+            if self.objs[o].veh.is_some() && self.live && self.objs[o].amb.is_none() {
                 continue;
             }
             b.jf = b.force * dt + b.jf;
@@ -2489,6 +2577,12 @@ impl LooseState {
                 b.l = b.l + b.jt;
                 (b.w, b.l) = capped(ex::spin_of(b.l, &b.rows, b.inv_inertia), b.l, b.max_spin);
                 b.jt = Vec3::ZERO;
+            }
+            if let Some(city) = city {
+                let m = self.objs[o].matrix;
+                if let Some(a) = self.objs[o].amb.as_mut() {
+                    ambient_wheels(a, &mut b, &m, city, dt);
+                }
             }
             // (0x8259E790, then the instance's matrix and the collide's "last" one)
             b.at = b.at + b.push;
@@ -2564,6 +2658,9 @@ impl LooseState {
 #[derive(Clone, Copy, Debug)]
 pub struct VehObj {
     pub shape: &'static HullShape,
+    /// an ambient car's composite's second part (a semi trailer's: the file's part matrices are all
+    /// the identity)
+    pub shape2: Option<&'static HullShape>,
     /// instance vtable[1]: 6 ambient traffic, 8 an mcCar
     pub class: u8,
     /// archetype +48
@@ -2576,6 +2673,17 @@ pub struct VehObj {
     pub here: bool,
     /// its mcCarDamage +20, the "damage inflicted" factor a car it hits takes its blow times (0x82342EA8)
     pub inflict: f32,
+}
+
+impl VehObj {
+    /// its bound's part `p`
+    pub fn part(&self, p: u16) -> &'static HullShape {
+        if p == 1 { self.shape2.unwrap_or(self.shape) } else { self.shape }
+    }
+
+    pub fn parts(&self) -> u16 {
+        if self.shape2.is_some() { 2 } else { 1 }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2922,16 +3030,19 @@ impl LooseState {
     pub fn set_vehicles(&mut self, list: Vec<LiveVeh>) {
         self.live = true;
         for o in self.objs.iter_mut() {
+            if o.amb.is_some() {
+                continue;
+            }
             if let Some(vh) = o.veh.as_mut() {
                 vh.here = false;
                 o.body = None;
             }
         }
         for v in list {
-            let i = match self.objs.iter().position(|o| o.veh.map_or(false, |x| x.index == v.id)) {
+            let i = match self.objs.iter().position(|o| o.amb.is_none() && o.veh.map_or(false, |x| x.index == v.id)) {
                 Some(i) => i,
                 None => {
-                    self.objs.push(Obj { ty: usize::MAX, inst: None, matrix: v.body.prev, entry: None, hit: false, body: None, level: 0, addr: 0, veh: None, sleep: Sleep::reset(), dormant: false });
+                    self.objs.push(Obj { ty: usize::MAX, inst: None, matrix: v.body.prev, entry: None, hit: false, body: None, level: 0, addr: 0, veh: None, sleep: Sleep::reset(), dormant: false, amb: None });
                     self.objs.len() - 1
                 }
             };
@@ -2940,7 +3051,7 @@ impl LooseState {
             obj.addr = v.level;
             obj.matrix = [v.body.rows[0], v.body.rows[1], v.body.rows[2], ex::origin_of(v.body.at, &v.body.rows, v.cg)];
             obj.body = if v.parked { None } else { Some(v.body) };
-            obj.veh = Some(VehObj { shape: v.shape, class: v.class, gravity: v.gravity, cg: v.cg, index: v.id, here: true, inflict: v.inflict });
+            obj.veh = Some(VehObj { shape: v.shape, shape2: None, class: v.class, gravity: v.gravity, cg: v.cg, index: v.id, here: true, inflict: v.inflict });
         }
         let objs = &self.objs;
         self.manis.retain(|m| ![m.a, m.b].iter().any(|w| matches!(w, Who::Obj(o) if objs[*o].veh.map_or(false, |x| !x.here))));
@@ -2951,6 +3062,9 @@ impl LooseState {
     pub fn vehicle_answers(&mut self) -> Vec<(u32, Vec3, Vec3, Vec3, Vec3)> {
         let mut out = Vec::new();
         for o in self.objs.iter_mut() {
+            if o.amb.is_some() {
+                continue;
+            }
             let (Some(vh), Some(b)) = (o.veh, o.body.as_mut()) else { continue };
             if b.jf != Vec3::ZERO || b.jt != Vec3::ZERO || b.push != Vec3::ZERO || b.turn != Vec3::ZERO {
                 out.push((vh.index, b.jf, b.jt, b.push, b.turn));
@@ -2992,7 +3106,7 @@ impl LooseState {
             let i = match self.objs.iter().position(|o| o.veh.map_or(false, |x| x.index == v.index)) {
                 Some(i) => i,
                 None => {
-                    self.objs.push(Obj { ty: usize::MAX, inst: None, matrix: v.matrix, entry: None, hit: false, body: None, level: 0, addr: 0, veh: None, sleep: Sleep::reset(), dormant: false });
+                    self.objs.push(Obj { ty: usize::MAX, inst: None, matrix: v.matrix, entry: None, hit: false, body: None, level: 0, addr: 0, veh: None, sleep: Sleep::reset(), dormant: false, amb: None });
                     self.objs.len() - 1
                 }
             };
@@ -3003,7 +3117,7 @@ impl LooseState {
             obj.addr = v.addr as i64 - ot.car_addr as i64 + car_addr;
             obj.matrix = v.matrix;
             obj.body = Some(v.body);
-            obj.veh = Some(VehObj { shape, class: v.class, gravity: v.gravity, cg: v.cg, index: v.index, here: true, inflict: 1.0 });
+            obj.veh = Some(VehObj { shape, shape2: None, class: v.class, gravity: v.gravity, cg: v.cg, index: v.index, here: true, inflict: 1.0 });
         }
         let gone = |w: Who, objs: &Vec<Obj>| matches!(w, Who::Obj(o) if objs[o].veh.map_or(false, |x| !x.here || ot.inject));
         let objs = &self.objs;
@@ -3014,13 +3128,432 @@ impl LooseState {
                 let vh = self.objs[o].veh.unwrap();
                 let side = |local: Vec3| Side { body: None, point: Vec3::ZERO, local, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
                 let t = Touch { depth: k.depth, a: side(k.local_a), b: side(k.local_b), normal: k.normal, back: k.back, kept: k.kept, ..Default::default() };
-                let slot = Slot2 { t, age: 1, enabled: true, element: k.element, surface: vh.shape.surface_of(k.element_b) };
+                let slot = Slot2 { t, age: 1, enabled: true, element: k.element, surface: vh.shape.surface_of(k.element_b), surface_a: Surface::Prop };
                 match self.manis.iter().position(|m| m.a == Who::Car && m.b == Who::Obj(o)) {
                     Some(i) => self.manis[i].slots.push(slot),
-                    None => self.manis.push(Mani { a: Who::Car, b: Who::Obj(o), part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: vec![slot] }),
+                    None => self.manis.push(Mani { a: Who::Car, b: Who::Obj(o), part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: vec![slot], rope: false }),
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The ambient (traffic) cars in the level (PEOPLE_TRAFFIC.md "Hitting riding traffic", "Physical
+// traffic"). Each is an mcAmbientCar whose instance (car +112) is in the level from its spawn:
+// inactive while it rides (level state 1; its matrix moved each frame, sub_826FA760, and its
+// velocity the place's change over the frame, inst +96, sub_826E9A40); activated by any contact
+// (0x8258D9F0 -> 0x8258D3F8 -> slot 28 0x826FA810 -> vfunc 18 sub_826E7340 -> sub_826E96E0); then its
+// mcAmbientCollider (car +2688) is the base phCollider with its own wheels (slot 14 sub_826FA0F8 ->
+// sub_826FBA60) until the rest rule (sub_826F9EA8) takes it out again. A semi's cab and trailer
+// are joined by three constraints while they are active (sub_826E7340, sub_82591FA0).
+
+/// An ambient type's physics: `mcAmbientTypePhysicsTuning.xml` (mass, inertia box, gravity factor),
+/// `mcAmbientWheelTuning.xml` (sub_826E5B30's derived numbers), the `.r155` bound and the skeleton's
+/// wheel bones.
+#[derive(Clone, Debug)]
+pub struct AmbTune {
+    /// the bound: one polyhedron, or a composite's two (a semi trailer's)
+    pub shape: &'static HullShape,
+    pub shape2: Option<&'static HullShape>,
+    /// fMass x fMassScale; mass / 12 x (y^2 + z^2, x^2 + z^2, x^2 + y^2) of vInertialBox x
+    /// fInertialBoxScale (sub_825A42C8), each at least a twentieth of the largest (sub_825A4088)
+    pub mass: f32,
+    pub inertia: Vec3,
+    /// fGravityFactor (archetype +48)
+    pub gravity: f32,
+    /// bound +80 as the game sets it: (0, fCogOffset x centroid.y, 0)
+    pub cg: Vec3,
+    /// type +240: fCogSim x centroid.y
+    pub cog_sim: f32,
+    /// type +244 .. +256 (sub_826E5B30, Wq = mass x gravity factor x 9.8 / 4): spring Ts Wq / travel,
+    /// its damping 2 Sd sqrt(Wq k), the tyre's 2 Wq Tt / St and 2 Td sqrt(Wq kt)
+    pub k: f32,
+    pub c: f32,
+    pub kt: f32,
+    pub ct: f32,
+    /// fSuspensionTravel (+216), fTireStretch (+228), fTireGrip (+204)
+    pub travel: f32,
+    pub stretch: f32,
+    pub grip: f32,
+    /// the wheels (`iWheelCount`; the `wheel_i` bones, sub_82790E68; a trailer's 2 and 3 are its
+    /// bones 0 and 1 with z turned)
+    pub wheels: Vec<Vec3>,
+    /// the hitch (sub_82790A18): a cab's or a trailer's
+    pub hitch: Option<Vec3>,
+}
+
+/// A wheel's record (collider +676, 24 bytes): the spring's compression (+8), the tyre's stretch
+/// (+12), the stretch as it was when it slid (+16) and the slide flag (+20).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AmbWheel {
+    pub d: f32,
+    pub s: f32,
+    pub raw: f32,
+    pub slide: bool,
+}
+
+/// An ambient car in the level.
+#[derive(Clone, Debug)]
+pub struct Amb {
+    /// the session's car (vehicles.rs `uid`)
+    pub uid: u32,
+    pub tune: Arc<AmbTune>,
+    pub wheels: [AmbWheel; 6],
+    /// collider +864: the rest rule's count
+    pub count: u32,
+    /// inst +96: the place's change over the frame
+    pub moved: Vec3,
+    /// the collider's turn (+288), kept while inactive: zero from Init (sub_8259BC48)
+    pub turn: Vec3,
+    /// the semi's other car (+3604)
+    pub partner: Option<u32>,
+    /// made active / put to rest since `ambient_events` last looked
+    pub woke: bool,
+    pub slept: bool,
+    last_at: Option<Vec3>,
+}
+
+/// A constraint between two ambient cars (rage::phConstraint, max distance: sub_825B6D18): the
+/// owner (the car that was activated, +3592 .. +3600), its two cars, a point in each one's frame
+/// (+80 / +96) and the length (+160); +164 = 0.6 (sub_825B6030), +320 = 0, +328 = -1 (never
+/// breaks), flags = 2 (sub_825B6278).
+#[derive(Clone, Copy, Debug)]
+pub struct Rope {
+    pub owner: u32,
+    pub a: u32,
+    pub b: u32,
+    pub la: Vec3,
+    pub lb: Vec3,
+    pub len: f32,
+}
+
+/// (diagnostics, `MCLA_DBG_ROPE`: the constraints and the ambient cars' activations)
+fn rope_dbg() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("MCLA_DBG_ROPE").is_some())
+}
+
+/// The first constraint's length: global 0x82909F6C, in the image's zero-filled tail and written by
+/// nothing - 0 (a point constraint, kind 1).
+const ROPE_POINT: f32 = 0.0;
+/// +164: how deep one constraint's contact stands at most; the rest moves the bodies (sub_825B6750)
+const ROPE_DEPTH: f32 = 0.6;
+
+impl LooseState {
+    fn amb_obj(&self, uid: u32) -> Option<usize> {
+        self.objs.iter().position(|o| o.amb.as_ref().is_some_and(|a| a.uid == uid))
+    }
+
+    /// A riding (or otherwise kinematic) ambient car's instance where the game puts it this frame:
+    /// into the level inactive at its first place; its velocity the place's change (inst +96).
+    pub fn ambient_place(&mut self, uid: u32, tune: &Arc<AmbTune>, matrix: [Vec3; 4], partner: Option<u32>, inflict: f32, dt: f32) {
+        let o = match self.amb_obj(uid) {
+            Some(o) => o,
+            None => {
+                let veh = VehObj { shape: tune.shape, shape2: tune.shape2, class: 6, gravity: tune.gravity, cg: tune.cg, index: uid, here: true, inflict };
+                let amb = Amb { uid, tune: tune.clone(), wheels: [AmbWheel::default(); 6], count: 0, moved: Vec3::ZERO, turn: Vec3::ZERO, partner, woke: false, slept: false, last_at: None };
+                // (its level index: above the stepping cars' 0 - the car is A against it)
+                let level = 1_000_000 + uid as i64;
+                let obj = Obj { ty: usize::MAX, inst: None, matrix, entry: None, hit: false, body: None, level, addr: level, veh: Some(veh), sleep: Sleep::reset(), dormant: false, amb: Some(amb) };
+                // (a slot an ambient car left)
+                match self.objs.iter().position(|o| o.amb.is_none() && o.veh.is_some_and(|v| v.index == u32::MAX)) {
+                    Some(i) => {
+                        self.objs[i] = obj;
+                        i
+                    }
+                    None => {
+                        self.objs.push(obj);
+                        self.objs.len() - 1
+                    }
+                }
+            }
+        };
+        if self.objs[o].body.is_some() {
+            return;
+        }
+        self.objs[o].matrix = matrix;
+        let a = self.objs[o].amb.as_mut().unwrap();
+        a.partner = partner;
+        a.moved = match a.last_at {
+            Some(p) if dt > 0.0 => (matrix[3] - p) / dt,
+            _ => Vec3::ZERO,
+        };
+        a.last_at = Some(matrix[3]);
+    }
+
+    /// The ambient cars the session no longer has go from the level, with their pairs and constraints.
+    pub fn ambient_keep(&mut self, alive: &dyn Fn(u32) -> bool) {
+        let gone: Vec<usize> = (0..self.objs.len()).filter(|&o| self.objs[o].amb.as_ref().is_some_and(|a| !alive(a.uid))).collect();
+        if gone.is_empty() {
+            return;
+        }
+        for &o in &gone {
+            let uid = self.objs[o].amb.as_ref().unwrap().uid;
+            self.ropes.retain(|r| r.a != uid && r.b != uid);
+            let obj = &mut self.objs[o];
+            obj.amb = None;
+            obj.body = None;
+            if let Some(v) = obj.veh.as_mut() {
+                v.here = false;
+                v.index = u32::MAX;
+            }
+        }
+        self.manis.retain(|m| ![m.a, m.b].iter().any(|w| matches!(w, Who::Obj(o) if gone.contains(o))));
+    }
+
+    /// The game makes an ambient car active (its footprint probe, an explosion, slots 16 / 17: the
+    /// same 0x8258D3F8).
+    pub fn ambient_let_go(&mut self, uid: u32) {
+        if let Some(o) = self.amb_obj(uid) {
+            self.ambient_activate(o);
+        }
+    }
+
+    /// An active ambient car: its instance's matrix, velocity and turn.
+    pub fn ambient_pose(&self, uid: u32) -> Option<([Vec3; 4], Vec3, Vec3)> {
+        let o = &self.objs[self.amb_obj(uid)?];
+        o.body.map(|b| (o.matrix, b.v, b.w))
+    }
+
+    /// What became of the ambient cars since the last look: (car, made active, put to rest).
+    pub fn ambient_events(&mut self) -> Vec<(u32, bool, bool)> {
+        let mut out = Vec::new();
+        for o in self.objs.iter_mut() {
+            if let Some(a) = o.amb.as_mut() {
+                if a.woke || a.slept {
+                    out.push((a.uid, a.woke, a.slept));
+                    a.woke = false;
+                    a.slept = false;
+                }
+            }
+        }
+        out
+    }
+
+    /// An inactive ambient car made active (0x8258D3F8 -> slot 28 0x826FA810, vfunc 41: its collider at
+    /// the instance's velocity, inst +96; its turn the collider's own; the rest count from 0). A semi's
+    /// cab or trailer then joins its partner by three constraints if the partner holds none, and makes
+    /// the partner active (sub_826E7340 -> sub_826EA0A8).
+    fn ambient_activate(&mut self, o: usize) {
+        if self.objs[o].body.is_some() {
+            return;
+        }
+        let Some(a) = self.objs[o].amb.as_ref() else { return };
+        let t = a.tune.clone();
+        let (uid, partner, moved, turn) = (a.uid, a.partner, a.moved, a.turn);
+        let m = self.objs[o].matrix;
+        let b = PBody::of_car(xf(&m, t.cg), [m[0], m[1], m[2]], moved, turn, t.mass, t.inertia, m, m, Vec3::ZERO, Vec3::ZERO);
+        self.objs[o].body = Some(b);
+        let a = self.objs[o].amb.as_mut().unwrap();
+        a.count = 0;
+        a.woke = true;
+        if dbg() || rope_dbg() {
+            eprintln!("AMBWAKE tick {} uid {uid} v {:?} hitch {:?} partner {:?} ropes {}", self.tick, moved, t.hitch, partner, self.ropes.len());
+        }
+        let (Some(h), Some(p)) = (t.hitch, partner) else { return };
+        let Some(q) = self.amb_obj(p) else { return };
+        if self.ropes.iter().any(|r| r.owner == p) {
+            return;
+        }
+        let hp = self.objs[q].amb.as_ref().unwrap().tune.hitch.unwrap_or(Vec3::ZERO);
+        // (the hitches; the points 10 m along each one's own +z and +y from them: 6 m and 1.5 m apart
+        // at most - their z axes within 2 asin 0.3, their y axes within 2 asin 0.075)
+        for (off, len) in [(Vec3::ZERO, ROPE_POINT), (Vec3::new(0.0, 0.0, 10.0), 6.0), (Vec3::new(0.0, 10.0, 0.0), 1.5)] {
+            self.ropes.push(Rope { owner: uid, a: uid, b: p, la: h + off, lb: hp + off, len });
+        }
+        self.ambient_activate(q);
+    }
+
+    /// After the tick (car slot 6, sub_826E5AB8): an active ambient car's velocity is its place's
+    /// change (sub_826E9A40), and the rest rule (sub_826F9EA8): from its fourth frame active, a frame
+    /// whose velocity is within 0.001 m/s on every axis resets its wheels (sub_826FBA38) and takes it
+    /// out (0x82588D90 -> slot 19 sub_826E68C0: its constraints go; the collider keeps its turn).
+    pub fn ambient_frame(&mut self, dt: f32) {
+        for o in 0..self.objs.len() {
+            let Some(b) = self.objs[o].body else { continue };
+            let at = self.objs[o].matrix[3];
+            let Some(a) = self.objs[o].amb.as_mut() else { continue };
+            a.moved = match a.last_at {
+                Some(p) if dt > 0.0 => (at - p) / dt,
+                _ => a.moved,
+            };
+            a.last_at = Some(at);
+            if a.count > 2 {
+                let still = |x: f32| x.abs() <= f32::from_bits(0x3a83_126f);
+                if still(a.moved.x) && still(a.moved.y) && still(a.moved.z) {
+                    a.wheels = [AmbWheel::default(); 6];
+                    a.turn = b.w;
+                    a.slept = true;
+                    a.count = 0;
+                    let uid = a.uid;
+                    self.objs[o].body = None;
+                    self.ropes.retain(|r| r.owner != uid);
+                    if dbg() {
+                        eprintln!("AMBREST tick {} uid {uid}", self.tick);
+                    }
+                }
+            }
+            if let Some(a) = self.objs[o].amb.as_mut() {
+                a.count += 1;
+            }
+        }
+    }
+
+    /// The constraints' contacts for this update (0x82591210 -> 0x825B6F78), before the collide: each
+    /// one's manifold made afresh. A side inactive is made active once the two points are more than
+    /// the length and 0.01 apart, else nothing; a rope that is slack has no contact; past +164 the
+    /// rest moves the two bodies apart by their masses (sub_825B6750, into the push).
+    fn ropes_touch(&mut self) {
+        self.manis.retain(|m| !m.rope);
+        let ropes = self.ropes.clone();
+        for r in ropes {
+            let (Some(oa), Some(ob)) = (self.amb_obj(r.a), self.amb_obj(r.b)) else { continue };
+            let (pa, pb) = (xf(&self.objs[oa].matrix, r.la), xf(&self.objs[ob].matrix, r.lb));
+            let far = |pa: Vec3, pb: Vec3| {
+                let d = pa - pb;
+                let lim = r.len + 0.01;
+                dot3(d, d) > lim * lim
+            };
+            if self.objs[oa].body.is_none() {
+                if !far(pa, pb) {
+                    continue;
+                }
+                self.ambient_activate(oa);
+            }
+            if self.objs[ob].body.is_none() {
+                if !far(pa, pb) {
+                    continue;
+                }
+                self.ambient_activate(ob);
+            }
+            // (0x825B6470)
+            let d = pb - pa;
+            let s2 = dot3(d, d);
+            let (n, l) = if s2 > f32::from_bits(0x2b8c_bccc) {
+                let l = s2.sqrt();
+                let e = 1.0 / l;
+                let e = e + e * (-(e * l - 1.0));
+                (d * e, l)
+            } else {
+                (Vec3::Y, 0.0)
+            };
+            let err = l - r.len;
+            if rope_dbg() {
+                eprintln!("ROPE tick {} {} -> {} len {} err {:.4} active {} {} island-to-be", self.tick, r.a, r.b, r.len, err, self.objs[oa].body.is_some(), self.objs[ob].body.is_some());
+            }
+            if err < 0.0 {
+                continue;
+            }
+            let kind = if r.len >= 0.01 { 2 } else { 1 };
+            let (depth, excess) = if err > ROPE_DEPTH { (ROPE_DEPTH, err - ROPE_DEPTH) } else { (err, 0.0) };
+            // (+320 = 0: the allowed depth on top)
+            let depth = depth + solver::ALLOW;
+            if excess > 0.0 {
+                let (ia, ib) = (self.objs[oa].body.map_or(0.0, |b| b.inv_mass), self.objs[ob].body.map_or(0.0, |b| b.inv_mass));
+                let (sa, sb) = (ia * ia, ib * ib);
+                let (wa, wb) = if sa > sb {
+                    let wa = 1.0 / ((sb / sa).sqrt() + 1.0);
+                    (wa, 1.0 - wa)
+                } else if sb > sa {
+                    let wb = 1.0 / ((sa / sb).sqrt() + 1.0);
+                    (1.0 - wb, wb)
+                } else {
+                    (0.5, 0.5)
+                };
+                if let Some(b) = self.objs[oa].body.as_mut() {
+                    b.push = solver::direct(b.push, n * (wa * excess));
+                }
+                if let Some(b) = self.objs[ob].body.as_mut() {
+                    b.push = solver::direct(b.push, n * (-(wb * excess)));
+                }
+            }
+            let side = |m: &[Vec3; 4], p: Vec3| Side { body: None, point: p, local: inv(m, p - m[3]), rows: [m[0], m[1], m[2]], margin: 0.04, core: Vec3::ZERO };
+            let t = Touch { depth, friction: 0.0, elasticity: 0.0, a: side(&self.objs[oa].matrix, pa), b: side(&self.objs[ob].matrix, pb), normal: n, back: Vec3::ZERO - n, kind, ..Default::default() };
+            let slot = Slot2 { t, age: 0, enabled: true, element: 0, surface: Surface::Prop, surface_a: Surface::Prop };
+            self.manis.push(Mani { a: Who::Obj(oa), b: Who::Obj(ob), part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: vec![slot], rope: true });
+        }
+    }
+}
+
+/// An active ambient car's wheels (slot 14 sub_826FA0F8 -> sub_826FBA60, per wheel): a probe from the
+/// wheel's bone straight down the car to half a metre under its floor (sub_826E5540 -> sub_827974F0,
+/// the ground; a polygon steeper than 45 degrees is no hit); the spring along the hit's normal with a
+/// constant quarter of the car's weight on top, its push when it is past its travel; the tyre's
+/// stretch across the normal against the slip - the front pair's whole, the others' less their rolling
+/// - into the body's forces for the next update. `m` the instance matrix (rows X, up, Z, place).
+fn ambient_wheels(a: &mut Amb, b: &mut PBody, m: &[Vec3; 4], city: &super::collision::WorldCollider, dt: f32) {
+    if dt == 0.0 {
+        return;
+    }
+    let t = a.tune.clone();
+    let inv_dt = 1.0 / dt;
+    let (x, u, z, p) = (m[0], m[1], m[2], m[3]);
+    let yzx = |v: Vec3| Vec3::new(v.y, v.z, v.x);
+    let zxy = |v: Vec3| Vec3::new(v.z, v.x, v.y);
+    let gj = |a: Vec3, b: Vec3| zxy(a) * yzx(b) - yzx(a) * zxy(b);
+    for (i, w) in t.wheels.iter().enumerate().take(6) {
+        let rec = &mut a.wheels[i];
+        let base = (x * w.x + p) + z * w.z;
+        let top = base + u * w.y;
+        let bottom = base - u * 0.5;
+        let mid = (top + bottom) * 0.5;
+        let seg = bottom - top;
+        let len = seg.length();
+        let hit = (len > 0.0).then(|| city.raycast(top, seg / len, len)).flatten().map(|h| (h.point, if h.normal.y < 0.0 { Vec3::ZERO - h.normal } else { h.normal })).filter(|(_, n)| !(n.y.abs() < f32::from_bits(0x3f35_0481)));
+        let Some((contact, n)) = hit else {
+            rec.slide = false;
+            rec.d = ex::fnms(u.y, dt, rec.d);
+            rec.d = rec.d.clamp(-t.travel, t.travel);
+            continue;
+        };
+        // (slot 21: the point's velocity)
+        let vp = b.v + cross(b.w, contact - b.at);
+        let s = fma(b.v.z, b.v.z, fma(b.v.x, b.v.x, b.v.y * b.v.y)).sqrt();
+        let slip = if i <= 1 {
+            let wk = Vec3::new(dot3(z, Vec3::new(x.x, u.x, z.x)), dot3(z, Vec3::new(x.y, u.y, z.y)), dot3(z, Vec3::new(x.z, u.z, z.z)));
+            let uu = zxy(wk) * yzx(vp) - yzx(wk) * zxy(vp);
+            vp - wk * uu
+        } else {
+            z * s + vp
+        };
+        let c1 = gj(n, slip);
+        let c2 = gj(n, c1);
+        let diff = contact - mid;
+        let d_old = rec.d;
+        let d = fma(diff.x, u.x, fma(u.y, diff.y, u.z * diff.z));
+        rec.d = d;
+        let rate = if d_old == 0.0 { 0.0 } else { (d - d_old) * inv_dt };
+        let cosn = fma(u.x, n.x, fma(u.z, n.z, u.y * n.y));
+        let mut f = n * (cosn * fma(t.k, d, t.c * rate));
+        // (sub_826E9658: a quarter of the archetype's weight, no gravity factor)
+        let sup = (t.mass * f32::from_bits(0x411c_cccd)) * 0.25;
+        f.y = sup + f.y;
+        b.force = b.force + f;
+        let r = u * (t.cog_sim * u.y) + (contact - p);
+        b.torque = b.torque + gj(f, r);
+        if d > t.travel {
+            b.push = solver::direct(b.push, n * (d - t.travel));
+        }
+        let s_old = rec.s;
+        let st = fma(c2.x, c2.x, fma(c2.y, c2.y, c2.z * c2.z)).sqrt() * dt;
+        rec.s = st;
+        if st > t.stretch {
+            rec.raw = st;
+            rec.slide = true;
+            rec.s = t.grip * t.stretch;
+        } else {
+            rec.slide = false;
+        }
+        let rate_s = (rec.s - s_old) * inv_dt;
+        let l2 = dot3(c2, c2);
+        let dir = if l2 == 0.0 { Vec3::ZERO } else { c2 * super::gjk::rsqrt_as_original(l2) };
+        let fac = if s < f32::from_bits(0x3f64_e26d) { 4.0 } else { 1.0 };
+        let ft = ex::fms(fac * t.kt, rec.s, t.ct * rate_s) * u.y;
+        let tyre = dir * ft;
+        b.force = b.force + tyre;
+        b.torque = b.torque + cross(contact - b.at, tyre);
+        rec.d = rec.d.clamp(-t.travel, t.travel);
     }
 }
 
@@ -3176,7 +3709,7 @@ impl LooseState {
         body.l = body.momentum_of(w);
         let o = self.objs.len();
         // (inserted after the car: the car is A against it)
-        self.objs.push(Obj { ty, inst: None, matrix, entry: None, hit: true, body: Some(body), level: 3_000_000 + o as i64, addr: 3_000_000 + o as i64, veh: None, sleep: Sleep::reset(), dormant: false });
+        self.objs.push(Obj { ty, inst: None, matrix, entry: None, hit: true, body: Some(body), level: 3_000_000 + o as i64, addr: 3_000_000 + o as i64, veh: None, sleep: Sleep::reset(), dormant: false, amb: None });
         let id = PIECE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.pieces.push(Piece { id, obj: o, sleep: Sleep::reset(), off: false, contacts: Vec::new() });
         Some(id)
@@ -3293,12 +3826,27 @@ impl LooseState {
 impl LooseState {
     /// Has the object a sleep object of the generic kind (a pool body that is no vehicle and no torn bumper)?
     fn sleeper(&self, o: usize) -> bool {
-        self.objs[o].veh.is_none() && !self.pieces.iter().any(|p| p.obj == o)
+        // (an ambient car's collider has its own, collider +820 - sub_826F9FB8 -> 0x825952E0: the same rule)
+        (self.objs[o].veh.is_none() || self.objs[o].amb.is_some()) && !self.pieces.iter().any(|p| p.obj == o)
     }
 
     /// Take an asleep object out of the simulator (0x82588D90): inactive at its last matrix, its entry and
     /// its "hit" bit kept.
     fn deactivate(&mut self, o: usize) {
+        // (an ambient car: 0x82588D90 -> inst vtable[29] sub_826FA458 -> car slot 19 sub_826E68C0 - its
+        // constraints go; the collider keeps its turn and its sleep object; the wheels are not reset)
+        let body = self.objs[o].body;
+        if let (Some(a), Some(b)) = (self.objs[o].amb.as_mut(), body) {
+            a.turn = b.w;
+            a.slept = true;
+            let uid = a.uid;
+            self.ropes.retain(|r| r.owner != uid);
+            self.objs[o].body = None;
+            if dbg() || rope_dbg() {
+                eprintln!("AMBSLEEP tick {} uid {uid}", self.tick);
+            }
+            return;
+        }
         let obj = &mut self.objs[o];
         obj.body = None;
         obj.dormant = true;
@@ -3472,7 +4020,7 @@ impl LooseState {
             b.last = m.matrix;
             b.last_set = true;
         }
-        self.objs.push(Obj { ty, inst: None, matrix: m.matrix, entry: None, hit: m.hit, body, level: 3_000_000 + o as i64, addr: 3_000_000 + o as i64, veh: None, sleep: Sleep::reset(), dormant: false });
+        self.objs.push(Obj { ty, inst: None, matrix: m.matrix, entry: None, hit: m.hit, body, level: 3_000_000 + o as i64, addr: 3_000_000 + o as i64, veh: None, sleep: Sleep::reset(), dormant: false, amb: None });
         self.pieces.push(Piece { id: m.id, obj: o, sleep: m.sleep, off: m.off, contacts: Vec::new() });
     }
 }

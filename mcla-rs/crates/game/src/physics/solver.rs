@@ -334,7 +334,7 @@ fn unit_or_x(v: Vec3) -> Vec3 {
 
 /// The body's direct push (0x8259DC58): `by` added to what is pending, less its share along
 /// what is pending already; no longer than 100 m.
-fn direct(pending: Vec3, by: Vec3) -> Vec3 {
+pub fn direct(pending: Vec3, by: Vec3) -> Vec3 {
     let l2 = dot3(by, by);
     let cap = 100.0f32;
     let by = if l2 > cap * cap {
@@ -490,6 +490,9 @@ pub struct Touch {
     pub kept: Vec3,
     pub target: Vec3,
     pub impulse: Vec3,
+    /// +164: 0 a contact; a constraint's (0x825B6F78): 2 a rope (a length of 0.01 or more), 1 a
+    /// point (a 256-byte row of its own, 0x825DBFA4)
+    pub kind: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -500,6 +503,7 @@ struct Row2 {
     /// the states of the two sides (0: the one of zeros)
     sa: usize,
     sb: usize,
+    kind: u8,
 }
 
 const NO_STATE: State = State { vel: Vec3::ZERO, ang: Vec3::ZERO, mcol: [Vec3::ZERO; 3], icol: [Vec3::ZERO; 3] };
@@ -526,12 +530,17 @@ impl Row2 {
             let aa = (wa[0] * arm[i].x + wa[1] * arm[i].y) + wa[2] * arm[i].z;
             let lb = (tb[0] * basis[i].x + tb[1] * basis[i].y) + tb[2] * basis[i].z;
             let ab = (wb[0] * arm_b[i].x + wb[1] * arm_b[i].y) + wb[2] * arm_b[i].z;
-            ((aa + la) + ab) + lb
+            // (a point constraint's block, 0x825E5CC0: B's linear term before its angular one)
+            if c.kind == 1 { ((aa + la) + lb) + ab } else { ((aa + la) + ab) + lb }
         });
+        if c.kind == 1 {
+            // (no c row, no block of ten thousands: 0x825DE528 on the block as it is)
+            return Row2 { row: Row { neg: Vec3::ZERO, bias: Vec3::ZERO, basis, bcol, arm, jcol, kcol: columns(&block_inverse(&k)), c: Vec3::X, mu: 0.0 }, arm_b, jcol_b, sa, sb, kind: 1 };
+        }
         let cc = if k[0].x == 0.0 { Vec3::X } else { k[0] * recip(k[0].x) };
         // (0x825E5110: a row between two sides without bodies is given a block of ten thousands)
         let kcol = if k[0].x == 0.0 && k[1].y == 0.0 && k[2].z == 0.0 { [Vec3::splat(10000.0); 3] } else { columns(&block_inverse(&k)) };
-        Row2 { row: Row { neg: Vec3::ZERO, bias: Vec3::ZERO, basis, bcol, arm, jcol, kcol, c: cc, mu: c.friction }, arm_b, jcol_b, sa, sb }
+        Row2 { row: Row { neg: Vec3::ZERO, bias: Vec3::ZERO, basis, bcol, arm, jcol, kcol, c: cc, mu: c.friction }, arm_b, jcol_b, sa, sb, kind: c.kind }
     }
 
     /// What a step of the row's multipliers does to the two bodies' velocities.
@@ -556,6 +565,15 @@ impl Row2 {
         let lin_b = Vec3::new(dot3(r.basis[0], b.vel), dot3(r.basis[1], b.vel), dot3(r.basis[2], b.vel));
         let ang_a = Vec3::new(dot3(r.arm[0], a.ang), dot3(r.arm[1], a.ang), dot3(r.arm[2], a.ang));
         let ang_b = Vec3::new(dot3(self.arm_b[0], b.ang), dot3(self.arm_b[1], b.ang), dot3(self.arm_b[2], b.ang));
+        if self.kind == 1 {
+            // (a point constraint, 0x825E8468 / 0x825E7D78: both ways, no relaxation, no cone)
+            let u = ((lin_a + ang_a) - (lin_b + ang_b)) - r.bias;
+            let ku = Vec3::new(dot3(r.kcol[0], u), dot3(r.kcol[1], u), dot3(r.kcol[2], u));
+            let step = Vec3::ZERO - ku;
+            self.give(states, step);
+            self.row.neg = self.row.neg - step;
+            return step * step;
+        }
         let u = (((ang_a - ang_b) + lin_a) - lin_b) - r.bias;
         let ku = Vec3::new(dot3(r.kcol[0], u), dot3(r.kcol[1], u), dot3(r.kcol[2], u));
         let x = ((Vec3::ZERO - ku) * omega) - r.neg;
@@ -624,6 +642,15 @@ pub fn island_solve(bodies: &[Body], touches: &[Touch], dt: f32, inv_dt: f32) ->
         .iter()
         .map(|c| {
             let mut row = Row2::new(bodies, &states, c);
+            if c.kind == 1 {
+                // (0x825DC0AC: the target minus the two points' pending velocities - not over the island's
+                // elasticity - through the basis as its transpose; no warm start, 0x825E7A70)
+                let pend = |s: &Side| s.body.map_or(Vec3::ZERO, |i| pending(&bodies[i], s.point, dt));
+                let v = c.target - (pend(&c.a) - pend(&c.b));
+                let b = &row.row.basis;
+                row.row.bias = Vec3::new(dot3(v, Vec3::new(b[0].x, b[1].x, b[2].x)), dot3(v, Vec3::new(b[0].y, b[1].y, b[2].y)), dot3(v, Vec3::new(b[0].z, b[1].z, b[2].z)));
+                return row;
+            }
             let pend = |s: &Side| s.body.map_or(Vec3::ZERO, |i| pending(&bodies[i], s.point, dt) * less);
             let p = pend(&c.a) - pend(&c.b);
             let g = (ALLOW - SKIN) - c.depth;
@@ -648,7 +675,9 @@ pub fn island_impulses(solved: &IslandSolved, touches: &mut [Touch]) {
         let p = Vec3::ZERO - row.row.neg;
         c.kept = p;
         let inv = inverse3(&row.row.bcol);
-        c.impulse = ((inv[0] * p.x + inv[1] * p.y) + inv[2] * p.z) * solved.bounce;
+        let j = (inv[0] * p.x + inv[1] * p.y) + inv[2] * p.z;
+        // (0x825919F8: a constraint's not times the island's elasticity)
+        c.impulse = if c.kind == 0 { j * solved.bounce } else { j };
     }
 }
 
@@ -681,6 +710,12 @@ pub fn island_push(bodies: &[Body], touches: &mut [Touch], solved: &mut IslandSo
         if t >= 0.0 { t } else { 0.0 }
     };
     for (row, c) in solved.rows.iter_mut().zip(touches.iter()) {
+        if c.kind == 1 {
+            // (a point constraint: its depth over the step, nothing taken off; no warm start)
+            row.row.bias = Vec3::new(c.depth * inv_dt, 0.0, 0.0);
+            row.row.neg = Vec3::ZERO;
+            continue;
+        }
         let d = c.depth - ALLOW;
         let half = d * 0.5;
         let m = if half - ALLOW >= 0.0 { ALLOW } else { half };

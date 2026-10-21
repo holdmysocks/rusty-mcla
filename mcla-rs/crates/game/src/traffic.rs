@@ -31,6 +31,8 @@ const CAB_HITCH: Vec3 = Vec3::new(0.0, 1.132, 1.289);
 const TRAILER_HITCH: Vec3 = Vec3::new(0.0, 1.174, -5.219);
 /// The trailer's rear bogie (between its axles at 3.914 and 5.219), which trails the hitch.
 const TRAILER_BOGIE: f32 = 4.57;
+pub const CAB_HITCH_PUB: Vec3 = CAB_HITCH;
+pub const TRAILER_HITCH_PUB: Vec3 = TRAILER_HITCH;
 
 /// A traffic type's driving values (`mcAmbientType.xml`; type +124 .. +164) and its bound.
 #[derive(Clone, Copy, Debug)]
@@ -147,6 +149,109 @@ pub fn bound_size(root: &std::path::Path, model: &str) -> Option<(f32, f32)> {
         }
     }
     None
+}
+
+/// A traffic car's instance matrix (inst +16): its rotation, and the seat's place - the pose before
+/// the drawn 0.025 m drop - while it rides; rows X, up, Z, place.
+pub fn instance_matrix(c: &super::CarInstance) -> [Vec3; 4] {
+    let m = glam::Mat3::from_quat(c.state.rot);
+    let at = c.rail.as_ref().filter(|r| !r.active).and_then(|r| r.seat.as_ref()).map_or(c.state.pos, |s| s.at.0);
+    [m.x_axis, m.y_axis, m.z_axis, at]
+}
+
+/// An ambient type's physics (loose.rs `AmbTune`): `mcAmbientTypePhysicsTuning.xml`,
+/// `mcAmbientWheelTuning.xml`, `iWheelCount` / `bIsTrailer` of `mcAmbientType.xml`, the `.r155`
+/// root bound, the model's wheel bones (`hubs`). Read once a type.
+pub fn amb_tune(root: &std::path::Path, model: &str, hubs: Option<[Option<Vec3>; 6]>, ty: &AmbType) -> Option<std::sync::Arc<crate::physics::loose::AmbTune>> {
+    use crate::physics::loose::AmbTune;
+    use std::sync::{Arc, Mutex};
+    static KEPT: std::sync::OnceLock<Mutex<hashbrown::HashMap<String, Option<Arc<AmbTune>>>>> = std::sync::OnceLock::new();
+    let mut kept = KEPT.get_or_init(|| Mutex::new(hashbrown::HashMap::new())).lock().unwrap();
+    if let Some(t) = kept.get(model) {
+        return t.clone();
+    }
+    let made = (|| {
+        let dir = root.join("tune/ambients/traffic").join(model);
+        let phys = std::fs::read_to_string(dir.join("mcAmbientTypePhysicsTuning.xml")).ok()?;
+        let wheel = std::fs::read_to_string(dir.join("mcAmbientWheelTuning.xml")).ok()?;
+        let ty_xml = std::fs::read_to_string(dir.join("mcAmbientType.xml")).unwrap_or_default();
+        let v = |t: &str, tag: &str| crate::ambient::xml_value(t, tag);
+        let attr = |t: &str, tag: &str, a: &str| -> Option<f32> {
+            let i = t.find(&format!("<{tag} "))?;
+            let rest = &t[i..];
+            let j = rest.find(&format!("{a}=\""))? + a.len() + 2;
+            rest[j..].split('"').next()?.parse().ok()
+        };
+        let mass = v(&phys, "fMass")? * v(&phys, "fMassScale").unwrap_or(1.0);
+        let scale = v(&phys, "fInertialBoxScale").unwrap_or(1.0);
+        let bx = Vec3::new(attr(&phys, "vInertialBox", "x")?, attr(&phys, "vInertialBox", "y")?, attr(&phys, "vInertialBox", "z")?) * scale;
+        let k = mass / 12.0;
+        let mut inertia = Vec3::new(k * (bx.y * bx.y + bx.z * bx.z), k * (bx.x * bx.x + bx.z * bx.z), k * (bx.x * bx.x + bx.y * bx.y));
+        let top = inertia.max_element();
+        for i in 0..3 {
+            if inertia[i] < top / 20.0 {
+                inertia[i] = top * 0.05;
+            }
+        }
+        let gravity = v(&phys, "fGravityFactor").unwrap_or(1.0);
+        let (cog_sim, cog_off) = (v(&wheel, "fCogSim")?, v(&wheel, "fCogOffset")?);
+        let (grip, ts, sd, travel, tt, td, st) = (v(&wheel, "fTireGrip")?, v(&wheel, "fSuspensionTension")?, v(&wheel, "fSuspensionDamping")?, v(&wheel, "fSuspensionTravel")?, v(&wheel, "fTireTension")?, v(&wheel, "fTireDamping")?, v(&wheel, "fTireStretch")?);
+        // (sub_826E5B30)
+        let wq = mass * gravity * 9.8 / 4.0;
+        let ks = ts * wq / travel;
+        let kt = 2.0 * wq * tt / st;
+        let (cs, ct) = (2.0 * sd * (wq * ks).sqrt(), 2.0 * td * (wq * kt).sqrt());
+        // (the bound)
+        let file = std::fs::read_dir(root.join("resources/ambients").join(model)).ok()?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "r155"))?;
+        let res = crate::assets::load_resource_file(&file).ok()?;
+        let bound = mcla_formats::rage::bound::ambient_bound(&res)?;
+        let shape = |h: &mcla_formats::rage::bound::Hull| -> &'static crate::physics::hull::HullShape {
+            let mut sh = crate::physics::hull::HullShape::new(h.verts.iter().map(|v| Vec3::from(*v)).collect(), &h.tris);
+            sh.mats = h.material.clone();
+            sh.cg = Vec3::from(h.cg);
+            sh.scan = (h.scan as usize).min(sh.verts.len());
+            Box::leak(Box::new(sh))
+        };
+        let ident = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]];
+        if bound.parts.iter().any(|p| p.1 != ident) {
+            log::warn!("traffic {model}: a part matrix is not the identity - its bound is taken as it stands");
+        }
+        let cy = bound.centroid[1];
+        // (the wheels: iWheelCount of the wheel bones; a trailer's from the third on are its first
+        // ones with z turned - its support near the hitch)
+        let count = v(&ty_xml, "iWheelCount").unwrap_or(4.0) as usize;
+        let hubs = hubs?;
+        let mut wheels = Vec::new();
+        for i in 0..count.min(6) {
+            let w = if ty.trailer && i >= 2 { hubs[i - 2].map(|h| Vec3::new(h.x, h.y, -h.z)) } else { hubs[i] };
+            wheels.push(w?);
+        }
+        Some(Arc::new(AmbTune {
+            shape: shape(&bound.parts[0].0),
+            shape2: bound.parts.get(1).map(|p| shape(&p.0)),
+            mass,
+            inertia,
+            gravity,
+            cg: Vec3::new(0.0, cog_off * cy, 0.0),
+            cog_sim: cog_sim * cy,
+            k: ks,
+            c: cs,
+            kt,
+            ct,
+            travel,
+            stretch: st,
+            grip,
+            wheels,
+            hitch: if ty.cab { Some(CAB_HITCH) } else if ty.trailer { Some(TRAILER_HITCH) } else { None },
+        }))
+    })();
+    if made.is_none() {
+        log::warn!("traffic {model}: no ambient physics (tune, bound or wheel bones missing)");
+    } else if let Some(t) = made.as_ref() {
+        log::info!("traffic {model}: mass {} inertia {:?} gravity {} cg {:?} k {:.1} c {:.1} kt {:.1} ct {:.2} wheels {:?} parts {}", t.mass, t.inertia, t.gravity, t.cg, t.k, t.c, t.kt, t.ct, t.wheels, 1 + t.shape2.is_some() as u8);
+    }
+    kept.insert(model.to_string(), made.clone());
+    made
 }
 
 /// The lanes as rails: each lane's links in order and its length.
@@ -431,9 +536,12 @@ pub struct Rider {
     pub seat: Option<Seat>,
     /// the drawn body's pitch and roll (sub_82794FA8)
     pub tilt: Tilt,
-    /// the velocity the physics level is given for the car while it rides (inactive): its
-    /// position's change over the frame (sub_826E9A40 -> sub_826FA510, inst +96; no turn)
-    pub moved: Vec3,
+    /// the physics level holds the car (loose.rs `Amb`: inactive while it rides, active - state 4 -
+    /// until its rest rule); `active`: its body is active; `wake`: the game made it physical
+    /// (vehicles.rs hands that to the level: 0x8258D3F8)
+    pub in_level: bool,
+    pub active: bool,
+    pub wake: bool,
     rng: u32,
     id: u32,
     /// the follower's curve speed |dP/dt| (+180) and the lane it was taken on (another
@@ -483,7 +591,9 @@ impl Rider {
             partner: None,
             seat: None,
             tilt: Tilt::default(),
-            moved: Vec3::ZERO,
+            in_level: false,
+            active: false,
+            wake: false,
             rng: seed.max(1),
             id: seed,
             ds: 0.0,
@@ -615,6 +725,17 @@ impl Rider {
                 self.t = t;
                 return;
             }
+        }
+    }
+
+    /// The physics level put the car to rest (sub_826E68C0 -> behaviour vfunc 13 sub_8279F790: state 5).
+    pub(super) fn came_to_rest(&mut self) {
+        self.active = false;
+        if self.state == 4 {
+            self.state = 5;
+            self.v = 0.0;
+            self.stand = 0.0;
+            self.rest = 0.0;
         }
     }
 
@@ -1687,10 +1808,16 @@ impl Vehicles {
                         let p = c.state.pos;
                         let _ = writeln!(w, "{:.2}	{}	{}	{:.2}	{:.2}	{:.2}	{:.3}	{:.2}	{}	0	000	{:.2}	0	0	0	{}	0	0", self.clock, r.rng_id(), c.model.name, p.x, p.y, p.z, c.state.speed(), c.input.brake, c.placed as u8, c.input.throttle, r.state);
                     }
-                    // physical: at rest the physics puts it to sleep (state 5; RAGE's sleep
-                    // thresholds are not decoded: under 0.1 m/s and 0.1 rad/s for 0.5 s)
+                    // physical: the physics level's rest rule takes it out (state 5: vehicles.rs,
+                    // loose.rs `ambient_frame`); a contact makes it active again
+                    if r.in_level {
+                        if r.state == 4 {
+                            continue;
+                        }
+                    }
+                    // (without the level: under 0.1 m/s and 0.1 rad/s for 0.5 s - the port's own)
                     let (sp, w) = (c.state.speed(), c.state.ang_vel.length());
-                    if r.state == 4 {
+                    if r.state == 4 && !r.in_level {
                         if sp < 0.1 && w < 0.1 {
                             r.rest += dt;
                             if r.rest > 0.5 {
@@ -1703,7 +1830,7 @@ impl Vehicles {
                         }
                         continue;
                     }
-                    if sp > 0.3 {
+                    if sp > 0.3 && !r.in_level {
                         r.state = 4;
                         r.rest = 0.0;
                         continue;
@@ -1725,6 +1852,7 @@ impl Vehicles {
                             let back = matches!(r.path.as_ref(), Some(p) if p.reverse);
                             r.state = 4;
                             r.physical = true;
+                            r.wake = true;
                             r.path = None;
                             r.then = None;
                             r.rest = 0.0;
@@ -1756,15 +1884,9 @@ impl Vehicles {
             let dist2 = Vec3::new(c.state.pos.x - focus.x, 0.0, c.state.pos.z - focus.z).length_squared();
             let due = probe_due(r, frame, dist2, c.state.up().y);
             let car = (c.state.pos, c.state.up(), dir);
-            let was = r.seat.as_ref().map(|s| s.at.0);
             let (p, rot) = seat_car(r, col, p, dir, f, car, due);
             c.state.relocate(p, rot);
             c.state.vel = dir * v;
-            // (the level's velocity: the matrix position's change - not the drawn drop - over dt)
-            r.moved = match (was, r.seat.as_ref().map(|s| s.at.0)) {
-                (Some(a), Some(b)) if dt > 0.0 => (b - a) / dt,
-                _ => dir * v,
-            };
             if let Some(w) = trace.as_mut() {
                 use std::io::Write;
                 let (lim, junction) = rail_speed(nav, r.link);
@@ -1798,14 +1920,15 @@ impl Vehicles {
                 let me = self.cars.iter().position(|c| c.is_player);
                 if let Some(pi) = me {
                     let m = self.cars[pi].state.pos;
-                    let pick = (0..self.cars.len()).filter(|&i| self.cars[i].rail.as_ref().is_some_and(|r| r.state == 1 && r.v > 2.0 && !r.ty.cab && !r.ty.trailer) && self.cars[i].state.pos.distance(m) < 80.0).min_by(|&a, &b| self.cars[a].state.pos.distance(m).total_cmp(&self.cars[b].state.pos.distance(m)));
+                    let semi = std::env::var("MCLA_TRAFFIC_RAM_SEMI").is_ok();
+                    let pick = (0..self.cars.len()).filter(|&i| self.cars[i].rail.as_ref().is_some_and(|r| (r.state == 1 && r.v > 2.0 && !semi && !r.ty.cab && !r.ty.trailer) || (semi && r.ty.trailer && r.state == 0 && !r.physical)) && self.cars[i].state.pos.distance(m) < 150.0).min_by(|&a, &b| self.cars[a].state.pos.distance(m).total_cmp(&self.cars[b].state.pos.distance(m)));
                     if let Some(k) = pick {
                         *last = self.clock;
-                        let (tp, tr, tv) = (self.cars[k].state.pos, self.cars[k].state.rot, self.cars[k].rail.as_ref().unwrap().v);
+                        let (tp, tr, tv) = (self.cars[k].state.pos, self.cars[k].state.rot, if semi { self.cars[k].state.vel.length() } else { self.cars[k].rail.as_ref().unwrap().v });
                         let f = tr * Vec3::NEG_Z;
                         let p = &mut self.cars[pi];
                         // (as a reset puts a car: a fresh state, placed on the ground by the step)
-                        p.state = crate::physics::CarState::new(tp - f * 9.0, (-f.x).atan2(-f.z));
+                        p.state = crate::physics::CarState::new(tp - f * if semi { 13.0 } else { 9.0 }, (-f.x).atan2(-f.z));
                         p.placed = false;
                         p.state.vel = f * (tv + 12.0);
                         p.pose_history.reset();
@@ -1827,6 +1950,7 @@ impl Vehicles {
                     let c = &mut self.cars[k];
                     let r = c.rail.as_mut().unwrap();
                     r.physical = true;
+                    r.wake = true;
                     r.state = 4;
                     r.rest = 0.0;
                     c.state.vel = c.state.forward() * r.v + c.state.right() * 5.0;
@@ -1856,6 +1980,11 @@ impl Vehicles {
                 r.partner = None;
                 continue;
             };
+            // (once physical a trailer never trails again: +500 bit 0x10, set by sub_826E96E0, is
+            // cleared only at the car's init, sub_826E9BB8 - it lies where it came to rest)
+            if r.physical {
+                continue;
+            }
             let (cp, cr) = (self.cars[cab].state.pos, self.cars[cab].state.rot);
             let h = cp + cr * CAB_HITCH;
             let t = &mut self.cars[i];
@@ -1923,12 +2052,19 @@ impl Vehicles {
     }
 
     /// Something met a traffic car on a rail: from now on the physics has it (base slot 18
-    /// sub_826E96E0, state 4). A trailer hands it to its cab (the pair's joints are not
-    /// ported: the trailer keeps trailing the hitch).
+    /// sub_826E96E0, state 4). A trailer has no behaviour (car +452 = 0): it is physical from
+    /// here (and never trails again); its cab is made active with it (sub_826E7340 ->
+    /// sub_826EA0A8, the level's constraints join them).
     pub(super) fn let_go(&mut self, k: usize, _world: &crate::world::World) {
-        let Some(r) = self.cars[k].rail.as_ref() else { return };
+        let Some(r) = self.cars[k].rail.as_mut() else { return };
         if r.state == 0 {
-            let cab = r.partner.and_then(|id| self.cars.iter().position(|c| c.rail.as_ref().is_some_and(|x| x.rng_id() == id && x.state != 0)));
+            if r.physical {
+                return;
+            }
+            r.physical = true;
+            r.wake = true;
+            let partner = r.partner;
+            let cab = partner.and_then(|id| self.cars.iter().position(|c| c.rail.as_ref().is_some_and(|x| x.rng_id() == id && x.state != 0)));
             if let Some(cab) = cab {
                 self.let_go(cab, _world);
             }
@@ -1939,6 +2075,7 @@ impl Vehicles {
         if r.physical {
             return;
         }
+        r.wake = true;
         let back = matches!(r.path.as_ref(), Some(p) if p.reverse);
         r.physical = true;
         r.state = 4;
@@ -2001,7 +2138,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), moved: Vec3::ZERO, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();

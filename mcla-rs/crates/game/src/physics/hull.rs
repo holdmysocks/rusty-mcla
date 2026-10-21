@@ -1499,6 +1499,8 @@ pub struct PartHit {
     pub on_b: Vec3,
     pub normal: Vec3,
     pub depth: f32,
+    /// the part's corners (their numbers) the detector ended on (for a hull's triangle)
+    pub corners: ([u32; 4], usize),
 }
 
 /// `swept`: the detector to use in place of the discrete one (0x825CEE38's swept branch, taken when the pair's
@@ -1566,7 +1568,7 @@ pub fn part_touches(core: &impl super::gjk::Support, margin: f32, bbox: (Vec3, V
             return;
         }
         let normal = cone_exact(&tri, face, &other, on_b, r.normal);
-        hit(PartHit { cell, polygon: i as u32, surface: Surface::from_u8(mesh.mats.get(i).copied().unwrap_or(0)), local, on_a, on_b, normal, depth: 0.0 - r.distance });
+        hit(PartHit { cell, polygon: i as u32, surface: Surface::from_u8(mesh.mats.get(i).copied().unwrap_or(0)), local, on_a, on_b, normal, depth: 0.0 - r.distance, corners: r.corners });
     });
 }
 

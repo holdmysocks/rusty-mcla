@@ -178,6 +178,56 @@ pub fn find_hull_of(res: &Resource, class: u32) -> Option<Hull> {
     let mut o = 0;
     while o + 0xe0 <= res.virtual_size {
         if rd.u32le(o) == class && rd.u8(o + 4) == 4 {
+            if let Some(h) = hull_at(&rd, res.virtual_size, o) {
+                return Some(h);
+            }
+        }
+        o += 16;
+    }
+    None
+}
+
+/// An ambient (traffic) type's bound: the `.r155` root's +8 bound - one polyhedron, or a composite
+/// (type 12: a semi trailer's deck and rear block) of polyhedra, each with its part matrix
+/// (+0x84, 64 bytes a part; rows, translation at +48) - and the root bound's centroid (+0x30).
+pub struct AmbientBound {
+    pub parts: Vec<(Hull, [[f32; 3]; 4])>,
+    pub centroid: [f32; 3],
+}
+
+pub fn ambient_bound(res: &Resource) -> Option<AmbientBound> {
+    let rd = Rd::new(res);
+    let o = rd.ptr(8)?;
+    let centroid = [rd.f32(o + 0x30), rd.f32(o + 0x34), rd.f32(o + 0x38)];
+    let ident = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]];
+    match rd.u8(o + 4) {
+        4 => Some(AmbientBound { parts: vec![(hull_at(&rd, res.virtual_size, o)?, ident)], centroid }),
+        12 => {
+            let n = rd.u16(o + 0x90) as usize;
+            let (parts, mats) = (rd.ptr(o + 0x80)?, rd.ptr(o + 0x84)?);
+            if n == 0 || n > 64 || !rd.has(parts, n * 4) || !rd.has(mats, n * 64) {
+                return None;
+            }
+            let mut out = Vec::new();
+            for i in 0..n {
+                let b = rd.ptr(parts + i * 4)?;
+                let m = mats + i * 64;
+                let row = |k: usize| [rd.f32(m + k * 16), rd.f32(m + k * 16 + 4), rd.f32(m + k * 16 + 8)];
+                if rd.u8(b + 4) != 4 {
+                    return None;
+                }
+                out.push((hull_at(&rd, res.virtual_size, b)?, [row(0), row(1), row(2), row(3)]));
+            }
+            Some(AmbientBound { parts: out, centroid })
+        }
+        _ => None,
+    }
+}
+
+/// The polyhedron bound (type 4) at `o`.
+fn hull_at(rd: &Rd, size: usize, o: usize) -> Option<Hull> {
+    {
+        {
             let (nv, nt, nm) = (rd.u32(o + 0xc8) as usize, rd.u32(o + 0xcc) as usize, rd.u8(o + 0xdc) as usize);
             if let (Some(verts), Some(tris)) = (rd.ptr(o + 0x80), rd.ptr(o + 0x8c)) {
                 if nv >= 4 && nv < 4096 && nt >= 4 && nt < 8192 && rd.has(verts, nv * 16) && rd.has(tris, nt * 16) {
@@ -197,7 +247,7 @@ pub fn find_hull_of(res: &Resource, class: u32) -> Option<Hull> {
                         let number = numbers.map_or(0, |n| rd.u8(n + t) as usize);
                         hull.material.push(ids.filter(|_| number < nm).map_or(0, |i| rd.u32(i + number * 4)));
                     }
-                    if let Some((b, w)) = composite_box_of(&rd, res.virtual_size, o) {
+                    if let Some((b, w)) = composite_box_of(rd, size, o) {
                         hull.composite = Some(b);
                         hull.wheel_parts = w;
                     }
@@ -206,7 +256,6 @@ pub fn find_hull_of(res: &Resource, class: u32) -> Option<Hull> {
                 }
             }
         }
-        o += 16;
     }
     None
 }

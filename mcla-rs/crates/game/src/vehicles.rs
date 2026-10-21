@@ -489,9 +489,6 @@ struct DmgMap {
 
 #[derive(Default)]
 pub struct Vehicles {
-    /// riding traffic a car's step met this tick, with what that step's solves gave it
-    /// (impulse, its turn): activated (traffic.rs `let_go`) after the steps
-    met: Vec<(u32, Vec3, Vec3)>,
     pub render_alpha: f32,
     pub models: Vec<Arc<CarModel>>,
     pub wheels: Option<Arc<WheelModel>>,
@@ -2719,6 +2716,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let step_dt = dt.min(1.0 / 30.0);
         if let Some(lw) = shared.as_deref() {
             self.level.live = true;
+            self.ambient_into_level(step_dt);
             self.level.pre_collide(lw, step_dt);
         }
         let mut level_car: Option<usize> = None;
@@ -2729,7 +2727,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 level_first = false;
             }
             let c = &mut self.cars[idx];
-            if c.rail.as_ref().is_some_and(|r| !r.physical) {
+            // (traffic: the physics level's - inactive while it rides, an ambient collider while
+            // physical; loose.rs `Amb`)
+            if c.rail.as_ref().is_some_and(|r| !r.physical || r.in_level) {
                 continue;
             }
             if let Some((p, yaw)) = c.ai.as_mut().and_then(|a| a.reset_to.take()) {
@@ -2839,35 +2839,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
         if let Some(lw) = shared.as_deref() {
             self.level_swap(&mut level_car, None, step_dt, false, true);
             self.level.step_rest_alone(lw, step_dt);
-            self.level.end_tick(lw, step_dt);
-        }
-        // riding traffic met by a car's step: physical from here (sub_826E7340 / sub_826E96E0, state
-        // 4), at the velocity the level had for it (inst +96 -> collider +272) and what the solves
-        // gave it (impulse / mass; the turn through its moments). Its turn before is the collider's
-        // own: zero from Init (sub_8259BC48) at the first activation, kept from its last sleep after
-        // (open: riding clears it here, so a later activation starts with no turn)
-        for (id, jf, jt) in std::mem::take(&mut self.met) {
-            let Some(k) = self.cars.iter().position(|c| c.uid == id && c.rail.is_some()) else { continue };
-            if std::env::var("MCLA_TRAFFIC_RAM").is_ok() {
-                let me = self.cars.iter().find(|c| c.is_player).map(|c| (c.state.pos, c.state.vel.length())).unwrap_or_default();
-                log::info!("traffic let go by contact {} d {:.2} player v {:.2} jf {:.0}", self.cars[k].model.name, self.cars[k].state.pos.distance(me.0), me.1, jf.length());
-            }
-            if let Some(v) = self.cars[k].rail.as_ref().filter(|r| !r.physical).map(|r| r.moved) {
-                self.let_go(k, world);
-                if self.cars[k].rail.as_ref().is_some_and(|r| r.physical) {
-                    self.cars[k].state.vel = v;
-                }
-            }
-            let c = &mut self.cars[k];
-            if c.rail.as_ref().is_some_and(|r| r.physical) && c.state.veh.is_none() {
-                let p = c.tuned.as_deref().unwrap_or(&c.model.params).clone();
-                if let Some(vt) = p.veh.as_ref() {
-                    let i = crate::physics::vehsim::moments(&p, &vt.t);
-                    c.state.vel += jf / vt.t.s.mass;
-                    let l = c.state.rot.inverse() * jt;
-                    c.state.ang_vel += c.state.rot * Vec3::new(l.x / i.x, l.y / i.y, l.z / i.z);
-                }
-            }
+            self.level.end_tick_with(lw, step_dt, Some(&world.collider));
+            self.ambient_out_of_level(step_dt, world);
         }
         // car-car separation (soft spheres): the port's own rule, now only for a pair the shared level does
         // not take (a car without the original's body: no hull, no simulation tuning; MCLA_DBG_NOSHARED)
@@ -2885,13 +2858,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     if (ki && kj) || ((ki || kj) && (self.cars[i].parked.is_some() || self.cars[j].parked.is_some())) {
                         continue;
                     }
-                    // (both in the shared level: their pair is the solver's, in a step - riding traffic
-                    // too, as an inactive body)
-                    let in_level = |c: &CarInstance| {
-                        let p = c.tuned.as_deref().unwrap_or(&c.model.params);
-                        p.hull.is_some() && p.veh.is_some() && (c.state.veh.is_some() || c.rail.as_ref().is_some_and(|r| !r.physical))
-                    };
-                    if shared.is_some() && in_level(&self.cars[i]) && in_level(&self.cars[j]) && (ki || kj) {
+                    // (traffic the physics level holds: its pairs are the level's - loose.rs `Amb`)
+                    let held = |c: &CarInstance| c.rail.as_ref().is_some_and(|r| r.in_level);
+                    if shared.is_some() && (held(&self.cars[i]) || held(&self.cars[j])) {
                         continue;
                     }
                     for (k, kin) in [(i, ki), (j, kj)] {
@@ -3031,7 +3000,6 @@ if keep || c.state.pos.distance(center) < 450.0 {
         use crate::physics::loose::{static_shape, LiveVeh};
         if let Some(k) = cur.take() {
             let mut answers = Vec::new();
-            let mut met = Vec::new();
             if let Some(vs) = self.cars.get_mut(k).and_then(|c| c.state.veh.as_deref_mut()) {
                 answers = vs.loose.vehicle_answers();
                 let part = vs.loose.take_car();
@@ -3040,18 +3008,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             for (uid, jf, jt, push, turn) in answers {
                 let Some(o) = self.cars.iter_mut().find(|c| c.uid == uid) else { continue };
-                // (a riding car this step met: activated - physical from here, starting at the
-                // velocity it was given, with what the solves gave it)
-                if o.state.veh.is_none() && o.rail.as_ref().is_some_and(|r| !r.physical) {
-                    met.push((uid, jf, jt));
-                    continue;
-                }
                 let p = o.tuned.as_deref().unwrap_or(&o.model.params).clone();
                 if let Some(vt) = p.veh.clone() {
                     crate::physics::vehsim::take_answer(&mut o.state, &p, &vt, jf, jt, push, turn);
                 }
             }
-            self.met.extend(met);
         }
         let Some(k) = next else { return };
         let ghost = self.cars[k].pu_ghost;
@@ -3065,31 +3026,14 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let me = self.cars[k].uid;
         let mut list = Vec::new();
         for (j, o) in self.cars.iter().enumerate() {
-            // (a car before this one has stepped: their pair was in its step)
-            // (traffic riding its lane is an inactive body of the level - sub_826FA588 ->
-            // sub_8258B598 - and never steps: its pairs are in the others' steps)
-            let riding = o.rail.as_ref().is_some_and(|r| !r.physical);
-            if (j <= k && !riding) || !o.placed || o.pu_ghost || self.cars[k].pu_ghost {
+            // (a car before this one has stepped: their pair was in its step; traffic the level holds
+            // is an object of its own there - loose.rs `Amb`)
+            if j <= k || !o.placed || o.pu_ghost || self.cars[k].pu_ghost || o.rail.as_ref().is_some_and(|r| r.in_level) {
                 continue;
             }
             let p = o.tuned.as_deref().unwrap_or(&o.model.params);
             let (Some(vt), Some(hull)) = (p.veh.as_ref(), p.hull.as_ref()) else { continue };
-            // (a riding car's body: its pose and the velocity it is given, no turn - it has no sim
-            // state; a contact with it activates it in the collision pass, so the step solves it as a
-            // body with its mass: sub_8258D9F0 -> sub_8258D3F8 -> sub_826FA810)
-            let ride = o.rail.as_ref().filter(|r| !r.physical && o.state.veh.is_none()).map(|r| r.moved);
-            let Some((body, cg)) = (match ride {
-                Some(v) => {
-                    let t = &vt.t;
-                    let pivot = Vec3::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z);
-                    let m = glam::Mat3::from_quat(o.state.rot);
-                    let rows = [m.x_axis, m.y_axis, m.z_axis];
-                    let now = [rows[0], rows[1], rows[2], o.state.pos];
-                    let at = o.state.pos + m * pivot + v * dt;
-                    Some((crate::physics::loose::PBody::of_car(at, rows, v, Vec3::ZERO, t.s.mass, crate::physics::vehsim::moments(p, t), now, now, Vec3::ZERO, Vec3::ZERO), pivot))
-                }
-                None => crate::physics::vehsim::island_body(&o.state, p, vt, dt),
-            }) else { continue };
+            let Some((body, cg)) = crate::physics::vehsim::island_body(&o.state, p, vt, dt) else { continue };
             list.push(LiveVeh { id: o.uid, shape: static_shape(hull), class: if o.rail.is_some() || o.parked.is_some() { 6 } else { 8 }, gravity: 1.0, cg, level: o.uid as i64 - me as i64, body, inflict: o.inflict, parked: o.parked.is_some() });
         }
         let vs = self.cars[k].state.veh.as_deref_mut().unwrap();
@@ -3102,6 +3046,85 @@ if keep || c.state.pos.distance(center) < 450.0 {
         vs.loose.later = !first;
         vs.loose.set_vehicles(list);
         *cur = Some(k);
+    }
+
+    /// Traffic into the physics level before the tick (loose.rs `Amb`): the cars gone leave it; each
+    /// riding (or otherwise kinematic) car's instance where it is this frame, inactive; a car the game
+    /// made physical (its footprint probe, a knock) is made active there.
+    fn ambient_into_level(&mut self, dt: f32) {
+        let Some(root) = traffic::DATA_ROOT.get().cloned() else { return };
+        let alive: std::collections::HashSet<u32> = self.cars.iter().filter(|c| c.rail.is_some()).map(|c| c.uid).collect();
+        self.level.ambient_keep(&|u| alive.contains(&u));
+        // (a semi's other car: a trailer's cab is the car its id names; a cab's trailer the one that names it)
+        let cabs: std::collections::HashMap<u32, u32> = self.cars.iter().filter_map(|c| c.rail.as_ref().filter(|r| r.state != 0).map(|r| (r.rng_id(), c.uid))).collect();
+        let trailers: std::collections::HashMap<u32, u32> = self.cars.iter().filter_map(|c| c.rail.as_ref().filter(|r| r.state == 0).and_then(|r| r.partner).map(|p| (p, c.uid))).collect();
+        for k in 0..self.cars.len() {
+            let c = &self.cars[k];
+            let Some(r) = c.rail.as_ref() else { continue };
+            let Some(tune) = traffic::amb_tune(&root, &c.model.name, c.model.own_wheels, &r.ty) else {
+                self.cars[k].rail.as_mut().unwrap().in_level = false;
+                continue;
+            };
+            let partner = if r.state == 0 { r.partner.and_then(|p| cabs.get(&p)).copied() } else if r.ty.cab { trailers.get(&r.rng_id()).copied() } else { None };
+            let m = traffic::instance_matrix(c);
+            self.level.ambient_place(c.uid, &tune, m, partner, c.inflict, dt);
+            let uid = c.uid;
+            let r = self.cars[k].rail.as_mut().unwrap();
+            r.in_level = true;
+            if std::mem::take(&mut r.wake) {
+                self.level.ambient_let_go(uid);
+            }
+        }
+    }
+
+    /// After the tick: the level's rest rule, what it made active or put to rest (traffic.rs `let_go`;
+    /// state 5), and each active car's pose from its body.
+    fn ambient_out_of_level(&mut self, dt: f32, world: &crate::world::World) {
+        self.level.ambient_frame(dt);
+        let ram = std::env::var("MCLA_TRAFFIC_RAM").is_ok();
+        for (uid, woke, slept) in self.level.ambient_events() {
+            let Some(k) = self.cars.iter().position(|c| c.uid == uid && c.rail.is_some()) else { continue };
+            if ram {
+                let me = self.cars.iter().find(|c| c.is_player).map(|c| (c.state.pos, c.state.vel.length())).unwrap_or_default();
+                log::info!("traffic level {} {} {} d {:.2} player v {:.2}", if woke { "active" } else { "rest" }, self.cars[k].model.name, uid, self.cars[k].state.pos.distance(me.0), me.1);
+            }
+            if woke {
+                self.let_go(k, world);
+                let r = self.cars[k].rail.as_mut().unwrap();
+                r.active = true;
+                r.wake = false;
+            }
+            if slept && self.level.ambient_pose(uid).is_none() {
+                self.cars[k].rail.as_mut().unwrap().came_to_rest();
+            }
+        }
+        // (test: MCLA_TRAFFIC_RAM - every half second each active semi's hitch gap and the active cars' speeds)
+        if ram {
+            static T: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if T.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 15 == 0 {
+                for c in self.cars.iter().filter(|c| c.rail.as_ref().is_some_and(|r| r.active)) {
+                    let r = c.rail.as_ref().unwrap();
+                    let gap = r.partner.and_then(|p| self.cars.iter().find(|o| o.rail.as_ref().is_some_and(|x| x.rng_id() == p))).and_then(|o| {
+                        let (a, b) = (self.level.ambient_pose(c.uid)?, self.level.ambient_pose(o.uid)?);
+                        let x = |m: &[Vec3; 4], p: Vec3| m[3] + m[0] * p.x + m[1] * p.y + m[2] * p.z;
+                        let (ha, hb) = if r.ty.trailer { (traffic::TRAILER_HITCH_PUB, traffic::CAB_HITCH_PUB) } else { (traffic::CAB_HITCH_PUB, traffic::TRAILER_HITCH_PUB) };
+                        Some(x(&a.0, ha).distance(x(&b.0, hb)))
+                    });
+                    log::info!("traffic active {} {} v {:.2} w {:.2} up {:.3} hitch gap {:?}", c.model.name, c.uid, c.state.vel.length(), c.state.ang_vel.length(), c.state.up().y, gap);
+                }
+            }
+        }
+        for c in self.cars.iter_mut() {
+            if !c.rail.as_ref().is_some_and(|r| r.active) {
+                continue;
+            }
+            let Some((m, v, w)) = self.level.ambient_pose(c.uid) else { continue };
+            let rot = Quat::from_mat3(&glam::Mat3::from_cols(m[0], m[1], m[2])).normalize();
+            c.state.relocate(m[3], rot);
+            c.state.vel = v;
+            c.state.ang_vel = w;
+            c.placed = true;
+        }
     }
 
     /// Put a car somewhere by hand (cutscenes): wheels follow, it stands still.
