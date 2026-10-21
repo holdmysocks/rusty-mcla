@@ -513,7 +513,8 @@ impl Vehicles {
         true
     }
 
-    /// sub_826F2A30: up to 30 tries, at most one car removed.
+    /// sub_826F2A30: up to 30 tries, at most one car marked for removal (sub_826E9588, reason 7 / 9: it goes
+    /// half a second later, when its fade has run out - `CarInstance::removing`).
     pub(super) fn parked_unspawn(&mut self, sp: &Spawner, focus: Vec3) {
         // S car list 0: the ambient cars (riding and parked)
         let amb: Vec<usize> = (0..self.cars.len()).filter(|&i| self.ambient_listed(i)).collect();
@@ -528,6 +529,10 @@ impl Vehicles {
                     }
                     let i = amb[self.park_rng.index(amb.len() as u32) as usize];
                     let c = &self.cars[i];
+                    // (already on its way out: car +500 bit 0x4)
+                    if c.removing.is_some() {
+                        continue;
+                    }
                     let Some(h) = c.item else { continue };
                     let age = if let Some(r) = c.rail.as_ref() { (self.clock - r.born, r.life) } else { (self.clock - c.amb_born, c.amb_life) };
                     if age.0 < age.1 || Vec2::new(focus.x - c.state.pos.x, focus.z - c.state.pos.z).length_squared() < r_in * r_in {
@@ -539,7 +544,8 @@ impl Vehicles {
                     if std::env::var("MCLA_PARK_DUMP").is_ok() {
                         log::info!("layout item {} unspawn {}", h, c.model.name);
                     }
-                    self.cars.remove(i);
+                    // (sub_826E9588: marked, removed when its fade has run out - `spawn_traffic`)
+                    self.cars[i].removing = Some(1.0);
                     return;
                 }
                 if self.ped_list.is_empty() {
@@ -561,6 +567,9 @@ impl Vehicles {
                 continue;
             }
             let i = amb[self.park_rng.index(amb.len() as u32) as usize];
+            if self.cars[i].removing.is_some() {
+                continue;
+            }
             // (a spot's car: car +44)
             let Some(si) = self.cars[i].parked.filter(|&s| s != ITEM_SPOT) else { continue };
             let p = self.cars[i].state.pos;
@@ -580,7 +589,7 @@ impl Vehicles {
                 if std::env::var("MCLA_PARK_DUMP").is_ok() {
                     log::info!("parked unspawn {} spot {} dist {:.1} listed {}", self.cars[i].model.name, si, d.length(), self.park_lists.contains(&ni));
                 }
-                self.cars.remove(i);
+                self.cars[i].removing = Some(1.0);
                 return;
             }
         }

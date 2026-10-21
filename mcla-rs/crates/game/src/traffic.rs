@@ -2828,6 +2828,14 @@ impl Vehicles {
         let mut sp = self.spawner.take().unwrap();
         // trailers whose cab is gone
         self.cars.retain(|c| c.rail.as_ref().map_or(true, |r| r.state != 0 || r.partner.is_some()));
+        // cars on their way out (car +500 bit 0x4, sub_826E9AD0): the fade +484 falls by 2 a second
+        // (0x82040E94); at 0 the car is removed (sub_826D50E8 with its reason)
+        for c in self.cars.iter_mut() {
+            if let Some(f) = c.removing.as_mut() {
+                *f -= 2.0 * dt;
+            }
+        }
+        self.cars.retain(|c| c.removing.map_or(true, |f| f > 0.0));
         // roads a race script set the density of
         for (p, d) in std::mem::take(&mut self.road_density_new) {
             for i in nav.links_near(p, 30.0) {

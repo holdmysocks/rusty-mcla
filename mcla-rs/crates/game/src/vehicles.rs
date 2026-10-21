@@ -261,6 +261,10 @@ pub struct CarInstance {
     /// 8 + 4U s, sub_826EAD00)
     pub amb_born: f32,
     pub amb_life: f32,
+    /// a car on its way out (car +500 bit 0x4, set with the reason at +488 by sub_826E9588 - only the parked
+    /// unspawner sub_826F2A30 does): its fade (+484), falling by 2 a second until the car is removed
+    /// (sub_826E9AD0 -> sub_826D50E8); meanwhile its LOD 1 is drawn as LOD 2 (`pick_lods`)
+    pub removing: Option<f32>,
     /// seconds of physics left before a parked car is frozen in place
     pub settle: f32,
     /// roaming street racer (free roam): can be challenged
@@ -2020,7 +2024,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6] });
+        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6] });
         self.cars.len() - 1
     }
 
@@ -4231,6 +4235,8 @@ impl Vehicles {
                 let d = (centre - eye).dot(axis) - near + r;
                 let seen = frustum.intersects_sphere(centre, r);
                 let lod = Self::lod_of(c, d, seen && !occluders.hides_sphere(centre, r), full_detail);
+                // (sub_82793360, main pass: LOD 1 becomes LOD 2 while car +500 bit 0x4 - on its way out)
+                let lod = if lod == 1 && c.removing.is_some() { 2 } else { lod };
                 (lod, seen && (lod >= 0 || d < 50.0))
             })
             .unzip();
