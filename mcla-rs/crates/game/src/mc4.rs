@@ -9340,6 +9340,15 @@ impl Game {
         (!self.career.event_races(&key).is_empty()).then_some(key)
     }
 
+    /// The tournament man's difficulty and his icon's colour (`game/CruisingHookmen/0xdcd7fe26`
+    /// 0x115..0x17e: Racer_SetIconColorByDifficulty, mcHookman_SetDifficulty): 1 while the mission
+    /// that started him is not complete, else 2.
+    pub fn mc4_tournament_man_diff(&self, d: usize) -> i32 {
+        let launcher = format!("{}_tournament_hk1", DISTRICT_CODES[d.min(4)]);
+        let open = MISSION_LAUNCHERS.iter().any(|(m, l)| *l == launcher && self.career.mission_started(m) && !self.career.mission_complete(m));
+        if open { 1 } else { 2 }
+    }
+
     /// The man of a tournament has been flashed: his panel (form 66) opens over the game for
     /// the race the tournament is at; ACCEPT starts it (`mc4_event_panel_accept`).
     pub fn mc4_tournament_open(&mut self, key: &str) -> bool {

@@ -384,9 +384,9 @@ impl Roamers {
             }
             let low = sp.config.to_ascii_lowercase();
             let car = low.find("_vp_").or_else(|| low.find("_vpd_")).map(|i| low[i + 1..].to_string()).unwrap_or_default();
-            // (generic_timetrial_hookman.sco 0x137 / 0x167: difficulty 1; generic_tournament_hookman.sco
-            // 0x14d / 0x17e: 2)
-            let diff = if sp.kind == ManKind::TimeTrial { 1 } else { 2 };
+            // (generic_timetrial_hookman.sco 0x137 / 0x167: difficulty 1; the tournament man's 1 while his
+            // mission is open, else 2 - `mc4_tournament_man_diff`)
+            let diff = if sp.kind == ManKind::TimeTrial { 1 } else { game.mc4_tournament_man_diff(sp.district) };
             men.push(Man { key: format!("{}:{}", if sp.kind == ManKind::TimeTrial { "tt" } else { "tour" }, sp.district), kind: sp.kind, district: sp.district, name: sp.name.clone(), car, config: sp.config.clone(), difficulty: diff, mission: String::new(), event, hidden: false, pts: sp.pts.clone(), at: 0.0, mod_value: -1, uid: 0 });
         }
         // the red light and freeway racers whose scripts run

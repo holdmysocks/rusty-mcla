@@ -1564,6 +1564,12 @@ impl Game {
             return true;
         }
         let (price, rep) = self.price_of(i);
+        // (a car the game does not offer: RMR_CANT_BUY_UNPURCHASED_DLC - sub_826AFFD8)
+        if !self.mc4_vehicle_available(&self.dir_name(i)) {
+            let text = self.career.strings.get("RMR_CANT_BUY_UNPURCHASED_DLC").map(|s| s.to_uppercase()).unwrap_or_else(|| "LOCKED".into());
+            self.show_message(&text);
+            return false;
+        }
         // (a DUB car comes to the showroom with its tournament's Hard completion: sub_826BF068)
         if self.mc4_showroom_locked(&self.dir_name(i)) {
             let text = self.career.strings.get("RMR_CANT_BUY_LOCKED_CAR").map(|s| s.to_uppercase()).unwrap_or_else(|| "LOCKED".into());
@@ -5504,8 +5510,9 @@ impl Game {
                     self.garage_list = Some((true, 0));
                 }
                 let list_cars: Vec<usize> = match self.garage_list {
-                    // (the showroom offers what the catalogue prices)
-                    Some((showroom, _)) => (0..n).filter(|i| self.is_owned(*i) != showroom && (!showroom || self.price_of(*i).0 > 0)).collect(),
+                    // (the showroom offers what the catalogue prices and the game offers at all -
+                    // mcGarage::ListShowroomVehicles, sub_826A9D58: `mc4_vehicle_available`)
+                    Some((showroom, _)) => (0..n).filter(|i| self.is_owned(*i) != showroom && (!showroom || (self.price_of(*i).0 > 0 && self.mc4_vehicle_available(&self.dir_name(*i))))).collect(),
                     None => Vec::new(),
                 };
                 // (MANAGE VEHICLES lists the garage in its own order - the save's slots, reference
@@ -8844,7 +8851,7 @@ impl Game {
     /// himself out on the road (the "!" of an active mission is his - none stands on the
     /// 100 % save's map, `s11/rk95_map.png`), and wagers and series belong to their hangouts.
     fn event_unmarked(icon: &str) -> bool {
-        matches!(icon, "icon_ingame1" | "icon_ingame6" | "icon_series")
+        matches!(icon, "icon_ingame1" | "icon_ingame6" | "icon_series" | "icon_tournament_man")
     }
 
     /// A hangout's frame on the maps: the wager's "$" in white, the series' flags in yellow
@@ -8871,9 +8878,13 @@ impl Game {
             ("icon_series", Some(egui::Color32::from_rgb(250, 235, 20)))
         } else if mission.contains("PINKSLIP") {
             ("icon_pinkslip", Some(egui::Color32::WHITE))
-        } else if mission.contains("TOURNAMENT") || mission.contains("CHAMP") {
-            // (a tournament is a cup in a ring with its pointer, like the races -
-            // `s11/rk95_mapz.png`, four of them on the 100 % save's map - not a frame)
+        } else if mission.contains("TOURNAMENT") {
+            // (a tournament is no place: its cup is the tournament man's car on the maps - map element
+            // vehicle subtype 4, Racer_SetIconType(car, 7), `main.rs` map_men -, gone once it is won:
+            // `game/CruisingHookmen/0xdcd7fe26`, career2 `series/notes.md` (c))
+            ("icon_tournament_man", None)
+        } else if mission.contains("CHAMP") {
+            // (a cup in a ring with its pointer, like the races - `s11/rk95_mapz.png`)
             ("icon_ingame7", None)
         } else if mission.starts_with("TIMETRIAL") {
             ("icon_ingame5", None)

@@ -84,6 +84,42 @@ pub struct S23bLive {
     pub ui_obj: Option<&'static str>,
 }
 
+/// The content mask (0x827E9174) of the running game: 317, what startup adds (sub_82388848)
+/// with no package downloaded (tDL2 = 317 in every sample).
+pub const CONTENT_MASK: u32 = 317;
+
+/// The vehicle table's ContentFlags (+52; none read as 0, in the mask) and PortalRewardIdx
+/// (+56; -1 none) of a vehicle (parser sub_823964C0).
+pub fn vehicle_content(data_dir: &str, car: &str) -> (u32, i32) {
+    static TABLE: std::sync::OnceLock<std::collections::HashMap<String, (u32, i32)>> = std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| {
+        let mut out = std::collections::HashMap::new();
+        for f in ["0xe94bde63", "0xccb5daee", "0x3cb91343"] {
+            let Ok(s) = std::fs::read(std::path::Path::new(data_dir).join("tune/vehicle").join(f)) else { continue };
+            let s = String::from_utf8_lossy(&s);
+            for block in s.split("Vehicle").skip(1) {
+                let field = |k: &str| block.lines().map(|l| l.trim()).find_map(|l| l.strip_prefix(k).filter(|r| r.starts_with(|c: char| c.is_whitespace())).map(|r| r.trim().to_string()));
+                let Some(name) = field("Name") else { continue };
+                let flags = field("ContentFlags").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+                let portal = field("PortalRewardIdx").and_then(|v| v.parse::<i32>().ok()).unwrap_or(-1);
+                out.insert(name.to_ascii_lowercase(), (flags, portal));
+            }
+        }
+        out
+    });
+    t.get(&car.to_ascii_lowercase()).copied().unwrap_or((0, -1))
+}
+
+impl Game {
+    /// A vehicle the game offers (sub_823961C0): its ContentFlags in the content mask, else a
+    /// portal reward the career holds - the statistic `tREW` of its index above 0 (earned on
+    /// line, sub_822D1260). Only `vp_aud_r8_08` (ContentFlags 2, index 0) is outside the mask.
+    pub fn mc4_vehicle_available(&self, car: &str) -> bool {
+        let (flags, portal) = vehicle_content(&self.data_dir, car);
+        flags == 0 || flags & CONTENT_MASK != 0 || (portal >= 0 && self.mc4_stat("tREW", portal as u32) > 0.0)
+    }
+}
+
 /// The gas stations of `game/MiscTasks/GasStations` (`0x53b4b66d`, started by the career's
 /// start-up script): each a trigger at this centre with this radius (0x40..0x3c0; South
 /// Central's `sc_GasStations`, `0x4398c445`, holds ten of them and one more but is started by
@@ -457,5 +493,21 @@ mod tests {
         let mut g = GasVisit::default();
         assert_eq!(g.step(dt, c, 0.0, false, false, false, false), GasStep::None);
         assert_eq!(g.step(dt, c, 20.0, false, false, false, false), GasStep::RefillOne);
+    }
+
+    /// sub_823961C0 on the disc's vehicle table: the R8 alone is outside the mask (ContentFlags 2,
+    /// PortalRewardIdx 0) and comes with tREW/0; the base cars and the DUB cars are offered.
+    #[test]
+    fn vehicles_outside_the_content_mask() {
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        if !std::path::Path::new(&dir).join("tune/vehicle/0xe94bde63").exists() {
+            return;
+        }
+        assert_eq!(vehicle_content(&dir, "vp_aud_r8_08"), (2, 0));
+        let mut g = Game::new(Vec::new(), 0);
+        g.data_dir = dir;
+        assert!(!g.mc4_vehicle_available("vp_aud_r8_08"));
+        assert!(g.mc4_vehicle_available("vp_am_vantage_07"));
+        assert!(g.mc4_vehicle_available("vp_lam_murcielago_06_dub"));
     }
 }
