@@ -74,6 +74,10 @@ pub struct S23bLive {
     pub takeoff: Option<Vec3>,
     /// the test drive seen last frame
     pub td_was: Option<usize>,
+    /// South Central's set-up script: its clock (WAITUNWARPED 6000 once the player's car is
+    /// there) and whether it has run since the career started
+    pub sc_setup_t: f32,
+    pub sc_setup_done: bool,
 }
 
 /// mph per m/s (0x8201CD1C) and hours per second (0x8202F80C).
@@ -132,8 +136,18 @@ impl Game {
             }
         }
         self.opt_x.s23b.td_was = td;
-        // ---- the driving statistics: only while the world runs ----
         let sim = dt * self.mc4_time_scale();
+        // ---- South Central's set-up script (career.sc_setup) ----
+        if !self.opt_x.s23b.sc_setup_done && d.present && sim > 0.0 && matches!(self.mode, Mode::FreeRoam | Mode::Race) && self.career.loaded() {
+            self.opt_x.s23b.sc_setup_t += sim;
+            if self.opt_x.s23b.sc_setup_t >= 6.0 {
+                self.opt_x.s23b.sc_setup_done = true;
+                for id in self.career.sc_setup() {
+                    log::info!("CareerSetup_SC: {} to READY_TO_START", id);
+                }
+            }
+        }
+        // ---- the driving statistics: only while the world runs ----
         if !d.present || sim <= 0.0 || !matches!(self.mode, Mode::FreeRoam | Mode::Race) || self.fresh_game {
             return;
         }

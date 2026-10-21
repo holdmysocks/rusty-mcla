@@ -1395,6 +1395,9 @@ impl Game {
         // restart of the missions: step 20, `mc4`)
         self.mc4_career_resume();
         self.career.event(crate::career::Ev::Rep(self.rep));
+        // (a career start: South Central's set-up script runs again)
+        self.opt_x.s23b.sc_setup_t = 0.0;
+        self.opt_x.s23b.sc_setup_done = false;
     }
 
     pub fn write_save(&self, data_dir: &str) {
@@ -2526,12 +2529,9 @@ impl Game {
         let easy_wanted = match std::env::var("MCLA_EASY").ok().as_deref() {
             Some("1") => true,
             Some(_) => false,
-            // (an event with a chosen difficulty runs the easy layout at EASIEST and only there:
-            // the recomp's series race at EASIEST on the 100 % save waited for the easy
-            // layout's checkpoint the open line passes 139 m from - step 97. Elsewhere the
-            // port's old guess stands: the first half of the career.)
             // (the race data's layout word: 0 - the easy layout - below Hard for an ARCADE race,
-            // a hookman's and a wager: `mc4_layout_easy`)
+            // a hookman's, a wager and an event from a panel: `mc4_layout_easy`. Elsewhere the
+            // port's old guess stands: the first half of the career.)
             None => self.mc4_layout_easy().unwrap_or((self.rep as f32 / crate::catalog::MAX_REP as f32) < 0.5),
         };
         let mut def = def;

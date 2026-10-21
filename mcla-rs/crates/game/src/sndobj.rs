@@ -188,6 +188,10 @@ pub struct SoundLib {
     /// MANAGER_OPPONENT_GAINS: the racers' presence, dB on its categories (applied at once, every frame)
     presence: (Vec<u32>, f32),
     presence_db: f32,
+    /// DYNAMIC_MIXER_SLOWDOWN's SFX_HARD record (pitch ratio 0.1, its level unchanged): the controller's ratio now and
+    /// its target (career2 `audioramp/notes.md`: 1 a second either way; the PLAYER_VEHICLES and AMBIENCE records are
+    /// `Audio::set_time_slow`'s)
+    slow_hard: (f32, f32),
     /// the scenes on at the end of the last update (the blocking test)
     scenes_on_hint: std::collections::HashSet<u32>,
 }
@@ -274,6 +278,7 @@ impl SoundLib {
             scenes: HashMap::new(),
             presence: (Vec::new(), 0.0),
             presence_db: 0.0,
+            slow_hard: (1.0, 1.0),
             scenes_on_hint: Default::default(),
         })
     }
@@ -476,8 +481,19 @@ impl SoundLib {
         }
     }
 
+    /// AudioManager_SetActiveTimeSlow for SFX_HARD (sub_821EC620 / sub_821EC060): its pitch ratio ramped to 0.1, or
+    /// back to 1, at 1 a second (K / fade time, sub_825484C8 / sub_82548768).
+    pub fn set_time_slow(&mut self, on: bool) {
+        self.slow_hard.1 = if on { 0.1 } else { 1.0 };
+    }
+
     fn step_scenes(&mut self, dt: f32) {
         let mut changed = false;
+        let (cur, to) = self.slow_hard;
+        if cur != to {
+            self.slow_hard.0 = if to > cur { (cur + dt).min(to) } else { (cur - dt).max(to) };
+            changed = true;
+        }
         for e in self.ramps.values_mut() {
             if e.0 != e.1 {
                 let step = e.2 * dt;
@@ -556,7 +572,11 @@ impl SoundLib {
                 *rt.entry(*h).or_insert(0.0) += self.presence.1;
             }
         }
-        self.cats = audcfg::resolve_categories_with(&self.cat_dat, &rt).into_iter().collect();
+        let mut cents = std::collections::HashMap::new();
+        if self.slow_hard.0 != 1.0 {
+            cents.insert(joaat("SFX_HARD"), (1200.0 * self.slow_hard.0.log2()) as i32);
+        }
+        self.cats = audcfg::resolve_categories_rt(&self.cat_dat, &rt, &cents).into_iter().collect();
     }
 
     pub fn rand_float(&mut self, a: f32, b: f32) -> f32 {
@@ -1228,6 +1248,31 @@ mod tests {
         // straight up: h = 0 -> every speaker 0.5
         let (l, r) = pan_gains(Vec3::Y);
         assert!((l - (0.5 + 0.5 * k)).abs() < 1e-6 && (r - l).abs() < 1e-6);
+    }
+
+    /// The slow-down state's SFX_HARD record (career2 `audioramp/notes.md`): its pitch ratio falls at 1 a second to
+    /// 0.1 (-3986 cents at the end) and rises back the same way; its children (opponents' engines, bangers, tyres)
+    /// take it, the player's vehicle categories do not.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn slowdown_sfx_hard_pitch() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let p = |lib: &SoundLib, n: &str| lib.category(n).unwrap().pitch;
+        let (hard, opp, eng) = (p(&lib, "SFX_HARD"), p(&lib, "OPPONENT_VEHICLES_ENGINE"), p(&lib, "PLAYER_VEHICLES_ENGINES"));
+        lib.set_time_slow(true);
+        lib.step_scenes(0.5);
+        assert_eq!(p(&lib, "SFX_HARD") - hard, (1200.0 * 0.5f32.log2()) as i32);
+        lib.step_scenes(1.0);
+        assert_eq!(p(&lib, "SFX_HARD") - hard, -3986);
+        assert_eq!(p(&lib, "OPPONENT_VEHICLES_ENGINE") - opp, -3986);
+        assert_eq!(p(&lib, "PLAYER_VEHICLES_ENGINES"), eng);
+        lib.set_time_slow(false);
+        lib.step_scenes(0.4);
+        assert_eq!(p(&lib, "SFX_HARD") - hard, (1200.0 * 0.5f32.log2()) as i32);
+        lib.step_scenes(1.0);
+        assert_eq!(p(&lib, "SFX_HARD"), hard);
     }
 
     /// VOLUME_RULE.md: slider 5 = -6.02 dB on its category and its children; the camera table's engine +3 dB in the

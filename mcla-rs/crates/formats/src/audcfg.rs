@@ -525,15 +525,21 @@ pub fn resolve_categories(cats: &Dat) -> HashMap<u32, Category> {
 /// table ...): `runtime[hash]` dB (20 log10 of the product of the controllers' gains, sub_82548888) is added to that
 /// category's own volume and so passed down to its children.
 pub fn resolve_categories_with(cats: &Dat, runtime: &HashMap<u32, f32>) -> HashMap<u32, Category> {
+    resolve_categories_rt(cats, runtime, &HashMap::new())
+}
+
+/// The same with the controllers' pitch too: `cents[hash]` (trunc(1200 log2 of the product of the controllers'
+/// ratios), sub_82548888) is added to that category's own pitch and passed down.
+pub fn resolve_categories_rt(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &HashMap<u32, i32>) -> HashMap<u32, Category> {
     let mut out = HashMap::new();
-    fn walk(cats: &Dat, runtime: &HashMap<u32, f32>, h: u32, parent: Option<Category>, out: &mut HashMap<u32, Category>, depth: usize) {
+    fn walk(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &HashMap<u32, i32>, h: u32, parent: Option<Category>, out: &mut HashMap<u32, Category>, depth: usize) {
         let Some(o) = cats.get(h) else { return };
         if depth > 32 {
             return;
         }
         let b9 = o.get(9).copied().unwrap_or(0);
         let own_vol = lin2db(db2lin(be_i16(o, 11) as f32 * 0.01)) + runtime.get(&h).copied().unwrap_or(0.0);
-        let own = Category { volume: own_vol, pitch: be_i16(o, 15) as i32, lpf: be_u16(o, 17), hpf: be_u16(o, 19), rolloff_scale: be_u16(o, 21) as f32 * 0.01 };
+        let own = Category { volume: own_vol, pitch: be_i16(o, 15) as i32 + cents.get(&h).copied().unwrap_or(0), lpf: be_u16(o, 17), hpf: be_u16(o, 19), rolloff_scale: be_u16(o, 21) as f32 * 0.01 };
         let c = match parent {
             None => own,
             Some(p) => Category {
@@ -547,10 +553,10 @@ pub fn resolve_categories_with(cats: &Dat, runtime: &HashMap<u32, f32>) -> HashM
         out.insert(h, c);
         let n = o.get(35).copied().unwrap_or(0) as usize;
         for i in 0..n {
-            walk(cats, runtime, be_u32(o, 36 + 4 * i), Some(c), out, depth + 1);
+            walk(cats, runtime, cents, be_u32(o, 36 + 4 * i), Some(c), out, depth + 1);
         }
     }
-    walk(cats, runtime, joaat("BASE"), None, &mut out, 0);
+    walk(cats, runtime, cents, joaat("BASE"), None, &mut out, 0);
     out
 }
 

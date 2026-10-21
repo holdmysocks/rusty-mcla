@@ -567,21 +567,12 @@ impl Career {
                 }
             }
         }
-        // Missions that only the compiled scripts start: spread them over the career by
-        // district, in the order the districts open up. Ones without a title are cut content.
-        let rank = |d: &str| ["Hollywood", "Beaches", "Hills", "Downtown", "SouthCentral"].iter().position(|x| x.eq_ignore_ascii_case(d)).unwrap_or(5);
-        let mut orphans: Vec<usize> = (0..c.missions.len())
-            .filter(|&i| {
-                let m = &c.missions[i];
-                !c.rewarded.contains(&i) && m.id != "RACE_GH_06" && !m.hidden && !m.prereq.iter().any(|r| r.conds.iter().any(|x| matches!(x, Cond::Mission(_)))) && c.strings.get(&format!("{}_TITLE", m.id)).is_some()
-            })
-            .collect();
-        orphans.sort_by(|&a, &b| rank(&c.missions[a].district).cmp(&rank(&c.missions[b].district)).then(c.missions[a].id.cmp(&c.missions[b].id)));
-        let n = orphans.len().max(1) as f32;
-        for (k, i) in orphans.into_iter().enumerate() {
-            c.rewarded.insert(i);
-            c.thresholds.push(((0.15 + 0.7 * k as f32 / n) * crate::catalog::MAX_REP as f32, Reward::Mission { id: c.missions[i].id.clone(), state: "READYTOSTART".into() }));
-            c.threshold_ids.push(String::new());
+        // (every titled mission is started by a decoded rule - a reward of the tables or of another mission, or a
+        // Mission prerequisite; the port used to give those it thought "script only" thresholds of its own, but
+        // with the Complete Edition's tables there are none: `unstarted`, test `every_mission_has_a_start`)
+        let unstarted = c.unstarted();
+        if !unstarted.is_empty() {
+            log::warn!("career: {} missions have no start rule and stay locked: {:?}", unstarted.len(), unstarted);
         }
         // which races belong to which event: read from the scripts once, then cached
         let mut keys: HashSet<String> = c.missions.iter().map(|m| m.id.clone()).collect();
@@ -1132,6 +1123,35 @@ impl Career {
         })?;
         let e = self.event_of(&self.missions[i])?;
         e.races.iter().find(|r| !self.state[i].won.contains(*r)).cloned()
+    }
+
+    /// Titled, visible missions that nothing starts: not a reward of the tables or of another mission, no Mission
+    /// prerequisite (RACE_GH_06 is the career start-up script's own: `game/career/0x400221ca` 0xba5..0xbc2).
+    pub fn unstarted(&self) -> Vec<String> {
+        (0..self.missions.len())
+            .filter(|&i| {
+                let m = &self.missions[i];
+                !self.rewarded.contains(&i) && m.id != "RACE_GH_06" && !m.hidden && !m.prereq.iter().any(|r| r.conds.iter().any(|x| matches!(x, Cond::Mission(_)))) && self.strings.get(&format!("{}_TITLE", m.id)).is_some()
+            })
+            .map(|i| self.missions[i].id.clone())
+            .collect()
+    }
+
+    /// South Central's set-up script (`sc/Career/CareerSetup_SC`, started at every career start
+    /// with the add-on: sub_826C0C50 0x826C0CAC) six seconds after the player's car is there
+    /// (0x6d): a mission still at CHECKING_PREREQUISITES whose missions are complete goes to
+    /// READY_TO_START (0xf4 .. 0x303). The missions started.
+    pub fn sc_setup(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (id, needs) in SC_SETUP_MISSIONS {
+            let Some(&i) = self.index.get(id) else { continue };
+            let done = needs.iter().all(|n| self.index.get(*n).map_or(false, |&j| self.state[j].stage == Stage::Complete));
+            if done && self.state[i].stage == Stage::Armed {
+                self.activate(i);
+                out.push(id.to_string());
+            }
+        }
+        out
     }
 
     /// Id of the mission that is waiting for a race against a roaming racer.
@@ -1823,6 +1843,17 @@ pub struct MissionExt {
 /// `Game/Career/Story/<ID>_CORE.sco` (BESTOF_SH_05 0x8bf..0x8ed / 0x123d..0x126b, CITY_CHAMP,
 /// BEAT_SH_02_EXOTIC; RACE_SH_01's is on no mission list).
 pub const STORY_SECOND_OBJECTIVE: [&str; 4] = ["BEAT_SH_02_EXOTIC", "BESTOF_SH_05", "CITY_CHAMP", "RACE_SH_01"];
+
+/// `sc/Career/CareerSetup_SC` (`sc/career/0x70e862b0`): the mission and the missions it
+/// checks for COMPLETE, in the script's order.
+pub const SC_SETUP_MISSIONS: [(&str, &[&str]); 6] = [
+    ("GARAGE_SC", &["GARAGE_HOLLYWOOD"]),
+    ("BESTOF_GH_31", &["DELIVERY"]),
+    ("LOWRIDER_REP", &["GARAGE_HOLLYWOOD"]),
+    ("DELIVERY_SC", &["GARAGE_HOLLYWOOD", "DELIVERY"]),
+    ("TOURNAMENT_SC", &["HANGOUT_SERIES_SC"]),
+    ("RACES_IN_SC", &["HANGOUT_SERIES_SC", "HANGOUT_SERIES_DOWNTOWN"]),
+];
 
 /// A requirement as the save holds it (the record's fields the port can give).
 #[derive(Debug, Clone, Default)]

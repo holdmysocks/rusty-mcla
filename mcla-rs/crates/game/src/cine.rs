@@ -371,8 +371,14 @@ impl Cine {
         let f = cam.frame_at(sc.t);
         let pos = cam.track(KIND_TRANSLATION, 0)?.data.vec(f);
         let rot = cam.track(KIND_ROTATION, 0).map(|t| t.data.rot(f)).unwrap_or(Quat::IDENTITY);
-        let fov = cam.track(KIND_FOV, 0).map(|t| t.data.vec(f).x).filter(|v| *v > 5.0 && *v < 150.0).unwrap_or(51.0);
-        Some((sc.origin.transform_point3(pos), sc.origin.transform_vector3(rot * -Vec3::Z).normalize_or(Vec3::Z), sc.origin.transform_vector3(rot * Vec3::Y).normalize_or(Vec3::Y), fov.to_radians()))
+        // (the lens track is a focal length in mm on a 35 mm gate: cam+104 = 2 atan(0.7085 in /
+        // (v mm * 0.03937)), the horizontal angle (sub_823CDAE8); the render camera's vertical
+        // angle is that divided by the viewport's aspect, 16:9 (sub_822C0320, the warp's
+        // target, cam_to_menu sub_82206F18). Without the track the camera keeps its reset
+        // lens, pi/4.)
+        let h = cam.track(KIND_FOV, 0).map(|t| t.data.vec(f).x).filter(|v| *v > 0.0).map_or(std::f32::consts::FRAC_PI_4, |v| 2.0 * (0.7085 / (v * 0.03937)).atan());
+        let fov = h / (16.0 / 9.0);
+        Some((sc.origin.transform_point3(pos), sc.origin.transform_vector3(rot * -Vec3::Z).normalize_or(Vec3::Z), sc.origin.transform_vector3(rot * Vec3::Y).normalize_or(Vec3::Y), fov))
     }
 
     /// Labels of the cars the scene moves.

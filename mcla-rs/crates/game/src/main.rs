@@ -3149,6 +3149,9 @@ impl App {
             if let Some(a) = self.audio.as_mut() {
                 a.set_time_slow(self.game.mc4b_time_slow());
             }
+            if let Some(l) = self.sound.lib.as_mut() {
+                l.set_time_slow(self.game.mc4b_time_slow());
+            }
             // (step 22b: Downtown's scripted pink slip - its race starts after its scene; the
             // opponent is deactivated after his steps, Racer_Deactivate)
             if self.game.mc4_s23_take_start() {

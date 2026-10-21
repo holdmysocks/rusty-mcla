@@ -6697,13 +6697,16 @@ impl Game {
     /// and the race has one); the word is 0 for a difficulty below 2 - Easy, Medium - and 1
     /// from Hard on: the ARCADE launcher (sub_8265CC90 0x8265CD24), the hookmen's scripts
     /// (e.g. `game/career/Story/0x156c2b36` 0x7e6, generic_local_hookman.sco 0x70a) and the
-    /// wager's (wager_hangout_core.sco 0x2079). An event entered from a panel keeps the
-    /// port's earlier rule - the easy layout at EASIEST, seen in the original - because what
-    /// writes the word there was not found. None: the difficulty is not known before the
+    /// wager's (wager_hangout_core.sco 0x2079). An event entered from a panel by the same
+    /// rule from the difficulty its core script was given (+3100): the series'
+    /// OrderedSeriesCore (`game/race/0xb8b948b6` 0x4c7..0x4f5), the tournament's
+    /// TournamentCore (`game/race/0x039dd301` 0x54b, before each race). (A payback's panel
+    /// writes 1, `game/Hangouts/0xfc2c6c0a` 0xdce, and a delivery has no layout: their races
+    /// are neither Ordered nor Unordered.) None: the difficulty is not known before the
     /// start (a race begun from the map or a test), the caller's own rule.
     pub fn mc4_layout_easy(&self) -> Option<bool> {
         if let Some(d) = self.event_diff {
-            return Some(d == 0);
+            return Some(d < 2);
         }
         if let Some((_, d)) = self.wager {
             return Some(d < 2);
@@ -14788,13 +14791,15 @@ mod tests {
             assert_eq!((g.mc4_arcade_difficulty(), g.mc4_layout_easy()), (Some(opt), Some(easy)));
         }
         g.arcade_restore = None;
-        // (a wager: the same rule; an event from a panel: the easy layout at EASIEST)
+        // (a wager and an event from a panel: the same rule)
         g.wager = Some((500, 1));
         assert_eq!(g.mc4_layout_easy(), Some(true));
         g.wager = Some((500, 2));
         assert_eq!(g.mc4_layout_easy(), Some(false));
-        g.event_diff = Some(1);
+        g.event_diff = Some(2);
         assert_eq!(g.mc4_layout_easy(), Some(false));
+        g.event_diff = Some(1);
+        assert_eq!(g.mc4_layout_easy(), Some(true));
         g.event_diff = Some(0);
         assert_eq!(g.mc4_layout_easy(), Some(true));
         let _ = std::fs::remove_dir_all(&dir);
@@ -15553,6 +15558,41 @@ mod tests {
         g2.load_save(&dir);
         assert_eq!(g2.career.ext[t].obj_base[0], Some(1));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Career queue item 6: every titled mission has a start in the data (the tables' rewards, another mission's,
+    /// a Mission prerequisite, or the start-up script's RACE_GH_06) - none is left for the port to place
+    /// (career2 `orphans/notes.md`: 141 of 142 rewarded).
+    #[test]
+    fn every_mission_has_a_start() {
+        if !std::path::Path::new(&data_dir()).join("tune/career").is_dir() {
+            return;
+        }
+        let c = crate::career::Career::load(&data_dir());
+        assert!(c.unstarted().is_empty(), "{:?}", c.unstarted());
+    }
+
+    /// CareerSetup_SC (`sc/career/0x70e862b0`): a mission at CHECKING_PREREQUISITES whose
+    /// missions are complete goes to READY_TO_START; one whose missions are not stays.
+    #[test]
+    fn sc_setup_starts_waiting_missions() {
+        use crate::career::{Career, MState, SaveState, Stage};
+        if !std::path::Path::new(&data_dir()).join("tune/career").is_dir() {
+            return;
+        }
+        let mut c = Career::load(&data_dir());
+        let st = |stage| MState { stage, ..Default::default() };
+        let mut s = SaveState::default();
+        for (id, stage) in [("RACE_GH_06", Stage::Complete), ("GARAGE_HOLLYWOOD", Stage::Complete), ("GARAGE_SC", Stage::Armed), ("DELIVERY_SC", Stage::Armed), ("LOWRIDER_REP", Stage::Active)] {
+            s.missions.insert(id.into(), st(stage));
+        }
+        c.restore(&s);
+        assert_eq!(c.sc_setup(), vec!["GARAGE_SC".to_string()]);
+        let stage = |c: &Career, id: &str| c.mission_no(id).map(|i| c.stage_of(i));
+        assert_eq!(stage(&c, "GARAGE_SC"), Some(Stage::Active));
+        // (DELIVERY is not complete)
+        assert_eq!(stage(&c, "DELIVERY_SC"), Some(Stage::Armed));
+        assert!(c.sc_setup().is_empty());
     }
 
     /// The first career race (RACE_GH_06) runs at Easy: its core script sets the man's
