@@ -60,7 +60,8 @@ pub fn drive_of(c: Option<&crate::vehicles::CarInstance>) -> S23Drive {
         vel_xz: Vec3::new(v.x, 0.0, v.z).length(),
         speed: v.length(),
         two: vs.map_or(false, |s| s.two != 0),
-        wheelie: c.model.bike && vs.map_or(false, |s| s.wheelie == 1 || s.wheelie == 99),
+        // (mcBikeGyro's stunt state is `bg.state`; `wheelie` is the older bike path's)
+        wheelie: c.model.bike && vs.map_or(false, |s| s.bg.state > 0 || s.wheelie == 1 || s.wheelie == 99),
         airborne: c.state.wheels.iter().take(if c.model.bike { 2 } else { 4 }).all(|w| !w.grounded),
         pos: c.state.pos,
     }
