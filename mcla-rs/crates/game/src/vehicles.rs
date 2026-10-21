@@ -99,6 +99,12 @@ pub struct CarModel {
     /// bones `wheel_0` .. `wheel_5` - `CarPart::mesh_wheel`): their hubs; drawn as batch groups 7 - 12 turned about these -
     /// no rim set of `resources/rims` is put on
     pub own_wheels: Option<[Option<Vec3>; 6]>,
+    /// a traffic model's LOD 1 and LOD 2 (its base fragments 0x7b0cd281 / 0x0de3ddb3: the type's drawables at
+    /// type +164 / +168, sub_82791A50), each with its batches' groups as `batch_window`; empty for other cars
+    pub lods: [(Vec<GpuBatch>, Vec<u8>); 2],
+    /// the radius the LOD choice adds to the depth (car +492, sub_826EAD00: 0.5 x sqrt 2 x the larger of the
+    /// bound's two sizes)
+    pub lod_radius: f32,
 }
 
 pub struct WheelModel {
@@ -621,6 +627,8 @@ struct DmgMap {
 #[derive(Default)]
 pub struct Vehicles {
     pub render_alpha: f32,
+    /// each car's LOD this frame (`pick_lods`, by the cars' index): 0 .. 2, -1 not drawn
+    pub lod_pick: Vec<i8>,
     pub models: Vec<Arc<CarModel>>,
     pub wheels: Option<Arc<WheelModel>>,
     pub cars: Vec<CarInstance>,
@@ -1363,7 +1371,16 @@ impl Vehicles {
             log::info!("damage parts {}: rig {:?} hood slot {:?} trunk bone {:?} (set {:?})", car.name, part_rig, hood_slot.map(|m| m.w_axis), trunk_bone.map(|m| m.w_axis), trunk_tags);
         }
         let mut own_hubs: [Option<Vec3>; 6] = [None; 6];
-        for (part, part_xf) in car.placed_parts_for(cfg) {
+        // (a traffic model's LOD 1 and LOD 2: its other two base fragments, built as LOD 0's body is)
+        let mut todo: Vec<(&vehicle_model::CarPart, Mat4, u32)> = car.placed_parts_for(cfg).into_iter().map(|(p, x)| (p, x, 0)).collect();
+        if car_is_ambient {
+            for (lod, h) in [(1u32, "7b0cd281"), (2, "0de3ddb3")] {
+                if let Some(p) = car.lod_parts.iter().find(|p| p.primary.contains(h)) {
+                    todo.push((p, p.transform, lod));
+                }
+            }
+        }
+        for (part, part_xf, lod) in todo {
             if let Some(f) = only_part.as_deref() {
                 if !f.split(',').any(|n| part.primary == n) {
                     continue;
@@ -1376,7 +1393,7 @@ impl Vehicles {
             }
             log::debug!("draw part {} ({} meshes, from_parent {})", part.primary, part.meshes.len(), part.from_parent);
             // (the glow places: bones of the part's own skeleton, children of the `glow<kind>0` bones)
-            if let Some(sk) = crate::assets::load_resource_file(&part.file).ok().and_then(|res| mcla_formats::rage::skeleton::Skeleton::parse(&res).ok().flatten()) {
+            if let Some(sk) = (lod == 0).then(|| crate::assets::load_resource_file(&part.file).ok()).flatten().and_then(|res| mcla_formats::rage::skeleton::Skeleton::parse(&res).ok().flatten()) {
                 for (bi, b) in sk.bones.iter().enumerate() {
                     let parent = sk.bones.get(b.parent).map_or(String::new(), |q| q.name.to_ascii_lowercase());
                     let w = (part_xf * b.world).w_axis.truncate();
@@ -1542,19 +1559,19 @@ impl Vehicles {
                 // (a traffic model's own wheel: tyre, rim and disc on one of its wheel bones -
                 // groups 7 - 12, the bone's place its hub)
                 let own_wheel = if car_is_ambient && !car.bike { part.mesh_wheel.get(mi).copied().flatten() } else { None };
-                if let Some(i) = own_wheel {
+                if let Some(i) = own_wheel.filter(|_| lod == 0) {
                     own_hubs[i] = Some((part_xf * bone_m).w_axis.truncate());
                 }
                 let win_side = own_wheel.map_or(win_side, |i| 7 + i as u32);
                 if win_side >= 3 && std::env::var("MCLA_PARTS_LOG").is_ok() {
                     log::info!("damage parts {}: {} mesh {} -> group {}", car.name, part.primary, mi, win_side);
                 }
-                let acc = merged.entry((k0, k1, mode as u32 | win_side << 16)).or_insert_with(|| MergeAcc { verts: Vec::new(), indices: Vec::new(), d, s2, sname: sname.to_string(), mode, min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) });
+                let acc = merged.entry((k0, k1, mode as u32 | win_side << 16 | lod << 24)).or_insert_with(|| MergeAcc { verts: Vec::new(), indices: Vec::new(), d, s2, sname: sname.to_string(), mode, min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) });
                 // (the glass over a lamp is its lens: red over the tail lamps, clear elsewhere -
                 // the game tints it from a table per lamp, BumpedTintColors)
                 let pn = part.primary.to_ascii_lowercase();
                 let (glass, lamp) = (sname.to_ascii_lowercase().contains("bumpedglass"), mode == MatMode::Light);
-                if lamp {
+                if lamp && lod == 0 {
                     let xf = part_xf * bone_m;
                     // (MCLA_LAMP_DUMP: every lamp mesh in full - vertices with their lamp id, triangles; work/lighting/fe_lamps.py)
                     if std::env::var("MCLA_LAMP_DUMP").is_ok() {
@@ -1699,6 +1716,7 @@ impl Vehicles {
         }
         let mut keys: Vec<(u32, u32, u32)> = merged.keys().copied().collect();
         let mut batch_window: Vec<u8> = Vec::new();
+        let mut lods: [(Vec<GpuBatch>, Vec<u8>); 2] = Default::default();
         keys.sort_by_key(|k| (k.2, k.0, k.1));
         if std::env::var("MCLA_WHEEL_DUMP").is_ok() {
             if let Some(h) = car.hubs {
@@ -1741,11 +1759,18 @@ impl Vehicles {
             };
             let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.verts), usage: wgpu::BufferUsages::VERTEX });
             let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.indices), usage: wgpu::BufferUsages::INDEX });
-            if k.2 >> 16 != 0 {
-                log::debug!("car {}: moving group {} (1/2 windows, 3 hood, 4 trunk, 5/6 bumpers) batch shader {} tris {}", car.name, k.2 >> 16, acc.sname, acc.indices.len() / 3);
+            let (group, lod) = ((k.2 >> 16) as u8, (k.2 >> 24) as usize);
+            if group != 0 {
+                log::debug!("car {}: moving group {} (1/2 windows, 3 hood, 4 trunk, 5/6 bumpers) batch shader {} tris {}", car.name, group, acc.sname, acc.indices.len() / 3);
             }
-            batch_window.push((k.2 >> 16) as u8);
-            batches.push(GpuBatch { shader: acc.sname, vb, ib, count: acc.indices.len() as u32, bind, mode: acc.mode, min: acc.min, max: acc.max });
+            let b = GpuBatch { shader: acc.sname, vb, ib, count: acc.indices.len() as u32, bind, mode: acc.mode, min: acc.min, max: acc.max };
+            if lod == 0 {
+                batch_window.push(group);
+                batches.push(b);
+            } else {
+                lods[lod - 1].1.push(group);
+                lods[lod - 1].0.push(b);
+            }
         }
         let mut params = car_params(&car);
         // cars with the original's tuning drive on the ported simulation (MCLA_OLD_PHYSICS keeps the simple model)
@@ -1768,7 +1793,7 @@ impl Vehicles {
         }
         log::info!("car {}: hubs {:?} bounds {:?}..{:?} wheel radius {:.3}", car.name, car.hubs, car.min, car.max, params.wheel_radius);
         let params_mods = car_params_mods(&car, &params);
-        log::info!("car model {}: {} batches, mass {:.0}", car.name, batches.len(), params.mass);
+        log::info!("car model {}: {} batches (LOD 1 {}, LOD 2 {}), mass {:.0}", car.name, batches.len(), lods[0].0.len(), lods[1].0.len(), params.mass);
         // stock wheels: whl_stk_<car> for the base cars, whld_stk_<car> for the DLC set
         let base_name = car.name.to_ascii_lowercase().replace("_dub", "");
         let rims_root = world.assets.root.join("resources/rims");
@@ -1823,7 +1848,9 @@ impl Vehicles {
         };
         let lamps: Vec<(u8, Vec3)> = lamp_acc.iter().map(|((id, _), (sum, n))| (*id as u8, *sum / (*n).max(1) as f32)).collect();
         let own_wheels = own_hubs.iter().any(|h| h.is_some()).then_some(own_hubs);
-        let m = Arc::new(CarModel { own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone });
+        let (bw, bl) = if car_is_ambient { traffic::bound_size(&world.assets.root, &car.name) } else { None }.unwrap_or((car.max.x - car.min.x, car.max.z - car.min.z));
+        let lod_radius = 0.5 * std::f32::consts::SQRT_2 * bw.max(bl);
+        let m = Arc::new(CarModel { lods, lod_radius, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -3883,11 +3910,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
     /// Draw all cars. `blend_pass` selects glass-only.
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>) {
-        for c in &self.cars {
+        for (ci, c) in self.cars.iter().enumerate() {
             // (step 19g: a car under Stealth is not drawn in either pass of its own - pu_fx.rs)
             if c.pu_stealth {
                 continue;
             }
+            let Some((batches, groups)) = self.lod_batches(ci) else { continue };
             let mut wheels_visible = true;
             let pos = c.render_pose(self.render_alpha).pos;
             if let Some((eye, max)) = range {
@@ -3919,11 +3947,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         continue;
                     }
                     pass.set_pipeline(pl);
-                    for (bi, b) in c.model.batches.iter().enumerate() {
+                    for (bi, b) in batches.iter().enumerate() {
                         if b.mode != MatMode::CarGlass || b.shader.to_ascii_lowercase().contains("bumped") {
                             continue;
                         }
-                        pass.set_bind_group(3, c.batch_object(bi), &[]);
+                        pass.set_bind_group(3, c.group_object(groups[bi]), &[]);
                         pass.set_bind_group(1, b.bind.as_ref(), &[]);
                         pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                         pass.set_vertex_buffer(0, b.vb.slice(..));
@@ -3934,7 +3962,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
                 pass.set_pipeline(&gpu.pipeline_blend);
             }
-            for (bi, b) in c.model.batches.iter().enumerate() {
+            for (bi, b) in batches.iter().enumerate() {
                 if b.mode.blended() != blend_pass {
                     continue;
                 }
@@ -3949,7 +3977,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         _ => &b.bind,
                     },
                 };
-                pass.set_bind_group(3, c.batch_object(bi), &[]);
+                pass.set_bind_group(3, c.group_object(groups[bi]), &[]);
                 pass.set_bind_group(1, bind.as_ref(), &[]);
                 pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                 pass.set_vertex_buffer(0, b.vb.slice(..));
@@ -4107,10 +4135,61 @@ impl CarInstance {
     /// The object (group 3) a batch of the car's model is drawn with: the body's, or a side
     /// window's for that window's glass.
     pub fn batch_object(&self, bi: usize) -> &wgpu::BindGroup {
-        match self.model.batch_window.get(bi).copied().unwrap_or(0) {
+        self.group_object(self.model.batch_window.get(bi).copied().unwrap_or(0))
+    }
+
+    /// The object of a batch group (`CarModel::batch_window`).
+    pub fn group_object(&self, group: u8) -> &wgpu::BindGroup {
+        match group {
             0 => &self.binding.bg,
             k @ 1..=2 => self.window_bindings.get(k as usize - 1).map_or(&self.binding.bg, |b| &b.bg),
             k => self.part_bindings.get(k as usize - 3).map_or(&self.binding.bg, |b| &b.bg),
+        }
+    }
+}
+
+impl Vehicles {
+    /// The traffic cars' LOD (sub_827902F0, from sub_827932D8 into the instance's +28): the depth is the
+    /// car's bounding sphere's distance in front of the view's near plane plus its radius (sub_8217C1D8; radius
+    /// `CarModel::lod_radius`); not drawn from 500 on (0x82003250), LOD 0 below type +44 x type +40, LOD 1
+    /// below type +48 x type +40, else LOD 2 (every traffic type: +40 = 1, +44 = 40, +48 = 155). The original
+    /// also gives -1 to a car outside the view, which keeps it out of the shadow passes too (sub_82793360) -
+    /// not here: the frustum test stays with each pass. Cars without LODs (set-up cars) keep 0.
+    pub fn pick_lods(&mut self, eye: Vec3, axis: Vec3, near: f32) {
+        let alpha = self.render_alpha;
+        // (diagnostics: MCLA_LOD_FORCE=1 / 2 draws every traffic car at that LOD)
+        let force = std::env::var("MCLA_LOD_FORCE").ok().and_then(|v| v.parse::<i8>().ok());
+        self.lod_pick = self
+            .cars
+            .iter()
+            .map(|c| {
+                if c.model.lods[0].0.is_empty() {
+                    return 0;
+                }
+                if let Some(f) = force {
+                    return f;
+                }
+                let d = (c.render_pose(alpha).pos - eye).dot(axis) - near + c.model.lod_radius;
+                if d >= 500.0 {
+                    -1
+                } else if d < 40.0 {
+                    0
+                } else if d < 155.0 {
+                    1
+                } else {
+                    2
+                }
+            })
+            .collect();
+    }
+
+    /// A car's batches and their groups at its LOD of this frame (None: not drawn).
+    pub fn lod_batches(&self, ci: usize) -> Option<(&[GpuBatch], &[u8])> {
+        let m = &self.cars[ci].model;
+        match self.lod_pick.get(ci).copied().unwrap_or(0) {
+            l if l < 0 => None,
+            0 => Some((&m.batches, &m.batch_window)),
+            l => m.lods.get(l as usize - 1).filter(|x| !x.0.is_empty()).map(|x| (&x.0[..], &x.1[..])).or(Some((&m.batches, &m.batch_window))),
         }
     }
 }
@@ -4148,19 +4227,20 @@ impl Vehicles {
         if *OFF.get_or_init(|| std::env::var("MCLA_GLASS_NOSHADOW").is_ok()) {
             return;
         }
-        for c in &self.cars {
+        for (ci, c) in self.cars.iter().enumerate() {
             let pos = c.render_pose(self.render_alpha).pos;
             if let Some((eye, max)) = range {
                 if pos.distance(eye) > max {
                     continue;
                 }
             }
+            let Some((batches, groups)) = self.lod_batches(ci) else { continue };
             pass.set_bind_group(3, &c.binding.bg, &[]);
-            for (bi, b) in c.model.batches.iter().enumerate() {
+            for (bi, b) in batches.iter().enumerate() {
                 if b.mode != MatMode::CarGlass || b.shader.to_ascii_lowercase().contains("bumped") {
                     continue;
                 }
-                pass.set_bind_group(3, c.batch_object(bi), &[]);
+                pass.set_bind_group(3, c.group_object(groups[bi]), &[]);
                 pass.set_bind_group(1, b.bind.as_ref(), &[]);
                 pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                 pass.set_vertex_buffer(0, b.vb.slice(..));
@@ -4201,19 +4281,20 @@ impl Vehicles {
     /// Every blended batch of the cars (windows, lenses) with the caller's pipeline: the blobs' pass draws the
     /// cars over its working value (the original's stencil test).
     pub fn draw_blended_plain<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, range: Option<(Vec3, f32)>) {
-        for c in &self.cars {
+        for (ci, c) in self.cars.iter().enumerate() {
             let pos = c.render_pose(self.render_alpha).pos;
             if let Some((eye, max)) = range {
                 if pos.distance(eye) > max {
                     continue;
                 }
             }
+            let Some((batches, groups)) = self.lod_batches(ci) else { continue };
             pass.set_bind_group(3, &c.binding.bg, &[]);
-            for (bi, b) in c.model.batches.iter().enumerate() {
+            for (bi, b) in batches.iter().enumerate() {
                 if !b.mode.blended() {
                     continue;
                 }
-                pass.set_bind_group(3, c.batch_object(bi), &[]);
+                pass.set_bind_group(3, c.group_object(groups[bi]), &[]);
                 pass.set_bind_group(1, b.bind.as_ref(), &[]);
                 pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                 pass.set_vertex_buffer(0, b.vb.slice(..));
@@ -4231,7 +4312,7 @@ impl Vehicles {
         if crate::carshadow::off() {
             return;
         }
-        for c in &self.cars {
+        for (ci, c) in self.cars.iter().enumerate() {
             let pose = c.render_pose(self.render_alpha);
             if let Some((eye, max)) = range {
                 if pose.pos.distance(eye) > max {
@@ -4241,11 +4322,12 @@ impl Vehicles {
             if c.model.bike || (self.hide_player && c.is_player) {
                 continue;
             }
-            let Some(b0) = c.model.batches.iter().find(|b| !b.mode.blended()) else { continue };
+            let Some((batches, _)) = self.lod_batches(ci) else { continue };
+            let Some(b0) = batches.iter().find(|b| !b.mode.blended()) else { continue };
             let wheel = |i: usize| c.params().veh.as_ref().filter(|v| v.tyre_width[0] > 0.0).map(|v| if i < 2 { (v.t.wheel_front.radius + 0.00635, v.tyre_width[0]) } else { (v.t.wheel_back.radius + 0.00635, v.tyre_width[1]) }).unwrap_or((c.model.params.wheel_radius, c.model.params.wheel_width));
             let s = crate::carshadow::get(gpu, &c.model.name, pose.hubs, [wheel(0), wheel(2)]);
             pass.set_bind_group(3, &c.binding.bg, &[]);
-            for b in &c.model.batches {
+            for b in batches {
                 if b.mode != MatMode::CarGlass || !b.shader.to_ascii_lowercase().contains("bumped") {
                     continue;
                 }

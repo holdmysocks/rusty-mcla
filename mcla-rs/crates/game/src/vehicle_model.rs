@@ -54,6 +54,9 @@ pub struct CarAsset {
     pub shaders_parent: Vec<Shader>,
     pub textures: HashMap<u32, Texture>,
     pub parts: Vec<CarPart>,
+    /// the lower LOD base fragments taken out of `parts` (LOD 1, then LOD 2: fewer triangles last); a traffic
+    /// model draws them by distance (vehicles.rs `Vehicles::pick_lods`)
+    pub lod_parts: Vec<CarPart>,
     pub min: Vec3,
     pub max: Vec3,
     pub skeleton: Option<Skeleton>,
@@ -810,7 +813,9 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
         }
     }
     let lod_drop: Vec<std::path::PathBuf> = parts.iter().filter(|p| p.is_base && !p.stock).map(|p| p.file.clone()).collect();
-    parts.retain(|p| !lod_drop.contains(&p.file));
+    let (mut lod_parts, rest): (Vec<CarPart>, Vec<CarPart>) = parts.into_iter().partition(|p| lod_drop.contains(&p.file));
+    let mut parts = rest;
+    lod_parts.sort_by_key(|p| std::cmp::Reverse(p.tris));
     // parts borrowed from the parent car must be listed in the edition's own part catalog
     // (the catalog names every mesh the edition uses, e.g. "exh_pipe0_lod_0", "seats_f0_lod_0")
     if parts.iter().any(|p| p.from_parent) {
@@ -925,7 +930,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
         max = max.max(p.max);
     }
     log::info!("car {}: {} shaders, {} textures, {} parts ({} stock)", name, shaders.len(), textures.len(), parts.len(), parts.iter().filter(|p| p.stock).count());
-    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows, damage_layout })
+    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows, damage_layout })
 }
 
 /// Display name of a part from its internal names, e.g. "exstPipe05_Borla_single_round"
