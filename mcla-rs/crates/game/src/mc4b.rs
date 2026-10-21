@@ -24,7 +24,8 @@
 //!   for South Central, 1 otherwise), bit 0: aAAR once every Ordered / Circuit / Unordered / Blitz
 //!   race (sub types 1, 2, 3, 5) not DevOnly of content bit 0 has rCGL; bit 2: aARC the same for
 //!   content 4. (The races' GoalTargetTime / TargetDamage are those of the GOAL ATTACK mode
-//!   - ArcadeMenuGoalAttack, pause MODES' GOAL ATTACK; the check itself runs at every race end.)
+//!   - ArcadeMenuGoalAttack, pause MODES' GOAL ATTACK; the check runs only for a race started
+//!   from it: sub_822D0438 0x822D0974 tests the mode object's +796 - `goal_attack`.)
 //! - The showroom's TEST DRIVE (sub_826A6330): tTST + 1; the vehicle table's +48
 //!   (ContentDownloadFlags, else ContentFlags - `tune/vehicle` lists) >= 4: aTDV (set once).
 //! - The photo album (sub_8263DCF8): a picture saved into slot k of the album (16 slots,
@@ -168,6 +169,9 @@ impl Game {
     /// under a quarter of the damage), rCGL and aAOR when all three are met; aAAR / aARC once
     /// every race of its content has them.
     pub fn mc4_race_goals(&mut self, place: usize, time: Option<f32>, damage: f32) {
+        if !self.goal_attack {
+            return;
+        }
         let Some(def) = self.current_race.and_then(|i| self.race_defs.get(i)).cloned() else {
             log::info!("race goals: no race in hand");
             return;
@@ -206,6 +210,35 @@ impl Game {
         }
     }
 
+    /// A race's goals as GOAL ATTACK's list shows them (sub_82655E58): the mask "0".."15" from
+    /// the save's rWIN 8, rMDG 4, rBTT 2, rCGL 1 of the race's table index.
+    pub fn mc4_goal_mask(&self, race: usize) -> u8 {
+        let Some(k) = self.race_defs.get(race).and_then(|d| self.mc4_race_index(&d.id)) else { return 0 };
+        [("rWIN", 8), ("rMDG", 4), ("rBTT", 2), ("rCGL", 1)].iter().filter(|(id, _)| self.mc4_stat(id, k as u32) != 0.0).map(|(_, b)| b).sum()
+    }
+
+    /// The goal panel's four lines for a race (columns 2..5 of the list: GOALATTACK_WIN,
+    /// GOALATTACK_DAMAGE, GOAL_TIME with GOAL_TIME_ENTRY = the race's GoalTargetTime by
+    /// sub_8223DE50 - set on a selection change, sub_82656048 -, GOALATTACK_ALLGOALS).
+    pub fn mc4_goal_lines(&self, race: usize) -> [String; 4] {
+        let ms = self.race_defs.get(race).map_or(0, |d| (d.goal_time * 1000.0).round() as i32);
+        let st = |k: &str, d: &str| self.career.strings.get(k).map(|v| v.to_string()).unwrap_or_else(|| d.to_string());
+        [
+            st("GOALATTACK_WIN", "WIN THIS RACE"),
+            st("GOALATTACK_DAMAGE", "FINISH RACE WITH LESS THAN 25% DAMAGE"),
+            fill_d(&st("GOAL_TIME", "FINISH THIS RACE IN UNDER <D>GOAL_TIME_ENTRY</D>"), &crate::flash_ui::race_time(ms)),
+            st("GOALATTACK_ALLGOALS", "ACHIEVE ALL GOALS IN THE SAME RACE"),
+        ]
+    }
+
+    /// The race start badge's second line in GOAL ATTACK (GetRaceInfo sub_82640AE0
+    /// 0x82640D78..0x82640DB4): RACE_INFO_GOALATTACK_FORMAT "TARGET TIME: <D>RACE_INFO_GOAL_TIME</D>".
+    pub fn mc4_goal_badge(&self) -> Option<String> {
+        let d = self.current_race.and_then(|i| self.race_defs.get(i)).filter(|_| self.goal_attack)?;
+        let f = self.career.strings.get("RACE_INFO_GOALATTACK_FORMAT").map(|v| v.to_string()).unwrap_or_else(|| "TARGET TIME: <D>RACE_INFO_GOAL_TIME</D>".to_string());
+        Some(fill_d(&f, &crate::flash_ui::race_time((d.goal_time * 1000.0).round() as i32)))
+    }
+
     /// A picture taken in photo mode (sub_8263DCF8): the album's slot it goes into - the first
     /// free one (the port has no PA_ChooseSlot page; with all sixteen used, slot 0 is written
     /// again) -, the count of used slots, aFAB as it reaches 16, tPTS + 1. The file to write.
@@ -232,5 +265,13 @@ impl Game {
     pub fn mc4b_time_slow(&self) -> bool {
         let x = &self.opt_x.s23;
         x.run.as_ref().map_or(false, |r| r.slow && r.phase >= 1) || x.lesson == 1
+    }
+}
+
+/// A string table text with its one `<D>name</D>` variable filled in.
+pub fn fill_d(text: &str, value: &str) -> String {
+    match (text.find("<D>"), text.find("</D>")) {
+        (Some(a), Some(b)) if b > a => format!("{}{}{}", &text[..a], value, &text[b + 4..]),
+        _ => text.to_string(),
     }
 }

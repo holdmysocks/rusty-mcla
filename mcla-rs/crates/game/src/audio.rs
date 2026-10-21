@@ -107,8 +107,22 @@ pub struct SlowRamp {
 
 impl SlowRamp {
     pub fn now(&self) -> [f32; 3] {
-        let k = if self.dur > 0.0 { (self.start.elapsed().as_secs_f32() / self.dur).clamp(0.0, 1.0) } else { 1.0 };
-        [0, 1, 2].map(|i| self.from[i] + (self.to[i] - self.from[i]) * k)
+        self.at(self.start.elapsed().as_secs_f32())
+    }
+
+    /// The values `t` seconds into the ramp. A category controller's ramp (sub_825484C8 /
+    /// sub_82548768, audio thread) moves at a fixed speed, not over a fixed time: rate =
+    /// K / min(time, 10 s) per second toward the target (K = 1 for gain - linear amplitude -
+    /// and pitch ratio), snapped to it when passed; a time <= 0 sets the value at once.
+    pub fn at(&self, t: f32) -> [f32; 3] {
+        let d = self.dur.min(10.0);
+        [0, 1, 2].map(|i| {
+            let gap = self.to[i] - self.from[i];
+            if d <= 0.0 {
+                return self.to[i];
+            }
+            self.from[i] + gap.signum() * (t.max(0.0) / d).min(gap.abs())
+        })
     }
 }
 
@@ -915,5 +929,26 @@ impl Audio {
             log::info!("audio: now playing {} ({})", self.now_playing, p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
             self.music = Some(s);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The slow-down state's ramp (step 23b, work/career2/audioramp/notes.md): every value
+    /// moves at 1 a second - the engines' gain reaches 0.316 at 0.684 s, their pitch 0.5 at
+    /// 0.5 s, the ambience 0 at 1 s; switched off, back up at the same speed.
+    #[test]
+    fn slowdown_ramp_moves_at_a_fixed_speed() {
+        let r = SlowRamp { from: SLOWDOWN_OFF, to: SLOWDOWN_ON, start: std::time::Instant::now(), dur: SLOWDOWN_FADE.0 };
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        assert!(near(r.at(0.25), [0.75, 0.75, 0.75]));
+        assert!(near(r.at(0.5), [0.5, 0.5, 0.5]));
+        assert!(near(r.at(0.683_772), [0.316_227_77, 0.5, 0.316_228]));
+        assert!(near(r.at(1.5), SLOWDOWN_ON));
+        let back = SlowRamp { from: r.at(0.5), to: SLOWDOWN_OFF, start: std::time::Instant::now(), dur: SLOWDOWN_FADE.1 };
+        assert!(near(back.at(0.25), [0.75, 0.75, 0.75]));
+        assert!(near(back.at(0.5), SLOWDOWN_OFF));
     }
 }

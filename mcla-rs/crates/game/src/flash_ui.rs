@@ -728,6 +728,11 @@ pub enum MenuLayout {
     /// a plain list (`template_Menu`, 2) with a header over each column (`menu.headers<n>`;
     /// the custom controls' ACTION / BUTTON)
     Columns { headers: Vec<String> },
+    /// GOAL ATTACK's race list (`template_GoalAttack`, 15, of the GPS map movie): per race
+    /// row `type` 32, `text2` the goal mask ("0".."15": won 8, damage 4, time 2, all 1 - the
+    /// four icons lit or at half), `text3..text6` the goal panel's lines of the race under the
+    /// cursor (sub_82655E58, navsys 0x1ecae / 0x2ff32)
+    GoalAttack { goals: Vec<(u8, [String; 4])> },
 }
 
 /// A page of the menu movie as the game's menu classes write it: the tab strip
@@ -1062,6 +1067,7 @@ impl FlashMenu {
                 p.set_path("menu.description", Value::str(description));
                 67
             }
+            MenuLayout::GoalAttack { .. } => 15,
             MenuLayout::List => if page.tabs.is_empty() { 2 } else { 56 },
             MenuLayout::Columns { headers } => {
                 for (k, h) in headers.iter().enumerate() {
@@ -1190,6 +1196,17 @@ impl FlashMenu {
                 p.set_path(&format!("menu.elements.{}.property1", i), Value::Int(page.row_props.get(i).copied().unwrap_or(r.enabled as i32)));
             }
         }
+        if let MenuLayout::GoalAttack { goals } = &page.layout {
+            // (two columns, `Option` / `Value`: sub_82657A20 in goal attack)
+            p.set_path("menu.type", Value::Int(2));
+            for (i, (mask, lines)) in goals.iter().enumerate().take(page.rows.len()) {
+                p.set_path(&format!("menu.elements.{}.type", i), Value::Int(32));
+                p.set_path(&format!("menu.elements.{}.text2", i), Value::str(&mask.to_string()));
+                for (k, l) in lines.iter().enumerate() {
+                    p.set_path(&format!("menu.elements.{}.text{}", i, k + 3), Value::str(l));
+                }
+            }
+        }
         p.set_path("menu.count", Value::Int(page.rows.len() as i32));
         // (`select` usize::MAX: no row under the cursor - a panel of figures)
         p.set_path("menu.select", Value::Int(if page.select == usize::MAX { -1 } else { page.select.min(page.rows.len().saturating_sub(1)) as i32 }));
@@ -1249,6 +1266,8 @@ impl FlashMenu {
             for (i, r) in page.rows.iter().enumerate() {
                 match page.row_props.get(i).copied().unwrap_or(0) {
                     12 => p.set_path(&format!("menu.elements.{}.text2", i), Value::str(&r.value)),
+                    // (GOAL ATTACK's item: the goal mask, 8 / 4 / 2 / 1 lit icons)
+                    15 => p.set_path(&format!("menu.elements.{}.text2", i), Value::str(&r.value)),
                     18 => {
                         let n = page.row_props[i + 1..].iter().take_while(|k| **k == 6).count();
                         p.set_path(&format!("menu.elements.{}.text3", i), Value::Int(n as i32));
@@ -1857,6 +1876,8 @@ impl FlashHud {
         p.set_global("Nitrovalue", Value::Float((info.nitro * 4.0).clamp(0.0, 5.0)));
         p.set_global("Nitroisvisible", Value::Int(1));
         p.set_global("d_Damagevalue", Value::Float(info.damage.clamp(0.0, 1.0)));
+        // (`speedometer.damage.goal` shown while > 0: hud 0x02244..0x022b2)
+        p.set_global("damage_goal", Value::Int(info.damage_goal as i32));
         p.set_global("d_IsNight", Value::Int(info.night as i32));
         p.set_global("cruiseisvisible", Value::Int(info.cruise as i32));
         let has_ability = !info.ability.is_empty();

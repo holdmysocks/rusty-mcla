@@ -668,7 +668,7 @@ impl Roamers {
                 // set-up, or the difficulty his slot was filled for)
                 let field = vehicles.cars.iter().filter(|c| c.racer).count() + 1;
                 let place = s15b_place;
-                let diff = game.career.hookman_diff().filter(|_| self.rival_challenged).or(ch.diff).unwrap_or_else(|| vehicles.cars.iter().find(|c| c.racer).map_or(1, |c| game.mc4_difficulty_of_setup(&c.model.name, &c.vinyl_name)).clamp(0, 3) as usize);
+                let diff = game.mc4_hookman_diff().filter(|_| self.rival_challenged).or(ch.diff).unwrap_or_else(|| vehicles.cars.iter().find(|c| c.racer).map_or(1, |c| game.mc4_difficulty_of_setup(&c.model.name, &c.vinyl_name)).clamp(0, 3) as usize);
                 let exp = crate::rewards::beat_me_there_exp(game.rep, diff, place, field);
                 game.rep += exp;
                 let what = if place == 1 { "BEAT ME THERE" } else { "BEATEN TO THE LINE" };

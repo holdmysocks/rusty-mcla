@@ -5063,7 +5063,12 @@ impl Game {
     /// every vehicle until the garage's SPECIAL ABILITIES page gives it one, sub_826A6FF0;
     /// `mcRacer::GetActiveAbility`, sub_822AE270, hands the record's byte to the scripts
     /// as it is). A vehicle without a record keeps the ability in hand, as before.
+    /// In GOAL ATTACK no vehicle has one: the racer's current ability (sub_82337A48, its
+    /// ability object's +52) answers -1 while the mode's +796 (or +797) is set.
     pub fn mc4_ability_none(&self) -> bool {
+        if self.goal_attack {
+            return true;
+        }
         self.car_x.ability.is_none() && !self.car_x.car.is_empty() && self.mc4.as_ref().map_or(false, |m| m.car(&self.car_x.car).is_some())
     }
 
@@ -5116,7 +5121,7 @@ impl Game {
     fn mc4_sync_cars(&self, m: &mut Mc4) {
         let cur = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
         let stock_brake = |car: &str| -> Option<u8> {
-            let b = std::fs::read(std::path::Path::new(&self.data_dir).join("resources/vehicle/configs").join(format!("{car}.xcc"))).ok()?;
+            let b = std::fs::read(crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), car)?).ok()?;
             b.get(0x846).copied()
         };
         for c in m.garage.iter_mut() {
@@ -6704,7 +6709,7 @@ impl Game {
             return Some(d < 2);
         }
         if self.hookman_race {
-            if let Some(d) = self.career.hookman_diff() {
+            if let Some(d) = self.mc4_hookman_diff() {
                 return Some(d < 2);
             }
         }
@@ -7137,7 +7142,7 @@ impl Game {
         if config.is_empty() {
             return 0;
         }
-        let Ok(b) = std::fs::read(std::path::Path::new(&self.data_dir).join("resources/vehicle/configs").join(format!("{config}.xcc"))) else { return 0 };
+        let Some(Ok(b)) = crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), config).map(std::fs::read) else { return 0 };
         if b.len() < 0x29 {
             return 0;
         }
@@ -7735,7 +7740,7 @@ impl Game {
     /// part choices, the rim's resource directory (by the rim table, as an imported save's
     /// rim) and the rim's size. Remembers the set-up for the livery (`mc4_setup_livery`).
     pub fn mc4_setup_dress(&mut self, car: &str, config: &str) -> Option<(crate::vehicle_model::CarConfig, Option<std::path::PathBuf>, u32)> {
-        let b = std::fs::read(std::path::Path::new(&self.data_dir).join("resources/vehicle/configs").join(format!("{config}.xcc"))).ok()?;
+        let b = std::fs::read(crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), config)?).ok()?;
         let (cfg, rim, inches) = setup_parts(&b)?;
         let dir = self.rim_shop.entry(rim as i32).and_then(|e| self.rim_by_name.get(&e.resource)).and_then(|at| self.rim_dirs.get(*at)).cloned();
         self.opt_x.arcade.setup = Some((car.to_ascii_lowercase(), config.to_string()));
@@ -8131,7 +8136,7 @@ impl Game {
         if let Some(uid) = config.strip_prefix("pinkslip:").and_then(|u| u.parse::<i32>().ok()) {
             return self.mc4_held_bytes(uid);
         }
-        std::fs::read(std::path::Path::new(&self.data_dir).join("resources/vehicle/configs").join(format!("{config}.xcc"))).ok()
+        std::fs::read(crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), config)?).ok()
     }
 
     /// A set-up as a car that is not the player's is put into it (`Vehicles::dress_setups`):
@@ -9182,6 +9187,35 @@ impl Game {
             None => (0, -2),
         };
         SlotHookman { name: name.to_string(), config: config.to_string(), car, core: core.to_string(), mod_value, difficulty, district, mission: mission.to_string() }
+    }
+
+    /// The difficulty word (+180) a story man's core script gives him as it starts (the race's
+    /// +3100 and his icon's colour): mcHookman_SetDifficulty(mcCareer_GetDifficultyPlayerVsRacer)
+    /// in 56 of the 61 calls of `game/career/Story`, i.e. his car at his mod value against the
+    /// player's (below the first step 0, the fifth step folded into Impossible); constants in
+    /// RACE_GH_06_CORE (`0x40a56c35` 0x1b7: 0, Easy) and FIND_SH_05 / BEAT_SH_05 (`0x15cd0f3d`,
+    /// `0xe3e84b4e` 0x3b: 1). None: not a story man of `MISSION_HOOKMEN`.
+    pub fn mc4_story_difficulty(&self, mission: &str) -> Option<usize> {
+        match mission {
+            "RACE_GH_06" => return Some(0),
+            "FIND_SH_05" | "BEAT_SH_05" => return Some(1),
+            _ => {}
+        }
+        let row = MISSION_HOOKMEN.iter().find(|r| r.0 == mission && !r.2.is_empty())?;
+        let h = self.mc4_mission_hookman(row);
+        let s = self.mc4_samples_of(&h.car)?;
+        Some(match gap_difficulty(setup_perf(s, h.mod_value) - self.player_perf()) {
+            d if d < 0 => 0,
+            5 => 3,
+            d => d as usize,
+        })
+    }
+
+    /// The difficulty of the hookman out on the road now (`mc4_story_difficulty`, else the
+    /// set-up named by his event).
+    pub fn mc4_hookman_diff(&self) -> Option<usize> {
+        let m = self.career.hookman_mission()?;
+        self.mc4_story_difficulty(m).or_else(|| self.career.hookman_diff())
     }
 
     /// The race definition of a race of the table, and where it starts (the start beacon:
@@ -11196,7 +11230,9 @@ impl Game {
                 self.mc4_stat_add("kRLW", 0, 1.0);
             }
         } else {
-            if place == 2 {
+            // (GOAL ATTACK's branch, 0x822D0974..0x822D0B90, counts no second or third place)
+            if self.goal_attack {
+            } else if place == 2 {
                 self.mc4_stat_add("k2ND", 0, 1.0);
             } else if place == 3 {
                 self.mc4_stat_add("k3RD", 0, 1.0);
@@ -12225,6 +12261,45 @@ mod tests {
         std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string())
     }
 
+    /// The set-ups the dev extraction once had under colliding names
+    /// (docs/reference/misc/configs_misnamed.md) are read by their real names, and a data folder
+    /// built by launcher v0.1.0 / v0.2.0 (the old names) gives the same paint, livery and parts.
+    #[test]
+    fn misnamed_setups_dress_the_same() {
+        let real = std::path::Path::new(&data_dir()).join("resources/vehicle/configs");
+        let cars = [
+            ("vp_pon_transam_79", "timetrial_vp_pon_transam_79", "1 0 0.82364774 -0.56710166 -0 0.56710166 0.82364774.pt"),
+            ("vp_lam_murcielago_06_dub", "vp_lam_murcielago_06_dub", "0.5486715436.wav"),
+            ("vp_chv_camaro_06", "SC_GH_36_2_vp_chv_camaro_06", "0x2AA070FD"),
+            ("vp_chv_cobalt_05", "SC_GH_36_1_vp_chv_cobalt_05", "0x674FF727"),
+        ];
+        if !cars.iter().all(|c| real.join(format!("{}.xcc", c.1)).is_file()) {
+            return;
+        }
+        let old = std::env::temp_dir().join(format!("mcla_mc4_oldnames_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(old.join("resources/vehicle/configs"));
+        for (_, cfg, was) in cars {
+            std::fs::copy(real.join(format!("{cfg}.xcc")), old.join("resources/vehicle/configs").join(was)).unwrap();
+        }
+        let mut g = Game::new(Vec::new(), 0);
+        for (car, cfg, _) in cars {
+            g.data_dir = data_dir();
+            let a = g.mc4_dress_of(car, cfg).unwrap_or_else(|| panic!("{cfg}"));
+            let livery = crate::vinyl::Livery::from_xcc(&g.mc4_setup_file(cfg).unwrap());
+            g.data_dir = old.to_string_lossy().to_string();
+            let b = g.mc4_dress_of(car, cfg).unwrap_or_else(|| panic!("{cfg} (old name)"));
+            assert_eq!((a.color, a.tire.clone(), a.brake.clone(), a.inches, a.plate.clone()), (b.color, b.tire, b.brake, b.inches, b.plate), "{cfg}");
+            assert_eq!(format!("{:?}", a.cfg), format!("{:?}", b.cfg), "{cfg}");
+            assert_eq!(format!("{livery:?}"), format!("{:?}", crate::vinyl::Livery::from_xcc(&g.mc4_setup_file(cfg).unwrap())), "{cfg}");
+            // (the files' body colours, 0x660: Trans Am 0.141 0.125 0.094, the DUB Murcielago
+            // black, the Camaro 0.639 grey, the Cobalt 0.063 0.094 0.431)
+            let body = match cfg { "timetrial_vp_pon_transam_79" => 0.141, "vp_lam_murcielago_06_dub" => 0.0, "SC_GH_36_2_vp_chv_camaro_06" => 0.639, _ => 0.063 };
+            let raw = g.mc4_setup_file(cfg).map(|b| f32::from_be_bytes([b[0x660], b[0x661], b[0x662], b[0x663]])).unwrap();
+            assert!((raw - body).abs() < 0.001 && a.color[3] == 1.0, "{cfg}: {raw} {:?}", a.color);
+        }
+        let _ = std::fs::remove_dir_all(&old);
+    }
+
     /// What the game changes reaches the block, per vehicle, and comes back after a save.
     #[test]
     fn changes_reach_the_block() {
@@ -12779,7 +12854,7 @@ mod tests {
             for c in &m.garage {
                 let cfg = c.source_config.clone().unwrap_or_else(|| panic!("{name} {}: origin not resolved", c.vehicle));
                 assert_eq!(c.source_config_hash, format!("0x{:08x}", joaat(&cfg)), "{}", c.vehicle);
-                if configs.is_dir() && !configs.join(format!("{cfg}.xcc")).is_file() {
+                if configs.is_dir() && crate::render::car_lamps::setup_file(std::path::Path::new(&data_dir()), &cfg).is_none() {
                     no_file.push(cfg.to_ascii_lowercase());
                 }
                 // (the set-up is one of this vehicle)
@@ -12787,11 +12862,10 @@ mod tests {
                 *kinds.entry(c.origin()).or_default() += 1;
             }
         }
-        // (two bought cars have no set-up file of their own on the disc: the loader keeps the
-        // constructor's record and still writes the hash of the name it asked for)
-        no_file.sort();
+        // (every one has its file: vp_lam_murcielago_06_dub and vp_sln_s7_06 are among the ten
+        // the dev extraction once had under colliding names - docs/reference/misc/configs_misnamed.md)
         if configs.is_dir() && !kinds.is_empty() {
-            assert_eq!(no_file, ["vp_lam_murcielago_06_dub", "vp_sln_s7_06"]);
+            assert!(no_file.is_empty(), "{no_file:?}");
         }
         if !kinds.is_empty() {
             assert_eq!(kinds.keys().map(|k| k.as_str()).collect::<Vec<_>>(), ["SC_pinkslip", "SC_timetrial", "SC_tournament", "starter", "stock"], "{kinds:?}");
@@ -15478,6 +15552,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The first career race (RACE_GH_06) runs at Easy: its core script sets the man's
+    /// difficulty to 0 (`0x40a56c35` 0x1b7), and the recomp paid $100 for second of two - the
+    /// curve's Easy money (250 x 0.8 x 1/2); BEAT_SH_05's core sets 1.
+    #[test]
+    fn story_men_difficulty_from_their_cores() {
+        if !std::path::Path::new(&data_dir()).join("tune/career").is_dir() {
+            return;
+        }
+        let mut g = Game::new(Vec::new(), 0);
+        g.data_dir = data_dir();
+        g.career = crate::career::Career::load(&data_dir());
+        g.fresh_game = true;
+        g.career.new_game();
+        g.career.call_delivered("RACE_GH_06");
+        assert_eq!(g.career.hookman_mission(), Some("RACE_GH_06"));
+        assert_eq!(g.mc4_hookman_diff(), Some(0));
+        assert_eq!(g.mc4_story_difficulty("BEAT_SH_05"), Some(1));
+        assert_eq!(g.mc4_story_difficulty("FIND_SH_05"), Some(1));
+        let (money, rep) = crate::rewards::race_reward(0, g.player_perf(), 0, 2, 2, 1.0);
+        assert_eq!((money, rep), (100, 50));
+    }
+
     /// Step 20: a career begun in the port writes the records and the scripts the original's
     /// new game has after its first two races: the new game sample's, entry for entry.
     #[test]
@@ -16556,9 +16652,15 @@ mod tests {
         let def = |id: &str, sub: &str, district: &str| crate::races::RaceDef { id: id.into(), sub_type: sub.into(), district: district.into(), goal_time: 100.0, ..Default::default() };
         g.race_defs = vec![def("game/Race/Hollywood/Ordered/a", "Ordered", "Hollywood"), def("game/Race/Beaches/Circuit/b", "Circuit", "Beaches"), def("game/Race/SouthCentral/Ordered/c", "Ordered", "SouthCentral"), def("game/Race/Hollywood/Delivery/d", "Delivery", "Hollywood")];
         g.race_table = g.race_defs.iter().map(|d| d.id.clone()).collect();
-        // won but not under the goal time: rWIN / rMDG only
+        // (only a race started from GOAL ATTACK records them: sub_822D0438 0x822D0974)
         g.current_race = Some(0);
+        g.mc4_race_goals(1, Some(50.0), 0.0);
+        assert_eq!(g.mc4_stat("rWIN", 0), 0.0);
+        g.goal_attack = true;
+        // won but not under the goal time: rWIN / rMDG only - the list's mask 8 + 4
         g.mc4_race_goals(1, Some(100.0), 0.1);
+        assert_eq!(g.mc4_goal_mask(0), 12);
+        assert_eq!(g.mc4_goal_lines(0)[2], "FINISH THIS RACE IN UNDER 01:40.00");
         assert_eq!((g.mc4_stat("rWIN", 0), g.mc4_stat("rBTT", 0), g.mc4_stat("rMDG", 0), g.mc4_stat("rCGL", 0)), (1.0, 0.0, 1.0, 0.0));
         // a quarter of MaxDamage is too much
         g.mc4_race_goals(1, Some(99.0), 0.25);
@@ -16567,6 +16669,9 @@ mod tests {
         g.mc4_race_goals(1, Some(99.0), 0.2);
         assert_eq!(g.mc4_stat("rCGL", 0), 1.0);
         assert!(g.mc4_awarded("aAOR") && !g.mc4_awarded("aAAR"));
+        assert_eq!(g.mc4_goal_mask(0), 15);
+        // (the badge's line: TARGET TIME)
+        assert_eq!(g.mc4_goal_badge().as_deref(), Some("TARGET TIME: 01:40.00"));
         g.current_race = Some(1);
         g.mc4_race_goals(1, Some(50.0), 0.0);
         assert!(g.mc4_awarded("aAAR") && !g.mc4_awarded("aARC"));

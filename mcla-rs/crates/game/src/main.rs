@@ -4275,7 +4275,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let key = if want == "custom" { format!("custom@{}#{}x{}", pcar, self.game.livery_rev, size) } else { format!("{}@{}", want, pcar) };
                     if !self.vehicles.has_vinyl(&key) {
                         self.vehicles.drop_vinyls(&format!("custom@{}#", pcar), &key);
-                        let s19a_file = want.strip_prefix("setup:").and_then(|c| std::fs::read(std::path::Path::new(&self.opt.data_dir).join("resources/vehicle/configs").join(format!("{c}.xcc"))).ok());
+                        let s19a_file = want.strip_prefix("setup:").and_then(|c| render::car_lamps::setup_file(std::path::Path::new(&self.opt.data_dir), c)).and_then(|f| std::fs::read(f).ok());
                         let livery = match (s19a_file, want.strip_prefix("preset:")) {
                             (Some(d), _) => vinyl::Livery::from_xcc(&d),
                             (None, Some(p)) => self.game.vinyl_presets.livery(p),
@@ -4764,6 +4764,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (step 23b: the race's goals - sub_822CD720 from sub_822D0438)
                     let s23b_dmg = self.vehicles.player().map_or(0.0, |c| c.state.damage);
                     self.game.mc4_race_goals(place, my_time, s23b_dmg);
+                    // (GOAL ATTACK: the race's end hook sub_82256BE0 - SetAllPoliceUnderground(0, 1))
+                    if self.game.goal_attack {
+                        self.police.units_up();
+                    }
                     self.game.event_line.clear();
                     self.game.next_event_race = None;
                     if let Some(title) = mine.first() {
@@ -6790,7 +6794,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if let Some(k) = self.game.ability_pick.take() {
                 self.ability.kind = crate::ability::Kind::ALL[k.min(3)];
             }
-            let hud = self.vehicles.player().map(|c| HudInfo { speed_kmh: c.state.fwd_speed() * 3.6, speed_abs: c.state.speed(), gear: c.state.gear, rpm: self.sound.tach_rpm().unwrap_or(c.state.rpm), redline: c.model.params.redline, nitro: (c.state.nitro_shots as f32 + c.state.veh.as_ref().map_or(0.0, |v| v.nitro_level)) / 4.0, damage: if self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery) { c.state.delivery_damage() } else { c.state.damage }, player_pos: c.state.pos, player_heading: { let f = c.state.forward(); f.x.atan2(-f.z) }, heat: std::env::var("MCLA_HUD_HEAT").ok().filter(|_| self.tick_no > 400).and_then(|v| v.parse().ok()).unwrap_or(if self.police.goons { 0 } else { self.police.heat as u8 }), fine: if self.police.goons { 0 } else { self.police.fine as i64 }, law: self.police.level(), search: self.police.search / self.police.tun.get("fSearchMaxTime", 35.0), rain: rain_now, ability: if (self.game.mc4_ability_none() || (self.game.career.loaded() && !self.game.career.reached("INSTALL_ABILITY"))) && std::env::var("MCLA_ABILITY").is_err() { "" } else { self.ability.kind.name() }, ability_meter: self.ability.meter, ability_fx: self.ability.fx(), draft: self.ability.draft, sst: self.ability.sst, sst_full: self.ability.sst_ready(), map_vp: self.map_vp, ability_tint: self.ability.tint().map(|t| (t, self.ability.blend())), cam_vp: Some(vp), cam_pos: self.chase.pos, cam_look: self.chase.look, cam_fwd: { let f = self.chase.look - self.chase.pos; Vec3::new(f.x, 0.0, f.z).normalize_or_zero() }, cam_vel: c.state.vel, night: self.time_of_day > 19.5 || self.time_of_day < 6.0, cruise: self.cruise_hold, pu_hud: self.powerups.as_ref().map_or([0.0, 0.0, 1.0], |p| p.hud(self.vehicles.cars.iter().position(|x| x.is_player).unwrap_or(0))) }).unwrap_or_default();
+            let hud = self.vehicles.player().map(|c| HudInfo { damage_goal: self.game.goal_attack && self.game.race.is_some(), speed_kmh: c.state.fwd_speed() * 3.6, speed_abs: c.state.speed(), gear: c.state.gear, rpm: self.sound.tach_rpm().unwrap_or(c.state.rpm), redline: c.model.params.redline, nitro: (c.state.nitro_shots as f32 + c.state.veh.as_ref().map_or(0.0, |v| v.nitro_level)) / 4.0, damage: if self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery) { c.state.delivery_damage() } else { c.state.damage }, player_pos: c.state.pos, player_heading: { let f = c.state.forward(); f.x.atan2(-f.z) }, heat: std::env::var("MCLA_HUD_HEAT").ok().filter(|_| self.tick_no > 400).and_then(|v| v.parse().ok()).unwrap_or(if self.police.goons { 0 } else { self.police.heat as u8 }), fine: if self.police.goons { 0 } else { self.police.fine as i64 }, law: self.police.level(), search: self.police.search / self.police.tun.get("fSearchMaxTime", 35.0), rain: rain_now, ability: if (self.game.mc4_ability_none() || (self.game.career.loaded() && !self.game.career.reached("INSTALL_ABILITY"))) && std::env::var("MCLA_ABILITY").is_err() { "" } else { self.ability.kind.name() }, ability_meter: self.ability.meter, ability_fx: self.ability.fx(), draft: self.ability.draft, sst: self.ability.sst, sst_full: self.ability.sst_ready(), map_vp: self.map_vp, ability_tint: self.ability.tint().map(|t| (t, self.ability.blend())), cam_vp: Some(vp), cam_pos: self.chase.pos, cam_look: self.chase.look, cam_fwd: { let f = self.chase.look - self.chase.pos; Vec3::new(f.x, 0.0, f.z).normalize_or_zero() }, cam_vel: c.state.vel, night: self.time_of_day > 19.5 || self.time_of_day < 6.0, cruise: self.cruise_hold, pu_hud: self.powerups.as_ref().map_or([0.0, 0.0, 1.0], |p| p.hud(self.vehicles.cars.iter().position(|x| x.is_player).unwrap_or(0))) }).unwrap_or_default();
             let mut action = MenuAction::None;
             let game = &mut self.game;
             let vehicles = &self.vehicles;
@@ -7993,7 +7997,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         // hand the delivery car back when the event is left
-        if self.game.borrowed && (pink_quit || matches!(action, MenuAction::StartFreeRoam | MenuAction::MainMenu | MenuAction::OpenGarage | MenuAction::OpenRaceSelect)) {
+        if self.game.borrowed && (pink_quit || matches!(action, MenuAction::StartFreeRoam | MenuAction::MainMenu | MenuAction::OpenGarage | MenuAction::OpenRaceSelect | MenuAction::OpenArcade(_))) {
             self.game.borrowed = false;
             if let Some(dir) = self.game.car_dirs.get(self.game.current_car).cloned() {
                 let color = self.game.paint_color();
@@ -8028,6 +8032,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.speech.say_as(sp, &self.game.althk.voice);
                 }
                 self.game.event_diff = None;
+                // (back to the cruise leaves GOAL ATTACK: sub_82665ED0 clears the mode's +796)
+                self.game.goal_attack = false;
                 self.game.series = None;
                 self.game.series_first = false;
                 self.game.series_ask = None;
@@ -8348,6 +8354,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         log::info!("arcade: options record {:02x?}, traffic x {} -> {} cars, hour {:?}, weather {:?}", self.game.mc4_arcade_record(), env.traffic, self.vehicles.traffic_target, env.hour, env.weather);
                     }
+                    // (GOAL ATTACK's START RACE: SetAllPoliceUnderground(1, 1) - sub_8265D2B8
+                    // 0x8265D58C; the race object's end hook brings them up again, sub_82256BE0)
+                    if self.game.goal_attack {
+                        self.police.units_down();
+                        log::info!("goal attack: race started, police units underground");
+                    }
                     // (step 19e: an ARCADE race with POWER UPS on or Custom - the record's byte
                     // 21, EventOptions_IsPowerUps - has its pick-up sources: the race script's
                     // own list, else laid out from the checkpoints - ordered races 1, unordered 0)
@@ -8374,6 +8386,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.mode = Mode::FreeRoam;
                 }
                 self.game.menu_sel = 0;
+            }
+            MenuAction::OpenArcade(goal) => {
+                // (the type list first, the flag set: sub_826669C0 / sub_82666760)
+                self.game.goal_attack = goal;
+                self.game.arcade.0 = 0;
+                if self.game.race_defs.is_empty() {
+                    self.pending_action = MenuAction::StartRace;
+                } else {
+                    self.game.mode = Mode::RaceSelect;
+                }
             }
             MenuAction::OpenRaceSelect => {
                 if self.game.race_defs.is_empty() {
@@ -10141,9 +10163,9 @@ fn run_game() -> Result<()> {
             let root = std::path::Path::new(&opt.data_dir);
             let zones = vinyl::CarZones::load(&root.join("resources/vehicle").join(p[0]));
             let mut lib = vinyl::ShapeLib::load(&opt.data_dir);
-            let livery = match std::fs::read(root.join("resources/vehicle/configs").join(format!("{}.xcc", p[1]))) {
-                Ok(d) => vinyl::Livery::from_xcc(&d),
-                Err(_) => vinyl::Presets::load(&opt.data_dir).livery(p[1]),
+            let livery = match render::car_lamps::setup_file(root, p[1]).map(std::fs::read) {
+                Some(Ok(d)) => vinyl::Livery::from_xcc(&d),
+                _ => vinyl::Presets::load(&opt.data_dir).livery(p[1]),
             };
             println!("zones {:?}, layers {:?}", zones.as_ref().map(|z| z.centres), livery.zones.iter().map(|z| z.len()).collect::<Vec<_>>());
             if let Some(z) = zones {

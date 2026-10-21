@@ -326,6 +326,9 @@ pub enum MenuAction {
     StartFreeRoam,
     StartRace,
     OpenRaceSelect,
+    /// the pause MODES' ARCADE (false) or GOAL ATTACK (true): the mode object's +796 set,
+    /// then the ARCADE menu's race type list (sub_82666760 / sub_826669C0)
+    OpenArcade(bool),
     OpenGarage,
     Back,
     Quit,
@@ -520,6 +523,9 @@ pub struct Game {
     pub arcade_x: [usize; 2],
     /// a race whose opponent count the ARCADE options changed, and its own figure
     pub arcade_restore: Option<(usize, usize)>,
+    /// GOAL ATTACK (the mode object's byte +796): the ARCADE menu entered from the pause
+    /// MODES' GOAL ATTACK, and the race started from it (`mc4_goal_*`)
+    pub goal_attack: bool,
     /// the races added to the favourites from the pause menu (their ids; the save's
     /// "RaceFavorites")
     pub race_favs: Vec<String>,
@@ -1086,6 +1092,7 @@ impl Game {
             arcade_opts: ARCADE_DEFAULTS,
             arcade_x: [1, 0],
             arcade_restore: None,
+            goal_attack: false,
             race_favs: Vec::new(),
             cfgs: Default::default(),
             arrest_panel: None,
@@ -3029,7 +3036,7 @@ impl Game {
             let diffs: Vec<i32> = self.race.as_ref().map(|r| r.participants.iter().skip(1).filter_map(|i| vehicles.cars.get(*i)).map(|c| self.difficulty_of(&c.model.name)).collect()).unwrap_or_default();
             let desired = diffs.first().copied().unwrap_or(1).clamp(0, 3);
             // (a hookman's race is as hard as the set-up his mission names)
-            let desired = self.career.hookman_diff().filter(|_| self.hookman_race).map_or(desired, |d| d as i32);
+            let desired = self.mc4_hookman_diff().filter(|_| self.hookman_race).map_or(desired, |d| d as i32);
             let desired = self.wager.map_or(desired, |(_, d)| d as i32);
             // (an event accepted at a hangout runs at the difficulty chosen there)
             let desired = self.event_diff.map_or(desired, |d| d as i32);
@@ -3046,7 +3053,7 @@ impl Game {
             let odd = diffs.iter().copied().find(|d| *d != desired);
             self.race_diff = desired as usize;
             let step = self.adaptive.step(desired, odd);
-            log::info!("race: difficulty {} (field {:?}; hookman race {} set-up {:?}), opponents level {} -> rubber band step {}", desired, diffs, self.hookman_race, self.career.hookman_diff(), self.adaptive.level, step);
+            log::info!("race: difficulty {} (field {:?}; hookman race {} set-up {:?}), opponents level {} -> rubber band step {}", desired, diffs, self.hookman_race, self.mc4_hookman_diff(), self.adaptive.level, step);
             self.rb_step = Some(step);
         }
         // (step 19c: LAST MAN OUT, the time trial's clock, the payback leg - `mc4`)
@@ -4312,11 +4319,11 @@ impl Game {
                         }
                         1 => {
                             let go = |a: MenuAction| if racing { Go::Off } else { Go::Act(a) };
-                            items.push((s("pause_arcade", "ARCADE"), String::new(), go(MenuAction::OpenRaceSelect)));
-                            // (the original's tab - reference `t03`; goal attack and the online modes
-                            // are not in the port: listed, greyed)
+                            items.push((s("pause_arcade", "ARCADE"), String::new(), go(MenuAction::OpenArcade(false))));
+                            // (the original's tab - reference `t03`; the online modes are not in
+                            // the port: listed, greyed. GOAL ATTACK (`PM_GoalAttack`) as ARCADE)
                             if self.flash_menu.is_some() {
-                                items.push((s("pause_goalattack", "GOAL ATTACK"), String::new(), Go::Off));
+                                items.push((s("pause_goalattack", "GOAL ATTACK"), String::new(), go(MenuAction::OpenArcade(true))));
                                 items.push((s("pause_play_online", "XBOX LIVE"), String::new(), Go::Off));
                                 items.push((s("pause_online_tournament", "ONLINE TOURNAMENT"), String::new(), Go::Off));
                                 items.push((s("pause_play_lan", "SYSTEM LINK"), String::new(), Go::Off));
@@ -7540,6 +7547,8 @@ impl Game {
                             _ => "",
                         };
                         let kind = self.career.strings.get(key).map(|v| if key == "Delivery" { v.to_string() } else { v.to_uppercase() }).unwrap_or_else(|| format!("{} RACE", d.sub_type.to_uppercase()));
+                        // (GOAL ATTACK: "TARGET TIME: mm:ss.hh" in place of the kind - `mc4_goal_badge`)
+                        let kind = self.mc4_goal_badge().map(|t| t.to_uppercase()).unwrap_or(kind);
                         // the icon is the district's emblem (the clip's frames: 0 a star -
                         // Hollywood, as captured; 1 a palm, 2 a wave, 4 SC, 6 LA; 9 handcuffs)
                         let dl = format!("{} {}", d.district, d.id).to_ascii_lowercase();
@@ -8504,7 +8513,7 @@ impl Game {
                     // the hookman a mission is about stands out
                     let named = !cinst.driver.is_empty();
                     // the icon is coloured by how hard the racer is for the player's car
-                    let dc = crate::rewards::DIFF_COLORS[self.career.hookman_diff().filter(|_| named).unwrap_or(self.difficulty_of(&cinst.model.name).clamp(0, 3) as usize)];
+                    let dc = crate::rewards::DIFF_COLORS[self.mc4_hookman_diff().filter(|_| named).unwrap_or(self.difficulty_of(&cinst.model.name).clamp(0, 3) as usize)];
                     let accent = egui::Color32::from_rgb(dc[0], dc[1], dc[2]);
                     if mini.is_some() && self.flash_map.is_some() {
                         // The original's racer on the minimap (`ng_chase_010` enlarged): the flag on a
@@ -9212,7 +9221,7 @@ impl Game {
                 let k = screen.height() / 720.0;
                 // (the ring is his difficulty's colour - TREVOR green in `ng_gps_1`; yellow once
                 // his mission is the GPS target)
-                let dc = crate::rewards::DIFF_COLORS[self.career.hookman_diff().filter(|_| named).unwrap_or(self.difficulty_of(&c.model.name).clamp(0, 3) as usize)];
+                let dc = crate::rewards::DIFF_COLORS[self.mc4_hookman_diff().filter(|_| named).unwrap_or(self.difficulty_of(&c.model.name).clamp(0, 3) as usize)];
                 let col = if named && self.mission_target.is_some() { egui::Color32::from_rgb(250, 235, 20) } else { egui::Color32::from_rgb(dc[0], dc[1], dc[2]) };
                 let f = c.state.forward();
                 // (the heading as the map shows it: a point ahead of him, through the map's own projection)
@@ -9321,6 +9330,9 @@ fn clip_to_circle(a: egui::Pos2, b: egui::Pos2, c: egui::Pos2, r: f32) -> Option
 
 #[derive(Clone, Copy, Default)]
 pub struct HudInfo {
+    /// GOAL ATTACK's damage goal on the meter (mcGoalDamageCtrl, sub_826506F0: the HUD movie's
+    /// `damage_goal` = the mode's +796 while the control is active)
+    pub damage_goal: bool,
     pub speed_kmh: f32,
     /// the body's whole speed, m/s: the HUD's d_Speedvalue (|velocity|, sub_822112A8), not the forward speed
     pub speed_abs: f32,
@@ -11228,6 +11240,8 @@ impl Game {
             _ => "",
         };
         let kind = self.career.strings.get(key).map(|v| if key == "Delivery" { v.to_string() } else { v.to_uppercase() }).unwrap_or_else(|| format!("{} RACE", d.sub_type.to_uppercase()));
+        // (GOAL ATTACK: "TARGET TIME: mm:ss.hh" in place of the kind - `mc4_goal_badge`)
+        let kind = self.mc4_goal_badge().map(|t| t.to_uppercase()).unwrap_or(kind);
         let dl = format!("{} {}", d.district, d.id).to_ascii_lowercase();
         let icon = if dl.contains("south") || dl.contains("sc_") { 4 } else if dl.contains("downtown") || dl.contains("dt_") { 6 } else if dl.contains("beach") || dl.contains("monica") || dl.contains("sm_") { 1 } else if dl.contains("hills") || dl.contains("bh_") { 2 } else { START_BADGE_ICON };
         Some(crate::flash_ui::MenuPage { layout: crate::flash_ui::MenuLayout::StartOfRace { description: kind, ring: self.badge_ring() }, icon, title: name, select: usize::MAX, ..Default::default() })
@@ -11490,6 +11504,17 @@ impl Game {
                     props.push(kind);
                 }
             }
+            // (GOAL ATTACK: after the money an empty row of kind 12, then the form's item
+            // `Goal Attack` of kind 15 - its four goal icons from `text2`: sub_82676B08
+            // 0x82676F68, navsys FillReward 0x16d0a. Where the game fills the item's texts was
+            // not found: the title and this race's goals are taken - approx.)
+            if self.goal_attack && self.career.reward_page == 0 {
+                rows.push(MenuRow { label: String::new(), value: String::new(), enabled: true, part: None });
+                props.push(12);
+                let mask = self.current_race.map_or(0, |i| self.mc4_goal_mask(i));
+                rows.push(MenuRow { label: st("Goal Attack", "GOAL ATTACK").to_uppercase(), value: mask.to_string(), enabled: true, part: None });
+                props.push(15);
+            }
             MenuPage {
                 layout: MenuLayout::Reward { total_rep: self.rep, next_rank: next, rep_label: format!("{}  ", st("Pause_Rep", "TOTAL REP:").trim()), next_label: format!("{}:  ", st("Next_Rank", "NEXT RANK AT").trim().trim_end_matches(':')), meter, money: self.money },
                 icon: std::env::var("MCLA_RES_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(13),
@@ -11740,6 +11765,10 @@ impl Game {
             if f.len() == 3 {
                 self.arcade = (f[0].min(2) as u8, f[1].min(3), [f[1].min(3), 0, 0]);
                 self.arcade.2[f[0].min(2)] = f[2];
+                // (test hook MCLA_GOAL_ATTACK=1: the menu as GOAL ATTACK's)
+                if std::env::var("MCLA_GOAL_ATTACK").is_ok() {
+                    self.goal_attack = true;
+                }
                 // (test hook MCLA_ARCADE_POWER=0..2: the POWER UPS row's choice on that page)
                 if let Some(v) = std::env::var("MCLA_ARCADE_POWER").ok().and_then(|v| v.parse::<usize>().ok()) {
                     self.arcade_opts[2] = v.min(2);
@@ -11778,6 +11807,7 @@ impl Game {
         *c = (*c).min(count - 1);
         let mut started: Option<usize> = None;
         let mut out = None;
+        let mut nag = false;
         match page_no {
             0 => {
                 if enter && !shown.is_empty() {
@@ -11786,6 +11816,32 @@ impl Game {
                     page_no = 1;
                 } else if back {
                     out = Some(MenuAction::Back);
+                    // (the type list's BACK leaves GOAL ATTACK: sub_82654F38 0x82655078)
+                    self.goal_attack = false;
+                }
+            }
+            1 if self.goal_attack => {
+                // GOAL ATTACK: ACCEPT starts the race at once, no options page (sub_8265D770
+                // 0x8265D9F8..0x8265DB10): the options' defaults (sub_826583C0), then TIME OF DAY
+                // Midnight, POWER UPS off, WEATHER Clear; START RACE forces TRAFFIC to its low
+                // choice (sub_8265D2B8 0x8265D3C4..0x8265D3E4); xNAG + 1
+                if enter && !races.is_empty() {
+                    let (i, _) = races[cur[1].min(races.len() - 1)];
+                    for r in self.mc4_arcade_rows(Some(i)) {
+                        crate::mc4::arcade_set(&mut self.arcade_opts, &mut self.arcade_x, &mut self.opt_x, r.slot, r.default);
+                    }
+                    self.opt_x.arcade.custom_off = [false; 11];
+                    for (slot, v) in [(5, 1), (2, 0), (4, 1), (3, 1)] {
+                        crate::mc4::arcade_set(&mut self.arcade_opts, &mut self.arcade_x, &mut self.opt_x, slot, v);
+                    }
+                    nag = true;
+                    started = Some(i);
+                    self.race_sel = i;
+                    self.current_race = Some(i);
+                    self.wager = None;
+                    out = Some(MenuAction::StartRace);
+                } else if back {
+                    page_no = 0;
                 }
             }
             1 => {
@@ -11851,7 +11907,13 @@ impl Game {
             1 => (
                 st("pause_choose_race", "Choose race:"),
                 races.iter().map(|(_, n)| MenuRow { label: n.clone(), value: String::new(), enabled: true, part: None }).collect(),
-                vec![(up_st("prompt_accept", "ACCEPT"), ICON_A), (up_st("prompt_back", "BACK"), ICON_B), (up_st("Navmap_Prompt_ViewRace", "VIEW RACE"), ICON_Y)],
+                // (GOAL ATTACK off line: prompt_accept / Common_Back / Navmap_Prompt_ViewRace -
+                // 0x82906F9C)
+                if self.goal_attack {
+                    vec![(up_st("prompt_accept", "ACCEPT"), ICON_A), (up_st("Common_Back", "BACK"), ICON_B), (up_st("Navmap_Prompt_ViewRace", "VIEW RACE"), ICON_Y)]
+                } else {
+                    vec![(up_st("prompt_accept", "ACCEPT"), ICON_A), (up_st("prompt_back", "BACK"), ICON_B), (up_st("Navmap_Prompt_ViewRace", "VIEW RACE"), ICON_Y)]
+                },
             ),
             _ => {
                 // (the rows and their lists are the original's: `mc4_arcade_rows`)
@@ -11865,15 +11927,22 @@ impl Game {
             }
         };
         let rows_n = rows.len();
+        // (GOAL ATTACK's race list: template 15, each race's goal icons and the panel of the
+        // one under the cursor - `mc4_goal_mask`, `mc4_goal_lines`)
+        let layout = if self.goal_attack && page_no == 1 {
+            MenuLayout::GoalAttack { goals: races.iter().map(|(i, _)| (self.mc4_goal_mask(*i), self.mc4_goal_lines(*i))).collect() }
+        } else {
+            MenuLayout::Confirm { description }
+        };
         let page = MenuPage {
-            layout: MenuLayout::Confirm { description },
+            layout,
             // (the GPS movie's title icons: 1 globe, 4 pad)
             icon: std::env::var("MCLA_ARCADE_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(4),
             // (the original marks each race with a star in a ring; that icon is not among the
             // row icons this template knows - `property1` 3..6: padlock, crossed box - so the
             // rows go without. MCLA_ROW_ICON tries a value.)
             row_props: match std::env::var("MCLA_ROW_ICON").ok().and_then(|v| v.parse().ok()) { Some(v) if page_no == 1 => vec![v; rows_n], _ => Vec::new() },
-            title: up_st("pause_arcade", "ARCADE"),
+            title: if self.goal_attack { up_st("goal_attack_title", "GOAL ATTACK") } else { up_st("pause_arcade", "ARCADE") },
             rows,
             select: self.arcade.2[page_no as usize],
             list_max: 11,
@@ -11895,6 +11964,10 @@ impl Game {
             fp.show(&prompts, None, None);
             fp.movie.player.update(dt);
             fp.movie.paint(ctx, &lp);
+        }
+        // (a GOAL ATTACK race started: xNAG + 1 - sub_8265D770 after START RACE)
+        if nag {
+            self.mc4_stat_add("xNAG", 0, 1.0);
         }
         out
     }

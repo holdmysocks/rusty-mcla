@@ -250,6 +250,14 @@ impl Police {
         self.units.clear();
     }
 
+    /// PoliceManager_SetAllPoliceUnderground(1, 1): the units go underground (no new car is put
+    /// up for them; a unit's car already on the road is left where it is - approx.).
+    pub fn units_down(&mut self) {
+        for u in self.units.iter_mut() {
+            u.under = true;
+        }
+    }
+
     /// PoliceManager_SetAllPoliceUnderground(0, 1): the units come up at their surface place;
     /// the port puts each there (`update_units`) while the player is within streaming reach.
     pub fn units_up(&mut self) {
