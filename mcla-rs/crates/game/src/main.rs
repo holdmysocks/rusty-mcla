@@ -90,6 +90,7 @@ mod rubber;
 mod vehicle_model;
 mod vehicles;
 mod hangout_scene;
+mod layout;
 mod mc4b;
 mod world;
 
@@ -241,6 +242,9 @@ struct App {
     /// the garage camera's move between views: where it came from, where it goes, the
     /// seconds gone and the up vector of this frame
     garage_tr: Option<(garagecam::CamState, garagecam::CamState, f32)>,
+    /// the cine scene whose lamp events run (vehicles.rs `CINE_LAMP_EVENTS`): its name, the clock already
+    /// passed, every car's lamp switch as the scene found it (uid, off)
+    cine_lamps: Option<(String, f32, Vec<(u32, bool)>)>,
     /// the race's end: the standings form's pause camera (picked when it comes up) and the
     /// view held once the game is paused
     race_end_cam: Option<(menu3d::PauseCam, menu3d::PauseCam)>,
@@ -429,6 +433,8 @@ struct App {
     at_station: Option<usize>,
     /// (step 23b) the hangouts' scenes: their cars, the panel's camera, the pink slip choice
     hscene: hangout_scene::HangoutScene,
+    /// the layout items' sources: the hangout cores and the story scenes (layout.rs)
+    layout: layout::Layout,
     was_racing: bool,
     nitro_lap: usize,
     /// hydraulics switched on (L, or a click of the left stick)
@@ -671,6 +677,7 @@ impl App {
             garage_views: None,
             garage_cam: None,
             garage_tr: None,
+            cine_lamps: None,
             race_end_cam: None,
             race_end_from: None,
             race_end_way: None,
@@ -784,6 +791,7 @@ impl App {
             pad_shift_last: None,
             at_station: None,
             hscene: Default::default(),
+            layout: Default::default(),
             was_racing: false,
             nitro_lap: 0,
             hyd_on: false,
@@ -2582,6 +2590,7 @@ impl App {
                 let scene = self.cine.playing.as_ref().map(|s| s.name.clone());
                 let cam = self.cine.camera();
                 self.hscene.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, near_h.as_ref().map(|(n, d)| (n.as_str(), *d)), scene.as_deref(), cam, dt);
+                self.layout.update(&self.game, &mut self.vehicles, &self.opt.data_dir, scene.as_deref(), dt);
             }
             // (a story hookman waits at his place: within his radius, not chased, he is met -
             // the CORE scripts' loop, step 20b)
@@ -3370,19 +3379,21 @@ impl App {
         }
         // ---- the race's script: its traffic, lights and nitro points ----
         if self.game.race.is_none() && self.dress.is_some() {
-            self.dress = None;
+            // (Race_UnloadAmbientPathArray: the paths' items go, racescript.rs `Runtime::unload`)
+            if let Some(rt) = self.dress.take() {
+                rt.unload(&mut self.vehicles);
+            }
             self.props_dirty = true;
             self.vehicles.signals.release();
                 self.vehicles.road_density.clear();
                 self.vehicles.road_density_new.clear();
             self.props.signals.release();
-            self.vehicles.cars.retain(|c| !c.driver.starts_with(racescript::TAG));
         }
         if let (Some(rt), Some(race), true) = (self.dress.as_mut(), self.game.race.as_ref(), self.game.mode == Mode::Race && sim_dt > 0.0) {
             let lap = (race.next.first().copied().unwrap_or(0) / race.lap_len.max(1)) as i32 + 1;
             let time = if race.countdown > 0.0 { -race.countdown } else { race.time };
             let subjects = race.participants.clone();
-            rt.update(&mut self.vehicles, &gpu, &mut self.props.signals, &subjects, time, lap, sim_dt);
+            rt.update(&mut self.vehicles, &gpu, &world, &mut self.props.signals, &subjects, time, lap, sim_dt);
             // the dispatcher reports the racing where the script says so
             for call in std::mem::take(&mut rt.radio) {
                 let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
@@ -3635,6 +3646,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         if sim_dt > 0.0 {
             self.vehicles.sirens = self.police.lights_on();
+            // (test hook MCLA_SIREN_TEST: the player's car is a cruiser with its siren on - the police lamps' states and glows)
+            if std::env::var("MCLA_SIREN_TEST").is_ok() {
+                self.vehicles.sirens = true;
+                if let Some(c) = self.vehicles.player_mut() {
+                    c.cop = true;
+                }
+            }
             if self.vehicles.signals.junctions.is_empty() && !self.props.signals.junctions.is_empty() {
                 self.vehicles.signals = self.props.signals.clone();
             }
@@ -4326,6 +4344,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         None => self.peds.set_view(self.cam.forward(), 0.0),
                     }
                     self.peds.update(&mut gpu, nav, &world.collider, &|p, r, out| props.obstacle_boxes_near(p, r, out), focus, &threats, signals, self.time_of_day, sim_dt);
+                    // (the layout items' people: placed, removed, and what the spawners see next)
+                    layout::Layout::people(&mut self.vehicles, &mut self.peds, &mut gpu, &world);
                     if self.tick_no % 90 == 0 && std::env::var("MCLA_PED_DUMP").is_ok() {
                         log::info!("peds: {} alive, {} evades, {} crossings, {} waiting, kerbs {:?}", self.peds.count(), self.peds.evades, self.peds.crossings, self.peds.waiting(), self.peds.curb_stats());
                         for (p, f, n) in self.peds.nearest(focus, 8) {
@@ -6365,9 +6385,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.vehicles.traffic_lamps(eye, axis, &Frustum::from_view_proj(vp), night, sim_dt);
         }
         // (the set-up cars' lamp states - vehicles.rs `setup_lamps`, sub_82353E38: head lamps due past the
-        // light manager's 18.0 or before its 6.0, or in Stormy or Foggy weather weighing over 0.85)
+        // light manager's 18.0 or before its 6.0, or in Stormy or Foggy weather weighing over 0.85; in the
+        // garage by its view, `garage_lamps_due`)
+        self.cine_lamps_tick();
         {
-            let due = self.time_of_day > 18.0 || self.time_of_day < 6.0 || self.weather_weight(sky::Weather::Stormy) > 0.85 || self.weather_weight(sky::Weather::Foggy) > 0.85;
+            let due = if self.game.mode == Mode::Garage {
+                vehicles::garage_lamps_due(self.game.garage_view())
+            } else {
+                self.time_of_day > 18.0 || self.time_of_day < 6.0 || self.weather_weight(sky::Weather::Stormy) > 0.85 || self.weather_weight(sky::Weather::Foggy) > 0.85
+            };
             self.vehicles.setup_lamps(due, sim_dt);
         }
         self.vehicles.upload_uniforms(&gpu, night);
@@ -6567,6 +6593,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // (ahead of the props for the cut at 96: the port's prop list is longer than the
                         // game's - 74 props at the gate at 23:30, the car's four lamps at 74 .. 77 of 80 -
                         // and a list of over 96 props dropped every car lamp)
+                        glows.push((-1.0e6 + p.distance(cam), g));
+                    }
+                }
+                // (the police lamps: their own AddGlow calls - vehicles.rs `police_glows`, halo.rs `Tune::police`)
+                for (p, f, c, k) in self.vehicles.police_glows(cam) {
+                    if let Some(g) = tune.police(w, p, f, c, k, cam) {
                         glows.push((-1.0e6 + p.distance(cam), g));
                     }
                 }
@@ -8259,7 +8291,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 // the race's own dressing: ramps and flares, scripted traffic, held lights
-                self.dress = None;
+                if let Some(rt) = self.dress.take() {
+                    rt.unload(&mut self.vehicles);
+                }
                 self.props_dirty = true;
                 self.vehicles.signals.release();
                 self.vehicles.road_density.clear();
@@ -8572,6 +8606,50 @@ impl App {
         m.restart(at);
         self.game.movie = Some(m);
         true
+    }
+
+    /// The cine scenes' lamp switches (vehicles.rs `CINE_LAMP_EVENTS`): at a scene's start every car's switch
+    /// is kept (sub_823BBE80), the scene's events set the car of their slot as its clock passes them, and when
+    /// it ends the kept switches come back (FinishScene, sub_823BBEE0).
+    fn cine_lamps_tick(&mut self) {
+        let now = self.cine.playing.as_ref().map(|s| (s.name.clone(), s.t));
+        if self.cine_lamps.as_ref().is_some_and(|(name, _, _)| now.as_ref().map_or(true, |(n, _)| n != name)) {
+            let (_, _, kept) = self.cine_lamps.take().unwrap();
+            for (uid, off) in kept {
+                if let Some(c) = self.vehicles.cars.iter_mut().find(|c| c.uid == uid) {
+                    c.amb_lamps.off = off;
+                }
+            }
+        }
+        let Some((name, t)) = now else { return };
+        if self.cine_lamps.is_none() {
+            let kept = self.vehicles.cars.iter().map(|c| (c.uid, c.amb_lamps.off)).collect();
+            self.cine_lamps = Some((name.clone(), -1.0, kept));
+        }
+        let last = self.cine_lamps.as_ref().map_or(-1.0, |l| l.1);
+        for &(scene, on, slot, at) in vehicles::CINE_LAMP_EVENTS {
+            if scene == name && at > last && at <= t {
+                if let Some(i) = self.cine_slot_car(slot) {
+                    self.vehicles.cars[i].amb_lamps.off = !on;
+                }
+            }
+        }
+        if let Some(l) = self.cine_lamps.as_mut() {
+            l.1 = t;
+        }
+    }
+
+    /// The car of a cine scene's car slot (CineScript_Cars_AssignIdToSlot): a start scene's racers in their
+    /// slots; otherwise slot 0 the player's car, slot k the car moved as `drv0k`.
+    fn cine_slot_car(&self, slot: u8) -> Option<usize> {
+        if let Some(&ci) = self.prerace_acts.as_ref().and_then(|a| a.racers.get(slot as usize)) {
+            return Some(ci);
+        }
+        if slot == 0 {
+            return self.vehicles.cars.iter().position(|c| c.is_player);
+        }
+        let label = format!("cine:drv{:02}", slot);
+        self.vehicles.cars.iter().position(|c| c.driver == label)
     }
 
     /// Cars a cutscene moves besides the player's: a named rival brings his own car.

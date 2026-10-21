@@ -3507,8 +3507,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let lst = i32(round(obj.params.w)) % 16;
             let brk = clamp(obj.params.y * 4.0, 0.0, 1.0);
             let lrow = clamp(lid, 0, 18);
-            let la = obj.lamp_a[lrow].rgb;
-            let lb = obj.lamp_b[lrow].rgb;
+            var la = obj.lamp_a[lrow].rgb;
+            var lb = obj.lamp_b[lrow].rgb;
             let amb8 = obj.lamp_a[0].w > 0.5;
             var l_on = 0.0;
             if (lid == 0) { l_on = max(0.25 * obj.params.x, brk); }
@@ -3522,8 +3522,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             else if (lid == 13) { l_on = f32(lst % 4 == 1); }
             else if (lid == 14) { l_on = f32(lst % 4 == 2); }
             // (every car's entry state now: traffic sub_82792FD8's, set-up cars sub_823523C0's - vehicles.rs
-            // `setup_lamps`; the police lamps 13 / 14 of a set-up car keep the port's siren phase)
-            if (amb8 || (lid != 13 && lid != 14)) { l_on = obj.lamp_b[lrow].w; }
+            // `setup_lamps`; the police lamps 13 / 14 the siren state +308, lit steadily)
+            l_on = obj.lamp_b[lrow].w;
+            // (a set-up car's 20th entry, the shift light: bulb 1, cover (0.5, 0.125, 0) - sub_823523C0's fixed row -
+            // its state in lamp_a[4].w)
+            if (lid == 19 && !amb8) { la = vec3<f32>(1.0); lb = vec3<f32>(0.5, 0.125, 0.0); l_on = obj.lamp_a[4].w; }
             let ix = clamp(albedo.rg, vec2<f32>(0.0), vec2<f32>(1.0));
             let illum = select(1.055 * pow(ix, vec2<f32>(1.0 / 2.4)) - vec2<f32>(0.055), ix * 12.92, ix <= vec2<f32>(0.0031308));
             if (g.params.w > 60.5 && g.params.w < 61.5) { return vec4<f32>(to_scene(vec3<f32>(f32(lid % 3) * 0.5, f32((lid / 3) % 3) * 0.5, f32(lid / 9) * 0.5) + vec3<f32>(0.05)), 1.0); }

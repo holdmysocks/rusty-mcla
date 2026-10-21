@@ -248,6 +248,14 @@ impl Tune {
         self.glow(w, pos, color, self.car_size[w], self.car_intensity[w] * i, true, cam, tan_half_fov)
     }
 
+    /// A police car's light bar lamp (sub_8235FB78): its own AddGlow call with the props' pull towards the
+    /// camera (not the cars'), size 0.3 x 0.3, strength 20 (0x82002C68) x the car's siren state x how squarely
+    /// the lamp faces the camera.
+    pub fn police(&self, w: usize, pos: Vec3, facing: Vec3, color: [f32; 3], state: f32, cam: Vec3) -> Option<Glow> {
+        let i = 20.0 * state * (cam - pos).normalize_or_zero().dot(facing).clamp(0.0, 1.0);
+        self.glow(w, pos, color, [0.3, 0.3], i, false, cam, 0.0)
+    }
+
     /// A signal head's lit lamp: `pos` its locator, `facing` the head's z axis (sub_82739948:
     /// the glow sits 0.3 m behind the locator and its strength goes by how squarely the lamp
     /// faces the camera).
