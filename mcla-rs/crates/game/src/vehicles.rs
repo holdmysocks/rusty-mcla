@@ -634,6 +634,8 @@ pub struct Vehicles {
     pub render_alpha: f32,
     /// each car's LOD this frame (`pick_lods`, by the cars' index): 0 .. 2, -1 not drawn
     pub lod_pick: Vec<i8>,
+    /// whether the glow pass draws a car's lamp glows this frame (`pick_lods`, by the cars' index)
+    pub lod_glow: Vec<bool>,
     pub models: Vec<Arc<CarModel>>,
     pub wheels: Option<Arc<WheelModel>>,
     pub cars: Vec<CarInstance>,
@@ -3825,7 +3827,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     pub fn halo_lamps(&self, night: f32, cam: Vec3) -> Vec<(Vec3, Vec3, [f32; 3], f32)> {
         let mut out = Vec::new();
         let old_rule = std::env::var("MCLA_GLOW_OLD").is_ok();
-        for c in &self.cars {
+        for (ci, c) in self.cars.iter().enumerate() {
             let pose = c.render_pose(self.render_alpha);
             if pose.pos.distance_squared(cam) > 260.0 * 260.0 || (self.hide_player && c.is_player) {
                 continue;
@@ -3843,6 +3845,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // A car without such bones keeps one glow a side at its lamp meshes' mean.
             let traffic = if !pl && self.lamp_rows(c).is_some_and(|t| t.ambient) {
                 let Some(lv) = c.amb_lamps.levels else { continue };
+                // (the glow pass's own test: in the view, and drawn or under 50 deep - `pick_lods`)
+                if !self.lod_glow.get(ci).copied().unwrap_or(true) {
+                    continue;
+                }
                 let r = c.model.params.body_half.length();
                 if pose.pos.distance_squared(cam) - r * r > 250.0 * 250.0 {
                     continue;
@@ -4197,43 +4203,61 @@ impl Vehicles {
     /// it, and so does the main view's (`lod_batches`). Cars without LODs (set-up cars) keep 0. `full_detail`
     /// (OPTIONS > PERFORMANCE > HIGH-DETAIL TRAFFIC, the port's own - DECISIONS.md D19): LOD 0 wherever the
     /// original draws the car at all.
+    ///
+    /// The glow pass (0x8000 of sub_82793360 -> sub_82790B08 -> sub_8237AC90) draws a car's glows when it is
+    /// visible in the view (the instance's per-view byte +557 + view, bit 0x4 - its setter, in the scene's
+    /// cull, was not read: here the same view test of the sphere) and either its LOD is not -1 or instance
+    /// +556 bit 0x20 is set: the depth below 50 (0x82006BF4, sub_827932D8). The depth is written whether or
+    /// not the sphere is in the view (sub_8217C1D8 stores it before its answer), so a car hidden by an
+    /// occluder or 500 deep keeps its glows within 50 - `lod_glow`.
     pub fn pick_lods(&mut self, eye: Vec3, axis: Vec3, near: f32, full_detail: bool, frustum: &crate::render::Frustum, occluders: &crate::occluder::Selected) {
         let alpha = self.render_alpha;
         // (diagnostics: MCLA_LOD_FORCE=1 / 2 draws every traffic car at that LOD)
         let force = std::env::var("MCLA_LOD_FORCE").ok().and_then(|v| v.parse::<i8>().ok());
         static FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let log_now = std::env::var("MCLA_LOD_LOG").is_ok() && FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 60 == 0;
-        self.lod_pick = self
+        (self.lod_pick, self.lod_glow) = self
             .cars
             .iter()
             .map(|c| {
                 if c.model.lods[0].0.is_empty() {
-                    return 0;
+                    return (0, true);
                 }
                 if let Some(f) = force {
-                    return f;
+                    return (f, true);
                 }
                 let pose = c.render_pose(alpha);
                 let (centre, r) = (pose.pos + pose.rot * c.model.lod_centre, c.model.lod_radius);
-                if !frustum.intersects_sphere(centre, r) || occluders.hides_sphere(centre, r) {
-                    return -1;
-                }
                 let d = (centre - eye).dot(axis) - near + r;
-                // (diagnostics: MCLA_LOD_LOG=1 prints every visible traffic car's depth each second)
-                if log_now {
-                    eprintln!("lodpick {} d {:.1} r {:.2} dist {:.1}", c.model.name, d, r, centre.distance(eye));
-                }
-                if d >= 500.0 {
-                    -1
-                } else if d < c.model.lod_steps[0] || full_detail {
-                    0
-                } else if d < c.model.lod_steps[1] {
-                    1
-                } else {
-                    2
-                }
+                let seen = frustum.intersects_sphere(centre, r);
+                let lod = Self::lod_of(c, d, seen && !occluders.hides_sphere(centre, r), full_detail);
+                (lod, seen && (lod >= 0 || d < 50.0))
             })
-            .collect();
+            .unzip();
+        if log_now {
+            // (diagnostics: MCLA_LOD_LOG=1 prints each second every traffic car drawn, glowing or under 60 deep)
+            for (c, (&l, &g)) in self.cars.iter().zip(self.lod_pick.iter().zip(&self.lod_glow)) {
+                let pose = c.render_pose(alpha);
+                let centre = pose.pos + pose.rot * c.model.lod_centre;
+                let d = (centre - eye).dot(axis) - near + c.model.lod_radius;
+                if (l >= 0 || g || d < 60.0) && !c.model.lods[0].0.is_empty() {
+                    eprintln!("lodpick {} lod {} glow {} d {:.1} r {:.2} dist {:.1}", c.model.name, l, g, d, c.model.lod_radius, centre.distance(eye));
+                }
+            }
+        }
+    }
+
+    /// sub_827902F0's answer for depth `d`: -1 outside the view or hidden (`shown` false) or from 500 on.
+    fn lod_of(c: &CarInstance, d: f32, shown: bool, full_detail: bool) -> i8 {
+        if !shown || d >= 500.0 {
+            -1
+        } else if d < c.model.lod_steps[0] || full_detail {
+            0
+        } else if d < c.model.lod_steps[1] {
+            1
+        } else {
+            2
+        }
     }
 
     /// A car's batches and their groups at its LOD of this frame (None: not drawn).
