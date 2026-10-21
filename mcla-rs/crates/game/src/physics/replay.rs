@@ -438,7 +438,7 @@ for i in 0..4 {
                     // (Z3, [178..196]: a motorcycle's gyro - +16, +20, +24, +36, +44, +48, +64..+72, +80..+88,
                     // +96, +100, +108, +112, +116, +120)
                     if q.len() >= 196 {
-                        vs.bg = super::vehsim::BikeGyro { intent: 0, state: q[178] as i16, roll: q[179], roll_err: q[180], level: q[181], yaw_target: q[182], yaw_err: q[183], vel: v(184), acc: v(187), share: q[190], lat: q[191], boost: q[192], pitch: q[193], pitch_err: q[194], burn: q[195] };
+                        vs.bg = super::vehsim::BikeGyro { intent: 0, state: q[178] as i16, roll: q[179], roll_err: q[180], level: q[181], yaw_target: q[182], yaw_err: q[183], vel: v(184), acc: v(187), share: q[190], lat: q[191], boost: q[192], pitch: q[193], pitch_err: q[194], burn: q[195], wobble: vs.bg.wobble };
                     }
                 }
             }

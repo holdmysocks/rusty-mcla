@@ -266,7 +266,13 @@ pub struct BikeGyro {
     pub pitch: f32,
     pub pitch_err: f32,
     pub burn: f32,
+    /// gyro +40: the wobble's clock, -1 while it is off
+    pub wobble: f32,
 }
+
+/// mcBikeGyro's T[+84] (0x827D7554): the main loop's global time scale, never under 0.1 - set by
+/// the game each frame (f32 bits; 1.0 by default).
+pub static TIME_SCALE84: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
 
 /// mcCarSim's rev limiter (chassis +736, +740, +744): the throttle it allows, how long the engine has
 /// stood past RevLimitMax, and whether it is cutting.
@@ -3819,7 +3825,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // from the listing: the filters, the turn (Turn = 0: the body's turning rate is SET), the
     // handbrake's level and the engine's torque multiplier, the lean (Lean = 0: the body is turned
     // about the line through its contacts by the collider's pending turn and push), the wheelie
-    // and the stoppie. Not ported: burnout turn, spin, wobble, air control, reverse drive. ----
+    // and the stoppie, the burnout, the spin and wobble, the gravity pitch and air control in the
+    // air, the reverse drive - every section of the listing. ----
     if vt.bike && exact_sums { 'gyro: {
         use super::exact::{self as ex, approach, ease, fma, fnma, unit_or_zero};
         let gt = &t.gyro;
@@ -3857,7 +3864,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let (wf, wr) = (vs.wheels[0], vs.wheels[2]);
         let ground = wf.record as i32 + wr.record as i32;
         let steer = vs.pad_steer;
-        let (stick_x, stick_y) = (0.0f32, input.lean);
+        // (input +36 / +32: the stick's two axes - X raw, as the camera's turn event also reads it)
+        let (stick_x, stick_y) = (input.steer, input.lean);
         // (the weight button, input +40 bit 0 - not with a burnout state. The port's game has one key
         // for "lean back" / "lean forward": stick and button together; a replay hands them apart)
         let btn = (input.xfer || (input.lean != 0.0 && !vs.pad.live && !REPLAY_STEER.load(std::sync::atomic::Ordering::Relaxed))) && vs.burn_state == 0;
@@ -3962,6 +3970,54 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
         // (section 5: the front tyre's slide is cleared every tick)
         vs.wheels[0].slide = 0.0;
+        // (section 6, 0x82369378..0x82369708: the spin on both brakes and the wobble. With the brake or
+        // the handbrake on and Spin, RevSpin or WobbleAmplitude above nothing: with both on, a torque
+        // through vehGyro's routine about the front wheel's ground normal at its contact,
+        // -(|sideways speed| x the share of the wheels down - a whole-number division: 1 only with both -
+        // x the pad's steering x the brake x the mass x Spin; -RevSpin while the shaft turns forward).
+        // The wobble's clock, gyro +40, is -1 while it is off. All four bikes have RevSpin and
+        // WobbleAmplitude 0.)
+        if (brake_in > 0.0 || hand > 0.0) && (gt.spin > 0.0 || gt.rev_spin > 0.0 || gt.wobble_amplitude > 0.0) {
+            let k = if vs.omega[0] < 0.0 { -gt.rev_spin } else { gt.spin }; // (-pt +48 < 0: the shaft forward)
+            if brake_in > 0.0 && hand > 0.0 && k != 0.0 {
+                let r = rows[0];
+                let side = fma(vel.x, r.x, fma(r.z, vel.z, r.y * vel.y));
+                let share = (ground / wheel_count as i32) as f32;
+                let s = -(((((side.abs() * share) * steer) * brake_in) * mass) * k);
+                let n = wf.frame[1];
+                let (tq, f) = torque_about(n * s, wf.frame[3] - body_at, n);
+                calls.push((533, f, tq));
+            }
+            if gt.wobble_amplitude != 0.0 {
+                if vs.bg.wobble < 0.0 {
+                    if fwd_speed > f32::from_bits(0x4232_cccd) {
+                        vs.bg.wobble = 0.0;
+                    }
+                } else if fwd_speed < f32::from_bits(0x417a_51ec) {
+                    vs.bg.wobble = -1.0;
+                }
+                if !(vs.bg.wobble < 0.0) {
+                    vs.bg.wobble += dt;
+                    vs.bg.wobble = ((vs.bg.wobble as f64) % (gt.wobble_frequency as f64)) as f32;
+                    let mut amp = if vs.bg.wobble > gt.wobble_frequency * 0.5 { -gt.wobble_amplitude } else { gt.wobble_amplitude };
+                    if brake_in != 0.0 {
+                        amp *= brake_in;
+                    } else if hand != 0.0 {
+                        amp *= hand;
+                    }
+                    amp = (1.0 - steer.abs()) * amp;
+                    if fwd_speed < 10.0 {
+                        amp = (amp * fwd_speed) * 0.1;
+                    }
+                    if wr.record && !btn {
+                        let f = wr.frame[0] * (mass * amp);
+                        calls.push((533, f, ex::cross(wr.frame[3] - cg, f)));
+                    }
+                }
+            }
+        } else if !(vs.bg.wobble < 0.0) {
+            vs.bg.wobble = -1.0;
+        }
         // (section 7: the handbrake's level, DriftThrust, and the engine's torque multiplier)
         if gt.drift_thrust > 0.0 {
             let hb = if hand > 0.0 { hand } else { 0.0 };
@@ -4180,6 +4236,21 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let climb = clamp(ex::guest_asin(d.y as f64) as f32, f32::from_bits(0xbf06_0a92), f32::from_bits(0x3f06_0a92));
             let a = climb - ex::guest_asin(-rows[2].y as f64) as f32;
             calls.push((542, Vec3::ZERO, rows[0] * (inertia.x * (gt.gravity_pitch * a))));
+        }
+        // (section 12, 0x8236AB84..0x8236ADAC, air control: in the air with the weight button, no stunt
+        // and no turn intent left from the ground (gyro +16, +18), Yaw, Pitch or Roll above nothing -
+        // once past a tenth of the timer's +84 (0x827D7554: the main loop's global time scale, never
+        // under 0.1) - the stick turns the bike: -(Yaw / scale x stick X) about the body's up and
+        // Pitch / scale x stick Y about its right, as turning accelerations (body vfunc 30). Roll only
+        // takes part in the test. Chassis +576 bit 0 (a script's mask, sub_822ADF90) is never set in
+        // the port. Before the tenth the original writes gyro +104, which nothing reads.)
+        if air > 0.0 && btn && vs.bg.intent == 0 && vs.bg.state == 0 && (gt.yaw > 0.0 || gt.pitch > 0.0 || gt.roll > 0.0) {
+            let scale = f32::from_bits(TIME_SCALE84.load(std::sync::atomic::Ordering::Relaxed));
+            if air > scale * 0.1 {
+                let inv = 1.0 / if scale - 0.1 >= 0.0 { scale } else { 0.1 };
+                calls.push((543, Vec3::ZERO, rows[1] * (inertia.y * -((inv * gt.yaw) * stick_x))));
+                calls.push((544, Vec3::ZERO, rows[0] * (inertia.x * ((gt.pitch * inv) * stick_y))));
+            }
         }
         // (RB6, section 13, 0x8236ADB0..0x8236AFD4, the reverse drive - the engine never drives a motorcycle
         // backwards, the gyro pushes it: in reverse gear, throttle (chassis +136) above nothing, the handbrake

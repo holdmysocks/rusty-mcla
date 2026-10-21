@@ -2949,6 +2949,8 @@ impl App {
             }
         }
         self.game.race_slow_tick(dt);
+        // (the bike gyro's T[+84]: the global scale as the main loop leaves it, never under 0.1)
+        crate::physics::vehsim::TIME_SCALE84.store(self.game.mc4_time_scale().max(0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
         let sim_dt = if self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale * self.ability.time_scale() * self.game.mc4_time_scale() };
         self.vehicles.rescue_fallen(&world, focus);
         // (VEHICLE SELECT: the car stands still, its wheels on the ground)
