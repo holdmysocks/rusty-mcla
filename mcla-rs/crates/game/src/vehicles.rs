@@ -860,7 +860,7 @@ struct MergeAcc {
 }
 
 impl MergeAcc {
-    fn push(&mut self, mesh: &mcla_formats::rage::geometry::Mesh, xf: Mat4, dark_above: Option<f32>, lens: f32, amb: bool) {
+    fn push(&mut self, mesh: &mcla_formats::rage::geometry::Mesh, xf: Mat4, dark_above: Option<f32>, lens: f32, amb: u8) {
         let base = self.verts.len() as u32;
         let identity = xf == Mat4::IDENTITY;
         let n = mesh.positions.len();
@@ -886,8 +886,9 @@ impl MergeAcc {
             let ca = if tw.is_some() { 255 } else { 0 };
             // (a traffic model's vertex: its stored tangent in the car's frame in the second colour's rgb, t x 0.5
             // + 0.5 - the ambient programs bend the normal along it where the car is dented (city.wgsl vs_body);
-            // its meshes have no second colour set, so those three bytes are otherwise unused)
-            let at = if amb && mesh.colors1.is_empty() { mesh.tangents.get(i).filter(|_| mesh.tangents.len() == n).map(|t| xf.transform_vector3(t.truncate()).normalize_or_zero()) } else { None };
+            // its meshes have no second colour set, so those three bytes are otherwise unused; 0 0 0 - no unit
+            // tangent comes out so - marks the tyre, whose program, VSAmbientTire, has no dent: amb 2)
+            let at = if amb == 2 && mesh.colors1.is_empty() { Some(Vec3::splat(-1.0)) } else if amb == 1 && mesh.colors1.is_empty() { mesh.tangents.get(i).filter(|_| mesh.tangents.len() == n).map(|t| xf.transform_vector3(t.truncate()).normalize_or_zero()) } else { None };
             let c1 = match at {
                 Some(t) => [c1[0], ((t.x * 0.5 + 0.5) * 255.0).round() as u8, ((t.y * 0.5 + 0.5) * 255.0).round() as u8, ((t.z * 0.5 + 0.5) * 255.0).round() as u8],
                 None => c1,
@@ -1458,7 +1459,7 @@ impl Vehicles {
                     0.0
                 };
                 let first = acc.verts.len();
-                acc.push(mesh, part_xf * bone_m, dark_above, lens, car_is_ambient);
+                acc.push(mesh, part_xf * bone_m, dark_above, lens, if !car_is_ambient { 0 } else if sname.eq_ignore_ascii_case("AmbientTire") { 2 } else { 1 });
                 // (render only - car parts drawn by their own programs' rules in city.wgsl, see
                 // work/lighting bs3.py / bmprobe.py / cglassprobe.py: the material's terms ride in
                 // the vertices. BumpSpec family: uv2 = (-(1 + 200 smoothness + 256 x 200
@@ -3357,6 +3358,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // (their second slot: gCarAmbDamageParams c126, the side sums; enableVertDamage = c126 . c126 > 0)
             if amb_paint {
                 body_slots[1] = c.amb_lamps.dmg;
+                // (diagnostics MCLA_AMB_DMG_ALL=v: every traffic car's four sums v)
+                if let Some(v) = std::env::var("MCLA_AMB_DMG_ALL").ok().and_then(|v| v.parse::<f32>().ok()) {
+                    body_slots[1] = [v; 4];
+                }
             }
             // (+ 256: the in-car glass, only the player's car - the camera's target, sub_822A9670)
             let int_glass = if self.interior_glass && c.is_player { 256.0 } else { 0.0 };
@@ -3402,10 +3407,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     },
                 };
                 let mut pu = ObjectUniform { model: pm.to_cols_array_2d(), ..body_u };
-                // (a traffic model's own wheel: its rim's and matte's programs dent it too, about the wheel bone's
-                // own origin - not done: the port's wheel vertices are in the car's frame)
+                // (a traffic model's own wheel: its rim's and matte's programs dent it too, the vertex taken in its
+                // wheel bone's frame - every va_ wheel bone is its hub with no turn or scale, so p - hub; the third
+                // slot carries the hub)
                 if k >= 4 {
-                    pu.dents[1] = [0.0; 4];
+                    if let Some(h) = c.model.own_wheels.and_then(|h| h[k - 4]) {
+                        pu.dents[2] = [h.x, h.y, h.z, 1.0];
+                    }
                 }
                 gpu.update_object(pb, &pu);
             }

@@ -1010,20 +1010,23 @@ fn vs_body(in: VsIn) -> VsOut {
     // instance's sums (dents[1]); a = sat(c126[k]); p' = p - 0.5 a T p / |p|; the normal bent along the stored
     // tangent t and cross(t, n) x w by the texel steps, n' = normalize(n - (T10 - T) t - (T01 - T) cross(t, n) w),
     // whatever a; o6.w = a for the paint's scrape. The glass is drawn at p but lit at p' with n'. (Each program
-    // run on numbers against this, work/lighting2/dmg/allvs.py, nrm.py: 1e-16.) The tangent rides in color1.rgb.
+    // run on numbers against this, work/lighting2/dmg/allvs.py, nrm.py: 1e-16.) The tangent rides in color1.rgb;
+    // 0 0 0 there is a tyre (VSAmbientTire: no dent). A wheel's vertex is taken in its bone's frame (dents[2]).
     let amb_obj = obj.params.w > 15.5 && obj.lamp_a[0].w > 0.5;
     var amb_lp = in.pos;
     var amb_n = normalize(in.normal);
     var amb_a = 0.0;
-    if (amb_obj && dot(obj.dents[1], obj.dents[1]) > 0.0 && !(g.params.w > 704.5 && g.params.w < 705.5)) {
-        let pl = length(in.pos);
-        let u = in.pos / pl;
+    if (amb_obj && dot(obj.dents[1], obj.dents[1]) > 0.0 && dot(in.color1.rgb, vec3<f32>(1.0)) > 0.001 && !(g.params.w > 704.5 && g.params.w < 705.5)) {
+        // (a wheel's vertex in its bone's frame: p - hub, dents[2] - vehicles.rs; the body's bone is the car's)
+        let pp = in.pos - select(vec3<f32>(0.0), obj.dents[2].xyz, obj.dents[2].w > 0.5);
+        let pl = length(pp);
+        let u = pp / pl;
         let ts = vec2<i32>(textureDimensions(t_dmg));
         let tc = vec2<i32>(floor((vec2<f32>(u.x, u.z) * 0.5 + vec2<f32>(0.5)) * vec2<f32>(ts)));
         let t00 = textureLoad(t_dmg, ((tc % ts) + ts) % ts, 0).r;
         let t10 = textureLoad(t_dmg, ((tc + vec2<i32>(1, 0)) % ts + ts) % ts, 0).r;
         let t01 = textureLoad(t_dmg, ((tc + vec2<i32>(0, 1)) % ts + ts) % ts, 0).r;
-        let k = select(0u, 2u, in.pos.x <= 0.0) + select(0u, 1u, in.pos.z <= 0.0);
+        let k = select(0u, 2u, pp.x <= 0.0) + select(0u, 1u, pp.z <= 0.0);
         amb_a = clamp(obj.dents[1][k], 0.0, 1.0);
         amb_lp = in.pos - u * (0.5 * amb_a * t00);
         let tg = in.color1.rgb * 2.0 - vec3<f32>(1.0);
@@ -1063,7 +1066,7 @@ fn vs_body(in: VsIn) -> VsOut {
     o.normal = normalize((obj.model * vec4<f32>(in.normal, 0.0)).xyz);
     // (world.rs marks it: the vertical at a quarter of the length - x 1.5 or x 2 by world::mark_binormal)
     if (dot(in.normal, in.normal) < 0.3 && !(g.params.w > 399.5 && g.params.w < 400.5)) { o.normal = vec3<f32>(0.0); }
-    if (amb_obj && amb_a + dot(obj.dents[1], obj.dents[1]) > 0.0) { o.normal = normalize((obj.model * vec4<f32>(amb_n, 0.0)).xyz); }
+    if (amb_obj && dot(obj.dents[1], obj.dents[1]) > 0.0 && dot(in.color1.rgb, vec3<f32>(1.0)) > 0.001) { o.normal = normalize((obj.model * vec4<f32>(amb_n, 0.0)).xyz); }
     o.bflip = clamp(round(2.0 * (length(in.normal) - 1.0)) * 0.5, 0.0, 1.0);
     o.uv0 = in.uv0;
     o.uv1 = in.uv1;
