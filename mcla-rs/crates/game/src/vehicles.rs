@@ -289,7 +289,71 @@ pub struct CarInstance {
     pub part_bindings: Vec<ObjectBinding>,
     /// ambient traffic riding its lane as the original's (traffic.rs; None: driven by the physics)
     pub rail: Option<traffic::Rider>,
+    /// a traffic car's lamp states and glow levels (`AmbLamps`)
+    pub amb_lamps: AmbLamps,
 }
+
+/// A traffic car's lamps as the original's mcAmbientRenderCarInstance keeps them (sub_82792FD8,
+/// run while the car is drawn): five states eased towards the car's flags (sub_82375C98: on
+/// v += (1 - v) x 9 x dt, 1 from 0.99; off v -= v x 9 x dt, 0 under 0.01), the lamp programs'
+/// state of each entry = the state table at its attachment (`traffic_state`), and each entry's
+/// glow level = that x (1 - sat((d - 50) / 325))^2 x the type's fGlowIntensityScale, d the car's
+/// depth along the camera's axis. A car not drawn (out of view, or past the lamps' reach) keeps
+/// what it had; one never drawn has no levels and no glows. Read out of the running game
+/// 2026-10-21 (docs/LIGHTING.md "Traffic's own lamp levels").
+#[derive(Clone, Copy, Default)]
+pub struct AmbLamps {
+    /// head (lights on), brake, the two signal sides, reversing
+    pub s: [f32; 5],
+    /// the glows' levels by table entry, once drawn
+    pub levels: Option<[f32; crate::render::car_lamps::IDS]>,
+    /// the lamp programs' state by table entry (PSAmbientCarLight's cover row w)
+    pub lens: [f32; crate::render::car_lamps::IDS],
+}
+
+/// sub_82792FD8's state table by attachment, from the five eased states (head, brake, signal
+/// sides a / b, reversing): brake 0.25 head + 0.75 brake, tail 0.25 head, 2 brake, 3 and 5 head,
+/// 7 .. 9 always 1, 11 reversing, 13 / 15 side a, 14 / 16 side b, the rest 0.
+pub fn traffic_state(s: [f32; 5], att: u8) -> f32 {
+    let [h, b, sa, sb, r] = s;
+    match att {
+        0 => 0.25 * h + 0.75 * b,
+        1 => 0.25 * h,
+        2 => b,
+        3 | 5 => h,
+        7..=9 => 1.0,
+        11 => r,
+        13 | 15 => sa,
+        14 | 16 => sb,
+        _ => 0.0,
+    }
+}
+
+/// sub_82792FD8's fade of a traffic car's glow levels with its depth `d` along the camera's
+/// axis: (1 - sat((d - 50) / 325))^2.
+pub fn traffic_fade(d: f32) -> f32 {
+    (1.0 - ((d - 50.0) / 325.0).clamp(0.0, 1.0)).powi(2)
+}
+
+/// sub_82375C98: one frame of a lamp state's easing at 9 a second.
+pub fn traffic_ease(v: f32, on: bool, dt: f32) -> f32 {
+    if on {
+        let n = v + (1.0 - v) * 9.0 * dt;
+        if n > 0.99 { 1.0 } else { n }
+    } else {
+        let n = v - v * 9.0 * dt;
+        if n < 0.01 { 0.0 } else { n }
+    }
+}
+
+/// how far (camera depth, m) a traffic car's lamps are drawn and its levels kept up to date: the
+/// last update seen at 125.1 m, the model's LOD 1 seen to 140.8 m - taken as 125 (approximate)
+pub const TRAFFIC_LAMP_REACH: f32 = 125.0;
+
+/// The glow file's factors by kind (`tune/vehicle/glow`, 0x0f2b8cad: `<kind>_intensity` and
+/// `<kind>_player_intensity`; sub_8237AC90 takes the second for the player's car).
+pub const GLOW_FACTOR: [f32; 19] = [2.0, 2.0, 1.002, 2.0, 1.002, 1.0, 0.528, 1.0, 1.002, 1.0, 1.0, 1.0, 0.346, 1.002, 1.002, 0.728, 0.728, 0.3, 0.3];
+pub const GLOW_FACTOR_PLAYER: [f32; 19] = [0.3, 1.004, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
 
 /// A side window's controller as the original's (vtable 0x82046958; open sub_8233C3B8, close
 /// sub_8233C438, update sub_8233BEC0): `state` 1 closed (up), 2 open (down), 3 opening,
@@ -1751,7 +1815,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None });
+        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default() });
         self.cars.len() - 1
     }
 
@@ -3087,7 +3151,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             }
             // (the car's own lamp colours: its set-up's, else its traffic type's, else the Audi R8's - render/car_lamps.rs)
-            let lamp_rows = (if c.is_player { player_lamps.clone() } else { None }).or_else(|| crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name)).map_or_else(|| crate::render::car_lamps::R8.uniform(), |t| t.uniform());
+            let mut lamp_rows = (if c.is_player { player_lamps.clone() } else { None }).or_else(|| crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name)).map_or_else(|| crate::render::car_lamps::R8.uniform(), |t| t.uniform());
+            // (a traffic car's lamp programs take each entry's state in the cover row's w - `AmbLamps`)
+            if lamp_rows.0[0][3] > 0.5 && !c.is_player {
+                for i in 0..crate::render::car_lamps::IDS {
+                    lamp_rows.1[i][3] = c.amb_lamps.lens[i];
+                }
+            }
             // (step 19d: a car in a set-up is painted by it, as the player's by its record)
             let s19d_look: (u8, [f32; 4], [f32; 4], [[f32; 4]; 5], [[f32; 4]; 5], [[f32; 4]; 5]) = match (c.is_player, c.look.as_ref()) {
                 (true, _) => (self.player_paint_type.min(5), self.player_paint_b, self.player_tint, self.player_interior, self.player_area_a, self.player_area_b),
@@ -3257,6 +3327,47 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
     }
 
+    /// Each frame before the cars' uniforms: the traffic cars' lamp states and glow levels
+    /// (`AmbLamps`) - for the cars drawn now: in the view and within the lamps' reach along the
+    /// camera's axis `axis` from `eye`. The flags as sub_826E8EC8 sets them, from what the port's
+    /// traffic has: lights on at night, braking when the pedal is down or the car stands,
+    /// reversing; the turn signals are not driven (the port's traffic does not signal; the
+    /// original's rule is in the doc). Parked cars have every flag off, as recorded.
+    pub fn traffic_lamps(&mut self, eye: Vec3, axis: Vec3, frustum: &crate::render::Frustum, night: f32, dt: f32) {
+        let alpha = self.render_alpha;
+        let lights_off = self.lights_off;
+        for c in self.cars.iter_mut() {
+            if c.is_player {
+                continue;
+            }
+            let Some(rows) = crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name).filter(|t| t.ambient) else { continue };
+            let pos = c.render_pose(alpha).pos;
+            let d = (pos - eye).dot(axis);
+            let r = Vec3::splat(c.model.params.body_half.length() + 1.0);
+            if d > TRAFFIC_LAMP_REACH || !frustum.intersects_aabb(pos - r, pos + r) {
+                continue;
+            }
+            let driven = c.parked.is_none();
+            let flags = [driven && !lights_off && night > 0.5, driven && (c.input.brake > 0.0 || c.state.speed() < 0.1), false, false, driven && c.state.gear < 0];
+            let a = &mut c.amb_lamps;
+            for (v, on) in a.s.iter_mut().zip(flags) {
+                *v = traffic_ease(*v, on, dt);
+            }
+            let fade = traffic_fade(d);
+            let mut lv = [0.0; crate::render::car_lamps::IDS];
+            for i in 0..crate::render::car_lamps::IDS {
+                let st = traffic_state(a.s, rows.att[i]);
+                a.lens[i] = st;
+                lv[i] = st * fade * rows.glow_scale;
+            }
+            a.levels = Some(lv);
+            // (diagnostics: MCLA_TLAMP_DUMP prints every drawn traffic car's depth, states and levels)
+            if std::env::var("MCLA_TLAMP_DUMP").is_ok() {
+                eprintln!("tlamp {} d {:.1} scale {:.3} s {:?} levels {:?}", c.model.name, d, rows.glow_scale, a.s, lv.map(|v| (v * 1e4).round() / 1e4));
+            }
+        }
+    }
+
     /// The cars' lit lamps for the glow pass after the tone map (render only; halo.rs, the
     /// original's sub_8237AC90): the lamp's place, the way it faces, its lit colour, and its
     /// level x the kind's factor of the executable's two tables (0x827E7688 other cars: brake 2,
@@ -3278,13 +3389,26 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // skeletons (the R8: four glowbrake0, two glowhead0, two glowhigh0, two glowreverse0, one
             // glowthirdbrake0), its facing the bone's z row. Levels of the standing player's car at 23:30:
             // brake 0.25, tail 0.25, signal 1, head 1, high beam 0, fog 1, reversing / third brake 0.
-            // Traffic (`va_*`) is NOT read: the captures' glow quads give tail and brake rows together at
-            // level x facing 0.383 at rest and brake / third brake at 1.155 braking (hl_L_23.5) - taken as
-            // 0.385 and 1.25. A car without such bones keeps one glow a side at its lamp meshes' mean.
-            let amb = c.model.name.starts_with("va_");
-            let rest = if amb { 0.385 } else { 0.25 };
-            let pedal = if amb { 1.25 * braking } else { braking };
+            // Traffic takes its own levels (`AmbLamps`, sub_82792FD8: by table entry, x the glow file's
+            // factor of the kind) and only once it has been drawn near; its glows reach as far as the
+            // original's test in sub_82790B08: |camera - car|^2 - radius^2 <= 250^2.
+            // A car without such bones keeps one glow a side at its lamp meshes' mean.
+            let traffic = if !pl && self.lamp_rows(c).is_some_and(|t| t.ambient) {
+                let Some(lv) = c.amb_lamps.levels else { continue };
+                let r = c.model.params.body_half.length();
+                if pose.pos.distance_squared(cam) - r * r > 250.0 * 250.0 {
+                    continue;
+                }
+                Some(lv)
+            } else {
+                None
+            };
+            let (rest, pedal) = (0.25, braking);
             let level = |id: u8| -> f32 {
+                if let Some(lv) = traffic {
+                    let k = (id as usize).min(crate::render::car_lamps::IDS - 1);
+                    return lv[k] * GLOW_FACTOR[k];
+                }
                 match id {
                     0 => (if pl { 0.3 } else { 2.0 }) * pedal.max(rest * lights),
                     1 => (if pl { 1.004 } else { 2.0 }) * rest * lights,
@@ -4048,5 +4172,30 @@ mod ambient_paint_tests {
             }
             assert_eq!(zones.into_iter().collect::<Vec<_>>(), want, "{}", name);
         }
+    }
+
+    /// Traffic's glow levels against the running original (2026-10-21, work/lighting2/lvcheck.py):
+    /// two cars' recorded levels from their depth, type scale and eased states.
+    #[test]
+    fn traffic_levels_as_recorded() {
+        use super::{traffic_ease, traffic_fade, traffic_state};
+        let rows = crate::render::car_lamps::R8; // (attachments: every traffic table's order)
+        let lv = |s: [f32; 5], d: f32, sc: f32| -> Vec<f32> { (0..19).map(|i| traffic_state(s, rows.att[i]) * traffic_fade(d) * sc).collect() };
+        // a93ffc90: 95.1 m, fGlowIntensityScale 1.856, head on, brake on, side a easing in (0.51)
+        let a = lv([1.0, 1.0, 0.51, 0.0, 0.0], 95.1, 1.856);
+        // (the depths as printed, to 0.1 m: the levels to 5e-4; with the depth read unrounded the
+        // check matched every drawn car to 2e-4)
+        assert!((a[3] - 1.3764).abs() < 5e-4 && (a[0] - 1.3764).abs() < 5e-4 && (a[12] - 1.3764).abs() < 5e-4, "{:?}", a);
+        // a9394100: 67.5 m, 1.758, head on: brake and tail 0.3934, head / side / fog 1.5736
+        let b = lv([1.0, 0.0, 0.0, 0.0, 0.0], 67.5, 1.758);
+        let want = [0.3934, 0.3934, 0.0, 1.5736, 0.0, 1.5736, 0.0, 0.0, 1.5736, 0.0, 0.0, 0.0, 0.0, 1.5736, 1.5736, 0.0, 0.0, 0.0, 0.0];
+        for (g, w) in b.iter().zip(want) {
+            assert!((g - w).abs() < 5e-4, "{:?}", b);
+        }
+        // the easing: 0.3, then 0.51 (the side lamp recorded at 0.51), off under 0.01
+        let e1 = traffic_ease(0.0, true, 1.0 / 30.0);
+        let e2 = traffic_ease(e1, true, 1.0 / 30.0);
+        assert!((e1 - 0.3).abs() < 1e-6 && (e2 - 0.51).abs() < 1e-6);
+        assert_eq!(traffic_ease(0.012, false, 1.0 / 30.0), 0.0);
     }
 }

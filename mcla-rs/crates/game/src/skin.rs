@@ -294,12 +294,12 @@ impl SkinBuffer {
         }
         gpu.queue.write_buffer(self.vb.as_ref().unwrap(), 0, bytemuck::cast_slice(&self.verts));
         gpu.queue.write_buffer(self.ib.as_ref().unwrap(), 0, bytemuck::cast_slice(&self.indices));
-        // (the lit figures' lanes: rows 0..11 of the object's first lamp table, the mark in row 0
-        // of the second - city.wgsl, the walkers at night)
+        // (the lit figures' lanes: rows 0..11 of the object's first lamp table, the mark 2 in row 0
+        // of the second - city.wgsl, the walkers at night; a traffic car's row 0 there is <= 1)
         for (i, l) in self.lanes.iter().enumerate() {
             let mut u = crate::render::ObjectUniform::default();
             u.lamp_a[..12].copy_from_slice(l);
-            u.lamp_b[0][3] = 1.0;
+            u.lamp_b[0][3] = 2.0;
             if i < self.lane_objs.len() {
                 gpu.queue.write_buffer(&self.lane_objs[i].buf, 0, bytemuck::bytes_of(&u));
             } else {

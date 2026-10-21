@@ -31,7 +31,15 @@ pub struct LampRows {
     pub cover: [[f32; 3]; IDS],
     /// a traffic car's table: its lamps are drawn by the ambient program
     pub ambient: bool,
+    /// each entry's attachment (`iLightAttachment`): which of the car's lamp states lights it
+    /// (traffic: sub_82792FD8's state table, `traffic_state`)
+    pub att: [u8; IDS],
+    /// a traffic type's `fGlowIntensityScale` (its glows' levels x this; 1 for set-ups)
+    pub glow_scale: f32,
 }
+
+/// the attachments of the traffic tables on the disc (every `LightTune` has them in this order)
+const ATT_TRAFFIC: [u8; IDS] = [0, 1, 6, 3, 4, 3, 11, 10, 5, 12, 12, 12, 2, 7, 7, 13, 14, 15, 16];
 
 /// The Audi R8's table (`vp_aud_r8_08.xcc`): what a car without a table of its own is given.
 pub const R8: LampRows = LampRows {
@@ -48,6 +56,8 @@ pub const R8: LampRows = LampRows {
         [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0],
     ],
     ambient: false,
+    att: ATT_TRAFFIC,
+    glow_scale: 1.0,
 };
 
 impl LampRows {
@@ -58,13 +68,14 @@ impl LampRows {
             return None;
         }
         let f = |o: usize| f32::from_be_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]);
-        let mut r = LampRows { bulb: [[0.0; 3]; IDS], cover: [[0.0; 3]; IDS], ambient: false };
+        let mut r = LampRows { bulb: [[0.0; 3]; IDS], cover: [[0.0; 3]; IDS], ambient: false, att: ATT_TRAFFIC, glow_scale: 1.0 };
         for i in 0..IDS {
             let o = AT + i * 0x30;
             for k in 0..3 {
                 r.bulb[i][k] = f(o + 4 * k);
                 r.cover[i][k] = f(o + 16 + 4 * k);
             }
+            r.att[i] = u32::from_be_bytes([d[o + 32], d[o + 33], d[o + 34], d[o + 35]]).min(255) as u8;
             // (colours: nothing else is a table)
             if r.bulb[i].iter().chain(r.cover[i].iter()).any(|v| !v.is_finite() || *v < 0.0 || *v > 16.0) {
                 return None;
@@ -79,7 +90,7 @@ impl LampRows {
         if rows.len() != IDS {
             return None;
         }
-        let mut r = LampRows { bulb: [[0.0; 3]; IDS], cover: [[0.0; 3]; IDS], ambient: false };
+        let mut r = LampRows { bulb: [[0.0; 3]; IDS], cover: [[0.0; 3]; IDS], ambient: false, att: ATT_TRAFFIC, glow_scale: 1.0 };
         for (i, (b, c)) in rows.iter().enumerate() {
             r.bulb[i] = *b;
             r.cover[i] = *c;
@@ -114,9 +125,16 @@ impl LampRows {
         if b.len() != IDS || c.len() != IDS {
             return None;
         }
-        let mut r = LampRows { bulb: [[0.0; 3]; IDS], cover: [[0.0; 3]; IDS], ambient: true };
+        let mut r = LampRows { bulb: [[0.0; 3]; IDS], cover: [[0.0; 3]; IDS], ambient: true, att: ATT_TRAFFIC, glow_scale: 1.0 };
         r.bulb.copy_from_slice(&b);
         r.cover.copy_from_slice(&c);
+        let att: Vec<u8> = s.split("<iLightAttachment value=\"").skip(1).filter_map(|t| t.split('"').next()?.trim().parse().ok()).collect();
+        if att.len() == IDS {
+            r.att.copy_from_slice(&att);
+        }
+        if let Some(v) = s.split("<fGlowIntensityScale value=\"").nth(1).and_then(|t| t.split('"').next()?.trim().parse::<f32>().ok()) {
+            r.glow_scale = v;
+        }
         Some(r)
     }
 

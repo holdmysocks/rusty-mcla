@@ -6165,6 +6165,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.vehicles.interior_glass = self.view_mode == 3 && !self.look_back && self.idle_cam.is_none();
         // (m_NFLFade for the night fill light the traffic cars add to their ambient - fillmap.rs)
         fillmap::set_fade(self.sky_now().tod.map_or(0.0, |t| t.nfl));
+        // (the traffic cars' lamp states and glow levels, for the cars drawn now - vehicles.rs
+        // `AmbLamps`: in the view of this frame's camera and within the lamps' reach along its axis)
+        {
+            let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
+            let (eye, view, vp) = if self.drive && self.vehicles.player().is_some() { (self.chase.pos, self.chase.view(), self.cam.proj(aspect) * self.chase.view()) } else { (self.cam.pos, self.cam.view(), self.cam.view_proj(aspect)) };
+            let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
+            self.vehicles.traffic_lamps(eye, axis, &Frustum::from_view_proj(vp), night, sim_dt);
+        }
         self.vehicles.upload_uniforms(&gpu, night);
         // --- camera / globals ---------------------------------------------------
         let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;

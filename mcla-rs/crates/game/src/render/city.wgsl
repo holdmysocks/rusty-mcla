@@ -3432,8 +3432,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             // instead, read from its listing (work/lighting/carlamps_src.py):
             //   out = screen(map.rgb x cover x light, 3 x bulb x cover x state)
             // with bulb = c128 + id and cover = c148 + id of their type's LightTune, the state in
-            // the cover row's w - recorded 0.25 tail, 0.25 / 1 brake, 1 head, side and fog, 0
-            // signal, all 0 parked - and no illumination map in the lit term.
+            // the cover row's w - the car's own (vehicles.rs `AmbLamps`: sub_82792FD8's eased
+            // states at the entry's attachment; lamp_b[id].w here) - and no illumination map in
+            // the lit term.
             // (MCLA_DEBUG_VIEW 60: the older reading; 61 the lamp ids; 62 the map as stored)
             let lid = i32(round(in.uv1.x));
             let lst = i32(round(obj.params.w)) % 16;
@@ -3453,6 +3454,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             else if (lid == 12) { l_on = brk; }
             else if (lid == 13) { l_on = f32(lst % 4 == 1); }
             else if (lid == 14) { l_on = f32(lst % 4 == 2); }
+            if (amb8) { l_on = obj.lamp_b[lrow].w; }
             let ix = clamp(albedo.rg, vec2<f32>(0.0), vec2<f32>(1.0));
             let illum = select(1.055 * pow(ix, vec2<f32>(1.0 / 2.4)) - vec2<f32>(0.055), ix * 12.92, ix <= vec2<f32>(0.0031308));
             if (g.params.w > 60.5 && g.params.w < 61.5) { return vec4<f32>(to_scene(vec3<f32>(f32(lid % 3) * 0.5, f32((lid / 3) % 3) * 0.5, f32(lid / 9) * 0.5) + vec3<f32>(0.05)), 1.0); }
@@ -4165,8 +4167,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // lamp grid, no sun and no highlight - diffuse x (gLightAmbient + four lanes), a lane
     // colour x sat(sat(strength / d^2) x sat(dot(to light, axis) / d + bias) x sat(n.l)). The lanes
     // are the walker's own (figlight.rs: the cell's lamps eased in, the head lamps / key light laid
-    // over), rows 0..11 of the figure's object, marked in row 0 of the second table. 750: as before.
-    if (mat.mode == 9u && in.uv1.y > 76.5 && in.uv1.y < 77.5 && obj.lamp_b[0].w > 0.5 && !(g.params.w > 749.5 && g.params.w < 750.5)) {
+    // over), rows 0..11 of the figure's object, marked 2 in row 0 of the second table. 750: as before.
+    if (mat.mode == 9u && in.uv1.y > 76.5 && in.uv1.y < 77.5 && obj.lamp_b[0].w > 1.5 && !(g.params.w > 749.5 && g.params.w < 750.5)) {
         var fl = vec3<f32>(0.0);
         for (var k = 0; k < 4; k = k + 1) {
             let lp = obj.lamp_a[3 * k];
