@@ -1885,6 +1885,18 @@ impl Gpu {
         damage_map_texture(&self.device, crate::damagemap::SIZE as u32)
     }
 
+    /// A traffic type's `_maxdamage` as its vertex programs read it (n x n RGBA8, as decoded).
+    pub fn new_layout_texture(&self, n: u32, rgba: &[u8]) -> wgpu::Texture {
+        let t = damage_map_texture(&self.device, n);
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            rgba,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * n), rows_per_image: Some(n) },
+            wgpu::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        );
+        t
+    }
+
     pub fn write_damage_map(&self, t: &wgpu::Texture, px: &[[u8; 4]]) {
         let n = crate::damagemap::SIZE as u32;
         self.queue.write_texture(

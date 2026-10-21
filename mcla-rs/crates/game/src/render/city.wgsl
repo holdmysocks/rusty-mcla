@@ -1003,7 +1003,35 @@ fn vs_body(in: VsIn) -> VsOut {
     // along the vertex's tangent and binormal: the port's vertex has neither - not done.)
     var dmg = vec2<f32>(0.0);
     var dmg_d = 0.0;
-    if (obj.params.w > 15.5) {
+    // Traffic and parked cars (their lamp rows ambient, lamp_a[0].w) - VSAmbientCarPaint, BumpSpec, CarLight,
+    // BlackMatte and Glass, with enableVertDamage (c126 . c126 > 0, sub_82791A50): DmgTex = the type's
+    // `_maxdamage` (t_dmg, vehicles.rs), point-sampled, wrapping, its red at uv = (x, z) / |p| x 0.5 + 0.5 and one
+    // texel on in u and in v; the side k = 2 [x <= 0] + [z <= 0] of gCarAmbDamageParams c126 = the render
+    // instance's sums (dents[1]); a = sat(c126[k]); p' = p - 0.5 a T p / |p|; the normal bent along the stored
+    // tangent t and cross(t, n) x w by the texel steps, n' = normalize(n - (T10 - T) t - (T01 - T) cross(t, n) w),
+    // whatever a; o6.w = a for the paint's scrape. The glass is drawn at p but lit at p' with n'. (Each program
+    // run on numbers against this, work/lighting2/dmg/allvs.py, nrm.py: 1e-16.) The tangent rides in color1.rgb.
+    let amb_obj = obj.params.w > 15.5 && obj.lamp_a[0].w > 0.5;
+    var amb_lp = in.pos;
+    var amb_n = normalize(in.normal);
+    var amb_a = 0.0;
+    if (amb_obj && dot(obj.dents[1], obj.dents[1]) > 0.0 && !(g.params.w > 704.5 && g.params.w < 705.5)) {
+        let pl = length(in.pos);
+        let u = in.pos / pl;
+        let ts = vec2<i32>(textureDimensions(t_dmg));
+        let tc = vec2<i32>(floor((vec2<f32>(u.x, u.z) * 0.5 + vec2<f32>(0.5)) * vec2<f32>(ts)));
+        let t00 = textureLoad(t_dmg, ((tc % ts) + ts) % ts, 0).r;
+        let t10 = textureLoad(t_dmg, ((tc + vec2<i32>(1, 0)) % ts + ts) % ts, 0).r;
+        let t01 = textureLoad(t_dmg, ((tc + vec2<i32>(0, 1)) % ts + ts) % ts, 0).r;
+        let k = select(0u, 2u, in.pos.x <= 0.0) + select(0u, 1u, in.pos.z <= 0.0);
+        amb_a = clamp(obj.dents[1][k], 0.0, 1.0);
+        amb_lp = in.pos - u * (0.5 * amb_a * t00);
+        let tg = in.color1.rgb * 2.0 - vec3<f32>(1.0);
+        let wsg = 1.0 - 2.0 * clamp(round(2.0 * (length(in.normal) - 1.0)) * 0.5, 0.0, 1.0);
+        amb_n = normalize(amb_n - (t10 - t00) * tg - (t01 - t00) * cross(tg, amb_n) * wsg);
+        if (in.uv2.x < 0.5) { lp = amb_lp; }
+    }
+    if (obj.params.w > 15.5 && !amb_obj) {
         let pl = length(in.pos);
         let dd = select(vec2<f32>(0.0), in.pos.xz / pl, pl > 1e-6);
         let ts = textureDimensions(t_dmg);
@@ -1024,8 +1052,10 @@ fn vs_body(in: VsIn) -> VsOut {
         let tw = (length(in.pos.yz) - 0.406) * 10.526315;
         dmg.x = 0.5 * obj.dents[3].x * sqrt(max(tw - tw * tw, 0.0));
     }
-    let wp = obj.model * vec4<f32>(lp, 1.0);
-    o.clip = g.view_proj * wp;
+    let wp_draw = obj.model * vec4<f32>(lp, 1.0);
+    o.clip = g.view_proj * wp_draw;
+    // (a traffic car's glass: lit where its dented place is - VSAmbientGlass o0)
+    let wp = select(wp_draw, obj.model * vec4<f32>(amb_lp, 1.0), amb_obj);
     o.wpos = wp.xyz;
     // (a vertex without a stored normal - the packed word all zero, 7 % of the cut-out bump-spec
     // batches' vertices, the dry weeds at the walls' feet: handed on as zero; fs_main
@@ -1033,6 +1063,7 @@ fn vs_body(in: VsIn) -> VsOut {
     o.normal = normalize((obj.model * vec4<f32>(in.normal, 0.0)).xyz);
     // (world.rs marks it: the vertical at a quarter of the length - x 1.5 or x 2 by world::mark_binormal)
     if (dot(in.normal, in.normal) < 0.3 && !(g.params.w > 399.5 && g.params.w < 400.5)) { o.normal = vec3<f32>(0.0); }
+    if (amb_obj && amb_a + dot(obj.dents[1], obj.dents[1]) > 0.0) { o.normal = normalize((obj.model * vec4<f32>(amb_n, 0.0)).xyz); }
     o.bflip = clamp(round(2.0 * (length(in.normal) - 1.0)) * 0.5, 0.0, 1.0);
     o.uv0 = in.uv0;
     o.uv1 = in.uv1;
@@ -1046,6 +1077,8 @@ fn vs_body(in: VsIn) -> VsOut {
     o.paint_s = paint_fade_s(in.pos, in.uv2.y);
     // (the soot: x (0.33 + 0.66 (1 - n.v)) at the vertex)
     dmg.y = dmg_d * (0.33 + 0.66 * (1.0 - clamp(dot(o.normal, normalize(g.cam_pos.xyz - wp.xyz)), 0.0, 1.0)));
+    // (traffic: no damage map marks; x = -1 - o6.w, the side's amount for PSAmbientCarPaint's scrape)
+    if (amb_obj) { dmg = vec2<f32>(-1.0 - amb_a, 0.0); }
     o.dmg = dmg;
     // Neon signs' highlight of the sun, PER VERTEX as VSCityNeon (city/0x25a6120c) has it - o4.w:
     //   SpecularIntensity x pow(sat(V . (2 (n.l) n - l)), SpecularExponent) x sat(4 n.l)
@@ -3385,6 +3418,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                     let soft_a = env_soft(ray_a);
                     let sp_a = clamp(mix(base * dot(soft_a, vec3<f32>(0.3, 0.59, 0.11)), soft_a, tc.x) * (ta.y * ao_v * pow(max(length(soft_a), 0.00001), ta.w - 1.0) * kk), vec3<f32>(0.0), vec3<f32>(1.0));
                     lit = m_a + sp_a - clamp(m_a * sp_a, vec3<f32>(0.0), vec3<f32>(1.0));
+                    // (the scrapes, PSAmbientCarPaint 31 - 50: ScrapeSampler = dmg_scrape at uv0 x (4, 3), its green and
+                    // alpha; lerp(out, lerp(soft, lum(soft), 0.75) x green, alpha x o6.w) - o6.w in dmg.x as -1 - a)
+                    let a_s = -1.0 - in.dmg.x;
+                    if (a_s > 0.0) {
+                        let sc_a = textureSample(t_scrape, s_diffuse, in.uv0 * vec2<f32>(4.0, 3.0));
+                        let bare_a = mix(soft_a, vec3<f32>(dot(soft_a, vec3<f32>(0.3, 0.59, 0.11))), 0.75) * sc_a.g;
+                        lit = lit + (sc_a.a * a_s) * (bare_a - lit);
+                    }
                 }
                 // (the damage map's marks on the lit paint, PS_CarPaint: the soot towards (0.22,
                 // 0.22, 0.17) of it, x (1 - rub), the bare metal - the soft surroundings three

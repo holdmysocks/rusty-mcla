@@ -323,6 +323,12 @@ pub struct AmbLamps {
     /// the glass's tint gCarAmbTintColor.w (sub_827914B8): 0.25 + 1.5 sat(min(d / 30, 1) - 0.5), d the
     /// game camera's distance from the car - set once a frame from that camera and used in every pass
     pub tint: f32,
+    /// the render instance's four side sums (+560, gCarAmbDamageParams c126): what the post-solve callback
+    /// sub_826FAF98 added from each contact with a car (vehsim.rs) - never reset, decayed or clamped while
+    /// the car lives; zeroed when the instance is set up (sub_82792860)
+    pub dmg: [f32; 4],
+    /// its type's `_maxdamage` texture is bound as the vertex programs' DmgTex
+    pub dmg_bound: bool,
 }
 
 /// sub_82792FD8's state table by attachment, from the five eased states (head, brake, signal
@@ -585,6 +591,9 @@ pub struct Vehicles {
     /// the cars' damage maps (crate::damagemap): the game's pool of 8 render targets, each a car's
     /// (its uid) for as long as the car is there
     dmg_maps: Vec<DmgMap>,
+    /// traffic types' DmgTex (the type's `<type>_maxdamage`, sub_82791A50: type +224, else its model's
+    /// +24), by model name
+    amb_dmg_tex: std::collections::HashMap<String, (wgpu::Texture, wgpu::TextureView)>,
     /// district traffic tables (`tune/ambients`) and the hour they are read at
     pub ambient: crate::ambient::Distribution,
     pub hour: f32,
@@ -849,7 +858,7 @@ struct MergeAcc {
 }
 
 impl MergeAcc {
-    fn push(&mut self, mesh: &mcla_formats::rage::geometry::Mesh, xf: Mat4, dark_above: Option<f32>, lens: f32) {
+    fn push(&mut self, mesh: &mcla_formats::rage::geometry::Mesh, xf: Mat4, dark_above: Option<f32>, lens: f32, amb: bool) {
         let base = self.verts.len() as u32;
         let identity = xf == Mat4::IDENTITY;
         let n = mesh.positions.len();
@@ -873,6 +882,14 @@ impl MergeAcc {
                 None => c,
             };
             let ca = if tw.is_some() { 255 } else { 0 };
+            // (a traffic model's vertex: its stored tangent in the car's frame in the second colour's rgb, t x 0.5
+            // + 0.5 - the ambient programs bend the normal along it where the car is dented (city.wgsl vs_body);
+            // its meshes have no second colour set, so those three bytes are otherwise unused)
+            let at = if amb && mesh.colors1.is_empty() { mesh.tangents.get(i).filter(|_| mesh.tangents.len() == n).map(|t| xf.transform_vector3(t.truncate()).normalize_or_zero()) } else { None };
+            let c1 = match at {
+                Some(t) => [c1[0], ((t.x * 0.5 + 0.5) * 255.0).round() as u8, ((t.y * 0.5 + 0.5) * 255.0).round() as u8, ((t.z * 0.5 + 0.5) * 255.0).round() as u8],
+                None => c1,
+            };
             self.verts.push(Vertex { pos: pos.to_array(), normal: nrm.to_array(), uv0: uv0.to_array(), uv1: uv1.to_array(), color: [c[1], c[2], c[3], ca], color1: [c1[1], c1[2], c1[3], c1[0]], uv2: [if dark_above.map_or(false, |y| pos.y >= y) { 1.0 } else { 0.0 }, lens] });
         }
         for t in mesh.indices.chunks_exact(3) {
@@ -1439,7 +1456,7 @@ impl Vehicles {
                     0.0
                 };
                 let first = acc.verts.len();
-                acc.push(mesh, part_xf * bone_m, dark_above, lens);
+                acc.push(mesh, part_xf * bone_m, dark_above, lens, car_is_ambient);
                 // (render only - car parts drawn by their own programs' rules in city.wgsl, see
                 // work/lighting bs3.py / bmprobe.py / cglassprobe.py: the material's terms ride in
                 // the vertices. BumpSpec family: uv2 = (-(1 + 200 smoothness + 256 x 200
@@ -3145,6 +3162,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// state 5), and each active car's pose from its body.
     fn ambient_out_of_level(&mut self, dt: f32, world: &crate::world::World) {
         self.level.ambient_frame(dt);
+        // (the post-solve callbacks' side sums, render instance +560)
+        for (uid, side, w) in std::mem::take(&mut self.level.amb_dmg) {
+            if let Some(c) = self.cars.iter_mut().find(|c| c.uid == uid) {
+                c.amb_lamps.dmg[side] += w;
+                // (diagnostics MCLA_AMB_DMG: each addition)
+                if std::env::var_os("MCLA_AMB_DMG").is_some() {
+                    log::info!("amb dmg {} {} side {} + {:.4} -> {:?}", c.model.name, uid, side, w, c.amb_lamps.dmg);
+                }
+            }
+        }
         let ram = std::env::var("MCLA_TRAFFIC_RAM").is_ok();
         for (uid, woke, slept) in self.level.ambient_events() {
             if ram {
@@ -3277,6 +3304,27 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let cars = &mut self.cars;
         self.dmg_maps.retain(|m| cars.iter().any(|c| c.uid == m.uid));
         for c in cars.iter_mut() {
+            // (a traffic or parked car - its lamp rows its type's - has no map: its programs read the type's
+            // `_maxdamage` and the four side sums, render instance +560; docs/LIGHTING.md "Traffic dents")
+            if !c.is_player && c.look.is_none() && crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name).is_some_and(|t| t.ambient) {
+                if !c.amb_lamps.dmg_bound {
+                    if let Some(l) = c.model.damage_layout.as_ref().filter(|l| l.0 == l.1 && l.0 > 0) {
+                        let (_, view) = self.amb_dmg_tex.entry(c.model.name.clone()).or_insert_with(|| {
+                            let t = gpu.new_layout_texture(l.0, &l.2);
+                            let v = t.create_view(&Default::default());
+                            (t, v)
+                        });
+                        for b in std::iter::once(&mut c.binding).chain(c.window_bindings.iter_mut()).chain(c.part_bindings.iter_mut()) {
+                            gpu.object_damage_map(b, Some(view));
+                        }
+                    }
+                    c.amb_lamps.dmg_bound = true;
+                }
+                c.state.dmg.dents.clear();
+                c.state.dmg.scrapes.clear();
+                c.state.dmg.repair = false;
+                continue;
+            }
             let k = match self.dmg_maps.iter().position(|m| m.uid == c.uid) {
                 Some(k) => Some(k),
                 None if self.dmg_maps.len() < crate::damagemap::POOL => {
@@ -3385,6 +3433,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // takes that as it is - docs/LIGHTING.md "Traffic paint: the ambient cars' own program")
             let amb_paint = !c.is_player && c.look.is_none() && lamp_rows.0[0][3] > 0.5;
             let body_color = if amb_paint { ambient_paint(c.color) } else { c.color };
+            // (their second slot: gCarAmbDamageParams c126, the side sums; enableVertDamage = c126 . c126 > 0)
+            if amb_paint {
+                body_slots[1] = c.amb_lamps.dmg;
+            }
             // (+ 256: the in-car glass, only the player's car - the camera's target, sub_822A9670)
             let int_glass = if self.interior_glass && c.is_player { 256.0 } else { 0.0 };
             let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
@@ -3428,7 +3480,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         None => m,
                     },
                 };
-                gpu.update_object(pb, &ObjectUniform { model: pm.to_cols_array_2d(), ..body_u });
+                let mut pu = ObjectUniform { model: pm.to_cols_array_2d(), ..body_u };
+                // (a traffic model's own wheel: its rim's and matte's programs dent it too, about the wheel bone's
+                // own origin - not done: the port's wheel vertices are in the car's frame)
+                if k >= 4 {
+                    pu.dents[1] = [0.0; 4];
+                }
+                gpu.update_object(pb, &pu);
             }
             for (i, b) in c.wheel_bindings.iter().enumerate() {
                 let left = i % 2 == 0;

@@ -5480,6 +5480,34 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     r
                 }));
             }
+            // (the ambient car's post-solve callback, slot 25 sub_826FAF98, for each contact it has with this car - an
+            // mcCarInstance: v = its impulse (negated on the pair's second side) x its collider's inverse mass (+196),
+            // x 0.4 were this car fixed (level state 2); w = sat((sqrt|v| - 0.5) x 0.2); w > 0 is added to one of
+            // its render instance's four side sums (+560) by the contact's point on it in its frame (the instance's
+            // matrix inverted, sub_821713C0): x for (x > 0, z > 0), y (x > 0, z <= 0), z (x <= 0, z > 0), w (x <= 0,
+            // z <= 0). A car without a collider (riding, not made active) is skipped.)
+            for (l, t) in out.links.iter().zip(out.touches.iter()) {
+                let (amb_side, j, o) = match (l.a, l.b) {
+                    (Some(super::loose::Who::Car), Some(super::loose::Who::Obj(o))) => (&t.b, Vec3::ZERO - t.impulse, o),
+                    (Some(super::loose::Who::Obj(o)), Some(super::loose::Who::Car)) => (&t.a, t.impulse, o),
+                    _ => continue,
+                };
+                let Some(ob) = vs.loose.objs.get(o) else { continue };
+                let Some(uid) = ob.amb.as_ref().map(|a| a.uid) else { continue };
+                let Some(b) = amb_side.body.and_then(|k| out.bodies.get(k)) else { continue };
+                let v = j * b.inv_mass;
+                let w = (((v.length_squared().sqrt()).sqrt() - 0.5) * 0.2).max(0.0).min(1.0);
+                if w > 0.0 {
+                    let lp = super::loose::inv(&ob.matrix, amb_side.point - ob.matrix[3]);
+                    let side = match (lp.x > 0.0, lp.z > 0.0) {
+                        (true, true) => 0,
+                        (true, false) => 1,
+                        (false, true) => 2,
+                        (false, false) => 3,
+                    };
+                    vs.loose.amb_dmg.push((uid, side, w));
+                }
+            }
             for (l, t) in out.links.iter().zip(out.touches.iter()) {
                 let other = match (l.a, l.b) {
                     (Some(super::loose::Who::Car), o) => o,

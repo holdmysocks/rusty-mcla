@@ -522,6 +522,10 @@ pub struct LooseState {
     pub ghost: bool,
     /// the constraints of the semis' cabs and trailers (sub_826E7340), in the update's list order
     pub ropes: Vec<Rope>,
+    /// what the ambient cars' post-solve callback (slot 25, sub_826FAF98) adds to their render instance's
+    /// four side sums (+560): (the car's uid, the side 0 .. 3, the amount) - vehsim.rs, taken by
+    /// vehicles.rs after the steps
+    pub amb_dmg: Vec<(u32, usize, f32)>,
 }
 
 /// What a run does not let one derive (the level's indices and the heap's addresses), given per
