@@ -208,7 +208,9 @@ struct App {
     weather: sky::Weather,
     /// weather being blended in: (sky, weather, progress 0..1)
     sky_next: Option<(sky::Sky, sky::Weather, f32)>,
-    /// game hours until the weather changes
+    /// the weather's change (sub_822E8BA8): seconds of game time to the next draw (0x8287E12C,
+    /// 0 at boot), the auto change (0x8287E138: off until hw_local_hangout2_setup runs), the
+    /// draws (the shared MWC, 0x82860890 - the port's own instance) and a scene seen last frame
     weather_timer: f32,
     weather_auto: bool,
     weather_rng: vehicles::parked::Mwc,
@@ -310,6 +312,9 @@ struct App {
     mode_before: Mode,
     /// the free-running scene belongs to the results screen and ends with it
     cine_results: bool,
+    /// a tournament attempt's field (its event, the opponents): TournamentCore creates them once
+    /// (0x20d..0x4cf) and `nextRace` / `restart` keep them; a new attempt draws again
+    tour_field: Option<(String, Vec<rivals::Rival>)>,
     /// line shown in the letterbox of a free-running scene
     cine_caption: Option<String>,
     /// test hook MCLA_SHOT_AT_GO: taken
@@ -332,6 +337,13 @@ struct App {
     warp: Option<hudmap::CineWarp>,
     warp_t: f32,
     warp_view: Option<(Vec3, Vec3, Vec3, f32)>,
+    /// Warper_Warp('DEFAULT_WITH_CUT')'s climb (hudmap::CineClimb) and the action it holds until
+    /// it is over (IsReadyToLoadStuff); its view (eye, look, up, fov radians), kept at its end until
+    /// the dive takes over; the climb's last camera and lens (the dive's start); frames held
+    climb: Option<(hudmap::CineClimb, MenuAction)>,
+    climb_view: Option<(Vec3, Vec3, Vec3, f32)>,
+    climb_end: Option<(hudmap::CamRows, f32)>,
+    climb_hold: u32,
     /// the start scene chosen when the pre-race begins (the warp lands on its camera)
     prerace_plan: Option<(Vec<String>, glam::Mat4)>,
     starter_was: bool,
@@ -743,6 +755,7 @@ impl App {
             hangout_in: None,
             mode_before: Mode::MainMenu,
             cine_results: false,
+            tour_field: None,
             cine_caption: None,
             shot_at_go: false,
             prerace_picker: None,
@@ -754,6 +767,10 @@ impl App {
             warp: None,
             warp_t: 0.0,
             warp_view: None,
+            climb: None,
+            climb_view: None,
+            climb_end: None,
+            climb_hold: 0,
             prerace_plan: None,
             starter_was: false,
             delivery_armed: true,
@@ -2855,6 +2872,44 @@ impl App {
             self.warp_view = None;
             self.prerace_plan = None;
         }
+        // DEFAULT_WITH_CUT's climb (`hudmap::CineClimb`): when it is over the camera keeps its last
+        // matrix (`sub_8221B8C8`), IsReadyToLoadStuff turns true and the script sets the race up - the
+        // action held; the dive below starts from `climb_end`
+        if let Some((c, act)) = self.climb.as_mut() {
+            let act = *act;
+            let (rows, fov) = match c.step(dt) {
+                Some(v) => v,
+                None => {
+                    let end = c.end();
+                    log::info!("DEFAULT_WITH_CUT climb over: {:?} lens {:.2}", end.0.eye, end.1.to_degrees());
+                    self.climb = None;
+                    self.climb_end = Some(end);
+                    self.pending_action = act;
+                    end
+                }
+            };
+            self.climb_view = Some((rows.eye, rows.look_point(), rows.r1, fov));
+            // (test hook MCLA_CLIMB_SHOTS=<prefix>,t1,t2,..: a screenshot <prefix>_<t>.png as the climb's
+            // clock passes each t)
+            if let (Ok(v), Some((c, _))) = (std::env::var("MCLA_CLIMB_SHOTS"), self.climb.as_ref()) {
+                let mut it = v.split(',');
+                let prefix = it.next().unwrap_or("climb").to_string();
+                for x in it {
+                    let at = x.parse::<f32>().unwrap_or(f32::MAX);
+                    if c.t() - dt < at && c.t() >= at {
+                        self.photo_request = Some(format!("{prefix}_{x}.png"));
+                    }
+                }
+            }
+        } else if self.climb_view.is_some() && self.warp.is_none() && self.game.prerace.is_none() {
+            // (held until the dive takes over; let go if no race came of it)
+            self.climb_hold += 1;
+            if self.climb_hold > 2 {
+                self.climb_view = None;
+                self.climb_end = None;
+            }
+        }
+        self.game.climb_on = self.climb.is_some() || self.climb_view.is_some();
         // The flight (CAREER_RACES.md "Race start: the warp"): mcWarper (`sub_8221A440`, the cinematic
         // request of ARCADE's START RACE) waits for the start scene, then `sub_82219DA0` flies the render
         // camera to the scene's camera at scene t 1.0 (`sub_823C0D10`) with one of the cinematic
@@ -2892,7 +2947,17 @@ impl App {
                             s = hudmap::CamRows::look_at(eye, eye + Vec3::new(wf[3], wf[4], wf[5]), Vec3::Y);
                         }
                         let e = hudmap::CamRows::look_at(eye, eye + fwd, up);
-                        let w = hudmap::CineWarp::new(s, e, Vec3::ZERO, self.cam.fov_y, fov);
+                        // (after DEFAULT_WITH_CUT's climb: from the camera and lens it left - state 4 =
+                        // ARCADE's state 7 handler, 0x8221C440)
+                        let fov_from = match self.climb_end.take() {
+                            Some((rows, lens)) => {
+                                s = rows;
+                                lens
+                            }
+                            None => self.cam.fov_y,
+                        };
+                        self.climb_view = None;
+                        let w = hudmap::CineWarp::new(s, e, Vec3::ZERO, fov_from, fov);
                         log::info!("race start warp: {:?} ({:.3} s) from {:?} to {:?} ({})", w.kind(), w.total(), s.eye, e.eye, plan.0[0]);
                         self.warp = Some(w);
                         self.warp_t = 0.0;
@@ -5149,7 +5214,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     self.game.event_line.clear();
                     self.game.next_event_race = None;
-                    if let Some(title) = mine.first() {
+                    // (a lost tournament is over: no next race - the man cruises again, bFailure)
+                    let tour_lost = self.game.career.tour_table.as_ref().is_some_and(|t| t.decided == Some(false));
+                    if let Some(title) = mine.first().filter(|_| !tour_lost) {
                         let left: Vec<String> = self.game.career.mission_races().into_iter().filter(|(_, t)| t == title).map(|(r, _)| r).collect();
                         if left.is_empty() {
                             self.game.event_line = format!("{}   EVENT WON", title.to_uppercase());
@@ -5453,6 +5520,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 p.state.damage = 0.0;
                 p.state.dmg.repair();
                 p.state.zones = [0.0; 4];
+                // (sub_82215810: set upright where it stands, its heading kept, then the racer's
+                // reset sub_822AC490(0))
+                let f = p.state.forward();
+                let f = Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::NEG_Z);
+                let right = f.cross(Vec3::Y).normalize_or(Vec3::X);
+                let pos = p.state.pos;
+                p.state.relocate(pos, glam::Quat::from_mat3(&glam::Mat3::from_cols(right, Vec3::Y, -f)).normalize());
+                p.state.vel = Vec3::ZERO;
+                p.state.ang_vel = Vec3::ZERO;
             }
         }
         // ---- nitrous: none until the garage's nitrous part is fitted, then as many canisters
@@ -6442,6 +6518,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.cam.pos = eye;
                 self.cam.fov_y = fov;
             }
+        }
+        // (DEFAULT_WITH_CUT's climb, and its end held until the dive or the scene takes over)
+        if let Some((eye, look, up, fov)) = self.climb_view.filter(|_| self.warp_view.is_none() && self.cine.playing.is_none()) {
+            self.chase.pos = eye;
+            self.chase.look = look;
+            self.chase.up = up;
+            self.cam.pos = eye;
+            self.cam.fov_y = fov;
         }
         // diagnostics: look at the n-th liveried rival: "n,side,front,up" (metres off the car)
         if let Ok(v) = std::env::var("MCLA_RIVAL_CAM") {
@@ -8427,6 +8511,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.goal_attack = false;
                 self.game.series = None;
                 self.game.series_first = false;
+                // (leaving a tournament - RETURN TO CRUISE, QUIT, GO TO GARAGE, a race quit - ends
+                // the attempt: TournamentCore's leave 0x2a7f; the next challenge is a new core, race 1
+                // at nought points and a new field. A won one stays as it is.)
+                self.tour_field = None;
+                if self.game.career.tour_table.as_ref().map_or(true, |t| t.decided != Some(true)) {
+                    if let Some(id) = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map(|d| d.id.clone()) {
+                        let _ = self.game.career.tournament_restart(&id);
+                    }
+                }
                 self.game.career.tour_table = None;
                 self.game.series_ask = None;
                 self.game.wager = None;
@@ -8463,6 +8556,30 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.mode = Mode::FreeRoam;
                 self.game.menu_sel = 0;
             }
+            // Warper_Warp('DEFAULT_WITH_CUT') (a series' / tournament's next race, its restart, a tournament's
+            // first race - CAREER_RACES.md "DEFAULT_WITH_CUT climb"): the camera climbs from where it is
+            // (`hudmap::CineClimb`); the race is set up once it is over (IsReadyToLoadStuff), the dive
+            // onto the start scene then starts from the climb's end. RESTART from a series' or a
+            // tournament race's pause too (OrderedSeriesCore / TournamentCore `restart`).
+            MenuAction::StartRace | MenuAction::RestartRace
+                if self.climb.is_none()
+                    && self.climb_end.is_none()
+                    && (std::mem::take(&mut self.game.warp_with_cut)
+                        || (action == MenuAction::RestartRace && (self.game.series.is_some() || self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map_or(false, |d| self.game.career.tournament_of(&d.id).is_some()))))
+                    && std::env::var("MCLA_NO_CLIMB").is_err()
+                    && self.vehicles.player().is_some() =>
+            {
+                let p = self.vehicles.player().unwrap();
+                let e = hudmap::CamRows { r0: p.state.rot * Vec3::X, r1: p.state.rot * Vec3::Y, r2: p.state.rot * Vec3::Z, eye: p.state.pos };
+                let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
+                let s = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.chase.up);
+                let c = hudmap::CineClimb::new(s, e, self.cam.fov_y, 25f32.to_radians());
+                log::info!("DEFAULT_WITH_CUT climb: {:?} ({:.3} s) from {:?} over the car at {:?}", c.kind(), c.total(), s.eye, e.eye);
+                self.climb = Some((c, action));
+                self.climb_end = None;
+                self.climb_hold = 0;
+                self.game.climb_on = true;
+            }
             // (a tournament's first race and a payback open their panel first: `mc4_event_panel_first`)
             MenuAction::StartRace if self.game.mc4_event_panel_first() => {}
             MenuAction::StartRace | MenuAction::RestartRace => {
@@ -8470,6 +8587,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // accepted; a restart or the next delivery goes straight to the intro)
                 let p080_again = action == MenuAction::RestartRace || self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery);
                 self.prerace_replay = action == MenuAction::RestartRace;
+                // (a race started from another's results - NEXT RACE IN SERIES, CONTINUE, RESTART - never
+                // passes through `race == None`, so the last race's start plan and warp go here)
+                self.prerace_plan = None;
+                self.prerace_wait = 0;
+                self.warp = None;
+                self.warp_view = None;
                 self.delivery_intro = None;
                 self.delivery_tail = None;
                 // (RESTART SERIES from a race's pause: its first race again, the tally at nought)
@@ -8535,11 +8658,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             grid.push(r);
                         }
                     }
+                    let tour_event = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).and_then(|d| self.game.career.tournament_of(&d.id)).map(|t| t.0);
+                    if let (Some(ev), Some((fe, kept))) = (tour_event.as_ref(), self.tour_field.as_ref()) {
+                        if ev == fe {
+                            grid = kept.clone();
+                        }
+                    }
                     let seed = self.game.current_race.unwrap_or(0) as u32 * 2654435761u32 ^ self.frame_no as u32;
                     for r in self.game.rivals.grid(7, tier, seed, &usable) {
                         if grid.len() < field && !grid.iter().any(|g| g.id == r.id) {
                             grid.push(r);
                         }
+                    }
+                    if let Some(ev) = tour_event {
+                        self.tour_field = Some((ev, grid.clone()));
                     }
                     if let Some(s) = self.game.series.as_mut() {
                         if s.rivals.is_empty() {
@@ -8934,6 +9066,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             MenuAction::RestartTournament => {
                 if self.game.tournament_restart() {
                     self.pending_action = MenuAction::StartRace;
+                    // (TournamentCore `restart` 0x2191: Warper_Warp('DEFAULT_WITH_CUT'))
+                    self.game.warp_with_cut = true;
                 }
             }
             MenuAction::GasStation(fix) => {

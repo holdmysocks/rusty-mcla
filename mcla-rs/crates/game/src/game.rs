@@ -601,6 +601,11 @@ pub struct Game {
     pub starter_swap: Option<String>,
     /// a race's opening shot from the air is on: how far through it is (0 = not)
     pub dive_k: f32,
+    /// the next StartRace is a Warper_Warp('DEFAULT_WITH_CUT') - a series' / tournament's next race or
+    /// restart: main climbs first (`hudmap::CineClimb`)
+    pub warp_with_cut: bool,
+    /// that climb is on: no form or HUD over it
+    pub climb_on: bool,
     /// race time stepped since the last UI frame: the HUD's 3-2-1 runs on it, so it stays on the race clock
     pub ui_sim_dt: f32,
     /// a start scene before its countdown event: no HUD (the original brings the HUD - map and 3-2-1 - up
@@ -805,8 +810,10 @@ pub struct Game {
     pub hangout_names: Vec<String>,
     /// service stations (map markers)
     pub gas_stations: Vec<Vec3>,
-    /// the race-over menu's QUICK FIX was bought: the car is to be repaired
+    /// the repair question's YES: the car is to be repaired (free - sub_82215810)
     pub quick_fix: bool,
+    /// what a repair would cost now (sub_8269EA88): 0 greys the repair question's YES
+    pub fix_now: i64,
     /// the event list was opened at one of the four wager hangouts
     pub wager_here: bool,
     /// the WAGER AMOUNT choice is open (the row it is on)
@@ -1143,6 +1150,8 @@ impl Game {
             starter_pick: None,
             starter_swap: None,
             dive_k: 0.0,
+            warp_with_cut: false,
+            climb_on: false,
             place_mask: 0.0,
             place_title: None,
             ui_sim_dt: 0.0,
@@ -1246,6 +1255,7 @@ impl Game {
             hangout_names: Vec::new(),
             gas_stations: Vec::new(),
             quick_fix: false,
+            fix_now: 0,
             wager_here: false,
             wager_pick: None,
             wager: None,
@@ -3455,6 +3465,13 @@ impl Game {
                 self.flash_popup = crate::flash_ui::FlashMenu::load(&self.data_dir, crate::flash_ui::POPUP_MOVIE, [0.0, 0.0], &shared);
                 self.ui_shared = Some(shared);
             }
+        }
+        // (DEFAULT_WITH_CUT's climb: the form that asked is closed, nothing is drawn over the flight)
+        if self.climb_on {
+            if let Some(fm) = self.flash_menu.as_mut() {
+                fm.hide();
+            }
+            return MenuAction::None;
         }
         if !matches!(self.mode, Mode::Paused | Mode::Results) && !(self.mode == Mode::RaceSelect && self.hangout_key.is_some()) {
             if let Some(fm) = self.flash_menu.as_mut() {
@@ -7176,11 +7193,11 @@ impl Game {
                 // the race-over entries of the original (`RO_*` in PauseMenu.sc.xml), in its words
                 let s = |key: &str, fallback: &str| -> String { self.career.strings.get(key).filter(|v| !v.contains('<')).map(|v| v.to_string()).unwrap_or_else(|| fallback.to_string()).to_uppercase() };
                 let mut ro: Vec<(String, u8)> = Vec::new();
-                // (RO_FullFix, shown as QUICK FIX: only for a car that needs it)
+                // (no QUICK FIX row after a race: RO_FullFix is only for a car wrecked offline with no
+                // race - sub_82660310; the repair is the question's YES, free. The price, sub_8269EA88,
+                // only greys that YES when it is 0.)
                 let fix = vehicles.player().map_or(0, |c| self.fix_price(c.state.damage.max(c.state.zone_mean()), c.state.zones.iter().any(|z| *z > 0.05)));
-                if fix > 0 && !self.quick_fix {
-                    ro.push((format!("{}   ${}", s("quick_fix", "QUICK FIX"), fix), 3));
-                }
+                self.fix_now = fix;
                 // (reference `y_over1`, an ARCADE race: NEXT RACE, RETURN TO CRUISE, RACE AGAIN,
                 // RACE RESULTS, ADD RACE TO FAVORITES, VIEW REPLAY)
                 let arcade_over = self.arcade_restore.is_some() && self.flash_menu.is_some();
@@ -7267,14 +7284,14 @@ impl Game {
                 let (up, down, enter, back) = if splash_on {
                     (false, false, false, false)
                 } else if let (Some(cur), true) = (self.series_ask, movie) {
-                    // CONTINUE SERIES: repair first? YES / NO (`sr_continue`); either goes on
-                    let cur = if up { 0 } else if down { 1 } else { cur };
+                    // CONTINUE SERIES: repair first? YES / NO (`sr_continue`); either goes on. YES is free
+                    // (QUICK_FIX_MASTER, sub_82215810 - no money taken) and greyed with nothing to
+                    // repair, the cursor then on NO (mcFixForm, sub_82662738)
+                    let cur = if fix == 0 { 1 } else if up { 0 } else if down { 1 } else { cur };
                     self.series_ask = Some(cur);
                     if enter {
-                        if cur == 0 && self.money >= fix.max(125) {
-                            self.money -= fix.max(125);
+                        if cur == 0 {
                             self.quick_fix = true;
-                            self.dirty = true;
                         }
                         self.series_ask = None;
                         self.menu_sel = 0;
@@ -7297,12 +7314,15 @@ impl Game {
                                     self.current_race = sr.races.first().copied();
                                     self.next_event_race = None;
                                     action = MenuAction::StartRace;
+                                    self.warp_with_cut = true;
                                 }
                             }
                             _ => {
                                 if let Some(n) = self.next_event_race.take() {
                                     self.current_race = Some(n);
                                     action = MenuAction::StartRace;
+                                    // (NEXT RACE IN SERIES / CONTINUE TOURNAMENT: Warper_Warp('DEFAULT_WITH_CUT'))
+                                    self.warp_with_cut = true;
                                 }
                             }
                         }
@@ -7440,16 +7460,6 @@ impl Game {
                         self.go_garage = true;
                         action = MenuAction::StartFreeRoam;
                     }
-                    Some(3) => {
-                        if self.money >= fix {
-                            self.money -= fix;
-                            self.quick_fix = true;
-                            self.dirty = true;
-                        } else {
-                            let m = self.career.strings.get("G_PerformanceOverBudget").map(|s| s.to_uppercase()).unwrap_or_else(|| "NOT ENOUGH CASH".into());
-                            self.show_message(&m);
-                        }
-                    }
                     // (NEXT RACE IN SERIES asks every time: the series handler has no damage test - form
                     // 71, Dialog_Title_NextSeries, sub_826624C8)
                     // (a tournament's rows: CONTINUE `Dialog_Title_NextTournament`, QUIT
@@ -7492,6 +7502,13 @@ impl Game {
                         self.series_ask_kind = 1;
                         self.series_ask = Some(0);
                     }
+                    // (an ordinary race's RETURN TO CRUISE asks the repair question too - form 71,
+                    // Dialog_Title_ReturnToCruise, sub_82668480 - after every race (the race-over test
+                    // sub_8265F2C0), unless the police are after the player (sub_8265E5E8))
+                    Some(2) if movie && self.opt_x.s23.heat_was != 2 => {
+                        self.series_ask_kind = 4;
+                        self.series_ask = Some(0);
+                    }
                     Some(21) => {
                         self.menu_sel = 0;
                         // (asked every time: sub_826698B8 opens form 71 - Dialog_Title_RaceBack /
@@ -7508,6 +7525,7 @@ impl Game {
                         action = match self.next_event_race.take() {
                             Some(n) => {
                                 self.current_race = Some(n);
+                                self.warp_with_cut = true;
                                 MenuAction::StartRace
                             }
                             None => MenuAction::RestartRace,
@@ -11207,6 +11225,9 @@ impl Game {
         } else if (enter || std::env::var("MCLA_EVENT_ACCEPT").is_ok()) && s15b_event {
             if self.mc4_event_panel_accept(&key) {
                 leave(self);
+                // (a tournament's first race: the man's script accepts form 66 -> Warper_Warp('DEFAULT_WITH_CUT'),
+                // tourstart.dis 0x75a; the payback's warp is not decoded - left as it was)
+                self.warp_with_cut = !key.eq_ignore_ascii_case("be_payback");
                 return Some(MenuAction::StartRace);
             }
         } else if enter && delivery {
@@ -11638,10 +11659,10 @@ impl Game {
             }
         } else if let Some(cur) = self.series_ask {
             MenuPage {
-                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc", "Dialog_Description_NextTournament", "Dialog_Description_QuitTournament", "Dlg_Desc_Tourn_Restart"][self.series_ask_kind.min(8) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
+                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc", "Dialog_Description_NextTournament", "Dialog_Description_QuitTournament", if self.career.tour_table.as_ref().is_some_and(|t| t.decided.is_some()) { "Dlg_Desc_Tourn_Restart_Lossless" } else { "Dlg_Desc_Tourn_Restart" }][self.series_ask_kind.min(8) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
                 icon: std::env::var("MCLA_RES_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(13),
                 title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK"), st("Dialog_Title_ReturnToCruise", "RETURN TO CRUISE"), st("Dlg_RaceAgainSeries_Title", "RACE AGAIN"), st("Dialog_Title_NextTournament", "CONTINUE TOURNAMENT"), st("Dialog_Title_QuitTournament", "QUIT TOURNAMENT"), st("Dlg_Title_Tourn_Restart", "RESTART TOURNAMENT")][self.series_ask_kind.min(8) as usize].clone(),
-                rows: vec![MenuRow { label: st("Common_Yes", "YES"), value: String::new(), enabled: true, part: None }, MenuRow { label: st("Common_No", "NO"), value: String::new(), enabled: true, part: None }],
+                rows: vec![MenuRow { label: st("Common_Yes", "YES"), value: String::new(), enabled: self.fix_now > 0, part: None }, MenuRow { label: st("Common_No", "NO"), value: String::new(), enabled: true, part: None }],
                 select: cur,
                 prompts: vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("prompt_back", "BACK"), ICON_B)],
                 list_max: 6,
@@ -11874,6 +11895,8 @@ impl Game {
     pub fn tournament_restart(&mut self) -> bool {
         let id = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| d.id.clone()).unwrap_or_default();
         let Some(first) = self.career.tournament_restart(&id) else { return false };
+        // (straight to the warp and race 1: the panel (form 66) is the man's, not reached)
+        self.career.panel_ok = true;
         self.career.tour_table = None;
         self.next_event_race = None;
         self.current_race = self.race_defs.iter().position(|d| d.id.to_ascii_lowercase().ends_with(&first));

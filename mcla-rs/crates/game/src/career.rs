@@ -851,9 +851,10 @@ impl Career {
     fn target(&self, m: &Mission, c: &Cond) -> u32 {
         // an event with its own race list: a series is decided by the majority of its races
         if let (Cond::Event { event, .. }, Some(e)) = (c, self.event_of(m)) {
-            // (a tournament is all of its races, decided on points - see `tournament_race`)
+            // (a tournament's objective is its one TOURNAMENT_COMPLETE event - 0 / 1, no count
+            // per race: the points live in TournamentCore's state - see `tournament_race`)
             if event.starts_with("TOURNAMENT_COMPLETE") && !e.races.is_empty() {
-                return e.races.len() as u32;
+                return 1;
             }
             if event == "SERIES_COMPLETE" && !e.races.is_empty() {
                 return (e.races.len() as u32 + 1) / 2;
@@ -972,7 +973,8 @@ impl Career {
                     }
                     (Cond::Event { event, .. }, Ev::EscapedPolice) if event == "MISSION_EVENT" && m.id.contains("POLICE") => cur + 1,
                     (Cond::Event { event, .. }, Ev::Race { place: 1, district, .. }) if event == "MISSION_EVENT" && !racing_id && !m.id.starts_with("FIND_") && !m.id.contains("POLICE") && (!ev_races.is_empty() || same_district(&m.district, district)) => cur + 1,
-                    (Cond::Event { event, .. }, Ev::Race { place: 1, district, .. }) if matches!(event.as_str(), "SERIES_COMPLETE" | "TOURNAMENT_COMPLETE" | "TOURNAMENT_COMPLETE_HARD" | "WAGER_RACE_COMPLETE") && (!ev_races.is_empty() || same_district(&m.district, district)) => cur + 1,
+                    // (a tournament with races is completed by tournament_race on the points, not per race)
+                    (Cond::Event { event, .. }, Ev::Race { place: 1, district, .. }) if matches!(event.as_str(), "SERIES_COMPLETE" | "TOURNAMENT_COMPLETE" | "TOURNAMENT_COMPLETE_HARD" | "WAGER_RACE_COMPLETE") && !(event.starts_with("TOURNAMENT_COMPLETE") && !ev_races.is_empty()) && (!ev_races.is_empty() || same_district(&m.district, district)) => cur + 1,
                     (Cond::Event { event, .. }, Ev::Payback) if event == "PAYBACK_COMPLETE" => cur + 1,
                     (Cond::Event { event, .. }, Ev::Garage) if event == "LOCATION_EVENT" && m.id.starts_with("GARAGE") => cur + 1,
                     (Cond::Event { event, .. }, Ev::District(d)) if event == "LOCATION_EVENT" && !m.id.starts_with("GARAGE") && same_district(&m.district, d) => cur + 1,
@@ -1196,12 +1198,10 @@ impl Career {
                 }
             };
             if st.won.len() < races.len() {
-                let n = st.won.len() as u32;
-                set(st, n);
                 return Some(format!("{} POINTS   BEST RIVAL {}", mine, rival));
             }
             if mine >= rival {
-                set(st, races.len() as u32);
+                set(st, 1);
                 st.pts.clear();
                 // (TOURNAMENT_COMPLETE with the event's name, and TOURNAMENT_COMPLETE_HARD only
                 // when the tournament was entered on Hard: sub_826CA6D8 0x826CA88C..0x826CA8B4)

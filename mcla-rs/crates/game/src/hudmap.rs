@@ -3370,6 +3370,157 @@ impl CineWarp {
     }
 }
 
+/// The climb of Warper_Warp('DEFAULT_WITH_CUT') (request type 4, `sub_8221A440` case 0x8221A8F4): one
+/// of three `Warp_*_Cinematically` states of tune/ui/transitions/Main.sc.xml picked by `sub_822192F8`
+/// (req+9 = 1, type not 8 / 9, the FromCarToLowWaitPosition distance 0): f1 = `sub_8216C9C0(S.r2,
+/// (0, 0, -1))` (S = the render camera, playerMgr+0x513E0; constants 0x82000ED4 = 0, 0x82003770 = -1),
+/// 0 < f1 < 1.57 -> Sharp_Angle_Right, -1.57 < f1 < 0 -> Sharp_Angle_Left, else FocusOnCar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClimbKind {
+    /// Warp_FocusOnCar_Cinematically (Main.sc.xml l.421; 1.30 s)
+    FocusOnCar,
+    /// Warp_Sharp_Angle_Right_Cinematically (l.467; 2.05 -> 61/30 s)
+    SharpAngleRight,
+    /// Warp_Sharp_Angle_Left_Cinematically (l.513; 61/30 s)
+    SharpAngleLeft,
+}
+
+impl ClimbKind {
+    pub fn choose(s: &CamRows) -> ClimbKind {
+        let f1 = sangle0(s.r2, Vec3::new(0.0, 0.0, -1.0));
+        if f1 < 1.57 && f1 > 0.0 {
+            ClimbKind::SharpAngleRight
+        } else if f1 > -1.57 && f1 < 0.0 {
+            ClimbKind::SharpAngleLeft
+        } else {
+            ClimbKind::FocusOnCar
+        }
+    }
+
+    /// The top Parallel's length (max of delay + total over the children, times snapped by
+    /// `ui_time`): FocusOnCar's Y 1.30 (X, Z and LookAtTarget 1.25 -> 37/30, Axis2Stages 22/30 +
+    /// 16/30, GPSJump .6); the Sharp_Angle ones' Y 2.05 -> 61/30.
+    pub fn total(self) -> f32 {
+        match self {
+            ClimbKind::FocusOnCar => ui_time(1.30),
+            _ => ui_time(2.05),
+        }
+    }
+
+    /// ease_in on the top Parallel (`sub_82229AA0`): C = T (1 - cos(pi t / 2T)).
+    fn clock(self, t: f32) -> f32 {
+        let tl = self.total();
+        tl * (1.0 - ((t / tl).clamp(0.0, 1.0) * PI * 0.5).cos())
+    }
+}
+
+/// The climb's flight (`sub_82219BA0`: T.648(warper+192), 632(S = the render camera), 636(E = the
+/// player car's matrix, `sub_822A8108`: rows right, up, back), 736 / 744(the render camera's velocity,
+/// playerMgr+0x51420, y 0 - taken as 0 here), no 720: the target_velocity Axis2Stages move nothing).
+/// Lens (warper+292, Lerp_Float): from playerMgr+0x51430 to req+96 = 25, no delay, over 0.8 T
+/// (0x820082E0). No Lean (no roll). When it is over (`sub_8221B8C8`) the camera keeps its last matrix
+/// and Warper_IsReadyToLoadStuff turns true.
+#[derive(Clone)]
+pub struct CineClimb {
+    kind: ClimbKind,
+    s: CamRows,
+    e: CamRows,
+    t: f32,
+    c_prev: f32,
+    out: CamRows,
+    lens: NavLens,
+}
+
+impl CineClimb {
+    /// `s` = the render camera, `e` = the player car's matrix, the lens from `fov_from` to `fov_to`
+    /// (25 degrees; any unit).
+    pub fn new(s: CamRows, e: CamRows, fov_from: f32, fov_to: f32) -> CineClimb {
+        let kind = ClimbKind::choose(&s);
+        let lens = NavLens { from: fov_from, to: fov_to, delay: 0.0, dur: 0.8 * kind.total(), clock: 0.0, deg: fov_from };
+        CineClimb { kind, s, e, t: 0.0, c_prev: 0.0, out: s, lens }
+    }
+
+    pub fn kind(&self) -> ClimbKind {
+        self.kind
+    }
+
+    /// the time flown
+    pub fn t(&self) -> f32 {
+        self.t
+    }
+
+    pub fn total(&self) -> f32 {
+        self.kind.total()
+    }
+
+    /// The eye at child clock `c` (`c_prev` = that clock a frame before).
+    fn eye_at(&self, c: f32, c_prev: f32) -> Vec3 {
+        let (s, e) = (self.s, self.e);
+        // Translate_Axis Y, 'world': d = 850 - S.y
+        let ty = self.kind.total();
+        let y = s.eye.y + (850.0 - s.eye.y) * s_curve(c / ty);
+        match self.kind {
+            ClimbKind::FocusOnCar => {
+                // Axis.sc X (0, 1.25 -> 37/30) target 0, Z (0, 37/30) target 1300 (d = E - S + target)
+                let t = ui_time(1.25);
+                Vec3::new(s.eye.x + (e.eye.x - s.eye.x) * s_curve(c / t), y, s.eye.z + (e.eye.z + 1300.0 - s.eye.z) * s_curve(c / t))
+            }
+            ClimbKind::SharpAngleRight | ClimbKind::SharpAngleLeft => {
+                // X (0, 2); Z (.2, 1.8) - shows 0 on the frame that crosses its delay
+                let x = s.eye.x + (e.eye.x - s.eye.x) * s_curve(c / 2.0);
+                let d = ui_time(0.2);
+                let z = if c_prev < d { s.eye.z } else { s.eye.z + (e.eye.z + 1300.0 - s.eye.z) * s_curve((c - d) / 1.8) };
+                // Axis2Stages('final_look', -+100, 0, .5, +-100, 0, 1.5) along n(flat E.r2) and
+                // ('final_side', -+300, 0, .5, +-300, 0, 1.5) along n(E.r0), 'set' (d = target);
+                // Right: -100 / -300 first, Left: +100 / +300
+                let k = if self.kind == ClimbKind::SharpAngleRight { -1.0 } else { 1.0 };
+                let st = k * (s_curve(c / 0.5) - s_curve((c - 0.5) / 1.5));
+                Vec3::new(x, y, z) + flat_n(e.r2) * (100.0 * st) + e.r0.normalize_or(Vec3::X) * (300.0 * st)
+            }
+        }
+    }
+
+    /// The rows: LookAtTarget(0, .1, T, target, 'Y', final_look) - from A = the render camera at the
+    /// start toward looking from the camera's last place at L = E.r3 + n(E.r2) target with up (0, 1, 0);
+    /// target -20 (FocusOnCar, total 37/30) / -10 (Sharp_Angle, total 2).
+    fn rows_at(&self, c: f32, prev_eye: Vec3) -> CamRows {
+        let e = self.e;
+        let (target, done) = match self.kind {
+            ClimbKind::FocusOnCar => (-20.0, ui_time(1.25)),
+            _ => (-10.0, 2.0),
+        };
+        let l = e.eye + e.r2.normalize_or(Vec3::Z) * target;
+        let b = CamRows::look_at(prev_eye, l, Vec3::Y);
+        let w = if c >= done { 1.0 } else { (1.0 - (PI * (c / 0.1).clamp(0.0, 1.0)).cos()) * 0.5 };
+        blend_rows(self.s, b, w, false)
+    }
+
+    /// One frame: the camera and the lens, or None once the climb is over (`end` holds from then on).
+    pub fn step(&mut self, dt: f32) -> Option<(CamRows, f32)> {
+        self.t += dt;
+        if self.t >= self.kind.total() - 1e-4 {
+            return None;
+        }
+        let fov = self.lens.step(dt);
+        let c = self.kind.clock(self.t);
+        let c_prev = std::mem::replace(&mut self.c_prev, c);
+        let prev_eye = self.out.eye;
+        let mut out = self.rows_at(c, prev_eye);
+        out.eye = self.eye_at(c, c_prev);
+        self.out = out;
+        Some((out, fov))
+    }
+
+    /// The camera the climb leaves (its last update, the clock at T: every child complete) and the
+    /// lens (at `to`, its 0.8 T being over).
+    pub fn end(&self) -> (CamRows, f32) {
+        let tl = self.kind.total();
+        let mut out = self.rows_at(tl, self.out.eye);
+        out.eye = self.eye_at(tl, tl);
+        (out, self.lens.to)
+    }
+}
+
 /// The opening's turn (Entering_Map_MaxHeight's Rotate children, rule_exitcam.md 7): from the game
 /// camera's rows `s`, at real time `t` of the 1.5 s move.
 pub fn nav_open_rows(s: CamRows, t: f32) -> CamRows {
@@ -4127,6 +4278,55 @@ mod tests {
                 assert!((fov - 51.0).abs() < 1e-4, "{kind:?}: fov {fov}");
             }
         }
+    }
+
+    /// DEFAULT_WITH_CUT's climb: the chooser's f1 against south, the three lengths, and where it
+    /// ends - 850 m world height, 1300 m south of the car (+z), looking at the point 20 m (FocusOnCar)
+    /// / 10 m (Sharp_Angle) ahead of it; the lens at 25 after 0.8 T.
+    #[test]
+    fn default_with_cut_climb() {
+        // the car at (100, 5, -200) facing -z (back +z), the camera behind it looking at it
+        let car = CamRows { r0: Vec3::X, r1: Vec3::Y, r2: Vec3::Z, eye: Vec3::new(100.0, 5.0, -200.0) };
+        let north = CamRows::look_at(Vec3::new(100.0, 7.0, -192.0), Vec3::new(100.0, 5.0, -210.0), Vec3::Y);
+        let south = CamRows::look_at(Vec3::new(100.0, 7.0, -208.0), Vec3::new(100.0, 5.0, -190.0), Vec3::Y);
+        let sw = CamRows::look_at(Vec3::new(100.0, 7.0, -208.0), Vec3::new(90.0, 5.0, -190.0), Vec3::Y);
+        let se = CamRows::look_at(Vec3::new(100.0, 7.0, -208.0), Vec3::new(110.0, 5.0, -190.0), Vec3::Y);
+        assert_eq!(ClimbKind::choose(&north), ClimbKind::FocusOnCar);
+        // (exactly south: f1 = 0, neither 0 < f1 nor f1 < 0)
+        assert_eq!(ClimbKind::choose(&south), ClimbKind::FocusOnCar);
+        assert_eq!(ClimbKind::choose(&sw), ClimbKind::SharpAngleRight);
+        assert_eq!(ClimbKind::choose(&se), ClimbKind::SharpAngleLeft);
+        assert!((ClimbKind::FocusOnCar.total() - 1.3).abs() < 1e-5);
+        assert!((ClimbKind::SharpAngleRight.total() - 61.0 / 30.0).abs() < 1e-4);
+        for (s, kind, ahead) in [(north, ClimbKind::FocusOnCar, 20.0), (sw, ClimbKind::SharpAngleRight, 10.0), (se, ClimbKind::SharpAngleLeft, 10.0)] {
+            let mut c = CineClimb::new(s, car, 50.0, 25.0);
+            assert_eq!(c.kind(), kind);
+            let mut n = 0;
+            let mut last = None;
+            while let Some(o) = c.step(1.0 / 30.0) {
+                last = Some(o);
+                n += 1;
+            }
+            assert_eq!(n as f32, (kind.total() * 30.0).round() - 1.0, "{kind:?}");
+            let (end, fov) = c.end();
+            assert!((end.eye - Vec3::new(100.0, 850.0, 1100.0)).length() < 1e-3, "{kind:?}: {}", end.eye);
+            assert_eq!(fov, 25.0);
+            let l = Vec3::new(100.0, 5.0, -200.0 - ahead);
+            assert!((-end.r2).dot((l - end.eye).normalize()) > 0.9999, "{kind:?}: looks {}", -end.r2);
+            assert!(end.r0.y.abs() < 1e-4, "{kind:?}: no roll");
+            let (o, f) = last.unwrap();
+            assert!((o.eye - end.eye).length() < 5.0, "{kind:?}: last frame {}", o.eye);
+            // (the lens's last write falls short of its end by under a frame)
+            assert!((f - 25.0).abs() < 0.05, "{kind:?}: lens {f}");
+        }
+        // FocusOnCar halfway (t 0.65, C = 1.3 (1 - cos(pi/4)) = 0.3808): y = 7 + 843 s(0.3808 / 1.3)
+        let mut c = CineClimb::new(north, car, 50.0, 25.0);
+        let mut o = None;
+        for _ in 0..39 {
+            o = c.step(1.0 / 60.0).or(o);
+        }
+        let y = 7.0 + 843.0 * s_curve(1.3 * (1.0 - (PI * 0.25).cos()) / 1.3);
+        assert!((o.unwrap().0.eye.y - y).abs() < 0.01, "{} vs {y}", o.unwrap().0.eye.y);
     }
 
     #[test]
