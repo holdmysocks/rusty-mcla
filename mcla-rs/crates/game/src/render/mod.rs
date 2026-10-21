@@ -614,6 +614,12 @@ pub struct Gpu {
     pub pipeline_refl: wgpu::RenderPipeline,
     pub pipeline_refl_win: wgpu::RenderPipeline,
     pub pipeline_refl_sky: wgpu::RenderPipeline,
+    /// The rear-view mirror (rearview.rs, OPTIONS > DISPLAY, DECISIONS.md D20): its own globals (the main
+    /// view's with the mirror's camera), their bind group (the main view's textures), and its sky, which
+    /// also clears the strip's depth.
+    pub mirror_globals: wgpu::Buffer,
+    pub mirror_bg: wgpu::BindGroup,
+    pub pipeline_mirror_sky: wgpu::RenderPipeline,
     pub sampler: wgpu::Sampler,
     pub white: Arc<GpuTexture>,
     pub textures: HashMap<u32, Arc<GpuTexture>>,
@@ -1107,6 +1113,10 @@ impl Gpu {
             .map(|_| device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("environment globals"), contents: bytemuck::bytes_of(&Globals::default()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST }))
             .collect();
         let env_bgs: Vec<wgpu::BindGroup> = env_globals.iter().map(|b| make_globals_bg(b, &env_none_cube, &env_none_cube, &fc_view)).collect();
+        // (the rear-view mirror's: the original's mirror pass draws the main view's programs with the main
+        // view's textures bound - rearview.rs)
+        let mirror_globals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("rear-view mirror globals"), contents: bytemuck::bytes_of(&Globals::default()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
+        let mirror_bg = make_globals_bg(&mirror_globals, &env_cube, &env_soft_cube, &refl_view);
         let tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tex layout"),
             entries: &[
@@ -1714,6 +1724,30 @@ impl Gpu {
             multiview: None,
             cache: None,
         });
+        // (the rear-view mirror's sky - refl.wgsl `fs_mirror_sky`: into the scene target, writing the far depth
+        // with the test off, so that it clears the strip's depth as well)
+        let pipeline_mirror_sky = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rear-view mirror sky"),
+            layout: Some(&refl_pl),
+            vertex: wgpu::VertexState { module: &refl_shader, entry_point: Some("vs_refl_sky"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &refl_shader,
+                entry_point: Some("fs_mirror_sky"),
+                targets: &[Some(wgpu::ColorTargetState { format: post::SCENE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky"),
             source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
@@ -1850,6 +1884,9 @@ impl Gpu {
             pipeline_refl,
             pipeline_refl_win,
             pipeline_refl_sky,
+            mirror_globals,
+            mirror_bg,
+            pipeline_mirror_sky,
             sampler,
             white,
             clear_tex,

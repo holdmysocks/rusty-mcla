@@ -1,0 +1,315 @@
+//! The original's rear-view mirror, which the shipped game never shows (OPTIONS > DISPLAY > REAR-VIEW MIRROR,
+//! the port's own switch for it - DECISIONS.md D20; rules and measurements in docs/LIGHTING.md "Rear-view
+//! mirror (2026-10-21)").
+//!
+//! In the original the HUD's `rearView` object (class vtable 0x82027A54, made by sub_82233A60 from the HUD
+//! builder sub_826521A0) runs only when the RAGE command-line parameter `rearview` is set (0x8287E0A8 +4,
+//! registered by sub_827ACB90). Each frame (sub_82233C18) it turns render pass 0x01000000 on while the HUD
+//! element is up (+16 bit 0x20 - off in the pause menu) and off otherwise - at once, no fade: the fade at +1216
+//! (4 / s, 0x8200308C) only sets how strongly the overlay frame textures rear_view1 / rear_view_2 / _1bg / _2bg
+//! are drawn (sub_82233E18 -> sub_82233D68), and the shipped data has none of them, so nothing of it shows.
+//!
+//! The pass (sub_82306500 0x01000000 -> sub_82307F28, its viewport object *(0x8288D004) made by sub_82307D68):
+//! - the rectangle (960, 57, 256, 51) of the 1280 x 720 frame (+0 .. +12), the window set by sub_8217D120;
+//! - a perspective of 15 degrees vertical (+20, 0x82007F9C) at the aspect of that rectangle, 256 / 51,
+//!   with the main view's near and far (main viewport +704 / +708: 0.2, 6000 recorded) - sub_8217D460;
+//! - the camera: the player's car matrix (sub_822A8108 of sub_822A39C8(*(0x82874374))) - its body's roll and
+//!   pitch with it - at the car's origin + 1.5 m straight up (world y, 0x827E5804), its first and third rows
+//!   times -1 (0x82003770): turned half round about the car's up axis, looking backwards, NOT mirrored left to
+//!   right. (Without a player car: the main view's camera.)
+//! - drawn into the scene's own target and depth after the main view's opaque and glass draws, before its
+//!   shadow-collect, glow, fog and particle passes: the strip goes through the same post chain.
+//! What it draws (GPU recordings `work/lighting2/rear/cap/rv1`, `st1`, `nt1`): the city's sector and far
+//! models with the main view's programs (day and night ones), the ocean water batches, the traffic cars
+//! (VSAmbient*), and the sky dome with vs_main + ps_main_cheap; no props, foliage, pedestrians, ground dome,
+//! glows, particles, player car.
+//!
+//! The traffic's LOD in the pass (sub_82793360 0x01000000 -> sub_82794308 -> sub_827902F0, flag 1): the
+//! mirror's view; a fixed sphere radius 0.9 (0x82007FA8); the steps x 0.125 (0x82003088); -1 when deeper than
+//! 125 (0x820375A8); LOD 0 drawn as LOD 1 - `mirror_lod`.
+
+use crate::render::{Frustum, Globals, Gpu, MatMode};
+use crate::vehicles::Vehicles;
+use glam::{Mat4, Quat, Vec3};
+
+/// The mirror's rectangle in the original's 1280 x 720 frame: x, y, width, height (sub_82307D68).
+pub const RECT: [f32; 4] = [960.0, 57.0, 256.0, 51.0];
+/// Vertical field of view, degrees (+20 = 0x82007F9C).
+pub const FOV_Y_DEG: f32 = 15.0;
+/// The eye above the car's origin, metres, along the world's y (0x827E5804).
+pub const EYE_UP: f32 = 1.5;
+/// The traffic's LOD sphere in the mirror (0x82007FA8), its step scale (0x82003088) and depth limit (0x820375A8).
+pub const LOD_RADIUS: f32 = 0.9;
+pub const LOD_STEP_SCALE: f32 = 0.125;
+pub const LOD_MAX_DEPTH: f32 = 125.0;
+
+/// The mirror's rectangle on a `w` x `h` target: the original's fixed rectangle of its 1280 x 720 frame, the
+/// frame scaled to the target as a whole (x by w / 1280, y by h / 720).
+pub fn rect(w: u32, h: u32) -> [f32; 4] {
+    let (sx, sy) = (w as f32 / 1280.0, h as f32 / 720.0);
+    [RECT[0] * sx, RECT[1] * sy, RECT[2] * sx, RECT[3] * sy]
+}
+
+/// The mirror's eye and view from the car's pose: the car's rotation turned half round about its own up axis
+/// (rows a and c times -1), the eye 1.5 m above the car's origin.
+pub fn camera(car_pos: Vec3, car_rot: Quat) -> (Vec3, Mat4) {
+    let eye = car_pos + Vec3::Y * EYE_UP;
+    let rot = car_rot * Quat::from_rotation_y(std::f32::consts::PI);
+    (eye, Mat4::from_rotation_translation(rot, eye).inverse())
+}
+
+/// The mirror's projection, the port's reverse-Z form (camera.rs `Camera::proj`) at 15 degrees and the
+/// rectangle's own aspect, 256 / 51, with the main view's near.
+pub fn proj(near: f32) -> Mat4 {
+    let f = 1.0 / (FOV_Y_DEG.to_radians() * 0.5).tan();
+    let aspect = RECT[2] / RECT[3];
+    Mat4::from_cols_array(&[f / aspect, 0.0, 0.0, 0.0, 0.0, f, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, near, 0.0])
+}
+
+/// sub_827902F0 with flag 1, then the caller's LOD 0 -> 1: the LOD of a traffic car at depth `d` (the
+/// sphere's centre along the mirror's axis, less the near distance, plus 0.9) - `steps` the type's two depths
+/// of the main view (`CarModel::lod_steps`), here x 0.125. -1: not drawn.
+pub fn mirror_lod(d: f32, steps: [f32; 2]) -> i8 {
+    if d > LOD_MAX_DEPTH {
+        -1
+    } else if d < steps[1] * LOD_STEP_SCALE {
+        // (below the first step it is LOD 0, which the mirror's pass draws as LOD 1)
+        1
+    } else {
+        2
+    }
+}
+
+/// Every car's LOD in the mirror (`Vehicles::lod_pick`'s layout): traffic cars by `mirror_lod` when the
+/// sphere is in the mirror's view and not behind the main view's occluders (sub_82175F20 is asked as in the
+/// main view's pass); cars without LODs - the player's, racers, set-up cars - are not the traffic's pass and
+/// are left out (-1).
+pub fn pick_lods(v: &Vehicles, eye: Vec3, axis: Vec3, near: f32, frustum: &Frustum, occluders: &crate::occluder::Selected) -> Vec<i8> {
+    v.cars
+        .iter()
+        .map(|c| {
+            if c.model.lods[0].0.is_empty() || c.is_player || c.pu_stealth {
+                return -1;
+            }
+            let pose = c.render_pose(v.render_alpha);
+            let centre = pose.pos + pose.rot * c.model.lod_centre;
+            if !frustum.intersects_sphere(centre, LOD_RADIUS) || occluders.hides_sphere(centre, LOD_RADIUS) {
+                return -1;
+            }
+            let d = (centre - eye).dot(axis) - near + LOD_RADIUS;
+            let l = mirror_lod(d, c.model.lod_steps);
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if l >= 0 && std::env::var("MCLA_REARVIEW_LOG").is_ok() && N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 30 == 0 {
+                eprintln!("rearview car {} lod {} d {:.1}", c.model.name, l, d);
+            }
+            l
+        })
+        .collect()
+}
+
+/// The mirror's frame: its globals (the main view's with the mirror's camera) and the matrices.
+pub struct View {
+    pub eye: Vec3,
+    pub axis: Vec3,
+    pub frustum: Frustum,
+    pub globals: Globals,
+}
+
+pub fn view(main: &Globals, car_pos: Vec3, car_rot: Quat, near: f32) -> View {
+    let (eye, view) = camera(car_pos, car_rot);
+    let vp = proj(near) * view;
+    let mut g = *main;
+    g.view_proj = vp.to_cols_array_2d();
+    g.inv_view_proj = vp.inverse().to_cols_array_2d();
+    g.cam_pos = [eye.x, eye.y, eye.z, main.cam_pos[3]];
+    // (no sun shadows: the original's mirror pass binds an 8 x 8 stand-in as the city programs'
+    // ShadowCollectorSampler (s13) in place of the frame's 1280 x 720 collector - recorded in o14, draw 3137
+    // against 2189 - and its strip shows the street sunlit. MCLA_REARVIEW_SHADOWS=1: with the main view's.)
+    if std::env::var("MCLA_REARVIEW_SHADOWS").is_err() {
+        g.shadow_params[0] = 0.0;
+    }
+    let axis = car_rot * Vec3::Z;
+    // (diagnostics: MCLA_REARVIEW_LOG=1 prints the mirror's camera each second, the rows as the original's +128)
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if std::env::var("MCLA_REARVIEW_LOG").is_ok() && N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 60 == 0 {
+        let w = view.inverse();
+        eprintln!("rearview eye {:.3} {:.3} {:.3} a {:.4?} b {:.4?} c {:.4?}", eye.x, eye.y, eye.z, w.x_axis.truncate(), w.y_axis.truncate(), w.z_axis.truncate());
+    }
+    View { eye, axis, frustum: Frustum::from_view_proj(vp), globals: g }
+}
+
+/// Draw the mirror into the scene target and depth (after the main view's city pass): the sky (which clears the
+/// strip's depth), the city's models of both phases, then the traffic at the LODs `Vehicles::lod_pick` holds
+/// for the mirror (the caller swaps them in). Returns the draw count.
+pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::World, vehicles: &Vehicles, mv: &View) -> usize {
+    gpu.queue.write_buffer(&gpu.mirror_globals, 0, bytemuck::bytes_of(&mv.globals));
+    let (w, h) = (gpu.config.width, gpu.config.height);
+    let r = rect(w, h);
+    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("rear-view mirror"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.post.scene_view(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &gpu.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_viewport(r[0], r[1], r[2], r[3], 0.0, 1.0);
+    let (x0, y0) = (r[0].round() as u32, r[1].round() as u32);
+    let (x1, y1) = (((r[0] + r[2]).round() as u32).min(w), ((r[1] + r[3]).round() as u32).min(h));
+    if x1 <= x0 || y1 <= y0 {
+        return 0;
+    }
+    pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+    let mut draws = 0usize;
+    // (diagnostics: MCLA_REARVIEW_LIST=1 lists once, at the 200th mirror frame, every far-model batch in the
+    // mirror's view - its index count, centre, distance, and whether the port shows it - for matching against
+    // the original's recorded VSCityLOD draws)
+    static LISTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if std::env::var("MCLA_REARVIEW_LIST").is_ok() && LISTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 200 {
+        for (sid, sec) in world.far_models_by_sector() {
+            let shown = world.sets.values().any(|s| std::ptr::eq(s, sec));
+            for b in sec.batches.iter().filter(|b| mv.frustum.intersects_aabb(b.min, b.max)) {
+                let c = (b.min + b.max) * 0.5;
+                eprintln!("rvlist far sector {} {} n {} centre {:.0} {:.0} {:.0} dist {:.0} shown {} loaded {}", sid, b.shader, b.count, c.x, c.y, c.z, c.distance(mv.eye), shown, world.loaded.contains_key(&sid));
+            }
+        }
+        for (sid, sec) in world.loaded.iter() {
+            for b in sec.batches.iter().filter(|b| mv.frustum.intersects_aabb(b.min, b.max)) {
+                let c = (b.min + b.max) * 0.5;
+                eprintln!("rvlist det sector {} {} n {} centre {:.0} {:.0} {:.0} dist {:.0}", sid, b.shader, b.count, c.x, c.y, c.z, c.distance(mv.eye));
+            }
+        }
+    }
+    // the sky: the dome by ps_main_cheap, at the far depth, the test off - the strip cleared
+    pass.set_bind_group(0, &gpu.mirror_bg, &[]);
+    if let Some(tb) = gpu.sky_hat.tex_bg.as_ref() {
+        pass.set_pipeline(&gpu.pipeline_mirror_sky);
+        pass.set_bind_group(1, tb, &[]);
+        pass.set_bind_group(2, &gpu.refl_bg, &[]);
+        pass.draw(0..3, 0..1);
+        draws += 1;
+    }
+    // the city: the main view's programs, both phases (opaque, then the blended - shop panes with depth writes)
+    let lens = ((FOV_Y_DEG.to_radians() * 0.5).tan() / 0.637).clamp(0.3, 1.2);
+    pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+    for phase in 0..2 {
+        pass.set_pipeline(if phase == 0 { &gpu.pipeline_opaque } else { &gpu.pipeline_blend });
+        let mut pane_pipe = false;
+        let mut last_mode = u32::MAX;
+        for sec in world.loaded.values().chain(world.sets.values()) {
+            let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
+            let mut bound = false;
+            let mut last_bind: *const wgpu::BindGroup = std::ptr::null();
+            let mut last_obj = 0u8;
+            for b in &sec.batches {
+                let blend = matches!(b.mode, MatMode::Blend | MatMode::StoreGlass);
+                if blend != (phase == 1) || !mv.frustum.intersects_aabb(b.min, b.max) {
+                    continue;
+                }
+                // (the main pass's small-object culling, at the mirror's lens and eye)
+                let ext = (b.max - b.min).length();
+                if ext < ((b.min + b.max) * 0.5).distance(mv.eye) * 0.012 * lens {
+                    continue;
+                }
+                if let Some(o) = sec.obj.as_ref() {
+                    let want = if b.interior { 2 } else { 1 };
+                    if want != last_obj {
+                        pass.set_bind_group(3, if b.interior { &o.1.bg } else { &o.0.bg }, &[]);
+                        last_obj = want;
+                    }
+                }
+                if !bound {
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    bound = true;
+                }
+                let bp = std::sync::Arc::as_ptr(&b.bind);
+                if bp != last_bind {
+                    pass.set_bind_group(1, b.bind.as_ref(), &[]);
+                    last_bind = bp;
+                }
+                if b.mode as u32 != last_mode {
+                    pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
+                    last_mode = b.mode as u32;
+                }
+                if phase == 1 {
+                    let want_pane = matches!(b.mode, MatMode::StoreGlass);
+                    if want_pane != pane_pipe {
+                        pass.set_pipeline(if want_pane { &gpu.pipeline_pane } else { &gpu.pipeline_blend });
+                        pane_pipe = want_pane;
+                    }
+                }
+                pass.draw_indexed(b.first..b.first + b.count, 0, 0..1);
+                draws += 1;
+            }
+            pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+        }
+        if phase == 0 {
+            // the traffic (the pass 0x01000000 of sub_82793360): opaque parts here, the glass after the city's blended
+            pass.set_pipeline(&gpu.pipeline_opaque);
+            vehicles.draw(&mut pass, gpu, false, &mut draws, None, Some(&mv.frustum));
+            pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+        }
+    }
+    pass.set_pipeline(&gpu.pipeline_blend);
+    vehicles.draw(&mut pass, gpu, true, &mut draws, None, Some(&mv.frustum));
+    draws
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rect_at_the_original_size_and_scaled() {
+        assert_eq!(rect(1280, 720), [960.0, 57.0, 256.0, 51.0]);
+        assert_eq!(rect(1920, 1080), [1440.0, 85.5, 384.0, 76.5]);
+    }
+
+    /// The projection recorded in the original's mirror pass (VSCityLOD c8 .. c11 of rv1): P00 1.51322, P11 7.59575.
+    #[test]
+    fn projection_as_recorded() {
+        let p = proj(0.2);
+        assert!((p.x_axis.x - 1.51322).abs() < 2e-4, "{}", p.x_axis.x);
+        assert!((p.y_axis.y - 7.59575).abs() < 2e-4, "{}", p.y_axis.y);
+    }
+
+    /// The camera recorded in rv1 (the viewport object's +128 read from the running original): eye (819.610,
+    /// 19.072, -808.409), rows a (0.8800, -0.0429, 0.4730), b (0.0184, 0.9982, 0.0564), c (-0.4746, -0.0410,
+    /// 0.8792) - from the car's matrix with a and c turned round.
+    #[test]
+    fn camera_as_recorded() {
+        let (a, b, c) = (Vec3::new(0.8800, -0.0429, 0.4730), Vec3::new(0.0184, 0.9982, 0.0564), Vec3::new(-0.4746, -0.0410, 0.8792));
+        // the car's own rows: a and c the other way round
+        let car = Quat::from_mat3(&glam::Mat3::from_cols(-a, b, -c).orthonormalize_hack());
+        let (eye, view) = camera(Vec3::new(819.610, 17.572, -808.409), car);
+        assert!((eye - Vec3::new(819.610, 19.072, -808.409)).length() < 1e-3);
+        let world = view.inverse();
+        for (got, want) in [(world.x_axis.truncate(), a), (world.y_axis.truncate(), b), (world.z_axis.truncate(), c)] {
+            assert!((got - want).length() < 3e-3, "{got:?} {want:?}");
+        }
+    }
+
+    #[test]
+    fn traffic_lod_in_the_mirror() {
+        // (most types: 40 / 155 in the main view -> 5 / 19.375 here; LOD 0 drawn as 1)
+        let s = [40.0, 155.0];
+        assert_eq!(mirror_lod(3.0, s), 1);
+        assert_eq!(mirror_lod(19.0, s), 1);
+        assert_eq!(mirror_lod(19.375, s), 2);
+        assert_eq!(mirror_lod(125.0, s), 2);
+        assert_eq!(mirror_lod(125.01, s), -1);
+    }
+
+    trait Ortho {
+        fn orthonormalize_hack(self) -> glam::Mat3;
+    }
+    impl Ortho for glam::Mat3 {
+        /// (the recorded rows carry four digits: make them a rotation)
+        fn orthonormalize_hack(self) -> glam::Mat3 {
+            let x = self.x_axis.normalize();
+            let z = x.cross(self.y_axis).normalize();
+            let y = z.cross(x);
+            glam::Mat3::from_cols(x, y, z)
+        }
+    }
+}

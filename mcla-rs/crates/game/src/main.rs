@@ -80,6 +80,7 @@ mod hudmap_gpu;
 mod hookicons;
 mod ground_sheet;
 mod fillmap;
+mod rearview;
 
 /// Where the pause cameras' frame sits in the car (x right, y up, z rear from the
 /// car's origin). Measured in the original (CAREER_RACES.md "Race end: camera and
@@ -8323,6 +8324,24 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             pass.set_pipeline(&gpu.pipeline_blend);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+        }
+        // The original's hidden rear-view mirror (rearview.rs; OPTIONS > DISPLAY > REAR-VIEW MIRROR, DECISIONS.md D20;
+        // MCLA_REARVIEW=1 turns it on for a run): after the main view's draws, before its particles and post chain,
+        // while the driving HUD is up. Nothing of it runs while it is off.
+        let rear_view = (self.game.opts.rear_view || std::env::var("MCLA_REARVIEW").map_or(false, |v| v.trim() == "1"))
+            && !map3d
+            && self.drive
+            && matches!(self.game.mode, Mode::FreeRoam | Mode::Race)
+            && !self.game.show_map
+            && !self.game.idle_cam
+            && self.game.cine.is_none()
+            && !self.game.scene_hud_off;
+        if let Some(pose) = self.vehicles.player().filter(|_| rear_view).map(|c| c.render_pose(self.vehicles.render_alpha)) {
+            let mv = rearview::view(&globals, pose.pos, pose.rot, self.cam.near);
+            let mut lods = rearview::pick_lods(&self.vehicles, mv.eye, mv.axis, self.cam.near, &mv.frustum, &occluded);
+            std::mem::swap(&mut self.vehicles.lod_pick, &mut lods);
+            draws += rearview::draw(&mut enc, &gpu, &world, &self.vehicles, &mv);
+            std::mem::swap(&mut self.vehicles.lod_pick, &mut lods);
         }
         if !map3d {
             // (the particles and the rain in a pass of their own, the depth read-only: the

@@ -354,3 +354,18 @@ fn fs_refl_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let m = q * inverseSqrt((q.x * q.x + q.z * q.z) / 40000.0 + q.y * q.y / 26787.9);
     return vec4<f32>(dome(length(m.xz) / 200.0, m.xz / max(length(m.xz), 0.0001)), 1.0);
 }
+
+// The rear-view mirror's sky (rearview.rs; the original's mirror pass draws the dome with vs_main +
+// ps_main_cheap, recorded in work/lighting2/rear/cap/rv1, st1, nt1): the dome seen from the mirror's own
+// camera, which the mirror's globals hold - not turned upside down as the road's picture is. A ray under
+// the horizon meets the dome's rim (the city covers those pixels). Written at the far depth with the
+// depth test off: it also clears the strip's depth before the city is drawn into it.
+@fragment
+fn fs_mirror_sky(in: SkyOut) -> @location(0) vec4<f32> {
+    let p0 = g.inv_view_proj * vec4<f32>(in.ndc, 0.5, 1.0);
+    var d = normalize(p0.xyz / p0.w - g.cam_pos.xyz);
+    d.y = max(d.y, 0.0);
+    let q = vec3<f32>(d.x * 0.2, d.y, d.z * 0.2);
+    let m = q * inverseSqrt((q.x * q.x + q.z * q.z) / 40000.0 + q.y * q.y / 26787.9);
+    return vec4<f32>(dome(length(m.xz) / 200.0, m.xz / max(length(m.xz), 0.0001)), 1.0);
+}

@@ -54,6 +54,11 @@ pub struct Options {
     /// the original.
     #[serde(default)]
     pub hq_traffic: bool,
+    /// OPTIONS > DISPLAY > REAR-VIEW MIRROR (the port's own switch for the original's hidden debug mirror,
+    /// DECISIONS.md D20; rearview.rs): the strip at the top right that shows the street behind the car. Off =
+    /// the original as shipped.
+    #[serde(default)]
+    pub rear_view: bool,
 }
 
 fn full_volume() -> u8 {
@@ -62,7 +67,7 @@ fn full_volume() -> u8 {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { master: 10, music: 10, subtitles: false, shake: true, sens: 5, voice: 10, vehicle: 10, cutscene: 10, hq_traffic: false }
+        Options { master: 10, music: 10, subtitles: false, shake: true, sens: 5, voice: 10, vehicle: 10, cutscene: 10, hq_traffic: false, rear_view: false }
     }
 }
 
@@ -4208,12 +4213,14 @@ impl Game {
                             items.push((s("Camera Shake", "CAMERA SHAKE"), onoff(self.opts.shake), Go::Page(43)));
                             items.push((s("option_sensitivity", "STEERING SENS."), bar(self.opts.sens), Go::Page(44)));
                             items.push(("HIGH-DETAIL TRAFFIC".to_string(), onoff(self.opts.hq_traffic), Go::Page(52)));
+                            items.push(("REAR-VIEW MIRROR".to_string(), onoff(self.opts.rear_view), Go::Page(53)));
                         }
                     }
                     PAGE_DISPLAY => {
-                        // (the port's own page, D19: nothing to set yet)
+                        // (the port's own page, D19; its first row the original's hidden rear-view mirror, D20)
                         title = "DISPLAY".to_string();
-                        items.push(("NO DISPLAY SETTINGS YET".to_string(), String::new(), Go::Off));
+                        let on = |b: bool| format!("{}{}", crate::flash_ui::CHOICE, if b { s("G_On", "ON") } else { s("G_Off", "OFF") });
+                        items.push(("REAR-VIEW MIRROR".to_string(), on(self.opts.rear_view), Go::Page(53)));
                     }
                     PAGE_PERFORMANCE => {
                         // (the port's own page, D19)
@@ -4411,7 +4418,7 @@ impl Game {
                         }
                     },
                 }
-                if ((4..=8).contains(&self.pause_page) || self.pause_page == PAGE_PERFORMANCE) && (left || right) {
+                if ((4..=8).contains(&self.pause_page) || self.pause_page == PAGE_PERFORMANCE || self.pause_page == PAGE_DISPLAY) && (left || right) {
                     let adj = |v: &mut u8| *v = if right { (*v + 1).min(10) } else { v.saturating_sub(1) };
                     // (the row under the cursor says which setting it is)
                     match items.get(self.menu_sel).map(|i| i.2) {
@@ -4425,6 +4432,7 @@ impl Game {
                         Some(Go::Page(46)) => adj(&mut self.opts.vehicle),
                         Some(Go::Page(47)) => adj(&mut self.opts.cutscene),
                         Some(Go::Page(52)) => self.opts.hq_traffic = !self.opts.hq_traffic,
+                        Some(Go::Page(53)) => self.opts.rear_view = !self.opts.rear_view,
                         _ => {}
                     }
                     self.dirty = true;
@@ -4656,6 +4664,7 @@ impl Game {
                                 46 => step(&mut self.opts.vehicle),
                                 47 => step(&mut self.opts.cutscene),
                                 52 => self.opts.hq_traffic = !self.opts.hq_traffic,
+                                53 => self.opts.rear_view = !self.opts.rear_view,
                                 48 | 49 | 50 | 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, true, self.fresh_game),
                                 _ => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, true, true, self.fresh_game),
                             }
@@ -4838,6 +4847,7 @@ impl Game {
                             42 => self.opts.subtitles = !self.opts.subtitles,
                             43 => self.opts.shake = !self.opts.shake,
                             52 => self.opts.hq_traffic = !self.opts.hq_traffic,
+                            53 => self.opts.rear_view = !self.opts.rear_view,
                             48 | 49 | 50 | 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, true, self.fresh_game),
                             _ => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, true, true, self.fresh_game),
                         }
