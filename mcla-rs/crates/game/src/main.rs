@@ -816,10 +816,15 @@ impl App {
 
     /// Rain intensity 0..1 (storms only), following weather cross-fades.
     fn rain_amount(&self) -> f32 {
-        let cur = if self.weather == sky::Weather::Stormy { 1.0 } else { 0.0 };
+        self.weather_weight(sky::Weather::Stormy)
+    }
+
+    /// A weather's weight 0..1 (the original's w[k], WEATHER_AUDIO_RULE.md), following cross-fades.
+    fn weather_weight(&self, k: sky::Weather) -> f32 {
+        let cur = if self.weather == k { 1.0 } else { 0.0 };
         match self.sky_next.as_ref() {
             Some((_, w, f)) => {
-                let nx = if *w == sky::Weather::Stormy { 1.0 } else { 0.0 };
+                let nx = if *w == k { 1.0 } else { 0.0 };
                 cur + (nx - cur) * f
             }
             None => cur,
@@ -6356,6 +6361,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let (eye, view, vp) = if self.drive && self.vehicles.player().is_some() { (self.chase.pos, self.chase.view(), self.cam.proj(aspect) * self.chase.view()) } else { (self.cam.pos, self.cam.view(), self.cam.view_proj(aspect)) };
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
             self.vehicles.traffic_lamps(eye, axis, &Frustum::from_view_proj(vp), night, sim_dt);
+        }
+        // (the set-up cars' lamp states - vehicles.rs `setup_lamps`, sub_82353E38: head lamps due past the
+        // light manager's 18.0 or before its 6.0, or in Stormy or Foggy weather weighing over 0.85)
+        {
+            let due = self.time_of_day > 18.0 || self.time_of_day < 6.0 || self.weather_weight(sky::Weather::Stormy) > 0.85 || self.weather_weight(sky::Weather::Foggy) > 0.85;
+            self.vehicles.setup_lamps(due, sim_dt);
         }
         self.vehicles.upload_uniforms(&gpu, night);
         // --- camera / globals ---------------------------------------------------

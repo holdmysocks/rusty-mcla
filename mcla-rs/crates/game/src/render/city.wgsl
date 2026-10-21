@@ -1480,8 +1480,10 @@ fn fresnel(n: vec3<f32>, v: vec3<f32>, f0: f32) -> f32 {
 // two colours are the gauge colours, not passed here; marked 32 in the colour's alpha) get none.
 fn car_own_lamps(wts: vec4<f32>) -> vec3<f32> {
     if (obj.lamp_a[0].w > 0.5 || (u32(round(wts.a * 255.0)) & 32u) != 0u || wts.a > 0.5) { return vec3<f32>(0.0); }
-    let st0 = max(0.25 * obj.params.x, clamp(obj.params.y * 4.0, 0.0, 1.0));
-    let s0 = obj.lamp_a[3].rgb * obj.lamp_b[3].rgb * (clamp(obj.params.x, 0.0, 1.0) * wts.r);
+    // (the states: sub_823523C0's car + 2676 = (1.5 x table entry 0)^2.2, + 2672 = the head state -
+    // vehicles.rs `setup_lamps`, handed in lamp_a[1].w / lamp_a[2].w)
+    let st0 = obj.lamp_a[1].w;
+    let s0 = obj.lamp_a[3].rgb * obj.lamp_b[3].rgb * (obj.lamp_a[2].w * wts.r);
     let s1 = obj.lamp_a[0].rgb * obj.lamp_b[0].rgb * (2.44 * pow(st0, 2.2) * wts.g);
     return s0 + s1 - clamp(s0 * s1, vec3<f32>(0.0), vec3<f32>(1.0));
 }
@@ -3519,7 +3521,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             else if (lid == 12) { l_on = brk; }
             else if (lid == 13) { l_on = f32(lst % 4 == 1); }
             else if (lid == 14) { l_on = f32(lst % 4 == 2); }
-            if (amb8) { l_on = obj.lamp_b[lrow].w; }
+            // (every car's entry state now: traffic sub_82792FD8's, set-up cars sub_823523C0's - vehicles.rs
+            // `setup_lamps`; the police lamps 13 / 14 of a set-up car keep the port's siren phase)
+            if (amb8 || (lid != 13 && lid != 14)) { l_on = obj.lamp_b[lrow].w; }
             let ix = clamp(albedo.rg, vec2<f32>(0.0), vec2<f32>(1.0));
             let illum = select(1.055 * pow(ix, vec2<f32>(1.0 / 2.4)) - vec2<f32>(0.055), ix * 12.92, ix <= vec2<f32>(0.0031308));
             if (g.params.w > 60.5 && g.params.w < 61.5) { return vec4<f32>(to_scene(vec3<f32>(f32(lid % 3) * 0.5, f32((lid / 3) % 3) * 0.5, f32(lid / 9) * 0.5) + vec3<f32>(0.05)), 1.0); }
