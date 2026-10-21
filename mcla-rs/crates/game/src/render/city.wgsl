@@ -1059,6 +1059,24 @@ fn vs_body(in: VsIn) -> VsOut {
     let hl_nl = clamp(dot(o.normal, hl_l), 0.0, 1.0);
     let hl_vr = clamp(dot(normalize(g.cam_pos.xyz - wp.xyz), o.normal * (2.0 * hl_nl) - hl_l), 0.0, 1.0);
     o.neon_hl = (round(in.color.g * 255.0) / 100.0) * pow(max(hl_vr, 1e-20), max(round(in.color.r * 255.0), 1.0)) * clamp(4.0 * hl_nl, 0.0, 1.0);
+    // Traffic (its lamp rows marked ambient, lamp_a[0].w): VSAmbientCarPaint and VSAmbientGlass hand
+    // their pixel programs the mirror ray and the fresnel worked out AT THE VERTEX (o5 / o3; the paint
+    // also n.v, o4.w), interpolated over the triangle (work/trafpaint/dis/amb_carpaint.txt 74 - 102,
+    // amb_glass.txt 68 - 86). Here in `fill` (ray, fresnel) and `neon_hl` (n.v + 4: the signs'
+    // branches read it as >= -0.5, the props' gamma test as < -0.5). The programs' ray is V - 2 (n.v) N;
+    // the port's maps take the opposite, reflect(-V, N). Glass vertices: uv2.x = 1 (vehicles.rs).
+    if (obj.params.w > 15.5 && obj.lamp_a[0].w > 0.5) {
+        let vv = normalize(g.cam_pos.xyz - wp.xyz);
+        let nv = dot(o.normal, vv);
+        let ray = 2.0 * nv * o.normal - vv;
+        if (in.uv2.x > 0.5) {
+            o.fill = vec4<f32>(ray, 0.025 + 0.825 * pow(clamp(1.0 - abs(nv), 0.0, 1.0), 4.5125));
+        } else {
+            let tbv = PAINT_B[min((u32(round(obj.params.w)) / 32u) % 8u, 5u)];
+            o.fill = vec4<f32>(normalize(ray), tbv.y + (tbv.z - tbv.y) * pow(clamp(1.0 - nv, 0.0, 1.0), tbv.x));
+            o.neon_hl = nv + 4.0;
+        }
+    }
     // the sea: the game's vertex program on this vertex (world::mark_water, `water_vertex`)
     if (in.uv2.x < -77000.0) { o = water_vertex(in, wp.xyz, o); }
     return o;
@@ -3354,14 +3372,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                     //   m    = lerp(paint x light, sharp map, w)               (the map not weighed by k)
                     //   spec = sat(DL0.y x AO x |soft|^(DL0.w - 1) x lerp(paint x lum(soft), soft, DL4.w) x k)
                     //   out  = screen(m, spec)
-                    // (soft and sharp maps along the smooth normal's mirror ray; the program interpolates
-                    // the ray and the fresnel from the vertices, the port takes them per pixel)
-                    let ndv_a = dot(n, v);
+                    // (soft and sharp maps along the mirror ray, the fresnel and the edge's n.v as the vertex
+                    // program worked them out at the vertices, interpolated - vs_body; MCLA_DEBUG_VIEW 700:
+                    // per pixel, as until 2026-10-21)
+                    let pv_a = !(g.params.w > 699.5 && g.params.w < 700.5);
+                    let ndv_a = select(dot(n, v), in.neon_hl - 4.0, pv_a);
                     let edge_a = select(0.0, 1.0, sqrt(dpdx(ndv_a) * dpdx(ndv_a) + dpdy(ndv_a) * dpdy(ndv_a)) >= 0.125);
-                    let fr_a = tb.y + (tb.z - tb.y) * pow(clamp(1.0 - ndv_a, 0.0, 1.0), tb.x);
+                    let fr_a = select(tb.y + (tb.z - tb.y) * pow(clamp(1.0 - ndv_a, 0.0, 1.0), tb.x), in.fill.w, pv_a);
                     let w_a = clamp(fr_a - edge_a, 0.0, 1.0) * ao_v;
-                    let m_a = mix(dif, env, w_a);
-                    let soft_a = env_soft(reflect(-v, n));
+                    let ray_a = select(reflect(-v, n), in.fill.xyz, pv_a);
+                    let m_a = mix(dif, select(env, env_color(ray_a), pv_a), w_a);
+                    let soft_a = env_soft(ray_a);
                     let sp_a = clamp(mix(base * dot(soft_a, vec3<f32>(0.3, 0.59, 0.11)), soft_a, tc.x) * (ta.y * ao_v * pow(max(length(soft_a), 0.00001), ta.w - 1.0) * kk), vec3<f32>(0.0), vec3<f32>(1.0));
                     lit = m_a + sp_a - clamp(m_a * sp_a, vec3<f32>(0.0), vec3<f32>(1.0));
                 }
@@ -3627,13 +3648,19 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 // and up (the lamp lenses); the zone is the vertex's uv1.x (the program's texcoord z:
                 // one half4 fetch over uv0 and uv1). Blended source alpha, both faces drawn.
                 // (the damage term, GlassDmgSampler.w x 8 sat(o2.z), is dead: the fetch writes 0 in that slot)
+                // (c127.w is the car's own, set once from the game's camera - vehicles.rs `AmbLamps::tint`, in
+                // fade_size.w - in every pass; the map's ray and f at the vertices, interpolated - vs_body.
+                // MCLA_DEBUG_VIEW 700: ray and f per pixel; 701: the tint from this pass's camera)
                 let d12a = min(distance(obj.model[3].xyz, g.cam_pos.xyz) / 30.0, 1.0);
-                let t12a = select(0.0, 0.25 + 1.5 * clamp(d12a - 0.5, 0.0, 1.0), trunc(in.uv1.x) < 3.0);
-                let f12a = 0.025 + 0.825 * pow(1.0 - clamp(abs(dot(n, v)), 0.0, 1.0), 4.5125);
-                let l12a = dot(env, vec3<f32>(0.3, 0.59, 0.11));
+                let c127w = select(obj.fade_size.w, 0.25 + 1.5 * clamp(d12a - 0.5, 0.0, 1.0), g.params.w > 700.5 && g.params.w < 701.5);
+                let t12a = select(0.0, c127w, trunc(in.uv1.x) < 3.0);
+                let pv12a = !(g.params.w > 699.5 && g.params.w < 700.5);
+                let f12a = select(0.025 + 0.825 * pow(1.0 - clamp(abs(dot(n, v)), 0.0, 1.0), 4.5125), in.fill.w, pv12a);
+                let env12a = select(env, env_color(in.fill.xyz), pv12a);
+                let l12a = dot(env12a, vec3<f32>(0.3, 0.59, 0.11));
                 let a12a = t12a + (1.0 - t12a) * f12a;
                 let x12a = a12a + (1.0 - a12a + l12a - clamp(l12a, 0.0, 1.0)) * f12a;
-                lit = env * f12a;
+                lit = env12a * f12a;
                 alpha = clamp(a12a + x12a - clamp(a12a * x12a, 0.0, 1.0), 0.0, 1.0);
                 base = vec3<f32>(0.0);
                 spec_k = 0.0;

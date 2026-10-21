@@ -309,6 +309,9 @@ pub struct AmbLamps {
     pub levels: Option<[f32; crate::render::car_lamps::IDS]>,
     /// the lamp programs' state by table entry (PSAmbientCarLight's cover row w)
     pub lens: [f32; crate::render::car_lamps::IDS],
+    /// the glass's tint gCarAmbTintColor.w (sub_827914B8): 0.25 + 1.5 sat(min(d / 30, 1) - 0.5), d the
+    /// game camera's distance from the car - set once a frame from that camera and used in every pass
+    pub tint: f32,
 }
 
 /// sub_82792FD8's state table by attachment, from the five eased states (head, brake, signal
@@ -3184,7 +3187,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let body_color = if amb_paint { ambient_paint(c.color) } else { c.color };
             // (+ 256: the in-car glass, only the player's car - the camera's target, sub_822A9670)
             let int_glass = if self.interior_glass && c.is_player { 256.0 } else { 0.0 };
-            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(0.0).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
+            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
             gpu.update_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {
@@ -3342,6 +3345,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             let Some(rows) = crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name).filter(|t| t.ambient) else { continue };
             let pos = c.render_pose(alpha).pos;
+            c.amb_lamps.tint = 0.25 + 1.5 * ((pos.distance(eye) / 30.0).min(1.0) - 0.5).clamp(0.0, 1.0);
             let d = (pos - eye).dot(axis);
             let r = Vec3::splat(c.model.params.body_half.length() + 1.0);
             if d > TRAFFIC_LAMP_REACH || !frustum.intersects_aabb(pos - r, pos + r) {
