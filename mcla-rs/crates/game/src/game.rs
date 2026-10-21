@@ -441,6 +441,10 @@ pub struct Game {
     /// the original HUD movie (gauge cluster, special ability and slipstream meters);
     /// `MCLA_FLASH_HUD=0` keeps the port's own drawing
     pub flash_hud: Option<crate::flash_ui::FlashHud>,
+    /// the player's view as the HUD's camera bar numbers it (0 Bumper .. 4 Boom 3; -1 none)
+    /// and the opacity of the cut mask (TRANSITIONMOVIE), set by the camera each frame
+    pub hud_camera: i32,
+    pub cut_mask: f32,
     /// textures and strings shared by the Flash movies
     pub ui_shared: Option<crate::flash_ui::UiShared>,
     /// the minimap's frame movie (hudmap.swf)
@@ -1042,6 +1046,8 @@ impl Game {
             art: None,
             art_tried: false,
             flash_hud: None,
+            hud_camera: -1,
+            cut_mask: 0.0,
             ui_shared: None,
             flash_map: None,
             hm: None,
@@ -7706,6 +7712,7 @@ impl Game {
                     // (step 19c: the thirty seconds of a run to the line are the race clock's)
                     let race_hud = self.race_hud(vehicles, &hud).or_else(|| self.mc4_bmt_hud());
                     let idle_cam = self.idle_cam;
+                    let (shown_camera, menu_up) = (self.hud_camera, self.in_menu());
                     if let Some(fh) = self.flash_hud.as_mut().filter(|_| !idle_cam) {
                         let dt = ctx.input(|i| i.stable_dt).min(0.1);
                         // the info line under the speed: the game queues texts for it (0x822068F8)
@@ -7764,6 +7771,8 @@ impl Game {
                         // (hudOverheadMap's onentry sets HUDMOVIE cur_visibility = 0, but hudBigMap's
                         // refreshHUD follows it: the original keeps the gauges up under the overhead
                         // map - recorded, `work/mm/cap/ov_s2.png`)
+                        // (the camera bar: the view's list place, not passed on while a menu is up)
+                        fh.camera(shown_camera, menu_up);
                         // (before GO the movie steps with the race clock: its 3-2-1 ends on the GO tick)
                         fh.drive(&hud, race_hud, if self.race.as_ref().map_or(false, |r| r.countdown > 0.0) { race_dt } else { dt });
                         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_hud"));
@@ -7771,6 +7780,12 @@ impl Game {
                         ctx.move_to_top(layer);
                         let p = ctx.layer_painter(layer);
                         fh.movie.paint(ctx, &p);
+                    }
+                    // the cut's black mask (TRANSITIONMOVIE `mask`, mask_color 0) over everything
+                    if self.cut_mask > 0.0 {
+                        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("cut_mask"));
+                        ctx.move_to_top(layer);
+                        ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.cut_mask.clamp(0.0, 1.0) * 255.0).round() as u8));
                     }
                     let hm_els = if self.hm.is_some() { crate::hudmap::elements(self, vehicles, hud.heat >= 2) } else { Vec::new() };
                     if let (Some(fm), false) = (self.flash_map.as_mut(), (self.hud_map_big && (self.hm.is_none() || crate::hudmap::old_bigmap())) || idle_cam) {

@@ -378,6 +378,10 @@ struct App {
     /// the cinematic view: each car's event camera views, and the camera
     event_views: std::collections::HashMap<String, Option<Arc<boomcam::EventViews>>>,
     event_cam: boomcam::EventCam,
+    /// the change of view: blend, cut mask, look-back turn
+    cam_switch: boomcam::Switch,
+    /// the event camera's burnout view
+    event_dir: boomcam::EventDirector,
     boom_up: Option<Vec3>,
     look_back: bool,
     hide_player: bool,
@@ -729,6 +733,8 @@ impl App {
             boom: Default::default(),
             event_views: Default::default(),
             event_cam: Default::default(),
+            cam_switch: Default::default(),
+            event_dir: Default::default(),
             boom_up: None,
             look_back: false,
             hide_player: false,
@@ -1299,15 +1305,10 @@ impl App {
                     self.game.show_message(&msg);
                 }
             }
-            // (V)
-            kb::CAM_UP => {
-                self.cam_mode = (self.cam_mode + 1) % 6;
-                self.game.show_message(["FAR CAMERA", "MEDIUM CAMERA", "NEAR CAMERA", "DRIVER CAMERA", "BUMPER CAMERA", "CINEMATIC CAMERA"][self.cam_mode as usize]);
-            }
-            kb::CAM_DOWN if driving => {
-                self.cam_mode = (self.cam_mode + 5) % 6;
-                self.game.show_message(["FAR CAMERA", "MEDIUM CAMERA", "NEAR CAMERA", "DRIVER CAMERA", "BUMPER CAMERA", "CINEMATIC CAMERA"][self.cam_mode as usize]);
-            }
+            // (V) the previous / the next place of the original's list of five (sub_822B35E8;
+            // the HUD's camera bar shows the new one)
+            kb::CAM_UP => self.camera_button(true),
+            kb::CAM_DOWN if driving => self.camera_button(false),
             // (E, Q)
             kb::IN_ZONE => self.fire_ability = true,
             kb::ABILITY_NEXT => self.cycle_ability = true,
@@ -1360,6 +1361,23 @@ impl App {
             }
         }
         inp
+    }
+
+    /// CAM_UP (`up`) / CAM_DOWN (sub_822B35E8): the previous / the next of the five views.
+    /// Nothing while looking back or while a wreck is watched (the reverse and wipeout cameras
+    /// hold the buttons). The new view is the save's DEFAULT CAMERA as well (sub_822AFAB0).
+    fn camera_button(&mut self, up: bool) {
+        if self.look_back || self.wreck_timer > 0.0 {
+            return;
+        }
+        // (while the event camera runs CAM_UP only ends it and CAM_DOWN does nothing)
+        if self.event_dir.running() {
+            if up {
+                self.event_dir.leave();
+            }
+            return;
+        }
+        self.cam_mode = boomcam::next_view(self.cam_mode, up);
     }
 
     /// The pad as the original's poll has it (`mc4::PadState`).
@@ -1620,9 +1638,13 @@ impl App {
                 self.idle_time = 0.0;
             }
             if (a(10) || a(11)) && !woke {
-                self.cam_mode = (self.cam_mode + if a(10) { 1 } else { 5 }) % 6;
-                self.game.show_message(["FAR CAMERA", "MEDIUM CAMERA", "NEAR CAMERA", "DRIVER CAMERA", "BUMPER CAMERA", "CINEMATIC CAMERA"][self.cam_mode as usize]);
+                self.camera_button(a(10));
             }
+            // (CAM_PAN_*: the look-back camera's turn - sub_822B4C98, actions 22..25 down)
+            self.cam_switch.pan_in = (
+                crate::mc4::pad_down(&st, &live, "CAM_PAN_RIGHT") as i32 as f32 - crate::mc4::pad_down(&st, &live, "CAM_PAN_LEFT") as i32 as f32,
+                crate::mc4::pad_down(&st, &live, "CAM_PAN_UP") as i32 as f32 - crate::mc4::pad_down(&st, &live, "CAM_PAN_DOWN") as i32 as f32,
+            );
             if a(12) || a(13) {
                 if let Some(au) = self.audio.as_mut() {
                     if a(12) { au.next_track() } else { au.prev_track() }
@@ -1663,8 +1685,7 @@ impl App {
             self.flash = true;
         }
         if p(5) {
-            self.cam_mode = (self.cam_mode + 1) % 6;
-            self.game.show_message(["FAR CAMERA", "MEDIUM CAMERA", "NEAR CAMERA", "DRIVER CAMERA", "BUMPER CAMERA", "CINEMATIC CAMERA"][self.cam_mode as usize]);
+            self.camera_button(true);
         }
         if p(13) {
             if let Some(a) = self.audio.as_mut() {
@@ -5366,11 +5387,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let backing = render_state.gear < 0 && render_state.fwd_speed() < -2.0;
                         // (C looks behind)
                         self.look_back = (self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::LOOKBACK, |k| self.input.down(k)) || self.cam_mode == 9 || self.pad_look.1 < -0.6) && matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
-                        let (tune, rev) = match (self.look_back, set.reverse.as_ref()) {
-                            (true, Some(r)) => (r, true),
-                            (true, None) => (&set.views[0], true),
-                            _ => (&set.views[view], backing),
-                        };
+                        let (tune, rev) = boomcam::tune_for(&set, self.cam_mode, self.look_back, backing);
+                        // (a change of view blends or cuts, a look back cuts - mcPlayerCamera; the
+                        // CINEMATIC CAMERA option turns the look back of a moving car to one side)
+                        let cinematic = self.game.mc4.as_ref().map_or(true, |m| m.options.idle_camera);
+                        self.cam_switch.frame(&set, self.cam_mode, self.look_back, backing, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
                         let target = boomcam::BoomTarget {
                             pos: render_state.pos,
                             rot: render_state.rot,
@@ -5387,8 +5408,35 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 (None, _) => (13.0, 0.5, 1.0),
                             },
                             ability: self.ability.camera(),
+                            pan: self.cam_switch.pan_for(self.cam_mode, self.look_back),
                         };
                         let out = self.boom.update(tune, &target, dt);
+                        let out = self.cam_switch.blend.apply(&boomcam::BoomTarget { pan: (0.0, 0.0), ..target }, out, dt);
+                        // the burnout camera: with the CINEMATIC CAMERA option on and a chase view in
+                        // use, a burnout spun on the handbrake brings in the event camera's Burnout
+                        // view (sub_822B3BF0; boomcam::EventDirector)
+                        let allowed = cinematic
+                            && boomcam::VIEW_OF_PORT[(self.cam_mode as usize).min(5)] >= 2
+                            && !self.look_back
+                            && self.wreck_timer <= 0.0
+                            && !self.cam_switch.blend.active()
+                            && matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
+                        let inv = render_state.rot.inverse();
+                        let front_z = render_state.wheels.iter().map(|w| (inv * (w.world_pos - render_state.pos)).z).fold(f32::INFINITY, f32::min);
+                        let track_car = boomcam::TrackCar {
+                            pos: render_state.pos,
+                            rot: render_state.rot,
+                            vel: render_state.vel,
+                            speed: render_state.speed(),
+                            reverse_gear: render_state.gear < 0,
+                            steer: car.input.steer,
+                            front_z: if front_z.is_finite() { front_z } else { 0.0 },
+                        };
+                        let charge = render_state.veh.as_ref().map_or(0.0, |v| v.burn);
+                        let out = self.event_dir.frame(&data_dir, &car.model.name, allowed, if car.input.handbrake { 1.0 } else { 0.0 }, charge, render_state.ang_vel.y, &track_car, out, dt);
+                        if std::env::var("MCLA_EVENT_DEBUG").is_ok() && self.frame_no % 10 == 0 {
+                            log::info!("event cam: running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
+                        }
                         self.chase.pos = out.pos;
                         self.chase.look = out.look;
                         // (the right stick swings the camera around the car, up to a side view -
@@ -5408,7 +5456,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 if !boom_view {
                     self.boom.reset();
+                    self.cam_switch.reset();
+                    self.event_dir.reset();
                 }
+                // the HUD's camera bar shows the view in use (sub_8223D450: the list place; the
+                // overhead camera of the race editor would be 5) and a cut puts the mask up
+                self.game.hud_camera = boomcam::VIEW_OF_PORT[(self.cam_mode as usize).min(5)] as i32;
+                self.game.cut_mask = self.cam_switch.mask.update(dt);
                 // camera shake (mcCarCamShakeTune): a rumble that grows between two shares of the top
                 // speed, and a jolt on every impact - the harder, the stronger and longer
                 if boom_view {

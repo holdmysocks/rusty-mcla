@@ -1718,6 +1718,8 @@ pub struct FlashHud {
     splash_queue: [std::collections::VecDeque<(String, i32, f32)>; 3],
     /// a splash was posted to queue 1 (the movie then plays RACER_FOUND_MASTER)
     pub racer_found: bool,
+    /// the camera bar: the view last seen (-1 at the start, as the game's own copy)
+    camera_last: i32,
 }
 
 /// Splash slots of the HUD movie (`SplashTypes` 5, 4, 10 for slots 0..2; slot 3
@@ -1729,7 +1731,35 @@ pub const SPLASH_BOTTOM: usize = 2;
 impl FlashHud {
     pub fn load(data_dir: &str, shared: &UiShared) -> Option<FlashHud> {
         let movie = FlashMovie::load(data_dir, "resources/ui/hud/0x1f0e1cda.r27", shared)?;
-        Some(FlashHud { movie, countdown_shown: false, splash_queue: Default::default(), racer_found: false })
+        Some(FlashHud { movie, countdown_shown: false, splash_queue: Default::default(), racer_found: false, camera_last: -1 })
+    }
+
+    /// The camera bar at the bottom (`camera_indicator`). The game names the views once
+    /// (sub_8223D300: `_global.cameras[0..4]` = the string table's "Bumper", "POV", "Boom 1",
+    /// "Boom 2", "Boom 3" - BUMPER, COCKPIT, STATIC, CLASSIC, ACTION - and [5] the race
+    /// editor's OVERHEAD VIEW) and every frame (sub_8223D450) sets `max_cameraNumber` 4 and,
+    /// when the view is not the one of the frame before (and that one was known), writes the
+    /// new one into `cameraNumber` - unless a menu is up. The movie does the rest: the bar
+    /// comes in by a quarter of the way a frame, stands 45 frames and goes out the same way
+    /// (`cameraTimer`, `cur_cameraAlpha`), the name in `slot`, the place on the `meter`.
+    pub fn camera(&mut self, view: i32, menu: bool) {
+        // (after the movie's own first frame, which fills the list with its sample names)
+        let first = self.movie.string(crate::boomcam::VIEW_KEYS[0]);
+        let p = &mut self.movie.player;
+        if p.get_path("cameras.0").map_or(false, |v| v.to_string().to_string() != first) {
+            for (i, key) in crate::boomcam::VIEW_KEYS.iter().enumerate() {
+                let name = self.movie.string(key);
+                self.movie.player.set_path(&format!("cameras.{i}"), Value::str(&name));
+            }
+        }
+        let p = &mut self.movie.player;
+        p.set_global("max_cameraNumber", Value::Int(4));
+        if view != self.camera_last {
+            if self.camera_last != -1 && view != -1 && !menu {
+                p.set_global("cameraNumber", Value::Int(view));
+            }
+            self.camera_last = view;
+        }
     }
 
     /// The line under the speed (`d_selectedlevel_longname`; the movie's own sample
