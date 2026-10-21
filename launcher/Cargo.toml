@@ -2,7 +2,7 @@
 # so the result is one exe. See README.md and docs/LAUNCHER.md.
 [package]
 name = "rusty-mcla"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Rusty MCLA launcher: installs, updates and starts the unofficial PC port"
 license = "GPL-3.0-only"
