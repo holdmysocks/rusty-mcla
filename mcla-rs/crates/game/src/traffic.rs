@@ -2039,7 +2039,7 @@ impl Vehicles {
                     let semi = std::env::var("MCLA_TRAFFIC_RAM_SEMI").is_ok();
                     // (MCLA_TRAFFIC_RAM_PARKED: a held parked car standing still instead)
                     let parked = std::env::var("MCLA_TRAFFIC_RAM_PARKED").is_ok();
-                    let pick = (0..self.cars.len()).filter(|&i| if parked { self.cars[i].park_held && self.cars[i].state.vel.length() == 0.0 && self.cars[i].state.pos.distance(m) > 20.0 } else { self.cars[i].rail.as_ref().is_some_and(|r| (r.state == 1 && r.v > 2.0 && !semi && !r.ty.cab && !r.ty.trailer) || (semi && r.ty.trailer && r.state == 0 && !r.physical)) } && self.cars[i].state.pos.distance(m) < 150.0).min_by(|&a, &b| self.cars[a].state.pos.distance(m).total_cmp(&self.cars[b].state.pos.distance(m)));
+                    let pick = (0..self.cars.len()).filter(|&i| if parked { self.cars[i].park_held && self.cars[i].state.vel.length() == 0.0 && self.cars[i].state.pos.distance(m) > 20.0 } else { self.cars[i].rail.as_ref().is_some_and(|r| (r.state == 1 && r.v > 2.0 && !semi && !r.ty.cab && !r.ty.trailer) || (semi && r.ty.trailer && r.state == 0 && !r.physical)) } && self.cars[i].state.pos.distance(m) < if parked { 400.0 } else { 150.0 }).min_by(|&a, &b| self.cars[a].state.pos.distance(m).total_cmp(&self.cars[b].state.pos.distance(m)));
                     if let Some(k) = pick {
                         *last = self.clock;
                         let (tp, tr, tv) = (self.cars[k].state.pos, self.cars[k].state.rot, if parked { 0.0 } else if semi { self.cars[k].state.vel.length() } else { self.cars[k].rail.as_ref().unwrap().v });
