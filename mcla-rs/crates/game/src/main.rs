@@ -358,7 +358,6 @@ struct App {
     idle_time: f32,
     /// the idle camera: the replay's views of the standing car
     /// the idle camera: the car's replay files and the mount held
-    idle_cam: Option<(replay::CamTune, usize)>,
     /// the player's drive view in use this frame (`cam_mode`, or the replay director's;
     /// 255 when another camera is on)
     view_mode: u8,
@@ -368,8 +367,6 @@ struct App {
     replay_prerace: Option<(Vec3, f32, String)>,
     /// seconds since VIEW REPLAY (test hook MCLA_REPLAY_SHOTS)
     replay_wall: f32,
-    idle_view: Option<(String, Option<(Vec3, Vec3, f32)>)>,
-    idle_blend: f32,
     /// camera shake: time left and length of the running impact shake, its strength, the clock
     /// of the noise, and the impact value seen last frame
     shake_left: f32,
@@ -727,13 +724,10 @@ impl App {
             wipe_view: None,
             wipe_tune: [1.25, 0.1, 5.0, 10.0],
             idle_time: 0.0,
-            idle_cam: None,
             view_mode: 0,
             replay_shot_t: f32::MIN,
             replay_prerace: None,
             replay_wall: 0.0,
-            idle_view: None,
-            idle_blend: 0.0,
             shake_left: 0.0,
             shake_len: 0.0,
             shake_amp: 0.0,
@@ -1647,7 +1641,7 @@ impl App {
             // (the idle camera is ended by the pad - sub_822B3BF0, its Idle view - and the press of
             // CAM_UP / CAM_DOWN that ends it does not change the view as well: sub_822B35E8 runs
             // after it and passes the press over while that camera goes)
-            let woke = self.idle_cam.is_some() && crate::mc4::pad_wakes_idle(&st, &live);
+            let woke = self.event_dir.idle() && crate::mc4::pad_wakes_idle(&st, &live);
             if woke {
                 self.idle_time = 0.0;
             }
@@ -5343,27 +5337,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     _ => None,
                 };
                 let replay_view = shot.and_then(|s| s.view());
-                // The idle camera: left alone in the cruise the game cuts between close shots of
-                // the car, the HUD away, until a button is touched (`ref/idle_garage_marker.png`
-                // and two more frames of step 103: a front quarter, the door, the flank). Port:
-                // the car's replay cameras. approx.: it starts after twenty seconds (the
-                // original's time was not measured).
-                let idle_on = self.idle_time > std::env::var("MCLA_IDLE_CAM").ok().and_then(|v| v.parse().ok()).unwrap_or(10.0) && self.game.flash_hud.is_some() && self.game.mode == Mode::FreeRoam && self.game.replay.is_none() && self.game.tip.is_none() && self.game.tutorial_box.is_none() && !self.game.show_map && self.game.starter_pick.is_none() && self.cine.playing.is_none() && self.input.keys.is_empty();
-                // (CAMERA OPTIONS' "Idle Camera", off: none)
-                let idle_on = idle_on && self.game.mc4_idle_camera();
-                if idle_on && self.idle_cam.is_none() {
-                    let tune = replay::CamTune::load(&self.opt.data_dir, &car.model.name.to_ascii_lowercase());
-                    // (one shot, held: 148 frames over four minutes of the recomp's idle camera
-                    // are the same view of the door - `s11/tn_tiles.png`)
-                    self.idle_cam = Some((tune, (self.frame_no as usize / 7) % 6));
-                } else if !idle_on {
-                    self.idle_cam = None;
-                }
-                self.game.idle_cam = self.idle_cam.is_some();
-                let replay_view = match self.idle_cam.as_ref() {
-                    Some((tune, k)) if replay_view.is_none() && replay_drive.is_none() => Some(replay::mount_view(tune, &car_view, *k)),
-                    _ => replay_view,
-                };
                 // (eye, look, fov) and the camera's own up
                 let (replay_view, replay_up) = match replay_view {
                     Some((eye, look, up, fov)) => (Some((eye, look, fov)), Some(up)),
@@ -5560,7 +5533,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             front_z: if front_z.is_finite() { front_z } else { 0.0 },
                         };
                         let charge = render_state.veh.as_ref().map_or(0.0, |v| v.burn);
-                        let out = self.event_dir.frame(&data_dir, &car.model.name, allowed, if car.input.handbrake { 1.0 } else { 0.0 }, charge, render_state.ang_vel.y, &track_car, out, dt);
+                        let out = self.event_dir.frame(&data_dir, &car.model.name, allowed, if car.input.handbrake { 1.0 } else { 0.0 }, charge, render_state.ang_vel.y, self.idle_time, &track_car, out, dt);
                         if std::env::var("MCLA_EVENT_DEBUG").is_ok() && self.frame_no % 10 == 0 {
                             log::info!("event cam: running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
                         }
@@ -5631,45 +5604,27 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.chase.pos += (side * ny - up * nx) * (amp * 0.02);
                     }
                 }
-                // left standing, the camera wanders round to the car's "Idle" view (and back at a touch)
+                // the seconds the car is left alone: the event camera's Idle view comes after camFX
+                // IdleDelayTime (60 s; boomcam::EventDirector) and goes at a touch (approx.: the
+                // original's own idle clock was not read; here no pedal, steering, handbrake, key or
+                // movement)
                 {
-                    let busy = car.input.throttle > 0.05 || car.input.brake > 0.05 || car.input.steer.abs() > 0.05 || self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::HANDBRAKE, |k| self.input.down(k)) || render_state.speed() > 0.5;
+                    let busy = car.input.throttle > 0.05 || car.input.brake > 0.05 || car.input.steer.abs() > 0.05 || self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::HANDBRAKE, |k| self.input.down(k)) || !self.input.keys.is_empty() || render_state.speed() > 0.5;
                     if self.frame_no % 120 == 0 && std::env::var("MCLA_IDLE_DEBUG").is_ok() {
-                        log::info!("idle: time {:.1} busy {} (thr {:.2} brk {:.2} steer {:.2} hb {} speed {:.2}) boom {} mode ok {} menu {} blend {:.2}", self.idle_time, busy, car.input.throttle, car.input.brake, car.input.steer, car.input.handbrake, render_state.speed(), boom_view, self.game.mode == Mode::FreeRoam, self.game.in_menu(), self.idle_blend);
+                        log::info!("idle: time {:.1} busy {} speed {:.2} boom {} idle view {}", self.idle_time, busy, render_state.speed(), boom_view, self.event_dir.idle());
                     }
-                    if busy || (!boom_view && self.idle_cam.is_none()) || self.game.mode != Mode::FreeRoam || self.game.in_menu() || self.wreck_timer > 0.0 {
+                    if busy || !boom_view || self.game.mode != Mode::FreeRoam || self.game.in_menu() || self.wreck_timer > 0.0 {
                         self.idle_time = 0.0;
                     } else {
                         self.idle_time += dt;
                     }
-                    if self.idle_view.as_ref().map_or(true, |(n, _)| *n != car.model.name) {
-                        let v = boomcam::event_view(&self.opt.data_dir, &car.model.name, "Idle").or_else(|| boomcam::event_view(&self.opt.data_dir, "vp_vw_golf_83", "Idle"));
-                        self.idle_view = Some((car.model.name.clone(), v));
-                    }
-                    if let Some((_, Some((track, offset, blend)))) = self.idle_view.as_ref() {
-                        let want = if self.idle_time > 6.0 { 1.0 } else { 0.0 };
-                        let rate = dt / if want > 0.5 { blend.max(0.2) * 2.0 } else { 0.5 };
-                        self.idle_blend += (want - self.idle_blend).clamp(-rate, rate);
-                        if self.idle_blend > 0.0 {
-                            let k = self.idle_blend * self.idle_blend * (3.0 - 2.0 * self.idle_blend);
-                            let f = render_state.forward();
-                            let yaw = glam::Quat::from_rotation_y((-f.x).atan2(-f.z));
-                            let at = render_state.pos + yaw * *track;
-                            // (swing round the car rather than cut through it)
-                            let from = self.chase.pos - at;
-                            let to = yaw * *offset;
-                            let (a0, a1) = (from.x.atan2(from.z), to.x.atan2(to.z));
-                            let mut da = a1 - a0;
-                            if da > std::f32::consts::PI { da -= std::f32::consts::TAU; }
-                            if da < -std::f32::consts::PI { da += std::f32::consts::TAU; }
-                            let ang = a0 + da * k;
-                            let r = Vec3::new(from.x, 0.0, from.z).length() * (1.0 - k) + Vec3::new(to.x, 0.0, to.z).length() * k;
-                            let h = from.y * (1.0 - k) + to.y * k;
-                            self.chase.pos = at + Vec3::new(ang.sin() * r, h, ang.cos() * r);
-                            self.chase.look = self.chase.look.lerp(at, k);
-                            self.cam.fov_y = self.cam.fov_y + (45f32.to_radians() - self.cam.fov_y) * k;
+                    if let Ok(v) = std::env::var("MCLA_IDLE_CAM") {
+                        // (test hook: the idle time starts at this many seconds short of the delay)
+                        if self.idle_time > 0.0 && self.idle_time < dt * 1.5 {
+                            self.idle_time = (60.0 - v.parse::<f32>().unwrap_or(60.0)).max(0.0);
                         }
                     }
+                    self.game.idle_cam = self.event_dir.idle();
                 }
                 // a wreck is watched from the car's "Damageout" view, blended in over its time
                 if let (true, Some((track, offset, blend))) = (self.wreck_timer > 0.0, self.wipe_view) {
@@ -6162,7 +6117,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (the driver's camera: the original's POV camera sets G+122 of the car it follows - sub_822A9670 -
         // and its windows take the in-car glass program; damage_map_rule.md Part C 6. As the cockpit's
         // headless driver: not while looking back, in a replay or the idle camera.)
-        self.vehicles.interior_glass = self.view_mode == 3 && !self.look_back && self.idle_cam.is_none();
+        self.vehicles.interior_glass = self.view_mode == 3 && !self.look_back && !self.event_dir.idle();
         // (m_NFLFade for the night fill light the traffic cars add to their ambient - fillmap.rs)
         fillmap::set_fade(self.sky_now().tod.map_or(0.0, |t| t.nfl));
         // (the traffic cars' lamp states and glow levels, for the cars drawn now - vehicles.rs
@@ -6938,7 +6893,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     drivers::Seat { id: i, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str() }
                 })
                 .collect();
-            self.drivers.headless = self.view_mode == 3 && !self.look_back && self.idle_cam.is_none();
+            self.drivers.headless = self.view_mode == 3 && !self.look_back && !self.event_dir.idle();
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
         }
         // --- main pass ----------------------------------------------------------
