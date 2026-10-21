@@ -11,7 +11,7 @@
 use super::Vehicles;
 use crate::physics::collision::WorldCollider;
 use glam::{Quat, Vec2, Vec3};
-use mcla_formats::rage::navsys::{NavSys, DEFAULT_ROAD_SPEED};
+use mcla_formats::rage::navsys::{LaneCurve, NavSys, DEFAULT_ROAD_SPEED};
 
 const MPH: f32 = 0.44704;
 /// The slowest a car is ever asked to drive (sub_827A2B38: 10 mph).
@@ -460,6 +460,10 @@ fn csc(p0: Vec3, h0: Vec3, p1: Vec3, h1: Vec3, rr: f32, max_turn: f32) -> Vec<(f
         for s1 in [1.0f32, -1.0] {
             let c0 = a + nrm(phi0) * (s0 * rr);
             let c1 = b + nrm(phi1) * (s1 * rr);
+            // (sub_8279D3A8: no way when the target lies inside the start circle)
+            if (c0 - b).length_squared() < rr * rr {
+                continue;
+            }
             let w = c1 - c0;
             let dd = w.length();
             let alpha = w.y.atan2(w.x);
@@ -477,7 +481,9 @@ fn csc(p0: Vec3, h0: Vec3, p1: Vec3, h1: Vec3, rr: f32, max_turn: f32) -> Vec<(f
             if th0 + th1 > max_turn {
                 continue;
             }
-            out.push((rr * (th0 + th1) + line, sample_csc(p0, p1, c0, s0, phi0, th0, c1, s1, psi, th1, rr)));
+            // (its length, sub_8279CB68: the arcs and the line between the tangent points, which
+            // take the start's and the end's heights)
+            out.push((rr * (th0 + th1) + (line * line + (p1.y - p0.y) * (p1.y - p0.y)).sqrt(), sample_csc(p0, p1, c0, s0, phi0, th0, c1, s1, psi, th1, rr)));
         }
     }
     out
@@ -594,6 +600,8 @@ pub struct Rider {
     /// 8 + 4U s)
     pub born: f32,
     pub life: f32,
+    /// a race path's car on the path's rails (state 9; racescript.rs, `step_route`)
+    pub route: Option<Box<Route>>,
 }
 
 impl Rider {
@@ -640,6 +648,7 @@ impl Rider {
             lock: Lock::default(),
             born: 0.0,
             life: 8.0,
+            route: None,
         };
         r.place(nav, link, s);
         r.life = 8.0 + 4.0 * r.rand();
@@ -1857,7 +1866,7 @@ impl Vehicles {
                     half_len: hl,
                     half_wid: hw,
                     on,
-                    railed: r.is_some_and(|r| matches!(r.state, 6..=8)),
+                    railed: r.is_some_and(|r| matches!(r.state, 6..=9)),
                     player: c.is_player,
                     ambient: r.is_some() || c.parked.is_some(),
                     active: r.is_some_and(|r| r.state == 4) || (r.is_none() && c.parked.is_none()),
@@ -1968,6 +1977,8 @@ impl Vehicles {
                         }
                     }
                 }
+                // a race path's car on the path's rails
+                9 => step_route(r, &env, i, half, dt),
                 _ => {
                     // on a junction's own lane: the junction is occupied
                     let l = &nav.links[r.link];
@@ -2296,7 +2307,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0 };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
@@ -2920,6 +2931,11 @@ impl Vehicles {
         for _ in 0..30 {
             let i = amb[(self.rand() * amb.len() as f32) as usize % amb.len()];
             let c = &self.cars[i];
+            // (a layout item's car is left to the parked unspawner's item branch: sub_826F4390
+            // skips a car whose +40 is set)
+            if c.item.is_some() {
+                continue;
+            }
             let pos = c.state.pos;
             if seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) {
                 continue;
@@ -2946,5 +2962,825 @@ impl Vehicles {
                 return;
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// The races' ambient paths (`*_AmbientData.xml`, mcAmbientPath; decoded 2026-10-21,
+// work/people2/re/ag16_report.txt A1 - A6, the vertex snap work/people2/racepaths/report.txt):
+// path init (sub_827393B8: the vertices snapped onto lanes, the curve rail, the join rail, the
+// spawn matrix) and the car that follows the path (sub_826DF430 with the path's params; its
+// behaviour route sub_8279FA00): the curve rail, the join rail, then the path's lane as
+// ordinary traffic, at most fPathMaxSpeed for its whole life.
+
+/// A path vertex looks for a lane within 30 m (sub_82738FB8: the vertex's w, [0x82006BF0]).
+pub const SNAP_RADIUS: f32 = 30.0;
+
+/// The nearest point of a curve to `p` (sub_825875F0): `n` chords at t = k / n, the one whose
+/// own nearest point is nearest gives the phase bracket [ta, tb]; the side whose third point
+/// (ta + h or tb - h, h = (tb - ta) / 3) is nearer is taken first, then `iters` halvings, each
+/// keeping the end that has come nearest so far (ties: the lower end first, then the upper).
+/// Returns (phase, squared distance, point) as the last halving wrote them.
+pub fn curve_nearest(c: &LaneCurve, p: Vec3, n: usize, iters: usize) -> (f32, f32, Vec3) {
+    let pt = |t: f32| c.eval(t).0;
+    let d2 = |q: Vec3| (p - q).length_squared();
+    let mut prev = pt(0.0);
+    let mut tprev = 0.0f32;
+    let step = 1.0 / n.max(1) as f32;
+    let (mut best, mut a, mut b, mut ta, mut tb) = (f32::MAX, prev, prev, 0.0f32, 1.0f32);
+    for k in 1..=n {
+        let t = k as f32 * step;
+        let q = pt(t);
+        let d = q - prev;
+        let len2 = d.length_squared();
+        let u = if len2 == 0.0 { 0.0 } else { ((p - prev).dot(d) / len2).clamp(0.0, 1.0) };
+        let e = d2(prev + d * u);
+        if e < best {
+            best = e;
+            a = prev;
+            b = q;
+            ta = tprev;
+            tb = t;
+        }
+        prev = q;
+        tprev = t;
+    }
+    let h = (tb - ta) * 0.333_333_34;
+    let (mut fa, mut fb) = (d2(a), d2(b));
+    let mut side = d2(pt(ta + h)) < d2(pt(tb - h));
+    let mut least = f32::MAX;
+    let mut out = (0.0f32, 0.0f32, Vec3::ZERO);
+    for _ in 0..iters {
+        let mid = (tb + ta) * 0.5;
+        if side {
+            out = (ta, fa, a);
+            tb = mid;
+            b = pt(mid);
+            fb = d2(b);
+        } else {
+            out = (tb, fb, b);
+            ta = mid;
+            a = pt(mid);
+            fa = d2(a);
+        }
+        if fa <= least {
+            least = fa;
+            side = true;
+        }
+        if fb <= least {
+            least = fb;
+            side = false;
+        }
+    }
+    out
+}
+
+/// A lane's box (lane +16 / +32: here the box of its control points, which holds its curve),
+/// its stored length (+0c, the curve's: sub_82244E10) and its flags (+4).
+struct LaneBox {
+    min: Vec3,
+    max: Vec3,
+    len: f32,
+    flags: u32,
+}
+
+/// The lanes' boxes, made once (for `rail_nav`'s curves).
+fn lane_boxes(nav: &NavSys) -> &'static [LaneBox] {
+    static B: std::sync::OnceLock<Vec<LaneBox>> = std::sync::OnceLock::new();
+    B.get_or_init(|| {
+        let mut flags = vec![0u32; nav.curves.len()];
+        for l in &nav.links {
+            if let Some(f) = flags.get_mut(l.lane) {
+                *f = l.flags;
+            }
+        }
+        nav.curves
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let (mut mn, mut mx) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                for p in &c.pts {
+                    mn = mn.min(*p);
+                    mx = mx.max(*p);
+                }
+                LaneBox { min: mn, max: mx, len: c.length(), flags: flags[i] }
+            })
+            .collect()
+    })
+}
+
+/// A lane's answer to a point (lane slot 3 sub_82245388: the 48-byte record {point, tangent,
+/// lane, squared distance, phase, valid}).
+#[derive(Clone, Copy, Debug)]
+pub struct LaneHit {
+    pub lane: usize,
+    pub t: f32,
+    pub d2: f32,
+    pub point: Vec3,
+    /// the curve's derivative there (sub_82586BC8)
+    pub dir: Vec3,
+}
+
+/// The lane nearest to `p` within `r` (sub_8224A868 -> sub_8224A4F8 with no heading): the lane
+/// quadtree's nodes whose x / z box comes within r (sub_82246BF8 / sub_82246B78), their lanes with
+/// flags & 1 whose box comes within r (lane slot 5 sub_82244DC0) asked for their nearest curve
+/// point (slot 3: sub_825875F0 with 8 chords for a lane of 450 m or more, else 4, and 10 halvings),
+/// valid when the squared distance is under r^2; the least squared distance wins (the first of
+/// equals). Also the number of valid answers (the original keeps 64 at most).
+pub fn snap_to_lane(nav: &NavSys, p: Vec3, r: f32) -> (Option<LaneHit>, usize) {
+    let boxes = lane_boxes(nav);
+    let mut best: Option<LaneHit> = None;
+    let mut hits = 0;
+    for (lane, b) in boxes.iter().enumerate() {
+        if b.flags & 1 == 0 {
+            continue;
+        }
+        let o = (b.min - p).max(p - b.max).max(Vec3::ZERO);
+        if !(r * r > o.length_squared()) {
+            continue;
+        }
+        let c = &nav.curves[lane];
+        let n = if b.len >= 450.0 { 8 } else { 4 };
+        let (t, d2, point) = curve_nearest(c, p, n, 10);
+        if !(d2 < r * r) {
+            continue;
+        }
+        hits += 1;
+        if best.as_ref().map_or(true, |x| d2 < x.d2) {
+            best = Some(LaneHit { lane, t, d2, point, dir: c.eval(t).1 });
+        }
+    }
+    (best, hits)
+}
+
+/// The curve rail of a path (sub_827383B8 -> sub_825867F8 -> sub_82587A78; class sub_82737E80,
+/// flags 0x801): a clamped B-spline over `cps`, degree min(3, k - 1) (at least 1), the knots
+/// handed over p zeros, 1 .. k - p - 1, then k - p repeated p times, with one more knot put
+/// before and after (K0 = K1 - (K2 - K1), the last = the one before + its step; with four
+/// knots both copied); TRange = K[count - p - 1] = k - p, TMax = TRange - 1e-4.
+pub fn path_curve(cps: &[Vec3]) -> LaneCurve {
+    let k = cps.len();
+    let p = (k as i32 - 1).clamp(1, 3) as usize;
+    let nk = p + k - 1;
+    let mut given = vec![0.0f32; nk];
+    let mut v = 1.0f32;
+    let mut i = p;
+    while i + p < nk {
+        given[i] = v;
+        v += 1.0;
+        i += 1;
+    }
+    for x in given.iter_mut().skip(i) {
+        *x = v;
+    }
+    let count = k + p + 1;
+    let mut kn = vec![0.0f32; count];
+    kn[1..=nk].copy_from_slice(&given);
+    let shift = kn[p];
+    for x in kn[1..=nk].iter_mut() {
+        *x -= shift;
+    }
+    kn[p] = 0.0;
+    if count > 4 {
+        kn[0] = kn[1] - (kn[2] - kn[1]);
+        kn[count - 1] = kn[count - 2] + (kn[count - 2] - kn[count - 3]);
+    } else if count == 4 {
+        kn[0] = kn[1];
+        kn[3] = kn[2];
+    }
+    let t_range = kn[count - p - 1];
+    LaneCurve { degree: p as u8, pts: cps.to_vec(), knots: kn, t_range, t_max: t_range - 1e-4 }
+}
+
+/// A race path after its init (sub_827393B8).
+#[derive(Clone, Debug, Default)]
+pub struct PathRails {
+    /// +32: the vertices, those that found a lane moved onto it
+    pub snapped: Vec<Vec3>,
+    /// +64 / +68: the lane the last vertex found and the phase there; +48 that lane's flat
+    /// direction there
+    pub lane: Option<(usize, f32)>,
+    pub lane_dir: Vec3,
+    /// +176: the curve rail
+    pub curve: Option<LaneCurve>,
+    /// +180: the join rail onto the lane (arc - line - arc, points every half metre) and its
+    /// heading at the start
+    pub join: Option<Vec<Vec3>>,
+    pub join_dir: Vec3,
+    /// the spawn matrix after init (sub_82738E48): its place and z row
+    pub spawn: Vec3,
+    pub row2: Vec3,
+    /// both rails' speed: fPathMaxSpeed x 0.44704 m/s (sub_82738A10)
+    pub speed: f32,
+    /// (diagnostics) the most valid lane answers a vertex had; the original keeps 64
+    pub hits: usize,
+}
+
+/// Path init (sub_827393B8). `snap`: bSnapToRails per vertex (a single-vertex path that is not
+/// parked snaps its vertex); `min_turn`: the TypeName type's fMinTurningRadius (type +160; no
+/// type, no join rail); `spawn` / `row2`: the file's SpawnMtx; `max_mph`: fPathMaxSpeed.
+#[allow(clippy::too_many_arguments)]
+pub fn path_rails(nav: &NavSys, verts: &[Vec3], snap: &[bool], parked: bool, min_turn: Option<f32>, spawn: Vec3, row2: Vec3, max_mph: f32) -> PathRails {
+    let n = verts.len();
+    let mut flags: Vec<bool> = (0..n).map(|i| snap.get(i).copied().unwrap_or(false)).collect();
+    if !parked && n == 1 && !flags[0] {
+        flags[0] = true;
+    }
+    let mut out = PathRails { speed: max_mph * 0.44704, spawn, row2, ..Default::default() };
+    // sub_82738FB8: each flagged vertex onto its nearest lane; the last one keeps the lane
+    for i in 0..n {
+        let mut q = verts[i];
+        if flags[i] {
+            let (hit, hits) = snap_to_lane(nav, verts[i], SNAP_RADIUS);
+            out.hits = out.hits.max(hits);
+            if let Some(h) = hit {
+                q = h.point;
+                if i + 1 == n {
+                    out.lane = Some((h.lane, h.t));
+                    out.lane_dir = Vec3::new(h.dir.x, 0.0, h.dir.z).normalize_or_zero();
+                }
+            }
+        }
+        out.snapped.push(q);
+    }
+    // the join rail (sub_82738558): the last vertex flagged and the one before not; from the
+    // vertex before along the file's last step (two vertices: the spawn matrix's -z) to the last
+    // along the lane; the shortest of the four arc - line - arc ways at fMinTurningRadius.
+    // (With no lane found the lane's direction is unset: no rail is made here.)
+    if n >= 2 && flags[n - 1] && !flags[n - 2] {
+        if let (Some(rr), Some(_)) = (min_turn, out.lane) {
+            let d = if n > 2 { verts[n - 2] - verts[n - 3] } else { -row2 };
+            let h0 = Vec3::new(d.x, 0.0, d.z).normalize_or_zero();
+            let (p0, p1) = (out.snapped[n - 2], out.snapped[n - 1]);
+            if let Some((_, pts)) = csc(p0, h0, p1, out.lane_dir, rr, f32::INFINITY).into_iter().min_by(|a, b| a.0.total_cmp(&b.0)) {
+                out.join = Some(pts);
+                out.join_dir = h0;
+            }
+        }
+    }
+    // the curve rail: over the snapped vertices (the last left to the join rail); none for a
+    // single vertex or two whose first is not flagged and the second is
+    if n >= 2 && !(n == 2 && !flags[0] && flags[1]) {
+        let k = out.snapped.len() - out.join.is_some() as usize;
+        if k >= 2 {
+            out.curve = Some(path_curve(&out.snapped[..k]));
+        }
+    }
+    // the spawn matrix: at the first snapped vertex, its z row against the first rail's flat
+    // tangent at its start (the curve, the join rail, else the lane at its phase)
+    out.spawn = out.snapped.first().copied().unwrap_or(spawn);
+    let tan = match (&out.curve, &out.join, out.lane) {
+        (Some(c), _, _) => Some(c.eval(0.0).1),
+        (None, Some(_), _) => Some(out.join_dir),
+        (None, None, Some((l, t))) => nav.curves.get(l).map(|c| c.eval(t).1),
+        _ => None,
+    };
+    if let Some(t) = tan {
+        let f = Vec3::new(t.x, 0.0, t.z).normalize_or_zero();
+        if f != Vec3::ZERO {
+            out.row2 = -f;
+        }
+    }
+    out
+}
+
+impl PathRails {
+    /// The heading of the spawn matrix (sub_8278F690: atan2(z row x, z row z) in (0, 2 pi]).
+    pub fn heading(&self) -> f32 {
+        let h = self.row2.x.atan2(self.row2.z);
+        if h <= 0.0 { h + std::f32::consts::TAU } else { h }
+    }
+
+    /// The follower's route (sub_8279FA00): more than one vertex - the curve rail, then the
+    /// join rail, at phase 0 - then the path's lane at its phase; one vertex: the lane at once.
+    /// None without a lane.
+    pub fn route(&self, path: usize) -> Option<Route> {
+        let (lane, lane_t) = self.lane?;
+        let mut rails = Vec::new();
+        if self.snapped.len() > 1 {
+            if let Some(c) = &self.curve {
+                let n = (c.length().ceil() as usize).clamp(8, 800);
+                let pts: Vec<(Vec3, f32)> = (0..=n).map(|k| {
+                    let t = k as f32 / n as f32;
+                    (c.eval(t).0, t)
+                }).collect();
+                rails.push(RouteRail::Curve(c.clone(), pts));
+            }
+            if let Some(j) = &self.join {
+                rails.push(RouteRail::Turn(Path::new(j.clone(), self.speed, None)));
+            }
+        }
+        Some(Route { path, rails, i: 0, t: 0.0, ds: 0.0, speed: self.speed, lane, lane_t })
+    }
+}
+
+/// A rail of a path's route: the curve rail (with points along it for the car-ahead search) or
+/// the join rail.
+#[derive(Clone, Debug)]
+pub enum RouteRail {
+    Curve(LaneCurve, Vec<(Vec3, f32)>),
+    Turn(Path),
+}
+
+/// A race path car's route over the path's rails (behaviour +468 the path).
+#[derive(Clone, Debug)]
+pub struct Route {
+    /// the path's index in the race's array
+    pub path: usize,
+    rails: Vec<RouteRail>,
+    i: usize,
+    /// the phase on a curve rail (follower +176) and its curve speed (+180, 0: taken anew)
+    t: f32,
+    ds: f32,
+    /// the rails' speed (m/s)
+    pub speed: f32,
+    /// the lane it goes on along and where (path +64 / +68)
+    pub lane: usize,
+    pub lane_t: f32,
+}
+
+impl Route {
+    /// The rail's index and the phase along it (0 .. 1).
+    fn at(&self) -> (usize, f32) {
+        let f = match &self.rails[self.i] {
+            RouteRail::Curve(..) => self.t,
+            RouteRail::Turn(p) => p.s / p.len().max(1e-3),
+        };
+        (self.i, f)
+    }
+
+    /// The point and heading where the car is.
+    fn peek(&self) -> (Vec3, Vec3) {
+        match &self.rails[self.i] {
+            RouteRail::Curve(c, _) => {
+                let (p, d) = c.eval(self.t);
+                (p, d.normalize_or(Vec3::NEG_Z))
+            }
+            RouteRail::Turn(p) => p.at(p.s),
+        }
+    }
+
+    /// The pose the follower stores (sub_827986C0 on a curve rail: the curve speed +180 the mean
+    /// of |dP/dt| here and the last value).
+    fn pose(&mut self) -> (Vec3, Vec3) {
+        let (p, d, sp) = match &self.rails[self.i] {
+            RouteRail::Curve(c, _) => {
+                let (p, d) = c.eval(self.t);
+                (p, d.normalize_or(Vec3::NEG_Z), Some(d.length()))
+            }
+            RouteRail::Turn(p) => {
+                let (q, d) = p.at(p.s);
+                (q, d, None)
+            }
+        };
+        if let Some(sp) = sp {
+            self.ds = if self.ds > 0.0 { (sp + self.ds) * 0.5 } else { sp };
+        }
+        (p, d)
+    }
+
+    /// Rail `k` as segments (from where the car is when `k` is its rail).
+    fn segs(&self, k: usize) -> Vec<(Vec3, Vec3)> {
+        let here = k == self.i;
+        match &self.rails[k] {
+            RouteRail::Curve(_, pts) => pts.windows(2).filter(|w| !here || w[1].1 > self.t).map(|w| (w[0].0, w[1].0)).collect(),
+            RouteRail::Turn(p) => p.pts.windows(2).zip(p.cum.iter().skip(1)).filter(|(_, &c)| !here || c > p.s).map(|(w, _)| (w[0], w[1])).collect(),
+        }
+    }
+}
+
+/// The phase on a lane: the link holding it and the metres along that link.
+fn lane_link_at(nav: &NavSys, lanes: &Lanes, lane: usize, t: f32) -> Option<(usize, f32)> {
+    let ls = lanes.links.get(lane)?;
+    for (i, &k) in ls.iter().enumerate() {
+        let l = &nav.links[k];
+        if t <= l.t[1] || i + 1 == ls.len() {
+            return Some((k, l.s_at(t)));
+        }
+    }
+    None
+}
+
+/// One frame of a race path's car on the path's rails (state 9): the follower as on a lane
+/// (sub_82798F18; the phase by distance over the curve speed on the curve rail, by arc length on
+/// the join rail), wanted speed max(10 mph, rail speed + offset) (sub_827A2B38), the car ahead
+/// along the rest of this rail and the next (the next path rail or the lane). Past the last rail
+/// the rest of the distance goes on along the path's lane from its phase (the lane-end turn
+/// sub_8279FBB0 returns the route's lane), then ordinary traffic (state 1). (The stop-line and
+/// slower-lane entries are not made on these rails, as on the other run-time rails here.)
+pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -> (Vec3, Vec3) {
+    let nav = env.nav;
+    r.off_timer -= dt;
+    if r.off_timer <= 0.0 {
+        r.draw_offset();
+    }
+    let ahead = {
+        let rt = r.route.as_ref().unwrap();
+        let (pos, fwd) = rt.peek();
+        let mut rails = vec![rt.segs(rt.i)];
+        let (next_lane, next_start) = if rt.i + 1 < rt.rails.len() {
+            rails.push(rt.segs(rt.i + 1));
+            (None, None)
+        } else {
+            rails.push(lane_segs(nav, env.lanes, rt.lane));
+            (Some(rt.lane), nav.curves.get(rt.lane).map(|c| c.eval(rt.lane_t).0))
+        };
+        find_ahead(nav, me, pos, fwd, r.ty.width.max(1.6), &rails, (None, next_lane), next_start, env.others)
+    };
+    let want = (r.route.as_ref().unwrap().speed + r.off).max(MIN_WANT);
+    let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, dt);
+    r.slot = chosen;
+    r.kept = None;
+    if env.hold {
+        a = -r.ty.max_decel;
+    }
+    integrate(r, a, dt);
+    let mut d = r.v * dt;
+    if d > 0.0 {
+        loop {
+            let rt = r.route.as_mut().unwrap();
+            let i = rt.i;
+            match &mut rt.rails[i] {
+                RouteRail::Curve(c, _) => {
+                    if rt.ds <= 0.0 {
+                        rt.ds = c.speed(rt.t);
+                    }
+                    let t0 = rt.t;
+                    let t1 = mcla_formats::rage::navsys::LaneCurve::advance(t0, d, rt.ds);
+                    if t1 <= 1.0 {
+                        rt.t = t1;
+                        break;
+                    }
+                    d = (t1 - 1.0) * d / (t1 - t0).max(1e-6);
+                }
+                RouteRail::Turn(p) => {
+                    p.s += d;
+                    if p.s <= p.len() {
+                        break;
+                    }
+                    d = p.s - p.len();
+                    p.s = p.len();
+                }
+            }
+            if rt.i + 1 < rt.rails.len() {
+                // the next rail, from its start (its curve speed taken anew)
+                rt.i += 1;
+                rt.t = 0.0;
+                rt.ds = 0.0;
+                if let RouteRail::Turn(p) = &mut rt.rails[rt.i] {
+                    p.s = 0.0;
+                }
+                continue;
+            }
+            // onto the path's lane at its phase: ordinary traffic from here
+            let (lane, lt) = (rt.lane, rt.lane_t);
+            if std::env::var_os("MCLA_RACEPATH_LOG").is_some() {
+                log::info!("race path {}: car {} at the end of its rails, onto lane {lane} at {lt:.3} at {:.1} m/s", rt.path, r.id, r.v);
+            }
+            r.route = None;
+            if let Some((link, _)) = lane_link_at(nav, env.lanes, lane, lt) {
+                r.link = link;
+                r.set_phase(nav, env.lanes, lt);
+                let c = &nav.curves[lane];
+                r.ds = c.speed(lt);
+                r.ds_lane = lane;
+                if d > 0.0 {
+                    let t = mcla_formats::rage::navsys::LaneCurve::advance(lt, d, r.ds).min(1.0);
+                    r.set_phase(nav, env.lanes, t);
+                }
+            }
+            r.state = 1;
+            r.on = [false; 3];
+            r.choose_next(nav);
+            return r.pose(nav);
+        }
+    }
+    r.route.as_mut().unwrap().pose()
+}
+
+/// What became of a race path car's request.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PathSpawn {
+    Done,
+    /// no ground under the spawn matrix yet (the request waits up to its 3 s, sub_826E0438)
+    NoGround,
+    /// not made, or taken out at once (sub_826D50E8 reason 17)
+    Removed,
+}
+
+impl Vehicles {
+    /// The shared random numbers (the MWC at 0x82860890) for the race script's draws.
+    pub fn shared_mwc(&mut self) -> &mut super::parked::Mwc {
+        &mut self.park_rng
+    }
+
+    /// A type for a random ambient path (sub_82738B08 -> sub_826DA8D0 on the traffic list,
+    /// S +8556): the focus district's list at this hour among the loaded types of bound group
+    /// `group`, taxis only when `taxis`.
+    pub fn path_type_draw(&mut self, root: &std::path::Path, focus: Vec3, group: u32, taxis: bool) -> Option<String> {
+        let names: Vec<String> = self.models.iter().map(|m| m.name.clone()).collect();
+        for n in &names {
+            if !self.amb_types.contains_key(n) {
+                let t = AmbType::load(root, n);
+                self.amb_types.insert(n.clone(), t);
+            }
+        }
+        let r = self.park_rng.float();
+        let (models, types) = (&self.models, &self.amb_types);
+        let ok = |m: &str| models.iter().find(|x| x.name.eq_ignore_ascii_case(m)).and_then(|x| types.get(&x.name)).is_some_and(|t| t.bound_group == group && (taxis || !t.taxi));
+        self.ambient.pick(focus, self.hour, r, &ok).map(|s| s.to_string())
+    }
+
+    /// The start speed (vfunc 84 sub_826E7FF8, after the route is set): offline and not on a
+    /// junction lane (the rail's owner or its parent flagged 4), the cars on the rail
+    /// (sub_826E7E28 -> sub_8273E108; phase = behaviour +208): the one ahead (the least phase
+    /// ahead, else the least on the next rail) caps it at sqrt(|v_a|^2 + fMaxDecel (gap - 2))
+    /// with our fMaxDecel, the one behind (the greatest phase behind) asks at least
+    /// sqrt(|v_b|^2 - fMaxDecel_b (gap - 2)), gap = the centres' distance less both half lengths.
+    /// Removed (None; sub_826D50E8 reason 17) when either term is negative, the least is over the
+    /// cap or over the wanted speed (rail speed + offset, at least 0), or the speed (`v`, capped)
+    /// is under the least. (Not ported: the light's stopping speed (sub_8273A178 / sub_8273A848),
+    /// the slot test sub_826F5FE0, bIsProxy types never removed.)
+    fn path_start_speed(&self, nav: &NavSys, rider: &Rider, pos: Vec3, half_len: f32, v: f32) -> Option<f32> {
+        let want = match (&rider.route, rider.state) {
+            (Some(rt), 9) => rt.speed,
+            _ => rail_speed(nav, rider.link).0,
+        } + rider.off;
+        let want = want.max(0.0);
+        // where the car is: (rail key, phase); the next rail
+        #[derive(PartialEq, Clone, Copy)]
+        enum Key {
+            Lane(usize),
+            Path(usize, usize),
+        }
+        let key_of = |r: &Rider| -> Option<(Key, f32)> {
+            match (&r.route, r.state) {
+                (Some(rt), 9) => {
+                    let (i, f) = rt.at();
+                    Some((Key::Path(rt.path, i), f))
+                }
+                (None, 1) => Some((Key::Lane(nav.links[r.link].lane), r.t)),
+                _ => None,
+            }
+        };
+        let (here, ph) = key_of(rider)?;
+        if let Key::Lane(_) = here {
+            if junction_lane(&nav.links[rider.link]) {
+                return Some(v);
+            }
+        }
+        let next = match (&rider.route, here) {
+            (Some(rt), Key::Path(p, i)) => Some(if i + 1 < rt.rails.len() { Key::Path(p, i + 1) } else { Key::Lane(rt.lane) }),
+            _ => rider.next.map(|n| Key::Lane(nav.links[n].lane)),
+        };
+        let (mut ahead, mut ahead_next, mut behind): (Option<(usize, f32)>, Option<(usize, f32)>, Option<(usize, f32)>) = (None, None, None);
+        for (j, c) in self.cars.iter().enumerate() {
+            let Some(o) = c.rail.as_ref() else { continue };
+            let Some((k, f)) = key_of(o) else { continue };
+            if k == here && f > ph && ahead.map_or(true, |a| f < a.1) {
+                ahead = Some((j, f));
+            } else if k == here && f < ph && behind.map_or(true, |b| f > b.1) {
+                behind = Some((j, f));
+            } else if Some(k) == next && ahead_next.map_or(true, |a| f < a.1) {
+                ahead_next = Some((j, f));
+            }
+        }
+        let gap = |j: usize| self.cars[j].state.pos.distance(pos) - half_len - half_size(&self.cars[j]).0;
+        let (mut lo, mut hi) = (None::<f32>, None::<f32>);
+        if let Some((j, _)) = ahead.or(ahead_next) {
+            let va = self.cars[j].state.vel.length_squared();
+            let x = va + rider.ty.max_decel * (gap(j) - 2.0);
+            if x < 0.0 {
+                if std::env::var_os("MCLA_RACEPATH_LOG").is_some() {
+                    log::info!("  start: the car ahead {} gap {:.1} speed {:.1}: {x:.1} < 0", self.cars[j].model.name, gap(j), va.sqrt());
+                }
+                return None;
+            }
+            hi = Some(x.sqrt());
+        }
+        if let Some((j, _)) = behind {
+            let o = self.cars[j].rail.as_ref().unwrap();
+            let x = self.cars[j].state.vel.length_squared() - o.ty.max_decel * (gap(j) - 2.0);
+            if x < 0.0 {
+                if std::env::var_os("MCLA_RACEPATH_LOG").is_some() {
+                    log::info!("  start: the car behind {} gap {:.1} speed {:.1}: {x:.1} < 0", self.cars[j].model.name, gap(j), self.cars[j].state.vel.length());
+                }
+                return None;
+            }
+            let l = x.sqrt();
+            if hi.is_some_and(|h| l > h) || l > want {
+                return None;
+            }
+            lo = Some(l);
+        }
+        let v = hi.map_or(v, |h| v.min(h));
+        if v < lo.unwrap_or(0.0) {
+            return None;
+        }
+        Some(v)
+    }
+
+    /// The rider of a race path's car on its route (state 9; on the lane at once when the route
+    /// has no rails), its type's top speed fPathMaxSpeed for life (sub_826EA240 reads behaviour
+    /// +244 for the type's fMaxSpeed).
+    fn path_rider(&mut self, nav: &NavSys, ty: AmbType, pr: &PathRails, path: usize) -> Option<Rider> {
+        let lanes = lanes(nav);
+        let route = pr.route(path)?;
+        let (link, s) = lane_link_at(nav, lanes, route.lane, route.lane_t)?;
+        let mut ty = ty;
+        ty.max_speed = pr.speed;
+        let seed = (self.rand() * 16777216.0) as u32 | 1;
+        let mut r = Rider::new(nav, ty, link, s, seed);
+        r.set_phase(nav, lanes, route.lane_t);
+        r.ds_lane = usize::MAX;
+        r.choose_next(nav);
+        r.born = self.clock;
+        if !route.rails.is_empty() {
+            r.route = Some(Box::new(route));
+            r.state = 9;
+        }
+        Some(r)
+    }
+
+    /// The follower of item `h` for its race path (sub_826DF430 with the path's params: the
+    /// type by the item's name, the colour `shade` of the type's twenty; placed at the spawn
+    /// matrix with no distance or visibility test once the ground is found there), its start
+    /// speed fPathStartSpeed (0 when `standing`: bParked, or referenced and not fired) within
+    /// its limits.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_path_car(&mut self, gpu: &crate::render::Gpu, world: &crate::world::World, h: u32, shade: usize, pr: &PathRails, path: usize, start_mph: f32, standing: bool) -> PathSpawn {
+        let Some(nav) = world.nav.as_ref().map(rail_nav) else { return PathSpawn::Removed };
+        let Some(item) = self.layout.get(h as usize).cloned().flatten() else { return PathSpawn::Removed };
+        let Some(mi) = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(&item.name)) else { return PathSpawn::Removed };
+        let Some((ground, normal)) = probe_ground(&world.collider, pr.spawn) else { return PathSpawn::NoGround };
+        let mname = self.models[mi].name.clone();
+        let ty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(&world.assets.root, &mname));
+        let Some(mut rider) = self.path_rider(nav, ty, pr, path) else { return PathSpawn::Removed };
+        let model = self.models[mi].clone();
+        let half = if ty.length > 0.0 { ty.length * 0.5 } else { (model.max.z - model.min.z) * 0.5 };
+        let v = if standing { 0.0 } else { start_mph * MPH };
+        let Some(v) = self.path_start_speed(nav, &rider, pr.spawn, half, v) else {
+            if std::env::var_os("MCLA_RACEPATH_LOG").is_some() { log::info!("race path {path}: car removed at its start (the car ahead or behind)"); }
+            return PathSpawn::Removed;
+        };
+        rider.v = v;
+        let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
+        let dir = Vec3::new(-pr.row2.x, 0.0, -pr.row2.z).normalize_or(Vec3::NEG_Z);
+        let yaw = (-dir.x).atan2(-dir.z);
+        let idx = self.spawn(gpu, model, ground, yaw, color, false);
+        let f = (dir - normal * dir.dot(normal)).normalize_or(dir);
+        let right = f.cross(normal).normalize_or(Vec3::X);
+        self.cars[idx].state.relocate(ground, Quat::from_mat3(&glam::Mat3::from_cols(right, normal, -f)).normalize());
+        rider.seat = Some(Seat::new(ground, normal, f));
+        let c = &mut self.cars[idx];
+        c.item = Some(h);
+        c.rail = Some(rider);
+        if let Some(ai) = c.ai.as_mut() {
+            ai.link = None;
+        }
+        if std::env::var_os("MCLA_RACEPATH_LOG").is_some() { log::info!("race path {path}: item {h} {} follows its path from {:?} at {:.1} m/s (rails {}, top {:.1} m/s)", c.model.name, ground, v, c.rail.as_ref().map_or(0, |r| r.route.as_ref().map_or(0, |rt| rt.rails.len())), pr.speed); }
+        PathSpawn::Done
+    }
+
+    /// The parked placement of item `h` (sub_826DF7F0, as parked.rs places an item's car): at its
+    /// place and heading, no behaviour.
+    fn place_path_parked(&mut self, gpu: &crate::render::Gpu, root: &std::path::Path, h: u32) -> PathSpawn {
+        let Some(item) = self.layout.get(h as usize).cloned().flatten() else { return PathSpawn::Removed };
+        let Some(mi) = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(&item.name)) else { return PathSpawn::Removed };
+        let shade = self.park_rng.index(20) as usize;
+        let mname = self.models[mi].name.clone();
+        let ty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(root, &mname));
+        let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
+        let model = self.models[mi].clone();
+        let idx = self.spawn(gpu, model, item.pos, item.heading, color, false);
+        let born = self.clock;
+        let life = 8.0 + 4.0 * self.rand();
+        let steer = parked_steer(1.0 - self.rand(), self.rand());
+        let c = &mut self.cars[idx];
+        c.ai = None;
+        c.parked = Some(super::parked::ITEM_SPOT);
+        c.item = Some(h);
+        c.amb_born = born;
+        c.amb_life = life;
+        c.park_steer = steer;
+        for wh in c.state.wheels.iter_mut().take(2) {
+            wh.steer = steer;
+        }
+        c.settle = super::PARK_PROBE;
+        PathSpawn::Done
+    }
+
+    /// A trigger fired race path `path` whose item is `h` (sub_82687F58): the item's path is
+    /// marked fired. A car there takes the path's params (vfunc 84): the waiting car placed
+    /// parked (referenced, not fired, not bParked: it has its behaviour and stood) drives off on
+    /// its route at fPathStartSpeed; a bParked car stays; a car following the path is set on its
+    /// route anew. No car (and no request pending): the item's car at once - parked when
+    /// bParked, else the follower at the spawn matrix when the path has its lane. Returns the
+    /// colour drawn and what became of a new follower.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fire_path(&mut self, gpu: &crate::render::Gpu, world: &crate::world::World, h: u32, pr: &PathRails, path: usize, start_mph: f32, parked: bool, pending: bool) -> Option<(usize, PathSpawn)> {
+        if let Some(it) = self.layout_item_mut(h) {
+            if let Some(p) = it.path.as_mut() {
+                p.fired = true;
+            }
+        }
+        if pending {
+            return None;
+        }
+        let Some(nav) = world.nav.as_ref().map(rail_nav) else { return None };
+        if let Some(k) = self.cars.iter().position(|c| c.item == Some(h)) {
+            if parked && self.cars[k].rail.is_none() {
+                return None;
+            }
+            let mname = self.cars[k].model.name.clone();
+            let ty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(&world.assets.root, &mname));
+            let mut rider = match self.cars[k].rail.take() {
+                // a follower: its route anew (its other state kept)
+                Some(mut r) => match pr.route(path) {
+                    Some(rt) => {
+                        let lanes = lanes(nav);
+                        if let Some((link, _)) = lane_link_at(nav, lanes, rt.lane, rt.lane_t) {
+                            r.link = link;
+                            r.set_phase(nav, lanes, rt.lane_t);
+                            r.ds_lane = usize::MAX;
+                            r.choose_next(nav);
+                        }
+                        r.path = None;
+                        if rt.rails.is_empty() {
+                            r.route = None;
+                            r.state = 1;
+                        } else {
+                            r.route = Some(Box::new(rt));
+                            r.state = 9;
+                        }
+                        r
+                    }
+                    None => {
+                        self.cars[k].rail = Some(r);
+                        return None;
+                    }
+                },
+                None => match self.path_rider(nav, ty, pr, path) {
+                    Some(mut r) => {
+                        let c = &self.cars[k];
+                        r.seat = Some(Seat::new(c.state.pos, c.state.up(), c.state.forward()));
+                        r
+                    }
+                    None => return None,
+                },
+            };
+            let pos = self.cars[k].state.pos;
+            let half = half_size(&self.cars[k]).0;
+            match self.path_start_speed(nav, &rider, pos, half, start_mph * MPH) {
+                Some(v) => rider.v = v,
+                None => {
+                    if std::env::var_os("MCLA_RACEPATH_LOG").is_some() { log::info!("race path {path}: fired car removed (the car ahead or behind)"); }
+                    self.cars.remove(k);
+                    return Some((0, PathSpawn::Removed));
+                }
+            }
+            let c = &mut self.cars[k];
+            c.parked = None;
+            c.park_held = false;
+            c.park_steer = 0.0;
+            for w in c.state.wheels.iter_mut() {
+                w.steer = 0.0;
+            }
+            if std::env::var_os("MCLA_RACEPATH_LOG").is_some() { log::info!("race path {path}: item {h} {} fired, drives off at {:.1} m/s", c.model.name, rider.v); }
+            c.rail = Some(rider);
+            return Some((0, PathSpawn::Done));
+        }
+        if parked {
+            return Some((0, self.place_path_parked(gpu, &world.assets.root, h)));
+        }
+        if pr.lane.is_none() {
+            return None;
+        }
+        let shade = self.park_rng.index(20) as usize;
+        Some((shade, self.spawn_path_car(gpu, world, h, shade, pr, path, start_mph, false)))
+    }
+
+    /// Race_UnloadAmbientPathArray (path vfunc sub_82739228: the item removed, reason 11): a car
+    /// riding a lane goes with its item; any other (on the path's rails or a recovery rail,
+    /// physical, placed parked) is let go of - no item, no path rails - and stays.
+    pub fn unload_path_items(&mut self, handles: &[u32]) {
+        for &h in handles {
+            for c in self.cars.iter_mut().filter(|c| c.item == Some(h)) {
+                if c.rail.as_ref().is_some_and(|r| r.state == 1) {
+                    continue;
+                }
+                c.item = None;
+                if let Some(r) = c.rail.as_mut() {
+                    if r.route.take().is_some() || r.state == 9 {
+                        // (what the behaviour does with no rail was not traced: it stands, the
+                        // port's state 6 with no rail - the recovery try's)
+                        r.state = 6;
+                        r.path = None;
+                    }
+                }
+            }
+            self.remove_layout_item(h);
+        }
+        self.item_followers_due.retain(|(h, _)| !handles.contains(h));
     }
 }

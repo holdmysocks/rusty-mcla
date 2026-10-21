@@ -52,6 +52,63 @@ impl Mwc {
     }
 }
 
+/// A layout item's parked car has no spot (car +44 = 0; +40 the item).
+pub const ITEM_SPOT: usize = usize::MAX;
+/// The layout items' pool (sub_826E2070: 512 records of 144 bytes).
+pub const ITEM_POOL: usize = 512;
+
+/// A layout item (sub_826E1418, record ctor sub_826E1FA0): a car or a person the parked spawner
+/// puts at a place of a quadtree node, as it fills the node's spots.
+#[derive(Clone, Debug)]
+pub struct LayoutItem {
+    /// +40: the type's name, a car type or a person type
+    pub name: String,
+    /// +96: where it was put (FullReset puts a script's item back there, sub_826E1CE8)
+    pub home: Vec3,
+    /// +112
+    pub pos: Vec3,
+    /// +132: the heading (rad)
+    pub heading: f32,
+    /// +128: the race's ambient path it stands for (None: a script's item)
+    pub path: Option<ItemPath>,
+    /// +140: a script's item
+    pub script: bool,
+    /// +24: the node it is in
+    pub node: u32,
+}
+
+/// What the spawner reads of an item's race path (`*_AmbientData.xml`, mcAmbientPath).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ItemPath {
+    /// the path's index in the race's array
+    pub index: usize,
+    /// +164 bParked
+    pub parked: bool,
+    /// +188: an "Ambient" trigger points at it; +189: that trigger has fired
+    pub referenced: bool,
+    pub fired: bool,
+    /// +64: its first vertex found a lane
+    pub lane: bool,
+    /// +171 bSpawnWhenTriggered
+    pub spawn_when_triggered: bool,
+}
+
+/// sub_823BDF38: from the root down into the first child (order 0..3) whose box holds
+/// [x - 1, x + 1] x [z - 1, z + 1] strictly; the deepest such node.
+pub fn item_node(tree: &ParkingTree, p: Vec2) -> Option<u32> {
+    let mut ni = tree.root?;
+    'down: loop {
+        for ch in tree.nodes[ni as usize].children.into_iter().flatten() {
+            let n = &tree.nodes[ch as usize];
+            if n.min.x < p.x - 1.0 && p.x + 1.0 < n.max.x && n.min.y < p.y - 1.0 && p.y + 1.0 < n.max.y {
+                ni = ch;
+                continue 'down;
+            }
+        }
+        return Some(ni);
+    }
+}
+
 /// The child order of the node query by the quadrant the centre is in (table 0x8282AEF0).
 const ORDER: [[usize; 4]; 4] = [[0, 1, 2, 3], [1, 3, 0, 2], [2, 0, 3, 1], [3, 2, 1, 0]];
 
@@ -59,8 +116,9 @@ const ORDER: [[usize; 4]; 4] = [[0, 1, 2, 3], [1, 3, 0, 2], [2, 0, 3, 1], [3, 2,
 pub const MAX_LISTS: usize = 64;
 
 /// sub_826E0F00: the nodes whose box meets the circle (x, z), children first in the quadrant's
-/// order, a node given when one of its own spots has `flags & 3`; at most `cap`.
-pub fn query(tree: &ParkingTree, ni: u32, c: Vec2, r: f32, cap: usize, out: &mut Vec<u32>) {
+/// order, a node given when one of its own entries has `flags & 3` - a spot by its flags, a
+/// layout item always (its +4 is 2); at most `cap`.
+pub fn query(tree: &ParkingTree, items: &[Vec<u32>], ni: u32, c: Vec2, r: f32, cap: usize, out: &mut Vec<u32>) {
     let n = &tree.nodes[ni as usize];
     // sub_82246B78: squared distance from the box, against r^2
     let mut d2 = 0.0;
@@ -83,10 +141,11 @@ pub fn query(tree: &ParkingTree, ni: u32, c: Vec2, r: f32, cap: usize, out: &mut
             break;
         }
         if let Some(ch) = n.children[k] {
-            query(tree, ch, c, r, cap, out);
+            query(tree, items, ch, c, r, cap, out);
         }
     }
-    if out.len() < cap && n.spots.iter().any(|&s| tree.spots[s as usize].flags & 3 != 0) {
+    let has_items = items.get(ni as usize).is_some_and(|v| !v.is_empty());
+    if out.len() < cap && (n.spots.iter().any(|&s| tree.spots[s as usize].flags & 3 != 0) || has_items) {
         out.push(ni);
     }
 }
@@ -133,6 +192,76 @@ impl Vehicles {
         occ
     }
 
+    /// The items' occupants: item h is taken while its car stands, or its person (the people's
+    /// spawner reports those in `item_peds`).
+    fn items_taken(&self) -> Vec<bool> {
+        let mut occ = vec![false; self.layout.len()];
+        for h in self.cars.iter().filter_map(|c| c.item).chain(self.item_peds.iter().copied()).chain(self.item_peds_due.iter().copied()).chain(self.item_followers_due.iter().map(|f| f.0)).chain(self.item_pending.iter().copied()) {
+            if let Some(o) = occ.get_mut(h as usize) {
+                *o = true;
+            }
+        }
+        occ
+    }
+
+    /// A node's items in the order they were put in.
+    fn items_of(&self, ni: u32) -> &[u32] {
+        self.node_items.get(ni as usize).map_or(&[], |v| v.as_slice())
+    }
+
+    /// sub_826E1418 (AddAmbientToLayout, the race paths' sub_826E1520): a record of the pool,
+    /// put into its node (sub_826E1738); None when the pool is used up.
+    pub fn add_layout_item(&mut self, name: &str, pos: Vec3, heading: f32, path: Option<ItemPath>) -> Option<u32> {
+        let Some(node) = item_node(&self.parking, Vec2::new(pos.x, pos.z)) else { return None };
+        // (the pool's free list: built 0 .. 511, taken from its head, given back to its tail)
+        if self.layout.is_empty() {
+            self.layout = vec![None; ITEM_POOL];
+            self.item_free = (0..ITEM_POOL as u32).collect();
+        }
+        let Some(h) = self.item_free.pop_front() else {
+            log::warn!("[AMBIENT LAYOUT] AddAmbientToLayout failed: no more items ({name})");
+            return None;
+        };
+        let h = h as usize;
+        let script = path.is_none();
+        self.layout[h] = Some(LayoutItem { name: name.to_string(), home: pos, pos, heading, path, script, node });
+        if self.node_items.len() < self.parking.nodes.len() {
+            self.node_items.resize(self.parking.nodes.len(), Vec::new());
+        }
+        self.node_items[node as usize].push(h as u32);
+        Some(h as u32)
+    }
+
+    /// AddRandomCarToLayout's type (sub_826DA638): a draw of the traffic list of the district at
+    /// `pos` at this hour, of the types of bound group `group`, no taxis.
+    pub fn random_layout_car(&mut self, data_dir: &str, pos: Vec3, group: u32) -> Option<String> {
+        let root = std::path::PathBuf::from(data_dir);
+        let names: Vec<String> = self.models.iter().map(|m| m.name.clone()).filter(|n| n.starts_with("va_")).collect();
+        for n in &names {
+            self.amb_types.entry(n.clone()).or_insert_with(|| super::traffic::AmbType::load(&root, n));
+        }
+        let r = self.park_rng.float();
+        let (models, types) = (&self.models, &self.amb_types);
+        let ok = |m: &str| models.iter().any(|x| x.name.eq_ignore_ascii_case(m)) && types.iter().find(|(k, _)| k.eq_ignore_ascii_case(m)).is_some_and(|(_, t)| t.bound_group == group && !t.taxi);
+        self.ambient.pick(pos, self.hour, r, &ok).map(|s| s.to_string())
+    }
+
+    /// sub_826E1A20 (RemoveAmbientFromLayout and the others): out of its node, its car gone.
+    pub fn remove_layout_item(&mut self, h: u32) {
+        let Some(item) = self.layout.get_mut(h as usize).and_then(|i| i.take()) else { return };
+        self.item_free.push_back(h);
+        if let Some(v) = self.node_items.get_mut(item.node as usize) {
+            v.retain(|&x| x != h);
+        }
+        self.cars.retain(|c| c.item != Some(h));
+        self.item_peds.retain(|&x| x != h);
+    }
+
+    /// The race path items' state (the trigger has fired, sub_82687F58).
+    pub fn layout_item_mut(&mut self, h: u32) -> Option<&mut LayoutItem> {
+        self.layout.get_mut(h as usize).and_then(|i| i.as_mut())
+    }
+
     /// No event is active (S+0x64250, sub_826D5B30): no race car on the road.
     fn cruise(&self) -> bool {
         !self.cars.iter().any(|c| c.racer || c.pinned)
@@ -151,7 +280,7 @@ impl Vehicles {
             return;
         }
         let mut found = Vec::new();
-        query(&self.parking, root, bc, len * 0.5, MAX_LISTS, &mut found);
+        query(&self.parking, &self.node_items, root, bc, len * 0.5, MAX_LISTS, &mut found);
         let bh = Vec2::new(len * 0.5, width * 0.5);
         for ni in found {
             let n = &self.parking.nodes[ni as usize];
@@ -222,13 +351,14 @@ impl Vehicles {
         if n == 0 || self.models.is_empty() {
             return;
         }
-        // the weight of a list: its spots (and its runtime items: none)
-        let w: Vec<f32> = self.park_lists.iter().map(|&ni| self.parking.nodes[ni as usize].spots.len() as f32).collect();
+        // the weight of a list: its spots and its items
+        let w: Vec<f32> = self.park_lists.iter().map(|&ni| (self.parking.nodes[ni as usize].spots.len() + self.items_of(ni).len()) as f32).collect();
         let total: f32 = w.iter().sum();
         if total == 0.0 {
             return;
         }
         let occ = self.spots_taken();
+        let items_occ = self.items_taken();
         let cruise = self.cruise();
         let mut occluders = None;
         for _ in 0..60 {
@@ -242,7 +372,19 @@ impl Vehicles {
             let li = li.min(n - 1);
             let ni = self.park_lists[li];
             let node = &self.parking.nodes[ni as usize];
-            let e = self.park_rng.index(node.spots.len() as u32) as usize;
+            let e = self.park_rng.index((node.spots.len() + self.items_of(ni).len()) as u32) as usize;
+            if e >= node.spots.len() {
+                // an item: no count limit, no visibility test
+                let h = self.items_of(ni)[e - node.spots.len()];
+                if items_occ[h as usize] {
+                    self.park_why[0] += 1;
+                    continue;
+                }
+                if self.item_spawn(gpu, sp, h) {
+                    return;
+                }
+                continue;
+            }
             let si = node.spots[e] as usize;
             let spot = self.parking.spots[si];
             if occ[si] || (spot.cruise_only && !cruise) {
@@ -314,6 +456,63 @@ impl Vehicles {
         }
     }
 
+    /// sub_826F23A0's item branch (sub_82687A60): the type by its name (sub_826D5390, the car and
+    /// the person types), a colour of the type's twenty; parked where it stands (a script's item,
+    /// a parked path or one waiting for its trigger: sub_826DF7F0; a person sub_826DFB08), else
+    /// following its path when its first vertex has a lane (sub_826DF430), else nothing.
+    fn item_spawn(&mut self, gpu: &Gpu, sp: &Spawner, h: u32) -> bool {
+        let Some(item) = self.layout.get(h as usize).cloned().flatten() else { return false };
+        // (a path a trigger points at: its car comes from the trigger once it has fired, and only
+        // from it with bSpawnWhenTriggered)
+        if item.path.is_some_and(|p| p.referenced && (p.fired || p.spawn_when_triggered)) {
+            return false;
+        }
+        let Some(mi) = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(&item.name)) else {
+            // a person type (the people's spawner places it)
+            if crate::peds::is_person_type(&item.name) {
+                self.item_peds_due.push(h);
+                return true;
+            }
+            self.park_why[2] += 1;
+            return false;
+        };
+        let shade = self.park_rng.index(20) as usize;
+        let path = item.path.unwrap_or_default();
+        let parked = item.script || path.parked || (path.referenced && !path.fired);
+        if !parked {
+            if !path.lane {
+                return false;
+            }
+            self.item_followers_due.push((h, shade));
+            return true;
+        }
+        let mname = self.models[mi].name.clone();
+        let root = std::path::PathBuf::from(&sp.data_dir);
+        let ty = *self.amb_types.entry(mname.clone()).or_insert_with(|| super::traffic::AmbType::load(&root, &mname));
+        let color = ty.color(shade).unwrap_or(TRAFFIC_PALETTE[shade % TRAFFIC_PALETTE.len()]);
+        let model = self.models[mi].clone();
+        // (sub_826DF7F0: as a spot's car, sub_826DF700 - its place and heading the item's)
+        let idx = self.spawn(gpu, model, item.pos, item.heading, color, false);
+        let born = self.clock;
+        let life = 8.0 + 4.0 * self.rand();
+        let steer = super::traffic::parked_steer(1.0 - self.rand(), self.rand());
+        let c = &mut self.cars[idx];
+        c.ai = None;
+        c.parked = Some(ITEM_SPOT);
+        c.item = Some(h);
+        c.amb_born = born;
+        c.amb_life = life;
+        c.park_steer = steer;
+        for wh in c.state.wheels.iter_mut().take(2) {
+            wh.steer = steer;
+        }
+        c.settle = PARK_PROBE;
+        if std::env::var("MCLA_PARK_DUMP").is_ok() {
+            log::info!("layout item {} spawn {} at {:?} node {}", h, item.name, item.pos, item.node);
+        }
+        true
+    }
+
     /// sub_826F2A30: up to 30 tries, at most one car removed.
     pub(super) fn parked_unspawn(&mut self, sp: &Spawner, focus: Vec3) {
         // S car list 0: the ambient cars (riding and parked)
@@ -321,17 +520,49 @@ impl Vehicles {
         let r_in = sp.tune.unspawn_inner;
         for _ in 0..30 {
             if self.park_rng.float() >= 0.8 {
-                // the cars of runtime items (lists 0 or 2): none here; the draws as the original's
-                if self.park_rng.float() < 0.5 && !amb.is_empty() {
-                    self.park_rng.index(amb.len() as u32);
+                // an item's car (list 0) or person (list 2), half and half: older than its
+                // least age, 120 m off at least, its node off the lists -> removed (reason 7 / 9)
+                if self.park_rng.float() < 0.5 {
+                    if amb.is_empty() {
+                        continue;
+                    }
+                    let i = amb[self.park_rng.index(amb.len() as u32) as usize];
+                    let c = &self.cars[i];
+                    let Some(h) = c.item else { continue };
+                    let age = if let Some(r) = c.rail.as_ref() { (self.clock - r.born, r.life) } else { (self.clock - c.amb_born, c.amb_life) };
+                    if age.0 < age.1 || Vec2::new(focus.x - c.state.pos.x, focus.z - c.state.pos.z).length_squared() < r_in * r_in {
+                        continue;
+                    }
+                    if self.item_listed(h) {
+                        continue;
+                    }
+                    if std::env::var("MCLA_PARK_DUMP").is_ok() {
+                        log::info!("layout item {} unspawn {}", h, c.model.name);
+                    }
+                    self.cars.remove(i);
+                    return;
                 }
-                continue;
+                if self.ped_list.is_empty() {
+                    continue;
+                }
+                let k = self.park_rng.index(self.ped_list.len() as u32) as usize;
+                let (h, p, old) = self.ped_list[k];
+                let Some(h) = h else { continue };
+                if !old || Vec2::new(focus.x - p.x, focus.z - p.z).length_squared() < r_in * r_in || self.item_listed(h) {
+                    continue;
+                }
+                if std::env::var("MCLA_PARK_DUMP").is_ok() {
+                    log::info!("layout item {} person unspawn dist {:.1}", h, Vec2::new(focus.x - p.x, focus.z - p.z).length());
+                }
+                self.ped_remove = Some(h);
+                return;
             }
             if amb.is_empty() {
                 continue;
             }
             let i = amb[self.park_rng.index(amb.len() as u32) as usize];
-            let Some(si) = self.cars[i].parked else { continue };
+            // (a spot's car: car +44)
+            let Some(si) = self.cars[i].parked.filter(|&s| s != ITEM_SPOT) else { continue };
             let p = self.cars[i].state.pos;
             let d = Vec2::new(focus.x - p.x, focus.z - p.z);
             if d.length_squared() < r_in * r_in {
@@ -355,6 +586,11 @@ impl Vehicles {
         }
     }
 
+    /// An item's node is in the active lists.
+    fn item_listed(&self, h: u32) -> bool {
+        self.layout.get(h as usize).and_then(|i| i.as_ref()).is_some_and(|i| self.park_lists.contains(&i.node))
+    }
+
     /// In the system's ambient car list (list 0): riding traffic and parked cars.
     fn ambient_listed(&self, i: usize) -> bool {
         let c = &self.cars[i];
@@ -372,6 +608,41 @@ mod tests {
         let l: Vec<i32> = (0..=13).map(|t| node_limit(t, 0.25)).collect();
         assert_eq!(l, [1, 1, 1, 2, 2, 1, 1, 1, 2, 2, 2, 2, 3, 3]);
         assert_eq!(node_limit(52, 0.25), 13);
+    }
+
+    /// sub_823BDF38: an item goes to the deepest node holding its 2 m square; the pool holds 512.
+    #[test]
+    fn layout_items_in_the_tree() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x2e3038ce.r62")) else { return };
+        let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u(4), flags: u(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let mut v = Vehicles::new();
+        v.parking = mcla_formats::rage::parking::parse_parking(&res);
+        // hw_local_hangout1's va_350z_04
+        let p = Vec3::new(746.375, 7.439, -286.63);
+        let h = v.add_layout_item("va_350z_04", p, 226.225f32.to_radians(), None).unwrap();
+        let it = v.layout[h as usize].clone().unwrap();
+        let n = &v.parking.nodes[it.node as usize];
+        assert!(n.min.x < p.x - 1.0 && p.x + 1.0 < n.max.x && n.min.y < p.z - 1.0 && p.z + 1.0 < n.max.y);
+        for ch in n.children.into_iter().flatten() {
+            let c = &v.parking.nodes[ch as usize];
+            assert!(!(c.min.x < p.x - 1.0 && p.x + 1.0 < c.max.x && c.min.y < p.z - 1.0 && p.z + 1.0 < c.max.y));
+        }
+        assert!(it.script && v.node_items[it.node as usize] == [h]);
+        // listed by the query even if it had no spots of its own
+        let mut found = Vec::new();
+        query(&v.parking, &v.node_items, v.parking.root.unwrap(), Vec2::new(p.x, p.z), 5.0, MAX_LISTS, &mut found);
+        assert!(found.contains(&it.node));
+        for k in 1..ITEM_POOL {
+            assert!(v.add_layout_item("va_350z_04", p + Vec3::X * (k % 7) as f32, 0.0, None).is_some());
+        }
+        assert!(v.add_layout_item("va_350z_04", p, 0.0, None).is_none());
+        v.remove_layout_item(h);
+        assert!(!v.node_items[it.node as usize].contains(&h));
+        assert_eq!(v.add_layout_item("va_350z_04", p, 0.0, None), Some(h));
     }
 
     /// The MWC: a = 0x5CDCFAA7, 23-bit floats, 31-bit indices.

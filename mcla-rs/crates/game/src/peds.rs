@@ -117,6 +117,12 @@ struct Ped {
     then_angry: bool,
     /// the car dodged last
     dodged: Option<Vec3>,
+    /// a layout item's person (sub_826DFB08): its item, and its age and least age (8 + 4U s)
+    item: Option<u32>,
+    age: f32,
+    life: f32,
+    /// the length of the blend running (`blend` counts it down)
+    blend_len: f32,
 }
 
 const NO_POLY: u32 = u32::MAX;
@@ -759,6 +765,13 @@ fn hash(a: u32, b: u32) -> u32 {
     h ^ (h >> 16)
 }
 
+/// A person type's name (the character sets `ped_*_set` / `drv_*_set`), as the ambient type list
+/// holds them next to the car types (sub_826D5390).
+pub fn is_person_type(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.ends_with("_set") && (n.starts_with("ped_") || n.starts_with("drv_"))
+}
+
 fn wrap_angle(mut d: f32) -> f32 {
     while d > std::f32::consts::PI {
         d -= std::f32::consts::TAU;
@@ -1081,6 +1094,7 @@ impl Peds {
                 break;
             }
             let i = (self.rand() * self.list.len() as f32) as usize % self.list.len();
+            // (an item's person goes like any walker, sub_826F49B8: no item test)
             if self.out_of_range(focus, self.list[i].pos) {
                 let p = self.list.swap_remove(i);
                 if std::env::var("MCLA_PED_DUMP").is_ok() {
@@ -1197,6 +1211,10 @@ impl Peds {
                 then_angry: false,
                 dodged: None,
                 hold: 0.5,
+                item: None,
+                age: 0.0,
+                life: 8.0,
+                blend_len: 0.25,
             });
             spawned += 1;
         }
@@ -1361,6 +1379,10 @@ impl Peds {
                     then_angry: false,
                     dodged: None,
                     hold: 0.0,
+                    item: None,
+                    age: 0.0,
+                    life: 8.0,
+                    blend_len: 0.25,
                 });
             }
         }
@@ -1408,6 +1430,60 @@ impl Peds {
         for i in 0..self.list.len() {
             let Some(Some(ty)) = self.types.get(&self.list[i].ty) else { continue };
             let p = &mut self.list[i];
+            if p.item.is_some() {
+                // (an item's person, sub_826DFB08: flag 0x08 clear - no walking, no avoiding;
+                // no rail - locomotion state 0, the set's clip 0 (`*Ped_Idle*`) looped from 0
+                // at rate 1, sub_8279EF40 / sub_826ECF58. The car check sub_8279B538 runs all
+                // the same: a dodge, then clip 0 again with its 1 s blend, sub_826EC8F0)
+                p.age += dt;
+                p.blend = (p.blend - dt).max(0.0);
+                if p.state == State::Idle && !ty.evade.is_empty() {
+                    if let Some((car, away, speed)) = car_threat(p.pos, threats) {
+                        let fwd = flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z);
+                        let from_front = fwd.dot(flat(car - p.pos).normalize_or_zero()) > 0.4;
+                        let mut best = (f32::MIN, 0usize);
+                        for (k, c) in ty.evade.iter().enumerate() {
+                            if c.front && !from_front {
+                                continue;
+                            }
+                            let s = (p.rot * c.travel.normalize_or_zero()).dot(away) + rand() * 0.5;
+                            if s > best.0 {
+                                best = (s, k);
+                            }
+                        }
+                        p.from = p.cur.clone();
+                        p.blend = 0.15;
+                        p.blend_len = 0.25;
+                        p.state = State::Evade(best.1);
+                        p.time = 0.0;
+                        p.dodged = Some(car);
+                        self.evades += 1;
+                        self.speech.push(Speech { pos: p.pos, voice: ty.voice.clone(), female: ty.female, fast: ty.evade[best.1].fast || speed * speed > 244.77 });
+                    }
+                }
+                let t0 = p.time;
+                p.time += dt;
+                if let State::Evade(k) = p.state {
+                    let clip = &ty.evade[k];
+                    let (a, ar) = clip.mover(clip.frame(t0, false));
+                    let (b, br) = clip.mover(clip.frame(p.time, false));
+                    p.pos += p.rot * (ar.inverse() * (b - a));
+                    p.rot = (p.rot * (ar.inverse() * br)).normalize();
+                    if p.time >= clip.anim.duration.max(0.05) {
+                        p.from = p.cur.clone();
+                        p.blend = 1.0;
+                        p.blend_len = 1.0;
+                        p.time = 0.0;
+                        p.state = State::Idle;
+                    }
+                    let f = p.rot * -Vec3::Z;
+                    p.rot = Quat::from_rotation_y((-f.x).atan2(-f.z));
+                    if let Some(g) = col.ground(p.pos, 0.7, 1.5) {
+                        p.pos.y += (g.point.y - p.pos.y) * (dt * 12.0).min(1.0);
+                    }
+                }
+                continue;
+            }
             p.calm = (p.calm - dt).max(0.0);
             p.blend = (p.blend - dt).max(0.0);
             let on_mesh = has_mesh && p.poly != NO_POLY;
@@ -1735,6 +1811,80 @@ impl Peds {
         self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223 + self.list.len() as u32);
     }
 
+    /// sub_826DFB08: a layout item's person, standing at the item's place facing
+    /// (-sin h, 0, -cos h). False when the type is not one of the people's.
+    pub fn spawn_item(&mut self, gpu: &mut Gpu, col: &WorldCollider, item: u32, name: &str, pos: Vec3, heading: f32) -> bool {
+        let Some(ti) = self.dirs.iter().position(|d| d.0.eq_ignore_ascii_case(name)) else { return false };
+        if !self.load_type(gpu, ti) {
+            return false;
+        }
+        let mut pos = pos;
+        if let Some(g) = col.ground(pos, 1.0, 1.5) {
+            pos.y = g.point.y;
+        }
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        let life = 8.0 + 4.0 * self.rand();
+        self.list.push(Ped {
+            ty: ti,
+            key: (usize::MAX, id),
+            pos,
+            rot: Quat::from_rotation_y(heading),
+            link: 0,
+            fwd: true,
+            lat: 0.0,
+            state: State::Idle,
+            time: 0.0,
+            from: Vec::new(),
+            blend: 0.0,
+            cur: Vec::new(),
+            loiter: true,
+            calm: 0.0,
+            seed: hash(id, item),
+            plan: None,
+            cross: None,
+            wait: 0.0,
+            poly: NO_POLY,
+            travel: Vec3::new(-heading.sin(), 0.0, -heading.cos()),
+            path: Vec::new(),
+            since_plan: 0,
+            scale: 1.0,
+            speed: 0.0,
+            rail: None,
+            stop: 0.0,
+            stops: 0,
+            slide: None,
+            turn_round: false,
+            turn_rest: 0.0,
+            then_angry: false,
+            dodged: None,
+            hold: 0.0,
+            item: Some(item),
+            age: 0.0,
+            life,
+            blend_len: 0.25,
+        });
+        true
+    }
+
+    /// The people as the parked unspawner sees them: (item, place, older than its least age).
+    pub fn item_list(&self) -> Vec<(Option<u32>, Vec3, bool)> {
+        self.list.iter().map(|p| (p.item, p.pos, p.age >= p.life)).collect()
+    }
+
+    /// The items whose person stands.
+    pub fn item_peds(&self) -> Vec<u32> {
+        self.list.iter().filter_map(|p| p.item).collect()
+    }
+
+    /// The parked unspawner's removal: the person of item `h`.
+    pub fn remove_item_person(&mut self, h: u32) {
+        self.list.retain(|p| p.item != Some(h));
+    }
+    pub fn remove_items(&mut self, live: &dyn Fn(u32) -> bool) {
+        self.list.retain(|p| p.item.map_or(true, live));
+    }
+
     /// Skin everything in view into this frame's vertex buffer.
     pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, frustum: &Frustum) {
         self.buf.clear();
@@ -1747,7 +1897,7 @@ impl Peds {
             let (clip, looped) = ty.clip(p.state);
             clip.local(&ty.model.bones, clip.frame(p.time, looped), &mut local);
             if p.blend > 0.0 && p.from.len() == local.len() {
-                blend_pose(&mut local, &p.from, (p.blend / 0.25).clamp(0.0, 1.0));
+                blend_pose(&mut local, &p.from, (p.blend / p.blend_len).clamp(0.0, 1.0));
             }
             p.cur.clone_from(&local);
             if !visible {

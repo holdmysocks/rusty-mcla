@@ -241,8 +241,15 @@ pub struct CarInstance {
     pub cop: bool,
     /// seconds the car is knocked out (EMP / Roar): no throttle, no steering
     pub stunned: f32,
-    /// parked at the kerb: index of its parking spot
+    /// parked at the kerb: index of its parking spot (`parked::ITEM_SPOT`: parked for a layout
+    /// item, no spot)
     pub parked: Option<usize>,
+    /// the layout item it stands for (car +40, parked.rs)
+    pub item: Option<u32>,
+    /// a layout item's car: when it was made and how long it lives at least (car +464 / +468,
+    /// 8 + 4U s, sub_826EAD00)
+    pub amb_born: f32,
+    pub amb_life: f32,
     /// seconds of physics left before a parked car is frozen in place
     pub settle: f32,
     /// roaming street racer (free roam): can be challenged
@@ -679,6 +686,24 @@ pub struct Vehicles {
     park_dump_frame: u32,
     /// (diagnostics, MCLA_PARK_DUMP) parked spawn tries turned down, by reason
     park_why: [u32; 5],
+    /// the layout items (sub_826E2070: a pool of 512) and each quadtree node's items in the order
+    /// they were put in (node +16 / +20)
+    pub layout: Vec<Option<parked::LayoutItem>>,
+    pub node_items: Vec<Vec<u32>>,
+    pub item_free: std::collections::VecDeque<u32>,
+    /// the items whose person stands (peds.rs keeps it), and the items the spawner drew for a
+    /// person (sub_826DFB08) or for a car following its race path (sub_826DF430): (item, its
+    /// colour of the type's twenty)
+    pub item_peds: Vec<u32>,
+    pub item_peds_due: Vec<u32>,
+    pub item_followers_due: Vec<(u32, usize)>,
+    /// the items whose follower's request is still pending (item +80 >= 0; racescript.rs)
+    pub item_pending: Vec<u32>,
+    /// the people's list 2 as the unspawner sees it (main.rs fills it from peds.rs): each
+    /// person's item, place and whether it is older than its least age; the item whose person
+    /// it removes
+    pub ped_list: Vec<(Option<u32>, Vec3, bool)>,
+    pub ped_remove: Option<u32>,
     /// parked cars on (> 0) or off (0); the count itself is not used: the spawner fills a
     /// quarter of the spots of the nodes round the focus (parked.rs)
     pub parked_target: usize,
@@ -1954,7 +1979,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6] });
+        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6] });
         self.cars.len() - 1
     }
 

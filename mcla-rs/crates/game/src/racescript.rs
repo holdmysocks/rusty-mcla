@@ -47,7 +47,8 @@ pub struct Trigger {
     /// 0 = every lap
     pub lap: i32,
     pub randomness: f32,
-    /// how many of the ambient actions run (0, 0 = all)
+    /// how many of its events are chosen at its reset (nMinTriggered / nMaxTriggered; the
+    /// trigger's ctor sub_82686340 sets -1, -1 = all, and fRandomness 1)
     pub n_min: i32,
     pub n_max: i32,
     pub player_can: bool,
@@ -56,16 +57,24 @@ pub struct Trigger {
     pub actions: Vec<Action>,
 }
 
+/// A path of the race's `mcAmbientPathArray` (parser sub_82739570). (bHazard, bFire, bSmoke and
+/// bDamage have no reader in the executable - only the parser's default and the unload's clear.)
 #[derive(Clone, Debug, Default)]
 pub struct AmbPath {
+    /// SpawnMtx: its place, rotation and z row
     pub pos: Vec3,
     pub rot: Quat,
+    pub row2: Vec3,
     pub verts: Vec<Vec3>,
-    /// mph
+    /// bSnapToRails, per vertex
+    pub snap: Vec<bool>,
+    /// fPathStartSpeed, fPathMaxSpeed, fPathEndSpeed (mph)
     pub speed: [f32; 3],
     pub parked: bool,
-    pub hazard: bool,
-    pub smoke: bool,
+    /// bPhysical: the car's instance bit 0x80 (sub_826FA588 from sub_826EAD00) - a riding or
+    /// parked car that meets the other inactive ambient cars (not ported: the physics level's pair
+    /// test has no such flag yet)
+    pub physical: bool,
     pub spawn_when_triggered: bool,
     pub random_large: bool,
     pub random_small: bool,
@@ -114,14 +123,16 @@ fn parse_paths(xml: &str) -> Vec<AmbPath> {
         }
         let rot = Quat::from_mat3(&glam::Mat3::from_cols(Vec3::new(m[0], m[1], m[2]), Vec3::new(m[3], m[4], m[5]), Vec3::new(m[6], m[7], m[8]))).normalize();
         let verts: Vec<Vec3> = block("vVerts").map(floats).unwrap_or_default().chunks_exact(3).map(|c| Vec3::new(c[0], c[1], c[2])).collect();
+        let snap: Vec<bool> = block("bSnapToRails").map(|b| b.split_whitespace().map(|x| x.parse::<i32>().map_or(false, |v| v != 0)).collect()).unwrap_or_default();
         out.push(AmbPath {
             pos: Vec3::new(m[9], m[10], m[11]),
             rot,
+            row2: Vec3::new(m[6], m[7], m[8]),
             verts,
+            snap,
             speed: [value("fPathStartSpeed"), value("fPathMaxSpeed"), value("fPathEndSpeed")],
             parked: flag("bParked"),
-            hazard: flag("bHazard"),
-            smoke: flag("bSmoke") || flag("bFire"),
+            physical: flag("bPhysical"),
             spawn_when_triggered: flag("bSpawnWhenTriggered"),
             random_large: flag("bRandomLargeAmbient"),
             random_small: flag("bRandomSmallAmbient"),
@@ -138,7 +149,7 @@ fn parse_calls(calls: &[Call]) -> (Vec<(String, Vec3, Quat)>, Vec<Trigger>) {
     // handle (offset of the creating call) -> trigger / (trigger, action)
     let mut trig_of: HashMap<usize, usize> = HashMap::new();
     let mut act_of: HashMap<usize, (usize, usize)> = HashMap::new();
-    let blank = |shape: Shape| Trigger { shape, lap: 0, randomness: 1.0, n_min: 0, n_max: 0, player_can: true, by_opponent: false, multiple: false, actions: Vec::new() };
+    let blank = |shape: Shape| Trigger { shape, lap: 0, randomness: 1.0, n_min: -1, n_max: -1, player_can: true, by_opponent: false, multiple: false, actions: Vec::new() };
     for c in calls {
         let a = &c.args;
         // a prop: (group, position, euler angles, "props", name)
@@ -622,30 +633,85 @@ impl Course {
 // ---------------------------------------------------------------------------------
 // Running it
 
-use crate::ai::AiDriver;
 use crate::render::Gpu;
 use crate::signals::Signals;
-use crate::vehicles::{Vehicles, TRAFFIC_PALETTE};
+use crate::vehicles::parked::{ItemPath, Mwc};
+use crate::vehicles::traffic::{self, PathRails, PathSpawn};
+use crate::vehicles::Vehicles;
 
-/// Tag (in `CarInstance::driver`) of the cars a race script put on the road.
+/// Tag (in `CarInstance::driver`) the port's own earlier rule gave the race scripts' cars; no
+/// car carries it now (the paths' cars are layout items, `CarInstance::item`).
 pub const TAG: &str = "amb:";
 
-#[derive(Clone, Copy, PartialEq)]
-enum PathState {
-    Waiting,
-    /// standing at its spawn point (the car is looked up by its tag)
-    Placed,
-    Running,
-    Done,
+/// A trigger's events chosen at its reset (trigger vfunc 13 sub_82685B30, from Reset sub_826854B8
+/// for every trigger, TriggerManager_ResetTriggers): the bounds clamped (min >= count -> 0;
+/// max >= count -> count; min < 0 with max >= 0 -> min 0; max < 0 with min >= 0 -> max count);
+/// one draw of the shared MWC, u = (lo & 0x7FFFFF) / 2^23, u >= fRandomness disarms it (None);
+/// both bounds negative: every event; else n = min + (lo & 0x7FFFFFFF) % (max - min + 1) on a
+/// second draw, n = count: every event, else the first index r % count, each next
+/// (previous + 1 + r % (count - 1)) % count, kept when not in yet, until n are in.
+pub fn select(rng: &mut Mwc, count: usize, n_min: i32, n_max: i32, randomness: f32) -> Option<Vec<usize>> {
+    let c = count as i32;
+    let (mut lo, mut hi) = (n_min, n_max);
+    if lo < 0 && hi >= 0 {
+        lo = 0;
+    } else if lo >= c {
+        lo = 0;
+    }
+    if hi < 0 && lo >= 0 {
+        hi = c;
+    } else if hi >= c {
+        hi = c;
+    }
+    let u = rng.float();
+    if !(u < randomness) {
+        return None;
+    }
+    if lo < 0 && hi < 0 {
+        return Some((0..count).collect());
+    }
+    let span = hi - lo + 1;
+    let r = (rng.next() & 0x7FFF_FFFF) as i32;
+    // (a zero span traps in the original)
+    let n = lo + if span != 0 { r % span } else { 0 };
+    if n == c {
+        return Some((0..count).collect());
+    }
+    let mut out: Vec<usize> = Vec::new();
+    let mut prev: i32 = -1;
+    // (n over the count would never end in the original; the bounds keep it within)
+    while (out.len() as i32) < n.min(c) {
+        let r = (rng.next() & 0x7FFF_FFFF) as i32;
+        let idx = if prev < 0 {
+            r % c
+        } else if c > 1 {
+            (r % (c - 1) + prev + 1) % c
+        } else {
+            0
+        };
+        prev = idx;
+        if !out.contains(&(idx as usize)) {
+            out.push(idx as usize);
+        }
+    }
+    Some(out)
 }
 
 pub struct Runtime {
     pub d: Dressing,
     fired: Vec<f32>,
-    state: Vec<PathState>,
+    /// each trigger's chosen events (trigger +40); None: disarmed (state 0)
+    chosen: Vec<Option<Vec<usize>>>,
     prev: Vec<(usize, Vec3)>,
-    rng: u32,
-    tick: f32,
+    /// the ambient updates since the race's FullReset (S +0x6423C): the triggers are reset at
+    /// the first, the paths become layout items at the second (sub_826D60A0)
+    count: u32,
+    /// each path after its init, and its layout item (+184)
+    rails: Vec<Option<PathRails>>,
+    items: Vec<Option<u32>>,
+    /// followers asked for and waiting for the ground (the record's 3 s, sub_826E0438): item,
+    /// colour, age
+    pending: Vec<(u32, usize, f32)>,
     /// counters for the log
     pub started: u32,
     pub lights: u32,
@@ -655,21 +721,10 @@ pub struct Runtime {
     pub radio: Vec<String>,
 }
 
-fn mph(v: f32) -> f32 {
-    v * 0.44704
-}
-
 impl Runtime {
-    pub fn new(d: Dressing, seed: u32) -> Runtime {
+    pub fn new(d: Dressing, _seed: u32) -> Runtime {
         let (nt, np) = (d.triggers.len(), d.paths.len());
-        Runtime { d, fired: vec![-1.0; nt], state: vec![PathState::Waiting; np], prev: Vec::new(), rng: seed | 1, tick: 0.0, started: 0, lights: 0, boosts: 0, roads: 0, radio: Vec::new() }
-    }
-
-    fn rand(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 17;
-        self.rng ^= self.rng << 5;
-        (self.rng % 100_000) as f32 / 100_000.0
+        Runtime { d, fired: vec![-1.0; nt], chosen: vec![None; nt], prev: Vec::new(), count: 0, rails: vec![None; np], items: vec![None; np], pending: Vec::new(), started: 0, lights: 0, boosts: 0, roads: 0, radio: Vec::new() }
     }
 
     /// Vehicle types the paths ask for (to have their models in memory).
@@ -688,124 +743,148 @@ impl Runtime {
         self.d.props.iter().filter(|p| p.0.contains("flare")).map(|p| p.1)
     }
 
-    fn car_of(vehicles: &Vehicles, path: usize) -> Option<usize> {
-        let tag = format!("{TAG}{path}");
-        vehicles.cars.iter().position(|c| c.driver == tag)
+    /// The path of item `h`.
+    fn path_of(&self, h: u32) -> Option<usize> {
+        self.items.iter().position(|x| *x == Some(h))
     }
 
-    fn place(&mut self, vehicles: &mut Vehicles, gpu: &Gpu, i: usize) -> Option<usize> {
-        let p = self.d.paths[i].clone();
-        let exact = vehicles.models.iter().find(|m| m.name.eq_ignore_ascii_case(&p.type_name)).cloned();
-        let model = match exact {
-            Some(m) => m,
-            None => {
-                let large = |n: &str| n.contains("bus") || n.contains("rstr") || n.contains("truck");
-                let pool: Vec<_> = vehicles.models.iter().filter(|m| m.name.starts_with("va_") && !m.name.contains("trailer") && large(&m.name) == p.random_large).cloned().collect();
-                if pool.is_empty() {
-                    return None;
-                }
-                pool[(self.rand() * pool.len() as f32) as usize % pool.len()].clone()
+    /// TriggerManager_ResetTriggers: every trigger chooses its events.
+    fn reset_triggers(&mut self, vehicles: &mut Vehicles) {
+        for (ti, t) in self.d.triggers.iter().enumerate() {
+            self.chosen[ti] = select(vehicles.shared_mwc(), t.actions.len(), t.n_min, t.n_max, t.randomness);
+            if std::env::var_os("MCLA_RACEPATH_LOG").is_some() {
+                log::info!("race trigger {ti}: {} events, randomness {} min {} max {} -> {:?}", t.actions.len(), t.randomness, t.n_min, t.n_max, self.chosen[ti]);
             }
-        };
-        if vehicles.cars.iter().any(|c| c.state.pos.distance(p.pos) < 4.0) {
-            return None;
         }
-        let color = if model.name.contains("taxi") { [0.95, 0.72, 0.05, 0.0] } else { TRAFFIC_PALETTE[(i * 7 + 3) % TRAFFIC_PALETTE.len()] };
-        let idx = vehicles.spawn(gpu, model, p.pos + Vec3::Y * 0.5, 0.0, color, false);
-        let c = &mut vehicles.cars[idx];
-        c.state.rot = p.rot;
-        c.driver = format!("{TAG}{i}");
-        c.pinned = true;
-        c.ai = None;
-        // standing until its trigger comes (parked ones for good)
-        c.parked = Some(usize::MAX - i);
-        c.settle = 2.0;
-        self.state[i] = PathState::Placed;
-        Some(idx)
     }
 
-    fn start_path(&mut self, vehicles: &mut Vehicles, gpu: &Gpu, i: usize) {
-        if i >= self.d.paths.len() || matches!(self.state[i], PathState::Running | PathState::Done) || self.d.paths[i].parked {
-            return;
+    /// sub_826D60A0 (once, at the second ambient update): each path's init (its vertices onto
+    /// the lanes, its rails), then its layout item unless an "Ambient" event points at it and
+    /// none of those events' triggers chose it - type bRandomSmallAmbient: a draw of bound group
+    /// 0, taxis too; bRandomLargeAmbient: group 1, no taxis; else TypeName; at the first snapped
+    /// vertex, heading the spawn matrix's.
+    fn make_items(&mut self, vehicles: &mut Vehicles, world: &crate::world::World, focus: Vec3) -> bool {
+        let Some(nav) = world.nav.as_ref().map(traffic::rail_nav) else { return false };
+        let root = world.assets.root.clone();
+        let (mut made, mut most) = (0, 0);
+        for i in 0..self.d.paths.len() {
+            let p = self.d.paths[i].clone();
+            let ty = (!p.type_name.is_empty()).then(|| traffic::AmbType::load(&root, &p.type_name));
+            let pr = traffic::path_rails(nav, &p.verts, &p.snap, p.parked, ty.map(|t| t.min_turn), p.pos, p.row2, p.speed[1]);
+            most = most.max(pr.hits);
+            let mut referenced = false;
+            let mut chosen = false;
+            'trig: for (ti, t) in self.d.triggers.iter().enumerate() {
+                for (ei, a) in t.actions.iter().enumerate() {
+                    if matches!(a, Action::Ambient(k) if *k == i) {
+                        referenced = true;
+                        if self.chosen[ti].as_ref().is_some_and(|c| c.contains(&ei)) {
+                            chosen = true;
+                            break 'trig;
+                        }
+                    }
+                }
+            }
+            if !referenced || chosen {
+                let name = if p.random_small {
+                    vehicles.path_type_draw(&root, focus, 0, true)
+                } else if p.random_large {
+                    vehicles.path_type_draw(&root, focus, 1, false)
+                } else if !p.type_name.is_empty() {
+                    Some(p.type_name.clone())
+                } else {
+                    None
+                };
+                if name.is_none() && std::env::var_os("MCLA_RACEPATH_LOG").is_some() {
+                    log::info!("race path {i}: no type (small {} large {} TypeName '{}')", p.random_small, p.random_large, p.type_name);
+                }
+                if let Some(name) = name {
+                    let path = ItemPath { index: i, parked: p.parked, referenced, fired: false, lane: pr.lane.is_some(), spawn_when_triggered: p.spawn_when_triggered };
+                    self.items[i] = vehicles.add_layout_item(&name, pr.spawn, pr.heading(), Some(path));
+                    made += self.items[i].is_some() as u32;
+                    if std::env::var_os("MCLA_RACEPATH_LOG").is_some() {
+                        log::info!("race path {i}: item {:?} {name} at {:?} parked {} referenced {} lane {:?} rails curve {} join {} start/max {}/{} mph", self.items[i], pr.spawn, p.parked, referenced, pr.lane, pr.curve.is_some(), pr.join.is_some(), p.speed[0], p.speed[1]);
+                    }
+                }
+            } else if std::env::var_os("MCLA_RACEPATH_LOG").is_some() {
+                log::info!("race path {i}: no item (referenced, not chosen)");
+            }
+            self.rails[i] = Some(pr);
         }
-        let idx = match Self::car_of(vehicles, i) {
-            Some(x) => Some(x),
-            None => self.place(vehicles, gpu, i),
-        };
-        let Some(idx) = idx else { return };
-        let p = &self.d.paths[i];
-        let c = &mut vehicles.cars[idx];
-        c.parked = None;
-        let mut ai = AiDriver::new(0x77 + i as u32 * 31);
-        ai.target_speed = mph(p.speed[1].max(p.speed[0]).max(15.0));
-        ai.aggression = 0.6;
-        if p.verts.len() >= 2 {
-            ai.path = Some(std::sync::Arc::new(p.verts.clone()));
-            ai.path_i = 0;
+        log::info!("race paths: {} of {} made layout items (most lane answers at a vertex {most})", made, self.d.paths.len());
+        true
+    }
+
+    /// The followers the parked spawner's item branch asked for (parked.rs `item_followers_due`)
+    /// and those waiting for the ground.
+    fn followers(&mut self, vehicles: &mut Vehicles, gpu: &Gpu, world: &crate::world::World, dt: f32) {
+        for (h, shade) in std::mem::take(&mut vehicles.item_followers_due) {
+            let Some(i) = self.path_of(h) else { continue };
+            // (the spawner's item branch, sub_826F23A0, passes over an item whose path a trigger
+            // points at once that has fired, or always with bSpawnWhenTriggered: such a path's car
+            // comes only from its trigger - the guard here until parked.rs reads it)
+            let ip = vehicles.layout.get(h as usize).and_then(|x| x.as_ref()).and_then(|x| x.path);
+            if ip.is_some_and(|x| x.referenced && (x.fired || self.d.paths[i].spawn_when_triggered)) {
+                continue;
+            }
+            if !self.pending.iter().any(|p| p.0 == h) && !vehicles.cars.iter().any(|c| c.item == Some(h)) {
+                self.pending.push((h, shade, 0.0));
+            }
         }
-        // it pulls out at its starting speed
-        c.state.vel = c.state.forward() * mph(p.speed[0]) * 0.6;
-        c.ai = Some(ai);
-        self.state[i] = PathState::Running;
+        let mut keep = Vec::new();
+        for (h, shade, age) in std::mem::take(&mut self.pending) {
+            let Some(i) = self.path_of(h) else { continue };
+            let Some(pr) = self.rails[i].clone() else { continue };
+            let p = &self.d.paths[i];
+            let fired = vehicles.layout.get(h as usize).and_then(|x| x.as_ref()).and_then(|x| x.path).is_some_and(|x| x.fired);
+            let referenced = vehicles.layout.get(h as usize).and_then(|x| x.as_ref()).and_then(|x| x.path).is_some_and(|x| x.referenced);
+            let standing = p.parked || (referenced && !fired);
+            if vehicles.spawn_path_car(gpu, world, h, shade, &pr, i, p.speed[0], standing) == PathSpawn::NoGround && age + dt <= 3.0 {
+                keep.push((h, shade, age + dt));
+            }
+        }
+        self.pending = keep;
+        vehicles.item_pending = self.pending.iter().map(|p| p.0).collect();
+    }
+
+    /// A trigger's "Ambient" event (sub_82687F58).
+    fn fire_path(&mut self, vehicles: &mut Vehicles, gpu: &Gpu, world: &crate::world::World, i: usize) {
+        let (Some(Some(h)), Some(Some(pr))) = (self.items.get(i).copied(), self.rails.get(i).cloned()) else { return };
         self.started += 1;
+        let pending = self.pending.iter().any(|p| p.0 == h);
+        let p = &self.d.paths[i];
+        if let Some((shade, PathSpawn::NoGround)) = vehicles.fire_path(gpu, world, h, &pr, i, p.speed[0], p.parked, pending) {
+            self.pending.push((h, shade, 0.0));
+        }
+    }
+
+    /// Race_UnloadAmbientPathArray (the core's teardown): the paths' items removed; cars riding
+    /// lanes go with them, the others stay without their item.
+    pub fn unload(self, vehicles: &mut Vehicles) {
+        let handles: Vec<u32> = self.items.iter().flatten().copied().collect();
+        vehicles.unload_path_items(&handles);
     }
 
     /// One frame of a running race. `time` is negative during the countdown;
     /// `subjects` are the racers (car indices), the player first.
-    pub fn update(&mut self, vehicles: &mut Vehicles, gpu: &Gpu, other_signals: &mut Signals, subjects: &[usize], time: f32, lap: i32, dt: f32) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, vehicles: &mut Vehicles, gpu: &Gpu, world: &crate::world::World, other_signals: &mut Signals, subjects: &[usize], time: f32, lap: i32, dt: f32) {
         let Some(&pi) = subjects.first() else { return };
         let Some(pp) = vehicles.cars.get(pi).map(|c| c.state.pos) else { return };
-        // cars that stand along the route appear as the field comes near
-        self.tick -= dt;
-        if self.tick <= 0.0 {
-            self.tick = 0.3;
-            let active = vehicles.cars.iter().filter(|c| c.driver.starts_with(TAG)).count();
-            let mut budget = 3;
-            for i in 0..self.d.paths.len() {
-                let p = self.d.paths[i].clone();
-                let d = p.pos.distance(pp);
-                match self.state[i] {
-                    PathState::Waiting if !p.spawn_when_triggered && d < 230.0 && d > 35.0 && active < 36 && budget > 0 => {
-                        if self.place(vehicles, gpu, i).is_some() {
-                            budget -= 1;
-                        }
-                    }
-                    PathState::Placed if d > 330.0 => {
-                        // left behind: make room (car indices move, so carry on next time)
-                        if let Some(ci) = Self::car_of(vehicles, i) {
-                            if !subjects.iter().any(|&s| s > ci) {
-                                vehicles.cars.remove(ci);
-                                self.state[i] = PathState::Waiting;
-                                break;
-                            }
-                        }
-                    }
-                    PathState::Running => match Self::car_of(vehicles, i) {
-                        Some(ci) => {
-                            let c = &mut vehicles.cars[ci];
-                            let end = p.verts.last().copied().unwrap_or(p.pos);
-                            let at_end = p.verts.len() < 2 || c.state.pos.distance(end) < 14.0;
-                            if at_end || d > 380.0 {
-                                // off its path: ordinary traffic from here on
-                                if let Some(ai) = c.ai.as_mut() {
-                                    ai.path = None;
-                                    ai.link = None;
-                                    ai.target_speed = ai.target_speed.min(mph(p.speed[2].max(25.0)));
-                                }
-                                c.pinned = false;
-                                c.driver.clear();
-                                self.state[i] = PathState::Done;
-                            }
-                        }
-                        None => self.state[i] = PathState::Done,
-                    },
-                    _ => {}
-                }
-            }
+        // the triggers' reset, then (the ambient counter at 2) the paths' items
+        if self.count == 0 {
+            self.reset_triggers(vehicles);
+            self.count = 1;
+        } else if self.count == 1 && self.make_items(vehicles, world, pp) {
+            self.count = 2;
         }
+        self.followers(vehicles, gpu, world, dt);
         // triggers
         let mut fire: Vec<(usize, usize)> = Vec::new();
         for (ti, t) in self.d.triggers.iter().enumerate() {
+            if self.chosen[ti].is_none() {
+                continue;
+            }
             if self.fired[ti] >= 0.0 && (!t.multiple || time - self.fired[ti] < 4.0) {
                 continue;
             }
@@ -843,24 +922,12 @@ impl Runtime {
         for (ti, ci) in fire {
             self.fired[ti] = time.max(0.0);
             let t = self.d.triggers[ti].clone();
-            if self.rand() > t.randomness {
-                continue;
-            }
-            // a random share of the scripted cars
-            let amb: Vec<usize> = t.actions.iter().filter_map(|a| if let Action::Ambient(i) = a { Some(*i) } else { None }).collect();
-            let mut pick = amb.clone();
-            if t.n_max > 0 && !amb.is_empty() {
-                let want = (t.n_min.max(0) as f32 + self.rand() * (t.n_max - t.n_min + 1).max(1) as f32).floor() as usize;
-                while pick.len() > want.clamp(1, amb.len()) {
-                    let k = (self.rand() * pick.len() as f32) as usize % pick.len();
-                    pick.remove(k);
-                }
-            }
-            for i in pick {
-                self.start_path(vehicles, gpu, i);
-            }
-            for a in &t.actions {
+            // the events the trigger chose at its reset
+            let chosen = self.chosen[ti].clone().unwrap_or_default();
+            for &ei in &chosen {
+                let Some(a) = t.actions.get(ei) else { continue };
                 match a {
+                    Action::Ambient(i) => self.fire_path(vehicles, gpu, world, *i),
                     Action::Intersection { center, toward, green } => {
                         let a1 = vehicles.signals.force(*center, *toward - *center, *green);
                         let a2 = other_signals.force(*center, *toward - *center, *green);
@@ -885,5 +952,105 @@ impl Runtime {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// sub_82685B30: the bounds, the disarming draw, the count draw and the picks.
+    #[test]
+    fn trigger_selection_rule() {
+        // fRandomness 1.0 never disarms; 0.0 always does (u >= 0)
+        let mut m = Mwc { lo: 12345, carry: 7 };
+        assert!(select(&mut m, 4, -1, -1, 0.0).is_none());
+        // both bounds negative: every event, one draw only
+        let mut m = Mwc { lo: 12345, carry: 7 };
+        let mut m2 = m;
+        assert_eq!(select(&mut m, 5, -1, -1, 1.0), Some(vec![0, 1, 2, 3, 4]));
+        m2.next();
+        assert_eq!((m.lo, m.carry), (m2.lo, m2.carry));
+        // min 0, max 0: no event chosen (the trigger still fires, with nothing to do)
+        let mut m = Mwc { lo: 99, carry: 3 };
+        assert_eq!(select(&mut m, 5, 0, 0, 1.0), Some(vec![]));
+        // min = max: exactly that many; a min at or over the count is 0
+        let mut m = Mwc { lo: 99, carry: 3 };
+        assert_eq!(select(&mut m, 4, 2, 2, 1.0).map(|v| v.len()), Some(2));
+        let mut m = Mwc { lo: 99, carry: 3 };
+        assert_eq!(select(&mut m, 4, 4, 0, 1.0).map(|v| v.len()), Some(0));
+        // the picks by hand: n = 1 + r % 2, first r % 6, then (prev + 1 + r % 5) % 6
+        for seed in 1..200u32 {
+            let mut m = Mwc { lo: seed.wrapping_mul(2654435761), carry: seed };
+            let mut e = m;
+            let got = select(&mut m, 6, 1, 2, 1.0).unwrap();
+            let u = e.float();
+            assert!(u < 1.0);
+            let n = 1 + ((e.next() & 0x7FFF_FFFF) % 2) as usize;
+            let mut want: Vec<usize> = Vec::new();
+            let mut prev: Option<usize> = None;
+            while want.len() < n {
+                let r = (e.next() & 0x7FFF_FFFF) as usize;
+                let i = match prev {
+                    None => r % 6,
+                    Some(p) => (p + 1 + r % 5) % 6,
+                };
+                prev = Some(i);
+                if !want.contains(&i) {
+                    want.push(i);
+                }
+            }
+            assert_eq!(got, want);
+            assert_eq!((m.lo, m.carry), (e.lo, e.carry));
+            // the second pick never repeats the first (it skips it by construction)
+            if got.len() == 2 {
+                assert_ne!(got[0], got[1]);
+            }
+        }
+        // a negative min with a set max: the min is 0
+        let mut m = Mwc { lo: 5, carry: 1 };
+        let mut e = m;
+        let got = select(&mut m, 4, -1, 1, 1.0).unwrap();
+        e.float();
+        let n = ((e.next() & 0x7FFF_FFFF) % 2) as usize;
+        assert_eq!(got.len(), n);
+    }
+
+    /// The curve rail (sub_827383B8 / sub_825867F8 / sub_82587A78): clamped uniform knots, degree
+    /// min(3, k - 1), through the first and last control points.
+    #[test]
+    fn path_curve_rail() {
+        let pts: Vec<Vec3> = vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, 0.0, 0.0), Vec3::new(20.0, 0.0, 5.0), Vec3::new(30.0, 1.0, 15.0), Vec3::new(35.0, 1.0, 30.0)];
+        let c = traffic::path_curve(&pts);
+        assert_eq!(c.degree, 3);
+        assert_eq!(c.knots, vec![0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0]);
+        assert_eq!(c.t_range, 2.0);
+        assert!((c.t_max - (2.0 - 1e-4)).abs() < 1e-6);
+        assert!(c.eval(0.0).0.distance(pts[0]) < 1e-4);
+        assert!(c.eval(1.0).0.distance(pts[4]) < 1e-2);
+        // the start's tangent along the first leg
+        let d = c.eval(0.0).1.normalize();
+        assert!(d.dot(Vec3::X) > 0.999);
+        // three points: degree 2, one span, knots 0 0 0 1 1 1
+        let c3 = traffic::path_curve(&pts[..3]);
+        assert_eq!(c3.degree, 2);
+        assert_eq!(c3.knots, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        assert_eq!(c3.t_range, 1.0);
+        let mid = c3.eval(0.5).0;
+        // the quadratic's middle: (P0 + 2 P1 + P2) / 4
+        assert!(mid.distance((pts[0] + pts[1] * 2.0 + pts[2]) / 4.0) < 1e-4);
+        // four points: degree 3, knots 0 0 0 0 1 1 1 1
+        let c4 = traffic::path_curve(&pts[..4]);
+        assert_eq!(c4.knots, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
+        // two points: the line
+        let c2 = traffic::path_curve(&pts[..2]);
+        assert_eq!(c2.degree, 1);
+        assert_eq!(c2.knots, vec![0.0, 0.0, 1.0, 1.0]);
+        assert!(c2.eval(0.25).0.distance(Vec3::new(2.5, 0.0, 0.0)) < 1e-4);
+        // the nearest point (sub_825875F0) on the cubic finds a point placed on it
+        let q = c.eval(0.37).0 + Vec3::new(0.0, 2.0, 0.0);
+        let (t, d2, p) = traffic::curve_nearest(&c, q, 4, 10);
+        assert!((t - 0.37).abs() < 0.02, "t {t}");
+        assert!((d2 - 4.0).abs() < 0.2 && (p.distance_squared(q) - d2).abs() < 1e-3);
     }
 }
