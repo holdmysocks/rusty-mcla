@@ -151,6 +151,33 @@ pub fn bound_size(root: &std::path::Path, model: &str) -> Option<(f32, f32)> {
     None
 }
 
+/// The drawn wheels turn only within 75 m of the focus, horizontally (sub_82794FA8: d^2 < 5625).
+pub const SPIN_REACH2: f32 = 5625.0;
+
+/// A drawn wheel's angle kept in [0, 2 pi] (sub_82794FA8: one 2 pi off above, one on below 0).
+pub fn wrap_spin(a: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    if a > tau {
+        a - tau
+    } else if a < 0.0 {
+        a + tau
+    } else {
+        a
+    }
+}
+
+/// A parked car's drawn wheel turn (sub_82794FA8): 0.2 of a riding car's - it has no behaviour
+/// (car +452 = 0) and is no trailer.
+pub const PARKED_SPIN: f32 = 0.2;
+
+/// A parked car's front wheels' turn (sub_826E86C8 with a spot: car +3584 = a Gaussian, mean 0, sd
+/// pi / 8 (sub_821CE328), clamped to +-0.706858; drawn added to the front wheels' steer while the
+/// car has no behaviour and is no trailer, sub_82794FA8). `u1` in (0, 1], `u2` in [0, 1).
+pub fn parked_steer(u1: f32, u2: f32) -> f32 {
+    let g = (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos();
+    (g * std::f32::consts::FRAC_PI_8).clamp(-0.706858, 0.706858)
+}
+
 /// A traffic car's instance matrix (inst +16): its rotation, and the seat's place - the pose before
 /// the drawn 0.025 m drop - while it rides; rows X, up, Z, place.
 pub fn instance_matrix(c: &super::CarInstance) -> [Vec3; 4] {
@@ -1629,9 +1656,9 @@ impl Seat {
 /// The ground under `p` (the probe: a vertical segment +- 1.75 m round it, the city's bound -
 /// the original's collision class 0x800): contact point and its normal, facing up.
 pub fn probe_ground(col: &WorldCollider, p: Vec3) -> Option<(Vec3, Vec3)> {
-    let h = col.raycast(p + Vec3::Y * PROBE_HALF, Vec3::NEG_Y, 2.0 * PROBE_HALF)?;
-    let n = if h.normal.y < 0.0 { -h.normal } else { h.normal };
-    Some((h.point, n.normalize_or(Vec3::Y)))
+    // (sub_826E5540 -> sub_827974F0: one-sided faces, the nearest hit - collision.rs `probe_front`)
+    let h = col.probe_front(p + Vec3::Y * PROBE_HALF, Vec3::NEG_Y, 2.0 * PROBE_HALF)?;
+    Some((h.point, h.normal.normalize_or(Vec3::Y)))
 }
 
 /// Should the car set up a probe this frame (sub_826E5D20): trailers every frame; a standing
@@ -1894,9 +1921,10 @@ impl Vehicles {
             }
             c.state.ang_vel = Vec3::ZERO;
             let wr = c.model.params.wheel_radius.max(0.2);
+            // (the drawn wheels turn at 0.6 of the rolling rate, within 75 m: sub_82794FA8)
+            let turn = if dist2 < SPIN_REACH2 { 0.6 * if back { -v } else { v } / wr * dt } else { 0.0 };
             for w in c.state.wheels.iter_mut() {
-                // (the drawn wheels turn at 0.6 of the rolling rate: sub_82794FA8)
-                w.spin += 0.6 * if back { -v } else { v } / wr * dt;
+                w.spin = wrap_spin(w.spin + turn);
                 w.steer = 0.0;
                 w.grounded = true;
             }
@@ -1921,18 +1949,21 @@ impl Vehicles {
                 if let Some(pi) = me {
                     let m = self.cars[pi].state.pos;
                     let semi = std::env::var("MCLA_TRAFFIC_RAM_SEMI").is_ok();
-                    let pick = (0..self.cars.len()).filter(|&i| self.cars[i].rail.as_ref().is_some_and(|r| (r.state == 1 && r.v > 2.0 && !semi && !r.ty.cab && !r.ty.trailer) || (semi && r.ty.trailer && r.state == 0 && !r.physical)) && self.cars[i].state.pos.distance(m) < 150.0).min_by(|&a, &b| self.cars[a].state.pos.distance(m).total_cmp(&self.cars[b].state.pos.distance(m)));
+                    // (MCLA_TRAFFIC_RAM_PARKED: a held parked car standing still instead)
+                    let parked = std::env::var("MCLA_TRAFFIC_RAM_PARKED").is_ok();
+                    let pick = (0..self.cars.len()).filter(|&i| if parked { self.cars[i].park_held && self.cars[i].state.vel.length() == 0.0 && self.cars[i].state.pos.distance(m) > 20.0 } else { self.cars[i].rail.as_ref().is_some_and(|r| (r.state == 1 && r.v > 2.0 && !semi && !r.ty.cab && !r.ty.trailer) || (semi && r.ty.trailer && r.state == 0 && !r.physical)) } && self.cars[i].state.pos.distance(m) < 150.0).min_by(|&a, &b| self.cars[a].state.pos.distance(m).total_cmp(&self.cars[b].state.pos.distance(m)));
                     if let Some(k) = pick {
                         *last = self.clock;
-                        let (tp, tr, tv) = (self.cars[k].state.pos, self.cars[k].state.rot, if semi { self.cars[k].state.vel.length() } else { self.cars[k].rail.as_ref().unwrap().v });
-                        let f = tr * Vec3::NEG_Z;
+                        let (tp, tr, tv) = (self.cars[k].state.pos, self.cars[k].state.rot, if parked { 0.0 } else if semi { self.cars[k].state.vel.length() } else { self.cars[k].rail.as_ref().unwrap().v });
+                        // (a parked car: from its right side)
+                        let f = if parked { tr * Vec3::NEG_X } else { tr * Vec3::NEG_Z };
                         let p = &mut self.cars[pi];
                         // (as a reset puts a car: a fresh state, placed on the ground by the step)
                         p.state = crate::physics::CarState::new(tp - f * if semi { 13.0 } else { 9.0 }, (-f.x).atan2(-f.z));
                         p.placed = false;
                         p.state.vel = f * (tv + 12.0);
                         p.pose_history.reset();
-                        log::info!("traffic ram {} {} at {:?}", self.cars[k].rail.as_ref().unwrap().rng_id(), self.cars[k].model.name, tp);
+                        log::info!("traffic ram {} {} at {:?}", self.cars[k].rail.as_ref().map_or(self.cars[k].uid, |r| r.rng_id()), self.cars[k].model.name, tp);
                     }
                 }
             }
@@ -1973,6 +2004,7 @@ impl Vehicles {
     /// the spawner's next step removes it - the cars are not removed in the middle of the
     /// vehicles' update).
     fn tow_trailers(&mut self, col: &WorldCollider, dt: f32) {
+        let focus = self.cars.iter().find(|c| c.is_player).map_or(Vec3::ZERO, |c| c.state.pos);
         let ids: hashbrown::HashMap<u32, usize> = self.cars.iter().enumerate().filter_map(|(i, c)| c.rail.as_ref().filter(|r| r.state != 0).map(|r| (r.rng_id(), i))).collect();
         for i in 0..self.cars.len() {
             let Some(r) = self.cars[i].rail.as_mut().filter(|r| r.state == 0) else { continue };
@@ -2007,9 +2039,10 @@ impl Vehicles {
             t.state.ang_vel = Vec3::ZERO;
             let speed = v.dot(rot * Vec3::NEG_Z);
             let wr = t.model.params.wheel_radius.max(0.2);
+            let near = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length_squared() < SPIN_REACH2;
             for w in t.state.wheels.iter_mut() {
                 // (the drawn wheels at 0.6 of the rolling rate, as the riding cars': sub_82794FA8)
-                w.spin += 0.6 * speed / wr * dt;
+                w.spin = wrap_spin(w.spin + if near { 0.6 * speed / wr * dt } else { 0.0 });
                 w.steer = 0.0;
                 w.grounded = true;
             }
@@ -2092,6 +2125,16 @@ impl Vehicles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parked_front_wheels_and_spin() {
+        // (car +3584: N(0, pi / 8), clamped to +-0.706858)
+        assert_eq!(parked_steer(1.0, 0.0), 0.0);
+        assert_eq!(parked_steer(1e-6, 0.0), 0.706858);
+        assert_eq!(parked_steer(1e-6, 0.5), -0.706858);
+        assert!((wrap_spin(7.0) - (7.0 - std::f32::consts::TAU)).abs() < 1e-6);
+        assert!((wrap_spin(-0.5) - (std::f32::consts::TAU - 0.5)).abs() < 1e-6);
+    }
 
     #[test]
     fn tilt_of_the_drawn_body() {

@@ -425,6 +425,37 @@ pub fn ray_tri(o: Vec3, d: Vec3, tri: &[Vec3; 3], max_t: f32) -> Option<(f32, Ve
     Some((t, n))
 }
 
+/// One-sided segment test of the level's probe (sub_82619AE0, query +160 = 1): only a face whose
+/// front the segment crosses from in front to behind hits (d0 >= 0, d1 < 0); the normal is the
+/// face's own, unflipped; `max_t` itself is no hit (the probe drops a value of 0 from the end).
+#[inline]
+pub fn ray_tri_front(o: Vec3, d: Vec3, tri: &[Vec3; 3], max_t: f32) -> Option<(f32, Vec3)> {
+    let e1 = tri[1] - tri[0];
+    let e2 = tri[2] - tri[0];
+    let p = d.cross(e2);
+    let det = e1.dot(p);
+    // (det = -d . (e1 x e2): a front face has det > 0)
+    if det < 1e-7 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = o - tri[0];
+    let u = s.dot(p) * inv;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = s.cross(e1);
+    let v = d.dot(q) * inv;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = e2.dot(q) * inv;
+    if t < 0.0 || t >= max_t {
+        return None;
+    }
+    Some((t, e1.cross(e2).normalize_or_zero()))
+}
+
 #[derive(Default)]
 pub struct WorldCollider {
     // Stable traversal makes equal-distance contacts independent of hash seeds
@@ -458,6 +489,37 @@ impl WorldCollider {
                             let tri = &s.tris[i as usize];
                             let lim = best.map_or(max_t, |h| h.t);
                             if let Some((t, n)) = ray_tri(o, d, tri, lim) {
+                                best = Some(Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(i as usize).copied().unwrap_or(0)) });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    /// The level's probe against the city bound (sub_827974F0 -> sub_822C6110, include 0x800: the
+    /// city bound and city_roads only, fixed objects): one-sided faces, the nearest hit kept (one
+    /// result slot, the smallest t; on a tie the earlier one).
+    pub fn probe_front(&self, o: Vec3, d: Vec3, max_t: f32) -> Option<Hit> {
+        let mut best: Option<Hit> = None;
+        let end = o + d * max_t;
+        let mn = o.min(end);
+        let mx = o.max(end);
+        let (cx0, cz0) = cell_of(mn.x, mn.z);
+        let (cx1, cz1) = cell_of(mx.x, mx.z);
+        for s in self.sectors.values() {
+            if mx.x < s.min.x || mn.x > s.max.x || mx.z < s.min.z || mn.z > s.max.z || mx.y < s.min.y || mn.y > s.max.y {
+                continue;
+            }
+            for cx in cx0..=cx1 {
+                for cz in cz0..=cz1 {
+                    if let Some(list) = s.grid.get(&(cx, cz)) {
+                        for &i in list {
+                            let tri = &s.tris[i as usize];
+                            let lim = best.map_or(max_t, |h| h.t);
+                            if let Some((t, n)) = ray_tri_front(o, d, tri, lim) {
                                 best = Some(Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(i as usize).copied().unwrap_or(0)) });
                             }
                         }
@@ -621,6 +683,20 @@ impl WorldCollider {
 #[cfg(test)]
 mod deterministic_contact_tests {
     use super::*;
+
+    #[test]
+    fn the_probe_meets_front_faces_only() {
+        // (sub_82619AE0: from in front to behind; the face's own normal)
+        let up = [Vec3::new(-4.0, 0.0, -4.0), Vec3::new(-4.0, 0.0, 4.0), Vec3::new(4.0, 0.0, -4.0)];
+        let (t, n) = ray_tri_front(Vec3::new(-1.0, 1.0, -1.0), Vec3::NEG_Y, &up, 2.0).unwrap();
+        assert!((t - 1.0).abs() < 1e-6 && (n - Vec3::Y).length() < 1e-6);
+        // its back: none, from below or with the face turned over
+        assert!(ray_tri_front(Vec3::new(-1.0, -1.0, -1.0), Vec3::Y, &up, 2.0).is_none());
+        let down = [up[0], up[2], up[1]];
+        assert!(ray_tri_front(Vec3::new(-1.0, 1.0, -1.0), Vec3::NEG_Y, &down, 2.0).is_none());
+        // a hit exactly at the end is none
+        assert!(ray_tri_front(Vec3::new(-1.0, 1.0, -1.0), Vec3::NEG_Y, &up, 1.0).is_none());
+    }
 
     #[test]
     fn coincident_contacts_do_not_depend_on_sector_load_order() {

@@ -3500,7 +3500,8 @@ fn ambient_wheels(a: &mut Amb, b: &mut PBody, m: &[Vec3; 4], city: &super::colli
         let mid = (top + bottom) * 0.5;
         let seg = bottom - top;
         let len = seg.length();
-        let hit = (len > 0.0).then(|| city.raycast(top, seg / len, len)).flatten().map(|h| (h.point, if h.normal.y < 0.0 { Vec3::ZERO - h.normal } else { h.normal })).filter(|(_, n)| !(n.y.abs() < f32::from_bits(0x3f35_0481)));
+        // (the city bound only, one-sided, the nearest hit: collision.rs `probe_front`)
+        let hit = (len > 0.0).then(|| city.probe_front(top, seg / len, len)).flatten().map(|h| (h.point, h.normal)).filter(|(_, n)| !(n.y.abs() < f32::from_bits(0x3f35_0481)));
         let Some((contact, n)) = hit else {
             rec.slide = false;
             rec.d = ex::fnms(u.y, dt, rec.d);

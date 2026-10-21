@@ -115,6 +115,10 @@ pub struct BrakeModel {
 /// (approx.) the rotor's diameter against the rim's, measured on the capture `g_rm_0`
 const ROTOR_OF_RIM: f32 = 0.74;
 
+/// A parked car's `settle` while its ground probe is due / after it found no ground (dropped).
+const PARK_PROBE: f32 = -1.0;
+const PARK_NO_GROUND: f32 = -2.0;
+
 /// The brake model in `dir`, its unit-diameter meshes scaled to `k` of the wheel's.
 fn load_brakes(gpu: &mut Gpu, world: &mut World, dir: &Path, k: f32, shift: f32) -> Option<BrakeModel> {
     let (mut r63, mut r83) = (None, None);
@@ -291,6 +295,10 @@ pub struct CarInstance {
     pub rail: Option<traffic::Rider>,
     /// a traffic car's lamp states and glow levels (`AmbLamps`)
     pub amb_lamps: AmbLamps,
+    /// a parked car's front wheels' turn (traffic.rs `parked_steer`)
+    pub park_steer: f32,
+    /// a parked car the physics level holds as its ambient instance (loose.rs `Amb`)
+    pub park_held: bool,
 }
 
 /// A traffic car's lamps as the original's mcAmbientRenderCarInstance keeps them (sub_82792FD8,
@@ -1818,7 +1826,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default() });
+        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false });
         self.cars.len() - 1
     }
 
@@ -2026,7 +2034,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         if self.parking.is_empty() || self.parked_target == 0 {
             return;
         }
-        self.cars.retain(|c| c.parked.is_none() || c.pinned || c.state.pos.distance(center) < 260.0);
+        self.cars.retain(|c| c.parked.is_none() || c.pinned || (c.state.pos.distance(center) < 260.0 && c.settle != PARK_NO_GROUND));
         let n_parked = self.cars.iter().filter(|c| c.parked.is_some()).count();
         if n_parked >= self.parked_target {
             return;
@@ -2079,13 +2087,21 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         None => self.amb_types.get(&model.name).copied(),
                     };
                     let color = ty.and_then(|t| t.color(shade)).unwrap_or(TRAFFIC_PALETTE[shade % TRAFFIC_PALETTE.len()]);
-                    // the heading runs from +x towards +z; our yaw has forward = (-sin, 0, -cos)
-                    let flip = if (h / 13) % 2 == 0 { 0.0 } else { std::f32::consts::PI };
-                    let yaw = -(sp.heading + std::f32::consts::FRAC_PI_2) + flip;
-                    let idx = self.spawn(gpu, model, sp.pos + Vec3::Y * 0.9, yaw, color, false);
+                    // (sub_826DF700 / sub_826DE7F8: z row (sin h, 0, cos h), the car facing -z =
+                    // (-sin h, 0, -cos h) - our yaw's forward is (-sin, 0, -cos); put on the ground by
+                    // the spawn probe in the step, `PARK_PROBE`)
+                    let yaw = sp.heading;
+                    let idx = self.spawn(gpu, model, sp.pos, yaw, color, false);
                     self.cars[idx].ai = None;
                     self.cars[idx].parked = Some(si);
-                    self.cars[idx].settle = 2.0;
+                    let u1 = (((h / 17) % 10007) + 1) as f32 / 10008.0;
+                    let u2 = ((h / 101) % 9973) as f32 / 9973.0;
+                    let steer = traffic::parked_steer(u1, u2);
+                    self.cars[idx].park_steer = steer;
+                    for w in self.cars[idx].state.wheels.iter_mut().take(2) {
+                        w.steer = steer;
+                    }
+                    self.cars[idx].settle = PARK_PROBE;
                     spawned += 1;
                     if spawned >= 2 || n_parked + spawned >= self.parked_target {
                         break 'outer;
@@ -2732,6 +2748,31 @@ if keep || c.state.pos.distance(center) < 450.0 {
             if c.rail.as_ref().is_some_and(|r| !r.physical || r.in_level) {
                 continue;
             }
+            // a parked car: on the ground by the spawn probe once its ground is here (sub_826E6380 /
+            // sub_826E5160: +-1.75 m round the spot, the place the hit, up its normal, the forward made
+            // square to it; no hit: no car), then the physics level's (loose.rs `Amb`)
+            if c.parked.is_some() && (c.park_held || c.settle == PARK_PROBE || c.settle == PARK_NO_GROUND) {
+                if c.settle == PARK_PROBE && world.ready_at(c.state.pos) {
+                    match traffic::probe_ground(&world.collider, c.state.pos) {
+                        Some((at, up)) => {
+                            let f = c.state.forward();
+                            let right = f.cross(up).normalize_or(Vec3::X);
+                            let f = up.cross(right).normalize_or(f);
+                            c.state.relocate(at, Quat::from_mat3(&glam::Mat3::from_cols(right, up, -f)).normalize());
+                            c.state.vel = Vec3::ZERO;
+                            c.state.ang_vel = Vec3::ZERO;
+                            c.pose_history.reset();
+                            c.placed = true;
+                            c.settle = 0.0;
+                        }
+                        None => {
+                            c.placed = false;
+                            c.settle = PARK_NO_GROUND;
+                        }
+                    }
+                }
+                continue;
+            }
             if let Some((p, yaw)) = c.ai.as_mut().and_then(|a| a.reset_to.take()) {
                 c.state = CarState::new(p, yaw);
                 c.pose_history.reset();
@@ -2859,7 +2900,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         continue;
                     }
                     // (traffic the physics level holds: its pairs are the level's - loose.rs `Amb`)
-                    let held = |c: &CarInstance| c.rail.as_ref().is_some_and(|r| r.in_level);
+                    let held = |c: &CarInstance| c.park_held || c.rail.as_ref().is_some_and(|r| r.in_level);
                     if shared.is_some() && (held(&self.cars[i]) || held(&self.cars[j])) {
                         continue;
                     }
@@ -3028,7 +3069,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         for (j, o) in self.cars.iter().enumerate() {
             // (a car before this one has stepped: their pair was in its step; traffic the level holds
             // is an object of its own there - loose.rs `Amb`)
-            if j <= k || !o.placed || o.pu_ghost || self.cars[k].pu_ghost || o.rail.as_ref().is_some_and(|r| r.in_level) {
+            if j <= k || !o.placed || o.pu_ghost || self.cars[k].pu_ghost || o.park_held || o.rail.as_ref().is_some_and(|r| r.in_level) {
                 continue;
             }
             let p = o.tuned.as_deref().unwrap_or(&o.model.params);
@@ -3053,8 +3094,28 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// made physical (its footprint probe, a knock) is made active there.
     fn ambient_into_level(&mut self, dt: f32) {
         let Some(root) = traffic::DATA_ROOT.get().cloned() else { return };
-        let alive: std::collections::HashSet<u32> = self.cars.iter().filter(|c| c.rail.is_some()).map(|c| c.uid).collect();
+        let alive: std::collections::HashSet<u32> = self.cars.iter().filter(|c| c.rail.is_some() || c.park_held).map(|c| c.uid).collect();
         self.level.ambient_keep(&|u| alive.contains(&u));
+        // parked cars: the same ambient car with no behaviour, an inactive instance where it stands
+        // (sub_826DF700 -> sub_826DF260 -> sub_826EAD00); any contact activates it, it rolls as the
+        // passive collider and rests where it stops, still parked (sub_826E68C0: no behaviour, no
+        // recovery) - ag13_park_report.txt
+        for k in 0..self.cars.len() {
+            let c = &self.cars[k];
+            if c.parked.is_none() || c.rail.is_some() || !c.placed || c.settle == PARK_PROBE || c.settle == PARK_NO_GROUND {
+                continue;
+            }
+            let Some(ty) = self.amb_types.get(&c.model.name).copied() else { continue };
+            let Some(tune) = traffic::amb_tune(&root, &c.model.name, c.model.own_wheels, &ty) else { continue };
+            let m = glam::Mat3::from_quat(c.state.rot);
+            self.level.ambient_place(c.uid, &tune, [m.x_axis, m.y_axis, m.z_axis, c.state.pos], None, c.inflict, dt);
+            let c = &mut self.cars[k];
+            if !c.park_held {
+                c.park_held = true;
+                c.state.vel = Vec3::ZERO;
+                c.state.ang_vel = Vec3::ZERO;
+            }
+        }
         // (a semi's other car: a trailer's cab is the car its id names; a cab's trailer the one that names it)
         let cabs: std::collections::HashMap<u32, u32> = self.cars.iter().filter_map(|c| c.rail.as_ref().filter(|r| r.state != 0).map(|r| (r.rng_id(), c.uid))).collect();
         let trailers: std::collections::HashMap<u32, u32> = self.cars.iter().filter_map(|c| c.rail.as_ref().filter(|r| r.state == 0).and_then(|r| r.partner).map(|p| (p, c.uid))).collect();
@@ -3083,6 +3144,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
         self.level.ambient_frame(dt);
         let ram = std::env::var("MCLA_TRAFFIC_RAM").is_ok();
         for (uid, woke, slept) in self.level.ambient_events() {
+            if ram {
+                if let Some(c) = self.cars.iter().find(|c| c.uid == uid && c.park_held) {
+                    let me = self.cars.iter().find(|c| c.is_player).map(|c| (c.state.pos, c.state.vel.length())).unwrap_or_default();
+                    log::info!("traffic level parked {} {} {} at {:?} d {:.2} player v {:.2}", if woke { "active" } else { "rest" }, c.model.name, uid, c.state.pos, c.state.pos.distance(me.0), me.1);
+                }
+            }
             let Some(k) = self.cars.iter().position(|c| c.uid == uid && c.rail.is_some()) else { continue };
             if ram {
                 let me = self.cars.iter().find(|c| c.is_player).map(|c| (c.state.pos, c.state.vel.length())).unwrap_or_default();
@@ -3110,16 +3177,38 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         let (ha, hb) = if r.ty.trailer { (traffic::TRAILER_HITCH_PUB, traffic::CAB_HITCH_PUB) } else { (traffic::CAB_HITCH_PUB, traffic::TRAILER_HITCH_PUB) };
                         Some(x(&a.0, ha).distance(x(&b.0, hb)))
                     });
-                    log::info!("traffic active {} {} v {:.2} w {:.2} up {:.3} hitch gap {:?}", c.model.name, c.uid, c.state.vel.length(), c.state.ang_vel.length(), c.state.up().y, gap);
+                    log::info!("traffic active {} {} v {:.2} w {:.2} up {:.3} hitch gap {:?} spin0 {:.2}", c.model.name, c.uid, c.state.vel.length(), c.state.ang_vel.length(), c.state.up().y, gap, c.state.wheels[0].spin);
+                }
+                for c in self.cars.iter().filter(|c| c.park_held && self.level.ambient_pose(c.uid).is_some()) {
+                    log::info!("traffic active parked {} {} v {:.2} w {:.2} up {:.3} spin0 {:.2} steer {:.3} at {:?}", c.model.name, c.uid, c.state.vel.length(), c.state.ang_vel.length(), c.state.up().y, c.state.wheels[0].spin, c.state.wheels[0].steer, c.state.pos);
                 }
             }
         }
+        let focus = self.cars.iter().find(|c| c.is_player).map_or(Vec3::ZERO, |c| c.state.pos);
         for c in self.cars.iter_mut() {
-            if !c.rail.as_ref().is_some_and(|r| r.active) {
+            if !c.rail.as_ref().is_some_and(|r| r.active) && !c.park_held {
                 continue;
             }
-            let Some((m, v, w)) = self.level.ambient_pose(c.uid) else { continue };
+            let Some((m, v, w)) = self.level.ambient_pose(c.uid) else {
+                if c.park_held {
+                    c.state.vel = Vec3::ZERO;
+                    c.state.ang_vel = Vec3::ZERO;
+                }
+                continue;
+            };
             let rot = Quat::from_mat3(&glam::Mat3::from_cols(m[0], m[1], m[2])).normalize();
+            // (the drawn wheels of a physical car: the same render update as a riding one's -
+            // sub_82794FA8 with car +208, the instance position's change over the frame, along the
+            // car's forward (the steer is 0 in states 4 / 5), x 0.6 / r, within 75 m)
+            let moved = if dt > 0.0 { (m[3] - c.state.pos) / dt } else { Vec3::ZERO };
+            let near = Vec3::new(m[3].x - focus.x, 0.0, m[3].z - focus.z).length_squared() < traffic::SPIN_REACH2;
+            let wr = c.model.params.wheel_radius.max(0.2);
+            let rate = if c.park_held { 0.6 * traffic::PARKED_SPIN } else { 0.6 };
+            let turn = if near { rate * moved.dot(rot * Vec3::NEG_Z) / wr * dt } else { 0.0 };
+            for (i, wh) in c.state.wheels.iter_mut().enumerate() {
+                wh.spin = traffic::wrap_spin(wh.spin + turn);
+                wh.steer = if c.park_held && i <= 1 { c.park_steer } else { 0.0 };
+            }
             c.state.relocate(m[3], rot);
             c.state.vel = v;
             c.state.ang_vel = w;

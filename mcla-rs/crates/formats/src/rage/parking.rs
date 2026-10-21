@@ -4,8 +4,9 @@
 //! ```text
 //! +28 u8 kind (1 = kerbside, 0 = car park)   +30 vec3 position   +3c f32 heading
 //! ```
-//! The heading is in radians measured from +x towards +z, i.e. the parked car points
-//! along `(cos h, 0, sin h)`.
+//! The heading h is in radians; the parked car's z row is (sin h, 0, cos h) and it faces -z =
+//! `(-sin h, 0, -cos h)` (sub_826DF700 / sub_826DE7F8). Checked on the data: so placed, 87 % of the
+//! kind-1 spots stand side by side with their nearest neighbour 3.3 m away (nose-in rows).
 
 use super::Rd;
 use crate::rsc::Resource;
@@ -21,7 +22,7 @@ pub struct ParkingSpot {
 impl ParkingSpot {
     /// Direction the parked car faces.
     pub fn dir(&self) -> Vec3 {
-        Vec3::new(self.heading.cos(), 0.0, self.heading.sin())
+        Vec3::new(-self.heading.sin(), 0.0, -self.heading.cos())
     }
 }
 
