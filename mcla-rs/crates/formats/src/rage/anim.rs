@@ -10,7 +10,8 @@
 //! Channels: byte +5 is the type: 4 static float (+8), 6 quantised floats (+8 -> bit
 //! stream, +0c bits per value, +10 count, +14 scale, +18 offset; values are packed
 //! LSB first inside big-endian 32-bit words), 9 static quaternion (+8 -> xyzw),
-//! 0x0d static vector (+8 -> xyz).
+//! 0x0d static vector (+8 -> xyz), 1 raw floats (+8 -> f32 list, +0c u16 count; the Beaches garage
+//! scene's camera x, whose values start at the set-up's wait camera -3059.59).
 //!
 //! Long animations (cutscenes) are cut into blocks of 128 frames; the last frame of a
 //! block is the first of the next. Track kind 10 is a camera's field of view (degrees,
@@ -59,6 +60,14 @@ fn bits(rd: &Rd, p: usize, bit: usize, n: usize) -> u32 {
 fn channel(rd: &Rd, ch: usize, frames: usize) -> Option<Vec<f32>> {
     match rd.u8(ch + 5) {
         4 => Some(vec![rd.f32(ch + 8)]),
+        1 => {
+            let p = rd.ptr(ch + 8)?;
+            let cnt = (rd.u16(ch + 0x0c) as usize).min(frames.max(1));
+            if cnt == 0 || !rd.has(p, cnt * 4) {
+                return None;
+            }
+            Some((0..cnt).map(|i| rd.f32(p + i * 4)).collect())
+        }
         6 => {
             let p = rd.ptr(ch + 8)?;
             let nb = rd.u32(ch + 0x0c) as usize;

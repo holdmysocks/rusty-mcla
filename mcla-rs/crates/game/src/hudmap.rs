@@ -3007,6 +3007,10 @@ pub enum CineKind {
     SharpAngle,
     /// Warp_SouthSideCloseCar_Cinematically (l.227; 3.033 s)
     SouthSideCloseCar,
+    /// Warp_Target_Close (l.354, "used for story location cuts": a Serial with one UITransition_Lerp,
+    /// ease_in_out, total 1, no Lean) - STORY_LOCATION_CUT_SIMPLE with the render camera within 100 of
+    /// the destination (`sub_8221A440` case 17); `CineWarp::target_close`
+    TargetClose,
 }
 
 impl CineKind {
@@ -3048,6 +3052,7 @@ impl CineKind {
             CineKind::SharpAngle => ui_time(3.05),
             // (AxisStages 2.5025 + .533866 -> 2.5 + 16/30; Axis2Stages 2.002 + 1.03436667 -> 2 + 31/30)
             CineKind::SouthSideCloseCar => ui_time(2.5025) + ui_time(0.533_866),
+            CineKind::TargetClose => 1.0,
         }
     }
 
@@ -3058,14 +3063,14 @@ impl CineKind {
         let tl = self.total();
         let x = (t / tl).clamp(0.0, 1.0);
         match self {
-            CineKind::HighAltitude => t.min(tl),
+            CineKind::HighAltitude | CineKind::TargetClose => t.min(tl),
             CineKind::CloseToTarget => tl * (1.0 - (PI * x).cos()) * 0.5,
             _ => tl * (x * PI * 0.5).sin(),
         }
     }
 
     fn lean_factor(self) -> f32 {
-        if self == CineKind::CloseToTarget {
+        if self == CineKind::CloseToTarget || self == CineKind::TargetClose {
             0.0
         } else {
             20.0
@@ -3136,6 +3141,16 @@ impl CineWarp {
 
     pub fn kind(&self) -> CineKind {
         self.kind
+    }
+
+    /// STORY_LOCATION_CUT_SIMPLE (the garages' and hangouts' Warper_TransitionTo, `sub_8221A440` case 17)
+    /// with the render camera `s` within 100 of the destination `e`: Warp_Target_Close started by
+    /// `sub_8221A3E0` -> `sub_82219BA0`, whose lens (Lerp_Float, warper+292) goes from the current one to
+    /// req+96 = 21.86547 (degrees; the 51 mm scene lens) with no delay over 0.8 T (0x820082E0).
+    pub fn target_close(s: CamRows, e: CamRows, fov_from: f32, fov_to: f32) -> CineWarp {
+        let kind = CineKind::TargetClose;
+        let lens = NavLens { from: fov_from, to: fov_to, delay: 0.0, dur: 0.8 * kind.total(), clock: 0.0, deg: fov_from };
+        CineWarp { kind, s, e, vel: Vec3::ZERO, t: 0.0, out: s, lat_a: None, hist: [0.0; 4], last: 0.0, prev: s, acc: 0.0, lam: 0.0, t_prev: 0.0, lens }
     }
 
     /// the flight's length (`CineKind::total`)
@@ -3220,9 +3235,9 @@ impl CineWarp {
                 }
                 q
             }
-            CineKind::CloseToTarget => {
+            CineKind::CloseToTarget | CineKind::TargetClose => {
                 // UITransition_Lerp (start `sub_822314D0`, update `sub_8222DE78`, `sub_8222DD28`): its own
-                // ease_in_out clock over 2 s on top of the Lean's; eye = S + (E - S) p
+                // ease_in_out clock over 2 s (1 s in Warp_Target_Close) on top of the Lean's; eye = S + (E - S) p
                 s.eye + (e.eye - s.eye) * self.lerp_p(c)
             }
         };
@@ -3236,6 +3251,8 @@ impl CineWarp {
                 CineKind::SouthSideCloseCar => (10.0, 0.0, ui_time(2.002), 0.0, ui_time(1.034_366_7), tl, tl_prev),
                 CineKind::SharpAngle => (10.0, 0.0, 2.0, 0.0, ui_time(1.05), c, self.kind.clock(tl_prev)),
                 CineKind::CloseToTarget => (2.0, 0.0, 1.5, 0.0, ui_time(0.55), c, self.kind.clock(tl_prev)),
+                // (Warp_Target_Close has no target_velocity stages)
+                CineKind::TargetClose => (0.0, 0.0, 1.0, 0.0, 1.0, c, c),
             };
             let s2 = d1 + t1 + d2;
             let tau2 = if d2 > 0.0 && ct_prev < s2 { 0.0 } else { ct - s2 };
@@ -3245,10 +3262,11 @@ impl CineWarp {
         eye
     }
 
-    /// The Lerp's progress at Lean clock `c`: (1 - cos(pi min(1, c / 2))) / 2 (its ease_in_out,
-    /// `sub_82227CE8`, total 2).
+    /// The Lerp's progress at Lean clock `c`: (1 - cos(pi min(1, c / T))) / 2 (its ease_in_out,
+    /// `sub_82227CE8`, total T = 2; 1 in Warp_Target_Close).
     fn lerp_p(&self, c: f32) -> f32 {
-        (1.0 - (PI * (c / 2.0).clamp(0.0, 1.0)).cos()) * 0.5
+        let tl = if self.kind == CineKind::TargetClose { 1.0 } else { 2.0 };
+        (1.0 - (PI * (c / tl).clamp(0.0, 1.0)).cos()) * 0.5
     }
 
     /// One frame: the camera and the lens, or None once the flight is over (t >= total; the scene
@@ -3316,7 +3334,7 @@ impl CineWarp {
                     s.roty(d * s_curve(c / tr))
                 }
             }
-            CineKind::CloseToTarget => {
+            CineKind::CloseToTarget | CineKind::TargetClose => {
                 // the Lerp's rows: slerp of the start / end quaternions (`sub_821BA038`, shorter way,
                 // `sub_821D5BE8`)
                 let q = |r: CamRows| glam::Quat::from_mat3(&glam::Mat3::from_cols(r.r0, r.r1, r.r2)).normalize();

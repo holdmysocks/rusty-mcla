@@ -461,6 +461,10 @@ pub struct Game {
     /// and the opacity of the cut mask (TRANSITIONMOVIE), set by the camera each frame
     pub hud_camera: i32,
     pub cut_mask: f32,
+    /// driving into a garage (main.rs `garagein`): the black of its scene and fade up, and the place's
+    /// name and district while ShowLocationName is up (popup template 63)
+    pub place_mask: f32,
+    pub place_title: Option<(String, String)>,
     /// textures and strings shared by the Flash movies
     pub ui_shared: Option<crate::flash_ui::UiShared>,
     /// the minimap's frame movie (hudmap.swf)
@@ -575,6 +579,8 @@ pub struct Game {
     /// on form 60, 0.2 s of real time after the end-of-race speech) and the wait before it
     pub race_slow: crate::mc4::SlowMo,
     pub race_slow_wait: Option<f32>,
+    /// a hangout entry's "ease to pause" / "ease from pause" (form 108; `hangoutin`)
+    pub hangout_slow: crate::mc4::SlowMo,
     /// real seconds since the player crossed the line (the race-end panels, `RACE_END_*`)
     pub race_end_t: Option<f32>,
     /// the results on show are a career race's (panels, then the cruise - no menu)
@@ -1127,6 +1133,7 @@ impl Game {
             mission_results: Vec::new(),
             race_slow: crate::mc4::SlowMo::default(),
             race_slow_wait: None,
+            hangout_slow: crate::mc4::SlowMo::default(),
             race_end_t: None,
             career_over: false,
             save_box: 0,
@@ -1136,6 +1143,8 @@ impl Game {
             starter_pick: None,
             starter_swap: None,
             dive_k: 0.0,
+            place_mask: 0.0,
+            place_title: None,
             ui_sim_dt: 0.0,
             scene_hud_off: false,
             mark_tune: None,
@@ -7667,14 +7676,23 @@ impl Game {
                     }
                     _ => None,
                 };
-                if let Some((name, kind, icon)) = race_badge {
-                    let page = crate::flash_ui::MenuPage {
+                // (a garage entry's ShowLocationName: template 63, the place's name and its district)
+                let place_page = self.place_title.clone().filter(|_| self.flash_popup.is_some() && self.message_box.is_none()).map(|(name, desc)| crate::flash_ui::MenuPage {
+                    layout: crate::flash_ui::MenuLayout::CutsceneTitle { description: desc },
+                    title: name,
+                    select: usize::MAX,
+                    ..Default::default()
+                });
+                let page = place_page.or_else(|| {
+                    race_badge.map(|(name, kind, icon)| crate::flash_ui::MenuPage {
                         layout: crate::flash_ui::MenuLayout::StartOfRace { description: kind, ring: std::env::var("MCLA_BADGE_RING").ok().and_then(|v| u32::from_str_radix(&v, 16).ok()).unwrap_or_else(|| self.badge_ring()) },
                         icon: std::env::var("MCLA_BADGE_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(icon),
                         title: name,
                         select: usize::MAX,
                         ..Default::default()
-                    };
+                    })
+                });
+                if let Some(page) = page {
                     let dt = ctx.input(|i| i.stable_dt).min(0.1);
                     let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("cine"));
                     if let Some(fp) = self.flash_popup.as_mut() {
@@ -8034,6 +8052,12 @@ impl Game {
                     }
                 }
             }
+        }
+        // a garage entry's black (TRANSITIONMOVIE, mask_color 0) over everything
+        if self.place_mask > 0.0 {
+            let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("place_mask"));
+            ctx.move_to_top(layer);
+            ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.place_mask.clamp(0.0, 1.0) * 255.0).round() as u8));
         }
         self.message_timer = (self.message_timer - ctx.input(|i| i.stable_dt)).max(0.0);
         action

@@ -656,6 +656,10 @@ pub enum MenuLayout {
     /// `raceName` - the page's title, this line under it, a ring of this colour around the
     /// page's icon; reference `y_replay_intro`)
     StartOfRace { description: String, ring: u32 },
+    /// the place-name band (`template_CutsceneTitile` 63: the clip `cutscene_title` plays, `slot0` the
+    /// page's title in `col_title`, `slot1` this line in `col_item`; ShowLocationName of a garage entry,
+    /// reference `work/garage-intro/capE`)
+    CutsceneTitle { description: String },
     /// the plate's seven characters as places in the movie's own table `LP_chars`
     /// (`template_licenceplate` 45; the page's `select` is the character under the cursor)
     LicensePlate { chars: [usize; 7] },
@@ -923,6 +927,10 @@ impl FlashMenu {
                 p.set_path("menu.type", Value::Int(*ring as i32));
                 57
             }
+            MenuLayout::CutsceneTitle { description } => {
+                p.set_path("menu.description", Value::str(description));
+                63
+            }
             MenuLayout::LicensePlate { chars } => {
                 for (i, c) in chars.iter().enumerate() {
                     p.set_path(&format!("LP_slotsIdx.{}", i), Value::Int(*c as i32));
@@ -1100,6 +1108,9 @@ impl FlashMenu {
         if let MenuLayout::StartOfRace { description, ring } = &page.layout {
             p.set_path("menu.description", Value::str(description));
             p.set_path("menu.type", Value::Int(*ring as i32));
+        }
+        if let MenuLayout::CutsceneTitle { description } = &page.layout {
+            p.set_path("menu.description", Value::str(description));
         }
         // the movie measures its own content to size the panel, so a brand with
         // short rim names draws a narrower panel than one with long names and the

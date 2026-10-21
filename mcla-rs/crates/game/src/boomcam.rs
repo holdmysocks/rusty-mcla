@@ -572,6 +572,18 @@ impl CutMask {
         // (the movie's next frame is the first: the mask is up on the frame of the cut)
         *self = CutMask { fade_in, fade_out, delay, on: true, clock: -1.0, ..Default::default() };
     }
+    /// The fade up of a held mask (game/misctasks/screen_fade_to_scene and garage_core's own:
+    /// StartOfTransitionin 0, TransitionOutisReady 2, StartOfTransitionout 1, fade_speed_out `fade_out`):
+    /// no more fading in, the alpha goes down from where it is.
+    pub fn release(&mut self, fade_out: f32) {
+        if self.on {
+            self.fade_out = fade_out;
+            self.ready = 2;
+        }
+    }
+    pub fn is_on(&self) -> bool {
+        self.on
+    }
     /// The mask's opacity 0..1 after `dt` seconds.
     pub fn update(&mut self, dt: f32) -> f32 {
         if !self.on {

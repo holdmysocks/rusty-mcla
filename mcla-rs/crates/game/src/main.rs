@@ -17,6 +17,8 @@ mod citymap;
 mod career;
 mod catalog;
 mod garagecam;
+mod garagein;
+mod hangoutin;
 mod radio;
 mod offroad;
 mod occluder;
@@ -342,6 +344,20 @@ struct App {
     delivery_tail: Option<(String, f32)>,
     /// the garage's door takes the car in (not straight after leaving it)
     door_armed: bool,
+    /// driving into a garage: the warp to its sign, the scene, the fade up (`garagein`)
+    garage_in: Option<garagein::Entry>,
+    /// pulling into a hangout: the ease to pause, the warp to its wait camera (`hangoutin`)
+    hangout_entry: Option<hangoutin::Entry>,
+    /// the place's band of a hangout entry: the clock from the warp's start
+    hangout_title: Option<(usize, f32)>,
+    /// the player's position a frame before (the entry lines' move: racer+400 -> the matrix)
+    hangout_prev: Option<Vec3>,
+    /// the camera of that warp and the wait after it (eye, look point, up, lens in radians)
+    place_view: Option<(Vec3, Vec3, Vec3, f32)>,
+    /// its black (the scene's fade_to_black, garage_core's fade up)
+    garage_mask: boomcam::CutMask,
+    /// leaving the garage for the street: seconds into the fade to black before the drive-out scene
+    garage_out: Option<f32>,
     /// seconds of cruising until a racer rings with a challenge (`game/race/TelephoneChallenge`)
     phone_challenge_in: f32,
     /// a new career's opening (the film, the arrival) has been started - before VEHICLE SELECT
@@ -744,6 +760,13 @@ impl App {
             delivery_intro: None,
             delivery_tail: None,
             door_armed: std::env::var("MCLA_DOOR_IN").is_ok(),
+            garage_in: None,
+            hangout_entry: None,
+            hangout_title: None,
+            hangout_prev: None,
+            place_view: None,
+            garage_mask: Default::default(),
+            garage_out: None,
             phone_challenge_in: 0.0,
             intro_played: false,
             starter_stand: None,
@@ -2625,9 +2648,20 @@ impl App {
             let name = near.filter(|n| n.1 < 170.0).map(|n| self.hangouts[n.0].0.clone());
             self.cine.set_ambient(&mut gpu, name.as_deref());
             let free = self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.roam.challenge.is_none() && self.cine.playing.is_none() && self.cuts.playing.is_none() && self.game.movie.is_none();
+            // (the hangout cores' entry lines: the player's move of this frame - `hangoutin::crossed`; the
+            // port's hangout of that set-up by its scenes' name)
+            let cur = pp.map(|(p, _)| p);
+            let line = match (self.hangout_prev, cur) {
+                (Some(a), Some(b)) => hangoutin::crossed_any(a, b),
+                _ => None,
+            };
+            self.hangout_prev = cur;
+            // (port guard: only a hangout whose scene parks the car near its line - South Central's scenes' car
+            // poses are not in the city's frame in the port, CUTSCENES.md)
+            let line = line.and_then(|s| self.hangouts.iter().position(|h| hangoutin::SETUPS[s].scene.starts_with(&format!("{}_", h.0))).filter(|&j| self.hangouts[j].1.distance(hangoutin::SETUPS[s].line[0]) < 60.0).map(|j| (s, j)));
             if let (Some((i, d)), Some((_, speed))) = (near, pp) {
                 if self.tick_no % 120 == 0 && std::env::var("MCLA_HANGOUT_TRACE").is_ok() {
-                    log::info!("hangout trace: nearest {} (spot {:?}) at {:.1} m, speed {:.1}, free {}, in {:?}, armed {}, mode {:?}", self.hangouts[i].0, self.hangouts[i].1, d, speed, free, self.hangout_in, self.delivery_armed, self.game.mode as u8);
+                    log::info!("hangout trace: nearest {} (spot {:?}) at {:.1} m, speed {:.1}, free {} (race {} challenge {} cine {} cuts {} movie {}), in {:?}, armed {}, mode {:?}", self.hangouts[i].0, self.hangouts[i].1, d, speed, free, self.game.race.is_some(), self.roam.challenge.is_some(), self.cine.playing.is_some(), self.cuts.playing.is_some(), self.game.movie.is_some(), self.hangout_in, self.delivery_armed, self.game.mode as u8);
                 }
                 if let Some(h) = self.hangout_in {
                     if free && self.mode_before == Mode::RaceSelect && std::env::var("MCLA_NO_CINE").is_err() {
@@ -2663,44 +2697,129 @@ impl App {
                         self.game.hangout_diff = 1;
                         self.pending_action = MenuAction::OpenRaceSelect;
                     }
-                } else if free && self.cuts.idle() && d < 10.0 && speed < 7.0 && !self.hangouts[i].0.starts_with("delivery") && std::env::var("MCLA_NO_CINE").is_err() && self.game.mc4_hangout_open(&self.hangouts[i].0) && !matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search) {
-                    // (step 21b: <HANGOUT>_ENTER - a mission's event script plays its story scene in
-                    // place of the hangout's own entry; the hangout follows once it is over)
-                    let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
-                    let story = mc4::hangout_key_of_scene(&self.hangouts[i].0).and_then(|k| self.game.career.location_enter(&format!("{}_ENTER", k.to_ascii_uppercase()))).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));
-                    if let Some(s) = story {
-                        self.cuts.queue(s);
-                    } else if self.cine.start(&mut gpu, &format!("{}_ent_01", self.hangouts[i].0), glam::Mat4::IDENTITY) {
-                        self.hangout_in = Some(i);
-                        self.cine_free = true;
-                        self.cine_caption = Some("HANGOUT".to_string());
-                        self.cine_after = Some(MenuAction::OpenRaceSelect);
-                        // (four of the hangouts take bets: Mack's Burger, the rooftop parking in
-                        // Santa Monica, the Diamond Lot and the Hollywood Lookout - the scenes
-                        // their own scripts play)
-                        self.game.wager_here = ["_04", "_06", "_08", "_10"].iter().any(|n| self.hangouts[i].0.ends_with(n));
-                        // The hangouts by their names in the string table. The scenes are numbered
-                        // in the table's order: Hollywood's three local ones and its wager one,
-                        // then the Beaches', Downtown's and the Hills' pairs. (01 = THE GREAT
-                        // PALACE checked in the recomp; the others by that order and their places.)
-                        const KEYS: [(&str, &str); 12] = [("/cut_hangout_01", "hw_local_hangout1"), ("/cut_hangout_02", "hw_local_hangout2"), ("/cut_hangout_03", "hw_local_hangout3"), ("/cut_hangout_04", "hw_wager_hangout1"), ("/cut_hangout_05", "be_local_hangout1"), ("/cut_hangout_06", "be_wager_hangout1"), ("/cut_hangout_07", "dt_local_hangout1"), ("/cut_hangout_08", "dt_wager_hangout1"), ("/cut_hangout_09", "hl_local_hangout1"), ("/cut_hangout_10", "hl_wager_hangout1"), ("/sc_cut_hangout_01", "sc_local_hangout1"), ("/sc_cut_hangout_02", "sc_wager_hangout1")];
-                        self.game.hangout_key = KEYS.iter().find(|k| self.hangouts[i].0.ends_with(k.0)).map(|k| k.1.to_string());
-                        self.game.hangout_diff = 0;
-                        // the list opens at the events around here
-                        let here = self.hangouts[i].1;
-                        let mission = self.game.mission_races.clone();
-                        let best = (0..self.game.race_defs.len()).min_by(|&a, &b| {
-                            let key = |k: usize| self.game.race_defs[k].beacon.distance(here) - if mission.contains(&k) { 5000.0 } else { 0.0 };
-                            key(a).partial_cmp(&key(b)).unwrap()
-                        });
-                        if let Some(b) = best {
-                            self.game.race_sel = b;
-                        }
-                    } else {
-                        self.hangout_in = Some(i);
-                    }
+                } else if let Some((si, j)) = line.filter(|&(_, j)| free && self.cuts.idle() && self.hangout_entry.is_none() && std::env::var("MCLA_NO_CINE").is_err() && self.game.mc4_hangout_open(&self.hangouts[j].0) && !matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted)) {
+                    // the core's entry line crossed - no speed test, not with the police activity above 1 (the
+                    // barrier's test): "ease to pause" (0.2 s), then the warp to the wait camera (`hangoutin`)
+                    log::info!("hangout entry: {} line crossed at {:?}, speed {:.1}", hangoutin::SETUPS[si].key, cur, speed);
+                    self.game.hangout_slow.set(0.0, 1.0 / hangoutin::SLOW_IN, false, true, 1.0);
+                    self.game.hangout_slow.visible = true;
+                    self.hangout_entry = Some(hangoutin::Entry { setup: si, hangout: j, stage: hangoutin::Stage::Slow, t: 0.0, warp: None });
                 } else if free && d < 60.0 && self.tick_no % 240 == 0 && self.news.is_empty() {
                     self.game.show_message("HANGOUT  -  PULL IN TO SEE THE EVENTS");
+                }
+            }
+            // ---- pulling into a hangout (`hangoutin`): the ease to pause, the warp, the event, the scene ----
+            let mut enter: Option<(usize, usize)> = None;
+            if let Some(mut he) = self.hangout_entry.take() {
+                he.t += dt;
+                let su = &hangoutin::SETUPS[he.setup];
+                let mut keep = true;
+                match he.stage {
+                    hangoutin::Stage::Slow => {
+                        // WAITUNWARPED(200), then Warper_TransitionTo('STORY_LOCATION_CUT_SIMPLE', ..): from the render
+                        // camera to the wait camera (Warp_Target_Close within 100 of it, as the garages')
+                        if he.t >= hangoutin::SLOW_IN {
+                            let e = hangoutin::wait_rows(su);
+                            let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
+                            let s = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.boom_up.unwrap_or(Vec3::Y));
+                            he.warp = (s.eye.distance(e.eye) < garagein::CLOSE).then(|| hudmap::CineWarp::target_close(s, e, self.cam.fov_y, garagein::LENS_DEG.to_radians()));
+                            log::info!("hangout entry: {} (location {}) warp from {:?} ({})", su.key, su.uid, s.eye, he.warp.is_some());
+                            he.stage = hangoutin::Stage::Warp;
+                            he.t = 0.0;
+                            // (ShowLocationName runs on the warp's Lerp: 0.1 s in, for 2 s)
+                            self.hangout_title = Some((he.setup, 0.0));
+                        }
+                    }
+                    hangoutin::Stage::Warp => {
+                        let warp_len = he.warp.as_ref().map_or(0.0, |w| w.total());
+                        let (rows, fov) = match he.warp.as_mut().and_then(|w| w.step(dt)) {
+                            Some(v) => v,
+                            None => (hangoutin::wait_rows(su), garagein::LENS_DEG.to_radians()),
+                        };
+                        self.place_view = Some((rows.eye, rows.look_point(), rows.r1, fov));
+                        self.game.dive_k = 1.0;
+                        // IsReadyToLoadStuff at the warp's end: Racer_Deactivate, "ease from pause" (0.5 s, form 108
+                        // hidden), LOCATION_EVENT, MISSION_EVENT <KEY>_ENTER - the scene
+                        if he.t >= warp_len {
+                            self.game.hangout_slow.set(1.0, 1.0 / hangoutin::SLOW_OUT, false, true, 1.0);
+                            self.game.hangout_slow.visible = false;
+                            self.place_view = None;
+                            enter = Some((he.setup, he.hangout));
+                            keep = false;
+                        }
+                    }
+                }
+                if keep {
+                    self.hangout_entry = Some(he);
+                }
+            }
+            if let Some((si, i)) = enter {
+                // (step 21b: <HANGOUT>_ENTER - a mission's event script plays its story scene in
+                // place of the hangout's own entry; the hangout follows once it is over)
+                let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
+                let story = self.game.career.location_enter(hangoutin::SETUPS[si].enter).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));
+                if let Some(s) = story {
+                    self.cuts.queue(s);
+                } else if self.cine.start(&mut gpu, &hangoutin::SETUPS[si].scene, glam::Mat4::IDENTITY) {
+                    self.hangout_in = Some(i);
+                    self.cine_free = true;
+                    self.cine_caption = Some(String::new());
+                    self.cine_after = Some(MenuAction::OpenRaceSelect);
+                    // (four of the hangouts take bets: Mack's Burger, the rooftop parking in
+                    // Santa Monica, the Diamond Lot and the Hollywood Lookout - the scenes
+                    // their own scripts play)
+                    // (the set-up's core: wager_hangout_core takes bets)
+                    self.game.wager_here = hangoutin::SETUPS[si].key.contains("_wager_");
+                    // (the location's key: its name in the string table, `<key>_state` in the registry)
+                    self.game.hangout_key = Some(hangoutin::SETUPS[si].key.to_string());
+                    self.game.hangout_diff = 0;
+                    // the list opens at the events around here
+                    let here = self.hangouts[i].1;
+                    let mission = self.game.mission_races.clone();
+                    let best = (0..self.game.race_defs.len()).min_by(|&a, &b| {
+                        let key = |k: usize| self.game.race_defs[k].beacon.distance(here) - if mission.contains(&k) { 5000.0 } else { 0.0 };
+                        key(a).partial_cmp(&key(b)).unwrap()
+                    });
+                    if let Some(b) = best {
+                        self.game.race_sel = b;
+                    }
+                } else {
+                    self.hangout_in = Some(i);
+                }
+            }
+            // (test hook MCLA_HANGOUT_LINE=0..11: at 4 s and again at 10 s the car is put 15 m outside that set-up's entry
+            // line, facing across its middle, and is pushed in at 8 m/s until the entry starts)
+            if let Some(n) = std::env::var("MCLA_HANGOUT_LINE").ok().and_then(|v| v.parse::<usize>().ok()).filter(|n| *n < hangoutin::SETUPS.len()) {
+                let su = &hangoutin::SETUPS[n];
+                let m = (su.line[0] + su.line[1]) * 0.5;
+                let d = su.line[1] - su.line[0];
+                let out = Vec3::new(-d.z, 0.0, d.x).normalize_or(Vec3::X);
+                if self.tick_no == 240 || self.tick_no == 600 {
+                    if let Some(c) = self.vehicles.player_mut() {
+                        c.state.relocate(m + out * 15.0 + Vec3::Y * 0.5, glam::Quat::from_rotation_y(out.x.atan2(out.z)));
+                        c.state.vel = Vec3::ZERO;
+                        c.pose_history.reset();
+                    }
+                    self.hangout_prev = None;
+                } else if self.tick_no > 600 && self.hangout_entry.is_none() && self.hangout_title.is_none() && self.cine.playing.is_none() && self.game.mode == Mode::FreeRoam {
+                    if let Some(c) = self.vehicles.player_mut() {
+                        if c.state.pos.distance(m) < 20.0 {
+                            c.state.vel = -out * 8.0;
+                        }
+                    }
+                }
+            }
+            // ShowLocationName (popup template 63): the place's name and district, 0.1 s into the warp for 2 s
+            if let Some((si, c)) = self.hangout_title.as_mut() {
+                *c += dt;
+                let (si, c) = (*si, *c);
+                if c >= garagein::TITLE_FROM + garagein::TITLE_LEN {
+                    self.game.place_title = None;
+                    self.hangout_title = None;
+                } else if c >= garagein::TITLE_FROM {
+                    let k = hangoutin::SETUPS[si].key;
+                    let st = |k: &str| self.game.career.strings.get(k).map(|v| v.to_string()).unwrap_or_default();
+                    self.game.place_title = Some((st(k), st(&format!("{}_desc", k))));
                 }
             }
             self.mode_before = self.game.mode;
@@ -3079,6 +3198,7 @@ impl App {
             }
         }
         self.game.race_slow_tick(dt);
+        self.game.hangout_slow.update(dt);
         // (the bike gyro's T[+84]: the global scale as the main loop leaves it, never under 0.1)
         crate::physics::vehsim::TIME_SCALE84.store(self.game.mc4_time_scale().max(0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
         let sim_dt = if self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale * self.ability.time_scale() * self.game.mc4_time_scale() };
@@ -3815,26 +3935,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // was in the garage, `ref/gar110_1.png`. The door is armed again once the
                         // car has been well away, or leaving would lead straight back in.
                         // approx.: nine metres from the door.)
-                        let door = self.game.garage_doors.iter().map(|d| d.distance(p)).fold(f32::MAX, f32::min);
+                        // (garage_core: within 8 m of the set-up's door point, the police doing nothing with
+                        // the player - no speed test; `garagein`. The door is armed again once the car has
+                        // been well away - the port's guard against driving straight back in.)
+                        let door = garagein::SETUPS.iter().map(|s| s.door.distance(p)).fold(f32::MAX, f32::min);
                         if door > 30.0 {
                             self.door_armed = true;
                         }
-                        let drive_in = self.game.flash_hud.is_some() && self.door_armed && door < 9.0 && c.state.speed() < 12.0 && (!self.game.career.loaded() || self.game.career.reached("GARAGE_HOLLYWOOD")) && self.opt.shot.is_none() | std::env::var("MCLA_DOOR_IN").is_ok();
+                        let quiet = matches!(self.police.heat, police::Heat::None);
+                        let drive_in = self.game.flash_hud.is_some() && self.door_armed && self.garage_in.is_none() && quiet && garagein::at_door(p).is_some() && (!self.game.career.loaded() || self.game.career.reached("GARAGE_HOLLYWOOD")) && self.opt.shot.is_none() | std::env::var("MCLA_DOOR_IN").is_ok();
                         if drive_in {
                             self.door_armed = false;
-                            // (step 21b: the garage's LOCATION_EVENT, then <GARAGE>_ENTER - a mission's
-                            // event script may play its scene before the garage opens:
-                            // REDLIGHT_GH_01_GARAGE_ON_ENTER)
-                            let ev = if p.distance(Vec3::new(861.8, 17.0, -809.7)) < 200.0 { "HW_GARAGE_ENTER" } else if p.distance(Vec3::new(-3102.2, -24.9, 188.0)) < 200.0 { "BE_GARAGE_ENTER" } else { "SC_GARAGE_ENTER" };
-                            self.game.career.event(career::Ev::Garage);
-                            let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
-                            let scene = self.game.career.location_enter(ev).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));
-                            if let Some(i) = scene {
-                                self.cuts.queue(i);
-                                self.game.car_x.garage_after_scene = true;
-                            } else {
-                                self.pending_action = MenuAction::OpenGarage;
-                            }
+                            // Warper_TransitionTo('STORY_LOCATION_CUT_SIMPLE', ..): from the render camera to
+                            // the garage's wait camera (Warp_Target_Close within 100 of it)
+                            let g = garagein::at_door(p).unwrap_or(0);
+                            let e = garagein::wait_rows(&garagein::SETUPS[g]);
+                            let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
+                            let s = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.boom_up.unwrap_or(Vec3::Y));
+                            let warp = (s.eye.distance(e.eye) < garagein::CLOSE).then(|| hudmap::CineWarp::target_close(s, e, self.cam.fov_y, garagein::LENS_DEG.to_radians()));
+                            log::info!("garage entry: {} from {:?} (warp {})", garagein::SETUPS[g].key, s.eye, warp.is_some());
+                            self.garage_in = Some(garagein::Entry { garage: g, stage: garagein::Stage::Warp, t: 0.0, clock: 0.0, warp, hold: (c.state.pos, c.state.rot), opened: false });
                         } else if self.game.car_x.garage_after_scene && self.cuts.idle() {
                             self.game.car_x.garage_after_scene = false;
                             self.pending_action = MenuAction::OpenGarage;
@@ -3848,6 +3968,129 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
+            // ---- driving into a garage (`garagein`): the warp to the sign, the event, the scene, the fade up ----
+            if let Some(mut gi) = self.garage_in.take() {
+                gi.t += dt;
+                gi.clock += dt;
+                let su = &garagein::SETUPS[gi.garage];
+                let mut keep = true;
+                match gi.stage {
+                    garagein::Stage::Warp => {
+                        // (the car stands where the warp found it: Racer_Deactivate)
+                        if let Some(c) = self.vehicles.player_mut() {
+                            c.state.pos = gi.hold.0;
+                            c.state.rot = gi.hold.1;
+                            c.state.vel = Vec3::ZERO;
+                            c.state.ang_vel = Vec3::ZERO;
+                        }
+                        // the Lerp, then the camera waits at the wait camera (the scene's first)
+                        let warp_len = gi.warp.as_ref().map_or(0.0, |w| w.total());
+                        let (rows, fov) = match gi.warp.as_mut().and_then(|w| w.step(dt)) {
+                            Some(v) => v,
+                            None => (garagein::wait_rows(su), garagein::LENS_DEG.to_radians()),
+                        };
+                        self.place_view = Some((rows.eye, rows.look_point(), rows.r1, fov));
+                        self.game.dive_k = 1.0;
+                        // IsReadyToLoadStuff at the warp's end: LOCATION_EVENT, 500 ms, then <X>_GARAGE_ENTER - a
+                        // mission's event script may play its story scene (REDLIGHT_GH_01_GARAGE_ON_ENTER), else
+                        // <x>_garage_enter_cine plays the `_ent` scene
+                        if gi.t >= warp_len + garagein::EVENT_WAIT {
+                            self.game.career.event(career::Ev::Garage);
+                            let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
+                            let story = self.game.career.location_enter(su.enter).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));
+                            self.place_view = None;
+                            if let Some(i) = story {
+                                self.cuts.queue(i);
+                                self.game.car_x.garage_after_scene = true;
+                                keep = false;
+                            } else if std::env::var("MCLA_NO_CINE").is_err() && self.cine.start(&mut gpu, su.scene, glam::Mat4::IDENTITY) {
+                                self.cine_free = true;
+                                self.cine_caption = Some(String::new());
+                                gi.stage = garagein::Stage::Scene;
+                                gi.t = 0.0;
+                            } else {
+                                self.pending_action = MenuAction::OpenGarage;
+                                keep = false;
+                            }
+                        }
+                    }
+                    garagein::Stage::Scene => {
+                        // the scene's fade_to_black (game/misctasks/screen_fade_to_black: held until the fade up)
+                        if gi.t >= garagein::FADE_AT {
+                            self.garage_mask.start(garagein::FADE_LEN, 0.01, f32::MAX);
+                        }
+                        if self.cine.playing.is_none() {
+                            gi.stage = garagein::Stage::Poll;
+                            gi.t = 0.0;
+                        }
+                    }
+                    garagein::Stage::Poll => {
+                        // <x>_garage_state 5: garage_core's next poll fades up and opens the garage. (The
+                        // original's scene script has streamed the garage in by then - PrestreamManager_UnlockAll
+                        // before the state; the port's interior comes in with the garage, so the fade up waits
+                        // for the car to stand in it, at most 10 s.)
+                        if gi.t >= garagein::STATE_POLL && !gi.opened {
+                            gi.opened = true;
+                            self.pending_action = MenuAction::OpenGarage;
+                        }
+                        if gi.opened && (self.garage_return.is_some() || gi.t > 10.0) {
+                            self.garage_mask.release(garagein::FADE_UP);
+                            keep = false;
+                        }
+                    }
+                }
+                // ShowLocationName: popup template 63 with the place's name and district
+                let shown = gi.clock >= garagein::TITLE_FROM && gi.clock < garagein::TITLE_FROM + garagein::TITLE_LEN && keep;
+                self.game.place_title = shown.then(|| {
+                    let st = |k: &str| self.game.career.strings.get(k).map(|v| v.to_string()).unwrap_or_default();
+                    (st(su.key), st(&format!("{}_desc", su.key)))
+                });
+                if keep {
+                    self.garage_in = Some(gi);
+                }
+            }
+            // leaving: LeaveGarage's 20 updates and garage_core's poll, then out to the street (the drive-out
+            // scene starts below) and its fade_to_scene (at 0, the default 1 s - game/misctasks/screen_fade_to_scene)
+            if let Some(t) = self.garage_out.as_mut() {
+                *t += dt;
+                if *t >= garagein::EXIT_WAIT || self.game.mode != Mode::Garage {
+                    self.garage_out = None;
+                    if self.game.mode == Mode::Garage {
+                        self.game.mode = self.game.prev_mode;
+                    }
+                    self.garage_mask.release(garagein::FADE_UP);
+                }
+            }
+            if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() {
+                self.place_view = None;
+                self.game.place_title = None;
+            }
+            self.game.place_mask = self.garage_mask.update(dt);
+            // (test hook MCLA_GARAGE_TEST=0..2: at 4 s the car is put 14 m from that garage's door point, towards
+            // its wait camera, facing away from the door, at 14 s 7 m from it - the place streamed in by then)
+            if let Some(g) = std::env::var("MCLA_GARAGE_TEST").ok().and_then(|v| v.parse::<usize>().ok()).filter(|g| *g < 3) {
+                // (and MCLA_GARAGE_BACK=tick: BACK out of the garage at that tick)
+                if std::env::var("MCLA_GARAGE_BACK").ok().and_then(|v| v.parse::<u64>().ok()) == Some(self.tick_no as u64) && self.game.mode == Mode::Garage {
+                    self.pending_action = MenuAction::Back;
+                }
+                if self.tick_no == 240 || self.tick_no == 840 {
+                    let su = &garagein::SETUPS[g];
+                    let far = if self.tick_no == 240 { 14.0 } else { 7.0 };
+                    let d = Vec3::new(su.cam[0].x - su.door.x, 0.0, su.cam[0].z - su.door.z).normalize_or(Vec3::X);
+                    if let Some(c) = self.vehicles.player_mut() {
+                        c.state.relocate(su.door + d * far + Vec3::Y * 0.5, glam::Quat::from_rotation_y((-d.x).atan2(-d.z)));
+                        c.state.vel = Vec3::ZERO;
+                        c.pose_history.reset();
+                    }
+                }
+            }
+            // (test hook MCLA_GARAGE_SHOTS=dir: a frame every 6 ticks while a garage entry runs and its black is up)
+            if let Ok(dir) = std::env::var("MCLA_GARAGE_SHOTS") {
+                if (self.garage_in.is_some() || self.hangout_entry.is_some() || self.hangout_title.is_some() || self.game.place_mask > 0.0 || self.cine.playing.is_some()) && self.tick_no % 6 == 0 {
+                    log::info!("garage shot {} stage {:?} mask {:.2} title {} placed {:?} car {:?}", self.tick_no, self.garage_in.as_ref().map(|g| (g.stage, g.clock)), self.game.place_mask, self.game.place_title.is_some(), self.garage_return.is_some(), self.vehicles.player().map(|c| c.state.pos));
+                    self.photo_request = Some(format!("{}/g_{:05}.png", dir, self.tick_no));
+                }
+            }
             // ---- garage: the car stands inside the nearest garage interior ----
             if self.game.mode == Mode::Garage && self.garage_return.is_none() && self.drive {
                 if let Some((ppos, pfwd)) = self.vehicles.player().map(|c| (c.state.pos, c.state.forward())) {
@@ -3857,7 +4100,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let spot = match self.garage_spots.get(&k) {
                             Some(s) => *s,
                             None => {
-                                let s = if self.tick_no % 20 == 0 { garage_spot(&world.collider, mn, mx) } else { None };
+                                // (every tick while a drive-in waits on it: the fade up waits for the car's place)
+                                let s = if self.tick_no % 20 == 0 || self.garage_in.is_some() { garage_spot(&world.collider, mn, mx) } else { None };
                                 if s.is_some() {
                                     self.garage_spots.insert(k, s);
                                 }
@@ -3896,6 +4140,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 }
                             }
                             self.garage_return = Some((ppos, (-pfwd.x).atan2(-pfwd.z)));
+                            // (the garage's camera starts on its view of the car where it now stands, not with a glide
+                            // from where the car was outside - the original places the car before the garage shows)
+                            self.garage_tr = None;
+                            self.garage_cam = None;
                             self.garage_clear = clear;
                             if let Some(c) = self.vehicles.player_mut() {
                                 c.state = physics::car::CarState::new(p + Vec3::Y * 0.6, 0.6);
@@ -5576,7 +5824,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 };
                 let replay_up = replay_up.filter(|_| self.game.starter_pick.is_none());
                 // (the race-start warp: hudmap::CineWarp, roll included)
-                let replay_view = match self.warp_view.filter(|_| self.game.race.is_some()) {
+                let replay_view = match self.warp_view.filter(|_| self.game.race.is_some()).or(self.place_view) {
                     Some((eye, look, _, fov)) => Some((eye, look, fov.to_degrees())),
                     None => replay_view,
                 };
@@ -5611,7 +5859,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(up) = replay_up {
                         self.boom_up = Some(up);
                     }
-                    if let Some((_, _, up, _)) = self.warp_view.filter(|_| self.game.race.is_some()) {
+                    if let Some((_, _, up, _)) = self.warp_view.filter(|_| self.game.race.is_some()).or(self.place_view) {
                         self.boom_up = Some(up);
                     }
                 } else if self.game.mode == Mode::Garage || self.cuts.playing.is_some() {
@@ -8663,7 +8911,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.dirty = false;
             }
             MenuAction::Back => {
+                log::debug!("back from {:?} (prev {:?}, in a garage {})", self.game.mode, self.game.prev_mode, self.garage_return.is_some());
                 self.game.mode = match self.game.mode {
+                    // (out to the street: the garage fades to black first, then the drive-out scene comes
+                    // up with its fade_to_scene - `garagein::EXIT_FADE`)
+                    Mode::Garage if self.game.prev_mode == Mode::FreeRoam && self.garage_return.is_some() && std::env::var("MCLA_NO_CINE").is_err() => {
+                        if self.garage_out.is_none() {
+                            self.garage_out = Some(0.0);
+                            self.garage_mask.start(garagein::EXIT_FADE, 0.01, f32::MAX);
+                        }
+                        Mode::Garage
+                    }
                     Mode::Garage => self.game.prev_mode,
                     // (out of a place's own panel - a hangout's, the delivery's - back to the cruise)
                     Mode::RaceSelect if self.hangout_in.is_some() => Mode::FreeRoam,
@@ -9200,6 +9458,14 @@ impl ApplicationHandler for App {
         if std::env::var("MCLA_HANGOUT_DUMP").is_ok() {
             for h in &self.hangouts {
                 log::info!("hangout: {:?}", h);
+            }
+            // (the entry lines against their scenes: where the car starts and stops, and whether that
+            // move takes the line - `hangoutin::crossed`)
+            for su in hangoutin::SETUPS.iter() {
+                let a = self.cine.car_pose(su.scene, &cine::is_player_car, false).map(|p| p.0);
+                let b = self.cine.car_pose(su.scene, &cine::is_player_car, true).map(|p| p.0);
+                let x = a.zip(b).map(|(a, b)| hangoutin::crossed(su, a, b));
+                log::info!("hangout entry line {}: scene {} car {:?} -> {:?}, crosses {:?}", su.key, su.scene, a, b, x);
             }
         }
         self.game.mode = if self.opt.shot.is_some() && !self.opt.menu { Mode::FreeRoam } else { Mode::MainMenu };

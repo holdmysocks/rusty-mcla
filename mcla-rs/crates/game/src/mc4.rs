@@ -11349,7 +11349,8 @@ impl Game {
         if self.race_end_t.map_or(false, |t| t >= Self::RACE_END_FREEZE) && self.replay.is_none() {
             return 0.0;
         }
-        self.opt_x.s23.slow.global.clamp(0.0, 1.0).min(self.race_slow.global.clamp(0.1, 1.0))
+        // (a hangout entry's ease to pause: held at the main loop's floor of 0.1 - sub_822C1FA8 0x822C20C4)
+        self.opt_x.s23.slow.global.clamp(0.0, 1.0).min(self.race_slow.global.clamp(0.1, 1.0)).min(self.hangout_slow.global.clamp(0.1, 1.0))
     }
 
     /// The race's end in slow motion, once a frame (`dt` real time). EndOfRaceSequence
