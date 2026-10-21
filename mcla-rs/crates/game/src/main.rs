@@ -6387,7 +6387,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let (eye, view, vp) = if self.drive && self.vehicles.player().is_some() { (self.chase.pos, self.chase.view(), self.cam.proj(aspect) * self.chase.view()) } else { (self.cam.pos, self.cam.view(), self.cam.view_proj(aspect)) };
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
             self.vehicles.traffic_lamps(eye, axis, &Frustum::from_view_proj(vp), night, sim_dt);
-            self.vehicles.pick_lods(eye, axis, self.cam.near);
+            self.vehicles.pick_lods(eye, axis, self.cam.near, self.game.opts.hq_traffic);
         }
         // (the set-up cars' lamp states - vehicles.rs `setup_lamps`, sub_82353E38: head lamps due past the
         // light manager's 18.0 or before its 6.0, or in Stormy or Foggy weather weighing over 0.85; in the

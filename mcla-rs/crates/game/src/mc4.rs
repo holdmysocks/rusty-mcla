@@ -3631,6 +3631,9 @@ pub const PAGE_STYLE: u8 = 70;
 pub const PAGE_EDIT: u8 = 71;
 pub const PAGE_KEYBOARD: u8 = 72;
 pub const PAGE_WHEEL: u8 = 73;
+/// The port's own pages of OPTIONS (DECISIONS.md D19): DISPLAY (a placeholder) and PERFORMANCE.
+pub const PAGE_DISPLAY: u8 = 74;
+pub const PAGE_PERFORMANCE: u8 = 75;
 
 fn action_name(slot: usize) -> Option<&'static str> {
     CONTROL_ACTIONS.iter().find(|a| a.0 == slot).map(|a| a.1)
@@ -4239,7 +4242,7 @@ impl Game {
     ///   box when a row that must be mapped is not. While it waits nothing else is heard.
     pub fn mc4_ctrl_input(&mut self, pressed: [bool; 4], key_x: bool, key_y: bool) -> [bool; 4] {
         let page = self.pause_page;
-        if !matches!(page, 4..=8 | PAGE_STYLE..=PAGE_WHEEL) {
+        if !matches!(page, 4..=8 | PAGE_STYLE..=PAGE_WHEEL | PAGE_DISPLAY | PAGE_PERFORMANCE) {
             // (OPTIONS was left some other way: nothing was confirmed - but the port's plain
             // menu, without the movie, has no box to ask with and leaves from any page: as if YES)
             if self.flash_menu.is_none() && ctrl_changed(&self.opt_x.ctrl) && ctrl_commit(&mut self.opt_x.ctrl, &mut self.mc4, self.fresh_game) {

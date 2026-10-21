@@ -2,6 +2,7 @@
 
 use crate::ai::AiDriver;
 use crate::physics::CarInput;
+use crate::mc4::{PAGE_DISPLAY, PAGE_PERFORMANCE};
 use crate::vehicle_model::{CarConfig, Slot, CUSTOM_SLOTS};
 use crate::vehicles::{Vehicles, PALETTE};
 use crate::world::World;
@@ -48,6 +49,11 @@ pub struct Options {
     pub vehicle: u8,
     #[serde(default = "full_volume")]
     pub cutscene: u8,
+    /// OPTIONS > PERFORMANCE > HIGH-DETAIL TRAFFIC (the port's own, DECISIONS.md D19): traffic cars keep their
+    /// full model at every distance instead of the original's LOD 1 / LOD 2 (vehicles.rs `pick_lods`). Off =
+    /// the original.
+    #[serde(default)]
+    pub hq_traffic: bool,
 }
 
 fn full_volume() -> u8 {
@@ -56,7 +62,7 @@ fn full_volume() -> u8 {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { master: 10, music: 10, subtitles: false, shake: true, sens: 5, voice: 10, vehicle: 10, cutscene: 10 }
+        Options { master: 10, music: 10, subtitles: false, shake: true, sens: 5, voice: 10, vehicle: 10, cutscene: 10, hq_traffic: false }
     }
 }
 
@@ -4145,13 +4151,29 @@ impl Game {
                             items.push((s("game", "GAME"), String::new(), Go::Page(6)));
                             items.push((s("audio", "AUDIO"), String::new(), Go::Page(7)));
                             items.push((s("camera", "CAMERA"), String::new(), Go::Page(8)));
+                            // (the port's own pages, DECISIONS.md D19: DISPLAY a placeholder, PERFORMANCE
+                            // the traffic's model detail)
+                            items.push(("DISPLAY".to_string(), String::new(), Go::Sub(PAGE_DISPLAY, 0, 0)));
+                            items.push(("PERFORMANCE".to_string(), String::new(), Go::Sub(PAGE_PERFORMANCE, 0, 0)));
                         } else {
                             items.push((s("master volume", "MASTER VOLUME"), bar(self.opts.master), Go::Page(40)));
                             items.push((s("music volume", "MUSIC VOLUME"), bar(self.opts.music), Go::Page(41)));
                             items.push((s("option_subtitles", "SUBTITLES"), onoff(self.opts.subtitles), Go::Page(42)));
                             items.push((s("Camera Shake", "CAMERA SHAKE"), onoff(self.opts.shake), Go::Page(43)));
                             items.push((s("option_sensitivity", "STEERING SENS."), bar(self.opts.sens), Go::Page(44)));
+                            items.push(("HIGH-DETAIL TRAFFIC".to_string(), onoff(self.opts.hq_traffic), Go::Page(52)));
                         }
+                    }
+                    PAGE_DISPLAY => {
+                        // (the port's own page, D19: nothing to set yet)
+                        title = "DISPLAY".to_string();
+                        items.push(("NO DISPLAY SETTINGS YET".to_string(), String::new(), Go::Off));
+                    }
+                    PAGE_PERFORMANCE => {
+                        // (the port's own page, D19)
+                        title = "PERFORMANCE".to_string();
+                        let on = |b: bool| format!("{}{}", crate::flash_ui::CHOICE, if b { s("G_On", "ON") } else { s("G_Off", "OFF") });
+                        items.push(("HIGH-DETAIL TRAFFIC".to_string(), on(self.opts.hq_traffic), Go::Page(52)));
                     }
                     5 | 70..=73 => {
                         // (the controller pages, `mc4` step 13b: 5 the port's own GAMEPAD / KEYBOARD /
@@ -4339,7 +4361,7 @@ impl Game {
                         }
                     },
                 }
-                if (4..=8).contains(&self.pause_page) && (left || right) {
+                if ((4..=8).contains(&self.pause_page) || self.pause_page == PAGE_PERFORMANCE) && (left || right) {
                     let adj = |v: &mut u8| *v = if right { (*v + 1).min(10) } else { v.saturating_sub(1) };
                     // (the row under the cursor says which setting it is)
                     match items.get(self.menu_sel).map(|i| i.2) {
@@ -4352,6 +4374,7 @@ impl Game {
                         Some(Go::Page(45)) => adj(&mut self.opts.voice),
                         Some(Go::Page(46)) => adj(&mut self.opts.vehicle),
                         Some(Go::Page(47)) => adj(&mut self.opts.cutscene),
+                        Some(Go::Page(52)) => self.opts.hq_traffic = !self.opts.hq_traffic,
                         _ => {}
                     }
                     self.dirty = true;
@@ -4382,6 +4405,7 @@ impl Game {
                         5 | 70..=73 => ctrl_page.as_ref().map(|c| c.prompts.clone()).unwrap_or_default(),
                         7 => vec![(s("prompt_back", "BACK"), ICON_B), (s("prompt_defaults", "DEFAULTS"), crate::flash_ui::ICON_X)],
                         6 | 8 => vec![(s("prompt_back", "BACK"), ICON_B), (s("prompt_defaults", "DEFAULTS"), crate::flash_ui::ICON_X)],
+                        PAGE_DISPLAY | PAGE_PERFORMANCE => vec![(s("prompt_back", "BACK"), ICON_B)],
                         // (the statistics' pages of figures: BACK alone, or with LT/RT to the next)
                         9 | 65 => vec![(s("prompt_back", "BACK"), ICON_B)],
                         61 => vec![(s("prompt_back", "BACK"), ICON_B), (s("prompt_Prev/Next_Car", "PREV/NEXT VEHICLE"), crate::flash_ui::ICON_LT_RT)],
@@ -4426,7 +4450,7 @@ impl Game {
                         tabs: if on_tabs { vec![s("pause_tab_mainmenu", "PAUSE"), s("pause_tab_gamemodes", "MODES"), s("pause_tab_settings", "SETTINGS")] } else { Vec::new() },
                         cur_tab: self.pause_tab,
                         title: title.clone(),
-                        rows: items.iter().enumerate().map(|(k, (l, v, g))| MenuRow { label: l.clone(), value: v.replace('|', "I"), enabled: (*g != Go::Off || !(on_tabs || self.pause_page == 2)) && !(self.pause_page == 6 && v.is_empty()) && !(ctrl_page.is_some() && *g == Go::Off && k < usize::MAX), part: None }).collect(),
+                        rows: items.iter().enumerate().map(|(k, (l, v, g))| MenuRow { label: l.clone(), value: v.replace('|', "I"), enabled: (*g != Go::Off || !(on_tabs || self.pause_page == 2)) && !(self.pause_page == 6 && v.is_empty()) && !(self.pause_page == PAGE_DISPLAY && *g == Go::Off) && !(ctrl_page.is_some() && *g == Go::Off && k < usize::MAX), part: None }).collect(),
                         select: sel,
                         prompts,
                         money: None,
@@ -4581,6 +4605,7 @@ impl Game {
                                 45 => step(&mut self.opts.voice),
                                 46 => step(&mut self.opts.vehicle),
                                 47 => step(&mut self.opts.cutscene),
+                                52 => self.opts.hq_traffic = !self.opts.hq_traffic,
                                 48 | 49 | 50 | 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, true, self.fresh_game),
                                 _ => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, true, true, self.fresh_game),
                             }
@@ -4652,6 +4677,10 @@ impl Game {
                         } else if (5..=8).contains(&self.pause_page) {
                             // (a page of OPTIONS returns to OPTIONS)
                             self.menu_sel = self.pause_page as usize - 5;
+                            self.pause_page = 4;
+                        } else if self.pause_page == PAGE_DISPLAY || self.pause_page == PAGE_PERFORMANCE {
+                            // (the port's own pages of OPTIONS, D19: rows 5 and 6)
+                            self.menu_sel = if self.pause_page == PAGE_DISPLAY { 4 } else { 5 };
                             self.pause_page = 4;
                         } else if self.pause_page != 0 {
                             self.menu_sel = if self.pause_page == 2 { 1 } else { 0 };
@@ -4758,6 +4787,7 @@ impl Game {
                             41 => step(&mut self.opts.music),
                             42 => self.opts.subtitles = !self.opts.subtitles,
                             43 => self.opts.shake = !self.opts.shake,
+                            52 => self.opts.hq_traffic = !self.opts.hq_traffic,
                             48 | 49 | 50 | 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, true, self.fresh_game),
                             _ => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, true, true, self.fresh_game),
                         }

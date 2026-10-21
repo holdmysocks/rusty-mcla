@@ -4157,8 +4157,10 @@ impl Vehicles {
     /// `CarModel::lod_radius`); not drawn from 500 on (0x82003250), LOD 0 below type +44 x type +40, LOD 1
     /// below type +48 x type +40, else LOD 2 (every traffic type: +40 = 1, +44 = 40, +48 = 155). The original
     /// also gives -1 to a car outside the view, which keeps it out of the shadow passes too (sub_82793360) -
-    /// not here: the frustum test stays with each pass. Cars without LODs (set-up cars) keep 0.
-    pub fn pick_lods(&mut self, eye: Vec3, axis: Vec3, near: f32) {
+    /// not here: the frustum test stays with each pass. Cars without LODs (set-up cars) keep 0. `full_detail`
+    /// (OPTIONS > PERFORMANCE > HIGH-DETAIL TRAFFIC, the port's own - DECISIONS.md D19): LOD 0 wherever the
+    /// original draws the car at all (the 500 limit stays).
+    pub fn pick_lods(&mut self, eye: Vec3, axis: Vec3, near: f32, full_detail: bool) {
         let alpha = self.render_alpha;
         // (diagnostics: MCLA_LOD_FORCE=1 / 2 draws every traffic car at that LOD)
         let force = std::env::var("MCLA_LOD_FORCE").ok().and_then(|v| v.parse::<i8>().ok());
@@ -4175,7 +4177,7 @@ impl Vehicles {
                 let d = (c.render_pose(alpha).pos - eye).dot(axis) - near + c.model.lod_radius;
                 if d >= 500.0 {
                     -1
-                } else if d < 40.0 {
+                } else if d < 40.0 || full_detail {
                     0
                 } else if d < 155.0 {
                     1
