@@ -256,6 +256,9 @@ pub struct Career {
     pub payback_done: bool,
     /// tournaments just won: (the event's name, the mission asks for a Hard completion)
     pub completed_events: Vec<(String, usize)>,
+    /// the last race decided a tournament: won (bComplete) or lost (bFailure) - the caller
+    /// takes it for form 56's banner
+    pub tour_decided: Option<bool>,
     /// the body part types the last race's class point unlocked: the rewards screen lists them
     pub unlocked_now: Vec<String>,
     /// the performance levels the last race's experience unlocked and the ability levels it
@@ -1209,11 +1212,13 @@ impl Career {
                         set(st, 0);
                     }
                 }
+                self.tour_decided = Some(true);
                 return Some(format!("TOURNAMENT WON   {} POINTS TO {}", mine, rival));
             }
             st.won.clear();
             st.pts.clear();
             set(st, 0);
+            self.tour_decided = Some(false);
             return Some(format!("TOURNAMENT LOST   {} POINTS TO {}", mine, rival));
         }
         None

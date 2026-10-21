@@ -7183,18 +7183,24 @@ impl Game {
                     // (the seventh row, under the list's fold: reference `y_over_garage`)
                     ro.push((s("pause_go_to_garage", "GO TO GARAGE"), 13));
                 }
-                // (a series' race-over menu - `sr_raceover`: NEXT RACE IN SERIES, QUIT SERIES, RESTART
-                // SERIES, SERIES STANDINGS, ADD RACE TO FAVORITES, VIEW REPLAY)
-                if movie && self.series.is_some() && self.next_event_race.is_some() {
+                // (a series' race-over menu - mcSeriesMenu, sub_826639B8 / sub_82664090; `sr_raceover`:
+                // NEXT RACE IN SERIES, QUIT SERIES, RESTART SERIES, SERIES STANDINGS, ADD RACE TO
+                // FAVORITES, VIEW REPLAY, GO TO GARAGE. Once won or lost - bComplete / bFailure - no
+                // NEXT row: RETURN TO CRUISE, RACE SERIES AGAIN, ...; the walkthrough at 0:32:10)
+                let decided = self.series_decided();
+                if movie && self.series.is_some() && (self.next_event_race.is_some() || decided) {
                     let fav = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| self.race_favs.iter().any(|f| f.eq_ignore_ascii_case(&d.id)));
-                    ro = vec![
-                        (s("pause_next_series", "NEXT RACE IN SERIES"), 0),
-                        (s("pause_quit_series", "QUIT SERIES"), 2),
-                        (s("pause_restart_series", "RESTART SERIES"), 14),
+                    ro = if decided {
+                        vec![(s("pause_continue_to_cruise", "RETURN TO CRUISE"), 2), (s("pause_race_series_again", "RACE SERIES AGAIN"), 14)]
+                    } else {
+                        vec![(s("pause_next_series", "NEXT RACE IN SERIES"), 0), (s("pause_quit_series", "QUIT SERIES"), 2), (s("pause_restart_series", "RESTART SERIES"), 14)]
+                    };
+                    ro.extend([
                         (s("pause_series_standings", "SERIES STANDINGS"), 9),
                         (if fav { s("pause_remove_favorites", "REMOVE RACE FROM FAVORITES") } else { s("pause_add_favorites", "ADD RACE TO FAVORITES") }, 11),
                         (s("pause_view_replay", "VIEW REPLAY"), 12),
-                    ];
+                        (s("pause_go_to_garage", "GO TO GARAGE"), 13),
+                    ]);
                 }
                 // (the place splash stands by itself for a moment)
                 let splash_on = match self.place_splash {
@@ -7229,8 +7235,11 @@ impl Game {
                             1 => action = MenuAction::StartFreeRoam,
                             // RACE BACK (Dialog_Title_RaceBack): the race back (althk.rs)
                             3 => self.althk.back_req = true,
-                            // RESTART SERIES: from its first race, the tally at nought
-                            2 => {
+                            // RETURN TO CRUISE of a decided series
+                            4 => action = MenuAction::StartFreeRoam,
+                            // RESTART SERIES / RACE SERIES AGAIN: from its first race, every tally at
+                            // nought (OrderedSeriesCore `restart`, 0x247c)
+                            2 | 5 => {
                                 if let Some(sr) = self.series.as_mut() {
                                     sr.at = 0;
                                     sr.wins.clear();
@@ -7390,9 +7399,20 @@ impl Game {
                             self.show_message(&m);
                         }
                     }
-// (asked of a car with any damage at all: the capture's had only scrapes. approx.)
-                    Some(0) if movie && self.series.is_some() && !self.quick_fix && vehicles.player().map_or(false, |c| c.state.damage.max(c.state.zone_mean()) > 0.002 || c.state.zones.iter().any(|z| *z > 0.002)) => {
+                    // (NEXT RACE IN SERIES asks every time: the series handler has no damage test - form
+                    // 71, Dialog_Title_NextSeries, sub_826624C8)
+                    Some(0) if movie && self.series.is_some() => {
                         self.series_ask_kind = 0;
+                        self.series_ask = Some(0);
+                    }
+                    // (a decided series: RETURN TO CRUISE and RACE SERIES AGAIN with their own boxes -
+                    // Dialog_Title_ReturnToCruise, Dlg_RaceAgainSeries_Title)
+                    Some(2) if movie && self.series_decided() => {
+                        self.series_ask_kind = 4;
+                        self.series_ask = Some(0);
+                    }
+                    Some(14) if self.series_decided() => {
+                        self.series_ask_kind = 5;
                         self.series_ask = Some(0);
                     }
                     // (QUIT SERIES and RESTART SERIES ask the same way - the strings `Dlg_Title_Series_Quit`
@@ -11135,7 +11155,9 @@ impl Game {
                 if !order.is_empty() {
                     self.career.stats.insert(format!("series_at:{}", key), ((first + 1) % order.len()) as i64);
                 }
-                self.series = (!order.is_empty()).then(|| Series { key: format!("{}_series", key), races: order, at: first, wins: Vec::new(), rivals: Vec::new(), diff: self.hangout_diff });
+                // (test hook: MCLA_SERIES_WINS=n starts the series with the player at n wins)
+                let wins = std::env::var("MCLA_SERIES_WINS").ok().and_then(|v| v.parse::<u32>().ok()).map(|n| vec![("YOU".to_string(), n)]).unwrap_or_default();
+                self.series = (!order.is_empty()).then(|| Series { key: format!("{}_series", key), races: order, at: first, wins, rivals: Vec::new(), diff: self.hangout_diff });
                 leave(self);
                 return Some(MenuAction::StartRace);
             }
@@ -11531,9 +11553,9 @@ impl Game {
             }
         } else if let Some(cur) = self.series_ask {
             MenuPage {
-                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack"][self.series_ask_kind.min(3) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
+                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc"][self.series_ask_kind.min(5) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
                 icon: std::env::var("MCLA_RES_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(13),
-                title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK")][self.series_ask_kind.min(3) as usize].clone(),
+                title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK"), st("Dialog_Title_ReturnToCruise", "RETURN TO CRUISE"), st("Dlg_RaceAgainSeries_Title", "RACE AGAIN")][self.series_ask_kind.min(5) as usize].clone(),
                 rows: vec![MenuRow { label: st("Common_Yes", "YES"), value: String::new(), enabled: true, part: None }, MenuRow { label: st("Common_No", "NO"), value: String::new(), enabled: true, part: None }],
                 select: cur,
                 prompts: vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("prompt_back", "BACK"), ICON_B)],
@@ -11741,6 +11763,14 @@ pub struct Series {
     pub wins: Vec<(String, u32)>,
     pub rivals: Vec<crate::rivals::Rival>,
     pub diff: usize,
+}
+
+impl Game {
+    /// The series under way is won or lost for good: a racer has its wins (sub_826CA568's
+    /// bComplete / bFailure).
+    pub fn series_decided(&self) -> bool {
+        self.series.as_ref().map_or(false, |s| s.wins.iter().any(|w| w.1 >= SERIES_WINS))
+    }
 }
 
 /// wins a series asks for (`RACE WINS NEEDED: 3`)

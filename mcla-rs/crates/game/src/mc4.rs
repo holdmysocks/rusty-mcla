@@ -6380,6 +6380,7 @@ impl Game {
         // `mc4_banner_page`)
         if ms.is_some() {
             self.opt_x.arcade.d.banner = Some((3.5, beaten));
+            self.opt_x.arcade.d.banner_kind = 2;
         }
         Some(beaten)
     }
@@ -7994,6 +7995,9 @@ pub struct S19d {
     pub clock_prev: Option<i64>,
     /// the event results banner (form 56): seconds left, complete
     pub banner: Option<(f32, bool)>,
+    /// the banner's event kind (results +3104): 2 a time trial, 3 a series, 4 a tournament
+    /// (sub_82678EC8: the icon and the text; 0 is taken as the time trial's)
+    pub banner_kind: u8,
     /// the local hookman the race is run with - (character, vehicle, set-up) - and the
     /// three races he keeps (race table indices: mcRaceArray_LocalHookmanFilter)
     pub race_man: Option<(String, String, String)>,
@@ -8542,11 +8546,23 @@ impl Game {
         let st = |k: &str, d: &str| self.career.strings.get(k).map(|v| v.to_uppercase()).filter(|v| !v.contains('<')).unwrap_or_else(|| d.to_string());
         Some(MenuPage {
             layout: MenuLayout::List,
-            icon: 4,
+            // (sub_82678EC8's jump table 0x82678F74: a time trial 4, a series 3, a tournament 5)
+            icon: match self.opt_x.arcade.d.banner_kind {
+                3 => 3,
+                4 => 5,
+                _ => 4,
+            },
             // (the fill's vfunc 340 -> 344 puts the text in form +48, which is what the base
             // writes as `menu.name` - vfunc 332, sub_821F8660: the title; the constructor's
             // description is the empty string at 0x82000F9E)
-            title: if ok { st("TIMETRIAL_SUCCESS", "NEW TIME POSTED") } else { st("TIMETRIAL_FAILURE", "TIME TRIAL FAILED") },
+            title: match (self.opt_x.arcade.d.banner_kind, ok) {
+                (3, true) => st("Series_SUCCESS", "SERIES WON"),
+                (3, false) => st("Series_FAILURE", "SERIES LOST"),
+                (4, true) => st("Tournament_SUCCESS", "TOURNAMENT WON"),
+                (4, false) => st("Tournament_FAILURE", "TOURNAMENT LOST"),
+                (_, true) => st("TIMETRIAL_SUCCESS", "NEW TIME POSTED"),
+                (_, false) => st("TIMETRIAL_FAILURE", "TIME TRIAL FAILED"),
+            },
             description: String::new(),
             rows: Vec::new(),
             select: ok as usize,
@@ -15440,6 +15456,20 @@ mod tests {
         g.opt_x.arcade.d.banner = Some((0.5, false));
         assert_eq!(g.mc4_banner_page(1.0).unwrap().title, "TIME TRIAL FAILED");
         assert!(g.mc4_banner_page(1.0).is_none() && g.opt_x.arcade.d.banner.is_none());
+        // (a series' and a tournament's: icons 3 and 5, SERIES WON / TOURNAMENT LOST - sub_82678EC8)
+        g.opt_x.arcade.d.banner = Some((3.5, true));
+        g.opt_x.arcade.d.banner_kind = 3;
+        let p = g.mc4_banner_page(0.1).unwrap();
+        assert_eq!((p.icon, p.title.as_str()), (3, "SERIES WON"));
+        g.opt_x.arcade.d.banner = Some((3.5, false));
+        g.opt_x.arcade.d.banner_kind = 4;
+        let p = g.mc4_banner_page(0.1).unwrap();
+        assert_eq!((p.icon, p.title.as_str()), (5, "TOURNAMENT LOST"));
+        // (a series is decided by the first to three wins, a rival's too)
+        g.series = Some(crate::game::Series { wins: vec![("YOU".into(), 2), ("RIVAL".into(), 2)], ..Default::default() });
+        assert!(!g.series_decided());
+        g.series.as_mut().unwrap().wins[1].1 = 3;
+        assert!(g.series_decided());
         // (the clock's sounds: the loop under 20 s, a beep a second from 10 s, the speech once)
         let mut g = Game::new(Vec::new(), 0);
         let steps: [(Option<i64>, bool, usize, usize); 8] = [(Some(21_000), false, 0, 0), (Some(19_900), true, 0, 0), (Some(10_500), true, 0, 0), (Some(9_990), true, 1, 1), (Some(9_000), true, 1, 1), (Some(8_999), true, 2, 1), (Some(8_999), false, 2, 1), (None, false, 2, 1)];

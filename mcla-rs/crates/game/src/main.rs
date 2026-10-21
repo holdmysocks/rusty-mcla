@@ -4810,6 +4810,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                     // COMPLETION REWARD; below, `mc4_event_complete`)
                                     s15_series_done = Some((sr.key.clone(), sr.diff));
                                 }
+                                // (form 56 for 3.5 s after the place's ring: SERIES WON / SERIES LOST -
+                                // EndOfRaceSequence, OrderedSeriesCore's bComplete / bFailure)
+                                self.game.opt_x.arcade.d.banner = Some((3.5, w == "YOU"));
+                                self.game.opt_x.arcade.d.banner_kind = 3;
                                 log::info!("series {}: won by {} ({:?})", sr.key, w, sr.wins);
                             }
                             None => {
@@ -4837,6 +4841,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (a car given by what the race completed has its page on the rewards screen)
                     if self.game.mc4_rewards_listed() {
                         self.game.reward_panel = true;
+                    }
+                    // (form 56 after the last race of a tournament: TOURNAMENT WON / TOURNAMENT LOST, 3.5 s -
+                    // TournamentCore's EndOfRaceSequence, sub_826CA6D8's bComplete / bFailure)
+                    if let Some(won) = self.game.career.tour_decided.take() {
+                        self.game.opt_x.arcade.d.banner = Some((3.5, won));
+                        self.game.opt_x.arcade.d.banner_kind = 4;
                     }
                     if let Some(line) = tournament {
                         // (the points decide: the career hears of it with the next event)
