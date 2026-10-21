@@ -431,6 +431,9 @@ pub struct Rider {
     pub seat: Option<Seat>,
     /// the drawn body's pitch and roll (sub_82794FA8)
     pub tilt: Tilt,
+    /// the velocity the physics level is given for the car while it rides (inactive): its
+    /// position's change over the frame (sub_826E9A40 -> sub_826FA510, inst +96; no turn)
+    pub moved: Vec3,
     rng: u32,
     id: u32,
     /// the follower's curve speed |dP/dt| (+180) and the lane it was taken on (another
@@ -480,6 +483,7 @@ impl Rider {
             partner: None,
             seat: None,
             tilt: Tilt::default(),
+            moved: Vec3::ZERO,
             rng: seed.max(1),
             id: seed,
             ds: 0.0,
@@ -1752,9 +1756,15 @@ impl Vehicles {
             let dist2 = Vec3::new(c.state.pos.x - focus.x, 0.0, c.state.pos.z - focus.z).length_squared();
             let due = probe_due(r, frame, dist2, c.state.up().y);
             let car = (c.state.pos, c.state.up(), dir);
+            let was = r.seat.as_ref().map(|s| s.at.0);
             let (p, rot) = seat_car(r, col, p, dir, f, car, due);
             c.state.relocate(p, rot);
             c.state.vel = dir * v;
+            // (the level's velocity: the matrix position's change - not the drawn drop - over dt)
+            r.moved = match (was, r.seat.as_ref().map(|s| s.at.0)) {
+                (Some(a), Some(b)) if dt > 0.0 => (b - a) / dt,
+                _ => dir * v,
+            };
             if let Some(w) = trace.as_mut() {
                 use std::io::Write;
                 let (lim, junction) = rail_speed(nav, r.link);
@@ -1778,6 +1788,31 @@ impl Vehicles {
             let Some(r) = c.rail.as_mut() else { continue };
             let dist2 = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length_squared();
             r.tilt.update(pos, fwd, right, dist2, dt);
+        }
+        // (test hook MCLA_TRAFFIC_RAM=s: every s seconds the player's car is put 9 m behind the
+        // riding car nearest it within 80 m, on its heading, 12 m/s faster than it)
+        if let Some(every) = std::env::var("MCLA_TRAFFIC_RAM").ok().and_then(|x| x.parse::<f32>().ok()) {
+            static LAST: std::sync::Mutex<f32> = std::sync::Mutex::new(-100.0);
+            let mut last = LAST.lock().unwrap();
+            if self.clock - *last >= every {
+                let me = self.cars.iter().position(|c| c.is_player);
+                if let Some(pi) = me {
+                    let m = self.cars[pi].state.pos;
+                    let pick = (0..self.cars.len()).filter(|&i| self.cars[i].rail.as_ref().is_some_and(|r| r.state == 1 && r.v > 2.0 && !r.ty.cab && !r.ty.trailer) && self.cars[i].state.pos.distance(m) < 80.0).min_by(|&a, &b| self.cars[a].state.pos.distance(m).total_cmp(&self.cars[b].state.pos.distance(m)));
+                    if let Some(k) = pick {
+                        *last = self.clock;
+                        let (tp, tr, tv) = (self.cars[k].state.pos, self.cars[k].state.rot, self.cars[k].rail.as_ref().unwrap().v);
+                        let f = tr * Vec3::NEG_Z;
+                        let p = &mut self.cars[pi];
+                        // (as a reset puts a car: a fresh state, placed on the ground by the step)
+                        p.state = crate::physics::CarState::new(tp - f * 9.0, (-f.x).atan2(-f.z));
+                        p.placed = false;
+                        p.state.vel = f * (tv + 12.0);
+                        p.pose_history.reset();
+                        log::info!("traffic ram {} {} at {:?}", self.cars[k].rail.as_ref().unwrap().rng_id(), self.cars[k].model.name, tp);
+                    }
+                }
+            }
         }
         // (test hook MCLA_TRAFFIC_KNOCK=s: every s seconds the riding car nearest the player
         // within 60 m is knocked sideways - physical - to watch it find its lane again)
@@ -1966,7 +2001,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), moved: Vec3::ZERO, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
