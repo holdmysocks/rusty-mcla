@@ -3995,10 +3995,10 @@ pub fn pad_acts_down(p: &PadState, slots: &ControlSlots) -> u32 {
 
 /// The idle camera is ended by the pad (sub_822B3BF0, its Idle view): CAM_UP, HYDRAULICS,
 /// CAM_DOWN, LOOKBACK, MUSIC_DOWN, MUSIC_UP, MUSIC_PAUSE or MAP down, or CAMERA_LEFT /
-/// CAMERA_RIGHT / CAMERA_UP off zero.
+/// CAMERA_RIGHT / CAMERA_UP above 0.2 (the constant at 0x82007A4C).
 pub fn pad_wakes_idle(p: &PadState, slots: &ControlSlots) -> bool {
     ["CAM_UP", "HYDRAULICS", "CAM_DOWN", "LOOKBACK", "MUSIC_DOWN", "MUSIC_UP", "MUSIC_PAUSE", "MAP"].iter().any(|a| pad_down(p, slots, a))
-        || ["CAMERA_LEFT", "CAMERA_RIGHT", "CAMERA_UP"].iter().any(|a| pad_analog(p, slots, a) > 0.0)
+        || ["CAMERA_LEFT", "CAMERA_RIGHT", "CAMERA_UP"].iter().any(|a| pad_analog(p, slots, a) > 0.2)
 }
 
 /// A box of the controller pages that is up.

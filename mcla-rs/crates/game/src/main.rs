@@ -367,14 +367,17 @@ struct App {
     replay_prerace: Option<(Vec3, f32, String)>,
     /// seconds since VIEW REPLAY (test hook MCLA_REPLAY_SHOTS)
     replay_wall: f32,
-    /// camera shake: time left and length of the running impact shake, its strength, the clock
-    /// of the noise, and the impact value seen last frame
     /// the camera shake (boomcam::CamShake, camFX's blocks), the last impact seen, the time in
     /// the air, a wipeout already shaken for
     shake: Option<boomcam::CamShake>,
     shake_impact: f32,
     shake_air: f32,
     shake_wipe: bool,
+    /// the landing shake held while a wheel is bottomed out (car +473), the slipstream turbo
+    /// running last frame, and one-shots asked for outside the camera code (duration, scale)
+    shake_land: bool,
+    shake_sst: bool,
+    shake_jolts: Vec<(f32, f32)>,
     district_timer: f32,
     flash: bool,
     enter_garage: bool,
@@ -407,6 +410,13 @@ struct App {
     /// the driving camera's look-around (boomcam::LookAround) and CAMERA_UP from the pad
     look: boomcam::LookAround,
     pad_look_up: f32,
+    /// the event camera's pad edges this frame: CAM_PAN_LEFT / RIGHT and CAM_UP / CAM_DOWN pressed
+    pad_pan: (bool, bool),
+    pad_cam_ud: bool,
+    /// the player's own handbrake this frame (mcPlayerInput +20), before the port's parked hold
+    own_handbrake: bool,
+    /// mcCarSSTurbo +20: the turbo's lens ramp (sub_823465C8)
+    sst_view: f32,
     /// tune/camera/default.camfx, read once
     cam_fx: Option<boomcam::CamFx>,
     pad_horn: bool,
@@ -737,6 +747,9 @@ impl App {
             shake_impact: 0.0,
             shake_air: 0.0,
             shake_wipe: false,
+            shake_land: false,
+            shake_sst: false,
+            shake_jolts: Vec::new(),
             district_timer: 0.0,
             flash: false,
             enter_garage: false,
@@ -760,6 +773,10 @@ impl App {
             cruise_hold: false,
             look: Default::default(),
             pad_look_up: 0.0,
+            pad_pan: (false, false),
+            pad_cam_ud: false,
+            own_handbrake: false,
+            sst_view: 0.0,
             cam_fx: None,
             pad_horn: false,
             pad_act_prev: 0,
@@ -1384,9 +1401,10 @@ impl App {
         if self.look_back || self.wreck_timer > 0.0 {
             return;
         }
-        // (while the event camera runs CAM_UP only ends it and CAM_DOWN does nothing)
+        // (while the event camera runs CAM_UP only ends it and CAM_DOWN does nothing; the
+        // Hydraulics, AirRide and Idle views are ended by the chooser's own tests)
         if self.event_dir.running() {
-            if up {
+            if up && !matches!(self.event_dir.event(), Some(11..=13)) {
                 self.event_dir.leave();
             }
             return;
@@ -1629,6 +1647,9 @@ impl App {
             let back = down >> 19 & 1 != 0 || (crate::mc4::pad_down(&st, &slots, "CAMERA_LEFT") && crate::mc4::pad_down(&st, &slots, "CAMERA_RIGHT"));
             self.pad_look = (right - left, if back { -1.0 } else { 0.0 });
             self.pad_look_up = crate::mc4::pad_analog(&st, &live, "CAMERA_UP");
+            let pan = crate::mc4::pad_down(&st, &live, "CAM_PAN_LEFT") || crate::mc4::pad_down(&st, &live, "CAM_PAN_RIGHT");
+            self.pad_pan = (pan && !self.pad_pan.1, pan);
+            self.pad_cam_ud = a(10) || a(11);
             self.pad_horn = down >> 18 & 1 != 0;
             self.pad_pending |= acted & 127;
             if !self.drive {
@@ -1913,6 +1934,7 @@ impl App {
         } else if !self.drive {
             self.fly_camera(dt);
         }
+        self.own_handbrake = player_input.handbrake;
         // standing with the pedals untouched, the car holds itself (it used to roll away on hills)
         if self.drive && !menu_open && player_input.throttle.abs() < 0.02 && player_input.brake.abs() < 0.02 {
             if self.vehicles.player().map_or(false, |c| c.state.speed() < 1.2) {
@@ -2090,6 +2112,13 @@ impl App {
                 self.ability.levels[i] = self.game.career.ability_level(system, stat);
             }
             if let Some(k) = self.ability.update(&mut self.vehicles, fire, !self.props.hits.is_empty(), dt) {
+                // (sub_823383C8: Roar and EMP shake the player's camera as they go off - their
+                // tunes' ShakeTime / ShakeScale, roar 0.75 s 0.365, pulse 0.5 s 1)
+                match k {
+                    ability::Kind::Roar => self.shake_jolts.push((0.75, 0.365)),
+                    ability::Kind::Emp => self.shake_jolts.push((0.5, 1.0)),
+                    _ => {}
+                }
                 self.game.show_message(k.name());
                 self.game.career.event(career::Ev::Ability);
                 let (system, stat) = k.system();
@@ -3035,6 +3064,8 @@ impl App {
                             self.warp_view = None;
                             self.prerace_plan = None;
                             self.prerace_wait = 0;
+                            // (the scene the race played, not a new pick)
+                            self.prerace_replay = true;
                             self.game.prerace = Some(p);
                             2
                         }
@@ -5192,6 +5223,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     c.plate = None;
                 }
             }
+            // (the damage callback's dv since the last frame, for the impact shake)
+            let shake_dv = self.vehicles.player_mut().map_or(0.0, |c| std::mem::take(&mut c.state.shake_dv));
             if let Some(car) = self.vehicles.player() {
                 let render_state = car.render_state(self.vehicles.render_alpha);
                 // the garage's own cameras: the view that goes with the highlighted row
@@ -5451,6 +5484,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if replay_cut {
                         self.boom.reset();
                         self.cam_switch.reset();
+                        // (a cut to a fixed mount - bumper or cockpit, camBoomCS vt+60 - puts the
+                        // TRANSITIONMOVIE mask up, sub_8271E930 -> sub_82207EF0)
+                        if replay_drive.map_or(false, |(v, _)| v < 2) {
+                            self.cam_switch.mask.start(0.01, 0.25, 0.01);
+                        }
                     }
                     let cine_views = if mode == 5 {
                         self.event_views
@@ -5506,7 +5544,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let fx = self.cam_fx.get_or_insert_with(|| boomcam::CamFx::load(&data_dir)).clone();
                         let input = self.drive && !self.game.in_menu() && self.game.replay.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
                         let (side, up) = if self.look_back && chase { (0.0, 0.0) } else { (self.pad_look.0, self.pad_look_up) };
-                        self.look.frame(&fx, boomcam::VIEW_OF_PORT[(mode as usize).min(5)] as u8, car.model.bike, side, up, input, self.look_back && !chase, dt);
+                        // (the cockpit's parked free look: no pedal and the car still for over
+                        // LookaroundDelayTime - the pad's idle time and chassis +588 - then the left
+                        // stick, raw, its up negative)
+                        let still = render_state.veh.as_ref().map_or(0.0, |v| v.still_timer);
+                        let free = (self.idle_time > fx.look_delay && still > fx.look_delay)
+                            .then(|| self.gamepad.as_ref().and_then(|g| active_pad(g, self.pad_id)).map(|p| (p.axis(pads::Axis::LeftX), -p.axis(pads::Axis::LeftY))))
+                            .flatten();
+                        self.look.frame(&fx, boomcam::VIEW_OF_PORT[(mode as usize).min(5)] as u8, car.model.bike, side, up, input, self.look_back && !chase, free, dt);
                         let target = boomcam::BoomTarget {
                             pos: render_state.pos,
                             rot: render_state.rot,
@@ -5526,6 +5571,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             pan: if self.look_back && chase { self.cam_switch.pan_for(mode, true) } else { (self.look.yaw, self.look.pitch) },
                             rise: if self.look_back && chase { 0.0 } else { self.look.rise },
                             fixed_mount: !chase,
+                            model_offset: car.model.simtunes.as_ref().map_or(Vec3::ZERO, |s| Vec3::new(s.base.s.model_offset_x, s.base.s.model_offset_y, s.base.s.model_offset_z)),
                         };
                         let out = self.boom.update(tune, &target, dt);
                         let out = self.cam_switch.blend.apply(&boomcam::BoomTarget { pan: (0.0, 0.0), ..target }, out, dt);
@@ -5551,7 +5597,67 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             slope: boomcam::TrackCar::slope_of(render_state.rot, &render_state.wheels),
                         };
                         let charge = render_state.veh.as_ref().map_or(0.0, |v| v.burn);
-                        let out = self.event_dir.frame(&data_dir, &car.model.name, allowed, if car.input.handbrake { 1.0 } else { 0.0 }, charge, render_state.ang_vel.y, self.idle_time, &track_car, out, dt);
+                        // the chooser's inputs (sub_822B3BF0; boomcam::EventIn)
+                        let vs = render_state.veh.as_ref();
+                        let bike = car.model.bike;
+                        // the slipstream turbo's lens (mcCarSSTurbo +20, sub_823465C8): to turboFOV at
+                        // |FOV| / FovOutTime a second while it runs, back at FovInTime
+                        let sst_on = vs.map_or(false, |v| v.sst_level > 0.0);
+                        let (sfov, sout, sin) = car.model.simtunes.as_ref().map_or((0.0, 1.0, 1.0), |s| (s.base.ss_turbo.fov, s.base.ss_turbo.fov_out_time, s.base.ss_turbo.fov_in_time));
+                        let goal = if sst_on { sfov } else { 0.0 };
+                        let rate = sfov.abs() / if sst_on { sout } else { sin }.max(1e-3) * dt;
+                        self.sst_view += (goal - self.sst_view).clamp(-rate, rate);
+                        let inv = render_state.rot.inverse();
+                        let zs: Vec<f32> = render_state.wheels.iter().map(|w| (inv * (w.world_pos - render_state.pos)).z).collect();
+                        let (zmin, zmax) = zs.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &z| (a.min(z), b.max(z)));
+                        // (the chassis' wheel 0 is the first front wheel, wheel 1 the first back one)
+                        let first_down = |z0: f32| zs.iter().position(|&z| (z - z0).abs() < 0.05).map_or(true, |i| render_state.wheels[i].grounded);
+                        let air_time = render_state.airborne_time;
+                        let ein = boomcam::EventIn {
+                            allowed,
+                            view: boomcam::VIEW_OF_PORT[(mode as usize).min(5)] as u8,
+                            bike,
+                            stunt: vs.map_or(0, |v| if bike { v.bg.state } else { v.wheelie as i16 }),
+                            g18: vs.map_or(0, |v| if bike { v.bg.intent } else { v.two as i16 }),
+                            sst_on,
+                            sst_full: sst_on && self.sst_view == sfov,
+                            nitro_on: vs.map_or(false, |v| v.nitro_burning),
+                            nitro_full: vs.map_or(false, |v| v.nitro_burning) && car.model.simtunes.as_ref().map_or(false, |s| vs.map_or(false, |v| v.nitro_view == s.base.nitro.fov)),
+                            tuck: bike && car.input.lean < -0.5 && air_time < 0.5,
+                            brake: car.input.brake,
+                            handbrake: if self.own_handbrake { 1.0 } else { 0.0 },
+                            hb_sim: if car.input.handbrake { 1.0 } else { 0.0 },
+                            stick_y: car.input.lean,
+                            stick_x: car.input.steer,
+                            front_down: first_down(zmin),
+                            rear_down: first_down(zmax),
+                            speed: render_state.speed(),
+                            charge,
+                            yaw_rate: render_state.ang_vel.y,
+                            hyd_on: vs.map_or(false, |v| v.hyd.on),
+                            pan_pressed: self.pad_pan.0,
+                            cam_pressed: self.pad_cam_ud,
+                            reverse_gear: render_state.gear < 0,
+                            air_time,
+                            idle: self.idle_time,
+                        };
+                        self.pad_pan.0 = false;
+                        self.pad_cam_ud = false;
+                        let out = self.event_dir.frame(
+                            &data_dir,
+                            &car.model.name,
+                            &ein,
+                            &track_car,
+                            out,
+                            dt,
+                            &|c, r| world.collider.sphere(c, r).map(|(d, n, _)| (d, n)),
+                            &|a, b| {
+                                let d = b - a;
+                                let l = d.length();
+                                l > 1e-4 && world.collider.raycast(a, d / l, l).is_some()
+                            },
+                            gpu.config.width as f32 / gpu.config.height.max(1) as f32,
+                        );
                         if std::env::var("MCLA_EVENT_DEBUG").is_ok() && self.frame_no % 10 == 0 {
                             log::info!("event cam: running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
                         }
@@ -5607,11 +5713,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let fixed = boomcam::VIEW_OF_PORT[(self.view_mode as usize).min(5)] < 2;
                     let lerp = |a: f32, b: f32, k: f32| a + (b - a) * k;
                     let speed = render_state.speed();
-                    // an impact (sub_82343880): over a threshold that goes from JoltThreshold to
-                    // ImpactThreshold between 5 and 30 m/s, k = the excess over FatalBlow.
-                    // (approx.: the impact's size is the port's speed lost, m/s)
-                    let impact = render_state.last_impact;
-                    if impact > self.shake_impact + 0.05 {
+                    // an impact (sub_82343880): dv, the change of velocity the step's contact impulses
+                    // gave the car (0.4 of those against fixed things; 0x82567A08), over a threshold
+                    // that goes from JoltThreshold to ImpactThreshold between 5 and 30 m/s; k = the
+                    // excess over FatalBlow
+                    let impact = shake_dv;
+                    if impact > 0.0 {
                         let s5 = ((speed - 5.0) * 0.04).clamp(0.0, 1.0);
                         let thr = lerp(dm.jolt_threshold, dm.impact_threshold, s5);
                         if impact > thr && dm.fatal_blow > 0.0 {
@@ -5620,12 +5727,35 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                     self.shake_impact = impact;
-                    // a landing after more than half a second in the air (sub_82336128). (approx.:
-                    // once, not held while the wheels settle)
+                    // the Agro user's own camera on each hit of another car: the agro tune's
+                    // ShakeTime / ShakeScale, 0.5 s at 1 (ScaleAgroBasedOnSpeed is 0 in the file).
+                    // (approx.: a car within 5.5 m and any contact stand for its car contacts)
+                    if impact > 0.0 && self.ability.agro() && self.vehicles.cars.iter().any(|c| !c.is_player && c.state.pos.distance(render_state.pos) < 5.5) {
+                        sh.jolt(0.5, 1.0, fixed);
+                    }
+                    // the slipstream turbo going off (sub_82345E40): 0.5 s (half in the bumper and
+                    // cockpit) at 0.78, the object's own constants
+                    let sst = render_state.veh.as_ref().map_or(false, |v| v.sst_level > 0.0);
+                    if sst && !self.shake_sst {
+                        sh.jolt(if fixed { 0.25 } else { 0.5 }, 0.78, fixed);
+                    }
+                    self.shake_sst = sst;
+                    for (d, a) in self.shake_jolts.drain(..) {
+                        sh.jolt(d, a, fixed);
+                    }
+                    // a landing after more than half a second in the air (sub_82336128, car +473):
+                    // DurationMax / AmplitudeMax on the first tick down, then again on every tick a
+                    // wheel is still bottomed out on fixed ground (wheel +530)
                     let down = render_state.wheels.iter().any(|w| w.grounded);
                     if down {
                         if self.shake_air > 0.5 {
+                            self.shake_land = true;
+                        }
+                        if self.shake_land {
                             sh.jolt(st.impact_duration_max, st.impact_amplitude_max, fixed);
+                            if !render_state.veh.as_ref().map_or(false, |v| v.wheels.iter().any(|w| w.bottomed)) {
+                                self.shake_land = false;
+                            }
                         }
                         self.shake_air = 0.0;
                     } else {
@@ -5655,36 +5785,43 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         r = 0.0;
                     }
                     sh.set(boomcam::SHAKE_DRIVING, if fixed { r * 0.4 } else { r });
-                    // burnout: the burnout charge. (approx.: the tyre and the other flag of the
-                    // original's three sources are not read)
-                    let b = render_state.veh.as_ref().map_or(0.0, |v| v.burn.max(0.0));
+                    // burnout: the charge in any burnout state (charging, full, launching), the tyres'
+                    // melt if more, full while a nitrous shot burns
+                    let b = render_state.veh.as_ref().map_or(0.0, |v| {
+                        let b = if v.burn_state != 0 { v.burn.max(0.0) } else { 0.0 };
+                        let b = b.max(v.melt);
+                        if v.nitro_burning { b.max(1.0) } else { b }
+                    });
                     sh.set(boomcam::SHAKE_BURNOUT, if fixed { b * 0.2 } else { b });
-                    // drift: above 20 m/s the most sliding wheel, ramped in up to 30 m/s.
-                    // (approx.: the port's wheel slip stands for the original's wheel +520)
+                    // drift: above 20 m/s the most sliding tyre (wheel +520, its slide), ramped in up
+                    // to 30 m/s
                     let mut d = 0.0;
                     if speed > 20.0 {
-                        let m = render_state.wheels.iter().map(|w| ((w.slip - 0.5) * 2.0).clamp(0.0, 1.0)).fold(0.0, f32::max);
+                        let m = render_state.veh.as_ref().map_or(0.0, |v| v.wheels.iter().map(|w| ((w.slide - 0.5) * 2.0).clamp(0.0, 1.0)).fold(0.0, f32::max));
                         d = (m * 2.0).clamp(0.0, 1.0);
                         if speed - 20.0 < 10.0 {
                             d *= (speed - 20.0) * 0.1;
                         }
                     }
                     sh.set(boomcam::SHAKE_DRIFT, if fixed { d * 0.08 } else { d });
-                } else if let Some(sh) = self.shake.as_mut() {
-                    sh.reset();
-                }
-                // the seconds the car is left alone: the event camera's Idle view comes after camFX
-                // IdleDelayTime (60 s; boomcam::EventDirector) and goes at a touch (approx.: the
-                // original's own idle clock was not read; here no pedal, steering, handbrake, key or
-                // movement)
-                {
-                    let busy = car.input.throttle > 0.05 || car.input.brake > 0.05 || car.input.steer.abs() > 0.05 || self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::HANDBRAKE, |k| self.input.down(k)) || !self.input.keys.is_empty() || render_state.speed() > 0.5;
-                    if self.frame_no % 120 == 0 && std::env::var("MCLA_IDLE_DEBUG").is_ok() {
-                        log::info!("idle: time {:.1} busy {} speed {:.2} boom {} idle view {}", self.idle_time, busy, render_state.speed(), boom_view, self.event_dir.idle());
+                } else {
+                    self.shake_jolts.clear();
+                    if let Some(sh) = self.shake.as_mut() {
+                        sh.reset();
                     }
-                    if busy || !boom_view || self.game.mode != Mode::FreeRoam || self.game.in_menu() || self.wreck_timer > 0.0 {
+                }
+                // the seconds the car is left alone (the pad block's +112): the event camera's Idle
+                // view comes after camFX IdleDelayTime (60 s; boomcam::EventDirector). The clock runs
+                // while gas, brake and handbrake are all exactly 0 - the steering and the car's
+                // movement do not stop it - and stands still while the game is paused
+                {
+                    let busy = car.input.throttle != 0.0 || car.input.brake != 0.0 || self.own_handbrake;
+                    if self.frame_no % 120 == 0 && std::env::var("MCLA_IDLE_DEBUG").is_ok() {
+                        log::info!("idle: time {:.1} busy {} (gas {} brake {} handbrake {}) speed {:.2} boom {} idle view {}", self.idle_time, busy, car.input.throttle, car.input.brake, self.own_handbrake, render_state.speed(), boom_view, self.event_dir.idle());
+                    }
+                    if busy || !boom_view || !matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
                         self.idle_time = 0.0;
-                    } else {
+                    } else if !self.game.in_menu() {
                         self.idle_time += dt;
                     }
                     if let Ok(v) = std::env::var("MCLA_IDLE_CAM") {
@@ -5748,7 +5885,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 // (the shake on the camera in use, after its collision - see CAMERAS_REPLAY.md)
-                if shake_on && sim_dt > 0.0 {
+                // (none while the player's Zone runs: the blocks keep their state, sub_822B2AB0)
+                let zone = self.ability.kind == ability::Kind::Zone && self.ability.active > 0.0;
+                if shake_on && sim_dt > 0.0 && !zone {
                     if let Some(sh) = self.shake.as_mut() {
                         let mut up = self.boom_up.unwrap_or(Vec3::Y);
                         sh.apply(dt, &mut self.chase.pos, &mut self.chase.look, &mut up, render_state.pos);

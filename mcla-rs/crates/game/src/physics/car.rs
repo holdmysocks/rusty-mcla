@@ -252,6 +252,9 @@ pub struct CarState {
     pub launch: f32,
     pub damage: f32,
     pub last_impact: f32,
+    /// the biggest change of velocity a contact callback of mcCarDamage (0x82343880) has seen
+    /// since the camera last took it (its shake reads the same dv; main.rs zeroes it)
+    pub shake_dv: f32,
     /// a hit above the wipeout threshold this frame, in thresholds (cleared by whoever acts on it)
     pub wipeout: f32,
     /// wiped out: 1 at the hit, running down to 0 over the tuning's WipeoutDelay (the centre
@@ -345,7 +348,7 @@ impl CarState {
             burnout: 0.0,
             launch: 0.0,
             damage: 0.0,
-            last_impact: 0.0, wipeout: 0.0, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
+            last_impact: 0.0, shake_dv: 0.0, wipeout: 0.0, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
             engine_factor: 1.0,
             veh: None,
             touches: Vec::new(),
@@ -469,6 +472,7 @@ impl CarState {
     /// contacts, which have none - the soft spheres between cars without the original's body, the
     /// props that stand fast).
     pub(super) fn damage_call(&mut self, p: &CarParams, dv: f32, mult: f32, at: Vec3, local: Vec3, scrape: Option<ScrapeIn>) {
+        self.shake_dv = self.shake_dv.max(dv);
         if self.damage >= 1.0 {
             return;
         }
