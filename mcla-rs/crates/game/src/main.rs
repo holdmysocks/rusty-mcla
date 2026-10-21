@@ -207,6 +207,9 @@ struct App {
     sky_next: Option<(sky::Sky, sky::Weather, f32)>,
     /// game hours until the weather changes
     weather_timer: f32,
+    weather_auto: bool,
+    weather_rng: vehicles::parked::Mwc,
+    weather_scene: bool,
     cycle_weather: bool,
     props: props::Props,
     sky_bind: Option<Arc<wgpu::BindGroup>>,
@@ -637,7 +640,10 @@ impl App {
             sky: sky::Sky::load_weather(&opt.data_dir, opt.weather.unwrap_or(sky::Weather::Nice)),
             weather: opt.weather.unwrap_or(sky::Weather::Nice),
             sky_next: None,
-            weather_timer: 5.0,
+            weather_timer: 0.0,
+            weather_auto: false,
+            weather_rng: Default::default(),
+            weather_scene: false,
             cycle_weather: false,
             props: props::Props::empty(),
             sky_bind: None,
@@ -835,6 +841,102 @@ impl App {
     }
 
     /// A weather's weight 0..1 (the original's w[k], WEATHER_AUDIO_RULE.md), following cross-fades.
+    /// The weather's change, once a frame (sub_822E8BA8; notes `work/career2/weather/notes.md`).
+    /// W (0x8287E134) is the weather blended towards - `sky_next`'s, else the one in force.
+    /// - hw_local_hangout2_setup's first instruction, Weather_GetAndSetAutoWeatherChange(1): the
+    ///   auto change on for the rest of the session (the flag is not saved).
+    /// - A cine scene (CineScripts 0x95ca1d1b): at its start Stormy becomes Cloudy unless the
+    ///   scene is a race start's; during it the auto change and the time of day's update are off
+    ///   - no countdown, the weights snap -, both back at its end.
+    /// - The garage's lighting (garage +393) forces Nice (W = 0), which stays after.
+    /// - With the time of day's update on (+14545; off with a clock fixed on the command line):
+    ///   the countdown by the game's frame step while the game is not paused; at 0 the next draw
+    ///   300 s on and, with the auto change on, r = the MWC's 23-bit float: Nice -> Nice below
+    ///   0.45, else Cloudy; Cloudy -> Nice below 0.70, Cloudy below 0.75, else Foggy; Stormy ->
+    ///   Foggy; Foggy -> Cloudy below 0.53, else Stormy. The weights then move to W's at
+    ///   dt x d x 0.0625, snapped within 0.05 (0 -> 1 in 47.9 s); with it off they snap.
+    fn weather_tick(&mut self, dt: f32) {
+        use sky::Weather::*;
+        if self.opt.weather.is_some() {
+            return;
+        }
+        // (HANGOUT_SERIES_HOLLYWOODB's mission script starts it as the mission enters the log,
+        // and again with a loaded save)
+        // (test hook: MCLA_WEATHER_TEST="timer,seed" - the next draw that many seconds on, the
+        // draws' MWC from that seed)
+        if self.tick_no == 60 {
+            if let Ok(v) = std::env::var("MCLA_WEATHER_TEST") {
+                let n: Vec<u32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                self.weather_timer = n.first().copied().unwrap_or(10) as f32;
+                self.weather_rng = vehicles::parked::Mwc { lo: n.get(1).copied().unwrap_or(1), carry: 1 };
+            }
+        }
+        if !self.weather_auto && self.tick_no % 30 == 0 && self.game.career.mission_started("HANGOUT_SERIES_HOLLYWOODB") {
+            self.weather_auto = true;
+            log::info!("weather: hw_local_hangout2_setup - the auto change on");
+        }
+        let target = |a: &Self| a.sky_next.as_ref().map_or(a.weather, |n| n.1);
+        let scene = self.cine.playing.as_ref().map(|s| s.name.clone());
+        if let (Some(name), false) = (scene.as_ref(), self.weather_scene) {
+            if target(self) == Stormy && !name.contains("racestart") {
+                self.weather_set(Cloudy);
+            }
+        }
+        self.weather_scene = scene.is_some();
+        if self.game.mode == Mode::Garage && target(self) != Nice {
+            self.weather_set(Nice);
+        }
+        let game_dt = dt * self.game.mc4_time_scale();
+        let update = self.opt.time.is_none() && scene.is_none();
+        if std::env::var("MCLA_WEATHER_TRACE").is_ok() && self.tick_no % 120 == 0 {
+            log::info!("weather: {} -> {} blend {:.3} timer {:.1} auto {} scene {:?} mode {:?} menu {}", self.weather.name(), target(self).name(), self.sky_next.as_ref().map_or(0.0, |n| n.2), self.weather_timer, self.weather_auto, scene, self.game.mode, self.game.in_menu());
+        }
+        if !update {
+            if let Some((sky, w, _)) = self.sky_next.take() {
+                self.sky = sky;
+                self.weather = w;
+            }
+            return;
+        }
+        if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !self.game.in_menu() {
+            self.weather_timer -= game_dt;
+            if self.weather_timer <= 0.0 {
+                self.weather_timer = 300.0;
+                if self.weather_auto {
+                    let r = self.weather_rng.float();
+                    let w = match target(self) {
+                        Nice => if r < 0.45 { Nice } else { Cloudy },
+                        Cloudy => if r < 0.70 { Nice } else if r < 0.75 { Cloudy } else { Foggy },
+                        Stormy => Foggy,
+                        _ => if r < 0.53 { Cloudy } else { Stormy },
+                    };
+                    log::info!("weather: draw {:.3} -> {}", r, w.name());
+                    self.weather_set(w);
+                }
+            }
+        }
+        if let Some((_, _, f)) = self.sky_next.as_mut() {
+            *f += game_dt * (1.0 - *f) * 0.0625;
+            if 1.0 - *f < 0.05 {
+                let (sky, w, _) = self.sky_next.take().unwrap();
+                self.sky = sky;
+                self.weather = w;
+            }
+        }
+    }
+
+    /// W = `w`, blended (the weights move towards it); back to the weather in force drops the blend.
+    fn weather_set(&mut self, w: sky::Weather) {
+        if self.sky_next.as_ref().map_or(self.weather, |n| n.1) == w {
+            return;
+        }
+        if w == self.weather {
+            self.sky_next = None;
+        } else {
+            self.sky_next = Some((sky::Sky::load_weather(&self.opt.data_dir, w), w, 0.0));
+        }
+    }
+
     fn weather_weight(&self, k: sky::Weather) -> f32 {
         let cur = if self.weather == k { 1.0 } else { 0.0 };
         match self.sky_next.as_ref() {
@@ -1800,41 +1902,14 @@ impl App {
         if self.opt.time.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
             let dh = dt / 60.0;
             self.time_of_day = (self.time_of_day + dh) % 24.0;
-            if self.opt.weather.is_none() {
-                self.weather_timer -= dh;
-                if self.weather_timer <= 0.0 && self.sky_next.is_none() {
-                    // mostly fair weather, now and then clouds, fog or a storm - the game's four
-                    // weathers ("TODSun%s": Nice, Cloudy, Foggy, Stormy; the suffix-less
-                    // "clear" set on the disc is an older one the game does not name)
-                    let r = (self.tick_no.wrapping_mul(2654435761) >> 8) % 100;
-                    let w = match r {
-                        0..=59 => sky::Weather::Nice,
-                        60..=79 => sky::Weather::Cloudy,
-                        80..=89 => sky::Weather::Foggy,
-                        _ => sky::Weather::Stormy,
-                    };
-                    self.weather_timer = 3.0 + (r % 5) as f32;
-                    if w != self.weather {
-                        self.sky_next = Some((sky::Sky::load_weather(&self.opt.data_dir, w), w, 0.0));
-                    }
-                }
-            }
         }
+        self.weather_tick(dt);
         if std::mem::take(&mut self.cycle_weather) && self.sky_next.is_none() {
             const CYCLE: [sky::Weather; 4] = [sky::Weather::Nice, sky::Weather::Cloudy, sky::Weather::Foggy, sky::Weather::Stormy];
             let i = CYCLE.iter().position(|w| *w == self.weather).unwrap_or(3);
             let w = CYCLE[(i + 1) % CYCLE.len()];
             self.sky_next = Some((sky::Sky::load_weather(&self.opt.data_dir, w), w, 0.0));
             self.game.show_message(&format!("WEATHER: {}", w.name().to_uppercase()));
-        }
-        if let Some((_, _, f)) = self.sky_next.as_mut() {
-            // 20 second cross-fade
-            *f += dt / 20.0;
-            if *f >= 1.0 {
-                let (sky, w, _) = self.sky_next.take().unwrap();
-                self.sky = sky;
-                self.weather = w;
-            }
         }
         let mut player_input = CarInput::default();
         let menu_open = self.game.in_menu();
