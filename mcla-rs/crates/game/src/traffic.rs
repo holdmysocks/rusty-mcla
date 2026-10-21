@@ -20,7 +20,7 @@ const MIN_WANT: f32 = 4.4704;
 const STOP_SPEED: f32 = 0.22352;
 /// Occluders are taken within 400 m of the focus, as the pedestrian spawner's (peds.rs
 /// `OCC_RANGE_SCALE`).
-const OCC_RANGE: f32 = crate::occluder::RANGE * 10.0;
+pub(super) const OCC_RANGE: f32 = crate::occluder::RANGE * 10.0;
 /// The recovery rail's largest turn (2.44346 rad) and the passing rail's (130 degrees).
 const RAIL_TURN: f32 = 2.44346;
 const PASS_TURN: f32 = 2.26893;
@@ -53,6 +53,8 @@ pub struct AmbType {
     pub freeway_only: bool,
     pub cab: bool,
     pub trailer: bool,
+    /// `bIsTaxi` (type +113: never parked, sub_826F23A0)
+    pub taxi: bool,
     /// the bound's full width and length (the `.r155` root +8 bound, max +0x10 - min +0x20:
     /// obstacle vfuncs 4 and 6, sub_826D9818); 0: not read
     pub width: f32,
@@ -67,7 +69,7 @@ pub struct AmbType {
 impl Default for AmbType {
     fn default() -> Self {
         // (the values every sedan of the set carries)
-        AmbType { max_speed: 40.0, min_accel_band: 1.0, min_accel: 1.0, max_accel: 5.0, min_decel_band: 0.2, min_decel: 3.0, max_decel: 22.5, min_turn: 5.0, pivot_turn: 3.0, instances: 20, bound_group: 0, freeway_only: false, cab: false, trailer: false, width: 0.0, length: 0.0, colors: None, paint_type: 2 }
+        AmbType { max_speed: 40.0, min_accel_band: 1.0, min_accel: 1.0, max_accel: 5.0, min_decel_band: 0.2, min_decel: 3.0, max_decel: 22.5, min_turn: 5.0, pivot_turn: 3.0, instances: 20, bound_group: 0, freeway_only: false, cab: false, trailer: false, taxi: false, width: 0.0, length: 0.0, colors: None, paint_type: 2 }
     }
 }
 
@@ -95,6 +97,7 @@ impl AmbType {
             freeway_only: flag("bFreewayOnly"),
             cab: flag("bIsCab"),
             trailer: flag("bIsTrailer") || TRAILERS.iter().any(|n| n.eq_ignore_ascii_case(model)),
+            taxi: flag("bIsTaxi"),
             width,
             length,
             colors,
@@ -2373,6 +2376,11 @@ pub struct Tune {
     pub spawn_inner: f32,
     pub spawn_outer: f32,
     pub unspawn_outer: f32,
+    /// the parked cars (vehicles/parked.rs): the unspawner's inner radius (M+12), the radius
+    /// inside which a spot must be unseen (M+68) and the share of a node's spots filled (M+152)
+    pub unspawn_inner: f32,
+    pub parked_radius: f32,
+    pub parked_density: f32,
 }
 
 impl Tune {
@@ -2405,6 +2413,9 @@ impl Tune {
             spawn_inner: g("fTrafficSpawnInnerRadius", 50.0),
             spawn_outer: g("fTrafficSpawnOuterRadius", 250.0),
             unspawn_outer: g("fTrafficUnspawnOuterRadius", 400.0),
+            unspawn_inner: g("fTrafficUnspawnInnerRadius", 120.0),
+            parked_radius: g("fParkedCarRadius", 100.0),
+            parked_density: g("fParkedCarDensityFactor", 0.25),
         }
     }
 }
@@ -2431,6 +2442,9 @@ pub struct Spawner {
     pub why: [u32; 8],
     /// the player's road (M+320), kept while the player is on no road's lane
     pub player_road: Option<u32>,
+    /// this frame's region box: centre, unit length axis (x, z), full length and width
+    /// (the parked-car lists take the same box, sub_826F17D8)
+    pub region_box: (glam::Vec2, glam::Vec2, f32, f32),
 }
 
 fn lerp(a: [f32; 2], t: f32) -> f32 {
@@ -2439,7 +2453,7 @@ fn lerp(a: [f32; 2], t: f32) -> f32 {
 
 /// Do two oriented rectangles (centre, unit x axis, half sizes along it and across) meet
 /// (sub_8261B200, a 2D separating-axis test)?
-fn rects_meet(c1: glam::Vec2, u1: glam::Vec2, h1: glam::Vec2, c2: glam::Vec2, u2: glam::Vec2, h2: glam::Vec2) -> bool {
+pub(super) fn rects_meet(c1: glam::Vec2, u1: glam::Vec2, h1: glam::Vec2, c2: glam::Vec2, u2: glam::Vec2, h2: glam::Vec2) -> bool {
     let d = c2 - c1;
     let (v1, v2) = (u1.perp(), u2.perp());
     for ax in [u1, v1, u2, v2] {
@@ -2484,7 +2498,7 @@ impl Spawner {
             .map(|r| mcla_formats::rage::navsys::parse_intersections(&r))
             .unwrap_or_default();
         let n = roads.len();
-        Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None }
+        Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None, region_box: (glam::Vec2::ZERO, glam::Vec2::NEG_Y, 0.0, 0.0) }
     }
 
     /// The road a link belongs to (sub_82245340): its lane's owner when that is a road (flag
@@ -2522,7 +2536,7 @@ impl Spawner {
 /// Is a point seen from the focus (sub_826F0628 / sub_826F0870): nearer than 50 m always;
 /// up to 250 m within the field of view either way along the view line (|cos|) and not
 /// behind an occluder (sphere r 2, 1.5 m up); beyond, never.
-fn seen(t: &Tune, focus: Vec3, view: Vec3, mph: f32, p: Vec3, occ: Option<&crate::occluder::Selected>) -> bool {
+pub(super) fn seen(t: &Tune, focus: Vec3, view: Vec3, mph: f32, p: Vec3, occ: Option<&crate::occluder::Selected>) -> bool {
     let d = Vec3::new(p.x - focus.x, 0.0, p.z - focus.z);
     let dist = d.length();
     if dist < t.spawn_inner {
@@ -2610,12 +2624,27 @@ impl Vehicles {
             sp.frame = sp.frame.wrapping_add(1);
             if sp.frame % 2 == 1 {
                 self.region_list(&mut sp, nav, center, view, mph, free_fast);
+                // the parked cars' lists right after (sub_826F17D8, vehicles/parked.rs)
+                self.parked_lists(&sp);
                 if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() && sp.frame % 30 == 1 {
                     log::info!("traffic regions {} target {:.2} current {} enabled {} mph {:.0} turned down (type, pool, junction, freeway, one way, room, seen, no ground) {:?}", sp.list.len(), sp.target, sp.current, enabled, mph, sp.why);
                 }
-            } else if enabled {
-                self.spawn_frame(&mut sp, gpu, world, nav, center, view, mph, player_link);
-                self.unspawn_frame(&sp, nav, center, view, mph);
+            } else {
+                // sub_826F7988 (traffic, people, then the parked cars) and sub_826F6130 (the
+                // unspawners, only while the region list has roads)
+                if enabled {
+                    self.spawn_frame(&mut sp, gpu, world, nav, center, view, mph, player_link);
+                }
+                let parked = self.parked_target > 0;
+                if parked {
+                    self.parked_spawn(gpu, &sp, center, view, mph);
+                }
+                if enabled {
+                    self.unspawn_frame(&sp, nav, center, view, mph);
+                }
+                if parked && !sp.list.is_empty() {
+                    self.parked_unspawn(&sp, center);
+                }
             }
         }
         self.spawner = Some(sp);
@@ -2633,6 +2662,7 @@ impl Vehicles {
         let (len, off, width) = if perp { (lerp(t.perp_len, k), lerp(t.perp_off, k), lerp(t.perp_width, k)) } else { (lerp(t.box_len, k), lerp(t.box_off, k), lerp(t.box_width, k)) };
         let bc = fx + vx * off;
         let bh = glam::Vec2::new(len * 0.5, width * 0.5);
+        sp.region_box = (bc, vx, len, width);
         let on_freeway = player_road.is_some_and(|r| sp.roads[r as usize].speed >= 29.0129);
         // hidden: behind an occluder of the spawner's view only (sub_82175508 with flags 2 - no
         // frustum test): the eye 1.75 m above the focus, occluders within 400 m

@@ -171,33 +171,3 @@ impl Distribution {
     }
 }
 
-/// Parking spots flagged `bRandomSmallAmbient` in the per-district parked car lists
-/// (`*_parked_ambients_AmbientData.xml`), keyed by position in decimetres.
-pub fn parked_small_spots(data_dir: &Path) -> hashbrown::HashSet<(i32, i32)> {
-    let mut out = hashbrown::HashSet::new();
-    let amb = data_dir.join("tune/ambients");
-    let Ok(rd) = std::fs::read_dir(&amb) else { return out };
-    let mut seen = hashbrown::HashSet::new();
-    for sub in rd.flatten().filter(|e| e.path().is_dir()) {
-        let Ok(files) = std::fs::read_dir(sub.path()) else { continue };
-        for f in files.flatten() {
-            let name = f.file_name().to_string_lossy().to_string();
-            if !name.ends_with("_AmbientData.xml") || !seen.insert(name) {
-                continue;
-            }
-            let Ok(t) = std::fs::read_to_string(f.path()) else { continue };
-            for item in t.split("<Item>").skip(1) {
-                if !item.contains("bRandomSmallAmbient value=\"true\"") {
-                    continue;
-                }
-                let Some(i) = item.find("<vVerts") else { continue };
-                let Some(j) = item[i..].find('>') else { continue };
-                let nums: Vec<f32> = item[i + j + 1..].split_whitespace().take(3).filter_map(|x| x.parse().ok()).collect();
-                if nums.len() == 3 {
-                    out.insert(((nums[0] * 10.0).round() as i32, (nums[2] * 10.0).round() as i32));
-                }
-            }
-        }
-    }
-    out
-}

@@ -14,6 +14,8 @@ use wgpu::util::DeviceExt;
 
 #[path = "traffic.rs"]
 pub mod traffic;
+#[path = "parked.rs"]
+pub mod parked;
 
 /// The glow table's kind of a `glow<name>0` bone of a car part's skeleton (every bone of that name
 /// is the place of one glow of the kind): 0 brake, 1 tail, 2 signal, 3 head, 4 high beam,
@@ -564,9 +566,16 @@ pub struct Vehicles {
     pub interior_glass: bool,
     /// the player's car is driven by the test driver (`--auto`): it passes traffic like the racers
     pub auto_player: bool,
-    /// the city's parking spots and a 64 m lookup grid
-    pub parking: Vec<mcla_formats::rage::parking::ParkingSpot>,
-    park_grid: hashbrown::HashMap<(i32, i32), Vec<usize>>,
+    /// the city's parking spots and their quadtree (parked.rs), the active lists (M+1804) and
+    /// the random numbers the parked-car spawner draws (the original's shared MWC)
+    pub parking: mcla_formats::rage::parking::ParkingTree,
+    park_lists: Vec<u32>,
+    park_rng: parked::Mwc,
+    park_dump_frame: u32,
+    /// (diagnostics, MCLA_PARK_DUMP) parked spawn tries turned down, by reason
+    park_why: [u32; 5],
+    /// parked cars on (> 0) or off (0); the count itself is not used: the spawner fills a
+    /// quarter of the spots of the nodes round the focus (parked.rs)
     pub parked_target: usize,
     wheel_cache: hashbrown::HashMap<(std::path::PathBuf, String, u32), Arc<WheelModel>>,
     brake_cache: hashbrown::HashMap<(std::path::PathBuf, u32, i32), Arc<BrakeModel>>,
@@ -606,8 +615,6 @@ pub struct Vehicles {
     pub player_area_b: [[f32; 4]; 5],
     /// its window tint (colour, level 1..10 or 0)
     pub player_tint: [f32; 4],
-    /// parking spots that take a random small car (the others take the list's Escalade)
-    park_small: hashbrown::HashSet<(i32, i32)>,
     /// diagnostics: car-frames braking for / standing at a red light
     pub held_at_red: u64,
     pub stopped_at_red: u64,
@@ -629,11 +636,6 @@ pub struct Vehicles {
 /// Trailers are towed, never driven.
 fn is_trailer(n: &str) -> bool {
     n.contains("trailer") || n.contains("flatbed") || n.contains("flatloaded") || n.contains("tanker")
-}
-
-/// Too big for a kerbside parking spot.
-fn is_large(n: &str) -> bool {
-    is_trailer(n) || n.contains("citybus") || n.contains("rstr") || n.contains("semitruck") || n.contains("limo")
 }
 
 pub const PALETTE: [[f32; 4]; 10] = [
@@ -2035,100 +2037,19 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let p = std::path::Path::new(data_dir).join("resources/city/sc/0x2e3038ce.r62");
         if let Ok(res) = crate::assets::load_resource_file(&p) {
             self.parking = mcla_formats::rage::parking::parse_parking(&res);
-            self.park_grid.clear();
-            for (i, sp) in self.parking.iter().enumerate() {
-                self.park_grid.entry(((sp.pos.x / 64.0).floor() as i32, (sp.pos.z / 64.0).floor() as i32)).or_default().push(i);
-            }
-            log::info!("parking: {} spots", self.parking.len());
+            log::info!("parking: {} spots in {} quadtree nodes", self.parking.spots.len(), self.parking.nodes.len());
         }
         let root = std::path::Path::new(data_dir);
         self.ambient = crate::ambient::Distribution::load(root, "va_");
-        self.park_small = crate::ambient::parked_small_spots(root);
         self.hour = 12.0;
-        log::info!("ambient: {} traffic districts, {} small-car parking spots", self.ambient.types.len(), self.park_small.len());
+        log::info!("ambient: {} traffic districts", self.ambient.types.len());
     }
 
-    /// Keep parked cars on the spots around `center` (a fixed share of the spots is
-    /// occupied, chosen by spot index so the city looks the same on every visit).
-    pub fn manage_parked(&mut self, gpu: &Gpu, center: Vec3) {
-        if self.parking.is_empty() || self.parked_target == 0 {
-            return;
-        }
-        self.cars.retain(|c| c.parked.is_none() || c.pinned || (c.state.pos.distance(center) < 260.0 && c.settle != PARK_NO_GROUND));
-        let n_parked = self.cars.iter().filter(|c| c.parked.is_some()).count();
-        if n_parked >= self.parked_target {
-            return;
-        }
-        let pool: Vec<usize> = (0..self.models.len())
-            .filter(|&i| {
-                let n = &self.models[i].name;
-                n.starts_with("va_") && !is_large(n)
-            })
-            .collect();
-        if pool.is_empty() {
-            return;
-        }
-        let (cx, cz) = ((center.x / 64.0).floor() as i32, (center.z / 64.0).floor() as i32);
-        let mut spawned = 0;
-        'outer: for dx in -3..=3 {
-            for dz in -3..=3 {
-                let Some(list) = self.park_grid.get(&(cx + dx, cz + dz)).cloned() else { continue };
-                for si in list {
-                    // a quarter of the spots is taken (fParkedCarDensityFactor)
-                    let h = (si as u32).wrapping_mul(2654435761) >> 8;
-                    if h % 100 >= 25 {
-                        continue;
-                    }
-                    let sp = self.parking[si];
-                    let d = sp.pos.distance(center);
-                    if d > 190.0 || d < 25.0 {
-                        continue;
-                    }
-                    if self.cars.iter().any(|c| c.parked == Some(si) || c.state.pos.distance(sp.pos) < 4.5) {
-                        continue;
-                    }
-                    let mut mi = pool[(h / 100) as usize % pool.len()];
-                    let models = &self.models;
-                    let small = self.park_small.is_empty() || self.park_small.contains(&((sp.pos.x * 10.0).round() as i32, (sp.pos.z * 10.0).round() as i32));
-                    if small {
-                        // a random small car of the district
-                        let r = ((h / 31) % 1000) as f32 / 1000.0;
-                        if let Some(name) = self.ambient.pick(sp.pos, self.hour, r, &|n| !is_large(n) && models.iter().any(|m| m.name.eq_ignore_ascii_case(n))) {
-                            mi = models.iter().position(|m| m.name.eq_ignore_ascii_case(name)).unwrap_or(mi);
-                        }
-                    } else if let Some(i) = models.iter().position(|m| m.name.eq_ignore_ascii_case("va_cad_escalade_03")) {
-                        mi = i;
-                    }
-                    let model = self.models[mi].clone();
-                    // (its type's own colours, as the traffic's: sub_826F23A0 draws % 20)
-                    let shade = (h / 7) as usize % 20;
-                    let ty = match traffic::DATA_ROOT.get() {
-                        Some(root) => Some(*self.amb_types.entry(model.name.clone()).or_insert_with(|| traffic::AmbType::load(root, &model.name))),
-                        None => self.amb_types.get(&model.name).copied(),
-                    };
-                    let color = ty.and_then(|t| t.color(shade)).unwrap_or(TRAFFIC_PALETTE[shade % TRAFFIC_PALETTE.len()]);
-                    // (sub_826DF700 / sub_826DE7F8: z row (sin h, 0, cos h), the car facing -z =
-                    // (-sin h, 0, -cos h) - our yaw's forward is (-sin, 0, -cos); put on the ground by
-                    // the spawn probe in the step, `PARK_PROBE`)
-                    let yaw = sp.heading;
-                    let idx = self.spawn(gpu, model, sp.pos, yaw, color, false);
-                    self.cars[idx].ai = None;
-                    self.cars[idx].parked = Some(si);
-                    let u1 = (((h / 17) % 10007) + 1) as f32 / 10008.0;
-                    let u2 = ((h / 101) % 9973) as f32 / 9973.0;
-                    let steer = traffic::parked_steer(u1, u2);
-                    self.cars[idx].park_steer = steer;
-                    for w in self.cars[idx].state.wheels.iter_mut().take(2) {
-                        w.steer = steer;
-                    }
-                    self.cars[idx].settle = PARK_PROBE;
-                    spawned += 1;
-                    if spawned >= 2 || n_parked + spawned >= self.parked_target {
-                        break 'outer;
-                    }
-                }
-            }
-        }
+    /// The parked cars are spawned and unspawned by the original's rules in the traffic
+    /// spawner's manager frames (parked.rs); here only a car whose ground probe found nothing
+    /// goes (its spot is free again: "could not spawn on terrain").
+    pub fn manage_parked(&mut self, _gpu: &Gpu, _center: Vec3) {
+        self.cars.retain(|c| c.parked.is_none() || c.pinned || c.settle != PARK_NO_GROUND);
     }
 
     /// Which livery file belongs to which car set-up (read once, then kept in a small index file).
