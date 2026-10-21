@@ -197,10 +197,13 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
             vehicles.draw(&mut pass, gpu, false, &mut draws, Some((cam, 110.0)), None);
             vehicles.draw_blended_plain(&mut pass, gpu, Some((cam, 110.0)));
         }
-        // (the full-screen draws use the city layout, whose group 1 the car draws above bind;
-        // with every car out of the passes - LOD -1 - none did, so a car batch's group is bound)
-        let Some(bind) = vehicles.cars.iter().find_map(|c| c.model.batches.first()).map(|b| b.bind.as_ref()) else { return };
-        pass.set_bind_group(1, bind, &[]);
+        // (the full-screen draws use the city layout, whose groups 1 - 3 the car draws above bind;
+        // with every car out of the passes - LOD -1 - none did, so a car batch's are bound)
+        let Some((c, b)) = vehicles.cars.iter().find_map(|c| c.model.batches.first().map(|b| (c, b))) else { return };
+        let Some(mat) = gpu.mat_bgs.get(&(b.mode as u32)) else { return };
+        pass.set_bind_group(1, b.bind.as_ref(), &[]);
+        pass.set_bind_group(2, mat, &[]);
+        pass.set_bind_group(3, &c.binding.bg, &[]);
         pass.set_pipeline(&s.apply);
         pass.draw(0..3, 0..1);
         pass.set_pipeline(&s.one_d);
