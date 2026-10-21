@@ -387,6 +387,8 @@ pub struct PadHeld {
     pub cruise: CruiseHeld,
     /// stage R: the weight button as the frame before had it (flag 1 of input +40)
     pub button: bool,
+    /// the handbrake as the frame wrote it to the chassis (+144): the button is read once a frame, like the pedals
+    pub handbrake: bool,
 }
 
 #[cfg(test)]

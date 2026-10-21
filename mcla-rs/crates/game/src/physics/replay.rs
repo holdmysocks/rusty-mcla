@@ -177,7 +177,7 @@ pub fn run(data_dir: &str, spec: &str) -> anyhow::Result<()> {
     let mut t = 0.0f32;
     // the script: segments, or "@file" with one tick a line (throttle brake steer handbrake -
     // what tools/veh_inputs.py writes from a recording of the original)
-    let mut ticks: Vec<[f32; 21]> = Vec::new();
+    let mut ticks: Vec<[f32; 23]> = Vec::new();
     if let Some(path) = f[2].strip_prefix('@') {
         for line in std::fs::read_to_string(path)?.lines() {
             let v: Vec<f32> = line.split_whitespace().filter_map(|x| x.parse().ok()).collect();
@@ -202,7 +202,7 @@ pub fn run(data_dir: &str, spec: &str) -> anyhow::Result<()> {
                 if v.len() >= 17 && v[16] >= 0.0 {
                     super::vehsim::REPLAY_RIDER_ON.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
-                ticks.push([v[0], v[1], v[2], v[3], g(4), g(5), g(6), g(7), g(8), g(9), g(10), g(11), g(12), g(13), g(14), g(15), g(16), g(17), g(18), g(19), g(20)]);
+                ticks.push([v[0], v[1], v[2], v[3], g(4), g(5), g(6), g(7), g(8), g(9), g(10), g(11), g(12), g(13), g(14), g(15), g(16), g(17), g(18), g(19), g(20), g(21), g(22)]);
             }
         }
     } else {
@@ -210,7 +210,7 @@ pub fn run(data_dir: &str, spec: &str) -> anyhow::Result<()> {
             let v: Vec<f32> = seg.split(':').filter_map(|x| x.parse().ok()).collect();
             anyhow::ensure!(v.len() >= 4, "segment = seconds:throttle:brake:steer[:handbrake]");
             for _ in 0..(v[0] * 60.0).round() as usize {
-                ticks.push([v[1], v[2], v[3], v.get(4).copied().unwrap_or(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+                ticks.push([v[1], v[2], v[3], v.get(4).copied().unwrap_or(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
             }
         }
     }
@@ -227,7 +227,9 @@ pub fn run(data_dir: &str, spec: &str) -> anyhow::Result<()> {
     let seeded = states.is_empty() && std::env::var_os("MCLA_REPLAY_START").is_some();
     if seeded {
         let line: Vec<f32> = std::env::var("MCLA_REPLAY_START").ok().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().next().unwrap_or("").split_whitespace().filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
-        let first = ticks.iter().position(|v| v[0] > 0.0 || v[1] > 0.0 || v[3] > 0.5 || v[2] != 0.0).unwrap_or(0);
+        // (MCLA_REPLAY_START_AT: the line it belongs to - a VEH_PAD replay's raw pad is down a line before the pedals)
+        let first = std::env::var("MCLA_REPLAY_START_AT").ok().and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| ticks.iter().position(|v| v[0] > 0.0 || v[1] > 0.0 || v[3] > 0.5 || v[2] != 0.0).unwrap_or(0));
         states = vec![Vec::new(); first];
         states.push(line);
     }
@@ -460,6 +462,15 @@ for i in 0..4 {
         super::vehsim::REPLAY_ORDER.store(v[20] as u32, std::sync::atomic::Ordering::Relaxed);
         super::vehsim::REPLAY_OTHERS_E.store(v[19].to_bits(), std::sync::atomic::Ordering::Relaxed);
         let rider = (v[13], v[14] > 0.5);
+        // (MCLA_REPLAY_PAD, `veh_diff.py` VEH_PAD: the recording's raw pad through this port's live pad path - a
+        // twenty-second value, 1 on the ticks whose update runs the pad's code (the recording's PADF ticks), sets
+        // the pad's frame phase; a twenty-third, the road's speed limit in mph (input +104) for the cruise)
+        if std::env::var_os("MCLA_REPLAY_PAD").is_some() {
+            if let Some(vs) = c.veh.as_mut() {
+                vs.pad.second_tick = v[21] < 0.5;
+            }
+            super::vehsim::CRUISE_LIMIT_MPH.store(v[22].to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
         let v = if v[12] < 0.0 { [0.0, v[1], v[0], v[2], v[3]] } else { [0.0, v[0], v[1], v[2], v[3]] };
         // (MCLA_REPLAY_HOLD: the recording was made on a race's grid - chassis +592 bit 0x2, N-VP-1)
         let grid_hold = std::env::var("MCLA_REPLAY_HOLD").ok().map_or(false, |v| v.parse::<usize>().map_or(true, |k| n < k));
@@ -471,6 +482,8 @@ for i in 0..4 {
         } else if let Some(q) = states.get(n).filter(|q| q.len() == 1 && states.iter().any(|s| s.len() >= 126)) {
             input.steer = q[0];
         }
+        // (MCLA_REPLAY_PAD: the car is moving once the pad's pedals - what this update drives with - are, not the raw pad)
+        let pad_moving = std::env::var_os("MCLA_REPLAY_PAD").is_some().then(|| c.veh.as_ref().map_or(false, |vs| vs.pad.pedals.throttle > 0.0 || vs.pad.pedals.brake > 0.0) || input.handbrake || input.steer != 0.0);
         {
             c.step(&p, input, &col, dt);
             // (a recording begins with the original's car standing: its body is at rest to
@@ -478,7 +491,7 @@ for i in 0..4 {
             // springs on a cambered road never quite is here. Until the first pedal the
             // replay's car is held as still.)
             static MOVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-            if input.throttle > 0.0 || input.brake > 0.0 || input.handbrake || input.steer != 0.0 {
+            if pad_moving.unwrap_or(input.throttle > 0.0 || input.brake > 0.0 || input.handbrake || input.steer != 0.0) {
                 MOVING.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             if !MOVING.load(std::sync::atomic::Ordering::Relaxed) && std::env::var_os("MCLA_REPLAY_NOSLEEP").is_none() && std::env::var_os("MCLA_REPLAY_STATE").is_none() && std::env::var_os("MCLA_REPLAY_POSES").is_none() && !states.get(n).is_some_and(|q| q.len() >= 61) {
