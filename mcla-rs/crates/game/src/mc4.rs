@@ -16794,19 +16794,25 @@ mod tests {
         g.mc4_race_goals(1, Some(50.0), 0.0);
         assert!(g.mc4_awarded("aARC"));
         // the odometer in miles (2.237 mph per m/s), two wheels, a jump
-        let d = |two: bool, air: bool, x: f32| S23Drive { present: true, vel_xz: 20.0, speed: 20.0, two, wheelie: false, airborne: air, pos: glam::Vec3::new(x, 0.0, 0.0) };
+        let d = |two: bool, air: bool, x: f32| S23Drive { present: true, vel_xz: 20.0, speed: 20.0, two, wheelie: false, airborne: air, pos: glam::Vec3::new(x, 0.0, 0.0), placed: true };
         g.mc4b_tick(1.0, d(true, false, 0.0));
         let mile = 20.0 * crate::mc4b::MPH * crate::mc4b::PER_HOUR;
         assert!((g.mc4_stat("gkDS", 0) - mile as f64).abs() < 1e-5 && (g.mc4_stat("gk2W", 0) - mile as f64).abs() < 1e-5);
+        // (a wheel down takes the take-off point; the first frame is a set-down)
+        g.mc4b_tick(0.1, d(false, false, 0.0));
         g.mc4b_tick(0.5, d(false, true, 5.0));
         g.mc4b_tick(0.5, d(false, true, 10.0));
-        g.mc4b_tick(0.1, d(false, false, 30.0));
-        assert!((g.mc4_stat("gsJT", 0) - 1.0).abs() < 1e-5 && (g.mc4_stat("gmJD", 0) - 30.0).abs() < 1e-4);
+        g.mc4b_tick(0.1, d(false, false, 12.0));
+        assert!((g.mc4_stat("gsJT", 0) - 1.0).abs() < 1e-5 && (g.mc4_stat("gmJD", 0) - 12.0).abs() < 1e-4);
         // (the frame after the landing only takes the new take-off point; a shorter jump keeps the longest)
-        g.mc4b_tick(0.1, d(false, false, 40.0));
-        g.mc4b_tick(0.2, d(false, true, 45.0));
-        g.mc4b_tick(0.1, d(false, false, 50.0));
-        assert!((g.mc4_stat("gsJT", 0) - 1.2).abs() < 1e-5 && (g.mc4_stat("gmJD", 0) - 30.0).abs() < 1e-4);
+        g.mc4b_tick(0.1, d(false, false, 13.0));
+        g.mc4b_tick(0.2, d(false, true, 15.0));
+        g.mc4b_tick(0.1, d(false, false, 16.0));
+        assert!((g.mc4_stat("gsJT", 0) - 1.2).abs() < 1e-5 && (g.mc4_stat("gmJD", 0) - 12.0).abs() < 1e-4);
+        // (a move the driving cannot make - a warp, the grid - is no jump: no air, no take-off point)
+        g.mc4b_tick(0.1, d(false, true, 900.0));
+        g.mc4b_tick(0.1, d(false, false, 901.0));
+        assert!((g.mc4_stat("gsJT", 0) - 1.2).abs() < 1e-5 && (g.mc4_stat("gmJD", 0) - 12.0).abs() < 1e-4);
         // nothing counts in a menu
         g.mode = crate::game::Mode::Paused;
         let before = g.mc4_stat("gkDS", 0);

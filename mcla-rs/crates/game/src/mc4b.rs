@@ -48,6 +48,8 @@ pub struct S23Drive {
     /// no wheel down
     pub airborne: bool,
     pub pos: Vec3,
+    /// set down (`CarInstance::placed`)
+    pub placed: bool,
 }
 
 /// The player's vehicle (the port's state: the wheels' contact, vehsim's `two` and `wheelie`).
@@ -64,6 +66,7 @@ pub fn drive_of(c: Option<&crate::vehicles::CarInstance>) -> S23Drive {
         wheelie: c.model.bike && vs.map_or(false, |s| s.bg.state > 0 || s.wheelie == 1 || s.wheelie == 99),
         airborne: c.state.wheels.iter().take(if c.model.bike { 2 } else { 4 }).all(|w| !w.grounded),
         pos: c.state.pos,
+        placed: c.placed,
     }
 }
 
@@ -73,6 +76,8 @@ pub struct S23bLive {
     /// the jump's air time (+584; negative for the frame after a landing) and take-off point (+640)
     pub air: f32,
     pub takeoff: Option<Vec3>,
+    /// the player's place last frame (a move the driving cannot make is the game's)
+    pub last_pos: Option<Vec3>,
     /// the test drive seen last frame
     pub td_was: Option<usize>,
     /// South Central's set-up script: its clock (WAITUNWARPED 6000 once the player's car is
@@ -318,6 +323,19 @@ impl Game {
             self.mc4_stat_add("gkWL", 0, miles(d.speed));
         }
         let x = &mut self.opt_x.s23b;
+        // (the port's own: a car the game moves - set down 3 cm up, put on a grid, warped - is
+        // no jump; the original sets them down on the ground and only a wheel down writes the
+        // take-off point. So no air and no take-off point across such a move.)
+        let warped = x.last_pos.map_or(true, |p| p.distance(d.pos) > d.speed * sim * 2.0 + 2.0);
+        x.last_pos = Some(d.pos);
+        if !d.placed || warped {
+            x.air = 0.0;
+            x.takeoff = None;
+            return;
+        }
+        if d.airborne && x.takeoff.is_none() {
+            return;
+        }
         if d.airborne {
             x.air += sim;
         } else if x.air > 0.0 {

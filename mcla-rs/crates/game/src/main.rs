@@ -1974,12 +1974,16 @@ impl App {
                     self.cruise_on = false;
                 }
             }
-            // (test hook: MCLA_TWO=1 drives off and goes up on two wheels after 700 frames)
+            // (test hook: MCLA_TWO=1 drives off and goes up on two wheels after 700 ticks; a bike
+            // pulls the stick back as well - a wheelie wants the button and stickY > 0.8)
             if std::env::var("MCLA_TWO").is_ok() {
                 player_input.throttle = 1.0;
                 if self.tick_no > 700 {
                     player_input.xfer = true;
                     player_input.steer = if self.tick_no < 720 { 0.3 } else { 0.0 };
+                    if self.vehicles.player().is_some_and(|c| c.model.bike) {
+                        (player_input.steer, player_input.lean) = (0.0, 1.0);
+                    }
                 }
             }
             // (test hook: MCLA_HYD=1 fits the hydraulics, switches them on and drops the front)
@@ -2496,6 +2500,17 @@ impl App {
                 self.game.pause_tab = n.first().copied().unwrap_or(0);
                 self.game.pause_page = n.get(1).copied().unwrap_or(0) as u8;
                 self.game.menu_sel = n.get(2).copied().unwrap_or(0);
+            }
+        }
+        // (test hook: MCLA_TEST_DRIVE_CAR=<vehicle> - the showroom's TEST DRIVE in that vehicle at
+        // tick 200, as its X does)
+        if self.tick_no == 200 {
+            if let Ok(name) = std::env::var("MCLA_TEST_DRIVE_CAR") {
+                let i = self.game.car_dirs.iter().position(|p| p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&name)));
+                if i.is_some() {
+                    self.game.test_drive = i;
+                    self.pending_action = MenuAction::TestDrive;
+                }
             }
         }
         if let Ok(path) = std::env::var("MCLA_PHOTO_TEST") {
