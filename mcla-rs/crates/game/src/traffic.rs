@@ -2973,6 +2973,10 @@ impl Vehicles {
                 target += iw;
             }
         }
+        // (the density scale, 0x826F5504: on the sum, before the clamp - not in the cutscene branch)
+        if !sp.cutscene {
+            target *= self.density_scale.unwrap_or(1.0);
+        }
         if target > 0.0 && target < 1.0 {
             target = 1.0;
         }

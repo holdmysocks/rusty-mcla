@@ -8369,8 +8369,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (step 19c: an ARCADE race's TRAFFIC, TIME OF DAY and WEATHER - the menu's
                     // ACCEPT, sub_8265D2B8: the density scale 0 / 0.5 / 1, the clock warped, the
                     // weather set at once; Dynamic leaves clock and weather be - `mc4_arcade_env`)
+                    // (the scale enters the spawner's target: sub_826F4E90; level 0 switches the
+                    // traffic off - AmbientMgr_SetTrafficEnable)
+                    self.vehicles.density_scale = None;
                     if let Some(env) = self.game.mc4_arcade_env() {
-                        self.vehicles.traffic_target = (self.vehicles.traffic_target as f32 * env.traffic).round() as usize;
+                        if env.traffic == 0.0 {
+                            self.vehicles.traffic_target = 0;
+                        } else {
+                            self.vehicles.density_scale = Some(env.traffic);
+                        }
                         if let Some(h) = env.hour {
                             self.time_of_day = h;
                         }
@@ -8629,6 +8636,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.chase.pos = self.cam.pos;
                 self.chase.look = pos;
                 self.vehicles.traffic_target = self.opt.traffic;
+                // (sub_82206890 puts the density scale back to 1)
+                self.vehicles.density_scale = None;
                 self.vehicles.parked_target = if self.opt.traffic > 0 { 36 } else { 0 };
             }
             Err(e) => log::error!("car load failed: {:#}", e),
