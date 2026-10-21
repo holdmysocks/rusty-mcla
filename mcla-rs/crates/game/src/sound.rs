@@ -147,6 +147,13 @@ pub struct Sound {
 impl Sound {
     #[allow(clippy::too_many_arguments)]
     /// `rain`: the weather's rain share (wet = not 0); `probe(from, to)`: the city's collision has something on that line.
+    /// The tach's rpm: the HUD's d_RPMvalue is the player's engine sound's slewed rpm (engine sound +204,
+    /// sub_822112A8 from sub_8234B000's follower: at most its slew a second - 250 rpm a frame for most cars),
+    /// not the engine's own. None while the car has no engine sound of the original's.
+    pub fn tach_rpm(&self) -> Option<f32> {
+        self.engine.as_ref().map(|(_, e)| e.smoothed_rpm())
+    }
+
     pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], cam_pos: Vec3, cam_right: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, dt: f32) {
         let wet = rain > 0.0;
         a.set_listener(cam_pos, cam_right);

@@ -462,7 +462,7 @@ for i in 0..4 {
         let rider = (v[13], v[14] > 0.5);
         let v = if v[12] < 0.0 { [0.0, v[1], v[0], v[2], v[3]] } else { [0.0, v[0], v[1], v[2], v[3]] };
         // (MCLA_REPLAY_HOLD: the recording was made on a race's grid - chassis +592 bit 0x2, N-VP-1)
-        let grid_hold = std::env::var_os("MCLA_REPLAY_HOLD").is_some();
+        let grid_hold = std::env::var("MCLA_REPLAY_HOLD").ok().map_or(false, |v| v.parse::<usize>().map_or(true, |k| n < k));
         let mut input = CarInput { throttle: v[1], brake: v[2], steer: v[3], handbrake: v[4] > 0.5, lean: rider.0, xfer: rider.1, nitro, hold: grid_hold, ..Default::default() };
         // (a state line's 126th value: the steering the recorded update turned its wheels with;
         // a line of one value alone: that steering and nothing else - the car runs on by itself)

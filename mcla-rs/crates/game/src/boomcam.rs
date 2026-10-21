@@ -136,7 +136,7 @@ pub struct BoomCam {
     shift_size: f32,
     shift_val: f32,
     last_gear: i32,
-    gz: f32,
+    pub gz: f32,
     nitro: f32,
     /// the move-speed limit in use (+656)
     rate: f32,

@@ -1498,7 +1498,7 @@ impl FlashMinimap {
         let p = &mut self.movie.player;
         p.set_global("Mapisvisible", Value::Int(1));
         p.set_global("d_IsNight", Value::Int(info.night as i32));
-        p.set_global("d_Speedvalue", Value::Float((info.speed_kmh / 3.6).abs()));
+        p.set_global("d_Speedvalue", Value::Float(info.speed_abs));
         p.set_global("gpsArrowActive", Value::Int(if gps.is_some() { 1 + self.highlight as i32 } else { 0 }));
         p.set_global("gpsArrowRotation", Value::Float(gps.unwrap_or(0.0)));
         // the ring and its north marker turn with the map, which turns with the car (with the
@@ -1843,9 +1843,8 @@ impl FlashHud {
             }
             _ => p.set_global("policePursuit", Value::Int(0)),
         }
-        let mps = info.speed_kmh / 3.6;
-        p.set_global("d_Speedvalue", Value::Float(mps.abs()));
-        p.set_global("Speedvalue", Value::Float(mps.abs()));
+        p.set_global("d_Speedvalue", Value::Float(info.speed_abs));
+        p.set_global("Speedvalue", Value::Float(info.speed_abs));
         p.set_global("d_RPMvalue", Value::Float(info.rpm.max(0.0)));
         p.set_global("RPMvalue", Value::Float(info.rpm.max(0.0)));
         let red = info.redline.max(1000.0);

@@ -9322,6 +9322,8 @@ fn clip_to_circle(a: egui::Pos2, b: egui::Pos2, c: egui::Pos2, r: f32) -> Option
 #[derive(Clone, Copy, Default)]
 pub struct HudInfo {
     pub speed_kmh: f32,
+    /// the body's whole speed, m/s: the HUD's d_Speedvalue (|velocity|, sub_822112A8), not the forward speed
+    pub speed_abs: f32,
     pub gear: i32,
     pub rpm: f32,
     pub redline: f32,
