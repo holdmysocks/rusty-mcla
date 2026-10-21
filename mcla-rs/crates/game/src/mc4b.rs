@@ -78,6 +78,127 @@ pub struct S23bLive {
     /// there) and whether it has run since the career started
     pub sc_setup_t: f32,
     pub sc_setup_done: bool,
+    /// the SERVICE STATION menu's REFILL NITRO row is enabled (nitrous fitted)
+    pub gas_nitro: bool,
+    /// a frontend sound object for the loop to play
+    pub ui_obj: Option<&'static str>,
+}
+
+/// The gas stations of `game/MiscTasks/GasStations` (`0x53b4b66d`, started by the career's
+/// start-up script): each a trigger at this centre with this radius (0x40..0x3c0; South
+/// Central's `sc_GasStations`, `0x4398c445`, holds ten of them and one more but is started by
+/// nothing).
+pub const GAS_STATIONS: [([f32; 3], f32); 27] = [
+    ([241.0, 25.76, -918.4], 12.0),
+    ([516.8, 31.76, -1368.3], 12.0),
+    ([519.7, 30.76, -1290.6], 12.0),
+    ([816.06, 31.76, -1283.56], 15.0),
+    ([-259.4, -3.06, -32.4], 12.0),
+    ([-732.2, 2.76, -157.7], 15.0),
+    ([-559.9, 39.76, -1784.9], 12.0),
+    ([-2768.9, -29.76, -979.4], 12.0),
+    ([1030.06, 6.76, -307.56], 12.0),
+    ([38.0, 6.76, -415.0], 12.0),
+    ([-598.9, -10.76, 339.9], 12.0),
+    ([-1834.4, 3.7, -216.6], 15.0),
+    ([516.6, 20.4, -751.6], 15.0),
+    ([2348.3, -3.5, -263.3], 15.0),
+    ([-607.0, -22.1, 1700.7], 12.0),
+    ([-1112.4, -21.8, 1650.3], 15.0),
+    ([-1715.6, -12.0, 1580.3], 12.0),
+    ([-1796.6, -10.8, 1506.3], 12.0),
+    ([-1830.6, -10.48, 895.3], 12.0),
+    ([-163.6, -14.8, 514.3], 12.0),
+    ([-197.6, -14.8, 518.3], 12.0),
+    ([520.6, -13.8, 421.3], 12.0),
+    ([1206.6, -16.0, 1401.3], 18.0),
+    ([974.9, -15.0, 1188.3], 12.0),
+    ([-1248.9, -7.9, 1280.3], 15.0),
+    ([-156.9, -21.6, 1555.9], 15.0),
+    ([946.3, -14.6, 456.0], 25.0),
+];
+
+/// The GasStations script's loop (0x438..0x716, every 10 ms) for one frame: what the player's
+/// visit does now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GasStep {
+    None,
+    /// mcCareer_RefillOneNitro: one canister
+    RefillOne,
+    /// Form_ShowForm(61): the SERVICE STATION menu
+    Menu,
+}
+
+/// The visit's locals: the station the player is in (mcCareer_IsInGasStation /
+/// GetGasStationIDX), armed (l69), refilled (l70), the last refill's time (l63) and the
+/// clock (AudioManager_GetActualTime, seconds).
+#[derive(Clone, Debug)]
+pub struct GasVisit {
+    pub at: Option<usize>,
+    pub armed: bool,
+    pub refilled: bool,
+    pub last: f32,
+    pub clock: f32,
+}
+
+impl Default for GasVisit {
+    fn default() -> Self {
+        GasVisit { at: None, armed: true, refilled: false, last: -10.0, clock: 0.0 }
+    }
+}
+
+impl GasVisit {
+    /// One frame: `pos` / `speed` (m/s) of the player's car, `menu_open` the form up
+    /// (mcCareer_ActivateGasMenu), `paused`, `police` (CheckPoliceActivity(1) >= 1), `menu_state`
+    /// the UI state is Cruising_Offline or Racing_Payback. (The script's first WAIT 10000 and
+    /// the trigger's rDelay 0.5 are left out: the port's start and the generic trigger's delay
+    /// were not decoded.)
+    pub fn step(&mut self, dt: f32, pos: Vec3, speed: f32, menu_open: bool, paused: bool, police: bool, menu_state: bool) -> GasStep {
+        self.clock += dt;
+        let flat = |c: [f32; 3]| Vec3::new(pos.x - c[0], 0.0, pos.z - c[2]).length();
+        // (the trigger: bTriggerMultipleTimes, not only on entry, also while moving)
+        if let Some(i) = GAS_STATIONS.iter().position(|(c, r)| flat(*c) < *r) {
+            self.at = Some(i);
+        }
+        let mut out = GasStep::None;
+        if self.at.is_some() && self.armed {
+            if speed < 7.0 && !paused {
+                if !police && self.clock >= self.last + 2.0 && menu_state {
+                    out = GasStep::Menu;
+                    self.armed = false;
+                }
+            } else if speed > 7.1 {
+                if !self.refilled {
+                    if self.clock >= self.last + 2.0 {
+                        out = GasStep::RefillOne;
+                    }
+                    self.refilled = true;
+                    self.last = self.clock;
+                }
+            } else {
+                self.armed = false;
+            }
+        }
+        // (0x716: the visit ends 10 m outside the radius, not while the menu is up)
+        if let Some(i) = self.at {
+            let (c, r) = GAS_STATIONS[i];
+            if !menu_open && flat(c) - 10.0 > r {
+                (self.at, self.armed, self.refilled) = (None, true, false);
+            }
+        }
+        out
+    }
+}
+
+impl Game {
+    /// The SERVICE STATION menu comes up (mcGasStationMenuForm open, sub_82646618): the cursor
+    /// on FULL FIX, REFILL NITRO enabled with nitrous fitted, UI_MENU_SELECT.
+    pub fn gas_menu_open(&mut self, nitro: bool) {
+        self.hangout_key = Some(crate::game::GAS_MENU.to_string());
+        self.hangout_page = (0, 0);
+        self.opt_x.s23b.gas_nitro = nitro;
+        self.opt_x.s23b.ui_obj = Some("UI_MENU_SELECT");
+    }
 }
 
 /// mph per m/s (0x8201CD1C) and hours per second (0x8202F80C).
@@ -287,5 +408,54 @@ pub fn fill_d(text: &str, value: &str) -> String {
     match (text.find("<D>"), text.find("</D>")) {
         (Some(a), Some(b)) if b > a => format!("{}{}{}", &text[..a], value, &text[b + 4..]),
         _ => text.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GasStations (`game/MiscTasks/0x53b4b66d` 0x438..0x716): rolling through fills one canister once a
+    /// visit; stopping opens the menu once a visit (not with the police about, not between 7.0 and 7.1); the
+    /// visit ends 10 m outside the radius, not while the menu is up.
+    #[test]
+    fn gas_station_visit() {
+        let c = Vec3::new(38.0, 6.76, -415.0);
+        let far = c + Vec3::new(30.0, 0.0, 0.0);
+        let dt = 0.01;
+        let mut g = GasVisit::default();
+        assert_eq!(g.step(dt, far, 20.0, false, false, false, true), GasStep::None);
+        assert_eq!(g.at, None);
+        // (rolling in: one canister, once)
+        assert_eq!(g.step(dt, c, 20.0, false, false, false, true), GasStep::RefillOne);
+        assert_eq!(g.at, Some(9));
+        assert_eq!(g.step(dt, c, 20.0, false, false, false, true), GasStep::None);
+        // (stopping within 2 s of the refill: nothing yet; then the menu, once)
+        assert_eq!(g.step(dt, c, 0.0, false, false, false, true), GasStep::None);
+        let mut n = 0;
+        for _ in 0..300 {
+            if g.step(dt, c, 0.0, n > 0, false, false, true) == GasStep::Menu {
+                n += 1;
+            }
+        }
+        assert_eq!(n, 1);
+        // (the menu up: the visit is kept however far; closed, it ends at radius + 10)
+        g.step(dt, far, 0.0, true, false, false, true);
+        assert_eq!(g.at, Some(9));
+        g.step(dt, c + Vec3::new(21.0, 0.0, 0.0), 0.0, false, false, false, true);
+        assert_eq!(g.at, Some(9));
+        g.step(dt, c + Vec3::new(22.5, 0.0, 0.0), 0.0, false, false, false, true);
+        assert_eq!((g.at, g.armed, g.refilled), (None, true, false));
+        // (a new visit with the police about: no menu; between 7.0 and 7.1 the visit is spent)
+        g.clock += 5.0;
+        assert_eq!(g.step(dt, c, 0.0, false, false, true, true), GasStep::None);
+        assert!(g.armed);
+        assert_eq!(g.step(dt, c, 7.05, false, false, false, true), GasStep::None);
+        assert!(!g.armed);
+        assert_eq!(g.step(dt, c, 20.0, false, false, false, true), GasStep::None);
+        // (in a race that is not a payback: the refill only)
+        let mut g = GasVisit::default();
+        assert_eq!(g.step(dt, c, 0.0, false, false, false, false), GasStep::None);
+        assert_eq!(g.step(dt, c, 20.0, false, false, false, false), GasStep::RefillOne);
     }
 }

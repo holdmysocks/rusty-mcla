@@ -348,6 +348,9 @@ pub enum MenuAction {
     QuitRace,
     /// the showroom's TEST DRIVE: out of the garage in the vehicle looked at
     TestDrive,
+    /// the SERVICE STATION menu's FULL FIX (true) or REFILL NITRO (false), then back to the
+    /// world (mcGasStationMenuForm, sub_826414A8)
+    GasStation(bool),
     /// the GPS map, and the race editor on it
     OpenMap,
     OpenEditor,
@@ -10823,7 +10826,25 @@ impl Game {
         // capture of it exists: it is put on the template the tournament's panel uses, the
         // column names as a first, grey row.)
         let s19h_tt = Self::mc4_tt_panel_district(&key);
-        let page = if let Some(d) = s19h_tt {
+        // (the SERVICE STATION menu - form 61, mcGasStationMenuForm: SimpleListForm with the title
+        // "Gas Station", no description, rows FULL FIX and REFILL NITRO - the second only with
+        // nitrous fitted -, ACCEPT / BACK, the base template 2; career2 `gasphoto/notes.md`)
+        let gas = key == GAS_MENU;
+        let page = if gas {
+            let cur = (if down { cur + 1 } else if up { cur.saturating_sub(1) } else { cur }).min(1);
+            self.hangout_page = (0, cur);
+            MenuPage {
+                layout: MenuLayout::List,
+                title: st("Gas Station", "SERVICE STATION").to_uppercase(),
+                rows: vec![
+                    MenuRow { label: st("GasStation_FullFix", "FULL FIX").to_uppercase(), value: String::new(), enabled: true, part: None },
+                    MenuRow { label: st("GasStation_RefillNitro", "REFILL NITRO").to_uppercase(), value: String::new(), enabled: self.opt_x.s23b.gas_nitro, part: None },
+                ],
+                select: cur,
+                prompts: vec![accept.clone(), (st("prompt_back", "BACK").to_uppercase(), ICON_B)],
+                ..MenuPage::default()
+            }
+        } else if let Some(d) = s19h_tt {
             let rows = self.mc4_tt_rows(d);
             let n = rows.len().max(1);
             let mut cur = self.hangout_page.1.min(n - 1);
@@ -11047,6 +11068,28 @@ impl Game {
                 fm.hide();
             }
         };
+        if gas {
+            // (test hook: MCLA_GAS_ACCEPT=0|1 presses ACCEPT on that row)
+            let hook = std::env::var("MCLA_GAS_ACCEPT").ok().and_then(|v| v.parse::<usize>().ok());
+            if let Some(r) = hook {
+                self.hangout_page.1 = r.min(1);
+            }
+            if enter || hook.is_some() {
+                // (REFILL NITRO without nitrous: UI_MENU_ERROR, the menu stays)
+                if self.hangout_page.1 == 1 && !self.opt_x.s23b.gas_nitro {
+                    self.opt_x.s23b.ui_obj = Some("UI_MENU_ERROR");
+                    return None;
+                }
+                let fix = self.hangout_page.1 == 0;
+                leave(self);
+                return Some(MenuAction::GasStation(fix));
+            }
+            if back {
+                leave(self);
+                return Some(MenuAction::Resume);
+            }
+            return None;
+        }
         // (test hook: MCLA_TT_ACCEPT presses ACCEPT on the time trial panel)
         if (enter || std::env::var("MCLA_TT_ACCEPT").is_ok()) && s19h_tt.is_some() {
             let row = self.hangout_page.1;
@@ -11712,6 +11755,9 @@ pub const STARTERS: [&str; 3] = ["vp_vw_scirocco_88", "vp_nsn_240sx_98", "vp_vw_
 /// (approx.) the hangout panel's title icon: a frame of the movie's title icons chosen by
 /// its look against the capture
 const HANGOUT_ICON: i32 = 8;
+
+/// `hangout_key` of the SERVICE STATION menu (form 61).
+pub const GAS_MENU: &str = "gas_station";
 /// a wager hangout's: the dollar (frame 6, as captured)
 const WAGER_ICON: i32 = 6;
 

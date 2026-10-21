@@ -434,6 +434,8 @@ struct App {
     pad_shift_last: Option<(i8, std::time::Instant)>,
     /// the gas station the car stands in
     at_station: Option<usize>,
+    /// the GasStations script's visit (`mc4b::GasVisit`)
+    gas: mc4b::GasVisit,
     /// (step 23b) the hangouts' scenes: their cars, the panel's camera, the pink slip choice
     hscene: hangout_scene::HangoutScene,
     /// the layout items' sources: the hangout cores and the story scenes (layout.rs)
@@ -794,6 +796,7 @@ impl App {
             pad_shift: 0,
             pad_shift_last: None,
             at_station: None,
+            gas: mc4b::GasVisit::default(),
             hscene: Default::default(),
             layout: Default::default(),
             was_racing: false,
@@ -5080,12 +5083,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         {
             let stage = self.game.perf_stages(self.game.current_car).get(6).copied().unwrap_or(0).min(2) as f32;
             let on_grid = self.game.race.as_ref().map_or(false, |r| r.countdown > 0.0);
-            let stations = &self.props.gas_stations;
-            let mut filled = None;
-            // (a full fix there costs what the game's fix price says, if the money is there)
-            let fix_price = self.vehicles.player().map_or(0, |c| self.game.fix_price(c.state.damage.max(c.state.zone_mean()), c.state.zones.iter().any(|z| *z > 0.05)));
-            let can_fix = fix_price > 0 && self.game.money >= fix_price;
-            let mut paid = 0;
+            let mut refilled = false;
+            let mut menu = false;
             if let Some(p) = self.vehicles.player_mut() {
                 let (a, b) = p.model.simtunes.as_ref().map_or((1.0, 4.0), |s| (s.base.nitro_shots, s.mods.nitro_shots));
                 let max = if stage > 0.0 { ((a + (b - a) * stage / 2.0) as u8).max(1) } else { 0 };
@@ -5100,45 +5099,43 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     p.state.nitro_max = max;
                     p.state.nitro_shots = max;
                 }
-                // a gas station: roll in among the pumps
-                let at = stations.iter().position(|(c, r)| (p.state.pos - *c).length_squared() < r * r);
-                if at != self.at_station {
-                    self.at_station = at;
-                    if at.is_some() && self.drive && racing {
-                        if p.state.nitro_shots < max {
-                            p.state.nitro_shots += 1;
-                            filled = Some((true, false));
+                // a gas station (`game/MiscTasks/GasStations`, career2 `gasphoto/notes.md`): rolling
+                // through above 7.1 m/s fills one canister, once a visit, in any race too; stopping below
+                // 7.0 in the cruise or a payback race with no police about opens the SERVICE STATION menu
+                // (form 61), once a visit; the visit ends 10 m outside the station's radius
+                if self.drive && p.state.damage < 1.0 {
+                    let paused = !matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
+                    let police = matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search);
+                    let state = self.game.race.as_ref().map_or(self.game.flag.is_none(), |r| r.kind == game::RaceKind::Payback);
+                    let menu_open = self.game.hangout_key.as_deref() == Some(game::GAS_MENU);
+                    match self.gas.step(dt, p.state.pos, p.state.vel.length(), menu_open, paused, police, state) {
+                        mc4b::GasStep::RefillOne => {
+                            // (mcCareer_RefillOneNitro, sub_826BCA78: one more while below the most)
+                            if p.state.nitro_shots < p.state.nitro_max {
+                                p.state.nitro_shots += 1;
+                                refilled = true;
+                            }
                         }
-                    } else if at.is_some() && self.drive && (p.state.nitro_shots < max || can_fix) {
-                        filled = Some((p.state.nitro_shots < max, can_fix));
-                        p.state.nitro_shots = max;
-                        if can_fix {
-                            p.state.damage = 0.0;
-                            p.state.dmg.repair();
-                p.state.zones = [0.0; 4];
-                            paid = fix_price;
-                        }
+                        mc4b::GasStep::Menu => menu = true,
+                        mc4b::GasStep::None => {}
                     }
+                    self.at_station = self.gas.at;
                 }
             }
-            if let Some((nitro, fix)) = filled {
-                self.game.money -= paid;
-                // (the gas station: NITROUS_REFILL_MASTER when a canister was missing, QUICK_FIX_MASTER for a paid fix)
+            if refilled {
                 if let Some(a) = self.audio.as_mut() {
-                    if nitro {
-                        a.obj("NITROUS_REFILL_MASTER");
-                    }
-                    if fix {
-                        a.obj("QUICK_FIX_MASTER");
-                    }
+                    a.obj("NITROUS_REFILL_MASTER");
                 }
-                let s = |k: &str, d: &str| self.game.career.strings.get(k).map(|s| s.to_uppercase()).unwrap_or_else(|| d.into());
-                let m = match (nitro, fix) {
-                    (true, true) => format!("{}   {}  -${}", s("GasStation_RefillNitro", "REFILL NITROUS"), s("GasStation_FullFix", "FULL FIX"), paid),
-                    (true, false) => s("GasStation_RefillNitro", "REFILL NITROUS"),
-                    _ => format!("{}  -${}", s("GasStation_FullFix", "FULL FIX"), paid),
-                };
-                self.game.show_message(&m);
+            }
+            if menu {
+                let nitro = self.vehicles.player().map_or(false, |c| c.state.nitro_max > 0);
+                self.game.gas_menu_open(nitro);
+                self.pending_action = MenuAction::OpenRaceSelect;
+            }
+            if let Some(n) = self.game.opt_x.s23b.ui_obj.take() {
+                if let Some(a) = self.audio.as_mut() {
+                    a.obj(n);
+                }
             }
         }
         // ---- cheats (earned with the collectables) ----
@@ -8534,6 +8531,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     _ => Mode::MainMenu,
                 };
                 self.game.menu_sel = 0;
+            }
+            MenuAction::GasStation(fix) => {
+                // (FULL FIX: the car seated upright where it stands and fully repaired, no money taken
+                // - G_MoneySpent reads "FREE" -, QUICK_FIX_MASTER; REFILL NITRO: every canister,
+                // NITROUS_REFILL_MASTER even when full. Then the form closes and the game resumes:
+                // sub_82640668 / sub_822A6DE0, sub_82641558)
+                if let Some(p) = self.vehicles.player_mut() {
+                    if fix {
+                        p.state.damage = 0.0;
+                        p.state.dmg.repair();
+                        p.state.zones = [0.0; 4];
+                    } else {
+                        p.state.nitro_shots = p.state.nitro_max;
+                    }
+                }
+                if let Some(a) = self.audio.as_mut() {
+                    a.obj(if fix { "QUICK_FIX_MASTER" } else { "NITROUS_REFILL_MASTER" });
+                }
+                log::info!("gas station: {}", if fix { "FULL FIX" } else { "REFILL NITRO" });
+                self.game.mode = if self.game.race.is_some() || self.game.flag.is_some() { Mode::Race } else { Mode::FreeRoam };
             }
             MenuAction::Resume => {
                 self.game.mode = if self.game.race.is_some() || self.game.flag.is_some() { Mode::Race } else { Mode::FreeRoam };
