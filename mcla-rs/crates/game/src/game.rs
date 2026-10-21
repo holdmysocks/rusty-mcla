@@ -545,6 +545,8 @@ pub struct Game {
     pub go_garage: bool,
     /// the place splash after a race: the place and the seconds it still stands
     pub place_splash: Option<(usize, f32)>,
+    /// the player's place in the race just run (the replay's end shows it again)
+    pub race_place: usize,
     /// the finish was level with another car's: the splash reads TIED
     pub place_tied: bool,
     /// MISSION RESULTS after an event: the missions it finished (title, objectives)
@@ -1098,6 +1100,7 @@ impl Game {
             nav_slow: 0.0,
             go_garage: false,
             place_splash: None,
+            race_place: 0,
             place_tied: false,
             mission_results: Vec::new(),
             race_slow: crate::mc4::SlowMo::default(),
@@ -2417,6 +2420,7 @@ impl Game {
         // (a race's place is the standings form 54: up 0.2 s after the line, closed after its
         // WAITUNWARPED(2200) - the splash's clock runs from the line)
         self.place_splash = Some((place, Self::RACE_END_MENU));
+        self.race_place = place;
         self.rb_step = None;
         log::info!("reward: place {}/{} difficulty {} class {} -> ${} rep {} (race time {:.1} s)", place, field, self.race_diff, crate::rewards::perf_class(self.player_perf()), money, rep, self.race.as_ref().map_or(0.0, |r| r.time));
         self.money += money;
@@ -3686,6 +3690,10 @@ impl Game {
                         pb.set_view(v[2] as usize);
                     }
                     pb.t = v.get(1).copied().unwrap_or(0.0);
+                    // (a time given: straight there, without the race's opening)
+                    if v.len() >= 2 {
+                        pb.opening = 0;
+                    }
                     pb.paused = v.get(3).map_or(false, |x| *x > 0.0);
                     pb.legend = v.get(4).map_or(0, |x| *x as u8);
                     pb.menu = v.get(5).filter(|x| **x > 0.0).map(|_| 0);
@@ -11247,7 +11255,8 @@ impl Game {
     /// Start opens a PAUSE panel: CONTINUE REPLAY, EXIT REPLAY, RESTART REPLAY, SAVE GAME.
     fn replay_ui(&mut self, ctx: &egui::Context, up: bool, down: bool, left: bool, right: bool, enter: bool, back: bool) {
         use crate::flash_ui::{ICON_A, ICON_B, ICON_BACK_BUTTON, ICON_START, ICON_X, ICON_Y};
-        let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        // (the replay runs in real time: the frame's own length, not egui's predicted one)
+        let dt = ctx.input(|i| i.unstable_dt).min(0.1);
         let (x, y, select, start) = (std::mem::take(&mut self.nav_x), std::mem::take(&mut self.nav_y), std::mem::take(&mut self.nav_select), std::mem::take(&mut self.nav_start));
         let slow = self.nav_slow + if right { 4.0 } else if left { -4.0 } else { 0.0 };
         let len = self.replay_rec.len().max(crate::replay::STEP);
@@ -11296,6 +11305,9 @@ impl Game {
             self.nav_back = false;
             return;
         }
+        // (the opening - the race's start played again - takes no buttons but MENU)
+        let opening = pb.opening != 0;
+        let (enter, back, y, x, select, slow) = if opening { (false, false, false, false, false, 0.0) } else { (enter, back, y, x, select, slow) };
         if enter {
             pb.paused = !pb.paused;
         }
@@ -11312,21 +11324,33 @@ impl Game {
         if select {
             pb.legend = (pb.legend + 1) % 3;
         }
-        if pb.paused {
+        if opening {
+        } else if pb.paused {
             pb.t += slow * 0.25 * dt;
         } else {
             pb.t += dt;
         }
-        pb.t = pb.t.clamp(-crate::replay::OPENING, len);
-        if pb.t >= len && !pb.paused {
-            // (the end of the race: the replay stands on its last frame)
-            pb.paused = true;
+        pb.t = pb.t.clamp(0.0, len);
+        if pb.t >= len && !pb.paused && !opening {
+            // the end of the recording: the original leaves the replay by itself - the race's
+            // end again (its camera and the place in its ring, `cap2/end_*`), then the race-over
+            // menu on its first row (mcReplayForm sub_82641F10 at the last frame)
+            self.replay = None;
+            self.replay_rec.restore = true;
+            self.menu_sel = 0;
+            self.race_end_t = Some(0.0);
+            self.place_splash = Some((self.race_place, Self::RACE_END_MENU));
+            if let Some(fp) = self.flash_prompt.as_mut() {
+                fp.hide();
+            }
+            return;
         }
         let (paused, legend, auto, pos) = (pb.paused, pb.legend, pb.auto_cam, pb.t.max(0.0) / len);
-        // the race's start again: its 3-2-1 from the HUD movie, nothing else of the HUD
-        let countdown = self.replay_rec.countdown0 - pb.t;
-        // (and before the count its badge, as over the race's own opening shot)
-        let badge = if countdown > 3.0 && countdown < self.replay_rec.countdown0 + crate::replay::OPENING * 0.55 { self.start_badge_page() } else { None };
+        // the race's start again: its 3-2-1 from the HUD movie, nothing else of the HUD (in the
+        // opening the start scene's own count, then the recording's)
+        let countdown = if opening { self.race.as_ref().map_or(0.0, |r| r.countdown) } else { self.replay_rec.countdown0 - pb.t };
+        // (and the start scene's racename event its badge)
+        let badge = if opening && self.cine.as_ref().map_or(false, |c| !c.is_empty()) { self.start_badge_page() } else { None };
         match (badge, self.flash_popup.as_mut()) {
             (Some(page), Some(fp)) => {
                 fp.show(&page);

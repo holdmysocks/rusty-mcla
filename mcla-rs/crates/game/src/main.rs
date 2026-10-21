@@ -357,7 +357,17 @@ struct App {
     /// standing still: seconds so far, the car's "Idle" view once looked up, how far it is blended in
     idle_time: f32,
     /// the idle camera: the replay's views of the standing car
-    idle_cam: Option<replay::Playback>,
+    /// the idle camera: the car's replay files and the mount held
+    idle_cam: Option<(replay::CamTune, usize)>,
+    /// the player's drive view in use this frame (`cam_mode`, or the replay director's;
+    /// 255 when another camera is on)
+    view_mode: u8,
+    /// the replay's clock at the last frame (test hook MCLA_REPLAY_SHOTS)
+    replay_shot_t: f32,
+    /// the race's start (`Game::prerace`) kept for its replay's opening
+    replay_prerace: Option<(Vec3, f32, String)>,
+    /// seconds since VIEW REPLAY (test hook MCLA_REPLAY_SHOTS)
+    replay_wall: f32,
     idle_view: Option<(String, Option<(Vec3, Vec3, f32)>)>,
     idle_blend: f32,
     /// camera shake: time left and length of the running impact shake, its strength, the clock
@@ -718,6 +728,10 @@ impl App {
             wipe_tune: [1.25, 0.1, 5.0, 10.0],
             idle_time: 0.0,
             idle_cam: None,
+            view_mode: 0,
+            replay_shot_t: f32::MIN,
+            replay_prerace: None,
+            replay_wall: 0.0,
             idle_view: None,
             idle_blend: 0.0,
             shake_left: 0.0,
@@ -2573,6 +2587,9 @@ impl App {
                 r.countdown = r.countdown.max(4.4);
             }
             if self.prerace_plan.is_none() {
+                if self.game.replay.is_none() {
+                    self.replay_prerace = Some((front, yaw, grid.clone()));
+                }
                 let plan = self.prerace_choose(front, yaw, &grid);
                 if std::env::var("MCLA_NO_DIVE").is_err() {
                     if let Some((eye, fwd, up, fov)) = plan.0.first().and_then(|sc| self.cine.peek_camera(sc, plan.1, hudmap::CINE_HANDOVER)) {
@@ -2698,6 +2715,11 @@ impl App {
                         };
                         if let Some(i) = idx {
                             self.vehicles.pose_car(i, pos, rot);
+                            // (a replay's opening: nothing is simulated, the pose drawn is this one)
+                            if self.game.replay.is_some() {
+                                let c = &mut self.vehicles.cars[i];
+                                c.pose_history.begin(&c.state, c.lean);
+                            }
                         }
                     }
                 }
@@ -2973,20 +2995,86 @@ impl App {
                 }
             }
         }
-        // VIEW REPLAY: the race's cars where the recording has them (nothing is simulated
-        // in the results); the traffic that stood about at the end is taken off the road
+        // VIEW REPLAY: the race's cars and the traffic about the player where the recording has
+        // them (nothing is simulated in the results); the recorded cars that have left the road
+        // are made again, the traffic it does not have is taken off it; leaving the replay puts
+        // every car back as it stood
         if let Some(pb) = self.game.replay.as_mut() {
             if !std::mem::replace(&mut pb.started, true) {
-                let top = self.game.replay_rec.tracks.iter().map(|t| t.0).max().unwrap_or(0);
-                let keep = |c: &vehicles::CarInstance| c.is_player || c.pinned || c.parked.is_some();
+                let rec = &mut self.game.replay_rec;
                 // (not from a running race's pause: its traffic is still wanted)
-                if self.game.mode == Mode::Results && self.vehicles.cars.iter().take(top + 1).all(keep) {
-                    self.vehicles.cars.retain(keep);
+                if self.game.mode == Mode::Results {
+                    self.vehicles.cars.retain(|c| c.is_player || c.pinned || c.parked.is_some() || rec.has(c.uid));
                 }
+                rec.saved = self.vehicles.cars.iter().map(|c| (c.uid, c.state.clone(), c.lean)).collect();
+                let gone: Vec<(u32, std::sync::Arc<vehicles::CarModel>, [f32; 4])> = rec.gone(&self.vehicles.cars).iter().map(|t| (t.uid, t.model.clone(), t.color)).collect();
+                log::info!("replay: {} tracks ({} whole) over {:.1} s, {} cars made again", rec.tracks.len(), rec.tracks.iter().filter(|t| !t.full.is_empty()).count(), rec.len(), gone.len());
+                for (uid, model, color) in gone {
+                    let i = self.vehicles.spawn(&gpu, model, Vec3::new(0.0, -1.0e4, 0.0), 0.0, color, false);
+                    let c = &mut self.vehicles.cars[i];
+                    c.uid = uid;
+                    c.driver = replay::GHOST.to_string();
+                    c.ai = None;
+                    c.pinned = true;
+                    c.placed = true;
+                }
+            }
+            // the opening: the race's own start again - the warp from the camera of the moment
+            // onto the grid, the start scene with the race's badge and its 3-2-1 (the original's
+            // mcWarper starts "replay recording/playback" alike); the replay's clock runs from GO
+            match pb.opening {
+                1 => {
+                    pb.opening_frames = 0;
+                    pb.opening = match self.replay_prerace.clone().filter(|_| self.game.race.is_some() && std::env::var("MCLA_REPLAY_NO_OPENING").is_err()) {
+                        Some(p) => {
+                            self.cine.stop();
+                            self.cine_prerace = false;
+                            self.warp = None;
+                            self.warp_view = None;
+                            self.prerace_plan = None;
+                            self.prerace_wait = 0;
+                            self.game.prerace = Some(p);
+                            2
+                        }
+                        None => 0,
+                    };
+                }
+                2 => {
+                    pb.opening_frames += 1;
+                    let busy = self.game.prerace.is_some() || self.warp.is_some() || (self.cine_prerace && self.cine.playing.is_some());
+                    let go = self.game.race.as_ref().map_or(0.0, |r| r.countdown);
+                    // (the recording runs with the countdown: the cars as they stood at this count)
+                    pb.t = (self.game.replay_rec.countdown0 - go).max(0.0);
+                    if pb.opening_frames > 3 && (!busy || go <= 0.0) {
+                        pb.opening = 0;
+                    }
+                }
+                _ => {}
             }
             self.game.replay_rec.apply(pb.t, &mut self.vehicles.cars);
         } else if std::mem::take(&mut self.game.replay_rec.restore) {
-            self.game.replay_rec.apply(f32::MAX, &mut self.vehicles.cars);
+            // (the race is over: its clock's countdown as the opening left it goes)
+            if let Some(r) = self.game.race.as_mut() {
+                r.countdown = 0.0;
+            }
+            self.game.prerace = None;
+            self.warp = None;
+            self.warp_view = None;
+            if self.cine_prerace {
+                self.cine.stop();
+                self.cine_prerace = false;
+                self.cine_free = false;
+                self.cine_caption = None;
+            }
+            self.vehicles.cars.retain(|c| !c.driver.starts_with(replay::GHOST));
+            let saved = std::mem::take(&mut self.game.replay_rec.saved);
+            for c in self.vehicles.cars.iter_mut() {
+                if let Some((_, s, lean)) = saved.iter().find(|x| x.0 == c.uid) {
+                    c.state = s.clone();
+                    c.lean = *lean;
+                    c.pose_history.begin(&c.state, c.lean);
+                }
+            }
         }
         if self.game.mode != Mode::Results {
             // (races are run in traffic too; their cars are pinned and never despawned)
@@ -5212,7 +5300,49 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // z rear, level with the ground. (approx.) The frame's height above the
                 // car's origin is set by eye against the reference capture.
                 // the replay's own cameras (not under its PAUSE panel)
-                let replay_view = self.game.replay.as_mut().filter(|p| p.menu.is_none()).map(|p| p.camera(&render_state, dt));
+                // (the original's director, replay::Director: its own cameras here, a drive view
+                // is left to the boom cameras below)
+                let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
+                let car_view = replay::CarView::of(&render_state, car.model.max.y);
+                let mut probe = |a: Vec3, b: Vec3, r: f32| replay_probe(&world.collider, a, b, r);
+                if let Some(p) = self.game.replay.as_mut() {
+                    // (the right stick turns the polar camera, sub_823170C8; the triggers' zoom is not wired)
+                    p.stick(self.pad_look.0, self.pad_look.1, 0.0, dt);
+                }
+                let was = self.game.replay.as_ref().and_then(|p| p.view());
+                // (test hook MCLA_REPLAY_SHOTS=<prefix>,t1,t2,..: a screenshot <prefix>_<t>.png as the
+                // replay's clock passes each t)
+                // (o<secs>: seconds since VIEW REPLAY, the opening included)
+                if let (Ok(v), Some(p)) = (std::env::var("MCLA_REPLAY_SHOTS"), self.game.replay.as_ref()) {
+                    let wall = self.replay_wall + dt;
+                    let mut it = v.split(',');
+                    let prefix = it.next().unwrap_or("replay").to_string();
+                    for x in it {
+                        let (o, at) = match x.strip_prefix('o') { Some(r) => (true, r.parse::<f32>().unwrap_or(f32::MAX)), None => (false, x.parse::<f32>().unwrap_or(f32::MAX)) };
+                        let (was, now) = if o { (self.replay_wall, wall) } else { (self.replay_shot_t, p.t) };
+                        if was < at && now >= at {
+                            self.photo_request = Some(format!("{prefix}_{x}.png"));
+                        }
+                    }
+                    if std::env::var("MCLA_REPLAY_DEBUG").is_ok() && self.frame_no % 15 == 0 {
+                        log::info!("replay clock: wall {:.2} t {:.2} opening {} warp {} scene {:?} countdown {:.2}", wall, p.t, p.opening, self.warp.is_some(), self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t)), self.game.race.as_ref().map_or(-1.0, |r| r.countdown));
+                    }
+                    self.replay_shot_t = p.t;
+                    self.replay_wall = wall;
+                }
+                let shot = self.game.replay.as_mut().filter(|p| p.menu.is_none()).and_then(|p| p.camera(&car_view, aspect, &mut probe));
+                if std::env::var("MCLA_REPLAY_DEBUG").is_ok() {
+                    let now = self.game.replay.as_ref().and_then(|p| p.view());
+                    if now != was || self.frame_no % 30 == 0 {
+                        log::info!("replay director: state {:?} -> {:?} at t {:.2} left {:.2} dt {:.4}", was, now, self.game.replay.as_ref().map_or(0.0, |p| p.t), self.game.replay.as_ref().and_then(|p| p.director.as_ref()).map_or(0.0, |d| d.time_left()), dt);
+                    }
+                }
+                let replay_cut = self.game.replay.as_ref().and_then(|p| p.director.as_ref()).map_or(false, |d| d.cut);
+                let replay_drive = match shot {
+                    Some(replay::Shot::Drive { view, back }) => Some((view, back)),
+                    _ => None,
+                };
+                let replay_view = shot.and_then(|s| s.view());
                 // The idle camera: left alone in the cruise the game cuts between close shots of
                 // the car, the HUD away, until a button is touched (`ref/idle_garage_marker.png`
                 // and two more frames of step 103: a front quarter, the door, the flank). Port:
@@ -5223,40 +5353,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let idle_on = idle_on && self.game.mc4_idle_camera();
                 if idle_on && self.idle_cam.is_none() {
                     let tune = replay::CamTune::load(&self.opt.data_dir, &car.model.name.to_ascii_lowercase());
-                    let mut pb = replay::Playback::new(tune, self.frame_no as u32 | 1);
-                    pb.t = 0.0;
                     // (one shot, held: 148 frames over four minutes of the recomp's idle camera
                     // are the same view of the door - `s11/tn_tiles.png`)
-                    pb.auto_cam = false;
-                    pb.set_view((self.frame_no as usize / 7) % 6);
-                    self.idle_cam = Some(pb);
+                    self.idle_cam = Some((tune, (self.frame_no as usize / 7) % 6));
                 } else if !idle_on {
                     self.idle_cam = None;
                 }
                 self.game.idle_cam = self.idle_cam.is_some();
-                let replay_view = match self.idle_cam.as_mut() {
-                    Some(pb) if replay_view.is_none() => {
-                        // (the car's own mounts and the camera about it: the roadside and
-                        // helicopter views are for a car on the move)
-                        let v = pb.camera(&render_state, dt);
-                        if pb.view > 6 {
-                            pb.set_view(pb.view % 7);
-                            Some(pb.camera(&render_state, 0.0))
-                        } else {
-                            Some(v)
-                        }
-                    }
+                let replay_view = match self.idle_cam.as_ref() {
+                    Some((tune, k)) if replay_view.is_none() && replay_drive.is_none() => Some(replay::mount_view(tune, &car_view, *k)),
                     _ => replay_view,
                 };
-                // (a replay or idle camera never stands under the road: the roadside camera's place
-                // is taken from the car's height, and the road may rise before it - seen as a
-                // view from below the street, `s11/rg2_10.png`)
-                let replay_view = replay_view.map(|(eye, look, fov)| {
-                    match world.collider.raycast(Vec3::new(eye.x, eye.y + 30.0, eye.z), -Vec3::Y, 60.0) {
-                        Some(g) if g.point.y + 0.35 > eye.y && g.point.y - eye.y < 25.0 => (Vec3::new(eye.x, g.point.y + 0.35, eye.z), look, fov),
-                        _ => (eye, look, fov),
-                    }
-                });
+                // (eye, look, fov) and the camera's own up
+                let (replay_view, replay_up) = match replay_view {
+                    Some((eye, look, up, fov)) => (Some((eye, look, fov)), Some(up)),
+                    None => (None, None),
+                };
                 // (the race's opening shot from the air)
                 // (VEHICLE SELECT: the car from its front left, low - `ng_vsel_0`; by eye)
                 let replay_view = if self.game.starter_pick.is_some() {
@@ -5275,6 +5387,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 } else {
                     replay_view
                 };
+                let replay_up = replay_up.filter(|_| self.game.starter_pick.is_none());
                 // (the race-start warp: hudmap::CineWarp, roll included)
                 let replay_view = match self.warp_view.filter(|_| self.game.race.is_some()) {
                     Some((eye, look, _, fov)) => Some((eye, look, fov.to_degrees())),
@@ -5306,6 +5419,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // the garage views' roll (`<View>Roll`): the camera's up turned about its line of sight
                     if self.game.mode == Mode::Garage {
                         self.boom_up = Some(self.garage_up);
+                    }
+                    if let Some(up) = replay_up {
+                        self.boom_up = Some(up);
                     }
                     if let Some((_, _, up, _)) = self.warp_view.filter(|_| self.game.race.is_some()) {
                         self.boom_up = Some(up);
@@ -5347,7 +5463,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         })
                         .clone();
                     let nitro = render_state.nitro_on();
-                    let cine_views = if self.cam_mode == 5 {
+                    // (the replay director's drive view: its view and the reverse camera; its
+                    // changes are cuts, sub_8271E930)
+                    let mode = replay_drive.map_or(self.cam_mode, |(v, _)| boomcam::PORT_OF_VIEW[(v as usize).min(4)]);
+                    self.view_mode = mode;
+                    if replay_cut {
+                        self.boom.reset();
+                        self.cam_switch.reset();
+                    }
+                    let cine_views = if mode == 5 {
                         self.event_views
                             .entry(car.model.name.clone())
                             .or_insert_with_key(|name| boomcam::EventViews::load(&data_dir, name).or_else(|| boomcam::EventViews::load(&data_dir, "vp_vw_golf_83")).map(Arc::new))
@@ -5383,15 +5507,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.boom.reset();
                     } else if let Some(set) = set {
                         self.event_cam.reset();
-                        let view = (self.cam_mode as usize).min(set.views.len() - 1);
+                        let view = (mode as usize).min(set.views.len() - 1);
                         let backing = render_state.gear < 0 && render_state.fwd_speed() < -2.0;
                         // (C looks behind)
-                        self.look_back = (self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::LOOKBACK, |k| self.input.down(k)) || self.cam_mode == 9 || self.pad_look.1 < -0.6) && matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
-                        let (tune, rev) = boomcam::tune_for(&set, self.cam_mode, self.look_back, backing);
+                        self.look_back = match replay_drive {
+                            Some((_, back)) => back,
+                            None => (self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::LOOKBACK, |k| self.input.down(k)) || self.cam_mode == 9 || self.pad_look.1 < -0.6) && matches!(self.game.mode, Mode::FreeRoam | Mode::Race),
+                        };
+                        let (tune, rev) = boomcam::tune_for(&set, mode, self.look_back, backing);
                         // (a change of view blends or cuts, a look back cuts - mcPlayerCamera; the
                         // CINEMATIC CAMERA option turns the look back of a moving car to one side)
                         let cinematic = self.game.mc4.as_ref().map_or(true, |m| m.options.idle_camera);
-                        self.cam_switch.frame(&set, self.cam_mode, self.look_back, backing, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
+                        self.cam_switch.frame(&set, mode, self.look_back, backing, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
                         let target = boomcam::BoomTarget {
                             pos: render_state.pos,
                             rot: render_state.rot,
@@ -5408,7 +5535,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 (None, _) => (13.0, 0.5, 1.0),
                             },
                             ability: self.ability.camera(),
-                            pan: self.cam_switch.pan_for(self.cam_mode, self.look_back),
+                            pan: self.cam_switch.pan_for(mode, self.look_back),
                         };
                         let out = self.boom.update(tune, &target, dt);
                         let out = self.cam_switch.blend.apply(&boomcam::BoomTarget { pan: (0.0, 0.0), ..target }, out, dt);
@@ -5416,7 +5543,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // use, a burnout spun on the handbrake brings in the event camera's Burnout
                         // view (sub_822B3BF0; boomcam::EventDirector)
                         let allowed = cinematic
-                            && boomcam::VIEW_OF_PORT[(self.cam_mode as usize).min(5)] >= 2
+                            && boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2
                             && !self.look_back
                             && self.wreck_timer <= 0.0
                             && !self.cam_switch.blend.active()
@@ -5450,6 +5577,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.boom_up = Some(out.up);
                         self.cam.fov_y = out.fov.to_radians();
                         boom_view = true;
+                        if let Some(d) = self.game.replay.as_mut().and_then(|p| p.director.as_mut()) {
+                            d.drive_eye = Some(self.chase.pos);
+                        }
                     } else {
                         self.cam.fov_y = self.chase.update(render_state.pos, render_state.forward(), render_state.vel, if nitro { 1.0 } else { 0.0 }, dt);
                     }
@@ -5458,6 +5588,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.boom.reset();
                     self.cam_switch.reset();
                     self.event_dir.reset();
+                    self.view_mode = if own_view { 255 } else { self.cam_mode };
                 }
                 // the HUD's camera bar shows the view in use (sub_8223D450: the list place; the
                 // overhead camera of the race editor would be 5) and a cut puts the mask up
@@ -5552,10 +5683,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.chase.look = self.chase.look.lerp(at, k);
                     self.cam.fov_y = self.cam.fov_y + (50f32.to_radians() - self.cam.fov_y) * k;
                 }
-                self.hide_player = boom_view && self.cam_mode == 4 && !self.look_back;
+                self.hide_player = boom_view && self.view_mode == 4 && !self.look_back;
                 // keep the camera out of walls and hillsides (camBoomCS CollideType): pull it in
                 // along the line from the car to where it wants to be
-                if (self.cam_mode < 3 || self.cam_mode == 5 || self.game.mode == Mode::Garage) && !own_view {
+                if (self.view_mode < 3 || self.view_mode == 5 || self.game.mode == Mode::Garage) && !own_view {
                     let from = render_state.pos + Vec3::Y * 1.1;
                     let to = self.chase.pos;
                     let d = to - from;
@@ -6031,7 +6162,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (the driver's camera: the original's POV camera sets G+122 of the car it follows - sub_822A9670 -
         // and its windows take the in-car glass program; damage_map_rule.md Part C 6. As the cockpit's
         // headless driver: not while looking back, in a replay or the idle camera.)
-        self.vehicles.interior_glass = self.cam_mode == 3 && !self.look_back && self.game.replay.is_none() && self.idle_cam.is_none();
+        self.vehicles.interior_glass = self.view_mode == 3 && !self.look_back && self.idle_cam.is_none();
         // (m_NFLFade for the night fill light the traffic cars add to their ambient - fillmap.rs)
         fillmap::set_fade(self.sky_now().tod.map_or(0.0, |t| t.nfl));
         self.vehicles.upload_uniforms(&gpu, night);
@@ -6799,7 +6930,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     drivers::Seat { id: i, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str() }
                 })
                 .collect();
-            self.drivers.headless = self.cam_mode == 3 && !self.look_back && self.game.replay.is_none() && self.idle_cam.is_none();
+            self.drivers.headless = self.view_mode == 3 && !self.look_back && self.idle_cam.is_none();
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
         }
         // --- main pass ----------------------------------------------------------
@@ -9076,6 +9207,24 @@ fn radio_ctx(vehicles: &vehicles::Vehicles, world: &world::World, hour: f32) -> 
         ctx.cross = best.1;
     }
     ctx
+}
+
+/// The replay director's test (replay::Probe): a ball of radius `r` swept from `a` to `b`
+/// through the city's collision; the last place it stood free when it touches. (approx.) The
+/// original sweeps a true ball (sub_82574C38) and also counts the cars and props its type
+/// flags name; here balls in steps of at most `r` against the city's triangles.
+fn replay_probe(c: &physics::collision::WorldCollider, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+    let d = b - a;
+    let n = ((d.length() / r.max(0.05)).ceil() as usize).clamp(1, 96);
+    let mut free = a;
+    for i in 0..=n {
+        let p = a + d * (i as f32 / n as f32);
+        if c.sphere(p, r).is_some() {
+            return Some(free);
+        }
+        free = p;
+    }
+    None
 }
 
 fn main() -> std::process::ExitCode {
