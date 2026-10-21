@@ -85,6 +85,10 @@ pub struct CarModel {
     pub part_rig: crate::damageparts::PartRig,
     pub hood_slot: Option<Mat4>,
     pub trunk_bone: Option<Mat4>,
+    /// a traffic model's own wheels (tyre, rim, disc in its body fragment, on its wheel
+    /// bones - `OWN_WHEEL_TAGS`): their hubs; drawn as batch groups 7 - 12 turned about these -
+    /// no rim set of `resources/rims` is put on
+    pub own_wheels: Option<[Option<Vec3>; 6]>,
 }
 
 pub struct WheelModel {
@@ -733,6 +737,10 @@ fn glass_noise(gpu: &mut Gpu, world: &World) -> Option<(Arc<GpuTexture>, u32)> {
     Some((gpu.upload_texture_raw(key, &t), key))
 }
 
+/// The wheel bones' tags of the traffic models: front left, front right, rear left, rear
+/// right, a second rear axle's left and right (semi trailers).
+const OWN_WHEEL_TAGS: [u16; 6] = [3956, 59546, 23677, 52975, 17106, 7529];
+
 /// Normals for a mesh whose vertex format has none (the matte black parts are stored as
 /// positions alone): the area-weighted mean of the faces around each vertex.
 fn face_normals(mesh: &mcla_formats::rage::geometry::Mesh) -> Vec<Vec3> {
@@ -1126,6 +1134,7 @@ impl Vehicles {
         if std::env::var("MCLA_PARTS_LOG").is_ok() {
             log::info!("damage parts {}: rig {:?} hood slot {:?} trunk bone {:?} (set {:?})", car.name, part_rig, hood_slot.map(|m| m.w_axis), trunk_bone.map(|m| m.w_axis), trunk_tags);
         }
+        let mut own_hubs: [Option<Vec3>; 6] = [None; 6];
         for (part, part_xf) in car.placed_parts_for(cfg) {
             if let Some(f) = only_part.as_deref() {
                 if !f.split(',').any(|n| part.primary == n) {
@@ -1302,6 +1311,13 @@ impl Vehicles {
                 // windows' glass apart, by side: it moves with its bone)
                 let win_side = if part.is_base { car.windows.iter().position(|w| w.as_ref().map_or(false, |w| part.mesh_tag.get(mi) == Some(&w.tag))).map_or(0, |k| k as u32 + 1) } else { 0 };
                 let win_side = if win_side != 0 { win_side } else { part_group(part, &part_xf, mi) };
+                // (a traffic model's own wheel: tyre, rim and disc on one of its wheel bones -
+                // groups 7 - 12, the bone's place its hub)
+                let own_wheel = if car_is_ambient && !car.bike { part.mesh_tag.get(mi).and_then(|t| OWN_WHEEL_TAGS.iter().position(|w| w == t)) } else { None };
+                if let Some(i) = own_wheel {
+                    own_hubs[i] = Some((part_xf * bone_m).w_axis.truncate());
+                }
+                let win_side = own_wheel.map_or(win_side, |i| 7 + i as u32);
                 if win_side >= 3 && std::env::var("MCLA_PARTS_LOG").is_ok() {
                     log::info!("damage parts {}: {} mesh {} -> group {}", car.name, part.primary, mi, win_side);
                 }
@@ -1578,7 +1594,8 @@ impl Vehicles {
             }
         };
         let lamps: Vec<(u8, Vec3)> = lamp_acc.iter().map(|((id, _), (sum, n))| (*id as u8, *sum / (*n).max(1) as f32)).collect();
-        let m = Arc::new(CarModel { name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone });
+        let own_wheels = own_hubs.iter().any(|h| h.is_some()).then_some(own_hubs);
+        let m = Arc::new(CarModel { own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -1719,7 +1736,11 @@ impl Vehicles {
         let wheel_bindings = (0..4).map(|_| gpu.new_object(&ObjectUniform::default())).collect();
         let caliper_bindings = (0..4).map(|_| gpu.new_object(&ObjectUniform::default())).collect();
         let window_bindings = if model.windows.iter().any(|w| w.is_some()) { (0..2).map(|_| gpu.new_object(&ObjectUniform::default())).collect() } else { Vec::new() };
-        let part_bindings = if model.batch_window.iter().any(|g| *g >= 3) { (0..4).map(|_| gpu.new_object(&ObjectUniform::default())).collect() } else { Vec::new() };
+        let part_bindings = match model.batch_window.iter().copied().max().unwrap_or(0) {
+            g if g >= 7 => (0..10).map(|_| gpu.new_object(&ObjectUniform::default())).collect(),
+            g if g >= 3 => (0..4).map(|_| gpu.new_object(&ObjectUniform::default())).collect(),
+            _ => Vec::new(),
+        };
         let mut ai = None;
         if !is_player {
             let mut d = AiDriver::new(self.rng ^ 0x9e3779b9);
@@ -3107,6 +3128,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 let pm = match k {
                     0 => c.model.hood_slot.map_or(m, |s| m * parts.hood_delta(&s)),
                     1 => c.model.trunk_bone.map_or(m, |b| m * parts.trunk_delta(&b)),
+                    // (a traffic model's own wheel: turned about its hub - steer, then the roll -
+                    // with the body untilted; the original's wheel bones, sub_82794FA8)
+                    w if w >= 4 => match c.model.own_wheels.and_then(|h| h[w - 4]) {
+                        Some(h) => {
+                            // (the second rear axle turns with the first)
+                            let i = [0, 1, 2, 3, 2, 3][w - 4];
+                            let q = Quat::from_rotation_y(-pose.steer[i]) * Quat::from_rotation_x(-pose.spin[i]);
+                            wheel_m * Mat4::from_translation(h) * Mat4::from_quat(q) * Mat4::from_translation(-h)
+                        }
+                        None => m,
+                    },
                     _ => match parts.bumpers[k - 2].as_ref() {
                         // (the fallen piece is drawn where its body is: M_slot' = B * M_rest^-1 of the slot's mesh)
                         Some(b) if b.detached.is_some() && !(self.hide_player && c.is_player) => {
@@ -3396,7 +3428,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 pass.draw_indexed(0..b.count, 0, 0..1);
                 *draws += 1;
             }
-            if !blend_pass && wheels_visible {
+            if !blend_pass && wheels_visible && c.model.own_wheels.is_none() {
                 // garage choice, else the car's stock wheels, else the generic set
                 if let Some(w) = c.wheels.as_ref().or(c.model.wheels.as_ref()).or(self.wheels.as_ref()) {
                     for (wi, wb) in c.wheel_bindings.iter().enumerate() {

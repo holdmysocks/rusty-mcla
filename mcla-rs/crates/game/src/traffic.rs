@@ -1844,7 +1844,8 @@ impl Vehicles {
             let speed = v.dot(rot * Vec3::NEG_Z);
             let wr = t.model.params.wheel_radius.max(0.2);
             for w in t.state.wheels.iter_mut() {
-                w.spin += speed / wr * dt;
+                // (the drawn wheels at 0.6 of the rolling rate, as the riding cars': sub_82794FA8)
+                w.spin += 0.6 * speed / wr * dt;
                 w.steer = 0.0;
                 w.grounded = true;
             }
