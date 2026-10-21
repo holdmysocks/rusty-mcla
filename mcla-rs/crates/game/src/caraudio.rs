@@ -1176,9 +1176,9 @@ impl Traffic {
                 }
             }
         }
-        // sub_826E5950: the mean of the last 4 frames' command is a deceleration of fMaxDecel, at 5 mph or more
-        let mean = if self.cmd.is_empty() { 0.0 } else { self.cmd.iter().sum::<f32>() / self.cmd.len() as f32 };
-        let emergency = -mean >= self.ty.max_decel && st.vel.length_squared() >= 4.996;
+        // sub_826E5950: the car ahead in charge of the speed, the mean of the last 4 updates' asked
+        // acceleration a deceleration of fMaxDecel, at 5 mph or more (traffic.rs `Lock`)
+        let emergency = c.rail.as_ref().is_some_and(|r| r.lock.now());
         if emergency || s > 0.15 {
             let pitch = (be_s16(&a, 86) + (be_s16(&a, 88) - be_s16(&a, 86)) * s) as i32;
             keep(lib, &mut self.skid, be_u32(&a, 78), Req::at(pos).pitch(pitch));

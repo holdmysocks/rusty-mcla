@@ -299,6 +299,9 @@ pub struct CarInstance {
     pub park_steer: f32,
     /// a parked car the physics level holds as its ambient instance (loose.rs `Amb`)
     pub park_held: bool,
+    /// a traffic / parked car's own wheels drawn raised by their collider wheel's compression, by
+    /// wheel bone (`ambient_out_of_level`; 0 beyond 30 m)
+    pub amb_lift: [f32; 6],
 }
 
 /// A traffic car's lamps as the original's mcAmbientRenderCarInstance keeps them (sub_82792FD8,
@@ -1826,7 +1829,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false });
+        self.cars.push(CarInstance { uid, sst: 0.0, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6] });
         self.cars.len() - 1
     }
 
@@ -3177,7 +3180,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         let (ha, hb) = if r.ty.trailer { (traffic::TRAILER_HITCH_PUB, traffic::CAB_HITCH_PUB) } else { (traffic::CAB_HITCH_PUB, traffic::TRAILER_HITCH_PUB) };
                         Some(x(&a.0, ha).distance(x(&b.0, hb)))
                     });
-                    log::info!("traffic active {} {} v {:.2} w {:.2} up {:.3} hitch gap {:?} spin0 {:.2}", c.model.name, c.uid, c.state.vel.length(), c.state.ang_vel.length(), c.state.up().y, gap, c.state.wheels[0].spin);
+                    log::info!("traffic active {} {} v {:.2} w {:.2} up {:.3} hitch gap {:?} spin0 {:.2} lock {} lift {:.3} {:.3} {:.3} {:.3}", c.model.name, c.uid, c.state.vel.length(), c.state.ang_vel.length(), c.state.up().y, gap, c.state.wheels[0].spin, r.lock.drawn(), c.amb_lift[0], c.amb_lift[1], c.amb_lift[2], c.amb_lift[3]);
+                }
+                let locked: Vec<String> = self.cars.iter().filter(|c| c.rail.as_ref().is_some_and(|r| r.lock.drawn())).map(|c| format!("{} v {:.1}", c.model.name, c.state.vel.length())).collect();
+                if !locked.is_empty() {
+                    log::info!("traffic locked wheels {:?}", locked);
                 }
                 for c in self.cars.iter().filter(|c| c.park_held && self.level.ambient_pose(c.uid).is_some()) {
                     log::info!("traffic active parked {} {} v {:.2} w {:.2} up {:.3} spin0 {:.2} steer {:.3} at {:?}", c.model.name, c.uid, c.state.vel.length(), c.state.ang_vel.length(), c.state.up().y, c.state.wheels[0].spin, c.state.wheels[0].steer, c.state.pos);
@@ -3185,6 +3192,20 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
         }
         let focus = self.cars.iter().find(|c| c.is_player).map_or(Vec3::ZERO, |c| c.state.pos);
+        // the drawn wheels' compression (sub_82794FA8, within 30 m horizontally): the collider wheel's
+        // d - collider +636 + 24 i + 48 for wheel bone i, a trailer's bones 2.. reading wheel i - 2 -
+        // kept between activations; beyond 30 m none
+        for c in self.cars.iter_mut() {
+            if c.rail.is_none() && !c.park_held {
+                continue;
+            }
+            let near = Vec3::new(c.state.pos.x - focus.x, 0.0, c.state.pos.z - focus.z).length_squared() < 900.0;
+            let trailer = c.rail.as_ref().is_some_and(|r| r.ty.trailer);
+            c.amb_lift = match (near, self.level.ambient_wheel_d(c.uid)) {
+                (true, Some(d)) => std::array::from_fn(|i| if trailer && i >= 2 { d[i - 2] } else { d[i] }),
+                _ => [0.0; 6],
+            };
+        }
         for c in self.cars.iter_mut() {
             if !c.rail.as_ref().is_some_and(|r| r.active) && !c.park_held {
                 continue;
@@ -3204,7 +3225,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let near = Vec3::new(m[3].x - focus.x, 0.0, m[3].z - focus.z).length_squared() < traffic::SPIN_REACH2;
             let wr = c.model.params.wheel_radius.max(0.2);
             let rate = if c.park_held { 0.6 * traffic::PARKED_SPIN } else { 0.6 };
-            let turn = if near { rate * moved.dot(rot * Vec3::NEG_Z) / wr * dt } else { 0.0 };
+            // (none while the lock holds: traffic.rs `Lock`)
+            let locked = c.rail.as_ref().is_some_and(|r| r.lock.drawn());
+            let turn = if near && !locked { rate * moved.dot(rot * Vec3::NEG_Z) / wr * dt } else { 0.0 };
             for (i, wh) in c.state.wheels.iter_mut().enumerate() {
                 wh.spin = traffic::wrap_spin(wh.spin + turn);
                 wh.steer = if c.park_held && i <= 1 { c.park_steer } else { 0.0 };
@@ -3385,7 +3408,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                             // (the second rear axle turns with the first)
                             let i = [0, 1, 2, 3, 2, 3][w - 4];
                             let q = Quat::from_rotation_y(-pose.steer[i]) * Quat::from_rotation_x(-pose.spin[i]);
-                            wheel_m * Mat4::from_translation(h) * Mat4::from_quat(q) * Mat4::from_translation(-h)
+                            // (raised by the collider wheel's compression d within 30 m: the bone's
+                            // local [S M | h M + 2 o M - h - o], o = (0, d, 0), M the counter-tilt -
+                            // the hub at h + 2 d up - d x the tilted body's up, in the untilted car)
+                            let d = c.amb_lift[w - 4];
+                            let tilted_up = c.rail.as_ref().and_then(|r| r.tilt.quat()).map_or(Vec3::Y, |t| t * Vec3::Y);
+                            let lift = (Vec3::Y * 2.0 - tilted_up) * d;
+                            wheel_m * Mat4::from_translation(h + lift) * Mat4::from_quat(q) * Mat4::from_translation(-h)
                         }
                         None => m,
                     },

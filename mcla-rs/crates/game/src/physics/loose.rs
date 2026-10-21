@@ -3311,6 +3311,13 @@ impl LooseState {
     }
 
     /// An active ambient car: its instance's matrix, velocity and turn.
+    /// An ambient car's wheels' compression d (collider +676 + 24 i + 8), whether it is active or not
+    /// (kept between activations; the rest rule's reset zeroes it).
+    pub fn ambient_wheel_d(&self, uid: u32) -> Option<[f32; 6]> {
+        let a = self.objs[self.amb_obj(uid)?].amb.as_ref()?;
+        Some(std::array::from_fn(|i| a.wheels[i].d))
+    }
+
     pub fn ambient_pose(&self, uid: u32) -> Option<([Vec3; 4], Vec3, Vec3)> {
         let o = &self.objs[self.amb_obj(uid)?];
         o.body.map(|b| (o.matrix, b.v, b.w))

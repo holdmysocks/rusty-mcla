@@ -580,8 +580,13 @@ pub struct Rider {
     t: f32,
     /// (diagnostics) the car ahead last seen: centre distance and margin
     pub ahead: (f32, f32),
-    /// (diagnostics) the acceleration asked for (car +408)
+    /// the acceleration asked for (car +408), before the integrator's clamp
     pub a: f32,
+    /// the speed controller's entry in charge of `a` (car +420: 0 the car ahead; None = free
+    /// driving), kept while the car is not driven
+    pub slot: Option<usize>,
+    /// the drawn wheels' lock (sub_826E5950, `Lock`)
+    pub lock: Lock,
     /// when it was made and how long it lives at least on a listed road (car +464 / +468:
     /// 8 + 4U s)
     pub born: f32,
@@ -628,6 +633,8 @@ impl Rider {
             t: 0.0,
             ahead: (0.0, 0.0),
             a: 0.0,
+            slot: None,
+            lock: Lock::default(),
             born: 0.0,
             life: 8.0,
         };
@@ -1343,6 +1350,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         (next_want, end.distance(pos))
     });
     let (mut a, chosen) = control(r, v, want, half_len, &ahead, env.others, stop, slower, dt);
+    r.slot = chosen;
     if env.hold {
         a = -r.ty.max_decel;
     }
@@ -1482,7 +1490,8 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         find_ahead(env.nav, me, q, dir, r.ty.width.max(1.6), &[segs], (None, None), None, env.others)
     };
     let want = path.speed;
-    let (mut a, _) = control(r, r.v, want, half_len, &ahead, env.others, None, None, dt);
+    let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, dt);
+    r.slot = chosen;
     if env.hold {
         a = -r.ty.max_decel;
     }
@@ -1556,6 +1565,74 @@ pub struct Seat {
     frames: u32,
     /// the car's position and up of the last update (before the drawn 0.025 m drop)
     at: (Vec3, Vec3),
+}
+
+/// The drawn wheels' lock (sub_826E5950, written after the render update in sub_826E8EC8): set
+/// when the speed controller's entry in charge is the car ahead (car +420 == 0), the mean of the
+/// last 4 updates' asked acceleration (car +2336: count, next, sum, 4 entries, pushed by
+/// sub_826E4DB0 from sub_826E5AB8 every update) is a deceleration of at least fMaxDecel, and
+/// |car +208|^2 >= 4.99612 ((5 mph)^2, the 30 Hz frame's position change). Kept per update index
+/// (owner byte +557 + U, U flipping each update): the render update reads the byte of its index
+/// before it is written, so the drawn wheels see the bit of two updates before; while it is set
+/// they do not turn. The car's skid sound reads the rule directly (sub_826DD748).
+#[derive(Clone, Debug, Default)]
+pub struct Lock {
+    n: u8,
+    i: u8,
+    sum: f32,
+    e: [f32; 4],
+    since: f32,
+    prev: Option<Vec3>,
+    buf: [bool; 2],
+    u: usize,
+    now: bool,
+}
+
+impl Lock {
+    /// One 30 Hz update: push `x` (car +408), work the bit out with the car's place change.
+    pub fn update(&mut self, pos: Vec3, x: f32, slot: Option<usize>, max_decel: f32, dt: f32) {
+        self.since += dt;
+        if self.since < 1.0 / 30.0 - 1e-4 {
+            return;
+        }
+        let t = self.since;
+        self.since = 0.0;
+        let v = self.prev.map_or(Vec3::ZERO, |p| (pos - p) / t);
+        self.prev = Some(pos);
+        // (sub_826E4DB0)
+        let i = self.i as usize;
+        if self.n == 0 {
+            self.e[0] = x;
+            self.sum = x;
+            self.i = 1;
+            self.n = 1;
+        } else if self.n < 4 {
+            self.e[i] = x;
+            self.sum += x;
+            self.i += 1;
+            self.n += 1;
+        } else {
+            self.sum -= self.e[i];
+            self.e[i] = x;
+            self.sum += x;
+            self.i += 1;
+        }
+        if self.i >= 4 {
+            self.i = 0;
+        }
+        let mean = if self.n == 0 { 0.0 } else { self.sum / self.n as f32 };
+        self.now = slot == Some(0) && -mean >= max_decel && v.length_squared() >= 4.99612;
+        self.buf[self.u] = self.now;
+        self.u ^= 1;
+    }
+    /// The bit the render update sees (two updates old).
+    pub fn drawn(&self) -> bool {
+        self.buf[self.u]
+    }
+    /// sub_826E5950 now (the skid sound).
+    pub fn now(&self) -> bool {
+        self.now
+    }
 }
 
 /// The drawn body's pitch and roll from the car's change of velocity (render update
@@ -1922,7 +1999,7 @@ impl Vehicles {
             c.state.ang_vel = Vec3::ZERO;
             let wr = c.model.params.wheel_radius.max(0.2);
             // (the drawn wheels turn at 0.6 of the rolling rate, within 75 m: sub_82794FA8)
-            let turn = if dist2 < SPIN_REACH2 { 0.6 * if back { -v } else { v } / wr * dt } else { 0.0 };
+            let turn = if dist2 < SPIN_REACH2 && !r.lock.drawn() { 0.6 * if back { -v } else { v } / wr * dt } else { 0.0 };
             for w in c.state.wheels.iter_mut() {
                 w.spin = wrap_spin(w.spin + turn);
                 w.steer = 0.0;
@@ -1938,6 +2015,14 @@ impl Vehicles {
             let Some(r) = c.rail.as_mut() else { continue };
             let dist2 = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length_squared();
             r.tilt.update(pos, fwd, right, dist2, dt);
+            // (the lock's window: car +408 pushed every update, in every state - frozen while the
+            // physics has the car, 0 resting (state 5) or in state 4 without its collider; a
+            // trailer never works its bit out)
+            if !r.ty.trailer {
+                let x = if r.state == 5 || (r.state == 4 && !r.active) { 0.0 } else { r.a };
+                let (slot, max_decel) = (r.slot, r.ty.max_decel);
+                r.lock.update(pos, x, slot, max_decel, dt);
+            }
         }
         // (test hook MCLA_TRAFFIC_RAM=s: every s seconds the player's car is put 9 m behind the
         // riding car nearest it within 80 m, on its heading, 12 m/s faster than it)
@@ -2127,6 +2212,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_drawn_wheels_lock_two_updates_late() {
+        // (sub_826E5950: the car ahead in charge, mean asked deceleration >= fMaxDecel, over 5 mph)
+        let mut l = Lock::default();
+        let dt = 1.0 / 30.0;
+        let mut x = 0.0;
+        let mut step = |l: &mut Lock, a: f32, slot: Option<usize>| {
+            x += 0.2; // 6 m/s
+            l.update(Vec3::new(x, 0.0, 0.0), a, slot, 22.5, dt);
+        };
+        step(&mut l, 0.0, Some(0));
+        assert!(!l.now());
+        // one -22.5 with 0 before: mean -11.25, not yet; a free-driving entry never
+        step(&mut l, -22.5, Some(0));
+        assert!(!l.now());
+        for _ in 0..4 {
+            step(&mut l, -22.5, None);
+        }
+        assert!(!l.now());
+        // (update A works the bit out; the render of the update after the next - C - sees it:
+        // read between B and C, `drawn` is what C's render update reads)
+        step(&mut l, -22.5, Some(0));
+        assert!(l.now() && !l.drawn());
+        step(&mut l, -22.5, Some(0));
+        assert!(l.drawn());
+    }
+
+    #[test]
     fn parked_front_wheels_and_spin() {
         // (car +3584: N(0, pi / 8), clamped to +-0.706858)
         assert_eq!(parked_steer(1.0, 0.0), 0.0);
@@ -2181,7 +2293,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, born: 0.0, life: 8.0 };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0 };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
