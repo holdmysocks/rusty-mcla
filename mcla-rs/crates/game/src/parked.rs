@@ -145,6 +145,8 @@ impl Vehicles {
         self.park_lists.clear();
         let Some(root) = self.parking.root else { return };
         let (bc, vx, len, width) = sp.region_box;
+        // (the cutscene mode: width = length - 700 x 700 at the mode's zero speed, offset 100)
+        let width = if sp.cutscene { len } else { width };
         if len <= 0.0 {
             return;
         }

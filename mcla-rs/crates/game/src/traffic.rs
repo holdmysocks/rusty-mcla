@@ -2445,6 +2445,8 @@ pub struct Spawner {
     /// this frame's region box: centre, unit length axis (x, z), full length and width
     /// (the parked-car lists take the same box, sub_826F17D8)
     pub region_box: (glam::Vec2, glam::Vec2, f32, f32),
+    /// the cutscene mode this frame (sub_826D4CA0): the parked lists' box as wide as it is long
+    pub cutscene: bool,
 }
 
 fn lerp(a: [f32; 2], t: f32) -> f32 {
@@ -2498,7 +2500,7 @@ impl Spawner {
             .map(|r| mcla_formats::rage::navsys::parse_intersections(&r))
             .unwrap_or_default();
         let n = roads.len();
-        Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None, region_box: (glam::Vec2::ZERO, glam::Vec2::NEG_Y, 0.0, 0.0) }
+        Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None, region_box: (glam::Vec2::ZERO, glam::Vec2::NEG_Y, 0.0, 0.0), cutscene: false }
     }
 
     /// The road a link belongs to (sub_82245340): its lane's owner when that is a road (flag
@@ -2613,6 +2615,23 @@ impl Vehicles {
             }
             None => (Vec3::NEG_Z, 0.0, None),
         };
+        // (the cutscene mode, sub_826D4CA0: the focus the camera's eye, the view its forward made
+        // flat, no speed - the velocity it takes, [0x828608D0], is zero - and no player's road)
+        let cut = self.amb_cutscene;
+        let (center, view, mph, player_link) = match cut {
+            Some((eye, f)) => (eye, Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::NEG_Z), 0.0, None),
+            None => (center, view, mph, player_link),
+        };
+        sp.cutscene = cut.is_some();
+        // (the player's car wiped out - its sim's +592 bit 0x10, set by mcCarDamage sub_823429B0 for
+        // WipeoutDelay: sub_826F0548 - no spawning or unspawning, the lists still made)
+        let wiped = self.cars.iter().find(|c| c.is_player).is_some_and(|c| c.state.upset > 0.0 || c.state.veh.as_ref().is_some_and(|v| v.wipe.is_some()));
+        {
+            static WAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if WAS.swap(wiped, std::sync::atomic::Ordering::Relaxed) != wiped {
+                log::info!("ambient spawners {} (the player's wipeout)", if wiped { "paused" } else { "resumed" });
+            }
+        }
         if let Some(r) = player_link.and_then(|l| sp.road_of(nav, l)) {
             sp.player_road = Some(r);
         }
@@ -2631,7 +2650,10 @@ impl Vehicles {
                 }
             } else {
                 // sub_826F7988 (traffic, people, then the parked cars) and sub_826F6130 (the
-                // unspawners, only while the region list has roads)
+                // unspawners, only while the region list has roads); none while wiped out
+                if wiped {
+                    continue;
+                }
                 if enabled {
                     self.spawn_frame(&mut sp, gpu, world, nav, center, view, mph, player_link);
                 }

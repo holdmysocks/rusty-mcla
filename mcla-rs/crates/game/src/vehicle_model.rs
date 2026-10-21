@@ -28,6 +28,9 @@ pub struct CarPart {
     pub mesh_bone: Vec<Mat4>,
     /// per-mesh tag of that bone (the window glass rides on `win_l_anim` / `win_r_anim`)
     pub mesh_tag: Vec<u16>,
+    /// per-mesh: the index i of a `wheel_<i>` bone it rides on (a traffic model's own wheels; the
+    /// original finds them by that name, sub_82790E68 - their tags differ between models)
+    pub mesh_wheel: Vec<Option<usize>>,
     pub tris: usize,
     pub min: Vec3,
     pub max: Vec3,
@@ -691,12 +694,14 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
             let mut meshes = Vec::new();
             let mut mesh_bone = Vec::new();
             let mut mesh_tag = Vec::new();
+            let mut mesh_wheel = Vec::new();
             let mut mn = Vec3::splat(f32::INFINITY);
             let mut mx = Vec3::splat(f32::NEG_INFINITY);
             let mut tris = 0;
             for m in d.models {
                 let bm = frag_sk.as_ref().and_then(|s| s.bones.get(m.bone as usize)).map(|b| b.world).unwrap_or(Mat4::IDENTITY);
                 let btag = frag_sk.as_ref().and_then(|s| s.bones.get(m.bone as usize)).map_or(0, |b| b.tag);
+                let wheel = frag_sk.as_ref().and_then(|s| s.bones.get(m.bone as usize)).and_then(|b| b.name.to_ascii_lowercase().strip_prefix("wheel_").and_then(|k| k.parse::<usize>().ok())).filter(|&i| i < 6);
                 for (mesh, si) in m.parts {
                     let (a, b) = mesh.bbox();
                     let (a, b) = if bm == Mat4::IDENTITY {
@@ -718,6 +723,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
                     meshes.push((mesh, si));
                     mesh_bone.push(bm);
                     mesh_tag.push(btag);
+                    mesh_wheel.push(wheel);
                 }
             }
             if meshes.is_empty() {
@@ -729,7 +735,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
             let is_base = BASE_FRAGMENTS.contains(&fname.as_str());
             let stock = (!is_anim || is_base) && (is_base || names.iter().any(|n| n.ends_with("_stk") || n.to_ascii_lowercase().ends_with("_dub")) || BASE_PARTS.contains(&primary.as_str()));
             let sockets: Vec<(String, Mat4)> = frag_sk.as_ref().map(|s| s.bones.iter().filter(|b| { let n = b.name.to_ascii_lowercase(); n.starts_with("exh_primary") || n.starts_with("exh_secondary") }).map(|b| (b.name.to_ascii_lowercase(), b.world)).collect()).unwrap_or_default();
-            Some(CarPart { file: p.clone(), names, primary: if is_base { format!("body_{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) } else { primary }, stock, meshes, mesh_bone, mesh_tag, tris, min: mn, max: mx, transform: Mat4::IDENTITY, placed: true, is_base, bones: nbones, from_parent: parent_files.contains(p), sockets })
+            Some(CarPart { file: p.clone(), names, primary: if is_base { format!("body_{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) } else { primary }, stock, meshes, mesh_bone, mesh_tag, mesh_wheel, tris, min: mn, max: mx, transform: Mat4::IDENTITY, placed: true, is_base, bones: nbones, from_parent: parent_files.contains(p), sockets })
         })
         .collect();
     // skeleton: the LOD0 base fragment; otherwise the part file with the most bone matrices

@@ -2061,6 +2061,11 @@ impl App {
         let focus = if self.drive { self.vehicles.player().map(|c| c.state.pos).unwrap_or(self.cam.pos) } else { self.cam.pos };
         // a cutscene plays wherever it was staged
         let focus = self.cine.camera().map(|c| c.0).unwrap_or(focus);
+        // (the ambient manager's cutscene mode, sub_826D4CA0: a scene playing - AmbientMgr_SetCutscene
+        // from its load to its closing transition - and no replay recorded (the port records a race
+        // as it runs) or played)
+        let recording = self.game.mode == Mode::Race && self.game.race.is_some();
+        self.vehicles.amb_cutscene = self.cine.camera().filter(|_| self.game.replay.is_none() && !recording).map(|c| (c.0, c.1));
         world.update(&mut gpu, focus, 6.0);
         // special abilities (real time); Zone slows the whole simulation down
         let mut fire = std::mem::take(&mut self.fire_ability);

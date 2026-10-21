@@ -88,7 +88,7 @@ pub struct CarModel {
     pub hood_slot: Option<Mat4>,
     pub trunk_bone: Option<Mat4>,
     /// a traffic model's own wheels (tyre, rim, disc in its body fragment, on its wheel
-    /// bones - `OWN_WHEEL_TAGS`): their hubs; drawn as batch groups 7 - 12 turned about these -
+    /// bones `wheel_0` .. `wheel_5` - `CarPart::mesh_wheel`): their hubs; drawn as batch groups 7 - 12 turned about these -
     /// no rim set of `resources/rims` is put on
     pub own_wheels: Option<[Option<Vec3>; 6]>,
 }
@@ -577,6 +577,10 @@ pub struct Vehicles {
     /// parked cars on (> 0) or off (0); the count itself is not used: the spawner fills a
     /// quarter of the spots of the nodes round the focus (parked.rs)
     pub parked_target: usize,
+    /// the ambient manager's cutscene mode (sub_826D4CA0: AmbientMgr_SetCutscene's flag, the race
+    /// timer >= 0, no replay recording or playback): the cutscene camera's eye and forward - the
+    /// focus and view of the spawners (sub_826F14E0), set by main.rs while a scene plays
+    pub amb_cutscene: Option<(Vec3, Vec3)>,
     wheel_cache: hashbrown::HashMap<(std::path::PathBuf, String, u32), Arc<WheelModel>>,
     brake_cache: hashbrown::HashMap<(std::path::PathBuf, u32, i32), Arc<BrakeModel>>,
     /// police light bars are flashing
@@ -825,10 +829,6 @@ fn glass_noise(gpu: &mut Gpu, world: &World) -> Option<(Arc<GpuTexture>, u32)> {
     let t = std::fs::read(p).ok().and_then(|d| mcla_formats::dds::parse_dds("2dnoise4.dds", &d).ok())?;
     Some((gpu.upload_texture_raw(key, &t), key))
 }
-
-/// The wheel bones' tags of the traffic models: front left, front right, rear left, rear
-/// right, a second rear axle's left and right (semi trailers).
-const OWN_WHEEL_TAGS: [u16; 6] = [3956, 59546, 23677, 52975, 17106, 7529];
 
 /// Normals for a mesh whose vertex format has none (the matte black parts are stored as
 /// positions alone): the area-weighted mean of the faces around each vertex.
@@ -1411,7 +1411,7 @@ impl Vehicles {
                 let win_side = if win_side != 0 { win_side } else { part_group(part, &part_xf, mi) };
                 // (a traffic model's own wheel: tyre, rim and disc on one of its wheel bones -
                 // groups 7 - 12, the bone's place its hub)
-                let own_wheel = if car_is_ambient && !car.bike { part.mesh_tag.get(mi).and_then(|t| OWN_WHEEL_TAGS.iter().position(|w| w == t)) } else { None };
+                let own_wheel = if car_is_ambient && !car.bike { part.mesh_wheel.get(mi).copied().flatten() } else { None };
                 if let Some(i) = own_wheel {
                     own_hubs[i] = Some((part_xf * bone_m).w_axis.truncate());
                 }
