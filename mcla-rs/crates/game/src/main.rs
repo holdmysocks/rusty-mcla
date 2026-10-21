@@ -92,6 +92,7 @@ mod vehicles;
 mod hangout_scene;
 mod layout;
 mod mc4b;
+mod photoalbum;
 mod world;
 
 use anyhow::Result;
@@ -2523,7 +2524,30 @@ impl App {
                 self.photo_request = Some(if path == "album" { self.game.mc4b_photo_path() } else { path });
             }
         }
+        // (test hook: MCLA_ALBUM_TEST="<presses>" - photo mode at tick 200, then the presses of
+        // `photoalbum`'s hook; MCLA_ALBUM_VIEW starts in the album, as the MODES tab's PHOTO ALBUM)
+        if std::env::var("MCLA_ALBUM_TEST").is_ok() && self.tick_no == 200 && self.photo.is_none() {
+            self.pending_action = if std::env::var("MCLA_ALBUM_VIEW").is_ok() { MenuAction::PhotoAlbum } else { MenuAction::PhotoMode };
+        }
         // ---- photo mode ----
+        // (the album's flow asks for the frame, sounds and the way out - `photoalbum`)
+        if self.photo.is_some() {
+            if self.photo_request.is_none() {
+                self.photo_request = self.game.album.capture.take().or_else(|| self.game.album.debug_shot.take());
+            }
+            for n in self.game.album.sounds.drain(..) {
+                if let Some(a) = self.audio.as_mut() {
+                    a.obj(n);
+                }
+            }
+            if std::mem::take(&mut self.game.album.leave) {
+                if let Some((_, drive)) = self.photo.take() {
+                    self.drive = drive;
+                    self.game.photo_on = false;
+                    self.game.photo = None;
+                }
+            }
+        }
         if self.photo.is_some() {
             self.photo_msg -= dt;
             self.game.photo = if self.photo_request.is_some() {
@@ -8531,8 +8555,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.mode = Mode::RaceSelect;
                 }
             }
-            MenuAction::PhotoMode => {
+            MenuAction::PhotoMode | MenuAction::PhotoAlbum => {
                 // the scene stays frozen (still paused); the camera flies free from where it was
+                // (SnapShot, or PM_PhotoAlbum straight into the album - `photoalbum`)
+                self.game.album.begin(action == MenuAction::PhotoAlbum);
                 self.photo = Some((self.game.mode, self.drive));
                 self.cam.pos = self.chase.pos;
                 let d = (self.chase.look - self.chase.pos).normalize_or(Vec3::Z);
@@ -9306,21 +9332,22 @@ impl ApplicationHandler for App {
                     }
                     match event.state {
                         ElementState::Pressed if self.photo.is_some() => {
-                            self.input.keys.insert(code);
-                            self.input.pending_keys.insert(code);
+                            // (the camera keys only while SnapShot has the camera input; the
+                            // album's states take Enter = A, Esc = B, Y, the arrows - `photoalbum`)
+                            if self.game.album.camera_input() {
+                                self.input.keys.insert(code);
+                                self.input.pending_keys.insert(code);
+                            }
                             match code {
-                                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
-                                    // (step 23b: into the photo album's slots - sub_8263DCF8: tPTS, aFAB)
-                                    self.photo_request = Some(self.game.mc4b_photo_path());
-                                }
+                                KeyCode::Enter | KeyCode::NumpadEnter => self.game.nav_enter = true,
+                                KeyCode::Escape => self.game.nav_back = true,
+                                KeyCode::KeyY => self.game.nav_y = true,
+                                KeyCode::KeyX => self.game.nav_x = true,
+                                KeyCode::ArrowUp => self.game.nav_up = true,
+                                KeyCode::ArrowDown => self.game.nav_down = true,
+                                KeyCode::ArrowLeft => self.game.nav_left = true,
+                                KeyCode::ArrowRight => self.game.nav_right = true,
                                 KeyCode::F12 => self.screenshot_key(),
-                                KeyCode::Escape => {
-                                    if let Some((_, drive)) = self.photo.take() {
-                                        self.drive = drive;
-                                        self.game.photo_on = false;
-                                        self.game.photo = None;
-                                    }
-                                }
                                 _ => {}
                             }
                         }

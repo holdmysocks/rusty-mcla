@@ -343,6 +343,8 @@ pub enum MenuAction {
     RestartRace,
     /// free camera over the frozen scene; Enter saves the picture
     PhotoMode,
+    /// the MODES tab's PHOTO ALBUM (`PM_PhotoAlbum`): photo mode's album, viewing (`photoalbum`)
+    PhotoAlbum,
     MainMenu,
     /// leave the running event and cruise on
     QuitRace,
@@ -779,6 +781,8 @@ pub struct Game {
     /// photo mode: nothing but this hint on screen (None while the picture is taken)
     pub photo: Option<String>,
     pub photo_on: bool,
+    /// photo mode's flow and the photo album (`photoalbum`)
+    pub album: crate::photoalbum::PhotoAlbum,
     /// start scene of the race just set up (red light races), played instead of a grid fly-by
     pub prerace_scene: Option<String>,
     /// red light race places (map markers)
@@ -1223,6 +1227,7 @@ impl Game {
             map_go: false,
             photo: None,
             photo_on: false,
+            album: Default::default(),
             prerace_scene: None,
             redlights: Vec::new(),
             flag: None,
@@ -3459,6 +3464,10 @@ impl Game {
                 }
             }
         }
+        if self.photo_on && self.album.stage != crate::photoalbum::Stage::Off {
+            // photo mode's states and the album own the screen (`photoalbum`)
+            return self.photo_album_ui(ctx);
+        }
         if self.photo_on {
             // nothing on screen but the hint (and not even that in the picture itself)
             if let Some(h) = self.photo.as_ref() {
@@ -4362,6 +4371,10 @@ impl Game {
                                 items.push((s("pause_play_lan", "SYSTEM LINK"), String::new(), Go::Off));
                             }
                             items.push((s("pause_race_editor", "RACE EDITOR"), String::new(), go(MenuAction::OpenEditor)));
+                            // (PauseMenu.sc.xml's GameModesMenu ends with PM_PhotoAlbum)
+                            if self.flash_menu.is_some() {
+                                items.push((s("pause_photo_album", "PHOTO ALBUM"), String::new(), go(MenuAction::PhotoAlbum)));
+                            }
                         }
                         _ => {
                             items.push((s("pause_options", "OPTIONS"), String::new(), Go::Page(4)));
@@ -9610,7 +9623,7 @@ impl Game {
     /// The message box: its page in the popup movie, navigation, and the choice.
     /// The confirming choice is the one whose id or text key says yes; anything else,
     /// and BACK, closes the box.
-    fn message_box_ui(&mut self, ctx: &egui::Context, up: bool, down: bool, enter: bool, back: bool) -> Option<MenuAction> {
+    pub(crate) fn message_box_ui(&mut self, ctx: &egui::Context, up: bool, down: bool, enter: bool, back: bool) -> Option<MenuAction> {
         use crate::flash_ui::{MenuLayout, MenuPage, MenuRow, ICON_A};
         // The ARRESTED panel (reference `y_arrested`): after the arrest's scene the screen goes
         // black and the panel says how long the pursuit was and what the fine is; CONTINUE (A).
@@ -9748,7 +9761,7 @@ impl Game {
         };
         // From the pause menu the box stands on the menu's own panel, in the pause movie
         // (reference `t25`: QUIT RACE with BACK and ACCEPT), not in the popup movie.
-        let in_pause = matches!(self.mode, Mode::Paused) && self.flash_menu.is_some();
+        let in_pause = matches!(self.mode, Mode::Paused) && self.flash_menu.is_some() && !self.photo_on;
         let mut out = None;
         let yes = |o: &(String, String)| o.0.to_ascii_lowercase().ends_with("yes") || o.1.eq_ignore_ascii_case("yes");
         if enter {

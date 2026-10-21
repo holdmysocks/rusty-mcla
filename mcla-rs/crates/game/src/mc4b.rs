@@ -278,7 +278,11 @@ pub fn content_flags(data_dir: &str, car: &str) -> u32 {
 }
 
 /// The photo album's slot files (the port's PHOTO_ALBUM): `<data>/../photos/album/slot_NN.png`.
+/// (test runs: MCLA_ALBUM_DIR puts the album elsewhere)
 pub fn album_dir(data_dir: &str) -> std::path::PathBuf {
+    if let Ok(d) = std::env::var("MCLA_ALBUM_DIR") {
+        return std::path::PathBuf::from(d);
+    }
     std::path::Path::new(data_dir).join("../photos/album")
 }
 
@@ -429,14 +433,24 @@ impl Game {
         Some(fill_d(&f, &crate::flash_ui::race_time((d.goal_time * 1000.0).round() as i32)))
     }
 
-    /// A picture taken in photo mode (sub_8263DCF8): the album's slot it goes into - the first
-    /// free one (the port has no PA_ChooseSlot page; with all sixteen used, slot 0 is written
-    /// again) -, the count of used slots, aFAB as it reaches 16, tPTS + 1. The file to write.
+    /// A picture taken in photo mode, written at once into the slot the album's chooser opens on
+    /// (sub_8263DC38: the first free one, slot 0 when all sixteen are used) - the test hook
+    /// MCLA_PHOTO_TEST=album; the game's own flow chooses the slot (`photoalbum`).
     pub fn mc4b_photo_path(&mut self) -> String {
+        let dir = album_dir(&self.data_dir);
+        let used: Vec<bool> = (0..ALBUM_SLOTS).map(|k| dir.join(format!("slot_{k:02}.png")).exists()).collect();
+        let slot = used.iter().position(|u| !u).unwrap_or(0);
+        self.mc4b_photo_save(slot)
+    }
+
+    /// A picture saved into slot k of the album (sub_8263DCF8): a slot not used before raises
+    /// the count of used slots (+856), aFAB as it reaches 16; tPTS + 1 for every picture, an
+    /// overwrite too. The file to write.
+    pub fn mc4b_photo_save(&mut self, slot: usize) -> String {
         let dir = album_dir(&self.data_dir);
         let _ = std::fs::create_dir_all(&dir);
         let used: Vec<bool> = (0..ALBUM_SLOTS).map(|k| dir.join(format!("slot_{k:02}.png")).exists()).collect();
-        let slot = used.iter().position(|u| !u).unwrap_or(0);
+        let slot = slot.min(ALBUM_SLOTS - 1);
         if !used[slot] {
             let count = used.iter().filter(|u| **u).count() + 1;
             if count == ALBUM_SLOTS {
