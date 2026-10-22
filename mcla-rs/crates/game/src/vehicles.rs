@@ -2963,8 +2963,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 c.pose_history.reset();
                 if world.ready_at(c.state.pos) {
                     // (the player's car, where roads are stacked: the first surface under the place asked for -
-                    // a tunnel's road, not the street above it; with nothing under it, the drop from above as before)
-                    let near = if c.is_player { world.collider.ground(c.state.pos, 2.0, 200.0) } else { None };
+                    // a tunnel's road, not the street above it; with nothing under it, the drop from above as before.
+                    // A set-up's standing car too (`hangout_scene::stand_car`): its place is the set-up's, at ground
+                    // height - the payback client's car stands under Classic Autos' canopy, not on it)
+                    let near = if c.is_player || c.driver.starts_with("hangout:") { world.collider.ground(c.state.pos, 2.0, 200.0) } else { None };
                     if let Some(g) = near.or_else(|| world.collider.ground(c.state.pos + Vec3::Y * 2.0, 50.0, 200.0)) {
                         // straight onto its springs (the model's origin is at road level), tilted with the road
                         let fwd = c.state.forward();

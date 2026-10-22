@@ -383,12 +383,16 @@ impl HangoutScene {
                     c.state.vel = Vec3::ZERO;
                     c.state.ang_vel = Vec3::ZERO;
                 }
-                None if c.placed => self.stood.push((key, c.state.pos, c.state.rot)),
+                None if c.placed => {
+                    log::info!("hangout scene: {} ({}) stands at {:?}", key.0, key.1, c.state.pos);
+                    self.stood.push((key, c.state.pos, c.state.rot));
+                }
                 None => {}
             }
         }
+        // (a place is forgotten with its car: the payback's client's car stands with no hangout's cars out)
         if self.cars_of.is_none() {
-            self.stood.clear();
+            self.stood.retain(|s| vehicles.cars.iter().any(|c| c.driver == s.0 .0 && c.model.name == s.0 .1));
         }
         // ---- the pink slip choice ----
         let choosing = game.mode == Mode::RaceSelect && game.hangout_page.0 == 2 && game.opt_x.s23.hangout_hold.is_none();
