@@ -5797,8 +5797,9 @@ impl Game {
                 let mut list_swallow = false;
                 if let (true, Some((showroom, sel))) = (listing, self.garage_list) {
                     let m = list_cars.len();
-                    // (the showroom's strip runs sideways)
-                    let (prev, next) = if showroom { (up || left, down || right) } else { (up, down) };
+                    // (the showroom's strip runs sideways: left / right only, its up / down
+                    // transitions are empty - Main.sc.xml GarageShowroom)
+                    let (prev, next) = if showroom { (left, right) } else { (up, down) };
                     let sel = if prev { (sel + m - 1) % m } else if next { (sel + 1) % m } else { sel.min(m - 1) };
                     self.garage_list = Some((showroom, sel));
                     if self.selected_car != list_cars[sel] {

@@ -1223,7 +1223,11 @@ impl FlashMenu {
         p.set_path("menu.select", Value::Int(if page.select == usize::MAX { -1 } else { page.select.min(page.rows.len().saturating_sub(1)) as i32 }));
         // PartMenu shows six PartType rows, the rim shop four (`fs_List_max`); the
         // movie runs its own selection expansion and scrolling.
-        let list_max = match page.layout {
+        // (tune/ui/garage/Main.sc.xml `fs_List_max`: GarageManageRide 12, GarageShowroom 6 -
+        // the showroom's per-press refresh scrolls its strip of six by this, so 12 let the
+        // cursor run six slots past the strip's right end)
+        let list_max = match &page.layout {
+            MenuLayout::Vehicles { ids, .. } if !ids.is_empty() => 6,
             MenuLayout::Vehicles { .. } => 12,
             MenuLayout::VinylPackages { .. } => 4,
             MenuLayout::VinylShapes { .. } => 7,
@@ -1701,6 +1705,52 @@ mod tests {
         menu.hide();
         settle(&mut menu, &page);
         assert_eq!(field(&menu.movie.player, "screen.menu.slotsB.slot0.slot"), "$12,345");
+    }
+
+    /// The showroom's strip (template 40) scrolls one slot per press and keeps the
+    /// selected vehicle among its six slots, both ways and over the wrap.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn showroom_strip_keeps_the_selection_in_its_six_slots() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let mut menu = FlashMenu::load(&dir, GARAGE_MOVIE, [0.0; 2], &shared).unwrap();
+        let n = 30usize;
+        let mut page = MenuPage {
+            layout: MenuLayout::Vehicles {
+                details: (0..n).map(|i| ("B".into(), "EXOTIC".into(), i as i64 * 1000)).collect(),
+                meters: [[0.0; 3]; 3],
+                value_label: "PRICE:".into(),
+                ids: (0..n).map(|i| (i as i32 + 1, true)).collect(),
+            },
+            title: "VEHICLE SHOWROOM".into(),
+            rows: (0..n).map(|i| MenuRow { label: format!("CAR {}", i), value: String::new(), enabled: true, part: None }).collect(),
+            select: 0,
+            ..MenuPage::default()
+        };
+        let mut check = |menu: &mut FlashMenu, page: &MenuPage, want: usize| {
+            menu.show(page);
+            for _ in 0..45 { menu.movie.player.tick(); }
+            let offset = menu.movie.player.get_global("ScrollOffset").unwrap().to_i32() as usize;
+            assert_eq!(offset, want, "select {}", page.select);
+        };
+        check(&mut menu, &page, 0);
+        // right: the strip stands still for the first six, then follows one slot per press
+        for s in 1..n {
+            page.select = s;
+            check(&mut menu, &page, s.saturating_sub(5));
+        }
+        // right off the end wraps to the first, the strip back at the start
+        page.select = 0;
+        check(&mut menu, &page, 0);
+        // left off the start wraps to the last, the strip at the end
+        page.select = n - 1;
+        check(&mut menu, &page, n - 6);
+        for s in (0..n - 1).rev() {
+            page.select = s;
+            check(&mut menu, &page, s.min(n - 6));
+        }
     }
 
     #[test]
