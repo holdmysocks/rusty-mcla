@@ -174,6 +174,13 @@ pub fn view(main: &Globals, car_pos: Vec3, car_rot: Quat, near: f32) -> View {
     if std::env::var("MCLA_REARVIEW_SHADOWS").is_err() {
         g.shadow_params[0] = 0.0;
     }
+    // (the mirror's cut-outs: every draw of the pass has colour control 0x8700000c - the alpha test on, GREATER
+    // than RB_ALPHA_REF 0.0, alpha-to-mask off - where the main view's cut-out draws have 0x8700001c (alpha-to-mask,
+    // the port's half-alpha cut): o14 draws 3143 / 2606, the chain-link fence of sector 132, same texture and
+    // constants. Read by city.wgsl as `true_sun.w`. MCLA_REARVIEW_CUT=1: the main view's cut.)
+    if std::env::var("MCLA_REARVIEW_CUT").is_err() {
+        g.true_sun[3] = 1.0;
+    }
     let axis = car_rot * Vec3::Z;
     // (diagnostics: MCLA_REARVIEW_LOG=1 prints the mirror's camera each second, the rows as the original's +128)
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

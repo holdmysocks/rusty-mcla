@@ -61,6 +61,8 @@ pub struct Globals {
     pub sky_horizon: [f32; 4],
     /// rgb, a = sunset strength
     pub sky_sunset: [f32; 4],
+    /// xyz = the sun's true direction; w = 1 in the rear-view mirror's pass: its cut-out materials keep every
+    /// pixel with alpha above 0 (rearview.rs `view`)
     pub true_sun: [f32; 4],
     pub moon_dir: [f32; 4],
     /// world -> shadow map clip space

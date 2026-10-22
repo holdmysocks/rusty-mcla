@@ -1707,7 +1707,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         if (cov <= fract(52.9829189 * fract(dot(in.clip.xy + vec2<f32>(31.0, 71.0), vec2<f32>(0.06711056, 0.00583715))))) {
             discard;
         }
-    } else if ((mat.mode == 1u || mat.mode == 13u || mat.mode == 15u) && albedo.a < select(0.5, 0.41667, imp_card) && !(mat.mode == 1u && g.moon_dir.w > 0.5)) {
+    } else if ((mat.mode == 1u || mat.mode == 13u || mat.mode == 15u) && select(albedo.a < select(0.5, 0.41667, imp_card), albedo.a <= 0.0, g.true_sun.w > 0.5) && !(mat.mode == 1u && g.moon_dir.w > 0.5)) {
+        // (the rear-view mirror - true_sun.w = 1: its draws have the alpha test GREATER 0 and no alpha-to-mask,
+        // colour control 0x8700000c, so a cut-out keeps every pixel whose alpha is above 0 - at the strip's small
+        // mip levels nearly all of a chain-link fence: the dark band above the wall in o14)
         // (not in the cars' map - moon_dir.w > 0.5, the paraboloid halves: its passes draw the
         // cut-out batches with alpha test and alpha-to-mask off, colour control 0xaa000004 where
         // the main view's have 0x8700001c - a fence is a solid sheet there)
