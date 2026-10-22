@@ -500,6 +500,7 @@ impl Game {
         let player = vehicles.player()?;
         let pp = player.state.pos;
         self.opt_x.arcade.d.redlight_man = Some((man.name.clone(), man.car.clone(), man.config.clone()));
+        self.man_mod = Some((man.name.clone(), man.mod_value));
         self.althk.diff = Some(man.difficulty.clamp(0, 3) as usize);
         self.althk.voice = man.name.clone();
         self.alt_race_begin(def.id);
@@ -634,6 +635,7 @@ impl Game {
         let prev = self.althk.last_scene;
         self.althk.back_offer = false;
         self.opt_x.arcade.d.redlight_man = Some((man.name.clone(), man.car.clone(), man.config.clone()));
+        self.man_mod = Some((man.name.clone(), man.mod_value));
         self.althk.diff = Some(man.difficulty.clamp(0, 3) as usize);
         self.althk.voice = man.name.clone();
         self.alt_race_begin(uid);

@@ -75,6 +75,7 @@ mod menu3d;
 mod prerace;
 mod racemark;
 mod mapmesh;
+mod oppick;
 mod hudmap;
 mod hudmap_gpu;
 mod hookicons;
@@ -8976,7 +8977,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let pname = self.vehicles.player().map(|c| c.model.name.clone()).unwrap_or_default();
                     let tier = rivals::tier(&self.game.catalog.get(&pname).map(|c| c.group.clone()).unwrap_or_default());
                     let dirs = self.game.car_dirs.clone();
-                    let usable = |car: &str| !car.contains("_duc_") && !car.contains("_kaw_") && dirs.iter().any(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(car)));
+                    // (a car the port can load; the original races motorcycles too)
+                    let usable = |car: &str| dirs.iter().any(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(car)));
                     let mut grid: Vec<rivals::Rival> = Vec::new();
                     // (a series keeps its field: the event's own man and two more)
                     // (a pink slip race is one against one, the opponent in the car raced for -
@@ -9019,11 +9021,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             grid = kept.clone();
                         }
                     }
-                    let seed = self.game.current_race.unwrap_or(0) as u32 * 2654435761u32 ^ self.frame_no as u32;
-                    for r in self.game.rivals.grid(7, tier, seed, &usable) {
-                        if grid.len() < field && !grid.iter().any(|g| g.id == r.id) {
-                            grid.push(r);
-                        }
+                    // the rest of the field: the race script's pick (oppick.rs) - cars of the difficulty's band
+                    // around the player's car, each with the first free driver who has it
+                    let d = self.game.grid_difficulty();
+                    self.game.grid_diff = Some(d);
+                    let masks = self.game.grid_masks();
+                    let p = std::env::var("MCLA_PLAYER_PERF").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| self.game.player_perf());
+                    let used: Vec<String> = grid.iter().map(|r| r.id.clone()).collect();
+                    let need = (field as usize).saturating_sub(grid.len());
+                    let picks = self.game.oppick.pick(need, p, d, masks, &used, &mut self.game.opp_rng, &usable);
+                    for pk in picks {
+                        log::info!("grid pick: {} drew {} -> {} in {} ({}), difficulty {} player {:.4}", if pk.driver.is_empty() { "-" } else { &pk.driver }, pk.drawn, pk.driver, pk.car, pk.setup, d, p);
+                        grid.push(self.game.rivals.with_config(&pk.driver, &pk.car, &pk.setup));
                     }
                     if let Some(ev) = tour_event {
                         self.tour_field = Some((ev, grid.clone()));
@@ -9811,6 +9820,8 @@ impl ApplicationHandler for App {
         self.game.ensure_owned();
         self.game.career = career::Career::load(&self.opt.data_dir);
         self.game.rivals = rivals::Rivals::load(&self.opt.data_dir);
+        // (a car the port adds as data joins the pick with its vehicle record here)
+        self.game.oppick = oppick::OpPick::load(&self.opt.data_dir, "");
         if std::env::var("MCLA_CAREER_TEST").is_ok() {
             self.game.career.selftest();
         }

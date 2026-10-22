@@ -749,6 +749,17 @@ pub struct Game {
     pub no_save: bool,
     /// the running race was started by challenging a roaming racer
     pub hookman_race: bool,
+    /// the hookman met on the road for the race being set up: his character and the mod value
+    /// he was given when he appeared (mcHookman +168, sub_826CF3E8 - his race script applies it
+    /// with mcHookman_GetModValue); -1 = his set-up's own stages
+    pub man_mod: Option<(String, i32)>,
+    /// the race scripts' opponent pick (cars, drivers, set-ups - oppick.rs) and its draws (the career
+    /// generator mcCareer +0x16C78 in the original, shared with the call timer there - not reproducible,
+    /// so the port keeps its own)
+    pub oppick: crate::oppick::OpPick,
+    pub opp_rng: crate::vehicles::parked::Mwc,
+    /// the difficulty the field was picked for (the race record's +3100), kept for the race's set-up
+    pub grid_diff: Option<i32>,
     /// the named rivals and the ones picked for the next grid
     pub rivals: crate::rivals::Rivals,
     /// performance figures of every car (decide prize class and opponent difficulty)
@@ -1236,6 +1247,10 @@ impl Game {
             adaptive: Default::default(),
             rb_step: None,
             grid_rivals: Vec::new(),
+            man_mod: None,
+            oppick: Default::default(),
+            opp_rng: crate::vehicles::parked::Mwc { lo: 1, carry: 1 },
+            grid_diff: None,
             mission_races: Vec::new(),
             map_races: Vec::new(),
             cine: None,
@@ -2403,6 +2418,44 @@ impl Game {
         })
     }
 
+    /// The race's difficulty as its launcher puts it in the race record (+3100) before the field is
+    /// picked: the hookman's, the wager's, the hangout event's, the red light / freeway man's, the ARCADE
+    /// menu's or a time trial's; a series' own; else Medium.
+    /// (approx.: a career event without any of these - the original takes the event panel's or the
+    /// player-against-racer difficulty - is Medium)
+    pub fn grid_difficulty(&self) -> i32 {
+        let mut d = self.series.as_ref().map_or(1, |s| s.diff as i32);
+        if let Some(h) = self.mc4_hookman_diff().filter(|_| self.hookman_race) {
+            d = h as i32;
+        }
+        if let Some((_, w)) = self.wager {
+            d = w as i32;
+        }
+        if let Some(e) = self.event_diff {
+            d = e as i32;
+        }
+        if let Some(a) = self.althk.diff.filter(|_| self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| crate::althk::is_alt_race(&d.id))) {
+            d = a as i32;
+        }
+        if let Some(f) = self.mc4_fixed_difficulty().filter(|_| self.event_diff.is_none()) {
+            d = f as i32;
+        }
+        std::env::var("MCLA_RACE_DIFFICULTY").ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    }
+
+    /// The district and class masks of the field's car list (mcCarArray_Fill's m1 / m2): a story
+    /// series in LA 15 / 31 (no South Central cars, no SUV or LowRider - the 16 scripts that launch
+    /// OrderedSeriesCore), everything else 31 / 255 (RaceWrapper, TournamentCore, South Central).
+    /// (approx.: the cruising hookmen's and the 20 series scripts' own parameters 7 / 8 are not traced)
+    pub fn grid_masks(&self) -> (i32, i32) {
+        let sc = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| d.district.to_ascii_lowercase().replace(' ', "").contains("south") || d.id.to_ascii_lowercase().starts_with("sc_"));
+        if self.series.is_some() && !sc {
+            crate::oppick::MASKS_LA_SERIES
+        } else {
+            crate::oppick::MASKS_RACE
+        }
+    }
+
     /// How hard car `name` (unmodified, as the rivals drive them) is for the player.
     pub fn difficulty_of(&self, name: &str) -> i32 {
         match self.samples.value(name, 0.0) {
@@ -3102,7 +3155,8 @@ impl Game {
             // the event is meant to be as hard as its first racer is for the player; a
             // field that is not all of that difficulty shifts the opponents level
             let diffs: Vec<i32> = self.race.as_ref().map(|r| r.participants.iter().skip(1).filter_map(|i| vehicles.cars.get(*i)).map(|c| self.difficulty_of(&c.model.name)).collect()).unwrap_or_default();
-            let desired = diffs.first().copied().unwrap_or(1).clamp(0, 3);
+            // (the field picked for a difficulty runs at it - `grid_difficulty`, the race record's +3100)
+            let desired = self.grid_diff.unwrap_or_else(|| diffs.first().copied().unwrap_or(1).clamp(0, 3));
             // (a hookman's race is as hard as the set-up his mission names)
             let desired = self.mc4_hookman_diff().filter(|_| self.hookman_race).map_or(desired, |d| d as i32);
             let desired = self.wager.map_or(desired, |(_, d)| d as i32);
@@ -3127,21 +3181,30 @@ impl Game {
             log::info!("race: difficulty {} (field {:?}; hookman race {} set-up {:?}), opponents level {} -> rubber band step {}", desired, diffs, self.hookman_race, self.mc4_hookman_diff(), self.adaptive.level, step);
             // each opponent's upgrade level: Racer_SetModValue(racer, mcCarConfigData_GetModValue(cfg))
             // of the race script - the car's share of its upgrades that puts it in the difficulty's band
-            // around the player's car (sub_8239C080); a payback's client is stock (its script sets 0)
-            // (approx.: a hookman's value is taken at the race's start - the original freezes it when
-            // he appears, sub_826CF3E8 - and a car without samples stays stock)
+            // around the player's car (sub_8239C080); a hookman met on the road keeps the value he got when
+            // he appeared (mcHookman_GetModValue; -1: his set-up's own stages); a payback's client is stock
+            // (its script sets 0)
             if self.race.as_ref().map_or(false, |r| r.kind != RaceKind::Payback) && std::env::var("MCLA_OPP_PERF").is_err() {
                 // (diagnostics, docs/AI.md: MCLA_PLAYER_PERF=<value> stands for the player's car here)
                 let player = std::env::var("MCLA_PLAYER_PERF").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| self.player_perf());
                 let ids: Vec<usize> = self.race.as_ref().map(|r| r.participants.iter().skip(1).copied().collect()).unwrap_or_default();
                 for i in ids {
-                    let Some(c) = vehicles.cars.get_mut(i) else { continue };
-                    if let Some(m) = self.samples.mod_value(&c.model.name, player, desired) {
-                        log::info!("race: racer {} mod value {} (player {:.4}, difficulty {})", c.model.name, m, player, desired);
-                        c.set_perf(m.max(0) as f32 * 0.01);
+                    let Some(c) = vehicles.cars.get(i) else { continue };
+                    let man = self.man_mod.as_ref().filter(|(id, _)| !c.driver.is_empty() && id.eq_ignore_ascii_case(&c.driver)).map(|m| m.1);
+                    // (approx.: -1 builds the tunes part by part from the set-up's stages in the original,
+                    // sub_82361988, not decoded - here the set-up's upgrade percentage)
+                    let m = match man {
+                        Some(m) if m >= 0 => Some(m),
+                        Some(_) => Some(self.mc4_setup_percent(&c.model.name, &c.vinyl_name)),
+                        None => self.mc4_samples_of(&c.model.name).map(|s| crate::mc4::setup_mod_value(s, player, desired)),
+                    };
+                    if let Some(m) = m {
+                        log::info!("race: racer {} ({}) mod value {} (player {:.4}, difficulty {}{})", c.model.name, c.driver, m, player, desired, if man.is_some() { ", the hookman's own" } else { "" });
+                        vehicles.cars[i].set_perf(m.clamp(0, 100) as f32 * 0.01);
                     }
                 }
             }
+            self.man_mod = None;
             self.rb_step = Some(step);
             // the racers' brains (BrainRacing_SetupRace in the race core; the rubber band's copy of its tuning)
             let laps = self.race.as_ref().map_or(1, |r| r.laps.max(1));

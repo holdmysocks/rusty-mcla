@@ -806,6 +806,7 @@ impl Roamers {
         self.rival_challenged = !vehicles.cars[ri].driver.is_empty();
         let s19d_cops = vehicles.cars.iter().any(|c| c.cop && c.state.pos.distance(pp) < 250.0);
         let s19d_man = man.as_ref().map(|m| (m.name.clone(), m.car.clone(), m.config.clone()));
+        game.man_mod = man.as_ref().map(|m| (m.name.clone(), m.mod_value));
         let s19d_skip = game.mc4_meet(s19d_man, race, &kept, s19d_cops, !kept.is_empty() && !self.rival_challenged);
         if s19d_skip {
             log::info!("roamers: police within 250 m - the race starts at its grid");

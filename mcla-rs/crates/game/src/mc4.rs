@@ -8807,8 +8807,9 @@ pub fn diff_window(perf: f32, d: i32) -> (f32, f32) {
         -1 => (perf - 1.0, DIFF_STEPS[0] + perf),
         5 => (DIFF_STEPS[5] + perf, perf + 1.0),
         3 => (DIFF_STEPS[3] + perf, DIFF_STEPS[5] + perf),
+        // (d 0, 1, 2 and 4 - the steps d and d + 1: sub_8239C080)
         _ => {
-            let k = d.clamp(0, 2) as usize;
+            let k = d.clamp(0, 4) as usize;
             (DIFF_STEPS[k] + perf, DIFF_STEPS[k + 1] + perf)
         }
     }
@@ -15020,6 +15021,10 @@ mod tests {
         let s = [0.4, 0.6, 0.9];
         assert!(setup_can_reach(s, 0.5, 2));
         assert_eq!(setup_mod_value(s, 0.5, 2), 71);
+        // (the original's AROUND HOLLYWOOD on MEDIUM against a fully upgraded Saleen S281, 0.790155:
+        // its opponents measured at 98 / 78 / 82 - docs/reference/ai/upgrades.md)
+        let m = [[0.580801, 0.707273, 0.822529], [0.701087, 0.803725, 0.888737], [0.710337, 0.798889, 0.861136]].map(|s| setup_mod_value(s, 0.790155, 1));
+        assert_eq!(m, [98, 78, 82]);
         assert!((setup_perf(s, 71) - 0.726).abs() < 1e-3);
         assert_eq!(gap_difficulty(setup_perf(s, 71) - 0.5), 2);
         // (a weak vehicle cannot be Hard: its band is cut at its best, the mod value is 100)
