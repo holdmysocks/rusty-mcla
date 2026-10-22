@@ -6,6 +6,7 @@ use crate::assets::load_resource_file;
 use crate::render::{Gpu, MatMode, Vertex};
 use glam::{Mat4, Quat, Vec3};
 use mcla_formats::rage::anim::{Animation, KIND_MOVER_ROTATION, KIND_MOVER_TRANSLATION, KIND_ROTATION, KIND_TRANSLATION};
+use mcla_formats::rage::blendshape::BlendShapes;
 use mcla_formats::rage::character::Character;
 use std::path::Path;
 use std::sync::Arc;
@@ -42,6 +43,92 @@ pub struct SkinModel {
     pub binds: Vec<Arc<wgpu::BindGroup>>,
     /// index of the head bone
     pub head: Option<usize>,
+    /// the set's facial blend shapes (`.r3`), when it has targets
+    pub morph: Option<Morph>,
+}
+
+/// A character set's blend shapes bound to its high-detail parts: the `.r3` mesh record names the model
+/// by its place in the drawable's LOD model list (+84), its blend geometries go with that model's
+/// geometries in order (docs/reference/cutscenes/blend_shapes.md).
+pub struct Morph {
+    pub shapes: BlendShapes,
+    /// part index in `lods[0]` of every (mesh, geometry)
+    pub parts: Vec<Vec<usize>>,
+}
+
+/// The creature component `crCreatureComponentBlendShapes` of one character (vtable 0x8207A4BC):
+/// the weights by target (records sorted by id), the weight each target last added to the delta
+/// buffer, and the buffer itself (float4 per vertex, added to the bind-pose position before skinning
+/// as `VSSkinned_BlendShape` does).
+pub struct FaceShapes {
+    weight: Vec<f32>,
+    applied: Vec<f32>,
+    /// by (mesh, geometry)
+    bufs: Vec<Vec<Vec<[f32; 4]>>>,
+    /// updates since the last full reset (+40), and the reset waiting (+44)
+    count: u32,
+    reset: bool,
+}
+
+/// The component's constants (`sub_8253F7E0`): every 100 updates the buffers are cleared and built
+/// again (+36), a target is applied again only when its weight moved by more than 1 % (+32, 0x8207A4B0).
+const RESET_EVERY: u32 = 100;
+const TOLERANCE: f32 = 0.01;
+
+impl FaceShapes {
+    pub fn new(m: &Morph) -> FaceShapes {
+        let n = m.shapes.targets.len();
+        let bufs = m.shapes.meshes.iter().map(|me| me.geoms.iter().map(|g| vec![[0.0f32; 4]; g.vertex_count]).collect()).collect();
+        FaceShapes { weight: vec![0.0; n], applied: vec![0.0; n], bufs, count: 0, reset: false }
+    }
+
+    /// Weight of target `i` (index into `Morph::shapes.targets`) as the frame's kind-21 track gives it
+    /// (`sub_8253EE48`).
+    pub fn set(&mut self, i: usize, w: f32) {
+        self.weight[i] = w;
+    }
+
+    /// `sub_8253F030` (the CPU path): add every changed weight's difference into the buffer.
+    pub fn update(&mut self, m: &Morph) {
+        self.count += 1;
+        if self.count >= RESET_EVERY {
+            self.reset = true;
+            self.count = 0;
+        }
+        if self.reset {
+            // sub_82613D68 -> sub_821B4260: the buffer is set to zero, the applied weights too
+            self.bufs.iter_mut().flatten().for_each(|b| b.iter_mut().for_each(|v| *v = [0.0; 4]));
+            self.applied.iter_mut().for_each(|a| *a = 0.0);
+            self.reset = false;
+        }
+        for (i, t) in m.shapes.targets.iter().enumerate() {
+            let (w, last) = (self.weight[i], self.applied[i]);
+            let big = if 1.0 - w.abs() >= 0.0 { 1.0 } else { w.abs() };
+            let big = if big - last.abs() >= 0.0 { big } else { last.abs() };
+            let d = w - last;
+            if d.abs() <= big * TOLERANCE {
+                continue;
+            }
+            // sub_82613FC8 -> sub_82615520 -> sub_826157B8 -> sub_82615F78 on every geometry of the target
+            for &(mi, gi) in &t.geoms {
+                let Some(Some(blob)) = m.shapes.meshes[mi].geoms[gi].blobs.get(t.slot) else { continue };
+                blob.apply(&mut self.bufs[mi][gi], d);
+            }
+            self.applied[i] = w;
+        }
+    }
+
+    /// (targets with a weight above the tolerance, largest vertex displacement in metres) - `MCLA_BS_TRACE`
+    pub fn stats(&self) -> (usize, f32) {
+        let n = self.applied.iter().filter(|a| a.abs() > TOLERANCE).count();
+        let d = self.bufs.iter().flatten().flatten().map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).fold(0.0f32, f32::max);
+        (n, d)
+    }
+
+    /// The delta buffer of part `p` of the high LOD, if the shapes move it.
+    pub fn part(&self, m: &Morph, p: usize) -> Option<&[[f32; 4]]> {
+        m.parts.iter().enumerate().find_map(|(mi, g)| g.iter().position(|&q| q == p).map(|gi| self.bufs[mi][gi].as_slice()))
+    }
 }
 
 impl SkinModel {
@@ -108,8 +195,49 @@ impl SkinModel {
         if lods[0].is_empty() {
             return None;
         }
-        Some(SkinModel { bones, ids, lods, binds, head: c.bone("head") })
+        let morph = load_morph(path, &c, &lods[0]);
+        Some(SkinModel { bones, ids, lods, binds, head: c.bone("head"), morph })
     }
+}
+
+/// The `.r3` next to a set's `.r6` (the cine spawner `sub_823D2AB0` loads it when it exists), bound to
+/// the high LOD's parts. Sets with an empty manager (231 of 247) have none.
+fn load_morph(path: &Path, c: &Character, high: &[Part]) -> Option<Morph> {
+    let dir = path.parent()?;
+    let r3 = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().map_or(false, |e| e.eq_ignore_ascii_case("r3")))?;
+    let shapes = match BlendShapes::parse(&load_resource_file(&r3).ok()?) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("blend shapes {}: {}", r3.display(), e);
+            return None;
+        }
+    };
+    if shapes.targets.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for me in &shapes.meshes {
+        // every file names LOD 0; the port's parts of other LODs are not laid out for this
+        if me.lod != 0 {
+            log::warn!("blend shapes {}: {} on LOD {}", r3.display(), me.name, me.lod);
+            return None;
+        }
+        let k = me.model as usize;
+        let mi = *c.lods[0].get(k)?;
+        // parts are laid out model by model in the LOD's order, one per geometry
+        let first: usize = c.lods[0][..k].iter().map(|&x| c.models[x].len()).sum();
+        let mut g = Vec::new();
+        for (gi, bg) in me.geoms.iter().enumerate() {
+            let p = first + gi;
+            if gi >= c.models[mi].len() || high.get(p).map_or(true, |part| part.verts.len() != bg.vertex_count) {
+                log::warn!("blend shapes {}: {} geometry {} does not fit the drawable", r3.display(), me.name, gi);
+                return None;
+            }
+            g.push(p);
+        }
+        parts.push(g);
+    }
+    Some(Morph { shapes, parts })
 }
 
 /// An animation bound to one skeleton: track index per bone.
@@ -224,6 +352,12 @@ impl SkinBuffer {
 
     /// Skin one character in the given local pose, standing at `root`.
     pub fn emit(&mut self, model: &SkinModel, lod: usize, local: &[(Quat, Vec3)], root: Mat4) {
+        self.emit_shaped(model, lod, local, root, None);
+    }
+
+    /// The same with the face's blend shapes: their delta is added to the bind-pose position before
+    /// skinning (`VSSkinned_BlendShape` 17: `r2.xyz = add(r2, r0)`; the normal stays).
+    pub fn emit_shaped(&mut self, model: &SkinModel, lod: usize, local: &[(Quat, Vec3)], root: Mat4, face: Option<&FaceShapes>) {
         self.world.clear();
         self.skin.clear();
         for (i, b) in model.bones.iter().enumerate() {
@@ -249,20 +383,29 @@ impl SkinBuffer {
             }
             None => usize::MAX,
         };
-        let parts = (lod.min(2)..3).map(|l| &model.lods[l]).find(|l| !l.is_empty()).unwrap_or(&model.lods[0]);
+        let first = (lod.min(2)..3).find(|&l| !model.lods[l].is_empty()).unwrap_or(0);
+        let parts = &model.lods[first];
         // (the night fill light at the figure's place - fillmap.rs: the figures share one buffer
         // and the identity object, so the colour rides in every vertex: color1.rgb = four times
         // map / 255 x 0.25 x m_NFLFade, uv1.y = 77 the mark city.wgsl knows a figure by)
         let fill = crate::fillmap::figure_now(root.w_axis.x, root.w_axis.z);
-        for part in parts {
+        for (pi, part) in parts.iter().enumerate() {
             let base = self.verts.len() as u32;
-            for v in &part.verts {
+            let shape = match (face, model.morph.as_ref()) {
+                (Some(f), Some(m)) if first == 0 => f.part(m, pi),
+                _ => None,
+            };
+            for (vi, v) in part.verts.iter().enumerate() {
+                let bind = match shape {
+                    Some(d) => v.pos + Vec3::new(d[vi][0], d[vi][1], d[vi][2]),
+                    None => v.pos,
+                };
                 let mut pos = Vec3::ZERO;
                 let mut nrm = Vec3::ZERO;
                 for k in 0..4 {
                     if v.w[k] > 0.0 {
                         let m = &self.skin[v.b[k] as usize];
-                        pos += m.transform_point3(v.pos) * v.w[k];
+                        pos += m.transform_point3(bind) * v.w[k];
                         nrm += m.transform_vector3(v.nrm) * v.w[k];
                     }
                 }

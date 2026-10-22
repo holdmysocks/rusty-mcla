@@ -25,6 +25,7 @@ pub mod lights;
 pub mod parking;
 pub mod bound;
 pub mod character;
+pub mod blendshape;
 pub mod anim;
 pub mod ptfx;
 pub mod aomap;

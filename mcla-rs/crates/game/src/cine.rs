@@ -18,7 +18,7 @@
 
 use crate::assets::load_resource_file;
 use crate::render::Gpu;
-use crate::skin::{Clip, SkinBuffer, SkinModel};
+use crate::skin::{Clip, FaceShapes, SkinBuffer, SkinModel};
 use glam::{Mat4, Quat, Vec3};
 use hashbrown::HashMap;
 use mcla_formats::rage::anim::{animation_named, pack_entries, Animation, KIND_FOV, KIND_MOVER_ROTATION, KIND_MOVER_TRANSLATION, KIND_ROTATION, KIND_TRANSLATION};
@@ -32,7 +32,13 @@ struct Actor {
     clip: Clip,
     /// facial animation
     face: Option<Clip>,
+    /// the face's blend shapes and the facial pack's kind-21 track of every target (by the target's id)
+    shapes: Option<(FaceShapes, Vec<Option<usize>>)>,
 }
+
+/// Track kind of a blend-shape weight (`crCreatureComponentBlendShapes` reads kind 21 by target id,
+/// `sub_8253EE48`).
+const KIND_BLEND_SHAPE: u8 = 21;
 
 struct Mover {
     /// "drv00", "henry", "omnibus"
@@ -193,6 +199,10 @@ impl Cine {
                         if let Some((label, _)) = ent.split_once("_name_") {
                             if let Some(a) = sc.actors.iter_mut().find(|a| a.label == label) {
                                 a.face = Some(Clip::bind(&anim, &a.model.ids, false, false));
+                                if let Some(m) = a.model.morph.as_ref() {
+                                    let tracks = m.shapes.targets.iter().map(|t| anim.tracks.iter().position(|k| k.kind == KIND_BLEND_SHAPE && k.bone_id == t.id)).collect();
+                                    a.shapes = Some((FaceShapes::new(m), tracks));
+                                }
                             }
                         }
                         continue;
@@ -222,7 +232,7 @@ impl Cine {
                     }
                     let Some(model) = self.model(gpu, &set) else { continue };
                     let clip = Clip::bind(&anim, &model.ids, false, false);
-                    sc.actors.push(Actor { label: label.to_string(), model, clip, face: None });
+                    sc.actors.push(Actor { label: label.to_string(), model, clip, face: None, shapes: None });
                 }
             }
         }
@@ -230,7 +240,7 @@ impl Cine {
             return false;
         }
         sc.actors.sort_by(|a, b| a.label.cmp(&b.label));
-        log::info!("cine: {} ({:.1} s): camera {}, {} characters [{}] ({} with faces), cars [{}]", key, sc.duration, sc.camera.is_some(), sc.actors.len(), sc.actors.iter().map(|a| a.label.as_str()).collect::<Vec<_>>().join(" "), sc.actors.iter().filter(|a| a.face.is_some()).count(), sc.movers.iter().map(|m| m.label.as_str()).collect::<Vec<_>>().join(" "));
+        log::info!("cine: {} ({:.1} s): camera {}, {} characters [{}] ({} with faces, {} with blend shapes: {} weight tracks), cars [{}]", key, sc.duration, sc.camera.is_some(), sc.actors.len(), sc.actors.iter().map(|a| a.label.as_str()).collect::<Vec<_>>().join(" "), sc.actors.iter().filter(|a| a.face.is_some()).count(), sc.actors.iter().filter(|a| a.shapes.is_some()).count(), sc.actors.iter().filter_map(|a| a.shapes.as_ref()).map(|s| s.1.iter().flatten().count()).sum::<usize>(), sc.movers.iter().map(|m| m.label.as_str()).collect::<Vec<_>>().join(" "));
         self.playing = Some(sc);
         true
     }
@@ -266,7 +276,7 @@ impl Cine {
             };
             let Some(model) = self.model(gpu, set) else { continue };
             let clip = Clip::bind(&Arc::new(anim), &model.ids, false, false);
-            self.ambient.push(Actor { label, model, clip, face: None });
+            self.ambient.push(Actor { label, model, clip, face: None, shapes: None });
         }
         log::info!("cine: {} people at {}", self.ambient.len(), name);
     }
@@ -432,12 +442,25 @@ impl Cine {
             let (mt, mr) = a.clip.mover(f);
             self.buf.emit(&a.model, 0, &local, Mat4::from_rotation_translation(mr, mt));
         }
-        for sc in self.playing.iter().chain(self.linger.iter()) {
-        for a in &sc.actors {
+        for sc in self.playing.iter_mut().chain(self.linger.iter_mut()) {
+        for a in &mut sc.actors {
             let f = a.clip.anim.frame_at(sc.t);
             a.clip.local(&a.model.bones, f, &mut local);
             if let Some(face) = a.face.as_ref() {
                 let ff = face.anim.frame_at(sc.t);
+                if let (Some((shapes, tracks)), Some(m)) = (a.shapes.as_mut(), a.model.morph.as_ref()) {
+                    // a target without a track keeps its weight (sub_8253EE48 writes only what the frame has)
+                    for (i, t) in tracks.iter().enumerate() {
+                        if let Some(t) = *t {
+                            shapes.set(i, face.anim.tracks[t].data.vec(ff).x);
+                        }
+                    }
+                    shapes.update(m);
+                    if std::env::var("MCLA_BS_TRACE").is_ok() {
+                        let (n, d) = shapes.stats();
+                        log::info!("blend shapes {} t {:.2}: {} targets on, largest delta {:.4} m", a.label, sc.t, n, d);
+                    }
+                }
                 for i in 0..local.len() {
                     if a.clip.rot[i].is_none() {
                         if let Some(t) = face.rot[i] {
@@ -452,7 +475,7 @@ impl Cine {
                 }
             }
             let (mt, mr) = a.clip.mover(f);
-            self.buf.emit(&a.model, 0, &local, sc.origin * Mat4::from_rotation_translation(mr, mt));
+            self.buf.emit_shaped(&a.model, 0, &local, sc.origin * Mat4::from_rotation_translation(mr, mt), a.shapes.as_ref().map(|s| &s.0));
         }
         }
         self.buf.upload(gpu);
