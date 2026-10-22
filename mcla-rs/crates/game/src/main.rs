@@ -51,6 +51,7 @@ mod tyrefx;
 mod part_audit;
 mod rain;
 mod halo;
+mod siglrefl;
 mod sunglow;
 mod carblob;
 mod carshadow;
@@ -4213,11 +4214,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             {
                 // the junctions' own state (signals.rs): stepped on the vehicles' copy, shown by the props'
-                // (traffic on lanes reports itself: `Signals::occupy` on a junction lane, `Signals::wait` when the light refuses it)
-                let cars: Vec<(Vec3, Vec3)> = self.vehicles.cars.iter().filter(|c| c.placed && c.parked.is_none() && c.rail.is_none()).map(|c| (c.state.pos, c.state.vel)).collect();
+                // (traffic on lanes reports itself: `Signals::wait` when the light refuses it)
+                // (the box hold and the player's demand: `Vehicles::step_signals`)
                 let race = self.game.race.as_ref().map(|r| (r.countdown, r.time));
-                let player = self.vehicles.player().map(|c| (c.state.pos, c.state.vel));
-                self.vehicles.signals.step(sim_dt, &cars, player, race);
+                match world.nav.as_ref() {
+                    Some(nav) => self.vehicles.step_signals(nav, sim_dt, race),
+                    None => self.vehicles.signals.step(sim_dt, &[], None, self.vehicles.player().map(|c| (c.state.pos, c.state.vel)), race),
+                }
                 self.props.signals.sync_from(&self.vehicles.signals);
             }
             self.props.update_signals(&gpu, focus, self.vehicles.clock);
@@ -7433,6 +7436,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let lamp_list = halo::ListView::new(glam::Mat4::from_cols_array_2d(&globals.view_proj), self.cam.pos, self.cam.forward(), self.cam.fov_y);
         {
             let mut glows: Vec<(f32, halo::Glow)> = Vec::new();
+            // (the same lamps' rectangles in the road's reflection picture: siglrefl.rs)
+            let mut sig_refl: Vec<siglrefl::Rect> = Vec::new();
             if let (Some(tune), false, false) = (halo::tune(), map_baked || matches!(self.game.mode, Mode::Garage), halo::old_look()) {
                 let w = match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 };
                 let cam = self.cam.pos;
@@ -7458,13 +7463,29 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 let tan = (self.cam.fov_y * 0.5).tan();
-                for (p, z, c) in self.props.signal_lamps_lit() {
-                    // (a signal prop goes by the same rule; its radius 6.87, the lamp for its centre)
-                    if !lamp_list.holds(*p, 7.0, 6.87, || occluded.hides_aabb(*p - Vec3::splat(0.5), *p + Vec3::splat(0.5))) {
+                let mut head_ok: Option<(u32, bool)> = None;
+                for (p, z, c, h) in self.props.signal_lamps_lit() {
+                    // (a head is listed as any prop - halo::ListView::holds with its own box and radius - and
+                    // then sub_82739F70 tests it once: a 2 m sphere round its origin in the main view (the near
+                    // clause, 300 m, never decides inside the list's reach), or within 20 m)
+                    if head_ok.map_or(true, |(k, _)| k != *h) {
+                        let (o, bc, bw, br, bx) = self.props.signal_head_cull(*h);
+                        let ok = lamp_list.holds(bc, bw, br, || occluded.hides_aabb(bx.0, bx.1)) && (lamp_list.sphere_in_view(o, 2.0) || o.distance_squared(cam) <= 400.0);
+                        head_ok = Some((*h, ok));
+                    }
+                    if !head_ok.map_or(false, |(_, ok)| ok) {
                         continue;
                     }
                     if let Some(g) = tune.signal(w, *p, *z, *c, cam, tan) {
                         glows.push((lamp_list.order(*p) as f32, g));
+                    }
+                    if let (true, Some((rp, ri, rs))) = (sig_refl.len() < siglrefl::MAX, tune.signal_reflection(w, *p, *z, cam)) {
+                        let oy = self.props.signal_head_cull(*h).0.y;
+                        let size = render::REFL_SIZE as f32;
+                        if let Some(r) = siglrefl::rect(vp, self.lod_near, oy, rp, cam, *c, ri, rs, (size, size)) {
+                            if (self.frame_no == 60 || self.frame_no == 280) && std::env::var("MCLA_GLOW_DUMP").is_ok() { eprintln!("siglrefl P {:.3} {:.3} {:.3} origin y {:.3} I {:.4} streak {:.4} near {:.3} rect {:.4} {:.4} {:.4} {:.4} depth {:.6} col {:.3} {:.3} {:.3}", rp.x, rp.y, rp.z, oy, ri, r.z[1], self.lod_near, r.r[0], r.r[1], r.r[2], r.r[3], r.z[0], c[0], c[1], c[2]); }
+                            sig_refl.push(r);
+                        }
                     }
                 }
                 // (the cars' lamps: lights on as the sprites had them)
@@ -7495,6 +7516,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             halo::set(&gpu, &glows.iter().map(|g| g.1).collect::<Vec<_>>());
+            siglrefl::set(&gpu, &sig_refl);
         }
         {
             // local lights: headlights of the cars around the camera + nearest street lamps (night only)
@@ -10146,6 +10168,7 @@ impl ApplicationHandler for App {
             self.tyre_fx = Some(tyrefx::TyreFx::load(std::path::Path::new(&self.opt.data_dir), &self.fx));
             rain::load(&mut gpu, &self.opt.data_dir);
             halo::load(&mut gpu, &self.opt.data_dir);
+            siglrefl::load(&gpu, &self.opt.data_dir);
             sunglow::load(&mut gpu);
             pu_draw::load(&mut gpu, &self.opt.data_dir);
             pu_fx::load(&mut gpu, &self.opt.data_dir);

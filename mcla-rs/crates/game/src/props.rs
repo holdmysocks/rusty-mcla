@@ -281,8 +281,12 @@ struct SignalGlows {
     sizes: [f32; 4],
     intensities: [f32; 4],
     /// this frame's lit lamps for the glow pass after the tone map (halo.rs): the locator's
-    /// place, the head's z axis, the colour
-    lit: Vec<(Vec3, Vec3, [f32; 3])>,
+    /// place, the head's z axis, the colour, the head (index into `Props::heads`)
+    lit: Vec<(Vec3, Vec3, [f32; 3], u32)>,
+    /// per head: what the game's prop list tests (halo::ListView::holds) - its box centre and half
+    /// diagonal (prop + 96, the box round its collision parts, as for the lamp props), its drawable's
+    /// radius - and its box for the occlusion query
+    cull: Vec<(Vec3, f32, f32, (Vec3, Vec3))>,
 }
 
 pub struct Props {
@@ -1325,13 +1329,33 @@ impl Props {
                     [[at("red"), at("red1")], [at("yellow"), at("yellow1")], [at("green"), at("green1")]]
                 })
                 .collect();
+            let cull: Vec<(Vec3, f32, f32, (Vec3, Vec3))> = heads
+                .iter()
+                .map(|h| {
+                    let run = runs.iter().find(|r| h.inst >= r.0 && h.inst < r.0 + r.1);
+                    let i = &insts[h.inst as usize];
+                    let (q, s) = (i.rot().0, i.pos_scale[3]);
+                    let Some((prop, mi)) = run.and_then(|r| type_of.get(&r.2).map(|pi| (&all[*pi], r.2))) else { return (h.pos, 1.0, 1.0, (h.pos - Vec3::ONE, h.pos + Vec3::ONE)) };
+                    let (mut bmn, mut bmx) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+                    for part in &prop.parts {
+                        bmn = bmn.min(part.min);
+                        bmx = bmx.max(part.max);
+                    }
+                    if !bmn.cmple(bmx).all() {
+                        bmn = prop.min;
+                        bmx = prop.max;
+                    }
+                    let r = models[mi].radius * s;
+                    (h.pos + q * ((bmn + bmx) * 0.5 * s), (bmx - bmn).length() * 0.5 * s, models[mi].sphere * s, (h.pos - Vec3::splat(r), h.pos + Vec3::splat(r)))
+                })
+                .collect();
             let text = std::fs::read_to_string(Path::new(data_dir).join("tune/lighting/GlowTuning.xml")).unwrap_or_default();
             let four = |tag: &str, or: [f32; 4]| -> [f32; 4] {
                 let v: Vec<f32> = text.split(&format!("<{tag} ")).nth(1).and_then(|t| t.split_once('>')).and_then(|t| t.1.split('<').next()).map(|t| t.split_whitespace().filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
                 if v.len() == 4 { [v[0], v[1], v[2], v[3]] } else { or }
             };
             log::info!("props: lamp locators on {} of {} signal heads", lamps.iter().filter(|l| l.iter().flatten().any(|x| x.is_some())).count(), heads.len());
-            SignalGlows { lit: Vec::new(), buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
+            SignalGlows { lit: Vec::new(), cull, buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
         };
         let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types);
         Props { impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
@@ -1600,16 +1624,17 @@ impl Props {
         let strength = (g.intensities[0] + (g.intensities[3] - g.intensities[0]) * n) * 0.5;
         let mut out: Vec<Inst> = Vec::new();
         g.lit.clear();
-        for (h, lamps) in self.heads.iter().zip(g.lamps.iter()) {
+        for (k, (h, lamps)) in self.heads.iter().zip(g.lamps.iter()).enumerate() {
             let d = h.pos - cam;
-            if d.x.abs() > REACH || d.z.abs() > REACH || d.length_squared() > REACH * REACH {
-                continue;
-            }
             let rot = self.insts[h.inst as usize].rot().0;
             let z = rot * Vec3::Z;
-            if (cam - h.pos).dot(z) <= 0.0 {
+            // (the original, sub_82739F70, once a head: no glow while the camera is behind the plane
+            // through its origin facing z - equality draws; no reach of its own. Its view test, a 2 m
+            // sphere in the main view or within 20 m, and the prop list's are main.rs's, with the frustum)
+            if z.dot(d) > 0.0 {
                 continue;
             }
+            let near = d.length_squared() <= REACH * REACH;
             // 0 red, 1 yellow, 2 green
             let state = if h.junction == crate::signals::UNBOUND { 2 } else { self.signals.junctions[h.junction as usize].arm_state(h.arm as usize, 0.0) } as usize;
             for l in lamps[state.min(2)].iter().flatten() {
@@ -1617,9 +1642,10 @@ impl Props {
                 let p = h.pos + rot * *l + z * 0.12;
                 let dist = p.distance(cam);
                 let fade = ((REACH - dist) / 40.0).clamp(0.0, 1.0);
-                if fade > 0.0 && out.len() < MAX {
-                    let c = COLOURS[state.min(2)];
-                    g.lit.push((h.pos + rot * *l, z, c));
+                let c = COLOURS[state.min(2)];
+                g.lit.push((h.pos + rot * *l, z, c, k as u32));
+                // (the sprites below: MCLA_DEBUG_VIEW=115, the look of before - tuning x 0.16 / x 0.5, 250 m)
+                if near && fade > 0.0 && out.len() < MAX {
                     // (a negative size: shown by day too)
                     out.push(Inst { pos_scale: [p.x, p.y, p.z, -size], rot_tint: [c[0], c[1], c[2], strength * fade], fill: [0; 4], ..Inst::NONE });
                 }
@@ -1636,9 +1662,15 @@ impl Props {
         }
     }
 
-    /// The signal lamps lit this frame (after `update_signal_glows`): locator, the head's z axis, colour.
-    pub fn signal_lamps_lit(&self) -> &[(Vec3, Vec3, [f32; 3])] {
+    /// The signal lamps lit this frame (after `update_signal_glows`): locator, the head's z axis, colour, head.
+    pub fn signal_lamps_lit(&self) -> &[(Vec3, Vec3, [f32; 3], u32)] {
         &self.signal_glows.lit
+    }
+
+    /// A head's origin and what the game's prop list tests of it: box centre, half diagonal, radius, box.
+    pub fn signal_head_cull(&self, head: u32) -> (Vec3, Vec3, f32, f32, (Vec3, Vec3)) {
+        let c = self.signal_glows.cull[head as usize];
+        (self.heads[head as usize].pos, c.0, c.1, c.2, c.3)
     }
 
     /// Draw the signal lamps' glows (day and night). Sets its own pipeline.

@@ -29,7 +29,7 @@ use mcla_formats::rage::navsys::NavJunction;
 const GREEN: f32 = 6.5;
 const YELLOW: f32 = 2.0;
 const ALL_RED: f32 = 1.5;
-const PHASE: f32 = GREEN + YELLOW + ALL_RED;
+pub const PHASE: f32 = GREEN + YELLOW + ALL_RED;
 /// the timer every junction starts with (all red, 1.5 s before its first green)
 const START: f32 = GREEN + YELLOW;
 
@@ -135,8 +135,6 @@ impl Junction {
 pub struct Signals {
     pub junctions: Vec<Junction>,
     grid: HashMap<(i32, i32), Vec<u32>>,
-    /// junctions whose own lanes carry traffic since the last step (`occupy`)
-    held: Vec<u32>,
     /// (junction, arm) of every traffic car the light refused since the last step (`wait`)
     waiting: Vec<(u32, u8)>,
 }
@@ -202,63 +200,19 @@ impl Signals {
     /// are up - in the first 1.5 s of a race to the player's arm, otherwise to the arm with the
     /// largest demand, arm 0 if there is none.
     /// Demand: every traffic car the light refused since the last step and within the
-    /// junction's reach adds one to the arm it stands on (`wait`, sub_827A3458). Box occupied:
-    /// traffic on the junction's own lanes (`occupy`), or another car (`cars`: the player,
-    /// racers, police - not lane traffic) within the box's reach less 2 m (a stand-in: the
-    /// original tests the player's lane).
-    /// Player priority (sub_8273A540; in a race, faster than 10 m/s, at the junction ahead):
-    /// own arm green -> its green is held; another arm green -> that goes yellow now; yellow /
-    /// red all round -> cut short; the player's arm gets demand.
-    pub fn step(&mut self, dt: f32, cars: &[(Vec3, Vec3)], player: Option<(Vec3, Vec3)>, race: Option<(f32, f32)>) {
-        let n = self.junctions.len();
-        let mut occupied = vec![false; n];
-        for ji in std::mem::take(&mut self.held) {
-            if let Some(o) = occupied.get_mut(ji as usize) {
-                *o = true;
-            }
-        }
-        for (pos, _vel) in cars {
-            let (cx, cz) = cell(*pos);
-            for dx in -1..=1 {
-                for dz in -1..=1 {
-                    let Some(list) = self.grid.get(&(cx + dx, cz + dz)) else { continue };
-                    for &ji in list {
-                        let j = &mut self.junctions[ji as usize];
-                        if (j.center.y - pos.y).abs() > 7.0 {
-                            continue;
-                        }
-                        let off = Vec3::new(pos.x - j.center.x, 0.0, pos.z - j.center.z);
-                        let d = off.length();
-                        if d < j.radius - 2.0 {
-                            occupied[ji as usize] = true;
-                        }
-                    }
-                }
-            }
-        }
+    /// junction's reach adds one to the arm it stands on (`wait`, sub_827A3458). Box held:
+    /// `blocked[ji]` per junction = sub_8273A848(J, 0) (`Vehicles::junction_blocked`: the
+    /// player on one of its lanes within 3 m, or ambient cars on its rails).
+    /// The player's demand (`demand`, sub_826F61D8 -> sub_8273A540, the junction ahead of the
+    /// player's lane found by `Vehicles::player_junction_ahead`): see `player_demand`.
+    pub fn step(&mut self, dt: f32, blocked: &[bool], demand: Option<(usize, Vec3, bool)>, player: Option<(Vec3, Vec3)>, race: Option<(f32, f32)>) {
         for (ji, arm) in std::mem::take(&mut self.waiting) {
             if let Some(c) = self.junctions.get_mut(ji as usize).and_then(|j| j.demand.get_mut(arm as usize)) {
                 *c = c.saturating_add(1);
             }
         }
-        let started = race.map_or(false, |r| r.0 <= 0.0);
-        if let (Some((pos, vel)), true) = (player, started) {
-            if vel.length() > 10.0 {
-                if let Some((ji, _, _)) = self.ahead(pos, vel, 0.0) {
-                    let j = &mut self.junctions[ji];
-                    if j.forced == -1 {
-                        let arm = j.arm_towards(pos - j.center);
-                        if j.timer < GREEN && j.current as usize == arm {
-                            j.timer = 0.0;
-                        } else {
-                            if let Some(c) = j.demand.get_mut(arm) {
-                                *c = c.saturating_add(1);
-                            }
-                            j.timer = if j.timer < GREEN { GREEN } else if j.timer < GREEN + YELLOW { j.timer.max(8.25) } else { j.timer.max(9.75) };
-                        }
-                    }
-                }
-            }
+        if let Some((ji, pos, prio)) = demand {
+            self.player_demand(ji, pos, prio);
         }
         for (ji, j) in self.junctions.iter_mut().enumerate() {
             if race.map_or(false, |r| r.0 > 0.0) || j.forced == -2 {
@@ -271,7 +225,7 @@ impl Signals {
                 continue;
             }
             j.timer += dt;
-            if j.timer <= PHASE || (occupied[ji] && j.timer <= PHASE + 5.0) {
+            if j.timer <= PHASE || (blocked.get(ji).copied().unwrap_or(false) && j.timer <= PHASE + 5.0) {
                 continue;
             }
             j.timer = 0.0;
@@ -339,31 +293,43 @@ impl Signals {
         for (i, j) in out.iter().enumerate() {
             grid.entry(cell(j.center)).or_default().push(i as u32);
         }
-        (Signals { junctions: out, grid, held: Vec::new(), waiting: Vec::new() }, of_head)
+        (Signals { junctions: out, grid, waiting: Vec::new() }, of_head)
     }
 
-    /// A traffic car on one of a junction's own lanes (its through lanes and connectors): the
-    /// junction near `pos` counts as occupied at its next step - the original holds the phase
-    /// while the junction's lanes carry traffic.
-    pub fn occupy(&mut self, pos: Vec3) {
-        let (cx, cz) = cell(pos);
-        let mut best: Option<(u32, f32)> = None;
-        for dx in -1..=1 {
-            for dz in -1..=1 {
-                let Some(list) = self.grid.get(&(cx + dx, cz + dz)) else { continue };
-                for &ji in list {
-                    let j = &self.junctions[ji as usize];
-                    let d = Vec3::new(pos.x - j.center.x, 0.0, pos.z - j.center.z).length();
-                    if (j.center.y - pos.y).abs() < 7.0 && d < j.radius + 12.0 && best.map_or(true, |b| d < b.1) {
-                        best = Some((ji, d));
-                    }
-                }
-            }
+    /// sub_8273A540(J, pos, vel, 1, prio, hold = prio): the player adds demand to junction `ji`
+    /// (the one ahead of its lane). The arm is the one nearest the player's bearing from the
+    /// centre (sub_8273E210). Not `prio` (free roam): +1 to that arm unless it is current.
+    /// `prio` (a race running and above 10 mph): green (timer < 6.5) on the player's own arm
+    /// -> held (timer 0); on another arm -> demand +1 and the timer to 6.5 (yellow at once);
+    /// yellow -> demand +1, timer at least 8.25; red all round -> demand +1, timer at least 9.75.
+    pub fn player_demand(&mut self, ji: usize, pos: Vec3, prio: bool) {
+        let Some(j) = self.junctions.get_mut(ji) else { return };
+        if j.arms.is_empty() {
+            return;
         }
-        if let Some((ji, _)) = best {
-            if !self.held.contains(&ji) {
-                self.held.push(ji);
+        let arm = j.arm_towards(pos - j.center);
+        let add = |j: &mut Junction| {
+            if let Some(c) = j.demand.get_mut(arm) {
+                *c = c.saturating_add(1);
             }
+        };
+        if !prio {
+            if j.current as usize != arm {
+                add(j);
+            }
+        } else if j.timer < GREEN {
+            if j.current as usize == arm {
+                j.timer = 0.0;
+            } else {
+                add(j);
+                j.timer = GREEN;
+            }
+        } else if j.timer < GREEN + YELLOW {
+            add(j);
+            j.timer = j.timer.max(GREEN + YELLOW - 0.25);
+        } else {
+            add(j);
+            j.timer = j.timer.max(PHASE - 0.25);
         }
     }
 
@@ -468,9 +434,9 @@ mod tests {
         Signals::build(&[nj], &[]).0
     }
 
-    fn run(s: &mut Signals, seconds: f32, cars: &[(Vec3, Vec3)], race: Option<(f32, f32)>) {
+    fn run(s: &mut Signals, seconds: f32, blocked: &[bool], race: Option<(f32, f32)>) {
         for _ in 0..(seconds * 60.0).round() as usize {
-            s.step(1.0 / 60.0, cars, None, race);
+            s.step(1.0 / 60.0, blocked, None, None, race);
         }
     }
 
@@ -501,7 +467,7 @@ mod tests {
             if s.junctions[0].lane_state(Vec3::Z) != 2 {
                 s.wait(0, Vec3::new(0.0, 0.0, 11.0));
             }
-            s.step(1.0 / 60.0, &[], None, None);
+            s.step(1.0 / 60.0, &[], None, None, None);
         }
         // (arm 0 had the first green; the car at +z waited through it)
         assert_eq!((s.junctions[0].current, s.junctions[0].arm_state(1, 0.0)), (1, 2));
@@ -509,15 +475,28 @@ mod tests {
         let mut s = one();
         for _ in 0..(11.6f32 * 60.0).round() as usize {
             s.wait(0, Vec3::new(0.0, 0.0, 13.0));
-            s.step(1.0 / 60.0, &[], None, None);
+            s.step(1.0 / 60.0, &[], None, None, None);
         }
         assert_eq!(s.junctions[0].current, 0);
         let mut s = one();
-        let crossing = [(Vec3::new(1.0, 0.0, 1.0), Vec3::new(5.0, 0.0, 0.0))];
+        let crossing = [true];
         run(&mut s, 3.0, &crossing, None);
         assert!((0..4).all(|a| s.junctions[0].arm_state(a, 0.0) == 0), "held while the box is occupied");
         run(&mut s, 4.0, &crossing, None);
         assert_eq!(s.junctions[0].arm_state(0, 0.0), 2, "but not beyond 5 s");
+        // the player's demand (sub_8273A540): free roam adds one to the arm at its bearing unless
+        // that arm is current; in a race above 10 mph a green on another arm is cut short
+        let mut s = one();
+        s.player_demand(0, Vec3::new(0.0, 0.0, 9.0), false);
+        assert_eq!(s.junctions[0].demand, vec![0, 1, 0, 0]);
+        s.player_demand(0, Vec3::new(9.0, 0.0, 0.0), false);
+        assert_eq!(s.junctions[0].demand, vec![0, 1, 0, 0], "its own arm is current");
+        s.junctions[0].timer = 2.0;
+        s.player_demand(0, Vec3::new(0.0, 0.0, 9.0), true);
+        assert_eq!((s.junctions[0].demand[1], s.junctions[0].timer), (2, 6.5));
+        s.junctions[0].timer = 2.0;
+        s.player_demand(0, Vec3::new(9.0, 0.0, 0.0), true);
+        assert_eq!(s.junctions[0].timer, 0.0, "own green held");
         let mut s = one();
         run(&mut s, 5.0, &[], Some((1.0, 0.0)));
         assert!((0..4).all(|a| s.junctions[0].arm_state(a, 0.0) == 0));

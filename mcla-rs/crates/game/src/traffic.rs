@@ -950,6 +950,71 @@ fn lane_ends(nav: &NavSys) -> &'static hashbrown::HashMap<[u32; 3], Vec<usize>> 
     })
 }
 
+/// What holds a junction's box for sub_8273A848 (`Vehicles::junction_blockers`).
+#[derive(Default, Clone, Debug)]
+pub struct Blockers {
+    /// the player's lane is one of the junction's and near
+    pub players: bool,
+    /// the cars on its rails that hold it (indices into `Vehicles::cars`)
+    pub cars: Vec<usize>,
+}
+
+impl Blockers {
+    /// Is the junction blocked for car `me` (the car itself left out)?
+    pub fn blocks(&self, me: usize) -> bool {
+        self.players || self.cars.iter().any(|&k| k != me)
+    }
+}
+
+/// The junction ahead of the player's lane (sub_826F4B98 + sub_826F0E30), as a navsys junction
+/// index. None when the lane is a junction lane (owner or parent flag 4) or its owner has
+/// flags & 0x30 or & 0x40. Else up to 8 rounds: at the lane's end (its first point when
+/// `reverse`) take the lanes of that vertex in the vertex table's order, not the lane itself,
+/// starting there (`reverse`: ending there); the first such junction lane gives its junction,
+/// and the first one whose owner has no flag 0x30 / 0x40 is the next round's lane. (The
+/// original goes on to a second junction for a record nothing reads.) The node order of the
+/// lanes at a vertex is the port's (`lane_ends`, curve order), not checked against the file.
+pub fn player_junction_ahead(nav: &NavSys, lane: usize, reverse: bool) -> Option<usize> {
+    let lanes = lanes(nav);
+    let owner = |l: usize| lanes.links.get(l).and_then(|v| v.first()).map(|&k| &nav.links[k]);
+    let l0 = owner(lane)?;
+    if junction_lane(l0) || l0.owner_flags & 0x70 != 0 {
+        return None;
+    }
+    let ends = lane_ends(nav);
+    let key = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+    let mut cur = lane;
+    for _ in 0..8 {
+        let c = nav.curves.get(cur)?;
+        let p = *(if reverse { c.pts.first() } else { c.pts.last() })?;
+        let Some(list) = ends.get(&key(p)) else { break };
+        let mut next = None;
+        for &o in list {
+            if o == cur {
+                continue;
+            }
+            let oc = &nav.curves[o];
+            let start = if reverse { oc.pts.last() } else { oc.pts.first() };
+            if start.map(|v| key(*v)) != Some(key(p)) {
+                continue;
+            }
+            let Some(l) = owner(o) else { continue };
+            if junction_lane(l) {
+                if let Some(j) = lane_junction(nav, o) {
+                    return Some(j);
+                }
+            }
+            if l.owner_flags & 0x70 != 0 {
+                continue;
+            }
+            next = Some(o);
+            break;
+        }
+        cur = next?;
+    }
+    None
+}
+
 /// A junction's box as sub_8273A848 tests it (mcRnIntersectionAmbient): the centre +0x50 / +0x58,
 /// the axes +0x60 and +0x70 (their y terms times 0), the half extents +0x40 and +0x3c.
 #[derive(Clone, Copy, Debug)]
@@ -1004,7 +1069,7 @@ fn junction_box(center: Vec3) -> Option<JunctionBox> {
 /// the stop line, state 2 green / 1 yellow / 0 red). (Which junction lane sub_822464F0 takes
 /// when several start at that point follows the node's lane order; here the graph's successor
 /// order. The junction is the lane's, sub_822452F8; one without arms gives none here.)
-fn signal_stop(env: &Env, r: &Rider, pos: Vec3) -> Option<(usize, f32, u8)> {
+fn signal_stop(env: &Env, r: &Rider, pos: Vec3) -> Option<(usize, f32, u8, usize)> {
     let nav = env.nav;
     let n = r.next?;
     let first = if junction_lane(&nav.links[n]) {
@@ -1022,9 +1087,10 @@ fn signal_stop(env: &Env, r: &Rider, pos: Vec3) -> Option<(usize, f32, u8)> {
         (Some(a), Some(b)) => (*a, *b),
         _ => (nav.links[first].a, nav.links[first].b),
     };
-    let ji = signals_junction(env.signals, nav, lane_junction(nav, nav.links[first].lane)?)?;
+    let nj = lane_junction(nav, nav.links[first].lane)?;
+    let ji = signals_junction(env.signals, nav, nj)?;
     let d = Vec3::new(p0.x - pos.x, 0.0, p0.z - pos.z).length();
-    Some((ji, d, env.signals.junctions[ji].lane_state(p0 - p1)))
+    Some((ji, d, env.signals.junctions[ji].lane_state(p0 - p1), nj))
 }
 
 pub fn rail_speed(nav: &NavSys, link: usize) -> (f32, bool) {
@@ -1237,6 +1303,8 @@ pub struct Env<'a> {
     pub col: &'a WorldCollider,
     pub others: &'a [Other],
     pub signals: &'a crate::signals::Signals,
+    /// the frame's blockers per navsys junction (sub_8273A848's hits, `Vehicles::frame_blockers`)
+    pub blockers: &'a hashbrown::HashMap<usize, Blockers>,
     pub clock: f32,
     /// a race or another event is on: no recovery, passing or backing up (byte +0x64251)
     pub event: bool,
@@ -1549,7 +1617,9 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         }
     };
     r.kept = (v == 0.0 && ahead.j != usize::MAX).then(|| (ahead.j, env.others[ahead.j].pos));
-    let stop = signal_stop(env, r, pos).filter(|x| x.2 != 2).map(|x| (x.0, x.1));
+    // sub_827A3458: go = green for the lane and the junction's box not held by anything but this car
+    // (`Blockers`); a refused car stops at the line as at red (and `waits` counts its demand)
+    let stop = signal_stop(env, r, pos).filter(|x| !(x.2 == 2 && !env.blockers.get(&x.3).is_some_and(|b| b.blocks(me)))).map(|x| (x.0, x.1));
     let slower = (next_want <= v).then(|| {
         let end = nav.links[r.lane_end(nav)].b;
         (next_want, end.distance(pos))
@@ -2074,7 +2144,8 @@ impl Vehicles {
         let frame = FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let parity = frame & 1 == 1;
         let focus = self.cars.iter().find(|c| c.is_player).map_or(Vec3::ZERO, |c| c.state.pos);
-        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, clock: self.clock, event, hold, parity };
+        let blockers = self.frame_blockers(nav);
+        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock: self.clock, event, hold, parity };
         // MCLA_TRAFFIC_TRACE=file: every riding car ten times a second (time, id, model, x, y,
         // z, speed, lane speed, junction lane, offset, entries on, standing gap, distance and
         // margin to the car ahead, acceleration, state, ...; the last column: the drawn heading in degrees)
@@ -2094,7 +2165,6 @@ impl Vehicles {
             }
             _ => None,
         };
-        let mut busy: Vec<Vec3> = Vec::new();
         let mut waits: Vec<(usize, Vec3)> = Vec::new();
         for i in 0..self.cars.len() {
             let (half, _) = half_size(&self.cars[i]);
@@ -2180,11 +2250,6 @@ impl Vehicles {
                 // a race path's car on the path's rails
                 9 => step_route(r, &env, i, half, dt),
                 _ => {
-                    // on a junction's own lane: the junction is occupied
-                    let l = &nav.links[r.link];
-                    if (l.owner_flags | l.parent_flags) & 4 != 0 && l.owner_flags & 2 == 0 {
-                        busy.push(c.state.pos);
-                    }
                     let p = step(r, &env, i, half, upright, dt);
                     // refused by the light this frame (the stop entry is made only then): the
                     // junction counts it as waiting (sub_827A3458)
@@ -2291,9 +2356,6 @@ impl Vehicles {
                     log::info!("traffic knock {} {}", r.rng_id(), c.model.name);
                 }
             }
-        }
-        for p in busy {
-            self.signals.occupy(p);
         }
         for (ji, p) in waits {
             self.signals.wait(ji, p);
@@ -3952,54 +4014,163 @@ impl Vehicles {
     /// or whose next rail is the junction's and not green, or that is headed (its forward,
     /// sub_826DDD90) off the green arm (sub_8273A360).
     fn junction_blocked(&self, nav: &NavSys, ji: usize, me: Option<usize>) -> bool {
-        let near = 4.5f32 * f32::from_bits(0x3f2a_7efa);
-        for (k, c) in self.cars.iter().enumerate() {
-            if Some(k) == me || c.rail.is_some() || c.parked.is_some() {
+        let b = self.junction_blockers(nav, ji, None);
+        if std::env::var_os("MCLA_START_LOG").is_some() && b.players {
+            log::info!("  start light: junction {ji} blocked by the player on one of its lanes");
+        }
+        match me {
+            Some(m) => b.blocks(m),
+            None => b.players || !b.cars.is_empty(),
+        }
+    }
+
+    /// Everything sub_8273A848 would call a hit on navsys junction `ji`, collected: `players`
+    /// (part 1: the player's lane is one of the junction's, within 4.5 x 0.667 m) and the cars
+    /// of part 2 (see `junction_blocked`), as `cars` indexes. The original returns at the first
+    /// hit with the asking car left out of the list; taking the set and leaving the asker out
+    /// gives the same answer (the asker holds its place in the 64 cap, as in the original's
+    /// buffer). `lists`: the rail lists by lane (`rail_lists`) when the caller has them.
+    ///
+    /// Part 1 looks at the player only (mcPlayerManager's list; racers, hookmen and police are
+    /// not in it). Part 2's `R+4 & 0x1800` branch (a run-time rail goes straight to the box
+    /// test, no green or moving test) is not written: the port has no such rails in a
+    /// junction's list (`rail_key` gives only lanes and race-path rails, whose junction lists
+    /// are lane rails), so there is nothing to carry the flags yet.
+    fn junction_blockers(&self, nav: &NavSys, ji: usize, lists: Option<&hashbrown::HashMap<usize, Vec<(u64, usize)>>>) -> Blockers {
+        let mut out = Blockers::default();
+        let near = 4.5f32 * f32::from_bits(0x3f2a_c083);
+        for c in self.cars.iter() {
+            if !c.is_player || c.rail.is_some() || c.parked.is_some() {
                 continue;
             }
             let Some((lane, d2)) = self.driver_lanes.get(&c.uid).and_then(|d| d.best) else { continue };
             if lane_junction(nav, lane) == Some(ji) && d2 < near * near {
-                if std::env::var_os("MCLA_START_LOG").is_some() {
-                    log::info!("  start light: junction {ji} blocked by driver car {} on lane {lane} ({:.2} m)", c.uid, d2.sqrt());
-                }
-                return true;
+                out.players = true;
             }
         }
         let sj = signals_junction(&self.signals, nav, ji);
         let jb = junction_box(nav.junction_centers[ji]);
-        let mut list: Vec<(usize, f32)> = Vec::new();
+        let mut list: Vec<usize> = Vec::new();
         for &lane in &nav.junction_lanes[ji] {
             if list.len() >= 64 {
                 break;
             }
             let room = 64 - list.len();
-            list.extend(self.rail_list(nav, RailKey::Lane(lane), room));
+            match lists {
+                Some(m) => list.extend(m.get(&lane).into_iter().flat_map(|v| v.iter().take(room)).map(|x| x.1)),
+                None => list.extend(self.rail_list(nav, RailKey::Lane(lane), room).into_iter().map(|x| x.0)),
+            }
         }
-        for (k, _) in list {
+        for k in list {
             let x = &self.cars[k];
-            let Some(r) = x.rail.as_ref() else { return true };
-            if Some(k) == me || r.ty.trailer {
+            let Some(r) = x.rail.as_ref() else {
+                out.cars.push(k);
+                continue;
+            };
+            if r.ty.trailer {
                 continue;
             }
             if junction_green(&self.signals, nav, ji, r.link) {
                 continue;
             }
             if r.v != 0.0 {
-                return true;
+                out.cars.push(k);
+                continue;
             }
             if !jb.is_some_and(|b| b.holds(x.state.pos)) {
                 continue;
             }
-            let Some(nl) = r.next else { return true };
-            if lane_junction(nav, nav.links[nl].lane) == Some(ji) {
-                if !junction_green(&self.signals, nav, ji, nl) {
-                    return true;
-                }
-            } else if !sj.is_some_and(|j| self.signals.junctions[j].lane_state(x.state.forward()) == 2) {
-                return true;
+            let Some(nl) = r.next else {
+                out.cars.push(k);
+                continue;
+            };
+            let blocked = if lane_junction(nav, nav.links[nl].lane) == Some(ji) {
+                !junction_green(&self.signals, nav, ji, nl)
+            } else {
+                !sj.is_some_and(|j| self.signals.junctions[j].lane_state(x.state.forward()) == 2)
+            };
+            if blocked {
+                out.cars.push(k);
             }
         }
-        false
+        out
+    }
+
+    /// The rail lists by lane (rail +96, `rail_list`'s order: the order the cars took the rail),
+    /// for the lanes any car holds, made once for a frame.
+    fn rail_lists(&self, nav: &NavSys) -> hashbrown::HashMap<usize, Vec<(u64, usize)>> {
+        let mut m: hashbrown::HashMap<usize, Vec<(u64, usize)>> = hashbrown::HashMap::new();
+        for (j, c) in self.cars.iter().enumerate() {
+            let Some(r) = c.rail.as_ref() else { continue };
+            let Some((RailKey::Lane(l), _)) = rail_key(nav, r) else { continue };
+            let seq = if r.rail_fresh || Some(RailKey::Lane(l)) == r.rail_key { r.rail_seq } else { u64::MAX };
+            m.entry(l).or_default().push((seq, j));
+        }
+        for v in m.values_mut() {
+            v.sort();
+        }
+        m
+    }
+
+    /// The blockers of every junction that has a car on its lanes or the player's lane, once a
+    /// frame, for the riders' light (sub_827A3458 -> sub_8273A848(J, car)).
+    fn frame_blockers(&self, nav: &NavSys) -> hashbrown::HashMap<usize, Blockers> {
+        let lists = self.rail_lists(nav);
+        let mut js: Vec<usize> = lists.keys().filter_map(|&l| lane_junction(nav, l)).collect();
+        for c in self.cars.iter().filter(|c| c.is_player) {
+            if let Some((lane, _)) = self.driver_lanes.get(&c.uid).and_then(|d| d.best) {
+                js.extend(lane_junction(nav, lane));
+            }
+        }
+        js.sort_unstable();
+        js.dedup();
+        js.into_iter()
+            .filter_map(|ji| {
+                let b = self.junction_blockers(nav, ji, Some(&lists));
+                (b.players || !b.cars.is_empty()).then_some((ji, b))
+            })
+            .collect()
+    }
+
+    /// One step of the junctions' lights (sub_8273ABC0 for all, sub_826D75D8's player demand):
+    /// `blocked` = sub_8273A848(J, 0) for the junctions whose timer passes 10 s this step, and
+    /// the player's demand at the junction ahead of its lane (`player_junction_ahead`; none in
+    /// the cutscene mode). Priority (sub_826F61D8): a race exists and the player is over 10 mph.
+    /// Approximate: evaluated once after the riders moved (the original's order against the
+    /// ambient manager update is not traced).
+    pub fn step_signals(&mut self, nav: &NavSys, dt: f32, race: Option<(f32, f32)>) {
+        let nav = rail_nav(nav);
+        let mut blocked = vec![false; self.signals.junctions.len()];
+        let mut lists = None;
+        for nj in 0..nav.junction_centers.len() {
+            let Some(ji) = signals_junction(&self.signals, nav, nj) else { continue };
+            let j = &self.signals.junctions[ji];
+            if j.forced != -1 || j.timer + dt <= crate::signals::PHASE {
+                continue;
+            }
+            let lists = lists.get_or_insert_with(|| self.rail_lists(nav));
+            let b = self.junction_blockers(nav, nj, Some(lists));
+            blocked[ji] = b.players || !b.cars.is_empty();
+        }
+        let mut demand = None;
+        let mut player = None;
+        if let Some(c) = self.cars.iter().find(|c| c.is_player) {
+            player = Some((c.state.pos, c.state.vel));
+            if self.amb_cutscene.is_none() {
+                if let Some(dl) = self.driver_lanes.get(&c.uid) {
+                    if let Some((lane, _)) = dl.best {
+                        let t = dl.list.iter().find(|e| e.0 == lane).map_or(0.0, |e| e.1);
+                        let tangent = nav.curves[lane].eval(t).1;
+                        let reverse = !(c.state.forward().dot(tangent) > 0.0);
+                        if let Some(ji) = player_junction_ahead(nav, lane, reverse).and_then(|nj| signals_junction(&self.signals, nav, nj)) {
+                            let mph = c.state.vel.length() * 2.236_936_3;
+                            demand = Some((ji, c.state.pos, race.is_some() && mph > 10.0));
+                        }
+                    }
+                }
+            }
+        }
+        self.signals.step(dt, &blocked, demand, player, race);
     }
 
     /// The cars on a rail in its list's order (rail +96: the order they took it - `rail_seq`;

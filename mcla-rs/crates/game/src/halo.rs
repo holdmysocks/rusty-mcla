@@ -24,6 +24,8 @@ pub struct Tune {
     /// sm_fSignalGlowSizes / sm_fSignalGlowIntensitys
     pub signal_size: [f32; 4],
     pub signal_intensity: [f32; 4],
+    /// sm_fSignalGlowReflectionSizes (vec2 a weather; the road reflection's rectangle, siglrefl.rs)
+    pub signal_refl: [[f32; 2]; 4],
     /// sm_fCarGlowIntensitys / sm_CarLightGlowSizess
     pub car_intensity: [f32; 4],
     pub car_size: [[f32; 2]; 4],
@@ -46,6 +48,7 @@ impl Default for Tune {
             prop_size: [[27.0, 13.8], [27.0, 14.0], [25.4, 9.8], [23.1875, 14.9]],
             signal_size: [4.52, 5.25, 8.7675, 10.0],
             signal_intensity: [4.52, 5.0, 5.0, 3.0],
+            signal_refl: [[5.0, 5.0]; 4],
             car_intensity: [5.35, 5.3, 5.3, 5.3],
             car_size: [[6.0, 2.6]; 4],
             streak: [0.15; 4],
@@ -91,6 +94,7 @@ impl Tune {
         t.prop_size = pairs("sm_PropGlowSeedSizes", t.prop_size);
         t.signal_size = four("sm_fSignalGlowSizes", t.signal_size);
         t.signal_intensity = four("sm_fSignalGlowIntensitys", t.signal_intensity);
+        t.signal_refl = pairs("sm_fSignalGlowReflectionSizes", t.signal_refl);
         t.car_intensity = four("sm_fCarGlowIntensitys", t.car_intensity);
         t.car_size = pairs("sm_CarLightGlowSizess", t.car_size);
         t.streak = four("sm_fStreakIntensitys", t.streak);
@@ -175,6 +179,11 @@ impl ListView {
             }
         }
         dd < 250.0 && 0.030_177_67 * dd < r && !hidden()
+    }
+
+    /// A sphere inside the view's planes (sub_8217C1D8: every plane's value + r >= 0).
+    pub fn sphere_in_view(&self, centre: Vec3, r: f32) -> bool {
+        self.planes.iter().all(|p| p.dot(centre.extend(1.0)) + r >= 0.0)
     }
 
     /// The place of a prop's cell in the walk (the list's order; AddGlow keeps the first 96).
@@ -266,6 +275,17 @@ impl Tune {
             return None;
         }
         self.glow(w, p, color, [self.signal_size[w]; 2], i, true, cam, tan_half_fov)
+    }
+
+    /// The same lamp's reflection call (sub_82739948 with refl = 1, siglrefl.rs): the place P (0.3 m
+    /// behind the locator), the strength I (as `signal`'s) and rsize = sm_fSignalGlowReflectionSizes x 0.01.
+    pub fn signal_reflection(&self, w: usize, pos: Vec3, facing: Vec3, cam: Vec3) -> Option<(Vec3, f32, [f32; 2])> {
+        let p = pos - facing * 0.3;
+        let i = self.signal_intensity[w] * (cam - p).normalize_or_zero().dot(facing).clamp(0.0, 1.0);
+        if i <= 0.001 {
+            return None;
+        }
+        Some((p, i, [self.signal_refl[w][0] * 0.01, self.signal_refl[w][1] * 0.01]))
     }
 }
 

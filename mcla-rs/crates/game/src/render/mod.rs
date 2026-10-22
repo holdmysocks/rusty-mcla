@@ -2513,6 +2513,8 @@ impl Gpu {
                 n += 1;
             }
         }
+        // the signal lamps' glow rectangles, after the city and the sky (siglrefl.rs)
+        crate::siglrefl::draw(&mut rp);
         n
     }
 

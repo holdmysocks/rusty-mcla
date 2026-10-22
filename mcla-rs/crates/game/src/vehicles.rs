@@ -2871,37 +2871,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                 }
             }
-            // ambient traffic stops for red lights
-            if !self.cars[i].is_player && !self.cars[i].cop && self.cars[i].parked.is_none() && self.cars[i].ai.as_ref().map_or(false, |a| a.path.is_none()) {
-                let v = positions[i].2;
-                if let Some((_, stop, state)) = self.signals.ahead(pos, fwd, self.clock) {
-                    // red, or yellow with room to stop
-                    let must = state == 0 || (state == 1 && stop > v * 1.2);
-                    if must && stop > -3.0 && stop < v * v / 5.0 + 9.0 {
-                        self.held_at_red += 1;
-                        if std::env::var("MCLA_SIGNAL_TEST").is_ok() && self.held_at_red % 400 == 0 {
-                            log::info!("signals: car {} stop {:.1} m, speed {:.1}, state {}", i, stop, v, state);
-                        }
-                        if v < 0.5 {
-                            self.stopped_at_red += 1;
-                        }
-                        input.throttle = 0.0;
-                        input.brake = if stop < 2.5 { 1.0 } else { (v * v / (2.0 * stop.max(1.0)) / 7.0).clamp(0.15, 1.0) };
-                        // at rest the brake pedal would select reverse: hold the car on the handbrake
-                        if v < 0.8 {
-                            input.brake = 0.0;
-                            input.handbrake = true;
-                        }
-                        if let Some(ai) = self.cars[i].ai.as_mut() {
-                            // waiting is not being stuck: no reversing out, no reset
-                            ai.stuck_timer = 0.0;
-                            ai.stuck_long = 0.0;
-                            ai.reverse_timer = 0.0;
-                            ai.stuck_anchor = pos;
-                        }
-                    }
-                }
-            }
+            // (free cars without a lane read no signal in the original: racers, hookmen, police and other brains never call the junction functions - docs signal_box_rule.md section 4)
             if self.cars[i].stunned > 0.0 {
                 self.cars[i].stunned -= dt;
                 input = CarInput { brake: 0.15, ..Default::default() };
