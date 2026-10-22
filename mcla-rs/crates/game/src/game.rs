@@ -2898,9 +2898,17 @@ impl Game {
                     vinyl = r.config.clone();
                 }
             }
+            // (diagnostics, docs/AI.md: MCLA_GRID_CARS=<car>,<car>.. puts these cars on grid slots 1, 2 ..)
+            if let Some(m) = std::env::var("MCLA_GRID_CARS").ok().and_then(|v| v.split(',').nth(k).map(|s| s.trim().to_ascii_lowercase())).and_then(|n| vehicles.models.iter().find(|m| m.name.eq_ignore_ascii_case(&n)).cloned()) {
+                model = m;
+            }
             let top = model.params.top_speed;
             let idx = vehicles.spawn(gpu, model, p + Vec3::Y * 0.9, yaw, color, false);
             log::debug!("grid car {}: {} plate [{}] livery {}", k, vehicles.cars[idx].model.name, plate, vinyl);
+            // (diagnostics, docs/AI.md: MCLA_OPP_PERF=<0..1> fits the opponents' cars with that much of their upgrades)
+            if let Some(f) = std::env::var("MCLA_OPP_PERF").ok().and_then(|v| v.parse::<f32>().ok()) {
+                vehicles.cars[idx].set_perf(f);
+            }
             vehicles.cars[idx].pinned = true;
             vehicles.cars[idx].driver = driver;
             vehicles.cars[idx].plate_text = plate;
@@ -2932,6 +2940,12 @@ impl Game {
             if kind == RaceKind::Payback {
                 // the mark runs for it
                 d.target_speed = (top * 0.7).clamp(24.0, 48.0);
+            }
+            // (the original's racer brain - brain.rs - is set up at the race's first update, once its
+            // difficulty is known; MCLA_AI_OLD=1 keeps the port's own driver)
+            if kind == RaceKind::Race && std::env::var("MCLA_AI_OLD").is_err() {
+                d.course = course.as_ref().map(|c| std::sync::Arc::new(crate::brain::Course::from_script(c)));
+                d.opponent = k as u32 + 1;
             }
             vehicles.cars[idx].ai = Some(d);
             participants.push(idx);
@@ -3104,11 +3118,57 @@ impl Game {
                 Some(d) if self.event_diff.is_none() => d as i32,
                 _ => desired,
             };
+            // (diagnostics, docs/AI.md: MCLA_RACE_DIFFICULTY / MCLA_RB_STEP force the race's difficulty / step)
+            let desired = std::env::var("MCLA_RACE_DIFFICULTY").ok().and_then(|v| v.parse().ok()).unwrap_or(desired);
             let odd = diffs.iter().copied().find(|d| *d != desired);
             self.race_diff = desired as usize;
             let step = self.adaptive.step(desired, odd);
+            let step = std::env::var("MCLA_RB_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(step);
             log::info!("race: difficulty {} (field {:?}; hookman race {} set-up {:?}), opponents level {} -> rubber band step {}", desired, diffs, self.hookman_race, self.mc4_hookman_diff(), self.adaptive.level, step);
             self.rb_step = Some(step);
+            // the racers' brains (BrainRacing_SetupRace in the race core; the rubber band's copy of its tuning)
+            let laps = self.race.as_ref().map_or(1, |r| r.laps.max(1));
+            let rubber = (!self.rubber.is_empty()).then(|| self.rubber[step.min(self.rubber.len() - 1)].clone());
+            let ids: Vec<usize> = self.race.as_ref().map(|r| r.participants.clone()).unwrap_or_default();
+            for i in ids {
+                let Some(c) = vehicles.cars.get_mut(i) else { continue };
+                let tune = c.model.aitunes.clone().map(|t| std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&t.base, &t.mods, c.perf)));
+                let perf = c.perf;
+                let name = c.model.name.clone();
+                let Some(ai) = c.ai.as_mut() else { continue };
+                let (Some(course), Some(tune)) = (ai.course.clone(), tune) else { continue };
+                if course.cps.is_empty() {
+                    continue;
+                }
+                let mut b = crate::brain::Brain::setup_race(course, tune.clone(), ai.opponent, laps, desired, rubber.is_some());
+                b.rubber = rubber.clone();
+                log::info!("race: racer {} ({}) brain: {} goals, opponent bit {}, perf {:.2}, aiv MaxSpeed {:.1}", i, name, b.plan.goals.len(), ai.opponent, perf, tune.max_speed);
+                log::debug!("race: racer {} goals {:?}", i, b.plan.goals.iter().take(8).map(|g| (g.centre().x as i32, g.centre().z as i32, g.w as i32, g.checkpoint(), g.is_checkpoint())).collect::<Vec<_>>());
+                ai.brain.0 = Some(Box::new(b));
+                // (the port's own off-road lines - offroad.rs, main.rs - are not this racer's any more)
+                if let Some(r) = self.race.as_mut() {
+                    r.shortcuts.retain(|s| s.car != i);
+                }
+            }
+            // (the core's set-up: half the computer racers, at random, rev with the handbrake on -
+            // at least one; only at a difficulty above 0)
+            if desired != 0 {
+                let brains: Vec<usize> = vehicles.cars.iter().enumerate().filter(|(_, c)| c.ai.as_ref().map_or(false, |a| a.brain.is_some())).map(|(i, _)| i).collect();
+                let n = brains.len();
+                let want = if n > 0 { (n / 2).max(1) } else { 0 };
+                let mut chosen: Vec<usize> = Vec::new();
+                while chosen.len() < want {
+                    let r = (crate::brain::rng().index(n as u32)) as usize;
+                    if !chosen.contains(&r) {
+                        chosen.push(r);
+                    }
+                }
+                for r in chosen {
+                    if let Some(b) = vehicles.cars[brains[r]].ai.as_mut().and_then(|a| a.brain.0.as_mut()) {
+                        b.rev.handbrake = true;
+                    }
+                }
+            }
         }
         // (step 19c: LAST MAN OUT, the time trial's clock, the payback leg - `mc4`)
         if self.mc4_lmo_tick(vehicles) {
@@ -3274,30 +3334,85 @@ impl Game {
                 }
             }
         }
-        // rubber banding: opponents pace themselves on the player (original tuning)
-        if !self.rubber.is_empty() && n > 0 && race.kind == RaceKind::Race {
+        // rubber banding (mcRubberBandMgr, sub_82743E28 / sub_822BCFE0; docs/AI.md "Rubber banding"): each
+        // racer's gap to the best-placed human along the chain of checkpoints, shifted by its rank difference
+        // to him, caps the throttle its driver asks for
+        if !self.rubber.is_empty() && n > 0 && race.kind == RaceKind::Race && std::env::var("MCLA_NO_RUBBER").is_err() {
             let step = self.rb_step.unwrap_or(0);
             let rb = &self.rubber[step.min(self.rubber.len() - 1)];
-            let spacing = if race.total_len > 1.0 { race.total_len / n as f32 } else { 300.0 };
-            let metric = |i: usize, pos: Vec3| -> f32 {
+            let unordered = race.rivals_checkpoints.is_some();
+            // (seg[k] = |cp[k+1] - cp[k]| in 3D; an unordered race 200 m each - sub_82743B30)
+            let seg: Vec<f32> = (0..n).map(|k| if unordered { 200.0 } else { race.checkpoints[k].distance(race.checkpoints[(k + 1) % n]) }).collect();
+            let chain = crate::rubber::Chain { seg: &seg, total: n };
+            // (sub_827430D8: to the checkpoint it heads for; unordered: the nearest one it has not taken,
+            // the finish only when it is the last one left; 0 once finished)
+            let at = |i: usize, pos: Vec3, own: bool| -> crate::rubber::ChainPos {
                 let k = race.next.get(i).copied().unwrap_or(0).min(n);
-                let dn = if k < n { race.checkpoints[k].distance(pos) } else { 0.0 };
-                k as f32 * spacing - dn
+                let list: &[Vec3] = match race.rivals_checkpoints.as_ref() {
+                    Some(r) if own => r,
+                    _ => &race.checkpoints,
+                };
+                let d = if k >= n || k >= list.len() {
+                    0.0
+                } else if unordered && k + 1 < list.len() {
+                    list[k..list.len() - 1].iter().map(|c| c.distance(pos)).fold(f32::INFINITY, f32::min)
+                } else {
+                    list[k].distance(pos)
+                };
+                crate::rubber::ChainPos { p: k, d }
             };
-            if let Some((pi, ppos)) = vehicles.cars.iter().enumerate().find(|(_, c)| c.is_player).map(|(i, c)| (i, c.state.pos)) {
-                let pm = metric(pi, ppos);
-                let to_finish = (n as f32 * spacing - pm).max(0.0);
-                let mut order: Vec<(usize, f32)> = vehicles.cars.iter().enumerate().filter(|(_, c)| !c.is_player && c.ai.is_some()).map(|(i, c)| (i, metric(i, c.state.pos))).collect();
-                order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                for (rank, (i, m)) in order.into_iter().enumerate() {
-                    let thr = rb.throttle(m - pm, rank, to_finish);
+            // places (1 = first) as the race shows them
+            let mut place = vec![0usize; vehicles.cars.len()];
+            {
+                let mut v: Vec<(usize, Option<f32>, f32)> = race.participants.iter().copied().filter(|&i| i < vehicles.cars.len()).map(|i| {
+                    let k = race.next.get(i).copied().unwrap_or(0).min(n);
+                    let dn = if k < n { race.checkpoints[k].distance(vehicles.cars[i].state.pos) } else { 0.0 };
+                    (i, race.finish_time.get(i).copied().flatten(), k as f32 * 10000.0 - dn)
+                }).collect();
+                v.sort_by(|a, b| match (a.1, b.1) {
+                    (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal),
+                });
+                for (r, (i, _, _)) in v.iter().enumerate() {
+                    place[*i] = r + 1;
+                }
+            }
+            // the best-placed human (the player)
+            let humans: Vec<usize> = race.participants.iter().copied().filter(|&i| i < vehicles.cars.len() && vehicles.cars[i].is_player).collect();
+            if let Some(&li) = humans.iter().min_by_key(|&&i| place[i]) {
+                let lpos = at(li, vehicles.cars[li].state.pos, false);
+                for &i in race.participants.iter() {
+                    if i >= vehicles.cars.len() || vehicles.cars[i].ai.is_none() || vehicles.cars[i].is_player {
+                        continue;
+                    }
+                    let pos = vehicles.cars[i].state.pos;
+                    let me = at(i, pos, true);
+                    let gap = chain.gap(me, lpos);
+                    let shifted = rb.shifted_gap(gap, place[i] as i32 - place[li] as i32);
+                    let to_finish = chain.to_finish(me);
+                    let d2 = humans.iter().map(|&h| vehicles.cars[h].state.pos.distance_squared(pos)).fold(1e8f32, f32::min);
+                    let speed = vehicles.cars[i].state.vel.length();
                     let c = &mut vehicles.cars[i];
-                    let top = c.model.params.top_speed;
                     if let Some(ai) = c.ai.as_mut() {
-                        ai.target_speed = (top * thr.max(rb.min_speed)).max(18.0);
-                        if std::env::var("MCLA_SLOW_RIVALS").is_ok() {
-                            ai.target_speed = 12.0;
-                        }
+                        // (a brain's own aiv tables; the rubber band reads its aiv object's MaxSpeed)
+                        let max_speed = match ai.brain.0.as_ref() {
+                            Some(b) => b.aiv.max_speed(),
+                            None => ai.tune.as_ref().map_or(c.model.params.top_speed, |t| t.max_speed),
+                        };
+                        let cap = rb.cap(shifted, to_finish, d2, speed, max_speed);
+                        let st = ai.rb.get_or_insert(crate::ai::RbState { start: pos, ..Default::default() });
+                        // (+392, sub_827435A8: from the start along the chain)
+                        let k = me.p.min(n);
+                        st.from_start = if k == 0 {
+                            pos.distance(st.start)
+                        } else {
+                            st.start.distance(race.checkpoints[0]) + seg[..k - 1].iter().sum::<f32>() + race.checkpoints[k - 1].distance(pos)
+                        };
+                        st.gap = gap;
+                        st.to_finish = to_finish;
+                        st.cap = cap;
                     }
                 }
             }

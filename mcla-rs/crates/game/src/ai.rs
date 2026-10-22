@@ -80,6 +80,29 @@ pub struct AiDriver {
     /// racing: over the finish line - on the brake, still steering along the line (the original's
     /// racers stop 60 - 65 m past the line, recorded 2026-10-19: CAREER_RACES.md "Race end")
     pub finished: bool,
+    /// racing: the rubber band's state for this racer (game.rs, mcRubberBandMgr)
+    pub rb: Option<RbState>,
+    /// racing: the original's racer brain drives this car (brain.rs); the rest of this driver is unused
+    pub brain: crate::brain::BrainSlot,
+    /// racing: the race's checkpoints and alt paths for the brain, and this racer's index in the race
+    /// (the bit of the alt paths' opponent masks; the player is 0)
+    pub course: Option<std::sync::Arc<crate::brain::Course>>,
+    pub opponent: u32,
+}
+
+/// What the rubber band measures for a racer each frame (brain +384 .. +404, docs/AI.md "Rubber banding").
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RbState {
+    /// where it started (racer +192)
+    pub start: Vec3,
+    /// metres ahead of the best-placed human along the checkpoints (+388; behind < 0)
+    pub gap: f32,
+    /// along the checkpoints from its start (+392)
+    pub from_start: f32,
+    /// to the finish (+396)
+    pub to_finish: f32,
+    /// the throttle cap (+404)
+    pub cap: f32,
 }
 
 impl AiDriver {
@@ -580,6 +603,10 @@ impl AiDriver {
         if self.stuck_timer > 1.5 {
             self.reverse_timer = 1.2;
             self.stuck_timer = 0.0;
+        }
+        // (the rubber band caps the throttle the driver asks for: sub_822BCFE0 0x822BD544..0x822BD668)
+        if let Some(r) = self.rb {
+            input.throttle = input.throttle.min(r.cap);
         }
         if self.reverse_timer > 0.0 {
             self.reverse_timer -= dt;

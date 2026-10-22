@@ -181,7 +181,7 @@ const HALF: f32 = 1.3;
 /// how far a route node may lie from the mesh
 const SNAP: f32 = 12.0;
 
-fn mesh() -> Option<&'static NavMesh> {
+pub fn mesh() -> Option<&'static NavMesh> {
     static MESH: std::sync::OnceLock<Option<NavMesh>> = std::sync::OnceLock::new();
     MESH.get_or_init(|| {
         // (the data directory as main.rs takes it: --data, else the default)

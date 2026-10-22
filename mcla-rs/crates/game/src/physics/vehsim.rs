@@ -708,7 +708,7 @@ pub struct VehState {
     /// chassis +584, the air time as the chassis update keeps it (negative in the tick of a landing), and the value of the tick before
     air584: f32,
     air584_before: f32,
-    nitro_rest: f32,
+    pub nitro_rest: f32,
     /// RB3, mcCarNitro +24: the view's widening - towards NitroFov while a shot burns (in NitroFovOutTime),
     /// back to +20 (nothing) in NitroFovInTime after it; no shot fires until it is back
     pub nitro_view: f32,

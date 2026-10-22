@@ -407,14 +407,22 @@ impl CourseCp {
     }
 }
 
-/// A stretch the opponents may drive: `count` nodes from `start`, taken with the
-/// given probability among the routes of the same stretch (0 = not during the race).
+/// An alt path of the race's CheckpointList (16 bytes; set by CheckpointList_SetAltPath*, docs/AI.md
+/// "Goals"): `count` alt checkpoints from `start`, driven before checkpoint `before` (== the checkpoint count:
+/// after the last one, at the lap's wrap), chosen by `weight` among the paths of that checkpoint that the
+/// racer's `mask` bit allows; taking it skips `skip` checkpoints. `shortcut` (+13, UseMask's second value)
+/// marks the shortcuts; `use_a` (+14, its first) is read by nothing found.
 #[derive(Clone, Debug, Default)]
 pub struct AiRoute {
     pub start: usize,
     pub count: usize,
     pub weight: f32,
+    /// SetAltPathSkipCheckpoints (0x7bc98615; the port called it `kind` before 2026-10-21)
     pub kind: i32,
+    pub before: usize,
+    pub mask: u8,
+    pub shortcut: bool,
+    pub use_a: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -538,7 +546,10 @@ pub fn course(data_dir: &str, race_id: &str, first_checkpoint: Option<Vec3>) -> 
     // the routes are set up one call per value: (brain, route, value)
     let mut routes: Vec<AiRoute> = Vec::new();
     for c in sco.calls() {
-        if !matches!(c.hash, 0x9e325f69 | 0x1555cd90 | 0x13eafb43 | 0x7bc98615) || c.args.len() != 3 {
+        // (SetAltPathFirstAltCheckpoint, NumAltCheckpoints, Weight, SkipCheckpoints, BeforeCheckpoint,
+        // OpponentMask: (list, path, value); UseMask: (list, path, a, b))
+        let n_args = if c.hash == 0x9f962d63 { 4 } else { 3 };
+        if !matches!(c.hash, 0x9e325f69 | 0x1555cd90 | 0x13eafb43 | 0x7bc98615 | 0xc948485e | 0x456f9663 | 0x9f962d63) || c.args.len() != n_args {
             continue;
         }
         let (Some(r), Some(v)) = (c.args[1].num(), c.args[2].num()) else { continue };
@@ -553,10 +564,17 @@ pub fn course(data_dir: &str, race_id: &str, first_checkpoint: Option<Vec3>) -> 
             0x9e325f69 => routes[r].start = v as usize,
             0x1555cd90 => routes[r].count = v as usize,
             0x13eafb43 => routes[r].weight = v as f32,
-            _ => routes[r].kind = v as i32,
+            0x7bc98615 => routes[r].kind = v as i32,
+            0xc948485e => routes[r].before = v.max(0.0) as usize,
+            0x456f9663 => routes[r].mask = v as u8,
+            _ => {
+                routes[r].use_a = v != 0.0;
+                routes[r].shortcut = c.args[3].num().map_or(false, |b| b != 0.0);
+            }
         }
     }
-    routes.retain(|r| r.count > 0 && r.start + r.count <= nodes.len());
+    // (a path without alt checkpoints is still a choice - it only skips; the brain keeps it)
+    routes.retain(|r| r.start + r.count <= nodes.len());
     Some(Course { cps, nodes, routes, cop_zones })
 }
 
@@ -583,7 +601,7 @@ impl Course {
         // which legs each route covers
         let mut spans: Vec<(usize, usize, usize, Vec<usize>)> = Vec::new();
         for (ri, r) in self.routes.iter().enumerate() {
-            if r.weight <= 0.0 {
+            if r.weight <= 0.0 || r.count == 0 {
                 continue;
             }
             let mut l: Vec<usize> = (r.start..r.start + r.count).map(|i| leg_of(self.nodes[i].0)).collect();

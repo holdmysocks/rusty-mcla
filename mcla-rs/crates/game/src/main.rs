@@ -91,6 +91,10 @@ mod rearview;
 const PAUSE_FRAME: Vec3 = Vec3::new(0.0, 1.42, 0.08);
 mod rivals;
 mod rubber;
+mod aiv;
+mod brain;
+mod brainpath;
+mod brainturn;
 mod vehicle_model;
 mod vehicles;
 mod hangout_scene;
@@ -9015,6 +9019,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     log::info!("grid: {}", grid.iter().map(|r| format!("{} {} [{}]", self.game.career.name_of(&r.id), r.car, r.plate)).collect::<Vec<_>>().join(", "));
                     self.game.grid_rivals = grid;
+                }
+                // (diagnostics, docs/AI.md: the cars MCLA_GRID_CARS puts on the grid)
+                if let Ok(v) = std::env::var("MCLA_GRID_CARS") {
+                    let dirs = self.game.car_dirs.clone();
+                    for n in v.split(',').map(|n| n.trim()) {
+                        if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(n)) {
+                            if let Some(d) = dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(n))) {
+                                let _ = self.vehicles.load_model(gpu, world, d);
+                            }
+                        }
+                    }
                 }
                 let racers = self.vehicles.models.iter().filter(|m| !m.name.starts_with("va_")).count();
                 if racers < 5 {

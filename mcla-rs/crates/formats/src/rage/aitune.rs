@@ -6,7 +6,7 @@
 //! [0] MaxSpeed  [1] MinCurvature  [2] MaxCurvature  [3] MaxTotalAccel  [4] MaxBrakeDecel
 //! [5..8] DragConstant1..3   [8..12] derived scales   [12..19] IdleSpeed per gear
 //! [19..]   MaxEngineAccelByGear  7 rows x 128 (row 0: the best gear), against speed
-//! [915..]  MaxEngineDecelByGear  7 rows x 128
+//! [915..]  MaxEngineDecelByGear  8 rows x 128
 //! [1939..] MaxSpeedForHighCurvature 64   [2003..] MaxSpeedForLowCurvature 64
 //! [2067..] SteerScalar 128, against speed
 //! ```
@@ -66,7 +66,7 @@ impl AiTune {
             max_brake_decel: f(4),
             idle_speed: std::array::from_fn(|i| f(12 + i)),
             accel: (0..128).map(|i| f(19 + i)).collect(),
-            decel: (0..7).map(|g| (0..128).map(|i| f(915 + g * 128 + i)).collect()).collect(),
+            decel: (0..8).map(|g| (0..128).map(|i| f(915 + g * 128 + i)).collect()).collect(),
             speed_high_curv: (0..64).map(|i| f(1939 + i)).collect(),
             speed_low_curv: (0..64).map(|i| f(2003 + i)).collect(),
             steer_scalar: (0..128).map(|i| f(2067 + i)).collect(),

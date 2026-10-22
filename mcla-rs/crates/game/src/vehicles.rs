@@ -2557,6 +2557,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 CarInput { brake: 1.0, ..Default::default() }
             } else if let (Some(_), true) = (self.grid_hold, self.grid_wait) {
                 CarInput { hold: true, ..Default::default() }
+            } else if let (Some(to_go), false, true) = (self.grid_hold, self.cars[i].is_player, self.cars[i].ai.as_ref().map_or(false, |a| a.brain.is_some())) {
+                // (a racer the original's brain drives: its revving and the grid burnout - brain.rs)
+                crate::brain::tick(self, i, Some(to_go), dt)
             } else if let (Some(to_go), false) = (self.grid_hold, self.cars[i].is_player) {
                 // (on the grid: a computer driver's pre-race antics - a burst at placement, revving
                 // against the brake, burnouts, the one it holds to GO)
@@ -2581,6 +2584,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (the steering is written 0 on the grid, 0x8232EC8C - only there)
                 let hold = self.grid_hold.is_some();
                 CarInput { hold, steer: if hold { 0.0 } else { player_input.steer }, ..player_input }
+            } else if self.cars[i].ai.as_ref().map_or(false, |a| a.brain.is_some()) {
+                // (a racer: the original's brain, aiv race line and mcOpponentInput - brain.rs)
+                crate::brain::tick(self, i, None, dt)
             } else if let (Some(nav), true) = (world.nav.as_ref(), self.cars[i].ai.is_some()) {
                 // (the driver knows its car from the game's calibration tables, at this car's state of tune)
                 if self.cars[i].ai.as_ref().map_or(false, |a| a.tune.is_none()) && self.cars[i].state.veh.is_some() {
