@@ -632,6 +632,9 @@ pub struct Game {
     /// the difficulty chosen on its panel, and the difficulty an event was accepted at
     pub hangout_key: Option<String>,
     pub hangout_diff: usize,
+    /// the delivery panel's difficulty: set to MEDIUM once (mcDeliveryForm's ctor, sub_8267C0D8)
+    /// and kept from the last choice - its refresh, sub_8267C3C8, does not reset it
+    pub delivery_diff: usize,
     /// the hangout's panel (0 its own, 1 WAGER AMOUNT) with its cursor, and the slider's
     /// place (0..10)
     pub hangout_page: (u8, usize),
@@ -1191,6 +1194,7 @@ impl Game {
             next_race_start: false,
             hangout_key: None,
             hangout_diff: 0,
+            delivery_diff: 1,
             hangout_page: (0, 0),
             hangout_stake: 5,
             event_diff: None,
@@ -11199,6 +11203,8 @@ impl Game {
         let delivery = key.contains("delivery");
         // (the tournament's and the payback's panels - mcTournamentForm / mcPaybackForm: `mc4_event_panel`)
         let s15b_event = key.contains("_tournament") || key == "be_payback";
+        let diff_shown = self.mc4_panel_diff_shown(&key);
+        let diff_rows = |mut rows: Vec<MenuRow>| { if !diff_shown { rows.remove(0); } rows };
         // (the time trial man's panel - form 65, sub_8267B370: a list of four rows, one a
         // vehicle, with the columns CAR_COL_NAME, TARGET_TIME_LABEL, BEST_TIME_COL_NAME; the
         // title is the district's key, the text TIMETRIAL_HOOKMAN_DESC; ACCEPT / BACK. No
@@ -11252,6 +11258,7 @@ impl Game {
                 ..MenuPage::default()
             }
         } else if s15b_event {
+            let (left, right) = (left && diff_shown, right && diff_shown);
             if left {
                 self.hangout_diff = (self.hangout_diff + 3) % 4;
             }
@@ -11272,11 +11279,11 @@ impl Game {
                 layout: MenuLayout::Hangout { description: st(&p.desc, ""), slider: None, money: None },
                 icon: std::env::var("MCLA_HANGOUT_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(HANGOUT_ICON),
                 title: st(&p.title, &key).to_uppercase(),
-                rows: vec![
+                rows: diff_rows(vec![
                     MenuRow { label: st("Navmap_Difficulty", "DIFFICULTY").to_uppercase(), value: choice_list(self.hangout_diff, &diffs), enabled: true, part: None },
                     MenuRow { label: st(&p.reward_label, "COMPLETION REWARD:").to_uppercase(), value: reward, enabled: true, part: None },
                     MenuRow { label: st(&p.count_label, "TOTAL RACES:").to_uppercase(), value: p.count.to_string(), enabled: true, part: None },
-                ],
+                ]),
                 select: usize::MAX,
                 // (these panels are no hangout's: BACK, as on the delivery's - not captured)
                 prompts: vec![accept.clone(), (st("prompt_back", "BACK").to_uppercase(), ICON_B)],
@@ -11288,27 +11295,30 @@ impl Game {
             // opening on MEDIUM) and DELIVERY REWARD as a range - the race money of the
             // difficulty to twice that, a perfect delivery's ($5,200 - $10,400 / 6,500 - 13,000 /
             // 7,800 - 15,600 / 9,100 - 18,200 on the 100 % save's R8); BACK (B), ACCEPT (A)
+            let (left, right) = (left && diff_shown, right && diff_shown);
             if left {
                 self.hangout_diff = (self.hangout_diff + 3) % 4;
             }
             if right {
                 self.hangout_diff = (self.hangout_diff + 1) % 4;
             }
+            self.delivery_diff = self.hangout_diff;
             let base = crate::rewards::race_money(self.rep, class, self.hangout_diff, 10.0) as i64;
             MenuPage {
                 layout: MenuLayout::Hangout { description: st("DELIVERY_MENU_DESC", "Deliver cars to the right locations without inflicting too much visual damage to earn cash."), slider: None, money: None },
                 icon: std::env::var("MCLA_HANGOUT_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(DELIVERY_ICON),
                 title: st("DELIVERY_MENU_TITLE", "DELIVERY").to_uppercase(),
-                rows: vec![
+                rows: diff_rows(vec![
                     MenuRow { label: st("Navmap_Difficulty", "DIFFICULTY").to_uppercase(), value: choice_list(self.hangout_diff, &diffs), enabled: true, part: None },
                     MenuRow { label: st("REWARD_DELIVERY_LABEL", "DELIVERY REWARD").to_uppercase(), value: format!("${} - ${}", commas(base), commas(base * 2)), enabled: true, part: None },
-                ],
+                ]),
                 select: std::env::var("MCLA_DL_SEL").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX),
                 prompts: vec![accept.clone(), (st("prompt_back", "BACK").to_uppercase(), ICON_B)],
                 list_max: 3,
                 ..MenuPage::default()
             }
         } else if !wager {
+            let (left, right) = (left && diff_shown, right && diff_shown);
             if left {
                 self.hangout_diff = (self.hangout_diff + 3) % 4;
             }
@@ -11320,11 +11330,11 @@ impl Game {
                 layout: MenuLayout::Hangout { description: st("LOCAL_HANGOUT_DESC", "Compete in a SERIES of races out of this HANGOUT.  First to win 3 races wins."), slider: None, money: None },
                 icon: std::env::var("MCLA_HANGOUT_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(HANGOUT_ICON),
                 title: st(&key, "HANGOUT").to_uppercase(),
-                rows: vec![
+                rows: diff_rows(vec![
                     MenuRow { label: st("Navmap_Difficulty", "DIFFICULTY").to_uppercase(), value: choice_list(self.hangout_diff, &diffs), enabled: true, part: None },
                     MenuRow { label: st("REWARD_SERIES_LABEL", "COMPLETION REWARD:").to_uppercase(), value: format!("${}", commas(reward)), enabled: true, part: None },
                     MenuRow { label: st("RACES_NEEDED_LABEL", "RACE WINS NEEDED:").to_uppercase(), value: "3".to_string(), enabled: true, part: None },
-                ],
+                ]),
                 // (no cursor bar: the template lights the first row's text and arrows by itself
                 // when nothing is selected; its prompts show in the pause movie, where it lives)
                 select: usize::MAX,

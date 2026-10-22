@@ -598,13 +598,14 @@ impl Game {
 
     /// (step 23b) The payback's panel at its place: the run's first leg is the payback race
     /// nearest the player that the run has not had (PaybackCore's mcRaceArray_SortByDistance /
-    /// FindNextRaceIndex - the same as its next legs), the panel on EASIEST.
+    /// FindNextRaceIndex - the same as its next legs), the panel on MEDIUM (mcPaybackForm
+    /// sets its combo to 1 on every showing, sub_8267B328).
     pub fn mc4_payback_place_panel(&mut self, from: Vec3) {
         let mut list: Vec<usize> = (0..self.race_defs.len()).filter(|&i| self.race_defs[i].race_type == "Payback").collect();
         list.sort_by(|a, b| self.race_defs[*a].beacon.distance(from).partial_cmp(&self.race_defs[*b].beacon.distance(from)).unwrap_or(std::cmp::Ordering::Equal));
         let Some(&first) = list.first() else { return };
         self.current_race = Some(first);
-        self.hangout_diff = 0;
+        self.hangout_diff = 1;
         self.hangout_key = Some("be_payback".to_string());
         self.hangout_page = (0, 0);
         self.mode = Mode::RaceSelect;

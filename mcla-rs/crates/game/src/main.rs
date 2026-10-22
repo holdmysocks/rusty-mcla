@@ -2844,7 +2844,8 @@ impl App {
                         self.hangout_in = Some(i);
                         self.game.wager_here = false;
                         self.game.hangout_key = Some(if self.hangouts[i].0.ends_with("_sc") { "sc_delivery" } else { "hw_delivery" }.to_string());
-                        self.game.hangout_diff = 1;
+                        // (the delivery panel keeps its last choice - mcDeliveryForm, sub_8267C3C8)
+                        self.game.hangout_diff = self.game.delivery_diff;
                         self.pending_action = MenuAction::OpenRaceSelect;
                     }
                 } else if let Some((si, j)) = line.filter(|&(_, j)| free && self.cuts.idle() && self.hangout_entry.is_none() && std::env::var("MCLA_NO_CINE").is_err() && self.game.mc4_hangout_open(&self.hangouts[j].0) && !matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted)) {
@@ -2922,7 +2923,9 @@ impl App {
                     self.game.wager_here = hangoutin::SETUPS[si].key.contains("_wager_");
                     // (the location's key: its name in the string table, `<key>_state` in the registry)
                     self.game.hangout_key = Some(hangoutin::SETUPS[si].key.to_string());
-                    self.game.hangout_diff = 0;
+                    // (series and wager panels open on MEDIUM: mcLocalHangoutForm sub_8267FE08 /
+                    // sub_8267FB98, mcWagerForm sub_8267F788 / sub_8267F438 - combo 1)
+                    self.game.hangout_diff = 1;
                     // the list opens at the events around here
                     let here = self.hangouts[i].1;
                     let mission = self.game.mission_races.clone();

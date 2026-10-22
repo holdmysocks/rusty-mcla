@@ -7252,9 +7252,10 @@ impl Game {
         if let Some((event, done, _, hard)) = self.career.tournament_of(&def.id) {
             let stored = self.career.stats.get(&format!("tour_diff:{}", event.to_ascii_lowercase())).copied();
             if done == 0 {
-                // (opens on MEDIUM - inferred: the 100 % save ran its plain tournaments there)
+                // (opens on MEDIUM while the man's mission is open, else on HARD: mcTournamentForm
+                // +1896 from the script, generic_tournament_hookman 0x115..0x148 / 0x4e3)
                 let _ = hard;
-                self.hangout_diff = 1;
+                self.hangout_diff = self.mc4_tournament_panel_diff(&event);
                 self.hangout_key = Some(event);
                 self.hangout_page = (0, 0);
                 self.mode = crate::game::Mode::RaceSelect;
@@ -9391,12 +9392,47 @@ impl Game {
             return false;
         }
         self.current_race = Some(i);
-        // (opens on MEDIUM - inferred, as in step 15b)
-        self.hangout_diff = 1;
+        // (opens on the man's own difficulty: MEDIUM while his mission is open, else HARD -
+        // mcTournamentForm +1896 from the script, generic_tournament_hookman 0x4e3)
+        self.hangout_diff = self.mc4_tournament_panel_diff(key);
         self.hangout_key = Some(key.to_string());
         self.hangout_page = (0, 0);
         self.mode = crate::game::Mode::RaceSelect;
         true
+    }
+
+    /// The tournament panel's start value for an event (`hw_tournament1` ...): the script's L5,
+    /// set into the form with PropertyCtrl_SetPropertyInt(form, 0, L5) (generic_tournament_hookman
+    /// 0x115..0x148, 0x4e3): 1 while the man's mission (static +460) is there and not COMPLETE,
+    /// else 2. The mission is the district's first, TOURNAMENT_<district>: it cannot be one
+    /// still open after it - TOURNAMENT_<district>B asks for a HARD completion, which this
+    /// panel allows only at 2, and REPEAT_TOURNAMENT_* never completes. South Central has none:
+    /// its panel opens on HARD. (+460 is a constant of the district's launcher script, whichever
+    /// mission started the man - the same mission as the man's own difficulty.)
+    pub fn mc4_tournament_panel_diff(&self, key: &str) -> usize {
+        let k = key.to_ascii_lowercase();
+        let Some(code) = DISTRICT_CODES.iter().find(|c| k.starts_with(&format!("{c}_"))) else { return 2 };
+        let launcher = format!("{code}_tournament_hk1");
+        let first = MISSION_LAUNCHERS.iter().find(|(m, l)| *l == launcher && m.starts_with("TOURNAMENT_")).map(|(m, _)| *m);
+        if first.map_or(false, |m| !self.career.mission_complete(m)) { 1 } else { 2 }
+    }
+
+    /// Whether an event's panel shows its DIFFICULTY row - the forms' refresh, Ctrl_SetVisible
+    /// of the combo: the tournament's only when it opened on HARD, its mission COMPLETE
+    /// (mcTournamentForm sub_8267C020); a series' after one MEDIUM completion of its event
+    /// (event+36 > 0, mcLocalHangoutForm sub_8267FB98); the delivery's after more than four
+    /// MEDIUM deliveries (event+36 > 4, mcDeliveryForm sub_8267C3C8); the payback's and the
+    /// wager's always. Hidden, the choice cannot change.
+    pub fn mc4_panel_diff_shown(&self, key: &str) -> bool {
+        if key.contains("delivery") {
+            self.mc4_event_completions(key, 1) > 4
+        } else if key.contains("_tournament") {
+            self.mc4_tournament_panel_diff(key) == 2
+        } else if key == "be_payback" || key.contains("_wager_") {
+            true
+        } else {
+            self.mc4_event_completions(&format!("{}_series", key), 1) > 0
+        }
     }
 
     /// The time trial man has been flashed: form 65 opens over the game.
@@ -14310,6 +14346,26 @@ mod tests {
     /// Step 15: an event completes at a difficulty - the reward at min(completions, last)
     /// of that list, then the counter (sub_826CD1E8); the counters are the block's.
     #[test]
+    fn panels_show_difficulty_by_the_forms_rules() {
+        let Some((mut g, _dir, _save)) = career_game("full_import.json", "s15panels") else { return };
+        // (the 100 % save: fifteen MEDIUM deliveries - more than four - and every tournament
+        // mission complete: the tournament panel opens on HARD with its choice shown)
+        assert!(g.mc4_panel_diff_shown("hw_delivery"));
+        assert_eq!(g.mc4_tournament_panel_diff("hw_tournament1"), 2);
+        assert!(g.mc4_panel_diff_shown("hw_tournament1"));
+        assert!(g.mc4_panel_diff_shown("be_payback") && g.mc4_panel_diff_shown("hw_wager_hangout1"));
+        // (a series shows it after one MEDIUM completion of its event, not before)
+        let medium = g.mc4_event_completions("hw_local_hangout1_series", 1);
+        assert_eq!(g.mc4_panel_diff_shown("hw_local_hangout1"), medium > 0);
+        if medium == 0 {
+            g.mc4_event_complete("hw_local_hangout1_series", 1, 1.5);
+            assert!(g.mc4_panel_diff_shown("hw_local_hangout1"));
+        }
+        // (an event never run at MEDIUM: hidden)
+        assert!(!g.mc4_panel_diff_shown("zz_local_hangout9") && !g.mc4_panel_diff_shown("zz_delivery"));
+    }
+
+    #[test]
     fn event_completions_and_rewards() {
         let Some((mut g, dir, save)) = career_game("full_import.json", "s15full") else { return };
         // (the 100 % save: fifteen deliveries on Medium, the tournaments once on Medium and once on Hard)
@@ -16960,6 +17016,6 @@ mod tests {
             crate::races::RaceDef { id: "game/Race/Beaches/Payback/near".into(), race_type: "Payback".into(), beacon: glam::Vec3::from(PAYBACK_AT), ..Default::default() },
         ];
         g.mc4_payback_place_panel(glam::Vec3::from(PAYBACK_AT));
-        assert_eq!((g.current_race, g.hangout_key.as_deref(), g.mode), (Some(1), Some("be_payback"), crate::game::Mode::RaceSelect));
+        assert_eq!((g.current_race, g.hangout_key.as_deref(), g.mode, g.hangout_diff), (Some(1), Some("be_payback"), crate::game::Mode::RaceSelect, 1));
     }
 }
