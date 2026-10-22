@@ -9153,6 +9153,11 @@ pub fn local_hookman_filter(sorted: &[usize], first: usize, n: usize, history: &
 
 pub const DISTRICT_CODES: [&str; 5] = ["hw", "be", "hl", "dt", "sc"];
 
+/// The mission a district's tournament man looks at (generic_tournament_hookman's static +460),
+/// written as a constant by `<code>_tournament_hk1` before it starts him: hw `0xddd89a62`, be
+/// `0x40c110a8`, hl `0x1f2efed7`, dt `0x2cb25834`, sc `sc/CruisingHookmen/0x5025ae01`.
+pub const TOURNAMENT_MISSIONS: [&str; 5] = ["TOURNAMENT_HOLLYWOOD", "TOURNAMENT_BEACHES", "TOURNAMENT_HILLS", "TOURNAMENT_DOWNTOWN", "TOURNAMENT_SC"];
+
 impl Game {
     /// The "hidden" mark of a cruising slot (slot +80; the save's `slots_hidden`): set for a
     /// district's slots by mcSlotSystem_HideDistrict, cleared when its hookman is found
@@ -9365,12 +9370,14 @@ impl Game {
     }
 
     /// The tournament man's difficulty and his icon's colour (`game/CruisingHookmen/0xdcd7fe26`
-    /// 0x115..0x17e: Racer_SetIconColorByDifficulty, mcHookman_SetDifficulty): 1 while the mission
-    /// that started him is not complete, else 2.
+    /// 0x115..0x17e: Racer_SetIconColorByDifficulty, mcHookman_SetDifficulty) - also the start of
+    /// his panel (form 66 +1896, 0x4e3): 1 while his mission (static +460) exists and is not
+    /// COMPLETE, else 2. +460 is a constant of the district's launcher script, whichever mission
+    /// started it (TOURNAMENT_<district>, its B, REPEAT_TOURNAMENT_<district>):
+    /// `TOURNAMENT_MISSIONS`.
     pub fn mc4_tournament_man_diff(&self, d: usize) -> i32 {
-        let launcher = format!("{}_tournament_hk1", DISTRICT_CODES[d.min(4)]);
-        let open = MISSION_LAUNCHERS.iter().any(|(m, l)| *l == launcher && self.career.mission_started(m) && !self.career.mission_complete(m));
-        if open { 1 } else { 2 }
+        let m = TOURNAMENT_MISSIONS[d.min(4)];
+        if self.career.mission_no(m).is_some() && !self.career.mission_complete(m) { 1 } else { 2 }
     }
 
     /// The man of a tournament has been flashed: his panel (form 66) opens over the game for
