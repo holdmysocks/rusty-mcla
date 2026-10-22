@@ -116,6 +116,13 @@ pub fn sector_distance(min: [f32; 3], max: [f32; 3], p: Vec3) -> f32 {
     Vec3::new(c.x - p.x, 0.0, c.z - p.z).length()
 }
 
+/// Whether the sector drawable of this bucket (the low three bits of its shader word, sub_822E0130) is drawn in the
+/// mirror: sub_822D8350 draws buckets 0, 2 and 4 for pass 0x01000000 and bucket 1 (the blended windows and signs) only
+/// for passes with a bit of 0x1F0; bucket 3 (the sea) comes from the water's own path, as in the main view.
+pub fn mirror_bucket(flags: u32) -> bool {
+    flags & 7 != 1
+}
+
 /// sub_822D87B8 in the mirror's pass (0x01000000): a sector's detailed model only when it is loaded (state 3) and
 /// its +268 - the ground-plane distance from the MAIN camera to its box - is under 20 m (0x827E0E54, never
 /// written); else its far model (when the far city is there, 0x8287C7D4). No cross-fade in this pass (its alpha
@@ -126,8 +133,8 @@ pub fn mirror_detail(loaded: bool, dist: f32) -> bool {
 }
 
 /// The models the mirror draws, each with whether its own object uniform (the cross-fade alpha, interiors) is
-/// bound, and for a far model the sphere round its sector's box: the loaded sectors under 20 m, the other sets as
-/// the main view has them, and the far model of every other sector (the plain uniform: whole). A far model is
+/// bound, and for a far model the sphere round its sector's box: the loaded sectors under 20 m (drawn drawable by
+/// drawable), and the far model of every other sector (the plain uniform: whole). A far model is
 /// drawn whole when that sphere is in the mirror's view (record +292 bit 0x400, sub_822D7D00 -> sub_8217C148 on
 /// the mirror's viewport): o14's 100 VSCityLOD / VSCityWindowLOD draws of the strip are exactly the far batches
 /// of the port's sectors chosen so, by index count.
@@ -138,7 +145,8 @@ fn models(world: &crate::world::World, main_eye: Vec3) -> Vec<(&crate::world::Gp
         ((mn + mx) * 0.5, (mx - mn).length() * 0.5)
     });
     let mut out: Vec<(&crate::world::GpuSector, bool, Option<(Vec3, f32)>)> = world.loaded.iter().filter(|(id, _)| near(**id)).map(|(_, s)| (s, true, None)).collect();
-    out.extend(world.sets.iter().filter(|(id, _)| **id < crate::world::FAR_ID).map(|(_, s)| (s, true, None)));
+    // (the garage rooms - the port's interior sets, `world::SET_ID` - are not in the mirror: the original's pass draws
+    // the sectors' drawables and far models only, sub_822D87B8, and o14 has none of the rooms' index counts in any pass)
     out.extend(world.far_models_by_sector().filter(|(sid, _)| !near(*sid)).map(|(sid, s)| (s, false, sphere(sid))));
     out
 }
@@ -267,15 +275,42 @@ pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::Wor
                 if blend != (phase == 1) {
                     continue;
                 }
-                // (a far model is drawn whole; the detailed sectors' batches by their own boxes - the original tests
-                // each drawable's sphere, sub_822DF960 - with the main pass's small-object culling at the mirror's lens)
+                // (a far model is drawn whole. A detailed sector's drawables one by one, each when its sphere - the
+                // centre and half diagonal of its box - is in the mirror's view: sub_822DF960 keeps flag 0x400 only
+                // when sub_8217C148 passes it against the mirror's viewport at ctx+2000; the distance gate after it,
+                // ctx+3188 = mirror+40 = 0.0, is off, so nothing is left out for being small or far. Batches without
+                // stored drawables (the interior sets) by their box with the main pass's small-object culling.)
+                let mut runs: Vec<(u32, u32)> = Vec::new();
                 if sphere.is_none() {
-                    if !mv.frustum.intersects_aabb(b.min, b.max) {
-                        continue;
-                    }
-                    let ext = (b.max - b.min).length();
-                    if ext < ((b.min + b.max) * 0.5).distance(mv.eye) * 0.012 * lens {
-                        continue;
+                    if b.parts.is_empty() {
+                        if !mv.frustum.intersects_aabb(b.min, b.max) {
+                            continue;
+                        }
+                        let ext = (b.max - b.min).length();
+                        if ext < ((b.min + b.max) * 0.5).distance(mv.eye) * 0.012 * lens {
+                            continue;
+                        }
+                    } else {
+                        for p in &b.parts {
+                            // (the drawable's bucket is the low three bits of its shader word, sub_822E0130; for
+                            // pass 0x01000000 sub_822D8350 draws buckets 0, 2 and 4 - bucket 1, the blended windows
+                            // and signs, only for passes with a bit of 0x1F0)
+                            if !mirror_bucket(p.4) {
+                                continue;
+                            }
+                            if mv.frustum.intersects_sphere(p.2, p.3) {
+                                if list_now {
+                                    eprintln!("rvlist part {} n {} centre {:.0} {:.0} {:.0}", b.shader, p.1, p.2.x, p.2.y, p.2.z);
+                                }
+                                match runs.last_mut() {
+                                    Some(r) if r.0 + r.1 == p.0 => r.1 += p.1,
+                                    _ => runs.push((p.0, p.1)),
+                                }
+                            }
+                        }
+                        if runs.is_empty() {
+                            continue;
+                        }
                     }
                 }
                 if let Some(o) = sec.obj.as_ref().filter(|_| own_obj) {
@@ -306,10 +341,17 @@ pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::Wor
                         pane_pipe = want_pane;
                     }
                 }
-                pass.draw_indexed(b.first..b.first + b.count, 0, 0..1);
-                draws += 1;
-                if list_now {
-                    eprintln!("rvlist drawn {} n {}", b.shader, b.count);
+                if runs.is_empty() {
+                    pass.draw_indexed(b.first..b.first + b.count, 0, 0..1);
+                    draws += 1;
+                    if list_now {
+                        eprintln!("rvlist drawn {} n {}", b.shader, b.count);
+                    }
+                } else {
+                    for r in &runs {
+                        pass.draw_indexed(r.0..r.0 + r.1, 0, 0..1);
+                        draws += 1;
+                    }
                 }
             }
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
@@ -362,6 +404,12 @@ mod tests {
 
     /// sub_822D87B8's mirror rule, with the o14s recording's sectors (record, state, +268): 227 (3, 0.0) and 228
     /// (3, 10.2) in detail; 229 (3, 40.5), 225 (3, 87.0), 218 (3, 180.0) and 219 (2, 321.6) as far models.
+    #[test]
+    fn buckets_in_the_mirror() {
+        assert!(mirror_bucket(0) && mirror_bucket(2) && mirror_bucket(3) && mirror_bucket(4));
+        assert!(!mirror_bucket(1));
+    }
+
     #[test]
     fn sectors_in_the_mirror() {
         assert!(mirror_detail(true, 0.0));
