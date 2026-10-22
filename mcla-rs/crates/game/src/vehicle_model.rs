@@ -567,6 +567,16 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
             _ => {}
         }
     }
+    // (a car that drives on another's tuning file: catalog::tune_donor)
+    if let Some(donor) = crate::catalog::tune_donor(&name) {
+        if let Ok(rd) = std::fs::read_dir(car_dir.with_file_name(donor)) {
+            let theirs: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "r50")).collect();
+            if !theirs.is_empty() {
+                log::info!("car {}: tuning of {}", name, donor);
+                r50 = theirs;
+            }
+        }
+    }
     // "_dub" editions only ship the parts that differ; everything else comes from the parent car
     let mut parent_files: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut parent_r83: Vec<PathBuf> = Vec::new();

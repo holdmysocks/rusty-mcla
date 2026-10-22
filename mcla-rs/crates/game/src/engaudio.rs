@@ -71,7 +71,7 @@ pub struct EngineIn {
 /// VP_ profile, then DEFAULT_CAR / DEFAULT_BIKE_PROFILE.
 pub fn default_object<'a>(lib: &'a SoundLib, car: &str, bike: bool, player: bool) -> Option<&'a [u8]> {
     let g = &lib.game;
-    let up = car.to_ascii_uppercase();
+    let up = crate::catalog::sound_car(car).to_ascii_uppercase();
     let profile = g
         .get_name(&format!("{up}_PROFILE"))
         .or_else(|| g.get_name(&format!("{}_PROFILE", up.replacen("VPD_", "VP_", 1))))
@@ -507,6 +507,19 @@ mod tests {
     use super::*;
 
     /// The Camaro's loops over an rpm sweep, rendered alone (`MCLA_ENGINE_WAV` = where to write the mix).
+    /// The cut GT-R sounds like the 350Z (catalog::sound_car), not its own profile's R8.
+    #[test]
+    fn cut_gtr_uses_the_350z_engine() {
+        let dir = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let Some(a) = crate::audio::Audio::new_offline(&dir) else { return };
+        let Some(lib) = SoundLib::load(a.root(), &a.cfg.clone()) else { return };
+        for player in [true, false] {
+            let gtr = default_object(&lib, crate::catalog::CUT_GTR, false, player).expect("gt-r");
+            assert_eq!(Some(gtr), default_object(&lib, "vp_nsn_350z_06", false, player));
+            assert_ne!(Some(gtr), default_object(&lib, "vp_aud_r8_08", false, player));
+        }
+    }
+
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
     fn camaro_sweep() {

@@ -9821,7 +9821,9 @@ impl ApplicationHandler for App {
         self.game.career = career::Career::load(&self.opt.data_dir);
         self.game.rivals = rivals::Rivals::load(&self.opt.data_dir);
         // (a car the port adds as data joins the pick with its vehicle record here)
-        self.game.oppick = oppick::OpPick::load(&self.opt.data_dir, "");
+        // (the cut GT-R races as an opponent too: DECISIONS.md D21)
+        crate::catalog::write_cut_setups(&self.opt.data_dir);
+        self.game.oppick = oppick::OpPick::load(&self.opt.data_dir, &format!("{}{}", crate::catalog::CUT_CATALOG, crate::catalog::CUT_OPPONENT));
         if std::env::var("MCLA_CAREER_TEST").is_ok() {
             self.game.career.selftest();
         }

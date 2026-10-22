@@ -3935,6 +3935,7 @@ vp_nsn_240sx_98.xtd
 vp_nsn_240sx_98_ps.xcc
 vp_nsn_240sx_98_zone.xtd
 vp_nsn_350z_06
+vp_nsn_gtr_08
 vp_nsn_350z_06.xcc
 vp_nsn_350z_06.xtd
 vp_nsn_350z_06_zone.xtd
@@ -4186,6 +4187,7 @@ whl_stk_mzd_rx7_95
 whl_stk_mzd_rx8_06
 whl_stk_nsn_240sx_98
 whl_stk_nsn_350z_06
+whl_stk_nsn_gtr_08
 whl_stk_nsn_skyline_99
 whl_stk_pon_solstice_06
 whl_stk_pon_transam_79

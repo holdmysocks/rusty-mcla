@@ -122,7 +122,9 @@ impl Game {
     /// line, sub_822D1260). Only `vp_aud_r8_08` (ContentFlags 2, index 0) is outside the mask.
     pub fn mc4_vehicle_available(&self, car: &str) -> bool {
         let (flags, portal) = vehicle_content(&self.data_dir, car);
-        flags == 0 || flags & CONTENT_MASK != 0 || (portal >= 0 && self.mc4_stat("tREW", portal as u32) > 0.0)
+        // (the port has no online play: a portal reward is offered like any other car -
+        // docs/DECISIONS.md, 2026-10-22; the original also asks `self.mc4_stat("tREW", portal) > 0`)
+        flags == 0 || flags & CONTENT_MASK != 0 || portal >= 0
     }
 }
 
@@ -529,7 +531,8 @@ mod tests {
     }
 
     /// sub_823961C0 on the disc's vehicle table: the R8 alone is outside the mask (ContentFlags 2,
-    /// PortalRewardIdx 0) and comes with tREW/0; the base cars and the DUB cars are offered.
+    /// PortalRewardIdx 0) and comes with tREW/0 - which the port, without online play, offers
+    /// anyway (docs/DECISIONS.md); the base cars, the DUB cars and the cut GT-R are offered.
     #[test]
     fn vehicles_outside_the_content_mask() {
         let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
@@ -539,7 +542,8 @@ mod tests {
         assert_eq!(vehicle_content(&dir, "vp_aud_r8_08"), (2, 0));
         let mut g = Game::new(Vec::new(), 0);
         g.data_dir = dir;
-        assert!(!g.mc4_vehicle_available("vp_aud_r8_08"));
+        assert!(g.mc4_vehicle_available("vp_aud_r8_08"));
+        assert!(g.mc4_vehicle_available(crate::catalog::CUT_GTR));
         assert!(g.mc4_vehicle_available("vp_am_vantage_07"));
         assert!(g.mc4_vehicle_available("vp_lam_murcielago_06_dub"));
     }

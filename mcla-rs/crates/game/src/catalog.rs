@@ -92,6 +92,134 @@ fn parse_blocks(text: &str, out: &mut HashMap<String, CarInfo>) {
     }
 }
 
+/// The cut Nissan GT-R (R35): its model, stock rims and garage pictures are on the disc,
+/// but no vehicle list has it, its tuning file was never filled in and it has no set-up
+/// file. The port offers it in the showroom (docs/DECISIONS.md, 2026-10-22).
+pub const CUT_GTR: &str = "vp_nsn_gtr_08";
+
+/// Its row: the Audi R8's group, unlock, showroom figures and districts (it drives on the
+/// R8's tuning); the districts let the opponent pick draw it (`oppick`).
+pub const CUT_CATALOG: &str = "Vehicle
+{
+Name vp_nsn_gtr_08
+Class EXOTIC
+DistrictFilter Hollywood
+DistrictFilter Beaches
+DistrictFilter Hills
+DistrictFilter Downtown
+Manufacturer Nissan
+Group B0
+UnlockingGroup A0
+Price 118000
+BaseAccel 0.26
+ModsAccel 0.42
+BaseSpeed 210.00
+ModsSpeed 255.00
+BaseHndlg 0.620
+ModsHndlg 0.875
+}
+";
+
+/// The set-up its opponent driver races it in (`CUT_OPPONENT`), written by `write_cut_setups`.
+pub const CUT_SETUP: &str = "GH_12_2_vp_nsn_gtr_08";
+
+/// What the opponent pick (`oppick::OpPick::load`'s `extra`) needs besides the vehicle row: the
+/// R8's performance samples at mod 0 / 50 / 100 (those in force after the sample files load)
+/// and a driver - GH_12, whose B car is the Skyline - with the GT-R in his car map.
+pub const CUT_OPPONENT: &str = "Character
+{
+Name GH_12
+Car
+{
+Name vp_nsn_gtr_08
+Config
+{
+Name GH_12_2_vp_nsn_gtr_08
+}
+}
+}
+sample
+{
+name vp_nsn_gtr_08
+mod 0
+performance 0.580801
+speed 0.487276
+}
+sample
+{
+name vp_nsn_gtr_08
+mod 50
+performance 0.707273
+speed 0.619890
+}
+sample
+{
+name vp_nsn_gtr_08
+mod 100
+performance 0.822529
+speed 0.750580
+}
+";
+
+/// The GT-R's set-up files, which the disc lacks: its stock set-up `vp_nsn_gtr_08.xcc` (a bought
+/// car's record, its wheel sizes) and its opponent's `CUT_SETUP`. Both are the R8's stock set-up
+/// (its tuning's wheels) with the vehicle's hash (+0x1FA8) and names (+0x1FAD, +0x1FCD) changed,
+/// no rim of the rim table (+0x844 = 255: the car keeps its own `whl_stk_nsn_gtr_08`) and the
+/// Brembo base brake (+0x846 = 9; the R8's own brake is index 14); the opponent's plate (+0x847)
+/// reads GODZILA. Written once into the data
+/// folder's `resources/vehicle/configs`.
+pub fn write_cut_setups(data_dir: &str) {
+    let dir = Path::new(data_dir).join("resources/vehicle/configs");
+    let Ok(base) = std::fs::read(dir.join("vp_aud_r8_08.xcc")) else { return };
+    if base.len() != 8176 {
+        return;
+    }
+    for name in [CUT_GTR, CUT_SETUP] {
+        let path = dir.join(format!("{name}.xcc"));
+        if path.is_file() {
+            continue;
+        }
+        let mut b = base.clone();
+        b[0x1FA8..0x1FAC].copy_from_slice(&mcla_formats::hash::joaat(CUT_GTR).to_be_bytes());
+        for (at, text) in [(0x1FAD, CUT_GTR), (0x1FCD, name)] {
+            b[at..at + 32].fill(0);
+            b[at..at + text.len()].copy_from_slice(text.as_bytes());
+        }
+        b[0x844] = 255;
+        b[0x846] = 9;
+        // (the opponent's own plate, not the R8 set-ups' 5HZX106)
+        if name == CUT_SETUP {
+            b[0x847..0x84E].copy_from_slice(b"GODZILA");
+        }
+        match std::fs::write(&path, &b) {
+            Ok(()) => log::info!("catalog: wrote the set-up {}", path.display()),
+            Err(e) => log::warn!("catalog: cannot write {}: {}", path.display(), e),
+        }
+    }
+}
+
+/// Its names, in the string table's style ("1999 SKYLINE GT-R V-SPEC" / "99 SKYLINE"): the
+/// table has none for it.
+pub const CUT_STRINGS: [(&str, &str); 2] = [("vp_nsn_gtr_08", "2008 GT-R"), ("vp_nsn_gtr_08_shrt", "08 GT-R")];
+
+/// The car whose tuning file a car drives on: the R8's for the cut GT-R (whose own is a
+/// template: every gear 4.0, 500 hp, no dimensions).
+pub fn tune_donor(car: &str) -> Option<&'static str> {
+    car.eq_ignore_ascii_case(CUT_GTR).then_some("vp_aud_r8_08")
+}
+
+/// The car whose sound profile a car uses: the 350Z's V6 for the cut GT-R (the disc's
+/// `VPD_NSN_GTR_08_PROFILE` points at the R8's engine; the user chose the 350Z's).
+pub fn sound_car(car: &str) -> &str {
+    if car.eq_ignore_ascii_case(CUT_GTR) { "vp_nsn_350z_06" } else { car }
+}
+
+/// The name in a garage picture's file (`sh_`, `msh_`, rewardvehicles): the GT-R's are
+/// drawn under its downloadable name `vpd_nsn_gtr_08` (its `mr_` picture is not).
+pub fn picture_name(car: &str) -> String {
+    if car.eq_ignore_ascii_case(CUT_GTR) { "vpd_nsn_gtr_08".into() } else { car.to_string() }
+}
+
 impl Catalog {
     pub fn load(data_dir: &str) -> Catalog {
         let dir = Path::new(data_dir).join("tune/vehicle");
@@ -101,6 +229,7 @@ impl Catalog {
                 parse_blocks(&String::from_utf8_lossy(&bytes), &mut cars);
             }
         }
+        parse_blocks(CUT_CATALOG, &mut cars);
         log::info!("catalog: {} vehicles", cars.len());
         Catalog { cars }
     }

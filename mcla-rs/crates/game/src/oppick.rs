@@ -177,8 +177,9 @@ impl OpPick {
         }
         parse_vehicles(extra, &mut vehicles);
         let mut found: Vec<PickCar> = Vec::new();
-        for i in 0..5 {
-            let Some(t) = read_named(&vdir, &format!("car_performance_sample_{i}.lst")) else { continue };
+        for i in 0..6 {
+            // (after the five files, the samples of `extra`)
+            let Some(t) = (if i < 5 { read_named(&vdir, &format!("car_performance_sample_{i}.lst")) } else { Some(extra.to_string()) }) else { continue };
             for s in t.split("sample").skip(1) {
                 let tok: Vec<&str> = s.split_whitespace().collect();
                 let field = |k: &str| tok.iter().position(|t| *t == k).and_then(|i| tok.get(i + 1)).copied();
@@ -205,8 +206,24 @@ impl OpPick {
         let order = atmap_order(&found.iter().map(|c| joaat(&c.name)).collect::<Vec<_>>());
         let cars: Vec<PickCar> = order.into_iter().map(|i| found[i].clone()).collect();
         let mut drivers = Vec::new();
+        // (`extra`'s Character blocks as if written at the end of the file: a character already
+        // there gets the cars at the end of his block)
         if let Some(t) = read_named(&root.join("tune/career/carcfg"), "opponent.lst") {
-            drivers = parse_drivers(&t);
+            let mut raw = parse_drivers_raw(&t);
+            for m in parse_drivers_raw(extra) {
+                match raw.iter_mut().find(|d| d.id.eq_ignore_ascii_case(&m.id)) {
+                    Some(d) => {
+                        for (car, setups) in m.cars {
+                            match d.cars.iter_mut().find(|c| joaat(&c.0) == joaat(&car)) {
+                                Some(c) => c.1.extend(setups.into_iter().filter(|s| !c.1.contains(s)).collect::<Vec<_>>()),
+                                None => d.cars.push((car, setups)),
+                            }
+                        }
+                    }
+                    None => raw.push(m),
+                }
+            }
+            drivers = in_map_order(raw);
         }
         log::info!("opponent pick: {} cars, {} drivers", cars.len(), drivers.len());
         OpPick { cars, drivers }
@@ -296,6 +313,11 @@ impl OpPick {
 /// `Character { Name <id> Car { Name <vehicle> Config { Name <setup> } .. } .. }` in the map orders
 /// (characters by joaat(id), each one's cars by joaat(vehicle); a repeated car adds its set-ups).
 pub fn parse_drivers(text: &str) -> Vec<PickDriver> {
+    in_map_order(parse_drivers_raw(text))
+}
+
+/// The characters and each one's cars in the order the maps were filled.
+fn parse_drivers_raw(text: &str) -> Vec<PickDriver> {
     let mut list: Vec<PickDriver> = Vec::new();
     for ch in text.split("Character").skip(1) {
         let mut words = ch.split_whitespace();
@@ -339,10 +361,21 @@ pub fn parse_drivers(text: &str) -> Vec<PickDriver> {
             }
         }
         if !id.is_empty() {
-            let order = atmap_order(&cars.iter().map(|c| joaat(&c.0)).collect::<Vec<_>>());
-            list.push(PickDriver { id, cars: order.into_iter().map(|i| cars[i].clone()).collect() });
+            list.push(PickDriver { id, cars });
         }
     }
+    list
+}
+
+/// The maps' iteration orders: characters by joaat(id), each one's cars by joaat(vehicle).
+fn in_map_order(list: Vec<PickDriver>) -> Vec<PickDriver> {
+    let list: Vec<PickDriver> = list
+        .into_iter()
+        .map(|d| {
+            let order = atmap_order(&d.cars.iter().map(|c| joaat(&c.0)).collect::<Vec<_>>());
+            PickDriver { cars: order.into_iter().map(|i| d.cars[i].clone()).collect(), id: d.id }
+        })
+        .collect();
     let order = atmap_order(&list.iter().map(|c| joaat(&c.id)).collect::<Vec<_>>());
     order.into_iter().map(|i| list[i].clone()).collect()
 }
@@ -397,5 +430,38 @@ mod tests {
         }
         let two = p.pick(2, 0.790155, 1, MASKS_RACE, &["GH_26".into()], &mut Mwc { lo: 1, carry: 1 }, &all);
         assert!(two.iter().all(|q| q.driver != "GH_26"));
+    }
+
+    /// The cut GT-R through `extra` (DECISIONS.md D21): a car of the table with the R8's samples,
+    /// drawn where the R8 is, raced by GH_12 in its set-up; the disc's cars keep their places.
+    #[test]
+    fn cut_gtr_as_an_opponent() {
+        let dir = "D:/MCLA/extracted/cache";
+        if !Path::new(dir).join("tune/vehicle").is_dir() {
+            return;
+        }
+        let p = OpPick::load(dir, &format!("{}{}", crate::catalog::CUT_CATALOG, crate::catalog::CUT_OPPONENT));
+        let disc = OpPick::load(dir, "");
+        assert_eq!(p.cars.len(), disc.cars.len() + 1);
+        let gtr = p.car(crate::catalog::CUT_GTR).expect("gt-r");
+        assert_eq!(gtr.samples, p.car("vp_aud_r8_08").unwrap().samples);
+        assert_eq!(p.drivers.len(), disc.drivers.len());
+        let gh12 = p.drivers.iter().find(|d| d.id == "GH_12").unwrap();
+        assert!(gh12.cars.iter().any(|c| c.0 == crate::catalog::CUT_GTR && c.1 == [crate::catalog::CUT_SETUP]));
+        let all = |_: &str| true;
+        let names = |q: &OpPick, v: Vec<usize>| v.into_iter().map(|k| q.cars[k].name.clone()).collect::<Vec<_>>();
+        let with = names(&p, p.fill(0.790155, 1, 31, 255, -1, &all));
+        assert!(with.iter().any(|n| n == crate::catalog::CUT_GTR));
+        let mut without = names(&disc, disc.fill(0.790155, 1, 31, 255, -1, &all));
+        without.push(crate::catalog::CUT_GTR.into());
+        let mut with_sorted = with.clone();
+        with_sorted.sort();
+        without.sort();
+        assert_eq!(with_sorted, without);
+        // (drawn alone, GH_12 takes it in its set-up)
+        let one = p.pick(1, 0.790155, 1, MASKS_RACE, &[], &mut Mwc { lo: 1, carry: 1 }, &|c: &str| c == crate::catalog::CUT_GTR || c == "vp_aud_r8_08");
+        if one[0].drawn == crate::catalog::CUT_GTR {
+            assert_eq!((one[0].driver.as_str(), one[0].setup.as_str()), ("GH_12", crate::catalog::CUT_SETUP));
+        }
     }
 }

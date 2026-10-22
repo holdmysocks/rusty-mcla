@@ -406,6 +406,12 @@ impl Career {
                 Err(e) => log::warn!("career: string table: {}", e),
             }
         }
+        // (the cut GT-R's names, which the table lacks: catalog::CUT_STRINGS)
+        if let Some(m) = c.strings.langs.first_mut() {
+            for (k, v) in crate::catalog::CUT_STRINGS {
+                m.entry(mcla_formats::hash::joaat(k)).or_insert_with(|| v.to_string());
+            }
+        }
         if let Ok(rd) = std::fs::read_dir(root.join("ui")) {
             let mut files: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.file_name().map_or(false, |n| n != "0xa4c1e8fa" && n != "0xac5297d5")).collect();
             files.sort();

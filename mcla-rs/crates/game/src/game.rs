@@ -5755,7 +5755,7 @@ impl Game {
                 if std::env::var("MCLA_GARAGE_LIST").is_ok() && self.garage_list.is_none() && self.flash_garage.is_some() {
                     static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                     if !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        self.garage_list = Some((std::env::var("MCLA_GARAGE_LIST").map_or(false, |v| v == "showroom"), 0));
+                        self.garage_list = Some((std::env::var("MCLA_GARAGE_LIST").map_or(false, |v| v.split(':').next() == Some("showroom")), 0));
                     }
                 }
                 // (an imported save's rim for this car, should it not have been fitted at loading)
@@ -5782,6 +5782,16 @@ impl Game {
                 } else {
                     list_cars
                 };
+                // (MCLA_GARAGE_LIST=showroom:<car>: with that vehicle highlighted, for screenshots)
+                if let (Some(want), Some((sh, _))) = (std::env::var("MCLA_GARAGE_LIST").ok().and_then(|v| v.split_once(':').map(|(_, c)| c.to_string())), self.garage_list) {
+                    static PICKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if let Some(k) = list_cars.iter().position(|&i| self.dir_name(i).eq_ignore_ascii_case(&want)) {
+                        if !PICKED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            log::info!("garage list hook: {} is {} of {}", want, k, list_cars.len());
+                            self.garage_list = Some((sh, k));
+                        }
+                    }
+                }
                 let listing = self.garage_list.is_some() && !list_cars.is_empty();
                 let mut list_back = false;
                 let mut list_swallow = false;
@@ -7084,8 +7094,8 @@ impl Game {
                         // (the highlighted vehicle's, whether or not its model has arrived yet)
                         let shown_car = self.garage_list.and_then(|(_, sel)| list_cars.get(sel).copied()).unwrap_or(self.current_car);
                         let picture = pictures.join("managerides").join(format!("mr_{}.r9", self.dir_name(shown_car)));
-                        let big_picture = pictures.join("showroom").join(format!("sh_{}.r9", self.dir_name(shown_car)));
-                        let list_dirs: Vec<String> = list_cars.iter().map(|&i| self.dir_name(i)).collect();
+                        let big_picture = pictures.join("showroom").join(format!("sh_{}.r9", crate::catalog::picture_name(&self.dir_name(shown_car))));
+                        let list_dirs: Vec<String> = list_cars.iter().map(|&i| crate::catalog::picture_name(&self.dir_name(i))).collect();
                         let fg = self.flash_garage.as_mut().unwrap();
                         fg.show(&page);
                         // The vehicle's picture: the movie's `sh_dyntexture` clip names a texture
