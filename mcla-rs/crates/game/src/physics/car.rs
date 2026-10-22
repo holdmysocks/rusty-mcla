@@ -258,6 +258,9 @@ pub struct CarState {
     /// the biggest change of velocity a contact callback of mcCarDamage (0x82343880) has seen
     /// since the camera last took it (its shake reads the same dv; main.rs zeroes it)
     pub shake_dv: f32,
+    /// the last hit that counted (sub_82342B70): the one that destroys a car tells whether it
+    /// explodes (over ExplodeThreshold)
+    pub last_hit: f32,
     /// a hit above the wipeout threshold this frame, in thresholds (cleared by whoever acts on it)
     pub wipeout: f32,
     /// wiped out: 1 at the hit, running down to 0 over the tuning's WipeoutDelay (the centre
@@ -351,7 +354,7 @@ impl CarState {
             burnout: 0.0,
             launch: 0.0,
             damage: 0.0,
-            last_impact: 0.0, shake_dv: 0.0, wipeout: 0.0, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
+            last_impact: 0.0, shake_dv: 0.0, last_hit: 0.0, wipeout: 0.0, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
             engine_factor: 1.0,
             veh: None,
             touches: Vec::new(),
@@ -418,6 +421,7 @@ impl CarState {
             }
         }
         let max = max.max(1.0);
+        self.last_hit = hit;
         let mut points = self.damage * max + hit;
         if points >= max {
             points = if hit <= fatal { max - 1.0 } else { max };

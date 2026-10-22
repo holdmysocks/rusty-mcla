@@ -397,14 +397,23 @@ struct App {
     photo: Option<(Mode, bool)>,
     photo_request: Option<String>,
     photo_msg: f32,
-    /// the car is wrecked: seconds until it is put back on the road
+    /// the car is wrecked: seconds until it is put back on the road (the port's repair; it counts
+    /// from the end of the damage-out timer)
     wreck_timer: f32,
-    /// wreck: seconds of slow motion left, the time scale now (`wipeout.timewarper`), and the
-    /// wrecked car's camera view (look-at, offset, blend time)
-    wipe_time: f32,
+    /// the game's time scale from the time warpers (min of them; `boomcam::TimeWarper`):
+    /// "vehicle\wipeout" (`wipeout.timewarper`) and "vehicle\explosion"
     wipe_scale: f32,
-    wipe_view: Option<(Vec3, Vec3, f32)>,
-    wipe_tune: [f32; 4],
+    warp_wipe: boomcam::TimeWarper,
+    warp_expl: boomcam::TimeWarper,
+    /// the player car's crash state (chassis +592: 0x10 wiped out, 0x04 damaged out; crash_camera_rule.md
+    /// 4): the bits, mcCarDamage +44 (the timer), an exploding car (+82), the speed and velocity
+    /// of the frame before
+    crash_bits: u8,
+    crash_timer: f32,
+    crash_exploding: bool,
+    crash_prev: (f32, Vec3),
+    /// the wipeout camera (mcPlayerCamera +72)
+    crash_cam: boomcam::CrashCam,
     /// standing still: seconds so far, the car's "Idle" view once looked up, how far it is blended in
     idle_time: f32,
     /// the idle camera: the replay's views of the standing car
@@ -423,6 +432,7 @@ struct App {
     shake: Option<boomcam::CamShake>,
     shake_impact: f32,
     shake_air: f32,
+    /// the wipeout camera's start asks for its jolt (sub_822AFF10)
     shake_wipe: bool,
     /// the landing shake held while a wheel is bottomed out (car +473), the slipstream turbo
     /// running last frame, and one-shots asked for outside the camera code (duration, scale)
@@ -817,10 +827,14 @@ impl App {
             photo_request: None,
             photo_msg: 0.0,
             wreck_timer: 0.0,
-            wipe_time: 0.0,
             wipe_scale: 1.0,
-            wipe_view: None,
-            wipe_tune: [1.25, 0.1, 5.0, 10.0],
+            warp_wipe: boomcam::TimeWarper::new([1.25, 0.1, 5.0, 10.0]),
+            warp_expl: boomcam::TimeWarper::new([0.5, 0.1, 3.0, 1.0]),
+            crash_bits: 0,
+            crash_timer: 0.0,
+            crash_exploding: false,
+            crash_prev: (0.0, Vec3::ZERO),
+            crash_cam: Default::default(),
             idle_time: 0.0,
             view_mode: 0,
             replay_shot_t: f32::MIN,
@@ -1585,7 +1599,7 @@ impl App {
     /// Nothing while looking back or while a wreck is watched (the reverse and wipeout cameras
     /// hold the buttons). The new view is the save's DEFAULT CAMERA as well (sub_822AFAB0).
     fn camera_button(&mut self, up: bool) {
-        if self.look_back || self.wreck_timer > 0.0 {
+        if self.look_back || self.crash_bits != 0 {
             return;
         }
         // (while the event camera runs CAM_UP only ends it and CAM_DOWN does nothing; the
@@ -2438,23 +2452,20 @@ impl App {
                 }
             }
         }
-        // ---- wrecked: the car dies, a moment later it is back on its wheels, repaired ----
+        // ---- crashes (crash_camera_rule.md 4): the player's car wiped out (chassis +592 bit 0x10) or
+        // damaged out (0x04); a wreck is put back on the road, repaired, a moment later ----
         {
-            // (slow motion: down to the file's time warp at its fall rate, back up at its rise rate)
-            let [_, warp, rise, fall] = self.wipe_tune;
-            if self.wipe_time > 0.0 {
-                self.wipe_time -= dt;
-                self.wipe_scale = (self.wipe_scale - fall * dt).max(warp);
-            } else {
-                self.wipe_scale = (self.wipe_scale + rise * dt).min(1.0);
-            }
+            // (slow motion: the warpers on real time; the game's scale is the least of them)
+            self.warp_wipe.update(dt);
+            self.warp_expl.update(dt);
+            self.wipe_scale = self.warp_wipe.cur.min(self.warp_expl.cur);
             let mission = self.game.race.as_ref().map_or(false, |r| r.kind != game::RaceKind::Race);
             if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !mission && self.cine.playing.is_none() {
                 if self.wreck_timer > 0.0 {
                     self.wreck_timer -= dt;
                     if self.wreck_timer <= 0.0 {
                         // (the game's quick fix: "you must repair your vehicle before you can
-                        // continue", at its fix price for a wreck)
+                        // continue", at its fix price for a wreck; the flags go to 0)
                         let bill = self.game.fix_price(1.0, true).min(self.game.money.max(0));
                         self.game.money -= bill;
                         if let Some(c) = self.vehicles.player_mut() {
@@ -2465,31 +2476,115 @@ impl App {
                             c.state.gear = gear;
                             c.placed = false;
                         }
+                        self.crash_bits = 0;
+                        self.crash_exploding = false;
+                        // (the player's reset puts the warpers back, sub_822EAFB0)
+                        self.warp_wipe.reset();
+                        self.warp_expl.reset();
                         self.game.show_message(&format!("REPAIRED   -${}", bill));
                     }
                 } else if let Some(c) = self.vehicles.player_mut() {
-                    // a wipeout: one blow of more than 1.8 times the WipeoutThreshold (the
-                    // player's allowance) - the crash in slow motion, the car not wrecked
-                    let big = std::mem::take(&mut c.state.wipeout);
-                    if big > 1.8 && c.state.damage < 0.999 && self.wipe_time <= 0.0 {
-                        c.stunned = c.stunned.max(1.2);
-                        c.state.upset = 1.0;
-                        self.wipe_time = self.wipe_tune[0];
+                    let dm = c.model.simtunes.as_ref().map(|s| s.base.damage.clone()).unwrap_or_default();
+                    let speed = c.state.speed();
+                    let up_y = (c.state.rot * Vec3::Y).y;
+                    let (was_speed, was_vel) = self.crash_prev;
+                    self.crash_prev = (speed, c.state.vel);
+                    if let Ok(v) = std::env::var("MCLA_CRASH_TEST") {
+                        // (test hook "secs,w|d|x": at that time a wipeout blow, a fatal blow, or an
+                        // exploding one)
+                        let mut it = v.split(',');
+                        let at = it.next().and_then(|x| x.parse::<f32>().ok()).unwrap_or(5.0);
+                        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                        if self.sim_time >= at && !DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            match it.next().unwrap_or("w") {
+                                "d" => {
+                                    c.state.damage = 1.0;
+                                    c.state.last_hit = dm.fatal_blow + 1.0;
+                                }
+                                "x" => {
+                                    c.state.damage = 1.0;
+                                    c.state.last_hit = dm.explode_threshold + 1.0;
+                                }
+                                _ => c.state.wipeout = 2.0,
+                            }
+                        }
                     }
-                    if c.state.damage >= 0.999 {
-                        c.stunned = 3.2;
-                        self.wreck_timer = 3.2;
-                        // the wreck plays in slow motion, seen from the car's wreck camera
-                        self.wipe_time = self.wipe_tune[0];
-                        self.wipe_view = boomcam::event_view(&self.opt.data_dir, &c.model.name, "Damageout").or_else(|| boomcam::event_view(&self.opt.data_dir, "vp_vw_golf_83", "Damageout"));
-                        let m = self.game.career.strings.get("splash_damaged_out").map(|s| s.to_uppercase()).unwrap_or_else(|| "DAMAGED OUT".into());
-                        self.game.show_message(&m);
-                        let p = c.state.pos;
-                        self.fx.sparks(p + Vec3::Y * 0.6, Vec3::Y, 60);
+                    let big = std::mem::take(&mut c.state.wipeout);
+                    if self.crash_bits == 0 {
+                        // a head-on into something fixed or a car above 22.35 m/s (sub_82333CE8): the
+                        // step's contact dv at least WipeoutThreshold, the contact within 25 degrees
+                        // of the car's back axis - 0.1 of MaxDamage, a wipeout and the slow motion.
+                        // (approx.: the direction of the velocity's change stands for the contact's
+                        // normal; one test for both partners)
+                        let dv = c.state.shake_dv;
+                        let dvec = c.state.vel - was_vel;
+                        let back = c.state.rot * Vec3::Z;
+                        let head_on = dm.wipeout_threshold > 0.0 && dv >= dm.wipeout_threshold && was_speed > 22.35 && dvec.normalize_or_zero().dot(back) > 25f32.to_radians().cos();
+                        // rolled onto its side or roof on the ground (mcCar::Update 0x82336814): 0.2 of
+                        // MaxDamage and a wipeout
+                        let rolled = up_y <= 0.1 && c.state.airborne_time <= 0.0 && c.state.damage < 0.999;
+                        if head_on {
+                            c.state.damage = (c.state.damage + 0.1).min(1.0);
+                            let now = self.wipe_scale;
+                            self.warp_wipe.start(now, 0.0);
+                        } else if rolled {
+                            c.state.damage = (c.state.damage + 0.2).min(1.0);
+                        }
+                        if c.state.damage >= 0.999 {
+                            // damaged out (sub_82342900 after sub_823429B0): its timer DamageOutDelay, or
+                            // ExplosionDelay when the destroying hit was over ExplodeThreshold
+                            self.crash_exploding = c.state.last_hit > dm.explode_threshold && dm.explode_threshold > 0.0;
+                            self.crash_bits = 0x14;
+                            self.crash_timer = if self.crash_exploding { dm.explosion_delay } else { dm.damage_out_delay };
+                            c.stunned = 1e6;
+                            let m = self.game.career.strings.get("splash_damaged_out").map(|s| s.to_uppercase()).unwrap_or_else(|| "DAMAGED OUT".into());
+                            self.game.show_message(&m);
+                            let p = c.state.pos;
+                            self.fx.sparks(p + Vec3::Y * 0.6, Vec3::Y, 60);
+                        } else if head_on || rolled || big > 1.8 {
+                            // a wipeout (sub_823429B0): its timer WipeoutDelay. (the hit's: one blow of
+                            // more than 1.8 times the WipeoutThreshold - the player's allowance)
+                            self.crash_bits = 0x10;
+                            self.crash_timer = dm.wipeout_delay;
+                            c.stunned = c.stunned.max(1.2);
+                            c.state.upset = 1.0;
+                        }
+                    } else {
+                        // mcCarDamage +44 runs down on real time while the car is under 4.47 m/s or
+                        // all its wheels touch (sub_82342EF0)
+                        let all_down = !c.state.wheels.is_empty() && c.state.wheels.iter().all(|w| w.grounded);
+                        if speed < 4.47 || all_down {
+                            self.crash_timer -= dt;
+                        }
+                        if self.crash_bits & 4 != 0 {
+                            c.stunned = c.stunned.max(0.5);
+                            if self.crash_timer <= 0.0 && self.wreck_timer <= 0.0 && self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT) {
+                                // (the wreck event, sub_822A4108, was not followed: the port's repair
+                                // comes 3.2 s after the Damageout view has begun)
+                                self.wreck_timer = 3.2;
+                            }
+                        } else if self.crash_timer <= 0.0 {
+                            // the wipeout is over (mcCar::Update 0x823363D0): a car lying over (up.y
+                            // under 0.7) is stood up where it is
+                            self.crash_bits = 0;
+                            c.state.upset = 0.0;
+                            if up_y < 0.7 {
+                                let f = c.state.forward();
+                                let fresh = physics::CarState::new(c.state.pos + Vec3::Y * 0.8, (-f.x).atan2(-f.z));
+                                let old = std::mem::replace(&mut c.state, fresh);
+                                c.state.damage = old.damage;
+                                c.state.zones = old.zones;
+                                c.state.dmg = old.dmg;
+                                c.state.gear = old.gear;
+                                c.pose_history.reset();
+                                c.placed = false;
+                            }
+                        }
                     }
                 }
             } else {
                 self.wreck_timer = 0.0;
+                self.crash_bits = 0;
             }
         }
         // diagnostics: enter photo mode and take a picture
@@ -3398,7 +3493,7 @@ impl App {
         self.game.hangout_slow.update(dt);
         // (the bike gyro's T[+84]: the global scale as the main loop leaves it, never under 0.1)
         crate::physics::vehsim::TIME_SCALE84.store(self.game.mc4_time_scale().max(0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
-        let sim_dt = if self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale * self.ability.time_scale() * self.game.mc4_time_scale() };
+        let sim_dt = if self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale.min(self.ability.time_scale()).max(0.1) * self.game.mc4_time_scale() };
         self.vehicles.rescue_fallen(&world, focus);
         // (VEHICLE SELECT: the car stands still, its wheels on the ground)
         if self.game.starter_pick.is_some() {
@@ -5847,7 +5942,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             Some(t) => if t.nfl > 0.0 || matches!(self.weather, sky::Weather::Stormy | sky::Weather::Foggy) { 1.0 } else { 0.0 },
             None => if self.time_of_day > 18.5 || self.time_of_day < 5.5 { 1.0 } else { 0.0 },
         };
-        let sim_dt = if self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale * self.ability.time_scale() * self.game.mc4_time_scale() };
+        let sim_dt = if self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale.min(self.ability.time_scale()).max(0.1) * self.game.mc4_time_scale() };
         if let (Some(path), Some(cfg)) = (self.opt.audio_dump.as_ref(), self.opt.shot.as_ref()) {
             if self.frame_no == cfg.frames {
                 if let Some(a) = self.audio.as_mut() { a.write_capture(path); }
@@ -6233,7 +6328,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let allowed = cinematic
                             && boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2
                             && !self.look_back
-                            && self.wreck_timer <= 0.0
                             && !self.cam_switch.blend.active()
                             && matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
                         let inv = render_state.rot.inverse();
@@ -6247,6 +6341,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             steer: car.input.steer,
                             front_z: if front_z.is_finite() { front_z } else { 0.0 },
                             slope: boomcam::TrackCar::slope_of(render_state.rot, &render_state.wheels),
+                            air_time: render_state.airborne_time,
+                            // (mcCarAero +4: AeroDampFactor while wiped out and over 4.47 m/s)
+                            aero: if self.crash_bits & 0x10 != 0 && render_state.speed() > 4.47 { car.model.simtunes.as_ref().map_or(1.0, |s| s.base.s.aero_damp_factor) } else { 1.0 },
                         };
                         let charge = render_state.veh.as_ref().map_or(0.0, |v| v.burn);
                         // the chooser's inputs (sub_822B3BF0; boomcam::EventIn)
@@ -6292,9 +6389,51 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             reverse_gear: render_state.gear < 0,
                             air_time,
                             idle: self.idle_time,
+                            ..Default::default()
                         };
                         self.pad_pan.0 = false;
                         self.pad_cam_ud = false;
+                        // the wipeout camera (sub_822B4C98 / sub_822AFF10): taken while the crash bits
+                        // are set (every frame until it is in use; not while Damageout is set); a running
+                        // event is ended first, and the camera waits for its blend back [?: the
+                        // director's queue], then is cut to
+                        let model_offset = car.model.simtunes.as_ref().map_or(Vec3::ZERO, |s| Vec3::new(s.base.s.model_offset_x, s.base.s.model_offset_y, s.base.s.model_offset_z));
+                        let view_now = boomcam::VIEW_OF_PORT[(mode as usize).min(5)] as u8;
+                        if self.crash_bits != 0 && !self.crash_cam.active() && self.event_dir.event() != Some(boomcam::EV_DAMAGEOUT) {
+                            let queued = self.event_dir.running() || self.event_dir.leaving();
+                            self.event_dir.end(&data_dir, &car.model.name);
+                            if !self.event_dir.leaving() {
+                                let mut how = boomcam::CrashStart::choose(view_now, self.crash_exploding, false, render_state.up().y, render_state.rot * Vec3::X, render_state.vel);
+                                if queued {
+                                    how.blend = 0.0;
+                                }
+                                self.crash_cam.start(model_offset, &track_car, how);
+                                if how.blend == 0.0 && !queued {
+                                    self.cam_switch.mask.start(0.01, 0.1, 0.01);
+                                }
+                                if self.crash_exploding {
+                                    let now = self.wipe_scale;
+                                    self.warp_expl.start(now, 0.0);
+                                }
+                                self.shake_wipe = true;
+                            }
+                        }
+                        // the bits gone while it is the current camera: a cut to the drive view
+                        if self.crash_bits == 0 && self.crash_cam.active() {
+                            self.crash_cam.stop();
+                            self.boom.reset();
+                        }
+                        let out = if self.crash_cam.active() {
+                            self.crash_cam.frame(&track_car, out, dt, sim_dt, &|c, r| world.collider.sphere(c, r).map(|(d, n, _)| (d, n)), gpu.config.width as f32 / gpu.config.height.max(1) as f32)
+                        } else {
+                            out
+                        };
+                        let ein = boomcam::EventIn {
+                            crash: self.crash_cam.active(),
+                            damage_out: self.crash_bits & 4 != 0 && self.crash_timer <= 0.0 && !car.model.bike,
+                            destroyed: self.crash_bits & 4 != 0,
+                            ..ein
+                        };
                         let out = self.event_dir.frame(
                             &data_dir,
                             &car.model.name,
@@ -6313,13 +6452,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         if std::env::var("MCLA_EVENT_DEBUG").is_ok() && self.frame_no % 10 == 0 {
                             log::info!("event cam: running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
                         }
+                        if std::env::var("MCLA_CRASH_DEBUG").is_ok() && (self.crash_bits != 0 || self.frame_no % 30 == 0) {
+                            log::info!("crash: bits {:#x} timer {:.2} exploding {} wipeout cam {} event {:?} scale {:.2} speed {:.1} damage {:.2} cam {:.1} {:.1} {:.1} car {:.1} {:.1} {:.1} fov {:.0}", self.crash_bits, self.crash_timer, self.crash_exploding, self.crash_cam.active(), self.event_dir.event(), self.wipe_scale, render_state.speed(), render_state.damage, out.pos.x, out.pos.y, out.pos.z, render_state.pos.x, render_state.pos.y, render_state.pos.z, out.fov);
+                        }
+                        // (the Damageout view wholly in: the wipeout camera is out of the director)
+                        if self.crash_cam.active() && self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT) && self.event_dir.shown() {
+                            self.crash_cam.stop();
+                        }
                         self.chase.pos = out.pos;
                         self.chase.look = out.look;
                         // the camera kept out of walls (camBoomCS CollideType 2, sub_8231FD60): a ball
                         // of the near plane's corner from the file's Collide point on the car to the
                         // camera; the camera stops where it touches, the look keeps its direction
                         // (the event camera has its own, not ported)
-                        if tune.collide_type() & 2 != 0 && !self.event_dir.running() {
+                        if tune.collide_type() & 2 != 0 && !self.event_dir.running() && !self.crash_cam.active() {
                             let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                             let ty = (out.fov.to_radians() * 0.5).tan();
                             let corner = tune.near() * (ty * ty + (ty * aspect) * (ty * aspect)).sqrt();
@@ -6332,7 +6478,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                         self.boom_up = Some(out.up);
-                        self.cam.fov_y = (out.fov + if self.event_dir.running() { 0.0 } else { self.look.fov }).to_radians();
+                        self.cam.fov_y = (out.fov + if self.event_dir.running() || self.crash_cam.active() { 0.0 } else { self.look.fov }).to_radians();
                         boom_view = true;
                         if let Some(d) = self.game.replay.as_mut().and_then(|p| p.director.as_mut()) {
                             d.drive_eye = Some(self.chase.pos);
@@ -6345,6 +6491,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.boom.reset();
                     self.cam_switch.reset();
                     self.event_dir.reset();
+                    self.crash_cam.stop();
                     self.look.reset();
                     self.view_mode = if own_view { 255 } else { self.cam_mode };
                 }
@@ -6417,15 +6564,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     } else {
                         self.shake_air += dt;
                     }
-                    // a wipeout or wreck begins (sub_823429B0), and its camera (sub_822AFF10: the
-                    // blocks off, then its own jolt 0.75 s, 0.6)
-                    let wiping = self.wipe_time > 0.0 || self.wreck_timer > 0.0;
-                    if wiping && !self.shake_wipe {
+                    // the wipeout camera starts (sub_822AFF10): every block off (the wipeout's own
+                    // impact jolt of the same frame with them), then its JoltDuration 0.75 s at
+                    // JoltAmplitude 0.6 for a wipeout or an exploding car
+                    if std::mem::take(&mut self.shake_wipe) {
                         sh.reset();
-                        sh.jolt(0.75, 0.6, fixed);
-                        sh.jolt(st.impact_duration_max, st.impact_amplitude_max, fixed);
+                        if self.crash_bits & 0x10 != 0 || self.crash_exploding {
+                            sh.jolt(0.75, 0.6, fixed);
+                        }
                     }
-                    self.shake_wipe = wiping;
                     // the rumbles (sub_822B4C98): driving between the tune's two shares of the top
                     // gear's speed, times MagnitudeMultiplier, none in the air
                     let top = car.model.params.veh.as_ref().map_or(60.0, |v| v.top_speed.max(1.0));
@@ -6488,19 +6635,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     self.game.idle_cam = self.event_dir.idle();
                 }
-                // a wreck is watched from the car's "Damageout" view, blended in over its time
-                if let (true, Some((track, offset, blend))) = (self.wreck_timer > 0.0, self.wipe_view) {
-                    let k = ((3.2 - self.wreck_timer) / blend.max(0.1)).clamp(0.0, 1.0);
-                    let k = k * k * (3.0 - 2.0 * k);
-                    // (the view keeps level: only the car's heading turns it)
-                    let f = render_state.forward();
-                    let yaw = glam::Quat::from_rotation_y((-f.x).atan2(-f.z));
-                    let at = render_state.pos + yaw * track;
-                    self.chase.pos = self.chase.pos.lerp(at + yaw * offset, k);
-                    self.chase.look = self.chase.look.lerp(at, k);
-                    self.cam.fov_y = self.cam.fov_y + (50f32.to_radians() - self.cam.fov_y) * k;
-                }
-                self.hide_player = boom_view && self.view_mode == 4 && !self.look_back;
+                self.hide_player = boom_view && self.view_mode == 4 && !self.look_back && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
                 // keep the camera out of walls and hillsides (camBoomCS CollideType): pull it in
                 // along the line from the car to where it wants to be
                 // (the driving views have the original's collision in the boom section; this
@@ -6999,7 +7134,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (the driver's camera: the original's POV camera sets G+122 of the car it follows - sub_822A9670 -
         // and its windows take the in-car glass program; damage_map_rule.md Part C 6. As the cockpit's
         // headless driver: not while looking back, in a replay or the idle camera.)
-        self.vehicles.interior_glass = self.view_mode == 3 && !self.look_back && !self.event_dir.idle();
+        self.vehicles.interior_glass = self.view_mode == 3 && !self.look_back && !self.event_dir.idle() && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
         // (m_NFLFade for the night fill light the traffic cars add to their ambient - fillmap.rs)
         fillmap::set_fade(self.sky_now().tod.map_or(0.0, |t| t.nfl));
         // (the traffic cars' lamp states and glow levels, for the cars drawn now - vehicles.rs
@@ -7800,7 +7935,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     drivers::Seat { id: i, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str() }
                 })
                 .collect();
-            self.drivers.headless = self.view_mode == 3 && !self.look_back && !self.event_dir.idle();
+            self.drivers.headless = self.view_mode == 3 && !self.look_back && !self.event_dir.idle() && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
         }
         // --- main pass ----------------------------------------------------------
@@ -9201,6 +9336,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             MenuAction::ApplyCar => {
                 let car_changed = self.game.selected_car != self.game.current_car;
                 if car_changed {
+                    self.crash_cam.new_car();
+                }
+                if car_changed {
                     // each vehicle keeps its own parts: those of the one left are put by, the
                     // taken one's brought out (a vehicle never fitted keeps the rim on, as before)
                     let left = self.game.car_dirs.get(self.game.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
@@ -9563,23 +9701,9 @@ impl ApplicationHandler for App {
             }
         }
         self.ability.load(&self.opt.data_dir);
-        // the wreck's slow motion (`wipeout.timewarper`: seconds, time warp, rise and fall rates)
-        {
-            let h = mcla_formats::hash::joaat("wipeout.timewarper");
-            if let Ok(text) = std::fs::read_to_string(std::path::Path::new(&self.opt.data_dir).join("tune/vehicle").join(format!("0x{h:08x}"))) {
-                for l in text.lines() {
-                    let mut it = l.split_whitespace();
-                    let (Some(k), Some(v)) = (it.next(), it.next().and_then(|x| x.parse::<f32>().ok())) else { continue };
-                    match k {
-                        "m_rSlowMotionDuration" => self.wipe_tune[0] = v,
-                        "m_rSlowMotionTimeWarp" => self.wipe_tune[1] = v.clamp(0.02, 1.0),
-                        "m_rRiseScaleTimeWarp" => self.wipe_tune[2] = v.max(0.1),
-                        "m_rFallScaleTimeWarp" => self.wipe_tune[3] = v.max(0.1),
-                        _ => {}
-                    }
-                }
-            }
-        }
+        // the time warpers' tunes (`tune/vehicle/<name>.timewarper`)
+        self.warp_wipe = boomcam::TimeWarper::load(&self.opt.data_dir, "wipeout", self.warp_wipe.tune);
+        self.warp_expl = boomcam::TimeWarper::load(&self.opt.data_dir, "explosion", self.warp_expl.tune);
         if std::env::var("MCLA_NO_CITYMAP").is_err() && std::env::var("MCLA_SIM_TEST").is_err() {
             self.citymap_rx = Some(citymap::spawn(world.assets.clone(), world.index.sectors.clone(), world.shared.clone()));
         }

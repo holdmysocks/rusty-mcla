@@ -1170,6 +1170,233 @@ impl TrackTune {
     }
 }
 
+impl TrackTune {
+    /// The wipeout camera (mcPlayerCamera +72, vehTrackCS): its `<class>_wipeout.camtrackcs` is not
+    /// on the disc, so these are the constructors' values and sub_822B1648's (crash_camera_rule.md
+    /// 1.2): TrackTo 0.75 x the tune's ModelOffset, lens 40, held 6..10 m from the point, the place
+    /// nearly still (XZ 0..0.1 m/s, Y 1..2 m/s over 5..10 m/s), turning at AppRot 60 / AppXRot 30;
+    /// the Offset is set at each start.
+    pub fn wipeout(model_offset: Vec3) -> TrackTune {
+        TrackTune {
+            blend: 1.2,
+            ret: 0.0,
+            track: model_offset * 0.75,
+            offset: Vec3::new(0.0, 1.0, 7.0),
+            dist: (6.0, 10.0),
+            dist_scale: 1.0,
+            fov: (40.0, 40.0),
+            app_rot: 60.0,
+            app_x_rot: 30.0,
+            app_app: 0.7,
+            app_rot_min: 0.01,
+            look_at: 1.0,
+            ss_speed: (0.0, 50.0),
+            ss_filter: 0.1,
+            app_xz: (0.0, 0.1),
+            app_y: (1.0, 2.0),
+            rev_app_xz: 0.1,
+            app_speed: (5.0, 10.0),
+            app_inc: 5.0,
+            app_dec: 10.0,
+            app_pos_min: 0.25,
+            hill: (-0.8, 1.25, 0.1),
+            approach_on: true,
+            collide_type: 1,
+            collide_min: 0.5,
+            near: 0.2,
+        }
+    }
+}
+
+/// The wipeout camera (mcPlayerCamera +72, vehTrackCS; crash_camera_rule.md 1 and 2): taken by
+/// sub_822AFF10 while the car is wiped out, damaged out or held by the police, and left with a
+/// cut when that is over.
+#[derive(Default)]
+pub struct CrashCam {
+    cam: TrackCam,
+    tune: Option<TrackTune>,
+    /// 0 off, 1 blending in from the drive view, 2 current
+    phase: u8,
+    left: f32,
+    time: f32,
+    /// the place's XZ rate has its load value (5, vt+16) until the first wipeout of a car
+    used: bool,
+}
+
+/// Where sub_822AFF10 puts the wipeout camera and how it comes in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrashStart {
+    /// the Offset (+448): (0, 1, 7) behind, or (+-6, 0, 0) to the side the car slides toward
+    pub offset: Vec3,
+    /// the director's orbit blend (mode 3), 0 = a cut (with the transition mask)
+    pub blend: f32,
+    /// ReverseOn -1 (an exploding car)
+    pub exploding: bool,
+}
+
+impl CrashStart {
+    /// sub_822AFF10's choice: BUMPER / POV or an exploding car cut (with the TRANSITIONMOVIE mask
+    /// 0.01, 0.1, 0.01); a bust or a car past 84 degrees over blends 0.5 s to 7 m behind and 1 m
+    /// up; else 0.25 s to 6 m on the side the car slides toward (its right axis . velocity).
+    pub fn choose(view: u8, exploding: bool, police: bool, up_y: f32, right: Vec3, vel: Vec3) -> CrashStart {
+        let behind = Vec3::new(0.0, 1.0, 6.0 + 1.0);
+        if view < 2 || exploding {
+            CrashStart { offset: behind, blend: 0.0, exploding }
+        } else if police || up_y <= 0.1 {
+            CrashStart { offset: behind, blend: 0.5, exploding }
+        } else {
+            let side = if right.dot(vel) > 0.0 { 1.0 } else { -1.0 };
+            CrashStart { offset: Vec3::new(side * 6.0, 0.0, 0.0), blend: 0.25, exploding }
+        }
+    }
+}
+
+impl CrashCam {
+    pub fn active(&self) -> bool {
+        self.phase != 0
+    }
+    /// The drive view comes back (a cut, sub_8271E930), or the Damageout view has taken over.
+    pub fn stop(&mut self) {
+        self.phase = 0;
+    }
+    /// A new car: the place's XZ rate starts again at the load's 5.
+    pub fn new_car(&mut self) {
+        self.used = false;
+    }
+    pub fn start(&mut self, model_offset: Vec3, car: &TrackCar, how: CrashStart) {
+        let mut t = TrackTune::wipeout(model_offset);
+        t.offset = how.offset;
+        if !self.used {
+            self.cam.app_xz = 5.0;
+            self.used = true;
+        }
+        // (reset: snap, the side 0 - no mirror)
+        self.cam.set(&t, car, 99, 0.0);
+        self.cam.rev = how.exploding;
+        self.tune = Some(t);
+        self.phase = if how.blend > 0.0 { 1 } else { 2 };
+        self.time = how.blend;
+        self.left = how.blend;
+    }
+    /// One frame: `dt` the unscaled frame time (+184 = 1), `dt_game` the game's; `drive` the
+    /// drive view's output (the blend's source).
+    pub fn frame(&mut self, car: &TrackCar, drive: BoomOut, dt: f32, dt_game: f32, test: SphereTest, aspect: f32) -> BoomOut {
+        let Some(t) = self.tune.clone() else { return drive };
+        if self.phase == 0 {
+            return drive;
+        }
+        let out = self.cam.update(&t, car, dt, dt_game, test, aspect);
+        if self.phase == 1 {
+            self.left -= dt;
+            if self.left <= 0.0 {
+                self.phase = 2;
+            } else {
+                let w = 1.0 - self.left / self.time.max(1e-4);
+                let w = (1.0 - (std::f32::consts::PI * w.clamp(0.0, 1.0)).cos()) * 0.5;
+                return orbit_mix(&drive, &out, car.pos, w);
+            }
+        }
+        out
+    }
+}
+
+/// A time warper of the player (mcTimeWarper, crash_camera_rule.md 5): `tune/vehicle/<name>.timewarper`
+/// = SlowMotionDuration, SlowMotionTimeWarp, RiseScaleTimeWarp, FallScaleTimeWarp. Started, it eases
+/// (sin) from the scale of the moment to the warp at Rise a second, holds until Duration after the
+/// start, then eases back to 1 at Fall a second; on real time.
+#[derive(Clone, Copy, Debug)]
+pub struct TimeWarper {
+    pub tune: [f32; 4],
+    /// 0 easing in, 1 easing out, 2 idle, 3 holding
+    state: u8,
+    from: f32,
+    to: f32,
+    pub cur: f32,
+    t: f32,
+    since: f32,
+    rate: f32,
+}
+
+impl TimeWarper {
+    pub fn new(tune: [f32; 4]) -> TimeWarper {
+        TimeWarper { tune, state: 2, from: 1.0, to: 1.0, cur: 1.0, t: 0.0, since: 0.0, rate: 0.0 }
+    }
+    /// The tune file's four values (`m_rSlowMotionDuration` ..), over the defaults given.
+    pub fn load(data_dir: &str, name: &str, tune: [f32; 4]) -> TimeWarper {
+        let mut tune = tune;
+        let h = mcla_formats::hash::joaat(&format!("{name}.timewarper"));
+        if let Ok(text) = std::fs::read_to_string(Path::new(data_dir).join("tune/vehicle").join(format!("0x{h:08x}"))) {
+            for l in text.lines() {
+                let mut it = l.split_whitespace();
+                let (Some(k), Some(v)) = (it.next(), it.next().and_then(|x| x.parse::<f32>().ok())) else { continue };
+                match k {
+                    "m_rSlowMotionDuration" => tune[0] = v,
+                    "m_rSlowMotionTimeWarp" => tune[1] = v,
+                    "m_rRiseScaleTimeWarp" => tune[2] = v,
+                    "m_rFallScaleTimeWarp" => tune[3] = v,
+                    _ => {}
+                }
+            }
+        }
+        TimeWarper::new(tune)
+    }
+    /// sub_822EB400: `now` is the game's time scale of the moment; one update follows at once.
+    pub fn start(&mut self, now: f32, dt: f32) {
+        self.since = 0.0;
+        self.state = 0;
+        self.from = now;
+        self.rate = self.tune[2];
+        self.t = if self.rate > 0.0 { 0.0 } else { 1.0 };
+        self.to = self.tune[1];
+        self.cur = self.tune[1];
+        self.update(dt);
+    }
+    /// sub_822EB078: back to 1 from where it is.
+    pub fn release(&mut self, now: f32) {
+        if self.state == 2 {
+            return;
+        }
+        self.to = 1.0;
+        self.state = 1;
+        self.from = now;
+        self.cur = now;
+        self.rate = self.tune[3];
+        self.t = if self.rate > 0.0 { 0.0 } else { 1.0 };
+    }
+    pub fn reset(&mut self) {
+        *self = TimeWarper::new(self.tune);
+    }
+    /// sub_822EB3A8, once a frame on the unscaled frame time.
+    pub fn update(&mut self, dt: f32) {
+        if self.state <= 1 {
+            self.t += self.rate * dt;
+            self.cur = if self.t >= 1.0 {
+                self.to
+            } else if self.t <= 0.0 {
+                self.from
+            } else {
+                self.from + (self.to - self.from) * (self.t * std::f32::consts::FRAC_PI_2).sin()
+            };
+        }
+        self.since += dt;
+        if self.tune[0] > 0.0 && self.since > self.tune[0] && self.state == 3 {
+            let now = self.cur;
+            self.release(now);
+        }
+        if self.t >= 1.0 {
+            match self.state {
+                0 => self.state = 3,
+                1 => {
+                    self.state = 2;
+                    self.since = 0.0;
+                }
+                _ => {}
+            }
+            self.t = 0.0;
+        }
+    }
+}
+
 /// What the track camera needs of the car.
 #[derive(Clone, Copy, Debug)]
 pub struct TrackCar {
@@ -1187,6 +1414,11 @@ pub struct TrackCar {
     /// the car's back axis laid into each wheel's ground plane (wheel +352 / +356); None with
     /// no wheel down
     pub slope: Option<f32>,
+    /// the chassis' air time (vt+52): over 0.5 s and 10 m/s the place is set behind the motion
+    pub air_time: f32,
+    /// mcCarAero +4: 1, or AeroDampFactor while the car is wiped out and moving (it scales the
+    /// place's XZ approach rate)
+    pub aero: f32,
 }
 
 impl TrackCar {
@@ -1266,6 +1498,9 @@ struct TrackCam {
     bits: u32,
     /// byte +156: the shown camera is the pulled-in one this frame
     corrected: bool,
+    /// ReverseOn -1 (+208, the wipeout camera of an exploding car): byte +656 set, the hill's
+    /// sign turned
+    rev: bool,
 }
 
 impl TrackCam {
@@ -1284,17 +1519,18 @@ impl TrackCam {
     }
 
     /// Where the camera wants to stand (sub_8231C4F8): the Offset in the car's level heading
-    /// (behind the motion above 10 m/s), its y along the world's up.
+    /// (behind the motion after half a second in the air above 10 m/s), its y along the world's up.
     fn place(&self, car: &TrackCar, at: Vec3) -> Vec3 {
         let m = Mat3::from_quat(car.rot);
-        let h = Vec3::new(car.vel.x, 0.0, car.vel.z);
-        let back = if car.speed > 10.0 && h.length_squared() > 1e-4 { -car.vel.normalize() } else { m.z_axis };
+        let back = if car.air_time > 0.5 && car.speed > 10.0 && car.vel.length_squared() > 1e-4 { -car.vel.normalize() } else { m.z_axis };
         let x = Vec3::Y.cross(back).normalize_or(m.x_axis);
         let zh = x.cross(Vec3::Y);
         at + x * self.offset.x + zh * self.offset.z + Vec3::Y * self.offset.y
     }
 
-    fn update(&mut self, t: &TrackTune, car: &TrackCar, dt: f32, test: SphereTest, aspect: f32) -> BoomOut {
+    /// `dt_game`: the game's step (G+8, slowed by a time warp) - the XZ rate's own approach
+    /// runs on it; everything else on `dt` (the camera's clock, +184).
+    fn update(&mut self, t: &TrackTune, car: &TrackCar, dt: f32, dt_game: f32, test: SphereTest, aspect: f32) -> BoomOut {
         // (per call of the original: once a 30 Hz game frame)
         let frames = (dt * 30.0).max(0.0);
         // the lens: the filtered speed over SSSpeedMin..Max, eased (1 - cos(pi x)) / 2
@@ -1319,7 +1555,7 @@ impl TrackCam {
         if !t.approach_on || h_lerp <= 0.0 || h_max <= h_min {
             self.hill = 0.0;
         } else {
-            let s = car.slope.unwrap_or(0.0) * if self.offset.z < 0.0 { -1.0 } else { 1.0 };
+            let s = car.slope.unwrap_or(0.0) * if (self.offset.z < 0.0) != self.rev { -1.0 } else { 1.0 };
             let goal = if s < 0.0 { -(s * h_min).min(0.9).asin() } else { (s * h_max).min(0.9).asin() };
             let l = 1.0 - (1.0 - h_lerp.min(1.0)).powf(frames);
             self.hill += (goal - self.hill) * l;
@@ -1335,14 +1571,14 @@ impl TrackCam {
         // towards its goal at AppInc / AppDec a second, in reverse gear RevAppXZPos
         let s = car.speed;
         let u = if t.app_speed.1 != t.app_speed.0 && s > t.app_speed.0 { ((s - t.app_speed.0) / (t.app_speed.1 - t.app_speed.0)).min(1.0) } else { 0.0 };
-        let goal = if car.reverse_gear {
-            t.rev_app_xz
-        } else if t.app_xz.0 > 0.0 {
-            t.app_xz.1 + (t.app_xz.0 - t.app_xz.1) * u
-        } else {
-            t.app_xz.1
-        };
-        let step = if goal < self.app_xz { t.app_dec } else { t.app_inc } * dt;
+        let mut goal = if t.app_xz.0 > 0.0 { t.app_xz.1 + (t.app_xz.0 - t.app_xz.1) * u } else { t.app_xz.1 };
+        if car.aero < 1.0 {
+            goal *= car.aero;
+        }
+        if car.reverse_gear && !self.rev {
+            goal = t.rev_app_xz;
+        }
+        let step = if goal < self.app_xz { t.app_dec } else { t.app_inc } * dt_game;
         self.app_xz += (goal - self.app_xz).clamp(-step, step);
         let app_y = t.app_y.0 + (t.app_y.1 - t.app_y.0) * u;
         if self.snap {
@@ -1606,6 +1842,12 @@ pub struct EventIn {
     pub air_time: f32,
     /// the pad block's idle time (+112)
     pub idle: f32,
+    /// the wipeout camera is in use (current, blending in, or the Damageout view's blend source):
+    /// the chooser does nothing else; `damage_out`: a destroyed car (not a bike) whose damage-out
+    /// timer has run out - Damageout (17) starts; `destroyed`: chassis +592 bit 0x4 (its end test)
+    pub crash: bool,
+    pub damage_out: bool,
+    pub destroyed: bool,
 }
 
 /// A segment probe of the world (sub_82574418, one result): something lies between the points.
@@ -1645,6 +1887,7 @@ pub const EV_AIR: usize = 8;
 pub const EV_TURN: usize = 9;
 pub const EV_REVERSE: usize = 10;
 pub const EV_HYDRAULICS: usize = 11;
+pub const EV_DAMAGEOUT: usize = 17;
 
 impl EventDirector {
     /// The event camera is running (or blending in): the camera buttons act on it.
@@ -1654,6 +1897,22 @@ impl EventDirector {
     /// The event running (cam +784), if any.
     pub fn event(&self) -> Option<usize> {
         self.running().then_some(self.ev)
+    }
+    /// The event view is wholly in (no blend in or out).
+    pub fn shown(&self) -> bool {
+        self.phase == 2
+    }
+    /// Blending back to the drive view.
+    pub fn leaving(&self) -> bool {
+        self.phase == 3
+    }
+    /// sub_822AFCD0(0, -1, -1): the running event goes back over the record's time.
+    pub fn end(&mut self, data_dir: &str, car_name: &str) {
+        if self.running() {
+            if let Some(t) = self.tune(data_dir, car_name, self.ev) {
+                self.off(&t, -1.0);
+            }
+        }
     }
     /// CAM_UP leaves it (sub_822B35E8: sub_822AFCD0(0, -1, 0.2)).
     pub fn leave(&mut self) {
@@ -1781,6 +2040,7 @@ impl EventDirector {
             EV_HYDRAULICS => end(!i.hyd_on || i.cam_pressed, -1.0),
             // (the pad's buttons zero the idle time - main.rs)
             EV_IDLE => end(i.idle == 0.0, 0.7),
+            EV_DAMAGEOUT => end(!i.destroyed, -1.0),
             _ => None,
         }
     }
@@ -1802,6 +2062,25 @@ impl EventDirector {
     pub fn frame(&mut self, data_dir: &str, car_name: &str, i: &EventIn, car: &TrackCar, chase: BoomOut, dt: f32, test: SphereTest, ray: RayTest, aspect: f32) -> BoomOut {
         let fx = self.fx.get_or_insert_with(|| CamFx::load(data_dir)).clone();
         let fx = &fx;
+        // part 1: while the wipeout camera is in use the only start is Damageout, whatever the
+        // option and the view, and nothing ends
+        if i.crash {
+            if i.damage_out && self.phase == 0 {
+                if let Some(t) = self.tune(data_dir, car_name, EV_DAMAGEOUT).filter(|t| t.blend > 0.0) {
+                    self.off_bytes = [false; 18];
+                    self.ev = EV_DAMAGEOUT;
+                    self.cam.set(&t, car, EV_DAMAGEOUT, 0.0);
+                    self.phase = 1;
+                    self.time = t.blend;
+                    self.left = t.blend;
+                }
+            }
+            if self.phase == 0 {
+                return chase;
+            }
+            let Some(t) = self.tune(data_dir, car_name, self.ev) else { return chase };
+            return self.show(&t, car, chase, dt, test, aspect);
+        }
         // part 2: an event starts only while the camera is wholly out of the director
         if self.phase == 0 {
             self.quit = false;
@@ -1873,7 +2152,7 @@ impl EventDirector {
     }
 
     fn show(&mut self, t: &TrackTune, car: &TrackCar, chase: BoomOut, dt: f32, test: SphereTest, aspect: f32) -> BoomOut {
-        let ev = self.cam.update(t, car, dt, test, aspect);
+        let ev = self.cam.update(t, car, dt, dt, test, aspect);
         self.left -= dt;
         let w = match self.phase {
             1 if self.left <= 0.0 => {
@@ -1895,35 +2174,6 @@ impl EventDirector {
             orbit_mix(&chase, &ev, car.pos, w)
         }
     }
-}
-
-/// One named view of a car's event camera file (`<car>_cinematic.camtrackcs`: Nitrous,
-/// Wheelie, Finish, Damageout ...): the point on the car it looks at, where it stands
-/// (both in the car's frame) and the seconds it takes to get there.
-pub fn event_view(data_dir: &str, car: &str, view: &str) -> Option<(Vec3, Vec3, f32)> {
-    let h = mcla_formats::hash::joaat(&format!("{car}_cinematic.camtrackcs"));
-    let text = std::fs::read_to_string(Path::new(data_dir).join("tune/camera").join(format!("0x{h:08x}"))).ok()?;
-    let mut inside = false;
-    let (mut track, mut offset, mut blend) = (None, None, 0.7);
-    for l in text.lines() {
-        let mut it = l.split_whitespace();
-        let Some(k) = it.next() else { continue };
-        if !inside {
-            inside = k == view && l.contains('{');
-            continue;
-        }
-        if k == "}" {
-            break;
-        }
-        let v: Vec<f32> = it.filter_map(|x| x.parse().ok()).collect();
-        match (k, v.len()) {
-            ("TrackTo", 3) => track = Some(Vec3::new(v[0], v[1], v[2])),
-            ("Offset", 3) => offset = Some(Vec3::new(v[0], v[1], v[2])),
-            ("BlendTime", 1) => blend = v[0],
-            _ => {}
-        }
-    }
-    Some((track?, offset?, blend))
 }
 
 /// One view of the event camera.
@@ -2113,7 +2363,7 @@ mod tests {
         assert!(!burnout_ends(&fx, 1.0, 0.6, 0.8) && burnout_ends(&fx, 1.0, 0.6, 0.7) && burnout_ends(&fx, 0.0, 1.0, 2.0));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 25.0 };
-        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0) };
+        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0 };
         let o = d.frame(&data, "vp_aud_r8_08", &ein(1.0, 1.0, 2.0, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &|_, _| None, &|_, _| false, 16.0 / 9.0);
         assert!(d.running());
         // (blending in: between the chase view and the event view)
@@ -2151,7 +2401,7 @@ mod tests {
             return;
         }
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(0.0, 0.0, -15.0), speed: 15.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0) };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(0.0, 0.0, -15.0), speed: 15.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0 };
         let dt = 1.0 / 60.0;
         let run = |i: EventIn, ray: bool| {
             let mut d = EventDirector::default();
@@ -2172,6 +2422,54 @@ mod tests {
         assert_eq!(d.event(), Some(EV_WHEELIE));
         d.frame(&data, "vp_aud_r8_08", &EventIn { nitro_on: true, ..w }, &car, BoomOut { ..chase }, dt, &|_, _| None, &|_, _| false, 16.0 / 9.0);
         assert_eq!(d.event(), None);
+    }
+
+    /// The crash cameras (crash_camera_rule.md): sub_822AFF10's choice of start; the wipeout camera
+    /// on the R8 snaps 6 m to the side the car slides toward at T = 0.75 x ModelOffset, lens 40,
+    /// comes in over 0.25 s and keeps 6..10 m from T while the car slides away; the wipeout warper
+    /// is at 0.1 after 0.2 s, held to 1.25 s, back to 1 by 1.35 s.
+    #[test]
+    fn crash_cameras() {
+        let right = Vec3::X;
+        let slide = Vec3::new(3.0, 0.0, -20.0);
+        assert_eq!(CrashStart::choose(3, false, false, 1.0, right, slide), CrashStart { offset: Vec3::new(6.0, 0.0, 0.0), blend: 0.25, exploding: false });
+        assert_eq!(CrashStart::choose(3, false, false, 1.0, right, -slide).offset, Vec3::new(-6.0, 0.0, 0.0));
+        assert_eq!(CrashStart::choose(3, false, false, 0.05, right, slide), CrashStart { offset: Vec3::new(0.0, 1.0, 7.0), blend: 0.5, exploding: false });
+        assert_eq!(CrashStart::choose(1, false, false, 1.0, right, slide).blend, 0.0);
+        assert_eq!(CrashStart::choose(4, true, false, 1.0, right, slide).blend, 0.0);
+        let mo = Vec3::new(0.0, 0.708, 0.0);
+        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: slide, speed: slide.length(), reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 0.3 };
+        let drive = BoomOut { pos: Vec3::new(0.0, 2.0, 6.0), look: Vec3::ZERO, up: Vec3::Y, fov: 60.0 };
+        let mut c = CrashCam::default();
+        c.start(mo, &car, CrashStart::choose(3, false, false, 1.0, right, slide));
+        let dt = 1.0 / 60.0;
+        let o = c.frame(&car, BoomOut { ..drive }, dt, dt, &|_, _| None, 16.0 / 9.0);
+        assert!(o.pos.distance(drive.pos) < 1.0, "blending in: {:?}", o.pos);
+        let mut o = o;
+        for _ in 0..15 {
+            o = c.frame(&car, BoomOut { ..drive }, dt, dt, &|_, _| None, 16.0 / 9.0);
+        }
+        let t = Vec3::new(0.0, 0.531, 0.0);
+        assert!(o.pos.distance(t + Vec3::new(6.0, 0.0, 0.0)) < 1e-3 && o.fov == 40.0, "{:?}", o.pos);
+        for _ in 0..120 {
+            car.pos += car.vel * dt;
+            o = c.frame(&car, BoomOut { ..drive }, dt, dt, &|_, _| None, 16.0 / 9.0);
+        }
+        let d = o.pos.distance(car.pos + t);
+        assert!((6.0 - 1e-3..=10.0 + 1e-3).contains(&d), "{d}");
+        let mut w = TimeWarper::new([1.25, 0.1, 5.0, 10.0]);
+        w.start(1.0, 0.0);
+        let mut at = |w: &mut TimeWarper, secs: f32| {
+            for _ in 0..(secs * 1000.0).round() as usize {
+                w.update(0.001);
+            }
+            w.cur
+        };
+        assert!((at(&mut w, 0.1) - (1.0 - 0.9 * (0.5f32 * std::f32::consts::FRAC_PI_2).sin())).abs() < 0.01);
+        assert_eq!(at(&mut w, 0.15), 0.1);
+        assert_eq!(at(&mut w, 0.99), 0.1);
+        assert!(at(&mut w, 0.02) > 0.1);
+        assert_eq!(at(&mut w, 0.1), 1.0);
     }
 
     /// The look-around with the file's camFX: full stick left in a chase view goes to +1.25 rad
@@ -2221,7 +2519,7 @@ mod tests {
         let wall = |c: Vec3, r: f32| (c.z - r < -5.0).then(|| (-5.0 - (c.z - r), Vec3::Z));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0) };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0 };
         let mut o = BoomOut { ..chase };
         let mut free = BoomOut { ..chase };
         let mut e = EventDirector::default();
@@ -2258,7 +2556,7 @@ mod tests {
         assert_eq!((t.offset, t.blend, t.dist, t.app_xz), (Vec3::new(-2.525, 0.0, -9.0), 1.5, (5.0, 10.0), (4.0, 9.0)));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0) };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0 };
         let o = d.frame(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 59.9), &car, BoomOut { ..chase }, 1.0 / 60.0, &|_, _| None, &|_, _| false, 16.0 / 9.0);
         assert!(!d.idle() && o.pos == chase.pos);
         let mut held = Vec::new();
