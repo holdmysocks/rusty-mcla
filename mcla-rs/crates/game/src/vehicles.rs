@@ -651,6 +651,9 @@ pub struct Vehicles {
     pub density_scale: Option<f32>,
     /// solid props around the racing cars (centre, radius), refreshed by the game a few times a second
     pub solids: Vec<(Vec3, f32)>,
+    /// the fixed props (physics level state 2) around the racers as the object grid's kind-3
+    /// objects (sub_82735580), for the racer brains' obstacle scan; refreshed with `solids`
+    pub prop_objects: Vec<crate::brainturn::ObjectInfo>,
     /// the glows of the cars' lamps this frame (instances of the glow pipeline)
     glow_buf: Option<wgpu::Buffer>,
     glow_count: u32,

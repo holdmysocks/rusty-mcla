@@ -4059,6 +4059,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
+            // (diagnostics: MCLA_PROPS_BOX=x0,z0,x1,z1 - the props standing in that box, once)
+            if self.tick_no == 200 {
+                if let Some(b) = std::env::var("MCLA_PROPS_BOX").ok().map(|v| v.split(',').filter_map(|x| x.parse::<f32>().ok()).collect::<Vec<_>>()).filter(|b| b.len() == 4) {
+                    for d in self.props.describe_in(Vec3::new(b[0], -1e9, b[1]), Vec3::new(b[2], 1e9, b[3])) {
+                        log::info!("props box: {d}");
+                    }
+                }
+            }
             // what stands beside the road around the racers (they steer round it)
             if self.tick_no % 8 == 0 {
                 let mut solids = std::mem::take(&mut self.vehicles.solids);
@@ -4073,6 +4081,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 self.vehicles.solids = solids;
+                // the fixed props around the racers, for their brains' obstacle scan (kind 3 of the
+                // object grid, filed while the prop is in level state 2 - sub_82735580)
+                // (approx.: the original files the props of the streamed-in city; here every fixed
+                // prop within 250 m of a racer - the scan reaches ~6 s of line ahead + 25 m)
+                let mut objs = std::mem::take(&mut self.vehicles.prop_objects);
+                objs.clear();
+                if let Some(race) = self.game.race.as_ref() {
+                    let mut seen = hashbrown::HashSet::new();
+                    for &ci in race.participants.iter().skip(1) {
+                        if let Some(c) = self.vehicles.cars.get(ci).filter(|c| c.ai.as_ref().map_or(false, |a| a.brain.is_some())) {
+                            self.props.fixed_objects_near(c.state.pos, 250.0, &mut seen, &mut objs);
+                        }
+                    }
+                }
+                self.vehicles.prop_objects = objs;
             }
             // the race's cop zones: a cruiser waits at each once the player comes near
             if self.tick_no % 30 == 0 && self.police.enabled {

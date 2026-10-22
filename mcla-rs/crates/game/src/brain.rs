@@ -929,8 +929,9 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         grid: to_go.is_some(),
     };
     // the obstacles near the line ahead (sub_822BD9D8)
-    // (approx.: the port's cars only - no props or pedestrians - and the grid without the level's bounds)
-    let objects: Vec<crate::brainturn::ObjectInfo> = v.cars.iter().enumerate().map(|(j, o)| crate::brainturn::ObjectInfo::from_car(j, o)).collect();
+    // (cars, then the fixed props the game gathered around the racers; approx.: no pedestrians - the
+    // brain ignores them anyway - and the grid without the level's bounds)
+    let objects: Vec<crate::brainturn::ObjectInfo> = v.cars.iter().enumerate().map(|(j, o)| crate::brainturn::ObjectInfo::from_car(j, o)).chain(v.prop_objects.iter().copied()).collect();
     let line: Vec<Vec3> = brain.aiv.points().collect();
     let sel = crate::brainturn::SelCar { pos: car.pos, forward: car.forward, vel: car.vel, speed: car.speed, half_length: car.size.z * 0.5 };
     let obstacles = crate::brainturn::select_obstacles_car(i, &objects, &line, &sel, brain.ignore, &crate::brainturn::ObjectGrid::unbounded(), &brain.aiv.tun);
@@ -969,6 +970,15 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
                 car.pos.x, car.pos.y, car.pos.z, car.speed, car.gear, brain.plan.goals.len(), brain.cur, brain.next, brain.nav_state,
                 brain.aiv.portal_count(), brain.aiv.goal_count(), brain.aiv.point_count(), brain.aiv.goals_done(), brain.last.valid, brain.last.throttle, brain.last.brake, brain.last.steer,
                 brain.stuck.state, brain.man, rb.map(|r| (r.gap as i32, r.cap)), obstacles.len(), out.input.throttle, out.input.brake, out.input.steer, out.input.handbrake);
+            if std::env::var("MCLA_BRAIN_SAMPLES").is_ok() {
+                log::info!("brain {i}: samples {:?}", brain.aiv.samples_dbg().iter().take(40).map(|s| format!("k{:.4} t{:.1} a{:.1} c{:.1} al{:.1} v{:.1}", s.0, s.1, s.2, s.3, s.4, s.5)).collect::<Vec<_>>());
+            }
+            if std::env::var("MCLA_BRAIN_OPT").is_ok() {
+                log::info!("brain {i}: opt {}", brain.aiv.opt_dbg());
+            }
+            if std::env::var("MCLA_BRAIN_PTS").is_ok() {
+                log::info!("brain {i}: pts {:?}", brain.aiv.points().map(|p| format!("{:.1},{:.1}", p.x, p.z)).collect::<Vec<_>>());
+            }
             if std::env::var("MCLA_BRAIN_PORTALS").is_ok() {
                 log::info!("brain {i}: portals {:?}", brain.aiv.portal_ends().take(16).map(|(a, b, sa, sb)| ((a.x as i32, a.z as i32), (b.x as i32, b.z as i32), (sa.x as i32, sa.z as i32), (sb.x as i32, sb.z as i32))).collect::<Vec<_>>());
             }

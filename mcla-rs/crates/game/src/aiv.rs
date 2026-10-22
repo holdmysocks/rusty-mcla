@@ -628,6 +628,17 @@ impl Aiv {
         self.h
     }
     /// control points from the one behind the car on
+    /// (diagnostics) the speed profile's samples from the car on: (kappa, table speed, grip, curve speed, allowed, v)
+    pub fn opt_dbg(&self) -> String {
+        let o: Vec<String> = self.obst[..self.n_obst].iter().map(|o| format!("{:.0},{:.0} v{:.0} e{:.1}x{:.1}", o.pos.x, o.pos.z, o.vel.length(), o.extent.0, o.extent.1)).collect();
+        format!("J{:.3} pJ{:.3} c{} st{:.3} m{} p{} n{:?} obst {} [{}]", self.ln.j, self.j_prev, self.cursor, self.step, self.mode, self.progress, self.counters, self.n_obst, o.join("; "))
+    }
+
+    pub fn samples_dbg(&self) -> Vec<(f32, f32, f32, f32, f32, f32)> {
+        let (f, n) = (self.ln.f.max(0) as usize, (self.ln.n.max(0) as usize).min(NS));
+        (f..n).map(|i| { let s = &self.ln.s[i]; (s.kappa, s.v_table, s.a_max, s.v_curve, s.allowed, s.v) }).collect()
+    }
+
     /// (diagnostics) the corridor's portals as held: the ends a / b and the shrunk ends sa / sb
     pub fn portal_ends(&self) -> impl Iterator<Item = (Vec3, Vec3, Vec3, Vec3)> + '_ {
         (self.portals.base..self.portals.end()).map(|i| {

@@ -3135,6 +3135,9 @@ impl Game {
                 let tune = c.model.aitunes.clone().map(|t| std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&t.base, &t.mods, c.perf)));
                 let perf = c.perf;
                 let name = c.model.name.clone();
+                if let Some(t) = c.model.aitunes.as_ref() {
+                    log::info!("race: racer {} aiv tables stock / full: MaxSpeed {:.2} / {:.2}, MaxTotalAccel {:.2} / {:.2}, MaxBrakeDecel {:.2} / {:.2}", i, t.base.max_speed, t.mods.max_speed, t.base.max_total_accel, t.mods.max_total_accel, t.base.max_brake_decel, t.mods.max_brake_decel);
+                }
                 let Some(ai) = c.ai.as_mut() else { continue };
                 let (Some(course), Some(tune)) = (ai.course.clone(), tune) else { continue };
                 if course.cps.is_empty() {

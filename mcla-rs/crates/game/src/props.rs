@@ -1746,6 +1746,36 @@ impl Props {
             .collect()
     }
 
+    /// The fixed props (level state 2) within `r` of `p` (plan distance) as the object grid's prop
+    /// objects (mcProp, kind 3): the instance's place, its forward -(matrix row 2), velocity 0, the
+    /// footprint's full width and length. Each collider once (`seen` by collider index).
+    pub fn fixed_objects_near(&self, p: Vec3, r: f32, seen: &mut hashbrown::HashSet<u32>, out: &mut Vec<crate::brainturn::ObjectInfo>) {
+        let (c0, c1) = (col_cell(p - Vec3::splat(r)), col_cell(p + Vec3::splat(r)));
+        for cx in c0.0..=c1.0 {
+            for cz in c0.1..=c1.1 {
+                let Some(list) = self.col_grid.get(&(cx, cz)) else { continue };
+                for &i in list {
+                    let c = &self.colliders[i as usize];
+                    let d = c.pos - p;
+                    if !c.foot.fixed || d.x * d.x + d.z * d.z > r * r || !seen.insert(i) {
+                        continue;
+                    }
+                    let half = c.foot.half * c.scale;
+                    out.push(crate::brainturn::ObjectInfo { pos: c.pos, vel: Vec3::ZERO, forward: -(c.rot * Vec3::Z), extent: (half.x * 2.0, half.y * 2.0), kind: crate::brainturn::KIND_PROP });
+                }
+            }
+        }
+    }
+
+    /// Diagnostics: every collider standing in a box.
+    pub fn describe_in(&self, mn: Vec3, mx: Vec3) -> Vec<String> {
+        self.colliders
+            .iter()
+            .filter(|c| c.pos.x >= mn.x && c.pos.x <= mx.x && c.pos.z >= mn.z && c.pos.z <= mx.z)
+            .map(|c| format!("{:.1} {:.1} {} half {:.2} x {:.2} high {:.1} fixed {} audio {:08x} knocked {}", c.pos.x, c.pos.z, if c.foot.kind == Solidity::Solid { "solid" } else { "loose" }, c.foot.half.x * c.scale, c.foot.half.y * c.scale, c.foot.height * c.scale, c.foot.fixed, c.foot.audio, c.knocked))
+            .collect()
+    }
+
     /// Everything solid (trees, posts, walls of props) standing in a box.
     pub fn solid_in(&self, mn: Vec3, mx: Vec3) -> Vec<Vec3> {
         self.colliders.iter().filter(|c| c.foot.kind == Solidity::Solid && !c.knocked && c.pos.x >= mn.x && c.pos.x <= mx.x && c.pos.z >= mn.z && c.pos.z <= mx.z).map(|c| c.pos).collect()
