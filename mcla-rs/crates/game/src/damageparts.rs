@@ -1033,7 +1033,7 @@ mod piece_replay {
             if !ids.is_empty() {
                 let (mut p, mut l) = (Vec3::ZERO, Vec3::ZERO);
                 let mut dynm = CarDyn { p: &mut p, l: &mut l, mass: 0.0, inverse: Vec3::ZERO, rows: body.rows };
-                let mut o = loose.solve_car_island(&world, &car_in, &mut body, &mut dynm, &[], &[], &ids, dt);
+                let mut o = loose.solve_car_island(&world, &car_in, &mut body, &mut dynm, &[], &[], &[], &ids, dt);
                 loose.push_car_island(&mut o, &body, Pushed::default(), dt);
             }
             loose.step_rest(&world, &car_in, dt);
