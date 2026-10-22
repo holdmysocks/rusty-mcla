@@ -10,6 +10,7 @@ pub mod loose;
 pub mod pad;
 pub mod replay;
 pub mod solver;
+pub mod sst;
 mod engine;
 mod engine_curve;
 mod transmission;

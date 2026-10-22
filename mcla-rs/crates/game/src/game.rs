@@ -8474,7 +8474,7 @@ impl Game {
                 arc(&overlay, c, 30.0 * sc, 38.0 * sc, -90f32.to_radians(), -90f32.to_radians() + frac.min(1.0) * std::f32::consts::TAU, col);
             }
             self.text(&overlay, c, egui::Align2::CENTER_CENTER, info.ability, 10.0 * sc, col);
-            if info.draft > 0.15 || info.sst > 0.02 {
+            if info.sst_on {
                 // the slipstream turbo: a bar that fills in the stream; full, the nitrous button fires it
                 let blue = egui::Color32::from_rgb(120, 220, 255);
                 let full = info.sst_full;
@@ -9761,9 +9761,12 @@ pub struct HudInfo {
     pub player_heading: f32,
     /// the map screen's camera when the city is shown from the air
     pub map_vp: Option<glam::Mat4>,
-    /// the slipstream turbo's charge (0..1), and whether it can be fired
+    /// the slipstream turbo's level (mcCarSSTurbo +36: the charge, then the burn running down - the HUD's
+    /// SSTvalue, 0x822112A8), whether it is full, and whether the car has one (the meter's visibility,
+    /// 0x82651890)
     pub sst: f32,
     pub sst_full: bool,
+    pub sst_on: bool,
     /// the running ability's screen tint (inner and outer RGBA) and how far in it is
     pub ability_tint: Option<([[f32; 4]; 2], f32)>,
     /// police: 0 none, 1 pull over, 2 pursuit, 3 search, 4 busted

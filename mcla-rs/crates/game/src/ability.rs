@@ -141,13 +141,6 @@ pub struct Abilities {
     pub meter: f32,
     /// seconds of the running effect left
     pub active: f32,
-    /// in another car's slipstream (0..1, smoothed)
-    pub draft: f32,
-    /// the slipstream turbo's charge (0..1) and the seconds since the car left the stream
-    pub sst: f32,
-    /// seconds a full charge is still kept; the charge has been full since it last ran out
-    sst_out: f32,
-    sst_full: bool,
     near_miss_cool: f32,
     /// level of each ability (0..2; they grow with use), in the order of `Kind::ALL`
     pub levels: [u8; 4],
@@ -166,10 +159,6 @@ impl Abilities {
             tints: [[[0.0, 0.333, 0.8, 0.0], [0.204, 0.294, 0.659, 0.118]], [[0.012, 0.0, 0.0, 0.49], [0.051, 0.0, 0.0, 1.0]]],
             meter: 0.0,
             active: 0.0,
-            draft: 0.0,
-            sst: 0.0,
-            sst_out: 0.0,
-            sst_full: false,
             near_miss_cool: 0.0,
             levels: [0; 4],
         }
@@ -261,18 +250,6 @@ impl Abilities {
 
     /// The ability can be fired with any gauge above its MinGaugeThreshold; it then runs
     /// until the gauge is empty.
-    /// The slipstream turbo is charged: the next press of the nitrous button spends it.
-    pub fn sst_ready(&self) -> bool {
-        // (once full it can be fired for as long as any of it is left)
-        self.sst_full && self.sst > 0.0
-    }
-
-    pub fn spend_sst(&mut self) {
-        self.sst = 0.0;
-        self.sst_out = 0.0;
-        self.sst_full = false;
-    }
-
     pub fn ready(&self) -> bool {
         !self.running && self.meter > self.tune().min_gauge.max(0.02)
     }
@@ -332,56 +309,8 @@ impl Abilities {
         };
         let speed = pvel.length();
 
-        // ---- slipstream turbo (mcCarSSTurbo, 0x823465c8): behind a car doing at least the
-        // tuning's minimum speed, inside the envelope laid along the way that car is moving
-        // (envelopeLength long, as wide and high as envelopeWidth2), the charge fills in
-        // turboRegenTime. Out of it a full charge is kept for stayFullTime and then runs out in
-        // chargedFalloffTime, a part charge in turboFalloffTime - eleven times as fast under
-        // loseChargeSpeed ----
-        let sst = vehicles.cars[pi].model.simtunes.as_ref().map(|s| s.base.ss_turbo.clone()).unwrap_or_default();
-        let (len, width) = (if sst.envelope_length > 1.0 { sst.envelope_length } else { 45.0 }, if sst.envelope_width2 > 0.1 { sst.envelope_width2 } else { 2.0 });
-        let lose = if sst.lose_charge_speed > 0.0 { sst.lose_charge_speed } else { 20.0 };
-        let min_speed = if sst.min_speed > 0.0 { sst.min_speed } else { 9.0 };
-        let mut draft = 0.0f32;
         let near_miss = false;
-        if speed >= min_speed {
-            for (i, c) in vehicles.cars.iter().enumerate() {
-                if i == pi || c.parked.is_some() {
-                    continue;
-                }
-                let v = c.state.vel.length();
-                if v < min_speed {
-                    continue;
-                }
-                // (the envelope trails the leading car against its motion)
-                let back = -c.state.vel / v;
-                let rel = ppos - c.state.pos;
-                let along = rel.dot(back);
-                let off = rel - back * along;
-                if along >= 0.0 && along <= len && off.y.abs() <= width && Vec3::new(off.x, 0.0, off.z).length() <= width {
-                    draft = 1.0;
-                }
-            }
-        }
-        self.draft += (draft - self.draft) * (dt * 6.0).min(1.0);
         let dtg = dt * self.time_scale();
-        if draft > 0.5 {
-            self.sst = (self.sst + dtg / sst.regen_time.max(0.2)).min(1.0);
-            if self.sst >= 1.0 {
-                self.sst_full = true;
-                self.sst_out = sst.stay_full_time.max(0.0);
-            }
-        } else if self.sst_out > 0.0 {
-            self.sst_out = (self.sst_out - dtg).max(0.0);
-        } else if self.sst > 0.0 {
-            let fall = if self.sst_full { sst.charged_falloff_time } else { sst.falloff_time }.max(0.1);
-            self.sst -= dtg / fall * if speed < lose { 11.0 } else { 1.0 };
-            if self.sst <= 0.0 {
-                self.sst = 0.0;
-                self.sst_full = false;
-            }
-        }
-
         // ---- the gauge (specialAbility, 0x82338798): it only grows with speed - above
         // ThresholdSpeed, faster the further above; below it, and for a moment after every
         // collision, it runs down; while the ability runs it drains at its own rate, in game

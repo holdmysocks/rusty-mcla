@@ -679,8 +679,8 @@ pub struct VehState {
     /// all four, 255 = not set yet (the tuning's DrivetrainType). An all-wheel-drive car is put
     /// on one axle while its tyres are melted or a burnout runs (type 2 to the rear, 3 to the front).
     pub drive: u8,
-    /// slipstream turbo running: 1 -> 0 over turboUseTime
-    pub sst_level: f32,
+    /// the slipstream turbo (mcCarSSTurbo, chassis +668)
+    pub sst: super::sst::SsTurbo,
     /// motorcycles: the lean the rider holds (rad, positive as the yaw rate times speed), the
     /// filtered sideways acceleration behind it
     pub lean: f32,
@@ -780,7 +780,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst_level: 0.0, lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, grid_reset: false }
+        VehState { shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, grid_reset: false }
     }
 }
 
@@ -1729,21 +1729,16 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         vs.nitro_rest = (vs.nitro_rest - dt).max(0.0);
     }
     st.nitro = st.nitro_shots as f32 / st.nitro_max.max(1) as f32;
-    if vs.sst_level > 0.0 {
-        vs.sst_level = (vs.sst_level - dt / t.ss_turbo.use_time.max(0.2)).max(0.0);
-    }
-    // (either shot is cut short when the car lies on its side or roof with a wheel on the road)
-    if (vs.nitro_level > 0.0 || vs.sst_level > 0.0) && st.up().y < 0.1 && st.wheels.iter().any(|w| w.grounded) {
-        if !exact_nitro {
-            vs.nitro_level = 0.0;
-        }
-        vs.sst_level = 0.0;
+    // (the shot is cut short when the car lies on its side or roof with a wheel on the road)
+    if !exact_nitro && vs.nitro_level > 0.0 && st.up().y < 0.1 && st.wheels.iter().any(|w| w.grounded) {
+        vs.nitro_level = 0.0;
     }
     // (0x8232EF30: while the nitrous burns the chassis's throttle, +136, is 1 - whatever the gear; in
-    // reverse this port's brake is that pedal)
+    // reverse this port's brake is that pedal. The slipstream turbo leaves the pedal alone: its push is
+    // scaled by it, 0x823465C8.)
     let input = if exact_nitro && vs.nitro_burning {
         if vs.gear < 0 { CarInput { brake: 1.0, ..input } } else { CarInput { throttle: 1.0, ..input } }
-    } else if ((!exact_nitro && vs.nitro_level > 0.0) || vs.sst_level > 0.0) && vs.gear > 0 { CarInput { throttle: 1.0, ..input } } else { input };
+    } else if !exact_nitro && vs.nitro_level > 0.0 && vs.gear > 0 { CarInput { throttle: 1.0, ..input } } else { input };
     // angular damping: AeroDampFactor after AeroDampDelay in the air, LandingDampFactor on
     // touching down after a quarter second of flight, back to 1 over a second
     // (0x82330554: "in the air" is no wheel with a contact record, 0x8255AC20)
@@ -2382,20 +2377,32 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // test is finished right after it. V: sd.0 (fired once, refused while burning and 2 and 20 ticks after
     // the burn's end), sd.1 (button pulsed: fired in the first pad frame after the view is back, 61 ticks
     // after each end). ----
+    let pressed = if REPLAY_STEER.load(std::sync::atomic::Ordering::Relaxed) {
+        REPLAY_NITRO_PAD.load(std::sync::atomic::Ordering::Relaxed)
+    } else {
+        // (the pad's frame is the first of every two ticks: `second_tick` was flipped just above)
+        pad_exact && vs.pad.second_tick && raw_input.nitro
+    };
     let nitro_try = {
-        let pressed = if REPLAY_STEER.load(std::sync::atomic::Ordering::Relaxed) {
-            REPLAY_NITRO_PAD.load(std::sync::atomic::Ordering::Relaxed)
-        } else {
-            // (the pad's frame is the first of every two ticks: `second_tick` was flipped just above)
-            pad_exact && vs.pad.second_tick && raw_input.nitro
-        };
         let up_y = vs.body.as_ref().filter(|b| b.snap == (st.pos, st.rot, st.vel, st.ang_vel)).map(|b| b.rows[1].y).unwrap_or_else(|| Mat3::from_quat(st.rot).y_axis.y);
         let upset = !(vs.air584 > 0.0) && up_y < 0.1;
         fire_exact && pressed && !upset && !wiped
     };
     let backup = (st.pos, st.rot, st.wheels);
     physics_frame(st, &mut vs, p, vt, input, ratio, world, dt);
-    if nitro_try && !vs.nitro_burning && vs.nitro_view == 0.0 && st.nitro_shots > 0 {
+    // ---- the slipstream turbo's button (mcPlayerInput 0x822A3374..0x822A344C): the nitrous button down in the
+    // pad's frame, the turbo ready (0x82345FE0) and the nitrous neither burning nor its view away from rest
+    // (+32, 0x82345660) sets flag 4 instead of the nitrous's 8, which needs the turbo not burning and its lens
+    // back (0x82345DF8); 0x822A1058 fires it at the frame's end (0x823460A0). A computer driver's flag 4 is
+    // `CarInput::sst` (0x822B91F0). Ready: car state +592 0, or 16 on a car (0x8232C368) - not on the grid,
+    // not with the rider off. ----
+    let sst_btn = if pad_exact || REPLAY_STEER.load(std::sync::atomic::Ordering::Relaxed) { pressed } else { input.sst || (!input_ai && raw_input.nitro) };
+    let sst_go = sst_btn && vs.sst.can_fire(!input.hold && !wiped) && !vs.nitro_burning && vs.nitro_view == 0.0;
+    if sst_go {
+        vs.sst.fire();
+        log::info!("slipstream turbo fired ({})", if input_ai { "computer" } else { "player" });
+    }
+    if nitro_try && !sst_go && !vs.sst.burning && vs.sst.fov == 0.0 && !vs.nitro_burning && vs.nitro_view == 0.0 && st.nitro_shots > 0 {
         vs.nitro_level = 1.0;
         vs.nitro_burning = true;
         st.nitro_shots -= 1;
@@ -3776,9 +3783,33 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     } else if vs.nitro_level > 0.0 && grounded_count > 0 {
         force += fwd * (t.nitro.boost_amount.max(0.0) * vs.nitro_level.powf(t.nitro.boost_exp.max(0.1)) * mass * grounded_count as f32 / wheel_count);
     }
-    // the slipstream turbo pushes like nitrous, with its own strength (turboBoostAmount)
-    if vs.sst_level > 0.0 && grounded_count > 0 {
-        force += fwd * (t.ss_turbo.boost_amount.max(0.0) * vs.sst_level.powf(if t.ss_turbo.boost_exp > 0.1 { t.ss_turbo.boost_exp } else { 3.0 }) * mass * grounded_count as f32 / wheel_count);
+    // ---- mcCarSSTurbo::Update 0x823465C8 (the chassis update 0x82330378, right after mcCarNitro's): burning,
+    // the level runs down and pushes along the car's length -(turboBoostAmount x level^turboBoostExp) x
+    // throttle (+136) x wheels with a record / wheels, times the mass - no gear's way, the pedal not forced;
+    // otherwise the slipstream found before the step charges it (physics/sst.rs) ----
+    // (0x82330024 read the turbo's +72 in mcCarSim::Update, before this: a car in a slipstream gets DragMin)
+    let draft_then = vs.sst.leader > -1;
+    // (mcCarSim::Update 0x8232EC2C..0x8232EE84: a car not answering its pad - vfunc 12, 0x8232C368: car state +592
+    // not 0, nor 16 on a car; here the grid's bit 0x2 and the rider off a motorcycle - has its nitrous and its
+    // turbo reset every tick, sub_82345E20: nothing charged, nothing burning)
+    if input.hold || wiped {
+        vs.sst.reset();
+    }
+    if vs.sst.burning {
+        let upset = !(vs.air584 > 0.0) && body_rows[1].y < 0.1;
+        let k = vs.sst.burn(&t.ss_turbo, upset, dt);
+        let share = vs.nitro_records as f32 / wheels_in as f32;
+        let f = (((body_rows[2] * k) * throttle_in) * share) * mass;
+        if exact_nitro {
+            calls.push((151, f, Vec3::ZERO));
+        } else {
+            force += f;
+        }
+    } else {
+        // (chassis +224 as vehAero left it this tick)
+        let v = st.vel;
+        let speed224 = fma32(v.z, v.z, fma32(v.x, v.x, v.y * v.y)).sqrt();
+        vs.sst.charge(&t.ss_turbo, speed224, dt);
     }
     // burnout: the launch pushes the car forward (BurnBoost), the charge swings it with the steering
     // (0x8232FC64: BurnBoost times the mass for as long as the charge lasts, whatever is left
@@ -4646,7 +4677,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // (mcCarSim::Update 0x82330024: the aero's byte +40 picks DragMin. Four wheels: a slipstream target.
         // Two wheels (0x8233005C): the rider's stick, input +32, under -0.5 with an air time under 0.5 -
         // the stoppie's lean; the ZX-14's DragMin is 3 against DragMax 2. MCLA_DBG_A1: cars' rule for all.)
-        let other = if vt.bike && !dbg_flag("MCLA_DBG_A1") { input.lean < -0.5 && vs.air584_before < 0.5 } else { input.draft };
+        let other = if vt.bike && !dbg_flag("MCLA_DBG_A1") { input.lean < -0.5 && vs.air584_before < 0.5 } else { input.draft || draft_then };
         // (R2: vehAero's drag, 0x8256B14C, asks only for a speed above 1 m/s - nothing about the wheels: V se.0
         // 168.., a quarter second after the last wheel left the ground. MCLA_DBG_R2: none in the air, as before.)
         let drag = if st.airborne_time > 0.25 && dbg_flag("MCLA_DBG_R2") { 0.0 } else if other { t.aero.drag_min * over } else { t.aero.drag_max * over };
@@ -4672,7 +4703,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // nothing once the car has been in the air for a quarter of a second)
         // (the switch to DragMin: a car in a slipstream; a bike whose rider leans back - the
         // bikes' DragMin is the larger of their two values)
-        let other = if vt.bike { input.lean > 0.5 } else { input.draft };
+        let other = if vt.bike { input.lean > 0.5 } else { input.draft || draft_then };
         let drag = if st.airborne_time > 0.25 { 0.0 } else if other { t.aero.drag_min.max(0.0) } else { t.aero.drag_max.max(0.0) };
         force -= st.vel * (speed * mass * drag / (top * top));
         if speed > 1.5 && grounded_count > 0 {
@@ -6068,7 +6099,9 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
         vs.nitro_burning = false;
         vs.nitro_level = 0.0;
     }
-    vs.sst_level = 0.0;
+    if vs.sst.burning {
+        vs.sst.reset();
+    }
     let t = &vt.t;
     let e = &t.engine.s;
     let fwd = -ex::fma(rows[2].x, vel.x, ex::fma(rows[2].z, vel.z, rows[2].y * vel.y));

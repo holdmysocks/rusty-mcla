@@ -921,11 +921,12 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         nitro_tune,
         nitro_t: vs.map_or(0.0, |s| s.nitro_level * nitro_tune[2]),
         sling_tune,
-        sling_t: vs.map_or(0.0, |s| s.sst_level * sling_tune[2]),
+        sling_t: vs.map_or(0.0, |s| s.sst.level * sling_tune[2]),
         nitro_ready: st.nitro_shots > 0 && vs.map_or(false, |s| s.nitro_level <= 0.0 && s.nitro_rest <= 0.0),
         nitro_burning: vs.map_or(false, |s| s.nitro_level > 0.0),
-        sling_ready: c.sst >= 1.0 && vs.map_or(false, |s| s.sst_level <= 0.0),
-        sling_active: vs.map_or(false, |s| s.sst_level > 0.0),
+        // (0x82345FE0, the car answering its pad off the grid)
+        sling_ready: vs.map_or(false, |s| s.sst.can_fire(to_go.is_none())),
+        sling_active: vs.map_or(false, |s| s.sst.burning),
         grid: to_go.is_some(),
     };
     // the obstacles near the line ahead (sub_822BD9D8)
@@ -1000,10 +1001,8 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         input = CarInput { hold: true, animated: false, ..input };
     }
     input.nitro = out.nitro;
-    if out.sling && c.sst >= 1.0 {
-        // (approx.: the port fires a racer's slipstream turbo on the throttle when full - vehicles.rs)
-        input.throttle = input.throttle.max(1.0);
-    }
+    // (flag 4: 0x822B91F0 fires the slipstream turbo through 0x823460A0 - vehsim's step)
+    input.sst = out.sling;
     if let Some(p) = out.teleport {
         c.state.pos = p + Vec3::Y * 0.9;
         c.state.vel = Vec3::ZERO;

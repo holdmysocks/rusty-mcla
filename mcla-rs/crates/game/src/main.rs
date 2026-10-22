@@ -514,10 +514,7 @@ struct App {
     /// hydraulics switched on (L, or a click of the left stick)
     hyd_on: bool,
     hyd_toggle_was: bool,
-    /// the nitrous button last frame; held since it fired the slipstream turbo
-    nitro_was: bool,
     auto_last_speed: f32,
-    sst_hold: bool,
     /// the city drawn from above for the map screen: being made, and on the GPU
     citymap_rx: Option<std::sync::mpsc::Receiver<citymap::CityMap>>,
     citymap: Option<CityMapGpu>,
@@ -902,9 +899,7 @@ impl App {
             nitro_lap: 0,
             hyd_on: false,
             hyd_toggle_was: false,
-            nitro_was: false,
             auto_last_speed: 0.0,
-            sst_hold: false,
             citymap_rx: None,
             citymap: None,
             map_target: Vec3::ZERO,
@@ -2087,14 +2082,12 @@ impl App {
                     player_input.hyd |= 0b0011;
                 }
             }
-            player_input.draft = self.ability.draft > 0.5;
             if self.game.hydraulics {
                 player_input.hyd |= physics::car::HYD_FITTED | if self.hyd_on { physics::car::HYD_ON } else { 0 };
             } else {
                 player_input.hyd = 0;
                 self.hyd_on = false;
             }
-            // a charged slipstream turbo is spent by the nitrous button, before the bottles
         // (test hook: MCLA_GRID_NITRO=1 holds the nitrous button all the time)
         if std::env::var("MCLA_GRID_NITRO").is_ok() {
             player_input.nitro = true;
@@ -2104,25 +2097,7 @@ impl App {
         // hydraulics or gear keys. Special abilities and power-ups are held further down.)
         if self.game.race.as_ref().map_or(false, |r| r.countdown > 0.0) {
             player_input = CarInput { throttle: player_input.throttle, brake: player_input.brake, handbrake: player_input.handbrake, steer: player_input.steer, ai: player_input.ai, ..Default::default() };
-            self.sst_hold = false;
         }
-            // a charged slipstream turbo is spent by the nitrous button, before the bottles
-            if player_input.nitro && !self.nitro_was && self.ability.sst_ready() {
-                if let Some(vs) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_mut()) {
-                    if vs.sst_level <= 0.0 && vs.nitro_level <= 0.0 {
-                        vs.sst_level = self.ability.sst.clamp(0.05, 1.0);
-                        self.ability.spend_sst();
-                        self.sst_hold = true;
-                    }
-                }
-            }
-            if !player_input.nitro {
-                self.sst_hold = false;
-            }
-            self.nitro_was = player_input.nitro;
-            if self.sst_hold {
-                player_input.nitro = false;
-            }
         } else if !self.drive {
             self.fly_camera(dt);
         }
@@ -2295,7 +2270,7 @@ impl App {
             }
             if self.tick_no % 60 == 0 && self.tick_no >= 180 {
                 let stunned = self.vehicles.cars.iter().filter(|c| c.stunned > 0.0).count();
-                log::info!("ability: {} meter {:.2} active {:.1} scale {:.2} stunned cars {} draft {:.2} sst {:.2}", self.ability.kind.name(), self.ability.meter, self.ability.active, self.ability.time_scale(), stunned, self.ability.draft, self.ability.sst);
+                log::info!("ability: {} meter {:.2} active {:.1} scale {:.2} stunned cars {}", self.ability.kind.name(), self.ability.meter, self.ability.active, self.ability.time_scale(), stunned);
             }
         }
         if std::mem::take(&mut self.cycle_ability) {
@@ -2401,7 +2376,7 @@ impl App {
             }
         }
         self.vehicles.agro = self.ability.agro();
-        self.vehicles.draft = self.ability.draft;
+        self.vehicles.draft = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(0.0, |v| v.sst.strength);
         // ---- story scenes ----
         // (once the car stands on its wheels: the world is frozen while a scene runs)
         let on_wheels = self.vehicles.player().map_or(false, |c| c.placed && c.state.wheels.iter().filter(|w| w.grounded).count() >= 3 && c.state.vel.y.abs() < 0.3);
@@ -6448,14 +6423,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             grounded: render_state.wheels.iter().filter(|w| w.grounded).count(),
                             gear: render_state.gear,
                             rev,
-                            nitro: render_state.veh.as_ref().map_or(nitro, |v| v.nitro_level > 0.0 || v.sst_level > 0.0),
-                            nitro_fov: match (car.model.simtunes.as_ref(), render_state.veh.as_ref().map_or(false, |v| v.sst_level > 0.0)) {
-                                // (the slipstream turbo has its own lens: turboFOV)
-                                (Some(s), true) => (s.base.ss_turbo.fov, s.base.ss_turbo.fov_out_time, s.base.ss_turbo.fov_in_time),
-                                (Some(s), false) => (s.base.nitro.fov, s.base.nitro.fov_out_time, s.base.nitro.fov_in_time),
-                                (None, _) => (13.0, 0.5, 1.0),
+                            nitro: render_state.veh.as_ref().map_or(nitro, |v| v.nitro_level > 0.0),
+                            nitro_fov: match car.model.simtunes.as_ref() {
+                                Some(s) => (s.base.nitro.fov, s.base.nitro.fov_out_time, s.base.nitro.fov_in_time),
+                                None => (13.0, 0.5, 1.0),
                             },
                             ability: self.ability.camera(),
+                            sst: render_state.veh.as_ref().map_or((0.0, 1.0), |v| (v.sst.fov, v.sst.dist)),
                             pan: if self.look_back && chase { self.cam_switch.pan_for(mode, true) } else { (self.look.yaw, self.look.pitch) },
                             rise: if self.look_back && chase { 0.0 } else { self.look.rise },
                             fixed_mount: !chase,
@@ -6492,12 +6466,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let vs = render_state.veh.as_ref();
                         let bike = car.model.bike;
                         // the slipstream turbo's lens (mcCarSSTurbo +20, sub_823465C8): to turboFOV at
-                        // |FOV| / FovOutTime a second while it runs, back at FovInTime
-                        let sst_on = vs.map_or(false, |v| v.sst_level > 0.0);
-                        let (sfov, sout, sin) = car.model.simtunes.as_ref().map_or((0.0, 1.0, 1.0), |s| (s.base.ss_turbo.fov, s.base.ss_turbo.fov_out_time, s.base.ss_turbo.fov_in_time));
-                        let goal = if sst_on { sfov } else { 0.0 };
-                        let rate = sfov.abs() / if sst_on { sout } else { sin }.max(1e-3) * dt;
-                        self.sst_view += (goal - self.sst_view).clamp(-rate, rate);
+                        // |FOV| / FovOutTime a second while it runs, back at FovInTime - physics/sst.rs
+                        let sst_on = vs.map_or(false, |v| v.sst.burning);
+                        let sfov = render_state.veh.as_ref().zip(car.params().veh.as_ref()).map_or(0.0, |(_, t)| t.t.ss_turbo.fov);
+                        self.sst_view = vs.map_or(0.0, |v| v.sst.fov);
                         let inv = render_state.rot.inverse();
                         let zs: Vec<f32> = render_state.wheels.iter().map(|w| (inv * (w.world_pos - render_state.pos)).z).collect();
                         let (zmin, zmax) = zs.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &z| (a.min(z), b.max(z)));
@@ -6680,7 +6652,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     // the slipstream turbo going off (sub_82345E40): 0.5 s (half in the bumper and
                     // cockpit) at 0.78, the object's own constants
-                    let sst = render_state.veh.as_ref().map_or(false, |v| v.sst_level > 0.0);
+                    let sst = render_state.veh.as_ref().map_or(false, |v| v.sst.burning);
                     if sst && !self.shake_sst {
                         sh.jolt(if fixed { 0.25 } else { 0.5 }, 0.78, fixed);
                     }
@@ -7699,7 +7671,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if let Some(k) = self.game.ability_pick.take() {
                 self.ability.kind = crate::ability::Kind::ALL[k.min(3)];
             }
-            let hud = self.vehicles.player().map(|c| HudInfo { damage_goal: self.game.goal_attack && self.game.race.is_some(), speed_kmh: c.state.fwd_speed() * 3.6, speed_abs: c.state.speed(), gear: c.state.gear, rpm: self.sound.tach_rpm().unwrap_or(c.state.rpm), redline: c.model.params.redline, nitro: (c.state.nitro_shots as f32 + c.state.veh.as_ref().map_or(0.0, |v| v.nitro_level)) / 4.0, damage: if self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery) { c.state.delivery_damage() } else { c.state.damage }, player_pos: c.state.pos, player_heading: { let f = c.state.forward(); f.x.atan2(-f.z) }, heat: std::env::var("MCLA_HUD_HEAT").ok().filter(|_| self.tick_no > 400).and_then(|v| v.parse().ok()).unwrap_or(if self.police.goons { 0 } else { self.police.heat as u8 }), fine: if self.police.goons { 0 } else { self.police.fine as i64 }, law: self.police.level(), search: self.police.search / self.police.tun.get("fSearchMaxTime", 35.0), rain: rain_now, ability: if (self.game.mc4_ability_none() || (self.game.career.loaded() && !self.game.career.reached("INSTALL_ABILITY"))) && std::env::var("MCLA_ABILITY").is_err() { "" } else { self.ability.kind.name() }, ability_meter: self.ability.meter, ability_fx: self.ability.fx(), draft: self.ability.draft, sst: self.ability.sst, sst_full: self.ability.sst_ready(), map_vp: self.map_vp, ability_tint: self.ability.tint().map(|t| (t, self.ability.blend())), cam_vp: Some(vp), cam_pos: self.chase.pos, cam_look: self.chase.look, cam_fwd: { let f = self.chase.look - self.chase.pos; Vec3::new(f.x, 0.0, f.z).normalize_or_zero() }, cam_vel: c.state.vel, night: self.time_of_day > 19.5 || self.time_of_day < 6.0, cruise: self.cruise_hold, pu_hud: self.powerups.as_ref().map_or([0.0, 0.0, 1.0], |p| p.hud(self.vehicles.cars.iter().position(|x| x.is_player).unwrap_or(0))) }).unwrap_or_default();
+            let hud = self.vehicles.player().map(|c| HudInfo { damage_goal: self.game.goal_attack && self.game.race.is_some(), speed_kmh: c.state.fwd_speed() * 3.6, speed_abs: c.state.speed(), gear: c.state.gear, rpm: self.sound.tach_rpm().unwrap_or(c.state.rpm), redline: c.model.params.redline, nitro: (c.state.nitro_shots as f32 + c.state.veh.as_ref().map_or(0.0, |v| v.nitro_level)) / 4.0, damage: if self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery) { c.state.delivery_damage() } else { c.state.damage }, player_pos: c.state.pos, player_heading: { let f = c.state.forward(); f.x.atan2(-f.z) }, heat: std::env::var("MCLA_HUD_HEAT").ok().filter(|_| self.tick_no > 400).and_then(|v| v.parse().ok()).unwrap_or(if self.police.goons { 0 } else { self.police.heat as u8 }), fine: if self.police.goons { 0 } else { self.police.fine as i64 }, law: self.police.level(), search: self.police.search / self.police.tun.get("fSearchMaxTime", 35.0), rain: rain_now, ability: if (self.game.mc4_ability_none() || (self.game.career.loaded() && !self.game.career.reached("INSTALL_ABILITY"))) && std::env::var("MCLA_ABILITY").is_err() { "" } else { self.ability.kind.name() }, ability_meter: self.ability.meter, ability_fx: self.ability.fx(), draft: c.state.veh.as_ref().map_or(0.0, |v| v.sst.strength), sst: c.state.veh.as_ref().map_or(0.0, |v| v.sst.level), sst_full: c.state.veh.as_ref().map_or(false, |v| v.sst.full && !v.sst.burning), sst_on: vehicles::Vehicles::has_sst(c), map_vp: self.map_vp, ability_tint: self.ability.tint().map(|t| (t, self.ability.blend())), cam_vp: Some(vp), cam_pos: self.chase.pos, cam_look: self.chase.look, cam_fwd: { let f = self.chase.look - self.chase.pos; Vec3::new(f.x, 0.0, f.z).normalize_or_zero() }, cam_vel: c.state.vel, night: self.time_of_day > 19.5 || self.time_of_day < 6.0, cruise: self.cruise_hold, pu_hud: self.powerups.as_ref().map_or([0.0, 0.0, 1.0], |p| p.hud(self.vehicles.cars.iter().position(|x| x.is_player).unwrap_or(0))) }).unwrap_or_default();
             let mut action = MenuAction::None;
             let game = &mut self.game;
             let vehicles = &self.vehicles;

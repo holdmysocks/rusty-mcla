@@ -96,6 +96,9 @@ pub struct BoomTarget {
     pub nitro_fov: (f32, f32, f32),
     /// a running special ability's change to the lens (degrees) and to the distance (scale)
     pub ability: (f32, f32),
+    /// the slipstream turbo's lens (mcCarSSTurbo +20, degrees added) and distance scale (+24) - the chase
+    /// cameras add the one and multiply by the other (mcTrackCS 0x8231CF48, camDynamicBoomCS 0x8231DCE8)
+    pub sst: (f32, f32),
     /// the look-back camera's turn about the car: yaw and pitch, radians (camBoomCS +452 /
     /// +456, set by mcPlayerCamera: the look-back's turn, or the look-around's)
     pub pan: (f32, f32),
@@ -338,8 +341,8 @@ impl BoomCam {
         } else {
             self.nitro = (self.nitro - dt / car.nitro_fov.2.max(0.05)).max(0.0);
         }
-        let fov = t.s("SSFovMin") + (t.s("SSFovMax") - t.s("SSFovMin")) * k + car.nitro_fov.0 * self.nitro + car.ability.0;
-        let dist_scale = (1.0 + (t.s("SSDistScale") - 1.0) * k) * car.ability.1;
+        let fov = t.s("SSFovMin") + (t.s("SSFovMax") - t.s("SSFovMin")) * k + car.nitro_fov.0 * self.nitro + car.sst.0 + car.ability.0;
+        let dist_scale = (1.0 + (t.s("SSDistScale") - 1.0) * k) * car.sst.1 * car.ability.1;
 
         // ---- where the camera and its focus want to be ----
         let (off0, foc0) = if car.rev { (t.v3("RevOffset"), t.v3("RevFocus")) } else { (t.v3("Offset"), t.v3("Focus")) };

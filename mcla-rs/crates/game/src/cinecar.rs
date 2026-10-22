@@ -195,7 +195,7 @@ pub fn solve(b: &AnimBrain, st: &CarState, vt: Option<&VehTune>) -> CarInput {
     let hold = tn.table_at(&tn.decel[row.min(tn.decel.len() - 1)], v).max(0.1);
     let k = steer / ss;
     let d = (k.abs().mul_add(tn.drag[2], tn.drag[1])).mul_add(v, tn.drag[0]);
-    let (nitro, turbo) = vs.map_or((0.0, 0.0), |v| (v.nitro_level.max(0.0), v.sst_level.max(0.0)));
+    let (nitro, turbo) = vs.map_or((0.0, 0.0), |v| (v.nitro_level.max(0.0), v.sst.level.max(0.0)));
     let (nitro_amount, turbo_amount, gravity, drift) = vt.map_or((0.0, 0.0, 9.8, 0.0), |t| (t.t.nitro.boost_amount, t.t.ss_turbo.boost_amount, t.gravity, t.t.gyro.drift_torque / t.sync_torque));
     let extra = ((turbo * turbo) * turbo).mul_add(turbo_amount, (nitro * nitro) * nitro_amount);
     let d = d.max(0.0);

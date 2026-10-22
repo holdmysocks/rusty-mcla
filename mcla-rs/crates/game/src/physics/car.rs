@@ -193,6 +193,8 @@ pub struct CarInput {
     pub hyd: u8,
     /// in another car's slipstream: the air's drag falls to the tuning's DragMin
     pub draft: bool,
+    /// a computer driver's flag 4 (0x822B91F0): fire the slipstream turbo if it is ready
+    pub sst: bool,
     /// the weight-transfer button: with the steering, at speed, it tips a car onto two wheels
     pub xfer: bool,
     /// manual gears (the pad's map binds both shifts): the gearbox does not choose
