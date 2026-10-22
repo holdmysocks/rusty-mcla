@@ -6,13 +6,24 @@
 //! The key is not part of the project, so extraction stores scripts in the **plain form** ([`to_plain`]):
 //! the same file with the magic "Scp\x0e" and the payload already decrypted (still zlib compressed).
 //! [`decode`] reads the plain form only.
+//!
+//! 42 small scripts (empty career mission stubs, a few cine and test scripts) use the uncompressed form "scr\x0e":
+//! a 24-byte header (no compressed size) followed by code, statics and globals as they are, where only the code is
+//! encrypted, in whole 16-byte blocks (a shorter tail stays clear, so stubs of under 16 bytes of code are not
+//! encrypted at all). [`to_plain`] turns them into the same "Scp" form.
 
 use crate::crypto::decrypt_toc;
 use crate::Result;
-use std::io::Read;
+use std::io::{Read, Write};
 
 const MAGIC_DISC: &[u8; 3] = b"Scr";
+const MAGIC_DISC_RAW: &[u8; 3] = b"scr";
 const MAGIC_PLAIN: &[u8; 3] = b"Scp";
+
+/// A script object in one of the disc's forms ("Scr" compressed or "scr" uncompressed), which [`to_plain`] converts.
+pub fn is_disc_form(file: &[u8]) -> bool {
+    file.starts_with(MAGIC_DISC) || file.starts_with(MAGIC_DISC_RAW)
+}
 
 pub struct Sco {
     pub code_size: usize,
@@ -23,10 +34,10 @@ pub struct Sco {
 
 /// Decode a script object in the plain form written by extraction.
 pub fn decode(file: &[u8]) -> Result<Sco> {
-    if file.len() < 28 || (&file[0..3] != MAGIC_PLAIN && &file[0..3] != MAGIC_DISC) {
+    if file.len() < 28 || (&file[0..3] != MAGIC_PLAIN && !is_disc_form(file)) {
         crate::bail!("not a script object");
     }
-    if &file[0..3] == MAGIC_DISC {
+    if is_disc_form(file) {
         crate::bail!("script object is in the disc's encrypted form: extract the game data again with this version");
     }
     inflate(file)
@@ -39,8 +50,11 @@ fn inflate(file: &[u8]) -> Result<Sco> {
     Ok(Sco { code_size: u(4), statics: u(8), globals: u(12), data })
 }
 
-/// Convert a script object of the disc (encrypted, "Scr") into the plain form ("Scp"). The result is checked by inflating it.
+/// Convert a script object of the disc ("Scr" or "scr", encrypted) into the plain form ("Scp"). The result is checked by inflating it.
 pub fn to_plain(file: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
+    if file.starts_with(MAGIC_DISC_RAW) {
+        return raw_to_plain(file, key);
+    }
     if file.len() < 28 || &file[0..3] != MAGIC_DISC {
         crate::bail!("not a script object of the disc");
     }
@@ -48,6 +62,31 @@ pub fn to_plain(file: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
     out[0..3].copy_from_slice(MAGIC_PLAIN);
     decrypt_toc(&mut out[28..], key);
     inflate(&out).map_err(|e| crate::anyhow!("script does not decode with the derived key: {e}"))?;
+    Ok(out)
+}
+
+/// The uncompressed form: decrypt the code's whole blocks, compress code + statics + globals, and write the 28-byte header.
+fn raw_to_plain(file: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
+    let u = |o: usize| u32::from_le_bytes(file[o..o + 4].try_into().unwrap()) as usize;
+    if file.len() < 24 {
+        crate::bail!("not a script object of the disc");
+    }
+    let (code, statics, globals) = (u(4), u(8), u(12));
+    let end = 24 + code + 4 * statics + 4 * globals;
+    if file.len() != end {
+        crate::bail!("uncompressed script object: {} bytes, header says {}", file.len(), end);
+    }
+    let mut payload = file[24..].to_vec();
+    decrypt_toc(&mut payload[..code], key);
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    z.write_all(&payload).map_err(|e| crate::anyhow!("script deflate: {e}"))?;
+    let packed = z.finish().map_err(|e| crate::anyhow!("script deflate: {e}"))?;
+    let mut out = Vec::with_capacity(28 + packed.len());
+    out.extend_from_slice(MAGIC_PLAIN);
+    out.push(file[3]);
+    out.extend_from_slice(&file[4..24]);
+    out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+    out.extend_from_slice(&packed);
     Ok(out)
 }
 
@@ -488,5 +527,31 @@ mod tests {
         let mut wrong = key;
         wrong[0] ^= 1;
         assert!(to_plain(&file, &wrong).is_err());
+    }
+
+    #[test]
+    fn uncompressed_form_decrypts_only_whole_code_blocks() {
+        let key: [u8; 32] = std::array::from_fn(|i| ((i * 31 + 7) % 251) as u8);
+        // 20 bytes of code (one whole block + a clear tail of 4), one static, no globals
+        let code: Vec<u8> = (0..20u8).collect();
+        let mut enc = code.clone();
+        let c = aes::Aes256::new((&key).into());
+        for _ in 0..16 {
+            c.encrypt_block((&mut enc[..16]).into());
+        }
+        let mut file = Vec::new();
+        file.extend_from_slice(b"scr\x0e");
+        for v in [20u32, 1, 0, 1, 0] {
+            file.extend_from_slice(&v.to_le_bytes());
+        }
+        file.extend_from_slice(&enc);
+        file.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+        assert!(is_disc_form(&file) && decode(&file).is_err());
+        let sco = decode(&to_plain(&file, &key).unwrap()).unwrap();
+        assert_eq!((sco.code_size, sco.statics, sco.globals), (20, 1, 0));
+        assert_eq!(&sco.data[..20], &code[..]);
+        assert_eq!(&sco.data[20..], &[0xaa, 0xbb, 0xcc, 0xdd]);
+        // a size that disagrees with the header is refused
+        assert!(to_plain(&file[..file.len() - 1], &key).is_err());
     }
 }

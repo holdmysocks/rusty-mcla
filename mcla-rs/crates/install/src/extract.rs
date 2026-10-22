@@ -2,7 +2,7 @@
 //!
 //! * Files are written to `<name>.part` and renamed when complete, so a file that exists is a finished file.
 //! * Resume: a file whose size matches (plain files) or that exists (resources, whose size is not known before decoding) is skipped.
-//! * Script objects ("Scr") are stored in the plain form ("Scp"), so the game never needs the key.
+//! * Script objects ("Scr", and the uncompressed "scr") are stored in the plain form ("Scp"), so the game never needs the key.
 
 use crate::error::{ErrorKind, InstallError, Result};
 use crate::progress::{Ctx, Stage, Unit};
@@ -104,7 +104,7 @@ pub fn extract_archive<R: ReadAt>(rpf: &Rpf3<R>, out: &Path, names: &Names, opts
                         return Ok(Some((target, size as u64, true)));
                     }
                     let data = rpf.read(i).map_err(|er| std::io::Error::other(format!("{er:#}")))?;
-                    let data = if !opts.raw && data.starts_with(b"Scr") { mcla_formats::sco::to_plain(&data, &rpf.key).map_err(|er| std::io::Error::other(format!("{er:#}")))? } else { data };
+                    let data = if !opts.raw && mcla_formats::sco::is_disc_form(&data) { mcla_formats::sco::to_plain(&data, &rpf.key).map_err(|er| std::io::Error::other(format!("{er:#}")))? } else { data };
                     write_atomic(&target, &data)?;
                     Ok(Some((target, data.len() as u64, false)))
                 }

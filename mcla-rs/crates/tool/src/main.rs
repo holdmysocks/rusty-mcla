@@ -375,9 +375,10 @@ fn cmd_plainscripts(a: &[String]) -> Result<()> {
             let p = e.path();
             if p.is_dir() {
                 walk(&p, key, done, skipped)?;
-            } else if p.extension().and_then(|x| x.to_str()) == Some("sco") {
+            } else {
+                // by content, not name: most scripts have no recovered name (hash names, or a wrong guessed extension)
                 let d = std::fs::read(&p)?;
-                if d.starts_with(b"Scr") {
+                if mcla_formats::sco::is_disc_form(&d) {
                     std::fs::write(&p, mcla_formats::sco::to_plain(&d, key).with_context(|| p.display().to_string())?)?;
                     *done += 1;
                 } else {
