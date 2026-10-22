@@ -3415,8 +3415,9 @@ impl ClimbKind {
 }
 
 /// The climb's flight (`sub_82219BA0`: T.648(warper+192), 632(S = the render camera), 636(E = the
-/// player car's matrix, `sub_822A8108`: rows right, up, back), 736 / 744(the render camera's velocity,
-/// playerMgr+0x51420, y 0 - taken as 0 here), no 720: the target_velocity Axis2Stages move nothing).
+/// player car's matrix, `sub_822A8108`: rows right, up, back), 736 / 744(V = the render camera's velocity,
+/// playerMgr+0x51420 = its last frame's step over the unscaled frame time, y 0: the Translate_Axis
+/// children carry it - `ta_carry`), no 720: the target_velocity Axis2Stages move nothing).
 /// Lens (warper+292, Lerp_Float): from playerMgr+0x51430 to req+96 = 25, no delay, over 0.8 T
 /// (0x820082E0). No Lean (no roll). When it is over (`sub_8221B8C8`) the camera keeps its last matrix
 /// and Warper_IsReadyToLoadStuff turns true.
@@ -3429,15 +3430,16 @@ pub struct CineClimb {
     c_prev: f32,
     out: CamRows,
     lens: NavLens,
+    v0: Vec3,
 }
 
 impl CineClimb {
     /// `s` = the render camera, `e` = the player car's matrix, the lens from `fov_from` to `fov_to`
-    /// (25 degrees; any unit).
-    pub fn new(s: CamRows, e: CamRows, fov_from: f32, fov_to: f32) -> CineClimb {
+    /// (25 degrees; any unit), `v` = the render camera's velocity (y set to 0 here).
+    pub fn new(s: CamRows, e: CamRows, fov_from: f32, fov_to: f32, v: Vec3) -> CineClimb {
         let kind = ClimbKind::choose(&s);
         let lens = NavLens { from: fov_from, to: fov_to, delay: 0.0, dur: 0.8 * kind.total(), clock: 0.0, deg: fov_from };
-        CineClimb { kind, s, e, t: 0.0, c_prev: 0.0, out: s, lens }
+        CineClimb { kind, s, e, t: 0.0, c_prev: 0.0, out: s, lens, v0: Vec3::new(v.x, 0.0, v.z) }
     }
 
     pub fn kind(&self) -> ClimbKind {
@@ -3462,20 +3464,24 @@ impl CineClimb {
         match self.kind {
             ClimbKind::FocusOnCar => {
                 // Axis.sc X (0, 1.25 -> 37/30) target 0, Z (0, 37/30) target 1300 (d = E - S + target)
-                let t = ui_time(1.25);
-                Vec3::new(s.eye.x + (e.eye.x - s.eye.x) * s_curve(c / t), y, s.eye.z + (e.eye.z + 1300.0 - s.eye.z) * s_curve(c / t))
+                // (X and Z carry V.x / V.z over their 37/30)
+                let (t, v) = (ui_time(1.25), self.v0);
+                Vec3::new(s.eye.x + (e.eye.x - s.eye.x) * s_curve(c / t) + ta_carry(v.x, t, c), y, s.eye.z + (e.eye.z + 1300.0 - s.eye.z) * s_curve(c / t) + ta_carry(v.z, t, c))
             }
             ClimbKind::SharpAngleRight | ClimbKind::SharpAngleLeft => {
                 // X (0, 2); Z (.2, 1.8) - shows 0 on the frame that crosses its delay
-                let x = s.eye.x + (e.eye.x - s.eye.x) * s_curve(c / 2.0);
+                let v = self.v0;
+                let x = s.eye.x + (e.eye.x - s.eye.x) * s_curve(c / 2.0) + ta_carry(v.x, 2.0, c);
                 let d = ui_time(0.2);
-                let z = if c_prev < d { s.eye.z } else { s.eye.z + (e.eye.z + 1300.0 - s.eye.z) * s_curve((c - d) / 1.8) };
+                let z = if c_prev < d { s.eye.z } else { s.eye.z + (e.eye.z + 1300.0 - s.eye.z) * s_curve((c - d) / 1.8) + ta_carry(v.z, 1.8, c - d) };
                 // Axis2Stages('final_look', -+100, 0, .5, +-100, 0, 1.5) along n(flat E.r2) and
                 // ('final_side', -+300, 0, .5, +-300, 0, 1.5) along n(E.r0), 'set' (d = target);
                 // Right: -100 / -300 first, Left: +100 / +300
                 let k = if self.kind == ClimbKind::SharpAngleRight { -1.0 } else { 1.0 };
                 let st = k * (s_curve(c / 0.5) - s_curve((c - 0.5) / 1.5));
-                Vec3::new(x, y, z) + flat_n(e.r2) * (100.0 * st) + e.r0.normalize_or(Vec3::X) * (300.0 * st)
+                // (their first stages carry V along their axes; the second ones nothing)
+                let (look, side) = (flat_n(e.r2), e.r0.normalize_or(Vec3::X));
+                Vec3::new(x, y, z) + look * (100.0 * st + ta_carry(look.dot(v), 0.5, c)) + side * (300.0 * st + ta_carry(side.dot(v), 0.5, c))
             }
         }
     }
@@ -4299,7 +4305,7 @@ mod tests {
         assert!((ClimbKind::FocusOnCar.total() - 1.3).abs() < 1e-5);
         assert!((ClimbKind::SharpAngleRight.total() - 61.0 / 30.0).abs() < 1e-4);
         for (s, kind, ahead) in [(north, ClimbKind::FocusOnCar, 20.0), (sw, ClimbKind::SharpAngleRight, 10.0), (se, ClimbKind::SharpAngleLeft, 10.0)] {
-            let mut c = CineClimb::new(s, car, 50.0, 25.0);
+            let mut c = CineClimb::new(s, car, 50.0, 25.0, Vec3::ZERO);
             assert_eq!(c.kind(), kind);
             let mut n = 0;
             let mut last = None;
@@ -4320,13 +4326,28 @@ mod tests {
             assert!((f - 25.0).abs() < 0.05, "{kind:?}: lens {f}");
         }
         // FocusOnCar halfway (t 0.65, C = 1.3 (1 - cos(pi/4)) = 0.3808): y = 7 + 843 s(0.3808 / 1.3)
-        let mut c = CineClimb::new(north, car, 50.0, 25.0);
+        let mut c = CineClimb::new(north, car, 50.0, 25.0, Vec3::ZERO);
         let mut o = None;
         for _ in 0..39 {
             o = c.step(1.0 / 60.0).or(o);
         }
         let y = 7.0 + 843.0 * s_curve(1.3 * (1.0 - (PI * 0.25).cos()) / 1.3);
         assert!((o.unwrap().0.eye.y - y).abs() < 0.01, "{} vs {y}", o.unwrap().0.eye.y);
+        // the render camera's velocity (y dropped) bends the path, never the end: FocusOnCar's X / Z carry
+        // V over 37/30 - v0 T g(u) - and the Sharp_Angle ones' X, Z, final_look / final_side first stages
+        for s0 in [north, sw, se] {
+            let v = Vec3::new(30.0, 50.0, -20.0);
+            let (mut a, mut b) = (CineClimb::new(s0, car, 50.0, 25.0, Vec3::ZERO), CineClimb::new(s0, car, 50.0, 25.0, v));
+            let mut most = 0f32;
+            while let (Some(x), Some(y)) = (a.step(1.0 / 30.0), b.step(1.0 / 30.0)) {
+                assert!((x.0.eye.y - y.0.eye.y).abs() < 1e-3, "no carry on Y");
+                most = most.max((x.0.eye - y.0.eye).length());
+            }
+            assert!(most > 1.0, "{:?}: carried {most}", a.kind());
+            assert!((a.end().0.eye - b.end().0.eye).length() < 1e-3);
+        }
+        let t = ui_time(1.25);
+        assert!((ta_carry(30.0, t, 1e-3) / 1e-3 - 30.0).abs() < 0.1);
     }
 
     #[test]

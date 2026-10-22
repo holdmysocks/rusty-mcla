@@ -609,6 +609,9 @@ pub struct Game {
     /// the next StartRace is a Warper_Warp('DEFAULT_WITH_CUT') - a series' / tournament's next race or
     /// restart: main climbs first (`hudmap::CineClimb`)
     pub warp_with_cut: bool,
+    /// the next StartRace is the payback's first leg after ACCEPT on form 68: main warps to the payback
+    /// place's wait camera (STORY_LOCATION_CUT_SIMPLE) and plays `cut_payback_get_keys` first
+    pub payback_keys: bool,
     /// that climb is on: no form or HUD over it
     pub climb_on: bool,
     /// race time stepped since the last UI frame: the HUD's 3-2-1 runs on it, so it stays on the race clock
@@ -819,6 +822,9 @@ pub struct Game {
     pub quick_fix: bool,
     /// what a repair would cost now (sub_8269EA88): 0 greys the repair question's YES
     pub fix_now: i64,
+    /// the police are pulling the player over or pursuing him (sub_8265E5E8: PoliceManager_IsPullingRacerOver
+    /// || PoliceManager_IsRacerPursued): RETURN TO CRUISE then goes straight back, no repair question
+    pub police_on_player: bool,
     /// the event list was opened at one of the four wager hangouts
     pub wager_here: bool,
     /// the WAGER AMOUNT choice is open (the row it is on)
@@ -1156,6 +1162,7 @@ impl Game {
             starter_swap: None,
             dive_k: 0.0,
             warp_with_cut: false,
+            payback_keys: false,
             climb_on: false,
             place_mask: 0.0,
             place_title: None,
@@ -1261,6 +1268,7 @@ impl Game {
             gas_stations: Vec::new(),
             quick_fix: false,
             fix_now: 0,
+            police_on_player: false,
             wager_here: false,
             wager_pick: None,
             wager: None,
@@ -7515,7 +7523,7 @@ impl Game {
                     // (an ordinary race's RETURN TO CRUISE asks the repair question too - form 71,
                     // Dialog_Title_ReturnToCruise, sub_82668480 - after every race (the race-over test
                     // sub_8265F2C0), unless the police are after the player (sub_8265E5E8))
-                    Some(2) if movie && self.opt_x.s23.heat_was != 2 => {
+                    Some(2) if movie && !self.police_on_player => {
                         self.series_ask_kind = 4;
                         self.series_ask = Some(0);
                     }
@@ -7547,10 +7555,9 @@ impl Game {
                     }
                     None => {}
                 }
-                if back {
-                    self.menu_sel = 0;
-                    action = MenuAction::StartFreeRoam;
-                }
+                // (B on a race-over menu does nothing: sub_82668660 returns 1 on cancel_pressed while the
+                // race is over (vt+52) - every variant hands B to it; no BACK prompt, `sr_raceover`)
+                let _ = back;
             }
             Mode::FreeRoam | Mode::Race => {
                 if self.mode == Mode::FreeRoam && std::mem::take(&mut self.go_garage) {
@@ -11236,8 +11243,15 @@ impl Game {
             if self.mc4_event_panel_accept(&key) {
                 leave(self);
                 // (a tournament's first race: the man's script accepts form 66 -> Warper_Warp('DEFAULT_WITH_CUT'),
-                // tourstart.dis 0x75a; the payback's warp is not decoded - left as it was)
-                self.warp_with_cut = !key.eq_ignore_ascii_case("be_payback");
+                // tourstart.dis 0x75a. The payback's (`Hangouts/0xfc2c6c0a` 0x0c3d): stat xGAK + 1, then
+                // Warper_TransitionTo('STORY_LOCATION_CUT_SIMPLE', 513, ..) to the place's wait camera and
+                // PaybackCore's `cut_payback_get_keys` - main, `payback_keys`; no climb)
+                let payback = key.eq_ignore_ascii_case("be_payback");
+                self.warp_with_cut = !payback;
+                if payback {
+                    self.mc4_stat_add("xGAK", 0, 1.0);
+                    self.payback_keys = true;
+                }
                 return Some(MenuAction::StartRace);
             }
         } else if enter && delivery {

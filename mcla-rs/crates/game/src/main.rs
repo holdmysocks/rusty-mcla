@@ -348,6 +348,13 @@ struct App {
     climb_view: Option<(Vec3, Vec3, Vec3, f32)>,
     climb_end: Option<(hudmap::CamRows, f32)>,
     climb_hold: u32,
+    /// the climb is over and its camera held: the time left until the race is set up and the dive
+    /// starts, and the action held until then
+    climb_wait: Option<(f32, MenuAction)>,
+    /// the camera on screen last frame and its velocity (playerMgr+0x51420: the step over the unscaled
+    /// frame time, `sub_82204058`) - what a climb is handed
+    screen_eye: Vec3,
+    screen_v: Vec3,
     /// the start scene chosen when the pre-race begins (the warp lands on its camera)
     prerace_plan: Option<(Vec<String>, glam::Mat4)>,
     starter_was: bool,
@@ -370,6 +377,10 @@ struct App {
     hangout_prev: Option<Vec3>,
     /// the camera of that warp and the wait after it (eye, look point, up, lens in radians)
     place_view: Option<(Vec3, Vec3, Vec3, f32)>,
+    /// ACCEPT on the payback's panel (form 68): the warp to the place's wait camera - (time, the warp, where
+    /// the car is held); then `payback_hold` until `cut_payback_get_keys` starts
+    payback_in: Option<(f32, Option<hudmap::CineWarp>, (Vec3, glam::Quat))>,
+    payback_hold: bool,
     /// its black (the scene's fade_to_black, garage_core's fade up)
     garage_mask: boomcam::CutMask,
     /// leaving the garage for the street: seconds into the fade to black before the drive-out scene
@@ -514,6 +525,9 @@ struct App {
     fire_ability: bool,
     cycle_ability: bool,
 }
+
+/// The payback place's wait camera (`Hangouts/0xbaa0ed14` +3468 / +3480 / +3492) is the Beaches garage's
+const PAYBACK_PLACE_CAM: usize = 1;
 
 impl App {
     /// The race's start scene from the original's picker and table (prerace.rs) and where it is staged.
@@ -776,6 +790,9 @@ impl App {
             climb_view: None,
             climb_end: None,
             climb_hold: 0,
+            climb_wait: None,
+            screen_eye: Vec3::ZERO,
+            screen_v: Vec3::ZERO,
             prerace_plan: None,
             starter_was: false,
             delivery_armed: true,
@@ -787,6 +804,8 @@ impl App {
             hangout_title: None,
             hangout_prev: None,
             place_view: None,
+            payback_in: None,
+            payback_hold: false,
             garage_mask: Default::default(),
             garage_out: None,
             phone_challenge_in: 0.0,
@@ -2885,11 +2904,18 @@ impl App {
             let (rows, fov) = match c.step(dt) {
                 Some(v) => v,
                 None => {
+                    // (held: the script's WAITUNWARPED polls every 100 ms from the climb's start, then the
+                    // race and its start scene are set up; warper state 4 counts 3 frames
+                    // (m_CityPrestreamWaitFrames), 1 for the sectors, 1 for the scene camera, then 0.1 s -
+                    // CAREER_RACES.md "The climb's hand-over")
+                    let total = c.total();
+                    let poll = ((total - 1e-4) / 0.1).ceil() * 0.1;
+                    let wait = poll - total + 5.0 / 30.0 + 0.1;
                     let end = c.end();
-                    log::info!("DEFAULT_WITH_CUT climb over: {:?} lens {:.2}", end.0.eye, end.1.to_degrees());
+                    log::info!("DEFAULT_WITH_CUT climb over: {:?} lens {:.2}, held {:.3} s", end.0.eye, end.1.to_degrees(), wait);
                     self.climb = None;
                     self.climb_end = Some(end);
-                    self.pending_action = act;
+                    self.climb_wait = Some((wait, act));
                     end
                 }
             };
@@ -2905,6 +2931,12 @@ impl App {
                         self.photo_request = Some(format!("{prefix}_{x}.png"));
                     }
                 }
+            }
+        } else if let Some((left, act)) = self.climb_wait.as_mut() {
+            *left -= dt;
+            if *left <= 0.0 {
+                self.pending_action = *act;
+                self.climb_wait = None;
             }
         } else if self.climb_view.is_some() && self.warp.is_none() && self.game.prerace.is_none() {
             // (held until the dive takes over; let go if no race came of it)
@@ -2931,6 +2963,43 @@ impl App {
             }
         }
         self.game.dive_k = if self.warp_view.is_some() { 1.0 } else { 0.0 };
+        // The payback's warp (ACCEPT on form 68, `Hangouts/0xfc2c6c0a` 0x0c3d; CAREER_RACES.md "The payback's
+        // warp"): the car deactivated where it is, Warp_Target_Close to the place's wait camera (within 100 of
+        // it; else the camera is put there), Warper_IsReadyToLoadStuff polled every 30 ms - then PaybackCore: the
+        // car changed, `cut_payback_get_keys` (Warper_SetIsEnterOnly(1): no flight onto it), the first leg
+        if let Some((mut t, mut warp, hold)) = self.payback_in.take() {
+            t += dt;
+            if let Some(c) = self.vehicles.player_mut() {
+                c.state.pos = hold.0;
+                c.state.rot = hold.1;
+                c.state.vel = Vec3::ZERO;
+                c.state.ang_vel = Vec3::ZERO;
+            }
+            let len = warp.as_ref().map_or(0.0, |w| w.total());
+            let (rows, fov) = match warp.as_mut().and_then(|w| w.step(dt)) {
+                Some(v) => v,
+                None => (garagein::wait_rows(&garagein::SETUPS[PAYBACK_PLACE_CAM]), garagein::LENS_DEG.to_radians()),
+            };
+            self.place_view = Some((rows.eye, rows.look_point(), rows.r1, fov));
+            self.game.dive_k = 1.0;
+            if t + 1e-4 >= ((len - 1e-4).max(0.0) / 0.03).ceil() * 0.03 {
+                log::info!("payback warp: ready at {:.3} s (warp {:.3} s), tick {}", t, len, self.tick_no);
+                self.payback_hold = true;
+                self.pending_action = MenuAction::StartRace;
+            } else {
+                self.payback_in = Some((t, warp, hold));
+            }
+        } else if self.payback_hold {
+            // (the camera waits at the wait camera until the keys scene is on)
+            if self.cine.playing.as_ref().map_or(false, |sc| sc.name.contains("cut_payback_get_keys")) || self.game.race.is_none() {
+                self.payback_hold = false;
+                self.place_view = None;
+            } else {
+                let rows = garagein::wait_rows(&garagein::SETUPS[PAYBACK_PLACE_CAM]);
+                self.place_view = Some((rows.eye, rows.look_point(), rows.r1, garagein::LENS_DEG.to_radians()));
+                self.game.dive_k = 1.0;
+            }
+        }
         if let Some((front, yaw, grid)) = self.game.prerace.clone() {
             self.prerace_wait += 1;
             if let Some(r) = self.game.race.as_mut() {
@@ -2941,7 +3010,9 @@ impl App {
                     self.replay_prerace = Some((front, yaw, grid.clone()));
                 }
                 let plan = self.prerace_choose(front, yaw, &grid);
-                if std::env::var("MCLA_NO_DIVE").is_err() {
+                // (PaybackCore's Warper_SetIsEnterOnly(1): the keys scene comes in from the wait camera, no flight)
+                let enter_only = plan.0.first().map_or(false, |sc| sc.contains("cut_payback_get_keys"));
+                if std::env::var("MCLA_NO_DIVE").is_err() && !enter_only {
                     if let Some((eye, fwd, up, fov)) = plan.0.first().and_then(|sc| self.cine.peek_camera(sc, plan.1, hudmap::CINE_HANDOVER)) {
                         let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
                         let mut s = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, Vec3::Y);
@@ -2987,7 +3058,7 @@ impl App {
                     self.cine_caption = self.game.race.as_ref().map(|r| r.name.to_uppercase().replace('_', " "));
                     // (p080: the walk to the delivery car has no badge - walkthrough 2:44:20; the intro
                     // shows it at its racename event only)
-                    if p080_sc.contains("delivery") {
+                    if p080_sc.contains("delivery") || p080_sc.contains("cut_payback_get_keys") {
                         self.cine_caption = None;
                     }
                     log::info!("prerace scene: {} (delivery intro {})", p080_sc, hudmap::delivery_intro(&p080_sc).is_some());
@@ -3032,6 +3103,10 @@ impl App {
                     // a grid / starter / taunt scene: GO 3 s after its countdown event, the badge from its
                     // racename event for that event's own duration (2 - 2.033 s; form 70 shown at its start,
                     // closed at its end - as the delivery intros), no HUD before the countdown (prerace.rs)
+                    // (the payback's keys scene plays before PaybackCore starts the leg: no race HUD over it)
+                    if self.cine_prerace && self.cine.playing.as_ref().map_or(false, |sc| sc.name.contains("cut_payback_get_keys")) {
+                        self.game.scene_hud_off = true;
+                    }
                     if let Some(e) = self.cine.playing.as_ref().filter(|_| self.cine_prerace).and_then(|sc| prerace::events(&sc.name)) {
                         if let Some(r) = self.game.race.as_mut() {
                             r.countdown = (e.go() - t).max(0.0);
@@ -3505,6 +3580,9 @@ impl App {
                 self.game.mc4_camera_sync(&mut self.cam_mode);
             }
             self.game.mc4_clock_sync(&mut self.time_of_day, self.opt.time.is_some());
+            // (sub_8265E5E8: a Pull Over tactic (type 1) or a pursuit (types 2 - 4) on the player - payback
+            // goons' StartPursuit included; Search / Busted taken as the pursuit's tactic still running)
+            self.game.police_on_player = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted);
             // (step 23: the slow motion, the tutorials, the statistics and achievements)
             self.game.mc4_s23_tick(dt, mc4::S23In { heat: if self.police.goons { 0 } else { self.police.heat as u8 }, near: self.roam.near.is_some(), flashed: self.roam.accepted, kind: self.roam.near_type, station: self.at_station.is_some(), drive: mc4b::drive_of(self.vehicles.player()) });
             // (step 23b: AudioManager_SetActiveTimeSlow - the dynamic mixer's slow-down state while
@@ -4199,7 +4277,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.garage_mask.release(garagein::FADE_UP);
                 }
             }
-            if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() {
+            if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() && self.payback_in.is_none() && !self.payback_hold {
                 self.place_view = None;
                 self.game.place_title = None;
             }
@@ -5732,6 +5810,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.fps = self.fps * 0.95 + (1.0 / wall_dt.max(1e-4)) * 0.05;
         self.frame_ms = wall_dt * 1000.0;
         self.frame_no += 1;
+        self.screen_v = (self.cam.pos - self.screen_eye) / dt.max(1e-4);
+        self.screen_eye = self.cam.pos;
 
         self.gamepad_buttons();
         // Do not spend the launch/countdown clock before the initial physics world
@@ -8655,6 +8735,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             MenuAction::StartRace | MenuAction::RestartRace
                 if self.climb.is_none()
                     && self.climb_end.is_none()
+                    && self.climb_wait.is_none()
                     && (std::mem::take(&mut self.game.warp_with_cut)
                         || (action == MenuAction::RestartRace && (self.game.series.is_some() || self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map_or(false, |d| self.game.career.tournament_of(&d.id).is_some()))))
                     && std::env::var("MCLA_NO_CLIMB").is_err()
@@ -8664,7 +8745,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let e = hudmap::CamRows { r0: p.state.rot * Vec3::X, r1: p.state.rot * Vec3::Y, r2: p.state.rot * Vec3::Z, eye: p.state.pos };
                 let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
                 let s = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.chase.up);
-                let c = hudmap::CineClimb::new(s, e, self.cam.fov_y, 25f32.to_radians());
+                let c = hudmap::CineClimb::new(s, e, self.cam.fov_y, 25f32.to_radians(), self.screen_v);
                 log::info!("DEFAULT_WITH_CUT climb: {:?} ({:.3} s) from {:?} over the car at {:?}", c.kind(), c.total(), s.eye, e.eye);
                 self.climb = Some((c, action));
                 self.climb_end = None;
@@ -8673,6 +8754,27 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (a tournament's first race and a payback open their panel first: `mc4_event_panel_first`)
             MenuAction::StartRace if self.game.mc4_event_panel_first() => {}
+            // ACCEPT on the payback's panel (`Hangouts/0xfc2c6c0a` 0x0c3d): PoliceManager_DestroyAllPolice, the player
+            // Racer_ZeroVelocity + Racer_Deactivate, "ease from pause" (form 68, 0.5 s), then
+            // Warper_TransitionTo('STORY_LOCATION_CUT_SIMPLE', 513, eye, up point, look-at) - the Beaches garage's
+            // wait camera; the race is set up once it is ready (the per-frame part)
+            MenuAction::StartRace if self.game.payback_keys && self.payback_in.is_none() && self.vehicles.player().is_some() => {
+                self.game.payback_keys = false;
+                self.police.destroy_all(&mut self.vehicles);
+                let c = self.vehicles.player_mut().unwrap();
+                c.state.vel = Vec3::ZERO;
+                c.state.ang_vel = Vec3::ZERO;
+                let hold = (c.state.pos, c.state.rot);
+                self.game.hangout_slow.set(1.0, 1.0 / 0.5, false, true, 1.0);
+                self.game.hangout_slow.visible = false;
+                self.game.mode = Mode::FreeRoam;
+                let e = garagein::wait_rows(&garagein::SETUPS[PAYBACK_PLACE_CAM]);
+                let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
+                let s = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.boom_up.unwrap_or(Vec3::Y));
+                let warp = (s.eye.distance(e.eye) < garagein::CLOSE).then(|| hudmap::CineWarp::target_close(s, e, self.cam.fov_y, garagein::LENS_DEG.to_radians()));
+                log::info!("payback warp: from {:?} to {:?} (Warp_Target_Close {}), tick {}", s.eye, e.eye, warp.is_some(), self.tick_no);
+                self.payback_in = Some((0.0, warp, hold));
+            }
             MenuAction::StartRace | MenuAction::RestartRace => {
                 // (p080: delivery_hangout_core plays the walk to the car only when the panel is
                 // accepted; a restart or the next delivery goes straight to the intro)
@@ -8910,6 +9012,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.game.prerace = Some((g0, yaw, String::new()));
                         }
                         log::info!("delivery start: {} - walk {}, intro {}", def.id, self.game.prerace_scene.as_deref().map_or(false, |s| s.contains("get_keys")), intro.scene);
+                    }
+                }
+                // the payback's first leg after its panel: PaybackCore plays `cut_payback_get_keys` (staged in the
+                // world, the player's car its `drv00`) and the leg goes from where the scene leaves the car - no warp
+                // (RunPayBack 0x06d5, main local3 = 0). A restart and the later legs as before.
+                if started && self.payback_hold {
+                    let sc = "racestart/cut_payback_get_keys";
+                    let pose = self.cine.car_pose(sc, &|l| cine::is_player_car(l), false);
+                    let payback = self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Payback);
+                    if let (true, Some((p, q))) = (payback && self.cine.has(sc), pose) {
+                        if let Some(i) = self.vehicles.cars.iter().position(|c| c.is_player) {
+                            self.vehicles.pose_car(i, p, q);
+                        }
+                        let f = q * Vec3::NEG_Z;
+                        self.game.prerace_scene = Some(sc.to_string());
+                        self.game.prerace = Some((p, f.x.atan2(-f.z), String::new()));
+                        log::info!("payback start: keys scene, the car at {:?}", p);
+                    } else {
+                        self.payback_hold = false;
+                        self.place_view = None;
                     }
                 }
                 // the race's own dressing: ramps and flares, scripted traffic, held lights
