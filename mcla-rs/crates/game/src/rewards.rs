@@ -222,6 +222,33 @@ impl Samples {
         Samples { cars }
     }
 
+    /// An opponent's mod value (0..100) in a race of difficulty `d` against a player whose car is
+    /// worth `player` (sub_8239C080, through the race script's `Racer_SetModValue(racer,
+    /// mcCarConfigData_GetModValue(cfg))`): the band of the difficulty around the player's value
+    /// (the career's steps -0.15, 0.025, 0.15, 0.3, 0.0, 0.45 x 1.0; d -1 down to P - 1, d 3 up to
+    /// the fifth step, d 5 from it to P + 1), cut to the car's own 0 / 100 samples, its middle taken
+    /// from the uncut lower end, and read back as a percentage on the car's 0 / 50 / 100 samples,
+    /// rounded. `None` for a car without samples (the original returns 100 without a config).
+    pub fn mod_value(&self, car: &str, player: f32, d: i32) -> Option<i32> {
+        let s = self.cars.get(&car.to_ascii_lowercase())?;
+        const THR: [f32; 6] = [-0.15, 0.025, 0.15, 0.30, 0.0, 0.45];
+        let (lo, hi) = match d {
+            -1 => (player - 1.0, player + THR[0]),
+            3 => (player + THR[3], player + THR[5]),
+            5 => (player + THR[5], player + 1.0),
+            _ => {
+                let d = d.clamp(0, 4) as usize;
+                (player + THR[d], player + THR[d + 1])
+            }
+        };
+        let low = if lo >= s[0] { lo } else if hi <= s[0] { hi } else { s[0] };
+        let high = if hi <= s[2] { hi } else if lo >= s[2] { lo } else { s[2] };
+        let t = lo + 0.5 * (high - low);
+        let ((pa, a), (pb, b)) = if t < s[1] { ((0.0, s[0]), (50.0, s[1])) } else { ((50.0, s[1]), (100.0, s[2])) };
+        let x = t.clamp(a.min(b), a.max(b));
+        Some((pa + (x - a) / (b - a) * (pb - pa) + 0.5) as i32)
+    }
+
     /// Performance value of `car` with `tuned` (0..1) of its upgrades fitted.
     pub fn value(&self, car: &str, tuned: f32) -> Option<f32> {
         let s = self.cars.get(&car.to_ascii_lowercase())?;
@@ -257,5 +284,17 @@ mod tests {
         assert_eq!(a.step(1, None), 1);
         assert_eq!(a.step(0, None), 0);
         assert_eq!(a.step(2, Some(1)), 4);
+    }
+
+    #[test]
+    fn opponents_mod_value() {
+        // (the original's AROUND HOLLYWOOD on MEDIUM against a fully upgraded Saleen S281, 0.790155:
+        // the opponents measured at 98 / 78 / 82 - work/racerai/scratch/upg/opponent_upgrades.md)
+        let mut s = Samples::default();
+        s.cars.insert("vp_aud_r8_08".into(), [0.580801, 0.707273, 0.822529]);
+        s.cars.insert("vp_lam_murcielago_06".into(), [0.701087, 0.803725, 0.888737]);
+        s.cars.insert("vp_duc_999r_06".into(), [0.710337, 0.798889, 0.861136]);
+        let m: Vec<_> = ["vp_aud_r8_08", "vp_lam_murcielago_06", "vp_duc_999r_06"].iter().map(|c| s.mod_value(c, 0.790155, 1).unwrap()).collect();
+        assert_eq!(m, [98, 78, 82]);
     }
 }

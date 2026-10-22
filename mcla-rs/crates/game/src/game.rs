@@ -3125,6 +3125,23 @@ impl Game {
             let step = self.adaptive.step(desired, odd);
             let step = std::env::var("MCLA_RB_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(step);
             log::info!("race: difficulty {} (field {:?}; hookman race {} set-up {:?}), opponents level {} -> rubber band step {}", desired, diffs, self.hookman_race, self.mc4_hookman_diff(), self.adaptive.level, step);
+            // each opponent's upgrade level: Racer_SetModValue(racer, mcCarConfigData_GetModValue(cfg))
+            // of the race script - the car's share of its upgrades that puts it in the difficulty's band
+            // around the player's car (sub_8239C080); a payback's client is stock (its script sets 0)
+            // (approx.: a hookman's value is taken at the race's start - the original freezes it when
+            // he appears, sub_826CF3E8 - and a car without samples stays stock)
+            if self.race.as_ref().map_or(false, |r| r.kind != RaceKind::Payback) && std::env::var("MCLA_OPP_PERF").is_err() {
+                // (diagnostics, docs/AI.md: MCLA_PLAYER_PERF=<value> stands for the player's car here)
+                let player = std::env::var("MCLA_PLAYER_PERF").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| self.player_perf());
+                let ids: Vec<usize> = self.race.as_ref().map(|r| r.participants.iter().skip(1).copied().collect()).unwrap_or_default();
+                for i in ids {
+                    let Some(c) = vehicles.cars.get_mut(i) else { continue };
+                    if let Some(m) = self.samples.mod_value(&c.model.name, player, desired) {
+                        log::info!("race: racer {} mod value {} (player {:.4}, difficulty {})", c.model.name, m, player, desired);
+                        c.set_perf(m.max(0) as f32 * 0.01);
+                    }
+                }
+            }
             self.rb_step = Some(step);
             // the racers' brains (BrainRacing_SetupRace in the race core; the rubber band's copy of its tuning)
             let laps = self.race.as_ref().map_or(1, |r| r.laps.max(1));
