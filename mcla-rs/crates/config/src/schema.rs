@@ -30,6 +30,7 @@ static KEYS: &[KeyInfo] = &[
     k("display.render_scale", "float", "1.0", "0.5 .. 2.0", false),
     k("display.aa", "enum", "\"off\"", "off | fxaa | msaa2 | msaa4", false),
     k("display.monitor", "int", "0", "0 .. 15 (0 = primary, then the others in the system's order; a missing one = primary)", true),
+    k("display.fps_monitor", "enum", "\"off\"", "off | fps | frame_time (the frame-rate readout: frames per second, or that and the frame time)", true),
     k("game.intro", "enum", "\"normal\"", "normal | fast | skip", true),
     k("paths.data_dir", "string", "\"\"", "empty = next to the exe; a relative path is taken from the install root", true),
     k("paths.screenshots", "string", "\"\"", "empty = <install root>/screenshots", true),

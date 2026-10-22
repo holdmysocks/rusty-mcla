@@ -75,8 +75,9 @@
     kbdSet: (act, slot, code, alt, force) => (invoke ? invoke('kbd_set', { act, slot, code, alt: !!alt, force: !!force }) : Promise.resolve({ outcome: 'failed', error: { detail: 'no bridge' }, view: previewKbd() })),
     kbdClear: (act, slot) => (invoke ? invoke('kbd_clear', { act, slot }) : Promise.resolve({ outcome: 'failed', error: { detail: 'no bridge' }, view: previewKbd() })),
     kbdReset: () => (invoke ? invoke('kbd_reset') : Promise.resolve({ outcome: 'failed', error: { detail: 'no bridge' }, view: previewKbd() })),
-    displayGet: () => (invoke ? invoke('display_get') : Promise.resolve({ monitors: [{ index: 0, name: 'DISPLAY1', width: 1920, height: 1080, primary: true }], monitor: 0, implemented: true, settings_path: '', file: 'missing' })),
+    displayGet: () => (invoke ? invoke('display_get') : Promise.resolve({ monitors: [{ index: 0, name: 'DISPLAY1', width: 1920, height: 1080, primary: true }], monitor: 0, implemented: true, intro: 'normal', window_mode: 'windowed', resolution: '1600x900', resolutions: ['1280x720', '1366x768', '1600x900', '1920x1080'], vsync: true, fps_cap: 0, fps_caps: [0, 30, 60, 120, 144, 165, 240], fps_monitor: 'off', live_keys: ['game.intro', 'display.window_mode', 'display.resolution', 'display.vsync', 'display.fps_cap', 'display.fps_monitor'], settings_path: '', file: 'missing' })),
     displaySetMonitor: (index) => (invoke ? invoke('display_set_monitor', { index }) : Promise.reject('no bridge')),
+    displaySet: (key, value) => (invoke ? invoke('display_set', { key, value }) : Promise.reject('no bridge')),
     // support: Export Logs, save manager, Play (src/support.rs over mcla-support). Without Tauri they answer with a sample so the layout can be looked at.
     exportInfo: () => (invoke ? invoke('export_info') : Promise.resolve({ dir: 'C:\\Users\\you\\Desktop', default_dir: 'C:\\Users\\you\\Desktop', custom: false })),
     exportPickDir: () => (invoke ? invoke('export_pick_dir') : Promise.resolve(null)),

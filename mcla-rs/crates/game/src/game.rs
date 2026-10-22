@@ -469,6 +469,8 @@ pub struct Game {
     /// driving into a garage (main.rs `garagein`): the black of its scene and fade up, and the place's
     /// name and district while ShowLocationName is up (popup template 63)
     pub place_mask: f32,
+    /// a row of OPTIONS > DISPLAY stepped (row id `hooks::ROW_*`, on / back); the window side applies it after the frame
+    pub display_step: Option<(u8, bool)>,
     pub place_title: Option<(String, String)>,
     /// textures and strings shared by the Flash movies
     pub ui_shared: Option<crate::flash_ui::UiShared>,
@@ -1177,6 +1179,7 @@ impl Game {
             payback_keys: false,
             climb_on: false,
             place_mask: 0.0,
+            display_step: None,
             place_title: None,
             ui_sim_dt: 0.0,
             scene_hud_off: false,
@@ -4434,6 +4437,10 @@ impl Game {
                         title = "DISPLAY".to_string();
                         let on = |b: bool| format!("{}{}", crate::flash_ui::CHOICE, if b { s("G_On", "ON") } else { s("G_Off", "OFF") });
                         items.push(("REAR-VIEW MIRROR".to_string(), on(self.opts.rear_view), Go::Page(53)));
+                        // (settings.toml's display keys, applied at once and written back - `hooks::display_step`)
+                        for (label, row) in [("WINDOW MODE", crate::hooks::ROW_WINDOW_MODE), ("RESOLUTION", crate::hooks::ROW_RESOLUTION), ("MONITOR", crate::hooks::ROW_MONITOR), ("VSYNC", crate::hooks::ROW_VSYNC), ("FPS CAP", crate::hooks::ROW_FPS_CAP), ("FPS COUNTER", crate::hooks::ROW_FPS_MONITOR)] {
+                            items.push((label.to_string(), format!("{}{}", crate::flash_ui::CHOICE, crate::hooks::display_value(row)), Go::Page(row)));
+                        }
                     }
                     PAGE_PERFORMANCE => {
                         // (the port's own page, D19)
@@ -4646,6 +4653,7 @@ impl Game {
                         Some(Go::Page(47)) => adj(&mut self.opts.cutscene),
                         Some(Go::Page(52)) => self.opts.hq_traffic = !self.opts.hq_traffic,
                         Some(Go::Page(53)) => self.opts.rear_view = !self.opts.rear_view,
+                        Some(Go::Page(p)) if (crate::hooks::ROW_WINDOW_MODE..=crate::hooks::ROW_FPS_MONITOR).contains(&p) => self.display_step = Some((p, right)),
                         _ => {}
                     }
                     self.dirty = true;
@@ -4878,6 +4886,7 @@ impl Game {
                                 47 => step(&mut self.opts.cutscene),
                                 52 => self.opts.hq_traffic = !self.opts.hq_traffic,
                                 53 => self.opts.rear_view = !self.opts.rear_view,
+                                60..=65 => self.display_step = Some((p, true)),
                                 48 | 49 | 50 | 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, true, self.fresh_game),
                                 _ => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, true, true, self.fresh_game),
                             }
@@ -5061,6 +5070,7 @@ impl Game {
                             43 => self.opts.shake = !self.opts.shake,
                             52 => self.opts.hq_traffic = !self.opts.hq_traffic,
                             53 => self.opts.rear_view = !self.opts.rear_view,
+                            60..=65 => self.display_step = Some((p, true)),
                             48 | 49 | 50 | 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, true, self.fresh_game),
                             _ => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, true, true, self.fresh_game),
                         }

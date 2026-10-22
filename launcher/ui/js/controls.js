@@ -152,7 +152,7 @@
     return call(Bridge.kbdReset());
   }
 
-  // ---------- Settings > Display and game: monitor ----------
+  // ---------- Settings > Display and game: monitor and the other live rows ----------
   function renderDisplay() {
     const d = st.display;
     const sel = $('#monitor-select');
@@ -175,6 +175,46 @@
     const s = $('#monitor-status');
     s.textContent = d.file === 'broken' ? t('set.mon_broken') : '';
     s.dataset.kind = d.file === 'broken' ? 'bad' : '';
+    // (intro, window mode, resolution, frame-rate cap, vsync, fps counter: live where the key table says the game reads the key)
+    const fill = (sel, values, label, cur) => {
+      sel.textContent = '';
+      values.forEach((v) => { const o = el('option'); o.value = String(v); o.textContent = label(v); sel.append(o); });
+      sel.value = String(cur);
+    };
+    fill($('#res-select'), d.resolutions || [], (v) => t('set.mon_res', v.split('x')), d.resolution);
+    fill($('#fps-select'), d.fps_caps || [], (v) => (v === 0 ? t('set.o_off') : t('set.mon_fps', [v])), d.fps_cap);
+    $('#vsync-switch').setAttribute('aria-checked', d.vsync ? 'true' : 'false');
+    const cur = { 'game.intro': d.intro, 'display.window_mode': d.window_mode, 'display.fps_monitor': d.fps_monitor };
+    $$('.opt[data-dkey]').forEach((row) => {
+      const key = row.dataset.dkey;
+      const live = d.file !== 'broken' && (d.live_keys || []).includes(key);
+      if (live) row.removeAttribute('aria-disabled'); else row.setAttribute('aria-disabled', 'true');
+      row.querySelectorAll('select, button').forEach((c) => { c.disabled = !live; });
+      row.querySelectorAll('.seg [data-v]').forEach((b) => {
+        const on = b.dataset.v === cur[key];
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+        b.tabIndex = live ? 0 : -1;
+      });
+    });
+  }
+
+  async function setKey(key, value) {
+    const row = $(`.opt[data-dkey="${key}"]`);
+    if (!row || row.getAttribute('aria-disabled') === 'true') return 'greyed';
+    const s = row.querySelector('.mon-status');
+    try {
+      st.display = await Bridge.displaySet(key, value);
+      renderDisplay();
+      s.textContent = t('set.mon_saved');
+      s.dataset.kind = 'ok';
+      return 'saved';
+    } catch (e) {
+      renderDisplay();
+      s.textContent = e === 'broken' ? t('set.mon_broken') : t('set.mon_failed');
+      s.dataset.kind = 'bad';
+      return 'failed:' + e;
+    }
   }
 
   async function loadDisplay() {
@@ -206,6 +246,14 @@
     $('#kbd-ask-yes').addEventListener('click', () => closeAsk(true));
     $('#kbd-ask-no').addEventListener('click', () => closeAsk(false));
     $('#monitor-select').addEventListener('change', (e) => setMonitor(Number(e.target.value)));
+    $('#res-select').addEventListener('change', (e) => setKey('display.resolution', e.target.value));
+    $('#fps-select').addEventListener('change', (e) => setKey('display.fps_cap', Number(e.target.value)));
+    $('#vsync-switch').addEventListener('click', () => setKey('display.vsync', !(st.display && st.display.vsync)));
+    $$('.opt[data-dkey] .seg [data-v]').forEach((b) => {
+      const pick = () => setKey(b.closest('.opt').dataset.dkey, b.dataset.v);
+      b.addEventListener('click', pick);
+      b.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+    });
     load().catch((e) => Bridge.log('error', 'controls: ' + e));
     loadDisplay().catch((e) => Bridge.log('error', 'display: ' + e));
   }
@@ -284,6 +332,29 @@
       await wait(200);
       report.display.after = { value: st.display.monitor, status: $('#monitor-status').textContent };
       report.display.out_of_range = await Bridge.displaySetMonitor(16).then(() => 'accepted', (e) => 'refused:' + e);
+      // the other live rows, each set and put back
+      const before = { intro: st.display.intro, window_mode: st.display.window_mode, resolution: st.display.resolution, vsync: st.display.vsync, fps_cap: st.display.fps_cap, fps_monitor: st.display.fps_monitor };
+      report.display.rows = { live_keys: st.display.live_keys, greyed_rows: $$('.opt[aria-disabled="true"]').length, before, steps: [] };
+      const stepRow = async (what, fn, read) => { await fn(); await wait(150); report.display.rows.steps.push([what, read(), $(`.opt[data-dkey] .mon-status[data-kind]`) ? 'status' : '']); };
+      await stepRow('intro fast', () => $('.opt[data-dkey="game.intro"] [data-v="fast"]').click(), () => st.display.intro);
+      await stepRow('window borderless', () => $('.opt[data-dkey="display.window_mode"] [data-v="borderless"]').click(), () => st.display.window_mode);
+      const rs = $('#res-select'); rs.value = rs.options[0].value;
+      await stepRow('resolution first', () => rs.dispatchEvent(new Event('change')), () => st.display.resolution);
+      const fs = $('#fps-select'); fs.value = '60';
+      await stepRow('fps 60', () => fs.dispatchEvent(new Event('change')), () => st.display.fps_cap);
+      await stepRow('vsync toggled', () => $('#vsync-switch').click(), () => st.display.vsync);
+      await stepRow('fps counter frame_time', () => $('.opt[data-dkey="display.fps_monitor"] [data-v="frame_time"]').click(), () => st.display.fps_monitor + (($('.opt[data-dkey="display.fps_monitor"] [data-v="frame_time"]').classList.contains('on')) ? '/on' : '/not-shown'));
+      report.display.rows.fps_monitor_bad = await Bridge.displaySet('display.fps_monitor', 'graph').then(() => 'accepted', (e) => 'refused:' + e);
+      report.display.rows.refused = await Bridge.displaySet('display.fps_cap', 5).then(() => 'accepted', (e) => 'refused:' + e);
+      report.display.rows.unknown = await Bridge.displaySet('display.aa', 'fxaa').then(() => 'accepted', (e) => 'refused:' + e);
+      await Bridge.displaySet('game.intro', before.intro);
+      await Bridge.displaySet('display.window_mode', before.window_mode);
+      await Bridge.displaySet('display.resolution', before.resolution);
+      await Bridge.displaySet('display.fps_cap', before.fps_cap);
+      await Bridge.displaySet('display.vsync', before.vsync);
+      await Bridge.displaySet('display.fps_monitor', before.fps_monitor);
+      await loadDisplay();
+      report.display.rows.restored = { intro: st.display.intro, window_mode: st.display.window_mode, resolution: st.display.resolution, vsync: st.display.vsync, fps_cap: st.display.fps_cap, fps_monitor: st.display.fps_monitor };
     } catch (e) {
       bad('test threw: ' + (e && e.stack || e));
     }

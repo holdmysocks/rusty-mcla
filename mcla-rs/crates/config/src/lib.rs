@@ -55,6 +55,8 @@ words!(Intro { Normal = "normal", Fast = "fast", Skip = "skip" });
 words!(Aspect { Auto = "auto", Wide21x9 = "21:9", Wide32x9 = "32:9", Fit16x9 = "16:9" });
 words!(Upscaler { Off = "off", Bilinear = "bilinear", Fsr = "fsr" });
 words!(Aa { Off = "off", Fxaa = "fxaa", Msaa2 = "msaa2", Msaa4 = "msaa4" });
+// (the port's frame-rate readout, DECISIONS.md D25: off, frames per second, or frames per second and frame time)
+words!(FpsMonitor { Off = "off", Fps = "fps", FrameTime = "frame_time" });
 
 /// A window size in pixels. Written as `"1600x900"`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +94,8 @@ pub struct Display {
     pub aa: Aa,
     /// index of the monitor, 0 = the primary one
     pub monitor: u32,
+    /// the frame-rate readout (a port-only addition)
+    pub fps_monitor: FpsMonitor,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,6 +143,7 @@ impl Default for Settings {
                 render_scale: 1.0,
                 aa: Aa::Off,
                 monitor: 0,
+                fps_monitor: FpsMonitor::Off,
             },
             game: GameSettings { intro: Intro::Normal },
             paths: Paths { data_dir: String::new(), screenshots: String::new() },
@@ -219,6 +224,7 @@ impl Settings {
         s.display.render_scale = r.float(dt, "display.render_scale", "render_scale", d.display.render_scale, 0.5, 2.0);
         s.display.aa = r.word(dt, "display.aa", "aa", d.display.aa, Aa::parse, Aa::WORDS);
         s.display.monitor = r.uint(dt, "display.monitor", "monitor", d.display.monitor, |n| n < 16, "0..15");
+        s.display.fps_monitor = r.word(dt, "display.fps_monitor", "fps_monitor", d.display.fps_monitor, FpsMonitor::parse, FpsMonitor::WORDS);
         let gt = sub(t, "game");
         s.game.intro = r.word(gt, "game.intro", "intro", d.game.intro, Intro::parse, Intro::WORDS);
         let pt = sub(t, "paths");
@@ -257,6 +263,7 @@ impl Settings {
         put(&mut t, "display", "render_scale", Value::Float(format!("{}", d.render_scale).parse::<f64>().unwrap_or(1.0)));
         put(&mut t, "display", "aa", d.aa.word().into());
         put(&mut t, "display", "monitor", Value::Integer(d.monitor as i64));
+        put(&mut t, "display", "fps_monitor", d.fps_monitor.word().into());
         put(&mut t, "game", "intro", g.intro.word().into());
         put(&mut t, "paths", "data_dir", p.data_dir.clone().into());
         put(&mut t, "paths", "screenshots", p.screenshots.clone().into());

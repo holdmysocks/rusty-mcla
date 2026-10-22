@@ -7600,6 +7600,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let world_ref = &world;
             let out = eg.ctx.run(raw, |ctx| {
                 action = game.ui(ctx, vehicles, world_ref, hud);
+                // (the port's FPS counter, over everything but a photo: hooks.rs)
+                hooks::draw_fps_monitor(ctx, game.art.as_ref().and_then(|a| a.font.as_ref()), game.photo_on);
                 if let Some(msg) = render::xs::problem() {
                     // (the translated shader files are missing: one notice; the log has the same sentence)
                     egui::Area::new(egui::Id::new("xs_missing")).anchor(egui::Align2::CENTER_TOP, [0.0, 20.0]).order(egui::Order::Foreground).show(ctx, |ui| {

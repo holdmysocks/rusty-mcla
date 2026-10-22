@@ -13,7 +13,7 @@
 
 use crate::App;
 use mcla_config::paths::{self, DataDir, DataInputs, DataSource};
-use mcla_config::{Intro, Settings, Status, WindowMode};
+use mcla_config::{FpsMonitor, Intro, Settings, Status, WindowMode};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -333,7 +333,7 @@ fn crash_report(thread: &str, msg: &str, place: &str, backtrace: &str) -> String
 
 /// Vertical sync: `display.vsync` (the auto modes pick what the surface supports).
 pub fn present_mode() -> wgpu::PresentMode {
-    let vsync = get().map_or(false, |r| r.settings.display.vsync);
+    let vsync = display().vsync;
     let m = if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
     log::info!("present mode: {m:?} (vsync {vsync})");
     m
@@ -544,7 +544,7 @@ pub fn frame_wait(last: Instant, now: Instant, period: Duration) -> Duration {
 
 /// Called after every rendered frame: sleeps (the last millisecond spins) to hold `display.fps_cap`.
 pub fn limit_frame() {
-    let cap = get().map_or(0, |r| r.settings.display.fps_cap);
+    let cap = display().fps_cap;
     if cap == 0 {
         return;
     }
@@ -570,6 +570,310 @@ pub fn limit_frame() {
     }
     *last = Some(target);
 }
+
+// ---------------------------------------------------------------- OPTIONS > DISPLAY (the port's own page, D19)
+
+/// The display settings in effect: `settings.toml`'s at the start (the defaults in a headless run without `--settings`),
+/// then what the DISPLAY page changed.
+static LIVE: Mutex<Option<mcla_config::Display>> = Mutex::new(None);
+/// The monitors in the launcher's numbering (`monitor_order`): name, size, and the sizes of their video modes.
+static MONITORS: Mutex<Vec<(String, (u32, u32), Vec<(u32, u32)>)>> = Mutex::new(Vec::new());
+
+/// The DISPLAY page's rows (`Go::Page` ids in game.rs).
+pub const ROW_WINDOW_MODE: u8 = 60;
+pub const ROW_RESOLUTION: u8 = 61;
+pub const ROW_MONITOR: u8 = 62;
+pub const ROW_VSYNC: u8 = 63;
+pub const ROW_FPS_CAP: u8 = 64;
+pub const ROW_FPS_MONITOR: u8 = 65;
+/// The frame-rate caps the page steps through (0 = none); a cap from the file that is not here is put in its place.
+const FPS_CAPS: [u32; 7] = [0, 30, 60, 120, 144, 165, 240];
+
+pub fn display() -> mcla_config::Display {
+    LIVE.lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(|| get().map_or_else(|| Settings::default().display, |r| r.settings.display.clone()))
+}
+
+fn set_display(d: mcla_config::Display) {
+    if let Ok(mut g) = LIVE.lock() {
+        *g = Some(d);
+    }
+}
+
+fn monitors() -> Vec<(String, (u32, u32), Vec<(u32, u32)>)> {
+    MONITORS.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// The resolutions the page offers: the chosen monitor's video mode sizes (from 640 x 360 up), and the one in effect.
+fn resolutions(d: &mcla_config::Display) -> Vec<(u32, u32)> {
+    let mons = monitors();
+    let mut v: Vec<(u32, u32)> = mons.get(d.monitor as usize).or(mons.first()).map(|m| m.2.clone()).unwrap_or_default();
+    v.retain(|r| r.0 >= mcla_config::Resolution::MIN.0 && r.1 >= mcla_config::Resolution::MIN.1);
+    v.push((d.resolution.w, d.resolution.h));
+    v.sort();
+    v.dedup();
+    v
+}
+
+fn fps_caps(d: &mcla_config::Display) -> Vec<u32> {
+    let mut v = FPS_CAPS.to_vec();
+    if !v.contains(&d.fps_cap) {
+        v.push(d.fps_cap);
+        v.sort();
+    }
+    v
+}
+
+/// The value a DISPLAY row shows.
+pub fn display_value(row: u8) -> String {
+    let d = display();
+    match row {
+        ROW_WINDOW_MODE => d.window_mode.word().to_uppercase(),
+        ROW_RESOLUTION => format!("{} X {}", d.resolution.w, d.resolution.h),
+        ROW_MONITOR => match monitors().get(d.monitor as usize) {
+            Some((name, (w, h), _)) => format!("{}  {} ({} X {})", d.monitor + 1, name.trim_start_matches(r"\\.\").to_uppercase(), w, h),
+            None => format!("{}", d.monitor + 1),
+        },
+        ROW_VSYNC => if d.vsync { "ON" } else { "OFF" }.to_string(),
+        ROW_FPS_CAP => if d.fps_cap == 0 { "OFF".to_string() } else { d.fps_cap.to_string() },
+        ROW_FPS_MONITOR => match d.fps_monitor {
+            FpsMonitor::Off => "OFF",
+            FpsMonitor::Fps => "FPS",
+            FpsMonitor::FrameTime => "FPS + FRAME TIME",
+        }
+        .to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The next (or previous) item of `list` after `cur`, round and round.
+fn step_in<T: PartialEq + Copy>(list: &[T], cur: T, fwd: bool) -> T {
+    let n = list.len();
+    if n == 0 {
+        return cur;
+    }
+    let i = list.iter().position(|x| *x == cur).unwrap_or(0);
+    list[if fwd { (i + 1) % n } else { (i + n - 1) % n }]
+}
+
+/// One key of `settings.toml` (only that key, atomic); not in a headless run that ignores the user's file.
+fn write_display_key(key: &str, value: mcla_config::toml::Value) {
+    let Some(rt) = get() else { return };
+    if rt.settings_ignored {
+        log::info!("display page: display.{key} not written (headless run without --settings)");
+        return;
+    }
+    match mcla_config::set_key(&rt.settings_path, "display", key, value) {
+        Ok(()) => log::info!("display page: display.{key} written to {}", rt.settings_path.display()),
+        Err(e) => log::warn!("display page: display.{key} not written: {e}"),
+    }
+}
+
+/// The monitors in the launcher's numbering, with their names, sizes and video mode sizes.
+fn list_monitors(w: &winit::window::Window) -> Vec<winit::monitor::MonitorHandle> {
+    let all: Vec<_> = w.available_monitors().collect();
+    let primary = w.primary_monitor();
+    let order = monitor_order(all.len(), primary.as_ref().and_then(|p| all.iter().position(|m| m == p)));
+    let ordered: Vec<_> = order.iter().map(|&i| all[i].clone()).collect();
+    if let Ok(mut g) = MONITORS.lock() {
+        *g = ordered.iter().map(|m| (m.name().unwrap_or_default(), (m.size().width, m.size().height), m.video_modes().map(|v| (v.size().width, v.size().height)).collect())).collect();
+    }
+    ordered
+}
+
+impl App {
+    /// The monitor list for the DISPLAY page's labels.
+    pub(crate) fn note_monitors(&self) {
+        if let Some(w) = self.window.as_ref() {
+            list_monitors(w);
+        }
+    }
+
+    /// A row of OPTIONS > DISPLAY stepped on (`fwd`) or back: applied to the window at once and written to `settings.toml`.
+    pub(crate) fn display_step(&mut self, row: u8, fwd: bool) {
+        use mcla_config::toml::Value;
+        use winit::window::Fullscreen;
+        let Some(w) = self.window.clone() else { return };
+        // (fresh: a monitor may have been plugged in since)
+        let ordered = list_monitors(&w);
+        let mut d = display();
+        let size = |d: &mcla_config::Display| winit::dpi::PhysicalSize::new(d.resolution.w, d.resolution.h);
+        match row {
+            ROW_WINDOW_MODE => {
+                let modes = [WindowMode::Windowed, WindowMode::Borderless, WindowMode::Fullscreen];
+                let from = window_mode();
+                let to = step_in(&modes, from, fwd);
+                d.window_mode = to;
+                set_display(d);
+                apply_window_mode(&w, from, to);
+                set_mode(to);
+                write_display_key("window_mode", Value::String(to.word().into()));
+            }
+            ROW_RESOLUTION => {
+                let (rw, rh) = step_in(&resolutions(&d), (d.resolution.w, d.resolution.h), fwd);
+                d.resolution = mcla_config::Resolution { w: rw, h: rh };
+                match window_mode() {
+                    WindowMode::Windowed => {
+                        let _ = w.request_inner_size(size(&d));
+                    }
+                    WindowMode::Fullscreen => w.set_fullscreen(Some(fullscreen_on(w.current_monitor().or_else(|| w.primary_monitor()), d.resolution))),
+                    // (borderless takes the monitor's size; the resolution counts again in the other modes)
+                    WindowMode::Borderless => {}
+                }
+                if let Ok(mut s) = WINDOWED_SIZE.lock() {
+                    *s = Some(size(&d));
+                }
+                write_display_key("resolution", Value::String(d.resolution.text()));
+                set_display(d);
+            }
+            ROW_MONITOR => {
+                let n = ordered.len().max(1) as u32;
+                d.monitor = if fwd { (d.monitor + 1) % n } else { (d.monitor + n - 1) % n };
+                if let Some(m) = ordered.get(d.monitor as usize).cloned() {
+                    match window_mode() {
+                        WindowMode::Windowed => {
+                            let (mp, ms, sz) = (m.position(), m.size(), w.outer_size());
+                            let x = mp.x + (ms.width as i32 - sz.width as i32).max(0) / 2;
+                            let y = mp.y + (ms.height as i32 - sz.height as i32).max(0) / 2;
+                            w.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+                        }
+                        WindowMode::Borderless => w.set_fullscreen(Some(Fullscreen::Borderless(Some(m)))),
+                        WindowMode::Fullscreen => w.set_fullscreen(Some(fullscreen_on(Some(m), d.resolution))),
+                    }
+                }
+                write_display_key("monitor", Value::Integer(d.monitor as i64));
+                set_display(d);
+            }
+            ROW_VSYNC => {
+                d.vsync = !d.vsync;
+                write_display_key("vsync", Value::Boolean(d.vsync));
+                set_display(d);
+                if let Some(g) = self.gpu.as_mut() {
+                    g.config.present_mode = present_mode();
+                    g.surface.configure(&g.device, &g.config);
+                }
+            }
+            ROW_FPS_CAP => {
+                d.fps_cap = step_in(&fps_caps(&d), d.fps_cap, fwd);
+                write_display_key("fps_cap", Value::Integer(d.fps_cap as i64));
+                set_display(d);
+            }
+            ROW_FPS_MONITOR => {
+                d.fps_monitor = step_in(FpsMonitor::ALL, d.fps_monitor, fwd);
+                write_display_key("fps_monitor", Value::String(d.fps_monitor.word().into()));
+                set_display(d);
+            }
+            _ => return,
+        }
+        log::info!("display page: row {} -> {}", row, display_value(row));
+        log_window(&w);
+    }
+}
+
+// ---------------------------------------------------------------- FPS counter (the port's own, DECISIONS.md D25)
+
+/// The FPS counter's meter: the time between presented frames (after the frame limiter), averaged over a window of
+/// [`FPS_WINDOW`] and shown anew at the end of each window.
+struct FpsMeter {
+    last: Option<Instant>,
+    frames: u32,
+    sum: f64,
+    /// frames per second, milliseconds per frame (the last window's)
+    shown: Option<(f32, f32)>,
+}
+
+static FPS_METER: Mutex<FpsMeter> = Mutex::new(FpsMeter { last: None, frames: 0, sum: 0.0, shown: None });
+/// How long the counter averages over (three new figures a second).
+const FPS_WINDOW: f64 = 1.0 / 3.0;
+
+/// One frame presented at `now`.
+fn note_frame(now: Instant) {
+    if let Ok(mut m) = FPS_METER.lock() {
+        m.note(now);
+    }
+}
+
+impl FpsMeter {
+    fn note(&mut self, now: Instant) {
+        if let Some(prev) = self.last {
+            let dt = now.duration_since(prev).as_secs_f64();
+            // (a stall of over a second - loading, the window dragged - starts afresh instead of showing a crawl)
+            if dt > 1.0 {
+                self.frames = 0;
+                self.sum = 0.0;
+            } else {
+                self.frames += 1;
+                self.sum += dt;
+                if self.sum >= FPS_WINDOW {
+                    let ms = self.sum / self.frames as f64;
+                    self.shown = Some(((1.0 / ms) as f32, (ms * 1000.0) as f32));
+                    self.frames = 0;
+                    self.sum = 0.0;
+                }
+            }
+        }
+        self.last = Some(now);
+    }
+}
+
+/// The counter's figures in effect (frames per second, milliseconds per frame), once a window has passed.
+pub fn fps_shown() -> Option<(f32, f32)> {
+    FPS_METER.lock().ok().and_then(|m| m.shown)
+}
+
+/// The counter's lines: the figure, its unit, and the frame time with `FrameTime`.
+pub fn fps_lines(mode: FpsMonitor, fps: f32, ms: f32) -> Vec<(String, &'static str)> {
+    match mode {
+        FpsMonitor::Off => Vec::new(),
+        FpsMonitor::Fps => vec![(format!("{:.0}", fps), "FPS")],
+        FpsMonitor::FrameTime => vec![(format!("{:.0}", fps), "FPS"), (format!("{:.1}", ms), "MS")],
+    }
+}
+
+/// Draws the FPS counter (when `display.fps_monitor` is on) at the top right of the screen, in the game's typeface:
+/// the figures white over a dark shadow as the HUD's own numbers, the units in the cyan of the menus' selected row.
+pub fn draw_fps_monitor(ctx: &egui::Context, font: Option<&crate::hud::TextFont>, hidden: bool) {
+    let mode = display().fps_monitor;
+    if mode == FpsMonitor::Off || hidden {
+        return;
+    }
+    let Some((fps, ms)) = fps_shown() else { return };
+    let screen = ctx.screen_rect();
+    let sc = (screen.height() / 900.0).clamp(0.5, 2.0);
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("fps_monitor")));
+    let (big, small) = (15.0 * sc, 9.0 * sc);
+    let measure = |t: &str, size: f32| font.map_or(t.len() as f32 * size * 0.7, |f| f.measure(t, size));
+    let draw = |pos: egui::Pos2, t: &str, size: f32, color: egui::Color32| {
+        for (d, c) in [(egui::vec2(1.5, 1.5) * sc, egui::Color32::from_black_alpha(200)), (egui::Vec2::ZERO, color)] {
+            match font {
+                Some(f) => {
+                    f.draw(&painter, pos + d, egui::Align2::LEFT_BOTTOM, t, size, c);
+                }
+                None => {
+                    painter.text(pos + d, egui::Align2::LEFT_BOTTOM, t, egui::FontId::proportional(size * 1.35), c);
+                }
+            }
+        }
+    };
+    let white = egui::Color32::from_rgb(235, 238, 245);
+    // (sampled from the pause menu's selected row: 4, 229, 230)
+    let cyan = egui::Color32::from_rgb(4, 229, 230);
+    let right = screen.right() - FPS_MARGIN.0 * sc;
+    let mut base = screen.top() + FPS_MARGIN.1 * sc + big;
+    for (fig, unit) in fps_lines(mode, fps, ms) {
+        let size = if unit == "FPS" { big } else { small * 1.25 };
+        let (wu, gap) = (measure(unit, small), 4.0 * sc);
+        let wf = measure(&fig, size);
+        draw(egui::pos2(right - wu - gap - wf, base), &fig, size, white);
+        draw(egui::pos2(right - wu, base), unit, small, cyan);
+        base += size + 8.0 * sc;
+    }
+}
+
+/// The counter's distance from the screen's top right corner, in pixels of a 900-line screen.
+const FPS_MARGIN: (f32, f32) = (28.0, 24.0);
 
 // ---------------------------------------------------------------- screenshot key, test hooks
 
@@ -609,6 +913,12 @@ impl App {
 
     /// After every rendered frame: the screenshot key's confirmation, the frame limiter, the test hooks.
     pub(crate) fn after_frame(&mut self) {
+        // (a row of OPTIONS > DISPLAY was changed in the menu)
+        if let Some((row, fwd)) = self.game.display_step.take() {
+            self.display_step(row, fwd);
+        } else if self.frame_no == 1 {
+            self.note_monitors();
+        }
         let pending = SHOT_PENDING.lock().ok().and_then(|mut p| match p.take() {
             Some((path, n)) if path.exists() => Some((path, n, true)),
             Some((path, n)) if n < 120 => {
@@ -630,6 +940,7 @@ impl App {
             }
         }
         limit_frame();
+        note_frame(Instant::now());
         // (test hooks: MCLA_SHOT_KEY_TEST=<frame> presses F12 at that frame; MCLA_TEST_PANIC=main|thread panics
         // at frame 30, in the main thread or in a worker; =quit leaves normally (exit code 0) - they exist only to check
         // the screenshot key, the crash report and the exit codes)
@@ -683,6 +994,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn fps_meter_averages_presented_frames() {
+        let t0 = Instant::now();
+        let mut m = FpsMeter { last: None, frames: 0, sum: 0.0, shown: None };
+        // 60 frames 16.667 ms apart: nothing until a third of a second has passed, then 60 fps / 16.7 ms
+        for i in 0..=21 {
+            m.note(t0 + Duration::from_micros(16_667 * i));
+        }
+        let (fps, ms) = m.shown.unwrap();
+        assert!((fps - 60.0).abs() < 0.1 && (ms - 16.667).abs() < 0.01, "{fps} {ms}");
+        // a two-second stall starts afresh and keeps the last figures
+        m.note(t0 + Duration::from_secs(3));
+        assert_eq!((m.frames, m.shown.unwrap().0.round()), (0, 60.0));
+        assert_eq!(fps_lines(FpsMonitor::FrameTime, 59.6, 16.78), vec![("60".to_string(), "FPS"), ("16.8".to_string(), "MS")]);
+        assert!(fps_lines(FpsMonitor::Off, 60.0, 16.7).is_empty());
     }
 
     #[test]

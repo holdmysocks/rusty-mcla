@@ -310,6 +310,11 @@ fn display_set_monitor(window: WebviewWindow, index: u32) -> Result<display::Dis
     display::set_monitor(&window, index)
 }
 
+#[tauri::command]
+fn display_set(window: WebviewWindow, key: String, value: serde_json::Value) -> Result<display::DisplayView, String> {
+    display::set(&window, &key, value)
+}
+
 // ---------- support: Export Logs, save manager, Play (see support.rs) ----------
 
 macro_rules! env_of {
@@ -640,6 +645,7 @@ fn main() {
             kbd_reset,
             display_get,
             display_set_monitor,
+            display_set,
             export_info,
             export_pick_dir,
             export_set_dir,

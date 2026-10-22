@@ -269,3 +269,14 @@ fn set_key_changes_one_key_only() {
     assert_eq!((WindowMode::Windowed.next(), WindowMode::Borderless.next(), WindowMode::Fullscreen.next()), (WindowMode::Borderless, WindowMode::Fullscreen, WindowMode::Windowed));
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn fps_monitor_is_read_and_written() {
+    let t: Table = "[display]\nfps_monitor = \"frame_time\"\n".parse().unwrap();
+    let (s, warn) = Settings::from_table(&t);
+    assert!(warn.is_empty(), "{warn:?}");
+    assert_eq!(s.display.fps_monitor, FpsMonitor::FrameTime);
+    assert_eq!(s.to_table()["display"]["fps_monitor"].as_str(), Some("frame_time"));
+    let (s, warn) = Settings::from_table(&"[display]\nfps_monitor = \"graph\"\n".parse().unwrap());
+    assert_eq!((s.display.fps_monitor, warn.len()), (FpsMonitor::Off, 1));
+}
