@@ -6725,6 +6725,11 @@ impl Game {
             return Some(d < 2);
         }
         if self.hookman_race {
+            // (the story cores that write +3112 as a constant; the others `+3100 < 2 ? 0 : 1`,
+            // e.g. MUSCLE_CHAMP_CORE 0x7e6..0x80d)
+            if let Some(&(_, easy)) = self.career.hookman_mission().and_then(|m| STORY_LAYOUT.iter().find(|r| r.0 == m)) {
+                return Some(easy);
+            }
             if let Some(d) = self.mc4_hookman_diff() {
                 return Some(d < 2);
             }
@@ -9222,11 +9227,15 @@ impl Game {
     /// +3100 and his icon's colour), docs/reference/ai/race_difficulty.md 1.4. The native
     /// mcCareer_GetDifficultyPlayerVsRacer (sub_826BE180) = his car at his mod value against the
     /// player's: below Easy and Easy both 0, the fifth step 3. Most cores wrap it, `x == 0 ? 1 : x`
-    /// (so they are never Easy); the FIND_* cores, RACE_GH_02 and RACE_SH_01 take it raw; RACE_GH_06
-    /// sets 0 (`0x40a56c35` 0x1b7), FIND_SH_05 / BEAT_SH_05 1 (0x3b); CITY_CHAMP and the two
-    /// BESTOF_SH_01 keep mcSlotSystem_RequestSlot's (sub_826CE660: at most Easy -> Medium).
-    /// (approx.: whether CruisingHookmanCore's own wrap (0x596, type-0 men) runs after a raw core's
-    /// value is not determined - the raw value is kept.) None: not a story man of `MISSION_HOOKMEN`.
+    /// (so they are never Easy). The FIND_* cores and RACE_SH_01 take it raw (RACE_SH_01's race
+    /// works it out again at its start, 0xa3f, raw into +3100); FIND_SH_01 and RACE_GH_02 set it
+    /// raw too, but then start CruisingHookmanCore, which wraps it for a type-0 man as it starts
+    /// (0x596..0x5db) - RACE_GH_02's race reads mcHookman_GetDifficulty after that (0xd20). The
+    /// other raw cores start no CruisingHookmanCore. RACE_GH_06 sets 0 (`0x40a56c35` 0x1b7; his
+    /// type is 1, no wrap), FIND_SH_05 / BEAT_SH_05 1 (0x3b); CITY_CHAMP and the two BESTOF_SH_01
+    /// keep mcSlotSystem_RequestSlot's (sub_826CE660: at most Easy -> Medium; generic_local_hookman
+    /// takes it, 0x34f, before it starts CruisingHookmanCore, 0x398). None: not a story man of
+    /// `MISSION_HOOKMEN`.
     pub fn mc4_story_difficulty(&self, mission: &str) -> Option<usize> {
         match mission {
             "RACE_GH_06" => return Some(0),
@@ -9244,7 +9253,7 @@ impl Game {
             5 => 3,
             d => d as usize,
         };
-        let raw = mission.starts_with("FIND_") || matches!(mission, "RACE_GH_02" | "RACE_SH_01");
+        let raw = (mission.starts_with("FIND_") && mission != "FIND_SH_01") || mission == "RACE_SH_01";
         Some(if raw || native != 0 { native } else { 1 })
     }
 
@@ -9417,6 +9426,20 @@ impl Game {
         true
     }
 }
+
+/// (mission, easy layout): the story cores whose race record's +3112 is a constant -
+/// RACE_GH_02_CORE 0 (0xf40), RACE_GH_06_CORE 0, RACE_SH_01_CORE 1 (0xa4f), BEAT_SH_04B_CORE,
+/// BEAT_SH_04_BCLASS_CORE, BEAT_GH_04_MUSCLE_CORE, BEAT_GH_05_TUNER_CORE 1 (e.g. `0x7efbea76`
+/// 0xa44); docs/reference/ai/race_difficulty.md 1.4.
+pub const STORY_LAYOUT: [(&str, bool); 7] = [
+    ("RACE_GH_02", true),
+    ("RACE_GH_06", true),
+    ("RACE_SH_01", false),
+    ("BEAT_SH_04B", false),
+    ("BEAT_SH_04_BCLASS", false),
+    ("BEAT_GH_04_MUSCLE", false),
+    ("BEAT_GH_05_TUNER", false),
+];
 
 /// (mission, district, character, set-up, priority, the difficulty asked of the set-up, core script)
 pub const MISSION_HOOKMEN: &[(&str, usize, &str, &str, i32, i32, &str)] = &[
@@ -15710,6 +15733,13 @@ mod tests {
         assert_eq!(g.mc4_hookman_diff(), Some(0));
         assert_eq!(g.mc4_story_difficulty("BEAT_SH_05"), Some(1));
         assert_eq!(g.mc4_story_difficulty("FIND_SH_05"), Some(1));
+        // (RACE_GH_06's record takes the easy layout whatever its difficulty; RACE_GH_02's man is
+        // wrapped again by CruisingHookmanCore - never Easy - and FIND_SH_01's too)
+        g.hookman_race = true;
+        assert_eq!(g.mc4_layout_easy(), Some(true));
+        g.samples = crate::rewards::Samples::load(&data_dir());
+        assert!(g.mc4_story_difficulty("RACE_GH_02").is_some_and(|d| d >= 1));
+        assert!(g.mc4_story_difficulty("FIND_SH_01").is_some_and(|d| d >= 1));
         let (money, rep) = crate::rewards::race_reward(0, g.player_perf(), 0, 2, 2, 1.0);
         assert_eq!((money, rep), (100, 50));
     }
