@@ -412,8 +412,8 @@ impl Roamers {
     /// suspended (a race, a mission): the red light man's script 0x3c68..0x3e4e - a new
     /// difficulty RAND_INT_RANGE(0, 3), one of the district's racers, his set-up for it -, the
     /// freeway man's 0xced..0xea7 (difficulty and set-up, his name stays). At the start the red
-    /// light man is Easy (mcHookman_SetDifficulty(h, 0) in the script's main), the freeway man
-    /// already drawn. Hollywood's red light man while REDLIGHT_GH_01 is not complete is GH_01
+    /// light men of Hollywood and South Central are Easy (mcHookman_SetDifficulty(h, 0) in their
+    /// scripts' main), the other three and the freeway men already drawn. Hollywood's red light man while REDLIGHT_GH_01 is not complete is GH_01
     /// in his `vp_vw_scirocco_88` (0x35e0..0x365a) and is not drawn again. He is not shown on
     /// the maps until he is visible (`Game::alt_visible`); hidden, he still drives.
     fn alt_men(&mut self, game: &Game, player_car: &str, men: &mut Vec<Man>) {
@@ -439,7 +439,11 @@ impl Roamers {
                 } else {
                     // RAND_INT_RANGE is inclusive (the freeway men's red rings - Impossible - in
                     // the 100 % save's map, `gps_whole`)
-                    let diff = if d.kind == crate::althk::AltKind::RedLight && first { 0 } else { ((self.rand() * 4.0) as i32).min(3) };
+                    // (a red light man starts Easy in Hollywood and South Central - hw / sc_redlight_hk1
+                    // 0x34e6 / 0x3454 - and at RAND_INT_RANGE(0, 3) in the other three; a freeway man
+                    // at RAND_INT_RANGE(0, 3); both drawn again when the player's car type changes)
+                    let fixed = d.kind == crate::althk::AltKind::RedLight && first && (d.script.starts_with("hw_") || d.script.starts_with("sc_"));
+                    let diff = if fixed { 0 } else { ((self.rand() * 4.0) as i32).min(3) };
                     let name = if d.names.is_empty() { None } else { Some(d.names[((self.rand() * d.names.len() as f32) as usize).min(d.names.len() - 1)].clone()) };
                     name.and_then(|n| game.mc4_character_car(&n, diff).map(|(car, config, m)| AltRoll { name: n, car, config, mod_value: m, difficulty: diff, mission: false }))
                 };
@@ -772,7 +776,8 @@ impl Roamers {
         let scripted = if vehicles.cars[ri].driver.is_empty() { None } else { game.career.hookman_race() }.and_then(|r| (0..game.race_defs.len()).find(|&i| game.race_defs[i].id.to_ascii_lowercase().ends_with(r.as_str()))).and_then(|i| game.race_start(i).map(|s| (i, s, s.distance(pp))));
         // a local hookman's choice (mcRaceArray_*: `mc4_local_races`)
         let (rpos, rfwd, top) = (vehicles.cars[ri].state.pos, vehicles.cars[ri].state.forward(), vehicles.cars[ri].model.params.top_speed);
-        let rnd = (self.rand() * 10000.0) as u32;
+        // (mcRaceArray_FindBeatMeThereRaceIndex draws from the career's generator)
+        let rnd = crate::oppick::career_rng().next() & 0x7FFF_FFFF;
         let kept = if scripted.is_some() { Vec::new() } else { game.mc4_local_races(rpos, rfwd, man.as_ref().map_or(6, |m| m.district as i32), rnd) };
         let pick = scripted.or_else(|| kept.first().and_then(|&t| game.mc4_table_race(t)).map(|(i, s)| (i, s, s.distance(pp))));
         let Some((race, goal, dist)) = pick else {
@@ -807,6 +812,7 @@ impl Roamers {
         let s19d_cops = vehicles.cars.iter().any(|c| c.cop && c.state.pos.distance(pp) < 250.0);
         let s19d_man = man.as_ref().map(|m| (m.name.clone(), m.car.clone(), m.config.clone()));
         game.man_mod = man.as_ref().map(|m| (m.name.clone(), m.mod_value));
+        game.man_diff = man.as_ref().map(|m| m.difficulty);
         let s19d_skip = game.mc4_meet(s19d_man, race, &kept, s19d_cops, !kept.is_empty() && !self.rival_challenged);
         if s19d_skip {
             log::info!("roamers: police within 250 m - the race starts at its grid");

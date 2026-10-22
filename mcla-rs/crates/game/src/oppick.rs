@@ -19,6 +19,24 @@ use crate::mc4::{diff_window, gap_difficulty, joaat, setup_mod_value, setup_perf
 use crate::vehicles::parked::Mwc;
 use std::path::Path;
 
+/// The career's random numbers (mcCareer +0x16C78): the MWC of the game (a = 0x5CDCFAA7) seeded once at
+/// boot with 1 - lo 1, carry 0x10001 (sub_826C16C0 -> sub_821CE460 / sub_821CE210: lo = s + (s == 0), carry =
+/// s ^ rot16(s)) - and never saved or restored. One state for every draw the original makes from it: the
+/// opponents' cars and set-ups here, the slot system's random character (sub_826CF118), the local
+/// hookman's beat-me-there race (sub_8273F540) (docs/reference/ai/race_difficulty.md 5).
+/// (approx.: the original's free-roam "incoming call" timer, mission events in Random mode and
+/// CityDescription_FindRaceByRacerPosition draw from it too; the port's versions of those do not, so the
+/// sequence runs ahead less often than the original's.)
+pub fn career_rng() -> std::sync::MutexGuard<'static, Mwc> {
+    static RNG: std::sync::OnceLock<std::sync::Mutex<Mwc>> = std::sync::OnceLock::new();
+    RNG.get_or_init(|| std::sync::Mutex::new(Mwc { lo: 1, carry: 0x0001_0001 })).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// An integer draw of the career's generator: `(lo & 0x7FFFFFFF) % n`.
+pub fn career_index(n: usize) -> usize {
+    ((career_rng().next() & 0x7FFF_FFFF) as usize) % n.max(1)
+}
+
 /// mcVehicleInfo Class (index in 0x827E9ABC): Tuner, Muscle, Exotic, SportBike, Luxury, Cop, SUV, LowRider, Misc1.
 pub const CLASSES: [&str; 9] = ["TUNER", "MUSCLE", "EXOTIC", "SPORTBIKE", "LUXURY", "COP", "SUV", "LOWRIDER", "MISC1"];
 pub const CLASS_COP: u32 = 5;
@@ -265,7 +283,7 @@ impl OpPick {
     /// career generator each). `used` = characters already on the grid (OrderedSeriesCore marks its fixed
     /// men before the loop).
     #[allow(clippy::too_many_arguments)]
-    pub fn pick(&self, n: usize, p: f32, d: i32, masks: (i32, i32), used: &[String], rng: &mut Mwc, usable: &dyn Fn(&str) -> bool) -> Vec<Pick> {
+    pub fn pick(&self, n: usize, p: f32, d: i32, masks: (i32, i32), used: &[String], usable: &dyn Fn(&str) -> bool) -> Vec<Pick> {
         let arr = self.fill(p, d, masks.0, masks.1, -1, usable);
         let mut taken: Vec<bool> = self.drivers.iter().map(|c| used.iter().any(|u| u.eq_ignore_ascii_case(&c.id))).collect();
         let mut out = Vec::new();
@@ -273,7 +291,7 @@ impl OpPick {
             return out;
         }
         for _ in 0..n {
-            let drawn = self.cars[arr[((rng.next() & 0x7FFF_FFFF) as usize) % arr.len()]].name.clone();
+            let drawn = self.cars[arr[career_index(arr.len())]].name.clone();
             // OpponentManager_FindRandomAvailableCharacterByVehicleName (sub_822B8608): not random
             let free = |k: usize| !taken[k];
             let chr = (0..self.drivers.len()).find(|&k| free(k) && self.drivers[k].cars.iter().any(|c| joaat(&c.0) == joaat(&drawn))).or_else(|| (0..self.drivers.len()).find(|&k| free(k)));
@@ -303,7 +321,7 @@ impl OpPick {
                 continue;
             };
             // mcCarConfigData_GetRandomConfigData: a draw even with one set-up
-            let setup = if cfg.1.is_empty() { "vp_vw_golf_83".to_string() } else { cfg.1[((rng.next() & 0x7FFF_FFFF) as usize) % cfg.1.len()].clone() };
+            let setup = if cfg.1.is_empty() { "vp_vw_golf_83".to_string() } else { cfg.1[career_index(cfg.1.len())].clone() };
             out.push(Pick { driver: ch.id.clone(), car: cfg.0.clone(), setup, drawn });
         }
         out
@@ -417,18 +435,17 @@ mod tests {
         // (a full ZX14 at d 1 falls to d 0 with the masks shifted: nine cars)
         assert_eq!(names(p.fill(1.0, 1, 31, 255, -1, &all)).len(), 9);
         // drivers: the first unused who has the car, in the map order; the 1098 has none
-        let mut rng = Mwc { lo: 1, carry: 1 };
-        let picks = p.pick(7, 0.790155, 1, MASKS_RACE, &[], &mut rng, &all);
+        let picks = p.pick(7, 0.790155, 1, MASKS_RACE, &[], &all);
         assert_eq!(picks.len(), 7);
         for k in 0..picks.len() {
             assert!(!picks[..k].iter().any(|q| q.driver == picks[k].driver));
         }
-        let r8 = p.pick(1, 0.790155, 1, MASKS_RACE, &[], &mut Mwc { lo: 1, carry: 1 }, &|c: &str| c == "vp_aud_r8_08");
+        let r8 = p.pick(1, 0.790155, 1, MASKS_RACE, &[], &|c: &str| c == "vp_aud_r8_08");
         // (the list holds one car: fallback adds vp_pon_transam_79 - only usable cars pass, so check the R8's driver)
         if r8[0].drawn == "vp_aud_r8_08" {
             assert_eq!(r8[0].driver, "GH_26");
         }
-        let two = p.pick(2, 0.790155, 1, MASKS_RACE, &["GH_26".into()], &mut Mwc { lo: 1, carry: 1 }, &all);
+        let two = p.pick(2, 0.790155, 1, MASKS_RACE, &["GH_26".into()], &all);
         assert!(two.iter().all(|q| q.driver != "GH_26"));
     }
 
@@ -459,7 +476,7 @@ mod tests {
         without.sort();
         assert_eq!(with_sorted, without);
         // (drawn alone, GH_12 takes it in its set-up)
-        let one = p.pick(1, 0.790155, 1, MASKS_RACE, &[], &mut Mwc { lo: 1, carry: 1 }, &|c: &str| c == crate::catalog::CUT_GTR || c == "vp_aud_r8_08");
+        let one = p.pick(1, 0.790155, 1, MASKS_RACE, &[], &|c: &str| c == crate::catalog::CUT_GTR || c == "vp_aud_r8_08");
         if one[0].drawn == crate::catalog::CUT_GTR {
             assert_eq!((one[0].driver.as_str(), one[0].setup.as_str()), ("GH_12", crate::catalog::CUT_SETUP));
         }

@@ -6706,6 +6706,10 @@ impl Game {
     /// are neither Ordered nor Unordered.) None: the difficulty is not known before the
     /// start (a race begun from the map or a test), the caller's own rule.
     pub fn mc4_layout_easy(&self) -> Option<bool> {
+        // (a pink slip race takes the hard layout: wager_hangout_core +3112 = 1, 0x566e)
+        if self.mc4_pink_on() {
+            return Some(false);
+        }
         if let Some(d) = self.event_diff {
             return Some(d < 2);
         }
@@ -6719,6 +6723,10 @@ impl Game {
             if let Some(d) = self.mc4_hookman_diff() {
                 return Some(d < 2);
             }
+        }
+        // (a slot hookman's race: generic_local_hookman 0x70a, +3112 = d < 2 ? 0 : 1)
+        if let Some(d) = self.man_diff.filter(|_| self.mc4_local_man_race()) {
+            return Some(d < 2);
         }
         None
     }
@@ -7248,8 +7256,8 @@ impl Game {
             return false;
         }
         if def.race_type == "Payback" && !self.career.payback_run {
-            // (opens on EASIEST - inferred: the 100 % save's six paybacks are all there)
-            self.hangout_diff = 0;
+            // (opens on MEDIUM: mcPaybackForm sets its combo to 1 on every showing, sub_8267B328)
+            self.hangout_diff = 1;
             self.hangout_key = Some("be_payback".to_string());
             self.hangout_page = (0, 0);
             self.mode = crate::game::Mode::RaceSelect;
@@ -8959,13 +8967,6 @@ impl SlotSystem {
         s
     }
 
-    fn rand(&mut self) -> u32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 17;
-        self.rng ^= self.rng << 5;
-        self.rng
-    }
-
     /// sub_826CDE30: the threshold of the district for the player's vehicle - the last whose
     /// value its performance is above (the first when none is).
     pub fn threshold_index(&self, d: usize, perf: f32) -> usize {
@@ -8993,7 +8994,7 @@ impl SlotSystem {
         if n == 0 {
             return None;
         }
-        let r = self.rand() as usize % n;
+        let r = crate::oppick::career_index(n);
         let l = &self.characters[d];
         if let Some(c) = l.iter().skip(r).find(|c| !c.1).or_else(|| l.iter().find(|c| !c.1)) {
             return Some(c.0.clone());
@@ -9213,11 +9214,14 @@ impl Game {
     }
 
     /// The difficulty word (+180) a story man's core script gives him as it starts (the race's
-    /// +3100 and his icon's colour): mcHookman_SetDifficulty(mcCareer_GetDifficultyPlayerVsRacer)
-    /// in 56 of the 61 calls of `game/career/Story`, i.e. his car at his mod value against the
-    /// player's (below the first step 0, the fifth step folded into Impossible); constants in
-    /// RACE_GH_06_CORE (`0x40a56c35` 0x1b7: 0, Easy) and FIND_SH_05 / BEAT_SH_05 (`0x15cd0f3d`,
-    /// `0xe3e84b4e` 0x3b: 1). None: not a story man of `MISSION_HOOKMEN`.
+    /// +3100 and his icon's colour), docs/reference/ai/race_difficulty.md 1.4. The native
+    /// mcCareer_GetDifficultyPlayerVsRacer (sub_826BE180) = his car at his mod value against the
+    /// player's: below Easy and Easy both 0, the fifth step 3. Most cores wrap it, `x == 0 ? 1 : x`
+    /// (so they are never Easy); the FIND_* cores, RACE_GH_02 and RACE_SH_01 take it raw; RACE_GH_06
+    /// sets 0 (`0x40a56c35` 0x1b7), FIND_SH_05 / BEAT_SH_05 1 (0x3b); CITY_CHAMP and the two
+    /// BESTOF_SH_01 keep mcSlotSystem_RequestSlot's (sub_826CE660: at most Easy -> Medium).
+    /// (approx.: whether CruisingHookmanCore's own wrap (0x596, type-0 men) runs after a raw core's
+    /// value is not determined - the raw value is kept.) None: not a story man of `MISSION_HOOKMEN`.
     pub fn mc4_story_difficulty(&self, mission: &str) -> Option<usize> {
         match mission {
             "RACE_GH_06" => return Some(0),
@@ -9226,12 +9230,17 @@ impl Game {
         }
         let row = MISSION_HOOKMEN.iter().find(|r| r.0 == mission && !r.2.is_empty())?;
         let h = self.mc4_mission_hookman(row);
+        if matches!(mission, "CITY_CHAMP" | "BESTOF_SH_01_MUSCLE" | "BESTOF_SH_01_TUNER") {
+            return (h.difficulty >= 0).then_some(h.difficulty as usize);
+        }
         let s = self.mc4_samples_of(&h.car)?;
-        Some(match gap_difficulty(setup_perf(s, h.mod_value) - self.player_perf()) {
+        let native = match gap_difficulty(setup_perf(s, h.mod_value) - self.player_perf()) {
             d if d < 0 => 0,
             5 => 3,
             d => d as usize,
-        })
+        };
+        let raw = mission.starts_with("FIND_") || matches!(mission, "RACE_GH_02" | "RACE_SH_01");
+        Some(if raw || native != 0 { native } else { 1 })
     }
 
     /// The difficulty of the hookman out on the road now (`mc4_story_difficulty`, else the

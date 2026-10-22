@@ -753,11 +753,12 @@ pub struct Game {
     /// he was given when he appeared (mcHookman +168, sub_826CF3E8 - his race script applies it
     /// with mcHookman_GetModValue); -1 = his set-up's own stages
     pub man_mod: Option<(String, i32)>,
-    /// the race scripts' opponent pick (cars, drivers, set-ups - oppick.rs) and its draws (the career
-    /// generator mcCareer +0x16C78 in the original, shared with the call timer there - not reproducible,
-    /// so the port keeps its own)
+    /// ... and his difficulty (mcHookman_GetDifficulty: a slot man's Easy / Medium / Hard from
+    /// districtSlots.lst, a red light / freeway man's draw) - generic_local_hookman's +3100
+    pub man_diff: Option<i32>,
+    /// the race scripts' opponent pick (cars, drivers, set-ups - oppick.rs; its draws come from the
+    /// career's generator, `oppick::career_rng`)
     pub oppick: crate::oppick::OpPick,
-    pub opp_rng: crate::vehicles::parked::Mwc,
     /// the difficulty the field was picked for (the race record's +3100), kept for the race's set-up
     pub grid_diff: Option<i32>,
     /// the named rivals and the ones picked for the next grid
@@ -1248,8 +1249,8 @@ impl Game {
             rb_step: None,
             grid_rivals: Vec::new(),
             man_mod: None,
+            man_diff: None,
             oppick: Default::default(),
-            opp_rng: crate::vehicles::parked::Mwc { lo: 1, carry: 1 },
             grid_diff: None,
             mission_races: Vec::new(),
             map_races: Vec::new(),
@@ -2427,6 +2428,9 @@ impl Game {
         let mut d = self.series.as_ref().map_or(1, |s| s.diff as i32);
         if let Some(h) = self.mc4_hookman_diff().filter(|_| self.hookman_race) {
             d = h as i32;
+        } else if let Some(m) = self.man_diff.filter(|_| self.mc4_local_man_race()) {
+            // (a slot hookman's race: generic_local_hookman 0x34f, his mcHookman_GetDifficulty)
+            d = m.clamp(0, 3);
         }
         if let Some((_, w)) = self.wager {
             d = w as i32;
@@ -2439,6 +2443,10 @@ impl Game {
         }
         if let Some(f) = self.mc4_fixed_difficulty().filter(|_| self.event_diff.is_none()) {
             d = f as i32;
+        }
+        // (a pink slip race is Medium: wager_hangout_core 0x566e)
+        if self.mc4_pink_on() {
+            d = 1;
         }
         std::env::var("MCLA_RACE_DIFFICULTY").ok().and_then(|v| v.parse().ok()).unwrap_or(d)
     }
@@ -3204,7 +3212,6 @@ impl Game {
                     }
                 }
             }
-            self.man_mod = None;
             self.rb_step = Some(step);
             // the racers' brains (BrainRacing_SetupRace in the race core; the rubber band's copy of its tuning)
             let laps = self.race.as_ref().map_or(1, |r| r.laps.max(1));

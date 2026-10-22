@@ -9029,6 +9029,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             grid = kept.clone();
                         }
                     }
+                    // (a man's values belong to his own race only)
+                    let alt = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map_or(false, |d| d.id.ends_with("red_light_race") || d.id == althk::FREEWAY_RACE_ID);
+                    if !(self.game.hookman_race || self.game.mc4_local_man_race() || alt) {
+                        self.game.man_mod = None;
+                        self.game.man_diff = None;
+                    }
                     // the rest of the field: the race script's pick (oppick.rs) - cars of the difficulty's band
                     // around the player's car, each with the first free driver who has it
                     let d = self.game.grid_difficulty();
@@ -9037,7 +9043,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let p = std::env::var("MCLA_PLAYER_PERF").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| self.game.player_perf());
                     let used: Vec<String> = grid.iter().map(|r| r.id.clone()).collect();
                     let need = (field as usize).saturating_sub(grid.len());
-                    let picks = self.game.oppick.pick(need, p, d, masks, &used, &mut self.game.opp_rng, &usable);
+                    let picks = self.game.oppick.pick(need, p, d, masks, &used, &usable);
                     for pk in picks {
                         log::info!("grid pick: {} drew {} -> {} in {} ({}), difficulty {} player {:.4}", if pk.driver.is_empty() { "-" } else { &pk.driver }, pk.drawn, pk.driver, pk.car, pk.setup, d, p);
                         grid.push(self.game.rivals.with_config(&pk.driver, &pk.car, &pk.setup));

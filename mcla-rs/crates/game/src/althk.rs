@@ -501,6 +501,7 @@ impl Game {
         let pp = player.state.pos;
         self.opt_x.arcade.d.redlight_man = Some((man.name.clone(), man.car.clone(), man.config.clone()));
         self.man_mod = Some((man.name.clone(), man.mod_value));
+        self.man_diff = Some(man.difficulty);
         self.althk.diff = Some(man.difficulty.clamp(0, 3) as usize);
         self.althk.voice = man.name.clone();
         self.alt_race_begin(def.id);
@@ -636,6 +637,7 @@ impl Game {
         self.althk.back_offer = false;
         self.opt_x.arcade.d.redlight_man = Some((man.name.clone(), man.car.clone(), man.config.clone()));
         self.man_mod = Some((man.name.clone(), man.mod_value));
+        self.man_diff = Some(man.difficulty);
         self.althk.diff = Some(man.difficulty.clamp(0, 3) as usize);
         self.althk.voice = man.name.clone();
         self.alt_race_begin(uid);
