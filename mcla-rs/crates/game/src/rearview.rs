@@ -42,6 +42,8 @@ pub const EYE_UP: f32 = 1.5;
 pub const LOD_RADIUS: f32 = 0.9;
 pub const LOD_STEP_SCALE: f32 = 0.125;
 pub const LOD_MAX_DEPTH: f32 = 125.0;
+/// The sectors drawn in detail in the mirror: loaded and nearer than this to the main camera (0x827E0E54).
+pub const MIRROR_DETAIL_DIST: f32 = 20.0;
 
 /// The mirror's rectangle on a `w` x `h` target: the original's fixed rectangle of its 1280 x 720 frame, the
 /// frame scaled to the target as a whole (x by w / 1280, y by h / 720).
@@ -107,9 +109,45 @@ pub fn pick_lods(v: &Vehicles, eye: Vec3, axis: Vec3, near: f32, frustum: &Frust
         .collect()
 }
 
+/// The ground-plane distance from `p` to a sector's box (sub_822D6B78: x and z only, 0 over the box) - the
+/// record's +268, the port's `World::dist_to`.
+pub fn sector_distance(min: [f32; 3], max: [f32; 3], p: Vec3) -> f32 {
+    let c = p.clamp(Vec3::from(min), Vec3::from(max));
+    Vec3::new(c.x - p.x, 0.0, c.z - p.z).length()
+}
+
+/// sub_822D87B8 in the mirror's pass (0x01000000): a sector's detailed model only when it is loaded (state 3) and
+/// its +268 - the ground-plane distance from the MAIN camera to its box - is under 20 m (0x827E0E54, never
+/// written); else its far model (when the far city is there, 0x8287C7D4). No cross-fade in this pass (its alpha
+/// is set only for the passes of bits 11 .. 20), so a far model is drawn whole even where the main view has
+/// faded it out.
+pub fn mirror_detail(loaded: bool, dist: f32) -> bool {
+    loaded && dist < MIRROR_DETAIL_DIST
+}
+
+/// The models the mirror draws, each with whether its own object uniform (the cross-fade alpha, interiors) is
+/// bound, and for a far model the sphere round its sector's box: the loaded sectors under 20 m, the other sets as
+/// the main view has them, and the far model of every other sector (the plain uniform: whole). A far model is
+/// drawn whole when that sphere is in the mirror's view (record +292 bit 0x400, sub_822D7D00 -> sub_8217C148 on
+/// the mirror's viewport): o14's 100 VSCityLOD / VSCityWindowLOD draws of the strip are exactly the far batches
+/// of the port's sectors chosen so, by index count.
+fn models(world: &crate::world::World, main_eye: Vec3) -> Vec<(&crate::world::GpuSector, bool, Option<(Vec3, f32)>)> {
+    let near = |id: usize| world.index.sectors.get(id).map_or(false, |si| mirror_detail(world.loaded.contains_key(&id), sector_distance(si.min, si.max, main_eye)));
+    let sphere = |id: usize| world.index.sectors.get(id).map(|si| {
+        let (mn, mx) = (Vec3::from(si.min), Vec3::from(si.max));
+        ((mn + mx) * 0.5, (mx - mn).length() * 0.5)
+    });
+    let mut out: Vec<(&crate::world::GpuSector, bool, Option<(Vec3, f32)>)> = world.loaded.iter().filter(|(id, _)| near(**id)).map(|(_, s)| (s, true, None)).collect();
+    out.extend(world.sets.iter().filter(|(id, _)| **id < crate::world::FAR_ID).map(|(_, s)| (s, true, None)));
+    out.extend(world.far_models_by_sector().filter(|(sid, _)| !near(*sid)).map(|(sid, s)| (s, false, sphere(sid))));
+    out
+}
+
 /// The mirror's frame: its globals (the main view's with the mirror's camera) and the matrices.
 pub struct View {
     pub eye: Vec3,
+    /// the main view's eye: the sectors' distances (+268) are measured from it
+    pub main_eye: Vec3,
     pub axis: Vec3,
     pub frustum: Frustum,
     pub globals: Globals,
@@ -135,7 +173,7 @@ pub fn view(main: &Globals, car_pos: Vec3, car_rot: Quat, near: f32) -> View {
         let w = view.inverse();
         eprintln!("rearview eye {:.3} {:.3} {:.3} a {:.4?} b {:.4?} c {:.4?}", eye.x, eye.y, eye.z, w.x_axis.truncate(), w.y_axis.truncate(), w.z_axis.truncate());
     }
-    View { eye, axis, frustum: Frustum::from_view_proj(vp), globals: g }
+    View { eye, main_eye: Vec3::new(main.cam_pos[0], main.cam_pos[1], main.cam_pos[2]), axis, frustum: Frustum::from_view_proj(vp), globals: g }
 }
 
 /// Draw the mirror into the scene target and depth (after the main view's city pass): the sky (which clears the
@@ -164,18 +202,35 @@ pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::Wor
     // mirror's view - its index count, centre, distance, and whether the port shows it - for matching against
     // the original's recorded VSCityLOD draws)
     static LISTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    if std::env::var("MCLA_REARVIEW_LIST").is_ok() && LISTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 200 {
+    let list_now = std::env::var("MCLA_REARVIEW_LIST").is_ok() && LISTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 200;
+    if list_now {
         for (sid, sec) in world.far_models_by_sector() {
             let shown = world.sets.values().any(|s| std::ptr::eq(s, sec));
+            if let Some(si) = world.index.sectors.get(sid) {
+                let (mn, mx) = (Vec3::from(si.min), Vec3::from(si.max));
+                if mv.frustum.intersects_sphere((mn + mx) * 0.5, (mx - mn).length() * 0.5) {
+                    eprintln!("rvlist sectorsphere {}", sid);
+                }
+                eprintln!("rvlist box sector {} min {:.1} {:.1} {:.1} max {:.1} {:.1} {:.1}", sid, si.min[0], si.min[1], si.min[2], si.max[0], si.max[1], si.max[2]);
+            }
+            for b in sec.batches.iter() {
+                eprintln!("rvlist all far sector {} {} n {}", sid, b.shader, b.count);
+                let (c, r) = ((b.min + b.max) * 0.5, (b.max - b.min).length() * 0.5);
+                if mv.frustum.intersects_sphere(c, r) && !mv.frustum.intersects_aabb(b.min, b.max) {
+                    eprintln!("rvlist sphere-only far sector {} {} n {}", sid, b.shader, b.count);
+                }
+            }
             for b in sec.batches.iter().filter(|b| mv.frustum.intersects_aabb(b.min, b.max)) {
                 let c = (b.min + b.max) * 0.5;
-                eprintln!("rvlist far sector {} {} n {} centre {:.0} {:.0} {:.0} dist {:.0} shown {} loaded {}", sid, b.shader, b.count, c.x, c.y, c.z, c.distance(mv.eye), shown, world.loaded.contains_key(&sid));
+                let sd = world.index.sectors.get(sid).map_or(-1.0, |si| sector_distance(si.min, si.max, mv.main_eye));
+                eprintln!("rvlist far sector {} {} n {} centre {:.0} {:.0} {:.0} dist {:.0} shown {} loaded {} d268 {:.1}", sid, b.shader, b.count, c.x, c.y, c.z, c.distance(mv.eye), shown, world.loaded.contains_key(&sid), sd);
             }
         }
         for (sid, sec) in world.loaded.iter() {
-            for b in sec.batches.iter().filter(|b| mv.frustum.intersects_aabb(b.min, b.max)) {
+            for b in sec.batches.iter() {
                 let c = (b.min + b.max) * 0.5;
-                eprintln!("rvlist det sector {} {} n {} centre {:.0} {:.0} {:.0} dist {:.0}", sid, b.shader, b.count, c.x, c.y, c.z, c.distance(mv.eye));
+                let seen = mv.frustum.intersects_aabb(b.min, b.max);
+                eprintln!("rvlist det{} sector {} {} n {} centre {:.0} {:.0} {:.0} dist {:.0} blend {} interior {}", if seen { "" } else { "out" }, sid, b.shader, b.count, c.x, c.y, c.z, c.distance(mv.eye), matches!(b.mode, MatMode::Blend | MatMode::StoreGlass), b.interior);
             }
         }
     }
@@ -190,27 +245,40 @@ pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::Wor
     }
     // the city: the main view's programs, both phases (opaque, then the blended - shop panes with depth writes)
     let lens = ((FOV_Y_DEG.to_radians() * 0.5).tan() / 0.637).clamp(0.3, 1.2);
+    let models = models(world, mv.main_eye);
     pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
     for phase in 0..2 {
         pass.set_pipeline(if phase == 0 { &gpu.pipeline_opaque } else { &gpu.pipeline_blend });
         let mut pane_pipe = false;
         let mut last_mode = u32::MAX;
-        for sec in world.loaded.values().chain(world.sets.values()) {
+        for &(sec, own_obj, sphere) in &models {
             let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
+            if sphere.is_some_and(|(c, r)| !mv.frustum.intersects_sphere(c, r)) {
+                continue;
+            }
             let mut bound = false;
             let mut last_bind: *const wgpu::BindGroup = std::ptr::null();
             let mut last_obj = 0u8;
+            if !own_obj {
+                pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+            }
             for b in &sec.batches {
                 let blend = matches!(b.mode, MatMode::Blend | MatMode::StoreGlass);
-                if blend != (phase == 1) || !mv.frustum.intersects_aabb(b.min, b.max) {
+                if blend != (phase == 1) {
                     continue;
                 }
-                // (the main pass's small-object culling, at the mirror's lens and eye)
-                let ext = (b.max - b.min).length();
-                if ext < ((b.min + b.max) * 0.5).distance(mv.eye) * 0.012 * lens {
-                    continue;
+                // (a far model is drawn whole; the detailed sectors' batches by their own boxes - the original tests
+                // each drawable's sphere, sub_822DF960 - with the main pass's small-object culling at the mirror's lens)
+                if sphere.is_none() {
+                    if !mv.frustum.intersects_aabb(b.min, b.max) {
+                        continue;
+                    }
+                    let ext = (b.max - b.min).length();
+                    if ext < ((b.min + b.max) * 0.5).distance(mv.eye) * 0.012 * lens {
+                        continue;
+                    }
                 }
-                if let Some(o) = sec.obj.as_ref() {
+                if let Some(o) = sec.obj.as_ref().filter(|_| own_obj) {
                     let want = if b.interior { 2 } else { 1 };
                     if want != last_obj {
                         pass.set_bind_group(3, if b.interior { &o.1.bg } else { &o.0.bg }, &[]);
@@ -240,6 +308,9 @@ pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::Wor
                 }
                 pass.draw_indexed(b.first..b.first + b.count, 0, 0..1);
                 draws += 1;
+                if list_now {
+                    eprintln!("rvlist drawn {} n {}", b.shader, b.count);
+                }
             }
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
         }
@@ -287,6 +358,19 @@ mod tests {
         for (got, want) in [(world.x_axis.truncate(), a), (world.y_axis.truncate(), b), (world.z_axis.truncate(), c)] {
             assert!((got - want).length() < 3e-3, "{got:?} {want:?}");
         }
+    }
+
+    /// sub_822D87B8's mirror rule, with the o14s recording's sectors (record, state, +268): 227 (3, 0.0) and 228
+    /// (3, 10.2) in detail; 229 (3, 40.5), 225 (3, 87.0), 218 (3, 180.0) and 219 (2, 321.6) as far models.
+    #[test]
+    fn sectors_in_the_mirror() {
+        assert!(mirror_detail(true, 0.0));
+        assert!(mirror_detail(true, 10.2));
+        assert!(!mirror_detail(true, 20.0));
+        assert!(!mirror_detail(true, 40.5));
+        assert!(!mirror_detail(false, 5.0));
+        assert_eq!(sector_distance([0.0, 0.0, 0.0], [10.0, 5.0, 10.0], Vec3::new(5.0, 100.0, 5.0)), 0.0);
+        assert_eq!(sector_distance([0.0, 0.0, 0.0], [10.0, 5.0, 10.0], Vec3::new(13.0, -50.0, 14.0)), 5.0);
     }
 
     #[test]
