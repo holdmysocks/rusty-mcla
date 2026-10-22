@@ -9403,18 +9403,12 @@ impl Game {
 
     /// The tournament panel's start value for an event (`hw_tournament1` ...): the script's L5,
     /// set into the form with PropertyCtrl_SetPropertyInt(form, 0, L5) (generic_tournament_hookman
-    /// 0x115..0x148, 0x4e3): 1 while the man's mission (static +460) is there and not COMPLETE,
-    /// else 2. The mission is the district's first, TOURNAMENT_<district>: it cannot be one
-    /// still open after it - TOURNAMENT_<district>B asks for a HARD completion, which this
-    /// panel allows only at 2, and REPEAT_TOURNAMENT_* never completes. South Central has none:
-    /// its panel opens on HARD. (+460 is a constant of the district's launcher script, whichever
-    /// mission started the man - the same mission as the man's own difficulty.)
+    /// 0x115..0x148, 0x4e3): the man's own difficulty, `mc4_tournament_man_diff` - 1 while his
+    /// district's TOURNAMENT_<district> (static +460, the launcher script's constant) is there
+    /// and not COMPLETE, else 2; 2 for a key of no district.
     pub fn mc4_tournament_panel_diff(&self, key: &str) -> usize {
         let k = key.to_ascii_lowercase();
-        let Some(code) = DISTRICT_CODES.iter().find(|c| k.starts_with(&format!("{c}_"))) else { return 2 };
-        let launcher = format!("{code}_tournament_hk1");
-        let first = MISSION_LAUNCHERS.iter().find(|(m, l)| *l == launcher && m.starts_with("TOURNAMENT_")).map(|(m, _)| *m);
-        if first.map_or(false, |m| !self.career.mission_complete(m)) { 1 } else { 2 }
+        DISTRICT_CODES.iter().position(|c| k.starts_with(&format!("{c}_"))).map_or(2, |d| self.mc4_tournament_man_diff(d) as usize)
     }
 
     /// Whether an event's panel shows its DIFFICULTY row - the forms' refresh, Ctrl_SetVisible
@@ -14353,6 +14347,13 @@ mod tests {
         assert!(g.mc4_panel_diff_shown("hw_delivery"));
         assert_eq!(g.mc4_tournament_panel_diff("hw_tournament1"), 2);
         assert!(g.mc4_panel_diff_shown("hw_tournament1"));
+        // (a new career: every district's TOURNAMENT_<district> open, South Central's
+        // TOURNAMENT_SC too - MEDIUM, the choice hidden)
+        let Some((n, _dir, _save)) = career_game("newgame_import.json", "s15panels_new") else { return };
+        for code in DISTRICT_CODES {
+            let key = format!("{code}_tournament1");
+            assert_eq!((n.mc4_tournament_panel_diff(&key), n.mc4_panel_diff_shown(&key)), (1, false), "{key}");
+        }
         assert!(g.mc4_panel_diff_shown("be_payback") && g.mc4_panel_diff_shown("hw_wager_hangout1"));
         // (a series shows it after one MEDIUM completion of its event, not before)
         let medium = g.mc4_event_completions("hw_local_hangout1_series", 1);
