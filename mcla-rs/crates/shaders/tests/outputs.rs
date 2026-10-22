@@ -8,7 +8,7 @@ use mcla_shaders::{build, OUTPUTS};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
-const EXPECTED: [(&str, &str); 8] = [
+const EXPECTED: [(&str, &str); 9] = [
     ("xs_sky.wgsl", "ba82a9046f57e467e3dfee44ab3fd337b78baa0c10e065a4022e06d395336942"),
     ("xs_perlin.wgsl", "bce1ea5d95543b6b0ad238ba7e6593d13c5c45100b171cee1e3010127a3ebe8c"),
     ("xs_sky_cheap.wgsl", "00100cc4364916953859452451e25229c4aff7a0ed4b9ba3e80566da405ae314"),
@@ -17,6 +17,7 @@ const EXPECTED: [(&str, &str); 8] = [
     ("xs_road.wgsl", "50cfa4737636e7e07fdcfcf7ad187f61d96daeac31a764415b20e48c1271622b"),
     ("xs_roadn.wgsl", "5531839b9e756ed906d9869cc460ee2803f943cdc0b4962192ced3ea1bbe4537"),
     ("xs_water.wgsl", "9f7cf194d48c1502968b017f81bb8aae66e49663020725349e96f1a725150de0"),
+    ("xs_pond.wgsl", "a4439d5bcf19a08dc6022342fa8103e353a487e1078eb124d728aece66f920dc"),
 ];
 
 fn data_dir() -> Option<PathBuf> {
@@ -26,7 +27,7 @@ fn data_dir() -> Option<PathBuf> {
 }
 
 #[test]
-fn the_eight_programs_match_the_reference_translation() {
+fn the_nine_programs_match_the_reference_translation() {
     let Some(d) = data_dir() else {
         eprintln!("skipped: no extracted game data with shaders/exe/exe_82801b00 (set MCLA_DATA)");
         return;

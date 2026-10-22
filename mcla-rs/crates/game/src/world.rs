@@ -274,7 +274,7 @@ fn classify(shader: &str, flags: u32) -> MatMode {
         MatMode::Blend
     } else if s.contains("oceanwaterlod") {
         // (the sea, CityOceanWater / CityOceanWaterLOD: the game's own programs - xs_water.wgsl, render/xs.rs;
-        // the pond water, CityPondWater, has programs of its own and stays blended)
+        // the pond water, CityPondWater, stays in the blended mode and runs its own programs there - `mark_pond`)
         MatMode::OceanWaterLod
     } else if s.contains("oceanwater") {
         MatMode::OceanWater
@@ -459,6 +459,26 @@ fn mark_water(vertices: &mut [Vertex], mode: MatMode) {
     }
 }
 
+/// The pond water (CityPondWater batches: the fountain basins, 32 materials in the city, all with the same values -
+/// RippleParams (1, 0.1, 0.1, 0), SpecularExponent 8, SpecularIntensity 0.33, SpecularColorMixer 0.7, DiffuseSampler
+/// l_sha_ground_water.dds, WaveSampler l_sha_water_ripple_n.dds) stays in the blended mode, as the original draws it
+/// (SrcAlpha / InvSrcAlpha, after the opaque city), and carries POND_MARK in uv2.x - its third coordinate set is not
+/// read by its programs: city.wgsl runs the game's VSCityPondWater + PSCityPondWater on it (`pond_program`,
+/// xs_pond.wgsl). MCLA_POND_OLD=1: unmarked, the generic blended rule as before.
+pub const POND_MARK: f32 = -55555.0;
+fn is_pond(shader: &str) -> bool {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !*OLD.get_or_init(|| std::env::var("MCLA_POND_OLD").map_or(false, |v| v == "1")) && shader.to_ascii_lowercase().contains("citypondwater")
+}
+fn mark_pond(vertices: &mut [Vertex], sh: &mcla_formats::rage::drawable::Shader, mode: MatMode) {
+    if mode != MatMode::Blend || !is_pond(&sh.name) {
+        return;
+    }
+    for v in vertices.iter_mut() {
+        v.uv2 = [POND_MARK, 0.0];
+    }
+}
+
 fn mark_tunnel_road(vertices: &mut [Vertex], sh: &mcla_formats::rage::drawable::Shader, mode: MatMode, interior: bool) {
     if mode != MatMode::Road || !interior || !sh.name.to_ascii_lowercase().contains("citytunnelroad") {
         return;
@@ -592,6 +612,8 @@ fn extra_textures_at(sh: &mcla_formats::rage::drawable::Shader, mode: MatMode, i
         MatMode::Decal => (tex(ph::GRIME).unwrap_or(0), tex(ph::HEIGHT_SPEC).unwrap_or(0)),
         // (the sea's ripple map, WaveSampler - read as stored: its fetch constant asks for no gamma decoding)
         MatMode::OceanWater | MatMode::OceanWaterLod => (tex(0x00a67acd).unwrap_or(0), 0),
+        // (the pond water's WaveSampler - the same ripple map, also read as stored: third)
+        MatMode::Blend if is_pond(&sh.name) => (tex(0x00a67acd).unwrap_or(0), 0),
         MatMode::Terrain => {
             let a = tex(ph::GRASS_A).unwrap_or(0);
             let b = tex(mcla_formats::hash::joaat("diffusesamplerb")).unwrap_or(a);
@@ -772,6 +794,7 @@ pub fn decode_set(id: usize, path: &Path) -> Result<CpuSector> {
             mark_lod(&mut vertices, sh, mode, &mut third);
             mark_binormal(&mut vertices, &m.tangents, sh);
             mark_water(&mut vertices, mode);
+            mark_pond(&mut vertices, sh, mode);
             batches.push(CpuBatch { vertices, indices: m.indices.clone(), diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts: Vec::new() });
         }
     }
@@ -885,6 +908,7 @@ pub fn decode_sector(id: usize, path: &Path) -> Result<CpuSector> {
         mark_tunnel_road(&mut vertices, sh, mode, b.flags & 4 != 0);
         mark_binormal(&mut vertices, &m.tangents, sh);
         mark_water(&mut vertices, mode);
+        mark_pond(&mut vertices, sh, mode);
         batches.push(CpuBatch {
             vertices,
             indices: m.indices.clone(),
@@ -956,6 +980,7 @@ pub fn decode_far(path: &Path, sectors: &[SectorInfo]) -> Result<Vec<CpuSector>>
             mark_lod(&mut vertices, sh, mode, &mut third);
             mark_binormal(&mut vertices, &mesh.tangents, sh);
             mark_water(&mut vertices, mode);
+            mark_pond(&mut vertices, sh, mode);
             batches.push(CpuBatch { vertices, indices: mesh.indices, diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts: Vec::new() });
         }
         let batches = merge_batches(batches);
@@ -1390,6 +1415,8 @@ impl World {
                 MatMode::Opaque | MatMode::AlphaTest => b.third,
                 // (the sea's ripple map: the third)
                 MatMode::OceanWater | MatMode::OceanWaterLod => b.third,
+                // (the pond water's ripple map: the third)
+                MatMode::Blend if is_pond(&b.shader) => b.third,
                 // (and the walls with a decal and a grime layer: the fourth too)
                 MatMode::Ground | MatMode::Decal => b.fourth,
                 _ => 0,
@@ -1507,7 +1534,7 @@ impl World {
                 };
                 gpu.texture_bind_group4(&d, &s, &t3, &t4, kd, ks, k3, k4)
             } else if b.third != 0 {
-                let wall = matches!(b.mode, MatMode::Opaque | MatMode::AlphaTest | MatMode::OceanWater | MatMode::OceanWaterLod);
+                let wall = matches!(b.mode, MatMode::Opaque | MatMode::AlphaTest | MatMode::OceanWater | MatMode::OceanWaterLod) || (b.mode == MatMode::Blend && is_pond(&b.shader));
                 let (t3, k3) = match raw.get(&b.third).filter(|_| wall) {
                     Some(t) => (t.clone(), sk(b.third) ^ RAW_KEY),
                     None => (resolve(gpu, b.third), sk(b.third)),

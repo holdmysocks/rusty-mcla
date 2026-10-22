@@ -235,6 +235,9 @@ pub struct WheelState {
 
 #[derive(Clone, Debug)]
 pub struct CarState {
+    /// the car's underside as the bound box has it (0.2 m above its floor, world corners): the hydrant's
+    /// water collides with it (vehsim.rs; propfx.rs)
+    pub underside: Option<[Vec3; 4]>,
     pub pos: Vec3,
     pub rot: Quat,
     pub vel: Vec3,
@@ -339,6 +342,7 @@ impl CarState {
 
     pub fn new(pos: Vec3, yaw: f32) -> CarState {
         CarState {
+            underside: None,
             pos,
             rot: Quat::from_rotation_y(yaw),
             vel: Vec3::ZERO,

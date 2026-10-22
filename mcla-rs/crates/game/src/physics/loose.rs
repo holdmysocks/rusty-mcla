@@ -526,6 +526,27 @@ pub struct LooseState {
     /// four side sums (+560): (the car's uid, the side 0 .. 3, the amount) - vehsim.rs, taken by
     /// vehicles.rs after the steps
     pub amb_dmg: Vec<(u32, usize, f32)>,
+    /// the effects the props' events start (propfx.rs, `prop_hit_fx_rule.md`): taken by the game after the steps
+    pub fx_events: Vec<FxPlay>,
+}
+
+/// An effect a prop's event starts: its name and where it is played.
+#[derive(Clone, Debug)]
+pub struct FxPlay {
+    pub effect: String,
+    pub at: FxAt,
+    /// the effect instance's velocity (the deflection pass gives the car's; every other event 0)
+    pub vel: Vec3,
+}
+
+/// Where an event effect is placed (`sub_82736D38`).
+#[derive(Clone, Copy, Debug)]
+pub enum FxAt {
+    /// at a world point, unrotated (the position parameter: impact and deflection events)
+    World(Vec3),
+    /// on a matrix it follows each frame (the matrix-pointer parameter: the break events): the object's
+    /// matrix, or the matrix of one of its bones (`part`); the offset in that frame
+    Follow { obj: usize, part: Option<u16>, offset: Vec3 },
 }
 
 /// What a run does not let one derive (the level's indices and the heap's addresses), given per
@@ -1799,6 +1820,17 @@ pub fn stl_sort<T: Clone>(a: &mut Vec<T>, key: impl Fn(&T) -> i64) {
     }
 }
 
+/// The bone whose matrix a break event of group `g` follows: that of the part that stays, the first child of the
+/// parent group, if that has a bone (`prop_hit_fx_rule.md` 2c; none: the instance's matrix).
+fn fx_part(t: &FragType, g: usize) -> Option<u16> {
+    let pg = t.groups.get(g)?.parent as usize;
+    if pg == 255 {
+        return None;
+    }
+    let c = t.groups.get(pg)?.first_child as usize;
+    t.children.get(c).filter(|ch| ch.bone != -1).map(|ch| ch.bone as u16)
+}
+
 /// One contact of an island as the breaking pass sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct Link {
@@ -2217,15 +2249,94 @@ impl LooseState {
         }
     }
 
+    /// The prop instances' impact report after the island's solve (`sub_82489EE8`, slot 25; `prop_hit_fx_rule.md` 2a):
+    /// per run of an instance's rows, as A and as B, the row with the largest impulse (the contact's +12, I) gives
+    /// the point on the prop, the normal turned to the prop's side and the closing speed of the two bodies' velocities;
+    /// when it is over 0.1 the type's events whose least speed it reaches are started at the point (+ the event's
+    /// offset, world axes).
+    pub fn impact_reports(&mut self, world: &LooseWorld, out: &IslandOut) {
+        for as_a in [true, false] {
+            let mut done: Vec<usize> = Vec::new();
+            for l in out.links.iter() {
+                let Some(Who::Obj(o)) = (if as_a { l.a } else { l.b }) else { continue };
+                if done.contains(&o) {
+                    continue;
+                }
+                done.push(o);
+                let ob = &self.objs[o];
+                if ob.veh.is_some() || ob.amb.is_some() || world.types[ob.ty].type_events.is_empty() {
+                    continue;
+                }
+                let mut best: Option<(f32, usize)> = None;
+                for (j, m) in out.links.iter().enumerate() {
+                    if (if as_a { m.a } else { m.b }) == Some(Who::Obj(o)) && best.map_or(true, |b| out.touches[j].impulse.length() > b.0) {
+                        best = Some((out.touches[j].impulse.length(), j));
+                    }
+                }
+                let Some((_, j)) = best else { continue };
+                let t = &out.touches[j];
+                let (me, other, n) = if as_a { (&t.a, &t.b, t.normal) } else { (&t.b, &t.a, t.back) };
+                let vp = me.body.and_then(|k| out.bodies.get(k)).map_or(Vec3::ZERO, |b| b.vel);
+                let vo = other.body.and_then(|k| out.bodies.get(k)).map_or(Vec3::ZERO, |b| b.vel + b.ang.cross(me.point - b.at));
+                let speed = -n.dot(vp - vo);
+                if speed > 0.1 {
+                    for e in &world.types[ob.ty].type_events {
+                        if speed >= e.min_speed {
+                            self.fx_events.push(FxPlay { effect: e.effect.clone(), at: FxAt::World(me.point + v(e.offset)), vel: Vec3::ZERO });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Start the events of a break set on object `w`, following the matrix of `part` (none: the instance's).
+    fn fx_follow(&mut self, w: usize, set: &[mcla_formats::rage::fragphys::PropEvent], part: Option<u16>) {
+        for e in set {
+            self.fx_events.push(FxPlay { effect: e.effect.clone(), at: FxAt::Follow { obj: w, part, offset: v(e.offset) }, vel: Vec3::ZERO });
+        }
+    }
+
+    /// The break-from-root sets of group `g` and, below it, of its sub-groups that have not broken (`sub_824D1B68`).
+    fn fx_root(&mut self, t: &FragType, w: usize, g: usize, absent: u64) {
+        let Some(gr) = t.groups.get(g) else { return };
+        let part = fx_part(t, g);
+        for c in gr.first_child as usize..gr.first_child as usize + gr.children as usize {
+            if let Some(ch) = t.children.get(c) {
+                self.fx_follow(w, &ch.break_root_events, part);
+            }
+        }
+        for sg in gr.first_group as usize..gr.first_group as usize + gr.groups as usize {
+            if sg < 64 && absent & (1 << sg) == 0 {
+                self.fx_root(t, w, sg, absent);
+            }
+        }
+    }
+
+    /// The matrix an event effect follows, with the offset it is placed at (`FxAt::Follow`).
+    pub fn fx_matrix(&self, world: &LooseWorld, obj: usize, part: Option<u16>) -> Option<[Vec3; 4]> {
+        let o = self.objs.get(obj)?;
+        match part {
+            None => Some(o.matrix),
+            // (the bone as the unposed skeleton has it, carried by the instance's matrix; a prop that has not been
+            // posed has every bone where its skeleton puts it - the hydrant's are both the identity)
+            Some(b) => Some(world.types[o.ty].bones.get(b as usize).map_or(o.matrix, |m| super::gjk::world_matrix(&m4(m), &o.matrix))),
+        }
+    }
+
     /// 0x824900A8 -> 0x8248F320: an instance breaks at `group` (255: it goes as a whole). Gives
     /// the new instance and the groups it took, if a piece came off.
     fn break_apart(&mut self, world: &LooseWorld, w: usize, group: u8) -> Option<(usize, u64)> {
         let ty = self.objs[w].ty;
         let t = &world.types[ty];
         let (max_speed, max_spin) = (500.0f32, f32::from_bits(0x40c9_0fdb));
+        let was_hit = self.objs[w].hit;
         if self.objs[w].entry.is_none() {
             if t.flags & 1 == 0 {
-                // (it goes as it is, with the file's archetype)
+                // (it goes as it is, with the file's archetype: child 0's break set on the instance's matrix, 0x824900A8)
+                if let Some(c0) = t.children.first() {
+                    self.fx_follow(w, &c0.break_events, None);
+                }
                 let obj = &mut self.objs[w];
                 obj.hit = true;
                 if obj.body.is_none() {
@@ -2245,6 +2356,11 @@ impl LooseState {
             self.entry_instance();
         }
         if group == 255 {
+            // (the whole instance comes loose: the break-from-root sets of the root groups, 0x82490284)
+            let absent = self.objs[w].entry.map_or(0, |e| e.absent);
+            for g in 0..t.root_groups as usize {
+                self.fx_root(t, w, g, absent);
+            }
             let obj = &mut self.objs[w];
             obj.hit = true;
             if obj.body.is_none() {
@@ -2259,6 +2375,9 @@ impl LooseState {
         let all: u64 = (0..t.groups.len()).fold(0, |b, g| b | 1 << g);
         // (something must stay behind, else it goes as a whole)
         if (all & !parent.absent) & !bits == 0 {
+            for g in 0..t.root_groups as usize {
+                self.fx_root(t, w, g, parent.absent);
+            }
             let obj = &mut self.objs[w];
             obj.hit = true;
             if obj.body.is_none() {
@@ -2282,6 +2401,19 @@ impl LooseState {
             body.p = vel * body.mass;
             body.w = pb.w;
             body.l = body.momentum_of(pb.w);
+        }
+        // (the events of the break, 0x8248F320: with the instance not broken before, the break-from-root sets of the
+        // group's subtree, then the break sets of the group's own children, on the part that stays)
+        if !was_hit {
+            self.fx_root(t, w, group as usize, parent.absent);
+        }
+        if let Some(gr) = t.groups.get(group as usize) {
+            let part = fx_part(t, group as usize);
+            for c in gr.first_child as usize..gr.first_child as usize + gr.children as usize {
+                if let Some(ch) = t.children.get(c) {
+                    self.fx_follow(w, &ch.break_events, part);
+                }
+            }
         }
         self.pieces_made += 1;
         let n = self.pieces_made;

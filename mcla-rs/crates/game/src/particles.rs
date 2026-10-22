@@ -132,8 +132,8 @@ struct RuleParticle {
     /// what its emitter makes of a second (effect and event scalar, `TimeScaleKF`)
     ts: f32,
     /// its random numbers: size, colour, alpha, acceleration, damping, playback, matrix
-    /// weight, spin, wind, noise
-    r: [f32; 10],
+    /// weight, spin, wind, noise, trail
+    r: [f32; 11],
     theta: f32,
     spin0: f32,
     /// the texture frames it blends between (`blk+92` A, `blk+93` B) by `anim`
@@ -160,6 +160,22 @@ struct RuleParticle {
     ev: u16,
     /// its effect's frame is mirrored (`Effect::flip`)
     flip: bool,
+    /// UseParticleTrails: its last positions, oldest first (`blk+32` .. `blk+64`), the share of the
+    /// way to the next shift (`f`) and the trail's length
+    trail: Option<Box<Trail>>,
+    /// a model particle's turn and scale state (modelfx.rs)
+    orient: crate::modelfx::Orient,
+    /// d+116 bit 2 (it collides with its effect's polygons: the share PercentPhysical decided at
+    /// its birth) and bit 1 (at rest after a collision)
+    physical: bool,
+    at_rest: bool,
+}
+
+/// A particle's trail (`sub_824BC788`).
+struct Trail {
+    nodes: Vec<Vec3>,
+    f: f32,
+    len: f32,
 }
 
 /// One event's emitter of a playing effect.
@@ -267,6 +283,82 @@ pub struct Particles {
     pub arrow_rt: [f32; 3],
     /// seconds the effects have run (the projected map's CurrentTime)
     clock: f32,
+    /// the collision polygons of the effect instances (inst +512, `set_collision`): by effect id
+    coll: HashMap<u32, Poly>,
+}
+
+/// A polygon the particles of an effect instance collide with (`trail_collision_rule.md` 1a): four
+/// corners, the plane normal, and the effect's place (for a rule's PhysicalRange).
+#[derive(Clone, Copy)]
+pub struct Poly {
+    pub v: [Vec3; 4],
+    pub n: Vec3,
+}
+
+/// The point of the triangle (a, b, c) nearest to `p`.
+fn tri_nearest(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let den = 1.0 / (va + vb + vc);
+    a + ab * (vb * den) + ac * (vc * den)
+}
+
+/// Is the point (on the polygon's plane) inside the triangle?
+fn in_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> bool {
+    let n = (b - a).cross(c - a);
+    (b - a).cross(p - a).dot(n) >= 0.0 && (c - b).cross(p - b).dot(n) >= 0.0 && (a - c).cross(p - c).dot(n) >= 0.0
+}
+
+impl Poly {
+    /// The depth of a particle's contact with the polygon, or none (`sub_8261A010` for a swept
+    /// particle, `sub_8261B9A0` for a sphere): the polygon is two triangles (v0 v1 v2) (v0 v2 v3).
+    fn depth(&self, pos: Vec3, vel: Vec3, dt: f32, radius: f32) -> Option<f32> {
+        let swept = vel.length() * dt > 0.7 * radius;
+        let v = &self.v;
+        if swept {
+            let (start, end) = (pos - vel * dt, pos);
+            let (ds, de) = ((start - v[0]).dot(self.n), (end - v[0]).dot(self.n));
+            if !(ds * de < 0.0) {
+                return None;
+            }
+            let t = ds / (ds - de);
+            if !(0.0..=1.0).contains(&t) {
+                return None;
+            }
+            let at = start + (end - start) * t;
+            (in_tri(at, v[0], v[1], v[2]) || in_tri(at, v[0], v[2], v[3])).then(|| radius - de)
+        } else {
+            let a = tri_nearest(pos, v[0], v[1], v[2]);
+            let b = tri_nearest(pos, v[0], v[2], v[3]);
+            let d = (pos - a).length().min((pos - b).length());
+            (d <= radius).then(|| radius - d)
+        }
+    }
 }
 
 const MAX: usize = 3000;
@@ -326,7 +418,7 @@ const MAX_RULE: usize = 5000;
 const MAX_EFFECTS: usize = 160;
 /// the effects whose sprites are loaded: the particle props' and the litter's
 // (step 19g: + the power-up shots' sparks, powerup_sparks - sub_82748340)
-const PLAYED: [&str; 11] = ["water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks", "damage_glassbreak", "wheel_"];
+const PLAYED: [&str; 18] = ["col_", "water_hydrant", "coin", "bang_concrete", "exp_gas", "tree_trunk", "damage_scrape", "water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks", "damage_glassbreak", "wheel_"];
 
 /// A vector of an effect's frame into the world: x negated first when the frame is a mirror image.
 fn turn(rot: Quat, flip: bool, v: Vec3) -> Vec3 {
@@ -365,6 +457,7 @@ impl Particles {
             fog_min: [0.0, 0.0, 0.0, 0.0, 1000.0],
             arrow_rt: [0.0, std::f32::consts::PI, 1.0],
             clock: 0.0,
+            coll: HashMap::new(),
         }
     }
 
@@ -444,13 +537,10 @@ impl Particles {
                                 cards.push(Card { sheet: s, uv: [0.0, 0.0, 1.0, 1.0], half: [1.0, 1.0] });
                             }
                         } else if let Some(m) = &pr.model {
+                            // (a card per drawable: its triangles are drawn by modelfx.rs with its texture)
                             for d in &m.drawables {
-                                let e = (d.max - d.min) * 0.5;
-                                // the sheet of paper as a card: its two long sides
-                                let mut s = [e.x, e.y, e.z];
-                                s.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-                                if let Some(sh) = sheet(self, gpu, &d.texture, false).filter(|_| s[1] > 0.0) {
-                                    cards.push(Card { sheet: sh, uv: [d.uv[0], d.uv[1], d.uv[2] - d.uv[0], d.uv[3] - d.uv[1]], half: [s[1], s[0]] });
+                                if crate::modelfx::add_mesh(gpu, *pi, cards.len(), d, &rd, &dict) {
+                                    cards.push(Card { sheet: 0, uv: [0.0, 0.0, 1.0, 1.0], half: [1.0, 1.0] });
                                 }
                             }
                         }
@@ -579,6 +669,51 @@ impl Particles {
             e.oneshot = true;
         }
         true
+    }
+
+    /// `burst` in a frame, with evolution values by name (a scrape's `damage_scrape_sparks`).
+    pub fn burst_evo(&mut self, effect: u32, pos: Vec3, rot: Quat, vel: Vec3, dist: f32, evo: &[(&str, f32)]) -> bool {
+        let key = 0x4255_5253_0000_0000 | self.next_id as u64;
+        if !self.play_evo(key, effect, pos, rot, false, vel, dist, evo) {
+            return false;
+        }
+        if let Some(e) = self.effects.iter_mut().find(|e| e.key == key) {
+            e.oneshot = true;
+        }
+        true
+    }
+
+    /// `play_evo` for an effect that is started once and left to run out (`burst_evo`), asked for
+    /// again with the same `key` each frame while its place or evolutions follow something
+    /// (`propfx.rs`: the event effects of the props). False: the rule cannot be played here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_oneshot_evo(&mut self, key: u64, effect: u32, pos: Vec3, rot: Quat, vel: Vec3, dist: f32, evo: &[(&str, f32)]) -> bool {
+        if !self.play_evo(key, effect, pos, rot, false, vel, dist, evo) {
+            return false;
+        }
+        if let Some(e) = self.effects.iter_mut().find(|e| e.key == key) {
+            e.oneshot = true;
+        }
+        true
+    }
+
+    /// Is the effect started under `key` still playing (or its particles alive)?
+    pub fn is_alive(&self, key: u64) -> bool {
+        self.effects.iter().any(|e| e.key == key)
+    }
+
+    /// The polygon the particles of the effect under `key` collide with this frame (the effect
+    /// instance's +512, set by the game's update functor before the particle step; none: no collision).
+    pub fn set_collision(&mut self, key: u64, poly: Option<Poly>) {
+        let Some(id) = self.effects.iter().find(|e| e.key == key).map(|e| e.id) else { return };
+        match poly {
+            Some(p) => {
+                self.coll.insert(id, p);
+            }
+            None => {
+                self.coll.remove(&id);
+            }
+        }
     }
 
     /// The checkpoint render setup's EffectPos.w for the effect playing under `key`: the arrows
@@ -766,7 +901,7 @@ impl Particles {
                 t: 0.0,
                 inv_life: if life > 1e-3 { 1.0 / life } else { 1.0 },
                 ts: pscale,
-                r: [0.0; 10],
+                r: [0.0; 11],
                 theta: 0.0,
                 spin0: 0.0,
                 frame0: 0,
@@ -785,6 +920,12 @@ impl Particles {
                 eff: e.effect as u16,
                 ev: i as u16,
                 flip: e.flip,
+                trail: None,
+                orient: Default::default(),
+                // (`sub_824BD930` 0x824BDC6C: a share of PercentPhysical of 101; the draw is made only
+                // for the rules that can collide, so the other effects' random numbers stay as they were)
+                physical: pr.physical_range != 0.0 && (rng.f() * 101.0) as u32 <= pr.percent_physical as u32,
+                at_rest: false,
             };
             for r in p.r.iter_mut() {
                 *r = rng.f();
@@ -796,11 +937,15 @@ impl Particles {
                 let (th, rv) = (s.init_theta.eval(te), s.init_rot_vel.eval(te));
                 p.theta = rng.range(th[0], th[1]).to_radians();
                 p.spin0 = rng.range(rv[0], rv[1]) * std::f32::consts::TAU;
+                if pr.flags & flag::USE_PARTICLE_TRAILS != 0 {
+                    // (n = max(lerp(TrailPropsKF z, w), 3) points, all at the spawn point)
+                    let tp = s.trail.eval(te);
+                    let n = (lerp(tp[2], tp[3], p.r[10]) as usize).max(3);
+                    p.trail = Some(Box::new(Trail { nodes: vec![p.pos; n], f: 0.0, len: lerp(tp[0], tp[1], p.r[10]) }));
+                }
             } else if let Some(m) = &pr.model {
-                // a model particle tumbles in three dimensions; its card only turns in the screen
-                let rs = m.init_rotation_speed.eval(te);
-                p.theta = rng.f() * std::f32::consts::TAU;
-                p.spin0 = rng.range(rs[0], rs[1]) * std::f32::consts::TAU * if rng.f() < 0.5 { -1.0 } else { 1.0 };
+                // (its Euler angles, spin axis and speed, scale numbers - modelfx.rs, sub_824B5BA8)
+                p.orient = crate::modelfx::Orient::birth(pr, m, te, ez, sot, &mut || rng.f());
             }
             // spread over the step: the earlier ones have already moved on
             if !er.one_shot {
@@ -816,6 +961,9 @@ impl Particles {
     /// One step of the particles of the effect list's rules (`sub_824BE248`).
     fn step_rule_particles(&mut self, fx: &FxList, dt: f32, moved: &[(u32, Vec3)]) {
         let mut rng = Rng(self.rng);
+        // (the trails' history moves once a draw of the original's 30 Hz frame: every other step here)
+        let shift = self.frame % 2 == 0;
+        let coll = &self.coll;
         self.rule_list.retain_mut(|p| {
             let pr = &fx.particle_rules[p.rule as usize];
             p.prev = p.pos;
@@ -873,6 +1021,53 @@ impl Particles {
             // particle, added to the velocity - and that function is `sub_8247D038`, which gives
             // (0, 0, 0): the original's particles have no wind)
             p.pos += p.vel * dt;
+            let mut killed = false;
+            // (the effect instance's polygons, `sub_824BADD8`: a physical particle that is not at rest, of a rule
+            // with PhysicalRange -1 or a range it is within; the polygon is the car's underside for the
+            // hydrant, `set_collision`)
+            if p.physical && !p.at_rest && (pr.physical_range == -1.0 || pr.physical_range > 0.0) {
+                if let (Some(poly), Some(s)) = (coll.get(&p.inst), pr.sprite.as_ref()) {
+                    let sz = s.size.eval(t);
+                    let radius = (lerp(sz[0], sz[2], p.r[0]) * p.size_ot[0] * p.zoom).max(lerp(sz[1], sz[3], p.r[0]) * p.size_ot[1] * p.zoom);
+                    let sp = p.vel.length();
+                    if sp > 0.0 && poly.n.dot(p.vel / sp) < 0.0 {
+                        if let Some(depth) = poly.depth(p.pos, p.vel, dt, radius) {
+                            let dm = pr.vel_dmp.eval(t);
+                            let dmp = lerp(dm[0], dm[1], p.r[4]);
+                            let iv = pr.imp_var.eval(t);
+                            let imp = lerp(iv[0], iv[1], p.r[5]);
+                            let mut n = poly.n;
+                            if imp != 0.0 {
+                                let mut r = Vec3::new(rng.f() * 2.0 * imp - imp, rng.f() * 2.0 * imp - imp, rng.f() * 2.0 * imp - imp);
+                                r -= n * (2.0 * r.dot(n));
+                                n = (n + r).normalize_or_zero();
+                            }
+                            p.vel = (p.vel - n * (2.0 * p.vel.dot(n))) * (1.0 - dmp * 0.01);
+                            if p.vel.length_squared() < pr.stop_vel * pr.stop_vel {
+                                p.vel = Vec3::ZERO;
+                                p.at_rest = true;
+                            }
+                            if pr.flags & 1 != 0 && (rng.f() * 101.0) as u32 <= pr.percent_kill as u32 {
+                                killed = true;
+                            }
+                            p.pos += poly.n * depth;
+                        }
+                    }
+                }
+            }
+            if let Some(tr) = p.trail.as_mut().filter(|_| shift) {
+                // (`sub_824BC788`: a point every length / count; at most one shift a draw)
+                let spacing = tr.len / tr.nodes.len() as f32;
+                let last = *tr.nodes.last().unwrap();
+                let dist = p.pos.distance(last);
+                if dist >= spacing {
+                    tr.nodes.rotate_left(1);
+                    *tr.nodes.last_mut().unwrap() = p.pos;
+                    tr.f = 0.0;
+                } else {
+                    tr.f = if spacing > 0.0 { dist / spacing } else { 0.0 };
+                }
+            }
             if let Some(s) = &pr.sprite {
                 let rv = s.rot_vel.eval(t);
                 p.theta += (p.spin0 + lerp(rv[0], rv[1], p.r[7]) * std::f32::consts::TAU) * dt;
@@ -903,10 +1098,10 @@ impl Particles {
                         p.frame = next.clamp(0, 255) as u8;
                     }
                 }
-            } else {
-                p.theta += p.spin0 * dt;
+            } else if let Some(m) = &pr.model {
+                p.orient.step(pr, m, t, p.r[7], p.r[4], dt);
             }
-            p.t = t;
+            p.t = if killed { 1.0 } else { t };
             true
         });
         self.rng = rng.0;
@@ -1070,6 +1265,10 @@ impl Particles {
         }
         effects.retain(|e| frame - e.seen <= 3 || (e.oneshot && !(e.done && e.kids.is_empty() && e.em.iter().all(|m| !m.playing))));
         self.effects = effects;
+        if !self.coll.is_empty() {
+            let alive: Vec<u32> = self.effects.iter().map(|e| e.id).collect();
+            self.coll.retain(|id, _| alive.contains(id));
+        }
         self.step_rule_particles(&fx, dt, &moved);
         if self.frame % 60 == 0 && std::env::var("MCLA_FX_LOG").is_ok() {
             let names: Vec<String> = self.effects.iter().map(|e| format!("{} t {:.2} kids {} em {}", fx.effects[e.effect].name, e.t, e.kids.len(), e.em.iter().filter(|m| m.playing).count())).collect();
@@ -1104,6 +1303,7 @@ impl Particles {
         for r in self.ranges.iter_mut() {
             *r = (0, 0);
         }
+        crate::modelfx::begin();
         if self.list.is_empty() && self.rule_list.is_empty() {
             return;
         }
@@ -1136,12 +1336,10 @@ impl Particles {
             let mut inst_at: HashMap<u32, (Vec3, bool)> = HashMap::new();
             // (and its cull sphere's centre offset, turned with it: `sub_824C1B08`)
             let mut inst_cull: HashMap<u32, Vec3> = HashMap::new();
-            let mut inst_r: HashMap<u32, f32> = HashMap::new();
             for e in &self.effects {
                 inst.insert(e.id, (e.alpha, e.evo));
                 inst_at.insert(e.id, (e.pos, e.arrow));
                 inst_cull.insert(e.id, turn(e.rot, e.flip, Vec3::from(fx.effects[e.effect].cull_offset)));
-                inst_r.insert(e.id, fx.effects[e.effect].cull_radius);
             }
             // the emitters' clocks (DrawDirectional's keys on the emit time)
             let mut em_t: HashMap<u32, f32> = HashMap::new();
@@ -1155,6 +1353,57 @@ impl Particles {
             }
             for e in &self.effects {
                 clocks(e, &mut em_t);
+            }
+            // the `_BaseLight` programs' height c94.w (`draw_order_rule.md`): the pass draws the effect
+            // instances farthest first (`sub_82480F68`, key |camera - instance|^2; children are instances
+            // of their own), in each the events in order, only emitters with live particles; an
+            // emitter's light callback binds the vertex block (the draw sees the value then held) and
+            // then stores its box's min.y (`sub_822F5D98`, `sub_822F1688`). The callback acts at night
+            // for every emitter, by day only for the checkpoints' (their render setup); the pass starts
+            // with the time-of-day accumulator's w, never a height (recorded -4.3e8: no base light)
+            let mut base_w: HashMap<u32, f32> = HashMap::new();
+            {
+                const RESET_W: f32 = -4.3e8;
+                let mut live: HashMap<u32, usize> = HashMap::new();
+                for p in &self.rule_list {
+                    *live.entry(p.uid).or_default() += 1;
+                }
+                fn flat<'a>(e: &'a Effect, cp: bool, fx: &FxList, out: &mut Vec<(&'a Effect, bool)>) {
+                    // (the checkpoints' effects - checkpoints.rs FLARE / COLUMN - and what they start)
+                    let n = fx.effects[e.effect].name.as_str();
+                    let cp = cp || n == "checkpoint_ctf_generic" || n == "light_column";
+                    out.push((e, cp));
+                    for k in &e.kids {
+                        flat(k, cp, fx, out);
+                    }
+                }
+                let mut order: Vec<(&Effect, bool)> = Vec::new();
+                for e in &self.effects {
+                    flat(e, false, &fx, &mut order);
+                }
+                order.sort_by(|a, b| b.0.pos.distance_squared(cam).partial_cmp(&a.0.pos.distance_squared(cam)).unwrap_or(std::cmp::Ordering::Equal));
+                let night = self.hour > 18.0 || self.hour < 6.0;
+                let (mut w_cpu, mut w_gpu) = (RESET_W, RESET_W);
+                for (e, cp) in &order {
+                    let rule = &fx.effects[e.effect];
+                    let ez = rule.zoom.eval(e.t);
+                    let ez = if rule.zoom.keys.is_empty() { 1.0 } else { lerp(ez[0], ez[1], e.zr) * 0.01 };
+                    for em in &e.em {
+                        if live.get(&em.uid).copied().unwrap_or(0) == 0 {
+                            continue;
+                        }
+                        if night || *cp {
+                            w_gpu = w_cpu;
+                            // (the box: centre = the instance's matrix x CullSphere x s, radius |CullRadius x s|
+                            // or 1; s = the event's zoom x the instance's - `sub_824C1B08`)
+                            let sc = em.zoom * ez;
+                            let c = e.pos + turn(e.rot, e.flip, Vec3::from(rule.cull_offset)) * sc;
+                            let r = if rule.cull_radius > 0.0 { (rule.cull_radius * sc).abs() } else { 1.0 };
+                            w_cpu = c.y - r;
+                        }
+                        base_w.insert(em.uid, w_gpu);
+                    }
+                }
             }
             for p in &self.rule_list {
                 let pr = &fx.particle_rules[p.rule as usize];
@@ -1178,6 +1427,7 @@ impl Particles {
                     c *= Vec3::from(p.tint);
                 }
                 // (the vertex holds it as 8-bit A, R, G, B: clamped, x 255, truncated - `sub_821D2470`)
+                let c_raw = c;
                 let c = (c.clamp(Vec3::ZERO, Vec3::ONE) * 255.0).floor() / 255.0;
                 // (`mc4_rmptfx_column`: turned about the up axis only, fading to its ends - the
                 // particle shader's mode 2)
@@ -1254,17 +1504,19 @@ impl Particles {
                         }
                     }
                 } else if let Some(m) = &pr.model {
-                    let (s0, s1) = (m.size_min.eval(p.t), m.size_max.eval(p.t));
-                    let sc = lerp(s0[0], s1[0], p.r[0]) * p.size_ot[0] * p.zoom;
-                    // (the flutter of a sheet of paper: its card narrows and widens)
-                    w = card.half[0] * sc * (0.35 + 0.65 * (p.theta * 1.7).cos().abs());
-                    h = card.half[1] * sc;
-                    uv = card.uv;
-                    rot = p.theta;
+                    // (its drawable's triangles, turned and scaled; gForcedColor the colour and alpha
+                    // as floats; the lights taken at its effect's cull-sphere centre - modelfx.rs)
+                    let at = inst_at.get(&p.inst).map_or(p.pos, |e| e.0) + inst_cull.get(&p.inst).copied().unwrap_or(Vec3::ZERO) * p.zoom;
+                    let tem = em_t.get(&p.uid).copied().unwrap_or(p.te);
+                    let a_raw = (lerp(a[0], a[1], p.r[2]) * p.fade * ialpha).clamp(0.0, 1.0);
+                    let world = p.orient.world(pr.flags, m, p.t, tem, p.pos, p.rot);
+                    crate::modelfx::push(p.rule, p.card, world, [c_raw.x, c_raw.y, c_raw.z, a_raw], at, pr.render.lighting_mode);
+                    continue;
                 } else {
                     continue;
                 }
-                if !(w > 1e-4 && h > 1e-4) {
+                // (a trail's strip takes the half width only - the height is unused, `trail_collision_rule.md`)
+                if !(w > 1e-4 && (h > 1e-4 || p.trail.is_some())) {
                     continue;
                 }
                 let (centre, quad_u, quad_v) = match quad {
@@ -1282,17 +1534,11 @@ impl Particles {
                     extra = [var("gDiffuse", 1.0), var("gAmbient", 1.0), var("gAmbientDayControl", 1.0), var("gTranslucency", 0.0)];
                     normal_arc = var("gNormalArc", 0.0);
                     if s.technique.ends_with("_BaseLight") {
-                        // (BaseLightColor c98, gFallOff c97, BaseLightDir c82; the height c94.w is the
-                        // bottom of a cull box - centre y - |CullRadius| (1 when none) - of the emitter
-                        // drawn before (`sub_822ECBF0` -> `sub_822F1688`); taken here as the one of
-                        // the particle's own effect)
+                        // (BaseLightColor c98, gFallOff c97, BaseLightDir c82; the height c94.w: `base_w`)
                         let v4 = |n: &str, d: [f32; 4]| s.vars.iter().find(|(k, _)| k == n).map_or(d, |(_, v)| *v);
                         let (bc, bd) = (v4("BaseLightColor", [0.0; 4]), v4("BaseLightDir", [0.0, 1.0, 0.0, 0.0]));
-                        let at = inst_at.get(&p.inst).map_or(p.pos, |e| e.0) + inst_cull.get(&p.inst).copied().unwrap_or(Vec3::ZERO) * p.zoom;
-                        let cr = inst_r.get(&p.inst).copied().unwrap_or(0.0);
-                        let r = if cr > 0.0 { (cr * p.zoom).abs() } else { 1.0 };
                         base_a = [bc[0], bc[1], bc[2], var("gFallOff", 0.0)];
-                        base_b = [bd[0], bd[1], bd[2], at.y - r];
+                        base_b = [bd[0], bd[1], bd[2], base_w.get(&p.uid).copied().unwrap_or(-4.3e8)];
                     }
                 }
                 // (the technique "draw" of `mc4_rmptfx_projected` - the low smoke - maps the arrows'
@@ -1331,6 +1577,32 @@ impl Particles {
                     arrow_c = [f[0], f[1], f[2], self.fog_min[4]];
                     // (arrow_d: the fog's colour at its height; arrow_c.w the height)
                     arrow_d = [self.fog_min[0], self.fog_min[1], self.fog_min[2], self.fog_min[3]];
+                }
+                if let Some(tr) = p.trail.as_ref() {
+                    // UseParticleTrails (`sub_824BC788`): count - 2 quads along the points (each moved
+                    // the share f towards the next), one side for the strip: normalize((P - Pprev) x
+                    // (P - camera)), half width = the sprite's; v along the strip, the oldest end at
+                    // the frame's bottom, the newest at its top; u across
+                    let n = tr.nodes.len();
+                    let side = (p.pos - p.prev).normalize_or_zero().cross((p.pos - cam).normalize_or_zero()).normalize_or_zero() * w;
+                    let q = |i: usize| tr.nodes[i] + (tr.nodes[(i + 1).min(n - 1)] - tr.nodes[i]) * tr.f;
+                    let k = |i: usize| if i + 2 >= n { 0.0 } else { 1.0 - i as f32 / (n - 2) as f32 };
+                    if self.frame % 60 == 0 && std::env::var("MCLA_FX_LOG").is_ok() {
+                        log::info!("fx trail {}: points {:?} f {:.2} side {:?} half height {:.3} uv {:?} colour {:?} alpha {:.3}", pr.name, tr.nodes, tr.f, side, h, uv, c, alpha);
+                    }
+                    for i in 0..n.saturating_sub(2) {
+                        let (a, b) = (q(i), q(i + 1));
+                        let (ka, kb) = (k(i), k(i + 1));
+                        let c3 = (a + b) * 0.5;
+                        let mut uvi = uv;
+                        uvi[1] = uv[1] + uv[3] * kb;
+                        uvi[3] = uv[3] * (ka - kb);
+                        let mut uv2i = uv2;
+                        uv2i[1] = uv2[1] + uv[3] * kb;
+                        let (du, dvv) = ((b - a) * 0.5, side);
+                        items.push((card.sheet as u32, c3.distance_squared(cam), PInst { pos_size: [c3.x, c3.y, c3.z, w], color: [c.x, c.y, c.z, alpha], uv: uvi, misc: [rot, 1.0, 1.0, lit], extra, arrow_a, arrow_b, arrow_c, arrow_d, uv2: uv2i, quad_u: [du.x, du.y, du.z, 1.0], quad_v: [dvv.x, dvv.y, dvv.z, 0.0], base_a, base_b }));
+                    }
+                    continue;
                 }
                 items.push((card.sheet as u32, p.pos.distance_squared(cam), PInst { pos_size: [centre.x, centre.y, centre.z, h], color: [c.x, c.y, c.z, alpha], uv, misc: [rot, w / h, 1.0, lit], extra, arrow_a, arrow_b, arrow_c, arrow_d, uv2, quad_u, quad_v, base_a, base_b }));
             }

@@ -993,6 +993,78 @@ fn water_program(in: VsOut) -> vec3<f32> {
     return max(xs_water_ps(o).rgb, vec3<f32>(0.0));
 }
 
+// ---- The pond water (fountain basins) as the game's own programs draw it (map2 pond work, 2026-10-22;
+// xs_pond.wgsl, appended to this file - effect city/0x5a516d4c CityPondWater: VSCityPondWater +
+// PSCityPondWater). Recorded at noon (work/map2/fcap/cap/fountain.gpu.bin draws 2719 - 2721, the Beverly
+// Hills roundabout basin): blended SrcAlpha / InvSrcAlpha after the opaque city, by day. The vertex program
+// is linear in the position and the coordinates, so it runs here per pixel on the interpolated vertex:
+// o0 = the position, o1 = the screen place (x + w, w - y) / 2, w, o2 = the coordinates with v scrolled by
+// - seconds x RippleParams.z, o3.w = occlusion (the vertex colour's alpha, OcclusionInfo.w recorded 0). The
+// pixel program (decoded in work/map2/pond/pond_rule.md): three taps of WaveSampler (.y / .w) at 4 x, 1 x and
+// 8 x the coordinates make a normal, flattened to 0.13 n + 0.87 up; sun = 2 x collector; lit = D x (ambient x
+// occ + gLightColor x n.l x sun x occ) + (r.v)^SpecularExponent x SpecularIntensity x sat(4 n.l) x mix(gLightColor,
+// D, SpecularColorMixer) x (sun x occ)^3; out = 0.7 lit + 0.3 x (1 - n.v)^4 x occ x sun x ReflectionSampler (at the
+// screen place + 0.2 x the normal's x / z); alpha = gLightAmbient.w x gInvColorExpBias.x x 0.4, i.e. 0.4 once the
+// scene target's bias 4 (x 16) is applied - the port's target has none: x 16 here.
+// DiffuseSampler gamma-decoded by its fetch constant (word 0 0x810000fe: x y z gamma); WaveSampler as
+// stored (0x82000002: no gamma), the batch's third texture, a raw copy (world.rs `upload`) - the sea's map.
+fn xs_pond_s0(uv: vec2<f32>) -> vec4<f32> {
+    let t = textureSample(t_diffuse, s_diffuse, uv);
+    if (xenos_gamma_on()) { return vec4<f32>(xenos_gamma(t.rgb), t.a); }
+    return t;
+}
+fn xs_pond_s1(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(t_third, s_diffuse, uv);
+}
+// ReflectionSampler: the picture the road and the sea read (the same render target in the recording:
+// base 0x05ac3000 for the pond's s2 and the road's s4), at the screen place; without it the stand-in
+var<private> xs_pond_refl: vec3<f32>;
+fn xs_pond_s2(uv: vec2<f32>) -> vec4<f32> {
+    if (g.collector.w > 0.5) {
+        return vec4<f32>(textureSampleLevel(t_refl, s_env, uv, 0.0).rgb, 1.0);
+    }
+    return vec4<f32>(xs_pond_refl, 1.0);
+}
+// ShadowCollectorSampler: the screen-space sun visibility, stored halved (as the road's)
+var<private> xs_pond_sun: f32;
+fn xs_pond_s13_off(uv: vec2<f32>, texels: vec2<f32>) -> vec4<f32> {
+    return vec4<f32>(xs_pond_sun * 0.5);
+}
+// rgb and the blend alpha (0 = the programs are missing: xs.rs's stub)
+fn pond_program(in: VsOut, sun: f32) -> vec4<f32> {
+    // VSCityPondWater: c8 .. c11 world x view x projection, c56 OcclusionInfo (only o3.w, not read by the
+    // pixel program), c63 ShaderGlobals (y: the clock - recorded 72.3), c73 RippleParams (1, 0.1, 0.1, 0:
+    // every CityPondWater material of the city)
+    xs_c[8] = g.view_proj[0];
+    xs_c[9] = g.view_proj[1];
+    xs_c[10] = g.view_proj[2];
+    xs_c[11] = g.view_proj[3];
+    xs_c[56] = vec4<f32>(g.ambient_ground.y, 0.05, 1.0, g.grade.w);
+    xs_c[63] = vec4<f32>(g.sun_color.w, g.cloud_shade.a / 0.0022, 0.2, 3.0);
+    xs_c[73] = vec4<f32>(1.0, 0.1, 0.1, 0.0);
+    var vin: array<vec4<f32>, 16>;
+    vin[0] = vec4<f32>(in.wpos, 1.0);
+    vin[1] = in.color;
+    vin[2] = vec4<f32>(in.uv0, 0.0, 0.0);
+    let vs = xs_pond_vs(vin);
+    // PSCityPondWater: c15 the camera, c16 gLightPosDir, c26 gLightAmbient, c27 gInvColorExpBias, c39
+    // gLightColor, c63 ShaderGlobals, c100 SpecularExponent 8, c101 SpecularIntensity 0.33, c102
+    // SpecularColorMixer 0.7, c103 RippleParams (the material's values, recorded so)
+    xs_c[15] = vec4<f32>(g.cam_pos.xyz, 1.0);
+    xs_c[16] = vec4<f32>(-g.sun_dir.xyz, 100.0);
+    xs_c[26] = vec4<f32>(g.ambient_sky.rgb, 1.0);
+    xs_c[27] = vec4<f32>(0.0625, 0.0, 1.875, 0.0);
+    xs_c[39] = vec4<f32>(g.sun_color.rgb * g.sun_dir.w, -1.0);
+    xs_c[100] = vec4<f32>(8.0, 0.0, 0.0, 0.0);
+    xs_c[101] = vec4<f32>(0.33, 0.0, 0.0, 0.0);
+    xs_c[102] = vec4<f32>(0.7, 0.0, 0.0, 0.0);
+    xs_c[103] = vec4<f32>(1.0, 0.1, 0.1, 0.0);
+    xs_pond_sun = sun;
+    xs_pond_refl = env_color(reflect(normalize(in.wpos - g.cam_pos.xyz), vec3<f32>(0.0, 1.0, 0.0)));
+    let c = xs_pond_ps(vs.o);
+    return vec4<f32>(max(c.rgb, vec3<f32>(0.0)), clamp(c.a * 16.0, 0.0, 1.0));
+}
+
 fn vs_body(in: VsIn) -> VsOut {
     var o: VsOut;
     var lp = in.pos;
@@ -4310,6 +4382,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // without the reflection picture - the stand-in.)
     if (mat.mode == 27u || mat.mode == 28u) {
         lit = water_program(in);
+    }
+    // The pond water (world.rs `mark_pond`: uv2.x = POND_MARK in the blended mode): the game's own programs
+    // (pond_program above) by day in the main view; run for every blended pixel (the samples need uniform
+    // control flow) and kept on the marked ones. At night (the effect's PSMultiLight, not recorded) and in
+    // the cars' map (VSCityPondWaterEnv) the generic blended rule as before. Diagnostics 755: as before.
+    if (mat.mode == 2u && g.tone.w < 0.5 && g.moon_dir.w < 0.5 && !(g.params.w > 754.5 && g.params.w < 755.5)) {
+        let pw = pond_program(in, shadow);
+        if (in.uv2.x < -55000.0 && in.uv2.x > -56000.0 && pw.a > 0.0) {
+            lit = pw.rgb;
+            alpha = pw.a;
+            // (756: the water left out - the basin floor alone; 757: the water opaque)
+            if (g.params.w > 755.5 && g.params.w < 756.5) { alpha = 0.0; }
+            if (g.params.w > 756.5 && g.params.w < 757.5) { alpha = 1.0; }
+        }
     }
     // (diagnostics 220 - 232, walls, run with --no-post - the terms of the night sum as plain numbers,
     // work/lighting/gw_*.py: 220 a calibration colour, 221 occlusion / grime alpha / night alpha, 222 the

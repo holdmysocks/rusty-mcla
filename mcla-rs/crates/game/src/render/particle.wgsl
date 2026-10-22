@@ -220,7 +220,10 @@ fn vert_lit(wp: vec3<f32>, n: vec3<f32>, v: vec4<f32>, ec: vec3<f32>, fill: vec3
     // (sat(n.l x (1 - gTranslucency) + gTranslucency): r13.x = adds_prev(1) after maxs(-gTranslucency))
     // (gLightPosDir c16: towards the sun for LightingMode 2 and up, else (0, -1, 0) - `sun_way`)
     let l0 = select(vec3<f32>(0.0, -1.0, 0.0), g.sun_dir.xyz, sun_way > 0.5);
-    var dl = g.sun_color.rgb * g.sun_dir.w * clamp(dot(n, l0) * (1.0 - v.w) + v.w, 0.0, 1.0);
+    // (night - after 18:00 or before 06:00 - `sub_822F5D98` sets light 0's colour to zero: no key term,
+    // as recorded (c39 = 0 on every particle draw of the night burnout))
+    let day = g.sun_color.w >= 6.0 && g.sun_color.w <= 18.0;
+    var dl = select(vec3<f32>(0.0), g.sun_color.rgb * g.sun_dir.w * clamp(dot(n, l0) * (1.0 - v.w) + v.w, 0.0, 1.0), day);
     // (night: the light picker's own test - after 18:00 or before 06:00 (obj +14568 / +14564, read
     // live: 18, 6); its third case, the interior flag the garage scenes set (`sub_82304648`),
     // has no lit particle to apply to)

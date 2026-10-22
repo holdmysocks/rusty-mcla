@@ -71,11 +71,43 @@ pub struct FragGroup {
 
 #[derive(Debug, Clone, Default)]
 pub struct FragChild {
+    /// +0x0e: its bone of the skeleton (-1: none)
+    pub bone: i16,
+    /// +0xa0 / +0xa4: the effects played when its group breaks off / when it first comes off its
+    /// standing instance (work/map2/colfx/prop_hit_fx_rule.md)
+    pub break_events: Vec<PropEvent>,
+    pub break_root_events: Vec<PropEvent>,
     pub mass: f32,
     pub damaged_mass: f32,
     pub group: u8,
     pub inertia: [f32; 3],
     pub damaged_inertia: [f32; 3],
+}
+
+/// An `evtInstancePtfx` of a prop's fragment type (class 0x680940): the effect it starts, where
+/// (in the frame it is played in) and from what relative speed on.
+#[derive(Debug, Clone, Default)]
+pub struct PropEvent {
+    /// +0x30
+    pub effect: String,
+    /// +0x20
+    pub offset: [f32; 3],
+    /// +0xac
+    pub min_speed: f32,
+}
+
+/// The events of an `evtSet` (+04 -> event pointers, +08 u16 count); only the particle effect events.
+fn event_set(rd: &Rd, set: Option<usize>) -> Vec<PropEvent> {
+    let mut out = Vec::new();
+    let Some(set) = set else { return out };
+    let (Some(arr), n) = (rd.ptr(set + 4), rd.u16(set + 8) as usize) else { return out };
+    for k in 0..n.min(16) {
+        let Some(e) = rd.ptr(arr + k * 4) else { continue };
+        if rd.vtable(e) == 0x0068_0940 {
+            out.push(PropEvent { effect: cstr(rd, e + 0x30), offset: v3(rd, e + 0x20), min_speed: rd.f32(e + 0xac) });
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Default)]
@@ -103,6 +135,11 @@ pub struct FragType {
     pub elasticity: f32,
     pub cg_shift: [f32; 3],
     pub damping: [[f32; 3]; 6],
+    /// +0x10c: the effects played on every impact report of the prop (closing speed > 0.1)
+    pub type_events: Vec<PropEvent>,
+    /// the skeleton's bones in the type's frame, as it stands unposed (drawable +0x0c: matrices +0x10, count +0x14,
+    /// parents +0x04; rows x y z and the place): what a break event follows
+    pub bones: Vec<[[f32; 3]; 4]>,
     pub groups: Vec<FragGroup>,
     pub children: Vec<FragChild>,
     pub archetype: FragArchetype,
@@ -183,6 +220,33 @@ fn bound_at(rd: &Rd, o: usize) -> FragBound {
     b
 }
 
+/// The unposed skeleton of a fragment type: the local matrices carried up the parent chain.
+fn bones_of(rd: &Rd, fr: usize) -> Vec<[[f32; 3]; 4]> {
+    let Some(lod) = rd.ptr(fr + 0xb4).and_then(|d| rd.ptr(d + 0x0c)) else { return Vec::new() };
+    let (Some(mats), Some(par), n) = (rd.ptr(lod + 0x10), rd.ptr(lod + 4), rd.u16(lod + 0x14) as usize) else { return Vec::new() };
+    if n == 0 || n > 256 || !rd.has(mats, n * 64) || !rd.has(par, n * 4) {
+        return Vec::new();
+    }
+    let local = |i: usize| -> [[f32; 3]; 4] { [v3(rd, mats + i * 64), v3(rd, mats + i * 64 + 16), v3(rd, mats + i * 64 + 32), v3(rd, mats + i * 64 + 48)] };
+    // (row convention: a point is carried by the bone's matrix, then by its parent's)
+    let mul = |a: &[[f32; 3]; 4], b: &[[f32; 3]; 4]| -> [[f32; 3]; 4] {
+        let rot = |v: [f32; 3]| -> [f32; 3] { [v[0] * b[0][0] + v[1] * b[1][0] + v[2] * b[2][0], v[0] * b[0][1] + v[1] * b[1][1] + v[2] * b[2][1], v[0] * b[0][2] + v[1] * b[1][2] + v[2] * b[2][2]] };
+        let t = rot(a[3]);
+        [rot(a[0]), rot(a[1]), rot(a[2]), [t[0] + b[3][0], t[1] + b[3][1], t[2] + b[3][2]]]
+    };
+    let mut world: Vec<Option<[[f32; 3]; 4]>> = vec![None; n];
+    fn resolve(i: usize, n: usize, rd: &Rd, par: usize, local: &dyn Fn(usize) -> [[f32; 3]; 4], mul: &dyn Fn(&[[f32; 3]; 4], &[[f32; 3]; 4]) -> [[f32; 3]; 4], world: &mut Vec<Option<[[f32; 3]; 4]>>, depth: usize) -> [[f32; 3]; 4] {
+        if let Some(w) = world[i] {
+            return w;
+        }
+        let p = rd.u32(par + i * 4) as usize;
+        let w = if p >= n || p == i || depth > 64 { local(i) } else { mul(&local(i), &resolve(p, n, rd, par, local, mul, world, depth + 1)) };
+        world[i] = Some(w);
+        w
+    }
+    (0..n).map(|i| resolve(i, n, rd, par, &local, &mul, &mut world, 0)).collect()
+}
+
 /// Every fragment type of the prop file.
 pub fn parse_frag_types(res: &Resource) -> Vec<FragType> {
     let rd = Rd::new(res);
@@ -204,6 +268,8 @@ pub fn parse_frag_types(res: &Resource) -> Vec<FragType> {
         for k in 0..6 {
             t.damping[k] = v3(&rd, fr + 0x50 + 16 * k);
         }
+        t.type_events = event_set(&rd, rd.ptr(fr + 0x10c));
+        t.bones = bones_of(&rd, fr);
         let (ng, nc) = (rd.u8(fr + 0x12e) as usize, rd.u8(fr + 0x12f) as usize);
         if let Some(g) = rd.ptr(fr + 0xd0) {
             for k in 0..ng {
@@ -234,6 +300,9 @@ pub fn parse_frag_types(res: &Resource) -> Vec<FragType> {
                     continue;
                 };
                 t.children.push(FragChild {
+                    bone: rd.u16(o + 0x0e) as i16,
+                    break_events: event_set(&rd, rd.ptr(o + 0xa0)),
+                    break_root_events: event_set(&rd, rd.ptr(o + 0xa4)),
                     mass: rd.f32(o + 4),
                     damaged_mass: rd.f32(o + 8),
                     group: rd.u8(o + 12),
@@ -287,4 +356,38 @@ pub fn parse_frag_instances(res: &Resource) -> Vec<FragInstance> {
         out.push(FragInstance { frag, matrix: [v3(&rd, o + 0x10), v3(&rd, o + 0x20), v3(&rd, o + 0x30), v3(&rd, o + 0x40)], state: rd.u32(o + 0x80) });
     }
     out
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+
+    /// The event sets of the prop types (work/map2/colfx/props_events.txt): the hydrant's water on the break of its
+    /// body, the poles' sparks from 5 m/s on, the meter's coins as it comes off its post, the gas pump's explosion.
+    #[test]
+    fn prop_events_of_the_types() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        if d.len() < 16 || &d[0..4] != b"MCLR" {
+            return;
+        }
+        let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u(12) as usize).min(data.len());
+        let res = Resource { rtype: u(4), flags: u(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let types = parse_frag_types(&res);
+        let of = |n: &str| types.iter().find(|t| t.name == n).unwrap();
+        let h = of("la_prop_fire_hydrant_01x");
+        assert!(h.type_events.is_empty() && h.children.len() == 3);
+        assert_eq!((h.children[1].break_events.len(), h.children[1].break_events[0].effect.as_str(), h.children[1].break_events[0].offset, h.children[1].break_events[0].min_speed), (1, "water_hydrant", [0.0; 3], 0.0));
+        assert!(h.children[0].break_events.is_empty() && h.children[2].break_events.is_empty());
+        assert_eq!((h.children[0].bone, h.children[1].bone, h.bones.len()), (0, 1, 2));
+        assert!(h.bones.iter().all(|b| b[3] == [0.0; 3] && b[0] == [1.0, 0.0, 0.0] && b[1] == [0.0, 1.0, 0.0]));
+        let pole = of("la_prop_static_frwy_green_01x");
+        assert_eq!((pole.type_events.len(), pole.type_events[0].effect.as_str(), pole.type_events[0].offset, pole.type_events[0].min_speed), (1, "col_metal_pole", [0.0, 0.2, 0.0], 5.0));
+        assert_eq!(of("l_prop_parkingmeter_01x").children[1].break_root_events[0].effect, "coin");
+        assert_eq!(of("la_prop_gas_pump_76_01x").children[1].break_root_events[0].effect, "exp_gas_station");
+        // 45 light / signal types play col_metal_pole on a hit
+        assert!(types.iter().filter(|t| t.type_events.first().is_some_and(|e| e.effect == "col_metal_pole")).count() >= 40);
+    }
 }

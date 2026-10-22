@@ -269,6 +269,9 @@ pub mod flag {
     pub const USE_DIRECTIONAL_IDENTITY: u32 = 1 << 28;
     /// DrawDirectional: the side is direction x `Sprite::axis` (not x the way to the camera)
     pub const ALIGN_TO_AXIS: u32 = 1 << 30;
+    /// UseParticleTrails: a strip along the particle's last positions instead of the sprite
+    /// (`sub_824BC788`; `Sprite::trail`)
+    pub const USE_PARTICLE_TRAILS: u32 = 1 << 31;
 }
 
 /// `ptxRenderState` (`ptxRule` +100).
@@ -316,7 +319,8 @@ pub struct Sprite {
     pub directional_vel: Keyframe,
     /// `TextureAnimRateKF`: x..y frames a second
     pub tex_anim_rate: Keyframe,
-    /// `TrailPropsKF` (read, not decoded)
+    /// `TrailPropsKF`: x..y the trail's length (m), z..w its number of points (at least 3), by
+    /// one random number of the particle, on the emitter's time (`sub_824BD930`, `sub_824BC788`)
     pub trail: Keyframe,
     /// +678 shader data: the effect file, its technique and the sprite's texture
     pub shader: String,
@@ -338,20 +342,45 @@ pub struct ModelDrawable {
     /// diffuse texture of its first shader and the part of it the model shows (u0, v0, u1, v1)
     pub texture: String,
     pub uv: [f32; 4],
+    /// the geometry of its first level of detail (drawable +0x40; all 13 have LOD 0 only, one
+    /// `mc4_rmptfx_model` shader each), every geometry of it in one triangle list
+    pub mesh: ModelMesh,
 }
 
-/// What a `ptxModel` adds to the rule.
+/// The triangles of a model particle's drawable, in the drawable's own frame.
+#[derive(Debug, Clone, Default)]
+pub struct ModelMesh {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub uv: Vec<[f32; 2]>,
+    /// the vertex colour's four bytes as stored (`Mesh::colors`); 255s where the geometry has none
+    pub colors: Vec<[u8; 4]>,
+    pub indices: Vec<u32>,
+}
+
+/// What a `ptxModel` adds to the rule (`sub_824B5BA8` birth, `sub_824B7930` step,
+/// `sub_824B6E40` draw; `work/map2/model/model_particle_rule.md`).
 #[derive(Debug, Clone)]
 pub struct Model {
     pub drawables: Vec<ModelDrawable>,
-    /// `SizeMin` / `SizeMax`: scale of the model (x, y, z) over the particle's life
+    /// `SizeMin` / `SizeMax` (PL+0x31c / +0x350): scale of the model (x, y, z) over the particle's life
     pub size_min: Keyframe,
     pub size_max: Keyframe,
-    /// `InitialRotationMin` / `Max` (degrees about x, y, z), `InitRotationSpeed`, `RotationSpeed`
+    /// `InitialRotationMin` / `Max` (PL+0x454 / +0x488, the parser's names): the code takes them
+    /// as the SPIN AXIS - x, y, z each between the two by a fresh random number, then normalised
     pub init_rotation_min: Keyframe,
     pub init_rotation_max: Keyframe,
+    /// `InitRotationSpeed` (PL+0x4bc, x..y turns a second, keyed on the emitter's time), the spin
+    /// at birth; `RotationSpeed` (PL+0x4f0, x..y turns a second over the life) added every step
     pub init_rotation_speed: Keyframe,
     pub rotation_speed: Keyframe,
+    /// `InitialThetaMin` / `Max` (PL+0x384 / +0x3b8, degrees about x, y, z, keyed on the emitter's
+    /// time): the Euler angles at birth
+    pub init_theta_min: Keyframe,
+    pub init_theta_max: Keyframe,
+    /// `ThetaMin` (PL+0x3ec, degrees, keyed on the emitter's time): added to the Euler angles at
+    /// every draw (ThetaMax is read but its lerp factor is the constant 0.0)
+    pub theta_min: Keyframe,
 }
 
 /// `ptxRule` (`ptxSprite` / `ptxModel`, 1696 bytes): how a particle looks and moves.
@@ -383,12 +412,22 @@ pub struct ParticleRule {
     pub velocity_noise: Keyframe,
     /// `WindInfluenceKF` x..y: share of the wind the particle takes
     pub wind_influence: Keyframe,
+    /// +114 `PhysicalRange` (-1: every particle within the effect's collision polygons' reach; 0:
+    /// no collision; else the range in metres), +118 `StopVel`, +132 / +133 `PercentPhysical` /
+    /// `PercentKill` (per cent; `flags` bit 0 enables the kill), `CollisionVelDmpKF` (per cent
+    /// lost) and `CollisionImpVarKF` (`work/map2/trail/trail_collision_rule.md` 1)
+    pub physical_range: f32,
+    pub stop_vel: f32,
+    pub percent_physical: u8,
+    pub percent_kill: u8,
+    pub vel_dmp: Keyframe,
+    pub imp_var: Keyframe,
     pub sprite: Option<Sprite>,
     pub model: Option<Model>,
 }
 
 fn parse_model_drawable(rd: &Rd, name: String, dr: Option<usize>) -> ModelDrawable {
-    let mut d = ModelDrawable { name, min: Vec3::ZERO, max: Vec3::ZERO, texture: String::new(), uv: [0.0, 0.0, 1.0, 1.0] };
+    let mut d = ModelDrawable { name, min: Vec3::ZERO, max: Vec3::ZERO, texture: String::new(), uv: [0.0, 0.0, 1.0, 1.0], mesh: ModelMesh::default() };
     let Some(dr) = dr else { return d };
     let v = |k: usize| Vec3::new(rd.f32(dr + k), rd.f32(dr + k + 4), rd.f32(dr + k + 8));
     d.min = v(0x20);
@@ -424,6 +463,15 @@ fn parse_model_drawable(rd: &Rd, name: String, dr: Option<usize>) -> ModelDrawab
                         lo = lo.min(*uv);
                         hi = hi.max(*uv);
                     }
+                    // (the triangles, appended to those of the geometries before)
+                    let n = mesh.positions.len();
+                    let base = d.mesh.positions.len() as u32;
+                    let mm = &mut d.mesh;
+                    mm.positions.extend(mesh.positions.iter().map(|p| p.to_array()));
+                    mm.normals.extend((0..n).map(|i| mesh.normals.get(i).map_or([0.0, 0.0, 1.0], |v| v.to_array())));
+                    mm.uv.extend((0..n).map(|i| mesh.uv0.get(i).map_or([0.0, 0.0], |v| v.to_array())));
+                    mm.colors.extend((0..n).map(|i| mesh.colors.get(i).copied().unwrap_or([255; 4])));
+                    mm.indices.extend(mesh.indices.iter().filter(|&&k| (k as usize) < n).map(|k| k + base));
                 }
             }
         }
@@ -455,7 +503,18 @@ impl ParticleRule {
                     drawables.push(parse_model_drawable(rd, rd.cstr_ptr(arr + i * 8).unwrap_or_default(), rd.ptr(arr + i * 8 + 4)));
                 }
             }
-            model = Some(Model { drawables, size_min: kf(0x31c), size_max: kf(0x350), init_rotation_min: kf(0x454), init_rotation_max: kf(0x488), init_rotation_speed: kf(0x4bc), rotation_speed: kf(0x4f0) });
+            model = Some(Model {
+                drawables,
+                size_min: kf(0x31c),
+                size_max: kf(0x350),
+                init_rotation_min: kf(0x454),
+                init_rotation_max: kf(0x488),
+                init_rotation_speed: kf(0x4bc),
+                rotation_speed: kf(0x4f0),
+                init_theta_min: kf(0x384),
+                init_theta_max: kf(0x3b8),
+                theta_min: kf(0x3ec),
+            });
         } else {
             let sh = o + 0x678;
             let mut texture = String::new();
@@ -526,6 +585,12 @@ impl ParticleRule {
             position_noise: kf(0x1e4),
             velocity_noise: kf(0x218),
             wind_influence: kf(0x2b4),
+            physical_range: rd.f32(o + 0x114),
+            stop_vel: rd.f32(o + 0x118),
+            percent_physical: rd.u8(o + 0x132),
+            percent_kill: rd.u8(o + 0x133),
+            vel_dmp: kf(0x24c),
+            imp_var: kf(0x280),
             sprite,
             model,
         }
@@ -952,7 +1017,36 @@ mod tests {
         assert_eq!(litter.events.len(), 3);
         let EventKind::Emitter { particle, .. } = &litter.events[1].kind else { panic!() };
         let m = fx.particle_rules[particle.unwrap()].model.as_ref().unwrap();
-        assert!(m.drawables.iter().any(|d| d.name == "flyer_la" && d.texture.starts_with("flyers") && d.max.x > 0.1 && d.uv[2] - d.uv[0] < 0.9), "{:?}", m.drawables);
+        assert!(m.drawables.iter().any(|d| d.name == "flyer_la" && d.texture.starts_with("flyers") && d.max.x > 0.1 && d.uv[2] - d.uv[0] < 0.9), "{:?}", m.drawables.iter().map(|d| &d.name).collect::<Vec<_>>());
+        // every model particle's drawable has its triangles, and the rules their orientation keys
+        for r in fx.particle_rules.iter().filter(|r| r.model.is_some()) {
+            let m = r.model.as_ref().unwrap();
+            for d in &m.drawables {
+                let mm = &d.mesh;
+                assert!(!mm.indices.is_empty() && mm.indices.len() % 3 == 0 && mm.normals.len() == mm.positions.len() && mm.uv.len() == mm.positions.len(), "{} {}", r.name, d.name);
+                if std::env::var("MCLA_MODEL_DUMP").is_ok() {
+                    let c0 = mm.colors.first().copied().unwrap_or([0; 4]);
+                    let cmin = (0..4).map(|k| mm.colors.iter().map(|c| c[k]).min().unwrap_or(0)).collect::<Vec<_>>();
+                    eprintln!("{} {}: {} verts {} tris tex {} box {:?}..{:?} colour first {:?} min {:?} n0 {:?}", r.name, d.name, mm.positions.len(), mm.indices.len() / 3, d.texture, d.min, d.max, c0, cmin, mm.normals[0]);
+                }
+            }
+            if std::env::var("MCLA_MODEL_DUMP").is_ok() {
+                eprintln!("{} flags {:#x}: theta {:?}..{:?} theta_min {:?} axis {:?}..{:?} speed {:?} rs {:?} size {:?}..{:?} damp w {:?}", r.name, r.flags, m.init_theta_min.eval(0.0), m.init_theta_max.eval(0.0), m.theta_min.eval(0.0), m.init_rotation_min.eval(0.0), m.init_rotation_max.eval(0.0), m.init_rotation_speed.eval(0.0), m.rotation_speed.eval(0.0), m.size_min.eval(0.5), m.size_max.eval(0.5), r.damp_min.eval(0.0)[3]);
+            }
+        }
+        if std::env::var("MCLA_MODEL_DUMP").is_ok() {
+            let hw = &fx.effects[fx.effect("wind_debris_hw").unwrap()];
+            eprintln!("wind_debris_hw zoom keys {:?} evo names {:?}", hw.zoom.keys, hw.evo_names);
+            for ev in &hw.events {
+                if let EventKind::Emitter { emit: Some(e), particle: Some(p), zoom, .. } = &ev.kind {
+                    let er = &fx.emit_rules[*e];
+                    eprintln!("  {} / {}: event zoom {:?} size_ot keys {:?} evo {:?}", er.name, fx.particle_rules[*p].name, zoom, er.size_ot.keys, ev.evo.as_ref().map(|g| (&g.names, g.props.iter().map(|q| (q.list, q.prop, q.mode)).collect::<Vec<_>>())));
+                }
+            }
+        }
+        let paper = &fx.particle_rules[fx.particle_rules.iter().position(|r| r.name == "wind_debris_paper").unwrap()];
+        let m = paper.model.as_ref().unwrap();
+        assert!(near(m.init_theta_min.eval(0.0)[0], 79.5) || m.init_theta_min.eval(0.0)[0] > 70.0, "{:?}", m.init_theta_min.eval(0.0));
     }
 
     #[test]

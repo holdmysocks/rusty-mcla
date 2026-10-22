@@ -1,7 +1,7 @@
 //! The "Translate shaders" stage: the sky, road and ocean programs of the original game, translated to WGSL on the user's machine.
 //!
 //! The translator is the crate `mcla-shaders`; this module is the pipeline side: the executable's Perlin effect is cut out of the disc's
-//! `default.xex` once (the other four effect files were extracted from the archive by the extract stage), the eight `xs_*.wgsl` files are
+//! `default.xex` once (the other four effect files were extracted from the archive by the extract stage), the nine `xs_*.wgsl` files are
 //! written below `data/cache/shaders_wgsl/`, and their SHA-256 values go into `manifest.local.json` so verify can tell a changed file.
 
 use crate::error::{ErrorKind, InstallError, IoCtx, Result};

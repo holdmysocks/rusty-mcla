@@ -1200,7 +1200,7 @@ impl Gpu {
         let identity_obj = make_object_binding(&device, &obj_layout, &ObjectUniform::default(), &blank_dmg);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("city"),
-            source: wgpu::ShaderSource::Wgsl(paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl")].concat()).into()),
+            source: wgpu::ShaderSource::Wgsl(paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat()).into()),
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("city pl"),

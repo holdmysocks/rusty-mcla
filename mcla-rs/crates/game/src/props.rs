@@ -323,6 +323,11 @@ pub struct Props {
     pub signals: crate::signals::Signals,
     /// prop impacts of this frame (for the sound driver)
     pub hits: Vec<crate::sound::PropHit>,
+    /// the effects the props' events start this tick (the type collision sets of the posts, the deflection pass;
+    /// propfx.rs plays them)
+    pub fx: Vec<crate::physics::loose::FxPlay>,
+    /// the colliders whose deflection event has played in this pass (prop +88 = 0; restored when the car is out of reach)
+    defl_done: std::collections::HashSet<u32>,
     /// props knocked over so far (stat)
     pub knocked: u32,
     rng: u32,
@@ -566,7 +571,7 @@ fn prop_mode(shader: &str) -> MatMode {
 
 impl Props {
     pub fn empty() -> Props {
-        Props { impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
+        Props { impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
     }
 
     pub fn load(gpu: &mut Gpu, world: &mut World, data_dir: &str) -> Props {
@@ -1329,17 +1334,19 @@ impl Props {
             SignalGlows { lit: Vec::new(), buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
         };
         let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types);
-        Props { impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
+        Props { impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
     }
 
     /// Keep the effects of the particle props near the camera playing, and the litter on the
     /// wind at the player's car (call once a tick).
-    pub fn emit(&self, fx: &mut crate::particles::Particles, cam: Vec3, tick: u64, player: Option<(Vec3, Vec3)>) {
+    pub fn emit(&self, fx: &mut crate::particles::Particles, cam: Vec3, tick: u64, player: Option<(Vec3, Vec3, Quat)>, stormy: f32) {
         // Wind debris: while the player's car is within 20 m of a trash rail the original runs
         // the effect of the rail's group on the car (`wind_debris_hw` / `_la` / `_beach`: flyers,
-        // papers and leaves let out in a box ahead of it). Played from the effect rules; a thin
-        // pale dust stands in when they cannot be.
-        if let Some((pos, vel)) = player {
+        // papers and leaves let out in a box ahead of it - `sub_822F0A38`, rule
+        // `docs/reference/map/litter_evo_rule.md`): only while the Stormy weather's weight is exactly
+        // 0, attached to the car's own matrix (`sub_8247A128`, mode 2), evolution "speed" =
+        // clamp(|v| / 90, 0, 1) every frame (`sub_82376C80` 0x823777A8); no stand-in
+        if let Some((pos, vel, rot)) = player.filter(|_| stormy == 0.0) {
             let near = |a: Vec3, b: Vec3| {
                 let ab = b - a;
                 let t = ((pos - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
@@ -1347,11 +1354,8 @@ impl Props {
             };
             let rail = self.emitters.iter().find(|e| e.1 == EMIT_RAIL && e.3.first().is_some_and(|f| near(e.0, f.1))).map(|e| e.3[0].0);
             // (the effect's frame is the car's: -z ahead)
-            let dir = Vec3::new(vel.x, 0.0, vel.z).normalize_or_zero();
-            let played = rail.is_some_and(|h| fx.play(u64::MAX, h, pos, if dir != Vec3::ZERO { Quat::from_rotation_arc(Vec3::NEG_Z, dir) } else { Quat::IDENTITY }, vel, 0.0));
-            if !played && tick % 4 == 0 && vel.length() > 6.0 && (rail.is_some() || self.trash.iter().any(|(a, b)| near(*a, *b))) {
-                let side = Vec3::new(-vel.z, 0.0, vel.x).normalize_or_zero() * (((tick / 4) % 5) as f32 - 2.0);
-                fx.dust(pos - vel.normalize_or_zero() * 3.0 + side, vel * 0.5, 0.3, [0.78, 0.76, 0.7]);
+            if let Some(h) = rail {
+                fx.play_evo(u64::MAX, h, pos, rot, false, vel, 0.0, &[("speed", (vel.length() / 90.0).clamp(0.0, 1.0))]);
             }
         }
         for (i, (pos, kind, rot, effects)) in self.emitters.iter().enumerate() {
@@ -1822,6 +1826,10 @@ impl Props {
     /// Collide the active cars with the props around them and advance knocked-over props.
     pub fn collide(&mut self, gpu: &Gpu, world: &World, cars: &mut [crate::vehicles::CarInstance], dt: f32) {
         self.hits.clear();
+        self.fx.clear();
+        // (the type's event set of a collider: the fragment type of its name, `FragType::type_events`)
+        let loose_types = world.collider.loose.clone();
+        let type_events = |audio: u32| loose_types.as_ref().and_then(|l| l.types.iter().find(|t| mcla_formats::hash::joaat(&t.name) == audio)).map(|t| t.type_events.clone()).unwrap_or_default();
         // (a level without the props - MCLA_NO_LOOSE_PHYSICS, the torn-off bumpers' alone - leaves them to this file)
         self.level_on = world.collider.loose.as_ref().is_some_and(|l| !l.instances.is_empty());
         if self.colliders.is_empty() || dt <= 0.0 {
@@ -1887,6 +1895,23 @@ impl Props {
                             if dist > 1e-3 && dist < c.foot.wide * c.scale + ext(d3 / dist) {
                                 let dn = d3 / dist;
                                 let closing = v.dot(dn);
+                                // (the deflection pass's event, `sub_823344C8` 0x82334B98: once a pass, the type set's event 0 at the
+                                // prop's matrix x its offset, the car's velocity; no speed test. The pass is armed again when the car
+                                // is out of reach, 0x82334948.)
+                                {
+                                    let l0 = (d3 - v * (v.dot(d3) / v.length_squared().max(1e-6))).normalize_or_zero();
+                                    let reach = (closing * 0.5).max(2.0 * (ext(l0) + c.foot.half.x * c.scale + 0.1));
+                                    if dist <= reach && v.length() >= if human { 25.0 } else { 0.0 } {
+                                        if self.defl_done.insert(ci) {
+                                            if let Some(e) = type_events(c.foot.audio).first() {
+                                                let at = c.pos + c.rot * Vec3::from(e.offset);
+                                                self.fx.push(crate::physics::loose::FxPlay { effect: e.effect.clone(), at: crate::physics::loose::FxAt::World(at), vel: st.vel });
+                                            }
+                                        }
+                                    } else if dist > reach {
+                                        self.defl_done.remove(&ci);
+                                    }
+                                }
                                 let l = (d3 - v * (v.dot(d3) / v.length_squared().max(1e-6))).normalize_or_zero();
                                 let clear = ext(l) + c.foot.half.x * c.scale + 0.1;
                                 if dist <= (closing * 0.5).max(2.0 * clear) && v.length() >= if human { 25.0 } else { 0.0 } {
@@ -1950,6 +1975,19 @@ impl Props {
                             st.correct_position(n3 * depth);
                             if vn < -1.5 {
                                 self.hits.push(crate::sound::PropHit { pos: c.pos, kind: c.foot.snd, model: c.foot.audio, speed: -vn, knocked: false });
+                            }
+                            if -vn > 0.1 {
+                                // (the impact report, `sub_82489EE8`: the type's events from their least speed, at the point on the prop
+                                // nearest the car (its box's face along the normal, at the car's height) + the offset; I: the original's
+                                // contact point is the hull's)
+                                let ext = (bx.dot(n).abs() * c.foot.half.x + bz.dot(n).abs() * c.foot.half.y) * c.scale;
+                                let y = (st.pos.y + 0.5).clamp(c.pos.y, c.pos.y + c.foot.height * c.scale);
+                                let pt = Vec3::new(cb.x + n.x * ext, y, cb.y + n.y * ext);
+                                for e in type_events(c.foot.audio) {
+                                    if -vn >= e.min_speed {
+                                        self.fx.push(crate::physics::loose::FxPlay { effect: e.effect.clone(), at: crate::physics::loose::FxAt::World(pt + Vec3::from(e.offset)), vel: Vec3::ZERO });
+                                    }
+                                }
                             }
                             if vn < 0.0 {
                                 let tang = st.vel - n3 * vn;

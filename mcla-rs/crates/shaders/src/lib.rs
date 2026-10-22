@@ -3,7 +3,7 @@
 //! The original game draws its sky dome, the night road and the sea with Xbox 360 shader microcode that sits in the effect files of the
 //! user's disc (and, for the cloud noise pass, inside `default.xex`). The port runs those programs on the GPU as WGSL. The WGSL is a
 //! mechanical translation of the microcode ([`xenos`]), so it is a derivative of the game's data and is NOT part of the source
-//! repository: the installer ([`translate_shaders`], install stage "Translate shaders") writes the eight files below into the user's
+//! repository: the installer ([`translate_shaders`], install stage "Translate shaders") writes the nine files below into the user's
 //! data folder and the game loads them from there at start-up.
 //!
 //! Inputs (relative to the data folder `data/cache`, written by the extract stage): four effect files below `shaders/city/fxl_final/`
@@ -19,8 +19,8 @@ use xenos::{translate, Translated};
 /// Folder (below the data folder) the translated programs are written to and the game reads them from.
 pub const OUT_DIR: &str = "shaders_wgsl";
 
-/// The eight output files, in the order the installer writes them.
-pub const OUTPUTS: [&str; 8] = ["xs_sky.wgsl", "xs_perlin.wgsl", "xs_sky_cheap.wgsl", "xs_sky_env.wgsl", "xs_minisky.wgsl", "xs_road.wgsl", "xs_roadn.wgsl", "xs_water.wgsl"];
+/// The nine output files, in the order the installer writes them.
+pub const OUTPUTS: [&str; 9] = ["xs_sky.wgsl", "xs_perlin.wgsl", "xs_sky_cheap.wgsl", "xs_sky_env.wgsl", "xs_minisky.wgsl", "xs_road.wgsl", "xs_roadn.wgsl", "xs_water.wgsl", "xs_pond.wgsl"];
 
 /// Where the executable's Perlin effect is kept (below the data folder), cut out of `default.xex` by [`cut_exe_effect`].
 pub const EXE_EFFECT: &str = "shaders/exe/exe_82801b00";
@@ -32,6 +32,7 @@ const SKY: &str = "shaders/city/fxl_final/0x29901476";
 const CITY: &str = "shaders/city/fxl_final/0x8667f75a";
 const OCEAN: &str = "shaders/city/fxl_final/0x487d7df0";
 const OCEAN_LOD: &str = "shaders/city/fxl_final/0x25bee0f2";
+const POND: &str = "shaders/city/fxl_final/0x5a516d4c";
 
 /// First line of every translated file.
 const FIRST_LINE: &str = "// GENERATED on this machine from your own game disc by Rusty MCLA (mcla-shaders, install stage \"Translate shaders\") - do not edit, do not share.";
@@ -176,6 +177,27 @@ pub fn build(data: &Path, name: &str) -> Result<String> {
             );
             Ok(format!("{head}\n{}\n{}", vs.wgsl, body))
         }
+        "xs_pond.wgsl" => {
+            // the fountain basins' and ponds' water (effect CityPondWater): VSCityPondWater + PSCityPondWater
+            let fx = read_input(data, POND)?;
+            let vs = tr(out, &fx, "VSCityPondWater", "xs_pond_vs")?;
+            let ps = tr(out, &fx, "PSCityPondWater", "xs_pond_ps")?;
+            let body = word_renamed(&ps.wgsl, |n| format!("xs_pond_s{n}"));
+            let used: Vec<String> = ps.samplers.iter().map(|u| u.replace("xs_s", "xs_pond_s")).collect();
+            let head = format!(
+                "{FIRST_LINE}
+// The game's pond water programs (effect city/0x5a516d4c CityPondWater), microcode instruction by instruction.
+// VSCityPondWater reads constants {}
+// PSCityPondWater reads constants {} and samplers {}
+",
+                cs(&vs.consts),
+                cs(&ps.consts),
+                used.join(" ")
+            );
+            Ok(format!("{head}
+{}
+{}", vs.wgsl, body))
+        }
         _ => {
             // xs_water.wgsl: the detailed sea's vertex program, the LOD sea's, and the pixel program both effects share
             let fx = read_input(data, OCEAN)?;
@@ -228,12 +250,12 @@ pub fn write_output(data: &Path, name: &'static str) -> Result<FileReport> {
     Ok(FileReport { name, bytes: text.len(), written: true })
 }
 
-/// Translate all eight programs of the data folder `data` (`data/cache`) into `data/shaders_wgsl/`.
+/// Translate all nine programs of the data folder `data` (`data/cache`) into `data/shaders_wgsl/`.
 pub fn translate_shaders(data: &Path) -> Result<Vec<FileReport>> {
     OUTPUTS.iter().map(|n| write_output(data, n)).collect()
 }
 
-/// Are all eight output files present and non-empty? (A cheap check for the game's start-up; the installer's verify compares content.)
+/// Are all nine output files present and non-empty? (A cheap check for the game's start-up; the installer's verify compares content.)
 pub fn outputs_present(data: &Path) -> bool {
     OUTPUTS.iter().all(|n| std::fs::metadata(output_path(data, n)).map(|m| m.len() > 0).unwrap_or(false))
 }

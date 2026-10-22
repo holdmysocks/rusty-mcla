@@ -5326,6 +5326,13 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     });
                 }
             }
+            // (the car's underside for the hydrant's water, `sub_822A76B8`: the composite box's floor + 0.2 m, car-local corners
+            // (max.x, min.z) (max.x, max.z) (min.x, max.z) (min.x, min.z) into the world by the car's matrix)
+            st.underside = {
+                let y = car_box.0.y + 0.2;
+                let xf = |x: f32, z: f32| super::loose::xf(&seen, Vec3::new(x, y, z));
+                Some([xf(car_box.1.x, car_box.0.z), xf(car_box.1.x, car_box.1.z), xf(car_box.0.x, car_box.1.z), xf(car_box.0.x, car_box.0.z)])
+            };
             let car_in = super::loose::CarIn { hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: seen, last, speed: speed_in, bound: car_box, wheels: loose_wheels, vel: v_in, touch: (t.s.bound_friction, t.s.bound_elasticity), wiped: vs.wipe.is_some() };
             if let Some(lw) = loose_world {
                 vs.loose.tick += 1;
@@ -5602,6 +5609,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     };
                     vs.loose.amb_dmg.push((uid, side, w));
                 }
+            }
+            // (the props' impact report, slot 25 of a fragment instance: the type's events)
+            if let Some(lw) = world.loose.as_ref() {
+                vs.loose.impact_reports(lw, &out);
             }
             for (l, t) in out.links.iter().zip(out.touches.iter()) {
                 let other = match (l.a, l.b) {

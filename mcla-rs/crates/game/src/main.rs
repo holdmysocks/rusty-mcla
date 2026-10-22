@@ -45,6 +45,8 @@ mod keybinds;
 mod hud;
 mod flash_ui;
 mod particles;
+mod propfx;
+mod modelfx;
 mod tyrefx;
 mod part_audit;
 mod rain;
@@ -248,6 +250,8 @@ struct App {
     fx: particles::Particles,
     /// the tyres' effects of the cars on the original's simulation (tireptx)
     tyre_fx: Option<tyrefx::TyreFx>,
+    /// the effects the props' events start (propfx.rs)
+    propfx: propfx::PropFx,
     peds: peds::Peds,
     roam: roamers::Roamers,
     /// where the car was before it was put into a garage (position, yaw)
@@ -747,6 +751,7 @@ impl App {
             police: police::Police::new(),
             fx: particles::Particles::new(),
             tyre_fx: None,
+            propfx: propfx::PropFx::new(),
             peds: peds::Peds::new(),
             roam: roamers::Roamers::new(),
             garage_return: None,
@@ -4238,7 +4243,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             self.props.update_signals(&gpu, focus, self.vehicles.clock);
             // (the particle props: fountains, steam, smoke - MAP_WORK.md)
-            self.props.emit(&mut self.fx, self.cam.pos, self.tick_no, self.vehicles.player().map(|c| (c.state.pos, c.state.vel)));
+            let stormy = self.weather_weight(sky::Weather::Stormy);
+            self.props.emit(&mut self.fx, self.cam.pos, self.tick_no, self.vehicles.player().map(|c| (c.state.pos, c.state.vel, c.state.rot)), stormy);
             props::set_lens(self.cam.fov_y);
             self.vehicles.hide_player = self.hide_player;
             // (the scene is over: its animated brains are deleted with it, BrainFactory_DeleteBrain)
@@ -5167,15 +5173,75 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         d.glass_fx_seen = n;
                     }
                 }
-                // (a scrape's sparks, damagemap::Sparks: at the point, away from the surface)
+                // (a scrape's sparks, damagemap::Sparks - `sub_82376408`: the effect damage_scrape_sparks at
+                // the point, its z along the contact normal, x = normalize(up x z), y = z x x
+                // (`sub_82202EC0`, up = the identity's row 1), moving with the closing velocity,
+                // evolution "impact" = min(10 x amount, 1); the port's own sparks only when the effect
+                // cannot be played)
+                let scrape_fx = mcla_formats::hash::joaat("damage_scrape_sparks");
                 for c in self.vehicles.cars.iter_mut() {
                     for k in std::mem::take(&mut c.state.dmg.sparks) {
-                        let n = ((k.amount * 10.0).min(1.0) * 12.0) as usize + 2;
-                        self.fx.sparks(k.at, (k.normal * 0.5 - k.rel.normalize_or_zero() * 0.3).normalize_or(Vec3::Y), n);
+                        let z = k.normal.normalize_or(Vec3::Y);
+                        let x = Vec3::Y.cross(z).normalize_or(Vec3::X);
+                        let rot = glam::Quat::from_mat3(&glam::Mat3::from_cols(x, z.cross(x), z));
+                        if !self.fx.burst_evo(scrape_fx, k.at, rot, k.rel, k.at.distance(self.cam.pos), &[("impact", (k.amount * 10.0).min(1.0))]) {
+                            let n = ((k.amount * 10.0).min(1.0) * 12.0) as usize + 2;
+                            self.fx.sparks(k.at, (k.normal * 0.5 - k.rel.normalize_or_zero() * 0.3).normalize_or(Vec3::Y), n);
+                        }
                     }
                 }
-                for h in self.props.hits.iter().filter(|h| h.kind == 8 || h.kind == 0 || h.kind == 3 || h.kind == 10) {
-                    self.fx.sparks(h.pos + Vec3::Y * 0.5, Vec3::Y, 10);
+                // (the props' events: the impact reports and deflection passes, the breaks - physics/loose.rs, props.rs;
+                // the hydrant's water gets the car's underside and its "collision" evolution before the particle step -
+                // propfx.rs. The original has no generic spark on a prop hit: the sparks of a pole are col_metal_pole's.)
+                {
+                    let mut plays = std::mem::take(&mut self.props.fx);
+                    plays.extend(std::mem::take(&mut self.vehicles.level.fx_events));
+                    if let Ok(t) = std::env::var("MCLA_PROPFX_TEST") {
+                        // test helper: "effect@x,y,z[;...]": the effect at that point (a fixed matrix) from tick 20, every 15 ticks (the hydrant's once)
+                        if self.tick_no >= 20 && self.tick_no % 15 == 0 {
+                            for item in t.split(';') {
+                                let Some((name, at)) = item.split_once('@') else { continue };
+                                let v: Vec<f32> = at.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                                if v.len() == 3 {
+                                    if name == "water_hydrant" {
+                                        if !self.propfx.has_fixed() {
+                                            self.propfx.start_fixed(name, Vec3::new(v[0], v[1], v[2]));
+                                        }
+                                    } else if name != "water_hydrant" {
+                                        plays.push(crate::physics::loose::FxPlay { effect: name.to_string(), at: crate::physics::loose::FxAt::World(Vec3::new(v[0], v[1], v[2])), vel: Vec3::ZERO });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let lw = world.collider.loose.as_deref();
+                    self.propfx.start(plays, &self.vehicles.level, lw, &mut self.fx, self.cam.pos);
+                    let mut car = self.vehicles.player().and_then(|c| c.state.underside.map(|q| (c.state.pos, q)));
+                    if let Ok(t) = std::env::var("MCLA_PROPFX_QUAD") {
+                        // test helper "x,y,z": a car's underside there (2 x 4 m, level)
+                        let v: Vec<f32> = t.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                        if v.len() == 3 {
+                            let c = Vec3::new(v[0], v[1], v[2]);
+                            car = Some((c, [c + Vec3::new(1.0, 0.0, -2.0), c + Vec3::new(1.0, 0.0, 2.0), c + Vec3::new(-1.0, 0.0, 2.0), c + Vec3::new(-1.0, 0.0, -2.0)]));
+                        }
+                    }
+                    self.propfx.step(&self.vehicles.level, lw, &mut self.fx, self.cam.pos, car);
+                }
+                let scrape_every = if std::env::var("MCLA_SCRAPE_TEST").map_or(false, |v| v.contains(',')) { 2 } else { 20 };
+                if std::env::var("MCLA_SCRAPE_TEST").is_ok() && self.tick_no > 90 && self.tick_no % scrape_every == 0 {
+                    // test helper: a scrape on the player's right side every 20 ticks (damagemap::Sparks,
+                    // played as above), the closing velocity the car's own; "x,y,z" instead puts it at that
+                    // point, normal +x, moving 8 m/s along -z (a still camera can watch it)
+                    let at: Vec<f32> = std::env::var("MCLA_SCRAPE_TEST").unwrap_or_default().split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                    if at.len() == 3 {
+                        // (no car needed: the frame for normal +x is x = up x z = -z, y = z x x = up)
+                        let p = Vec3::new(at[0], at[1], at[2]);
+                        let rot = glam::Quat::from_mat3(&glam::Mat3::from_cols(Vec3::NEG_Z, Vec3::Y, Vec3::X));
+                        self.fx.burst_evo(mcla_formats::hash::joaat("damage_scrape_sparks"), p, rot, Vec3::new(0.0, 0.0, -8.0), p.distance(self.cam.pos), &[("impact", 1.0)]);
+                    } else if let Some(c) = self.vehicles.cars.iter_mut().find(|c| c.is_player) {
+                        let (pos, right, vel) = (c.state.pos, c.state.right(), c.state.vel);
+                        c.state.dmg.sparks.push(crate::damagemap::Sparks { at: pos + right * 1.0 + Vec3::Y * 0.3, normal: -right, rel: vel, amount: 0.1 });
+                    }
                 }
                 if std::env::var("MCLA_FX_TEST").is_ok() && self.tick_no > 90 {
                     // test helper: every effect at once on the player's car
@@ -5345,6 +5411,30 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.write_save(&self.opt.data_dir);
                     }
                     None => {}
+                }
+            }
+            if let (Ok(t), 90) = (std::env::var("MCLA_PROPFX_AIM"), self.tick_no) {
+                // test helper "x,y,z[,run]": line the player up with the prop at that place, `run` (14) m away on the first clear line
+                let v: Vec<f32> = t.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if let (true, Some(c)) = (v.len() >= 3, self.vehicles.player_mut()) {
+                    let t = Vec3::new(v[0], v[1], v[2]);
+                    let run = v.get(3).copied().unwrap_or(14.0);
+                    for turn in 0..16 {
+                        let dir = glam::Quat::from_rotation_y(turn as f32 * std::f32::consts::FRAC_PI_8) * Vec3::X;
+                        let start = t - dir * run + Vec3::Y * 0.7;
+                        let side = Vec3::new(-dir.z, 0.0, dir.x) * 1.1;
+                        if [Vec3::ZERO, side, -side].iter().any(|&o| world.collider.raycast(start + o, dir, run - 1.0).is_some()) {
+                            continue;
+                        }
+                        let Some(g) = world.collider.ground(start, 1.0, 2.0) else { continue };
+                        if (g.point.y - t.y).abs() > 0.4 {
+                            continue;
+                        }
+                        c.state = physics::car::CarState::new(start, (-dir.x).atan2(-dir.z));
+                        c.pose_history.reset();
+                        log::info!("propfx aim: from {:?} towards {:?}", start, t);
+                        break;
+                    }
                 }
             }
             if let Some(kind) = self.opt.aim_prop.clone() {
@@ -8595,6 +8685,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             std::mem::swap(&mut self.vehicles.lod_pick, &mut lods);
             draws += rearview::draw(&mut enc, &gpu, &world, &self.vehicles, &mv);
             std::mem::swap(&mut self.vehicles.lod_pick, &mut lods);
+        }
+        if !map3d {
+            // (the effect list's model particles - litter, cans - before them, writing the depth: modelfx.rs)
+            modelfx::run(&gpu, &mut enc);
         }
         if !map3d {
             // (the particles and the rain in a pass of their own, the depth read-only: the

@@ -1,6 +1,6 @@
 //! The game's own sky, road and ocean shader programs, as WGSL, loaded at start-up.
 //!
-//! The eight `xs_*.wgsl` files are a mechanical translation of the original's shader microcode, made on the player's machine from the
+//! The nine `xs_*.wgsl` files are a mechanical translation of the original's shader microcode, made on the player's machine from the
 //! player's disc (the installer's stage "Translate shaders", crate `mcla-shaders`) into `<data>/shaders_wgsl/`. They are not part of
 //! the source tree, so the shader modules that append them (the city / road / sea module, the sky dome, the Perlin and mini-sky passes,
 //! the road reflection) take their text from [`text`].
@@ -9,7 +9,7 @@
 //! useful (vertex programs put every vertex at the origin, pixel programs return black), the log gets one error saying what to do, and
 //! [`problem`] gives the same sentence for the on-screen notice. What degrades: with `xs_sky`, `xs_perlin`, `xs_sky_cheap`,
 //! `xs_sky_env` or `xs_minisky` missing the sky dome, the clouds and the sky reflections are black; with `xs_road` / `xs_roadn` missing
-//! the roads are not drawn (day / night); with `xs_water` missing the sea is not drawn. Everything else (cars, buildings, sound, menus,
+//! the roads are not drawn (day / night); with `xs_water` missing the sea is not drawn; with `xs_pond` missing the ponds keep the generic blended look. Everything else (cars, buildings, sound, menus,
 //! driving) runs as usual.
 
 use std::collections::HashMap;
@@ -47,11 +47,16 @@ fn stub(name: &str) -> &'static str {
             "fn xs_water_lod_vs(vin: array<vec4<f32>, 16>) -> XsVsOut { return XsVsOut(vec4<f32>(0.0, 0.0, 0.0, 1.0), array<vec4<f32>, 16>()); }\n",
             "fn xs_water_ps(rin: array<vec4<f32>, 16>) -> vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }\n"
         ),
+        // (a missing pond file: city.wgsl reads alpha 0 from this stub as "no programs" and draws the basins with the generic blended rule)
+        "xs_pond.wgsl" => concat!(
+            "fn xs_pond_vs(vin: array<vec4<f32>, 16>) -> XsVsOut { return XsVsOut(vec4<f32>(0.0, 0.0, 0.0, 1.0), array<vec4<f32>, 16>()); }\n",
+            "fn xs_pond_ps(rin: array<vec4<f32>, 16>) -> vec4<f32> { return vec4<f32>(0.0); }\n"
+        ),
         _ => "",
     }
 }
 
-/// Read the eight files from `<data>/shaders_wgsl/`. The first call decides (later calls change nothing); one error is logged when
+/// Read the nine files from `<data>/shaders_wgsl/`. The first call decides (later calls change nothing); one error is logged when
 /// anything is missing.
 pub fn load(data: &Path) {
     PROGRAMS.get_or_init(|| {
@@ -91,7 +96,7 @@ pub fn text(name: &str) -> &'static str {
     PROGRAMS.get().and_then(|p| p.text.get(name)).map(|s| s.as_str()).unwrap_or("")
 }
 
-/// The sentence for the on-screen notice when a file could not be read; `None` when all eight were.
+/// The sentence for the on-screen notice when a file could not be read; `None` when all nine were.
 pub fn problem() -> Option<&'static str> {
     PROGRAMS.get().and_then(|p| p.problem.as_deref())
 }
