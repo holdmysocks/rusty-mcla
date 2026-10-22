@@ -45,6 +45,7 @@ mod keybinds;
 mod hud;
 mod flash_ui;
 mod particles;
+mod tyrefx;
 mod part_audit;
 mod rain;
 mod halo;
@@ -245,6 +246,8 @@ struct App {
     sound: sound::Sound,
     police: police::Police,
     fx: particles::Particles,
+    /// the tyres' effects of the cars on the original's simulation (tireptx)
+    tyre_fx: Option<tyrefx::TyreFx>,
     peds: peds::Peds,
     roam: roamers::Roamers,
     /// where the car was before it was put into a garage (position, yaw)
@@ -743,6 +746,7 @@ impl App {
             sound: sound::Sound::default(),
             police: police::Police::new(),
             fx: particles::Particles::new(),
+            tyre_fx: None,
             peds: peds::Peds::new(),
             roam: roamers::Roamers::new(),
             garage_return: None,
@@ -5075,28 +5079,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     let st = &c.state;
                     let speed = st.speed();
-                    for (wi, w) in st.wheels.iter().enumerate() {
+                    // (the cars on the original's simulation: their tyres' effects are the original's,
+                    // `tyrefx.rs` below; the others keep the port's own puffs)
+                    for (wi, w) in st.wheels.iter().enumerate().filter(|_| c.state.veh.is_none()) {
                         if !w.grounded {
                             continue;
                         }
                         // spinning or sliding tyres smoke; the driven axle most of all
                         let over = (w.slip - 1.0).max(0.0);
                         let mut burn = over * if speed > 3.0 || c.input.throttle > 0.6 { 1.0 } else { 0.0 };
-                        if c.state.veh.is_some() {
-                            // (N-VP-1: on the original's simulation each wheel's own slide decides - a burnout's
-                            // spinning axle smokes, its braked axle and a wheel at rest do not, whatever the
-                            // pedals or the tuning's drive split say; a decaying charge still smokes)
-                            burn = over;
-                        } else {
-                            // hard launches light up the driven tyres; the handbrake locks the rears
-                            let pr = c.tuned.as_deref().unwrap_or(&c.model.params);
-                            let driven = if wi < 2 { pr.drive_front > 0.4 } else { pr.drive_front < 0.6 };
-                            if driven && c.input.throttle > 0.9 && speed < 11.0 && pr.accel_at(speed) > 5.2 {
-                                burn = burn.max(0.7 * (1.0 - speed / 11.0));
-                            }
-                            if wi >= 2 && c.input.handbrake && speed > 6.0 {
-                                burn = burn.max(0.6);
-                            }
+                        // hard launches light up the driven tyres; the handbrake locks the rears
+                        let pr = c.tuned.as_deref().unwrap_or(&c.model.params);
+                        let driven = if wi < 2 { pr.drive_front > 0.4 } else { pr.drive_front < 0.6 };
+                        if driven && c.input.throttle > 0.9 && speed < 11.0 && pr.accel_at(speed) > 5.2 {
+                            burn = burn.max(0.7 * (1.0 - speed / 11.0));
+                        }
+                        if wi >= 2 && c.input.handbrake && speed > 6.0 {
+                            burn = burn.max(0.6);
                         }
                         if burn > 0.12 && (self.tick_no + wi as u64) % 2 == 0 {
                             self.fx.tyre_smoke(w.contact, st.vel, (burn * 1.6).min(1.0));
@@ -5196,6 +5195,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.fx.sparks(st.pos + st.right() * 1.5 + Vec3::Y * 0.4, Vec3::Y, 20);
                         }
                     }
+                }
+                // (the tyres' effects: decided once a game frame - the original's 30 Hz, `sub_82351A70` -
+                // and moved with the wheels on the tick between; the road's wetness eases to the weather's)
+                if let Some(t) = self.tyre_fx.as_mut() {
+                    let mut wet = self.weather.wet();
+                    if let Some((_, w, f)) = self.sky_next.as_ref() {
+                        wet += (w.wet() - wet) * f;
+                    }
+                    t.step(&mut self.fx, &self.vehicles.cars, wet, sim_dt * 2.0, self.tick_no % 2 == 0, self.cam.pos);
                 }
                 self.fx.hour = self.time_of_day;
                 self.fx.update(sim_dt);
@@ -10044,6 +10052,7 @@ impl ApplicationHandler for App {
                 }
             }
             self.fx.load(&mut gpu, &self.opt.data_dir);
+            self.tyre_fx = Some(tyrefx::TyreFx::load(std::path::Path::new(&self.opt.data_dir), &self.fx));
             rain::load(&mut gpu, &self.opt.data_dir);
             halo::load(&mut gpu, &self.opt.data_dir);
             sunglow::load(&mut gpu);

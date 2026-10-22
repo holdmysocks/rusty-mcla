@@ -112,9 +112,10 @@ fn vs_particle(
     // smoke takes the light of the scene, flames and sparks glow on their own
     let light = g.ambient_sky.rgb * 0.9 + g.sun_color.rgb * g.sun_dir.w * 0.35;
     o.color = vec4<f32>(color.rgb * mix(vec3<f32>(1.0), light, select(misc.w, 0.0, misc.w > 1.5)), color.a);
-    if (misc.w > 3.5 && misc.w < 4.5) {
+    if ((misc.w > 3.5 && misc.w < 4.5) || misc.w > 5.5) {
         // misc.w 4: mc4_rmptfx_mainlist's vs_main_SoftPart_VertLit - the vertex's normal is its
-        // turned corner in the camera's plane plus (gNormalArc + 0.1) towards the camera
+        // turned corner in the camera's plane plus (gNormalArc + 0.1) towards the camera; misc.w 6:
+        // vs_main_SoftPart_TexBlend_VertLit (and _Rescale, the same microcode), the same light
         let nrm = normalize(right * r.x + up * r.y + to_cam * (arrow_a.x + 0.1));
         o.color = vec4<f32>(color.rgb * ptx_fog(vert_lit(wp, nrm, extra, arrow_b.xyz, arrow_c.xyz), wp, arrow_d, arrow_c.w), color.a);
     }
@@ -363,6 +364,13 @@ fn fs_particle(in: VsOut) -> @location(0) vec4<f32> {
         let ta = mix(t_a.a, t.a, clamp(in.uva.z, 0.0, 1.0));
         let c = clamp(mix(in.extra.rgb, in.color.rgb * in.extra.w, ta), vec3<f32>(0.0), vec3<f32>(1.0)) + arrow_add(in);
         return vec4<f32>(c, clamp(2.0 * ta * in.color.a, 0.0, 1.0) * soft_fade(in));
+    }
+    if (in.prof.y > 3.5 && (in.prof.y < 4.5 || in.prof.y > 5.5)) {
+        // (modes 4 and 6 alpha-blended, ps_main_SoftPart_VertLit / ps_main_SoftPart_TexBlend_VertLit:
+        // rgb = the texture (6: frames A and B by the blend) x the lit vertex colour, alpha = its
+        // alpha x the colour's x sat(4 d^2); the scene's linear value)
+        let tb = select(t, mix(t_a, t, clamp(in.uva.z, 0.0, 1.0)), in.prof.y > 5.5);
+        return vec4<f32>(tb.rgb * in.color.rgb, tb.a * in.color.a * soft_fade(in));
     }
     if (in.prof.y > 4.5) {
         // (mode 5, mc4_rmptfx_default's PS_Draw: frames A and B by the blend, times the colour;

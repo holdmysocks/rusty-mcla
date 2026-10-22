@@ -142,6 +142,8 @@ struct RuleParticle {
     /// the effect rule and the event that let it out (for the event's evolutions)
     eff: u16,
     ev: u16,
+    /// its effect's frame is mirrored (`Effect::flip`)
+    flip: bool,
 }
 
 /// One event's emitter of a playing effect.
@@ -154,6 +156,9 @@ struct Emitter {
     zoom: f32,
     carry: f32,
     uid: u32,
+    /// where the emitter was when it last let particles out by distance (em +64: set to its place
+    /// at its start, `sub_824B3928`; `sub_824B3B18` moves it along the path by the share spawned)
+    prev: Option<Vec3>,
 }
 
 /// A playing effect: its timeline and one emitter per event; the effects its events start
@@ -191,6 +196,9 @@ struct Effect {
     /// started once and left to run out (`burst`): it plays without being asked again and is
     /// dropped when it and what it let out are done
     oneshot: bool,
+    /// the frame the effect follows is a mirror image (the tyres' left wheels, `tyrefx.rs`): its
+    /// local x is negated before `rot` turns it
+    flip: bool,
 }
 
 struct Rng(u32);
@@ -249,12 +257,15 @@ pub struct Particles {
 
 const MAX: usize = 3000;
 /// The particle shader's mode for the programs ported as the original draws them (the scene's
-/// linear value, not a display colour): 4 = `mc4_rmptfx_mainlist`'s draw_SoftPart_VertLit when
-/// it adds (blend 7 - the flares' fire, glows), 5 = `mc4_rmptfx_default`'s unlit_draw (the
-/// checkpoints' sparks); 0 = the generic look.
-pub(crate) fn sprite_mode(s: &mcla_formats::rage::ptfx::Sprite, blend_set: u32) -> f32 {
+/// linear value, not a display colour): 4 = `mc4_rmptfx_mainlist`'s draw_SoftPart_VertLit
+/// (the flares' fire and glows when they add, smoke and steam when alpha-blended), 6 = its
+/// draw_SoftPart_TexBlend_VertLit and _Rescale (the same vertex light, the two frames blended:
+/// the tyre smoke; the two techniques' programs are the same microcode), 5 =
+/// `mc4_rmptfx_default`'s unlit_draw (the checkpoints' sparks); 0 = the generic look.
+pub(crate) fn sprite_mode(s: &mcla_formats::rage::ptfx::Sprite, _blend_set: u32) -> f32 {
     match (s.shader.as_str(), s.technique.as_str()) {
-        ("mc4_rmptfx_mainlist", "draw_SoftPart_VertLit") if blend_set == 7 => 4.0,
+        ("mc4_rmptfx_mainlist", "draw_SoftPart_VertLit") => 4.0,
+        ("mc4_rmptfx_mainlist", "draw_SoftPart_TexBlend_VertLit" | "draw_SoftPart_TexBlend_VertLit_Rescale") => 6.0,
         ("mc4_rmptfx_default", "unlit_draw") => 5.0,
         _ => 0.0,
     }
@@ -292,11 +303,17 @@ fn arrow_atlas(data_dir: &str) -> Option<Texture> {
 }
 /// most particles of the effect list's rules alive at once
 const MAX_RULE: usize = 5000;
-/// most effects playing at once (69 particle props stand in the city, a few in reach)
-const MAX_EFFECTS: usize = 48;
+/// most effects playing at once (69 particle props stand in the city, a few in reach; up to four
+/// tyre effects a car) - the port's own cap
+const MAX_EFFECTS: usize = 160;
 /// the effects whose sprites are loaded: the particle props' and the litter's
 // (step 19g: + the power-up shots' sparks, powerup_sparks - sub_82748340)
-const PLAYED: [&str; 10] = ["water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks", "damage_glassbreak"];
+const PLAYED: [&str; 11] = ["water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks", "damage_glassbreak", "wheel_"];
+
+/// A vector of an effect's frame into the world: x negated first when the frame is a mirror image.
+fn turn(rot: Quat, flip: bool, v: Vec3) -> Vec3 {
+    rot * if flip { Vec3::new(-v.x, v.y, v.z) } else { v }
+}
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
@@ -378,8 +395,11 @@ impl Particles {
                 let bare = name.trim_end_matches(".dds");
                 let h = [name.to_string(), bare.to_string(), format!("{bare}.dds")].iter().map(|n| mcla_formats::hash::joaat(n)).find(|h| dict.get(*h).is_some())?;
                 let t = Texture::parse(&rd, dict.get(h)?).ok()?;
-                let key = h ^ 0x7f00_0000;
-                let tex = gpu.upload_texture(key, &t);
+                // (read as stored, no gamma decoding: the fetch constants of the original's particle
+                // draws ask for none - signs 0 on r, g, b in the recorded tyre and checkpoint smoke,
+                // where the road's ask for gamma (3); `work/map2/rec`, MAP.md "Tyre smoke")
+                let key = h ^ 0x7e00_0000;
+                let tex = gpu.upload_texture_raw(key, &t);
                 this.binds.push(Some(match &atlas {
                     Some(a) => gpu.texture_bind_group(&tex, a, key, ARROW_ATLAS_KEY),
                     None => gpu.texture_bind_group(&tex, &tex, key, key),
@@ -465,6 +485,23 @@ impl Particles {
 
     #[allow(clippy::too_many_arguments)]
     fn play_ex(&mut self, key: u64, effect: u32, pos: Vec3, rot: Quat, vel: Vec3, dist: f32, tint: [f32; 3], shadow: [f32; 3], alpha: f32, cap: f32, evo_in: &[(&str, f32)]) -> bool {
+        self.play_full(key, effect, pos, rot, false, vel, dist, tint, shadow, alpha, cap, evo_in)
+    }
+
+    /// `play` following a frame that may be a mirror image (`flip`), with evolution values by
+    /// name (the tyres' effects, `tyrefx.rs`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_evo(&mut self, key: u64, effect: u32, pos: Vec3, rot: Quat, flip: bool, vel: Vec3, dist: f32, evo: &[(&str, f32)]) -> bool {
+        self.play_full(key, effect, pos, rot, flip, vel, dist, [1.0; 3], [0.0; 3], 1.0, 250.0, evo)
+    }
+
+    /// Whether the effect list has an effect rule of that name hash.
+    pub fn has_effect(&self, effect: u32) -> bool {
+        self.by_hash.contains_key(&effect)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn play_full(&mut self, key: u64, effect: u32, pos: Vec3, rot: Quat, flip: bool, vel: Vec3, dist: f32, tint: [f32; 3], shadow: [f32; 3], alpha: f32, cap: f32, evo_in: &[(&str, f32)]) -> bool {
         if self.standin {
             return false;
         }
@@ -493,6 +530,7 @@ impl Particles {
             e.moved += pos - e.pos;
             e.pos = pos;
             e.rot = rot;
+            e.flip = flip;
             e.vel = vel;
             e.fade = fade;
             e.seen = self.frame;
@@ -513,7 +551,7 @@ impl Particles {
         self.next_id += 1;
         // (for looking at an effect in a screenshot: where in its loop it starts, 0..1)
         let t = std::env::var("MCLA_FX_PHASE").ok().and_then(|v| v.parse::<f32>().ok()).map_or(0.0, |v| v.clamp(0.0, 0.99));
-        self.effects.push(Effect { key, id, effect: ei, pos, rot, vel, moved: Vec3::ZERO, t, dur, rate: if rate > 0.0 { rate } else { 1.0 }, loops: 0, done: false, seen: self.frame, fade, em: Vec::new(), kids: Vec::new(), tint, alpha, shadow, evo, arrow: false, zr, oneshot: false });
+        self.effects.push(Effect { key, id, effect: ei, pos, rot, vel, moved: Vec3::ZERO, t, dur, rate: if rate > 0.0 { rate } else { 1.0 }, loops: 0, done: false, seen: self.frame, fade, em: Vec::new(), kids: Vec::new(), tint, alpha, shadow, evo, arrow: false, zr, oneshot: false, flip });
         true
     }
 
@@ -547,7 +585,7 @@ impl Particles {
             e.em = (0..rule.events.len())
                 .map(|_| {
                     self.next_id += 1;
-                    Emitter { playing: false, t: 0.0, dur: 1.0, tsc: 1.0, zoom: 1.0, carry: 0.0, uid: self.next_id }
+                    Emitter { playing: false, t: 0.0, dur: 1.0, tsc: 1.0, zoom: 1.0, carry: 0.0, uid: self.next_id, prev: None }
                 })
                 .collect();
         }
@@ -568,13 +606,14 @@ impl Particles {
                         em.dur = (fx.emit_rules[*ei].duration * rng.range(duration_scalar[0], duration_scalar[1])).max(0.01);
                         em.tsc = rng.range(time_scalar[0], time_scalar[1]);
                         em.zoom = rng.range(zoom[0], zoom[1]);
+                        em.prev = Some(e.pos);
                     }
                     EventKind::Effect { effect: Some(k), domain, .. } if self.playable[*k] && e.kids.len() < 12 => {
                         let kr = &fx.effects[*k];
                         // where: a point of the event's domain, in the parent's frame
                         let at = domain.as_ref().map_or(Vec3::ZERO, |d| d.centre(0.0) + d.point(0.0, &mut || rng.f()));
                         let id = e.id;
-                        e.kids.push(Effect { key: 0, id, effect: *k, pos: e.pos + e.rot * at, rot: e.rot, vel: e.vel, moved: Vec3::ZERO, t: 0.0, dur: rng.range(kr.duration[0], kr.duration[1]).max(0.01), rate: rng.range(kr.time_scalar[0], kr.time_scalar[1]).max(0.01), loops: 0, done: false, seen: 0, fade: e.fade, em: Vec::new(), kids: Vec::new(), tint: e.tint, alpha: e.alpha, shadow: e.shadow, evo: [0.0; 4], arrow: false, zr: rng.f(), oneshot: false });
+                        e.kids.push(Effect { key: 0, id, effect: *k, pos: e.pos + turn(e.rot, e.flip, at), rot: e.rot, vel: e.vel, moved: Vec3::ZERO, t: 0.0, dur: rng.range(kr.duration[0], kr.duration[1]).max(0.01), rate: rng.range(kr.time_scalar[0], kr.time_scalar[1]).max(0.01), loops: 0, done: false, seen: 0, fade: e.fade, em: Vec::new(), kids: Vec::new(), tint: e.tint, alpha: e.alpha, shadow: e.shadow, evo: [0.0; 4], arrow: false, zr: rng.f(), oneshot: false, flip: e.flip });
                     }
                     _ => {}
                 }
@@ -637,14 +676,23 @@ impl Particles {
         };
         let rate = ev(0, 0, er.spawn_rate.eval(te));
         let r = rng.range(rate[0], rate[1]).max(0.0);
-        let mut n = if er.one_shot {
+        // (`sub_824B3B18`: the rate's whole particles of the step - its fraction carried - plus
+        // SpawnDistKF's random(x, y) a metre the emitter moved since `prev` (no fraction carried
+        // there: `prev` only moves on by the share let out); one-shot emitters only the rate)
+        let (cur, prev) = (e.pos, em.prev.unwrap_or(e.pos));
+        let mut per = 0.0;
+        let total = if er.one_shot {
             em.t = 1.0;
-            r as i32
+            r
         } else {
             let x = r * frac * dt * ts + em.carry;
             em.carry = x.fract();
-            x as i32
+            let sd = ev(0, 9, er.spawn_dist.eval(te));
+            per = rng.range(sd[0], sd[1]);
+            x.trunc() + cur.distance(prev) * per
         };
+        let mut n = total as i32;
+        let wanted = n;
         if em.t >= 1.0 {
             em.playing = false;
         }
@@ -654,12 +702,15 @@ impl Particles {
         let ez = if fx.effects[e.effect].zoom.keys.is_empty() { 1.0 } else { lerp(ez[0], ez[1], e.zr) * 0.01 };
         let (uid, zoom, pscale) = (em.uid, em.zoom * ez, e.rate * em.tsc * ts);
         self.rng = rng.0;
-        let Some(look) = self.looks[*pi].as_ref().filter(|_| live && n > 0) else { return };
-        let ncards = look.cards.len();
         // SpawnRateKF z: the most that may be alive
         if rate[2] >= 1.0 {
             n = n.min(rate[2] as i32 - self.rule_list.iter().filter(|p| p.uid == uid).count() as i32);
         }
+        // (the remembered place: to here when nothing is let out by distance or some were
+        // refused, else on along the path by the share let out)
+        e.em[i].prev = Some(if per == 0.0 || wanted > n.max(0) { cur } else if n > 0 && total > 0.0 { prev + (cur - prev) * (n as f32 / total) } else { prev });
+        let Some(look) = self.looks[*pi].as_ref().filter(|_| live && n > 0) else { return };
+        let ncards = look.cards.len();
         let mut rng = Rng(self.rng);
         for k in 1..=n.min(64) {
             if self.rule_list.len() >= MAX_RULE {
@@ -669,7 +720,9 @@ impl Particles {
             // where the particle heads from its start
             let lf = ev(0, 2, er.spawn_life.eval(te));
             let life = rng.range(lf[0], lf[1]);
-            let (mut start, mut at) = (Vec3::ZERO, e.pos);
+            // (the emitter's place for the k-th of the step: along the path from `prev`, k / total of it)
+            let along = if total > 0.0 { (k as f32 / total * frac).min(1.0) } else { 1.0 };
+            let (mut start, mut at) = (Vec3::ZERO, prev + (cur - prev) * along);
             // (the domains' position and sizes: lists 1 and 2)
             let dom = |l: u8, d: &mcla_formats::rage::ptfx::Domain, rnd: &mut dyn FnMut() -> f32| -> Vec3 {
                 let c = ev(l, 0, d.position.eval(te));
@@ -677,13 +730,13 @@ impl Particles {
             };
             if let Some(d) = &er.emitter_domain {
                 start = dom(1, d, &mut || rng.f()) * zoom;
-                at += if d.world_space { start } else { e.rot * start };
+                at += if d.world_space { start } else { turn(e.rot, e.flip, start) };
             }
             let mut vel = Vec3::ZERO;
             if let Some(d) = &er.velocity_domain {
                 let p = dom(2, d, &mut || rng.f()) * zoom;
                 let v = if d.point_relative { p } else { p - start };
-                vel = if d.world_space { v } else { e.rot * v };
+                vel = if d.world_space { v } else { turn(e.rot, e.flip, v) };
             }
             let sp = ev(0, 3, er.speed.eval(te));
             let inh = ev(0, 8, er.inherit_vel.eval(te));
@@ -717,6 +770,7 @@ impl Particles {
                 shadow: e.shadow,
                 eff: e.effect as u16,
                 ev: i as u16,
+                flip: e.flip,
             };
             for r in p.r.iter_mut() {
                 *r = rng.f();
@@ -759,7 +813,7 @@ impl Particles {
             }
             let mut acc = v3(pr.accel_min.eval(t)).lerp(v3(pr.accel_max.eval(t)), p.r[3]) * p.accel_ot;
             if pr.flags & flag::WORLD_SPACE_ACCELERATION == 0 {
-                acc = p.rot * acc;
+                acc = turn(p.rot, p.flip, acc);
             }
             if pr.flags & flag::ZOOM_ACCELERATION != 0 {
                 acc *= p.zoom;
@@ -980,6 +1034,19 @@ impl Particles {
         if self.frame % 60 == 0 && std::env::var("MCLA_FX_LOG").is_ok() {
             let names: Vec<String> = self.effects.iter().map(|e| format!("{} t {:.2} kids {} em {}", fx.effects[e.effect].name, e.t, e.kids.len(), e.em.iter().filter(|m| m.playing).count())).collect();
             log::info!("fx: dt {:.4} effects {} particles {} first {:?}: {:?}", dt, self.effects.len(), self.rule_list.len(), self.rule_list.first().map(|p| (p.pos, p.t, p.ts)), names);
+            let mut per: HashMap<&str, usize> = HashMap::new();
+            for p in &self.rule_list {
+                *per.entry(fx.particle_rules[p.rule as usize].name.as_str()).or_default() += 1;
+            }
+            log::info!("fx: particles by rule {:?}", per);
+            let mut by: HashMap<(u32, &str), usize> = HashMap::new();
+            for p in &self.rule_list {
+                *by.entry((p.inst, fx.particle_rules[p.rule as usize].name.as_str())).or_default() += 1;
+            }
+            let at: HashMap<u32, Vec3> = self.effects.iter().map(|e| (e.id, e.pos)).collect();
+            let mut v: Vec<_> = by.into_iter().map(|((i, n), c)| (i, n, c, at.get(&i).copied())).collect();
+            v.sort_by_key(|x| (x.0, x.1));
+            log::info!("fx: particles by instance {:?}", v);
         }
     }
 
@@ -1032,7 +1099,7 @@ impl Particles {
             for e in &self.effects {
                 inst.insert(e.id, (e.alpha, e.evo));
                 inst_at.insert(e.id, (e.pos, e.arrow));
-                inst_cull.insert(e.id, e.rot * Vec3::from(fx.effects[e.effect].cull_offset));
+                inst_cull.insert(e.id, turn(e.rot, e.flip, Vec3::from(fx.effects[e.effect].cull_offset)));
             }
             for p in &self.rule_list {
                 let pr = &fx.particle_rules[p.rule as usize];
@@ -1082,10 +1149,11 @@ impl Particles {
                     uv = [(f % s.tiles_x) as f32 * du, (f / s.tiles_x) as f32 * dv, du, dv];
                     let f0 = p.frame0 as u32 % (s.tiles_x * s.tiles_y);
                     // (w: the soft fade's factor k of sat(k d^2) - technique "draw" of mc4_rmptfx_projected
-                    // and mc4_rmptfx_default's PS_Draw 0.1, ps_main_SoftPart_VertLit 4; 0 none)
+                    // and mc4_rmptfx_default's PS_Draw 0.1, ps_main_SoftPart_VertLit and
+                    // ps_main_SoftPart_TexBlend_VertLit 4; 0 none)
                     let soft = match sprite_mode(s, pr.render.blend_set) {
                         _ if projected && s.technique == "draw" => 0.1,
-                        4.0 => 4.0,
+                        4.0 | 6.0 => 4.0,
                         5.0 => 0.1,
                         _ => 0.0,
                     };
@@ -1119,7 +1187,7 @@ impl Particles {
                 let lit = if projected { 3.0 } else if column { 2.0 } else if mode > 0.0 { mode } else if self.additive[card.sheet] { 0.0 } else { 1.0 };
                 let mut extra = if projected { [p.shadow[0], p.shadow[1], p.shadow[2], (2.0 * night).max(1.0)] } else { [0.0; 4] };
                 let mut normal_arc = 0.0;
-                if let (4.0, Some(s)) = (mode, pr.sprite.as_ref()) {
+                if let (4.0 | 6.0, Some(s)) = (mode, pr.sprite.as_ref()) {
                     // (vs_main_SoftPart_VertLit's variables, the effect file's defaults where the rule has none)
                     let var = |n: &str, d: f32| s.vars.iter().find(|(k, _)| k == n).map_or(d, |(_, v)| v[0]);
                     extra = [var("gDiffuse", 1.0), var("gAmbient", 1.0), var("gAmbientDayControl", 1.0), var("gTranslucency", 0.0)];
@@ -1143,7 +1211,7 @@ impl Particles {
                     arrow_c = [tint[0], tint[1], tint[2], boost];
                     arrow_d = [self.arrow_rt[2], tile, self.clock * rate, night];
                 }
-                if mode == 4.0 {
+                if mode == 4.0 || mode == 6.0 {
                     // (x: gNormalArc; arrow_b xyz: the light picker's position - the effect's cull
                     // sphere centre, its place + the rule's offset x the event's and the effect's
                     // zoom, from the frame before; checkpoint_ctf_generic: 68 m straight up)
