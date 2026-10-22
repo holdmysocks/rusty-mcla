@@ -4960,7 +4960,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
     }
     if dbg_flag("MCLA_DBG_STUCK") {
-        eprintln!("STUCK state {} timer {:.3} far {:.2} steer {:e} turn {:?} cg {:.4} walls {}", vs.stuck, vs.stuck_timer, (vs.stuck_at - (st.pos + rm * pivot_local)).length(), vs.steer, stuck_turn, vs.cg[0], super::hull::WALLS.with(|t| t.get()));
+        eprintln!("STUCK state {} timer {:.3} far {:.2} steer {:e} turn {:?} cg {:.4} walls {} tick {}", vs.stuck, vs.stuck_timer, (vs.stuck_at - (st.pos + rm * pivot_local)).length(), vs.steer, stuck_turn, vs.cg[0], super::hull::WALLS.with(|t| t.get()), super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed));
     }
     let frozen = vs.still_timer > 1.0;
     // (R4: and the sums a frozen tick leaves are nothing - what the recorder's hook at the integration reads)
@@ -4989,6 +4989,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     let exact_step = exact_sums && !dbg_flag("MCLA_DBG_OLDSTEP");
     // (whether the hull's contacts were answered by an impulse, and how many of them stand all but upright)
     let mut hull_touched: Option<(bool, u32)> = None;
+    // (a tick whose callbacks are the island's runs, and those runs: mcCarStuck is armed by them there, not by the
+    // city's call below)
+    let mut island_calls = false;
+    let mut car_runs: Vec<(bool, bool, bool)> = Vec::new();
     let (dv, dw) = if exact_step {
         use super::exact as ex;
         let rows0 = if st.rot == rot_in {
@@ -5336,10 +5340,13 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let mut contacts: Vec<super::solver::Contact> = Vec::new();
             // (every contact of the car with the city in the manifolds' order: is it one the solver gets)
             let mut city_rows: Vec<bool> = Vec::new();
+            // (and the part of the car each is on)
+            let mut city_part: Vec<u8> = Vec::new();
             let mut hull_at: Vec<usize> = Vec::new();
             for m in vs.manifolds.iter_mut() {
                 for slot in m.slots.iter_mut() {
                     city_rows.push(true);
+                    city_part.push(slot.part);
                     // (0x825A2C88: the two materials' friction and elasticity multiplied; the
                     // impulse of the tick before forgotten)
                     let c = &mut slot.c;
@@ -5443,7 +5450,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 if loose_touch {
                     // (an island with something loose in it: the solve, the breaking pass, the solve again)
                     let mut dynm = super::loose::CarDyn { p: &mut pm, l: &mut lm, mass, inverse, rows: rows1 };
-                    let out = vs.loose.solve_car_island(loose_world.unwrap(), &car_in, &mut body, &mut dynm, &contacts, &city_rows, &loose_ids, dt);
+                    let out = vs.loose.solve_car_island(loose_world.unwrap(), &car_in, &mut body, &mut dynm, &contacts, &city_rows, &city_part, &loose_ids, dt);
                     impulse = out.impulse;
                     turning = out.turning;
                     // (each back to its own contact: the island's sort can have moved the car's rows among
@@ -5539,6 +5546,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             }
             Some((pushed, contacts))
         } else if let Some((body, mut contacts, mut out)) = loose_island.take() {
+            island_calls = true;
+            car_runs = out.car_runs.clone();
             // (mcCarDamage's calls: the car's run of the A-sorted list - its rows with the city and with what it is
             // A against, in the island's order - then its run of the B-sorted list; each sums the impulses on the car
             // over its mass, 0.4 of those against the fixed city (0x82567A08), and takes the first row's point and other)
@@ -5723,6 +5732,18 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             }
             // (the island's calls, the A run's first: in a recorded tick with both, mcCarDamage +56 - the last
             // call's - is the sum of the pieces the car is B against, exactly - sa.0 k230..k292)
+            // (mcCarStuck's callback in the same calls (mcCarDamage's, sub_82343880 -> 0x8256A078): every run of the
+            // car's rows that the solve gave an impulse, unless its first row's other object is active (level state 0),
+            // arms it with the chassis's place when a row of the run is on a part of the car that is not a wheel (outside
+            // car +392, +24 of them). V on the recorders' mcCarStuck +56: sb.0 k232 / k307 armed, k231 / k306 not (a
+            // piece first); sd.0 k96 not (the prop broken off whole is first); sc.0 k94 - 105 not (the hull's rows
+            // with the city without an impulse), k106 armed. MCLA_DBG_RA9: not armed here.)
+            if !dbg_flag("MCLA_DBG_RA9") && vs.stuck == 0 && car_runs.iter().any(|&(first_active, hull, any)| hull && any && !first_active) {
+                if dbg_flag("MCLA_DBG_STUCK") { eprintln!("STUCKARM runs tick {} runs {:?}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), car_runs); }
+                vs.stuck = 1;
+                vs.stuck_at = body_rows[3];
+                vs.stuck_timer = 0.0;
+            }
             for r in loose_runs.iter().filter(|r| r.any && !dbg_flag("MCLA_DBG_NOWORLDHIT")) {
                 let at = if st.up().y < f32::from_bits(0x3dcc_cccd) { r.last } else { r.first };
                 let d = at - moved_origin;
@@ -5863,7 +5884,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         if let Some((answered, walls)) = hull_touched {
             vs.still_timer = 0.0;
             if answered {
-                if vs.stuck == 0 {
+                if vs.stuck == 0 && (!island_calls || dbg_flag("MCLA_DBG_RA9")) {
+                    if dbg_flag("MCLA_DBG_STUCK") { eprintln!("STUCKARM city tick {} island {}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), island_calls); }
                     vs.stuck = 1;
                     // (0x8256A078: the chassis's own place as the tick's update had it - the model's
                     // origin - which mcCarStuck then measures the BODY's place from)
@@ -6125,7 +6147,7 @@ struct DamageRun {
 
 pub(super) fn dbg_flag(name: &'static str) -> bool {
     static FLAGS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    FLAGS.get_or_init(|| ["MCLA_DBG_R1", "MCLA_DBG_R2", "MCLA_DBG_R3", "MCLA_DBG_R4", "MCLA_DBG_RB2", "MCLA_DBG_RB3", "MCLA_DBG_RB4", "MCLA_DBG_RB5", "MCLA_DBG_RB6", "MCLA_DBG_P1", "MCLA_DBG_P2", "MCLA_DBG_P3", "MCLA_DBG_RA1", "MCLA_DBG_RA2", "MCLA_DBG_RA3", "MCLA_DBG_RA4", "MCLA_DBG_RA5", "MCLA_DBG_RA6", "MCLA_DBG_RA7", "MCLA_DBG_RA8", "MCLA_DBG_RB1", "MCLA_DBG_RD1", "MCLA_DBG_A1", "MCLA_DBG_A2", "MCLA_DBG_A3", "MCLA_DBG_A4", "MCLA_DBG_A6", "MCLA_DBG_Z1", "MCLA_DBG_Z2", "MCLA_DBG_HIT", "MCLA_DBG_OLDCOLLIDE", "MCLA_DBG_NORESOLVE", "MCLA_DBG_NODAMP", "MCLA_DBG_NOROLLBAR", "MCLA_DBG_YAW", "MCLA_DBG_SPHERES", "MCLA_DBG_RAYWHEEL", "MCLA_DBG_HANG", "MCLA_DBG_GYRO", "MCLA_DBG_NOBOX", "MCLA_DBG_NOSTEEP", "MCLA_DBG_NOCAMBER", "MCLA_DBG_NOLEANPROBE", "MCLA_DBG_OLDWHEEL", "MCLA_DBG_ZEROTYRE", "MCLA_DBG_TERMS", "MCLA_DBG_SUBDAMP", "MCLA_DBG_NOFREEZE", "MCLA_DBG_STEEPWHEEL", "MCLA_DBG_NOPIVOT", "MCLA_DBG_NOSETTLE", "MCLA_DBG_NOSTUCK", "MCLA_DBG_STUCK", "MCLA_DBG_SYMSOLVE", "MCLA_DBG_OLDWHEELPOSE", "MCLA_DBG_OLDSUSP", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDSTEP", "MCLA_DBG_OLDPOSE", "MCLA_DBG_AXLEORDER", "MCLA_DBG_CALLS", "MCLA_DBG_OLDGYRO", "MCLA_DBG_NOBOTTOM", "MCLA_DBG_WHEELORDER", "MCLA_DBG_OLDMELT", "MCLA_DBG_OLDHANG", "MCLA_DBG_GEAR", "MCLA_DBG_OLDORDER", "MCLA_DBG_OLDSTEER", "MCLA_DBG_OLDDOWN", "MCLA_DBG_OLDDRIFT", "MCLA_DBG_NOENGINEROLL", "MCLA_DBG_OLDAUTOBRAKE", "MCLA_DBG_Y1", "MCLA_DBG_Y2", "MCLA_DBG_Y3", "MCLA_DBG_Y4", "MCLA_DBG_Y5", "MCLA_DBG_Y6", "MCLA_DBG_Y7", "MCLA_DBG_Y8", "MCLA_DBG_Y9", "MCLA_DBG_TRACE", "MCLA_DBG_WORLDHIT", "MCLA_DBG_NOWORLDHIT", "MCLA_DBG_SCRAPEPOST"].into_iter().filter(|n| std::env::var(n).is_ok()).collect()).contains(&name)
+    FLAGS.get_or_init(|| ["MCLA_DBG_R1", "MCLA_DBG_R2", "MCLA_DBG_R3", "MCLA_DBG_R4", "MCLA_DBG_RB2", "MCLA_DBG_RB3", "MCLA_DBG_RB4", "MCLA_DBG_RB5", "MCLA_DBG_RB6", "MCLA_DBG_P1", "MCLA_DBG_P2", "MCLA_DBG_P3", "MCLA_DBG_RA1", "MCLA_DBG_RA2", "MCLA_DBG_RA3", "MCLA_DBG_RA4", "MCLA_DBG_RA5", "MCLA_DBG_RA6", "MCLA_DBG_RA7", "MCLA_DBG_RA8", "MCLA_DBG_RA9", "MCLA_DBG_RB1", "MCLA_DBG_RD1", "MCLA_DBG_A1", "MCLA_DBG_A2", "MCLA_DBG_A3", "MCLA_DBG_A4", "MCLA_DBG_A6", "MCLA_DBG_Z1", "MCLA_DBG_Z2", "MCLA_DBG_HIT", "MCLA_DBG_OLDCOLLIDE", "MCLA_DBG_NORESOLVE", "MCLA_DBG_NODAMP", "MCLA_DBG_NOROLLBAR", "MCLA_DBG_YAW", "MCLA_DBG_SPHERES", "MCLA_DBG_RAYWHEEL", "MCLA_DBG_HANG", "MCLA_DBG_GYRO", "MCLA_DBG_NOBOX", "MCLA_DBG_NOSTEEP", "MCLA_DBG_NOCAMBER", "MCLA_DBG_NOLEANPROBE", "MCLA_DBG_OLDWHEEL", "MCLA_DBG_ZEROTYRE", "MCLA_DBG_TERMS", "MCLA_DBG_SUBDAMP", "MCLA_DBG_NOFREEZE", "MCLA_DBG_STEEPWHEEL", "MCLA_DBG_NOPIVOT", "MCLA_DBG_NOSETTLE", "MCLA_DBG_NOSTUCK", "MCLA_DBG_STUCK", "MCLA_DBG_SYMSOLVE", "MCLA_DBG_OLDWHEELPOSE", "MCLA_DBG_OLDSUSP", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDSTEP", "MCLA_DBG_OLDPOSE", "MCLA_DBG_AXLEORDER", "MCLA_DBG_CALLS", "MCLA_DBG_OLDGYRO", "MCLA_DBG_NOBOTTOM", "MCLA_DBG_WHEELORDER", "MCLA_DBG_OLDMELT", "MCLA_DBG_OLDHANG", "MCLA_DBG_GEAR", "MCLA_DBG_OLDORDER", "MCLA_DBG_OLDSTEER", "MCLA_DBG_OLDDOWN", "MCLA_DBG_OLDDRIFT", "MCLA_DBG_NOENGINEROLL", "MCLA_DBG_OLDAUTOBRAKE", "MCLA_DBG_Y1", "MCLA_DBG_Y2", "MCLA_DBG_Y3", "MCLA_DBG_Y4", "MCLA_DBG_Y5", "MCLA_DBG_Y6", "MCLA_DBG_Y7", "MCLA_DBG_Y8", "MCLA_DBG_Y9", "MCLA_DBG_TRACE", "MCLA_DBG_WORLDHIT", "MCLA_DBG_NOWORLDHIT", "MCLA_DBG_SCRAPEPOST"].into_iter().filter(|n| std::env::var(n).is_ok()).collect()).contains(&name)
 }
 
 fn dbg_angdrag() -> f32 {

@@ -1814,6 +1814,15 @@ pub struct Link {
     pub car_row: usize,
 }
 
+/// Where a row of a car's island comes from.
+#[derive(Clone, Copy)]
+enum RowSrc {
+    /// the car's contact with the city of this number
+    City(usize),
+    /// a slot of this manifold
+    Mani(usize),
+}
+
 /// What a car's island came to.
 pub struct IslandOut {
     pub touches: Vec<Touch>,
@@ -1828,6 +1837,9 @@ pub struct IslandOut {
     /// the rows (numbers into `links`) in the island's second list, sorted by instance B's address
     /// (0x82594068's list for the B side, island +296)
     pub by_b: Vec<usize>,
+    /// the car's runs of the callbacks (its A run, then its B run, those it has): the first row's other object
+    /// active, a row on a part of the car that is not a wheel, a row with an impulse
+    pub car_runs: Vec<(bool, bool, bool)>,
     /// the car's normals summed over the rows the callbacks disabled, of the car's A run and of its B run
     /// (mcCarDamage's scrape normal takes every row of its run, 0x82343F8C)
     pub off_a: Vec3,
@@ -1877,7 +1889,7 @@ impl LooseState {
     /// winner's share given at once to the bodies; the break; and the solve again from where the
     /// bodies then are, until nothing breaks. `city`: the car's own contacts with the world
     /// (it is A, the world has no body), which stand first or last by the addresses.
-    pub fn solve_car_island(&mut self, world: &LooseWorld, car_in: &CarIn, car: &mut Body, dynm: &mut CarDyn, city: &[solver::Contact], city_rows: &[bool], ids: &[usize], dt: f32) -> IslandOut {
+    pub fn solve_car_island(&mut self, world: &LooseWorld, car_in: &CarIn, car: &mut Body, dynm: &mut CarDyn, city: &[solver::Contact], city_rows: &[bool], city_part: &[u8], ids: &[usize], dt: f32) -> IslandOut {
         let _ = car_in;
         let (car_level, car_addr) = self.car_place();
         // (the island's contacts, 0x82594068: every contact of every manifold in the tree's pre-order - a
@@ -1893,6 +1905,8 @@ impl LooseState {
         let (mut off_a, mut off_b) = (Vec3::ZERO, Vec3::ZERO);
         let mut list: Vec<((i64, i64, u64, u64), i64, i64, Option<(Link, Touch)>)> = Vec::new();
         let mut next_city = 0;
+        // (where each row of the walk comes from: the car's contact with the city of that number, or a manifold)
+        let mut src: Vec<RowSrc> = Vec::new();
         let city_link = |(row, c): (usize, &solver::Contact)| {
             let a = Side { body: Some(0), point: c.on_body, local: c.local, rows: car.rows, margin: 0.04, core: Vec3::ZERO };
             let b = Side { body: None, point: c.on_world, local: c.on_world, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
@@ -1901,6 +1915,7 @@ impl LooseState {
         if old_order || city_rows.is_empty() {
             for (n, c) in city.iter().enumerate() {
                 list.push(((if old_order { i64::MIN } else { car_order as i64 }, car_level, 0, n as u64), car_addr, city_addr, Some(city_link((n, c)))));
+                src.push(RowSrc::City(n));
             }
         } else {
             for (n, on) in city_rows.iter().enumerate() {
@@ -1911,6 +1926,7 @@ impl LooseState {
                     None
                 };
                 list.push(((car_order as i64, car_level, 0, n as u64), car_addr, city_addr, row));
+                src.push(RowSrc::City(n));
             }
         }
         for &k in ids {
@@ -1940,6 +1956,7 @@ impl LooseState {
                     }
                     if !old_order {
                         list.push((pair, key, key_b, None));
+                        src.push(RowSrc::Mani(k));
                     }
                     continue;
                 }
@@ -1976,9 +1993,13 @@ impl LooseState {
                     }
                 }
                 list.push((pair, key, key_b, Some((Link { a: Some(m.a), b: Some(m.b), part_a: m.part_a, part_b: m.part_b, car_row: 0, from: Some((k, i)) }, t))));
+                src.push(RowSrc::Mani(k));
             }
         }
-        list.sort_by_key(|x| x.0);
+        // (the rows' sources go with them)
+        let mut both: Vec<_> = list.into_iter().zip(src).collect();
+        both.sort_by_key(|x| x.0 .0);
+        let (list, src): (Vec<_>, Vec<RowSrc>) = both.into_iter().unzip();
         if dbg() {
             eprintln!("LOOSEROWS tick {} n {} city_rows {:?} walk {:?}", self.tick, list.len(), city_rows, list.iter().map(|x| (x.0 .0, x.0 .2, x.0 .3, x.1, x.3.is_some())).collect::<Vec<_>>());
             eprintln!("LOOSEWARM tick {} {:?}", self.tick, list.iter().filter_map(|x| x.3.as_ref().map(|(l, t)| (l.a, l.b, t.depth, t.kept))).collect::<Vec<_>>());
@@ -1995,6 +2016,12 @@ impl LooseState {
             stl_sort(&mut tagged, |x| x.0);
             stl_sort(&mut walk_b, |x| x.0);
         }
+        // (the car's two runs - its rows of the A-sorted list, where it is A, then of the B-sorted one - as the
+        // callbacks are handed them, 0x82590DB0: every row of the run, the disabled ones too)
+        let car_runs_at: [Vec<usize>; 2] = [
+            tagged.iter().filter(|x| x.0 == car_addr).map(|x| x.1).collect(),
+            walk_b.iter().filter(|x| x.0 == car_addr).map(|x| x.1).collect(),
+        ];
         let mut row_of = vec![usize::MAX; enabled.len()];
         for (r, x) in tagged.iter().filter(|x| x.2.is_some()).enumerate() {
             row_of[x.1] = r;
@@ -2157,7 +2184,36 @@ impl LooseState {
                     }
                 }
             }
-            return IslandOut { impulse: given[0].0, turning: given[0].1, touches, links, bodies, owners, solved, by_b, off_a, off_b };
+            // (each run as the callbacks find it, after the breaking pass: the first row's other object - re-pointed to
+            // a piece if it broke off - active or not (level state 0: a body, not asleep), and whether a row is on a
+            // part of the car that is not a wheel, and whether a row of it has an impulse from the solve)
+            let side_of = |n: usize| -> Option<(Who, u16)> {
+                match src[n] {
+                    RowSrc::City(r) => Some((Who::City, city_part.get(r).copied().unwrap_or(0) as u16)),
+                    RowSrc::Mani(k) => {
+                        let m = &self.manis[k];
+                        if m.a == Who::Car {
+                            Some((m.b, m.part_a))
+                        } else if m.b == Who::Car {
+                            Some((m.a, m.part_b))
+                        } else {
+                            None
+                        }
+                    }
+                }
+            };
+            let car_runs = car_runs_at
+                .iter()
+                .filter(|r| !r.is_empty())
+                .map(|r| {
+                    let first_active = side_of(r[0]).is_some_and(|(o, _)| matches!(o, Who::Obj(o) if self.objs.get(o).is_some_and(|x| x.body.is_some() && !x.dormant)));
+                    let hull = r.iter().any(|&n| side_of(n).is_some_and(|(_, part)| part == 0));
+                    let any = r.iter().any(|&n| row_of[n] != usize::MAX && touches[row_of[n]].impulse != Vec3::ZERO);
+                    if super::vehsim::dbg_flag("MCLA_DBG_STUCK") { eprintln!("STUCKRUN tick {} first {:?} body {:?} dormant {:?} rows {}", REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), side_of(r[0]), side_of(r[0]).and_then(|(o, _)| if let Who::Obj(o) = o { self.objs.get(o).map(|x| x.body.is_some()) } else { None }), side_of(r[0]).and_then(|(o, _)| if let Who::Obj(o) = o { self.objs.get(o).map(|x| x.dormant) } else { None }), r.len()); }
+                    (first_active, hull, any)
+                })
+                .collect();
+            return IslandOut { impulse: given[0].0, turning: given[0].1, touches, links, bodies, owners, solved, by_b, off_a, off_b, car_runs };
         }
     }
 
@@ -2426,7 +2482,7 @@ impl LooseState {
             let mut none = Body { at: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z], vel: Vec3::ZERO, ang: Vec3::ZERO, inv_mass: 0.0, inv_moments: Vec3::ZERO, force: Vec3::ZERO, torque: Vec3::ZERO };
             let (mut p, mut l) = (Vec3::ZERO, Vec3::ZERO);
             let mut dynm = CarDyn { p: &mut p, l: &mut l, mass: 0.0, inverse: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z] };
-            let mut out = self.solve_car_island(world, car_in, &mut none, &mut dynm, &[], &[], &ids, dt);
+            let mut out = self.solve_car_island(world, car_in, &mut none, &mut dynm, &[], &[], &[], &ids, dt);
             self.push_car_island(&mut out, &none, Pushed::default(), dt);
         }
     }
