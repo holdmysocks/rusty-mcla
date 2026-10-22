@@ -428,11 +428,18 @@ impl Game {
     }
 
     /// The race start badge's second line in GOAL ATTACK (GetRaceInfo sub_82640AE0
-    /// 0x82640D78..0x82640DB4): RACE_INFO_GOALATTACK_FORMAT "TARGET TIME: <D>RACE_INFO_GOAL_TIME</D>".
+    /// 0x82640D78..0x82640DB4) and in a time trial (event kind 2, the jump table 0x82640B70 ->
+    /// 0x82640D00: the race's target time, sub_82256150): RACE_INFO_GOALATTACK_FORMAT
+    /// "TARGET TIME: <D>RACE_INFO_GOAL_TIME</D>" (work/hookmen2 `cap/tt_07`).
     pub fn mc4_goal_badge(&self) -> Option<String> {
-        let d = self.current_race.and_then(|i| self.race_defs.get(i)).filter(|_| self.goal_attack)?;
+        let d = self.current_race.and_then(|i| self.race_defs.get(i))?;
+        let ms = if self.goal_attack {
+            (d.goal_time * 1000.0).round() as i32
+        } else {
+            (self.mc4_tt_run(&d.id)?.2 as f64 * 1000.0).round() as i32
+        };
         let f = self.career.strings.get("RACE_INFO_GOALATTACK_FORMAT").map(|v| v.to_string()).unwrap_or_else(|| "TARGET TIME: <D>RACE_INFO_GOAL_TIME</D>".to_string());
-        Some(fill_d(&f, &crate::flash_ui::race_time((d.goal_time * 1000.0).round() as i32)))
+        Some(fill_d(&f, &crate::flash_ui::race_time(ms)))
     }
 
     /// A picture taken in photo mode, written at once into the slot the album's chooser opens on

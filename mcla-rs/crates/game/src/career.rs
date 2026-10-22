@@ -1322,11 +1322,7 @@ impl Career {
 
     /// Character id ("GH_06") of the rival the oldest hookman mission is about.
     pub fn rival_id(&self) -> Option<String> {
-        let i = *self.order.iter().find(|&&i| {
-            let id = &self.missions[i].id;
-            id.starts_with("RACE_") || id.starts_with("BEAT_") || id.starts_with("REDLIGHT_") || id.starts_with("FIND_")
-        })?;
-        let id = &self.missions[i].id;
+        let id = self.rival_mission()?;
         let parts: Vec<&str> = id.split('_').collect();
         let k = parts.iter().position(|p| *p == "GH" || *p == "SH")?;
         let num: String = parts.get(k + 1)?.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -1334,6 +1330,37 @@ impl Career {
             return None;
         }
         Some(format!("{}_{}", parts[k], num))
+    }
+
+    /// The mission whose man `rival_id` names: the oldest RACE_ / BEAT_ / REDLIGHT_ / FIND_
+    /// mission of the log.
+    pub fn rival_mission(&self) -> Option<String> {
+        let i = *self.order.iter().find(|&&i| {
+            let id = &self.missions[i].id;
+            id.starts_with("RACE_") || id.starts_with("BEAT_") || id.starts_with("REDLIGHT_") || id.starts_with("FIND_")
+        })?;
+        Some(self.missions[i].id.clone())
+    }
+
+    /// The objective of mission `id` whose target racer's icon flashes (racer +466, `icon_subtype`
+    /// 1 of the 3D icon): the refresh sub_8220A0B8 takes each mission that is not bAlwaysHidden
+    /// (+685) and, through sub_826C72D8, in state 2 READY_TO_START or 3 CHECKING_OBJECTIVES, the
+    /// first objective that is not satisfied (+116), not always hidden (+117) and not hidden (+118);
+    /// its target's vehicle element and racer are flagged (sub_822378F8), every other one cleared
+    /// (sub_82238080).
+    pub fn pulse_objective(&self, id: &str) -> Option<usize> {
+        let &i = self.index.get(id)?;
+        let m = &self.missions[i];
+        if m.hidden || self.state[i].stage != Stage::Active || !matches!(self.state_id_of(i), 2 | 3) {
+            return None;
+        }
+        let ext = self.ext.get(i).filter(|_| self.ext_ok(i));
+        m.objectives.iter().enumerate().position(|(k, r)| {
+            let hidden = ext.map_or(r.hidden, |e| e.obj_always[k] || e.obj_hidden[k]);
+            let target = r.conds.first().map_or(1, |c| self.target(m, c));
+            let met = self.state[i].progress.get(k).copied().unwrap_or(0) >= target;
+            !hidden && !met
+        })
     }
 
     /// Display name of a character id.

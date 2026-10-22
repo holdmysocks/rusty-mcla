@@ -516,7 +516,8 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             }
             e.colour = DIFFICULTY[game.mc4_hookman_diff().unwrap_or(1).min(3)];
             e.icon = 4;
-            e.mission = true;
+            // (flashing while his mission's current objective points at him - `Career::pulse_objective`)
+            e.mission = game.career.rival_mission().map_or(false, |m| game.career.pulse_objective(&m) == Some(0));
             e.selected = game.mission_target.is_some();
             push(e);
         }

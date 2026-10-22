@@ -5794,10 +5794,22 @@ impl Game {
 // ---- step 19: the slot system's district locks ----
 //
 // The cruising hookmen's slot system (manager +8596) saves, per district, three "slot hidden"
-// flags and one "district locked" byte (manager +8741 + d). A new game has Hollywood open and
-// the other four locked with their slots hidden. A mission's script opens a district when the
-// mission starts: mcSlotSystem_HideDistrict(d, 0) - the slots shown (0x826CE5B8 -> sub_826CDDC8)
-// - and mcSlotSystem_UnlockDistrict(d, 1) - the lock off and the slots evaluated (0x826CFFC8).
+// flags and one "district locked" byte (manager +8741 + d). A new game has every district locked,
+// Hollywood too, and every slot hidden: the slot system's constructor (sub_826CF9C0, from the
+// manager's sub_826C16C0) sets +145..+151 to 1, and the slot template (sub_826D4360) hidden +80 to
+// 1; nothing native clears them. A mission's script opens a district when the mission starts:
+// mcSlotSystem_HideDistrict(d, 0) - the slots shown (0x826CE5B8 -> sub_826CDDC8) - and
+// mcSlotSystem_UnlockDistrict(d, 1) - the lock off and the slots evaluated (0x826CFFC8).
+// Hollywood is opened by RACE_GH_02's and RACE_SH_01's core scripts when their race is won
+// (`DISTRICTS_WON`).
+
+/// (mission, district, evaluate): the story core scripts that open a district when their
+/// mission is won (mcMission_GetState == 5): RACE_GH_02_CORE (`Story/0x81d83d96` 0x42c7, 0x43e6:
+/// HideDistrict(0, 0), UnlockDistrict(0, 0), then ClearAllDistricts and EvaluateAllDistricts
+/// 0x4401..0x445b) and RACE_SH_01_CORE (`Story/0xc6518ca3` 0x24f5, 0x2597: the same two calls, no
+/// evaluation - the slots are filled at the next ClearAll / EvaluateAll: the garage, a career
+/// load `game/career/0x62e9486d` 0x5e4..0x63e).
+pub const DISTRICTS_WON: [(&str, usize, bool); 2] = [("RACE_GH_02", 0, true), ("RACE_SH_01", 0, false)];
 
 /// (mission, district): the mission scripts that open a district (`game/career/missions/*.sco`,
 /// `sc/career/missions/*.sco`). Districts: 1 Beaches, 2 Hills, 3 Downtown, 4 South Central.
@@ -5818,24 +5830,23 @@ pub const MISSION_DISTRICTS: [(&str, usize); 12] = [
 
 impl Game {
     /// The block's district locks after the career moved; true when they changed. A block
-    /// without the list gets it: a new career the new game's (Hollywood open), a career under
-    /// way every district open (the port had racers cruising everywhere).
-    fn mc4_slots_apply(&self, m: &mut Mc4) -> bool {
+    /// without the list gets it: a new career the new game's (every district locked, every
+    /// slot hidden), a career under way every district open (the port had racers cruising
+    /// everywhere).
+    pub(crate) fn mc4_slots_apply(&self, m: &mut Mc4) -> bool {
         let mut changed = false;
         if m.career.cruising_slots.is_empty() {
             if !m.made_by_port() {
                 return false;
             }
-            for (d, name) in DISTRICTS.iter().enumerate() {
-                let locked = self.fresh_game && d != 0;
+            for name in DISTRICTS {
+                let locked = self.fresh_game;
                 m.career.cruising_slots.push(CruisingSlots { district: name.to_string(), district_locked: locked, slots_hidden: vec![locked; 3], extra: Extra::new() });
             }
             changed = true;
         }
-        for (mission, d) in MISSION_DISTRICTS {
-            if !self.career.mission_started(mission) {
-                continue;
-            }
+        let won = DISTRICTS_WON.iter().filter(|r| self.career.state_at_least(r.0, 5)).map(|r| (r.0, r.1));
+        for (_, d) in MISSION_DISTRICTS.into_iter().filter(|r| self.career.mission_started(r.0)).chain(won) {
             if let Some(s) = m.career.cruising_slots.get_mut(d) {
                 if s.district_locked || s.slots_hidden.iter().any(|h| *h) {
                     s.district_locked = false;
@@ -5854,8 +5865,25 @@ impl Game {
         let Some(d) = DISTRICTS.iter().position(|n| n.eq_ignore_ascii_case(district.trim())) else { return true };
         match self.mc4.as_ref().and_then(|m| m.career.cruising_slots.get(d)) {
             Some(s) => !s.district_locked,
-            None => !self.fresh_game || d == 0,
+            None => !self.fresh_game,
         }
+    }
+
+    /// The district locks brought up to date in the block in hand (`mc4_slots_apply`).
+    pub fn mc4_slots_sync(&mut self) {
+        if let Some(mut m) = self.mc4.take() {
+            if self.mc4_slots_apply(&mut m) {
+                self.dirty = true;
+            }
+            self.mc4 = Some(m);
+        }
+    }
+
+    /// A district that has just opened has its slots evaluated at once: the missions'
+    /// UnlockDistrict(d, 1) and RACE_GH_02's EvaluateAllDistricts; Hollywood opened by RACE_SH_01
+    /// alone waits for the next evaluation (`DISTRICTS_WON`).
+    pub fn mc4_open_evaluates(&self, d: usize) -> bool {
+        d != 0 || DISTRICTS_WON.iter().any(|r| r.2 && r.1 == d && self.career.state_at_least(r.0, 5))
     }
 }
 
@@ -6152,10 +6180,9 @@ pub fn tt_beaten(time_ms: i64, target_ms: i64) -> bool {
     target_ms / 10 * 10 - time_ms / 10 * 10 >= 0
 }
 
-/// A race clock as the game writes it (UIManager_FormatRaceClock): m:ss.cc.
+/// A race clock as the game writes it (UIManager_FormatRaceClock, sub_8223DE50 "%s%02d:%02d.%02d"): mm:ss.cc.
 pub fn tt_clock(ms: i64) -> String {
-    let ms = ms.max(0);
-    format!("{}:{:02}.{:02}", ms / 60000, ms / 1000 % 60, ms / 10 % 100)
+    crate::flash_ui::race_time(ms.clamp(0, i32::MAX as i64) as i32)
 }
 
 /// One row of the hookman's panel: the vehicle, its target time, the player's best.
@@ -6600,7 +6627,7 @@ impl Game {
     ///   race of the table besides (what it had: every race was listed).
     /// - Every block: what the mission scripts unlock when their mission starts
     ///   (`MISSION_UNLOCKS`).
-    fn mc4_races_apply(&self, m: &mut Mc4) -> bool {
+    pub(crate) fn mc4_races_apply(&self, m: &mut Mc4) -> bool {
         let mut changed = false;
         // (not before the race table is read: the list is made from it)
         if m.made_by_port() && !races_counted(m) && !self.race_table.is_empty() {
@@ -9478,6 +9505,18 @@ pub const STORY_LAYOUT: [(&str, bool); 7] = [
     ("BEAT_GH_05_TUNER", false),
 ];
 
+/// The objective a mission's script points at its man (mcRequirement_SetTarget(mcMission_GetObjective(m, k),
+/// mcHookman_GetId(h)) in `game/career/missions/*.sco`): objective 0 in all 53 scripts but BESTOF_SH_05 (1)
+/// and DISTRICT_CHAMPS (GH_20 0x101 objective 0, GH_11 0x21d 1, GH_10 0x339 2).
+pub fn target_objective(mission: &str, man: &str) -> usize {
+    match (mission, man) {
+        ("BESTOF_SH_05", _) => 1,
+        ("DISTRICT_CHAMPS", "GH_11") => 1,
+        ("DISTRICT_CHAMPS", "GH_10") => 2,
+        _ => 0,
+    }
+}
+
 /// (mission, district, character, set-up, priority, the difficulty asked of the set-up, core script)
 pub const MISSION_HOOKMEN: &[(&str, usize, &str, &str, i32, i32, &str)] = &[
     ("BEAT_GH_04_MUSCLE", 0, "GH_04", "GH_04_1_vp_chv_camaross_69", 1, 2, "Game/Career/Story/BEAT_GH_04_MUSCLE_CORE"),
@@ -11574,9 +11613,13 @@ impl Game {
         }
         x.near_was = near;
         let shown = |g: &Game, form: u32| tutorial_keys(form).map_or(false, |k| g.tutorial_box.as_ref().map_or(false, |b| b.0 == k.0));
-        if near && !self.opt_x.s23.near_shown && !Self::mc4_no_tutorial() && self.tutorial_box.is_none() && self.mode == crate::game::Mode::FreeRoam {
+        // (Form_ShowForm(Form_GetForm(-1), form) 0x946: shown over whatever tutorial box is up - the
+        // walkthrough at 1:40.8 has CHALLENGE RACER in the place of the SIDEKICK tip, the phone still
+        // up; a slow-motion tutorial of the runner keeps its place)
+        if near && !self.opt_x.s23.near_shown && !Self::mc4_no_tutorial() && self.opt_x.s23.run.is_none() && self.mode == crate::game::Mode::FreeRoam {
             let form = if !self.mc4_tut_seen("tTFL") { Some(82) } else if !self.mc4_tut_seen("tTFB") { Some(83) } else { None };
             if let Some((t, d)) = form.and_then(tutorial_keys) {
+                log::info!("tutorial form {} shown: a hookman can be flashed", form.unwrap_or(0));
                 self.tutorial_box = Some((t, d, 0.0, 600.0));
             }
             self.opt_x.s23.near_shown = true;
@@ -15005,14 +15048,14 @@ mod tests {
         assert_eq!(tt_evaluate(130881, 125000), Some(130293));
         assert_eq!((tt_evaluate(120000, 125000), tt_evaluate(0, 125000)), (Some(119985), None));
         assert!(tt_beaten(130299, 130293) && tt_beaten(130293, 130293) && !tt_beaten(130300, 130293));
-        assert_eq!((tt_clock(130293), tt_clock(59999), tt_clock(0)), ("2:10.29".to_string(), "0:59.99".to_string(), "0:00.00".to_string()));
+        assert_eq!((tt_clock(130293), tt_clock(59999), tt_clock(0)), ("02:10.29".to_string(), "00:59.99".to_string(), "00:00.00".to_string()));
         std::env::remove_var("MCLA_TT_PICK");
         let Some((g, dir, _)) = race_game("newgame_import.json", "s18ng") else { return };
         // (a new game: nothing saved - the first targets of the scripts answer; the panel has its first row only)
         assert!(!g.mc4_tt_unlocked(0) && !g.mc4_tt_open(0));
         assert_eq!((g.mc4_tt_target(0, 0), g.mc4_tt_target(4, 3), g.mc4_tt_best(0, 0)), (145000, 135000, None));
         let rows = g.mc4_tt_rows(0);
-        assert_eq!(rows[0], TimeTrialRow { car: "1999 ECLIPSE GSX".into(), target: "2:25.00".into(), best: "--:--.--".into(), enabled: true });
+        assert_eq!(rows[0], TimeTrialRow { car: "1999 ECLIPSE GSX".into(), target: "02:25.00".into(), best: "--:--.--".into(), enabled: true });
         assert!(rows[1..].iter().all(|r| !r.enabled && r.target.is_empty()));
         assert_eq!(g.mc4_tt_of("game/Race/Hollywood/Circuit/hw_circuit_mb_01"), None);
         let mut m = g.mc4.clone().unwrap();
@@ -15026,7 +15069,7 @@ mod tests {
         assert_eq!((g.mc4_tt_target(0, 0), g.mc4_tt_target(0, 1), g.mc4_tt_best(0, 0), g.mc4_tt_best(4, 0), g.mc4_tt_best(4, 1)), (130293, 150000, Some(130287), Some(161967), None));
         let rows = g.mc4_tt_rows(0);
         assert!(rows.iter().all(|r| r.enabled));
-        assert_eq!((rows[0].target.as_str(), rows[0].best.as_str(), rows[3].car.as_str()), ("2:10.29", "2:10.28", "2006 GALLARDO SPYDER"));
+        assert_eq!((rows[0].target.as_str(), rows[0].best.as_str(), rows[3].car.as_str()), ("02:10.29", "02:10.28", "2006 GALLARDO SPYDER"));
         // (the race is the time trial of the district - not when it is started from ARCADE)
         let id = "game/Race/Hollywood/Circuit/hw_circuit_mb_01";
         assert_eq!(g.mc4_tt_of(id), Some(0));
@@ -15043,10 +15086,12 @@ mod tests {
         assert_eq!((def.laps, def.goal_time), (1, 130.293));
         g.current_race = Some(k);
         assert_eq!(g.mc4_fixed_difficulty(), Some(1));
+        // (the start badge's line, GetRaceInfo's event kind 2 - `cap/tt_07`)
+        assert_eq!(g.mc4_goal_badge().as_deref(), Some("TARGET TIME: 02:10.29"));
         // (a run above the target: no money, the best time stays, the panel says so)
         let money = g.money;
         assert_eq!(g.mc4_tt_end(id, Some(131.0)), Some(false));
-        assert_eq!(g.mission_results[0], (format!("{}TIME", TT_PANEL), vec!["TARGET TIME: 2:10.29".to_string(), "YOUR TIME: 2:11.00".to_string()], false));
+        assert_eq!(g.mission_results[0], (format!("{}TIME", TT_PANEL), vec!["TARGET TIME: 02:10.29".to_string(), "YOUR TIME: 02:11.00".to_string()], false));
         g.award_race(1, 1);
         assert_eq!((g.money, g.mc4_tt_best(0, 0), g.last_reward), (money, Some(130287), (0, 0)));
         // (a beaten time: the best time, the money of the event at Medium, no reputation)
@@ -15098,19 +15143,48 @@ mod tests {
         assert!(g.mc4_district_open("All") && g.mc4_district_open(""));
         let mut m = g.mc4.clone().unwrap();
         assert!(!g.mc4_slots_apply(&mut m));
-        // (a block of the port: a new career gets the new game's locks, a career under way none)
+        // (a block of the port: a new career gets the new game's locks - every district locked,
+        // every slot hidden: sub_826CF9C0, sub_826D4360 -, a career under way none; the import was
+        // taken after RACE_GH_02 was won, which opens Hollywood)
         g.fresh_game = true;
         let mut m = Mc4::seeded(true);
         assert!(g.mc4_slots_apply(&mut m));
         assert_eq!(m.career.cruising_slots, g.mc4.as_ref().unwrap().career.cruising_slots);
+        assert!(g.mc4_open_evaluates(0) && g.mc4_open_evaluates(3));
+        let rows = |g: &Game| DISTRICTS.iter().map(|d| g.mc4_district_open(d)).collect::<Vec<_>>();
+        let saved = g.mc4.take();
+        assert_eq!(rows(&g), vec![false; 5]);
+        g.mc4 = saved;
+        // (before RACE_GH_02 and RACE_SH_01 are won: Hollywood locked and hidden as well)
+        g.career.new_game();
+        assert!(!g.career.state_at_least("RACE_GH_02", 5) && !g.career.state_at_least("RACE_SH_01", 5));
+        let mut m = Mc4::seeded(true);
+        g.mc4_slots_apply(&mut m);
+        assert!(m.career.cruising_slots.iter().all(|s| s.district_locked && s.slots_hidden == vec![true; 3]));
+        assert!(!g.mc4_open_evaluates(0));
         g.mc4 = None;
-        assert!(g.mc4_district_open("Hollywood") && !g.mc4_district_open("Downtown"));
+        assert!(!g.mc4_district_open("Hollywood") && !g.mc4_district_open("Downtown"));
         g.fresh_game = false;
         assert!(g.mc4_district_open("Downtown"));
         let mut m = Mc4::seeded(false);
         assert!(g.mc4_slots_apply(&mut m));
         assert!(m.career.cruising_slots.iter().all(|s| !s.district_locked && s.slots_hidden == vec![false; 3]));
         // (every mission of the table is a mission of the career)
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// N-HK-1: the flashing icon - the man the current objective of his mission points at.
+    #[test]
+    fn the_flashing_icon_follows_the_objective() {
+        let Some((mut g, dir, _)) = career_game("newgame_import.json", "pulse") else { return };
+        g.career.new_game();
+        // (a new career: RACE_GH_06 open, its objective 0 is TREVOR's - he flashes)
+        assert!(g.career.mission_active("RACE_GH_06"));
+        assert_eq!(g.career.pulse_objective("RACE_GH_06"), Some(0), "state {:?}", g.career.mission_no("RACE_GH_06").map(|i| g.career.state_id_of(i)));
+        assert_eq!(target_objective("RACE_GH_06", "GH_06"), 0);
+        // (a mission not under way: nothing)
+        assert_eq!(g.career.pulse_objective("RACE_GH_02"), None);
+        assert_eq!((target_objective("DISTRICT_CHAMPS", "GH_20"), target_objective("DISTRICT_CHAMPS", "GH_11"), target_objective("DISTRICT_CHAMPS", "GH_10"), target_objective("BESTOF_SH_05", "SH_05")), (0, 1, 2, 1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

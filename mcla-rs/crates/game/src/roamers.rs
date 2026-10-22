@@ -312,10 +312,11 @@ impl Roamers {
             return;
         }
         let perf = game.player_perf();
+        game.mc4_slots_sync();
         let mut eval: Vec<usize> = Vec::new();
         for d in 0..5 {
             let locked = !game.mc4_district_open(DISTRICTS[d]);
-            if self.sys.locked[d] && !locked {
+            if self.sys.locked[d] && !locked && game.mc4_open_evaluates(d) {
                 eval.push(d);
             }
             self.sys.locked[d] = locked;
@@ -702,6 +703,21 @@ impl Roamers {
                 self.cancel(vehicles);
             }
             return None;
+        }
+        // (test hook: MCLA_HOOKMAN_BEHIND="from-to" - between those clock seconds the player is held
+        // 12 m behind the nearest racer at his speed, so that he can be flashed)
+        if let Some((a, b)) = std::env::var("MCLA_HOOKMAN_BEHIND").ok().and_then(|v| v.split_once('-').and_then(|(a, b)| Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)))) {
+            let t = vehicles.clock as f32;
+            if t >= a && t <= b {
+                if let Some(c) = vehicles.cars.iter().filter(|c| c.racer).min_by(|x, y| x.state.pos.distance(pp).total_cmp(&y.state.pos.distance(pp))) {
+                    let (pos, rot, vel, fwd) = (c.state.pos, c.state.rot, c.state.vel, c.state.forward());
+                    if let Some(p) = vehicles.player_mut() {
+                        p.state.pos = pos - fwd * 12.0;
+                        p.state.rot = rot;
+                        p.state.vel = vel;
+                    }
+                }
+            }
         }
         // someone to flash? Racer_CanFlashHookman: within 30 m, ahead, at about our speed
         // (`mc4::can_flash`; its line-of-sight ray is not cast here)

@@ -2396,6 +2396,12 @@ impl App {
                 self.game.mode = Mode::FreeRoam;
             }
         }
+        // diagnostics: Enter pressed at the given ticks (MCLA_NAV_ENTER="300,320")
+        if let Ok(v) = std::env::var("MCLA_NAV_ENTER") {
+            if v.split(',').any(|t| t.trim().parse::<u64>().ok() == Some(self.tick_no as u64)) {
+                self.game.nav_enter = true;
+            }
+        }
         // diagnostics: lay out a race in the editor and run it
         if std::env::var("MCLA_EDITOR_TEST").is_ok() {
             let f = self.tick_no as i64 - 150;
@@ -3146,7 +3152,7 @@ impl App {
                     self.cine_caption = self.game.race.as_ref().map(|r| r.name.to_uppercase().replace('_', " "));
                     // (p080: the walk to the delivery car has no badge - walkthrough 2:44:20; the intro
                     // shows it at its racename event only)
-                    if p080_sc.contains("delivery") || p080_sc.contains("cut_payback_get_keys") {
+                    if p080_sc.contains("delivery") || p080_sc.contains("cut_payback_get_keys") || self.game.active_def.as_ref().map_or(false, |d| d.id == althk::REDLIGHT_RACE_ID) {
                         self.cine_caption = None;
                     }
                     log::info!("prerace scene: {} (delivery intro {})", p080_sc, hudmap::delivery_intro(&p080_sc).is_some());
@@ -3157,13 +3163,17 @@ impl App {
             }
         }
         if self.cine.playing.is_some() {
+            // (the red light's script runs its own clock: Race_SetTimer(-7000) with the timer off over
+            // the start scene, then Race_SetTimer(-4000) on - CruisingHookmen 0x18ac539b; the scene's
+            // countdown and racename events are not its)
+            let red_alt = self.game.active_def.as_ref().map_or(false, |d| d.id == althk::REDLIGHT_RACE_ID);
             let t = if self.cine_free {
                 let skip = (self.cine_caption.is_some() && std::mem::take(&mut self.game.nav_enter)) || (self.cine_prerace && self.game.race.is_none()) || (self.cine_results && self.game.mode != Mode::Results);
                 // (a scene without its own countdown event holds the count; the race-start scripts all
                 // have one - prerace.rs)
-                let own = self.cine.playing.as_ref().map_or(false, |sc| prerace::events(&sc.name).is_some());
+                let own = !red_alt && self.cine.playing.as_ref().map_or(false, |sc| prerace::events(&sc.name).is_some());
                 if let (true, false, Some(r)) = (self.cine_prerace, own, self.game.race.as_mut()) {
-                    r.countdown = r.countdown.max(4.4);
+                    r.countdown = if red_alt { 4.0 } else { r.countdown.max(4.4) };
                 }
                 self.cine.playing.as_mut().and_then(|sc| {
                     sc.t += dt;
@@ -3195,7 +3205,12 @@ impl App {
                     if self.cine_prerace && self.cine.playing.as_ref().map_or(false, |sc| sc.name.contains("cut_payback_get_keys")) {
                         self.game.scene_hud_off = true;
                     }
-                    if let Some(e) = self.cine.playing.as_ref().filter(|_| self.cine_prerace).and_then(|sc| prerace::events(&sc.name)) {
+                    // (the red light's scene - its own clock held, no badge - has no HUD over it:
+                    // `cap/rl_07..10`)
+                    if self.cine_prerace && red_alt {
+                        self.game.scene_hud_off = true;
+                    }
+                    if let Some(e) = self.cine.playing.as_ref().filter(|_| self.cine_prerace && !red_alt).and_then(|sc| prerace::events(&sc.name)) {
                         if let Some(r) = self.game.race.as_mut() {
                             r.countdown = (e.go() - t).max(0.0);
                         }
@@ -3382,7 +3397,12 @@ impl App {
             if go != self.game.map_go {
                 self.game.map_go = go;
                 self.game.hud_map_big = go;
-                self.game.overhead_title = if red { self.redlights.title_key.as_ref().and_then(|k| self.game.career.strings.get(k)).map(|t| t.to_uppercase()) } else { None };
+                // (the red light's script turns the map control's property 0 on with the landmark's
+                // name - 0x5D7A -, but the original's big map has no title bar there: work/hookmen2
+                // `cap/rl_11`. The control (HUD+2624) is not made visible by the red light's HUD
+                // behaviour, sub_82651EA8; who shows it for a delivery's intro is not traced.)
+                let _ = &self.redlights.title_key;
+                self.game.overhead_title = None;
                 // (p080) a delivery intro's title bar: the race's name, then its kind "Delivery" and
                 // the district's emblem (walkthrough 2:46:30; the code that fills mcMapCtrl's
                 // +196 / +200 for it is not traced - the badge's own values are used)
@@ -3422,8 +3442,9 @@ impl App {
                 static NEXT_S: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
                 static CLOCK: std::sync::Mutex<Option<f32>> = std::sync::Mutex::new(None);
                 let mut clock = CLOCK.lock().unwrap();
-                if self.warp.is_some() && clock.is_none() {
-                    *clock = Some(self.warp_t);
+                if (self.warp.is_some() || self.game.race.is_some()) && clock.is_none() {
+                    // (a race without a warp - the freeway race's rolling start - from its first frame)
+                    *clock = Some(if self.warp.is_some() { self.warp_t } else { 0.0 });
                 } else if let Some(c) = clock.as_mut() {
                     *c += dt;
                 }
@@ -4763,6 +4784,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 if self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.vehicles.traffic_target > 0 && !self.vehicles.frozen {
+                    // (no flash while Warper_Warp's climb holds the race about to start - the red light's)
+                    let flash = flash && self.climb.is_none() && self.climb_end.is_none() && self.climb_wait.is_none() && self.pending_action == MenuAction::None;
                     if let Some(race) = self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) {
                         self.game.current_race = Some(race);
                         // only a race against the hookman himself counts for his mission
@@ -4787,6 +4810,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                             self.game.current_race = self.game.race_defs.iter().position(|d| d.id == id);
                             self.game.hookman_race = st.mission;
+                            // Warper_TransitionTo('REDLIGHT') (type 24, `sub_8221A440` 0x8221AA6C): with the
+                            // camera within 100 m of the target, or 300 m in the same district (sub_8224A2B8),
+                            // Warp_RedlightCloseToTarget (Main.sc.xml 612; approx.: the port's dive); else it
+                            // goes on as EXIT_TO_CUT - DEFAULT_WITH_CUT's climb from the camera over the
+                            // player's car, then the dive onto the start scene (`cap/rl_03..07`)
+                            if st.scene.is_some() {
+                                let target = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map_or(Vec3::ZERO, |d| d.grid.first().map_or(d.beacon, |g| g.0));
+                                let d = self.cam.pos.distance(target);
+                                let close = d < 100.0 || (d < 300.0 && self.game.district_at(self.cam.pos) == self.game.district_at(target));
+                                self.game.warp_with_cut = !close;
+                                log::info!("red light warp: {:.0} m from the start, {}", d, if close { "close" } else { "climb (EXIT_TO_CUT)" });
+                            }
                             self.game.prerace_scene = st.scene;
                             self.pending_action = MenuAction::StartRace;
                             if let Some(t) = st.announce.and_then(|k| self.game.career.strings.get(&k).map(|s| s.to_string())) {
@@ -4886,7 +4921,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                         (p, d)
                                     }
                                 };
-                                let mission = !m.mission.is_empty() && self.game.career.mission_active(&m.mission);
+                                // (the flash of the icon: the man the current objective of his mission points at -
+                                // `Career::pulse_objective`, `mc4::target_objective`)
+                                let mission = !m.mission.is_empty() && self.game.career.pulse_objective(&m.mission) == Some(crate::mc4::target_objective(&m.mission, &m.name));
                                 match m.kind {
                                     roamers::ManKind::Slot => (p, d, 3, 4, m.difficulty.clamp(0, 3) as usize, mission),
                                     roamers::ManKind::Tournament => (p, d, 4, 7, m.difficulty.clamp(0, 3) as usize, mission),

@@ -770,6 +770,12 @@ pub struct MenuPage {
     /// rows the list shows at once (`menu.List_max`; 0 = the layout's own). The pause
     /// menu shows six and a scrollbar beside longer lists; the movie scrolls itself.
     pub list_max: usize,
+    /// a header over each column (`menu.headers<n>`, drawn by the movie's `ShowHeaders` in
+    /// `col_headers`, 0x04F8F9 - SetTemplate 0x22481, for the templates it lays out itself:
+    /// 2, 52, the confirmation boxes ...) and per row its cells (`text1..`): `menu.type` is
+    /// the count
+    pub headers: Vec<String>,
+    pub cells: Vec<Vec<String>>,
 }
 
 /// A menu movie: `pause/pause.swf` (pause menu) or `garage/garage.swf`, which
@@ -1322,6 +1328,17 @@ impl FlashMenu {
                 p.set_global("t_banktxt", Value::str(std::env::var("MCLA_BANKTXT").as_deref().unwrap_or("MONEY  ")));
             }
         }
+        if !page.headers.is_empty() {
+            for (k, h) in page.headers.iter().enumerate() {
+                p.set_path(&format!("menu.headers{}", k + 1), Value::str(h));
+            }
+            p.set_path("menu.type", Value::Int(page.headers.len() as i32));
+            for (i, row) in page.cells.iter().enumerate() {
+                for (k, c) in row.iter().enumerate() {
+                    p.set_path(&format!("menu.elements.{}.text{}", i, k + 1), Value::str(c));
+                }
+            }
+        }
         self.shown = Some(page.clone());
     }
 
@@ -1613,6 +1630,10 @@ pub struct RaceHud {
     pub clock_count: Option<(f32, bool)>,
     /// the race clock is not on show (a payback before its client is reached)
     pub clock_off: bool,
+    /// the red light's and the freeway's start: no 3-2-1, the script raises the splash queue 3
+    /// with 2 at the timer's zero - GO alone (`FlashHelper_SetGlobalIntArray(.., "SplashVisibles",
+    /// 3, 2)`, red light 0x5EBE, freeway 0x16DD; hud.r27: `countdownOffline.showGo(1)`)
+    pub go_only: bool,
     /// a payback's wins, wins needed and the meter's full mark (HUD control 10's
     /// properties 1, 2 and 4: `payback_stored`, `payback_level`, `payback_meterMax`)
     pub payback: Option<(i32, i32, f32)>,
@@ -1971,7 +1992,9 @@ impl FlashHud {
         let ms = (shown_time.max(0.0) * 1000.0) as i32;
         // on the grid the original shows the countdown and the map only: clock, place and
         // the cluster come in at GO (reference `t09`..`t11`)
-        let started = race.is_none() || r.countdown <= 0.0;
+        // (the red light's grid has them before its GO - its map, cluster and place: work/hookmen2
+        // `cap/rl_11`, `rl_12`)
+        let started = race.is_none() || r.countdown <= 0.0 || r.go_only;
         // (p080: a delivery's cluster is up already under its intro's overhead map and through the
         // count - walkthrough 2:46:30 / 2:46:34; its clock still comes in at GO)
         let gauges = started || r.kind == RaceHudKind::Delivery;
@@ -2011,12 +2034,16 @@ impl FlashHud {
         }
         // the 3-2-1-GO splash: the movie animates it itself once its splash slot 3 is
         // raised (`showCountdown`, one number per 1/countdownUpdate frames)
-        if race.is_some() && r.countdown > 0.0 && r.countdown <= 3.0 && !self.countdown_shown {
+        if race.is_some() && !r.go_only && r.countdown > 0.0 && r.countdown <= 3.0 && !self.countdown_shown {
             self.countdown_shown = true;
             p.set_global("countdownUpdate", Value::Float(1.0 / 30.0));
             p.set_path("SplashVisibles.3", Value::Int(1));
         }
-        if race.is_none() || r.countdown > 3.0 {
+        if race.is_some() && r.go_only && r.countdown <= 0.0 && r.elapsed < 0.5 && !self.countdown_shown {
+            self.countdown_shown = true;
+            p.set_path("SplashVisibles.3", Value::Int(2));
+        }
+        if race.is_none() || r.countdown > 3.0 || (r.go_only && r.countdown > 0.0) {
             self.countdown_shown = false;
         }
         self.post_splashes();

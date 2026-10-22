@@ -4754,6 +4754,8 @@ impl Game {
                         tab_icons: Vec::new(),
                         row_props: ctrl_page.as_ref().map(|c| c.props.clone()).unwrap_or_default(),
                         list_max: if self.pause_page == 68 { 15 } else if genres { 0 } else { 6 },
+                        headers: Vec::new(),
+                        cells: Vec::new(),
                     }
                 });
                 // (a message box takes the panel while it is up)
@@ -7124,6 +7126,8 @@ impl Game {
                         row_props: Vec::new(),
                             description: String::new(),
                             list_max: 0,
+                            headers: Vec::new(),
+                            cells: Vec::new(),
                         };
                         let pictures = std::path::Path::new(&self.data_dir).join("resources/ui/textures/garage/dyntextures");
                         // (the highlighted vehicle's, whether or not its model has arrived yet)
@@ -7491,6 +7495,26 @@ impl Game {
                     ro.push((s("pause_view_replay", "VIEW REPLAY"), 12));
                     // (the seventh row, under the list's fold: reference `y_over_garage`)
                     ro.push((s("pause_go_to_garage", "GO TO GARAGE"), 13));
+                }
+                // (a red light race's - mcRedLightMenu, sub_82663640 over the base sub_82660310; work/hookmen2
+                // `re/raceover.md`, `cap/rl_19`): RETURN TO CRUISE; RACE AGAIN only with the car wrecked
+                // (sub_82207138: health / tune >= 1), RACE BACK only with `raceBack` and the car not wrecked;
+                // RACE RESULTS; VIEW REPLAY (every race offline); GO TO GARAGE (sub_826648F8 - the race is
+                // over and sub_826632C0: a district's garage state 2 and the flag tGAR; approx.: taken as
+                // met); no NEXT RACE, no favourites
+                if movie && self.active_def.as_ref().map_or(false, |d| d.id == crate::althk::REDLIGHT_RACE_ID) {
+                    let wrecked = vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
+                    ro = vec![(s("pause_return_cruise", "RETURN TO CRUISE"), 2)];
+                    if wrecked {
+                        ro.push((s("pause_restart_race", "RACE AGAIN"), 1));
+                    } else if self.alt_race_back_offered() {
+                        ro.push((s("pause_race_back", "RACE BACK"), 21));
+                    }
+                    ro.extend([
+                        (s("pause_race_results", "RACE RESULTS"), 9),
+                        (s("pause_view_replay", "VIEW REPLAY"), 12),
+                        (s("pause_go_to_garage", "GO TO GARAGE"), 13),
+                    ]);
                 }
                 // (a series' race-over menu - mcSeriesMenu, sub_826639B8 / sub_82664090; `sr_raceover`:
                 // NEXT RACE IN SERIES, QUIT SERIES, RESTART SERIES, SERIES STANDINGS, ADD RACE TO
@@ -7933,7 +7957,9 @@ impl Game {
                 let _ = (&dive_name, p080_dl);
                 let badge_from = self.cine.as_ref().filter(|s| !s.is_empty());
                 let race_badge = match (badge_from, self.race.as_ref(), self.current_race.and_then(|i| self.race_defs.get(i))) {
-                    (Some(sub), Some(_), Some(d)) if !self.cine_black && self.flash_popup.is_some() && self.message_box.is_none() && self.arrest_panel.is_none() => {
+                    // (not the red light's: its script plays the start scene and names the race only on
+                    // the big map, mapGoBig with gps_racename - work/hookmen2 `cap/rl_07..11`)
+                    (Some(sub), Some(_), Some(d)) if !self.cine_black && self.flash_popup.is_some() && self.message_box.is_none() && self.arrest_panel.is_none() && !crate::althk::is_alt_race(&d.id) => {
                         let name = self.career.strings.get(&d.id).filter(|v| !v.contains('<')).map(|v| v.to_uppercase()).unwrap_or_else(|| sub.clone());
                         let key = match d.sub_type.to_ascii_lowercase().as_str() {
                             "ordered" => "cp_ordered",
@@ -8119,7 +8145,11 @@ impl Game {
                         } else {
                             let st = |k: &str| self.career.strings.get(k).map(|v| v.to_string()).unwrap_or_default();
                             // (the mission log's box carries its prompt: MISSION LOG (Back) - `ng_tut_missionlog`)
-                            let prompts = if title.contains("target") || self.mc4_tut_continue(&title) { vec![(self.career.strings.get("prompt_continue").map(|v| v.to_uppercase()).unwrap_or_else(|| "CONTINUE".into()), crate::flash_ui::ICON_A)] } else if title.contains("mission_log") { vec![(self.career.strings.get("Navmap_Prompt_MissionLog").map(|v| v.to_uppercase()).unwrap_or_else(|| "MISSION LOG".into()), crate::flash_ui::ICON_BACK_BUTTON)] } else { Vec::new() };
+                            let prompts = if title.contains("target") || self.mc4_tut_continue(&title) { vec![(self.career.strings.get("prompt_continue").map(|v| v.to_uppercase()).unwrap_or_else(|| "CONTINUE".into()), crate::flash_ui::ICON_A)] } else if title.contains("mission_log") { vec![(self.career.strings.get("Navmap_Prompt_MissionLog").map(|v| v.to_uppercase()).unwrap_or_else(|| "MISSION LOG".into()), crate::flash_ui::ICON_BACK_BUTTON)] } else if title == "tutorial_challenge_title" || title == "tutorial_flash_title" {
+                                // (forms 82 / 83: one prompt, `tutorial_prompt_flash` - the list 0x829072AC of
+                                // sub_8267E2D8 / sub_8267E368 -, the flash's button: Y in the walkthrough at 1:44)
+                                vec![(self.career.strings.get("tutorial_prompt_flash").map(|v| v.to_uppercase()).unwrap_or_else(|| "FLASH HEADLIGHTS".into()), crate::flash_ui::ICON_Y)]
+                            } else { Vec::new() };
                             let page = crate::flash_ui::MenuPage { layout: crate::flash_ui::MenuLayout::Tutorial { description: st(&text) }, title: st(&title), select: usize::MAX, prompts, ..Default::default() };
                             let which = std::env::var("MCLA_TUT_MOVIE").unwrap_or_default();
                             let fm = if which == "pause" { self.flash_menu.as_mut() } else { self.flash_popup.as_mut() };
@@ -8365,7 +8395,11 @@ impl Game {
             // (a payback's leg script turns the clock's property 0 on when the client is
             // reached - PaybackLegCore 0x0bf4; a delivery's clock has no countdown pie)
             clock_count: s19a_clock.map(|c| (c.1, c.2)).or((race.kind == RaceKind::Payback && race.time_limit > 0.0).then(|| ((race.time_limit - race.time) / 10.0, false))),
-            clock_off: s19a_pb.map_or(false, |p| !p.3),
+            // (the HUD's behaviour by the race's event kind, sub_8264F830: the red light's (11)
+            // and the freeway's (5) lay out the race's and then hide the clock, control 6 -
+            // sub_82651EA8 / sub_82652018)
+            clock_off: s19a_pb.map_or(false, |p| !p.3) || self.active_def.as_ref().map_or(false, |d| crate::althk::is_alt_race(&d.id)),
+            go_only: self.active_def.as_ref().map_or(false, |d| crate::althk::is_alt_race(&d.id)),
             payback: s19a_pb.map(|p| (p.0, p.1, p.2)),
             payback_vis: self.mc4_payback_vis(),
             lap: (next / lap_len + 1).min(laps) as i32,
@@ -11210,9 +11244,8 @@ impl Game {
         let diff_rows = |mut rows: Vec<MenuRow>| { if !diff_shown { rows.remove(0); } rows };
         // (the time trial man's panel - form 65, sub_8267B370: a list of four rows, one a
         // vehicle, with the columns CAR_COL_NAME, TARGET_TIME_LABEL, BEST_TIME_COL_NAME; the
-        // title is the district's key, the text TIMETRIAL_HOOKMAN_DESC; ACCEPT / BACK. No
-        // capture of it exists: it is put on the template the tournament's panel uses, the
-        // column names as a first, grey row.)
+        // title is the district's key, the text TIMETRIAL_HOOKMAN_DESC; ACCEPT / BACK. It
+        // stands beside the car on the pause camera as the delivery's does - `cap/tt_04`.)
         let s19h_tt = Self::mc4_tt_panel_district(&key);
         // (the SERVICE STATION menu - form 61, mcGasStationMenuForm: SimpleListForm with the title
         // "Gas Station", no description, rows FULL FIX and REFILL NITRO - the second only with
@@ -11248,16 +11281,25 @@ impl Game {
                 cur = (cur + 1..n).find(|&k| rows[k].enabled).unwrap_or(cur);
             }
             self.hangout_page = (0, cur);
-            let mut list = vec![MenuRow { label: st("CAR_COL_NAME", "CAR").to_uppercase(), value: format!("{}     {}", st("TARGET_TIME_LABEL", "TARGET TIME").to_uppercase(), st("BEST_TIME_COL_NAME", "BEST TIME").to_uppercase()), enabled: false, part: None }];
-            list.extend(rows.iter().map(|r| MenuRow { label: r.car.to_uppercase(), value: if r.enabled { format!("{}     {}", r.target, r.best) } else { String::new() }, enabled: r.enabled, part: None }));
+            // (the columns' names are the list's headers, sub_826347F0 with three of them: the
+            // movie draws them over the rows in its `col_headers` cyan - `cap/tt_04`)
+            let headers = vec![st("CAR_COL_NAME", "CAR").to_uppercase(), st("TARGET_TIME_LABEL", "TARGET TIME").to_uppercase(), st("BEST_TIME_COL_NAME", "BEST TIME").to_uppercase()];
+            let list: Vec<MenuRow> = rows.iter().map(|r| MenuRow { label: r.car.to_uppercase(), value: if r.enabled { r.target.clone() } else { String::new() }, enabled: r.enabled, part: None }).collect();
+            let cells: Vec<Vec<String>> = rows.iter().map(|r| if r.enabled { vec![r.car.to_uppercase(), r.target.clone(), r.best.clone()] } else { vec![r.car.to_uppercase(), String::new(), String::new()] }).collect();
             MenuPage {
-                layout: MenuLayout::Hangout { description: st("TIMETRIAL_HOOKMAN_DESC", ""), slider: None, money: None },
+                // (template_confbox, 3, of the pause movie - `cap/tt_04`: of the templates its
+                // SetTemplate lays out, the confirmation boxes' branch alone shows a text
+                // (ShowDescription, 0x21ec6) and goes on to ShowHeaders (0x22481); the hangout
+                // template, 64, has no column headers, template_Menu no text)
+                layout: MenuLayout::Confirm { description: st("TIMETRIAL_HOOKMAN_DESC", "") },
                 icon: std::env::var("MCLA_HANGOUT_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(HANGOUT_ICON),
                 title: st(crate::mc4::TIME_TRIALS[d].key, "TIME TRIAL").to_uppercase(),
                 rows: list,
-                select: cur + 1,
+                select: cur,
                 prompts: vec![accept.clone(), (st("prompt_back", "BACK").to_uppercase(), ICON_B)],
-                list_max: 5,
+                list_max: 4,
+                headers,
+                cells,
                 ..MenuPage::default()
             }
         } else if s15b_event {
@@ -11424,7 +11466,7 @@ impl Game {
         if let Some(fm) = self.flash_menu.as_mut() {
             fm.show(&page);
             fm.movie.player.set_global("moviepausemode", mcla_flash::value::Value::Int(3));
-            if delivery {
+            if delivery || s19h_tt.is_some() {
                 // (the delivery's panel stands beside the car as the pause menu's does, on the
                 // pause camera - `dl_panel_medium`; the hangouts' own are flat at the top left)
                 fm.movie.player.set_global("cur_camera", mcla_flash::value::Value::Int(std::env::var("MCLA_PAUSE_CAM").ok().and_then(|v| v.parse().ok()).unwrap_or(1)));
@@ -11445,7 +11487,7 @@ impl Game {
             }
             match (crate::menu3d::read_scene(&mut fm.movie.player), self.ui_meshes.as_mut()) {
                 (Some(scene), Some(meshes)) => {
-                    if delivery {
+                    if delivery || s19h_tt.is_some() {
                         self.pause_cam = Some((scene.cam.position, scene.cam.lookat, scene.cam.fovy));
                     }
                     crate::menu3d::paint(ctx, &lp, meshes, &mut fm.movie, &scene, None)
@@ -11670,6 +11712,13 @@ impl Game {
         }
         if enter {
             self.starter_pick = None;
+            // (the career's block is made now, while the game still knows it is a new one: the
+            // slot system's new-game locks and the start-up's races - `mc4_slots_apply`,
+            // `mc4_races_apply`)
+            let mut m = self.mc4.take().unwrap_or_else(|| crate::mc4::Mc4::seeded(true));
+            self.mc4_slots_apply(&mut m);
+            self.mc4_races_apply(&mut m);
+            self.mc4 = Some(m);
             self.fresh_game = false;
             // (a new career's first tutorial, with the first call - `ng_c4`)
             self.tutorial_box = Some(("tutorial_sidekick_title".into(), "tutorial_sidekick_desc".into(), 3.0, 12.0));
