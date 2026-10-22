@@ -1079,6 +1079,10 @@ impl CarAsset {
                 }
             }
         }
+        // (the trunk piece: the body draw sub_8235D500 shows slot 4 `trunk_swap` without the wide
+        // body kit and slot 43 `trunk_wide` with it - tables 0x82050D9C / 0x82050DDC at
+        // 0x8235DCAC - at the record's index, 0 on every car; a car without the piece shows none)
+        want.insert(Slot::Trunk, if wide_body { "trunk_wide0" } else { "trunk_swap0" }.to_string());
         // hinge slots that are not customisable (doors, trunk, steering wheel, door interiors)
         // still need exactly one part even when none of the variants carries a stock name
         for slot in [Slot::DoorL, Slot::DoorR, Slot::DoorLInt, Slot::DoorRInt, Slot::Trunk, Slot::Steer, Slot::Hood, Slot::Intercooler, Slot::Body] {
@@ -1146,16 +1150,28 @@ impl CarAsset {
     /// round: with both, its half-metre pipes would stand out of the back of the car).
     pub fn placed_parts_for(&self, cfg: &CarConfig) -> Vec<(&CarPart, Mat4)> {
         let parts = self.parts_for(cfg);
-        let rank = |p: &CarPart| match p.primary.to_ascii_lowercase() {
-            n if n.starts_with("widebody") => 0,
-            n if n.starts_with("bumper_r") => 1,
-            _ => 2,
+        // (the outlet bones as sub_82357960 finds them: the base body's skeleton first, then the
+        // drawn parts in the order of their slots - the part-name table 0x827E9608)
+        let rank = |p: &CarPart| {
+            if p.is_base {
+                return 0;
+            }
+            let n = p.primary.to_ascii_lowercase();
+            1 + crate::mc4::PARTS.iter().position(|s| n.strip_prefix(s).is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))).unwrap_or(99)
         };
+        // (sub_82359C10: the tip at `exh_primary0` as the bone stands and at `exh_secondary0` with the
+        // bone's x row negated - the mirror image, drawn with the cull mode flipped; vehicles.rs
+        // reverses the winding of a mirrored instance)
         let outlets: Vec<Mat4> = if std::env::var("MCLA_MOUNT_OLD").is_ok() {
             Vec::new()
         } else {
-            parts.iter().filter(|p| !p.sockets.is_empty()).min_by_key(|p| rank(p)).map(|p| p.sockets.iter().map(|(_, m)| p.transform * *m).collect()).unwrap_or_default()
+            parts.iter().filter(|p| !p.sockets.is_empty()).min_by_key(|p| rank(p)).map(|p| p.sockets.iter().map(|(n, m)| {
+                let mirror = if n.starts_with("exh_secondary") { Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)) } else { Mat4::IDENTITY };
+                p.transform * *m * mirror
+            }).collect()).unwrap_or_default()
         };
+        // (a side exhaust fitted - the part byte of slot 24: the side pipes alone, no rear tips)
+        let side = cfg.extra.get("side_exhaust").copied().unwrap_or(0) != 0;
         if log::log_enabled!(log::Level::Debug) {
             for p in parts.iter().filter(|p| !p.sockets.is_empty()) {
                 log::debug!("exhaust outlets of {} (at {:?}): {:?}", p.primary, p.transform.w_axis.truncate(), p.sockets.iter().map(|(n, m)| (n.as_str(), m.w_axis.truncate(), m.z_axis.truncate())).collect::<Vec<_>>());
@@ -1163,6 +1179,9 @@ impl CarAsset {
         }
         let mut out = Vec::with_capacity(parts.len() + 2);
         for p in parts {
+            if side && p.primary.to_ascii_lowercase().starts_with("exh_pipe") {
+                continue;
+            }
             if !outlets.is_empty() && p.primary.to_ascii_lowercase().starts_with("exh_pipe") {
                 let root = p.mesh_bone.first().copied().unwrap_or(Mat4::IDENTITY).inverse();
                 out.extend(outlets.iter().map(|m| (p, *m * root)));

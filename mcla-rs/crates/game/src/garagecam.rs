@@ -46,7 +46,16 @@ impl Views {
         let base = car.to_ascii_lowercase();
         // (the DUB editions use their base car's garage)
         let names = [base.clone(), base.replace("_dub", "")];
-        let text = names.iter().find_map(|n| std::fs::read_to_string(Path::new(data_dir).join("tune/garage").join(format!("0x{:08x}", mcla_formats::hash::joaat(&format!("{n}.garage"))))).ok())?;
+        let read = |n: &str| std::fs::read_to_string(Path::new(data_dir).join("tune/garage").join(format!("0x{:08x}", mcla_formats::hash::joaat(&format!("{n}.garage"))))).ok();
+        let text = names.iter().find_map(|n| read(n))?;
+        // (the cut GT-R's file was left unfinished - no WholeCarViewMenuOffsetZ / MenuScaleX / MenuScaleY,
+        // no RearLowCloseMenuScaleY: the VEHICLE tab's panel had no size. Its stand-in's file goes first,
+        // its own lines after it - catalog::tune_donor)
+        let text = match crate::catalog::tune_donor(&base).and_then(|d| read(d)) {
+            Some(donor) => format!("{donor}
+{text}"),
+            None => text,
+        };
         let mut v = Views { transition: 0.7, ..Default::default() };
         for line in text.lines() {
             let mut it = line.split_whitespace();

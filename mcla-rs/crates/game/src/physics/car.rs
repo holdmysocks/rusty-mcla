@@ -394,6 +394,15 @@ impl CarState {
         self.pos = pos;
         self.rot = rot;
     }
+    /// Takes the body damage of `old` onto this state - the damage points, the zones, the damage map's
+    /// dents and the loose parts: a car put down somewhere else, or built again with other parts, is
+    /// the same car with the damage it had (the garage asks about it - `Game::mc4_repair_gate`).
+    pub fn keep_damage(&mut self, old: &CarState) {
+        self.damage = old.damage;
+        self.zones = old.zones;
+        self.dmg = old.dmg.clone();
+        self.parts = old.parts.clone();
+    }
     pub fn speed(&self) -> f32 {
         self.vel.length()
     }

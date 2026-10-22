@@ -4819,6 +4819,11 @@ impl Game {
         let leaving = back || (enter && at_exit);
         let need = if leaving { damage > 0.9 } else { zones.iter().any(|z| *z > 0.05) };
         if !need {
+            // (RepairBeforeCustomizing with no zone above 0.05: no box, the car repaired as it goes in - free,
+            // scrapes and all - `sub_826A53C8` -> `sub_822A7388`)
+            if !leaving {
+                self.repair_car = true;
+            }
             return (enter, back);
         }
         let mean = zones.iter().map(|z| z.clamp(0.0, 1.0)).sum::<f32>() / 4.0;
@@ -4838,19 +4843,19 @@ impl Game {
             // (no box to ask in: repaired as chosen)
             _ => {
                 self.money -= price;
-                self.quick_fix = true;
+                self.repair_car = true;
                 self.dirty = true;
                 (enter, back)
             }
         }
     }
 
-    /// YES in the REPAIR box: the car is repaired at the price shown (`quick_fix`: the
-    /// window's loop straightens the car out), and the row or the way out is taken.
+    /// YES in the REPAIR box: the car is repaired at the price shown (`repair_car`: the
+    /// window's loop resets its damage, the scrapes too), and the row or the way out is taken.
     pub fn mc4_repair_finish(&mut self) {
         if let Some((kind, price)) = self.car_x.repair_pending.take() {
             self.money -= price.min(self.money.max(0));
-            self.quick_fix = true;
+            self.repair_car = true;
             self.dirty = true;
             self.car_x.repair_go = Some(kind);
         }
@@ -12916,7 +12921,7 @@ mod tests {
     }
 
     /// The garage's REPAIR boxes: asked before MANAGE / CUSTOMIZE / SHOWROOM for a dented car,
-    /// before leaving for a wreck; nothing is repaired or charged otherwise.
+    /// before leaving for a wreck; a row taken without a box repairs for nothing; the way out charges nothing otherwise.
     #[test]
     fn garage_repair_gate() {
         let Some((mut g, dir, _)) = game_on("full_import.json", "repair") else { return };
@@ -12929,29 +12934,34 @@ mod tests {
         let scraped = Some(([0.05f32, 0.0, 0.01, 0.0], 0.4f32));
         assert_eq!(g.mc4_repair_gate(true, true, false, false, 0, scraped), (true, false));
         assert_eq!(g.mc4_repair_gate(true, true, false, true, 3, scraped), (true, false));
-        assert_eq!((g.money, g.quick_fix, g.car_x.repair_pending), (money, false, None));
+        // (a row taken with no zone above 0.05 repairs the car on the way in, free - sub_826A53C8 -> sub_822A7388;
+        // the way out does not)
+        assert_eq!((g.money, g.repair_car, g.car_x.repair_pending), (money, true, None));
+        g.repair_car = false;
+        assert_eq!(g.mc4_repair_gate(true, false, true, false, 0, scraped), (false, true));
+        assert!(!g.repair_car);
         // (a dented zone: CUSTOMIZE VEHICLE asks - no box to ask in here, so it is repaired as
         // chosen, at the fix price - but the way out does not)
         let dented = Some(([0.0f32, 0.3, 0.0, 0.0], 0.2f32));
         assert_eq!(g.mc4_repair_gate(true, false, true, false, 1, dented), (false, true));
         assert_eq!(g.mc4_repair_gate(true, true, false, true, 3, dented), (true, false));
-        assert_eq!((g.money, g.quick_fix), (money, false));
+        assert_eq!((g.money, g.repair_car), (money, false));
         let price = g.fix_price(0.2f32.max(0.3 / 4.0), true);
         assert!(price >= 125);
         assert_eq!(g.mc4_repair_gate(true, true, false, false, 1, dented), (true, false));
-        assert_eq!((g.money, g.quick_fix), (money - price, true));
+        assert_eq!((g.money, g.repair_car), (money - price, true));
         // (a wreck: no way out without the repair)
-        g.quick_fix = false;
+        g.repair_car = false;
         let wreck = Some(([0.0f32; 4], 0.95f32));
         let price = g.fix_price(0.95, false);
         assert_eq!(g.mc4_repair_gate(true, false, true, false, 0, wreck), (false, true));
-        assert_eq!((g.money, g.quick_fix), (money - g.fix_price(0.2f32.max(0.3 / 4.0), true) - price, true));
+        assert_eq!((g.money, g.repair_car), (money - g.fix_price(0.2f32.max(0.3 / 4.0), true) - price, true));
         // (not the top menu, or someone else's car: nothing is asked)
-        g.quick_fix = false;
+        g.repair_car = false;
         assert_eq!(g.mc4_repair_gate(false, true, false, false, 0, dented), (true, false));
         g.borrowed = true;
         assert_eq!(g.mc4_repair_gate(true, true, false, false, 1, dented), (true, false));
-        assert!(!g.quick_fix);
+        assert!(!g.repair_car);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -208,6 +208,43 @@ pub fn tune_donor(car: &str) -> Option<&'static str> {
     car.eq_ignore_ascii_case(CUT_GTR).then_some("vp_aud_r8_08")
 }
 
+/// The price list a car's garage uses when the disc has none (`<car>_parts.gtun`): the cut GT-R
+/// takes the Audi RS4's, the disc's dearest list with the GT-R's own layout (five of each body
+/// piece, an intercooler, a wide body, six seats / wheels / exhausts), with its car-made pieces
+/// (brand 0: bumpers, skirts, lamps, hood, body kit) raised to the R8's level by the body kits'
+/// ratio (R8 $30,600 / RS4 $13,030, rounded to $5) and the branded aftermarket parts at the
+/// list's own prices. The R8's own list has three of each piece, which leaves the GT-R's
+/// fourth and fifth without a row. The third value is the maker's logo the stock rows show
+/// (Nissan's 52, as in the 350Z's and the Skyline's lists, for the RS4's Audi 35).
+pub fn price_donor(car: &str) -> Option<(&'static str, &'static str, i32)> {
+    car.eq_ignore_ascii_case(CUT_GTR).then_some(("vp_aud_rs4_07", "vp_aud_r8_08", 52))
+}
+
+/// Scales the car-made rows of the donor's list (see `price_donor`) to the level of `level`'s.
+pub fn scale_price_list(
+    rows: &std::collections::HashMap<String, Vec<(i32, i64, usize)>>,
+    level: &std::collections::HashMap<String, Vec<(i32, i64, usize)>>,
+    maker: i32,
+) -> std::collections::HashMap<String, Vec<(i32, i64, usize)>> {
+    // (the donor's maker: the logo of its stock rows)
+    let own = rows.get("bumper_front").and_then(|l| l.first()).map_or(-1, |r| r.0);
+    let kit = |l: &std::collections::HashMap<String, Vec<(i32, i64, usize)>>| l.get("body").and_then(|b| b.iter().find(|r| r.2 == 1)).map_or(0, |r| r.1);
+    let (from, to) = (kit(rows), kit(level));
+    rows.iter()
+        .map(|(sec, list)| {
+            // (the scissor doors are a fitted kit whose price each list sets itself)
+            let kit = level.get(sec.as_str()).filter(|_| sec == "scissor_door");
+            let list: Vec<(i32, i64, usize)> = kit.cloned().unwrap_or_else(|| {
+                list.iter()
+                    .map(|&(brand, price, index)| (brand, if brand == 0 && from > 0 && to > 0 { ((price * to) as f64 / from as f64 / 5.0).round() as i64 * 5 } else { price }, index))
+                    .collect()
+            });
+            let list = list.into_iter().map(|(brand, price, index)| (if brand == own { maker } else { brand }, price, index)).collect();
+            (sec.clone(), list)
+        })
+        .collect()
+}
+
 /// The car whose sound profile a car uses: the 350Z's V6 for the cut GT-R (the disc's
 /// `VPD_NSN_GTR_08_PROFILE` points at the R8's engine; the user chose the 350Z's).
 pub fn sound_car(car: &str) -> &str {
@@ -244,3 +281,26 @@ impl Catalog {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    /// The cut GT-R's garage lists every one of its pieces at a price (the disc has no list).
+    #[test]
+    fn cut_gtr_parts_have_prices() {
+        let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        if !std::path::Path::new(&data).join("tune/garage").is_dir() {
+            return;
+        }
+        let mut g = crate::game::Game::new(vec![std::path::PathBuf::from(&data).join("resources/vehicle").join(super::CUT_GTR)], 0);
+        g.load_perf_prices(&data);
+        let rows = |s: &str| g.part_entries_sec(0, s).cloned().unwrap_or_default();
+        let bf = rows("bumper_front");
+        assert_eq!(bf.iter().map(|r| r.1).collect::<Vec<_>>(), vec![0, 2265, 3310, 4425, 5390]);
+        assert_eq!(rows("body")[1].1, 30600);
+        assert_eq!(rows("hood").len(), 5);
+        // (a branded part keeps its own price: the 625 wing)
+        assert_eq!(rows("spoiler")[1], (56, 625, 1));
+        assert_eq!(rows("scissor_door")[1].1, 11800);
+        // (Nissan's logo on the stock rows)
+        assert_eq!(rows("steer_whl")[0].0, 52);
+    }
+}

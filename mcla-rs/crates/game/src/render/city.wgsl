@@ -1788,6 +1788,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // the main view's have 0x8700001c - a fence is a solid sheet there)
         discard;
     }
+    // (the cars' badges, BumpedAlphaChrome - chrome marked uv2.y = 3: alpha 2 x the bump map's alpha - 1, cut out
+    // where it is not above 0; the alpha test's own reference is not recorded - approx.)
+    if (mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && albedo.a <= 0.5) {
+        discard;
+    }
     // (the cars' BumpSpecAlpha parts - marked in uv2.y, bit 16 of the colour's alpha: cut out as before)
     if (mat.mode == 9u && in.uv2.y > 0.5 && obj.params.w > 15.5 && (u32(round(in.color.a * 255.0)) & 16u) != 0u && albedo.a < 0.5) {
         discard;

@@ -61,6 +61,8 @@ pub struct CarDamage {
     pub stamped: bool,
     /// the respawn's repair (+2149): the dents go at the next draw, the scrapes stay
     pub repair: bool,
+    /// the full reset (+2150, `sub_82308888` from `sub_82353890`): dents and scrapes go at the next draw
+    pub reset: bool,
     /// a window's hit sum passed 1 or 2 (0x82376B78): the window's place in the car, numbered on
     /// (`glass_serial`) so the effect and the sound each take every one once; the last 8 kept
     pub glass: Vec<(u64, Vec3)>,
@@ -160,6 +162,13 @@ impl CarDamage {
         self.scrapes.clear();
         self.repair = true;
     }
+
+    /// The full reset (mcCarModel vt[1] = 0x82353890 - a new car, the garage's `game.repairCar` through
+    /// `sub_822A7388`): as the repair, and the map's scrapes cleared too.
+    pub fn reset(&mut self) {
+        self.repair();
+        self.reset = true;
+    }
 }
 
 /// A stamp's shape: the red channel of `dmg_test_4.dds` (dents) or `dmg_test_3.dds` (scrapes).
@@ -258,6 +267,13 @@ impl MapPixels {
         }
     }
 
+    /// The full reset (+2150, 0x82308888): red and blue to 0, green and alpha from the layout.
+    pub fn reset(&mut self) {
+        for (p, l) in self.px.iter_mut().zip(self.layout.iter()) {
+            *p = [0, l[0], 0, l[1]];
+        }
+    }
+
     /// One stamp (0x82308F18, VertDamageBlit): a quad at c = (dir.x, dir.z) of half size `sx`
     /// across and `sy` x |c.xy| / |c| (c's third value -0.1) along the radius, its texture's red x
     /// trunc(amount x 255) / 255 added into `channel` (0 red, 2 blue), saturating at 1.
@@ -318,7 +334,11 @@ impl MapPixels {
         let mut changed = false;
         if d.repair {
             d.repair = false;
-            self.repair();
+            if std::mem::take(&mut d.reset) {
+                self.reset();
+            } else {
+                self.repair();
+            }
             changed = true;
         }
         if let Some((dent, scrape)) = SHAPES.get() {
@@ -440,6 +460,11 @@ mod tests {
         m.px[1000] = [77, 1, 55, 2];
         m.repair();
         assert_eq!(m.px[1000], [0, (1000 % 251) as u8, 55, (1000 % 13) as u8]);
+        // (the full reset - the garage's repairCar, a new car - takes the scrapes too)
+        let mut d = CarDamage::default();
+        d.reset();
+        assert!(m.apply(&mut d) && !d.reset);
+        assert_eq!(m.px[1000], [0, (1000 % 251) as u8, 0, (1000 % 13) as u8]);
         // (a 128 x 128 layout is spread over the 256 x 256 map)
         let small: Vec<u8> = (0..128 * 128).flat_map(|_| [0u8, 200, 0, 100]).collect();
         assert_eq!(MapPixels::with_layout(&small, 128, 128).px[SIZE * SIZE - 1], [0, 200, 0, 100]);

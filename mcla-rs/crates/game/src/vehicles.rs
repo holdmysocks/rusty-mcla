@@ -856,7 +856,7 @@ fn car_mode(shader: &str) -> MatMode {
         MatMode::BlackGloss
     } else if s.contains("glass") {
         MatMode::CarGlass
-    } else if s.contains("alphachrome") {
+    } else if s.contains("alphachrome") && std::env::var("MCLA_BADGE_OLD").is_ok() {
         MatMode::AlphaTest
     } else if s.contains("chrome") || s.contains("brushedmetal") || (s.contains("metal") && !s.contains("grime")) {
         MatMode::Chrome
@@ -1054,9 +1054,16 @@ impl MergeAcc {
             };
             self.verts.push(Vertex { pos: pos.to_array(), normal: nrm.to_array(), uv0: uv0.to_array(), uv1: uv1.to_array(), color: [c[1], c[2], c[3], ca], color1: [c1[1], c1[2], c1[3], c1[0]], uv2: [if dark_above.map_or(false, |y| pos.y >= y) { 1.0 } else { 0.0 }, lens] });
         }
+        // (a mirrored instance - the second exhaust tip - keeps its faces outward: its winding
+        // reversed, as the original flips the cull mode for it, sub_82359C10)
+        let mirrored = xf.determinant() < 0.0;
         for t in mesh.indices.chunks_exact(3) {
             if t.iter().all(|&i| (i as usize) < n) {
-                self.indices.extend(t.iter().map(|&i| i + base));
+                if mirrored {
+                    self.indices.extend([t[0] + base, t[2] + base, t[1] + base]);
+                } else {
+                    self.indices.extend(t.iter().map(|&i| i + base));
+                }
             }
         }
     }
@@ -1468,6 +1475,10 @@ impl Vehicles {
                 const NORMAL_SAMPLERS: [u32; 2] = [0x8ac11cb0, 0x28038e05];
                 // (the traffic lamps' program, PSAmbientCarLight, has ONE texture and it is a colour map - the car's trim sheet - bound to the sampler called NormalSampler)
                 let amb_lamp_map = sname.eq_ignore_ascii_case("AmbientCarLight") && std::env::var("MCLA_CARPARTS_OLD").is_err();
+                // (and the badges' program, PS_BumpedChrome of cars/0x1d68d869 (BumpedAlphaChrome): its one
+                // texture, on NormalSampler, is a bump map whose alpha is the badge's outline - kept for its alpha)
+                let badge = sname.eq_ignore_ascii_case("BumpedAlphaChrome") && std::env::var("MCLA_BADGE_OLD").is_err();
+                let amb_lamp_map = amb_lamp_map || badge;
                 let all_tex: Vec<(u32, String)> = sh.map(|s| s.textures().filter(|(h, _)| !NORMAL_SAMPLERS.contains(h) || amb_lamp_map).map(|(h, n)| (h, n.to_string())).collect()).unwrap_or_default();
                 let is_normal = |n: &str| {
                     let l = n.to_ascii_lowercase();
@@ -1660,6 +1671,13 @@ impl Vehicles {
                     } else if sname.eq_ignore_ascii_case("BlackOpaqueGlass") {
                         for v in &mut acc.verts[first..] {
                             v.uv2 = [1.0, 0.0];
+                        }
+                    } else if badge {
+                        // (BumpedAlphaChrome, PS_BumpedChrome of cars/0x1d68d869: PS_Chrome's mirror x
+                        // (0.125 + 1.185 sat(collector - 0.25)) x baked occlusion, alpha = 2 x the
+                        // texture's alpha - 1; city.wgsl cuts it out where that is not above 0 (uv2.y = 3))
+                        for v in &mut acc.verts[first..] {
+                            v.uv2 = [0.0, 3.0];
                         }
                     } else if sname.eq_ignore_ascii_case("CarbonFiber") && std::env::var("MCLA_CARBON_OLD").is_err() {
                         // (render only - PS_CarbonFiber of cars/0x84fc57d9, city.wgsl: uv2.x = 2)
@@ -2070,6 +2088,13 @@ impl Vehicles {
             let pos = p.state.pos + Vec3::Y * 0.5;
             let f = p.state.forward();
             let yaw = (-f.x).atan2(-f.z);
+            // (the same vehicle built again keeps its damage; another one comes without any - its own
+            // damage map, made again with its layout)
+            let same = p.model.name == model.name;
+            if !same {
+                let uid = p.uid;
+                self.dmg_maps.retain(|m| m.uid != uid);
+            }
             p.model = model;
             p.wheels = custom;
             p.tuned = None;
@@ -2077,7 +2102,10 @@ impl Vehicles {
             let perf = p.perf;
             p.set_perf(perf);
             p.color = color;
-            p.state = CarState::new(pos, yaw);
+            let old = std::mem::replace(&mut p.state, CarState::new(pos, yaw));
+            if same {
+                p.state.keep_damage(&old);
+            }
             p.pose_history.reset();
             p.placed = false;
         }

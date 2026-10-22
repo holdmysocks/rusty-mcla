@@ -3750,7 +3750,8 @@ impl App {
                             let stand = self.vehicles.player().map(|c| (c.state.pos, c.state.rot));
                             if self.vehicles.replace_player(&mut gpu, &mut world, &dir, color, &now.1, rim.as_deref()).is_ok() {
                                 if let (Some((pos, rot)), Some(c)) = (stand, self.vehicles.player_mut()) {
-                                    c.state = physics::car::CarState::new(pos, 0.0);
+                                    let old = std::mem::replace(&mut c.state, physics::car::CarState::new(pos, 0.0));
+                                    c.state.keep_damage(&old);
                                     c.pose_history.reset();
                                     c.state.rot = rot;
                                     c.placed = true;
@@ -4495,7 +4496,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.garage_cam = None;
                             self.garage_clear = clear;
                             if let Some(c) = self.vehicles.player_mut() {
-                                c.state = physics::car::CarState::new(p + Vec3::Y * 0.6, 0.6);
+                                // (the car goes in with the damage it has: the garage asks about it)
+                                let old = std::mem::replace(&mut c.state, physics::car::CarState::new(p + Vec3::Y * 0.6, 0.6));
+                                c.state.keep_damage(&old);
                                 c.pose_history.reset();
                                 c.state.rot = rot;
                                 // already on the floor: the usual drop from above would land on the roof
@@ -5882,6 +5885,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
 
+        }
+        // ---- the garage's repair (`game.repairCar` = sub_822A7388: the full reset sub_82353890 of the
+        // model - zones, pieces, the map's dents AND scrapes - and the parts' repair sub_8233E1B0; the car
+        // is not moved) ----
+        if std::mem::take(&mut self.game.repair_car) {
+            if let Some(p) = self.vehicles.player_mut() {
+                p.state.damage = 0.0;
+                p.state.zones = [0.0; 4];
+                p.state.dmg.reset();
+            }
         }
         // ---- the race-over menu's quick fix ----
         if std::mem::take(&mut self.game.quick_fix) {
@@ -9525,7 +9538,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 match self.vehicles.replace_player(gpu, world, &dir, color, &cfg, rim.as_deref()) {
                     Ok(()) => {
                         if let (Some((pos, rot)), Some(c)) = (stand, self.vehicles.player_mut()) {
-                            c.state = physics::car::CarState::new(pos + Vec3::Y * 0.05, 0.0);
+                            let old = std::mem::replace(&mut c.state, physics::car::CarState::new(pos + Vec3::Y * 0.05, 0.0));
+                            c.state.keep_damage(&old);
                             c.pose_history.reset();
                             c.state.rot = rot;
                             c.placed = true;

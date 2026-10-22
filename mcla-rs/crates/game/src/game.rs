@@ -834,6 +834,9 @@ pub struct Game {
     pub gas_stations: Vec<Vec3>,
     /// the repair question's YES: the car is to be repaired (free - sub_82215810)
     pub quick_fix: bool,
+    /// the garage's `game.repairCar` (`sub_822A7388`): damage, zones, loose parts and the whole damage
+    /// map - scrapes too (`sub_82353890`) - reset where the car stands
+    pub repair_car: bool,
     /// what a repair would cost now (sub_8269EA88): 0 greys the repair question's YES
     pub fix_now: i64,
     /// the police are pulling the player over or pursuing him (sub_8265E5E8: PoliceManager_IsPullingRacerOver
@@ -1286,6 +1289,7 @@ impl Game {
             hangout_names: Vec::new(),
             gas_stations: Vec::new(),
             quick_fix: false,
+            repair_car: false,
             fix_now: 0,
             police_on_player: false,
             wager_here: false,
@@ -1776,6 +1780,15 @@ impl Game {
                 let base = secs.get("body").and_then(|b| b.get(1)).copied().unwrap_or(0);
                 if base > 0 {
                     self.vis_lists.push((base, secs));
+                }
+            }
+            // (cars the disc gives no list: catalog::price_donor)
+            for car in [crate::catalog::CUT_GTR] {
+                let Some((donor, level, maker)) = crate::catalog::price_donor(car) else { continue };
+                let key = |c: &str| mcla_formats::hash::joaat(&format!("{c}_parts.gtun"));
+                if let (Some(rows), Some(lv)) = (self.part_files.get(&key(donor)), self.part_files.get(&key(level))) {
+                    let list = crate::catalog::scale_price_list(rows, lv, maker);
+                    self.part_files.insert(key(car), list);
                 }
             }
             self.vis_lists.sort_by_key(|l| l.0);
