@@ -208,6 +208,12 @@ pub fn tune_donor(car: &str) -> Option<&'static str> {
     car.eq_ignore_ascii_case(CUT_GTR).then_some("vp_aud_r8_08")
 }
 
+/// The car whose driving-camera files (`tune/camera`: boom 1..3, POV, bumper, cinematic, replay) a
+/// car uses: the R8's for the cut GT-R, which has none of the eight (user's decision, 2026-10-22).
+pub fn camera_car(car: &str) -> &str {
+    if car.eq_ignore_ascii_case(CUT_GTR) { "vp_aud_r8_08" } else { car }
+}
+
 /// The price list a car's garage uses when the disc has none (`<car>_parts.gtun`): the cut GT-R
 /// takes the Audi RS4's, the disc's dearest list with the GT-R's own layout (five of each body
 /// piece, an intercooler, a wide body, six seats / wheels / exhausts), with its car-made pieces
@@ -283,6 +289,15 @@ impl Catalog {
 
 #[cfg(test)]
 mod tests {
+    /// The cut GT-R reads the R8's driving-camera files; every other car its own.
+    #[test]
+    fn cut_gtr_drives_on_the_r8_cameras() {
+        assert_eq!(super::camera_car(super::CUT_GTR), "vp_aud_r8_08");
+        assert_eq!(super::camera_car("VP_NSN_GTR_08"), "vp_aud_r8_08");
+        assert_eq!(super::camera_car("vp_aud_r8_08"), "vp_aud_r8_08");
+        assert_eq!(super::camera_car("vp_nsn_350z_06"), "vp_nsn_350z_06");
+    }
+
     /// The cut GT-R's garage lists every one of its pieces at a price (the disc has no list).
     #[test]
     fn cut_gtr_parts_have_prices() {

@@ -315,6 +315,8 @@ impl Default for CamTune {
 
 impl CamTune {
     pub fn load(data_dir: &str, car: &str) -> CamTune {
+        // (the cut GT-R has no camera files: the R8's, catalog::camera_car)
+        let car = crate::catalog::camera_car(car);
         let mut t = CamTune::default();
         let read = |ext: &str| -> Vec<(String, Vec<f32>)> {
             let h = mcla_formats::hash::joaat(&format!("{}_replay.mcreplaycamera{}", car.to_ascii_lowercase(), ext));

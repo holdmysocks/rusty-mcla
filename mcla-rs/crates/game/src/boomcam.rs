@@ -66,6 +66,8 @@ pub struct BoomSet {
 
 impl BoomSet {
     pub fn load(data_dir: &str, car: &str) -> Option<BoomSet> {
+        // (the cut GT-R has no camera files: the R8's, catalog::camera_car)
+        let car = crate::catalog::camera_car(car);
         let get = |suffix: &str| {
             let h = mcla_formats::hash::joaat(&format!("{car}_{suffix}.camboomcs"));
             let p = Path::new(data_dir).join("tune/camera").join(format!("0x{h:08x}"));
@@ -1134,6 +1136,8 @@ impl TrackTune {
         let text = std::fs::read_to_string(Path::new(data_dir).join("tune/camera").join(format!("0x{h:08x}"))).ok()?;
         let (b, e) = (track_block(&text, None), track_block(&text, Some(event)));
         if e.is_empty() {
+        // (the cut GT-R has no camera files: the R8's, catalog::camera_car)
+        let car = crate::catalog::camera_car(car);
             return None;
         }
         let f = |m: &HashMap<String, Vec<f32>>, k: &str, d: f32| m.get(k).and_then(|v| v.first()).copied().unwrap_or(d);
@@ -2198,6 +2202,8 @@ impl EventViews {
         let text = std::fs::read_to_string(Path::new(data_dir).join("tune/camera").join(format!("0x{h:08x}"))).ok()?;
         let blank = EventView { track: Vec3::new(0.0, 1.0, 0.0), offset: Vec3::new(0.0, 0.5, 6.0), blend: 0.7, ret: 0.7, fov: (50.0, 50.0) };
         let mut base = blank;
+        // (the cut GT-R has no camera files: the R8's, catalog::camera_car)
+        let car = crate::catalog::camera_car(car);
         let mut named = HashMap::new();
         let mut cur: Option<(String, EventView)> = None;
         let mut depth = 0;
