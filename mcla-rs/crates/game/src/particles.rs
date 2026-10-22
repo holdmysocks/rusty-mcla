@@ -35,6 +35,14 @@ pub struct PInst {
     /// the rule's sprites: frame A's u0, v0 (`uv` holds frame B), the blend between them
     /// (`blk+84`, vertex float 17 of `sub_825F8358`)
     uv2: [f32; 4],
+    /// DrawDirectional (`sub_824BBB20`): the quad's half extents from its centre (`pos_size`) -
+    /// u towards the front edge (frame top), v towards the right edge; `quad_u.w` 1 = in use
+    quad_u: [f32; 4],
+    quad_v: [f32; 4],
+    /// the `_BaseLight` programs: BaseLightColor (c98), gFallOff (c97); BaseLightDir (c82), the
+    /// base's height (c94.w); zero = none
+    base_a: [f32; 4],
+    base_b: [f32; 4],
 }
 
 impl PInst {
@@ -52,6 +60,10 @@ impl PInst {
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 112, shader_location: 7 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 128, shader_location: 8 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 144, shader_location: 9 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 160, shader_location: 10 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 176, shader_location: 11 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 192, shader_location: 12 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 208, shader_location: 13 },
         ],
     };
 }
@@ -110,14 +122,18 @@ struct RuleParticle {
     inst: u32,
     pos: Vec3,
     vel: Vec3,
+    /// where it was before its last step (`blk+32`, copied by the update before it moves) and
+    /// where it was let out (`blk+64`, AnchorToSpawnPos)
+    prev: Vec3,
+    spawn: Vec3,
     /// its clock 0..1 and 1 / life
     t: f32,
     inv_life: f32,
     /// what its emitter makes of a second (effect and event scalar, `TimeScaleKF`)
     ts: f32,
     /// its random numbers: size, colour, alpha, acceleration, damping, playback, matrix
-    /// weight, spin, wind
-    r: [f32; 9],
+    /// weight, spin, wind, noise
+    r: [f32; 10],
     theta: f32,
     spin0: f32,
     /// the texture frames it blends between (`blk+92` A, `blk+93` B) by `anim`
@@ -242,8 +258,6 @@ pub struct Particles {
     next_id: u32,
     /// `MCLA_FX_STANDIN=1`: the effect rules are not played (the callers fall back)
     standin: bool,
-    /// the wind the rules' `WindInfluenceKF` takes a share of (m/s; the port has no wind field)
-    pub wind: Vec3,
     /// the clock (hours): the checkpoint smoke's night boost
     pub hour: f32,
     /// the lit sprites' fog: RMPTFX_FogMinColor rgba and RMPTFX_FogParams.x (the height)
@@ -260,13 +274,17 @@ const MAX: usize = 3000;
 /// linear value, not a display colour): 4 = `mc4_rmptfx_mainlist`'s draw_SoftPart_VertLit
 /// (the flares' fire and glows when they add, smoke and steam when alpha-blended), 6 = its
 /// draw_SoftPart_TexBlend_VertLit and _Rescale (the same vertex light, the two frames blended:
-/// the tyre smoke; the two techniques' programs are the same microcode), 5 =
-/// `mc4_rmptfx_default`'s unlit_draw (the checkpoints' sparks); 0 = the generic look.
+/// the `_BaseLight` variants: the same pixel programs, a light from below added in the vertex -
+/// `PInst::base_a` / `base_b`;
+/// the tyre smoke; the two techniques' programs are the same microcode; draw_TexBlend_VertLit is
+/// the same light and pixel rule without the soft fade), 5 = `mc4_rmptfx_default`'s unlit_draw
+/// (the checkpoints' sparks) and `mc4_rmptfx_mainlist`'s unlit draw_SoftPart_TexBlend (its
+/// vertex colour as it is, frames A and B blended, soft fade 4); 0 = the generic look.
 pub(crate) fn sprite_mode(s: &mcla_formats::rage::ptfx::Sprite, _blend_set: u32) -> f32 {
     match (s.shader.as_str(), s.technique.as_str()) {
-        ("mc4_rmptfx_mainlist", "draw_SoftPart_VertLit") => 4.0,
-        ("mc4_rmptfx_mainlist", "draw_SoftPart_TexBlend_VertLit" | "draw_SoftPart_TexBlend_VertLit_Rescale") => 6.0,
-        ("mc4_rmptfx_default", "unlit_draw") => 5.0,
+        ("mc4_rmptfx_mainlist", "draw_SoftPart_VertLit" | "draw_SoftPart_VertLit_BaseLight") => 4.0,
+        ("mc4_rmptfx_mainlist", "draw_SoftPart_TexBlend_VertLit" | "draw_SoftPart_TexBlend_VertLit_Rescale" | "draw_TexBlend_VertLit" | "draw_TexBlend_VertLit_BaseLight") => 6.0,
+        ("mc4_rmptfx_default", "unlit_draw") | ("mc4_rmptfx_mainlist", "draw_SoftPart_TexBlend") => 5.0,
         _ => 0.0,
     }
 }
@@ -343,7 +361,6 @@ impl Particles {
             frame: 0,
             next_id: 1,
             standin: std::env::var("MCLA_FX_STANDIN").map_or(false, |v| v == "1"),
-            wind: Vec3::new(1.5, 0.0, 0.8),
             hour: 12.0,
             fog_min: [0.0, 0.0, 0.0, 0.0, 1000.0],
             arrow_rt: [0.0, std::f32::consts::PI, 1.0],
@@ -411,7 +428,6 @@ impl Particles {
         // rules reached from the played effects
         let mut todo: Vec<usize> = fx.effects.iter().enumerate().filter(|(_, e)| PLAYED.iter().any(|p| e.name.starts_with(p))).map(|(i, _)| i).collect();
         let mut seen = vec![false; fx.effects.len()];
-        let mut flat = 0;
         while let Some(ei) = todo.pop() {
             if std::mem::replace(&mut seen[ei], true) {
                 continue;
@@ -424,11 +440,7 @@ impl Particles {
                         let additive = pr.render.blend_set == 7;
                         let mut cards = Vec::new();
                         if let Some(sp) = &pr.sprite {
-                            // a quad lying on an axis (rings on the water, a fountain's base) is not
-                            // a billboard: the particle pipeline cannot draw it
-                            if pr.flags & flag::DRAW_DIRECTIONAL != 0 && sp.axis.length_squared() > 0.0 {
-                                flat += 1;
-                            } else if let Some(s) = sheet(self, gpu, &sp.texture, additive) {
+                            if let Some(s) = sheet(self, gpu, &sp.texture, additive) {
                                 cards.push(Card { sheet: s, uv: [0.0, 0.0, 1.0, 1.0], half: [1.0, 1.0] });
                             }
                         } else if let Some(m) = &pr.model {
@@ -462,7 +474,7 @@ impl Particles {
         self.playable = (0..fx.effects.len()).map(|ei| can(&fx, &looks, ei, 0)).collect();
         self.by_hash = fx.effect_hashes.iter().enumerate().map(|(i, h)| (*h, i)).collect();
         self.ranges = vec![(0, 0); self.binds.len()];
-        log::info!("particles: {} effect / {} emit / {} particle rules; {} effects playable from them with {} rules on {} sheets ({} flat rules not drawn)", fx.effects.len(), fx.emit_rules.len(), fx.particle_rules.len(), self.playable.iter().filter(|p| **p).count(), looks.iter().filter(|l| l.is_some()).count(), self.binds.len() - KINDS, flat);
+        log::info!("particles: {} effect / {} emit / {} particle rules; {} effects playable from them with {} rules on {} sheets", fx.effects.len(), fx.emit_rules.len(), fx.particle_rules.len(), self.playable.iter().filter(|p| **p).count(), looks.iter().filter(|l| l.is_some()).count(), self.binds.len() - KINDS);
         self.looks = looks;
         self.fx = Some(fx);
     }
@@ -749,10 +761,12 @@ impl Particles {
                 inst: e.id,
                 pos: at,
                 vel,
+                prev: at,
+                spawn: at,
                 t: 0.0,
                 inv_life: if life > 1e-3 { 1.0 / life } else { 1.0 },
                 ts: pscale,
-                r: [0.0; 9],
+                r: [0.0; 10],
                 theta: 0.0,
                 spin0: 0.0,
                 frame0: 0,
@@ -801,10 +815,10 @@ impl Particles {
 
     /// One step of the particles of the effect list's rules (`sub_824BE248`).
     fn step_rule_particles(&mut self, fx: &FxList, dt: f32, moved: &[(u32, Vec3)]) {
-        let wind = self.wind;
         let mut rng = Rng(self.rng);
         self.rule_list.retain_mut(|p| {
             let pr = &fx.particle_rules[p.rule as usize];
+            p.prev = p.pos;
             let dt = dt * p.ts;
             let pb = pr.playback_rate.eval(p.t);
             let t = p.t + lerp(pb[0], pb[1], p.r[5]) * p.inv_life * dt;
@@ -820,6 +834,34 @@ impl Particles {
             }
             let damp = v3(pr.damp_min.eval(t)).lerp(v3(pr.damp_max.eval(t)), p.r[4]) * p.damp_ot;
             p.vel += acc * dt;
+            // position / velocity noise (`sub_824DD5C0`, after the acceleration): amplitudes by one
+            // random number of the particle at its life, three fresh numbers in -1..1 each time,
+            // the restricted axes masked; the direction noise turns the velocity, keeping its speed
+            let pn = pr.position_noise.eval(t);
+            let vn = pr.velocity_noise.eval(t);
+            let (pa, va, da) = (lerp(pn[0], pn[1], p.r[9]), lerp(vn[0], vn[1], p.r[9]), lerp(vn[2], vn[3], p.r[9]));
+            if pa > 0.0 || va > 0.0 || da > 0.0 {
+                let mask = Vec3::new(
+                    if pr.flags & flag::RESTRICT_NOISE_X != 0 { 0.0 } else { 1.0 },
+                    if pr.flags & flag::RESTRICT_NOISE_Y != 0 { 0.0 } else { 1.0 },
+                    if pr.flags & flag::RESTRICT_NOISE_Z != 0 { 0.0 } else { 1.0 },
+                );
+                let mut r3 = || Vec3::new(rng.f() - 0.5, rng.f() - 0.5, rng.f() - 0.5) * 2.0;
+                if pa > 0.0 {
+                    p.pos += r3() * pa * dt * mask;
+                }
+                if va > 0.0 {
+                    p.vel += r3() * va * dt * mask;
+                }
+                if da > 0.0 {
+                    let sp = p.vel.length();
+                    if sp > 0.001 {
+                        let u = p.vel + r3() * da * dt * sp;
+                        p.vel = u.normalize_or_zero() * sp;
+                    }
+                    p.vel *= mask;
+                }
+            }
             let mw = pr.matrix_weight.eval(t);
             let mw = (lerp(mw[0], mw[1], p.r[6]) * p.mw_ot).clamp(0.0, 1.0);
             // the share of its effect's movement it follows
@@ -827,12 +869,10 @@ impl Particles {
                 p.pos += m.1 * mw;
             }
             p.vel *= (Vec3::ONE - damp * dt).max(Vec3::ZERO);
-            let wi = pr.wind_influence.eval(t);
-            let mut wi = lerp(wi[0], wi[1], p.r[8]);
-            if pr.flags & flag::WIND_IGNORES_MATRIX_WEIGHT == 0 {
-                wi *= 1.0 - mw;
-            }
-            p.pos += (p.vel + wind * wi) * dt;
+            // (the wind: WindInfluenceKF's share of what the manager's wind function gives at the
+            // particle, added to the velocity - and that function is `sub_8247D038`, which gives
+            // (0, 0, 0): the original's particles have no wind)
+            p.pos += p.vel * dt;
             if let Some(s) = &pr.sprite {
                 let rv = s.rot_vel.eval(t);
                 p.theta += (p.spin0 + lerp(rv[0], rv[1], p.r[7]) * std::f32::consts::TAU) * dt;
@@ -1087,7 +1127,7 @@ impl Particles {
             } else {
                 (1.0, 1.0, p.rot)
             };
-            items.push((k as u32, p.pos.distance_squared(cam), PInst { pos_size: [p.pos.x, p.pos.y, p.pos.z, size], color: [p.color[0], p.color[1], p.color[2], p.color[3] * fade], uv: [fx as f32 * du, fy as f32 * dv, du, dv], misc: [rot, sx, sy, if matches!(p.kind, Kind::Smoke | Kind::Splash) { 1.0 } else { 0.0 }], extra: [0.0; 4], arrow_a: [0.0; 4], arrow_b: [0.0; 4], arrow_c: [0.0; 4], arrow_d: [0.0; 4], uv2: [0.0; 4] }));
+            items.push((k as u32, p.pos.distance_squared(cam), PInst { pos_size: [p.pos.x, p.pos.y, p.pos.z, size], color: [p.color[0], p.color[1], p.color[2], p.color[3] * fade], uv: [fx as f32 * du, fy as f32 * dv, du, dv], misc: [rot, sx, sy, if matches!(p.kind, Kind::Smoke | Kind::Splash) { 1.0 } else { 0.0 }], extra: [0.0; 4], arrow_a: [0.0; 4], arrow_b: [0.0; 4], arrow_c: [0.0; 4], arrow_d: [0.0; 4], uv2: [0.0; 4], quad_u: [0.0; 4], quad_v: [0.0; 4], base_a: [0.0; 4], base_b: [0.0; 4] }));
         }
         if let Some(fx) = self.fx.as_ref() {
             // (every effect instance's opacity and evolution values, by its id)
@@ -1096,10 +1136,25 @@ impl Particles {
             let mut inst_at: HashMap<u32, (Vec3, bool)> = HashMap::new();
             // (and its cull sphere's centre offset, turned with it: `sub_824C1B08`)
             let mut inst_cull: HashMap<u32, Vec3> = HashMap::new();
+            let mut inst_r: HashMap<u32, f32> = HashMap::new();
             for e in &self.effects {
                 inst.insert(e.id, (e.alpha, e.evo));
                 inst_at.insert(e.id, (e.pos, e.arrow));
                 inst_cull.insert(e.id, turn(e.rot, e.flip, Vec3::from(fx.effects[e.effect].cull_offset)));
+                inst_r.insert(e.id, fx.effects[e.effect].cull_radius);
+            }
+            // the emitters' clocks (DrawDirectional's keys on the emit time)
+            let mut em_t: HashMap<u32, f32> = HashMap::new();
+            fn clocks(e: &Effect, m: &mut HashMap<u32, f32>) {
+                for em in &e.em {
+                    m.insert(em.uid, em.t);
+                }
+                for k in &e.kids {
+                    clocks(k, m);
+                }
+            }
+            for e in &self.effects {
+                clocks(e, &mut em_t);
             }
             for p in &self.rule_list {
                 let pr = &fx.particle_rules[p.rule as usize];
@@ -1138,6 +1193,7 @@ impl Particles {
                     continue;
                 }
                 let (w, h, uv, mut rot);
+                let mut quad: Option<(Vec3, Vec3, Vec3)> = None;
                 let mut uv2 = [0.0f32; 4];
                 if let Some(s) = &pr.sprite {
                     // SizeKF: half width x..z, half height y..w, one random number for both
@@ -1150,23 +1206,51 @@ impl Particles {
                     let f0 = p.frame0 as u32 % (s.tiles_x * s.tiles_y);
                     // (w: the soft fade's factor k of sat(k d^2) - technique "draw" of mc4_rmptfx_projected
                     // and mc4_rmptfx_default's PS_Draw 0.1, ps_main_SoftPart_VertLit and
-                    // ps_main_SoftPart_TexBlend_VertLit 4; 0 none)
+                    // ps_main_SoftPart_TexBlend_VertLit and ps_main_SoftPart_TexBlend 4; 0 none:
+                    // ps_main_TexBlend_VertLit)
                     let soft = match sprite_mode(s, pr.render.blend_set) {
                         _ if projected && s.technique == "draw" => 0.1,
-                        4.0 | 6.0 => 4.0,
+                        _ if !s.technique.starts_with("draw_SoftPart") && s.shader == "mc4_rmptfx_mainlist" => 0.0,
+                        4.0 | 6.0 | 5.0 if s.shader == "mc4_rmptfx_mainlist" => 4.0,
                         5.0 => 0.1,
                         _ => 0.0,
                     };
                     uv2 = [(f0 % s.tiles_x) as f32 * du, (f0 / s.tiles_x) as f32 * dv, p.anim, soft];
                     rot = p.theta;
                     if pr.flags & flag::DRAW_DIRECTIONAL != 0 {
-                        // along its velocity, as the billboard sees it
-                        let to_cam = (cam - p.pos).normalize_or_zero();
-                        let right = Vec3::Y.cross(to_cam).normalize_or_zero();
-                        let up = to_cam.cross(right);
-                        let (vr, vu) = (p.vel.dot(right), p.vel.dot(up));
-                        if vr * vr + vu * vu > 1e-6 {
-                            rot = (-vr).atan2(vu);
+                        // DrawDirectional (`sub_824BBB20`): the quad's corners from the particle -
+                        // along d (its last step, else its velocity, else up), sideways along s =
+                        // d x (the way to the camera, or the rule's raw axis with AlignToAxis)
+                        let mut d = (p.pos - p.prev).normalize_or_zero();
+                        if d == Vec3::ZERO {
+                            d = p.vel.normalize_or_zero();
+                        }
+                        if d == Vec3::ZERO {
+                            d = Vec3::Y;
+                        }
+                        let e = if pr.flags & flag::ALIGN_TO_AXIS != 0 { s.axis } else { cam - p.pos };
+                        let mut sd = d.cross(e).normalize_or_zero();
+                        if pr.flags & flag::USE_DIRECTIONAL_IDENTITY != 0 {
+                            (sd, d) = (Vec3::X, Vec3::Y);
+                        }
+                        let et = em_t.get(&p.uid).copied().unwrap_or(p.te);
+                        let dk = s.directional.eval(if pr.flags & flag::KEY_DIRECTIONAL_ON_EMIT_TIME != 0 { et } else { p.t });
+                        let dv = s.directional_vel.eval(if pr.flags & flag::KEY_DIRECTIONAL_VEL_ON_EMIT_TIME != 0 { et } else { p.t });
+                        let speed = p.vel.length();
+                        let k = [h * dk[0] + dv[0] * speed, h * dk[1] + dv[1] * speed, w * dk[2] + dv[2] * speed, w * dk[3] + dv[3] * speed];
+                        let front = d * k[0];
+                        let mut back = -d * k[1];
+                        let (left, right) = (-sd * k[2], sd * k[3]);
+                        if pr.flags & flag::ANCHOR_TO_SPAWN_POS != 0 {
+                            let a = p.spawn - p.pos;
+                            if back.length() > a.length() {
+                                back = if a.length() > 0.0 { a } else { back * 0.01 };
+                            }
+                        }
+                        // (the recorded quad: the front edge takes frame A's top, the left its u0)
+                        quad = Some((p.pos + (front + back) * 0.5 + (left + right) * 0.5, (front - back) * 0.5, (right - left) * 0.5));
+                        if self.frame % 60 == 0 && std::env::var("MCLA_FX_LOG").is_ok() {
+                            log::info!("fx quad {}: front {:?} back {:?} left {:?} right {:?} (pos {:?}) colour {:?} alpha {:.3}", pr.name, p.pos + front, p.pos + back, p.pos + left, p.pos + right, p.pos, c, alpha);
                         }
                     }
                 } else if let Some(m) = &pr.model {
@@ -1183,15 +1267,33 @@ impl Particles {
                 if !(w > 1e-4 && h > 1e-4) {
                     continue;
                 }
+                let (centre, quad_u, quad_v) = match quad {
+                    Some((c, u, v)) => (c, [u.x, u.y, u.z, 1.0], [v.x, v.y, v.z, 0.0]),
+                    None => (p.pos, [0.0; 4], [0.0; 4]),
+                };
                 let mode = pr.sprite.as_ref().map_or(0.0, |s| sprite_mode(s, pr.render.blend_set));
                 let lit = if projected { 3.0 } else if column { 2.0 } else if mode > 0.0 { mode } else if self.additive[card.sheet] { 0.0 } else { 1.0 };
                 let mut extra = if projected { [p.shadow[0], p.shadow[1], p.shadow[2], (2.0 * night).max(1.0)] } else { [0.0; 4] };
                 let mut normal_arc = 0.0;
+                let (mut base_a, mut base_b) = ([0.0f32; 4], [0.0f32; 4]);
                 if let (4.0 | 6.0, Some(s)) = (mode, pr.sprite.as_ref()) {
                     // (vs_main_SoftPart_VertLit's variables, the effect file's defaults where the rule has none)
                     let var = |n: &str, d: f32| s.vars.iter().find(|(k, _)| k == n).map_or(d, |(_, v)| v[0]);
                     extra = [var("gDiffuse", 1.0), var("gAmbient", 1.0), var("gAmbientDayControl", 1.0), var("gTranslucency", 0.0)];
                     normal_arc = var("gNormalArc", 0.0);
+                    if s.technique.ends_with("_BaseLight") {
+                        // (BaseLightColor c98, gFallOff c97, BaseLightDir c82; the height c94.w is the
+                        // bottom of a cull box - centre y - |CullRadius| (1 when none) - of the emitter
+                        // drawn before (`sub_822ECBF0` -> `sub_822F1688`); taken here as the one of
+                        // the particle's own effect)
+                        let v4 = |n: &str, d: [f32; 4]| s.vars.iter().find(|(k, _)| k == n).map_or(d, |(_, v)| *v);
+                        let (bc, bd) = (v4("BaseLightColor", [0.0; 4]), v4("BaseLightDir", [0.0, 1.0, 0.0, 0.0]));
+                        let at = inst_at.get(&p.inst).map_or(p.pos, |e| e.0) + inst_cull.get(&p.inst).copied().unwrap_or(Vec3::ZERO) * p.zoom;
+                        let cr = inst_r.get(&p.inst).copied().unwrap_or(0.0);
+                        let r = if cr > 0.0 { (cr * p.zoom).abs() } else { 1.0 };
+                        base_a = [bc[0], bc[1], bc[2], var("gFallOff", 0.0)];
+                        base_b = [bd[0], bd[1], bd[2], at.y - r];
+                    }
                 }
                 // (the technique "draw" of `mc4_rmptfx_projected` - the low smoke - maps the arrows'
                 // target round its effect; "draw_noarrow" - the plume - does not)
@@ -1217,7 +1319,10 @@ impl Particles {
                     // zoom, from the frame before; checkpoint_ctf_generic: 68 m straight up)
                     arrow_a[0] = normal_arc;
                     let at = inst_at.get(&p.inst).map_or(p.pos, |e| e.0) + inst_cull.get(&p.inst).copied().unwrap_or(Vec3::ZERO) * p.zoom;
-                    arrow_b = [at.x, at.y, at.z, 0.0];
+                    // (w: the key light's way - RenderState.LightingMode 2 and up: towards the sun (a point
+                    // 100 m off the effect, `sub_822F5D98`); 0 and 1: the light group's default (0, -1, 0),
+                    // straight down, as recorded on the tyre smoke and the fountains)
+                    arrow_b = [at.x, at.y, at.z, if pr.render.lighting_mode >= 2 { 1.0 } else { 0.0 }];
                     // (arrow_c rgb: what the picker adds to gLightAmbient there - the night fill
                     // light, map / 255 x 0.25 x m_NFLFade, as for the traffic cars, not cut to bytes;
                     // recorded c26 (0.2255, 0.2382, 0.2363) = (0.0353, 0.0510, 0.0588) + (0.1902,
@@ -1227,7 +1332,7 @@ impl Particles {
                     // (arrow_d: the fog's colour at its height; arrow_c.w the height)
                     arrow_d = [self.fog_min[0], self.fog_min[1], self.fog_min[2], self.fog_min[3]];
                 }
-                items.push((card.sheet as u32, p.pos.distance_squared(cam), PInst { pos_size: [p.pos.x, p.pos.y, p.pos.z, h], color: [c.x, c.y, c.z, alpha], uv, misc: [rot, w / h, 1.0, lit], extra, arrow_a, arrow_b, arrow_c, arrow_d, uv2 }));
+                items.push((card.sheet as u32, p.pos.distance_squared(cam), PInst { pos_size: [centre.x, centre.y, centre.z, h], color: [c.x, c.y, c.z, alpha], uv, misc: [rot, w / h, 1.0, lit], extra, arrow_a, arrow_b, arrow_c, arrow_d, uv2, quad_u, quad_v, base_a, base_b }));
             }
         }
         items.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)));

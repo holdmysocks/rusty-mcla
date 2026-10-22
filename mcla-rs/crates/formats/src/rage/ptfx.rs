@@ -260,6 +260,15 @@ pub mod flag {
     pub const MODEL_RANDOM_COLOR: u32 = 1 << 7;
     /// the acceleration is multiplied by the event's zoom
     pub const ZOOM_ACCELERATION: u32 = 1 << 26;
+    /// DrawDirectional: the back half reaches no further than the spawn point (`blk+64`)
+    pub const ANCHOR_TO_SPAWN_POS: u32 = 1 << 14;
+    /// DrawDirectional: `DirectionalKF` / `DirectionalVelKF` keyed on the emitter's time, not the life
+    pub const KEY_DIRECTIONAL_ON_EMIT_TIME: u32 = 1 << 18;
+    pub const KEY_DIRECTIONAL_VEL_ON_EMIT_TIME: u32 = 1 << 19;
+    /// DrawDirectional: side (1, 0, 0), direction (0, 1, 0)
+    pub const USE_DIRECTIONAL_IDENTITY: u32 = 1 << 28;
+    /// DrawDirectional: the side is direction x `Sprite::axis` (not x the way to the camera)
+    pub const ALIGN_TO_AXIS: u32 = 1 << 30;
 }
 
 /// `ptxRenderState` (`ptxRule` +100).
@@ -279,8 +288,9 @@ pub struct RenderState {
 /// What a `ptxSprite` adds to the rule.
 #[derive(Debug, Clone)]
 pub struct Sprite {
-    /// +160 `AxisAligned`: with `DRAW_DIRECTIONAL` the normal the quad lies on (0, 1, 0 for the
-    /// rings on water); zero = along the velocity
+    /// +160 `AxisAligned`: read only with `flag::ALIGN_TO_AXIS` (and `DRAW_DIRECTIONAL`): the
+    /// quad's side is direction x this, raw (not turned, not normalised) - (0, 1, 0) for the
+    /// rings on water, which then lie flat
     pub axis: Vec3,
     /// +170 / +174: the first frame is picked at random in this range
     pub frame_start: i32,
@@ -300,7 +310,8 @@ pub struct Sprite {
     pub init_rot_vel: Keyframe,
     /// `RotateVelKF`: x..y spin (turns a second) over the particle's life
     pub rot_vel: Keyframe,
-    /// `DirectionalKF`, `DirectionalVelKF` (read, not decoded)
+    /// `DirectionalKF`, `DirectionalVelKF`: DrawDirectional's extents = (Zy, Zy, Zx, Zx) x
+    /// DirectionalKF + DirectionalVelKF x speed (front, back, left, right; `sub_824BBB20`)
     pub directional: Keyframe,
     pub directional_vel: Keyframe,
     /// `TextureAnimRateKF`: x..y frames a second
@@ -366,7 +377,8 @@ pub struct ParticleRule {
     pub playback_rate: Keyframe,
     /// `AlphaKF` x..y over the particle's life
     pub alpha: Keyframe,
-    /// `PositionNoiseKF`, `VelocityNoiseKF` (read, not decoded)
+    /// `PositionNoiseKF` x..y, `VelocityNoiseKF` x..y (velocity) and z..w (direction): noise
+    /// amplitudes over the particle's life (`sub_824DD5C0`)
     pub position_noise: Keyframe,
     pub velocity_noise: Keyframe,
     /// `WindInfluenceKF` x..y: share of the wind the particle takes

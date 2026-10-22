@@ -90,6 +90,10 @@ fn vs_particle(
     @location(7) arrow_c: vec4<f32>,
     @location(8) arrow_d: vec4<f32>,
     @location(9) uv2: vec4<f32>,       // frame A's u0, v0; the blend A -> B
+    @location(10) quad_u: vec4<f32>,   // DrawDirectional: the quad's half extents (w = 1)
+    @location(11) quad_v: vec4<f32>,
+    @location(12) base_a: vec4<f32>,   // BaseLight: BaseLightColor, gFallOff
+    @location(13) base_b: vec4<f32>,   // BaseLightDir, the base's height (w)
 ) -> VsOut {
     var o: VsOut;
     let corner = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u)) - vec2<f32>(1.0);
@@ -104,7 +108,24 @@ fn vs_particle(
     let sn = sin(misc.x);
     let c = vec2<f32>(corner.x * misc.y, corner.y * misc.z);
     let r = vec2<f32>(c.x * cs - c.y * sn, c.x * sn + c.y * cs);
-    let wp = pos_size.xyz + (right * r.x + up * r.y) * pos_size.w;
+    var wp = pos_size.xyz + (right * r.x + up * r.y) * pos_size.w;
+    // the lit programs of mc4_rmptfx_mainlist (modes 4, 6) place the corner in the camera's plane
+    // (gViewInverse c12, c13), not facing the camera from the particle; the camera's rows from
+    // view_proj: x and y rows / their scale, c14 (towards the viewer) = -(w row)
+    let lit_ml = (misc.w > 3.5 && misc.w < 4.5) || misc.w > 5.5;
+    let cr = normalize(vec3<f32>(g.view_proj[0][0], g.view_proj[1][0], g.view_proj[2][0]));
+    let cu = normalize(vec3<f32>(g.view_proj[0][1], g.view_proj[1][1], g.view_proj[2][1]));
+    let cb = -normalize(vec3<f32>(g.view_proj[0][3], g.view_proj[1][3], g.view_proj[2][3]));
+    var off = (cr * r.x + cu * r.y) * pos_size.w;
+    if (lit_ml) {
+        wp = pos_size.xyz + off;
+    }
+    if (quad_u.w > 0.5) {
+        // DrawDirectional (`sub_824BBB20`): the four corners worked out on the CPU, no corner
+        // offset in the vertex (so none in the lit programs' normal either)
+        wp = pos_size.xyz + quad_v.xyz * corner.x + quad_u.xyz * corner.y;
+        off = vec3<f32>(0.0);
+    }
     o.clip = g.view_proj * vec4<f32>(wp, 1.0);
     o.uv = uv_rect.xy + (corner * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5)) * uv_rect.zw;
     o.uva = vec3<f32>(uv2.xy + (corner * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5)) * uv_rect.zw, uv2.z);
@@ -116,8 +137,16 @@ fn vs_particle(
         // misc.w 4: mc4_rmptfx_mainlist's vs_main_SoftPart_VertLit - the vertex's normal is its
         // turned corner in the camera's plane plus (gNormalArc + 0.1) towards the camera; misc.w 6:
         // vs_main_SoftPart_TexBlend_VertLit (and _Rescale, the same microcode), the same light
-        let nrm = normalize(right * r.x + up * r.y + to_cam * (arrow_a.x + 0.1));
-        o.color = vec4<f32>(color.rgb * ptx_fog(vert_lit(wp, nrm, extra, arrow_b.xyz, arrow_c.xyz), wp, arrow_d, arrow_c.w), color.a);
+        // (the normal: the corner's offset in metres + (gNormalArc + 0.1) x c14)
+        let nrm = normalize(off + cb * (arrow_a.x + 0.1));
+        var lit = vert_lit(wp, nrm, extra, arrow_b.xyz, arrow_c.xyz, arrow_b.w);
+        if (base_b.w != 0.0 || base_a.w != 0.0) {
+            // the _BaseLight programs: + 0.55 x BaseLightColor x sat(gFallOff / (y - h)^2) x
+            // sat(n . BaseLightDir x (1 - gTranslucency) + gTranslucency), not scaled by gDiffuse
+            let hy = wp.y - base_b.w;
+            lit = lit + 0.55 * base_a.rgb * clamp(base_a.w / max(hy * hy, 1e-12), 0.0, 1.0) * clamp(dot(nrm, base_b.xyz) * (1.0 - extra.w) + extra.w, 0.0, 1.0);
+        }
+        o.color = vec4<f32>(color.rgb * ptx_fog(lit, wp, arrow_d, arrow_c.w), color.a);
     }
     o.prof = vec2<f32>(corner.y, select(select(select(0.0, 1.0, column), 2.0, smoke), misc.w, misc.w > 3.5));
     o.extra = extra;
@@ -158,7 +187,7 @@ fn lamp_term(i: i32, wp: vec3<f32>, n: vec3<f32>, tr: f32) -> vec3<f32> {
     let d = p.xyz - wp;
     let inv = inverseSqrt(max(dot(d, d), 1e-6));
     let dn = d * inv;
-    return c.rgb * 2.0 * clamp(p.w * inv * inv, 0.0, 1.0) * clamp(dot(dn, axis.xyz) * axis.w + bias, 0.0, 1.0) * clamp(dot(n, dn) + tr, 0.0, 1.0);
+    return c.rgb * 2.0 * clamp(p.w * inv * inv, 0.0, 1.0) * clamp(dot(dn, axis.xyz) * axis.w + bias, 0.0, 1.0) * clamp(dot(n, dn) * (1.0 - tr) + tr, 0.0, 1.0);
 }
 
 // The same program's fog (RMPTFX_FogParams c79 = (height H, -, near, far), FogParams2 c78 = (1 / H,
@@ -185,10 +214,13 @@ fn ptx_fog(lit: vec3<f32>, wp: vec3<f32>, mn: vec4<f32>, hgt: f32) -> vec3<f32> 
     return mix(lit, fc.rgb, amount);
 }
 
-fn vert_lit(wp: vec3<f32>, n: vec3<f32>, v: vec4<f32>, ec: vec3<f32>, fill: vec3<f32>) -> vec3<f32> {
+fn vert_lit(wp: vec3<f32>, n: vec3<f32>, v: vec4<f32>, ec: vec3<f32>, fill: vec3<f32>, sun_way: f32) -> vec3<f32> {
     let nf = clamp(4.0 * (abs(g.sun_color.w / 12.0 - 1.0) - 0.25), 0.0, 1.0);
     let amb = (g.ambient_sky.rgb + fill) * mix(v.z, v.y, nf);
-    var dl = g.sun_color.rgb * g.sun_dir.w * clamp(dot(n, g.sun_dir.xyz) + v.w, 0.0, 1.0);
+    // (sat(n.l x (1 - gTranslucency) + gTranslucency): r13.x = adds_prev(1) after maxs(-gTranslucency))
+    // (gLightPosDir c16: towards the sun for LightingMode 2 and up, else (0, -1, 0) - `sun_way`)
+    let l0 = select(vec3<f32>(0.0, -1.0, 0.0), g.sun_dir.xyz, sun_way > 0.5);
+    var dl = g.sun_color.rgb * g.sun_dir.w * clamp(dot(n, l0) * (1.0 - v.w) + v.w, 0.0, 1.0);
     // (night: the light picker's own test - after 18:00 or before 06:00 (obj +14568 / +14564, read
     // live: 18, 6); its third case, the interior flag the garage scenes set (`sub_82304648`),
     // has no lit particle to apply to)
@@ -214,7 +246,7 @@ fn vert_lit(wp: vec3<f32>, n: vec3<f32>, v: vec4<f32>, ec: vec3<f32>, fill: vec3
             let d = lights.pos_range[hl].xyz - wp;
             let inv = inverseSqrt(max(dot(d, d), 1e-6));
             let cone = clamp(dot(d, -lights.dir[hl].xyz * 4.4696) * inv - 2.872, 0.0, 1.0);
-            dl = dl + lights.color[hl].rgb * clamp(500.0 * inv * inv, 0.0, 1.0) * cone * clamp(dot(n, d) * inv + v.w, 0.0, 1.0);
+            dl = dl + lights.color[hl].rgb * clamp(500.0 * inv * inv, 0.0, 1.0) * cone * clamp(dot(n, d) * inv * (1.0 - v.w) + v.w, 0.0, 1.0);
         }
     }
     return 0.55 * (amb + v.x * dl);
