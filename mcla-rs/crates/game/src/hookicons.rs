@@ -276,6 +276,9 @@ impl HookIcons {
         for s in 0..3 {
             let Some(c) = self.slots.idx[s].and_then(|i| cands.get(i)).copied() else { continue };
             let Some(f) = feed(t, &c, cam, racing, checkpoints) else { continue };
+            if log {
+                log::info!("hook icon slot {s}: id {} type {} subtype {} ripple {}", c.id, f.icon_type, f.icon_subtype, f.icon_ripple);
+            }
             let m = &mut self.movies[s];
             let p = &mut m.player;
             p.set_global("icon_type", Value::Int(f.icon_type));

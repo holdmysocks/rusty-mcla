@@ -147,6 +147,8 @@ pub struct Roamers {
     /// a story man whose core warps has just been flashed: his greeting; the race returned
     /// with it is a Warper_Warp('DEFAULT_WITH_CUT'), no run to the line
     pub warp_greeting: Option<String>,
+    /// the story men whose core makes him the GPS target while he cruises (`core_gps`)
+    pub gps_cores: Vec<String>,
     /// the red light and freeway racers' scripts (`althk.rs`)
     pub alt: crate::althk::AltData,
     alt_roll: HashMap<u32, AltRoll>,
@@ -280,6 +282,16 @@ pub fn core_warp(sco: &mcla_formats::sco::Sco) -> Option<String> {
     None
 }
 
+/// Whether a story core makes its man the GPS target while CruisingHookmanCore runs: a call of
+/// mcUINavMap_SetTargetByUID (RACE_GH_06_CORE `0x40a56c35` 0x43a..0x47b: while the child runs,
+/// once, when UIManager_GetState('Cruising_Offline') listens, FlashNavigator_IsTransitioning
+/// (0xe7c764c0) is 0 and mcTargetManager_IsTargetHidden(him) is 0). Of the disc's scripts only
+/// RACE_GH_06_CORE calls it.
+pub fn core_gps(sco: &mcla_formats::sco::Sco) -> bool {
+    let set = crate::mc4::joaat("mcUINavMap_SetTargetByUID");
+    sco.calls().iter().any(|c| c.hash == set)
+}
+
 /// The point a cruising brain is sent to first from `pos` (CruisingHookmanCore 0x1f9..0x2c5): the
 /// loop's point nearest to him, or the one after it when he is past it (the dot of his offset
 /// from it and the way on above 0) or within 1 m of it.
@@ -313,6 +325,7 @@ impl Roamers {
             cores: HashMap::new(),
             warp_cores: HashMap::new(),
             warp_greeting: None,
+            gps_cores: Vec::new(),
             specials: Vec::new(),
             sys: SlotSystem::default(),
             men: Vec::new(),
@@ -387,6 +400,10 @@ impl Roamers {
             if let Some(g) = core_warp(&sco) {
                 log::info!("roamers: {} warps to his race after the flash ({}, DEFAULT_WITH_CUT)", row.0, g);
                 self.warp_cores.insert(row.0.to_string(), g);
+            }
+            if core_gps(&sco) && !self.gps_cores.iter().any(|m| m == row.0) {
+                log::info!("roamers: {} makes his man the GPS target while he cruises", row.0);
+                self.gps_cores.push(row.0.to_string());
             }
             if let Some(l) = core_loop(&sco) {
                 log::info!("roamers: {} drives the loop of his core ({} points from {:?}, heading {:?}, put at {:?})", row.0, l.0.len(), l.0[0], l.1, l.2);
@@ -464,6 +481,14 @@ impl Roamers {
                 }
                 if self.sys.request(h, PRIO_MISSION) {
                     log::info!("slots: {} gets a slot of {} for {}", row.2, DISTRICTS[d], row.0);
+                    // (his core, once CruisingHookmanCore runs, the Cruising_Offline state listens
+                    // and no movie transition is on: mcUINavMap_SetTargetByUID(him), once -
+                    // RACE_GH_06_CORE 0x43a..0x47b. The HUD map's element is then selected, so the
+                    // icon over him shows `icon_ripple` and the minimap the route)
+                    if self.gps_cores.iter().any(|m| m == row.0) {
+                        game.mission_target = Some(row.0.to_string());
+                        log::info!("slots: the man of {} is made the GPS target", row.0);
+                    }
                 }
             } else if !active && held {
                 while let Some(d) = self.sys.remove_mission(row.0) {
@@ -1072,5 +1097,10 @@ mod tests {
         assert_eq!(core_warp(&read("0x7efbea76").unwrap()).as_deref(), Some("GREETING_MEET_ME_THERE_EVENT"));
         assert_eq!(core_warp(&read("0x81d83d96").unwrap()), None);
         assert_eq!(core_warp(&read("0x05a65d81").unwrap()), None);
+        // the GPS target on him while he cruises (0x47b): RACE_GH_06_CORE only
+        assert!(core_gps(&gh06));
+        for n in ["0x7efbea76", "0x81d83d96", "0x05a65d81"] {
+            assert!(!core_gps(&read(n).unwrap()), "{n}");
+        }
     }
 }
