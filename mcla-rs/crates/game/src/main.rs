@@ -6115,7 +6115,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             self.sound.speech_busy = self.speech.busy() || self.radio.busy();
-            self.sound.no_player_car = self.game.fresh_game || self.game.starter_pick.is_some();
+            // (nor on the start screen and the start-up movie before it: the career script makes the player's car only at
+            // loadSuccess, after START - the port's car stands at the garage from the start)
+            self.sound.no_player_car = self.game.fresh_game || self.game.starter_pick.is_some() || self.game.mode == Mode::MainMenu;
             self.sound.damage_alpha = self.game.flash_hud.as_ref().and_then(|h| h.movie.player.get_global("damage_alpha")).map_or(0.0, |v| v.to_f32());
             self.sound.racer_found |= self.game.flash_hud.as_mut().is_some_and(|h| std::mem::take(&mut h.racer_found));
             self.sound.menu_cam = self.game.flash_menu.as_ref().filter(|_| self.game.in_menu()).and_then(|m| m.movie.player.get_global("cur_camera")).map(|v| v.to_f32() as i32);

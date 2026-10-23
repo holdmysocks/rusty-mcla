@@ -2143,7 +2143,7 @@ impl Vehicles {
         static FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let frame = FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let parity = frame & 1 == 1;
-        let focus = self.cars.iter().find(|c| c.is_player).map_or(Vec3::ZERO, |c| c.state.pos);
+        let focus = self.amb_focus();
         let blockers = self.frame_blockers(nav);
         let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock: self.clock, event, hold, parity };
         // MCLA_TRAFFIC_TRACE=file: every riding car ten times a second (time, id, model, x, y,
@@ -2368,7 +2368,7 @@ impl Vehicles {
     /// the spawner's next step removes it - the cars are not removed in the middle of the
     /// vehicles' update).
     fn tow_trailers(&mut self, col: &WorldCollider, dt: f32) {
-        let focus = self.cars.iter().find(|c| c.is_player).map_or(Vec3::ZERO, |c| c.state.pos);
+        let focus = self.amb_focus();
         let ids: hashbrown::HashMap<u32, usize> = self.cars.iter().enumerate().filter_map(|(i, c)| c.rail.as_ref().filter(|r| r.state != 0).map(|r| (r.rng_id(), i))).collect();
         for i in 0..self.cars.len() {
             let Some(r) = self.cars[i].rail.as_mut().filter(|r| r.state == 0) else { continue };

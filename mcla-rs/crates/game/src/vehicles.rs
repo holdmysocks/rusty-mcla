@@ -3467,7 +3467,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             }
         }
-        let focus = self.cars.iter().find(|c| c.is_player).map_or(Vec3::ZERO, |c| c.state.pos);
+        let focus = self.amb_focus();
         // the drawn wheels' compression (sub_82794FA8, within 30 m horizontally): the collider wheel's
         // d - collider +636 + 24 i + 48 for wheel bone i, a trailer's bones 2.. reading wheel i - 2 -
         // kept between activations; beyond 30 m none
@@ -3516,6 +3516,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
     }
 
     /// Put a car somewhere by hand (cutscenes): wheels follow, it stands still.
+    /// The ambient manager's focus (its +192): the player's car; on the start screen, in front-end mode, the still
+    /// camera's eye (AmbientMgr_SetFrontEnd - PEOPLE_TRAFFIC.md "Front-end mode"). The drawn wheels' spin (75 m) and
+    /// the bodies' tilt (30 m) are measured from it (sub_82794FA8).
+    pub fn amb_focus(&self) -> Vec3 {
+        match self.amb_frontend.as_ref() {
+            Some(fe) => fe.eye,
+            None => self.cars.iter().find(|c| c.is_player).map_or(Vec3::ZERO, |c| c.state.pos),
+        }
+    }
+
     pub fn pose_car(&mut self, idx: usize, pos: Vec3, rot: Quat) {
         let c = &mut self.cars[idx];
         // (a car the physics has not run yet - one a story scene brings, whose clock stops the physics - has its
