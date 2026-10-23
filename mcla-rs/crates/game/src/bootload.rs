@@ -213,8 +213,13 @@ impl Loading {
         });
         eg.state.handle_platform_output(&self.window, out.platform_output);
         let jobs = eg.ctx.tessellate(out.shapes, out.pixels_per_point);
+        // (every UI renderer gets the textures made here - the font atlas, the movies' pictures loaded behind
+        // the start-up movie: the menus' 4x / 2x passes draw with `renderer4` / `renderer2`, and a texture
+        // they never got is skipped there - the pause panel lost its black list and cursor bar, UI.md 2026-10-23)
         for (id, delta) in &out.textures_delta.set {
             eg.renderer.update_texture(&self.device, &self.queue, *id, delta);
+            eg.renderer4.update_texture(&self.device, &self.queue, *id, delta);
+            eg.renderer2.update_texture(&self.device, &self.queue, *id, delta);
         }
         let desc = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: out.pixels_per_point };
         let mut enc = self.device.create_command_encoder(&Default::default());
@@ -234,6 +239,8 @@ impl Loading {
         frame.present();
         for id in &out.textures_delta.free {
             eg.renderer.free_texture(id);
+            eg.renderer4.free_texture(id);
+            eg.renderer2.free_texture(id);
         }
     }
 

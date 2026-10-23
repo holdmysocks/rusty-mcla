@@ -10029,6 +10029,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (out of a place's own panel - a hangout's, the delivery's - back to the cruise)
                     Mode::RaceSelect if self.hangout_in.is_some() => Mode::FreeRoam,
                     Mode::RaceSelect => Mode::Paused,
+                    // (START / Esc where the original's gate says no: nothing - `pause_allowed`)
+                    Mode::FreeRoam | Mode::Race if !self.pause_allowed() => self.game.mode,
                     Mode::FreeRoam | Mode::Race => Mode::Paused,
                     _ => Mode::MainMenu,
                 };
@@ -10214,6 +10216,37 @@ impl App {
         m.restart(at);
         self.game.movie = Some(m);
         true
+    }
+
+    /// Whether START (the keyboard's Esc) opens the pause menu now. The original: the HUD state's
+    /// event handler (sub_82653058, mcHudState `Invisible`) takes start_pressed (event 55) only when
+    /// the pad has a player and the race is not in its last three seconds before GO, then asks
+    /// sub_82652CF8, which says no while (in its order): the perspective form (108, the "ease to
+    /// pause" slow motion) is visible; there is no player on the pad; a race is in its last 3000 ms
+    /// before GO (race +3764, sub_82256028 in [-3000, 0) - sub_822040F8); the race is over (+3773,
+    /// offline); an open form does not allow it (vt+672); the registry's `disablePause` is set (only
+    /// the CruisingHookmen scripts set it, around a hookman's challenge); GameState_Loading or
+    /// GameState_Intro is active; a cinematic plays (0x828CD440, the cine manager +288 / +324 - +328
+    /// window - sub_823BB3F0 / sub_823BBF80); the player's car is wrecked (+36 / +24 >= 1,
+    /// sub_82204160). VEHICLE SELECT is CarSelection's own loop: it polls only left / right / A
+    /// (IS_BUTTON_DOWN 13 / 3, 15 / 2, 6) - START does nothing there; the opening before the car is
+    /// given (save boxes, film, VEHICLE SELECT, its black) and the story scenes are cinematics or the
+    /// intro state. Docs: UI.md "Where START opens the pause menu (2026-10-23)".
+    fn pause_allowed(&self) -> bool {
+        let g = &self.game;
+        // (the new career's opening: the save boxes, the film, VEHICLE SELECT, the black to the first scene)
+        let opening = g.fresh_game || g.starter_pick.is_some() || g.hold_starter || g.opening_black || self.intro_stage != 0;
+        // (cinematics: story scenes, a race's opening shots, the film)
+        let cinematic = self.cuts.playing.is_some() || self.cine.playing.is_some() || g.movie.is_some();
+        // (the warper's moves: the start-up flight, the race-start warp, the climb, garage / hangout /
+        // payback entries and the garage's way out - *(approx.)* which of the gates above holds them is
+        // not read; the port's warps hold the car as a scene does)
+        let warping = g.start_warp_on || self.warp.is_some() || self.climb.is_some() || self.garage_in.is_some() || self.garage_out.is_some() || self.hangout_entry.is_some() || self.payback_in.is_some();
+        // (the race's last three seconds before GO, and the race's end - PostRace / race over)
+        let race_gate = g.race.as_ref().map_or(false, |r| r.countdown > 0.0 && r.countdown <= 3.0) || g.race_end_t.is_some();
+        // (the perspective form's slow motion holds the game: the lessons' "ease to pause")
+        let form108 = g.tutorial_hold();
+        !(opening || cinematic || warping || race_gate || form108 || g.photo_on)
     }
 
     /// The new career's opening after the save boxes (CarSelection, `intro_stage`): every tick, the film and
