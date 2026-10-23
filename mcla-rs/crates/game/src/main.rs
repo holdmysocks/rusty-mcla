@@ -2718,10 +2718,14 @@ impl App {
         // NAME (as the keyboard page names it, `_` for a space) is pressed at tick `from` and let
         // go after tick `to`; where the player's car is then is logged)
         // (test hook MCLA_NAV_TEST="frame:a,frame:y,...": the pad's A / Y / START / B / up / down / left / right pressed at that frame)
+        // (at the first tick on or after that frame: in real time a frame may run no tick)
         if let Ok(v) = std::env::var("MCLA_NAV_TEST") {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SEEN: AtomicU64 = AtomicU64::new(0);
+            let seen = SEEN.swap(self.frame_no, Ordering::Relaxed);
             for step in v.split(',') {
                 let Some((at, b)) = step.trim().split_once(':') else { continue };
-                if at.trim().parse::<u64>().ok() == Some(self.frame_no) {
+                if at.trim().parse::<u64>().ok().is_some_and(|at| at > seen && at <= self.frame_no) {
                     log::info!("nav test: {} at frame {}", b, self.frame_no);
                     match b.trim() {
                         "a" => self.game.nav_enter = true,
@@ -3760,10 +3764,11 @@ impl App {
                     let (p, z) = LOT[k];
                     let z = Vec3::new(z[0], 0.0, z[1]).normalize();
                     let idx = self.vehicles.spawn(&gpu, model, Vec3::from(p), 0.0, color, false);
+                    // (posed with its wheels under their mounts: the arrival scene that follows stops the physics, so
+                    // in real time the car may get no step before it is seen)
+                    self.vehicles.pose_car(idx, Vec3::from(p), glam::Quat::from_mat3(&glam::Mat3::from_cols(Vec3::Y.cross(z), Vec3::Y, z)));
                     let c = &mut self.vehicles.cars[idx];
-                    c.state.rot = glam::Quat::from_mat3(&glam::Mat3::from_cols(Vec3::Y.cross(z), Vec3::Y, z));
                     c.ai = None;
-                    c.placed = true;
                     c.pinned = true;
                     // (Racer_Deactivate: chassis +592 bit 0x1 - work/ui2/starter_hold/notes.md)
                     c.deactivated = true;
