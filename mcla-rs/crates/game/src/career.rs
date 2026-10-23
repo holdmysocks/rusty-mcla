@@ -1507,6 +1507,13 @@ impl Career {
         self.index.get(id).map_or(false, |&i| self.state[i].stage == Stage::Active)
     }
 
+    /// The mission is in the log: active and past READY_TO_START (state 3 or 4). Its own script
+    /// `Game/Career/Missions/<ID>` starts then (sub_826C7710 -> sub_826C6CC8), and with it the
+    /// slot request of its man (`missions/race_gh_06.sco` 0x4e).
+    pub fn mission_in_log(&self, id: &str) -> bool {
+        self.index.get(id).map_or(false, |&i| self.state[i].stage == Stage::Active && self.ext.get(i).map_or(true, |e| e.state != 2))
+    }
+
     /// A car handed over (a reward of type Car).
     pub fn give_car(&mut self, name: &str) {
         self.give(&Reward::Car(name.to_string()));

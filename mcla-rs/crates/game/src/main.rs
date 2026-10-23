@@ -329,6 +329,9 @@ struct App {
     tips: std::collections::VecDeque<(String, String, String)>,
     /// a mission's reminder (caller, text) waiting for its story scene to end
     pending_call: Option<(String, String)>,
+    /// a mission whose READY_TO_START_ON_ENTER script plays its story scene first: it enters
+    /// the log (mcMission_ChangeState(3)) once the scene is over - RACE_GH_06 0xadb
+    pending_log: Option<String>,
     /// whoosh lines of the city, by 128 m cell; where the player was last frame
     whoosh: hashbrown::HashMap<(i32, i32), Vec<(Vec3, Vec3)>>,
     whoosh_prev: Vec3,
@@ -830,6 +833,7 @@ impl App {
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
             pending_call: None,
+            pending_log: None,
             whoosh: Default::default(),
             whoosh_prev: Vec3::ZERO,
             whoosh_cool: 0.0,
@@ -4885,9 +4889,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(c) = call {
                         // (the call made: the READY_TO_START_ON_ENTER script moves the mission on
                         // to CHECKING_OBJECTIVES - step 20b)
-                        self.game.career.call_delivered(c.trim_start_matches("SIDEKICK_"));
                         let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
                         let scene = if career::Career::scene_elsewhere(c.trim_start_matches("SIDEKICK_")) { None } else { self.cuts.for_mission(c.trim_start_matches("SIDEKICK_"), night) };
+                        // (RACE_GH_06's script plays CUT_STORY_RACE_GH_06 and changes the mission to
+                        // CHECKING_OBJECTIVES only after it - 0x9cc..0xadb -, so its own script and the
+                        // slot request of his man come after the scene; the other ON_ENTER scripts
+                        // play no scene of their own)
+                        let after_scene = c == "SIDEKICK_RACE_GH_06" && scene.is_some() && std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok());
+                        if after_scene {
+                            self.pending_log = Some(c.trim_start_matches("SIDEKICK_").to_string());
+                        } else {
+                            self.game.career.call_delivered(c.trim_start_matches("SIDEKICK_"));
+                        }
                         // (after its story scene a mission is on the phone as its reminder -
                         // "REMEMBER TO GO RACE HENRY ON THE SUNSET STRIP.", `ng_c4` - once the scene
                         // is over)
@@ -4960,6 +4973,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             if std::mem::take(&mut self.game.phone_accept) {
                 self.pending_action = MenuAction::OpenRaceSelect;
+            }
+            // (the mission whose scene is over enters the log)
+            if self.pending_log.is_some() && self.cuts.idle() && self.game.movie.is_none() {
+                if let Some(id) = self.pending_log.take() {
+                    log::info!("career: {} enters the log after its scene", id);
+                    self.game.career.call_delivered(&id);
+                }
             }
             // the reminder kept for after a story scene
             if self.pending_call.is_some() && self.cuts.idle() && self.game.movie.is_none() && self.game.tip.is_none() && matches!(self.game.mode, Mode::FreeRoam) && !self.game.fresh_game {

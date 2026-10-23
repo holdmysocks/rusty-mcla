@@ -83,6 +83,14 @@ pub struct Man {
     pub mod_value: i32,
     /// an alternative hookman's id (mcHookman_SetId: 300.., 350..), 0 for the others
     pub uid: u32,
+    /// the heading his script hands Racer_InitializeResetPosition with point 0 (static +380,
+    /// degrees), when it was read
+    pub heading: Option<f32>,
+    /// where his core puts him as it starts when that is not point 0 of the loop
+    pub start: Option<Vec3>,
+    /// a mission's man whose core script has just started: his car is still to be put at point
+    /// 0 of his loop (the core's Racer_InitializeResetPosition + Racer_Reset as it starts)
+    pub fresh: bool,
 }
 
 /// A hookman script of a district's special man: (kind, district, id, character, set-up, loop).
@@ -128,6 +136,11 @@ pub struct Roamers {
     last_car: String,
     /// (difficulty, loop) - kept for the callers of the first version
     pub cruisers: Vec<(usize, Vec<Vec3>)>,
+    /// the headings of the loop scripts (static +380), by script name
+    pub heads: HashMap<String, f32>,
+    /// the story men whose core script puts a loop of its own over the slot's (mission ->
+    /// points, heading): RACE_GH_06, RACE_GH_02, RACE_SH_04_MOTORCYCLE, BEAT_SH_04_MOTORCYCLE
+    pub cores: HashMap<String, (Vec<Vec3>, Option<f32>, Option<Vec3>)>,
     /// the red light and freeway racers' scripts (`althk.rs`)
     pub alt: crate::althk::AltData,
     alt_roll: HashMap<u32, AltRoll>,
@@ -200,6 +213,50 @@ fn script_points(t: &[mcla_formats::sco::Tok]) -> Vec<Vec3> {
     pts
 }
 
+/// The value a script's main stores into one of its static words, `push v, push <block>, static,
+/// push 0, add, push <offset>, add, set` (the first such store; the block is 0 in the slot scripts
+/// and most cores, 37 in RACE_GH_02_CORE): +376 the number of loop points, +380 the heading.
+fn static_word(t: &[mcla_formats::sco::Tok], offset: f64) -> Option<f64> {
+    use mcla_formats::sco::Tok;
+    (3..t.len()).find(|&i| t[i] == Tok::Num(offset) && t[i - 1] == Tok::Num(0.0) && matches!(t[i - 2], Tok::Num(_))).and_then(|i| if let Tok::Num(v) = t[i - 3] { Some(v) } else { None })
+}
+
+/// A story core script's own loop. Four cores write static +0 / +376 / +380 over the slot
+/// script's before their Racer_InitializeResetPosition, and CruisingHookmanCore then drives them
+/// round it: RACE_GH_06_CORE (`0x40a56c35` 0xdb..0x186: five points, heading 95.52), RACE_GH_02_CORE
+/// (`0x81d83d96`), RACE_SH_04 / BEAT_SH_04_MOTORCYCLE_CORE (`0x2bba840e` / `0x31be07b7`). None: the
+/// core keeps the slot's loop. The third part is the place of his Racer_InitializeResetPosition
+/// when it is not point 0: RACE_GH_02_CORE's vector built just before the call (0x55c..0x57d:
+/// 268.76, 30.72, -1157.07).
+pub fn core_loop(sco: &mcla_formats::sco::Sco) -> Option<(Vec<Vec3>, Option<f32>, Option<Vec3>)> {
+    use mcla_formats::sco::Tok;
+    let t = sco.consts();
+    if !t.iter().any(|x| matches!(x, Tok::Str(s) if s.to_ascii_lowercase().ends_with("cruisinghookmancore"))) {
+        return None;
+    }
+    let n = static_word(&t, 376.0)? as usize;
+    let pts: Vec<Vec3> = script_points(&t).into_iter().take(n).collect();
+    let num = |i: usize| if let Some(Tok::Num(v)) = t.get(i) { Some(*v as f32) } else { None };
+    // (a vector x, y, z, 3 (implode) straight before the call's `<block> static 0 add 380` heading)
+    let reset = (0..t.len()).find_map(|i| {
+        let (x, y, z) = (num(i)?, num(i + 1)?, num(i + 2)?);
+        (num(i + 3)? == 3.0 && num(i + 5)? == 0.0 && num(i + 6)? == 380.0 && (x.abs() > 2.0 || z.abs() > 2.0)).then(|| Vec3::new(x, y, z))
+    });
+    (n >= 3 && pts.len() == n).then(|| (pts, static_word(&t, 380.0).map(|h| h as f32), reset))
+}
+
+/// The point a cruising brain is sent to first from `pos` (CruisingHookmanCore 0x1f9..0x2c5): the
+/// loop's point nearest to him, or the one after it when he is past it (the dot of his offset
+/// from it and the way on above 0) or within 1 m of it.
+pub fn first_dest(pts: &[Vec3], pos: Vec3) -> usize {
+    if pts.is_empty() {
+        return 0;
+    }
+    let k = (0..pts.len()).min_by(|&a, &b| pts[a].distance(pos).partial_cmp(&pts[b].distance(pos)).unwrap()).unwrap_or(0);
+    let n = (k + 1) % pts.len();
+    if (pos - pts[k]).dot(pts[n] - pts[k]) > 0.0 || pos.distance(pts[k]) < 1.0 { n } else { k }
+}
+
 impl Roamers {
     pub fn new() -> Roamers {
         Roamers {
@@ -217,6 +274,8 @@ impl Roamers {
             rival_challenged: false,
             slots: Vec::new(),
             loops: HashMap::new(),
+            heads: HashMap::new(),
+            cores: HashMap::new(),
             specials: Vec::new(),
             sys: SlotSystem::default(),
             men: Vec::new(),
@@ -255,6 +314,9 @@ impl Roamers {
                 }
                 if pts.len() >= 3 {
                     self.loops.insert(stem.clone(), pts.clone());
+                    if let Some(h) = static_word(&t, 380.0) {
+                        self.heads.insert(stem.clone(), h as f32);
+                    }
                 }
                 // (`<d>_time_trial_hk1`, `<d>_tournament_hk1`: mcHookman_SetId / SetType /
                 // SetName / SetCarConfigName and the patrol points)
@@ -272,6 +334,22 @@ impl Roamers {
                 if pts.len() >= 3 && !self.slots.iter().any(|s| s[0].distance(pts[0]) < 1.0) {
                     self.slots.push(pts);
                 }
+            }
+        }
+        // (the story men's core scripts: `Game/Career/Story/<MISSION>_CORE` is
+        // `script_obj/game/career/Story/0x<joaat of "<mission>_core.sco">`)
+        for row in MISSION_HOOKMEN.iter() {
+            let parts: Vec<&str> = row.6.split('/').collect();
+            let Some((file, dirs)) = parts.split_last() else { continue };
+            let mut path = std::path::Path::new(data_dir).join("script_obj");
+            for (i, d) in dirs.iter().enumerate() {
+                path = path.join(if i == 0 { d.to_ascii_lowercase() } else { d.to_string() });
+            }
+            let name = format!("0x{:08x}", crate::mc4::joaat(&format!("{}.sco", file.to_ascii_lowercase())));
+            let Some(sco) = [path.join(&name), path.join(format!("{name}.sco"))].iter().find_map(|p| std::fs::read(p).ok()).and_then(|d| mcla_formats::sco::decode(&d).ok()) else { continue };
+            if let Some(l) = core_loop(&sco) {
+                log::info!("roamers: {} drives the loop of his core ({} points from {:?}, heading {:?}, put at {:?})", row.0, l.0.len(), l.0[0], l.1, l.2);
+                self.cores.insert(row.0.to_string(), l);
             }
         }
         self.alt = crate::althk::AltData::load(data_dir);
@@ -327,7 +405,10 @@ impl Roamers {
         // the missions' men
         let rows: Vec<_> = MISSION_HOOKMEN.iter().collect();
         for row in rows {
-            let active = game.career.mission_active(row.0);
+            // (the mission's script asks for the slot: it runs once the mission is in the log -
+            // a mission waiting in READY_TO_START for its call has no man yet. RACE_GH_06 enters
+            // the log after its story scene, READY_TO_START_ON_ENTER 0xadb)
+            let active = game.career.mission_in_log(row.0);
             let d = row.1;
             let held = self.sys.slots.get(d).map_or(false, |l| l.iter().any(|s| s.hookman.as_ref().map_or(false, |h| h.mission == row.0 && (row.2.is_empty() || h.name == row.2))));
             if active && !held {
@@ -372,7 +453,17 @@ impl Roamers {
                 let Some(h) = s.hookman.as_ref() else { continue };
                 let stem = s.script.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
                 let Some(pts) = self.loops.get(&stem) else { continue };
-                men.push(Man { key: format!("slot:{d}:{i}"), kind: ManKind::Slot, district: d, name: h.name.clone(), car: h.car.clone(), config: h.config.clone(), difficulty: h.difficulty, mission: h.mission.clone(), event: String::new(), hidden: s.hidden && h.mission.is_empty(), pts: pts.clone(), at: 0.0, mod_value: h.mod_value, uid: 0 });
+                // (the slot's script hands the hookman's core its loop: sub_826D4488 starts the
+                // slot's script as the slot is given, and the script starts the core with its
+                // static block - `hw_slot1` 0x1d0..0x1df. A story core may write its own loop over
+                // it - `core_loop` - and every story core puts him at point 0 with the heading as
+                // it starts: Racer_InitializeResetPosition + Racer_Reset, `0x40a56c35` 0x19b..0x1a4,
+                // `0x05a65d81` 0xf9..0x102)
+                let (pts, heading, start) = match self.cores.get(&h.mission) {
+                    Some((p, hd, st)) if !h.mission.is_empty() => (p.clone(), *hd, *st),
+                    _ => (pts.clone(), self.heads.get(&stem).copied(), None),
+                };
+                men.push(Man { key: format!("slot:{d}:{i}"), kind: ManKind::Slot, district: d, name: h.name.clone(), car: h.car.clone(), config: h.config.clone(), difficulty: h.difficulty, mission: h.mission.clone(), event: String::new(), hidden: s.hidden && h.mission.is_empty(), pts, at: 0.0, mod_value: h.mod_value, uid: 0, heading, start, fresh: !h.mission.is_empty() });
             }
         }
         for sp in &self.specials {
@@ -388,7 +479,7 @@ impl Roamers {
             // (generic_timetrial_hookman.sco 0x137 / 0x167: difficulty 1; the tournament man's 1 while his
             // mission is open, else 2 - `mc4_tournament_man_diff`)
             let diff = if sp.kind == ManKind::TimeTrial { 1 } else { game.mc4_tournament_man_diff(sp.district) };
-            men.push(Man { key: format!("{}:{}", if sp.kind == ManKind::TimeTrial { "tt" } else { "tour" }, sp.district), kind: sp.kind, district: sp.district, name: sp.name.clone(), car, config: sp.config.clone(), difficulty: diff, mission: String::new(), event, hidden: false, pts: sp.pts.clone(), at: 0.0, mod_value: -1, uid: 0 });
+            men.push(Man { key: format!("{}:{}", if sp.kind == ManKind::TimeTrial { "tt" } else { "tour" }, sp.district), kind: sp.kind, district: sp.district, name: sp.name.clone(), car, config: sp.config.clone(), difficulty: diff, mission: String::new(), event, hidden: false, pts: sp.pts.clone(), at: 0.0, mod_value: -1, uid: 0, heading: None, start: None, fresh: false });
         }
         // the red light and freeway racers whose scripts run
         self.alt_men(game, player_car, &mut men);
@@ -397,6 +488,7 @@ impl Roamers {
             // loop - Racer_InitializeResetPosition with patrol point 0)
             if let Some(o) = self.men.iter().find(|o| o.key == m.key && o.config == m.config) {
                 m.at = o.at;
+                m.fresh = o.fresh;
             }
         }
         if men.len() != self.men.len() || men.iter().zip(self.men.iter()).any(|(a, b)| a.key != b.key || a.config != b.config) {
@@ -460,7 +552,7 @@ impl Roamers {
             let Some(r) = self.alt_roll.get(&d.id) else { continue };
             let kind = if d.kind == crate::althk::AltKind::RedLight { ManKind::RedLight } else { ManKind::Freeway };
             let key = format!("{}:{}", if kind == ManKind::RedLight { "rl" } else { "fw" }, d.id);
-            men.push(Man { key, kind, district: d.district, name: r.name.clone(), car: r.car.clone(), config: r.config.clone(), difficulty: r.difficulty, mission: if r.mission { "REDLIGHT_GH_01".into() } else { String::new() }, event: String::new(), hidden: !game.alt_visible(d.id), pts: d.pts.clone(), at: 0.0, mod_value: r.mod_value, uid: d.id });
+            men.push(Man { key, kind, district: d.district, name: r.name.clone(), car: r.car.clone(), config: r.config.clone(), difficulty: r.difficulty, mission: if r.mission { "REDLIGHT_GH_01".into() } else { String::new() }, event: String::new(), hidden: !game.alt_visible(d.id), pts: d.pts.clone(), at: 0.0, mod_value: r.mod_value, uid: d.id, heading: None, start: None, fresh: false });
         }
     }
 
@@ -497,6 +589,12 @@ impl Roamers {
         if self.sync_timer <= 0.0 {
             self.sync_timer = 1.0;
             self.sync(game, &pname);
+            // (test log: the player and the racers on the road, once a second)
+            if std::env::var("MCLA_ALT_LOG").is_ok() {
+                for c in vehicles.cars.iter().filter(|c| c.racer) {
+                    log::info!("roamers pos: player ({:.1}, {:.1}, {:.1}) fwd ({:.2}, {:.2}) {:.1} m/s; {} ({:.1}, {:.1}, {:.1}) {:.1} m/s, {:.1} m away", pp.x, pp.y, pp.z, pf.x, pf.z, pspeed, c.vinyl_name, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.speed(), c.state.pos.distance(pp));
+                }
+            }
         }
         // (test hooks: MCLA_HOOKMAN_TEST=<key prefix> - `tt:0`, `tour`, `slot:0:1` - puts that man
         // near the player; the self-test MCLA_ROAM_TEST alone takes a slot hookman)
@@ -540,6 +638,18 @@ impl Roamers {
                     }
                 }
                 None => {
+                    // (a mission's man is put at point 0 of his loop as his core starts and his
+                    // car is in the world from then on - OpponentManager_AddOpponentToWorld,
+                    // Racer_InitializeResetPosition, Racer_Reset, `0x40a56c35` 0x76..0x1a4 -: he
+                    // stays there until his car is made, if the player is in reach of it)
+                    if m.fresh && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 330.0) && only.is_none() {
+                        m.at = 0.0;
+                        if self.challenge.is_none() {
+                            spawn = Some(k);
+                        }
+                        continue;
+                    }
+                    m.fresh = false;
                     m.at += CRUISE * dt;
                     let d = loop_at(&m.pts, m.at).0.distance(pp);
                     // (test hook MCLA_HOOKMAN_TEST=<key prefix>: that man alone, put near the player)
@@ -567,15 +677,28 @@ impl Roamers {
                         }
                     }
                 }
-                Some(model) => ready = Some((m, model)),
+                Some(model) => ready = Some((k, m, model)),
             }
         }
         let Some(nav) = world.nav.as_ref() else { return None };
-        if let Some((m, model)) = ready.filter(|(_, model)| (is_racer_model(&model.name) && model.name != pname) || only.is_some()) {
+        if let Some((k, m, model)) = ready.filter(|(_, m, model)| (is_racer_model(&model.name) && (model.name != pname || m.fresh)) || only.is_some()) {
             {
                 {
                     self.timer = 1.0;
-                    let (mut pos, mut dir, next) = loop_at(&m.pts, m.at);
+                    if let Some(x) = self.men.get_mut(k) {
+                        x.fresh = false;
+                    }
+                    let (mut pos, mut dir, mut next) = loop_at(&m.pts, m.at);
+                    if m.fresh {
+                        // (point 0 with his script's heading; the cruising brain's first point
+                        // from there - CruisingHookmanCore 0x1f9..0x2ea: point 1)
+                        pos = m.start.unwrap_or(m.pts[0]);
+                        if let Some(h) = m.heading {
+                            let h = h.to_radians();
+                            dir = Vec3::new(-h.sin(), 0.0, -h.cos());
+                        }
+                        next = first_dest(&m.pts, pos);
+                    }
                     if only.is_some() && pos.distance(pp) > 330.0 {
                         // (test hook: the man is put on a road near the player)
                         if let Some(li) = nav.links_near(pp, 320.0).find(|&i| { let l = &nav.links[i]; let d = l.a.distance(pp); !l.next.is_empty() && d > 60.0 && d < 200.0 && l.len > 20.0 }) {
@@ -587,11 +710,11 @@ impl Roamers {
                     // three times round
                     let stops: Vec<Vec3> = (0..n * 3).map(|j| m.pts[(next + j) % n]).collect();
                     let (line, _) = nav.route_through(pos, dir, &stops, 25.0);
-                    let at = if line.len() > 8 { line[0] } else { pos };
+                    let at = if line.len() > 8 && !m.fresh { line[0] } else { pos };
                     if let Some((li, t, d)) = nav.nearest_link(at) {
-                        if d < 30.0 && !vehicles.cars.iter().any(|c| c.state.pos.distance(at) < 25.0) {
+                        if d < 30.0 && (m.fresh || !vehicles.cars.iter().any(|c| c.state.pos.distance(at) < 25.0)) {
                             let l = &nav.links[li];
-                            let dir = if line.len() > 8 { (line[1] - line[0]).normalize_or(l.dir()) } else { l.dir() };
+                            let dir = if m.fresh { dir } else if line.len() > 8 { (line[1] - line[0]).normalize_or(l.dir()) } else { l.dir() };
                             let rgb = game.rivals.paint_of(&m.config);
                             let color = rgb.map(|c| [c[0], c[1], c[2], 1.0]).unwrap_or(PALETTE[(self.rand() * PALETTE.len() as f32) as usize % PALETTE.len()]);
                             let idx = vehicles.spawn(gpu, model, at + Vec3::Y * 0.8, (-dir.x).atan2(-dir.z), color, false);
@@ -604,7 +727,7 @@ impl Roamers {
                             if m.mod_value >= 0 {
                                 c.set_perf(m.mod_value.clamp(0, 100) as f32 / 100.0);
                             }
-                            log::info!("roamers: {} ({:?}, {}, difficulty {}) in his {} {:.0} m away", m.name, m.kind, DISTRICTS[m.district.min(4)], m.difficulty, c.model.name, at.distance(pp));
+                            log::info!("roamers: {} ({:?}, {}, difficulty {}) in his {} {:.0} m away{}", m.name, m.kind, DISTRICTS[m.district.min(4)], m.difficulty, c.model.name, at.distance(pp), if m.fresh { format!(" - put at point 0 of his loop ({:.1}, {:.1}, {:.1}), heading {:?}, first point {}", at.x, at.y, at.z, m.heading, next) } else { String::new() });
                             if let Some(ai) = c.ai.as_mut() {
                                 ai.link = Some(li);
                                 ai.t = t;
@@ -861,5 +984,32 @@ mod tests {
         assert!(loop_at(&pts, 550.0).0.distance(p) < 1e-3);
         assert!((loop_project(&pts, Vec3::new(104.0, 0.0, 50.0)) - 150.0).abs() < 1e-3);
         assert!((loop_project(&pts, Vec3::new(20.0, 0.0, 97.0)) - 280.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_brain_goes_to_the_point_after_the_one_he_stands_on() {
+        let pts = vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(100.0, 0.0, 0.0), Vec3::new(100.0, 0.0, 100.0)];
+        assert_eq!(first_dest(&pts, pts[0]), 1);
+        assert_eq!(first_dest(&pts, Vec3::new(-10.0, 0.0, 0.0)), 0);
+        assert_eq!(first_dest(&pts, Vec3::new(10.0, 0.0, 3.0)), 1);
+    }
+
+    /// RACE_GH_06_CORE (`0x40a56c35` 0xdb..0x1a4) and RACE_GH_02_CORE (`0x81d83d96` 0x3d0..0x57d)
+    /// from the disc's scripts (skipped without the extracted data).
+    #[test]
+    fn story_cores_put_their_man_on_their_own_loop() {
+        let dir = std::path::Path::new("D:/MCLA/extracted/cache/script_obj/game/career/Story");
+        let read = |n: &str| std::fs::read(dir.join(n)).ok().and_then(|d| mcla_formats::sco::decode(&d).ok());
+        let Some(gh06) = read("0x40a56c35") else { return };
+        let (pts, h, start) = core_loop(&gh06).unwrap();
+        assert_eq!(pts.len(), 5);
+        assert!(pts[0].distance(Vec3::new(-233.874, 20.7603, -738.0)) < 1e-3 && pts[4].distance(Vec3::new(-130.792, 20.854, -813.429)) < 1e-3);
+        assert_eq!(h, Some(95.52));
+        assert_eq!(start, None);
+        let (pts, h, start) = core_loop(&read("0x81d83d96").unwrap()).unwrap();
+        assert_eq!((pts.len(), h), (12, Some(133.95)));
+        assert!(start.unwrap().distance(Vec3::new(268.76, 30.72, -1157.07)) < 1e-3);
+        // (a core that keeps the slot's loop)
+        assert!(core_loop(&read("0x05a65d81").unwrap()).is_none());
     }
 }
