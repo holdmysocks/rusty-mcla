@@ -416,6 +416,11 @@ impl SoundLib {
         }
     }
 
+    /// A scene stopped without its exit sound (sub_821EC060(h, 0): the camera table's apply on NAVMAP).
+    pub fn scene_cut(&mut self, name: &str) {
+        self.scene_stop(joaat(name), false);
+    }
+
     pub fn scene_on(&self, name: &str) -> bool {
         self.scenes.get(&joaat(name)).is_some_and(|s| s.on)
     }

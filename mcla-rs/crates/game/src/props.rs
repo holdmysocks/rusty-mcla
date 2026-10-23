@@ -1922,6 +1922,12 @@ impl Props {
         v.into_iter().map(|(_, q)| q).collect()
     }
 
+    /// Every prop with a body: its type's audio object (joaat of the type's name - game.dat LA_PROP_<TYPE>) and where it
+    /// is now (sound.rs: the props' distance loops).
+    pub fn audio_places(&self) -> impl Iterator<Item = (u32, Vec3)> + '_ {
+        self.colliders.iter().map(|c| (c.foot.audio, c.pos))
+    }
+
     /// Bring the signal heads near `focus` up to date with their junction's phase.
     pub fn update_signals(&mut self, gpu: &Gpu, focus: Vec3, t: f32) {
         let Some(buf) = self.inst_buf.as_ref() else { return };

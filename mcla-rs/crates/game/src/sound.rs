@@ -130,6 +130,18 @@ pub struct Sound {
     /// a speech line the sounds ask for (PLAYER_IN_AIR); the game says it if no speech plays
     pub want_speech: Option<&'static str>,
     navmap: bool,
+    /// set by the game: the start warp's step (startwarp.rs) - 0 none, 1 the climb, 2 held, 3 the way down
+    pub warp: u8,
+    /// the warp's step last frame, and whether its NAVMAP scene is the warp's (started by the climb, not yet stopped)
+    warp_prev: u8,
+    warp_navmap: bool,
+    /// the audio camera mode last frame (a change applies the camera table, sub_821ED418)
+    cam_prev: i32,
+    /// set by the game once the props are placed: every prop's audio object and place (`Props::audio_places`)
+    pub prop_places: Vec<(u32, Vec3)>,
+    /// the props with a distance loop (their game.dat object's +86 not NULL_SOUND): place, loop, max distance, and the
+    /// loop while it plays
+    prop_loops: Option<Vec<(Vec3, u32, f32, Option<crate::sndobj::Handle>)>>,
     phone: bool,
     tutorial: bool,
     dmg_prev: f32,
@@ -332,6 +344,72 @@ impl Sound {
                 lib.scene("DYNAMIC_MIXER_NAVMAP", game.show_map);
                 self.navmap = game.show_map;
             }
+            // the start warp's navmap audio (mcWarper -> sub_8262BAB0(event)): Warper_Warp('MAXHEIGHT') (sub_8221A440 case
+            // 9, 0x8221B2D8) sends event 0 - GLOBAL_UI_NAVMAP +66 (GPS_UP_HIGH) and, unless it already runs, NAVMAP (stream
+            // GPS_SKY_AMBIENCE; beds, SFX_HARD - every car, the people, the tyres - and PLAYER_VEHICLES to -100 dB, fade in
+            // 1 s); the way down (USER_WAIT_NO_CUT_DOWN: sub_8221BE98 after the GPS chooser sub_82219DA0) sends event 1 from
+            // the held 9000 m (> 6000, 0x82018A20) - +70 (GPS_DOWN_LOW) and NAVMAP stopped with its exit (fade out 2 s).
+            // A new career has no way down: the scene stays until the camera table is next applied for another mode than 5
+            // (sub_821ED418 from sub_822C0320 stops NAVMAP without its exit)
+            if self.warp != self.warp_prev {
+                let field = |lib: &crate::sndobj::SoundLib, at: usize| lib.game.get_name("GLOBAL_UI_NAVMAP").and_then(|o| o.get(at..at + 4)).map(|b| u32::from_be_bytes(b.try_into().unwrap()));
+                if self.warp == 1 && self.warp_prev == 0 {
+                    if let Some(h) = field(lib, 66) {
+                        lib.play_hash(h, crate::sndobj::Req::default());
+                    }
+                    if !lib.scene_on("DYNAMIC_MIXER_NAVMAP") {
+                        lib.scene("DYNAMIC_MIXER_NAVMAP", true);
+                        self.warp_navmap = true;
+                    }
+                } else if self.warp == 3 {
+                    if let Some(h) = field(lib, 70) {
+                        lib.play_hash(h, crate::sndobj::Req::default());
+                    }
+                    lib.scene("DYNAMIC_MIXER_NAVMAP", false);
+                    self.warp_navmap = false;
+                }
+                self.warp_prev = self.warp;
+            }
+            if self.cam_audio != self.cam_prev {
+                if self.warp == 0 && self.warp_navmap && self.cam_audio != 5 {
+                    lib.scene_cut("DYNAMIC_MIXER_NAVMAP");
+                    self.warp_navmap = false;
+                }
+                self.cam_prev = self.cam_audio;
+            }
+            // the props' distance loops (sub_82735918 -> sub_8272D5F0, COLLISION_AUDIO_RULE.md 3.5): a prop whose type
+            // object (LA_PROP_<type>, type 43) has a loop at +86 - the parked and flying aircraft (CESSNA, CESSNA_BEACH,
+            // the 737 JET, HELICOPTER) and road flares - plays it at its place while the listener is within +90 m
+            // (700 / 800 / 780 / 50), and stops beyond. (The aircraft's flag +85 bit 0 keeps it while the prop moves; the
+            // port's stand. The request's +88 LPF / +90 curves are not applied by the port's mixer.)
+            if self.prop_loops.is_none() && !self.prop_places.is_empty() {
+                let null = mcla_formats::hash::joaat("NULL_SOUND");
+                let mut v = Vec::new();
+                for &(ty, pos) in &self.prop_places {
+                    let Some(o) = lib.game.get(ty).filter(|o| o.first() == Some(&43) && o.len() >= 94) else { continue };
+                    let h = u32::from_be_bytes(o[86..90].try_into().unwrap());
+                    if h != 0 && h != null {
+                        v.push((pos, h, f32::from_bits(u32::from_be_bytes(o[90..94].try_into().unwrap())), None));
+                    }
+                }
+                log::info!("audio: {} props with a distance loop", v.len());
+                self.prop_loops = Some(v);
+            }
+            for (pos, h, max, playing) in self.prop_loops.iter_mut().flatten() {
+                let near = pos.distance(cam_pos) <= *max;
+                match (near, *playing) {
+                    (true, Some(p)) if lib.playing(p) => {}
+                    (true, _) => *playing = lib.play_hash(*h, crate::sndobj::Req { pos: Some(*pos), ..Default::default() }),
+                    (false, Some(p)) => {
+                        lib.stop(p);
+                        *playing = None;
+                    }
+                    (false, None) => {}
+                }
+            }
+            // BINK_DEFAULT: a film (BINK_INTRO / BINK_ATTRACT +10) while it plays - the Bink player's sub_822CBC10 starts
+            // it at strength 1.0, its cleanup sub_822CBE30 stops it (MUSIC, SPEECH, CUTSCENES, PLAYER_VEHICLES, SFX -100 dB)
+            lib.scene("DYNAMIC_MIXER_BINK_DEFAULT", game.movie.is_some());
             // PAUSE (sub_821E63F0): paused, not the map, not the replay viewer playing outside the race end
             let endrace = lib.scene_on("DYNAMIC_MIXER_ENDRACE") || lib.scene_on("DYNAMIC_MIXER_ENDRACE_BEATMETHERE");
             let viewer = game.replay.as_ref().is_some_and(|r| !r.paused);

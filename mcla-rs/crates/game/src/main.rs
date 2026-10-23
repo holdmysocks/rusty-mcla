@@ -4869,8 +4869,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.news_timer = -5.0;
                 }
             }
+            // (the calls and tips are the career's mission scripts', which run once the career is loaded: none during the
+            // start warp or before its loadSuccess, 1 s after the landing - LOADING still up)
+            let career_up = self.startwarp.is_none() && self.game.loading_tag <= 0.0;
             // the mechanic rings when nothing else is going on
-            if self.news.is_empty() && self.game.tip.is_none() && self.news_timer <= -4.0 && matches!(self.game.mode, Mode::FreeRoam) {
+            if career_up && self.news.is_empty() && self.game.tip.is_none() && self.news_timer <= -4.0 && matches!(self.game.mode, Mode::FreeRoam) {
                 if let Some((key, title, text)) = self.tips.pop_front() {
                     let secs = (6.0 + text.len() as f32 * 0.055).min(22.0);
                     self.game.tip = Some((title, text, secs));
@@ -4884,7 +4887,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             self.news_timer = (self.news_timer - dt).max(-30.0);
-            if self.news_timer <= 0.0 && matches!(self.game.mode, Mode::FreeRoam) {
+            if career_up && self.news_timer <= 0.0 && matches!(self.game.mode, Mode::FreeRoam) {
                 if let Some((m, call)) = self.news.pop_front() {
                     log::info!("news: {:?} call {:?}", m, call);
                     // (a mission's call is on the phone alone - no line across the top:
@@ -6118,6 +6121,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (nor on the start screen and the start-up movie before it: the career script makes the player's car only at
             // loadSuccess, after START - the port's car stands at the garage from the start)
             self.sound.no_player_car = self.game.fresh_game || self.game.starter_pick.is_some() || self.game.mode == Mode::MainMenu;
+            if self.sound.prop_places.is_empty() && self.props.instances > 0 {
+                self.sound.prop_places = self.props.audio_places().collect();
+            }
+            self.sound.warp = match self.startwarp.as_ref().map(|w| w.phase()) {
+                None => 0,
+                Some(startwarp::Phase::Climb) => 1,
+                Some(startwarp::Phase::Hold) => 2,
+                Some(startwarp::Phase::Down) => 3,
+            };
             self.sound.damage_alpha = self.game.flash_hud.as_ref().and_then(|h| h.movie.player.get_global("damage_alpha")).map_or(0.0, |v| v.to_f32());
             self.sound.racer_found |= self.game.flash_hud.as_mut().is_some_and(|h| std::mem::take(&mut h.racer_found));
             self.sound.menu_cam = self.game.flash_menu.as_ref().filter(|_| self.game.in_menu()).and_then(|m| m.movie.player.get_global("cur_camera")).map(|v| v.to_f32() as i32);
