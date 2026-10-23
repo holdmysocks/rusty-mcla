@@ -141,6 +141,12 @@ pub struct Roamers {
     /// the story men whose core script puts a loop of its own over the slot's (mission ->
     /// points, heading): RACE_GH_06, RACE_GH_02, RACE_SH_04_MOTORCYCLE, BEAT_SH_04_MOTORCYCLE
     pub cores: HashMap<String, (Vec<Vec3>, Option<f32>, Option<Vec3>)>,
+    /// the story men whose core warps to the race at once after the flash (mission -> the
+    /// greeting it plays first): `core_warp`
+    pub warp_cores: HashMap<String, String>,
+    /// a story man whose core warps has just been flashed: his greeting; the race returned
+    /// with it is a Warper_Warp('DEFAULT_WITH_CUT'), no run to the line
+    pub warp_greeting: Option<String>,
     /// the red light and freeway racers' scripts (`althk.rs`)
     pub alt: crate::althk::AltData,
     alt_roll: HashMap<u32, AltRoll>,
@@ -245,6 +251,35 @@ pub fn core_loop(sco: &mcla_formats::sco::Sco) -> Option<(Vec<Vec3>, Option<f32>
     (n >= 3 && pts.len() == n).then(|| (pts, static_word(&t, 380.0).map(|h| h as f32), reset))
 }
 
+/// What a story core does once its CruisingHookmanCore child is over (the man flashed): the
+/// greeting it plays when the first thing after it is Warper_Warp('DEFAULT_WITH_CUT') - the race
+/// at once, no run to the line. RACE_GH_06_CORE (`0x40a56c35` 0x43a..0x491 waits for the child,
+/// 0x2b0d calls 0x4e4: GREETING_MEET_ME_THERE_INTRO 0x4e8, Warper_Warp('DEFAULT_WITH_CUT')
+/// 0x536..0x549, IsReadyToLoadStuff 0x568, then Racer_HideIcon 0x770 and the race
+/// hw_ordered_jp_11 0x7ca..0x830) and `0x7efbea76` (GREETING_MEET_ME_THERE_EVENT 0x3b5,
+/// 0x403..0x416). The 19 cores with RACE_TO_START run to the line (beat me there); the
+/// OrderedSeriesCore cores and FIND_SH_04's scene give None.
+pub fn core_warp(sco: &mcla_formats::sco::Sco) -> Option<String> {
+    use mcla_formats::sco::Tok;
+    let t = sco.consts();
+    let at = t.iter().position(|x| matches!(x, Tok::Str(s) if s.to_ascii_lowercase().ends_with("cruisinghookmancore")))?;
+    let mut greeting = None;
+    for x in &t[at + 1..] {
+        let Tok::Str(s) = x else { continue };
+        if s.starts_with("GREETING_") {
+            greeting = Some(s.clone());
+        }
+        let l = s.to_ascii_lowercase();
+        if s == "DEFAULT_WITH_CUT" {
+            return Some(greeting.unwrap_or_default());
+        }
+        if s == "RACE_TO_START" || s.contains("BEAT_ME_THERE") || l.contains("orderedseriescore") || l.contains("cinescripts/") || l.starts_with("game/race/") {
+            return None;
+        }
+    }
+    None
+}
+
 /// The point a cruising brain is sent to first from `pos` (CruisingHookmanCore 0x1f9..0x2c5): the
 /// loop's point nearest to him, or the one after it when he is past it (the dot of his offset
 /// from it and the way on above 0) or within 1 m of it.
@@ -276,6 +311,8 @@ impl Roamers {
             loops: HashMap::new(),
             heads: HashMap::new(),
             cores: HashMap::new(),
+            warp_cores: HashMap::new(),
+            warp_greeting: None,
             specials: Vec::new(),
             sys: SlotSystem::default(),
             men: Vec::new(),
@@ -347,6 +384,10 @@ impl Roamers {
             }
             let name = format!("0x{:08x}", crate::mc4::joaat(&format!("{}.sco", file.to_ascii_lowercase())));
             let Some(sco) = [path.join(&name), path.join(format!("{name}.sco"))].iter().find_map(|p| std::fs::read(p).ok()).and_then(|d| mcla_formats::sco::decode(&d).ok()) else { continue };
+            if let Some(g) = core_warp(&sco) {
+                log::info!("roamers: {} warps to his race after the flash ({}, DEFAULT_WITH_CUT)", row.0, g);
+                self.warp_cores.insert(row.0.to_string(), g);
+            }
             if let Some(l) = core_loop(&sco) {
                 log::info!("roamers: {} drives the loop of his core ({} points from {:?}, heading {:?}, put at {:?})", row.0, l.0.len(), l.0[0], l.1, l.2);
                 self.cores.insert(row.0.to_string(), l);
@@ -923,6 +964,20 @@ impl Roamers {
             game.show_message("NO EVENT NEARBY");
             return None;
         };
+        // a story man whose core warps (`core_warp`: RACE_GH_06_CORE 0x4e4..0x549): his greeting and
+        // Warper_Warp('DEFAULT_WITH_CUT') - the race at once, no run to the line, no meeting splash or
+        // beat-me-there tutorial; Racer_HideIcon(his car) at 0x770 once the warp is ready
+        if let Some(g) = man.as_ref().filter(|_| scripted.is_some()).and_then(|m| self.warp_cores.get(&m.mission)).cloned() {
+            log::info!("roamers: challenge, {} warps to race {} ({}, start {:.0} m away)", man.as_ref().map_or("", |m| m.mission.as_str()), game.race_defs[race].name, g, dist);
+            self.accepted = true;
+            self.rival_challenged = !vehicles.cars[ri].driver.is_empty();
+            self.won_against_rival = self.rival_challenged;
+            self.warp_greeting = Some(g);
+            game.man_mod = man.as_ref().map(|m| (m.name.clone(), m.mod_value));
+            game.man_diff = man.as_ref().map(|m| m.difficulty);
+            // (his car stays where it is through the climb: the core keeps its opponent for the race)
+            return Some(race);
+        }
         let rc = &mut vehicles.cars[ri];
         if let Some(ai) = rc.ai.as_mut() {
             let route = nav.route_points(rpos, Some(rfwd), goal);
@@ -1011,5 +1066,11 @@ mod tests {
         assert!(start.unwrap().distance(Vec3::new(268.76, 30.72, -1157.07)) < 1e-3);
         // (a core that keeps the slot's loop)
         assert!(core_loop(&read("0x05a65d81").unwrap()).is_none());
+        // after the flash: RACE_GH_06_CORE and 0x7efbea76 warp at once (DEFAULT_WITH_CUT), a beat-me-there
+        // core runs to the line, an OrderedSeriesCore core starts its series
+        assert_eq!(core_warp(&gh06).as_deref(), Some("GREETING_MEET_ME_THERE_INTRO"));
+        assert_eq!(core_warp(&read("0x7efbea76").unwrap()).as_deref(), Some("GREETING_MEET_ME_THERE_EVENT"));
+        assert_eq!(core_warp(&read("0x81d83d96").unwrap()), None);
+        assert_eq!(core_warp(&read("0x05a65d81").unwrap()), None);
     }
 }

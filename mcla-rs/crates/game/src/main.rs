@@ -5007,16 +5007,33 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.vehicles.traffic_target > 0 && !self.vehicles.frozen {
                     // (no flash while Warper_Warp's climb holds the race about to start - the red light's)
                     let flash = flash && self.climb.is_none() && self.climb_end.is_none() && self.climb_wait.is_none() && self.pending_action == MenuAction::None;
-                    if let Some(race) = self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) {
+                    let mut warped = false;
+                    // (nothing of the cruise runs while Warper_Warp's climb holds a race about to start: the
+                    // flashed man's CruisingHookmanCore is over - no tutorial form, no new man on the road)
+                    let climbing = self.climb.is_some() || self.climb_end.is_some() || self.climb_wait.is_some();
+                    if climbing {
+                        self.roam.near = None;
+                        self.roam.near_is_rival = false;
+                    } else if let Some(race) = self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) {
+                        warped = self.roam.warp_greeting.is_some();
                         self.game.current_race = Some(race);
                         // only a race against the hookman himself counts for his mission
                         self.game.hookman_race = self.roam.won_against_rival;
                         self.pending_action = MenuAction::StartRace;
-                        if let Some(id) = self.game.career.hookman_mission() {
+                        // (a story core that warps at once - `roamers::core_warp`, RACE_GH_06_CORE 0x4e4: its
+                        // greeting, then Warper_Warp('DEFAULT_WITH_CUT'): the climb, the race set up after it)
+                        if let Some(g) = self.roam.warp_greeting.take() {
+                            self.game.warp_with_cut = true;
+                            // (mcCareerSpeech_PlayScenario(scenario, Racer_GetVehicleDriverName(the man), 'PLAYER'))
+                            let who = self.game.man_mod.as_ref().map_or(String::new(), |m| m.0.clone());
+                            if !g.is_empty() && !self.speech.say_as(&g, &who) {
+                                log::info!("speech: no scenario {}", g);
+                            }
+                        } else if let Some(id) = self.game.career.hookman_mission() {
                             self.speech.say(&format!("TAUNT_PRE_{}", id));
                         }
                     }
-                    if self.roam.accepted {
+                    if self.roam.accepted && !warped {
                         if let Some(id) = self.game.career.hookman_mission() {
                             self.speech.say(&format!("GREETING_{}", id));
                         }
