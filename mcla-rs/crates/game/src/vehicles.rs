@@ -734,6 +734,8 @@ pub struct Vehicles {
     /// parked cars on (> 0) or off (0); the count itself is not used: the spawner fills a
     /// quarter of the spots of the nodes round the focus (parked.rs)
     pub parked_target: usize,
+    /// AmbientMgr_SetParkedCarsEnable(0) in force (main.rs: CarSelection, the new career's opening)
+    pub parked_held: bool,
     /// the ambient manager's cutscene mode (sub_826D4CA0: AmbientMgr_SetCutscene's flag, the race
     /// timer >= 0, no replay recording or playback): the cutscene camera's eye and forward - the
     /// focus and view of the spawners (sub_826F14E0), set by main.rs while a scene plays

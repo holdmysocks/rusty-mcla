@@ -426,6 +426,8 @@ struct App {
     intro_t: f32,
     /// the opening's black (CarSelection's TRANSITIONMOVIE fades)
     intro_mask: boomcam::CutMask,
+    /// the opening's `Graphics_WarpToTimeOfDay(17, 100)`: the hour aimed at, while the clock is moved there
+    intro_tod: Option<f32>,
     /// of the frame before
     crash_bits: u8,
     crash_timer: f32,
@@ -865,6 +867,7 @@ impl App {
             intro_stage: 0,
             intro_t: 0.0,
             intro_mask: Default::default(),
+            intro_tod: None,
             shake_land: false,
             shake_sst: false,
             shake_jolts: Vec::new(),
@@ -1997,7 +2000,11 @@ impl App {
         }
         // the clock runs while driving: one game hour per minute (a day in 24 minutes),
         // unless a time was fixed on the command line
-        if self.opt.time.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
+        // (CarSelection holds the clock - Graphics_GetAndSetAutoUpdateTimeOfDay(0) at its start, (1) once ACCEPT's
+        // black is up - and the parked cars, AmbientMgr_SetParkedCarsEnable 0 / 1)
+        let car_selection = (1..=3).contains(&self.intro_stage) || self.game.starter_pick.is_some();
+        self.vehicles.parked_held = car_selection;
+        if self.opt.time.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !car_selection {
             let dh = dt / 60.0;
             self.time_of_day = (self.time_of_day + dh) % 24.0;
         }
@@ -3559,8 +3566,12 @@ impl App {
         } else if std::mem::take(&mut self.starter_was) {
             self.vehicles.frozen = false;
             self.vehicles.lights_off = false;
-            // (the two not taken are gone with the choice)
-            self.vehicles.cars.retain(|c| c.driver != "starter");
+            // (the two not taken stay where they stand, still deactivated: CarSelection 0x1402 only unlocks their
+            // streaming and marks them Opponent_ToggleDeleteOnEviction - they go when the opponent manager evicts
+            // them, below; the original's scene shows them in the lot behind the three)
+            for c in self.vehicles.cars.iter_mut().filter(|c| c.driver == "starter") {
+                c.driver = "starter_left".into();
+            }
             self.starter_stand = None;
             // (the story goes on at the kerb outside the lot: where its first scene has the
             // player's car - the `drv00` mover of CUT_STORY_RACE_GH_06)
@@ -3572,6 +3583,13 @@ impl App {
                     c.pose_history.reset();
                 }
             }
+        }
+        // (the starters not taken, deleted on eviction: the opponent manager's walk, sub_822B5AD8 - a car in the world
+        // whose horizontal distance to the player less M+896 (100 m) is over M+892 (600 m) is evicted, and one marked
+        // DeleteOnEviction is deleted (sub_822B7C90); the constructor's values, docs/reference/ai/brain.md 2.9. Out of
+        // the slots (8) is not reached by two cars and the hookman)
+        if let Some(me) = self.vehicles.player().map(|c| c.state.pos) {
+            self.vehicles.cars.retain(|c| c.driver != "starter_left" || (Vec3::new(c.state.pos.x - me.x, 0.0, c.state.pos.z - me.z).length() - 100.0).max(0.0) <= 600.0);
         }
         // VEHICLE SELECT: the starter under the cursor stands in the player's place
         if let Some(name) = self.game.starter_swap.take() {
@@ -10068,6 +10086,8 @@ impl ApplicationHandler for App {
                 }
                 self.intro_stage = 2;
                 self.intro_t = 0.0;
+                // (after the film: Graphics_WarpToTimeOfDay(17, 100) - CarSelection, before City_DoneStreaming)
+                self.intro_tod = Some(17.0);
             }
             // (after the film: `City_DoneStreaming(100)` polled every 10 ms after three frames, then the fade up
             // over 1 s - CarSelection 0xb68, 0xbaa - with VEHICLE SELECT already up)
@@ -10091,12 +10111,25 @@ impl ApplicationHandler for App {
                 let scenes =std::env::var("MCLA_NO_CUTS").is_err() && std::env::var("MCLA_NO_CINE").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok());
                 let up = self.cuts.playing.is_some() && self.cine_hold.is_none();
                 if self.intro_mask.full() && (up || !scenes) {
-                    log::info!("opening: the first story scene comes up");
+                    log::info!("opening: the first story scene comes up ({:.2} h, {} cars)", self.time_of_day, self.vehicles.cars.len());
                     self.intro_mask.release(1.0);
                     self.intro_stage = 0;
                 }
             }
             _ => {}
+        }
+        // (the warp, sub_822F1DB0 with +14552 set: the hour moves the short way round at the rate (+14548, 100 h a
+        // second) x the frame's unscaled seconds (G+88), stops on the target and the warp is over; then mod 24)
+        if let Some(to) = self.intro_tod.filter(|_| self.game.movie.is_none()) {
+            let h = self.time_of_day;
+            let (up, down) = if h < to { (to, to - 24.0) } else { (to + 24.0, to) };
+            let step = 100.0 * dt;
+            let (next, done) = if up - h < h - down { ((h + step).min(up), h + step >= up) } else { ((h - step).max(down), h - step <= down) };
+            self.time_of_day = next.rem_euclid(24.0);
+            if done {
+                log::info!("opening: the clock at {:.2} h", self.time_of_day);
+                self.intro_tod = None;
+            }
         }
         self.game.intro_mask = if self.game.movie.is_some() { 0.0 } else { self.intro_mask.update(dt) };
     }

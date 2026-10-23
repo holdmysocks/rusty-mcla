@@ -2965,7 +2965,8 @@ impl Vehicles {
                     self.spawn_frame(&mut sp, gpu, world, nav, center, view, mph, player_link);
                 }
                 let parked = self.parked_target > 0;
-                if parked {
+                // (AmbientMgr_SetParkedCarsEnable(0): no parked car is made - the new career's CarSelection)
+                if parked && !self.parked_held {
                     self.parked_spawn(gpu, &sp, center, view, mph);
                 }
                 if enabled {
