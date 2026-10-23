@@ -41,6 +41,8 @@ pub struct Character {
     pub shader_tex: Vec<String>,
     /// shader names
     pub shader_names: Vec<String>,
+    /// the shaders with their material parameters (SpecExp, wrapAmount, the maps, ...)
+    pub shaders: Vec<super::drawable::Shader>,
     pub textures: Vec<Texture>,
 }
 
@@ -76,6 +78,7 @@ impl Character {
         // the drawable itself hangs off root+0x10: +08 shader group, +40.. LOD model lists
         let mut shader_tex = Vec::new();
         let mut shader_names = Vec::new();
+        let mut shaders = Vec::new();
         let mut lods: [Vec<usize>; 3] = Default::default();
         // usually at root+0x10; some sets (bike riders) keep it elsewhere: find the object
         // whose +08 points at a shader group {+08 -> shaders, +0c count == +0e} and that has
@@ -90,6 +93,7 @@ impl Character {
             if let Some(Ok(g)) = rd.ptr(dr + 0x08).map(|sg| ShaderGroup::parse(&rd, sg)) {
                 shader_tex = g.shaders.iter().map(|s| s.diffuse().unwrap_or("").to_string()).collect();
                 shader_names = g.shaders.iter().map(|s| s.name.clone()).collect();
+                shaders = g.shaders;
             }
             for (l, lod) in lods.iter_mut().enumerate() {
                 let Some(list) = rd.ptr(dr + 0x40 + l * 4) else { continue };
@@ -122,7 +126,7 @@ impl Character {
             }
             o += 4;
         }
-        Ok(Character { name, bones, models, lods, shader_tex, shader_names, textures })
+        Ok(Character { name, bones, models, lods, shader_tex, shader_names, shaders, textures })
     }
 
     pub fn bone(&self, name: &str) -> Option<usize> {

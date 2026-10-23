@@ -1062,6 +1062,17 @@ fn cmd_char(a: &[String]) -> Result<()> {
         println!("  bone {:2} {:<14} parent {:?} world ({:.2},{:.2},{:.2}) local ({:.2},{:.2},{:.2})", i, b.name, b.parent, b.world_pos.x, b.world_pos.y, b.world_pos.z, b.local_pos.x, b.local_pos.y, b.local_pos.z);
     }
     println!("  lods {:?}; shaders {:?}", c.lods, c.shader_names);
+    for (mi, m) in c.models.iter().enumerate() {
+        for (mesh, si) in m {
+            println!("  model {} shader {} verts {} tangents {} uv1 {} colors {} first tangent {:?}", mi, si, mesh.positions.len(), mesh.tangents.len(), mesh.uv1.len(), mesh.colors.len(), mesh.tangents.first());
+        }
+    }
+    for (i, sh) in c.shaders.iter().enumerate() {
+        println!("  shader {} {} ({})", i, sh.name, sh.source_path);
+        for (h, p) in &sh.params {
+            println!("    {:08x} {:?}", h, p);
+        }
+    }
     for extra in &a[1..] {
         let res = load_res(extra)?;
         let mut anims = mcla_formats::rage::anim::find_animations(&res);

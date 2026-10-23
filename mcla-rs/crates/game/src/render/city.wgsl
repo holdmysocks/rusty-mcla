@@ -1147,6 +1147,21 @@ fn vs_body(in: VsIn) -> VsOut {
     o.color1 = in.color1;
     o.lpos = in.pos;
     o.fill = vec4<f32>(0.0);
+    // (the story characters' programs - skin.rs: the skinned tangent, octahedral in uv1.x / uv2.y
+    // with its sign as + 4 (none: + 8) on uv1.x, handed on in `fill` and the two cleared; for a Ped
+    // program its light term gLightColor x sat(N . L) per vertex, as VSPedDay has it)
+    if (obj.params.w < 15.5 && obj.interior[4].x > 0.5 && in.uv1.y > 76.5 && in.uv1.y < 77.5) {
+        if (obj.interior[4].x > 9.5) {
+            o.fill = vec4<f32>(g.sun_color.rgb * clamp(dot(o.normal, g.sun_dir.xyz), 0.0, 1.0), 0.0);
+        } else {
+            var ox = in.uv1.x;
+            var sg = 1.0;
+            if (ox > 6.0) { ox = ox - 8.0; sg = 0.0; } else if (ox > 2.0) { ox = ox - 4.0; sg = -1.0; }
+            o.fill = vec4<f32>(oct_dec(vec2<f32>(ox, in.uv2.y)), sg);
+        }
+        o.uv1.x = 0.0;
+        o.uv2.y = 0.0;
+    }
     // (car paint's directional fade, per vertex; the material's mode is not visible to this stage -
     // only the paint branch of the pixel stage reads it)
     o.paint_s = paint_fade_s(in.pos, in.uv2.y);
@@ -1560,8 +1575,161 @@ fn car_own_lamps(wts: vec4<f32>) -> vec3<f32> {
     return s0 + s1 - clamp(s0 * s1, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+
+// ---- The story scenes' characters (2026-10-22): the character programs of characters/*.fxc ----
+// Decoded from the microcode (work/lighting-chars/dis/CHAR_RULE.md: every program against an
+// emulation of its listing, <= 2.4e-6) with the game's side (work/lighting-chars/cpu/LIGHT_RULE.md):
+// skin.rs hands each draw an object with the three lights (area_a / area_b [0..2]: place + range,
+// colour + minus the intensity), ambYPos + ambientMod (area_a[3]), floorPlaneEq (area_b[3]), the
+// material's constants (area_a[4], area_b[4], interior[0..3]: see skin.rs `CharMat`) and (effect,
+// shadow source, double-sided, bystander) in interior[4]. The vertex stage hands on the tangent in
+// `fill`. screen(a, b) = a + b - sat(a b), the programs' way of adding light.
+fn ch_screen(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+    return a + b - clamp(a * b, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// One of the three lights at Pw: (L, att x I) - att = sat(1 - min(d / range, 1)), I = -colour.w.
+fn ch_light(k: i32, pw: vec3<f32>) -> vec4<f32> {
+    let p = obj.area_a[k];
+    var l = p.xyz - pw;
+    let d = length(l);
+    l = l / max(d, 1e-6);
+    return vec4<f32>(l, clamp(1.0 - min(d / p.w, 1.0), 0.0, 1.0) * -obj.area_b[k].w);
+}
+
+// The program's own normal-map rebuild: (2 a - 1) x mod and (2 b - 1) x mod along T and B, z from
+// the rest - Character family: map .y / .w; teeth: .x / .w.
+fn ch_nm(nn: vec3<f32>, t: vec3<f32>, b: vec3<f32>, x: f32, y: f32, m: f32) -> vec3<f32> {
+    let a = (2.0 * x - 1.0) * m;
+    let c = (2.0 * y - 1.0) * m;
+    return normalize(nn * sqrt(abs(1.0 - a * a - c * c)) + a * t + c * b);
+}
+
+// pw world position, nv the interpolated normal, tf the tangent (w its sign), vcol the vertex
+// colour, d the diffuse (decoded), nm the normal map (stored), det the detail map (decoded, at
+// uv x scale), m4 the fourth map at uv (spec map), m4b at 20 uv (skin_arm's offset map), s the
+// shadow (the full-screen collector), fast the top-down mask's raw value, ff front facing.
+fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f32>, d: vec4<f32>, nm: vec4<f32>, det: f32, m4: vec4<f32>, m4b: vec4<f32>, s: f32, fast: f32, ff: bool, pedl: vec3<f32>) -> vec3<f32> {
+    let k0 = obj.area_a[4];
+    let k1 = obj.area_b[4];
+    let k2 = obj.interior[0];
+    let k3 = obj.interior[1];
+    let k4 = obj.interior[2];
+    let tint = obj.interior[3];
+    // Ped (VSPedDay + PS): rgb = D (gLightColor sat(N.L) s + sat(gLightAmbient) (0.25 s + 0.75)),
+    // the light term per vertex (`pedl`)
+    if (fx == 10u) {
+        let a = clamp(g.ambient_sky.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+        return d.rgb * (pedl * s + a * (0.25 * s + 0.75));
+    }
+    var nn = normalize(nv);
+    // (double-sided: the face register's sign - which sign a back face gives is not verified)
+    if (obj.interior[4].z > 0.5 && !ff) { nn = -nn; }
+    let t = normalize(tf.xyz);
+    let b = cross(t, nn) * tf.w;
+    let v = normalize(g.cam_pos.xyz - pw);
+    let ambp = obj.area_a[3];
+    let fl = obj.area_b[3];
+    let h = clamp(dot(pw, fl.xyz) - fl.w, 0.0, 1.0);
+    let l0 = ch_light(0, pw);
+    let l1 = ch_light(1, pw);
+    let l2 = ch_light(2, pw);
+    let c0 = obj.area_b[0].rgb;
+    let c1 = obj.area_b[1].rgb;
+    let c2 = obj.area_b[2].rgb;
+    let lum = vec3<f32>(0.3, 0.59, 0.11);
+    if (fx == 5u || fx == 6u || fx == 7u || fx == 8u) {
+        // teeth / visor / plastic: VS o3 = (ambYPos x ambientMod x vertex colour, 1)
+        let amb = ambp.rgb * ambp.w * vcol.rgb;
+        var n = nn;
+        if (fx == 6u) { n = ch_nm(nn, t, b, nm.x, nm.w, k0.x); }
+        if (fx == 8u) { n = normalize(t * (2.0 * nm.x - 1.0) + b * (2.0 * nm.y - 1.0) + nn * (2.0 * nm.z - 1.0)); }
+        let vn = dot(v, n);
+        let fres = k2.z + (k2.w - k2.z) * pow(1.0 - clamp(abs(vn), 0.0, 1.0), k2.y);
+        let r = normalize(2.0 * vn * n - v);
+        let env = env_color(r);
+        let dt = d.rgb * tint.rgb;
+        let envc = mix(env, dt * dot(env, lum), k4.y);
+        let se = k1.z;
+        if (fx <= 6u) {
+            let wr = k3.x;
+            let w0 = clamp(clamp(dot(n, l0.xyz), 0.0, 1.0) * (1.0 - wr) + wr, 0.0, 1.0);
+            let w1 = clamp(clamp(dot(n, l1.xyz), 0.0, 1.0) * (1.0 - wr) + wr, 0.0, 1.0);
+            let d0 = c0 * w0 * l0.w * s;
+            let d1 = 2.0 * c1 * w1 * l1.w * s;
+            let sp = c0 * pow(clamp(dot(n, normalize(v + l0.xyz)), 0.0, 1.0), se) * clamp(16.0 * w0, 0.0, 1.0)
+                   + c1 * pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * w1, 0.0, 1.0);
+            let lit = ch_screen(amb, ch_screen(d1, d0));
+            return dt * ch_screen(lit * k1.x, sp * k1.w) + k4.x * fres * envc;
+        }
+        let e0 = c0 * clamp(dot(n, l0.xyz), 0.0, 1.0) * l0.w * s;
+        let e1 = 2.0 * c1 * clamp(dot(n, l1.xyz), 0.0, 1.0) * l1.w * s;
+        let e2 = 2.0 * c2 * clamp(dot(n, l2.xyz), 0.0, 1.0) * l2.w * s;
+        let dsum = ch_screen(ch_screen(e1, e0), e2);
+        let sp = c0 * pow(clamp(dot(n, normalize(v + l0.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l0.xyz), 0.0, 1.0)
+               + c1 * pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l1.xyz), 0.0, 1.0)
+               + c2 * pow(clamp(dot(n, normalize(v + l2.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l2.xyz), 0.0, 1.0);
+        let lit = ch_screen(amb, dsum * 0.5 * k1.x);
+        let cc = dt * ch_screen(lit, sp * k1.w);
+        return mix(cc, envc, fres);
+    }
+    // (the Character family and skin_arm: VS o3 = ambYPos x 0.1 x ambientMod / 0.66 x h, w = h / 0.66,
+    // h = sat(dot(Pw, floorPlaneEq.xyz) - floorPlaneEq.w); no gauge / neon light outside a car)
+    let amb = ambp.rgb * (0.1 * ambp.w / 0.66) * h;
+    let ambw = h / 0.66;
+    let vl = vec3<f32>(0.0);
+    if (fx == 9u) {
+        // PS_HighQualitySkin: its constants are literals but diffuseMod; the fast mask always
+        let n = normalize(t * ((2.0 * nm.x - 1.0) + 1.5 * (m4b.x - 0.5)) + b * ((2.0 * nm.y - 1.0) + 1.5 * (m4b.y - 0.5)) + nn * (2.0 * nm.z - 1.0));
+        let vn = dot(v, n);
+        let sh = clamp(fast - 0.25, 0.0, 1.0);
+        let d0 = 0.25 * c0 * clamp(pow(clamp(0.625 * (dot(n, l0.xyz) + 0.6), 0.0, 1.0), 1.6), 0.0, 1.0) * l0.w * sh * 1.3333333;
+        let d1 = 0.25 * c1 * clamp(dot(n, l1.xyz), 0.0, 1.0) * l1.w;
+        let lit = ch_screen(0.25 * amb, ch_screen(ch_screen(d1, d0), vl) * ambw * k0.x);
+        let env = env_soft(normalize(2.0 * vn * n - v));
+        let rimc = mix(d.rgb * dot(env, lum), env, pow(1.0 - clamp(vn, 0.0, 1.0), 2.0));
+        let sp = pow(abs(rimc), vec3<f32>(1.25)) * (0.0625 + 1.9375 * pow(1.0 - clamp(abs(vn), 0.0, 1.0), 4.0)) * d.a * ambw * (0.5 * n.y + 0.5) * (0.5 + 0.666665 * sh);
+        return ch_screen(lit * d.rgb, sp);
+    }
+    let shm = 0.75 * s + 0.25;
+    let detf = mix(k0.w, 1.0, det);
+    var n = nn;
+    if (fx == 2u || fx == 4u) { n = ch_nm(nn, t, b, nm.y, nm.w, k0.x); }
+    let vn = dot(v, n);
+    let fres = k2.z + (k2.w - k2.z) * pow(1.0 - clamp(abs(vn), 0.0, 1.0), k2.y);
+    let env = env_soft(normalize(2.0 * vn * n - v));
+    let wr = k3.x;
+    let se = k1.z;
+    let dl0 = c0 * clamp(dot(n, l0.xyz) * (1.0 - wr) + wr, 0.0, 1.0) * l0.w;
+    let dl1 = c1 * clamp(dot(n, l1.xyz) * (1.0 - wr) + wr, 0.0, 1.0) * l1.w;
+    let dl2 = c2 * clamp(dot(n, l2.xyz) * (1.0 - wr) + wr, 0.0, 1.0) * l2.w;
+    let sl0 = c0 * pow(clamp(dot(n, normalize(v + l0.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l0.xyz), 0.0, 1.0) * l0.w;
+    let sl1 = c1 * pow(clamp(dot(n, normalize(v + l1.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l1.xyz), 0.0, 1.0) * l1.w;
+    let sl2 = c2 * pow(clamp(dot(n, normalize(v + l2.xyz)), 0.0, 1.0), se) * clamp(16.0 * dot(n, l2.xyz), 0.0, 1.0) * l2.w;
+    let dsum = ch_screen(ch_screen(dl0 * shm, dl1), dl2);
+    let ssum = sl0 * shm + sl1 + sl2;
+    let aoh = pow(abs(vcol.a), k3.w) * ambw;
+    let lt = ch_screen(ch_screen(amb * detf, dsum * aoh), vl);
+    let base = lt * k1.x * 1.8 * detf * d.rgb;
+    let rimc = mix(d.rgb * dot(env, lum), env, 1.0 - clamp(vn, 0.0, 1.0));
+    let rim = rimc * pow(1.0 - max(vn, 0.0), k3.y) * k3.z * aoh;
+    var mask = det * d.a;
+    if (fx == 3u || fx == 4u) { mask = det * m4.x; }
+    let sp = (k1.w * mask * fres * aoh * ssum + k2.x * pow(abs(rimc), vec3<f32>(k1.y + 1.0))) * (0.5 + 0.5 * n.y);
+    return ch_screen(ch_screen(base, sp), rim);
+}
+
+// Octahedral decoding (skin.rs `oct`).
+fn oct_dec(e: vec2<f32>) -> vec3<f32> {
+    var v = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (v.z < 0.0) {
+        v = vec3<f32>((1.0 - abs(e.y)) * select(-1.0, 1.0, e.x >= 0.0), (1.0 - abs(e.x)) * select(-1.0, 1.0, e.y >= 0.0), v.z);
+    }
+    return normalize(v);
+}
+
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> {
     car_wp = in.wpos;
     var albedo = textureSample(t_diffuse, s_diffuse, in.uv0);
     // (diagnostics 542 .. 545, p2day: the upper windows' diffuse read at level 0 .. 3; 546: at one level coarser than the sampler's choice)
@@ -1835,6 +2003,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
     }
     var second = textureSample(t_second, s_diffuse, second_uv);
+    // (the story characters' maps - `char_shade`; read here, where the control flow is uniform: the
+    // diffuse as stored, the detail map decoded the console's way at uv x its scales, the fourth map
+    // at uv and at 20 uv; the normal map is `second`)
+    let ch_obj = mat.mode == 9u && obj.params.w < 15.5 && obj.interior[4].x > 0.5;
+    var ch_d = vec4<f32>(0.0);
+    var ch_det = 1.0;
+    var ch_m4 = vec4<f32>(0.0);
+    var ch_m4b = vec4<f32>(0.0);
+    if (ch_obj) {
+        ch_d = textureSample(t_diffuse, s_diffuse, in.uv0);
+        ch_det = pwl_decode(textureSample(t_third, s_diffuse, in.uv0 * obj.area_a[4].yz).rgb).x;
+        ch_m4 = textureSample(t_fourth, s_diffuse, in.uv0);
+        ch_m4b = textureSample(t_fourth, s_diffuse, in.uv0 * 20.0);
+    }
     let sg_dx1 = dpdx(second_uv) * sg_s;
     let sg_dy1 = dpdy(second_uv) * sg_s;
     if (sg_on) {
@@ -4326,6 +4508,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // colour x sat(sat(strength / d^2) x sat(dot(to light, axis) / d + bias) x sat(n.l)). The lanes
     // are the walker's own (figlight.rs: the cell's lamps eased in, the head lamps / key light laid
     // over), rows 0..11 of the figure's object, marked 2 in row 0 of the second table. 750: as before.
+    // The story scenes' characters: their own programs (`char_shade`). The shadow: the full-screen
+    // collector (the scenes' ShaderGlobals.z = 8.09 >= 8) or the fast top-down mask, sat(x - 0.25) x 4/3.
+    // MCLA_DEBUG_VIEW=760: the generic look.
+    if (ch_obj && in.uv1.y > 76.5 && in.uv1.y < 77.5 && !(g.params.w > 759.5 && g.params.w < 760.5)) {
+        let ch_fast = fast_collector(in.wpos);
+        let ch_s = select(clamp((ch_fast - 0.25) * 1.3333333, 0.0, 1.0), sun_shadow(in.wpos, ng), obj.interior[4].y > 0.5);
+        let ch_dd = vec4<f32>(select(ch_d.rgb, xenos_gamma(ch_d.rgb), xenos_gamma_on()), ch_d.a);
+        lit = char_shade(u32(round(obj.interior[4].x)), in.wpos, in.normal, in.fill, in.color, ch_dd, second, ch_det, ch_m4, ch_m4b, ch_s, ch_fast, ff, in.fill.xyz);
+        // (761: the shadow term; 762: sat(n.L) of the first light x its colour)
+        if (g.params.w > 760.5 && g.params.w < 761.5) { lit = vec3<f32>(ch_s); }
+        if (g.params.w > 761.5 && g.params.w < 762.5) { lit = obj.area_b[0].rgb * clamp(dot(normalize(in.normal), ch_light(0, in.wpos).xyz), 0.0, 1.0) * ch_light(0, in.wpos).w; }
+    }
     if (mat.mode == 9u && in.uv1.y > 76.5 && in.uv1.y < 77.5 && obj.lamp_b[0].w > 1.5 && !(g.params.w > 749.5 && g.params.w < 750.5)) {
         var fl = vec3<f32>(0.0);
         for (var k = 0; k < 4; k = k + 1) {

@@ -431,6 +431,12 @@ impl Cine {
         self.playing.as_ref().map_or(false, |s| s.actors.iter().any(|a| a.label.starts_with(prefix)))
     }
 
+    /// The light manager's state for the character programs this frame (main.rs); None: the
+    /// figures keep the generic look (MCLA_CHAR_OLD=1).
+    pub fn set_light(&mut self, l: Option<crate::skin::CharLight>) {
+        self.buf.char_light = l;
+    }
+
     /// Skin the characters at the scene's time.
     pub fn prepare(&mut self, gpu: &Gpu) {
         self.buf.clear();
@@ -440,6 +446,8 @@ impl Cine {
             let f = if a.clip.anim.duration > 0.0 && last > 0.0 { (self.clock / a.clip.anim.duration * last).rem_euclid(last) } else { 0.0 };
             a.clip.local(&a.model.bones, f, &mut local);
             let (mt, mr) = a.clip.mover(f);
+            // (the hangout's people: bystanders, the manager's own lights)
+            self.buf.next_bystander = true;
             self.buf.emit(&a.model, 0, &local, Mat4::from_rotation_translation(mr, mt));
         }
         for sc in self.playing.iter_mut().chain(self.linger.iter_mut()) {
@@ -475,6 +483,10 @@ impl Cine {
                 }
             }
             let (mt, mr) = a.clip.mover(f);
+            // (sub_823A10A8: a cine character whose name holds "ped" is drawn with the manager's own
+            // lights - the scenes' bystanders pedsit1_ped00, benchsit_ped05 ...; the cast with three
+            // lights of its own)
+            self.buf.next_bystander = a.label.to_ascii_lowercase().contains("ped");
             self.buf.emit_shaped(&a.model, 0, &local, sc.origin * Mat4::from_rotation_translation(mr, mt), a.shapes.as_ref().map(|s| &s.0));
         }
         }

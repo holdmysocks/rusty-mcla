@@ -25,6 +25,10 @@ pub struct SkinVert {
     pub uv: [f32; 2],
     pub w: [f32; 4],
     pub b: [u16; 4],
+    /// the stored tangent (xyz as stored, w its sign: +1 / -1, 0 without one) and vertex colour
+    /// (r the wind weight, a the occlusion the character programs read)
+    pub tan: [f32; 4],
+    pub col: [u8; 4],
 }
 
 pub struct Part {
@@ -33,6 +37,120 @@ pub struct Part {
     pub tex: usize,
     /// hair cards and the like: cut out by the texture's alpha
     pub alpha: bool,
+    /// its shader's character material
+    pub mat: CharMat,
+}
+
+/// The character programs (characters/*.fxc, work/lighting-chars/dis/CHAR_RULE.md) as their pixel
+/// programs group the twenty effects; city.wgsl reads the number from the draw's object
+/// (interior[4].x). 0: none (the generic look).
+pub mod fx {
+    /// Character, Character_skin, Character_skin_blendshape
+    pub const PLAIN: u32 = 1;
+    /// Character_normalmap, Character_skin_normalmap, Character_skin_blendshape_normalmap
+    pub const NM: u32 = 2;
+    /// Character_alpha(_doublesided)
+    pub const ALPHA: u32 = 3;
+    /// Character_alpha_normalmap(_doublesided)
+    pub const ALPHA_NM: u32 = 4;
+    pub const TEETH: u32 = 5;
+    pub const TEETH_NM: u32 = 6;
+    /// Character_visor / Character_plastic (the same programs)
+    pub const VISOR: u32 = 7;
+    pub const VISOR_NM: u32 = 8;
+    /// Character_skin_arm(_normalmap): PS_HighQualitySkin
+    pub const ARM: u32 = 9;
+    /// Ped (VSPedDay + PS)
+    pub const PED: u32 = 10;
+}
+
+/// A part's character material: the effect, double-sided, ambientMod (VS c208) and the pixel
+/// program's constants in fixed slots - k[0] (normalMapMod, detailMapUScale, detailMapVScale,
+/// detailMapOffset), k[1] (diffuseMod, SpecMapExp, SpecExp, SpecIntensity), k[2] (SpecMapIntensity,
+/// the fresnel's exponent, minimum, maximum), k[3] (wrapAmount, rimPower, rimAmount,
+/// ambientOcclusionContrast), k[4] (envMod, metallic, -, -), k[5] tintColor.
+#[derive(Clone, Copy, Default)]
+pub struct CharMat {
+    pub fx: u32,
+    pub double: bool,
+    pub ambient_mod: f32,
+    pub k: [[f32; 4]; 6],
+}
+
+impl CharMat {
+    /// From the drawable's shader: its name and its parameters by name hash.
+    pub fn of(sh: &mcla_formats::rage::drawable::Shader, has_normal: bool) -> CharMat {
+        use mcla_formats::rage::drawable::ShaderParam;
+        let n = sh.name.to_ascii_lowercase();
+        let nm = n.ends_with("_normalmap") || n.contains("_normalmap_");
+        let fx = match n.trim_end_matches("_doublesided").trim_end_matches("_normalmap") {
+            _ if n == "ped" => fx::PED,
+            "character" | "character_skin" | "character_skin_blendshape" => if nm && has_normal { fx::NM } else { fx::PLAIN },
+            "character_alpha" => if nm && has_normal { fx::ALPHA_NM } else { fx::ALPHA },
+            "character_teeth" => if nm && has_normal { fx::TEETH_NM } else { fx::TEETH },
+            "character_visor" | "character_plastic" => if nm && has_normal { fx::VISOR_NM } else { fx::VISOR },
+            "character_skin_arm" if has_normal => fx::ARM,
+            _ => 0,
+        };
+        let v = |name: &str| -> Option<f32> {
+            let h = mcla_formats::hash::joaat(&name.to_ascii_lowercase());
+            sh.params.iter().find_map(|(ph, p)| match p {
+                ShaderParam::Vector(v) if *ph == h => v.first().map(|x| x.x),
+                _ => None,
+            })
+        };
+        let f = |a: &str| v(a).unwrap_or(0.0);
+        let f2 = |a: &str, b: &str| v(a).or(v(b)).unwrap_or(0.0);
+        let tint = sh.params.iter().find_map(|(ph, p)| match p {
+            ShaderParam::Vector(v) if *ph == mcla_formats::hash::joaat("tintcolor") => v.first().map(|x| x.to_array()),
+            _ => None,
+        });
+        CharMat {
+            fx,
+            double: n.ends_with("_doublesided"),
+            ambient_mod: f("ambientMod"),
+            k: [
+                [f("normalMapMod"), f("detailMapUScale"), f("detailMapVScale"), f("detailMapOffset")],
+                [f("diffuseMod"), f("SpecMapExp"), f("SpecExp"), f("SpecIntensity")],
+                [f("SpecMapIntensity"), f2("specFresnelExp", "fresnelExp"), f2("specFresnelMin", "fresnelMin"), f2("specFresnelMax", "fresnelMax")],
+                [f("wrapAmount"), f("rimPower"), f("rimAmount"), f("ambientOcclusionContrast")],
+                [f("envMod"), f("metallic"), 0.0, 0.0],
+                tint.unwrap_or([1.0; 4]),
+            ],
+        }
+    }
+}
+
+/// What the story scenes' characters are lit by this frame: the light manager's state (main.rs
+/// `lighting`) - the direction towards the sun (mgr + 32 negated), its colour (mgr + 64) and
+/// strength (mgr + 80), the scene's ambient (mgr + 224); night: hour > 18 or < 6 (sub_82205248).
+#[derive(Clone, Copy, Default)]
+pub struct CharLight {
+    pub to_light: Vec3,
+    pub key: Vec3,
+    pub strength: f32,
+    pub amb: Vec3,
+    pub night: bool,
+}
+
+impl CharLight {
+    /// The three lights a story character's draw gets by day (sub_823D1748 -> sub_822F5D98 path A,
+    /// sub_8218F210 / sub_821800A0; work/lighting-chars/cpu/LIGHT_RULE.md, every draw of the
+    /// recordings to 6.3e-8): the sun 100 m from the model's origin `p` (range 1000), colour S,
+    /// w = -strength; the ambient's colour 100 m on the other side, w = -0.8 x strength
+    /// (0x827E2118); the third empty (range 100). Rows: place + range, colour + (-intensity).
+    pub fn day_slots(&self, p: Vec3) -> [[f32; 4]; 6] {
+        let a = p + self.to_light * 100.0;
+        let b = p - self.to_light * 100.0;
+        [
+            [a.x, a.y, a.z, 1000.0],
+            [b.x, b.y, b.z, 1000.0],
+            [0.0, 0.0, 0.0, 100.0],
+            [self.key.x, self.key.y, self.key.z, -self.strength],
+            [self.amb.x, self.amb.y, self.amb.z, -0.8 * self.strength],
+            [0.0, 0.0, 0.0, -0.0],
+        ]
+    }
 }
 
 pub struct SkinModel {
@@ -41,6 +159,10 @@ pub struct SkinModel {
     pub ids: Vec<u16>,
     pub lods: [Vec<Part>; 3],
     pub binds: Vec<Arc<wgpu::BindGroup>>,
+    /// per shader, for the character programs: diffuse, normal map, detail map, and the spec map
+    /// (alpha effects) or the normal offset map (skin_arm) - all but the diffuse uploaded as stored
+    pub binds4: Vec<Arc<wgpu::BindGroup>>,
+    pub mats: Vec<CharMat>,
     /// index of the head bone
     pub head: Option<usize>,
     /// the set's facial blend shapes (`.r3`), when it has targets
@@ -158,6 +280,36 @@ impl SkinModel {
             let w = gpu.white.clone();
             binds.push(gpu.texture_bind_group(&w, &w, 0, 0));
         }
+        // the character programs' maps by parameter (NormalMapSampler / NormalSampler,
+        // DetailMapSampler, SpecMapSampler / NormalOffsetSampler); a missing one is white
+        let mut binds4 = Vec::new();
+        let mut mats = Vec::new();
+        for (si, sh) in c.shaders.iter().enumerate() {
+            let find = |h: &[u32]| sh.textures().find(|(ph, _)| h.contains(ph)).and_then(|(_, n)| c.textures.iter().find(|t| t.name.eq_ignore_ascii_case(n)));
+            let mut raw = |t: Option<&mcla_formats::rage::texture::Texture>| match t {
+                Some(t) => {
+                    let key = mcla_formats::hash::joaat(&format!("{}/raw/{}", name, t.name)) | 1;
+                    (gpu.upload_texture_raw(key, t), key)
+                }
+                None => (gpu.white.clone(), 0),
+            };
+            let nrm_t = find(&[0x3350a6fd, 0x8ac11cb0]);
+            let (nrm, kn) = raw(nrm_t);
+            let (det, kd) = raw(find(&[0x3e19076b]));
+            let (spec, ks) = raw(find(&[0x4bc6d1ed, 0x6cd2b2ab]));
+            let tn = sh.diffuse().unwrap_or("");
+            let dtex = c.textures.iter().find(|t| t.name.eq_ignore_ascii_case(tn)).or(c.textures.iter().find(|t| t.name.ends_with("_d.dds"))).or(c.textures.first());
+            let (dif, k0) = match dtex {
+                Some(t) => {
+                    let key = mcla_formats::hash::joaat(&format!("{}/{}", name, t.name)) | 1;
+                    (gpu.upload_texture(key, t), key)
+                }
+                None => (gpu.white.clone(), 0),
+            };
+            binds4.push(gpu.texture_bind_group4(&dif, &nrm, &det, &spec, k0, kn ^ 0x5bd1e995, kd ^ 0x27d4eb2d, ks ^ 0x165667b1));
+            mats.push(CharMat::of(sh, nrm_t.is_some()));
+            let _ = si;
+        }
         let nb = bones.len() as u16;
         let mut lods: [Vec<Part>; 3] = Default::default();
         for (l, models) in c.lods.iter().enumerate() {
@@ -185,10 +337,17 @@ impl SkinModel {
                         }
                         let n = mesh.normals.get(vi).copied().unwrap_or(Vec3::Y);
                         let uv = mesh.uv0.get(vi).map(|u| [u.x, u.y]).unwrap_or([0.0; 2]);
-                        verts.push(SkinVert { pos: *p, nrm: if n.is_finite() { n } else { Vec3::Y }, uv, w, b });
+                        // (the tangent word's sign: raw 1 = +1, raw 3 = -1 - vehicles.rs `car_binormal_mark`)
+                        let tan = match mesh.tangents.get(vi) {
+                            Some(t) if mesh.tangents.len() == mesh.positions.len() => [t.x, t.y, t.z, if t.w >= 1.5 { -1.0 } else if t.w < 0.5 { 0.0 } else { 1.0 }],
+                            _ => [0.0; 4],
+                        };
+                        let col = mesh.colors.get(vi).copied().unwrap_or([255; 4]);
+                        verts.push(SkinVert { pos: *p, nrm: if n.is_finite() { n } else { Vec3::Y }, uv, w, b, tan, col });
                     }
                     let alpha = c.shader_names.get(*si as usize).map_or(false, |n| n.to_ascii_lowercase().contains("alpha"));
-                    lods[l].push(Part { verts, indices: mesh.indices.clone(), tex: (*si as usize).min(binds.len() - 1), alpha });
+                    let mat = mats.get(*si as usize).copied().unwrap_or_default();
+                    lods[l].push(Part { verts, indices: mesh.indices.clone(), tex: (*si as usize).min(binds.len() - 1), alpha, mat });
                 }
             }
         }
@@ -196,7 +355,10 @@ impl SkinModel {
             return None;
         }
         let morph = load_morph(path, &c, &lods[0]);
-        Some(SkinModel { bones, ids, lods, binds, head: c.bone("head"), morph })
+        if binds4.is_empty() {
+            binds4 = binds.clone();
+        }
+        Some(SkinModel { bones, ids, lods, binds, binds4, mats, head: c.bone("head"), morph })
     }
 }
 
@@ -339,6 +501,17 @@ pub struct SkinBuffer {
     lanes: Vec<[[f32; 4]; 12]>,
     draw_fig: Vec<usize>,
     lane_objs: Vec<crate::render::ObjectBinding>,
+    /// Some: this buffer's figures are drawn with the character programs (the story scenes - cine.rs),
+    /// lit as the light manager stands this frame
+    pub char_light: Option<CharLight>,
+    /// the next figure is one of a scene's bystanders (an entity named "ped": sub_823A10A8 sets
+    /// +149, the draw takes the manager's own lights - path B); taken by `emit`
+    pub next_bystander: bool,
+    /// this frame's figures (character programs): the model's origin, bystander
+    figs: Vec<(Vec3, bool)>,
+    /// and each draw's figure and material
+    char_draws: Vec<(usize, CharMat)>,
+    char_objs: Vec<crate::render::ObjectBinding>,
 }
 
 impl SkinBuffer {
@@ -348,6 +521,8 @@ impl SkinBuffer {
         self.draws.clear();
         self.lanes.clear();
         self.draw_fig.clear();
+        self.figs.clear();
+        self.char_draws.clear();
     }
 
     /// Skin one character in the given local pose, standing at `root`.
@@ -385,6 +560,13 @@ impl SkinBuffer {
         };
         let first = (lod.min(2)..3).find(|&l| !model.lods[l].is_empty()).unwrap_or(0);
         let parts = &model.lods[first];
+        let chars = self.char_light.is_some();
+        let cfig = self.figs.len();
+        if chars {
+            // (the lights' origin: the model's place, gWorld row 3 - here the root bone's, which carries
+            // the scene position (cine.rs); x / z within 3 cm of the recorded draws, y up to 0.4 m higher)
+            self.figs.push((self.world.first().map_or(root.w_axis, |w| w.w_axis).truncate(), std::mem::take(&mut self.next_bystander)));
+        }
         // (the night fill light at the figure's place - fillmap.rs: the figures share one buffer
         // and the identity object, so the colour rides in every vertex: color1.rgb = four times
         // map / 255 x 0.25 x m_NFLFade, uv1.y = 77 the mark city.wgsl knows a figure by)
@@ -402,18 +584,39 @@ impl SkinBuffer {
                 };
                 let mut pos = Vec3::ZERO;
                 let mut nrm = Vec3::ZERO;
+                let mut tan = Vec3::ZERO;
+                let t = Vec3::new(v.tan[0], v.tan[1], v.tan[2]);
                 for k in 0..4 {
                     if v.w[k] > 0.0 {
                         let m = &self.skin[v.b[k] as usize];
                         pos += m.transform_point3(bind) * v.w[k];
                         nrm += m.transform_vector3(v.nrm) * v.w[k];
+                        tan += m.transform_vector3(t) * v.w[k];
                     }
+                }
+                if chars {
+                    // (the character programs: the skinned tangent - normalised after the world
+                    // matrix as VSSkinned does - octahedral in uv1.x / uv2.y, its sign as + 4 on
+                    // uv1.x (no sign: + 8), unpacked by city.wgsl `vs_body` into `fill`; the vertex
+                    // colour as stored)
+                    let o = oct(tan.normalize_or(Vec3::X));
+                    let sgn = if v.tan[3] < -0.5 { 4.0 } else if v.tan[3] < 0.5 { 8.0 } else { 0.0 };
+                    self.verts.push(Vertex { pos: pos.to_array(), normal: nrm.normalize_or(Vec3::Y).to_array(), uv0: v.uv, uv1: [o[0] + sgn, 77.0], color: v.col, color1: fill, uv2: [if part.alpha { 1.0 } else { 0.0 }, o[1]] });
+                    continue;
                 }
                 self.verts.push(Vertex { pos: pos.to_array(), normal: nrm.normalize_or(Vec3::Y).to_array(), uv0: v.uv, uv1: [0.0, 77.0], color: [255; 4], color1: fill, uv2: [if part.alpha { 1.0 } else { 0.0 }, 0.0] });
             }
             let first = self.indices.len() as u32;
             self.indices.extend(part.indices.iter().map(|i| i + base));
-            self.draws.push((model.binds[part.tex].clone(), first, part.indices.len() as u32));
+            if chars && part.mat.fx != 0 {
+                self.draws.push((model.binds4.get(part.tex).unwrap_or(&model.binds[part.tex]).clone(), first, part.indices.len() as u32));
+                self.char_draws.push((cfig, part.mat));
+            } else {
+                self.draws.push((model.binds[part.tex].clone(), first, part.indices.len() as u32));
+                if chars {
+                    self.char_draws.push((cfig, CharMat::default()));
+                }
+            }
             self.draw_fig.push(fig);
         }
     }
@@ -439,6 +642,40 @@ impl SkinBuffer {
         gpu.queue.write_buffer(self.ib.as_ref().unwrap(), 0, bytemuck::cast_slice(&self.indices));
         // (the lit figures' lanes: rows 0..11 of the object's first lamp table, the mark 2 in row 0
         // of the second - city.wgsl, the walkers at night; a traffic car's row 0 there is <= 1)
+        // (the character programs: one object a draw - city.wgsl reads the three lights from
+        // area_a / area_b [0..2], ambYPos and ambientMod from area_a[3], floorPlaneEq from
+        // area_b[3], the material's slots from area_a[4], area_b[4], interior[0..3] and
+        // (effect, shadow source, double-sided, bystander) from interior[4]. The scenes' draws
+        // read the full-screen collector: ShaderGlobals.z = 8.09 >= 8 in every recorded draw.)
+        if let Some(cl) = self.char_light {
+            for (i, (f, m)) in self.char_draws.iter().enumerate() {
+                let (p, by) = self.figs[*f];
+                let mut u = crate::render::ObjectUniform::default();
+                let sl = cl.day_slots(p);
+                for k in 0..3 {
+                    u.area_a[k] = sl[k];
+                    u.area_b[k] = sl[3 + k];
+                }
+                u.area_a[3] = [cl.amb.x, cl.amb.y, cl.amb.z, m.ambient_mod];
+                // (outside a car: sub_823CFCE0 - neon and gauge light colours 0, the floor far below)
+                u.area_b[3] = [0.0, 1.0, 0.0, -1000.0];
+                u.area_a[4] = m.k[0];
+                u.area_b[4] = m.k[1];
+                u.interior[0] = m.k[2];
+                u.interior[1] = m.k[3];
+                u.interior[2] = m.k[4];
+                u.interior[3] = m.k[5];
+                // (a Ped program at night is VSPedNight + PSMultiLight with the walkers' four lanes -
+                // not kept for the scenes' bystanders: the generic look then)
+                let fxv = if cl.night && m.fx == fx::PED { 0 } else { m.fx };
+                u.interior[4] = [fxv as f32, 1.0, if m.double { 1.0 } else { 0.0 }, if by { 1.0 } else { 0.0 }];
+                if i < self.char_objs.len() {
+                    gpu.queue.write_buffer(&self.char_objs[i].buf, 0, bytemuck::bytes_of(&u));
+                } else {
+                    self.char_objs.push(gpu.new_object(&u));
+                }
+            }
+        }
         for (i, l) in self.lanes.iter().enumerate() {
             let mut u = crate::render::ObjectUniform::default();
             u.lamp_a[..12].copy_from_slice(l);
@@ -475,6 +712,13 @@ impl SkinBuffer {
                 pass.set_bind_group(1, bind.as_ref(), &[]);
                 last = Arc::as_ptr(bind);
             }
+            if self.char_light.is_some() {
+                // (one object a draw)
+                pass.set_bind_group(3, self.char_objs.get(k).map_or(&gpu.identity_obj.bg, |o| &o.bg), &[]);
+                pass.draw_indexed(*first..*first + *count, 0, 0..1);
+                *draws += 1;
+                continue;
+            }
             let fig = self.draw_fig.get(k).copied().unwrap_or(usize::MAX);
             if fig != obj {
                 pass.set_bind_group(3, self.lane_objs.get(fig).map_or(&gpu.identity_obj.bg, |o| &o.bg), &[]);
@@ -482,6 +726,47 @@ impl SkinBuffer {
             }
             pass.draw_indexed(*first..*first + *count, 0, 0..1);
             *draws += 1;
+        }
+    }
+}
+
+/// Octahedral encoding of a unit vector (city.wgsl `oct_dec`).
+fn oct(v: Vec3) -> [f32; 2] {
+    let n = v / (v.x.abs() + v.y.abs() + v.z.abs());
+    if n.z >= 0.0 {
+        [n.x, n.y]
+    } else {
+        [(1.0 - n.y.abs()) * n.x.signum(), (1.0 - n.x.abs()) * n.y.signum()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// g.28.bin draw 1457 (GH_06, 17:00): the model at c3, the lights c16..c18 / c39..c41.
+    #[test]
+    fn day_slots_match_the_recorded_draw() {
+        let p = Vec3::new(-179.41, 18.178, -751.71);
+        let cl = CharLight {
+            to_light: (Vec3::new(-268.15, 64.034, -747.02) - p) / 100.0,
+            key: Vec3::new(1.0, 0.47486, 0.097636),
+            strength: 1.0,
+            amb: Vec3::new(0.10388, 0.11954, 0.14902),
+            night: false,
+        };
+        let want = [
+            [-268.15, 64.034, -747.02, 1000.0],
+            [-90.668, -27.678, -756.4, 1000.0],
+            [0.0, 0.0, 0.0, 100.0],
+            [1.0, 0.47486, 0.097636, -1.0],
+            [0.10388, 0.11954, 0.14902, -0.8],
+            [0.0, 0.0, 0.0, -0.0],
+        ];
+        for (r, w) in cl.day_slots(p).iter().zip(want.iter()) {
+            for k in 0..4 {
+                assert!((r[k] - w[k]).abs() < 0.01, "{r:?} vs {w:?}");
+            }
         }
     }
 }

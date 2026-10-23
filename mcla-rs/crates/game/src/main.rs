@@ -8076,6 +8076,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (the rain and the lamps' cones in it, as the original draws them - rain.rs)
         rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, hour: self.time_of_day, collider: Some(&world.collider) });
         self.peds.prepare(&gpu, self.cam.pos, &frustum);
+        // (the story scenes' characters: their own programs, lit by the light manager's state -
+        // skin.rs `CharLight`; MCLA_CHAR_OLD=1: the generic look as before)
+        let hour = globals.sun_color[3];
+        self.cine.set_light(std::env::var("MCLA_CHAR_OLD").is_err().then(|| skin::CharLight {
+            to_light: Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]),
+            key: Vec3::new(globals.sun_color[0], globals.sun_color[1], globals.sun_color[2]),
+            strength: globals.sun_dir[3],
+            amb: Vec3::new(globals.ambient_sky[0], globals.ambient_sky[1], globals.ambient_sky[2]),
+            night: hour > 18.0 || hour < 6.0,
+        }));
         self.cine.prepare(&gpu);
         {
             // drivers of the player's car, the racers and the police (traffic models have their own)
