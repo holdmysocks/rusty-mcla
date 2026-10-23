@@ -1596,11 +1596,21 @@ pub struct FlashMinimap {
     pub overhead_sub: Option<(i32, String)>,
     /// `target0.aspect` (= viewportWindow width / height, the movie's own easing)
     pub aspect: f32,
+    /// the UI pass the map was last painted in (`Game::ui`: not on the first pass after a gap - its map target is
+    /// handed to the movie after the movie's step, so that pass would show the empty ring)
+    pub last_pass: u64,
 }
 
 impl FlashMinimap {
     pub fn load(data_dir: &str, shared: &UiShared) -> Option<FlashMinimap> {
-        Some(FlashMinimap { movie: FlashMovie::load(data_dir, "resources/ui/hudmap/0x7064220c.r27", shared)?, cam_height: 1890.0, look_ahead: 110.0, viewport: [78.0, 464.0, 219.0, 219.0], highlight: false, cam_eye: glam::Vec3::new(0.0, 1891.0, 0.0), cam_look: glam::Vec3::new(0.0, 0.0, -110.0), cam_fovy: 35.0, map_rotation: 0.0, own_map: false, overhead: false, overhead_title: None, overhead_sub: None, aspect: 1.0 })
+        let movie = FlashMovie::load(data_dir, "resources/ui/hudmap/0x7064220c.r27", shared)?;
+        let mut m = FlashMinimap { movie, cam_height: 1890.0, look_ahead: 110.0, viewport: [78.0, 464.0, 219.0, 219.0], highlight: false, cam_eye: glam::Vec3::new(0.0, 1891.0, 0.0), cam_look: glam::Vec3::new(0.0, 0.0, -110.0), cam_fovy: 35.0, map_rotation: 0.0, own_map: false, overhead: false, overhead_title: None, overhead_sub: None, aspect: 1.0, last_pass: 0 };
+        // (driven from the start as the HUD's movie - `FlashHud::load`: first shown undriven, its mask was a white
+        // shape and a white circle for a few frames)
+        for _ in 0..30 {
+            m.drive(&HudInfo::default(), None, 1.0 / 30.0);
+        }
+        Some(m)
     }
 
     /// `gps`: bearing of the GPS target relative to the map's up, degrees clockwise.
@@ -1891,7 +1901,13 @@ pub const SPLASH_BOTTOM: usize = 2;
 impl FlashHud {
     pub fn load(data_dir: &str, shared: &UiShared) -> Option<FlashHud> {
         let movie = FlashMovie::load(data_dir, "resources/ui/hud/0x1f0e1cda.r27", shared)?;
-        Some(FlashHud { movie, countdown_shown: false, splash_queue: Default::default(), racer_found: false, camera_last: -1 })
+        let mut h = FlashHud { movie, countdown_shown: false, splash_queue: Default::default(), racer_found: false, camera_last: -1 };
+        // (the game drives the HUD from its start - the movie is up, hidden, long before it is first shown; driven
+        // only from its first showing, its first frames were its placeholders: the race clock's "1:23.45.67.85")
+        for _ in 0..30 {
+            h.drive(&HudInfo::default(), None, 1.0 / 30.0);
+        }
+        Some(h)
     }
 
     /// The camera bar at the bottom (`camera_indicator`). The game names the views once

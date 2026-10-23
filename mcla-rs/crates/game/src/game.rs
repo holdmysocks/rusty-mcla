@@ -8486,9 +8486,15 @@ impl Game {
                             if n.w.abs() > 1e-4 {
                                 fm.map_rotation = (std::f32::consts::FRAC_PI_2 - (n.y / n.w).atan2(n.x / n.w)).to_degrees();
                             }
-                            let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_map"));
-                            ctx.move_to_top(layer);
-                            fm.movie.paint(ctx, &ctx.layer_painter(layer));
+                            // (the first pass after the map was away has no map in the ring yet: left out - one frame)
+                            let pass = ctx.cumulative_pass_nr();
+                            let fresh = fm.last_pass + 1 != pass;
+                            fm.last_pass = pass;
+                            if !fresh {
+                                let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_map"));
+                                ctx.move_to_top(layer);
+                                fm.movie.paint(ctx, &ctx.layer_painter(layer));
+                            }
                         } else {
                         // The movie stacks the ring (depth 3) under the map target (20) and the north
                         // marker (22) over it, so the map covers all but the ring's outer edge. Two
