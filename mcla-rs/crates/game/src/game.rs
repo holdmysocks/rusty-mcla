@@ -8237,6 +8237,10 @@ impl Game {
                         let q = crate::hudmap::build(&hm.tune, &mut hm.assets, &f, &els, &[], false);
                         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gps_icons"));
                         ctx.move_to_top(layer);
+                        // (the icons are the map's 3D scene; the navsys movie - panels, prompt bar - is drawn
+                        // over them. egui orders layers that move to the top in the same frame by when each
+                        // was first seen, not by the calls, so tie the movie's layer directly above this one)
+                        ctx.set_sublayer(layer, egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_navsys")));
                         // MAP MODE's road overlay first (the UI components' 3D pass comes before the icons)
                         if hm.map_mode {
                             crate::hudmap::overlay_fade(&mut hm.road_fades, hud.cam_pos.y, dt);
