@@ -1532,8 +1532,15 @@ impl World {
                 // (walls with a fourth texture - the interior mirror picture of metal walls and
                 // tunnel tiles: their height / specular map stays the raw copy, as below)
                 let wall4 = matches!(b.mode, MatMode::Opaque | MatMode::AlphaTest);
+                // (the road, ground and decal programs' third texture is their grime layer, laid over
+                // by its own alpha: a batch without one gets the transparent texture, as it does when
+                // it has no fourth either - `resolve(0)` is opaque white, which painted South
+                // Central's lots and sidewalks white, CityDecal / CityTintBumpDecal2 with a
+                // height map and no GrimeSampler. LIGHTING.md "White ground in South Central")
+                let no_grime = b.third == 0 && matches!(b.mode, MatMode::Road | MatMode::Ground | MatMode::Decal);
                 let (t3, k3) = match raw.get(&b.third).filter(|_| wall4) {
                     Some(t) => (t.clone(), sk(b.third) ^ RAW_KEY),
+                    None if no_grime => (gpu.clear_tex.clone(), 0),
                     None => (resolve(gpu, b.third), sk(b.third)),
                 };
                 let (t4, k4) = match raw.get(&b.fourth).filter(|_| b.mode == MatMode::Ground || b.mode == MatMode::Decal) {
