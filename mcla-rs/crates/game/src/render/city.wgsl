@@ -32,6 +32,7 @@ struct Globals {
     car_key2: vec4<f32>,     // the cars' OTHER light slot at night (the hour's light, or a second lamp that beat it): the direction towards it; w = 1: use it
     car_key2_col: vec4<f32>, // ... its colour x strength
     car_amb: vec4<f32>,      // the garage: rgb = the cars' own ambient (ambYPos), w = 1: in force; car_key2 is then a position (its w = 2)
+    lod: vec4<f32>,          // OPTIONS > PERFORMANCE: x = DRAW DISTANCE, y = DETAIL LEVEL (1 = the original), z = the plants' model angle factor (0.9 while paused, else 1) - props.rs `Lod`
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(2) var t_shadow: texture_depth_2d;
@@ -470,7 +471,8 @@ struct LightSet {
 @group(0) @binding(1) var<uniform> lights: LightSet;
 
 @group(1) @binding(0) var t_diffuse: texture_2d<f32>;
-@group(1) @binding(1) var s_diffuse: sampler;
+// (the texture sampler: the device default's anisotropy, 4 driving / 16 in the 4x mode - group 0 binding 15, render/ms.rs)
+@group(0) @binding(15) var s_diffuse: sampler;
 @group(1) @binding(2) var t_second: texture_2d<f32>;
 @group(1) @binding(3) var t_third: texture_2d<f32>;
 @group(1) @binding(4) var t_fourth: texture_2d<f32>;
@@ -1354,18 +1356,28 @@ fn vs_inst(in: VsIn, inst: InstIn) -> VsOut {
         let s = inst.pos_scale.w * max(tall, 1.0);
         let s2 = min(s, 2.0);
         let kind = i32(round(in.uv1.y)) - 100;
-        let model = 2.0 * r / tan(half_deg * 0.007853982) * s2;
+        // (the options' scales, props.rs `PropModel::reach`: x the far ends, y the model's end)
+        let kd = max(g.lod.x, 1.0);
+        let pa = select(1.0, g.lod.z, g.lod.z > 0.5);
+        let model = 2.0 * r / tan(half_deg * pa * 0.007853982) * s2 * max(g.lod.y, 1.0);
         if (kind == 1) {
             fade = clamp((model - depth) * 0.25, 0.0, 1.0);
         } else if (kind == 3 || kind == 4) {
-            let far = min(2.0 * r / tan(half_deg * 0.000436332) * s2, 2600.0);
+            let far = min(2.0 * r / tan(half_deg * 0.000436332) * s2 * kd, 6000.0 * kd);
             fade = clamp((far - depth) / (far * 0.25), 0.0, 1.0);
             if (inst.rot_tint.w >= 0.0) { fade = min(fade, clamp((depth - (model - 8.0)) * 0.25, 0.0, 1.0)); }
         } else if (kind == 2) {
-            let far = min(2.0 * r / tan(half_deg * 0.001308997) * s2, 2600.0);
-            fade = clamp((far - depth) / (far * 0.25), 0.0, 1.0);
+            // hedges: the high level (uv1.y 102) out over L - 8 .. L, the low level (102.25) in over L - 16 .. L - 8
+            // and out over the last quarter of its far end (lod_rule.md 2b); L = 2R / tan(h pi/600)
+            let far = min(2.0 * r / tan(half_deg * 0.001308997) * s2 * kd, 6000.0 * kd);
+            let l = min(2.0 * r / tan(half_deg * 0.005235988) * s2 * max(g.lod.y, 1.0), far);
+            if (in.uv1.y < 102.125) {
+                fade = clamp((l - depth) * 0.125, 0.0, 1.0);
+            } else {
+                fade = min(clamp((far - depth) / (far * 0.25), 0.0, 1.0), clamp((depth - (l - 16.0)) * 0.125, 0.0, 1.0));
+            }
         } else {
-            let far = min(r * s * (80.0 * cot - 0.5), 2250.0);
+            let far = min(r * s * (80.0 * cot - 0.5) * kd, 2250.0 * kd);
             fade = clamp((far - depth) * 0.125, 0.0, 1.0);
         }
     }

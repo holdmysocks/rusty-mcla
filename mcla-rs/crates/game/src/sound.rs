@@ -144,6 +144,79 @@ pub struct Sound {
     obj_loops: std::collections::HashMap<String, crate::sndobj::Handle>,
 }
 
+/// The ambience beds' streams: bed name -> stream file (relative to the audio root).
+pub fn load_beds(root: &std::path::Path) -> hashbrown::HashMap<String, String> {
+    let mut m = hashbrown::HashMap::new();
+    if let Ok(rd) = std::fs::read_dir(root.join("ambience_stream")) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let fname = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let Some(stem) = fname.strip_suffix(".mp3.txt") else { continue };
+            let Ok(t) = std::fs::read_to_string(&p) else { continue };
+            let Some(ch) = t.lines().next().and_then(|l| l.split(char::from(9u8)).nth(2)) else { continue };
+            if let Some(bed) = ch.strip_prefix("AMB_BED_") {
+                // drop the speaker suffix (_L, _R, _LS, _RS)
+                let bed = bed.rsplit_once('_').map(|x| x.0).unwrap_or(bed);
+                m.insert(bed.to_string(), format!("ambience_stream/{stem}.mp3"));
+            }
+        }
+    }
+    log::info!("audio: {} ambience beds", m.len());
+    m
+}
+
+/// The sound library and what is made with it, read off the game loop (the start-up's loading thread,
+/// boot.md "Loading behind the movie"; or at the first sound update as before).
+pub struct Preloaded {
+    pub lib: Option<crate::sndobj::SoundLib>,
+    coll: Option<crate::collaudio::CollisionAudio>,
+    amb: Option<crate::ambaudio::Ambience>,
+    fleet: Option<crate::caraudio::Fleet>,
+    beds: Option<hashbrown::HashMap<String, String>>,
+}
+
+impl Preloaded {
+    /// `root` = the audio root, `cfg` = `audio/X360/config`; `all`: the ambience beds and the stream index too
+    /// (otherwise read when first needed).
+    pub fn load(root: &std::path::Path, cfg: &std::path::Path, all: bool) -> Preloaded {
+        let mut lib = crate::sndobj::SoundLib::load(root, cfg);
+        let (mut coll, mut amb, mut fleet) = (None, None, None);
+        if let Some(l) = lib.as_mut() {
+            // (cfg = <data>/audio/X360/config)
+            let data = cfg.ancestors().nth(3).map(|p| p.to_path_buf()).unwrap_or_default();
+            coll = Some(crate::collaudio::CollisionAudio::new(&data));
+            amb = crate::ambaudio::Ambience::new(l);
+            fleet = Some(crate::caraudio::Fleet::new(&data));
+            if all {
+                l.index_streams();
+            }
+        } else {
+            log::warn!("audio: {} not loaded - the original's sound objects are not played", cfg.display());
+        }
+        Preloaded { lib, coll, amb, fleet, beds: all.then(|| load_beds(root)) }
+    }
+}
+
+impl Sound {
+    /// Take a [`Preloaded`] sound library (the first sound update does it itself when nothing was handed over).
+    pub fn adopt(&mut self, p: Preloaded) {
+        self.lib_tried = true;
+        self.lib = p.lib;
+        self.coll = p.coll;
+        self.amb = p.amb;
+        self.fleet = p.fleet;
+        if p.beds.is_some() {
+            self.beds = p.beds;
+        }
+    }
+
+    /// A persistent object sound started outside the game loop (the start-up movie's loading music), kept as
+    /// [`crate::audio::Audio::obj_loop`] keeps its own.
+    pub fn keep_loop(&mut self, name: &str, h: crate::sndobj::Handle) {
+        self.obj_loops.insert(name.to_string(), h);
+    }
+}
+
 impl Sound {
     #[allow(clippy::too_many_arguments)]
     /// `rain`: the weather's rain share (wet = not 0); `probe(from, to)`: the city's collision has something on that line.
@@ -158,18 +231,7 @@ impl Sound {
         let wet = rain > 0.0;
         a.set_listener(cam_pos, cam_right);
         if !self.lib_tried {
-            self.lib_tried = true;
-            self.lib = crate::sndobj::SoundLib::load(a.root(), &a.cfg);
-            if self.lib.is_some() {
-                // (cfg = <data>/audio/X360/config)
-                let data = a.cfg.ancestors().nth(3).map(|p| p.to_path_buf()).unwrap_or_default();
-                self.coll = Some(crate::collaudio::CollisionAudio::new(&data));
-                self.amb = self.lib.as_ref().and_then(crate::ambaudio::Ambience::new);
-                self.fleet = Some(crate::caraudio::Fleet::new(&data));
-            }
-            if self.lib.is_none() {
-                log::warn!("audio: {} not loaded - the original's sound objects are not played", a.cfg.display());
-            }
+            self.adopt(Preloaded::load(a.root(), &a.cfg, false));
         }
         a.objects = self.lib.is_some();
         if let Some(lib) = &mut self.lib {
@@ -852,23 +914,7 @@ impl Sound {
 
         // ---- district ambience -----------------------------------------------------
         if self.beds.is_none() {
-            let mut m = hashbrown::HashMap::new();
-            if let Ok(rd) = std::fs::read_dir(a.root().join("ambience_stream")) {
-                for e in rd.flatten() {
-                    let p = e.path();
-                    let fname = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    let Some(stem) = fname.strip_suffix(".mp3.txt") else { continue };
-                    let Ok(t) = std::fs::read_to_string(&p) else { continue };
-                    let Some(ch) = t.lines().next().and_then(|l| l.split(char::from(9u8)).nth(2)) else { continue };
-                    if let Some(bed) = ch.strip_prefix("AMB_BED_") {
-                        // drop the speaker suffix (_L, _R, _LS, _RS)
-                        let bed = bed.rsplit_once('_').map(|x| x.0).unwrap_or(bed);
-                        m.insert(bed.to_string(), format!("ambience_stream/{stem}.mp3"));
-                    }
-                }
-            }
-            log::info!("audio: {} ambience beds", m.len());
-            self.beds = Some(m);
+            self.beds = Some(load_beds(a.root()));
         }
         let district = game.district_at(st.pos);
         let base = if game.mode == Mode::Garage {

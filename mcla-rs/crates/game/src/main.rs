@@ -1,6 +1,8 @@
 //! Midnight Club: Los Angeles – Rust runtime.
 
 mod ability;
+mod boot;
+mod bootload;
 mod figlight;
 mod hooks;
 mod mc4;
@@ -16,6 +18,8 @@ mod camera;
 mod citymap;
 mod career;
 mod catalog;
+mod modcars;
+mod modfs;
 mod garagecam;
 mod garagein;
 mod hangoutin;
@@ -41,9 +45,13 @@ mod damagemap;
 mod cutscene;
 mod drivers;
 mod game;
+mod glyphs;
 mod keybinds;
 mod hud;
 mod flash_ui;
+mod selfmovie;
+mod uipass;
+mod aamode;
 mod particles;
 mod propfx;
 mod modelfx;
@@ -86,6 +94,8 @@ mod hookicons;
 mod ground_sheet;
 mod fillmap;
 mod rearview;
+mod titlecam;
+mod startwarp;
 
 /// Where the pause cameras' frame sits in the car (x right, y up, z rear from the
 /// car's origin). Measured in the original (CAREER_RACES.md "Race end: camera and
@@ -144,6 +154,14 @@ struct Egui {
     ctx: egui::Context,
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
+    /// the menus' 4x UI pass (uipass.rs) and its renderer: 4 samples, no depth attachment
+    renderer4: egui_wgpu::Renderer,
+    ui4: Option<uipass::Ui4>,
+    /// the same pass at 2 samples (ANTI-ALIASING 2X, aamode.rs), drawn with `renderer2`
+    ui2: Option<uipass::Ui4>,
+    /// the self movies' pictures (selfmovie.rs): 2 samples, 960 x 640
+    renderer2: egui_wgpu::Renderer,
+    selfs: std::sync::Arc<std::sync::Mutex<selfmovie::Shared>>,
 }
 
 #[derive(Clone, Debug)]
@@ -402,6 +420,14 @@ struct App {
     phone_challenge_in: f32,
     /// a new career's opening (the film, the arrival) has been started - before VEHICLE SELECT
     intro_played: bool,
+    /// the opening's step: 1 fading to black, 2 the film and the wait for the city, 3 VEHICLE SELECT, 4 black
+    /// until the first story scene; 0 none (and `intro_t`, seconds in the step)
+    intro_stage: u8,
+    intro_t: f32,
+    /// the opening's black (CarSelection's TRANSITIONMOVIE fades)
+    intro_mask: boomcam::CutMask,
+    /// the opening's `Graphics_WarpToTimeOfDay(17, 100)`: the hour aimed at, while the clock is moved there
+    intro_tod: Option<f32>,
     /// VEHICLE SELECT: where the first of the three starters stands
     starter_stand: Option<(Vec3, glam::Quat)>,
     settle_frames: u32,
@@ -420,14 +446,6 @@ struct App {
     warp_expl: boomcam::TimeWarper,
     /// the player car's crash state (chassis +592: 0x10 wiped out, 0x04 damaged out; crash_camera_rule.md
     /// 4): the bits, mcCarDamage +44 (the timer), an exploding car (+82), the speed and velocity
-    /// the opening's step: 1 fading to black, 2 the film and the wait for the city, 3 VEHICLE SELECT, 4 black
-    /// until the first story scene; 0 none (and `intro_t`, seconds in the step)
-    intro_stage: u8,
-    intro_t: f32,
-    /// the opening's black (CarSelection's TRANSITIONMOVIE fades)
-    intro_mask: boomcam::CutMask,
-    /// the opening's `Graphics_WarpToTimeOfDay(17, 100)`: the hour aimed at, while the clock is moved there
-    intro_tod: Option<f32>,
     /// of the frame before
     crash_bits: u8,
     crash_timer: f32,
@@ -481,6 +499,12 @@ struct App {
     boom_up: Option<Vec3>,
     look_back: bool,
     hide_player: bool,
+    /// the start screen's cameras (titlecam.rs: the press-start script's front-end shots)
+    titlecam: titlecam::TitleCam,
+    /// the camera move after START (startwarp.rs)
+    startwarp: Option<startwarp::StartWarp>,
+    /// its clock (s since START)
+    startwarp_t: f32,
     /// the camera's outer wall rays: the distance each last found (infinite: nothing)
     cam_side_t: [f32; 4],
     /// the pad's buttons a frame ago (for presses), its right stick, its horn button
@@ -840,6 +864,10 @@ impl App {
             garage_out: None,
             phone_challenge_in: 0.0,
             intro_played: false,
+            intro_stage: 0,
+            intro_t: 0.0,
+            intro_mask: Default::default(),
+            intro_tod: None,
             starter_stand: None,
             settle_frames: 0,
             news_timer: 0.0,
@@ -864,10 +892,6 @@ impl App {
             shake_impact: 0.0,
             shake_air: 0.0,
             shake_wipe: false,
-            intro_stage: 0,
-            intro_t: 0.0,
-            intro_mask: Default::default(),
-            intro_tod: None,
             shake_land: false,
             shake_sst: false,
             shake_jolts: Vec::new(),
@@ -885,6 +909,9 @@ impl App {
             boom_up: None,
             look_back: false,
             hide_player: false,
+            titlecam: Default::default(),
+            startwarp: None,
+            startwarp_t: 0.0,
             cam_side_t: [f32::INFINITY; 4],
             pad_prev: 0,
             pad_pending: 0,
@@ -1322,6 +1349,7 @@ impl App {
             moon_dir: [-0.072, 0.215, 0.974, 0.0],
             cloud_color: [cloud_c.x, cloud_c.y, cloud_c.z, cover],
             cloud_shade: [cloud_s.x, cloud_s.y, cloud_s.z, self.sim_time * 0.0022],
+            lod: { let k = crate::props::Lod::now(); [k.draw, k.detail, k.plant_angle, 0.0] },
             ..Globals::default()
         }
     }
@@ -1780,6 +1808,13 @@ impl App {
                     self.pad_id = Some(id);
                 }
             }
+            // (the prompts show the glyphs of the pad played with, once it is used - `glyphs`)
+            let used = |e: &pads::PadEvent| matches!(e, E::Pressed(..)) || matches!(e, E::Moved(_, v) if v.abs() > 0.5);
+            if let Some(pad) = self.pad_id.filter(|id| events.iter().any(|(e, ev)| e == id && used(ev))).and_then(|id| g.get(id)) {
+                if crate::glyphs::use_pad(pad.playstation()) {
+                    log::info!("prompts: {:?} glyphs ({})", crate::glyphs::device(), pad.kind());
+                }
+            }
             let mut pressed = 0u32;
             for (id, ev) in &events {
                 if Some(*id) == self.pad_id {
@@ -2128,6 +2163,10 @@ impl App {
         if self.police.heat == police::Heat::Busted {
             player_input = CarInput { brake: 1.0, handbrake: true, ..Default::default() };
         }
+        // (the warp after START: the car is not the player's to drive until it lands - Racer_Activate)
+        if self.startwarp.is_some() {
+            player_input = CarInput { handbrake: true, ..Default::default() };
+        }
         if menu_open && self.game.mode != Mode::Paused {
             // parked behind the menu (a held brake would select reverse at standstill)
             player_input.handbrake = true;
@@ -2245,11 +2284,20 @@ impl App {
         let focus = if self.drive { self.vehicles.player().map(|c| c.state.pos).unwrap_or(self.cam.pos) } else { self.cam.pos };
         // a cutscene plays wherever it was staged
         let focus = self.cine.camera().map(|c| c.0).unwrap_or(focus);
+        // (the start screen: the city streamed round its shot's camera - City_DoneStreaming)
+        let focus = self.titlecam.eye().unwrap_or(focus);
         // (the ambient manager's cutscene mode, sub_826D4CA0: a scene playing - AmbientMgr_SetCutscene
         // from its load to its closing transition - and no replay recorded (the port records a race
         // as it runs) or played)
         let recording = self.game.mode == Mode::Race && self.game.race.is_some();
         self.vehicles.amb_cutscene = self.cine.camera().filter(|_| self.game.replay.is_none() && !recording).map(|c| (c.0, c.1));
+        // (the ambient manager's front-end mode, sub_826D4C90: AmbientMgr_SetFrontEnd from the press-start
+        // script while the start screen is up; the viewport's tan(fov / 2) up and across)
+        self.vehicles.amb_frontend = self.titlecam.ambient().filter(|_| self.game.mode == Mode::MainMenu);
+        if let Some((_, _, lens)) = self.titlecam.view() {
+            let ty = (lens.to_radians() * 0.5).tan();
+            self.vehicles.amb_frontend_tan = [ty, ty * gpu.config.width as f32 / gpu.config.height.max(1) as f32];
+        }
         world.update(&mut gpu, focus, 6.0);
         // special abilities (real time); Zone slows the whole simulation down
         let mut fire = std::mem::take(&mut self.fire_ability);
@@ -2648,6 +2696,22 @@ impl App {
         // (test hook for the keyboard's table, `keybinds`: MCLA_KEY_TEST="from-to:NAME,..." - the key
         // NAME (as the keyboard page names it, `_` for a space) is pressed at tick `from` and let
         // go after tick `to`; where the player's car is then is logged)
+        // (test hook MCLA_NAV_TEST="frame:a,frame:y,...": the pad's A / Y / START / B pressed at that frame)
+        if let Ok(v) = std::env::var("MCLA_NAV_TEST") {
+            for step in v.split(',') {
+                let Some((at, b)) = step.trim().split_once(':') else { continue };
+                if at.trim().parse::<u64>().ok() == Some(self.frame_no) {
+                    log::info!("nav test: {} at frame {}", b, self.frame_no);
+                    match b.trim() {
+                        "a" => self.game.nav_enter = true,
+                        "y" => self.game.nav_y = true,
+                        "start" => self.game.nav_start = true,
+                        "b" => self.game.nav_back = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
         if let Ok(v) = std::env::var("MCLA_KEY_TEST") {
             for step in v.split(',') {
                 let Some((at, name)) = step.trim().split_once(':') else { continue };
@@ -2696,22 +2760,6 @@ impl App {
             }
         }
         // (test hook: MCLA_ALBUM_TEST="<presses>" - photo mode at tick 200, then the presses of
-        // (test hook MCLA_NAV_TEST="frame:a,frame:y,...": the pad's A / Y / START / B pressed at that frame)
-        if let Ok(v) = std::env::var("MCLA_NAV_TEST") {
-            for step in v.split(',') {
-                let Some((at, b)) = step.trim().split_once(':') else { continue };
-                if at.trim().parse::<u64>().ok() == Some(self.frame_no) {
-                    log::info!("nav test: {} at frame {}", b, self.frame_no);
-                    match b.trim() {
-                        "a" => self.game.nav_enter = true,
-                        "y" => self.game.nav_y = true,
-                        "start" => self.game.nav_start = true,
-                        "b" => self.game.nav_back = true,
-                        _ => {}
-                    }
-                }
-            }
-        }
         // `photoalbum`'s hook; MCLA_ALBUM_VIEW starts in the album, as the MODES tab's PHOTO ALBUM)
         if std::env::var("MCLA_ALBUM_TEST").is_ok() && self.tick_no == 200 && self.photo.is_none() {
             self.pending_action = if std::env::var("MCLA_ALBUM_VIEW").is_ok() { MenuAction::PhotoAlbum } else { MenuAction::PhotoMode };
@@ -2759,9 +2807,27 @@ impl App {
                 }
             }
         }
-        // nobody at the main menu: the attract movie
-        self.idle = if self.game.mode == Mode::MainMenu && self.game.movie.is_none() && self.input.keys.is_empty() { self.idle + dt } else { 0.0 };
-        if self.idle > 45.0 && self.opt.shot.is_none() {
+        // the start-up movie (boot.rs): its frames, loading done (`Game_SetLoadingDone` after `City_DoneStreaming`:
+        // the game is loaded - bootload.rs held the movie until then - and no sector is waiting to be read), the logo
+        // hidden while the attract movie plays, the loading music from its frame 340 on
+        if self.game.mode != Mode::MainMenu {
+            self.game.boot = None;
+        }
+        let attract_on = self.game.movie.is_some();
+        let streamed = world.streaming() == 0;
+        if let Some(b) = self.game.boot.as_mut() {
+            b.update(dt, streamed, attract_on);
+            if b.music() && !attract_on {
+                if let Some(a) = self.audio.as_mut() {
+                    a.obj_loop(boot::LOADING_MUSIC);
+                }
+            }
+        }
+        // nobody at the start screen: the attract movie (the press-start script: TIMERA > 110000 ms, the timer
+        // started when the start screen takes START and again after each attract movie; other buttons do not reset it)
+        let title_up = self.game.boot.as_ref().map_or(true, |b| b.title);
+        self.idle = if self.game.mode == Mode::MainMenu && self.game.movie.is_none() && title_up { self.idle + dt } else { 0.0 };
+        if self.idle > boot::ATTRACT_IDLE && self.opt.shot.is_none() {
             self.idle = 0.0;
             self.start_movie("attract", Vec::new(), true);
         }
@@ -2820,6 +2886,7 @@ impl App {
                 }
             }
         }
+        self.opening_tick(dt, world.streaming());
         // ---- hangouts: the people there, pulling in, leaving ----
         self.cine.tick(dt);
         {
@@ -2886,7 +2953,6 @@ impl App {
                     self.game.hangout_slow.visible = true;
                     self.hangout_entry = Some(hangoutin::Entry { setup: si, hangout: j, stage: hangoutin::Stage::Slow, t: 0.0, warp: None });
                 } else if free && d < 60.0 && self.tick_no % 240 == 0 && self.news.is_empty() {
-        self.opening_tick(dt, world.streaming());
                     self.game.show_message("HANGOUT  -  PULL IN TO SEE THE EVENTS");
                 }
             }
@@ -3485,8 +3551,20 @@ impl App {
                     self.game.shot_now = true;
                 }
             }
+            // (test hook MCLA_TITLE_SHOTS=<dir>;<s>: a picture every s seconds on the start screen)
+            if let (Ok(v), true) = (std::env::var("MCLA_TITLE_SHOTS"), self.game.mode == Mode::MainMenu) {
+                static CLOCK: std::sync::Mutex<(f32, u32)> = std::sync::Mutex::new((0.0, 0));
+                let mut c = CLOCK.lock().unwrap();
+                c.0 += dt;
+                let (dir, s) = v.split_once(';').unwrap_or((".", v.as_str()));
+                let s: f32 = s.parse().unwrap_or(1.0);
+                if c.0 >= s * c.1 as f32 && self.photo_request.is_none() {
+                    self.photo_request = Some(format!("{}/ts_{:03}.png", dir, c.1));
+                    c.1 += 1;
+                }
+            }
             // (test hook MCLA_RACE_START_SHOTS=<dir>;t1,t2,...: pictures t seconds after the race-start warp
-            // began, the camera logged)
+            // began - or the race, when it has none -, the camera logged)
             if let Ok(v) = std::env::var("MCLA_RACE_START_SHOTS") {
                 static NEXT_S: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
                 static CLOCK: std::sync::Mutex<Option<f32>> = std::sync::Mutex::new(None);
@@ -3563,9 +3641,27 @@ impl App {
             self.vehicles.frozen = true;
             self.vehicles.lights_off = true;
             self.starter_was = true;
+            // (the car under the cursor is one of the three deactivated starters too: the screen's loop
+            // calls no racer native, so it is held as the other two are)
+            if let Some(c) = self.vehicles.player_mut() {
+                c.deactivated = true;
+            }
+            // (test hook: MCLA_STARTER_LOG=1 logs where the starters stand, once a second)
+            if std::env::var("MCLA_STARTER_LOG").is_ok() {
+                use std::sync::atomic::{AtomicU32, Ordering};
+                static N: AtomicU32 = AtomicU32::new(0);
+                if N.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+                    for c in self.vehicles.cars.iter().filter(|c| c.driver == "starter" || c.is_player) {
+                        log::info!("starter hold: {} {:.3} {:.3} {:.3} speed {:.3}", if c.is_player { "player" } else { "other" }, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.vel.length());
+                    }
+                }
+            }
         } else if std::mem::take(&mut self.starter_was) {
             self.vehicles.frozen = false;
             self.vehicles.lights_off = false;
+            if let Some(c) = self.vehicles.player_mut() {
+                c.deactivated = false;
+            }
             // (the two not taken stay where they stand, still deactivated: CarSelection 0x1402 only unlocks their
             // streaming and marks them Opponent_ToggleDeleteOnEviction - they go when the opponent manager evicts
             // them, below; the original's scene shows them in the lot behind the three)
@@ -3633,6 +3729,9 @@ impl App {
                         c.ai = None;
                         c.placed = true;
                         c.pinned = true;
+                        // (the start script deactivates all three: Racer_Deactivate, chassis +592 bit 0x1 -
+                        // `game/career/0xebb682f7`; work/ui2/starter_hold/notes.md)
+                        c.deactivated = true;
                         c.driver = "starter".into();
                     }
                 }
@@ -5122,18 +5221,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // ---- pedestrians ----
             if let Some(nav) = world.nav.as_ref() {
-                if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
+                // (and on the start screen, the ambient manager's front-end mode: the camera's view)
+                let frontend = self.vehicles.amb_frontend;
+                self.peds.set_frontend(frontend.is_some());
+                if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) || frontend.is_some() {
                     let threats: Vec<peds::Threat> = self.vehicles.cars.iter().filter(|c| c.parked.is_none() && c.placed).map(|c| peds::Threat { pos: c.state.pos, vel: c.state.vel }).collect();
                     let props = &self.props;
                     let signals = if self.vehicles.signals.junctions.is_empty() { None } else { Some((&self.vehicles.signals, self.vehicles.clock)) };
                     // the original's spawner looks along the player car (speed in mph)
-                    match self.vehicles.player().filter(|_| self.drive) {
+                    match self.vehicles.player().filter(|_| self.drive && frontend.is_none()) {
                         Some(c) => self.peds.set_view(c.state.forward(), c.state.speed() * 2.236_936),
-                        None => self.peds.set_view(self.cam.forward(), 0.0),
+                        None => self.peds.set_view(frontend.map_or(self.cam.forward(), |f| f.dir), 0.0),
                     }
                     self.peds.update(&mut gpu, nav, &world.collider, &|p, r, out| props.obstacle_boxes_near(p, r, out), focus, &threats, signals, self.time_of_day, sim_dt);
                     // (the layout items' people: placed, removed, and what the spawners see next)
-                    layout::Layout::people(&mut self.vehicles, &mut self.peds, &mut gpu, &world);
+                    if frontend.is_none() {
+                        layout::Layout::people(&mut self.vehicles, &mut self.peds, &mut gpu, &world);
+                    }
                     if self.tick_no % 90 == 0 && std::env::var("MCLA_PED_DUMP").is_ok() {
                         log::info!("peds: {} alive, {} evades, {} crossings, {} waiting, kerbs {:?}", self.peds.count(), self.peds.evades, self.peds.crossings, self.peds.waiting(), self.peds.curb_stats());
                         for (p, f, n) in self.peds.nearest(focus, 8) {
@@ -6108,13 +6212,54 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.fps = self.fps * 0.95 + (1.0 / wall_dt.max(1e-4)) * 0.05;
         self.frame_ms = wall_dt * 1000.0;
         self.frame_no += 1;
+        // (start-up timing: the long frames of the first minute - docs/reference/ui/boot.md)
+        if self.frame_no < 3600 && wall_dt > 0.05 {
+            log::info!("startup: frame {} took {:.0} ms", self.frame_no, wall_dt * 1000.0);
+        }
         self.screen_v = (self.cam.pos - self.screen_eye) / dt.max(1e-4);
         self.screen_eye = self.cam.pos;
 
         self.gamepad_buttons();
+        // (what the prompts' keyboard keys are on this screen, and the GPS map's key - `glyphs`)
+        crate::glyphs::set_screen(if self.photo.is_some() {
+            crate::glyphs::Screen::Photo
+        } else if self.game.show_map {
+            crate::glyphs::Screen::Map
+        } else if self.game.replay.is_some() {
+            crate::glyphs::Screen::Replay
+        } else {
+            crate::glyphs::Screen::Menu
+        });
+        crate::glyphs::set_gps_key(self.game.opt_x.ctrl.kbd.binds.keys[keybinds::GPS_MAP][0].and_then(keybinds::key_name).unwrap_or("M"));
         // Do not spend the launch/countdown clock before the initial physics world
         // exists. Sector decode completion is asynchronous and can take different
         // numbers of render frames. UI/rendering continue while it loads.
+        // the start screen's cameras (titlecam.rs, the press-start script): the shot up, its hour (the clock's
+        // update off meanwhile) and its weather (snapped); after the start screen the hour before it
+        let title_mask;
+        {
+            let attract = self.game.movie.as_ref().filter(|m| m.any_key).map(|m| (m.time(), m.duration()));
+            // (the climb after START is still the press-start script's: its hour and streaming - startwarp.rs)
+            let climbing = self.startwarp.as_ref().map_or(false, |w| w.climbing());
+            if let Some(a) = self.titlecam.frame(self.game.mode == Mode::MainMenu || climbing, attract, self.time_of_day) {
+                let w = if a.weather == 1 { sky::Weather::Cloudy } else { sky::Weather::Nice };
+                if self.weather != w || self.sky_next.is_some() {
+                    self.sky = sky::Sky::load_weather(&self.opt.data_dir, w);
+                    self.weather = w;
+                    self.sky_next = None;
+                }
+            }
+            if let Some(i) = self.titlecam.shot {
+                self.time_of_day = titlecam::SHOTS[i].hour;
+            }
+            if let Some(h) = self.titlecam.take_saved_hour() {
+                self.time_of_day = h;
+            }
+            // (the black around the attract movie: 1 s down, the movie, then up after the next shot is
+            // streamed - titlecam::attract_fade; over the garage entry's own mask)
+            let streamed = self.world.as_ref().map_or(true, |w| w.streaming() == 0);
+            title_mask = self.titlecam.attract_fade(dt, &mut self.idle, boot::ATTRACT_IDLE, self.game.movie.is_some(), streamed);
+        }
         let loading = if self.tick_no == 0 && self.drive {
             if let Some(car) = self.vehicles.player() {
                 let pos = car.state.pos;
@@ -6131,6 +6276,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.update_gameplay(fixed_step::DT);
         }
         let sim_ms = sim_t0.elapsed().as_secs_f32() * 1000.0;
+        // (the start screen's black around the attract movie, over the garage entry's own mask - set by the ticks)
+        self.game.title_mask = title_mask;
+        if self.frame_no < 3600 && sim_ms > 50.0 {
+            log::info!("startup: frame {} - its {} game ticks took {:.0} ms", self.frame_no, ticks, sim_ms);
+        }
         self.vehicles.render_alpha = if self.opt.fixed_dt > 0.0 { 1.0 } else { self.sim_clock.alpha() };
         let world = self.world.take().unwrap();
         let mut gpu = self.gpu.take().unwrap();
@@ -6188,6 +6338,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.game.mode == Mode::Garage && self.cuts.playing.is_none() && std::env::var("MCLA_NO_GARAGE_CAM").is_err() {
                     if self.garage_views.as_ref().map_or(true, |v| v.0 != car.model.name) {
                         let v = garagecam::Views::load(&self.opt.data_dir, &car.model.name);
+                        // (a mod car without its own lines: its manifest's `donors.garage` - modcars.rs)
+                        let v = v.or_else(|| crate::modcars::car(&car.model.name).and_then(|c| c.garage.as_deref()).and_then(|g| garagecam::Views::load(&self.opt.data_dir, g)));
                         log::info!("garage: {} camera views for {}", v.as_ref().map_or(0, |v| v.len()), car.model.name);
                         self.garage_views = Some((car.model.name.clone(), v.unwrap_or_default()));
                         self.game.dyno_rect = self.garage_views.as_ref().map(|v| v.1.dyno).filter(|d| d[2] > 0.0);
@@ -6355,6 +6507,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     Some((eye, look, _, fov)) => Some((eye, look, fov.to_degrees())),
                     None => replay_view,
                 };
+                // (the start screen's still camera: Game_SetCamera(eye, eye + dir, lens, 0, 5, 10000) - titlecam.rs)
+                let title_view = self.titlecam.view().filter(|_| self.game.mode == Mode::MainMenu && self.cuts.playing.is_none());
+                let replay_view = title_view.or(replay_view);
                 if let Some((eye, look, fov)) = replay_view {
                     self.chase.pos = eye;
                     self.chase.look = look;
@@ -6376,7 +6531,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 let mut boom_view = false;
-                self.lod_near = self.cam.near;
+                self.lod_near = if title_view.is_some() { titlecam::NEAR } else { self.cam.near };
                 self.boom_up = None;
                 if own_view {
                     // the garage views' roll (`<View>Roll`): the camera's up turned about its line of sight
@@ -7015,6 +7170,41 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.cam.pos = eye;
             self.cam.fov_y = fov;
         }
+        // (the camera move after START: up to the whole city, held while the world streams at the car, down onto
+        // the game camera - startwarp.rs; MCLA_START_WARP_SHOTS=<prefix>,t1,..: a screenshot as its clock passes each t)
+        if let Some(w) = self.startwarp.as_mut() {
+            let car = self.vehicles.player().map(|c| c.state.pos);
+            let ready = car.map_or(true, |p| world.ready_at(p)) && world.streaming() == 0;
+            let t0 = self.startwarp_t;
+            match w.step(dt, ready, (self.chase.pos, self.chase.look, self.chase.up)) {
+                Some((eye, look, up, fov)) => {
+                    self.chase.pos = eye;
+                    self.chase.look = look;
+                    self.chase.up = up;
+                    self.cam.pos = eye;
+                    self.cam.fov_y = fov;
+                    self.game.loading_tag = self.game.loading_tag.max(if w.loading() { 0.5 } else { 0.0 });
+                }
+                None => {
+                    log::info!("start warp: landed at {:.3} s", t0 + dt);
+                    self.startwarp = None;
+                    // (mc.loadSuccess: the career script's WAITUNWARPED(1000) after the flight)
+                    self.game.loading_tag = startwarp::LOAD_SUCCESS_WAIT;
+                }
+            }
+            self.startwarp_t = t0 + dt;
+            if let Ok(v) = std::env::var("MCLA_START_WARP_SHOTS") {
+                let mut it = v.split(',');
+                let prefix = it.next().unwrap_or("sw").to_string();
+                for x in it {
+                    let at = x.parse::<f32>().unwrap_or(f32::MAX);
+                    if t0 < at && t0 + dt >= at {
+                        self.photo_request = Some(format!("{prefix}_{x}.png"));
+                    }
+                }
+            }
+        }
+        self.game.start_warp_on = self.startwarp.is_some();
         // diagnostics: look at the n-th liveried rival: "n,side,front,up" (metres off the car)
         if let Ok(v) = std::env::var("MCLA_RIVAL_CAM") {
             let f: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -7095,30 +7285,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         // --- the map screen: the city from the air --------------------------------
-        if let Some(rx) = self.citymap_rx.as_ref() {
-            if let Ok(map) = rx.try_recv() {
-                self.citymap_rx = None;
-                if (map.w.max(map.h) as u32) <= gpu.max_tex {
-                    use wgpu::util::DeviceExt;
-                    let (verts, idx) = map.mesh();
-                    let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("citymap vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
-                    let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("citymap ib"), contents: bytemuck::cast_slice(&idx), usage: wgpu::BufferUsages::INDEX });
-                    let tex = Arc::new(render::create_rgba(&gpu.device, &gpu.queue, map.w as u32, map.h as u32, &map.rgba(), "citymap"));
-                    let clear = gpu.clear_tex.clone();
-                    let bind = gpu.texture_bind_group(&tex, &clear, 0xC17A_0001, 0xC17A_0002);
-                    log::info!("city map: ready ({} x {} texels, {} vertices)", map.w, map.h, verts.len());
-                    // (under a close-up patch the coarse city is drawn a little lower)
-                    let low = gpu.new_object(&render::ObjectUniform { model: glam::Mat4::from_translation(Vec3::new(0.0, -30.0, 0.0)).to_cols_array_2d(), color: [1.0; 4], params: [0.0; 4], dents: [[0.0; 4]; 6], ..Default::default() });
-                    // (the coarse relief for the GPS map's x-ray, hudmap::Heights)
-                    if let Some(hm) = self.game.hm.as_mut() {
-                        hm.heights = Some(hudmap::Heights { min_x: map.min_x, min_z: map.min_z, cell: citymap::RES * citymap::STEP as f32, gw: map.gw, gh: map.gh, h: std::sync::Arc::new(map.height.clone()), coarse: Default::default() });
-                    }
-                    self.citymap = Some(CityMapGpu { vb, ib, count: idx.len() as u32, bind, map, low, patch: None });
-                } else {
-                    log::warn!("city map: {} texels is more than this GPU's textures hold", map.w.max(map.h));
-                }
-            }
-        }
+        self.take_citymap(&mut gpu, false);
         // (ARCADE stands over the city seen from the air, near the player - `h_arc2`,
         // `call_accept_0`: the map's own view, close in)
         let arcade_view = self.game.mode == Mode::RaceSelect && self.game.flash_navsys.is_some() && self.game.hangout_key.is_none() && self.hangout_in.is_none() && !self.game.wager_here && std::env::var("MCLA_ARCADE_FLAT").is_err();
@@ -7369,7 +7536,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         {
             let (eye, view) = if self.drive && self.vehicles.player().is_some() { (self.chase.pos, self.chase.view()) } else { (self.cam.pos, self.cam.view()) };
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
-            self.vehicles.pick_lods(eye, axis, self.lod_near, self.game.opts.hq_traffic, &frustum, &occluded);
+            self.vehicles.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
+            self.peds.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
+            // (the original's renderer flag of sub_822E5B30, set while the game is paused: the plants' model angle x 0.9)
+            crate::props::set_paused(self.game.mode == Mode::Paused);
         }
         let mut globals = self.lighting(vp);
         // sun shadow map: an orthographic box around the area in front of the camera
@@ -7731,6 +7901,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let clear = if map_baked { [0.012, 0.018, 0.028, 1.0] } else { globals.fog_color };
         let t_sim = now.elapsed().as_secs_f32() * 1000.0;
 
+        // (RENDER SCALE: the scene at window x scale, filtered down by the post chain - render/post.rs)
+        gpu.set_render_scale(crate::hooks::render_scale());
         let frame = match gpu.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -7776,7 +7948,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if let Some(k) = self.game.ability_pick.take() {
                 self.ability.kind = crate::ability::Kind::ALL[k.min(3)];
             }
-            let hud = self.vehicles.player().map(|c| HudInfo { damage_goal: self.game.goal_attack && self.game.race.is_some(), speed_kmh: c.state.fwd_speed() * 3.6, speed_abs: c.state.speed(), gear: c.state.gear, rpm: self.sound.tach_rpm().unwrap_or(c.state.rpm), redline: c.model.params.redline, nitro: (c.state.nitro_shots as f32 + c.state.veh.as_ref().map_or(0.0, |v| v.nitro_level)) / 4.0, damage: if self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery) { c.state.delivery_damage() } else { c.state.damage }, player_pos: c.state.pos, player_heading: { let f = c.state.forward(); f.x.atan2(-f.z) }, heat: std::env::var("MCLA_HUD_HEAT").ok().filter(|_| self.tick_no > 400).and_then(|v| v.parse().ok()).unwrap_or(if self.police.goons { 0 } else { self.police.heat as u8 }), fine: if self.police.goons { 0 } else { self.police.fine as i64 }, law: self.police.level(), search: self.police.search / self.police.tun.get("fSearchMaxTime", 35.0), rain: rain_now, ability: if (self.game.mc4_ability_none() || (self.game.career.loaded() && !self.game.career.reached("INSTALL_ABILITY"))) && std::env::var("MCLA_ABILITY").is_err() { "" } else { self.ability.kind.name() }, ability_meter: self.ability.meter, ability_fx: self.ability.fx(), draft: c.state.veh.as_ref().map_or(0.0, |v| v.sst.strength), sst: c.state.veh.as_ref().map_or(0.0, |v| v.sst.level), sst_full: c.state.veh.as_ref().map_or(false, |v| v.sst.full && !v.sst.burning), sst_on: vehicles::Vehicles::has_sst(c), map_vp: self.map_vp, ability_tint: self.ability.tint().map(|t| (t, self.ability.blend())), cam_vp: Some(vp), cam_pos: self.chase.pos, cam_look: self.chase.look, cam_fwd: { let f = self.chase.look - self.chase.pos; Vec3::new(f.x, 0.0, f.z).normalize_or_zero() }, cam_vel: c.state.vel, night: self.time_of_day > 19.5 || self.time_of_day < 6.0, cruise: self.cruise_hold, pu_hud: self.powerups.as_ref().map_or([0.0, 0.0, 1.0], |p| p.hud(self.vehicles.cars.iter().position(|x| x.is_player).unwrap_or(0))) }).unwrap_or_default();
+            let hud = self.vehicles.player().map(|c| HudInfo { damage_goal: self.game.goal_attack && self.game.race.is_some(), speed_kmh: c.state.fwd_speed() * 3.6, speed_abs: c.state.speed(), gear: c.state.gear, rpm: self.sound.tach_rpm().unwrap_or(c.state.rpm), redline: c.model.params.redline, nitro: (c.state.nitro_shots as f32 + c.state.veh.as_ref().map_or(0.0, |v| v.nitro_level)) / 4.0, damage: if self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery) { c.state.delivery_damage() } else { c.state.damage }, player_pos: c.state.pos, player_heading: { let f = c.state.forward(); f.x.atan2(-f.z) }, heat: std::env::var("MCLA_HUD_HEAT").ok().filter(|_| self.tick_no > 400).and_then(|v| v.parse().ok()).unwrap_or(if self.police.goons { 0 } else { self.police.heat as u8 }), fine: if self.police.goons { 0 } else { self.police.fine as i64 }, law: self.police.level(), search: self.police.search / self.police.tun.get("fSearchMaxTime", 35.0), rain: rain_now, ability: if (self.game.mc4_ability_none() || (self.game.career.loaded() && !self.game.career.reached("INSTALL_ABILITY"))) && std::env::var("MCLA_ABILITY").is_err() { "" } else { self.ability.kind.name() }, ability_meter: self.ability.meter, ability_fx: self.ability.fx(), draft: c.state.veh.as_ref().map_or(0.0, |v| v.sst.strength), sst: c.state.veh.as_ref().map_or(0.0, |v| v.sst.level), sst_full: c.state.veh.as_ref().map_or(false, |v| v.sst.full && !v.sst.burning), sst_on: vehicles::Vehicles::has_sst(c), map_vp: self.map_vp, ability_tint: self.ability.tint().map(|t| (t, self.ability.blend())), cam_vp: Some(vp), cam_pos: self.chase.pos, cam_look: self.chase.look, cam_fwd: { let f = self.chase.look - self.chase.pos; Vec3::new(f.x, 0.0, f.z).normalize_or_zero() }, cam_vel: c.state.vel, night: self.time_of_day > 18.0 || self.time_of_day < 6.0, /* d_IsNight = sub_82205248: light manager +14568 / +14564 */ cruise: self.cruise_hold, pu_hud: self.powerups.as_ref().map_or([0.0, 0.0, 1.0], |p| p.hud(self.vehicles.cars.iter().position(|x| x.is_player).unwrap_or(0))) }).unwrap_or_default();
             let mut action = MenuAction::None;
             let game = &mut self.game;
             let vehicles = &self.vehicles;
@@ -7815,17 +7987,54 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let jobs = eg.ctx.tessellate(out.shapes, out.pixels_per_point);
             for (id, delta) in &out.textures_delta.set {
                 eg.renderer.update_texture(&gpu.device, &gpu.queue, *id, delta);
+                eg.renderer4.update_texture(&gpu.device, &gpu.queue, *id, delta);
+                eg.renderer2.update_texture(&gpu.device, &gpu.queue, *id, delta);
             }
+            // (the menus' 3D-scene movies drawn into their own pictures first - selfmovie.rs)
+            selfmovie::render_jobs(&eg.ctx, &gpu.device, &gpu.queue, &mut eg.renderer2, &eg.selfs, gpu.config.format.remove_srgb_suffix());
             let desc = egui_wgpu::ScreenDescriptor { size_in_pixels: [gpu.config.width, gpu.config.height], pixels_per_point: out.pixels_per_point };
+            // (the original's menu flag: the UI pass at 4x while a menu is open - uipass.rs)
+            let ui_n = aamode::ui_samples(self.game.ui_msaa4());
+            let r = match ui_n { 1 => &mut eg.renderer, 2 => &mut eg.renderer2, _ => &mut eg.renderer4 };
             // (the 3D frame's depth for the GPS map's x-ray callbacks, hudmap_gpu.rs)
-            if let Some(r) = eg.renderer.callback_resources.get_mut::<hudmap_gpu::XrayRes>() {
-                r.depth = Some(gpu.depth.clone());
+            if let Some(x) = r.callback_resources.get_mut::<hudmap_gpu::XrayRes>() {
+                x.depth = Some(gpu.depth_ui.clone());
             }
-            eg.renderer.update_buffers(&gpu.device, &gpu.queue, &mut enc, &jobs, &desc);
-            egui_jobs = Some((jobs, desc, out.textures_delta.free));
+            if let Some(s) = r.callback_resources.get_mut::<selfmovie::SelfRes>() {
+                s.new_frame();
+            }
+            r.update_buffers(&gpu.device, &gpu.queue, &mut enc, &jobs, &desc);
+            egui_jobs = Some((jobs, desc, out.textures_delta.free, ui_n));
         }
 
         let t_ui = now.elapsed().as_secs_f32() * 1000.0;
+        // The scene's sample count (render/ms.rs): the original's 2x while driving, 4x while its menu flag (+373) or
+        // garage flag (+393) is set; the city's sampler at maximum anisotropy 16 in that mode (sub_822E60E0), else 4
+        // (TEXTURE FILTERING 16X: 16 always).
+        let menu4 = self.game.ui_msaa4() || self.garage_light().is_some();
+        let scene_n = aamode::scene_samples(menu4);
+        gpu.set_scene_samples(scene_n);
+        gpu.set_aniso16(menu4 || crate::hooks::aniso_16x());
+        render::ms::set_plain();
+        // PSStreakMotionBlur's matrices and the cars' stencil ids for this frame (render/mb.rs)
+        let mb_mtx = {
+            let eye_view = if self.drive && self.vehicles.player().is_some() { self.chase.view() } else { self.cam.view() };
+            let proj = glam::Mat4::from_cols_array_2d(&globals.view_proj) * eye_view.inverse();
+            let alpha = self.vehicles.render_alpha;
+            let cars: Vec<Option<render::mb::Car>> = self
+                .vehicles
+                .cars
+                .iter()
+                .map(|c| {
+                    (!c.pu_stealth).then(|| {
+                        let p = c.render_pose(alpha);
+                        render::mb::Car { pos: p.pos, rot: p.rot, vel: c.state.vel, player: c.is_player }
+                    })
+                })
+                .collect();
+            let still = sim_dt <= 0.0;
+            render::mb::frame(eye_view, proj, &cars, dt, self.game.mc4_time_scale() < 1.0, still)
+        };
         let mut stat_shadow_sec = 0usize;
         let mut stat_shadow = 0usize;
         // --- shadow pass --------------------------------------------------------
@@ -7941,7 +8150,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            let tile = render::CASC_TILE;
+            let tile = render::casc_tile();
             for (ci, cvp) in cvps.iter().enumerate() {
                 let lf = Frustum::from_view_proj(*cvp);
                 let (ox, oy) = ((ci as u32 % 2) * tile, (ci as u32 / 2) * tile);
@@ -8602,27 +8811,32 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 bp.draw(0..3, face..face + 1);
             }
         }
+        render::ms::set_scene(gpu.scene_n);
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("city"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    // (always the HDR scene target: the tone map is what writes the display)
-                    view: gpu.post.scene_view(),
+                    // (always the HDR scene target - multisampled, resolved before the post chain: the tone map is
+                    // what writes the display)
+                    view: gpu.scene_color(),
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0] as f64, g: clear[1] as f64, b: clear[2] as f64, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
+                // (the stencil: 0 the world, 1 the sky and the ground dome, 4 k (+1) the k-th car - render/mb.rs)
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &gpu.depth,
+                    view: gpu.scene_ds(),
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
+                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Store }),
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &gpu.globals_bg, &[]);
+            // (the sky writes stencil 1: ps_main_withstarfield, ref 1 in 0x210D)
+            pass.set_stencil_reference(1);
             if let (false, true, Some(tb)) = (map_baked, sky_hat_on, gpu.sky_hat.tex_bg.as_ref()) {
                 pass.set_pipeline(&gpu.sky_hat.pipeline);
                 pass.set_bind_group(1, tb, &[]);
@@ -8633,6 +8847,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 pass.set_bind_group(1, sb.as_ref(), &[]);
                 pass.draw(0..3, 0..1);
             }
+            pass.set_stencil_reference(0);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
             pass.set_pipeline(&gpu.pipeline_opaque);
             if let (true, Some(cm)) = (map_baked, self.citymap.as_ref()) {
@@ -8664,6 +8879,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     pass.set_pipeline(&gpu.pipeline_opaque);
                     let d1 = draws;
                     self.vehicles.draw(&mut pass, &gpu, false, &mut draws, Some((cam_pos, 450.0)), Some(&frustum));
+                    pass.set_stencil_reference(0);
                     stat_cars = draws - d1;
                     pass.set_pipeline(&gpu.pipeline_opaque);
                     self.peds.draw(&mut pass, &gpu, false, &mut draws);
@@ -8757,6 +8973,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     pass.set_pipeline(&gpu.pipeline_blend);
                 }
                 self.vehicles.draw(&mut pass, &gpu, true, &mut draws, Some((cam_pos, 200.0)), Some(&frustum));
+                pass.set_stencil_reference(0);
                 if self.time_of_day > 18.0 || self.time_of_day < 6.0 {
                     self.props.draw_glows(&mut pass, &gpu);
                 }
@@ -8793,13 +9010,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the effect list's model particles - litter, cans - before them, writing the depth: modelfx.rs)
             modelfx::run(&gpu, &mut enc);
         }
+        // (the depth and stencil resolved - sample 0 - for what reads them: the particles' soft fade, the blobs)
+        gpu.resolve_scene_depth(&mut enc);
         if !map3d {
             // (the particles and the rain in a pass of their own, the depth read-only: the
             // checkpoint smoke reads it for its soft fade - PSCheckpointProj)
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("particles"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.post.scene_view(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &gpu.depth, depth_ops: None, stencil_ops: None }),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: None, stencil_ops: None }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
@@ -8819,7 +9038,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             radial += self.ability.fx() * 0.05;
             let mut tune = self.post_tune(&self.sky_now());
             tune.dt = dt;
-            tune.radial = if post_on { radial } else { 0.0 };
+            // (the port's own radial speed blur is retired: the original has no such term - its motion blur is the
+            // streak pass, render/mb.rs; work/ui-sharp/agent_tone. MCLA_RADIAL=1: as before)
+            tune.radial = if post_on && std::env::var("MCLA_RADIAL").is_ok_and(|v| v.trim() == "1") { radial } else { 0.0 };
             tune.center = [0.5, 0.46];
             tune.plain = !post_on;
             // (test hook: MCLA_LUM = the adapted luminance to expose by, instead of the measured one)
@@ -8843,13 +9064,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let (r, u) = (Vec3::new(v.x_axis.x, v.y_axis.x, v.z_axis.x), Vec3::new(v.x_axis.y, v.y_axis.y, v.z_axis.y));
                 pu_draw::run(&gpu, &mut enc, &cards, &glows, r, u);
             }
+            // (the depth once more - the power-ups' passes write it - then the sun's glow, the last draw into the
+            // multisampled scene, and the colour resolve: the samples averaged)
+            gpu.resolve_scene_depth(&mut enc);
             sunglow::run(&gpu, &mut enc, self.sky.sun_color.rgb(self.time_of_day).to_array());
+            gpu.resolve_scene_color(&mut enc);
+            render::ms::set_plain();
             halo::run(&gpu, &mut enc);
             // the depth of field (post.rs: the far blur's buffer, lerped in by the tone map): the weather's
             // m_DoFParams at the hour; not in the garage or on the 3D map
             if !map3d && self.game.mode != Mode::Garage {
                 if let Some(t) = self.sky_now().tod {
                     tune.dof = t.dof;
+                }
+                // (the start screen's shot: the cutscene depth of field when it sets one - titlecam.rs)
+                if let Some(d) = self.titlecam.dof().filter(|_| self.game.mode == Mode::MainMenu) {
+                    tune.dof = d;
                 }
             }
             // (the garage has its own - garage round, 2026-10-13: DofParams of PSStreakMotionBlur in seven
@@ -8864,16 +9094,28 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             tune.inv_view_proj = globals.inv_view_proj;
             tune.cam_pos = [globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]];
-            gpu.post.run(&gpu.device, &gpu.queue, &mut enc, &view, &gpu.depth, &tune);
+            tune.mb_mtx = mb_mtx;
+            // (OPTIONS > DISPLAY: BLOOM, DEPTH OF FIELD, MOTION BLUR - ON = the original's)
+            tune.bloom = crate::hooks::bloom_on();
+            tune.dof_on = crate::hooks::dof_on();
+            tune.motion_blur = crate::hooks::motion_blur_on();
+            gpu.post.run(&gpu.device, &gpu.queue, &mut enc, &view, &gpu.depth, &gpu.stencil_copy, &tune);
+            gpu.depth_to_ui(&mut enc);
         }
         {
-            if let (Some(eg), Some((jobs, desc, _))) = (self.egui.as_mut(), egui_jobs.as_ref()) {
+            if let (Some(eg), Some((jobs, desc, _, n))) = (self.egui.as_mut(), egui_jobs.as_ref().filter(|j| j.3 > 1)) {
+                let plain = gpu.config.format.remove_srgb_suffix();
+                let (w, h) = (gpu.config.width, gpu.config.height);
+                let (pass, r) = if *n == 2 { (&mut eg.ui2, &eg.renderer2) } else { (&mut eg.ui4, &eg.renderer4) };
+                let p = pass.get_or_insert_with(|| uipass::Ui4::new(&gpu.device, gpu.config.format, plain, w, h, if *n == 2 { selfmovie::samples() } else { uipass::SAMPLES }));
+                p.run(&gpu.device, &mut enc, &frame.texture, &ui_view, plain, r, jobs, desc);
+            } else if let (Some(eg), Some((jobs, desc, _, 1))) = (self.egui.as_mut(), egui_jobs.as_ref()) {
                 let pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("ui"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &ui_view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
                     // (read-only: egui writes no depth, and the GPS map's x-ray callbacks sample it - hudmap_gpu.rs)
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &gpu.depth,
+                        view: &gpu.depth_ui,
                         depth_ops: None,
                         stencil_ops: None,
                     }),
@@ -8895,6 +9137,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if photo.is_some() {
             self.photo_msg = 2.0;
         }
+        // (test hook MCLA_SHOT_EVERY=n: a screenshot run also writes <shot>_<frame>.png every n frames)
+        let photo = photo.or_else(|| {
+            let n = std::env::var("MCLA_SHOT_EVERY").ok()?.parse::<u64>().ok().filter(|n| *n > 0)?;
+            let cfg = self.opt.shot.as_ref()?;
+            (self.frame_no % n == 0 && self.frame_no < cfg.frames).then(|| format!("{}_{:05}.png", cfg.path.trim_end_matches(".png"), self.frame_no))
+        });
         let exit_after = photo.is_none();
         let want = match (photo, self.opt.shot.clone()) {
             (Some(p), _) => Some(p),
@@ -8986,9 +9234,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 std::process::exit(0);
             }
         }
-        if let (Some(eg), Some((_, _, free))) = (self.egui.as_mut(), egui_jobs) {
+        if let (Some(eg), Some((_, _, free, _))) = (self.egui.as_mut(), egui_jobs) {
             for id in free {
                 eg.renderer.free_texture(&id);
+                eg.renderer4.free_texture(&id);
+                eg.renderer2.free_texture(&id);
             }
         }
         self.world = Some(world);
@@ -9043,6 +9293,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             MenuAction::StartFreeRoam | MenuAction::QuitRace => {
+                // (START on the start screen: Warper_Warp('MAXHEIGHT') from the shot - startwarp.rs)
+                if let (true, Some((eye, look, lens))) = (self.game.mode == Mode::MainMenu && std::env::var("MCLA_NO_START_WARP").is_err(), self.titlecam.view()) {
+                    let car = self.vehicles.player().map_or(eye, |c| c.state.pos);
+                    self.startwarp = Some(startwarp::StartWarp::start(eye, look, lens, car, gpu.config.width as f32 / gpu.config.height.max(1) as f32));
+                    self.startwarp_t = 0.0;
+                }
                 if let Some(sp) = self.game.alt_leave(action == MenuAction::QuitRace) {
                     log::info!("alt hookman: {} leaving the race", sp);
                     self.speech.say_as(sp, &self.game.althk.voice);
@@ -9137,12 +9393,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let hold = (c.state.pos, c.state.rot);
                 self.game.hangout_slow.set(1.0, 1.0 / 0.5, false, true, 1.0);
                 self.game.hangout_slow.visible = false;
-        // (test hook MCLA_SHOT_EVERY=n: a screenshot run also writes <shot>_<frame>.png every n frames)
-        let photo = photo.or_else(|| {
-            let n = std::env::var("MCLA_SHOT_EVERY").ok()?.parse::<u64>().ok().filter(|n| *n > 0)?;
-            let cfg = self.opt.shot.as_ref()?;
-            (self.frame_no % n == 0 && self.frame_no < cfg.frames).then(|| format!("{}_{:05}.png", cfg.path.trim_end_matches(".png"), self.frame_no))
-        });
                 self.game.mode = Mode::FreeRoam;
                 let e = garagein::wait_rows(&garagein::SETUPS[PAYBACK_PLACE_CAM]);
                 let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
@@ -9821,6 +10071,69 @@ impl App {
         true
     }
 
+    /// The new career's opening after the save boxes (CarSelection, `intro_stage`): every tick, the film and
+    /// the scenes included.
+    fn opening_tick(&mut self, dt: f32, streaming: usize) {
+        self.intro_t += dt;
+        match self.intro_stage {
+            // (the film once the black is up; settings.toml game.intro `fast` / `skip` leave it out - `hooks`)
+            1 if self.intro_mask.full() => {
+                let film = hooks::intro_film() && (self.opt.shot.is_none() || std::env::var("MCLA_MOVIE").is_ok());
+                // (the film carries the phone call: the subtitles of CUT_INTRO's table)
+                let subs = self.cuts.by_name("CUT_INTRO").map(|i| self.cuts.scenes[i].subs.clone()).unwrap_or_default();
+                if film && self.start_movie("intro", subs, false) {
+                    log::info!("opening: the film");
+                }
+                self.intro_stage = 2;
+                self.intro_t = 0.0;
+                // (after the film: Graphics_WarpToTimeOfDay(17, 100) - CarSelection, before City_DoneStreaming)
+                self.intro_tod = Some(17.0);
+            }
+            // (after the film: `City_DoneStreaming(100)` polled every 10 ms after three frames, then the fade up
+            // over 1 s - CarSelection 0xb68, 0xbaa - with VEHICLE SELECT already up)
+            2 if self.game.movie.is_none() && self.intro_t > 3.0 / 60.0 && streaming == 0 => {
+                log::info!("opening: VEHICLE SELECT");
+                self.intro_mask.release(1.0);
+                self.intro_stage = 3;
+            }
+            // ACCEPT: fade down, 1 s (CarSelection 0x13f5), held until the story scene's picture
+            3 if !self.game.fresh_game => {
+                self.intro_mask = Default::default();
+                self.intro_mask.start(1.0, 0.01, f32::MAX);
+                self.intro_stage = 4;
+                self.intro_t = 0.0;
+            }
+            4 => {
+                // (the black is up: the two not taken go, the car is the player's - CarSelection 0x1402 on)
+                if self.intro_mask.full() {
+                    self.game.starter_pick = None;
+                }
+                let scenes =std::env::var("MCLA_NO_CUTS").is_err() && std::env::var("MCLA_NO_CINE").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok());
+                let up = self.cuts.playing.is_some() && self.cine_hold.is_none();
+                if self.intro_mask.full() && (up || !scenes) {
+                    log::info!("opening: the first story scene comes up ({:.2} h, {} cars)", self.time_of_day, self.vehicles.cars.len());
+                    self.intro_mask.release(1.0);
+                    self.intro_stage = 0;
+                }
+            }
+            _ => {}
+        }
+        // (the warp, sub_822F1DB0 with +14552 set: the hour moves the short way round at the rate (+14548, 100 h a
+        // second) x the frame's unscaled seconds (G+88), stops on the target and the warp is over; then mod 24)
+        if let Some(to) = self.intro_tod.filter(|_| self.game.movie.is_none()) {
+            let h = self.time_of_day;
+            let (up, down) = if h < to { (to, to - 24.0) } else { (to + 24.0, to) };
+            let step = 100.0 * dt;
+            let (next, done) = if up - h < h - down { ((h + step).min(up), h + step >= up) } else { ((h - step).max(down), h - step <= down) };
+            self.time_of_day = next.rem_euclid(24.0);
+            if done {
+                log::info!("opening: the clock at {:.2} h", self.time_of_day);
+                self.intro_tod = None;
+            }
+        }
+        self.game.intro_mask = if self.game.movie.is_some() { 0.0 } else { self.intro_mask.update(dt) };
+    }
+
     /// The cine scenes' lamp switches (vehicles.rs `CINE_LAMP_EVENTS`): at a scene's start every car's switch
     /// is kept (sub_823BBE80), the scene's events set the car of their slot as its clock passes them, and when
     /// it ends the kept switches come back (FinishScene, sub_823BBEE0).
@@ -9910,15 +10223,46 @@ impl App {
             self.vehicles.cars[idx].ai = None;
             self.vehicles.cars[idx].cop = car.contains("police");
             self.vehicles.pose_car(idx, pos, rot);
+            // (the scene's car is its set-up's whole car - RACE_GH_06_READY_TO_START_ON_ENTER loads
+            // GH_06_0_vp_dsn_280z_75 with OpponentManager_LoadOpponent and waits for it to stream before the
+            // scene: parts, rims, paint now, not by the cruise's one-car-a-frame dressing, which a story scene's
+            // stopped clock never reaches)
+            let game = &self.game;
+            while !self.vehicles.cars[idx].dressed && !self.vehicles.cars[idx].vinyl_name.is_empty() {
+                if self.vehicles.dress_setups(gpu, world, &mut |car, cfg| game.mc4_dress_of(car, cfg)).is_none() {
+                    break;
+                }
+            }
+            log::info!("cine car: {} is {} in set-up {:?} (dressed {})", label, car, self.vehicles.cars[idx].vinyl_name, self.vehicles.cars[idx].dressed);
         }
     }
 }
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
+impl App {
+    fn start_at_once(&mut self, event_loop: &ActiveEventLoop) {
+        // (everything at once before the first frame: OFF, headless runs and the test hooks - with the start-up
+        // movie the loading runs behind it instead, bootload.rs)
+        let window = self.open_window(event_loop);
+        let t0 = Instant::now();
+        let gpu = pollster::block_on(Gpu::new(window.clone())).expect("gpu init");
+        log::info!("startup: gpu at {} ms", t0.elapsed().as_millis());
+        self.egui = Some(App::make_egui(&window, &gpu.device, &gpu.queue, gpu.config.format));
+        if self.opt.shot.is_none() {
+            self.audio = audio::Audio::new(&self.opt.data_dir);
+        } else if self.opt.audio_dump.is_some() {
+            self.audio = audio::Audio::new_offline(&self.opt.data_dir);
         }
+        let root = self.audio.as_ref().map(|a| a.root().to_path_buf());
+        self.load_game(gpu, root.as_deref(), None);
+        if let Some(a) = self.audio.as_mut() {
+            a.set_music_catalog(&self.game.career.strings);
+        }
+        self.window = Some(window);
+        self.last = Instant::now();
+    }
+
+    /// The window (settings.toml's mode and size), logged; the data folder handed to the renderer.
+    fn open_window(&mut self, event_loop: &ActiveEventLoop) -> Arc<Window> {
         let attrs = Window::default_attributes().with_title("Midnight Club: Los Angeles (Rust)").with_inner_size(winit::dpi::LogicalSize::new(1600.0, 900.0));
         // (settings.toml: display.window_mode and display.resolution - `hooks`)
         let attrs = hooks::window_attributes(event_loop, attrs);
@@ -9930,16 +10274,89 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         hooks::log_window(&window);
         let _ = render::DATA_DIR.set(self.opt.data_dir.clone());
-        let mut gpu = pollster::block_on(Gpu::new(window.clone())).expect("gpu init");
+        window
+    }
+
+    /// The UI's context, input state and renderer (drawn into the surface's plain view, with the scene's depth).
+    fn make_egui(window: &Window, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Egui {
         let ctx = egui::Context::default();
-        let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(2048));
-        let mut renderer = egui_wgpu::Renderer::new(&gpu.device, gpu.config.format.remove_srgb_suffix(), Some(wgpu::TextureFormat::Depth32Float), 1, false);
+        let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, window, Some(window.scale_factor() as f32), None, Some(2048));
+        let plain = format.remove_srgb_suffix();
+        let mut renderer = egui_wgpu::Renderer::new(device, plain, Some(wgpu::TextureFormat::Depth32Float), 1, false);
         // (the GPS map's icons and road overlay against the scene's depth: hudmap_gpu.rs)
-        renderer.callback_resources.insert(hudmap_gpu::XrayRes::new(&gpu.device, &gpu.queue, gpu.config.format.remove_srgb_suffix()));
-        self.egui = Some(Egui { ctx, state, renderer });
+        renderer.callback_resources.insert(hudmap_gpu::XrayRes::new(device, queue, plain, 1, true));
+        let selfs = selfmovie::Shared::new(device);
+        renderer.callback_resources.insert(selfmovie::SelfRes::new(device, selfs.clone(), plain, 1, true));
+        // (the menus' pass: 4 samples, no depth attachment - uipass.rs)
+        let mut renderer4 = egui_wgpu::Renderer::new(device, plain, None, uipass::SAMPLES, false);
+        renderer4.callback_resources.insert(hudmap_gpu::XrayRes::new(device, queue, plain, uipass::SAMPLES, false));
+        renderer4.callback_resources.insert(selfmovie::SelfRes::new(device, selfs.clone(), plain, uipass::SAMPLES, false));
+        // (also the UI pass at ANTI-ALIASING 2X: the same callbacks as the others)
+        let mut renderer2 = egui_wgpu::Renderer::new(device, plain, None, selfmovie::samples(), false);
+        renderer2.callback_resources.insert(hudmap_gpu::XrayRes::new(device, queue, plain, selfmovie::samples(), false));
+        renderer2.callback_resources.insert(selfmovie::SelfRes::new(device, selfs.clone(), plain, selfmovie::samples(), false));
+        Egui { ctx, state, renderer, renderer4, ui4: None, ui2: None, renderer2, selfs }
+    }
+
+    /// Whether the start-up movie plays (OPTIONS > PERFORMANCE > INTRO = settings.toml game.intro; not in a headless
+    /// run, unless MCLA_BOOT_INTRO=normal|fast asks for it - tests).
+    fn boot_mode(&self) -> mcla_config::Intro {
+        match std::env::var("MCLA_BOOT_INTRO").ok().as_deref() {
+            Some(v) => mcla_config::Intro::parse(v).unwrap_or(mcla_config::Intro::Skip),
+            None if self.opt.shot.is_some() => mcla_config::Intro::Skip,
+            None => hooks::intro_mode(),
+        }
+    }
+
+    /// The city seen from the air (the map screen), once its thread has made it; `wait`: until it has (behind the
+    /// start-up movie, bootload.rs).
+    fn take_citymap(&mut self, gpu: &mut Gpu, wait: bool) {
+        let Some(rx) = self.citymap_rx.as_ref() else { return };
+        let got = if wait { rx.recv().ok() } else { rx.try_recv().ok() };
+        if wait || got.is_some() {
+            self.citymap_rx = None;
+        }
+        if let Some(map) = got {
+            if (map.w.max(map.h) as u32) <= gpu.max_tex {
+                use wgpu::util::DeviceExt;
+                let (verts, idx) = map.mesh();
+                let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("citymap vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+                let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("citymap ib"), contents: bytemuck::cast_slice(&idx), usage: wgpu::BufferUsages::INDEX });
+                let tex = Arc::new(render::create_rgba(&gpu.device, &gpu.queue, map.w as u32, map.h as u32, &map.rgba(), "citymap"));
+                let clear = gpu.clear_tex.clone();
+                let bind = gpu.texture_bind_group(&tex, &clear, 0xC17A_0001, 0xC17A_0002);
+                log::info!("city map: ready ({} x {} texels, {} vertices)", map.w, map.h, verts.len());
+                // (under a close-up patch the coarse city is drawn a little lower)
+                let low = gpu.new_object(&render::ObjectUniform { model: glam::Mat4::from_translation(Vec3::new(0.0, -30.0, 0.0)).to_cols_array_2d(), color: [1.0; 4], params: [0.0; 4], dents: [[0.0; 4]; 6], ..Default::default() });
+                // (the coarse relief for the GPS map's x-ray, hudmap::Heights)
+                if let Some(hm) = self.game.hm.as_mut() {
+                    hm.heights = Some(hudmap::Heights { min_x: map.min_x, min_z: map.min_z, cell: citymap::RES * citymap::STEP as f32, gw: map.gw, gh: map.gh, h: std::sync::Arc::new(map.height.clone()), coarse: Default::default() });
+                }
+                self.citymap = Some(CityMapGpu { vb, ib, count: idx.len() as u32, bind, map, low, patch: None });
+            } else {
+                log::warn!("city map: {} texels is more than this GPU's textures hold", map.w.max(map.h));
+            }
+        }
+    }
+
+    /// Whether the loading runs behind the start-up movie (bootload.rs): the movie plays and nothing asked for the
+    /// game at once (headless runs, `--auto`, `--race-select`, `--garage`; MCLA_BOOT_LOAD=0 loads before it as before).
+    fn loads_behind_movie(&self) -> bool {
+        self.opt.shot.is_none() && !self.opt.auto && !self.opt.race_select && !self.opt.garage && self.boot_mode() != mcla_config::Intro::Skip && std::env::var("MCLA_BOOT_LOAD").map_or(true, |v| v != "0")
+    }
+
+    /// Everything the game needs after the window and the renderer (`resumed`, or the loading thread behind the
+    /// start-up movie - bootload.rs). `audio_root`: the converted audio's folder when there is sound. `ui`: behind
+    /// the movie, the UI's context, so that the UI's art and movies and the traffic's lanes are made here too
+    /// instead of in the first frames.
+    fn load_game(&mut self, mut gpu: Gpu, audio_root: Option<&std::path::Path>, ui: Option<&egui::Context>) {
+        let t0 = Instant::now();
+        let lap = |what: &str| log::info!("startup: {} at {} ms", what, t0.elapsed().as_millis());
         let assets = Arc::new(Assets::new(&self.opt.data_dir));
+        lap("egui");
         let mut world = World::new(assets).expect("world");
         world.index_globaltex();
+        lap("world");
         // the garage's lights for the cars' mirror map (render/mod.rs `set_garage_glow`): kept, and handed
         // to the renderer while the garage's own light state is in force (the render function)
         if let Some(p) = world.globaltex.get(&mcla_formats::hash::joaat("garageEnvMap.dds")) {
@@ -9974,16 +10391,21 @@ impl ApplicationHandler for App {
         if std::env::var("MCLA_NO_CITYMAP").is_err() && std::env::var("MCLA_SIM_TEST").is_err() {
             self.citymap_rx = Some(citymap::spawn(world.assets.clone(), world.index.sectors.clone(), world.shared.clone()));
         }
+        lap("damage shapes, abilities");
         self.spawn_player(&mut gpu, &mut world);
         if self.vehicles.player().is_none() {
             self.drive = false;
         }
+        lap("player");
         // garage car list
         let root = world.assets.path("resources/vehicle");
         let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&root)
             .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("vp_") || n.to_string_lossy().starts_with("vpd_"))).collect())
             .unwrap_or_default();
         dirs.sort();
+        // (the mod cars after the disc's, in their table order: MODS.md M-5, modcars.rs)
+        crate::modcars::init(std::path::Path::new(&self.opt.data_dir));
+        dirs.extend(crate::modcars::car_dirs());
         let cur = self.opt.car_dir.as_ref().and_then(|d| dirs.iter().position(|p| p.to_string_lossy().replace('\\', "/").ends_with(&d.replace('\\', "/").trim_end_matches('/').rsplit('/').next().unwrap_or("")))).unwrap_or(0);
         self.game = Game::new(dirs, cur);
         self.game.data_dir = self.opt.data_dir.clone();
@@ -10071,69 +10493,6 @@ impl ApplicationHandler for App {
                     if let Err(e) = self.vehicles.replace_player(&mut gpu, &mut world, &dir, color, &cfg, rim.as_deref()) {
                         log::warn!("restoring saved car: {:#}", e);
                     }
-    /// The new career's opening after the save boxes (CarSelection, `intro_stage`): every tick, the film and
-    /// the scenes included.
-    fn opening_tick(&mut self, dt: f32, streaming: usize) {
-        self.intro_t += dt;
-        match self.intro_stage {
-            // (the film once the black is up; settings.toml game.intro `fast` / `skip` leave it out - `hooks`)
-            1 if self.intro_mask.full() => {
-                let film = hooks::intro_film() && (self.opt.shot.is_none() || std::env::var("MCLA_MOVIE").is_ok());
-                // (the film carries the phone call: the subtitles of CUT_INTRO's table)
-                let subs = self.cuts.by_name("CUT_INTRO").map(|i| self.cuts.scenes[i].subs.clone()).unwrap_or_default();
-                if film && self.start_movie("intro", subs, false) {
-                    log::info!("opening: the film");
-                }
-                self.intro_stage = 2;
-                self.intro_t = 0.0;
-                // (after the film: Graphics_WarpToTimeOfDay(17, 100) - CarSelection, before City_DoneStreaming)
-                self.intro_tod = Some(17.0);
-            }
-            // (after the film: `City_DoneStreaming(100)` polled every 10 ms after three frames, then the fade up
-            // over 1 s - CarSelection 0xb68, 0xbaa - with VEHICLE SELECT already up)
-            2 if self.game.movie.is_none() && self.intro_t > 3.0 / 60.0 && streaming == 0 => {
-                log::info!("opening: VEHICLE SELECT");
-                self.intro_mask.release(1.0);
-                self.intro_stage = 3;
-            }
-            // ACCEPT: fade down, 1 s (CarSelection 0x13f5), held until the story scene's picture
-            3 if !self.game.fresh_game => {
-                self.intro_mask = Default::default();
-                self.intro_mask.start(1.0, 0.01, f32::MAX);
-                self.intro_stage = 4;
-                self.intro_t = 0.0;
-            }
-            4 => {
-                // (the black is up: the two not taken go, the car is the player's - CarSelection 0x1402 on)
-                if self.intro_mask.full() {
-                    self.game.starter_pick = None;
-                }
-                let scenes =std::env::var("MCLA_NO_CUTS").is_err() && std::env::var("MCLA_NO_CINE").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok());
-                let up = self.cuts.playing.is_some() && self.cine_hold.is_none();
-                if self.intro_mask.full() && (up || !scenes) {
-                    log::info!("opening: the first story scene comes up ({:.2} h, {} cars)", self.time_of_day, self.vehicles.cars.len());
-                    self.intro_mask.release(1.0);
-                    self.intro_stage = 0;
-                }
-            }
-            _ => {}
-        }
-        // (the warp, sub_822F1DB0 with +14552 set: the hour moves the short way round at the rate (+14548, 100 h a
-        // second) x the frame's unscaled seconds (G+88), stops on the target and the warp is over; then mod 24)
-        if let Some(to) = self.intro_tod.filter(|_| self.game.movie.is_none()) {
-            let h = self.time_of_day;
-            let (up, down) = if h < to { (to, to - 24.0) } else { (to + 24.0, to) };
-            let step = 100.0 * dt;
-            let (next, done) = if up - h < h - down { ((h + step).min(up), h + step >= up) } else { ((h - step).max(down), h - step <= down) };
-            self.time_of_day = next.rem_euclid(24.0);
-            if done {
-                log::info!("opening: the clock at {:.2} h", self.time_of_day);
-                self.intro_tod = None;
-            }
-        }
-        self.game.intro_mask = if self.game.movie.is_some() { 0.0 } else { self.intro_mask.update(dt) };
-    }
-
                 }
             }
             let tuned = self.game.perf_frac(self.game.current_car);
@@ -10148,22 +10507,18 @@ impl ApplicationHandler for App {
                 p.set_perf(level / 3.0);
             }
         }
-        if self.opt.shot.is_none() {
-            self.audio = audio::Audio::new(&self.opt.data_dir);
-        } else if self.opt.audio_dump.is_some() {
-            self.audio = audio::Audio::new_offline(&self.opt.data_dir);
-        }
-        if let Some(a) = self.audio.as_mut() {
-            a.set_music_catalog(&self.game.career.strings);
-        }
+        lap("races, rims, catalog, career, save, cars");
         self.sound.amb_types = sound::load_amb_types(&self.opt.data_dir);
-        if let Some(a) = self.audio.as_ref() {
-            self.speech = speech::Speech::load(&self.opt.data_dir, a.root());
-            self.radio = radio::Radio::load(&self.opt.data_dir, a.root());
+        if let Some(root) = audio_root {
+            self.speech = speech::Speech::load(&self.opt.data_dir, root);
+            lap("speech");
+            self.radio = radio::Radio::load(&self.opt.data_dir, root);
+            lap("police radio");
             self.sound.scripted_radio = self.radio.loaded();
         }
-        self.cuts = cutscene::Cutscenes::load(&self.opt.data_dir, self.audio.as_ref().map(|a| a.root()));
+        self.cuts = cutscene::Cutscenes::load(&self.opt.data_dir, audio_root);
         self.cine = cine::Cine::load(&self.opt.data_dir);
+        lap("cutscenes, cine");
         // (test hook: MCLA_CINE_DUMP=<part of a scene's name> logs where its car movers stand)
         if let Ok(part) = std::env::var("MCLA_CINE_DUMP") {
             for sc in self.cine.scenes("").into_iter().filter(|s| s.contains(&part.to_ascii_lowercase())) {
@@ -10223,17 +10578,6 @@ impl ApplicationHandler for App {
         physics::collision::load_surfaces(&self.opt.data_dir);
         self.game.load_perf_prices(&self.opt.data_dir);
         self.game.samples = rewards::Samples::load(&self.opt.data_dir);
-            // (the scene's car is its set-up's whole car - RACE_GH_06_READY_TO_START_ON_ENTER loads
-            // GH_06_0_vp_dsn_280z_75 with OpponentManager_LoadOpponent and waits for it to stream before the
-            // scene: parts, rims, paint now, not by the cruise's one-car-a-frame dressing, which a story scene's
-            // stopped clock never reaches)
-            let game = &self.game;
-            while !self.vehicles.cars[idx].dressed && !self.vehicles.cars[idx].vinyl_name.is_empty() {
-                if self.vehicles.dress_setups(gpu, world, &mut |car, cfg| game.mc4_dress_of(car, cfg)).is_none() {
-                    break;
-                }
-            }
-            log::info!("cine car: {} is {} in set-up {:?} (dressed {})", label, car, self.vehicles.cars[idx].vinyl_name, self.vehicles.cars[idx].dressed);
         self.game.vinyl_presets = vinyl::Presets::load(&self.opt.data_dir);
         self.game.vinyl_cats = vinyl::ShapeLib::categories(&self.opt.data_dir);
         self.game.data_dir = self.opt.data_dir.clone();
@@ -10285,6 +10629,10 @@ impl ApplicationHandler for App {
             }
         }
         self.game.mode = if self.opt.shot.is_some() && !self.opt.menu { Mode::FreeRoam } else { Mode::MainMenu };
+        // the start-up movie before the start screen (boot.rs; behind the movie bootload.rs hands over its own)
+        if self.game.mode == Mode::MainMenu {
+            self.game.boot = boot::Boot::new(self.boot_mode());
+        }
         if self.opt.auto {
             self.game.mode = Mode::FreeRoam;
         }
@@ -10327,6 +10675,7 @@ impl ApplicationHandler for App {
             }
             self.sky_bind = Some(gpu.texture_bind_group3(&stars, &moon, &noise, 0x5ca7_0001, 0x5ca7_0002, 0x5ca7_0003));
         }
+        lap("scripts, hangouts, sky");
         if !self.opt.no_props {
             self.vehicles.load_parking(&self.opt.data_dir);
             self.police.load(&self.opt.data_dir);
@@ -10337,6 +10686,7 @@ impl ApplicationHandler for App {
                     world.request_set(k, p);
                 }
             }
+            lap("parking, police");
             self.fx.load(&mut gpu, &self.opt.data_dir);
             self.tyre_fx = Some(tyrefx::TyreFx::load(std::path::Path::new(&self.opt.data_dir), &self.fx));
             rain::load(&mut gpu, &self.opt.data_dir);
@@ -10346,11 +10696,16 @@ impl ApplicationHandler for App {
             pu_draw::load(&mut gpu, &self.opt.data_dir);
             pu_fx::load(&mut gpu, &self.opt.data_dir);
             carblob::load(&mut gpu);
+            // (the scene's pipelines at the driving and the menus' sample counts, built ahead on a thread of their
+            // own - render/ms.rs; the city's plain ones for the environment map too)
+            render::ms::warm(vec![render::ms::scene(aamode::scene_samples(false)), render::ms::PLAIN, render::ms::scene(aamode::scene_samples(true))]);
             if std::env::var("MCLA_NO_PEDS").is_err() {
                 self.peds.load(&self.opt.data_dir);
                 self.drivers.load(&self.opt.data_dir);
             }
+            lap("effects, peds, drivers");
             self.props = props::Props::load(&mut gpu, &mut world, &self.opt.data_dir);
+            lap("props");
             // the city's placed lamps (the baked light list: its "range" is the light files'
             // Intensity) for the night lamp grid
             // (a record's cone and axis go into the table as they stand - the game's table writer
@@ -10386,11 +10741,30 @@ impl ApplicationHandler for App {
             self.game.gas_stations = self.props.gas_stations.iter().map(|g| g.0).collect();
         }
         self.cp_markers = checkpoints::Markers::new(&self.opt.data_dir);
+        lap("lamps, markers");
+        if let Some(ctx) = ui {
+            // (what the first frames would read: the UI's art and movies, the traffic's lane curves)
+            self.game.load_ui(ctx);
+            if let Some(nav) = world.nav.as_ref() {
+                let _ = vehicles::traffic::rail_nav(nav);
+            }
+            let _ = occluder::city(&self.opt.data_dir);
+            self.take_citymap(&mut gpu, true);
+            lap("ui, traffic lanes, occluders, city map");
+        }
         self.gpu = Some(gpu);
         self.world = Some(world);
-        self.window = Some(window);
-        self.last = Instant::now();
     }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        self.start_at_once(event_loop);
+    }
+
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if let (Some(eg), Some(w)) = (self.egui.as_mut(), self.window.as_ref()) {
@@ -10413,6 +10787,10 @@ impl ApplicationHandler for App {
                     // (Alt+Enter: the window mode, before anything else hears the Enter - `hooks`)
                     if self.alt_enter_key(code, event.state == ElementState::Pressed, event.repeat, is_synthetic) {
                         return;
+                    }
+                    // (a key pressed: the prompts show the keyboard's keys - `glyphs`)
+                    if event.state == ElementState::Pressed && !is_synthetic && crate::glyphs::use_keyboard() {
+                        log::info!("prompts: keyboard keys");
                     }
                     match event.state {
                         ElementState::Pressed if self.photo.is_some() => {
@@ -10462,6 +10840,8 @@ impl ApplicationHandler for App {
                                 KeyCode::Escape => self.game.nav_back = true,
                                 KeyCode::KeyX if self.game.replay.is_some() => self.game.nav_x = true,
                                 KeyCode::KeyY if self.game.replay.is_some() => self.game.nav_y = true,
+                                // (Y skips the opening film and a story scene - `cine::skip_to`)
+                                KeyCode::KeyY if self.cuts.playing.is_some() || self.game.movie.is_some() => self.game.nav_y = true,
                                 KeyCode::Backspace if self.game.replay.is_some() => self.game.nav_select = true,
                                 KeyCode::KeyP if self.game.replay.is_some() => self.game.nav_start = true,
                                 // (the GPS map's MAP MODE is the pad's START; N on the keyboard)
@@ -10681,6 +11061,8 @@ fn parse_options(args: &[String]) -> Options {
         shot.frames = shot_frames;
     }
     o.data_dir = hooks::init(data_flag.as_deref(), o.settings_file.as_deref(), o.shot.is_some()).data.path.to_string_lossy().into_owned();
+    // (the anti-aliasing mode from the settings, for the renderer)
+    hooks::apply_aa_at_start();
     if !o.fly {
         o.drive = true;
         if o.car_dir.is_none() {
@@ -10806,6 +11188,8 @@ fn run_game() -> Result<()> {
     // (logging, the panic hook and the exit code: `hooks::run`)
     let opt = parse_args();
     game::savedir::init(opt.save_dir.as_deref());
+    // (the mods first: the sound library's thread merges their sound objects while the game loads - modfs.rs)
+    crate::modcars::init(std::path::Path::new(&opt.data_dir));
     if std::env::var("MCLA_PART_AUDIT").is_ok() {
         return part_audit::run(&opt.data_dir);
     }
@@ -10840,8 +11224,6 @@ fn run_game() -> Result<()> {
             let ai = &ai.base;
             // acceleration
             let mut c = physics::CarState::new(Vec3::new(0.0, 0.02, 0.0), 0.0);
-                                // (Y skips the opening film and a story scene - `cine::skip_to`)
-                                KeyCode::KeyY if self.cuts.playing.is_some() || self.game.movie.is_some() => self.game.nav_y = true,
             for _ in 0..90 {
                 c.step(&p, physics::CarInput::default(), &col, dt);
             }
@@ -11450,7 +11832,7 @@ fn run_game() -> Result<()> {
     hooks::start_file_log();
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App::new(opt);
+    let mut app = bootload::Runner::new(App::new(opt));
     event_loop.run_app(&mut app)?;
     Ok(())
 }

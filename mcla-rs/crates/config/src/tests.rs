@@ -73,7 +73,8 @@ screenshots = "D:/shots"
     assert_eq!(s.game.intro, Intro::Skip);
     assert_eq!(s.paths.data_dir, "data/cache");
     // what was not in the file keeps its default
-    assert_eq!(s.display.aa, Aa::Off);
+    assert_eq!(s.display.aa, Aa::Original);
+    assert!(s.display.bloom && s.display.dof && s.display.motion_blur);
 }
 
 #[test]
@@ -279,4 +280,23 @@ fn fps_monitor_is_read_and_written() {
     assert_eq!(s.to_table()["display"]["fps_monitor"].as_str(), Some("frame_time"));
     let (s, warn) = Settings::from_table(&"[display]\nfps_monitor = \"graph\"\n".parse().unwrap());
     assert_eq!((s.display.fps_monitor, warn.len()), (FpsMonitor::Off, 1));
+}
+
+#[test]
+fn aa_words_and_effect_toggles() {
+    for (w, a) in [("original", Aa::Original), ("off", Aa::Off), ("2x", Aa::X2), ("4x", Aa::X4), ("msaa2", Aa::X2), ("msaa4", Aa::X4), ("fxaa", Aa::Original)] {
+        let t: Table = format!("[display]
+aa = \"{w}\"
+bloom = false
+dof = false
+motion_blur = false
+").parse().unwrap();
+        let (s, warn) = Settings::from_table(&t);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(s.display.aa, a);
+        assert!(!s.display.bloom && !s.display.dof && !s.display.motion_blur);
+    }
+    let (s, _) = Settings::from_table(&Table::new());
+    assert_eq!(s.to_table()["display"]["aa"].as_str(), Some("original"));
+    assert_eq!(s.to_table()["display"]["bloom"].as_bool(), Some(true));
 }

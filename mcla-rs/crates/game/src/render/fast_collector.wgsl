@@ -170,7 +170,9 @@ fn vs_blur(@builtin(vertex_index) i: u32) -> BlurOut {
 // PS_Blur: four taps at -1.5 / +0.5 texels, a quarter each.
 @fragment
 fn fs_blur(in: BlurOut) -> @location(0) vec4<f32> {
-    let t = 1.0 / 256.0;
+    // (one texel: 1 / 256 at the original's size - SHADOW RESOLUTION, render/mod.rs fc_size)
+    let n = vec2<i32>(textureDimensions(t_prev));
+    let t = 1.0 / f32(n.x);
     let uv = in.uv + fc.blur.xy * t;
     let b = 0.25 * (textureSampleLevel(t_src, s_src, uv + vec2<f32>(-1.5, -1.5) * t, 0.0)
         + textureSampleLevel(t_src, s_src, uv + vec2<f32>(-1.5, 0.5) * t, 0.0)
@@ -187,7 +189,7 @@ fn fs_blur(in: BlurOut) -> @location(0) vec4<f32> {
     // that was dark once reads 251, not 255).
     let px = vec2<i32>(in.clip.xy) + vec2<i32>(fc.hist.xy);
     var prev = vec4<f32>(1.0);
-    if (px.x >= 0 && px.y >= 0 && px.x < 256 && px.y < 256) {
+    if (px.x >= 0 && px.y >= 0 && px.x < n.x && px.y < n.y) {
         prev = textureLoad(t_prev, px, 0);
     }
     let fresh = floor(b * 255.0 + vec4<f32>(0.5));

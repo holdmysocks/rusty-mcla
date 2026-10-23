@@ -2,7 +2,8 @@
 // LIGHTING_WORK.md): the scene is HDR and linear; its luminance is averaged in log space and
 // adapted over time, the bright pass and two 9-tap Gauss passes make the bloom at quarter size,
 // and the tone map exposes, compresses, adds the bloom, desaturates and colour-corrects.
-// (The speed-dependent radial blur of the composite is this port's own.)
+// (The tone map still holds the port's old speed-dependent radial blur; main.rs feeds it 0 since the original's
+// motion blur - fs_dof's streaks - is ported.)
 
 struct P {
     // blur passes: xy = one texel of the source
@@ -19,6 +20,8 @@ struct P {
     // tone map: x = 1: the depth of field's buffer (t4) is there, y = MCLA_DEBUG_VIEW 500 .. 519, zw = one
     // pixel of the original's 1280 x 720 frame in uv
     e: vec4<f32>,
+    // tone map: x = 1: no bloom (OPTIONS > DISPLAY > BLOOM off)
+    f: vec4<f32>,
 };
 
 @group(0) @binding(0) var t0: texture_2d<f32>;
@@ -38,13 +41,20 @@ struct DofU {
     cam: vec4<f32>,
     // m_DoFParams: x = where the blur begins (m), y = its ramp (m), z = scale
     dof: vec4<f32>,
-    // xy = one pixel of the original's 1280 x 720 frame in uv
+    // xy = one pixel of the original's 1280 x 720 frame in uv; z = 1: the motion part on; w = 1: the depth of
+    // field's weight on
     px: vec4<f32>,
+    // Mc4MotionBlurVehicleMtxs: world -> the previous frame's clip space, per stencil id / 4 (render/mb.rs)
+    mtx: array<mat4x4<f32>, 24>,
 };
 @group(0) @binding(10) var d_scene: texture_2d<f32>;
 @group(0) @binding(11) var d_depth: texture_depth_2d;
 @group(0) @binding(12) var d_samp: sampler;
 @group(0) @binding(13) var<uniform> du: DofU;
+// the stencil copy (R8Unorm = s / 255, as the original's 8888 copy; read bilinearly like its StencilSampler)
+@group(0) @binding(14) var d_sten: texture_2d<f32>;
+// PSInitialScaleBuffer's 640 x 360 copy (fs_copy)
+@group(0) @binding(15) var d_copy: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -88,8 +98,104 @@ fn dof_texel(uv: vec2<f32>) -> vec2<i32> {
 //     (read with a bilinear tap on the corner: two of the four pixels being sky are enough).
 // Left out: the velocity's share of `a` and of the taps' spread (a moving camera's streaks), the
 // taps' weights by stencil (other cars' outlines), blurEffectDesatScale (the abilities' effect).
+// PSInitialScaleBuffer as the streak pass reads it: texel m = one bilinear tap a scene pixel down-right of its
+// centre (the 2 x 2 box of scene pixels 2m+1, 2m+2; LIGHTING.md, depth of field (a)).
+@fragment
+fn fs_copy(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(max(textureSampleLevel(d_scene, d_samp, in.uv + du.px.xy, 0.0).rgb, vec3<f32>(0.0)), 1.0);
+}
+
+// PSStreakMotionBlur (rage_postfx a6b9b6b0fa692c54), the whole program - run in numpy from its listing and checked
+// against this reading (work/ui-sharp/agent_rend/mb_check.py, mb_pair.py):
+//   s   = the stencil copy at uv (bilinear, s / 255); sky = s in [1/512, 1.5/256) (stencil 1); k = trunc(trunc(256 s) / 4)
+//   P   = this pixel's point (inverse view-projection, the depth at the point tap); v = uv - its place under
+//         matrix k (the previous frame's, render/mb.rs), in uv units
+//   M   = sat(38 x min(|v|^1.25, 0.02625));  B = M / 38 x v / |v|
+//   seven taps of the 640 copy at uv + k B - half its texel, k = -0.5, 0.5, -0.375, -0.25, 0.25, -0.125, 0 (0 twice),
+//   weighted by eight stencil taps at uv + j B / 8 - half a scene pixel (j = -4..-1, 1..4; tap j belongs to the copy
+//   tap j / 8, except j = 1 and 3: the k = 0 ones, j = 2: 0.25, j = 4: 0.5): weight 0 where the tap's stencil is
+//   1/64 or more above the pixel's (a vehicle drawn after this one), else 1
+//   rgb = (the scene's point tap + sum of the weighted copy taps) / (1 + sum of the weights)
+//   a   = sat(M + (sky ? 0 : A)), A the depth of field's weight below.
+// Left out: blurEffectDesatScale / TintFade (c167 / c166: 0 / 1 in every capture; an effect blend towards the
+// screen's centre, not traced).
+fn copy_tap(p: vec2<f32>) -> vec3<f32> {
+    return max(textureSampleLevel(d_copy, d_samp, p, 0.0).rgb, vec3<f32>(0.0));
+}
+
+fn sten_w(p: vec2<f32>, s: f32) -> f32 {
+    return select(0.0, 1.0, textureSampleLevel(d_sten, d_samp, p, 0.0).r - s < 0.015625);
+}
+
 @fragment
 fn fs_dof(in: VsOut) -> @location(0) vec4<f32> {
+    let view = du.cam.w;
+    if (view < 502.5 || view > 505.5) {
+        return streak(in.uv);
+    }
+    return dof_static(in);
+}
+
+fn streak(uv: vec2<f32>) -> vec4<f32> {
+    let v = du.px.xy;
+    let view = du.cam.w;
+    let sharp = uv + 0.5 * v;
+    let s = textureSampleLevel(d_sten, d_samp, uv, 0.0).r;
+    let sky = s >= 0.001953125 && s < 0.005859375;
+    let k = min(u32(trunc(trunc(s * 256.0) * 0.25)), 23u);
+    let z = textureLoad(d_depth, dof_texel(sharp), 0);
+    let ndc = vec4<f32>(sharp.x * 2.0 - 1.0, 1.0 - sharp.y * 2.0, z, 1.0);
+    let w = du.inv_view_proj * vec4<f32>(ndc.xy, max(z, 1e-9), 1.0);
+    // the motion: the point under the previous frame's matrix (homogeneous: the sky's far points too)
+    var m = 0.0;
+    var b = vec2<f32>(0.0);
+    if (du.px.z > 0.5) {
+        let pc = du.mtx[k] * du.inv_view_proj * ndc;
+        if (pc.w > 1e-12) {
+            let prev = vec2<f32>(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
+            let vel = sharp - prev;
+            let l = length(vel);
+            if (l > 0.0) {
+                m = clamp(38.0 * min(pow(l, 1.25), 0.02625), 0.0, 1.0);
+                b = (m / 38.0) * vel / l;
+            }
+        }
+    }
+    let h = v;
+    let q_m50 = copy_tap(uv - 0.5 * b - h);
+    let q_p50 = copy_tap(uv + 0.5 * b - h);
+    let q_m375 = copy_tap(uv - 0.375 * b - h);
+    let q_m25 = copy_tap(uv - 0.25 * b - h);
+    let q_p25 = copy_tap(uv + 0.25 * b - h);
+    let q_m125 = copy_tap(uv - 0.125 * b - h);
+    let q_0 = copy_tap(uv - h);
+    let st = uv - 0.5 * v;
+    let w_m4 = sten_w(st - 0.5 * b, s);
+    let w_m3 = sten_w(st - 0.375 * b, s);
+    let w_m2 = sten_w(st - 0.25 * b, s);
+    let w_m1 = sten_w(st - 0.125 * b, s);
+    let w_p1 = sten_w(st + 0.125 * b, s);
+    let w_p2 = sten_w(st + 0.25 * b, s);
+    let w_p3 = sten_w(st + 0.375 * b, s);
+    let w_p4 = sten_w(st + 0.5 * b, s);
+    let f = max(textureLoad(d_scene, dof_texel(sharp), 0).rgb, vec3<f32>(0.0));
+    let sum = f + w_m4 * q_m50 + w_m3 * q_m375 + w_m2 * q_m25 + w_m1 * q_m125 + (w_p1 + w_p3) * q_0 + w_p2 * q_p25 + w_p4 * q_p50;
+    var rgb = sum / (1.0 + w_m4 + w_m3 + w_m2 + w_m1 + w_p1 + w_p2 + w_p3 + w_p4);
+    if (view > 506.5 && view < 507.5) {
+        rgb = q_0;
+    }
+    // the depth of field's weight (DofParams = m_DoFParams)
+    let d = length(w.xyz / w.w - du.cam.xyz);
+    var a = clamp((d - du.dof.x) / max(du.dof.y, 1e-3), 0.0, 1.0) * du.dof.z;
+    if (du.px.w < 0.5 || (sky && !(view > 505.5 && view < 506.5))) {
+        a = 0.0;
+    }
+    return vec4<f32>(rgb, clamp(m + a, 0.0, 1.0));
+}
+
+// The standing frame's reading as it was (MCLA_DEBUG_VIEW 503 - 505 only: the 7e3 tests and the taps without the
+// quads' half-pixel shift).
+fn dof_static(in: VsOut) -> vec4<f32> {
     let v = du.px.xy;
     let view = du.cam.w;
     let uv = in.uv;
@@ -216,15 +322,14 @@ fn adapted() -> f32 {
 fn fs_bright(in: VsOut) -> @location(0) vec4<f32> {
     let c = max(textureSampleLevel(t0, samp, in.uv, 0.0).rgb, vec3<f32>(0.0));
     let xyz = to_xyz(c);
-    let sum = xyz.x + xyz.y + xyz.z;
-    if (sum <= 0.0) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    }
+    // (the original puts 0.001 where the sum or y is 0 - work/ui-sharp/agent_tone)
+    let sum = select(xyz.x + xyz.y + xyz.z, 0.001, xyz.x + xyz.y + xyz.z == 0.0);
     let l = xyz.y * p.a.x / (adapted() + 0.001);
     let over = max(l * (1.0 + l / p.a.w) - p.a.y, 0.0);
     let ld = over / (p.a.z + over);
     let xy = xyz.xy / sum;
-    let big = vec3<f32>(ld * xy.x / max(xy.y, 1e-5), ld, ld * (1.0 - xy.x - xy.y) / max(xy.y, 1e-5));
+    let yy = select(xy.y, 0.001, xy.y == 0.0);
+    let big = vec3<f32>(ld * xy.x / yy, ld, ld * (1.0 - xy.x - xy.y) / yy);
     return vec4<f32>(clamp(from_xyz(big), vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
 
@@ -286,15 +391,16 @@ fn fs_tonemap(in: VsOut) -> @location(0) vec4<f32> {
         }
     }
     let xyz = to_xyz(c);
-    let sum = xyz.x + xyz.y + xyz.z;
+    let sum = select(xyz.x + xyz.y + xyz.z, 0.001, xyz.x + xyz.y + xyz.z == 0.0);
     var o = vec3<f32>(0.0);
-    if (sum > 0.0) {
+    {
         let l = xyz.y * p.a.x / (adapted() + 0.001);
         let ld = l * (1.0 + l / p.b.z) / (1.0 + l);
         let xy = xyz.xy / sum;
-        o = from_xyz(vec3<f32>(ld * xy.x / max(xy.y, 1e-5), ld, ld * (1.0 - xy.x - xy.y) / max(xy.y, 1e-5)));
+        let yy = select(xy.y, 0.001, xy.y == 0.0);
+        o = from_xyz(vec3<f32>(ld * xy.x / yy, ld, ld * (1.0 - xy.x - xy.y) / yy));
     }
-    if (!plain) {
+    if (!plain && p.f.x < 0.5) {
         o = o + textureSampleLevel(t2, samp, in.uv, 0.0).rgb;
     }
     let luma = dot(o, LUMINANCE);

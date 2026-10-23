@@ -210,6 +210,12 @@ pub struct CarInput {
     /// player's chassis brake is also written 1 by the race code. A computer driver's pedals with it
     /// are the chassis's own (no coasting share).
     pub hold: bool,
+    /// a deactivated racer (Racer_Deactivate sub_822AB258 -> sub_8232C788(sim, 1): chassis +592 bit 0x1;
+    /// the new career's three starters on VEHICLE SELECT, `game/career/0xebb682f7`): mcCarSim::Update writes
+    /// the pedals 0 (0x8232EC70) and the steering the default steer direction +656 (0x8232EDB0; the input's
+    /// `steer` carries it), the automatic brake 1.0 on every wheel and the gearbox held (0x8232F214,
+    /// 0x8232F2AC). The pedals at 0, the stop timer runs and the body is frozen after a second standing.
+    pub deactivated: bool,
     /// a cine car event's mcBrainAnimated writes the chassis's inputs (sub_822B97E0): as they are - no pad
     /// code, no computer driver's pedal share - and the gearbox set to first out of reverse or neutral
     pub animated: bool,

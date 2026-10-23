@@ -7,8 +7,8 @@ use glam::Vec3;
 use std::sync::Mutex;
 
 struct State {
-    card: wgpu::RenderPipeline,
-    glow: wgpu::RenderPipeline,
+    card: crate::render::ms::MsPipe,
+    glow: crate::render::ms::MsPipe,
     bind: wgpu::BindGroup,
     cam: wgpu::Buffer,
     cards: wgpu::Buffer,
@@ -119,10 +119,11 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("power-up"), source: wgpu::ShaderSource::Wgsl(include_str!("render/powerup.wgsl").into()) });
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("power-up pl"), bind_group_layouts: &[&globals_layout, &layout], push_constant_ranges: &[] });
     let attrs: [wgpu::VertexAttribute; 3] = std::array::from_fn(|i| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16 * i as u64, shader_location: i as u32 });
-    let inst = wgpu::VertexBufferLayout { array_stride: 48, step_mode: wgpu::VertexStepMode::Instance, attributes: &attrs };
     // (reversed depth: tested, not written - as the other passes over the finished scene)
-    let depth = wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::GreaterEqual, stencil: Default::default(), bias: Default::default() };
-    let make = |label: &str, vs: &str, fs: &str, blend: wgpu::BlendState| {
+    let make = |label: &'static str, vs: &'static str, fs: &'static str, blend: wgpu::BlendState| {
+        let (pl, shader) = (pl.clone(), shader.clone());
+        crate::render::ms::MsPipe::new(device, move |device, v| {
+        let inst = wgpu::VertexBufferLayout { array_stride: 48, step_mode: wgpu::VertexStepMode::Instance, attributes: &attrs };
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
             layout: Some(&pl),
@@ -134,10 +135,11 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
-            depth_stencil: Some(depth.clone()),
-            multisample: Default::default(),
+            depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
+            multisample: v.ms(),
             multiview: None,
             cache: None,
+        })
         })
     };
     // (the card: the two passes' source alpha / inverse source alpha put together - premultiplied)
@@ -201,8 +203,8 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, cards: &[[f32; 12]], glows
     }
     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("power-ups"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.post.scene_view(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &gpu.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
         timestamp_writes: None,
         occlusion_query_set: None,
     });

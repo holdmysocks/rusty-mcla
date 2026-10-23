@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/formats", "crates/flash", "crates/tool", "crates/game", "crates/config", "crates/install", "crates/savedecode", "crates/shaders"]
+members = ["crates/formats", "crates/flash", "crates/tool", "crates/game", "crates/config", "crates/install", "crates/savedecode", "crates/shaders", "crates/mods"]
 
 [workspace.package]
 version = "0.4.0"

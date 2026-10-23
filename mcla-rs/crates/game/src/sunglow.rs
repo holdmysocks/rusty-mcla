@@ -6,7 +6,7 @@ use crate::render::Gpu;
 use std::sync::Mutex;
 
 struct SunGlow {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: crate::render::ms::MsPipe,
     layout: wgpu::BindGroupLayout,
     /// rgb = the sky's SunColor of the hour, w = the share of the sun the query sees
     consts: wgpu::Buffer,
@@ -38,7 +38,9 @@ pub fn load(gpu: &mut Gpu) {
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("sun glow pl"), bind_group_layouts: &[&globals_layout, &layout], push_constant_ranges: &[] });
     // (blend one / one, as the original's 0x01010101; the target's alpha is left alone)
     let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let pipeline = {
+        let (pl, shader) = (pl.clone(), shader.clone());
+        crate::render::ms::MsPipe::new(device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("sun glow"),
         layout: Some(&pl),
         vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_sun_glow"), buffers: &[], compilation_options: Default::default() },
@@ -50,10 +52,11 @@ pub fn load(gpu: &mut Gpu) {
         }),
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
         depth_stencil: None,
-        multisample: Default::default(),
+        multisample: v.ms(),
         multiview: None,
         cache: None,
-    });
+    }))
+    };
     *STATE.lock().unwrap() = Some(SunGlow { pipeline, layout, consts });
 }
 
@@ -74,7 +77,7 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, sun_color: [f32; 3]) {
     });
     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("sun glow"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.post.scene_view(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
         depth_stencil_attachment: None,
         timestamp_writes: None,
         occlusion_query_set: None,

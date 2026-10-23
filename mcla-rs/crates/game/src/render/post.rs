@@ -41,12 +41,20 @@ pub struct Tune {
     /// the scene's inverse view-projection and the camera's place: the depth of field's distance
     pub inv_view_proj: [[f32; 4]; 4],
     pub cam_pos: [f32; 3],
+    /// PSStreakMotionBlur's previous-frame matrices (Mc4MotionBlurVehicleMtxs, render/mb.rs): world -> the
+    /// previous frame's clip space, per stencil id / 4
+    pub mb_mtx: [[[f32; 4]; 4]; super::mb::RECORDS],
+    /// OPTIONS > DISPLAY toggles (ON = the original's): the bloom's share of the tone map; the depth of field's
+    /// weight; the motion part of the streak pass (M = 0 when off)
+    pub bloom: bool,
+    pub dof_on: bool,
+    pub motion_blur: bool,
 }
 
 impl Default for Tune {
     fn default() -> Self {
         // noon in the Nice weather
-        Tune { middle_grey: 0.25, white: 0.21646, bright: [1.6203, 4.6213, 0.032782], limits: [0.15, 0.2], lambda: 3.7266, saturation: 0.9, color_correct: [0.5862, 0.53442, 0.43101], dt: 1.0 / 60.0, radial: 0.0, center: [0.5, 0.5], plain: false, force_lum: None, dof: [0.0; 4], inv_view_proj: [[0.0; 4]; 4], cam_pos: [0.0; 3] }
+        Tune { middle_grey: 0.25, white: 0.21646, bright: [1.6203, 4.6213, 0.032782], limits: [0.15, 0.2], lambda: 3.7266, saturation: 0.9, color_correct: [0.5862, 0.53442, 0.43101], dt: 1.0 / 60.0, radial: 0.0, center: [0.5, 0.5], plain: false, force_lum: None, dof: [0.0; 4], inv_view_proj: [[0.0; 4]; 4], cam_pos: [0.0; 3], mb_mtx: [[[0.0; 4]; 4]; super::mb::RECORDS], bloom: true, dof_on: true, motion_blur: true }
     }
 }
 
@@ -58,6 +66,8 @@ struct Params {
     c: [f32; 4],
     d: [f32; 4],
     e: [f32; 4],
+    /// tone map: x = 1: no bloom (OPTIONS > DISPLAY > BLOOM off)
+    f: [f32; 4],
 }
 
 /// What the depth of field's pass is drawn with (post.wgsl `DofU`).
@@ -67,7 +77,10 @@ struct DofU {
     inv_view_proj: [[f32; 4]; 4],
     cam: [f32; 4],
     dof: [f32; 4],
+    /// xy = one pixel of the original's 1280 x 720 frame in uv (half a texel of the buffer); z = 1: the motion part
+    /// on; w = 1: the depth of field's weight on
     px: [f32; 4],
+    mtx: [[[f32; 4]; 4]; super::mb::RECORDS],
 }
 
 /// The depth of field's buffer. The original's is 640 x 360 beside a 1280 x 720 frame: 360 rows at
@@ -141,6 +154,10 @@ pub struct Post {
     /// the depth of field's buffer (PSStreakMotionBlur's target): rgb = the scene blurred, a = how far
     /// beyond `m_DoFParams`.x the pixel lies; the tone map lerps the scene towards it
     dof: Target,
+    /// PSInitialScaleBuffer's 640 x 360 copy as the streak pass reads it (texel m = the 2 x 2 box of scene pixels
+    /// 2m+1, 2m+2: one bilinear tap a scene pixel down-right of its centre)
+    copy: Target,
+    pipe_copy: wgpu::RenderPipeline,
     dof_layout: wgpu::BindGroupLayout,
     dof_buf: wgpu::Buffer,
     pipe_dof: wgpu::RenderPipeline,
@@ -162,7 +179,55 @@ pub struct Post {
     bufs: Vec<wgpu::Buffer>,
     /// [adapted target of this frame][step]
     groups: [Vec<wgpu::BindGroup>; 2],
+    /// RENDER SCALE (hooks::render_scale): the display's format; the tone map's target at the scene's size when the
+    /// window is another size (None at scale 1), its group and the box filter into the window
+    format: wgpu::TextureFormat,
+    out_size: (u32, u32),
+    display: Option<(Target, wgpu::BindGroup)>,
+    down_layout: wgpu::BindGroupLayout,
+    pipe_down: wgpu::RenderPipeline,
 }
+
+/// RENDER SCALE's filter from the scene's size to the window's: each window pixel the area-weighted mean of the
+/// scene pixels it covers (a box filter; 2.0 = the plain 2 x 2 average), read from the sRGB target so the mean is
+/// taken in linear light; below scale 1 one bilinear tap.
+const DOWN_WGSL: &str = r#"
+struct D { size: vec4<f32> };
+@group(0) @binding(0) var t: texture_2d<f32>;
+@group(0) @binding(1) var smp: sampler;
+@group(0) @binding(2) var<uniform> d: D;
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment
+fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let k = d.size.xy / d.size.zw;
+    if (k.x <= 1.0 || k.y <= 1.0) {
+        return vec4<f32>(textureSampleLevel(t, smp, pos.xy / d.size.zw, 0.0).rgb, 1.0);
+    }
+    let o = floor(pos.xy);
+    let lo = o * k;
+    let hi = lo + k;
+    let i0 = vec2<i32>(floor(lo));
+    let i1 = vec2<i32>(ceil(hi)) - vec2<i32>(1);
+    let top = vec2<i32>(d.size.xy) - vec2<i32>(1);
+    var acc = vec3<f32>(0.0);
+    var ws = 0.0;
+    for (var y = i0.y; y <= i1.y; y = y + 1) {
+        let wy = min(hi.y, f32(y + 1)) - max(lo.y, f32(y));
+        for (var x = i0.x; x <= i1.x; x = x + 1) {
+            let w = (min(hi.x, f32(x + 1)) - max(lo.x, f32(x))) * wy;
+            if (w > 0.0) {
+                acc = acc + w * textureLoad(t, clamp(vec2<i32>(x, y), vec2<i32>(0), top), 0).rgb;
+                ws = ws + w;
+            }
+        }
+    }
+    return vec4<f32>(acc / max(ws, 1e-6), 1.0);
+}
+"#;
 
 impl Post {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32) -> Post {
@@ -235,6 +300,9 @@ impl Post {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
+                // the stencil copy (s / 255, bilinear - the original's 8888 copy) and the 640 x 360 copy
+                wgpu::BindGroupLayoutEntry { binding: 14, ..tex_entry(0) },
+                wgpu::BindGroupLayoutEntry { binding: 15, ..tex_entry(0) },
             ],
         });
         let dof_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("dof pl"), bind_group_layouts: &[&dof_layout], push_constant_ranges: &[] });
@@ -254,6 +322,50 @@ impl Post {
             multiview: None,
             cache: None,
         });
+        let pipe_copy = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fs_copy"),
+            layout: Some(&dof_pl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_post"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_copy"),
+                targets: &[Some(wgpu::ColorTargetState { format: SCENE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                compilation_options: Default::default(),
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+        let down_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("render scale down"),
+            entries: &[
+                tex_entry(0),
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+            ],
+        });
+        let pipe_down = {
+            let m = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("render scale down"), source: wgpu::ShaderSource::Wgsl(DOWN_WGSL.into()) });
+            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&down_layout], push_constant_ranges: &[] });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("render scale down"),
+                layout: Some(&pl),
+                vertex: wgpu::VertexState { module: &m, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+                fragment: Some(wgpu::FragmentState { module: &m, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
         let dof_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("dof params"), contents: bytemuck::bytes_of(&DofU::default()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
         let bufs = (0..STEPS).map(|_| device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("post params"), contents: bytemuck::bytes_of(&Params::default()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST })).collect();
         let lum = |n: u32, label: &str| target(device, n, n, LUM_FORMAT, label);
@@ -265,6 +377,8 @@ impl Post {
             bloom_b: target(device, bloom_size(w, h).0, bloom_size(w, h).1, SCENE_FORMAT, "bloom b"),
             halo: target(device, w, h, SCENE_FORMAT, "halo"),
             dof: target(device, dof_size(w, h).0, dof_size(w, h).1, SCENE_FORMAT, "dof"),
+            copy: target(device, dof_size(w, h).0, dof_size(w, h).1, SCENE_FORMAT, "dof copy"),
+            pipe_copy,
             dof_layout,
             dof_buf,
             pipe_dof,
@@ -283,6 +397,11 @@ impl Post {
             sampler,
             bufs,
             groups: [Vec::new(), Vec::new()],
+            format,
+            out_size: (w.max(1), h.max(1)),
+            display: None,
+            down_layout,
+            pipe_down,
         };
         p.rebuild_groups(device);
         p
@@ -343,7 +462,40 @@ impl Post {
         self.bloom_b = target(device, bloom_size(w, h).0, bloom_size(w, h).1, SCENE_FORMAT, "bloom b");
         self.halo = target(device, w, h, SCENE_FORMAT, "halo");
         self.dof = target(device, dof_size(w, h).0, dof_size(w, h).1, SCENE_FORMAT, "dof");
+        self.copy = target(device, dof_size(w, h).0, dof_size(w, h).1, SCENE_FORMAT, "dof copy");
         self.rebuild_groups(device);
+        self.refresh_display(device);
+    }
+
+    /// The window's size (RENDER SCALE: the chain runs at the scene's, `resize`; the tone map's result is filtered
+    /// down to this).
+    pub fn set_out_size(&mut self, device: &wgpu::Device, w: u32, h: u32) {
+        self.out_size = (w.max(1), h.max(1));
+        self.refresh_display(device);
+    }
+
+    fn refresh_display(&mut self, device: &wgpu::Device) {
+        let (ow, oh) = self.out_size;
+        if (ow, oh) == (self.scene.w, self.scene.h) {
+            self.display = None;
+            return;
+        }
+        let t = target(device, self.scene.w, self.scene.h, self.format, "display (render scale)");
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("render scale down"),
+            contents: bytemuck::cast_slice(&[self.scene.w as f32, self.scene.h as f32, ow as f32, oh as f32]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("render scale down"),
+            layout: &self.down_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&t.view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: buf.as_entire_binding() },
+            ],
+        });
+        self.display = Some((t, bg));
     }
 
     /// Diagnostics (MCLA_POST_DUMP=<file>): the bright pass's input (the quarter-size scene) and
@@ -401,7 +553,7 @@ impl Post {
 
     /// Run the chain and write the result to `out`. `depth`: the scene's depth buffer (the depth of
     /// field's distance).
-    pub fn run(&self, device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, out: &wgpu::TextureView, depth: &wgpu::TextureView, t: &Tune) {
+    pub fn run(&self, device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, out: &wgpu::TextureView, depth: &wgpu::TextureView, stencil: &wgpu::TextureView, t: &Tune) {
         let now = self.flip.get();
         self.flip.set(1 - now);
         let first = self.first.replace(false);
@@ -409,13 +561,17 @@ impl Post {
         let texel = |t: &Target| [1.0 / t.w as f32, 1.0 / t.h as f32, 0.0, 0.0];
         // The depth of field (PSStreakMotionBlur + PSToneMap instr. 6 - 9, LIGHTING_WORK.md): not under
         // --no-post, not without the weather's key.
-        let dof_on = t.dof[2] > 0.0 && !t.plain && dof_enabled();
+        let dof_w = t.dof[2] > 0.0 && t.dof_on && dof_enabled();
+        // (the streak pass runs for either part; with neither the tone map reads the scene alone)
+        let mb_on = t.motion_blur && !t.plain && dof_enabled();
+        let dof_on = (dof_w || mb_on) && !t.plain;
         let grade = Params {
             a: [t.middle_grey, t.bright[0], t.bright[1], t.bright[2]],
             b: [t.limits[0], t.limits[1], t.white, t.saturation],
             c: [t.color_correct[0], t.color_correct[1], t.color_correct[2], t.radial],
             d: [t.center[0], t.center[1], aspect, if let Some(l) = t.force_lum { 2.0 + l.max(0.0) } else if t.plain { 1.0 } else { 0.0 }],
             e: [if dof_on { 1.0 } else { 0.0 }, dof_view() as f32, 0.5 / self.dof.w as f32, 0.5 / self.dof.h as f32],
+            f: [if t.bloom { 0.0 } else { 1.0 }, 0.0, 0.0, 0.0],
         };
         let only = |a: [f32; 4]| Params { a, ..Default::default() };
         let ps = [
@@ -448,7 +604,7 @@ impl Post {
             (&self.bloom_a.view, &self.pipe_bright, 7),
             (&self.bloom_b.view, &self.pipe_gauss, 8),
             (&self.bloom_a.view, &self.pipe_gauss, 9),
-            (out, &self.pipe_tonemap, 10),
+            (self.display.as_ref().map_or(out, |d| &d.0.view), &self.pipe_tonemap, 10),
         ];
         if dof_on {
             let u = DofU {
@@ -456,7 +612,8 @@ impl Post {
                 cam: [t.cam_pos[0], t.cam_pos[1], t.cam_pos[2], dof_view() as f32],
                 dof: t.dof,
                 // one pixel of the original's 1280 x 720 frame in uv (half a texel of the buffer)
-                px: [0.5 / self.dof.w as f32, 0.5 / self.dof.h as f32, 0.0, 0.0],
+                px: [0.5 / self.dof.w as f32, 0.5 / self.dof.h as f32, if mb_on { 1.0 } else { 0.0 }, if dof_w { 1.0 } else { 0.0 }],
+                mtx: t.mb_mtx,
             };
             queue.write_buffer(&self.dof_buf, 0, bytemuck::bytes_of(&u));
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -467,8 +624,35 @@ impl Post {
                     wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(depth) },
                     wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                     wgpu::BindGroupEntry { binding: 13, resource: self.dof_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(stencil) },
+                    wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(&self.copy.view) },
                 ],
             });
+            // (the copy reads the scene only; binding 15 is the copy itself, so it gets a group of its own)
+            let bg_copy = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("dof copy bg"),
+                layout: &self.dof_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&self.scene.view) },
+                    wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(depth) },
+                    wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 13, resource: self.dof_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(stencil) },
+                    wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(&self.dof.view) },
+                ],
+            });
+            {
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("dof copy"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &self.copy.view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&self.pipe_copy);
+                pass.set_bind_group(0, &bg_copy, &[]);
+                pass.draw(0..3, 0..1);
+            }
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("dof"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &self.dof.view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],
@@ -490,6 +674,19 @@ impl Post {
             });
             pass.set_pipeline(pipe);
             pass.set_bind_group(0, &self.groups[now][g], &[]);
+            pass.draw(0..3, 0..1);
+        }
+        // (RENDER SCALE: the tone map's result filtered down to the window)
+        if let Some((_, bg)) = self.display.as_ref() {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render scale down"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: out, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipe_down);
+            pass.set_bind_group(0, bg, &[]);
             pass.draw(0..3, 0..1);
         }
     }

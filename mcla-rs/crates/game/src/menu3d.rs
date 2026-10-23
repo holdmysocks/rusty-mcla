@@ -587,7 +587,15 @@ pub fn paint_scene(ctx: &egui::Context, painter: &egui::Painter, meshes: &mut Me
             // than the stage and the original shows all of it)
             let whole = scene.wide_stage && u0 < 0.01 && v0 < 0.01 && u1 > 0.99 && v1 > 0.99;
             let part = if whole { [s[0] - 4.0 * w, s[2] - 4.0 * h, s[0] + 5.0 * w, s[2] + 5.0 * h] } else { [s[0] + u0 * w, s[2] + v0 * h, s[0] + u1 * w, s[2] + v1 * h] };
-            movie.paint_warped(ctx, painter, &list, m, screen, (n.alpha * dense).min(1.0), Some(part));
+            if whole || !crate::selfmovie::enabled() {
+                movie.paint_warped(ctx, painter, &list, m, screen, (n.alpha * dense).min(1.0), Some(part));
+                continue;
+            }
+            // the original's way (`selfmovie`): the stage drawn flat into its 960 x 640 picture, the mesh
+            // textured with it by its own texture coordinates
+            let mm = view.vp * view.frame * n.srt;
+            let tris: Vec<(Vec4, [f32; 2])> = mesh.indices.iter().map(|&i| (mm * mesh.pos[i as usize].extend(1.0), mesh.uv.get(i as usize).copied().unwrap_or([0.0; 2]))).collect();
+            crate::selfmovie::paint_mesh(ctx, painter, screen, movie, &list, &tris, (n.alpha * dense).min(1.0));
             continue;
         }
         let tex_name = mesh.texture.clone();

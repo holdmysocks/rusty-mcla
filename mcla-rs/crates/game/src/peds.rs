@@ -708,6 +708,12 @@ struct Tuning {
 }
 
 pub struct Peds {
+    /// the ambient manager's front-end mode (sub_826D4C90, the start screen): the spawner has no
+    /// visibility test (sub_826F3038, 0x826F36BC); the focus and view are the camera's
+    pub frontend: bool,
+    /// spawner frames still to run at once (the front-end mode's loading wait, traffic.rs
+    /// `FRONT_END_PREROLL`)
+    preroll: u32,
     districts: Distribution,
     hour: f32,
     dirs: Vec<(String, PathBuf, PathBuf)>,
@@ -734,6 +740,8 @@ pub struct Peds {
     pub night_lights: Option<(crate::figlight::Dynamic, f32)>,
     /// each lit walker's eased records (the original's walker + 64)
     fig_lights: HashMap<(usize, u32), crate::figlight::FigureLight>,
+    /// each walker's LOD of this frame by the main view (`pick_lods`; -1 not drawn)
+    lod_pick: HashMap<(usize, u32), i8>,
     pub enabled: bool,
     /// the original's navigation mesh; without it the pedestrians follow the kerbs
     mesh: Option<NavMesh>,
@@ -785,6 +793,8 @@ fn wrap_angle(mut d: f32) -> f32 {
 impl Peds {
     pub fn new() -> Peds {
         Peds {
+            frontend: false,
+            preroll: 0,
             districts: Distribution::default(),
             hour: 12.0,
             dirs: Vec::new(),
@@ -806,6 +816,7 @@ impl Peds {
             buf: SkinBuffer::default(),
             night_lights: None,
             fig_lights: HashMap::new(),
+            lod_pick: HashMap::new(),
             enabled: true,
             mesh: None,
             island: Vec::new(),
@@ -820,6 +831,15 @@ impl Peds {
             next_id: 0,
             trace: std::env::var("MCLA_PED_TRACE").ok().and_then(|f| std::fs::File::create(f).ok()).map(|f| (std::io::BufWriter::new(f), 0.0, 0.0)),
         }
+    }
+
+    /// The ambient manager's front-end mode on or off; switched on, the frames of the loading wait
+    /// run first (traffic.rs `FRONT_END_PREROLL`).
+    pub fn set_frontend(&mut self, on: bool) {
+        if on && !self.frontend {
+            self.preroll = crate::vehicles::traffic::FRONT_END_PREROLL;
+        }
+        self.frontend = on;
     }
 
     /// The player's view the spawner works with: the car's forward direction and speed.
@@ -1145,8 +1165,9 @@ impl Peds {
             if (v.z * dir.x - v.x * dir.z).abs() > self.tune.box_width * 0.5 {
                 continue;
             }
-            // in view, unless an occluder hides it from just above the player
-            if self.in_view(v) {
+            // in view, unless an occluder hides it from just above the player (no test in the
+            // front-end mode)
+            if !self.frontend && self.in_view(v) {
                 if occ.is_none() {
                     occ = Some(crate::occluder::city(&self.data_dir).map(|c| c.select_around(focus + Vec3::Y * OCC_EYE, crate::occluder::RANGE * OCC_RANGE_SCALE)));
                 }
@@ -1401,8 +1422,12 @@ impl Peds {
             // the original's 30 Hz frames
             self.step = (self.step + dt).min(FRAME * 4.0);
             frame0 = self.frame_no;
-            while self.step >= FRAME {
-                self.step -= FRAME;
+            while self.step >= FRAME || self.preroll > 0 {
+                if self.preroll > 0 {
+                    self.preroll -= 1;
+                } else {
+                    self.step -= FRAME;
+                }
                 self.frame_no = self.frame_no.wrapping_add(1);
                 if self.frame_no % 2 == 0 {
                     self.spawn_frame(gpu, &mesh, col, center);
@@ -1885,15 +1910,39 @@ impl Peds {
         self.list.retain(|p| p.item.map_or(true, live));
     }
 
+    /// The walkers' LOD by the main view, as the original's walker render routine (sub_82794358, main
+    /// pass) gets it from its vt+44 sub_82794308 -> sub_827902F0(the set's render type, the sphere's
+    /// centre, radius 0.9 (0x82007FA8), flag 0): -1 when the sphere is outside the view or behind an
+    /// occluder or its far side is 500 or more in front of the near plane (0x82003250); LOD 0 below
+    /// the set's `fHighToMedSwitch` x `fLodSwitchScale`, LOD 1 below `fMedToLowSwitch` x the scale,
+    /// else LOD 2 (every set: 40 / 80). There is no other distance limit. OPTIONS > PERFORMANCE
+    /// (`k`): DRAW DISTANCE x the 500, DETAIL LEVEL x the steps (3X: LOD 0 throughout).
+    /// The centre: the original takes the walker's matrix x its bound's centroid (sub_826E9F88);
+    /// the port takes the walker's root (the centroid was not read - approximate).
+    pub fn pick_lods(&mut self, eye: Vec3, axis: Vec3, near: f32, k: crate::props::Lod, frustum: &Frustum, occluders: &crate::occluder::Selected) {
+        const RADIUS: f32 = 0.9;
+        self.lod_pick.clear();
+        for p in &self.list {
+            let Some(Some(ty)) = self.types.get(&p.ty) else { continue };
+            let d = (p.pos - eye).dot(axis) - near + RADIUS;
+            let shown = frustum.intersects_sphere(p.pos, RADIUS) && !occluders.hides_sphere(p.pos, RADIUS);
+            self.lod_pick.insert(p.key, crate::vehicles::Vehicles::lod_by(ty.lod_switch, d, shown, k));
+        }
+    }
+
     /// Skin everything in view into this frame's vertex buffer.
     pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, frustum: &Frustum) {
         self.buf.clear();
         let tables = self.night_lights.as_ref().and_then(|_| crate::render::LAMP_TABLES.read().ok()?.clone());
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
+        // (the LOD of `pick_lods`; a walker it has not seen - none in a normal frame - by the same
+        // rule on the plain distance, without the occluders)
+        let k = crate::props::Lod::now();
         for p in self.list.iter_mut() {
             let Some(Some(ty)) = self.types.get(&p.ty) else { continue };
             let dist = p.pos.distance(cam);
-            let visible = dist < 160.0 && frustum.intersects_aabb(p.pos - Vec3::new(1.2, 0.2, 1.2), p.pos + Vec3::new(1.2, 2.1, 1.2));
+            let lod = self.lod_pick.get(&p.key).copied().unwrap_or_else(|| crate::vehicles::Vehicles::lod_by(ty.lod_switch, dist, frustum.intersects_sphere(p.pos, 0.9), k));
+            let visible = lod >= 0;
             let (clip, looped) = ty.clip(p.state);
             clip.local(&ty.model.bones, clip.frame(p.time, looped), &mut local);
             if p.blend > 0.0 && p.from.len() == local.len() {
@@ -1903,13 +1952,7 @@ impl Peds {
             if !visible {
                 continue;
             }
-            let lod = if dist < ty.lod_switch[0] {
-                0
-            } else if dist < ty.lod_switch[1] {
-                1
-            } else {
-                2
-            };
+            let lod = lod as usize;
             // (at night the four lights of its program, picked and eased as the original's
             // sub_822F2C48 does at the walker's place - only while it is drawn, as there)
             if let (Some((dynamic, frames)), Some(t)) = (&self.night_lights, &tables) {

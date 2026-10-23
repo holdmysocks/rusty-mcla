@@ -933,7 +933,7 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
     // (N-VP-1: on the grid, chassis +592 bit 0x2, the computer drivers' cars get the automatic brake and its hold
     // too - recorded: the opponents' transmission +32 = 1 and their wheels' +480 rising 45 a tick, 1389, 1434 ..,
     // in their idle and handbrake phases, c4 R8 k44.., a.1 k116..)
-    if vs.auto_brake > 0.0 && (!computer || input.hold) {
+    if (vs.auto_brake > 0.0 && (!computer || input.hold)) || input.deactivated {
         vs.trans_inhibited = true;
     }
     let pedal = if vs.gear < 0 { input.brake } else { input.throttle }.clamp(0.0, 1.0);
@@ -1154,6 +1154,10 @@ pub fn take_answer(st: &mut CarState, p: &CarParams, vt: &VehTune, jf: Vec3, jt:
 pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, world: &WorldCollider, dt: f32) {
     // (a replay of a recorded computer driver gives the chassis' own pedals: no mapping)
     let replay_ai = REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed);
+    // (a deactivated racer, chassis +592 bit 0x1: throttle, brake and handbrake written 0 (0x8232EC70)
+    // after its brain - no driver's pedal share - and the steering its default direction, which the
+    // input brings (0x8232EDB0))
+    let input = if input.deactivated { CarInput { throttle: 0.0, brake: 0.0, handbrake: false, nitro: false, ai: false, ..input } } else { input };
     let input = CarInput { ai: input.ai && !replay_ai, ..input };
     let input_ai = input.ai || replay_ai;
     // (the chassis' own throttle, +136: nothing on the pedal at all)
@@ -1257,6 +1261,11 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     // keep the throttle, the handbrake is written 1; otherwise the brake is written 1, and with burnout charge
     // left under the handbrake the throttle 0. The steering, +132, is written 0 in every case - here it is
     // zeroed where the grid input is made, vehicles.rs. The `noburnout` switch, 0x8288E614, is 0 in a game.)
+    // (Racer_Deactivate's sub_8232C788 puts the gearbox into first out of reverse or neutral, 0x82561D90)
+    if input.deactivated && vs.gear <= 0 {
+        vs.gear = 1;
+        vs.shift_timer = 0.0;
+    }
     if input.hold {
         if vs.gear <= 0 {
             vs.gear = 1;
@@ -1428,6 +1437,11 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
         } else if pedal > 0.05 {
             vs.auto_brake = 0.0;
         }
+        // (0x8232F214: a deactivated racer, chassis +592 bit 0x1, has the automatic brake at 1.0 on every
+        // tick, and every wheel gets it, 0x8232F2AC)
+        if input.deactivated {
+            vs.auto_brake = 1.0;
+        }
     }
     // ---- the burnout (mcCarSim::Update 0x8232F768..0x8232FD7C, operation for operation; after the
     // automatic brake, ahead of the tyres' melt, the engine and the transmission). Throttle and
@@ -1522,7 +1536,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     let mut input = input;
     if vs.by.exact {
         let computer = input.ai || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed);
-        let held = (vs.gear_change.direction != 0 && vs.gear >= 2) || vs.gear == 0 || (vs.auto_brake > 0.0 && (!computer || input.hold))
+        let held = (vs.gear_change.direction != 0 && vs.gear >= 2) || vs.gear == 0 || (vs.auto_brake > 0.0 && (!computer || input.hold)) || input.deactivated
             || (input.hold && vs.burn < 0.95 && !input.handbrake);
         let thr = if vs.gear < 0 { input.brake } else { input.throttle };
         let mut allowed = thr;

@@ -196,12 +196,14 @@ pub fn view(main: &Globals, car_pos: Vec3, car_rot: Quat, near: f32) -> View {
 /// for the mirror (the caller swaps them in). Returns the draw count.
 pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::World, vehicles: &Vehicles, mv: &View) -> usize {
     gpu.queue.write_buffer(&gpu.mirror_globals, 0, bytemuck::bytes_of(&mv.globals));
-    let (w, h) = (gpu.config.width, gpu.config.height);
+    // (the scene's size: RENDER SCALE draws it at window x scale)
+    let (w, h) = (gpu.scene_w, gpu.scene_h);
     let r = rect(w, h);
     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("rear-view mirror"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.post.scene_view(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &gpu.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+        // (into the multisampled scene - render/ms.rs; the city's draws write their stencil id as in the main view)
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }) }),
         timestamp_writes: None,
         occlusion_query_set: None,
     });

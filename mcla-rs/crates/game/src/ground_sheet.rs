@@ -90,7 +90,7 @@ fn fs_sheet_debug(in: VsOut) -> @location(0) vec4<f32> {
 "#;
 
 struct Sheet {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: crate::render::ms::MsPipe,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     ubuf: wgpu::Buffer,
@@ -123,7 +123,9 @@ fn build(device: &wgpu::Device) -> Sheet {
         ],
     });
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("ground sheet pl"), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let pipeline = {
+        let (pl, shader) = (pl.clone(), shader.clone());
+        crate::render::ms::MsPipe::new(device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("ground sheet"),
         layout: Some(&pl),
         vertex: wgpu::VertexState {
@@ -142,17 +144,12 @@ fn build(device: &wgpu::Device) -> Sheet {
         // (no culling: 0x00018000 in the recorded draw)
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
         // (depth test with the scene's compare - reversed z -, no depth write)
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::GreaterEqual,
-            stencil: Default::default(),
-            bias: Default::default(),
-        }),
-        multisample: Default::default(),
+        depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, true, Default::default())),
+        multisample: v.ms(),
         multiview: None,
         cache: None,
-    });
+    }))
+    };
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("ground sheet sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -198,6 +195,10 @@ pub fn draw(pass: &mut wgpu::RenderPass<'_>, gpu: &crate::render::Gpu, view_proj
     pass.set_bind_group(0, &bg, &[]);
     pass.set_vertex_buffer(0, s.vb.slice(..));
     pass.set_index_buffer(s.ib.slice(..), wgpu::IndexFormat::Uint16);
+    // (vs_GroundDome: stencil ALWAYS / REPLACE ref 1 where its depth test passes - LIGHTING.md, sea; the depth of
+    // field leaves those pixels alone)
+    pass.set_stencil_reference(1);
     pass.draw_indexed(0..TRI.len() as u32, 0, 0..1);
+    pass.set_stencil_reference(0);
     pass.set_bind_group(0, &gpu.globals_bg, &[]);
 }

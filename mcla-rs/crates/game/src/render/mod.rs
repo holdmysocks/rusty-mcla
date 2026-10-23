@@ -1,6 +1,8 @@
 //! wgpu renderer: device setup, static-geometry pipeline, texture cache.
 
 pub mod car_lamps;
+pub mod mb;
+pub mod ms;
 pub mod post;
 pub mod skyhat;
 pub mod xs;
@@ -109,6 +111,8 @@ pub struct Globals {
     /// the car programs: the light manager's sm_vGarageAmbientLighting), w = 1: in force - and then
     /// `car_key2` is a POSITION when its w is 2 (the garage's second light, a point 1 m above the camera)
     pub car_amb: [f32; 4],
+    /// OPTIONS > PERFORMANCE: x = DRAW DISTANCE, y = DETAIL LEVEL (1 = the original; props.rs `Lod`, city.wgsl `vs_inst`)
+    pub lod: [f32; 4],
 }
 
 pub const MAX_LIGHTS: usize = 48;
@@ -155,6 +159,29 @@ pub const SHADOW_SIZE: u32 = 4096;
 /// The original's sun shadow maps: four cascades of 640 x 640 texels, two by two in one
 /// 1280 x 1280 depth map (tile 1 right of tile 0, tiles 2 and 3 under them) - `Gpu::set_cascades`.
 pub const CASC_TILE: u32 = 640;
+
+/// SHADOW RESOLUTION (hooks::shadow_res_scale: 1 = ORIGINAL, 2 = 2X, 4 = 4X), read once when the renderer starts:
+/// the cascades' tiles and the fast collector's map get so many times the original's texels on each side over the
+/// same ground (their uv rules, the taps' radii in uv, the map's 256 m are kept; the slope bias is per texel as the
+/// hardware's). At 1 every size is the original's.
+pub fn shadow_scale() -> u32 {
+    static S: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *S.get_or_init(|| match crate::hooks::shadow_res_scale() {
+        0 | 1 => 1,
+        2 | 3 => 2,
+        _ => 4,
+    })
+}
+
+/// A cascade tile's side in texels (the original's 640 x SHADOW RESOLUTION; the atlas is two by two of them).
+pub fn casc_tile() -> u32 {
+    CASC_TILE * shadow_scale()
+}
+
+/// The fast collector's map side in texels (the original's 256 x SHADOW RESOLUTION, always 256 m).
+pub fn fc_size() -> u32 {
+    FC_SIZE * shadow_scale()
+}
 /// tune/360CascadedShadowMaps.xml, per tile: FarSlice, ViewportZShift, FovYDiv, BiasSlope.
 pub const CASC_TUNE: [[f32; 4]; 4] = [[15.0, 1.5, 0.653, 4.485], [31.0, 1.5, 0.75, 3.8], [80.0, 4.0, 0.7, 1.938], [160.0, 8.0, 0.7, 2.8]];
 /// The tiles' constant depth bias in metres along the rays: the file's DepthBias (1e-7, 1e-7,
@@ -352,6 +379,7 @@ impl Default for Globals {
             car_key2: [0.0, 1.0, 0.0, 0.0],
             car_key2_col: [0.0; 4],
             car_amb: [0.0; 4],
+            lod: [1.0, 1.0, 1.0, 0.0],
         }
     }
 }
@@ -488,12 +516,45 @@ pub struct GpuTexture {
     pub height: u32,
 }
 
+/// [`Gpu::base`]: the device and the window's surface, before the renderer's programs are made.
+pub struct GpuBase {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub surface: Arc<wgpu::Surface<'static>>,
+    pub config: wgpu::SurfaceConfiguration,
+    pub bc_supported: bool,
+    pub max_tex: u32,
+}
+
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    pub surface: wgpu::Surface<'static>,
+    pub surface: Arc<wgpu::Surface<'static>>,
     pub config: wgpu::SurfaceConfiguration,
+    /// the scene's depth, resolved (sample 0 of the multisampled depth, `resolve_scene_depth`): what every pass
+    /// after the scene reads (particles' soft fade, blobs, glows, depth of field, the GPS map's x-ray)
     pub depth: wgpu::TextureView,
+    /// The scene's multisampled targets (render/ms.rs): the sample count of this frame (`set_scene_samples`), the
+    /// targets per count (made when first used), the stencil resolved like the depth (R8Unorm, s / 255: the
+    /// original's 8888 copy of its depth-stencil that PSStreakMotionBlur reads), the resolve's programs.
+    pub scene_n: u32,
+    scene_sets: [Option<SceneSet>; 3],
+    pub stencil_copy: wgpu::TextureView,
+    resolve_layouts: [wgpu::BindGroupLayout; 2],
+    resolve_pipes: [wgpu::RenderPipeline; 2],
+    /// RENDER SCALE (hooks::render_scale): the scale in force and the scene's size (window x scale: every scene
+    /// target, `depth`, `stencil_copy`, the post chain); `depth_ui` = the depth at the window's size for the UI pass
+    /// and the GPS map's x-ray (`depth` itself at scale 1, else a point-sampled copy, `depth_to_ui`)
+    pub render_scale: f32,
+    pub scene_w: u32,
+    pub scene_h: u32,
+    pub depth_ui: wgpu::TextureView,
+    depth_down: (wgpu::BindGroupLayout, wgpu::RenderPipeline),
+    depth_down_bg: Option<wgpu::BindGroup>,
+    /// the globals' bind group with the city's sampler at maximum anisotropy 16 (sub_822E60E0: while the scene
+    /// is 4x) while `globals_bg` has the device default 4 (`*(0x827E19C4)`) - `set_aniso16` swaps them
+    pub globals_bg_alt: wgpu::BindGroup,
+    pub aniso16: bool,
     /// off-screen scene target + bloom / motion blur chain
     pub post: post::Post,
     pub globals_buf: wgpu::Buffer,
@@ -520,25 +581,25 @@ pub struct Gpu {
     /// the object's damage map when it has none (all zero)
     pub blank_dmg: wgpu::TextureView,
     pub identity_obj: ObjectBinding,
-    pub pipeline_opaque: wgpu::RenderPipeline,
-    pub pipeline_blend: wgpu::RenderPipeline,
+    pub pipeline_opaque: ms::MsPipe,
+    pub pipeline_blend: ms::MsPipe,
     /// car windows: back faces, then front faces, both with depth writes
-    pub pipeline_glass_back: wgpu::RenderPipeline,
-    pub pipeline_glass_front: wgpu::RenderPipeline,
+    pub pipeline_glass_back: ms::MsPipe,
+    pub pipeline_glass_front: ms::MsPipe,
     /// the player's windows in the driver's view (interiorwindowglass): the back faces' cull, no depth writes
-    pub pipeline_glass_inner: wgpu::RenderPipeline,
+    pub pipeline_glass_inner: ms::MsPipe,
     /// shop panes (PSCityWindowLower and its night program): blended WITH depth writes, like the original's draws
-    pub pipeline_pane: wgpu::RenderPipeline,
-    pub pipeline_sky: wgpu::RenderPipeline,
+    pub pipeline_pane: ms::MsPipe,
+    pub pipeline_sky: ms::MsPipe,
     /// the game's own sky dome programs and their Perlin pass (skyhat.rs)
     pub sky_hat: skyhat::SkyHat,
     /// opaque / alpha-tested geometry drawn with per-instance transforms (props)
-    pub pipeline_inst: wgpu::RenderPipeline,
+    pub pipeline_inst: ms::MsPipe,
     /// the glass props: instanced, blended, both sides, depth tested but not written (the original's draws: blend
     /// control 0x07060706, cull register 0x18000, depth control 0x00708763)
-    pub pipeline_inst_blend: wgpu::RenderPipeline,
+    pub pipeline_inst_blend: ms::MsPipe,
     /// additive light glows (instanced billboards)
-    pub pipeline_glow: wgpu::RenderPipeline,
+    pub pipeline_glow: ms::MsPipe,
     /// the light glows of the environment map (env_glow.wgsl) and their instances
     /// (position + strength, colour: 8 floats each, at most ENV_GLOWS)
     pub pipeline_env_glow: wgpu::RenderPipeline,
@@ -559,8 +620,8 @@ pub struct Gpu {
     pub env_tex: wgpu::Texture,
     pub env_soft_tex: wgpu::Texture,
     pub env_glow_buf: wgpu::Buffer,
-    pub pipeline_particle: wgpu::RenderPipeline,
-    pub pipeline_particle_add: wgpu::RenderPipeline,
+    pub pipeline_particle: ms::MsPipe,
+    pub pipeline_particle_add: ms::MsPipe,
     pub particle_depth_layout: wgpu::BindGroupLayout,
     /// sun shadow map
     pub shadow_view: wgpu::TextureView,
@@ -621,7 +682,7 @@ pub struct Gpu {
     /// also clears the strip's depth.
     pub mirror_globals: wgpu::Buffer,
     pub mirror_bg: wgpu::BindGroup,
-    pub pipeline_mirror_sky: wgpu::RenderPipeline,
+    pub pipeline_mirror_sky: ms::MsPipe,
     pub sampler: wgpu::Sampler,
     pub white: Arc<GpuTexture>,
     pub textures: HashMap<u32, Arc<GpuTexture>>,
@@ -634,6 +695,13 @@ pub struct Gpu {
 
 impl Gpu {
     pub async fn new(window: Arc<winit::window::Window>) -> Result<Gpu> {
+        Ok(Gpu::build(Gpu::base(window).await?))
+    }
+
+    /// The device, queue and configured surface: what the start-up movie needs to be drawn while the rest of
+    /// the renderer (`build`: its programs, a long wait for the driver) is made on the loading thread
+    /// (docs/reference/ui/boot.md, "Loading behind the movie").
+    pub async fn base(window: Arc<winit::window::Window>) -> Result<GpuBase> {
         // (the game's own sky / road / sea programs: translated from the disc at install time, read once here - xs.rs)
         xs::load(&crate::hooks::get().map(|r| r.data.path.clone()).unwrap_or_else(|| std::path::PathBuf::from(".")));
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -657,6 +725,17 @@ impl Gpu {
         let mut required = wgpu::Features::empty();
         if bc_supported {
             required |= wgpu::Features::TEXTURE_COMPRESSION_BC;
+        }
+        // (2-sample targets, the original's "fullscreenself" - selfmovie.rs; WebGPU guarantees only 1 and 4)
+        if feats.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
+            required |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        }
+        // (the scene's depth-stencil: the original's ids in the stencil - render/ms.rs)
+        if feats.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) {
+            required |= wgpu::Features::DEPTH32FLOAT_STENCIL8;
+            ms::set_scene_ds_format(wgpu::TextureFormat::Depth32FloatStencil8);
+        } else {
+            ms::set_scene_ds_format(wgpu::TextureFormat::Depth24PlusStencil8);
         }
         let limits = adapter.limits();
         let (device, queue) = adapter
@@ -687,6 +766,16 @@ impl Gpu {
         config.view_formats = vec![config.format, config.format.remove_srgb_suffix()];
         config.usage |= wgpu::TextureUsages::COPY_SRC;
         surface.configure(&device, &config);
+        crate::selfmovie::set_two_samples(
+            required.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+                && adapter.get_texture_format_features(config.format.remove_srgb_suffix()).flags.sample_count_supported(2),
+        );
+        Ok(GpuBase { device, queue, surface: Arc::new(surface), config, bc_supported, max_tex: limits.max_texture_dimension_2d })
+    }
+
+    /// The rest of the renderer on a [`GpuBase`] (any thread).
+    pub fn build(base: GpuBase) -> Gpu {
+        let GpuBase { device, queue, surface, config, bc_supported, max_tex } = base;
         let depth = create_depth(&device, config.width, config.height);
         let post = post::Post::new(&device, config.format, config.width, config.height);
 
@@ -739,7 +828,7 @@ impl Gpu {
         // pass, and what the scene reads them with
         let casc_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shadow cascades"),
-            size: wgpu::Extent3d { width: CASC_TILE * 2, height: CASC_TILE * 2, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: casc_tile() * 2, height: casc_tile() * 2, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -862,6 +951,8 @@ impl Gpu {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                     count: None,
                 },
+                // the city's texture sampler: the device's default sampler state, maximum anisotropy by mode (ms.rs)
+                wgpu::BindGroupLayoutEntry { binding: 15, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
         let minisky_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -890,7 +981,7 @@ impl Gpu {
         let fc_map = |label: &str, usage: wgpu::TextureUsages| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width: FC_SIZE, height: FC_SIZE, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d { width: fc_size(), height: fc_size(), depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -904,7 +995,7 @@ impl Gpu {
         let fc_prev = fc_map("fast collector, last frame", wgpu::TextureUsages::COPY_DST);
         let fc_prev_view = fc_prev.create_view(&Default::default());
         let (fc_work_view, fc_view) = (fc_work.create_view(&Default::default()), fc_tex.create_view(&Default::default()));
-        let fc_depth = create_depth(&device, FC_SIZE, FC_SIZE);
+        let fc_depth = create_depth(&device, fc_size(), fc_size());
         {
             // the maps start lit (the game's too: its map's corners, where the goal is always 255, read 255 and
             // not the 251 a rise from below ends at). MCLA_FC_START=<0..255>: another start level (diagnostics).
@@ -1003,7 +1094,24 @@ impl Gpu {
             .collect();
         let env_dp_depth = create_depth(&device, ENV_DP_SIZE, ENV_DP_SIZE);
         let env_sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("environment"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        let make_globals_bg = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView| {
+        // (sub_822E60E0 each frame: grc sampler state 9, maximum anisotropy, = 16 while the 4x flag is set, else
+        // `*(0x827E19C4)` = 4; the city's fetches take it from the fetch constant - driving trace aniso field 3 = 4 : 1,
+        // GPS map 5 = 16 : 1. MCLA_ANISO=<n> forces one value.)
+        let aniso_env = std::env::var("MCLA_ANISO").ok().and_then(|v| v.parse::<u16>().ok()).map(|v| v.clamp(1, 16));
+        let city_sampler = |aniso: u16| device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("city aniso"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            anisotropy_clamp: aniso_env.unwrap_or(aniso),
+            ..Default::default()
+        });
+        let city_samp4 = city_sampler(4);
+        let city_samp16 = city_sampler(16);
+        let make_globals_bg_s = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView, samp: &wgpu::Sampler| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("globals bg"),
                 layout: &globals_layout,
@@ -1023,10 +1131,13 @@ impl Gpu {
                     wgpu::BindGroupEntry { binding: 12, resource: casc_buf.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(&casc_view) },
                     wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(&minisky_view) },
+                    wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::Sampler(samp) },
                 ],
             })
         };
+        let make_globals_bg = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView| make_globals_bg_s(buf, cube, soft, refl, &city_samp4);
         let globals_bg = make_globals_bg(&globals_buf, &env_cube, &env_soft_cube, &refl_view);
+        let globals_bg_alt = make_globals_bg_s(&globals_buf, &env_cube, &env_soft_cube, &refl_view, &city_samp16);
         // (the reflection pass draws with the main globals; the picture itself cannot be bound
         // while it is drawn into - the collector's map stands in its slot)
         let refl_globals_bg = make_globals_bg(&globals_buf, &env_none_cube, &env_none_cube, &fc_view);
@@ -1207,7 +1318,10 @@ impl Gpu {
             bind_group_layouts: &[&globals_layout, &tex_layout, &mat_layout, &obj_layout],
             push_constant_ranges: &[],
         });
-        let make_pipeline_x = |blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool| {
+        // (every city pipeline per ms::Variant: the scene's are multisampled and write the stencil reference)
+        let city_build = {
+            let (pl, shader) = (pl.clone(), shader.clone());
+            Arc::new(move |device: &wgpu::Device, v: ms::Variant, blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(if blend { "city blend" } else { "city opaque" }),
                 layout: Some(&pl),
@@ -1233,17 +1347,16 @@ impl Gpu {
                     front_face: wgpu::FrontFace::Cw,
                     ..Default::default()
                 },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: zwrite,
-                    depth_compare: wgpu::CompareFunction::GreaterEqual,
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
+                depth_stencil: Some(v.ds(zwrite, wgpu::CompareFunction::GreaterEqual, true, Default::default())),
+                multisample: v.ms(),
                 multiview: None,
                 cache: None,
             })
+            })
+        };
+        let make_pipeline_x = |blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool| {
+            let b = city_build.clone();
+            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, blend, vs, cull, zwrite))
         };
         let make_pipeline = |blend: bool, vs: &'static str| make_pipeline_x(blend, vs, None, !blend);
         // (the cars' windows as the original draws them: blended WITH depth writes, back faces first
@@ -1262,8 +1375,8 @@ impl Gpu {
         let pipeline_opaque = make_pipeline(false, "vs_main");
         let pipeline_blend = make_pipeline(true, "vs_main");
         // (the cars' environment map drawn the original's way: the paraboloid warp per vertex - city.wgsl vs_env_dp)
-        let pipeline_env_dp = make_pipeline(false, "vs_env_dp");
-        let pipeline_env_dp_blend = make_pipeline(true, "vs_env_dp");
+        let pipeline_env_dp = city_build(&device, ms::PLAIN, false, "vs_env_dp", None, true);
+        let pipeline_env_dp_blend = city_build(&device, ms::PLAIN, true, "vs_env_dp", None, false);
         let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shadow"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shadow.wgsl").into()),
@@ -1437,7 +1550,9 @@ impl Gpu {
             multiview: None,
             cache: None,
         });
-        let pipeline_inst = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline_inst = {
+            let (pl, shader) = (pl.clone(), shader.clone());
+            ms::MsPipe::new(&device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("city instanced"),
             layout: Some(&pl),
             vertex: wgpu::VertexState {
@@ -1453,18 +1568,15 @@ impl Gpu {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, front_face: wgpu::FrontFace::Cw, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
+            depth_stencil: Some(v.ds(true, wgpu::CompareFunction::GreaterEqual, true, Default::default())),
+            multisample: v.ms(),
             multiview: None,
             cache: None,
-        });
-        let pipeline_inst_blend = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        }))
+        };
+        let pipeline_inst_blend = {
+            let (pl, shader) = (pl.clone(), shader.clone());
+            ms::MsPipe::new(&device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("city instanced blend"),
             layout: Some(&pl),
             vertex: wgpu::VertexState {
@@ -1480,17 +1592,12 @@ impl Gpu {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, front_face: wgpu::FrontFace::Cw, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
+            depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, true, Default::default())),
+            multisample: v.ms(),
             multiview: None,
             cache: None,
-        });
+        }))
+        };
         let glow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("glow"),
             source: wgpu::ShaderSource::Wgsl(include_str!("glow.wgsl").into()),
@@ -1500,7 +1607,9 @@ impl Gpu {
             bind_group_layouts: &[&globals_layout],
             push_constant_ranges: &[],
         });
-        let pipeline_glow = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline_glow = {
+            let (glow_pl, glow_shader) = (glow_pl.clone(), glow_shader.clone());
+            ms::MsPipe::new(&device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("glow"),
             layout: Some(&glow_pl),
             vertex: wgpu::VertexState { module: &glow_shader, entry_point: Some("vs_glow"), buffers: &[crate::props::Inst::LAYOUT], compilation_options: Default::default() },
@@ -1518,17 +1627,12 @@ impl Gpu {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, cull_mode: None, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
+            depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
+            multisample: v.ms(),
             multiview: None,
             cache: None,
-        });
+        }))
+        };
         let env_glow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("environment glows"),
             source: wgpu::ShaderSource::Wgsl(include_str!("env_glow.wgsl").into()),
@@ -1599,6 +1703,7 @@ impl Gpu {
             push_constant_ranges: &[],
         });
         let make_particle = |additive: bool| {
+            let (particle_pl, particle_shader) = (particle_pl.clone(), particle_shader.clone());
             let blend = if additive {
                 wgpu::BlendState {
                     color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
@@ -1607,7 +1712,7 @@ impl Gpu {
             } else {
                 wgpu::BlendState::ALPHA_BLENDING
             };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            ms::MsPipe::new(&device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("particle"),
                 layout: Some(&particle_pl),
                 vertex: wgpu::VertexState { module: &particle_shader, entry_point: Some("vs_particle"), buffers: &[crate::particles::PInst::LAYOUT], compilation_options: Default::default() },
@@ -1618,17 +1723,11 @@ impl Gpu {
                     compilation_options: Default::default(),
                 }),
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, cull_mode: None, ..Default::default() },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: false,
-                    depth_compare: wgpu::CompareFunction::GreaterEqual,
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
+                depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
+                multisample: v.ms(),
                 multiview: None,
                 cache: None,
-            })
+            }))
         };
         let pipeline_particle = make_particle(false);
         let pipeline_particle_add = make_particle(true);
@@ -1728,7 +1827,9 @@ impl Gpu {
         });
         // (the rear-view mirror's sky - refl.wgsl `fs_mirror_sky`: into the scene target, writing the far depth
         // with the test off, so that it clears the strip's depth as well)
-        let pipeline_mirror_sky = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline_mirror_sky = {
+            let (refl_pl, refl_shader) = (refl_pl.clone(), refl_shader.clone());
+            ms::MsPipe::new(&device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("rear-view mirror sky"),
             layout: Some(&refl_pl),
             vertex: wgpu::VertexState { module: &refl_shader, entry_point: Some("vs_refl_sky"), buffers: &[], compilation_options: Default::default() },
@@ -1739,17 +1840,12 @@ impl Gpu {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
+            depth_stencil: Some(v.ds(true, wgpu::CompareFunction::Always, true, Default::default())),
+            multisample: v.ms(),
             multiview: None,
             cache: None,
-        });
+        }))
+        };
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky"),
             source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
@@ -1759,7 +1855,9 @@ impl Gpu {
             bind_group_layouts: &[&globals_layout, &tex_layout],
             push_constant_ranges: &[],
         });
-        let pipeline_sky = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline_sky = {
+            let (sky_pl, sky_shader) = (sky_pl.clone(), sky_shader.clone());
+            ms::MsPipe::new_shared(&device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sky"),
             layout: Some(&sky_pl),
             vertex: wgpu::VertexState { module: &sky_shader, entry_point: Some("vs_sky"), buffers: &[], compilation_options: Default::default() },
@@ -1770,17 +1868,12 @@ impl Gpu {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
+            depth_stencil: Some(v.ds(false, wgpu::CompareFunction::Always, true, Default::default())),
+            multisample: v.ms(),
             multiview: None,
             cache: None,
-        });
+        }))
+        };
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("aniso"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -1790,19 +1883,36 @@ impl Gpu {
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Linear,
             // (diagnostics, p2day 2026-10-13: MCLA_ANISO=<1..16>; the original's city fetches ask for 4 : 1)
-            anisotropy_clamp: std::env::var("MCLA_ANISO").ok().and_then(|v| v.parse::<u16>().ok()).map_or(8, |v| v.clamp(1, 16)),
+            anisotropy_clamp: std::env::var("MCLA_ANISO").ok().and_then(|v| v.parse::<u16>().ok()).map_or(4, |v| v.clamp(1, 16)),
             ..Default::default()
         });
         let white = Arc::new(create_rgba(&device, &queue, 1, 1, &[255, 255, 255, 255], "white"));
         let clear_tex = Arc::new(create_rgba(&device, &queue, 1, 1, &[0, 0, 0, 0], "clear"));
         let refl_bg = make_refl_bg(&device, &refl_layout, &refl_buf, &sky_hat.buf, &clear_tex.view, &clear_tex.view, &sampler);
-        let max_tex = limits.max_texture_dimension_2d;
-        Ok(Gpu {
+        let stencil_copy = create_stencil_copy(&device, config.width, config.height);
+        let (resolve_layouts, resolve_pipes) = resolve_programs(&device);
+        let depth_down = depth_down_program(&device);
+        let (scene_w, scene_h) = (config.width, config.height);
+        let depth_ui = depth.clone();
+        Gpu {
             device,
             queue,
             surface,
             config,
             depth,
+            render_scale: 1.0,
+            scene_w,
+            scene_h,
+            depth_ui,
+            depth_down,
+            depth_down_bg: None,
+            scene_n: 1,
+            scene_sets: [None, None, None],
+            stencil_copy,
+            resolve_layouts,
+            resolve_pipes,
+            globals_bg_alt,
+            aniso16: false,
             post,
             globals_buf,
             lights_buf,
@@ -1896,7 +2006,7 @@ impl Gpu {
             bind_cache: HashMap::new(),
             bc_supported,
             max_tex,
-        })
+        }
     }
 
     pub fn resize(&mut self, w: u32, h: u32) {
@@ -1906,9 +2016,125 @@ impl Gpu {
         self.config.width = w;
         self.config.height = h;
         self.surface.configure(&self.device, &self.config);
-        self.depth = create_depth(&self.device, w, h);
-        self.post.resize(&self.device, w, h);
+        self.resize_scene();
     }
+
+    /// RENDER SCALE: the scene drawn at window x `scale` (1.0 / 1.25 / 1.5 / 1.75 / 2.0 on the page; 0.5 - 2.0
+    /// taken); the targets made again when it changes.
+    pub fn set_render_scale(&mut self, scale: f32) {
+        let scale = scale.clamp(0.5, 2.0);
+        if (scale - self.render_scale).abs() > 1e-4 {
+            self.render_scale = scale;
+            self.resize_scene();
+        }
+    }
+
+    /// The scene's targets at window x render scale.
+    fn resize_scene(&mut self) {
+        let (w, h) = (self.config.width.max(1), self.config.height.max(1));
+        let lim = self.device.limits().max_texture_dimension_2d;
+        let sw = ((w as f32 * self.render_scale).round() as u32).clamp(1, lim);
+        let sh = ((h as f32 * self.render_scale).round() as u32).clamp(1, lim);
+        self.scene_w = sw;
+        self.scene_h = sh;
+        self.depth = create_depth(&self.device, sw, sh);
+        self.depth_ui = if (sw, sh) == (w, h) { self.depth.clone() } else { create_depth(&self.device, w, h) };
+        self.depth_down_bg = ((sw, sh) != (w, h)).then(|| {
+            let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("depth to ui"), contents: bytemuck::cast_slice(&[sw as f32 / w as f32, sh as f32 / h as f32, sw as f32, sh as f32]), usage: wgpu::BufferUsages::UNIFORM });
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("depth to ui"),
+                layout: &self.depth_down.0,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.depth) }, wgpu::BindGroupEntry { binding: 1, resource: buf.as_entire_binding() }],
+            })
+        });
+        self.post.resize(&self.device, sw, sh);
+        self.post.set_out_size(&self.device, w, h);
+        self.stencil_copy = create_stencil_copy(&self.device, sw, sh);
+        self.scene_sets = [None, None, None];
+        let n = self.scene_n;
+        self.set_scene_samples(n);
+    }
+
+    /// RENDER SCALE: the scene's depth point-sampled into `depth_ui` (the window pixel's centre); nothing at scale 1.
+    pub fn depth_to_ui(&self, enc: &mut wgpu::CommandEncoder) {
+        let Some(bg) = self.depth_down_bg.as_ref() else { return };
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("depth to ui"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &self.depth_ui, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }), stencil_ops: None }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.depth_down.1);
+        pass.set_bind_group(0, bg, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// The scene's sample count for this frame (`aamode::scene_samples`); makes its targets when first used.
+    pub fn set_scene_samples(&mut self, n: u32) {
+        let n = match n {
+            0 | 1 => 1,
+            2 => 2,
+            _ => 4,
+        };
+        self.scene_n = n;
+        let i = ms::scene(n).slot() - 1;
+        if self.scene_sets[i].is_none() {
+            let (w, h) = (self.scene_w.max(1), self.scene_h.max(1));
+            self.scene_sets[i] = Some(SceneSet::new(&self.device, &self.resolve_layouts, w, h, n));
+        }
+    }
+
+    fn scene_set(&self) -> &SceneSet {
+        self.scene_sets[ms::scene(self.scene_n).slot() - 1].as_ref().expect("set_scene_samples first")
+    }
+
+    /// The colour attachment of the scene passes: the multisampled target, or the scene target itself at 1 sample.
+    pub fn scene_color(&self) -> &wgpu::TextureView {
+        self.scene_set().color.as_ref().unwrap_or_else(|| self.post.scene_view())
+    }
+
+    /// The depth-stencil attachment of the scene passes (the scene's sample count, `ms::scene_ds_format`).
+    pub fn scene_ds(&self) -> &wgpu::TextureView {
+        &self.scene_set().ds
+    }
+
+    /// Depth and stencil of the scene resolved into `depth` / `stencil_copy`: sample 0 (the original's depth
+    /// resolves use flags 0x14 - DEPTHSTENCIL | FRAGMENT0 by the SDK's values).
+    pub fn resolve_scene_depth(&self, enc: &mut wgpu::CommandEncoder) {
+        let set = self.scene_set();
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("scene depth resolve"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &self.stencil_copy, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &self.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }), stencil_ops: None }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.resolve_pipes[if self.scene_n > 1 { 1 } else { 0 }]);
+        pass.set_bind_group(0, &set.resolve_bg, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// The scene's colour resolved into the scene target (the samples averaged); nothing at 1 sample.
+    pub fn resolve_scene_color(&self, enc: &mut wgpu::CommandEncoder) {
+        let Some(c) = self.scene_set().color.as_ref() else { return };
+        let _pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("scene colour resolve"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: c, resolve_target: Some(self.post.scene_view()), ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+    }
+
+    /// The city's sampler at maximum anisotropy 16 (the 4x mode, or TEXTURE FILTERING 16X) or the device default 4.
+    pub fn set_aniso16(&mut self, on: bool) {
+        if on != self.aniso16 {
+            std::mem::swap(&mut self.globals_bg, &mut self.globals_bg_alt);
+            self.aniso16 = on;
+        }
+    }
+
 
     pub fn new_object(&self, u: &ObjectUniform) -> ObjectBinding {
         make_object_binding(&self.device, &self.obj_layout, u, &self.blank_dmg)
@@ -2172,7 +2398,7 @@ impl Gpu {
             // map has (-0.53, -0.87) of a texel away - pixel centres at whole numbers and sample 0 at (-1/8, -3/8),
             // nominally (-0.625, -0.875) - so with the matrices' half texel the map is read (-1/8, -3/8) of a
             // texel off, not (+3/8, +1/8) as assumed until now (MCLA_CASC_SHIFT=0.375,0.125: as before).
-            let (dx, dy) = (shift.first().copied().unwrap_or(-0.125) / (CASC_TILE * 2) as f32, shift.get(1).copied().unwrap_or(-0.375) / (CASC_TILE * 2) as f32);
+            let (dx, dy) = (shift.first().copied().unwrap_or(-0.125) / (casc_tile() * 2) as f32, shift.get(1).copied().unwrap_or(-0.375) / (casc_tile() * 2) as f32);
             let to_map = Mat4::from_cols(Vec4::new(0.25, 0.0, 0.0, 0.0), Vec4::new(0.0, -0.25, 0.0, 0.0), Vec4::new(0.0, 0.0, 1.0, 0.0), Vec4::new(0.25 + ox + dx, 0.25 + oy + dy, 0.0, 1.0));
             u.m[i] = (to_map * m).to_cols_array_2d();
             u.top_off[i] = -tc;
@@ -2203,7 +2429,7 @@ impl Gpu {
         // original's cars are no receivers of this pass at all (no car draw among PS_ShadowBlend's), their sun term
         // is the car work's; the measured shift darkened the R8's sunlit side by 1 - 2 levels in the left view.
         // MCLA_CASC_CARSHIFT=0: cars read the map like everything else)
-        let car_shift = if std::env::var("MCLA_CASC_SHIFT").is_ok() || std::env::var("MCLA_CASC_CARSHIFT").map_or(false, |v| v.trim() == "0") { 0.0 } else { 0.5 / (CASC_TILE * 2) as f32 };
+        let car_shift = if std::env::var("MCLA_CASC_SHIFT").is_ok() || std::env::var("MCLA_CASC_CARSHIFT").map_or(false, |v| v.trim() == "0") { 0.0 } else { 0.5 / (casc_tile() * 2) as f32 };
         u.right = [right.x, right.y, right.z, car_shift];
         // (params.w = 1, MCLA_CASC_PXGRID=1: the taps' turn taken at the centres of a 1280 x 720 grid, as the
         // original's collector has it, whatever the window's size - a trial)
@@ -2264,7 +2490,9 @@ impl Gpu {
         };
         let in_pre = pre.len() >= 7 && (fc_frame as f32) < pre[0];
         let (cam, view_dir) = if in_pre { (Vec3::new(pre[1], pre[2], pre[3]), Vec3::new(pre[4], pre[5], pre[6]).normalize_or(Vec3::Z)) } else { (cam, view_dir) };
+        // (half the map's reach in metres - the original's 256 m at any SHADOW RESOLUTION; `fs` texels a metre)
         let half = FC_SIZE as f32 * 0.5;
+        let fs = shadow_scale() as f32;
         let (cx, cz) = (cam.x.trunc(), cam.z.trunc());
         // from above: +x to the right, +z down the map, the highest face in front
         let (top, depth) = (1000.0f32, 1400.0f32);
@@ -2276,7 +2504,7 @@ impl Gpu {
         // displacement in texels (0,0 = as until 2026-10-14).
         let fc_half: Vec<f32> = std::env::var("MCLA_FC_HALF").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
         let (fhx, fhz) = (fc_half.first().copied().unwrap_or(0.5), fc_half.get(1).copied().unwrap_or(0.5));
-        let view_proj = Mat4::from_cols(Vec4::new(1.0 / half, 0.0, 0.0, 0.0), Vec4::new(0.0, 0.0, -1.0 / depth, 0.0), Vec4::new(0.0, -1.0 / half, 0.0, 0.0), Vec4::new((fhx - cx) / half, (cz - fhz) / half, top / depth, 1.0));
+        let view_proj = Mat4::from_cols(Vec4::new(1.0 / half, 0.0, 0.0, 0.0), Vec4::new(0.0, 0.0, -1.0 / depth, 0.0), Vec4::new(0.0, -1.0 / half, 0.0, 0.0), Vec4::new((fhx / fs - cx) / half, (cz - fhz / fs) / half, top / depth, 1.0));
         // (diagnostics: MCLA_FC_TAP=<dx>,<dy> shifts the blur's taps by so many texels,
         // MCLA_FC_FIRST draws level ground alone - the first reading of the pass)
         let tap: Vec<f32> = std::env::var("MCLA_FC_TAP").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
@@ -2298,7 +2526,7 @@ impl Gpu {
             rect: [-7.05, 151.05, 47.5, if std::env::var("MCLA_FC_NORECT").is_ok() { 0.0 } else { 1.0 }],
             hist: match (fc_old, fc_last) {
                 (true, _) => [0.0; 4],
-                (false, Some((lx, lz))) => [cx - lx, cz - lz, fc_w, 0.0],
+                (false, Some((lx, lz))) => [(cx - lx) * fs, (cz - lz) * fs, fc_w, 0.0],
                 (false, None) => [0.0, 0.0, fc_w, 0.0],
             },
         };
@@ -2351,7 +2579,7 @@ impl Gpu {
                 rp.draw(0..3, 0..1);
             }
         }
-        let all = wgpu::Extent3d { width: FC_SIZE, height: FC_SIZE, depth_or_array_layers: 1 };
+        let all = wgpu::Extent3d { width: fc_size(), height: fc_size(), depth_or_array_layers: 1 };
         enc.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo { texture: &self.fc_tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::TexelCopyTextureInfo { texture: if fc_old { &self.fc_work } else { &self.fc_prev }, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
@@ -2366,7 +2594,7 @@ impl Gpu {
     /// the rays from the camera, 1 at 200 m down them). Compare with the original's by
     /// work/lighting/se_dcmp.py.
     pub fn dump_casc(&self, path: &str) {
-        let n = CASC_TILE * 2;
+        let n = casc_tile() * 2;
         let bpr = n * 4;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("casc dump"), size: (bpr * n) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let mut enc = self.device.create_command_encoder(&Default::default());
@@ -2402,14 +2630,15 @@ impl Gpu {
     /// Rows run along +z, texels along +x; texel (128, 128) has the map's centre at its corner.
     /// Compare with the original's by work/lighting/fccmp.py.
     pub fn dump_fc(&self, path: &str) {
-        let bpr = FC_SIZE * 4;
-        let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("fc dump"), size: (bpr * FC_SIZE) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let n = fc_size();
+        let bpr = n * 4;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("fc dump"), size: (bpr * n) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let mut enc = self.device.create_command_encoder(&Default::default());
         enc.copy_texture_to_buffer(
             // (MCLA_FC_DUMP_WORK: the fresh map of the last frame, before its blur, instead)
             wgpu::TexelCopyTextureInfo { texture: if std::env::var("MCLA_FC_DUMP_WORK").is_ok() { &self.fc_work } else { &self.fc_tex }, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(FC_SIZE) } },
-            wgpu::Extent3d { width: FC_SIZE, height: FC_SIZE, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(n) } },
+            wgpu::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
         );
         self.queue.submit([enc.finish()]);
         let slice = buf.slice(..);
@@ -2419,8 +2648,8 @@ impl Gpu {
         });
         self.device.poll(wgpu::Maintain::Wait);
         let mut out: Vec<u8> = Vec::new();
-        out.extend_from_slice(&FC_SIZE.to_le_bytes());
-        out.extend_from_slice(&FC_SIZE.to_le_bytes());
+        out.extend_from_slice(&n.to_le_bytes());
+        out.extend_from_slice(&n.to_le_bytes());
         if let Ok(Ok(())) = rx.recv() {
             let data = slice.get_mapped_range();
             for px in data.chunks_exact(4) {
@@ -2723,6 +2952,127 @@ fn make_refl_bg(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, buf: &wgp
             wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(sampler) },
         ],
     })
+}
+
+/// The scene's multisampled colour (none at 1 sample) and depth-stencil, and the resolve's bindings of it.
+struct SceneSet {
+    color: Option<wgpu::TextureView>,
+    ds: wgpu::TextureView,
+    resolve_bg: wgpu::BindGroup,
+}
+
+impl SceneSet {
+    fn new(device: &wgpu::Device, layouts: &[wgpu::BindGroupLayout; 2], w: u32, h: u32, n: u32) -> SceneSet {
+        let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+        let color = (n > 1).then(|| {
+            device
+                .create_texture(&wgpu::TextureDescriptor { label: Some("scene msaa"), size, mip_level_count: 1, sample_count: n, dimension: wgpu::TextureDimension::D2, format: post::SCENE_FORMAT, usage: wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[] })
+                .create_view(&Default::default())
+        });
+        let ds_tex = device.create_texture(&wgpu::TextureDescriptor { label: Some("scene depth-stencil"), size, mip_level_count: 1, sample_count: n, dimension: wgpu::TextureDimension::D2, format: ms::scene_ds_format(), usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
+        let ds = ds_tex.create_view(&Default::default());
+        let dv = ds_tex.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
+        let sv = ds_tex.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::StencilOnly, ..Default::default() });
+        let resolve_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scene resolve"),
+            layout: &layouts[if n > 1 { 1 } else { 0 }],
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dv) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&sv) }],
+        });
+        SceneSet { color, ds, resolve_bg }
+    }
+}
+
+/// The depth / stencil resolve (sample 0), for 1 sample and for more.
+fn resolve_programs(device: &wgpu::Device) -> ([wgpu::BindGroupLayout; 2], [wgpu::RenderPipeline; 2]) {
+    let mk = |ms: bool| {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene resolve"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: ms }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: ms }, count: None },
+            ],
+        });
+        let (dt, st) = if ms { ("texture_depth_multisampled_2d", "texture_multisampled_2d<u32>") } else { ("texture_depth_2d", "texture_2d<u32>") };
+        let src = format!(
+            "@group(0) @binding(0) var d: {dt};
+@group(0) @binding(1) var s: {st};
+struct O {{ @builtin(frag_depth) z: f32, @location(0) s: vec4<f32> }};
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {{
+    let x = f32((vi << 1u) & 2u);
+    let y = f32(vi & 2u);
+    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+}}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> O {{
+    let c = vec2<i32>(p.xy);
+    var o: O;
+    o.z = textureLoad(d, c, 0);
+    o.s = vec4<f32>(f32(textureLoad(s, c, 0).r) / 255.0, 0.0, 0.0, 0.0);
+    return o;
+}}
+"
+        );
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("scene resolve"), source: wgpu::ShaderSource::Wgsl(src.into()) });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("scene resolve"), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
+        let pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("scene resolve"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
+            primitive: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Always, stencil: Default::default(), bias: Default::default() }),
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+        (layout, pipe)
+    };
+    let (l0, p0) = mk(false);
+    let (l1, p1) = mk(true);
+    ([l0, l1], [p0, p1])
+}
+
+/// RENDER SCALE: the program of `Gpu::depth_to_ui` (frag_depth = the scene depth at the window pixel's centre).
+fn depth_down_program(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("depth to ui"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+        ],
+    });
+    let src = "@group(0) @binding(0) var d: texture_depth_2d;
+struct K { k: vec4<f32> };
+@group(0) @binding(1) var<uniform> u: K;
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
+    let x = f32((vi << 1u) & 2u);
+    let y = f32(vi & 2u);
+    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @builtin(frag_depth) f32 {
+    let c = clamp(vec2<i32>(p.xy * u.k.xy), vec2<i32>(0), vec2<i32>(u.k.zw) - vec2<i32>(1));
+    return textureLoad(d, c, 0);
+}
+";
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("depth to ui"), source: wgpu::ShaderSource::Wgsl(src.into()) });
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("depth to ui"), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
+    let pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("depth to ui"),
+        layout: Some(&pl),
+        vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+        fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs"), targets: &[], compilation_options: Default::default() }),
+        primitive: Default::default(),
+        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Always, stencil: Default::default(), bias: Default::default() }),
+        multisample: Default::default(),
+        multiview: None,
+        cache: None,
+    });
+    (layout, pipe)
+}
+
+fn create_stencil_copy(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor { label: Some("stencil copy"), size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::R8Unorm, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] })
+        .create_view(&Default::default())
 }
 
 fn create_depth(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {

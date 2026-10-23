@@ -1615,6 +1615,7 @@ dependencies = [
  "mcla-config",
  "mcla-flash",
  "mcla-formats",
+ "mcla-mods",
  "mcla-shaders",
  "memmap2",
  "png",
@@ -1678,6 +1679,18 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+ "zip",
+]
+
+[[package]]
+name = "mcla-mods"
+version = "0.4.0"
+dependencies = [
+ "log",
+ "mcla-config",
+ "mcla-formats",
+ "serde",
+ "toml",
  "zip",
 ]
 

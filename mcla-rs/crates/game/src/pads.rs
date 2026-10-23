@@ -162,6 +162,11 @@ impl Pad {
         }
     }
 
+    /// A PlayStation pad (SDL's PS3, PS4 and PS5 kinds): the prompts show the PS3's glyphs.
+    pub fn playstation(&self) -> bool {
+        matches!(unsafe { SDL_GetGamepadType(self.raw) }, SDL_GAMEPAD_TYPE_PS3 | SDL_GAMEPAD_TYPE_PS4 | SDL_GAMEPAD_TYPE_PS5)
+    }
+
     pub fn has_rumble(&self) -> bool {
         unsafe { SDL_GetBooleanProperty(SDL_GetGamepadProperties(self.raw), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) }
     }

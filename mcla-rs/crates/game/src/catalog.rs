@@ -205,13 +205,18 @@ pub const CUT_STRINGS: [(&str, &str); 2] = [("vp_nsn_gtr_08", "2008 GT-R"), ("vp
 /// The car whose tuning file a car drives on: the R8's for the cut GT-R (whose own is a
 /// template: every gear 4.0, 500 hp, no dimensions).
 pub fn tune_donor(car: &str) -> Option<&'static str> {
-    car.eq_ignore_ascii_case(CUT_GTR).then_some("vp_aud_r8_08")
+    // (a mod car: its manifest's `donors.tune` - modcars.rs)
+    car.eq_ignore_ascii_case(CUT_GTR).then_some("vp_aud_r8_08").or_else(|| crate::modcars::tune_donor(car))
 }
 
 /// The car whose driving-camera files (`tune/camera`: boom 1..3, POV, bumper, cinematic, replay) a
 /// car uses: the R8's for the cut GT-R, which has none of the eight (user's decision, 2026-10-22).
 pub fn camera_car(car: &str) -> &str {
-    if car.eq_ignore_ascii_case(CUT_GTR) { "vp_aud_r8_08" } else { car }
+    if car.eq_ignore_ascii_case(CUT_GTR) {
+        return "vp_aud_r8_08";
+    }
+    // (a mod car: its manifest's `donors.cameras` - modcars.rs)
+    crate::modcars::car(car).and_then(|c| c.cameras.as_deref()).unwrap_or(car)
 }
 
 /// The price list a car's garage uses when the disc has none (`<car>_parts.gtun`): the cut GT-R
@@ -254,7 +259,11 @@ pub fn scale_price_list(
 /// The car whose sound profile a car uses: the 350Z's V6 for the cut GT-R (the disc's
 /// `VPD_NSN_GTR_08_PROFILE` points at the R8's engine; the user chose the 350Z's).
 pub fn sound_car(car: &str) -> &str {
-    if car.eq_ignore_ascii_case(CUT_GTR) { "vp_nsn_350z_06" } else { car }
+    if car.eq_ignore_ascii_case(CUT_GTR) {
+        return "vp_nsn_350z_06";
+    }
+    // (a mod car: its manifest's `donors.sound` - modcars.rs)
+    crate::modcars::car(car).and_then(|c| c.sound.as_deref()).unwrap_or(car)
 }
 
 /// The name in a garage picture's file (`sh_`, `msh_`, rewardvehicles): the GT-R's are
@@ -273,6 +282,8 @@ impl Catalog {
             }
         }
         parse_blocks(CUT_CATALOG, &mut cars);
+        // (the mod cars' rows, as the extra list `vehicle0003.lst` would hold them: modcars.rs)
+        parse_blocks(crate::modcars::extra_list(), &mut cars);
         log::info!("catalog: {} vehicles", cars.len());
         Catalog { cars }
     }

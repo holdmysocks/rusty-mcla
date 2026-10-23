@@ -245,6 +245,22 @@ pub const XPARTS: [(usize, &str, &str, &str); 13] = [
     (9956, "bike_tank", "TANK", "SideOverviewClose"),
 ];
 
+/// The rows of a part price list (`<car>_parts.gtun`: "<!-- section --> n", then name, brand, price, part index
+/// per row), as `Game::load_perf_prices` reads the disc's; used for a mod car's own list (modcars.rs).
+pub fn parse_part_rows(t: &str) -> std::collections::HashMap<String, Vec<(i32, i64, usize)>> {
+    let mut rows = std::collections::HashMap::new();
+    for part in t.split("<!--").skip(1) {
+        let Some((name, rest)) = part.split_once("-->") else { continue };
+        let tok: Vec<&str> = rest.split_whitespace().collect();
+        let n: usize = tok.first().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let list: Vec<(i32, i64, usize)> = (0..n).filter_map(|k| Some((tok.get(2 + k * 4)?.parse().ok()?, tok.get(3 + k * 4)?.parse().ok()?, tok.get(4 + k * 4)?.parse().ok()?))).collect();
+        if list.len() == n && n > 0 {
+            rows.insert(name.trim().to_string(), list);
+        }
+    }
+    rows
+}
+
 /// The performance bars' scales, measured on the R8 and the Ninja ZX14 of MANAGE VEHICLES
 /// (references `g_mv0`, `g_mv1`, catalogue figures 0.26 / 0.42, 210 / 255, 0.62 / 0.875 and
 /// 0.66 / 0.75, 236 / 258, 0.856 / 0.917): acceleration x 1.3 (approx.), top speed from
@@ -469,11 +485,17 @@ pub struct Game {
     /// driving into a garage (main.rs `garagein`): the black of its scene and fade up, and the place's
     /// name and district while ShowLocationName is up (popup template 63)
     pub place_mask: f32,
+    /// a new career's opening: CarSelection's black (main.rs `opening_tick`)
+    pub intro_mask: f32,
+    /// the start screen's black around the attract movie (titlecam.rs)
+    pub title_mask: f32,
     /// a row of OPTIONS > DISPLAY stepped (row id `hooks::ROW_*`, on / back); the window side applies it after the frame
     pub display_step: Option<(u8, bool)>,
     pub place_title: Option<(String, String)>,
     /// textures and strings shared by the Flash movies
     pub ui_shared: Option<crate::flash_ui::UiShared>,
+    /// the start-up movie before the start screen (boot.rs; None: OFF, or over)
+    pub boot: Option<crate::boot::Boot>,
     /// the minimap's frame movie (hudmap.swf)
     pub flash_map: Option<crate::flash_ui::FlashMinimap>,
     /// the original's map (`hudmap.rs`): icons, minimap target, clocks
@@ -485,8 +507,6 @@ pub struct Game {
     /// the menus' 3D scene: meshes of `resources/ui/meshes` and their textures
     pub ui_meshes: Option<crate::menu3d::Meshes>,
     /// the prompt bar movie (bottom of the screen in the garage)
-    /// a new career's opening: CarSelection's black (main.rs `opening_tick`)
-    pub intro_mask: f32,
     pub flash_prompt: Option<crate::flash_ui::FlashPrompt>,
     /// the phone (sidekick movie)
     pub flash_phone: Option<crate::flash_ui::FlashPhone>,
@@ -618,6 +638,8 @@ pub struct Game {
     pub payback_keys: bool,
     /// that climb is on: no form or HUD over it
     pub climb_on: bool,
+    /// the camera move after START runs (main.rs / startwarp.rs): no HUD, only the LOADING tag
+    pub start_warp_on: bool,
     /// race time stepped since the last UI frame: the HUD's 3-2-1 runs on it, so it stays on the race clock
     pub ui_sim_dt: f32,
     /// a start scene before its countdown event: no HUD (the original brings the HUD - map and 3-2-1 - up
@@ -1118,6 +1140,7 @@ impl Game {
             hud_camera: -1,
             cut_mask: 0.0,
             ui_shared: None,
+            boot: None,
             flash_map: None,
             hm: None,
             flash_menu: None,
@@ -1186,7 +1209,10 @@ impl Game {
             warp_with_cut: false,
             payback_keys: false,
             climb_on: false,
+            start_warp_on: false,
             place_mask: 0.0,
+            intro_mask: 0.0,
+            title_mask: 0.0,
             display_step: None,
             place_title: None,
             ui_sim_dt: 0.0,
@@ -1211,7 +1237,6 @@ impl Game {
             finishes: Default::default(),
             paint_for: String::new(),
             mc4: None,
-            intro_mask: 0.0,
             mc4_raw: None,
             car_x: Default::default(),
             opt_x: Default::default(),
@@ -1411,6 +1436,8 @@ impl Game {
                 self.neon_color = sd.neon_color;
                 self.music_genre = sd.music_genre;
                 self.opts = sd.opts;
+                // (the old HIGH-DETAIL TRAFFIC row is DETAIL LEVEL 3X now)
+                crate::hooks::migrate_hq_traffic(self.opts.hq_traffic);
                 self.perf_parts = sd.perf_parts;
                 self.parts_owned = sd.parts_owned;
                 self.adaptive = sd.adaptive;
@@ -1798,6 +1825,18 @@ impl Game {
                     self.part_files.insert(key(car), list);
                 }
             }
+            // (mod cars: their own `<car>_parts.gtun`, else their manifest's `donors.prices` as it is - modcars.rs)
+            for c in crate::modcars::get().map_or(&[][..], |r| r.cars.as_slice()) {
+                let key = |c: &str| mcla_formats::hash::joaat(&format!("{c}_parts.gtun"));
+                let list = match (&c.prices_text, &c.prices) {
+                    (Some(t), _) => Some(parse_part_rows(t)),
+                    (None, Some(d)) => self.part_files.get(&key(d)).cloned(),
+                    _ => None,
+                };
+                if let Some(list) = list.filter(|l| !l.is_empty()) {
+                    self.part_files.insert(key(&c.name), list);
+                }
+            }
             self.vis_lists.sort_by_key(|l| l.0);
         }
         log::info!("garage: {} visual part price lists", self.vis_lists.len());
@@ -1862,7 +1901,9 @@ impl Game {
             return *d;
         }
         let stock = *self.dims_stock.borrow_mut().entry(car.clone()).or_insert_with(|| {
-            let d = std::fs::read(std::path::Path::new(&self.data_dir).join("resources/vehicle/configs").join(format!("{car}.xcc"))).ok()?;
+            // (a mod car's set-up lies with the mod: modcars.rs)
+            let file = crate::modcars::setup_file(&car).unwrap_or_else(|| std::path::Path::new(&self.data_dir).join("resources/vehicle/configs").join(format!("{car}.xcc")));
+            let d = std::fs::read(file).ok()?;
             d.get(0x83a..0x842).and_then(|b| b.try_into().ok())
         });
         stock.unwrap_or([3, 3, 4, 4, 17, 17, 6, 6])
@@ -2629,6 +2670,34 @@ impl Game {
             return;
         }
         self.hud_map_big = !self.hud_map_big;
+    }
+
+    /// The original's menu flag (renderer +373; UI.md "UI edge smoothing", `work/ui-sharp/agent_menu/notes.md`):
+    /// the scene and the UI pass go 4x while it is set. `game.pause()` (sub_82215A60) sets it, `game.resume()`
+    /// (sub_822150D8) or the warper's end (sub_8221BE98) puts the old value back. Set by: the pause menu and every
+    /// NavSystemStyle scene (the GPS map, MISSION LOG, the arcade maps), the arcade race-type menu, the service
+    /// station's menu, the cop fine / arrest panels, the payback menu, the photo album (PhotoAlbum +780), and the
+    /// end-of-race form from 1.0 s after it shows (sub_82674120); the garage keeps the 1 the pause menu's GO TO
+    /// GARAGE left. Not by: the start screen and front end, the tournament / delivery / wager / hangout panels,
+    /// cutscenes, replay playback, the phone. *(approx.)* the original keeps it until the warp that leaves a menu
+    /// has streamed; here it drops with the menu.
+    pub fn ui_msaa4(&self) -> bool {
+        static RESULTS_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+        let results = {
+            let mut at = RESULTS_AT.lock().unwrap();
+            if self.mode == Mode::Results {
+                at.get_or_insert_with(std::time::Instant::now).elapsed().as_secs_f32() >= 1.0
+            } else {
+                *at = None;
+                false
+            }
+        };
+        let panel = self.hangout_key.as_deref().map_or(false, |k| k == GAS_MENU || k == "be_payback");
+        matches!(self.mode, Mode::Paused | Mode::Garage | Mode::RaceSelect)
+            || results
+            || panel
+            || self.arrest_panel.is_some()
+            || (self.photo_on && self.album.stage != crate::photoalbum::Stage::Off)
     }
 
     pub fn in_menu(&self) -> bool {
@@ -3675,9 +3744,8 @@ impl Game {
         }
     }
 
-    /// Draw menus / HUD. Returns the action chosen this frame.
-    pub fn ui(&mut self, ctx: &egui::Context, vehicles: &Vehicles, world: &World, hud: HudInfo) -> MenuAction {
-        let race_dt = std::mem::take(&mut self.ui_sim_dt);
+    /// The UI's art and movies (once; at the first `ui`, or on the start-up's loading thread - boot.md).
+    pub fn load_ui(&mut self, ctx: &egui::Context) {
         if !self.art_tried && !self.data_dir.is_empty() {
             self.art_tried = true;
             self.art = Some(crate::hud::UiArt::load(ctx, &self.data_dir));
@@ -3707,11 +3775,29 @@ impl Game {
                 self.ui_shared = Some(shared);
             }
         }
+    }
+
+    /// Draw menus / HUD. Returns the action chosen this frame.
+    pub fn ui(&mut self, ctx: &egui::Context, vehicles: &Vehicles, world: &World, hud: HudInfo) -> MenuAction {
+        let race_dt = std::mem::take(&mut self.ui_sim_dt);
+        self.load_ui(ctx);
+        // (the start-up movie, boot.rs: once the UI's shared textures are there)
+        if let (Some(b), Some(sh)) = (self.boot.as_mut(), self.ui_shared.as_ref()) {
+            b.load(&self.data_dir, sh);
+        }
         // (DEFAULT_WITH_CUT's climb: the form that asked is closed, nothing is drawn over the flight)
         if self.climb_on {
             if let Some(fm) = self.flash_menu.as_mut() {
                 fm.hide();
             }
+            return MenuAction::None;
+        }
+        // (the warp after START: nothing over it but the LOADING tag - SG_LoadFile, startwarp.rs)
+        if self.start_warp_on {
+            if let Some(fm) = self.flash_menu.as_mut() {
+                fm.hide();
+            }
+            let _ = self.message_box_ui(ctx, false, false, false, false);
             return MenuAction::None;
         }
         if !matches!(self.mode, Mode::Paused | Mode::Results) && !(self.mode == Mode::RaceSelect && self.hangout_key.is_some()) {
@@ -4144,9 +4230,18 @@ impl Game {
                 // The original's start screen is the city under a slow camera with nothing on
                 // it but the prompt bar's "PRESS (Start)" at the bottom right (reference `t00`).
                 let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("menu")));
-                let painter = if let Some(fp) = self.flash_prompt.as_mut() {
+                // the start-up movie (boot.rs: legal pages, logos, LOADING, then the logo on the start screen); until
+                // its transition out has ended (`Game_GetLoadingDone`) there is no prompt and START does nothing
+                if let Some(b) = self.boot.as_mut() {
+                    b.paint(ctx, &painter);
+                }
+                let booting = self.boot.as_ref().is_some_and(|b| !b.title);
+                let painter = if booting {
+                    painter.with_clip_rect(egui::Rect::NOTHING)
+                } else if let Some(fp) = self.flash_prompt.as_mut() {
                     let press = self.career.strings.get("prompt_press").map(|v| v.to_uppercase()).unwrap_or_else(|| "PRESS".into());
-                    fp.show(&[(press, crate::flash_ui::ICON_START)], None, None);
+                    // (on the keyboard the start screen's Start is Enter)
+                    fp.show(&[crate::glyphs::with_key("ENTER", (press, crate::flash_ui::ICON_START))], None, None);
                     fp.movie.player.update(ctx.input(|i| i.stable_dt).min(0.1));
                     fp.movie.paint(ctx, &painter);
                     // (the port's own title is not drawn then)
@@ -4161,10 +4256,12 @@ impl Game {
                 self.text(&painter, egui::pos2(cx, band.top() + 78.0 * sc), egui::Align2::CENTER_TOP, "LOS ANGELES", 24.0 * sc, accent);
                 let t = ctx.input(|i| i.time);
                 let a = (150.0 + 105.0 * (t * 3.0).sin()) as u8;
-                self.text(&painter, egui::pos2(cx, band.top() + 122.0 * sc), egui::Align2::CENTER_TOP, "PRESS ENTER", 16.0 * sc, egui::Color32::from_rgba_unmultiplied(255, 255, 255, a));
+                self.text(&painter, egui::pos2(cx, band.top() + 122.0 * sc), egui::Align2::CENTER_TOP, &format!("PRESS {}", if crate::glyphs::device() == crate::glyphs::Device::Keyboard { "ENTER" } else { crate::glyphs::button_name(crate::flash_ui::ICON_START) }), 16.0 * sc, egui::Color32::from_rgba_unmultiplied(255, 255, 255, a));
                 let clicked = ctx.input(|i| i.pointer.primary_clicked());
                 let _ = back;
-                if enter || clicked {
+                if (enter || clicked) && !booting {
+                    // (Game_LoadScreenShutdown: the logo is not drawn again - gone at once)
+                    self.boot = None;
                     action = MenuAction::StartFreeRoam;
                 }
             }
@@ -4454,7 +4551,7 @@ impl Game {
                             items.push((s("option_subtitles", "SUBTITLES"), onoff(self.opts.subtitles), Go::Page(42)));
                             items.push((s("Camera Shake", "CAMERA SHAKE"), onoff(self.opts.shake), Go::Page(43)));
                             items.push((s("option_sensitivity", "STEERING SENS."), bar(self.opts.sens), Go::Page(44)));
-                            items.push(("HIGH-DETAIL TRAFFIC".to_string(), onoff(self.opts.hq_traffic), Go::Page(52)));
+                            items.push(("DETAIL LEVEL".to_string(), crate::hooks::display_value(crate::hooks::ROW_DETAIL_LEVEL), Go::Page(crate::hooks::ROW_DETAIL_LEVEL)));
                             items.push(("REAR-VIEW MIRROR".to_string(), onoff(self.opts.rear_view), Go::Page(53)));
                         }
                     }
@@ -4464,7 +4561,7 @@ impl Game {
                         let on = |b: bool| format!("{}{}", crate::flash_ui::CHOICE, if b { s("G_On", "ON") } else { s("G_Off", "OFF") });
                         items.push(("REAR-VIEW MIRROR".to_string(), on(self.opts.rear_view), Go::Page(53)));
                         // (settings.toml's display keys, applied at once and written back - `hooks::display_step`)
-                        for (label, row) in [("WINDOW MODE", crate::hooks::ROW_WINDOW_MODE), ("RESOLUTION", crate::hooks::ROW_RESOLUTION), ("MONITOR", crate::hooks::ROW_MONITOR), ("VSYNC", crate::hooks::ROW_VSYNC), ("FPS CAP", crate::hooks::ROW_FPS_CAP), ("FPS COUNTER", crate::hooks::ROW_FPS_MONITOR)] {
+                        for (label, row) in [("WINDOW MODE", crate::hooks::ROW_WINDOW_MODE), ("RESOLUTION", crate::hooks::ROW_RESOLUTION), ("MONITOR", crate::hooks::ROW_MONITOR), ("VSYNC", crate::hooks::ROW_VSYNC), ("FPS CAP", crate::hooks::ROW_FPS_CAP), ("FPS COUNTER", crate::hooks::ROW_FPS_MONITOR), ("RENDER SCALE", crate::hooks::ROW_RENDER_SCALE), ("TEXTURE FILTERING", crate::hooks::ROW_TEX_FILTER), ("ANTI-ALIASING", crate::hooks::ROW_AA), ("BLOOM", crate::hooks::ROW_BLOOM), ("DEPTH OF FIELD", crate::hooks::ROW_DOF), ("MOTION BLUR", crate::hooks::ROW_MOTION_BLUR)] {
                             items.push((label.to_string(), format!("{}{}", crate::flash_ui::CHOICE, crate::hooks::display_value(row)), Go::Page(row)));
                         }
                     }
@@ -4472,7 +4569,12 @@ impl Game {
                         // (the port's own page, D19)
                         title = "PERFORMANCE".to_string();
                         let on = |b: bool| format!("{}{}", crate::flash_ui::CHOICE, if b { s("G_On", "ON") } else { s("G_Off", "OFF") });
-                        items.push(("HIGH-DETAIL TRAFFIC".to_string(), on(self.opts.hq_traffic), Go::Page(52)));
+                        // (settings.toml game.*, applied at once and written back - `hooks::display_step`; DETAIL LEVEL 3X folds in the old HIGH-DETAIL TRAFFIC)
+                        for (label, row) in [("SHADOW RESOLUTION", crate::hooks::ROW_SHADOW_RES), ("DRAW DISTANCE", crate::hooks::ROW_DRAW_DISTANCE), ("DETAIL LEVEL", crate::hooks::ROW_DETAIL_LEVEL)] {
+                            items.push((label.to_string(), format!("{}{}", crate::flash_ui::CHOICE, crate::hooks::display_value(row)), Go::Page(row)));
+                        }
+                        // (settings.toml game.intro: the start-up sequence (boot.rs, next start) and the career's opening)
+                        items.push(("INTRO".to_string(), format!("{}{}", crate::flash_ui::CHOICE, crate::hooks::intro_value()), Go::Page(54)));
                     }
                     5 | 70..=73 => {
                         // (the controller pages, `mc4` step 13b: 5 the port's own GAMEPAD / KEYBOARD /
@@ -4679,7 +4781,8 @@ impl Game {
                         Some(Go::Page(47)) => adj(&mut self.opts.cutscene),
                         Some(Go::Page(52)) => self.opts.hq_traffic = !self.opts.hq_traffic,
                         Some(Go::Page(53)) => self.opts.rear_view = !self.opts.rear_view,
-                        Some(Go::Page(p)) if (crate::hooks::ROW_WINDOW_MODE..=crate::hooks::ROW_FPS_MONITOR).contains(&p) => self.display_step = Some((p, right)),
+                        Some(Go::Page(54)) => crate::hooks::intro_step(right),
+                        Some(Go::Page(p)) if (crate::hooks::ROW_TEX_FILTER..=crate::hooks::ROW_MOTION_BLUR).contains(&p) => self.display_step = Some((p, right)),
                         _ => {}
                     }
                     self.dirty = true;
@@ -4720,9 +4823,9 @@ impl Game {
                         // would do to shuffle - sub_82642510)
                         68 if self.opt_x.music.is_some() && items.is_empty() => vec![(s("prompt_back", "BACK"), ICON_B)],
                         68 if crate::mc4::music_in_custom(&self.opt_x, self.stat_idx[0], self.menu_sel) => vec![(s("playlist_prompt_play", "PLAY"), ICON_A), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_remove", "REMOVE FROM PLAYLIST"), crate::flash_ui::ICON_Y)],
-                        3 if crate::mc4::music_shuffle(&self.opt_x) == Some(false) => vec![(s("playlist_prompt_view", "VIEW SONGS"), ICON_A), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_shuffle", "TURN SHUFFLE ON"), crate::flash_ui::ICON_X)],
+                        3 if crate::mc4::music_shuffle(&self.opt_x) == Some(false) => vec![crate::glyphs::with_key("V", (s("playlist_prompt_view", "VIEW SONGS"), ICON_A)), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_shuffle", "TURN SHUFFLE ON"), crate::flash_ui::ICON_X)],
                         68 => vec![(s("playlist_prompt_play", "PLAY"), ICON_A), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_add", "ADD TO PLAYLIST"), crate::flash_ui::ICON_Y)],
-                        3 => vec![(s("playlist_prompt_view", "VIEW SONGS"), ICON_A), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_unshuffle", "TURN SHUFFLE OFF"), crate::flash_ui::ICON_X)],
+                        3 => vec![crate::glyphs::with_key("V", (s("playlist_prompt_view", "VIEW SONGS"), ICON_A)), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_unshuffle", "TURN SHUFFLE OFF"), crate::flash_ui::ICON_X)],
                         _ => vec![(s("prompt_accept", "ACCEPT"), ICON_A), (s("prompt_back", "BACK"), ICON_B)],
                     };
                     // (GPS stands on every tab, in a race too: references `p01`, `t03`, `y01`)
@@ -4914,7 +5017,8 @@ impl Game {
                                 47 => step(&mut self.opts.cutscene),
                                 52 => self.opts.hq_traffic = !self.opts.hq_traffic,
                                 53 => self.opts.rear_view = !self.opts.rear_view,
-                                60..=65 => self.display_step = Some((p, true)),
+                                54 => crate::hooks::intro_step(true),
+                                55..=69 => self.display_step = Some((p, true)),
                                 48 | 49 | 50 | 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, true, self.fresh_game),
                                 _ => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, true, true, self.fresh_game),
                             }
@@ -5098,7 +5202,8 @@ impl Game {
                             43 => self.opts.shake = !self.opts.shake,
                             52 => self.opts.hq_traffic = !self.opts.hq_traffic,
                             53 => self.opts.rear_view = !self.opts.rear_view,
-                            60..=65 => self.display_step = Some((p, true)),
+                            54 => crate::hooks::intro_step(true),
+                            55..=69 => self.display_step = Some((p, true)),
                             48 | 49 | 50 | 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, true, self.fresh_game),
                             _ => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, true, true, self.fresh_game),
                         }
@@ -6860,6 +6965,9 @@ impl Game {
                                     let kind = c.as_ref().map(|c| c.class.to_uppercase()).unwrap_or_default();
                                     // (the catalogue's SPORTBIKE reads SPORTS BIKE: reference `g_mv1`)
                                     let kind = if kind == "SPORTBIKE" { self.career.strings.get("SportBike").filter(|v| !v.contains('<')).map(|v| v.to_uppercase()).unwrap_or_else(|| "SPORTS BIKE".into()) } else { kind };
+                                    // (the port's small mark on a mod car, here only: the showroom's purchase view and
+                                    // MANAGE VEHICLES - MODS.md design 7)
+                                    let kind = if crate::modcars::is_mod_car(&self.dir_name(i)) { format!("{kind} - {}", crate::modcars::MOD_MARK) } else { kind };
                                     (format!("VEHICLE: {}-CLASS / GROUP {}", class, gn), kind, if showroom { self.price_of(i).0 } else { self.trade_in(i) })
                                 })
                                 .collect();
@@ -7141,8 +7249,10 @@ impl Game {
                         let pictures = std::path::Path::new(&self.data_dir).join("resources/ui/textures/garage/dyntextures");
                         // (the highlighted vehicle's, whether or not its model has arrived yet)
                         let shown_car = self.garage_list.and_then(|(_, sel)| list_cars.get(sel).copied()).unwrap_or(self.current_car);
-                        let picture = pictures.join("managerides").join(format!("mr_{}.r9", self.dir_name(shown_car)));
-                        let big_picture = pictures.join("showroom").join(format!("sh_{}.r9", crate::catalog::picture_name(&self.dir_name(shown_car))));
+                        // (a mod car's pictures: its own or its donor's - modcars.rs)
+                        let picture = crate::modcars::picture(0, &self.dir_name(shown_car)).unwrap_or_else(|| pictures.join("managerides").join(format!("mr_{}.r9", self.dir_name(shown_car))));
+                        let big_picture = crate::modcars::picture(1, &self.dir_name(shown_car)).unwrap_or_else(|| pictures.join("showroom").join(format!("sh_{}.r9", crate::catalog::picture_name(&self.dir_name(shown_car)))));
+                        let list_mods: Vec<Option<std::path::PathBuf>> = list_cars.iter().map(|&i| crate::modcars::picture(2, &self.dir_name(i))).collect();
                         let list_dirs: Vec<String> = list_cars.iter().map(|&i| crate::catalog::picture_name(&self.dir_name(i))).collect();
                         let fg = self.flash_garage.as_mut().unwrap();
                         fg.show(&page);
@@ -7156,7 +7266,7 @@ impl Game {
                             fg.movie.swap_texture(ctx, "screen.menu.showroom_panel.sh_dyntexture", 2, &big_picture);
                             let first = fg.movie.player.get_global("ScrollOffset").map_or(0.0, |v| v.to_f32()).max(0.0) as usize;
                             for k in 0..6usize {
-                                let file = pictures.join("mini_showroom").join(format!("msh_{}.r9", list_dirs.get(first + k).cloned().unwrap_or_else(|| "default".into())));
+                                let file = list_mods.get(first + k).cloned().flatten().unwrap_or_else(|| pictures.join("mini_showroom").join(format!("msh_{}.r9", list_dirs.get(first + k).cloned().unwrap_or_else(|| "default".into()))));
                                 fg.movie.swap_texture(ctx, &format!("screen.menu.showroom_panel.car_list_rt.slot{k}"), 10 + k as u32, &file);
                             }
                         }
@@ -8074,7 +8184,7 @@ impl Game {
                         self.text(&p, pos, egui::Align2::CENTER_CENTER, l, 15.0 * sc, egui::Color32::WHITE);
                     }
                     if !plain {
-                        self.text(&p, egui::pos2(screen.right() - 30.0 * sc, screen.top() + bar * 0.5), egui::Align2::RIGHT_CENTER, "ENTER  SKIP", 9.0 * sc, egui::Color32::from_gray(120));
+                        self.text(&p, egui::pos2(screen.right() - 30.0 * sc, screen.top() + bar * 0.5), egui::Align2::RIGHT_CENTER, &format!("{}  SKIP", crate::glyphs::button_name(crate::flash_ui::ICON_A)), 9.0 * sc, egui::Color32::from_gray(120));
                     }
                 } else if self.fresh_game && self.mode == Mode::FreeRoam && self.flash_prompt.is_some() && (self.message_box.is_some() || (self.save_box < 2 && self.flash_popup.is_some() && std::env::var("MCLA_NO_SAVE_BOX").is_err())) {
                     // (the save boxes stand over a dark screen before VEHICLE SELECT)
@@ -8371,10 +8481,10 @@ impl Game {
             }
         }
         // a garage entry's black (TRANSITIONMOVIE, mask_color 0) over everything
-        if self.place_mask.max(self.intro_mask) > 0.0 {
+        if self.place_mask.max(self.title_mask).max(self.intro_mask) > 0.0 {
             let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("place_mask"));
             ctx.move_to_top(layer);
-            ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.place_mask.max(self.intro_mask).clamp(0.0, 1.0) * 255.0).round() as u8));
+            ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.place_mask.max(self.title_mask).max(self.intro_mask).clamp(0.0, 1.0) * 255.0).round() as u8));
         }
         self.message_timer = (self.message_timer - ctx.input(|i| i.stable_dt)).max(0.0);
         action
@@ -8566,7 +8676,7 @@ impl Game {
                 self.text(&overlay, c, egui::Align2::CENTER_CENTER, &rd.title().to_uppercase().replace("_", " ").replace(" - ", "   "), 18.0 * sc, white);
                 let laps = if rd.laps > 1 { format!("{} LAPS   ", rd.laps) } else { String::new() };
                 let tag = if self.mission_races.contains(&i) { "CAREER EVENT      " } else { "" };
-                self.text(&overlay, c + egui::vec2(0.0, 30.0 * sc), egui::Align2::CENTER_CENTER, &format!("{}{}{} OPPONENTS      ENTER  RACE", tag, laps, rd.opponents), 12.0 * sc, accent);
+                self.text(&overlay, c + egui::vec2(0.0, 30.0 * sc), egui::Align2::CENTER_CENTER, &format!("{}{}{} OPPONENTS      {}  RACE", tag, laps, rd.opponents, crate::glyphs::button_name(crate::flash_ui::ICON_A)), 12.0 * sc, accent);
             }
         }
 
@@ -10590,7 +10700,15 @@ impl Game {
                             let stage_to_local = glam::Mat4::from_cols(glam::Vec4::new(kx, 0.0, 0.0, 0.0), glam::Vec4::new(0.0, 0.0, kz, 0.0), glam::Vec4::new(0.0, 1.0, 0.0, 0.0), glam::Vec4::new(x0 - u0 * sw * kx, 0.0146484375, z0 - v0 * sh * kz, 1.0));
                             let world = glam::Mat4::from_scale_rotation_translation(Vec3::new(s, 1.0, s), glam::Quat::IDENTITY, at);
                             let list = mcla_flash::draw::build(&fm.movie.player);
-                            fm.movie.paint_warped(ctx, &lp, &list, vp * world * stage_to_local, screen, 1.0, Some([u0 * sw, v0 * sh, u1 * sw, v1 * sh]));
+                            if crate::selfmovie::enabled() {
+                                // (the original's way: the movie's picture on the quad - selfmovie.rs)
+                                let m = vp * world * stage_to_local;
+                                let c = |u: f32, v: f32| (m * glam::Vec4::new(u * sw, v * sh, 0.0, 1.0), [u, v]);
+                                let q = [c(u0, v0), c(u1, v0), c(u1, v1), c(u0, v1)];
+                                crate::selfmovie::paint_mesh(ctx, &lp, screen, &mut fm.movie, &list, &[q[0], q[1], q[2], q[0], q[2], q[3]], 1.0);
+                            } else {
+                                fm.movie.paint_warped(ctx, &lp, &list, vp * world * stage_to_local, screen, 1.0, Some([u0 * sw, v0 * sh, u1 * sw, v1 * sh]));
+                            }
                             true
                         }
                         _ => false,

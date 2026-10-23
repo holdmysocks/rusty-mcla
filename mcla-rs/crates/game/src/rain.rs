@@ -107,8 +107,8 @@ struct Rain {
     cone_buf: wgpu::Buffer,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
-    drop_pipeline: wgpu::RenderPipeline,
-    cone_pipeline: wgpu::RenderPipeline,
+    drop_pipeline: crate::render::ms::MsPipe,
+    cone_pipeline: crate::render::ms::MsPipe,
     drop_count: u32,
     cone_count: u32,
     dumped: bool,
@@ -215,8 +215,9 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
     ];
     // (the original: blend control 0x07060706 = source alpha / one minus source alpha, depth
     // tested and not written - register 0x2200 = 0x00700762)
-    let make = |vs: &str, fs: &str, attrs: &'static [wgpu::VertexAttribute], stride: u64, topology: wgpu::PrimitiveTopology| {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let make = |vs: &'static str, fs: &'static str, attrs: &'static [wgpu::VertexAttribute], stride: u64, topology: wgpu::PrimitiveTopology| {
+        let (pl, shader) = (pl.clone(), shader.clone());
+        crate::render::ms::MsPipe::new(device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("rain"),
             layout: Some(&pl),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), buffers: &[wgpu::VertexBufferLayout { array_stride: stride, step_mode: wgpu::VertexStepMode::Instance, attributes: attrs }], compilation_options: Default::default() },
@@ -227,11 +228,11 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState { topology, cull_mode: None, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::GreaterEqual, stencil: Default::default(), bias: Default::default() }),
-            multisample: Default::default(),
+            depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
+            multisample: v.ms(),
             multiview: None,
             cache: None,
-        })
+        }))
     };
     let drop_pipeline = make("vs_drop", "fs_drop", &DROP_ATTRS, std::mem::size_of::<DropInst>() as u64, wgpu::PrimitiveTopology::TriangleStrip);
     let cone_pipeline = make("vs_cone", "fs_cone", &CONE_ATTRS, std::mem::size_of::<ConeInst>() as u64, wgpu::PrimitiveTopology::TriangleList);

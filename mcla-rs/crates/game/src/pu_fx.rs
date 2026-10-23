@@ -34,12 +34,12 @@ struct Mesh {
 }
 
 struct State {
-    ice_in: wgpu::RenderPipeline,
-    ice_out: wgpu::RenderPipeline,
-    shield_in: wgpu::RenderPipeline,
-    shield_out: wgpu::RenderPipeline,
-    stealth_solid: wgpu::RenderPipeline,
-    stealth_glass: wgpu::RenderPipeline,
+    ice_in: crate::render::ms::MsPipe,
+    ice_out: crate::render::ms::MsPipe,
+    shield_in: crate::render::ms::MsPipe,
+    shield_out: crate::render::ms::MsPipe,
+    stealth_solid: crate::render::ms::MsPipe,
+    stealth_glass: crate::render::ms::MsPipe,
     ice: Option<Mesh>,
     shield: Option<Mesh>,
     ice_bg: wgpu::BindGroup,
@@ -47,10 +47,10 @@ struct State {
     ice_ub: wgpu::Buffer,
     shield_ub: wgpu::Buffer,
     looks: [(u8, Look); 5],
-    bolt: wgpu::RenderPipeline,
+    bolt: crate::render::ms::MsPipe,
     bolt_bg: wgpu::BindGroup,
     bolt_vb: wgpu::Buffer,
-    laser: wgpu::RenderPipeline,
+    laser: crate::render::ms::MsPipe,
     laser_bg: wgpu::BindGroup,
     laser_vb: wgpu::Buffer,
     /// m_powerupColor of every type's look (powerup_<name>.mcpowerup, +112) - FX_Color
@@ -363,11 +363,16 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
     // vehicle pass's: taken as mode 0, source alpha / inverse source alpha)
     let over = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
     let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-    let make = |label: &str, pl: &wgpu::PipelineLayout, vs: &str, fs: &str, blend: wgpu::BlendComponent, zwrite: bool, buffers: &[wgpu::VertexBufferLayout]| {
+    let make = |label: &'static str, pl: &wgpu::PipelineLayout, vs: &'static str, fs: &'static str, blend: wgpu::BlendComponent, zwrite: bool, buffers: &[wgpu::VertexBufferLayout]| {
+        // (per sample count of the scene - render/ms.rs)
+        let (pl, shader) = (pl.clone(), shader.clone());
+        let bufs: Vec<(u64, wgpu::VertexStepMode, Vec<wgpu::VertexAttribute>)> = buffers.iter().map(|b| (b.array_stride, b.step_mode, b.attributes.to_vec())).collect();
+        crate::render::ms::MsPipe::new(device, move |device, v| {
+        let buffers: Vec<wgpu::VertexBufferLayout> = bufs.iter().map(|(s, m, a)| wgpu::VertexBufferLayout { array_stride: *s, step_mode: *m, attributes: a }).collect();
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
-            layout: Some(pl),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), buffers, compilation_options: Default::default() },
+            layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), buffers: &buffers, compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some(fs),
@@ -376,10 +381,11 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
             // (the techniques' passes: ZWriteEnable 0; reversed depth, tested)
-            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: zwrite, depth_compare: wgpu::CompareFunction::GreaterEqual, stencil: Default::default(), bias: Default::default() }),
-            multisample: Default::default(),
+            depth_stencil: Some(v.ds(zwrite, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
+            multisample: v.ms(),
             multiview: None,
             cache: None,
+        })
         })
     };
     let fxv = [vl.clone()];
@@ -492,8 +498,8 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
     }
     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("power-up effects"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.post.scene_view(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &gpu.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
         timestamp_writes: None,
         occlusion_query_set: None,
     });

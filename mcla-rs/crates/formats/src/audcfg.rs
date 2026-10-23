@@ -123,6 +123,66 @@ impl Dat {
     pub fn contains(&self, hash: u32) -> bool {
         self.by_hash.contains_key(&hash)
     }
+
+    /// Add the objects of `other` whose names this file does not have yet, and its banks not yet listed (a mod's
+    /// sound objects joining the game's: docs/reference/mods/manifest.md). Objects refer to each other and to banks
+    /// by name hash only, so they move as they are. Returns the names skipped because this file already has them.
+    pub fn extend_from(&mut self, other: &Dat) -> Vec<String> {
+        let mut skipped = Vec::new();
+        for (name, off, sz) in &other.objects {
+            let h = joaat(name);
+            if self.by_hash.contains_key(&h) {
+                skipped.push(name.clone());
+                continue;
+            }
+            let Some(bytes) = other.data.get(*off..*off + *sz) else { continue };
+            let at = self.data.len();
+            self.data.extend_from_slice(bytes);
+            self.by_hash.insert(h, self.objects.len());
+            self.objects.push((name.clone(), at, *sz));
+        }
+        for b in &other.banks {
+            if !self.banks.iter().any(|x| joaat(x) == joaat(b)) {
+                self.banks.push(b.clone());
+            }
+        }
+        skipped
+    }
+
+    /// Write a `.dat` file in the layout [`Dat::parse`] reads (the disc's: `version`, data, the bank string block,
+    /// count, name bytes = the sum of the name lengths + 1 per object, the name table). Names are at most 255 bytes.
+    pub fn build(version: u32, objects: &[(&str, &[u8])], banks: &[&str]) -> Vec<u8> {
+        let mut data = Vec::new();
+        let mut table = Vec::new();
+        let mut name_bytes = 0u32;
+        for (name, body) in objects {
+            let n = name.len().min(255);
+            table.push(n as u8);
+            table.extend_from_slice(&name.as_bytes()[..n]);
+            table.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            table.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            name_bytes += n as u32 + 1;
+            data.extend_from_slice(body);
+        }
+        let mut strs = (banks.len() as u32).to_be_bytes().to_vec();
+        let mut text = Vec::new();
+        for b in banks {
+            strs.extend_from_slice(&(text.len() as u32).to_be_bytes());
+            text.extend_from_slice(b.as_bytes());
+            text.push(0);
+        }
+        strs.extend_from_slice(&text);
+        let mut out = Vec::new();
+        out.extend_from_slice(&version.to_be_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(&data);
+        out.extend_from_slice(&(strs.len() as u32).to_be_bytes());
+        out.extend_from_slice(&strs);
+        out.extend_from_slice(&(objects.len() as u32).to_be_bytes());
+        out.extend_from_slice(&name_bytes.to_be_bytes());
+        out.extend_from_slice(&table);
+        out
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ sound objects
@@ -599,6 +659,20 @@ mod tests {
         assert_eq!((s.header.volume, s.header.pitch, s.header.pitch_var, s.header.category), (-600, -500, 200, 0x8856_f65a));
         assert_eq!((s.header.pan, s.header.release, s.header.doppler, s.header.curve_scale), (-1, -1, 100, 100));
         assert_eq!(s.payload, Payload::Wrapper { child: 0x1234_5678 });
+    }
+
+    /// A built file reads back; merging keeps the first file's objects and adds the rest with their banks.
+    #[test]
+    fn build_and_extend() {
+        let a = Dat::parse(&Dat::build(0x16, &[("ONE", &[1, 2, 3]), ("TWO", &[4])], &[])).unwrap();
+        assert_eq!((a.version, a.len(), a.get_name("one"), a.banks.len()), (0x16, 2, Some(&[1u8, 2, 3][..]), 0));
+        let b = Dat::parse(&Dat::build(0x10, &[("TWO", &[9, 9]), ("THREE", &[7, 8])], &["PLAYER_VEHICLES\\VP_X_08", "VEHICLES\\VEHICLE_AUX"])).unwrap();
+        assert_eq!(b.banks, ["PLAYER_VEHICLES\\VP_X_08", "VEHICLES\\VEHICLE_AUX"]);
+        let mut m = a;
+        m.banks.push("vehicles/vehicle_aux".into());
+        assert_eq!(m.extend_from(&b), ["TWO"]);
+        assert_eq!((m.get_name("TWO"), m.get_name("THREE"), m.get_name("ONE")), (Some(&[4u8][..]), Some(&[7u8, 8][..]), Some(&[1u8, 2, 3][..])));
+        assert_eq!(m.banks, ["vehicles/vehicle_aux", "PLAYER_VEHICLES\\VP_X_08"], "the same bank by hash is not listed twice");
     }
 
     /// Against the disc's own files (MCLA_DATA_DIR = extracted/cache), when present.

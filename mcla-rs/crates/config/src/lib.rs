@@ -54,7 +54,44 @@ impl WindowMode {
 words!(Intro { Normal = "normal", Fast = "fast", Skip = "skip" });
 words!(Aspect { Auto = "auto", Wide21x9 = "21:9", Wide32x9 = "32:9", Fit16x9 = "16:9" });
 words!(Upscaler { Off = "off", Bilinear = "bilinear", Fsr = "fsr" });
-words!(Aa { Off = "off", Fxaa = "fxaa", Msaa2 = "msaa2", Msaa4 = "msaa4" });
+// (anti-aliasing: "original" = the original's own sample counts; the old words msaa2 / msaa4 / fxaa are still read)
+words!(Aa { Original = "original", Off = "off", X2 = "2x", X4 = "4x" });
+impl Aa {
+    /// `parse` plus the words of the first schema (msaa2 -> 2x, msaa4 -> 4x, fxaa -> original).
+    pub fn parse_any(s: &str) -> Option<Aa> {
+        Aa::parse(s).or_else(|| match s.trim().to_ascii_lowercase().as_str() {
+            "msaa2" => Some(Aa::X2),
+            "msaa4" => Some(Aa::X4),
+            "fxaa" => Some(Aa::Original),
+            _ => None,
+        })
+    }
+}
+// (texture filtering: the original's anisotropy (4 driving, 16 in the menus) or 16x everywhere)
+words!(TexFilter { Original = "original", X16 = "16x" });
+// (shadow map size: the original's, or 2x / 4x its side)
+words!(ShadowRes { Original = "original", X2 = "2x", X4 = "4x" });
+// (draw distance and detail level: the original's, or a multiple)
+words!(Scale { Original = "original", X1_5 = "1.5x", X2 = "2x", X3 = "3x" });
+impl Scale {
+    pub fn factor(self) -> f32 {
+        match self {
+            Scale::Original => 1.0,
+            Scale::X1_5 => 1.5,
+            Scale::X2 => 2.0,
+            Scale::X3 => 3.0,
+        }
+    }
+}
+impl ShadowRes {
+    pub fn factor(self) -> u32 {
+        match self {
+            ShadowRes::Original => 1,
+            ShadowRes::X2 => 2,
+            ShadowRes::X4 => 4,
+        }
+    }
+}
 // (the port's frame-rate readout, DECISIONS.md D25: off, frames per second, or frames per second and frame time)
 words!(FpsMonitor { Off = "off", Fps = "fps", FrameTime = "frame_time" });
 
@@ -96,11 +133,19 @@ pub struct Display {
     pub monitor: u32,
     /// the frame-rate readout (a port-only addition)
     pub fps_monitor: FpsMonitor,
+    /// bloom, depth of field, motion blur: ON = the original's
+    pub bloom: bool,
+    pub dof: bool,
+    pub motion_blur: bool,
+    pub texture_filtering: TexFilter,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameSettings {
     pub intro: Intro,
+    pub shadow_resolution: ShadowRes,
+    pub draw_distance: Scale,
+    pub detail_level: Scale,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -141,11 +186,15 @@ impl Default for Settings {
                 fps_cap: 0,
                 upscaler: Upscaler::Off,
                 render_scale: 1.0,
-                aa: Aa::Off,
+                aa: Aa::Original,
                 monitor: 0,
                 fps_monitor: FpsMonitor::Off,
+                bloom: true,
+                dof: true,
+                motion_blur: true,
+                texture_filtering: TexFilter::Original,
             },
-            game: GameSettings { intro: Intro::Normal },
+            game: GameSettings { intro: Intro::Normal, shadow_resolution: ShadowRes::Original, draw_distance: Scale::Original, detail_level: Scale::Original },
             paths: Paths { data_dir: String::new(), screenshots: String::new() },
             launcher: LauncherSettings { language: String::new(), check_updates: true },
             extra: Table::new(),
@@ -222,11 +271,19 @@ impl Settings {
         s.display.fps_cap = r.uint(dt, "display.fps_cap", "fps_cap", d.display.fps_cap, |n| n == 0 || (20..=1000).contains(&n), "0 (no cap) or 20..1000");
         s.display.upscaler = r.word(dt, "display.upscaler", "upscaler", d.display.upscaler, Upscaler::parse, Upscaler::WORDS);
         s.display.render_scale = r.float(dt, "display.render_scale", "render_scale", d.display.render_scale, 0.5, 2.0);
-        s.display.aa = r.word(dt, "display.aa", "aa", d.display.aa, Aa::parse, Aa::WORDS);
+        s.display.aa = r.word(dt, "display.aa", "aa", d.display.aa, Aa::parse_any, Aa::WORDS);
         s.display.monitor = r.uint(dt, "display.monitor", "monitor", d.display.monitor, |n| n < 16, "0..15");
         s.display.fps_monitor = r.word(dt, "display.fps_monitor", "fps_monitor", d.display.fps_monitor, FpsMonitor::parse, FpsMonitor::WORDS);
+        s.display.texture_filtering = r.word(dt, "display.texture_filtering", "texture_filtering", d.display.texture_filtering, TexFilter::parse, TexFilter::WORDS);
+        s.display.bloom = r.boolean(dt, "display.bloom", "bloom", d.display.bloom);
+        s.display.dof = r.boolean(dt, "display.dof", "dof", d.display.dof);
+        s.display.motion_blur = r.boolean(dt, "display.motion_blur", "motion_blur", d.display.motion_blur);
         let gt = sub(t, "game");
-        s.game.intro = r.word(gt, "game.intro", "intro", d.game.intro, Intro::parse, Intro::WORDS);
+        // ("off", the in-game INTRO row's name for it, is read as "skip"; "skip" is what is written)
+        s.game.intro = r.word(gt, "game.intro", "intro", d.game.intro, |v| Intro::parse(v).or_else(|| v.trim().eq_ignore_ascii_case("off").then_some(Intro::Skip)), Intro::WORDS);
+        s.game.shadow_resolution = r.word(gt, "game.shadow_resolution", "shadow_resolution", d.game.shadow_resolution, ShadowRes::parse, ShadowRes::WORDS);
+        s.game.draw_distance = r.word(gt, "game.draw_distance", "draw_distance", d.game.draw_distance, Scale::parse, Scale::WORDS);
+        s.game.detail_level = r.word(gt, "game.detail_level", "detail_level", d.game.detail_level, Scale::parse, Scale::WORDS);
         let pt = sub(t, "paths");
         s.paths.data_dir = r.string(pt, "paths.data_dir", "data_dir", &d.paths.data_dir);
         s.paths.screenshots = r.string(pt, "paths.screenshots", "screenshots", &d.paths.screenshots);
@@ -264,7 +321,14 @@ impl Settings {
         put(&mut t, "display", "aa", d.aa.word().into());
         put(&mut t, "display", "monitor", Value::Integer(d.monitor as i64));
         put(&mut t, "display", "fps_monitor", d.fps_monitor.word().into());
+        put(&mut t, "display", "texture_filtering", d.texture_filtering.word().into());
+        put(&mut t, "display", "bloom", d.bloom.into());
+        put(&mut t, "display", "dof", d.dof.into());
+        put(&mut t, "display", "motion_blur", d.motion_blur.into());
         put(&mut t, "game", "intro", g.intro.word().into());
+        put(&mut t, "game", "shadow_resolution", g.shadow_resolution.word().into());
+        put(&mut t, "game", "draw_distance", g.draw_distance.word().into());
+        put(&mut t, "game", "detail_level", g.detail_level.word().into());
         put(&mut t, "paths", "data_dir", p.data_dir.clone().into());
         put(&mut t, "paths", "screenshots", p.screenshots.clone().into());
         put(&mut t, "launcher", "language", l.language.clone().into());

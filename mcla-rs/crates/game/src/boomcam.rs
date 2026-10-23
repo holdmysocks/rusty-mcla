@@ -68,11 +68,8 @@ impl BoomSet {
     pub fn load(data_dir: &str, car: &str) -> Option<BoomSet> {
         // (the cut GT-R has no camera files: the R8's, catalog::camera_car)
         let car = crate::catalog::camera_car(car);
-        let get = |suffix: &str| {
-            let h = mcla_formats::hash::joaat(&format!("{car}_{suffix}.camboomcs"));
-            let p = Path::new(data_dir).join("tune/camera").join(format!("0x{h:08x}"));
-            std::fs::read_to_string(p).ok().and_then(|t| BoomTune::parse(&t))
-        };
+        // (a mod car: its own file, then its manifest's camera donor - modfs.rs)
+        let get = |suffix: &str| crate::modfs::car_camera_text(data_dir, car, &format!("_{suffix}.camboomcs"), crate::modfs::Donor::Cameras).and_then(|t| BoomTune::parse(&t));
         let views: Vec<BoomTune> = ["boom1", "boom2", "boom3", "POV", "bumper"].iter().filter_map(|s| get(s)).collect();
         if views.is_empty() {
             return None;
@@ -588,6 +585,10 @@ impl CutMask {
     }
     pub fn is_on(&self) -> bool {
         self.on
+    }
+    /// Faded in all the way (the movie's StartOfTransitionin cleared: ready 1).
+    pub fn full(&self) -> bool {
+        self.on && self.ready >= 1
     }
     /// The mask's opacity 0..1 after `dt` seconds.
     pub fn update(&mut self, dt: f32) -> f32 {
@@ -1135,12 +1136,12 @@ pub struct TrackTune {
 
 impl TrackTune {
     pub fn load(data_dir: &str, car: &str, event: &str) -> Option<TrackTune> {
-        let h = mcla_formats::hash::joaat(&format!("{car}_cinematic.camtrackcs"));
-        let text = std::fs::read_to_string(Path::new(data_dir).join("tune/camera").join(format!("0x{h:08x}"))).ok()?;
-        let (b, e) = (track_block(&text, None), track_block(&text, Some(event)));
-        if e.is_empty() {
         // (the cut GT-R has no camera files: the R8's, catalog::camera_car)
         let car = crate::catalog::camera_car(car);
+        // (a mod car: its own file, then its manifest's camera donor - modfs.rs)
+        let text = crate::modfs::car_camera_text(data_dir, car, "_cinematic.camtrackcs", crate::modfs::Donor::Cameras)?;
+        let (b, e) = (track_block(&text, None), track_block(&text, Some(event)));
+        if e.is_empty() {
             return None;
         }
         let f = |m: &HashMap<String, Vec<f32>>, k: &str, d: f32| m.get(k).and_then(|v| v.first()).copied().unwrap_or(d);
@@ -2201,12 +2202,12 @@ pub struct EventViews {
 
 impl EventViews {
     pub fn load(data_dir: &str, car: &str) -> Option<EventViews> {
-        let h = mcla_formats::hash::joaat(&format!("{car}_cinematic.camtrackcs"));
-        let text = std::fs::read_to_string(Path::new(data_dir).join("tune/camera").join(format!("0x{h:08x}"))).ok()?;
-        let blank = EventView { track: Vec3::new(0.0, 1.0, 0.0), offset: Vec3::new(0.0, 0.5, 6.0), blend: 0.7, ret: 0.7, fov: (50.0, 50.0) };
-        let mut base = blank;
         // (the cut GT-R has no camera files: the R8's, catalog::camera_car)
         let car = crate::catalog::camera_car(car);
+        // (a mod car: its own file, then its manifest's camera donor - modfs.rs)
+        let text = crate::modfs::car_camera_text(data_dir, car, "_cinematic.camtrackcs", crate::modfs::Donor::Cameras)?;
+        let blank = EventView { track: Vec3::new(0.0, 1.0, 0.0), offset: Vec3::new(0.0, 0.5, 6.0), blend: 0.7, ret: 0.7, fov: (50.0, 50.0) };
+        let mut base = blank;
         let mut named = HashMap::new();
         let mut cur: Option<(String, EventView)> = None;
         let mut depth = 0;

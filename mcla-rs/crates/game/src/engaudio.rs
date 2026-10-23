@@ -68,13 +68,17 @@ pub struct EngineIn {
 }
 
 /// The car's audio DEFAULT object: `<CAR>_PROFILE` +10 for the player, +14 for an opponent; VPD_ cars fall back to their
-/// VP_ profile, then DEFAULT_CAR / DEFAULT_BIKE_PROFILE.
+/// VP_ profile, then DEFAULT_CAR / DEFAULT_BIKE_PROFILE. A mod car: its own profile (the mod's game.dat, merged into
+/// `lib.game`), then its manifest's sound donor's, then the default (modfs.rs).
 pub fn default_object<'a>(lib: &'a SoundLib, car: &str, bike: bool, player: bool) -> Option<&'a [u8]> {
     let g = &lib.game;
-    let up = crate::catalog::sound_car(car).to_ascii_uppercase();
-    let profile = g
-        .get_name(&format!("{up}_PROFILE"))
-        .or_else(|| g.get_name(&format!("{}_PROFILE", up.replacen("VPD_", "VP_", 1))))
+    let find = |c: &str| {
+        let up = c.to_ascii_uppercase();
+        g.get_name(&format!("{up}_PROFILE")).or_else(|| g.get_name(&format!("{}_PROFILE", up.replacen("VPD_", "VP_", 1))))
+    };
+    let profile = crate::modfs::car_names(crate::catalog::sound_car(car), crate::modfs::Donor::Sound)
+        .iter()
+        .find_map(|c| find(c))
         .or_else(|| g.get_name(if bike { "DEFAULT_BIKE_PROFILE" } else { "DEFAULT_CAR_PROFILE" }))?;
     g.get(be_u32(profile, if player { 10 } else { 14 }))
 }

@@ -37,11 +37,11 @@ pub struct CarBlob {
 }
 
 struct State {
-    blob: wgpu::RenderPipeline,
-    one: wgpu::RenderPipeline,
-    mask: wgpu::RenderPipeline,
-    apply: wgpu::RenderPipeline,
-    one_d: wgpu::RenderPipeline,
+    blob: crate::render::ms::MsPipe,
+    one: crate::render::ms::MsPipe,
+    mask: crate::render::ms::MsPipe,
+    apply: crate::render::ms::MsPipe,
+    one_d: crate::render::ms::MsPipe,
     layout: wgpu::BindGroupLayout,
     inst: wgpu::Buffer,
 }
@@ -80,36 +80,37 @@ pub fn load(gpu: &mut Gpu) {
     let pl_city = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("car blob mask pl"), bind_group_layouts: &[&city[0], &city[1], &city[2], &city[3]], push_constant_ranges: &[] });
     let keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
     let attrs: Vec<wgpu::VertexAttribute> = (0..6).map(|i| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16 * i as u64, shader_location: i }).collect();
-    let depth_ro = |bias: i32| wgpu::DepthStencilState {
-        format: wgpu::TextureFormat::Depth32Float,
-        depth_write_enabled: false,
-        depth_compare: if bias != 0 { wgpu::CompareFunction::GreaterEqual } else { wgpu::CompareFunction::Always },
-        stencil: Default::default(),
-        bias: wgpu::DepthBiasState { constant: bias, slope_scale: if bias != 0 { 2.0 } else { 0.0 }, clamp: 0.0 },
-    };
-    let make = |label: &str, layout: &wgpu::PipelineLayout, vs: &str, fs: &str, buffers: &[wgpu::VertexBufferLayout], blend: wgpu::BlendState, mask: wgpu::ColorWrites, ds: Option<wgpu::DepthStencilState>| {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(layout),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), buffers, compilation_options: Default::default() },
-            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), targets: &[Some(wgpu::ColorTargetState { format: crate::render::post::SCENE_FORMAT, blend: Some(blend), write_mask: mask })], compilation_options: Default::default() }),
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
-            depth_stencil: ds,
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
+    let depth_ro = |bias: i32| (false, if bias != 0 { wgpu::CompareFunction::GreaterEqual } else { wgpu::CompareFunction::Always }, wgpu::DepthBiasState { constant: bias, slope_scale: if bias != 0 { 2.0 } else { 0.0 }, clamp: 0.0 });
+    // (per sample count of the scene - render/ms.rs)
+    type Bufs = Vec<(u64, wgpu::VertexStepMode, Vec<wgpu::VertexAttribute>)>;
+    let make = |label: &'static str, layout: &wgpu::PipelineLayout, vs: &'static str, fs: &'static str, buffers: Bufs, blend: wgpu::BlendState, mask: wgpu::ColorWrites, ds: Option<(bool, wgpu::CompareFunction, wgpu::DepthBiasState)>| {
+        let (layout, shader) = (layout.clone(), shader.clone());
+        crate::render::ms::MsPipe::new(device, move |device, v| {
+            let buffers: Vec<wgpu::VertexBufferLayout> = buffers.iter().map(|(s, m, a)| wgpu::VertexBufferLayout { array_stride: *s, step_mode: *m, attributes: a }).collect();
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), buffers: &buffers, compilation_options: Default::default() },
+                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), targets: &[Some(wgpu::ColorTargetState { format: crate::render::post::SCENE_FORMAT, blend: Some(blend), write_mask: mask })], compilation_options: Default::default() }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: ds.map(|(w, c, b)| v.ds(w, c, false, b)),
+                multisample: v.ms(),
+                multiview: None,
+                cache: None,
+            })
         })
     };
-    let inst_layout = [wgpu::VertexBufferLayout { array_stride: INST_SIZE as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &attrs }];
+    let inst_layout: Bufs = vec![(INST_SIZE as u64, wgpu::VertexStepMode::Instance, attrs.clone())];
+    let vtx: Bufs = vec![(crate::render::Vertex::LAYOUT.array_stride, crate::render::Vertex::LAYOUT.step_mode, crate::render::Vertex::LAYOUT.attributes.to_vec())];
     // the target's alpha x (1 - the blob's alpha); the colour stays
     let mul_alpha = wgpu::BlendState { color: keep, alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add } };
     // the colour x the target's alpha
     let mul_color = wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::DstAlpha, operation: wgpu::BlendOperation::Add }, alpha: keep };
-    let blob = make("car blob", &pl, "vs_blob", "fs_blob", &inst_layout, mul_alpha, wgpu::ColorWrites::ALPHA, None);
-    let one = make("car blob one", &pl, "vs_full", "fs_one", &[], wgpu::BlendState::REPLACE, wgpu::ColorWrites::ALPHA, None);
-    let mask = make("car blob mask", &pl_city, "vs_mask", "fs_one", &[crate::render::Vertex::LAYOUT], wgpu::BlendState::REPLACE, wgpu::ColorWrites::ALPHA, Some(depth_ro(16)));
-    let apply = make("car blob apply", &pl_city, "vs_full", "fs_apply", &[], mul_color, wgpu::ColorWrites::COLOR, Some(depth_ro(0)));
-    let one_d = make("car blob one (depth)", &pl_city, "vs_full", "fs_one", &[], wgpu::BlendState::REPLACE, wgpu::ColorWrites::ALPHA, Some(depth_ro(0)));
+    let blob = make("car blob", &pl, "vs_blob", "fs_blob", inst_layout, mul_alpha, wgpu::ColorWrites::ALPHA, None);
+    let one = make("car blob one", &pl, "vs_full", "fs_one", vec![], wgpu::BlendState::REPLACE, wgpu::ColorWrites::ALPHA, None);
+    let mask = make("car blob mask", &pl_city, "vs_mask", "fs_one", vtx, wgpu::BlendState::REPLACE, wgpu::ColorWrites::ALPHA, Some(depth_ro(16)));
+    let apply = make("car blob apply", &pl_city, "vs_full", "fs_apply", vec![], mul_color, wgpu::ColorWrites::COLOR, Some(depth_ro(0)));
+    let one_d = make("car blob one (depth)", &pl_city, "vs_full", "fs_one", vec![], wgpu::BlendState::REPLACE, wgpu::ColorWrites::ALPHA, Some(depth_ro(0)));
     *STATE.lock().unwrap() = Some(State { blob, one, mask, apply, one_d, layout, inst });
 }
 
@@ -169,7 +170,7 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
     {
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("car blobs"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.post.scene_view(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -185,8 +186,8 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
     {
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("car blobs: cars, apply"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.post.scene_view(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &gpu.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
             timestamp_writes: None,
             occlusion_query_set: None,
         });

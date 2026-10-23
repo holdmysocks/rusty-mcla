@@ -569,7 +569,9 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     }
     // (a car that drives on another's tuning file: catalog::tune_donor)
     if let Some(donor) = crate::catalog::tune_donor(&name) {
-        if let Ok(rd) = std::fs::read_dir(car_dir.with_file_name(donor)) {
+        // (a mod car's donor is a disc car: modcars.rs)
+        let donor_dir = if crate::modcars::is_mod_car(&name) { crate::modcars::disc_vehicle_dir(donor).unwrap_or_default() } else { car_dir.with_file_name(donor) };
+        if let Ok(rd) = std::fs::read_dir(donor_dir) {
             let theirs: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "r50")).collect();
             if !theirs.is_empty() {
                 log::info!("car {}: tuning of {}", name, donor);
@@ -604,7 +606,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     let mut simtune = r50.iter().find_map(|p| load_resource_file(p).ok().and_then(|res| mcla_formats::rage::simtune::SimTunes::parse(&res)));
     // (the car's stock set-up decides its wheels, as it does in the original for every car)
     let fit = simtune.as_mut().and_then(|s| {
-        let cfg = car_dir.parent().map(|v| v.join("configs").join(format!("{name}.xcc"))).and_then(|p| std::fs::read(p).ok())?;
+        let cfg = crate::modcars::setup_file(&name).or_else(|| car_dir.parent().map(|v| v.join("configs").join(format!("{name}.xcc")))).and_then(|p| std::fs::read(p).ok())?;
         s.fit(&cfg)
     });
     if let Some(f) = fit.as_ref() {

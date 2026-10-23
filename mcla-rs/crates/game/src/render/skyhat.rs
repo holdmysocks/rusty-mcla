@@ -51,7 +51,7 @@ impl HatConsts {
 pub struct SkyHat {
     pub buf: wgpu::Buffer,
     pub buf_bg: wgpu::BindGroup,
-    pub pipeline: wgpu::RenderPipeline,
+    pub pipeline: super::ms::MsPipe,
     /// the dome for the passes of the cars' environment map (`ps_dpenvmapsky`)
     pub pipeline_env: wgpu::RenderPipeline,
     pub pipeline_perlin: wgpu::RenderPipeline,
@@ -95,7 +95,7 @@ impl SkyHat {
             bind_group_layouts: &[globals_layout, tex_layout, &hat_layout],
             push_constant_ranges: &[],
         });
-        let make = |entry: &str| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let make_v = |device: &wgpu::Device, v: super::ms::Variant, entry: &str| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sky hat"),
             layout: Some(&pl),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_hat"), buffers: &[], compilation_options: Default::default() },
@@ -106,19 +106,35 @@ impl SkyHat {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
+            // (the sky writes stencil 1 - ps_main_withstarfield, ref 1 in 0x210D; the depth of field skips it)
+            depth_stencil: Some(v.ds(false, wgpu::CompareFunction::Always, true, Default::default())),
+            multisample: v.ms(),
             multiview: None,
             cache: None,
         });
-        let pipeline = make("fs_hat");
-        let pipeline_env = make("fs_hat_env");
+        let pipeline = {
+            let (pl, shader) = (pl.clone(), shader.clone());
+            super::ms::MsPipe::new(device, move |d, v| {
+                let make_v = |device: &wgpu::Device, v: super::ms::Variant, entry: &str| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("sky hat"),
+                    layout: Some(&pl),
+                    vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_hat"), buffers: &[], compilation_options: Default::default() },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(entry),
+                        targets: &[Some(wgpu::ColorTargetState { format: post::SCENE_FORMAT, blend: Some(wgpu::BlendState::REPLACE), write_mask: wgpu::ColorWrites::ALL })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                    depth_stencil: Some(v.ds(false, wgpu::CompareFunction::Always, true, Default::default())),
+                    multisample: v.ms(),
+                    multiview: None,
+                    cache: None,
+                });
+                make_v(d, v, "fs_hat")
+            })
+        };
+        let pipeline_env = make_v(device, super::ms::PLAIN, "fs_hat_env");
         let perlin_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky perlin"),
             source: wgpu::ShaderSource::Wgsl([include_str!("sky_perlin.wgsl"), super::xs::text("xs_perlin.wgsl")].concat().into()),

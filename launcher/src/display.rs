@@ -39,6 +39,16 @@ pub struct DisplayView {
     fps_caps: Vec<u32>,
     /// the frame-rate readout: off | fps | frame_time
     fps_monitor: &'static str,
+    /// anti-aliasing: original | off | 2x | 4x, and the effect toggles (true = the original's)
+    aa: &'static str,
+    texture_filtering: &'static str,
+    render_scale: f32,
+    shadow_resolution: &'static str,
+    draw_distance: &'static str,
+    detail_level: &'static str,
+    bloom: bool,
+    dof: bool,
+    motion_blur: bool,
     /// the keys of these rows the key table marks as read by the game
     live_keys: Vec<&'static str>,
     settings_path: String,
@@ -111,6 +121,15 @@ pub fn view(window: &WebviewWindow) -> DisplayView {
         fps_cap: d.fps_cap,
         fps_caps: caps,
         fps_monitor: d.fps_monitor.word(),
+        aa: d.aa.word(),
+        texture_filtering: d.texture_filtering.word(),
+        render_scale: d.render_scale,
+        shadow_resolution: l.settings.game.shadow_resolution.word(),
+        draw_distance: l.settings.game.draw_distance.word(),
+        detail_level: l.settings.game.detail_level.word(),
+        bloom: d.bloom,
+        dof: d.dof,
+        motion_blur: d.motion_blur,
         live_keys,
         settings_path: path.to_string_lossy().into_owned(),
         file,
@@ -118,7 +137,7 @@ pub fn view(window: &WebviewWindow) -> DisplayView {
 }
 
 /// The rows `set` writes (besides the monitor's own command).
-const LIVE_KEYS: [&str; 6] = ["game.intro", "display.window_mode", "display.resolution", "display.vsync", "display.fps_cap", "display.fps_monitor"];
+const LIVE_KEYS: [&str; 15] = ["game.intro", "display.window_mode", "display.resolution", "display.vsync", "display.fps_cap", "display.fps_monitor", "display.aa", "display.bloom", "display.dof", "display.motion_blur", "display.texture_filtering", "display.render_scale", "game.shadow_resolution", "game.draw_distance", "game.detail_level"];
 /// Window sizes offered beside the monitor's own (those that fit on it).
 const COMMON_RESOLUTIONS: [(u32, u32); 9] = [(1280, 720), (1366, 768), (1600, 900), (1920, 1080), (2560, 1080), (2560, 1440), (3440, 1440), (3840, 1600), (3840, 2160)];
 /// The caps the game's DISPLAY page steps through (crates/game/src/hooks.rs `FPS_CAPS`).
@@ -135,6 +154,18 @@ pub fn set(window: &WebviewWindow, key: &str, value: serde_json::Value) -> Resul
         "display.resolution" => Value::String(mcla_config::Resolution::parse(&text()?).ok_or("bad_value")?.text()),
         "display.vsync" => Value::Boolean(value.as_bool().ok_or("bad_value")?),
         "display.fps_monitor" => Value::String(mcla_config::FpsMonitor::parse(&text()?).ok_or("bad_value")?.word().into()),
+        "display.aa" => Value::String(mcla_config::Aa::parse_any(&text()?).ok_or("bad_value")?.word().into()),
+        "display.bloom" | "display.dof" | "display.motion_blur" => Value::Boolean(value.as_bool().ok_or("bad_value")?),
+        "display.texture_filtering" => Value::String(mcla_config::TexFilter::parse(&text()?).ok_or("bad_value")?.word().into()),
+        "display.render_scale" => {
+            let f = value.as_f64().ok_or("bad_value")?;
+            if !(0.5..=2.0).contains(&f) {
+                return Err("out_of_range".into());
+            }
+            Value::Float(f)
+        }
+        "game.shadow_resolution" => Value::String(mcla_config::ShadowRes::parse(&text()?).ok_or("bad_value")?.word().into()),
+        "game.draw_distance" | "game.detail_level" => Value::String(mcla_config::Scale::parse(&text()?).ok_or("bad_value")?.word().into()),
         "display.fps_cap" => {
             let n = value.as_u64().ok_or("bad_value")?;
             if n != 0 && !(20..=1000).contains(&n) {

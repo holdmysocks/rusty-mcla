@@ -80,9 +80,48 @@ pub fn init(data_flag: Option<&str>, settings_flag: Option<&str>, shot_run: bool
     })
 }
 
-/// The intro setting (`game.intro`); `normal` when settings were never loaded.
+/// The intro setting (`game.intro`); `normal` when settings were never loaded. After the OPTIONS > PERFORMANCE >
+/// INTRO row changed it, the row's value.
 pub fn intro_mode() -> Intro {
+    INTRO_LIVE.lock().ok().and_then(|g| *g).unwrap_or_else(intro_at_start)
+}
+
+/// The intro setting this run started with (what the start-up sequence used).
+pub fn intro_at_start() -> Intro {
     get().map_or(Intro::Normal, |r| r.settings.game.intro)
+}
+
+// ---------------------------------------------------------------- OPTIONS > PERFORMANCE > INTRO (the port's own row)
+
+static INTRO_LIVE: Mutex<Option<Intro>> = Mutex::new(None);
+
+/// The INTRO row's value: NORMAL / FAST / OFF (= `skip`), with "(NEXT START)" while it differs from the one this run
+/// started with (the start-up sequence takes it at the next start; the career's opening at once).
+pub fn intro_value() -> String {
+    let m = intro_mode();
+    let w = if m == Intro::Skip { "OFF".to_string() } else { m.word().to_uppercase() };
+    if m != intro_at_start() { format!("{w} (NEXT START)") } else { w }
+}
+
+/// LEFT / RIGHT on the INTRO row: NORMAL -> FAST -> OFF round, written to `settings.toml` `game.intro` at once
+/// (only that key; "skip" for OFF), not in a headless run that ignores the user's file.
+pub fn intro_step(fwd: bool) {
+    let list = [Intro::Normal, Intro::Fast, Intro::Skip];
+    let cur = intro_mode();
+    let i = list.iter().position(|x| *x == cur).unwrap_or(0);
+    let next = list[if fwd { (i + 1) % 3 } else { (i + 2) % 3 }];
+    if let Ok(mut g) = INTRO_LIVE.lock() {
+        *g = Some(next);
+    }
+    let Some(rt) = get() else { return };
+    if rt.settings_ignored {
+        log::info!("performance page: game.intro not written (headless run without --settings)");
+        return;
+    }
+    match mcla_config::set_key(&rt.settings_path, "game", "intro", mcla_config::toml::Value::String(next.word().into())) {
+        Ok(()) => log::info!("performance page: game.intro = {} written to {}", next.word(), rt.settings_path.display()),
+        Err(e) => log::warn!("performance page: game.intro not written: {e}"),
+    }
 }
 
 /// The new-career arrival: the opening film plays (`normal` only), and the arrival scene (`normal`, `fast`).
@@ -586,6 +625,17 @@ pub const ROW_MONITOR: u8 = 62;
 pub const ROW_VSYNC: u8 = 63;
 pub const ROW_FPS_CAP: u8 = 64;
 pub const ROW_FPS_MONITOR: u8 = 65;
+pub const ROW_TEX_FILTER: u8 = 55;
+pub const ROW_RENDER_SCALE: u8 = 56;
+pub const ROW_SHADOW_RES: u8 = 57;
+pub const ROW_DRAW_DISTANCE: u8 = 58;
+pub const ROW_DETAIL_LEVEL: u8 = 59;
+pub const ROW_AA: u8 = 66;
+pub const ROW_BLOOM: u8 = 67;
+pub const ROW_DOF: u8 = 68;
+pub const ROW_MOTION_BLUR: u8 = 69;
+/// The render scales the DISPLAY row steps through (1.0 = native, the original's).
+const RENDER_SCALES: [f32; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
 /// The frame-rate caps the page steps through (0 = none); a cap from the file that is not here is put in its place.
 const FPS_CAPS: [u32; 7] = [0, 30, 60, 120, 144, 165, 240];
 
@@ -644,8 +694,132 @@ pub fn display_value(row: u8) -> String {
             FpsMonitor::FrameTime => "FPS + FRAME TIME",
         }
         .to_string(),
+        ROW_TEX_FILTER => d.texture_filtering.word().to_uppercase(),
+        ROW_RENDER_SCALE => format!("{}%", (d.render_scale * 100.0).round() as i32),
+        ROW_SHADOW_RES => game_live().shadow_resolution.word().to_uppercase(),
+        ROW_DRAW_DISTANCE => game_live().draw_distance.word().to_uppercase(),
+        ROW_DETAIL_LEVEL => game_live().detail_level.word().to_uppercase(),
+        ROW_AA => match d.aa {
+            mcla_config::Aa::Original => "ORIGINAL",
+            mcla_config::Aa::Off => "OFF",
+            mcla_config::Aa::X2 => "2X",
+            mcla_config::Aa::X4 => "4X",
+        }
+        .to_string(),
+        ROW_BLOOM => if d.bloom { "ON" } else { "OFF" }.to_string(),
+        ROW_DOF => if d.dof { "ON" } else { "OFF" }.to_string(),
+        ROW_MOTION_BLUR => if d.motion_blur { "ON" } else { "OFF" }.to_string(),
         _ => String::new(),
     }
+}
+
+/// The anti-aliasing mode the renderer's `aamode` takes for a settings value.
+fn aa_mode(a: mcla_config::Aa) -> crate::aamode::Mode {
+    use crate::aamode::Mode;
+    match a {
+        mcla_config::Aa::Original => Mode::Original,
+        mcla_config::Aa::Off => Mode::Off,
+        mcla_config::Aa::X2 => Mode::X2,
+        mcla_config::Aa::X4 => Mode::X4,
+    }
+}
+
+/// Hands the settings' anti-aliasing mode to the renderer (`aamode`); once at start-up (a headless run without
+/// `--settings` has the defaults, ORIGINAL).
+pub fn apply_aa_at_start() {
+    crate::aamode::set(aa_mode(display().aa));
+}
+
+/// Texture filtering 16x everywhere (`display.texture_filtering`, live); false = the original's anisotropy (4 while
+/// driving, 16 in the menus' / garage 4x mode).
+pub fn aniso_16x() -> bool {
+    display().texture_filtering == mcla_config::TexFilter::X16
+}
+
+/// The render scale (`display.render_scale`, live; 1.0 = native). The scene is drawn at window x scale.
+pub fn render_scale() -> f32 {
+    display().render_scale.clamp(0.5, 2.0)
+}
+
+static GAME_LIVE: Mutex<Option<mcla_config::GameSettings>> = Mutex::new(None);
+
+/// The `game.*` performance settings in effect (the file's at the start, then what the PERFORMANCE page changed).
+fn game_live() -> mcla_config::GameSettings {
+    GAME_LIVE.lock().ok().and_then(|g| g.clone()).unwrap_or_else(|| get().map_or_else(|| Settings::default().game, |r| r.settings.game.clone()))
+}
+
+fn set_game_live(g: mcla_config::GameSettings) {
+    if let Ok(mut l) = GAME_LIVE.lock() {
+        *l = Some(g);
+    }
+}
+
+/// Shadow map side multiplier: 1 (the original's), 2 or 4.
+pub fn shadow_res_scale() -> u32 {
+    game_live().shadow_resolution.factor()
+}
+
+/// Draw distance multiplier (1.0 = the original's).
+pub fn draw_distance_scale() -> f32 {
+    game_live().draw_distance.factor()
+}
+
+/// Detail level multiplier (1.0 = the original's); 3.0 also keeps traffic cars at LOD 0.
+pub fn detail_level_scale() -> f32 {
+    game_live().detail_level.factor()
+}
+
+/// Traffic cars at LOD 0 wherever the original draws them (the old HIGH-DETAIL TRAFFIC; folded into DETAIL LEVEL 3X).
+pub fn hq_traffic() -> bool {
+    detail_level_scale() >= 3.0
+}
+
+/// A save written with the old HIGH-DETAIL TRAFFIC row ON becomes DETAIL LEVEL 3X, when `game.detail_level` is not in
+/// the settings file yet (the old key is read for this and nothing else).
+pub fn migrate_hq_traffic(was_on: bool) {
+    let Some(rt) = get() else { return };
+    if !was_on || rt.settings_ignored {
+        return;
+    }
+    let present = std::fs::read_to_string(&rt.settings_path)
+        .ok()
+        .and_then(|t| t.parse::<mcla_config::toml::Table>().ok())
+        .is_some_and(|t| t.get("game").and_then(|g| g.get("detail_level")).is_some());
+    if present {
+        return;
+    }
+    let mut g = game_live();
+    g.detail_level = mcla_config::Scale::X3;
+    set_game_live(g);
+    write_game_key("detail_level", mcla_config::toml::Value::String("3x".into()));
+}
+
+/// One key of `settings.toml`'s `[game]` table (only that key; atomic); not in a headless run that ignores the file.
+fn write_game_key(key: &str, value: mcla_config::toml::Value) {
+    let Some(rt) = get() else { return };
+    if rt.settings_ignored {
+        log::info!("performance page: game.{key} not written (headless run without --settings)");
+        return;
+    }
+    match mcla_config::set_key(&rt.settings_path, "game", key, value) {
+        Ok(()) => log::info!("performance page: game.{key} written to {}", rt.settings_path.display()),
+        Err(e) => log::warn!("performance page: game.{key} not written: {e}"),
+    }
+}
+
+/// Bloom on (`display.bloom`, live; ON = the original's). The renderer reads it.
+pub fn bloom_on() -> bool {
+    display().bloom
+}
+
+/// Depth of field on (`display.dof`, live; ON = the original's).
+pub fn dof_on() -> bool {
+    display().dof
+}
+
+/// Motion blur on (`display.motion_blur`, live; ON = the original's).
+pub fn motion_blur_on() -> bool {
+    display().motion_blur
 }
 
 /// The next (or previous) item of `list` after `cur`, round and round.
@@ -763,6 +937,57 @@ impl App {
             ROW_FPS_MONITOR => {
                 d.fps_monitor = step_in(FpsMonitor::ALL, d.fps_monitor, fwd);
                 write_display_key("fps_monitor", Value::String(d.fps_monitor.word().into()));
+                set_display(d);
+            }
+            ROW_TEX_FILTER => {
+                d.texture_filtering = step_in(mcla_config::TexFilter::ALL, d.texture_filtering, fwd);
+                write_display_key("texture_filtering", Value::String(d.texture_filtering.word().into()));
+                set_display(d);
+            }
+            ROW_RENDER_SCALE => {
+                let i = RENDER_SCALES.iter().enumerate().min_by(|a, b| (a.1 - d.render_scale).abs().total_cmp(&(b.1 - d.render_scale).abs())).map_or(0, |x| x.0);
+                let n = RENDER_SCALES.len();
+                d.render_scale = RENDER_SCALES[if fwd { (i + 1) % n } else { (i + n - 1) % n }];
+                write_display_key("render_scale", Value::Float(format!("{}", d.render_scale).parse::<f64>().unwrap_or(1.0)));
+                set_display(d);
+            }
+            ROW_SHADOW_RES => {
+                let mut g = game_live();
+                g.shadow_resolution = step_in(mcla_config::ShadowRes::ALL, g.shadow_resolution, fwd);
+                write_game_key("shadow_resolution", Value::String(g.shadow_resolution.word().into()));
+                set_game_live(g);
+            }
+            ROW_DRAW_DISTANCE => {
+                let mut g = game_live();
+                g.draw_distance = step_in(mcla_config::Scale::ALL, g.draw_distance, fwd);
+                write_game_key("draw_distance", Value::String(g.draw_distance.word().into()));
+                set_game_live(g);
+            }
+            ROW_DETAIL_LEVEL => {
+                let mut g = game_live();
+                g.detail_level = step_in(mcla_config::Scale::ALL, g.detail_level, fwd);
+                write_game_key("detail_level", Value::String(g.detail_level.word().into()));
+                set_game_live(g);
+            }
+            ROW_AA => {
+                d.aa = step_in(mcla_config::Aa::ALL, d.aa, fwd);
+                crate::aamode::set(aa_mode(d.aa));
+                write_display_key("aa", Value::String(d.aa.word().into()));
+                set_display(d);
+            }
+            ROW_BLOOM => {
+                d.bloom = !d.bloom;
+                write_display_key("bloom", Value::Boolean(d.bloom));
+                set_display(d);
+            }
+            ROW_DOF => {
+                d.dof = !d.dof;
+                write_display_key("dof", Value::Boolean(d.dof));
+                set_display(d);
+            }
+            ROW_MOTION_BLUR => {
+                d.motion_blur = !d.motion_blur;
+                write_display_key("motion_blur", Value::Boolean(d.motion_blur));
                 set_display(d);
             }
             _ => return,

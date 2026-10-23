@@ -175,7 +175,7 @@
     const s = $('#monitor-status');
     s.textContent = d.file === 'broken' ? t('set.mon_broken') : '';
     s.dataset.kind = d.file === 'broken' ? 'bad' : '';
-    // (intro, window mode, resolution, frame-rate cap, vsync, fps counter: live where the key table says the game reads the key)
+    // (intro, window mode, resolution, frame-rate cap, vsync, fps counter, anti-aliasing, bloom, depth of field, motion blur: live where the key table says the game reads the key)
     const fill = (sel, values, label, cur) => {
       sel.textContent = '';
       values.forEach((v) => { const o = el('option'); o.value = String(v); o.textContent = label(v); sel.append(o); });
@@ -184,7 +184,7 @@
     fill($('#res-select'), d.resolutions || [], (v) => t('set.mon_res', v.split('x')), d.resolution);
     fill($('#fps-select'), d.fps_caps || [], (v) => (v === 0 ? t('set.o_off') : t('set.mon_fps', [v])), d.fps_cap);
     $('#vsync-switch').setAttribute('aria-checked', d.vsync ? 'true' : 'false');
-    const cur = { 'game.intro': d.intro, 'display.window_mode': d.window_mode, 'display.fps_monitor': d.fps_monitor };
+    const cur = { 'game.intro': d.intro, 'display.window_mode': d.window_mode, 'display.fps_monitor': d.fps_monitor, 'display.aa': d.aa, 'display.bloom': String(d.bloom), 'display.dof': String(d.dof), 'display.motion_blur': String(d.motion_blur), 'display.texture_filtering': d.texture_filtering, 'display.render_scale': String(d.render_scale), 'game.shadow_resolution': d.shadow_resolution, 'game.draw_distance': d.draw_distance, 'game.detail_level': d.detail_level };
     $$('.opt[data-dkey]').forEach((row) => {
       const key = row.dataset.dkey;
       const live = d.file !== 'broken' && (d.live_keys || []).includes(key);
@@ -250,7 +250,7 @@
     $('#fps-select').addEventListener('change', (e) => setKey('display.fps_cap', Number(e.target.value)));
     $('#vsync-switch').addEventListener('click', () => setKey('display.vsync', !(st.display && st.display.vsync)));
     $$('.opt[data-dkey] .seg [data-v]').forEach((b) => {
-      const pick = () => setKey(b.closest('.opt').dataset.dkey, b.dataset.v);
+      const pick = () => setKey(b.closest('.opt').dataset.dkey, b.dataset.v === 'true' ? true : b.dataset.v === 'false' ? false : b.closest('.opt').dataset.dkey === 'display.render_scale' ? Number(b.dataset.v) : b.dataset.v);
       b.addEventListener('click', pick);
       b.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
     });
@@ -346,7 +346,7 @@
       await stepRow('fps counter frame_time', () => $('.opt[data-dkey="display.fps_monitor"] [data-v="frame_time"]').click(), () => st.display.fps_monitor + (($('.opt[data-dkey="display.fps_monitor"] [data-v="frame_time"]').classList.contains('on')) ? '/on' : '/not-shown'));
       report.display.rows.fps_monitor_bad = await Bridge.displaySet('display.fps_monitor', 'graph').then(() => 'accepted', (e) => 'refused:' + e);
       report.display.rows.refused = await Bridge.displaySet('display.fps_cap', 5).then(() => 'accepted', (e) => 'refused:' + e);
-      report.display.rows.unknown = await Bridge.displaySet('display.aa', 'fxaa').then(() => 'accepted', (e) => 'refused:' + e);
+      report.display.rows.unknown = await Bridge.displaySet('display.upscaler', 'fsr').then(() => 'accepted', (e) => 'refused:' + e);
       await Bridge.displaySet('game.intro', before.intro);
       await Bridge.displaySet('display.window_mode', before.window_mode);
       await Bridge.displaySet('display.resolution', before.resolution);

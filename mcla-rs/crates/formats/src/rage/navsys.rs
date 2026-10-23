@@ -129,6 +129,8 @@ pub struct Zone {
     pub no_box: bool,
     /// the road's traffic density index from data (+98; -1: the default, 3)
     pub density: i32,
+    /// the x / z the region's sphere test measures from (+34, +38: vfunc 3 sub_8224D4C0)
+    pub rect_c: [f32; 2],
 }
 
 pub const DEFAULT_ROAD_SPEED: f32 = 40.0 * 0.44704;
@@ -492,6 +494,7 @@ impl NavSys {
             z.y_range = [rd.f32(zo + 0x44), rd.f32(zo + 0x48)];
             z.no_box = rd.u8(zo + 0x4c) != 0;
             z.density = rd.u32(zo + 0x98) as i32;
+            z.rect_c = [rd.f32(zo + 0x34), rd.f32(zo + 0x38)];
             if let Some(np) = rd.ptr(zo + 0x90) {
                 let s = rd.cstr(np);
                 if s.len() < 64 && s.bytes().all(|b| (0x20..0x7f).contains(&b)) {
@@ -937,6 +940,11 @@ impl NavSys {
                 self.ends_at[id].push(e / 2);
             }
         }
+    }
+
+    /// A lane's box as the file has it (lane +10 least, +20 greatest corner).
+    pub fn lane_box(&self, lane: usize) -> Option<(Vec3, Vec3)> {
+        self.raw.get(lane).map(|l| (l.min, l.max))
     }
 
     /// (lanes, links, links with a successor)
@@ -1720,6 +1728,39 @@ pub fn parse_intersections(res: &crate::rsc::Resource) -> Vec<(glam::Vec3, f32, 
         if c.is_finite() {
             out.push((c, rd.f32(o + 0x1c), rd.f32(o + 0x40)));
         }
+    }
+    out
+}
+
+/// A region's rectangle and box as the ambient spawners test them (the region base shared by
+/// roads and junctions: +34 / +38 the sphere test's x / z, +3c width, +40 length, +44 / +48 the
+/// height range, +50 centre, +60 direction, +70 across; sub_8224D4C0, sub_826F4E90).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RegionRect {
+    /// the junction's index in the file's array (as `NavSys::junction_lanes`)
+    pub index: usize,
+    pub rect_c: [f32; 2],
+    pub width: f32,
+    pub len: f32,
+    pub y_range: [f32; 2],
+    pub mid: glam::Vec3,
+    pub dir: glam::Vec3,
+    pub side: glam::Vec3,
+}
+
+/// The junctions' rectangles, in the order (and with the filter) of [`parse_intersections`].
+pub fn parse_intersection_rects(res: &crate::rsc::Resource) -> Vec<RegionRect> {
+    let rd = super::Rd::new(res);
+    let mut out = Vec::new();
+    let Some(arr) = rd.ptr(0x58) else { return out };
+    let n = (rd.u32(0xc8) as usize).min(4096);
+    let v = |p: usize| glam::Vec3::new(rd.f32(p), rd.f32(p + 4), rd.f32(p + 8));
+    for i in 0..n {
+        let o = arr + i * 0xc0;
+        if !rd.has(o, 0xc0) || rd.vtable(o) != 0x0047_a0c4 || !v(o + 0x80).is_finite() {
+            continue;
+        }
+        out.push(RegionRect { index: i, rect_c: [rd.f32(o + 0x34), rd.f32(o + 0x38)], width: rd.f32(o + 0x3c), len: rd.f32(o + 0x40), y_range: [rd.f32(o + 0x44), rd.f32(o + 0x48)], mid: v(o + 0x50), dir: v(o + 0x60), side: v(o + 0x70) });
     }
     out
 }

@@ -13,6 +13,7 @@ mcla-formats = { path = "../formats" }
 mcla-flash = { path = "../flash" }
 mcla-config = { path = "../config" }
 mcla-shaders = { path = "../shaders" }
+mcla-mods = { path = "../mods" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 anyhow.workspace = true
 log.workspace = true

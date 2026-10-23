@@ -273,6 +273,9 @@ pub struct CarInstance {
     pub racer: bool,
     /// takes part in the running event: never despawned, not counted as traffic
     pub pinned: bool,
+    /// a deactivated racer (Racer_Deactivate, chassis +592 bit 0x1 - `CarInput::deactivated`): the new
+    /// career's starters on VEHICLE SELECT. Stepped with that input whatever else holds the world.
+    pub deactivated: bool,
     /// seconds of nitrous an AI car has been told to use (race scripts)
     pub boost: f32,
     /// character id of a named rival at the wheel ("GH_06"), else empty
@@ -369,6 +372,28 @@ pub struct AmbLamps {
     pub shift: f32,
     /// a set-up car's siren target (+304): its police lamps glow while it is set (`police_glows`)
     pub siren_on: bool,
+    /// an ambient car's own hour offset for its lights (car +3568: the global MWC's 23 bits x 2^-25,
+    /// 0 .. 0.25 h, drawn by the spawn slot sub_826E86C8; 0 for the others, sub_826E8D80)
+    pub hour_offset: f32,
+}
+
+/// An ambient car's lights (sub_826E6D90, bit 2 of the render flags): on when the hour is past the
+/// light manager's sunset (+14568, 18.0) - 0.333 - the car's offset, or before its sunrise (+14564,
+/// 6.0) + 0.5 + the offset, or when the weather term (the viewport table 0x827E1B10 +8 + +12, wet /
+/// foggy weather - the port's `wet`) is over the offset; off on a car fading out (+484 < 0.1).
+pub fn traffic_lights_due(hour: f32, offset: f32, wet: bool) -> bool {
+    hour > 18.0 - 0.333 - offset || hour < offset + 6.0 + 0.5 || wet
+}
+
+#[cfg(test)]
+#[test]
+fn traffic_lights_due_hours() {
+    // start-screen shot 2 at 6.498 h: on for every offset (before 6.5 + offset)
+    assert!(traffic_lights_due(6.498, 0.0, false) && traffic_lights_due(6.498, 0.25, false));
+    assert!(!traffic_lights_due(6.6, 0.0, false) && traffic_lights_due(6.6, 0.2, false));
+    assert!(!traffic_lights_due(12.0, 0.25, false) && traffic_lights_due(12.0, 0.0, true));
+    // 17.6 h: past 17.667 - offset only for offsets over 0.067
+    assert!(!traffic_lights_due(17.6, 0.05, false) && traffic_lights_due(17.6, 0.1, false));
 }
 
 /// sub_82792FD8's state table by attachment, from the five eased states (head, brake, signal
@@ -740,6 +765,13 @@ pub struct Vehicles {
     /// timer >= 0, no replay recording or playback): the cutscene camera's eye and forward - the
     /// focus and view of the spawners (sub_826F14E0), set by main.rs while a scene plays
     pub amb_cutscene: Option<(Vec3, Vec3)>,
+    /// the ambient manager's front-end mode (sub_826D4C90, AmbientMgr_SetFrontEnd from the
+    /// press-start script): the start screen's camera and the shot's four values and density
+    /// index (traffic.rs `FrontEnd`), set by main.rs while the start screen is up
+    pub amb_frontend: Option<crate::titlecam::FrontEndAmbient>,
+    /// the start screen viewport's tan(fov / 2) up and across (viewport +712, +716)
+    pub amb_frontend_tan: [f32; 2],
+    amb_frontend_was: bool,
     wheel_cache: hashbrown::HashMap<(std::path::PathBuf, String, u32), Arc<WheelModel>>,
     brake_cache: hashbrown::HashMap<(std::path::PathBuf, u32, i32), Arc<BrakeModel>>,
     /// police light bars are flashing
@@ -1847,8 +1879,9 @@ impl Vehicles {
         let rim_ratio = if car.bike { 0.812 } else { stock_rim_ratio(&world.assets.root, &car.name, params.wheel_radius) };
         let mut wheels = None;
         let mut rim_dir = None;
-        for c in cands.iter().flatten() {
-            let dir = rims_root.join(c);
+        // (a mod car's stock rims: its own folder or its manifest's `donors.rims` - modcars.rs)
+        let mod_rims = crate::modcars::car(&car.name).and_then(|c| c.rims.clone());
+        for dir in mod_rims.into_iter().chain(cands.iter().flatten().map(|c| rims_root.join(c))) {
             if dir.is_dir() {
                 wheels = self.wheel_set(gpu, world, &dir, tyre, rim_ratio);
                 rim_dir = Some(dir);
@@ -1870,7 +1903,8 @@ impl Vehicles {
         } else {
             let root = world.assets.root.join("resources/brakes");
             let own = [base_name.strip_prefix("vpd_").map(|n| format!("brkd_stk_{n}")), base_name.strip_prefix("vp_").map(|n| format!("brk_stk_{n}"))];
-            let dir = own.iter().flatten().map(|n| root.join(n)).find(|d| d.is_dir()).unwrap_or_else(|| root.join("brk_car_base"));
+            // (a mod car: its manifest's `donors.brake` - modcars.rs)
+            let dir = crate::modcars::brake_dir(&car.name).into_iter().chain(own.iter().flatten().map(|n| root.join(n))).find(|d| d.is_dir()).unwrap_or_else(|| root.join("brk_car_base"));
             let k = rim_ratio * ROTOR_OF_RIM;
             let shift = brake_shift(wheels.as_ref().map_or(-0.2, |w: &Arc<WheelModel>| w.spoke_x));
             let key = (dir.clone(), (k * 200.0).round() as u32, (shift * 200.0).round() as i32);
@@ -2048,7 +2082,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6] });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6] });
         self.cars.len() - 1
     }
 
@@ -2229,6 +2263,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
     /// Keep `traffic_target` AI cars alive around `center`.
     pub fn manage_traffic(&mut self, gpu: &Gpu, world: &World, center: Vec3, dt: f32) {
+        // (the start screen: the world has run behind the loading logo before its first frame -
+        // traffic.rs FRONT_END_PREROLL frames of the spawners and the cars)
+        let fe_new = self.amb_frontend.is_some() && !self.amb_frontend_was;
+        self.amb_frontend_was = self.amb_frontend.is_some();
+        if fe_new && world.nav.is_some() {
+            for _ in 0..traffic::FRONT_END_PREROLL {
+                self.spawn_traffic(gpu, world, center, 1.0 / 30.0);
+                self.update(world, CarInput::default(), 1.0 / 30.0);
+            }
+        }
         // with the road network: the original's spawner and unspawner (traffic.rs)
         if world.nav.is_some() {
             self.spawn_traffic(gpu, world, center, dt);
@@ -3037,6 +3081,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
                 continue;
             }
+            if c.deactivated {
+                // (the steering is the default steer direction the start script gives the three,
+                // Racer_SetDefaultSteerDirection 0.5 - chassis +656, sub_822ADE90)
+                let input = CarInput { deactivated: true, steer: 0.5, ..Default::default() };
+                c.state.step(c.tuned.as_deref().unwrap_or(&c.model.params), input, &world.collider, dt.min(1.0 / 30.0));
+                continue;
+            }
             if self.frozen || (self.grid_hold.is_some() && !c.is_player && !c.pinned) {
                 // settle onto the ground but do not drive
                 c.state.step(c.tuned.as_deref().unwrap_or(&c.model.params), CarInput { brake: 1.0, ..Default::default() }, &world.collider, dt.min(1.0 / 30.0));
@@ -3442,7 +3493,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// Put a car somewhere by hand (cutscenes): wheels follow, it stands still.
     pub fn pose_car(&mut self, idx: usize, pos: Vec3, rot: Quat) {
         let c = &mut self.cars[idx];
+        // (a car the physics has not run yet - one a story scene brings, whose clock stops the physics - has its
+        // hubs at the world's origin: it was drawn without wheels, the tyres somewhere under it. Its wheels go
+        // under their mounts at the suspension's rest length. approx.: no static sag)
+        let unset = c.state.wheels.iter().all(|w| w.world_pos == Vec3::ZERO);
         c.state.relocate(pos, rot);
+        if unset {
+            let (mounts, rest) = (c.params().wheel_pos, c.params().susp_rest);
+            for (w, a) in c.state.wheels.iter_mut().zip(mounts) {
+                w.world_pos = pos + rot * (a - Vec3::Y * rest);
+            }
+        }
         c.state.vel = Vec3::ZERO;
         c.state.ang_vel = Vec3::ZERO;
         c.placed = true;
@@ -3493,17 +3554,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                     c.amb_lamps.dmg_bound = true;
                 }
-        // (a car the physics has not run yet - one a story scene brings, whose clock stops the physics - has its
-        // hubs at the world's origin: it was drawn without wheels, the tyres somewhere under it. Its wheels go
-        // under their mounts at the suspension's rest length. approx.: no static sag)
-        let unset = c.state.wheels.iter().all(|w| w.world_pos == Vec3::ZERO);
                 c.state.dmg.dents.clear();
-        if unset {
-            let (mounts, rest) = (c.params().wheel_pos, c.params().susp_rest);
-            for (w, a) in c.state.wheels.iter_mut().zip(mounts) {
-                w.world_pos = pos + rot * (a - Vec3::Y * rest);
-            }
-        }
                 c.state.dmg.scrapes.clear();
                 c.state.dmg.repair = false;
                 continue;
@@ -3802,6 +3853,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     pub fn traffic_lamps(&mut self, eye: Vec3, axis: Vec3, frustum: &crate::render::Frustum, night: f32, dt: f32) {
         let alpha = self.render_alpha;
         let lights_off = self.lights_off;
+        let hour = self.hour;
         for c in self.cars.iter_mut() {
             if c.is_player {
                 continue;
@@ -3815,7 +3867,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 continue;
             }
             let driven = c.parked.is_none();
-            let flags = [driven && !lights_off && night > 0.5, driven && (c.input.brake > 0.0 || c.state.speed() < 0.1), false, false, driven && c.state.gear < 0];
+            // (the hour window of sub_826E6D90; `night` over 0.5 inside 6 .. 18 h is the weather's own term)
+            let wet = night > 0.5 && (6.0..=18.0).contains(&hour);
+            let due = traffic_lights_due(hour, c.amb_lamps.hour_offset, wet) && c.removing.map_or(true, |f| f >= 0.1);
+            let flags = [driven && !lights_off && due, driven && (c.input.brake > 0.0 || c.state.speed() < 0.1), false, false, driven && c.state.gear < 0];
             let a = &mut c.amb_lamps;
             for (v, on) in a.s.iter_mut().zip(flags) {
                 *v = traffic_ease(*v, on, dt);
@@ -4044,6 +4099,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             }
             pass.set_bind_group(3, &c.binding.bg, &[]);
+            // (the car's stencil id for the motion blur: 4 k, + 1 when not a player's - render/mb.rs)
+            pass.set_stencil_reference(crate::render::mb::stencil_of(ci));
             // (the windows in two passes, as the original: all back faces, then all front faces, with depth
             // writes; the lamps' lenses stay in the one pass. MCLA_GLASS_ONEPASS=1: as before. MCLA_GLASS_PASS=b / f:
             // one of the two only, to look at them)
@@ -4279,7 +4336,7 @@ impl Vehicles {
     /// +556 bit 0x20 is set: the depth below 50 (0x82006BF4, sub_827932D8). The depth is written whether or
     /// not the sphere is in the view (sub_8217C1D8 stores it before its answer), so a car hidden by an
     /// occluder or 500 deep keeps its glows within 50 - `lod_glow`.
-    pub fn pick_lods(&mut self, eye: Vec3, axis: Vec3, near: f32, full_detail: bool, frustum: &crate::render::Frustum, occluders: &crate::occluder::Selected) {
+    pub fn pick_lods(&mut self, eye: Vec3, axis: Vec3, near: f32, k: crate::props::Lod, frustum: &crate::render::Frustum, occluders: &crate::occluder::Selected) {
         let alpha = self.render_alpha;
         // (diagnostics: MCLA_LOD_FORCE=1 / 2 draws every traffic car at that LOD)
         let force = std::env::var("MCLA_LOD_FORCE").ok().and_then(|v| v.parse::<i8>().ok());
@@ -4299,7 +4356,7 @@ impl Vehicles {
                 let (centre, r) = (pose.pos + pose.rot * c.model.lod_centre, c.model.lod_radius);
                 let d = (centre - eye).dot(axis) - near + r;
                 let seen = frustum.intersects_sphere(centre, r);
-                let lod = Self::lod_of(c, d, seen && !occluders.hides_sphere(centre, r), full_detail);
+                let lod = Self::lod_of(c, d, seen && !occluders.hides_sphere(centre, r), k);
                 // (sub_82793360, main pass: LOD 1 becomes LOD 2 while car +500 bit 0x4 - on its way out)
                 let lod = if lod == 1 && c.removing.is_some() { 2 } else { lod };
                 (lod, seen && (lod >= 0 || d < 50.0))
@@ -4318,13 +4375,21 @@ impl Vehicles {
         }
     }
 
-    /// sub_827902F0's answer for depth `d`: -1 outside the view or hidden (`shown` false) or from 500 on.
-    fn lod_of(c: &CarInstance, d: f32, shown: bool, full_detail: bool) -> i8 {
-        if !shown || d >= 500.0 {
+    /// sub_827902F0's answer for depth `d`: -1 outside the view or hidden (`shown` false) or from 500 on
+    /// (0x82003250); LOD 0 below the type's fHighToMedSwitch x fLodSwitchScale (+44 x +40, the scale
+    /// is the f0 of 0x827903E0), LOD 1 below fMedToLowSwitch x the scale (+48 x +40), else LOD 2.
+    /// OPTIONS > PERFORMANCE (`k`, 1 = the original): DRAW DISTANCE multiplies the 500, DETAIL LEVEL
+    /// the scale; DETAIL LEVEL 3X keeps every car at LOD 0 (what HIGH-DETAIL TRAFFIC ON did, D19).
+    fn lod_of(c: &CarInstance, d: f32, shown: bool, k: crate::props::Lod) -> i8 {
+        Self::lod_by(c.model.lod_steps, d, shown, k)
+    }
+
+    pub(crate) fn lod_by(steps: [f32; 2], d: f32, shown: bool, k: crate::props::Lod) -> i8 {
+        if !shown || d >= 500.0 * k.draw {
             -1
-        } else if d < c.model.lod_steps[0] || full_detail {
+        } else if k.detail >= 3.0 || d < steps[0] * k.detail {
             0
-        } else if d < c.model.lod_steps[1] {
+        } else if d < steps[1] * k.detail {
             1
         } else {
             2
@@ -4532,7 +4597,7 @@ fn rim_ratio_for(inches: f32, wheel_radius: f32) -> f32 {
 /// Rim size a car set-up asks for (`resources/vehicle/configs/<name>.xcc`: front and rear
 /// rim diameter in inches at 0x83e).
 fn config_rim_inches(root: &Path, config: &str) -> Option<f32> {
-    let d = std::fs::read(root.join("resources/vehicle/configs").join(format!("{config}.xcc"))).ok()?;
+    let d = std::fs::read(crate::modcars::setup_file(config).unwrap_or_else(|| root.join("resources/vehicle/configs").join(format!("{config}.xcc")))).ok()?;
     let v = *d.get(0x83e)? as f32;
     if (13.0..=26.0).contains(&v) { Some(v) } else { None }
 }
@@ -4848,5 +4913,23 @@ mod ambient_paint_tests {
         for (g, w) in b.iter().zip(want) {
             assert!((g - w).abs() < 1e-3, "{:?}", b);
         }
+    }
+}
+
+#[cfg(test)]
+mod lod_option_tests {
+    use crate::props::Lod;
+    /// sub_827902F0 (ORIGINAL): 500 from 0x82003250, steps 40 / 155 of an ordinary type; the PERFORMANCE scales on top.
+    #[test]
+    fn traffic_lod_by_the_options() {
+        let by = super::Vehicles::lod_by;
+        let s = [40.0, 155.0];
+        let o = Lod::ORIGINAL;
+        assert_eq!([by(s, 39.9, true, o), by(s, 40.0, true, o), by(s, 154.9, true, o), by(s, 155.0, true, o), by(s, 499.9, true, o), by(s, 500.0, true, o), by(s, 10.0, false, o)], [0, 1, 1, 2, 2, -1, -1]);
+        let k = Lod { draw: 2.0, detail: 1.5, ..Lod::ORIGINAL };
+        assert_eq!([by(s, 59.9, true, k), by(s, 60.0, true, k), by(s, 232.4, true, k), by(s, 232.5, true, k), by(s, 999.0, true, k), by(s, 1000.0, true, k)], [0, 1, 1, 2, 2, -1]);
+        // DETAIL LEVEL 3X = the old HIGH-DETAIL TRAFFIC ON: LOD 0 wherever the car is drawn
+        let k = Lod { draw: 1.0, detail: 3.0, ..Lod::ORIGINAL };
+        assert_eq!([by(s, 300.0, true, k), by(s, 499.0, true, k), by(s, 500.0, true, k)], [0, 0, -1]);
     }
 }

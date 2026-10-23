@@ -122,11 +122,13 @@ pub struct Builder<'a> {
     alpha: u8,
     /// host texture of the clip being drawn (0 = the movie's own bitmaps)
     swap: u32,
+    /// draw the clips of `Player::key_caps` as authored (measuring them)
+    no_caps: bool,
 }
 
 impl<'a> Builder<'a> {
     pub fn new(movie: &'a Movie) -> Self {
-        Builder { movie, out: DrawList::default(), alpha: 255, swap: 0 }
+        Builder { movie, out: DrawList::default(), alpha: 255, swap: 0, no_caps: false }
     }
 
     /// Draw an instance's children (depth order, with clip-depth masks).
@@ -165,6 +167,13 @@ impl<'a> Builder<'a> {
         let cx = combine_cx(&inst.cxform, pcx, ptint);
         if cx.mult[3] == 0 {
             return;
+        }
+        if !self.no_caps && !p.key_caps.is_empty() {
+            if let Some((_, t, argb)) = p.key_caps.iter().find(|(n, ..)| inst.name.eq_ignore_ascii_case(n)) {
+                self.alpha = inst.tint[3];
+                self.key_cap(p, id, t, *argb, parent, &cx);
+                return;
+            }
         }
         if inst.tex_swap != 0 {
             // (this clip and what it holds take the host's texture)
@@ -307,6 +316,47 @@ impl<'a> Builder<'a> {
         let mk = |xy: (f32, f32), u: f32, v: f32| Vertex { pos: [xy.0, xy.1], uv: [u, v], color };
         let (tl, tr, bl, br) = (mk(p(l, t), u0, v0), mk(p(r, t), u1, v0), mk(p(l, b), u0, v1), mk(p(r, b), u1, v1));
         self.out.tris(TexRef::Glyph { font: font_id, page: pi as u8, sheet: g.sheet }, 0x41, &[br, bl, tr, bl, tr, tl]);
+    }
+
+    /// A key's name in place of a clip (`Player::key_caps`): in the host's colour, in the movie's
+    /// "Dev Gothic" (its largest glyph page), the capitals 0.45 of the clip's height,
+    /// centred where the clip draws.
+    fn key_cap(&mut self, p: &Player, id: InstId, text: &str, argb: u32, parent: &Matrix, cx: &CxForm) {
+        let mut b = Builder::new(self.movie);
+        b.no_caps = true;
+        b.instance(p, id, &Matrix::IDENTITY, &CxForm::IDENTITY, [255; 4]);
+        let mut r = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for it in &b.out.items {
+            if let Item::Triangles { verts, .. } = it {
+                for v in verts {
+                    r = [r[0].min(v.pos[0]), r[1].min(v.pos[1]), r[2].max(v.pos[0]), r[3].max(v.pos[1])];
+                }
+            }
+        }
+        if r[0] > r[2] {
+            return;
+        }
+        let font = (0..self.movie.chars.len() as u16).find_map(|i| match self.movie.char(i) {
+            Some(Character::Font(f)) if f.name.to_ascii_lowercase().contains("dev gothic") && !f.pages.is_empty() => Some((i, f)),
+            _ => None,
+        });
+        let Some((fid, font)) = font else { return };
+        let Some(h) = font.pages.iter().map(|pg| pg.height).max() else { return };
+        let adv = |c: char| font.glyph_index(c).and_then(|g| font.advances.get(g).copied()).unwrap_or(0.0);
+        let width: f32 = text.chars().map(adv).sum();
+        // (em units -> pixels: the glyph quads scale by h / 20480; the capitals stand
+        // about 0.72 of the ascent)
+        let cap = 0.72 * font.ascent as f32;
+        let k = (r[3] - r[1]) * 0.45 / cap / (h as f32 / 20480.0);
+        let m = parent.concat(&Matrix { a: k, b: 0.0, c: 0.0, d: k, tx: (r[0] + r[2]) * 0.5, ty: (r[1] + r[3]) * 0.5 });
+        let color = apply_cx(argb, cx, self.alpha);
+        let mut x = -width * 0.5;
+        for ch in text.chars() {
+            if let Some(g) = font.glyph_index(ch) {
+                self.glyph_quad(fid, h, g, x, cap * 0.5, &m, color);
+            }
+            x += adv(ch);
+        }
     }
 
     pub fn text(&mut self, t: &Text, world: &Matrix, cx: &CxForm) {

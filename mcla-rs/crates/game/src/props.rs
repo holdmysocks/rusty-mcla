@@ -98,28 +98,73 @@ impl PropModel {
     ///   scale, the scale capped at 2. The cards' reach is cut at `FAR_DIST` here (the
     ///   original's far plane and fog end them);
     /// - hedges: no card, the model to 2 R / tan(0.075 degrees ...) (122 R).
-    fn reach(&self, scale: f32, fov: f32) -> (f32, f32) {
+    ///
+    /// `k` = (DRAW DISTANCE, DETAIL LEVEL) of OPTIONS > PERFORMANCE (`Lod`; 1 = the original): the
+    /// draw distance scales where anything of it ends (the prop's distance and its 2250 m cap, the
+    /// cards' and hedges' far distance and `FAR_DIST`), the detail level where a plant's model gives
+    /// way to its card (city.wgsl `vs_inst` takes the same two from `Globals::lod`).
+    fn reach(&self, scale: f32, fov: f32, k: Lod) -> (f32, f32) {
         let r = self.sphere;
         let half_deg = fov.to_degrees() * 0.5;
         let by = |per: f32| 2.0 * r / (half_deg * std::f32::consts::PI / per).tan().max(1e-6) * scale.min(2.0);
+        let cap = FAR_DIST * k.draw;
         match self.kind {
             1 => {
-                let far = by(7200.0).min(FAR_DIST);
-                (by(400.0).min(far), far)
+                let far = (by(7200.0) * k.draw).min(cap);
+                // (the model's angle x 0.9 while the game is paused: sub_8230F3A0, 0x82007FA8)
+                let model = 2.0 * r / (half_deg * k.plant_angle * std::f32::consts::PI / 400.0).tan().max(1e-6) * scale.min(2.0);
+                ((model * k.detail).min(far), far)
             }
+            // hedges: the high level to L = 2R / tan(h pi/600) (DETAIL LEVEL), the low level
+            // (`Props::hedge_low`, kind 5) from L - 16 to the far end
             2 => {
-                let far = by(2400.0).min(FAR_DIST);
-                (far, far)
+                let far = (by(2400.0) * k.draw).min(cap);
+                ((by(600.0) * k.detail).min(far), far)
+            }
+            5 => {
+                let far = (by(2400.0) * k.draw).min(cap);
+                (0.0, far)
             }
             3 => {
-                let far = by(7200.0).min(FAR_DIST);
+                let far = (by(7200.0) * k.draw).min(cap);
                 (0.0, far)
             }
             _ => {
-                let far = (r * scale * (80.0 / (fov * 0.5).tan().max(0.02) - 0.5)).min(2250.0);
+                let far = (r * scale * (80.0 / (fov * 0.5).tan().max(0.02) - 0.5) * k.draw).min(2250.0 * k.draw);
                 (far, far)
             }
         }
+    }
+}
+
+/// The two OPTIONS > PERFORMANCE scales the draw distances take (1 = the original's), and the
+/// original's own paused-game factor on the plants' model angle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lod {
+    /// DRAW DISTANCE: where things end
+    pub draw: f32,
+    /// DETAIL LEVEL: where the detailed form gives way to the coarser one
+    pub detail: f32,
+    /// the plants' model angle factor: 0.9 (0x82007FA8) while the renderer's flag of sub_822E5B30
+    /// is set - the game paused (sub_82215A60 sets it with the pause, sub_822150D8 puts the old
+    /// value back) - else 1 (`set_paused`)
+    pub plant_angle: f32,
+}
+
+/// The renderer's paused-detail flag (renderer +373, read by sub_822E5B30).
+static PAUSED_DETAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// main.rs, once a frame: whether the game is paused (the original's flag of sub_822E5B30).
+pub fn set_paused(on: bool) {
+    PAUSED_DETAIL.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl Lod {
+    pub const ORIGINAL: Lod = Lod { draw: 1.0, detail: 1.0, plant_angle: 1.0 };
+    /// What the PERFORMANCE page has now (read once a frame by each user: the getters lock).
+    pub fn now() -> Lod {
+        let plant_angle = if PAUSED_DETAIL.load(std::sync::atomic::Ordering::Relaxed) { 0.9 } else { 1.0 };
+        Lod { draw: crate::hooks::draw_distance_scale().clamp(1.0, 4.0), detail: crate::hooks::detail_level_scale().clamp(1.0, 4.0), plant_angle }
     }
 }
 
@@ -290,6 +335,8 @@ struct SignalGlows {
 }
 
 pub struct Props {
+    /// a hedge's high-level model -> its low level (the drawable's second LOD slot; kind 5)
+    hedge_low: HashMap<usize, usize>,
     /// the plants' impostors: a picture per type, redrawn as the camera turns (props/impostor.rs)
     impostors: Option<impostor::Impostors>,
     /// the signal lamps' glows (rebuilt every frame)
@@ -444,8 +491,9 @@ pub fn lens() -> f32 {
 /// fine one (`CELL`).
 const NEAR_DIST: f32 = 440.0;
 const FAR_CELL: f32 = 384.0;
-/// nothing is drawn beyond this (the original's tree cards go to 3 - 4.5 km)
-const FAR_DIST: f32 = 2600.0;
+/// nothing is drawn beyond this: the main view's far clip, 6000 (0x82037480, set with the near 0.2
+/// by sub_822AFB10; recorded 5994 .. 6000) - the original's tree cards would reach 3 - 11 km
+const FAR_DIST: f32 = 6000.0;
 /// coarse cells live in the same map as the fine ones, moved out of their way
 const FAR_KEY: i32 = 1 << 20;
 
@@ -575,7 +623,7 @@ fn prop_mode(shader: &str) -> MatMode {
 
 impl Props {
     pub fn empty() -> Props {
-        Props { impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
+        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
     }
 
     pub fn load(gpu: &mut Gpu, world: &mut World, data_dir: &str) -> Props {
@@ -618,7 +666,21 @@ impl Props {
             log::debug!("prop texture miss: {}", name);
             (gpu.white.clone(), 0)
         };
-        let all = parse_props(&pres);
+        let mut all = parse_props(&pres);
+        // the hedges' low level (their drawable's second LOD slot) as a prop of its own
+        let hedge_low_of: HashMap<usize, usize> = {
+            let mut m = HashMap::new();
+            for i in 0..all.len() {
+                if all[i].name.to_ascii_lowercase().contains("hedge") && !all[i].lod1.is_empty() {
+                    let p = &all[i];
+                    let low = mcla_formats::rage::props::Prop { off: p.off, name: format!("{}#low", p.name), hash: p.hash, meshes: p.lod1.clone(), lod1: Vec::new(), shaders: p.shaders.clone(), min: p.min, max: p.max, center: p.center, radius: p.radius, mass: 0.0, parts: Vec::new(), locators: Vec::new() };
+                    all.push(low);
+                    m.insert(i, all.len() - 1);
+                }
+            }
+            m
+        };
+        let mut hedge_low: HashMap<usize, usize> = HashMap::new();
         let by_name: HashMap<String, usize> = all.iter().enumerate().map(|(i, p)| (p.name.to_ascii_lowercase(), i)).collect();
         let foliage = parse_foliage(&fres);
         let mut models: Vec<PropModel> = Vec::new();
@@ -704,12 +766,13 @@ impl Props {
                     eprintln!("prop hl {} / {}: {:?} bump {:?} textures {:?}", prop.name, sname, prop_hl, prop_bump, sh.map(|s| s.textures().map(|(h, n)| format!("{:08x} {}", h, n)).collect::<Vec<_>>()));
                 }
                 // (for the fade with distance, city.wgsl vs_inst: the sphere's radius and 100 + kind
-                // - 0 prop, 1 plant, 2 hedge - in the second UV set, which only the signal heads use)
+                // - 0 prop, 1 plant, 2 hedge, 2.25 a hedge's low level - in the second UV set, which
+                // only the signal heads use)
                 let lname = prop.name.to_ascii_lowercase();
                 let fade_uv = if sname.to_ascii_lowercase().contains("trafficsignal") || prop.radius <= 0.0 {
                     None
                 } else {
-                    Some([prop.radius, 100.0 + if !lname.contains("_gfx_") { 0.0 } else if lname.contains("hedge") { 2.0 } else { 1.0 }])
+                    Some([prop.radius, 100.0 + if !lname.contains("_gfx_") { 0.0 } else if lname.ends_with("#low") { 2.25 } else if lname.contains("hedge") { 2.0 } else { 1.0 }])
                 };
                 if std::env::var("MCLA_LEAF_DUMP").is_ok() && lname.contains("_gfx_") && !mesh.colors.is_empty() {
                     let m = mesh.colors.len() as f32;
@@ -866,6 +929,10 @@ impl Props {
                     imp_types.push(impostor::TypeInfo { model: mi, baked: ci, name: all[pi].name.clone(), min: all[pi].min, max: all[pi].max, sphere, radius });
                 }
                 models[mi].kind = if hedge { 2 } else if card.is_some() { 1 } else { 0 };
+                if let Some(li) = hedge_low_of.get(&pi).and_then(|&lp| model_for(gpu, world, &mut models, lp)) {
+                    models[li].kind = 5;
+                    hedge_low.insert(mi, li);
+                }
             }
             let card = card_of[&mi];
             // (the `_displayAsLowLOD` placements are never more than their card)
@@ -873,7 +940,7 @@ impl Props {
                 Some(ci) if ft.name.ends_with("_displayAsLowLOD") => ci,
                 _ => mi,
             };
-            let far = card.is_some() || models[mi].reach(2.0, FOV_REST).1 > NEAR_DIST;
+            let far = card.is_some() || models[mi].reach(2.0, FOV_REST, Lod::ORIGINAL).1 > NEAR_DIST;
             let cellmap = per_model.entry(key).or_default();
             for it in &ft.instances {
                 let (w, h) = (it.width, it.height());
@@ -937,7 +1004,7 @@ impl Props {
                 }
                 continue;
             };
-            let cell = if models[mi].reach(1.0, FOV_REST).1 > NEAR_DIST { far_cell_of(it.pos) } else { cell_of(it.pos) };
+            let cell = if models[mi].reach(1.0, FOV_REST, Lod::ORIGINAL).1 > NEAR_DIST { far_cell_of(it.pos) } else { cell_of(it.pos) };
             per_model.entry(mi).or_default().entry(cell).or_default().push(Inst { pos_scale: [it.pos.x, it.pos.y, it.pos.z, 1.0], rot_tint: [it.rot.x, it.rot.y, it.rot.z, it.rot.w], fill: crate::fillmap::prop(it.pos.x, it.pos.z), ..Inst::NONE });
             n_static += 1;
         }
@@ -1182,8 +1249,9 @@ impl Props {
         for (mi, cellmap) in per_model {
             let radius = models[mi].radius;
             let card = card_of.get(&mi).copied().flatten();
+            let split = card.is_some() || hedge_low.contains_key(&mi);
             for (c, mut list) in cellmap {
-                if card.is_some() {
+                if split {
                     list.sort_by_key(|i| cell_of(i.pos()));
                 }
                 let bounds = |part: &[Inst]| {
@@ -1200,7 +1268,7 @@ impl Props {
                     (mn, mx, scale)
                 };
                 let mut subs = Vec::new();
-                if card.is_some() {
+                if split {
                     let mut a = 0;
                     while a < list.len() {
                         let fc = cell_of(list[a].pos());
@@ -1358,7 +1426,7 @@ impl Props {
             SignalGlows { lit: Vec::new(), cull, buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
         };
         let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types);
-        Props { impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
+        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
     }
 
     /// Keep the effects of the particle props near the camera playing, and the litter on the
@@ -1509,8 +1577,10 @@ impl Props {
         let card_model = |card: usize| imp.map_or(card, |i| if scene { i.card(card) } else { i.shadow_card(card) });
         pass.set_vertex_buffer(1, ibuf.slice(..));
         let lens = lens();
-        // fine cells: what is only seen close by; coarse cells: lamps, masts, trees
-        for (cell, size, reach) in [(cell_of(cam), CELL, NEAR_DIST), (far_cell_of(cam), FAR_CELL, FAR_DIST)] {
+        let k = Lod::now();
+        // fine cells: what is only seen close by; coarse cells: lamps, masts, trees (both as far
+        // again as the DRAW DISTANCE takes the reach: a cell's props were sorted by the original's)
+        for (cell, size, reach) in [(cell_of(cam), CELL, NEAR_DIST * k.draw), (far_cell_of(cam), FAR_CELL, FAR_DIST * k.draw)] {
             let r = (reach / size).ceil() as i32;
             for dx in -r..=r {
                 for dz in -r..=r {
@@ -1518,7 +1588,7 @@ impl Props {
                     for run in runs {
                         let model = &self.models[run.model];
                         let d = dist_to_box(cam, run.min, run.max);
-                        let (near, far) = model.reach(run.scale, lens);
+                        let (near, far) = model.reach(run.scale, lens, k);
                         if d > far || !frustum.intersects_aabb(run.min, run.max) || occluded.map_or(false, |o| o.hides_aabb(run.min, run.max)) {
                             continue;
                         }
@@ -1544,7 +1614,7 @@ impl Props {
                             Some(card) => {
                                 for sub in &run.subs {
                                     let ds = dist_to_box(cam, sub.min, sub.max);
-                                    let (near, far) = model.reach(sub.scale, lens);
+                                    let (near, far) = model.reach(sub.scale, lens, k);
                                     if ds > far || !frustum.intersects_aabb(sub.min, sub.max) || occluded.map_or(false, |o| o.hides_aabb(sub.min, sub.max)) {
                                         continue;
                                     }
@@ -1559,7 +1629,28 @@ impl Props {
                                     }
                                 }
                             }
-                            None => put(run.model, run),
+                            // a hedge: the high level to L, the low one from L - 16 (both in between,
+                            // each faded by city.wgsl); the shadow passes keep the high level
+                            None => match self.hedge_low.get(&run.model).filter(|_| scene) {
+                                Some(&low) if d > near + 1.0 => put(low, run),
+                                Some(&low) => {
+                                    for sub in &run.subs {
+                                        let ds = dist_to_box(cam, sub.min, sub.max);
+                                        let (near, far) = model.reach(sub.scale, lens, k);
+                                        if ds > far || !frustum.intersects_aabb(sub.min, sub.max) || occluded.map_or(false, |o| o.hides_aabb(sub.min, sub.max)) {
+                                            continue;
+                                        }
+                                        let ds_far = ds + Vec3::new(sub.max.x - sub.min.x, 0.0, sub.max.z - sub.min.z).length();
+                                        if ds <= near {
+                                            put(run.model, sub);
+                                        }
+                                        if ds_far >= near - 16.0 {
+                                            put(low, sub);
+                                        }
+                                    }
+                                }
+                                None => put(run.model, run),
+                            },
                         }
                     }
                 }
@@ -2285,4 +2376,36 @@ fn bake_card(prop: &mcla_formats::rage::props::Prop, texture: &mut dyn FnMut(&st
 fn plant_mesh_shadow() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MCLA_PLANT_MESH_SHADOW").map_or(false, |v| v != "0"))
+}
+
+#[cfg(test)]
+mod lod_option_tests {
+    use super::*;
+    /// lod_rule.md at the 25 degree lens: props 360.36 R (cap 2250), plants' model 20.31 R and cards 366.7 R;
+    /// DRAW DISTANCE scales the far ends (and the caps), DETAIL LEVEL the plant's model distance.
+    #[test]
+    fn reach_by_the_options() {
+        let m = |kind| PropModel { batches: Vec::new(), radius: 1.0, sphere: 1.0, kind };
+        let fov = 25f32.to_radians();
+        let (n, f) = m(0).reach(1.0, fov, Lod::ORIGINAL);
+        assert!((f - 360.36).abs() < 0.05 && n == f, "{f}");
+        let (_, f2) = m(0).reach(1.0, fov, Lod { draw: 2.0, detail: 1.0, ..Lod::ORIGINAL });
+        assert!((f2 - 2.0 * f).abs() < 0.01);
+        assert_eq!(m(0).reach(10.0, fov, Lod::ORIGINAL).1, 2250.0);
+        assert_eq!(m(0).reach(10.0, fov, Lod { draw: 1.5, detail: 1.0, ..Lod::ORIGINAL }).1, 3375.0);
+        let (n, f) = m(1).reach(1.0, fov, Lod::ORIGINAL);
+        assert!((n - 20.31).abs() < 0.02 && (f - 366.7).abs() < 0.1, "{n} {f}");
+        let (n3, f3) = m(1).reach(1.0, fov, Lod { draw: 1.0, detail: 3.0, ..Lod::ORIGINAL });
+        assert!((n3 - 3.0 * n).abs() < 0.01 && f3 == f);
+        // paused (sub_822E5B30): the model angle x 0.9 (0x82007FA8) - 2R / tan(12.5 x 0.9 deg x pi/400)
+        let (np, _) = m(1).reach(1.0, fov, Lod { plant_angle: 0.9, ..Lod::ORIGINAL });
+        assert!((np - 2.0 / (11.25f32 * std::f32::consts::PI / 400.0).tan()).abs() < 0.01 && (np - 22.58).abs() < 0.02, "{np}");
+        // hedges: high level to 2R / tan(h pi/600) (30.5 R), gone at 2R / tan(h pi/2400) (122.2 R)
+        let (l, hf) = m(2).reach(1.0, fov, Lod::ORIGINAL);
+        assert!((l - 30.54).abs() < 0.05 && (hf - 122.2).abs() < 0.1, "{l} {hf}");
+        assert_eq!(m(5).reach(1.0, fov, Lod::ORIGINAL), (0.0, hf));
+        // the cards end at the main view's far clip, 6000 m (0x82037480)
+        let big = PropModel { batches: Vec::new(), radius: 20.0, sphere: 20.0, kind: 1 };
+        assert_eq!(big.reach(2.0, fov, Lod::ORIGINAL).1, 6000.0);
+    }
 }

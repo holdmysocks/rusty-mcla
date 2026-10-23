@@ -28,7 +28,7 @@ pub struct FlashMovie {
     /// file each key was loaded from
     swap_files: HashMap<u32, String>,
     shared: Arc<HashMap<String, Texture>>,
-    name: String,
+    pub name: String,
     /// placement of a stage smaller than 1280x720, in 720p pixels
     pub offset: [f32; 2],
     /// the game's string table (what the game itself writes into movies)
@@ -237,7 +237,8 @@ impl FlashMovie {
         }
         let st = self.player.movie.stage;
         let k = w as f32 / (st[1] - st[0]).max(1.0);
-        let mut c = mcla_flash::raster::Canvas::new(w, h, [0, 0, 0, 0]);
+        // (the original's WorldIconRenderTarget%d is 4x multisampled - sub_821F7710, UI.md "UI edge smoothing")
+        let mut c = mcla_flash::raster::Canvas::with_samples(w, h, [0, 0, 0, 0], &mcla_flash::raster::SAMPLES_4X);
         c.draw(&list, k, [-st[0] * k, -st[2] * k], &|t| cache.get(&t).cloned().flatten());
         c.rgba
     }
@@ -375,6 +376,30 @@ impl FlashMovie {
         let s = self.player.movie.stage;
         let stage = Rect::from_min_max(Pos2::new(o.x + s[0] * k, o.y + s[2] * k), Pos2::new(o.x + s[1] * k, o.y + s[3] * k));
         let screen = if s[3] - s[2] < 719.0 { screen.intersect(stage) } else { screen };
+        // the mcUI ortho (sub_822264D0 -> sub_8217CC80, left 1, right W+1) puts stage (i+1, j) on pixel i with
+        // D3D9 pixel centres (PA_SU_VTX_CNTL pix_center 0): in centre-at-half terms the stage sits -0.5 / +0.5 px
+        let o = o + egui::vec2(-0.5 * k, 0.5 * k);
+        self.emit_list(ctx, list, [k, k], o, screen, &mut |c, sh| {
+            painter.with_clip_rect(c).add(sh);
+        });
+    }
+
+    /// The movie drawn flat into a picture of its own (`selfmovie`, the original's "fullscreenself"):
+    /// the stage squeezed onto `size` pixels, masks as clip rectangles as on the screen.
+    pub fn self_shapes(&mut self, ctx: &egui::Context, list: &DrawList, size: [f32; 2]) -> Vec<egui::epaint::ClippedShape> {
+        let s = self.player.movie.stage;
+        let (kx, ky) = (size[0] / (s[1] - s[0]).max(1.0), size[1] / (s[3] - s[2]).max(1.0));
+        // Ortho(0, W, H, 0) with D3D9 pixel centres (sub_82720C58): the target half a pixel down-right
+        let o = Pos2::new(-s[0] * kx + 0.5, -s[2] * ky + 0.5);
+        let mut out = Vec::new();
+        self.emit_list(ctx, list, [kx, ky], o, Rect::from_min_size(Pos2::ZERO, egui::vec2(size[0], size[1])), &mut |c, sh| {
+            out.push(egui::epaint::ClippedShape { clip_rect: c, shape: sh });
+        });
+        out
+    }
+
+    /// The list's triangles as egui shapes, stage (x, y) at `o + (x k0, y k1)`, each with its clip rectangle.
+    fn emit_list(&mut self, ctx: &egui::Context, list: &DrawList, k: [f32; 2], o: Pos2, screen: Rect, sink: &mut dyn FnMut(Rect, egui::Shape)) {
         let mut clips: Vec<Rect> = vec![screen];
         // the shape of each mask (its triangles), beside its box
         let mut shapes: Vec<Vec<Pos2>> = vec![Vec::new()];
@@ -404,7 +429,7 @@ impl FlashMovie {
                 Item::Triangles { tex, kind, verts } => {
                     if let Some(m) = &mut mask {
                         for v in verts {
-                            let at = Pos2::new(o.x + v.pos[0] * k, o.y + v.pos[1] * k);
+                            let at = Pos2::new(o.x + v.pos[0] * k[0], o.y + v.pos[1] * k[1]);
                             *m = m.union(Rect::from_min_size(at, egui::Vec2::ZERO));
                             shape.push(at);
                         }
@@ -417,7 +442,7 @@ impl FlashMovie {
                         let same = verts.iter().all(|v| v.color == first.color);
                         let mut cover = Rect::NOTHING;
                         for v in verts {
-                            cover = cover.union(Rect::from_min_size(Pos2::new(o.x + v.pos[0] * k, o.y + v.pos[1] * k), egui::Vec2::ZERO));
+                            cover = cover.union(Rect::from_min_size(Pos2::new(o.x + v.pos[0] * k[0], o.y + v.pos[1] * k[1]), egui::Vec2::ZERO));
                         }
                         let mut need = Rect::NOTHING;
                         for q in sh {
@@ -430,7 +455,7 @@ impl FlashMovie {
                                 mesh.vertices.push(egui::epaint::Vertex { pos: *q, uv: egui::epaint::WHITE_UV, color });
                             }
                             mesh.indices = (0..mesh.vertices.len() as u32).collect();
-                            painter.with_clip_rect(clips[clips.len() - 2]).add(egui::Shape::mesh(mesh));
+                            sink(clips[clips.len() - 2], egui::Shape::mesh(mesh));
                             continue;
                         }
                     }
@@ -445,13 +470,13 @@ impl FlashMovie {
                     for v in verts {
                         let uv = if handle.is_some() { Pos2::new(v.uv[0], v.uv[1]) } else { egui::epaint::WHITE_UV };
                         mesh.vertices.push(egui::epaint::Vertex {
-                            pos: Pos2::new(o.x + v.pos[0] * k, o.y + v.pos[1] * k),
+                            pos: Pos2::new(o.x + v.pos[0] * k[0], o.y + v.pos[1] * k[1]),
                             uv,
                             color: plain_color(v.color[0], v.color[1], v.color[2], v.color[3]),
                         });
                     }
                     mesh.indices = (0..mesh.vertices.len() as u32).collect();
-                    painter.with_clip_rect(*clips.last().unwrap()).add(egui::Shape::mesh(mesh));
+                    sink(*clips.last().unwrap(), egui::Shape::mesh(mesh));
                 }
             }
         }
@@ -783,6 +808,8 @@ pub struct MenuPage {
 pub struct FlashMenu {
     pub movie: FlashMovie,
     shown: Option<MenuPage>,
+    /// the glyphs the page was shown with (`glyphs`: the device, the movie's `platform`)
+    glyphs: (crate::glyphs::Device, i32),
 }
 
 pub const PAUSE_MOVIE: &str = "resources/ui/pause/0xaed9b6c9.r27";
@@ -866,7 +893,7 @@ impl FlashMenu {
         for _ in 0..4 {
             movie.player.tick();
         }
-        Some(FlashMenu { movie, shown: None })
+        Some(FlashMenu { movie, shown: None, glyphs: (crate::glyphs::Device::Xbox, 0) })
     }
 
     pub fn is_shown(&self) -> bool {
@@ -876,11 +903,18 @@ impl FlashMenu {
     /// Show `page`. A changed structure rebuilds the page (`TransitionLevel` 0);
     /// a changed selection only refreshes the list (`TransitionLevel` 1, `0x82635840`).
     pub fn show(&mut self, page: &MenuPage) {
-        if self.shown.as_ref() == Some(page) {
+        let glyphs = (crate::glyphs::device(), crate::glyphs::platform());
+        if self.shown.as_ref() == Some(page) && self.glyphs == glyphs {
             return;
         }
         let p = &mut self.movie.player;
-        let structure_changed = self.shown.as_ref().map_or(true, |s| s.layout != page.layout || s.icon != page.icon || s.tabs != page.tabs || s.cur_tab != page.cur_tab || s.title != page.title || s.rows.len() != page.rows.len() || s.prompts != page.prompts);
+        // (another device: the page again, with the other glyphs - the tab bar's LB / RB and
+        // the BUTTON column go by `platform` when the page is built)
+        let structure_changed = self.glyphs != glyphs || self.shown.as_ref().map_or(true, |s| s.layout != page.layout || s.icon != page.icon || s.tabs != page.tabs || s.cur_tab != page.cur_tab || s.title != page.title || s.rows.len() != page.rows.len() || s.prompts != page.prompts);
+        self.glyphs = glyphs;
+        p.set_global("platform", Value::Int(glyphs.1));
+        // (on the keyboard the tab bar's LB / RB are its Q / E)
+        p.key_caps = crate::glyphs::key_caps(&[("btn_lb", crate::flash_ui::ICON_LB), ("btn_rb", crate::flash_ui::ICON_RB)]);
         p.set_global("cur_visibility", Value::Int(1));
         // (wide screen; the menus' 2D layouts take their size from `pos_2d[aspect]`)
         p.set_global("aspect", Value::Int(1));
@@ -1250,8 +1284,9 @@ impl FlashMenu {
         p.set_global("ScrollbarVisible", Value::Int((page.list_max > 0 && page.rows.len() > list_max) as i32));
         p.set_path("prompt.count", Value::Int(page.prompts.len() as i32));
         for (i, (t, icon)) in page.prompts.iter().enumerate() {
-            p.set_path(&format!("prompt.elements.{}.text1", i), Value::str(t));
-            p.set_path(&format!("prompt.elements.{}.iconID", i), Value::Int(*icon));
+            let (t, icon) = crate::glyphs::prompt(t, *icon);
+            p.set_path(&format!("prompt.elements.{}.text1", i), Value::str(&t));
+            p.set_path(&format!("prompt.elements.{}.iconID", i), Value::Int(icon));
         }
         match &page.money {
             Some((label, amount)) => {
@@ -1356,6 +1391,8 @@ impl FlashMenu {
 pub struct FlashPrompt {
     pub movie: FlashMovie,
     shown: Option<(Vec<(String, i32)>, Option<i64>, Option<i64>)>,
+    /// the glyphs the bar was shown with (`FlashMenu::glyphs`)
+    glyphs: (crate::glyphs::Device, i32),
 }
 
 impl FlashPrompt {
@@ -1364,25 +1401,29 @@ impl FlashPrompt {
         for _ in 0..4 {
             movie.player.tick();
         }
-        Some(FlashPrompt { movie, shown: None })
+        Some(FlashPrompt { movie, shown: None, glyphs: (crate::glyphs::Device::Xbox, 0) })
     }
 
     /// `prompts` in the game's order (the bar lays them out right to left).
     /// `cart`: what is in the garage's cart (`showcart`, `t_cart`), shown before the money.
     pub fn show(&mut self, prompts: &[(String, i32)], money: Option<i64>, cart: Option<i64>) {
         let state = (prompts.to_vec(), money, cart);
-        if self.shown.as_ref() == Some(&state) {
+        let glyphs = (crate::glyphs::device(), crate::glyphs::platform());
+        if self.shown.as_ref() == Some(&state) && self.glyphs == glyphs {
             return;
         }
+        self.glyphs = glyphs;
         let p = &mut self.movie.player;
+        p.set_global("platform", Value::Int(glyphs.1));
         p.set_global("cur_visibility", Value::Int(1));
         p.set_path("prompt.template", Value::Int(0));
         // the money's thousands separator goes by language; the movie starts on 2
         p.set_global("lang", Value::Int(0));
         p.set_path("prompt.count", Value::Int(prompts.len() as i32));
         for (i, (t, icon)) in prompts.iter().enumerate() {
-            p.set_path(&format!("prompt.elements.{}.text1", i), Value::str(t));
-            p.set_path(&format!("prompt.elements.{}.iconID", i), Value::Int(*icon));
+            let (t, icon) = crate::glyphs::prompt(t, *icon);
+            p.set_path(&format!("prompt.elements.{}.text1", i), Value::str(&t));
+            p.set_path(&format!("prompt.elements.{}.iconID", i), Value::Int(icon));
         }
         p.set_global("showmoney", Value::Int(money.is_some() as i32));
         if let Some(m) = money {
@@ -1401,14 +1442,16 @@ impl FlashPrompt {
     /// (0..1) with the knob's `icon` (`prompt.replayIcon`, a frame of `playhead.icons`).
     pub fn show_replay(&mut self, prompts: &[(String, i32)], icon: i32, position: f32) {
         let p = &mut self.movie.player;
+        p.set_global("platform", Value::Int(crate::glyphs::platform()));
         p.set_global("cur_visibility", Value::Int(1));
         p.set_path("prompt.template", Value::Int(1));
         p.set_path("prompt.replayIcon", Value::Int(icon));
         p.set_path("prompt.replayPosition", Value::Float(position.clamp(0.0, 1.0)));
         p.set_path("prompt.count", Value::Int(prompts.len() as i32));
         for (i, (t, icon)) in prompts.iter().enumerate() {
-            p.set_path(&format!("prompt.elements.{}.text1", i), Value::str(t));
-            p.set_path(&format!("prompt.elements.{}.iconID", i), Value::Int(*icon));
+            let (t, icon) = crate::glyphs::prompt(t, *icon);
+            p.set_path(&format!("prompt.elements.{}.text1", i), Value::str(&t));
+            p.set_path(&format!("prompt.elements.{}.iconID", i), Value::Int(icon));
         }
         p.set_global("showmoney", Value::Int(0));
         p.set_global("showcart", Value::Int(0));
@@ -1439,6 +1482,8 @@ pub struct FlashPhone {
     shown: Option<(String, String, i32, String)>,
     /// frames left to let the phone fold and slide away after the message
     pub closing: u32,
+    /// the glyphs the prompt was shown with (`FlashMenu::glyphs`)
+    glyphs: (crate::glyphs::Device, i32),
 }
 
 pub const PHONE_MOVIE: &str = "resources/ui/0xabc77a4f/0x1ddfa2df.r27";
@@ -1449,7 +1494,7 @@ impl FlashPhone {
         for _ in 0..5 {
             movie.player.tick();
         }
-        Some(FlashPhone { movie, shown: None, closing: 0 })
+        Some(FlashPhone { movie, shown: None, closing: 0, glyphs: (crate::glyphs::Device::Xbox, 0) })
     }
 
     pub fn is_active(&self) -> bool {
@@ -1474,6 +1519,20 @@ impl FlashPhone {
         // this movie's `getvar IsNight`, so the flag stays 0.
         let _ = night;
         p.set_global("d_IsNight", Value::Int(0));
+        // (the movie's frame script sends the back button to its frame 2, the PS3's, while
+        // `platform` > 0 and never back: the port sets the frame. On the keyboard the button
+        // is the GPS map's key, which is Back there.)
+        let glyphs = (crate::glyphs::device(), crate::glyphs::platform());
+        if self.glyphs != glyphs {
+            self.glyphs = glyphs;
+            p.set_global("platform", Value::Int(glyphs.1));
+            if let Some(id) = p.find("prompt.btn_back") {
+                p.goto(id, glyphs.1 as usize);
+            }
+        }
+        // (dark on the screen's light strip, as the button's own picture; no brackets - the
+        // strip has room for the clip's width)
+        p.key_caps = if glyphs.0 == crate::glyphs::Device::Keyboard { vec![("btn_back".into(), crate::glyphs::gps_key().to_string(), 0xff30_3030)] } else { Vec::new() };
         match message {
             Some((title, text, icon)) => {
                 let state = (title.to_string(), text.to_string(), icon, prompt.to_string());

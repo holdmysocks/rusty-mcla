@@ -8,7 +8,6 @@
 
 use glam::{Quat, Vec3};
 use hashbrown::HashMap;
-use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct View {
@@ -44,9 +43,11 @@ const FIELDS: [&str; 8] = ["Height", "Dist", "Azimuth", "Incline", "FOV", "Inter
 impl Views {
     pub fn load(data_dir: &str, car: &str) -> Option<Views> {
         let base = car.to_ascii_lowercase();
-        // (the DUB editions use their base car's garage)
-        let names = [base.clone(), base.replace("_dub", "")];
-        let read = |n: &str| std::fs::read_to_string(Path::new(data_dir).join("tune/garage").join(format!("0x{:08x}", mcla_formats::hash::joaat(&format!("{n}.garage"))))).ok();
+        // (the DUB editions use their base car's garage; a mod car: its own file, then its manifest's garage donor -
+        // modfs.rs)
+        let mut names = vec![base.clone(), base.replace("_dub", "")];
+        names.extend(crate::modfs::car_names(&base, crate::modfs::Donor::Garage).into_iter().skip(1));
+        let read = |n: &str| crate::modfs::read_text(data_dir, &format!("tune/garage/0x{:08x}", mcla_formats::hash::joaat(&format!("{n}.garage"))));
         let text = names.iter().find_map(|n| read(n))?;
         // (the cut GT-R's file was left unfinished - no WholeCarViewMenuOffsetZ / MenuScaleX / MenuScaleY,
         // no RearLowCloseMenuScaleY: the VEHICLE tab's panel had no size. Its stand-in's file goes first,

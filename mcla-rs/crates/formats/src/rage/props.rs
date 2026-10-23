@@ -25,6 +25,8 @@ pub struct Prop {
     pub hash: u32,
     /// LOD0 meshes with their shader index
     pub meshes: Vec<(Mesh, u16)>,
+    /// the next LOD slot's meshes (only the two hedge types have one: their low level)
+    pub lod1: Vec<(Mesh, u16)>,
     pub shaders: Vec<Shader>,
     pub min: Vec3,
     pub max: Vec3,
@@ -151,8 +153,9 @@ pub fn parse_props(res: &Resource) -> Vec<Prop> {
             }
         }
         let mut meshes = Vec::new();
+        let mut lod1 = Vec::new();
         {
-            // first LOD slot that has models
+            // first LOD slot that has models (and the slot after it)
             for lod in 0..4 {
                 let Some(slot) = rd.ptr(dr + 0x40 + lod * 4) else { continue };
                 let n = rd.u16(slot + 4) as usize;
@@ -166,6 +169,16 @@ pub fn parse_props(res: &Resource) -> Vec<Prop> {
                     }
                 }
                 if !meshes.is_empty() {
+                    if let Some(slot) = rd.ptr(dr + 0x40 + (lod + 1) * 4).filter(|_| lod < 3) {
+                        let n = rd.u16(slot + 4) as usize;
+                        if let (Some(arr), true) = (rd.ptr(slot), n > 0 && n <= 64) {
+                            for i in 0..n {
+                                if let Some(m) = rd.ptr(arr + i * 4) {
+                                    model_meshes(&rd, m, &mut lod1);
+                                }
+                            }
+                        }
+                    }
                     break;
                 }
             }
@@ -182,7 +195,7 @@ pub fn parse_props(res: &Resource) -> Vec<Prop> {
         let (center, radius) = if center.is_finite() && radius.is_finite() && radius > 0.0 { (center, radius) } else { (Vec3::ZERO, 0.0) };
         let (mass, parts) = physics(&rd, frag);
         let locators = locators(&rd, dr);
-        out.push(Prop { off: frag, name, hash: *h, meshes, shaders, min, max, center, radius, mass, parts, locators });
+        out.push(Prop { off: frag, name, hash: *h, meshes, lod1, shaders, min, max, center, radius, mass, parts, locators });
     }
     out
 }

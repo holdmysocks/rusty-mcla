@@ -411,6 +411,10 @@ impl Career {
             for (k, v) in crate::catalog::CUT_STRINGS {
                 m.entry(mcla_formats::hash::joaat(k)).or_insert_with(|| v.to_string());
             }
+            // (the mod cars' long / short names from their manifests: modcars.rs)
+            for (k, v) in crate::modcars::strings() {
+                m.entry(mcla_formats::hash::joaat(k)).or_insert_with(|| v.clone());
+            }
         }
         if let Ok(rd) = std::fs::read_dir(root.join("ui")) {
             let mut files: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.file_name().map_or(false, |n| n != "0xa4c1e8fa" && n != "0xac5297d5")).collect();

@@ -1203,6 +1203,12 @@ impl World {
         self.pending.len()
     }
 
+    /// The original's detail-model distance of a sector (sub_822D5A30: `MaxHilodDrawDistance` 300 x the
+    /// lens scale, 1.5 at a 25 degree lens .. 1.0 from 50 degrees) times the DETAIL LEVEL `detail`.
+    pub fn detail_distance(lens_deg: f32, detail: f32) -> f32 {
+        300.0 * (1.5 - 0.5 * ((lens_deg - 25.0) * 0.04).clamp(0.0, 1.0)) * detail.max(1.0)
+    }
+
     pub fn update(&mut self, gpu: &mut Gpu, pos: Vec3, budget_ms: f32) {
         // The original draws a sector in detail while the level distance from the camera to its
         // box is under 300 m times a lens scale - 1.5 at the 25 degree lens of a standing car,
@@ -1210,9 +1216,11 @@ impl World {
         // sectors in memory to 600 m (sub_822D5A30 / sub_822D7D00, work/map/lod_rule.md). Here
         // "loaded" is "drawn in detail", so the load distance is that rule (plus a margin before
         // a sector is dropped again). The original cross-fades the two over a third of a second;
-        // here they swap. MCLA_SECTOR_DIST=<metres> overrides.
+        // here they swap. MCLA_SECTOR_DIST=<metres> overrides. OPTIONS > PERFORMANCE > DETAIL LEVEL
+        // multiplies the 300 m (MaxHilodDrawDistance, 0x827E0DE0) - and so what is loaded with it;
+        // ORIGINAL = 1. (DRAW DISTANCE has nothing to scale here: the far models are drawn at any distance.)
         let lens_deg = crate::props::lens().to_degrees();
-        let detail = 300.0 * (1.5 - 0.5 * ((lens_deg - 25.0) * 0.04).clamp(0.0, 1.0));
+        let detail = Self::detail_distance(lens_deg, crate::props::Lod::now().detail);
         let detail = std::env::var("MCLA_SECTOR_DIST").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(detail);
         // (the lens widens with speed: keep to the larger distance for a while rather than drop and reload)
         self.load_radius = detail.max(self.load_radius - 2.0);
@@ -1615,5 +1623,16 @@ mod batch_tests {
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].vertices.len(), 6);
         assert_eq!(batches[0].indices, [0, 1, 2, 3, 4, 5]);
+    }
+}
+
+#[cfg(test)]
+mod lod_option_tests {
+    /// sub_822D5A30: 300 x (1.5 at 25 degrees .. 1.0 from 50), times DETAIL LEVEL.
+    #[test]
+    fn sector_detail_distance() {
+        let d = super::World::detail_distance;
+        assert_eq!([d(25.0, 1.0), d(37.5, 1.0), d(50.0, 1.0), d(70.0, 1.0)], [450.0, 375.0, 300.0, 300.0]);
+        assert_eq!([d(25.0, 2.0), d(50.0, 3.0)], [900.0, 900.0]);
     }
 }

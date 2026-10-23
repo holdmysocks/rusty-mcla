@@ -325,6 +325,13 @@ pub const VEHICLES: [&str; 69] = [
     "vp_se_dge_ubp_06", "vp_se_dge_chp_06",
 ];
 
+/// A vehicle's table index: its place in `VEHICLES`, a mod car's after them (69 + its place in name order,
+/// `modcars`; MODS.md M-5), else -1.
+pub fn vehicle_index(name: &str) -> i32 {
+    let n = name.to_ascii_lowercase();
+    VEHICLES.iter().position(|v| *v == n).map(|k| k as i32).or_else(|| crate::modcars::table_index(&n).map(|k| k as i32)).unwrap_or(-1)
+}
+
 /// The game's string hash (sub_821C9790): lower case, one-at-a-time.
 pub fn joaat(s: &str) -> u32 {
     let mut h = 0u32;
@@ -732,7 +739,7 @@ impl Car {
         };
         let type_name = cstr(8109, 32);
         let vehicle = vehicle.to_ascii_lowercase();
-        let vehicle_index = VEHICLES.iter().position(|v| *v == vehicle).map_or(-1, |k| k as i32);
+        let vehicle_index = vehicle_index(&vehicle);
         let performance = Performance {
             stages: PERF_PARTS.iter().enumerate().map(|(k, n)| (n.to_string(), b[28 + k])).collect(),
             airbags_fitted: b[41],
@@ -951,7 +958,7 @@ impl VehicleRecord {
     /// A model's record as the constructor leaves it (sub_8238FFC8): nothing owned, the sum 1.
     pub fn new(vehicle: &str) -> VehicleRecord {
         let v = vehicle.to_ascii_lowercase();
-        VehicleRecord { index: VEHICLES.iter().position(|n| *n == v).map_or(-1, |k| k as i32), in_use: true, hash: format!("0x{:08x}", joaat(&v)), vehicle: Some(v), refund_value: 0, spent_plus_1: 1, ..Default::default() }
+        VehicleRecord { index: vehicle_index(&v), in_use: true, hash: format!("0x{:08x}", joaat(&v)), vehicle: Some(v), refund_value: 0, spent_plus_1: 1, ..Default::default() }
     }
 
     /// What was spent on parts for this model (0xCDCC + 1 = never set up, 0 likewise).
@@ -1771,6 +1778,18 @@ impl Game {
                 for r in m.vehicle_records.iter_mut() {
                     r.upgrade();
                 }
+                // (a mod car's table index follows the mods installed now: rewritten from its name, as the
+                // original rewrites every slot's from its TypeName on load - MODS.md M-2, sub_8238C5A0)
+                for c in m.garage.iter_mut() {
+                    if let Some(k) = crate::modcars::table_index(&c.vehicle) {
+                        c.vehicle_index = k as i32;
+                    }
+                }
+                for r in m.vehicle_records.iter_mut() {
+                    if let Some(k) = r.vehicle.as_deref().and_then(crate::modcars::table_index) {
+                        r.index = k as i32;
+                    }
+                }
                 // (what the port's own tags say was bought, into the records of a block the
                 // port made: its first build wrote four categories only)
                 if m.made_by_port() {
@@ -1848,7 +1867,7 @@ impl Game {
             // (no set-up file at hand: the constructor's record - sub_82395138)
             let made = made.unwrap_or_else(|| {
                 let mut c = Car { slot, TypeName: car.to_string(), vehicle: car.to_ascii_lowercase(), in_garage: 1, source_config: Some(cfg.clone()), source_config_hash: format!("0x{:08x}", joaat(&cfg)), ..Default::default() };
-                c.vehicle_index = VEHICLES.iter().position(|v| *v == c.vehicle).map_or(-1, |k| k as i32);
+                c.vehicle_index = vehicle_index(&c.vehicle);
                 c.visual.m_vWindowTintColorNew = fv(&[0.0, 0.0035, 0.005, 0.372]);
                 c.visual.ExtNeonColor = fv(&[0.52, 0.52, 1.0]);
                 c.visual.LicenseBG = 4;

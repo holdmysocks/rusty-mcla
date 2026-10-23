@@ -238,6 +238,10 @@ pub struct Player {
     pub warnings: Vec<String>,
     /// false while building previews: no ActionScript runs
     pub scripts: bool,
+    /// The host's key names drawn in place of clips, by instance name, with their ARGB
+    /// colour (a pad button's picture shown as a keyboard key: `draw::Builder::key_cap`);
+    /// empty = as authored.
+    pub key_caps: Vec<(String, String, u32)>,
 }
 
 const MAX_WARNINGS: usize = 200;
@@ -261,6 +265,7 @@ impl Player {
             alloc_since_gc: 0,
             warnings: Vec::new(),
             scripts: true,
+            key_caps: Vec::new(),
         };
         p.global = p.alloc(ObjKind::Script);
         p.root = p.alloc_inst(Inst::new(0, 0, None));

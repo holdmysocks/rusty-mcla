@@ -156,7 +156,7 @@ struct Mesh {
 }
 
 struct State {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: crate::render::ms::MsPipe,
     /// by (particle rule, drawable)
     meshes: HashMap<(u16, u16), Mesh>,
     /// this frame's particles in the order they are drawn
@@ -169,7 +169,7 @@ struct State {
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
-fn make_pipeline(gpu: &Gpu) -> wgpu::RenderPipeline {
+fn make_pipeline(gpu: &Gpu) -> crate::render::ms::MsPipe {
     let device = &gpu.device;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("model particles"), source: wgpu::ShaderSource::Wgsl(include_str!("render/modelfx.wgsl").into()) });
     // (the globals and the effect sheets' texture group, as the sprites have them)
@@ -186,10 +186,10 @@ fn make_pipeline(gpu: &Gpu) -> wgpu::RenderPipeline {
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 32, shader_location: 3 },
         ],
     };
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    crate::render::ms::MsPipe::new(device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("model particles"),
         layout: Some(&pl),
-        vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_model"), buffers: &[vtx, INST_LAYOUT], compilation_options: Default::default() },
+        vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_model"), buffers: &[vtx.clone(), INST_LAYOUT], compilation_options: Default::default() },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: Some("fs_model"),
@@ -200,11 +200,11 @@ fn make_pipeline(gpu: &Gpu) -> wgpu::RenderPipeline {
         // (two-sided: PSRrmptfxModel turns the normal by the face register)
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, front_face: wgpu::FrontFace::Cw, ..Default::default() },
         // (DepthTest 1, DepthWrite 1; the scene's reversed depth)
-        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::GreaterEqual, stencil: Default::default(), bias: Default::default() }),
-        multisample: Default::default(),
+        depth_stencil: Some(v.ds(true, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
+        multisample: v.ms(),
         multiview: None,
         cache: None,
-    })
+    }))
 }
 
 /// At the effect list's load: the triangles of drawable `card` of particle rule `rule` and its
@@ -276,8 +276,8 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder) {
     }
     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("model particles"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.post.scene_view(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &gpu.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
         timestamp_writes: None,
         occlusion_query_set: None,
     });

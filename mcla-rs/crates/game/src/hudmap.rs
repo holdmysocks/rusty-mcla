@@ -11,7 +11,7 @@
 //!   sized from the camera height, coloured by the tune (`tune/ui` `HudMap`) or by the element,
 //!   pulsing and cross-fading on a clock - or, on the minimap, into a dot on the rim when it lies
 //!   outside the map.
-//! - MINIMAP (mode 0): a 220x220 render target (`__mini_map`, 8888, 2x MSAA) cleared to the hudmap
+//! - MINIMAP (mode 0): a 220x220 render target (`__mini_map`, 8888, 4x MSAA) cleared to the hudmap
 //!   movie's background colour with alpha 0; the five road meshes, the queued icon meshes, then a
 //!   round mask that takes alpha away (`mask0.dds`, reverse-subtract), then the rim dots. The
 //!   hudmap movie shows that target in its clip `renderMe` at 90 % over its `miniBG` plate.
@@ -1311,7 +1311,7 @@ impl Ripple {
     }
 }
 
-/// The map's render target with two samples per pixel (the original's 2x MSAA): 220x220
+/// The map's render target with four samples per pixel (the original's 4x MSAA: surface field 2): 220x220
 /// "__mini_map" for the minimap, 749x430 "__hud_map" for the overhead map (`sub_821F7920`).
 pub struct Target {
     pub w: usize,
@@ -1322,8 +1322,10 @@ pub struct Target {
     roads: Option<([u32; 16], Vec<[f32; 4]>)>,
 }
 
-/// Where the two samples of a pixel lie (pixel corner = 0).
-const SAMPLES: [(f32, f32); 2] = [(0.25, 0.25), (0.75, 0.75)];
+/// Where the four samples of a pixel lie (pixel corner = 0). *(approx.)* The console's own 4x positions are not
+/// decoded; these are D3D's standard 4x pattern (-2,-6) (6,-2) (-6,2) (2,6) / 16 px, which the recomp's captures use.
+const SAMPLES: [(f32, f32); 4] = [(0.375, 0.125), (0.875, 0.375), (0.125, 0.625), (0.625, 0.875)];
+const NS: usize = SAMPLES.len();
 
 #[derive(Clone, Copy, PartialEq)]
 enum Blend {
@@ -1337,7 +1339,7 @@ impl Target {
     }
 
     pub fn rect(w: usize, h: usize) -> Target {
-        Target { w, h, buf: vec![[0.0; 4]; w * h * 2], roads: None }
+        Target { w, h, buf: vec![[0.0; 4]; w * h * NS], roads: None }
     }
 
     pub fn clear(&mut self, c: [f32; 4]) {
@@ -1386,7 +1388,7 @@ impl Target {
                         None => tex.map_or([1.0; 4], |t| t.sample(u, vv, lod)),
                     };
                     let src = [t[0] * colour[0], t[1] * colour[1], t[2] * colour[2], t[3] * colour[3]];
-                    let d = &mut self.buf[(py * self.w + px) * 2 + s];
+                    let d = &mut self.buf[(py * self.w + px) * NS + s];
                     for k in 0..3 {
                         d[k] = src[k] * src[3] + d[k] * (1.0 - src[3]);
                     }
@@ -1447,7 +1449,7 @@ impl Target {
                     let u = ((px as f32 + sx) / nw).clamp(0.05, 0.95);
                     let v = ((py as f32 + sy) / nh).clamp(0.05, 0.95);
                     let m = mask.sample(u, v, 0.0)[0];
-                    let d = &mut self.buf[(py * self.w + px) * 2 + s];
+                    let d = &mut self.buf[(py * self.w + px) * NS + s];
                     d[3] = (d[3] - (1.0 - m)).max(0.0);
                 }
             }
@@ -1481,12 +1483,12 @@ impl Target {
         }
     }
 
-    /// The resolved picture (two samples averaged), straight RGBA 8-bit.
+    /// The resolved picture (the samples averaged), straight RGBA 8-bit.
     pub fn resolve(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.w * self.h * 4);
-        for p in self.buf.chunks_exact(2) {
+        for p in self.buf.chunks_exact(NS) {
             for k in 0..4 {
-                out.push((((p[0][k] + p[1][k]) * 0.5).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+                out.push(((p.iter().map(|s| s[k]).sum::<f32>() / NS as f32).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
             }
         }
         out
@@ -2091,6 +2093,12 @@ impl NavLens {
     /// the closing fade back to the game camera's lens
     pub fn closing(to_deg: f32, delay: f32, dur: f32) -> NavLens {
         NavLens { from: 25.0, to: to_deg, delay, dur, clock: 0.0, deg: 25.0 }
+    }
+
+    /// the warper's lens (`sub_82219BA0` / `sub_82219DA0`: Lerp_Float 804 from, 812 to, 580 delay, 576
+    /// length, written to warper+284)
+    pub fn between(from_deg: f32, to_deg: f32, delay: f32, dur: f32) -> NavLens {
+        NavLens { from: from_deg, to: to_deg, delay, dur, clock: 0.0, deg: from_deg }
     }
 
     /// already over (the lens at 25 degrees)

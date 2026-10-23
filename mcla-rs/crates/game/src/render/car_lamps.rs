@@ -200,6 +200,10 @@ pub fn setup_file(data_dir: &std::path::Path, name: &str) -> Option<std::path::P
     if name.is_empty() || name.contains(['/', '\\', ':']) {
         return None;
     }
+    // (a mod car's stock set-up: the mod's own or the one made from its donor - modcars.rs)
+    if let Some(p) = crate::modcars::setup_file(name) {
+        return Some(p);
+    }
     let dir = data_dir.join("resources/vehicle/configs");
     let plain = dir.join(format!("{name}.xcc"));
     if plain.is_file() {

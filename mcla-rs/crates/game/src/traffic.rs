@@ -11,7 +11,7 @@
 use super::Vehicles;
 use crate::physics::collision::WorldCollider;
 use glam::{Quat, Vec2, Vec3};
-use mcla_formats::rage::navsys::{LaneCurve, NavSys, DEFAULT_ROAD_SPEED};
+use mcla_formats::rage::navsys::{LaneCurve, NavSys, RegionRect, DEFAULT_ROAD_SPEED};
 
 const MPH: f32 = 0.44704;
 /// The slowest a car is ever asked to drive (sub_827A2B38: 10 mph).
@@ -2491,6 +2491,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn front_end_frustum_and_lane_entries() {
+        // shot 5's values (AmbientMgr_SetFrontEnd(1, 0, 0, 0.1, 226, 4)), a camera looking down -z,
+        // tan up 0.3, across 0.3 x 16 / 9
+        let fe = FrontEnd { eye: Vec3::new(10.0, 2.0, 5.0), fwd: Vec3::NEG_Z, tan: [0.3, 0.3 * 16.0 / 9.0], amb: [0.0, 0.0, 0.1, 226.0], index: 4 };
+        let pl = frontend_planes(&fe);
+        let inside = |p: Vec3| !pl.iter().any(|q| plane_out(*q, p));
+        assert!(inside(Vec3::new(10.0, 2.0, -100.0)));
+        // near 0.1, far 226 along the view
+        assert!(!inside(Vec3::new(10.0, 2.0, 5.0 - 0.05)));
+        assert!(inside(Vec3::new(10.0, 2.0, 5.0 - 225.9)));
+        assert!(!inside(Vec3::new(10.0, 2.0, 5.0 - 226.1)));
+        // the side planes at atan(0.5333) = 28.07 degrees across, atan(0.3) = 16.70 degrees up
+        let at = |deg_x: f32, deg_y: f32| Vec3::new(10.0 + 100.0 * deg_x.to_radians().tan(), 2.0 + 100.0 * deg_y.to_radians().tan(), -95.0);
+        assert!(inside(at(28.0, 0.0)) && !inside(at(28.2, 0.0)) && inside(at(-28.0, 0.0)) && !inside(at(-28.2, 0.0)));
+        assert!(inside(at(0.0, 16.6)) && !inside(at(0.0, 16.8)) && !inside(at(0.0, -16.8)));
+        // S+8312 widens the sides: 0.06 rad more (31.51 degrees)
+        let wide = frontend_planes(&FrontEnd { amb: [0.06, 0.0, 0.1, 226.0], ..fe });
+        assert!(!wide.iter().any(|q| plane_out(*q, at(31.45, 0.0))) && wide.iter().any(|q| plane_out(*q, at(31.6, 0.0))));
+        // a straight lane across the view from the left (x -1000 .. 1000 at z -95): one entry,
+        // across the left plane (index 1), at the middle of the 100 samples' step
+        let c = path_curve(&[Vec3::new(-990.0, 2.0, -95.0), Vec3::new(1010.0, 2.0, -95.0)]);
+        let e = lane_entries(&c, pl[1], 64);
+        assert_eq!(e.len(), 1);
+        let x_edge = 10.0 - 100.0 * (0.3f32 * 16.0 / 9.0);
+        assert!((e[0].0.x - x_edge).abs() < 2000.0 / 99.0, "{:?} {}", e[0], x_edge);
+        assert!(lane_entries(&c, pl[2], 64).is_empty());
+        // the region's sphere test: a 40 x 10 m road along +x, 30 m off a circle of 20 m
+        let r = RegionRect { index: 0, rect_c: [0.0, 0.0], width: 10.0, len: 40.0, y_range: [0.0, 1.0], mid: Vec3::ZERO, dir: Vec3::X, side: Vec3::Z };
+        assert!(region_meets_circle(&r, Vec3::new(0.0, 0.0, 24.9), 20.0));
+        assert!(!region_meets_circle(&r, Vec3::new(0.0, 0.0, 25.1), 20.0));
+        assert!(region_meets_circle(&r, Vec3::new(39.9, 0.0, 0.0), 20.0));
+        assert!(!region_meets_circle(&r, Vec3::new(40.1, 0.0, 0.0), 20.0));
+    }
+
+    #[test]
     fn the_drawn_wheels_lock_two_updates_late() {
         // (sub_826E5950: the car ahead in charge, mean asked deceleration >= fMaxDecel, over 5 mph)
         let mut l = Lock::default();
@@ -2655,6 +2690,8 @@ pub struct Road {
     pub bmin: Vec3,
     pub bmax: Vec3,
     pub no_box: bool,
+    /// the rectangle the front-end mode's sphere and frustum tests take (sub_8224D4C0, sub_826F4E90)
+    pub rect: RegionRect,
 }
 
 /// `density_tuning.xml`.
@@ -2746,6 +2783,15 @@ pub struct Spawner {
     pub region_box: (glam::Vec2, glam::Vec2, f32, f32),
     /// the cutscene mode this frame (sub_826D4CA0): the parked lists' box as wide as it is long
     pub cutscene: bool,
+    /// the front-end mode this frame (sub_826D4C90): its camera and values
+    pub frontend: Option<FrontEnd>,
+    /// the junctions' rectangles (as `ints`), the junctions the front-end region list holds,
+    /// and the front-end lane points (ambient S+48, sub_8273E7E8)
+    pub int_rects: Vec<RegionRect>,
+    pub fe_ints: Vec<usize>,
+    pub fe_pts: FrontEndPoints,
+    /// every lane's links on the rail graph, in order
+    lane_links: Vec<Vec<usize>>,
 }
 
 fn lerp(a: [f32; 2], t: f32) -> f32 {
@@ -2793,13 +2839,27 @@ impl Spawner {
             let (mut bmin, mut bmax) = mids.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), p| (a.min(*p), b.max(*p)));
             bmin.y = z.y_range[0];
             bmax.y = z.y_range[1] + 2.0;
-            roads.push(Road { mid: z.mid, dir: z.dir, half, speed: z.speed_limit_mps(), density: z.density, lanes, lane_len, bmin, bmax, no_box: z.no_box });
+            let rect = RegionRect { index: roads.len(), rect_c: z.rect_c, width: z.width, len: z.rect_len, y_range: z.y_range, mid: z.mid, dir: z.dir, side: z.side };
+            roads.push(Road { mid: z.mid, dir: z.dir, half, speed: z.speed_limit_mps(), density: z.density, lanes, lane_len, bmin, bmax, no_box: z.no_box, rect });
         }
         let ints = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66"))
             .map(|r| mcla_formats::rage::navsys::parse_intersections(&r))
             .unwrap_or_default();
+        let int_rects = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66"))
+            .map(|r| mcla_formats::rage::navsys::parse_intersection_rects(&r))
+            .unwrap_or_default();
+        let mut lane_links: Vec<Vec<usize>> = Vec::new();
+        for (k, l) in nav.links.iter().enumerate() {
+            if lane_links.len() <= l.lane {
+                lane_links.resize(l.lane + 1, Vec::new());
+            }
+            lane_links[l.lane].push(k);
+        }
+        for v in lane_links.iter_mut() {
+            v.sort_by(|a, b| nav.links[*a].t[0].total_cmp(&nav.links[*b].t[0]));
+        }
         let n = roads.len();
-        Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None, region_box: (glam::Vec2::ZERO, glam::Vec2::NEG_Y, 0.0, 0.0), cutscene: false }
+        Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None, region_box: (glam::Vec2::ZERO, glam::Vec2::NEG_Y, 0.0, 0.0), cutscene: false, frontend: None, int_rects, fe_ints: Vec::new(), fe_pts: FrontEndPoints::default(), lane_links }
     }
 
     /// The road a link belongs to (sub_82245340): its lane's owner when that is a road (flag
@@ -2821,7 +2881,12 @@ impl Spawner {
     /// mode's meaning is a guess) the indices map 0 -> 0, 1-2 -> 0.55, 3-5 -> 1.25, 6 -> 0.10.
     fn value(&self, r: u32, free_fast: bool) -> f32 {
         let own = self.roads[r as usize].density;
-        let idx = self.script.get(&r).copied().unwrap_or(if own >= 0 { own } else { 3 }).clamp(0, 6) as usize;
+        // (the front-end mode's index, 0x8282A7D8, before the road's own)
+        let base = match self.frontend {
+            Some(f) => f.index,
+            None => if own >= 0 { own } else { 3 },
+        };
+        let idx = self.script.get(&r).copied().unwrap_or(base).clamp(0, 6) as usize;
         if free_fast {
             return match idx {
                 0 => 0.0,
@@ -2852,6 +2917,273 @@ pub(super) fn seen(t: &Tune, focus: Vec3, view: Vec3, mph: f32, p: Vec3, occ: Op
         return false;
     }
     !occ.is_some_and(|o| o.hides_sphere(p + Vec3::Y * 1.5, 2.0))
+}
+
+// ---------------------------------------------------------------------------------
+// The ambient manager's front-end mode (sub_826D4C90: byte 0x829095FE, set by the press-start
+// script's AmbientMgr_SetFrontEnd(1, a, b, c, d, n), sub_826D5D10, which also writes S+8312 = a,
+// S+8316 = b, S+8304 = c, S+8308 = d and 0x8282A7D8 = n). No player exists on the start screen:
+// sub_826D75D8 runs the manager once with the camera (sub_826F14E0: focus its eye, view its
+// forward made flat, speed 0, no player's road).
+
+/// The world's frames run before the start screen's first frame is seen: the press-start script sets
+/// the front-end mode (0x532), then waits for the city (City_DoneStreaming(250) polled every 10 ms)
+/// and for Game_GetLoadingDone behind the loading logo; the game (the ambient manager and the cars)
+/// runs meanwhile. The wait is the streaming's, not a constant of the code: in the recording
+/// `work/title-cams/rec4` the boot movies end at f0184 and the first frame of the shot is f0224
+/// (0.1 s a frame), and that first frame shows the freeway already full, the cars spread some 200 m
+/// from the lane points they were made at: 4.0 s, i.e. 120 frames at 30 Hz (approximate - the
+/// script's start inside that window was not measured).
+pub const FRONT_END_PREROLL: u32 = 120;
+
+/// The front-end mode this frame.
+#[derive(Clone, Copy, Debug)]
+pub struct FrontEnd {
+    pub eye: Vec3,
+    /// the camera's forward (unit)
+    pub fwd: Vec3,
+    /// tan(fov / 2) up and across (viewport +712, +716)
+    pub tan: [f32; 2],
+    /// S+8312 (widens the frustum across, radians), S+8316 (up), S+8304 (near), S+8308 (far)
+    pub amb: [f32; 4],
+    /// the roads' density index (0x8282A7D8, sub_8273B670)
+    pub index: i32,
+}
+
+/// The front-end lane points (ambient S+48, sub_8273E7E8): the planes and region count they were
+/// made for (the list is made again only when either changed), and at most 256 points - where a
+/// lane goes into the frustum across one plane, inside the other five: the point, the lane, its
+/// phase and the rail link and metres along it (none: a lane off the rail graph).
+#[derive(Default, Clone)]
+pub struct FrontEndPoints {
+    planes: [glam::Vec4; 6],
+    regions: Option<usize>,
+    pub pts: Vec<(Vec3, usize, f32, Option<(usize, f32)>)>,
+}
+
+/// The front-end frustum (sub_8273E2F8): six planes, outward normal and w = normal . point (a
+/// point is outside when normal . p - w > 0): near (at S+8304), left, right, far (at S+8308), top,
+/// bottom; the sides at atan(tan across) + S+8312 and atan(tan up) + S+8316 off the forward axis.
+pub fn frontend_planes(fe: &FrontEnd) -> [glam::Vec4; 6] {
+    let [a, b, near, far] = fe.amb;
+    let h = fe.tan[1].atan() + a;
+    let v = fe.tan[0].atan() + b;
+    // the viewport's matrix: z = -forward, x = right, y = up
+    let z = -fe.fwd;
+    let x = Vec3::Y.cross(z).normalize_or(Vec3::X);
+    let y = z.cross(x);
+    let local = [
+        (Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, -near)),
+        (Vec3::new(-h.cos(), 0.0, h.sin()), Vec3::ZERO),
+        (Vec3::new(h.cos(), 0.0, h.sin()), Vec3::ZERO),
+        (Vec3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 0.0, -far)),
+        (Vec3::new(0.0, v.cos(), v.sin()), Vec3::ZERO),
+        (Vec3::new(0.0, -v.cos(), v.sin()), Vec3::ZERO),
+    ];
+    local.map(|(n, p)| {
+        let nw = x * n.x + y * n.y + z * n.z;
+        let pw = fe.eye + x * p.x + y * p.y + z * p.z;
+        nw.extend(nw.dot(pw))
+    })
+}
+
+fn plane_out(pl: glam::Vec4, p: Vec3) -> bool {
+    pl.truncate().dot(p) - pl.w > 0.0
+}
+
+/// Where a lane goes into a plane's inside (sub_822450A0): the lane at t = k x 0.01010101 (k 0 ..
+/// 99, lane vfunc 7); a step from outside to inside gives the middle of the step and its phase;
+/// at most `max`.
+pub fn lane_entries(c: &LaneCurve, pl: glam::Vec4, max: usize) -> Vec<(Vec3, f32)> {
+    let mut out = Vec::new();
+    let mut last: Option<(bool, Vec3, f32)> = None;
+    for k in 0..100 {
+        let t = k as f32 * 0.010_101_01;
+        let p = c.eval(t).0;
+        let o = plane_out(pl, p);
+        if let Some((true, q, tq)) = last {
+            if !o {
+                out.push(((p + q) * 0.5, (t + tq) * 0.5));
+                if out.len() >= max {
+                    break;
+                }
+            }
+        }
+        last = Some((o, p, t));
+    }
+    out
+}
+
+/// sub_8224D4C0 (the regions' vfunc 3): does the circle (x / z) meet the region's rectangle -
+/// first the length x 0.7071 + r round +34 / +38, then the squared distance from the centre,
+/// turned by -atan2(dir.x, dir.z), to the rectangle (+3c across, +40 along) at most r^2.
+pub fn region_meets_circle(r: &RegionRect, c: Vec3, rad: f32) -> bool {
+    let (dx, dz) = (r.rect_c[0] - c.x, r.rect_c[1] - c.z);
+    let reach = r.len * 0.707_106_77 + rad;
+    if dx * dx + dz * dz > reach * reach {
+        return false;
+    }
+    let ang = -r.dir.x.atan2(r.dir.z);
+    let (s, co) = ang.sin_cos();
+    let (px, pz) = (c.x - r.rect_c[0], c.z - r.rect_c[1]);
+    let x = px * co + pz * s;
+    let y = pz * co - px * s;
+    let (hw, hl) = (r.width * 0.5, r.len * 0.5);
+    let mut d = 0.0;
+    if x < -hw {
+        d = (x + hw) * (x + hw);
+    } else if x > hw {
+        d = (x - hw) * (x - hw);
+    }
+    if y < -hl {
+        d += (y + hl) * (y + hl);
+    } else if y > hl {
+        d += (y - hl) * (y - hl);
+    }
+    d <= rad * rad
+}
+
+/// The 8 corners of a region's box (sub_826F4E90's front-end branch): centre +- direction x
+/// length / 2 +- across x width / 2, at the height range's two ends.
+fn region_corners(r: &RegionRect) -> [Vec3; 8] {
+    let (d, s) = (r.dir * (r.len * 0.5), r.side * (r.width * 0.5));
+    let xz = [r.mid + d + s, r.mid + d - s, r.mid - d - s, r.mid - d + s];
+    let mut out = [Vec3::ZERO; 8];
+    for (i, p) in xz.iter().enumerate() {
+        out[i] = Vec3::new(p.x, r.y_range[0], p.z);
+        out[i + 4] = Vec3::new(p.x, r.y_range[1], p.z);
+    }
+    out
+}
+
+/// Are all the points outside one of the planes?
+fn all_out_of_one(planes: &[glam::Vec4; 6], pts: &[Vec3]) -> bool {
+    planes.iter().any(|pl| pts.iter().all(|p| plane_out(*pl, *p)))
+}
+
+impl Spawner {
+    /// sub_826F4E90's front-end branch: the regions (roads and junctions) whose rectangle meets
+    /// the sphere ahead of the camera - D = S+8308, v = the flat forward x D, L = |v|, centre eye +
+    /// v / 2, radius sqrt((L / 2)^2 + (L / tan across)^2); at most 200 (sub_822491E8) - kept,
+    /// at most 100, unless all 8 corners of the region's box are outside one plane of the
+    /// front-end frustum; the target the sum of their weights (no density scale), 0 .. 1 -> 1.
+    /// (The cutscene's own neighbours, sub_826F2000, are not added in this mode.)
+    fn region_list_frontend(&mut self, fe: &FrontEnd) {
+        let t = self.tune;
+        // (the parked lists' own box, sub_826F13A8, at the mode's zero speed and M+324 = 0)
+        let vx = glam::Vec2::new(fe.fwd.x, fe.fwd.z).normalize_or(glam::Vec2::NEG_Y);
+        let fx = glam::Vec2::new(fe.eye.x, fe.eye.z);
+        self.region_box = (fx + vx * lerp(t.box_off, 0.0), vx, lerp(t.box_len, 0.0), lerp(t.box_width, 0.0));
+        let d = fe.amb[3];
+        let v = Vec3::new(fe.fwd.x * d, 0.0, fe.fwd.z * d);
+        let l = (v.x * v.x + v.z * v.z).sqrt();
+        let centre = fe.eye + v.normalize_or(Vec3::NEG_Z) * (l * 0.5);
+        let rad = ((l * 0.5) * (l * 0.5) + (l / fe.tan[1]) * (l / fe.tan[1])).sqrt();
+        let planes = frontend_planes(fe);
+        let speed_factor = lerp(t.density_at, ((0.0 - t.density_mph[0]) / (t.density_mph[1] - t.density_mph[0])).clamp(0.0, 1.0));
+        self.list.clear();
+        self.listed.iter_mut().for_each(|x| *x = false);
+        self.fe_ints.clear();
+        self.int_weight = 0.0;
+        let mut target = 0.0;
+        let (mut found, mut kept) = (0usize, 0usize);
+        // (the regions' query order is the city's region tree's, not decoded: roads, then
+        // junctions - both caps are far from reached at the shots, see the doc)
+        let n_roads = self.roads.len();
+        for k in 0..n_roads + self.int_rects.len() {
+            let r = if k < n_roads { self.roads[k].rect } else { self.int_rects[k - n_roads] };
+            if !region_meets_circle(&r, centre, rad) {
+                continue;
+            }
+            found += 1;
+            if found > 200 || kept == 100 {
+                break;
+            }
+            if all_out_of_one(&planes, &region_corners(&r)) {
+                continue;
+            }
+            kept += 1;
+            if k < n_roads {
+                let w = self.roads[k].lane_len * 0.01 * self.value(k as u32, false) * speed_factor;
+                self.list.push((k as u32, w));
+                self.listed[k] = true;
+                target += w;
+            } else {
+                let j = k - n_roads;
+                let iw = self.ints.get(j).map_or(0.0, |x| x.1) * 0.01 * t.values[1] * speed_factor;
+                self.fe_ints.push(j);
+                self.int_weight += iw;
+                target += iw;
+            }
+        }
+        if target > 0.0 && target < 1.0 {
+            target = 1.0;
+        }
+        self.target = target;
+        if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() && self.frame % 30 == 1 {
+            log::info!("front-end regions: {} in the sphere (r {:.0}), {} kept ({} roads, {} junctions), target {:.2}", found, rad, kept, self.list.len(), self.fe_ints.len(), target);
+        }
+    }
+
+    /// sub_8273E7E8 (from sub_826D75D8 every frame in the front-end mode, before the managers
+    /// run): the front-end planes and manager 0's region list; when either has changed (the
+    /// planes compared exactly, the list by its count only) the points are made again - for every
+    /// region whose lanes' box (lane +10 / +20) is not wholly outside one plane, every lane's
+    /// entries across each plane (sub_822450A0, 64 at most) that are inside the other five; at
+    /// most 256.
+    fn frontend_points(&mut self, nav: &NavSys, fe: &FrontEnd) {
+        let planes = frontend_planes(fe);
+        let count = self.list.len() + self.fe_ints.len();
+        if self.fe_pts.regions == Some(count) && self.fe_pts.planes == planes {
+            return;
+        }
+        self.fe_pts.planes = planes;
+        self.fe_pts.regions = Some(count);
+        self.fe_pts.pts.clear();
+        let regions: Vec<Vec<usize>> = self
+            .list
+            .iter()
+            .map(|&(ri, _)| self.roads[ri as usize].lanes.iter().map(|&(k, _)| nav.links[k].lane).collect())
+            .chain(self.fe_ints.iter().map(|&j| self.int_rects.get(j).and_then(|r| nav.junction_lanes.get(r.index)).cloned().unwrap_or_default()))
+            .collect();
+        'regions: for lanes in regions {
+            let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            for &ln in &lanes {
+                if let Some((a, b)) = nav.lane_box(ln) {
+                    lo = lo.min(a);
+                    hi = hi.max(b);
+                }
+            }
+            let corners = [
+                Vec3::new(lo.x, lo.y, lo.z), Vec3::new(lo.x, lo.y, hi.z), Vec3::new(lo.x, hi.y, lo.z), Vec3::new(lo.x, hi.y, hi.z),
+                Vec3::new(hi.x, lo.y, lo.z), Vec3::new(hi.x, lo.y, hi.z), Vec3::new(hi.x, hi.y, lo.z), Vec3::new(hi.x, hi.y, hi.z),
+            ];
+            if all_out_of_one(&planes, &corners) {
+                continue;
+            }
+            for &ln in &lanes {
+                let Some(curve) = nav.curves.get(ln) else { continue };
+                for i in 0..6 {
+                    for (p, ph) in lane_entries(curve, planes[i], 64) {
+                        if (0..6).any(|j| j != i && plane_out(planes[j], p)) {
+                            continue;
+                        }
+                        let at = self.lane_links.get(ln).and_then(|ks| {
+                            let k = *ks.iter().find(|&&k| ph <= nav.links[k].t[1]).or(ks.last())?;
+                            Some((k, nav.links[k].s_at(ph)))
+                        });
+                        self.fe_pts.pts.push((p, ln, ph, at));
+                        if self.fe_pts.pts.len() == 256 {
+                            break 'regions;
+                        }
+                    }
+                }
+            }
+        }
+        if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
+            log::info!("front-end lane points: {} from {} regions", self.fe_pts.pts.len(), count);
+        }
+    }
 }
 
 impl Vehicles {
@@ -2930,9 +3262,20 @@ impl Vehicles {
             None => (center, view, mph, player_link),
         };
         sp.cutscene = cut.is_some();
+        // (the front-end mode, sub_826D4C90: no player on the start screen - sub_826F14E0 takes the
+        // camera as in the cutscene mode: its eye, its forward made flat, speed 0, no player's road)
+        let fe = self.amb_frontend.filter(|_| cut.is_none()).map(|f| FrontEnd { eye: f.eye, fwd: f.dir.normalize_or(Vec3::NEG_Z), tan: self.amb_frontend_tan, amb: f.amb, index: f.index });
+        let (center, view, mph, player_link) = match fe {
+            Some(f) => (f.eye, Vec3::new(f.fwd.x, 0.0, f.fwd.z).normalize_or(Vec3::NEG_Z), 0.0, None),
+            None => (center, view, mph, player_link),
+        };
+        if sp.frontend.is_none() != fe.is_none() {
+            sp.fe_pts = FrontEndPoints::default();
+        }
+        sp.frontend = fe;
         // (the player's car wiped out - its sim's +592 bit 0x10, set by mcCarDamage sub_823429B0 for
         // WipeoutDelay: sub_826F0548 - no spawning or unspawning, the lists still made)
-        let wiped = self.cars.iter().find(|c| c.is_player).is_some_and(|c| c.state.upset > 0.0 || c.state.veh.as_ref().is_some_and(|v| v.wipe.is_some()));
+        let wiped = fe.is_none() && self.cars.iter().find(|c| c.is_player).is_some_and(|c| c.state.upset > 0.0 || c.state.veh.as_ref().is_some_and(|v| v.wipe.is_some()));
         {
             static WAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if WAS.swap(wiped, std::sync::atomic::Ordering::Relaxed) != wiped {
@@ -2948,10 +3291,21 @@ impl Vehicles {
         while sp.step >= 1.0 / 30.0 {
             sp.step -= 1.0 / 30.0;
             sp.frame = sp.frame.wrapping_add(1);
+            // (sub_826D75D8: the front-end lane points from manager 0's region list, every frame
+            // before the manager runs)
+            if let Some(f) = fe {
+                sp.frontend_points(nav, &f);
+            }
             if sp.frame % 2 == 1 {
                 self.region_list(&mut sp, nav, center, view, mph, free_fast);
                 // the parked cars' lists right after (sub_826F17D8, vehicles/parked.rs)
                 self.parked_lists(&sp);
+                if let Some(f) = fe.filter(|_| sp.frame % 30 == 1 && std::env::var("MCLA_TRAFFIC_TRACE").is_ok()) {
+                    // (diagnostics) the riding cars inside the drawn frustum (5 m .. 10 km, no widening)
+                    let pl = frontend_planes(&FrontEnd { amb: [0.0, 0.0, 5.0, 10000.0], ..f });
+                    let n = self.cars.iter().filter(|c| c.rail.is_some() && c.parked.is_none() && !c.is_player && !pl.iter().any(|p| plane_out(*p, c.state.pos))).count();
+                    log::info!("front-end cars in view: {} (riding {})", n, self.cars.iter().filter(|c| c.rail.is_some() && c.parked.is_none() && !c.is_player).count());
+                }
                 if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() && sp.frame % 30 == 1 {
                     log::info!("traffic regions {} target {:.2} current {} enabled {} mph {:.0} turned down (type, pool, junction, freeway, one way, room, seen, no ground) {:?}", sp.list.len(), sp.target, sp.current, enabled, mph, sp.why);
                 }
@@ -2983,6 +3337,11 @@ impl Vehicles {
     /// sub_826F4E90: the roads in the box ahead of the focus, their weights and the target.
     #[allow(clippy::too_many_arguments)]
     fn region_list(&mut self, sp: &mut Spawner, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32, free_fast: bool) {
+        if let Some(f) = sp.frontend {
+            sp.region_list_frontend(&f);
+            sp.current = (0..self.cars.len()).filter(|&i| self.ambient_car(i) && self.car_road(sp, nav, i).is_some_and(|r| sp.listed[r as usize])).count() as u32;
+            return;
+        }
         let t = sp.tune;
         let k = (mph / 60.0).clamp(0.0, 1.0);
         let (fx, vx) = (glam::Vec2::new(focus.x, focus.z), glam::Vec2::new(view.x, view.z).normalize_or(glam::Vec2::NEG_Y));
@@ -3060,9 +3419,11 @@ impl Vehicles {
     #[allow(clippy::too_many_arguments)]
     fn spawn_frame(&mut self, sp: &mut Spawner, gpu: &crate::render::Gpu, world: &crate::world::World, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32, player_link: Option<usize>) {
         let mut n = (sp.target as i32 - sp.current as i32).min(6);
-        if n <= 0 || sp.list.is_empty() || self.models.is_empty() {
+        if n <= 0 || (sp.list.is_empty() && sp.fe_ints.is_empty()) || self.models.is_empty() {
             return;
         }
+        // (the front-end mode: one try a frame, 0x826F6C5C)
+        let fe = sp.frontend.is_some();
         // no spawning while the player is under 30 mph on a junction's lane (the lane's owner or
         // its parent flagged 4, sub_822452F8)
         if mph * MPH < 13.41 && player_link.is_some_and(|l| (nav.links[l].owner_flags | nav.links[l].parent_flags) & 4 != 0) {
@@ -3071,7 +3432,7 @@ impl Vehicles {
         let t = sp.tune;
         let occ = crate::occluder::city(&sp.data_dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE));
         let total: f32 = sp.list.iter().map(|x| x.1).sum::<f32>() + sp.int_weight;
-        for _ in 0..60 {
+        for _ in 0..if fe { 1 } else { 60 } {
             if n <= 0 {
                 break;
             }
@@ -3097,6 +3458,19 @@ impl Vehicles {
                 sp.why[1] += 1;
                 continue;
             }
+            // the front-end mode: a point of the front-end list (S+8240 of them, the global MWC %
+            // count), its lane and phase; the lane's road (sub_82245340), else the try is wasted
+            let fe_at = if fe {
+                if sp.fe_pts.pts.is_empty() {
+                    continue;
+                }
+                let k = (self.rand() * sp.fe_pts.pts.len() as f32) as usize % sp.fe_pts.pts.len();
+                let Some((link, s)) = sp.fe_pts.pts[k].3 else { continue };
+                let Some(ri) = sp.road_of(nav, link) else { continue };
+                Some((ri, link, s))
+            } else {
+                None
+            };
             // a region by weight (a junction wastes the try)
             let mut x = self.rand() * total;
             let mut pick = None;
@@ -3107,6 +3481,10 @@ impl Vehicles {
                 }
                 x -= w;
             }
+            let pick = match fe_at {
+                Some((ri, _, _)) => Some(ri),
+                None => pick,
+            };
             let Some(ri) = pick else {
                 sp.why[2] += 1;
                 continue;
@@ -3138,6 +3516,10 @@ impl Vehicles {
                     }
                 }
             }
+            let (link, s) = match fe_at {
+                Some((_, k, sk)) => (k, sk),
+                None => (link, s),
+            };
             let l = &nav.links[link];
             let pos = l.a + (l.b - l.a) * (s / l.len.max(1e-3));
             let dir = l.tangent_at(s / l.len.max(1e-3));
@@ -3168,12 +3550,13 @@ impl Vehicles {
                 sp.why[5] += 1;
                 continue;
             }
-            // unseen (a long type at both ends too)
-            if seen(&t, focus, view, mph, pos, occ.as_ref()) {
+            // unseen (a long type at both ends too; the front-end mode has no visibility test,
+            // 0x826F7658)
+            if !fe && seen(&t, focus, view, mph, pos, occ.as_ref()) {
                 sp.why[6] += 1;
                 continue;
             }
-            if ty.bound_group == 2 {
+            if ty.bound_group == 2 && !fe {
                 let m = &self.models[mi];
                 let h = if ty.length > 0.0 { ty.length * 0.5 } else { (m.max.z - m.min.z) * 0.5 };
                 if seen(&t, focus, view, mph, pos + dir * h, occ.as_ref()) || seen(&t, focus, view, mph, pos - dir * h, occ.as_ref()) {
@@ -3192,6 +3575,8 @@ impl Vehicles {
             let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
             let yaw = (-dir.x).atan2(-dir.z);
             let idx = self.spawn(gpu, model, ground, yaw, color, false);
+            // (its lights' hour offset, car +3568: 0 .. 0.25 h - sub_826E86C8)
+            self.cars[idx].amb_lamps.hour_offset = self.rand() * 0.25;
             let f = (dir - normal * dir.dot(normal)).normalize_or(dir);
             let right = f.cross(normal).normalize_or(Vec3::X);
             self.cars[idx].state.relocate(ground, Quat::from_mat3(&glam::Mat3::from_cols(right, normal, -f)).normalize());
@@ -3260,7 +3645,9 @@ impl Vehicles {
                 // radius) of the focus, and then kept while seen or young; otherwise removed
                 // (reason 8) - sub_826F4390: remove if !r27 || r24 || stuck || r30 || crowded || !r23
                 let near = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length() < sp.tune.unspawn_outer;
-                if near && (self.clock - r.born < r.life || seen(&sp.tune, focus, view, mph, pos, occ.as_ref())) {
+                // (the front-end mode: seen = listed, here within the outer radius, 0x826F48A4)
+                let seen_now = if sp.frontend.is_some() { near } else { seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) };
+                if near && (self.clock - r.born < r.life || seen_now) {
                     continue;
                 }
                 if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
@@ -3269,11 +3656,12 @@ impl Vehicles {
                 self.cars.remove(i);
                 return;
             }
-            if seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) {
-                continue;
-            }
             let road = self.car_road(sp, nav, i);
             let listed = road.is_some_and(|x| sp.listed[x as usize]);
+            // (the front-end mode: a listed car counts as seen - never removed - 0x826F48A4)
+            if if sp.frontend.is_some() { listed } else { seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) } {
+                continue;
+            }
             let stuck = if r.physical { c.state.speed() < 6.7056 } else { r.v == 0.0 && r.next.is_none() && r.on == [false; 3] };
             let crowded = road.is_some_and(|x| weight.get(&x).is_some_and(|w| road_cars.get(&x).copied().unwrap_or(0) as f32 > 1.5 * w));
             let off_list = match road {

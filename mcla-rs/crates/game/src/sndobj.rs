@@ -163,6 +163,8 @@ pub struct SoundLib {
     cats: HashMap<u32, Category>,
     /// bank name hash -> the bank's folder below the audio root (`vehicles/vehicle_aux`)
     bank_dir: HashMap<u32, String>,
+    /// bank name hash -> a mod's wave bank folder on disk (banks the game's audio does not have; modfs.rs)
+    mod_banks: HashMap<u32, PathBuf>,
     waves: HashMap<u32, Arc<HashMap<u32, WaveInfo>>>,
     /// stream channel hash -> (converted .mp3, the stream's lowest channel headroom)
     stream_of: Option<HashMap<u32, (PathBuf, i16)>>,
@@ -233,14 +235,29 @@ const NONE: u32 = 0xFFFF_FFFF;
 impl SoundLib {
     /// `root` = the converted audio (`audio_pc`), `cfg` = `audio/X360/config` of the extracted cache.
     pub fn load(root: &Path, cfg: &Path) -> Option<SoundLib> {
-        let snd = Dat::load(&cfg.join("sounds.dat"))?;
+        let mut snd = Dat::load(&cfg.join("sounds.dat"))?;
         let crv = Dat::load(&cfg.join("curves.dat"))?;
         let cat = Dat::load(&cfg.join("categories.dat"))?;
-        let game = Dat::load(&cfg.join("game.dat"))?;
+        let mut game = Dat::load(&cfg.join("game.dat"))?;
+        // a mod's own sound and game objects join the game's; the game's keep their names (modfs.rs,
+        // docs/reference/mods/manifest.md section 7)
+        let mods = crate::modfs::set();
+        for (rel, dat) in [(mcla_mods::SOUNDS_DAT, &mut snd), (mcla_mods::GAME_DAT, &mut game)] {
+            for (id, b) in mods.map(|m| m.read_each(rel)).unwrap_or_default() {
+                match Dat::parse(&b) {
+                    Some(d) => {
+                        let skipped = dat.extend_from(&d);
+                        log::info!("audio: mod {id}: {} objects of {rel} added ({} already the game's: not used)", d.len() - skipped.len(), skipped.len());
+                    }
+                    None => log::warn!("audio: mod {id}: {rel} is not a readable .dat file"),
+                }
+            }
+        }
         let curves = crv.objects.iter().filter_map(|(n, _, _)| crv.get_name(n).map(|o| (joaat(n), Curve::parse(o)))).collect();
         let cats: HashMap<u32, Category> = audcfg::resolve_categories(&cat).into_iter().collect();
         // bank folders: each part of the bank's path by name, or by its hash where the archive lost the name
         let mut bank_dir = HashMap::new();
+        let mut mod_banks = HashMap::new();
         for b in &snd.banks {
             let mut dir = PathBuf::new();
             let mut rel = Vec::new();
@@ -251,7 +268,13 @@ impl SoundLib {
                 dir.push(&pick);
                 rel.push(pick);
             }
-            bank_dir.insert(joaat(b), rel.join("/"));
+            let rel = rel.join("/");
+            // (a bank the game's audio does not have: a mod's wave bank, its folder on disk)
+            if let Some(d) = mods.filter(|_| !root.join(&rel).is_dir()).and_then(|m| m.wave_bank_dir(b)) {
+                log::info!("audio: bank {b} from a mod ({})", d.display());
+                mod_banks.insert(joaat(b), d);
+            }
+            bank_dir.insert(joaat(b), rel);
         }
         log::info!("audio: sounds.dat {} sounds, {} curves, {} categories, {} banks", snd.len(), crv.len(), cat.len(), snd.banks.len());
         Some(SoundLib {
@@ -261,6 +284,7 @@ impl SoundLib {
             curves,
             cats,
             bank_dir,
+            mod_banks,
             waves: HashMap::new(),
             stream_of: None,
             clips: HashMap::new(),
@@ -594,20 +618,28 @@ impl SoundLib {
         if let Some(w) = self.waves.get(&bank) {
             return Some(w.clone());
         }
-        let dir = self.bank_dir.get(&bank)?.clone();
+        let dir = match self.mod_banks.get(&bank) {
+            Some(d) => d.clone(),
+            None => self.root.join(self.bank_dir.get(&bank)?),
+        };
         let mut m = HashMap::new();
-        if let Ok(t) = std::fs::read_to_string(self.root.join(&dir).join("_index.tsv")) {
+        if let Ok(t) = std::fs::read_to_string(dir.join("_index.tsv")) {
             for l in t.lines() {
                 let c: Vec<&str> = l.split('\t').collect();
                 let (Some(name), Some(h)) = (c.first(), c.get(1).and_then(|h| u32::from_str_radix(h, 16).ok())) else { continue };
                 let loop_start = c.get(5).and_then(|v| v.parse().ok()).unwrap_or(-1);
                 let headroom = c.get(6).and_then(|v| v.parse().ok()).unwrap_or(0);
-                m.insert(h, WaveInfo { file: self.root.join(&dir).join(format!("{name}.wav")), loop_start, headroom });
+                m.insert(h, WaveInfo { file: dir.join(format!("{name}.wav")), loop_start, headroom });
             }
         }
         let a = Arc::new(m);
         self.waves.insert(bank, a.clone());
         Some(a)
+    }
+
+    /// Read the stream channels' index now (otherwise at the first stream played).
+    pub fn index_streams(&mut self) {
+        self.stream_index();
     }
 
     fn stream_index(&mut self) -> &HashMap<u32, (PathBuf, i16)> {

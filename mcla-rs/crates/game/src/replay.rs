@@ -16,7 +16,6 @@
 use crate::physics::car::CarState;
 use crate::vehicles::CarInstance;
 use glam::{Quat, Vec3};
-use std::path::Path;
 
 /// seconds between two recorded states
 pub const STEP: f32 = 1.0 / 30.0;
@@ -319,8 +318,8 @@ impl CamTune {
         let car = crate::catalog::camera_car(car);
         let mut t = CamTune::default();
         let read = |ext: &str| -> Vec<(String, Vec<f32>)> {
-            let h = mcla_formats::hash::joaat(&format!("{}_replay.mcreplaycamera{}", car.to_ascii_lowercase(), ext));
-            let text = std::fs::read_to_string(Path::new(data_dir).join("tune/camera").join(format!("0x{h:08x}"))).unwrap_or_default();
+            // (a mod car: its own file, then its manifest's camera donor - modfs.rs; the name hash ignores case)
+            let text = crate::modfs::car_camera_text(data_dir, car, &format!("_replay.mcreplaycamera{ext}"), crate::modfs::Donor::Cameras).unwrap_or_default();
             text.lines()
                 .filter_map(|l| {
                     let mut it = l.split_whitespace();

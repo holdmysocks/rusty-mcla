@@ -179,8 +179,9 @@ pub struct XrayRes {
 }
 
 impl XrayRes {
-    /// `format`: the UI pass's colour target (the surface's plain view); the pass's depth is Depth32Float.
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> XrayRes {
+    /// `format`: the UI pass's colour target (the surface's plain view); `samples`: the pass's sample count (4 in
+    /// the menus' pass, UI.md "UI edge smoothing"); `depth`: the pass has the scene's Depth32Float attached.
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, samples: u32, depth: bool) -> XrayRes {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("hudmap xray"), source: wgpu::ShaderSource::Wgsl(include_str!("hudmap_xray.wgsl").into()) });
         let g_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hudmap xray globals"),
@@ -223,8 +224,8 @@ impl XrayRes {
                 ..Default::default()
             },
             // (the UI pass's depth, read-only: no test, no writes - the shader does the test)
-            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::Always, stencil: Default::default(), bias: Default::default() }),
-            multisample: Default::default(),
+            depth_stencil: depth.then(|| wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::Always, stencil: Default::default(), bias: Default::default() }),
+            multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
             multiview: None,
             cache: None,
         });

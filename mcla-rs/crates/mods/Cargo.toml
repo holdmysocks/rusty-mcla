@@ -1,0 +1,18 @@
+[package]
+name = "mcla-mods"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rusty MCLA mod loader core (docs/MODS.md M-5): mod packages (folder or zip), manifest, validation, file overlay, extra vehicle list; shared by the game and the launcher"
+
+[lib]
+name = "mcla_mods"
+path = "src/lib.rs"
+
+[dependencies]
+mcla-formats = { path = "../formats" }
+mcla-config = { path = "../config" }
+serde.workspace = true
+log.workspace = true
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse", "display"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
