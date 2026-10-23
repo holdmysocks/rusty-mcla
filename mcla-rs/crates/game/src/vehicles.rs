@@ -3522,6 +3522,18 @@ if keep || c.state.pos.distance(center) < 450.0 {
         // hubs at the world's origin: it was drawn without wheels, the tyres somewhere under it. Its wheels go
         // under their mounts at the suspension's rest length. approx.: no static sag)
         let unset = c.state.wheels.iter().all(|w| w.world_pos == Vec3::ZERO);
+        // (its drawn wheels roll with the way it was moved along its forward - a car the scene drives in the
+        // original is a riding car whose wheels turn at the road's speed; approx.: the posed car's rolling is not
+        // taken from the original, it is the plain rolling of the move)
+        if !unset {
+            let r = c.model.params.wheel_radius.max(0.2);
+            let turn = (pos - c.state.pos).dot(rot * Vec3::NEG_Z) / r;
+            if turn.abs() < 5.0 {
+                for wh in c.state.wheels.iter_mut() {
+                    wh.spin = traffic::wrap_spin(wh.spin + turn);
+                }
+            }
+        }
         c.state.relocate(pos, rot);
         if unset {
             let (mounts, rest) = (c.params().wheel_pos, c.params().susp_rest);
