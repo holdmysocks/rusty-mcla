@@ -10141,6 +10141,13 @@ impl App {
                 let subs = self.cuts.by_name("CUT_INTRO").map(|i| self.cuts.scenes[i].subs.clone()).unwrap_or_default();
                 if film && self.start_movie("intro", subs, false) {
                     log::info!("opening: the film");
+                } else if !hooks::intro_film() && hooks::intro_scene() && std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()) {
+                    // (INTRO FAST, the user's own path - DECISIONS.md D24: the film is left out but the arrival by
+                    // bus stays, as the scene CUT_INTRO in its place; the original has no such path)
+                    if let Some(i) = self.cuts.by_name("CUT_INTRO") {
+                        log::info!("opening: the arrival scene in place of the film (INTRO FAST)");
+                        self.cuts.queue(i);
+                    }
                 }
                 self.intro_stage = 2;
                 self.intro_t = 0.0;
@@ -10149,7 +10156,7 @@ impl App {
             }
             // (after the film: `City_DoneStreaming(100)` polled every 10 ms after three frames, then the fade up
             // over 1 s - CarSelection 0xb68, 0xbaa - with VEHICLE SELECT already up)
-            2 if self.game.movie.is_none() && self.intro_t > 3.0 / 60.0 && streaming == 0 => {
+            2 if self.game.movie.is_none() && self.cuts.idle() && self.intro_t > 3.0 / 60.0 && streaming == 0 => {
                 log::info!("opening: VEHICLE SELECT");
                 self.intro_mask.release(1.0);
                 self.intro_stage = 3;
@@ -10178,7 +10185,7 @@ impl App {
         }
         // (the warp, sub_822F1DB0 with +14552 set: the hour moves the short way round at the rate (+14548, 100 h a
         // second) x the frame's unscaled seconds (G+88), stops on the target and the warp is over; then mod 24)
-        if let Some(to) = self.intro_tod.filter(|_| self.game.movie.is_none()) {
+        if let Some(to) = self.intro_tod.filter(|_| self.game.movie.is_none() && self.cuts.idle()) {
             let h = self.time_of_day;
             let (up, down) = if h < to { (to, to - 24.0) } else { (to + 24.0, to) };
             let step = 100.0 * dt;
@@ -10189,7 +10196,9 @@ impl App {
                 self.intro_tod = None;
             }
         }
-        self.game.intro_mask = if self.game.movie.is_some() { 0.0 } else { self.intro_mask.update(dt) };
+        // (the film, or FAST's arrival scene, plays over the held black)
+        let over_black = self.game.movie.is_some() || (self.intro_stage == 2 && self.cuts.playing.is_some());
+        self.game.intro_mask = if over_black { 0.0 } else { self.intro_mask.update(dt) };
         self.game.opening_black = self.intro_stage == 4 || (self.intro_stage == 3 && !self.game.fresh_game);
     }
 
