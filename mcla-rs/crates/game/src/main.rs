@@ -2709,7 +2709,7 @@ impl App {
         // (test hook for the keyboard's table, `keybinds`: MCLA_KEY_TEST="from-to:NAME,..." - the key
         // NAME (as the keyboard page names it, `_` for a space) is pressed at tick `from` and let
         // go after tick `to`; where the player's car is then is logged)
-        // (test hook MCLA_NAV_TEST="frame:a,frame:y,...": the pad's A / Y / START / B pressed at that frame)
+        // (test hook MCLA_NAV_TEST="frame:a,frame:y,...": the pad's A / Y / START / B / up / down pressed at that frame)
         if let Ok(v) = std::env::var("MCLA_NAV_TEST") {
             for step in v.split(',') {
                 let Some((at, b)) = step.trim().split_once(':') else { continue };
@@ -2720,6 +2720,8 @@ impl App {
                         "y" => self.game.nav_y = true,
                         "start" => self.game.nav_start = true,
                         "b" => self.game.nav_back = true,
+                        "up" => self.game.nav_up = true,
+                        "down" => self.game.nav_down = true,
                         _ => {}
                     }
                 }
@@ -4719,8 +4721,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // story scene CUT_STORY_RACE_GH_06 comes up (its core's own 1 s fade up, 0x95ca1d1b 0x1012). No
             // script plays CUT_INTRO (only the recomp's cutscene gallery lists it); the game camera is never seen
             // in between. `intro_stage`, `intro_mask`.
-            let boxes_done = self.game.message_box.is_none() && (self.game.save_box >= 2 || self.game.flash_popup.is_none() || std::env::var("MCLA_NO_SAVE_BOX").is_ok());
-            if self.game.fresh_game && self.game.mode == Mode::FreeRoam && !self.intro_played && boxes_done {
+            // (CarSelection runs once the start-up checks are over - mc.loadSuccess after the save boxes,
+            // `Game::save_boxes_step` - and, after START, under the camera held over the city: `StartWarp::stay`)
+            let boxes_done = self.game.message_box.is_none() && (self.game.save_box == 2 || self.game.flash_popup.is_none() || std::env::var("MCLA_NO_SAVE_BOX").is_ok());
+            let warp_held = self.startwarp.as_ref().map_or(true, |w| w.phase() == startwarp::Phase::Hold);
+            if self.game.fresh_game && self.game.mode == Mode::FreeRoam && !self.intro_played && boxes_done && warp_held {
                 self.intro_played = true;
                 self.intro_stage = 1;
                 self.intro_t = 0.0;
@@ -4728,7 +4733,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.intro_mask.start(1.0, 0.01, f32::MAX);
             }
             self.game.hold_starter = self.game.fresh_game && (!self.intro_played || self.intro_stage < 3);
-            let held = self.game.fresh_game && self.game.mode == Mode::FreeRoam;
+            // (also on the start screen: a new career's first call must not go out - and bring its story scene - before
+            // VEHICLE SELECT is over)
+            let held = self.game.fresh_game;
             for n in if held { Vec::new() } else { std::mem::take(&mut self.game.career.news) } {
                 match n {
                     career::News::Started { id, title, who, .. } => {
@@ -7188,6 +7195,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (the camera move after START: up to the whole city, held while the world streams at the car, down onto
         // the game camera - startwarp.rs; MCLA_START_WARP_SHOTS=<prefix>,t1,..: a screenshot as its clock passes each t)
         if let Some(w) = self.startwarp.as_mut() {
+            w.stay = self.game.fresh_game;
             let car = self.vehicles.player().map(|c| c.state.pos);
             let ready = car.map_or(true, |p| world.ready_at(p)) && world.streaming() == 0;
             let t0 = self.startwarp_t;
@@ -7198,7 +7206,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.chase.up = up;
                     self.cam.pos = eye;
                     self.cam.fov_y = fov;
-                    self.game.loading_tag = self.game.loading_tag.max(if w.loading() { 0.5 } else { 0.0 });
+                    // (a new career's tags are the start-up checks' - `Game::save_boxes_step`)
+                    if !self.game.fresh_game {
+                        self.game.loading_tag = self.game.loading_tag.max(if w.loading() { 0.5 } else { 0.0 });
+                    }
                 }
                 None => {
                     log::info!("start warp: landed at {:.3} s", t0 + dt);
@@ -7220,6 +7231,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         self.game.start_warp_on = self.startwarp.is_some();
+        self.game.start_warp_held = self.startwarp.as_ref().is_some_and(|w| w.phase() == startwarp::Phase::Hold);
         // diagnostics: look at the n-th liveried rival: "n,side,front,up" (metres off the car)
         if let Ok(v) = std::env::var("MCLA_RIVAL_CAM") {
             let f: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -9156,11 +9168,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if photo.is_some() {
             self.photo_msg = 2.0;
         }
-        // (test hook MCLA_SHOT_EVERY=n: a screenshot run also writes <shot>_<frame>.png every n frames)
+        // (test hook MCLA_SHOT_EVERY=n[,from]: a screenshot run also writes <shot>_<frame>.png every n frames, from frame `from`)
         let photo = photo.or_else(|| {
-            let n = std::env::var("MCLA_SHOT_EVERY").ok()?.parse::<u64>().ok().filter(|n| *n > 0)?;
+            let v = std::env::var("MCLA_SHOT_EVERY").ok()?;
+            let (n, from) = v.split_once(',').map_or((v.as_str(), "0"), |(a, b)| (a, b));
+            let n = n.trim().parse::<u64>().ok().filter(|n| *n > 0)?;
+            let from = from.trim().parse::<u64>().unwrap_or(0);
             let cfg = self.opt.shot.as_ref()?;
-            (self.frame_no % n == 0 && self.frame_no < cfg.frames).then(|| format!("{}_{:05}.png", cfg.path.trim_end_matches(".png"), self.frame_no))
+            (self.frame_no % n == 0 && self.frame_no >= from && self.frame_no < cfg.frames).then(|| format!("{}_{:05}.png", cfg.path.trim_end_matches(".png"), self.frame_no))
         });
         let exit_after = photo.is_none();
         let want = match (photo, self.opt.shot.clone()) {
@@ -10097,6 +10112,10 @@ impl App {
         match self.intro_stage {
             // (the film once the black is up; settings.toml game.intro `fast` / `skip` leave it out - `hooks`)
             1 if self.intro_mask.full() => {
+                // (a new career's held camera goes under the black - the career script's UILogic_UnPauseCamera)
+                if self.startwarp.take().is_some() {
+                    log::info!("start warp: released under CarSelection's black");
+                }
                 let film = hooks::intro_film() && (self.opt.shot.is_none() || std::env::var("MCLA_MOVIE").is_ok());
                 // (the film carries the phone call: the subtitles of CUT_INTRO's table)
                 let subs = self.cuts.by_name("CUT_INTRO").map(|i| self.cuts.scenes[i].subs.clone()).unwrap_or_default();
@@ -10151,6 +10170,7 @@ impl App {
             }
         }
         self.game.intro_mask = if self.game.movie.is_some() { 0.0 } else { self.intro_mask.update(dt) };
+        self.game.opening_black = self.intro_stage == 4 || (self.intro_stage == 3 && !self.game.fresh_game);
     }
 
     /// The cine scenes' lamp switches (vehicles.rs `CINE_LAMP_EVENTS`): at a scene's start every car's switch

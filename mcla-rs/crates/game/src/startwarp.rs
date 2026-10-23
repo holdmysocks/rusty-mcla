@@ -25,6 +25,12 @@
 //!   SaveGame.sc.xml SG_LoadFile (UISpinner, Save_Icon_Loading) until mc.loadSuccess, which the career
 //!   script throws after the flight, Racer_Activate and WAITUNWARPED(1000).
 //!
+//! - **New career** - the career script's other branch (local8 false: RACE_GH_06 not past state 2) loads the player
+//!   at (-199.5, 18.85, -752.03) and calls UILogic_UnPauseCamera, not Warper_Warp: there is no way down. The held
+//!   picture stays under the start-up boxes (SaveGame.sc.xml), SAVING and LOADING until CarSelection's fade to
+//!   black (recording `work/cutscenes-intro/rec`, c_000 - c_007); the port lets the warp go under that black
+//!   (`StartWarp::stay`, main.rs `opening_tick`).
+//!
 //! (approx.) The port has no career load: the hold lasts until the world is streamed at the car
 //! (`ready`), then the script's 0.3 s, 3 frames and 0.1 s; E is the game camera when the flight starts.
 
@@ -66,6 +72,9 @@ pub struct StartWarp {
     hold_t: f32,
     down: Option<NavExit>,
     aspect: f32,
+    /// a new career: the career script (local8 false, RACE_GH_06 not past state 2) never asks for
+    /// USER_WAIT_NO_CUT_DOWN - UILogic_UnPauseCamera instead; the hold stays until CarSelection's black is up
+    pub stay: bool,
 }
 
 impl StartWarp {
@@ -75,7 +84,7 @@ impl StartWarp {
         climb.open(eye, look, car, aspect);
         let held = CamRows::look_at(eye, look, Vec3::Y);
         log::info!("start warp: Entering_Map_MaxHeight from {:?} lens {:.1}", eye, lens_deg);
-        StartWarp { phase: Phase::Climb, climb, lens: NavLens::between(lens_deg, MAP_LENS, 0.0, CLIMB_LENS_SHARE * CLIMB_T), t: 0.0, held, ready_t: None, hold_t: 0.0, down: None, aspect }
+        StartWarp { phase: Phase::Climb, climb, lens: NavLens::between(lens_deg, MAP_LENS, 0.0, CLIMB_LENS_SHARE * CLIMB_T), t: 0.0, held, ready_t: None, hold_t: 0.0, down: None, aspect, stay: false }
     }
 
     pub fn phase(&self) -> Phase {
@@ -112,7 +121,7 @@ impl StartWarp {
             }
             Phase::Hold => {
                 self.hold_t += dt;
-                if ready || self.hold_t > HOLD_CAP {
+                if !self.stay && (ready || self.hold_t > HOLD_CAP) {
                     *self.ready_t.get_or_insert(0.0) += dt;
                 }
                 if self.ready_t.map_or(false, |r| r >= SCRIPT_WAIT + PRESTREAM_FRAMES + HANDOVER - 1e-4) {

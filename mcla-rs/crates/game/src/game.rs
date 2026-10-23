@@ -265,6 +265,12 @@ pub fn parse_part_rows(t: &str) -> std::collections::HashMap<String, Vec<(i32, i
 /// (references `g_mv0`, `g_mv1`, catalogue figures 0.26 / 0.42, 210 / 255, 0.62 / 0.875 and
 /// 0.66 / 0.75, 236 / 258, 0.856 / 0.917): acceleration x 1.3 (approx.), top speed from
 /// 100 at 0.006 a unit, handling as it stands.
+/// a save's write, by SaveGame.sc.xml's note on SG_SaveFile ("save game is currently taking .93 seconds")
+pub const SAVE_WRITE_T: f32 = 0.93;
+/// the map behind the start-up boxes keeps 0.19 of its brightness (`work/cutscenes-intro/rec` a_010 against c_002,
+/// the median over the picture outside the box; brighter pixels keep a little more, 0.18 - 0.25). The popup
+/// movie's box leaves 0.335 of it in the port; this black (0.567 kept) makes up the rest
+pub const SAVE_BOX_DIM: u8 = 110;
 pub const METER_ACCEL: f32 = 1.3;
 pub const METER_SPEED: f32 = 0.006;
 
@@ -547,6 +553,8 @@ pub struct Game {
     /// the LOADING tag: time left, whether it is up, its fade-out, and the place last seen
     pub loading_tag: f32,
     pub loading_on: bool,
+    /// the text the tag was given
+    pub loading_text: String,
     pub loading_fade: f32,
     pub loading_was_garage: bool,
     /// the songs of the playlists ("ARTIST - TITLE", genre 0..6), from the audio side
@@ -614,9 +622,16 @@ pub struct Game {
     pub race_end_t: Option<f32>,
     /// the results on show are a career race's (panels, then the cruise - no menu)
     pub career_over: bool,
-    /// a new career's save boxes: 0 not shown yet, 1 the ALERT is up, 2 done; and the
+    /// a new career's save boxes (SaveGame.sc.xml): 0 not shown yet, 1 the ALERT is up, 2 done
+    /// (mc.loadSuccess), 3 the auto save WARNING after CREATE A NEW SAVE GAME, 4 the auto save
+    /// disabled WARNING after CONTINUE WITHOUT SAVING, 5 the SAVING / LOADING tags; and the
     /// player chose CONTINUE WITHOUT SAVING (nothing is written this session)
     pub save_box: u8,
+    /// seconds in step 5 (SAVING, then LOADING), and since the world was ready at the car
+    pub save_box_t: (f32, Option<f32>),
+    /// the tag's text: None the garage's LOADING (VE_Loading), Some(true) SG_SaveFile's Save_Icon_Saving,
+    /// Some(false) SG_LoadFile's Save_Icon_Loading
+    pub tag_saving: Option<bool>,
     /// the row the last message box was closed on
     pub box_sel: usize,
     /// a tutorial's box is up: the keys of its title and text, seconds before it shows
@@ -640,6 +655,10 @@ pub struct Game {
     pub climb_on: bool,
     /// the camera move after START runs (main.rs / startwarp.rs): no HUD, only the LOADING tag
     pub start_warp_on: bool,
+    /// that camera is held over the city (warper+273: Warper_IsReadyToLoadStuff - the start-up checks run)
+    pub start_warp_held: bool,
+    /// VEHICLE SELECT's ACCEPT until the first story scene is up (CarSelection's black): nothing but the fade
+    pub opening_black: bool,
     /// race time stepped since the last UI frame: the HUD's 3-2-1 runs on it, so it stays on the race clock
     pub ui_sim_dt: f32,
     /// a start scene before its countdown event: no HUD (the original brings the HUD - map and 3-2-1 - up
@@ -1165,6 +1184,7 @@ impl Game {
             cart_open: None,
             loading_tag: 0.0,
             loading_on: false,
+            loading_text: String::new(),
             loading_fade: 0.0,
             loading_was_garage: false,
             songs: Vec::new(),
@@ -1200,6 +1220,8 @@ impl Game {
             race_end_t: None,
             career_over: false,
             save_box: 0,
+            save_box_t: (0.0, None),
+            tag_saving: None,
             box_sel: 0,
             tutorial_box: None,
             fresh_game: false,
@@ -1210,6 +1232,8 @@ impl Game {
             payback_keys: false,
             climb_on: false,
             start_warp_on: false,
+            start_warp_held: false,
+            opening_black: false,
             place_mask: 0.0,
             intro_mask: 0.0,
             title_mask: 0.0,
@@ -3792,12 +3816,35 @@ impl Game {
             }
             return MenuAction::None;
         }
-        // (the warp after START: nothing over it but the LOADING tag - SG_LoadFile, startwarp.rs)
+        // (the warp after START: nothing over it but the LOADING tag - SG_LoadFile, startwarp.rs. Once it is held
+        // over the city the start-up checks run: a new career's save boxes stand over the held picture, dimmed -
+        // `save_boxes_step`; `ng_alert_nosave`, the recording's a_006 on)
         if self.start_warp_on {
             if let Some(fm) = self.flash_menu.as_mut() {
                 fm.hide();
             }
-            let _ = self.message_box_ui(ctx, false, false, false, false);
+            let (up, down, enter) = (std::mem::take(&mut self.nav_up), std::mem::take(&mut self.nav_down), std::mem::take(&mut self.nav_enter));
+            self.nav_back = false;
+            if self.start_warp_held {
+                self.save_boxes_step(world, vehicles, ctx.input(|i| i.stable_dt).min(0.1));
+            }
+            if self.message_box.is_some() {
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("savebox_dim"))).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(SAVE_BOX_DIM));
+            }
+            let _ = self.message_box_ui(ctx, up, down, enter, false);
+            // (CarSelection's fade to black starts under the held camera)
+            if self.intro_mask > 0.0 {
+                let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("intro_mask"));
+                ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.intro_mask.clamp(0.0, 1.0) * 255.0).round() as u8));
+            }
+            return MenuAction::None;
+        }
+        // (ACCEPT on VEHICLE SELECT: the lot fades to black with no HUD - CarSelection 0x13f5 - and the black stays
+        // until the story scene's own fade up)
+        if self.opening_black {
+            self.nav_enter = false;
+            let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("intro_mask"));
+            ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.intro_mask.clamp(0.0, 1.0) * 255.0).round() as u8));
             return MenuAction::None;
         }
         if !matches!(self.mode, Mode::Paused | Mode::Results) && !(self.mode == Mode::RaceSelect && self.hangout_key.is_some()) {
@@ -4024,31 +4071,8 @@ impl Game {
                 self.arcade_restore = self.arcade_restore.or(Some((0, self.race_defs.first().map_or(3, |d| d.opponents))));
             }
         }
-        // A new career opens on the game's own boxes (SaveGame.sc.xml; references
-        // `ng_alert_nosave`, `ng_warning_autosave`): SG_NoGamesFound - ALERT, "A Midnight Club:
-        // Los Angeles save game could not be found. What would you like to do?", CREATE A
-        // NEW SAVE GAME / RETRY / CONTINUE WITHOUT SAVING - and behind the last one
-        // SG_AutoSaveDisabled - WARNING, "Auto save has been disabled...", CONTINUE.
-        if self.fresh_game && self.mode == Mode::FreeRoam && self.flash_popup.is_some() && self.message_box.is_none() && std::env::var("MCLA_NO_SAVE_BOX").is_err() {
-            if self.save_box == 0 {
-                self.save_box = 1;
-                self.message_box = Some((
-                    crate::flash_ui::MessageBoxDef { title: "Save_Dialog_Title_Message".into(), description: "Save_Dialog_NoGamesFound".into(), options: vec![("create".into(), "Save_CreateNewSave".into()), ("retry".into(), "Common_Retry".into()), ("nosave".into(), "Common_ContinueWithoutSaving".into())] },
-                    0,
-                    MenuAction::None,
-                ));
-            } else if self.save_box == 1 {
-                // (the choice made: `box_sel` holds it)
-                self.save_box = 2;
-                match self.box_sel {
-                    1 => self.save_box = 0, // RETRY: the same question again
-                    2 => {
-                        self.no_save = true;
-                        self.message_box = Some((crate::flash_ui::MessageBoxDef { title: "Save_Dialog_Title_Warning".into(), description: "Save_Dialog_SaveDisabled".into(), options: Vec::new() }, 0, MenuAction::None));
-                    }
-                    _ => {}
-                }
-            }
+        if self.mode == Mode::FreeRoam {
+            self.save_boxes_step(world, vehicles, ctx.input(|i| i.stable_dt).min(0.1));
         }
         // (test hook: MCLA_TUT_TEST=<name> raises that tutorial's box - target, mission_log, sidekick)
         if let Ok(k) = std::env::var("MCLA_TUT_TEST") {
@@ -4100,7 +4124,9 @@ impl Game {
         }
         // a message box (popup movie) takes the input while it is up
         let boxed = self.message_box.is_some();
-        if let Some(a) = self.message_box_ui(ctx, up, down, enter, back) {
+        // (the start-up boxes answer ACCEPT alone)
+        let box_back = back && !(self.fresh_game && matches!(self.save_box, 1 | 3 | 4));
+        if let Some(a) = self.message_box_ui(ctx, up, down, enter, box_back) {
             action = a;
             // (YES in the garage's SELL VEHICLE box: `garage.FinishVehicleSale`)
             if let Some(car) = self.sell_pending.take() {
@@ -8186,9 +8212,9 @@ impl Game {
                     if !plain {
                         self.text(&p, egui::pos2(screen.right() - 30.0 * sc, screen.top() + bar * 0.5), egui::Align2::RIGHT_CENTER, &format!("{}  SKIP", crate::glyphs::button_name(crate::flash_ui::ICON_A)), 9.0 * sc, egui::Color32::from_gray(120));
                     }
-                } else if self.fresh_game && self.mode == Mode::FreeRoam && self.flash_prompt.is_some() && (self.message_box.is_some() || (self.save_box < 2 && self.flash_popup.is_some() && std::env::var("MCLA_NO_SAVE_BOX").is_err())) {
+                } else if self.fresh_game && self.mode == Mode::FreeRoam && self.flash_prompt.is_some() && (self.message_box.is_some() || (self.save_box != 2 && self.flash_popup.is_some() && std::env::var("MCLA_NO_SAVE_BOX").is_err())) {
                     // (the save boxes stand over a dark screen before VEHICLE SELECT)
-                    ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("savebox_dim"))).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 235));
+                    ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("savebox_dim"))).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(SAVE_BOX_DIM));
                 } else if self.fresh_game && self.mode == Mode::FreeRoam && self.flash_prompt.is_some() && self.hold_starter {
                     // (the opening is about to play)
                 } else if self.fresh_game && self.mode == Mode::FreeRoam && self.flash_prompt.is_some() {
@@ -10074,6 +10100,73 @@ fn pause_camera_index(page: u8) -> i32 {
 impl Game {
     /// Put one of the game's message boxes up. `confirm` is what its "Yes" does.
     /// False when the box or the popup movie is not there.
+    /// A new career's start-up checks (Boot.sc.xml Startup_Checks, SaveGame.sc.xml; references
+    /// `ng_alert_nosave`, `ng_warning_autosave`, the recording `work/cutscenes-intro/rec`): file.noGamesFound
+    /// raises SG_NoGamesFound - ALERT, "A Midnight Club: Los Angeles save game could not be found. What would
+    /// you like to do?", CREATE A NEW SAVE GAME / RETRY / CONTINUE WITHOUT SAVING. CREATE: SG_AutosaveWarning
+    /// - WARNING, "This game uses an auto save feature...", CONTINUE sends CREATE_NEW_SAVE: SG_SaveFile
+    /// (SAVING, the 0.93 s the XML gives the save), then SG_LoadFile (LOADING) until mc.loadSuccess - the
+    /// career script's player loaded and streamed, then WAITUNWARPED(1000). RETRY: START_PLAYER_CHECKS, the
+    /// same box again. CONTINUE WITHOUT SAVING: SG_AutoSaveDisabled - WARNING, "Auto save has been
+    /// disabled...", CONTINUE: NO_SAVE_EVENT, file.disableSaving (no file read: no tag; the career's load and its
+    /// second are still waited for - approx., that path is not recorded). The boxes answer
+    /// only ACCEPT (uinput.action_pressed); B does nothing. `save_box` 2 = done: CarSelection may start.
+    fn save_boxes_step(&mut self, world: &World, vehicles: &Vehicles, dt: f32) {
+        if !self.fresh_game || self.flash_popup.is_none() || std::env::var("MCLA_NO_SAVE_BOX").is_ok() || self.message_box.is_some() {
+            return;
+        }
+        let bx = |d: &str, title: &str, options: Vec<(String, String)>| Some((crate::flash_ui::MessageBoxDef { title: title.into(), description: d.into(), options }, 0, MenuAction::None));
+        match self.save_box {
+            0 => {
+                self.save_box = 1;
+                self.message_box = bx("Save_Dialog_NoGamesFound", "Save_Dialog_Title_Message", vec![("create".into(), "Save_CreateNewSave".into()), ("retry".into(), "Common_Retry".into()), ("nosave".into(), "Common_ContinueWithoutSaving".into())]);
+            }
+            // (the choice made: `box_sel` holds it)
+            1 => match self.box_sel {
+                1 => self.save_box = 0,
+                2 => {
+                    self.no_save = true;
+                    self.save_box = 4;
+                    self.message_box = bx("Save_Dialog_SaveDisabled", "Save_Dialog_Title_Warning", Vec::new());
+                }
+                _ => {
+                    self.save_box = 3;
+                    self.message_box = bx("Save_Dialog_AutosaveWarning", "Save_Dialog_Title_Warning", Vec::new());
+                }
+            },
+            3 => {
+                log::info!("save boxes: CREATE_NEW_SAVE - SAVING, then LOADING until loadSuccess");
+                self.save_box = 5;
+                self.save_box_t = (0.0, None);
+            }
+            4 => {
+                log::info!("save boxes: NO_SAVE_EVENT - saving disabled, the career loads without a file");
+                self.save_box = 5;
+                self.save_box_t = (SAVE_WRITE_T, None);
+            }
+            5 => {
+                // (the SAVING tag for the save's 0.93 s, the LOADING tag from then until the world is streamed at
+                // the car and a second more)
+                self.save_box_t.0 += dt;
+                let saving = self.save_box_t.0 < SAVE_WRITE_T;
+                let ready = vehicles.player().map_or(true, |c| world.ready_at(c.state.pos)) && world.streaming() == 0;
+                if !saving && ready {
+                    *self.save_box_t.1.get_or_insert(0.0) += dt;
+                }
+                if self.save_box_t.1.is_some_and(|t| t >= crate::startwarp::LOAD_SUCCESS_WAIT) {
+                    log::info!("save boxes: loadSuccess after {:.2} s", self.save_box_t.0);
+                    self.save_box = 2;
+                    self.loading_tag = 0.0;
+                    self.tag_saving = None;
+                } else if !self.no_save {
+                    self.loading_tag = dt.max(1e-3);
+                    self.tag_saving = Some(saving);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn open_message_box(&mut self, id: &str, confirm: MenuAction) -> bool {
         if self.flash_popup.is_none() {
             return false;
@@ -10171,7 +10264,12 @@ impl Game {
                 self.loading_was_garage = garage_now;
                 self.loading_tag = 1.5;
             }
-            let text = self.career.strings.get("VE_Loading").map(|v| v.to_uppercase()).unwrap_or_else(|| "LOADING".into());
+            let key = match self.tag_saving {
+                Some(true) => "Save_Icon_Saving",
+                Some(false) => "Save_Icon_Loading",
+                None => "VE_Loading",
+            };
+            let text = self.career.strings.get(key).map(|v| v.to_uppercase()).unwrap_or_else(|| "LOADING".into());
             // (the race's badge is the popup movie's too: it stays while it is up)
             let badge_up = self.start_badge_on || self.tutorial_box.as_ref().map_or(false, |t| t.2 <= 0.0);
             if let Some(fp) = self.flash_popup.as_mut() {
@@ -10184,6 +10282,12 @@ impl Game {
                         fp.movie.player.set_global("savegame_text", Value::str(&text));
                         fp.movie.player.set_global("savegame_anim", Value::Int(1));
                         self.loading_on = true;
+                        self.loading_text = text.clone();
+                    } else if self.loading_text != text {
+                        // (SG_SaveFile goes, SG_LoadFile comes)
+                        fp.movie.player.set_global("savegame_text", Value::str(&text));
+                        fp.movie.player.set_global("savegame_anim", Value::Int(1));
+                        self.loading_text = text.clone();
                     }
                     self.loading_tag -= dt;
                 } else if self.loading_on {
