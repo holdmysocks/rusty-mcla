@@ -358,6 +358,24 @@ impl AiDriver {
         Some(limit)
     }
 
+    /// Put `path_i` on the segment of the path nearest to `pos` from `path_i` on: a car the racer brain drives
+    /// never moves the index, so it can stand far behind the car (`path_ahead` then led the car back to it -
+    /// the Corvette set back 144 m on hw_ordered_jp_04 that turned round in a gas station, AI.md NEW 5).
+    pub fn seat_path(&mut self, pos: Vec3) {
+        let Some(path) = self.path.as_ref() else { return };
+        let mut best = (f32::MAX, self.path_i);
+        for i in self.path_i..path.len().saturating_sub(1) {
+            let (a, b) = (path[i], path[i + 1]);
+            let ab = Vec3::new(b.x - a.x, 0.0, b.z - a.z);
+            let t = (Vec3::new(pos.x - a.x, 0.0, pos.z - a.z).dot(ab) / ab.length_squared().max(0.01)).clamp(0.0, 1.0);
+            let d = Vec3::new(pos.x - a.x - ab.x * t, 0.0, pos.z - a.z - ab.z * t).length_squared();
+            if d < best.0 {
+                best = (d, i);
+            }
+        }
+        self.path_i = best.1;
+    }
+
     pub fn path_ahead(&mut self, pos: Vec3, dist: f32) -> Option<Vec3> {
         let path = self.path.clone()?;
         if path.len() < 2 {

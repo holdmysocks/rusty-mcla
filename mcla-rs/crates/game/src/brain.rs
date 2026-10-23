@@ -1009,10 +1009,10 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         c.state.ang_vel = Vec3::ZERO;
     }
     if let Some(a) = c.ai.as_mut() {
-        // (over the line: on the brake, still steering - the port's race-end rule, CAREER_RACES.md "Race end")
-        if a.finished {
-            input = CarInput { throttle: 0.0, brake: 1.0, nitro: false, ..input };
-        }
+        // (over the line nothing changes: the script's RecordTime / EndRace are no-ops and nothing else touches a
+        // computer racer; it drives its finishing route (the final wrap's weight-0 alt paths) and, its line used up,
+        // the "no line" branch above holds it on the brake - docs/reference/ai/after_finish.md. The port's own
+        // "brake after the line" turned into reversing at a standstill: the racers wandered round the finish, AI.md NEW 4)
         a.brain.0 = Some(brain);
     }
     input

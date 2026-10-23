@@ -522,14 +522,10 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             push(e);
         }
     }
-    // race opponents (subtype 6, the race scripts' SetVehicleElement): arrows in RacerColor
-    if racing {
-        for c in vehicles.cars.iter().filter(|c| !c.is_player && c.pinned && !c.cop && c.racer) {
-            let mut e = Element::at(Kind::OtherCar, c.state.pos);
-            e.back = -c.state.forward();
-            push(e);
-        }
-    }
+    // race opponents (subtype 6, the race scripts' SetVehicleElement) are listed by the original but
+    // never drawn in a race: while the race's checkpoint provider is set (HudMap+24, every race but
+    // the online flag modes) only the player and type-0 elements pass (rule_elements.md 4.1, 7); the
+    // original's RACE_GH_06 shows no arrow for the man beside the player (work/ui/ref/ng_race_045..047)
     // police (PoliceManager: listed within 500 m of a racer while no pursuit; always, pulsing, in
     // a pursuit)
     for c in vehicles.cars.iter().filter(|c| c.cop) {

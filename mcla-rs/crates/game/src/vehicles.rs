@@ -3029,16 +3029,24 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // Already placed cars can outlive their streamed collision sectors.
             // Suspend physical motion until they can be placed on resident ground
             // again. The existing distant-racer path still advances kinematically.
-            if c.placed && !world.ready_at(c.state.pos) {
+            // (a race opponent the racer brain drives keeps driving on the city's collision bound, which is loaded
+            // whole - `World::own_bound`, one resource in the original too: far from the player it is neither
+            // suspended nor carried along the old driver's line with its wheels still - AI.md NEW 2 / 3 / 5)
+            let on_bound = world.own_bound && c.ai.as_ref().is_some_and(|a| a.brain.is_some());
+            if c.placed && !on_bound && !world.ready_at(c.state.pos) {
                 c.placed = false;
                 c.pose_history.reset();
             }
             // Racers outside the streamed-in part of the city have no ground to drive on:
             // move them along the race line until the world around them is loaded.
             // (not on the grid: there the cars stand on their brakes while the world streams in)
-            if !c.is_player && !self.frozen && self.grid_hold.is_none() && c.parked.is_none() && c.rail.is_none() && !world.ready_at(c.state.pos) {
+            if !c.is_player && !on_bound && !self.frozen && self.grid_hold.is_none() && c.parked.is_none() && c.rail.is_none() && !world.ready_at(c.state.pos) {
                 if let Some(ai) = c.ai.as_mut() {
                     if ai.path.is_some() {
+                        // (a brain-driven racer has left the old driver's index behind: from where the car is)
+                        if ai.brain.is_some() {
+                            ai.seat_path(c.state.pos);
+                        }
                         let v = ai.target_speed * 0.8;
                         if let Some(p) = ai.path_ahead(c.state.pos, v * dt) {
                             let d = p - c.state.pos;
