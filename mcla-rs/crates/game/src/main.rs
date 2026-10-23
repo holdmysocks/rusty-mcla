@@ -432,7 +432,11 @@ struct App {
     /// the opening's `Graphics_WarpToTimeOfDay(17, 100)`: the hour aimed at, while the clock is moved there
     intro_tod: Option<f32>,
     /// VEHICLE SELECT: where the first of the three starters stands
+    starters_made: bool,
+    /// where the player's hidden car is held through VEHICLE SELECT (`place_player_at_kerb`)
     starter_stand: Option<(Vec3, glam::Quat)>,
+    /// VEHICLE SELECT's camera (CarSelection 0x1069): eye, look, their speeds, the time to the next 30 ms step
+    sel_cam: Option<(Vec3, Vec3, f32, f32, f32)>,
     settle_frames: u32,
     news_timer: f32,
     /// photo mode: (mode to return to, was driving), picture to write this frame, pictures taken
@@ -873,7 +877,9 @@ impl App {
             intro_t: 0.0,
             intro_mask: Default::default(),
             intro_tod: None,
+            starters_made: false,
             starter_stand: None,
+            sel_cam: None,
             settle_frames: 0,
             news_timer: 0.0,
             photo: None,
@@ -2711,7 +2717,7 @@ impl App {
         // (test hook for the keyboard's table, `keybinds`: MCLA_KEY_TEST="from-to:NAME,..." - the key
         // NAME (as the keyboard page names it, `_` for a space) is pressed at tick `from` and let
         // go after tick `to`; where the player's car is then is logged)
-        // (test hook MCLA_NAV_TEST="frame:a,frame:y,...": the pad's A / Y / START / B / up / down pressed at that frame)
+        // (test hook MCLA_NAV_TEST="frame:a,frame:y,...": the pad's A / Y / START / B / up / down / left / right pressed at that frame)
         if let Ok(v) = std::env::var("MCLA_NAV_TEST") {
             for step in v.split(',') {
                 let Some((at, b)) = step.trim().split_once(':') else { continue };
@@ -2724,6 +2730,8 @@ impl App {
                         "b" => self.game.nav_back = true,
                         "up" => self.game.nav_up = true,
                         "down" => self.game.nav_down = true,
+                        "left" => self.game.nav_left = true,
+                        "right" => self.game.nav_right = true,
                         _ => {}
                     }
                 }
@@ -2856,7 +2864,8 @@ impl App {
             }
         }
         // (the radio waits: through the flight down, and for a new career until its opening is over)
-        self.game.radio_held = self.startwarp.is_some() || self.game.fresh_game || self.intro_stage != 0;
+        // (and through a story scene: the cutscene's own sound only)
+        self.game.radio_held = self.startwarp.is_some() || self.game.fresh_game || self.intro_stage != 0 || self.cuts.playing.is_some();
         // nobody at the start screen: the attract movie (the press-start script: TIMERA > 110000 ms, the timer
         // started when the start screen takes START and again after each attract movie; other buttons do not reset it)
         let title_up = self.game.boot.as_ref().map_or(true, |b| b.title);
@@ -3670,51 +3679,57 @@ impl App {
         crate::physics::vehsim::TIME_SCALE84.store(self.game.mc4_time_scale().max(0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
         let sim_dt = if self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale.min(self.ability.time_scale()).max(0.1) * self.game.mc4_time_scale() };
         self.vehicles.rescue_fallen(&world, focus);
-        // (VEHICLE SELECT: the car stands still, its wheels on the ground)
+        // (VEHICLE SELECT: the three starters stand deactivated in the lot - the screen's loop calls no racer native;
+        // the traffic and the people about them go on. The player has no car yet - AddVehicleToPlayer comes after
+        // ACCEPT - so the port's player car is kept out of sight at the kerb until then)
         if self.game.starter_pick.is_some() {
-            self.vehicles.frozen = true;
             self.vehicles.lights_off = true;
-            self.starter_was = true;
-            // (the car under the cursor is one of the three deactivated starters too: the screen's loop
-            // calls no racer native, so it is held as the other two are)
-            if let Some(c) = self.vehicles.player_mut() {
-                c.deactivated = true;
+            // (out of sight at the kerb from the first frame of the screen: the city about the lot is streamed by then)
+            if !std::mem::replace(&mut self.starter_was, true) {
+                self.place_player_at_kerb();
+                self.starter_stand = self.vehicles.player().map(|c| (c.state.pos, c.state.rot));
             }
             // (test hook: MCLA_STARTER_LOG=1 logs where the starters stand, once a second)
             if std::env::var("MCLA_STARTER_LOG").is_ok() {
                 use std::sync::atomic::{AtomicU32, Ordering};
                 static N: AtomicU32 = AtomicU32::new(0);
                 if N.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
-                    for c in self.vehicles.cars.iter().filter(|c| c.driver == "starter" || c.is_player) {
-                        log::info!("starter hold: {} {:.3} {:.3} {:.3} speed {:.3}", if c.is_player { "player" } else { "other" }, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.vel.length());
+                    for c in self.vehicles.cars.iter().filter(|c| c.driver == "starter") {
+                        log::info!("starter hold: {} {:.4} {:.4} {:.4} speed {:.4}", c.model.name, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.vel.length());
                     }
                 }
             }
         } else if std::mem::take(&mut self.starter_was) {
-            self.vehicles.frozen = false;
             self.vehicles.lights_off = false;
-            if let Some(c) = self.vehicles.player_mut() {
-                c.deactivated = false;
-            }
-            // (the two not taken stay where they stand, still deactivated: CarSelection 0x1402 only unlocks their
-            // streaming and marks them Opponent_ToggleDeleteOnEviction - they go when the opponent manager evicts
-            // them, below; the original's scene shows them in the lot behind the three)
+            self.sel_cam = None;
+            // (CarSelection 0x1402 on: the two not taken get their streaming unlocked and are marked
+            // Opponent_ToggleDeleteOnEviction - they go when the opponent manager evicts them, below; the one taken
+            // is given to the player (AddVehicleToPlayer) and its racer is SetUID(208) - it stays in the lot, and
+            // the original's story scene shows all three behind the player)
             for c in self.vehicles.cars.iter_mut().filter(|c| c.driver == "starter") {
                 c.driver = "starter_left".into();
             }
-            self.starter_stand = None;
-            // (CarSelection 0x1494: AmbientMgr_Reset, the last thing it does - `Vehicles::ambient_reset`)
-            self.vehicles.ambient_reset();
-            // (the story goes on at the kerb outside the lot: where its first scene has the
-            // player's car - the `drv00` mover of CUT_STORY_RACE_GH_06)
-            if let (Some((p, r)), true) = (self.cine.car_pose("story/cut_story_race_gh_06", &cine::is_player_car, true), std::env::var("MCLA_STARTER_HERE").is_err()) {
-                if let Some(c) = self.vehicles.player_mut() {
-                    c.state.relocate(p + Vec3::Y * 0.3, r);
-                    c.state.vel = Vec3::ZERO;
-                    c.state.ang_vel = Vec3::ZERO;
-                    c.pose_history.reset();
+            if let Some(dir) = self.game.car_dirs.get(self.game.current_car).cloned() {
+                let (color, cfg) = (self.game.paint_color(), self.game.cfg.clone());
+                if let Err(e) = self.vehicles.replace_player(&mut gpu, &mut world, &dir, color, &cfg, None) {
+                    log::warn!("opening: the chosen starter {}: {:#}", dir.display(), e);
                 }
             }
+            if let Some(c) = self.vehicles.player_mut() {
+                c.deactivated = false;
+            }
+            // (CarSelection 0x1494: AmbientMgr_Reset, the last thing it does - `Vehicles::ambient_reset`)
+            self.vehicles.ambient_reset();
+        }
+        // (the hidden car held where it was put, still - its ground need not be streamed in - through VEHICLE SELECT;
+        // after ACCEPT it is let go onto its wheels once that ground is here: the first story scene waits for it)
+        if self.cine.playing.is_some() || (self.game.starter_pick.is_none() && self.starter_stand.is_some_and(|(p, _)| world.ready_at(p))) {
+            self.starter_stand = None;
+        }
+        if let (Some((p, r)), Some(c)) = (self.starter_stand, self.vehicles.player_mut()) {
+            c.state.relocate(p, r);
+            c.state.vel = Vec3::ZERO;
+            c.state.ang_vel = Vec3::ZERO;
         }
         // (the starters not taken, deleted on eviction: the opponent manager's walk, sub_822B5AD8 - a car in the world
         // whose horizontal distance to the player less M+896 (100 m) is over M+892 (600 m) is evicted, and one marked
@@ -3723,71 +3738,51 @@ impl App {
         if let Some(me) = self.vehicles.player().map(|c| c.state.pos) {
             self.vehicles.cars.retain(|c| c.driver != "starter_left" || (Vec3::new(c.state.pos.x - me.x, 0.0, c.state.pos.z - me.z).length() - 100.0).max(0.0) <= 600.0);
         }
-        // VEHICLE SELECT: the starter under the cursor stands in the player's place
+        // CarSelection (game/career/0xebb682f7, 0x214 - 0x35a) makes the three starters before the film: opponents
+        // loaded into the lot (OpponentManager_LoadOpponent, AddOpponentToWorld), deactivated, their icons hidden;
+        // VEHICLE SELECT only moves the camera between them (`sel_cam`), and the one taken stays in the lot. The
+        // places are the original's three car objects on this screen (the body's origin and its z axis - the
+        // script's own placements are (-173.088, 18.169, -762.769) 34.025, (-176.355, 18.199, -761.178) 35.091,
+        // (-179.104, 18.203, -759.119) 36.12, before the cars settle)
+        if self.game.fresh_game && self.intro_stage >= 1 && !self.starters_made {
+            self.starters_made = true;
+            const LOT: [([f32; 3], [f32; 2]); 3] = [([-173.088, 18.137, -762.768], [0.559, 0.829]), ([-176.354, 18.147, -761.177], [0.575, 0.818]), ([-179.103, 18.192, -759.120], [0.589, 0.808])];
+            self.vehicles.cars.retain(|c| c.driver != "starter");
+            for (k, name) in game::STARTERS.iter().enumerate() {
+                let Some(j) = self.game.car_dirs.iter().position(|d| d.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case(name))) else { continue };
+                let dir = self.game.car_dirs[j].clone();
+                let was = self.game.current_car;
+                self.game.current_car = j;
+                self.game.set_starter_paint(name);
+                let (color, cfg) = (self.game.paint_color(), self.game.cfg.clone());
+                self.game.current_car = was;
+                if let Ok(model) = self.vehicles.model_cached(&mut gpu, &mut world, &dir, &cfg) {
+                    let (p, z) = LOT[k];
+                    let z = Vec3::new(z[0], 0.0, z[1]).normalize();
+                    let idx = self.vehicles.spawn(&gpu, model, Vec3::from(p), 0.0, color, false);
+                    let c = &mut self.vehicles.cars[idx];
+                    c.state.rot = glam::Quat::from_mat3(&glam::Mat3::from_cols(Vec3::Y.cross(z), Vec3::Y, z));
+                    c.ai = None;
+                    c.placed = true;
+                    c.pinned = true;
+                    // (Racer_Deactivate: chassis +592 bit 0x1 - work/ui2/starter_hold/notes.md)
+                    c.deactivated = true;
+                    c.driver = "starter".into();
+                }
+            }
+            if let Some(c) = self.vehicles.player_mut() {
+                c.deactivated = true;
+            }
+            log::info!("opening: the three starters in the lot");
+        }
+        // VEHICLE SELECT: the starter under the cursor is the car the player will be given
         if let Some(name) = self.game.starter_swap.take() {
             if let Some(i) = self.game.car_dirs.iter().position(|d| d.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case(&name))) {
-                let dir = self.game.car_dirs[i].clone();
-                // The three stand in a row in the lot by the bus stop (`ng_vsel_0`..`3`): the
-                // SCIROCCO, the 240SX on its left, the GOLF beyond. Their places and headings
-                // are the original's, read from its three car objects on this screen (the
-                // body's origin and its z axis, which points backwards).
-                const LOT: [([f32; 3], [f32; 2]); 3] = [([-173.088, 18.137, -762.768], [0.559, 0.829]), ([-176.354, 18.147, -761.177], [0.575, 0.818]), ([-179.103, 18.192, -759.120], [0.589, 0.808])];
-                let here = std::env::var("MCLA_STARTER_HERE").is_ok();
-                if self.starter_stand.is_none() {
-                    self.starter_stand = self.vehicles.player().map(|c| (c.state.pos, c.state.rot));
-                }
-                let lift = std::env::var("MCLA_STARTER_LIFT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
-                let slot = |k: usize, at: (Vec3, glam::Quat)| -> (Vec3, glam::Quat) {
-                    if here {
-                        let f = at.1 * Vec3::NEG_Z;
-                        let f = Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::NEG_Z);
-                        return (at.0 - Vec3::new(-f.z, 0.0, f.x) * 3.5 * k as f32, at.1);
-                    }
-                    let (p, z) = LOT[k.min(2)];
-                    let z = Vec3::new(z[0], 0.0, z[1]).normalize();
-                    (Vec3::new(p[0], p[1] + lift, p[2]), glam::Quat::from_mat3(&glam::Mat3::from_cols(Vec3::Y.cross(z), Vec3::Y, z)))
-                };
-                let me = game::STARTERS.iter().position(|s| s.eq_ignore_ascii_case(&name)).unwrap_or(0);
-                self.vehicles.cars.retain(|c| c.driver != "starter");
-                for (k, other) in game::STARTERS.iter().enumerate().filter(|(k, _)| *k != me) {
-                    let (Some(at), Some(j)) = (self.starter_stand, self.game.car_dirs.iter().position(|d| d.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case(other)))) else { continue };
-                    let odir = self.game.car_dirs[j].clone();
-                    let was = self.game.current_car;
-                    self.game.current_car = j;
-                    self.game.set_starter_paint(other);
-                    let (color, cfg) = (self.game.paint_color(), self.game.cfg.clone());
-                    self.game.current_car = was;
-                    // (each starter is loaded once: left / right only moves the three)
-                    if let Ok(model) = self.vehicles.model_cached(&mut gpu, &mut world, &odir, &cfg) {
-                        let (sp, sr) = slot(k, at);
-                        let idx = self.vehicles.spawn(&gpu, model, sp, 0.0, color, false);
-                        let c = &mut self.vehicles.cars[idx];
-                        c.state.rot = sr;
-                        c.ai = None;
-                        c.placed = true;
-                        c.pinned = true;
-                        // (the start script deactivates all three: Racer_Deactivate, chassis +592 bit 0x1 -
-                        // `game/career/0xebb682f7`; work/ui2/starter_hold/notes.md)
-                        c.deactivated = true;
-                        c.driver = "starter".into();
-                    }
-                }
-                let stand = self.starter_stand.map(|at| slot(me, at));
                 self.game.owned.retain(|o| !game::STARTERS.iter().any(|s| o.eq_ignore_ascii_case(s)));
                 self.game.current_car = i;
                 self.game.selected_car = i;
                 self.game.ensure_owned();
                 self.game.set_starter_paint(&name);
-                let color = self.game.paint_color();
-                let cfg = self.game.cfg.clone();
-                if self.vehicles.replace_player(&mut gpu, &mut world, &dir, color, &cfg, None).is_ok() {
-                    if let (Some((pos, rot)), Some(c)) = (stand, self.vehicles.player_mut()) {
-                        c.state = physics::car::CarState::new(pos, 0.0);
-                        c.pose_history.reset();
-                        c.state.rot = rot;
-                        c.placed = true;
-                    }
-                }
             }
         }
         // VIEW REPLAY: the race's cars and the traffic about the player where the recording has
@@ -4445,7 +4440,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let stormy = self.weather_weight(sky::Weather::Stormy);
             self.props.emit(&mut self.fx, self.cam.pos, self.tick_no, self.vehicles.player().map(|c| (c.state.pos, c.state.vel, c.state.rot)), stormy);
             props::set_lens(self.cam.fov_y);
-            self.vehicles.hide_player = self.hide_player;
+            self.vehicles.hide_player = self.hide_player || (self.game.fresh_game && self.intro_stage != 0) || self.game.starter_pick.is_some();
             // (the scene is over: its animated brains are deleted with it, BrainFactory_DeleteBrain)
             static AFTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if self.cine.playing.is_none() && !self.cine_events.0.is_empty() {
@@ -6526,24 +6521,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     None => (None, None),
                 };
                 // (the race's opening shot from the air)
-                // (VEHICLE SELECT: the car from its front left, low - `ng_vsel_0`; by eye)
-                let replay_view = if self.game.starter_pick.is_some() {
-                    let f = render_state.forward();
-                    let f = Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::NEG_Z);
-                    let r = Vec3::new(-f.z, 0.0, f.x);
-                    // (the 240SX is looked at from its other side - `ng_vsel_1`)
-                    let r = if self.game.starter_pick == Some(1) { r } else { -r };
-                    let c: Vec<f32> = std::env::var("MCLA_STARTER_CAM").ok().map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
-                    // (by eye against the three captures: near and low off the front corner; the
-                    // GOLF more from its side, the 240SX's nose in the corner of the picture)
-                    const VIEW: [[f32; 7]; 2] = [[3.5, 1.8, 1.0, 0.6, -0.5, 0.55, 45.0], [3.4, 3.0, 0.95, 0.3, -0.2, 0.6, 45.0]];
-                    let v = VIEW[(self.game.starter_pick == Some(2)) as usize];
-                    let c = |i: usize| c.get(i).copied().unwrap_or(v[i]);
-                    Some((render_state.pos + f * c(0) - r * c(1) + Vec3::Y * c(2), render_state.pos + f * c(3) + r * c(4) + Vec3::Y * c(5), c(6)))
-                } else {
-                    replay_view
-                };
-                let replay_up = replay_up.filter(|_| self.game.starter_pick.is_none());
+                // (CarSelection's camera: Game_SetCamera(eye, look, 25.5) - `sel_cam`, stepped in `opening_tick`)
+                let sel_view = self.sel_cam.filter(|_| self.cuts.playing.is_none()).map(|(eye, look, ..)| (eye, look, 25.5));
+                let replay_view = sel_view.or(replay_view);
+                let replay_up = replay_up.filter(|_| sel_view.is_none());
                 // (the race-start warp: hudmap::CineWarp, roll included)
                 let replay_view = match self.warp_view.filter(|_| self.game.race.is_some()).or(self.place_view) {
                     Some((eye, look, _, fov)) => Some((eye, look, fov.to_degrees())),
@@ -7544,7 +7525,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
         }
-        self.vehicles.hide_player = self.hide_player;
+        self.vehicles.hide_player = self.hide_player || (self.game.fresh_game && self.intro_stage != 0) || self.game.starter_pick.is_some();
         // (the driver's camera: the original's POV camera sets G+122 of the car it follows - sub_822A9670 -
         // and its windows take the in-car glass program; damage_map_rule.md Part C 6. As the cockpit's
         // headless driver: not while looking back, in a replay or the idle camera.)
@@ -10110,6 +10091,22 @@ impl App {
         self.game.career.strings.get("Mission_Log").map(|s| s.to_uppercase()).unwrap_or_else(|| "MISSION LOG".into())
     }
 
+    /// The new career's car at the kerb outside the lot: where the first story scene has the player's car (the
+    /// `drv00` mover of CUT_STORY_RACE_GH_06). MCLA_STARTER_HERE leaves it where it is.
+    fn place_player_at_kerb(&mut self) {
+        if std::env::var("MCLA_STARTER_HERE").is_ok() {
+            return;
+        }
+        if let Some((p, r)) = self.cine.car_pose("story/cut_story_race_gh_06", &cine::is_player_car, false) {
+            if let Some(c) = self.vehicles.player_mut() {
+                c.state.relocate(p + Vec3::Y * 0.3, r);
+                c.state.vel = Vec3::ZERO;
+                c.state.ang_vel = Vec3::ZERO;
+                c.pose_history.reset();
+            }
+        }
+    }
+
     fn start_movie(&mut self, name: &str, subs: Vec<(f32, f32, String)>, any_key: bool) -> bool {
         let dir = std::path::Path::new(&self.opt.data_dir).join("../video_pc");
         let Some(mut m) = video::Video::open(&dir, name) else { return false };
@@ -10129,6 +10126,16 @@ impl App {
     /// the scenes included.
     fn opening_tick(&mut self, dt: f32, streaming: usize) {
         self.intro_t += dt;
+        // (VEHICLE SELECT's loop: one step of the camera function at 0x1069 toward the car under the cursor, then
+        // WAITUNWARPED(30))
+        if let (3, Some(k), Some(c)) = (self.intro_stage, self.game.starter_pick, self.sel_cam.as_mut()) {
+            c.4 += dt;
+            while c.4 >= 0.030 {
+                c.4 -= 0.030;
+                let (eye, look, se, sl) = sel_cam_step((c.0, c.1, c.2, c.3), SEL_EYE[k.min(2)], SEL_LOOK[k.min(2)]);
+                *c = (eye, look, se, sl, c.4);
+            }
+        }
         match self.intro_stage {
             // (the film once the black is up; settings.toml game.intro `fast` / `skip` leave it out - `hooks`)
             1 if self.intro_mask.full() => {
@@ -10151,6 +10158,8 @@ impl App {
                 }
                 self.intro_stage = 2;
                 self.intro_t = 0.0;
+                // (the camera over the lot, set after the film: CarSelection's eye local45 and look local48)
+                self.sel_cam = Some((SEL_EYE0, SEL_LOOK0, 0.0, 0.0, 0.0));
                 // (after the film: Graphics_WarpToTimeOfDay(17, 100) - CarSelection, before City_DoneStreaming)
                 self.intro_tod = Some(17.0);
             }
@@ -11958,3 +11967,27 @@ struct CityMapGpu {
 
 /// `garageEnvMap.dds` as RGBA8 (256 x 128): the garage's lights for the cars' mirror map.
 static GARAGE_GLOW: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+
+/// CarSelection's camera over the lot (game/career/0xebb682f7): the first eye and look (local45, local48), and the
+/// eye and look targets for the three starters in the screen's order (local25, local35)
+const SEL_EYE0: Vec3 = Vec3::new(-174.542, 20.308, -773.402);
+const SEL_LOOK0: Vec3 = Vec3::new(-176.885, 17.332, -746.174);
+const SEL_EYE: [Vec3; 3] = [Vec3::new(-174.154, 19.609, -769.263), Vec3::new(-181.709, 19.577, -764.572), Vec3::new(-179.077, 19.065, -765.562)];
+const SEL_LOOK: [Vec3; 3] = [Vec3::new(-172.353, 16.673, -751.904), Vec3::new(-165.489, 16.825, -755.183), Vec3::new(-179.634, 18.415, -749.725)];
+
+/// One step of CarSelection's camera function (0x1069): the leg with further to go speeds up by 0.1 (to 1.4) while it
+/// is more than four steps away and slows by 0.7 inside that, never past its target; the other leg takes the speed
+/// that brings it in at the same time. Returns eye, look and their speeds.
+fn sel_cam_step((eye, look, se, sl): (Vec3, Vec3, f32, f32), eye_t: Vec3, look_t: Vec3) -> (Vec3, Vec3, f32, f32) {
+    let (d8, d9) = (eye.distance(eye_t), look.distance(look_t));
+    let lead = |d: f32, v: f32| (if d > v * 4.0 { (v + 0.1).min(1.4) } else { v * 0.7 }).min(d);
+    let (se, sl) = if d8 >= d9 {
+        let se = lead(d8, se);
+        (se, if d8 > 0.0 { (se * d9 / d8).min(d9) } else { 0.0 })
+    } else {
+        let sl = lead(d9, sl);
+        ((sl * d8 / d9).min(d8), sl)
+    };
+    let go = |p: Vec3, t: Vec3, d: f32, v: f32| if d > 0.0 { p + (t - p) / d * v } else { p };
+    (go(eye, eye_t, d8, se), go(look, look_t, d9, sl), se, sl)
+}
