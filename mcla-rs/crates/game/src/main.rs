@@ -3669,6 +3669,8 @@ impl App {
                 c.driver = "starter_left".into();
             }
             self.starter_stand = None;
+            // (CarSelection 0x1494: AmbientMgr_Reset, the last thing it does - `Vehicles::ambient_reset`)
+            self.vehicles.ambient_reset();
             // (the story goes on at the kerb outside the lot: where its first scene has the
             // player's car - the `drv00` mover of CUT_STORY_RACE_GH_06)
             if let (Some((p, r)), true) = (self.cine.car_pose("story/cut_story_race_gh_06", &cine::is_player_car, true), std::env::var("MCLA_STARTER_HERE").is_err()) {

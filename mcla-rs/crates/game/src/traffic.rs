@@ -3187,6 +3187,23 @@ impl Spawner {
 }
 
 impl Vehicles {
+    /// AmbientMgr_Reset (sub_826D6A40 -> sub_826D5F40 -> sub_826D56F0 with the message 0x40): every ambient car
+    /// of kind 0x40 - a car type (type vt+24 sub_82130008 = 1; a person's type returns 0) without a parking
+    /// spot (car +44 = 0) - goes at once, no fade: riding traffic, trailers, a layout item's car (its item stays).
+    /// The cars in spots (kind 0x20) and the walkers (0x10) stay. Per car (sub_826DF370 / sub_826E0140 /
+    /// sub_826E0438 with no time): +500 bit 0x80, a request that takes the car over (sub_826DE730), its
+    /// behaviour (sub_826E02F0), then the car's vfunc 11 with reason 11 (sub_826E7AC0: the car taken out) and
+    /// back to its group's free list (sub_826D6390, the type's counts sub_826E39E8). The spawn requests of kind
+    /// 0x40 still waiting for ground are ended too (sub_826ED338: state 7) - the port keeps none at this point.
+    pub fn ambient_reset(&mut self) {
+        let before = self.cars.len();
+        self.cars.retain(|c| {
+            let ambient = !c.is_player && !c.cop && !c.racer && !c.pinned && (c.rail.is_some() || c.parked.is_some());
+            !ambient || c.parked.is_some_and(|s| s != super::parked::ITEM_SPOT)
+        });
+        log::info!("ambient: reset - {} cars taken out, {} left", before - self.cars.len(), self.cars.len());
+    }
+
     /// Is car `i` ambient traffic the spawner owns?
     fn ambient_car(&self, i: usize) -> bool {
         let c = &self.cars[i];
