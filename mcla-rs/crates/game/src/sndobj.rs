@@ -140,6 +140,9 @@ struct Node {
     /// ms since the node was made / since it started playing
     t: f32,
     play_t: f32,
+    /// set at the node's first update (sub_8213CBD8, from the parent's offset then): the predelay to wait (ms of `t`),
+    /// the start offset, and the envelope's time origin in `t` (own predelay - the parent's offset, sub_8215C5B8 +176)
+    wait: Option<(f32, f32, f32)>,
     /// release: (start, end) in `t` ms
     release: Option<(f32, f32)>,
     kind: Kind,
@@ -761,7 +764,7 @@ impl SoundLib {
             },
             Payload::Speech | Payload::Other(_) => Kind::Empty,
         };
-        Some(Node { h, vol, pitch, pan, predelay_ms, start_ms, st: St::Waiting, t: 0.0, play_t: 0.0, release: None, kind })
+        Some(Node { h, vol, pitch, pan, predelay_ms, start_ms, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, kind })
     }
 
     fn voice_id(&mut self) -> u64 {
@@ -831,7 +834,7 @@ impl SoundLib {
         let (h, _) = audcfg::parse_header(&o);
         let dur_ms = clip.frames() as f32 * 1000.0 / clip.rate as f32;
         let voice = self.voice_id();
-        let root = Node { h, vol: 0.0, pitch: 0, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, release: None, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
+        let root = Node { h, vol: 0.0, pitch: 0, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
         let id = self.next;
         self.next += 1;
         self.insts.push(Instance { id, hash: 0, root, req, prev_dist: None, doppler: 1.0, stop: false });
@@ -920,6 +923,25 @@ impl SoundLib {
     }
 
     /// Advance every sound by `dt` and drive the mixer's voices.
+    /// (tests) Advance one playing sound by `dt` and give the volume chain (dB) of every wave it plays now - the
+    /// original's vol[40] with its attack / release / envelope terms; empty once it has ended.
+    #[cfg(test)]
+    pub(crate) fn test_leaf_vols(&mut self, h: Handle, dt: f32) -> Vec<f32> {
+        let Some(at) = self.insts.iter().position(|i| i.id == h.0) else { return Vec::new() };
+        let mut inst = self.insts.remove(at);
+        if inst.stop {
+            inst.stop = false;
+            stop_node(&mut inst.root);
+        }
+        let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, start_pct: inst.req.start_pct };
+        let mut out = Vec::new();
+        self.step(&mut inst.root, dt * 1000.0, ctx, inst.req.start_ms, &mut out);
+        if inst.root.st != St::Done {
+            self.insts.insert(at, inst);
+        }
+        out.iter().map(|l| l.ctx.vol).collect()
+    }
+
     pub fn update(&mut self, dt: f32, audio: &mut Audio) {
         self.step_scenes(dt);
         let ms = dt * 1000.0;
@@ -961,8 +983,13 @@ impl SoundLib {
         }
         n.t += ms;
         if n.st == St::Waiting {
-            // predelay and start offset (sub_8213CBD8): the parent's elapsed offset first eats the predelay
-            let (pd, so) = if parent_offset >= n.predelay_ms { (0.0, parent_offset - n.predelay_ms + n.start_ms) } else { (n.predelay_ms - parent_offset, n.start_ms) };
+            // predelay and start offset (sub_8213CBD8): the parent's elapsed offset first eats the predelay - worked out
+            // once, when the sound is played (the wait then runs on the sound's own clock; recorded: SST_ENV_TAIL's 250 ms
+            // predelay under SST_MULTI starts its envelope 250 ms after the burn's start, work/slipstream/audiorec)
+            let (pd, so, _) = *n.wait.get_or_insert_with(|| {
+                let (pd, so) = if parent_offset >= n.predelay_ms { (0.0, parent_offset - n.predelay_ms + n.start_ms) } else { (n.predelay_ms - parent_offset, n.start_ms) };
+                (pd, so, n.predelay_ms - parent_offset)
+            });
             if n.t < pd {
                 return;
             }
@@ -1112,8 +1139,11 @@ impl SoundLib {
                 live.is_empty() && *count != -1 && *made >= *count as i32
             }
             Kind::Envelope { a, d, s, hold, r, curves, child, rel_from } => {
-                // ADSR on the child's volume (sub_8215C5B8): value = a * d * r, linear
-                let t = offset;
+                // ADSR on the child's volume (sub_8215C5B8): value = a * d * r, linear. Its times count from its play
+                // time + own predelay - the parent's offset (+176 = +88 - +108 + +96): the start offset is not in them
+                // (recorded: SST_ENV_TAIL, PreDelay 250, StartOffset 250, rises as sin((t - 250)/500 * pi/2) from the burn's
+                // start)
+                let t = n.t - n.wait.map_or(0.0, |w| w.2);
                 let cv = |me: &SoundLib, k: usize, x: f32, default: f32| me.curves.get(&curves[k]).map(|c| c.eval(x)).unwrap_or(default);
                 let att = if *a > 0.0 { cv(self, 0, (t / *a).clamp(0.0, 1.0), (t / *a).clamp(0.0, 1.0)) } else { 1.0 };
                 let dec = if t <= *a {
@@ -1251,7 +1281,12 @@ fn stop_node(n: &mut Node) {
         return;
     }
     if n.h.release >= 0 && n.st == St::Playing {
+        // sub_8213D9D8: a sound with a ReleaseTime only marks its own release (start = now, end = now + release) and
+        // returns; its children are not stopped and play on under the fading parent until the release ends (recorded:
+        // the slipstream burn SLIPSTREAM_NITROUS_MASTER, ReleaseTime 2000, kept both SST envelopes at their full value
+        // for the 2 s after the stop - work/slipstream/audiorec)
         n.release = Some((n.t, n.t + n.h.release as f32));
+        return;
     } else if !matches!(n.kind, Kind::OnStop { .. } | Kind::Envelope { .. }) {
         n.st = St::Done;
         return;
@@ -1282,6 +1317,7 @@ fn reset_node(n: &mut Node) {
     n.st = St::Waiting;
     n.t = 0.0;
     n.play_t = 0.0;
+    n.wait = None;
     n.release = None;
     match &mut n.kind {
         Kind::Wave { pos_ms, .. } | Kind::Stream { pos_ms, .. } => *pos_ms = 0.0,

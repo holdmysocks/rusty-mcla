@@ -9132,12 +9132,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the effect list's model particles - litter, cans - before them, writing the depth: modelfx.rs)
             modelfx::run(&gpu, &mut enc);
         }
-        if !map3d {
-            // (the slipstream trails: drawn by the original in each car's alpha pass after the car - sst_trail.rs)
-            sst_trail::run(&gpu, &mut enc, &self.vehicles);
-        }
-        // (the depth and stencil resolved - sample 0 - for what reads them: the particles' soft fade, the blobs)
+        // (the depth and stencil resolved - sample 0 - for what reads them: the trails' fog, the particles' soft fade,
+        // the blobs)
         gpu.resolve_scene_depth(&mut enc);
+        if !map3d {
+            // (the slipstream trails: drawn by the original last of the cars' alpha draws - sst_trail.rs; they write
+            // no depth or stencil, so the resolve before them holds for what follows)
+            sst_trail::run(&gpu, &mut enc, &self.vehicles, globals.view_proj);
+        }
         if !map3d {
             // (the particles and the rain in a pass of their own, the depth read-only: the
             // checkpoint smoke reads it for its soft fade - PSCheckpointProj)

@@ -2224,6 +2224,27 @@ impl Vehicles {
         }
     }
 
+    /// Test hook MCLA_SST_TRAIL_FOLLOW=<dist> (the port's copy of the recorder's hold, work/slipstream/trailrec
+    /// hold2.py / MCLA_HOLD_BEHIND): before the player's step each tick his car is put `dist` m behind (along +z,
+    /// the back row) the nearest other car with a slipstream turbo (the racers; no bike), turned as that car and with its
+    /// velocity, so that he drafts it.
+    fn sst_trail_follow(&mut self, idx: usize) {
+        if !self.cars[idx].is_player {
+            return;
+        }
+        let Some(dist) = std::env::var("MCLA_SST_TRAIL_FOLLOW").ok().and_then(|v| v.trim().parse::<f32>().ok()) else { return };
+        let me = self.cars[idx].state.pos;
+        let lead = (0..self.cars.len())
+            .filter(|&j| j != idx && Self::has_sst(&self.cars[j]) && !self.cars[j].model.bike && self.cars[j].placed)
+            .min_by(|&a, &b| self.cars[a].state.pos.distance(me).total_cmp(&self.cars[b].state.pos.distance(me)));
+        let Some(j) = lead else { return };
+        let (pos, rot, vel, ang) = { let s = &self.cars[j].state; (s.pos, s.rot, s.vel, s.ang_vel) };
+        let c = &mut self.cars[idx];
+        c.state.relocate(pos + rot * Vec3::Z * dist, rot);
+        c.state.vel = vel;
+        c.state.ang_vel = ang;
+    }
+
     /// After the step: each turbo's trail fades (mcCarModel 0x82379D48 - kept while the local player is this car,
     /// or the car in its slipstream with this car as its leader).
     fn sst_trails(&mut self, dt: f32) {
@@ -2979,6 +3000,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 self.level_swap(&mut level_car, Some(idx), step_dt, level_first, true);
                 level_first = false;
             }
+            self.sst_trail_follow(idx);
             self.sst_search_step(idx);
             let c = &mut self.cars[idx];
             // (traffic: the physics level's - inactive while it rides, an ambient collider while

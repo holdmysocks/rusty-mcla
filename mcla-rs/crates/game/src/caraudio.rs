@@ -73,6 +73,27 @@ fn cents(ratio: f32) -> i32 {
     (1200.0 * ratio.max(1e-6).log2()) as i32
 }
 
+/// A pitch ratio as sub_8213CB40 turns it into the voice's cents (+80): log10 in double (sub_823DB918 = ln x
+/// 0.4342944819032518, 0x8205D018), rounded to single, times 3.321928 (0x82002C44) and 1200 (0x82002C40) in single,
+/// truncated (fctiwz). (Recorded on the slipstream loop: 292 updates, every value equal - work/slipstream/audiorec.)
+fn voice_cents(ratio: f32) -> i32 {
+    let l = ((ratio.max(1e-6) as f64).ln() * 0.4342944819032518) as f32;
+    (l * f32::from_bits(0x4054_9A78) * 1200.0) as i32
+}
+
+/// MCLA_SST_REPLAY: the recording's update the player's sounds are fed this frame (-1: no replay)
+static SST_REPLAY_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+/// MCLA_SST_AUDIO_LOG=<file>: the slipstream sounds' updates and events in the recorder's own line format
+/// (work/slipstream/audiorec, recomp-trace src/sst_audio.cpp), for a line-by-line comparison.
+fn sst_log(line: std::fmt::Arguments) {
+    use std::io::Write;
+    static F: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    if let Some(f) = F.get_or_init(|| std::env::var_os("MCLA_SST_AUDIO_LOG").and_then(|p| std::fs::File::create(p).ok()).map(std::sync::Mutex::new)) {
+        let _ = writeln!(f.lock().unwrap(), "{line}");
+    }
+}
+
 /// A persistent sound in a handle slot: start it when the slot is empty (or its sound ended), else update it.
 fn keep(lib: &mut SoundLib, slot: &mut Option<Handle>, hash: u32, req: Req) {
     match *slot {
@@ -138,7 +159,8 @@ pub struct WheelIn {
 #[derive(Clone, Copy, Default)]
 pub struct CarIn {
     pub pos: Vec3,
-    /// the wheels in the original's record order (car +28: FL, RL, FR, RR; a bike front, rear) and how many there are
+    /// the wheels in the original's record order (car +28: FL, FR, RL, RR - read from the running original; a bike front,
+    /// rear) and how many there are
     pub wheels: [WheelIn; 4],
     pub n_wheels: usize,
     /// the weather's wet amount is not 0 (WEATHER_AUDIO_RULE.md 1.3)
@@ -241,6 +263,8 @@ pub struct CarSounds {
     sst_seen: (u8, f32),
     /// the charge loop's last volume (dB) and pitch (cents)
     sst_vp: (f32, i32),
+    /// the slipstream update's count (MCLA_SST_AUDIO_LOG lines)
+    sst_f: u64,
     pings: Option<Handle>,
     /// the moving damage parts: the hood / trunk move loops, the bumpers' creak loops (rear, front), the fallen
     /// bumpers' scrape loops with the time of their last sliding contact (inst+96, +100), the last event heard
@@ -275,7 +299,7 @@ impl CarSounds {
             police: g.get_name("GLOBAL_POLICE").map(|o| o.to_vec()).unwrap_or_default(),
             w: Default::default(),
             clock: 0.0,
-            chirp_at: -10.0,
+            chirp_at: 0.0,
             upshift_at: -10.0,
             prev_shift: 0,
             damper: [None; 4],
@@ -305,6 +329,7 @@ impl CarSounds {
             sst_speech: false,
             sst_seen: (0, 0.0),
             sst_vp: (0.0, 0),
+            sst_f: 0,
             pings: None,
             flap_move: [None; 2],
             creak: [None; 2],
@@ -813,22 +838,28 @@ impl CarSounds {
         if self.clock < self.chirp_at + 0.5 {
             return;
         }
-        for w in c.wheels.iter().take(c.n_wheels).filter(|w| w.driven && w.contact) {
+        for (k, w) in c.wheels.iter().enumerate().take(c.n_wheels).filter(|(_, w)| w.driven && w.contact) {
             let (m, _) = mats.get(w.surface);
             let h = lib.game.get(m).map(|o| be_u32(o, 182)).unwrap_or(0);
             if !is_null(h) {
                 lib.play_hash(h, self.req(w.pos));
             }
+            let at = SST_REPLAY_AT.load(std::sync::atomic::Ordering::Relaxed);
+            sst_log(format_args!("CHIRP f={} wheel {k} hash={h:08x} at {:.2},{:.2},{:.2}", if at >= 0 { at as u64 } else { self.sst_f }, w.pos.x, w.pos.y, w.pos.z));
             self.chirp_at = self.clock;
         }
     }
 
-    // ---- the slipstream turbo (SLIPSTREAM_AUDIO_RULE: work/slipstream/audio/audio_rule.md): GLOBAL_SPECIAL_ABILITIES
-    // +99 SST_LOOP_MASTER, +103 f32 charge start (0.05), +107 s16 mB there (-500), +109 f32 pitch ratio there (0.4),
-    // +113 f32 full (1.0), +117 s16 mB at full (0), +119 f32 pitch ratio at full (1.5), +123 SST_BEEP_MASTER,
-    // +127 SLIPSTREAM_NITROUS_MASTER (player's burn), +131 SLIPSTREAM_NITROUS_MASTER_O (an opponent's burn)
+    // ---- the slipstream turbo (SST_AUDIO_RULE.md, recorded against the original: work/slipstream/audiorec):
+    // GLOBAL_SPECIAL_ABILITIES +99 SST_LOOP_MASTER, +103 f32 charge start (0.05), +107 s16 mB there (-500), +109 f32 pitch
+    // ratio there (0.4), +113 f32 full (1.0), +117 s16 mB at full (0), +119 f32 pitch ratio at full (1.5), +123
+    // SST_BEEP_MASTER, +127 SLIPSTREAM_NITROUS_MASTER (player's burn), +131 SLIPSTREAM_NITROUS_MASTER_O (an opponent's burn)
     fn slipstream(&mut self, lib: &mut SoundLib, mats: &Materials, c: &CarIn) {
         self.sst_speech = false;
+        self.sst_f += 1;
+        // (log lines count this entity's updates; under MCLA_SST_REPLAY they carry the recording's update instead)
+        let k = SST_REPLAY_AT.load(std::sync::atomic::Ordering::Relaxed);
+        let f = if k >= 0 { k as u64 } else { self.sst_f };
         let p = &self.sst_obj;
         if p.len() < 135 {
             return;
@@ -836,53 +867,91 @@ impl CarSounds {
         let (level, burning) = c.sst.unwrap_or((0.0, false));
         // every start: 0 dB at the entity (P+20 = this+80), flags |0x20
         let at = Req { player: self.player, ..Req::at(c.pos) };
+        let live = |lib: &SoundLib, h: &Option<Handle>| h.is_some_and(|h| lib.playing(h));
+        // a slot's stop (sub_8213C218) is only made when the slot holds a handle
+        let halt = |lib: &mut SoundLib, slot: &mut Option<Handle>, what: &str| {
+            if live(lib, slot) {
+                sst_log(format_args!("STOP {what} f={f}"));
+            }
+            stop(lib, slot);
+        };
         if !self.player {
             // mcOpponentAudioEntity vt+132 (sub_82364DC8): only the burn
+            if c.sst.is_some_and(|(l, b)| b || l > 0.0) || live(lib, &self.sst_burn) {
+                sst_log(format_args!("O f={f} L={level:.5} burn={} h={}", burning as u8, live(lib, &self.sst_burn) as u8));
+            }
             if c.sst.is_some() && burning {
                 let h = be_u32(p, 131);
+                if free(lib, &self.sst_burn) {
+                    sst_log(format_args!("START oppburn f={f} vol 0"));
+                }
                 keep(lib, &mut self.sst_burn, h, at);
             } else {
-                stop(lib, &mut self.sst_burn);
+                halt(lib, &mut self.sst_burn, "oppburn");
             }
             return;
         }
         // mcPlayerAudioEntity vt+132 (sub_82327598)
+        if c.sst.is_some_and(|(l, b)| b || l > 0.0) || live(lib, &self.sst_burn) || live(lib, &self.sst_loop) || live(lib, &self.sst_full) {
+            sst_log(format_args!(
+                "P f={f} clk={:.4} chirp={:.4} L={level:.5} burn={} burnh={} loop={} beep={}",
+                self.clock,
+                self.chirp_at,
+                burning as u8,
+                live(lib, &self.sst_burn) as u8,
+                live(lib, &self.sst_loop) as u8,
+                live(lib, &self.sst_full) as u8
+            ));
+        }
         if burning {
-            if free(lib, &self.sst_burn) {
-                self.launch_chirp(lib, mats, c);
+            // (the request's position is the entity's own (P+20 = this+80), so a playing burn follows the car)
+            let first = free(lib, &self.sst_burn);
+            if first {
+                sst_log(format_args!("START burn f={f} vol 0"));
             }
             let h = be_u32(&self.sst_obj, 127);
             keep(lib, &mut self.sst_burn, h, at);
+            if first {
+                self.launch_chirp(lib, mats, c);
+            }
             // mix slot 18 (mgr+1740 bit 0x40000) not on yet: the speech request PLAYER_NITROUS (if no speech line
             // plays - the caller's test), then the slot on at strength 1.0
             if !lib.scene_on("DYNAMIC_MIXER_SST") {
                 self.sst_speech = true;
+                sst_log(format_args!("SPEECHREQ f={f}"));
                 lib.scene("DYNAMIC_MIXER_SST", true);
+                sst_log(format_args!("MIXON f={f}"));
             }
         } else {
-            stop(lib, &mut self.sst_burn);
-            lib.scene("DYNAMIC_MIXER_SST", false);
+            halt(lib, &mut self.sst_burn, "burn");
+            if lib.scene_on("DYNAMIC_MIXER_SST") {
+                lib.scene("DYNAMIC_MIXER_SST", false);
+                sst_log(format_args!("MIXOFF f={f}"));
+            }
         }
         let p = &self.sst_obj;
         let (lmin, lfull) = (be_f32(p, 103), be_f32(p, 113));
         let (vol, pitch) = 'charge: {
             if burning || level < lmin {
-                stop(lib, &mut self.sst_loop);
-                stop(lib, &mut self.sst_full);
+                halt(lib, &mut self.sst_loop, "loop");
+                halt(lib, &mut self.sst_full, "beep");
                 break 'charge (0.0, 1.0);
             }
             let (vol, pitch);
             if level >= lfull {
                 let beep = be_u32(p, 123);
                 if level >= 1.0 {
+                    if free(lib, &self.sst_full) {
+                        sst_log(format_args!("START beep f={f} vol 0"));
+                    }
                     keep(lib, &mut self.sst_full, beep, at);
                 } else {
-                    stop(lib, &mut self.sst_full);
+                    halt(lib, &mut self.sst_full, "beep");
                 }
                 vol = be_s16(p, 117) * 0.01;
                 pitch = be_f32(p, 119);
             } else {
-                stop(lib, &mut self.sst_full);
+                halt(lib, &mut self.sst_full, "beep");
                 let u = (level - lmin) / (lfull - lmin);
                 let (v0, v1) = (be_s16(p, 107) * 0.01, be_s16(p, 117) * 0.01);
                 vol = (v1 - v0) * u + v0;
@@ -890,21 +959,26 @@ impl CarSounds {
                 pitch = (p1 - p0) * u + p0;
             }
             if level >= 1.0 {
-                stop(lib, &mut self.sst_loop);
+                halt(lib, &mut self.sst_loop, "loop");
             } else {
-                // the loop's volume (dB, voice +64: sub_82148CB0) and pitch (trunc(1200 log2 ratio) cents, voice +80:
-                // sub_8213CB40) set every frame
+                // the loop's volume (dB, voice +64: sub_82148CB0) and pitch (cents, voice +80: sub_8213CB40) set every
+                // frame; a new loop is started with the request's volume = this frame's
                 let h = be_u32(p, 99);
-                keep(lib, &mut self.sst_loop, h, Req { volume: vol, pitch: cents(pitch), ..at });
-                self.sst_vp = (vol, cents(pitch));
+                if free(lib, &self.sst_loop) {
+                    sst_log(format_args!("START loop f={f} vol {vol:.4}"));
+                }
+                let cents = voice_cents(pitch);
+                keep(lib, &mut self.sst_loop, h, Req { volume: vol, pitch: cents, ..at });
+                self.sst_vp = (vol, cents);
+                sst_log(format_args!("PITCH f={f} ratio {pitch:.9}"));
+                sst_log(format_args!("VOL f={f} dB {vol:.6} (block pitch now {cents})"));
             }
             (vol, pitch)
         };
         if trace() {
-            let live = |h: &Option<Handle>| h.is_some_and(|h| lib.playing(h)) as u8;
-            let k = live(&self.sst_burn) | live(&self.sst_loop) << 1 | live(&self.sst_full) << 2;
+            let k = live(lib, &self.sst_burn) as u8 | (live(lib, &self.sst_loop) as u8) << 1 | (live(lib, &self.sst_full) as u8) << 2;
             if k != self.sst_seen.0 || (k & 2 != 0 && self.clock >= self.sst_seen.1 + 0.5) {
-                eprintln!("sst audio: level {level:.3} burn {} loop {} ({vol:.2} dB, {} cents) full {}", k & 1, k >> 1 & 1, cents(pitch), k >> 2 & 1);
+                eprintln!("sst audio: level {level:.3} burn {} loop {} ({vol:.2} dB, {} cents) full {}", k & 1, k >> 1 & 1, voice_cents(pitch), k >> 2 & 1);
                 self.sst_seen = (k, self.clock);
             }
         }
@@ -1066,6 +1140,25 @@ impl CarSounds {
     }
 }
 
+/// MCLA_SST_REPLAY: the recorder's "P" lines (work/slipstream/audiorec) as (level, burning) per original update, from the
+/// first update with a charge or a burn; updates the recorder skipped (nothing charged, nothing playing) are (0, false).
+fn sst_replay_load(text: &str) -> Vec<(f32, bool)> {
+    let field = |l: &str, k: &str| l.split(' ').find_map(|w| w.strip_prefix(k)).map(str::to_string);
+    let mut rows: Vec<(usize, f32, bool)> = Vec::new();
+    for l in text.lines().filter(|l| l.starts_with("P f=")) {
+        let (Some(f), Some(lv), Some(b)) = (field(l, "f="), field(l, "L="), field(l, "burn=")) else { continue };
+        let (Ok(f), Ok(lv)) = (f.parse::<usize>(), lv.parse::<f32>()) else { continue };
+        rows.push((f, lv, b == "1"));
+    }
+    let Some(first) = rows.iter().find(|r| r.1 > 0.0 || r.2).map(|r| r.0) else { return Vec::new() };
+    let last = rows.iter().map(|r| r.0).max().unwrap_or(first);
+    let mut v = vec![(0.0, false); last + 1 - first];
+    for (f, lv, b) in rows.into_iter().filter(|r| r.0 >= first) {
+        v[f - first] = (lv, b);
+    }
+    v
+}
+
 /// A speech scenario's Probability (percent, clamped 0..100, 100 when missing) and Frequency (s, 10 when missing) as
 /// the speech script loader sub_821F3E88 reads them (scenario +64, +20).
 fn scenario_gate(xml: &str, name: &str) -> (i32, f32) {
@@ -1074,15 +1167,27 @@ fn scenario_gate(xml: &str, name: &str) -> (i32, f32) {
     (attr("Probability").map_or(100, |p| (p as i32).clamp(0, 100)), attr("Frequency").unwrap_or(10.0))
 }
 
+/// Record +40 (sub_8234DE50 @8234E0DC) of the port's wheel `i` (FL, FR, RL, RR): chassis +372 layout 1 or 3 -> +412 /
+/// +420 (the front pair) are the driven ones, any other layout -> +416 / +424 (the rear pair). So an all-wheel-drive car
+/// with layout 2 (the R8) chirps from its rear wheels only (recorded: records 2 and 3, work/slipstream/audiorec).
+fn driven_record(drive: u8, i: usize) -> bool {
+    if drive == 1 || drive == 3 {
+        i < 2
+    } else {
+        i >= 2
+    }
+}
+
 /// What a car's sounds read from the port's car (vehicle sim when it has one).
 pub fn car_in(c: &CarInstance) -> CarIn {
     let st = &c.state;
     let vs = st.veh.as_deref();
     let tune = c.model.params.veh.as_deref();
     let drive = vs.map_or(0, |v| v.drive);
-    // the original's record order: car +28 holds FL, RL, FR, RR (the port's wheels are FL, FR, RL, RR); a bike's records are
-    // its front and rear wheel (the port's 0 and 2)
-    let order: &[usize] = if c.model.bike { &[0, 2] } else { &[0, 2, 1, 3] };
+    // the original's record order: car +28 holds FL (+412), FR (+420), RL (+416), RR (+424) - read from the running original
+    // (work/slipstream/audiorec: the R8's car+28 = +412, +420, +416, +424, wheels 2 and 3 on the rear axle), the port's
+    // own order; a bike's records are its front and rear wheel (the port's 0 and 2)
+    let order: &[usize] = if c.model.bike { &[0, 2] } else { &[0, 1, 2, 3] };
     let mut wheels = [WheelIn::default(); 4];
     for (k, w) in wheels.iter_mut().enumerate().take(order.len()) {
         let i = order[k];
@@ -1099,11 +1204,7 @@ pub fn car_in(c: &CarInstance) -> CarIn {
             comp_rate: sim.map_or(0.0, |s| s.comp_rate),
             limit: wt.map_or(0.0, |t| t.suspension_limit),
             travel: wt.map_or(1.0, |t| t.suspension_extent + t.suspension_limit),
-            driven: match drive {
-                0 => i >= 2,
-                1 | 4 => i < 2,
-                _ => true,
-            },
+            driven: driven_record(drive, i),
         };
     }
     let p = &c.model.params;
@@ -1461,6 +1562,8 @@ pub struct Fleet {
     /// clock (+2244) and the scenario's last start (+24, -FLT_MAX at load)
     nitrous_line: (i32, f32, f32),
     speech_clock: f32,
+    /// MCLA_SST_REPLAY (test hook): the recorded level / burn per original update (30 a second) and the time into it
+    sst_replay: Option<(Vec<(f32, bool)>, f32)>,
     /// a player line the cars' sounds ask for this frame (the game says it if no speech plays)
     pub want_speech: Option<&'static str>,
 }
@@ -1546,6 +1649,11 @@ impl Fleet {
             idle: HashMap::new(),
             nitrous_line: (prob, freq, -f32::MAX),
             speech_clock: 0.0,
+            // "<recording>[;<seconds to wait first>]"
+            sst_replay: std::env::var("MCLA_SST_REPLAY").ok().and_then(|v| {
+                let (p, wait) = v.split_once(';').map_or((v.as_str(), 0.0), |(p, w)| (p, w.parse::<f32>().unwrap_or(0.0)));
+                std::fs::read_to_string(p).ok().map(|t| (sst_replay_load(&t), -wait))
+            }),
             want_speech: None,
         }
     }
@@ -1715,6 +1823,13 @@ impl Fleet {
         if let Some((pi, p)) = v.cars.iter().enumerate().find(|(_, c)| c.is_player) {
             let e = entry(&mut self.cars, &self.types, lib, pi, p, true);
             let mut c = car_in(p);
+            if let Some((v, t)) = &mut self.sst_replay {
+                // (test hook) the recording's update at this time; 0 / not burning before and after it
+                let k = (*t * 30.0).floor() as i64;
+                SST_REPLAY_AT.store(k, std::sync::atomic::Ordering::Relaxed);
+                *t += dt;
+                c.sst = Some(usize::try_from(k).ok().and_then(|k| v.get(k).copied()).unwrap_or((0.0, false)));
+            }
             c.wet = wet;
             c.horn = ctl.horn && !p.cop;
             c.nitro_empty = ctl.nitro_empty;
@@ -1730,9 +1845,13 @@ impl Fleet {
                 // rand(0, 99) < Probability; the start time is kept when it passes
                 if s.sst_speech && !pol.speech_busy {
                     let (prob, freq, last) = &mut self.nitrous_line;
+                    sst_log(format_args!("SCEN clk {:.3} name PLAYER_NITROUS freq {freq:.3} last {last:.3} prob {prob}", self.speech_clock));
                     if self.speech_clock >= *last + *freq && lib.rand_int(0, 99) < *prob {
                         *last = self.speech_clock;
                         self.want_speech = Some("PLAYER_NITROUS");
+                        sst_log(format_args!("SPEECHRET started"));
+                    } else {
+                        sst_log(format_args!("SPEECHRET 0"));
                     }
                 }
                 s.damage_parts(lib, &p.state.parts);
@@ -2208,7 +2327,8 @@ mod tests {
         s.update(&mut lib, &mats, &c, 2, dt);
         assert!(!live(&lib, &s.sst_loop) && !live(&lib, &s.sst_full) && live(&lib, &s.sst_burn));
         assert!(lib.scene_on("DYNAMIC_MIXER_SST") && s.sst_speech);
-        assert!((s.chirp_at - s.clock).abs() < 1e-6);
+        // (no launch chirp yet: this+264 starts at 0 with the entity's clock and the clock is not 0.5 s on - recorded)
+        assert!(s.clock < 0.5 && s.chirp_at == 0.0);
         c.sst = Some((0.5, true));
         s.update(&mut lib, &mats, &c, 2, dt);
         assert!(!s.sst_speech && live(&lib, &s.sst_burn));
@@ -2227,6 +2347,126 @@ mod tests {
         assert_eq!(scenario_gate(&xml, "PLAYER_NITROUS"), (30, 120.0));
         assert_eq!(scenario_gate(&xml, "PLAYER_HORN"), (30, 10.0));
     }
+
+    /// sub_8213CB40's pitch arithmetic against the running original (work/slipstream/audiorec, r5: the charge loop's
+    /// ratio as passed and the cents found in the voice block right after): the recorded pairs, and a ratio where the
+    /// plain single-precision 1200 log2 would be one cent off.
+    #[test]
+    fn voice_cents_recorded() {
+        for (r, c) in [(0.406076461f32, -1560), (0.703386903, -609), (1.04511762, 76), (1.42090929, 608), (0.829858959, -322), (1.37913656, 556), (0.642281413, -766)] {
+            assert_eq!(voice_cents(r), c, "{r}");
+        }
+        assert_eq!((voice_cents(0.411_082_54), cents(0.411_082_54)), (-1538, -1539));
+    }
+
+    /// The driven records (+40): layout 0 / 2 / 4 the rear pair, 1 / 3 the front pair (the recorded R8, layout 2: records 2
+    /// and 3 only).
+    #[test]
+    fn driven_records() {
+        let pick = |d: u8| (0..4).map(|i| driven_record(d, i)).collect::<Vec<_>>();
+        for d in [0, 2, 4, 255] {
+            assert_eq!(pick(d), [false, false, true, true]);
+        }
+        for d in [1, 3] {
+            assert_eq!(pick(d), [true, true, false, false]);
+        }
+    }
+
+    /// The slipstream sounds against recordings of the running original (recomp-trace's sst_audio recorder,
+    /// work/slipstream/audiorec cap/r1, r3, r5): the loop's dB and cents at recorded levels, the beep's start and stop
+    /// with the level, the burn's chirp from the driven rear records only, its restart chirp 0.5 s after the last, the
+    /// envelopes of SLIPSTREAM_NITROUS_MASTER (SST_ENV_ATTACK: 1 for 250 ms, then linear to 0 over 500 ms; SST_ENV_TAIL:
+    /// after its 250 ms predelay sin(t/500 * pi/2) up to 1, held) and its stop: the wrapper's 2 s release over the
+    /// envelopes as they were.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn slipstream_matches_recording() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mats = Materials::load(Path::new(&dir));
+        let mut s = CarSounds::new(&lib, "vp_aud_r8_08", false, true);
+        let dt = 1.0 / 30.0;
+        let live = |lib: &SoundLib, h: &Option<Handle>| h.is_some_and(|h| lib.playing(h));
+        let mut c = CarIn { n_wheels: 4, sst: Some((0.0, false)), ..Default::default() };
+        for (i, w) in c.wheels.iter_mut().enumerate() {
+            *w = WheelIn { contact: true, driven: driven_record(2, i), surface: Surface::Road as u8, ..Default::default() };
+        }
+        // (L, dB, cents) recorded (r1 f955, f981, f1057, f445; L printed to 5 decimals)
+        for (l, db, ct) in [(0.05064f32, -4.99664f32, -1583), (0.56536, -2.28756, -5), (0.96296, -0.19494, 651), (0.99307, -0.03646, 692)] {
+            c.sst = Some((l, false));
+            s.update(&mut lib, &mats, &c, 2, dt);
+            let (v, p) = s.sst_vp;
+            assert!(live(&lib, &s.sst_loop) && (v - db).abs() < 3e-5 && p == ct, "{l}: {v} {p}");
+        }
+        // below 0.05 (r3 f888: 0.01850): the loop stops; at 1: the loop stops and the beep starts (r3 f552)
+        c.sst = Some((0.0185, false));
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(!live(&lib, &s.sst_loop) && !live(&lib, &s.sst_full));
+        c.sst = Some((1.0, false));
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(!live(&lib, &s.sst_loop) && live(&lib, &s.sst_full));
+        // the stay-full time ran out (r3 f862: 0.98148): the beep stops and the loop starts again in the same update
+        c.sst = Some((0.98148, false));
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(live(&lib, &s.sst_loop) && !live(&lib, &s.sst_full) && (s.sst_vp.0 + 0.0975).abs() < 1e-3);
+        // the fire (r3 f641, burn = 1 at L 0.98667): the loop / beep stop, the burn starts, the chirp from records 2 and 3
+        s.clock = 21.3667 - dt;
+        s.chirp_at = 15.1001;
+        c.sst = Some((0.98667, true));
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(live(&lib, &s.sst_burn) && !live(&lib, &s.sst_loop) && s.sst_speech && lib.scene_on("DYNAMIC_MIXER_SST"));
+        assert!((s.chirp_at - 21.3667).abs() < 1e-4);
+        // a restarted burn (the slot found empty, r3 f700 at clock 23.3333, last chirp 21.3667): it chirps again; with the
+        // wheels off the ground (r1 f940) the chirp time stays
+        let h = s.sst_burn.take().unwrap();
+        lib.stop(h);
+        s.clock = 23.3333 - dt;
+        c.sst = Some((0.16, true));
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!((s.chirp_at - 23.3333).abs() < 1e-4 && !s.sst_speech);
+        let h = s.sst_burn.take().unwrap();
+        lib.stop(h);
+        s.clock = 31.3332 - dt;
+        s.chirp_at = 29.2666;
+        for w in c.wheels.iter_mut() {
+            w.contact = false;
+        }
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!((s.chirp_at - 29.2666).abs() < 1e-4 && live(&lib, &s.sst_burn));
+        // the burn's envelopes (r5, on the audio clock): the two leaves of SST_MULTI less their fixed chain dB
+        let h = lib.play_hash(joaat("SLIPSTREAM_NITROUS_MASTER"), Req::default()).expect("burn");
+        let attack = |t: f32| if t < 250.0 { 1.0 } else { (1.0 - (t - 250.0) / 500.0).max(1e-5) };
+        let tail = |t: f32| ((t - 250.0).clamp(0.0, 500.0) / 500.0 * std::f32::consts::FRAC_PI_2).sin().max(1e-5);
+        let mut base: Option<(f32, f32)> = None;
+        for t in 1..=1200 {
+            let v = lib.test_leaf_vols(h, 0.001);
+            let tf = t as f32;
+            if t == 300 {
+                assert_eq!(v.len(), 2, "{v:?}");
+                base = Some((v[0] - lin2db(attack(tf)), v[1] - lin2db(tail(tf))));
+            }
+            if let (Some((b0, b1)), true) = (base, t > 300 && t % 50 == 0 && t < 700) {
+                println!("t {t}: attack {:.3} dB (model {:.3}), tail {:.3} dB (model {:.3})", v[0] - b0, lin2db(attack(tf)), v[1] - b1, lin2db(tail(tf)));
+                assert!((v[0] - b0 - lin2db(attack(tf))).abs() < 0.1, "attack at {t}: {v:?}");
+                assert!((v[1] - b1 - lin2db(tail(tf))).abs() < 0.1, "tail at {t}: {v:?}");
+            }
+        }
+        // the stop: SLIPSTREAM_NITROUS_MASTER's ReleaseTime 2000 ms fades the whole tree; the tail envelope stays at 1
+        let (_, b1) = base.unwrap();
+        lib.stop(h);
+        for k in 1..=2100 {
+            let v = lib.test_leaf_vols(h, 0.001);
+            if k == 1000 {
+                println!("1 s into the release: {v:?} (tail alone {b1:.3})");
+                assert!(v.len() == 1 && (v[0] - b1 - lin2db(0.5)).abs() < 0.1, "half-way: {v:?}");
+            }
+            if k == 2100 {
+                assert!(v.is_empty(), "{v:?}");
+            }
+        }
+    }
+
 
     /// TUNERS_DAMAGE's records as DAMAGE_PARTS_RULE.md 4.3 reads them, and the parts' sounds started by their
     /// events: the hood's slam, the break-off, the fallen bumper's impact and scrape (stopped 1/15 s after the slide).

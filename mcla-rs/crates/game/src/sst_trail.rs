@@ -8,16 +8,22 @@
 //!   (+z) row, w 0, with a new drift ((r - 0.5) x 0.1 (0x82004288), two 23-bit draws of the game's MWC 0x82860880,
 //!   the first into y). The car's model makes them all 0 and the drifts (r - 0.5) x 5.0 (sub_82379A58). The "moved
 //!   more than 0.05 m" test compares with +800, which only the model's set-up writes (-100000, -1e6, -1e6), so the
-//!   points move every frame. The original's frame is 1/30 s (TIME +8 outside the tick loop); the port moves them
-//!   every 1/30 s of the car's ticks with dt = 1/30 and puts point 0 on the drawn pose each frame.
+//!   points move every frame. Recorded in the running original (work/slipstream/trailrec, 2026-10-23): one move
+//!   a frame, after the frame's ticks (point 0 = the drawn pose, point k = point 0 of k frames before), rise and
+//!   v offset with the frame's step (TIME +8); at the console's 30 frames a second that is 1/30 s. The port moves
+//!   them every 1/30 s of the car's ticks with dt = 1/30 and draws them read back by the time since the move
+//!   (`Trail::render_points`).
 //! - The draw (sub_82379B30, from the vehicle's alpha pass sub_82360518 after the car's own draws, unless the
 //!   "nossttrail" switch or the renderer's garage flag): while the faded value (+780 = `sst.trail`) > 0.001
 //!   (0x820022B4), the trail model with the identity matrix (the points are in the world), skinningData = the 32
-//!   points, effectFade = the faded value, stencil test NOT EQUAL against the local player's car's stencil id + 1
-//!   (states 20 / 24 / 23 / 25, kept: the trail is not drawn over that car) when it has one.
-//! - SSTTrail.fx (cars/0xc53f6c0e, technique "draw"): SrcBlend SRCALPHA, DestBlend ONE, no Z write, alpha test
-//!   alpha > 0, no culling; DiffuseSampler `__ssttrail` = sst_trail_tex.dds (cars' globaltex). VS_Trail and
-//!   PS_Trail are in render/sst_trail.wgsl.
+//!   points, effectFade = the faded value, stencil test NOT EQUAL against the local player's car's +6028 + 1 (the
+//!   id his DRIVER draws with; states 20 / 24 / 23 / 25, kept) when it has one - so it IS drawn over his car.
+//! - SSTTrail.fx (cars/0xc53f6c0e, technique "draw"): SrcBlend SRCALPHA, DestBlend ONE (colour and alpha), no Z
+//!   write, Z test on, alpha test alpha > 0, no culling; DiffuseSampler `__ssttrail` = sst_trail_tex.dds (cars'
+//!   globaltex), no gamma, clamped, trilinear. VS_Trail and PS_Trail are in render/sst_trail.wgsl. The fog pass
+//!   (PSBlendedHeightFogInFogNoPFog, SRCALPHA / INVSRCALPHA where stencil != 1) comes after it in the original
+//!   and so takes its share of the trail's light; the port fogs in its materials, so the trail's alpha takes it
+//!   (the fog of the scene's depth under the pixel).
 
 use crate::render::Gpu;
 use glam::{Quat, Vec3};
@@ -72,6 +78,27 @@ pub fn head(pos: Vec3, rot: Quat) -> Vec3 {
 }
 
 impl Trail {
+    /// The points as the program gets them at a drawn moment `phi` 30 Hz frames after the last move (the original
+    /// moves them in its frame update, after the frame's two ticks, and draws that frame's state: point k is where
+    /// point 0 was k frames before the drawn pose - recorded, work/slipstream/trailrec). The port draws at any rate
+    /// between its moves: point 0 = the drawn pose (`head_now`), point k >= 1 = the path k frames back from it,
+    /// i.e. the kept points read at place k - phi, linear between neighbours (the rise and the v offset too) -
+    /// the original's points exactly at phi = 0. `phi` < 0 (a drawn pose interpolated to before the last move)
+    /// reads towards the older points; the oldest is held.
+    pub fn render_points(&self, head_now: Vec3, phi: f32) -> [[f32; 4]; POINTS] {
+        let mut out = self.pts;
+        let phi = phi.clamp(-1.0, 1.0);
+        for (k, o) in out.iter_mut().enumerate().skip(1) {
+            let at = (k as f32 - phi).clamp(0.0, (POINTS - 1) as f32);
+            let a = (at.floor() as usize).min(POINTS - 2);
+            let f = at - a as f32;
+            let (p, q) = (self.pts[a], self.pts[a + 1]);
+            *o = std::array::from_fn(|c| p[c] + (q[c] - p[c]) * f);
+        }
+        out[0] = [head_now.x, head_now.y, head_now.z, 0.0];
+        out
+    }
+
     /// One frame of sub_82379D48 (`dt` = the frame's step): the points move one place back, then the new head.
     pub fn shift(&mut self, head: Vec3, dt: f32) {
         for k in (1..POINTS).rev() {
@@ -144,6 +171,7 @@ struct State {
     count: u32,
     ub: wgpu::Buffer,
     bg: wgpu::BindGroup,
+    scene_layout: wgpu::BindGroupLayout,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -168,18 +196,21 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
         .or_else(|_| std::fs::read(base.join(format!("0x{:08x}", mcla_formats::hash::joaat("sst_trail_tex.dds")))))
         .ok()
         .and_then(|d| mcla_formats::dds::parse_dds("sst_trail_tex.dds", &d).ok());
+    // (fetched without gamma: the draw's fetch constant has sign bits "uuuu" - recorded, trailrec g.0.bin)
     let view = match tex {
-        Some(t) => gpu.upload_texture(mcla_formats::hash::joaat("sst_trail/sst_trail_tex.dds"), &t).texture.create_view(&Default::default()),
+        Some(t) => gpu.upload_texture_raw(mcla_formats::hash::joaat("sst_trail/sst_trail_tex.dds"), &t).texture.create_view(&Default::default()),
         None => {
             log::warn!("sst_trail: sst_trail_tex.dds missing");
             crate::render::create_rgba(&gpu.device, &gpu.queue, 1, 1, &[0, 0, 0, 0], "sst_trail").view
         }
     };
     let device = &gpu.device;
+    // (the fetch constant's clamp_x / clamp_y = 2, clamp to the last texel - v + the point's offset past 0 or 1
+    // holds the edge row; mag / min / mip filters linear)
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("sst_trail"),
-        address_mode_u: wgpu::AddressMode::Repeat,
-        address_mode_v: wgpu::AddressMode::Repeat,
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
         mipmap_filter: wgpu::FilterMode::Linear,
@@ -199,9 +230,17 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
         layout: &layout,
         entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }, wgpu::BindGroupEntry { binding: 2, resource: ub.as_entire_binding() }],
     });
+    // (the scene's depth and stencil resolved - sample 0 - for the fog pass that follows the trail in the original)
+    let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("sst_trail scene"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+        ],
+    });
     let globals_layout = gpu.pipeline_particle.get_bind_group_layout(0);
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sst_trail"), source: wgpu::ShaderSource::Wgsl(include_str!("render/sst_trail.wgsl").into()) });
-    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("sst_trail pl"), bind_group_layouts: &[&globals_layout, &layout], push_constant_ranges: &[] });
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("sst_trail pl"), bind_group_layouts: &[&globals_layout, &layout, &scene_layout], push_constant_ranges: &[] });
     let pipe = crate::render::ms::MsPipe::new(device, move |device, v| {
         let attrs = [
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
@@ -209,8 +248,9 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
         ];
         // (SrcBlend SRCALPHA, DestBlend ONE; the alpha test's alpha > 0 changes nothing under it)
         let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-        // (stencil NOT EQUAL the player car's id, kept; the reference is set per frame - 255 when the player's car
-        // has none, which no pixel holds)
+        // (stencil NOT EQUAL the player's car's id + 1, kept - recorded depth control 0x00700563, stencil ref / mask
+        // / write mask 0x00ffff05; the reference is set per frame - 255 when the player's car has none, which no
+        // pixel holds)
         let face = wgpu::StencilFaceState { compare: wgpu::CompareFunction::NotEqual, fail_op: wgpu::StencilOperation::Keep, depth_fail_op: wgpu::StencilOperation::Keep, pass_op: wgpu::StencilOperation::Keep };
         let stencil = if v.scene { wgpu::StencilState { front: face, back: face, read_mask: 0xff, write_mask: 0 } } else { Default::default() };
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -232,7 +272,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             cache: None,
         })
     });
-    *STATE.lock().unwrap() = Some(State { pipe, vb, ib, count: idx.len() as u32, ub, bg });
+    *STATE.lock().unwrap() = Some(State { pipe, vb, ib, count: idx.len() as u32, ub, bg, scene_layout });
 }
 
 /// The trails drawn this frame: each car with a turbo whose faded value is over 0.001 and that is drawn, its
@@ -251,9 +291,10 @@ fn instances(vehicles: &crate::vehicles::Vehicles) -> Vec<Inst> {
             continue;
         }
         let pose = c.render_pose(vehicles.render_alpha);
-        let mut p = c.sst_trail.pts;
-        let h = head(pose.pos, pose.rot);
-        p[0] = [h.x, h.y, h.z, 0.0];
+        // (the drawn pose is render_alpha of a tick past the tick before the last one; the points last moved
+        // `acc` of car time before the last tick)
+        let since = c.sst_trail.acc - (1.0 - vehicles.render_alpha) * crate::fixed_step::DT;
+        let p = c.sst_trail.render_points(head(pose.pos, pose.rot), since / FRAME);
         out.push(Inst { p, fade: [fade, 0.0, 0.0, 0.0] });
         if out.len() == MAX {
             break;
@@ -262,11 +303,30 @@ fn instances(vehicles: &crate::vehicles::Vehicles) -> Vec<Inst> {
     out
 }
 
-/// The pass: over the scene after its draws (the cars' alpha pass draws it, after the car), before the particles.
-pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles::Vehicles) {
+/// The pass: over the scene after its draws and the depth / stencil resolve (gpu.depth / stencil_copy, read for the
+/// fog), before the particles. The original draws it last of the cars' alpha draws (after every car's glass and
+/// lamps and the far cars' cheap draws), before the cars' shadow blobs, the fog pass and the particles - recorded
+/// draw order, trailrec g.0.bin draws 1651 - 1714.
+pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles::Vehicles, view_proj: [[f32; 4]; 4]) {
     let guard = STATE.lock().unwrap();
     let Some(s) = guard.as_ref() else { return };
     let list = instances(vehicles);
+    // (MCLA_SST_TRAIL_DUMP=<file>: each drawn frame's view x projection (columns) and every trail - fade, its 32
+    // points -, overwritten every frame: the last frame's for an offline redraw,
+    // work/slipstream/trailrec/render_port.py)
+    if let (Some(path), false) = (std::env::var_os("MCLA_SST_TRAIL_DUMP"), list.is_empty()) {
+        let mut t = String::new();
+        for c in view_proj {
+            t += &format!("vp {} {} {} {}\n", c[0], c[1], c[2], c[3]);
+        }
+        for inst in &list {
+            t += &format!("fade {}\n", inst.fade[0]);
+            for p in inst.p {
+                t += &format!("p {} {} {} {}\n", p[0], p[1], p[2], p[3]);
+            }
+        }
+        let _ = std::fs::write(path, t);
+    }
     // (MCLA_SST_TRAIL_LOG=1: each drawn frame's count of the scene frames and the trails' fade and head)
     if std::env::var("MCLA_SST_TRAIL_LOG").is_ok_and(|v| v.trim() == "1") {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -279,9 +339,18 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
         return;
     }
     gpu.queue.write_buffer(&s.ub, 0, bytemuck::cast_slice(&list));
-    // (the local player's car's stencil id: the original's 0x827E7628 = that car's +6028 + 1, the id its body
-    // draws with - the port's car keeps one id for all its draws)
-    let reference = vehicles.cars.iter().position(|c| c.is_player).map(crate::render::mb::stencil_of).filter(|&r| r != 0).unwrap_or(255);
+    // (the stencil reference: 0x827E7628 = the local player's car's +6028 + 1. +6028 is the id its body draws
+    // with; the car draw sub_82360518 hands the driver +6028 + 1 unless sub_82332098 (a motorbike: + 0) -
+    // 0x82360818 .. 0x8236085C. Recorded (trailrec g.0.bin): the player's body 4, his driver 5, the drafted
+    // car's body 8, driver 9, the trail NOT EQUAL 5 - so the trail is drawn over the player's car (its glass,
+    // drawn before the trail with 4, covers the driver). The port's drivers write 0, the bodies 4 k (mb.rs): the
+    // reference id + 1 matches no pixel of the port, as no visible pixel of a closed car in the original.)
+    let reference = vehicles.cars.iter().position(|c| c.is_player).map(crate::render::mb::stencil_of).filter(|&r| r != 0).map_or(255, |r| r + 1);
+    let scene_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("sst_trail scene"),
+        layout: &s.scene_layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&gpu.depth) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&gpu.stencil_copy) }],
+    });
     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("sst trail"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
@@ -292,6 +361,7 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
     pass.set_bind_group(0, &gpu.globals_bg, &[]);
     pass.set_pipeline(&s.pipe);
     pass.set_bind_group(1, &s.bg, &[]);
+    pass.set_bind_group(2, &scene_bg, &[]);
     pass.set_stencil_reference(reference);
     pass.set_vertex_buffer(0, s.vb.slice(..));
     pass.set_index_buffer(s.ib.slice(..), wgpu::IndexFormat::Uint32);
@@ -360,6 +430,63 @@ mod tests {
         [31.1828465, 1.3, 33.8022837, 0.0283655],
         [31.8281944, 1.31, 35.4544718, 0.0240503],
     ];
+
+    /// One frame of the drafted car's block recorded in the running original (work/slipstream/trailrec
+    /// cap/poll1.pkl, record 40; red light race, the player held 8 m behind at ~42 m/s): the frame's step 1/60
+    /// (the recomp's frame), the points before and after, the car's matrix (mcCar +272) the head was taken from.
+    #[test]
+    fn sst_trail_shift_matches_recording() {
+        let mut t = Trail { pts: [[0.0; 4]; POINTS], drift: [[0.0; 2]; POINTS], acc: 0.0 };
+        let old = [
+            [-54.434391, 82.664276, -1368.6759, 0.0],
+            [-53.144897, 82.536385, -1369.2421, -0.000319741404],
+            [-51.864964, 82.410156, -1369.83, -0.00069707038],
+            [-50.593281, 82.285172, -1370.4362, 0.00152300193],
+        ];
+        let drift = [[0.049851157, -0.033185590], [-0.019184483, -0.019026101], [-0.020912111, -0.007907427], [0.030460035, -0.013655043]];
+        t.pts[..4].copy_from_slice(&old);
+        t.drift[..4].copy_from_slice(&drift);
+        // (rows right, up, back and the place of the car's matrix)
+        let rows = [Vec3::new(-0.32332194, 0.02214045, -0.94603002), Vec3::new(0.10561232, 0.99432451, -0.01282405), Vec3::new(0.94037664, -0.10405862, -0.32382533)];
+        let pos = Vec3::new(-57.693146, 82.259392, -1367.4755);
+        let rot = Quat::from_mat3(&glam::Mat3::from_cols(rows[0], rows[1], rows[2]));
+        let h = head(pos, rot);
+        let want_new = [
+            [-55.733185, 82.79702, -1368.1328, 0.0],
+            [-54.434391, 82.668442, -1368.6759, 0.000830852659],
+            [-53.144897, 82.54055, -1369.2421, -0.000639482809],
+            [-51.864964, 82.414322, -1369.83, -0.00104560563],
+            [-50.593281, 82.289337, -1370.4362, 0.00203066925],
+        ];
+        t.shift(h, 1.0 / 60.0);
+        for (k, w) in want_new.iter().enumerate() {
+            for c in 0..4 {
+                assert!((t.pts[k][c] - w[c]).abs() < 2e-4, "point {k}.{c}: {} vs {}", t.pts[k][c], w[c]);
+            }
+        }
+        // (the drifts move with their points)
+        assert_eq!(&t.drift[1..5], &drift[..]);
+    }
+
+    /// The points read back between moves: the kept ones at phi 0, the next frame's places at phi 1, point 0 the
+    /// drawn pose.
+    #[test]
+    fn sst_trail_render_points_between_moves() {
+        let mut t = Trail { pts: [[0.0; 4]; POINTS], drift: [[0.0; 2]; POINTS], acc: 0.0 };
+        for k in 0..POINTS {
+            t.pts[k] = [k as f32, 1.0 + 0.01 * k as f32, -2.0 * k as f32, 0.001 * k as f32];
+        }
+        let h = Vec3::new(-0.5, 1.0, 1.0);
+        let a = t.render_points(h, 0.0);
+        assert_eq!(a[0], [h.x, h.y, h.z, 0.0]);
+        assert_eq!(&a[1..], &t.pts[1..]);
+        let b = t.render_points(h, 0.5);
+        assert!((b[3][0] - 2.5).abs() < 1e-6 && (b[3][2] + 5.0).abs() < 1e-6 && (b[3][3] - 0.0025).abs() < 1e-7);
+        let c = t.render_points(h, 1.0);
+        assert_eq!(&c[1..], &t.pts[..POINTS - 1]);
+        let d = t.render_points(h, -0.5);
+        assert!((d[31][0] - 31.0).abs() < 1e-6 && (d[30][0] - 30.5).abs() < 1e-6);
+    }
 
     #[test]
     fn sst_trail_shift_moves_points_back() {
