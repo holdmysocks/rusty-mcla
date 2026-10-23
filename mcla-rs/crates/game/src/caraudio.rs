@@ -1435,6 +1435,8 @@ impl Traffic {
 const CALLSIGNS: [&str; 6] = ["3ADAM5", "1LINCOLN4", "4ADAM8", "4ADAM13", "2ADAM6", "1EDWARD7"];
 
 struct Entry {
+    /// the car's `uid`: the entry follows its car when the list moves (cars before it removed)
+    uid: u32,
     model: String,
     sounds: Option<CarSounds>,
     engine: Option<EngineSound>,
@@ -1647,6 +1649,31 @@ impl Fleet {
     #[allow(clippy::too_many_arguments)]
     pub fn update(&mut self, lib: &mut SoundLib, v: &Vehicles, listener: Vec3, ctl: PlayerCtl, wet: bool, racing: bool, pol: PoliceIn, dt: f32) {
         self.speech_clock += dt;
+        // (the entries are kept by the car's place in the list: when cars before it go - traffic despawning - a car
+        // moves down, and its sounds move with it rather than being dropped and loaded again on every move)
+        let at: HashMap<u32, usize> = v.cars.iter().enumerate().map(|(i, c)| (c.uid, i)).collect();
+        let moved: HashMap<usize, usize> = self.cars.iter().filter_map(|(&i, e)| at.get(&e.uid).map(|&j| (i, j))).filter(|(i, j)| i != j).collect();
+        if !moved.is_empty() {
+            let old = std::mem::take(&mut self.cars);
+            for (_, mut e) in old {
+                match at.get(&e.uid) {
+                    Some(&j) => {
+                        self.cars.insert(j, e);
+                    }
+                    None => Self::release(lib, &mut e),
+                }
+            }
+            let m = |i: usize| moved.get(&i).copied().unwrap_or(i);
+            self.sel = self.sel.iter().map(|&i| m(i)).collect();
+            self.idle = self.idle.iter().map(|(&i, &t)| (m(i), t)).collect();
+            if let Some(ch) = self.chatter.as_mut() {
+                ch.0 = m(ch.0);
+            }
+            self.pol.tactic = self.pol.tactic.iter().map(|&i| m(i)).collect();
+            self.pol.callsigns = self.pol.callsigns.iter().map(|(&i, &k)| (m(i), k)).collect();
+            self.pol.warn_barred = self.pol.warn_barred.iter().map(|&i| m(i)).collect();
+            self.pol.warn_cop = self.pol.warn_cop.map(m);
+        }
         // cars that left
         let alive: Vec<usize> = self.cars.keys().copied().filter(|i| v.cars.get(*i).is_some_and(|c| c.placed && c.model.name == self.cars[i].model)).collect();
         let gone: Vec<usize> = self.cars.keys().copied().filter(|i| !alive.contains(i)).collect();
@@ -2070,6 +2097,7 @@ fn entry<'a>(cars: &'a mut HashMap<usize, Entry>, types: &HashMap<String, Traffi
                 }
             });
             Entry {
+                uid: c.uid,
                 model: c.model.name.clone(),
                 sounds: (!traffic).then(|| CarSounds::new(lib, &c.model.name, c.model.bike, player)),
                 engine: None,

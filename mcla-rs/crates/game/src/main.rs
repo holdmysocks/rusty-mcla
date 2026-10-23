@@ -104,6 +104,8 @@ mod startwarp;
 /// tuned place + (0, 1.42, 0.08) from the S281's instance origin, the look the tune's to
 /// 0.003. (approx.: the port's car origin taken as the original's instance origin; was
 /// (0, 1.38, -0.25), fitted by eye)
+/// VEHICLE SELECT's music (CarSelection 0xedb: mcMusicManager_PlayCustomMusic('MUSIC_CARSELECT_MASTER'))
+const CARSELECT_MUSIC: &str = "MUSIC_CARSELECT_MASTER";
 const PAUSE_FRAME: Vec3 = Vec3::new(0.0, 1.42, 0.08);
 mod rivals;
 mod rubber;
@@ -2838,6 +2840,23 @@ impl App {
                 }
             }
         }
+        // After START the loading music goes on (the press-start script does not stop it) until the career stops it:
+        // with a save the career script's AudioManager_StopLoadingMusic (0x64d) just before the flight down - the radio
+        // (mcMusicManager_Play, 0x6e0) after it; a new career's CarSelection stops it (0x8a4) just before the film, and
+        // plays MUSIC_CARSELECT_MASTER from VEHICLE SELECT's fade up (PlayCustomMusic, 0xef4) to its end
+        // (StopCustomMusic, 0x149b, after AmbientMgr_Reset)
+        let loading_on = self.startwarp.as_ref().is_some_and(|w| self.game.fresh_game || w.phase() != startwarp::Phase::Down);
+        let carselect_on = self.intro_stage == 3 || (self.intro_stage == 4 && self.game.starter_pick.is_some());
+        if let Some(a) = self.audio.as_mut() {
+            if loading_on {
+                a.obj_loop(boot::LOADING_MUSIC);
+            }
+            if carselect_on {
+                a.obj_loop(CARSELECT_MUSIC);
+            }
+        }
+        // (the radio waits: through the flight down, and for a new career until its opening is over)
+        self.game.radio_held = self.startwarp.is_some() || self.game.fresh_game || self.intro_stage != 0;
         // nobody at the start screen: the attract movie (the press-start script: TIMERA > 110000 ms, the timer
         // started when the start screen takes START and again after each attract movie; other buttons do not reset it)
         let title_up = self.game.boot.as_ref().map_or(true, |b| b.title);
@@ -3738,7 +3757,8 @@ impl App {
                     self.game.set_starter_paint(other);
                     let (color, cfg) = (self.game.paint_color(), self.game.cfg.clone());
                     self.game.current_car = was;
-                    if let Ok(model) = self.vehicles.load_model_cfg(&mut gpu, &mut world, &odir, &cfg) {
+                    // (each starter is loaded once: left / right only moves the three)
+                    if let Ok(model) = self.vehicles.model_cached(&mut gpu, &mut world, &odir, &cfg) {
                         let (sp, sr) = slot(k, at);
                         let idx = self.vehicles.spawn(&gpu, model, sp, 0.0, color, false);
                         let c = &mut self.vehicles.cars[idx];

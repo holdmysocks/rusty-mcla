@@ -659,6 +659,8 @@ pub struct Game {
     pub start_warp_held: bool,
     /// VEHICLE SELECT's ACCEPT until the first story scene is up (CarSelection's black): nothing but the fade
     pub opening_black: bool,
+    /// the radio waits (main.rs: the flight after START, a new career's opening)
+    pub radio_held: bool,
     /// race time stepped since the last UI frame: the HUD's 3-2-1 runs on it, so it stays on the race clock
     pub ui_sim_dt: f32,
     /// a start scene before its countdown event: no HUD (the original brings the HUD - map and 3-2-1 - up
@@ -1234,6 +1236,7 @@ impl Game {
             start_warp_on: false,
             start_warp_held: false,
             opening_black: false,
+            radio_held: false,
             place_mask: 0.0,
             intro_mask: 0.0,
             title_mask: 0.0,

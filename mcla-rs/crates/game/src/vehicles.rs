@@ -1361,6 +1361,15 @@ impl Vehicles {
         self.load_model_cfg(gpu, world, dir, &CarConfig::default())
     }
 
+    /// The model of `dir` with `cfg` as loaded before (`replace_player`'s lookup), else loaded now.
+    pub fn model_cached(&mut self, gpu: &mut Gpu, world: &mut World, dir: &Path, cfg: &CarConfig) -> Result<Arc<CarModel>> {
+        let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        match self.models.iter().find(|m| m.name == name && m.cfg == *cfg) {
+            Some(m) => Ok(m.clone()),
+            None => self.load_model_cfg(gpu, world, dir, cfg),
+        }
+    }
+
     pub fn load_model_cfg(&mut self, gpu: &mut Gpu, world: &mut World, dir: &Path, cfg: &CarConfig) -> Result<Arc<CarModel>> {
         let car = vehicle_model::load_car(&world.assets, dir)?;
         let car_is_ambient = dir.file_name().map_or(false, |n| n.to_string_lossy().to_ascii_lowercase().starts_with("va_"));

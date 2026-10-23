@@ -142,6 +142,8 @@ pub struct Sound {
     air_t: f32,
     /// persistent sounds asked for by name (Audio::obj_loop)
     obj_loops: std::collections::HashMap<String, crate::sndobj::Handle>,
+    /// loops asked for whose object the library does not have (said once)
+    obj_loops_missing: std::collections::HashSet<String>,
 }
 
 /// The ambience beds' streams: bed name -> stream file (relative to the audio root).
@@ -244,6 +246,8 @@ impl Sound {
                         if !alive {
                             if let Some(h) = lib.play(&name, crate::sndobj::Req::default()) {
                                 self.obj_loops.insert(name.clone(), h);
+                            } else if self.obj_loops_missing.insert(name.clone()) {
+                                log::warn!("audio: no sound object {name} for a loop");
                             }
                         }
                         loops_now.push(name);
@@ -956,7 +960,7 @@ impl Sound {
             a.set_bed(bed.as_deref(), if in_menu { 0.25 } else { 0.4 });
         }
 
-        a.update_music(driving || game.mode == Mode::Paused);
+        a.update_music((driving || game.mode == Mode::Paused) && !game.radio_held);
         self.finish(a, dt);
     }
 
