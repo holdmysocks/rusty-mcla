@@ -8383,6 +8383,15 @@ impl Game {
                         fh.camera(shown_camera, menu_up);
                         // (before GO the movie steps with the race clock: its 3-2-1 ends on the GO tick)
                         fh.drive(&hud, race_hud, if self.race.as_ref().map_or(false, |r| r.countdown > 0.0) { race_dt } else { dt });
+                        // (test hook MCLA_GO_TRACE=1: the 3-2-1-GO the movie shows, every frame)
+                        if std::env::var("MCLA_GO_TRACE").is_ok() {
+                            if let Some(r) = self.race.as_ref().filter(|r| r.countdown < 4.0 && r.time < 1.0) {
+                                let p = &mut fh.movie.player;
+                                let g = |p: &mut mcla_flash::player::Player, n: &str| p.get_path(n).map_or(-1.0, |v| v.to_f32());
+                                let (vis, count, frame, timer) = (g(p, "SplashVisibles.3"), g(p, "countdownCount"), g(p, "countdownFrame"), g(p, "countdownTimer"));
+                                log::info!("go hud: countdown {:.4} time {:.4} race_dt {:.4} dt {:.4} slot3 {} count {} ({}) frame {} timer {:.2}", r.countdown, r.time, race_dt, dt, vis, count, ["3", "2", "1", "GO"].get(count.max(0.0) as usize).copied().unwrap_or("?"), frame, timer);
+                            }
+                        }
                         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_hud"));
                         // above the port's own HUD layer, which still draws the map's streets
                         ctx.move_to_top(layer);

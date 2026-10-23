@@ -2170,6 +2170,10 @@ impl App {
         if std::env::var("MCLA_GRID_NITRO").is_ok() {
             player_input.nitro = true;
         }
+        // (test hook MCLA_GO_GAS=1: the throttle held down through a race's start)
+        if std::env::var("MCLA_GO_GAS").is_ok() && self.game.race.is_some() {
+            player_input.throttle = 1.0;
+        }
         // (N-VP-1: on the grid, from the intro to GO, the player can only burn out and rev - throttle,
         // brake, handbrake, the steering for the wheels; no nitrous, slipstream turbo, weight shift,
         // hydraulics or gear keys. Special abilities and power-ups are held further down.)
@@ -4263,6 +4267,14 @@ impl App {
             let ready = self.vehicles.player().map_or(true, |c| world.ready_at(c.state.pos));
             race_finished = self.game.update_race(&mut self.vehicles, sim_dt, ready);
             self.game.ui_sim_dt += sim_dt;
+            // (test hook MCLA_GO_TRACE=1: the race clock and the player's car around GO, every tick)
+            if std::env::var("MCLA_GO_TRACE").is_ok() {
+                if let (Some(r), Some(c)) = (self.game.race.as_ref(), self.vehicles.player()) {
+                    if r.countdown < 4.0 && r.time < 1.0 && self.game.prerace.is_none() {
+                        log::info!("go trace: tick {} countdown {:.4} time {:.4} hold {:?} speed {:.3} thr {:.2} brk {:.2} scene {:?}", self.tick_no, r.countdown, r.time, self.vehicles.grid_hold.map(|h| (h * 1000.0).round() / 1000.0), c.state.vel.length(), c.input.throttle, c.input.brake, self.cine.playing.as_ref().map(|sc| (sc.name.clone(), (sc.t * 1000.0).round() / 1000.0)));
+                    }
+                }
+            }
             if !(self.cine_prerace && self.cine.playing.is_some()) {
                 self.game.scene_hud_off = false;
             }

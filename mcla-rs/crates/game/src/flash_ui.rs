@@ -1727,6 +1727,43 @@ pub fn race_time(ms: i32) -> String {
 mod tests {
     use super::*;
 
+    /// The HUD movie's 3-2-1-GO against the race clock (countdown_321Go_3sec: the slot raised at -3 s,
+    /// GO at 0): stepped every 60 Hz tick, and with the frames from 2.5 s to 1.2 s before GO not drawn.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn hud_countdown_stands_on_the_race_clock() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let digit = |h: &mut FlashHud| h.movie.player.get_global("countdownCount").map_or(-1, |v| v.to_i32());
+        for skip in [false, true] {
+            let mut h = FlashHud::load(&dir, &shared).unwrap();
+            let info = crate::game::HudInfo::default();
+            let dt = 1.0 / 60.0;
+            let mut cd = 3.5f32;
+            let mut seen = Vec::new();
+            for _ in 0..300 {
+                cd -= dt;
+                let race = RaceHud { countdown: cd.max(0.0), elapsed: (-cd).max(0.0), total: 2, pos: 1, ..Default::default() };
+                // (a frame the HUD is not drawn on: its race time is gone, as `Game::ui` takes it)
+                if skip && cd < 2.5 && cd > 1.2 {
+                    continue;
+                }
+                h.drive(&info, Some(race), dt);
+                if cd <= 3.0 && cd > -0.5 {
+                    // (the number the race clock says: 0 = "3" from -3 s, ..., 3 = GO from 0)
+                    let want = ((3.0 - cd) + 1e-4).floor().clamp(0.0, 3.0) as i32;
+                    seen.push((cd, digit(&mut h), want));
+                }
+            }
+            let bad: Vec<_> = seen.iter().filter(|(cd, got, want)| got != want && ((3.0 - cd) - (3.0 - cd).round()).abs() > 1.5 / 30.0).collect();
+            assert!(bad.is_empty(), "skip {skip}: movie off the race clock at {:?}", &bad[..bad.len().min(6)]);
+            // GO on the tick the clock reaches 0
+            let go = seen.iter().find(|s| s.1 == 3).map(|s| s.0).unwrap();
+            assert!(go.abs() < 0.5 / 60.0 + 1e-4, "skip {skip}: GO shown at {go}");
+        }
+    }
+
     /// Print the game's own wording for the garage dimension menu.
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
@@ -2121,7 +2158,46 @@ impl FlashHud {
         if race.is_none() || r.countdown > 3.0 || (r.go_only && r.countdown > 0.0) {
             self.countdown_shown = false;
         }
+        // (the original's movie is never behind its race clock: countdown_321Go_3sec raises the slot in the same
+        // instant it sets Race_SetTimer(-3000) - 0x6D5..0x70C -, and the game hands the movie the frame's step as
+        // `countdownUpdate` on every frame, drawn or not - sub_82212298, 0x822124D8 -, so 3, 2, 1 and GO stand at
+        // race clock -3, -2, -1 and 0. The port steps the movie only on the frames it draws it: a movie left behind
+        // the race's clock is put where that clock is.)
+        // (before this frame's movie frames - at most eight a call, `Player::update` - and after them)
+        let since = (race.is_some() && !r.go_only && self.countdown_shown).then(|| if r.countdown > 0.0 { 3.0 - r.countdown } else { 3.0 + r.elapsed });
+        if let Some(s) = since {
+            self.countdown_follow(s - dt.min(8.0 / 30.0));
+        }
         self.post_splashes();
         self.movie.player.update(dt);
+        if let Some(s) = since {
+            self.countdown_follow(s);
+        }
+    }
+
+    /// The movie's 3-2-1-GO (`showCountdown`, one movie frame a call, `duration[3]` = 1 / `countdownUpdate` = 30
+    /// frames a number: after k frames `countdownCount` = k / 30, `countdownTimer` = k % 30) put on `since`
+    /// seconds after its slot was raised, when it is two frames or more behind. Returns the frames it was behind.
+    fn countdown_follow(&mut self, since: f32) -> i32 {
+        let p = &mut self.movie.player;
+        if p.get_path("SplashVisibles.3").map_or(0, |v| v.to_i32()) != 1 {
+            return 0;
+        }
+        let count = p.get_global("countdownCount").map_or(0, |v| v.to_i32());
+        let timer = p.get_global("countdownTimer").map_or(0, |v| v.to_i32());
+        let want = (since.max(0.0) * 30.0 + 1e-3).floor() as i32;
+        let behind = want - (count * 30 + timer);
+        if behind < 2 || want >= 120 {
+            return 0;
+        }
+        log::info!("hud countdown: the movie was {} frames behind the race clock ({} {}, {:.3} s since 3)", behind, count, timer, since);
+        if want / 30 != count {
+            // (the script's own change of number: a pulse of the glow and the text)
+            p.set_global("cur_glowAlpha", Value::Int(100));
+            p.set_global("cur_textScale", Value::Int(150));
+        }
+        p.set_global("countdownCount", Value::Int(want / 30));
+        p.set_global("countdownTimer", Value::Int(want % 30));
+        behind
     }
 }
