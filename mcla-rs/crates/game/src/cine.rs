@@ -132,6 +132,25 @@ pub fn is_player_car(label: &str) -> bool {
     matches!(label, "drv00" | "player" | "player_drv00" | "playergarage" | "delivery")
 }
 
+/// The driver sets Boot.sco registers with a cutscene copy (CineScript_Characters_RegisterDriverMappings, its sixth
+/// argument: "<set>_HackedScale" - native sub_823C0828, the map at the manager's +116 / +128). The copy is the same
+/// figure about 7.6 % taller, the rig the scenes' face packs were made on; every other set plays as itself.
+const HACKED_SCALE: [&str; 14] = [
+    "drv_fc_002_set", "drv_fc_003_set", "drv_ma_001_set", "drv_ma_03_set", "drv_mb_001_set", "drv_mb_008_set", "drv_mb_04_set",
+    "drv_mc_001_set", "drv_mc_003_set", "drv_mc_02_set", "drv_mh_006_set", "drv_mh_02_set", "drv_mp_01_set", "mec_mc_01_set",
+];
+
+/// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, sub_823BC348 / sub_823BC268). Not ported:
+/// a slot marked to use the unscaled character (CineScript_Characters_GetSlotToUseUnscaledCharacter) and the jacket
+/// copy (`drv_mp_jacket_01_set_hackedscale`, chosen by sub_822A7D90 - not decoded); GH_06 marks no slot.
+fn cutscene_set(set: &str) -> String {
+    if HACKED_SCALE.iter().any(|s| s.eq_ignore_ascii_case(set)) {
+        format!("{}_hackedscale", set.to_ascii_lowercase())
+    } else {
+        set.to_string()
+    }
+}
+
 /// Character set of a scene entity that does not name one.
 fn default_set(scene: &str, entity: &str, n: usize) -> &'static str {
     const COPS: [&str; 4] = ["pol_mc_01_set", "pol_mb_01_set", "pol_mc_02_set", "pol_mc_03_set"];
@@ -282,6 +301,9 @@ impl Cine {
                     if set.starts_with("prp_") && anim.tracks.len() <= 4 {
                         continue;
                     }
+                    // (the cutscene loader script, 0x95ca1d1b 0x4f - 0x1d8: a slot not marked for the unscaled
+                    // character takes its set's cutscene copy - LookupDriverToCutscenePath / Name)
+                    let set = cutscene_set(&set);
                     let Some(model) = self.model(gpu, &set) else { continue };
                     let clip = Clip::bind(&anim, &model.ids, false, false);
                     sc.actors.push(Actor { label: label.to_string(), model, clip, face: None, shapes: None });
