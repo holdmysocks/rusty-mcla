@@ -5141,6 +5141,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                         vs.melt = 0.0;
                         vs.nitro_level = 0.0;
                         vs.nitro_burning = false;
+                        // (0x82336128: then the turbo's reset, 0x82345D58)
+                        vs.sst.reset_all();
                         vs.stuck = 0;
                         vs.stuck_timer = 0.0;
                         vs.bg = BikeGyro { level: vs.bg.level, share: t.gyro.lean_angle, ..BikeGyro::default() };

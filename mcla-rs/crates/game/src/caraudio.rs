@@ -161,6 +161,8 @@ pub struct CarIn {
     pub horn: bool,
     pub nitro_firing: bool,
     pub nitro_empty: bool,
+    /// the slipstream turbo (car +668, mcCarSSTurbo): its level (+36) and whether it burns (+40); None = no object
+    pub sst: Option<(f32, bool)>,
     /// performance stages: intake, turbo, nitrous (mcCar+132 +30, +31, +34)
     pub parts: [u8; 3],
     /// the engine sound's smoothed rpm and load volume (this+204, +148), the limiter's rpm
@@ -227,6 +229,18 @@ pub struct CarSounds {
     prev_throttle: f32,
     nitro: Option<(Option<Handle>, Option<Handle>)>,
     nitro_empty: Option<Handle>,
+    /// GLOBAL_SPECIAL_ABILITIES (entity+1252) and the slipstream turbo's slots: 1408 the burn, 1412 the charge loop,
+    /// 1416 the full charge's beep
+    sst_obj: Vec<u8>,
+    sst_burn: Option<Handle>,
+    sst_loop: Option<Handle>,
+    sst_full: Option<Handle>,
+    /// this frame the player's burn asked for PLAYER_NITROUS (sub_82327598: mix slot 18 was not on yet)
+    pub sst_speech: bool,
+    /// MCLA_CAR_AUDIO trace: the slots last printed and when
+    sst_seen: (u8, f32),
+    /// the charge loop's last volume (dB) and pitch (cents)
+    sst_vp: (f32, i32),
     pings: Option<Handle>,
     /// the moving damage parts: the hood / trunk move loops, the bumpers' creak loops (rear, front), the fallen
     /// bumpers' scrape loops with the time of their last sliding contact (inst+96, +100), the last event heard
@@ -284,6 +298,13 @@ impl CarSounds {
             prev_throttle: 0.0,
             nitro: None,
             nitro_empty: None,
+            sst_obj: g.get_name("GLOBAL_SPECIAL_ABILITIES").map(|o| o.to_vec()).unwrap_or_default(),
+            sst_burn: None,
+            sst_loop: None,
+            sst_full: None,
+            sst_speech: false,
+            sst_seen: (0, 0.0),
+            sst_vp: (0.0, 0),
             pings: None,
             flap_move: [None; 2],
             creak: [None; 2],
@@ -310,8 +331,11 @@ impl CarSounds {
         if let Some((h, _)) = self.hyd_loop.take() {
             lib.stop(h);
         }
-        for s in [&mut self.two_loop, &mut self.horn, &mut self.siren, &mut self.turbo_v, &mut self.nitro_empty, &mut self.pings] {
+        for s in [&mut self.two_loop, &mut self.horn, &mut self.siren, &mut self.turbo_v, &mut self.nitro_empty, &mut self.pings, &mut self.sst_burn, &mut self.sst_loop, &mut self.sst_full] {
             stop(lib, s);
+        }
+        if self.player {
+            lib.scene("DYNAMIC_MIXER_SST", false);
         }
         for s in self.flap_move.iter_mut().chain(self.creak.iter_mut()) {
             stop(lib, s);
@@ -337,6 +361,8 @@ impl CarSounds {
         self.tyres(lib, mats, c, dt);
         self.suspension(lib, c);
         self.hydraulics(lib, c, dt);
+        // (the base update calls vt+132 after the gear shift sub_82347580, before the horn sub_8234A560 and the nitro vt+68)
+        self.slipstream(lib, mats, c);
         self.horn(lib, c);
         self.nitrous(lib, mats, c, cam_mode);
         self.damage(lib, c, cam_mode);
@@ -779,6 +805,111 @@ impl CarSounds {
         keep(lib, &mut self.turbo_v, hash, req);
     }
 
+    /// The launch chirp (sub_8234C978, the nitrous fire's first call and the slipstream burn's start): when the
+    /// clock (this+156) is at least 0.5 s (0x82003A24) past the last chirp (this+264), TIRE_CHIRP_MASTER (the
+    /// surface's MATERIALS_* +182) at every driven wheel (entity+1516+44i) with contact (+529) and a material (+464);
+    /// this+264 = the clock once a wheel chirped.
+    fn launch_chirp(&mut self, lib: &mut SoundLib, mats: &Materials, c: &CarIn) {
+        if self.clock < self.chirp_at + 0.5 {
+            return;
+        }
+        for w in c.wheels.iter().take(c.n_wheels).filter(|w| w.driven && w.contact) {
+            let (m, _) = mats.get(w.surface);
+            let h = lib.game.get(m).map(|o| be_u32(o, 182)).unwrap_or(0);
+            if !is_null(h) {
+                lib.play_hash(h, self.req(w.pos));
+            }
+            self.chirp_at = self.clock;
+        }
+    }
+
+    // ---- the slipstream turbo (SLIPSTREAM_AUDIO_RULE: work/slipstream/audio/audio_rule.md): GLOBAL_SPECIAL_ABILITIES
+    // +99 SST_LOOP_MASTER, +103 f32 charge start (0.05), +107 s16 mB there (-500), +109 f32 pitch ratio there (0.4),
+    // +113 f32 full (1.0), +117 s16 mB at full (0), +119 f32 pitch ratio at full (1.5), +123 SST_BEEP_MASTER,
+    // +127 SLIPSTREAM_NITROUS_MASTER (player's burn), +131 SLIPSTREAM_NITROUS_MASTER_O (an opponent's burn)
+    fn slipstream(&mut self, lib: &mut SoundLib, mats: &Materials, c: &CarIn) {
+        self.sst_speech = false;
+        let p = &self.sst_obj;
+        if p.len() < 135 {
+            return;
+        }
+        let (level, burning) = c.sst.unwrap_or((0.0, false));
+        // every start: 0 dB at the entity (P+20 = this+80), flags |0x20
+        let at = Req { player: self.player, ..Req::at(c.pos) };
+        if !self.player {
+            // mcOpponentAudioEntity vt+132 (sub_82364DC8): only the burn
+            if c.sst.is_some() && burning {
+                let h = be_u32(p, 131);
+                keep(lib, &mut self.sst_burn, h, at);
+            } else {
+                stop(lib, &mut self.sst_burn);
+            }
+            return;
+        }
+        // mcPlayerAudioEntity vt+132 (sub_82327598)
+        if burning {
+            if free(lib, &self.sst_burn) {
+                self.launch_chirp(lib, mats, c);
+            }
+            let h = be_u32(&self.sst_obj, 127);
+            keep(lib, &mut self.sst_burn, h, at);
+            // mix slot 18 (mgr+1740 bit 0x40000) not on yet: the speech request PLAYER_NITROUS (if no speech line
+            // plays - the caller's test), then the slot on at strength 1.0
+            if !lib.scene_on("DYNAMIC_MIXER_SST") {
+                self.sst_speech = true;
+                lib.scene("DYNAMIC_MIXER_SST", true);
+            }
+        } else {
+            stop(lib, &mut self.sst_burn);
+            lib.scene("DYNAMIC_MIXER_SST", false);
+        }
+        let p = &self.sst_obj;
+        let (lmin, lfull) = (be_f32(p, 103), be_f32(p, 113));
+        let (vol, pitch) = 'charge: {
+            if burning || level < lmin {
+                stop(lib, &mut self.sst_loop);
+                stop(lib, &mut self.sst_full);
+                break 'charge (0.0, 1.0);
+            }
+            let (vol, pitch);
+            if level >= lfull {
+                let beep = be_u32(p, 123);
+                if level >= 1.0 {
+                    keep(lib, &mut self.sst_full, beep, at);
+                } else {
+                    stop(lib, &mut self.sst_full);
+                }
+                vol = be_s16(p, 117) * 0.01;
+                pitch = be_f32(p, 119);
+            } else {
+                stop(lib, &mut self.sst_full);
+                let u = (level - lmin) / (lfull - lmin);
+                let (v0, v1) = (be_s16(p, 107) * 0.01, be_s16(p, 117) * 0.01);
+                vol = (v1 - v0) * u + v0;
+                let (p0, p1) = (be_f32(p, 109), be_f32(p, 119));
+                pitch = (p1 - p0) * u + p0;
+            }
+            if level >= 1.0 {
+                stop(lib, &mut self.sst_loop);
+            } else {
+                // the loop's volume (dB, voice +64: sub_82148CB0) and pitch (trunc(1200 log2 ratio) cents, voice +80:
+                // sub_8213CB40) set every frame
+                let h = be_u32(p, 99);
+                keep(lib, &mut self.sst_loop, h, Req { volume: vol, pitch: cents(pitch), ..at });
+                self.sst_vp = (vol, cents(pitch));
+            }
+            (vol, pitch)
+        };
+        if trace() {
+            let live = |h: &Option<Handle>| h.is_some_and(|h| lib.playing(h)) as u8;
+            let k = live(&self.sst_burn) | live(&self.sst_loop) << 1 | live(&self.sst_full) << 2;
+            if k != self.sst_seen.0 || (k & 2 != 0 && self.clock >= self.sst_seen.1 + 0.5) {
+                eprintln!("sst audio: level {level:.3} burn {} loop {} ({vol:.2} dB, {} cents) full {}", k & 1, k >> 1 & 1, cents(pitch), k >> 2 & 1);
+                self.sst_seen = (k, self.clock);
+            }
+        }
+    }
+
     // ---- 8.4 nitrous: FIRE / FIRE_FRONT_END loops by the camera, the launch chirp, EMPTY
     fn nitrous(&mut self, lib: &mut SoundLib, mats: &Materials, c: &CarIn, cam_mode: i32) {
         let n = &self.nitro_obj;
@@ -796,16 +927,8 @@ impl CarSounds {
             if self.player {
                 keep(lib, &mut slots.1, fire_fe, Req { volume: fe_db, ..Req { player: true, ..Req::at(c.pos) } });
             }
-            // the launch chirp (sub_8234C978), at most every 0.5 s
-            if first && self.player && self.clock >= self.chirp_at + 0.5 {
-                for w in c.wheels.iter().filter(|w| w.driven && w.contact) {
-                    let (m, _) = mats.get(w.surface);
-                    let h = lib.game.get(m).map(|o| be_u32(o, 182)).unwrap_or(0);
-                    if !is_null(h) {
-                        lib.play_hash(h, self.req(w.pos));
-                    }
-                }
-                self.chirp_at = self.clock;
+            if first && self.player {
+                self.launch_chirp(lib, mats, c);
             }
         } else if let Some((a, b)) = self.nitro.take() {
             for mut s in [a, b] {
@@ -813,7 +936,7 @@ impl CarSounds {
             }
         }
         if c.nitro_empty && self.player && free(lib, &self.nitro_empty) {
-            let h = be_u32(n, base + if front { 12 } else { 8 });
+            let h = be_u32(&self.nitro_obj, base + if front { 12 } else { 8 });
             if !is_null(h) {
                 self.nitro_empty = lib.play_hash(h, self.req(c.pos));
             }
@@ -943,6 +1066,14 @@ impl CarSounds {
     }
 }
 
+/// A speech scenario's Probability (percent, clamped 0..100, 100 when missing) and Frequency (s, 10 when missing) as
+/// the speech script loader sub_821F3E88 reads them (scenario +64, +20).
+fn scenario_gate(xml: &str, name: &str) -> (i32, f32) {
+    let tag = xml.split("<Scenario ").find(|s| s.starts_with(&format!("name=\"{name}\""))).and_then(|s| s.split('>').next()).unwrap_or("");
+    let attr = |a: &str| tag.split(&format!(" {a}=\"")).nth(1).and_then(|r| r.split('"').next()).and_then(|v| v.trim().parse::<f32>().ok());
+    (attr("Probability").map_or(100, |p| (p as i32).clamp(0, 100)), attr("Frequency").unwrap_or(10.0))
+}
+
 /// What a car's sounds read from the port's car (vehicle sim when it has one).
 pub fn car_in(c: &CarInstance) -> CarIn {
     let st = &c.state;
@@ -996,6 +1127,7 @@ pub fn car_in(c: &CarInstance) -> CarIn {
         wipeout: st.wipeout > 0.0,
         two_wheels: vs.is_some_and(|v| v.two != 0) && !c.model.bike,
         nitro_firing: st.nitro_on(),
+        sst: vs.map(|v| (v.sst.level, v.sst.burning)),
         throttle: c.input.throttle,
         pedal: vs.map_or(c.input.throttle, |v| v.engine_pedal),
         shift: vs.map_or(0, |v| if v.gear_change.active { v.gear_change.direction } else { 0 }),
@@ -1323,6 +1455,12 @@ pub struct Fleet {
     sel: Vec<usize>,
     /// racing vehicles' seconds without driving input ((car+896)->+112)
     idle: HashMap<usize, f32>,
+    /// the speech manager's gate for PLAYER_NITROUS (CareerScript.xml Probability, Frequency; sub_821F2B60): its
+    /// clock (+2244) and the scenario's last start (+24, -FLT_MAX at load)
+    nitrous_line: (i32, f32, f32),
+    speech_clock: f32,
+    /// a player line the cars' sounds ask for this frame (the game says it if no speech plays)
+    pub want_speech: Option<&'static str>,
 }
 
 /// What the police tell the cars' sounds: heat 0 none, 1 pull-over, 2 pursuit, 3 search, 4 busted; the payback's
@@ -1394,7 +1532,20 @@ impl Fleet {
                 }
             }
         }
-        Fleet { mats: Materials::load(data_dir), types, cars: HashMap::new(), chatter: None, trace_t: 0.0, pol: PoliceAudio::default(), sel: Vec::new(), idle: HashMap::new() }
+        let (prob, freq) = scenario_gate(&std::fs::read_to_string(data_dir.join("tune/audio/CareerScript.xml")).unwrap_or_default(), "PLAYER_NITROUS");
+        Fleet {
+            mats: Materials::load(data_dir),
+            types,
+            cars: HashMap::new(),
+            chatter: None,
+            trace_t: 0.0,
+            pol: PoliceAudio::default(),
+            sel: Vec::new(),
+            idle: HashMap::new(),
+            nitrous_line: (prob, freq, -f32::MAX),
+            speech_clock: 0.0,
+            want_speech: None,
+        }
     }
 
     fn opponent(c: &CarInstance) -> bool {
@@ -1495,6 +1646,7 @@ impl Fleet {
     /// A frame of every car's sounds; `pol`: the police's state for the sirens, chirp, bullhorn and chatter.
     #[allow(clippy::too_many_arguments)]
     pub fn update(&mut self, lib: &mut SoundLib, v: &Vehicles, listener: Vec3, ctl: PlayerCtl, wet: bool, racing: bool, pol: PoliceIn, dt: f32) {
+        self.speech_clock += dt;
         // cars that left
         let alive: Vec<usize> = self.cars.keys().copied().filter(|i| v.cars.get(*i).is_some_and(|c| c.placed && c.model.name == self.cars[i].model)).collect();
         let gone: Vec<usize> = self.cars.keys().copied().filter(|i| !alive.contains(i)).collect();
@@ -1546,6 +1698,16 @@ impl Fleet {
             }
             if let Some(s) = &mut e.sounds {
                 s.update(lib, &self.mats, &c, ctl.cam_mode, dt);
+                // the slipstream burn's PLAYER_NITROUS request when no speech line plays (sub_82327598 @82327674): the
+                // speech manager (sub_821F2B60) refuses it within Frequency s of its last start, then unless
+                // rand(0, 99) < Probability; the start time is kept when it passes
+                if s.sst_speech && !pol.speech_busy {
+                    let (prob, freq, last) = &mut self.nitrous_line;
+                    if self.speech_clock >= *last + *freq && lib.rand_int(0, 99) < *prob {
+                        *last = self.speech_clock;
+                        self.want_speech = Some("PLAYER_NITROUS");
+                    }
+                }
                 s.damage_parts(lib, &p.state.parts);
                 s.glass(lib, &p.state.dmg, p.state.pos, p.state.rot);
                 // a police car's horn button chirps the siren (sub_822A1058)
@@ -1957,6 +2119,85 @@ mod tests {
         assert!(lib.game.get_name("AMBIENT_SEDAN_00").is_some());
         let opp = EngineSound::new_opponent(&lib, "vp_chv_camaro_06", false);
         assert!(opp.is_some());
+    }
+
+    /// The slipstream turbo's sounds (work/slipstream/audio/audio_rule.md): GLOBAL_SPECIAL_ABILITIES' fields, the charge
+    /// loop's level / pitch along the charge, the beep at full, the burn (player and opponent), mix slot 18 and the
+    /// PLAYER_NITROUS gate (Probability 30, Frequency 120 s).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn slipstream_sounds_from_disc() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mats = Materials::load(Path::new(&dir));
+        let mut s = CarSounds::new(&lib, "vp_chv_camaro_06", false, true);
+        let p = s.sst_obj.clone();
+        println!(
+            "GLOBAL_SPECIAL_ABILITIES: +99 {:08x} +103 {} +107 {} +109 {} +113 {} +117 {} +119 {} +123 {:08x} +127 {:08x} +131 {:08x}",
+            be_u32(&p, 99),
+            be_f32(&p, 103),
+            be_s16(&p, 107),
+            be_f32(&p, 109),
+            be_f32(&p, 113),
+            be_s16(&p, 117),
+            be_f32(&p, 119),
+            be_u32(&p, 123),
+            be_u32(&p, 127),
+            be_u32(&p, 131)
+        );
+        assert_eq!(be_u32(&p, 99), joaat("SST_LOOP_MASTER"));
+        assert_eq!(be_u32(&p, 123), joaat("SST_BEEP_MASTER"));
+        assert_eq!(be_u32(&p, 127), joaat("SLIPSTREAM_NITROUS_MASTER"));
+        assert_eq!(be_u32(&p, 131), joaat("SLIPSTREAM_NITROUS_MASTER_O"));
+        assert_eq!((be_f32(&p, 103), be_s16(&p, 107), be_f32(&p, 109)), (0.05, -500.0, 0.4));
+        assert_eq!((be_f32(&p, 113), be_s16(&p, 117), be_f32(&p, 119)), (1.0, 0.0, 1.5));
+        let dt = 1.0 / 30.0;
+        let w = WheelIn { contact: true, driven: true, surface: Surface::Road as u8, ..Default::default() };
+        let mut c = CarIn { wheels: [w; 4], n_wheels: 4, sst: Some((0.0, false)), ..Default::default() };
+        let live = |lib: &SoundLib, h: &Option<Handle>| h.is_some_and(|h| lib.playing(h));
+        // below 0.05: nothing; along the charge: the loop at lerp(-5, 0) dB and 1200 log2(lerp(0.4, 1.5)) cents
+        for (l, db, ct) in [(0.04, None, 0), (0.05, Some(-5.0), -1586), (0.525, Some(-2.5), -88), (0.99, Some(-0.0526), 688)] {
+            c.sst = Some((l, false));
+            s.update(&mut lib, &mats, &c, 2, dt);
+            let req = live(&lib, &s.sst_loop).then_some(s.sst_vp);
+            println!("level {l}: loop {req:?} full {}", live(&lib, &s.sst_full));
+            match db {
+                None => assert!(!live(&lib, &s.sst_loop)),
+                Some(db) => {
+                    let (v, p) = req.expect("loop");
+                    assert!((v - db).abs() < 1e-3 && p == ct, "{v} {p}");
+                }
+            }
+            assert!(!live(&lib, &s.sst_full));
+        }
+        // full: the loop stops, the beep (a looping wave) runs
+        c.sst = Some((1.0, false));
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(!live(&lib, &s.sst_loop) && live(&lib, &s.sst_full));
+        // the burn: both stop, the burn sound, mix slot 18, the speech request once, the launch chirp
+        c.sst = Some((1.0, true));
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(!live(&lib, &s.sst_loop) && !live(&lib, &s.sst_full) && live(&lib, &s.sst_burn));
+        assert!(lib.scene_on("DYNAMIC_MIXER_SST") && s.sst_speech);
+        assert!((s.chirp_at - s.clock).abs() < 1e-6);
+        c.sst = Some((0.5, true));
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(!s.sst_speech && live(&lib, &s.sst_burn));
+        c.sst = Some((0.0, false));
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(!live(&lib, &s.sst_burn) && !lib.scene_on("DYNAMIC_MIXER_SST"));
+        // an opponent: only the burn, _O_
+        let mut o = CarSounds::new(&lib, "vp_chv_camaro_06", false, false);
+        c.sst = Some((0.7, false));
+        o.update(&mut lib, &mats, &c, -1, dt);
+        assert!(!live(&lib, &o.sst_loop) && !live(&lib, &o.sst_burn));
+        c.sst = Some((0.7, true));
+        o.update(&mut lib, &mats, &c, -1, dt);
+        assert!(live(&lib, &o.sst_burn) && !lib.scene_on("DYNAMIC_MIXER_SST"));
+        let xml = std::fs::read_to_string(Path::new(&dir).join("tune/audio/CareerScript.xml")).unwrap();
+        assert_eq!(scenario_gate(&xml, "PLAYER_NITROUS"), (30, 120.0));
+        assert_eq!(scenario_gate(&xml, "PLAYER_HORN"), (30, 10.0));
     }
 
     /// TUNERS_DAMAGE's records as DAMAGE_PARTS_RULE.md 4.3 reads them, and the parts' sounds started by their

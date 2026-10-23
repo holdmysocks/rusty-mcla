@@ -628,6 +628,10 @@ impl Sound {
                 speech_busy: self.speech_busy,
             };
             fleet.update(lib, vehicles, cam_pos, ctl, wet, game.mode == Mode::Race, pol, dt);
+            // (the slipstream burn's PLAYER_NITROUS)
+            if let Some(l) = fleet.want_speech.take() {
+                self.want_speech = Some(l);
+            }
         }
         self.nitro_btn = p.input.nitro;
 

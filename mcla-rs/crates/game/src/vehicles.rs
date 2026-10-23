@@ -337,6 +337,8 @@ pub struct CarInstance {
     /// a traffic / parked car's own wheels drawn raised by their collider wheel's compression, by
     /// wheel bone (`ambient_out_of_level`; 0 beyond 30 m)
     pub amb_lift: [f32; 6],
+    /// the slipstream trail's points (mcCarModel +7200 block - sst_trail.rs)
+    pub sst_trail: crate::sst_trail::Trail,
 }
 
 /// A traffic car's lamps as the original's mcAmbientRenderCarInstance keeps them (sub_82792FD8,
@@ -2082,7 +2084,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6] });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default() });
         self.cars.len() - 1
     }
 
@@ -2158,63 +2160,76 @@ impl Vehicles {
         (c.is_player || c.racer || c.ai.as_ref().map_or(false, |a| a.brain.is_some())) && !c.cop && c.state.veh.is_some() && c.params().veh.is_some()
     }
 
-    /// The slipstream search of every car with a turbo (mcCarSSTurbo 0x82346438 over the player manager's
-    /// list, 0x82346140 for each car), made once before the cars are stepped - the original makes it in each
-    /// car's update, after the cars ahead of it in the list have moved. A car slower than its own tune +32
-    /// finds nothing; the others are every car with a turbo but a motorcycle (catalogue class 3, SportBike:
-    /// 0x82332098), the strongest slipstream the one kept (the first of equals). (Not ported: a car whose
-    /// mcCar +48 object has a u16 +18 set is passed over.) Its car is told it is followed (+68) and fades
-    /// its trail in (clamp(strength + 0.75, 0, 1), its model +7976) - by a car that does not burn.
-    fn draft_pass(&mut self, dt: f32) {
+    /// 0x82346438 for car `i` with the cars as they stand now: nothing if it is slower than its own tune +32;
+    /// else over every car with a turbo but a motorcycle (catalogue class 3, SportBike: 0x82332098) and a car on
+    /// two wheels (its gyro's +18, the side it is up on), the strongest slipstream (0x82346140, the leader's
+    /// tune), the first of equals. The follower's speed is its own chassis +224 of this tick (the speed it comes
+    /// in with), the leader's the +224 its last update wrote.
+    fn sst_search(&self, i: usize) -> (f32, i32) {
         use crate::physics::sst::{strength, DraftCar};
+        let me = &self.cars[i];
+        let Some(vt) = me.params().veh.as_ref() else { return (0.0, -1) };
+        if !Self::has_sst(me) || me.state.vel.length() < vt.t.ss_turbo.min_speed {
+            return (0.0, -1);
+        }
+        let mut best = (0.0f32, -1i32);
+        for (j, o) in self.cars.iter().enumerate() {
+            if j == i || o.model.bike || !Self::has_sst(o) {
+                continue;
+            }
+            let (Some(ov), Some(ot)) = (o.state.veh.as_ref(), o.params().veh.as_ref()) else { continue };
+            if ov.two != 0 {
+                continue;
+            }
+            let st = &o.state;
+            let s = strength(&ot.t.ss_turbo, &DraftCar { pos: st.pos, up: st.up(), vel: st.vel, speed: ov.last_speed }, me.state.pos);
+            if s > best.0 {
+                best = (s, j as i32);
+            }
+        }
+        best
+    }
+
+    /// The search half of car `idx`'s mcCarSSTurbo::Update (0x823465C8), made right before the car's step - in
+    /// the list's order, with the cars before it already moved this tick, as the original makes it in each car's
+    /// update. A car that does not burn and finds a slipstream tells its leader so (+68 = this car) and fades the
+    /// leader's trail in (its model +7976 = clamp(strength + 0.75, 0, 1)); the car's own +68 is checked by the
+    /// search of the car it names.
+    fn sst_search_step(&mut self, idx: usize) {
+        if !Self::has_sst(&self.cars[idx]) {
+            return;
+        }
+        let found = self.sst_search(idx);
+        let d = self.cars[idx].state.veh.as_ref().map_or(-1, |v| v.sst.drafter);
+        let drafting = d >= 0 && (d as usize) < self.cars.len() && self.sst_search(d as usize).0 > 0.0;
+        let Some(vs) = self.cars[idx].state.veh.as_deref_mut() else { return };
+        vs.sst.found = found;
+        vs.sst.drafter_drafting = drafting;
+        let (s, j) = found;
+        if vs.sst.burning || vs.sst.locked || !(s > 0.0) {
+            return;
+        }
+        if let Some(lv) = self.cars[j as usize].state.veh.as_deref_mut() {
+            lv.sst.trail_target = (s + 0.75).clamp(0.0, 1.0);
+            lv.sst.drafter = idx as i32;
+        }
+    }
+
+    /// After the step: each turbo's trail fades (mcCarModel 0x82379D48 - kept while the local player is this car,
+    /// or the car in its slipstream with this car as its leader).
+    fn sst_trails(&mut self, dt: f32) {
+        // (the trail's points move first - sst_trail.rs)
+        crate::sst_trail::update(&mut self.cars, dt);
         let n = self.cars.len();
-        let info: Vec<Option<(DraftCar, Arc<crate::physics::vehsim::VehTune>, bool)>> = self.cars.iter().map(|c| {
-            if !Self::has_sst(c) {
-                return None;
-            }
-            let vt = c.params().veh.clone()?;
-            let st = &c.state;
-            Some((DraftCar { pos: st.pos, up: st.up(), vel: st.vel, speed: st.vel.length() }, vt, c.model.bike))
-        }).collect();
-        let mut found = vec![(0.0f32, -1i32); n];
-        for i in 0..n {
-            let Some((me, vt, _)) = info[i].as_ref() else { continue };
-            if me.speed < vt.t.ss_turbo.min_speed {
-                continue;
-            }
-            for j in 0..n {
-                let Some((o, ot, bike)) = info[j].as_ref() else { continue };
-                if j == i || *bike {
-                    continue;
-                }
-                let s = strength(&ot.t.ss_turbo, o, me.pos);
-                if s > found[i].0 {
-                    found[i] = (s, j as i32);
-                }
-            }
-        }
-        for i in 0..n {
-            let Some(vs) = self.cars[i].state.veh.as_deref_mut() else { continue };
-            vs.sst.found = found[i];
-            let (s, j) = found[i];
-            if vs.sst.burning || !(s > 0.0) || info[i].is_none() {
-                continue;
-            }
-            if let Some(lv) = self.cars[j as usize].state.veh.as_deref_mut() {
-                lv.sst.trail_target = if s > 0.0 { (s + 0.75).clamp(0.0, 1.0) } else { 0.0 };
-                lv.sst.drafter = i as i32;
-            }
-        }
         let leader_of: Vec<i32> = self.cars.iter().map(|c| c.state.veh.as_ref().map_or(-1, |v| v.sst.leader)).collect();
+        let player: Vec<bool> = self.cars.iter().map(|c| c.is_player).collect();
         for i in 0..n {
-            let me_player = self.cars[i].is_player;
+            if !Self::has_sst(&self.cars[i]) {
+                continue;
+            }
             let Some(vs) = self.cars[i].state.veh.as_deref_mut() else { continue };
             let d = vs.sst.drafter;
-            vs.sst.drafter_drafting = d >= 0 && (d as usize) < n && info[d as usize].is_some() && found[d as usize].0 > 0.0;
-            // (0x82379D48: the trail is kept while the local player is this car, or the car in its slipstream
-            // with this car as its leader)
-            let keep = me_player || (d >= 0 && (d as usize) < n && self.cars[d as usize].is_player && leader_of[d as usize] == i as i32);
-            let vs = self.cars[i].state.veh.as_deref_mut().unwrap();
+            let keep = player[i] || (d >= 0 && (d as usize) < n && player[d as usize] && leader_of[d as usize] == i as i32);
             vs.sst.fade_trail(keep, dt);
         }
         // (MCLA_SST_LOG: each car's turbo every half second)
@@ -2222,8 +2237,8 @@ impl Vehicles {
         if std::env::var_os("MCLA_SST_LOG").is_some() && self.sst_log_t >= 0.5 {
             self.sst_log_t = 0.0;
             for (i, c) in self.cars.iter().enumerate() {
-                if let (Some(v), true) = (c.state.veh.as_ref(), info[i].is_some()) {
-                    log::info!("sst car {i}{} speed {:.1} level {:.3} full {} burning {} strength {:.3} leader {} drafter {} fov {:.2}", if c.is_player { "P" } else { "" }, c.state.speed(), v.sst.level, v.sst.full, v.sst.burning, v.sst.strength, v.sst.leader, v.sst.drafter, v.sst.fov);
+                if let (Some(v), true) = (c.state.veh.as_ref(), Self::has_sst(c)) {
+                    log::info!("sst car {i}{} speed {:.1} level {:.3} full {} burning {} strength {:.3} leader {} drafter {} fov {:.2} trail {:.2}", if c.is_player { "P" } else { "" }, c.state.speed(), v.sst.level, v.sst.full, v.sst.burning, v.sst.strength, v.sst.leader, v.sst.drafter, v.sst.fov, v.sst.trail);
                 }
             }
         }
@@ -2938,7 +2953,6 @@ if keep || c.state.pos.distance(center) < 450.0 {
         if let Some(nav) = world.nav.as_ref() {
             self.ride_traffic(nav, &world.collider, dt.min(1.0 / 30.0));
         }
-        self.draft_pass(dt.min(1.0 / 30.0));
         // ---- one physics level for every car (physics/loose.rs): the loose props and pieces once a tick
         // before and after the cars, each car's step with the cars not yet stepped as bodies of its island
         // (each pair is solved in the earlier car's step) ----
@@ -2956,6 +2970,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 self.level_swap(&mut level_car, Some(idx), step_dt, level_first, true);
                 level_first = false;
             }
+            self.sst_search_step(idx);
             let c = &mut self.cars[idx];
             // (traffic: the physics level's - inactive while it rides, an ambient collider while
             // physical; loose.rs `Amb`)
@@ -3118,6 +3133,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             }
         }
+        self.sst_trails(step_dt);
         if let Some(lw) = shared.as_deref() {
             self.level_swap(&mut level_car, None, step_dt, false, true);
             self.level.step_rest_alone(lw, step_dt);

@@ -31,6 +31,7 @@ mod checkpoints;
 mod powerups;
 mod pu_draw;
 mod pu_fx;
+mod sst_trail;
 mod pu_bolt;
 mod redlight;
 mod althk;
@@ -477,6 +478,8 @@ struct App {
     /// running last frame, and one-shots asked for outside the camera code (duration, scale)
     shake_land: bool,
     shake_sst: bool,
+    /// the player's SsTurbo::fires last frame (stats gSST / nSST)
+    sst_fires: u32,
     shake_jolts: Vec<(f32, f32)>,
     district_timer: f32,
     flash: bool,
@@ -894,6 +897,7 @@ impl App {
             shake_wipe: false,
             shake_land: false,
             shake_sst: false,
+            sst_fires: 0,
             shake_jolts: Vec::new(),
             district_timer: 0.0,
             flash: false,
@@ -2442,6 +2446,15 @@ impl App {
         }
         self.vehicles.agro = self.ability.agro();
         self.vehicles.draft = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(0.0, |v| v.sst.strength);
+        // mcCarSSTurbo::Fire 0x82345E40: the player's car (0x82331D28, its player's +48) counts "gSST" and "nSST", 1 each
+        let fires = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(0, |v| v.sst.fires);
+        if fires > self.sst_fires {
+            for _ in self.sst_fires..fires {
+                self.game.mc4_stat_add("gSST", 0, 1.0);
+                self.game.mc4_stat_add("nSST", 0, 1.0);
+            }
+        }
+        self.sst_fires = fires;
         // ---- story scenes ----
         // (once the car stands on its wheels: the world is frozen while a scene runs)
         let on_wheels = self.vehicles.player().map_or(false, |c| c.placed && c.state.wheels.iter().filter(|w| w.grounded).count() >= 3 && c.state.vel.y.abs() < 0.3);
@@ -3854,7 +3867,7 @@ impl App {
             // goons' StartPursuit included; Search / Busted taken as the pursuit's tactic still running)
             self.game.police_on_player = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted);
             // (step 23: the slow motion, the tutorials, the statistics and achievements)
-            self.game.mc4_s23_tick(dt, mc4::S23In { heat: if self.police.goons { 0 } else { self.police.heat as u8 }, near: self.roam.near.is_some(), flashed: self.roam.accepted, kind: self.roam.near_type, station: self.at_station.is_some(), drive: mc4b::drive_of(self.vehicles.player()) });
+            self.game.mc4_s23_tick(dt, mc4::S23In { heat: if self.police.goons { 0 } else { self.police.heat as u8 }, near: self.roam.near.is_some(), flashed: self.roam.accepted, kind: self.roam.near_type, station: self.at_station.is_some(), drive: mc4b::drive_of(self.vehicles.player()), sst: self.vehicles.player().filter(|c| vehicles::Vehicles::has_sst(c)).and_then(|c| c.state.veh.as_ref()).map(|v| v.sst.level) });
             // (step 23b: AudioManager_SetActiveTimeSlow - the dynamic mixer's slow-down state while
             // a tutorial holds the game)
             if let Some(a) = self.audio.as_mut() {
@@ -7950,7 +7963,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if let Some(k) = self.game.ability_pick.take() {
                 self.ability.kind = crate::ability::Kind::ALL[k.min(3)];
             }
-            let hud = self.vehicles.player().map(|c| HudInfo { damage_goal: self.game.goal_attack && self.game.race.is_some(), speed_kmh: c.state.fwd_speed() * 3.6, speed_abs: c.state.speed(), gear: c.state.gear, rpm: self.sound.tach_rpm().unwrap_or(c.state.rpm), redline: c.model.params.redline, nitro: (c.state.nitro_shots as f32 + c.state.veh.as_ref().map_or(0.0, |v| v.nitro_level)) / 4.0, damage: if self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery) { c.state.delivery_damage() } else { c.state.damage }, player_pos: c.state.pos, player_heading: { let f = c.state.forward(); f.x.atan2(-f.z) }, heat: std::env::var("MCLA_HUD_HEAT").ok().filter(|_| self.tick_no > 400).and_then(|v| v.parse().ok()).unwrap_or(if self.police.goons { 0 } else { self.police.heat as u8 }), fine: if self.police.goons { 0 } else { self.police.fine as i64 }, law: self.police.level(), search: self.police.search / self.police.tun.get("fSearchMaxTime", 35.0), rain: rain_now, ability: if (self.game.mc4_ability_none() || (self.game.career.loaded() && !self.game.career.reached("INSTALL_ABILITY"))) && std::env::var("MCLA_ABILITY").is_err() { "" } else { self.ability.kind.name() }, ability_meter: self.ability.meter, ability_fx: self.ability.fx(), draft: c.state.veh.as_ref().map_or(0.0, |v| v.sst.strength), sst: c.state.veh.as_ref().map_or(0.0, |v| v.sst.level), sst_full: c.state.veh.as_ref().map_or(false, |v| v.sst.full && !v.sst.burning), sst_on: vehicles::Vehicles::has_sst(c), map_vp: self.map_vp, ability_tint: self.ability.tint().map(|t| (t, self.ability.blend())), cam_vp: Some(vp), cam_pos: self.chase.pos, cam_look: self.chase.look, cam_fwd: { let f = self.chase.look - self.chase.pos; Vec3::new(f.x, 0.0, f.z).normalize_or_zero() }, cam_vel: c.state.vel, night: self.time_of_day > 18.0 || self.time_of_day < 6.0, /* d_IsNight = sub_82205248: light manager +14568 / +14564 */ cruise: self.cruise_hold, pu_hud: self.powerups.as_ref().map_or([0.0, 0.0, 1.0], |p| p.hud(self.vehicles.cars.iter().position(|x| x.is_player).unwrap_or(0))) }).unwrap_or_default();
+            let hud = self.vehicles.player().map(|c| HudInfo { damage_goal: self.game.goal_attack && self.game.race.is_some(), speed_kmh: c.state.fwd_speed() * 3.6, speed_abs: c.state.speed(), gear: c.state.gear, rpm: self.sound.tach_rpm().unwrap_or(c.state.rpm), redline: c.model.params.redline, nitro: (c.state.nitro_shots as f32 + c.state.veh.as_ref().map_or(0.0, |v| v.nitro_level)) / 4.0, damage: if self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery) { c.state.delivery_damage() } else { c.state.damage }, player_pos: c.state.pos, player_heading: { let f = c.state.forward(); f.x.atan2(-f.z) }, heat: std::env::var("MCLA_HUD_HEAT").ok().filter(|_| self.tick_no > 400).and_then(|v| v.parse().ok()).unwrap_or(if self.police.goons { 0 } else { self.police.heat as u8 }), fine: if self.police.goons { 0 } else { self.police.fine as i64 }, law: self.police.level(), search: self.police.search / self.police.tun.get("fSearchMaxTime", 35.0), rain: rain_now, ability: if (self.game.mc4_ability_none() || (self.game.career.loaded() && !self.game.career.reached("INSTALL_ABILITY"))) && std::env::var("MCLA_ABILITY").is_err() { "" } else { self.ability.kind.name() }, ability_meter: self.ability.meter, ability_fx: self.ability.fx(), draft: c.state.veh.as_ref().map_or(0.0, |v| v.sst.strength), sst: c.state.veh.as_ref().map_or(0.0, |v| v.sst.level), sst_full: c.state.veh.as_ref().map_or(false, |v| v.sst.full && !v.sst.burning), sst_on: vehicles::Vehicles::has_sst(c), sst_lit: self.game.tutorial_box.as_ref().map_or(false, |t| t.0 == "tutorial_slipstream_title" && t.2 <= 0.0), map_vp: self.map_vp, ability_tint: self.ability.tint().map(|t| (t, self.ability.blend())), cam_vp: Some(vp), cam_pos: self.chase.pos, cam_look: self.chase.look, cam_fwd: { let f = self.chase.look - self.chase.pos; Vec3::new(f.x, 0.0, f.z).normalize_or_zero() }, cam_vel: c.state.vel, night: self.time_of_day > 18.0 || self.time_of_day < 6.0, /* d_IsNight = sub_82205248: light manager +14568 / +14564 */ cruise: self.cruise_hold, pu_hud: self.powerups.as_ref().map_or([0.0, 0.0, 1.0], |p| p.hud(self.vehicles.cars.iter().position(|x| x.is_player).unwrap_or(0))) }).unwrap_or_default();
             let mut action = MenuAction::None;
             let game = &mut self.game;
             let vehicles = &self.vehicles;
@@ -9011,6 +9024,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if !map3d {
             // (the effect list's model particles - litter, cans - before them, writing the depth: modelfx.rs)
             modelfx::run(&gpu, &mut enc);
+        }
+        if !map3d {
+            // (the slipstream trails: drawn by the original in each car's alpha pass after the car - sst_trail.rs)
+            sst_trail::run(&gpu, &mut enc, &self.vehicles);
         }
         // (the depth and stencil resolved - sample 0 - for what reads them: the particles' soft fade, the blobs)
         gpu.resolve_scene_depth(&mut enc);
@@ -10697,6 +10714,7 @@ impl App {
             sunglow::load(&mut gpu);
             pu_draw::load(&mut gpu, &self.opt.data_dir);
             pu_fx::load(&mut gpu, &self.opt.data_dir);
+            sst_trail::load(&mut gpu, &self.opt.data_dir);
             carblob::load(&mut gpu);
             // (the scene's pipelines at the driving and the menus' sample counts, built ahead on a thread of their
             // own - render/ms.rs; the city's plain ones for the environment map too)

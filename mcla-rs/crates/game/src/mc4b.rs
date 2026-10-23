@@ -477,7 +477,8 @@ impl Game {
     /// RACE_GH_02's lesson while box 76 is up (SetActiveTimeSlow(1) at 0x3e4, (0) after the box).
     pub fn mc4b_time_slow(&self) -> bool {
         let x = &self.opt_x.s23;
-        x.run.as_ref().map_or(false, |r| r.slow && r.phase >= 1) || x.lesson == 1
+        // (SST_Tutorial: SetActiveTimeSlow(1) at 0xe9 before the ease, 0 at 0x22f once form 78 is closed)
+        x.run.as_ref().map_or(false, |r| r.slow && r.phase >= 1) || x.lesson == 1 || matches!(x.sst_tut, crate::mc4::SstTut::Ease(_) | crate::mc4::SstTut::Box78)
     }
 }
 

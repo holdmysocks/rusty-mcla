@@ -43,12 +43,18 @@ pub struct SsTurbo {
     pub found: (f32, i32),
     /// the drafter (+68) is still in a slipstream (its own search found one)
     pub drafter_drafting: bool,
+    /// chassis +576 bit 0x10, set and cleared only by the script native Racer_LockFeature (sub_822ADF90; hash
+    /// af5d85f0): the turbo neither charges, fades nor fires. None of the disc's 869 scripts calls it
+    /// (`lock_feature_calls_of_the_disc`), so it stays false.
+    pub locked: bool,
+    /// the port's count of fires (0x82345E40), read for the player's stats gSST / nSST
+    pub fires: u32,
 }
 
 impl Default for SsTurbo {
     fn default() -> Self {
         // (0x82345CC8)
-        SsTurbo { level: 0.0, burning: false, full: false, stay: 0.0, fov: 0.0, dist: 1.0, blur: 1.0, strength: 0.0, leader: -1, drafter: -1, trail_target: 0.0, trail: 0.0, found: (0.0, -1), drafter_drafting: false }
+        SsTurbo { level: 0.0, burning: false, full: false, stay: 0.0, fov: 0.0, dist: 1.0, blur: 1.0, strength: 0.0, leader: -1, drafter: -1, trail_target: 0.0, trail: 0.0, found: (0.0, -1), drafter_drafting: false, locked: false, fires: 0 }
     }
 }
 
@@ -74,10 +80,25 @@ impl SsTurbo {
         self.stay = 0.0;
     }
 
-    /// 0x82345FE0: `answering` is the chassis's vfunc 12 (0x8232C368: car state +592 0, or 16 on a car).
-    /// (Chassis +576 bit 0x10, mcRacer::LockFeature's mask, also refuses it - no script of the port sets it.)
+    /// 0x82345D58 (mcCarSim's reset, slot +4; mcCar's update when a wiped-out car is set back, sim +592 bit
+    /// 0x10 with its damage timer run out): everything back to rest.
+    pub fn reset_all(&mut self) {
+        self.burning = false;
+        self.full = false;
+        self.level = 0.0;
+        self.stay = 0.0;
+        self.strength = 0.0;
+        self.drafter = -1;
+        self.leader = -1;
+        self.fov = 0.0;
+        self.dist = 1.0;
+        self.blur = 1.0;
+    }
+
+    /// 0x82345FE0: `answering` is the chassis's vfunc 12 (0x8232C368: car state +592 0, or 16 on a car); not
+    /// with chassis +576 bit 0x10 (`locked`).
     pub fn can_fire(&self, answering: bool) -> bool {
-        answering && self.full && self.level >= 1.0 && !self.burning && self.fov == 0.0
+        !self.locked && answering && self.full && self.level >= 1.0 && !self.burning && self.fov == 0.0
     }
 
     /// 0x82345E40: the level 1 and burning. (The camera's jolt, the pad's rumble 3 and the player's
@@ -85,6 +106,7 @@ impl SsTurbo {
     pub fn fire(&mut self) {
         self.level = 1.0;
         self.burning = true;
+        self.fires = self.fires.wrapping_add(1);
     }
 
     /// The burning half of 0x823465C8. `upset`: 0x823455B8 (air time <= 0 and up.y under 0.1). Returns
@@ -114,6 +136,11 @@ impl SsTurbo {
     /// `speed`: chassis +224.
     pub fn charge(&mut self, t: &SsTurboTune, speed: f32, dt: f32) {
         self.strength = 0.0;
+        // (0x823467E4: with chassis +576 bit 0x10 the update ends here. Byte +48 - a forced full-strength charge
+        // and the car's own trail at 1 - has no writer but the constructor, so it is left out.)
+        if self.locked {
+            return;
+        }
         let fall = 1.0 / if self.full { t.charged_falloff_time } else { t.falloff_time };
         let (s, idx) = self.found;
         if !(s > 0.0) {
@@ -310,6 +337,76 @@ mod tests {
         u.fire();
         assert_eq!(u.burn(&t, true, dt), 0.0);
         assert!(!u.burning);
+    }
+
+    /// Every script call of Racer_LockFeature on the disc (MCLA_DATA_DIR=...\extracted\cache).
+    #[test]
+    #[ignore]
+    fn lock_feature_calls_of_the_disc() {
+        fn walk(d: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() { walk(&p, out) } else if p.extension().map_or(false, |x| x == "sco") { out.push(p) }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR")), &mut files);
+        let hashes = [mcla_formats::hash::joaat_bytes(b"Racer_LockFeature"), mcla_formats::hash::joaat_bytes(b"racer_lockfeature")];
+        let mut n = 0;
+        for f in &files {
+            let Some(sco) = std::fs::read(f).ok().and_then(|d| mcla_formats::sco::decode(&d).ok()) else { continue };
+            // (also the raw bytes, in case the walk misses one)
+            for h in hashes {
+                let b = h.to_le_bytes();
+                n += sco.code().windows(4).filter(|w| *w == b).count();
+            }
+            for c in sco.calls() {
+                if hashes.contains(&c.hash) {
+                    n += 1;
+                    println!("{} pc {} hash {:08x} args {:?}", f.display(), c.pc, c.hash, c.args);
+                }
+            }
+        }
+        println!("{} scripts, {n} calls", files.len());
+    }
+
+    /// Who opens the slipstream tutorial forms 78 / 79: every Form_GetForm / Form_ShowForm call of the disc's
+    /// scripts with a constant 78 or 79 (MCLA_DATA_DIR=...\extracted\cache).
+    #[test]
+    #[ignore]
+    fn slipstream_tutorial_calls_of_the_disc() {
+        fn walk(d: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() { walk(&p, out) } else if p.extension().map_or(false, |x| x == "sco") { out.push(p) }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR")), &mut files);
+        let names = ["Form_GetForm", "Form_ShowForm", "Form_CloseForm", "Form_GetFormVisible"];
+        let hashes: Vec<u32> = names.iter().map(|n| mcla_formats::hash::joaat_bytes(n.as_bytes())).chain(names.iter().map(|n| mcla_formats::hash::joaat_bytes(n.to_lowercase().as_bytes()))).collect();
+        let mut n = 0;
+        let mut ids = std::collections::BTreeMap::new();
+        for f in &files {
+            let Some(sco) = std::fs::read(f).ok().and_then(|d| mcla_formats::sco::decode(&d).ok()) else { continue };
+            for c in sco.calls() {
+                let all = format!("{:?}", c.args);
+                if all.contains("TUTORIAL_SST") {
+                    println!("{} pc {} hash {:08x} args {:?}", f.display(), c.pc, c.hash, c.args);
+                }
+                if !hashes.contains(&c.hash) {
+                    continue;
+                }
+                let form = c.args.get(1).map(|a| format!("{:?}", a)).unwrap_or_default();
+                *ids.entry(form.clone()).or_insert(0) += 1;
+                if form == "Num(78.0)" || form == "Num(79.0)" {
+                    n += 1;
+                    println!("{} pc {} hash {:08x} args {:?}", f.display(), c.pc, c.hash, c.args);
+                }
+            }
+        }
+        println!("form arguments of the calls: {:?}", ids);
+        println!("{} scripts, {n} calls", files.len());
     }
 
     /// The disc's slipstream tunings, every car (MCLA_DATA_DIR=...\extracted\cache).

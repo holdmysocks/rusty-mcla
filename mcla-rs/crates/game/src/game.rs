@@ -8252,9 +8252,12 @@ impl Game {
                     // a tutorial's box over the cruise
                     if let Some((title, text, wait, left)) = self.tutorial_box.clone() {
                         // (a box with CONTINUE stays until it is answered)
-                        let left = if (title.contains("target") || self.mc4_tut_continue(&title)) && wait <= 0.0 && enter { 0.0 } else { left };
+                        // (form 78, the slipstream's, has the target form's prompt list 0x82906EBC: CONTINUE)
+                        let left = if (title.contains("target") || title == "tutorial_slipstream_title" || self.mc4_tut_continue(&title)) && wait <= 0.0 && enter { 0.0 } else { left };
                         let dt = ctx.input(|i| i.stable_dt).min(0.1);
-                        if self.mode != Mode::FreeRoam || left <= 0.0 {
+                        // (SST_Tutorial's forms 78 / 79 come up in RACE_GH_06's race)
+                        let here = self.mode == Mode::FreeRoam || (self.mode == Mode::Race && title.starts_with("tutorial_slipstream"));
+                        if !here || left <= 0.0 {
                             self.tutorial_box = None;
                             if let Some(fp) = self.flash_popup.as_mut() {
                                 fp.hide();
@@ -8264,10 +8267,14 @@ impl Game {
                         } else {
                             let st = |k: &str| self.career.strings.get(k).map(|v| v.to_string()).unwrap_or_default();
                             // (the mission log's box carries its prompt: MISSION LOG (Back) - `ng_tut_missionlog`)
-                            let prompts = if title.contains("target") || self.mc4_tut_continue(&title) { vec![(self.career.strings.get("prompt_continue").map(|v| v.to_uppercase()).unwrap_or_else(|| "CONTINUE".into()), crate::flash_ui::ICON_A)] } else if title.contains("mission_log") { vec![(self.career.strings.get("Navmap_Prompt_MissionLog").map(|v| v.to_uppercase()).unwrap_or_else(|| "MISSION LOG".into()), crate::flash_ui::ICON_BACK_BUTTON)] } else if title == "tutorial_challenge_title" || title == "tutorial_flash_title" {
+                            let prompts = if title.contains("target") || title == "tutorial_slipstream_title" || self.mc4_tut_continue(&title) { vec![(self.career.strings.get("prompt_continue").map(|v| v.to_uppercase()).unwrap_or_else(|| "CONTINUE".into()), crate::flash_ui::ICON_A)] } else if title.contains("mission_log") { vec![(self.career.strings.get("Navmap_Prompt_MissionLog").map(|v| v.to_uppercase()).unwrap_or_else(|| "MISSION LOG".into()), crate::flash_ui::ICON_BACK_BUTTON)] } else if title == "tutorial_challenge_title" || title == "tutorial_flash_title" {
                                 // (forms 82 / 83: one prompt, `tutorial_prompt_flash` - the list 0x829072AC of
                                 // sub_8267E2D8 / sub_8267E368 -, the flash's button: Y in the walkthrough at 1:44)
                                 vec![(self.career.strings.get("tutorial_prompt_flash").map(|v| v.to_uppercase()).unwrap_or_else(|| "FLASH HEADLIGHTS".into()), crate::flash_ui::ICON_Y)]
+                            } else if title == "tutorial_slipstream_use_title" {
+                                // (form 79: the list 0x82906F14 - static init: id 1, `tutorial_prompt_nitro`; the glyph is
+                                // the NITRO action's button, key 7 = X in the default pad map)
+                                vec![(self.career.strings.get("tutorial_prompt_nitro").map(|v| v.to_uppercase()).unwrap_or_else(|| "NITROUS".into()), crate::flash_ui::ICON_X)]
                             } else { Vec::new() };
                             let page = crate::flash_ui::MenuPage { layout: crate::flash_ui::MenuLayout::Tutorial { description: st(&text) }, title: st(&title), select: usize::MAX, prompts, ..Default::default() };
                             let which = std::env::var("MCLA_TUT_MOVIE").unwrap_or_default();
@@ -9920,6 +9927,9 @@ pub struct HudInfo {
     pub sst: f32,
     pub sst_full: bool,
     pub sst_on: bool,
+    /// the slipstream tutorial (form 78) lights the meter: mcTutorialSlipstreamForm sub_8267DCA0 sets the HUD
+    /// element's (form 109 +3648) highlight bit, SSTisvisible 2
+    pub sst_lit: bool,
     /// the running ability's screen tint (inner and outer RGBA) and how far in it is
     pub ability_tint: Option<([[f32; 4]; 2], f32)>,
     /// police: 0 none, 1 pull over, 2 pursuit, 3 search, 4 busted

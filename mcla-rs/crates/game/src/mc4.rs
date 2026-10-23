@@ -11219,6 +11219,25 @@ pub struct TutRun {
     pub modeless: bool,
 }
 
+/// Game/Career/SST_Tutorial (`game/career/0xc3c7949c`), started by RACE_GH_06's core
+/// (`Story/0x40a56c35` 0x1031: mcCareer_StartNewScript after EvaluatePolice, before "missionRace").
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum SstTut {
+    #[default]
+    Idle,
+    /// 0x69..0xe3: every 100 ms (WAITUNPAUSED) until racing and the turbo level > 0.3
+    Charge,
+    /// 0xe8..0x14e: AudioManager_SetActiveTimeSlow(1), the ease to pause (form 108, 1 / 0.5 s), 500 ms
+    Ease(f32),
+    /// 0x156..0x22d: form 78 with TUTORIAL_SST_INGAME (drv_mb_04_set, PLAYER) until it is closed
+    Box78,
+    /// 0x2dc..0x356: the ease from pause done; every 100 ms until racing and the level > 0.99
+    Full,
+    /// 0x35b..0x367: form 79, no speech, no slow motion, until it is closed (sub_8267C720: SSTvalue < 0.9)
+    Box79,
+    Done,
+}
+
 /// What the running game keeps for step 23 (in `OptLive`).
 #[derive(Clone, Debug, Default)]
 pub struct S23Live {
@@ -11258,6 +11277,10 @@ pub struct S23Live {
     pub start_race: bool,
     /// (step 22b) the garage was on the vinyl editor's top menu last frame
     pub vyl_was: bool,
+    /// Game/Career/SST_Tutorial (`SstTut`), the race seen last frame, the script's 100 ms poll
+    pub sst_tut: SstTut,
+    pub sst_race_was: bool,
+    pub sst_poll: f32,
     /// (step 23b) in a gas station last frame
     pub station_was: bool,
 }
@@ -11275,6 +11298,8 @@ pub struct S23In {
     pub station: bool,
     /// (step 23b) the player's vehicle this frame, for the driving statistics
     pub drive: crate::mc4b::S23Drive,
+    /// the player's slipstream turbo level (mcCarSSTurbo +36, Racer_GetTurboLevel sub_822ADF00), None without one
+    pub sst: Option<f32>,
 }
 
 /// FIND_SH_02C_CORE (`game/career/Story/0xb27d6524`): the place registered (location 605,
@@ -11566,6 +11591,86 @@ impl Game {
         self.opt_x.s23.run = Some(run);
     }
 
+    /// Game/Career/SST_Tutorial (`SstTut`). Started at each start of RACE_GH_06's race (its core runs
+    /// the start once per race: hw_ordered_jp_11 against GH_06) unless GetNoTutorialCommandLine. "Racing" is
+    /// the script's test: the UI in its Racing state (vhsmState_IsListener), no FlashNavigator transition, not
+    /// networked, not paused, no warp, no menu - the port's race under way, no box or menu up.
+    fn mc4_sst_tut_tick(&mut self, dt: f32, sst: Option<f32>) {
+        use crate::game::Mode;
+        let race = self.race.is_some() && self.mode == Mode::Race;
+        let was = std::mem::replace(&mut self.opt_x.s23.sst_race_was, race);
+        if race && !was && matches!(self.opt_x.s23.sst_tut, SstTut::Idle | SstTut::Done) && !Self::mc4_no_tutorial() && !self.fresh_game {
+            let id = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| d.id.to_ascii_lowercase()).unwrap_or_default();
+            if self.hookman_race && self.career.hookman_mission() == Some("RACE_GH_06") && id.ends_with("hw_ordered_jp_11") {
+                self.opt_x.s23.sst_tut = SstTut::Charge;
+                self.opt_x.s23.sst_poll = 0.0;
+                log::info!("SST_Tutorial started (RACE_GH_06)");
+            }
+        }
+        let racing = race && self.race.as_ref().map_or(false, |r| r.countdown <= 0.0 && r.finish_time.first().map_or(true, |t| t.is_none())) && self.message_box.is_none() && self.tutorial_box.is_none() && !self.in_menu();
+        self.mc4_sst_tut_step(dt, sst.unwrap_or(0.0), racing);
+    }
+
+    /// SST_Tutorial's steps once it runs (`SstTut`): `racing` the script's test, `level` Racer_GetTurboLevel.
+    fn mc4_sst_tut_step(&mut self, dt: f32, level: f32, racing: bool) {
+        let title = self.tutorial_box.as_ref().map(|b| b.0.clone());
+        let x = &mut self.opt_x.s23;
+        // (the script's WAITUNPAUSED(100) between its tests)
+        let poll = matches!(x.sst_tut, SstTut::Charge | SstTut::Full) && {
+            x.sst_poll += dt;
+            if x.sst_poll >= 0.1 {
+                x.sst_poll = 0.0;
+                true
+            } else {
+                false
+            }
+        };
+        match x.sst_tut {
+            SstTut::Charge if poll && racing && level > 0.3 => {
+                x.slow.ease(0.0);
+                x.sst_tut = SstTut::Ease(0.5);
+                log::info!("SST_Tutorial: level {:.3} > 0.3 - the ease to pause", level);
+            }
+            SstTut::Ease(t) => {
+                if t - dt <= 0.0 {
+                    if let Some((t, d)) = tutorial_keys(78) {
+                        self.tutorial_box = Some((t, d, 0.0, 600.0));
+                    }
+                    self.opt_x.arcade.d.say.push("TUTORIAL_SST_INGAME".to_string());
+                    self.opt_x.s23.sst_tut = SstTut::Box78;
+                } else {
+                    x.sst_tut = SstTut::Ease(t - dt);
+                }
+            }
+            SstTut::Box78 if title.as_deref() != Some("tutorial_slipstream_title") => {
+                x.slow.ease(1.0);
+                x.sst_tut = SstTut::Full;
+                x.sst_poll = 0.0;
+                log::info!("SST_Tutorial: form 78 closed - the ease from pause");
+            }
+            SstTut::Full if poll && racing && level > 0.99 => {
+                if let Some((t, d)) = tutorial_keys(79) {
+                    self.tutorial_box = Some((t, d, 0.0, 600.0));
+                }
+                self.opt_x.s23.sst_tut = SstTut::Box79;
+                log::info!("SST_Tutorial: level {:.3} > 0.99 - form 79", level);
+            }
+            SstTut::Box79 => {
+                // (mcTutorialSlipstreamUseForm's update sub_8267C720: closed once SSTvalue < 0.9 - the burn)
+                if title.as_deref() == Some("tutorial_slipstream_use_title") {
+                    if level < 0.9 {
+                        self.tutorial_box = None;
+                        self.opt_x.s23.sst_tut = SstTut::Done;
+                        log::info!("SST_Tutorial: level {:.3} < 0.9 - form 79 closed, over", level);
+                    }
+                } else {
+                    x.sst_tut = SstTut::Done;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// RACE_GH_02's tutorial (READY_TO_START_ON_ENTER 0x44f..0x8b3) about the port's lesson:
     /// box 76 after the ease to pause, the log's lesson (GOTO_MISSIONLOG_TUTORIAL ->
     /// MissionLogTutorialScene) with the speech TUTORIAL_MISSION_LOG_GPS, box 77 with
@@ -11849,6 +11954,7 @@ impl Game {
             self.mc4_station_tick(i.station);
         }
         self.mc4_tut_tick(dt);
+        self.mc4_sst_tut_tick(dt, i.sst);
         // (a mission's completion: its script's or its reward's achievement)
         let j = self.career.journal.clone();
         let from = self.opt_x.s23.journal_seen.min(j.len());
@@ -16686,6 +16792,44 @@ mod tests {
 
     /// Step 23: the tutorial flags - shown once, the form in the slow motion, CONTINUE; the
     /// garage's, the hangout's, the police's and the hookman's; RACE_GH_02's lesson.
+    #[test]
+    fn sst_tutorial_steps() {
+        let Some((mut g, dir, _)) = career_game("newgame_import.json", "ssttut") else { return };
+        g.fresh_game = false;
+        g.opt_x.s23.sst_tut = SstTut::Charge;
+        let mut step = |g: &mut Game, n: usize, level: f32, racing: bool| {
+            for _ in 0..n {
+                g.mc4_sst_tut_step(0.02, level, racing);
+                g.opt_x.s23.slow.update(0.02);
+            }
+        };
+        // (not before 0.3, nor out of the race)
+        step(&mut g, 20, 0.3, true);
+        step(&mut g, 20, 0.5, false);
+        assert_eq!(g.opt_x.s23.sst_tut, SstTut::Charge);
+        // (over 0.3: within the 100 ms poll the ease to pause, the box after 500 ms)
+        step(&mut g, 5, 0.31, true);
+        assert!(matches!(g.opt_x.s23.sst_tut, SstTut::Ease(_)));
+        step(&mut g, 27, 0.31, true);
+        assert_eq!(g.opt_x.s23.sst_tut, SstTut::Box78);
+        assert_eq!(g.tutorial_box.as_ref().map(|b| b.0.as_str()), Some("tutorial_slipstream_title"));
+        assert!(g.opt_x.arcade.d.say.contains(&"TUTORIAL_SST_INGAME".to_string()));
+        assert_eq!(g.opt_x.s23.slow.global, 0.0);
+        // (answered: the ease from pause; form 79 at a full charge, closed by the burn)
+        g.tutorial_box = None;
+        step(&mut g, 60, 0.99, true);
+        assert_eq!(g.opt_x.s23.sst_tut, SstTut::Full);
+        assert_eq!(g.opt_x.s23.slow.global, 1.0);
+        step(&mut g, 5, 1.0, true);
+        assert_eq!(g.opt_x.s23.sst_tut, SstTut::Box79);
+        step(&mut g, 5, 0.95, false);
+        assert_eq!(g.tutorial_box.as_ref().map(|b| b.0.as_str()), Some("tutorial_slipstream_use_title"));
+        step(&mut g, 1, 0.89, false);
+        assert_eq!(g.opt_x.s23.sst_tut, SstTut::Done);
+        assert!(g.tutorial_box.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn tutorial_flags_and_slow_motion() {
         // (sub_82653920: ease out to 0 in 0.5 s, sin(t pi / 2), back to 1)

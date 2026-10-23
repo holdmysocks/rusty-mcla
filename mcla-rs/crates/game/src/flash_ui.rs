@@ -2036,8 +2036,8 @@ impl FlashHud {
         p.set_global("SA_iconID", Value::Int(icon));
         p.set_global("SAvalue", Value::Float(if info.ability_fx > 0.0 { info.ability_fx } else { info.ability_meter }.clamp(0.0, 1.0)));
         // (mcSlipstream 0x8223FDF0: 1 while the element is shown - the car has a turbo, 0x82651890; 2 when the
-        // slipstream tutorial lights it, not ported)
-        p.set_global("SSTisvisible", Value::Int(info.sst_on as i32));
+        // slipstream tutorial lights it, sub_8267DCA0)
+        p.set_global("SSTisvisible", Value::Int(if info.sst_on && info.sst_lit { 2 } else { info.sst_on as i32 }));
         p.set_global("SSTvalue", Value::Float(info.sst.clamp(0.0, 1.0)));
         // the online player list (`_global.playerlist`, bound by the game in
         // 0x8228BED8): type 0 = not shown in single player
