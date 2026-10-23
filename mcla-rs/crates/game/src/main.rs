@@ -420,6 +420,12 @@ struct App {
     warp_expl: boomcam::TimeWarper,
     /// the player car's crash state (chassis +592: 0x10 wiped out, 0x04 damaged out; crash_camera_rule.md
     /// 4): the bits, mcCarDamage +44 (the timer), an exploding car (+82), the speed and velocity
+    /// the opening's step: 1 fading to black, 2 the film and the wait for the city, 3 VEHICLE SELECT, 4 black
+    /// until the first story scene; 0 none (and `intro_t`, seconds in the step)
+    intro_stage: u8,
+    intro_t: f32,
+    /// the opening's black (CarSelection's TRANSITIONMOVIE fades)
+    intro_mask: boomcam::CutMask,
     /// of the frame before
     crash_bits: u8,
     crash_timer: f32,
@@ -856,6 +862,9 @@ impl App {
             shake_impact: 0.0,
             shake_air: 0.0,
             shake_wipe: false,
+            intro_stage: 0,
+            intro_t: 0.0,
+            intro_mask: Default::default(),
             shake_land: false,
             shake_sst: false,
             shake_jolts: Vec::new(),
@@ -2680,6 +2689,22 @@ impl App {
             }
         }
         // (test hook: MCLA_ALBUM_TEST="<presses>" - photo mode at tick 200, then the presses of
+        // (test hook MCLA_NAV_TEST="frame:a,frame:y,...": the pad's A / Y / START / B pressed at that frame)
+        if let Ok(v) = std::env::var("MCLA_NAV_TEST") {
+            for step in v.split(',') {
+                let Some((at, b)) = step.trim().split_once(':') else { continue };
+                if at.trim().parse::<u64>().ok() == Some(self.frame_no) {
+                    log::info!("nav test: {} at frame {}", b, self.frame_no);
+                    match b.trim() {
+                        "a" => self.game.nav_enter = true,
+                        "y" => self.game.nav_y = true,
+                        "start" => self.game.nav_start = true,
+                        "b" => self.game.nav_back = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
         // `photoalbum`'s hook; MCLA_ALBUM_VIEW starts in the album, as the MODES tab's PHOTO ALBUM)
         if std::env::var("MCLA_ALBUM_TEST").is_ok() && self.tick_no == 200 && self.photo.is_none() {
             self.pending_action = if std::env::var("MCLA_ALBUM_VIEW").is_ok() { MenuAction::PhotoAlbum } else { MenuAction::PhotoMode };
@@ -2733,7 +2758,8 @@ impl App {
             self.idle = 0.0;
             self.start_movie("attract", Vec::new(), true);
         }
-        if self.game.mode == Mode::FreeRoam && self.game.race.is_none() && settled && self.roam.challenge.is_none() && self.game.movie.is_none() {
+        // (a new career's first scene waits for ACCEPT's black and the car's hand-over - `opening_tick`)
+        if self.game.mode == Mode::FreeRoam && self.game.race.is_none() && settled && self.roam.challenge.is_none() && self.game.movie.is_none() && self.game.starter_pick.is_none() {
             if let Some(stream) = self.cuts.start_pending() {
                 self.speech.stop();
                 // the scene's own animation (camera, characters, cars), if the disc has it
@@ -2765,7 +2791,22 @@ impl App {
             }
         }
         if self.cuts.playing.is_some() && self.cine_hold.is_none() {
-            let skip = std::mem::take(&mut self.game.nav_enter) || self.game.mode != Mode::FreeRoam;
+            // (the player's skip is UI event 63 - Y, prompt button 4 - and does not end the scene: the cine
+            // manager's request +305 jumps its clock to the scene's bookmark and it plays on from there
+            // (sub_826439E0 -> sub_823BB498 -> sub_823BEEB0 / sub_823BBB98, `cine::skip_to`); A does nothing)
+            std::mem::take(&mut self.game.nav_enter);
+            if std::mem::take(&mut self.game.nav_y) {
+                let at = self.cine.playing.as_ref().and_then(|sc| cine::skip_to(&sc.name, sc.t, sc.duration));
+                if let (Some(at), Some(p)) = (at, self.cuts.playing.as_mut()) {
+                    log::info!("cutscene: skip from {:.2} s to the bookmark at {:.2} s", p.t, at);
+                    p.t = at;
+                    // (approx.: the port's dialogue stream cannot be moved to the new time; it stops)
+                    if let Some(a) = self.audio.as_mut() {
+                        a.play_stream(None, 0.0);
+                    }
+                }
+            }
+            let skip = self.game.mode != Mode::FreeRoam;
             if !self.cuts.update(dt, skip) {
                 if let Some(a) = self.audio.as_mut() {
                     a.play_stream(None, 0.0);
@@ -2838,6 +2879,7 @@ impl App {
                     self.game.hangout_slow.visible = true;
                     self.hangout_entry = Some(hangoutin::Entry { setup: si, hangout: j, stage: hangoutin::Stage::Slow, t: 0.0, warp: None });
                 } else if free && d < 60.0 && self.tick_no % 240 == 0 && self.news.is_empty() {
+        self.opening_tick(dt, world.streaming());
                     self.game.show_message("HANGOUT  -  PULL IN TO SEE THE EVENTS");
                 }
             }
@@ -4538,24 +4580,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // ---- career news: new missions, completions, prize cars ----
             // (a new career's first call waits for VEHICLE SELECT to be over)
-            // A new career opens with the arrival in Los Angeles - the film and the bus stop
-            // scene - and only then VEHICLE SELECT (the recomp's order: ALERT boxes, intro,
-            // VEHICLE SELECT, the first story scene). It had come after the choice.
+            // A new career's opening is the original's `game/Career/CarSelection` (0xebb682f7), then
+            // CareerSetupPlayer and RACE_GH_06_READY_TO_START_ON_ENTER: the screen fades to black (1 s), the
+            // film (intro720.bik: the arrival by bus is in it), black until the city has streamed in, the fade
+            // up (1 s) onto VEHICLE SELECT; ACCEPT fades to black (1 s) and the black is held until the first
+            // story scene CUT_STORY_RACE_GH_06 comes up (its core's own 1 s fade up, 0x95ca1d1b 0x1012). No
+            // script plays CUT_INTRO (only the recomp's cutscene gallery lists it); the game camera is never seen
+            // in between. `intro_stage`, `intro_mask`.
             let boxes_done = self.game.message_box.is_none() && (self.game.save_box >= 2 || self.game.flash_popup.is_none() || std::env::var("MCLA_NO_SAVE_BOX").is_ok());
             if self.game.fresh_game && self.game.mode == Mode::FreeRoam && !self.intro_played && boxes_done {
                 self.intro_played = true;
-                // (settings.toml game.intro: `fast` leaves out the opening film, `skip` the arrival scene as well - `hooks`)
-                if std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()) && hooks::intro_scene() {
-                    if let Some(intro) = self.cuts.by_name("CUT_INTRO") {
-                        let subs = if hooks::intro_film() { std::mem::take(&mut self.cuts.scenes[intro].subs) } else { Vec::new() };
-                        if (self.opt.shot.is_none() || std::env::var("MCLA_MOVIE").is_ok()) && hooks::intro_film() {
-                            self.start_movie("intro", subs, false);
-                        }
-                        self.cuts.queue(intro);
-                    }
-                }
+                self.intro_stage = 1;
+                self.intro_t = 0.0;
+                // (CarSelection 0x456: fade down, waited for, 1 s)
+                self.intro_mask.start(1.0, 0.01, f32::MAX);
             }
-            self.game.hold_starter = self.game.fresh_game && (!self.intro_played || !self.cuts.idle() || self.game.movie.is_some());
+            self.game.hold_starter = self.game.fresh_game && (!self.intro_played || self.intro_stage < 3);
             let held = self.game.fresh_game && self.game.mode == Mode::FreeRoam;
             for n in if held { Vec::new() } else { std::mem::take(&mut self.game.career.news) } {
                 match n {
@@ -4687,21 +4727,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                         match scene.filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok())) {
-                            Some(i) => {
-                                // a fresh career opens with the arrival in Los Angeles
-                                if c == "SIDEKICK_RACE_GH_06" && self.game.career.completed() == 0 && !self.intro_played && hooks::intro_scene() {
-                                    if let Some(intro) = self.cuts.by_name("CUT_INTRO") {
-                                        // the opening movie carries the phone call (the subtitles of
-                                        // the scene), the bus stop scene itself has no lines
-                                        let subs = if hooks::intro_film() { std::mem::take(&mut self.cuts.scenes[intro].subs) } else { Vec::new() };
-                                        if (self.opt.shot.is_none() || std::env::var("MCLA_MOVIE").is_ok()) && hooks::intro_film() {
-                                            self.start_movie("intro", subs, false);
-                                        }
-                                        self.cuts.queue(intro);
-                                    }
-                                }
-                                self.cuts.queue(i)
-                            }
+                            // (the film plays only in CarSelection, before VEHICLE SELECT; RACE_GH_06's
+                            // READY_TO_START_ON_ENTER plays its scene alone)
+                            Some(i) => self.cuts.queue(i),
                             None if self.pending_call.is_some() => {}
                             None => {
                                 if !self.speech.say(&c) {
@@ -6343,7 +6371,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some((_, _, up, _)) = self.warp_view.filter(|_| self.game.race.is_some()).or(self.place_view) {
                         self.boom_up = Some(up);
                     }
-                } else if self.game.mode == Mode::Garage || self.cuts.playing.is_some() {
+                } else if self.game.mode == Mode::Garage || (self.cuts.playing.is_some() && !self.cine.at_game_camera()) {
                     // showroom orbit: 3/4 view slowly circling the car
                     self.orbit += dt * 0.25;
                     let a = self.orbit + 0.6;
@@ -9091,6 +9119,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let hold = (c.state.pos, c.state.rot);
                 self.game.hangout_slow.set(1.0, 1.0 / 0.5, false, true, 1.0);
                 self.game.hangout_slow.visible = false;
+        // (test hook MCLA_SHOT_EVERY=n: a screenshot run also writes <shot>_<frame>.png every n frames)
+        let photo = photo.or_else(|| {
+            let n = std::env::var("MCLA_SHOT_EVERY").ok()?.parse::<u64>().ok().filter(|n| *n > 0)?;
+            let cfg = self.opt.shot.as_ref()?;
+            (self.frame_no % n == 0 && self.frame_no < cfg.frames).then(|| format!("{}_{:05}.png", cfg.path.trim_end_matches(".png"), self.frame_no))
+        });
                 self.game.mode = Mode::FreeRoam;
                 let e = garagein::wait_rows(&garagein::SETUPS[PAYBACK_PLACE_CAM]);
                 let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
@@ -10019,6 +10053,54 @@ impl ApplicationHandler for App {
                     if let Err(e) = self.vehicles.replace_player(&mut gpu, &mut world, &dir, color, &cfg, rim.as_deref()) {
                         log::warn!("restoring saved car: {:#}", e);
                     }
+    /// The new career's opening after the save boxes (CarSelection, `intro_stage`): every tick, the film and
+    /// the scenes included.
+    fn opening_tick(&mut self, dt: f32, streaming: usize) {
+        self.intro_t += dt;
+        match self.intro_stage {
+            // (the film once the black is up; settings.toml game.intro `fast` / `skip` leave it out - `hooks`)
+            1 if self.intro_mask.full() => {
+                let film = hooks::intro_film() && (self.opt.shot.is_none() || std::env::var("MCLA_MOVIE").is_ok());
+                // (the film carries the phone call: the subtitles of CUT_INTRO's table)
+                let subs = self.cuts.by_name("CUT_INTRO").map(|i| self.cuts.scenes[i].subs.clone()).unwrap_or_default();
+                if film && self.start_movie("intro", subs, false) {
+                    log::info!("opening: the film");
+                }
+                self.intro_stage = 2;
+                self.intro_t = 0.0;
+            }
+            // (after the film: `City_DoneStreaming(100)` polled every 10 ms after three frames, then the fade up
+            // over 1 s - CarSelection 0xb68, 0xbaa - with VEHICLE SELECT already up)
+            2 if self.game.movie.is_none() && self.intro_t > 3.0 / 60.0 && streaming == 0 => {
+                log::info!("opening: VEHICLE SELECT");
+                self.intro_mask.release(1.0);
+                self.intro_stage = 3;
+            }
+            // ACCEPT: fade down, 1 s (CarSelection 0x13f5), held until the story scene's picture
+            3 if !self.game.fresh_game => {
+                self.intro_mask = Default::default();
+                self.intro_mask.start(1.0, 0.01, f32::MAX);
+                self.intro_stage = 4;
+                self.intro_t = 0.0;
+            }
+            4 => {
+                // (the black is up: the two not taken go, the car is the player's - CarSelection 0x1402 on)
+                if self.intro_mask.full() {
+                    self.game.starter_pick = None;
+                }
+                let scenes =std::env::var("MCLA_NO_CUTS").is_err() && std::env::var("MCLA_NO_CINE").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok());
+                let up = self.cuts.playing.is_some() && self.cine_hold.is_none();
+                if self.intro_mask.full() && (up || !scenes) {
+                    log::info!("opening: the first story scene comes up");
+                    self.intro_mask.release(1.0);
+                    self.intro_stage = 0;
+                }
+            }
+            _ => {}
+        }
+        self.game.intro_mask = if self.game.movie.is_some() { 0.0 } else { self.intro_mask.update(dt) };
+    }
+
                 }
             }
             let tuned = self.game.perf_frac(self.game.current_car);
@@ -10108,6 +10190,17 @@ impl ApplicationHandler for App {
         physics::collision::load_surfaces(&self.opt.data_dir);
         self.game.load_perf_prices(&self.opt.data_dir);
         self.game.samples = rewards::Samples::load(&self.opt.data_dir);
+            // (the scene's car is its set-up's whole car - RACE_GH_06_READY_TO_START_ON_ENTER loads
+            // GH_06_0_vp_dsn_280z_75 with OpponentManager_LoadOpponent and waits for it to stream before the
+            // scene: parts, rims, paint now, not by the cruise's one-car-a-frame dressing, which a story scene's
+            // stopped clock never reaches)
+            let game = &self.game;
+            while !self.vehicles.cars[idx].dressed && !self.vehicles.cars[idx].vinyl_name.is_empty() {
+                if self.vehicles.dress_setups(gpu, world, &mut |car, cfg| game.mc4_dress_of(car, cfg)).is_none() {
+                    break;
+                }
+            }
+            log::info!("cine car: {} is {} in set-up {:?} (dressed {})", label, car, self.vehicles.cars[idx].vinyl_name, self.vehicles.cars[idx].dressed);
         self.game.vinyl_presets = vinyl::Presets::load(&self.opt.data_dir);
         self.game.vinyl_cats = vinyl::ShapeLib::categories(&self.opt.data_dir);
         self.game.data_dir = self.opt.data_dir.clone();
@@ -10714,6 +10807,8 @@ fn run_game() -> Result<()> {
             let ai = &ai.base;
             // acceleration
             let mut c = physics::CarState::new(Vec3::new(0.0, 0.02, 0.0), 0.0);
+                                // (Y skips the opening film and a story scene - `cine::skip_to`)
+                                KeyCode::KeyY if self.cuts.playing.is_some() || self.game.movie.is_some() => self.game.nav_y = true,
             for _ in 0..90 {
                 c.step(&p, physics::CarInput::default(), &col, dt);
             }

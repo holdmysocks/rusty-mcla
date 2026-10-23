@@ -889,7 +889,19 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
         let slot = classify_slot(&part.primary, &part.names);
         // is the part already in car space? (its box overlaps the body volume)
         let center = (part.min + part.max) * 0.5;
-        let in_car_space = part.is_base || (center.y > 0.12 && part.min.y > -0.2);
+        let mut in_car_space = part.is_base || (center.y > 0.12 && part.min.y > -0.2);
+        // (a part drawn round its slot bone's origin - its box holds that origin, not the bone - is in the
+        // bone's space however high it sits: the 280Z's hoods and intercooler, the Bel Air's and Impala's
+        // rear bumpers, the CLK63's spoiler 2 - port's test, the placing itself is the slot bone's)
+        if in_car_space && !part.is_base && slot != Slot::CarSpace {
+            let tags = if slot == Slot::Spoiler { spoiler_tags(&part.primary) } else { slot_tag(slot).into_iter().collect() };
+            if let Some(bp) = skeleton.as_ref().and_then(|sk| tags.iter().find_map(|&t| sk.bone_by_tag(t)).map(|bi| sk.bones[bi].world.w_axis.truncate())) {
+                let holds = |q: Vec3, r: f32| part.min.cmple(q + r).all() && part.max.cmpge(q - r).all();
+                if holds(Vec3::ZERO, 0.02) && !holds(bp, 0.05) {
+                    in_car_space = false;
+                }
+            }
+        }
         let mut t = Mat4::IDENTITY;
         let mut placed = in_car_space || slot == Slot::CarSpace;
         if !in_car_space {

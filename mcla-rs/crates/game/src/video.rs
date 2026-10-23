@@ -21,6 +21,8 @@ pub struct Video {
     pub any_key: bool,
     /// the sound track next to the frames
     pub audio: PathBuf,
+    /// skipped: when the skip came (`skip`)
+    skipped: Option<Instant>,
 }
 
 impl Video {
@@ -36,7 +38,7 @@ impl Video {
             return None;
         }
         log::info!("video: {} {}x{} {:.0} fps, {:.1} s", name, width, height, fps, frames as f32 / fps);
-        Some(Video { data, width, height, fps, frames, start: Instant::now(), offset: 0.0, shown: None, tex: None, subs: Vec::new(), any_key: false, audio: dir.join(format!("{name}.mp3")) })
+        Some(Video { data, width, height, fps, frames, start: Instant::now(), offset: 0.0, shown: None, tex: None, subs: Vec::new(), any_key: false, audio: dir.join(format!("{name}.mp3")), skipped: None })
     }
 
     /// Restart the clock (call when the sound starts); `at` skips ahead.
@@ -64,12 +66,21 @@ impl Video {
         &self.data[a..b.max(a)]
     }
 
+    /// The opening film skipped (CarSelection 0xa02): the movie's tint alpha from 1 down by 0.1 every 30 ms
+    /// while it plays on (the first step at once; the eleventh, below zero, ends the loop: 0.33 s), then
+    /// MoviePlayer_StopMovie.
+    pub fn skip(&mut self) {
+        self.skipped.get_or_insert_with(Instant::now);
+    }
+
     /// Draw the frame for the current time over the whole screen; false when the movie is over.
     pub fn show(&mut self, ctx: &egui::Context) -> bool {
         let i = (self.time() * self.fps) as usize;
-        if i >= self.frames {
+        let steps = self.skipped.map(|s| 1 + (s.elapsed().as_secs_f32() / 0.03) as u32);
+        if i >= self.frames || steps.map_or(false, |n| n > 11) {
             return false;
         }
+        let tint = steps.map_or(1.0, |n| (1.0 - 0.1 * n as f32).max(0.0));
         if self.shown != Some(i) {
             if let Ok(img) = mcla_formats::jpeg::decode(self.frame(i)) {
                 let ci = egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.rgba);
@@ -87,7 +98,7 @@ impl Video {
             // fit, keeping the picture's shape
             let s = (screen.width() / self.width as f32).min(screen.height() / self.height as f32);
             let rect = egui::Rect::from_center_size(screen.center(), egui::vec2(self.width as f32 * s, self.height as f32 * s));
-            crate::hud::image(&p, t, rect, egui::Color32::WHITE);
+            crate::hud::image(&p, t, rect, egui::Color32::from_white_alpha((tint * 255.0).round() as u8));
         }
         ctx.request_repaint();
         true

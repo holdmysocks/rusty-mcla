@@ -3491,7 +3491,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                     c.amb_lamps.dmg_bound = true;
                 }
+        // (a car the physics has not run yet - one a story scene brings, whose clock stops the physics - has its
+        // hubs at the world's origin: it was drawn without wheels, the tyres somewhere under it. Its wheels go
+        // under their mounts at the suspension's rest length. approx.: no static sag)
+        let unset = c.state.wheels.iter().all(|w| w.world_pos == Vec3::ZERO);
                 c.state.dmg.dents.clear();
+        if unset {
+            let (mounts, rest) = (c.params().wheel_pos, c.params().susp_rest);
+            for (w, a) in c.state.wheels.iter_mut().zip(mounts) {
+                w.world_pos = pos + rot * (a - Vec3::Y * rest);
+            }
+        }
                 c.state.dmg.scrapes.clear();
                 c.state.dmg.repair = false;
                 continue;

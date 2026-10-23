@@ -75,6 +75,58 @@ pub struct Cine {
     linger: Option<Scene>,
 }
 
+/// The story scenes' skip and cut events, from their generated scripts (`Game/CineScripts/generated/story/
+/// cut_story_*`, CineScript_Events_LaunchEvent): the scene, its `bookmark` (73), `bookmark_cut_to_game` (72)
+/// and `cut_to_game` (74) times. A scene not listed has none (cut_story_motorcycle_rep_A / _B, cut_intro).
+pub const STORY_MARKS: &[(&str, &[(u8, f32)])] = &[
+    ("story/cut_story_payback_intro", &[(73, 66.3333)]),
+    ("story/cut_story_find_sh_04_alt", &[(73, 61.5)]),
+    ("story/cut_story_hangout_series_hollywoodc", &[(72, 56.0)]),
+    ("story/cut_story_hangout_pinkslip_downtown", &[(73, 43.3667)]),
+    ("story/cut_story_city_champ_night", &[(73, 38.0)]),
+    ("story/cut_story_district_champs_night", &[(72, 74.3333)]),
+    ("story/cut_story_find_sh_02c", &[(73, 105.0)]),
+    ("story/cut_story_race_sh_01", &[(73, 3.33333)]),
+    ("story/cut_story_hangout_series_downtown", &[(73, 41.1)]),
+    ("story/cut_story_motorcycle_rep", &[(72, 48.3333)]),
+    ("story/cut_story_bestof_sh_05", &[(73, 41.6667)]),
+    ("story/cut_story_district_champs", &[(72, 74.3333)]),
+    ("story/cut_story_find_sh_04", &[(72, 58.3333)]),
+    ("story/cut_story_rep_on_strip_garage", &[(73, 80.3333)]),
+    ("story/cut_story_races_in_beach", &[(72, 41.8333)]),
+    ("story/cut_story_hangout_pinkslip_hills", &[(72, 69.0)]),
+    ("story/cut_story_city_champ", &[(73, 38.0)]),
+    ("story/cut_story_hollywood_garage_intro", &[(73, 63.0)]),
+    ("story/cut_story_race_gh_06", &[(73, 57.6333), (74, 64.1667)]),
+    ("story/cut_story_beat_sh_02_exotic", &[(73, 35.2333)]),
+];
+
+/// An event's time as Events_LaunchEvent files it (sub_823C4FA8): countdown (58), bookmark_cut_to_game (72)
+/// and cut_to_game (74) at the camera clip's very end are moved 0.1 s earlier.
+fn mark_time(id: u8, t: f32, cam_len: f32) -> f32 {
+    if matches!(id, 58 | 72 | 74) && t >= (cam_len - 0.1).max(0.1) {
+        t - 0.1
+    } else {
+        t
+    }
+}
+
+/// Where a skip takes a story scene (the cine manager's skip request +305: sub_823BEEB0 -> sub_823BBB98):
+/// the earliest bookmark / bookmark_cut_to_game / countdown of the scene, if the clock is not past it yet
+/// (the clock jumps there and the scene plays on; with none, or past it, the skip does nothing).
+pub fn skip_to(scene: &str, t: f32, cam_len: f32) -> Option<f32> {
+    let marks = STORY_MARKS.iter().find(|m| m.0.eq_ignore_ascii_case(scene))?.1;
+    let at = marks.iter().filter(|m| matches!(m.0, 58 | 72 | 73)).map(|m| mark_time(m.0, m.1, cam_len)).fold(f32::INFINITY, f32::min);
+    (at.is_finite() && at > t).then_some(at)
+}
+
+/// When a story scene hands the picture to the game camera (bookmark_cut_to_game / cut_to_game: sub_823CC200,
+/// a hard cut); the scene's clock and cars run on to its end.
+pub fn cut_to_game(scene: &str, cam_len: f32) -> Option<f32> {
+    let marks = STORY_MARKS.iter().find(|m| m.0.eq_ignore_ascii_case(scene))?.1;
+    marks.iter().filter(|m| matches!(m.0, 72 | 74)).map(|m| mark_time(m.0, m.1, cam_len)).reduce(f32::min)
+}
+
 /// The car movers that stand for the player's own car.
 pub fn is_player_car(label: &str) -> bool {
     matches!(label, "drv00" | "player" | "player_drv00" | "playergarage" | "delivery")
@@ -373,7 +425,15 @@ impl Cine {
 
     /// Camera at the scene's time: (eye, forward, up, vertical field of view in radians).
     pub fn camera(&self) -> Option<(Vec3, Vec3, Vec3, f32)> {
+        if self.at_game_camera() {
+            return None;
+        }
         Self::scene_camera(self.playing.as_ref()?)
+    }
+
+    /// A story scene past its cut_to_game: the game camera shows the rest (`STORY_MARKS`).
+    pub fn at_game_camera(&self) -> bool {
+        self.playing.as_ref().map_or(false, |sc| cut_to_game(&sc.name, sc.duration).map_or(false, |c| sc.t >= c))
     }
 
     fn scene_camera(sc: &Scene) -> Option<(Vec3, Vec3, Vec3, f32)> {
@@ -497,5 +557,24 @@ impl Cine {
         if self.playing.is_some() || !self.ambient.is_empty() {
             self.buf.draw(pass, gpu, shadow, draws);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn story_skip_lands_on_the_bookmark() {
+        // (the recomp's skip measured on district champs: its clock jumped to 74.233 s - bookmark_cut_to_game
+        // 74.333 at the clip's end, filed 0.1 s earlier)
+        let to = skip_to("story/cut_story_district_champs", 0.036, 74.3333).unwrap();
+        assert!((to - 74.2333).abs() < 1e-3);
+        // RACE_GH_06: the bookmark 57.633, the cut to the game camera 64.167 (0.1 s earlier at a 64.2 s clip)
+        assert_eq!(skip_to("story/cut_story_race_gh_06", 10.0, 64.2), Some(57.6333));
+        assert_eq!(skip_to("story/cut_story_race_gh_06", 58.0, 64.2), None);
+        assert!((cut_to_game("story/cut_story_race_gh_06", 64.2).unwrap() - 64.0667).abs() < 1e-3);
+        // no marks: the skip does nothing
+        assert_eq!(skip_to("story/cut_story_motorcycle_rep_A", 1.0, 40.0), None);
     }
 }

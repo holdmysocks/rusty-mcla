@@ -485,6 +485,8 @@ pub struct Game {
     /// the menus' 3D scene: meshes of `resources/ui/meshes` and their textures
     pub ui_meshes: Option<crate::menu3d::Meshes>,
     /// the prompt bar movie (bottom of the screen in the garage)
+    /// a new career's opening: CarSelection's black (main.rs `opening_tick`)
+    pub intro_mask: f32,
     pub flash_prompt: Option<crate::flash_ui::FlashPrompt>,
     /// the phone (sidekick movie)
     pub flash_phone: Option<crate::flash_ui::FlashPhone>,
@@ -1209,6 +1211,7 @@ impl Game {
             finishes: Default::default(),
             paint_for: String::new(),
             mc4: None,
+            intro_mask: 0.0,
             mc4_raw: None,
             car_x: Default::default(),
             opt_x: Default::default(),
@@ -3744,8 +3747,14 @@ impl Game {
             return MenuAction::None;
         }
         if let Some(mut m) = self.movie.take() {
-            let skip = std::mem::take(&mut self.nav_enter);
-            if !skip && m.show(ctx) {
+            let enter = std::mem::take(&mut self.nav_enter);
+            // (the opening film: CarSelection's loop polls START, A and Y - IS_BUTTON_DOWN 11 / 6 / 4 - once
+            // TIMERA > 1 ms, and fades it out before it stops; B does nothing. The keyboard's Esc is START.)
+            let (y, start, esc) = (std::mem::take(&mut self.nav_y), std::mem::take(&mut self.nav_start), std::mem::take(&mut self.nav_back));
+            if !m.any_key && (enter || y || start || esc) {
+                m.skip();
+            }
+            if !(m.any_key && enter) && m.show(ctx) {
                 // subtitles of the opening movie
                 let screen = ctx.screen_rect();
                 let sc = (screen.height() / 900.0).clamp(0.5, 2.0);
@@ -3758,8 +3767,8 @@ impl Game {
                         self.text(&p, pos, egui::Align2::CENTER_CENTER, l, 15.0 * sc, egui::Color32::WHITE);
                     }
                 }
-                if m.time() < 4.0 {
-                    self.text(&p, egui::pos2(screen.right() - 30.0 * sc, screen.top() + 30.0 * sc), egui::Align2::RIGHT_CENTER, if m.any_key { "PRESS ANY KEY" } else { "ENTER  SKIP" }, 9.0 * sc, egui::Color32::from_gray(150));
+                if m.time() < 4.0 && m.any_key {
+                    self.text(&p, egui::pos2(screen.right() - 30.0 * sc, screen.top() + 30.0 * sc), egui::Align2::RIGHT_CENTER, "PRESS ANY KEY", 9.0 * sc, egui::Color32::from_gray(150));
                 }
                 self.movie = Some(m);
             } else {
@@ -8362,10 +8371,10 @@ impl Game {
             }
         }
         // a garage entry's black (TRANSITIONMOVIE, mask_color 0) over everything
-        if self.place_mask > 0.0 {
+        if self.place_mask.max(self.intro_mask) > 0.0 {
             let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("place_mask"));
             ctx.move_to_top(layer);
-            ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.place_mask.clamp(0.0, 1.0) * 255.0).round() as u8));
+            ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.place_mask.max(self.intro_mask).clamp(0.0, 1.0) * 255.0).round() as u8));
         }
         self.message_timer = (self.message_timer - ctx.input(|i| i.stable_dt)).max(0.0);
         action
@@ -11711,7 +11720,9 @@ impl Game {
             fp.movie.paint(ctx, &ctx.layer_painter(layer));
         }
         if enter {
-            self.starter_pick = None;
+            // (the screen and the car stay as they are while ACCEPT's fade to black runs - CarSelection waits
+            // for it, 0x13fd, before the two others go and the car is given: main.rs `opening_tick` lets
+            // `starter_pick` go when the black is up)
             // (the career's block is made now, while the game still knows it is a new one: the
             // slot system's new-game locks and the start-up's races - `mc4_slots_apply`,
             // `mc4_races_apply`)
