@@ -144,6 +144,12 @@ pub struct Sound {
     obj_loops: std::collections::HashMap<String, crate::sndobj::Handle>,
     /// loops asked for whose object the library does not have (said once)
     obj_loops_missing: std::collections::HashSet<String>,
+    /// the story scene's audio (sub_821F5AA0): its dialogue and effects sounds and its mixer scene
+    cut: Vec<crate::sndobj::Handle>,
+    /// set by the game: the player's car is the port's stand-in, hidden - a new career has no player vehicle until
+    /// CarSelection gives one (AddVehicleToPlayer), so it has no engine sound
+    pub no_player_car: bool,
+    cut_scene: Option<String>,
 }
 
 /// The ambience beds' streams: bed name -> stream file (relative to the audio root).
@@ -264,6 +270,32 @@ impl Sound {
                         // (a speech line's scene, sub_821F1038: strength = dB2lin(the SPEECH category's runtime volume))
                         let s = if name.starts_with("DYNAMIC_MIXER_SPEECH") || name == "DYNAMIC_MIXER_PRERACE_TAUNT" { lib.category("SPEECH").map_or(1.0, |c| mcla_formats::audcfg::db2lin(c.volume)) } else { 1.0 };
                         lib.scene_at(&name, on, s)
+                    }
+                    crate::audio::ObjCmd::Cutscene { name, on, sounds } => {
+                        // the scene's audio ends (sub_821F5C38): its sounds stop, its mixer scene stops with its exit
+                        for h in self.cut.drain(..) {
+                            lib.stop(h);
+                        }
+                        if let Some(sc) = self.cut_scene.take() {
+                            lib.scene(&sc, false);
+                        }
+                        // starts: the dialogue and effects non-positional at 0 dB, the mixer scene at strength 1.0
+                        // (0x82001D14) - `SoundLib::cutscene_parts`
+                        if let (true, Some((parts, scene))) = (on, lib.cutscene_parts(&name, wet)) {
+                            for h in parts.into_iter().filter(|_| sounds) {
+                                self.cut.extend(lib.play_hash(h, crate::sndobj::Req::default()));
+                            }
+                            if let Some(sc) = scene {
+                                lib.scene_at(&sc, true, 1.0);
+                                self.cut_scene = Some(sc);
+                            }
+                            log::info!("cutscene audio: CUTSCENES_{name} ({} sounds, scene {:?})", self.cut.len(), self.cut_scene);
+                        }
+                    }
+                    crate::audio::ObjCmd::CutsceneSeek { secs } => {
+                        for &h in &self.cut {
+                            lib.seek(h, secs * 1000.0);
+                        }
                     }
                     crate::audio::ObjCmd::Field { object, offset, pos, on } => {
                         let h = lib.game.get_name(&object).and_then(|o| o.get(offset..offset + 4)).map(|b| u32::from_be_bytes(b.try_into().unwrap()));
@@ -566,7 +598,12 @@ impl Sound {
         let throttle = if in_menu { 0.0 } else { p.input.throttle };
         let eng_vol = if in_menu { 0.28 } else { 0.62 };
         // the original's engine sound (engaudio.rs); the port's own cross-fade where the car's audio objects are missing
-        if let Some(lib) = &mut self.lib {
+        if self.no_player_car {
+            if let (Some(lib), Some((_, e))) = (&mut self.lib, &mut self.engine) {
+                e.stop(lib);
+            }
+            self.engine = None;
+        } else if let Some(lib) = &mut self.lib {
             if self.engine.as_ref().map_or(true, |(n, _)| *n != name) {
                 if let Some((_, e)) = &mut self.engine {
                     e.stop(lib);
@@ -595,7 +632,7 @@ impl Sound {
                 speed_ratio: 0.0,
             };
             eng.update(lib, &inp, dt);
-        } else {
+        } else if !self.no_player_car {
             // engine sits a little towards the centre of the mix whatever the camera does
             a.engine(0, &name, st.rpm, throttle, (eng_vol, eng_vol));
         }

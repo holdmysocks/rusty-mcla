@@ -106,6 +106,10 @@ mod startwarp;
 /// (0, 1.38, -0.25), fitted by eye)
 /// VEHICLE SELECT's music (CarSelection 0xedb: mcMusicManager_PlayCustomMusic('MUSIC_CARSELECT_MASTER'))
 const CARSELECT_MUSIC: &str = "MUSIC_CARSELECT_MASTER";
+/// INTRO FAST (DECISIONS.md D24): the film `intro720.bik` (68.47 s) ends with the arrival CUT_INTRO shows (10.3 s), the
+/// two ending together - the film's time of the scene's first frame (the close-up's cut: film 66.30 s, scene 8.1 s;
+/// CUTSCENES.md "The opening scenes' audio (session `cut-audio`, 2026-10-23)")
+const FILM_CUT_INTRO_AT: f32 = 58.2;
 const PAUSE_FRAME: Vec3 = Vec3::new(0.0, 1.42, 0.08);
 mod rivals;
 mod rubber;
@@ -315,6 +319,8 @@ struct App {
     cine: cine::Cine,
     /// a scene is waiting for its surroundings to load: (dialogue stream, frames waited)
     cine_hold: Option<(Option<String>, u32)>,
+    /// the story scene's audio was started through the sound objects (`start_scene_audio`)
+    cut_audio_objects: bool,
     /// the running scene keeps its own time (start-line cameras) instead of a story scene's
     cine_free: bool,
     /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
@@ -427,6 +433,8 @@ struct App {
     /// until the first story scene; 0 none (and `intro_t`, seconds in the step)
     intro_stage: u8,
     intro_t: f32,
+    /// MCLA_AUDIO_TRACE: seconds since the last line of the audio trace
+    audio_trace_t: f32,
     /// the opening's black (CarSelection's TRANSITIONMOVIE fades)
     intro_mask: boomcam::CutMask,
     /// the opening's `Graphics_WarpToTimeOfDay(17, 100)`: the hour aimed at, while the clock is moved there
@@ -817,6 +825,7 @@ impl App {
             cuts: Default::default(),
             cine: Default::default(),
             cine_hold: None,
+            cut_audio_objects: false,
             cine_free: false,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
@@ -875,6 +884,7 @@ impl App {
             intro_played: false,
             intro_stage: 0,
             intro_t: 0.0,
+            audio_trace_t: 0.0,
             intro_mask: Default::default(),
             intro_tod: None,
             starters_made: false,
@@ -2895,17 +2905,15 @@ impl App {
                         }
                     }
                     self.cine_hold = Some((stream, 0));
-                } else if let Some(a) = self.audio.as_mut() {
-                    a.play_stream(stream.as_deref(), 1.0);
+                } else {
+                    self.start_scene_audio(stream.as_deref());
                 }
             }
         }
         if let Some((stream, n)) = self.cine_hold.take() {
             // black until the place has streamed in, then the dialogue starts with the picture
             if (n >= 30 && world.streaming() == 0) || n > 400 {
-                if let Some(a) = self.audio.as_mut() {
-                    a.play_stream(stream.as_deref(), 1.0);
-                }
+                self.start_scene_audio(stream.as_deref());
             } else {
                 self.cine_hold = Some((stream, n + 1));
             }
@@ -2920,15 +2928,21 @@ impl App {
                 if let (Some(at), Some(p)) = (at, self.cuts.playing.as_mut()) {
                     log::info!("cutscene: skip from {:.2} s to the bookmark at {:.2} s", p.t, at);
                     p.t = at;
-                    // (approx.: the port's dialogue stream cannot be moved to the new time; it stops)
+                    // (the scene's streams go to the same time; the stand-in film sound of INTRO FAST stops)
                     if let Some(a) = self.audio.as_mut() {
+                        a.obj_cutscene_seek(at);
                         a.play_stream(None, 0.0);
                     }
                 }
             }
             let skip = self.game.mode != Mode::FreeRoam;
+            let name = self.cuts.playing.as_ref().map(|p| p.def.name.clone()).unwrap_or_default();
             if !self.cuts.update(dt, skip) {
+                // (the scene's audio ends with it, sub_821F5C38)
                 if let Some(a) = self.audio.as_mut() {
+                    if std::mem::take(&mut self.cut_audio_objects) {
+                        a.obj_cutscene(&name, false, false);
+                    }
                     a.play_stream(None, 0.0);
                 }
             }
@@ -6052,12 +6066,24 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             self.sound.speech_busy = self.speech.busy() || self.radio.busy();
+            self.sound.no_player_car = self.game.fresh_game || self.game.starter_pick.is_some();
             self.sound.damage_alpha = self.game.flash_hud.as_ref().and_then(|h| h.movie.player.get_global("damage_alpha")).map_or(0.0, |v| v.to_f32());
             self.sound.racer_found |= self.game.flash_hud.as_mut().is_some_and(|h| std::mem::take(&mut h.racer_found));
             self.sound.menu_cam = self.game.flash_menu.as_ref().filter(|_| self.game.in_menu()).and_then(|m| m.movie.player.get_global("cur_camera")).map(|v| v.to_f32() as i32);
             self.sound.update(a, &self.vehicles, &self.game, &self.police, &self.ability, &self.props.hits, self.cam.pos, right, rain_snd, horn, self.time_of_day > 19.5 || self.time_of_day < 6.0, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); l > 0.0 && world.collider.raycast(p, d / l, l).is_some() }, dt);
             if let Some(v) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_mut()) {
                 (v.hyd.ev_rise, v.hyd.ev_drop, v.hyd.ev_end, v.hyd.ev_switch) = (0, 0, 0, 0);
+            }
+            // (test hook: MCLA_AUDIO_TRACE=1 logs once a second what sounds: the stream, the radio, the sound objects
+            // and the mixer scenes, with the opening's step and the story scene)
+            if std::env::var("MCLA_AUDIO_TRACE").is_ok() {
+                self.audio_trace_t += dt;
+                if self.audio_trace_t >= 1.0 {
+                    self.audio_trace_t -= 1.0;
+                    let cut = self.cuts.playing.as_ref().map(|p| format!("{} {:.1} s", p.def.name, p.t));
+                    let lib = self.sound.lib.as_ref().map(|l| l.summary()).unwrap_or_default();
+                    log::info!("audio trace: frame {} stage {} movie {} cut {:?} hold {} radio_held {} | stream {:?} radio {} speech {} | {}", self.frame_no, self.intro_stage, self.game.movie.is_some(), cut, self.cine_hold.is_some(), self.game.radio_held, a.stream_playing(), a.music_playing(), self.speech.busy(), lib);
+                }
             }
             a.render(dt);
             // (the original's music lists, `mc4`: handed to the audio once; PLAY in the playlist
@@ -10112,6 +10138,32 @@ impl App {
         }
     }
 
+    /// A story scene's audio as its picture comes up (sub_821F5AA0): the sound objects' `CUTSCENES_<scene>`
+    /// (dialogue, effects stream, mixer scene) - or, without them, the converted dialogue stream. The speech and the
+    /// police radio stop (the object's flags 0x1 / 0x2: every story scene has both). INTRO FAST's CUT_INTRO in the
+    /// film's place (DECISIONS.md D24) plays the film's own sound from where the film shows the same picture: the
+    /// phone call of the arrival is in the film's sound track only (CUT_INTRO_MASTER has the bus, no voice).
+    fn start_scene_audio(&mut self, stream: Option<&str>) {
+        let Some((name, t)) = self.cuts.playing.as_ref().map(|p| (p.def.name.clone(), p.t)) else { return };
+        self.speech.stop();
+        self.radio.stop();
+        let Some(a) = self.audio.as_mut() else { return };
+        // (INTRO FAST's stand-in: the scene's mixer scene with the film's sound in place of the scene's own)
+        let film = name == "CUT_INTRO" && self.intro_stage == 2;
+        self.cut_audio_objects = a.obj_cutscene(&name, true, !film);
+        if film {
+            let path = std::path::Path::new(&self.opt.data_dir).join("../video_pc/intro.mp3");
+            log::info!("cutscene audio: CUT_INTRO in the film's place - the film's sound from {:.2} s", FILM_CUT_INTRO_AT + t);
+            a.play_stream_at(path.to_str(), 1.0, FILM_CUT_INTRO_AT + t);
+        } else if self.cut_audio_objects {
+            if t > 0.0 {
+                a.obj_cutscene_seek(t);
+            }
+        } else {
+            a.play_stream(stream, 1.0);
+        }
+    }
+
     fn start_movie(&mut self, name: &str, subs: Vec<(f32, f32, String)>, any_key: bool) -> bool {
         let dir = std::path::Path::new(&self.opt.data_dir).join("../video_pc");
         let Some(mut m) = video::Video::open(&dir, name) else { return false };
@@ -10120,7 +10172,7 @@ impl App {
         let at = std::env::var("MCLA_MOVIE_T").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
         self.speech.stop();
         if let Some(a) = self.audio.as_mut() {
-            a.play_stream(m.audio.to_str(), 1.0);
+            a.play_stream_at(m.audio.to_str(), 1.0, at);
         }
         m.restart(at);
         self.game.movie = Some(m);

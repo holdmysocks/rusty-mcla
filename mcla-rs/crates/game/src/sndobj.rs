@@ -147,6 +147,8 @@ struct Node {
 
 struct Instance {
     id: u64,
+    /// the sounds.dat object played (0: a converted wave)
+    hash: u32,
     root: Node,
     req: Req,
     prev_dist: Option<f32>,
@@ -808,7 +810,7 @@ impl SoundLib {
         let root = self.make(hash, 0)?;
         let id = self.next;
         self.next += 1;
-        self.insts.push(Instance { id, root, req, prev_dist: None, doppler: 1.0, stop: false });
+        self.insts.push(Instance { id, hash, root, req, prev_dist: None, doppler: 1.0, stop: false });
         Some(Handle(id))
     }
 
@@ -827,7 +829,7 @@ impl SoundLib {
         let root = Node { h, vol: 0.0, pitch: 0, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, release: None, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
         let id = self.next;
         self.next += 1;
-        self.insts.push(Instance { id, root, req, prev_dist: None, doppler: 1.0, stop: false });
+        self.insts.push(Instance { id, hash: 0, root, req, prev_dist: None, doppler: 1.0, stop: false });
         Some(Handle(id))
     }
 
@@ -845,12 +847,71 @@ impl SoundLib {
         }
     }
 
+    /// A story scene's audio (sub_821F5F98 prepares, sub_821F5AA0 plays): game.dat `CUTSCENES_<scene>` (type 21) - +11 the
+    /// dialogue (+15 instead while it is wet, audio manager +1044, unless NULL_SOUND), +19 the effects stream unless
+    /// NULL_SOUND, +23 the mixer scene. Flags +10: 0x1 the speech stops, 0x2 the police speech stops (`main.rs`), 0x4 the
+    /// garage district (not ported); +27 the music manager's bits (none set on a story scene). None: no such object.
+    pub fn cutscene_parts(&self, scene: &str, wet: bool) -> Option<(Vec<u32>, Option<String>)> {
+        let o = self.game.get_name(&format!("CUTSCENES_{scene}")).filter(|o| o.first() == Some(&21) && o.len() >= 27)?;
+        let u32at = |at: usize| u32::from_be_bytes(o[at..at + 4].try_into().unwrap());
+        let null = joaat("NULL_SOUND");
+        let dialogue = if wet && u32at(15) != null { u32at(15) } else { u32at(11) };
+        let parts = [dialogue, u32at(19)].into_iter().filter(|&h| h != 0 && h != null).collect();
+        let mixer = self.game.name_of(u32at(23)).filter(|_| self.game.get(u32at(23)).and_then(|g| g.first()) == Some(&23)).map(|n| n.to_string());
+        Some((parts, mixer))
+    }
+
+    /// Move a playing sound's streams to `ms` from their start (a story scene's skip to its bookmark): each stream
+    /// takes a new voice there and its old voice fades as one no longer driven.
+    pub fn seek(&mut self, h: Handle, ms: f32) {
+        fn walk(n: &mut Node, ms: f32, ids: &mut dyn FnMut() -> u64) {
+            match &mut n.kind {
+                Kind::Stream { pos_ms, voice, dur_ms, .. } => {
+                    *pos_ms = ms.min(*dur_ms);
+                    *voice = ids();
+                }
+                Kind::Group { children } => children.iter_mut().for_each(|c| walk(c, ms, ids)),
+                Kind::Looping { child, .. } | Kind::Envelope { child, .. } | Kind::OnStop { child, .. } => walk(child, ms, ids),
+                Kind::Sequential { cur: Some(c), .. } => walk(c, ms, ids),
+                _ => {}
+            }
+        }
+        let mut next = self.next_voice;
+        if let Some(i) = self.insts.iter_mut().find(|i| i.id == h.0) {
+            walk(&mut i.root, ms, &mut || {
+                next += 1;
+                VOICE_BASE + next
+            });
+        }
+        self.next_voice = next;
+    }
+
     pub fn playing(&self, h: Handle) -> bool {
         self.insts.iter().any(|i| i.id == h.0)
     }
 
     pub fn count(&self) -> usize {
         self.insts.len()
+    }
+
+    /// Diagnostics: the playing sounds by object name (with a count where one plays more than once) and the scenes
+    /// that are on with their fade level.
+    pub fn summary(&self) -> String {
+        let mut names: Vec<String> = self.insts.iter().map(|i| self.snd.name_of(i.hash).map(|n| n.to_string()).unwrap_or_else(|| if i.hash == 0 { "clip".into() } else { format!("{:08x}", i.hash) })).collect();
+        names.sort();
+        let mut out: Vec<String> = Vec::new();
+        for n in names {
+            match out.last_mut() {
+                Some(l) if l.split(" x").next() == Some(n.as_str()) => {
+                    let k = l.split(" x").nth(1).and_then(|v| v.parse::<u32>().ok()).unwrap_or(1) + 1;
+                    *l = format!("{n} x{k}");
+                }
+                _ => out.push(n),
+            }
+        }
+        let mut sc: Vec<String> = self.scenes.iter().filter(|(_, s)| s.on || s.level > 0.0).map(|(h, s)| format!("{}@{:.2}", self.game.name_of(*h).unwrap_or("?"), s.level)).collect();
+        sc.sort();
+        format!("sounds [{}] scenes [{}]", out.join(", "), sc.join(", "))
     }
 
     /// Advance every sound by `dt` and drive the mixer's voices.
@@ -1246,7 +1307,7 @@ fn reset_node(n: &mut Node) {
 }
 
 /// A converted stream (stereo MP3) decoded whole.
-fn decode_mp3(p: &Path) -> Option<Clip> {
+pub(crate) fn decode_mp3(p: &Path) -> Option<Clip> {
     use rodio::Source;
     let f = std::fs::File::open(p).ok()?;
     let dec = rodio::Decoder::new(std::io::BufReader::new(f)).ok()?;
@@ -1305,6 +1366,31 @@ mod tests {
         assert_eq!(p(&lib, "SFX_HARD") - hard, (1200.0 * 0.5f32.log2()) as i32);
         lib.step_scenes(1.0);
         assert_eq!(p(&lib, "SFX_HARD"), hard);
+    }
+
+    /// A story scene's audio (sub_821F5F98): the new career's two scenes - CUT_INTRO has its stream and no effects,
+    /// GH_06 its dialogue and its effects stream; GH_06's mixer scene takes the cars out (-100 dB) and ambient traffic
+    /// down 8 dB.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn story_scene_audio() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let (p, s) = lib.cutscene_parts("CUT_INTRO", false).unwrap();
+        assert_eq!(p, vec![joaat("CUT_INTRO_MASTER")]);
+        assert_eq!(s.as_deref(), Some("DYNAMIC_MIXER_CUTSCENE_INTRO"));
+        let (p, s) = lib.cutscene_parts("CUT_STORY_RACE_GH_06", true).unwrap();
+        assert_eq!(p, vec![joaat("CUT_STORY_RACE_GH_06_MASTER"), joaat("SFX_CUT_STORY_RACE_GH_06_MASTER")]);
+        let s = s.unwrap();
+        assert_eq!(s, "DYNAMIC_MIXER_CUTSCENE_CUT_STORY_RACE_GH_06");
+        let v = |lib: &SoundLib, n: &str| lib.category(n).unwrap().volume;
+        let (pv, av) = (v(&lib, "PLAYER_VEHICLES"), v(&lib, "AMBIENT_VEHICLES"));
+        lib.scene(&s, true);
+        lib.step_scenes(10.0);
+        assert!(v(&lib, "PLAYER_VEHICLES") - pv < -99.0);
+        assert!((v(&lib, "AMBIENT_VEHICLES") - av + 8.0).abs() < 0.01);
+        assert!(lib.cutscene_parts("CUT_STORY_NO_SUCH", false).is_none());
     }
 
     /// VOLUME_RULE.md: slider 5 = -6.02 dB on its category and its children; the camera table's engine +3 dB in the

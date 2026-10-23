@@ -140,6 +140,8 @@ struct MixSource {
 }
 
 const BLOCK: usize = 256;
+/// the offline capture's stream voice ([`Audio::play_stream`])
+const STREAM_VOICE: u64 = u64::MAX - 1;
 
 impl MixSource {
     fn refill(&mut self) {
@@ -248,6 +250,8 @@ pub struct Audio {
     music: Option<Sink>,
     /// one-shot dialogue stream (story scenes)
     voice: Option<Sink>,
+    /// what `voice` plays (diagnostics)
+    stream_name: Option<String>,
     music_files: Vec<PathBuf>,
     music_next: usize,
     pub music_on: bool,
@@ -291,6 +295,11 @@ pub enum ObjCmd {
     Field { object: String, offset: usize, pos: Option<Vec3>, on: bool },
     /// a persistent sound by name, kept while it is asked for every frame (stopped in the first frame it is not)
     Loop { name: String },
+    /// a story scene's audio (game.dat `CUTSCENES_<name>`: its dialogue and effects streams and its mixer scene)
+    /// started (`sounds` false: its mixer scene only), or (`on` false) the scene's audio ended
+    Cutscene { name: String, on: bool, sounds: bool },
+    /// the story scene's streams moved to `secs` from their start (the skip to the scene's bookmark)
+    CutsceneSeek { secs: f32 },
 }
 
 /// Gains for a sound at `pos`: inverse-distance roll-off with a reference distance,
@@ -364,6 +373,7 @@ impl Audio {
             track_changed: false,
             bed: None,
             voice: None,
+            stream_name: None,
             ear: Vec3::ZERO,
             ear_right: Vec3::X,
             rng: seed,
@@ -444,6 +454,18 @@ impl Audio {
             self.obj_cmds.push(ObjCmd::Field { object: object.to_string(), offset, pos, on });
         }
         self.objects
+    }
+    /// A story scene's audio by the scene's name ("CUT_STORY_RACE_GH_06"); false when the sound objects are not loaded.
+    pub fn obj_cutscene(&mut self, name: &str, on: bool, sounds: bool) -> bool {
+        if self.objects {
+            self.obj_cmds.push(ObjCmd::Cutscene { name: name.to_string(), on, sounds });
+        }
+        self.objects
+    }
+    pub fn obj_cutscene_seek(&mut self, secs: f32) {
+        if self.objects {
+            self.obj_cmds.push(ObjCmd::CutsceneSeek { secs });
+        }
     }
     pub fn obj_scene(&mut self, name: &str, on: bool) {
         if self.objects {
@@ -543,6 +565,28 @@ impl Audio {
         Some(format!("{}/{}", bank, m[k]))
     }
 
+    /// A voice that is not one of the 96 game voices (the offline stream).
+    fn push_any(&mut self, v: Voice) {
+        if let Ok(mut m) = self.mixer.lock() {
+            m.voices.push(v);
+        }
+    }
+
+    /// The stream [`Audio::play_stream`] last started, if it still plays (diagnostics).
+    pub fn stream_playing(&self) -> Option<&str> {
+        let on = match (&self.voice, self.offline.is_some()) {
+            (Some(s), _) => !s.empty(),
+            (None, true) => self.mixer.lock().is_ok_and(|m| m.voices.iter().any(|v| v.id == STREAM_VOICE)),
+            _ => false,
+        };
+        self.stream_name.as_deref().filter(|_| on)
+    }
+
+    /// The radio's song, if it plays (diagnostics).
+    pub fn music_playing(&self) -> bool {
+        self.music.as_ref().is_some_and(|s| !s.is_paused() && !s.empty())
+    }
+
     fn push(&mut self, v: Voice) {
         if let Ok(mut m) = self.mixer.lock() {
             if m.voices.len() < 96 {
@@ -621,7 +665,7 @@ impl Audio {
     /// Fade out every loop the game did not touch this frame.
     pub fn end_frame(&mut self) {
         if let Ok(mut m) = self.mixer.lock() {
-            for v in m.voices.iter_mut().filter(|v| v.id != 0) {
+            for v in m.voices.iter_mut().filter(|v| v.id != 0 && v.id != STREAM_VOICE) {
                 if !v.fresh {
                     v.tl = 0.0;
                     v.tr = 0.0;
@@ -741,17 +785,34 @@ impl Audio {
         }
     }
 
-    /// Play a stereo stream once (story scene dialogue); `None` stops it.
+    /// Play a stereo stream once (a film's sound, story scene dialogue without the sound objects); `None` stops it.
     pub fn play_stream(&mut self, rel: Option<&str>, volume: f32) {
+        self.play_stream_at(rel, volume, 0.0);
+    }
+
+    /// The same from `at` seconds into the stream.
+    pub fn play_stream_at(&mut self, rel: Option<&str>, volume: f32, at: f32) {
         if let Some(s) = self.voice.take() {
             s.stop();
+        }
+        self.stream_name = rel.map(|r| r.to_string());
+        // (offline: a mixer voice, so the capture holds it)
+        if self.offline.is_some() {
+            if let Ok(mut m) = self.mixer.lock() {
+                m.voices.retain(|v| v.id != STREAM_VOICE);
+            }
+            if let Some(c) = rel.and_then(|r| crate::sndobj::decode_mp3(&self.root.join(r))) {
+                let pos = (at.max(0.0) * c.rate as f32) as f64;
+                self.push_any(Voice { id: STREAM_VOICE, clip: Arc::new(c), pos, speed: 1.0, gl: volume, gr: volume, tl: volume, tr: volume, looping: false, fresh: true });
+            }
+            return;
         }
         let (Some(handle), Some(rel)) = (self.handle.as_ref(), rel) else { return };
         let Ok(f) = std::fs::File::open(self.root.join(rel)) else { return };
         let Ok(dec) = rodio::Decoder::new(std::io::BufReader::new(f)) else { return };
         if let Ok(s) = Sink::try_new(handle) {
             s.set_volume(volume);
-            s.append(dec);
+            s.append(dec.skip_duration(Duration::from_secs_f32(at.max(0.0))));
             s.play();
             self.voice = Some(s);
         }
