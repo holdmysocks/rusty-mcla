@@ -5564,6 +5564,22 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             pm = Vec3::ZERO;
             lm = Vec3::ZERO;
         }
+        // (the head-on rule, sub_82333CE8: mcCarInstance slot 25 runs it in the velocity apply's callbacks
+        // (0x82590DB0), after each run's mcCarDamage call and before the integrate takes +368 / +384 (gjk_exact.md
+        // 29) - its angular impulse is this tick's; its damage, melt and wipeout go in at the damage calls below)
+        let head_hits = {
+            let own = |dv: Vec3| super::headon::Own { dv, speed: speed_in, vel: solve_body.as_ref().map_or(v_in, |b| b.vel), body_pos: solve_body.as_ref().map_or(at1, |b| b.at), back: rows1[2], wipeout_threshold: t.damage.wipeout_threshold, max_damage: t.damage.max_damage, spin_mult: t.s.head_on_spin_mult, no_damage: false, agro: st.agro };
+            if let Some((body, contacts, _)) = solved_contacts.as_ref() {
+                super::headon::hull_run(contacts, reordered.as_deref(), body.inv_mass, own)
+            } else if let Some((body, _, out)) = loose_island.as_ref() {
+                super::headon::island_runs(out, &vs.loose.objs, body.inv_mass, own)
+            } else {
+                Vec::new()
+            }
+        };
+        for h in &head_hits {
+            turning += h.spin;
+        }
         if !frozen || impulse != Vec3::ZERO || turning != Vec3::ZERO {
             let (f, tq) = if frozen { (Vec3::ZERO, Vec3::ZERO) } else { (force, torque) };
             (pm, lm) = ex::integrate_with(pm, lm, f, tq, impulse, turning, &damping, &rows1, inertia, mass, dt);
@@ -5787,6 +5803,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     eprintln!("SCRAPE t{} dv {:.5} |v1| {:.5} |rel| {:.4} c {:.4} n {:.4?} amount {:.6}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), hit_dv.length(), v_pt.length(), v_c.length(), v_c.dot(n) / v_c.length().max(1e-9), n, scrape.amount());
                 }
                 st.world_hit(p, hit_dv.length(), at, local, Some(scrape));
+                // (then the head-on rule's effects on the same run, 0x82567818 -> sub_82333CE8)
+                if let Some(h) = head_hits.first() {
+                    super::headon::apply(st, p, h, &mut vs.melt, &mut vs.cg, t.s.model_offset_y);
+                }
             }
             // (the island's calls, the A run's first: in a recorded tick with both, mcCarDamage +56 - the last
             // call's - is the sum of the pieces the car is B against, exactly - sa.0 k230..k292)
@@ -5802,7 +5822,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 vs.stuck_at = body_rows[3];
                 vs.stuck_timer = 0.0;
             }
-            for r in loose_runs.iter().filter(|r| r.any && !dbg_flag("MCLA_DBG_NOWORLDHIT")) {
+            for (r, h) in loose_runs.iter().zip(head_hits.iter()).filter(|(r, _)| r.any && !dbg_flag("MCLA_DBG_NOWORLDHIT")) {
                 let at = if st.up().y < f32::from_bits(0x3dcc_cccd) { r.last } else { r.first };
                 let d = at - moved_origin;
                 let local = Vec3::new(d.dot(moved_rows[0]), d.dot(moved_rows[1]), d.dot(moved_rows[2]));
@@ -5819,6 +5839,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     eprintln!("LOOSESCRAPE t{} dv {:.5} v1 {:.4?} v2 {:.4?} rel {:.4?} n {:.4?} amount {:.6}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), dv, v_pt, r.v2, scrape.rel, n, scrape.amount());
                 }
                 st.damage_call(p, dv, r.mult, at, local, Some(scrape));
+                super::headon::apply(st, p, h, &mut vs.melt, &mut vs.cg, t.s.model_offset_y);
             }
             // (0x8259E920: the matrix the next tick's collision takes for the last one)
             let end = [rows1[0], rows1[1], rows1[2], origin1];

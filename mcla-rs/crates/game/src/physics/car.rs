@@ -272,6 +272,11 @@ pub struct CarState {
     /// the last hit that counted (sub_82342B70): the one that destroys a car tells whether it
     /// explodes (over ExplodeThreshold)
     pub last_hit: f32,
+    /// the head-on rule (physics::headon, sub_82333CE8) wiped the car out in a step since the game
+    /// last took it: main.rs makes it the wipeout and the slow motion
+    pub head_on: bool,
+    /// the player's Agro is running (ability +52 == 1, +48 == 3): no head-on wipeout (main.rs sets it)
+    pub agro: bool,
     /// a hit above the wipeout threshold this frame, in thresholds (cleared by whoever acts on it)
     pub wipeout: f32,
     /// wiped out: 1 at the hit, running down to 0 over the tuning's WipeoutDelay (the centre
@@ -366,7 +371,7 @@ impl CarState {
             burnout: 0.0,
             launch: 0.0,
             damage: 0.0,
-            last_impact: 0.0, shake_dv: 0.0, last_hit: 0.0, wipeout: 0.0, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
+            last_impact: 0.0, shake_dv: 0.0, last_hit: 0.0, head_on: false, agro: false, wipeout: 0.0, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
             engine_factor: 1.0,
             veh: None,
             touches: Vec::new(),
@@ -451,6 +456,19 @@ impl CarState {
         if hit > wipeout && wipeout > 0.0 && self.damage < 1.0 {
             self.wipeout = self.wipeout.max(hit / wipeout);
         }
+    }
+
+    /// Damage added outright (sub_82343178, the head-on's): `hit` points on top, at MaxDamage
+    /// only when it is over FatalBlow, else one point short.
+    pub fn add_damage(&mut self, p: &CarParams, hit: f32) {
+        let [max, _med, _impact, fatal, _wipeout] = p.dmg;
+        let max = max.max(1.0);
+        self.last_hit = hit;
+        let mut points = self.damage * max + hit;
+        if points >= max {
+            points = if hit > fatal { max } else { max - 1.0 };
+        }
+        self.damage = (points / max).min(1.0);
     }
 
     /// The mean of the zones (each at most 1).

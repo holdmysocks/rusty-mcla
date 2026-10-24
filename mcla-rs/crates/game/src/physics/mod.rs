@@ -5,6 +5,7 @@ pub mod collision;
 pub mod drivetrain;
 pub mod exact;
 pub mod gjk;
+pub mod headon;
 pub mod hull;
 pub mod loose;
 pub mod pad;

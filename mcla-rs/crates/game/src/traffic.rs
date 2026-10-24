@@ -2322,16 +2322,28 @@ impl Vehicles {
                     if let Some(k) = pick {
                         *last = self.clock;
                         let (tp, tr, tv) = (self.cars[k].state.pos, self.cars[k].state.rot, if parked { 0.0 } else if semi { self.cars[k].state.vel.length() } else { self.cars[k].rail.as_ref().unwrap().v });
-                        // (a parked car: from its right side)
-                        let f = if parked { tr * Vec3::NEG_X } else { tr * Vec3::NEG_Z };
+                        // (a parked car: from its right side; MCLA_TRAFFIC_RAM_FROM=side / front: a riding car from its
+                        // right side or head on, MCLA_TRAFFIC_RAM_DV: the speed over it, 12 m/s if not given)
+                        let from = std::env::var("MCLA_TRAFFIC_RAM_FROM").unwrap_or_default();
+                        let dv = std::env::var("MCLA_TRAFFIC_RAM_DV").ok().and_then(|x| x.parse::<f32>().ok()).unwrap_or(12.0);
+                        let f = if parked || from == "side" { tr * Vec3::NEG_X } else if from == "front" { tr * Vec3::Z } else { tr * Vec3::NEG_Z };
+                        let tv = if from == "side" { 0.0 } else if from == "front" { -tv } else { tv };
                         let p = &mut self.cars[pi];
                         // (as a reset puts a car: a fresh state, placed on the ground by the step)
                         p.state = crate::physics::CarState::new(tp - f * if semi { 13.0 } else { 9.0 }, (-f.x).atan2(-f.z));
                         p.placed = false;
-                        p.state.vel = f * (tv + 12.0);
+                        p.state.vel = f * (tv + dv);
                         p.pose_history.reset();
                         log::info!("traffic ram {} {} at {:?}", self.cars[k].rail.as_ref().map_or(self.cars[k].uid, |r| r.rng_id()), self.cars[k].model.name, tp);
                     }
+                }
+            }
+        }
+        // (test hook MCLA_TRAFFIC_RAM: each frame an active riding car rises faster than 1 m/s or tips past 25 degrees)
+        if std::env::var_os("MCLA_TRAFFIC_RAM").is_some() {
+            for c in self.cars.iter().filter(|c| c.rail.as_ref().is_some_and(|r| r.active)) {
+                if c.state.vel.y > 1.0 || c.state.up().y < 0.906 {
+                    log::info!("traffic fly {} {} t {:.3} at {:?} v {:?} w {:?} up {:.3}", c.model.name, c.uid, self.clock, c.state.pos, c.state.vel, c.state.ang_vel, c.state.up().y);
                 }
             }
         }

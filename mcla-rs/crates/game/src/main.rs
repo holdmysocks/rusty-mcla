@@ -476,7 +476,6 @@ struct App {
     crash_bits: u8,
     crash_timer: f32,
     crash_exploding: bool,
-    crash_prev: (f32, Vec3),
     /// the wipeout camera (mcPlayerCamera +72)
     crash_cam: boomcam::CrashCam,
     /// standing still: seconds so far, the car's "Idle" view once looked up, how far it is blended in
@@ -918,7 +917,6 @@ impl App {
             crash_bits: 0,
             crash_timer: 0.0,
             crash_exploding: false,
-            crash_prev: (0.0, Vec3::ZERO),
             crash_cam: Default::default(),
             idle_time: 0.0,
             view_mode: 0,
@@ -2485,6 +2483,9 @@ impl App {
             }
         }
         self.vehicles.agro = self.ability.agro();
+        if let Some(c) = self.vehicles.cars.iter_mut().find(|c| c.is_player) {
+            c.state.agro = self.ability.agro();
+        }
         self.vehicles.draft = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(0.0, |v| v.sst.strength);
         // mcCarSSTurbo::Fire 0x82345E40: the player's car (0x82331D28, its player's +48) counts "gSST" and "nSST", 1 each
         let fires = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(0, |v| v.sst.fires);
@@ -2600,8 +2601,6 @@ impl App {
                     let dm = c.model.simtunes.as_ref().map(|s| s.base.damage.clone()).unwrap_or_default();
                     let speed = c.state.speed();
                     let up_y = (c.state.rot * Vec3::Y).y;
-                    let (was_speed, was_vel) = self.crash_prev;
-                    self.crash_prev = (speed, c.state.vel);
                     if let Ok(v) = std::env::var("MCLA_CRASH_TEST") {
                         // (test hook "secs,w|d|x": at that time a wipeout blow, a fatal blow, or an
                         // exploding one)
@@ -2624,15 +2623,10 @@ impl App {
                     }
                     let big = std::mem::take(&mut c.state.wipeout);
                     if self.crash_bits == 0 {
-                        // a head-on into something fixed or a car above 22.35 m/s (sub_82333CE8): the
-                        // step's contact dv at least WipeoutThreshold, the contact within 25 degrees
-                        // of the car's back axis - 0.1 of MaxDamage, a wipeout and the slow motion.
-                        // (approx.: the direction of the velocity's change stands for the contact's
-                        // normal; one test for both partners)
-                        let dv = c.state.shake_dv;
-                        let dvec = c.state.vel - was_vel;
-                        let back = c.state.rot * Vec3::Z;
-                        let head_on = dm.wipeout_threshold > 0.0 && dv >= dm.wipeout_threshold && was_speed > 22.35 && dvec.normalize_or_zero().dot(back) > 25f32.to_radians().cos();
+                        // a head-on into the nose of a traffic car or into something fixed above
+                        // 22.35 m/s (sub_82333CE8, physics::headon, which added its damage): a wipeout
+                        // and the slow motion
+                        let head_on = std::mem::take(&mut c.state.head_on);
                         // rolled onto its side or roof on the ground (mcCar::Update 0x82336814): 0.2 of
                         // MaxDamage and a wipeout
                         let rolled = up_y <= 0.1 && c.state.airborne_time <= 0.0 && c.state.damage < 0.999;
@@ -2654,9 +2648,10 @@ impl App {
                             self.game.show_message(&m);
                             let p = c.state.pos;
                             self.fx.sparks(p + Vec3::Y * 0.6, Vec3::Y, 60);
-                        } else if head_on || rolled || big > 1.8 {
-                            // a wipeout (sub_823429B0): its timer WipeoutDelay. (the hit's: one blow of
-                            // more than 1.8 times the WipeoutThreshold - the player's allowance)
+                        } else if head_on || rolled || (c.model.bike && big > 1.8) {
+                            // a wipeout (sub_823429B0): its timer WipeoutDelay. (the hit's: a bike's
+                            // blow of more than 1.8 times the WipeoutThreshold, sub_82332098 - a car
+                            // wipes out on a hit only through the head-on rule)
                             self.crash_bits = 0x10;
                             self.crash_timer = dm.wipeout_delay;
                             c.stunned = c.stunned.max(1.2);
