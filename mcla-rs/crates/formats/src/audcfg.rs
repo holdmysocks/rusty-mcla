@@ -448,6 +448,15 @@ enum CurveParams {
     None,
 }
 
+/// The PowerPC `fsel`: `a` when `c >= 0`, else `b` (a NaN `c` picks `b`).
+pub fn fsel(c: f32, a: f32, b: f32) -> f32 {
+    if c >= 0.0 {
+        a
+    } else {
+        b
+    }
+}
+
 impl Curve {
     pub fn parse(o: &[u8]) -> Curve {
         let kind = o.first().copied().unwrap_or(0);
@@ -488,7 +497,8 @@ impl Curve {
             }
             return last.1;
         }
-        let x = if self.flags & 3 == 1 { x.clamp(self.min, self.max) } else { x };
+        // (sub_82164DB8 @82164E04: fsel against the range's min, then its max - a NaN input becomes the min)
+        let x = if self.flags & 3 == 1 { fsel(fsel(x - self.min, x, self.min) - self.max, self.max, fsel(x - self.min, x, self.min)) } else { x };
         match &self.params {
             CurveParams::Const(c) => *c,
             CurveParams::Points(p) => {
@@ -509,7 +519,10 @@ impl Curve {
                 }
             }
             CurveParams::Sine { flip_in, flip_out } => {
-                let xi = if *flip_in { 1.0 - x } else { x }.clamp(0.0, 1.0);
+                // (sub_821642A0: fsel to 0, then to 1 - a NaN input becomes 0)
+                let xi = if *flip_in { 1.0 - x } else { x };
+                let xi = fsel(xi, xi, 0.0);
+                let xi = fsel(xi - 1.0, 1.0, xi);
                 let y = (xi * std::f32::consts::FRAC_PI_2).sin();
                 if *flip_out {
                     1.0 - y

@@ -9,6 +9,7 @@
 
 use crate::sndobj::{Handle, Req, SoundLib};
 use glam::Vec3;
+use mcla_formats::audcfg::fsel;
 use mcla_formats::hash::joaat;
 
 fn be_u32(o: &[u8], at: usize) -> u32 {
@@ -436,10 +437,13 @@ impl Ambience {
         for (d2, k) in cands {
             let l = d.locs[k];
             let dist = d2.sqrt();
-            let span = (l.outer - l.inner).max(1e-3);
-            let t = (dist.clamp(l.inner, l.outer) - l.inner) / span;
+            // (sub_821E9390 @821E9588: dist raised to the inner radius, then lowered to the outer one, both by fsel, over
+            // outer - inner with no guard - an emitter with equal radii (342 of 409) gives 0 / 0 = NaN, which the
+            // LANDMARK curve turns into 0, so it plays at -100 dB; one with the inner radius above the outer gives 1)
+            let t = landmark_t(dist, l.inner, l.outer);
             let b = lib.curve_eval(self.landmark_curve, t).unwrap_or(1.0 - t);
-            let vol = 20.0 * b.max(1e-5).log10();
+            // (@821E9644: 20 x 0.301 x log2(b) when b >= 1e-5, else -100 dB - the constants at 0x820188E0)
+            let vol = fsel(b - 1e-5, 20.0 * (b.log2() * 0.301), -100.0);
             let req = Req { pos: Some(l.pos), volume: vol, ..Default::default() };
             match self.slots.iter().find(|s| s.key == (di, k)) {
                 Some(s) => {
@@ -482,9 +486,27 @@ impl Ambience {
     }
 }
 
+/// The location emitter's position between its radii (sub_821E9390 @821E9588..821E95B0), as the original computes it.
+fn landmark_t(dist: f32, inner: f32, outer: f32) -> f32 {
+    let x = fsel(dist - inner, dist, inner);
+    let x = fsel(x - outer, outer, x);
+    (x - inner) / (outer - inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The data's odd radii never panic: equal radii give NaN (silent through the LANDMARK curve), an inner radius
+    /// above the outer gives 1 (DISTRICT_BUSINESS_OLD 4: 50 / 49.94).
+    #[test]
+    fn landmark_radii() {
+        assert!((landmark_t(30.0, 10.0, 50.0) - 0.5).abs() < 1e-6);
+        assert_eq!(landmark_t(5.0, 10.0, 50.0), 0.0);
+        assert!(landmark_t(20.0, 50.0, 50.0).is_nan());
+        assert_eq!(landmark_t(40.0, 50.0, 49.94), 1.0);
+        assert_eq!(landmark_t(20.0, 50.0, 25.0), 1.0);
+    }
 
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
@@ -509,5 +531,19 @@ mod tests {
         }
         let sm = amb.districts.iter().find(|d| d.name == "DISTRICT_SANTA_MONICA").unwrap();
         assert_eq!(sm.line.len(), 7);
+        // every location's t is a number or the equal-radii NaN, and the LANDMARK curve maps NaN to 0 (silent), t 0 to 1
+        let bo = amb.districts.iter().find(|d| d.name == "DISTRICT_BUSINESS_OLD").unwrap();
+        assert!(bo.locs[4].inner > bo.locs[4].outer);
+        for d in &amb.districts {
+            for l in &d.locs {
+                for dist in [0.0, l.inner * 0.5, l.outer] {
+                    let t = landmark_t(dist, l.inner, l.outer);
+                    assert!(t.is_nan() == (l.inner == l.outer), "{} {:?} {t}", d.name, (l.inner, l.outer));
+                }
+            }
+        }
+        let c = amb.landmark_curve;
+        assert_eq!(lib.curve_eval(c, f32::NAN), Some(0.0));
+        assert!((lib.curve_eval(c, 0.0).unwrap() - 1.0).abs() < 1e-6);
     }
 }
