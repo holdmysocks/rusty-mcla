@@ -165,8 +165,9 @@ pub struct Post {
     lum: [Target; 4],
     /// the adapted luminance of the frame before and of this one (they swap)
     adapted: [Target; 2],
-    flip: std::cell::Cell<usize>,
-    first: std::cell::Cell<bool>,
+    // (atomics: the frame's recording borrows the Gpu from several threads - docs/PERFORMANCE.md 2026-10-23 (4))
+    flip: std::sync::atomic::AtomicUsize,
+    first: std::sync::atomic::AtomicBool,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pipe_scale: wgpu::RenderPipeline,
@@ -384,8 +385,8 @@ impl Post {
             pipe_dof,
             lum: [lum(128, "lum 128"), lum(64, "lum 64"), lum(16, "lum 16"), lum(4, "lum 4")],
             adapted: [lum(1, "adapted a"), lum(1, "adapted b")],
-            flip: std::cell::Cell::new(0),
-            first: std::cell::Cell::new(true),
+            flip: std::sync::atomic::AtomicUsize::new(0),
+            first: std::sync::atomic::AtomicBool::new(true),
             pipe_scale: make("fs_scale", SCENE_FORMAT),
             pipe_lum_log: make("fs_lum_log", LUM_FORMAT),
             pipe_lum_down: make("fs_lum_down", LUM_FORMAT),
@@ -554,9 +555,9 @@ impl Post {
     /// Run the chain and write the result to `out`. `depth`: the scene's depth buffer (the depth of
     /// field's distance).
     pub fn run(&self, device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, out: &wgpu::TextureView, depth: &wgpu::TextureView, stencil: &wgpu::TextureView, t: &Tune) {
-        let now = self.flip.get();
-        self.flip.set(1 - now);
-        let first = self.first.replace(false);
+        let now = self.flip.load(std::sync::atomic::Ordering::Relaxed);
+        self.flip.store(1 - now, std::sync::atomic::Ordering::Relaxed);
+        let first = self.first.swap(false, std::sync::atomic::Ordering::Relaxed);
         let aspect = self.scene.w as f32 / self.scene.h as f32;
         let texel = |t: &Target| [1.0 / t.w as f32, 1.0 / t.h as f32, 0.0, 0.0];
         // The depth of field (PSStreakMotionBlur + PSToneMap instr. 6 - 9, LIGHTING_WORK.md): not under

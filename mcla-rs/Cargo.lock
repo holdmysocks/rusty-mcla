@@ -1647,6 +1647,7 @@ dependencies = [
  "hashbrown 0.15.5",
  "log",
  "mcla-formats",
+ "rayon",
 ]
 
 [[package]]

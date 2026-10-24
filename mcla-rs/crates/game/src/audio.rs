@@ -24,19 +24,48 @@ pub struct Clip {
     pub channels: usize,
     /// the frame a looping wave returns to (the wave info's loop start; 0 for the old loops)
     pub loop_start: usize,
+    /// a stream decoded while it plays (`sndobj::decode_mp3`): its samples, filled in by a thread; `data` is empty
+    pub stream: Option<Arc<Progressive>>,
+}
+
+/// The samples of a stream being decoded on a thread of its own: the length is known before (the converted
+/// stream's `.mp3.txt`), the samples arrive in order, about 2000 times faster than they play
+/// (docs/PERFORMANCE.md, 2026-10-23: a whole stream decoded at once stopped the game for 100 - 700 ms).
+pub struct Progressive {
+    /// f32 bits, interleaved like `Clip::data`; 0 until decoded
+    pub samples: Box<[std::sync::atomic::AtomicU32]>,
+    pub frames: usize,
+    /// set when the thread has finished
+    pub done: std::sync::atomic::AtomicBool,
+}
+
+impl Progressive {
+    pub fn zeroed(samples: usize, frames: usize) -> Progressive {
+        let b: Box<[u32]> = vec![0u32; samples].into_boxed_slice();
+        // (AtomicU32 has the same in-memory representation as u32)
+        let samples = unsafe { Box::from_raw(Box::into_raw(b) as *mut [std::sync::atomic::AtomicU32]) };
+        Progressive { samples, frames, done: std::sync::atomic::AtomicBool::new(false) }
+    }
 }
 
 impl Clip {
     pub fn mono(data: Vec<f32>, rate: u32) -> Clip {
-        Clip { data, rate, channels: 1, loop_start: 0 }
+        Clip { data, rate, channels: 1, loop_start: 0, stream: None }
     }
     /// Frames (samples per channel).
     pub fn frames(&self) -> usize {
-        self.data.len() / self.channels.max(1)
+        match &self.stream {
+            Some(s) => s.frames,
+            None => self.data.len() / self.channels.max(1),
+        }
     }
     /// The sample of channel `c` at frame `i` (a mono clip gives the same to both).
     fn at(&self, i: usize, c: usize) -> f32 {
-        self.data[i * self.channels + c.min(self.channels - 1)]
+        let k = i * self.channels + c.min(self.channels - 1);
+        match &self.stream {
+            Some(s) => s.samples.get(k).map_or(0.0, |v| f32::from_bits(v.load(std::sync::atomic::Ordering::Relaxed))),
+            None => self.data[k],
+        }
     }
 }
 

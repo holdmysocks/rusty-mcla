@@ -104,6 +104,9 @@ pub struct Special {
 }
 
 pub struct Roamers {
+    /// each set-up's model parts (`Game::mc4_dress_of`, read once a run: it reads the set-up's file), for the
+    /// read-ahead and the build of the men's cars
+    setup_cfg: std::collections::HashMap<String, crate::vehicle_model::CarConfig>,
     pub wanted: usize,
     timer: f32,
     load_timer: f32,
@@ -307,6 +310,7 @@ pub fn first_dest(pts: &[Vec3], pos: Vec3) -> usize {
 impl Roamers {
     pub fn new() -> Roamers {
         Roamers {
+            setup_cfg: Default::default(),
             wanted: 2,
             timer: 3.0,
             load_timer: 1.0,
@@ -672,6 +676,7 @@ impl Roamers {
         self.timer -= dt;
         self.load_timer -= dt;
         let mut spawn: Option<usize> = None;
+        let mut ahead: Vec<(String, String)> = Vec::new();
         for (k, m) in self.men.iter_mut().enumerate() {
             match vehicles.cars.iter().position(|c| c.racer && c.vinyl_name == m.config) {
                 Some(ci) => {
@@ -708,6 +713,9 @@ impl Roamers {
                     // car is in the world from then on - OpponentManager_AddOpponentToWorld,
                     // Racer_InitializeResetPosition, Racer_Reset, `0x40a56c35` 0x76..0x1a4 -: he
                     // stays there until his car is made, if the player is in reach of it)
+                    if m.fresh && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 450.0) {
+                        ahead.push((m.car.clone(), m.config.clone()));
+                    }
                     if m.fresh && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 330.0) && only.is_none() {
                         m.at = 0.0;
                         if self.challenge.is_none() {
@@ -718,6 +726,11 @@ impl Roamers {
                     m.fresh = false;
                     m.at += CRUISE * dt;
                     let d = loop_at(&m.pts, m.at).0.distance(pp);
+                    // (his car's files read ahead on a worker thread while he is still out of reach, so
+                    // building it as he comes in does not stop the game - docs/PERFORMANCE.md 2026-10-23 (4))
+                    if d < 450.0 {
+                        ahead.push((m.car.clone(), m.config.clone()));
+                    }
                     // (test hook MCLA_HOOKMAN_TEST=<key prefix>: that man alone, put near the player)
                     let wanted = only.as_deref().map_or(true, |o| m.key.starts_with(o) && !vehicles.cars.iter().any(|c| c.racer));
                     if wanted && spawn.is_none() && self.challenge.is_none() && ((d > 120.0 && d < 330.0) || only.is_some()) {
@@ -726,16 +739,43 @@ impl Roamers {
                 }
             }
         }
+        for (car, config) in ahead {
+            // (and his set-up's rim, tyres and brakes into the file cache - `vehicles::warm_dress`)
+            if !self.setup_cfg.contains_key(&config) {
+                let d = game.mc4_dress_of(&car, &config);
+                if let Some(d) = d.as_ref() {
+                    crate::vehicles::warm_dress(&world.assets.root, d);
+                }
+                self.setup_cfg.insert(config.clone(), d.map(|d| d.cfg).unwrap_or_default());
+            }
+            // (read unless his car is built in his set-up already)
+            let cfg = &self.setup_cfg[&config];
+            if !vehicles.models.iter().any(|x| x.name.eq_ignore_ascii_case(&car) && x.cfg == *cfg) {
+                if let Some(d) = game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))) {
+                    vehicles.prefetch(world, d);
+                }
+            }
+        }
         let mut ready = None;
         if let Some(k) = spawn.filter(|_| self.timer <= 0.0) {
             let m = self.men[k].clone();
-            match vehicles.models.iter().find(|x| x.name.eq_ignore_ascii_case(&m.car)).cloned() {
+            // (his car as his set-up builds it: dressing him then finds it - docs/PERFORMANCE.md 2026-10-23 (6))
+            if !self.setup_cfg.contains_key(&m.config) {
+                self.setup_cfg.insert(m.config.clone(), game.mc4_dress_of(&m.car, &m.config).map(|x| x.cfg).unwrap_or_default());
+            }
+            let cfg = self.setup_cfg[&m.config].clone();
+            match vehicles.models.iter().find(|x| x.name.eq_ignore_ascii_case(&m.car) && x.cfg == cfg).cloned() {
                 None => {
                     // his car has to be in memory first
-                    if self.load_timer <= 0.0 {
+                    // (his car's files still being read on their worker: he waits for them rather than the game -
+                    // docs/PERFORMANCE.md 2026-10-23 (5))
+                    let dir = game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&m.car))).cloned();
+                    if self.load_timer <= 0.0 && !dir.as_ref().map_or(false, |d| vehicles.reading(d)) {
                         self.load_timer = 2.0;
-                        if let Some(d) = game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&m.car))).cloned() {
-                            if let Err(e) = vehicles.load_model(gpu, world, &d) {
+                        if let Some(d) = dir {
+                            // (built in his set-up's parts at once: dressing him then finds that model rather than
+                            // building the car a second time - docs/PERFORMANCE.md 2026-10-23 (6))
+                            if let Err(e) = vehicles.model_cached(gpu, world, &d, &cfg) {
                                 log::warn!("roamers: {}: {}", m.car, e);
                             }
                         } else {

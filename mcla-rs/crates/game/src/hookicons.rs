@@ -224,7 +224,8 @@ pub struct Shown {
     pub slot: usize,
     pub frame: Mat4,
     pub dist: f32,
-    pub rgba: Arc<Vec<u8>>,
+    /// the stage drawn on the CPU (`MCLA_ICONS_CPU=1`); else drawn on the GPU (`queue_pictures`)
+    pub rgba: Option<Arc<Vec<u8>>>,
     pub nodes: Vec<crate::menu3d::Node>,
 }
 
@@ -233,6 +234,13 @@ pub struct HookIcons {
     movies: Vec<crate::flash_ui::FlashMovie>,
     pub slots: Slots,
     cache: HashMap<TexRef, Option<Arc<TexImage>>>,
+    /// each movie's last draw list and picture (`FlashMovie::raster_draw`)
+    last: [Option<(mcla_flash::draw::DrawList, Arc<Vec<u8>>)>; 3],
+    /// the pictures drawn on the CPU (`MCLA_ICONS_CPU=1`, the old way); else on the GPU (flashpic.rs)
+    pub cpu: bool,
+    /// this frame's draw lists of the shown slots (GPU), and the last list each slot's picture was queued with
+    lists: [Option<mcla_flash::draw::DrawList>; 3],
+    queued: [Option<mcla_flash::draw::DrawList>; 3],
     pub shown: Vec<Shown>,
 }
 
@@ -248,7 +256,7 @@ impl HookIcons {
             m.player.tick();
             movies.push(m);
         }
-        Some(HookIcons { movies, slots: Slots::default(), cache: HashMap::new(), shown: Vec::new() })
+        Some(HookIcons { movies, slots: Slots::default(), cache: HashMap::new(), last: Default::default(), cpu: std::env::var("MCLA_ICONS_CPU").map_or(false, |v| v.trim() == "1"), lists: Default::default(), queued: Default::default(), shown: Vec::new() })
     }
 
     /// One frame: the candidates, the slots, each fed slot's movie advanced by `dt` and its scene
@@ -273,6 +281,9 @@ impl HookIcons {
         if log {
             log::info!("hook icons: camera {:?} looking {:?}: {} candidates, nearest {:?}, slots {:?}, racing {} checkpoints {}", cam, fwd.normalize_or_zero(), cands.len(), near.map(|n| n.map(|(i, id)| (cands[i].kind, id, cands[i].pos.distance(cam) as i32))), self.slots.id, racing, checkpoints);
         }
+        // (each fed slot's picture: the draw lists here, in order; then the pictures drawn side by side -
+        // three movies of their own, the same pictures)
+        let mut pend = Vec::new();
         for s in 0..3 {
             let Some(c) = self.slots.idx[s].and_then(|i| cands.get(i)).copied() else { continue };
             let Some(f) = feed(t, &c, cam, racing, checkpoints) else { continue };
@@ -299,15 +310,59 @@ impl HookIcons {
                 }
             }
             nodes.retain(|n| n.view == "world" && n.alpha > 0.0);
-            let rgba = m.raster(RT, RT, &mut self.cache);
+            let list = m.raster_list(&mut self.cache);
             let fr = frame(t, fwd, c.pos);
             if log {
                 log::info!("hook icon slot {}: kind {} id {} dist {:.1} feed {:?} frame t {:?} meshes {:?}", s, c.kind, c.id, f.distance, f, fr.w_axis.truncate(), nodes.iter().map(|n| (n.file.as_str(), n.alpha)).collect::<Vec<_>>());
             }
-            self.shown.push(Shown { slot: s, frame: fr, dist: f.distance, rgba: Arc::new(rgba), nodes });
+            pend.push((s, fr, f.distance, nodes, list, self.last[s].take()));
+        }
+        if self.cpu {
+            let st = self.movies[0].player.movie.stage;
+            let cache = &self.cache;
+            use rayon::prelude::*;
+            let pics: Vec<Arc<Vec<u8>>> = pend.par_iter_mut().map(|(_, _, _, _, list, last)| crate::flash_ui::FlashMovie::raster_draw(std::mem::take(list), st, RT, RT, cache, last)).collect();
+            for ((s, frame, dist, nodes, _, last), rgba) in pend.into_iter().zip(pics) {
+                self.last[s] = last;
+                self.shown.push(Shown { slot: s, frame, dist, rgba: Some(rgba), nodes });
+            }
+        } else {
+            for (s, frame, dist, nodes, list, _) in pend {
+                self.lists[s] = Some(list);
+                self.shown.push(Shown { slot: s, frame, dist, rgba: None, nodes });
+            }
         }
         // (the queue is drawn far first - `sub_82225138`)
         self.shown.sort_by(|a, b| b.dist.total_cmp(&a.dist));
+    }
+}
+
+impl HookIcons {
+    /// The shown slots' pictures queued for the GPU (flashpic.rs: 256 x 256, 4 samples, by `raster_draw`'s
+    /// rules); a slot whose draw list is the one its picture already holds is not drawn again
+    /// (docs/PERFORMANCE.md, 2026-10-23).
+    pub fn queue_pictures(&mut self) {
+        let st = self.movies[0].player.movie.stage;
+        let k = RT as f32 / (st[1] - st[0]).max(1.0);
+        for s in 0..3 {
+            let Some(list) = self.lists[s].take() else { continue };
+            if self.queued[s].as_ref() == Some(&list) {
+                continue;
+            }
+            let cache = &self.cache;
+            crate::flashpic::queue(&format!("3dicons#{s}"), [RT, RT], &list, k, [-st[0] * k, -st[2] * k], &|t| cache.get(&t).cloned().flatten());
+            // (MCLA_SELF_DUMP: the CPU's picture of the same list beside the GPU's - flashpic::dump)
+            if let Ok(dir) = std::env::var("MCLA_SELF_DUMP") {
+                let px = crate::flash_ui::FlashMovie::raster_draw(list.clone(), st, RT, RT, &self.cache, &mut None);
+                if let Ok(f) = std::fs::File::create(format!("{dir}/3dicons_{s}_cpu.png")) {
+                    let mut e = png::Encoder::new(std::io::BufWriter::new(f), RT, RT);
+                    e.set_color(png::ColorType::Rgba);
+                    e.set_depth(png::BitDepth::Eight);
+                    let _ = e.write_header().and_then(|mut w| w.write_image_data(&px));
+                }
+            }
+            self.queued[s] = Some(list);
+        }
     }
 }
 
@@ -418,6 +473,7 @@ mod tests {
         let strings = mcla_formats::strtbl::StringTable::parse(&std::fs::read(std::path::Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
         let shared = crate::flash_ui::UiShared { textures: Arc::new(crate::flash_ui::load_shared(&dir)), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
         let mut hi = HookIcons::new(&dir, &shared).expect("movie");
+        hi.cpu = true;
         let t = MarkTune::default();
         let mut g = Element::at(Kind::Garage, Vec3::new(0.0, 0.0, 0.0));
         g.uid = 505;
@@ -426,7 +482,7 @@ mod tests {
         for _ in 0..60 {
             hi.update(&t, &[g.clone()], [1.0; 4], [0.5; 4], cam, -cam, false, false, 1.0 / 30.0);
             // (the ring: a top segment's middle - it fades in from 0, then pulses with `ring_anim`)
-            ring.push(hi.shown[0].rgba[(20 * RT as usize + 80) * 4]);
+            ring.push(hi.shown[0].rgba.as_ref().unwrap()[(20 * RT as usize + 80) * 4]);
         }
         println!("ring over the first two seconds: {ring:?}");
         assert!(ring[0] < 40 && ring.iter().max() > Some(&240));
@@ -434,7 +490,7 @@ mod tests {
         for n in &sh.nodes {
             println!("{} alpha {:.3} colour {:?} movie {} view {} coord {} srt {:?}", n.file, n.alpha, n.color, n.movie, n.view, n.coord, n.srt.to_cols_array());
         }
-        let opaque = sh.rgba.chunks(4).filter(|p| p[3] > 0).count();
+        let opaque = sh.rgba.as_ref().unwrap().chunks(4).filter(|p| p[3] > 0).count();
         println!("stage pixels drawn: {opaque}");
         assert!(opaque > 1000);
         if let Ok(out) = std::env::var("MCLA_HOOKICON_PNG") {
@@ -442,7 +498,7 @@ mod tests {
             let mut e = png::Encoder::new(std::io::BufWriter::new(f), RT, RT);
             e.set_color(png::ColorType::Rgba);
             e.set_depth(png::BitDepth::Eight);
-            e.write_header().unwrap().write_image_data(&sh.rgba).unwrap();
+            e.write_header().unwrap().write_image_data(sh.rgba.as_ref().unwrap()).unwrap();
         }
     }
 
@@ -456,10 +512,11 @@ mod tests {
         let strings = mcla_formats::strtbl::StringTable::parse(&std::fs::read(std::path::Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
         let shared = crate::flash_ui::UiShared { textures: Arc::new(crate::flash_ui::load_shared(&dir)), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
         let mut hi = HookIcons::new(&dir, &shared).expect("movie");
+        hi.cpu = true;
         let t = MarkTune::default();
         let mut g = Element::at(Kind::Garage, Vec3::ZERO);
         g.uid = 505;
-        let drawn = |hi: &HookIcons| hi.shown.first().map_or(0, |s| s.rgba.chunks(4).filter(|p| p[3] > 0).count());
+        let drawn = |hi: &HookIcons| hi.shown.first().map_or(0, |s| s.rgba.as_ref().unwrap().chunks(4).filter(|p| p[3] > 0).count());
         let mut run = |hi: &mut HookIcons, d: f32, n: usize| {
             for _ in 0..n {
                 hi.update(&t, &[g.clone()], [1.0; 4], [0.5; 4], Vec3::new(0.0, 2.0, d), Vec3::new(0.0, 0.0, -1.0), false, false, 1.0 / 30.0);

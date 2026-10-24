@@ -1332,7 +1332,8 @@ impl Game {
             neon_color: 4,
             music_genre: 0,
             opts: Options::default(),
-            hud_map_big: false,
+            // (test hook MCLA_BIG_MAP=1: the overhead map up from the start)
+            hud_map_big: std::env::var("MCLA_BIG_MAP").is_ok(),
             overhead_title: None,
             overhead_sub: None,
             map_go: false,
@@ -9514,6 +9515,7 @@ impl Game {
         let ripple = crate::hudmap::Ripple::new(&hm.tune, hm.t, 0.0);
         let hi = self.hook_icons.as_mut().unwrap();
         hi.update(&tune, &els, garage, gas, hud.cam_pos, hud.cam_look - hud.cam_pos, racing, checkpoints, dt);
+        hi.queue_pictures();
         let draws = hi.draws();
         if draws.is_empty() {
             return;

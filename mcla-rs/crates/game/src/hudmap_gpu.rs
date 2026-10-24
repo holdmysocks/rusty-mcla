@@ -530,7 +530,8 @@ pub struct HookDraw {
     pub mesh: &'static str,
     pub world: Mat4,
     pub colour: [f32; 4],
-    pub movie: Option<(usize, Arc<Vec<u8>>)>,
+    /// the slot whose movie picture the mesh carries: drawn on the CPU (`MCLA_ICONS_CPU=1`) or, `None`, the GPU's
+    pub movie: Option<(usize, Option<Arc<Vec<u8>>>)>,
     pub ripple: bool,
 }
 
@@ -576,9 +577,24 @@ impl egui_wgpu::CallbackTrait for HookIcons {
                     None
                 } else if let Some((slot, rgba)) = d.movie.as_ref() {
                     let key = format!("3dicons#{slot}");
-                    if !written[*slot % 3] {
-                        written[*slot % 3] = true;
-                        r.dyn_texture(device, queue, &key, crate::hookicons::RT, crate::hookicons::RT, rgba);
+                    match rgba {
+                        Some(rgba) => {
+                            if !written[*slot % 3] {
+                                written[*slot % 3] = true;
+                                r.dyn_texture(device, queue, &key, crate::hookicons::RT, crate::hookicons::RT, rgba);
+                            }
+                        }
+                        // (the picture render_jobs drew this frame: bound once, the view stays)
+                        None if !r.textures.contains_key(&key) => {
+                            let Some(view) = crate::flashpic::view(&key) else { continue };
+                            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("hudmap xray movie"),
+                                layout: &r.t_layout,
+                                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&r.sampler) }],
+                            });
+                            r.textures.insert(key.clone(), bg);
+                        }
+                        None => {}
                     }
                     Some(key)
                 } else {

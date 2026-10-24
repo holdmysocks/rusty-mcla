@@ -13,3 +13,4 @@ mcla-formats = { path = "../formats" }
 anyhow.workspace = true
 log.workspace = true
 hashbrown.workspace = true
+rayon.workspace = true

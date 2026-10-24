@@ -224,8 +224,10 @@ impl FlashMovie {
 
     /// The stage drawn into a `w` x `h` picture over transparent black: a movie the game renders
     /// into its own target (`3dicons`, 256x256, the texture of its `player0mesh`). Pictures are
-    /// kept in `cache`.
-    pub fn raster(&self, w: u32, h: u32, cache: &mut HashMap<TexRef, Option<Arc<mcla_flash::raster::TexImage>>>) -> Vec<u8> {
+    /// kept in `cache`: `raster_list` builds the stage's draw list and resolves its pictures, `raster_draw`
+    /// draws it. `last` holds the previous draw list and its picture: an unchanged list gives the same
+    /// picture back without drawing it again (docs/PERFORMANCE.md, 2026-10-23).
+    pub fn raster_list(&self, cache: &mut HashMap<TexRef, Option<Arc<mcla_flash::raster::TexImage>>>) -> mcla_flash::draw::DrawList {
         let list = mcla_flash::draw::build(&self.player);
         for it in &list.items {
             if let Item::Triangles { tex, .. } = it {
@@ -235,12 +237,23 @@ impl FlashMovie {
                 }
             }
         }
-        let st = self.player.movie.stage;
+        list
+    }
+
+    /// The draw list `list` of a movie whose stage is `st`, drawn into a `w` x `h` picture (see `raster_list`).
+    pub fn raster_draw(list: mcla_flash::draw::DrawList, st: [f32; 4], w: u32, h: u32, cache: &HashMap<TexRef, Option<Arc<mcla_flash::raster::TexImage>>>, last: &mut Option<(mcla_flash::draw::DrawList, Arc<Vec<u8>>)>) -> Arc<Vec<u8>> {
+        if let Some((l, px)) = last.as_ref() {
+            if *l == list && px.len() == (w * h * 4) as usize {
+                return px.clone();
+            }
+        }
         let k = w as f32 / (st[1] - st[0]).max(1.0);
         // (the original's WorldIconRenderTarget%d is 4x multisampled - sub_821F7710, UI.md "UI edge smoothing")
         let mut c = mcla_flash::raster::Canvas::with_samples(w, h, [0, 0, 0, 0], &mcla_flash::raster::SAMPLES_4X);
         c.draw(&list, k, [-st[0] * k, -st[2] * k], &|t| cache.get(&t).cloned().flatten());
-        c.rgba
+        let px = Arc::new(c.rgba);
+        *last = Some((list, px.clone()));
+        px
     }
 
     /// The rectangle a sprite covers, in stage pixels.

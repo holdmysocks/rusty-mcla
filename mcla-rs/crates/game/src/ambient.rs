@@ -148,6 +148,11 @@ impl Distribution {
 
     /// Weighted pick for this place and hour among the types `usable` accepts
     /// (`r` in 0..1). `None` when the district has nothing to offer.
+    /// The types `pick` can draw at `pos` at this hour.
+    pub fn names(&self, pos: Vec3, hour: f32) -> Vec<&str> {
+        self.district(pos).and_then(|d| self.types.get(&d)).map_or(Vec::new(), |l| l.iter().filter(|(_, t)| t.at(hour) > 0.0).map(|(n, _)| n.as_str()).collect())
+    }
+
     pub fn pick(&self, pos: Vec3, hour: f32, r: f32, usable: &dyn Fn(&str) -> bool) -> Option<&str> {
         let list = self.types.get(&self.district(pos)?)?;
         let total: f32 = list.iter().filter(|(n, _)| usable(n)).map(|(_, t)| t.at(hour)).sum();

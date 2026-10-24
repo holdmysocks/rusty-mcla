@@ -241,6 +241,8 @@ impl PinkChoice {
 /// What the main loop keeps for the hangouts' scenes.
 #[derive(Default)]
 pub struct HangoutScene {
+    /// the hangout whose set-up cars were last read ahead (`update`), once each time the player comes near
+    read_ahead: Option<&'static str>,
     /// the hangout whose cars stand in the world
     pub cars_of: Option<String>,
     /// the profiles standing at its pink slip spots (their ids)
@@ -278,7 +280,9 @@ fn stand_car(game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mu
                 log::warn!("hangout scene: no vehicle {}", model);
                 return false;
             }
-            match vehicles.load_model(gpu, world, &dir) {
+            // (built in the set-up's parts at once: dressing it then finds that model - docs/PERFORMANCE.md 2026-10-23 (6))
+            let cfg = game.mc4_dress_of(model, setup).map(|x| x.cfg).unwrap_or_default();
+            match vehicles.model_cached(gpu, world, &dir, &cfg) {
                 Ok(m) => m,
                 Err(e) => {
                     log::warn!("hangout scene: {}: {}", model, e);
@@ -336,6 +340,23 @@ impl HangoutScene {
             self.held_key = None;
         }
         // ---- the hangout's cars: while its set-up runs and the player is near ----
+        // (their files read ahead on worker threads from 250 m, so standing them there at 170 m does not
+        // stop the game - docs/PERFORMANCE.md 2026-10-23 (5))
+        if self.tick % 30 == 0 && game.race.is_none() {
+            let k = near.filter(|n| n.1 < 250.0).and_then(|n| crate::mc4::hangout_key_of_scene(n.0)).and_then(|k| setup_of(k));
+            let key = k.map(|k| k.key);
+            if key.is_some() && key != self.read_ahead {
+                let k = k.unwrap();
+                for (setup, _, _) in k.cars {
+                    let car = crate::mc4::setup_vehicle(setup);
+                    vehicles.prefetch(world, &world.assets.path("resources/vehicle").join(&car));
+                    if let Some(d) = game.mc4_dress_of(&car, setup) {
+                        crate::vehicles::warm_dress(&world.assets.root, &d);
+                    }
+                }
+            }
+            self.read_ahead = key;
+        }
         let want = near.filter(|n| n.1 < 170.0).and_then(|n| crate::mc4::hangout_key_of_scene(n.0).filter(|_| game.mc4_hangout_open(n.0) || panel).map(|k| k.to_string()));
         let want = if game.race.is_some() { None } else { want };
         if want != self.cars_of {

@@ -57,12 +57,19 @@ pub struct Scene {
     pub origin: Mat4,
 }
 
+/// The character sets of the hangouts' people (`Cine::set_ambient`).
+const AMBIENT_FEMALE: [&str; 4] = ["ped_fa_001_set", "ped_fb_002_set", "ped_fc_001_set", "ped_fh_001_set"];
+const AMBIENT_MALE: [&str; 5] = ["ped_ma_001_set", "ped_mb_001_set", "ped_mc_001_set", "ped_mh_001_set", "ped_ma_003_set"];
+const AMBIENT_DRIVERS: [&str; 4] = ["drv_mb_02_set", "drv_mc_02_set", "drv_ma_02_set", "drv_mh_02_set"];
+
 #[derive(Default)]
 pub struct Cine {
     char_dir: PathBuf,
     /// scene ("story/cut_intro") -> (entry name, pack file)
     index: HashMap<String, Vec<(String, PathBuf)>>,
     models: HashMap<String, Option<Arc<SkinModel>>>,
+    /// character sets read ahead on worker threads (`read_ahead_ambient`): the file and what it holds
+    reading: HashMap<String, std::thread::JoinHandle<Option<(PathBuf, mcla_formats::rage::character::Character)>>>,
     pub playing: Option<Scene>,
     buf: SkinBuffer,
     /// people of the hangout nearby: each loops at its own length
@@ -221,7 +228,35 @@ impl Cine {
         v
     }
 
+    /// The hangouts' people's character sets (`set_ambient`) read on worker threads before the player reaches a
+    /// hangout, so making them there does not stop the game; their models are made on first use as before
+    /// (docs/PERFORMANCE.md 2026-10-23 (6)).
+    pub fn read_ahead_ambient(&mut self) {
+        for set in AMBIENT_FEMALE.iter().chain(AMBIENT_MALE.iter()).chain(AMBIENT_DRIVERS.iter()) {
+            if self.models.contains_key(*set) || self.reading.contains_key(*set) {
+                continue;
+            }
+            let dir = self.char_dir.join(set);
+            if let Ok(h) = std::thread::Builder::new().name("people read".into()).spawn(move || {
+                let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().map(|e| e == "r6").unwrap_or(false)).collect()).unwrap_or_default();
+                files.sort();
+                let f = files.into_iter().next()?;
+                let c = SkinModel::read(&f)?;
+                Some((f, c))
+            }) {
+                self.reading.insert(set.to_string(), h);
+            }
+        }
+    }
+
     fn model(&mut self, gpu: &mut Gpu, set: &str) -> Option<Arc<SkinModel>> {
+        if let Some(h) = self.reading.remove(set).filter(|_| !self.models.contains_key(set)) {
+            let m = h.join().ok().flatten().and_then(|(f, c)| SkinModel::from_character(gpu, set, &f, c)).map(Arc::new);
+            if m.is_none() {
+                log::warn!("cine: could not load {}", set);
+            }
+            self.models.insert(set.to_string(), m);
+        }
         if !self.models.contains_key(set) {
             let dir = self.char_dir.join(set);
             let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().map(|e| e == "r6").unwrap_or(false)).collect()).unwrap_or_default();
@@ -330,14 +365,21 @@ impl Cine {
         if name.is_empty() {
             return;
         }
-        const FEMALE: [&str; 4] = ["ped_fa_001_set", "ped_fb_002_set", "ped_fc_001_set", "ped_fh_001_set"];
-        const MALE: [&str; 5] = ["ped_ma_001_set", "ped_mb_001_set", "ped_mc_001_set", "ped_mh_001_set", "ped_ma_003_set"];
-        const DRIVERS: [&str; 4] = ["drv_mb_02_set", "drv_mc_02_set", "drv_ma_02_set", "drv_mh_02_set"];
+        const FEMALE: [&str; 4] = AMBIENT_FEMALE;
+        const MALE: [&str; 5] = AMBIENT_MALE;
+        const DRIVERS: [&str; 4] = AMBIENT_DRIVERS;
+        let t0 = std::time::Instant::now();
+        let mut packs: std::collections::HashMap<std::path::PathBuf, _> = std::collections::HashMap::new();
         for (k, key) in self.scenes(&format!("{name}/")).into_iter().enumerate() {
             let Some((entry, f)) = self.index.get(&key).and_then(|e| e.first().cloned()) else { continue };
-            let Ok(res) = load_resource_file(&f) else { continue };
-            let rd = Rd::new(&res);
-            let Some((o, _)) = pack_entries(&res).into_iter().find(|(_, n)| *n == entry) else { continue };
+            // (the scenes of a hangout share their packs: each read once - docs/PERFORMANCE.md 2026-10-23 (5))
+            if !packs.contains_key(&f) {
+                let Ok(res) = load_resource_file(&f) else { continue };
+                packs.insert(f.clone(), res);
+            }
+            let res = &packs[&f];
+            let rd = Rd::new(res);
+            let Some((o, _)) = pack_entries(res).into_iter().find(|(_, n)| *n == entry) else { continue };
             let Some(anim) = animation_named(&rd, o) else { continue };
             let label = key.rsplit('/').next().unwrap_or("").to_string();
             // the racers' skeleton has more bones than the pedestrians'
@@ -352,7 +394,7 @@ impl Cine {
             let clip = Clip::bind(&Arc::new(anim), &model.ids, false, false);
             self.ambient.push(Actor { label, model, clip, face: None, shapes: None });
         }
-        log::info!("cine: {} people at {}", self.ambient.len(), name);
+        log::info!("cine: {} people at {} ({:.0} ms)", self.ambient.len(), name, t0.elapsed().as_secs_f32() * 1000.0);
     }
 
     pub fn tick(&mut self, dt: f32) {

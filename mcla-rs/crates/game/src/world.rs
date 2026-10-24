@@ -89,6 +89,75 @@ pub struct CpuSector {
     pub collision: Vec<[Vec3; 3]>,
     /// surface of each collision triangle (empty = road)
     pub collision_mat: Vec<u8>,
+    /// `batches` put together for the buffers on the decoding worker (`prepare_geo`); None: done at upload
+    pub geo: Option<Geo>,
+}
+
+/// A sector's batches put together for its two buffers - the vertices and the kept indices in draw order, each
+/// batch's place in them - on the worker that decoded it, so the main thread only makes the buffers and the bind
+/// groups (docs/PERFORMANCE.md 2026-10-23 (5)). The same as `upload` did in place before.
+pub struct Geo {
+    verts: Vec<Vertex>,
+    indices: Vec<u32>,
+    items: Vec<GeoItem>,
+}
+
+struct GeoItem {
+    /// the batch, its vertices and indices moved out (an empty one: `keep` false, not drawn)
+    b: CpuBatch,
+    keep: bool,
+    base: u32,
+    n: u32,
+    first: u32,
+    count: u32,
+    parts: Vec<(u32, u32, Vec3, f32, u32)>,
+}
+
+fn geo_rank(b: &CpuBatch) -> u32 {
+    if b.mode.blended() {
+        2
+    } else if shadow_cutout(b.mode) {
+        1
+    } else {
+        0
+    }
+}
+
+pub fn prepare_geo(batches: Vec<CpuBatch>) -> Geo {
+    // plain opaque casters first (one shadow draw), then by material mode
+    let mut src: Vec<(bool, CpuBatch)> = batches.into_iter().map(|b| (!b.indices.is_empty() && !b.vertices.is_empty(), b)).collect();
+    // (the shop panes keep the sector's own batch order - the sort is stable: the original draws them
+    // blended WITH depth writes in that order, so of two panes one behind the other the first drawn decides
+    // what shows - a shop door behind an angled front pane is not drawn, LIGHTING_WORK.md 2026-10-15)
+    src.sort_by_key(|(_, b)| if b.mode == MatMode::StoreGlass { (geo_rank(b), b.mode as u32, Default::default(), Default::default()) } else { (geo_rank(b), b.mode as u32, b.diffuse, b.second) });
+    let mut verts: Vec<Vertex> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut items = Vec::with_capacity(src.len());
+    for (keep, mut b) in src {
+        if !keep {
+            items.push(GeoItem { b, keep, base: 0, n: 0, first: 0, count: 0, parts: Vec::new() });
+            continue;
+        }
+        let base = verts.len() as u32;
+        let n = b.vertices.len() as u32;
+        let first = indices.len() as u32;
+        // (kept[k]: how many indices of the first k triangles are kept - the parts' runs follow)
+        let mut kept: Vec<u32> = Vec::with_capacity(b.indices.len() / 3 + 1);
+        kept.push(0);
+        for t in b.indices.chunks_exact(3) {
+            if t.iter().all(|&i| i < n) {
+                indices.extend(t.iter().map(|&i| i + base));
+            }
+            kept.push(indices.len() as u32 - first);
+        }
+        let count = indices.len() as u32 - first;
+        let at = |i: u32| kept[((i / 3) as usize).min(kept.len() - 1)];
+        let parts: Vec<(u32, u32, Vec3, f32, u32)> = b.parts.iter().map(|p| (first + at(p.0), at(p.0 + p.1) - at(p.0), p.2, p.3, p.4)).filter(|p| p.1 > 0).collect();
+        verts.extend(std::mem::take(&mut b.vertices));
+        b.indices = Vec::new();
+        items.push(GeoItem { b, keep, base, n, first, count, parts });
+    }
+    Geo { verts, indices, items }
 }
 
 pub struct CpuBatch {
@@ -805,7 +874,7 @@ pub fn decode_set(id: usize, path: &Path) -> Result<CpuSector> {
             textures.push((*h, t));
         }
     }
-    Ok(CpuSector { id, batches, textures, collision, collision_mat: Vec::new() })
+    Ok(CpuSector { id, batches, textures, collision, collision_mat: Vec::new(), geo: None })
 }
 
 /// (diagnostics, MCLA_SECTOR_LIST: one line a stored batch, appended to work/lighting/out/sectorlist.txt -
@@ -926,7 +995,7 @@ pub fn decode_sector(id: usize, path: &Path) -> Result<CpuSector> {
     }
     let batches = merge_batches(batches);
     let textures = sec.textures.into_iter().collect();
-    Ok(CpuSector { id, batches, textures, collision, collision_mat })
+    Ok(CpuSector { id, batches, textures, collision, collision_mat, geo: None })
 }
 
 /// Ids of the far city's sector models while they are shown (among `World::sets`):
@@ -1001,7 +1070,7 @@ pub fn decode_far(path: &Path, sectors: &[SectorInfo]) -> Result<Vec<CpuSector>>
                 best = (iou, j);
             }
         }
-        out.push(CpuSector { id: FAR_ID + i * FAR_SLOTS + best.1, batches, textures: Vec::new(), collision: Vec::new(), collision_mat: Vec::new() });
+        out.push(CpuSector { id: FAR_ID + i * FAR_SLOTS + best.1, batches, textures: Vec::new(), collision: Vec::new(), collision_mat: Vec::new(), geo: None });
     }
     Ok(out)
 }
@@ -1259,12 +1328,16 @@ impl World {
             let path = self.assets.path(&self.index.sectors[id].file);
             let tx = self.tx.clone();
             rayon::spawn(move || {
-                let r = decode_sector(id, &path);
+                let r = decode_sector(id, &path).map(|mut cs| {
+                    cs.geo = Some(prepare_geo(std::mem::take(&mut cs.batches)));
+                    cs
+                });
                 let _ = tx.send(r);
             });
         }
         // upload finished (time-boxed)
         let t0 = std::time::Instant::now();
+        let (mut n_up, mut ms_up, mut ms_col) = (0, 0.0f32, 0.0f32);
         while let Ok(r) = self.rx.try_recv() {
             match r {
                 Ok(cs) if cs.id >= FAR_ID => {
@@ -1295,12 +1368,17 @@ impl World {
                         let id = cs.id;
                         let col = std::mem::take(&mut { cs.collision.clone() });
                         let mats = cs.collision_mat.clone();
+                        let tu = std::time::Instant::now();
                         let gs = self.upload(gpu, cs);
+                        ms_up += tu.elapsed().as_secs_f32() * 1000.0;
                         self.stats_tris += gs.tris as u64;
                         self.loaded.insert(id, gs);
                         if !self.own_bound {
+                            let tc = std::time::Instant::now();
                             self.collider.sectors.insert(id, SectorMesh::build_with(col, mats));
+                            ms_col += tc.elapsed().as_secs_f32() * 1000.0;
                         }
+                        n_up += 1;
                     }
                 }
                 Err(e) => log::warn!("sector load failed: {:#}", e),
@@ -1308,6 +1386,9 @@ impl World {
             if t0.elapsed().as_secs_f32() * 1000.0 > budget_ms {
                 break;
             }
+        }
+        if ms_up + ms_col > 8.0 {
+            log::info!("streaming: {} sectors in, upload {:.1} ms, collision {:.1} ms", n_up, ms_up, ms_col);
         }
         // The cross-fade of a sector with its far model, as the original times it (a third of a
         // second; sub_822D7D00): with u running 0 -> 1 the sector's alpha is min(2u, 1) and the
@@ -1389,8 +1470,12 @@ impl World {
         });
     }
 
-    fn upload(&mut self, gpu: &mut Gpu, cs: CpuSector) -> GpuSector {
+    fn upload(&mut self, gpu: &mut Gpu, mut cs: CpuSector) -> GpuSector {
         let sector_id = cs.id;
+        let Geo { mut verts, indices, items } = match cs.geo.take() {
+            Some(g) => g,
+            None => prepare_geo(std::mem::take(&mut cs.batches)),
+        };
         // local textures first
         let mut local: HashMap<u32, Arc<GpuTexture>> = HashMap::new();
         // An interior set's OWN textures (the garages' dictionaries) keep to the set: the GPU's
@@ -1417,7 +1502,7 @@ impl World {
         // such wall's normal 30 degrees along its tangent. Their own copies, uploaded raw:
         const RAW_KEY: u32 = 0x4853_5241;
         let mut raw: HashMap<u32, Arc<GpuTexture>> = HashMap::new();
-        for b in &cs.batches {
+        for b in items.iter().map(|it| &it.b) {
             // (walls: the third texture; the ground programs: the fourth)
             let hs = match b.mode {
                 MatMode::Opaque | MatMode::AlphaTest => b.third,
@@ -1458,7 +1543,7 @@ impl World {
         let sign_raw_on = std::env::var("MCLA_REF_FILTER").ok().as_deref() != Some("0") && std::env::var("MCLA_DEBUG_VIEW").ok().as_deref() != Some("441");
         let mut sign_raw: HashMap<u32, Arc<GpuTexture>> = HashMap::new();
         if sign_raw_on {
-            for b in &cs.batches {
+            for b in items.iter().map(|it| &it.b) {
                 if !matches!(b.mode, MatMode::Neon | MatMode::StoreSign) {
                     continue;
                 }
@@ -1495,26 +1580,21 @@ impl World {
                 }
             }
         };
-        // plain opaque casters first (one shadow draw), then by material mode
-        let mut src: Vec<CpuBatch> = cs.batches.into_iter().filter(|b| !b.indices.is_empty() && !b.vertices.is_empty()).collect();
-        let rank = |b: &CpuBatch| -> u32 { if b.mode.blended() { 2 } else if shadow_cutout(b.mode) { 1 } else { 0 } };
-        // (the shop panes keep the sector's own batch order - the sort is stable: the original draws them
-        // blended WITH depth writes in that order, so of two panes one behind the other the first drawn decides
-        // what shows - a shop door behind an angled front pane is not drawn, LIGHTING_WORK.md 2026-10-15)
-        src.sort_by_key(|b| if b.mode == MatMode::StoreGlass { (rank(b), b.mode as u32, Default::default(), Default::default()) } else { (rank(b), b.mode as u32, b.diffuse, b.second) });
-        let mut batches = Vec::with_capacity(src.len());
+        // (the batches in draw order, put together by `prepare_geo`)
+        let mut batches = Vec::with_capacity(items.len());
         let mut tris = 0u32;
-        let mut verts: Vec<Vertex> = Vec::new();
-        let mut indices: Vec<u32> = Vec::new();
         let mut caster_count = 0u32;
         let mut caster_batches = 0usize;
         let mut caster_min = Vec3::splat(f32::INFINITY);
         let mut caster_max = Vec3::splat(f32::NEG_INFINITY);
-        for mut b in src {
+        for GeoItem { b, keep, base, n, first, count, parts } in items {
+            if !keep {
+                continue;
+            }
             let is_sign = matches!(b.mode, MatMode::Neon | MatMode::StoreSign);
             // (the mark for city.wgsl, bit 14 of uv2.y: this sign's textures ARE the raw copies - both of them)
             if is_sign && sign_raw.contains_key(&b.diffuse) && sign_raw.contains_key(&b.second) {
-                for v in b.vertices.iter_mut() {
+                for v in verts[base as usize..(base + n) as usize].iter_mut() {
                     v.uv2[1] += 16384.0;
                 }
             }
@@ -1558,23 +1638,7 @@ impl World {
             } else {
                 gpu.texture_bind_group(&d, &s, kd, ks)
             };
-            let base = verts.len() as u32;
-            let n = b.vertices.len() as u32;
-            let first = indices.len() as u32;
-            // (kept[k]: how many indices of the first k triangles are kept - the parts' runs follow)
-            let mut kept: Vec<u32> = Vec::with_capacity(b.indices.len() / 3 + 1);
-            kept.push(0);
-            for t in b.indices.chunks_exact(3) {
-                if t.iter().all(|&i| i < n) {
-                    indices.extend(t.iter().map(|&i| i + base));
-                }
-                kept.push(indices.len() as u32 - first);
-            }
-            let count = indices.len() as u32 - first;
-            let at = |i: u32| kept[((i / 3) as usize).min(kept.len() - 1)];
-            let parts: Vec<(u32, u32, Vec3, f32, u32)> = b.parts.iter().map(|p| (first + at(p.0), at(p.0 + p.1) - at(p.0), p.2, p.3, p.4)).filter(|p| p.1 > 0).collect();
-            let caster = rank(&b) == 0;
-            verts.extend(b.vertices);
+            let caster = geo_rank(&b) == 0;
             if count == 0 {
                 continue;
             }

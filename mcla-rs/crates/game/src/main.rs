@@ -51,6 +51,9 @@ mod keybinds;
 mod hud;
 mod flash_ui;
 mod selfmovie;
+mod flashpic;
+mod minimap_gpu;
+mod passprof;
 mod uipass;
 mod aamode;
 mod particles;
@@ -238,6 +241,11 @@ struct App {
     last: Instant,
     fps: f32,
     frame_ms: f32,
+    // (MCLA_FRAMELOG=<ms>: the worst-frame log - docs/PERFORMANCE.md)
+    framelog: Option<f32>,
+    fl_prev: [f32; 9],
+    fl_ui: [f32; 5],
+    fl_stream_ms: f32,
     draws: usize,
     time_of_day: f32,
     sky: sky::Sky,
@@ -785,6 +793,10 @@ impl App {
             last: Instant::now(),
             fps: 0.0,
             frame_ms: 0.0,
+            framelog: std::env::var("MCLA_FRAMELOG").ok().map(|v| v.parse::<f32>().unwrap_or(25.0)),
+            fl_prev: [0.0; 9],
+            fl_ui: [0.0; 5],
+            fl_stream_ms: 0.0,
             draws: 0,
             show_ui: false,
             frame_no: 0,
@@ -2328,7 +2340,9 @@ impl App {
             let ty = (lens.to_radians() * 0.5).tan();
             self.vehicles.amb_frontend_tan = [ty, ty * gpu.config.width as f32 / gpu.config.height.max(1) as f32];
         }
+        let t_stream = Instant::now();
         world.update(&mut gpu, focus, 6.0);
+        self.fl_stream_ms += t_stream.elapsed().as_secs_f32() * 1000.0;
         // special abilities (real time); Zone slows the whole simulation down
         let mut fire = std::mem::take(&mut self.fire_ability);
         if let Some(g) = self.gamepad.as_ref() {
@@ -2623,7 +2637,7 @@ impl App {
                         // MaxDamage and a wipeout
                         let rolled = up_y <= 0.1 && c.state.airborne_time <= 0.0 && c.state.damage < 0.999;
                         if head_on {
-                            c.state.damage = (c.state.damage + 0.1).min(1.0);
+                            log::info!("crash: head-on wipeout at {:.2} s, speed {:.2}, damage {:.3}", self.sim_time, speed, c.state.damage);
                             let now = self.wipe_scale;
                             self.warp_wipe.start(now, 0.0);
                         } else if rolled {
@@ -2962,6 +2976,10 @@ impl App {
             let pp = self.vehicles.player().map(|c| (c.state.pos, c.state.speed()));
             let near = pp.and_then(|(p, _)| self.hangouts.iter().enumerate().map(|(i, h)| (i, h.1.distance(p))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()));
             let name = near.filter(|n| n.1 < 170.0).map(|n| self.hangouts[n.0].0.clone());
+            // (their people's character sets read ahead from 250 m - cine.rs `read_ahead_ambient`)
+            if near.is_some_and(|n| n.1 < 250.0) {
+                self.cine.read_ahead_ambient();
+            }
             self.cine.set_ambient(&mut gpu, name.as_deref());
             let free = self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.roam.challenge.is_none() && self.cine.playing.is_none() && self.cuts.playing.is_none() && self.game.movie.is_none();
             // (the hangout cores' entry lines: the player's move of this frame - `hangoutin::crossed`; the
@@ -6342,6 +6360,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // --fast fixes simulation time, not the measured rendering throughput.
         self.fps = self.fps * 0.95 + (1.0 / wall_dt.max(1e-4)) * 0.05;
         self.frame_ms = wall_dt * 1000.0;
+        // (MCLA_FRAMELOG=<ms>: a frame whose whole interval passed the limit, with the phases of the frame
+        // that took it - the interval of frame N is known when frame N+1 starts)
+        if let Some(limit) = self.framelog {
+            if self.frame_ms > limit && self.frame_no > 0 {
+                let p = self.fl_prev;
+                let u = self.fl_ui;
+                log::info!("slowframe: #{} {:.1} ms (limit {:.0}) | ticks {:.0} sim {:.2} (streaming {:.2}) prep {:.2} acquire {:.2} ui {:.2} (run {:.2} tessellate {:.2} textures {:.2} movies {:.2} buffers {:.2}) passes {:.2} submit+present {:.2} | loaded {} pending {} draws {}",
+                    self.frame_no, self.frame_ms, limit, p[0], p[1], p[2], p[3], p[4], p[5], u[0], u[1], u[2], u[3], u[4], p[6], p[7], p[8] as i64, self.world.as_ref().map_or(0, |w| w.pending.len()), self.draws);
+            }
+        }
+        self.fl_stream_ms = 0.0;
         self.frame_no += 1;
         // (start-up timing: the long frames of the first minute - docs/reference/ui/boot.md)
         if self.frame_no < 3600 && wall_dt > 0.05 {
@@ -8041,6 +8070,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 return;
             }
         };
+        let t_acq = now.elapsed().as_secs_f32() * 1000.0;
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(gpu.config.format), ..Default::default() });
         // The UI blends in gamma space, as the original does: through an sRGB view a
         // 30% white pane over a dark scene comes out about twice as bright and a 77%
@@ -8052,7 +8082,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let mut egui_jobs = None;
         let rain_now = self.rain_amount();
         if let Some(eg) = self.egui.as_mut() {
-            let raw = eg.state.take_egui_input(&window);
+            let mut raw = eg.state.take_egui_input(&window);
+            // (--fast: the UI's clock steps as the game's, so the movies' animations repeat run for run)
+            if self.opt.fixed_dt > 0.0 {
+                raw.time = None;
+                raw.predicted_dt = self.opt.fixed_dt;
+            }
             let fps = self.fps;
             let ms = self.frame_ms;
             let loaded = world.loaded.len();
@@ -8075,6 +8110,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let game = &mut self.game;
             let vehicles = &self.vehicles;
             let world_ref = &world;
+            let tu0 = Instant::now();
             let out = eg.ctx.run(raw, |ctx| {
                 action = game.ui(ctx, vehicles, world_ref, hud);
                 // (the port's FPS counter, over everything but a photo: hooks.rs)
@@ -8106,14 +8142,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.pending_action = action;
             }
             eg.state.handle_platform_output(&window, out.platform_output);
+            let tu1 = Instant::now();
             let jobs = eg.ctx.tessellate(out.shapes, out.pixels_per_point);
+            let tu2 = Instant::now();
             for (id, delta) in &out.textures_delta.set {
                 eg.renderer.update_texture(&gpu.device, &gpu.queue, *id, delta);
                 eg.renderer4.update_texture(&gpu.device, &gpu.queue, *id, delta);
                 eg.renderer2.update_texture(&gpu.device, &gpu.queue, *id, delta);
             }
+            let tu3 = Instant::now();
             // (the menus' 3D-scene movies drawn into their own pictures first - selfmovie.rs)
             selfmovie::render_jobs(&eg.ctx, &gpu.device, &gpu.queue, &mut eg.renderer2, &eg.selfs, gpu.config.format.remove_srgb_suffix());
+            // (and the free-roam icons' movies into their 4x targets - flashpic.rs)
+            flashpic::render(&gpu.device, &gpu.queue);
+            // (and the minimap into the HUD movie's texture of it - minimap_gpu.rs)
+            minimap_gpu::render(&gpu.device, &gpu.queue, [&eg.renderer, &eg.renderer4, &eg.renderer2]);
+            let tu4 = Instant::now();
             let desc = egui_wgpu::ScreenDescriptor { size_in_pixels: [gpu.config.width, gpu.config.height], pixels_per_point: out.pixels_per_point };
             // (the original's menu flag: the UI pass at 4x while a menu is open - uipass.rs)
             let ui_n = aamode::ui_samples(self.game.ui_msaa4());
@@ -8126,10 +8170,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 s.new_frame();
             }
             r.update_buffers(&gpu.device, &gpu.queue, &mut enc, &jobs, &desc);
+            let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1000.0;
+            self.fl_ui = [ms(tu0, tu1), ms(tu1, tu2), ms(tu2, tu3), ms(tu3, tu4), ms(tu4, Instant::now())];
             egui_jobs = Some((jobs, desc, out.textures_delta.free, ui_n));
         }
 
         let t_ui = now.elapsed().as_secs_f32() * 1000.0;
+        passprof::mark("setup");
         // The scene's sample count (render/ms.rs): the original's 2x while driving, 4x while its menu flag (+373) or
         // garage flag (+393) is set; the city's sampler at maximum anisotropy 16 in that mode (sub_822E60E0), else 4
         // (TEXTURE FILTERING 16X: 16 always).
@@ -8158,289 +8205,354 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             render::mb::frame(eye_view, proj, &cars, dt, self.game.mc4_time_scale() < 1.0, still)
         };
         let mut stat_shadow_sec = 0usize;
+        let mut early_cbs: Vec<wgpu::CommandBuffer> = Vec::new();
         let mut stat_shadow = 0usize;
-        // --- shadow pass --------------------------------------------------------
+        passprof::mark("shadow+cascades+collector+reflection");
+        // --- shadow pass and the four shadow cascades --------------------------------
+        // (recorded side by side, each into a command buffer of its own, submitted in this order after what is
+        // recorded so far and before the rest: the same passes, in the same order, as one encoder gave -
+        // docs/PERFORMANCE.md 2026-10-23 (4); the first tile clears the cascades' map, the others keep it)
         if shadow_on {
-            let lf = Frustum::from_view_proj(light_vp);
-            let mut n = 0usize;
-            let mut sec_n = 0usize;
             // (the plants' shadow impostors: the silhouette mask that is due - props/impostor.rs)
             self.props.update_shadow_impostors(&gpu, &mut enc, light_vp, self.time_of_day);
-            let mut sp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("shadow"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &gpu.shadow_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            sp.set_pipeline(&gpu.pipeline_shadow);
-            sp.set_bind_group(0, &gpu.shadow_bg, &[]);
-            sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
-            for sec in world.loaded.values().chain(world.sets.values()) {
-                let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
-                let mut bound = false;
-                // every plain opaque caster of the sector in a single draw
-                if sec.caster_count > 0 && lf.intersects_aabb(sec.caster_min, sec.caster_max) {
-                    sp.set_vertex_buffer(0, vb.slice(..));
-                    sp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    bound = true;
-                    sp.set_bind_group(1, sec.batches[0].bind.as_ref(), &[]);
-                    sp.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Opaque as u32)], &[]);
-                    sp.draw_indexed(0..sec.caster_count, 0, 0..1);
-                    sec_n += 1;
-                }
-                // cut-out materials need their texture
-                for b in &sec.batches[sec.caster_batches..] {
-                    if b.mode.blended() || !lf.intersects_aabb(b.min, b.max) {
-                        continue;
-                    }
-                    let ext = (b.max - b.min).length();
-                    if ext < ((b.min + b.max) * 0.5).distance(self.cam.pos) * 0.03 {
-                        continue;
-                    }
-                    if !bound {
-                        sp.set_vertex_buffer(0, vb.slice(..));
-                        sp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                        bound = true;
-                    }
-                    sp.set_bind_group(1, b.bind.as_ref(), &[]);
-                    sp.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
-                    sp.draw_indexed(b.first..b.first + b.count, 0, 0..1);
-                    sec_n += 1;
-                }
-            }
-            stat_shadow_sec = sec_n;
-            self.vehicles.draw(&mut sp, &gpu, false, &mut n, Some((self.cam.pos, 140.0)), None);
-            // (the windows cast too, as in the original's shadow passes)
-            self.vehicles.draw_glass_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, 140.0)));
-            self.vehicles.draw_solid_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, 140.0)));
-            sp.set_pipeline(&gpu.pipeline_shadow);
-            self.peds.draw(&mut sp, &gpu, true, &mut n);
-            self.cine.draw(&mut sp, &gpu, true, &mut n);
-            sp.set_pipeline(&gpu.pipeline_shadow_inst);
-            sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
-            self.props.draw(&mut sp, &gpu, self.cam.pos, &lf, None, &mut n);
-            stat_shadow = n + sec_n;
         }
-        // --- the original's four shadow cascades: the same casters into the four tiles of
-        // their depth map, each with its own matrix and bias (shadow.wgsl fs_shadow_casc) ---
-        if let Some(cvps) = casc_vps {
-            let mut n = 0usize;
-            let mut sec_n = 0usize;
-            let car_casc_all = std::env::var("MCLA_CAR_CASC_ALL").is_ok();
-            // (sel, 2026-10-13: WHICH sector batches go into a tile - the original's rule, read from its code
-            // (sub_822D7D00 the sector, sub_822DF960 + sub_825F3F90 the batch; LIGHTING_WORK.md "The cascade tiles'
-            // casters: the selection rule from the code"). A sector within 200 m (flat, the eye to its box) hands
-            // every batch of its file to the test, whatever its material - the panes and signs too, as solid
-            // casters; a batch by the sphere round its stored box (centre c, radius r):
-            //   1. |eye - c| - r < 200;
-            //   2. the MAIN view's near, left and right planes (inward normal n): where the light runs outwards
-            //      through the plane (d . n < 0, d = the light's own direction, not the cascades' ray) a sphere
-            //      wholly outside it is in no tile - what lies beside or behind the view and throws its shadow
-            //      away from it;
-            //   3. the sphere against the tile's own planes.
-            // No size cut, no extrusion, no top / bottom / far plane of the main view. Checked on the depth draws
-            // of 17 captures: no batch the rule keeps out is drawn, none it lets in is missing but those of
-            // sectors the original did not hold in detail at the time (work/lighting/sl_rule.py).
-            // MCLA_CASC_SEL=0: the box against the tile's rectangle, as before; =noblend: the rule without the
-            // blended batches (the port's own skip).)
-            let casc_sel: Option<(Vec3, Vec3, [glam::Vec4; 3], bool)> = match std::env::var("MCLA_CASC_SEL").ok().as_deref().map(str::trim) {
-                Some("0") => None,
-                v => {
-                    let m = glam::Mat4::from_cols_array_2d(&globals.view_proj);
-                    let eye = Vec3::new(globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]);
-                    let unit = |p: glam::Vec4| p / p.truncate().length().max(1e-9);
-                    let fwd = m.row(3).truncate().normalize_or(Vec3::Z);
-                    // (the near plane 0.2 m in front of the eye, as the original's view has it)
-                    let planes = [fwd.extend(-fwd.dot(eye) - 0.2), unit(m.row(3) + m.row(0)), unit(m.row(3) - m.row(0))];
-                    let d = -Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]).normalize_or(Vec3::Y);
-                    Some((eye, d, planes, v != Some("noblend")))
-                }
-            };
-            let mut sp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("shadow cascades"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &gpu.casc_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            let tile = render::casc_tile();
-            for (ci, cvp) in cvps.iter().enumerate() {
-                let lf = Frustum::from_view_proj(*cvp);
-                let (ox, oy) = ((ci as u32 % 2) * tile, (ci as u32 / 2) * tile);
-                sp.set_viewport(ox as f32, oy as f32, tile as f32, tile as f32, 0.0, 1.0);
-                sp.set_scissor_rect(ox, oy, tile, tile);
-                // (casc2: each kind of caster with the original's culling or without - render/mod.rs CASC_CULL_*)
-                let casc_pl = |kind: u32| if gpu.casc_cull_kinds & kind != 0 { &gpu.pipeline_casc_cull } else { &gpu.pipeline_casc };
-                sp.set_pipeline(casc_pl(render::CASC_CULL_SEC));
-                sp.set_bind_group(0, &gpu.casc_pass_bgs[ci], &[]);
-                sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
-                // (sel: the tile's four side planes, inward, unit normals)
-                let tile_pl = {
-                    let unit = |p: glam::Vec4| p / p.truncate().length().max(1e-9);
-                    [unit(cvp.row(3) + cvp.row(0)), unit(cvp.row(3) - cvp.row(0)), unit(cvp.row(3) + cvp.row(1)), unit(cvp.row(3) - cvp.row(1))]
-                };
-                for (detailed, sec) in world.loaded.values().map(|s| (true, s)).chain(world.sets.values().map(|s| (false, s))) {
-                    let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
-                    if let (true, Some((eye, d, main_pl, blend))) = (detailed, casc_sel.as_ref()) {
-                        // the sector: its box within 200 m of the eye, flat
-                        let (mut smin, mut smax) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
-                        for b in &sec.batches {
-                            smin = smin.min(b.min);
-                            smax = smax.max(b.max);
-                        }
-                        let (dx, dz) = ((smin.x - eye.x).max(eye.x - smax.x).max(0.0), (smin.z - eye.z).max(eye.z - smax.z).max(0.0));
-                        if dx * dx + dz * dz >= 200.0 * 200.0 {
-                            continue;
-                        }
-                        let keep = |c: Vec3, r: f32| -> bool {
-                            eye.distance(c) - r < 200.0
-                                && !main_pl.iter().any(|p| p.truncate().dot(*d) < 0.0 && p.dot(c.extend(1.0)) < -r)
-                                && tile_pl.iter().all(|p| p.dot(c.extend(1.0)) >= -r)
-                        };
+        early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
+        {
+            let gpu = &gpu;
+            // (of the world only its sectors: the rest of it is not shared between threads)
+            let (loaded, sets) = (&world.loaded, &world.sets);
+            let (vehicles, peds, cine, props, cam_pos) = (&self.vehicles, &self.peds, &self.cine, &self.props, self.cam.pos);
+            let shadow_job = || -> (wgpu::CommandBuffer, usize, usize) {
+                let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shadow") });
+                let mut n = 0usize;
+                let mut sec_n = 0usize;
+                {
+                    let lf = Frustum::from_view_proj(light_vp);
+                    let mut n = 0usize;
+                    let mut sec_n = 0usize;
+                    let mut sp = e.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("shadow"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &gpu.shadow_view,
+                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    sp.set_pipeline(&gpu.pipeline_shadow);
+                    sp.set_bind_group(0, &gpu.shadow_bg, &[]);
+                    sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+                    for sec in loaded.values().chain(sets.values()) {
+                        let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
                         let mut bound = false;
-                        // (solid casters: neighbouring runs go out as one draw; a cut-out batch with its own picture)
-                        let mut run: Option<(u32, u32)> = None;
-                        let mut solid_bind = false;
-                        macro_rules! flush_solid {
-                            ($bind:expr) => {
-                                if let Some((a, e)) = run.take() {
-                                    if !solid_bind {
-                                        sp.set_bind_group(1, $bind, &[]);
-                                        sp.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Opaque as u32)], &[]);
-                                        solid_bind = true;
-                                    }
-                                    sp.draw_indexed(a..e, 0, 0..1);
-                                    sec_n += 1;
-                                }
-                            };
-                        }
-                        for (bi, b) in sec.batches.iter().enumerate() {
-                            if b.mode.blended() && !*blend {
-                                continue;
-                            }
-                            let cutout = bi >= sec.caster_batches && world::shadow_cutout(b.mode);
-                            let whole = [(b.first, b.count, (b.min + b.max) * 0.5, (b.max - b.min).length() * 0.5, 0u32)];
-                            let parts: &[(u32, u32, Vec3, f32, u32)] = if b.parts.is_empty() { &whole } else { &b.parts };
-                            let mut cut: Vec<(u32, u32)> = Vec::new();
-                            for p in parts {
-                                if !keep(p.2, p.3) {
-                                    continue;
-                                }
-                                if !bound {
-                                    sp.set_vertex_buffer(0, vb.slice(..));
-                                    sp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                                    bound = true;
-                                }
-                                if cutout {
-                                    match cut.last_mut() {
-                                        Some((_, end)) if *end == p.0 => *end = p.0 + p.1,
-                                        _ => cut.push((p.0, p.0 + p.1)),
-                                    }
-                                } else {
-                                    match run.as_mut() {
-                                        Some((_, end)) if *end == p.0 => *end = p.0 + p.1,
-                                        _ => {
-                                            flush_solid!(b.bind.as_ref());
-                                            run = Some((p.0, p.0 + p.1));
-                                        }
-                                    }
-                                }
-                            }
-                            if !cut.is_empty() {
-                                flush_solid!(b.bind.as_ref());
-                                sp.set_bind_group(1, b.bind.as_ref(), &[]);
-                                sp.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
-                                solid_bind = false;
-                                for (a, e) in cut {
-                                    sp.draw_indexed(a..e, 0, 0..1);
-                                    sec_n += 1;
-                                }
-                            }
-                        }
-                        flush_solid!(sec.batches[0].bind.as_ref());
-                        continue;
-                    }
-                    let mut bound = false;
-                    if sec.caster_count > 0 && lf.intersects_aabb(sec.caster_min, sec.caster_max) {
-                        sp.set_vertex_buffer(0, vb.slice(..));
-                        sp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                        bound = true;
-                        sp.set_bind_group(1, sec.batches[0].bind.as_ref(), &[]);
-                        sp.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Opaque as u32)], &[]);
-                        sp.draw_indexed(0..sec.caster_count, 0, 0..1);
-                        sec_n += 1;
-                    }
-                    for b in &sec.batches[sec.caster_batches..] {
-                        if b.mode.blended() || !lf.intersects_aabb(b.min, b.max) {
-                            continue;
-                        }
-                        let ext = (b.max - b.min).length();
-                        if ext < ((b.min + b.max) * 0.5).distance(self.cam.pos) * 0.03 {
-                            continue;
-                        }
-                        if !bound {
+                        // every plain opaque caster of the sector in a single draw
+                        if sec.caster_count > 0 && lf.intersects_aabb(sec.caster_min, sec.caster_max) {
                             sp.set_vertex_buffer(0, vb.slice(..));
                             sp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                             bound = true;
+                            sp.set_bind_group(1, sec.batches[0].bind.as_ref(), &[]);
+                            sp.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Opaque as u32)], &[]);
+                            sp.draw_indexed(0..sec.caster_count, 0, 0..1);
+                            sec_n += 1;
                         }
-                        sp.set_bind_group(1, b.bind.as_ref(), &[]);
-                        sp.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
-                        sp.draw_indexed(b.first..b.first + b.count, 0, 0..1);
-                        sec_n += 1;
+                        // cut-out materials need their texture
+                        for b in &sec.batches[sec.caster_batches..] {
+                            if b.mode.blended() || !lf.intersects_aabb(b.min, b.max) {
+                                continue;
+                            }
+                            let ext = (b.max - b.min).length();
+                            if ext < ((b.min + b.max) * 0.5).distance(self.cam.pos) * 0.03 {
+                                continue;
+                            }
+                            if !bound {
+                                sp.set_vertex_buffer(0, vb.slice(..));
+                                sp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                                bound = true;
+                            }
+                            sp.set_bind_group(1, b.bind.as_ref(), &[]);
+                            sp.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
+                            sp.draw_indexed(b.first..b.first + b.count, 0, 0..1);
+                            sec_n += 1;
+                        }
                     }
+                    self.vehicles.draw(&mut sp, &gpu, false, &mut n, Some((self.cam.pos, 140.0)), None);
+                    // (the windows cast too, as in the original's shadow passes)
+                    self.vehicles.draw_glass_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, 140.0)));
+                    self.vehicles.draw_solid_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, 140.0)));
+                    sp.set_pipeline(&gpu.pipeline_shadow);
+                    self.peds.draw(&mut sp, &gpu, true, &mut n);
+                    self.cine.draw(&mut sp, &gpu, true, &mut n);
+                    sp.set_pipeline(&gpu.pipeline_shadow_inst);
+                    sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+                    self.props.draw(&mut sp, &gpu, self.cam.pos, &lf, None, &mut n);
                 }
-                // (cars: those within the tile's far slice of the camera, and a car's length more)
-                // (2026-10-15: into the first two tiles only - every capture has its 2 x 93
-                // VS_CarShadowDepthLocal draws in two tiles and none in the other two; where the
-                // top-down collector reads a further tile the original's car side is unshadowed:
-                // l3L_15, the R8's sunlit side = the paint program with collector 1.0, the port
-                // had 0.9. MCLA_CAR_CASC_ALL=1: into all four, as before.)
-                if ci < 2 || car_casc_all {
-                    sp.set_pipeline(casc_pl(render::CASC_CULL_CAR));
-                    self.vehicles.draw(&mut sp, &gpu, false, &mut n, Some((self.cam.pos, render::CASC_TUNE[ci][0] + 20.0)), None);
-                    // (the glass, the lamps' lenses, the occluder box and the wheels' spheres: both sides, as the
-                    // original's - 0x18000 on its PS_GlassFront / PS_Light / PS_fixupAlpha meshes' depth draws)
-                    sp.set_pipeline(&gpu.pipeline_casc);
-                    self.vehicles.draw_glass_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, render::CASC_TUNE[ci][0] + 20.0)));
-                    self.vehicles.draw_solid_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, render::CASC_TUNE[ci][0] + 20.0)));
+                (e.finish(), n, sec_n)
+            };
+            let casc = casc_vps.map(|cvps| {
+                let car_casc_all = std::env::var("MCLA_CAR_CASC_ALL").is_ok();
+                // (sel, 2026-10-13: WHICH sector batches go into a tile - the original's rule, read from its code
+                // (sub_822D7D00 the sector, sub_822DF960 + sub_825F3F90 the batch; LIGHTING_WORK.md "The cascade tiles'
+                // casters: the selection rule from the code"). A sector within 200 m (flat, the eye to its box) hands
+                // every batch of its file to the test, whatever its material - the panes and signs too, as solid
+                // casters; a batch by the sphere round its stored box (centre c, radius r):
+                //   1. |eye - c| - r < 200;
+                //   2. the MAIN view's near, left and right planes (inward normal n): where the light runs outwards
+                //      through the plane (d . n < 0, d = the light's own direction, not the cascades' ray) a sphere
+                //      wholly outside it is in no tile - what lies beside or behind the view and throws its shadow
+                //      away from it;
+                //   3. the sphere against the tile's own planes.
+                // No size cut, no extrusion, no top / bottom / far plane of the main view. Checked on the depth draws
+                // of 17 captures: no batch the rule keeps out is drawn, none it lets in is missing but those of
+                // sectors the original did not hold in detail at the time (work/lighting/sl_rule.py).
+                // MCLA_CASC_SEL=0: the box against the tile's rectangle, as before; =noblend: the rule without the
+                // blended batches (the port's own skip).)
+                let casc_sel: Option<(Vec3, Vec3, [glam::Vec4; 3], bool)> = match std::env::var("MCLA_CASC_SEL").ok().as_deref().map(str::trim) {
+                    Some("0") => None,
+                    v => {
+                        let m = glam::Mat4::from_cols_array_2d(&globals.view_proj);
+                        let eye = Vec3::new(globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]);
+                        let unit = |p: glam::Vec4| p / p.truncate().length().max(1e-9);
+                        let fwd = m.row(3).truncate().normalize_or(Vec3::Z);
+                        // (the near plane 0.2 m in front of the eye, as the original's view has it)
+                        let planes = [fwd.extend(-fwd.dot(eye) - 0.2), unit(m.row(3) + m.row(0)), unit(m.row(3) - m.row(0))];
+                        let d = -Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]).normalize_or(Vec3::Y);
+                        Some((eye, d, planes, v != Some("noblend")))
+                    }
+                };
+                (cvps, std::env::var("MCLA_CAR_CASC_ALL").is_ok(), casc_sel)
+            });
+            let casc_job = |ci: usize| -> (wgpu::CommandBuffer, usize) {
+                let (cvps, car_casc_all, casc_sel) = casc.as_ref().unwrap();
+                let (car_casc_all, cvp) = (*car_casc_all, &cvps[ci]);
+                let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shadow cascades") });
+                let mut n = 0usize;
+                let mut sec_n = 0usize;
+                {
+                    let mut sp = e.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("shadow cascades"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &gpu.casc_view,
+                            depth_ops: Some(wgpu::Operations { load: if ci == 0 { wgpu::LoadOp::Clear(1.0) } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    let tile = render::casc_tile();
+                    let lf = Frustum::from_view_proj(*cvp);
+                    let (ox, oy) = ((ci as u32 % 2) * tile, (ci as u32 / 2) * tile);
+                    sp.set_viewport(ox as f32, oy as f32, tile as f32, tile as f32, 0.0, 1.0);
+                    sp.set_scissor_rect(ox, oy, tile, tile);
+                    // (casc2: each kind of caster with the original's culling or without - render/mod.rs CASC_CULL_*)
+                    let casc_pl = |kind: u32| if gpu.casc_cull_kinds & kind != 0 { &gpu.pipeline_casc_cull } else { &gpu.pipeline_casc };
+                    sp.set_pipeline(casc_pl(render::CASC_CULL_SEC));
+                    sp.set_bind_group(0, &gpu.casc_pass_bgs[ci], &[]);
+                    sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+                    // (sel: the tile's four side planes, inward, unit normals)
+                    let tile_pl = {
+                        let unit = |p: glam::Vec4| p / p.truncate().length().max(1e-9);
+                        [unit(cvp.row(3) + cvp.row(0)), unit(cvp.row(3) - cvp.row(0)), unit(cvp.row(3) + cvp.row(1)), unit(cvp.row(3) - cvp.row(1))]
+                    };
+                    for (detailed, sec) in loaded.values().map(|s| (true, s)).chain(sets.values().map(|s| (false, s))) {
+                        let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
+                        if let (true, Some((eye, d, main_pl, blend))) = (detailed, casc_sel.as_ref()) {
+                            // the sector: its box within 200 m of the eye, flat
+                            let (mut smin, mut smax) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+                            for b in &sec.batches {
+                                smin = smin.min(b.min);
+                                smax = smax.max(b.max);
+                            }
+                            let (dx, dz) = ((smin.x - eye.x).max(eye.x - smax.x).max(0.0), (smin.z - eye.z).max(eye.z - smax.z).max(0.0));
+                            if dx * dx + dz * dz >= 200.0 * 200.0 {
+                                continue;
+                            }
+                            let keep = |c: Vec3, r: f32| -> bool {
+                                eye.distance(c) - r < 200.0
+                                    && !main_pl.iter().any(|p| p.truncate().dot(*d) < 0.0 && p.dot(c.extend(1.0)) < -r)
+                                    && tile_pl.iter().all(|p| p.dot(c.extend(1.0)) >= -r)
+                            };
+                            let mut bound = false;
+                            // (solid casters: neighbouring runs go out as one draw; a cut-out batch with its own picture)
+                            let mut run: Option<(u32, u32)> = None;
+                            let mut solid_bind = false;
+                            macro_rules! flush_solid {
+                                ($bind:expr) => {
+                                    if let Some((a, e)) = run.take() {
+                                        if !solid_bind {
+                                            sp.set_bind_group(1, $bind, &[]);
+                                            sp.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Opaque as u32)], &[]);
+                                            solid_bind = true;
+                                        }
+                                        sp.draw_indexed(a..e, 0, 0..1);
+                                        sec_n += 1;
+                                    }
+                                };
+                            }
+                            for (bi, b) in sec.batches.iter().enumerate() {
+                                if b.mode.blended() && !*blend {
+                                    continue;
+                                }
+                                let cutout = bi >= sec.caster_batches && world::shadow_cutout(b.mode);
+                                let whole = [(b.first, b.count, (b.min + b.max) * 0.5, (b.max - b.min).length() * 0.5, 0u32)];
+                                let parts: &[(u32, u32, Vec3, f32, u32)] = if b.parts.is_empty() { &whole } else { &b.parts };
+                                let mut cut: Vec<(u32, u32)> = Vec::new();
+                                for p in parts {
+                                    if !keep(p.2, p.3) {
+                                        continue;
+                                    }
+                                    if !bound {
+                                        sp.set_vertex_buffer(0, vb.slice(..));
+                                        sp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                                        bound = true;
+                                    }
+                                    if cutout {
+                                        match cut.last_mut() {
+                                            Some((_, end)) if *end == p.0 => *end = p.0 + p.1,
+                                            _ => cut.push((p.0, p.0 + p.1)),
+                                        }
+                                    } else {
+                                        match run.as_mut() {
+                                            Some((_, end)) if *end == p.0 => *end = p.0 + p.1,
+                                            _ => {
+                                                flush_solid!(b.bind.as_ref());
+                                                run = Some((p.0, p.0 + p.1));
+                                            }
+                                        }
+                                    }
+                                }
+                                if !cut.is_empty() {
+                                    flush_solid!(b.bind.as_ref());
+                                    sp.set_bind_group(1, b.bind.as_ref(), &[]);
+                                    sp.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
+                                    solid_bind = false;
+                                    for (a, e) in cut {
+                                        sp.draw_indexed(a..e, 0, 0..1);
+                                        sec_n += 1;
+                                    }
+                                }
+                            }
+                            flush_solid!(sec.batches[0].bind.as_ref());
+                            continue;
+                        }
+                        let mut bound = false;
+                        if sec.caster_count > 0 && lf.intersects_aabb(sec.caster_min, sec.caster_max) {
+                            sp.set_vertex_buffer(0, vb.slice(..));
+                            sp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                            bound = true;
+                            sp.set_bind_group(1, sec.batches[0].bind.as_ref(), &[]);
+                            sp.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Opaque as u32)], &[]);
+                            sp.draw_indexed(0..sec.caster_count, 0, 0..1);
+                            sec_n += 1;
+                        }
+                        for b in &sec.batches[sec.caster_batches..] {
+                            if b.mode.blended() || !lf.intersects_aabb(b.min, b.max) {
+                                continue;
+                            }
+                            let ext = (b.max - b.min).length();
+                            if ext < ((b.min + b.max) * 0.5).distance(self.cam.pos) * 0.03 {
+                                continue;
+                            }
+                            if !bound {
+                                sp.set_vertex_buffer(0, vb.slice(..));
+                                sp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                                bound = true;
+                            }
+                            sp.set_bind_group(1, b.bind.as_ref(), &[]);
+                            sp.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
+                            sp.draw_indexed(b.first..b.first + b.count, 0, 0..1);
+                            sec_n += 1;
+                        }
+                    }
+                    // (cars: those within the tile's far slice of the camera, and a car's length more)
+                    // (2026-10-15: into the first two tiles only - every capture has its 2 x 93
+                    // VS_CarShadowDepthLocal draws in two tiles and none in the other two; where the
+                    // top-down collector reads a further tile the original's car side is unshadowed:
+                    // l3L_15, the R8's sunlit side = the paint program with collector 1.0, the port
+                    // had 0.9. MCLA_CAR_CASC_ALL=1: into all four, as before.)
+                    if ci < 2 || car_casc_all {
+                        sp.set_pipeline(casc_pl(render::CASC_CULL_CAR));
+                        self.vehicles.draw(&mut sp, &gpu, false, &mut n, Some((self.cam.pos, render::CASC_TUNE[ci][0] + 20.0)), None);
+                        // (the glass, the lamps' lenses, the occluder box and the wheels' spheres: both sides, as the
+                        // original's - 0x18000 on its PS_GlassFront / PS_Light / PS_fixupAlpha meshes' depth draws)
+                        sp.set_pipeline(&gpu.pipeline_casc);
+                        self.vehicles.draw_glass_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, render::CASC_TUNE[ci][0] + 20.0)));
+                        self.vehicles.draw_solid_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, render::CASC_TUNE[ci][0] + 20.0)));
+                    }
+                    sp.set_pipeline(casc_pl(render::CASC_CULL_PED));
+                    self.peds.draw(&mut sp, &gpu, true, &mut n);
+                    self.cine.draw(&mut sp, &gpu, true, &mut n);
+                    sp.set_pipeline(if gpu.casc_cull_kinds & render::CASC_CULL_PROP != 0 { &gpu.pipeline_casc_inst_cull } else { &gpu.pipeline_casc_inst });
+                    sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+                    self.props.draw(&mut sp, &gpu, self.cam.pos, &lf, None, &mut n);
                 }
-                sp.set_pipeline(casc_pl(render::CASC_CULL_PED));
-                self.peds.draw(&mut sp, &gpu, true, &mut n);
-                self.cine.draw(&mut sp, &gpu, true, &mut n);
-                sp.set_pipeline(if gpu.casc_cull_kinds & render::CASC_CULL_PROP != 0 { &gpu.pipeline_casc_inst_cull } else { &gpu.pipeline_casc_inst });
-                sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
-                self.props.draw(&mut sp, &gpu, self.cam.pos, &lf, None, &mut n);
-            }
-            stat_shadow += n + sec_n;
-        }
-        // --- the fast shadow collector (the far city's ground from above, blurred, kept) ---
-        if shadow_on {
+                (e.finish(), n + sec_n)
+            };
+            // --- the fast shadow collector (the far city's ground from above, blurred, kept) ---
+            let far: Vec<&world::GpuSector> = world.far_models().collect();
             let to_light = Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]).normalize();
             let fc_dir = if self.drive && self.vehicles.player().is_some() { self.chase.look - self.chase.pos } else { self.cam.forward() };
-            gpu.collector_pass(&mut enc, fc_cam, fc_dir.normalize_or(Vec3::Z), to_light, light_vp, world.far_models());
-        }
-        // --- the wet road's planar reflection (the far city mirrored, the sky dome behind) ---
-        if refl_on {
+            let collector_job = || -> wgpu::CommandBuffer {
+                let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("collector") });
+                gpu.collector_pass(&mut e, fc_cam, fc_dir.normalize_or(Vec3::Z), to_light, light_vp, far.iter().copied());
+                e.finish()
+            };
+            // --- the wet road's planar reflection (the far city mirrored, the sky dome behind) ---
             // the mirror's height (gReflectionParams.z): recorded 17.572 with the car standing
             // on ground at 17.58 - exactly 2 m under the centre of the cars' environment map
             // (c51.y 19.572): the height of the car's own place. (MCLA_REFL_PLANE: another.)
             let plane = self.vehicles.player().filter(|_| self.drive).map_or(globals.cam_pos[1] - 2.0, |c| c.render_pose(self.vehicles.render_alpha).pos.y);
             let plane = std::env::var("MCLA_REFL_PLANE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(plane);
             let sky = self.sky_now().hat.is_some() && gpu.sky_hat.ready();
-            let n = gpu.reflection_pass(&mut enc, glam::Mat4::from_cols_array_2d(&globals.view_proj), Vec3::new(globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]), plane, sky, world.far_models());
-            if self.frame_no == 100 && std::env::var("MCLA_REFL_DUMP").is_ok() {
-                eprintln!("refl: plane {:.3} camera {:.3} batches {} sky {}", plane, globals.cam_pos[1], n, sky);
+            let frame_no = self.frame_no;
+            let reflection_job = || -> wgpu::CommandBuffer {
+                let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("reflection") });
+                let n = gpu.reflection_pass(&mut e, glam::Mat4::from_cols_array_2d(&globals.view_proj), Vec3::new(globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]), plane, sky, far.iter().copied());
+                if frame_no == 100 && std::env::var("MCLA_REFL_DUMP").is_ok() {
+                    eprintln!("refl: plane {:.3} camera {:.3} batches {} sky {}", plane, globals.cam_pos[1], n, sky);
+                }
+                e.finish()
+            };
+            let tiles = if casc.is_some() { 4 } else { 0 };
+            use rayon::prelude::*;
+            let mut parts: Vec<(usize, wgpu::CommandBuffer, usize, usize)> = mcla_flash::raster::pool().install(|| {
+                // (0 the shadow map, 1 - 4 the cascade tiles, 5 the collector, 6 the reflection)
+                (0..7usize)
+                    .into_par_iter()
+                    .filter(|&j| match j {
+                        0 | 5 => shadow_on,
+                        1..=4 => j <= tiles,
+                        _ => refl_on,
+                    })
+                    .map(|j| match j {
+                        0 => {
+                            let (c, n, s) = shadow_job();
+                            (j, c, n, s)
+                        }
+                        1..=4 => {
+                            let (c, n) = casc_job(j - 1);
+                            (j, c, n, 0)
+                        }
+                        5 => (j, collector_job(), 0, 0),
+                        _ => (j, reflection_job(), 0, 0),
+                    })
+                    .collect()
+            });
+            parts.sort_by_key(|p| p.0);
+            for (j, cb, n, sec_n) in parts {
+                if j == 0 {
+                    stat_shadow_sec = sec_n;
+                    stat_shadow = n + sec_n;
+                } else if j <= 4 {
+                    stat_shadow += n;
+                }
+                early_cbs.push(cb);
             }
         }
+        passprof::mark("impostors+prepare");
+        // (the fast shadow collector and the wet road's planar reflection: recorded with the shadows, above)
         // (the plants' impostor pictures that are due this frame - props/impostor.rs)
         self.props.update_impostors(&gpu, &mut enc, &globals);
         // (the particles' fog: RMPTFX_FogMinColor = sm_KeyMinFogColor x the light factor the
@@ -8500,6 +8612,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.drivers.headless = self.view_mode == 3 && !self.look_back && !self.event_dir.idle() && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
         }
+        passprof::mark("main setup");
         // --- main pass ----------------------------------------------------------
         let post_on = !self.opt.no_post;
         // a long lens magnifies: scale the small-object culling with it
@@ -8618,6 +8731,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // every frame after the Perlin pass. (MCLA_MINISKY_OLD=1: not drawn - city.wgsl's old
         // stand-in function instead.)
         gpu.sky_hat.mini_pass(&mut enc, &gpu.minisky_view, sky_hat_on && std::env::var("MCLA_MINISKY_OLD").is_err());
+        passprof::mark("environment");
         // ---- the environment map: one face of the cube a frame - the sky and the city's
         // opaque geometry around the player's car, for the car shaders to mirror ----
         // The city of the map is drawn the original's way (2026-10-14): into two paraboloid
@@ -8934,6 +9048,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         render::ms::set_scene(gpu.scene_n);
+        passprof::mark("city");
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("city"),
@@ -9110,6 +9225,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             pass.set_pipeline(&gpu.pipeline_blend);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
         }
+        passprof::mark("mirror+particles+post+ui");
         // The original's hidden rear-view mirror (rearview.rs; OPTIONS > DISPLAY > REAR-VIEW MIRROR, DECISIONS.md D20;
         // MCLA_REARVIEW=1 turns it on for a run): after the main view's draws, before its particles and post chain,
         // while the driving HUD is up. Nothing of it runs while it is off.
@@ -9259,6 +9375,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             log::info!("draws: main {} (props {}, cars {}), shadow {} (sectors {})", draws, stat_props, stat_cars, stat_shadow, stat_shadow_sec);
         }
 
+        passprof::mark("screenshot");
         // --- screenshot capture -------------------------------------------------
         let mut shot_buf = None;
         let photo = self.photo_request.take();
@@ -9294,13 +9411,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 shot_buf = Some((buf, w, h, bpr, path));
             }
         }
+        passprof::end();
         let t_enc = now.elapsed().as_secs_f32() * 1000.0;
-        gpu.queue.submit([enc.finish()]);
+        gpu.queue.submit(early_cbs.into_iter().chain([enc.finish()]));
         window.pre_present_notify();
         frame.present();
         let t_end = now.elapsed().as_secs_f32() * 1000.0;
+        if self.framelog.is_some() {
+            self.fl_prev = [ticks as f32, sim_ms, self.fl_stream_ms, t_sim - sim_ms, t_acq - t_sim, t_ui - t_acq, t_enc - t_ui, t_end - t_enc, world.loaded.len() as f32];
+        }
         if self.frame_no % 240 == 0 {
-            log::info!("phases: sim {:.2} ms, acquire+ui {:.2}, passes {:.2}, submit+present {:.2}", t_sim, t_ui - t_sim, t_enc - t_ui, t_end - t_enc);
+            log::info!("phases: sim {:.2} ms, acquire {:.2} + ui {:.2}, passes {:.2}, submit+present {:.2}", t_sim, t_acq - t_sim, t_ui - t_acq, t_enc - t_ui, t_end - t_enc);
         }
         // (MCLA_ENV_DUMP=<file>: with the screenshot, the cars' environment maps as numbers)
         if shot_buf.is_some() {
@@ -9640,6 +9761,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(s) = self.game.series.as_mut() {
                         if s.rivals.is_empty() {
                             s.rivals = grid.clone();
+                        }
+                    }
+                    // (the grid's cars read side by side on worker threads first, then built - docs/PERFORMANCE.md 2026-10-23 (5))
+                    for r in &grid {
+                        if let Some(d) = dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&r.car))) {
+                            self.vehicles.prefetch(world, d);
+                        }
+                        // (and their set-ups' rims, tyres and brakes into the file cache, for their dressing)
+                        if let Some(d) = self.game.mc4_dress_of(&r.car, &r.config) {
+                            vehicles::warm_dress(&world.assets.root, &d);
                         }
                     }
                     for r in &grid {
@@ -10527,6 +10658,9 @@ impl App {
         let mut renderer2 = egui_wgpu::Renderer::new(device, plain, None, selfmovie::samples(), false);
         renderer2.callback_resources.insert(hudmap_gpu::XrayRes::new(device, queue, plain, selfmovie::samples(), false));
         renderer2.callback_resources.insert(selfmovie::SelfRes::new(device, selfs.clone(), plain, selfmovie::samples(), false));
+        // (the 3D icons' and the minimap's pipelines - flashpic.rs, minimap_gpu.rs)
+        flashpic::init(device, queue);
+        minimap_gpu::init(device, queue);
         Egui { ctx, state, renderer, renderer4, ui4: None, ui2: None, renderer2, selfs }
     }
 

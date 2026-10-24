@@ -358,6 +358,20 @@ pub struct NavSys {
     pub junction_lanes: Vec<Vec<usize>>,
     /// the lane quadtree (root +130; node class 0x47b4dc), node 0 the root
     pub quad: Vec<QuadNode>,
+    /// the longest link (`path_to_point`'s look-up of the links near its goal)
+    max_link_len: f32,
+    /// the graph's strongly connected components, made on first use (`path_to_point`)
+    sccs: std::sync::OnceLock<Sccs>,
+}
+
+/// The lane graph's strongly connected components over the edges `path_to_point` walks (`next` and `side`) and
+/// the graph between them: with them `path_to_point` knows at once when no link it could stop on can be reached
+/// from its start, the case in which its search walks every link it can reach before it gives up
+/// (docs/PERFORMANCE.md 2026-10-23 (6): police cars chasing a player off the lanes, every tick).
+#[derive(Debug, Default)]
+struct Sccs {
+    comp: Vec<u32>,
+    succ: Vec<Vec<u32>>,
 }
 
 /// A node of the lane quadtree (root +130): +04 -> its lanes, +08 u16 their number, +1c .. +28
@@ -791,6 +805,8 @@ impl NavSys {
                 self.grid.entry(c2).or_default().push(i);
             }
         }
+        self.max_link_len = links.iter().map(|l| l.len).fold(0.0, f32::max);
+        self.sccs = Default::default();
         self.links = links;
         // lane changes: from the end of a link onto a parallel link of a neighbouring lane
         let nl = self.links.len();
@@ -1112,9 +1128,131 @@ impl NavSys {
         best.map(|(i, t, _)| (i, t))
     }
 
+    fn sccs(&self) -> &Sccs {
+        self.sccs.get_or_init(|| {
+            // Tarjan's, without recursion: (link, next edge to try) on `call`
+            let n = self.links.len();
+            let edge = |u: usize, k: usize| -> Option<usize> {
+                let l = &self.links[u];
+                if k < l.next.len() {
+                    Some(l.next[k])
+                } else {
+                    l.side.get(k - l.next.len()).copied()
+                }
+            };
+            let (mut index, mut low, mut on) = (vec![u32::MAX; n], vec![0u32; n], vec![false; n]);
+            let mut comp = vec![u32::MAX; n];
+            let (mut stack, mut call): (Vec<usize>, Vec<(usize, usize)>) = (Vec::new(), Vec::new());
+            let (mut idx, mut nc) = (0u32, 0u32);
+            for s in 0..n {
+                if index[s] != u32::MAX {
+                    continue;
+                }
+                index[s] = idx;
+                low[s] = idx;
+                idx += 1;
+                stack.push(s);
+                on[s] = true;
+                call.push((s, 0));
+                while let Some(&(u, k)) = call.last() {
+                    if let Some(v) = edge(u, k) {
+                        call.last_mut().unwrap().1 += 1;
+                        if index[v] == u32::MAX {
+                            index[v] = idx;
+                            low[v] = idx;
+                            idx += 1;
+                            stack.push(v);
+                            on[v] = true;
+                            call.push((v, 0));
+                        } else if on[v] {
+                            low[u] = low[u].min(index[v]);
+                        }
+                    } else {
+                        call.pop();
+                        if let Some(&(p, _)) = call.last() {
+                            low[p] = low[p].min(low[u]);
+                        }
+                        if low[u] == index[u] {
+                            while let Some(w) = stack.pop() {
+                                on[w] = false;
+                                comp[w] = nc;
+                                if w == u {
+                                    break;
+                                }
+                            }
+                            nc += 1;
+                        }
+                    }
+                }
+            }
+            let mut succ = vec![Vec::new(); nc as usize];
+            for u in 0..n {
+                let mut k = 0;
+                while let Some(v) = edge(u, k) {
+                    if comp[v] != comp[u] {
+                        succ[comp[u] as usize].push(comp[v]);
+                    }
+                    k += 1;
+                }
+            }
+            for s in succ.iter_mut() {
+                s.sort_unstable();
+                s.dedup();
+            }
+            Sccs { comp, succ }
+        })
+    }
+
+    /// Can `path_to_point(from, goal, radius)` find anything: is a link it would stop on (passing within `radius`
+    /// of `goal`, 8 m in height) reachable from `from`? Exact: the links near the goal are taken from the grid
+    /// out to the longest link's length, then the components' graph is searched from `from`'s.
+    fn goal_reachable(&self, from: usize, goal: Vec3, radius: f32) -> bool {
+        let goals: Vec<usize> = self
+            .links_near(goal, radius + self.max_link_len)
+            .filter(|&i| {
+                let l = &self.links[i];
+                let q = l.point_at(l.project(goal));
+                xz(q, goal) < radius && (q.y - goal.y).abs() < 8.0
+            })
+            .collect();
+        if goals.is_empty() {
+            return false;
+        }
+        let sc = self.sccs();
+        let mut want = vec![false; sc.succ.len()];
+        for &g in &goals {
+            want[sc.comp[g] as usize] = true;
+        }
+        let mut seen = vec![false; sc.succ.len()];
+        let mut todo = vec![sc.comp[from]];
+        seen[sc.comp[from] as usize] = true;
+        while let Some(c) = todo.pop() {
+            if want[c as usize] {
+                return true;
+            }
+            for &d in &sc.succ[c as usize] {
+                if !seen[d as usize] {
+                    seen[d as usize] = true;
+                    todo.push(d);
+                }
+            }
+        }
+        false
+    }
+
     /// Shortest path (by length) from link `from` to any link passing within `radius`
     /// of `goal` (A* over the directed lane graph). Returns the links, both ends inclusive.
     pub fn path_to_point(&self, from: usize, goal: Vec3, radius: f32) -> Option<Vec<usize>> {
+        // (none to be found: answered without walking the graph - the search would return None after every link
+        // reachable from `from`)
+        if !self.goal_reachable(from, goal, radius) {
+            return None;
+        }
+        self.search(from, goal, radius)
+    }
+
+    /// `path_to_point`'s search itself.
+    fn search(&self, from: usize, goal: Vec3, radius: f32) -> Option<Vec<usize>> {
         use std::cmp::Ordering;
         use std::collections::BinaryHeap;
         #[derive(PartialEq)]
@@ -1787,4 +1925,55 @@ pub fn parse_junctions(res: &crate::rsc::Resource) -> Vec<NavJunction> {
         out.push(NavJunction { center, arms, half: [rd.f32(o + 0x3c), rd.f32(o + 0x40)] });
     }
     out
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::*;
+
+    /// `path_to_point`'s shortcut (`goal_reachable`) against the full search on the city's own lane graph
+    /// (MCLA_DATA_DIR = extracted/cache, when present): the same answer for every query - goals on the lanes and
+    /// goals 20 m above or below them, where the full search walks the graph and finds nothing - and the time.
+    #[test]
+    fn shortcut_matches_the_search() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let dir = std::path::Path::new(&root).join("resources/city/sc");
+        let Some(p) = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "r66")).max_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)) else { return };
+        let d = std::fs::read(&p).unwrap();
+        let res = if &d[0..4] == b"MCLR" {
+            let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+            let data = d[16..].to_vec();
+            let vs = (u(12) as usize).min(data.len());
+            Resource { rtype: u(4), flags: u(8), virtual_size: vs, physical_size: data.len() - vs, data }
+        } else {
+            Resource::parse(&d).unwrap()
+        };
+        let nav = NavSys::parse(&res).unwrap();
+        let n = nav.links.len();
+        let mut x = 12345u32;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as usize
+        };
+        let (mut t_full, mut t_new, mut found, mut none) = (0.0f64, 0.0f64, 0, 0);
+        for q in 0..300 {
+            let from = rnd() % n;
+            let to = &nav.links[rnd() % n];
+            let goal = (to.a + to.b) * 0.5 + Vec3::Y * [0.0, 20.0, -20.0][q % 3];
+            for r in [9.0f32, 18.0, 32.0] {
+                let t0 = std::time::Instant::now();
+                let a = nav.search(from, goal, r);
+                let t1 = std::time::Instant::now();
+                let b = nav.path_to_point(from, goal, r);
+                let t2 = std::time::Instant::now();
+                t_full += (t1 - t0).as_secs_f64();
+                t_new += (t2 - t1).as_secs_f64();
+                assert_eq!(a, b, "from {from} goal {goal:?} radius {r}");
+                if a.is_some() { found += 1 } else { none += 1 }
+            }
+        }
+        eprintln!("{} links, {} components; {} found, {} none; full search {:.1} ms, with the shortcut {:.1} ms", n, nav.sccs().succ.len(), found, none, t_full * 1000.0, t_new * 1000.0);
+    }
 }

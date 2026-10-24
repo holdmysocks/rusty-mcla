@@ -685,7 +685,12 @@ impl SoundLib {
         if let Some(c) = self.clips.get(file) {
             return c.clone();
         }
+        let t = std::time::Instant::now();
         let c = if file.extension().is_some_and(|e| e == "mp3") { decode_mp3(file) } else { crate::audio::load_wav_clip(file) };
+        let ms = t.elapsed().as_secs_f32() * 1000.0;
+        if ms > 20.0 {
+            log::info!("audio: {} read in {:.0} ms", file.display(), ms);
+        }
         let c = c.map(|mut c| {
             c.loop_start = loop_start.max(0) as usize;
             Arc::new(c)
@@ -1347,16 +1352,56 @@ fn reset_node(n: &mut Node) {
     }
 }
 
-/// A converted stream (stereo MP3) decoded whole.
+/// A converted stream (stereo MP3): decoded while it plays when its length is known (`<name>.mp3.txt`, the
+/// stream's frames - the same as decoded, checked on the disc's streams), else decoded whole.
 pub(crate) fn decode_mp3(p: &Path) -> Option<Clip> {
     use rodio::Source;
+    let frames = std::fs::read_to_string(format!("{}.txt", p.display())).ok().and_then(|t| t.lines().next().and_then(|l| l.split('\t').nth(3)).and_then(|v| v.parse::<usize>().ok())).filter(|&n| n > 0);
     let f = std::fs::File::open(p).ok()?;
     let dec = rodio::Decoder::new(std::io::BufReader::new(f)).ok()?;
     let channels = dec.channels() as usize;
     let rate = dec.sample_rate();
+    if let Some(frames) = frames {
+        // (stereo kept, otherwise the first channel - as the whole decode below)
+        let out = if channels == 2 { 2 } else { 1 };
+        let buf = Arc::new(crate::audio::Progressive::zeroed(frames * out, frames));
+        let b = buf.clone();
+        let name = p.display().to_string();
+        let spawned = std::thread::Builder::new().name("mp3 decode".into()).spawn(move || {
+            let mut k = 0usize;
+            for (j, s) in dec.enumerate() {
+                if out == 1 && j % channels.max(1) != 0 {
+                    continue;
+                }
+                let Some(v) = b.samples.get(k) else { break };
+                v.store((s as f32 / 32768.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+                k += 1;
+            }
+            if k != b.samples.len() {
+                log::warn!("audio: {} decoded {} frames, its .txt says {}", name, k / out, b.frames);
+            }
+            b.done.store(true, std::sync::atomic::Ordering::Release);
+        });
+        if spawned.is_ok() {
+            return Some(Clip { data: Vec::new(), rate, channels: out, loop_start: 0, stream: Some(buf) });
+        }
+        return decode_mp3_whole(p);
+    }
+    decode_mp3_whole_from(dec, channels, rate)
+}
+
+fn decode_mp3_whole(p: &Path) -> Option<Clip> {
+    use rodio::Source;
+    let f = std::fs::File::open(p).ok()?;
+    let dec = rodio::Decoder::new(std::io::BufReader::new(f)).ok()?;
+    let (channels, rate) = (dec.channels() as usize, dec.sample_rate());
+    decode_mp3_whole_from(dec, channels, rate)
+}
+
+fn decode_mp3_whole_from(dec: rodio::Decoder<std::io::BufReader<std::fs::File>>, channels: usize, rate: u32) -> Option<Clip> {
     let data: Vec<f32> = dec.map(|s| s as f32 / 32768.0).collect();
     if channels == 2 {
-        Some(Clip { data, rate, channels: 2, loop_start: 0 })
+        Some(Clip { data, rate, channels: 2, loop_start: 0, stream: None })
     } else {
         // mono / other: keep the first channel
         Some(Clip::mono(data.chunks(channels.max(1)).map(|c| c[0]).collect(), rate))
@@ -1366,6 +1411,34 @@ pub(crate) fn decode_mp3(p: &Path) -> Option<Clip> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The streamed decode gives the same samples as the whole decode (MCLA_AUDIO_DIR = the converted audio,
+    /// `<data>/../audio_pc`): every 25th stream of the stream folders.
+    #[test]
+    #[ignore = "requires MCLA_AUDIO_DIR"]
+    fn streamed_decode_matches_whole() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_AUDIO_DIR").expect("MCLA_AUDIO_DIR"));
+        let mut n = 0;
+        for dir in ["ambience_stream", "vehicles_stream", "ambience_landmarks", "music"] {
+            let mut files: Vec<_> = std::fs::read_dir(root.join(dir)).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "mp3")).collect();
+            files.sort();
+            for p in files.iter().step_by(25) {
+                let a = decode_mp3(p).unwrap();
+                let b = decode_mp3_whole(p).unwrap();
+                let Some(s) = a.stream.as_ref() else { continue };
+                while !s.done.load(std::sync::atomic::Ordering::Acquire) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                assert_eq!((a.frames(), a.channels, a.rate), (b.frames(), b.channels, b.rate), "{}", p.display());
+                for (k, v) in b.data.iter().enumerate() {
+                    assert_eq!(s.samples[k].load(std::sync::atomic::Ordering::Relaxed), v.to_bits(), "{} sample {k}", p.display());
+                }
+                n += 1;
+            }
+        }
+        assert!(n > 20, "{n}");
+        eprintln!("{n} streams equal");
+    }
 
     #[test]
     fn pan_law() {

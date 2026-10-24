@@ -776,6 +776,11 @@ pub struct Vehicles {
     amb_frontend_was: bool,
     wheel_cache: hashbrown::HashMap<(std::path::PathBuf, String, u32), Arc<WheelModel>>,
     brake_cache: hashbrown::HashMap<(std::path::PathBuf, u32, i32), Arc<BrakeModel>>,
+    /// the cars' files as read (`vehicle_model::load_car`) by folder: parsed ahead on a worker thread (`prefetch`)
+    /// and kept for the next build of the same car - a set-up's build follows the plain one (docs/PERFORMANCE.md,
+    /// 2026-10-23 (4)); the last `PARSED_KEEP` kept, by the order they were taken
+    parsed: hashbrown::HashMap<String, Parsed>,
+    parsed_stamp: u64,
     /// police light bars are flashing
     pub sirens: bool,
     /// running time for light flashing (s)
@@ -1333,7 +1338,84 @@ impl CarInstance {
     }
 }
 
+/// The files of a set-up's rim, tyres and brakes read once on a worker thread and dropped, so that dressing a car
+/// in it later (`Vehicles::dress_setups`) reads them from the system's file cache rather than the disk - what is
+/// loaded is unchanged (docs/PERFORMANCE.md 2026-10-23 (6)). Each folder once a run.
+pub fn warm_dress(root: &Path, d: &Dress) {
+    static DONE: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+    let mut dirs = vec![root.join("resources/tires/models/tir_car"), root.join("resources/tires/textures").join(&d.tire)];
+    dirs.extend(d.rim_dir.clone());
+    dirs.extend(d.brake.as_ref().map(|b| root.join("resources/brakes").join(b)));
+    let Ok(mut done) = DONE.lock() else { return };
+    dirs.retain(|p| !done.contains(p));
+    if dirs.is_empty() {
+        return;
+    }
+    done.extend(dirs.iter().cloned());
+    let _ = std::thread::Builder::new().name("dress read".into()).spawn(move || {
+        for d in dirs {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let _ = std::fs::read(e.path());
+            }
+        }
+    });
+}
+
+/// A car's files being read on a worker thread, or read (`Vehicles::parsed`).
+enum Parsed {
+    Reading(std::thread::JoinHandle<Result<CarAsset>>),
+    Read(Arc<CarAsset>, u64),
+}
+
+const PARSED_KEEP: usize = 6;
+
+/// `Vehicles::parsed`'s key: the car's folder name (the callers spell the path differently).
+fn parsed_key(dir: &Path) -> String {
+    dir.file_name().map_or_else(|| dir.to_string_lossy().to_string(), |n| n.to_string_lossy().to_ascii_lowercase())
+}
+
 impl Vehicles {
+    /// Start reading the car in `dir` on a worker thread, if it is not read or being read (the model built from it
+    /// later takes it from there - `load_model_cfg`).
+    pub fn prefetch(&mut self, world: &World, dir: &Path) {
+        let key = parsed_key(dir);
+        // (a model of the car may be built already, but in other parts: the callers ask only when the build they want is not)
+        if self.parsed.contains_key(&key) {
+            return;
+        }
+        let assets = crate::assets::Assets::new(world.assets.root.clone());
+        let d = dir.to_path_buf();
+        if let Ok(h) = std::thread::Builder::new().name("car read".into()).spawn(move || vehicle_model::load_car(&assets, &d)) {
+            log::info!("vehicles: reading {} ahead", dir.display());
+            self.parsed.insert(key, Parsed::Reading(h));
+        }
+    }
+
+    /// True while the car in `dir` is still being read on its worker thread (`prefetch`).
+    pub fn reading(&self, dir: &Path) -> bool {
+        matches!(self.parsed.get(&parsed_key(dir)), Some(Parsed::Reading(h)) if !h.is_finished())
+    }
+
+    /// The car in `dir` as read: from `parsed` (waiting for its worker if it is still reading), else read now.
+    fn car_asset(&mut self, world: &World, dir: &Path) -> Result<Arc<CarAsset>> {
+        self.parsed_stamp += 1;
+        let stamp = self.parsed_stamp;
+        let key = parsed_key(dir);
+        let car = match self.parsed.remove(&key) {
+            Some(Parsed::Read(c, _)) => c,
+            Some(Parsed::Reading(h)) => Arc::new(h.join().map_err(|_| anyhow::anyhow!("car read thread panicked"))??),
+            None => Arc::new(vehicle_model::load_car(&world.assets, dir)?),
+        };
+        self.parsed.insert(key, Parsed::Read(car.clone(), stamp));
+        // (the oldest read ones go past PARSED_KEEP)
+        loop {
+            let read: Vec<(String, u64)> = self.parsed.iter().filter_map(|(k, v)| if let Parsed::Read(_, t) = v { Some((k.clone(), *t)) } else { None }).collect();
+            let Some(old) = read.iter().min_by_key(|(_, t)| *t).filter(|_| read.len() > PARSED_KEEP) else { break };
+            self.parsed.remove(&old.0);
+        }
+        Ok(car)
+    }
+
     pub fn new() -> Vehicles {
         Vehicles { traffic_target: 0, rng: 12345, ..Default::default() }
     }
@@ -1371,7 +1453,9 @@ impl Vehicles {
     }
 
     pub fn load_model_cfg(&mut self, gpu: &mut Gpu, world: &mut World, dir: &Path, cfg: &CarConfig) -> Result<Arc<CarModel>> {
-        let car = vehicle_model::load_car(&world.assets, dir)?;
+        let t_load = std::time::Instant::now();
+        let car = self.car_asset(world, dir)?;
+        let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
         let car_is_ambient = dir.file_name().map_or(false, |n| n.to_string_lossy().to_ascii_lowercase().starts_with("va_"));
         let mut batches = Vec::new();
         let mut merged: hashbrown::HashMap<(u32, u32, u32), MergeAcc> = hashbrown::HashMap::new();
@@ -1876,7 +1960,7 @@ impl Vehicles {
         }
         log::info!("car {}: hubs {:?} bounds {:?}..{:?} wheel radius {:.3}", car.name, car.hubs, car.min, car.max, params.wheel_radius);
         let params_mods = car_params_mods(&car, &params);
-        log::info!("car model {}: {} batches (LOD 1 {}, LOD 2 {}), mass {:.0}", car.name, batches.len(), lods[0].0.len(), lods[1].0.len(), params.mass);
+        log::info!("car model {}: {} batches (LOD 1 {}, LOD 2 {}), mass {:.0}, built in {:.0} ms ({:.0} reading the files)", car.name, batches.len(), lods[0].0.len(), lods[1].0.len(), params.mass, t_load.elapsed().as_secs_f32() * 1000.0, ms_parse);
         // stock wheels: whl_stk_<car> for the base cars, whld_stk_<car> for the DLC set
         let base_name = car.name.to_ascii_lowercase().replace("_dub", "");
         let rims_root = world.assets.root.join("resources/rims");
@@ -2010,6 +2094,7 @@ impl Vehicles {
     /// tires, its brakes, its paints (`CarLook`), its share of upgrades. `resolve(car,
     /// set-up)` reads the set-up (`Game::mc4_dress_of`). Returns the car dressed.
     pub fn dress_setups(&mut self, gpu: &mut Gpu, world: &mut World, resolve: &mut dyn FnMut(&str, &str) -> Option<Dress>) -> Option<usize> {
+        let t_dress = std::time::Instant::now();
         let i = self.cars.iter().position(|c| !c.is_player && !c.dressed && !c.vinyl_name.is_empty() && c.parked.is_none())?;
         self.cars[i].dressed = true;
         let name = self.cars[i].model.name.clone();
@@ -2070,6 +2155,7 @@ impl Vehicles {
         if let Some(p) = d.perf.filter(|_| c.perf == 0.0) {
             c.set_perf(p);
         }
+        log::info!("vehicles: {} dressed in {:.0} ms", name, t_dress.elapsed().as_secs_f32() * 1000.0);
         Some(i)
     }
 
@@ -2530,6 +2616,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             }
             if !self.vinyls.contains_key(&name) {
+                let t_liv = std::time::Instant::now();
                 let tex = self.vinyl_index.as_ref().and_then(|m| m.get(&name)).and_then(|f| crate::assets::load_resource_file(f).ok()).and_then(|res| {
                     let rd = mcla_formats::rage::Rd::new(&res);
                     rd.ptr(8).and_then(|o| mcla_formats::rage::texture::Texture::parse(&rd, o).ok()).map(|t| (t.width, t.height, t.to_rgba8()))
@@ -2549,7 +2636,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     let key = mcla_formats::hash::joaat(&format!("vinyl:{name}")) | 1;
                     gpu.texture_bind_group3(&white, &white, &tex, key, key, key)
                 });
-                log::info!("vehicles: livery {} {}", name, if bind.is_some() { "loaded" } else { "not found" });
+                log::info!("vehicles: livery {} {} ({:.0} ms)", name, if bind.is_some() { "loaded" } else { "not found" }, t_liv.elapsed().as_secs_f32() * 1000.0);
                 self.vinyls.insert(name.clone(), bind);
             }
             self.cars[i].vinyl = self.vinyls.get(&name).cloned().flatten();

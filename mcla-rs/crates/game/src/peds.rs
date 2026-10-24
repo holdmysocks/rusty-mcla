@@ -707,6 +707,13 @@ struct Tuning {
     fov_deg: [f32; 2],
 }
 
+/// A pedestrian type's files as read: its character set and its own clips.
+type TypeRead = (mcla_formats::rage::character::Character, Vec<Animation>);
+
+fn read_type(model: &Path, anims: &Path) -> Option<TypeRead> {
+    Some((SkinModel::read(model)?, find_animations(&load_resource_file(anims).ok()?)))
+}
+
 pub struct Peds {
     /// the ambient manager's front-end mode (sub_826D4C90, the start screen): the spawner has no
     /// visibility test (sub_826F3038, 0x826F36BC); the focus and view are the camera's
@@ -719,6 +726,8 @@ pub struct Peds {
     dirs: Vec<(String, PathBuf, PathBuf)>,
     tune_dir: PathBuf,
     types: HashMap<usize, Option<PedType>>,
+    /// types whose files are being read on a worker thread (`read_ahead`)
+    reading: HashMap<usize, std::thread::JoinHandle<Option<TypeRead>>>,
     avoid: Vec<(Arc<Animation>, bool, bool, u8)>,
     list: Vec<Ped>,
     active: HashSet<(usize, u32)>,
@@ -800,6 +809,7 @@ impl Peds {
             dirs: Vec::new(),
             tune_dir: PathBuf::new(),
             types: HashMap::new(),
+            reading: HashMap::new(),
             avoid: Vec::new(),
             list: Vec::new(),
             active: HashSet::new(),
@@ -931,10 +941,18 @@ impl Peds {
         log::info!("peds: {} types, {} shared clips, {} districts", self.dirs.len(), self.avoid.len(), self.districts.types.len());
     }
 
-    fn build_type(&self, gpu: &mut Gpu, ti: usize) -> Option<PedType> {
-        let (name, model, anims) = &self.dirs[ti];
-        let model = SkinModel::load(gpu, name, model)?;
-        let own: Vec<Arc<Animation>> = find_animations(&load_resource_file(anims).ok()?).into_iter().map(Arc::new).collect();
+    fn build_type(&mut self, gpu: &mut Gpu, ti: usize) -> Option<PedType> {
+        let t0 = std::time::Instant::now();
+        let read = match self.reading.remove(&ti) {
+            Some(h) => h.join().ok().flatten(),
+            None => read_type(&self.dirs[ti].1, &self.dirs[ti].2),
+        };
+        let ms_read = t0.elapsed().as_secs_f32() * 1000.0;
+        let (name, path, _) = &self.dirs[ti];
+        let (c, own) = read?;
+        let model = SkinModel::from_character(gpu, name, path, c)?;
+        let own: Vec<Arc<Animation>> = own.into_iter().map(Arc::new).collect();
+        log::info!("peds: type {} built in {:.0} ms ({:.0} reading the files)", name, t0.elapsed().as_secs_f32() * 1000.0, ms_read);
         let pick = |what: &str| own.iter().find(|a| a.short().contains(what));
         let walk = Clip::bind(pick("walk")?, &model.ids, false, false);
         let idle = Clip::bind(pick("idle").or(pick("walk"))?, &model.ids, false, false);
@@ -971,6 +989,28 @@ impl Peds {
         let walk_speed = walk.travel.length() / walk.anim.duration.max(1e-3);
         let turn_radius = std::fs::read_to_string(self.tune_dir.join(name).join("mcAmbientType.xml")).ok().and_then(|t| xml_value(&t, "fMinTurningRadius")).unwrap_or(0.1);
         Some(PedType { female, voice: core, model, walk, idle, evade, angry, pivot, lod_switch, walk_speed, turn_radius })
+    }
+
+    /// The files of the types the spawner can draw around `focus` now, read and parsed on worker threads (two at a
+    /// time) before they are first wanted, so building one does not stop the game - docs/PERFORMANCE.md 2026-10-23 (5).
+    fn read_ahead(&mut self, focus: Vec3) {
+        if self.reading.values().filter(|h| !h.is_finished()).count() >= 2 {
+            return;
+        }
+        let names: Vec<String> = self.districts.names(focus, self.hour).into_iter().filter(|n| n.starts_with("ped_")).map(|n| n.to_string()).collect();
+        for n in names {
+            let Some(ti) = self.dirs.iter().position(|d| d.0.eq_ignore_ascii_case(&n)) else { continue };
+            if self.types.contains_key(&ti) || self.reading.contains_key(&ti) {
+                continue;
+            }
+            let (m, a) = (self.dirs[ti].1.clone(), self.dirs[ti].2.clone());
+            if let Ok(h) = std::thread::Builder::new().name("ped read".into()).spawn(move || read_type(&m, &a)) {
+                self.reading.insert(ti, h);
+            }
+            if self.reading.values().filter(|h| !h.is_finished()).count() >= 2 {
+                break;
+            }
+        }
     }
 
     fn load_type(&mut self, gpu: &mut Gpu, ti: usize) -> bool {
@@ -1422,6 +1462,9 @@ impl Peds {
             // the original's 30 Hz frames
             self.step = (self.step + dt).min(FRAME * 4.0);
             frame0 = self.frame_no;
+            if self.districts.loaded() && self.frame_no % 8 == 0 {
+                self.read_ahead(center);
+            }
             while self.step >= FRAME || self.preroll > 0 {
                 if self.preroll > 0 {
                     self.preroll -= 1;

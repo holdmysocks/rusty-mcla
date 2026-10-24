@@ -152,6 +152,11 @@ impl Img {
         o
     }
 
+    /// The mip chain (size and straight RGBA 0..1 per level), for the GPU's copy (minimap_gpu.rs).
+    pub fn levels(&self) -> &[(usize, usize, Vec<[f32; 4]>)] {
+        &self.levels
+    }
+
     /// Trilinear sample at level of detail `lod` (log2 texels per pixel).
     pub fn sample(&self, u: f32, v: f32, lod: f32) -> [f32; 4] {
         let lod = lod.clamp(0.0, (self.levels.len() - 1) as f32);
@@ -190,6 +195,8 @@ pub struct Assets {
     pub mask0: Option<Img>,
     /// egui textures of the pictures, for the GPS map's drawing
     handles: HashMap<String, egui::TextureHandle>,
+    /// `mask0` shared with the GPU's minimap (minimap_gpu.rs)
+    mask0_gpu: Option<Arc<Img>>,
 }
 
 impl Assets {
@@ -201,7 +208,7 @@ impl Assets {
         if mask0.is_none() {
             log::warn!("hudmap: ui/hudmap/mask0.dds not found");
         }
-        Assets { data_dir: data_dir.to_string(), meshes: HashMap::new(), dict: None, mask0, handles: HashMap::new() }
+        Assets { data_dir: data_dir.to_string(), meshes: HashMap::new(), dict: None, mask0, handles: HashMap::new(), mask0_gpu: None }
     }
 
     fn texture(&mut self, mesh: &str, name: &str) -> Option<Arc<Img>> {
@@ -228,6 +235,14 @@ impl Assets {
         dict.get(&format!("{}/{}", mesh.to_ascii_lowercase(), short))
             .or_else(|| dict.iter().find(|(k, _)| k.rsplit(['/', '\\']).next() == Some(short.as_str())).map(|(_, v)| v))
             .cloned()
+    }
+
+    /// `mask0` for the GPU's minimap.
+    pub fn mask0_arc(&mut self) -> Option<Arc<Img>> {
+        if self.mask0_gpu.is_none() {
+            self.mask0_gpu = self.mask0.as_ref().map(|m| Arc::new(Img::from_rgba8(m.w, m.h, &m.rgba8)));
+        }
+        self.mask0_gpu.clone()
     }
 
     pub fn mesh(&mut self, name: &str) -> Option<Arc<IconMesh>> {
@@ -647,6 +662,25 @@ impl State {
             }
             log::info!("hudmap: {} elements {:?}, {} draws, {} rim dots, camera y {:.0}", els.len(), kinds, q.draws.len(), q.rim.len(), f.cam_pos.y);
         }
+        // (on the GPU, into the same texture: minimap_gpu.rs; MCLA_MINIMAP_CPU=1 the CPU's target)
+        if crate::minimap_gpu::enabled() {
+            let (w, h) = (self.target.w, self.target.h);
+            let tex = self.tex.get_or_insert_with(|| ctx.load_texture("hudmap:minimap", egui::ColorImage::new([w, h], egui::Color32::TRANSPARENT), egui::TextureOptions::LINEAR)).clone();
+            crate::minimap_gpu::queue(w, h, &mut self.assets, &self.tune, roads, f, &q, [0.4, 0.4, 0.4], tex.id());
+            // (MCLA_SELF_DUMP: the CPU's picture of the same frame beside the GPU's, as the texture holds it)
+            if let Ok(dir) = std::env::var("MCLA_SELF_DUMP") {
+                render_minimap(&mut self.target, &mut self.assets, &self.tune, roads, f, &q, [0.4, 0.4, 0.4]);
+                let img = crate::flash_ui::plain_image(w as u32, h as u32, &self.target.resolve());
+                let px: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+                if let Ok(file) = std::fs::File::create(format!("{dir}/minimap_cpu.png")) {
+                    let mut e = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
+                    e.set_color(png::ColorType::Rgba);
+                    e.set_depth(png::BitDepth::Eight);
+                    let _ = e.write_header().and_then(|mut wr| wr.write_image_data(&px));
+                }
+            }
+            return tex;
+        }
         render_minimap(&mut self.target, &mut self.assets, &self.tune, roads, f, &q, [0.4, 0.4, 0.4]);
         let px = self.target.resolve();
         let img = crate::flash_ui::plain_image(self.target.w as u32, self.target.h as u32, &px);
@@ -667,6 +701,25 @@ impl State {
     /// a texture (the hudmap movie shows it in `HUD.renderMe`, scaled to its 739 x 499 window).
     pub fn overhead(&mut self, ctx: &egui::Context, f: &Frame, els: &[Element], roads: Option<&crate::mapmesh::RoadMap>) -> egui::TextureHandle {
         let q = build(&self.tune, &mut self.assets, f, els, &[], false);
+        // (on the GPU, as the minimap: minimap_gpu.rs; MCLA_MINIMAP_CPU=1 the CPU's target)
+        if crate::minimap_gpu::enabled() {
+            let tex = self.over_tex.get_or_insert_with(|| ctx.load_texture("hudmap:overhead", egui::ColorImage::new([OVERHEAD_W, OVERHEAD_H], egui::Color32::TRANSPARENT), egui::TextureOptions::LINEAR)).clone();
+            crate::minimap_gpu::queue(OVERHEAD_W, OVERHEAD_H, &mut self.assets, &self.tune, roads, f, &q, [0.4, 0.4, 0.4], tex.id());
+            // (MCLA_SELF_DUMP: the CPU's picture of the same frame beside the GPU's)
+            if let Ok(dir) = std::env::var("MCLA_SELF_DUMP") {
+                let t = self.over.get_or_insert_with(|| Target::rect(OVERHEAD_W, OVERHEAD_H));
+                render_minimap(t, &mut self.assets, &self.tune, roads, f, &q, [0.4, 0.4, 0.4]);
+                let img = crate::flash_ui::plain_image(OVERHEAD_W as u32, OVERHEAD_H as u32, &t.resolve());
+                let px: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+                if let Ok(file) = std::fs::File::create(format!("{dir}/overhead_cpu.png")) {
+                    let mut e = png::Encoder::new(std::io::BufWriter::new(file), OVERHEAD_W as u32, OVERHEAD_H as u32);
+                    e.set_color(png::ColorType::Rgba);
+                    e.set_depth(png::BitDepth::Eight);
+                    let _ = e.write_header().and_then(|mut wr| wr.write_image_data(&px));
+                }
+            }
+            return tex;
+        }
         let t = self.over.get_or_insert_with(|| Target::rect(OVERHEAD_W, OVERHEAD_H));
         render_minimap(t, &mut self.assets, &self.tune, roads, f, &q, [0.4, 0.4, 0.4]);
         let img = crate::flash_ui::plain_image(t.w as u32, t.h as u32, &t.resolve());
@@ -1316,6 +1369,34 @@ pub struct Target {
     /// the overhead map's roads (its camera stands still once the movie's easing settles): the
     /// samples after the roads, and the view they were drawn from
     roads: Option<([u32; 16], Vec<[f32; 4]>)>,
+    /// the mask pass's values per sample (they depend on the mask picture and the target's size only),
+    /// by the picture they were read from
+    mask_m: Option<(usize, Vec<f32>)>,
+}
+
+/// The x range (pixels, one more on each side for the rounding of the exact test) where the triangle `v`
+/// meets the band of rows `b0..b1`; None when it does not.
+fn band_span(v: &[(f32, f32, f32); 3], b0: f64, b1: f64) -> Option<(f64, f64)> {
+    let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+    for i in 0..3 {
+        let (p, q) = (v[i], v[(i + 1) % 3]);
+        let (px, py, qx, qy) = (p.0 as f64, p.1 as f64, q.0 as f64, q.1 as f64);
+        if py >= b0 && py <= b1 {
+            lo = lo.min(px);
+            hi = hi.max(px);
+        }
+        if py != qy {
+            for b in [b0, b1] {
+                let t = (b - py) / (qy - py);
+                if (0.0..=1.0).contains(&t) {
+                    let x = px + (qx - px) * t;
+                    lo = lo.min(x);
+                    hi = hi.max(x);
+                }
+            }
+        }
+    }
+    (lo <= hi).then(|| (lo.floor() - 1.0, hi.ceil() + 1.0))
 }
 
 /// Where the four samples of a pixel lie (pixel corner = 0). *(approx.)* The console's own 4x positions are not
@@ -1335,7 +1416,7 @@ impl Target {
     }
 
     pub fn rect(w: usize, h: usize) -> Target {
-        Target { w, h, buf: vec![[0.0; 4]; w * h * NS], roads: None }
+        Target { w, h, buf: vec![[0.0; 4]; w * h * NS], roads: None, mask_m: None }
     }
 
     pub fn clear(&mut self, c: [f32; 4]) {
@@ -1365,8 +1446,12 @@ impl Target {
         let (px0, py0) = (x0.floor().max(0.0) as usize, y0.floor().max(0.0) as usize);
         let (px1, py1) = ((x1.ceil() as usize).min(self.w - 1), (y1.ceil() as usize).min(self.h - 1));
         let inv = 1.0 / area;
-        for py in py0..=py1 {
-            for px in px0..=px1 {
+        // (each row of the box on its own - rows share no samples, so they run side by side with the same
+        // result; only the pixels the triangle can reach in the row - docs/PERFORMANCE.md, 2026-10-23)
+        let row = |py: usize, out: &mut [[f32; 4]]| {
+            let Some((lo, hi)) = band_span(&v, py as f64, py as f64 + 1.0) else { return };
+            let (sx0, sx1) = ((lo.max(px0 as f64)) as usize, (hi.min(px1 as f64)) as usize);
+            for px in sx0..=sx1.min(px1) {
                 for (s, (sx, sy)) in SAMPLES.iter().enumerate() {
                     let (x, y) = (px as f32 + sx, py as f32 + sy);
                     let w0 = ((v[1].0 - x) * (v[2].1 - y) - (v[2].0 - x) * (v[1].1 - y)) * inv;
@@ -1384,13 +1469,21 @@ impl Target {
                         None => tex.map_or([1.0; 4], |t| t.sample(u, vv, lod)),
                     };
                     let src = [t[0] * colour[0], t[1] * colour[1], t[2] * colour[2], t[3] * colour[3]];
-                    let d = &mut self.buf[(py * self.w + px) * NS + s];
+                    let d = &mut out[px * NS + s];
                     for k in 0..3 {
                         d[k] = src[k] * src[3] + d[k] * (1.0 - src[3]);
                     }
                     d[3] = d[3].max(src[3]);
                 }
             }
+        };
+        let rl = self.w * NS;
+        let rows = &mut self.buf[py0 * rl..(py1 + 1) * rl];
+        if (px1 + 1 - px0) * (py1 + 1 - py0) >= 4096 {
+            use rayon::prelude::*;
+            mcla_flash::raster::pool().install(|| rows.par_chunks_mut(rl).enumerate().for_each(|(i, r)| row(py0 + i, r)));
+        } else {
+            rows.chunks_mut(rl).enumerate().for_each(|(i, r)| row(py0 + i, r));
         }
     }
 
@@ -1438,17 +1531,25 @@ impl Target {
     /// The mask pass: alpha minus (1 - mask), the mask's red channel over the whole target
     /// (`AlphaModulate`, uv clamped to 0.05..0.95, reverse subtract).
     pub fn mask(&mut self, mask: &Img) {
-        let (nw, nh) = (self.w as f32, self.h as f32);
-        for py in 0..self.h {
-            for px in 0..self.w {
-                for (s, (sx, sy)) in SAMPLES.iter().enumerate() {
-                    let u = ((px as f32 + sx) / nw).clamp(0.05, 0.95);
-                    let v = ((py as f32 + sy) / nh).clamp(0.05, 0.95);
-                    let m = mask.sample(u, v, 0.0)[0];
-                    let d = &mut self.buf[(py * self.w + px) * NS + s];
-                    d[3] = (d[3] - (1.0 - m)).max(0.0);
+        // (the mask's value at each sample, read once for this picture and size)
+        let key = mask.rgba8.as_ptr() as usize;
+        if self.mask_m.as_ref().map_or(true, |(k, m)| *k != key || m.len() != self.buf.len()) {
+            let (nw, nh) = (self.w as f32, self.h as f32);
+            let mut m = Vec::with_capacity(self.buf.len());
+            for py in 0..self.h {
+                for px in 0..self.w {
+                    for (sx, sy) in SAMPLES.iter() {
+                        let u = ((px as f32 + sx) / nw).clamp(0.05, 0.95);
+                        let v = ((py as f32 + sy) / nh).clamp(0.05, 0.95);
+                        m.push(mask.sample(u, v, 0.0)[0]);
+                    }
                 }
             }
+            self.mask_m = Some((key, m));
+        }
+        let m = &self.mask_m.as_ref().unwrap().1;
+        for (d, m) in self.buf.iter_mut().zip(m) {
+            d[3] = (d[3] - (1.0 - m)).max(0.0);
         }
     }
 

@@ -31,7 +31,7 @@ pub struct Vertex {
     pub color: [u8; 4],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     /// triangle list; `kind` is the SWF fill type for bitmap fills (0x40 repeat, 0x41 clamp ...)
     Triangles { tex: TexRef, kind: u8, verts: Vec<Vertex> },
@@ -42,7 +42,7 @@ pub enum Item {
     MaskPop,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct DrawList {
     pub items: Vec<Item>,
 }

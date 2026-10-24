@@ -256,7 +256,16 @@ impl FaceShapes {
 impl SkinModel {
     /// Load a character set; `name` only keys the texture cache.
     pub fn load(gpu: &mut Gpu, name: &str, path: &Path) -> Option<SkinModel> {
-        let c = Character::parse(&load_resource_file(path).ok()?).ok()?;
+        Self::from_character(gpu, name, path, Self::read(path)?)
+    }
+
+    /// The character set's file, read (no GPU work: may run on a worker thread).
+    pub fn read(path: &Path) -> Option<Character> {
+        Character::parse(&load_resource_file(path).ok()?).ok()
+    }
+
+    /// The model of a character set read by `read`.
+    pub fn from_character(gpu: &mut Gpu, name: &str, path: &Path, c: Character) -> Option<SkinModel> {
         let ids: Vec<u16> = c.bones.iter().map(|b| b.id).collect();
         let bones: Vec<Bone> = c.bones.iter().map(|b| Bone { parent: b.parent, pos: b.local_pos, rot: b.local_rot, bind: b.world_pos }).collect();
         // one texture per shader
