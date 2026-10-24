@@ -155,7 +155,9 @@ impl Builder {
 /// egui texture `tex`.
 #[allow(clippy::too_many_arguments)]
 pub fn queue(w: usize, h: usize, assets: &mut Assets, tune: &Tune, roads: Option<&crate::mapmesh::RoadMap>, f: &Frame, q: &Queue, clear_rgb: [f32; 3], tex: egui::TextureId) {
-    let mut b = Builder { w: w as f32, h: h as f32, verts: Vec::new(), cmds: Vec::new() };
+    // (room for as many vertices as the last picture had: the list is not grown step by step every frame)
+    static LAST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let mut b = Builder { w: w as f32, h: h as f32, verts: Vec::with_capacity(LAST.load(std::sync::atomic::Ordering::Relaxed)), cmds: Vec::new() };
     let mut road_job = None;
     // (no road is drawn in a frame without an icon - sub_822371E0)
     if !q.draws.is_empty() || !q.rim.is_empty() {
@@ -245,6 +247,7 @@ pub fn queue(w: usize, h: usize, assets: &mut Assets, tune: &Tune, roads: Option
                 }
             }
         }
+        LAST.store(b.verts.len(), std::sync::atomic::Ordering::Relaxed);
         j.push(Job { size: [w as u32, h as u32], roads: road_job, verts: b.verts, cmds: b.cmds, clear: clear_rgb, mask, tex });
     }
 }

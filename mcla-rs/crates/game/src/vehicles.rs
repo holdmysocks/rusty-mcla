@@ -2162,13 +2162,14 @@ impl Vehicles {
     }
 
     pub fn spawn(&mut self, gpu: &Gpu, model: Arc<CarModel>, pos: Vec3, yaw: f32, color: [f32; 4], is_player: bool) -> usize {
-        let binding = gpu.new_object(&ObjectUniform::default());
-        let wheel_bindings = (0..4).map(|_| gpu.new_object(&ObjectUniform::default())).collect();
-        let caliper_bindings = (0..4).map(|_| gpu.new_object(&ObjectUniform::default())).collect();
-        let window_bindings = if model.windows.iter().any(|w| w.is_some()) { (0..2).map(|_| gpu.new_object(&ObjectUniform::default())).collect() } else { Vec::new() };
+        // (the parts' uniforms in shared buffers, written once a frame by `upload_uniforms` - render::ObjPool)
+        let binding = gpu.new_pooled_object(&ObjectUniform::default());
+        let wheel_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
+        let caliper_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
+        let window_bindings = if model.windows.iter().any(|w| w.is_some()) { (0..2).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect() } else { Vec::new() };
         let part_bindings = match model.batch_window.iter().copied().max().unwrap_or(0) {
-            g if g >= 7 => (0..10).map(|_| gpu.new_object(&ObjectUniform::default())).collect(),
-            g if g >= 3 => (0..4).map(|_| gpu.new_object(&ObjectUniform::default())).collect(),
+            g if g >= 7 => (0..10).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
+            g if g >= 3 => (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
             _ => Vec::new(),
         };
         let mut ai = None;

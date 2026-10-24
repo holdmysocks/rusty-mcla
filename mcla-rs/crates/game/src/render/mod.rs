@@ -507,6 +507,49 @@ impl Default for ObjectUniform {
 pub struct ObjectBinding {
     pub buf: wgpu::Buffer,
     pub bg: wgpu::BindGroup,
+    /// where in `buf` its uniform lies (0, or its slot in a shared buffer - `Gpu::new_pooled_object`)
+    pub off: u64,
+    slot: Option<PoolSlot>,
+}
+
+/// Objects whose uniforms share buffers of `POOL_SLOTS` slots (`Gpu::new_pooled_object`, the cars' parts), each
+/// buffer written once a frame for all of them by `UniformBatch` instead of a copy per object (docs/PERFORMANCE.md
+/// 2026-10-24). `mirror` holds what each buffer holds - every write goes through it -, `dirty` the part written
+/// since the last flush.
+#[derive(Default)]
+pub struct ObjPool {
+    bufs: Vec<wgpu::Buffer>,
+    mirror: Vec<Vec<u8>>,
+    dirty: Vec<Option<(usize, usize)>>,
+    free: Vec<(u32, u64)>,
+    stride: u64,
+}
+
+const POOL_SLOTS: u64 = 256;
+
+impl ObjPool {
+    fn put(&mut self, buf: u32, off: u64, b: &[u8]) {
+        let (i, o) = (buf as usize, off as usize);
+        self.mirror[i][o..o + b.len()].copy_from_slice(b);
+        let d = &mut self.dirty[i];
+        *d = Some(d.map_or((o, o + b.len()), |(lo, hi)| (lo.min(o), hi.max(o + b.len()))));
+    }
+}
+
+/// An object's slot in the pool; given back when the object is dropped.
+struct PoolSlot {
+    pool: Arc<std::sync::Mutex<ObjPool>>,
+    buf: u32,
+}
+
+impl Drop for ObjectBinding {
+    fn drop(&mut self) {
+        if let Some(s) = self.slot.as_ref() {
+            if let Ok(mut p) = s.pool.lock() {
+                p.free.push((s.buf, self.off));
+            }
+        }
+    }
 }
 
 /// Many small uniform buffers written with one upload (docs/PERFORMANCE.md 2026-10-24): every
@@ -517,7 +560,9 @@ pub struct ObjectBinding {
 #[derive(Default)]
 pub struct UniformBatch {
     bytes: Vec<u8>,
-    dst: Vec<(wgpu::Buffer, u64, u64)>,
+    dst: Vec<(wgpu::Buffer, u64, u64, u64)>,
+    /// pooled objects' values: (pool buffer, offset in it, start in `bytes`, length)
+    pooled: Vec<(u32, u64, usize, usize)>,
     arena: Option<wgpu::Buffer>,
 }
 
@@ -526,16 +571,35 @@ impl UniformBatch {
         let b = bytemuck::bytes_of(v);
         // (copies go in steps of 4 bytes: every uniform here is a multiple of 16)
         debug_assert!(b.len() % 4 == 0);
-        self.dst.push((buf.clone(), self.bytes.len() as u64, b.len() as u64));
+        self.dst.push((buf.clone(), 0, self.bytes.len() as u64, b.len() as u64));
         self.bytes.extend_from_slice(b);
     }
 
     pub fn push_object(&mut self, b: &ObjectBinding, u: &ObjectUniform) {
-        self.push(&b.buf, u);
+        let v = bytemuck::bytes_of(u);
+        match b.slot.as_ref() {
+            Some(s) => self.pooled.push((s.buf, b.off, self.bytes.len(), v.len())),
+            None => self.dst.push((b.buf.clone(), b.off, self.bytes.len() as u64, v.len() as u64)),
+        }
+        self.bytes.extend_from_slice(v);
     }
 
     fn flush(&mut self, gpu: &Gpu) {
+        if !self.pooled.is_empty() {
+            if let Ok(mut p) = gpu.obj_pool.lock() {
+                for &(buf, off, start, len) in &self.pooled {
+                    p.put(buf, off, &self.bytes[start..start + len]);
+                }
+                for i in 0..p.bufs.len() {
+                    if let Some((lo, hi)) = p.dirty[i].take() {
+                        gpu.queue.write_buffer(&p.bufs[i], lo as u64, &p.mirror[i][lo..hi]);
+                    }
+                }
+            }
+            self.pooled.clear();
+        }
         if self.dst.is_empty() {
+            self.bytes.clear();
             return;
         }
         let need = self.bytes.len() as u64;
@@ -550,8 +614,8 @@ impl UniformBatch {
         let arena = self.arena.as_ref().unwrap();
         gpu.queue.write_buffer(arena, 0, &self.bytes);
         let mut enc = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("uniform batch") });
-        for (buf, off, len) in &self.dst {
-            enc.copy_buffer_to_buffer(arena, *off, buf, 0, *len);
+        for (buf, at, off, len) in &self.dst {
+            enc.copy_buffer_to_buffer(arena, *off, buf, *at, *len);
         }
         gpu.queue.submit([enc.finish()]);
         self.bytes.clear();
@@ -577,6 +641,8 @@ pub struct GpuBase {
 }
 
 pub struct Gpu {
+    /// the shared buffers of the pooled objects' uniforms (`new_pooled_object`)
+    pub obj_pool: Arc<std::sync::Mutex<ObjPool>>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface: Arc<wgpu::Surface<'static>>,
@@ -755,7 +821,8 @@ impl Gpu {
         // (the game's own sky / road / sea programs: translated from the disc at install time, read once here - xs.rs)
         xs::load(&crate::hooks::get().map(|r| r.data.path.clone()).unwrap_or_else(|| std::path::PathBuf::from(".")));
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
+            // (WGPU_BACKEND=dx12 etc.: a test hook to try another backend; Vulkan first by default)
+            backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
             ..Default::default()
         });
         let surface = instance.create_surface(window.clone()).context("create surface")?;
@@ -1945,6 +2012,7 @@ impl Gpu {
         let (scene_w, scene_h) = (config.width, config.height);
         let depth_ui = depth.clone();
         Gpu {
+            obj_pool: Default::default(),
             device,
             queue,
             surface,
@@ -2190,9 +2258,38 @@ impl Gpu {
         make_object_binding(&self.device, &self.obj_layout, u, &self.blank_dmg)
     }
 
+    /// The same with its uniform in a slot of a shared buffer (`ObjPool`): for objects written every frame through a
+    /// `UniformBatch` (the cars' parts).
+    pub fn new_pooled_object(&self, u: &ObjectUniform) -> ObjectBinding {
+        let size = std::mem::size_of::<ObjectUniform>() as u64;
+        let mut p = self.obj_pool.lock().unwrap_or_else(|e| e.into_inner());
+        if p.stride == 0 {
+            let a = (self.device.limits().min_uniform_buffer_offset_alignment as u64).max(16);
+            p.stride = size.div_ceil(a) * a;
+        }
+        if p.free.is_empty() {
+            let i = p.bufs.len() as u32;
+            let bytes = p.stride * POOL_SLOTS;
+            p.bufs.push(self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("object pool"), size: bytes, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+            p.mirror.push(vec![0u8; bytes as usize]);
+            p.dirty.push(None);
+            let stride = p.stride;
+            p.free.extend((0..POOL_SLOTS).rev().map(|s| (i, s * stride)));
+        }
+        let (bi, off) = p.free.pop().unwrap();
+        let buf = p.bufs[bi as usize].clone();
+        // (its first value, as a buffer of its own is made with it - written now, and kept in the mirror)
+        let o = off as usize;
+        p.mirror[bi as usize][o..o + size as usize].copy_from_slice(bytemuck::bytes_of(u));
+        drop(p);
+        self.queue.write_buffer(&buf, off, bytemuck::bytes_of(u));
+        let bg = object_bind_group(&self.device, &self.obj_layout, &buf, off, &self.blank_dmg);
+        ObjectBinding { buf, bg, off, slot: Some(PoolSlot { pool: self.obj_pool.clone(), buf: bi }) }
+    }
+
     /// The object drawn with a damage map (`None`: the empty one) - its uniform kept.
     pub fn object_damage_map(&self, b: &mut ObjectBinding, map: Option<&wgpu::TextureView>) {
-        b.bg = object_bind_group(&self.device, &self.obj_layout, &b.buf, map.unwrap_or(&self.blank_dmg));
+        b.bg = object_bind_group(&self.device, &self.obj_layout, &b.buf, b.off, map.unwrap_or(&self.blank_dmg));
     }
 
     /// A car's damage map: 256 x 256 RGBA8, linear (crate::damagemap).
@@ -2967,15 +3064,16 @@ fn make_object_binding(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, u:
         contents: bytemuck::bytes_of(u),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    let bg = object_bind_group(device, layout, &buf, dmg);
-    ObjectBinding { buf, bg }
+    let bg = object_bind_group(device, layout, &buf, 0, dmg);
+    ObjectBinding { buf, bg, off: 0, slot: None }
 }
 
-fn object_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, buf: &wgpu::Buffer, dmg: &wgpu::TextureView) -> wgpu::BindGroup {
+fn object_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, buf: &wgpu::Buffer, off: u64, dmg: &wgpu::TextureView) -> wgpu::BindGroup {
+    let size = wgpu::BufferSize::new(std::mem::size_of::<ObjectUniform>() as u64);
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("object bg"),
         layout,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(dmg) }],
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: buf, offset: off, size }) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(dmg) }],
     })
 }
 
