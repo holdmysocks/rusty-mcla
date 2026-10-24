@@ -6115,7 +6115,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             physics::vehsim::STEER_SENS.store((0.5 + self.game.sens_exact() * 0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
             self.speech.update(a, dt);
             self.radio.update(a, dt);
-            // pedestrians shouting as they jump clear
+            // pedestrians shouting as they jump clear (their speech banks looked up ahead)
+            self.peds.scan_voices_ahead(a.root());
             for sp in std::mem::take(&mut self.peds.speech) {
                 let root = a.root().to_path_buf();
                 if let Some(bank) = self.peds.voice_bank(&root, &sp.voice, sp.female) {
@@ -9044,28 +9045,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         render::ms::set_scene(gpu.scene_n);
         passprof::mark("city");
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("city"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    // (always the HDR scene target - multisampled, resolved before the post chain: the tone map is
-                    // what writes the display)
-                    view: gpu.scene_color(),
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0] as f64, g: clear[1] as f64, b: clear[2] as f64, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                // (the stencil: 0 the world, 1 the sky and the ground dome, 4 k (+1) the k-th car - render/mb.rs)
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: gpu.scene_ds(),
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Store }),
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+        // (the city pass as two passes - docs/PERFORMANCE.md 2026-10-24: A, the sky and the opaque sectors, recorded on
+        // a worker into a command buffer of its own while this thread records B - the ground sheet, props, cars, people,
+        // the blended sectors, glass and glows - into a pass that loads what A stored. The same draws in the same order
+        // on the same targets: every draw of B sets its own bind groups and buffers, and B starts from the state A
+        // leaves it (the globals, the identity object, the opaque pipeline). MCLA_CITY_ONE_PASS=1: one pass as before.)
+        let split_city = std::env::var("MCLA_CITY_ONE_PASS").is_err();
+        let sector_view = SectorView { gpu: &gpu, occluded: &occluded, frustum: &frustum, cam_pos, lens, only: self.opt.only.as_deref(), hide: self.opt.hide.as_deref() };
+        let (sky_bind, citymap, loaded, sets) = (self.sky_bind.as_ref(), self.citymap.as_ref(), &world.loaded, &world.sets);
+        let city_a = |pass: &mut wgpu::RenderPass<'_>, draws: &mut usize| {
+            let gpu = &gpu;
             pass.set_bind_group(0, &gpu.globals_bg, &[]);
             // (the sky writes stencil 1: ps_main_withstarfield, ref 1 in 0x210D)
             pass.set_stencil_reference(1);
@@ -9074,7 +9063,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 pass.set_bind_group(1, tb, &[]);
                 pass.set_bind_group(2, &gpu.sky_hat.buf_bg, &[]);
                 pass.draw(0..3, 0..1);
-            } else if let (false, Some(sb)) = (map_baked, self.sky_bind.as_ref()) {
+            } else if let (false, Some(sb)) = (map_baked, sky_bind) {
                 pass.set_pipeline(&gpu.pipeline_sky);
                 pass.set_bind_group(1, sb.as_ref(), &[]);
                 pass.draw(0..3, 0..1);
@@ -9082,117 +9071,76 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             pass.set_stencil_reference(0);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
             pass.set_pipeline(&gpu.pipeline_opaque);
-            if let (true, Some(cm)) = (map_baked, self.citymap.as_ref()) {
+            if let (true, Some(cm)) = (map_baked, citymap) {
                 pass.set_bind_group(1, cm.bind.as_ref(), &[]);
                 pass.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Opaque as u32)], &[]);
                 if let Some((vb, ib, n, _)) = cm.patch.as_ref() {
                     pass.set_vertex_buffer(0, vb.slice(..));
                     pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..*n, 0, 0..1);
-                    draws += 1;
+                    *draws += 1;
                     pass.set_bind_group(3, &cm.low.bg, &[]);
                 }
                 pass.set_vertex_buffer(0, cm.vb.slice(..));
                 pass.set_index_buffer(cm.ib.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..cm.count, 0, 0..1);
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
-                draws += 1;
+                *draws += 1;
             }
-            for phase in 0..(if map_baked { 0 } else { 2 }) {
-                if phase == 1 {
-                    // (the original's ground sheet: after the opaque city and the sky, before the props)
-                    ground_sheet::draw(&mut pass, &gpu, vp);
-                    // instanced foliage
-                    pass.set_pipeline(&gpu.pipeline_inst);
-                    pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
-                    let d0 = draws;
-                    self.props.draw_scene(&mut pass, &gpu, self.cam.pos, &frustum, Some(&occluded), &mut draws);
-                    stat_props = draws - d0;
-                    pass.set_pipeline(&gpu.pipeline_opaque);
-                    let d1 = draws;
-                    self.vehicles.draw(&mut pass, &gpu, false, &mut draws, Some((cam_pos, 450.0)), Some(&frustum));
-                    pass.set_stencil_reference(0);
-                    stat_cars = draws - d1;
-                    pass.set_pipeline(&gpu.pipeline_opaque);
-                    self.peds.draw(&mut pass, &gpu, false, &mut draws);
-                    self.cine.draw(&mut pass, &gpu, false, &mut draws);
-                    self.drivers.draw(&mut pass, &gpu, &mut draws);
-                    pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
-                    pass.set_pipeline(&gpu.pipeline_blend);
-                }
-                let mut last_mode = u32::MAX;
+            if !map_baked {
+                draw_sectors(pass, &sector_view, loaded.values().chain(sets.values()), 0, false, draws);
+                pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+            }
+        };
+        let mut city_a_out: Option<(wgpu::CommandBuffer, usize)> = None;
+        if split_city {
+            early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
+        }
+        mcla_flash::raster::pool().in_place_scope(|scope| {
+            if split_city {
+                let (city_a, out) = (&city_a, &mut city_a_out);
+                let gpu = &gpu;
+                scope.spawn(move |_| {
+                    let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("city sky and sectors") });
+                    let mut n = 0usize;
+                    {
+                        let mut pass = begin_city_pass(&mut e, gpu, clear, false);
+                        city_a(&mut pass, &mut n);
+                    }
+                    *out = Some((e.finish(), n));
+                });
+            }
+            let mut pass = begin_city_pass(&mut enc, &gpu, clear, split_city);
+            if split_city {
+                pass.set_bind_group(0, &gpu.globals_bg, &[]);
+                pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+                pass.set_pipeline(&gpu.pipeline_opaque);
+            } else {
+                city_a(&mut pass, &mut draws);
+            }
+            if !map_baked {
+                // (the original's ground sheet: after the opaque city and the sky, before the props)
+                ground_sheet::draw(&mut pass, &gpu, vp);
+                // instanced foliage
+                pass.set_pipeline(&gpu.pipeline_inst);
+                pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+                let d0 = draws;
+                self.props.draw_scene(&mut pass, &gpu, self.cam.pos, &frustum, Some(&occluded), &mut draws);
+                stat_props = draws - d0;
+                pass.set_pipeline(&gpu.pipeline_opaque);
+                let d1 = draws;
+                self.vehicles.draw(&mut pass, &gpu, false, &mut draws, Some((cam_pos, 450.0)), Some(&frustum));
+                pass.set_stencil_reference(0);
+                stat_cars = draws - d1;
+                pass.set_pipeline(&gpu.pipeline_opaque);
+                self.peds.draw(&mut pass, &gpu, false, &mut draws);
+                self.cine.draw(&mut pass, &gpu, false, &mut draws);
+                self.drivers.draw(&mut pass, &gpu, &mut draws);
+                pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+                pass.set_pipeline(&gpu.pipeline_blend);
                 // (shop panes write depth as the original's pane draws do; MCLA_DEBUG_VIEW=330: as before, no depth writes)
-                let pane_zw = phase == 1 && std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "330");
-                let mut pane_pipe = false;
-                for sec in world.loaded.values().chain(world.sets.values()) {
-                    let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
-                    if occluded.hides_all(sec.batches.iter().map(|b| (b.min, b.max))) {
-                        continue;
-                    }
-                    let mut bound = false;
-                    let mut last_bind: *const wgpu::BindGroup = std::ptr::null();
-                    // (the sector's own object uniforms: its cross-fade with the far model, and
-                    // which of its batches are interiors - world.rs `GpuSector::obj`)
-                    let mut last_obj = 0u8;
-                    for b in &sec.batches {
-                        let blend = matches!(b.mode, MatMode::Blend | MatMode::StoreGlass);
-                        if blend != (phase == 1) {
-                            continue;
-                        }
-                        if !frustum.intersects_aabb(b.min, b.max) {
-                            continue;
-                        }
-                        if let Some(o) = sec.obj.as_ref() {
-                            let want = if b.interior { 2 } else { 1 };
-                            if want != last_obj {
-                                pass.set_bind_group(3, if b.interior { &o.1.bg } else { &o.0.bg }, &[]);
-                                last_obj = want;
-                            }
-                        }
-                        // contribution culling: skip what covers less than a few pixels
-                        let ext = (b.max - b.min).length();
-                        let dist = ((b.min + b.max) * 0.5).distance(cam_pos);
-                        if ext < dist * 0.012 * lens {
-                            continue;
-                        }
-                        if let Some(o) = self.opt.only.as_ref() {
-                            if !b.shader.contains(o.as_str()) {
-                                continue;
-                            }
-                        }
-                        if let Some(h) = self.opt.hide.as_ref() {
-                            if b.shader.contains(h.as_str()) {
-                                continue;
-                            }
-                        }
-                        if !bound {
-                            pass.set_vertex_buffer(0, vb.slice(..));
-                            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                            bound = true;
-                        }
-                        let bp = Arc::as_ptr(&b.bind);
-                        if bp != last_bind {
-                            pass.set_bind_group(1, b.bind.as_ref(), &[]);
-                            last_bind = bp;
-                        }
-                        if b.mode as u32 != last_mode {
-                            pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
-                            last_mode = b.mode as u32;
-                        }
-                        if pane_zw {
-                            let want_pane = matches!(b.mode, MatMode::StoreGlass);
-                            if want_pane != pane_pipe {
-                                pass.set_pipeline(if want_pane { &gpu.pipeline_pane } else { &gpu.pipeline_blend });
-                                pane_pipe = want_pane;
-                            }
-                        }
-                        pass.draw_indexed(b.first..b.first + b.count, 0, 0..1);
-                        draws += 1;
-                    }
-                }
-                if pane_pipe {
-                    pass.set_pipeline(&gpu.pipeline_blend);
-                }
+                let pane_zw = std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "330");
+                draw_sectors(&mut pass, &sector_view, loaded.values().chain(sets.values()), 1, pane_zw, &mut draws);
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
             }
             if !map3d {
@@ -9219,6 +9167,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             pass.set_pipeline(&gpu.pipeline_blend);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+        });
+        if let Some((cb, n)) = city_a_out {
+            early_cbs.push(cb);
+            draws += n;
         }
         passprof::mark("mirror+particles+post+ui");
         // The original's hidden rear-view mirror (rearview.rs; OPTIONS > DISPLAY > REAR-VIEW MIRROR, DECISIONS.md D20;
@@ -9415,9 +9367,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if self.framelog.is_some() {
             self.fl_prev = [ticks as f32, sim_ms, self.fl_stream_ms, t_sim - sim_ms, t_acq - t_sim, t_ui - t_acq, t_enc - t_ui, t_end - t_enc, world.loaded.len() as f32];
         }
-        if self.frame_no % 240 == 0 {
-            log::info!("phases: sim {:.2} ms, acquire {:.2} + ui {:.2}, passes {:.2}, submit+present {:.2}", t_sim, t_acq - t_sim, t_ui - t_acq, t_enc - t_ui, t_end - t_enc);
-        }
+        // (the frame's parts, the mean of the 240 frames since the last line: the game ticks, the frame's preparation,
+        // the swap chain, the UI, recording the passes, submit and present - docs/PERFORMANCE.md)
+        thread_local!(static PHASES: std::cell::Cell<([f64; 6], u32)> = const { std::cell::Cell::new(([0.0; 6], 0)) });
+        PHASES.with(|c| {
+            let (mut acc, mut n) = c.get();
+            for (a, v) in acc.iter_mut().zip([sim_ms, t_sim - sim_ms, t_acq - t_sim, t_ui - t_acq, t_enc - t_ui, t_end - t_enc]) {
+                *a += v as f64;
+            }
+            n += 1;
+            if self.frame_no % 240 == 0 {
+                let m: Vec<f64> = acc.iter().map(|a| a / n as f64).collect();
+                log::info!("phases: ticks {:.2} ms, prep {:.2}, acquire {:.2} + ui {:.2}, passes {:.2}, submit+present {:.2} (mean of {} frames)", m[0], m[1], m[2], m[3], m[4], m[5], n);
+                (acc, n) = ([0.0; 6], 0);
+            }
+            c.set((acc, n));
+        });
         // (MCLA_ENV_DUMP=<file>: with the screenshot, the cars' environment maps as numbers)
         if shot_buf.is_some() {
             if let Ok(p) = std::env::var("MCLA_ENV_DUMP") {
@@ -11528,6 +11493,119 @@ fn radio_ctx(vehicles: &vehicles::Vehicles, world: &world::World, hour: f32) -> 
 /// through the city's collision; the last place it stood free when it touches. (approx.) The
 /// original sweeps a true ball (sub_82574C38) and also counts the cars and props its type
 /// flags name; here balls in steps of at most `r` against the city's triangles.
+/// The city pass (`load`: its second part, which keeps what the first stored - docs/PERFORMANCE.md 2026-10-24).
+fn begin_city_pass<'e>(enc: &'e mut wgpu::CommandEncoder, gpu: &Gpu, clear: [f32; 4], load: bool) -> wgpu::RenderPass<'e> {
+    enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(if load { "city (rest)" } else { "city" }),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            // (always the HDR scene target - multisampled, resolved before the post chain: the tone map is
+            // what writes the display)
+            view: gpu.scene_color(),
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: if load { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color { r: clear[0] as f64, g: clear[1] as f64, b: clear[2] as f64, a: 1.0 }) },
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        // (the stencil: 0 the world, 1 the sky and the ground dome, 4 k (+1) the k-th car - render/mb.rs)
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: gpu.scene_ds(),
+            depth_ops: Some(wgpu::Operations { load: if load { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0.0) }, store: wgpu::StoreOp::Store }),
+            stencil_ops: Some(wgpu::Operations { load: if load { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0) }, store: wgpu::StoreOp::Store }),
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    })
+}
+
+/// What the city pass's sector loop reads (`draw_sectors`), shared with the worker that records the first part of
+/// the pass (docs/PERFORMANCE.md 2026-10-24).
+struct SectorView<'a> {
+    gpu: &'a Gpu,
+    occluded: &'a occluder::Selected,
+    frustum: &'a Frustum,
+    cam_pos: Vec3,
+    lens: f32,
+    only: Option<&'a str>,
+    hide: Option<&'a str>,
+}
+
+/// The city's sector batches of one phase: 0 the opaque ones, 1 the blended ones.
+fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: impl Iterator<Item = &'a world::GpuSector>, phase: usize, pane_zw: bool, draws: &mut usize) {
+    let gpu = v.gpu;
+    let mut last_mode = u32::MAX;
+    let mut pane_pipe = false;
+    for sec in secs {
+        let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
+        if v.occluded.hides_all(sec.batches.iter().map(|b| (b.min, b.max))) {
+            continue;
+        }
+        let mut bound = false;
+        let mut last_bind: *const wgpu::BindGroup = std::ptr::null();
+        // (the sector's own object uniforms: its cross-fade with the far model, and
+        // which of its batches are interiors - world.rs `GpuSector::obj`)
+        let mut last_obj = 0u8;
+        for b in &sec.batches {
+            let blend = matches!(b.mode, MatMode::Blend | MatMode::StoreGlass);
+            if blend != (phase == 1) {
+                continue;
+            }
+            if !v.frustum.intersects_aabb(b.min, b.max) {
+                continue;
+            }
+            if let Some(o) = sec.obj.as_ref() {
+                let want = if b.interior { 2 } else { 1 };
+                if want != last_obj {
+                    pass.set_bind_group(3, if b.interior { &o.1.bg } else { &o.0.bg }, &[]);
+                    last_obj = want;
+                }
+            }
+            // contribution culling: skip what covers less than a few pixels
+            let ext = (b.max - b.min).length();
+            let dist = ((b.min + b.max) * 0.5).distance(v.cam_pos);
+            if ext < dist * 0.012 * v.lens {
+                continue;
+            }
+            if let Some(o) = v.only {
+                if !b.shader.contains(o) {
+                    continue;
+                }
+            }
+            if let Some(h) = v.hide {
+                if b.shader.contains(h) {
+                    continue;
+                }
+            }
+            if !bound {
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                bound = true;
+            }
+            let bp = Arc::as_ptr(&b.bind);
+            if bp != last_bind {
+                pass.set_bind_group(1, b.bind.as_ref(), &[]);
+                last_bind = bp;
+            }
+            if b.mode as u32 != last_mode {
+                pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
+                last_mode = b.mode as u32;
+            }
+            if pane_zw {
+                let want_pane = matches!(b.mode, MatMode::StoreGlass);
+                if want_pane != pane_pipe {
+                    pass.set_pipeline(if want_pane { &gpu.pipeline_pane } else { &gpu.pipeline_blend });
+                    pane_pipe = want_pane;
+                }
+            }
+            pass.draw_indexed(b.first..b.first + b.count, 0, 0..1);
+            *draws += 1;
+        }
+    }
+    if pane_pipe {
+        pass.set_pipeline(&gpu.pipeline_blend);
+    }
+}
+
 fn replay_probe(c: &physics::collision::WorldCollider, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
     let d = b - a;
     let n = ((d.length() / r.max(0.05)).ceil() as usize).clamp(1, 96);

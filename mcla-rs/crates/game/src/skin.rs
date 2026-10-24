@@ -521,6 +521,8 @@ pub struct SkinBuffer {
     /// and each draw's figure and material
     char_draws: Vec<(usize, CharMat)>,
     char_objs: Vec<crate::render::ObjectBinding>,
+    /// the objects' uniforms of this frame, written in one upload
+    uniforms: crate::render::UniformBatch,
 }
 
 impl SkinBuffer {
@@ -679,7 +681,7 @@ impl SkinBuffer {
                 let fxv = if cl.night && m.fx == fx::PED { 0 } else { m.fx };
                 u.interior[4] = [fxv as f32, 1.0, if m.double { 1.0 } else { 0.0 }, if by { 1.0 } else { 0.0 }];
                 if i < self.char_objs.len() {
-                    gpu.queue.write_buffer(&self.char_objs[i].buf, 0, bytemuck::bytes_of(&u));
+                    self.uniforms.push_object(&self.char_objs[i], &u);
                 } else {
                     self.char_objs.push(gpu.new_object(&u));
                 }
@@ -690,11 +692,12 @@ impl SkinBuffer {
             u.lamp_a[..12].copy_from_slice(l);
             u.lamp_b[0][3] = 2.0;
             if i < self.lane_objs.len() {
-                gpu.queue.write_buffer(&self.lane_objs[i].buf, 0, bytemuck::bytes_of(&u));
+                self.uniforms.push_object(&self.lane_objs[i], &u);
             } else {
                 self.lane_objs.push(gpu.new_object(&u));
             }
         }
+        gpu.flush_uniforms(&mut self.uniforms);
     }
 
     /// Draw with the pipeline already set (opaque pass or shadow pass).

@@ -743,6 +743,8 @@ pub struct Peds {
     pub evades: u32,
     evade_radius: f32,
     voices: Option<HashMap<String, String>>,
+    /// the speech banks' scan, started ahead on a thread (`scan_voices_ahead`)
+    voices_scan: Option<std::thread::JoinHandle<HashMap<String, String>>>,
     buf: SkinBuffer,
     /// at night: the lights the walkers' picker lays over their grid lamps, and the 30 Hz frames
     /// since the last frame (main.rs sets them each frame; None by day - figlight.rs)
@@ -823,6 +825,7 @@ impl Peds {
             crossings: 0,
             evade_radius: std::env::var("MCLA_PED_EVADE").ok().and_then(|v| v.parse().ok()).unwrap_or(2.3),
             voices: None,
+            voices_scan: None,
             buf: SkinBuffer::default(),
             night_lights: None,
             fig_lights: HashMap::new(),
@@ -2017,25 +2020,20 @@ impl Peds {
         self.buf.draw(pass, gpu, shadow, draws);
     }
 
+    /// The speech banks' scan (`voice_bank`) on a thread of its own, once: read cold, the bank folders' indexes took
+    /// one game tick 313 ms at the first pedestrian's shout (docs/PERFORMANCE.md 2026-10-24).
+    pub fn scan_voices_ahead(&mut self, audio_root: &Path) {
+        if self.voices.is_some() || self.voices_scan.is_some() {
+            return;
+        }
+        let root = audio_root.to_path_buf();
+        self.voices_scan = std::thread::Builder::new().name("speech banks".into()).spawn(move || scan_voice_banks(&root)).ok();
+    }
+
     /// Speech bank of a voice key ("fh_006"), from the converted `ped_*` banks.
     pub fn voice_bank(&mut self, audio_root: &Path, voice: &str, female: bool) -> Option<String> {
         if self.voices.is_none() {
-            let mut m = HashMap::new();
-            if let Ok(rd) = std::fs::read_dir(audio_root.join("0x051b41b9")) {
-                for e in rd.flatten() {
-                    let Ok(t) = std::fs::read_to_string(e.path().join("_index.tsv")) else { continue };
-                    // "ped_slow_evade_fh_006_06" -> "fh_006"
-                    for line in t.lines().take(40) {
-                        let name = line.split('\t').next().unwrap_or("");
-                        let Some(i) = name.find("_evade_") else { continue };
-                        let rest = &name[i + 7..];
-                        if let Some(j) = rest.rfind('_') {
-                            m.insert(rest[..j].to_string(), format!("0x051b41b9/{}", e.file_name().to_string_lossy()));
-                            break;
-                        }
-                    }
-                }
-            }
+            let m = self.voices_scan.take().and_then(|h| h.join().ok()).unwrap_or_else(|| scan_voice_banks(audio_root));
             log::info!("peds: {} speech banks", m.len());
             self.voices = Some(m);
         }
@@ -2052,6 +2050,27 @@ impl Peds {
         }
         Some(same[hash(mcla_formats::hash::joaat(voice), 3) as usize % same.len()].clone())
     }
+}
+
+/// The speech bank of each voice key: the folder of the first `ped_*_evade_<voice>_NN` wave in a bank's index.
+fn scan_voice_banks(audio_root: &Path) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    if let Ok(rd) = std::fs::read_dir(audio_root.join("0x051b41b9")) {
+        for e in rd.flatten() {
+            let Ok(t) = std::fs::read_to_string(e.path().join("_index.tsv")) else { continue };
+            // "ped_slow_evade_fh_006_06" -> "fh_006"
+            for line in t.lines().take(40) {
+                let name = line.split('\t').next().unwrap_or("");
+                let Some(i) = name.find("_evade_") else { continue };
+                let rest = &name[i + 7..];
+                if let Some(j) = rest.rfind('_') {
+                    m.insert(rest[..j].to_string(), format!("0x051b41b9/{}", e.file_name().to_string_lossy()));
+                    break;
+                }
+            }
+        }
+    }
+    m
 }
 
 #[cfg(test)]

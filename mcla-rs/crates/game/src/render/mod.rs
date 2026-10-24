@@ -509,6 +509,56 @@ pub struct ObjectBinding {
     pub bg: wgpu::BindGroup,
 }
 
+/// Many small uniform buffers written with one upload (docs/PERFORMANCE.md 2026-10-24): every
+/// `queue.write_buffer` makes a staging buffer of its own on the device, ~1000 a frame for the
+/// city's cars. The values are gathered here, written once into `arena` and copied from there
+/// into each buffer by a command buffer submitted at once: what any later submit sees is the
+/// same as with a `write_buffer` per buffer, in the same order (the last value of a buffer wins).
+#[derive(Default)]
+pub struct UniformBatch {
+    bytes: Vec<u8>,
+    dst: Vec<(wgpu::Buffer, u64, u64)>,
+    arena: Option<wgpu::Buffer>,
+}
+
+impl UniformBatch {
+    pub fn push<T: Pod>(&mut self, buf: &wgpu::Buffer, v: &T) {
+        let b = bytemuck::bytes_of(v);
+        // (copies go in steps of 4 bytes: every uniform here is a multiple of 16)
+        debug_assert!(b.len() % 4 == 0);
+        self.dst.push((buf.clone(), self.bytes.len() as u64, b.len() as u64));
+        self.bytes.extend_from_slice(b);
+    }
+
+    pub fn push_object(&mut self, b: &ObjectBinding, u: &ObjectUniform) {
+        self.push(&b.buf, u);
+    }
+
+    fn flush(&mut self, gpu: &Gpu) {
+        if self.dst.is_empty() {
+            return;
+        }
+        let need = self.bytes.len() as u64;
+        if self.arena.as_ref().map_or(true, |a| a.size() < need) {
+            self.arena = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("uniform batch"),
+                size: need.next_power_of_two().max(1 << 16),
+                usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let arena = self.arena.as_ref().unwrap();
+        gpu.queue.write_buffer(arena, 0, &self.bytes);
+        let mut enc = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("uniform batch") });
+        for (buf, off, len) in &self.dst {
+            enc.copy_buffer_to_buffer(arena, *off, buf, 0, *len);
+        }
+        gpu.queue.submit([enc.finish()]);
+        self.bytes.clear();
+        self.dst.clear();
+    }
+}
+
 pub struct GpuTexture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -2174,6 +2224,11 @@ impl Gpu {
 
     pub fn update_object(&self, b: &ObjectBinding, u: &ObjectUniform) {
         self.queue.write_buffer(&b.buf, 0, bytemuck::bytes_of(u));
+    }
+
+    /// Writes a batch's uniforms (`UniformBatch::flush`).
+    pub fn flush_uniforms(&self, batch: &mut UniformBatch) {
+        batch.flush(self);
     }
 
     pub fn write_lights(&self, l: &LightSet) {

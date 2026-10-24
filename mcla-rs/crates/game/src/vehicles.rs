@@ -668,6 +668,8 @@ pub struct Vehicles {
     /// whether the glow pass draws a car's lamp glows this frame (`pick_lods`, by the cars' index)
     pub lod_glow: Vec<bool>,
     pub models: Vec<Arc<CarModel>>,
+    /// this frame's uniforms, written in one upload (`upload_uniforms`)
+    uniforms: crate::render::UniformBatch,
     pub wheels: Option<Arc<WheelModel>>,
     pub cars: Vec<CarInstance>,
     pub traffic_target: usize,
@@ -3768,6 +3770,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     pub fn upload_uniforms(&mut self, gpu: &Gpu, night: f32) {
         self.damage_maps(gpu);
         let player_lamps = self.player_lamps.clone();
+        let mut batch = std::mem::take(&mut self.uniforms);
         for c in self.cars.iter_mut() {
             let pose = c.render_pose(self.render_alpha);
             let mut m = Mat4::from_rotation_translation(pose.rot, pose.pos);
@@ -3851,12 +3854,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // (+ 256: the in-car glass, only the player's car - the camera's target, sub_822A9670)
             let int_glass = if self.interior_glass && c.is_player { 256.0 } else { 0.0 };
             let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5 };
-            gpu.update_object(&c.binding, &body_u);
+            batch.push_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {
                 let Some(clip) = c.model.windows[k].as_ref() else { continue };
                 let wm = m * clip.delta(c.windows[k].clip_time(clip.duration));
-                gpu.update_object(wb, &ObjectUniform { model: wm.to_cols_array_2d(), ..body_u });
+                batch.push_object(wb, &ObjectUniform { model: wm.to_cols_array_2d(), ..body_u });
             }
             // (the moving damage parts: hood, trunk lid, rear and front bumper - damageparts.rs)
             for (k, pb) in c.part_bindings.iter().enumerate() {
@@ -3900,7 +3903,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         pu.dents[2] = [h.x, h.y, h.z, 1.0];
                     }
                 }
-                gpu.update_object(pb, &pu);
+                batch.push_object(pb, &pu);
             }
             for (i, b) in c.wheel_bindings.iter().enumerate() {
                 let left = i % 2 == 0;
@@ -3930,16 +3933,18 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (the fourth: the tyre's dirt - TireDirtColor.w, its hub's scrape sum at most 1 - and a
                 // mark that this is a wheel)
                 finish[3] = [c.state.dmg.rim_scuff(i), 1.0, 0.0, 0.0];
-                gpu.update_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: finish, fill: car_fill, ..Default::default() });
+                batch.push_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: finish, fill: car_fill, ..Default::default() });
                 // the caliper: with the wheel but for its turning, on the rear of the disc on
                 // both sides (the right ones turned over instead of around)
                 if let (Some(cb), true) = (c.caliper_bindings.get(i), c.model.brakes.is_some() || c.brake.is_some()) {
                     let side = if left { Quat::IDENTITY } else { Quat::from_rotation_y(std::f32::consts::PI) * Quat::from_rotation_x(std::f32::consts::PI) };
                     let cm = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * side) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
-                    gpu.update_object(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], fill: car_fill, ..Default::default() });
+                    batch.push_object(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], fill: car_fill, ..Default::default() });
                 }
             }
         }
+        gpu.flush_uniforms(&mut batch);
+        self.uniforms = batch;
     }
 
     /// The glow of every lit lamp near the camera, as the game's glow table rates them
