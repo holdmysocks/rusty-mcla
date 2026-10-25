@@ -199,11 +199,17 @@ fn grid_lamps_spec(wpos: vec3<f32>, r: vec3<f32>, e2: f32) -> vec3<f32> {
 // CityDefault-type and road forms, THREE in the tile form (CityTunnelTile / CityGrimeMetal read
 // only half of the second index texture). x: the diffuse sum (x n.l); y: the specular sum,
 // s / (e2 - (e2 - 1) s) with s = sat(r . l), for the forms that have one (e2 = 0: none).
-fn interior_lamps(wpos: vec3<f32>, n: vec3<f32>, r: vec3<f32>, e2: f32, count: i32) -> array<vec3<f32>, 2> {
+// (A struct, not array<vec3<f32>, 2>: naga's HLSL writer drops the array typedef of a function's
+// return type, and FXC then fails the whole city module on DX12 - docs/LIGHTING.md, 2026-10-24.)
+struct Lamps {
+    x: vec3<f32>,
+    y: vec3<f32>,
+}
+fn interior_lamps(wpos: vec3<f32>, n: vec3<f32>, r: vec3<f32>, e2: f32, count: i32) -> Lamps {
     var out = array<vec3<f32>, 2>(vec3<f32>(0.0), vec3<f32>(0.0));
     let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.5485759, 0.5282554);
     if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
-        return out;
+        return Lamps(out[0], out[1]);
     }
     let cell = textureLoad(t_lamp_grid, vec2<i32>(uv * vec2<f32>(512.0, 640.0)), 0);
     for (var k = 0; k < count; k = k + 1) {
@@ -228,7 +234,7 @@ fn interior_lamps(wpos: vec3<f32>, n: vec3<f32>, r: vec3<f32>, e2: f32, count: i
     }
     out[0] = out[0] * 3.0;
     out[1] = out[1] * 3.0;
-    return out;
+    return Lamps(out[0], out[1]);
 }
 
 // One tap of the cascades' depth map as the original's sampler s15 gives it: the depth itself,
@@ -2822,7 +2828,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         // four lamps, as before.)
         let neon3 = mat.mode == 5u && in.uv2.x > 0.5 && (u32(round(in.uv2.y)) & 4096u) != 0u && !(g.params.w > 332.5 && g.params.w < 333.5);
         if (neon3) {
-            light_in = (hemi + in.color1.rgb * 1.25 * g.ambient_ground.x + interior_lamps(in.wpos, n, n, 0.0, 3)[0] * g.ambient_ground.x + g.key_col.rgb * max(dot(n, g.key_dir.xyz), 0.0)) * occ;
+            light_in = (hemi + in.color1.rgb * 1.25 * g.ambient_ground.x + interior_lamps(in.wpos, n, n, 0.0, 3).x * g.ambient_ground.x + g.key_col.rgb * max(dot(n, g.key_dir.xyz), 0.0)) * occ;
         }
         if (g.tone.w > 1.5) {
             // The environment map's night program (PSMultiLightEnv): the ambient and the cell's
@@ -2910,7 +2916,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // taken. Diagnostics 84: sRGB day picture, night picture to the power 2.2, four
             // lamps - as it stood; 88: the night picture by the sRGB curve.)
             var np = pwl_decode(hs.rgb);
-            var lod_lamps = interior_lamps(in.wpos, n, n, 0.0, 3)[0] * g.ambient_ground.x;
+            var lod_lamps = interior_lamps(in.wpos, n, n, 0.0, 3).x * g.ambient_ground.x;
             if (g.params.w > 83.5 && g.params.w < 84.5) { np = pow(hs.rgb, vec3<f32>(2.2)); lod_lamps = grid_lamps(in.wpos, n); }
             if (g.params.w > 87.5 && g.params.w < 88.5) { np = srgb_decode(hs.rgb); }
             light_in = hemi + np * 1.25 * abs(g.ambient_ground.x) + lod_lamps + g.key_col.rgb * max(dot(n, g.key_dir.xyz), 0.0);
@@ -3005,8 +3011,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let no_spec = g.params.w > 77.5 && g.params.w < 78.5;
             if (tile_in) {
                 let il = interior_lamps(in.wpos, n, reflect(-v, n), select(0.0, 2.0 * max(wall_spec.x, 1.0), hs_k != 0u), 3);
-                light_in = v1 * 1.25 + il[0] + dir_in;
-                if (hs_k != 0u && !no_spec) { int_spec = (il[1] + v1 * 0.3125) * wall_spec.w; }
+                light_in = v1 * 1.25 + il.x + dir_in;
+                if (hs_k != 0u && !no_spec) { int_spec = (il.y + v1 * 0.3125) * wall_spec.w; }
                 if (!(g.params.w > 76.5 && g.params.w < 77.5)) {
                     let rv = reflect(-v, n);
                     let pic = xgm(textureSampleLevel(t_fourth, s_diffuse, vec2<f32>(0.5 - 0.9 * rv.x, 0.5 - 0.47 * rv.y), 0.0).rgb);
@@ -3018,9 +3024,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             } else {
                 let wall_hs = int_wall && hs_k != 0u;
                 let il = interior_lamps(in.wpos, n, reflect(-v, n), select(0.0, 2.0 * max(wall_spec.x, 1.0), wall_hs), 4);
-                light_in = (v1 * 1.25 + il[0] + select(dir_in, vec3<f32>(0.0), tunnel_road)) * occ;
+                light_in = (v1 * 1.25 + il.x + select(dir_in, vec3<f32>(0.0), tunnel_road)) * occ;
                 if (wall_hs && !no_spec) {
-                    int_spec = mix(vec3<f32>(1.0), base, wall_spec.z) * (wall_spec.y * wall_spec.w) * (il[1] + v1 * 0.3125);
+                    int_spec = mix(vec3<f32>(1.0), base, wall_spec.z) * (wall_spec.y * wall_spec.w) * (il.y + v1 * 0.3125);
                 } else if (mat.mode == 4u && !no_spec) {
                     int_spec = v1 * 0.3125 * (mix(0.4, 0.33, second.a * second.a) * albedo.g) * mix(vec3<f32>(1.0), base, 0.7);
                 }
@@ -3180,8 +3186,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         tile_n = true;
         let soft_t = in.color1.rgb * (1.25 * abs(g.ambient_ground.x)) + hemi * occ;
         let il_t = interior_lamps(in.wpos, n, reflect(-v, n), select(0.0, 2.0 * max(wall_spec.x, 1.0), hs_k != 0u), 3);
-        light_in = soft_t + il_t[0] * g.ambient_ground.x + g.key_col.rgb * max(dot(n, g.key_dir.xyz), 0.0);
-        if (hs_k != 0u) { tile_spec = (il_t[1] * g.ambient_ground.x + 0.25 * soft_t) * wall_spec.w; }
+        light_in = soft_t + il_t.x * g.ambient_ground.x + g.key_col.rgb * max(dot(n, g.key_dir.xyz), 0.0);
+        if (hs_k != 0u) { tile_spec = (il_t.y * g.ambient_ground.x + 0.25 * soft_t) * wall_spec.w; }
     }
     var lit = base * light_in;
     if (tile_out && !night_prog) {
@@ -4494,7 +4500,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 var hl_n = in.color1.rgb * (0.3125 * abs(g.ambient_ground.x)) + grid_lamps_spec(in.wpos, reflect(-v, n), 2.0 * max(round(in.color.r * 255.0), 1.0));
                 // (the first three lamps' highlights, as the diffuse sum above; 333: four)
                 if (!(g.params.w > 332.5 && g.params.w < 333.5)) {
-                    hl_n = in.color1.rgb * (0.3125 * abs(g.ambient_ground.x)) + interior_lamps(in.wpos, n, reflect(-v, n), 2.0 * max(round(in.color.r * 255.0), 1.0), 3)[1] * g.ambient_ground.x;
+                    hl_n = in.color1.rgb * (0.3125 * abs(g.ambient_ground.x)) + interior_lamps(in.wpos, n, reflect(-v, n), 2.0 * max(round(in.color.r * 255.0), 1.0), 3).y * g.ambient_ground.x;
                 }
                 if (!(g.params.w > 330.5 && g.params.w < 331.5)) { lit = lit + mix(vec3<f32>(1.0), albedo.rgb, round(in.color.b * 255.0) / 100.0) * (round(in.color.g * 255.0) / 100.0) * hl_n; }
             }

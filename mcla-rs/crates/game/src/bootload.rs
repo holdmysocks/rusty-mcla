@@ -228,7 +228,7 @@ impl Loading {
             let pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("start-up movie"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &ui_view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &self.depth, depth_ops: None, stencil_ops: None }),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &self.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }), stencil_ops: None }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });

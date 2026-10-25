@@ -48,7 +48,7 @@ struct LightSet {
 @group(0) @binding(8) var t_lamp_data: texture_2d<f32>;
 
 @group(1) @binding(0) var t_diffuse: texture_2d<f32>;
-@group(1) @binding(1) var s_diffuse: sampler;
+@group(0) @binding(16) var s_diffuse: sampler;
 
 struct VsIn {
     @location(0) pos: vec3<f32>,

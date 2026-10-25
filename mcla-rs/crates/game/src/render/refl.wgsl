@@ -62,7 +62,7 @@ struct Globals {
 // a far model's batch: 0 the day picture (a window model's wall texture), 2 a window model's
 // lit rooms (WindowSampler), 3 the night picture
 @group(1) @binding(0) var t_a: texture_2d<f32>;
-@group(1) @binding(1) var s_a: sampler;
+@group(0) @binding(16) var s_a: sampler;
 @group(1) @binding(2) var t_b: texture_2d<f32>;
 @group(1) @binding(3) var t_c: texture_2d<f32>;
 

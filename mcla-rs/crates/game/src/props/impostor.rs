@@ -110,6 +110,8 @@ pub(super) struct Impostors {
     pipeline_mask_trunk: wgpu::RenderPipeline,
     ms_mask: [wgpu::TextureView; 2],
     ms_mask_depth: [wgpu::TextureView; 2],
+    /// group 2: the materials' sampler
+    samp_bg: wgpu::BindGroup,
     /// the type whose mask is drawn next (one a frame, in turn), the hour of the last call, masks drawn so far
     mask_next: usize,
     mask_hour: f32,
@@ -149,7 +151,13 @@ impl Impostors {
             entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }],
         });
         let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("impostor tile"), source: wgpu::ShaderSource::Wgsl(include_str!("impostor.wgsl").into()) });
-        let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("impostor tile pl"), bind_group_layouts: &[&tile_layout, &gpu.tex_layout], push_constant_ranges: &[] });
+        // (the materials' sampler in a group of its own, made once: it left the texture group - render/mod.rs `sampler`)
+        let samp_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("impostor sampler layout"),
+            entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None }],
+        });
+        let samp_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("impostor sampler"), layout: &samp_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&gpu.sampler) }] });
+        let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("impostor tile pl"), bind_group_layouts: &[&tile_layout, &gpu.tex_layout, &samp_layout], push_constant_ranges: &[] });
         let make = |entry: &str| gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("impostor tile"),
             layout: Some(&pl),
@@ -269,7 +277,7 @@ impl Impostors {
         log::info!("impostors: {} plant types with a {} x {} picture ({} named in MultiPropTuning.xml), redrawn every other frame while their cards are in view", types.len(), TILE, TILE, sched.len());
         let mask_on = !std::env::var("MCLA_NO_SHADOW_IMPOSTORS").map_or(false, |v| v != "0");
         log::info!("impostors: shadow masks {} ({} of {} x {}, the rest {} x {}), one redrawn a frame", if mask_on { "on" } else { "off (MCLA_NO_SHADOW_IMPOSTORS)" }, types.iter().filter(|t| t.mask.width == MASK_BIG).count(), MASK_BIG, MASK_BIG, TILE, TILE);
-        Some(Impostors { types, by_baked, pipeline, pipeline_trunk, ms_color, ms_normal, ms_depth, pipeline_mask, pipeline_mask_trunk, ms_mask, ms_mask_depth, mask_next: 0, mask_hour: f32::NAN, mask_total: 0, mask_on, frame: 2, total: 0, log_every: std::env::var("MCLA_IMPOSTOR_LOG").ok().and_then(|v| v.parse().ok()).unwrap_or(0) })
+        Some(Impostors { types, by_baked, pipeline, pipeline_trunk, ms_color, ms_normal, ms_depth, pipeline_mask, pipeline_mask_trunk, ms_mask, ms_mask_depth, samp_bg, mask_next: 0, mask_hour: f32::NAN, mask_total: 0, mask_on, frame: 2, total: 0, log_every: std::env::var("MCLA_IMPOSTOR_LOG").ok().and_then(|v| v.parse().ok()).unwrap_or(0) })
     }
 
     /// The model to draw in the scene pass where a run names the baked card `baked`: the type's
@@ -332,6 +340,7 @@ impl Impostors {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &ty.mask_bg, &[]);
+            pass.set_bind_group(2, &self.samp_bg, &[]);
             for b in &model.batches {
                 pass.set_pipeline(if b.mode as u32 == MatMode::Foliage as u32 { &self.pipeline_mask } else { &self.pipeline_mask_trunk });
                 pass.set_bind_group(1, b.bind.as_ref(), &[]);
@@ -410,6 +419,7 @@ impl Impostors {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &ty.bg, &[]);
+            pass.set_bind_group(2, &self.samp_bg, &[]);
             for b in &model.batches {
                 pass.set_pipeline(if b.mode as u32 == MatMode::Foliage as u32 { &self.pipeline } else { &self.pipeline_trunk });
                 pass.set_bind_group(1, b.bind.as_ref(), &[]);

@@ -49,7 +49,7 @@ fn to_scene(d: vec3<f32>) -> vec3<f32> {
     return v * (l / max(y, 0.0001)) / max(g.tone.x, 0.001);
 }
 @group(1) @binding(0) var t_sprite: texture_2d<f32>;
-@group(1) @binding(1) var s_sprite: sampler;
+@group(0) @binding(16) var s_sprite: sampler;
 // the projected arrows' four textures, checkpoint_arrows_anim_0..3 one above the other
 // (particles.rs `arrow_atlas`; the effect sheets' second texture)
 @group(1) @binding(2) var t_arrow: texture_2d<f32>;

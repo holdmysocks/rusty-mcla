@@ -820,20 +820,37 @@ impl Gpu {
     pub async fn base(window: Arc<winit::window::Window>) -> Result<GpuBase> {
         // (the game's own sky / road / sea programs: translated from the disc at install time, read once here - xs.rs)
         xs::load(&crate::hooks::get().map(|r| r.data.path.clone()).unwrap_or_else(|| std::path::PathBuf::from(".")));
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            // (WGPU_BACKEND=dx12 etc.: a test hook to try another backend; Vulkan first by default)
-            backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
-            ..Default::default()
-        });
-        let surface = instance.create_surface(window.clone()).context("create surface")?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .context("no suitable GPU adapter")?;
+        // Vulkan when the driver has it, else DX12 (WGPU_BACKEND=dx12 etc.: a test hook to force another backend).
+        // On DX12 the instance is made again with InstanceFlags::DEBUG, which is what makes wgpu compile with FXC's
+        // optimiser off (/Od): that optimiser recurses without end on city.wgsl's fs_main and overflows any stack
+        // (docs/LIGHTING.md, 2026-10-24). The driver still optimises the program; Vulkan is untouched.
+        let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY);
+        let mut dx12_od = false;
+        let (surface, adapter) = loop {
+            let mut flags = wgpu::InstanceFlags::from_build_config().with_env();
+            if dx12_od {
+                flags |= wgpu::InstanceFlags::DEBUG;
+            }
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: if dx12_od { wgpu::Backends::DX12 } else { backends },
+                flags,
+                ..Default::default()
+            });
+            let surface = instance.create_surface(window.clone()).context("create surface")?;
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                })
+                .await
+                .context("no suitable GPU adapter")?;
+            if adapter.get_info().backend == wgpu::Backend::Dx12 && !dx12_od && !flags.contains(wgpu::InstanceFlags::DEBUG) {
+                dx12_od = true;
+                continue;
+            }
+            break (surface, adapter);
+        };
         let info = adapter.get_info();
         log::info!("GPU: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
         crate::hooks::set_adapter(&info);
@@ -922,6 +939,21 @@ impl Gpu {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
+        // The materials' sampler. It is bound once in group 0 (globals binding 16, the shadow layout's binding 1, the sky
+        // hat's binding 1), not in every material's texture group: wgpu 24 on DX12 copies a bind group's samplers into a
+        // 2048-entry heap for every bind group, and the city's materials ran it out (docs/LIGHTING.md, DX12 fallback).
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("aniso"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            // (diagnostics, p2day 2026-10-13: MCLA_ANISO=<1..16>; the original's city fetches ask for 4 : 1)
+            anisotropy_clamp: std::env::var("MCLA_ANISO").ok().and_then(|v| v.parse::<u16>().ok()).map_or(4, |v| v.clamp(1, 16)),
+            ..Default::default()
+        });
         let shadow_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("shadow globals"),
             contents: bytemuck::bytes_of(&CascPass { light_vp: Mat4::IDENTITY.to_cols_array_2d(), bias: [0.0; 4] }),
@@ -929,17 +961,20 @@ impl Gpu {
         });
         let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow globals layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
         });
         let shadow_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("shadow bg"),
             layout: &shadow_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: shadow_buf.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: shadow_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }],
         });
         // the original's four cascades: their depth map, a uniform and bind group per tile's
         // pass, and what the scene reads them with
@@ -959,7 +994,7 @@ impl Gpu {
             .collect();
         let casc_pass_bgs: Vec<wgpu::BindGroup> = casc_pass_bufs
             .iter()
-            .map(|b| device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("cascade pass bg"), layout: &shadow_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: b.as_entire_binding() }] }))
+            .map(|b| device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("cascade pass bg"), layout: &shadow_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: b.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }] }))
             .collect();
         let casc_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("cascades"), contents: bytemuck::bytes_of(&CascUniform::zeroed()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
         let lights_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1070,6 +1105,8 @@ impl Gpu {
                 },
                 // the city's texture sampler: the device's default sampler state, maximum anisotropy by mode (ms.rs)
                 wgpu::BindGroupLayoutEntry { binding: 15, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                // the materials' sampler (was binding 1 of every texture group)
+                wgpu::BindGroupLayoutEntry { binding: 16, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
         let minisky_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -1249,6 +1286,7 @@ impl Gpu {
                     wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(&casc_view) },
                     wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(&minisky_view) },
                     wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::Sampler(samp) },
+                    wgpu::BindGroupEntry { binding: 16, resource: wgpu::BindingResource::Sampler(&sampler) },
                 ],
             })
         };
@@ -1356,12 +1394,7 @@ impl Gpu {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
+                // (binding 1, the sampler, is in group 0: globals binding 16 / shadow binding 1 / sky hat binding 1)
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1848,7 +1881,7 @@ impl Gpu {
         };
         let pipeline_particle = make_particle(false);
         let pipeline_particle_add = make_particle(true);
-        let sky_hat = skyhat::SkyHat::new(&device, &globals_layout, &tex_layout);
+        let sky_hat = skyhat::SkyHat::new(&device, &globals_layout, &tex_layout, &sampler);
         // the wet road's planar reflection: the far models mirrored, the dome mirrored behind
         let refl_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("road reflection"),
@@ -1991,18 +2024,6 @@ impl Gpu {
             cache: None,
         }))
         };
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("aniso"),
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            address_mode_w: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
-            // (diagnostics, p2day 2026-10-13: MCLA_ANISO=<1..16>; the original's city fetches ask for 4 : 1)
-            anisotropy_clamp: std::env::var("MCLA_ANISO").ok().and_then(|v| v.parse::<u16>().ok()).map_or(4, |v| v.clamp(1, 16)),
-            ..Default::default()
-        });
         let white = Arc::new(create_rgba(&device, &queue, 1, 1, &[255, 255, 255, 255], "white"));
         let clear_tex = Arc::new(create_rgba(&device, &queue, 1, 1, &[0, 0, 0, 0], "clear"));
         let refl_bg = make_refl_bg(&device, &refl_layout, &refl_buf, &sky_hat.buf, &clear_tex.view, &clear_tex.view, &sampler);
@@ -3025,7 +3046,7 @@ impl Gpu {
     /// Three-texture material (ground shaders: diffuse, decal atlas, grime).
     /// The sky dome's textures (see `skyhat::SkyHat::bind`).
     pub fn bind_sky_hat(&mut self, stars: &GpuTexture, galaxy: &GpuTexture, detail: &GpuTexture, noise1: &GpuTexture) {
-        self.sky_hat.bind(&self.device, &self.tex_layout, &self.sampler, stars, galaxy, detail, noise1, &self.clear_tex);
+        self.sky_hat.bind(&self.device, &self.tex_layout, stars, galaxy, detail, noise1, &self.clear_tex);
         // (the reflection pass draws the dome too: the Perlin pass's target and the detail noise)
         self.refl_bg = make_refl_bg(&self.device, &self.refl_layout, &self.refl_buf, &self.sky_hat.buf, &self.sky_hat.perlin_view, &detail.view, &self.sampler);
     }
@@ -3047,7 +3068,6 @@ impl Gpu {
             layout: &self.tex_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&diffuse.view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&second.view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&third.view) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&fourth.view) },

@@ -10,7 +10,7 @@ struct Hat {
 };
 @group(0) @binding(0) var<uniform> hat: Hat;
 @group(1) @binding(0) var t_noise1: texture_2d<f32>;
-@group(1) @binding(1) var s_rep: sampler;
+@group(0) @binding(1) var s_rep: sampler;
 
 var<private> xs_c: array<vec4<f32>, 256>;
 

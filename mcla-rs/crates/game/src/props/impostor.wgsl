@@ -15,7 +15,7 @@ struct Tile {
 };
 @group(0) @binding(0) var<uniform> tile: Tile;
 @group(1) @binding(0) var t_diffuse: texture_2d<f32>;
-@group(1) @binding(1) var s_diffuse: sampler;
+@group(2) @binding(0) var s_diffuse: sampler;
 
 struct VsIn {
     @location(0) pos: vec3<f32>,

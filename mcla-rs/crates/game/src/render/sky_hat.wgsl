@@ -16,7 +16,7 @@ struct Globals {
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var t_stars: texture_2d<f32>;
-@group(1) @binding(1) var s_rep: sampler;
+@group(0) @binding(16) var s_rep: sampler;
 @group(1) @binding(2) var t_galaxy: texture_2d<f32>;
 @group(1) @binding(3) var t_perlin: texture_2d<f32>;
 @group(1) @binding(4) var t_detail: texture_2d<f32>;

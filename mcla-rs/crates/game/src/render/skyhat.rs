@@ -65,7 +65,7 @@ pub struct SkyHat {
 }
 
 impl SkyHat {
-    pub fn new(device: &wgpu::Device, globals_layout: &wgpu::BindGroupLayout, tex_layout: &wgpu::BindGroupLayout) -> SkyHat {
+    pub fn new(device: &wgpu::Device, globals_layout: &wgpu::BindGroupLayout, tex_layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler) -> SkyHat {
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sky hat"),
             size: (HAT_VEC4S * 16) as u64,
@@ -74,17 +74,21 @@ impl SkyHat {
         });
         let hat_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sky hat"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                // the materials' sampler, for the Perlin pass (its group 0; render/mod.rs `sampler`)
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
         });
         let buf_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("sky hat"),
             layout: &hat_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) }],
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky hat"),
@@ -197,14 +201,13 @@ impl SkyHat {
     /// The dome's textures: `starfield.dds`, `galaxy.dds`, `noise16_p.dds` (the high detail
     /// noise) and `perlinnoise_small.dds` (what the Perlin pass reads) of the disc's sky folder.
     #[allow(clippy::too_many_arguments)]
-    pub fn bind(&mut self, device: &wgpu::Device, tex_layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, stars: &GpuTexture, galaxy: &GpuTexture, detail: &GpuTexture, noise1: &GpuTexture, spare: &GpuTexture) {
+    pub fn bind(&mut self, device: &wgpu::Device, tex_layout: &wgpu::BindGroupLayout, stars: &GpuTexture, galaxy: &GpuTexture, detail: &GpuTexture, noise1: &GpuTexture, spare: &GpuTexture) {
         let make = |a: &wgpu::TextureView, b: &wgpu::TextureView, c: &wgpu::TextureView, d: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("sky hat textures"),
                 layout: tex_layout,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(a) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(b) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(c) },
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(d) },
