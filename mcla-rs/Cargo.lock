@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "mcla"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-config"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "log",
  "serde",
@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-flash"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "hashbrown 0.15.5",
@@ -1652,7 +1652,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-formats"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aes",
  "anyhow",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-install"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "fs2",
  "log",
@@ -1685,7 +1685,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-mods"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "log",
  "mcla-config",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-savedecode"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aes",
  "serde_json",
@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-shaders"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "regex",
  "sha2",
@@ -1713,7 +1713,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-tool"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aes",
  "anyhow",
