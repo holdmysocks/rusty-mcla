@@ -3967,6 +3967,33 @@ impl Game {
                 self.standings_view = true;
                 self.pause_page = 0;
             }
+            Some(p @ 243..=245) => {
+                let wrecked = vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
+                let goal = p == 244;
+                if self.race.is_none() {
+                    let def = crate::flash_ui::MessageBoxDef { title: "Dialog_Title_DamagedOut".into(), description: "Dialog_Description_DamagedOut".into(), options: Self::repair_options(true, "go_yes", "") };
+                    self.message_box = Some((def, 0, MenuAction::None));
+                    self.menu_confirm = if p == 243 { 6 } else if goal { 5 } else { 4 };
+                } else {
+                    let (title, desc, repair, no) = self.quit_box();
+                    if repair {
+                        let def = crate::flash_ui::MessageBoxDef { title: title.into(), description: desc.into(), options: Self::repair_options(wrecked, "go_yes", no) };
+                        self.message_box = Some((def, 0, MenuAction::None));
+                        self.menu_confirm = if goal { 5 } else { 4 };
+                    } else {
+                        self.open_confirm(title, desc, MenuAction::None);
+                        self.menu_confirm = if goal { 8 } else { 7 };
+                    }
+                }
+            }
+            Some(p @ 246..=248) => {
+                action = match p {
+                    248 => MenuAction::OpenArcade(false),
+                    247 => MenuAction::OpenArcade(true),
+                    _ => MenuAction::OpenEditor,
+                };
+                self.pause_page = 0;
+            }
             Some(253) => {
                 // VIEW REPLAY from a running race's pause: the race is not over, so the menu asks first
                 // (F-33773: vt+52 false -> Dialog_Title_ViewReplay with the class's text, vt+88)
@@ -4220,6 +4247,21 @@ impl Game {
                     // (YES is greyed with nothing to repair in the original; the popup box cannot grey it - approx.)
                     self.quick_fix = self.box_sel == 0 && vehicles.player().map_or(false, |c| self.fix_price(c.state.damage.max(c.state.zone_mean()), c.state.zones.iter().any(|z| *z > 0.05)) > 0);
                     self.pause_do = Some(250);
+                }
+                c @ 4..=8 => {
+                    // (ARCADE / GOAL ATTACK / RACE EDITOR: the repair form's YES repairs, DAMAGED OUT's
+                    // always; then out of the race - F-35999 / F-40647: F-30951 - and on)
+                    if matches!(c, 4..=6) && self.box_sel == 0 {
+                        self.quick_fix = c == 6 || self.race.is_none() || vehicles.player().map_or(false, |c| self.fix_price(c.state.damage.max(c.state.zone_mean()), c.state.zones.iter().any(|z| *z > 0.05)) > 0);
+                    }
+                    if self.race.is_some() {
+                        action = MenuAction::QuitRace;
+                    }
+                    self.pause_do = Some(match c {
+                        4 | 7 => 248,
+                        5 | 8 => 247,
+                        _ => 246,
+                    });
                 }
                 _ => {}
             }
@@ -4854,11 +4896,14 @@ impl Game {
                         }
                         1 => {
                             let go = |a: MenuAction| if racing { Go::Off } else { Go::Act(a) };
-                            items.push((s("pause_arcade", "ARCADE"), String::new(), go(MenuAction::OpenArcade(false))));
+                            // (ARCADE and GOAL ATTACK stay open in an off-line race - F-72415 clears their
+                            // bit 0x10 unless on line or in the editor; the press asks first, F-24625)
+                            let arcade = |a: MenuAction| if self.flag.is_some() || self.editor.is_some() { Go::Off } else { Go::Act(a) };
+                            items.push((s("pause_arcade", "ARCADE"), String::new(), arcade(MenuAction::OpenArcade(false))));
                             // (the original's tab - reference `t03`; the online modes are not in
                             // the port: listed, greyed. GOAL ATTACK (`PM_GoalAttack`) as ARCADE)
                             if self.flash_menu.is_some() {
-                                items.push((s("pause_goalattack", "GOAL ATTACK"), String::new(), go(MenuAction::OpenArcade(true))));
+                                items.push((s("pause_goalattack", "GOAL ATTACK"), String::new(), arcade(MenuAction::OpenArcade(true))));
                                 items.push((s("pause_play_online", "XBOX LIVE"), String::new(), Go::Off));
                                 items.push((s("pause_online_tournament", "ONLINE TOURNAMENT"), String::new(), Go::Off));
                                 items.push((s("pause_play_lan", "SYSTEM LINK"), String::new(), Go::Off));
@@ -5086,6 +5131,17 @@ impl Game {
                             };
                             self.message_box = Some((def, 0, a));
                         }
+                        // (ARCADE / GOAL ATTACK, F-24625 / F-33281: in a race - running or over - the menu
+                        // class's quit question, the repair form when its vt+56 says so, else YES / NO;
+                        // out of a race with the car wrecked (F-48456) DAMAGED OUT; RACE EDITOR the same
+                        // DAMAGED OUT out of a race. YES leaves the race (F-30951) and goes on.)
+                        Some(Go::Act(a @ (MenuAction::OpenArcade(_) | MenuAction::OpenEditor))) if self.flash_popup.is_some() && (self.race.is_some() || vehicles.player().map_or(false, |c| c.state.damage >= 1.0)) && (self.race.is_none() || a != MenuAction::OpenEditor) => {
+                            self.pause_do = Some(match a {
+                                MenuAction::OpenArcade(false) => 245,
+                                MenuAction::OpenArcade(true) => 244,
+                                _ => 243,
+                            });
+                        }
                         Some(Go::Act(MenuAction::QuitRace)) if self.flash_popup.is_some() => match crate::flash_ui::MessageBoxDef::load(&self.data_dir, "QuitRaceMenu") {
                             Some(def) if !def.options.is_empty() => self.message_box = Some((def, 0, MenuAction::QuitRace)),
                             _ => {
@@ -5119,7 +5175,7 @@ impl Game {
                         // (NEXT RACE during a race: the same repair box with Dialog_Desc_NextRaceMidRace - the race
                         // is not over (vt+52); both answers go on, YES repairs)
                         Some(Go::Page(250)) if self.flash_popup.is_some() && self.race.is_some() => {
-                            let def = crate::flash_ui::MessageBoxDef { title: "Dialog_Title_NextRace".into(), description: "Dialog_Desc_NextRaceMidRace".into(), options: vec![("repair_yes".into(), "Common_Yes".into()), ("next_yes".into(), "Common_No".into())] };
+                            let def = crate::flash_ui::MessageBoxDef { title: "Dialog_Title_NextRace".into(), description: "Dialog_Desc_NextRaceMidRace".into(), options: Self::repair_options(vehicles.player().map_or(false, |c| c.state.damage >= 1.0), "next_yes", "Common_No") };
                             self.message_box = Some((def, 0, MenuAction::None));
                             self.menu_confirm = 3;
                         }
@@ -10309,6 +10365,44 @@ impl Game {
     fn open_confirm(&mut self, title: &str, description: &str, confirm: MenuAction) {
         let def = crate::flash_ui::MessageBoxDef { title: title.into(), description: description.into(), options: vec![("confirm_yes".into(), "Common_Yes".into()), ("confirm_no".into(), "Common_No".into())] };
         self.message_box = Some((def, 0, confirm));
+    }
+
+    /// The quit question of the race's menu class (vt+108 title, vt+104 text, vt+56 repair form, vt+112
+    /// second button): series, tournament, time trial, delivery, payback, wager, pink slip, else
+    /// Dialog_Title_QuitRace. Time trial, delivery and payback ask YES / NO (vt+56 = 0); the pink slip's
+    /// repair form needs its bComplete (F-27940), taken as not yet complete - approx.; the base class's
+    /// police-chase exception (vt+56, F-58132) is not mirrored.
+    fn quit_box(&self) -> (&'static str, &'static str, bool, &'static str) {
+        let tt = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| self.career.is_time_trial(&d.id) || self.mc4_tt_of(&d.id).is_some());
+        let kind = self.race.as_ref().map(|r| r.kind);
+        if self.series.is_some() {
+            ("Dlg_Title_Series_Quit", "Dlg_Desc_Series_Quit", true, "Common_No")
+        } else if self.career.tour_table.is_some() {
+            ("Dialog_Title_QuitTournament", "Dialog_Description_QuitTournament", true, "Common_No")
+        } else if kind == Some(RaceKind::Payback) {
+            ("Dialog_Title_PaybackQuit", "Dialog_Description_PaybackQuit", false, "")
+        } else if kind == Some(RaceKind::Delivery) {
+            ("Dialog_Title_DeliveryQuit", "Dialog_Description_DeliveryQuit", false, "")
+        } else if tt {
+            ("Dlg_Title_TimeTrial_Quit", "Dlg_Desc_TimeTrial_Quit", false, "")
+        } else if self.opt_x.arcade.pink.run.is_some() {
+            ("Dlg_Title_Pinkslip_Quit", "Dlg_Desc_Pinkslip_Quit", false, "")
+        } else if self.wager.is_some() {
+            ("Dialog_Title_QuitWager", "Dialog_Description_QuitWager", true, "Common_No")
+        } else {
+            ("Dialog_Title_QuitRace", "Dialog_Description_QuitRace", true, "Common_No")
+        }
+    }
+
+    /// The repair form's buttons (F-84186): YES repairs; the second button, `no`, only with a label and
+    /// the car not wrecked (F-48456) - wrecked, YES alone. (YES is greyed with nothing to repair in the
+    /// original; the popup box cannot grey it - approx.)
+    fn repair_options(wrecked: bool, no_id: &str, no: &str) -> Vec<(String, String)> {
+        let mut v = vec![("repair_yes".to_string(), "Common_Yes".to_string())];
+        if !wrecked && !no.is_empty() {
+            v.push((no_id.to_string(), no.to_string()));
+        }
+        v
     }
 
     /// VIEW REPLAY's text during a race, as each menu class gives it (vt+88): the series' F-79373, the
