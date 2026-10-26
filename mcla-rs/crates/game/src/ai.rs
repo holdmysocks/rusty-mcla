@@ -84,6 +84,9 @@ pub struct AiDriver {
     pub rb: Option<RbState>,
     /// racing: the original's racer brain drives this car (brain.rs); the rest of this driver is unused
     pub brain: crate::brain::BrainSlot,
+    /// racing: another car ran into this one (the contact walker's notify, `Vehicles::notify_contact`); the brain takes it as its
+    /// 1.5 s collision timer at its next update
+    pub hit_pending: bool,
     /// racing: the race's checkpoints and alt paths for the brain, and this racer's index in the race
     /// (the bit of the alt paths' opponent masks; the player is 0)
     pub course: Option<std::sync::Arc<crate::brain::Course>>,

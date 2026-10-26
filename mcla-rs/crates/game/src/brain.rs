@@ -882,6 +882,9 @@ pub fn script_grid(b: &mut Brain, to_go: Option<f32>) {
 pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt: f32) -> CarInput {
     let Some(mesh) = crate::offroad::mesh() else { return CarInput { brake: 1.0, ai: true, ..Default::default() } };
     let Some(mut brain) = v.cars[i].ai.as_mut().and_then(|a| a.brain.0.take()) else { return CarInput::default() };
+    if v.cars[i].ai.as_mut().map_or(false, |a| std::mem::take(&mut a.hit_pending)) {
+        brain.hit();
+    }
     let rb = v.cars[i].ai.as_ref().and_then(|a| a.rb);
     script_grid(&mut brain, to_go);
     let c = &v.cars[i];

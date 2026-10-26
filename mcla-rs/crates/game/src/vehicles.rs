@@ -624,6 +624,21 @@ pub struct Dress {
     pub plate: String,
 }
 
+/// The walker's aggressor test (F-83713) for the car "this" with velocity `va` and its partner with `vb`, `d` = partner position - this position:
+/// this when the partner stands (< 0.2235 m/s), the partner when this stands, else the one whose velocity points at the other the
+/// more (velocity . offset / speed).
+fn first_is_aggressor(va: Vec3, vb: Vec3, d: Vec3) -> bool {
+    const STANDING: f32 = 0.2235;
+    let (sa, sb) = (va.length(), vb.length());
+    if sb < STANDING {
+        true
+    } else if sa <= STANDING {
+        false
+    } else {
+        va.dot(d) / sa > vb.dot(-d) / sb
+    }
+}
+
 impl CarInstance {
     pub fn render_pose(&self, alpha: f32) -> crate::vehicle_pose::Pose {
         self.pose_history.sample(&self.state, self.lean, alpha)
@@ -3423,6 +3438,29 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// The shared physics level from car `cur` (its step done) to car `next`: what `cur`'s solves gave the
     /// other cars goes into their bodies, `cur` keeps its own manifolds; `next` gets its manifolds and the
     /// cars after it as bodies. `first`: `next` is the tick's first car (it makes the loose bodies' own pairs).
+    /// The base driver's contact walker for a car-car contact of cars `a` and `b` (F-83713: the vehicle case of the
+    /// walker; the port takes "in contact" as "the level gave an impulse in this step"). Gate: one of the two
+    /// speeds (chassis +224) above 4.47 m/s (10 mph). The aggressor is the one whose partner stands (< 0.2235 m/s), else
+    /// the one that stands itself is the victim, else the one whose velocity points at the other the more
+    /// (velocity . offset / speed, compared); the victim's driver is told (hit with byte 0, the aggressor's speed), the
+    /// racer turning that into its brain's 1.5 s collision timer when the aggressor is the player (F-30284: the other driver's
+    /// slot 10 is true for mcPlayer only; the other driver classes return false). Both drivers are told in the original, the aggressor's call (byte 1) does nothing.
+    fn notify_contact(&mut self, a: usize, b: usize) {
+        const MOVING: f32 = 4.47;
+        let (sa, sb) = (self.cars[a].state.vel.length(), self.cars[b].state.vel.length());
+        if !(sa > MOVING || sb > MOVING) {
+            return;
+        }
+        let a_aggressor = first_is_aggressor(self.cars[a].state.vel, self.cars[b].state.vel, self.cars[b].state.pos - self.cars[a].state.pos);
+        for (victim, aggressor) in [(b, a), (a, b)] {
+            if a_aggressor == (victim == b) && self.cars[aggressor].is_player {
+                if let Some(ai) = self.cars[victim].ai.as_mut().filter(|ai| ai.brain.is_some()) {
+                    ai.hit_pending = true;
+                }
+            }
+        }
+    }
+
     fn level_swap(&mut self, cur: &mut Option<usize>, next: Option<usize>, dt: f32, first: bool, _step: bool) {
         use crate::physics::loose::{static_shape, LiveVeh};
         if let Some(k) = cur.take() {
@@ -3434,6 +3472,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 vs.loose.put_car(part);
             }
             for (uid, jf, jt, push, turn) in answers {
+                if let Some(j) = self.cars.iter().position(|c| c.uid == uid) {
+                    self.notify_contact(k, j);
+                }
                 let Some(o) = self.cars.iter_mut().find(|c| c.uid == uid) else { continue };
                 let p = o.tuned.as_deref().unwrap_or(&o.model.params).clone();
                 if let Some(vt) = p.veh.clone() {
@@ -5101,5 +5142,21 @@ mod lod_option_tests {
         // DETAIL LEVEL 3X = the old HIGH-DETAIL TRAFFIC ON: LOD 0 wherever the car is drawn
         let k = Lod { draw: 1.0, detail: 3.0, ..Lod::ORIGINAL };
         assert_eq!([by(s, 300.0, true, k), by(s, 499.0, true, k), by(s, 500.0, true, k)], [0, 0, -1]);
+    }
+}
+
+#[cfg(test)]
+mod hit_tests {
+    use super::*;
+
+    #[test]
+    fn aggressor_is_the_one_driving_at_the_other() {
+        let d = Vec3::new(10.0, 0.0, 0.0);
+        // the partner stands: this is the aggressor; this stands: the partner is
+        assert!(first_is_aggressor(Vec3::new(20.0, 0.0, 0.0), Vec3::ZERO, d));
+        assert!(!first_is_aggressor(Vec3::ZERO, Vec3::new(-20.0, 0.0, 0.0), d));
+        // both move: the one whose heading points more at the other (the speeds divide out)
+        assert!(first_is_aggressor(Vec3::new(30.0, 0.0, 0.0), Vec3::new(-5.0, 0.0, 5.0), d));
+        assert!(!first_is_aggressor(Vec3::new(5.0, 0.0, 5.0), Vec3::new(-30.0, 0.0, 0.0), d));
     }
 }
