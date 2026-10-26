@@ -3048,7 +3048,7 @@ impl App {
                         }
                     } else if self.game.flash_hud.is_some() && self.delivery_armed {
                         self.delivery_armed = false;
-                        self.police.units_down();
+                        self.police.units_down(&mut self.vehicles);
                         if let Some(c) = self.vehicles.player_mut() {
                             c.state.vel = Vec3::ZERO;
                             c.state.ang_vel = Vec3::ZERO;
@@ -10043,7 +10043,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (GOAL ATTACK's START RACE: SetAllPoliceUnderground(1, 1) - F-15258
                     // A-96349; the race object's end hook brings them up again, F-84893)
                     if self.game.goal_attack {
-                        self.police.units_down();
+                        self.police.units_down(&mut self.vehicles);
                         log::info!("goal attack: race started, police units underground");
                     }
                     // (step 19e: an ARCADE race with POWER UPS on or Custom - the record's byte

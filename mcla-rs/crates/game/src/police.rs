@@ -301,10 +301,13 @@ impl Police {
 
     /// PoliceManager_SetAllPoliceUnderground(1, 1): the units go underground (no new car is put
     /// up for them; a unit's car already on the road is left where it is - approx.).
-    pub fn units_down(&mut self) {
+    pub fn units_down(&mut self, vehicles: &mut Vehicles) {
         for u in self.units.iter_mut() {
             u.under = true;
         }
+        // (an underground unit has no car on the road, and so none for IsAnyPoliceCloseToPlayer,
+        // F-91297, which skips the police whose underground flag +880 is set)
+        vehicles.cars.retain(|c| !(c.cop && c.vinyl_name.starts_with("police_unit:")));
     }
 
     /// PoliceManager_SetAllPoliceUnderground(0, 1): the units come up at their surface place;
@@ -851,7 +854,10 @@ impl Police {
                     self.arrest += dt;
                     if self.arrest >= t("fArrestTime", 1.0) {
                         self.heat = Heat::Busted;
-                        self.busted_timer = t("fArrestStateTime", 1.75);
+                        // (F-56938: the arrest ends after fArrestStateTime, 0.5 s longer when the
+                        // target is damaged out - the enter state F-69250 only stops a car whose damage
+                        // points are under its MaxDamage and then sets the tactic byte +68)
+                        self.busted_timer = t("fArrestStateTime", 1.75) + if damage >= 0.999 { 0.5 } else { 0.0 };
                         event = Some(Event::Busted(self.fine as i64));
                     }
                 } else {
