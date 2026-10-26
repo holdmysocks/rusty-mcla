@@ -536,6 +536,8 @@ pub struct Game {
     pub sell_pending: Option<usize>,
     /// the favourite REMOVE RACE FROM FAVORITES is asking about (its YES removes it)
     pub fav_remove_pending: Option<String>,
+    /// a pause / race-over YES / NO box is asking: 1 VIEW REPLAY during a race, 2 GO TO GARAGE (F-33773)
+    pub menu_confirm: u8,
     /// the GPS map's cursor: which of the map's places it is on
     pub map_cursor: usize,
     /// the place set as the GPS target on the map (SET AS TARGET)
@@ -1181,6 +1183,7 @@ impl Game {
             garage_list: None,
             sell_pending: None,
             fav_remove_pending: None,
+            menu_confirm: 0,
             map_cursor: usize::MAX,
             gps_pick: None,
             mission_target: None,
@@ -3965,11 +3968,14 @@ impl Game {
                 self.pause_page = 0;
             }
             Some(253) => {
-                // VIEW REPLAY from a running race's pause
-                self.pause_page = 0;
-                self.start_replay();
-                if let Some(fm) = self.flash_menu.as_mut() {
-                    fm.hide();
+                // VIEW REPLAY from a running race's pause: the race is not over, so the menu asks first
+                // (F-33773: vt+52 false -> Dialog_Title_ViewReplay with the class's text, vt+88)
+                if self.flash_popup.is_some() {
+                    let wrecked = vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
+                    self.open_confirm("Dialog_Title_ViewReplay", self.view_replay_desc(wrecked), MenuAction::None);
+                    self.menu_confirm = 1;
+                } else {
+                    self.view_replay_now();
                 }
             }
             Some(250) => {
@@ -4203,6 +4209,15 @@ impl Game {
             if let Some(id) = self.fav_remove_pending.take() {
                 self.remove_favourite(&id);
             }
+            // (YES in VIEW REPLAY - F-16256 -> F-55868; in GO TO GARAGE - F-59677 -> F-24062)
+            match std::mem::take(&mut self.menu_confirm) {
+                1 => self.view_replay_now(),
+                2 => {
+                    self.menu_sel = 0;
+                    self.go_garage = true;
+                }
+                _ => {}
+            }
             // (YES in a vinyl editor box: LoadPresetVinyl / SavePresetVinyl - step 22)
             self.mc4_vinyl_finish();
             // (YES in the showroom's box: `garage.FinishShowroomPurchase`; with a trade-in
@@ -4222,6 +4237,7 @@ impl Game {
             self.sell_pending = None;
             self.buy_pending = None;
             self.fav_remove_pending = None;
+            self.menu_confirm = 0;
             self.mc4_misc_idle();
         }
         let (up, down, left, right, enter, back, tab_prev, tab_next) = if boxed { (false, false, false, false, false, false, false, false) } else { (up, down, left, right, enter, back, tab_prev, tab_next) };
@@ -7949,6 +7965,12 @@ impl Game {
                     Some(10) => self.pause_do = Some(250),
                     Some(11) => self.pause_do = Some(251),
                     Some(12) => self.start_replay(),
+                    // (GO TO GARAGE asks while vt+32 holds: for a series or a tournament (F-71834) until it is
+                    // won or lost - bComplete / bFailure; every other class only while its race is not over)
+                    Some(13) if self.flash_popup.is_some() && ((self.series.is_some() && !self.series_decided()) || self.career.tour_table.as_ref().is_some_and(|t| !t.last && t.decided.is_none())) => {
+                        self.open_confirm("Dialog_Title_GarageConfirm", "Dialog_Description_GarageConfirm", MenuAction::StartFreeRoam);
+                        self.menu_confirm = 2;
+                    }
                     Some(13) => {
                         // (out of the event first, then into the garage)
                         self.menu_sel = 0;
@@ -10260,6 +10282,40 @@ impl Game {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A YES / NO box of the pause / race-over menus (F-48904, its YES / NO layout; B cancels)
+    fn open_confirm(&mut self, title: &str, description: &str, confirm: MenuAction) {
+        let def = crate::flash_ui::MessageBoxDef { title: title.into(), description: description.into(), options: vec![("confirm_yes".into(), "Common_Yes".into()), ("confirm_no".into(), "Common_No".into())] };
+        self.message_box = Some((def, 0, confirm));
+    }
+
+    /// VIEW REPLAY's text during a race, as each menu class gives it (vt+88): the series' F-79373, the
+    /// tournament's F-69707, the payback's (Dialog_Desc_ViewReplayPayback); the wager's F-84081 and the pink
+    /// slip's F-48661 only while the car is not wrecked (F-36476); else F-46420
+    fn view_replay_desc(&self, wrecked: bool) -> &'static str {
+        if self.series.is_some() {
+            "Dialog_Desc_ViewReplaySeries"
+        } else if self.career.tour_table.is_some() {
+            "Dialog_Desc_ViewReplayTourn"
+        } else if self.race.as_ref().is_some_and(|r| r.kind == RaceKind::Payback) {
+            "Dialog_Desc_ViewReplayPayback"
+        } else if self.opt_x.arcade.pink.run.is_some() && !wrecked {
+            "Dlg_Desc_ViewReplay_PinkSlip"
+        } else if self.wager.is_some() && !wrecked {
+            "Dlg_Desc_ViewReplay_Wager"
+        } else {
+            "Dialog_Description_ViewReplay"
+        }
+    }
+
+    /// The race so far, then back to this menu
+    fn view_replay_now(&mut self) {
+        self.pause_page = 0;
+        self.start_replay();
+        if let Some(fm) = self.flash_menu.as_mut() {
+            fm.hide();
         }
     }
 
