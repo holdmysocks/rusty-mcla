@@ -12,8 +12,8 @@ An unofficial PC port of *Midnight Club: Los Angeles* (Complete Edition), writte
 It is a new game engine that reads the original game's own data from **your copy of the disc** and runs the game natively on PC
 (Vulkan, DirectX 12 and Metal through wgpu). Nothing of the original game is included in this repository or in its releases.
 
-> **Status: early development.** The game runs from data extracted from a disc image, and the launcher that will automate the
-> setup is being built. There is no stable release yet.
+> **Status: early development.** The game runs from data built from your disc image by the launcher. Early releases (currently 0.6.1) are
+> published on the Releases page, but many things still differ from the original and bugs are expected.
 
 ## What you need
 
@@ -22,14 +22,14 @@ It is a new game engine that reads the original game's own data from **your copy
 - Windows 10 or 11 (Linux and macOS are planned).
 - A graphics card with Vulkan or DirectX 12 support, and enough free disk space for the game data built from your disc.
 
-## How it will work
+## How it works
 
 1. Download the launcher from the Releases page. It is one portable file: put it in a folder of your choice.
 2. Start it, choose your disc image, and let it build the game data into that folder. This is done once, on your computer.
 3. Press Play. The launcher shows the latest release notes and offers updates, which you can always skip.
 
-The launcher is built in this repository (`launcher/`): themes, language support, settings and logs are in; the disc setup,
-updates, log export and save manager are next.
+The launcher is built in this repository (`launcher/`): themes, language support, settings and logs, the disc setup, updates with release notes,
+log export, a save manager and Play are in.
 
 ## What works today
 
@@ -45,7 +45,7 @@ Postponed for later: online play, custom music (including Spotify), car mods, co
 
 ## Reporting problems
 
-Open an issue. The launcher's Support tab can export a log file for you to attach (your Windows user name is removed first). Please only submit issues for crashes at this state of the game, others will be closed at this state. There will be MANY bugs that will eventually be worked out as progress keeps getting made. This request will change once more progress is made.
+Open an issue. The launcher's Support tab can export a log file for you to attach (your Windows user name is removed first). There will be MANY bugs that will eventually be worked out as progress keeps getting made.
 Please **do not post or ask for game files or disc images** in issues.
 
 ## Licence and notice
