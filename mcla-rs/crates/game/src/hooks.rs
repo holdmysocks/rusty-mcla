@@ -124,14 +124,25 @@ pub fn intro_step(fwd: bool) {
     }
 }
 
-/// The new-career arrival: the opening film plays (`normal` only), and the arrival scene (`normal`, `fast`).
-/// `skip` is the same as pressing ENTER through both, before they start.
+/// The new-career arrival: the opening film plays with `normal` and `skip` (OFF), and the arrival scene CUT_INTRO
+/// in the film's place with `fast` only. The original has no switch that leaves out a new career's opening:
+/// CarSelection (0xebb682f7) plays `intro720.bik` unconditionally (0x8ab) before City_DoneStreaming (0xb6d) and
+/// VEHICLE SELECT (0xedb on), so OFF - the original's skip path for the start-up movie (boot.rs) - leaves the
+/// opening as it is (GitHub #8: with OFF the car was chosen before any opening; DECISIONS.md D24).
 pub fn intro_film() -> bool {
-    intro_mode() == Intro::Normal
+    film_for(intro_mode())
 }
 
 pub fn intro_scene() -> bool {
-    intro_mode() != Intro::Skip
+    scene_for(intro_mode())
+}
+
+fn film_for(m: Intro) -> bool {
+    m != Intro::Fast
+}
+
+fn scene_for(m: Intro) -> bool {
+    m == Intro::Fast
 }
 
 // ---------------------------------------------------------------- logging
@@ -1340,6 +1351,10 @@ mod tests {
     #[test]
     fn intro_modes() {
         // (settings are not loaded in unit tests: the intro is the normal one)
-        assert!(intro_film() && intro_scene());
+        assert!(intro_film() && !intro_scene());
+        // (GitHub #8: OFF keeps the career's opening film - VEHICLE SELECT never comes before it)
+        assert!(film_for(Intro::Normal) && !scene_for(Intro::Normal));
+        assert!(!film_for(Intro::Fast) && scene_for(Intro::Fast));
+        assert!(film_for(Intro::Skip) && !scene_for(Intro::Skip));
     }
 }

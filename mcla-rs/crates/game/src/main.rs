@@ -10389,7 +10389,8 @@ impl App {
             }
         }
         match self.intro_stage {
-            // (the film once the black is up; settings.toml game.intro `fast` / `skip` leave it out - `hooks`)
+            // (the film once the black is up; settings.toml game.intro `fast` puts CUT_INTRO in its place, `skip` (OFF)
+            // keeps it - the original always plays it, GitHub #8 - `hooks::intro_film`)
             1 if self.intro_mask.full() => {
                 // (a new career's held camera goes under the black - the career script's UILogic_UnPauseCamera)
                 if self.startwarp.take().is_some() {
