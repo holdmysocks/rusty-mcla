@@ -1,7 +1,7 @@
 //! The particle effects the props' events start (`work/map2/colfx/prop_hit_fx_rule.md`): the impact
 //! reports and the deflection pass (an effect at a world point, unrotated, one shot), the break
 //! events (an effect that follows a matrix of the part that stays), and the hydrant's water, whose
-//! update functor (`sub_827364D8`) hands it the car's underside to bounce off and the "collision"
+//! update functor (`F-93079`) hands it the car's underside to bounce off and the "collision"
 //! evolution each frame before the particle step.
 
 use crate::particles::{Particles, Poly};
@@ -17,7 +17,7 @@ struct Active {
     fixed: Option<[Vec3; 4]>,
     /// the last place it was put at (the matrix is gone when the object is)
     last: ([Vec3; 4], Vec3),
-    /// the effect has the evolution "collision" (only `water_hydrant`): the update functor `sub_827364D8`
+    /// the effect has the evolution "collision" (only `water_hydrant`): the update functor `F-93079`
     hydrant: bool,
     /// it has been asked for once (then it is alive until it ends by itself: never asked for again after that)
     asked: bool,
@@ -104,7 +104,7 @@ impl PropFx {
             let mut coll = 0.0f32;
             let mut poly = None;
             if a.hydrant {
-                // (`sub_827364D8`: the quad only within 10 m of the car, 3D; the collision evolution 1 when the segment from
+                // (`F-93079`: the quad only within 10 m of the car, 3D; the collision evolution 1 when the segment from
                 // 0.5 m below the effect to 2 m above it crosses the quad)
                 if let Some((car_pos, q)) = car.filter(|(c, _)| (*c - pos).length_squared() <= 100.0) {
                     let _ = car_pos;
@@ -129,13 +129,14 @@ impl PropFx {
     }
 }
 
-/// Does the segment a -> b cross the triangle (v0, v1, v2) (`sub_8261A3F0`; either side)?
+/// Does the segment a -> b cross the triangle (v0, v1, v2) (`F-65698`; either side)?
 fn seg_tri(a: Vec3, b: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> bool {
     let d = b - a;
     let (e1, e2) = (v1 - v0, v2 - v0);
     let p = d.cross(e2);
     let det = e1.dot(p);
-    if det.abs() < 7.63e-6 {
+    // (the original tests the determinant against exactly zero, not a threshold)
+    if det == 0.0 {
         return false;
     }
     let inv = 1.0 / det;

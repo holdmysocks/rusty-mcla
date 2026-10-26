@@ -111,7 +111,7 @@ impl PropModel {
         match self.kind {
             1 => {
                 let far = (by(7200.0) * k.draw).min(cap);
-                // (the model's angle x 0.9 while the game is paused: sub_8230F3A0, 0x82007FA8)
+                // (the model's angle x 0.9 while the game is paused: F-63362, 0x82007FA8)
                 let model = 2.0 * r / (half_deg * k.plant_angle * std::f32::consts::PI / 400.0).tan().max(1e-6) * scale.min(2.0);
                 ((model * k.detail).min(far), far)
             }
@@ -145,16 +145,16 @@ pub struct Lod {
     pub draw: f32,
     /// DETAIL LEVEL: where the detailed form gives way to the coarser one
     pub detail: f32,
-    /// the plants' model angle factor: 0.9 (0x82007FA8) while the renderer's flag of sub_822E5B30
-    /// is set - the game paused (sub_82215A60 sets it with the pause, sub_822150D8 puts the old
+    /// the plants' model angle factor: 0.9 (0x82007FA8) while the renderer's flag of F-31789
+    /// is set - the game paused (F-23567 sets it with the pause, F-35144 puts the old
     /// value back) - else 1 (`set_paused`)
     pub plant_angle: f32,
 }
 
-/// The renderer's paused-detail flag (renderer +373, read by sub_822E5B30).
+/// The renderer's paused-detail flag (renderer +373, read by F-31789).
 static PAUSED_DETAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// main.rs, once a frame: whether the game is paused (the original's flag of sub_822E5B30).
+/// main.rs, once a frame: whether the game is paused (the original's flag of F-31789).
 pub fn set_paused(on: bool) {
     PAUSED_DETAIL.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -212,7 +212,7 @@ struct Foot {
     /// posts: radius of the wide capsule round them, the zone of the deflection (0: none)
     wide: f32,
     /// in the physics level FIXED (level state 2, the file's instance word 2: `_static_` props, the
-    /// deflecting posts, trees): mcCarDamage counts a contact with it 0.4 of itself (0x82567A08);
+    /// deflecting posts, trees): mcCarDamage counts a contact with it 0.4 of itself (F-19931);
     /// state 1 (loose, the parked aircraft too) whole
     fixed: bool,
 }
@@ -279,6 +279,11 @@ pub struct PropLamp {
 }
 
 /// A prop's light file: (colour, intensity, cone scale and bias).
+/// The light files' Direction (90, 0, 171.469223) as the original turns it into a vector
+/// (the Euler converter reads degrees x 0.0174556): (sin z, -cos z) of 2.99310 rad - every one of
+/// the 75 spot light files has the same Direction.
+const LAMP_BACK: [f32; 2] = [0.147_949_35, 0.988_994_95];
+
 fn prop_light_file(data_dir: &str, name: &str) -> Option<(Vec3, f32, [f32; 2])> {
     let file = Path::new(data_dir).join("tune/lighting").join(format!("0x{:08x}", mcla_formats::hash::joaat(&format!("{}.xml", name.to_ascii_lowercase()))));
     let x = std::fs::read_to_string(file).ok()?;
@@ -312,7 +317,7 @@ fn prop_light_file(data_dir: &str, name: &str) -> Option<(Vec3, f32, [f32; 2])> 
     Some((color, intensity, cone))
 }
 
-/// The glow sprites at the lit lamps of the signal heads (the original's sub_82739F70;
+/// The glow sprites at the lit lamps of the signal heads (the original's F-79347;
 /// work/map/signal_rule.md, "Glows in the port").
 #[derive(Default)]
 struct SignalGlows {
@@ -406,7 +411,7 @@ pub struct Props {
 
 /// `trash.xrn` (root class 0x47b4cc like the road network): 98 short rails in four groups laid
 /// along streets and alleys. While the player's car is within 20 m of one the original runs
-/// that group's litter effect on the car (`wind_debris_hw` / `_la` / `_beach`; sub_822F0A38).
+/// that group's litter effect on the car (`wind_debris_hw` / `_la` / `_beach`; F-52018).
 /// Vertices: root +2c, vec4 each; a rail (class 0x479d24, 0x60 bytes): +4c u16 points,
 /// +50 -> u16 vertex indices. Returns the rails as segments.
 fn trash_rails(res: &mcla_formats::rsc::Resource) -> Vec<(Vec3, Vec3)> {
@@ -492,7 +497,7 @@ pub fn lens() -> f32 {
 const NEAR_DIST: f32 = 440.0;
 const FAR_CELL: f32 = 384.0;
 /// nothing is drawn beyond this: the main view's far clip, 6000 (0x82037480, set with the near 0.2
-/// by sub_822AFB10; recorded 5994 .. 6000) - the original's tree cards would reach 3 - 11 km
+/// by F-82384; recorded 5994 .. 6000) - the original's tree cards would reach 3 - 11 km
 const FAR_DIST: f32 = 6000.0;
 /// coarse cells live in the same map as the fine ones, moved out of their way
 const FAR_KEY: i32 = 1 << 20;
@@ -1304,7 +1309,7 @@ impl Props {
                             continue;
                         }
                         // (the light files point their spot down but for 8.5 degrees - Direction 90, 0, 171.47 - towards the prop's own +x: the original's table shows the props' four headings for it)
-                        prop_lamps.push(PropLamp { pos, color: *color, intensity: *intensity, back: (q * Vec3::new(0.148, 0.989, 0.0)).normalize(), cone: *cone });
+                        prop_lamps.push(PropLamp { pos, color: *color, intensity: *intensity, back: (q * Vec3::new(LAMP_BACK[0], LAMP_BACK[1], 0.0)).normalize(), cone: *cone });
                     }
                 }
                 if signal_models.contains(&mi) {
@@ -1434,10 +1439,10 @@ impl Props {
     pub fn emit(&self, fx: &mut crate::particles::Particles, cam: Vec3, tick: u64, player: Option<(Vec3, Vec3, Quat)>, stormy: f32) {
         // Wind debris: while the player's car is within 20 m of a trash rail the original runs
         // the effect of the rail's group on the car (`wind_debris_hw` / `_la` / `_beach`: flyers,
-        // papers and leaves let out in a box ahead of it - `sub_822F0A38`, rule
+        // papers and leaves let out in a box ahead of it - `F-52018`, rule
         // `docs/reference/map/litter_evo_rule.md`): only while the Stormy weather's weight is exactly
-        // 0, attached to the car's own matrix (`sub_8247A128`, mode 2), evolution "speed" =
-        // clamp(|v| / 90, 0, 1) every frame (`sub_82376C80` 0x823777A8); no stand-in
+        // 0, attached to the car's own matrix (`F-47301`, mode 2), evolution "speed" =
+        // clamp(|v| / 90, 0, 1) every frame (`F-21480` A-62667); no stand-in
         if let Some((pos, vel, rot)) = player.filter(|_| stormy == 0.0) {
             let near = |a: Vec3, b: Vec3| {
                 let ab = b - a;
@@ -1719,7 +1724,7 @@ impl Props {
             let d = h.pos - cam;
             let rot = self.insts[h.inst as usize].rot().0;
             let z = rot * Vec3::Z;
-            // (the original, sub_82739F70, once a head: no glow while the camera is behind the plane
+            // (the original, F-79347, once a head: no glow while the camera is behind the plane
             // through its origin facing z - equality draws; no reach of its own. Its view test, a 2 m
             // sphere in the main view or within 20 m, and the prop list's are main.rs's, with the frustum)
             if z.dot(d) > 0.0 {
@@ -1998,7 +2003,7 @@ impl Props {
                         if (st.pos.x - c.pos.x).abs() > reach || (st.pos.z - c.pos.z).abs() > reach {
                             continue;
                         }
-                        // Deflection (mcCarBehavior::CollideObjects, sub_823344C8; tune/vehicle/
+                        // Deflection (mcCarBehavior::CollideObjects, F-35508; tune/vehicle/
                         // propDeflection: SpeedThreshold 25, SpeedClamp 25, MaxDetectionTime 0.5,
                         // MinGapDist 0.1, AccelScalar 1, AngAccScalar 1.5 - work/map/deflection_rule.md).
                         // A post is two capsules: the post, and a wide one that is never solid but
@@ -2024,9 +2029,9 @@ impl Props {
                             if dist > 1e-3 && dist < c.foot.wide * c.scale + ext(d3 / dist) {
                                 let dn = d3 / dist;
                                 let closing = v.dot(dn);
-                                // (the deflection pass's event, `sub_823344C8` 0x82334B98: once a pass, the type set's event 0 at the
+                                // (the deflection pass's event, `F-35508` A-72075: once a pass, the type set's event 0 at the
                                 // prop's matrix x its offset, the car's velocity; no speed test. The pass is armed again when the car
-                                // is out of reach, 0x82334948.)
+                                // is out of reach, A-11977.)
                                 {
                                     let l0 = (d3 - v * (v.dot(d3) / v.length_squared().max(1e-6))).normalize_or_zero();
                                     let reach = (closing * 0.5).max(2.0 * (ext(l0) + c.foot.half.x * c.scale + 0.1));
@@ -2106,7 +2111,7 @@ impl Props {
                                 self.hits.push(crate::sound::PropHit { pos: c.pos, kind: c.foot.snd, model: c.foot.audio, speed: -vn, knocked: false });
                             }
                             if -vn > 0.1 {
-                                // (the impact report, `sub_82489EE8`: the type's events from their least speed, at the point on the prop
+                                // (the impact report, `F-81755`: the type's events from their least speed, at the point on the prop
                                 // nearest the car (its box's face along the normal, at the car's height) + the offset; I: the original's
                                 // contact point is the hull's)
                                 let ext = (bx.dot(n).abs() * c.foot.half.x + bz.dot(n).abs() * c.foot.half.y) * c.scale;
@@ -2403,7 +2408,7 @@ mod lod_option_tests {
         assert!((n - 20.31).abs() < 0.02 && (f - 366.7).abs() < 0.1, "{n} {f}");
         let (n3, f3) = m(1).reach(1.0, fov, Lod { draw: 1.0, detail: 3.0, ..Lod::ORIGINAL });
         assert!((n3 - 3.0 * n).abs() < 0.01 && f3 == f);
-        // paused (sub_822E5B30): the model angle x 0.9 (0x82007FA8) - 2R / tan(12.5 x 0.9 deg x pi/400)
+        // paused (F-31789): the model angle x 0.9 (0x82007FA8) - 2R / tan(12.5 x 0.9 deg x pi/400)
         let (np, _) = m(1).reach(1.0, fov, Lod { plant_angle: 0.9, ..Lod::ORIGINAL });
         assert!((np - 2.0 / (11.25f32 * std::f32::consts::PI / 400.0).tan()).abs() < 0.01 && (np - 22.58).abs() < 0.02, "{np}");
         // hedges: high level to 2R / tan(h pi/600) (30.5 R), gone at 2R / tan(h pi/2400) (122.2 R)
