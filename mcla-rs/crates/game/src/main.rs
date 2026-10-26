@@ -3962,6 +3962,7 @@ impl App {
             // (F-54212: a Pull Over tactic (type 1) or a pursuit (types 2 - 4) on the player - payback
             // goons' StartPursuit included; Search / Busted taken as the pursuit's tactic still running)
             self.game.police_on_player = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted);
+            self.game.police_fine = if self.police.goons { 0 } else { self.police.fine as i64 };
             // (step 23: the slow motion, the tutorials, the statistics and achievements)
             self.game.mc4_s23_tick(dt, mc4::S23In { heat: if self.police.goons { 0 } else { self.police.heat as u8 }, near: self.roam.near.is_some(), flashed: self.roam.accepted, kind: self.roam.near_type, station: self.at_station.is_some(), drive: mc4b::drive_of(self.vehicles.player()), sst: self.vehicles.player().filter(|c| vehicles::Vehicles::has_sst(c)).and_then(|c| c.state.veh.as_ref()).map(|v| v.sst.level) });
             // (step 23b: AudioManager_SetActiveTimeSlow - the dynamic mixer's slow-down state while
@@ -9542,6 +9543,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (step 21b: the staked vehicle is gone at once - out of the garage since the start)
                 pink_quit = true;
             }
+        }
+        // (ARCADE / GOAL ATTACK's ACCEPT on a race with the police on the player and a fine pays the
+        // fine first - F-15258: the manager lets go of the player (F-41497, approx.: the port's police
+        // reset), the profile's money less the fine with no floor at 0 (F-38145: min 0x80723100), the
+        // save written; then the race is set up)
+        if action == MenuAction::StartRace && std::mem::take(&mut self.game.fine_pay) && self.game.police_fine > 0 && self.game.police_on_player {
+            self.game.money = (self.game.money - self.game.police_fine).max(-2_140_007_168);
+            log::info!("police: fine {} paid starting the race, money now {}", self.game.police_fine, self.game.money);
+            self.police.reset(&mut self.vehicles);
+            self.game.police_fine = 0;
+            self.game.police_on_player = false;
+            self.game.write_save(&self.opt.data_dir);
         }
         // hand the delivery car back when the event is left
         if self.game.borrowed && (pink_quit || matches!(action, MenuAction::StartFreeRoam | MenuAction::MainMenu | MenuAction::OpenGarage | MenuAction::OpenRaceSelect | MenuAction::OpenArcade(_))) {

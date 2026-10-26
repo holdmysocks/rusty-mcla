@@ -896,6 +896,11 @@ pub struct Game {
     /// the police are pulling the player over or pursuing him (F-54212: PoliceManager_IsPullingRacerOver
     /// || PoliceManager_IsRacerPursued): RETURN TO CRUISE then goes straight back, no repair question
     pub police_on_player: bool,
+    /// the police manager's fine (+76; 0 with payback goons) and the PAY FINE box's PayOffAmount
+    pub police_fine: i64,
+    pay_off: i64,
+    /// the ARCADE list's ACCEPT started this race: the fine is paid first (F-15258)
+    pub fine_pay: bool,
     /// the event list was opened at one of the four wager hangouts
     pub wager_here: bool,
     /// the WAGER AMOUNT choice is open (the row it is on)
@@ -1361,6 +1366,9 @@ impl Game {
             repair_car: false,
             fix_now: 0,
             police_on_player: false,
+            police_fine: 0,
+            pay_off: 0,
+            fine_pay: false,
             wager_here: false,
             wager_pick: None,
             wager: None,
@@ -3967,10 +3975,24 @@ impl Game {
                 self.standings_view = true;
                 self.pause_page = 0;
             }
-            Some(p @ 243..=245) => {
+            Some(p @ 241..=245) => {
                 let wrecked = vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
-                let goal = p == 244;
-                if self.race.is_none() {
+                let goal = matches!(p, 241 | 244);
+                if matches!(p, 244 | 245) && self.flash_popup.is_some() && self.police_fine > 0 && self.police_on_player {
+                    // (PAY FINE first while the police are on the player with a fine - F-33773: the
+                    // dispatcher's PM_Arcade / PM_GoalAttack branch, F-48904 type 2: OK alone; OK goes on
+                    // to the mode's own question, F-49422 / F-39024 -> F-24625)
+                    let def = crate::flash_ui::MessageBoxDef { title: "Dlg_PayFine_Title".into(), description: "Dlg_PayFine_Desc".into(), options: vec![("ok_yes".into(), "messagebox_ok".into())] };
+                    self.pay_off = self.police_fine;
+                    self.message_box = Some((def, 0, MenuAction::None));
+                    self.menu_confirm = if goal { 10 } else { 9 };
+                } else if self.race.is_none() && !wrecked {
+                    action = match p {
+                        243 => MenuAction::OpenEditor,
+                        _ => MenuAction::OpenArcade(goal),
+                    };
+                    self.pause_page = 0;
+                } else if self.race.is_none() {
                     let def = crate::flash_ui::MessageBoxDef { title: "Dialog_Title_DamagedOut".into(), description: "Dialog_Description_DamagedOut".into(), options: Self::repair_options(true, "go_yes", "") };
                     self.message_box = Some((def, 0, MenuAction::None));
                     self.menu_confirm = if p == 243 { 6 } else if goal { 5 } else { 4 };
@@ -4248,6 +4270,8 @@ impl Game {
                     self.quick_fix = self.box_sel == 0 && vehicles.player().map_or(false, |c| self.fix_price(c.state.damage.max(c.state.zone_mean()), c.state.zones.iter().any(|z| *z > 0.05)) > 0);
                     self.pause_do = Some(250);
                 }
+                9 => self.pause_do = Some(242),
+                10 => self.pause_do = Some(241),
                 c @ 4..=8 => {
                     // (ARCADE / GOAL ATTACK / RACE EDITOR: the repair form's YES repairs, DAMAGED OUT's
                     // always; then out of the race - F-35999 / F-40647: F-30951 - and on)
@@ -5135,7 +5159,7 @@ impl Game {
                         // class's quit question, the repair form when its vt+56 says so, else YES / NO;
                         // out of a race with the car wrecked (F-48456) DAMAGED OUT; RACE EDITOR the same
                         // DAMAGED OUT out of a race. YES leaves the race (F-30951) and goes on.)
-                        Some(Go::Act(a @ (MenuAction::OpenArcade(_) | MenuAction::OpenEditor))) if self.flash_popup.is_some() && (self.race.is_some() || vehicles.player().map_or(false, |c| c.state.damage >= 1.0)) && (self.race.is_none() || a != MenuAction::OpenEditor) => {
+                        Some(Go::Act(a @ (MenuAction::OpenArcade(_) | MenuAction::OpenEditor))) if self.flash_popup.is_some() && (self.race.is_some() || vehicles.player().map_or(false, |c| c.state.damage >= 1.0) || (self.police_fine > 0 && self.police_on_player)) && (self.race.is_none() || a != MenuAction::OpenEditor) => {
                             self.pause_do = Some(match a {
                                 MenuAction::OpenArcade(false) => 245,
                                 MenuAction::OpenArcade(true) => 244,
@@ -10597,7 +10621,7 @@ impl Game {
         }
         let st = |k: &str| self.career.strings.get(k).map(|v| v.to_string()).unwrap_or_else(|| k.to_string());
         let page = MenuPage {
-            layout: MenuLayout::Confirm { description: st(&def.description) },
+            layout: MenuLayout::Confirm { description: st(&def.description).replace("<D>PayOffAmount</D>", &self.pay_off.to_string()) },
             // (the warning triangle; 2 and up are the question mark)
             icon: 1,
             title: st(&def.title).to_uppercase(),
@@ -12981,6 +13005,7 @@ impl Game {
         self.arcade = (page_no, kind, cur);
         let races = self.arcade_races(kind);
         if let Some(i) = started {
+            self.fine_pay = true;
             self.arcade_restore = Some((i, self.race_defs[i].opponents));
             self.race_defs[i].opponents = self.arcade_opts[0] + 1;
         }
