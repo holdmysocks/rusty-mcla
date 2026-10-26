@@ -453,6 +453,9 @@ struct App {
     intro_tod: Option<f32>,
     /// VEHICLE SELECT: where the first of the three starters stands
     starters_made: bool,
+    /// a new career's opening read ahead on worker threads (`opening_read_ahead`): 1 the three starters, 2 the
+    /// first story scene's cars and people
+    opening_read: u8,
     /// where the player's hidden car is held through VEHICLE SELECT (`place_player_at_kerb`)
     starter_stand: Option<(Vec3, glam::Quat)>,
     /// VEHICLE SELECT's camera (CarSelection 0x1069): eye, look, their speeds, the time to the next 30 ms step
@@ -904,6 +907,7 @@ impl App {
             intro_mask: Default::default(),
             intro_tod: None,
             starters_made: false,
+            opening_read: 0,
             starter_stand: None,
             sel_cam: None,
             settle_frames: 0,
@@ -3784,6 +3788,8 @@ impl App {
         if let Some(me) = self.vehicles.player().map(|c| c.state.pos) {
             self.vehicles.cars.retain(|c| c.driver != "starter_left" || (Vec3::new(c.state.pos.x - me.x, 0.0, c.state.pos.z - me.z).length() - 100.0).max(0.0) <= 600.0);
         }
+        // (a new career's starters and first story scene read ahead on worker threads - docs/PERFORMANCE.md 2026-10-25)
+        self.opening_read_ahead(&world);
         // CarSelection (game/career/0xebb682f7, 0x214 - 0x35a) makes the three starters before the film: opponents
         // loaded into the lot (OpponentManager_LoadOpponent, AddOpponentToWorld), deactivated, their icons hidden;
         // VEHICLE SELECT only moves the camera between them (`sel_cam`), and the one taken stays in the lot. The
@@ -10528,6 +10534,64 @@ impl App {
         self.vehicles.cars.iter().position(|c| c.driver == label)
     }
 
+    /// The car a cutscene's mover `label` is (car, colour, plate, set-up): "henry" -> the hookman called Henry in
+    /// his car; "hookman" / "drv01" -> the rival of the current mission; the bus and the police bring their own models.
+    fn cine_car_of(&mut self, label: &str) -> Option<(String, [f32; 4], String, String)> {
+        let ids: Vec<String> = self.game.rivals.characters.iter().map(|c| c.id.clone()).collect();
+        let who = match label {
+            "hookman" | "hookmans" | "drv01" => self.game.career.rival_id(),
+            l => ids.iter().find(|id| self.game.career.name_of(id).eq_ignore_ascii_case(l)).cloned(),
+        };
+        let rival = who.and_then(|id| self.game.rivals.of(&id, 0));
+        match (rival, label) {
+            (Some(r), _) => Some((r.car, r.color, r.plate, r.config)),
+            (None, "omnibus") => Some(("vp_citybus_07".to_string(), [0.85, 0.85, 0.85, 1.0], String::new(), String::new())),
+            (None, "cop" | "cop1" | "cop2") => Some(("vp_chv_police_96".to_string(), [0.05, 0.05, 0.06, 1.0], String::new(), String::new())),
+            _ => None,
+        }
+    }
+
+    /// A new career's opening read ahead on worker threads, so that none of it waits for the disk on the main thread
+    /// (docs/PERFORMANCE.md 2026-10-25): from the start screen the three starters (made under CarSelection's first
+    /// black, `starters_made`: 1.7 s of reading in that frame before); from the opening's first black its story
+    /// scene - CUT_INTRO in the film's place (INTRO FAST, DECISIONS.md D24) and CUT_STORY_RACE_GH_06 after VEHICLE
+    /// SELECT - with its animation packs, its people and the cars it moves (henry's 280Z and his set-up's parts,
+    /// `cine_spawn_cars`: 0.6 s at the scene's start before). What is made, and when, is unchanged.
+    fn opening_read_ahead(&mut self, world: &world::World) {
+        if self.opening_read & 1 == 0 && self.game.fresh_game && !self.starters_made {
+            self.opening_read |= 1;
+            for name in game::STARTERS {
+                if let Some(d) = self.game.car_dirs.iter().find(|d| d.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case(name))) {
+                    self.vehicles.prefetch(world, d);
+                }
+            }
+        }
+        if self.opening_read & 2 == 0 && self.intro_stage >= 1 {
+            self.opening_read |= 2;
+            let mut scenes = vec!["story/cut_story_race_gh_06"];
+            if !hooks::intro_film() && hooks::intro_scene() {
+                scenes.insert(0, "story/cut_intro");
+            }
+            for scene in scenes {
+                for label in self.cine.read_ahead_scene(scene) {
+                    if cine::is_player_car(&label) {
+                        continue;
+                    }
+                    let Some((car, _, _, config)) = self.cine_car_of(&label) else { continue };
+                    if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car)) {
+                        if let Some(d) = self.game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))) {
+                            self.vehicles.prefetch(world, d);
+                        }
+                    }
+                    // (its set-up's rims, tyres and brakes into the file cache, for its dressing - `vehicles::warm_dress`)
+                    if let Some(d) = self.game.mc4_dress_of(&car, &config) {
+                        vehicles::warm_dress(&world.assets.root, &d);
+                    }
+                }
+            }
+        }
+    }
+
     /// Cars a cutscene moves besides the player's: a named rival brings his own car.
     fn cine_spawn_cars(&mut self, gpu: &mut render::Gpu, world: &mut world::World) {
         for label in self.cine.movers() {
@@ -10545,20 +10609,7 @@ impl App {
                     continue;
                 }
             }
-            // "henry" -> the hookman called Henry in his car; "hookman" / "drv01" -> the rival
-            // of the current mission; the bus and the police bring their own models
-            let ids: Vec<String> = self.game.rivals.characters.iter().map(|c| c.id.clone()).collect();
-            let who = match label.as_str() {
-                "hookman" | "hookmans" | "drv01" => self.game.career.rival_id(),
-                l => ids.iter().find(|id| self.game.career.name_of(id).eq_ignore_ascii_case(l)).cloned(),
-            };
-            let rival = who.and_then(|id| self.game.rivals.of(&id, 0));
-            let (car, color, plate, config) = match (rival, label.as_str()) {
-                (Some(r), _) => (r.car, r.color, r.plate, r.config),
-                (None, "omnibus") => ("vp_citybus_07".to_string(), [0.85, 0.85, 0.85, 1.0], String::new(), String::new()),
-                (None, "cop" | "cop1" | "cop2") => ("vp_chv_police_96".to_string(), [0.05, 0.05, 0.06, 1.0], String::new(), String::new()),
-                _ => continue,
-            };
+            let Some((car, color, plate, config)) = self.cine_car_of(&label) else { continue };
             let dirs = self.game.car_dirs.clone();
             if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car)) {
                 if let Some(d) = dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))) {

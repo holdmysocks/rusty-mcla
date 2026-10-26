@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 pub struct Video {
-    data: memmap2::Mmap,
+    data: std::sync::Arc<memmap2::Mmap>,
+    /// the next frame being decoded on a worker thread (`show`): its number and the picture
+    ahead: Option<(usize, std::thread::JoinHandle<Option<egui::ColorImage>>)>,
     pub width: usize,
     pub height: usize,
     fps: f32,
@@ -38,7 +40,7 @@ impl Video {
             return None;
         }
         log::info!("video: {} {}x{} {:.0} fps, {:.1} s", name, width, height, fps, frames as f32 / fps);
-        Some(Video { data, width, height, fps, frames, start: Instant::now(), offset: 0.0, shown: None, tex: None, subs: Vec::new(), any_key: false, audio: dir.join(format!("{name}.mp3")), skipped: None })
+        Some(Video { data: std::sync::Arc::new(data), ahead: None, width, height, fps, frames, start: Instant::now(), offset: 0.0, shown: None, tex: None, subs: Vec::new(), any_key: false, audio: dir.join(format!("{name}.mp3")), skipped: None })
     }
 
     /// Restart the clock (call when the sound starts); `at` skips ahead.
@@ -60,10 +62,29 @@ impl Video {
         self.subs.iter().find(|s| t >= s.0 && t < s.1).map(|s| s.2.as_str())
     }
 
-    fn frame(&self, i: usize) -> &[u8] {
-        let off = |k: usize| u64::from_le_bytes(self.data[20 + k * 8..28 + k * 8].try_into().unwrap()) as usize;
-        let (a, b) = (off(i).min(self.data.len()), off(i + 1).min(self.data.len()));
-        &self.data[a..b.max(a)]
+    /// Frame `i` decoded into the picture shown.
+    fn decode(data: &[u8], i: usize) -> Option<egui::ColorImage> {
+        let off = |k: usize| u64::from_le_bytes(data[20 + k * 8..28 + k * 8].try_into().unwrap()) as usize;
+        let (a, b) = (off(i).min(data.len()), off(i + 1).min(data.len()));
+        let img = mcla_formats::jpeg::decode(&data[a..b.max(a)]).ok()?;
+        Some(egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.rgba))
+    }
+
+    /// Frame `i`: the one decoded ahead if it is that one, else decoded now; then the next one is started on a worker
+    /// thread (the film's 1280 x 720 pictures took 5 - 7 ms of the main thread each - docs/PERFORMANCE.md
+    /// 2026-10-25). The frame shown for a time is unchanged.
+    fn picture(&mut self, i: usize) -> Option<egui::ColorImage> {
+        let got = match self.ahead.take() {
+            Some((k, h)) if k == i => h.join().ok().flatten(),
+            _ => Self::decode(&self.data, i),
+        };
+        if i + 1 < self.frames {
+            let data = self.data.clone();
+            if let Ok(h) = std::thread::Builder::new().name("movie frame".into()).spawn(move || Self::decode(&data, i + 1)) {
+                self.ahead = Some((i + 1, h));
+            }
+        }
+        got
     }
 
     /// The opening film skipped (CarSelection 0xa02): the movie's tint alpha from 1 down by 0.1 every 30 ms
@@ -82,8 +103,7 @@ impl Video {
         }
         let tint = steps.map_or(1.0, |n| (1.0 - 0.1 * n as f32).max(0.0));
         if self.shown != Some(i) {
-            if let Ok(img) = mcla_formats::jpeg::decode(self.frame(i)) {
-                let ci = egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.rgba);
+            if let Some(ci) = self.picture(i) {
                 match self.tex.as_mut() {
                     Some(t) => t.set(ci, egui::TextureOptions::LINEAR),
                     None => self.tex = Some(ctx.load_texture("movie", ci, egui::TextureOptions::LINEAR)),

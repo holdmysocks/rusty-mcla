@@ -3800,6 +3800,12 @@ impl Game {
                 self.flash_navsys = crate::flash_ui::FlashMenu::load(&self.data_dir, crate::flash_ui::NAVSYS_MOVIE, [0.0, 0.0], &shared);
                 self.road_map = crate::mapmesh::RoadMap::load(&self.data_dir);
                 self.flash_popup = crate::flash_ui::FlashMenu::load(&self.data_dir, crate::flash_ui::POPUP_MOVIE, [0.0, 0.0], &shared);
+                // (the free-roam 3D icons' three movies here too, behind the start-up movie, not in the first free-roam
+                // frame - 45 ms at the end of a new career's first scene; made as `hook_icons` made them, and not
+                // advanced until a slot is fed - docs/PERFORMANCE.md 2026-10-25)
+                if self.hook_icons.is_none() && std::env::var("MCLA_NO_HOOK_ICONS").is_err() {
+                    self.hook_icons = crate::hookicons::HookIcons::new(&self.data_dir, &shared);
+                }
                 self.ui_shared = Some(shared);
             }
         }

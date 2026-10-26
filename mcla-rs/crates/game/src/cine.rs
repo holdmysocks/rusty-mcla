@@ -70,6 +70,8 @@ pub struct Cine {
     models: HashMap<String, Option<Arc<SkinModel>>>,
     /// character sets read ahead on worker threads (`read_ahead_ambient`): the file and what it holds
     reading: HashMap<String, std::thread::JoinHandle<Option<(PathBuf, mcla_formats::rage::character::Character)>>>,
+    /// a story scene's animation packs read ahead on a worker thread (`read_ahead_scene`), taken by `start`
+    packs: HashMap<PathBuf, std::thread::JoinHandle<Option<mcla_formats::rsc::Resource>>>,
     pub playing: Option<Scene>,
     buf: SkinBuffer,
     /// people of the hangout nearby: each loops at its own length
@@ -175,6 +177,15 @@ fn default_set(scene: &str, entity: &str, n: usize) -> &'static str {
     }
 }
 
+/// A character set's first `.r6` read (on a worker thread: `read_ahead_ambient`, `read_ahead_scene`).
+fn read_set(dir: &Path) -> Option<(PathBuf, mcla_formats::rage::character::Character)> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().map(|e| e == "r6").unwrap_or(false)).collect()).unwrap_or_default();
+    files.sort();
+    let f = files.into_iter().next()?;
+    let c = SkinModel::read(&f)?;
+    Some((f, c))
+}
+
 /// "story/cut_intro/Entity/x/x" -> "story/cut_intro"
 fn scene_of(entry: &str) -> String {
     let l = entry.to_ascii_lowercase();
@@ -237,15 +248,69 @@ impl Cine {
                 continue;
             }
             let dir = self.char_dir.join(set);
-            if let Ok(h) = std::thread::Builder::new().name("people read".into()).spawn(move || {
-                let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().map(|e| e == "r6").unwrap_or(false)).collect()).unwrap_or_default();
-                files.sort();
-                let f = files.into_iter().next()?;
-                let c = SkinModel::read(&f)?;
-                Some((f, c))
-            }) {
+            if let Ok(h) = std::thread::Builder::new().name("people read".into()).spawn(move || read_set(&dir)) {
                 self.reading.insert(set.to_string(), h);
             }
+        }
+    }
+
+    /// A story scene's animation packs and its people's character sets read on worker threads before it starts, so
+    /// that `start` finds them read (what it makes and when is unchanged - docs/PERFORMANCE.md 2026-10-25). Returns
+    /// the labels of the cars it moves (`mover_<label>_car`), for the caller to read their cars ahead.
+    pub fn read_ahead_scene(&mut self, scene: &str) -> Vec<String> {
+        let key = scene.to_ascii_lowercase();
+        let short = key.rsplit('/').next().unwrap_or("").to_string();
+        let mut movers = Vec::new();
+        let mut sets = Vec::new();
+        let mut files: Vec<PathBuf> = Vec::new();
+        for (part, faces) in [(key.clone(), false), (format!("hangout/{short}_peds"), false), (format!("{key}_im"), true)] {
+            for (name, f) in self.index.get(&part).cloned().unwrap_or_default() {
+                if !files.contains(&f) && !self.packs.contains_key(&f) {
+                    files.push(f);
+                }
+                let l = name.to_ascii_lowercase();
+                let ent = l.rsplit('/').next().unwrap_or("").to_string();
+                if faces || l.ends_with("/cscamera") {
+                    continue;
+                }
+                if let Some(label) = ent.strip_prefix("mover_").and_then(|r| r.strip_suffix("_car")) {
+                    movers.push(label.to_string());
+                    continue;
+                }
+                if ent.ends_with("_car") {
+                    continue;
+                }
+                // (as `start` names them; an entity without a set of its own gets `default_set`'s by its place among
+                // the actors, which only `start` knows - not read ahead)
+                if let Some((_, s)) = ent.split_once("_name_") {
+                    sets.push(cutscene_set(s));
+                }
+            }
+        }
+        for f in files {
+            let p = f.clone();
+            if let Ok(h) = std::thread::Builder::new().name("scene read".into()).spawn(move || load_resource_file(&p).ok()) {
+                self.packs.insert(f, h);
+            }
+        }
+        for set in sets {
+            if self.models.contains_key(&set) || self.reading.contains_key(&set) {
+                continue;
+            }
+            let dir = self.char_dir.join(&set);
+            if let Ok(h) = std::thread::Builder::new().name("people read".into()).spawn(move || read_set(&dir)) {
+                self.reading.insert(set, h);
+            }
+        }
+        log::info!("cine: reading {} ahead ({} cars)", key, movers.len());
+        movers
+    }
+
+    /// An animation pack: the one read ahead (`read_ahead_scene`), else read now.
+    fn pack(&mut self, f: &Path) -> Option<mcla_formats::rsc::Resource> {
+        match self.packs.remove(f) {
+            Some(h) => h.join().ok().flatten(),
+            None => load_resource_file(f).ok(),
         }
     }
 
@@ -280,6 +345,7 @@ impl Cine {
         // the scene itself, its bystanders, then the faces
         let short = key.rsplit('/').next().unwrap_or("").to_string();
         let parts = [(key.clone(), false), (format!("hangout/{short}_peds"), false), (format!("{key}_im"), true)];
+        let mut got: HashMap<PathBuf, Arc<mcla_formats::rsc::Resource>> = HashMap::new();
         for (part, faces) in parts {
             let Some(entries) = self.index.get(&part).cloned() else { continue };
             let mut by_file: HashMap<PathBuf, Vec<String>> = HashMap::new();
@@ -287,7 +353,16 @@ impl Cine {
                 by_file.entry(f).or_default().push(name);
             }
             for (f, names) in by_file {
-                let Ok(res) = load_resource_file(&f) else { continue };
+                // (the scene and its faces are mostly in one pack: read once)
+                let res = match got.get(&f) {
+                    Some(r) => r.clone(),
+                    None => {
+                        let Some(r) = self.pack(&f) else { continue };
+                        let r = Arc::new(r);
+                        got.insert(f.clone(), r.clone());
+                        r
+                    }
+                };
                 let rd = Rd::new(&res);
                 for (o, name) in pack_entries(&res) {
                     if !names.contains(&name) {

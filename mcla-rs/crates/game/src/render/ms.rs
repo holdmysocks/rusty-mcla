@@ -110,7 +110,14 @@ struct Inner {
 
 impl Inner {
     fn at(&self, v: Variant) -> &wgpu::RenderPipeline {
-        self.slots[v.slot()].get_or_init(|| (self.build)(&self.device, v))
+        self.slots[v.slot()].get_or_init(|| {
+            let t = std::time::Instant::now();
+            let p = (self.build)(&self.device, v);
+            if std::env::var("MCLA_PIPE_LOG").is_ok() && std::thread::current().name() != Some("msaa warm") {
+                log::info!("pipeline: {:?} built in {:.1} ms on {:?}", v, t.elapsed().as_secs_f32() * 1000.0, std::thread::current().name());
+            }
+            p
+        })
     }
 }
 
@@ -166,8 +173,40 @@ pub fn warm_now(variants: &[Variant]) {
     }
 }
 
-/// The same on a thread of its own (the menus' 4x set while the game drives at 2x), so that the first switch
-/// does not wait for the driver's compiler.
+/// Threads of [`warm`] still building.
+static WARMING: AtomicU32 = AtomicU32::new(0);
+
+/// True while [`warm`]'s threads are still building: the start-up movie holds its LOADING until they are done
+/// (bootload.rs), as the first frame drawn would otherwise wait for the pipelines it draws with - 2.5 - 6.5 s
+/// with the driver's shader cache cold (docs/PERFORMANCE.md 2026-10-25).
+pub fn warming() -> bool {
+    WARMING.load(Ordering::Acquire) > 0
+}
+
+/// The same on threads of their own (the menus' 4x set while the game drives at 2x), so that the first switch
+/// does not wait for the driver's compiler. The variants in the order given (the first for every pipeline before
+/// the second), shared out over up to four threads.
 pub fn warm(variants: Vec<Variant>) {
-    let _ = std::thread::Builder::new().name("msaa warm".into()).spawn(move || warm_now(&variants));
+    let list: Vec<Arc<Inner>> = REGISTRY.lock().map(|r| r.iter().filter_map(|w| w.upgrade()).collect()).unwrap_or_default();
+    let jobs: Arc<Vec<(Arc<Inner>, Variant)>> = Arc::new(variants.iter().flat_map(|&v| list.iter().filter(move |p| v.scene || p.plain_too).map(move |p| (p.clone(), v))).collect());
+    let next = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let threads = std::thread::available_parallelism().map_or(2, |n| (n.get() / 4).clamp(1, 4));
+    let t = std::time::Instant::now();
+    for _ in 0..threads {
+        let (jobs, next) = (jobs.clone(), next.clone());
+        WARMING.fetch_add(1, Ordering::AcqRel);
+        let spawned = std::thread::Builder::new().name("msaa warm".into()).spawn(move || {
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some((p, v)) = jobs.get(i) else { break };
+                p.at(*v);
+            }
+            if WARMING.fetch_sub(1, Ordering::AcqRel) == 1 {
+                log::info!("pipeline: {} scene pipelines built ahead in {} ms ({} threads)", jobs.len(), t.elapsed().as_millis(), threads);
+            }
+        });
+        if spawned.is_err() {
+            WARMING.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
 }

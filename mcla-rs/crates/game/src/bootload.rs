@@ -255,7 +255,9 @@ impl Loading {
             }
         }
         let sound_ready = self.sound.is_some() || self.sound_rx.is_none();
-        sound_ready && self.job.as_ref().map_or(true, |j| j.is_finished())
+        // (and the scene's pipelines built ahead - render/ms.rs `warm`, started by the loading thread: the game's
+        // first frame waited 2.5 - 6.5 s for them under the movie's held LOADING with a cold shader cache)
+        sound_ready && self.job.as_ref().map_or(true, |j| j.is_finished()) && !render::ms::warming()
     }
 }
 
