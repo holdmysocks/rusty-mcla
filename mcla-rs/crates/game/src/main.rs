@@ -441,6 +441,8 @@ struct App {
     garage_out: Option<f32>,
     /// seconds of cruising until a racer rings with a challenge (`game/race/TelephoneChallenge`)
     phone_challenge_in: f32,
+    /// the racer whose telephone challenge is up (GH_03 ..): his voice says the invite and the decline
+    phone_caller: &'static str,
     /// a new career's opening (the film, the arrival) has been started - before VEHICLE SELECT
     intro_played: bool,
     /// the opening's step: 1 fading to black, 2 the film and the wait for the city, 3 VEHICLE SELECT, 4 black
@@ -906,6 +908,7 @@ impl App {
             garage_mask: Default::default(),
             garage_out: None,
             phone_challenge_in: 0.0,
+            phone_caller: "",
             intro_played: false,
             intro_stage: 0,
             intro_t: 0.0,
@@ -5022,18 +5025,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.phone_challenge_in -= sim_dt;
                     if self.phone_challenge_in <= 0.0 {
                         const WHO: [&str; 5] = ["GH_03", "GH_07", "GH_13", "GH_16", "GH_22"];
-                        let who = self.game.career.name_of(WHO[(self.tick_no / 7) as usize % 5]);
+                        let caller = WHO[(self.tick_no / 7) as usize % 5];
+                        let who = self.game.career.name_of(caller);
+                        self.phone_caller = caller;
                         let st = |k: &str, d: &str| self.game.career.strings.get(k).map(|s| s.to_string()).unwrap_or_else(|| d.to_string());
                         self.game.tip = Some((who, st("Lets Race", "LET'S RACE.  YOU PICK THE LOCATION."), 12.0));
                         self.game.phone_prompt = st("Back To Accept", "ACCEPT").to_uppercase();
                         self.game.phone_challenge = true;
-                        self.speech.say("HOOKMAN_PHONE_INVITE_PLAYER");
+                        self.speech.say_as("HOOKMAN_PHONE_INVITE_PLAYER", caller);
                     }
                 }
             }
             if self.game.tip.is_none() && std::mem::take(&mut self.game.phone_challenge) {
                 // (not taken)
-                self.speech.say("HOOKMAN_PHONE_PLAYER_DECLINES");
+                self.speech.say_as("HOOKMAN_PHONE_PLAYER_DECLINES", self.phone_caller);
             }
             if std::mem::take(&mut self.game.phone_accept) {
                 self.pending_action = MenuAction::OpenRaceSelect;

@@ -17,6 +17,9 @@ enum Step {
     /// a clip by its full name (the taunts' special-case assets): from `voice`'s banks, or the player's
     Clip { name: String, player: bool, voice: Option<String> },
     Wait(f32),
+    /// `<SpecialCase name="SIDEKICK_TELEPHONE_INVITE|DECLINE">` (F-87287): the clip is named `<name>_<profile>_<A..E>_01`
+    /// when the scenario is queued, in the caller's voice (`player`: the receiver, the player's own line)
+    Phone { name: String, player: bool },
     /// the scenario's dynamic mixer (`DynMixer`, default DYNAMIC_MIXER_SPEECH_DEFAULT; "" = NULL): on while it plays
     Mixer(String),
 }
@@ -24,6 +27,8 @@ enum Step {
 /// The bank that holds the player's replies to every hookman's pre-race taunt (`PRERACE_TAUNT_HP_*` /
 /// `_PH_*` receiver / sender lines of the player).
 const PLAYER_TAUNT_BANK: &str = "0x0624a35b";
+/// The bank of the player's telephone lines (`SIDEKICK_TELEPHONE_INVITE_` / `_DECLINE_<profile>_<A..E>_01`).
+const PLAYER_PHONE_BANK: &str = "0xb84d2992";
 
 #[derive(Default)]
 pub struct Speech {
@@ -39,9 +44,11 @@ pub struct Speech {
     rng: u32,
     /// the line playing now: (the player's, seconds left) - the speakers' jaw flap
     line: Option<(bool, f32)>,
-    /// the pre-race taunt counters (sub_826C2B18 starts them at random): H 1..12, the HP / PH letter A..F
+    /// the pre-race taunt counters (F-44958 starts them at random): H 1..12, the HP / PH letter A..F
     taunt_h: u32,
     taunt_l: u32,
+    /// the telephone lines' letter, 'A'..'E' (the byte at +70 of F-87287's instance: random at the start, one on per call)
+    phone_l: u8,
     taunt_ready: Vec<Step>,
     /// the dynamic mixer of the scenario playing now, and whether it was switched on
     mixer: String,
@@ -127,6 +134,15 @@ impl Speech {
                         }
                     }
                     steps.push(Step::Play { asset: asset.to_string(), player, voice: None });
+                } else if l.starts_with("<SpecialCase") {
+                    // (the career radio's squelch clicks around a line: RADIO_PRE_SQUELCH_01..03 / RADIO_POST_SQUELCH_01..03,
+                    // bank 0x52b9ce47 - a take of three, like any asset)
+                    if let Some(n) = attr(l, "name").filter(|n| *n == "RADIO_PRE_SQUELCH" || *n == "RADIO_POST_SQUELCH") {
+                        steps.push(Step::Play { asset: n.to_string(), player: false, voice: None });
+                    }
+                    if let Some(n) = attr(l, "name").filter(|n| *n == "SIDEKICK_TELEPHONE_INVITE" || *n == "SIDEKICK_TELEPHONE_DECLINE") {
+                        steps.push(Step::Phone { name: n.to_string(), player: attr(l, "VoiceGroup") == Some("PLAYER") });
+                    }
                 } else if l.starts_with("<WaitTime") {
                     steps.push(Step::Wait(attr(l, "value").and_then(|v| v.parse().ok()).unwrap_or(0.4)));
                 }
@@ -157,6 +173,7 @@ impl Speech {
         let Some(scripts) = self.scenarios.get(&scenario.to_ascii_uppercase()) else { return false };
         self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
         let steps = scripts[(self.rng >> 16) as usize % scripts.len()].clone();
+        let steps = self.phone_steps(steps, "");
         if !self.queue.is_empty() {
             self.queue.push_back(Step::Wait(0.8));
         }
@@ -171,15 +188,38 @@ impl Speech {
         let Some(scripts) = self.scenarios.get(&scenario.to_ascii_uppercase()) else { return false };
         self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
         let steps = scripts[(self.rng >> 16) as usize % scripts.len()].clone();
+        let steps = self.phone_steps(steps, profile);
         if !self.queue.is_empty() {
             self.queue.push_back(Step::Wait(0.8));
         }
         let voice = (!profile.is_empty()).then(|| profile.to_ascii_uppercase());
         self.queue.extend(steps.into_iter().map(|s| match s {
             Step::Play { asset, player: false, .. } => Step::Play { asset, player: false, voice: voice.clone() },
+            Step::Clip { name, player: false, .. } => Step::Clip { name, player: false, voice: voice.clone() },
             o => o,
         }));
         true
+    }
+
+    /// The telephone lines of a scenario become clips of `profile`'s voice (F-87287: the letter steps on once per
+    /// call, 'A'..'E', and both lines of the call have it); without a voice they are dropped.
+    fn phone_steps(&mut self, steps: Vec<Step>, profile: &str) -> Vec<Step> {
+        if !steps.iter().any(|s| matches!(s, Step::Phone { .. })) {
+            return steps;
+        }
+        if self.phone_l == 0 {
+            self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
+            self.phone_l = b'A' + ((self.rng >> 16) % 5) as u8;
+        }
+        self.phone_l = if self.phone_l >= b'E' { b'A' } else { self.phone_l + 1 };
+        let voice = profile.to_ascii_uppercase();
+        steps
+            .into_iter()
+            .filter_map(|s| match s {
+                Step::Phone { name, player } => (!voice.is_empty()).then(|| Step::Clip { name: format!("{name}_{voice}_{}_01", self.phone_l as char), player, voice: (!player).then(|| voice.clone()) }),
+                o => Some(o),
+            })
+            .collect()
     }
 
     /// The banks of a profile's voice (a test aid).
@@ -200,7 +240,7 @@ impl Speech {
         let c = self.clips.get(&joaat(name))?;
         let bank_of = |k: &String| k.rsplit_once('/').map(|x| x.0.to_string()).unwrap_or_default();
         if player {
-            return c.iter().find(|k| bank_of(k).ends_with(PLAYER_TAUNT_BANK)).cloned();
+            return c.iter().find(|k| bank_of(k).ends_with(PLAYER_TAUNT_BANK) || bank_of(k).ends_with(PLAYER_PHONE_BANK)).cloned();
         }
         let vb = self.voice_banks.get(voice?)?;
         c.iter().find(|k| vb.contains(&bank_of(k))).cloned()
@@ -208,7 +248,7 @@ impl Speech {
 
     /// Prepare a pre-race taunt (`CineScript_RequestPreraceTauntScenarioAudio`, scenario `TAUNT_PRERACE_<kind>`:
     /// HP = the hookman, 0.6 s, the player's reply; PH = the player first; H = the hookman alone). The asset
-    /// names are the special cases of sub_826C3000: H `PRERACE_TAUNT_H_<NN>` (NN 1..12 in turn), HP / PH
+    /// names are the special cases of F-87287: H `PRERACE_TAUNT_H_<NN>` (NN 1..12 in turn), HP / PH
     /// `PRERACE_TAUNT_<kind>_<hookman's profile>_<A..F in turn>_01` for both lines. False when the hookman has
     /// no voice for it (the scenario is then not prepared: no windows, no speech).
     pub fn prepare_taunt(&mut self, kind: &str, hookman: &str) -> bool {
@@ -306,7 +346,7 @@ impl Speech {
             }
         }
         self.step(a);
-        // the scenario's dynamic mixer while it plays (sub_821F1860 / sub_821EC620)
+        // the scenario's dynamic mixer while it plays (F-70477 / F-38026)
         let on = self.busy() && !self.mixer.is_empty();
         if on != self.mixer_on && !self.mixer.is_empty() {
             a.obj_scene(&self.mixer, on);
@@ -322,6 +362,7 @@ impl Speech {
             };
             match step {
                 Step::Wait(t) => self.wait = t,
+                Step::Phone { .. } => {}
                 Step::Mixer(m) => {
                     if m != self.mixer {
                         if self.mixer_on {
@@ -353,6 +394,36 @@ impl Speech {
                             a.play(&key, 1.0);
                         }
                         self.wait = dur + 0.15;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// N-AU-2: the telephone invite / decline are `<SpecialCase>` scenarios; each caller of the challenge has all
+    /// five letters of both lines and the player's line is in the player's phone bank (needs the user's data).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR (data dir) and MCLA_AUDIO_DIR (converted audio root)"]
+    fn telephone_lines() {
+        let data = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let root = std::env::var("MCLA_AUDIO_DIR").expect("MCLA_AUDIO_DIR");
+        let mut sp = Speech::load(&data, Path::new(&root));
+        for who in ["GH_03", "GH_07", "GH_13", "GH_16", "GH_22"] {
+            for (sc, kind) in [("HOOKMAN_PHONE_INVITE_PLAYER", "INVITE"), ("HOOKMAN_PHONE_PLAYER_DECLINES", "DECLINE")] {
+                for _ in 0..5 {
+                    sp.queue.clear();
+                    assert!(sp.say_as(sc, who));
+                    let clips: Vec<_> = sp.queue.iter().filter_map(|s| if let Step::Clip { name, player, voice } = s { Some((name.clone(), *player, voice.clone())) } else { None }).collect();
+                    assert_eq!(clips.len(), 2, "{sc} {who}");
+                    for (n, p, v) in &clips {
+                        assert!(n.starts_with(&format!("SIDEKICK_TELEPHONE_{kind}_{who}_")) && n.ends_with("_01"));
+                        let k = sp.clip_in(n, *p, v.as_deref());
+                        assert!(k.is_some(), "no clip {n} player {p}");
                     }
                 }
             }
