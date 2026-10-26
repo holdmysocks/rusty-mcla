@@ -536,7 +536,7 @@ pub struct Game {
     pub sell_pending: Option<usize>,
     /// the favourite REMOVE RACE FROM FAVORITES is asking about (its YES removes it)
     pub fav_remove_pending: Option<String>,
-    /// a pause / race-over YES / NO box is asking: 1 VIEW REPLAY during a race, 2 GO TO GARAGE (F-33773)
+    /// a pause / race-over YES / NO box is asking: 1 VIEW REPLAY during a race, 2 GO TO GARAGE, 3 NEXT RACE during a race (F-33773)
     pub menu_confirm: u8,
     /// the GPS map's cursor: which of the map's places it is on
     pub map_cursor: usize,
@@ -4216,6 +4216,11 @@ impl Game {
                     self.menu_sel = 0;
                     self.go_garage = true;
                 }
+                3 => {
+                    // (YES is greyed with nothing to repair in the original; the popup box cannot grey it - approx.)
+                    self.quick_fix = self.box_sel == 0 && vehicles.player().map_or(false, |c| self.fix_price(c.state.damage.max(c.state.zone_mean()), c.state.zones.iter().any(|z| *z > 0.05)) > 0);
+                    self.pause_do = Some(250);
+                }
                 _ => {}
             }
             // (YES in a vinyl editor box: LoadPresetVinyl / SavePresetVinyl - step 22)
@@ -5110,6 +5115,13 @@ impl Game {
                             self.stat_idx[0] = (p - 230) as usize;
                             self.pause_page = 68;
                             self.menu_sel = 0;
+                        }
+                        // (NEXT RACE during a race: the same repair box with Dialog_Desc_NextRaceMidRace - the race
+                        // is not over (vt+52); both answers go on, YES repairs)
+                        Some(Go::Page(250)) if self.flash_popup.is_some() && self.race.is_some() => {
+                            let def = crate::flash_ui::MessageBoxDef { title: "Dialog_Title_NextRace".into(), description: "Dialog_Desc_NextRaceMidRace".into(), options: vec![("repair_yes".into(), "Common_Yes".into()), ("next_yes".into(), "Common_No".into())] };
+                            self.message_box = Some((def, 0, MenuAction::None));
+                            self.menu_confirm = 3;
                         }
                         Some(Go::Page(p)) if p >= 250 => self.pause_do = Some(p),
                         Some(Go::Page(p)) if p >= 40 => {
@@ -7816,6 +7828,8 @@ impl Game {
                             // RESTART TOURNAMENT: every point at nought, from its first race
                             // (TournamentCore `restart`, 0x571)
                             8 => action = MenuAction::RestartTournament,
+                            // NEXT RACE (ARCADE): the race after this one
+                            9 => self.pause_do = Some(250),
                             // RESTART SERIES / RACE SERIES AGAIN: from its first race, every tally at
                             // nought (OrderedSeriesCore `restart`, 0x247c)
                             2 | 5 => {
@@ -7961,6 +7975,12 @@ impl Game {
                             self.menu_sel = 0;
                             action = MenuAction::StartRace;
                         }
+                    }
+                    // (NEXT RACE asks every time - F-33773 opens F-84186, the repair box of CONTINUE SERIES:
+                    // Dialog_Description_NextRace, the race being over; its callback F-98836 starts it)
+                    Some(10) if movie && self.flash_popup.is_some() => {
+                        self.series_ask_kind = 9;
+                        self.series_ask = Some(0);
                     }
                     Some(10) => self.pause_do = Some(250),
                     Some(11) => self.pause_do = Some(251),
@@ -12389,9 +12409,9 @@ impl Game {
             }
         } else if let Some(cur) = self.series_ask {
             MenuPage {
-                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc", "Dialog_Description_NextTournament", "Dialog_Description_QuitTournament", if self.career.tour_table.as_ref().is_some_and(|t| t.decided.is_some()) { "Dlg_Desc_Tourn_Restart_Lossless" } else { "Dlg_Desc_Tourn_Restart" }][self.series_ask_kind.min(8) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
+                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc", "Dialog_Description_NextTournament", "Dialog_Description_QuitTournament", if self.career.tour_table.as_ref().is_some_and(|t| t.decided.is_some()) { "Dlg_Desc_Tourn_Restart_Lossless" } else { "Dlg_Desc_Tourn_Restart" }, "Dialog_Description_NextRace"][self.series_ask_kind.min(9) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
                 icon: std::env::var("MCLA_RES_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(13),
-                title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK"), st("Dialog_Title_ReturnToCruise", "RETURN TO CRUISE"), st("Dlg_RaceAgainSeries_Title", "RACE AGAIN"), st("Dialog_Title_NextTournament", "CONTINUE TOURNAMENT"), st("Dialog_Title_QuitTournament", "QUIT TOURNAMENT"), st("Dlg_Title_Tourn_Restart", "RESTART TOURNAMENT")][self.series_ask_kind.min(8) as usize].clone(),
+                title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK"), st("Dialog_Title_ReturnToCruise", "RETURN TO CRUISE"), st("Dlg_RaceAgainSeries_Title", "RACE AGAIN"), st("Dialog_Title_NextTournament", "CONTINUE TOURNAMENT"), st("Dialog_Title_QuitTournament", "QUIT TOURNAMENT"), st("Dlg_Title_Tourn_Restart", "RESTART TOURNAMENT"), st("Dialog_Title_NextRace", "NEXT RACE")][self.series_ask_kind.min(9) as usize].clone(),
                 rows: vec![MenuRow { label: st("Common_Yes", "YES"), value: String::new(), enabled: self.fix_now > 0, part: None }, MenuRow { label: st("Common_No", "NO"), value: String::new(), enabled: true, part: None }],
                 select: cur,
                 prompts: vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("prompt_back", "BACK"), ICON_B)],
