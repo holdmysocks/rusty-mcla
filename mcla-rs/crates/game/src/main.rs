@@ -3530,6 +3530,12 @@ impl App {
                                 }
                                 self.game.prerace_scene = Some(sc);
                                 self.game.prerace = Some((g0, yaw, String::new()));
+                                // (#10: the walk's start plan goes with it - else the walk was played
+                                // again from that plan and the intro never came, the race starting where
+                                // the walk parks the car; the intro is planned anew at grid slot 0)
+                                self.prerace_plan = None;
+                                self.prerace_wait = 0;
+                                log::info!("delivery start: walk over, intro {} at grid slot 0 {:?} yaw {:.3}", self.game.prerace_scene.as_deref().unwrap_or(""), g0, yaw);
                             }
                         }
                     }
