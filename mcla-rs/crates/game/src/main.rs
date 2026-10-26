@@ -253,7 +253,7 @@ struct App {
     weather: sky::Weather,
     /// weather being blended in: (sky, weather, progress 0..1)
     sky_next: Option<(sky::Sky, sky::Weather, f32)>,
-    /// the weather's change (sub_822E8BA8): seconds of game time to the next draw (0x8287E12C,
+    /// the weather's change (F-18159): seconds of game time to the next draw (0x8287E12C,
     /// 0 at boot), the auto change (0x8287E138: off until hw_local_hangout2_setup runs), the
     /// draws (the shared MWC, 0x82860890 - the port's own instance) and a scene seen last frame
     weather_timer: f32,
@@ -404,7 +404,7 @@ struct App {
     /// starts, and the action held until then
     climb_wait: Option<(f32, MenuAction)>,
     /// the camera on screen last frame and its velocity (playerMgr+0x51420: the step over the unscaled
-    /// frame time, `sub_82204058`) - what a climb is handed
+    /// frame time, `F-31556`) - what a climb is handed
     screen_eye: Vec3,
     screen_v: Vec3,
     /// the start scene chosen when the pre-race begins (the warp lands on its camera)
@@ -504,7 +504,7 @@ struct App {
     shake: Option<boomcam::CamShake>,
     shake_impact: f32,
     shake_air: f32,
-    /// the wipeout camera's start asks for its jolt (sub_822AFF10)
+    /// the wipeout camera's start asks for its jolt (F-37740)
     shake_wipe: bool,
     /// the landing shake held while a wheel is bottomed out (car +473), the slipstream turbo
     /// running last frame, and one-shots asked for outside the camera code (duration, scale)
@@ -559,7 +559,7 @@ struct App {
     pad_cam_ud: bool,
     /// the player's own handbrake this frame (mcPlayerInput +20), before the port's parked hold
     own_handbrake: bool,
-    /// mcCarSSTurbo +20: the turbo's lens ramp (sub_823465C8)
+    /// mcCarSSTurbo +20: the turbo's lens ramp (F-60935)
     sst_view: f32,
     /// tune/camera/default.camfx, read once
     cam_fx: Option<boomcam::CamFx>,
@@ -741,7 +741,7 @@ impl App {
             self.prerace_window(slot, right, open);
         }
         if over {
-            // (FinishScene, sub_823BEF90 mode 1: slot 0's left and slot 1's right windows up)
+            // (FinishScene, F-62618 mode 1: slot 0's left and slot 1's right windows up)
             if racers_n > 0 {
                 self.prerace_window(0, false, false);
                 self.prerace_window(1, true, false);
@@ -1019,7 +1019,7 @@ impl App {
     }
 
     /// A weather's weight 0..1 (the original's w[k], WEATHER_AUDIO_RULE.md), following cross-fades.
-    /// The weather's change, once a frame (sub_822E8BA8; notes `work/career2/weather/notes.md`).
+    /// The weather's change, once a frame (F-18159; notes `work/career2/weather/notes.md`).
     /// W (0x8287E134) is the weather blended towards - `sky_next`'s, else the one in force.
     /// - hw_local_hangout2_setup's first instruction, Weather_GetAndSetAutoWeatherChange(1): the
     ///   auto change on for the rest of the session (the flag is not saved).
@@ -1436,11 +1436,11 @@ impl App {
         // through later days and nights. Here: by the hour the session starts at;
         // MCLA_CAR_SLOT=0 / 1 forces the hour's light / the lamp first, for comparisons.)
         // 2026-10-14, car round 10 - the game's own routine, read from the executable:
-        // sub_8235E3D8 (every car, every frame) asks sub_822F51A0 for the two strongest lights
+        // F-56246 (every car, every frame) asks F-24398 for the two strongest lights
         // where the car stands. Candidates and their weights:
         //   - from dusk to dawn (hour > 18 or < 6) the lamps of the lamp grid's cell: weight =
-        //     sat(Intensity / d^2) x sat(cone) (sub_822FD198), which is also the strength the
-        //     slot then carries (sub_822F2550);
+        //     sat(Intensity / d^2) x sat(cone) (F-60154), which is also the strength the
+        //     slot then carries (F-77922);
         //   - the hour's light (the light manager's + 64): 2 x (0.30 r + 0.59 g + 0.11 b) of
         //     its colour (weights 0x827E25E0, the 2 at 0x827E264C), strength 1.
         //   (also the dynamic lights - the player's head lamps for a car in their cone - and a
@@ -1449,7 +1449,7 @@ impl App {
         // already sits in the other slot: a light keeps its slot while it stays chosen (ids at
         // car + 6336 / + 6388). So the order is the car's history: the hour's light first for a
         // car made by day, the lamp first for one made at night. Each slot is then eased, per
-        // frame of the 30 Hz game: the direction turns 2.5 % of the angle left (sub_822F2960),
+        // frame of the 30 Hz game: the direction turns 2.5 % of the angle left (F-27981),
         // colour and strength go 6 % of the way; the light is handed to the programs as a point
         // 100 m off along that direction with range 1000 (the programs' 0.9).
         // MCLA_CAR_SLOT=0 / 1 starts with the hour's light in the first / second slot (a
@@ -1482,7 +1482,7 @@ impl App {
                     if d2 > 6400.0 || d2 < 1e-4 {
                         continue;
                     }
-                    // (the weight takes the record's cone as the prop lamps' below - sub_822FD198)
+                    // (the weight takes the record's cone as the prop lamps' below - F-60154)
                     let cone = l.table_cone();
                     let s = if l.on() { (l.range / d2).clamp(0.0, 1.0) * ((d / d2.sqrt()).dot(-l.dir) * cone[0] + cone[1]).clamp(0.0, 1.0) } else { 0.0 };
                     cand.push((i as i32, s, d / d2.sqrt(), l.color.max(Vec3::ZERO), s));
@@ -1637,7 +1637,7 @@ impl App {
                     self.game.show_message(&msg);
                 }
             }
-            // (V) the previous / the next place of the original's list of five (sub_822B35E8;
+            // (V) the previous / the next place of the original's list of five (F-67519;
             // the HUD's camera bar shows the new one)
             kb::CAM_UP => self.camera_button(true),
             kb::CAM_DOWN if driving => self.camera_button(false),
@@ -1695,9 +1695,9 @@ impl App {
         inp
     }
 
-    /// CAM_UP (`up`) / CAM_DOWN (sub_822B35E8): the previous / the next of the five views.
+    /// CAM_UP (`up`) / CAM_DOWN (F-67519): the previous / the next of the five views.
     /// Nothing while looking back or while a wreck is watched (the reverse and wipeout cameras
-    /// hold the buttons). The new view is the save's DEFAULT CAMERA as well (sub_822AFAB0).
+    /// hold the buttons). The new view is the save's DEFAULT CAMERA as well (F-93502).
     fn camera_button(&mut self, up: bool) {
         if self.look_back || self.crash_bits != 0 {
             return;
@@ -1734,7 +1734,7 @@ impl App {
         if let Some(p) = self.pad_state() {
             let slots = self.game.mc4_controls(self.hyd_on && self.game.hydraulics);
             if !slots.is_empty() {
-                // (the look-back rule of sub_822A50C0)
+                // (the look-back rule of F-75699)
                 let live = crate::mc4::pad_live(&p, &slots);
                 let value = |a: &str| crate::mc4::pad_analog(&p, &live, a);
                 let down = |a: &str| crate::mc4::pad_down(&p, &live, a);
@@ -1759,7 +1759,7 @@ impl App {
                         inp.hyd |= 1 << i;
                     }
                 }
-                // (manual gears are the map's: both shifts bound - sub_822A4B80)
+                // (manual gears are the map's: both shifts bound - F-31769)
                 inp.manual = crate::mc4::pad_manual(&slots);
                 inp.shift = shift;
                 return;
@@ -1910,8 +1910,8 @@ impl App {
         if self.game.in_menu() || self.game.show_map || watching || self.game.takes_menu_input() {
             self.pad_pending = 0;
             // (the map's actions keep their "down the frame before" while a menu is up: the
-            // original's driver update still runs the pad's own, sub_822A50C0, when input is shut -
-            // 0x822A3880 - so a button held as the menu closes is no fresh press)
+            // original's driver update still runs the pad's own, F-75699, when input is shut -
+            // A-60769 - so a button held as the menu closes is no fresh press)
             if let Some(st) = self.game.opt_x.pad {
                 let slots = self.game.mc4_controls(self.hyd_on && self.game.hydraulics);
                 if !slots.is_empty() {
@@ -1945,7 +1945,7 @@ impl App {
         // stay what they are - the original's editor cannot give them away.)
         let slots = self.game.mc4_controls(self.hyd_on && self.game.hydraulics);
         if let (Some(st), false) = (self.pad_state(), slots.is_empty()) {
-            // (`mc4::PAD_ACTS`, through the look-back rule of sub_822A50C0: while looking back what
+            // (`mc4::PAD_ACTS`, through the look-back rule of F-75699: while looking back what
             // shares a button with CAM_PAN_* reads nothing)
             let down = crate::mc4::pad_acts_down(&st, &slots);
             let live = crate::mc4::pad_live(&st, &slots);
@@ -1953,7 +1953,7 @@ impl App {
             self.pad_act_prev = down;
             let a = |i: u32| acted >> i & 1 != 0;
             // (LOOKBACK is "is down"; both CAMERA_LEFT and CAMERA_RIGHT down look back too -
-            // sub_822A50C0; the side look is the two as values)
+            // F-75699; the side look is the two as values)
             let (left, right) = (crate::mc4::pad_analog(&st, &live, "CAMERA_LEFT"), crate::mc4::pad_analog(&st, &live, "CAMERA_RIGHT"));
             let back = down >> 19 & 1 != 0 || (crate::mc4::pad_down(&st, &slots, "CAMERA_LEFT") && crate::mc4::pad_down(&st, &slots, "CAMERA_RIGHT"));
             self.pad_look = (right - left, if back { -1.0 } else { 0.0 });
@@ -1977,9 +1977,9 @@ impl App {
             if a(9) {
                 self.flash = true;
             }
-            // (CAM_UP / CAM_DOWN: the next / the previous view - sub_822B35E8)
-            // (the idle camera is ended by the pad - sub_822B3BF0, its Idle view - and the press of
-            // CAM_UP / CAM_DOWN that ends it does not change the view as well: sub_822B35E8 runs
+            // (CAM_UP / CAM_DOWN: the next / the previous view - F-67519)
+            // (the idle camera is ended by the pad - F-24075, its Idle view - and the press of
+            // CAM_UP / CAM_DOWN that ends it does not change the view as well: F-67519 runs
             // after it and passes the press over while that camera goes)
             let woke = self.event_dir.idle() && crate::mc4::pad_wakes_idle(&st, &live);
             if woke {
@@ -1988,7 +1988,7 @@ impl App {
             if (a(10) || a(11)) && !woke {
                 self.camera_button(a(10));
             }
-            // (CAM_PAN_*: the look-back camera's turn - sub_822B4C98, actions 22..25 down)
+            // (CAM_PAN_*: the look-back camera's turn - F-38892, actions 22..25 down)
             self.cam_switch.pan_in = (
                 crate::mc4::pad_down(&st, &live, "CAM_PAN_RIGHT") as i32 as f32 - crate::mc4::pad_down(&st, &live, "CAM_PAN_LEFT") as i32 as f32,
                 crate::mc4::pad_down(&st, &live, "CAM_PAN_UP") as i32 as f32 - crate::mc4::pad_down(&st, &live, "CAM_PAN_DOWN") as i32 as f32,
@@ -2002,7 +2002,7 @@ impl App {
                 self.fire_ability = true;
             }
             // (a shift is a press; one the other way within 0.4 s of the last is passed over -
-            // sub_822A2988 at 0x822A352C)
+            // F-56064 at A-82189)
             if crate::mc4::pad_manual(&slots) && (a(15) || a(16)) {
                 let way: i8 = if a(15) { 1 } else { -1 };
                 if !self.pad_shift_last.map_or(false, |(w, t)| w != way && t.elapsed().as_secs_f32() < 0.4) {
@@ -2118,14 +2118,14 @@ impl App {
                     player_input.shift = kbd_shift;
                 }
             }
-            // ---- the cruise assist (mcPlayerInput 0x822a25e0): cruising within
+            // ---- the cruise assist (mcPlayerInput F-43388): cruising within
             // CruiseActivationSpeedRange of the speed limit with the pedal between
             // CruiseThrottleMin and Max, the game holds the car at the limit - "press the gas
             // lightly to stay under the limit". Under Min the pedal coasts, over Max it is the
             // upper half of the engine's range; a hard brake lets go. ----
             self.cruise_hold = false;
-            // Original road accessor sub_822447B8; keep the last limit through
-            // junctions without a road owner (sub_822A25E0).
+            // Original road accessor F-87157; keep the last limit through
+            // junctions without a road owner (F-43388).
             if let (Some(nav), Some(c)) = (self.world.as_ref().and_then(|w| w.nav.as_ref()), self.vehicles.player()) {
                 if let Some(speed) = nav.speed_limit_at(c.state.pos) {
                     if (speed / 0.44704 - self.cruise_limit_mph).abs() > 0.01 && std::env::var_os("MCLA_CRUISE_TRACE").is_some() {
@@ -2343,12 +2343,12 @@ impl App {
         let focus = self.cine.camera().map(|c| c.0).unwrap_or(focus);
         // (the start screen: the city streamed round its shot's camera - City_DoneStreaming)
         let focus = self.titlecam.eye().unwrap_or(focus);
-        // (the ambient manager's cutscene mode, sub_826D4CA0: a scene playing - AmbientMgr_SetCutscene
+        // (the ambient manager's cutscene mode, F-97032: a scene playing - AmbientMgr_SetCutscene
         // from its load to its closing transition - and no replay recorded (the port records a race
         // as it runs) or played)
         let recording = self.game.mode == Mode::Race && self.game.race.is_some();
         self.vehicles.amb_cutscene = self.cine.camera().filter(|_| self.game.replay.is_none() && !recording).map(|c| (c.0, c.1));
-        // (the ambient manager's front-end mode, sub_826D4C90: AmbientMgr_SetFrontEnd from the press-start
+        // (the ambient manager's front-end mode, F-95688: AmbientMgr_SetFrontEnd from the press-start
         // script while the start screen is up; the viewport's tan(fov / 2) up and across)
         self.vehicles.amb_frontend = self.titlecam.ambient().filter(|_| self.game.mode == Mode::MainMenu);
         if let Some((_, _, lens)) = self.titlecam.view() {
@@ -2373,7 +2373,7 @@ impl App {
         // two dials are empty rings in a new career - `ng_c4`)
         // (or the save says they are fitted: `mc4`, abilities_unlocked)
         // (step 19e: IN_ZONE with a power-up in hand fires it, backwards while LOOKBACK is held;
-        // the special ability only gets the press when there is nothing to fire - sub_822A0398)
+        // the special ability only gets the press when there is nothing to fire - F-39212)
         if fire {
             if let (Some(pu), Some(p)) = (self.powerups.as_mut(), self.vehicles.cars.iter().position(|c| c.is_player)) {
                 if pu.fire(p, self.look_back, &mut self.vehicles, &mut self.ability) {
@@ -2408,7 +2408,7 @@ impl App {
                 self.ability.levels[i] = self.game.career.ability_level(system, stat);
             }
             if let Some(k) = self.ability.update(&mut self.vehicles, fire, !self.props.hits.is_empty(), dt) {
-                // (sub_823383C8: Roar and EMP shake the player's camera as they go off - their
+                // (F-77604: Roar and EMP shake the player's camera as they go off - their
                 // tunes' ShakeTime / ShakeScale, roar 0.75 s 0.365, pulse 0.5 s 1)
                 match k {
                     ability::Kind::Roar => self.shake_jolts.push((0.75, 0.365)),
@@ -2450,7 +2450,7 @@ impl App {
                         log::info!("powerups: test - IN_ZONE pressed, fired {}", fired);
                     }
                 }
-                // (step 19f: a racer that has finished takes nothing more - sub_8232A820)
+                // (step 19f: a racer that has finished takes nothing more - F-37974)
                 if let Some(r) = self.game.race.as_ref() {
                     let ft = &r.finish_time;
                     pu.set_finished(&|car| ft.get(car).map_or(false, |t| t.is_some()));
@@ -2504,7 +2504,7 @@ impl App {
             c.state.agro = self.ability.agro();
         }
         self.vehicles.draft = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(0.0, |v| v.sst.strength);
-        // mcCarSSTurbo::Fire 0x82345E40: the player's car (0x82331D28, its player's +48) counts "gSST" and "nSST", 1 each
+        // mcCarSSTurbo::Fire F-68670: the player's car (F-14919, its player's +48) counts "gSST" and "nSST", 1 each
         let fires = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(0, |v| v.sst.fires);
         if fires > self.sst_fires {
             for _ in self.sst_fires..fires {
@@ -2609,7 +2609,7 @@ impl App {
                         }
                         self.crash_bits = 0;
                         self.crash_exploding = false;
-                        // (the player's reset puts the warpers back, sub_822EAFB0)
+                        // (the player's reset puts the warpers back, F-86999)
                         self.warp_wipe.reset();
                         self.warp_expl.reset();
                         self.game.show_message(&format!("REPAIRED   -${}", bill));
@@ -2641,10 +2641,10 @@ impl App {
                     let big = std::mem::take(&mut c.state.wipeout);
                     if self.crash_bits == 0 {
                         // a head-on into the nose of a traffic car or into something fixed above
-                        // 22.35 m/s (sub_82333CE8, physics::headon, which added its damage): a wipeout
+                        // 22.35 m/s (F-43509, physics::headon, which added its damage): a wipeout
                         // and the slow motion
                         let head_on = std::mem::take(&mut c.state.head_on);
-                        // rolled onto its side or roof on the ground (mcCar::Update 0x82336814): 0.2 of
+                        // rolled onto its side or roof on the ground (mcCar::Update A-72058): 0.2 of
                         // MaxDamage and a wipeout
                         let rolled = up_y <= 0.1 && c.state.airborne_time <= 0.0 && c.state.damage < 0.999;
                         if head_on {
@@ -2655,7 +2655,7 @@ impl App {
                             c.state.damage = (c.state.damage + 0.2).min(1.0);
                         }
                         if c.state.damage >= 0.999 {
-                            // damaged out (sub_82342900 after sub_823429B0): its timer DamageOutDelay, or
+                            // damaged out (F-70073 after F-69183): its timer DamageOutDelay, or
                             // ExplosionDelay when the destroying hit was over ExplodeThreshold
                             self.crash_exploding = c.state.last_hit > dm.explode_threshold && dm.explode_threshold > 0.0;
                             self.crash_bits = 0x14;
@@ -2666,8 +2666,8 @@ impl App {
                             let p = c.state.pos;
                             self.fx.sparks(p + Vec3::Y * 0.6, Vec3::Y, 60);
                         } else if head_on || rolled || (c.model.bike && big > 1.8) {
-                            // a wipeout (sub_823429B0): its timer WipeoutDelay. (the hit's: a bike's
-                            // blow of more than 1.8 times the WipeoutThreshold, sub_82332098 - a car
+                            // a wipeout (F-69183): its timer WipeoutDelay. (the hit's: a bike's
+                            // blow of more than 1.8 times the WipeoutThreshold, F-54299 - a car
                             // wipes out on a hit only through the head-on rule)
                             self.crash_bits = 0x10;
                             self.crash_timer = dm.wipeout_delay;
@@ -2676,7 +2676,7 @@ impl App {
                         }
                     } else {
                         // mcCarDamage +44 runs down on real time while the car is under 4.47 m/s or
-                        // all its wheels touch (sub_82342EF0)
+                        // all its wheels touch (F-32386)
                         let all_down = !c.state.wheels.is_empty() && c.state.wheels.iter().all(|w| w.grounded);
                         if speed < 4.47 || all_down {
                             self.crash_timer -= dt;
@@ -2684,12 +2684,12 @@ impl App {
                         if self.crash_bits & 4 != 0 {
                             c.stunned = c.stunned.max(0.5);
                             if self.crash_timer <= 0.0 && self.wreck_timer <= 0.0 && self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT) {
-                                // (the wreck event, sub_822A4108, was not followed: the port's repair
+                                // (the wreck event, F-79134, was not followed: the port's repair
                                 // comes 3.2 s after the Damageout view has begun)
                                 self.wreck_timer = 3.2;
                             }
                         } else if self.crash_timer <= 0.0 {
-                            // the wipeout is over (mcCar::Update 0x823363D0): a car lying over (up.y
+                            // the wipeout is over (mcCar::Update A-23262): a car lying over (up.y
                             // under 0.7) is stood up where it is
                             self.crash_bits = 0;
                             c.state.upset = 0.0;
@@ -2955,7 +2955,7 @@ impl App {
         if self.cuts.playing.is_some() && self.cine_hold.is_none() {
             // (the player's skip is UI event 63 - Y, prompt button 4 - and does not end the scene: the cine
             // manager's request +305 jumps its clock to the scene's bookmark and it plays on from there
-            // (sub_826439E0 -> sub_823BB498 -> sub_823BEEB0 / sub_823BBB98, `cine::skip_to`); A does nothing)
+            // (F-86493 -> F-80555 -> F-19408 / F-61676, `cine::skip_to`); A does nothing)
             std::mem::take(&mut self.game.nav_enter);
             if std::mem::take(&mut self.game.nav_y) {
                 let at = self.cine.playing.as_ref().and_then(|sc| cine::skip_to(&sc.name, sc.t, sc.duration));
@@ -2972,7 +2972,7 @@ impl App {
             let skip = self.game.mode != Mode::FreeRoam;
             let name = self.cuts.playing.as_ref().map(|p| p.def.name.clone()).unwrap_or_default();
             if !self.cuts.update(dt, skip) {
-                // (the scene's audio ends with it, sub_821F5C38)
+                // (the scene's audio ends with it, F-27469)
                 if let Some(a) = self.audio.as_mut() {
                     if std::mem::take(&mut self.cut_audio_objects) {
                         a.obj_cutscene(&name, false, false);
@@ -3056,7 +3056,7 @@ impl App {
                         self.hangout_in = Some(i);
                         self.game.wager_here = false;
                         self.game.hangout_key = Some(if self.hangouts[i].0.ends_with("_sc") { "sc_delivery" } else { "hw_delivery" }.to_string());
-                        // (the delivery panel keeps its last choice - mcDeliveryForm, sub_8267C3C8)
+                        // (the delivery panel keeps its last choice - mcDeliveryForm, F-17823)
                         self.game.hangout_diff = self.game.delivery_diff;
                         self.pending_action = MenuAction::OpenRaceSelect;
                     }
@@ -3133,8 +3133,8 @@ impl App {
                     self.game.wager_here = hangoutin::SETUPS[si].key.contains("_wager_");
                     // (the location's key: its name in the string table, `<key>_state` in the registry)
                     self.game.hangout_key = Some(hangoutin::SETUPS[si].key.to_string());
-                    // (series and wager panels open on MEDIUM: mcLocalHangoutForm sub_8267FE08 /
-                    // sub_8267FB98, mcWagerForm sub_8267F788 / sub_8267F438 - combo 1)
+                    // (series and wager panels open on MEDIUM: mcLocalHangoutForm F-75411 /
+                    // F-48938, mcWagerForm F-90876 / F-82914 - combo 1)
                     self.game.hangout_diff = 1;
                     // the list opens at the events around here
                     let here = self.hangouts[i].1;
@@ -3219,7 +3219,7 @@ impl App {
             self.prerace_plan = None;
         }
         // DEFAULT_WITH_CUT's climb (`hudmap::CineClimb`): when it is over the camera keeps its last
-        // matrix (`sub_8221B8C8`), IsReadyToLoadStuff turns true and the script sets the race up - the
+        // matrix (`F-99030`), IsReadyToLoadStuff turns true and the script sets the race up - the
         // action held; the dive below starts from `climb_end`
         if let Some((c, act)) = self.climb.as_mut() {
             let act = *act;
@@ -3269,9 +3269,9 @@ impl App {
             }
         }
         self.game.climb_on = self.climb.is_some() || self.climb_view.is_some();
-        // The flight (CAREER_RACES.md "Race start: the warp"): mcWarper (`sub_8221A440`, the cinematic
-        // request of ARCADE's START RACE) waits for the start scene, then `sub_82219DA0` flies the render
-        // camera to the scene's camera at scene t 1.0 (`sub_823C0D10`) with one of the cinematic
+        // The flight (CAREER_RACES.md "Race start: the warp"): mcWarper (`F-32081`, the cinematic
+        // request of ARCADE's START RACE) waits for the start scene, then `F-18267` flies the render
+        // camera to the scene's camera at scene t 1.0 (`F-62707`) with one of the cinematic
         // transitions (`hudmap::CineWarp`); 1 s before it lands the scene may start (state 19), so the
         // scene's clock runs at flight time - (T - 1) and the flight ends on its camera.
         if let Some(w) = self.warp.as_mut() {
@@ -3346,7 +3346,7 @@ impl App {
                         }
                         let e = hudmap::CamRows::look_at(eye, eye + fwd, up);
                         // (after DEFAULT_WITH_CUT's climb: from the camera and lens it left - state 4 =
-                        // ARCADE's state 7 handler, 0x8221C440)
+                        // ARCADE's state 7 handler, A-41914)
                         let fov_from = match self.climb_end.take() {
                             Some((rows, lens)) => {
                                 s = rows;
@@ -3634,7 +3634,7 @@ impl App {
                 // (the red light's script turns the map control's property 0 on with the landmark's
                 // name - 0x5D7A -, but the original's big map has no title bar there: work/hookmen2
                 // `cap/rl_11`. The control (HUD+2624) is not made visible by the red light's HUD
-                // behaviour, sub_82651EA8; who shows it for a delivery's intro is not traced.)
+                // behaviour, F-88341; who shows it for a delivery's intro is not traced.)
                 let _ = &self.redlights.title_key;
                 self.game.overhead_title = None;
                 // (p080) a delivery intro's title bar: the race's name, then its kind "Delivery" and
@@ -3807,9 +3807,9 @@ impl App {
             c.state.vel = Vec3::ZERO;
             c.state.ang_vel = Vec3::ZERO;
         }
-        // (the starters not taken, deleted on eviction: the opponent manager's walk, sub_822B5AD8 - a car in the world
+        // (the starters not taken, deleted on eviction: the opponent manager's walk, F-31748 - a car in the world
         // whose horizontal distance to the player less M+896 (100 m) is over M+892 (600 m) is evicted, and one marked
-        // DeleteOnEviction is deleted (sub_822B7C90); the constructor's values, docs/reference/ai/brain.md 2.9. Out of
+        // DeleteOnEviction is deleted (F-28020); the constructor's values, docs/reference/ai/brain.md 2.9. Out of
         // the slots (8) is not reached by two cars and the hookman)
         if let Some(me) = self.vehicles.player().map(|c| c.state.pos) {
             self.vehicles.cars.retain(|c| c.driver != "starter_left" || (Vec3::new(c.state.pos.x - me.x, 0.0, c.state.pos.z - me.z).length() - 100.0).max(0.0) <= 600.0);
@@ -3959,7 +3959,7 @@ impl App {
                 self.game.mc4_camera_sync(&mut self.cam_mode);
             }
             self.game.mc4_clock_sync(&mut self.time_of_day, self.opt.time.is_some());
-            // (sub_8265E5E8: a Pull Over tactic (type 1) or a pursuit (types 2 - 4) on the player - payback
+            // (F-54212: a Pull Over tactic (type 1) or a pursuit (types 2 - 4) on the player - payback
             // goons' StartPursuit included; Search / Busted taken as the pursuit's tactic still running)
             self.game.police_on_player = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted);
             // (step 23: the slow motion, the tutorials, the statistics and achievements)
@@ -4371,7 +4371,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 self.vehicles.solids = solids;
                 // the fixed props around the racers, for their brains' obstacle scan (kind 3 of the
-                // object grid, filed while the prop is in level state 2 - sub_82735580)
+                // object grid, filed while the prop is in level state 2 - F-47614)
                 // (approx.: the original files the props of the streamed-in city; here every fixed
                 // prop within 250 m of a racer - the scan reaches ~6 s of line ahead + 25 m)
                 let mut objs = std::mem::take(&mut self.vehicles.prop_objects);
@@ -5117,8 +5117,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                             self.game.current_race = self.game.race_defs.iter().position(|d| d.id == id);
                             self.game.hookman_race = st.mission;
-                            // Warper_TransitionTo('REDLIGHT') (type 24, `sub_8221A440` 0x8221AA6C): with the
-                            // camera within 100 m of the target, or 300 m in the same district (sub_8224A2B8),
+                            // Warper_TransitionTo('REDLIGHT') (type 24, `F-32081` A-10573): with the
+                            // camera within 100 m of the target, or 300 m in the same district (F-55639),
                             // Warp_RedlightCloseToTarget (Main.sc.xml 612; approx.: the port's dive); else it
                             // goes on as EXIT_TO_CUT - DEFAULT_WITH_CUT's climb from the camera over the
                             // player's car, then the dive onto the start scene (`cap/rl_03..07`)
@@ -5370,7 +5370,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 if let Some(a) = self.audio.as_mut() {
                     for s in sounds {
-                        // (the clock's beep: RACE_TIMER_SECOND_BEEP_MASTER, sub_822112A8)
+                        // (the clock's beep: RACE_TIMER_SECOND_BEEP_MASTER, F-86111)
                         if !(s == "ui/menus/beep_fin" && a.obj("RACE_TIMER_SECOND_BEEP_MASTER")) {
                             a.play(s, 0.8);
                         }
@@ -5480,9 +5480,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.fx_impact = st.last_impact;
                     }
                 }
-                // (a window's hit sum passing 1 or 2 (0x82376B78): `damage_glassbreak` at the window's place,
+                // (a window's hit sum passing 1 or 2 (F-66214): `damage_glassbreak` at the window's place,
                 // moving with the car's body - effect +2028 of the car's effects object, started only while
-                // the car is drawn (G+116 != 0, sub_8235F738: radius r = the larger of the composite bound box's
+                // the car is drawn (G+116 != 0, F-44722: radius r = the larger of the composite bound box's
                 // full x / z sizes, the car's origin in the viewport's sphere test and no more than 450 m + r from
                 // the camera; here the last frame's view frustum); its sound is caraudio's)
                 let glass_fx = mcla_formats::hash::joaat("damage_glassbreak");
@@ -5507,9 +5507,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         d.glass_fx_seen = n;
                     }
                 }
-                // (a scrape's sparks, damagemap::Sparks - `sub_82376408`: the effect damage_scrape_sparks at
+                // (a scrape's sparks, damagemap::Sparks - `F-85632`: the effect damage_scrape_sparks at
                 // the point, its z along the contact normal, x = normalize(up x z), y = z x x
-                // (`sub_82202EC0`, up = the identity's row 1), moving with the closing velocity,
+                // (`F-97951`, up = the identity's row 1), moving with the closing velocity,
                 // evolution "impact" = min(10 x amount, 1); the port's own sparks only when the effect
                 // cannot be played)
                 let scrape_fx = mcla_formats::hash::joaat("damage_scrape_sparks");
@@ -5596,7 +5596,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                 }
-                // (the tyres' effects: decided once a game frame - the original's 30 Hz, `sub_82351A70` -
+                // (the tyres' effects: decided once a game frame - the original's 30 Hz, `F-67671` -
                 // and moved with the wheels on the tick between; the road's wetness eases to the weather's)
                 if let Some(t) = self.tyre_fx.as_mut() {
                     let mut wet = self.weather.wet();
@@ -5694,7 +5694,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     Some(police::Event::Escaped) => {
                         let exp = rewards::pursuit_exp(self.game.rep, std::mem::take(&mut self.police.chase_time));
                         if exp > 0 {
-                            // (no upper limit: sub_826BC348)
+                            // (no upper limit: F-55689)
                             self.game.rep += exp;
                             self.game.show_message(&format!("YOU ESCAPED   REP +{}", exp));
                         } else {
@@ -5909,12 +5909,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.career.event(career::Ev::Race { district: &district, place, hookman, class: &class, race: &race_id, beat_goal });
                     // (a finished race is an unlocked race: `mc4`)
                     self.game.mc4_race_finished(&race_id);
-                    // (step 23: the race-end statistics, sub_822D0438)
+                    // (step 23: the race-end statistics, F-98556)
                     self.game.mc4_race_stats(place);
-                    // (step 23b: the race's goals - sub_822CD720 from sub_822D0438)
+                    // (step 23b: the race's goals - F-96807 from F-98556)
                     let s23b_dmg = self.vehicles.player().map_or(0.0, |c| c.state.damage);
                     self.game.mc4_race_goals(place, my_time, s23b_dmg);
-                    // (GOAL ATTACK: the race's end hook sub_82256BE0 - SetAllPoliceUnderground(0, 1))
+                    // (GOAL ATTACK: the race's end hook F-84893 - SetAllPoliceUnderground(0, 1))
                     if self.game.goal_attack {
                         self.police.units_up();
                     }
@@ -5966,7 +5966,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                     }
-                    // the events that just completed: their counters and their rewards (sub_826CD1E8)
+                    // the events that just completed: their counters and their rewards (F-67065)
                     let mut s15_done: Vec<(String, usize)> = s15_series_done.into_iter().collect();
                     for (key, diff) in std::mem::take(&mut self.game.career.completed_events) {
                         // (at the difficulty the tournament was entered with at its panel)
@@ -5985,7 +5985,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.reward_panel = true;
                     }
                     // (form 56 after the last race of a tournament: TOURNAMENT WON / TOURNAMENT LOST, 3.5 s -
-                    // TournamentCore's EndOfRaceSequence, sub_826CA6D8's bComplete / bFailure)
+                    // TournamentCore's EndOfRaceSequence, F-66541's bComplete / bFailure)
                     if let Some(won) = self.game.career.tour_decided.take() {
                         self.game.opt_x.arcade.d.banner = Some((3.5, won));
                         self.game.opt_x.arcade.d.banner_kind = 4;
@@ -6071,7 +6071,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             let cp3_raw: Vec<Vec3> = shown.iter().map(|s| s.pos).collect();
             // (the script's height of each - the flare's "Height" evolution - and +112: the marker
-            // stands on the ground found from 2 m above to 2 m below it, sub_82265FE0)
+            // stands on the ground found from 2 m above to 2 m below it, F-34461)
             if let Some(race) = self.game.race.as_ref() {
                 for s in shown.iter_mut() {
                     if let Some(sp) = checkpoints::spec_at(&race.cp_specs, s.pos + Vec3::Y * 0.2) {
@@ -6091,7 +6091,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // (the arrows projected onto the low smoke - checkpoints::arrow_plan; none in a flag
-            // game: the CTF game object 0x8286EC44 turns them off, sub_82263128)
+            // game: the CTF game object 0x8286EC44 turns them off, F-45072)
             self.cp_markers.arrows = None;
             if self.game.mode == Mode::Race && self.game.flag.is_none() {
                 if let Some(race) = self.game.race.as_ref().filter(|r| r.kind != game::RaceKind::Payback) {
@@ -6137,7 +6137,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (docs/reference/audio/VOLUME_RULE.md); the pause is the PAUSE scene
                 a.set_master(1.0);
                 self.sound.sliders = [o.master, o.music, o.voice, o.vehicle, o.cutscene];
-                // the audio camera mode (sub_822C0320): 0 bumper, 1 driver, 2 near, 3 medium, 4 far, 5 cinematic, 6 other
+                // the audio camera mode (F-79297): 0 bumper, 1 driver, 2 near, 3 medium, 4 far, 5 cinematic, 6 other
                 self.sound.cam_audio = if self.cuts.playing.is_some() || self.cine.playing.is_some() || self.game.replay.is_some() {
                     6
                 } else if self.vehicles.player().is_none() || self.game.in_menu() && self.game.mode != Mode::Paused {
@@ -6241,8 +6241,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
 
         }
-        // ---- the garage's repair (`game.repairCar` = sub_822A7388: the full reset sub_82353890 of the
-        // model - zones, pieces, the map's dents AND scrapes - and the parts' repair sub_8233E1B0; the car
+        // ---- the garage's repair (`game.repairCar` = F-12181: the full reset F-74884 of the
+        // model - zones, pieces, the map's dents AND scrapes - and the parts' repair F-75221; the car
         // is not moved) ----
         if std::mem::take(&mut self.game.repair_car) {
             if let Some(p) = self.vehicles.player_mut() {
@@ -6260,8 +6260,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 p.state.damage = 0.0;
                 p.state.dmg.repair();
                 p.state.zones = [0.0; 4];
-                // (sub_82215810: set upright where it stands, its heading kept, then the racer's
-                // reset sub_822AC490(0))
+                // (F-32850: set upright where it stands, its heading kept, then the racer's
+                // reset F-39432(0))
                 let f = p.state.forward();
                 let f = Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::NEG_Z);
                 let right = f.cross(Vec3::Y).normalize_or(Vec3::X);
@@ -6305,7 +6305,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let menu_open = self.game.hangout_key.as_deref() == Some(game::GAS_MENU);
                     match self.gas.step(dt, p.state.pos, p.state.vel.length(), menu_open, paused, police, state) {
                         mc4b::GasStep::RefillOne => {
-                            // (mcCareer_RefillOneNitro, sub_826BCA78: one more while below the most)
+                            // (mcCareer_RefillOneNitro, F-21838: one more while below the most)
                             if p.state.nitro_shots < p.state.nitro_max {
                                 p.state.nitro_shots += 1;
                                 refilled = true;
@@ -6594,7 +6594,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             let k = 1.0 - (-dt * 3.2 / views.transition.max(0.1)).exp();
                             let cur = self.garage_cam.get_or_insert((pos, look, fov));
                             if original {
-                                // the game's own move (0x826B4508): the camera's figures eased from the
+                                // the game's own move (F-53958): the camera's figures eased from the
                                 // view left to the view entered, the azimuth the short way round
                                 let to = garagecam::CamState::of(&view, origin, render_state.rot, turn);
                                 let tr = self.garage_tr.get_or_insert((to, to, 1.0e3));
@@ -6639,7 +6639,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let car_view = replay::CarView::of(&render_state, car.model.max.y);
                 let mut probe = |a: Vec3, b: Vec3, r: f32| replay_probe(&world.collider, a, b, r);
                 if let Some(p) = self.game.replay.as_mut() {
-                    // (the right stick turns the polar camera, sub_823170C8; the triggers' zoom is not wired)
+                    // (the right stick turns the polar camera, F-79918; the triggers' zoom is not wired)
                     p.stick(self.pad_look.0, self.pad_look.1, 0.0, dt);
                 }
                 let was = self.game.replay.as_ref().and_then(|p| p.view());
@@ -6766,14 +6766,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         .clone();
                     let nitro = render_state.nitro_on();
                     // (the replay director's drive view: its view and the reverse camera; its
-                    // changes are cuts, sub_8271E930)
+                    // changes are cuts, F-53309)
                     let mode = replay_drive.map_or(self.cam_mode, |(v, _)| boomcam::PORT_OF_VIEW[(v as usize).min(4)]);
                     self.view_mode = mode;
                     if replay_cut {
                         self.boom.reset();
                         self.cam_switch.reset();
                         // (a cut to a fixed mount - bumper or cockpit, camBoomCS vt+60 - puts the
-                        // TRANSITIONMOVIE mask up, sub_8271E930 -> sub_82207EF0)
+                        // TRANSITIONMOVIE mask up, F-53309 -> F-28091)
                         if replay_drive.map_or(false, |(v, _)| v < 2) {
                             self.cam_switch.mask.start(0.01, 0.25, 0.01);
                         }
@@ -6825,7 +6825,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // CINEMATIC CAMERA option turns the look back of a moving car to one side)
                         let cinematic = self.game.mc4.as_ref().map_or(true, |m| m.options.idle_camera);
                         self.cam_switch.frame(&set, mode, self.look_back, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
-                        // the look-around (sub_822B2AB0): the stick turns the view camera, CAMERA_UP
+                        // the look-around (F-36289): the stick turns the view camera, CAMERA_UP
                         // lifts it; looking back from a chase view is the reverse camera's own turn
                         let chase = boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2;
                         let fx = self.cam_fx.get_or_insert_with(|| boomcam::CamFx::load(&data_dir)).clone();
@@ -6864,7 +6864,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let out = self.cam_switch.blend.apply(&boomcam::BoomTarget { pan: (0.0, 0.0), ..target }, out, dt);
                         // the burnout camera: with the CINEMATIC CAMERA option on and a chase view in
                         // use, a burnout spun on the handbrake brings in the event camera's Burnout
-                        // view (sub_822B3BF0; boomcam::EventDirector)
+                        // view (F-24075; boomcam::EventDirector)
                         let allowed = cinematic
                             && boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2
                             && !self.look_back
@@ -6886,10 +6886,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             aero: if self.crash_bits & 0x10 != 0 && render_state.speed() > 4.47 { car.model.simtunes.as_ref().map_or(1.0, |s| s.base.s.aero_damp_factor) } else { 1.0 },
                         };
                         let charge = render_state.veh.as_ref().map_or(0.0, |v| v.burn);
-                        // the chooser's inputs (sub_822B3BF0; boomcam::EventIn)
+                        // the chooser's inputs (F-24075; boomcam::EventIn)
                         let vs = render_state.veh.as_ref();
                         let bike = car.model.bike;
-                        // the slipstream turbo's lens (mcCarSSTurbo +20, sub_823465C8): to turboFOV at
+                        // the slipstream turbo's lens (mcCarSSTurbo +20, F-60935): to turboFOV at
                         // |FOV| / FovOutTime a second while it runs, back at FovInTime - physics/sst.rs
                         let sst_on = vs.map_or(false, |v| v.sst.burning);
                         let sfov = render_state.veh.as_ref().zip(car.params().veh.as_ref()).map_or(0.0, |(_, t)| t.t.ss_turbo.fov);
@@ -6931,7 +6931,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         };
                         self.pad_pan.0 = false;
                         self.pad_cam_ud = false;
-                        // the wipeout camera (sub_822B4C98 / sub_822AFF10): taken while the crash bits
+                        // the wipeout camera (F-38892 / F-37740): taken while the crash bits
                         // are set (every frame until it is in use; not while Damageout is set); a running
                         // event is ended first, and the camera waits for its blend back [?: the
                         // director's queue], then is cut to
@@ -6999,7 +6999,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         self.chase.pos = out.pos;
                         self.chase.look = out.look;
-                        // the camera kept out of walls (camBoomCS CollideType 2, sub_8231FD60): a ball
+                        // the camera kept out of walls (camBoomCS CollideType 2, F-12669): a ball
                         // of the near plane's corner from the file's Collide point on the car to the
                         // camera; the camera stops where it touches, the look keeps its direction
                         // (the event camera has its own, not ported)
@@ -7033,7 +7033,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.look.reset();
                     self.view_mode = if own_view { 255 } else { self.cam_mode };
                 }
-                // the HUD's camera bar shows the view in use (sub_8223D450: the list place; the
+                // the HUD's camera bar shows the view in use (F-43809: the list place; the
                 // overhead camera of the race editor would be 5) and a cut puts the mask up
                 self.game.hud_camera = boomcam::VIEW_OF_PORT[(self.cam_mode as usize).min(5)] as i32;
                 self.game.cut_mask = self.cam_switch.mask.update(dt);
@@ -7041,7 +7041,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let vs = render_state.veh.as_ref();
                     log::info!("frame {} ms {:.2} sim {:.2} ticks {} alpha {:.3} gear {} shift {} rpm {:.0} tach {:.0} pos {:.4} {:.4} {:.4} vel {:.4} cam {:.4} {:.4} {:.4} look {:.4} {:.4} {:.4} fov {:.4} gz {:.4}", self.frame_no, self.frame_ms, sim_ms, ticks, self.vehicles.render_alpha, render_state.gear, vs.map_or(0, |v| if v.gear_change.active { v.gear_change.direction } else { 0 }), vs.map_or(render_state.rpm, |v| v.engine_w * 9.549_296), self.sound.tach_rpm().unwrap_or(-1.0), render_state.pos.x, render_state.pos.y, render_state.pos.z, render_state.speed(), self.chase.pos.x, self.chase.pos.y, self.chase.pos.z, self.chase.look.x, self.chase.look.y, self.chase.look.z, self.cam.fov_y, self.boom.gz);
                 }
-                // camera shake (camFX's blocks, sub_822B4C98 / sub_82315000; rule in
+                // camera shake (camFX's blocks, F-38892 / F-10707; rule in
                 // docs/reference/cameras/shake_rule.md): one-shots on impacts, landings and wipeouts
                 // from the car's vehCamShake, the driving, burnout and drift rumbles each frame; only
                 // with the CAMERA SHAKE option, not in a replay
@@ -7054,8 +7054,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let fixed = boomcam::VIEW_OF_PORT[(self.view_mode as usize).min(5)] < 2;
                     let lerp = |a: f32, b: f32, k: f32| a + (b - a) * k;
                     let speed = render_state.speed();
-                    // an impact (sub_82343880): dv, the change of velocity the step's contact impulses
-                    // gave the car (0.4 of those against fixed things; 0x82567A08), over a threshold
+                    // an impact (F-11688): dv, the change of velocity the step's contact impulses
+                    // gave the car (0.4 of those against fixed things; F-19931), over a threshold
                     // that goes from JoltThreshold to ImpactThreshold between 5 and 30 m/s; k = the
                     // excess over FatalBlow
                     let impact = shake_dv;
@@ -7074,7 +7074,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if impact > 0.0 && self.ability.agro() && self.vehicles.cars.iter().any(|c| !c.is_player && c.state.pos.distance(render_state.pos) < 5.5) {
                         sh.jolt(0.5, 1.0, fixed);
                     }
-                    // the slipstream turbo going off (sub_82345E40): 0.5 s (half in the bumper and
+                    // the slipstream turbo going off (F-68670): 0.5 s (half in the bumper and
                     // cockpit) at 0.78, the object's own constants
                     let sst = render_state.veh.as_ref().map_or(false, |v| v.sst.burning);
                     if sst && !self.shake_sst {
@@ -7084,7 +7084,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     for (d, a) in self.shake_jolts.drain(..) {
                         sh.jolt(d, a, fixed);
                     }
-                    // a landing after more than half a second in the air (sub_82336128, car +473):
+                    // a landing after more than half a second in the air (F-53665, car +473):
                     // DurationMax / AmplitudeMax on the first tick down, then again on every tick a
                     // wheel is still bottomed out on fixed ground (wheel +530)
                     let down = render_state.wheels.iter().any(|w| w.grounded);
@@ -7102,7 +7102,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     } else {
                         self.shake_air += dt;
                     }
-                    // the wipeout camera starts (sub_822AFF10): every block off (the wipeout's own
+                    // the wipeout camera starts (F-37740): every block off (the wipeout's own
                     // impact jolt of the same frame with them), then its JoltDuration 0.75 s at
                     // JoltAmplitude 0.6 for a wipeout or an exploding car
                     if std::mem::take(&mut self.shake_wipe) {
@@ -7111,7 +7111,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             sh.jolt(0.75, 0.6, fixed);
                         }
                     }
-                    // the rumbles (sub_822B4C98): driving between the tune's two shares of the top
+                    // the rumbles (F-38892): driving between the tune's two shares of the top
                     // gear's speed, times MagnitudeMultiplier, none in the air
                     let top = car.model.params.veh.as_ref().map_or(60.0, |v| v.top_speed.max(1.0));
                     let pct = (speed / top).clamp(0.0, 1.0);
@@ -7214,7 +7214,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 // (the shake on the camera in use, after its collision - see CAMERAS_REPLAY.md)
-                // (none while the player's Zone runs: the blocks keep their state, sub_822B2AB0)
+                // (none while the player's Zone runs: the blocks keep their state, F-36289)
                 let zone = self.ability.kind == ability::Kind::Zone && self.ability.active > 0.0;
                 if shake_on && sim_dt > 0.0 && !zone {
                     if let Some(sh) = self.shake.as_mut() {
@@ -7232,15 +7232,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // takes the camera over (recorded twice in the original, CAREER_RACES.md "Race end:
                 // camera and timing"). The movie's camera: from `cur_camera` 0 (PauseCamera1) to the
                 // standings form's 2 (PauseCamera3; its mirror 13 when a line from it to its look-at
-                // point is blocked, else 1 - sub_82654960), `fs_LerpFactor` += (1 - it) / 10 a movie
+                // point is blocked, else 1 - F-32014), `fs_LerpFactor` += (1 - it) / 10 a movie
                 // frame; the game's camera mixed into it by `player0_cam_ctrl` = sin(acos(1 - temp /
-                // 100)), temp += 3 a frame; both mixes as SetPolarCam's sub_82205A18 (the angles and
+                // 100)), temp += 3 a frame; both mixes as SetPolarCam's F-22967 (the angles and
                 // length of eye - look-at, the look-at and the lens straight). Movie frames 30 a
                 // second (the settling seen in the original: 0.9 a frame at 30). The pause at 1.2 s
                 // does not stop the movie: the camera settles on. At 2.4 s the race-over panel's
                 // camera is the movie's next `cur_camera`: the same lerp from where it stands, the
                 // short way round unless that path is blocked, then the long way, else a cut
-                // (0x82205FD8 tests t = 0.25, 0.5, 0.75).
+                // (F-32916 tests t = 0.25, 0.5, 0.75).
                 if race_end_on {
                     let t = self.game.race_end_t.unwrap_or(0.0);
                     let polar = |d: Vec3| (d.x.atan2(d.z), d.y.atan2(Vec3::new(d.x, 0.0, d.z).length()), d.length());
@@ -7589,7 +7589,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // CHANGE TARGET: the camera flies over the new place (Change_Target, 1 s)
                     self.nav.fly_to(at);
                 }
-                // the left stick / WASD move the cursor freely (sub_82629BA0): 0.5 H m/s at full tilt
+                // the left stick / WASD move the cursor freely (F-62325): 0.5 H m/s at full tilt
                 let mut stick = glam::Vec2::ZERO;
                 if self.input.down(KeyCode::KeyA) { stick.x -= 1.0; }
                 if self.input.down(KeyCode::KeyD) { stick.x += 1.0; }
@@ -7686,7 +7686,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         self.vehicles.hide_player = self.hide_player || (self.game.fresh_game && self.intro_stage != 0) || self.game.starter_pick.is_some();
-        // (the driver's camera: the original's POV camera sets G+122 of the car it follows - sub_822A9670 -
+        // (the driver's camera: the original's POV camera sets G+122 of the car it follows - F-95074 -
         // and its windows take the in-car glass program; damage_map_rule.md Part C 6. As the cockpit's
         // headless driver: not while looking back, in a replay or the idle camera.)
         self.vehicles.interior_glass = self.view_mode == 3 && !self.look_back && !self.event_dir.idle() && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
@@ -7700,7 +7700,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
             self.vehicles.traffic_lamps(eye, axis, &Frustum::from_view_proj(vp), night, sim_dt);
         }
-        // (the set-up cars' lamp states - vehicles.rs `setup_lamps`, sub_82353E38: head lamps due past the
+        // (the set-up cars' lamp states - vehicles.rs `setup_lamps`, F-10129: head lamps due past the
         // light manager's 18.0 or before its 6.0, or in Stormy or Foggy weather weighing over 0.85; in the
         // garage by its view, `garage_lamps_due`)
         self.cine_lamps_tick();
@@ -7726,7 +7726,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
             self.vehicles.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
             self.peds.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
-            // (the original's renderer flag of sub_822E5B30, set while the game is paused: the plants' model angle x 0.9)
+            // (the original's renderer flag of F-31789, set while the game is paused: the plants' model angle x 0.9)
             crate::props::set_paused(self.game.mode == Mode::Paused);
         }
         let mut globals = self.lighting(vp);
@@ -7868,7 +7868,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // "The lamps' glow pass after the tone map"): a seed and three star quads for every lit
         // prop lamp - the list the cars' map shows as glows, the same props out to the same
         // distance - and for every lit signal lamp. A lamp is lit after 17.9 - o and before
-        // 6.1 + o o'clock, o = one of sixteen steps of a minute a lamp (sub_82729438: bits 4..7
+        // 6.1 + o o'clock, o = one of sixteen steps of a minute a lamp (F-28456: bits 4..7
         // of the prop's address x 1 / 960 h - here a hash of its place; recorded: none at 17:30,
         // 26 of 70 at 17:48, all from 17:57 to 06:00, 12 at 06:18, none at 06:30 or at noon in
         // any weather). The cars' head, tail, brake
@@ -7907,7 +7907,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let mut head_ok: Option<(u32, bool)> = None;
                 for (p, z, c, h) in self.props.signal_lamps_lit() {
                     // (a head is listed as any prop - halo::ListView::holds with its own box and radius - and
-                    // then sub_82739F70 tests it once: a 2 m sphere round its origin in the main view (the near
+                    // then F-79347 tests it once: a 2 m sphere round its origin in the main view (the near
                     // clause, 300 m, never decides inside the list's reach), or within 20 m)
                     if head_ok.map_or(true, |(k, _)| k != *h) {
                         let (o, bc, bw, br, bx) = self.props.signal_head_cull(*h);
@@ -8118,6 +8118,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // --- egui ---------------------------------------------------------------
         let mut egui_jobs = None;
         let rain_now = self.rain_amount();
+        // the police radar (F-61846): the nearest police car to the player - a payback goon is not one (+872),
+        // an underground unit has no car up in the port (+880) - from the UILogic tune; 0 with none
+        let radar_now = {
+            let [near, falloff, exponent] = self.game.ui_shared.as_ref().map_or([40.0, 140.0, 1.0], |s| s.logic.radar);
+            let pp = self.vehicles.player().map(|c| c.state.pos);
+            let d = pp.and_then(|pp| self.vehicles.cars.iter().filter(|c| c.cop && !c.is_player).map(|c| c.state.pos.distance(pp)).reduce(f32::min));
+            d.map_or(0.0, |d| (1.0 - ((d - near).max(0.0) / falloff).min(1.0)).powf(exponent))
+        };
         if let Some(eg) = self.egui.as_mut() {
             let mut raw = eg.state.take_egui_input(&window);
             // (--fast: the UI's clock steps as the game's, so the movies' animations repeat run for run)
@@ -8142,7 +8150,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if let Some(k) = self.game.ability_pick.take() {
                 self.ability.kind = crate::ability::Kind::ALL[k.min(3)];
             }
-            let hud = self.vehicles.player().map(|c| HudInfo { damage_goal: self.game.goal_attack && self.game.race.is_some(), speed_kmh: c.state.fwd_speed() * 3.6, speed_abs: c.state.speed(), gear: c.state.gear, rpm: self.sound.tach_rpm().unwrap_or(c.state.rpm), redline: c.model.params.redline, nitro: (c.state.nitro_shots as f32 + c.state.veh.as_ref().map_or(0.0, |v| v.nitro_level)) / 4.0, damage: if self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery) { c.state.delivery_damage() } else { c.state.damage }, player_pos: c.state.pos, player_heading: { let f = c.state.forward(); f.x.atan2(-f.z) }, heat: std::env::var("MCLA_HUD_HEAT").ok().filter(|_| self.tick_no > 400).and_then(|v| v.parse().ok()).unwrap_or(if self.police.goons { 0 } else { self.police.heat as u8 }), fine: if self.police.goons { 0 } else { self.police.fine as i64 }, law: self.police.level(), search: self.police.search / self.police.tun.get("fSearchMaxTime", 35.0), rain: rain_now, ability: if (self.game.mc4_ability_none() || (self.game.career.loaded() && !self.game.career.reached("INSTALL_ABILITY"))) && std::env::var("MCLA_ABILITY").is_err() { "" } else { self.ability.kind.name() }, ability_meter: self.ability.meter, ability_fx: self.ability.fx(), draft: c.state.veh.as_ref().map_or(0.0, |v| v.sst.strength), sst: c.state.veh.as_ref().map_or(0.0, |v| v.sst.level), sst_full: c.state.veh.as_ref().map_or(false, |v| v.sst.full && !v.sst.burning), sst_on: vehicles::Vehicles::has_sst(c), sst_lit: self.game.tutorial_box.as_ref().map_or(false, |t| t.0 == "tutorial_slipstream_title" && t.2 <= 0.0), map_vp: self.map_vp, ability_tint: self.ability.tint().map(|t| (t, self.ability.blend())), cam_vp: Some(vp), cam_pos: self.chase.pos, cam_look: self.chase.look, cam_fwd: { let f = self.chase.look - self.chase.pos; Vec3::new(f.x, 0.0, f.z).normalize_or_zero() }, cam_vel: c.state.vel, night: self.time_of_day > 18.0 || self.time_of_day < 6.0, /* d_IsNight = sub_82205248: light manager +14568 / +14564 */ cruise: self.cruise_hold, pu_hud: self.powerups.as_ref().map_or([0.0, 0.0, 1.0], |p| p.hud(self.vehicles.cars.iter().position(|x| x.is_player).unwrap_or(0))) }).unwrap_or_default();
+            let hud = self.vehicles.player().map(|c| HudInfo { damage_goal: self.game.goal_attack && self.game.race.is_some(), speed_kmh: c.state.fwd_speed() * 3.6, speed_abs: c.state.speed(), gear: c.state.gear, rpm: self.sound.tach_rpm().unwrap_or(c.state.rpm), redline: c.model.params.redline, nitro: (c.state.nitro_shots as f32 + c.state.veh.as_ref().map_or(0.0, |v| v.nitro_level)) / 4.0, damage: if self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery) { c.state.delivery_damage() } else { c.state.damage }, player_pos: c.state.pos, player_heading: { let f = c.state.forward(); f.x.atan2(-f.z) }, heat: std::env::var("MCLA_HUD_HEAT").ok().filter(|_| self.tick_no > 400).and_then(|v| v.parse().ok()).unwrap_or(if self.police.goons { 0 } else { self.police.heat as u8 }), fine: if self.police.goons { 0 } else { self.police.fine as i64 }, law: self.police.level(), search: self.police.search / self.police.tun.get("fSearchMaxTime", 35.0), rain: rain_now, radar: radar_now, ability: if (self.game.mc4_ability_none() || (self.game.career.loaded() && !self.game.career.reached("INSTALL_ABILITY"))) && std::env::var("MCLA_ABILITY").is_err() { "" } else { self.ability.kind.name() }, ability_meter: self.ability.meter, ability_fx: self.ability.fx(), draft: c.state.veh.as_ref().map_or(0.0, |v| v.sst.strength), sst: c.state.veh.as_ref().map_or(0.0, |v| v.sst.level), sst_full: c.state.veh.as_ref().map_or(false, |v| v.sst.full && !v.sst.burning), sst_on: vehicles::Vehicles::has_sst(c), sst_lit: self.game.tutorial_box.as_ref().map_or(false, |t| t.0 == "tutorial_slipstream_title" && t.2 <= 0.0), map_vp: self.map_vp, ability_tint: self.ability.tint().map(|t| (t, self.ability.blend())), cam_vp: Some(vp), cam_pos: self.chase.pos, cam_look: self.chase.look, cam_fwd: { let f = self.chase.look - self.chase.pos; Vec3::new(f.x, 0.0, f.z).normalize_or_zero() }, cam_vel: c.state.vel, night: self.time_of_day > 18.0 || self.time_of_day < 6.0, /* d_IsNight = F-47292: light manager +14568 / +14564 */ cruise: self.cruise_hold, pu_hud: self.powerups.as_ref().map_or([0.0, 0.0, 1.0], |p| p.hud(self.vehicles.cars.iter().position(|x| x.is_player).unwrap_or(0))) }).unwrap_or_default();
             let mut action = MenuAction::None;
             let game = &mut self.game;
             let vehicles = &self.vehicles;
@@ -8215,7 +8223,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let t_ui = now.elapsed().as_secs_f32() * 1000.0;
         passprof::mark("setup");
         // The scene's sample count (render/ms.rs): the original's 2x while driving, 4x while its menu flag (+373) or
-        // garage flag (+393) is set; the city's sampler at maximum anisotropy 16 in that mode (sub_822E60E0), else 4
+        // garage flag (+393) is set; the city's sampler at maximum anisotropy 16 in that mode (F-23692), else 4
         // (TEXTURE FILTERING 16X: 16 always).
         let menu4 = self.game.ui_msaa4() || self.garage_light().is_some();
         let scene_n = aamode::scene_samples(menu4);
@@ -8333,7 +8341,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let casc = casc_vps.map(|cvps| {
                 let car_casc_all = std::env::var("MCLA_CAR_CASC_ALL").is_ok();
                 // (sel, 2026-10-13: WHICH sector batches go into a tile - the original's rule, read from its code
-                // (sub_822D7D00 the sector, sub_822DF960 + sub_825F3F90 the batch; LIGHTING_WORK.md "The cascade tiles'
+                // (F-56244 the sector, F-76875 + F-37078 the batch; LIGHTING_WORK.md "The cascade tiles'
                 // casters: the selection rule from the code"). A sector within 200 m (flat, the eye to its box) hands
                 // every batch of its file to the test, whatever its material - the panes and signs too, as solid
                 // casters; a batch by the sphere round its stored box (centre c, radius r):
@@ -9576,7 +9584,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.speech.say_as(sp, &self.game.althk.voice);
                 }
                 self.game.event_diff = None;
-                // (back to the cruise leaves GOAL ATTACK: sub_82665ED0 clears the mode's +796)
+                // (back to the cruise leaves GOAL ATTACK: F-65087 clears the mode's +796)
                 self.game.goal_attack = false;
                 self.game.series = None;
                 self.game.series_first = false;
@@ -9981,7 +9989,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         log::info!("race script: {} props, {} triggers, {} scripted cars, checkpoint radii {:?}", d.props.len(), d.triggers.len(), d.paths.len(), d.cp_radius);
                         if let Some(r) = self.game.race.as_mut() {
                             // (the checkpoints' activation radii as the script sets them - what the power-up
-                            // layout reads, +168 of each, sub_826830A0; no longer raised to 9 m)
+                            // layout reads, +168 of each, F-28343; no longer raised to 9 m)
                             if !r.cp_specs.is_empty() {
                                 r.cp_radius = r.cp_specs.iter().map(|s| s.radius).collect();
                             } else if d.cp_radius.len() == r.lap_len && r.kind == game::RaceKind::Race {
@@ -10007,9 +10015,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let have_traffic = self.vehicles.models.iter().any(|m| m.name.starts_with("va_"));
                     self.vehicles.traffic_target = if !have_traffic || std::env::var("MCLA_RACE_NO_TRAFFIC").is_ok() { 0 } else { (self.opt.traffic.max(10) * 2 / 3).max(6) };
                     // (step 19c: an ARCADE race's TRAFFIC, TIME OF DAY and WEATHER - the menu's
-                    // ACCEPT, sub_8265D2B8: the density scale 0 / 0.5 / 1, the clock warped, the
+                    // ACCEPT, F-15258: the density scale 0 / 0.5 / 1, the clock warped, the
                     // weather set at once; Dynamic leaves clock and weather be - `mc4_arcade_env`)
-                    // (the scale enters the spawner's target: sub_826F4E90; level 0 switches the
+                    // (the scale enters the spawner's target: F-49549; level 0 switches the
                     // traffic off - AmbientMgr_SetTrafficEnable)
                     self.vehicles.density_scale = None;
                     if let Some(env) = self.game.mc4_arcade_env() {
@@ -10031,8 +10039,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         log::info!("arcade: options record {:02x?}, traffic x {} -> {} cars, hour {:?}, weather {:?}", self.game.mc4_arcade_record(), env.traffic, self.vehicles.traffic_target, env.hour, env.weather);
                     }
-                    // (GOAL ATTACK's START RACE: SetAllPoliceUnderground(1, 1) - sub_8265D2B8
-                    // 0x8265D58C; the race object's end hook brings them up again, sub_82256BE0)
+                    // (GOAL ATTACK's START RACE: SetAllPoliceUnderground(1, 1) - F-15258
+                    // A-96349; the race object's end hook brings them up again, F-84893)
                     if self.game.goal_attack {
                         self.police.units_down();
                         log::info!("goal attack: race started, police units underground");
@@ -10065,7 +10073,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.menu_sel = 0;
             }
             MenuAction::OpenArcade(goal) => {
-                // (the type list first, the flag set: sub_826669C0 / sub_82666760)
+                // (the type list first, the flag set: F-40647 / F-35999)
                 self.game.goal_attack = goal;
                 self.game.arcade.0 = 0;
                 if self.game.race_defs.is_empty() {
@@ -10226,7 +10234,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (FULL FIX: the car seated upright where it stands and fully repaired, no money taken
                 // - G_MoneySpent reads "FREE" -, QUICK_FIX_MASTER; REFILL NITRO: every canister,
                 // NITROUS_REFILL_MASTER even when full. Then the form closes and the game resumes:
-                // sub_82640668 / sub_822A6DE0, sub_82641558)
+                // F-35780 / F-41930, F-81587)
                 if let Some(p) = self.vehicles.player_mut() {
                     if fix {
                         p.state.damage = 0.0;
@@ -10296,7 +10304,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.chase.pos = self.cam.pos;
                 self.chase.look = pos;
                 self.vehicles.traffic_target = self.opt.traffic;
-                // (sub_82206890 puts the density scale back to 1)
+                // (F-31099 puts the density scale back to 1)
                 self.vehicles.density_scale = None;
                 self.vehicles.parked_target = if self.opt.traffic > 0 { 36 } else { 0 };
             }
@@ -10356,7 +10364,7 @@ impl App {
         }
     }
 
-    /// A story scene's audio as its picture comes up (sub_821F5AA0): the sound objects' `CUTSCENES_<scene>`
+    /// A story scene's audio as its picture comes up (F-58551): the sound objects' `CUTSCENES_<scene>`
     /// (dialogue, effects stream, mixer scene) - or, without them, the converted dialogue stream. The speech and the
     /// police radio stop (the object's flags 0x1 / 0x2: every story scene has both). INTRO FAST's CUT_INTRO in the
     /// film's place (DECISIONS.md D24) plays the film's own sound from where the film shows the same picture: the
@@ -10398,16 +10406,16 @@ impl App {
     }
 
     /// Whether START (the keyboard's Esc) opens the pause menu now. The original: the HUD state's
-    /// event handler (sub_82653058, mcHudState `Invisible`) takes start_pressed (event 55) only when
+    /// event handler (F-88073, mcHudState `Invisible`) takes start_pressed (event 55) only when
     /// the pad has a player and the race is not in its last three seconds before GO, then asks
-    /// sub_82652CF8, which says no while (in its order): the perspective form (108, the "ease to
+    /// F-38972, which says no while (in its order): the perspective form (108, the "ease to
     /// pause" slow motion) is visible; there is no player on the pad; a race is in its last 3000 ms
-    /// before GO (race +3764, sub_82256028 in [-3000, 0) - sub_822040F8); the race is over (+3773,
+    /// before GO (race +3764, F-98822 in [-3000, 0) - F-54121); the race is over (+3773,
     /// offline); an open form does not allow it (vt+672); the registry's `disablePause` is set (only
     /// the CruisingHookmen scripts set it, around a hookman's challenge); GameState_Loading or
     /// GameState_Intro is active; a cinematic plays (0x828CD440, the cine manager +288 / +324 - +328
-    /// window - sub_823BB3F0 / sub_823BBF80); the player's car is wrecked (+36 / +24 >= 1,
-    /// sub_82204160). VEHICLE SELECT is CarSelection's own loop: it polls only left / right / A
+    /// window - F-46334 / F-52539); the player's car is wrecked (+36 / +24 >= 1,
+    /// F-36476). VEHICLE SELECT is CarSelection's own loop: it polls only left / right / A
     /// (IS_BUTTON_DOWN 13 / 3, 15 / 2, 6) - START does nothing there; the opening before the car is
     /// given (save boxes, film, VEHICLE SELECT, its black) and the story scenes are cinematics or the
     /// intro state. Docs: UI.md "Where START opens the pause menu (2026-10-23)".
@@ -10499,7 +10507,7 @@ impl App {
             }
             _ => {}
         }
-        // (the warp, sub_822F1DB0 with +14552 set: the hour moves the short way round at the rate (+14548, 100 h a
+        // (the warp, F-64257 with +14552 set: the hour moves the short way round at the rate (+14548, 100 h a
         // second) x the frame's unscaled seconds (G+88), stops on the target and the warp is over; then mod 24)
         if let Some(to) = self.intro_tod.filter(|_| self.game.movie.is_none() && self.cuts.idle()) {
             let h = self.time_of_day;
@@ -10519,8 +10527,8 @@ impl App {
     }
 
     /// The cine scenes' lamp switches (vehicles.rs `CINE_LAMP_EVENTS`): at a scene's start every car's switch
-    /// is kept (sub_823BBE80), the scene's events set the car of their slot as its clock passes them, and when
-    /// it ends the kept switches come back (FinishScene, sub_823BBEE0).
+    /// is kept (F-32153), the scene's events set the car of their slot as its clock passes them, and when
+    /// it ends the kept switches come back (FinishScene, F-62501).
     fn cine_lamps_tick(&mut self) {
         let now = self.cine.playing.as_ref().map(|s| (s.name.clone(), s.t));
         if self.cine_lamps.as_ref().is_some_and(|(name, _, _)| now.as_ref().map_or(true, |(n, _)| n != name)) {
@@ -11142,7 +11150,7 @@ impl App {
             // the city's placed lamps (the baked light list: its "range" is the light files'
             // Intensity) for the night lamp grid
             // (a record's cone and axis go into the table as they stand - the game's table writer
-            // sub_823033F0 reads +4C / +50 and the direction of every record; byte +59 zero = a
+            // F-85100 reads +4C / +50 and the direction of every record; byte +59 zero = a
             // lamp that is off. MCLA_LAMP_NOCONE=1: all omni, as before)
             let nocone = std::env::var("MCLA_LAMP_NOCONE").is_ok();
             let mut lamps: Vec<render::Lamp> = self.props.lights.iter().map(|l| if nocone { render::Lamp { pos: l.pos, color: l.color.max(Vec3::ZERO), intensity: l.range.max(0.0), back: Vec3::Y, cone: [0.0, 1.0] } } else { render::Lamp { pos: l.pos, color: l.color.max(Vec3::ZERO), intensity: if l.on() { l.range.max(0.0) } else { 0.0 }, back: -l.dir, cone: l.table_cone() } }).collect();
@@ -11597,7 +11605,7 @@ fn radio_ctx(vehicles: &vehicles::Vehicles, world: &world::World, hour: f32) -> 
 
 /// The replay director's test (replay::Probe): a ball of radius `r` swept from `a` to `b`
 /// through the city's collision; the last place it stood free when it touches. (approx.) The
-/// original sweeps a true ball (sub_82574C38) and also counts the cars and props its type
+/// original sweeps a true ball (F-58512) and also counts the cars and props its type
 /// flags name; here balls in steps of at most `r` against the city's triangles.
 /// The city pass (`load`: its second part, which keeps what the first stored - docs/PERFORMANCE.md 2026-10-24).
 fn begin_city_pass<'e>(enc: &'e mut wgpu::CommandEncoder, gpu: &Gpu, clear: [f32; 4], load: bool) -> wgpu::RenderPass<'e> {

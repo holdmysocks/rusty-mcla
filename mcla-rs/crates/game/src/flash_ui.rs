@@ -2122,6 +2122,8 @@ impl FlashHud {
         p.set_global("Nitrovalue", Value::Float((info.nitro * 4.0).clamp(0.0, 5.0)));
         p.set_global("Nitroisvisible", Value::Int(1));
         p.set_global("d_Damagevalue", Value::Float(info.damage.clamp(0.0, 1.0)));
+        // (F-61846 -> F-68014: the police radar, every frame)
+        p.set_global("radar_strength", Value::Float(info.radar));
         // (`speedometer.damage.goal` shown while > 0: hud 0x02244..0x022b2)
         p.set_global("damage_goal", Value::Int(info.damage_goal as i32));
         p.set_global("d_IsNight", Value::Int(info.night as i32));

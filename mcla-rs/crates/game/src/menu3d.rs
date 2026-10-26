@@ -2,7 +2,7 @@
 //!
 //! The pause and garage movies do not go to the screen directly. Each one
 //! describes a small scene in `_global` (`scenegraph`, `meshes`, `player0_cam`,
-//! `lights`) and the game's Flash-3D pass (`0x82722A10`..`0x82725B20`) renders it:
+//! `lights`) and the game's Flash-3D pass (`F-13913`..`F-95656`) renders it:
 //! the movie is the texture of a flat mesh (`useMovieAsTexture`), a glass frame
 //! mesh (`pause_screen`) is stretched round the menu, and both hang in the world
 //! next to the car. The movie's own `MoveMeshes` computes every transform each
@@ -10,18 +10,18 @@
 //! (`cur_MenuPosition` / `cur_menuRotation` / `cur_MenuScale`).
 //!
 //! Read from the executable:
-//! - a node's matrix (`0x82723120`, row vectors): `S * Rx(rot0) * Rz(rot2)`,
+//! - a node's matrix (`F-12621`, row vectors): `S * Rx(rot0) * Rz(rot2)`,
 //!   then the translation, then `Ry(rot1)`; a child is `local * parent`
-//!   (`0x82724220`), and a `world` view mesh is then taken through the matrix of
+//!   (`F-14472`), and a `world` view mesh is then taken through the matrix of
 //!   its `coord` frame;
 //! - a skinned mesh is not scaled as a whole: the bones' translations are
-//!   multiplied by the node's scale (`0x827246F0`), so the frame's four corner
+//!   multiplied by the node's scale (`A-22650`), so the frame's four corner
 //!   bones move apart and its corners keep their shape;
 //! - the pause cameras are `PauseCamera<n>Position/LookAt/MenuPos/MenuScale/
-//!   MenuRot/Speed/FOVY` of `tune/ui` `UILogic` (`0x822073B0`), handed to the
+//!   MenuRot/Speed/FOVY` of `tune/ui` `UILogic` (`F-59198`), handed to the
 //!   movie as `camera_coord[n - 1]` = position, look-at, menu position, rotation,
-//!   speed, fov, scale x, scale y (`0x82208B08`); `FSCommand:SetPolarCam`
-//!   (`0x82205FD8`) blends two of them into `player0_cam`.
+//!   speed, fov, scale x, scale y (`F-92151`); `FSCommand:SetPolarCam`
+//!   (`F-32916`) blends two of them into `player0_cam`.
 //!
 //! The port draws through egui, so instead of a render target the movie's
 //! triangles are carried through the same matrices vertex by vertex.
@@ -50,6 +50,8 @@ pub struct PauseCam {
 pub struct UiLogic {
     /// index = `PauseCamera` number - 1 (the game's own table, 50 slots)
     pub pause_cams: Vec<PauseCam>,
+    /// RadarNear, RadarFalloff, RadarExponent (the tune loader F-59198; read by the police radar, F-61846)
+    pub radar: [f32; 3],
 }
 
 impl UiLogic {
@@ -73,9 +75,14 @@ impl UiLogic {
 
     pub fn parse(text: &str) -> UiLogic {
         let mut cams: Vec<PauseCam> = Vec::new();
+        let mut radar = [0.0f32; 3];
         for line in text.lines() {
             let mut it = line.split_whitespace();
             let Some(key) = it.next() else { continue };
+            if let Some(i) = ["RadarNear", "RadarFalloff", "RadarExponent"].iter().position(|k| *k == key) {
+                radar[i] = it.next().and_then(|x| x.parse().ok()).unwrap_or(0.0);
+                continue;
+            }
             let Some(rest) = key.strip_prefix("PauseCamera") else { continue };
             let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
             let Ok(n) = rest[..digits].parse::<usize>() else { continue };
@@ -99,10 +106,10 @@ impl UiLogic {
                 _ => {}
             }
         }
-        UiLogic { pause_cams: cams }
+        UiLogic { pause_cams: cams, radar }
     }
 
-    /// Write the table into a movie the way `0x82208B08` does.
+    /// Write the table into a movie the way `F-92151` does.
     pub fn write_camera_coord(&self, p: &mut Player) {
         if self.pause_cams.is_empty() {
             return;
@@ -120,11 +127,11 @@ impl UiLogic {
         p.set_global("camera_coord", arr);
     }
 
-    /// `FSCommand:SetPolarCam` (`0x82205FD8`): `fs_SrcCamIndex`, `fs_DstCamIndex`
+    /// `FSCommand:SetPolarCam` (`F-32916`): `fs_SrcCamIndex`, `fs_DstCamIndex`
     /// and `fs_LerpFactor` pick a place between two cameras, written to the
     /// camera object named by the argument.
     ///
-    /// (approx.) The original's blend (`0x82205A18`) is a polar one about the
+    /// (approx.) The original's blend (`F-22967`) is a polar one about the
     /// car; here the eye turns about the blended look-at point at a blended
     /// distance, which is the same at both ends.
     pub fn set_polar_cam(&self, p: &mut Player, target: &str) {
@@ -210,7 +217,7 @@ fn vec3_of(p: &mut Player, r: Ref, name: &str, default: Vec3) -> Vec3 {
     out
 }
 
-/// `0x82723120`: (rotation and translation, the same with the scale).
+/// `F-12621`: (rotation and translation, the same with the scale).
 fn local(p: &mut Player, r: Ref) -> (Mat4, Vec3) {
     let rot = vec3_of(p, r, "rot", Vec3::ZERO);
     let scale = vec3_of(p, r, "scale", Vec3::ONE);
@@ -696,6 +703,12 @@ pub fn paint_scene(ctx: &egui::Context, painter: &egui::Painter, meshes: &mut Me
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The radar's three values of the disc's UILogic block (`tune/ui/0x1020673f`)
+    #[test]
+    fn radar_tune_values() {
+        assert_eq!(UiLogic::parse("UILogic {\n  RadarNear 40 \n  RadarFalloff 140 \n  RadarExponent 1 \n}\n").radar, [40.0, 140.0, 1.0]);
+    }
 
     const TUNE: &str = "type: a\nUILogic {\n  RadarNear 40 \n  PauseCamera1Position -0.22499999\t0.94999999\t2.575001 \n  PauseCamera2Position -2.2750001\t-0.34999999\t3.5999999 \n  PauseCamera2LookAt -0.22499999\t-0.25\t-0.97500002 \n  PauseCamera2MenuPos -2\t-0.30000001\t0.050000001 \n  PauseCamera2MenuScale 1.6\t1.6 \n  PauseCamera2MenuRot 0 \n  PauseCamera2Speed 5 \n  PauseCamera2FOVY 53.75 \n}\n";
 
