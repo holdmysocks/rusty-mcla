@@ -9130,6 +9130,9 @@ impl SlotSystem {
             }
             let Some(i) = (0..n).find(|&i| self.slots[d][i].priority == PRIO_FREE) else { break };
             let Some(name) = self.random_character(d) else { break };
+            // (the set-up of the man's car is a random one of the car's configurations (F-18603, one more career step, no NULL
+            // test); the disc gives every car exactly one, so the draw changes the generator and nothing else)
+            let _ = crate::oppick::career_index(1);
             let Some((car, config, mod_value)) = car_of(&name, t) else { continue };
             self.put(d, i, SlotHookman { name, config, car, core: CORE_GENERIC.to_string(), mod_value, difficulty: t, district: d, mission: String::new() }, PRIO_GENERIC);
         }
