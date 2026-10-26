@@ -86,7 +86,7 @@ pub struct BoomTarget {
     pub ang_vel: Vec3,
     pub grounded: usize,
     pub gear: i32,
-    /// look along the Rev* boom (the car is backing up, or the look-behind camera)
+    /// look along the Rev* boom (the look back, +208)
     pub rev: bool,
     pub nitro: bool,
     /// the car's nitrous lens: degrees added, seconds to open, seconds to close (mcCarNitroTune)
@@ -344,8 +344,10 @@ impl BoomCam {
         // ---- where the camera and its focus want to be ----
         let (off0, foc0) = if car.rev { (t.v3("RevOffset"), t.v3("RevFocus")) } else { (t.v3("Offset"), t.v3("Focus")) };
         let (off0, foc0) = (off0 - t.v3("Center"), foc0 - t.v3("Center"));
+        // (the distance scale shortens the offset's own length from Center, along the boom from the focus:
+        // off - normalize(off - focus) x |off| x (1 - scale), 0x82320A5C..0x82320B2C)
         let boom = off0 - foc0;
-        let mut off = off0 - boom.normalize_or_zero() * boom.length() * (1.0 - dist_scale);
+        let mut off = off0 - boom.normalize_or_zero() * off0.length() * (1.0 - dist_scale);
         // (accelerating and braking have their own sets)
         let (gz_off_z, gz_off_y, gz_foc_y, gz_foc_z) = if gs.z >= 0.0 {
             (t.s("GsZOffsetZ") * gs.z, t.s("GsZOffsetY") * gs.z, t.s("GsZFocusY") * gs.z, 0.0)
@@ -415,12 +417,25 @@ impl BoomCam {
         let mut foc = foc_target;
         let mut roll = roll_target;
         if !snap {
+            // (0x82320F90: once a game frame, 1/30 s, the last place seen from the new frame goes h of the
+            // way to the target, homed = last + (off - last) h, then takes the target's length. The lag
+            // that leaves is fed by the car's move over the frame, so at another step the place keeps the
+            // original's decay q = (1 - h)^(dt 30) and takes the move at the original's weight
+            // k = (1 - q)(1 - h) / (h dt 30) - at dt = 1/30 the original's step exactly, at any other its
+            // time constant and its lag at a steady speed (GitHub #9: the plain per-step factor left the
+            // cockpit four times as far behind))
             let homing = t.v3("HomingTime");
             if homing != Vec3::ZERO {
                 let len = off.length();
                 let last = to_frame * (self.world - origin);
-                let h = Vec3::new(per_frame(homing.x), per_frame(homing.y), per_frame(homing.z));
-                let homed = last + (off - last) * h;
+                let moved = last - self.off;
+                let keep = |h: f32| {
+                    let h = h.clamp(1e-4, 1.0);
+                    let q = (1.0 - h).powf(frames);
+                    (q, (1.0 - q) * (1.0 - h) / (h * frames))
+                };
+                let (kx, ky, kz) = (keep(homing.x), keep(homing.y), keep(homing.z));
+                let homed = off + Vec3::new(kx.0, ky.0, kz.0) * (self.off - off) + Vec3::new(kx.1, ky.1, kz.1) * moved;
                 off = homed.normalize_or(off.normalize_or(Vec3::Z)) * len;
             }
             // and nothing moves faster than the approach rate (+656: 25 m/s while the camera is
@@ -629,14 +644,16 @@ impl CutMask {
 
 /// The camera file a view runs and whether it looks along its Rev* boom: looking back from a
 /// chase view cuts to the car's `_reverse` camera; from Bumper or POV the same camera turns
-/// round (sub_822B23D0: vt+80(1) on the camera in use); else backing up takes the Rev* boom.
-pub fn tune_for(set: &BoomSet, view: u8, back: bool, backing: bool) -> (&BoomTune, bool) {
+/// round (sub_822B23D0: vt+80(1) on the camera in use). Backing up changes nothing: the update
+/// takes RevOffset / RevFocus only on +208 (0x823209D8), which only vt+80 (sub_8231D1F8) sets - at
+/// the start for the `_reverse` camera (sub_822B1B58) and for the look back (GitHub #10).
+pub fn tune_for(set: &BoomSet, view: u8, back: bool) -> (&BoomTune, bool) {
     let i = (view as usize).min(set.views.len() - 1);
     let chase = VIEW_OF_PORT[(view as usize).min(5)] >= 2;
     match (back, chase) {
         (true, true) => (set.reverse.as_ref().unwrap_or(&set.views[0]), true),
         (true, false) => (&set.views[i], true),
-        _ => (&set.views[i], backing),
+        _ => (&set.views[i], false),
     }
 }
 
@@ -672,7 +689,7 @@ impl Switch {
     /// `moving`: the car's speed above zero. On a change of view or of the look back the
     /// camera's history goes (the new camera is started afresh, vt+36), the old view is
     /// blended out or the mask is put up.
-    pub fn frame(&mut self, set: &BoomSet, view: u8, back: bool, backing: bool, cinematic: bool, moving: bool, cam: &mut BoomCam, dt: f32) {
+    pub fn frame(&mut self, set: &BoomSet, view: u8, back: bool, cinematic: bool, moving: bool, cam: &mut BoomCam, dt: f32) {
         let Some((was_view, was_back)) = self.last.replace((view, back)) else { return };
         let chase = VIEW_OF_PORT[(view as usize).min(5)] >= 2;
         if back != was_back {
@@ -692,8 +709,8 @@ impl Switch {
                 self.blend.stop();
                 self.mask.start(0.01, 0.25, 0.01);
             } else {
-                let (old, _) = tune_for(set, was_view, false, backing);
-                let (new, _) = tune_for(set, view, false, backing);
+                let (old, _) = tune_for(set, was_view, false);
+                let (new, _) = tune_for(set, view, false);
                 self.blend.start(old.clone(), cam.clone(), new.blend_time(), new.blend_goal());
             }
             cam.reset();
@@ -2597,4 +2614,36 @@ mod tests {
         let level = Vec3::new(o.pos.x - at.x, 0.0, o.pos.z - at.z).length();
         assert!((level - rel * (0.2f32 * 0.8).asin().cos()).abs() < 0.01 && (o.pos.y - at.y).abs() < 0.2, "{:?} {}", o.pos, level);
     }
+
+    /// The cockpit camera of a car accelerating to 55 m/s (GitHub #9): it stays at the dashboard -
+    /// the boom shortened by |Offset - Center| x (1 - SSDistScale) = 0.19 m, SpeedZOffsetZ 0.24 m
+    /// forward, GsZOffsetZ back under power - and stands the same at 30, 60 and 144 frames a second
+    /// (the port shortened by the boom's whole 2.74 m and let the homing lag four times the
+    /// original's: 1.1 m forward at 30 Hz, out through the windscreen).
+    #[test]
+    fn cockpit_under_power() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let Some(set) = BoomSet::load(&data, "vp_aud_r8_08") else { return };
+        let t = &set.views[3];
+        for hz in [30.0f32, 60.0, 144.0] {
+            let dt = 1.0 / hz;
+            let mut cam = BoomCam::default();
+            let (mut z, mut v) = (0.0f32, 0.0f32);
+            let mut seen = Vec::new();
+            let mut at = Vec3::ZERO;
+            for i in 0..(12.0 * hz) as usize {
+                v = (v + 6.0 * dt).min(55.0);
+                z -= v * dt;
+                let car = BoomTarget { pos: Vec3::new(0.0, 0.0, z), rot: Quat::IDENTITY, vel: Vec3::new(0.0, 0.0, -v), ang_vel: Vec3::ZERO, grounded: 4, gear: 3, rev: false, nitro: false, nitro_fov: (0.0, 0.5, 1.0), ability: (0.0, 1.0), sst: (0.0, 1.0), pan: (0.0, 0.0), rise: 0.0, fixed_mount: true, model_offset: Vec3::ZERO };
+                let o = cam.update(t, &car, dt);
+                at = o.pos - car.pos;
+                if i % (hz as usize * 2) == 0 {
+                    seen.push(format!("v {:.0}: {:.3?}", v, at));
+                }
+            }
+            eprintln!("{hz} Hz: {}", seen.join(" | "));
+            assert!((at - Vec3::new(-0.35, 1.038, -0.083)).length() < 0.005, "{hz} Hz: {at:?}");
+        }
+    }
 }
+

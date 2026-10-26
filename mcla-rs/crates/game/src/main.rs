@@ -6810,17 +6810,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     } else if let Some(set) = set {
                         self.event_cam.reset();
                         let view = (mode as usize).min(set.views.len() - 1);
-                        let backing = render_state.gear < 0 && render_state.fwd_speed() < -2.0;
                         // (C looks behind)
                         self.look_back = match replay_drive {
                             Some((_, back)) => back,
                             None => (self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::LOOKBACK, |k| self.input.down(k)) || self.cam_mode == 9 || self.pad_look.1 < -0.6) && matches!(self.game.mode, Mode::FreeRoam | Mode::Race),
                         };
-                        let (tune, rev) = boomcam::tune_for(&set, mode, self.look_back, backing);
+                        let (tune, rev) = boomcam::tune_for(&set, mode, self.look_back);
                         // (a change of view blends or cuts, a look back cuts - mcPlayerCamera; the
                         // CINEMATIC CAMERA option turns the look back of a moving car to one side)
                         let cinematic = self.game.mc4.as_ref().map_or(true, |m| m.options.idle_camera);
-                        self.cam_switch.frame(&set, mode, self.look_back, backing, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
+                        self.cam_switch.frame(&set, mode, self.look_back, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
                         // the look-around (sub_822B2AB0): the stick turns the view camera, CAMERA_UP
                         // lifts it; looking back from a chase view is the reverse camera's own turn
                         let chase = boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2;
