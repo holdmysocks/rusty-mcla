@@ -106,6 +106,19 @@ struct Inner {
     slots: [OnceLock<wgpu::RenderPipeline>; 4],
     /// the variants this pipeline is ever drawn in (for `warm`): scene only, or plain too
     plain_too: bool,
+    /// drawn only in the plain passes (`new_plain`): no scene variant is built ahead
+    plain_only: bool,
+}
+
+impl Inner {
+    /// `warm` builds this variant of it
+    fn drawn_in(&self, v: Variant) -> bool {
+        if v.scene {
+            !self.plain_only
+        } else {
+            self.plain_too
+        }
+    }
 }
 
 impl Inner {
@@ -140,8 +153,17 @@ impl MsPipe {
         Self::make(device, Box::new(build), true)
     }
 
+    /// One drawn only in the plain passes (the environment map's), built when first used or ahead.
+    pub fn new_plain(device: &wgpu::Device, build: impl Fn(&wgpu::Device, Variant) -> wgpu::RenderPipeline + Send + Sync + 'static) -> MsPipe {
+        Self::make_x(device, Box::new(build), true, true)
+    }
+
     fn make(device: &wgpu::Device, build: Build, plain_too: bool) -> MsPipe {
-        let inner = Arc::new(Inner { device: device.clone(), build, slots: Default::default(), plain_too });
+        Self::make_x(device, build, plain_too, false)
+    }
+
+    fn make_x(device: &wgpu::Device, build: Build, plain_too: bool, plain_only: bool) -> MsPipe {
+        let inner = Arc::new(Inner { device: device.clone(), build, slots: Default::default(), plain_too, plain_only });
         if let Ok(mut r) = REGISTRY.lock() {
             r.retain(|w| w.strong_count() > 0);
             r.push(Arc::downgrade(&inner));
@@ -166,7 +188,7 @@ pub fn warm_now(variants: &[Variant]) {
     let list: Vec<Arc<Inner>> = REGISTRY.lock().map(|r| r.iter().filter_map(|w| w.upgrade()).collect()).unwrap_or_default();
     for p in list {
         for &v in variants {
-            if v.scene || p.plain_too {
+            if p.drawn_in(v) {
                 p.at(v);
             }
         }
@@ -183,17 +205,38 @@ pub fn warming() -> bool {
     WARMING.load(Ordering::Acquire) > 0
 }
 
+/// `v` of each of `pipes` now, each on a thread of its own (counted in `warming`): for pipelines that take
+/// seconds to compile (the city's environment-map pair, ~4 s each with the driver's cache cold), so that
+/// `Gpu::build` and the loading go on beside them (docs/PERFORMANCE.md 2026-10-26).
+pub fn build_ahead(pipes: &[&MsPipe], v: Variant) {
+    for p in pipes {
+        let inner = p.inner.clone();
+        WARMING.fetch_add(1, Ordering::AcqRel);
+        let t = std::time::Instant::now();
+        let spawned = std::thread::Builder::new().name("msaa warm".into()).spawn(move || {
+            inner.at(v);
+            log::info!("pipeline: one built ahead in {} ms (a thread of its own)", t.elapsed().as_millis());
+            WARMING.fetch_sub(1, Ordering::AcqRel);
+        });
+        if spawned.is_err() {
+            WARMING.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
 /// The same on threads of their own (the menus' 4x set while the game drives at 2x), so that the first switch
 /// does not wait for the driver's compiler. The variants in the order given (the first for every pipeline before
 /// the second), shared out over up to four threads.
 pub fn warm(variants: Vec<Variant>) {
     let list: Vec<Arc<Inner>> = REGISTRY.lock().map(|r| r.iter().filter_map(|w| w.upgrade()).collect()).unwrap_or_default();
-    let jobs: Arc<Vec<(Arc<Inner>, Variant)>> = Arc::new(variants.iter().flat_map(|&v| list.iter().filter(move |p| v.scene || p.plain_too).map(move |p| (p.clone(), v))).collect());
+    let jobs: Arc<Vec<(Arc<Inner>, Variant)>> = Arc::new(variants.iter().flat_map(|&v| list.iter().filter(move |p| p.drawn_in(v)).map(move |p| (p.clone(), v))).collect());
     let next = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let threads = std::thread::available_parallelism().map_or(2, |n| (n.get() / 4).clamp(1, 4));
     let t = std::time::Instant::now();
+    // (its own threads still building: the last logs the time)
+    let left = Arc::new(AtomicU32::new(threads as u32));
     for _ in 0..threads {
-        let (jobs, next) = (jobs.clone(), next.clone());
+        let (jobs, next, left) = (jobs.clone(), next.clone(), left.clone());
         WARMING.fetch_add(1, Ordering::AcqRel);
         let spawned = std::thread::Builder::new().name("msaa warm".into()).spawn(move || {
             loop {
@@ -201,7 +244,8 @@ pub fn warm(variants: Vec<Variant>) {
                 let Some((p, v)) = jobs.get(i) else { break };
                 p.at(*v);
             }
-            if WARMING.fetch_sub(1, Ordering::AcqRel) == 1 {
+            WARMING.fetch_sub(1, Ordering::AcqRel);
+            if left.fetch_sub(1, Ordering::AcqRel) == 1 {
                 log::info!("pipeline: {} scene pipelines built ahead in {} ms ({} threads)", jobs.len(), t.elapsed().as_millis(), threads);
             }
         });

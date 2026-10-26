@@ -728,6 +728,8 @@ pub struct Peds {
     types: HashMap<usize, Option<PedType>>,
     /// types whose files are being read on a worker thread (`read_ahead`)
     reading: HashMap<usize, std::thread::JoinHandle<Option<TypeRead>>>,
+    /// a second place and hour whose types are read ahead (`read_ahead_also`)
+    ahead_also: Option<(Vec3, f32)>,
     avoid: Vec<(Arc<Animation>, bool, bool, u8)>,
     list: Vec<Ped>,
     active: HashSet<(usize, u32)>,
@@ -812,6 +814,7 @@ impl Peds {
             tune_dir: PathBuf::new(),
             types: HashMap::new(),
             reading: HashMap::new(),
+            ahead_also: None,
             avoid: Vec::new(),
             list: Vec::new(),
             active: HashSet::new(),
@@ -844,6 +847,12 @@ impl Peds {
             next_id: 0,
             trace: std::env::var("MCLA_PED_TRACE").ok().and_then(|f| std::fs::File::create(f).ok()).map(|f| (std::io::BufWriter::new(f), 0.0, 0.0)),
         }
+    }
+
+    /// The types around `at` at an hour read ahead too (on the start screen: the player's car and the hour given back
+    /// after it, where START takes the focus - its first tick read 8 types, 31 - 207 ms; docs/PERFORMANCE.md 2026-10-26).
+    pub fn read_ahead_also(&mut self, at: Option<(Vec3, f32)>) {
+        self.ahead_also = at;
     }
 
     /// The ambient manager's front-end mode on or off; switched on, the frames of the loading wait
@@ -996,11 +1005,11 @@ impl Peds {
 
     /// The files of the types the spawner can draw around `focus` now, read and parsed on worker threads (two at a
     /// time) before they are first wanted, so building one does not stop the game - docs/PERFORMANCE.md 2026-10-23 (5).
-    fn read_ahead(&mut self, focus: Vec3) {
+    fn read_ahead(&mut self, focus: Vec3, hour: f32) {
         if self.reading.values().filter(|h| !h.is_finished()).count() >= 2 {
             return;
         }
-        let names: Vec<String> = self.districts.names(focus, self.hour).into_iter().filter(|n| n.starts_with("ped_")).map(|n| n.to_string()).collect();
+        let names: Vec<String> = self.districts.names(focus, hour).into_iter().filter(|n| n.starts_with("ped_")).map(|n| n.to_string()).collect();
         for n in names {
             let Some(ti) = self.dirs.iter().position(|d| d.0.eq_ignore_ascii_case(&n)) else { continue };
             if self.types.contains_key(&ti) || self.reading.contains_key(&ti) {
@@ -1466,7 +1475,10 @@ impl Peds {
             self.step = (self.step + dt).min(FRAME * 4.0);
             frame0 = self.frame_no;
             if self.districts.loaded() && self.frame_no % 8 == 0 {
-                self.read_ahead(center);
+                self.read_ahead(center, self.hour);
+                if let Some((p, h)) = self.ahead_also {
+                    self.read_ahead(p, h);
+                }
             }
             while self.step >= FRAME || self.preroll > 0 {
                 if self.preroll > 0 {

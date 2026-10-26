@@ -73,10 +73,11 @@ pub fn load(gpu: &mut Gpu) {
     });
     let inst = device.create_buffer(&wgpu::BufferDescriptor { label: Some("car blob instances"), size: (MAX_INST * INST_SIZE) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("car blob"), source: wgpu::ShaderSource::Wgsl(include_str!("render/car_blob.wgsl").into()) });
-    let globals_layout = gpu.pipeline_particle.get_bind_group_layout(0);
+    let globals_layout = gpu.globals_layout.clone();
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("car blob pl"), bind_group_layouts: &[&globals_layout, &layout], push_constant_ranges: &[] });
     // (the cars are drawn by `Vehicles::draw`, which binds the city pipelines' groups)
-    let city: Vec<wgpu::BindGroupLayout> = (0..4).map(|i| gpu.pipeline_opaque.get_bind_group_layout(i)).collect();
+    // (the layouts themselves: asking the opaque pipeline for them built it here, ~4 s with the driver's cache cold)
+    let city = [gpu.globals_layout.clone(), gpu.tex_layout.clone(), gpu.mat_layout.clone(), gpu.obj_layout.clone()];
     let pl_city = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("car blob mask pl"), bind_group_layouts: &[&city[0], &city[1], &city[2], &city[3]], push_constant_ranges: &[] });
     let keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
     let attrs: Vec<wgpu::VertexAttribute> = (0..6).map(|i| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16 * i as u64, shader_location: i }).collect();

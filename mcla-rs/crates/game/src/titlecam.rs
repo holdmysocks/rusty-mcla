@@ -230,6 +230,11 @@ impl TitleCam {
         self.mask.update(dt)
     }
 
+    /// The hour the start screen will give back (`take_saved_hour`), while it is up.
+    pub fn saved_hour(&self) -> Option<f32> {
+        self.saved_hour
+    }
+
     /// The hour to give back once the start screen has gone (the script hands the clock's update
     /// back after START; the career's load then sets its own clock).
     pub fn take_saved_hour(&mut self) -> Option<f32> {

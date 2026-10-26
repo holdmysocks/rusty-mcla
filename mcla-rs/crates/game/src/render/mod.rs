@@ -690,6 +690,8 @@ pub struct Gpu {
     /// the night lamp grid and the lamps it numbers (`set_lamps`)
     pub lamp_grid: wgpu::Texture,
     pub lamp_data: wgpu::Texture,
+    /// the city pipelines' four groups (globals, textures, material, object)
+    pub globals_layout: wgpu::BindGroupLayout,
     pub tex_layout: wgpu::BindGroupLayout,
     pub mat_layout: wgpu::BindGroupLayout,
     pub mat_bgs: HashMap<u32, wgpu::BindGroup>,
@@ -724,8 +726,8 @@ pub struct Gpu {
     pub pipeline_env_blur: wgpu::RenderPipeline,
     /// the cars' map drawn the original's way: the city into two paraboloid halves (warp per
     /// vertex), the cube filled from them
-    pub pipeline_env_dp: wgpu::RenderPipeline,
-    pub pipeline_env_dp_blend: wgpu::RenderPipeline,
+    pub pipeline_env_dp: ms::MsPipe,
+    pub pipeline_env_dp_blend: ms::MsPipe,
     pub env_dp_views: Vec<wgpu::TextureView>,
     pub env_dp_depth: wgpu::TextureView,
     pub pipeline_env_fill: wgpu::RenderPipeline,
@@ -1527,8 +1529,16 @@ impl Gpu {
         let pipeline_opaque = make_pipeline(false, "vs_main");
         let pipeline_blend = make_pipeline(true, "vs_main");
         // (the cars' environment map drawn the original's way: the paraboloid warp per vertex - city.wgsl vs_env_dp)
-        let pipeline_env_dp = city_build(&device, ms::PLAIN, false, "vs_env_dp", None, true);
-        let pipeline_env_dp_blend = city_build(&device, ms::PLAIN, true, "vs_env_dp", None, false);
+        // (each ~4 s to compile with the driver's cache cold: built on threads of their own while the loading goes on)
+        let pipeline_env_dp = {
+            let b = city_build.clone();
+            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, false, "vs_env_dp", None, true))
+        };
+        let pipeline_env_dp_blend = {
+            let b = city_build.clone();
+            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, true, "vs_env_dp", None, false))
+        };
+        ms::build_ahead(&[&pipeline_env_dp, &pipeline_env_dp_blend], ms::PLAIN);
         let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shadow"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shadow.wgsl").into()),
@@ -2066,6 +2076,7 @@ impl Gpu {
             garage_glow_tex,
             lamp_grid,
             lamp_data,
+            globals_layout: globals_layout.clone(),
             tex_layout,
             mat_layout,
             mat_bgs,

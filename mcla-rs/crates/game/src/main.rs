@@ -5367,6 +5367,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         Some(c) => self.peds.set_view(c.state.forward(), c.state.speed() * 2.236_936),
                         None => self.peds.set_view(frontend.map_or(self.cam.forward(), |f| f.dir), 0.0),
                     }
+                    self.peds.read_ahead_also(frontend.and(self.vehicles.player().map(|c| c.state.pos)).map(|p| (p, self.titlecam.saved_hour().unwrap_or(self.time_of_day))));
                     self.peds.update(&mut gpu, nav, &world.collider, &|p, r, out| props.obstacle_boxes_near(p, r, out), focus, &threats, signals, self.time_of_day, sim_dt);
                     // (the layout items' people: placed, removed, and what the spawners see next)
                     if frontend.is_none() {
@@ -8861,7 +8862,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if blend && (!env_all || std::env::var("MCLA_ENV_NO_PANES").is_ok()) {
                     continue;
                 }
-                dp.set_pipeline(if blend { &gpu.pipeline_env_dp_blend } else { &gpu.pipeline_env_dp });
+                dp.set_pipeline(if blend { gpu.pipeline_env_dp_blend.at(render::ms::PLAIN) } else { gpu.pipeline_env_dp.at(render::ms::PLAIN) });
                 let mut last_mode = u32::MAX;
                 for (sec, detail, sid) in env_secs.iter().copied() {
                     // (MCLA_ENV_ONLY=far|detail: one of the two kinds alone, to see what each covers)
