@@ -10,8 +10,9 @@ use glam::Vec3;
 use hashbrown::HashMap;
 use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const RATE: u32 = 44100;
 const TAB: char = '\u{9}';
@@ -166,6 +167,8 @@ struct MixSource {
     mixer: Arc<Mutex<Mixer>>,
     buf: Vec<f32>,
     at: usize,
+    /// samples the output has pulled (the output watch tells a stalled stream by it)
+    pulled: Arc<AtomicU64>,
 }
 
 const BLOCK: usize = 256;
@@ -177,6 +180,7 @@ impl MixSource {
         self.buf.clear();
         self.buf.resize(BLOCK * 2, 0.0);
         self.at = 0;
+        self.pulled.fetch_add((BLOCK * 2) as u64, Ordering::Relaxed);
         let Ok(mut m) = self.mixer.lock() else { return };
         let master = m.master;
         // (step 23b: the slow-down state on the player's vehicle - the engine's slot 0)
@@ -256,6 +260,118 @@ impl Source for MixSource {
     }
 }
 
+/// Seconds between the output device checks (`Audio::watch_output`).
+const WATCH_SECS: f32 = 3.0;
+
+/// An opened output: the stream, its handle, the device's name and the default device's name at the time.
+struct Output {
+    stream: OutputStream,
+    handle: OutputStreamHandle,
+    name: String,
+    default: Option<String>,
+}
+
+/// Open the default output device, else any other output device that opens (#13: a disabled or vanished default,
+/// a format the default will not take); on each device its default format first, then the others it supports
+/// (`open_device`). rodio converts the mix's 44.1 kHz stereo to the format. `verbose`: log every device tried.
+fn open_output(verbose: bool) -> Option<Output> {
+    use rodio::cpal::traits::{DeviceTrait, HostTrait};
+    // (test hook MCLA_AUDIO_FAIL_OPENS=<n>: the first n opens fail, as with no usable device)
+    static FAILS: AtomicU64 = AtomicU64::new(0);
+    if let Some(n) = std::env::var("MCLA_AUDIO_FAIL_OPENS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        if FAILS.fetch_add(1, Ordering::Relaxed) < n {
+            log::warn!("audio: output open failed (MCLA_AUDIO_FAIL_OPENS)");
+            return None;
+        }
+    }
+    let host = rodio::cpal::default_host();
+    let default = host.default_output_device();
+    let dname = default.as_ref().and_then(|d| d.name().ok());
+    match &default {
+        Some(d) => {
+            if verbose {
+                let cfg = match d.default_output_config() {
+                    Ok(c) => format!("{} Hz, {} channels, {:?}", c.sample_rate().0, c.channels(), c.sample_format()),
+                    Err(e) => format!("no default format: {e}"),
+                };
+                log::info!("audio: {} host, default output device {:?} ({cfg})", host.id().name(), dname.as_deref().unwrap_or("?"));
+            }
+            match open_device(d, verbose) {
+                Ok((stream, handle)) => return Some(Output { stream, handle, name: dname.clone().unwrap_or_default(), default: dname }),
+                Err(e) => {
+                    if verbose {
+                        log::warn!("audio: the default output device would not open: {e}");
+                    }
+                }
+            }
+        }
+        None => {
+            if verbose {
+                log::warn!("audio: {} host has no default output device", host.id().name());
+            }
+        }
+    }
+    if let Ok(devs) = host.output_devices() {
+        for d in devs {
+            let n = d.name().unwrap_or_default();
+            if Some(&n) == dname.as_ref() {
+                continue;
+            }
+            match open_device(&d, verbose) {
+                Ok((stream, handle)) => {
+                    log::info!("audio: opened output device {n:?} instead of the default");
+                    return Some(Output { stream, handle, name: n, default: dname });
+                }
+                Err(e) => {
+                    if verbose {
+                        log::warn!("audio: output device {n:?} would not open: {e}");
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// One device: its default format (rodio's `try_from_device`), else each supported format range at 48 kHz, 44.1 kHz
+/// or its highest rate, float and 16-bit ranges first.
+fn open_device(d: &rodio::cpal::Device, verbose: bool) -> Result<(OutputStream, OutputStreamHandle), rodio::StreamError> {
+    use rodio::cpal::traits::DeviceTrait;
+    use rodio::cpal::{SampleFormat, SampleRate};
+    let first = match OutputStream::try_from_device(d) {
+        Ok(o) => return Ok(o),
+        Err(e) => e,
+    };
+    let Ok(ranges) = d.supported_output_configs() else { return Err(first) };
+    let mut ranges: Vec<_> = ranges.collect();
+    ranges.sort_by_key(|r| match r.sample_format() {
+        SampleFormat::F32 => 0,
+        SampleFormat::I16 => 1,
+        _ => 2,
+    });
+    for r in ranges {
+        for rate in [48_000, 44_100] {
+            if (r.min_sample_rate().0..=r.max_sample_rate().0).contains(&rate) {
+                let c = r.clone().with_sample_rate(SampleRate(rate));
+                if let Ok(o) = OutputStream::try_from_device_config(d, c.clone()) {
+                    if verbose {
+                        log::info!("audio: opened at {} Hz, {} channels, {:?}", rate, c.channels(), c.sample_format());
+                    }
+                    return Ok(o);
+                }
+            }
+        }
+        let c = r.with_max_sample_rate();
+        if let Ok(o) = OutputStream::try_from_device_config(d, c.clone()) {
+            if verbose {
+                log::info!("audio: opened at {} Hz, {} channels, {:?}", c.sample_rate().0, c.channels(), c.sample_format());
+            }
+            return Ok(o);
+        }
+    }
+    Err(first)
+}
+
 /// The rpm loops of one car's engine bank.
 struct EngineBank {
     /// (rpm, clip), ascending
@@ -268,6 +384,14 @@ pub struct Audio {
     _sink: Option<Sink>,
     /// offline rendering (tests): the mix is pulled by the game loop and kept here
     offline: Option<(MixSource, Vec<f32>)>,
+    /// the output: the device's name, the default device's name when it was opened, the samples pulled, when it was
+    /// last checked, and the mix drained in real time while no device is open (so voices still run out)
+    device: String,
+    default_seen: Option<String>,
+    pulled: Arc<AtomicU64>,
+    watch: Instant,
+    drain: Option<(MixSource, Instant)>,
+    voice_vol: f32,
     mixer: Arc<Mutex<Mixer>>,
     root: PathBuf,
     /// the original's audio metadata (`audio/X360/config` of the extracted data: sounds.dat, curves.dat ...)
@@ -355,15 +479,33 @@ impl Audio {
 
     fn create(data_dir: &str, offline: bool) -> Option<Audio> {
         let mixer = Arc::new(Mutex::new(Mixer { voices: Vec::new(), master: 0.9, slow: None }));
-        let src = MixSource { mixer: mixer.clone(), buf: Vec::new(), at: 0 };
+        let pulled = Arc::new(AtomicU64::new(0));
+        let src = MixSource { mixer: mixer.clone(), buf: Vec::new(), at: 0, pulled: pulled.clone() };
+        let mut device = String::new();
+        let mut default_seen = None;
+        let mut drain = None;
         let (stream, handle, sink, off) = if offline {
             (None, None, None, Some((src, Vec::new())))
         } else {
-            let (stream, handle) = OutputStream::try_default().ok()?;
-            let sink = Sink::try_new(&handle).ok()?;
-            sink.append(src);
-            sink.play();
-            (Some(stream), Some(handle), Some(sink), None)
+            // (no device is no reason to drop the game's sound for the session: the mix is drained and the output
+            // tried again every few seconds - `watch_output`)
+            match open_output(true) {
+                Some(o) => {
+                    let sink = Sink::try_new(&o.handle).ok();
+                    if let Some(s) = &sink {
+                        s.append(src);
+                        s.play();
+                    }
+                    device = o.name;
+                    default_seen = o.default;
+                    (Some(o.stream), Some(o.handle), sink, None)
+                }
+                None => {
+                    log::warn!("audio: no output device could be opened - the game runs silent and tries again every {} s", WATCH_SECS);
+                    drain = Some((src, Instant::now()));
+                    (None, None, None, None)
+                }
+            }
         };
         // <data>/../audio_pc  (data = .../extracted/cache)
         let root = Path::new(data_dir).parent().map(|p| p.join("audio_pc")).unwrap_or_else(|| PathBuf::from("audio_pc"));
@@ -383,6 +525,12 @@ impl Audio {
             handle,
             _sink: sink,
             offline: off,
+            device,
+            default_seen,
+            pulled,
+            watch: Instant::now(),
+            drain,
+            voice_vol: 1.0,
             mixer,
             root,
             cfg: Path::new(data_dir).join("audio").join("X360").join("config"),
@@ -692,7 +840,100 @@ impl Audio {
     }
 
     /// Fade out every loop the game did not touch this frame.
+    /// The output device kept working (#13): every few seconds, reopen it when none is open, when the stream has
+    /// stopped pulling the mix (a device unplugged, its format changed, taken exclusively) or when Windows' default
+    /// output device changed; while none is open the mix is drained in real time. Cheap between the checks.
+    pub fn watch_output(&mut self) {
+        if self.offline.is_some() {
+            return;
+        }
+        if let Some((src, at)) = &mut self.drain {
+            let n = (at.elapsed().as_secs_f32() * RATE as f32) as usize * 2;
+            *at = Instant::now();
+            for _ in 0..n.min(RATE as usize * 2) {
+                src.next();
+            }
+        }
+        let el = self.watch.elapsed().as_secs_f32();
+        if el < WATCH_SECS {
+            return;
+        }
+        self.watch = Instant::now();
+        let pulled = self.pulled.swap(0, Ordering::Relaxed) as f32;
+        let reason = if self.handle.is_none() {
+            Some("no device open".to_string())
+        } else if pulled < el * RATE as f32 * 2.0 * 0.25 {
+            Some(format!("the stream on {:?} stopped ({:.0} of {:.0} samples pulled)", self.device, pulled, el * RATE as f32 * 2.0))
+        } else {
+            use rodio::cpal::traits::{DeviceTrait, HostTrait};
+            let now = rodio::cpal::default_host().default_output_device().and_then(|d| d.name().ok());
+            (now.is_some() && now != self.default_seen).then(|| format!("the default output device changed to {:?}", now.unwrap_or_default()))
+        };
+        if let Some(r) = reason {
+            self.reopen_output(&r);
+        }
+    }
+
+    fn reopen_output(&mut self, why: &str) {
+        let first = self.handle.is_some();
+        let Some(o) = open_output(first) else {
+            if first {
+                log::warn!("audio: {why}; no output device could be opened - silent, trying again every {} s", WATCH_SECS);
+                self.drop_output();
+                self.drain = Some((self.mix_source(), Instant::now()));
+            }
+            return;
+        };
+        // what the streams were playing, to carry on where they were
+        let music = self.music.as_ref().map(|s| (s.get_pos(), s.is_paused()));
+        let voice = self.voice.as_ref().map(|s| s.get_pos()).zip(self.stream_name.clone());
+        self.drop_output();
+        let Ok(sink) = Sink::try_new(&o.handle) else { return };
+        sink.append(self.mix_source());
+        sink.play();
+        log::info!("audio: output on {:?} ({why})", o.name);
+        self.device = o.name;
+        self.default_seen = o.default;
+        self._sink = Some(sink);
+        self.handle = Some(o.handle);
+        self._stream = Some(o.stream);
+        self.drain = None;
+        self.pulled.store(0, Ordering::Relaxed);
+        self.watch = Instant::now();
+        if let Some((pos, paused)) = music {
+            self.start_track();
+            self.track_changed = false;
+            if let Some(s) = self.music.as_ref() {
+                let _ = s.try_seek(pos);
+                if paused {
+                    s.pause();
+                }
+            }
+        }
+        if let Some((pos, name)) = voice {
+            let v = self.voice_vol;
+            self.play_stream_at(Some(&name), v, pos.as_secs_f32());
+        }
+        // (the ambience bed is asked for every frame and starts again on its own)
+    }
+
+    fn drop_output(&mut self) {
+        for s in [self.music.take(), self.voice.take(), self._sink.take()].into_iter().flatten() {
+            s.stop();
+        }
+        if let Some((_, s)) = self.bed.take() {
+            s.stop();
+        }
+        self.handle = None;
+        self._stream = None;
+    }
+
+    fn mix_source(&self) -> MixSource {
+        MixSource { mixer: self.mixer.clone(), buf: Vec::new(), at: 0, pulled: self.pulled.clone() }
+    }
+
     pub fn end_frame(&mut self) {
+        self.watch_output();
         if let Ok(mut m) = self.mixer.lock() {
             for v in m.voices.iter_mut().filter(|v| v.id != 0 && v.id != STREAM_VOICE) {
                 if !v.fresh {
@@ -825,6 +1066,7 @@ impl Audio {
             s.stop();
         }
         self.stream_name = rel.map(|r| r.to_string());
+        self.voice_vol = volume;
         // (offline: a mixer voice, so the capture holds it)
         if self.offline.is_some() {
             if let Ok(mut m) = self.mixer.lock() {
@@ -849,6 +1091,7 @@ impl Audio {
 
     /// Keep the radio playing: starts the next track when the current one ends.
     pub fn update_music(&mut self, playing: bool) {
+        self.watch_output();
         if !self.music_on || !playing || self.music_files.is_empty() {
             if let Some(s) = self.music.as_ref() {
                 s.pause();
@@ -1025,6 +1268,31 @@ impl Audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #13: with no device at the start the game keeps its audio (silent, the mix drained) and opens the output at
+    /// the next check; a stream that stops pulling is reopened. Needs an output device and MCLA_DATA_DIR.
+    #[test]
+    #[ignore = "requires an audio output device and MCLA_DATA_DIR"]
+    fn output_retries_and_reopens() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        std::env::set_var("MCLA_AUDIO_FAIL_OPENS", "1");
+        let mut a = Audio::new(&dir).expect("audio without a device");
+        assert!(a.handle.is_none() && a.drain.is_some());
+        a.play("ui/menus/ui_menu_select_l", 0.5);
+        a.watch = Instant::now() - Duration::from_secs(4);
+        a.watch_output();
+        assert!(a.handle.is_some() && a.drain.is_none(), "opened at the retry");
+        // a stalled stream: nothing pulled over the check's window
+        std::thread::sleep(Duration::from_millis(300));
+        a.drop_output();
+        a.handle = Some(open_output(false).unwrap().handle);
+        a.pulled.store(0, Ordering::Relaxed);
+        a.watch = Instant::now() - Duration::from_secs(4);
+        a.watch_output();
+        assert!(a._sink.is_some() && a._stream.is_some(), "reopened");
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(a.pulled.load(Ordering::Relaxed) > 10_000, "the new stream pulls the mix");
+    }
 
     /// The slow-down state's ramp (step 23b, work/career2/audioramp/notes.md): every value
     /// moves at 1 a second - the engines' gain reaches 0.316 at 0.684 s, their pitch 0.5 at
