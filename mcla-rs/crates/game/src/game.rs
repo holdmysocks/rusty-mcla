@@ -3825,6 +3825,27 @@ impl Game {
 
     /// Draw menus / HUD. Returns the action chosen this frame.
     pub fn ui(&mut self, ctx: &egui::Context, vehicles: &Vehicles, world: &World, hud: HudInfo) -> MenuAction {
+        let action = self.ui_screens(ctx, vehicles, world, hud);
+        // (a menu's X / Y / Back from the pad is this frame's: a page that has no use for it
+        // does not keep it for the next page - #11. The replay's panel takes them outside the UI.)
+        if self.in_menu() && self.replay.is_none() {
+            self.nav_x = false;
+            self.nav_y = false;
+            self.nav_select = false;
+        }
+        action
+    }
+
+    /// X / Y on a menu page: the pad's (nav_x / nav_y, kept for this frame) or the keyboard's
+    fn x_hit(&self, ctx: &egui::Context) -> bool {
+        self.nav_x || ctx.input(|i| i.key_pressed(egui::Key::X))
+    }
+
+    fn y_hit(&self, ctx: &egui::Context) -> bool {
+        self.nav_y || ctx.input(|i| i.key_pressed(egui::Key::Y))
+    }
+
+    fn ui_screens(&mut self, ctx: &egui::Context, vehicles: &Vehicles, world: &World, hud: HudInfo) -> MenuAction {
         let race_dt = std::mem::take(&mut self.ui_sim_dt);
         self.load_ui(ctx);
         // (the start-up movie, boot.rs: once the UI's shared textures are there)
@@ -4326,7 +4347,7 @@ impl Game {
             Mode::Paused => {
                 // (the controller pages, `mc4` step 13b: what they answer of this frame's presses
                 // is taken; `ctrl_page` is the page they show)
-                let [up, down, enter, back] = self.mc4_ctrl_input([up, down, enter, back], ctx.input(|i| i.key_pressed(egui::Key::X)), ctx.input(|i| i.key_pressed(egui::Key::Y)));
+                let [up, down, enter, back] = self.mc4_ctrl_input([up, down, enter, back], self.x_hit(ctx), self.y_hit(ctx));
                 let mut ctrl_page: Option<crate::mc4::CtrlPage> = None;
                 // The original pause menu: three tabs (PAUSE, MODES, SETTINGS) with the entries
                 // and texts of `tune/ui/PauseMenu.sc.xml`.
@@ -4993,7 +5014,7 @@ impl Game {
                     // the GPS prompt of the free-roam tab (Back on the pad; M or Tab here), and
                     // the photo mode the list no longer carries (P)
                     // DEFAULTS (X on the pad, X here) on the audio page
-                    if self.pause_page == 7 && ctx.input(|i| i.key_pressed(egui::Key::X)) {
+                    if self.pause_page == 7 && (self.nav_x || ctx.input(|i| i.key_pressed(egui::Key::X))) {
                         let d = Options::default();
                         self.opts.master = d.master;
                         self.opts.music = d.music;
@@ -5003,7 +5024,7 @@ impl Game {
                         self.dirty = true;
                     }
                     if on_tabs && self.pause_tab == 0 && !racing {
-                        if ctx.input(|i| i.key_pressed(egui::Key::M) || i.key_pressed(egui::Key::Tab)) {
+                        if self.nav_select || ctx.input(|i| i.key_pressed(egui::Key::M) || i.key_pressed(egui::Key::Tab)) {
                             chosen = Some(Go::Act(MenuAction::OpenMap));
                         } else if ctx.input(|i| i.key_pressed(egui::Key::P)) {
                             chosen = Some(Go::Act(MenuAction::PhotoMode));
@@ -5779,7 +5800,7 @@ impl Game {
                 }
                 // AUTO UPGRADE (X, reference `n13`): every part to the last stage the career has
                 // opened and the money reaches, one after the other down the list
-                if self.flash_garage.is_some() && (ctx.input(|i| i.key_pressed(egui::Key::X)) || std::env::var("MCLA_AUTO_UPGRADE").is_ok()) {
+                if self.flash_garage.is_some() && (self.x_hit(ctx) || std::env::var("MCLA_AUTO_UPGRADE").is_ok()) {
                     self.auto_upgrade();
                 }
                 // CHANGE BRAND (LB / RB): the highlighted part's next maker, round its list
@@ -6013,7 +6034,7 @@ impl Game {
                     // under the cursor
                     static TD_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                     let td_hook = showroom && std::env::var("MCLA_TEST_DRIVE").is_ok() && !TD_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed);
-                    if showroom && self.message_box.is_none() && !self.is_owned(list_cars[sel]) && (td_hook || ctx.input(|i| i.key_pressed(egui::Key::X))) {
+                    if showroom && self.message_box.is_none() && !self.is_owned(list_cars[sel]) && (td_hook || self.x_hit(ctx)) {
                         self.test_drive = Some(list_cars[sel]);
                         self.test_drive_req = true;
                         self.garage_list = None;
@@ -6021,7 +6042,7 @@ impl Game {
                     }
                     // PURCHASE (A) / PURCHASE WITH TRADE-IN (Y): `garage.CheckOKVehiclePurchase[WithTrade]`
                     // asks first, or says the money is short; a locked vehicle takes neither
-                    let with_trade = ctx.input(|i| i.key_pressed(egui::Key::Y));
+                    let with_trade = self.y_hit(ctx);
                     // (test hook: MCLA_BUY_TEST presses PURCHASE once)
                     static BUY_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                     let enter = enter || (showroom && std::env::var("MCLA_BUY_TEST").is_ok() && !BUY_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed));
@@ -6038,7 +6059,7 @@ impl Game {
                         }
                     }
                     // SELL RIDE (X): `garage.CheckOKVehicleSale` - the last vehicle cannot be sold
-                    if !showroom && (ctx.input(|i| i.key_pressed(egui::Key::X)) || std::env::var("MCLA_SELL_TEST").is_ok()) && self.message_box.is_none() {
+                    if !showroom && (self.x_hit(ctx) || std::env::var("MCLA_SELL_TEST").is_ok()) && self.message_box.is_none() {
                         if self.owned.len() <= 1 {
                             self.open_message_box("ManageRideSaleError", MenuAction::None);
                         } else if self.open_message_box("G_SellVehicle", MenuAction::None) {
@@ -6084,10 +6105,10 @@ impl Game {
                             }
                         } else if back {
                             self.cart_open = None;
-                        } else if ctx.input(|i| i.key_pressed(egui::Key::X)) {
+                        } else if self.x_hit(ctx) {
                             self.cfg.set(unpaid[sel], 0);
                             self.dirty = true;
-                        } else if ctx.input(|i| i.key_pressed(egui::Key::Y)) {
+                        } else if self.y_hit(ctx) {
                             for s in &unpaid {
                                 self.cfg.set(*s, 0);
                             }
@@ -6152,13 +6173,13 @@ impl Game {
                         self.dirty = true;
                     } else if enter {
                         self.paint_open = None;
-                    } else if primary && ctx.input(|i| i.key_pressed(egui::Key::X)) {
+                    } else if primary && self.x_hit(ctx) {
                         // EDIT COLOR SLOT: the picker starts from the colour on the car
                         self.paint_pick = Some(self.paint_hsv);
                         if self.paint_hsv.is_none() {
                             self.paint_hsv = Some(paint_rgb_to_hsv(PALETTE[self.color_idx % PALETTE.len()]));
                         }
-                    } else if primary && ctx.input(|i| i.key_pressed(egui::Key::Y)) {
+                    } else if primary && self.y_hit(ctx) {
                         // RESET COLOR SLOT: back to the slot's own colour
                         self.paint_hsv = None;
                         self.dirty = true;
@@ -6211,14 +6232,14 @@ impl Game {
                     // (test hook: MCLA_SLOT_PICK presses X once on the open strip)
                     static PICK_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                     let hook = std::env::var("MCLA_SLOT_PICK").is_ok() && !PICK_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed);
-                    if hook || ctx.input(|i| i.key_pressed(egui::Key::X)) {
+                    if hook || self.x_hit(ctx) {
                         // EDIT COLOR SLOT: the picker starts from the row's colour; the car's own paint
                         // is set aside meanwhile
                         let from = (if k < 9 { self.slot_hsv[k] } else { self.car_x.int_de_hsv[(k - 9).min(1)] }).unwrap_or_else(|| paint_rgb_to_hsv(PALETTE[swatch % PALETTE.len()]));
                         self.pick_slot = Some((k.min(10), self.paint_hsv));
                         self.paint_pick = Some(Some(from));
                         self.paint_hsv = Some(from);
-                    } else if ctx.input(|i| i.key_pressed(egui::Key::Y)) {
+                    } else if self.y_hit(ctx) {
                         // RESET COLOR SLOT
                         if k < 9 { self.slot_hsv[k] = None; } else { self.car_x.int_de_hsv[(k - 9).min(1)] = None; }
                         self.dirty = true;
@@ -6331,7 +6352,7 @@ impl Game {
                             self.garage_cur = 0;
                         }
                         went_in = true;
-                    } else if sec == "brakes" && ctx.input(|i| i.key_pressed(egui::Key::X)) {
+                    } else if sec == "brakes" && self.x_hit(ctx) {
                         // STOCK BRAKES
                         let car = self.dir_name(self.current_car).to_ascii_lowercase();
                         self.xparts.entry(car).or_default().insert(sec.to_string(), 0);
@@ -7429,7 +7450,7 @@ impl Game {
                             // (the hood list: CARBON FIBER ON/OFF on X - reference `c09`; `garage.SwapCarbonFiber()`)
                             if self.garage_part.map_or(false, |row| CUSTOM_SLOTS.get(row.wrapping_sub(1)) == Some(&Slot::Hood)) {
                                 prompts.push((st("G_SwapCarbonFiber", "CARBON FIBER ON/OFF"), ICON_X));
-                                if ctx.input(|i| i.key_pressed(egui::Key::X)) {
+                                if self.nav_x || ctx.input(|i| i.key_pressed(egui::Key::X)) {
                                     // (taken up by `mc4_misc_idle`, outside this panel's borrow)
                                     self.car_x.swap_cf = true;
                                 }
@@ -10483,7 +10504,7 @@ impl Game {
         if self.flash_navsys.is_none() || self.editor.is_some() {
             return;
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Y)) {
+        if self.y_hit(ctx) {
             self.mission_log.2 = !self.mission_log.2;
         }
         let guided = self.mlog_guided;
@@ -10502,7 +10523,7 @@ impl Game {
             tab = (tab + if tab_next { 1 } else { 2 }) % 3;
             sel = 0;
         }
-        if hidden && ctx.input(|i| i.key_pressed(egui::Key::X)) {
+        if hidden && self.x_hit(ctx) {
             self.map_legend = !self.map_legend;
         }
         if std::env::var("MCLA_MAP_LEGEND").is_ok() {
@@ -11008,8 +11029,8 @@ impl Game {
         let d: isize = right as isize - left as isize;
         let dv: isize = up as isize - down as isize;
         let cats: Vec<(String, usize)> = self.vinyl_cats.clone();
-        let x_key = ctx.input(|i| i.key_pressed(egui::Key::X));
-        let y_key = ctx.input(|i| i.key_pressed(egui::Key::Y));
+        let x_key = self.x_hit(ctx);
+        let y_key = self.y_hit(ctx);
         let fine = ctx.input(|i| i.modifiers.shift);
         let mut close = false;
         let mut warn = false;
@@ -12721,7 +12742,7 @@ impl Game {
                     let v = (self.mc4_arcade_value(r.slot).min(n - 1) + if right { 1 } else { n - 1 }) % n;
                     crate::mc4::arcade_set(&mut self.arcade_opts, &mut self.arcade_x, &mut self.opt_x, r.slot, v);
                 }
-                if ctx.input(|i| i.key_pressed(egui::Key::X)) {
+                if self.x_hit(ctx) {
                     for r in &orows {
                         crate::mc4::arcade_set(&mut self.arcade_opts, &mut self.arcade_x, &mut self.opt_x, r.slot, r.default);
                     }
