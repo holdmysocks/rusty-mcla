@@ -36,7 +36,7 @@ pub struct FlashMovie {
 }
 
 impl FlashMovie {
-    /// A string of the game's table, as the game hands it to a movie (`0x82218310`);
+    /// A string of the game's table, as the game hands it to a movie (`F-53775`);
     /// the key itself when missing.
     pub fn string(&self, key: &str) -> String {
         self.strings.get(key).map(|s| s.to_string()).unwrap_or_else(|| key.to_string())
@@ -248,7 +248,7 @@ impl FlashMovie {
             }
         }
         let k = w as f32 / (st[1] - st[0]).max(1.0);
-        // (the original's WorldIconRenderTarget%d is 4x multisampled - sub_821F7710, UI.md "UI edge smoothing")
+        // (the original's WorldIconRenderTarget%d is 4x multisampled - F-92420, UI.md "UI edge smoothing")
         let mut c = mcla_flash::raster::Canvas::with_samples(w, h, [0, 0, 0, 0], &mcla_flash::raster::SAMPLES_4X);
         c.draw(&list, k, [-st[0] * k, -st[2] * k], &|t| cache.get(&t).cloned().flatten());
         let px = Arc::new(c.rgba);
@@ -389,7 +389,7 @@ impl FlashMovie {
         let s = self.player.movie.stage;
         let stage = Rect::from_min_max(Pos2::new(o.x + s[0] * k, o.y + s[2] * k), Pos2::new(o.x + s[1] * k, o.y + s[3] * k));
         let screen = if s[3] - s[2] < 719.0 { screen.intersect(stage) } else { screen };
-        // the mcUI ortho (sub_822264D0 -> sub_8217CC80, left 1, right W+1) puts stage (i+1, j) on pixel i with
+        // the mcUI ortho (F-65457 -> F-11735, left 1, right W+1) puts stage (i+1, j) on pixel i with
         // D3D9 pixel centres (PA_SU_VTX_CNTL pix_center 0): in centre-at-half terms the stage sits -0.5 / +0.5 px
         let o = o + egui::vec2(-0.5 * k, 0.5 * k);
         self.emit_list(ctx, list, [k, k], o, screen, &mut |c, sh| {
@@ -402,7 +402,7 @@ impl FlashMovie {
     pub fn self_shapes(&mut self, ctx: &egui::Context, list: &DrawList, size: [f32; 2]) -> Vec<egui::epaint::ClippedShape> {
         let s = self.player.movie.stage;
         let (kx, ky) = (size[0] / (s[1] - s[0]).max(1.0), size[1] / (s[3] - s[2]).max(1.0));
-        // Ortho(0, W, H, 0) with D3D9 pixel centres (sub_82720C58): the target half a pixel down-right
+        // Ortho(0, W, H, 0) with D3D9 pixel centres (F-68803): the target half a pixel down-right
         let o = Pos2::new(-s[0] * kx + 0.5, -s[2] * ky + 0.5);
         let mut out = Vec::new();
         self.emit_list(ctx, list, [kx, ky], o, Rect::from_min_size(Pos2::ZERO, egui::vec2(size[0], size[1])), &mut |c, sh| {
@@ -545,14 +545,14 @@ fn clip_poly(poly: &mut Vec<WarpVert>, r: [f32; 4]) {
     }
 }
 
-/// FSCommands the movies send (`0x82721CC8` handles getvar/setvar; the
+/// FSCommands the movies send (`F-30276` handles getvar/setvar; the
 /// measuring commands write their result back into `_global`).
 fn fscommand(p: &mut Player, cmd: &str, arg: &str, strings: &StringTable, logic: &crate::menu3d::UiLogic) {
     if mcla_flash::player::common_fscommand(p, cmd, arg) {
         return;
     }
     match cmd.to_ascii_lowercase().as_str() {
-        // `_global.getstring(id)`: fs_stringID -> t_stringID (game side 0x82205D78)
+        // `_global.getstring(id)`: fs_stringID -> t_stringID (game side F-55076)
         "getstring" => {
             let id = p.get_global("fs_stringID").map(|v| v.to_string().to_string()).unwrap_or_default();
             let text = strings.get(&id).map(|s| s.to_string()).unwrap_or(id);
@@ -620,10 +620,10 @@ pub const CHOICE: &str = "\u{2}";
 /// the car, the open strip's cursor (-1 = the strip is closed) and the strip's colours.
 pub const SWATCH: &str = "\u{3}";
 /// A row whose value is a button glyph: `GLYPH` then the glyph's number (the movie's row
-/// `type` 7 with the number in `text2` - the custom controls' BUTTON column, sub_8264BDA8).
+/// `type` 7 with the number in `text2` - the custom controls' BUTTON column, F-46822).
 pub const GLYPH: &str = "\u{4}";
 /// A garage row whose part type wears the "new" mark: the movie's row `type` 50
-/// (sub_826A8D48, 0x826A9208..0x826A9244).
+/// (F-99914, A-25757..A-24193).
 pub const NEW_ROW: &str = "\u{5}new";
 
 /// A choice row's value with all its choices (`at` is the one shown).
@@ -773,14 +773,14 @@ pub enum MenuLayout {
     /// GOAL ATTACK's race list (`template_GoalAttack`, 15, of the GPS map movie): per race
     /// row `type` 32, `text2` the goal mask ("0".."15": won 8, damage 4, time 2, all 1 - the
     /// four icons lit or at half), `text3..text6` the goal panel's lines of the race under the
-    /// cursor (sub_82655E58, navsys 0x1ecae / 0x2ff32)
+    /// cursor (F-33135, navsys 0x1ecae / 0x2ff32)
     GoalAttack { goals: Vec<(u8, [String; 4])> },
 }
 
 /// A page of the menu movie as the game's menu classes write it: the tab strip
-/// (`0x82630E40`: `tabs_count`, `tabs`, `tabs_iconID`, `cur_tab`, `template`
+/// (`F-20870`: `tabs_count`, `tabs`, `tabs_iconID`, `cur_tab`, `template`
 /// 56 = template_MenuTabs), or a titled page (`template` 2 = template_Menu,
-/// `menu.name`), the list (`0x82631FD0`: `menu.count`, `menu.type` = columns,
+/// `menu.name`), the list (`F-39782`: `menu.count`, `menu.type` = columns,
 /// `menu.elements[i].text1/text2/ID/color/property1`, `menu.select`,
 /// `menu.List_max`) and the prompt bar (`prompt.count`, `prompt.elements[i]
 /// .text1/iconID`).
@@ -800,7 +800,7 @@ pub struct MenuPage {
     pub rows: Vec<MenuRow>,
     pub select: usize,
     pub prompts: Vec<(String, i32)>,
-    /// the money line of the prompt bar (`showmoney`, `t_banktxt`, `bank`; `0x8267F518`)
+    /// the money line of the prompt bar (`showmoney`, `t_banktxt`, `bank`; `F-46968`)
     pub money: Option<(String, i64)>,
     /// pad row labels to this many characters so the movie measures a constant
     /// content width and the panel does not resize as the cursor moves
@@ -914,7 +914,7 @@ impl FlashMenu {
     }
 
     /// Show `page`. A changed structure rebuilds the page (`TransitionLevel` 0);
-    /// a changed selection only refreshes the list (`TransitionLevel` 1, `0x82635840`).
+    /// a changed selection only refreshes the list (`TransitionLevel` 1, `F-88457`).
     pub fn show(&mut self, page: &MenuPage) {
         let glyphs = (crate::glyphs::device(), crate::glyphs::platform());
         if self.shown.as_ref() == Some(page) && self.glyphs == glyphs {
@@ -1235,7 +1235,7 @@ impl FlashMenu {
                 p.set_path(&format!("menu.elements.{}.price", i), Value::str(if choice { &r.value[CHOICE.len()..] } else { "" }));
             } else if let MenuLayout::Reward { .. } = page.layout {
                 // (the reward row's second line is its `text3`; a group's header - `property1` 13
-                // UNLOCKED, 17 REWARDED - carries its count in `text2`: sub_82676B08)
+                // UNLOCKED, 17 REWARDED - carries its count in `text2`: F-36204)
                 p.set_path(&format!("menu.elements.{}.text2", i), Value::str(if matches!(page.row_props.get(i), Some(13 | 17)) { &r.value } else { "" }));
                 p.set_path(&format!("menu.elements.{}.text3", i), Value::str(&r.value));
             } else if !matches!(page.layout, MenuLayout::Vehicles { .. } | MenuLayout::PerfShop { .. } | MenuLayout::Abilities { .. } | MenuLayout::Results { .. }) {
@@ -1261,7 +1261,7 @@ impl FlashMenu {
             }
         }
         if let MenuLayout::GoalAttack { goals } = &page.layout {
-            // (two columns, `Option` / `Value`: sub_82657A20 in goal attack)
+            // (two columns, `Option` / `Value`: F-82755 in goal attack)
             p.set_path("menu.type", Value::Int(2));
             for (i, (mask, lines)) in goals.iter().enumerate().take(page.rows.len()) {
                 p.set_path(&format!("menu.elements.{}.type", i), Value::Int(32));
@@ -1345,7 +1345,7 @@ impl FlashMenu {
                     6 => p.set_path(&format!("menu.elements.{}.select", i), Value::Int((r.value == "1") as i32)),
                     // (a results header - `property1` 25, the time trial's TIME: the number of
                     // its rows of kind 19 in `text2`, 1 in `text4` for the COMPLETE stamp -
-                    // sub_82678B90; the movie's rule at 0x13f10..0x14399)
+                    // F-65302; the movie's rule at 0x13f10..0x14399)
                     25 => {
                         let n = page.row_props[i + 1..].iter().take_while(|k| **k == 19).count();
                         p.set_path(&format!("menu.elements.{}.text2", i), Value::Int(n as i32));
@@ -1487,7 +1487,7 @@ impl FlashPrompt {
 /// phone's screen and also steers the phone itself - three meshes it lists in
 /// `dyn3Ds` (`sidekick_body`, `sidekick_screenshell`, `sidekick_screen`), slid in from
 /// the corner and flipped open by its own script when `cur_visibility` rises.
-/// The game fills `message` (`0x82650BB0`): `title`, `description`, `prompt`,
+/// The game fills `message` (`F-51036`): `title`, `description`, `prompt`,
 /// `IconID` (portrait frame - 1; 30 / 31 are the gamer pictures), and sets
 /// `sidekickisvisible` and `promptisvisible`.
 pub struct FlashPhone {
@@ -1635,12 +1635,12 @@ impl FlashMinimap {
         p.set_global("gpsArrowActive", Value::Int(if gps.is_some() { 1 + self.highlight as i32 } else { 0 }));
         p.set_global("gpsArrowRotation", Value::Float(gps.unwrap_or(0.0)));
         // the ring and its north marker turn with the map, which turns with the car (with the
-        // map drawn here: the screen angle of world north through the map camera, 0x822375CC)
+        // map drawn here: the screen angle of world north through the map camera, A-27172)
         p.set_global("map_rotation", Value::Float(if self.own_map { self.map_rotation } else { -info.player_heading.to_degrees() }));
         // The overhead map (rule_frame.md 9): hud.sc.xml's hudOverheadMap writes cur_Property[1] = 2,
-        // hudBigMap's exit and dashboardNormal 0. SC_map = (city prefix == "sc"), sub_8220CC10 - the
+        // hudBigMap's exit and dashboardNormal 0. SC_map = (city prefix == "sc"), F-18526 - the
         // port's city is always "sc". The title bar: mcMapCtrl (HUD control 11) vfunc 44,
-        // sub_826510F0 - with its property 0 on overhead_type 1, overhead_iconID = ctrl+196 (-1 from
+        // F-76764 - with its property 0 on overhead_type 1, overhead_iconID = ctrl+196 (-1 from
         // the constructor: no icon), overhead_text0 = its text, overhead_text1 = ctrl+200 (empty);
         // else overhead_type 0 and both texts empty.
         p.set_path("cur_Property.1", Value::Int(if self.overhead { 2 } else { 0 }));
@@ -1707,7 +1707,7 @@ pub struct RaceHud {
     pub delivery_damage: f32,
     pub target_damage: f32,
     /// the race clock counts down to a target (HUD control 6 with its property 0 on:
-    /// sub_8264F620): the movie's `TotalCountdown` - the time left in ms x 0.0001 - and
+    /// F-87516): the movie's `TotalCountdown` - the time left in ms x 0.0001 - and
     /// `red_countdown` (its property 2); `time_left` is then the time shown
     pub clock_count: Option<(f32, bool)>,
     /// the race clock is not on show (a payback before its client is reached)
@@ -1724,7 +1724,7 @@ pub struct RaceHud {
     pub payback_vis: i32,
 }
 
-/// The game's race clock text (`0x8223DE50`): `[-][h:]mm:ss.hh` from milliseconds.
+/// The game's race clock text (`F-26034`): `[-][h:]mm:ss.hh` from milliseconds.
 pub fn race_time(ms: i32) -> String {
     let sign = if ms < 0 { "-" } else { "" };
     let ms = ms.unsigned_abs();
@@ -1739,6 +1739,29 @@ pub fn race_time(ms: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The splash rings (F-71442, F-92234, F-60177): five per slot with the one on show, a sixth dropped,
+    /// the first posted when queued, the next when the movie clears `SplashVisibles`.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn splash_ring_keeps_five_and_drops_the_new_one() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let mut h = FlashHud::load(&dir, &shared).unwrap();
+        let shown = |h: &mut FlashHud| h.movie.player.get_path("SplashStrings.0").map(|v| v.to_string().to_string()).unwrap_or_default();
+        for i in 0..7 {
+            h.splash(0, &format!("S{i}"), 0, 2.0);
+        }
+        assert_eq!(shown(&mut h), "S0");
+        assert_eq!(h.splash_queue[0].iter().map(|q| q.0.as_str()).collect::<Vec<_>>(), ["S0", "S1", "S2", "S3", "S4"]);
+        h.post_splashes();
+        assert_eq!(shown(&mut h), "S0", "still on show");
+        h.movie.player.set_path("SplashVisibles.0", Value::Int(0));
+        h.post_splashes();
+        assert_eq!(shown(&mut h), "S1");
+        assert_eq!(h.splash_queue[0].len(), 4);
+    }
 
     /// The HUD movie's 3-2-1-GO against the race clock (countdown_321Go_3sec: the slot raised at -3 s,
     /// GO at 0): stepped every 60 Hz tick, and with the frames from 2.5 s to 1.2 s before GO not drawn.
@@ -1920,7 +1943,7 @@ mod tests {
 
     #[test]
     fn race_clock_text_follows_the_games_format() {
-        // 0x8223DE50: "%s%02d:%02d.%02d", from an hour "%s%d:%02d:%02d.%02d"
+        // F-26034: "%s%02d:%02d.%02d", from an hour "%s%d:%02d:%02d.%02d"
         assert_eq!(super::race_time(0), "00:00.00");
         assert_eq!(super::race_time(4_910), "00:04.91");
         assert_eq!(super::race_time(83_456), "01:23.45");
@@ -1933,7 +1956,7 @@ mod tests {
 pub struct FlashHud {
     pub movie: FlashMovie,
     countdown_shown: bool,
-    /// the game's splash queues (`0x82234440`): per slot, up to five waiting
+    /// the game's splash queues (`F-60177`): per slot, up to five waiting
     /// (text, colour, seconds), posted when the movie has freed the slot
     splash_queue: [std::collections::VecDeque<(String, i32, f32)>; 3],
     /// a splash was posted to queue 1 (the movie then plays RACER_FOUND_MASTER)
@@ -1961,9 +1984,9 @@ impl FlashHud {
     }
 
     /// The camera bar at the bottom (`camera_indicator`). The game names the views once
-    /// (sub_8223D300: `_global.cameras[0..4]` = the string table's "Bumper", "POV", "Boom 1",
+    /// (F-13512: `_global.cameras[0..4]` = the string table's "Bumper", "POV", "Boom 1",
     /// "Boom 2", "Boom 3" - BUMPER, COCKPIT, STATIC, CLASSIC, ACTION - and [5] the race
-    /// editor's OVERHEAD VIEW) and every frame (sub_8223D450) sets `max_cameraNumber` 4 and,
+    /// editor's OVERHEAD VIEW) and every frame (F-43809) sets `max_cameraNumber` 4 and,
     /// when the view is not the one of the frame before (and that one was known), writes the
     /// new one into `cameraNumber` - unless a menu is up. The movie does the rest: the bar
     /// comes in by a quarter of the way a frame, stands 45 frames and goes out the same way
@@ -1998,32 +2021,48 @@ impl FlashHud {
         p.set_global("d_selectedlevel_longname", Value::str(text.unwrap_or("")));
     }
 
-    /// Queue a splash message (`0x82234A10`). The game keeps five per slot and
-    /// drops the oldest when full.
+    /// Queue a splash message (F-71442). A slot's ring holds five, the one on show
+    /// (its head) included; a sixth is dropped (F-92234 returns 0). Queued into an
+    /// empty slot it is posted at once.
     pub fn splash(&mut self, slot: usize, text: &str, color: i32, seconds: f32) {
-        let q = &mut self.splash_queue[slot.min(2)];
+        let slot = slot.min(2);
+        let q = &mut self.splash_queue[slot];
         if q.len() >= 5 {
-            q.pop_front();
+            return;
         }
+        let was_empty = q.is_empty();
         q.push_back((text.to_string(), color, seconds));
+        if was_empty {
+            self.post_head(slot);
+        }
     }
 
-    /// Post the next queued splash of each free slot (`0x82234440` -> `0x8223FFB0`:
-    /// `SplashColor[i]`, `SplashVisibles[i]` = 1, `duration[i]` = seconds (at least
-    /// 2), `SplashStrings[i]`). The movie clears `SplashVisibles[i]` when done.
+    /// Each frame (F-60177): a slot whose splash the movie has finished
+    /// (`SplashVisibles[i]` back to 0) lets its head go and posts the next one.
     fn post_splashes(&mut self) {
-        let p = &mut self.movie.player;
-        for (slot, q) in self.splash_queue.iter_mut().enumerate() {
-            if q.is_empty() || p.get_path(&format!("SplashVisibles.{}", slot)).map_or(0, |v| v.to_i32()) != 0 {
+        for slot in 0..3 {
+            let done = self.movie.player.get_path(&format!("SplashVisibles.{}", slot)).map_or(0, |v| v.to_i32()) == 0;
+            if self.splash_queue[slot].is_empty() || !done {
                 continue;
             }
-            let (text, color, seconds) = q.pop_front().unwrap();
-            p.set_path(&format!("SplashColor.{}", slot), Value::Int(color));
-            p.set_path(&format!("SplashVisibles.{}", slot), Value::Int(1));
-            p.set_path(&format!("duration.{}", slot), Value::Float(seconds.max(2.0)));
-            p.set_path(&format!("SplashStrings.{}", slot), Value::str(&text));
-            self.racer_found |= slot == 1;
+            self.splash_queue[slot].pop_front();
+            if !self.splash_queue[slot].is_empty() {
+                self.post_head(slot);
+            }
         }
+    }
+
+    /// Show a slot's head (F-76805 -> F-97681: `SplashColor[i]`, `SplashVisibles[i]` = 1,
+    /// `duration[i]` = seconds (at least 2), `SplashStrings[i]`). The movie clears
+    /// `SplashVisibles[i]` when done.
+    fn post_head(&mut self, slot: usize) {
+        let Some((text, color, seconds)) = self.splash_queue[slot].front().cloned() else { return };
+        let p = &mut self.movie.player;
+        p.set_path(&format!("SplashColor.{}", slot), Value::Int(color));
+        p.set_path(&format!("SplashVisibles.{}", slot), Value::Int(1));
+        p.set_path(&format!("duration.{}", slot), Value::Float(seconds.max(2.0)));
+        p.set_path(&format!("SplashStrings.{}", slot), Value::str(&text));
+        self.racer_found |= slot == 1;
     }
 
     /// The start of a replay: nothing of the HUD but the race's 3-2-1 (reference `vr_2`).
@@ -2049,9 +2088,9 @@ impl FlashHud {
     /// `d_Speedvalue` m/s (x2.237 for mph), `d_RPMvalue` rpm, `RPMopt` redline rpm,
     /// `GearValue` text, `Nitrovalue` and `SAvalue` 0..1).
     pub fn drive(&mut self, info: &HudInfo, race: Option<RaceHud>, dt: f32) {
-        // the police strip under the cluster. Text: `0x82650FF0` writes per message
+        // the police strip under the cluster. Text: `F-76838` writes per message
         // kind (0 pull over, 1 pursuit -> t_police_pursuit; 2 investigation,
-        // 3 searching -> t_police_search). Mode: `0x82206458` sets `policePursuit`
+        // 3 searching -> t_police_search). Mode: `F-61846` sets `policePursuit`
         // from the police state (0 none, 1 and 2 the two flashing "pursuit" looks,
         // 3 searching).
         let police = match info.heat {
@@ -2092,7 +2131,7 @@ impl FlashHud {
         // power-up slots, drawn when `PowerUpisvisible` is set and the ability meter is not)
         p.set_global("SAisvisible", Value::Int(has_ability as i32));
         p.set_global("PowerUpisvisible", Value::Int(!has_ability as i32));
-        // (step 19e: the slots' types and the value - sub_82203AC8 -> sub_8223E200)
+        // (step 19e: the slots' types and the value - F-24988 -> F-56191)
         p.set_global("PowerUptype_0", Value::Int(info.pu_hud[0] as i32));
         p.set_global("PowerUptype_1", Value::Int(info.pu_hud[1] as i32));
         p.set_global("PowerUpvalue", Value::Float(info.pu_hud[2]));
@@ -2101,18 +2140,18 @@ impl FlashHud {
         let icon = match info.ability.to_ascii_uppercase().as_str() { "AGRO" => 2, "ROAR" => 3, "PULSE" | "EMP" => 4, _ => 1 };
         p.set_global("SA_iconID", Value::Int(icon));
         p.set_global("SAvalue", Value::Float(if info.ability_fx > 0.0 { info.ability_fx } else { info.ability_meter }.clamp(0.0, 1.0)));
-        // (mcSlipstream 0x8223FDF0: 1 while the element is shown - the car has a turbo, 0x82651890; 2 when the
-        // slipstream tutorial lights it, sub_8267DCA0)
+        // (mcSlipstream F-18864: 1 while the element is shown - the car has a turbo, F-53853; 2 when the
+        // slipstream tutorial lights it, F-23619)
         p.set_global("SSTisvisible", Value::Int(if info.sst_on && info.sst_lit { 2 } else { info.sst_on as i32 }));
         p.set_global("SSTvalue", Value::Float(info.sst.clamp(0.0, 1.0)));
         // the online player list (`_global.playerlist`, bound by the game in
-        // 0x8228BED8): type 0 = not shown in single player
+        // F-46154): type 0 = not shown in single player
         p.set_path("playerlist.type", Value::Int(0));
         // single player: no team totals (also selects the single-player colours)
         p.set_path("playerlist.showTotals", Value::Int(0));
         let r = race.unwrap_or_default();
         let racing = race.is_some() && r.kind == RaceHudKind::Race;
-        // the race clock (0x8223E000): Totaltime text, total_MS
+        // the race clock (F-95277): Totaltime text, total_MS
         let shown_time = r.time_left.unwrap_or(r.elapsed);
         let ms = (shown_time.max(0.0) * 1000.0) as i32;
         // on the grid the original shows the countdown and the map only: clock, place and
@@ -2133,7 +2172,7 @@ impl FlashHud {
         p.set_global("Totaltimeisvisible", Value::Int((race.is_some() && started && !r.clock_off) as i32));
         p.set_global("Totaltime", Value::str(&race_time(ms)));
         p.set_global("total_MS", Value::Int(ms));
-        // (sub_8264F620: without a countdown `TotalCountdown` is 2 and `red_countdown` 0)
+        // (F-87516: without a countdown `TotalCountdown` is 2 and `red_countdown` 0)
         p.set_global("TotalCountdown", Value::Float(r.clock_count.map_or(2.0, |c| c.0)));
         p.set_global("red_countdown", Value::Int(r.clock_count.map_or(false, |c| c.1) as i32));
         p.set_global("Posisvisible", Value::Int((racing && started && r.total > 1) as i32));
@@ -2143,7 +2182,7 @@ impl FlashHud {
         p.set_global("LapNumber", Value::Int(r.lap));
         p.set_global("LapMax", Value::Int(r.laps));
         p.set_global("Laptimeisvisible", Value::Int(0));
-        // delivery / payback meters (0x82651240, 0x82651320)
+        // delivery / payback meters (F-87582, F-99754)
         let delivery = race.is_some() && r.kind == RaceHudKind::Delivery;
         p.set_global("deliveryisvisible", Value::Int(delivery as i32));
         p.set_global("delivery_meter", Value::Float(r.delivery_damage.clamp(0.0, 1.0)));
@@ -2152,7 +2191,7 @@ impl FlashHud {
         p.set_global("paybackisvisible", Value::Int(if payback { r.payback_vis.max(1) } else { 0 }));
         p.set_global("payback_meter", Value::Float(r.target_damage.clamp(0.0, 1.0)));
         p.set_global("payback_meterMax", Value::Float(r.payback.map_or(1.0, |x| x.2)));
-        // (sub_82651320: the wins of the run and the wins it asks for)
+        // (F-99754: the wins of the run and the wins it asks for)
         if let Some((wins, needed, _)) = r.payback {
             p.set_global("payback_stored", Value::Int(wins));
             p.set_global("payback_level", Value::Int(needed));
@@ -2173,7 +2212,7 @@ impl FlashHud {
         }
         // (the original's movie is never behind its race clock: countdown_321Go_3sec raises the slot in the same
         // instant it sets Race_SetTimer(-3000) - 0x6D5..0x70C -, and the game hands the movie the frame's step as
-        // `countdownUpdate` on every frame, drawn or not - sub_82212298, 0x822124D8 -, so 3, 2, 1 and GO stand at
+        // `countdownUpdate` on every frame, drawn or not - F-28336, A-72273 -, so 3, 2, 1 and GO stand at
         // race clock -3, -2, -1 and 0. The port steps the movie only on the frames it draws it: a movie left behind
         // the race's clock is put where that clock is.)
         // (before this frame's movie frames - at most eight a call, `Player::update` - and after them)
