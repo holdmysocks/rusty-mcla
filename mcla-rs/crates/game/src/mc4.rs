@@ -15850,9 +15850,18 @@ mod tests {
         g.career.event(crate::career::Ev::Rep(600));
         assert_eq!(line(&g), Some((340, Some("(340/400)".to_string()))));
         assert!(g.career.mission_active("REP_ON_HW_STRIP"), "400 in all is not enough");
+        // (GitHub #10: the first hangout waits for this objective - its reward mission
+        // HANGOUT_SERIES_HOLLYWOOD starts Game/Hangouts/hw_local_hangout1_setup)
+        assert!(!g.mc4_hangout_open("hangout/cut_hangout_01") && !g.mc4_hangout_open("hangout/cut_hangout_04"));
         g.rep = 660;
         g.career.event(crate::career::Ev::Rep(660));
         assert!(g.career.mission_complete("REP_ON_HW_STRIP"));
+        // (the reward waits for its call at READY_TO_START; its own script - the set-up's
+        // start - runs when the call has put it in the log, sub_826C7710)
+        assert!(g.career.mission_active("HANGOUT_SERIES_HOLLYWOOD") && !g.mc4_hangout_open("hangout/cut_hangout_01"));
+        g.career.call_delivered("HANGOUT_SERIES_HOLLYWOOD");
+        assert!(g.mc4_hangout_open("hangout/cut_hangout_01"));
+        assert!(!g.mc4_hangout_open("hangout/cut_hangout_04"), "the wager hangout comes later (HANGOUT_SERIES_HOLLYWOODC)");
         // (it joined the completed list at its end; the record says so)
         assert_eq!(g.career.done.last().map(|&k| g.career.mission_id(k)), Some("REP_ON_HW_STRIP"));
         g.write_save(&dir);

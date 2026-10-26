@@ -412,6 +412,8 @@ struct App {
     starter_was: bool,
     /// the delivery's place opens its panel (again once the car has been away)
     delivery_armed: bool,
+    /// The delivery core's LOSE_COPS count (100 polls of 0.1 s between splashes), seconds left.
+    delivery_cops: f32,
     /// (p080) a delivery's intro still to come after the walk to the car: (scene, grid slot 0, yaw)
     delivery_intro: Option<(String, Vec3, f32)>,
     /// (p080) a delivery intro after its cut to the game camera: (scene, scene time) - its map and
@@ -611,6 +613,9 @@ struct App {
 
 /// The payback place's wait camera (`Hangouts/0xbaa0ed14` +3468 / +3480 / +3492) is the Beaches garage's
 const PAYBACK_PLACE_CAM: usize = 1;
+/// The deliveries' trigger points (the set-ups' static 3276: `game/Hangouts/0x4dd86889` 0x256,
+/// `sc/Hangouts/0xc8c6051d` 0x259) - Hollywood's, South Central's.
+const DELIVERY_POINT: [[f32; 3]; 2] = [[834.47, 18.07, -843.32], [-37.614, -19.674, 1316.65]];
 
 impl App {
     /// The race's start scene from the original's picker and table (prerace.rs) and where it is staged.
@@ -887,6 +892,7 @@ impl App {
             prerace_plan: None,
             starter_was: false,
             delivery_armed: true,
+            delivery_cops: 0.0,
             delivery_intro: None,
             delivery_tail: None,
             door_armed: std::env::var("MCLA_DOOR_IN").is_ok(),
@@ -3021,13 +3027,29 @@ impl App {
                             // (step 21b: the delivery's set-up ends with the visit too)
                             let k = if self.hangouts[h].0.ends_with("_sc") { "sc_delivery" } else { "hw_delivery" };
                             self.game.mc4_hangout_left(k);
+                            // (the core's end of the visit, 0x351d: SetAllPoliceUnderground(0, 1))
+                            self.police.units_up();
                         }
                     }
-                } else if free && d < 13.0 && speed < 7.0 && self.hangouts[i].0.starts_with("delivery") && !matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search) {
-                    // (the delivery's place has no scene of pulling in: its panel comes up as the
-                    // car stops there - `ref/dl_panel_medium.png`)
-                    if self.game.flash_hud.is_some() && self.delivery_armed {
+                } else if free && self.hangouts[i].0.starts_with("delivery") && cur.is_some_and(|p| p.distance(Vec3::from(DELIVERY_POINT[self.hangouts[i].0.ends_with("_sc") as usize])) < 12.0) {
+                    // (delivery_hangout_core 0x3f5..0x552: within 12 of the set-up's point (static 3276),
+                    // no speed test; with police activity above 1 the LOSE_COPS splash, again after 100
+                    // polls of 0.1 s; else SetAllPoliceUnderground(1, 1), Racer_Deactivate - its panel)
+                    let chased = matches!(self.game.opt_x.s23.heat_was, 2 | 3);
+                    self.delivery_cops = (self.delivery_cops - dt).max(0.0);
+                    if chased && self.delivery_armed {
+                        if self.delivery_cops <= 0.0 {
+                            let m = self.game.career.strings.get("LOSE_COPS").map(|s| s.to_uppercase()).unwrap_or_else(|| "LOSE THE COPS".into());
+                            self.game.show_message(&m);
+                            self.delivery_cops = 10.0;
+                        }
+                    } else if self.game.flash_hud.is_some() && self.delivery_armed {
                         self.delivery_armed = false;
+                        self.police.units_down();
+                        if let Some(c) = self.vehicles.player_mut() {
+                            c.state.vel = Vec3::ZERO;
+                            c.state.ang_vel = Vec3::ZERO;
+                        }
                         self.hangout_in = Some(i);
                         self.game.wager_here = false;
                         self.game.hangout_key = Some(if self.hangouts[i].0.ends_with("_sc") { "sc_delivery" } else { "hw_delivery" }.to_string());
@@ -3042,8 +3064,6 @@ impl App {
                     self.game.hangout_slow.set(0.0, 1.0 / hangoutin::SLOW_IN, false, true, 1.0);
                     self.game.hangout_slow.visible = true;
                     self.hangout_entry = Some(hangoutin::Entry { setup: si, hangout: j, stage: hangoutin::Stage::Slow, t: 0.0, warp: None });
-                } else if free && d < 60.0 && self.tick_no % 240 == 0 && self.news.is_empty() {
-                    self.game.show_message("HANGOUT  -  PULL IN TO SEE THE EVENTS");
                 }
             }
             // ---- pulling into a hangout (`hangoutin`): the ease to pause, the warp, the event, the scene ----
