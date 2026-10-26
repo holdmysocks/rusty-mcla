@@ -1896,7 +1896,9 @@ impl App {
         self.game.nav_slow = (now >> 17 & 1) as f32 - (now >> 16 & 1) as f32;
         // (`mc4` step 13b: the pad as it stands, for the mapping editor)
         self.game.opt_x.pad = self.pad_state();
-        if self.game.in_menu() || self.game.show_map || watching {
+        // (a box that takes the menu buttons outside a menu mode is read as a menu: the keyboard's
+        // Enter / Esc reach it in every mode, so the pad's A / B must as well - GitHub #11)
+        if self.game.in_menu() || self.game.show_map || watching || self.game.takes_menu_input() {
             self.pad_pending = 0;
             // (the map's actions keep their "down the frame before" while a menu is up: the
             // original's driver update still runs the pad's own, sub_822A50C0, when input is shut -
@@ -1926,7 +1928,8 @@ impl App {
             self.game.nav_enter |= p(0) || (p(7) && title);
             // (B does nothing there either: the original's start screen has no way out)
             self.game.nav_back |= ((p(1) || p(7)) && !title) && !watching;
-            self.game.nav_map |= p(6) && self.game.show_map;
+            // (Back answers a call on the phone over a menu too - the keyboard's map key does)
+            self.game.nav_map |= p(6) && (self.game.show_map || self.game.phone_call_up());
             return;
         }
         // (the active controller map, `mc4`: the driving buttons are its actions. START and BACK

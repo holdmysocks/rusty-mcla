@@ -2732,6 +2732,18 @@ impl Game {
         matches!(self.mode, Mode::MainMenu | Mode::RaceSelect | Mode::Garage | Mode::Results | Mode::Paused) || self.starter_pick.is_some()
     }
 
+    /// A box or screen that answers the menu buttons is up outside a menu mode: a message box
+    /// (the new career's save boxes, NEW GAME / CONTINUE GAME under the start warp), a tutorial
+    /// box. The keyboard's Enter / Esc reach these in every mode; the pad's A / B must too (#11).
+    pub fn takes_menu_input(&self) -> bool {
+        self.message_box.is_some() || self.start_warp_on || self.tutorial_box.is_some()
+    }
+
+    /// A call is on the phone with a prompt line (Back answers it: MISSION LOG, ACCEPT).
+    pub fn phone_call_up(&self) -> bool {
+        self.tip.is_some() && !self.phone_prompt.is_empty()
+    }
+
     pub fn car_name(&self, i: usize) -> String {
         let raw = self.car_dirs.get(i).and_then(|p| p.file_name()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         pretty_car_name(&raw)
