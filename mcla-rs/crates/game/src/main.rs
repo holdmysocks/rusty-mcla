@@ -10433,7 +10433,9 @@ impl App {
         let race_gate = g.race.as_ref().map_or(false, |r| r.countdown > 0.0 && r.countdown <= 3.0) || g.race_end_t.is_some();
         // (the perspective form's slow motion holds the game: the lessons' "ease to pause")
         let form108 = g.tutorial_hold();
-        !(opening || cinematic || warping || race_gate || form108 || g.photo_on)
+        // (the player's car wrecked: F-36476 - damage / its limit >= 1)
+        let wrecked = self.vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
+        !(opening || cinematic || warping || race_gate || form108 || g.photo_on || wrecked)
     }
 
     /// The new career's opening after the save boxes (CarSelection, `intro_stage`): every tick, the film and

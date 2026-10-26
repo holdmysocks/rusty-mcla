@@ -534,6 +534,8 @@ pub struct Game {
     pub garage_list: Option<(bool, usize)>,
     /// the car the SELL VEHICLE box is asking about
     pub sell_pending: Option<usize>,
+    /// the favourite REMOVE RACE FROM FAVORITES is asking about (its YES removes it)
+    pub fav_remove_pending: Option<String>,
     /// the GPS map's cursor: which of the map's places it is on
     pub map_cursor: usize,
     /// the place set as the GPS target on the map (SET AS TARGET)
@@ -1178,6 +1180,7 @@ impl Game {
             map_legend: false,
             garage_list: None,
             sell_pending: None,
+            fav_remove_pending: None,
             map_cursor: usize::MAX,
             gps_pick: None,
             mission_target: None,
@@ -3999,14 +4002,25 @@ impl Game {
                 // ADD RACE TO FAVORITES / REMOVE RACE FROM FAVORITES
                 if let Some(id) = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| d.id.clone()) {
                     let name = self.career.strings.get(&id).map(|v| v.to_uppercase()).unwrap_or_else(|| id.clone());
-                    if let Some(at) = self.race_favs.iter().position(|f| f.eq_ignore_ascii_case(&id)) {
-                        self.race_favs.remove(at);
-                        self.show_message(&format!("{} REMOVED FROM FAVORITES", name));
+                    if self.race_favs.iter().any(|f| f.eq_ignore_ascii_case(&id)) {
+                        // (REMOVE asks first - the select dispatcher F-33773: Dialog_Title_RemoveFav,
+                        // YES / NO; the YES callback F-22144 removes it)
+                        if self.flash_popup.is_some() {
+                            let def = crate::flash_ui::MessageBoxDef { title: "Dialog_Title_RemoveFav".into(), description: "Dialog_Description_RemoveFav".into(), options: vec![("remove_yes".into(), "Common_Yes".into()), ("remove_no".into(), "Common_No".into())] };
+                            self.message_box = Some((def, 0, MenuAction::None));
+                            self.fav_remove_pending = Some(id);
+                        } else {
+                            self.remove_favourite(&id);
+                        }
+                    } else if self.race_favs.len() >= 100 {
+                        // (a hundred places: F-94791 posts ACTION_RACE_FAVORITES_FULL)
+                        let full = self.career.strings.get("ACTION_RACE_FAVORITES_FULL").map(|v| v.to_uppercase()).unwrap_or_default();
+                        self.show_message(&full);
                     } else {
                         self.race_favs.push(id);
                         self.show_message(&format!("{} ADDED TO FAVORITES", name));
+                        self.dirty = true;
                     }
-                    self.dirty = true;
                 }
             }
             _ => {}
@@ -4185,6 +4199,10 @@ impl Game {
             }
             // (YES in the garage's REPAIR box: `game.repairCar()`, then on)
             self.mc4_repair_finish();
+            // (YES in REMOVE RACE FROM FAVORITES)
+            if let Some(id) = self.fav_remove_pending.take() {
+                self.remove_favourite(&id);
+            }
             // (YES in a vinyl editor box: LoadPresetVinyl / SavePresetVinyl - step 22)
             self.mc4_vinyl_finish();
             // (YES in the showroom's box: `garage.FinishShowroomPurchase`; with a trade-in
@@ -4203,6 +4221,7 @@ impl Game {
         if self.message_box.is_none() {
             self.sell_pending = None;
             self.buy_pending = None;
+            self.fav_remove_pending = None;
             self.mc4_misc_idle();
         }
         let (up, down, left, right, enter, back, tab_prev, tab_next) = if boxed { (false, false, false, false, false, false, false, false) } else { (up, down, left, right, enter, back, tab_prev, tab_next) };
@@ -10241,6 +10260,16 @@ impl Game {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Take a race off the favourites: the splash ACTION_REMOVE_RACE_FROM_FAVORITES (F-76280, arg 1)
+    fn remove_favourite(&mut self, id: &str) {
+        let name = self.career.strings.get(id).map(|v| v.to_uppercase()).unwrap_or_else(|| id.to_string());
+        if let Some(at) = self.race_favs.iter().position(|f| f.eq_ignore_ascii_case(id)) {
+            self.race_favs.remove(at);
+            self.show_message(&format!("{} REMOVED FROM FAVORITES", name));
+            self.dirty = true;
         }
     }
 
