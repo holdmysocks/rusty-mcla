@@ -67,6 +67,8 @@ impl Aa {
         })
     }
 }
+// (the graphics API: auto = Vulkan where the driver has it, else DX12; a port-only switch, read at start - issue #12)
+words!(Backend { Auto = "auto", Vulkan = "vulkan", Dx12 = "dx12" });
 // (texture filtering: the original's anisotropy (4 driving, 16 in the menus) or 16x everywhere)
 words!(TexFilter { Original = "original", X16 = "16x" });
 // (shadow map size: the original's, or 2x / 4x its side)
@@ -138,6 +140,8 @@ pub struct Display {
     pub dof: bool,
     pub motion_blur: bool,
     pub texture_filtering: TexFilter,
+    /// the graphics API (read at start)
+    pub backend: Backend,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -193,6 +197,7 @@ impl Default for Settings {
                 dof: true,
                 motion_blur: true,
                 texture_filtering: TexFilter::Original,
+                backend: Backend::Auto,
             },
             game: GameSettings { intro: Intro::Normal, shadow_resolution: ShadowRes::Original, draw_distance: Scale::Original, detail_level: Scale::Original },
             paths: Paths { data_dir: String::new(), screenshots: String::new() },
@@ -275,6 +280,7 @@ impl Settings {
         s.display.monitor = r.uint(dt, "display.monitor", "monitor", d.display.monitor, |n| n < 16, "0..15");
         s.display.fps_monitor = r.word(dt, "display.fps_monitor", "fps_monitor", d.display.fps_monitor, FpsMonitor::parse, FpsMonitor::WORDS);
         s.display.texture_filtering = r.word(dt, "display.texture_filtering", "texture_filtering", d.display.texture_filtering, TexFilter::parse, TexFilter::WORDS);
+        s.display.backend = r.word(dt, "display.backend", "backend", d.display.backend, Backend::parse, Backend::WORDS);
         s.display.bloom = r.boolean(dt, "display.bloom", "bloom", d.display.bloom);
         s.display.dof = r.boolean(dt, "display.dof", "dof", d.display.dof);
         s.display.motion_blur = r.boolean(dt, "display.motion_blur", "motion_blur", d.display.motion_blur);
@@ -322,6 +328,7 @@ impl Settings {
         put(&mut t, "display", "monitor", Value::Integer(d.monitor as i64));
         put(&mut t, "display", "fps_monitor", d.fps_monitor.word().into());
         put(&mut t, "display", "texture_filtering", d.texture_filtering.word().into());
+        put(&mut t, "display", "backend", d.backend.word().into());
         put(&mut t, "display", "bloom", d.bloom.into());
         put(&mut t, "display", "dof", d.dof.into());
         put(&mut t, "display", "motion_blur", d.motion_blur.into());
@@ -349,8 +356,8 @@ impl Settings {
     pub fn summary(&self) -> String {
         let (d, g) = (&self.display, &self.game);
         format!(
-            "window_mode={} resolution={} vsync={} fps_cap={} intro={} (aspect={} upscaler={} render_scale={} aa={} monitor={})",
-            d.window_mode.word(), d.resolution.text(), d.vsync, d.fps_cap, g.intro.word(), d.aspect.word(), d.upscaler.word(), d.render_scale, d.aa.word(), d.monitor
+            "window_mode={} resolution={} vsync={} fps_cap={} intro={} (aspect={} upscaler={} render_scale={} aa={} monitor={} backend={})",
+            d.window_mode.word(), d.resolution.text(), d.vsync, d.fps_cap, g.intro.word(), d.aspect.word(), d.upscaler.word(), d.render_scale, d.aa.word(), d.monitor, d.backend.word()
         )
     }
 }

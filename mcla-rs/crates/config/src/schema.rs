@@ -35,6 +35,7 @@ static KEYS: &[KeyInfo] = &[
     k("display.dof", "bool", "true", "true | false (depth of field; true = the original's)", true),
     k("display.motion_blur", "bool", "true", "true | false (true = the original's motion blur)", true),
     k("display.texture_filtering", "enum", "\"original\"", "original | 16x (original = anisotropy 4 while driving, 16 in the menus; 16x = 16 everywhere)", true),
+    k("display.backend", "enum", "\"auto\"", "auto | vulkan | dx12 (the graphics API, read at start; auto = Vulkan where the driver has it, else DX12)", true),
     k("game.intro", "enum", "\"normal\"", "normal | fast | skip", true),
     k("game.shadow_resolution", "enum", "\"original\"", "original | 2x | 4x (the shadow map's side)", true),
     k("game.draw_distance", "enum", "\"original\"", "original | 1.5x | 2x | 3x", true),

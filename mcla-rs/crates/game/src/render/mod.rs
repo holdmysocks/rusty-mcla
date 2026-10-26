@@ -822,11 +822,16 @@ impl Gpu {
     pub async fn base(window: Arc<winit::window::Window>) -> Result<GpuBase> {
         // (the game's own sky / road / sea programs: translated from the disc at install time, read once here - xs.rs)
         xs::load(&crate::hooks::get().map(|r| r.data.path.clone()).unwrap_or_else(|| std::path::PathBuf::from(".")));
-        // Vulkan when the driver has it, else DX12 (WGPU_BACKEND=dx12 etc.: a test hook to force another backend).
+        // Vulkan when the driver has it, else DX12; settings.toml display.backend = "vulkan" / "dx12" takes that one (issue
+        // #12: to compare the two on a card where the game is slow); WGPU_BACKEND=dx12 etc.: a test hook over both.
         // On DX12 the instance is made again with InstanceFlags::DEBUG, which is what makes wgpu compile with FXC's
         // optimiser off (/Od): that optimiser recurses without end on city.wgsl's fs_main and overflows any stack
         // (docs/LIGHTING.md, 2026-10-24). The driver still optimises the program; Vulkan is untouched.
-        let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY);
+        let backends = wgpu::Backends::from_env().unwrap_or(match crate::hooks::display().backend {
+            mcla_config::Backend::Auto => wgpu::Backends::PRIMARY,
+            mcla_config::Backend::Vulkan => wgpu::Backends::VULKAN,
+            mcla_config::Backend::Dx12 => wgpu::Backends::DX12,
+        });
         let mut dx12_od = false;
         let (surface, adapter) = loop {
             let mut flags = wgpu::InstanceFlags::from_build_config().with_env();
