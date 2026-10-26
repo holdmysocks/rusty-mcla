@@ -5624,6 +5624,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.police.enabled {
                     self.police.update_units(&gpu, &mut self.vehicles);
                 }
+                self.police.progress = rewards::progress(self.game.rep).1;
                 let ev = self.police.update(&gpu, &world, &mut self.vehicles, self.props.knocked, sim_dt);
                 // (step 19d: the payback's chase - the pursuers are the client's friends, their
                 // two results the leg's own: no radio, no fine, no arrest form - `mc4`)

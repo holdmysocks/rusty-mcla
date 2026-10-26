@@ -18,14 +18,32 @@ const MPH: f32 = 2.236_94;
 #[derive(Default)]
 pub struct Tuning {
     v: HashMap<String, f32>,
+    /// the `content="int_array"` members (`iLawFines`), in file order
+    arrays: HashMap<String, Vec<i32>>,
 }
 
 impl Tuning {
     pub fn load(path: &Path) -> Tuning {
         let mut v = HashMap::new();
+        let mut arrays = HashMap::new();
         if let Ok(t) = std::fs::read_to_string(path) {
+            let mut open: Option<(String, Vec<i32>)> = None;
             for line in t.lines() {
                 let l = line.trim();
+                if let Some((name, list)) = open.as_mut() {
+                    if l.starts_with("</") {
+                        arrays.insert(std::mem::take(name), std::mem::take(list));
+                        open = None;
+                    } else if let Ok(n) = l.parse::<i32>() {
+                        list.push(n);
+                    }
+                    continue;
+                }
+                if l.starts_with('<') && l.ends_with("content=\"int_array\">") {
+                    let name = l[1..].split_whitespace().next().unwrap_or("").to_string();
+                    open = Some((name, Vec::new()));
+                    continue;
+                }
                 let Some(rest) = l.strip_prefix('<') else { continue };
                 let Some(sp) = rest.find(" value=\"") else { continue };
                 let name = &rest[..sp];
@@ -36,7 +54,12 @@ impl Tuning {
                 }
             }
         }
-        Tuning { v }
+        Tuning { v, arrays }
+    }
+
+    /// One entry of an int array member; the members the file lists fewer values for read 0.
+    pub fn array_at(&self, key: &str, i: usize) -> i32 {
+        self.arrays.get(key).and_then(|a| a.get(i)).copied().unwrap_or(0)
     }
 
     pub fn get(&self, key: &str, default: f32) -> f32 {
@@ -132,6 +155,22 @@ pub struct Police {
     busted_timer: f32,
     pullover_time: f32,
     speed_level: u8,
+    /// the highest speed band of the offences so far (1..3; 0 = none): the fine counts that one
+    speed_top: u8,
+    /// the seconds counters of the per-second points (F-52240: they pay whole seconds): 0 speed,
+    /// 1 wrong way, 2 burn-out, 3 two-wheel driving, 4 off-road
+    sec: [f32; 5],
+    /// the player is off the roads, since the start points were paid
+    off_active: bool,
+    /// two-wheel driving has been going on since its start points were paid
+    two_active: bool,
+    /// the jump in the air has been paid (the original's byte +140)
+    jump_paid: bool,
+    /// the pull-over was run from (the fine's `iPullOverFleeFine`)
+    fled: bool,
+    /// the share of the career (the Progression system's fraction, 0..1) that cuts the fine;
+    /// set by the game each frame
+    pub progress: f32,
     wrong_way: f32,
     wrong_active: bool,
     burnout: f32,
@@ -167,6 +206,9 @@ const LAW_PROP: u32 = 8;
 const LAW_VEHICLE: u32 = 16;
 const LAW_POLICE_VEHICLE: u32 = 32;
 const LAW_RED_LIGHT: u32 = 64;
+const LAW_ROOF_JUMP: u32 = 128;
+const LAW_TWO_WHEEL: u32 = 256;
+const LAW_OFF_ROAD: u32 = 512;
 const MAX_GLOWS: usize = 16;
 
 impl Police {
@@ -186,6 +228,13 @@ impl Police {
             busted_timer: 0.0,
             pullover_time: 0.0,
             speed_level: 0,
+            speed_top: 0,
+            sec: [0.0; 5],
+            off_active: false,
+            two_active: false,
+            jump_paid: false,
+            fled: false,
+            progress: 1.0,
             wrong_way: 0.0,
             wrong_active: false,
             burnout: 0.0,
@@ -227,7 +276,7 @@ impl Police {
     }
 
     /// PoliceManager_CreatePolice for the three units (only while the police are unlocked -
-    /// sub_826BDB78): made at their home, sent underground at once. A unit of the same id is
+    /// F-17632): made at their home, sent underground at once. A unit of the same id is
     /// made again.
     pub fn create_units(&mut self, unlocked: bool) {
         if !unlocked {
@@ -378,7 +427,7 @@ impl Police {
 
     /// Step 19d: PoliceManager_StartPursuit(player, 3, 0, 0, 0) for the payback's chasers:
     /// the pursuit tactic on the player with the cars made for it. The law-breaking score
-    /// goes to its maximum (sub_82704228 0x827046C4: at least the table's first entry).
+    /// goes to its maximum (F-33550 A-46466: at least the table's first entry).
     pub fn start_goons(&mut self, vehicles: &mut Vehicles) {
         // (approx.: the cruisers on the road are taken off for the chase - whether the
         // original's tactic can pick one of them beside the three was not read)
@@ -521,6 +570,9 @@ impl Police {
         let mph = speed * MPH;
         let slip = p.state.wheels.iter().map(|w| w.slip).fold(0.0, f32::max);
         let damage = p.state.damage;
+        let p_air = p.state.airborne_time;
+        // (F-81388: the gyro's two-wheel state, +18, is not 0)
+        let p_two = p.state.veh.as_ref().map_or(false, |v| v.two != 0);
         let tun = std::mem::take(&mut self.tun);
         let t = |k: &str, d: f32| tun.get(k, d);
 
@@ -553,12 +605,15 @@ impl Police {
         let mut breaking = false;
         let mut add = 0.0f32;
         // speeding: three bands above the limit
-        let limit = t("fSpeedLimitLow", 50.0);
-        let lvl: u8 = if mph > limit + t("fSpeedLimitHiOffset", 45.0) {
+        // (F-36879: the road's limit in mph, `fSpeedLimitLow` where there is none; a band starts
+        // at the larger of limit + offset and limit x (100 + percent) / 100)
+        let limit = world.nav.as_ref().and_then(|n| n.speed_limit_at(ppos)).filter(|l| *l != 0.0).map_or(t("fSpeedLimitLow", 50.0), |l| l * MPH);
+        let band = |off: &str, pct: &str, d_off: f32, d_pct: f32| (limit + t(off, d_off)).max(limit * (t(pct, d_pct) + 100.0) * 0.01);
+        let lvl: u8 = if mph > band("fSpeedLimitHiOffset", "iSpeedLimitHiPrcnt", 45.0, 80.0) {
             3
-        } else if mph > limit + t("fSpeedLimitMidOffset", 30.0) {
+        } else if mph > band("fSpeedLimitMidOffset", "iSpeedLimitMidPrcnt", 30.0, 50.0) {
             2
-        } else if mph > limit + t("fSpeedLimitLowOffset", 15.0) {
+        } else if mph > band("fSpeedLimitLowOffset", "iSpeedLimitLowPrcnt", 15.0, 1.0) {
             1
         } else {
             0
@@ -566,6 +621,7 @@ impl Police {
         if watching && lvl > 0 {
             breaking = true;
             self.offences |= LAW_SPEED;
+            self.speed_top = self.speed_top.max(lvl);
             if lvl > self.speed_level {
                 add += match lvl {
                     3 => t("iHighSpeedStartPoints", 600.0),
@@ -573,7 +629,7 @@ impl Police {
                     _ => t("iLowSpeedStartPoints", 130.0),
                 };
             }
-            add += dt * match lvl {
+            add += self.whole_seconds(0, dt) * match lvl {
                 3 => t("iHighSpeedPerSecPoints", 10.0),
                 2 => t("iMidSpeedPerSecPoints", 10.0),
                 _ => t("iLowSpeedPerSecPoints", 38.0),
@@ -613,9 +669,11 @@ impl Police {
             self.offences |= LAW_WRONG_WAY;
             if !self.wrong_active {
                 self.wrong_active = true;
+                self.sec[1] = 0.0;
                 add += t("iWrongWayStartPoints", 130.0);
+            } else {
+                add += self.whole_seconds(1, dt) * t("iWrongWayPerSecPoints", 25.0);
             }
-            add += dt * t("iWrongWayPerSecPoints", 25.0);
         }
         // burn-outs
         if slip > 1.6 && speed < 9.0 {
@@ -629,9 +687,52 @@ impl Police {
             self.offences |= LAW_BURNOUT;
             if !self.burnout_active {
                 self.burnout_active = true;
+                self.sec[2] = 0.0;
                 add += t("iBurnOutStartPoints", 130.0);
+            } else {
+                add += self.whole_seconds(2, dt) * t("iBurnOutPerSecPoints", 25.0);
             }
-            add += dt * t("iBurnOutPerSecPoints", 25.0);
+        }
+        // off the roads (F-90092: no polygon of the mesh with the ai_road material under the car)
+        let off_road = crate::offroad::mesh().map_or(false, |m| !m.on_road(ppos));
+        if watching && off_road {
+            breaking = true;
+            self.offences |= LAW_OFF_ROAD;
+            if !self.off_active {
+                self.off_active = true;
+                self.sec[4] = 0.0;
+                add += t("iOffRoadStartPoints", 50.0);
+            } else {
+                add += self.whole_seconds(4, dt) * t("iOffRoadPerSecPoints", 50.0);
+            }
+        } else if !off_road {
+            self.off_active = false;
+        }
+        // driving on two wheels: start points, then per second
+        if watching && p_two {
+            breaking = true;
+            self.offences |= LAW_TWO_WHEEL;
+            if !self.two_active {
+                self.two_active = true;
+                self.sec[3] = 0.0;
+                add += t("iTwoWheelStartPoints", 50.0);
+            } else {
+                add += self.whole_seconds(3, dt) * t("iTwoWheelPerSecPoints", 50.0);
+            }
+        } else if !p_two {
+            self.two_active = false;
+        }
+        // a jump: in the air for longer than fAirJumpThresholdTime (F-29122, the car sim's air
+        // time), paid once per jump
+        if p_air > t("fAirJumpThresholdTime", 0.8) {
+            if watching && !self.jump_paid {
+                self.jump_paid = true;
+                breaking = true;
+                self.offences |= LAW_ROOF_JUMP;
+                add += t("iJumpOffRoofTopPoints", 500.0);
+            }
+        } else {
+            self.jump_paid = false;
         }
         // running a red light: approached on red, then drove into the box
         match vehicles.signals.ahead(ppos, pfwd, vehicles.clock) {
@@ -724,7 +825,8 @@ impl Police {
                     if self.score >= t("iPursuitLawBreakScore", 600.0) || (self.pullover_time > flee_delay && speed > arrest_speed * 2.0) || nearest > 120.0 {
                         self.heat = Heat::Pursuit;
                         self.last_known = ppos;
-                        self.fine = self.law_fines() + t("iPullOverFleeFine", 300.0);
+                        self.fled = true;
+                        self.fine = self.law_fines();
                         self.lost = 0.0;
                         self.dispatch = t("fDispatchRdoDelayTime", 3.0);
                         event = Some(Event::Pursuit);
@@ -732,7 +834,7 @@ impl Police {
                 }
             }
             Heat::Pursuit => {
-                self.fine = (self.fine + t("iPerSecPursuitFine", 10.0) * dt).min(t("iMaxFine", 5000.0));
+                self.fine = self.law_fines();
                 if seen {
                     self.lost = 0.0;
                     self.last_known = ppos;
@@ -867,8 +969,55 @@ impl Police {
         event
     }
 
+    /// The fine (F-83946, the routine that fills the arrest form): the highest speed band's
+    /// `iLawFines` entry, plus the entry of every other offence (bit n of the original's word
+    /// = entry n; a hit on a cruiser sets 0x20 and 0x40, the second one is taken back off),
+    /// plus for a pursuit `iPerSecPursuitFine` x its length (rounded half away from zero) and
+    /// `iPullOverFleeFine` after running from a pull-over; cut to 1/4, 1/3, 1/2 below 25 %,
+    /// 50 %, 75 % of the career, at least 100, at most `iMaxFine`.
+    /// The whole seconds that counter `i` has run through (the original subtracts 1 s while the
+    /// counter stands above 1 s).
+    fn whole_seconds(&mut self, i: usize, dt: f32) -> f32 {
+        self.sec[i] += dt;
+        let mut n = 0.0;
+        while self.sec[i] > 1.0 {
+            self.sec[i] -= 1.0;
+            n += 1.0;
+        }
+        n
+    }
+
     fn law_fines(&self) -> f32 {
-        (self.offences.count_ones().max(1) as f32) * 100.0
+        let t = |i: usize| self.tun.array_at("iLawFines", i);
+        let mut f = 0i32;
+        if self.speed_top > 0 {
+            f += t(self.speed_top as usize - 1);
+        }
+        for (flag, entry) in [(LAW_PROP, 4), (LAW_VEHICLE, 7), (LAW_POLICE_VEHICLE, 5) /* (0x20 + 0x40 - entry 6) */, (LAW_RED_LIGHT, 9), (LAW_BURNOUT, 11), (LAW_WRONG_WAY, 13), (LAW_ROOF_JUMP, 12), (LAW_TWO_WHEEL, 10), (LAW_OFF_ROAD, 3)] {
+            if self.offences & flag != 0 {
+                f += t(entry);
+            }
+        }
+        if matches!(self.heat, Heat::Pursuit | Heat::Search | Heat::Busted) {
+            let x = self.tun.get("iPerSecPursuitFine", 10.0) * self.chase_time;
+            f += (if x < 0.0 { x - 0.5 } else { x + 0.5 }) as i32;
+            if self.fled {
+                f += self.tun.get("iPullOverFleeFine", 300.0) as i32;
+            }
+        }
+        f = if self.progress < 0.25 {
+            f / 4
+        } else if self.progress < 0.5 {
+            f / 3
+        } else if self.progress < 0.75 {
+            f / 2
+        } else {
+            f
+        };
+        if f < 100 {
+            return 100.0;
+        }
+        f.min(self.tun.get("iMaxFine", 5000.0) as i32) as f32
     }
 
     fn clear(&mut self) {
@@ -877,6 +1026,8 @@ impl Police {
         self.fine = 0.0;
         self.offences = 0;
         self.speed_level = 0;
+        self.speed_top = 0;
+        self.fled = false;
         self.arrest = 0.0;
         self.lost = 0.0;
         self.search = 0.0;
@@ -936,5 +1087,57 @@ impl Police {
         pass.set_pipeline(&gpu.pipeline_glow);
         pass.set_vertex_buffer(0, buf.slice(..));
         pass.draw(0..4, 0..self.glow_count);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cop(arrays: &[(&str, Vec<i32>)]) -> Police {
+        let mut p = Police::new();
+        for (k, v) in arrays {
+            p.tun.arrays.insert(k.to_string(), v.clone());
+        }
+        p.tun.v.insert("iMaxFine".into(), 5000.0);
+        p.tun.v.insert("iPerSecPursuitFine".into(), 10.0);
+        p.tun.v.insert("iPullOverFleeFine".into(), 300.0);
+        p
+    }
+
+    /// F-83946: the sum over the offences, the pursuit's seconds, the flee fine, the career cut
+    /// and the clamp, as the routine reads them.
+    #[test]
+    fn fine_of_the_original() {
+        let mut p = cop(&[("iLawFines", vec![100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230])]);
+        // one speed band (the highest, entry 2), nothing else: 120
+        p.offences = LAW_SPEED;
+        p.speed_top = 3;
+        assert_eq!(p.law_fines(), 120.0);
+        // plus a cruiser hit (entry 5, the 0x40 entry cancels) and a prop (entry 4)
+        p.offences |= LAW_POLICE_VEHICLE | LAW_PROP;
+        assert_eq!(p.law_fines(), 120.0 + 150.0 + 140.0);
+        // a 20.04 s pursuit adds round(200.4) = 200, running from the pull-over 300
+        p.heat = Heat::Pursuit;
+        p.chase_time = 20.04;
+        p.fled = true;
+        assert_eq!(p.law_fines(), 410.0 + 200.0 + 300.0);
+        // the career cuts it
+        p.progress = 0.6;
+        assert_eq!(p.law_fines(), 455.0);
+        p.progress = 0.3;
+        assert_eq!(p.law_fines(), 303.0);
+        p.progress = 0.1;
+        assert_eq!(p.law_fines(), 227.0);
+        // never under 100, never over iMaxFine
+        let mut q = cop(&[("iLawFines", vec![100; 14])]);
+        q.progress = 0.0;
+        q.offences = LAW_SPEED;
+        q.speed_top = 1;
+        assert_eq!(q.law_fines(), 100.0);
+        q.progress = 1.0;
+        q.heat = Heat::Pursuit;
+        q.chase_time = 1000.0;
+        assert_eq!(q.law_fines(), 5000.0);
     }
 }

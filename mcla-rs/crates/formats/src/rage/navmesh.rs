@@ -849,6 +849,12 @@ impl NavMesh {
         !self.polys_containing(p, -10.0, 100.0, 1).is_empty()
     }
 
+    /// The police's "on a road" test (F-90092 with the mcRoadFilter F-94062: the same query as
+    /// `on_mesh` over the polygons whose material word has bit 2, ai_road).
+    pub fn on_road(&self, p: Vec3) -> bool {
+        self.polys_containing(p, -10.0, 100.0, usize::MAX).iter().any(|&i| self.polys[i as usize].flags & 2 != 0)
+    }
+
     /// Material flags of the polygon `p` lies in (nearest within 10 m, only when `p` is
     /// inside it within +-1 m, else 0), sub_826FD730.
     pub fn point_flags(&self, p: Vec3) -> u32 {
