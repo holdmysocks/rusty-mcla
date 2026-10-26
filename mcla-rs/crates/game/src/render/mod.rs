@@ -871,6 +871,8 @@ impl Gpu {
         } else {
             ms::set_scene_ds_format(wgpu::TextureFormat::Depth24PlusStencil8);
         }
+        // (the timestamps of the `gputimes:` log line, where the adapter has them - gpuprof.rs)
+        required |= crate::gpuprof::features(feats);
         let limits = adapter.limits();
         let (device, queue) = adapter
             .request_device(

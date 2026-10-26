@@ -53,6 +53,7 @@ mod flash_ui;
 mod selfmovie;
 mod flashpic;
 mod minimap_gpu;
+mod gpuprof;
 mod passprof;
 mod uipass;
 mod aamode;
@@ -8210,6 +8211,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let mut early_cbs: Vec<wgpu::CommandBuffer> = Vec::new();
         let mut stat_shadow = 0usize;
         passprof::mark("shadow+cascades+collector+reflection");
+        gpuprof::begin();
+        gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "pre");
         // --- shadow pass and the four shadow cascades --------------------------------
         // (recorded side by side, each into a command buffer of its own, submitted in this order after what is
         // recorded so far and before the rest: the same passes, in the same order, as one encoder gave -
@@ -8218,6 +8221,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the plants' shadow impostors: the silhouette mask that is due - props/impostor.rs)
             self.props.update_shadow_impostors(&gpu, &mut enc, light_vp, self.time_of_day);
         }
+        gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "shadows");
         early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
         {
             let gpu = &gpu;
@@ -8554,6 +8558,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         passprof::mark("impostors+prepare");
+        gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "impostors+prepare");
         // (the fast shadow collector and the wet road's planar reflection: recorded with the shadows, above)
         // (the plants' impostor pictures that are due this frame - props/impostor.rs)
         self.props.update_impostors(&gpu, &mut enc, &globals);
@@ -8734,6 +8739,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // stand-in function instead.)
         gpu.sky_hat.mini_pass(&mut enc, &gpu.minisky_view, sky_hat_on && std::env::var("MCLA_MINISKY_OLD").is_err());
         passprof::mark("environment");
+        gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "environment");
         // ---- the environment map: one face of the cube a frame - the sky and the city's
         // opaque geometry around the player's car, for the car shaders to mirror ----
         // The city of the map is drawn the original's way (2026-10-14): into two paraboloid
@@ -9099,8 +9105,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         };
         let mut city_a_out: Option<(wgpu::CommandBuffer, usize)> = None;
+        gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "city A");
         if split_city {
             early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
+            gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "city B");
         }
         mcla_flash::raster::pool().in_place_scope(|scope| {
             if split_city {
@@ -9127,17 +9135,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if !map_baked {
                 // (the original's ground sheet: after the opaque city and the sky, before the props)
                 ground_sheet::draw(&mut pass, &gpu, vp);
+                gpuprof::stamp_pass(&gpu.device, &mut pass, "B props");
                 // instanced foliage
                 pass.set_pipeline(&gpu.pipeline_inst);
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                 let d0 = draws;
                 self.props.draw_scene(&mut pass, &gpu, self.cam.pos, &frustum, Some(&occluded), &mut draws);
                 stat_props = draws - d0;
+                gpuprof::stamp_pass(&gpu.device, &mut pass, "B cars");
                 pass.set_pipeline(&gpu.pipeline_opaque);
                 let d1 = draws;
                 self.vehicles.draw(&mut pass, &gpu, false, &mut draws, Some((cam_pos, 450.0)), Some(&frustum));
                 pass.set_stencil_reference(0);
                 stat_cars = draws - d1;
+                gpuprof::stamp_pass(&gpu.device, &mut pass, "B people");
                 pass.set_pipeline(&gpu.pipeline_opaque);
                 self.peds.draw(&mut pass, &gpu, false, &mut draws);
                 self.cine.draw(&mut pass, &gpu, false, &mut draws);
@@ -9146,20 +9157,24 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 pass.set_pipeline(&gpu.pipeline_blend);
                 // (shop panes write depth as the original's pane draws do; MCLA_DEBUG_VIEW=330: as before, no depth writes)
                 let pane_zw = std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "330");
+                gpuprof::stamp_pass(&gpu.device, &mut pass, "B blended sectors");
                 draw_sectors(&mut pass, &sector_view, loaded.values().chain(sets.values()), 1, pane_zw, &mut draws);
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
             }
             if !map3d {
                 // (lighting, 2026-10-13: the glass props' panes - door leaves, glass walls: VSPropGlass / PSPropGlass,
                 // drawn after the shop panes, blended, both sides, no depth writes; MCLA_DEBUG_VIEW=580: not drawn)
+                gpuprof::stamp_pass(&gpu.device, &mut pass, "B glass props");
                 if std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "580") {
                     pass.set_pipeline(&gpu.pipeline_inst_blend);
                     pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                     self.props.draw_glass(&mut pass, &gpu, self.cam.pos, &frustum, Some(&occluded), &mut draws);
                     pass.set_pipeline(&gpu.pipeline_blend);
                 }
+                gpuprof::stamp_pass(&gpu.device, &mut pass, "B car glass");
                 self.vehicles.draw(&mut pass, &gpu, true, &mut draws, Some((cam_pos, 200.0)), Some(&frustum));
                 pass.set_stencil_reference(0);
+                gpuprof::stamp_pass(&gpu.device, &mut pass, "B glows");
                 if self.time_of_day > 18.0 || self.time_of_day < 6.0 {
                     self.props.draw_glows(&mut pass, &gpu);
                 }
@@ -9179,6 +9194,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             draws += n;
         }
         passprof::mark("mirror+particles+post+ui");
+        gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "mirror+particles");
         // The original's hidden rear-view mirror (rearview.rs; OPTIONS > DISPLAY > REAR-VIEW MIRROR, DECISIONS.md D20;
         // MCLA_REARVIEW=1 turns it on for a run): after the main view's draws, before its particles and post chain,
         // while the driving HUD is up. Nothing of it runs while it is off.
@@ -9296,7 +9312,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             tune.bloom = crate::hooks::bloom_on();
             tune.dof_on = crate::hooks::dof_on();
             tune.motion_blur = crate::hooks::motion_blur_on();
+            gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "post");
             gpu.post.run(&gpu.device, &gpu.queue, &mut enc, &view, &gpu.depth, &gpu.stencil_copy, &tune);
+            gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "ui");
             gpu.depth_to_ui(&mut enc);
         }
         {
@@ -9365,8 +9383,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         passprof::end();
+        gpuprof::end(&gpu.device, &gpu.queue, &mut enc);
         let t_enc = now.elapsed().as_secs_f32() * 1000.0;
         gpu.queue.submit(early_cbs.into_iter().chain([enc.finish()]));
+        gpuprof::after_submit();
         window.pre_present_notify();
         frame.present();
         let t_end = now.elapsed().as_secs_f32() * 1000.0;
