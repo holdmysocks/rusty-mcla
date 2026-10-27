@@ -1,30 +1,30 @@
 //! The rage `aiv` race-line follower of the computer racers, ported 1:1 from the executable
-//! (decode: work/racerai/raceline.md; aiv code 0x8254A000-0x82550000, optimiser 0x8216C900-0x821712F0).
+//! (decode: work/racerai/raceline.md; aiv code A-53277..A-78268, optimiser F-88594..F-78843).
 //!
 //! The object holds a corridor of nav-mesh portals (ring of 128), the brain's goals (ring of 8),
 //! the race line's control points (ring of 64, Catmull-Rom knots), up to 32 obstacles and the
-//! aivRaceLineTuning. Each frame [`Aiv::update`] takes the car state (sub_8254D570, which also
-//! builds one leg of the line, sub_8254D160) and runs the optimiser (sub_82171078, the job
-//! "UpdateRaceLine", here synchronously); [`Aiv::output`] (sub_8254DCD0) gives the chassis pedals.
+//! aivRaceLineTuning. Each frame [`Aiv::update`] takes the car state (F-12813, which also
+//! builds one leg of the line, F-85983) and runs the optimiser (F-62607, the job
+//! "UpdateRaceLine", here synchronously); [`Aiv::output`] (F-65301) gives the chassis pedals.
 //!
 //! Ring indices are absolute, as in the original: element `i` sits in slot
 //! `(i - base + start + 1) mod N`. The line state that the optimiser saves and restores
 //! (the 5040-byte block aiv+25440..+30480) is [`Line`].
 //!
 //! Runtime-initialised vector constants (zero in the image), decided from their initialisers
-//! (static constructors 0x827A9108..0x827A9458) and their use:
+//! (static constructors F-89044..F-50173) and their use:
 //! 0x82860930 = (0,0,0,1) (copy of 0x827D8440), 0x82860950 = xyz lane mask, 0x82860910 /
 //! 0x82860A00 = x,z(,w) lane mask, 0x828609E0 = +inf splat (rsqrte guard). 0x828608E0 and
 //! 0x828608C0 have no initialiser in the static-constructor block: read as the zero vector
 //! (they are the fallback of the normalisations and the floor of the half-space clamps
-//! vmaxfp(dot, c) in sub_8216D5C0, where only 0 makes sense).
+//! vmaxfp(dot, c) in F-15125, where only 0 makes sense).
 #![allow(dead_code)] // (wired into the racers by brain.rs)
 use glam::Vec3;
 use mcla_formats::rage::aitune::AiTune;
 use std::sync::Arc;
 
-/// aivRaceLineTuning (registration sub_8254A5F0, member table 0x82810A38); `Default` = the code
-/// defaults of sub_825498C8. No tune file sets them in the game.
+/// aivRaceLineTuning (registration F-88098, member table 0x82810A38); `Default` = the code
+/// defaults of F-46101. No tune file sets them in the game.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AivTuning {
     pub max_steps_ahead: i32,
@@ -93,9 +93,9 @@ impl Default for AivTuning {
     }
 }
 
-/// One nav-mesh portal as the brain passes it to sub_8254ADF0: the shared edge A-B of two
+/// One nav-mesh portal as the brain passes it to F-95594: the shared edge A-B of two
 /// consecutive path polygons, the polygon normal, the polygon flag bit 0x2 ("off-road") and the
-/// two extensions (0 for polygon edges; the path element's +28/+32 in sub_822BC508).
+/// two extensions (0 for polygon edges; the path element's +28/+32 in F-78429).
 #[derive(Debug, Clone, Copy)]
 pub struct Portal {
     pub a: Vec3,
@@ -105,8 +105,8 @@ pub struct Portal {
     pub ext: (f32, f32),
 }
 
-/// One obstacle as the brain passes it to sub_8254B030 (the selection, sub_822BBB60, is the
-/// brain's). `extent` is what the brain passes; sub_8254B030 stores half of it (x along `dir`'s
+/// One obstacle as the brain passes it to F-70624 (the selection, F-53450, is the
+/// brain's). `extent` is what the brain passes; F-70624 stores half of it (x along `dir`'s
 /// side, z along `dir`). `flags`: [`OBST_FIRST_LEG`] (0x80: only tested against the car's leg),
 /// [`OBST_TYPE0`] (0x40, not read by the follower).
 #[derive(Debug, Clone, Copy)]
@@ -120,7 +120,7 @@ pub struct Obstacle {
 pub const OBST_FIRST_LEG: u8 = 0x80;
 pub const OBST_TYPE0: u8 = 0x40;
 
-/// The car state of sub_8254D570 plus the values the brain sets once (sub_822BB47C).
+/// The car state of F-12813 plus the values the brain sets once (A-59878).
 #[derive(Debug, Clone, Copy)]
 pub struct AivCar {
     pub pos: Vec3,
@@ -139,13 +139,13 @@ pub struct AivCar {
     pub sling_t: f32,
     /// brain+292, -1 = none
     pub speed_cap: f32,
-    /// 2 x the bound's half extents (sub_8255B9A8(car+8)+16 x 2)
+    /// 2 x the bound's half extents (F-98453(car+8)+16 x 2)
     pub size: Vec3,
     /// g = -9.8 x car vfunc 44 (negative)
     pub gravity: f32,
 }
 
-/// The chassis pedals of sub_8254A280 as written (before mcOpponentInput's smoothing).
+/// The chassis pedals of F-28541 as written (before mcOpponentInput's smoothing).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AivOut {
     pub throttle: f32,
@@ -207,7 +207,7 @@ impl<T: Copy, const N: usize> Ring<T, N> {
 }
 
 /// A portal as stored (176 bytes in the original): raw ends, shrunk ends, normal and the planes
-/// of the cell to the next portal (sub_8254B8B8), plus the flag byte (0x80 = off-road).
+/// of the cell to the next portal (F-68053), plus the flag byte (0x80 = off-road).
 #[derive(Clone, Copy, Default)]
 struct Cell {
     a: Vec3,
@@ -296,7 +296,7 @@ struct Line {
     t: f32,
 }
 
-/// The job's scratch (sub_8254DDD0): backup states, dirty bits, spline coefficients.
+/// The job's scratch (F-61160): backup states, dirty bits, spline coefficients.
 struct Scratch {
     backup: [Line; 4],
     dirty: [u32; 2],
@@ -304,7 +304,7 @@ struct Scratch {
     legs: i32,
 }
 
-/// The vehicle tables (aivVehicleTuning) with the derived scales of sub_82549770.
+/// The vehicle tables (aivVehicleTuning) with the derived scales of F-49493.
 struct Veh {
     t: Arc<AiTune>,
     spd_k: f32,
@@ -329,12 +329,12 @@ impl Veh {
         let (a, b) = (row[k], row[k + 1]);
         (b - a) * (x - i) + a
     }
-    /// sub_82549B78: max(0.1, MaxEngineAccelByGear [147 + 128 g + i]) = accel row g + 1.
+    /// F-45930: max(0.1, MaxEngineAccelByGear [147 + 128 g + i]) = accel row g + 1.
     fn accel(&self, g: i32, v: f32) -> f32 {
         let r = (g.max(0) as usize + 1).min(self.t.accel_rows.len().saturating_sub(1));
         Self::read(self.t.accel_rows.get(r).map_or(&[][..], |r| &r[..]), self.spd_k * v).max(0.1)
     }
-    /// sub_82549C20: max(0.1, MaxEngineDecelByGear [1043 + 128 g + i]) = decel row g + 1.
+    /// F-71244: max(0.1, MaxEngineDecelByGear [1043 + 128 g + i]) = decel row g + 1.
     fn decel(&self, g: i32, v: f32) -> f32 {
         let d = &self.t.decel;
         if d.is_empty() {
@@ -348,11 +348,11 @@ impl Veh {
     fn accel0(&self, v: f32) -> f32 {
         Self::read(&self.t.accel, self.spd_k * v).max(0.1)
     }
-    /// sub_82549CC8
+    /// F-67089
     fn steer_scalar(&self, v: f32) -> f32 {
         Self::read(&self.t.steer_scalar, v.abs() * self.spd_k)
     }
-    /// the curvature speed tables as sub_8216E408 reads them (max 0)
+    /// the curvature speed tables as F-27864 reads them (max 0)
     fn curve_speed(&self, k: f32) -> f32 {
         let (row, x) = if k < self.knee { (&self.t.speed_low_curv, self.low_k * k) } else { (&self.t.speed_high_curv, (k - self.knee) * self.high_k) };
         if row.len() < 2 {
@@ -369,7 +369,7 @@ impl Veh {
 // ---------------------------------------------------------------------------------------------
 // geometry helpers
 
-/// sub_82165300: normalise if |v|^2 > eps, else the fallback.
+/// F-41334: normalise if |v|^2 > eps, else the fallback.
 fn norm_or(v: Vec3, eps: f32, fb: Vec3) -> Vec3 {
     let l2 = v.length_squared();
     if l2 > eps { v * (1.0 / l2.sqrt()) } else { fb }
@@ -381,14 +381,14 @@ fn norm0(v: Vec3) -> Vec3 {
     if l2 > 0.0 { v * (1.0 / l2.sqrt()) } else { Vec3::ZERO }
 }
 
-/// sub_8254AD68: signed XZ angle between two unit vectors.
+/// F-52074: signed XZ angle between two unit vectors.
 fn ang_xz_unit(a: Vec3, b: Vec3) -> f32 {
     let dot = (a.x * b.x + b.z * a.z).clamp(-1.0, 1.0);
     let s = b.x * a.z - a.x * b.z;
     dot.acos() * if s >= 0.0 { 1.0 } else { -1.0 }
 }
 
-/// sub_8216C9C0: signed XZ angle from a to b (0 when either is degenerate).
+/// F-32060: signed XZ angle from a to b (0 when either is degenerate).
 pub fn ang_xz(a: Vec3, b: Vec3) -> f32 {
     let norm = ((b.x * b.x + b.z * b.z) * (a.x * a.x + a.z * a.z)).sqrt();
     if norm - 1e-12 >= 0.0 {
@@ -400,19 +400,19 @@ pub fn ang_xz(a: Vec3, b: Vec3) -> f32 {
     }
 }
 
-/// sub_8216C900: unsigned 3D angle.
+/// F-88594: unsigned 3D angle.
 fn ang3(a: Vec3, b: Vec3) -> f32 {
     let norm = (b.length_squared() * a.length_squared()).sqrt();
     if norm - 1e-12 >= 0.0 { (a.dot(b) / norm).clamp(-1.0, 1.0).acos() } else { 0.0 }
 }
 
-/// sub_8216C890: rotation about y.
+/// F-57591: rotation about y.
 fn rot_y(v: Vec3, a: f32) -> Vec3 {
     let (s, c) = a.sin_cos();
     Vec3::new(v.x * c + v.z * s, v.y, v.z * c - v.x * s)
 }
 
-/// sub_8216CA78: segment P0-P1 against portal Q0-Q1 in XZ -> (s along the segment, t along the portal).
+/// F-91226: segment P0-P1 against portal Q0-Q1 in XZ -> (s along the segment, t along the portal).
 fn seg_portal(p0: Vec3, p1: Vec3, q0: Vec3, q1: Vec3, one_sided: bool) -> Option<(f32, f32)> {
     let dqx = q1.x - q0.x;
     let dpz = p1.z - p0.z;
@@ -446,7 +446,7 @@ fn seg_portal(p0: Vec3, p1: Vec3, q0: Vec3, q1: Vec3, one_sided: bool) -> Option
     Some((s, t))
 }
 
-/// the plane-normal construction of sub_8254B8B8: v made perpendicular to e (when |e|^2 > 1e-4),
+/// the plane-normal construction of F-68053: v made perpendicular to e (when |e|^2 > 1e-4),
 /// normalised (fallback 0)
 fn plane_n(v: Vec3, e: Vec3) -> Vec3 {
     let l2 = e.length_squared();
@@ -454,7 +454,7 @@ fn plane_n(v: Vec3, e: Vec3) -> Vec3 {
     norm_or(v, 1e-12, Vec3::ZERO)
 }
 
-/// sub_82227C18
+/// F-17888
 fn sin_ramp(x: f32) -> f32 {
     if x <= 0.0 {
         0.0
@@ -517,7 +517,7 @@ impl Aiv {
         self.veh.t.max_speed
     }
 
-    /// sub_8254CE70 (with the vehicle tables of the car, aiv+0).
+    /// F-36694 (with the vehicle tables of the car, aiv+0).
     pub fn new(tune: Arc<AiTune>) -> Aiv {
         let empty_line = Line { pts: Ring::new(Vec3::ZERO), pp: Ring::new(0), s: [Sample::default(); NS], n: 0, f: 0, j: 0.0, t: 0.0 };
         let mut a = Aiv {
@@ -567,7 +567,7 @@ impl Aiv {
         self.veh = Veh::new(tune);
     }
 
-    /// sub_8254B768: drop corridor, goals and line.
+    /// F-71106: drop corridor, goals and line.
     pub fn reset(&mut self) {
         self.next_goal = 0;
         self.cached = 0;
@@ -611,11 +611,11 @@ impl Aiv {
     pub fn has_path(&self) -> bool {
         self.portals.base + self.portals.count != 0
     }
-    /// sub_8254CA78
+    /// F-65527
     pub fn line_used_up(&self) -> bool {
         self.progress >= self.ln.pts.end()
     }
-    /// sub_8254C888: the first control point ahead of the car
+    /// F-28749: the first control point ahead of the car
     pub fn next_point(&self) -> Vec3 {
         self.ln.pts.get(self.progress)
     }
@@ -639,6 +639,125 @@ impl Aiv {
         (f..n).map(|i| { let s = &self.ln.s[i]; (s.kappa, s.v_table, s.a_max, s.v_curve, s.allowed, s.v) }).collect()
     }
 
+    /// (diagnostics, work/ai-record: the replay of recorded states) Load the original's aiv object bytes
+    /// (+0 .. +31232, read from the running recomp, big endian) into this one: the portal / goal / obstacle /
+    /// point / sample rings, the car state, and the optimiser's cursor. Planes are recomputed.
+    pub fn import_original(&mut self, b: &[u8]) {
+        let f = |o: usize| f32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+        let i = |o: usize| i32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+        let v3 = |o: usize| Vec3::new(f(o), f(o + 4), f(o + 8));
+        let ring_hdr = |o: usize| (i(o + 4), i(o + 8), i(o + 16)); // start, count, base (tail +0, ? +12)
+        // portals: 128 x 176 at +16, header +22544, flags +22576
+        let (st, ct, bs) = ring_hdr(22544);
+        self.portals.start = st;
+        self.portals.count = ct;
+        self.portals.base = bs;
+        for slot in 0..128usize {
+            let o = 16 + 176 * slot;
+            self.portals.d[slot] = Cell {
+                a: v3(o), b: v3(o + 16), sa: v3(o + 32), sb: v3(o + 48), n: v3(o + 64),
+                offroad: b[22576 + slot] & 0x80 != 0,
+                ..Cell::default()
+            };
+        }
+        self.planes_upto = 0;
+        // goals: 8 x 32 at +22720, header +22976, words +23008
+        let (st, ct, bs) = ring_hdr(22976);
+        self.goals.start = st;
+        self.goals.count = ct;
+        self.goals.base = bs;
+        for slot in 0..8usize {
+            let o = 22720 + 32 * slot;
+            self.goals.d[slot] = Goal { p0: v3(o), w: f(o + 12), p1: v3(o + 16), speed: f(o + 28), word: i(23008 + 4 * slot) };
+        }
+        // obstacles: 32 x 64 at +23056, count +25104, flags +25120
+        self.n_obst = (i(25104).max(0) as usize).min(32);
+        for k in 0..32usize {
+            let o = 23056 + 64 * k;
+            self.obst[k] = Obstacle { pos: v3(o), vel: v3(o + 16), dir: v3(o + 32), extent: (f(o + 48), f(o + 52)), flags: b[25120 + k] };
+        }
+        // car state
+        self.size = v3(25168);
+        self.pos = v3(25184);
+        self.h = v3(25200);
+        self.f = v3(25216);
+        self.vel = v3(25232);
+        self.ang_vel = v3(25248);
+        self.goal_dir = v3(25264);
+        self.v_fwd = f(25280);
+        self.cap = f(25284);
+        self.dt = f(25288);
+        self.b1 = [f(25292), f(25296), f(25300)];
+        self.t1 = f(25304);
+        self.b2 = [f(25308), f(25312), f(25316)];
+        self.t2 = f(25320);
+        self.g = f(25324);
+        self.inv_g = f(25328);
+        self.right = v3(30816);
+        // points / point->portal / samples
+        let (st, ct, bs) = ring_hdr(26464);
+        self.ln.pts.start = st;
+        self.ln.pts.count = ct;
+        self.ln.pts.base = bs;
+        for slot in 0..64usize {
+            self.ln.pts.d[slot] = v3(25440 + 16 * slot);
+        }
+        let (st, ct, bs) = (i(26756), i(26760), i(26764)); // (the 4-word header: tail, start, count, base)
+        self.ln.pp.start = st;
+        self.ln.pp.count = ct;
+        self.ln.pp.base = bs;
+        for slot in 0..64usize {
+            self.ln.pp.d[slot] = i(26496 + 4 * slot);
+        }
+        for k in 0..NS {
+            let o = 26768 + 56 * k;
+            let w: Vec<f32> = (0..14).map(|q| f(o + 4 * q)).collect();
+            self.ln.s[k] = Sample { v: w[0], allowed: w[1], v_curve: w[2], v_table: w[3], kv: w[4], kappa: w[5], g_ty: w[6], g_ly: w[7], a_max: w[8], ds: w[9], ty: w[10], xy: w[11], w: w[12], coll: w[13] };
+        }
+        self.ln.n = i(30464);
+        self.ln.f = i(30468);
+        self.ln.j = f(30472);
+        self.ln.t = f(30476);
+        self.last_reached = v3(30480);
+        let (st, ct, bs) = (i(30756), i(30760), i(30764));
+        self.pg.start = st;
+        self.pg.count = ct;
+        self.pg.base = bs;
+        for slot in 0..64usize {
+            self.pg.d[slot] = i(30496 + 4 * slot);
+        }
+        self.j_prev = f(30768);
+        self.cursor = i(30772);
+        self.step = f(30776);
+        self.mode = i(30780);
+        self.progress = i(30784);
+        self.cached = i(30836);
+        self.next_goal = i(30840);
+    }
+
+    /// (diagnostics) the car as the aiv's own copy holds it after F-12813 - the input of that update.
+    pub fn car_as_held(&self) -> AivCar {
+        AivCar {
+            pos: self.pos, right: self.right, forward: self.f, vel: self.vel, ang_vel: self.ang_vel, nitro_tune: self.b1, nitro_t: self.t1,
+            sling_tune: self.b2, sling_t: self.t2, speed_cap: self.cap, size: self.size, gravity: self.g,
+        }
+    }
+
+    /// (diagnostics) the sample ring and line points as `samples_raw` / `points` give them, for comparing two states.
+    pub fn line_state(&self) -> (Vec<Vec3>, Vec<[f32; 14]>, i32, i32, f32, i32) {
+        let (f, n, j, _t, prog, s) = self.samples_raw();
+        let _ = (f, n);
+        (self.points().collect(), s, self.ln.f, self.ln.n, j, prog)
+    }
+
+    /// (diagnostics, work/ai-record) the sample ring as the original's bytes +26768.. hold it: first (+30468), end (+30464),
+    /// cost J (+30472), time T (+30476), progress (+30784) and each sample's 14 floats from the first to the end.
+    pub fn samples_raw(&self) -> (i32, i32, f32, f32, i32, Vec<[f32; 14]>) {
+        let (f, n) = (self.ln.f.max(0) as usize, (self.ln.n.max(0) as usize).min(NS));
+        let v = (f..n).map(|i| { let s = &self.ln.s[i]; [s.v, s.allowed, s.v_curve, s.v_table, s.kv, s.kappa, s.g_ty, s.g_ly, s.a_max, s.ds, s.ty, s.xy, s.w, s.coll] }).collect();
+        (self.ln.f, self.ln.n, self.ln.j, self.ln.t, self.progress, v)
+    }
+
     /// (diagnostics) the corridor's portals as held: the ends a / b and the shrunk ends sa / sb
     pub fn portal_ends(&self) -> impl Iterator<Item = (Vec3, Vec3, Vec3, Vec3)> + '_ {
         (self.portals.base..self.portals.end()).map(|i| {
@@ -647,11 +766,21 @@ impl Aiv {
         })
     }
 
+    /// (diagnostics) the goal ring as held: base, count, then per goal p0, w, p1, speed, word; and the exit direction
+    pub fn goals_dbg(&self) -> String {
+        let mut s = format!("{},{},{:.3},{:.3},{:.3}", self.goals.base, self.goals.count, self.goal_dir.x, self.goal_dir.y, self.goal_dir.z);
+        for g in self.goals.base..self.goals.end() {
+            let g = self.goals.get(g);
+            s.push_str(&format!(",{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{}", g.p0.x, g.p0.y, g.p0.z, g.w, g.p1.x, g.p1.y, g.p1.z, g.speed, 0.0, g.word));
+        }
+        s
+    }
+
     pub fn points(&self) -> impl Iterator<Item = Vec3> + '_ {
         (self.ln.pts.base..self.ln.pts.end()).map(|i| self.ln.pts.get(i))
     }
 
-    /// sub_8254C8C0: the corridor point ahead.
+    /// F-43876: the corridor point ahead.
     pub fn corridor_ahead(&self) -> Vec3 {
         let b = self.portals.base;
         if b + self.portals.count == 2 {
@@ -663,7 +792,7 @@ impl Aiv {
         }
     }
 
-    /// sub_8254C6E0: the car is off the planned line (clamped position more than 0.25 m away in
+    /// F-13872: the car is off the planned line (clamped position more than 0.25 m away in
     /// plan, more than 5 m below it, or the next point not reachable through the portals).
     /// Returns the test and the clamped position.
     pub fn off_line(&self) -> (bool, Vec3) {
@@ -684,7 +813,7 @@ impl Aiv {
 
     // ---- input from the brain ---------------------------------------------------------------
 
-    /// sub_8254ADF0: append a portal (shrunk by half the car width + BufferZone).
+    /// F-95594: append a portal (shrunk by half the car width + BufferZone).
     pub fn push_portal(&mut self, p: &Portal) {
         let (mut a, mut b) = (p.a, p.b);
         let mut c = Cell { n: p.normal, offroad: p.offroad, ..Cell::default() };
@@ -713,7 +842,7 @@ impl Aiv {
         self.portals.push(c);
     }
 
-    /// sub_8254B828: drop the last portal.
+    /// F-82126: drop the last portal.
     pub fn pop_portal(&mut self) {
         if self.portals.count == 0 {
             return;
@@ -722,7 +851,7 @@ impl Aiv {
         self.planes_upto = self.planes_upto.min(self.portals.end() + 1);
     }
 
-    /// sub_8254CFA0: append a goal. `w` = radius, or the gate fraction (flags bit 0 = gate,
+    /// F-29767: append a goal. `w` = radius, or the gate fraction (flags bit 0 = gate,
     /// segment p0-p1); `dir` = exit direction; `speed` = target speed (-1 none); `flags` = the
     /// brain's flags/tag (low 13 bits kept).
     pub fn push_goal(&mut self, dir: Vec3, p0: Vec3, w: f32, p1: Vec3, speed: f32, flags: u32) {
@@ -745,7 +874,7 @@ impl Aiv {
         self.planes();
     }
 
-    /// sub_8254B020 + sub_8254B030 for each (up to 32).
+    /// F-69761 + F-70624 for each (up to 32).
     pub fn set_obstacles(&mut self, list: &[Obstacle]) {
         self.n_obst = 0;
         for o in list.iter().take(32) {
@@ -757,8 +886,8 @@ impl Aiv {
 
     // ---- per frame --------------------------------------------------------------------------
 
-    /// sub_8254D570 (car state, one leg of line building, progress, trimming), then the
-    /// optimiser (sub_8254DEA0 -> sub_82171078) when the line is not used up.
+    /// F-12813 (car state, one leg of line building, progress, trimming), then the
+    /// optimiser (F-32780 -> F-62607) when the line is not used up.
     /// (approx.: the original runs the optimiser as an async job joined on the next update, and
     /// only when brain+253 is clear; here it runs at once)
     pub fn update(&mut self, car: &AivCar, dt: f32) {
@@ -768,7 +897,7 @@ impl Aiv {
         }
     }
 
-    /// sub_8254D570 alone.
+    /// F-12813 alone.
     pub fn update_state(&mut self, car: &AivCar, dt: f32) {
         self.size = car.size;
         self.g = car.gravity;
@@ -848,37 +977,37 @@ impl Aiv {
         }
     }
 
-    /// sub_8254DCD0 -> sub_8254CAA0 -> sub_8254A280. `gear` = brain gear - 2 clamped >= 0;
+    /// F-65301 -> F-41825 -> F-28541. `gear` = brain gear - 2 clamped >= 0;
     /// `min_wheel` is passed by the brain but not read; `rpm_ratio` = the f3 term of
-    /// sub_8254A280; `collision` = the brain's collision timer running.
+    /// F-28541; `collision` = the brain's collision timer running.
     pub fn output(&mut self, gear: i32, _min_wheel: f32, rpm_ratio: f32, collision: bool) -> AivOut {
         if self.progress >= self.ln.pts.end() {
             return AivOut { throttle: 0.0, steer: 0.0, brake: 1.0, handbrake: 0.0, valid: false };
         }
         let (kc, ac) = self.command(collision);
         let (steer, throttle, brake) = pedal_map(&self.veh, kc, ac, rpm_ratio, self.t1, self.b1[1], self.t2, self.b2[1], self.g, gear, self.vel, self.f, self.right);
-        // (the handbrake branch after sub_8254A280 never fires: it always writes 0)
+        // (the handbrake branch after F-28541 never fires: it always writes 0)
         AivOut { throttle, steer, brake, handbrake: 0.0, valid: true }
     }
 
-    /// sub_8254A280 for a commanded curvature / acceleration, with this follower's car state
+    /// F-28541 for a commanded curvature / acceleration, with this follower's car state
     /// (the brain also calls it directly).
     pub fn pedals(&self, kappa: f32, a_cmd: f32, gear: i32, rpm_ratio: f32) -> (f32, f32, f32) {
         pedal_map(&self.veh, kappa, a_cmd, rpm_ratio, self.t1, self.b1[1], self.t2, self.b2[1], self.g, gear, self.vel, self.f, self.right)
     }
 
-    /// sub_8254B110: nitro benefit (0..1) for the brain's nitro decision.
+    /// F-82077: nitro benefit (0..1) for the brain's nitro decision.
     pub fn nitro_benefit(&self) -> f32 {
         self.boost_benefit(self.b1[1], self.b1[2], false)
     }
-    /// sub_8254B438: slingshot benefit.
+    /// F-96973: slingshot benefit.
     pub fn sling_benefit(&self) -> f32 {
         self.boost_benefit(self.b2[1], self.b2[2], true)
     }
 
     // ---- corridor ---------------------------------------------------------------------------
 
-    /// sub_8254B8B8: the cell planes of every portal pair not yet done.
+    /// F-68053: the cell planes of every portal pair not yet done.
     fn planes(&mut self) {
         let base = self.portals.base;
         let end = base + self.portals.count;
@@ -900,7 +1029,7 @@ impl Aiv {
         }
     }
 
-    /// sub_8216D1C8: walk the cell index along the corridor until x is in it.
+    /// F-84189: walk the cell index along the corridor until x is in it.
     fn walk(&self, idx: &mut i32, x: Vec3) -> bool {
         let lo = self.portals.base;
         let hi = lo + self.portals.count - 2;
@@ -937,7 +1066,7 @@ impl Aiv {
         true
     }
 
-    /// sub_8216D390: binary search of the cell of x between the cells a and b.
+    /// F-43908: binary search of the cell of x between the cells a and b.
     fn bracket(&self, idx: &mut i32, a: i32, b: i32, x: Vec3) -> bool {
         let mut lo = a.min(b).max(self.portals.base);
         let mut hi = a.max(b).min(self.portals.end() - 2);
@@ -979,7 +1108,7 @@ impl Aiv {
         }
     }
 
-    /// sub_8216D5C0: clamp x into its corridor cell (the shrunk side planes, and the end planes
+    /// F-15125: clamp x into its corridor cell (the shrunk side planes, and the end planes
     /// of the first and last cell).
     fn clamp_cell(&self, idx: &mut i32, x: &mut Vec3) {
         self.walk(idx, *x);
@@ -998,7 +1127,7 @@ impl Aiv {
         *x -= c.sside_b * c.sside_b.dot(*x - c.sb).max(0.0);
     }
 
-    /// sub_8216DB50: height of x on the cell's surface triangle.
+    /// F-84036: height of x on the cell's surface triangle.
     fn surface_y(&self, idx: i32, x: &mut Vec3) {
         let c = self.portals.get(idx);
         let nx = self.portals.get(idx + 1);
@@ -1030,7 +1159,7 @@ impl Aiv {
         x.y = y.max(ymin).min(ymax);
     }
 
-    /// sub_8216D7B0: can p (in cell b) be reached from x (in cell a), bending the line once
+    /// F-80559: can p (in cell b) be reached from x (in cell a), bending the line once
     /// round each shrunk portal end at most.
     fn reach(&self, a: i32, x: Vec3, b: i32, p: Vec3) -> bool {
         if b == a {
@@ -1066,7 +1195,7 @@ impl Aiv {
         true
     }
 
-    /// sub_8254BDD8: P -> M crosses every shrunk portal from..=to inside it (and is not too long).
+    /// F-42352: P -> M crosses every shrunk portal from..=to inside it (and is not too long).
     fn visible(&self, p: Vec3, m: Vec3, from: i32, to: i32) -> bool {
         let isl = self.tun.initial_segment_length;
         if isl > 1e-6 {
@@ -1085,7 +1214,7 @@ impl Aiv {
         true
     }
 
-    /// sub_8254BF98: the furthest portal whose midpoint the last point sees (string pulling).
+    /// F-51411: the furthest portal whose midpoint the last point sees (string pulling).
     fn furthest_visible(&self) -> i32 {
         let pend = self.portals.end();
         let gend = self.goals.end();
@@ -1115,7 +1244,7 @@ impl Aiv {
         pend
     }
 
-    /// sub_8254C348: append a leg A -> B cut into pieces of about InitialSegmentLength.
+    /// F-84385: append a leg A -> B cut into pieces of about InitialSegmentLength.
     fn add_leg(&mut self, a: Vec3, b: Vec3, target: i32, tag: i32) -> bool {
         let pend = self.portals.end();
         let isl = self.tun.initial_segment_length;
@@ -1145,7 +1274,7 @@ impl Aiv {
         true
     }
 
-    /// sub_8254D160: one leg per call, to the furthest visible portal or the next goal.
+    /// F-85983: one leg per call, to the furthest visible portal or the next goal.
     fn build_line(&mut self) {
         let pend = self.portals.end();
         let gend = self.goals.end();
@@ -1221,14 +1350,14 @@ impl Aiv {
         (0..64).contains(&bit) && self.sc.dirty[(bit >> 5) as usize] & (1 << (bit & 31)) != 0
     }
 
-    /// sub_8216F898
+    /// F-77899
     fn point_height(&mut self, k: i32) {
         let mut p = self.ln.pts.get(k);
         self.surface_y(self.port(k), &mut p);
         self.ln.pts.set(k, p);
     }
 
-    /// sub_8216D9A0: the link a-b does not miss a shrunk portal it crosses.
+    /// F-19562: the link a-b does not miss a shrunk portal it crosses.
     fn link_ok(&self, a: i32, b: i32) -> bool {
         let (pa, pb) = (self.port(a), self.port(b));
         if pa == pb {
@@ -1248,7 +1377,7 @@ impl Aiv {
         true
     }
 
-    /// sub_8216F288: a pushed point is still inside the corridor with valid links.
+    /// F-63779: a pushed point is still inside the corridor with valid links.
     fn push_ok(&self, k: i32, out: &mut i32) -> bool {
         *out = self.port(k);
         let p = self.ln.pts.get(k);
@@ -1268,7 +1397,7 @@ impl Aiv {
         true
     }
 
-    /// sub_8216F4B8: keep point k on its goal and in the corridor; mark it dirty.
+    /// F-81109: keep point k on its goal and in the corridor; mark it dirty.
     fn constrain(&mut self, k: i32) {
         let tag = self.pg.get(k);
         if tag != -1 {
@@ -1298,7 +1427,7 @@ impl Aiv {
         self.set_dirty(k - self.progress + 1);
     }
 
-    /// sub_821705F0: make the link a -> b pass the shrunk portals by rotating b about a (once
+    /// F-29423: make the link a -> b pass the shrunk portals by rotating b about a (once
     /// round each end at most), then reconstrain b and set its height.
     fn fix_link(&mut self, a: i32, b: i32) -> bool {
         let (pa, pb) = (self.port(a), self.port(b));
@@ -1339,7 +1468,7 @@ impl Aiv {
         true
     }
 
-    /// sub_82170918: rotate points k.. about point k-1, each following point by the falloff of
+    /// F-63252: rotate points k.. about point k-1, each following point by the falloff of
     /// the previous point's achieved angle.
     fn rotate_from(&mut self, k: i32, angle: f32) -> bool {
         let end = self.window_end();
@@ -1369,7 +1498,7 @@ impl Aiv {
         if end > 2 { self.fix_link(last, end - 2) } else { true }
     }
 
-    /// the evaluation chain of sub_82170B98 / sub_82171078
+    /// the evaluation chain of F-21477 / F-62607
     fn evaluate(&mut self) {
         self.ln.j = 0.0;
         self.obstacles();
@@ -1379,7 +1508,7 @@ impl Aiv {
         self.forward(d);
     }
 
-    /// sub_82170B98: try point k moved by +-step (mode 0 rotate, 1 along, 2 across); keep the best.
+    /// F-21477: try point k moved by +-step (mode 0 rotate, 1 along, 2 across); keep the best.
     fn try_move(&mut self, k: i32, recurse: bool) {
         let (o, b) = if recurse { (0, 2) } else { (1, 3) };
         self.sc.backup[o] = self.ln;
@@ -1418,7 +1547,7 @@ impl Aiv {
         self.ln = self.sc.backup[b];
     }
 
-    /// sub_82170F38: re-try the neighbours with a falling step.
+    /// F-34153: re-try the neighbours with a falling step.
     fn recurse(&mut self, k: i32) {
         let msr = self.tun.max_steps_to_recurse;
         let mut hi = self.window_end() - 1;
@@ -1446,7 +1575,7 @@ impl Aiv {
         }
     }
 
-    /// sub_82171078: evaluate the line, then coordinate descent over the control points.
+    /// F-62607: evaluate the line, then coordinate descent over the control points.
     pub fn optimise(&mut self) {
         let end = self.window_end();
         if self.tun.restart_every_update {
@@ -1495,7 +1624,7 @@ impl Aiv {
 
     // ---- obstacles --------------------------------------------------------------------------
 
-    /// sub_8216F900: push the line's points sideways off the predicted obstacles.
+    /// F-70569: push the line's points sideways off the predicted obstacles.
     fn obstacles(&mut self) {
         let end = self.window_end();
         let v = self.v_fwd;
@@ -1598,7 +1727,7 @@ impl Aiv {
 
     // ---- spline, samples, speed profile -------------------------------------------------------
 
-    /// sub_8216DD38: Catmull-Rom coefficients of the legs in the window.
+    /// F-86861: Catmull-Rom coefficients of the legs in the window.
     fn spline(&mut self) {
         let end = self.window_end();
         let pr = self.progress;
@@ -1635,7 +1764,7 @@ impl Aiv {
         }
     }
 
-    /// sub_8216E408: sample the dirty legs (curvature, grip, table speeds, weights).
+    /// F-27864: sample the dirty legs (curvature, grip, table speeds, weights).
     fn samples(&mut self) {
         let end = self.window_end();
         let pr = self.progress;
@@ -1780,7 +1909,7 @@ impl Aiv {
         self.sc.dirty[0] = 0;
     }
 
-    /// sub_8216CBC0: backward braking pass; returns the mean sample spacing.
+    /// F-31929: backward braking pass; returns the mean sample spacing.
     fn backward(&mut self) -> f32 {
         let (n, f) = (self.ln.n, self.ln.f);
         let t = self.veh.t.clone();
@@ -1821,7 +1950,7 @@ impl Aiv {
         sum / (n - 1) as f32
     }
 
-    /// sub_8216CDD0: forward acceleration pass and the cost J.
+    /// F-39661: forward acceleration pass and the cost J.
     fn forward(&mut self, d: f32) {
         let (n, f) = (self.ln.n, self.ln.f);
         if n - f <= 1 || n as usize > NS {
@@ -1872,7 +2001,7 @@ impl Aiv {
         self.ln.j *= self.tun.length_variance_weight * sumabs / ((n - 2) as f32 * d).max(1e-6) + 1.0;
     }
 
-    /// sub_8254CAA0: commanded curvature and acceleration at the next sample; turns H.
+    /// F-41825: commanded curvature and acceleration at the next sample; turns H.
     fn command(&mut self, collision: bool) -> (f32, f32) {
         let (n, f) = (self.ln.n, self.ln.f);
         if n - f <= 1 || (f + 1) as usize >= NS {
@@ -1903,7 +2032,7 @@ impl Aiv {
         (kc, ac)
     }
 
-    /// sub_8254B110 / sub_8254B438: fraction of the time gain of a boost that the grip-limited
+    /// F-82077 / F-96973: fraction of the time gain of a boost that the grip-limited
     /// line keeps, against an unlimited run.
     fn boost_benefit(&self, c: f32, dur: f32, cubic: bool) -> f32 {
         let (n, f) = (self.ln.n, self.ln.f);
@@ -1942,7 +2071,7 @@ impl Aiv {
         r.max(0.0).min(1.0)
     }
 
-    /// push point k by `dv` (sub_8216F900's push), keeping it when sub_8216F288 accepts it.
+    /// push point k by `dv` (F-70569's push), keeping it when F-63779 accepts it.
     fn push_point(&mut self, k: i32, dv: Vec3, dirty_bit: i32, other_side: bool) {
         let old = self.ln.pts.get(k);
         self.ln.pts.set(k, dv + old);
@@ -1967,7 +2096,7 @@ fn side_n(p: Vec3, q: Vec3, c: Vec3) -> Vec3 {
     if e.length_squared() > 1e-4 { plane_n((p + q) * 0.5 - c, e) } else { norm_or(p - c, 1e-12, Vec3::ZERO) }
 }
 
-/// sub_8215E000 with the Catmull-Rom basis at 0x828386B0 (set up in sub_8216DD38).
+/// F-96281 with the Catmull-Rom basis at 0x828386B0 (set up in F-86861).
 fn cr(w: &[Vec3; 4]) -> [Vec3; 4] {
     [
         w[0] * -0.5 + w[1] * 1.5 + w[2] * -1.5 + w[3] * 0.5,
@@ -1977,7 +2106,7 @@ fn cr(w: &[Vec3; 4]) -> [Vec3; 4] {
     ]
 }
 
-/// sub_8254A280: steer, throttle, brake from the commanded curvature and acceleration.
+/// F-28541: steer, throttle, brake from the commanded curvature and acceleration.
 #[allow(clippy::too_many_arguments)]
 fn pedal_map(veh: &Veh, kappa: f32, a_cmd: f32, f3: f32, t1: f32, c1: f32, t2: f32, c2: f32, g: f32, gear: i32, vel: Vec3, fwd: Vec3, right: Vec3) -> (f32, f32, f32) {
     let vf = vel.x * fwd.x + vel.y * fwd.y + vel.z * fwd.z;
@@ -2195,4 +2324,118 @@ mod tests {
         }
     }
     use mcla_formats::rage::aitune::AiTunes;
+
+    /// The recorded states of the original's aiv (work/ai-record/fixture, 2026-10-26: R8 on AROUND HOLLYWOOD,
+    /// `mkfix.py`): every snapshot is an aiv after one update; the port's update from snapshot k with the car
+    /// of snapshot k + 1 must give snapshot k + 1's line. Prints the errors (`--nocapture`); returns at once without
+    /// the fixture.
+    #[test]
+    fn replay_recorded_updates() {
+        let dir = "D:/MCLA/work/ai-record/fixture";
+        let (Ok(fix), Ok(tb)) = (std::fs::read(format!("{dir}/r7_r8_run0.bin")), std::fs::read(format!("{dir}/aivtune_r8.bin"))) else { return };
+        let floats: Vec<f32> = tb.chunks_exact(4).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&floats).unwrap());
+        let n = u32::from_le_bytes(fix[8..12].try_into().unwrap()) as usize;
+        let rec = 8 + 31232 + 1024;
+        let snaps: Vec<(f64, &[u8])> = (0..n).map(|k| {
+            let o = 12 + k * rec;
+            (f64::from_le_bytes(fix[o..o + 8].try_into().unwrap()), &fix[o + 8..o + 8 + 31232])
+        }).collect();
+        let (mut tested, mut exact, mut pts_equal, mut j_close, mut lockstep) = (0, 0, 0, 0, 0);
+        for k in 0..n - 1 {
+            if snaps[k + 1].0 - snaps[k].0 > 0.06 {
+                continue;
+            }
+            let mut a = Aiv::new(tune.clone());
+            a.import_original(snaps[k].1);
+            let mut b = Aiv::new(tune.clone());
+            b.import_original(snaps[k + 1].1);
+            // brain-side pushes between the two (portals / goals appended) are not replayed: skip those pairs
+            if b.portals.end() > a.portals.end() || b.goals.end() > a.goals.end() {
+                continue;
+            }
+            a.n_obst = b.n_obst;
+            a.obst = b.obst;
+            a.planes(); // (the cell planes are derived from the portals; the original holds them, an import does not)
+            let car = b.car_as_held();
+            let (a0c, a0m, a0s) = (a.cursor, a.mode, a.step);
+            a.update_state(&car, b.dt);
+            if !a.line_used_up() {
+                a.optimise();
+            }
+            let (pa, sa, fa, na, ja, pra) = a.line_state();
+            let (pb, sb, fb, nb, jb, prb) = b.line_state();
+            tested += 1;
+            let pe = if pa.len() == pb.len() { pa.iter().zip(&pb).map(|(x, y)| (*x - *y).length()).fold(0.0f32, f32::max) } else { -1.0 };
+            let se = if sa.len() == sb.len() { sa.iter().zip(&sb).map(|(x, y)| x.iter().zip(y).map(|(p, q)| (p - q).abs()).fold(0.0f32, f32::max)).fold(0.0f32, f32::max) } else { -1.0 };
+            if pe == 0.0 && se == 0.0 {
+                exact += 1;
+            }
+            pts_equal += (pe >= 0.0 && pe < 1e-4) as i32;
+            j_close += ((ja - jb).abs() < 1e-3) as i32;
+            lockstep += (pra == prb && fa == fb && na == nb && a.cursor == b.cursor && a.mode == b.mode) as i32;
+            if pe < 0.01 && se > 0.05 && std::env::var("MCLA_REPLAY_DIFF").is_ok() {
+                const NAMES: [&str; 14] = ["v", "allowed", "v_curve", "v_table", "kv", "kappa", "g_ty", "g_ly", "a_max", "ds", "ty", "xy", "w", "coll"];
+                let mut shown = 0;
+                for (i, (x, y)) in sa.iter().zip(&sb).enumerate() {
+                    for q in 0..14 {
+                        if (x[q] - y[q]).abs() > 1e-3 && shown < 10 {
+                            shown += 1;
+                            println!("    sample {} (first {fa}) {}: port {} original {}", i, NAMES[q], x[q], y[q]);
+                        }
+                    }
+                }
+            }
+            if pe > 0.04 && std::env::var("MCLA_REPLAY_PTS").is_ok() {
+                let (c0, m0, s0) = (a0c, a0m, a0s);
+                let diffs: Vec<String> = pa.iter().zip(&pb).enumerate().filter(|(_, (x, y))| (**x - **y).length() > 1e-4).map(|(i, (x, y))| format!("p{} ({:.3},{:.3},{:.3})", i as i32 + a.ln.pts.base, x.x - y.x, x.y - y.y, x.z - y.z)).collect();
+                println!("    pair start: cursor {c0} mode {m0} step {s0} progress {pra}; point diffs port-orig: {}", diffs.join(" "));
+            }
+            println!("k {k:3} t {:.3} progress {pra}/{prb} pts {}/{} first/end {fa}/{fb} {na}/{nb} J {ja:.4}/{jb:.4} max point err {pe:.4} max sample err {se:.4} cursor {}/{} mode {}/{}", snaps[k + 1].0, pa.len(), pb.len(), a.cursor, b.cursor, a.mode, b.mode);
+        }
+        println!("tested {tested} pairs: points equal {pts_equal}, J within 0.001 {j_close}, progress / window / cursor / mode equal {lockstep}, all equal {exact}");
+        // (2026-10-26, 191 pairs: 69 / 144 / 186. The other pairs hold a snapshot read between the original's asynchronous line job and its join:
+        // docs/reference/ai/ai_record.md)
+        assert!(tested >= 150 && lockstep * 100 >= tested * 95 && j_close * 100 >= tested * 70 && pts_equal * 100 >= tested * 30);
+    }
+
+    /// Re-run the evaluation chain (planes, spline, samples, backward, forward) over recorded post-update states of the original,
+    /// everything dirty, with the car heading H turned back by the commanded step (the recording holds H after the output's turn,
+    /// F-41825; the line was evaluated with the H before it): the cost J and the first leg's curvature must come out as stored
+    /// (work/ai-record: 25 of 26 states J within 0.002 - the 26th was read mid-update -, sample 1's curvature within 1e-5).
+    #[test]
+    fn reevaluate_recorded_state() {
+        let dir = "D:/MCLA/work/ai-record/fixture";
+        let (Ok(fix), Ok(tb)) = (std::fs::read(format!("{dir}/r7_r8_run0.bin")), std::fs::read(format!("{dir}/aivtune_r8.bin"))) else { return };
+        let floats: Vec<f32> = tb.chunks_exact(4).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&floats).unwrap());
+        let n = u32::from_le_bytes(fix[8..12].try_into().unwrap()) as usize;
+        let rec = 8 + 31232 + 1024;
+        let (mut tested, mut j_ok, mut k_ok) = (0, 0, 0);
+        for k in (0..n).step_by(8) {
+            let o = 12 + k * rec;
+            let snap = &fix[o + 8..o + 8 + 31232];
+            let mut a = Aiv::new(tune.clone());
+            a.import_original(snap);
+            let (_, _, js, _, _, ss) = a.samples_raw();
+            let kk0 = a.ln.s[(a.ln.f + 1) as usize].kappa;
+            let lim = 1.0 / a.veh.steer_scalar(a.v_fwd);
+            let kk = kk0.max(-lim).min(lim);
+            let vh = a.vel.z * a.h.z + a.vel.x * a.h.x;
+            a.h = norm0(rot_y(a.h, -(kk * a.dt * vh)));
+            a.sc.dirty = [u32::MAX; 2];
+            a.ln.j = 0.0;
+            a.planes(); // (derived from the portals; the original holds them, an import does not)
+            a.spline();
+            a.samples();
+            let d = a.backward();
+            a.forward(d);
+            let (_, _, jr, _, _, sr) = a.samples_raw();
+            tested += 1;
+            j_ok += ((jr - js).abs() < 0.002) as i32;
+            k_ok += ((sr[1][5] - ss[1][5]).abs() < 1e-5) as i32;
+        }
+        println!("re-evaluated {tested} recorded states: J within 0.002 in {j_ok}, first curvature within 1e-5 in {k_ok}");
+        assert!(tested >= 20 && j_ok >= tested - 2 && k_ok >= tested - 2);
+    }
 }

@@ -625,7 +625,7 @@ impl AiDriver {
             self.reverse_timer = 1.2;
             self.stuck_timer = 0.0;
         }
-        // (the rubber band caps the throttle the driver asks for: sub_822BCFE0 0x822BD544..0x822BD668)
+        // (the rubber band caps the throttle the driver asks for: F-17058 A-19457..A-72963)
         if let Some(r) = self.rb {
             input.throttle = input.throttle.min(r.cap);
         }

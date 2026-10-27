@@ -13,8 +13,8 @@ pub struct Pedals {
     pub steer: f32,
 }
 
-/// mcOpponentInput (vtable 0x820384CC, update sub_822B91F0): moves its pedals towards the brain's at
-/// fixed rates (its tune block, sub_822B90B8): steer 4 /s towards the centre and 6 /s away from it (half
+/// mcOpponentInput (vtable 0x820384CC, update F-94408): moves its pedals towards the brain's at
+/// fixed rates (its tune block, F-62477): steer 4 /s towards the centre and 6 /s away from it (half
 /// while the brain's collision timer runs), throttle 35 /s, brake 2 /s on and 30 /s off, handbrake 10 /s;
 /// any throttle takes the brake off.
 #[derive(Debug, Clone, Copy, Default)]
@@ -57,7 +57,7 @@ impl OpponentInput {
     }
 }
 
-/// The brain's stuck detector (sub_822BA468; +340 state, +344 timer, +352 anchor; +368 2.0 s, +372 1.0 s,
+/// The brain's stuck detector (F-34336; +340 state, +344 timer, +352 anchor; +368 2.0 s, +372 1.0 s,
 /// +376 5.0 m): a racer that has stayed within 5 m of a spot at no more than 10 m/s for 2 s backs up
 /// straight for 1 s, then turns towards the line on full lock with the handbrake until it points within
 /// 45 degrees of it.
@@ -86,7 +86,7 @@ impl Stuck {
     pub const MOVING: f32 = 10.0;
 
     /// `angle_to_line`: signed plan angle from the car's forward to the race line's next point
-    /// (sub_8216C9C0 of sub_8254C888), `angle_to_corridor` to the corridor point ahead (sub_8254C8C0),
+    /// (F-32060 of F-28749), `angle_to_corridor` to the corridor point ahead (F-43876),
     /// used when the first is past 135 degrees.
     pub fn update(&mut self, m: &mut Manoeuvre, pos: glam::Vec3, speed: f32, angle_to_line: f32, angle_to_corridor: f32, dt: f32) {
         self.timer += dt;
@@ -136,7 +136,7 @@ impl Stuck {
     }
 }
 
-/// The pre-race revving (sub_822BCFE0 case 2; brain +254 enabled, +255 handbrake, +276 rpm seen, +280 timer,
+/// The pre-race revving (F-17058 case 2; brain +254 enabled, +255 handbrake, +276 rpm seen, +280 timer,
 /// +284 rev-up target, +288 rev-down threshold): the engine's rpm as the brain follows it (6000 rpm/s
 /// towards the real one), throttle up to a random target and held a random time, then off down to a
 /// random threshold and a random pause. The draws are the shared MWC's uniforms.
@@ -168,7 +168,7 @@ pub struct RevEngine {
 }
 
 impl Revving {
-    /// SetRevvingEnabled (sub_822BB0C0): on resets the cycle; either way the timer is drawn anew, U(0, 1) s.
+    /// SetRevvingEnabled (F-58174): on resets the cycle; either way the timer is drawn anew, U(0, 1) s.
     pub fn set_enabled(&mut self, on: bool, u: f32) {
         if on {
             self.rpm = 0.0;
@@ -194,7 +194,7 @@ impl Revving {
                 return 0.0;
             }
             if !self.enabled {
-                // (0x822BD1CC: revving switched off - throttle 1 for this last frame, no new target)
+                // (A-77186: revving switched off - throttle 1 for this last frame, no new target)
                 return 1.0;
             }
             if e.limit_max > 0.0 {
@@ -207,7 +207,7 @@ impl Revving {
             self.down = -1.0;
             1.0
         } else {
-            // (0x822BD3E0: revving switched off - the rev-up holds, throttle 1, until the cycle's timer
+            // (A-32488: revving switched off - the rev-up holds, throttle 1, until the cycle's timer
             // has run out; no down phase follows)
             if !self.enabled || !(self.timer < 0.0 && self.rpm > self.up) {
                 return 1.0;
@@ -248,7 +248,7 @@ impl Goal {
     pub fn checkpoint(&self) -> usize {
         ((self.flags >> 6) & 0x7F) as usize
     }
-    /// Where the goal lies (sub_822BAD78: a gate's point is lerp(pos, p1, w)).
+    /// Where the goal lies (F-79021: a gate's point is lerp(pos, p1, w)).
     pub fn centre(&self) -> Vec3 {
         if self.gate() { self.pos + (self.p1 - self.pos) * self.w } else { self.pos }
     }
@@ -317,7 +317,7 @@ impl Course {
     }
 }
 
-/// The goal-building part of the brain (sub_822BE538 SetupRace, sub_822BAF18, sub_822BA758).
+/// The goal-building part of the brain (F-68332 SetupRace, F-58517, F-60279).
 #[derive(Debug, Clone)]
 pub struct GoalPlan {
     pub laps: usize,
@@ -345,7 +345,7 @@ impl GoalPlan {
         self.open_to(p) && (!self.rubber || p.shortcut == shortcut)
     }
 
-    /// sub_822BA758: the alt path driven before checkpoint `cp` (in lap `lap`), from the path cursor `alt`.
+    /// F-60279: the alt path driven before checkpoint `cp` (in lap `lap`), from the path cursor `alt`.
     fn alt_before(&mut self, c: &Course, cp: &mut usize, alt: &mut usize, lap: usize, final_wrap: bool, rng: &mut Mwc) {
         let forced = *cp as i32 == self.lock.0 && lap as i32 == self.lock.1;
         let mut shortcut = forced;
@@ -376,7 +376,7 @@ impl GoalPlan {
                     if self.matches(&p, shortcut) {
                         x -= w_of(&p);
                     }
-                    // (the test is made on every path of the checkpoint, matching or not: 0x822BAC44)
+                    // (the test is made on every path of the checkpoint, matching or not: A-22353)
                     if x < 1e-6 {
                         *cp += p.skip;
                         for j in 0..p.count {
@@ -393,7 +393,7 @@ impl GoalPlan {
         *alt = end;
     }
 
-    /// sub_822BAF18: goals from checkpoint `cp` of lap `lap` to the end of the race.
+    /// F-58517: goals from checkpoint `cp` of lap `lap` to the end of the race.
     pub fn build(&mut self, c: &Course, mut cp: usize, lap: usize, rng: &mut Mwc) {
         let n = c.cps.len();
         for lap in lap..self.laps {
@@ -413,7 +413,7 @@ impl GoalPlan {
         }
     }
 
-    /// BrainRacing_AppendGoal (sub_822BE478): a goal of its own - checkpoint bit set, gate clear, the
+    /// BrainRacing_AppendGoal (F-84673): a goal of its own - checkpoint bit set, gate clear, the
     /// checkpoint field its index, lap 0; +16 and +28 not written (taken as the point itself and -1).
     pub fn append(&mut self, pos: Vec3, radius: f32) {
         let k = self.goals.len() as u32;
@@ -456,7 +456,7 @@ pub struct BrainCar {
     pub gear: i32,
     pub rpm: f32,
     pub engine: RevEngine,
-    /// sub_8254A280's f3: the gyro's DriftTorque / the engine's torque at its best power
+    /// F-28541's f3: the gyro's DriftTorque / the engine's torque at its best power
     pub drift_ratio: f32,
     /// 2 x the bound's half extents
     pub size: Vec3,
@@ -466,10 +466,10 @@ pub struct BrainCar {
     pub nitro_t: f32,
     pub sling_tune: [f32; 3],
     pub sling_t: f32,
-    /// mcCarNitro can fire (sub_82345698) / is burning
+    /// mcCarNitro can fire (F-50530) / is burning
     pub nitro_ready: bool,
     pub nitro_burning: bool,
-    /// mcCarSSTurbo charged and not active (sub_82345FE0) / active
+    /// mcCarSSTurbo charged and not active (F-29462) / active
     pub sling_ready: bool,
     pub sling_active: bool,
     /// the grid flag (car +592 == 2: Racer_PreRaceBurnout)
@@ -483,7 +483,7 @@ pub struct BrainOut {
     /// fire the nitrous (flag 8) / the slingshot (flag 4)
     pub nitro: bool,
     pub sling: bool,
-    /// put the car here (sub_822A9930: velocities zeroed, onto the ground)
+    /// put the car here (F-86308: velocities zeroed, onto the ground)
     pub teleport: Option<Vec3>,
     /// the car's nitrous is unlimited (car +664 byte +33)
     pub unlimited_nitro: bool,
@@ -534,6 +534,10 @@ pub struct Brain {
     pub max_speed: f32,
     pub collision: f32,
     pub avoid_handbrake: bool,
+    /// the game frame's clock (see `FRAME`): sim time since the last brain update
+    pub frame_acc: f32,
+    /// the pedals of the last brain update, held through the physics ticks between two
+    pub held: Option<CarInput>,
     /// +212 base, +216 current goal, +220 next goal to plan
     pub base: usize,
     pub cur: usize,
@@ -582,6 +586,8 @@ impl Brain {
             max_speed: -1.0,
             collision: 0.0,
             avoid_handbrake: false,
+            frame_acc: 0.0,
+            held: None,
             base: 0,
             cur: 0,
             next: 0,
@@ -605,7 +611,7 @@ impl Brain {
         self.plan.goals.get(i).copied()
     }
 
-    /// sub_822B9F18: plan again from the car (nav cancelled, the line reset, all three indices = `at`).
+    /// F-68035: plan again from the car (nav cancelled, the line reset, all three indices = `at`).
     fn replan(&mut self, at: usize) {
         self.nav_state = 0;
         self.path = None;
@@ -615,7 +621,7 @@ impl Brain {
         self.next = at;
     }
 
-    /// sub_822BCC90: the racer is far behind - onto the next shortcut.
+    /// F-34392: the racer is far behind - onto the next shortcut.
     fn catch_up(&mut self) {
         let n = self.course.cps.len();
         let flags_of = |b: &Brain| -> u32 {
@@ -678,11 +684,11 @@ impl Brain {
         self.plan.lock = (cp as i32, lp as i32);
     }
 
-    /// One frame: sub_822BE670 (goals, routes, the line) then sub_822BCFE0 (the pedals) and
+    /// One frame: F-13552 (goals, routes, the line) then F-17058 (the pedals) and
     /// mcOpponentInput. `rb` = the rubber band's tuning and this racer's measures (None: off).
     pub fn update(&mut self, car: &BrainCar, turn: &crate::brainturn::TurnCar, mesh: &NavMesh, obstacles: &[crate::aiv::Obstacle], rb: Option<(&crate::rubber::RubberBand, crate::ai::RbState)>, dt: f32) -> BrainOut {
         let mut out = BrainOut::default();
-        // ---- sub_822BE670 ----
+        // ---- F-13552 ----
         if self.nav_state == 4 && self.aiv.goal_count() < 8 {
             if let Some(path) = self.path.take() {
                 let mut goals = std::mem::take(&mut self.plan.goals);
@@ -775,7 +781,7 @@ impl Brain {
         self.collision = (self.collision - dt).max(0.0);
         self.nitro_off = (self.nitro_off - dt).max(0.0);
 
-        // ---- sub_822BCFE0 ----
+        // ---- F-17058 ----
         let gear_arg = car.gear.max(1) - 1;
         let a = self.aiv.output(gear_arg, 0.0, car.drift_ratio, self.collision > 0.0);
         self.last = a;
@@ -840,7 +846,7 @@ impl Brain {
         out
     }
 
-    /// Mark a collision with another vehicle (mcOpponent sub_822B9AC0: +296 = 1.5 s).
+    /// Mark a collision with another vehicle (mcOpponent F-30284: +296 = 1.5 s).
     pub fn hit(&mut self) {
         self.collision = 1.5;
     }
@@ -876,12 +882,40 @@ pub fn script_grid(b: &mut Brain, to_go: Option<f32>) {
     }
 }
 
+/// The game frame the original's brains (and its aiv) update on.
+pub const FRAME: f32 = 1.0 / 30.0;
+
+/// Whether a brain update is due after `dt` more sim time (the clock `acc` counts towards the next game frame).
+pub fn frame_due(acc: &mut f32, dt: f32) -> bool {
+    *acc += dt;
+    if *acc < FRAME * (1.0 - 1e-3) {
+        return false;
+    }
+    *acc = (*acc - FRAME).clamp(0.0, FRAME);
+    true
+}
+
 /// One frame of car `i`'s brain (vehicles.rs): its view of the car, the obstacles, the update, and
 /// what it does to the car besides the pedals (nitrous, the off-mesh drop). `to_go`: seconds to GO
 /// while the grid holds the racers.
 pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt: f32) -> CarInput {
     let Some(mesh) = crate::offroad::mesh() else { return CarInput { brake: 1.0, ai: true, ..Default::default() } };
     let Some(mut brain) = v.cars[i].ai.as_mut().and_then(|a| a.brain.0.take()) else { return CarInput::default() };
+    // (the brain runs once per game frame, 1/30 s, with that dt: the chassis ticks twice in between - the original's aiv position,
+    // mcOpponentInput targets and aiv dt (0.0333) change on every second chassis tick, work/ai-record. The pedals go on through the
+    // other ticks; the one-shot nitrous / slingshot flags do not repeat.)
+    if let Some(held) = brain.held.filter(|_| dt > 0.0) {
+        if !frame_due(&mut brain.frame_acc, dt) {
+            let mut input = held;
+            input.nitro = false;
+            input.sst = false;
+            if let Some(a) = v.cars[i].ai.as_mut() {
+                a.brain.0 = Some(brain);
+            }
+            return input;
+        }
+    }
+    let dt = if dt > 0.0 { FRAME } else { dt };
     if v.cars[i].ai.as_mut().map_or(false, |a| std::mem::take(&mut a.hit_pending)) {
         brain.hit();
     }
@@ -927,12 +961,12 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         sling_t: vs.map_or(0.0, |s| s.sst.level * sling_tune[2]),
         nitro_ready: st.nitro_shots > 0 && vs.map_or(false, |s| s.nitro_level <= 0.0 && s.nitro_rest <= 0.0),
         nitro_burning: vs.map_or(false, |s| s.nitro_level > 0.0),
-        // (0x82345FE0, the car answering its pad off the grid)
+        // (F-29462, the car answering its pad off the grid)
         sling_ready: vs.map_or(false, |s| s.sst.can_fire(to_go.is_none())),
         sling_active: vs.map_or(false, |s| s.sst.burning),
         grid: to_go.is_some(),
     };
-    // the obstacles near the line ahead (sub_822BD9D8)
+    // the obstacles near the line ahead (F-86521)
     // (cars, then the fixed props the game gathered around the racers; approx.: no pedestrians - the
     // brain ignores them anyway - and the grid without the level's bounds)
     let objects: Vec<crate::brainturn::ObjectInfo> = v.cars.iter().enumerate().map(|(j, o)| crate::brainturn::ObjectInfo::from_car(j, o)).chain(v.prop_objects.iter().copied()).collect();
@@ -963,6 +997,38 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         if let Some(f) = f.lock().ok().as_mut().and_then(|g| g.as_mut()) {
             let _ = writeln!(f, "{i},{},{:.3},{:.3},{:.3},{:.3},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{:.3},{:.1},{},{}", to_go.is_some() as u8, car.pos.x, car.pos.y, car.pos.z, car.speed, car.gear, brain.last.valid as u8,
                 brain.last.throttle, brain.last.brake, brain.last.steer, out.input.throttle, out.input.brake, out.input.steer, out.input.handbrake as u8, rb.map_or(1.0, |r| r.cap), rb.map_or(0.0, |r| r.gap), brain.stuck.state, out.nitro as u8);
+        }
+    }
+    // (diagnostics, work/ai-record: MCLA_AIV_DUMP=<file> - the aiv's sample ring of every racer every 5th frame, one line:
+    // car, tick, x, z, first, end, J, T, progress, then the samples' 14 floats each)
+    if let Ok(path) = std::env::var("MCLA_AIV_DUMP") {
+        use std::io::Write;
+        static FILE: std::sync::OnceLock<std::sync::Mutex<(Option<std::fs::File>, std::collections::HashMap<usize, u32>)>> = std::sync::OnceLock::new();
+        let f = FILE.get_or_init(|| std::sync::Mutex::new((std::fs::File::create(&path).ok(), Default::default())));
+        if let Ok(mut g) = f.lock() {
+            let k = { let e = g.1.entry(i).or_insert(0); *e += 1; *e };
+            if k % 5 == 1 {
+                let (first, end, j, t, prog, s) = brain.aiv.samples_raw();
+                if let Some(file) = g.0.as_mut() {
+                    let mut line = format!("{i},{k},{:.3},{:.3},{first},{end},{j:.4},{t:.4},{prog}", car.pos.x, car.pos.z);
+                    for x in s.iter().flatten() {
+                        line.push_str(&format!(",{x:.5}"));
+                    }
+                    let _ = writeln!(file, "{line}");
+                    let mut pl = format!("P,{i},{k}");
+                    for q in brain.aiv.points() {
+                        pl.push_str(&format!(",{:.3},{:.3},{:.3}", q.x, q.y, q.z));
+                    }
+                    let _ = writeln!(file, "{pl}");
+                    let mut ql = format!("Q,{i},{k}");
+                    for (a, b, sa, sb) in brain.aiv.portal_ends() {
+                        ql.push_str(&format!(",{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}", a.x, a.y, a.z, b.x, b.y, b.z, sa.x, sa.y, sa.z, sb.x, sb.y, sb.z));
+                    }
+                    let _ = writeln!(file, "{ql}");
+                    let _ = writeln!(file, "G,{i},{k},{}", brain.aiv.goals_dbg());
+                    let _ = writeln!(file, "O,{i},{k},{}", brain.aiv.opt_dbg());
+                }
+            }
         }
     }
     // (diagnostics: MCLA_BRAIN_DUMP=<seconds>)
@@ -1004,8 +1070,9 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         input = CarInput { hold: true, animated: false, ..input };
     }
     input.nitro = out.nitro;
-    // (flag 4: 0x822B91F0 fires the slipstream turbo through 0x823460A0 - vehsim's step)
+    // (flag 4: F-94408 fires the slipstream turbo through F-28681 - vehsim's step)
     input.sst = out.sling;
+    brain.held = Some(input);
     if let Some(p) = out.teleport {
         c.state.pos = p + Vec3::Y * 0.9;
         c.state.vel = Vec3::ZERO;
@@ -1062,7 +1129,7 @@ mod tests {
         let dt = 1.0 / 60.0;
         let p = i.update(Pedals { throttle: 1.0, brake: 0.0, handbrake: 0.0, steer: 1.0 }, false, dt);
         assert!((p.throttle - 35.0 / 60.0).abs() < 1e-6);
-        // (from the middle (cur - target) x cur is 0: the fsel at 0x822B92BC takes the 4 /s rate)
+        // (from the middle (cur - target) x cur is 0: the fsel at A-57478 takes the 4 /s rate)
         assert!((p.steer - 4.0 / 60.0).abs() < 1e-6);
         let p = i.update(Pedals { throttle: 0.0, brake: 1.0, handbrake: 0.0, steer: 0.0 }, true, dt);
         // (steer back at 4 /s halved; the throttle falls to 0 in that frame, so the brake rises at 2 /s)
@@ -1075,7 +1142,7 @@ mod tests {
 
     #[test]
     fn revving_switched_off_mid_rev_up() {
-        // (0x822BD3E0: in the rev-up phase with revving off the throttle stays 1 until the timer is out, no down phase)
+        // (A-32488: in the rev-up phase with revving off the throttle stays 1 until the timer is out, no down phase)
         let e = RevEngine { idle: 1000.0, opt: 6000.0, max: 8000.0, limit_min: 0.0, limit_max: 0.0 };
         let mut r = Revving::default();
         r.set_enabled(true, 0.0);
@@ -1090,6 +1157,42 @@ mod tests {
             frames += 1;
         }
         assert_eq!(frames, 16);
+    }
+
+    /// work/ai-record: the handbrake release after GO of the original's racers (BeginRace draws a U(0, 1) timer from the shared MWC and
+    /// SetRevvingEnabled(0) stores it; the revving cycle holds the handbrake until it has run out). Recorded releases (the tick the
+    /// chassis handbrake fell below 0.5 after GO) for the timers the recording's MWC draws gave: 0.504 s -> +30, 0.398 s -> +24,
+    /// 0.123 s -> +7 ticks (60 Hz, the slew of the pedal input and the host sampling put the measure within a tick of the count below).
+    #[test]
+    fn grid_release_follows_timer() {
+        let e = RevEngine { idle: 1000.0, opt: 6000.0, max: 8000.0, limit_min: 0.0, limit_max: 0.0 };
+        for (u, recorded) in [(0.504f32, 30), (0.398, 24), (0.123, 7)] {
+            let mut r = Revving::default();
+            r.set_enabled(true, 0.0);
+            r.set_enabled(false, u);
+            let mut frames = 0i32;
+            while r.active() {
+                r.update(&e, 1000.0, FRAME, &mut || 0.5);
+                frames += 1;
+            }
+            // (the brain runs once per two chassis ticks)
+            assert!((frames * 2 - recorded as i32).abs() <= 2, "timer {u}: {frames} brain frames, recorded {recorded} ticks");
+        }
+    }
+
+    /// work/ai-record: the original's aiv position, mcOpponentInput targets and aiv dt (0.0333) change on every second chassis tick
+    /// (199 recorded ticks: 99 changes, strictly alternating); the brain updates once per 1/30 s game frame at any tick rate.
+    #[test]
+    fn brain_updates_once_per_game_frame() {
+        for (dt, every) in [(1.0 / 60.0, 2), (1.0 / 120.0, 4), (1.0 / 30.0, 1), (1.0 / 20.0, 1)] {
+            let mut acc = 0.0;
+            let due: Vec<bool> = (0..240).map(|_| frame_due(&mut acc, dt)).collect();
+            let n = due.iter().filter(|d| **d).count();
+            if every > 1 {
+                assert!(due.iter().enumerate().all(|(k, d)| *d == (k % every == every - 1)), "dt {dt}");
+            }
+            assert!((n as f32 - 240.0 / every as f32).abs() <= 1.0, "dt {dt}: {n} updates in 240 ticks");
+        }
     }
 
     #[test]

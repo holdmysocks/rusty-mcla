@@ -20,10 +20,10 @@ use crate::vehicles::parked::Mwc;
 use std::path::Path;
 
 /// The career's random numbers (mcCareer +0x16C78): the MWC of the game (a = 0x5CDCFAA7) seeded once at
-/// boot with 1 - lo 1, carry 0x10001 (sub_826C16C0 -> sub_821CE460 / sub_821CE210: lo = s + (s == 0), carry =
+/// boot with 1 - lo 1, carry 0x10001 (F-77509 -> F-82174 / F-37317: lo = s + (s == 0), carry =
 /// s ^ rot16(s)) - and never saved or restored. One state for every draw the original makes from it: the
-/// opponents' cars and set-ups here, the slot system's random character (sub_826CF118), the local
-/// hookman's beat-me-there race (sub_8273F540) (docs/reference/ai/race_difficulty.md 5).
+/// opponents' cars and set-ups here, the slot system's random character (F-32224), the local
+/// hookman's beat-me-there race (F-73402) (docs/reference/ai/race_difficulty.md 5).
 /// (approx.: the original's free-roam "incoming call" timer, mission events in Random mode and
 /// CityDescription_FindRaceByRacerPosition draw from it too; the port's versions of those do not, so the
 /// sequence runs ahead less often than the original's.)
@@ -48,7 +48,7 @@ pub const MASKS_RACE: (i32, i32) = (31, 255);
 /// The LA story scripts that launch OrderedSeriesCore: the four LA districts, Tuner .. Luxury.
 pub const MASKS_LA_SERIES: (i32, i32) = (15, 31);
 
-/// A vehicle record's fields the pick reads (sub_823964C0: +24 Class, +40 DEVONLY, +42 PlayerOnly, +60 DistrictFilter).
+/// A vehicle record's fields the pick reads (F-87336: +24 Class, +40 DEVONLY, +42 PlayerOnly, +60 DistrictFilter).
 #[derive(Clone, Debug, Default)]
 pub struct VehInfo {
     pub class: u32,
@@ -93,7 +93,7 @@ pub struct OpPick {
 
 /// rage::atMap's iteration order for keys inserted in this order: buckets 0..n-1, each chain from its
 /// head. The first insert makes 11 buckets; when the count reaches the bucket count the map grows to
-/// the next prime of the table (sub_821C9438) and the old nodes move, bucket by bucket from each chain's
+/// the next prime of the table (F-82002) and the old nodes move, bucket by bucket from each chain's
 /// head, to the heads of their new buckets; a new node goes to the head of `key % buckets`. A key
 /// already in the map is not inserted again. Returns indices into `keys`.
 pub fn atmap_order(keys: &[u32]) -> Vec<usize> {
@@ -180,9 +180,9 @@ pub fn parse_vehicles(text: &str, out: &mut Vec<(String, VehInfo)>) {
 }
 
 impl OpPick {
-    /// Start-up loads (sub_822D4878): the vehicle lists `vehicle.lst`, `vehicle0001..0008.lst` (+ `extra`:
-    /// vehicle blocks the port adds itself, in the same format), the samples `car_performance_sample_0..4.lst` (sub_8239C6F0: a car
-    /// not in the vehicle lists or DEVONLY is skipped) and `tune/Career/CarCfg/Opponent.lst` (sub_822B89C8).
+    /// Start-up loads (F-71171): the vehicle lists `vehicle.lst`, `vehicle0001..0008.lst` (+ `extra`:
+    /// vehicle blocks the port adds itself, in the same format), the samples `car_performance_sample_0..4.lst` (F-21730: a car
+    /// not in the vehicle lists or DEVONLY is skipped) and `tune/Career/CarCfg/Opponent.lst` (F-99400).
     pub fn load(data_dir: &str, extra: &str) -> OpPick {
         let root = Path::new(data_dir);
         let vdir = root.join("tune/vehicle");
@@ -251,7 +251,7 @@ impl OpPick {
         self.cars.iter().find(|c| c.name.eq_ignore_ascii_case(name))
     }
 
-    /// mcCarArray_Fill (sub_8239D598 -> sub_8239D220): indices of the cars a race can draw for a player
+    /// mcCarArray_Fill (F-77344 -> F-88029): indices of the cars a race can draw for a player
     /// worth `p` at difficulty `d`. When a pass keeps one car or none: d one step up (p < 0.5) or down,
     /// the masks shifted (m1 = m2, m2 = m3, m3 = -1), again; at d -2 or 4 the table's first car is added
     /// to what the pass kept. `usable` (the port's: a car whose model it can load) is one more filter.
@@ -284,6 +284,13 @@ impl OpPick {
     /// men before the loop).
     #[allow(clippy::too_many_arguments)]
     pub fn pick(&self, n: usize, p: f32, d: i32, masks: (i32, i32), used: &[String], usable: &dyn Fn(&str) -> bool) -> Vec<Pick> {
+        let mut rng = career_rng();
+        self.pick_with(&mut rng, n, p, d, masks, used, usable)
+    }
+
+    /// `pick` with the generator given (the draws are `(lo & 0x7FFFFFFF) % n`, [`career_index`]).
+    pub fn pick_with(&self, rng: &mut Mwc, n: usize, p: f32, d: i32, masks: (i32, i32), used: &[String], usable: &dyn Fn(&str) -> bool) -> Vec<Pick> {
+        let index = |rng: &mut Mwc, n: usize| ((rng.next() & 0x7FFF_FFFF) as usize) % n.max(1);
         let arr = self.fill(p, d, masks.0, masks.1, -1, usable);
         let mut taken: Vec<bool> = self.drivers.iter().map(|c| used.iter().any(|u| u.eq_ignore_ascii_case(&c.id))).collect();
         let mut out = Vec::new();
@@ -291,8 +298,8 @@ impl OpPick {
             return out;
         }
         for _ in 0..n {
-            let drawn = self.cars[arr[career_index(arr.len())]].name.clone();
-            // OpponentManager_FindRandomAvailableCharacterByVehicleName (sub_822B8608): not random
+            let drawn = self.cars[arr[index(rng, arr.len())]].name.clone();
+            // OpponentManager_FindRandomAvailableCharacterByVehicleName (F-95899): not random
             let free = |k: usize| !taken[k];
             let chr = (0..self.drivers.len()).find(|&k| free(k) && self.drivers[k].cars.iter().any(|c| joaat(&c.0) == joaat(&drawn))).or_else(|| (0..self.drivers.len()).find(|&k| free(k)));
             let Some(ci) = chr else {
@@ -302,7 +309,7 @@ impl OpPick {
             };
             taken[ci] = true;
             let ch = &self.drivers[ci];
-            // mcCharacterConfigData_GetCarConfigDataByVehicleName (sub_823989B0, class mask 255)
+            // mcCharacterConfigData_GetCarConfigDataByVehicleName (F-46809, class mask 255)
             let class_ok = |car: &str| self.car(car).map_or(true, |c| (1i64 << c.info.class) as i32 & 255 != 0);
             let cfg = ch.cars.iter().filter(|c| class_ok(&c.0)).find(|c| c.0 == drawn).or_else(|| {
                 // (his car whose difficulty class at its band mod value is nearest d; the first wins a tie)
@@ -321,7 +328,7 @@ impl OpPick {
                 continue;
             };
             // mcCarConfigData_GetRandomConfigData: a draw even with one set-up
-            let setup = if cfg.1.is_empty() { "vp_vw_golf_83".to_string() } else { cfg.1[career_index(cfg.1.len())].clone() };
+            let setup = if cfg.1.is_empty() { "vp_vw_golf_83".to_string() } else { cfg.1[index(rng, cfg.1.len())].clone() };
             out.push(Pick { driver: ch.id.clone(), car: cfg.0.clone(), setup, drawn });
         }
         out
@@ -451,6 +458,27 @@ mod tests {
 
     /// The cut GT-R through `extra` (DECISIONS.md D21): a car of the table with the R8's samples,
     /// drawn where the R8 is, raced by GH_12 in its set-up; the disc's cars keep their places.
+    /// The original's race start recorded (work/ai-record/orig/pick3.txt, 2026-10-26; the recomp, Saleen S281
+    /// fully upgraded, ARCADE AROUND HOLLYWOOD, MEDIUM, 3 opponents): the career generator stood at
+    /// (lo 0xe705bc4e, carry 0x2d07775a); seven draws followed (states in pick3.txt), the field was ZX14,
+    /// Gallardo, Gallardo. The draws 1 / 3 / 5 are the cars (index % 10 = 0, 2, 2 in the Fill list of
+    /// car_pick.md 1.4), 2 / 4 / 6 the set-ups; the seventh is not the pick's (the port has no user for it).
+    #[test]
+    fn recorded_pick_draws() {
+        let Some(p) = data() else { return };
+        let mut r = Mwc { lo: 0xe705bc4e, carry: 0x2d07775a };
+        let picks = p.pick_with(&mut r, 3, 0.790155, 1, MASKS_RACE, &[], &|_: &str| true);
+        assert_eq!(picks.iter().map(|q| q.drawn.as_str()).collect::<Vec<_>>(), ["vp_kaw_ninja_zx14_06", "vp_lam_gallardo_06", "vp_lam_gallardo_06"]);
+        // six draws used: the state the recording shows after the sixth
+        assert_eq!((r.lo, r.carry), (0xc6269a6f, 0x405fae24));
+        // a second recorded start (pick6.txt, the next race): generator (0x943e97cd, 0x496cf02a) before; Murcielago,
+        // GT, R8 raced; after the sixth draw (0x1e4b6d15, 0x5566dbd8) (seven draws in all: the seventh is not the pick's)
+        let mut r = Mwc { lo: 0x943e97cd, carry: 0x496cf02a };
+        let picks = p.pick_with(&mut r, 3, 0.790155, 1, MASKS_RACE, &[], &|_: &str| true);
+        assert_eq!(picks.iter().map(|q| q.drawn.as_str()).collect::<Vec<_>>(), ["vp_lam_murcielago_06", "vp_frd_gt_06", "vp_aud_r8_08"]);
+        assert_eq!((r.lo, r.carry), (0x1e4b6d15, 0x5566dbd8));
+    }
+
     #[test]
     fn cut_gtr_as_an_opponent() {
         let dir = "D:/MCLA/extracted/cache";
