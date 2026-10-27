@@ -51,6 +51,8 @@ mod game;
 mod glyphs;
 mod keybinds;
 mod hud;
+#[cfg(test)]
+mod controls_ref;
 mod flash_ui;
 mod selfmovie;
 mod flashpic;
