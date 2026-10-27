@@ -4,9 +4,9 @@
 //! `rule_elements.md`) and checked against frames recorded from the running original
 //! (`work/mm/trace_idle.md`); log in UI_WORK.md, "Minimap and GPS map 1:1".
 //!
-//! - The map is a list of ELEMENTS in seven layers (`mcHudMapServer`, `sub_82238AD8`): gas
+//! - The map is a list of ELEMENTS in seven layers (`mcHudMapServer`, `F-72032`): gas
 //!   stations, locations, vehicles, checkpoints, the player. Each kind has a RENDERER
-//!   (`sub_82235148`) that turns the element into a few textured meshes in world space
+//!   (`F-98280`) that turns the element into a few textured meshes in world space
 //!   (`resources/ui/meshes`: `icon_ring_hangout`, `icon_ring_car`, `caricon`, `icon_ingame<N>` ...),
 //!   sized from the camera height, coloured by the tune (`tune/ui` `HudMap`) or by the element,
 //!   pulsing and cross-fading on a clock - or, on the minimap, into a dot on the rim when it lies
@@ -85,7 +85,7 @@ impl Tune {
 pub const DIFFICULTY: [[f32; 4]; 4] = [[0.576471, 0.980392, 0.0313726, 1.0], [1.0, 1.0, 0.0, 1.0], [0.988235, 0.611765, 0.0, 1.0], [0.8, 0.0, 0.2, 1.0]];
 
 /// The same colours through an element's colour word (`SetColorByDifficulty`: bytes made by
-/// truncation, `sub_82237BE8`).
+/// truncation, `F-88563`).
 pub fn difficulty_word(d: usize) -> [f32; 4] {
     word(DIFFICULTY[d.min(3)])
 }
@@ -304,7 +304,7 @@ impl Assets {
 // ---------------------------------------------------------------------------------------------
 // Elements
 
-/// What an element is (`+36` icon type, `+38` subtype; renderer table `sub_82235148`).
+/// What an element is (`+36` icon type, `+38` subtype; renderer table `F-98280`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
     /// type 0: a checkpoint / destination flag; subtype 0 start (or next), 1 next, 2 next-next,
@@ -361,7 +361,7 @@ impl Kind {
         }
     }
 
-    /// The layer an element of this kind is listed in (`sub_82237978`); flag bits as `+41`.
+    /// The layer an element of this kind is listed in (`F-77867`); flag bits as `+41`.
     pub fn layer(&self, flags: u8) -> usize {
         match self {
             Kind::Checkpoint(_) => {
@@ -613,7 +613,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
 }
 
 /// What the map keeps between frames: its pictures, the minimap target and texture, the clocks
-/// (`sub_82235068`: `HudMap+468` += dt, the strobe position, the pulse phase, the frame count).
+/// (`F-98009`: `HudMap+468` += dt, the strobe position, the pulse phase, the frame count).
 pub struct State {
     pub tune: Tune,
     pub assets: Assets,
@@ -781,7 +781,7 @@ impl State {
 // ---------------------------------------------------------------------------------------------
 // The frame
 
-/// Per-frame values every renderer reads (`sub_822373E8`'s record).
+/// Per-frame values every renderer reads (`F-64763`'s record).
 #[derive(Clone, Copy)]
 pub struct Frame {
     /// 0 minimap, 1 GPS map, 2 overhead map
@@ -795,7 +795,7 @@ pub struct Frame {
     pub scale_a: f32,
     /// `+148`: the checkpoints' base
     pub scale_b: f32,
-    /// the GPS map's per-icon base: |p - camera| * k + c (`sub_82620070`; k 7e-05, c 0.04)
+    /// the GPS map's per-icon base: |p - camera| * k + c (`F-38206`; k 7e-05, c 0.04)
     pub nav_scale: Option<(f32, f32)>,
     /// `HudMap+468` (seconds of map time) and the game clock `0x827D7514`
     pub t468: f32,
@@ -806,7 +806,7 @@ pub struct Frame {
     pub race: bool,
     /// `HudMap+24`: the race's checkpoints are being drawn (only the player and checkpoints pass)
     pub race_checkpoints: bool,
-    /// `+156`: the player's police state (`sub_82701BD8(1)`)
+    /// `+156`: the player's police state (`F-35540(1)`)
     pub police: i32,
     /// `+160`
     pub police0: i32,
@@ -831,7 +831,7 @@ pub struct Draw {
     pub colour: [f32; 4],
 }
 
-/// A dot on the minimap's rim (`sub_822402A0` records).
+/// A dot on the minimap's rim (`F-12952` records).
 #[derive(Clone, Copy, Debug)]
 pub struct Rim {
     pub angle: f32,
@@ -851,7 +851,7 @@ fn diag(s: f32, t: Vec3) -> Mat4 {
     Mat4::from_cols(Vec4::new(s, 0.0, 0.0, 0.0), Vec4::new(0.0, s, 0.0, 0.0), Vec4::new(0.0, 0.0, s, 0.0), t.extend(1.0))
 }
 
-/// The heading of a matrix whose row 2 is `back` (`sub_82238F88`).
+/// The heading of a matrix whose row 2 is `back` (`F-94892`).
 pub fn heading(back: Vec3) -> f32 {
     let c = Vec3::new(back.x, 0.0, back.z).normalize_or(Vec3::Z);
     let h = c.z.clamp(-1.0, 1.0).acos();
@@ -863,7 +863,7 @@ pub fn heading(back: Vec3) -> f32 {
 }
 
 impl Frame {
-    /// The icon bases from the camera height (`sub_822373E8` 0x822376D8..0x8223778C).
+    /// The icon bases from the camera height (`F-64763` A-82768..A-68741).
     pub fn bases(tune: &Tune, mode: u8, cam_y: f32) -> (f32, f32) {
         let (off, fac) = (tune.f("IconScalingOffset", -280.0), tune.f("IconScalingFactor", 9000.0));
         let global = tune.f(["GlobalIconScaleMiniMap", "GlobalIconScaleGPSMap", "GlobalIconScaleOverheadMap"][mode.min(2) as usize], 1.0);
@@ -880,7 +880,7 @@ impl Frame {
         c.truncate() / c.w
     }
 
-    /// `sub_82238D68`: inside the map when |projected (x, y, z)| < RimIconRadius - the depth (0..1)
+    /// `F-72569`: inside the map when |projected (x, y, z)| < RimIconRadius - the depth (0..1)
     /// counts in the length.
     fn inside(&self, tune: &Tune, p: Vec3) -> bool {
         self.project(p).length() < tune.f("RimIconRadius", 1.25)
@@ -904,13 +904,13 @@ pub struct Queue {
 
 impl Queue {
     fn mesh(&mut self, mesh: &'static str, m: Mat4, colour: [f32; 4]) {
-        // (a draw with alpha 0 is skipped, sub_82723940)
+        // (a draw with alpha 0 is skipped, F-61799)
         if colour[3] > 0.0 {
             self.draws.push(Draw { mesh, m, colour });
         }
     }
 
-    /// `sub_82235280`: a rim dot at the element's bearing.
+    /// `F-40572`: a rim dot at the element's bearing.
     fn rim(&mut self, f: &Frame, p: Vec3, colour: [f32; 4], selected: bool, kind: u8) {
         let q = f.project(p);
         let angle = std::f32::consts::FRAC_PI_2 - q.y.atan2(q.x);
@@ -920,7 +920,7 @@ impl Queue {
 
 const PI: f32 = std::f32::consts::PI;
 
-/// The element walk of one frame (`sub_822373E8` + `sub_82236D18` + the renderers), elements
+/// The element walk of one frame (`F-64763` + `F-83806` + the renderers), elements
 /// already in layer order. `checkpoints`: the race's own checkpoints (`HudMap+24` provider),
 /// drawn after the layers; `circuit` = `HudMap+28`.
 pub fn build(tune: &Tune, assets: &mut Assets, f: &Frame, elements: &[Element], checkpoints: &[Vec3], circuit: bool) -> Queue {
@@ -942,7 +942,7 @@ pub fn build(tune: &Tune, assets: &mut Assets, f: &Frame, elements: &[Element], 
         }
         draw_element(tune, assets, &f, e, &mut q, &mut cp_count);
     }
-    // the race's checkpoints (0x822377B8): first = start, second = next, others normal, the last the
+    // the race's checkpoints (A-20285): first = start, second = next, others normal, the last the
     // finish (or the start on a circuit); drawn as in the GPS map (record mode 1)
     if !checkpoints.is_empty() {
         let n = checkpoints.len();
@@ -1159,7 +1159,7 @@ fn mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]]
 }
 
-/// `sub_82239D20`: the arrow of a vehicle (player, cop, other car, red car).
+/// `F-54162`: the arrow of a vehicle (player, cop, other car, red car).
 fn vehicle_arrow(tune: &Tune, f: &Frame, e: &Element, q: &mut Queue) {
     let (scale, rim) = match e.kind {
         // (the player pulses off the minimap: IconPlayerPulseFrequency 12, amplitude 0.05)
@@ -1192,7 +1192,7 @@ fn vehicle_arrow(tune: &Tune, f: &Frame, e: &Element, q: &mut Queue) {
     vehicle_arrow_as(tune, f, &a, q, scale, rim);
 }
 
-/// `sub_82239B80`: a cop's colour - cruising, or flashing by the police state when pulsing.
+/// `F-40117`: a cop's colour - cruising, or flashing by the police state when pulsing.
 fn cop_colour(tune: &Tune, f: &Frame, e: &Element) -> [f32; 4] {
     let cruise = tune.c("CopColorCruising", [0.0, 0.266667, 0.517647, 0.917647]);
     if e.flags & 0x20 == 0 {
@@ -1239,7 +1239,7 @@ fn vehicle_arrow_as(tune: &Tune, f: &Frame, e: &Element, q: &mut Queue, scale: f
     q.mesh("caricon", m, e.colour);
 }
 
-/// `sub_8223A680`: a checkpoint sphere. `mode`: the frame's real mode (the race's checkpoints are
+/// `F-35159`: a checkpoint sphere. `mode`: the frame's real mode (the race's checkpoints are
 /// drawn with the record's mode forced to 1, `provider`).
 fn checkpoint(tune: &Tune, f: &Frame, mode: u8, e: &Element, provider: bool, q: &mut Queue, count: &mut u32) {
     let Kind::Checkpoint(sub) = e.kind else { return };
@@ -1375,7 +1375,7 @@ impl Ripple {
 }
 
 /// The map's render target with four samples per pixel (the original's 4x MSAA: surface field 2): 220x220
-/// "__mini_map" for the minimap, 749x430 "__hud_map" for the overhead map (`sub_821F7920`).
+/// "__mini_map" for the minimap, 749x430 "__hud_map" for the overhead map (`F-76527`).
 pub struct Target {
     pub w: usize,
     pub h: usize,
@@ -1567,7 +1567,7 @@ impl Target {
         }
     }
 
-    /// The rim dots, after the mask (`sub_822404E0` -> `sub_82240340`): unselected from the last to
+    /// The rim dots, after the mask (`F-88946` -> `F-42900`): unselected from the last to
     /// the first, then the selected; a quad of the mesh scaled by 6 at 90 px from the centre.
     pub fn rim(&mut self, assets: &mut Assets, rim: &[Rim], tg: f32) {
         let (cx, cy) = (self.w as f32 * 0.5, self.h as f32 * 0.5);
@@ -1606,7 +1606,7 @@ impl Target {
     }
 }
 
-/// The road layers in the order and colours the map draws them (`sub_822371E0`).
+/// The road layers in the order and colours the map draws them (`F-85917`).
 pub const ROAD_COLOURS: [(&str, [f32; 4]); 5] = [
     ("MinorRoadColor", [0.0470588, 0.0862745, 0.101961, 1.0]),
     ("MainRoadColor", [0.0470588, 0.0862745, 0.101961, 1.0]),
@@ -1615,7 +1615,7 @@ pub const ROAD_COLOURS: [(&str, [f32; 4]); 5] = [
     ("FreewayColor", [0.0470588, 0.0862745, 0.101961, 1.0]),
 ];
 
-/// The minimap's camera (`target0_cam` in coordinate frame 1, `sub_82723570`): `eye` and `look`
+/// The minimap's camera (`target0_cam` in coordinate frame 1, `F-15166`): `eye` and `look`
 /// in the frame turned by the heading `h` about the car's (x, 0, z); 35 degree lens, square,
 /// near 10, far 9000.
 pub fn minimap_view_proj(car: Vec3, h: f32, eye: Vec3, look: Vec3, fovy_deg: f32) -> (Mat4, Vec3) {
@@ -1627,7 +1627,7 @@ pub fn minimap_view_proj(car: Vec3, h: f32, eye: Vec3, look: Vec3, fovy_deg: f32
     (proj * view, e)
 }
 
-/// The overhead map's target "__hud_map" (`sub_821F7920`: 749x430, 32 bpp).
+/// The overhead map's target "__hud_map" (`F-76527`: 749x430, 32 bpp).
 pub const OVERHEAD_W: usize = 749;
 pub const OVERHEAD_H: usize = 430;
 
@@ -1638,8 +1638,8 @@ pub const OVERHEAD_H: usize = 430;
 /// after its easing (`pos += int((cam - pos) / 2)` stops one short; z keeps the 1 left from the
 /// minimap's easing down from 2500); the other city's (`SC_map` 0) (-300, 6000, 0) -> (-300, 0, -610).
 /// Lens `target0_cam.fovy` (35), aspect `target0.aspect` = the movie's viewportWindow width / height
-/// (widescreen: 740 x 500 asked, 739 / 499 settled), near 10, far 9000 (`sub_82723ED8` ->
-/// `sub_8217D460`); the up vector (0, 1, 0) (`sub_82202EC0`). Recorded from the original
+/// (widescreen: 740 x 500 asked, 739 / 499 settled), near 10, far 9000 (`F-27685` ->
+/// `F-79482`); the up vector (0, 1, 0) (`F-97951`). Recorded from the original
 /// (`work/mm/cap/ov_free1.bin`): eye (-299, 7399, 1), x scale 2.14158 = 3.17159 / (739 / 499).
 pub fn overhead_view_proj(eye: Vec3, look: Vec3, fovy_deg: f32, aspect: f32) -> Mat4 {
     Mat4::perspective_rh(fovy_deg.to_radians(), aspect.max(0.1), 10.0, 9000.0) * Mat4::look_at_rh(eye, look, Vec3::Y)
@@ -1653,7 +1653,7 @@ pub fn old_bigmap() -> bool {
 }
 
 /// The delivery start scenes' generic events `big_map_up` (88) and `big_map_down` (89) - they send
-/// the HUD mapGoBig / mapGoNormal (`sub_823D76A8`): scene, up and down in scene seconds
+/// the HUD mapGoBig / mapGoNormal (`F-91263`): scene, up and down in scene seconds
 /// (`gen_prerace_delivery_1x1_0N_generated.sco`; `bookmark_cut_to_game` at the up time, the
 /// countdown event 0.17 s after the down).
 pub const CINE_BIG_MAP: [(&str, f32, f32); 3] = [("gen_prerace_delivery_1x1_01", 6.1, 9.1), ("gen_prerace_delivery_1x1_02", 5.5, 8.5), ("gen_prerace_delivery_1x1_03", 6.0, 9.0)];
@@ -1700,7 +1700,7 @@ pub fn delivery_intro_pick(r: u32) -> DeliveryIntro {
 /// Render the whole map target: roads, queued icons, mask, rim dots.
 pub fn render_minimap(target: &mut Target, assets: &mut Assets, tune: &Tune, roads: Option<&crate::mapmesh::RoadMap>, f: &Frame, q: &Queue, clear_rgb: [f32; 3]) {
     target.clear([clear_rgb[0], clear_rgb[1], clear_rgb[2], 0.0]);
-    // (no road is drawn in a frame without an icon - sub_822371E0)
+    // (no road is drawn in a frame without an icon - F-85917)
     if !q.draws.is_empty() || !q.rim.is_empty() {
         // the overhead map: every road triangle of the city (the view takes it all in); drawn again
         // only when the camera moves - the movie eases it in over a dozen frames, then it stands
@@ -1932,7 +1932,7 @@ fn xray_split(mesh: &egui::Mesh, part: &Part, m: &Mat4, wvp: &Mat4, (c, hw, hh):
     out
 }
 
-/// MAP MODE's road overlay on the GPS map (mcSimpleMap, `sub_82624300`; rule_frame.md 4.4): the
+/// MAP MODE's road overlay on the GPS map (mcSimpleMap, `F-25904`; rule_frame.md 4.4): the
 /// same five road meshes, lifted 2 + 98 t (t = the camera's height fraction), in the order shortcuts,
 /// small, main, large, freeways. Colours and alphas as recorded with every class faded in
 /// (`work/mm/cap/mapmode_low.bin`): shortcuts (1, 1, 1, 0.4), small (0.9, 0.9, 0.5, 0.4), main and
@@ -2084,14 +2084,14 @@ pub fn paint_world(ctx: &egui::Context, painter: &egui::Painter, assets: &mut As
 // ---------------------------------------------------------------------------------------------
 // The GPS map's camera (NavMap; `work/mm/rule_navcam.md`)
 
-/// The map's middle for the "sc" city (outline polygon of `sub_82622260`, box overridden for sc).
+/// The map's middle for the "sc" city (outline polygon of `F-93744`, box overridden for sc).
 pub const NAV_CENTRE: Vec3 = Vec3::new(-327.0, 0.0, 111.5);
 const NAV_MIN: [f32; 2] = [-3627.0, -2488.5];
 const NAV_MAX: [f32; 2] = [2973.0, 2386.5];
 const NAV_LOW: f32 = 850.0;
 const NAV_HIGH: f32 = 9000.0;
 
-/// How far south of its look point the eye stands (`sub_8261FC88`).
+/// How far south of its look point the eye stands (`F-84102`).
 pub fn nav_off(h: f32) -> f32 {
     let f = (h - NAV_LOW) / (5000.0 - NAV_LOW);
     if f > 1.0 {
@@ -2101,7 +2101,7 @@ pub fn nav_off(h: f32) -> f32 {
     }
 }
 
-/// `sub_82227C70`.
+/// `F-86323`.
 fn nav_g(u: f32) -> f32 {
     if u <= 0.0 {
         0.0
@@ -2118,7 +2118,7 @@ fn nav_u(h: f32) -> f32 {
     ((1.0 - t).clamp(-1.0, 1.0).acos() * 0.63662).min(1.0)
 }
 
-/// Where the eye may stand at height `h` (`sub_826206B0`): (xmin, xmax, zmin, zmax).
+/// Where the eye may stand at height `h` (`F-94269`): (xmin, xmax, zmin, zmax).
 pub fn nav_bounds(h: f32, aspect: f32) -> [f32; 4] {
     let off = nav_off(h);
     let a = off.atan2(h);
@@ -2170,7 +2170,7 @@ pub struct NavCam {
     pub exit: Option<NavExit>,
     /// the lens (NM+712)
     pub lens: NavLens,
-    /// the render camera's velocity (playerMgr+0x51420, `sub_82204058`): the eye's move over the last
+    /// the render camera's velocity (playerMgr+0x51420, `F-31556`): the eye's move over the last
     /// 30 Hz frame / that frame's time (1/30 s), y = 0 - and the eye at the start of that frame, time
     /// since then
     vel: Vec3,
@@ -2179,11 +2179,11 @@ pub struct NavCam {
 }
 
 /// The map camera's lens, NM+712: the Lerp_Float transition, a UITransition_Value (start
-/// `sub_8222E1B8`, update `sub_82231720`). Recorded from the original (rule_exitcam.md 10.9): the value
+/// `F-13189`, update `F-34135`). Recorded from the original (rule_exitcam.md 10.9): the value
 /// is eased, from + (to - from) (1 - cos(pi x)) / 2, x = (clock - delay) / duration, written before the
 /// clock steps (the first frame shows `from`) and reaching `to` on the last write. Opening
-/// (`sub_826282C8`): from the game camera's lens to 25 degrees over 23 frames (0.767 s; "half the
-/// opening's 1.5 s" as read, one frame longer as recorded). Closing (`sub_82623748` / `sub_826234A0`):
+/// (`F-39307`): from the game camera's lens to 25 degrees over 23 frames (0.767 s; "half the
+/// opening's 1.5 s" as read, one frame longer as recorded). Closing (`F-88097` / `F-37814`):
 /// from 25 to the game camera's lens (playerMgr+0x131F4), delay 0.2 T, over 0.7 T, T = the closing
 /// flight's length (recorded with T 3.0: 0.6 s / 2.1 s).
 #[derive(Clone, Copy, Debug)]
@@ -2206,7 +2206,7 @@ impl NavLens {
         NavLens { from: 25.0, to: to_deg, delay, dur, clock: 0.0, deg: 25.0 }
     }
 
-    /// the warper's lens (`sub_82219BA0` / `sub_82219DA0`: Lerp_Float 804 from, 812 to, 580 delay, 576
+    /// the warper's lens (`F-98643` / `F-18267`: Lerp_Float 804 from, 812 to, 580 delay, 576
     /// length, written to warper+284)
     pub fn between(from_deg: f32, to_deg: f32, delay: f32, dur: f32) -> NavLens {
         NavLens { from: from_deg, to: to_deg, delay, dur, clock: 0.0, deg: from_deg }
@@ -2235,7 +2235,7 @@ impl Default for NavCam {
 }
 
 impl NavCam {
-    /// Opening (`sub_826282C8` with EnterIntoMaxHeight, then activation `sub_8262AEE0`): fly from
+    /// Opening (`F-39307` with EnterIntoMaxHeight, then activation `F-13388`): fly from
     /// the game camera to the whole city in 1.5 s; the stored look point and the cursor are the
     /// selection's place, else the player's - while the screen shows the whole city.
     pub fn open(&mut self, game_eye: Vec3, game_look: Vec3, at: Vec3, aspect: f32) {
@@ -2254,7 +2254,7 @@ impl NavCam {
         self.vel_t = 0.0;
     }
 
-    /// The eye clamped and the look point made from it (`sub_82625F50`).
+    /// The eye clamped and the look point made from it (`F-38897`).
     fn place(&mut self, mut e: Vec3) {
         e.y = e.y.clamp(NAV_LOW, NAV_HIGH);
         e.x = e.x.clamp(self.bounds[0], self.bounds[1]);
@@ -2263,7 +2263,7 @@ impl NavCam {
         self.look = Vec3::new(e.x, 0.0, e.z - nav_off(e.y));
     }
 
-    /// Fly to an element (Change_Target, `sub_826290C0`): eye over it at the same height, 10 m
+    /// Fly to an element (Change_Target, `F-79270`): eye over it at the same height, 10 m
     /// beyond the offset, in 1 s.
     pub fn fly_to(&mut self, p: Vec3) {
         let h = self.eye.y;
@@ -2297,7 +2297,7 @@ impl NavCam {
                 self.mv = None;
             }
             if zoom_in {
-                // (sub_82626768: about the cursor)
+                // (F-50813: about the cursor)
                 let u = (nav_u(hold) - 0.02).max(0.0);
                 let h = NAV_LOW + (NAV_HIGH - NAV_LOW) * nav_g(u);
                 let k = (hold - h) / h;
@@ -2305,7 +2305,7 @@ impl NavCam {
                 let e = Vec3::new(l.x + (self.cursor.x - l.x) * k, h, l.z + (self.cursor.z - l.z) * k + nav_off(h));
                 self.place(e);
             } else if zoom_out {
-                // (sub_82626968: toward the map's middle)
+                // (F-11681: toward the map's middle)
                 let u = (nav_u(hold) + 0.02).min(1.0);
                 let h = NAV_LOW + (NAV_HIGH - NAV_LOW) * nav_g(u);
                 let k = (h - hold) / (NAV_HIGH + 250.0 - h);
@@ -2314,16 +2314,16 @@ impl NavCam {
                 self.place(e);
             }
         }
-        // the left stick moves the cursor at 0.5 H m/s at full tilt (sub_82629BA0)
+        // the left stick moves the cursor at 0.5 H m/s at full tilt (F-62325)
         if cursor_move != Vec2::ZERO {
             let d = cursor_move * 0.5 * self.eye.y * dt;
             self.cursor += Vec3::new(d.x, 0.0, d.y);
         }
-        // (the bounds of this frame's height, used by the next frame - sub_82623BF8)
+        // (the bounds of this frame's height, used by the next frame - F-51113)
         self.bounds = nav_bounds(self.eye.y, aspect);
-        // the render camera's velocity (`sub_82204058`, once per rendered frame: (eye - previous eye) /
+        // the render camera's velocity (`F-31556`, once per rendered frame: (eye - previous eye) /
         // *(0x827D7558) = the timer's unscaled frame step, 1/30 s at the original's 30 Hz - written every
-        // frame by `sub_821BDA90`; recorded: V = the eye's speed). Sampled on the same 30 Hz frames as
+        // frame by `F-49323`; recorded: V = the eye's speed). Sampled on the same 30 Hz frames as
         // the zoom steps.
         if frame_done {
             let eye = self.view().0;
@@ -2339,7 +2339,7 @@ impl NavCam {
     }
 
     /// The velocity the closing flight starts with (playerMgr+0x51420 with y = 0, handed to the
-    /// transition by `sub_82219678`): the eye's move over the last 30 Hz frame divided by its 1/30 s.
+    /// transition by `F-60031`): the eye's move over the last 30 Hz frame divided by its 1/30 s.
     pub fn eye_velocity(&self) -> Vec3 {
         self.vel
     }
@@ -2352,7 +2352,7 @@ impl NavCam {
         (c.w > 1e-3).then(|| Vec2::new(c.x / c.w, c.y / c.w))
     }
 
-    /// The cursor pushed the view (`sub_82629BA0` at an edge limit): the eye moves by the cursor's
+    /// The cursor pushed the view (`F-62325` at an edge limit): the eye moves by the cursor's
     /// own step on that axis.
     pub fn push(&mut self, d: Vec3) {
         self.mv = None;
@@ -2360,7 +2360,7 @@ impl NavCam {
         self.place(e);
     }
 
-    /// Shape a stick as the NavMap does (`sub_8260C6D8`): radial dead zone 0.2 rescaled, then each
+    /// Shape a stick as the NavMap does (`F-54604`): radial dead zone 0.2 rescaled, then each
     /// axis through 1 - cos(|a| pi / 2) with its sign.
     pub fn shape_stick(v: Vec2) -> Vec2 {
         let m = v.length();
@@ -2396,14 +2396,14 @@ impl NavCam {
                 let s = if x <= 0.5 { 2.0 * x * x } else { 1.0 - 2.0 * (1.0 - x) * (1.0 - x) };
                 (m.from.lerp(m.to, s), m.from_look.lerp(m.to_look, s))
             }
-            // (the pose is always built from the eye - sub_82625F50; the stored look point NM+720
+            // (the pose is always built from the eye - F-38897; the stored look point NM+720
             // only feeds the zoom and may be stale)
             None => (self.eye, Vec3::new(self.eye.x, 0.0, self.eye.z - nav_off(self.eye.y))),
         }
     }
 }
 
-/// CHANGE TARGET (`sub_82628878`): the nearest place (3D distance) whose direction from the cursor
+/// CHANGE TARGET (`F-99017`): the nearest place (3D distance) whose direction from the cursor
 /// lies within 1 rad of `dir` (up = north = -z).
 pub fn pick_in_direction(cursor: Vec3, dir: Vec3, places: &[Vec3]) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
@@ -2440,7 +2440,7 @@ struct StreetLabel {
     rot: f32,
 }
 
-/// The street-name manager (`sub_8262B6F8`): the `gps_sc` labels, 30 shown at most in the 60 slots
+/// The street-name manager (`F-48222`): the `gps_sc` labels, 30 shown at most in the 60 slots
 /// of the NAVSYS2DMOVIE movie, which draws them itself (Prototype 21 px, black over a 0xCFC87B
 /// outline).
 pub struct StreetNames {
@@ -2496,7 +2496,7 @@ impl StreetNames {
         Some(StreetNames { movie, labels, free: (0..60).collect(), acc: 0.0 })
     }
 
-    /// One frame (`sub_8262B450` + `sub_826271C8` + each label's `sub_82627738`) with the map camera
+    /// One frame (`F-91177` + `F-61493` + each label's `F-86093`) with the map camera
     /// `view_proj` onto the 1280x720 stage; `cam_y` its height, `u` the zoom parameter.
     pub fn update(&mut self, view_proj: Mat4, cam_y: f32, u: f32, dt: f32) {
         use mcla_flash::value::Value;
@@ -2620,7 +2620,7 @@ pub struct CamRows {
 }
 
 impl CamRows {
-    /// `sub_82202EC0`: r2 = n(eye - target), r0 = n(up x r2), r1 = r2 x r0.
+    /// `F-97951`: r2 = n(eye - target), r0 = n(up x r2), r1 = r2 x r0.
     pub fn look_at(eye: Vec3, target: Vec3, up: Vec3) -> CamRows {
         let r2 = (eye - target).normalize_or(Vec3::Z);
         let r0 = up.cross(r2).normalize_or(Vec3::X);
@@ -2631,7 +2631,7 @@ impl CamRows {
         self.eye - self.r2 * 100.0
     }
 
-    /// every row times roty(th) (`sub_82202E38`: [[c,0,-s],[0,1,0],[s,0,c]]) - a yaw about world Y
+    /// every row times roty(th) (`F-92665`: [[c,0,-s],[0,1,0],[s,0,c]]) - a yaw about world Y
     fn roty(mut self, th: f32) -> CamRows {
         self.r0 = roty_v(self.r0, th);
         self.r1 = roty_v(self.r1, th);
@@ -2647,7 +2647,7 @@ impl CamRows {
         self
     }
 
-    /// roll about its own r2 (`sub_82227E98`)
+    /// roll about its own r2 (`F-83846`)
     fn roll(mut self, th: f32) -> CamRows {
         let (s, c) = th.sin_cos();
         let (r0, r1) = (self.r0, self.r1);
@@ -2656,7 +2656,7 @@ impl CamRows {
         self
     }
 
-    /// pitch about its own r0 (`sub_82227DE0`)
+    /// pitch about its own r0 (`F-52786`)
     fn pitch(mut self, th: f32) -> CamRows {
         let (s, c) = th.sin_cos();
         let (r1, r2) = (self.r1, self.r2);
@@ -2675,7 +2675,7 @@ fn flat_n(v: Vec3) -> Vec3 {
     Vec3::new(v.x, 0.0, v.z).normalize_or(Vec3::Z)
 }
 
-/// `sub_82229060`: a UITransition time (total_time, delay_start_time) snapped to whole frames of
+/// `F-52353`: a UITransition time (total_time, delay_start_time) snapped to whole frames of
 /// *(0x827D7558) (the timer's frame step, 1/30 s), in single precision: n = trunc(t (1/F) + 0.5), t' =
 /// n / (1/F). 1/F rounds to 29.999998, so a time on a half frame goes DOWN: 0.75 -> 22/30, 2.25 ->
 /// 67/30, 1.05 -> 31/30 (recorded in the original's closing flights, rule_exitcam.md 10.9).
@@ -2696,7 +2696,7 @@ fn s_curve(u: f32) -> f32 {
     }
 }
 
-/// The carried-speed part of the Translate_Axis profile (`sub_8222BF18` / `sub_82230908` with
+/// The carried-speed part of the Translate_Axis profile (`F-76061` / `F-58409` with
 /// v1 = 0): `vm = 2d/T - v0/2, a1 = 2(vm - v0)/T, a2 = -2vm/T` give p(tau) = d s(tau/T) + v0 T g(tau/T),
 /// g(u) = u - 1.5u^2 (u <= 1/2), 1/8 - (w - w^2)/2 with w = u - 1/2; 0 at both ends, slope v0 at 0.
 fn ta_carry(v0: f32, t: f32, tau: f32) -> f32 {
@@ -2710,7 +2710,7 @@ fn ta_carry(v0: f32, t: f32, tau: f32) -> f32 {
     v0 * t * g
 }
 
-/// `sub_8216C9C0`: the angle turning `a` onto `b` in the xz plane.
+/// `F-32060`: the angle turning `a` onto `b` in the xz plane.
 fn sangle(a: Vec3, b: Vec3) -> f32 {
     let (a, b) = (flat_n(a), flat_n(b));
     let ang = a.dot(b).clamp(-1.0, 1.0).acos();
@@ -2721,7 +2721,7 @@ fn sangle(a: Vec3, b: Vec3) -> f32 {
     }
 }
 
-/// `sub_822324A8`: the axis and angle turning `u` onto `v`.
+/// `F-73985`: the axis and angle turning `u` onto `v`.
 fn align(u: Vec3, v: Vec3) -> (Vec3, f32) {
     let (u, v) = (u.normalize_or(Vec3::Y), v.normalize_or(Vec3::Y));
     let cr = u.cross(v);
@@ -2737,7 +2737,7 @@ fn align(u: Vec3, v: Vec3) -> (Vec3, f32) {
     (cr.normalize_or(Vec3::Y), phi)
 }
 
-/// LookAtTarget's blend (`sub_82232090`): from A's rows toward B's by weight w - yaw about world Y,
+/// LookAtTarget's blend (`F-99969`): from A's rows toward B's by weight w - yaw about world Y,
 /// then the view direction, then the up vector (only in the second half with delay_up_rotate).
 fn blend_rows(a: CamRows, b: CamRows, w: f32, delay_up: bool) -> CamRows {
     let (fa, fb) = (flat_n(a.r2), flat_n(b.r2));
@@ -2764,7 +2764,7 @@ fn blend_rows(a: CamRows, b: CamRows, w: f32, delay_up: bool) -> CamRows {
     m
 }
 
-/// `sub_8216C9C0` exactly: the signed xz angle turning `a` onto `b`, 0 when either is vertical.
+/// `F-32060` exactly: the signed xz angle turning `a` onto `b`, 0 when either is vertical.
 fn sangle0(a: Vec3, b: Vec3) -> f32 {
     let n = ((a.x * a.x + a.z * a.z) * (b.x * b.x + b.z * b.z)).sqrt();
     if n - 1e-12 < 0.0 {
@@ -2788,7 +2788,7 @@ fn wrap_pi(mut a: f32) -> f32 {
     a
 }
 
-/// The rage spline's Catmull-Rom segment (`sub_825857F8` basis 0x82812730, `sub_82585458`).
+/// The rage spline's Catmull-Rom segment (`F-85496` basis 0x82812730, `F-39947`).
 fn catmull(p: [Vec3; 4], u: f32) -> Vec3 {
     let c0 = p[0] * -0.5 + p[1] * 1.5 - p[2] * 1.5 + p[3] * 0.5;
     let c1 = p[0] - p[1] * 2.5 + p[2] * 2.0 - p[3] * 0.5;
@@ -2796,7 +2796,7 @@ fn catmull(p: [Vec3; 4], u: f32) -> Vec3 {
     c0 * (u * u * u) + c1 * (u * u) + c2 * u + p[1]
 }
 
-/// Which closing flight (`sub_82219678`, GPS branch, rule_exitcam.md 10).
+/// Which closing flight (`F-60031`, GPS branch, rule_exitcam.md 10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitKind {
     /// Exiting_Map_GPS_HighAltitude (3.0 s)
@@ -2812,8 +2812,8 @@ pub enum ExitKind {
 }
 
 impl ExitKind {
-    /// `sub_82219678` with start S = the map camera (playerMgr+0x513E0) and end E = the gameplay camera
-    /// (playerMgr+0x13170, `sub_82623748`): h = S.y, dist = |flat(S - E)|, f1 = sangle(S.r2, flat(S - E))
+    /// `F-60031` with start S = the map camera (playerMgr+0x513E0) and end E = the gameplay camera
+    /// (playerMgr+0x13170, `F-88097`): h = S.y, dist = |flat(S - E)|, f1 = sangle(S.r2, flat(S - E))
     /// (where the map camera stands seen from the car's camera, 0 = due south since the map's r2 points
     /// south), f30 = sangle(E.r2, S.r2) (the chase camera's back against south; +-pi = car facing south).
     pub fn choose(s: &CamRows, e: &CamRows) -> ExitKind {
@@ -2861,7 +2861,7 @@ impl ExitKind {
     }
 }
 
-/// The way back to driving (`sub_82623748` -> `sub_82219678`): one of five UITransition states of
+/// The way back to driving (`F-88097` -> `F-60031`): one of five UITransition states of
 /// Main.sc.xml picked from the map camera's height, distance and angles to the driving camera.
 #[derive(Clone)]
 pub struct NavExit {
@@ -2879,7 +2879,7 @@ pub struct NavExit {
     acc: f32,
     lam: f32,
     /// the map camera's velocity handed in (vfuncs 736 / 744), y = 0, and its projections (vfunc 860
-    /// `sub_8222F6F8`) on along_final_look (3D: n(E.r3 + n(E.r2) target - S.r3)) and final_look
+    /// `F-18512`) on along_final_look (3D: n(E.r3 + n(E.r2) target - S.r3)) and final_look
     /// (n(flat E.r2))
     vel: Vec3,
     v0_along: f32,
@@ -2905,7 +2905,7 @@ impl NavExit {
         NavExit::moving(s, e, Vec3::ZERO)
     }
 
-    /// `sub_82219678` also hands the render camera's velocity (playerMgr+0x51420, y set to 0) to the
+    /// `F-60031` also hands the render camera's velocity (playerMgr+0x51420, y set to 0) to the
     /// transition: Lean / Parallel give it to every child, a Serial to its first child; each
     /// Translate_Axis projects it on its axis (vfunc 860) and starts its profile with that speed.
     /// The choice itself does not use it.
@@ -2962,7 +2962,7 @@ impl NavExit {
         let (s, e) = (self.s, self.e);
         let prev_eye = self.out.eye;
         let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z);
-        // LookAtTarget (`sub_82231DA8`): from A (the camera when it starts) toward looking at L from
+        // LookAtTarget (`F-47360`): from A (the camera when it starts) toward looking at L from
         // the camera's last place, up = E.r1, cosine weight over `ttl` from clock `d0`
         let look = |this: &mut NavExit, d0: f32, ttl: f32, target: f32, delay_up: bool| {
             let a = *this.lat_a.get_or_insert(this.out);
@@ -3034,7 +3034,7 @@ impl NavExit {
             }
             ExitKind::SouthSideCloseCar => {
                 // X, Z (0, 1.5); AxisStages('Y', 100, 1.05, .5); Forward(+300 (0, 1), -300 (0, .5));
-                // Axis2Stages('target_velocity', ..) moves nothing (no vector handed in, `sub_8222E908`)
+                // Axis2Stages('target_velocity', ..) moves nothing (no vector handed in, `F-66730`)
                 // (AxisStages' 1.05 snaps to 31/30 s)
                 let y1 = ui_time(1.05);
                 let xz = flat(s.eye) + (flat(e.eye) - flat(s.eye)) * s_curve(c / 1.5);
@@ -3045,8 +3045,8 @@ impl NavExit {
                 out.eye = Vec3::new(xz.x, y, xz.z) + fwd;
             }
             ExitKind::SharpAngle => {
-                // UITransition_Translate_Spline_ExitSharpAngle (`sub_82232790` / `sub_8222CA60` /
-                // `sub_8222CCF8`): x, z on a Catmull-Rom curve S -> P1 -> E, a segment per half of the
+                // UITransition_Translate_Spline_ExitSharpAngle (`F-38895` / `F-34196` /
+                // `F-43336`): x, z on a Catmull-Rom curve S -> P1 -> E, a segment per half of the
                 // time; P1 = E + 100 n(E.r0) (to the side the chase camera turns from) - 150 m toward S
                 let sign = if sangle0(e.r2, s.r2) >= 0.0 { 1.0 } else { -1.0 };
                 let (p0, p2) = (s.eye, e.eye);
@@ -3072,11 +3072,11 @@ impl NavExit {
         if self.vel != Vec3::ZERO {
             out.eye += self.carried(c, c_prev);
         }
-        // Lean (`sub_8222ED38`): a roll into the turn, sampled at 30 Hz as the original's frames
+        // Lean (`F-10316`): a roll into the turn, sampled at 30 Hz as the original's frames
         self.acc += dt;
         while self.acc >= 1.0 / 30.0 {
             self.acc -= 1.0 / 30.0;
-            // (d = sangle(flat prev.r2, flat out.r2): `sub_8216C9C0(r3 = prev, r4 = out)` - recorded:
+            // (d = sangle(flat prev.r2, flat out.r2): `F-32060(r3 = prev, r4 = out)` - recorded:
             // the other order rolled the wrong way)
             let d = sangle(self.prev.r2, out.r2);
             self.prev = out;
@@ -3101,17 +3101,17 @@ impl NavExit {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The cinematic warps (race start from the map: mcWarper `sub_8221A440` / `sub_82219DA0`,
+// The cinematic warps (race start from the map: mcWarper `F-32081` / `F-18267`,
 // `work/career2/re_start/notes.md`, rule_exitcam.md "Cinematic warps (race start)")
 
-/// The start scene begins (`sub_8221BE98` state 19 clears cineMgr+293 = IsGameReadyForScene) when the
+/// The start scene begins (`F-31347` state 19 clears cineMgr+293 = IsGameReadyForScene) when the
 /// flight's time reaches `total - CINE_HANDOVER` (`+260 + 1e-4 >= T - 30 * frame_dt` = T - 1.0 s at the
-/// original's 30 Hz). The flight's end E is the scene camera at scene t = 1.0 (`sub_823C0D10`, req+3 = 0),
+/// original's 30 Hz). The flight's end E is the scene camera at scene t = 1.0 (`F-62707`, req+3 = 0),
 /// so scene t = flight time - (total - CINE_HANDOVER) and the flight lands on the scene camera exactly when
 /// it is over; from then on the camera is the scene's.
 pub const CINE_HANDOVER: f32 = 1.0;
 
-/// Which cinematic warp (`sub_82219678` with req+9 = 1, the `Warp_*_Cinematically` states of
+/// Which cinematic warp (`F-60031` with req+9 = 1, the `Warp_*_Cinematically` states of
 /// tune/ui/transitions/Main.sc.xml).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CineKind {
@@ -3129,15 +3129,15 @@ pub enum CineKind {
     SouthSideCloseCar,
     /// Warp_Target_Close (l.354, "used for story location cuts": a Serial with one UITransition_Lerp,
     /// ease_in_out, total 1, no Lean) - STORY_LOCATION_CUT_SIMPLE with the render camera within 100 of
-    /// the destination (`sub_8221A440` case 17); `CineWarp::target_close`
+    /// the destination (`F-32081` case 17); `CineWarp::target_close`
     TargetClose,
 }
 
 impl CineKind {
-    /// `sub_82219678`, req+9 = 1: S = the render camera (playerMgr+0x513E0), E = the start scene's camera
+    /// `F-60031`, req+9 = 1: S = the render camera (playerMgr+0x513E0), E = the start scene's camera
     /// at scene t 1.0; h = S.y, dist = |flat(S - E)|, f30 = sangle(E.r2, S.r2) as `ExitKind::choose`.
     /// Differs from the GPS tree: the f1 test is `f1 > 0.75 && f1 < -0.75` (never true) and an extra
-    /// `E.z > S.z -> AboveCar` comes before the f30 test (`0x8221980C..0x822198EC`). req+4 (forces
+    /// `E.z > S.z -> AboveCar` comes before the f30 test (`A-28643..A-41039`). req+4 (forces
     /// CloseToTarget) is 0 on the race start.
     pub fn choose(s: &CamRows, e: &CamRows) -> CineKind {
         let h = s.eye.y;
@@ -3159,7 +3159,7 @@ impl CineKind {
         }
     }
 
-    /// The flight's length (the top node's real total, `sub_82228180`): max over the children of
+    /// The flight's length (the top node's real total, `F-66580`): max over the children of
     /// delay + total with the times snapped by `ui_time`; equal to the Lean's own length in every state.
     pub fn total(self) -> f32 {
         match self {
@@ -3176,7 +3176,7 @@ impl CineKind {
         }
     }
 
-    /// The Lean's child clock at real time `t` (`sub_82229AA0`): ease_out C = T sin(pi t / 2T)
+    /// The Lean's child clock at real time `t` (`F-17563`): ease_out C = T sin(pi t / 2T)
     /// (LowAltitude, AboveCar, SharpAngle, SouthSide), ease_in_out C = T (1 - cos(pi t / T)) / 2
     /// (CloseToTarget), none (HighAltitude: neither its Parallel nor its Lean has an easing).
     fn clock(self, t: f32) -> f32 {
@@ -3198,7 +3198,7 @@ impl CineKind {
     }
 }
 
-/// The end-velocity part of the Translate_Axis profile (`sub_8222BF18` / `sub_82230908` with d = 0,
+/// The end-velocity part of the Translate_Axis profile (`F-76061` / `F-58409` with d = 0,
 /// v0 = 0, v1 = +404): `vm = -v1/2, a1 = -v1/T, a2 = 3v1/T` give p = v1 T h(u), h(u) = -u^2/2 (u <= 1/2),
 /// -1/8 - w/2 + 1.5 w^2 with w = u - 1/2; 0 at both ends, slope v1 at u = 1.
 fn ta_end(v1: f32, t: f32, tau: f32) -> f32 {
@@ -3212,13 +3212,13 @@ fn ta_end(v1: f32, t: f32, tau: f32) -> f32 {
     v1 * t * h
 }
 
-/// A cinematic warp flight from the render camera S to the start scene's camera E (`sub_82219DA0`):
+/// A cinematic warp flight from the render camera S to the start scene's camera E (`F-18267`):
 /// the chosen state with output warper+192, start S, end E, T.720(V = req+80, the scene camera's
-/// velocity from `sub_823C0F88`), and the lens's Lerp_Float (warper+292, `sub_82219B40`).
+/// velocity from `F-81729`), and the lens's Lerp_Float (warper+292, `F-59974`).
 ///
-/// T.720 (Lean / Parallel `sub_822296E8`: every child; Serial `sub_8222A850`: 720 to its LAST child,
+/// T.720 (Lean / Parallel `F-79404`: every child; Serial `F-90176`: 720 to its LAST child,
 /// 724 to all) gives every Translate_Axis that gets it the vector (+448, the target_velocity direction)
-/// and, with 720 (`sub_8222BBB8`), the end speed v1 = its projection (vfunc 860) - so with V != 0 the
+/// and, with 720 (`F-16072`), the end speed v1 = its projection (vfunc 860) - so with V != 0 the
 /// pieces arrive moving with the scene camera; the target_velocity Axis2Stages moves `-k` then `+k`
 /// along n(V) (net 0, the second stage ending at |V|). V = 0 adds nothing.
 /// Not handed in: the chooser's T.736 (the render camera's own velocity, playerMgr+0x51420) - assumed 0
@@ -3263,9 +3263,9 @@ impl CineWarp {
         self.kind
     }
 
-    /// STORY_LOCATION_CUT_SIMPLE (the garages' and hangouts' Warper_TransitionTo, `sub_8221A440` case 17)
+    /// STORY_LOCATION_CUT_SIMPLE (the garages' and hangouts' Warper_TransitionTo, `F-32081` case 17)
     /// with the render camera `s` within 100 of the destination `e`: Warp_Target_Close started by
-    /// `sub_8221A3E0` -> `sub_82219BA0`, whose lens (Lerp_Float, warper+292) goes from the current one to
+    /// `F-47096` -> `F-98643`, whose lens (Lerp_Float, warper+292) goes from the current one to
     /// req+96 = 21.86547 (degrees; the 51 mm scene lens) with no delay over 0.8 T (0x820082E0).
     pub fn target_close(s: CamRows, e: CamRows, fov_from: f32, fov_to: f32) -> CineWarp {
         let kind = CineKind::TargetClose;
@@ -3356,7 +3356,7 @@ impl CineWarp {
                 q
             }
             CineKind::CloseToTarget | CineKind::TargetClose => {
-                // UITransition_Lerp (start `sub_822314D0`, update `sub_8222DE78`, `sub_8222DD28`): its own
+                // UITransition_Lerp (start `F-50507`, update `F-33191`, `F-31424`): its own
                 // ease_in_out clock over 2 s (1 s in Warp_Target_Close) on top of the Lean's; eye = S + (E - S) p
                 s.eye + (e.eye - s.eye) * self.lerp_p(c)
             }
@@ -3383,7 +3383,7 @@ impl CineWarp {
     }
 
     /// The Lerp's progress at Lean clock `c`: (1 - cos(pi min(1, c / T))) / 2 (its ease_in_out,
-    /// `sub_82227CE8`, total T = 2; 1 in Warp_Target_Close).
+    /// `F-39265`, total T = 2; 1 in Warp_Target_Close).
     fn lerp_p(&self, c: f32) -> f32 {
         let tl = if self.kind == CineKind::TargetClose { 1.0 } else { 2.0 };
         (1.0 - (PI * (c / tl).clamp(0.0, 1.0)).cos()) * 0.5
@@ -3406,7 +3406,7 @@ impl CineWarp {
         let cur = self.out;
         let eye = self.eye_at(c, self.t, t_prev);
         let ey = |r: CamRows| r.r2.x.atan2(r.r2.z);
-        // LookAtTarget (`sub_82231DA8`): from A toward looking at L = E.r3 + n(E.r2) target (796 sets
+        // LookAtTarget (`F-47360`): from A toward looking at L = E.r3 + n(E.r2) target (796 sets
         // +452 = 0: req+10 = 0) from the camera's last place, up E.r1, cosine weight over `ttl` (not
         // snapped) from `d0`, w = 1 once its snapped delay + total `done` is passed
         let look = |this: &mut CineWarp, a: CamRows, d0: f32, ttl: f32, done: f32, target: f32, delay_up: bool| {
@@ -3455,15 +3455,15 @@ impl CineWarp {
                 }
             }
             CineKind::CloseToTarget | CineKind::TargetClose => {
-                // the Lerp's rows: slerp of the start / end quaternions (`sub_821BA038`, shorter way,
-                // `sub_821D5BE8`)
+                // the Lerp's rows: slerp of the start / end quaternions (`F-50812`, shorter way,
+                // `F-97287`)
                 let q = |r: CamRows| glam::Quat::from_mat3(&glam::Mat3::from_cols(r.r0, r.r1, r.r2)).normalize();
                 let m = glam::Mat3::from_quat(q(s).slerp(q(e), self.lerp_p(c)));
                 CamRows { r0: m.x_axis, r1: m.y_axis, r2: m.z_axis, eye }
             }
         };
         out.eye = eye;
-        // Lean (`sub_8222ED38`) at 30 Hz, as NavExit
+        // Lean (`F-10316`) at 30 Hz, as NavExit
         let lean_factor = self.kind.lean_factor();
         self.acc += dt;
         while self.acc >= 1.0 / 30.0 {
@@ -3490,9 +3490,9 @@ impl CineWarp {
     }
 }
 
-/// The climb of Warper_Warp('DEFAULT_WITH_CUT') (request type 4, `sub_8221A440` case 0x8221A8F4): one
-/// of three `Warp_*_Cinematically` states of tune/ui/transitions/Main.sc.xml picked by `sub_822192F8`
-/// (req+9 = 1, type not 8 / 9, the FromCarToLowWaitPosition distance 0): f1 = `sub_8216C9C0(S.r2,
+/// The climb of Warper_Warp('DEFAULT_WITH_CUT') (request type 4, `F-32081` case A-30830): one
+/// of three `Warp_*_Cinematically` states of tune/ui/transitions/Main.sc.xml picked by `F-81678`
+/// (req+9 = 1, type not 8 / 9, the FromCarToLowWaitPosition distance 0): f1 = `F-32060(S.r2,
 /// (0, 0, -1))` (S = the render camera, playerMgr+0x513E0; constants 0x82000ED4 = 0, 0x82003770 = -1),
 /// 0 < f1 < 1.57 -> Sharp_Angle_Right, -1.57 < f1 < 0 -> Sharp_Angle_Left, else FocusOnCar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3527,19 +3527,19 @@ impl ClimbKind {
         }
     }
 
-    /// ease_in on the top Parallel (`sub_82229AA0`): C = T (1 - cos(pi t / 2T)).
+    /// ease_in on the top Parallel (`F-17563`): C = T (1 - cos(pi t / 2T)).
     fn clock(self, t: f32) -> f32 {
         let tl = self.total();
         tl * (1.0 - ((t / tl).clamp(0.0, 1.0) * PI * 0.5).cos())
     }
 }
 
-/// The climb's flight (`sub_82219BA0`: T.648(warper+192), 632(S = the render camera), 636(E = the
-/// player car's matrix, `sub_822A8108`: rows right, up, back), 736 / 744(V = the render camera's velocity,
+/// The climb's flight (`F-98643`: T.648(warper+192), 632(S = the render camera), 636(E = the
+/// player car's matrix, `F-35658`: rows right, up, back), 736 / 744(V = the render camera's velocity,
 /// playerMgr+0x51420 = its last frame's step over the unscaled frame time, y 0: the Translate_Axis
 /// children carry it - `ta_carry`), no 720: the target_velocity Axis2Stages move nothing).
 /// Lens (warper+292, Lerp_Float): from playerMgr+0x51430 to req+96 = 25, no delay, over 0.8 T
-/// (0x820082E0). No Lean (no roll). When it is over (`sub_8221B8C8`) the camera keeps its last matrix
+/// (0x820082E0). No Lean (no roll). When it is over (`F-99030`) the camera keeps its last matrix
 /// and Warper_IsReadyToLoadStuff turns true.
 #[derive(Clone)]
 pub struct CineClimb {
@@ -3745,6 +3745,185 @@ mod tests {
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
         enc.write_header().unwrap().write_image_data(&out).unwrap();
+    }
+
+    /// The minimap pass's camera against the recorded idle frame (`work/mm/cap/mm_idle.bin`, draw 1515, an
+    /// identity-world road draw: VS c8..c11 is the camera's view-projection, c12..c15 its ViewInverse).
+    /// `minimap_view_proj` with the recorded eye and a look point along the recorded back vector
+    /// (35 degree lens, square, near 10, far 9000) must give the recorded matrix.
+    #[test]
+    fn minimap_camera_matches_the_recorded_frame() {
+        let eye = Vec3::new(820.085144, 1891.0, -809.289124);
+        let back = Vec3::new(0.027579, 0.998312, -0.051105);
+        let (vp, e) = minimap_view_proj(Vec3::ZERO, 0.0, eye, eye - back * 500.0, 35.0);
+        assert!((e - eye).length() < 1e-3);
+        let rec = [[-2.791112, -1.503681, -0.02761, -0.027579], [0.0, 0.184181, -0.999423, -0.998312], [-1.506222, 2.786402, 0.051162, 0.051105], [1069.980347, 3139.864258, 1943.944946, 1951.785034]];
+        let got = vp.to_cols_array_2d();
+        for c in 0..4 {
+            for r in 0..4 {
+                let tol = if c == 3 { 0.05 } else { 2e-4 };
+                assert!((got[c][r] - rec[c][r]).abs() < tol, "col {c} row {r}: {} vs {}", got[c][r], rec[c][r]);
+            }
+        }
+    }
+
+    /// The icons of the recorded idle frame (`work/mm/cap/mm_idle.bin`, draws 1530..1552, R8 outside the
+    /// Hollywood garage at night, speed 0, `docs/reference/minimap/trace_idle.md`): position, uniform
+    /// scale, turn about y, colour and the target pixel of every draw, against the numbers read from the
+    /// recording (`work/mm/mmdraws.py`). The scales are b x kind x 0.41361 (gas 100, hangout / garage 139,
+    /// cop 158, player 130, racer 158 pulsing). Two entity headings (racer, cop) are inputs rounded to
+    /// 0.1 degree, T468 is the recorded 5.101 (3 digits): the racer's pulse and cross-fade alphas carry that.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the extracted disc"]
+    fn recorded_idle_frame_icons_match_the_original() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let tune = Tune::load(&dir);
+        let mut assets = Assets::new(&dir);
+        let eye = Vec3::new(820.085144, 1891.0, -809.289124);
+        let back_cam = Vec3::new(0.027579, 0.998312, -0.051105);
+        let (view_proj, _) = minimap_view_proj(Vec3::ZERO, 0.0, eye, eye - back_cam * 500.0, 35.0);
+        let back = Vec3::new(0.47491, 0.0, -0.880034);
+        let (a, b) = Frame::bases(&tune, 0, eye.y);
+        let frame = |t468: f32| Frame { mode: 0, view_proj, cam_pos: eye, theta: heading(back), scale_a: a, scale_b: b, nav_scale: None, t468, tg: t468, frame_no: 0, race: false, race_checkpoints: false, police: 0, police0: 0, target_set: false, strobe: 0.0, pulse: 0.0, cap_lift: false, h473: false, strobe_on: true };
+        let deg = |d: f32| Vec3::new(d.to_radians().sin(), 0.0, d.to_radians().cos());
+        let mut els = Vec::new();
+        for p in [(241.0, -918.4), (516.8, -1368.3), (519.7, -1290.6), (816.06, -1283.56), (1030.06, -307.56), (38.0, -415.0), (516.6, -751.6)] {
+            els.push(Element::at(Kind::Gas, Vec3::new(p.0, 0.0, p.1)));
+        }
+        els.push(Element::at(Kind::Garage, Vec3::new(844.72803, 18.28, -819.383)));
+        let mut h = Element::at(Kind::Series, Vec3::new(729.04602, 9.391, -285.35101));
+        h.colour = [1.0, 1.0, 0.0, 1.0];
+        els.push(h);
+        let mut r = Element::at(Kind::Racer(10), Vec3::new(396.14804, 19.84267, -727.62256));
+        r.back = deg(270.2);
+        r.colour = DIFFICULTY[1];
+        r.mission = true;
+        els.push(r);
+        let mut c = Element::at(Kind::Cop, Vec3::new(417.31116, 14.88972, -582.53674));
+        c.back = deg(-88.3);
+        els.push(c);
+        els.push(Element::at(Kind::Delivery, Vec3::new(844.72803, 18.28, -819.383)));
+        let mut p = Element::at(Kind::Player, Vec3::new(819.61023, 17.57223, -808.40912));
+        p.back = back;
+        els.push(p);
+        // T468 was recorded to 3 digits (5.101): take the value within +-0.0005 for which the racer's three
+        // alphas (ring 0.96784, cross-fade 0.6821 / 0.3179) all agree with the recording - two different
+        // functions of the one clock, so a wrong rule would not find a common time.
+        let mut found = None;
+        for i in 0..=100 {
+            let t = 5.1005 + i as f32 * 1e-5;
+            let q = build(&tune, &mut assets, &frame(t), &els, &[], false);
+            let al: Vec<f32> = q.draws[11..14].iter().map(|d| d.colour[3]).collect();
+            if (al[0] - 0.96784).abs() < 1.5e-4 && (al[1] - 0.6821).abs() < 1.5e-4 && (al[2] - 0.3179).abs() < 1.5e-4 {
+                found = Some(t);
+                break;
+            }
+        }
+        let t468 = found.expect("no clock value fits the racer's three alphas");
+        let f = frame(t468);
+        let q = build(&tune, &mut assets, &f, &els, &[], false);
+        // mesh, x, y, z, scale, yaw (deg), pixel x, pixel y, rgba
+        #[rustfmt::skip]
+        let rec: [(&str, [f32; 3], f32, f32, [f32; 2], [f32; 4]); 19] = [
+            ("icon_gasStation", [241.0, 1.0, -918.40002], 50.7457, -151.6465, [213.24139, 97.32384], [0.50196, 0.50196, 0.50196, 1.0]),
+            ("icon_gasStation", [516.8, 1.0, -1368.3], 50.7457, -151.6465, [209.50398, 195.4308], [0.50196, 0.50196, 0.50196, 1.0]),
+            ("icon_gasStation", [519.7, 1.0, -1290.6], 50.7457, -151.6465, [201.93849, 182.7774], [0.50196, 0.50196, 0.50196, 1.0]),
+            ("icon_gasStation", [816.06, 1.0, -1283.56], 50.7457, -151.6465, [152.84954, 208.24082], [0.50196, 0.50196, 0.50196, 1.0]),
+            ("icon_gasStation", [1030.06, 1.0, -307.56], 50.7457, -151.6465, [32.58941, 67.64325], [0.50196, 0.50196, 0.50196, 1.0]),
+            ("icon_gasStation", [38.0, 1.0, -415.0], 50.7457, -151.6465, [200.63382, 0.11283], [0.50196, 0.50196, 0.50196, 1.0]),
+            ("icon_gasStation", [516.6, 1.0, -751.6], 50.7457, -151.6465, [154.05315, 94.41169], [0.50196, 0.50196, 0.50196, 1.0]),
+            ("icon_ring_hangout", [844.72803, 1.0, -819.383], 70.53652, -151.6465, [106.87449, 134.10946], [1.0, 1.0, 1.0, 1.0]),
+            ("icon_garage", [844.72803, 1.0, -819.383], 70.53652, -151.6465, [106.87449, 134.10946], [1.0, 1.0, 1.0, 1.0]),
+            ("icon_ring_hangout", [729.04602, 1.0, -285.35101], 70.53652, -151.6465, [79.28269, 38.31456], [1.0, 1.0, 0.0, 1.0]),
+            ("icon_series", [729.04602, 1.0, -285.35101], 70.53652, -151.6465, [79.28269, 38.31456], [1.0, 1.0, 1.0, 1.0]),
+            ("icon_ring_car", [396.14804, 20.84267, -727.62256], 82.89776, -135.1786, [171.94134, 79.58726], [1.0, 1.0, 0.0, 0.96784]),
+            ("icon_series", [396.14804, 20.84267, -727.62256], 82.89776, -151.6465, [171.94134, 79.58726], [1.0, 1.0, 1.0, 0.6821]),
+            ("icon_ingame1", [396.14804, 20.84267, -727.62256], 82.89776, -151.6465, [171.94134, 79.58726], [1.0, 1.0, 1.0, 0.3179]),
+            ("caricon", [417.31116, 15.88972, -582.53674], 80.17821, 88.3355, [155.43933, 58.20567], [0.0, 0.26667, 0.51765, 0.91765]),
+            ("icon_ring_hangout", [844.72803, 1.0, -819.383], 70.53652, -151.6465, [106.87449, 134.10946], [1.0, 1.0, 1.0, 1.0]),
+            ("icon_delivery", [844.72803, 1.0, -819.383], 70.53652, -151.6465, [106.87449, 134.10946], [1.0, 1.0, 1.0, 0.73877]),
+            ("icon_garage", [844.72803, 1.0, -819.383], 70.53652, -151.6465, [106.87449, 134.10946], [1.0, 1.0, 1.0, 0.26123]),
+            ("caricon", [819.61023, 18.57223, -808.40912], 65.96941, -151.6465, [110.00001, 130.10724], [0.45098, 0.96078, 1.0, 1.0]),
+        ];
+        assert_eq!(q.draws.len(), rec.len(), "draw count");
+        for (d, r) in q.draws.iter().zip(rec.iter()) {
+            let pos = d.m.w_axis.truncate();
+            let scale = d.m.x_axis.truncate().length();
+            let yaw = d.m.x_axis.z.atan2(d.m.x_axis.x).to_degrees();
+            let c = view_proj * pos.extend(1.0);
+            let px = [110.0 + 110.0 * c.x / c.w, 110.0 - 110.0 * c.y / c.w];
+            let tag = format!("{} at {pos:?}", d.mesh);
+            assert_eq!(d.mesh, r.0, "{tag}: mesh");
+            assert!((pos - Vec3::from(r.1)).length() < 2e-3, "{tag}: pos {pos:?} vs {:?}", r.1);
+            assert!((scale - r.2).abs() < r.2 * 1e-4, "{tag}: scale {scale} vs {}", r.2);
+            assert!((yaw - r.3).abs() < 0.06, "{tag}: yaw {yaw} vs {}", r.3);
+            assert!((px[0] - r.4[0]).abs() < 0.02 && (px[1] - r.4[1]).abs() < 0.02, "{tag}: pixel {px:?} vs {:?}", r.4);
+            for k in 0..4 {
+                assert!((d.colour[k] - r.5[k]).abs() < 2e-4, "{tag}: colour {:?} vs {:?}", d.colour, r.5);
+            }
+        }
+    }
+
+    /// The GPS map's icon sizes against the recorded frame `work/mm/cap/gps_whole.bin` (whole city, camera
+    /// (-327, 9000, 111.5) straight down; draws 4283..4337): every icon is kind x (|position - camera| x 7e-5 +
+    /// 0.04) (`F-38206`) - the 27 gas stations (kind 100), the Hollywood garage and a hangout (139) and a
+    /// cop (158), at the recorded world positions (y = the element's height + 1) and scales.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the extracted disc"]
+    fn recorded_gps_frame_icon_scales_match_the_original() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let tune = Tune::load(&dir);
+        let mut assets = Assets::new(&dir);
+        let cam = Vec3::new(-327.0, 9000.0, 111.5);
+        let view_proj = Mat4::perspective_rh(25f32.to_radians(), 16.0 / 9.0, 100.0, 20000.0) * Mat4::look_at_rh(cam, cam + Vec3::new(0.0, -1.0, -0.00111), Vec3::new(0.0, 0.0, -1.0));
+        let (a, b) = Frame::bases(&tune, 1, cam.y);
+        let f = Frame { mode: 1, view_proj, cam_pos: cam, theta: 0.0, scale_a: a, scale_b: b, nav_scale: Some((7e-5, 0.04)), t468: 5.0, tg: 5.0, frame_no: 0, race: false, race_checkpoints: false, police: 0, police0: 0, target_set: false, strobe: 0.0, pulse: 0.0, cap_lift: false, h473: false, strobe_on: true };
+        // x, y, z (as drawn), scale
+        let gas: [(f32, f32, f32, f32); 27] = [
+(241.0000, 26.7600, -918.4000, 67.3569),
+(516.8000, 32.7600, -1368.3000, 67.9001),
+(519.7000, 31.7600, -1290.6000, 67.8230),
+(816.0600, 32.7600, -1283.5601, 68.0346),
+(-259.4000, -2.0600, -32.4000, 67.0312),
+(-732.2000, 3.7600, -157.7000, 67.0727),
+(-559.9000, 40.7600, -1784.9000, 68.1318),
+(-2768.8999, -28.7600, -979.4000, 69.9226),
+(1030.0601, 7.7600, -307.5600, 67.7329),
+(38.0000, 7.7600, -415.0000, 67.1122),
+(-598.9000, -9.7600, 339.9000, 67.1243),
+(-1834.4000, 4.7000, -216.6000, 67.8933),
+(516.6000, 21.4000, -751.6000, 67.4224),
+(2348.3000, -2.5000, -263.3000, 69.8003),
+(-607.0000, -21.1000, 1700.7000, 68.1569),
+(-1112.4000, -20.8000, 1650.3000, 68.3001),
+(-1715.6000, -11.0000, 1580.3000, 68.6513),
+(-1796.6000, -9.8000, 1506.3000, 68.6505),
+(-1830.6000, -9.4800, 895.3000, 68.1805),
+(-163.6000, -13.8000, 514.3000, 67.1769),
+(-197.6000, -13.8000, 518.3000, 67.1743),
+(520.6000, -12.8000, 421.3000, 67.4120),
+(1206.6000, -15.0000, 1401.3000, 68.6520),
+(974.9000, -14.0000, 1188.3000, 68.2037),
+(-1248.9000, -6.9000, 1280.3000, 67.9105),
+(-156.9000, -20.6000, 1555.9000, 67.9666),
+(946.3000, -13.6000, 456.0000, 67.7742)
+        ];
+        let mut els: Vec<Element> = gas.iter().map(|g| Element::at(Kind::Gas, Vec3::new(g.0, g.1 - 1.0, g.2))).collect();
+        els.push(Element::at(Kind::Garage, Vec3::new(844.728, 18.28, -819.383)));
+        els.push(Element::at(Kind::Cop, Vec3::new(1039.5265, 25.5811, -1165.9615)));
+        let q = build(&tune, &mut assets, &f, &els, &[], false);
+        let mut want: Vec<(f32, f32, f32, f32)> = gas.to_vec();
+        want.push((844.728, 19.28, -819.383, 94.1569));
+        want.push((844.728, 19.28, -819.383, 94.1569));
+        want.push((1039.5265, 26.5811, -1165.9615, 107.7104));
+        let got: Vec<&Draw> = q.draws.iter().collect();
+        assert_eq!(got.len(), want.len(), "draws: {:?}", got.iter().map(|d| d.mesh).collect::<Vec<_>>());
+        for (d, w) in got.iter().zip(&want) {
+            let pos = d.m.w_axis.truncate();
+            let s = d.m.x_axis.truncate().length();
+            assert!((pos - Vec3::new(w.0, w.1, w.2)).length() < 2e-3, "{}: pos {pos:?} vs {w:?}", d.mesh);
+            assert!((s - w.3).abs() < w.3 * 2e-4, "{} at {pos:?}: scale {s} vs {}", d.mesh, w.3);
+        }
     }
 
     /// The overhead map's camera against the original's recorded frame (`work/mm/cap/ov_free1.bin`,
@@ -3994,7 +4173,7 @@ mod tests {
         (-c.r2.x).atan2(c.r2.z).to_degrees()
     }
 
-    /// `sub_82219678`'s choice (rule_exitcam.md 10; numbers from work/mm/exitcam/sim_exit_low.py)
+    /// `F-60031`'s choice (rule_exitcam.md 10; numbers from work/mm/exitcam/sim_exit_low.py)
     #[test]
     fn exit_choice_follows_the_tree() {
         let e = chase_south();
@@ -4085,7 +4264,7 @@ mod tests {
     /// the carried part of each Translate_Axis profile, gone again at the end.
     #[test]
     fn exit_carries_the_map_camera_velocity() {
-        let v = Vec3::new(300.0, 25.0, -400.0); // (y is dropped, as sub_82219678 does)
+        let v = Vec3::new(300.0, 25.0, -400.0); // (y is dropped, as F-60031 does)
         let ss = map_cam(823.773 + 100.0, 1500.0, -816.039 + 1200.0);
         for (name, s, e, kind, n, want) in [
             ("high", map_cam(-327.0, 9000.0, 111.5), chase_south(), ExitKind::HighAltitude, 89,
