@@ -96,7 +96,7 @@ impl Default for Mc4 {
             container_version: 15,
             options: Options::default(),
             options_unknown: Vec::new(),
-            // (enableGps: default 1, sub_8264FF48)
+            // (enableGps: default 1, F-38943)
             enable_gps: true,
             garage_current_slot: 0,
             garage: Vec::new(),
@@ -199,7 +199,7 @@ pub const LANGUAGES: [&str; 5] = ["english", "spanish", "french", "german", "ita
 pub const MUSIC_GENRES: [&str; 9] = ["MUSIC_GENRE_ECLECTIC", "MUSIC_GENRE_ELECTRONIC", "MUSIC_GENRE_HARDROCK", "MUSIC_GENRE_HIPHOP", "MUSIC_GENRE_ROCK", "MUSIC_GENRE_TECHNO", "MUSIC_GENRE_WEST_RAP", "MUSIC_GENRE_ALL", "MUSIC_GENRE_ON_THE_FLY"];
 
 impl Default for Options {
-    /// The original's defaults (sub_8238C120).
+    /// The original's defaults (F-63809).
     fn default() -> Self {
         Options {
             control_config_pad: 1,
@@ -248,7 +248,7 @@ impl Options {
         }
     }
 
-    /// The "cinematics" word from its two halves (mcCameraOptionsForm, sub_8264BF48).
+    /// The "cinematics" word from its two halves (mcCameraOptionsForm, F-15111).
     pub fn set_cinematics(&mut self, idle: bool, shake: bool) {
         self.idle_camera = idle;
         self.camera_shake = shake;
@@ -275,13 +275,13 @@ impl Options {
         self.music_genre_name = Some(MUSIC_GENRES[self.music_genre as usize].into());
     }
 
-    /// The slider's place, -10..10 (sub_8264B9C0: the value times 10).
+    /// The slider's place, -10..10 (F-78269: the value times 10).
     pub fn sensitivity_step(&self) -> i32 {
         ((self.steering_sensitivity.0 * 10.0).round() as i32).clamp(-10, 10)
     }
 
     pub fn set_sensitivity_step(&mut self, step: i32) {
-        // (sub_8264B870: the slider's place times 0.1)
+        // (F-24198: the slider's place times 0.1)
         self.steering_sensitivity = F((step.clamp(-10, 10) as f64 * 0.1 * 1e6).round() / 1e6);
     }
 }
@@ -332,7 +332,7 @@ pub fn vehicle_index(name: &str) -> i32 {
     VEHICLES.iter().position(|v| *v == n).map(|k| k as i32).or_else(|| crate::modcars::table_index(&n).map(|k| k as i32)).unwrap_or(-1)
 }
 
-/// The game's string hash (sub_821C9790): lower case, one-at-a-time.
+/// The game's string hash (F-58929): lower case, one-at-a-time.
 pub fn joaat(s: &str) -> u32 {
     let mut h = 0u32;
     for c in s.bytes() {
@@ -487,7 +487,7 @@ pub struct Visual {
     pub m_vBumpedTaillightColor: Vec<F>,
     /// window tint: rgb the tint's colour, a its darkness (the tint menu's row)
     pub m_vWindowTintColorNew: Vec<F>,
-    /// exterior neon on / off: 0.0 or 1.0 (sub_82392590)
+    /// exterior neon on / off: 0.0 or 1.0 (F-16643)
     pub ExtNeonIntensity: F,
     pub IntNeonIntensity: F,
     pub RimMaterial: RimMaterial,
@@ -521,16 +521,16 @@ pub struct Visual {
     pub m_iCarPaintOverride: i32,
     /// NOT preset ids (the decode note's name): the vinyl generator's pending redraw, set
     /// and cleared again by the garage while it works - zone and layer to draw anew
-    /// (sub_8269D660: `sub_823924E0(zone * 64 + layer)`, redraw, `sub_82392510` = -1, -1;
-    /// or `sub_82392538(zone)` for every layer of a zone, then `sub_82392548` = -1). The
+    /// (F-93216: `F-77238(zone * 64 + layer)`, redraw, `F-68814` = -1, -1;
+    /// or `F-90191(zone)` for every layer of a zone, then `F-37891` = -1). The
     /// renderer hands a changed pair to the generator and takes -1, -1 as "finished"
-    /// (sub_8235AC78 -> sub_8236D2A0 / sub_8236EA38). At rest - in every save and set-up
+    /// (F-93469 -> F-79014 / F-19017). At rest - in every save and set-up
     /// file - both are -1. The keys keep their first names.
     pub vinyl_preset_group: i32,
     pub vinyl_preset_index: i32,
     /// one byte per part kind (`PARTS`): the part's number in the car's part file
     pub parts: BTreeMap<String, u8>,
-    /// the redraw's "whole zone" flag (1 after `sub_82392538`, 0 after `sub_823924E0`): what
+    /// the redraw's "whole zone" flag (1 after `F-90191`, 0 after `F-77238`): what
     /// the garage's last redraw left behind; read only together with a pending redraw
     pub vinyl_is_user_slot: u8,
     #[serde(flatten)]
@@ -590,7 +590,7 @@ pub struct Car {
     pub extra: Extra,
 }
 
-/// The tint menu's ten rows: darkness a = 0.372 + 0.528 * k (sub_826AB520 at 0x826ACCBC).
+/// The tint menu's ten rows: darkness a = 0.372 + 0.528 * k (F-96638 at A-34580).
 pub const TINT_K: [f64; 10] = [0.002, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
 
 pub fn tint_alpha(row: u8) -> f64 {
@@ -627,7 +627,7 @@ impl Car {
     pub fn set_tint(&mut self, row: u8, rgb: Option<[f32; 3]>) {
         let t = &mut self.visual.m_vWindowTintColorNew;
         if t.len() < 4 {
-            // (the constructor's glass: sub_82395138)
+            // (the constructor's glass: F-35798)
             *t = fv(&[0.0, 0.0035, 0.005, 0.372]);
         }
         if tint_row_of(t[3].0) != row.min(9) {
@@ -649,7 +649,7 @@ impl Car {
         self.visual.IntNeonIntensity.0 > 0.0
     }
 
-    /// (sub_82392590 toggles the intensity between 0.0 and 1.0)
+    /// (F-16643 toggles the intensity between 0.0 and 1.0)
     pub fn set_neon_ext(&mut self, on: bool, rgb: Option<[f32; 3]>) {
         if (self.visual.ExtNeonIntensity.0 > 0.0) != on {
             self.visual.ExtNeonIntensity = F(if on { 1.0 } else { 0.0 });
@@ -712,7 +712,7 @@ impl Car {
     }
 
     /// A record as the game makes one from a set-up file (`resources/vehicle/configs/<name>.xcc`,
-    /// 8176 bytes, the garage record's own layout; loader sub_8238FBD0): what a vehicle that
+    /// 8176 bytes, the garage record's own layout; loader F-86225): what a vehicle that
     /// comes into the garage starts from. `config` is the file's name without the extension.
     pub fn from_xcc(b: &[u8], vehicle: &str, config: &str, slot: u32) -> Option<Car> {
         if b.len() != 8176 {
@@ -848,16 +848,16 @@ impl Car {
             performance,
             visual,
             unk_8096: u(8096),
-            // (a garage car: its edits go back to the slot - sub_826A9D58)
+            // (a garage car: its edits go back to the slot - F-31112)
             in_garage: 1,
-            // (sub_8238FBD0: the hash of the set-up file's name)
+            // (F-86225: the hash of the set-up file's name)
             source_config_hash: format!("0x{:08x}", joaat(config)),
             source_config: Some(config.to_string()),
             ability: Value::Null,
             derived: Derived::default(),
             current: false,
             vehicle: vehicle.clone(),
-            // (a car that is added has its damage zeroed: sub_8238B6E8)
+            // (a car that is added has its damage zeroed: F-91320)
             damage: Damage { damage: Some(F(0.0)), zones: Some(fv(&[0.0, 0.0, 0.0, 0.0])), extra: Extra::new() },
             name_hash: Some(format!("0x{:08x}", joaat(&vehicle))),
             vinyl_layers_flagged: None,
@@ -898,14 +898,14 @@ pub struct VehicleRecord {
 }
 
 /// The categories of a purchase record's bit sets (number, name): the number is what the
-/// garage's menu section gives (sub_8269BA28), the name the section of the vehicle's part
-/// file that the same menu section lists (its part slot: sub_8269A400) - 1 hood, 2 bumper_r,
+/// garage's menu section gives (F-70916), the name the section of the vehicle's part
+/// file that the same menu section lists (its part slot: F-92682) - 1 hood, 2 bumper_r,
 /// 3 bumper_f, 5 skirts, 6 spoiler, 7 headlight, 8 taillight, 9 frontgrill, 11 blower,
 /// 12 intercooler, 13..15 bike_tail / tank / cowl, 16 door_l (scissor doors), 18 widebody
 /// ("body"), 24 seats_f, 25 stereo, 28 steer_whl, 29 post_gauge, 30 rims, 31 tires, 32 brakes,
 /// 34 exh_pipe, 35..46 performance, 47 exh_side. 5 and 6 are the paint shop and the vinyl
-/// editor, bought once per model for $1000 (`garage.FinishMiscPurchase(0 / 1)`, sub_826AB520
-/// at 0x826AEE08 / 0x826AEE80). No part file has a frontgrill or stereo section.
+/// editor, bought once per model for $1000 (`garage.FinishMiscPurchase(0 / 1)`, F-96638
+/// at A-64047 / A-84400). No part file has a frontgrill or stereo section.
 pub const PART_CATEGORIES: [(u8, &str); 27] = [
     (1, "intercooler"), (2, "bike_tail"), (3, "bike_tank"), (4, "bike_cowl"), (5, "paint"), (6, "vinyl"), (7, "tires"), (8, "rims"),
     (9, "brakes"), (10, "exhaust"), (11, "bumper_front"), (12, "bumper_rear"), (13, "spoiler"), (14, "hood"), (16, "blower"),
@@ -949,13 +949,13 @@ impl VehicleRecord {
     }
 
     /// The highest stage (0..2) of performance part `k` (0..12, the record's order) the
-    /// model owns: sub_8269B6D8 - bit k * 3 + 2, else bit k * 3 + 1.
+    /// model owns: F-32441 - bit k * 3 + 2, else bit k * 3 + 1.
     pub fn perf_owned(&self, k: usize) -> u8 {
         let k = k as u32 * 3;
         if self.owns("performance", k + 2) { 2 } else if self.owns("performance", k + 1) { 1 } else { 0 }
     }
 
-    /// A model's record as the constructor leaves it (sub_8238FFC8): nothing owned, the sum 1.
+    /// A model's record as the constructor leaves it (F-69059): nothing owned, the sum 1.
     pub fn new(vehicle: &str) -> VehicleRecord {
         let v = vehicle.to_ascii_lowercase();
         VehicleRecord { index: vehicle_index(&v), in_use: true, hash: format!("0x{:08x}", joaat(&v)), vehicle: Some(v), refund_value: 0, spent_plus_1: 1, ..Default::default() }
@@ -969,7 +969,7 @@ impl VehicleRecord {
         }
     }
 
-    /// A part was bought (sub_823900E0): its bit is set and its price joins the sum.
+    /// A part was bought (F-66800): its bit is set and its price joins the sum.
     pub fn buy(&mut self, category: &str, index: u32, price: u32) {
         let have = self.owned_parts.entry(category.to_string()).or_default();
         if have.contains(&index) {
@@ -981,7 +981,7 @@ impl VehicleRecord {
         self.add_spent(price);
     }
 
-    /// The sum takes a price, as sub_823900E0 does it: the 16-bit word plus the price, held
+    /// The sum takes a price, as F-66800 does it: the 16-bit word plus the price, held
     /// at 0xFFFF; 0xCDCC (the debug fill, "never set up") stays what it is.
     pub fn add_spent(&mut self, price: u32) {
         let t = self.spent_plus_1 as i64 + price as i64 - 1;
@@ -1012,8 +1012,8 @@ impl VehicleRecord {
     }
 }
 
-/// What a vehicle fetches when sold or traded in (0x826A74F0..0x826A7538, the same at the
-/// showroom's trade 0x826AF6B4): the purchase record's 16-bit sum word plus the vehicle's
+/// What a vehicle fetches when sold or traded in (A-93343..A-99774, the same at the
+/// showroom's trade A-22953): the purchase record's 16-bit sum word plus the vehicle's
 /// price less one, times 0.8, cut to a whole number; nothing while the free-parts flag is up.
 pub fn trade_in_value(spent_plus_1: u32, price: i64, free: bool) -> i64 {
     if free {
@@ -1022,8 +1022,8 @@ pub fn trade_in_value(spent_plus_1: u32, price: i64, free: bool) -> i64 {
     ((spent_plus_1 as i64 + price - 1) as f32 * 0.8) as i64
 }
 
-/// The garage's category numbers of the purchase records (sub_8269BA28's section -> the
-/// category handed to sub_823900E0 / sub_823901C0) by name. `None`: not named.
+/// The garage's category numbers of the purchase records (F-70916's section -> the
+/// category handed to F-66800 / F-10180) by name. `None`: not named.
 pub fn category_name(cat: u32) -> Option<&'static str> {
     Some(match cat {
         7 => "tires",
@@ -1224,7 +1224,7 @@ pub struct HistoryRace {
     pub extra: Extra,
 }
 
-/// The ring of the last twelve races (sub_826BE380).
+/// The ring of the last twelve races (F-63023).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct RaceHistory {
@@ -1334,8 +1334,8 @@ impl Career {
         self.flags.raw |= 1;
     }
 
-    /// A race joins the ring of the last twelve (sub_826BE380). A race that is in it
-    /// already is taken out first (sub_826BD060: the later ones move down a place, the write
+    /// A race joins the ring of the last twelve (F-63023). A race that is in it
+    /// already is taken out first (F-98664: the later ones move down a place, the write
     /// index steps back), so a race is in the ring once; with twelve in it the oldest goes
     /// (the head steps on); then the race is written to the cell after the one written last.
     pub fn add_race_to_history(&mut self, race_index: i64, race: Option<String>) {
@@ -1355,13 +1355,13 @@ impl Career {
         h.count = h.oldest_first.len() as _;
     }
 
-    /// Where a race stands in the ring (sub_826BD9B8): 0 the oldest; None, not in it.
+    /// Where a race stands in the ring (F-97924): 0 the oldest; None, not in it.
     pub fn history_position(&self, race_index: i64) -> Option<usize> {
         self.race_history.oldest_first.iter().position(|r| r.race_index == race_index)
     }
 
     /// The race of `races` (indices of the race table, in the order of the array) a hookman
-    /// takes next (mcRaceArray_FindNextRaceIndex, sub_8273EEB0): the first that is not in the
+    /// takes next (mcRaceArray_FindNextRaceIndex, F-18968): the first that is not in the
     /// history; with all of them in it, the one run longest ago.
     pub fn next_race_of(&self, races: &[i64]) -> Option<i64> {
         let mut best: Option<(usize, i64)> = None;
@@ -1378,7 +1378,7 @@ impl Career {
         best.map(|(_, r)| r)
     }
 
-    /// A race is put on the list of unlocked races (sub_826BCEE8): at the first free cell of
+    /// A race is put on the list of unlocked races (F-81609): at the first free cell of
     /// the 250, unless it is on the list. True when it was added.
     pub fn unlock_race(&mut self, name: &str) -> bool {
         if name.is_empty() || self.races_unlocked.len() >= 250 || self.race_is_unlocked(name) {
@@ -1388,7 +1388,7 @@ impl Career {
         true
     }
 
-    /// The race is on the list (sub_826BF4B0 -> sub_826BDA38; the list holds the hashes of
+    /// The race is on the list (F-64698 -> F-56529; the list holds the hashes of
     /// the names in lower case).
     pub fn race_is_unlocked(&self, name: &str) -> bool {
         self.races_unlocked.iter().any(|r| r.as_str().map_or(false, |s| s.eq_ignore_ascii_case(name)))
@@ -1506,7 +1506,7 @@ impl Mc4 {
     }
 
     /// The model's purchase record, made when there is none (the original keeps one per
-    /// entry of the vehicle table, sorted by its index: sub_8238C5A0).
+    /// entry of the vehicle table, sorted by its index: F-90134).
     pub fn record_mut(&mut self, vehicle: &str) -> &mut VehicleRecord {
         if let Some(k) = self.vehicle_records.iter().position(|r| r.vehicle.as_deref().map_or(false, |v| v.eq_ignore_ascii_case(vehicle))) {
             return &mut self.vehicle_records[k];
@@ -1518,7 +1518,7 @@ impl Mc4 {
     }
 
     /// The garage in the port's order: the records follow `owned` (a record of a car that
-    /// is no longer owned goes, as the original moves the later slots down - sub_8238ABB8),
+    /// is no longer owned goes, as the original moves the later slots down - F-87162),
     /// the slot numbers and the slot in use with them.
     pub fn sync_garage(&mut self, owned: &[String], current: &str) {
         let mut out = Vec::with_capacity(self.garage.len());
@@ -1644,11 +1644,11 @@ pub struct PaintOut {
 }
 
 /// The second colour the two matte paint types are drawn with, whatever the entry holds
-/// (sub_823580D0 at 0x82358360: types 0 and 1 get (0.6, 0.6, 0.55) for ColorB, keep the
+/// (F-13513 at A-97806: types 0 and 1 get (0.6, 0.6, 0.55) for ColorB, keep the
 /// type's paint falloff and have no fade direction).
 pub const MATTE_B: [f32; 3] = [0.6, 0.6, 0.55];
 
-/// What the original's paint set-up makes of an entry (sub_823580D0): a matte type shifts
+/// What the original's paint set-up makes of an entry (F-13513): a matte type shifts
 /// to `MATTE_B` by the type's falloff (the port's fade 1) and has no other fade.
 fn paint_as_drawn(p: AreaPaint) -> AreaPaint {
     if p.ty <= 1 { AreaPaint { ty: p.ty, fade: 1, b: MATTE_B } } else { p }
@@ -1779,7 +1779,7 @@ impl Game {
                     r.upgrade();
                 }
                 // (a mod car's table index follows the mods installed now: rewritten from its name, as the
-                // original rewrites every slot's from its TypeName on load - MODS.md M-2, sub_8238C5A0)
+                // original rewrites every slot's from its TypeName on load - MODS.md M-2, F-90134)
                 for c in m.garage.iter_mut() {
                     if let Some(k) = crate::modcars::table_index(&c.vehicle) {
                         c.vehicle_index = k as i32;
@@ -1864,7 +1864,7 @@ impl Game {
             let root = std::path::Path::new(&self.data_dir);
             let read = |n: &str| crate::render::car_lamps::setup_file(root, n).and_then(|f| std::fs::read(f).ok());
             let made = read(&cfg).and_then(|b| Car::from_xcc(&b, car, &cfg, slot)).or_else(|| read(car).and_then(|b| Car::from_xcc(&b, car, car, slot)));
-            // (no set-up file at hand: the constructor's record - sub_82395138)
+            // (no set-up file at hand: the constructor's record - F-35798)
             let made = made.unwrap_or_else(|| {
                 let mut c = Car { slot, TypeName: car.to_string(), vehicle: car.to_ascii_lowercase(), in_garage: 1, source_config: Some(cfg.clone()), source_config_hash: format!("0x{:08x}", joaat(&cfg)), ..Default::default() };
                 c.vehicle_index = vehicle_index(&c.vehicle);
@@ -1885,7 +1885,7 @@ impl Game {
 
     /// A vehicle came into the garage (bought: no `config`; a starter, a prize: the set-up
     /// file it is made from, e.g. `starter_vp_vw_golf_83`). The original builds the slot's
-    /// record from that file (sub_8238FBD0) and zeroes the slot's damage (sub_8238B6E8).
+    /// record from that file (F-86225) and zeroes the slot's damage (F-91320).
     pub fn mc4_car_added(&mut self, car: &str, config: Option<&str>) {
         let mut m = self.mc4.take().unwrap_or_else(|| Mc4::seeded(self.fresh_game));
         let car = car.to_ascii_lowercase();
@@ -1906,7 +1906,7 @@ impl Game {
         self.mc4 = Some(m);
     }
 
-    /// `garage.SwapCarbonFiber()` (X in the hood list; sub_826AB520 at 0x826AE214): the
+    /// `garage.SwapCarbonFiber()` (X in the hood list; F-96638 at A-65149): the
     /// hood of the vehicle in the garage in carbon fibre, or back - free, any hood.
     pub fn mc4_swap_carbon_fiber(&mut self) {
         let car = self.mc4_car_name(self.current_car);
@@ -2115,7 +2115,7 @@ impl Game {
             }
         }
         // (the thresholds of the two main systems: every one the share of the system has
-        // come to is reached, whatever its rewards - sub_826BC090; the Unlocking amount)
+        // come to is reached, whatever its rewards - F-61830; the Unlocking amount)
         for def in self.career.exp_tables.systems.iter().filter(|d| d.is_main()) {
             let amount = if def.name == "Unlocking" { self.mc4_unlocking() } else { self.rep };
             let f = def.fraction(amount);
@@ -2149,7 +2149,7 @@ impl Game {
                 s.set_reached(id);
             }
         }
-        // (the reputation is the Progression system's amount: sub_826BAB00)
+        // (the reputation is the Progression system's amount: F-22911)
         let p = c.experience.main.entry("Progression".to_string()).or_default();
         if p.amount != self.rep {
             p.amount = self.rep;
@@ -2203,8 +2203,8 @@ impl Game {
     /// The race editor's races (the game's `user_races`, in the order of the slots) into the
     /// block's: a race that is the slot's keeps the slot's record as it is; a changed one
     /// gets its checkpoints (activation height and radius 25 m, as the editor saves them:
-    /// sub_822551E0); a new one the first free slot of the twenty, named as the constructor
-    /// names it ("LosAngeles<slot>", sub_82251168).
+    /// F-60473); a new one the first free slot of the twenty, named as the constructor
+    /// names it ("LosAngeles<slot>", F-65243).
     fn mc4_editor_out(&self, m: &mut Mc4) {
         let races = &mut m.editor.races;
         for (k, pts) in self.user_races.iter().enumerate() {
@@ -2240,7 +2240,7 @@ impl Game {
         self.mc4.as_ref().and_then(|m| m.editor.races.get(k)).map_or(k + 1, |r| r.slot as usize + 1)
     }
 
-    /// "Save As Vinyl Package" (sub_8269C960): every layer of the vehicle in use into one of
+    /// "Save As Vinyl Package" (F-59911): every layer of the vehicle in use into one of
     /// the three packages. False when the vehicle has no layers of its own.
     pub fn mc4_vinyl_store(&mut self, slot: usize) -> bool {
         // (the vehicle the editor is on: the key of `liveries`; else the one in use)
@@ -2260,7 +2260,7 @@ impl Game {
         true
     }
 
-    /// A package back onto the vehicle in use (sub_8269CA20): its layers replace the
+    /// A package back onto the vehicle in use (F-57683): its layers replace the
     /// vehicle's. False for a package never saved.
     pub fn mc4_vinyl_load(&mut self, slot: usize) -> bool {
         let Some(p) = self.mc4.as_ref().and_then(|m| m.vinyl_packages.get(slot)).filter(|p| p.used) else { return false };
@@ -2296,12 +2296,12 @@ impl Game {
     }
 
     /// A performance level (`D1` .. `A2`) is unlocked in the save (reward PerformanceLevel,
-    /// sub_826B78A0; read by the shop, sub_826BCD90).
+    /// F-52004; read by the shop, F-85976).
     pub fn mc4_perf_level_unlocked(&self, id: &str) -> bool {
         self.mc4.as_ref().and_then(|m| m.career.performance_levels_unlocked.get(id).copied()).unwrap_or(false)
     }
 
-    /// A race is on the lists of races to choose from (sub_826BF4B0): an original save's
+    /// A race is on the lists of races to choose from (F-64698): an original save's
     /// list of unlocked races. A game without one lists every race, as before.
     pub fn mc4_race_unlocked(&self, id: &str) -> bool {
         match self.mc4.as_ref() {
@@ -2316,7 +2316,7 @@ impl Game {
         }
     }
 
-    /// A race was finished: it is unlocked from then on (sub_826C1EB8 -> sub_826BCEE8 on
+    /// A race was finished: it is unlocked from then on (F-20860 -> F-81609 on
     /// GENERIC_RACE_COMPLETE, not for a race of the editor; the list holds 250).
     pub fn mc4_race_finished(&mut self, id: &str) {
         if id.is_empty() || id.starts_with("user/") {
@@ -2386,7 +2386,7 @@ impl Game {
             o.set_music_genre(if self.music_genre == 0 { 7 } else { self.music_genre as u32 - 1 });
         }
         // (the music lists: shuffle, the list that plays - the custom playlist too - and the
-        // playlist's first 32 songs, as sub_82642638 / sub_826410D8 write them on leaving
+        // playlist's first 32 songs, as F-39888 / F-44753 write them on leaving
         // the playlist menu)
         if let Some(l) = self.opt_x.music.as_ref().and_then(|m| m.lock().ok()) {
             if o.music_shuffle != l.shuffle {
@@ -2400,14 +2400,14 @@ impl Game {
                 o.custom_playlist = ids;
             }
         }
-        // (the camera in use is the option: sub_822AFAB0 -> sub_82398568 writes it whenever
+        // (the camera in use is the option: F-93502 -> F-25166 writes it whenever
         // the player changes the view; the port's cinematic view, 5, is no option)
         if let Some(c) = self.opt_x.cam.and_then(|c| PORT_TO_CAMERA.get(c as usize).copied()) {
             if o.camera != c {
                 o.set_camera(c);
             }
         }
-        // (the clock at the time of saving: sub_822D20D8)
+        // (the clock at the time of saving: F-51180)
         if let Some(h) = self.opt_x.hours {
             if (o.time_of_day_hours.0 - h as f64).abs() > 1e-6 {
                 o.time_of_day_hours = r6(h.rem_euclid(24.0));
@@ -2416,7 +2416,7 @@ impl Game {
     }
 
     /// The steering sensitivity on the port's scale of 0 .. 10 - with the original's odd
-    /// steps between (its slider runs -10 .. 10: sub_8264B870).
+    /// steps between (its slider runs -10 .. 10: F-24198).
     pub fn sens_exact(&self) -> f32 {
         match self.mc4.as_ref().map(|m| m.options.sensitivity_step()) {
             Some(step) if ((step + 10) as f32 / 2.0).round().clamp(0.0, 10.0) as u8 == self.opts.sens => (step + 10) as f32 / 2.0,
@@ -2425,7 +2425,7 @@ impl Game {
     }
 
     /// CAMERA OPTIONS' "Idle Camera": the cinematic camera that takes over when the player
-    /// lets the car stand (the "cinematics" word, sub_8264BF48; on by default).
+    /// lets the car stand (the "cinematics" word, F-15111; on by default).
     pub fn mc4_idle_camera(&self) -> bool {
         self.mc4.as_ref().map_or(true, |m| m.options.idle_camera)
     }
@@ -2454,7 +2454,7 @@ impl Game {
         }
     }
 
-    /// And its clock: a save's time of day is where the game resumes (sub_822D2258), unless
+    /// And its clock: a save's time of day is where the game resumes (F-90712), unless
     /// the run was given one.
     pub fn mc4_clock_sync(&mut self, hours: &mut f32, given: bool) {
         if let Some(h) = self.opt_x.hours_in.take() {
@@ -2524,7 +2524,7 @@ fn rgb_f(c: [f32; 3]) -> Vec<F> {
 }
 
 /// The port's parts and the record's part bytes that hold them (`cfg` slots, then `xparts`),
-/// with the byte the game's set-part writes alongside (sub_82391EE0's mirrors).
+/// with the byte the game's set-part writes alongside (F-20885's mirrors).
 const PART_MAP: [(&str, &str, Option<&str>); 14] = [
     ("hood", "hood", None),
     ("bumper_r", "bumper_r", None),
@@ -2544,7 +2544,7 @@ const PART_MAP: [(&str, &str, Option<&str>); 14] = [
 
 /// The colour group (0..9: `m_vBaseColor`) of each of the 25 zones of a vehicle's cabin trim,
 /// from one of its model resources: the root's pointer at +72 leads to 25 words. The
-/// original's sub_82358AE0 builds the InteriorTrim program's table from it every frame:
+/// original's F-19629 builds the InteriorTrim program's table from it every frame:
 /// zone z gets `m_vBaseColor[groups[z]]` with the surface values of the zone's kind (zones
 /// 0..2 kind 0, 3..5 kind 2, 6..8 kind 1, 9..11 kind 3, 12..14 kind 4, 15..17 kind 5,
 /// 18 kind 6, 19..21 kind 7, 22..24 kind 8).
@@ -2604,11 +2604,11 @@ fn rgb_hsv(c: [f32; 3]) -> [f32; 3] {
 
 /// The part bytes of a record that the port keeps in `xparts` under its own keys:
 /// (key, the record's byte). "intercooler" is the switch UseIntercooler - the garage's
-/// "part" of the intercooler list, sub_82391F48 - and "carbon_hood" CarbonFiberHood.
+/// "part" of the intercooler list, F-20669 - and "carbon_hood" CarbonFiberHood.
 pub const XPART_BYTES: [(&str, &str); 5] = [("intercooler", "UseIntercooler"), ("bike_tail", "bike_tail"), ("bike_tank", "bike_tank"), ("bike_cowl", "bike_cowl"), ("carbon_hood", "CarbonFiberHood")];
 
 /// The GPS button works (the original's `enableGps`: "mcMainState_EnableGpsButton", read
-/// by the button's handler and the pause bar, sub_8264F2A8). `base`: what the save says
+/// by the button's handler and the pause bar, F-25450). `base`: what the save says
 /// (none: a save without the block); then the career's three events that set it, in the
 /// career's order: RACE_GH_06's start switches it off, RACE_GH_02's and RACE_SH_01's on
 /// (their READY_TO_START_ON_ENTER scripts). `career`: the career's tables are there.
@@ -2626,7 +2626,7 @@ pub fn gps_button(base: Option<bool>, career: bool, gh06: bool, gh02: bool, sh01
 }
 
 /// The tuning of the HUD's 3D GPS arrow (`tune/ui/0xf9e58c68`, the lines GPSArrow...; class
-/// mcGPSArrow, registered by sub_8223E748). Defaults = the disc's values.
+/// mcGPSArrow, registered by F-17004). Defaults = the disc's values.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TopArrowTune {
     pub in_target: bool,
@@ -2688,7 +2688,7 @@ impl TopArrowTune {
                 "GPSArrowScale" => t.scale = v[0],
                 "GPSArrowPosition" => t.position = v3(0),
                 "GPSArrowPivot" => t.pivot = v3(0),
-                // (red, green, blue and the opacity: sub_8223F3D8 multiplies the fourth by the fade)
+                // (red, green, blue and the opacity: F-47907 multiplies the fourth by the fade)
                 "GPSArrowMaterialColor" if v.len() >= 4 => {
                     t.color = v3(0);
                     t.opacity = v[3];
@@ -2711,10 +2711,10 @@ impl TopArrowTune {
 }
 
 /// The square of the screen the top arrow's picture goes to, [x, y, width, height] in
-/// pixels (sub_8223EC28): k = BlitScale x lines / 720, at least 1; from
+/// pixels (F-29366): k = BlitScale x lines / 720, at least 1; from
 /// y = BlitPosition.y x lines + 0.075 x lines, cut to a whole number, to y + 256 k, cut
 /// likewise (255 lines high at 720); trunc(128 k x the screen's shape / the display's) to
-/// either side of the middle (the control's +1676, set by sub_8223E230: 16:9 for a wide
+/// either side of the middle (the control's +1676, set by F-92461: 16:9 for a wide
 /// display, 4:3 otherwise).
 /// (approx.) The original asks the console whether the display is wide; here a window wider
 /// than 3:2 counts as wide.
@@ -2784,9 +2784,9 @@ pub fn top_arrow_model(data_dir: &str) -> Option<&'static TopArrowModel> {
         .as_ref()
 }
 
-/// The arrow's own frame (sub_8223EFC8), rows x, y, z: z away from the target (`local`:
+/// The arrow's own frame (F-30300), rows x, y, z: z away from the target (`local`:
 /// the target from the car, in the car's level frame - right, up, back; the car's matrix
-/// with its z row laid flat, sub_8220A1A0 - with its height, so the arrow tips up or down
+/// with its z row laid flat, F-32331 - with its height, so the arrow tips up or down
 /// at a target above or below), x = z x up, y = x x z. The arrow's point is at its -z end,
 /// so it points at the target. The frame is a mirror (x = z x up, not up x z); the model is
 /// the same on both sides, so only its lighting could tell, and the normals go through the
@@ -2809,11 +2809,11 @@ pub struct TopArrowVertex {
     pub alpha: f32,
 }
 
-/// The arrow's corners in its target (sub_8223F870 -> sub_8223F3D8, the shader's
+/// The arrow's corners in its target (F-74360 -> F-47907, the shader's
 /// VS_TransformAndTextureColor).
 /// Place: (corner + GPSArrowPivot) x GPSArrowScale, through the arrow's frame, +
 /// GPSArrowPosition - the pivot is all but the arrow's point (-0.83 against -0.79), so it
-/// turns about its point. Seen from the origin towards GPSArrowLookat (sub_82202EC0, up =
+/// turns about its point. Seen from the origin towards GPSArrowLookat (F-97951, up =
 /// +y) through a lens of GPSArrowFovy, a square picture; near 0.01, far 100.
 /// Colour: share x GPSArrowAmbientLight + GPSArrowMaterialColor x (the two lights' colours x
 /// what of each falls on the normal; a light comes from against its GPSArrowLightN_Direction,
@@ -2955,7 +2955,7 @@ pub fn top_arrow_picture(t: &TopArrowTune, m: &TopArrowModel, size: usize, local
     out
 }
 
-/// The top arrow's fade (sub_8223EAC0): towards 1 while it has a target, towards 0
+/// The top arrow's fade (F-47090): towards 1 while it has a target, towards 0
 /// without, 3 a second; it keeps the direction it had while it goes.
 pub fn top_arrow_fade(x: &mut CarLive, local: Option<[f32; 3]>, dt: f32) {
     match local {
@@ -2997,8 +2997,8 @@ pub fn top_arrow(x: &mut CarLive, data_dir: &str, ctx: &egui::Context, local: Op
         }
     }
     let Some((tex, _, _)) = shown.as_ref() else { return };
-    // (GPSArrowSlowInOut: the fade eased at both ends, (1 - cos(pi t)) / 2 - sub_8223EC28 at
-    // 0x8223EDDC, sub_82227CE8)
+    // (GPSArrowSlowInOut: the fade eased at both ends, (1 - cos(pi t)) / 2 - F-29366 at
+    // A-82125, F-39265)
     let a = if t.slow_in_out { (1.0 - (x.top_arrow.0 * std::f32::consts::PI).cos()) * 0.5 } else { x.top_arrow.0 };
     let rect = egui::Rect::from_min_size(egui::pos2(r[0] / ppp, r[1] / ppp), egui::vec2(r[2] / ppp, r[3] / ppp));
     let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
@@ -3022,7 +3022,7 @@ pub struct MusicSong {
     pub file: Option<usize>,
 }
 
-/// One genre's play order (the original's 24-byte table, sub_821F7558 ..): the songs'
+/// One genre's play order (the original's 24-byte table, F-19442 ..): the songs'
 /// places in the genre's list, `count` of them in use, and where the player is in it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MusicOrder {
@@ -3050,7 +3050,7 @@ pub struct MusicLists {
     pub shuffle: bool,
     /// PLAY was chosen in the menu: the window's loop starts `now`
     pub play: bool,
-    /// the original's generator (sub_82145020): a multiply-with-carry pair
+    /// the original's generator (F-62480): a multiply-with-carry pair
     rng: (u32, u32),
 }
 
@@ -3065,11 +3065,11 @@ const MUSIC_ALIAS: [(&str, &str); 4] = [
 ];
 
 impl MusicLists {
-    /// The manager as the original builds it (sub_821EFB98): the songs of MUSIC_0_MANAGER,
-    /// then those of MUSIC_0_MANAGER_SC (their names start "SC_"; sub_821EF310 takes them
-    /// while bit 4 of the content word at 0x827E9174 is set, and sub_82388848 sets it at the
-    /// start), each into its genre's list and into ALL (sub_821EF310); the nine orders
-    /// (sub_821EED18; the custom one has room for every song); shuffle on.
+    /// The manager as the original builds it (F-96264): the songs of MUSIC_0_MANAGER,
+    /// then those of MUSIC_0_MANAGER_SC (their names start "SC_"; F-44823 takes them
+    /// while bit 4 of the content word at 0x827E9174 is set, and F-68286 sets it at the
+    /// start), each into its genre's list and into ALL (F-44823); the nine orders
+    /// (F-18025; the custom one has room for every song); shuffle on.
     pub fn from_game_dat(d: &[u8]) -> Option<MusicLists> {
         let be = |o: usize| d.get(o..o + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
         // (the file: a version, the objects' block and its size, a block of four bytes, then
@@ -3093,7 +3093,7 @@ impl MusicLists {
         for manager in ["MUSIC_0_MANAGER", "MUSIC_0_MANAGER_SC"] {
             let Some((_, at, size)) = objects.get(&joaat(manager)) else { continue };
             let o = d.get(*at..*at + *size)?;
-            // (seven lists from +42: a count, that many names' hashes - sub_821EF450)
+            // (seven lists from +42: a count, that many names' hashes - F-73467)
             let mut q = 42;
             for _ in 0..7 {
                 let n = *o.get(q)? as usize;
@@ -3125,14 +3125,14 @@ impl MusicLists {
         Some(m)
     }
 
-    /// sub_82145020(lo, hi): the state x 0x5CDCFAA7 + the carry; its low 31 bits into the span.
+    /// F-62480(lo, hi): the state x 0x5CDCFAA7 + the carry; its low 31 bits into the span.
     fn rand(&mut self, lo: usize, hi: usize) -> usize {
         let t = self.rng.0 as u64 * 0x5CDC_FAA7 + self.rng.1 as u64;
         self.rng = (t as u32, (t >> 32) as u32);
         lo + (self.rng.0 & 0x7FFF_FFFF) as usize % (hi - lo + 1)
     }
 
-    /// sub_821F73B0: eight passes, each swapping every place in use with a random one; the
+    /// F-22709: eight passes, each swapping every place in use with a random one; the
     /// player goes to the head of the order.
     fn shuffle_order(&mut self, g: usize) {
         let n = self.order[g].count.min(self.order[g].arr.len());
@@ -3145,8 +3145,8 @@ impl MusicLists {
         self.order[g].pos = 0;
     }
 
-    /// sub_821F74B8: `n` places in use, the order straight again - and then shuffled: the
-    /// orders are made with the flag for it (sub_821F7558 from sub_821EED18), whatever the
+    /// F-90563: `n` places in use, the order straight again - and then shuffled: the
+    /// orders are made with the flag for it (F-19442 from F-18025), whatever the
     /// shuffle option says.
     fn resize(&mut self, g: usize, n: usize) {
         self.order[g].count = n;
@@ -3156,7 +3156,7 @@ impl MusicLists {
         self.shuffle_order(g);
     }
 
-    /// sub_821EEA90. On: every order shuffled, and the place of the song that is on becomes
+    /// F-48642. On: every order shuffled, and the place of the song that is on becomes
     /// the head of the playing list's order (the song itself goes on). Off: every order
     /// straight, the player where it was.
     pub fn set_shuffle(&mut self, on: bool) {
@@ -3177,7 +3177,7 @@ impl MusicLists {
         }
     }
 
-    /// sub_821EEC68: the list that plays (the original only complains about an empty one).
+    /// F-66833: the list that plays (the original only complains about an empty one).
     pub fn set_genre(&mut self, g: usize) {
         let g = g.min(8);
         if g != self.genre {
@@ -3186,7 +3186,7 @@ impl MusicLists {
         }
     }
 
-    /// sub_821F0270 / sub_821F0400: the next (previous) place of the playing list's order,
+    /// F-51486 / F-87381: the next (previous) place of the playing list's order,
     /// round and round. None while the list is empty.
     pub fn step(&mut self, forward: bool) -> Option<usize> {
         let g = self.genre;
@@ -3200,8 +3200,8 @@ impl MusicLists {
         self.now
     }
 
-    /// sub_821F0600: the song at `index` of the playing list goes on; the order's player
-    /// moves to where that index stands (sub_821F7518).
+    /// F-89347: the song at `index` of the playing list goes on; the order's player
+    /// moves to where that index stands (F-36254).
     pub fn play_index(&mut self, index: usize) {
         let g = self.genre;
         if let Some(p) = self.order[g].arr.iter().position(|v| *v == index) {
@@ -3212,12 +3212,12 @@ impl MusicLists {
         self.play = true;
     }
 
-    /// sub_821EEFD8: the song is in the custom playlist.
+    /// F-71612: the song is in the custom playlist.
     pub fn in_custom(&self, song: usize) -> bool {
         self.lists[8][..self.counts[8]].contains(&song)
     }
 
-    /// sub_821EF5E0: a song joins the custom playlist unless it is there; its order is made
+    /// F-92408: a song joins the custom playlist unless it is there; its order is made
     /// again for the new length (and so shuffled).
     pub fn add_custom(&mut self, song: usize) -> bool {
         if song >= self.songs.len() || self.in_custom(song) {
@@ -3234,7 +3234,7 @@ impl MusicLists {
         true
     }
 
-    /// sub_821EF700: the song with this id leaves the custom playlist, the later ones move
+    /// F-18610: the song with this id leaves the custom playlist, the later ones move
     /// up; its order is left as it was. With the last one gone the playing list becomes the
     /// one before.
     pub fn remove_custom(&mut self, id: u32) {
@@ -3249,12 +3249,12 @@ impl MusicLists {
         }
     }
 
-    /// sub_821EF020: the song with this id, looked for in the lists 0..7.
+    /// F-34712: the song with this id, looked for in the lists 0..7.
     pub fn find(&self, id: u32) -> Option<usize> {
         (0..8).find_map(|g| self.lists[g].iter().copied().find(|s| self.songs[*s].id == id))
     }
 
-    /// What a save holds, as sub_826402C0 takes it up: the custom playlist's songs, the
+    /// What a save holds, as F-55961 takes it up: the custom playlist's songs, the
     /// genre, shuffle.
     pub fn load(&mut self, custom: &[u32], genre: usize, shuffle: bool) {
         for id in custom {
@@ -3266,7 +3266,7 @@ impl MusicLists {
         self.set_shuffle(shuffle);
     }
 
-    /// What the save keeps of the custom playlist (sub_826410D8): its first 32 songs' ids.
+    /// What the save keeps of the custom playlist (F-44753): its first 32 songs' ids.
     pub fn custom_ids(&self) -> Vec<u32> {
         self.lists[8][..self.counts[8]].iter().take(32).map(|s| self.songs[*s].id).collect()
     }
@@ -3335,7 +3335,7 @@ fn music_port_genre(g: usize) -> u8 {
 }
 
 /// The titles of a list's songs, in the list's order (the song form shows the manager's
-/// own array: sub_826423F8). None without the lists.
+/// own array: F-54463). None without the lists.
 pub fn music_rows(x: &OptLive, port: usize) -> Option<Vec<String>> {
     let l = x.music.as_ref()?.lock().ok()?;
     let g = music_list(port);
@@ -3347,7 +3347,7 @@ pub fn music_shuffle(x: &OptLive) -> Option<bool> {
     Some(x.music.as_ref()?.lock().ok()?.shuffle)
 }
 
-/// X on MUSIC PLAYLISTS (sub_82642768, button 62): shuffle the other way.
+/// X on MUSIC PLAYLISTS (F-37911, button 62): shuffle the other way.
 pub fn music_toggle_shuffle(x: &OptLive) {
     if let Some(mut l) = x.music.as_ref().and_then(|m| m.lock().ok()) {
         let on = !l.shuffle;
@@ -3355,12 +3355,12 @@ pub fn music_toggle_shuffle(x: &OptLive) {
     }
 }
 
-/// The row MUSIC PLAYLISTS opens on: the list that plays (sub_82642510).
+/// The row MUSIC PLAYLISTS opens on: the list that plays (F-41165).
 pub fn music_cursor(x: &OptLive) -> Option<usize> {
     Some(x.music.as_ref()?.lock().ok()?.genre)
 }
 
-/// A on a song (PLAY, sub_82640208): its list becomes the one that plays, the song goes
+/// A on a song (PLAY, F-37737): its list becomes the one that plays, the song goes
 /// on. Gives the port's saved genre.
 pub fn music_play(x: &OptLive, port: usize, row: usize) -> Option<u8> {
     let mut l = x.music.as_ref()?.lock().ok()?;
@@ -3374,7 +3374,7 @@ pub fn music_play(x: &OptLive, port: usize, row: usize) -> Option<u8> {
     Some(music_port_genre(l.genre))
 }
 
-/// Y on a song (sub_826422C8, button 63): into the custom playlist, or out of it when it
+/// Y on a song (F-22536, button 63): into the custom playlist, or out of it when it
 /// is there. Gives the port's saved genre (the playing list changes when the playlist
 /// runs empty).
 pub fn music_add_remove(x: &OptLive, port: usize, row: usize) -> Option<u8> {
@@ -3391,7 +3391,7 @@ pub fn music_add_remove(x: &OptLive, port: usize, row: usize) -> Option<u8> {
     Some(music_port_genre(l.genre))
 }
 
-/// The song under the cursor is in the custom playlist (the Y prompt: sub_82641000).
+/// The song under the cursor is in the custom playlist (the Y prompt: F-31312).
 pub fn music_in_custom(x: &OptLive, port: usize, row: usize) -> bool {
     let Some(l) = x.music.as_ref().and_then(|m| m.lock().ok()) else { return false };
     let g = music_list(port);
@@ -3478,7 +3478,7 @@ pub fn control_maps(data_dir: &str) -> Vec<ControlMap> {
     out
 }
 
-/// The pad as the original's poll has it (sub_82614D30): sixteen buttons (bit = the maps'
+/// The pad as the original's poll has it (F-31331): sixteen buttons (bit = the maps'
 /// button key: 0 LT, 1 RT, 2 LB, 3 RB, 4 Y, 5 B, 6 A, 7 X, 8 BACK, 9 L3, 10 R3, 11 START,
 /// 12..15 the d-pad up, right, down, left), the two triggers' own bytes, and the sticks'
 /// bytes LX, LY, RX, RY (128 the centre; 0 is left, and up).
@@ -3504,7 +3504,7 @@ impl PadState {
         PadState { buttons, triggers: t, sticks: [byte(sticks[0]), byte(-sticks[1]), byte(sticks[2]), byte(-sticks[3])] }
     }
 
-    /// A slot's byte (the mapper's update, sub_8260B990). Device 8, a button: 255 while it is
+    /// A slot's byte (the mapper's update, F-66987). Device 8, a button: 255 while it is
     /// down - a trigger gives its own byte while that is not zero. Device 9, an axis: 0..3 the
     /// sticks' bytes; 4..7 (12..15) the left (right) stick as four switches, up / down / left
     /// / right - past 0.8 of the way with the other axis under 0.57; 20 / 21 the d-pad as two
@@ -3547,10 +3547,10 @@ impl PadState {
 /// The active map's slots: action -> (device, key).
 pub type ControlSlots = BTreeMap<String, (u32, u32)>;
 
-/// An action's value (sub_822A4BB8): a button's byte / 255 past a dead zone of 0.05; the
+/// An action's value (F-33017): a button's byte / 255 past a dead zone of 0.05; the
 /// stick and d-pad axes (keys 0..3, 20, 21) signed about the centre, the other axis keys
 /// byte / 255, past a dead zone of 0.1. Past the dead zone the rest is stretched to the
-/// whole (sub_8260C5C8). 0 for an action the map does not bind.
+/// whole (F-93983). 0 for an action the map does not bind.
 pub fn pad_analog(p: &PadState, slots: &ControlSlots, action: &str) -> f32 {
     let Some(&(device, key)) = slots.get(action) else { return 0.0 };
     let b = p.byte(device, key) as f32;
@@ -3563,22 +3563,22 @@ pub fn pad_analog(p: &PadState, slots: &ControlSlots, action: &str) -> f32 {
     if v.abs() <= dead { 0.0 } else { v.signum() * (v.abs() - dead) / (1.0 - dead) }
 }
 
-/// An action is down (sub_822A4DB0): its byte above 127.
+/// An action is down (F-70872): its byte above 127.
 pub fn pad_down(p: &PadState, slots: &ControlSlots, action: &str) -> bool {
     slots.get(action).map_or(false, |&(device, key)| device != 0 && p.byte(device, key) > 127)
 }
 
-/// Manual gears (sub_822A4B80): the map binds both SHIFT_UP and SHIFT_DOWN. (The list's own
+/// Manual gears (F-31769): the map binds both SHIFT_UP and SHIFT_DOWN. (The list's own
 /// "Transmission" line is read by nothing.)
 pub fn pad_manual(slots: &ControlSlots) -> bool {
     ["SHIFT_UP", "SHIFT_DOWN"].iter().all(|a| slots.get(*a).map_or(false, |s| s.0 != 0))
 }
 
-/// The map the pad is read through (sub_822A4ED0): with the hydraulics switched on the
+/// The map the pad is read through (F-92127): with the hydraulics switched on the
 /// list's ninth, whatever the style; else the style's - LocalOptions + 0, Throttle_Trigger
 /// for a save without the block - and for the custom style the save's own mapping (every
 /// slot from the save; a mapping never filled starts as the list's file for it, the stick's,
-/// as sub_8238CC80 fills a new profile's).
+/// as F-78614 fills a new profile's).
 pub fn control_slots(maps: &[ControlMap], options: Option<&Options>, hydraulics: bool) -> ControlSlots {
     let style = options.map_or(1, |o| o.control_config_pad).clamp(0, 8) as usize;
     if hydraulics {
@@ -3603,7 +3603,7 @@ pub fn control_slots(maps: &[ControlMap], options: Option<&Options>, hydraulics:
     maps.get(style).map(|m| m.slots.clone()).unwrap_or_default()
 }
 
-/// A on a row of CONTROL STYLE (sub_8264D070): the style is the pad's from now on. The
+/// A on a row of CONTROL STYLE (F-36113): the style is the pad's from now on. The
 /// wheel's rows and the row that is set already do nothing.
 pub fn control_set(mc4: &mut Option<Mc4>, style: i32, fresh: bool) -> bool {
     if !(0..=4).contains(&style) || mc4.as_ref().map_or(1, |m| m.options.control_config_pad) == style {
@@ -3716,13 +3716,13 @@ pub fn mapping_store(m: &mut BTreeMap<String, Mapping>, a: &SlotMap) {
     }
 }
 
-/// A slot the editor does not show (sub_82726710): the lean axis, CAM_DOWN, the zooms, PAUSE,
+/// A slot the editor does not show (F-36505): the lean axis, CAM_DOWN, the zooms, PAUSE,
 /// TALK, the pans, the POPUP_* and the hydraulics' four wheels.
 pub fn control_hidden(slot: usize) -> bool {
     matches!(slot, 1 | 13 | 15 | 16 | 17 | 18 | 22..=25 | 30..=41)
 }
 
-/// sub_82391868: what sits on one of the pad's six axes is taken off every slot 0..44 -
+/// F-26260: what sits on one of the pad's six axes is taken off every slot 0..44 -
 /// 0 / 1 the left stick's x / y (the axis, its two half-axes and its two switches), 2 / 3
 /// the right stick's, 20 / 21 the d-pad's left-right / up-down (the axis and its two
 /// buttons, by key or by mask). Any other number takes nothing off.
@@ -3744,7 +3744,7 @@ pub fn control_clear(m: &mut SlotMap, axis: u32) {
     }
 }
 
-/// The editor's assignment (sub_82726870): (device, key) for the action in `slot` of the
+/// The editor's assignment (F-23125): (device, key) for the action in `slot` of the
 /// working copy. False = refused (the "INVALID CHOICE" box), the mapping untouched.
 /// - keys 8 and 11 never (BACK and START - by the key's number alone, whatever the device);
 /// - STEER_AXIS: an axis only, and not the one GAS or BRAKE is on; the left stick (key 0 or
@@ -3765,7 +3765,7 @@ pub fn control_assign(device: u32, key: u32, slot: usize, m: &mut SlotMap, wheel
     if key == 11 || key == 8 {
         return false;
     }
-    // (sub_821A5CC0 is "false" for every slot; what is left of its test)
+    // (F-74264 is "false" for every slot; what is left of its test)
     if key == 1 && device == 0 {
         return true;
     }
@@ -3790,7 +3790,7 @@ pub fn control_assign(device: u32, key: u32, slot: usize, m: &mut SlotMap, wheel
                 return false;
             }
             if key == 2 || key == 3 {
-                // (28, 29, 26 and 27 are asked for too; sub_82391868 knows no such number)
+                // (28, 29, 26 and 27 are asked for too; F-26260 knows no such number)
                 for axis in [2, 28, 29, 3, 26, 27] {
                     control_clear(m, axis);
                 }
@@ -3855,7 +3855,7 @@ pub fn control_assign(device: u32, key: u32, slot: usize, m: &mut SlotMap, wheel
     true
 }
 
-/// What the editor takes as the new button while it waits (sub_82727010), from the pad now
+/// What the editor takes as the new button while it waits (F-56470), from the pad now
 /// and the buttons that were down the frame before. In this order -
 /// an action that is no axis (every one but STEER_AXIS, GAS, BRAKE): the lowest newly
 /// pressed button (LT, RT, LB, RB, Y, B, A, X, BACK, L3, R3, START, d-pad up, right, down,
@@ -3908,7 +3908,7 @@ pub fn control_poll(slot: usize, now: &PadState, prev_buttons: u16) -> Option<(u
     }
 }
 
-/// An unbound row reads "MUST BE MAPPED" (sub_827265A0): every one while exactly one of the
+/// An unbound row reads "MUST BE MAPPED" (F-88529): every one while exactly one of the
 /// two shifts is bound; else the steering and the pedals, HANDBRAKE, NITRO, HEADLIGHTS,
 /// IN_ZONE and MAP (and, of the slots no row shows, 15..18, 22..25, 30..41).
 pub fn control_recommended(m: &SlotMap, slot: usize) -> bool {
@@ -3918,7 +3918,7 @@ pub fn control_recommended(m: &SlotMap, slot: usize) -> bool {
     slot < 4 || slot > 44 || matches!(slot, 6 | 8 | 9 | 11 | 14..=18 | 22..=25 | 30..=41)
 }
 
-/// What the BUTTON column shows for a slot (sub_82679678).
+/// What the BUTTON column shows for a slot (F-31353).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ControlLabel {
     /// nothing bound (or a device the column does not know)
@@ -3977,13 +3977,13 @@ pub fn control_label(device: u32, key: u32) -> ControlLabel {
 /// The pad's actions that are read as "down" by the window's loop, in the order of its bits.
 pub const PAD_ACTS: [&str; 20] = ["HANDBRAKE", "WEIGHT_XFER", "NITRO", "WHEEL_FRONT_LEFT", "WHEEL_FRONT_RIGHT", "WHEEL_BACK_LEFT", "WHEEL_BACK_RIGHT", "MAP", "HYDRAULICS", "HEADLIGHTS", "CAM_UP", "CAM_DOWN", "MUSIC_UP", "MUSIC_DOWN", "IN_ZONE", "SHIFT_UP", "SHIFT_DOWN", "CONVERTIBLE_UP_DN", "HORN", "LOOKBACK"];
 
-/// Looking back (sub_822A50C0): LOOKBACK down - or CAMERA_LEFT and CAMERA_RIGHT both down,
+/// Looking back (F-75699): LOOKBACK down - or CAMERA_LEFT and CAMERA_RIGHT both down,
 /// which forces it (the stick style: both triggers).
 pub fn pad_lookback(p: &PadState, slots: &ControlSlots) -> bool {
     pad_down(p, slots, "LOOKBACK") || (pad_down(p, slots, "CAMERA_LEFT") && pad_down(p, slots, "CAMERA_RIGHT"))
 }
 
-/// The map as the pad is read this frame (sub_822A50C0): while looking back every action
+/// The map as the pad is read this frame (F-75699): while looking back every action
 /// but the four CAM_PAN_* that has the (device, key) of one of them reads nothing - the
 /// d-pad then only pans (the song, map and hydraulics buttons on it do nothing).
 pub fn pad_live(p: &PadState, slots: &ControlSlots) -> ControlSlots {
@@ -4015,7 +4015,7 @@ pub fn pad_acts_down(p: &PadState, slots: &ControlSlots) -> u32 {
     down
 }
 
-/// The idle camera is ended by the pad (sub_822B3BF0, its Idle view): CAM_UP, HYDRAULICS,
+/// The idle camera is ended by the pad (F-24075, its Idle view): CAM_UP, HYDRAULICS,
 /// CAM_DOWN, LOOKBACK, MUSIC_DOWN, MUSIC_UP, MUSIC_PAUSE or MAP down, or CAMERA_LEFT /
 /// CAMERA_RIGHT / CAMERA_UP above 0.2 (the constant at 0x82007A4C).
 pub fn pad_wakes_idle(p: &PadState, slots: &ControlSlots) -> bool {
@@ -4026,13 +4026,13 @@ pub fn pad_wakes_idle(p: &PadState, slots: &ControlSlots) -> bool {
 /// A box of the controller pages that is up.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CtrlBox {
-    /// "INVALID CHOICE" (sub_82679D08): OK
+    /// "INVALID CHOICE" (F-32568): OK
     Invalid,
-    /// "MISSING MAPPINGS" on the way out of the editor (sub_82679E98): OK leaves, BACK stays
+    /// "MISSING MAPPINGS" on the way out of the editor (F-53815): OK leaves, BACK stays
     Unmapped,
     /// "SET TO DEFAULT?" (event 62): YES / NO
     Defaults,
-    /// "SAVE OPTIONS" on the way out of OPTIONS (sub_8264D770): YES / NO
+    /// "SAVE OPTIONS" on the way out of OPTIONS (F-92772): YES / NO
     Save,
     /// the keyboard page's two (the port's own page, `keybinds`): the same boxes
     KbdUnmapped,
@@ -4042,7 +4042,7 @@ pub enum CtrlBox {
 /// The controller pages' state while OPTIONS is open (the original's forms 31..33).
 #[derive(Clone, Debug)]
 pub struct CtrlUi {
-    /// OPTIONS is open: the mapping was loaded (sub_8264CB28 -> sub_82679BD8)
+    /// OPTIONS is open: the mapping was loaded (F-94952 -> F-87567)
     pub open: bool,
     /// the style the save had when OPTIONS opened, and the one chosen since (SET)
     pub style_was: i32,
@@ -4074,7 +4074,7 @@ impl Default for CtrlUi {
 
 /// OPTIONS opens: the style and the mapping as the save has them. A mapping never filled
 /// is the custom style's own file (the list's fifth entry), as a new profile's is
-/// (sub_8238CC80).
+/// (F-78614).
 pub fn ctrl_open(c: &mut CtrlUi, maps: &[ControlMap], options: Option<&Options>) {
     c.style_was = options.map_or(1, |o| o.control_config_pad);
     c.style = c.style_was;
@@ -4091,13 +4091,13 @@ pub fn ctrl_open(c: &mut CtrlUi, maps: &[ControlMap], options: Option<&Options>)
     c.kbd.polling = false;
 }
 
-/// Something of the controller's was changed since OPTIONS opened (its part of sub_8264C950).
+/// Something of the controller's was changed since OPTIONS opened (its part of F-66374).
 pub fn ctrl_changed(c: &CtrlUi) -> bool {
     c.open && (c.style != c.style_was || c.work != c.saved || c.kbd.work != c.kbd.binds)
 }
 
-/// "SAVE OPTIONS", YES (sub_8264C6F0, result 3): an edited mapping is written to the save
-/// and the style becomes the row the editor was opened for (sub_82679F50 - only when the
+/// "SAVE OPTIONS", YES (F-87944, result 3): an edited mapping is written to the save
+/// and the style becomes the row the editor was opened for (F-57485 - only when the
 /// working copy differs); then the style stands. True when the save's block was changed.
 pub fn ctrl_commit(c: &mut CtrlUi, mc4: &mut Option<Mc4>, fresh: bool) -> bool {
     let mut wrote = false;
@@ -4133,7 +4133,7 @@ pub fn ctrl_unmapped(m: &SlotMap) -> bool {
     CONTROL_ROWS.iter().any(|&s| m[s].0 == 0 && control_recommended(m, s))
 }
 
-/// A frame of the editor (sub_8267A8E0): while it waits, the pad is looked at - not on the
+/// A frame of the editor (F-23338): while it waits, the pad is looked at - not on the
 /// first frame - and what comes is assigned. `Some(false)`: it was refused.
 pub fn ctrl_poll_frame(c: &mut CtrlUi, pad: Option<&PadState>, slot: usize) -> Option<bool> {
     let mut out = None;
@@ -4231,7 +4231,7 @@ impl Game {
     }
 
     /// One of the controller pages' boxes goes up (the original's box kinds 1, 2 and 3 / 4
-    /// of sub_82634140: OK alone; OK with BACK; YES / NO with the cursor on NO).
+    /// of F-75153: OK alone; OK with BACK; YES / NO with the cursor on NO).
     fn ctrl_box(&mut self, kind: CtrlBox) {
         let yes_no = vec![("ctrl_a".to_string(), "messagebox_yes".to_string()), ("ctrl_b".to_string(), "messagebox_no".to_string())];
         let ok = vec![("ctrl_a".to_string(), "messagebox_ok".to_string())];
@@ -4251,12 +4251,12 @@ impl Game {
     /// what was pressed (up, down, accept, back; X and Y) is taken where a controller page
     /// answers it, and what the menu's own code is still to see comes back.
     /// - OPTIONS (page 4): BACK with something of the controller's changed asks "SAVE
-    ///   OPTIONS" (sub_8264D770): YES commits (`ctrl_commit`), NO goes back to what was;
+    ///   OPTIONS" (F-92772): YES commits (`ctrl_commit`), NO goes back to what was;
     /// - CONTROLLER (5, the port's own page): GAMEPAD, KEYBOARD, RACING WHEEL;
-    /// - CONTROL STYLE (70, mcControllerStyleForm, sub_8264D0D8): A sets the row's style
+    /// - CONTROL STYLE (70, mcControllerStyleForm, F-22867): A sets the row's style
     ///   (the pad's rows; kept until the options are saved), Y opens the editor on the
     ///   custom row and the viewer on the others;
-    /// - the editor (71, mcControllerCustomizeForm, sub_8267AB50): A waits for a button, Y
+    /// - the editor (71, mcControllerCustomizeForm, F-38381): A waits for a button, Y
     ///   clears the row, X asks for the defaults, BACK leaves - past the "MISSING MAPPINGS"
     ///   box when a row that must be mapped is not. While it waits nothing else is heard.
     pub fn mc4_ctrl_input(&mut self, pressed: [bool; 4], key_x: bool, key_y: bool) -> [bool; 4] {
@@ -4288,7 +4288,7 @@ impl Game {
             self.opt_x.ctrl.box_kind = None;
             match (kind, self.box_sel) {
                 (CtrlBox::Defaults, 0) => {
-                    // (sub_8267AA50: the working copy is the list's map of the row)
+                    // (F-17745: the working copy is the list's map of the row)
                     let row = self.opt_x.ctrl.row;
                     if let Some(m) = self.opt_x.control_maps.as_ref().and_then(|m| m.get(row)) {
                         self.opt_x.ctrl.work = slots_array(&m.slots);
@@ -4304,7 +4304,7 @@ impl Game {
                     self.pause_page = PAGE_CONTROLLER;
                 }
                 (CtrlBox::Save, 0) => {
-                    // (and the game is saved, as sub_8264C6F0 has "mc4.sav" written)
+                    // (and the game is saved, as F-87944 has "mc4.sav" written)
                     if ctrl_commit(&mut self.opt_x.ctrl, &mut self.mc4, self.fresh_game) {
                         self.dirty = true;
                         let d = self.data_dir.clone();
@@ -4314,7 +4314,7 @@ impl Game {
                     self.pause_page = 0;
                 }
                 (CtrlBox::Save, 1) => {
-                    // (sub_8264C6F0, result 2: the options as they were)
+                    // (F-87944, result 2: the options as they were)
                     self.opt_x.ctrl.open = false;
                     self.menu_sel = 0;
                     self.pause_page = 0;
@@ -4485,7 +4485,7 @@ impl Game {
                 for (i, (key, fb)) in STYLES.iter().enumerate() {
                     out.rows.push((st(key, fb), if i >= 5 { String::new() } else if style == i as i32 { CHECK_ON.to_string() } else { CHECK_OFF.to_string() }, i < 5));
                 }
-                // (sub_8264AFB8: by the row under the cursor)
+                // (F-59161: by the row under the cursor)
                 out.prompts = match sel {
                     4 => vec![(st("prompt_set", "SET"), ICON_A), back, (st("prompt_edit", "EDIT"), ICON_Y)],
                     0..=3 => vec![(st("prompt_set", "SET"), ICON_A), back, (st("prompt_view", "VIEW"), ICON_Y)],
@@ -4500,7 +4500,7 @@ impl Game {
                     let name = action_name(slot).unwrap_or("");
                     let (device, key) = shown[slot];
                     let must = device == 0 && control_recommended(&shown, slot);
-                    // (sub_82679D90: while it waits the row is blank and the others are greyed)
+                    // (F-47959: while it waits the row is blank and the others are greyed)
                     let value = if c.polling {
                         if i == sel { String::new() } else { Self::ctrl_value(&st, device, key, must) }
                     } else {
@@ -4508,7 +4508,7 @@ impl Game {
                     };
                     let on = !c.polling || i == sel;
                     out.rows.push((st(name, &name.replace('_', " ")), value, on));
-                    // (the row's own writer, sub_8264BDA8: `property1` 20 on a row that must be mapped)
+                    // (the row's own writer, F-46822: `property1` 20 on a row that must be mapped)
                     out.props.push(if must && !(c.polling && i == sel) { 20 } else { on as i32 });
                 }
                 out.prompts = if c.polling {
@@ -4575,7 +4575,7 @@ impl Game {
     }
 
     /// A slot in the BUTTON column: a glyph (the movie's row kind 7), a text, or "MUST BE
-    /// MAPPED" (sub_8267A1C0).
+    /// MAPPED" (F-25949).
     fn ctrl_value(st: &dyn Fn(&str, &str) -> String, device: u32, key: u32, must: bool) -> String {
         if must {
             return st("mapping_recommended", "MUST BE MAPPED");
@@ -4588,8 +4588,8 @@ impl Game {
     }
 }
 
-/// What the paint shop and the vinyl editor cost, once per model (`li r6,1000` at 0x826AEE08 /
-/// 0x826AEE80; the affordability test sub_826B94E8 gets the same 1000).
+/// What the paint shop and the vinyl editor cost, once per model (`li r6,1000` at A-64047 /
+/// A-84400; the affordability test F-69834 gets the same 1000).
 pub const MISC_PRICE: i64 = 1000;
 
 /// The paint areas after the body, by the port's `part_paint` keys.
@@ -4597,7 +4597,7 @@ const AREA_KEYS: [&str; 5] = ["doors", "hood", "bumper_f", "bumper_r", "skirts"]
 
 impl Game {
     /// The brake model a vehicle's record names: `brakes` of tune/vehicle/wheel_models.list
-    /// by `BrakeMdlIdx` (sub_82390768) - the stock models too, which are no rows of the
+    /// by `BrakeMdlIdx` (F-75123) - the stock models too, which are no rows of the
     /// BRAKES menu (the Ford GT's 11 `brk_car_brembo_drilled_blank`, the R8's own 14 ...).
     pub fn mc4_brake_name(&self, car: &str) -> Option<String> {
         let c = self.mc4.as_ref()?.car(car)?;
@@ -4606,7 +4606,7 @@ impl Game {
 
     /// Parts were paid for on `car`: the port's tags ("<section>:<index>") get their bits in
     /// the model's purchase record (every category: `PART_CATEGORIES`), and the model's sum
-    /// takes what was paid (sub_823900E0).
+    /// takes what was paid (F-66800).
     pub fn mc4_parts_bought(&mut self, car: &str, tags: &[String], cost: i64) {
         let seed = self.mc4.is_none();
         let key = car.to_ascii_lowercase();
@@ -4624,8 +4624,8 @@ impl Game {
         }
     }
 
-    /// The highest stage of performance part `k` the model of `car` owns (sub_8269B6D8).
-    /// The shop makes the stages up to it free (sub_826A8640 before 0x826A89A8: price 0 for
+    /// The highest stage of performance part `k` the model of `car` owns (F-32441).
+    /// The shop makes the stages up to it free (F-41623 before A-28976: price 0 for
     /// stage 1 when the level is above 0, for stage 2 when above 1). The port's tags
     /// "performance:<k * 3 + stage>" hold it, with or without the block.
     pub fn perf_owned(&self, car: &str, k: usize) -> u8 {
@@ -4634,7 +4634,7 @@ impl Game {
         if has(2) { 2 } else if has(1) { 1 } else { 0 }
     }
 
-    /// The performance shop's purchase (sub_8269B7C0): every part's fitted stage becomes
+    /// The performance shop's purchase (F-69428): every part's fitted stage becomes
     /// the model's - bit part * 3 + stage, and with a stage 2 the stage 1 as well - and the
     /// sum takes the price.
     pub fn mc4_perf_bought(&mut self, car: &str, stages: &[u8], cost: i64) {
@@ -4687,10 +4687,10 @@ impl Game {
     /// The six paint areas of the vehicle in use follow the paint shop, by the original's
     /// rules (called every frame):
     /// - PAINT OPTIONS: ALL PARTS (the garage's flag, `garage.ChangePaintOverride(1)`): a
-    ///   paint type, a fade, a colour goes into all six entries (sub_82391F78, sub_82391FB8,
-    ///   sub_82391FF8 with the flag set) - so the parts lose a colour of their own;
+    ///   paint type, a fade, a colour goes into all six entries (F-31035, F-83553,
+    ///   F-87462 with the flag set) - so the parts lose a colour of their own;
     /// - PARTS: into the entry of the PAINT AREA in hand only, and a colour set there takes
-    ///   that area's fade off (sub_82699600 at 0x826996E8: `sub_82391FB8(.., area, 0)`);
+    ///   that area's fade off (F-40495 at A-90030: `F-83553(.., area, 0)`);
     /// - changing the PAINT AREA shows that area's type on the row (MatchPaintTypeAndFade).
     /// The areas start from the vehicle's record; a vehicle without one starts with the
     /// body's paint on every area, a part painted by itself without a fade (as it was drawn).
@@ -4775,7 +4775,7 @@ impl Game {
     }
 
     /// The player's paint for the renderer: each area as the original's body draw sets it
-    /// up before the parts of that area (sub_8235D500 at 0x8235DF28 -> sub_823580D0).
+    /// up before the parts of that area (F-92759 at A-29193 -> F-13513).
     pub fn paint_out(&self) -> PaintOut {
         let body_a = self.paint_color();
         let Some(live) = self.car_x.paint.as_ref() else {
@@ -4800,9 +4800,9 @@ impl Game {
     /// menu may act on them. `top`: the GARAGE menu itself; `at_exit`: the cursor is on EXIT
     /// GARAGE; `row`: the cursor's row (0 MANAGE VEHICLES, 1 CUSTOMIZE VEHICLE, 2 VEHICLE
     /// SHOWROOM); `car`: the player's car - its four damage zones and its damage (0..1).
-    /// - a row: `garage.RepairBeforeCustomizing` (sub_826A53C8) - a zone above 0.05 brings
+    /// - a row: `garage.RepairBeforeCustomizing` (F-32431) - a zone above 0.05 brings
     ///   the REPAIR box (FullFixConfirm / ..Manage / ..Showroom of MessageBoxes.sc.xml);
-    /// - EXIT GARAGE or BACK: `garage.RepairBeforeExiting` (sub_8269B9A8) - damage above
+    /// - EXIT GARAGE or BACK: `garage.RepairBeforeExiting` (F-70109) - damage above
     ///   0.9 brings FullFixConfirmExit; below that the car leaves as it is.
     /// YES repairs (`game.repairCar()`) and goes on; NO closes the box.
     /// (approx.) The box's price line: the original sets it by `game.SetQuickFixPrice()` into
@@ -4839,7 +4839,7 @@ impl Game {
         let need = if leaving { damage > 0.9 } else { zones.iter().any(|z| *z > 0.05) };
         if !need {
             // (RepairBeforeCustomizing with no zone above 0.05: no box, the car repaired as it goes in - free,
-            // scrapes and all - `sub_826A53C8` -> `sub_822A7388`)
+            // scrapes and all - `F-32431` -> `F-12181`)
             if !leaving {
                 self.repair_car = true;
             }
@@ -4881,7 +4881,7 @@ impl Game {
     }
 
     /// PAINT SHOP (`n` 0) or VINYL EDITOR (1) was chosen in the garage:
-    /// `garage.CheckMiscPartPurchased(n)` (sub_826AB520 at 0x826AEEF0). The shop opens when
+    /// `garage.CheckMiscPartPurchased(n)` (F-96638 at A-97737). The shop opens when
     /// the model's purchase record has it (category 5 / 6, bit 0) or the parts are free;
     /// else the player is asked to buy it for $1000 (`Confirm_Buy_Paint` /
     /// `Confirm_Buy_Vinyl` of tune/ui/garage/Main.sc.xml), or told that $1000 are needed
@@ -4923,9 +4923,9 @@ impl Game {
         }
     }
 
-    /// `garage.FinishMiscPurchase(n)` (sub_826AB520 at 0x826AEDC0): bit 0 of category 5 / 6
-    /// for $1000 (sub_823900E0, so the sum of the model's record takes it too), and the
-    /// money goes (sub_826B94A8).
+    /// `garage.FinishMiscPurchase(n)` (F-96638 at A-53975): bit 0 of category 5 / 6
+    /// for $1000 (F-66800, so the sum of the model's record takes it too), and the
+    /// money goes (F-38145).
     pub fn mc4_misc_buy(&mut self, n: usize) {
         let tag = ["paint:0", "vinyl:0"][n.min(1)].to_string();
         let car = self.mc4_car_name(self.current_car);
@@ -5069,7 +5069,7 @@ impl Game {
     }
 
     /// STEERING SENS. as the original's slider has it: -10 .. 10 (the saved value x 10,
-    /// sub_8264B9C0; 0 in a new game). A save without the block: the port's eleven places,
+    /// F-78269; 0 in a new game). A save without the block: the port's eleven places,
     /// 0..10, are the even steps.
     pub fn mc4_sens_step(&self) -> i32 {
         match self.mc4.as_ref().map(|m| m.options.sensitivity_step()) {
@@ -5087,10 +5087,10 @@ impl Game {
     }
 
     /// The vehicle in use has no special ability: its record says -1 (set-up files and
-    /// every vehicle until the garage's SPECIAL ABILITIES page gives it one, sub_826A6FF0;
-    /// `mcRacer::GetActiveAbility`, sub_822AE270, hands the record's byte to the scripts
+    /// every vehicle until the garage's SPECIAL ABILITIES page gives it one, F-73337;
+    /// `mcRacer::GetActiveAbility`, F-74686, hands the record's byte to the scripts
     /// as it is). A vehicle without a record keeps the ability in hand, as before.
-    /// In GOAL ATTACK no vehicle has one: the racer's current ability (sub_82337A48, its
+    /// In GOAL ATTACK no vehicle has one: the racer's current ability (F-78162, its
     /// ability object's +52) answers -1 while the mode's +796 (or +797) is set.
     pub fn mc4_ability_none(&self) -> bool {
         if self.goal_attack {
@@ -5100,14 +5100,14 @@ impl Game {
     }
 
     /// The sum word of a model's purchase record (1 = nothing spent: the constructor's,
-    /// sub_8238FFC8).
+    /// F-69059).
     pub fn mc4_spent_word(&self, car: &str) -> u32 {
         self.mc4.as_ref().and_then(|m| m.record(car)).map_or(1, |r| r.spent_plus_1)
     }
 
     /// The player's vehicle as it stands (its model's name, its damage and the damage of
     /// its four zones - left, right, front, rear: the original keeps these per garage slot
-    /// while a vehicle is stored, LocalOptions + 0x3DCB4, sub_8238ACD8). A vehicle that was
+    /// while a vehicle is stored, LocalOptions + 0x3DCB4, F-72475). A vehicle that was
     /// just taken out gets what its slot kept.
     pub fn mc4_damage(&mut self, model: &str, damage: &mut f32, zones: &mut [f32; 4]) {
         if self.car_x.car.is_empty() || !model.eq_ignore_ascii_case(&self.car_x.car) {
@@ -5387,17 +5387,17 @@ impl Game {
 // ---- the experience systems: class reputation and the Unlocking amount ----
 //
 // The original's experience manager (global 0x8287484C) gives experience at the end of an
-// event (handler sub_826BB9E0):
-//   GENERIC_RACE_COMPLETE, FREEWAY_RACE_COMPLETE (sub_826B9AE8) and WAGER_RACE_COMPLETE
-//   (sub_826BB750): the race's experience to `Progression` (not in a network game) and the
+// event (handler F-12673):
+//   GENERIC_RACE_COMPLETE, FREEWAY_RACE_COMPLETE (F-48818) and WAGER_RACE_COMPLETE
+//   (F-51495): the race's experience to `Progression` (not in a network game) and the
 //   same to `Unlocking` (always); one point to the system of the class of the vehicle
 //   driven, whatever the place; one point to the system of the ability fitted.
-//   PAYBACK_LEG_COMPLETE (sub_826B9F40), last leg: the experience to both.
-//   BEAT_ME_THERE_RACE_COMPLETE (sub_826B99A0), COP_EVADE (sub_826BA238): `Progression` only.
-//   DELIVERY_RACE_COMPLETE (sub_826B9DF8), TIME_TRIAL_RACE_COMPLETE (sub_826BA198): money only.
-// An addition (sub_826BC348) is followed by the system's thresholds (sub_826BC090): each one
-// not yet reached whose `Percent` the system's share (sub_826BBCF0) has come to is marked
-// reached and gives its rewards (sub_826BC5E8).
+//   PAYBACK_LEG_COMPLETE (F-66865), last leg: the experience to both.
+//   BEAT_ME_THERE_RACE_COMPLETE (F-90736), COP_EVADE (F-67002): `Progression` only.
+//   DELIVERY_RACE_COMPLETE (F-96289), TIME_TRIAL_RACE_COMPLETE (F-58178): money only.
+// An addition (F-55689) is followed by the system's thresholds (F-61830): each one
+// not yet reached whose `Percent` the system's share (F-14176) has come to is marked
+// reached and gives its rewards (F-61974).
 
 /// The vehicle classes, in the order of the original's table (0x827E9ABC); each has an
 /// experience system of its name.
@@ -5426,7 +5426,7 @@ pub struct SystemDef {
 
 /// The experience systems of the career tables (`tune/career/0x3b8ff776` and the South
 /// Central one, `0x30974b1d`): `System { Type MaxAmount IncrementValue Threshold { Id
-/// Percent Reward { Type ... } } }` (read by sub_826BC128, sub_826BC6E8).
+/// Percent Reward { Type ... } } }` (read by F-93962, F-30482).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExpTables {
     pub systems: Vec<SystemDef>,
@@ -5538,7 +5538,7 @@ impl SystemDef {
         self.name == "Progression" || self.name == "Unlocking"
     }
 
-    /// The share of the system, 0..1 (sub_826BBCF0): the two main systems go through the
+    /// The share of the system, 0..1 (F-14176): the two main systems go through the
     /// thirteen levels of the manager, the others are amount / MaxAmount; the amount counts
     /// up to MaxAmount.
     pub fn fraction(&self, amount: i64) -> f32 {
@@ -5551,7 +5551,7 @@ impl SystemDef {
         }
     }
 
-    /// The step the system stands on (sub_826BBEE8): the last one with the share at 1,
+    /// The step the system stands on (F-96803): the last one with the share at 1,
     /// else the first threshold the share is below.
     pub fn index(&self, amount: i64) -> usize {
         let n = self.thresholds.len();
@@ -5566,7 +5566,7 @@ impl SystemDef {
         self.thresholds.iter().position(|t| f < t.percent).unwrap_or(n - 1)
     }
 
-    /// The amounts the step runs between (sub_826BBF80, sub_826BC008): Percent x MaxAmount,
+    /// The amounts the step runs between (F-57870, F-53104): Percent x MaxAmount,
     /// cut to a whole number; 0 below the first threshold, 100 for a system without any.
     pub fn span(&self, amount: i64) -> (i64, i64) {
         if self.thresholds.is_empty() {
@@ -5579,7 +5579,7 @@ impl SystemDef {
 }
 
 /// The smallest amount at which a main system (Progression, Unlocking) has share `pct`:
-/// where a threshold of that `Percent` is reached (sub_826BC090 compares the share).
+/// where a threshold of that `Percent` is reached (F-61830 compares the share).
 pub fn main_amount_at(pct: f32) -> i64 {
     let max = crate::catalog::MAX_REP;
     if !(pct <= 1.0) {
@@ -5645,7 +5645,7 @@ impl Game {
     }
 
     /// What `price_of` answers for a vehicle of unlock group `group` (C0, B0, A0: levels the
-    /// Unlocking system gives, like the performance levels; sub_826BC090): 0 when the save
+    /// Unlocking system gives, like the performance levels; F-61830): 0 when the save
     /// has the level or the Unlocking amount is at its threshold, else in terms of the
     /// reputation, as `mc4_perf_need`.
     pub fn mc4_group_need(&self, group: &str) -> i64 {
@@ -5684,9 +5684,9 @@ impl Game {
         }
     }
 
-    /// The thresholds of a class system after an addition (sub_826BC090): each one not yet
+    /// The thresholds of a class system after an addition (F-61830): each one not yet
     /// reached that the share has come to is marked and gives its rewards - PartUnlock
-    /// (sub_826B71D0): the body part type is unlocked, and marked new, for the class of the
+    /// (F-70978): the body part type is unlocked, and marked new, for the class of the
     /// vehicle the player is in (`class`).
     fn mc4_class_thresholds(&self, m: &mut Mc4, system: &str, class: &str) -> Vec<String> {
         let mut given = Vec::new();
@@ -5715,8 +5715,8 @@ impl Game {
     }
 
     /// The experience of a finished race, beside the reputation the game has added
-    /// (GENERIC_RACE_COMPLETE / FREEWAY_RACE_COMPLETE: sub_826B9AE8; WAGER_RACE_COMPLETE:
-    /// sub_826BB750): `exp` to the Unlocking system too, one point to the system of the
+    /// (GENERIC_RACE_COMPLETE / FREEWAY_RACE_COMPLETE: F-48818; WAGER_RACE_COMPLETE:
+    /// F-51495): `exp` to the Unlocking system too, one point to the system of the
     /// class of the vehicle driven (whatever the place) and one to the system of the
     /// ability fitted. `rep_before`: the reputation before that of the race was added.
     /// Returns the body part types this unlocked.
@@ -5742,7 +5742,7 @@ impl Game {
             let after = self.career.ability_level(sys, stat);
             // (step 23: a threshold of the ability's system reached gives its Achievement
             // reward - aZON / aAGR / aROR / aPUL with level 2; the reward sets the statistic
-            // once, sub_826B68E0)
+            // once, F-13951)
             if after > before {
                 let amount = self.career.ability_amounts.get(sys).copied().unwrap_or(0);
                 let due: Vec<String> = self.career.exp_tables.system(sys).map(|d| { let f = d.fraction(amount); d.thresholds.iter().filter(|t| f >= t.percent).flat_map(|t| t.achievements.iter().cloned()).collect() }).unwrap_or_default();
@@ -5755,7 +5755,7 @@ impl Game {
                 let key = format!("{}_LEVEL_{}", sys.to_ascii_uppercase(), after);
                 let text = self.career.strings.get(&key).map(|s| s.to_string()).unwrap_or_else(|| format!("{} LEVEL {}", ABILITY[k], after + 1));
                 // (a reward of type AbilityLevel: a line of the rewards screen's REWARDED
-                // group - sub_82676B08 0x82677148 -, not a message of its own)
+                // group - F-36204 A-62815 -, not a message of its own)
                 self.career.rewarded_now.push(text.to_uppercase());
             }
         }
@@ -5780,7 +5780,7 @@ impl Game {
 
     /// What keeps a body part type of the class tables from the shop for a vehicle of
     /// `class`: (points needed, points so far); None = unlocked. With the class systems
-    /// counted the flag of the type decides (sub_826BCDD8), as the garage of the original
+    /// counted the flag of the type decides (F-57000), as the garage of the original
     /// asks; else the earlier rule of the port, races won in the class.
     pub fn mc4_part_lock(&self, class: &str, part: &str) -> Option<(i64, i64)> {
         let (need, wins) = self.career.part_wins_needed(class, part);
@@ -5794,7 +5794,7 @@ impl Game {
         if unlocked { None } else { Some((need, self.mc4_class_amount(sys))) }
     }
 
-    /// The rank and meter of the class as the map screen shows them (sub_8262D560): rank =
+    /// The rank and meter of the class as the map screen shows them (F-71884): rank =
     /// the step of the system of the class + 1; "(a/b)" = the points on that step and its
     /// length.
     pub fn mc4_class_rank(&self, class: &str) -> (usize, i64, i64) {
@@ -5814,11 +5814,11 @@ impl Game {
 //
 // The cruising hookmen's slot system (manager +8596) saves, per district, three "slot hidden"
 // flags and one "district locked" byte (manager +8741 + d). A new game has every district locked,
-// Hollywood too, and every slot hidden: the slot system's constructor (sub_826CF9C0, from the
-// manager's sub_826C16C0) sets +145..+151 to 1, and the slot template (sub_826D4360) hidden +80 to
+// Hollywood too, and every slot hidden: the slot system's constructor (F-18978, from the
+// manager's F-77509) sets +145..+151 to 1, and the slot template (F-57269) hidden +80 to
 // 1; nothing native clears them. A mission's script opens a district when the mission starts:
-// mcSlotSystem_HideDistrict(d, 0) - the slots shown (0x826CE5B8 -> sub_826CDDC8) - and
-// mcSlotSystem_UnlockDistrict(d, 1) - the lock off and the slots evaluated (0x826CFFC8).
+// mcSlotSystem_HideDistrict(d, 0) - the slots shown (F-16040 -> F-58249) - and
+// mcSlotSystem_UnlockDistrict(d, 1) - the lock off and the slots evaluated (F-12898).
 // Hollywood is opened by RACE_GH_02's and RACE_SH_01's core scripts when their race is won
 // (`DISTRICTS_WON`).
 
@@ -5877,7 +5877,7 @@ impl Game {
         changed
     }
 
-    /// The district's cruising slots are in use (mcSlotSystem_IsDistrictLocked, 0x826CE5F8, is
+    /// The district's cruising slots are in use (mcSlotSystem_IsDistrictLocked, F-54458, is
     /// false for it). A name that is no district of the five, and a game without the block
     /// that is not a new career, are open.
     pub fn mc4_district_open(&self, district: &str) -> bool {
@@ -6016,7 +6016,7 @@ pub const MISSION_LAUNCHERS: [(&str, &str); 51] = [
 pub const REDLIGHT_HOOKMEN: [u32; 5] = [350, 351, 352, 353, 354];
 
 /// The mark before the title of a results panel that is the time trial's (form 42,
-/// `TIMETRIAL_RESULTS_TITLE`; constructor sub_82677C40, update sub_82678B90): a list of
+/// `TIMETRIAL_RESULTS_TITLE`; constructor F-72304, update F-65302): a list of
 /// the rewards' template with the header TIME_HEADER - row kind 25: the COMPLETE / FAIL
 /// stamp by `bComplete` in its fourth text, the number of rows under it in its second -
 /// and TARGET_TIME_FORMAT, YOUR_TIME_FORMAT as rows of kind 19; one prompt, CONTINUE
@@ -6031,12 +6031,12 @@ pub struct ArcadeRow {
     /// where its choice is kept: 0..5 `Game::arcade_opts`, 6.. `Game::arcade_x`
     pub slot: usize,
     pub choices: Vec<String>,
-    /// the choice DEFAULT puts back (sub_826583C0)
+    /// the choice DEFAULT puts back (F-84256)
     pub default: usize,
 }
 
 impl Game {
-    /// mcCareer_GetAltHookmanVisibility (0x826C0610): the alternative hookman - one who
+    /// mcCareer_GetAltHookmanVisibility (F-25257): the alternative hookman - one who
     /// holds no cruising slot: the freeway racers 300..307 and the red light racers 350..354 -
     /// has been marked visible. A save without the block: no.
     pub fn mc4_alt_visible(&self, uid: u32) -> bool {
@@ -6075,9 +6075,9 @@ impl Game {
         self.dirty = true;
     }
 
-    /// The rows of the ARCADE menu's options page for a race (sub_8265A4A0, the off line
-    /// branch 0x8265ABD8..0x8265AD10; the widgets and their lists: sub_8265B4D8; the
-    /// defaults: sub_826583C0):
+    /// The rows of the ARCADE menu's options page for a race (F-71627, the off line
+    /// branch A-67715..A-92713; the widgets and their lists: F-14101; the
+    /// defaults: F-84256):
     /// NUMBER OF OPPONENTS 1 .. the race's `OpponentsAllowed` (default 3, or that if less);
     /// LAST MAN OUT off / on - a circuit only; DIFFICULTY Easy / Medium / Hard / Impossible
     /// (default Medium); NUMBER OF LAPS 1 .. 5 (default the race's `NumLaps`) - a circuit
@@ -6100,8 +6100,8 @@ impl Game {
             rows.push(ArcadeRow { label: st("RO_NumberofLaps", "NUMBER OF LAPS"), slot: 6, choices: (1..=5).map(|n| n.to_string()).collect(), default: laps - 1 });
         }
         rows.push(ArcadeRow { label: st("RO_PowerUps", "POWER UPS"), slot: 2, choices: list(&[("off", "OFF"), ("on", "ON"), ("Custom", "CUSTOM")]), default: 0 });
-        // (Custom: the eleven power-ups follow, each off / on, on by default - sub_82658218,
-        // sub_826583C0 0x8265876C..0x826587EC)
+        // (Custom: the eleven power-ups follow, each off / on, on by default - F-93221,
+        // F-84256 A-93001..A-92303)
         if self.arcade_opts[2] == 2 {
             for (k, (key, text)) in POWER_UP_ROWS.iter().enumerate() {
                 let label = self.career.strings.get(*key).map(|v| v.to_uppercase()).unwrap_or_else(|| format!("\u{b1}{text}"));
@@ -6123,7 +6123,7 @@ impl Game {
     }
 
     /// The laps of a circuit started from the ARCADE menu: the menu's NUMBER OF LAPS, which
-    /// its launcher puts in the race data (sub_8265CC90 0x8265CD4C: +3116).
+    /// its launcher puts in the race data (F-28426 A-66352: +3116).
     pub fn mc4_arcade_laps(&self, def: &crate::races::RaceDef) -> Option<usize> {
         // (LAST MAN OUT: as many laps as opponents - RaceWrapper, `game/race/0xc4e26a20`
         // 0x2bd1..0x2bfa: +3116 = the racers less one)
@@ -6134,7 +6134,7 @@ impl Game {
     }
 
     /// The text of a Car reward on the rewards screen: the string of the reward's
-    /// description, shown through `EOR_car_reward_format` (sub_82676B08 0x82677028..0x8267706C;
+    /// description, shown through `EOR_car_reward_format` (F-36204 A-65125..A-72924;
     /// the string table has the cars' set-up names as keys: `timetrial_vp_mit_eclipse_99`
     /// = "1999 ECLIPSE GSX"). A key the table has not: `!!key!!`.
     pub fn mc4_car_reward_label(&self, name: &str) -> String {
@@ -6180,7 +6180,7 @@ pub const TIME_TRIALS: [TimeTrialDef; 5] = [
     TimeTrialDef { key: "TIMETRIAL_SC", race: "game/Race/SouthCentral/Ordered/sc_ordered_dh_11", hookman: 254, cars: ["SC_timetrial_vpd_chv_impala_64", "SC_timetrial_vpd_pon_gto_66", "SC_timetrial_vpd_lr_hse_08", "SC_timetrial_vpd_mbz_clk63amg_08"], first: [180000, 160000, 165000, 135000], low: [150000, 120000, 120000, 120000], missions: ["TIMETRIAL_SC", "TIMETRIAL_SCB", "TIMETRIAL_SCC"] },
 ];
 
-/// mcCareer_EvaluateCurrentTargetTime (0x826BE028 -> sub_826BDBB0): with the player's best
+/// mcCareer_EvaluateCurrentTargetTime (F-96015 -> F-93929): with the player's best
 /// time above the bound, the target becomes best - (best - bound) / 10; with a best time at
 /// or below it, best - 15; with no best time it stays.
 pub fn tt_evaluate(best: i64, low: u32) -> Option<u32> {
@@ -6193,13 +6193,13 @@ pub fn tt_evaluate(best: i64, low: u32) -> Option<u32> {
     }
 }
 
-/// A time beats a target as the result's routine has it (sub_826CA9D8 0x826CAA54..0x826CAA84,
-/// the same test in sub_826CA8E0): both cut to hundredths of a second, time not above target.
+/// A time beats a target as the result's routine has it (F-58463 A-63797..A-52016,
+/// the same test in F-83470): both cut to hundredths of a second, time not above target.
 pub fn tt_beaten(time_ms: i64, target_ms: i64) -> bool {
     target_ms / 10 * 10 - time_ms / 10 * 10 >= 0
 }
 
-/// A race clock as the game writes it (UIManager_FormatRaceClock, sub_8223DE50 "%s%02d:%02d.%02d"): mm:ss.cc.
+/// A race clock as the game writes it (UIManager_FormatRaceClock, F-26034 "%s%02d:%02d.%02d"): mm:ss.cc.
 pub fn tt_clock(ms: i64) -> String {
     crate::flash_ui::race_time(ms.clamp(0, i32::MAX as i64) as i32)
 }
@@ -6226,12 +6226,12 @@ fn tt_block(m: &mut Mc4, d: usize) -> &mut TimeTrials {
 }
 
 impl Game {
-    /// mcCareer_IsTimeTrialUnlocked (0x826BE080).
+    /// mcCareer_IsTimeTrialUnlocked (F-37759).
     pub fn mc4_tt_unlocked(&self, d: usize) -> bool {
         self.mc4.as_ref().and_then(|m| m.career.time_trials.get(d)).map_or(false, |t| t.unlocked)
     }
 
-    /// mcCareer_GetTimeTrialTargetTime (0x826BDF70): the saved target; while that is 0, the
+    /// mcCareer_GetTimeTrialTargetTime (F-90742): the saved target; while that is 0, the
     /// script's first target.
     pub fn mc4_tt_target(&self, d: usize, k: usize) -> u32 {
         let (d, k) = (d.min(4), k.min(3));
@@ -6324,7 +6324,7 @@ impl Game {
     /// The block's time trial state after the career moved (`m`): true when it changed.
     /// - The hookman's script starts with a mission of the district; its
     ///   mcCareer_SetTimeTrialTargetTime(d, k, 0, ms) puts the first target where none is
-    ///   saved (sub_826BDFC8).
+    ///   saved (F-82902).
     /// - The third mission's reward runs `<district>_unlock_time_trial.sco`:
     ///   mcCareer_UnlockTimeTrial(d).
     fn mc4_tt_apply_block(&self, m: &mut Mc4) -> bool {
@@ -6397,9 +6397,9 @@ impl Game {
     /// best time is kept - StatsManager_UpdateStatInt("k:TB", district * 4 + row, 1, time):
     /// the lower one stays -; a time not above the target (`tt_beaten`) is "complete": the
     /// hookman posts MISSION_EVENT with the district's key (the missions' objective) and
-    /// TIME_TRIAL_RACE_COMPLETE (the money, sub_826BA198). Returns whether the time was
+    /// TIME_TRIAL_RACE_COMPLETE (the money, F-58178). Returns whether the time was
     /// beaten; None when the race was not a time trial. The result's panel is put together
-    /// (sub_82678B90: TIME, the stamp, TARGET TIME, YOUR TIME).
+    /// (F-65302: TIME, the stamp, TARGET TIME, YOUR TIME).
     pub fn mc4_tt_end(&mut self, race_id: &str, time: Option<f32>) -> Option<bool> {
         self.career.tt_last = None;
         let d = self.mc4_tt_of(race_id)?;
@@ -6440,12 +6440,12 @@ impl Game {
 // ---- step 17: the unlocked races, the race history, the pages of the rewards screen ----
 //
 // The list of unlocked races (career +0x16844, 250 hashes of race names in lower case,
-// filled from the front): written by sub_826BCEE8 alone - the script command
-// mcCareer_UnlockRace (0x826C06E0), mcCareer_UnlockDistrictRaces (0x826BE060 ->
-// sub_826BDAA8: every race of the race table whose district, type and sub type pass) and
-// every finished race that is not the editor's (sub_826C1EB8); read by sub_826BF4B0 - the
-// ARCADE menu's lists (sub_826598D8, sub_826571D8), the hookmen's race arrays
-// (mcRaceArray_Fill, sub_8273F220) and mcCareer_IsRaceUnlocked.
+// filled from the front): written by F-81609 alone - the script command
+// mcCareer_UnlockRace (F-61993), mcCareer_UnlockDistrictRaces (F-84897 ->
+// F-86648: every race of the race table whose district, type and sub type pass) and
+// every finished race that is not the editor's (F-20860); read by F-64698 - the
+// ARCADE menu's lists (F-71344, F-52452), the hookmen's race arrays
+// (mcRaceArray_Fill, F-50395) and mcCareer_IsRaceUnlocked.
 
 /// The districts, race types and race sub types as the race records number them (the name
 /// tables at 0x827E91DC, 0x827E92F0 and 0x827E930C; a record: type +0, sub type +4,
@@ -6527,7 +6527,7 @@ fn number_of(names: &[&str], v: &str) -> i32 {
 }
 
 /// A race record (district, type, sub type) passes mcCareer_UnlockDistrictRaces' and
-/// mcRaceArray_Fill's test (sub_826BDAA8 0x826BDAF8..0x826BDB40, sub_8273F220): its district
+/// mcRaceArray_Fill's test (F-86648 A-60228..A-41892, F-50395): its district
 /// is the one asked for, or 6 - all - is asked; the bit of its type is in `types`, or
 /// `types` is -1; the same for the sub type.
 pub fn race_passes(record: (i32, i32, i32), district: i32, types: i32, subs: i32) -> bool {
@@ -6540,8 +6540,8 @@ pub fn race_passes(record: (i32, i32, i32), district: i32, types: i32, subs: i32
 pub type RewardRow = (i32, String, String);
 
 /// The pages of the rewards form after the one of the reputation and the money
-/// (sub_82676B08, 0x82677104..0x826775F0; a row's page is its word +1268, the form's page
-/// count +3680; CONTINUE shows the next page while there is one, sub_826764E8):
+/// (F-36204, A-89717..A-74152; a row's page is its word +1268, the form's page
+/// count +3680; CONTINUE shows the next page while there is one, F-48737):
 /// - the REWARDED items (rewards of type AbilityLevel, PartLevel, Part), eight at the
 ///   most, under their header with their number, on a page of their own;
 /// - then, when REWARDED had items and they, the UNLOCKED rewards and the two headers are
@@ -6610,7 +6610,7 @@ impl Game {
     }
 
     /// The races mcCareer_UnlockDistrictRaces(district, types, subs) names: the races of the
-    /// table that pass, in the table's order (sub_826BDAA8; the test-only races too).
+    /// table that pass, in the table's order (F-86648; the test-only races too).
     pub fn mc4_district_races(&self, district: i32, types: i32, subs: i32) -> Vec<String> {
         self.race_table.iter().filter(|t| race_passes(self.mc4_race_record(t), district, types, subs)).cloned().collect()
     }
@@ -6691,7 +6691,7 @@ impl Game {
             }
         }
         // (and the launchers the career's list of scripts holds: running when the save was
-        // made, started again by the load - 0x826C1394 -> sub_82727908; step 20)
+        // made, started again by the load - A-23923 -> F-33294; step 20)
         let running: Vec<String> = m.career.scripts.iter().chain(m.career.addon.scripts.iter()).map(|s| s.name.rsplit('/').next().unwrap_or("").to_ascii_lowercase()).collect();
         for (launcher, races) in LAUNCHERS.iter() {
             if running.iter().any(|n| n == launcher) {
@@ -6739,7 +6739,7 @@ impl Game {
     }
 
     /// The difficulty of a race started from the ARCADE menu: the menu's DIFFICULTY, which
-    /// its launcher puts in the race data (sub_8265CC90 0x8265CD20: `nDifficulty` to +3100).
+    /// its launcher puts in the race data (F-28426 A-78403: `nDifficulty` to +3100).
     pub fn mc4_arcade_difficulty(&self) -> Option<usize> {
         self.arcade_restore.is_some().then(|| self.arcade_opts[1].min(3))
     }
@@ -6747,7 +6747,7 @@ impl Game {
     /// Is the race driven on its easy layout (`EasyRace`, more checkpoints)? The race
     /// scripts take it when the race data's layout word +3112 is 0 (TournamentCore.sco 0x10ed,
     /// and the race has one); the word is 0 for a difficulty below 2 - Easy, Medium - and 1
-    /// from Hard on: the ARCADE launcher (sub_8265CC90 0x8265CD24), the hookmen's scripts
+    /// from Hard on: the ARCADE launcher (F-28426 A-88893), the hookmen's scripts
     /// (e.g. `game/career/Story/0x156c2b36` 0x7e6, generic_local_hookman.sco 0x70a) and the
     /// wager's (wager_hangout_core.sco 0x2079). An event entered from a panel by the same
     /// rule from the difficulty its core script was given (+3100): the series'
@@ -6798,7 +6798,7 @@ impl Game {
     /// The text of an unlocked performance level on the rewards screen: the string of the
     /// reward's description `Performance level <id>` (0x820BBA08; "GROUP 1 VEHICLES:
     /// PERFORMANCE LEVEL 1"). A key the string table has not shows as the original shows a
-    /// missing string: `!!key!!` (sub_82217CA0).
+    /// missing string: `!!key!!` (F-12531).
     pub fn mc4_perf_label(&self, id: &str) -> String {
         let key = format!("Performance level {id}");
         match self.career.strings.get(&key).filter(|v| !v.contains('<')) {
@@ -6809,14 +6809,14 @@ impl Game {
 
     /// The pages of the rewards screen after the first (`reward_pages`): REWARDED - the
     /// ability levels the race gave -, UNLOCKED - the performance levels its experience
-    /// unlocked (the Unlocking system is added to before the class system: sub_826B9AE8
-    /// 0x826B9D08, 0x826B9D74), then the body part types of the class point.
+    /// unlocked (the Unlocking system is added to before the class system: F-48818
+    /// A-53944, A-82913), then the body part types of the class point.
     pub fn mc4_reward_pages(&self) -> Vec<Vec<RewardRow>> {
         let st = |k: &str, d: &str| self.career.strings.get(k).map(|v| v.to_string()).filter(|v| !v.contains('<')).unwrap_or_else(|| d.to_string());
         let unlocked: Vec<String> = self.career.perf_now.iter().map(|p| self.mc4_perf_label(p)).chain(self.career.unlocked_now.iter().map(|p| self.mc4_part_type_label(p))).collect();
         let mut pages = reward_pages(&self.career.rewarded_now, &unlocked, &st("EOR_UNLOCKED_PARTS", "UNLOCKED"), &st("EOR_REWARDED_PARTS", "REWARDED"));
         // (the Car rewards - type 4 - come before them, on a page of their own: a row of
-        // kind 14 each, eight at the most - sub_82676B08 0x82676FE0..0x82677100)
+        // kind 14 each, eight at the most - F-36204 A-54775..A-89564)
         // (MCLA_REWARD_CAR=<set-up>: a test hook, a car row without a car given)
         let hook = std::env::var("MCLA_REWARD_CAR").ok();
         let cars: Vec<&String> = self.career.cars_now.iter().chain(hook.iter()).take(8).collect();
@@ -6843,7 +6843,7 @@ impl Game {
         Some(pages.get(k.min(pages.len().saturating_sub(1))).cloned().unwrap_or_default()).filter(|_| !pages.is_empty())
     }
 
-    /// CONTINUE on the rewards screen (sub_826764E8): the next page while there is one -
+    /// CONTINUE on the rewards screen (F-48737): the next page while there is one -
     /// true -, else the screen is done.
     pub fn mc4_reward_continue(&mut self, first: bool) -> bool {
         let total = self.mc4_reward_pages().len() + first as usize;
@@ -6864,7 +6864,7 @@ impl Game {
 // fifteen of them: the hangouts' series, the five tournaments, the two deliveries and the
 // Beaches payback. The career completes the event the UI names (`szEventName`) at the
 // difficulty of the race data (results +3100) on SERIES_COMPLETE, TOURNAMENT_COMPLETE,
-// DELIVERY_RACE_COMPLETE and PAYBACK_COMPLETE (sub_826C1EB8 -> sub_826BE500 -> sub_826CD1E8):
+// DELIVERY_RACE_COMPLETE and PAYBACK_COMPLETE (F-20860 -> F-47248 -> F-67065):
 // the reward of that difficulty's list at index min(completions so far, last) is given
 // and the difficulty's counter goes up by one.
 
@@ -6872,10 +6872,10 @@ impl Game {
 #[derive(Clone, Debug, PartialEq)]
 pub enum EventReward {
     /// `DynamicMoney`: the race money of the player's car class at the event's difficulty,
-    /// times the factor of the panel the event is entered from (sub_826B7AB0)
+    /// times the factor of the panel the event is entered from (F-86598)
     Money,
     /// `DynamicExperience SystemName <system>`: an event's experience at that difficulty
-    /// (sub_826B7940), added to the system (sub_826B79E8)
+    /// (F-43293), added to the system (F-88785)
     Experience(String),
     /// `Car Name <set-up>`
     Car(String),
@@ -6902,7 +6902,7 @@ pub struct EventPay {
 
 pub const EVENT_DIFFICULTIES: [&str; 4] = ["Easy", "Medium", "Hard", "Impossible"];
 /// The showroom's DUB cars and the tournament whose Hard completion puts them there
-/// (sub_826BF068).
+/// (F-96690).
 pub const DUB_TOURNAMENTS: [(&str, &str); 4] = [("vp_chv_camaro_06_dub", "hw_tournament1"), ("vp_dge_challenger_06_dub", "hl_tournament1"), ("vp_mbz_s600_07_dub", "be_tournament1"), ("vp_lam_murcielago_06_dub", "dt_tournament1")];
 
 impl ExpTables {
@@ -6981,17 +6981,17 @@ impl Game {
         self.mc4.as_ref().and_then(|m| m.career.events.iter().find(|e| e.name.eq_ignore_ascii_case(name))).map_or(0, |e| e.completions.get(diff))
     }
 
-    /// The reward the event would give now at `diff` (sub_826CD180): what its panel shows.
+    /// The reward the event would give now at `diff` (F-90222): what its panel shows.
     pub fn mc4_event_reward(&self, name: &str, diff: usize) -> Option<EventReward> {
         let def = self.career.exp_tables.event(name)?;
         let list = &def.rewards[diff.min(3)];
         list.get((self.mc4_event_completions(name, diff) as usize).min(list.len().checked_sub(1)?)).cloned()
     }
 
-    /// An event of the tables is completed at `diff` (sub_826CD1E8): the reward at index
+    /// An event of the tables is completed at `diff` (F-67065): the reward at index
     /// min(completions, last) of that difficulty's list is given, then the counter goes up.
     /// `money_factor`: what the event's panel puts on its DynamicMoney - 1.5 on the event
-    /// panels (sub_8267B9D8, sub_8267FA38), 1.0 on the delivery menu (sub_8267BBA8).
+    /// panels (F-23231, F-38970), 1.0 on the delivery menu (F-15204).
     /// Money comes back in the answer for the caller to add; experience and cars are given
     /// here.
     pub fn mc4_event_complete(&mut self, name: &str, diff: usize, money_factor: f32) -> EventPay {
@@ -7000,7 +7000,7 @@ impl Game {
 
     /// The same, with the difficulty the DynamicMoney was last computed for (`money_diff`):
     /// the reward holds what its panel put into it. The event panels compute it for the
-    /// difficulty shown; the delivery menu (sub_8267BBA8, 0x8267BC6C..0x8267BD30) runs the
+    /// difficulty shown; the delivery menu (F-15204, A-38963..A-83966) runs the
     /// one reward through all four difficulties to write its four "X - 2X" lines and leaves
     /// the last - Impossible - in it.
     pub fn mc4_event_complete_at(&mut self, name: &str, diff: usize, money_factor: f32, money_diff: usize) -> EventPay {
@@ -7025,10 +7025,10 @@ impl Game {
             }
             Some(EventReward::Experience(system)) => {
                 // (the amount of a DynamicExperience is computed when the reward is made -
-                // at boot, sub_822C2EA8 -> sub_826C0C50 -> sub_826CD370 -> sub_826B7E38, with
+                // at boot, F-20115 -> F-64159 -> F-83600 -> F-10118, with
                 // no player: 0 - and again by the tournament, delivery and series forms for
                 // the reward they show. The only event that has one is `be_payback`, whose
-                // form (sub_8267B1D0) does not: the reward is given with amount 0.)
+                // form (F-75259) does not: the reward is given with amount 0.)
                 let amount: i64 = 0;
                 if system.eq_ignore_ascii_case("Unlocking") {
                     self.career.unlocking = Some(self.mc4_unlocking() + amount);
@@ -7052,13 +7052,13 @@ impl Game {
     /// (money, reputation).
     ///
     /// Delivery (DELIVERY_RACE_COMPLETE): the manager gives the race money of the player's
-    /// own car class at the delivery's difficulty, less the share of the damage (sub_826B9DF8),
+    /// own car class at the delivery's difficulty, less the share of the damage (F-96289),
     /// and the career completes the district's delivery event, whose DynamicMoney is that
     /// race money again - so the menu's "X - 2X". No experience.
     ///
     /// Payback (PaybackLegCore, `script_obj/game/0x3ae26fc8/0xb3f9732f`): a leg pays
     /// ROUND(f x the race money of class A in steps of 20), f = 0.10 .. 0.30 for the first
-    /// to the fifth win; the last leg (sub_826B9F40) gives needed wins x an event's
+    /// to the fifth win; the last leg (F-66865) gives needed wins x an event's
     /// experience to Progression and Unlocking; then PAYBACK_COMPLETE completes the event
     /// `be_payback`. Needed wins: 1 while the mission PAYBACK_GH_18 or PAYBACK_INTRO is
     /// being done, else 5 (`script_obj/game/Hangouts/0xfc2c6c0a`).
@@ -7099,9 +7099,9 @@ impl Game {
         (money, rep)
     }
 
-    /// The factor on a race's money and experience (sub_826B9AE8, 0x826B9B6C..0x826B9BA4):
-    /// 0.6 for a race started from the pause menu's ARCADE (its launcher, sub_8265CC90 at
-    /// 0x8265D140, sets the results' word +3132); else 1. (0.35 in a network game, with the
+    /// The factor on a race's money and experience (F-48818, A-44799..A-67293):
+    /// 0.6 for a race started from the pause menu's ARCADE (its launcher, F-28426 at
+    /// A-42138, sets the results' word +3132); else 1. (0.35 in a network game, with the
     /// experience to the Unlocking system alone: not built - online is postponed. The flag
     /// games, which the original only has on line, are the port's own off line and pay as
     /// any race here: the user's decision of 2026-10-13.)
@@ -7114,7 +7114,7 @@ impl Game {
     }
 
     /// A DUB car is not in the showroom before its tournament has been completed on Hard
-    /// (sub_826BF068: the event's third counter). Asked of a block that lists the event.
+    /// (F-96690: the event's third counter). Asked of a block that lists the event.
     pub fn mc4_showroom_locked(&self, car: &str) -> bool {
         let Some((_, event)) = DUB_TOURNAMENTS.iter().find(|(c, _)| c.eq_ignore_ascii_case(car)) else { return false };
         self.mc4.as_ref().and_then(|m| m.career.events.iter().find(|e| e.name.eq_ignore_ascii_case(event))).map_or(false, |e| e.completions.Hard == 0)
@@ -7123,8 +7123,8 @@ impl Game {
 
 // ---- step 15b: the event panels, the payback's run, the upgrade percentage, the run to the line ----
 
-/// A set-up's upgrade percentage (sub_8238F1F0, recomputed for every racer's vehicle when it
-/// is made - sub_822A6560): 100 x the stages fitted to the twelve performance parts (all
+/// A set-up's upgrade percentage (F-76051, recomputed for every racer's vehicle when it
+/// is made - F-51384): 100 x the stages fitted to the twelve performance parts (all
 /// but the nitrous) / (2 x the parts the vehicle has - twelve, a motorcycle five: exhaust,
 /// engine, electronics, gear kit, tires), cut to a whole number. `stages`: the thirteen
 /// parts in the port's order (`PERF_PARTS`).
@@ -7185,8 +7185,8 @@ impl BmtClose {
     }
 }
 
-/// What an event's panel shows (mcTournamentForm sub_8267BD60 / sub_8267B9D8, mcPaybackForm
-/// sub_8267B748 / sub_8267B1D0): string ids and values.
+/// What an event's panel shows (mcTournamentForm F-20832 / F-23231, mcPaybackForm
+/// F-12424 / F-75259): string ids and values.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EventPanel {
     pub title: String,
@@ -7201,7 +7201,7 @@ pub struct EventPanel {
 
 impl Game {
     /// The share (0..1) of the upgrades the player's vehicle `i` carries, as the original
-    /// counts it for the performance value (sub_8238EFE8 -> sub_8239C2C8).
+    /// counts it for the performance value (F-92180 -> F-34010).
     pub fn mc4_upgrade_share(&self, i: usize) -> f32 {
         let bike = self.catalog.get(&self.mc4_car_name(i)).map_or(false, |c| c.class.eq_ignore_ascii_case("SportBike"));
         upgrade_percent(&self.perf_stages(i), bike).clamp(0, 100) as f32 / 100.0
@@ -7221,7 +7221,7 @@ impl Game {
         upgrade_percent(&b[0x1C..0x29], bike)
     }
 
-    /// How hard a racer in `car` with set-up `config` is for the player (sub_826BCB70): his
+    /// How hard a racer in `car` with set-up `config` is for the player (F-25301): his
     /// car's performance value at his set-up's upgrade percentage against the player's.
     pub fn mc4_difficulty_of_setup(&self, car: &str, config: &str) -> i32 {
         let share = self.mc4_setup_percent(car, config).clamp(0, 100) as f32 / 100.0;
@@ -7232,7 +7232,7 @@ impl Game {
     }
 
     /// What `price_of` answers as the reputation a vehicle needs: the showroom's lock
-    /// (`fs_lock`, sub_826A9D58 0x826A9F98) is sub_826BF068 - for a DUB car its tournament's
+    /// (`fs_lock`, F-31112 A-67545) is F-96690 - for a DUB car its tournament's
     /// Hard completion, for the others the level of their group.
     pub fn mc4_car_need(&self, car: &str, group: &str) -> i64 {
         if self.mc4_showroom_locked(car) && std::env::var("MCLA_UNLOCK_ALL").is_err() {
@@ -7246,7 +7246,7 @@ impl Game {
         if self.career.mission_active("PAYBACK_GH_18") || self.career.mission_active("PAYBACK_INTRO") { 1 } else { 5 }
     }
 
-    /// The payback panel's COMPLETION REWARD (sub_8267B1D0): the legs' shares added up the
+    /// The payback panel's COMPLETION REWARD (F-75259): the legs' shares added up the
     /// way the code does - i x 0.05 x the race money of class A in steps of 20, i = 2 ..
     /// wins + 1, cut to a whole number at every step.
     pub fn mc4_payback_total(&self, diff: usize) -> i64 {
@@ -7313,7 +7313,7 @@ impl Game {
             return false;
         }
         if def.race_type == "Payback" && !self.career.payback_run {
-            // (opens on MEDIUM: mcPaybackForm sets its combo to 1 on every showing, sub_8267B328)
+            // (opens on MEDIUM: mcPaybackForm sets its combo to 1 on every showing, F-60038)
             self.hangout_diff = 1;
             self.hangout_key = Some("be_payback".to_string());
             self.hangout_page = (0, 0);
@@ -7383,8 +7383,8 @@ impl Game {
 // ---- step 19c: the ARCADE options at work, the time trial's forms and clock, set-ups on the
 // player's vehicle, the payback leg ----
 //
-// The ARCADE launcher (sub_8265CC90) hands the race an options record of 28 bytes (the race
-// data's +3160; made by sub_82130528(28), its defaults those of sub_823974A8):
+// The ARCADE launcher (F-28426) hands the race an options record of 28 bytes (the race
+// data's +3160; made by F-15488(28), its defaults those of F-87205):
 //   byte 0, bits 7..0: NITRO, ICE, REVERSE STEERING, STEALTH, DISRUPTER, SHIELD, STOP, PULSE
 //   byte 1, bits 7..5: MIRROR, AGRO, RANDOM (the eleven rows of POWER UPS' Custom page -
 //           widgets form + 5856 + 240 k, read whatever POWER UPS itself says)
@@ -7393,25 +7393,25 @@ impl Game {
 //           1, 1, 10 minutes)
 //   word 12 TRAFFIC (0 none, 1 low, 2 default), word 16 TIME OF DAY (the row's index),
 //   byte 20 LAST MAN OUT, byte 21 POWER UPS (off / anything else)
-// Readers: the script commands EventOptions_* (0x82397528..0x82397820) and three routines of
-// the network lobby (sub_82397458 / 70 / A8). Off line:
+// Readers: the script commands EventOptions_* (F-28012..F-94827) and three routines of
+// the network lobby (F-53909 / 70 / A8). Off line:
 //   - TRAFFIC: OrderedCheckpointCore (`game/0x3ae26fc8/0xf637b18a` 0x90..0x224) switches the
 //     traffic off for level 0 and on for anything above; the launcher's own ACCEPT
-//     (sub_8265D2B8 0x8265D394..0x8265D42C) writes the ambient manager's density scale
+//     (F-15258 A-82006..A-16151) writes the ambient manager's density scale
 //     (manager + 0x64240): 0 for none, 0.5 for low, 1 for default.
-//   - TIME OF DAY: the same ACCEPT warps the clock (sub_8238EB90: Midnight 0 h, Dawn 6 h,
+//   - TIME OF DAY: the same ACCEPT warps the clock (F-42257: Midnight 0 h, Dawn 6 h,
 //     Noon 12 h, Dusk 17.4 h; Dynamic: the hour the menu was opened at) - the clock runs on
 //     from there.
-//   - WEATHER: sub_82656998 sets the weather of the row (table 0x82826E28: Clear 0, Cloudy 1,
+//   - WEATHER: F-99588 sets the weather of the row (table 0x82826E28: Clear 0, Cloudy 1,
 //     Foggy 3, Stormy 2; Dynamic: the weather the menu was opened in). The weather's own
-//     change (sub_822E8BA8, every 300 s) is not switched off.
+//     change (F-18159, every 300 s) is not switched off.
 //   - LAST MAN OUT: RaceWrapper (`game/race/0xc4e26a20` 0x2bd1) makes the laps the number of
 //     opponents; OrderedCheckpointCore 0x1987..0x285d eliminates (`Lmo`).
 //   - POWER UPS: the core makes the pick-up sources from the race's checkpoints
-//     (PickUpManager_CreatePowerUpSourcesFromCheckPoints, sub_826830A0) - built in
+//     (PickUpManager_CreatePowerUpSourcesFromCheckPoints, F-28343) - built in
 //     `powerups.rs` (step 19e), from the race script's own list where it has one.
 
-/// The eleven rows of POWER UPS' Custom page, in the form's order (sub_82658218; keys of
+/// The eleven rows of POWER UPS' Custom page, in the form's order (F-93221; keys of
 /// the string table - their texts begin with the list's sub-row mark, U+00B1).
 pub const POWER_UP_ROWS: [(&str, &str); 11] = [
     ("RO_Nitro_PowerUp", "NITRO"),
@@ -7433,7 +7433,7 @@ pub const ARCADE_CUSTOM_SLOT: usize = 8;
 /// What the running game keeps for this step (in `OptLive`: made with the game, not saved).
 #[derive(Clone, Debug, Default)]
 pub struct ArcadeLive {
-    /// the Custom rows that are OFF (the form's default is ON for all eleven: sub_826583C0)
+    /// the Custom rows that are OFF (the form's default is ON for all eleven: F-84256)
     pub custom_off: [bool; 11],
     /// LAST MAN OUT's state while its race runs
     pub lmo: Option<Lmo>,
@@ -7485,7 +7485,7 @@ pub fn arcade_set(opts: &mut [usize; 6], x: &mut [usize; 2], live: &mut OptLive,
     }
 }
 
-/// What ACCEPT does to the world for an ARCADE race (sub_8265D2B8).
+/// What ACCEPT does to the world for an ARCADE race (F-15258).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ArcadeEnv {
     /// the ambient manager's density scale: 0, 0.5 or 1
@@ -7656,7 +7656,7 @@ impl Game {
         arcade_set(&mut self.arcade_opts, &mut self.arcade_x, &mut self.opt_x, slot, v);
     }
 
-    /// The options record the launcher would hand this race (sub_8265CC90).
+    /// The options record the launcher would hand this race (F-28426).
     pub fn mc4_arcade_record(&self) -> [u8; 28] {
         let on = self.opt_x.arcade.custom_off.map(|off| !off);
         event_options(self.arcade_x[1] != 0, self.arcade_opts[2], self.arcade_opts[3].min(2), self.arcade_opts[5].min(4), on)
@@ -7745,7 +7745,7 @@ impl Game {
 
     /// The results panel next in line is a time trial's (it is shown before the rewards).
     pub fn mc4_tt_panel_first(&self) -> bool {
-        self.mission_results.first().map_or(false, |m| m.0.starts_with(TT_PANEL))
+        self.mission_results.first().map_or(false, |m| m.0.starts_with(TT_PANEL) || m.0.starts_with(crate::game::DL_PANEL))
     }
 
     /// The HUD's field size: LAST MAN OUT shows the racers still in (PosMax, 0x3208..0x3236).
@@ -7757,7 +7757,7 @@ impl Game {
     }
 
     /// The race clock as HUD control 6 shows it when its property 0 is on (the HUD's
-    /// update, sub_822112A8 0x82211484..0x82211620, and the control's, sub_8264F620): the
+    /// update, F-86111 A-97648..A-95951, and the control's, F-87516): the
     /// time left to the race's target - shown without its sign -, the movie's
     /// `TotalCountdown` (the time left in ms x 0.0001: under 1 the pie beside the clock
     /// runs down and the figures blink, under 0 they are red) and `red_countdown`
@@ -7830,7 +7830,7 @@ impl Game {
 
     /// The picture of a Car reward: `resources/ui/textures/garage/dyntextures/rewardvehicles/
     /// <texture name>.r9` (the movie's `reward_dyntexture` clip names its texture; the form
-    /// gives the file's name as string variable 17 - sub_82676B08). None: no such file.
+    /// gives the file's name as string variable 17 - F-36204). None: no such file.
     pub fn mc4_reward_picture(&self, name: &str) -> Option<std::path::PathBuf> {
         let dir = std::path::Path::new(&self.data_dir).join("resources/ui/textures/garage/dyntextures/rewardvehicles");
         let want = format!("{}.r9", name.to_ascii_lowercase());
@@ -7855,7 +7855,7 @@ impl Game {
         let thr = payback_threshold(diff);
         let Some(race) = self.race.as_mut().filter(|r| r.kind == crate::game::RaceKind::Payback) else {
             self.opt_x.arcade.pb = None;
-            // (step 19d: the factors go with the race - Racer_Reset, sub_82342810)
+            // (step 19d: the factors go with the race - Racer_Reset, F-15879)
             if std::mem::take(&mut self.opt_x.arcade.d.inflict_on) {
                 for c in vehicles.cars.iter_mut() {
                     c.inflict = 1.0;
@@ -7969,10 +7969,10 @@ impl Game {
 //     four difficulties; Racer_SetDamageMultiplierFlag(32) multiplies what he takes by his
 //     "difficulty damage factor", which nothing sets: 1), the client 0.65 of his while he
 //     cruises and 0.55 once he runs (0x73f..0x79b, PaybackLegCore 0x8bf, 0xa47). The factor
-//     is mcCarDamage +20, read for the vehicle that was hit by sub_82342EA8;
+//     is mcCarDamage +20, read for the vehicle that was hit by F-61340;
 //   - `payback_meterMax` is the table at +3368: 0.5, 0.75, 0.87, 1.0 - the leg's threshold;
 //   - a cruising brain without a speed (BrainCruising +1664 = -1) drives at its rail's own
-//     speed (sub_82745EE0 0x82745F30): the road's, as the traffic.
+//     speed (F-90476 A-16530): the road's, as the traffic.
 //   - the leg's time is up: PB_Failed, a second, the mechanic's call
 //     (SIDEKICK_PAYBACK_WARNING, speech PAYBACK_WARNING), the three chasers are made, a
 //     second, PoliceManager_StartPursuit(player, 3, 0, 0, 0), PB_LoseTheseGuys, the taunt
@@ -8061,7 +8061,7 @@ pub struct S19d {
     /// the event results banner (form 56): seconds left, complete
     pub banner: Option<(f32, bool)>,
     /// the banner's event kind (results +3104): 2 a time trial, 3 a series, 4 a tournament
-    /// (sub_82678EC8: the icon and the text; 0 is taken as the time trial's)
+    /// (F-94174: the icon and the text; 0 is taken as the time trial's)
     pub banner_kind: u8,
     /// the local hookman the race is run with - (character, vehicle, set-up) - and the
     /// three races he keeps (race table indices: mcRaceArray_LocalHookmanFilter)
@@ -8339,8 +8339,8 @@ impl Game {
     /// The payback's chase, once a tick of the loop, right after the police's own update
     /// (`ev`: what that update reported). Returns the report for the ordinary handling -
     /// none while the pursuers are the client's friends: no radio, no fine, no arrest form
-    /// (the manager's update skips them for cars of type 0: sub_82709AD0 0x8270A8BC,
-    /// 0x8270A984, 0x8270AA4C).
+    /// (the manager's update skips them for cars of type 0: F-22530 A-38933,
+    /// A-69090, A-18979).
     pub fn mc4_payback_chase(&mut self, police: &mut crate::police::Police, vehicles: &mut crate::vehicles::Vehicles, gpu: &mut crate::render::Gpu, world: &mut crate::world::World, ev: Option<crate::police::Event>, dt: f32) -> Option<crate::police::Event> {
         use crate::police::{Event, Heat};
         let running = self.race.as_ref().map_or(false, |r| r.kind == crate::game::RaceKind::Payback) && self.mode == crate::game::Mode::Race;
@@ -8499,12 +8499,12 @@ impl Game {
 //     (Racer_CanFlashHookman) is the acceptance (0x8cf..0xdea), provided the cruise's UI
 //     state listens, the game is not paused, no idle camera runs and the police are doing
 //     nothing with the player (PoliceManager_CheckPoliceActivity(1) < 2: no pull-over,
-//     pursuit, search or arrest - sub_82701BD8);
-//   - Racer_CanFlashHookman (sub_822AB318): the player's vehicle is in no special state
+//     pursuit, search or arrest - F-35540);
+//   - Racer_CanFlashHookman (F-96972): the player's vehicle is in no special state
 //     (sim +592 == 0), the distance is at most 30, the speeds differ by at most 25, the
 //     player's axis c and the direction to the man make -0.2 or less (he is ahead by 0.2 or
 //     more), and a segment from 0.5 above the one vehicle to 0.5 above the other hits
-//     nothing (sub_82574418);
+//     nothing (F-20855);
 //   - the first time ever (stat `tTBM` 0): the tutorial's form 102 with the speech
 //     TUTORIAL_BEAT_ME_THERE (0xc0e..0xe18);
 //   - police within 250 of the player (PoliceManager_IsAnyPoliceCloseToPlayer(250)): the
@@ -8586,15 +8586,15 @@ impl Game {
         true
     }
 
-    /// Form 56, the event results banner (constructor sub_82677EF8, fill sub_82678EC8, update
-    /// sub_82679158): a SimpleListForm without rows; its template is the form base's
-    /// default - 2, `template_Menu` (sub_82633E80 0x82633F18: neither the form's constructor
-    /// nor its fill nor its update calls SetTemplate, vfunc 476 = sub_821F84E0) -; the constructor's title `EOR_eventResultsTitle` (a key the string
+    /// Form 56, the event results banner (constructor F-10770, fill F-94174, update
+    /// F-98159): a SimpleListForm without rows; its template is the form base's
+    /// default - 2, `template_Menu` (F-51209 A-80132: neither the form's constructor
+    /// nor its fill nor its update calls SetTemplate, vfunc 476 = F-44479) -; the constructor's title `EOR_eventResultsTitle` (a key the string
     /// tables do not have) is replaced by the fill's text by the race's kind and `bComplete`
     /// - a time trial (race type 2): TIMETRIAL_SUCCESS "NEW TIME POSTED" / TIMETRIAL_FAILURE
-    /// "TIME TRIAL FAILED" -, no description, `menu.iconID` 4 (vfunc 648 = sub_8228FA40 puts
-    /// the number in form +248, which the base writes as `iconID` - sub_82632F78
-    /// 0x82633104: 3 series, 5 tournament, 1 delivery, 4 time trial, 2 payback, 6 wager, 7
+    /// "TIME TRIAL FAILED" -, no description, `menu.iconID` 4 (vfunc 648 = F-53926 puts
+    /// the number in form +248, which the base writes as `iconID` - F-88697
+    /// A-93683: 3 series, 5 tournament, 1 delivery, 4 time trial, 2 payback, 6 wager, 7
     /// pink slip), `menu.select` = complete,
     /// the prompt CONTINUE (table 0x82906FE4). The script shows it 3500 ms. `dt`: the frame's
     /// seconds; None when it is not up.
@@ -8611,14 +8611,14 @@ impl Game {
         let st = |k: &str, d: &str| self.career.strings.get(k).map(|v| v.to_uppercase()).filter(|v| !v.contains('<')).unwrap_or_else(|| d.to_string());
         Some(MenuPage {
             layout: MenuLayout::List,
-            // (sub_82678EC8's jump table 0x82678F74: a time trial 4, a series 3, a tournament 5)
+            // (F-94174's jump table A-82231: a time trial 4, a series 3, a tournament 5)
             icon: match self.opt_x.arcade.d.banner_kind {
                 3 => 3,
                 4 => 5,
                 _ => 4,
             },
             // (the fill's vfunc 340 -> 344 puts the text in form +48, which is what the base
-            // writes as `menu.name` - vfunc 332, sub_821F8660: the title; the constructor's
+            // writes as `menu.name` - vfunc 332, F-41972: the title; the constructor's
             // description is the empty string at 0x82000F9E)
             title: match (self.opt_x.arcade.d.banner_kind, ok) {
                 (3, true) => st("Series_SUCCESS", "SERIES WON"),
@@ -8653,13 +8653,13 @@ impl Game {
         Some(((race.time_limit - race.time) as f64 * 1000.0).round() as i64)
     }
 
-    /// The counting down clock's sounds, once an update of the HUD (sub_822112A8
-    /// 0x82211484..0x82211608): with the time left under 20 s, changed since the last update
+    /// The counting down clock's sounds, once an update of the HUD (F-86111
+    /// A-97648..A-58621): with the time left under 20 s, changed since the last update
     /// and the last one above 0, the tick loop RACE_TIMER_TICK_LOOP_MASTER runs (sounds.dat:
     /// UI_MENUS_STOPWATCH_FIN, the wave `ui/menus/stopwatch_fin`); at 10 s and under, each
     /// time the whole seconds change, RACE_TIMER_SECOND_BEEP_MASTER (UI_MENUS_BEEP_FIN,
     /// `ui/menus/beep_fin`), and when the last update was still above 10 s the player says
-    /// PLAYER_TIME_TRIAL_TIMES_UP (sub_821F3628). Otherwise the loop stops (sub_8213C218).
+    /// PLAYER_TIME_TRIAL_TIMES_UP (F-30989). Otherwise the loop stops (F-31667).
     /// `left`: the time left now (None: no clock counting down).
     pub fn mc4_clock_sounds(&mut self, left: Option<i64>) {
         let d = &mut self.opt_x.arcade.d;
@@ -8716,19 +8716,19 @@ impl Game {
 //
 // The career keeps two bytes for every vehicle class and body part type (9 x 38, the
 // block's `body_parts_unlocked` / `body_parts_new`): "unlocked" and "new". Both are set by
-// one thing only, the reward PartUnlock of a class system's threshold (sub_826B71D0 ->
-// sub_826BCE98, sub_826BCEB8(.., 1)), for the class of the vehicle the player is in.
-// The garage's part list (sub_826A92E0, script `garage.` PartMenu) reads them:
-//   - opening the list of a part type clears its "new" mark (0x826A9430..0x826A9450);
+// one thing only, the reward PartUnlock of a class system's threshold (F-70978 ->
+// F-67691, F-10782(.., 1)), for the class of the vehicle the player is in.
+// The garage's part list (F-77984, script `garage.` PartMenu) reads them:
+//   - opening the list of a part type clears its "new" mark (A-83193..A-29913);
 //   - a list whose type is not unlocked keeps its first three parts open when it has more
 //     than three, else its first (the stock part) only; the others are closed - item flag
-//     16 (0x826A9628..0x826A9674, 0x826A9870..0x826A98A8). The door list (menu 16) is never
+//     16 (A-55738..A-54002, A-87109..A-46767). The door list (menu 16) is never
 //     closed, nor is anything with the garage's "all open" byte (+21670) set.
-// The area menu that leads to the lists (sub_826A8D48, 0x826A9140..0x826A9248) gives a row
+// The area menu that leads to the lists (F-99914, A-71639..A-51632) gives a row
 // whose type wears the mark `type` 50 in the movie.
 
 /// The part type a body slot's list belongs to (the garage's menu -> category -> type
-/// tables, sub_8269A400 / sub_8269BBD8); None = a list the flags do not reach.
+/// tables, F-92682 / F-13246); None = a list the flags do not reach.
 pub fn slot_part_type(slot: crate::vehicle_model::Slot) -> Option<&'static str> {
     use crate::vehicle_model::Slot;
     Some(match slot {
@@ -8763,13 +8763,13 @@ pub fn section_part_type(section: &str) -> Option<&'static str> {
     })
 }
 
-/// A row of a part list is open (sub_826A92E0): every row of an unlocked type; of a
+/// A row of a part list is open (F-77984): every row of an unlocked type; of a
 /// locked one the first three when the list has more than three, else the first.
 pub fn part_row_open(locked: bool, row: usize, count: usize) -> bool {
     !locked || if count > 3 { row < 3 } else { row < 1 }
 }
 
-/// The garage's meter of an ability (sub_826A6460, 0x826A6568..0x826A65AC): the system's
+/// The garage's meter of an ability (F-91415, A-65412..A-14800): the system's
 /// amount, at most MaxAmount, as a percentage of the level it is on - 5 per point up to
 /// 20, 5 per point from 20 to 40, then 100.
 pub fn ability_meter(amount: i64, max: i64) -> i32 {
@@ -8785,7 +8785,7 @@ impl Game {
     }
 
     /// The list of a part type is locked for the vehicle in the garage: the type's flag
-    /// (sub_826BCDD8) where the class systems are counted; else the port's earlier rule,
+    /// (F-57000) where the class systems are counted; else the port's earlier rule,
     /// races won in the class against the threshold that names the type.
     pub fn mc4_part_type_locked(&self, ptype: Option<&str>) -> bool {
         let Some(ptype) = ptype else { return false };
@@ -8807,13 +8807,13 @@ impl Game {
         part_row_open(self.mc4_part_type_locked(ptype), row, count)
     }
 
-    /// The part type wears the "new" mark for the vehicle in the garage (sub_826BCE20).
+    /// The part type wears the "new" mark for the vehicle in the garage (F-71120).
     pub fn mc4_part_new(&self, ptype: Option<&str>) -> bool {
         let (Some(ptype), Some(sys)) = (ptype, self.mc4_garage_class()) else { return false };
         self.mc4.as_ref().and_then(|m| m.career.body_parts_new.get(sys)).map_or(false, |v| v.iter().any(|p| p.eq_ignore_ascii_case(ptype)))
     }
 
-    /// The list of a part type is opened: its "new" mark goes (sub_826BCEB8(.., 0)).
+    /// The list of a part type is opened: its "new" mark goes (F-10782(.., 0)).
     pub fn mc4_part_list_opened(&mut self, ptype: Option<&str>) {
         let (Some(ptype), Some(sys)) = (ptype, self.mc4_garage_class()) else { return };
         if let Some(v) = self.mc4.as_mut().and_then(|m| m.career.body_parts_new.get_mut(sys)) {
@@ -8822,7 +8822,7 @@ impl Game {
     }
 
     /// A part type's name as the rewards form shows it: the string of the reward's own
-    /// name (`mcRewardPartUnlock`'s description is the name, sub_826B71B8).
+    /// name (`mcRewardPartUnlock`'s description is the name, F-23081).
     pub fn mc4_part_type_label(&self, ptype: &str) -> String {
         let s = &self.career.strings;
         let alt = if ptype.eq_ignore_ascii_case("Headlight") { "HeadLight".to_string() } else { ptype.to_ascii_lowercase() };
@@ -8830,7 +8830,7 @@ impl Game {
     }
 
     /// The garage's SPECIAL ABILITIES row of ability `k` (0 ZONE, 1 AGRO, 2 ROAR, 3 EMP):
-    /// (stars = level + 1, meter in percent) - sub_826A6460.
+    /// (stars = level + 1, meter in percent) - F-91415.
     pub fn mc4_ability_panel(&self, k: usize) -> (i32, i32) {
         let k = k.min(3);
         let (sys, stat) = (ABILITY_SYSTEMS[k], ["gZON", "gAGR", "gROR", "gPUL"][k]);
@@ -8843,12 +8843,12 @@ impl Game {
 // ---- step 19b: the cruising slot system, the hookmen's cars and their choice of race ----
 
 /// The steps of the performance gap (racer - player) between the difficulties: the career's
-/// floats +8472.. (constructor 0x826C1960..0x826C1A08; the scale +8468 is 1): below Easy,
+/// floats +8472.. (constructor A-13457..A-56187; the scale +8468 is 1): below Easy,
 /// Easy, Medium, Hard, Impossible, [unused], above Impossible.
 pub const DIFF_STEPS: [f32; 6] = [-0.15, 0.025, 0.15, 0.3, 0.0, 0.45];
 
-/// sub_826BCAF0: the difficulty a performance gap is: -1 below Easy, 0 Easy, 1 Medium, 2 Hard,
-/// 3 Impossible, 5 beyond it (the numbers of mc::LookupDifficulty, sub_8238E8C0).
+/// F-44143: the difficulty a performance gap is: -1 below Easy, 0 Easy, 1 Medium, 2 Hard,
+/// 3 Impossible, 5 beyond it (the numbers of mc::LookupDifficulty, F-64420).
 pub fn gap_difficulty(gap: f32) -> i32 {
     if gap >= DIFF_STEPS[5] {
         5
@@ -8866,13 +8866,13 @@ pub fn gap_difficulty(gap: f32) -> i32 {
 }
 
 /// The band of performance values a racer of difficulty `d` has for a player at `perf`
-/// (the head of sub_8239C548 / sub_8239C080).
+/// (the head of F-44797 / F-83091).
 pub fn diff_window(perf: f32, d: i32) -> (f32, f32) {
     match d {
         -1 => (perf - 1.0, DIFF_STEPS[0] + perf),
         5 => (DIFF_STEPS[5] + perf, perf + 1.0),
         3 => (DIFF_STEPS[3] + perf, DIFF_STEPS[5] + perf),
-        // (d 0, 1, 2 and 4 - the steps d and d + 1: sub_8239C080)
+        // (d 0, 1, 2 and 4 - the steps d and d + 1: F-83091)
         _ => {
             let k = d.clamp(0, 4) as usize;
             (DIFF_STEPS[k] + perf, DIFF_STEPS[k + 1] + perf)
@@ -8880,14 +8880,14 @@ pub fn diff_window(perf: f32, d: i32) -> (f32, f32) {
     }
 }
 
-/// sub_8239C548: a vehicle whose samples (stock, half, fully upgraded) are `s` can be set up
+/// F-44797: a vehicle whose samples (stock, half, fully upgraded) are `s` can be set up
 /// to be of difficulty `d` for the player.
 pub fn setup_can_reach(s: [f32; 3], perf: f32, d: i32) -> bool {
     let (lo, hi) = diff_window(perf, d);
     s[2] >= lo && s[0] <= hi
 }
 
-/// sub_8239C080: the upgrade percentage ("mod value", 0..100) at which the vehicle sits in
+/// F-83091: the upgrade percentage ("mod value", 0..100) at which the vehicle sits in
 /// the middle of the part of the band it can reach.
 pub fn setup_mod_value(s: [f32; 3], perf: f32, d: i32) -> i32 {
     let (lo, hi) = diff_window(perf, d);
@@ -8908,13 +8908,13 @@ pub fn setup_mod_value(s: [f32; 3], perf: f32, d: i32) -> i32 {
     ((t - va) / (vb - va) * (pb - pa) + pa + 0.5) as i32
 }
 
-/// sub_8239C2C8: the vehicle's performance value at a mod value.
+/// F-34010: the vehicle's performance value at a mod value.
 pub fn setup_perf(s: [f32; 3], m: i32) -> f32 {
     let (pa, va, pb, vb) = if m < 50 { (0.0, s[0], 50.0, s[1]) } else { (50.0, s[1], 100.0, s[2]) };
     (m as f32 - pa) / (pb - pa) * (vb - va) + va
 }
 
-/// Racer_CanFlashHookman (0x822AD5D8 -> sub_822AB318): the hookman is within 30 m, the two
+/// Racer_CanFlashHookman (F-57747 -> F-96972): the hookman is within 30 m, the two
 /// speeds are within 25 of each other, and he is ahead - the player's forward axis and the
 /// direction to him make more than 0.2. (The routine's last test, a clear line from one
 /// vehicle to the other 0.5 m up, is the caller's.)
@@ -8994,7 +8994,7 @@ fn tune_blocks<'a>(tok: &[&'a str], name: &str) -> Vec<Vec<&'a str>> {
 }
 
 impl SlotSystem {
-    /// sub_826CFB98 (`tune/Career/districtSlots.lst` = `0xc72d4489`) and sub_826CEA20
+    /// F-52390 (`tune/Career/districtSlots.lst` = `0xc72d4489`) and F-85712
     /// (`tune/Career/CarCfg/<district>.lst`: the characters the free slots of a district
     /// draw from).
     pub fn load(data_dir: &str) -> SlotSystem {
@@ -9024,7 +9024,7 @@ impl SlotSystem {
         s
     }
 
-    /// sub_826CDE30: the threshold of the district for the player's vehicle - the last whose
+    /// F-90759: the threshold of the district for the player's vehicle - the last whose
     /// value its performance is above (the first when none is).
     pub fn threshold_index(&self, d: usize, perf: f32) -> usize {
         let mut at = 0;
@@ -9036,14 +9036,14 @@ impl SlotSystem {
         at
     }
 
-    /// sub_826CE530 (mcSlotSystem_ToggleCharacterUsed).
+    /// F-66870 (mcSlotSystem_ToggleCharacterUsed).
     pub fn toggle_character(&mut self, d: usize, name: &str, used: bool) {
         if let Some(c) = self.characters.get_mut(d).and_then(|l| l.iter_mut().find(|c| c.0.eq_ignore_ascii_case(name))) {
             c.1 = used;
         }
     }
 
-    /// sub_826CF118 (mcSlotSystem_FindRandomAvailableCharacter): from a random place of the
+    /// F-32224 (mcSlotSystem_FindRandomAvailableCharacter): from a random place of the
     /// list of the district the first character not in use, else the first not in use of the
     /// whole list; with all in use the marks are cleared.
     pub fn random_character(&mut self, d: usize) -> Option<String> {
@@ -9061,8 +9061,8 @@ impl SlotSystem {
     }
 
     fn put(&mut self, d: usize, i: usize, h: SlotHookman, priority: i32) {
-        // (sub_826D4488 -> sub_826D04C0: the character is marked used and the script of the
-        // slot is started for the hookman; a hookman who was there is reset - sub_826D03C8:
+        // (F-94535 -> F-40941: the character is marked used and the script of the
+        // slot is started for the hookman; a hookman who was there is reset - F-66721:
         // his character is free again, his state 4, his script ends)
         if let Some(old) = self.slots[d][i].hookman.take() {
             self.toggle_character(d, &old.name, false);
@@ -9072,7 +9072,7 @@ impl SlotSystem {
         self.slots[d][i].priority = priority;
     }
 
-    /// sub_826CE130, the slot part of mcSlotSystem_RequestSlot: (1) a slot that holds a
+    /// F-98487, the slot part of mcSlotSystem_RequestSlot: (1) a slot that holds a
     /// hookman of the same name and is not of priority 1; (2) the first free slot; (3) a slot
     /// whose hookman has the same difficulty and a priority number above the asked one;
     /// (4) from the last slot down the first with a priority number above it. False: none.
@@ -9093,7 +9093,7 @@ impl SlotSystem {
         }
     }
 
-    /// sub_826CF6C0 (mcSlotSystem_RequestSlotRemoval) without its closing evaluation: the slot
+    /// F-80442 (mcSlotSystem_RequestSlotRemoval) without its closing evaluation: the slot
     /// that holds the hookman of the mission is emptied. The district when there was one.
     pub fn remove_mission(&mut self, mission: &str) -> Option<usize> {
         for d in 0..self.slots.len() {
@@ -9109,7 +9109,7 @@ impl SlotSystem {
         None
     }
 
-    /// sub_826CF3E8 (the evaluation of a district): nothing in a locked district. For each
+    /// F-92355 (the evaluation of a district): nothing in a locked district. For each
     /// difficulty type of the threshold the player is at, in the order of the file: a slot
     /// that already holds a hookman of that difficulty answers for it (each slot once); else
     /// the first free slot gets a generic hookman - a random free character of the district
@@ -9138,7 +9138,7 @@ impl SlotSystem {
         }
     }
 
-    /// sub_826CE0A8 over the unlocked districts (mcSlotSystem_ClearAllDistricts): every
+    /// F-11072 over the unlocked districts (mcSlotSystem_ClearAllDistricts): every
     /// hookman whose slot is not of priority 1 is reset. (His script then gives the slot back,
     /// generic_local_hookman.sco 0x2c..0x48; the port frees it here.)
     pub fn clear_all(&mut self) {
@@ -9157,14 +9157,14 @@ impl SlotSystem {
         }
     }
 
-    /// sub_826CDDC8 (mcSlotSystem_HideDistrict).
+    /// F-58249 (mcSlotSystem_HideDistrict).
     pub fn hide_district(&mut self, d: usize, hide: bool) {
         if let Some(l) = self.slots.get_mut(d) {
             l.iter_mut().for_each(|s| s.hidden = hide);
         }
     }
 
-    /// sub_826CE380 (mcSlotSystem_UnlockSlot): the slot that holds the hookman is shown.
+    /// F-82555 (mcSlotSystem_UnlockSlot): the slot that holds the hookman is shown.
     pub fn unlock_slot(&mut self, d: usize, name: &str) {
         if let Some(s) = self.slots.get_mut(d).and_then(|l| l.iter_mut().find(|s| s.hookman.as_ref().map_or(false, |h| h.name == name))) {
             s.hidden = false;
@@ -9172,7 +9172,7 @@ impl SlotSystem {
     }
 }
 
-/// mcRaceArray_LocalHookmanFilter (sub_8273F918): the `n` races a local hookman keeps - the
+/// mcRaceArray_LocalHookmanFilter (F-15609): the `n` races a local hookman keeps - the
 /// race he is going to, then, in the order of the array (it was sorted by distance), the
 /// races that are not in the history; when those do not fill the list, the ones run longest
 /// ago.
@@ -9219,7 +9219,7 @@ impl Game {
         }
     }
 
-    /// The hookman of a hidden slot has been found (mcSlotSystem_UnlockSlot, sub_826CE380): the
+    /// The hookman of a hidden slot has been found (mcSlotSystem_UnlockSlot, F-82555): the
     /// mark of the slot is cleared in the block.
     pub fn mc4_slot_found(&mut self, d: usize, i: usize) {
         if let Some(h) = self.mc4.as_mut().and_then(|m| m.career.cruising_slots.get_mut(d)).and_then(|s| s.slots_hidden.get_mut(i)) {
@@ -9232,7 +9232,7 @@ impl Game {
         Some([self.samples.value(car, 0.0)?, self.samples.value(car, 0.5)?, self.samples.value(car, 1.0)?])
     }
 
-    /// mcCharacterConfigData_GetCarConfigData (sub_82398780) with the class mask 247 - every
+    /// mcCharacterConfigData_GetCarConfigData (F-70276) with the class mask 247 - every
     /// class but the motorcycles - as the slot system and the scripts of the hookmen call it:
     /// of the cars of the character the first that can be set up to the difficulty for the
     /// vehicle of the player; when none can, the one whose difficulty at its best mod value
@@ -9259,10 +9259,10 @@ impl Game {
         best.map(|(k, m, _)| (ch.cars[k].car.clone(), ch.cars[k].config.clone(), m))
     }
 
-    /// The hookman record mcSlotSystem_RequestSlot (sub_826CE660) makes for a mission: the
+    /// The hookman record mcSlotSystem_RequestSlot (F-25974) makes for a mission: the
     /// vehicle of the set-up is the name after `_vp_` / `_vpd_`; its mod value the one of
-    /// the difficulty asked (sub_8239C080); his difficulty the gap at that mod value - Easy
-    /// and below count as Medium, beyond Impossible as Impossible (0x826CE7E0..0x826CE808).
+    /// the difficulty asked (F-83091); his difficulty the gap at that mod value - Easy
+    /// and below count as Medium, beyond Impossible as Impossible (A-10257..A-22231).
     pub fn mc4_mission_hookman(&self, row: &(&str, usize, &str, &str, i32, i32, &str)) -> SlotHookman {
         let (mission, district, name, config, _, level, core) = *row;
         let low = config.to_ascii_lowercase();
@@ -9280,7 +9280,7 @@ impl Game {
 
     /// The difficulty word (+180) a story man's core script gives him as it starts (the race's
     /// +3100 and his icon's colour), docs/reference/ai/race_difficulty.md 1.4. The native
-    /// mcCareer_GetDifficultyPlayerVsRacer (sub_826BE180) = his car at his mod value against the
+    /// mcCareer_GetDifficultyPlayerVsRacer (F-69029) = his car at his mod value against the
     /// player's: below Easy and Easy both 0, the fifth step 3. Most cores wrap it, `x == 0 ? 1 : x`
     /// (so they are never Easy). The FIND_* cores and RACE_SH_01 take it raw (RACE_SH_01's race
     /// works it out again at its start, 0xa3f, raw into +3100); FIND_SH_01 and RACE_GH_02 set it
@@ -9288,7 +9288,7 @@ impl Game {
     /// (0x596..0x5db) - RACE_GH_02's race reads mcHookman_GetDifficulty after that (0xd20). The
     /// other raw cores start no CruisingHookmanCore. RACE_GH_06 sets 0 (`0x40a56c35` 0x1b7; his
     /// type is 1, no wrap), FIND_SH_05 / BEAT_SH_05 1 (0x3b); CITY_CHAMP and the two BESTOF_SH_01
-    /// keep mcSlotSystem_RequestSlot's (sub_826CE660: at most Easy -> Medium; generic_local_hookman
+    /// keep mcSlotSystem_RequestSlot's (F-25974: at most Easy -> Medium; generic_local_hookman
     /// takes it, 0x34f, before it starts CruisingHookmanCore, 0x398). None: not a story man of
     /// `MISSION_HOOKMEN`.
     pub fn mc4_story_difficulty(&self, mission: &str) -> Option<usize> {
@@ -9328,7 +9328,7 @@ impl Game {
         Some((i, if d.beacon.length_squared() > 1.0 { d.beacon } else { self.race_start(i)? }))
     }
 
-    /// mcRaceArray_Fill (sub_8273F220): the races of the table - in its order - of the
+    /// mcRaceArray_Fill (F-50395): the races of the table - in its order - of the
     /// district (6 = all), the type mask and the sub type mask that are unlocked and are not
     /// test-only. (With none the original puts one random race in; the port leaves the array
     /// empty.)
@@ -9351,13 +9351,13 @@ impl Game {
         self.mc4.as_ref().and_then(|m| m.career.history_position(table_index as i64))
     }
 
-    /// mcRaceArray_FindBeatMeThereRaceIndex (sub_8273F540): of the races of the array in the
+    /// mcRaceArray_FindBeatMeThereRaceIndex (F-73402): of the races of the array in the
     /// district of the racer (6: any), sorted by the dot product of row c of his matrix
     /// (+32 - a vehicle drives along -c, so the smallest is the race most straight ahead)
     /// and the direction to the race, lowest first: among those more than `min_dist` away
     /// (on the map, x / z) the first that is not in the history, else the one run longest
     /// ago. None further away: a random one (`rnd`); the index is taken of the candidates of
-    /// the district and used on the whole array (0x8273F838..0x8273F8F4), as here.
+    /// the district and used on the whole array (A-76493..A-63524), as here.
     pub fn mc4_bmt_race(&self, arr: &[usize], district: i32, pos: glam::Vec3, forward: glam::Vec3, min_dist: f32, rnd: u32) -> Option<usize> {
         if arr.is_empty() {
             return None;
@@ -9395,7 +9395,7 @@ impl Game {
     /// (generic_local_hookman.sco 0x73d..0x853): the array is filled with the ordered-type
     /// races (type mask 2) of the sub types Ordered and Circuit (mask 6); the first race is
     /// the beat-me-there pick in the district the hookman is in, 400 m; then the array is
-    /// sorted by the distance from him (mcRaceArray_SortByDistance, sub_8273F3E0: on the map,
+    /// sorted by the distance from him (mcRaceArray_SortByDistance, F-25597: on the map,
     /// nearest first) and cut to three (mcRaceArray_LocalHookmanFilter).
     pub fn mc4_local_races(&self, pos: glam::Vec3, forward: glam::Vec3, hookman_district: i32, rnd: u32) -> Vec<usize> {
         let arr = self.mc4_race_array(self.mc4_local_district(), 2, 6);
@@ -9462,9 +9462,9 @@ impl Game {
 
     /// Whether an event's panel shows its DIFFICULTY row - the forms' refresh, Ctrl_SetVisible
     /// of the combo: the tournament's only when it opened on HARD, its mission COMPLETE
-    /// (mcTournamentForm sub_8267C020); a series' after one MEDIUM completion of its event
-    /// (event+36 > 0, mcLocalHangoutForm sub_8267FB98); the delivery's after more than four
-    /// MEDIUM deliveries (event+36 > 4, mcDeliveryForm sub_8267C3C8); the payback's and the
+    /// (mcTournamentForm F-10216); a series' after one MEDIUM completion of its event
+    /// (event+36 > 0, mcLocalHangoutForm F-48938); the delivery's after more than four
+    /// MEDIUM deliveries (event+36 > 4, mcDeliveryForm F-17823); the payback's and the
     /// wager's always. Hidden, the choice cannot change.
     pub fn mc4_panel_diff_shown(&self, key: &str) -> bool {
         if key.contains("delivery") {
@@ -9609,15 +9609,15 @@ pub const MISSION_HOOKMEN: &[(&str, usize, &str, &str, i32, i32, &str)] = &[
 
 // ---- step 19b: the district of a place ----
 
-/// The box of the district map (the vectors at 0x8282BCB0 / 0x8282BCC0, sub_826F89C8): x from
+/// The box of the district map (the vectors at 0x8282BCB0 / 0x8282BCC0, F-31430): x from
 /// -3089 to 2881, z from -2542 to 2121; a place outside is moved onto its edge.
 pub const DISTRICT_BOX: (f32, f32, f32, f32) = (-3089.0, 2881.0, -2542.0, 2121.0);
 
-/// The district of a place as Racer_GetCurrentDistrict has it (0x822ADEC0 -> sub_822AAF00 ->
-/// sub_826DB9D0): the texel of the city's zone map (`tune/ambients/<city>.dds`, 256 x 256, one
+/// The district of a place as Racer_GetCurrentDistrict has it (F-42321 -> F-35346 ->
+/// F-84136): the texel of the city's zone map (`tune/ambients/<city>.dds`, 256 x 256, one
 /// grey level a zone) at the place names a zone of the ambient tree (`iMapColor` of its
 /// `mcAmbientDistributionTreeData.xml`), and the zone's parent is the district. A grey level
-/// that is no zone's answers Hollywood (0x822AAF70).
+/// that is no zone's answers Hollywood (A-46870).
 pub struct DistrictMap {
     map: Vec<u8>,
     zones: std::collections::HashMap<u8, usize>,
@@ -9681,11 +9681,11 @@ pub const STARTUP_SCRIPTS: [(&str, u32); 6] = [
 ];
 
 /// The scripts whose saved variables are none (all the others save one word, 0 in every
-/// sample: the program's static tail, sub_826BF7B0 0x826BFDA8).
+/// sample: the program's static tail, F-78990 A-82765).
 pub const SCRIPTS_WITHOUT_DATA: [&str; 4] = ["game/MiscTasks/GasStations", "Game/MiscTasks/Collectables", "Game/MiscTasks/SoundTriggers", "Game/Flow/BootDebug"];
 
 /// What a mission's own script (`Game/Career/Missions/<ID>`, started when the mission enters
-/// the log state: sub_826C7710 -> sub_826C6CC8, and again when a save is loaded) starts with
+/// the log state: F-58560 -> F-68362, and again when a save is loaded) starts with
 /// mcCareer_StartNewScript - each only when it is not running (the scripts ask the registry,
 /// `<name>_state`, or mcCareer_GetHookman(300 + n)). (mission, script, stack, South Central
 /// list: mcCareer_StartNewScript_SC, manager+428.) From the native calls of
@@ -9785,7 +9785,7 @@ pub const COMPLETE_SCRIPTS: [(&str, &str, u32, bool); 6] = [
     ("TIMETRIAL_SCC", "sc/CruisingHookmen/sc_time_trial_hk1", 1500, true),
 ];
 
-/// A script record as the career saves it (sub_826BF7B0 0x826BFD40..).
+/// A script record as the career saves it (F-78990 A-68894..).
 fn script_record(name: &str, stack: u32) -> Script {
     let none = SCRIPTS_WITHOUT_DATA.iter().any(|n| n.eq_ignore_ascii_case(name));
     Script { name: name.to_string(), stack_size: stack, saved_bytes: if none { 0 } else { 4 }, saved_words: if none { Vec::new() } else { vec![0] }, extra: Extra::new() }
@@ -9907,7 +9907,7 @@ fn requirement_out(rec: &mut Requirement, v: &crate::career::ReqSave, live: bool
                     changed = true;
                 }
                 // (the statistic's last value: followed while the condition waits, frozen when
-                // it is met - sub_826D25E8)
+                // it is met - F-16469)
                 if armed && !was_met && v.value.is_some() && c.value != v.value {
                     c.value = v.value;
                     changed = true;
@@ -9934,22 +9934,22 @@ fn requirement_out(rec: &mut Requirement, v: &crate::career::ReqSave, live: bool
 impl Game {
     /// Step 20, the load: the save was read and the career restored from the port's own
     /// fields; the block's mission records go over it as the original's load does
-    /// (sub_826C0E08 -> sub_826C5DB8 -> sub_826C7530 for each record):
+    /// (F-98950 -> F-23748 -> F-60562 for each record):
     /// - the mission is put back into the log's list and the completed list at its slots
-    ///   (sub_826C3F68): the port's log order and completion order;
+    ///   (F-49159): the port's log order and completion order;
     /// - its requirements' hidden bytes and its conditions' saved values are read
-    ///   (sub_826CCC50), and it re-enters its state with the loading flag (sub_826C67F8), so
+    ///   (F-47948), and it re-enters its state with the loading flag (F-44473), so
     ///   the baselines are kept, not taken again: the port's baselines;
-    /// - re-entering the state posts `<ID>_<STATE>_ON_ENTER` (sub_826CD528): a mission saved in
+    /// - re-entering the state posts `<ID>_<STATE>_ON_ENTER` (F-83568): a mission saved in
     ///   READY_TO_START runs its READY_TO_START_ON_ENTER script again - the port's
     ///   `ready_now` (what the port does with those: the time trials' target, step 18);
-    /// - a mission in the log starts its own script again (sub_826C7710 -> sub_826C6CC8); the
+    /// - a mission in the log starts its own script again (F-58560 -> F-68362); the
     ///   event it runs (a series' wins, a tournament's points) lives in script variables that
     ///   are not saved, so it starts over - the port drops a String objective's partial count;
     ///   what the script starts that is not running is started (the journal, applied when the
     ///   block is written);
     /// - the career's scripts are restarted from the list with their saved variables
-    ///   (0x826C1394 -> sub_82727908): the list is kept as it is.
+    ///   (A-23923 -> F-33294): the list is kept as it is.
     /// A record whose state is not the port's stage (an older block, a career the port moved
     /// on) gives nothing: the port's own state stands, and the record is rewritten at the next
     /// save. Without the block nothing changes: the port's lists and flags as before.
@@ -10004,7 +10004,7 @@ impl Game {
             }
         }
         self.opt_x.arcade.pink.counted.set(0);
-        // (k%AG is posted when the missions have been read: sub_826C5DB8 -> sub_826C4388)
+        // (k%AG is posted when the missions have been read: F-23748 -> F-20532)
         self.career.post_percent();
         // (the missions in the log start their scripts again)
         let open: Vec<usize> = self.career.log_order().to_vec();
@@ -10015,7 +10015,7 @@ impl Game {
 
     /// Step 20, the save: every mission of the career into the block's records - state, the
     /// log's slot and the completed slot, the requirements' hidden bytes, verdicts, counts and
-    /// baselines (what sub_826C69C8 / sub_826CC3F8 write). A record whose state the port has
+    /// baselines (what F-56966 / F-57390 write). A record whose state the port has
     /// not moved keeps every value the port does not follow, so an untouched save is written
     /// back as it was read; a mission without a record (a block of the port) gets one.
     fn mc4_missions_out(&self, m: &mut Mc4) {
@@ -10417,14 +10417,14 @@ impl PinkSlips {
     }
 
     /// The id counter (manager + 0x10000 + 25960): one up for every profile added or loaded,
-    /// back to 0 past the top (sub_826BE7F0 0x826BE858..0x826BE874).
+    /// back to 0 past the top (F-58746 A-29345..A-89255).
     pub fn next_uid(&mut self) -> i32 {
         let n = (self.uid_counter as i32).wrapping_add(1);
         self.uid_counter = if n < 0 { 0 } else { n as u32 };
         self.uid_counter as i32
     }
 
-    /// mcCareer_AddPinkSlipProfile(location, record, kind != 0) (sub_826BE7F0): slots 3..0 move
+    /// mcCareer_AddPinkSlipProfile(location, record, kind != 0) (F-58746): slots 3..0 move
     /// to 4..1 (slot 4 is lost), slot 0 takes the record, its name (record + 8109) and a new id.
     pub fn add(&mut self, kind: i32, car: &Car) -> i32 {
         self.ensure();
@@ -10447,7 +10447,7 @@ impl PinkSlips {
         uid
     }
 
-    /// mcCareer_RemovePinkSlipProfile(location, uid) (sub_826BEAB8): the slot is cleared and
+    /// mcCareer_RemovePinkSlipProfile(location, uid) (F-85350): the slot is cleared and
     /// the later ones move up.
     pub fn remove(&mut self, uid: i32) -> Option<PinkSlip> {
         self.ensure();
@@ -10482,7 +10482,7 @@ pub fn pink_record(s: &PinkSlip) -> Option<Car> {
 
 impl Game {
     /// The profiles a wager hangout offers (mcCareer_GetNumPinkSlipProfiles / GetPinkSlipUID,
-    /// sub_826BE5E8 / sub_826BECF0): first its own car while its pink slip mission's script
+    /// F-54647 / F-50697): first its own car while its pink slip mission's script
     /// runs (the mission in the log), then the held cars of the lot - the same at every wager
     /// hangout.
     pub fn mc4_pink_profiles(&self, key: &str) -> Vec<PinkProfile> {
@@ -10599,7 +10599,7 @@ impl Game {
 
     /// The race of a pink slip at hangout `key`: of the hangout's races (its set-up's list,
     /// `LAUNCHERS`) the first not run lately, else the one run longest ago (the race array's
-    /// FindNextRaceIndex, sub_8273EEB0 - which array call the wager core makes was not
+    /// FindNextRaceIndex, F-18968 - which array call the wager core makes was not
     /// followed). The race definition's index.
     pub fn mc4_pink_race(&self, key: &str) -> Option<usize> {
         // (step 21b: the race is the one of +1400 of the set-up's data - CityDescription_
@@ -10692,7 +10692,7 @@ impl Game {
     }
 
     /// The hangouts' own cars loaded this session (their missions' scripts start - at the
-    /// log, and again at a load): the id counter, once each (sub_826BE950).
+    /// log, and again at a load): the id counter, once each (F-53651).
     fn mc4_pink_count(&self, m: &mut Mc4) {
         let j = &self.career.journal;
         let from = self.opt_x.arcade.pink.counted.get().min(j.len());
@@ -10713,12 +10713,12 @@ impl Game {
 // ---------------------------------------------------------------------------------------
 
 /// The vehicles whose own preset (`tune/garage/<vehicle>_<zone>.vgp`) heads VINYL PACKAGES
-/// (sub_82699F38, called by sub_8269D8C0 and sub_826A6BB0 with the vehicle's name).
+/// (F-30784, called by F-95994 and F-34888 with the vehicle's name).
 pub const OWN_PRESET_CARS: [&str; 9] = ["vp_dge_challenger_70", "vp_frd_boss302_69", "vp_pon_transam_79", "vp_frd_cobra_04", "vp_frd_gt_06", "vp_sln_s281_06", "vp_duc_monster_s4r_07", "vp_duc_999r_06", "vpd_chv_chevelle_70"];
 
-/// The content mask words (`tDL1`, `tDL2` at 0x827E9170) as sub_82388848 sets them at
+/// The content mask words (`tDL1`, `tDL2` at 0x827E9170) as F-68286 sets them at
 /// start-up: word 0 |= 0x13F, word 1 |= 0x13D. Bit 4 of word 1 lists the South Central
-/// presets (`sc_vinyl_preset_names.vgp`) for a car (sub_8269D8C0 0x8269DA58); it is
+/// presets (`sc_vinyl_preset_names.vgp`) for a car (F-95994 A-98299); it is
 /// always set, so the list is never short of them. `tms_vinyl_preset_names.vgp` (asked
 /// for after them) is not on the disc.
 pub const CONTENT_MASK_START: [u32; 2] = [0x13F, 0x13D];
@@ -10742,8 +10742,8 @@ pub enum VinylAsk {
     RemoveAll,
 }
 
-/// The rows of VINYL PACKAGES (`garage.CreateVinylPresetMenu` = sub_826A6BB0, the names from
-/// sub_8269D8C0): the vehicle's own preset when it has one, the disc's list for its kind
+/// The rows of VINYL PACKAGES (`garage.CreateVinylPresetMenu` = F-34888, the names from
+/// F-95994): the vehicle's own preset when it has one, the disc's list for its kind
 /// (`vinyl_preset_names` then - content bit 4 - `sc_vinyl_preset_names` for a car,
 /// `vinyl_bk_preset_names` for a bike; `presets` is that list as the port reads it), then
 /// "Package<n>" for every stored slot whose byte 0 is set, in slot order.
@@ -10755,7 +10755,7 @@ pub fn vinyl_package_rows(car: &str, presets: &[String], used: &[bool], content:
     }
     let bike = presets.iter().any(|p| p.starts_with("bikepreset"));
     out.extend(presets.iter().filter(|p| !p.eq_ignore_ascii_case(&car)).filter(|p| bike || content & CONTENT_SC_PRESETS != 0 || !p.starts_with("sc_preset")).map(|p| PkgRow::Preset(p.clone())));
-    // (sub_826A6BB0 returns before the list when the disc's count is 0: no rows at all)
+    // (F-34888 returns before the list when the disc's count is 0: no rows at all)
     if out.is_empty() {
         return out;
     }
@@ -10794,9 +10794,9 @@ impl Game {
         [key.clone(), key.to_uppercase(), format!("VE_{}", key)].iter().find_map(|k| self.career.strings.get(k).map(|v| v.to_uppercase())).unwrap_or_else(|| key.to_uppercase())
     }
 
-    /// The vehicle has layers (sub_82699888: a layer in any of the five zones) - REMOVE ALL
-    /// VINYLS and STORE VINYL PACKAGES are open (EnterTopLevelVinylMenu, sub_826AB520
-    /// 0x826AF314: flag 16 of both rows cleared; LoadPresetVinyl(-1) sets it again).
+    /// The vehicle has layers (F-74954: a layer in any of the five zones) - REMOVE ALL
+    /// VINYLS and STORE VINYL PACKAGES are open (EnterTopLevelVinylMenu, F-96638
+    /// A-55810: flag 16 of both rows cleared; LoadPresetVinyl(-1) sets it again).
     pub fn mc4_vinyl_has_layers(&self) -> bool {
         match self.vinyls.get(&self.vinyl_for).map(|s| s.as_str()) {
             Some("custom") => self.liveries.get(&self.vinyl_for).map_or(false, |l| !l.is_empty()),
@@ -10821,9 +10821,9 @@ impl Game {
         }
     }
 
-    /// YES in a vinyl editor box: `garage.LoadPresetVinyl` (sub_826A2520: a stored slot
-    /// through sub_8269CA20, a preset of the disc from its five `.vgp` files, index -1 every
-    /// layer off) or `garage.SavePresetVinyl` (sub_8269C960 on the slot of
+    /// YES in a vinyl editor box: `garage.LoadPresetVinyl` (F-58362: a stored slot
+    /// through F-57683, a preset of the disc from its five `.vgp` files, index -1 every
+    /// layer off) or `garage.SavePresetVinyl` (F-59911 on the slot of
     /// SetVinylPresetIndex).
     pub fn mc4_vinyl_finish(&mut self) {
         // (step 23: the YES of a box of this step - FIND_SH_02C's money)
@@ -10885,29 +10885,29 @@ impl Game {
 //
 // The race editor. A slot (EditorData, 1056 bytes) keeps per checkpoint its position, its
 // activation height (byte 16) and radius (byte 17), and the city it was made in (byte 1043).
-//   - Net_EditorRaceCreateCheckpoints (native 0x82293730 -> sub_82293368) builds the race of
-//     a slot: count - 1 race checkpoints (sub_822677a0), checkpoint k of the race from the
-//     slot's k + 1 - the position (sub_82264e80), +180 the activation height = byte 16 and
-//     +168 the activation radius = byte 17 (0x82293438..0x82293478); the rest of the race
-//     checkpoint is the constructor's (sub_82266208: radius 10, height 100, activation
+//   - Net_EditorRaceCreateCheckpoints (native F-96995 -> F-70973) builds the race of
+//     a slot: count - 1 race checkpoints (F-81860), checkpoint k of the race from the
+//     slot's k + 1 - the position (F-47850), +180 the activation height = byte 16 and
+//     +168 the activation radius = byte 17 (A-46936..A-72657); the rest of the race
+//     checkpoint is the constructor's (F-64962: radius 10, height 100, activation
 //     height 50 ...) before those two are set. The slot's checkpoint 0 is where the grid goes
 //     (Net_EditorPopulateGrid). EditorRace.sco runs it as OrderedCheckpointCore.
 //   - The editor gives a new checkpoint the radius and activation height of the statics at
-//     0x827DCB34 / 0x827DCB38 (sub_82252C58 0x82252CA0..0x82252CC0; 25 and 25 in the image),
-//     which take the values of the checkpoint the cursor stands on (sub_82254388 0x822544B0..
-//     0x822544FC) - no control of the editor's menus (tune/ui/RaceEditor.sc.xml) changes them,
+//     0x827DCB34 / 0x827DCB38 (F-52268 A-15149..A-97683; 25 and 25 in the image),
+//     which take the values of the checkpoint the cursor stands on (F-75970 A-41895..
+//     A-15301) - no control of the editor's menus (tune/ui/RaceEditor.sc.xml) changes them,
 //     so every saved checkpoint has 25 / 25 (empty slots 20 / 20).
 //   - A slot is offered in the current city when its byte 1043 is that city, or when it is 0
-//     or 0xCD (never saved) and the city is 0 or 3 (sub_82250ED8, caller sub_826598D8). The
+//     or 0xCD (never saved) and the city is 0 or 3 (F-34172, caller F-71344). The
 //     city's number is its place in the table of 80-byte entries at 0x828CCE98 (built at run
 //     time): Los Angeles is 3 (the 100 % save's own race, made there).
-//   - Saving a race (sub_822551E0) awards `aSRE` (0x82255970).
+//   - Saving a race (F-60473) awards `aSRE` (A-70341).
 //
 // Achievements. The statistics with an `a` id are the achievements (value 1 = awarded); the
-// stats manager hands such a record to the console (sub_822D1D88). Who sets them:
-//   - sub_822CCCD0, every 60th update of the stats manager at count 30 (sub_822D16E0):
+// stats manager hands such a record to the console (F-79933). Who sets them:
+//   - F-56238, every 60th update of the stats manager at count 30 (F-50381):
 //     23 thresholds of statistics (`ACHIEVEMENT_STATS`; five compare for equality);
-//   - the race-end statistics (sub_822D0438): aLOW / aSUV at 10 class wins;
+//   - the race-end statistics (F-98556): aLOW / aSUV at 10 class wins;
 //   - scripts at a mission's end: RACE_GH_06_CORE aCPL (0x13cf), the class champions'
 //     CORE scripts aUTU / aUMU / aUEX / aULU / aUMO, CITY_CHAMP_CORE aBCC; mission rewards of
 //     type mcRewardAchievement (CITY_CHAMP aBCC, BESTOF_GH_27 aBSC, GARAGE_SC aMSC,
@@ -10915,15 +10915,15 @@ impl Game {
 //     generic_timetrial_hookman aB1T / aBAT (step 18);
 //   - the career tables' ability thresholds (Reward Type Achievement aZON / aAGR / aROR /
 //     aPUL with the level 2 of their ability, `tune/career/0x3b8ff776`);
-//   - code: the purse (sub_826B93E0: aMIL when the money after an addition is 1,000,000 or
-//     more), mcCareer_SetTournamentWinStatus (sub_826BEFB8: aBTO when the four districts'
-//     tournaments are won), the police (sub_82706CF8 aRUN as a ticket is run from,
-//     sub_82709AD0 aEVA with gCPL as the police are lost), the race editor (aSRE), the photo
-//     mode (aFAB, tPTS >= 16 - sub_8263DCF8), the goal attack goals (sub_822CD720: aAOR,
-//     aAAR, aARC), the showroom's test drive of a South Central vehicle (sub_826A6330: aTDV),
+//   - code: the purse (F-71075: aMIL when the money after an addition is 1,000,000 or
+//     more), mcCareer_SetTournamentWinStatus (F-67674: aBTO when the four districts'
+//     tournaments are won), the police (F-72120 aRUN as a ticket is run from,
+//     F-22530 aEVA with gCPL as the police are lost), the race editor (aSRE), the photo
+//     mode (aFAB, tPTS >= 16 - F-67304), the goal attack goals (F-96807: aAOR,
+//     aAAR, aARC), the showroom's test drive of a South Central vehicle (F-22067: aTDV),
 //     and the online ones (aNJR, aNRE, aNRS, aTMF; postponed).
 // The game shows nothing of its own: the pause menu's ACHIEVEMENTS row calls
-// XamShowAchievementsUI (sub_82641390 -> sub_82131C30 -> 0x827BCDC4), the console's list, and
+// XamShowAchievementsUI (F-13098 -> F-82612 -> 0x827BCDC4), the console's list, and
 // an award is announced by the console's overlay. The port records the award (the
 // statistic, the block's `achievements`) and logs it.
 //
@@ -10936,29 +10936,29 @@ impl Game {
 // PlayScenario(<scenario>, drv_mb_04_set, PLAYER)), wait until it is closed;
 // SetActiveTimeSlow(0); "ease from pause" - SetSlowMotion(form 108, 1, 1 / 0.5, 0, 1, 1),
 // form 108 hidden. Some show the form without the slow motion (the hangouts' panels, the
-// hookman in reach, the police). The forms (sub_82648E40 0x82649520..: one class each,
+// hookman in reach, the police). The forms (F-26445 A-49179..: one class each,
 // title / description keys `tutorial_<name>_title / _desc`): `TUTORIAL_FORMS`.
 //
-// The slow motion (sub_826533E8 sets, sub_82653920 updates once a frame): target +960, rate
+// The slow motion (F-84653 sets, F-82413 updates once a frame): target +960, rate
 // +964 (per second), ease flags +968 / +969, power +972, t +976, value +980, start +984 =
 // the global scale (0x827E1C34) when set. While t < 1: t += rate x frame time (0x827D7558);
-// e = t eased - both flags (1 - cos(pi t)) / 2 (sub_82227CE8), +968 only 1 - cos(t pi / 2)
-// (sub_82227C70), +969 only sin(t pi / 2) (sub_82227C18), else t; e ^= power when it is not
+// e = t eased - both flags (1 - cos(pi t)) / 2 (F-39265), +968 only 1 - cos(t pi / 2)
+// (F-86323), +969 only sin(t pi / 2) (F-17888), else t; e ^= power when it is not
 // 1; value = start + (target - start) e; the global scale = value; t >= 1: value = target. A
 // value equal to the target sets t = 1 at once; rate 0 sets the value at once.
 
 use crate::checkpoints::CpSpec;
 
-/// Byte 1043 of a slot made in Los Angeles (sub_82250ED8's city 3).
+/// Byte 1043 of a slot made in Los Angeles (F-34172's city 3).
 pub const EDITOR_CITY_LA: u32 = 3;
 
-/// Whether a slot of city `city` is offered in city `current` (sub_82250ED8).
+/// Whether a slot of city `city` is offered in city `current` (F-34172).
 pub fn editor_city_ok(city: u32, current: u32) -> bool {
     city == current || ((city == 0 || city == 0xCD) && (current == 0 || current == 3))
 }
 
-/// The achievements: id, the console's number, title (the table sub_822CE1B8 builds with
-/// sub_822CDE28; titles from the executable's achievement resource - `mc4save/small.py`).
+/// The achievements: id, the console's number, title (the table F-53715 builds with
+/// F-47825; titles from the executable's achievement resource - `mc4save/small.py`).
 pub const ACHIEVEMENTS: [(&str, u32, &str); 55] = [
     ("aRUN", 18, "Wanted Man"),
     ("aEVA", 19, "Out On Bail"),
@@ -11017,7 +11017,7 @@ pub const ACHIEVEMENTS: [(&str, u32, &str); 55] = [
     ("aARC", 78, "GOOOOAAAAALLLLL!!!!!"),
 ];
 
-/// sub_822CCCD0 in its order: (achievement, statistic, sub id, equal (`bne`) - else at least
+/// F-56238 in its order: (achievement, statistic, sub id, equal (`bne`) - else at least
 /// (`blt`) -, the value). Floats for g?2W / gkWL / gkDS / gmJD / gsJT (vfunc 80), the others
 /// whole numbers (vfunc 76).
 pub const ACHIEVEMENT_STATS: [(&str, &str, u32, bool, f64); 23] = [
@@ -11064,8 +11064,8 @@ pub const ACHIEVEMENT_MISSIONS: [(&str, &str); 12] = [
     ("TOURNAMENT_SC", "aTSC"),
 ];
 
-/// The tutorial forms by id (places in the main form's table; constructors sub_8267DFC0 ..
-/// sub_8267EF70, the hydraulics' sub_8267E920 built later): `tutorial_<name>_title / _desc`.
+/// The tutorial forms by id (places in the main form's table; constructors F-10143 ..
+/// F-86881, the hydraulics' F-51796 built later): `tutorial_<name>_title / _desc`.
 pub const TUTORIAL_FORMS: [(u32, &str); 31] = [
     (76, "mission_log"),
     (77, "target"),
@@ -11131,7 +11131,7 @@ pub fn tutorial_keys(form: u32) -> Option<(String, String)> {
     TUTORIAL_FORMS.iter().find(|f| f.0 == form).map(|f| (format!("tutorial_{}_title", f.1), format!("tutorial_{}_desc", f.1)))
 }
 
-/// The perspective form's slow motion (form 108, +960 .. +984; sub_826533E8 / sub_82653920).
+/// The perspective form's slow motion (form 108, +960 .. +984; F-84653 / F-82413).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SlowMo {
     pub target: f32,
@@ -11236,7 +11236,7 @@ pub enum SstTut {
     Box78,
     /// 0x2dc..0x356: the ease from pause done; every 100 ms until racing and the level > 0.99
     Full,
-    /// 0x35b..0x367: form 79, no speech, no slow motion, until it is closed (sub_8267C720: SSTvalue < 0.9)
+    /// 0x35b..0x367: form 79, no speech, no slow motion, until it is closed (F-61402: SSTvalue < 0.9)
     Box79,
     Done,
 }
@@ -11301,7 +11301,7 @@ pub struct S23In {
     pub station: bool,
     /// (step 23b) the player's vehicle this frame, for the driving statistics
     pub drive: crate::mc4b::S23Drive,
-    /// the player's slipstream turbo level (mcCarSSTurbo +36, Racer_GetTurboLevel sub_822ADF00), None without one
+    /// the player's slipstream turbo level (mcCarSSTurbo +36, Racer_GetTurboLevel F-55566), None without one
     pub sst: Option<f32>,
 }
 
@@ -11334,7 +11334,7 @@ impl Game {
         )
     }
 
-    /// The `k`-th race of the editor is offered in Los Angeles (its slot's city: sub_82250ED8).
+    /// The `k`-th race of the editor is offered in Los Angeles (its slot's city: F-34172).
     /// A race without a slot record is the port's own: offered.
     pub fn mc4_editor_listed(&self, k: usize) -> bool {
         self.mc4.as_ref().and_then(|m| m.editor.races.get(k)).map_or(true, |r| editor_city_ok(r.city, EDITOR_CITY_LA))
@@ -11387,7 +11387,7 @@ impl Game {
         true
     }
 
-    /// sub_822CCCD0: the thresholds of the statistics.
+    /// F-56238: the thresholds of the statistics.
     pub fn mc4_achievements_check(&mut self) -> Vec<String> {
         let mut out = Vec::new();
         for (id, stat, sub, eq, v) in ACHIEVEMENT_STATS {
@@ -11400,7 +11400,7 @@ impl Game {
         out
     }
 
-    /// The race-end statistics (sub_822D0438) of a finished race: races completed; a win - the
+    /// The race-end statistics (F-98556) of a finished race: races completed; a win - the
     /// wins, the streak and the longest streak, the last race won; second / third places; any
     /// place but the first ends the streak. A red light race won counts kRLW (the red light
     /// hookmen's scripts). The class wins are the career's (`Ev::Race`); aLOW / aSUV at ten.
@@ -11422,7 +11422,7 @@ impl Game {
                 self.mc4_stat_add("kRLW", 0, 1.0);
             }
         } else {
-            // (GOAL ATTACK's branch, 0x822D0974..0x822D0B90, counts no second or third place)
+            // (GOAL ATTACK's branch, A-77758..A-58950, counts no second or third place)
             if self.goal_attack {
             } else if place == 2 {
                 self.mc4_stat_add("k2ND", 0, 1.0);
@@ -11441,7 +11441,7 @@ impl Game {
     }
 
     /// mcCareer_SetTournamentWinStatus(district, 1) (TournamentCore 0x12c4, the tournament
-    /// complete): the flag, and aBTO once the four are set (sub_826BEFB8).
+    /// complete): the flag, and aBTO once the four are set (F-67674).
     pub fn mc4_tournament_won(&mut self, district: usize) {
         if district > 3 {
             return;
@@ -11498,19 +11498,19 @@ impl Game {
     /// WAITUNWARPED(200) forms 60 (mcEndOfRaceForm) and 54 (mcStandingsForm, the place) come up
     /// and the camera swings to the standings form's PauseCamera3.
     pub const RACE_END_PANEL: f32 = 0.2;
-    /// mcEndOfRaceForm's update (sub_82674120) pauses the game when its own clock reaches 1 s.
+    /// mcEndOfRaceForm's update (F-79093) pauses the game when its own clock reaches 1 s.
     pub const RACE_END_FREEZE: f32 = 1.2;
     /// The standings panel's WAITUNWARPED(2200) ends: forms 54 and 60 close, the race-over menu.
     pub const RACE_END_MENU: f32 = 2.4;
 
     /// The global time scale (0x827E1C34): what the simulation's time is multiplied by.
     pub fn mc4_time_scale(&self) -> f32 {
-        // (the race's end: the main loop never lets the scale under 0.1 - sub_822C1FA8)
+        // (the race's end: the main loop never lets the scale under 0.1 - F-75502)
         // (and a second after its panels came up, form 60 pauses the game: UILogic_PauseGame)
         if self.race_end_t.map_or(false, |t| t >= Self::RACE_END_FREEZE) && self.replay.is_none() {
             return 0.0;
         }
-        // (a hangout entry's ease to pause: held at the main loop's floor of 0.1 - sub_822C1FA8 0x822C20C4)
+        // (a hangout entry's ease to pause: held at the main loop's floor of 0.1 - F-75502 A-91484)
         self.opt_x.s23.slow.global.clamp(0.0, 1.0).min(self.race_slow.global.clamp(0.1, 1.0)).min(self.hangout_slow.global.clamp(0.1, 1.0))
     }
 
@@ -11659,7 +11659,7 @@ impl Game {
                 log::info!("SST_Tutorial: level {:.3} > 0.99 - form 79", level);
             }
             SstTut::Box79 => {
-                // (mcTutorialSlipstreamUseForm's update sub_8267C720: closed once SSTvalue < 0.9 - the burn)
+                // (mcTutorialSlipstreamUseForm's update F-61402: closed once SSTvalue < 0.9 - the burn)
                 if title.as_deref() == Some("tutorial_slipstream_use_title") {
                     if level < 0.9 {
                         self.tutorial_box = None;
@@ -11929,15 +11929,15 @@ impl Game {
                 }
             }
             self.opt_x.s23.page_was = page;
-            // (the police: the first pursuit form 103, the second 104 - sub_82700108)
+            // (the police: the first pursuit form 103, the second 104 - F-24639)
             let heat_was = std::mem::replace(&mut self.opt_x.s23.heat_was, i.heat);
             if i.heat == 2 && heat_was != 2 && heat_was != 3 {
                 if !self.mc4_tutorial("tTPP") {
                     self.mc4_tutorial("tTPL");
                 }
             }
-            // (aRUN: a ticket run from - the pull over turned into a pursuit, sub_82706CF8;
-            // aEVA and gCPL: the police lost, sub_82709AD0)
+            // (aRUN: a ticket run from - the pull over turned into a pursuit, F-72120;
+            // aEVA and gCPL: the police lost, F-22530)
             if heat_was == 1 && i.heat == 2 {
                 self.mc4_award("aRUN");
             }
@@ -11995,7 +11995,7 @@ impl Game {
             self.mc4_stat_add("kPDS", 0, (pb - self.opt_x.s23.pb_wins_was) as f64);
         }
         self.opt_x.s23.pb_wins_was = pb;
-        // (step 22b: garage.EnterTopLevelVinylMenu posts tVYL, add 1 - sub_826AB520 0x826AF314:
+        // (step 22b: garage.EnterTopLevelVinylMenu posts tVYL, add 1 - F-96638 A-55810:
         // the vinyl editor's top menu, garage menu 15, entered)
         let vyl = self.mode == crate::game::Mode::Garage && self.garage_menu == 15 && self.car_x.vinyl_save.is_none() && self.vinyl_pkg.is_none();
         if vyl && !std::mem::replace(&mut self.opt_x.s23.vyl_was, vyl) {
@@ -12025,7 +12025,7 @@ impl Game {
 // ---- step 22b, item 4: a held car the port staked, written as the original keeps it ----
 //
 // The lot keeps a held car's whole vehicle record (the garage record's layout, the same as a
-// set-up file's: AddPinkSlipProfile copies it, sub_826BE7F0); its opponent races it as it
+// set-up file's: AddPinkSlipProfile copies it, F-58746); its opponent races it as it
 // is (OpponentManager_LoadOpponentByCarConfig, wager_hangout_core 0x5566). The port's lot
 // keeps the decoded record (`car`); `car_to_xcc` writes it back into the record's bytes - the
 // inverse of `Car::from_xcc` field by field, the layers of the vehicle's livery at 0x904
@@ -12258,7 +12258,7 @@ impl Game {
 // wager_hangout_core after the car is chosen (0x4ff8..0x508e): UILogic_SetPrompt(0); then
 // MessageBox_ShowMessageBox(0, desc, <the hangout's location key> (title), 3, 0) through its
 // helper 0x1900, waiting while the box is visible - desc `pinkslip_confirmation_max` when
-// mcCareer_GetNumPinkSlipProfiles(location) is 4 (sub_826BE5E8: the hangout's own car, if
+// mcCareer_GetNumPinkSlipProfiles(location) is 4 (F-54647: the hangout's own car, if
 // loaded, plus the held cars), else `pinkslip_confirmation`. A result other than 3 (YES)
 // goes back to the choice; YES leaves the hangout's state and starts the race (0x5095 ->
 // 0x63f6, the stake at 0x50a0..).
@@ -12830,7 +12830,7 @@ mod tests {
         let mut z = VehicleRecord { spent_plus_1: 0, ..VehicleRecord::new("vp_frd_gt_06") };
         z.buy("rims", 82, 1200);
         assert_eq!(z.spent_plus_1, 1200);
-        // (the trade-in, 0x826A74F0..0x826A7538: (the word + the price - 1) x 0.8, cut)
+        // (the trade-in, A-93343..A-99774: (the word + the price - 1) x 0.8, cut)
         assert_eq!(trade_in_value(1201, 147000, false), 118560);
         assert_eq!(trade_in_value(1, 21000, false), 16800);
         assert_eq!(trade_in_value(1201, 147000, true), 0);
@@ -12852,7 +12852,7 @@ mod tests {
         assert_eq!(r.owned_parts.keys().map(|k| k.as_str()).collect::<Vec<_>>(), ["bumper_front", "paint", "performance", "scissor_door", "spoiler"]);
         assert_eq!(r.owned_parts["spoiler"], [1, 2]);
         assert_eq!(r.owned_tags(), ["bumper_front:2", "paint:0", "performance:0", "performance:1", "performance:2", "performance:3", "performance:4", "performance:6", "scissor_door:1", "spoiler:1", "spoiler:2"]);
-        // (sub_8269B6D8: stage 2's bit, else stage 1's)
+        // (F-32441: stage 2's bit, else stage 1's)
         assert_eq!((r.perf_owned(0), r.perf_owned(1), r.perf_owned(2), r.perf_owned(3)), (2, 1, 0, 0));
         assert_eq!(PART_CATEGORIES.len(), 27);
         assert_eq!((part_category("rim"), part_category("side_exhaust"), part_category("wheels")), (Some("rims"), Some("side_exhaust"), None));
@@ -12888,7 +12888,7 @@ mod tests {
         assert_eq!(rec.spent_plus_1, 600);
 
         // (the paint shop and the vinyl editor: the 100 % save has the free-parts flag, so
-        // nothing is asked or charged - the original's test of the same flag, 0x826AF018)
+        // nothing is asked or charged - the original's test of the same flag, A-47155)
         let money = g.money;
         // (the flag is the save's statistic tPAR = 1; a game without the career's tables, as here, starts its statistics anew)
         g.career.stats.insert("tPAR".into(), 1);
@@ -13119,7 +13119,7 @@ mod tests {
     }
 
     /// A vehicle's origin: the hash at record + 8104 is that of the set-up file the record was
-    /// made from (sub_8238FBD0). Every car of the samples resolves to a file of the disc, and
+    /// made from (F-86225). Every car of the samples resolves to a file of the disc, and
     /// the kinds are the ones the port makes records from (bought, starter, the rewards').
     #[test]
     fn origins_are_setup_files() {
@@ -13165,7 +13165,7 @@ mod tests {
         let scraped = Some(([0.05f32, 0.0, 0.01, 0.0], 0.4f32));
         assert_eq!(g.mc4_repair_gate(true, true, false, false, 0, scraped), (true, false));
         assert_eq!(g.mc4_repair_gate(true, true, false, true, 3, scraped), (true, false));
-        // (a row taken with no zone above 0.05 repairs the car on the way in, free - sub_826A53C8 -> sub_822A7388;
+        // (a row taken with no zone above 0.05 repairs the car on the way in, free - F-32431 -> F-12181;
         // the way out does not)
         assert_eq!((g.money, g.repair_car, g.car_x.repair_pending), (money, true, None));
         g.repair_car = false;
@@ -13260,7 +13260,7 @@ mod tests {
         assert_eq!(g.mc4_gps_arrow(), 2);
         g.write_save(&dir);
         assert_eq!(saved_block(&dir)["options"]["gps_arrow"], 2);
-        // (the top arrow's square: sub_8223EC28 - at 720 lines 256 wide from 512, from line
+        // (the top arrow's square: F-29366 - at 720 lines 256 wide from 512, from line
         // -10 to line 245; the lines' 0.075 less the tuning's 0.09 down from the top, the size
         // by lines / 720, never under 1; a 4:3 screen keeps the 256)
         let a = TopArrowTune::default();
@@ -13275,7 +13275,7 @@ mod tests {
         assert_eq!(x.top_arrow, (1.0, [0.0, 0.0, -5.0]));
         top_arrow_fade(&mut x, None, 0.25);
         assert!((x.top_arrow.0 - 0.25).abs() < 1e-6 && x.top_arrow.1 == [0.0, 0.0, -5.0], "the arrow keeps its direction while it goes");
-        // (the arrow's frame, sub_8223EFC8: its z axis away from the target, x = z x up, y = x x z)
+        // (the arrow's frame, F-30300: its z axis away from the target, x = z x up, y = x x z)
         let m = top_arrow_axes(glam::Vec3::new(0.0, 0.0, -9.0));
         assert_eq!(m, [glam::Vec3::NEG_X, glam::Vec3::Y, glam::Vec3::Z]);
         let m = top_arrow_axes(glam::Vec3::new(4.0, 0.0, 0.0));
@@ -14160,7 +14160,7 @@ mod tests {
         take(&mut g, "vp_aud_r8_08");
         g.mode = crate::game::Mode::Garage;
         let t0 = g.car_x.paint.as_ref().unwrap().areas[0].ty;
-        // ALL PARTS: a type goes into all six entries (sub_82391F78 with the flag set)
+        // ALL PARTS: a type goes into all six entries (F-31035 with the flag set)
         g.paint_parts = false;
         g.paint_type = if t0 == 4 { 5 } else { 4 };
         g.mc4_paint_sync();
@@ -14178,7 +14178,7 @@ mod tests {
         g.mc4_paint_sync();
         let a = g.car_x.paint.as_ref().unwrap().areas;
         assert_eq!((a[2].ty, a[0].ty, a[1].ty, a[5].ty), (1, all, all, all));
-        // (a colour set on the hood takes the hood's fade off: sub_82699600)
+        // (a colour set on the hood takes the hood's fade off: F-40495)
         g.cfg.part_paint.insert("hood".to_string(), [10, 200, 30]);
         g.mc4_paint_sync();
         let a = g.car_x.paint.as_ref().unwrap().areas;
@@ -14207,7 +14207,7 @@ mod tests {
         g2.sync_car_paint();
         g2.mc4_paint_sync();
         assert_eq!(g2.car_x.paint.as_ref().unwrap().areas, g.car_x.paint.as_ref().unwrap().areas);
-        // ALL PARTS, a new body colour: every part takes it (sub_82391FF8 with the flag set)
+        // ALL PARTS, a new body colour: every part takes it (F-87462 with the flag set)
         g.mode = crate::game::Mode::Garage;
         g.paint_hsv = Some([0.3, 0.9, 0.8]);
         g.mc4_paint_sync();
@@ -14263,8 +14263,8 @@ mod tests {
         assert_eq!(car.performance.stages, t.performance.stages);
     }
 
-    /// Step 14: the experience systems of the career tables and their shares (sub_826BBCF0,
-    /// sub_826BBEE8, sub_826BBF80, sub_826BC008).
+    /// Step 14: the experience systems of the career tables and their shares (F-14176,
+    /// F-96803, F-57870, F-53104).
     #[test]
     fn experience_tables_and_shares() {
         // (the rule itself, without the game's data)
@@ -14337,7 +14337,7 @@ mod tests {
         assert_eq!((g.mc4_group_need("C0"), g.mc4_group_need("D0"), g.mc4_group_need("")), (260 + 1790, 0, 0));
         let mut earned = 0;
         for k in 0..7 {
-            // (last of four still counts for the class: sub_826B9AE8 adds the point whatever the place)
+            // (last of four still counts for the class: F-48818 adds the point whatever the place)
             g.award_race(if k == 0 { 4 } else { 1 }, 4);
             earned += g.last_reward.1;
         }
@@ -14444,8 +14444,8 @@ mod tests {
     }
 
     /// Step 14b: what gives reputation and what does not - a delivery and a race of the
-    /// race editor give none (sub_826B9DF8; results word +3140), and nothing stops the
-    /// reputation at the top of the table (sub_826BC348).
+    /// race editor give none (F-96289; results word +3140), and nothing stops the
+    /// reputation at the top of the table (F-55689).
     #[test]
     fn reputation_rules_of_the_original() {
         let Some((mut g, dir, _)) = career_game("newgame_import.json", "s14b") else { return };
@@ -14509,7 +14509,7 @@ mod tests {
     }
 
     /// Step 15: an event completes at a difficulty - the reward at min(completions, last)
-    /// of that list, then the counter (sub_826CD1E8); the counters are the block's.
+    /// of that list, then the counter (F-67065); the counters are the block's.
     #[test]
     fn panels_show_difficulty_by_the_forms_rules() {
         let Some((mut g, _dir, _save)) = career_game("full_import.json", "s15panels") else { return };
@@ -14642,7 +14642,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Step 15b: the upgrade percentage of a set-up (sub_8238F1F0) and the run to the line's
+    /// Step 15b: the upgrade percentage of a set-up (F-76051) and the run to the line's
     /// thirty seconds.
     #[test]
     fn upgrade_percent_and_the_run_to_the_line() {
@@ -14921,8 +14921,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Step 17: the ring of the last twelve races (sub_826BE380, sub_826BD060) and what
-    /// reads it (sub_826BD9B8, sub_8273EEB0).
+    /// Step 17: the ring of the last twelve races (F-63023, F-98664) and what
+    /// reads it (F-97924, F-18968).
     #[test]
     fn race_history_ring() {
         let mut c = Career::default();
@@ -14991,7 +14991,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Step 16b: the pages of the rewards screen (sub_82676B08) and what a race lists on
+    /// Step 16b: the pages of the rewards screen (F-36204) and what a race lists on
     /// them - the performance levels of the Unlocking system, the ability levels.
     #[test]
     fn reward_pages_of_the_form() {
@@ -15272,7 +15272,7 @@ mod tests {
         let mut m = g.mc4.clone().unwrap();
         assert!(!g.mc4_slots_apply(&mut m));
         // (a block of the port: a new career gets the new game's locks - every district locked,
-        // every slot hidden: sub_826CF9C0, sub_826D4360 -, a career under way none; the import was
+        // every slot hidden: F-18978, F-57269 -, a career under way none; the import was
         // taken after RACE_GH_02 was won, which opens Hollywood)
         g.fresh_game = true;
         let mut m = Mc4::seeded(true);
@@ -15319,7 +15319,7 @@ mod tests {
     /// Step 19b: the performance bands, the mod value and the flash test.
     #[test]
     fn hookman_setups_and_the_flash_test() {
-        // (sub_826BCAF0: the steps -0.15, 0.025, 0.15, 0.3, 0.45)
+        // (F-44143: the steps -0.15, 0.025, 0.15, 0.3, 0.45)
         assert_eq!([-0.2f32, -0.15, 0.0, 0.025, 0.14, 0.15, 0.29, 0.3, 0.44, 0.45].map(gap_difficulty), [-1, 0, 0, 1, 1, 2, 2, 3, 3, 5]);
         assert_eq!(diff_window(0.5, 2), (0.65, 0.8));
         assert_eq!(diff_window(0.5, 3), (0.8, 0.95));
@@ -15348,7 +15348,7 @@ mod tests {
         // (Racer_CanFlashHookman: 30 m, 25 of speed, 0.2 ahead)
         assert!(can_flash(30.0, 0.0, 0.21) && can_flash(5.0, -25.0, 1.0));
         // (step 19d: 0.2 itself is ahead - the routine fails the test with `ble` on c . dir
-        // against -0.2, sub_822AB318 0x822AB50C)
+        // against -0.2, F-96972 A-35936)
         assert!(!can_flash(30.1, 0.0, 1.0) && !can_flash(10.0, 25.5, 1.0) && can_flash(10.0, 0.0, 0.2) && !can_flash(10.0, 0.0, 0.19) && !can_flash(10.0, 0.0, -1.0));
         // (the three races a local hookman keeps: his first, then those never run in the
         // order of the array, then the ones run longest ago)
@@ -15563,7 +15563,7 @@ mod tests {
     /// LAST MAN OUT; a set-up's parts; the time trial's clock and panel; the payback leg.
     #[test]
     fn arcade_options_time_trial_forms_and_the_payback_leg() {
-        // (the record: the defaults of sub_823974A8 around the rows' fields)
+        // (the record: the defaults of F-87205 around the rows' fields)
         let all = [true; 11];
         let r = event_options(false, 0, 2, 0, all);
         assert_eq!((r[0], r[1], r[4], r[5], r[6]), (0xFF, 0xE0, 0x80, 10, 0xC0));
@@ -15779,7 +15779,7 @@ mod tests {
         g.opt_x.arcade.d.banner = Some((0.5, false));
         assert_eq!(g.mc4_banner_page(1.0).unwrap().title, "TIME TRIAL FAILED");
         assert!(g.mc4_banner_page(1.0).is_none() && g.opt_x.arcade.d.banner.is_none());
-        // (a series' and a tournament's: icons 3 and 5, SERIES WON / TOURNAMENT LOST - sub_82678EC8)
+        // (a series' and a tournament's: icons 3 and 5, SERIES WON / TOURNAMENT LOST - F-94174)
         g.opt_x.arcade.d.banner = Some((3.5, true));
         g.opt_x.arcade.d.banner_kind = 3;
         let p = g.mc4_banner_page(0.1).unwrap();
@@ -15807,7 +15807,7 @@ mod tests {
         g.mc4_clock_sounds(Some(-10));
         g.mc4_clock_sounds(Some(-20));
         assert!(!g.opt_x.arcade.d.tick_loop);
-        // (the flash test: ahead by 0.2 or more is ahead - sub_822AB318's `ble`)
+        // (the flash test: ahead by 0.2 or more is ahead - F-96972's `ble`)
         assert!(can_flash(30.0, 25.0, 0.2) && !can_flash(30.01, 0.0, 1.0) && !can_flash(10.0, 25.5, 1.0) && !can_flash(10.0, 0.0, 0.19));
     }
 
@@ -15860,7 +15860,7 @@ mod tests {
         g.career.event(crate::career::Ev::Rep(660));
         assert!(g.career.mission_complete("REP_ON_HW_STRIP"));
         // (the reward waits for its call at READY_TO_START; its own script - the set-up's
-        // start - runs when the call has put it in the log, sub_826C7710)
+        // start - runs when the call has put it in the log, F-58560)
         assert!(g.career.mission_active("HANGOUT_SERIES_HOLLYWOOD") && !g.mc4_hangout_open("hangout/cut_hangout_01"));
         g.career.call_delivered("HANGOUT_SERIES_HOLLYWOOD");
         assert!(g.mc4_hangout_open("hangout/cut_hangout_01"));
@@ -16605,7 +16605,7 @@ mod tests {
     }
 
     /// (probe, step 22) the fonts of the UI movies: what the money separator of the French
-    /// form ('|', sub_82217820) is in each of them.
+    /// form ('|', F-36073) is in each of them.
     #[test]
     #[ignore]
     fn s22_font_bar_probe() {
@@ -16674,7 +16674,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Step 23: the achievements' rules (sub_822CCCD0, sub_822D0438, the purse, the tournaments,
+    /// Step 23: the achievements' rules (F-56238, F-98556, the purse, the tournaments,
     /// the police, the editor) and their record in the statistics and the block.
     #[test]
     fn achievement_rules() {
@@ -16844,7 +16844,7 @@ mod tests {
 
     #[test]
     fn tutorial_flags_and_slow_motion() {
-        // (sub_82653920: ease out to 0 in 0.5 s, sin(t pi / 2), back to 1)
+        // (F-82413: ease out to 0 in 0.5 s, sin(t pi / 2), back to 1)
         let mut s = SlowMo::default();
         s.ease(0.0);
         s.update(0.25);
@@ -17123,7 +17123,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Step 23b: the race goals (sub_822CD720), the driving statistics (odometer, two wheels,
+    /// Step 23b: the race goals (F-96807), the driving statistics (odometer, two wheels,
     /// wheelie, jumps), the test drive's table field and the photo album's aFAB.
     #[test]
     fn s23b_goals_drive_stats_album() {
@@ -17135,7 +17135,7 @@ mod tests {
         let def = |id: &str, sub: &str, district: &str| crate::races::RaceDef { id: id.into(), sub_type: sub.into(), district: district.into(), goal_time: 100.0, ..Default::default() };
         g.race_defs = vec![def("game/Race/Hollywood/Ordered/a", "Ordered", "Hollywood"), def("game/Race/Beaches/Circuit/b", "Circuit", "Beaches"), def("game/Race/SouthCentral/Ordered/c", "Ordered", "SouthCentral"), def("game/Race/Hollywood/Delivery/d", "Delivery", "Hollywood")];
         g.race_table = g.race_defs.iter().map(|d| d.id.clone()).collect();
-        // (only a race started from GOAL ATTACK records them: sub_822D0438 0x822D0974)
+        // (only a race started from GOAL ATTACK records them: F-98556 A-77758)
         g.current_race = Some(0);
         g.mc4_race_goals(1, Some(50.0), 0.0);
         assert_eq!(g.mc4_stat("rWIN", 0), 0.0);

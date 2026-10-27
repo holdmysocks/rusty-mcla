@@ -5828,6 +5828,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if !s19d_lost {
                         self.game.award_mission(failed.is_none(), delivered);
                     }
+                    // (the delivery's results panel, form 51 - F-88581)
+                    if let (Some(d), true) = (delivered, self.game.flash_menu.is_some()) {
+                        let limit = self.game.race.as_ref().map_or(0.0, |r| r.time_limit);
+                        self.game.delivery_panel(failed.is_none().then_some(time), limit, d);
+                    }
                     // (PAYBACK_COMPLETE comes with the last of the legs asked for: `mc4_mission_pay`)
                     if failed.is_none() && (kind == game::RaceKind::Delivery || std::mem::take(&mut self.game.career.payback_done)) {
                         self.game.career.event(if kind == game::RaceKind::Delivery { career::Ev::Delivery } else { career::Ev::Payback });

@@ -23,6 +23,9 @@ pub enum Mode {
     Paused,
 }
 
+/// The mark of a delivery's results panel in `mission_results` (form 51, F-52975 / F-88581)
+pub const DL_PANEL: char = '\u{2}';
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RaceKind {
     Race,
@@ -901,6 +904,8 @@ pub struct Game {
     pay_off: i64,
     /// the ARCADE list's ACCEPT started this race: the fine is paid first (F-15258)
     pub fine_pay: bool,
+    /// the delivery panel's DAMAGE stamp (F-88581: the damage under 0.9999)
+    dl_damage_ok: bool,
     /// the event list was opened at one of the four wager hangouts
     pub wager_here: bool,
     /// the WAGER AMOUNT choice is open (the row it is on)
@@ -1369,6 +1374,7 @@ impl Game {
             police_fine: 0,
             pay_off: 0,
             fine_pay: false,
+            dl_damage_ok: false,
             wager_here: false,
             wager_pick: None,
             wager: None,
@@ -4180,6 +4186,10 @@ impl Game {
                 self.last_reward = (100, 50);
                 self.reward_panel = true;
                 self.mission_results.push(("FIRST IMPRESSIONS".to_string(), vec!["RACE HENRY".to_string()], !v.contains("fail"))); self.career_over = true;
+            }
+            // (=delivery: a delivery's panel, 1:52.30 against 2:00.00 with 37 % damage)
+            if v.contains("delivery") {
+                self.delivery_panel(Some(112.3), 120.0, 0.37);
             }
             if v.contains("arcade") {
                 self.last_results = vec![("Henry".to_string(), Some(64.16)), ("Mikey".to_string(), Some(68.71)), ("Julian".to_string(), Some(72.46)), ("YOU".to_string(), Some(1338.84))];
@@ -10406,6 +10416,32 @@ impl Game {
         (to.unwrap_or(at.min(n.saturating_sub(1))), if to.is_some() { "UI_MENU_SELECT" } else { "UI_MENU_ERROR" })
     }
 
+    /// A delivery is over: its results panel (form 51, F-52975 / F-88581). TARGET TIME the race's target (+3752, the
+    /// port's `time_limit`), YOUR TIME the player's (DNF without one), the TIME stamp complete when the
+    /// player's time is not over the target; VISUAL DAMAGE TAKEN the damage x 100 cut to an integer, the
+    /// DAMAGE stamp complete under 0.9999.
+    pub fn delivery_panel(&mut self, time: Option<f32>, target: f32, damage: f32) {
+        let st = |k: &str, f: &str| self.career.strings.get(k).map(|v| v.to_string()).filter(|v| !v.contains('<')).unwrap_or_else(|| f.to_string());
+        let line = |k: &str, f: &str, v: String| {
+            let fmt = self.career.strings.get(k).map(|v| v.to_string()).unwrap_or_else(|| f.to_string());
+            match (fmt.find('<'), fmt.find("</D>")) {
+                (Some(i), Some(j)) => format!("{}{}{}", &fmt[..i], v, &fmt[j + 4..]),
+                _ => format!("{fmt} {v}"),
+            }
+        };
+        let target_ms = (target as f64 * 1000.0).round() as i64;
+        let ms = time.map(|t| (t as f64 * 1000.0).round() as i64);
+        let on_time = ms.map_or(false, |t| t <= target_ms);
+        let rows = vec![
+            line("TARGET_TIME_FORMAT", "TARGET TIME: <D>TARGET_TIME</D>", crate::mc4::tt_clock(target_ms)),
+            line("YOUR_TIME_FORMAT", "YOUR TIME: <D>YOUR_TIME</D>", ms.map_or_else(|| st("RACE_RESULT_DNF", "DNF"), crate::mc4::tt_clock)),
+            st("G_damage", "DAMAGE"),
+            line("YOUR_DAMAGE_FORMAT", "VISUAL DAMAGE TAKEN: <D>YOUR_DAMAGE</D>%", ((damage * 100.0) as i32).to_string()),
+        ];
+        self.dl_damage_ok = damage < 0.9999;
+        self.mission_results.insert(0, (format!("{}{}", DL_PANEL, st("TIME_HEADER", "TIME")), rows, on_time));
+    }
+
     /// The quit question of the race's menu class (vt+108 title, vt+104 text, vt+56 repair form, vt+112
     /// second button): series, tournament, time trial, delivery, payback, wager, pink slip, else
     /// Dialog_Title_QuitRace. Time trial, delivery and payback ask YES / NO (vt+56 = 0); the pink slip's
@@ -12620,19 +12656,28 @@ impl Game {
             // of kind 25 with the stamp, TARGET TIME and YOUR TIME as rows of kind 19 -
             // `mc4::TT_PANEL`, F-65302)
             let s19a_tt = title.starts_with(crate::mc4::TT_PANEL);
-            let title = title.trim_start_matches(crate::mc4::TT_PANEL).to_string();
+            // (a delivery's panel - form 51, F-52975 / F-88581: TIME of kind 25 stamped by the time, TARGET TIME and
+            // YOUR TIME of kind 19, DAMAGE of kind 26 stamped by the damage, VISUAL DAMAGE TAKEN of kind 19;
+            // each header's second text the rows under it - 2, then 1)
+            let dl = title.starts_with(DL_PANEL);
+            let title = title.trim_start_matches(crate::mc4::TT_PANEL).trim_start_matches(DL_PANEL).to_string();
             let mut rows = vec![MenuRow { label: title.to_uppercase(), value: mark.to_string(), enabled: true, part: None }];
-            let mut props = vec![if s19a_tt { 25 } else { 18 }];
-            for o in objectives {
-                rows.push(MenuRow { label: o.to_uppercase(), value: if s19a_tt { String::new() } else { mark.to_string() }, enabled: true, part: None });
-                props.push(if s19a_tt { 19 } else { 6 });
+            let mut props = vec![if s19a_tt || dl { 25 } else { 18 }];
+            for (k, o) in objectives.iter().enumerate() {
+                if dl && k == 2 {
+                    rows.push(MenuRow { label: o.to_uppercase(), value: if self.dl_damage_ok { "1" } else { "0" }.to_string(), enabled: true, part: None });
+                    props.push(26);
+                    continue;
+                }
+                rows.push(MenuRow { label: o.to_uppercase(), value: if s19a_tt || dl { String::new() } else { mark.to_string() }, enabled: true, part: None });
+                props.push(if s19a_tt || dl { 19 } else { 6 });
             }
             MenuPage {
                 layout: MenuLayout::Reward { total_rep: self.rep, next_rank: String::new(), rep_label: String::new(), next_label: String::new(), meter: 0.0, money: 0 },
                 // (step 19d: form 42's own `iconID` is the form base's 0 - its constructor
                 // F-72304 and update F-65302 never call vfunc 648)
-                icon: std::env::var("MCLA_RES_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(if s19a_tt { 0 } else { 15 }),
-                title: if s19a_tt { st("TIMETRIAL_RESULTS_TITLE", "TIME TRIAL RESULTS") } else { st("EOR_missionResultsTitle", "MISSION RESULTS") },
+                icon: std::env::var("MCLA_RES_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(if s19a_tt || dl { 0 } else { 15 }),
+                title: if dl { st("DELIVERY_RESULTS_TITLE", "DELIVERY RESULTS") } else if s19a_tt { st("TIMETRIAL_RESULTS_TITLE", "TIME TRIAL RESULTS") } else { st("EOR_missionResultsTitle", "MISSION RESULTS") },
                 rows,
                 row_props: props,
                 select: usize::MAX,
@@ -13187,5 +13232,17 @@ mod tests {
         assert_eq!(Game::stat_step(0, true, 4), (1, "UI_MENU_SELECT"));
         assert_eq!(Game::stat_step(3, true, 4), (3, "UI_MENU_ERROR"));
         assert_eq!(Game::stat_step(3, false, 4), (2, "UI_MENU_SELECT"));
+    }
+
+    /// F-88581: the delivery's panel - TIME stamped when not over the target, DNF without a time,
+    /// the damage cut to an integer percent, its stamp under 0.9999
+    #[test]
+    fn delivery_results_panel() {
+        let mut g = Game::new(Vec::new(), 0);
+        g.delivery_panel(Some(120.0), 120.0, 0.379);
+        assert_eq!(g.mission_results[0], (format!("{}TIME", super::DL_PANEL), vec!["TARGET TIME: 02:00.00".to_string(), "YOUR TIME: 02:00.00".to_string(), "DAMAGE".to_string(), "VISUAL DAMAGE TAKEN: 37%".to_string()], true));
+        assert!(g.dl_damage_ok);
+        g.delivery_panel(None, 90.0, 1.0);
+        assert_eq!((g.mission_results[0].1[1].as_str(), g.mission_results[0].2, g.dl_damage_ok), ("YOUR TIME: DNF", false, false));
     }
 }

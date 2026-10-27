@@ -1345,8 +1345,9 @@ impl FlashMenu {
                     6 => p.set_path(&format!("menu.elements.{}.select", i), Value::Int((r.value == "1") as i32)),
                     // (a results header - `property1` 25, the time trial's TIME: the number of
                     // its rows of kind 19 in `text2`, 1 in `text4` for the COMPLETE stamp -
-                    // F-65302; the movie's rule at 0x13f10..0x14399)
-                    25 => {
+                    // F-65302; the movie's rule at 0x13f10..0x14399; a delivery's DAMAGE header,
+                    // 26, the same two texts - F-88581)
+                    25 | 26 => {
                         let n = page.row_props[i + 1..].iter().take_while(|k| **k == 19).count();
                         p.set_path(&format!("menu.elements.{}.text2", i), Value::Int(n as i32));
                         p.set_path(&format!("menu.elements.{}.text4", i), Value::Int((r.value == "1") as i32));
