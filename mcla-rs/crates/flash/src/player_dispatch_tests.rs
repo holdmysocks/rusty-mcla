@@ -88,3 +88,42 @@ fn global_accessors_match_the_original() {
     }
     assert!(cases == 500 && gets > 1000, "{cases} {gets}");
 }
+
+/// F-46400: strict equality of two values of one type (tools/flash_equals_reference.py). Not compared: the unnamed type 6 and booleans whose byte is
+/// neither 0 nor 1 (the original compares the byte, the port's boolean is one bit). Two undefined values are not equal (the port said they were).
+#[test]
+fn strict_equals_matches_the_original() {
+    let (mut n, mut skipped, mut undef) = (0, 0, 0);
+    let hx = |s: &str| u32::from_str_radix(s, 16).unwrap();
+    for line in include_str!("testdata/flash_equals_ref.txt").lines() {
+        let (inp, out) = line.split_once(" -> ").unwrap();
+        let w: Vec<&str> = inp.split_whitespace().skip(1).collect();
+        let (ty, p1, t1, p2, t2) = (hx(w[0]), hx(w[1]), w[2], hx(w[3]), w[4]);
+        fn txt(t: &str) -> &str {
+            if t == "-" {
+                ""
+            } else {
+                t
+            }
+        }
+        let v = |p: u32, t: &str| -> Option<Value> {
+            Some(match ty {
+                0 | 1 => Value::str(txt(t)),
+                2 if p >> 24 <= 1 => Value::Bool(p >> 24 != 0),
+                3 => Value::Int(p as i32),
+                4 => Value::Float(f32::from_bits(p)),
+                5 => Value::Obj(Ref::Obj(p)),
+                7 => Value::Undef,
+                _ => return None,
+            })
+        };
+        let (Some(a), Some(b)) = (v(p1, t1), v(p2, t2)) else {
+            skipped += 1;
+            continue;
+        };
+        undef += (ty == 7) as i32;
+        assert_eq!(strict_equals(&a, &b) as u32, hx(out), "{line}");
+        n += 1;
+    }
+    assert!(n > 600 && skipped > 20 && undef == 16, "{n} {skipped} {undef}");
+}

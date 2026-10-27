@@ -1558,15 +1558,7 @@ impl Player {
             0x66 => {
                 let b = self.pop();
                 let a = self.pop();
-                let r = match (&a, &b) {
-                    (Value::Str(x), Value::Str(y)) => x == y,
-                    (Value::Int(x), Value::Int(y)) => x == y,
-                    (Value::Float(x), Value::Float(y)) => x == y,
-                    (Value::Bool(x), Value::Bool(y)) => x == y,
-                    (Value::Obj(x), Value::Obj(y)) => x == y,
-                    (Value::Undef, Value::Undef) => true,
-                    _ => false,
-                };
+                let r = strict_equals(&a, &b);
                 self.stack.push(Value::Bool(r));
             }
             0x4c => {
@@ -1789,6 +1781,19 @@ mod tests {
 
 /// Equals2 (`A-88557`): strings compare as strings, otherwise floats, ints,
 /// booleans in that order; two objects compare equal (the original warns).
+/// StrictEquals (`F-46400` after the interpreter has compared the type words): by the receiver's type a string compare, the boolean's byte, an
+/// integer, a float compare, a pointer compare for an object. Two undefined values are NOT equal: the original's equality has no case for type 7.
+fn strict_equals(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Obj(x), Value::Obj(y)) => x == y,
+        _ => false,
+    }
+}
+
 fn equals2(a: &Value, b: &Value) -> bool {
     if a.is_str() || b.is_str() {
         return a.to_string() == b.to_string();
