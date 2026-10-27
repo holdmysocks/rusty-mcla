@@ -56,7 +56,8 @@ def vector_shim() -> str:
     s = shim()
     s = s.replace('struct Context {', prelude + 'struct Context { VReg ' + ', '.join(f'v{i}' for i in range(128)) + ';', 1)
     s = s.replace('struct { void disableFlushMode() {} } fpscr;',
-                  'struct { void disableFlushMode() {} void enableFlushMode() {} } fpscr;')
+                  'struct { void disableFlushMode() {} void enableFlushMode() {} void disableFlushModeUnconditional() {}'
+                  ' void enableFlushModeUnconditional() {} } fpscr;')
     s = s.replace('static uint8_t objects[', 'alignas(16) static uint8_t objects[', 1)
     return s + '#define REX_RAW_ADDR(a) pointer(a)\n'
 

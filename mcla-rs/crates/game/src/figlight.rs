@@ -51,14 +51,31 @@ fn turn(from: Vec3, to: Vec3, frac: f32) -> Vec3 {
     (Quat::from_axis_angle(axis.normalize(), c.clamp(-1.0, 1.0).acos() * frac) * from).normalize_or(to)
 }
 
-/// The score of a light at `p` (sub_822FD198): sat(strength / d^2) x its cone.
+/// The score of a light at `p` (F-60154): sat(strength / d^2) x its cone.
 fn score(l: &LampRec, p: Vec3) -> f32 {
-    let v = l.pos - p;
-    let d2 = v.length_squared();
-    if d2 <= 0.0 {
+    light_score(true, l.pos, -l.back, l.strength, l.cone[0], l.cone[1], p)
+}
+
+/// F-60154 step by step: 1 / d by the estimate and two Newton steps in double, 0 at d = 0 (and for a light that is
+/// off), sat(strength / d^2) x sat(dot(dir, (p - pos) / d) x scale + bias), the fused steps as the original's.
+/// Checked against the original's code in `render/lightref.rs`.
+pub fn light_score(lit: bool, pos: Vec3, dir: Vec3, strength: f32, scale: f32, bias: f32, p: Vec3) -> f32 {
+    if !lit {
         return 0.0;
     }
-    (l.strength / d2).clamp(0.0, 1.0) * (l.back.dot(v / d2.sqrt()) * l.cone[0] + l.cone[1]).clamp(0.0, 1.0)
+    let fma = |a: f32, b: f32, c: f32| (a as f64).mul_add(b as f64, c as f64) as f32;
+    let sat = |x: f32| if x >= 0.0 { x.min(1.0) } else { 0.0 };
+    let v = p - pos;
+    let d2 = fma(v.y, v.y, fma(v.z, v.z, v.x * v.x)) as f64;
+    let mut y = (1.0 / d2.sqrt()) as f32 as f64;
+    for _ in 0..2 {
+        let e = -(y * y).mul_add(d2, -1.0);
+        y = e.mul_add(y * 0.5, y);
+    }
+    let r = if -d2 >= 0.0 { 0.0 } else { y as f32 };
+    let w = v * r;
+    let c = fma(fma(dir.y, w.y, fma(dir.z, w.z, dir.x * w.x)), scale, bias);
+    sat(strength * r * r) * sat(c)
 }
 
 /// A lane as the figure's object uniform carries it: position and strength, colour, the axis

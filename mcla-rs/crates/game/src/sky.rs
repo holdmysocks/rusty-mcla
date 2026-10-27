@@ -1061,6 +1061,8 @@ mod garage_tests {
         let near = |a: Vec3, b: [f32; 3], eps: f32| (a - Vec3::from(b)).abs().max_element() < eps;
         let rig = garage_rig(&root).unwrap();
         assert!(near(rig.light1, [1.0, 0.98823, 0.85098], 1e-4) && rig.int1 == 1.0 && rig.int0 == 0.0 && rig.hour == 19.0);
+        // the cars' ambient c57 (ambYPos) of the capture: 0.196 grey (LIGHTING.md "The cars' lights")
+        assert!(near(rig.ambient, [0.196, 0.196, 0.196], 1e-3), "{:?}", rig.ambient);
         let t = garage_tod(&root, Weather::Nice, Vec3::new(861.77, 17.0, -809.72)).unwrap();
         assert!(near(t.light, [0.019608, 0.019608, 0.019608], 1e-5), "{:?}", t.light);
         assert!(near(t.ambient, [0.035294, 0.05098, 0.027451], 1e-5), "{:?}", t.ambient);

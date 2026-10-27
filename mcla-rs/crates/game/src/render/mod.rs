@@ -6,6 +6,8 @@ pub mod ms;
 pub mod post;
 pub mod skyhat;
 pub mod xs;
+#[cfg(test)]
+mod lightref;
 
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
@@ -313,6 +315,37 @@ impl LampTables {
 }
 
 pub static LAMP_TABLES: std::sync::RwLock<Option<Arc<LampTables>>> = std::sync::RwLock::new(None);
+
+/// The lamp table's half float as the game writes it (F-70220): cut off, not rounded; NaN and |v| < 2^-14 give 0,
+/// beyond +-65504 it is clamped. Checked against the original's code in `lightref.rs`.
+pub fn half_cut(v: f32) -> u16 {
+    const TINY: f32 = 6.103515625e-05;
+    if v.is_nan() || (v < TINY && v > -TINY) {
+        return 0;
+    }
+    let b = v.clamp(-65504.0, 65504.0).to_bits();
+    ((((b >> 23) & 0x1ff) + 16) << 10 | (b >> 13) & 0x3ff | (b >> 16) & 0x8000) as u16
+}
+
+/// The value a half float of `half_cut` reads back as (it writes no subnormals).
+pub fn half_value(h: u16) -> f32 {
+    let e = (h >> 10) & 0x1f;
+    if e == 0 {
+        return if h & 0x8000 != 0 { -0.0 } else { 0.0 };
+    }
+    f32::from_bits((h as u32 & 0x8000) << 16 | (e as u32 + 112) << 23 | (h as u32 & 0x3ff) << 13)
+}
+
+/// A lamp's score at a grid cell's centre (F-47404): its term over the flat distance squared - the distance's square
+/// root taken and squared again, as the game does; 0 for a lamp that is not lit. The f32 steps of the original.
+pub fn cell_score(lit: bool, term: f32, lamp: (f32, f32), at: (f32, f32)) -> f32 {
+    if !lit {
+        return 0.0;
+    }
+    let (dx, dz) = (lamp.0 - at.0, lamp.1 - at.1);
+    let d = ((dz as f64).mul_add(dz as f64, (dx * dx) as f64) as f32).sqrt();
+    term / (d * d)
+}
 
 /// One of the city's placed lamps: position, colour (as in the light files) and intensity (the
 /// light is `colour / 2 x sat(intensity / distance squared)`, see city.wgsl `grid_lamps`).
@@ -2518,8 +2551,7 @@ impl Gpu {
             for gz in z0..=z1 {
                 for gx in x0..=x1 {
                     let (mx, mz) = (LAMP_ORIGIN.0 + (gx as f32 + 0.5) * cw, LAMP_ORIGIN.1 + (gz as f32 + 0.5) * ch);
-                    let d2 = (l.pos.x - mx).powi(2) + (l.pos.z - mz).powi(2);
-                    let score = ((term / d2 * 256.0) as i64 & 0xffff) as u16;
+                    let score = ((cell_score(true, term, (l.pos.x, l.pos.z), (mx, mz)) * 256.0) as i64 & 0xffff) as u16;
                     if score == 0 {
                         continue;
                     }
@@ -2536,7 +2568,7 @@ impl Gpu {
         // The game's tables are coarse (its writer sub_823033F0): x, z and the cone's two numbers
         // half floats cut off (not rounded), the colour, the axis and the height bytes cut off -
         // the height over the 110 m from -31 m up. The same numbers here.
-        let half = |v: f32| f32::from_bits(v.to_bits() & 0xffff_e000);
+        let half = |v: f32| half_value(half_cut(v));
         let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).trunc() / 255.0;
         for (i, l) in lamps.iter().enumerate() {
             let o = (i + 1) * 16;
