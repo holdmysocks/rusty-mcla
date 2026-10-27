@@ -812,6 +812,25 @@ pub const SHAKE_DRIVING: usize = 2;
 pub const SHAKE_BURNOUT: usize = 3;
 pub const SHAKE_DRIFT: usize = 4;
 
+/// 23 bits of the game's multiply-with-carry generator (state lo, carry), as a number below 1.
+fn rand23(rng: &mut (u32, u32)) -> f32 {
+    let x = rng.0 as u64 * 0x5CDC_FAA7 + rng.1 as u64;
+    *rng = (x as u32, (x >> 32) as u32);
+    (rng.0 & 0x7F_FFFF) as f32 * (1.0 / 8_388_608.0)
+}
+
+/// One part (CarRot, Rot or Tran) of a shake block, F-17992: the phase advances by frequency x dt, then per axis
+/// (amplitude sin(phase) + (-random + 2 random u)) m with u the next number of the game's generator (x, then y, then z)
+/// and sin the game's own sine (the phase and the sine are floats). `part` = [amplitude, frequency, random, phase].
+fn oscillate(part: &mut [Vec3; 4], dt: f32, m: f32, rng: &mut (u32, u32)) -> Vec3 {
+    let [amp, freq, rnd, ph] = *part;
+    let ph = ph + freq * dt;
+    part[3] = ph;
+    let u = Vec3::new(rand23(rng), rand23(rng), rand23(rng));
+    let sin = |x: f32| crate::physics::exact::guest_sin(x as f64) as f32;
+    (amp * Vec3::new(sin(ph.x), sin(ph.y), sin(ph.z)) + (-rnd + rnd * 2.0 * u)) * m
+}
+
 impl CamShake {
     pub fn load(data_dir: &str) -> CamShake {
         let h = mcla_formats::hash::joaat("default.camfx");
@@ -862,13 +881,6 @@ impl CamShake {
         }
     }
 
-    /// 23 bits of the game's multiply-with-carry generator (0x82860880).
-    fn rand23(&mut self) -> f32 {
-        let x = self.rng.0 as u64 * 0x5CDC_FAA7 + self.rng.1 as u64;
-        self.rng = (x as u32, (x >> 32) as u32);
-        (self.rng.0 & 0x7F_FFFF) as f32 * (1.0 / 8_388_608.0)
-    }
-
     /// Shakes the camera (eye `pos`, `look`, `up`) about the car at `car` (F-10707).
     pub fn apply(&mut self, dt: f32, pos: &mut Vec3, look: &mut Vec3, up: &mut Vec3, car: Vec3) {
         let reach = pos.distance(*look).max(0.1);
@@ -895,11 +907,7 @@ impl CamShake {
             // the oscillator (F-17992): phase += freq dt; (amp sin phase + uniform(-r, r)) m
             let mut out = [Vec3::ZERO; 3];
             for k in 0..3 {
-                let [amp, freq, rnd, ph] = self.blocks[i].parts[k];
-                let ph = ph + freq * dt;
-                self.blocks[i].parts[k][3] = ph;
-                let u = Vec3::new(self.rand23(), self.rand23(), self.rand23());
-                out[k] = (amp * Vec3::new(ph.x.sin(), ph.y.sin(), ph.z.sin()) + (-rnd + rnd * 2.0 * u)) * m;
+                out[k] = oscillate(&mut self.blocks[i].parts[k], dt, m, &mut self.rng);
             }
             let [cr, rt, tr] = out;
             // CarRot: the camera orbits the car, turning with it
@@ -3098,6 +3106,131 @@ mod tests {
             assert_eq!(get(&format!("PHOTO_CAM_{a}")), (9, 22 + i as u32), "{a}");
         }
         assert_eq!((get("PHOTO_CAM_ZOOM_IN"), get("PHOTO_CAM_ZOOM_OUT")), ((8, 1), (8, 0)));
+    }
+}
+
+/// F-85638 / F-79714 / F-25863 / F-22575 / F-30992 / F-49780: the camera time warper against the original's own code run offline
+/// (tools/camera_warper_reference.py -> testdata/camera_warper_ref.txt: 300 random tunes with 80 random start / release / update
+/// operations each, the state compared after every operation; the constructor; the tune constructor's defaults).
+#[cfg(test)]
+mod original_warper_tests {
+    use super::*;
+
+    #[test]
+    fn time_warper_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = |x: &str| f32::from_bits(h(x));
+        let mut seqs = 0;
+        for line in include_str!("testdata/camera_warper_ref.txt").lines() {
+            if let Some(r) = line.strip_prefix("DEFAULTS -> ") {
+                // the tune constructor: duration, slow-motion scale, rise rate, fall rate (the lookback warper's tune in main.rs)
+                let v: Vec<u32> = r.split(' ').map(h).collect();
+                assert_eq!(v, [0.0f32, 0.239, 2.009, 3.009].map(f32::to_bits));
+            } else if let Some(r) = line.strip_prefix("CTOR -> ") {
+                // state 2 (idle), normal scale and from / to / cur 1, since 0; t (+24) is left alone and the rate (+32) is 1 in the original -
+                // neither can be seen while idle (the ramp returns for state > 1) and both are set by start / release
+                let v: Vec<u32> = r.split(' ').map(h).collect();
+                let w = TimeWarper::new([0.0; 4]);
+                assert_eq!((v[0], v[2], v[3], v[4], v[5], v[7]), (w.state as u32, 1.0f32.to_bits(), w.from.to_bits(), w.to.to_bits(), w.cur.to_bits(), w.since.to_bits()));
+                assert_eq!(v[8], 1.0f32.to_bits());
+            } else if let Some(r) = line.strip_prefix("SEQ ") {
+                let (a, b) = r.split_once(" -> ").unwrap();
+                let (head, ops) = a.split_once(" 80 ").unwrap();
+                let tune: Vec<f32> = head.split(' ').map(f).collect();
+                let mut w = TimeWarper::new([tune[0], tune[1], tune[2], tune[3]]);
+                let mut touched = false;
+                for (op, row) in ops.split(' ').zip(b.split(" | ")) {
+                    let args: Vec<&str> = op[1..].split(',').collect();
+                    match op.as_bytes()[0] {
+                        b'S' => {
+                            w.start(f(args[0]), f(args[1]));
+                            touched = true;
+                        }
+                        b'R' => {
+                            w.release(f(args[0]));
+                            touched = true;
+                        }
+                        _ => w.update(f(args[0])),
+                    }
+                    let v: Vec<u32> = row.split(' ').map(h).collect();
+                    let got = [w.state as u32, w.from.to_bits(), w.to.to_bits(), w.cur.to_bits(), w.t.to_bits(), w.since.to_bits()];
+                    assert_eq!(got[..], [v[0], v[1], v[2], v[3], v[4], v[5]], "{line} at {op}");
+                    if touched {
+                        assert_eq!(w.rate.to_bits(), v[6], "rate, {line} at {op}");
+                    }
+                }
+                seqs += 1;
+            }
+        }
+        assert_eq!(seqs, 300);
+    }
+}
+
+/// F-29203 / F-54070 / F-48972 / F-68650: the camera shake's reset, continuous strength, one-shot and the manager's trigger against the
+/// original's own code run offline (tools/camera_shake_reference.py -> testdata/camera_shake_ref.txt: 400 random block states with 30
+/// random operations each; the five blocks' timer / magnitude / scale / state compared after every operation).
+#[cfg(test)]
+mod original_shake_tests {
+    use super::*;
+
+    #[test]
+    fn shake_setters_match_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = |x: &str| f32::from_bits(h(x));
+        let mut seqs = 0;
+        for line in include_str!("testdata/camera_shake_ref.txt").lines() {
+            let (a, b) = line.strip_prefix("SEQ ").unwrap().split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let blocks: Vec<ShakeBlock> = (0..5)
+                .map(|i| ShakeBlock { timer: f(w[4 * i]), magnitude: f(w[4 * i + 1]), scale: f(w[4 * i + 2]), state: w[4 * i + 3].parse().unwrap(), ..Default::default() })
+                .collect();
+            let mut cs = CamShake { blocks, rng: (1, 0) };
+            for (op, row) in w[21..].iter().zip(b.split(" | ")) {
+                let args: Vec<&str> = op[1..].split(',').collect();
+                match op.as_bytes()[0] {
+                    b'R' => cs.reset(),
+                    b'S' => cs.set(args[0].parse().unwrap(), f(args[1])),
+                    _ => cs.jolt(f(args[1]), f(args[2]), args[0].parse::<u32>().unwrap() < 2),
+                }
+                let v: Vec<&str> = row.split(' ').collect();
+                for (i, bl) in cs.blocks.iter().enumerate() {
+                    let got = [bl.timer.to_bits(), bl.magnitude.to_bits(), bl.scale.to_bits(), bl.state as u32];
+                    let want = [h(v[4 * i]), h(v[4 * i + 1]), h(v[4 * i + 2]), v[4 * i + 3].parse::<u32>().unwrap()];
+                    assert_eq!(got, want, "block {i} after {op} in {line}");
+                }
+            }
+            seqs += 1;
+        }
+        assert_eq!(seqs, 400);
+    }
+}
+
+/// F-17992: the shake oscillator against the original's own code run offline (tools/camera_shake_osc_reference.py ->
+/// testdata/camera_shake_osc_ref.txt: 2,000 random phases (up to 1e5 rad), frequencies, amplitudes, random ranges, multipliers
+/// and generator states). The port used the host's sine before; the numbers need the game's own sine.
+#[cfg(test)]
+mod original_osc_tests {
+    use super::*;
+
+    #[test]
+    fn shake_oscillator_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = |x: &str| f32::from_bits(h(x));
+        let mut n = 0;
+        for line in include_str!("testdata/camera_shake_osc_ref.txt").lines() {
+            let (a, b) = line.strip_prefix("OSC ").unwrap().split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let v3 = |i: usize| Vec3::new(f(w[i]), f(w[i + 1]), f(w[i + 2]));
+            // [amplitude, frequency, random, phase]
+            let mut part = [v3(10), v3(7), v3(13), v3(4)];
+            let mut rng = (h(w[0]), h(w[1]));
+            let out = oscillate(&mut part, f(w[2]), f(w[3]), &mut rng);
+            let o: Vec<u32> = b.split(' ').map(h).collect();
+            let got = [out.x.to_bits(), out.y.to_bits(), out.z.to_bits(), part[3].x.to_bits(), part[3].y.to_bits(), part[3].z.to_bits(), rng.0, rng.1];
+            assert_eq!(got[..], o[..], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 2000);
     }
 }
 

@@ -1,22 +1,22 @@
 //! Step 19g: the lightning on a car hit by Reverse Steering, Stop or the Disrupter (and their
 //! megas), as the original makes it (SAVE_WORK.md "Step 19g"):
-//! - the start (the types' +12: sub_8237D110 Reverse, sub_8237E978 Stop, sub_8237D920 Disrupter -
-//!   not on the local player, who gets the screen tint) -> sub_82375E58: ten bolts (the car's
-//!   render object +2096, 336 bytes each, set up by sub_827496B0 from the manager's
+//! - the start (the types' +12: F-52550 Reverse, F-52760 Stop, F-69513 Disrupter -
+//!   not on the local player, who gets the screen tint) -> F-94353: ten bolts (the car's
+//!   render object +2096, 336 bytes each, set up by F-74937 from the manager's
 //!   m_XSize .. m_SampleRangeMinMax) and per bolt two arc styles, major and minor (+5456 / +6096,
-//!   64 bytes, sub_822ED948 from the type's ma_ / mi_ values);
-//! - every frame (the types' +32 -> sub_82375EB8): the bolt's frame = the car's matrix with its
+//!   64 bytes, F-63789 from the type's ma_ / mi_ values);
+//! - every frame (the types' +32 -> F-64075): the bolt's frame = the car's matrix with its
 //!   rows times the bound's box maximum z (the third negated) and m_Offset added in world axes;
-//!   the bolt turns (sub_82749B48) and casts five rays at the car's body - the arc's five control
-//!   points; the styles' clocks run (sub_822EDAF0);
-//! - the draw (the types' +40 -> sub_82376070 -> sub_82749590 -> sub_822EE490 / sub_822EDD80):
+//!   the bolt turns (F-21335) and casts five rays at the car's body - the arc's five control
+//!   points; the styles' clocks run (F-49462);
+//! - the draw (the types' +40 -> F-79045 -> F-80235 -> F-62166 / F-28189):
 //!   per bolt and style a camera-facing strip of Iterations + 1 pairs along a Bezier curve
 //!   through jittered points, lightning.fxc / lightning.dds, blend source alpha, one, depth
 //!   tested, not written, the alpha x time left / ActiveTime.
 
 use glam::{Quat, Vec3};
 
-/// The manager's bolt settings (mcPowerUpMgr +12 .. +68, sub_82740220) and m_Offset (+304).
+/// The manager's bolt settings (mcPowerUpMgr +12 .. +68, F-15219) and m_Offset (+304).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BoltTune {
     pub size: Vec3,
@@ -72,7 +72,7 @@ impl Mwc {
     }
 }
 
-/// One bolt (sub_827496B0's record): +0 SampleRange, +4 theta, +8 ArcSpeed, +12 Range, +16
+/// One bolt (F-74937's record): +0 SampleRange, +4 theta, +8 ArcSpeed, +12 Range, +16
 /// EndTheta, +20 life, the five control points.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bolt {
@@ -88,7 +88,7 @@ pub struct Bolt {
     pub dir_b: Vec3,
 }
 
-/// An arc style's state (sub_822ED948's record): +0 the colour, +32 the texture's offset,
+/// An arc style's state (F-63789's record): +0 the colour, +32 the texture's offset,
 /// +40 the shape's seed, +48 the growth clock, +20 its rate, +52 the flicker clock, +28 its rate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Arc {
@@ -112,7 +112,7 @@ pub struct Lightning {
 }
 
 fn bolt_init(t: &BoltTune, rng: &mut Mwc) -> Bolt {
-    // (sub_827496B0: the order of the draws)
+    // (F-74937: the order of the draws)
     let speed = rng.range(t.arc_speed);
     let theta = rng.range(t.start_theta);
     let end = rng.range(t.end_theta);
@@ -123,7 +123,7 @@ fn bolt_init(t: &BoltTune, rng: &mut Mwc) -> Bolt {
 }
 
 fn arc_init(s: &ArcTune, rng: &mut Mwc) -> Arc {
-    // (sub_822ED948: +16 ArcGrowth (unread by the draw), +20 1 / GrowthSpeed, +28 1 /
+    // (F-63789: +16 ArcGrowth (unread by the draw), +20 1 / GrowthSpeed, +28 1 /
     // FlickerSpeed, +24 FluxTangent (unread), +40 a 31-bit seed, the clocks 0)
     let _growth = rng.range(s.arc_growth);
     let growth_rate = 1.0 / rng.range(s.growth_speed);
@@ -134,7 +134,7 @@ fn arc_init(s: &ArcTune, rng: &mut Mwc) -> Arc {
 }
 
 impl Lightning {
-    /// sub_82375E58: ten bolts, each with its two styles.
+    /// F-94353: ten bolts, each with its two styles.
     pub fn start(tune: BoltTune, styles: [ArcTune; 2], seed: u32) -> Lightning {
         let mut rng = Mwc { lo: seed | 1, carry: 0x1234_5 };
         let mut bolts = [bolt_init(&tune, &mut rng); 10];
@@ -146,7 +146,7 @@ impl Lightning {
         Lightning { bolts, arcs, tune, styles, rng }
     }
 
-    /// One frame (sub_82375EB8): `rot` / `pos` the car's matrix, `bz` its bound's box maximum
+    /// One frame (F-64075): `rot` / `pos` the car's matrix, `bz` its bound's box maximum
     /// z, `hit` a ray from a to b against the car's body (world), `dt` 0 while paused.
     pub fn update(&mut self, rot: Quat, pos: Vec3, bz: f32, hit: &dyn Fn(Vec3, Vec3) -> Option<Vec3>, dt: f32) {
         // the bolt's frame B: the car's rows x bz, the third negated; + m_Offset in world axes
@@ -161,7 +161,7 @@ impl Lightning {
     }
 
     fn bolt_tick(&mut self, i: usize, b: [Vec3; 3], b3: Vec3, hit: &dyn Fn(Vec3, Vec3) -> Option<Vec3>, dt: f32) {
-        // (sub_82749B48) theta += ArcSpeed dt, life -= dt; past EndTheta or out of life: anew
+        // (F-21335) theta += ArcSpeed dt, life -= dt; past EndTheta or out of life: anew
         {
             let bo = &mut self.bolts[i];
             bo.theta += bo.speed * dt;
@@ -173,7 +173,7 @@ impl Lightning {
         let bo = &mut self.bolts[i];
         let rad = std::f32::consts::PI / 180.0;
         // S = diag(m_XSize, m_YSize, m_ZSize), its rows 0 / 1 turned by SampleRange
-        // (sub_82227E98), then 0 / 2 by theta (sub_82214D90)
+        // (F-83846), then 0 / 2 by theta (F-25963)
         let s = self.tune.size;
         let (mut s0, mut s1, mut s2) = (Vec3::new(s.x, 0.0, 0.0), Vec3::new(0.0, s.y, 0.0), Vec3::new(0.0, 0.0, s.z));
         let (c, sn) = ((bo.sample * rad).cos(), (bo.sample * rad).sin());
@@ -202,7 +202,7 @@ impl Lightning {
     }
 
     /// The strips to draw this frame: per bolt and style the camera-facing strip's pairs
-    /// (left, right, colour, u) - sub_822EDD80 - `fade` the time left / ActiveTime.
+    /// (left, right, colour, u) - F-28189 - `fade` the time left / ActiveTime.
     pub fn strips(&self, cam: Vec3, fade: f32) -> Vec<Vec<(Vec3, Vec3, [f32; 4], f32)>> {
         let mut out = Vec::new();
         for i in 0..10 {
@@ -217,10 +217,11 @@ impl Lightning {
 }
 
 fn arc_tick(a: &mut Arc, s: &ArcTune, rng: &mut Mwc, dt: f32) {
-    // (sub_822EDAF0)
-    a.growth += dt * a.growth_rate;
-    a.flicker += dt * a.flicker_rate;
-    a.tex += s.tex_anim_rate * dt;
+    // (F-49462)
+    // (the original's three clocks are fused multiply-adds: one rounding)
+    a.growth = dt.mul_add(a.growth_rate, a.growth);
+    a.flicker = dt.mul_add(a.flicker_rate, a.flicker);
+    a.tex = s.tex_anim_rate.mul_add(dt, a.tex);
     if a.growth > 1.0 {
         a.growth = 0.0;
         let _g = rng.range(s.arc_growth);
@@ -241,7 +242,7 @@ fn arc_tick(a: &mut Arc, s: &ArcTune, rng: &mut Mwc, dt: f32) {
     }
 }
 
-/// de Casteljau (sub_822ED750)
+/// de Casteljau (F-29412)
 pub fn bezier(p: &[Vec3], t: f32) -> Vec3 {
     let mut q: Vec<Vec3> = p.to_vec();
     let n = q.len();
@@ -253,7 +254,7 @@ pub fn bezier(p: &[Vec3], t: f32) -> Vec3 {
     q.first().copied().unwrap_or(Vec3::ZERO)
 }
 
-/// One arc (sub_822EDD80): nothing for a Thickness under 0.01; `n` = Iterations points - the
+/// One arc (F-28189): nothing for a Thickness under 0.01; `n` = Iterations points - the
 /// first and last the curve's ends, those between at i / (n - 1) along the Bezier curve of the
 /// five control points, moved by dir_a x m_ArcGrowth max x the growth clock and jittered with
 /// the arc's own seed: each axis of dir_b x U(+-FluxTangent max x flicker clock) and of dir_a x
@@ -448,5 +449,71 @@ mod tests {
         assert_eq!(s.len(), 10);
         assert_eq!(s[0].len(), 11);
         assert_eq!(s[0][0].2[3], 0.0);
+    }
+}
+
+/// F-29412: the arcs' de Casteljau routine against the original's own code run offline
+/// (tools/pu_bezier_reference.py -> testdata/pu_bezier_ref.txt: 1 to 10 points, t at 0, 1, 0.5 and random, random points).
+#[cfg(test)]
+mod original_bezier_tests {
+    use super::*;
+
+    #[test]
+    fn bezier_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/pu_bezier_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let a: Vec<&str> = a.split(' ').skip(1).collect();
+            let k: usize = a[0].parse().unwrap();
+            let t = f32::from_bits(u32::from_str_radix(a[1], 16).unwrap());
+            let w: Vec<u32> = a[2..].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let pts: Vec<Vec3> = (0..k).map(|i| Vec3::new(f32::from_bits(w[4 * i]), f32::from_bits(w[4 * i + 1]), f32::from_bits(w[4 * i + 2]))).collect();
+            let r: Vec<u32> = b.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let q = bezier(&pts, t);
+            assert_eq!([q.x.to_bits(), q.y.to_bits(), q.z.to_bits()], [r[0], r[1], r[2]], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 120);
+    }
+
+    /// F-49462: the arc's clock step against the original's own code run offline (tools/pu_arc_reference.py -> testdata/pu_arc_ref.txt:
+    /// 1,500 random arcs, styles, generator states and steps, past 1 on a clock in about half).
+    #[test]
+    fn arc_tick_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/pu_arc_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+            let f = |x: &str| f32::from_bits(h(x));
+            let w: Vec<&str> = a.split(' ').skip(1).collect();
+            let o: Vec<u32> = b.split(' ').map(h).collect();
+            let st = ArcTune {
+                color_min: [f(w[8]), f(w[9]), f(w[10]), f(w[11])],
+                color_max: [f(w[12]), f(w[13]), f(w[14]), f(w[15])],
+                end_color: [0.0; 4],
+                arc_growth: [f(w[16]), f(w[17])],
+                growth_speed: [f(w[18]), f(w[19])],
+                flux_tangent: [f(w[20]), f(w[21])],
+                flux_normal: [0.0; 2],
+                flicker_speed: [f(w[22]), f(w[23])],
+                thickness: 0.0,
+                tex_anim_rate: f(w[24]),
+                iterations: 0,
+            };
+            let mut arc = Arc { color: [0.0; 4], growth_rate: f(w[5]), flicker_rate: f(w[6]), tex: f(w[7]), seed: 0, growth: f(w[3]), flicker: f(w[4]) };
+            let mut rng = Mwc { lo: h(w[0]), carry: h(w[1]) };
+            arc_tick(&mut arc, &st, &mut rng, f(w[2]));
+            let got = [
+                arc.color[0].to_bits(), arc.color[1].to_bits(), arc.color[2].to_bits(), arc.color[3].to_bits(),
+                arc.growth_rate.to_bits(), arc.flicker_rate.to_bits(), arc.tex.to_bits(), arc.seed, arc.growth.to_bits(), arc.flicker.to_bits(),
+                rng.lo, rng.carry,
+            ];
+            // the original's words: colour x4, +16, +20 growth rate, +24, +28 flicker rate, +32 tex, +40 seed hi, +44 seed lo, +48, +52, lo, carry
+            let want = [o[0], o[1], o[2], o[3], o[5], o[7], o[8], o[10], o[11], o[12], o[13], o[14]];
+            assert_eq!(o[9], 0, "{line}");
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 1500);
     }
 }

@@ -88,7 +88,7 @@ fn log10_guest(x: f64) -> f64 {
 
 /// The original's own natural logarithm (F-96865, a rational polynomial in double on the mantissa in [0.5, 1) and the
 /// exponent), same operations and fused multiply-adds, for positive finite x (other inputs fall back to the library).
-fn ln_guest(x: f64) -> f64 {
+pub(crate) fn ln_guest(x: f64) -> f64 {
     if x == 1.0 {
         return 0.0;
     }

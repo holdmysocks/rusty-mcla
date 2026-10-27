@@ -796,17 +796,19 @@ impl VehState {
 
     /// A normally distributed number (F-66400: the polar method, the second value kept).
     fn random_normal(&mut self, mean: f32, deviation: f32) -> f32 {
+        // (the original's arithmetic, offline run in docs/reference/cameras/verify_dispatch_evidence.md: s = fma(b, b, a a), the game's own
+        // logarithm, the result fma(value, deviation, mean))
         if let Some(v) = self.gauss_spare.take() {
-            return v * deviation + mean;
+            return v.mul_add(deviation, mean);
         }
         loop {
             let a = self.random_bits() * (1.0 / 4_194_304.0) - 1.0;
             let b = self.random_bits() * (1.0 / 4_194_304.0) - 1.0;
-            let s = a * a + b * b;
+            let s = b.mul_add(b, a * a);
             if s < 1.0 && s != 0.0 {
-                let f = (s.ln() * -2.0 / s).sqrt();
+                let f = ((crate::caraudio::ln_guest(s as f64) as f32 / s) * -2.0).sqrt();
                 self.gauss_spare = Some(f * a);
-                return f * b * deviation + mean;
+                return (f * b).mul_add(deviation, mean);
             }
         }
     }
@@ -6830,3 +6832,39 @@ fn start_velocity(body: Option<&super::solver::Body>, p: Vec3) -> Option<Vec3> {
     let b = body.filter(|_| !dbg_flag("MCLA_DBG_SCRAPEPOST"))?;
     Some(b.vel + b.ang.cross(p - b.at))
 }
+
+/// F-66400: the normal-deviate generator against the original's own code run offline (tools/random_normal_reference.py ->
+/// testdata/random_normal_ref.txt: 288 sequences of 16 calls from random generator states, mean and deviation random or (0, 1) / (0, 0.5) / (5, 3);
+/// result, spare flag and value and the generator after every call).
+#[cfg(test)]
+mod original_normal_tests {
+    use super::*;
+
+    #[test]
+    fn normal_deviate_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut seqs = 0;
+        for line in include_str!("../testdata/random_normal_ref.txt").lines() {
+            let (a, b) = line.strip_prefix("NRM ").unwrap().split_once(" -> ").unwrap();
+            let (head, calls) = a.split_once(" | ").unwrap();
+            let hd: Vec<&str> = head.split(' ').collect();
+            let mut vs = VehState::default();
+            vs.rng = [h(hd[0]), h(hd[1])];
+            let w: Vec<&str> = calls.split(' ').collect();
+            for (i, row) in b.split(" | ").enumerate() {
+                let (mean, dev) = (f32::from_bits(h(w[2 * i])), f32::from_bits(h(w[2 * i + 1])));
+                let r = vs.random_normal(mean, dev);
+                let o: Vec<&str> = row.split(' ').collect();
+                assert_eq!(r.to_bits(), h(o[0]), "call {i} of {line}");
+                assert_eq!(vs.gauss_spare.is_some(), o[1] == "1", "spare flag, call {i} of {line}");
+                if let Some(sp) = vs.gauss_spare {
+                    assert_eq!(sp.to_bits(), h(o[2]), "spare, call {i} of {line}");
+                }
+                assert_eq!(vs.rng, [h(o[3]), h(o[4])], "generator, call {i} of {line}");
+            }
+            seqs += 1;
+        }
+        assert_eq!(seqs, 288);
+    }
+}
+

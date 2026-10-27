@@ -753,3 +753,61 @@ mod tests {
         assert_eq!(simple, 10_078);
     }
 }
+
+/// F-17925 / F-28348 (lookup by hash) and F-86504 / F-73434 (by name): the container's binary search against the original's own code run
+/// offline (tools/audio_container_reference.py -> testdata/audio_container_ref.txt: 237 containers of 1 to 100 random names, every
+/// hash and name present, other letter cases, key 0, absent hashes next to present ones and random names). The original's table is the
+/// sorted (offset, hash) array and its +60 the last index; the port keeps a hash map. Same answer in every query.
+#[cfg(test)]
+mod original_container_tests {
+    use super::*;
+
+    fn dat_of(names: &[&str]) -> Dat {
+        let mut d = Vec::new();
+        d.extend_from_slice(&15u32.to_be_bytes());
+        d.extend_from_slice(&((names.len() * 8) as u32).to_be_bytes());
+        for i in 0..names.len() {
+            d.extend_from_slice(&(i as u32).to_be_bytes());
+            d.extend_from_slice(&[0; 4]);
+        }
+        d.extend_from_slice(&0u32.to_be_bytes());
+        d.extend_from_slice(&(names.len() as u32).to_be_bytes());
+        d.extend_from_slice(&0u32.to_be_bytes());
+        for (i, nm) in names.iter().enumerate() {
+            d.push(nm.len() as u8);
+            d.extend_from_slice(nm.as_bytes());
+            d.extend_from_slice(&((i * 8) as u32).to_be_bytes());
+            d.extend_from_slice(&8u32.to_be_bytes());
+        }
+        Dat::parse(&d).unwrap()
+    }
+
+    #[test]
+    fn container_lookups_match_the_original() {
+        let (mut containers, mut queries) = (0, 0);
+        for line in include_str!("testdata/audio_container_ref.txt").lines() {
+            let (a, r) = line.strip_prefix("CNT ").unwrap().split_once(" ->").unwrap();
+            let (head, qs) = a.split_once(" | ").unwrap();
+            let mut it = head.split(' ');
+            let n: usize = it.next().unwrap().parse().unwrap();
+            let names: Vec<&str> = it.collect();
+            assert_eq!(names.len(), n);
+            let dat = dat_of(&names);
+            let want: Vec<i32> = r.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let qs: Vec<&str> = qs.split(' ').collect();
+            assert_eq!(qs.len(), want.len(), "{line}");
+            for (q, w) in qs.iter().zip(want) {
+                let got = match q.as_bytes()[0] {
+                    b'H' => dat.get(u32::from_str_radix(&q[1..], 16).unwrap()),
+                    _ => dat.get_name(&q[1..]),
+                };
+                let got = got.map_or(-1, |o| u32::from_be_bytes([o[0], o[1], o[2], o[3]]) as i32);
+                assert_eq!(got, w, "query {q} in {line}");
+                queries += 1;
+            }
+            containers += 1;
+        }
+        assert_eq!((containers, queries), (237, 5415));
+    }
+}
+

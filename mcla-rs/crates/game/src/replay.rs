@@ -440,24 +440,26 @@ impl Mwc {
     fn unit(&mut self) -> f32 {
         self.u23() * 1.192_09e-7
     }
-    fn normal(&mut self) -> f32 {
+    /// F-66400 with its mean and deviation: the original's arithmetic (2^-22, s = fma(second, second, first^2), the game's own logarithm,
+    /// the result fma(value, deviation, mean)); the same routine as `VehState::random_normal`, checked there against the original's code
+    fn normal(&mut self, mean: f32, dev: f32) -> f32 {
         if let Some(s) = self.spare.take() {
-            return s;
+            return s.mul_add(dev, mean);
         }
         loop {
-            let u = self.u23() * 2.384_19e-7 - 1.0;
-            let v = self.u23() * 2.384_19e-7 - 1.0;
-            let s = v * v + u * u;
+            let u = self.u23() * (1.0 / 4_194_304.0) - 1.0;
+            let v = self.u23() * (1.0 / 4_194_304.0) - 1.0;
+            let s = v.mul_add(v, u * u);
             if s < 1.0 && s != 0.0 {
-                let k = (s.ln() / s * -2.0).sqrt();
+                let k = ((crate::caraudio::ln_guest(s as f64) as f32 / s) * -2.0).sqrt();
                 self.spare = Some(k * u);
-                return k * v;
+                return (k * v).mul_add(dev, mean);
             }
         }
     }
     /// a shot's length: average, variance, least, most
     fn length(&mut self, c: [f32; 4]) -> f32 {
-        (self.normal() * c[1] + c[0]).max(c[2]).min(c[3])
+        self.normal(c[0], c[1]).max(c[2]).min(c[3])
     }
 }
 
@@ -1058,3 +1060,33 @@ mod tests {
         assert!((-(rot * Vec3::Z)).dot(to) > 0.999);
     }
 }
+
+/// F-66400 as the replay director's shot lengths use it (`Mwc::normal`) against the original's own code run offline
+/// (tools/random_normal_reference.py -> testdata/random_normal_ref.txt, 288 sequences of 16 calls).
+#[cfg(test)]
+mod original_normal_tests {
+    use super::*;
+
+    #[test]
+    fn normal_deviate_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut seqs = 0;
+        for line in include_str!("testdata/random_normal_ref.txt").lines() {
+            let (a, b) = line.strip_prefix("NRM ").unwrap().split_once(" -> ").unwrap();
+            let (head, calls) = a.split_once(" | ").unwrap();
+            let hd: Vec<&str> = head.split(' ').collect();
+            let mut g = Mwc { x: h(hd[0]), c: h(hd[1]), spare: None };
+            let w: Vec<&str> = calls.split(' ').collect();
+            for (i, row) in b.split(" | ").enumerate() {
+                let r = g.normal(f32::from_bits(h(w[2 * i])), f32::from_bits(h(w[2 * i + 1])));
+                let o: Vec<&str> = row.split(' ').collect();
+                assert_eq!(r.to_bits(), h(o[0]), "call {i} of {line}");
+                assert_eq!((g.x, g.c), (h(o[3]), h(o[4])), "generator, call {i} of {line}");
+                assert_eq!(g.spare.map(f32::to_bits), if o[1] == "1" { Some(h(o[2])) } else { None }, "spare, call {i} of {line}");
+            }
+            seqs += 1;
+        }
+        assert_eq!(seqs, 288);
+    }
+}
+

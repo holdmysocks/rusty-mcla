@@ -1,6 +1,6 @@
 //! Power-ups in a race (step 19e) - the original's pick-up manager (mcPickUpManager /
-//! mcPowerUpSource, 0x8267F000..0x82687000), the car's holder (mcCarPickups, 0x8232A1B0..
-//! 0x8232D000) and the power-up types (mcPowerUpType*, 0x8237C370..0x82380800), read from the
+//! mcPowerUpSource, A-55831..A-79955), the car's holder (mcCarPickups, F-99947..
+//! A-40087) and the power-up types (mcPowerUpType*, F-97066..A-95447), read from the
 //! executable. See `D:\MCLA\SAVE_WORK.md`, "Step 19e".
 //!
 //! Where they appear: the race cores (OrderedCheckpointCore `game/0x3ae26fc8/0xf637b18a` 0x38d,
@@ -8,8 +8,8 @@
 //! options record's byte 21) is set - offline that is an ARCADE race with POWER UPS on or
 //! Custom. The race script's own list (`PickUpManager_CreatePowerUpSources(n)` +
 //! `PickUpManager_AddPowerUpSource(list, pos, width, second)` in a loop) is used when it has
-//! one; otherwise the sources are laid out from the checkpoints (sub_826830A0, 1 for the
-//! ordered core, 0 for the unordered one). `PickUpManager_OnRaceReset` (sub_82680328) then
+//! one; otherwise the sources are laid out from the checkpoints (F-28343, 1 for the
+//! ordered core, 0 for the unordered one). `PickUpManager_OnRaceReset` (F-48305) then
 //! gives every source its type.
 
 use glam::{Quat, Vec3};
@@ -43,9 +43,9 @@ pub const NAMES: [&str; 24] = [
     "MegaMirror", "MegaAgro", "MegaHotPotato", "Mystery", "HitByAgro",
 ];
 
-/// One power-up type: the constructors' values (0x8237C460 and the per-type ones, called by
-/// the manager's constructor sub_8273FC88) with the tune file's (`tune/powerup/0xe49d3ba2`,
-/// mcPowerUpMgr, parsed by sub_8237C950 / sub_8237EAE0) laid over them.
+/// One power-up type: the constructors' values (F-34625 and the per-type ones, called by
+/// the manager's constructor F-56926) with the tune file's (`tune/powerup/0xe49d3ba2`,
+/// mcPowerUpMgr, parsed by F-78177 / F-90605) laid over them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TypeTune {
     /// +16 ActiveTime: how long the effect lasts on a car
@@ -73,8 +73,8 @@ pub struct TypeTune {
 }
 
 impl TypeTune {
-    /// The constructors' values (sub_8237C460 base: ActiveTime 10, not shootable, ShootTime 5,
-    /// ShootRange 20, +32 10, no mega; then sub_8237CCB8 Ice .. sub_8237E790 MegaHotPotato).
+    /// The constructors' values (F-34625 base: ActiveTime 10, not shootable, ShootTime 5,
+    /// ShootRange 20, +32 10, no mega; then F-22784 Ice .. F-98423 MegaHotPotato).
     pub fn constructed(t: u8) -> TypeTune {
         let mut v = TypeTune { active_time: 10.0, shootable: false, shoot_time: 5.0, shoot_range: 20.0, width: 10.0, mega: NONE, force: Vec3::ZERO, torque: Vec3::ZERO, force_dir: Vec3::ZERO, fade: [0.7, 20.0, 4.0, 2.0], draw_icon: true };
         let (mega, shoot, megawidth) = match t {
@@ -99,17 +99,17 @@ impl TypeTune {
 }
 
 /// The look of a source (`tune/powerup/powerup_<name>.mcpowerup`, mcPowerup, parser
-/// sub_82681348): the colours and heights the original's draw uses.
+/// F-54473): the colours and heights the original's draw uses.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Look {
     pub glow_color: [f32; 4],
     pub sphere_color: [f32; 4],
     pub sphere_scale: f32,
     pub powerup_height: f32,
-    /// step 19f, what the draw (sub_82681760 / sub_82682318) reads - the object's +28
+    /// step 19f, what the draw (F-11753 / F-50763) reads - the object's +28
     /// m_groundGlowScale, +32 m_powerupWidth, +48 m_iconHeight, +52 m_powerupHeight, +112
-    /// m_powerupColor, +128 / +144 m_groundGlowColor1 / 2 (field table sub_82681358; defaults
-    /// of the constructor sub_826811D0 where a file leaves one out)
+    /// m_powerupColor, +128 / +144 m_groundGlowColor1 / 2 (field table F-94779; defaults
+    /// of the constructor F-88402 where a file leaves one out)
     pub ground_glow_scale: f32,
     pub powerup_width: f32,
     pub icon_height: f32,
@@ -194,7 +194,7 @@ pub fn load_types(data_dir: &str) -> [TypeTune; 24] {
     types
 }
 
-/// Step 19g: the effect's fade (sub_8237CAC8, type +44 .. +56): 1 until the last
+/// Step 19g: the effect's fade (F-72619, type +44 .. +56): 1 until the last
 /// (1 - FadeFxStart) of the effect's time, then with r = (time left / ActiveTime) / (1 -
 /// FadeFxStart) it flickers out: clamp((1 + Amplitude cos(Frequency (1 - r)^Acceleration)) r, 0, 1)
 /// (a negative Acceleration takes r^-Acceleration instead). No effect on the car: 1.
@@ -216,14 +216,14 @@ pub fn fade_fx(t: &TypeTune, left: f32) -> f32 {
 }
 
 /// Step 19g: how an effect changes the car's OWN draw - (DL6.w, stealth):
-/// - Mirror / MegaMirror (the draw +40, sub_823802D8): the car's render object +4108 =
-///   clamp(fade, 0, 1); sub_823580D0 hands it to the paint as DL6.w (handle +88, sub_823798D8) for
+/// - Mirror / MegaMirror (the draw +40, F-68530): the car's render object +4108 =
+///   clamp(fade, 0, 1); F-13513 hands it to the paint as DL6.w (handle +88, F-96226) for
 ///   the player's car only (any other car: 0) and PS_CarPaint adds it to its mirror weight
 ///   (instruction 111: lerp(paint x light, reflection, weight + DL6.w));
-/// - Stealth / MegaStealth (sub_822A91E0 -> sub_8232AF88 / sub_8232AFB0) while the fade is above
-///   0 (sub_8235FB78 0x8235FDFC..0x8235FE38): the car is not drawn in the opaque pass and is
+/// - Stealth / MegaStealth (F-54047 -> F-73113 / F-63149) while the fade is above
+///   0 (F-73214 A-42973..A-37430): the car is not drawn in the opaque pass and is
 ///   drawn in the alpha pass with powerupicecube's "stealthtechnique" forced (the type's +48,
-///   sub_8237D568) - pu_fx.rs.
+///   F-19366) - pu_fx.rs.
 pub fn car_look(effect: Option<(u8, f32)>, types: &[TypeTune; 24], player: bool) -> (f32, bool) {
     let Some((kind, left)) = effect else { return (0.0, false) };
     let Some(t) = types.get(kind as usize) else { return (0.0, false) };
@@ -291,9 +291,9 @@ pub struct Spot {
     pub last: bool,
 }
 
-/// `PickUpManager_AddPowerUpSource(list, pos, width, second)` (sub_82680130): a zero `second`
-/// makes a ring (sub_82682970), otherwise a row across the way from `pos` to `second`
-/// (sub_82682BF8). Each spot is probed from 2 m above to 20 m below; the height is 5.
+/// `PickUpManager_AddPowerUpSource(list, pos, width, second)` (F-28622): a zero `second`
+/// makes a ring (F-32756), otherwise a row across the way from `pos` to `second`
+/// (F-10244). Each spot is probed from 2 m above to 20 m below; the height is 5.
 pub fn hand_spots(pos: Vec3, width: f32, second: Vec3) -> Vec<Spot> {
     let spot = |p: Vec3| Spot { at: p, up: 2.0, down: 20.0, height: 5.0, last: false };
     if second == Vec3::ZERO {
@@ -341,7 +341,7 @@ pub struct CpIn {
     pub height: f32,
 }
 
-/// `PickUpManager_CreatePowerUpSourcesFromCheckPoints(list, ordered)` (sub_826830A0). For
+/// `PickUpManager_CreatePowerUpSourcesFromCheckPoints(list, ordered)` (F-28343). For
 /// each checkpoint (the last one takes the one before it - and, ordered, no direction):
 /// a line checkpoint makes int((length - 5) / 3) sources (5 is taken off from 5 m), along the
 /// line; a round one int((radius - 6) / 3) (3 taken off, and 3 more from 6 m), across the way
@@ -554,7 +554,7 @@ pub fn script_list(data_dir: &str, race_id: &str) -> Option<Vec<(Vec3, f32, Vec3
 
 /// The race's checkpoints of one lap as the layout reads them (the port's race: a gate's ends,
 /// the radii - 24 m where the script gave none -; the height is the checkpoint's default, 100,
-/// sub_82266208: the scripts' own heights are not read by the port).
+/// F-64962: the scripts' own heights are not read by the port).
 pub fn race_checkpoints(r: &crate::game::Race) -> Vec<CpIn> {
     let n = if r.lap_len > 0 { r.lap_len.min(r.checkpoints.len()) } else { r.checkpoints.len() };
     (0..n)
@@ -582,7 +582,7 @@ pub struct Source {
 }
 
 /// The types a source may give (+128) and whether it may be a Mystery one (+22), from the
-/// options record (sub_82682770): byte 0 bits 7..0 Nitro .. Pulse, byte 1 bits 7, 6 Mirror,
+/// options record (F-18300): byte 0 bits 7..0 Nitro .. Pulse, byte 1 bits 7, 6 Mirror,
 /// Agro, bit 5 RANDOM.
 pub fn allowed(record: &[u8; 28]) -> (u32, bool) {
     let mut bits = 0u32;
@@ -600,9 +600,9 @@ pub fn allowed(record: &[u8; 28]) -> (u32, bool) {
     (bits, record[1] & 0x20 != 0)
 }
 
-/// A source's type from a random number (sub_82683A28): with RANDOM allowed, one in four
+/// A source's type from a random number (F-14458): with RANDOM allowed, one in four
 /// (the number's low two bits 0) is shown as Mystery; the type is the (number >> 2) mod
-/// count-th allowed one, in type order (sub_82683928); none allowed: 25. Nitro is never a
+/// count-th allowed one, in type order (F-52455); none allowed: 25. Nitro is never a
 /// Mystery one.
 pub fn roll(bits: u32, mystery_ok: bool, r: i32, was_mystery: bool) -> (u8, bool) {
     let mut mystery = was_mystery;
@@ -661,31 +661,31 @@ pub struct Holder {
     /// Agro: the ability the car had (the type's +104)
     pub agro_prev: Option<crate::ability::Kind>,
     /// where the car was a frame ago (the racer's +400 as the source's test reads it: the
-    /// position row of the racer's second matrix, +352..+415, which sub_822A9930 refreshes from
+    /// position row of the racer's second matrix, +352..+415, which F-86308 refreshes from
     /// its matrix at +288)
     pub prev: Option<Vec3>,
-    /// step 19f: the racer has finished (sub_8232A820: racer +36 >= (racer +8) +24) - it takes
+    /// step 19f: the racer has finished (F-37974: racer +36 >= (racer +8) +24) - it takes
     /// nothing more
     pub finished: bool,
-    /// step 19f: the vehicle lets it fire (sub_8232A728 -> the vehicle's slot 12, sub_8232C368:
+    /// step 19f: the vehicle lets it fire (F-22431 -> the vehicle's slot 12, F-71660:
     /// chassis +592 == 0, or on a motorcycle exactly 0x10 - the rider off)
     pub veh_ok: bool,
     /// step 19f: a wasted shot's icon (+164 type, +176 where, +192 the second it shows for,
-    /// sub_8232A4B0; counted down by 1/60 a tick, sub_8232B150 0x8232B34C)
+    /// F-79013; counted down by 1/60 a tick, F-22441 A-18663)
     pub icon: Option<(u8, Vec3, f32)>,
     /// step 19g: what the effect's draw reads (pu_fx.rs)
     pub fx: CarFx,
     /// step 19g: the lightning of Reverse / Stop / Disrupter (pu_bolt.rs)
     pub bolts: Option<Box<crate::pu_bolt::Lightning>>,
-    /// step 19g: the shot's laser fans (the shoot-effect manager's slots, sub_82747650): the
+    /// step 19g: the shot's laser fans (the shoot-effect manager's slots, F-17465): the
     /// race time it started, the time it ends (start + ShootTime; set to "now" when the shot
-    /// lands or is wasted - sub_82747720), backwards, the type
+    /// lands or is wasted - F-39157), backwards, the type
     pub lasers: Vec<Laser>,
 }
 
 /// Step 19g: one laser fan of a shot (a slot of the manager [*0x8288B9AC + 52], +880 + 64 i:
-/// +912 start, +916 end, +921 backwards, +928 the type's look; drawn by sub_82747E20 until
-/// 0.25 s (+1400) after its end - sub_827481C0).
+/// +912 start, +916 end, +921 backwards, +928 the type's look; drawn by F-23309 until
+/// 0.25 s (+1400) after its end - F-97749).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Laser {
     pub start: f32,
@@ -699,10 +699,10 @@ pub struct Laser {
 /// have a Shield); here per car.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CarFx {
-    /// Shield +376: the hit flash's clock (1 = no flash; set to 0 by a shot taken, sub_8237E1F8;
-    /// + 1/60 x +380 (1) a frame up to 1, sub_8237FB18) - the key curve's time for FX_Timer1
+    /// Shield +376: the hit flash's clock (1 = no flash; set to 0 by a shot taken, F-76553;
+    /// + 1/60 x +380 (1) a frame up to 1, F-32841) - the key curve's time for FX_Timer1
     pub flash: f32,
-    /// Shield +384: FX_Timer2, + 1/60 x +368 (0.18) a frame from 0 at the start (sub_8237E218)
+    /// Shield +384: FX_Timer2, + 1/60 x +368 (0.18) a frame from 0 at the start (F-71747)
     pub t2: f32,
     /// Shield +388: the clock of FX_Timer3 - every +372 (0.24 s) +392 takes a new random number
     pub t3_clock: f32,
@@ -719,8 +719,8 @@ impl Default for CarFx {
 }
 
 impl CarFx {
-    /// The Shield's per-frame update (sub_8237FB18; 1/60 = the clock object's +8, 0x827D7508):
-    /// HitByAgro's (sub_82380670) is the same with the flash held at 1.
+    /// The Shield's per-frame update (F-32841; 1/60 = the clock object's +8, 0x827D7508):
+    /// HitByAgro's (F-74161) is the same with the flash held at 1.
     pub fn shield_tick(&mut self, dt: f32) {
         self.flash = (self.flash + 1.0 * dt).min(1.0);
         self.t2 += 0.18 * dt;
@@ -748,12 +748,12 @@ impl Holder {
         Holder { car, slots: [NONE; 2], shot: None, effect: None, back: false, ctl: 0, shield_hits: 0, agro_prev: None, prev: None, finished: false, veh_ok: true, icon: None, bolts: None, lasers: Vec::new(), fx: CarFx { rng: (0x9e37_79b9 ^ (car as u32).wrapping_mul(0x85eb_ca6b)) | 1, ..Default::default() } }
     }
 
-    /// Two megas in hand (the manager's test, sub_82680B68): slot 1 not empty and both >= 11.
+    /// Two megas in hand (the manager's test, F-28572): slot 1 not empty and both >= 11.
     pub fn megas(&self) -> bool {
         self.slots[1] != NONE && self.slots[1] >= 11 && self.slots[0] >= 11
     }
 
-    /// May this power-up be taken (sub_8232A820)? `shots`: the nitrous shots in the car.
+    /// May this power-up be taken (F-37974)? `shots`: the nitrous shots in the car.
     pub fn accept(&self, kind: u8, shots: u8, types: &[TypeTune; 24]) -> bool {
         // (the racer has finished: nothing)
         if self.finished || kind == NONE {
@@ -768,7 +768,7 @@ impl Holder {
         (kind == self.slots[0] || kind == self.slots[1]) && types.get(kind as usize).map_or(false, |t| t.mega != NONE)
     }
 
-    /// Take it (sub_8232B540): Nitro is one more nitrous shot (up to 5); the same one again
+    /// Take it (F-93987): Nitro is one more nitrous shot (up to 5); the same one again
     /// with the second slot empty makes its mega, which fills both; else the first empty
     /// slot. Returns the type taken (None: not taken).
     pub fn give(&mut self, kind: u8, shots: &mut u8, types: &[TypeTune; 24]) -> Option<u8> {
@@ -797,13 +797,13 @@ impl Holder {
         Some(kind)
     }
 
-    /// May the car fire (sub_8232A728): something in hand, no shot out, no effect on it, and the
-    /// vehicle lets it (its slot 12, sub_8232C368 - `veh_ok`).
+    /// May the car fire (F-22431): something in hand, no shot out, no effect on it, and the
+    /// vehicle lets it (its slot 12, F-71660 - `veh_ok`).
     pub fn can_fire(&self) -> bool {
         self.slots[0] != NONE && self.shot.is_none() && self.effect.is_none() && self.veh_ok
     }
 
-    /// The slots after firing (sub_8232BB90): a mega goes at once.
+    /// The slots after firing (F-52079): a mega goes at once.
     fn shift(&mut self) {
         if self.slots[0] == self.slots[1] {
             self.slots = [NONE; 2];
@@ -818,7 +818,7 @@ pub fn hud_cell(t: i32) -> i32 {
     if t == NONE as i32 { 0 } else { t + 1 }
 }
 
-/// The HUD's power-up control (sub_82203AC8 -> sub_8223E200): `PowerUptype_0`,
+/// The HUD's power-up control (F-24988 -> F-56191): `PowerUptype_0`,
 /// `PowerUptype_1` (the type + 1, 0 empty; a mega shows as its base) and `PowerUpvalue`.
 /// With a shot out: its type - less 11 when under 22, as the original does it - then the
 /// first slot, and the shot's time left over the type's ActiveTime.
@@ -840,8 +840,8 @@ pub fn hud_values(h: &Holder, types: &[TypeTune; 24]) -> [f32; 3] {
     }
 }
 
-/// The control override on a car's input (sub_8232EA78 0x8232EB18..0x8232EC28; the ice bit
-/// is read by the wheels, 0x823300EC: their handling factor 10 - the grip a tenth).
+/// The control override on a car's input (F-17997 A-43247..A-20490; the ice bit
+/// is read by the wheels, A-34557: their handling factor 10 - the grip a tenth).
 pub fn apply_ctl(input: &mut crate::physics::car::CarInput, ctl: u32) {
     if ctl == 0 {
         return;
@@ -883,16 +883,16 @@ pub fn apply_ctl(input: &mut crate::physics::car::CarInput, ctl: u32) {
 /// The physics tick (1/dt = 59.999996 in the original).
 pub const TICK: f32 = 1.0 / 60.0;
 
-/// Pulse's push (sub_82380418, step 19f), world axes: the force per unit of mass and the torque
+/// Pulse's push (F-19990, step 19f), world axes: the force per unit of mass and the torque
 /// per unit of the body's own (diagonal, car-axes) inertia. The instance's rows A (+16, right),
 /// C (+48, back): sx = sign(A . ForceDir), s4 = sign(-(C . ForceDir)) x sx - ForceDir taken in
 /// WORLD axes, as the code does it; force = rows x (Force.x sx, Force.y, Force.z), torque =
 /// rows x (Torque x s4). The routine then multiplies the force by the archetype's mass (its
 /// slot 7) and the world torque by the archetype's inertia vector (slot 9) component by
-/// component, and hands both to the simulator (sub_8258D8B8 / sub_8258D938) - for a car
-/// (instance vtable 0x82045F44, slot 8 = 0) the collider's slot 31 (0x8259E0F0: force at the
-/// bound's centroid, into +336 / +352) and slot 33 (0x8259C0F0: torque into +352). Those are
-/// the force and torque the next tick integrates over its dt and clears (0x8259BE30): the
+/// component, and hands both to the simulator (F-33609 / F-77639) - for a car
+/// (instance vtable 0x82045F44, slot 8 = 0) the collider's slot 31 (F-18006: force at the
+/// bound's centroid, into +336 / +352) and slot 33 (F-93816: torque into +352). Those are
+/// the force and torque the next tick integrates over its dt and clears (F-94789): the
 /// change of speed is Force / 60 - (2.5, 5, 0) m/s in the car's frame for Pulse.
 pub fn pulse_push(rot: Quat, t: &TypeTune) -> (Vec3, Vec3) {
     let sgn = |v: f32| if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 };
@@ -901,22 +901,22 @@ pub fn pulse_push(rot: Quat, t: &TypeTune) -> (Vec3, Vec3) {
     (rot * Vec3::new(t.force.x * sx, t.force.y, t.force.z), rot * (t.torque * s4))
 }
 
-/// The vehicle's own "may it fire" (its slot 12, sub_8232C368): chassis +592 nothing, or - on
+/// The vehicle's own "may it fire" (its slot 12, F-71660): chassis +592 nothing, or - on
 /// a two-wheeler - exactly 0x10 (the rider off). The port keeps only the motorcycle's 0x10
 /// (`VehState::wipe`); a car's other bits of +592 are not modelled, so a car always may.
 pub fn vehicle_lets_fire(flags592: u32, wheels: u32) -> bool {
     flags592 == 0 || (wheels == 2 && flags592 == 0x10)
 }
 
-/// The types the sources get (sub_82682770 reads them from the session's options copy,
+/// The types the sources get (F-18300 reads them from the session's options copy,
 /// (*0x8286D804 +48) +0x2ADE0 - step 19f): that copy is written only by three network
-/// message handlers (sub_822837B8 and sub_82289F20 through EventOptions' defaults sub_823974A8,
-/// sub_82282EB8 through sub_8227D1B0), each with byte 0 = 0xFF and byte 1 | 0xE0 - all ten
+/// message handlers (F-79553 and F-30469 through EventOptions' defaults F-87205,
+/// F-54654 through F-37780), each with byte 0 = 0xFF and byte 1 | 0xE0 - all ten
 /// types and RANDOM. Nothing copies the ARCADE menu's record into it. MCLA_PU_RECORD_TYPES=1:
 /// the ARCADE record's bits instead (the step 19e reading).
 pub const SESSION_TYPES: [u8; 2] = [0xff, 0xe0];
 
-/// How a target ranks for a shot (sub_8232B718): a car under Stealth 1e6; with a negative
+/// How a target ranks for a shot (F-47137): a car under Stealth 1e6; with a negative
 /// width the distance; else the target in the shooter's frame - out of the box (|x| or |y|
 /// over the width) 1e6, in it the distance ahead.
 pub fn rank(shooter_pos: Vec3, shooter_rot: Quat, target_pos: Vec3, width: f32, stealth: bool) -> f32 {
@@ -933,7 +933,7 @@ pub fn rank(shooter_pos: Vec3, shooter_rot: Quat, target_pos: Vec3, width: f32, 
     -l.z
 }
 
-/// The targets of a shot (sub_8232BCE8): every other racer whose rank is between 0 and the
+/// The targets of a shot (F-33277): every other racer whose rank is between 0 and the
 /// range - backwards (LOOKBACK) the rank turned round, but not for a mega -, the nearest one,
 /// or all of them for a mega (types 12..20).
 pub fn targets(cars: &[(usize, Vec3, Quat, bool)], shooter: usize, kind: u8, back: bool, t: &TypeTune) -> Vec<usize> {
@@ -968,7 +968,7 @@ pub fn targets(cars: &[(usize, Vec3, Quat, bool)], shooter: usize, kind: u8, bac
 // ---------------------------------------------------------------------------------
 // The sounds (game.dat PACKAGE_POWERUP_PLAYER: POWERUP_<X>_PLAYER per type; the computer
 // racers' package has none). Fields of the object as the car audio's notifications play them
-// (sub_823497D8 .. sub_82349EC8): +10 picked up, +14 a hit landed, +18 / +22 fired (and its
+// (F-90757 .. F-96330): +10 picked up, +14 a hit landed, +18 / +22 fired (and its
 // loop), +30 / +34 in (and its loop), +38 out, +42 mirrored, +46 shielded, +54 melting.
 // The first wave of each object (sounds.dat), left channel.
 
@@ -1060,9 +1060,9 @@ pub struct PowerUps {
     /// step 19g: the lightning's settings - the manager's bolts and the types' ma_ / mi_ arcs
     /// (Reverse 2, Disrupter 4, Stop 6 and their megas)
     pub bolt_tunes: Vec<(u8, crate::pu_bolt::BoltTune, [crate::pu_bolt::ArcTune; 2])>,
-    /// step 19g: the landings of the last 2 s (the manager's target records, sub_82748340: the
+    /// step 19g: the landings of the last 2 s (the manager's target records, F-72989: the
     /// rmptfx effect "powerup_sparks" at the target, (0, 0.5, 0) along its axes, with its
-    /// velocity, tinted m_beamColor of the type's look; dropped 2 s after - sub_827481C0)
+    /// velocity, tinted m_beamColor of the type's look; dropped 2 s after - F-97749)
     pub hits: Vec<Hit>,
 }
 
@@ -1113,7 +1113,7 @@ impl PowerUps {
         (x & 0x7fff_ffff) as i32
     }
 
-    /// PickUpManager_OnRaceReset (sub_82680328 -> sub_82683B28).
+    /// PickUpManager_OnRaceReset (F-48305 -> F-79388).
     pub fn reset(&mut self) {
         let r = self.rand();
         let (bits, ok) = (self.bits, self.mystery_ok);
@@ -1135,7 +1135,7 @@ impl PowerUps {
         self.holder(car).map_or([0.0, 0.0, 1.0], |h| hud_values(h, &self.types))
     }
 
-    /// IN_ZONE pressed (sub_822A0398 -> sub_8232BC98): with something to fire, the first
+    /// IN_ZONE pressed (F-39212 -> F-15655): with something to fire, the first
     /// slot is fired - backwards while LOOKBACK is held - and the press does not reach the
     /// special ability. Returns whether it was taken.
     pub fn fire(&mut self, car: usize, back: bool, vehicles: &mut crate::vehicles::Vehicles, ability: &mut crate::ability::Abilities) -> bool {
@@ -1146,13 +1146,13 @@ impl PowerUps {
         let kind = self.holders[hi].slots[0];
         let t = self.types[kind as usize];
         if t.shootable {
-            // (sub_8232BB90: the shot, ShootTime to find its target - sub_8237EBD0 looks at once)
+            // (F-52079: the shot, ShootTime to find its target - F-37047 looks at once)
             self.holders[hi].back = back;
             let cars = self.racer_cars(vehicles);
             let found = if no_target_hook() { Vec::new() } else { targets(&cars, car, kind, back, &t) };
             self.holders[hi].shot = Some(Shot { kind, left: t.shoot_time, found: !found.is_empty(), targets: found, wait: 0.0 });
             self.notes.push(Note { car, kind, snd: Snd::Fire });
-            // (step 19g, sub_8237C718: the laser - a mega shoots two, backwards and forwards;
+            // (step 19g, F-60377: the laser - a mega shoots two, backwards and forwards;
             // the others one, backwards when LOOKBACK is held)
             let now = self.time;
             let mk = |b: bool| Laser { start: now, end: now + t.shoot_time, back: b, kind };
@@ -1164,7 +1164,7 @@ impl PowerUps {
                 self.holders[hi].lasers.push(mk(back));
             }
         } else {
-            // (sub_8232B4B8 -> sub_8232A428: on the own car)
+            // (F-50196 -> F-63170: on the own car)
             self.apply(hi, kind, vehicles, ability);
         }
         self.holders[hi].shift();
@@ -1178,17 +1178,17 @@ impl PowerUps {
             .collect()
     }
 
-    /// An effect starts on a car (sub_8232A428: the type's +12, then +236 and ActiveTime).
+    /// An effect starts on a car (F-63170: the type's +12, then +236 and ActiveTime).
     fn apply(&mut self, hi: usize, kind: u8, vehicles: &mut crate::vehicles::Vehicles, ability: &mut crate::ability::Abilities) {
         let car = self.holders[hi].car;
         let t = self.types[kind as usize];
         let base = if (12..21).contains(&kind) { kind - 11 } else { kind };
         match base {
-            // (sub_8237D020: +624 = 128; sub_8237D110: 64 and the lightning; sub_8237E978: 6)
+            // (F-39004: +624 = 128; F-52550: 64 and the lightning; F-52760: 6)
             ICE => self.holders[hi].ctl = 0x80,
             REVERSE => self.holders[hi].ctl = 0x40,
             STOP => self.holders[hi].ctl = 6,
-            // (sub_8237E218: the shield shown, its hits counted from 0; step 19g: its timers
+            // (F-71747: the shield shown, its hits counted from 0; step 19g: its timers
             // +384 .. +396 from 0 - the flash clock +376 is left as it is)
             SHIELD => {
                 self.holders[hi].shield_hits = 0;
@@ -1197,13 +1197,13 @@ impl PowerUps {
                 fx.t3_clock = 0.0;
                 fx.t3 = 0.0;
             }
-            // (sub_8237E638: the car's ability made Agro, its gauge full and running)
+            // (F-68975: the car's ability made Agro, its gauge full and running)
             AGRO => {
                 if vehicles.cars.get(car).map_or(false, |c| c.is_player) {
                     self.holders[hi].agro_prev = Some(ability.powerup_run(crate::ability::Kind::Agro));
                 }
             }
-            // (sub_82380418, step 19f: the push - see `pulse_push`. It goes into the body's force
+            // (F-19990, step 19f: the push - see `pulse_push`. It goes into the body's force
             // and torque sums for the next physics tick; a car without the ported body takes the
             // same change of speed by hand)
             PULSE => {
@@ -1220,8 +1220,8 @@ impl PowerUps {
             }
             _ => {}
         }
-        // (step 19g: the lightning - Reverse (sub_8237D110) and Stop (sub_8237E978) on any car, the
-        // Disrupter (sub_8237D920) on any but the local player's, sub_82331D40)
+        // (step 19g: the lightning - Reverse (F-52550) and Stop (F-52760) on any car, the
+        // Disrupter (F-69513) on any but the local player's, F-31409)
         let player = vehicles.cars.get(car).map_or(false, |c| c.is_player);
         self.holders[hi].bolts = match base {
             REVERSE | STOP => self.bolt_tunes.iter().find(|b| b.0 == kind),
@@ -1233,7 +1233,7 @@ impl PowerUps {
         self.notes.push(Note { car, kind, snd: Snd::In });
     }
 
-    /// The effect ends (sub_8232A590: the type's +16).
+    /// The effect ends (F-71910: the type's +16).
     fn end_effect(&mut self, hi: usize, ability: &mut crate::ability::Abilities) {
         self.holders[hi].bolts = None;
         let Some(e) = self.holders[hi].effect.take() else { return };
@@ -1252,13 +1252,13 @@ impl PowerUps {
         self.notes.push(Note { car, kind: e.kind, snd: Snd::Out });
     }
 
-    /// A shot lands (sub_8232C080 for the shooter, sub_8232BED8 for the target): the
+    /// A shot lands (F-12528 for the shooter, F-52298 for the target): the
     /// shooter's shot ends; a Shield takes it (and breaks at the second), Stealth lets it
     /// pass, a Mirror sends it back (a MegaMirror to every car round it) and ends; else the
     /// target's effect ends and this one starts.
     fn land(&mut self, from: usize, to: usize, kind: u8, vehicles: &mut crate::vehicles::Vehicles, ability: &mut crate::ability::Abilities, depth: u32) {
         let (Some(fi), Some(ti)) = (self.holders.iter().position(|h| h.car == from), self.holders.iter().position(|h| h.car == to)) else { return };
-        // (step 19g, sub_8237C5C0 / sub_8232C080: the shooter's lasers stop now, and a target
+        // (step 19g, F-45318 / F-12528: the shooter's lasers stop now, and a target
         // record starts - whatever the target then does with the shot)
         let now = self.time;
         let key = 0x5019_0000_0000_0000u64 | ((self.hits.len() as u64 + (now * 60.0) as u64 * 64) << 8) | to as u64;
@@ -1267,16 +1267,16 @@ impl PowerUps {
             l.end = l.end.min(now);
         }
         if self.holders[fi].shot.take().is_some() {
-            // (sub_8232A4B0 with a shot: the type's +24, the notification +84 - no sound)
+            // (F-79013 with a shot: the type's +24, the notification +84 - no sound)
         }
         let cur = self.holders[ti].effect.as_ref().map_or(NONE, |e| e.kind);
         match cur {
             SHIELD | MEGA_SHIELD => {
                 self.holders[ti].shield_hits += 1;
-                // (sub_8237E1F8: +104 + 1 and the flash clock +376 back to 0)
+                // (F-76553: +104 + 1 and the flash clock +376 back to 0)
                 self.holders[ti].fx.flash = 0.0;
                 self.notes.push(Note { car: to, kind: cur, snd: Snd::Shielded });
-                // (the Shield's vfunc +64, sub_8237E0A8: broken from two hits)
+                // (the Shield's vfunc +64, F-89403: broken from two hits)
                 if self.holders[ti].shield_hits >= 2 {
                     self.end_effect(ti, ability);
                 }
@@ -1286,7 +1286,7 @@ impl PowerUps {
                 if depth < 4 {
                     self.land(to, from, kind, vehicles, ability, depth + 1);
                     if cur == MEGA_MIRROR {
-                        // (sub_8232BCE8 round the mirroring car with the shot's range and box,
+                        // (F-33277 round the mirroring car with the shot's range and box,
                         // every car found)
                         let t = self.types[kind as usize];
                         let cars = self.racer_cars(vehicles);
@@ -1307,8 +1307,8 @@ impl PowerUps {
     }
 
     /// One frame: sources placed where the ground is there to probe, the cars' shots and
-    /// effects (sub_8232B150), the pick-ups (sub_82680D78: the player first, then the
-    /// racers), the sources coming back (sub_826836C8). `probe`: the ground under a point
+    /// effects (F-22441), the pick-ups (F-99814: the player first, then the
+    /// racers), the sources coming back (F-43563). `probe`: the ground under a point
     /// (None while that part of the city is not loaded: Some(None) a miss).
     pub fn update(&mut self, vehicles: &mut crate::vehicles::Vehicles, ability: &mut crate::ability::Abilities, probe: &dyn Fn(Vec3, f32, f32) -> Option<Option<Vec3>>, dt: f32) {
         // (step 19g test hook MCLA_PU_SELF="<type>,<seconds>": that effect starts on the player's
@@ -1352,8 +1352,8 @@ impl PowerUps {
                     for l in self.holders[hi].lasers.iter_mut() {
                         l.end = l.end.min(now);
                     }
-                    // (sub_8232A4B0. Step 19g: the shot's flag +232 is set by every firing
-                    // (sub_8232BB90 0x8232BC20) and cleared only here and by the clear-out, so the
+                    // (F-79013. Step 19g: the shot's flag +232 is set by every firing
+                    // (F-52079 A-59766) and cleared only here and by the clear-out, so the
                     // branch that leaves the wasted shot's icon (+164 / +176 / +192) is never taken:
                     // no icon - 19f's reading of it was wrong)
                 } else {
@@ -1376,7 +1376,7 @@ impl PowerUps {
                     }
                 }
             }
-            // (the icon's second, 0x8232B34C)
+            // (the icon's second, A-18663)
             if let Some(ic) = self.holders[hi].icon.as_mut() {
                 ic.2 -= dt;
                 if ic.2 <= 0.0 {
@@ -1389,7 +1389,7 @@ impl PowerUps {
             if matches!(self.holders[hi].effect.as_ref().map(|e| e.kind), Some(SHIELD | MEGA_SHIELD)) {
                 self.holders[hi].fx.shield_tick(dt);
             }
-            // (step 19g: the lightning's frame - the types' +32, sub_82375EB8)
+            // (step 19g: the lightning's frame - the types' +32, F-64075)
             if let (Some(l), Some(c)) = (self.holders[hi].bolts.as_mut(), vehicles.cars.get(car)) {
                 let bz = crate::pu_fx::bound_max_z(c);
                 let (rot, pos) = (c.state.rot, c.state.pos);
@@ -1406,7 +1406,7 @@ impl PowerUps {
                 if e.left <= 0.0 {
                     ended = true;
                 } else if (e.kind == ICE || e.kind == 12) && !e.melted && e.left / self.types[e.kind as usize].active_time.max(1e-3) <= 0.5 {
-                    // (sub_8237CFD8: the notification +96 once the ice is half gone)
+                    // (F-47297: the notification +96 once the ice is half gone)
                     e.melted = true;
                     let kind = e.kind;
                     self.notes.push(Note { car, kind, snd: Snd::Melt });
@@ -1435,7 +1435,7 @@ impl PowerUps {
                 if s.state != 1 || (player && megas && s.kind != NITRO) || (!player && (megas || s.kind == NITRO)) {
                     continue;
                 }
-                // (sub_82683750: within 4 m across - having come in this frame - and between 1 m
+                // (F-11375: within 4 m across - having come in this frame - and between 1 m
                 // below the source and its height above it)
                 let r2 = 16.0;
                 let d = |p: Vec3| (sp.x - p.x).powi(2) + (sp.z - p.z).powi(2);
@@ -1452,7 +1452,7 @@ impl PowerUps {
                 vehicles.cars[car].state.nitro_shots = shots;
                 if let Some(g) = got {
                     self.notes.push(Note { car, kind: g, snd: Snd::Pickup });
-                    // (sub_82683828: back in 2 s; sub_82683A28: a new type)
+                    // (F-79772: back in 2 s; F-14458: a new type)
                     let r = self.rand();
                     let (bits, ok) = (self.bits, self.mystery_ok);
                     let s = &mut self.sources[si];
@@ -1473,20 +1473,20 @@ impl PowerUps {
         for h in &mut self.holders {
             if let Some(c) = vehicles.cars.get_mut(h.car) {
                 c.pu_ctl = h.ctl;
-                // (MegaStealth, sub_8237F8B0 / sub_8237F8F8: no collisions but the map's while it lasts)
+                // (MegaStealth, F-83580 / F-69311: no collisions but the map's while it lasts)
                 c.pu_ghost = h.effect.as_ref().map_or(false, |e| e.kind == MEGA_STEALTH);
                 // (step 19g: the looks the car's own draw takes - see `car_look`)
                 let (mirror, stealth) = car_look(h.effect.as_ref().map(|e| (e.kind, e.left)), &self.types, c.is_player);
                 c.pu_mirror = mirror;
                 c.pu_stealth = stealth;
-                // (the vehicle's own test, sub_8232C368: the port's motorcycle rider-off is +592 0x10)
+                // (the vehicle's own test, F-71660: the port's motorcycle rider-off is +592 0x10)
                 let flags = if c.state.veh.as_ref().map_or(false, |v| v.wipe.is_some()) { 0x10 } else { 0 };
                 h.veh_ok = vehicle_lets_fire(flags, if c.model.bike { 2 } else { 4 });
             }
         }
     }
 
-    /// The racers that have finished (sub_8232A820's refusal): `done(car)`.
+    /// The racers that have finished (F-37974's refusal): `done(car)`.
     pub fn set_finished(&mut self, done: &dyn Fn(usize) -> bool) {
         for h in &mut self.holders {
             h.finished = done(h.car);
@@ -1507,21 +1507,21 @@ impl PowerUps {
         self.sources.iter().filter(|s| s.state == 1 && s.kind < 24).filter_map(|s| s.pos.map(|p| (p, if s.mystery { MYSTERY } else { s.kind })))
     }
 
-    /// Step 19f: the original draws no glow sprite for a source (sub_82682590 draws the icon
+    /// Step 19f: the original draws no glow sprite for a source (F-12500 draws the icon
     /// card and the ground glow - `draw_list`, pu_draw.rs); the lamp-glow list stays empty.
     pub fn glows(&self) -> Vec<[f32; 8]> {
         Vec::new()
     }
 
     /// What the original draws for the power-ups this frame (step 19f, pu_draw.rs):
-    /// - every source that is there (sub_82683888 -> sub_82682590 with f1 = 0 and the ground
+    /// - every source that is there (F-12247 -> F-12500 with f1 = 0 and the ground
     ///   glow on): its look (22 for a Mystery one) at its place;
     /// - (step 19g) NOT a wasted shot's icon: the holder's +164 is never set (see `update`).
     pub fn draw_list(&self) -> Vec<(Vec3, u8, f32, bool)> {
         self.visible().map(|(p, k)| (p, k, 0.0, true)).collect()
     }
 
-    /// Everything off at the end (the Racing state's `RemovePowerUps`, sub_8232B030).
+    /// Everything off at the end (the Racing state's `RemovePowerUps`, F-24971).
     pub fn clear(&mut self, vehicles: &mut crate::vehicles::Vehicles, ability: &mut crate::ability::Abilities) {
         for hi in 0..self.holders.len() {
             self.end_effect(hi, ability);
@@ -1709,7 +1709,7 @@ mod tests {
         assert!(i.ice);
     }
 
-    /// Step 19f: Pulse's push (sub_82380418) and the other effect data.
+    /// Step 19f: Pulse's push (F-19990) and the other effect data.
     #[test]
     fn pulse_push_and_effect_data() {
         let mut t = TypeTune::constructed(PULSE);
@@ -1728,9 +1728,9 @@ mod tests {
         assert!((f - Vec3::new(0.0, 300.0, 0.0)).length() < 1e-3 && q.length() < 1e-3);
         // over one tick of 1/60 s: 2.5 m/s sideways, 5 m/s up
         assert!((f * TICK).y - 5.0 < 1e-4);
-        // the vehicle's own test, sub_8232C368
+        // the vehicle's own test, F-71660
         assert!(vehicle_lets_fire(0, 4) && !vehicle_lets_fire(0x10, 4) && vehicle_lets_fire(0x10, 2) && !vehicle_lets_fire(0x11, 2));
-        // a racer that has finished takes nothing (sub_8232A820)
+        // a racer that has finished takes nothing (F-37974)
         let ty = types();
         let mut h = Holder::new(0);
         assert!(h.accept(ICE, 0, &ty));
@@ -1919,3 +1919,52 @@ mod tests {
         assert_eq!(n, [2048, 32, 1, 1]);
     }
 }
+
+/// F-37974 (may the car take a type) and F-22431 (may it fire) against the original's own code run offline
+/// (tools/pu_holder_reference.py -> testdata/pu_holder_ref.txt: 4,180 take-up and 200 fire cases; the racer, holder and type-table
+/// objects are built in guest memory, the vehicle's virtual 'may fire' is the case's flag).
+#[cfg(test)]
+mod original_holder_tests {
+    use super::*;
+
+    #[test]
+    fn take_up_and_fire_decisions_match_the_original() {
+        let (mut acc, mut fire) = (0, 0);
+        for line in include_str!("testdata/pu_holder_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let want = b == "1";
+            let n = |i: usize| w[i].parse::<u8>().unwrap();
+            if w[0] == "ACC" {
+                // finished, nitrous object present, its shots, kind, slot 0, slot 1, the mega of `kind`
+                let (fin, nit, shots, kind, s0, s1, mega) = (n(1), n(2), n(3), n(4), n(5), n(6), n(7));
+                let mut h = Holder::new(0);
+                h.finished = fin != 0;
+                h.slots = [s0, s1];
+                let mut types: [TypeTune; 24] = std::array::from_fn(|i| TypeTune::constructed(i as u8));
+                if (kind as usize) < 24 {
+                    types[kind as usize].mega = mega;
+                }
+                // no nitrous object: the original takes it (the port's count is 0)
+                let got = h.accept(kind, if nit != 0 { shots } else { 0 }, &types);
+                assert_eq!(got, want, "{line}");
+                acc += 1;
+            } else {
+                let (s0, shot, eff, vf) = (n(1), n(2), n(3), n(4));
+                let mut h = Holder::new(0);
+                h.slots = [s0, NONE];
+                h.veh_ok = vf != 0;
+                if shot != 0 {
+                    h.shot = Some(Shot { kind: 1, left: 1.0, found: false, targets: Vec::new(), wait: 0.0 });
+                }
+                if eff != 0 {
+                    h.effect = Some(Effect { kind: 1, left: 1.0, melted: false });
+                }
+                assert_eq!(h.can_fire(), want, "{line}");
+                fire += 1;
+            }
+        }
+        assert_eq!((acc, fire), (4180, 200));
+    }
+}
+
