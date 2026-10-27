@@ -4186,6 +4186,10 @@ impl Game {
                 self.last_reward = (100, 50);
                 self.reward_panel = true;
                 self.mission_results.push(("FIRST IMPRESSIONS".to_string(), vec!["RACE HENRY".to_string()], !v.contains("fail"))); self.career_over = true;
+                // (=missions: two missions finished by the one event share the panel)
+                if v.contains("missions") {
+                    self.mission_results.push(("NEW KID IN TOWN".to_string(), vec!["WIN A RACE".to_string(), "TALK TO HENRY".to_string()], false));
+                }
             }
             // (=delivery: a delivery's panel, 1:52.30 against 2:00.00 with 37 % damage)
             if v.contains("delivery") {
@@ -7979,7 +7983,9 @@ impl Game {
                 } else if !self.mission_results.is_empty() && movie {
                     // (then MISSION RESULTS, a panel for each mission the event finished)
                     if enter {
-                        self.mission_results.remove(0);
+                        // (the missions share one panel: F-66221)
+                        let n = self.plain_missions().max(1);
+                        self.mission_results.drain(..n);
                     }
                     (false, false, false, false)
                 } else {
@@ -10442,6 +10448,12 @@ impl Game {
         self.mission_results.insert(0, (format!("{}{}", DL_PANEL, st("TIME_HEADER", "TIME")), rows, on_time));
     }
 
+    /// How many missions' panels at the head of `mission_results` share the MISSION RESULTS form (F-66221):
+    /// the plain ones, not a time trial's or a delivery's own form
+    fn plain_missions(&self) -> usize {
+        self.mission_results.iter().take_while(|m| !m.0.starts_with(crate::mc4::TT_PANEL) && !m.0.starts_with(DL_PANEL)).count()
+    }
+
     /// The quit question of the race's menu class (vt+108 title, vt+104 text, vt+56 repair form, vt+112
     /// second button): series, tournament, time trial, delivery, payback, wager, pink slip, else
     /// Dialog_Title_QuitRace. Time trial, delivery and payback ask YES / NO (vt+56 = 0); the pink slip's
@@ -12663,6 +12675,11 @@ impl Game {
             let title = title.trim_start_matches(crate::mc4::TT_PANEL).trim_start_matches(DL_PANEL).to_string();
             let mut rows = vec![MenuRow { label: title.to_uppercase(), value: mark.to_string(), enabled: true, part: None }];
             let mut props = vec![if s19a_tt || dl { 25 } else { 18 }];
+            // (MISSION RESULTS lists every mission the event finished in the one form - F-66221: each
+            // mission's header of kind 18, stamped COMPLETE by its state 5, then its objectives, eight
+            // rows at the most)
+            let more: Vec<(String, Vec<String>, bool)> = if s19a_tt || dl { Vec::new() } else { self.mission_results[1..self.plain_missions()].to_vec() };
+            let objectives: Vec<String> = objectives.iter().take(7).cloned().collect();
             for (k, o) in objectives.iter().enumerate() {
                 if dl && k == 2 {
                     rows.push(MenuRow { label: o.to_uppercase(), value: if self.dl_damage_ok { "1" } else { "0" }.to_string(), enabled: true, part: None });
@@ -12671,6 +12688,18 @@ impl Game {
                 }
                 rows.push(MenuRow { label: o.to_uppercase(), value: if s19a_tt || dl { String::new() } else { mark.to_string() }, enabled: true, part: None });
                 props.push(if s19a_tt || dl { 19 } else { 6 });
+            }
+            for (t, objs, ok) in more {
+                if rows.len() >= 8 {
+                    break;
+                }
+                let m = if ok { "1" } else { "0" };
+                rows.push(MenuRow { label: t.to_uppercase(), value: m.to_string(), enabled: true, part: None });
+                props.push(18);
+                for o in objs.iter().take(8 - rows.len()) {
+                    rows.push(MenuRow { label: o.to_uppercase(), value: m.to_string(), enabled: true, part: None });
+                    props.push(6);
+                }
             }
             MenuPage {
                 layout: MenuLayout::Reward { total_rep: self.rep, next_rank: String::new(), rep_label: String::new(), next_label: String::new(), meter: 0.0, money: 0 },
