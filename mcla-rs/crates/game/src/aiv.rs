@@ -19,6 +19,7 @@
 //! (they are the fallback of the normalisations and the floor of the half-space clamps
 //! vmaxfp(dot, c) in F-15125, where only 0 makes sense).
 #![allow(dead_code)] // (wired into the racers by brain.rs)
+use crate::physics::exact::{fma, fms, fnms, guest_acos, guest_cos, guest_sin};
 use glam::Vec3;
 use mcla_formats::rage::aitune::AiTune;
 use std::sync::Arc;
@@ -371,8 +372,27 @@ impl Veh {
 
 /// F-41334: normalise if |v|^2 > eps, else the fallback.
 fn norm_or(v: Vec3, eps: f32, fb: Vec3) -> Vec3 {
-    let l2 = v.length_squared();
-    if l2 > eps { v * (1.0 / l2.sqrt()) } else { fb }
+    let l2 = fma(v.z, v.z, fma(v.x, v.x, v.y * v.y));
+    if !(l2 > eps) {
+        return fb;
+    }
+    // frsqrte as 1/sqrt rounded to single, two Newton steps in double, the scale rounded to single; the vector
+    // multiply flushes denormals
+    let x = l2 as f64;
+    let y0 = (1.0 / x.sqrt()) as f32 as f64;
+    let e0 = -((y0 * y0).mul_add(x, -1.0));
+    let y1 = e0.mul_add(y0 * 0.5, y0);
+    let e1 = -((y1 * y1).mul_add(x, -1.0));
+    let k = e1.mul_add(y1 * 0.5, y1) as f32;
+    let ftz = |a: f32| if a.abs() < f32::MIN_POSITIVE { 0.0 * a } else { a };
+    Vec3::new(ftz(ftz(v.x) * k), ftz(ftz(v.y) * k), ftz(ftz(v.z) * k))
+}
+
+/// the scalar acos of the original's helpers: the guest runtime's acos of a value clamped by `fsel`, rounded to single
+fn acos32(c: f32) -> f32 {
+    let lo = if c - -1.0 >= 0.0 { c } else { -1.0 };
+    let hi = if lo - 1.0 >= 0.0 { 1.0 } else { lo };
+    guest_acos(hi as f64) as f32
 }
 
 /// rsqrte-guarded normalisation (vrsqrtefp + one Newton step; zero stays zero)
@@ -383,18 +403,20 @@ fn norm0(v: Vec3) -> Vec3 {
 
 /// F-52074: signed XZ angle between two unit vectors.
 fn ang_xz_unit(a: Vec3, b: Vec3) -> f32 {
-    let dot = (a.x * b.x + b.z * a.z).clamp(-1.0, 1.0);
-    let s = b.x * a.z - a.x * b.z;
-    dot.acos() * if s >= 0.0 { 1.0 } else { -1.0 }
+    let dot = fma(a.x, b.x, b.z * a.z);
+    let s = fms(b.x, a.z, a.x * b.z);
+    acos32(dot) * if s >= 0.0 { 1.0 } else { -1.0 }
 }
 
 /// F-32060: signed XZ angle from a to b (0 when either is degenerate).
 pub fn ang_xz(a: Vec3, b: Vec3) -> f32 {
-    let norm = ((b.x * b.x + b.z * b.z) * (a.x * a.x + a.z * a.z)).sqrt();
+    let aa = fma(a.x, a.x, a.z * a.z);
+    let bb = fma(b.x, b.x, b.z * b.z);
+    let norm = (bb * aa).sqrt();
     if norm - 1e-12 >= 0.0 {
-        let c = ((b.z * a.z + b.x * a.x) / norm).clamp(-1.0, 1.0);
-        let s = a.z * b.x - a.x * b.z;
-        c.acos() * if s >= 0.0 { 1.0 } else { -1.0 }
+        let dot = fma(b.z, a.z, b.x * a.x);
+        let s = fms(a.z, b.x, b.z * a.x);
+        acos32(dot / norm) * if s >= 0.0 { 1.0 } else { -1.0 }
     } else {
         0.0
     }
@@ -402,14 +424,22 @@ pub fn ang_xz(a: Vec3, b: Vec3) -> f32 {
 
 /// F-88594: unsigned 3D angle.
 fn ang3(a: Vec3, b: Vec3) -> f32 {
-    let norm = (b.length_squared() * a.length_squared()).sqrt();
-    if norm - 1e-12 >= 0.0 { (a.dot(b) / norm).clamp(-1.0, 1.0).acos() } else { 0.0 }
+    let aa = fma(a.z, a.z, fma(a.x, a.x, a.y * a.y));
+    let bb = fma(b.z, b.z, fma(b.x, b.x, b.y * b.y));
+    let norm = (bb * aa).sqrt();
+    if norm - 1e-12 >= 0.0 {
+        let dot = fma(b.y, a.y, fma(b.x, a.x, b.z * a.z));
+        acos32(dot / norm)
+    } else {
+        0.0
+    }
 }
 
 /// F-57591: rotation about y.
 fn rot_y(v: Vec3, a: f32) -> Vec3 {
-    let (s, c) = a.sin_cos();
-    Vec3::new(v.x * c + v.z * s, v.y, v.z * c - v.x * s)
+    let s = guest_sin(a as f64) as f32;
+    let c = guest_cos(a as f64) as f32;
+    Vec3::new(fma(v.x, c, v.z * s), v.y, fms(v.z, c, v.x * s))
 }
 
 /// F-91226: segment P0-P1 against portal Q0-Q1 in XZ -> (s along the segment, t along the portal).
@@ -418,7 +448,7 @@ fn seg_portal(p0: Vec3, p1: Vec3, q0: Vec3, q1: Vec3, one_sided: bool) -> Option
     let dpz = p1.z - p0.z;
     let dpx = p1.x - p0.x;
     let dqz = q1.z - q0.z;
-    let den = dqz * dpx - dqx * dpz;
+    let den = fms(dqz, dpx, dqx * dpz);
     if one_sided && den < 1e-5 {
         return None;
     }
@@ -430,7 +460,7 @@ fn seg_portal(p0: Vec3, p1: Vec3, q0: Vec3, q1: Vec3, one_sided: bool) -> Option
             return None;
         }
         let s = (q0.x - p0.x) / dpx;
-        let t = (s * dpz + p0.z - q0.z) / dqz;
+        let t = (fma(s, dpz, p0.z) - q0.z) / dqz;
         return Some((s, t));
     }
     if dqz.abs() < 1e-5 {
@@ -438,11 +468,11 @@ fn seg_portal(p0: Vec3, p1: Vec3, q0: Vec3, q1: Vec3, one_sided: bool) -> Option
             return None;
         }
         let s = (q0.z - p0.z) / dpz;
-        let t = (s * dpx + p0.x - q0.x) / dqx;
+        let t = (fma(s, dpx, p0.x) - q0.x) / dqx;
         return Some((s, t));
     }
-    let s = ((p0.z - q0.z) * dqx + (q0.x - p0.x) * dqz) / den;
-    let t = (s * dpx + p0.x - q0.x) / dqx;
+    let s = fma(p0.z - q0.z, dqx, (q0.x - p0.x) * dqz) / den;
+    let t = (fma(s, dpx, p0.x) - q0.x) / dqx;
     Some((s, t))
 }
 
@@ -461,8 +491,24 @@ fn sin_ramp(x: f32) -> f32 {
     } else if x >= 1.0 {
         1.0
     } else {
-        (x * 1.570_796_4).sin()
+        guest_sin((x * 1.570_796_4) as f64) as f32
     }
+}
+
+/// `fsel`: a if c >= 0 (NaN counts as false), else b.
+#[inline]
+fn fsel(c: f32, a: f32, b: f32) -> f32 {
+    if c >= 0.0 { a } else { b }
+}
+
+/// The original's square root of its race-line passes: x times the refined reciprocal root (the reciprocal root rounded to
+/// single, then one Newton step in double), rounded to single - not a correctly rounded square root.
+#[inline]
+fn sqrt_nr(x: f32) -> f32 {
+    let xd = x as f64;
+    let y = (1.0 / xd.sqrt()) as f32 as f64;
+    let e = -((y * y).mul_add(xd, -1.0));
+    (e.mul_add(y * 0.5, y) * xd) as f32
 }
 
 const UP: Vec3 = Vec3::Y;
@@ -1912,38 +1958,51 @@ impl Aiv {
     /// F-31929: backward braking pass; returns the mean sample spacing.
     fn backward(&mut self) -> f32 {
         let (n, f) = (self.ln.n, self.ln.f);
-        let t = self.veh.t.clone();
         let v0 = self.v_fwd;
+        // the first sample's speed is the car's, floored at 0.1 (an fsel pair: NaN takes the second operand)
         if (f as usize) < NS {
-            self.ln.s[f as usize].v = if 0.1 - v0 >= 0.0 { 0.1 } else { v0 };
+            self.ln.s[f as usize].v = fsel(0.1 - v0, 0.1, v0);
         }
         self.ln.t = 0.0;
         if n - f <= 1 || n as usize > NS {
             return 0.0;
         }
         let cap = self.cap;
-        let lim = |a: f32, goal: f32| {
-            let a = if goal >= 0.0 { a.min(goal) } else { a };
-            if cap >= 0.0 { a.min(cap) } else { a }
+        // allowed = min(v_curve, goal, cap), each by an fsel pair as the original's code does
+        let lim = |vc: f32, goal: f32| {
+            let m = fsel(vc - goal, goal, vc);
+            let a = fsel(goal, m, vc);
+            let b = fsel(cap - a, a, cap);
+            fsel(cap, b, a)
         };
         let last = (n - 1) as usize;
         let s = self.ln.s[last];
         self.ln.s[last].allowed = lim(s.v_curve, s.allowed);
         let mtds = self.tun.max_total_decel_scalar;
-        let brake = t.max_brake_decel * self.tun.max_brake_decel_scalar;
-        let mut sum = 0.0;
+        let mbd = self.veh.t.max_brake_decel;
+        let mbds = self.tun.max_brake_decel_scalar;
+        let mut sum = 0.0f32;
         let mut j = last;
         while j as i32 > f {
             let s = self.ln.s[j];
-            let v = s.allowed;
-            let nn = (1.0 - s.kv * self.inv_g * v * v).clamp(0.0, 1.0);
-            let alat = s.kappa * v * v + s.g_ly;
-            let gl = nn * s.a_max * mtds;
-            let lng = (gl * gl - alat * alat).max(0.1).sqrt();
-            let dec = (brake - s.g_ty).min(lng);
-            let vi = (dec * s.ds * 2.0 + v * v).max(0.1).sqrt();
             let p = self.ln.s[j - 1];
-            self.ln.s[j - 1].allowed = lim(p.v_curve.min(vi), p.allowed);
+            let v = s.allowed;
+            let vv = v * v;
+            // lateral part of the available grip, the grip circle left for braking (a friction circle of radius n a_max)
+            let alat = fma(s.kappa * v, v, s.g_ly);
+            let nn0 = fnms(s.kv * self.inv_g * v, v, 1.0);
+            let nn1 = fsel(nn0, nn0, 0.0);
+            let nn = fsel(nn1 - 1.0, 1.0, nn1);
+            let gl = nn * s.a_max * mtds;
+            let lng = sqrt_nr(fsel(0.1 - fms(gl, gl, alat * alat), 0.1, fms(gl, gl, alat * alat)));
+            let cap_dec = fms(mbd, mbds, s.g_ty);
+            let dec = fsel(cap_dec - lng, lng, cap_dec);
+            let vi = sqrt_nr(fsel(0.1 - fma(dec * s.ds, 2.0, vv), 0.1, fma(dec * s.ds, 2.0, vv)));
+            let m = fsel(p.v_curve - vi, vi, p.v_curve);
+            let m2 = fsel(m - p.allowed, p.allowed, m);
+            let a = fsel(p.allowed, m2, m);
+            let b = fsel(cap - a, a, cap);
+            self.ln.s[j - 1].allowed = fsel(cap, b, a);
             sum += s.ds;
             j -= 1;
         }
@@ -2437,5 +2496,208 @@ mod tests {
         }
         println!("re-evaluated {tested} recorded states: J within 0.002 in {j_ok}, first curvature within 1e-5 in {k_ok}");
         assert!(tested >= 20 && j_ok >= tested - 2 && k_ok >= tested - 2);
+    }
+
+    /// 12,000 cases of the original's scalar geometry helpers (F-41334 norm_or, F-88594 ang3, F-32060 ang_xz,
+    /// F-52074 ang_xz_unit, F-57591 rot_y, F-17888 ease, F-91226 seg_portal), run offline on their
+    /// generated code with the callee acos / sin / cos (work/ai-verify/scalar/cases.py): per case, bit for bit.
+    #[test]
+    fn scalar_helpers_are_the_originals() {
+        let text = include_str!("aiv_scalar_cases.txt");
+        let f = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap_or_else(|_| panic!("token {t:?}")));
+        let v3 = |w: &[&str]| Vec3::new(f(w[0]), f(w[1]), f(w[2]));
+        let mut bad: std::collections::BTreeMap<String, (usize, usize, String)> = Default::default();
+        for line in text.lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let iw: Vec<&str> = i.split(' ').collect();
+            let ow: Vec<&str> = o.split(' ').collect();
+            let mode = iw[0];
+            let a = &iw[1..];
+            let (ok, got): (bool, String) = match mode {
+                "norm" => {
+                    let r = norm_or(v3(&a[0..3]), f(a[3]), v3(&a[4..7]));
+                    let want = v3(&ow[1..4]);
+                    (r.to_array().map(f32::to_bits) == want.to_array().map(f32::to_bits), format!("{:08x} {:08x} {:08x}", r.x.to_bits(), r.y.to_bits(), r.z.to_bits()))
+                }
+                "ang3" | "angxz" | "angu" => {
+                    let (x, y) = (v3(&a[0..3]), v3(&a[3..6]));
+                    let r = match mode {
+                        "ang3" => ang3(x, y),
+                        "angxz" => ang_xz(x, y),
+                        _ => ang_xz_unit(x, y),
+                    };
+                    (format!("{:08x}", r.to_bits()) == ow[0], format!("{:08x}", r.to_bits()))
+                }
+                "roty" => {
+                    let r = rot_y(v3(&a[0..3]), f(a[3]));
+                    let want = v3(&ow[0..3]);
+                    (r.to_array().map(f32::to_bits) == want.to_array().map(f32::to_bits), format!("{:08x} {:08x} {:08x}", r.x.to_bits(), r.y.to_bits(), r.z.to_bits()))
+                }
+                "ease" => {
+                    let r = sin_ramp(f(a[0]));
+                    (format!("{:08x}", r.to_bits()) == ow[0], format!("{:08x}", r.to_bits()))
+                }
+                "segp" => {
+                    let r = seg_portal(v3(&a[0..3]), v3(&a[3..6]), v3(&a[6..9]), v3(&a[9..12]), a[12] != "0");
+                    let want_ok = ow[0] == "1";
+                    match r {
+                        Some((s, t)) => (want_ok && format!("{:08x}", s.to_bits()) == ow[1] && format!("{:08x}", t.to_bits()) == ow[2], format!("{:08x} {:08x}", s.to_bits(), t.to_bits())),
+                        None => (!want_ok, "none".into()),
+                    }
+                }
+                _ => panic!("{mode}"),
+            };
+            let e = bad.entry(mode.to_string()).or_insert((0, 0, String::new()));
+            e.1 += 1;
+            if !ok {
+                e.0 += 1;
+                if e.2.is_empty() {
+                    e.2 = format!("{line} (port {got})");
+                }
+            }
+        }
+        let mut fails = 0;
+        for (m, (b, n, first)) in &bad {
+            println!("{m}: {b} of {n} differ {first}");
+            fails += b;
+        }
+        assert_eq!(fails, 0);
+    }
+
+    /// The original's evaluation chain (F-70569 obstacles, F-86861 spline, F-27864 samples, F-31929 backward, F-39661
+    /// forward) run offline on its generated code on the 202 recorded aiv snapshots of the R8 at the bend
+    /// (work/ai-verify/scalar/chain.py, stage s = the chain up to and including step s), against the port's chain run
+    /// the same way: every control point, every sample field, J, n, first, and the spline's coefficients.
+    #[test]
+    fn evaluation_chain_is_the_originals() {
+        let dir = "D:/MCLA/work/ai-verify/scalar";
+        let Ok(inp) = std::fs::read(format!("{dir}/chain_in.bin")) else {
+            println!("chain fixtures missing: skipped");
+            return;
+        };
+        let tb = std::fs::read(format!("{dir}/tune_r8.bin")).unwrap();
+        let floats: Vec<f32> = tb.chunks_exact(4).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&floats).unwrap());
+        const BS: usize = 31232;
+        const SS: usize = 21696;
+        let n = inp.len() / BS;
+        let mut total_bad = 0;
+        let only: Option<usize> = std::env::var("AIV_STAGE").ok().and_then(|v| v.parse().ok());
+        for stage in 0..5usize {
+            if only.is_some_and(|o| o != stage) {
+                continue;
+            }
+            let out = std::fs::read(format!("{dir}/chain_out_{stage}.bin")).unwrap();
+            let (mut same, mut first_bad) = (0, String::new());
+            let (mut pts_bad, mut fn_bad, mut j_bad, mut coef_bad) = (0, 0, 0, 0);
+            let mut fields = [0usize; 14];
+            for k in 0..n {
+                let b = &inp[k * BS..(k + 1) * BS];
+                let o = &out[k * (BS + SS)..k * (BS + SS) + BS];
+                let scr = &out[k * (BS + SS) + BS..(k + 1) * (BS + SS)];
+                // each stage starts from the original's state after the stage before (decoupled), the first from the snapshot
+                let prev = if stage == 0 { None } else { Some(std::fs::read(format!("{dir}/chain_out_{}.bin", stage - 1)).unwrap()) };
+                let (pb, pscr): (&[u8], Option<&[u8]>) = match &prev {
+                    Some(pv) => (&pv[k * (BS + SS)..k * (BS + SS) + BS], Some(&pv[k * (BS + SS) + BS..(k + 1) * (BS + SS)])),
+                    None => (b, None),
+                };
+                let mut a = Aiv::new(tune.clone());
+                a.import_original(pb);
+                a.planes();
+                if stage == 0 {
+                    a.ln.s = [Sample::default(); NS];
+                    a.ln.n = 0;
+                    a.sc.dirty[0] = 0x3F_FFFF;
+                    a.ln.j = 0.0;
+                } else if let Some(sc) = pscr {
+                    let f = |o: usize| f32::from_be_bytes(sc[o..o + 4].try_into().unwrap());
+                    a.sc.dirty[0] = u32::from_be_bytes(sc[20160..20164].try_into().unwrap());
+                    a.sc.dirty[1] = u32::from_be_bytes(sc[20164..20168].try_into().unwrap());
+                    a.sc.legs = i32::from_be_bytes(sc[21584..21588].try_into().unwrap());
+                    for l in 0..22usize {
+                        for row in 0..4 {
+                            a.sc.coef[l][row] = Vec3::new(f(20176 + 64 * l + 16 * row), f(20176 + 64 * l + 16 * row + 4), f(20176 + 64 * l + 16 * row + 8));
+                        }
+                    }
+                }
+                let mut d = 0.0;
+                match stage {
+                    0 => a.obstacles(),
+                    1 => a.spline(),
+                    2 => a.samples(),
+                    3 => d = a.backward(),
+                    _ => {
+                        // forward takes backward's result in f1: the original's own, recovered by running the port's backward
+                        // on the original's samples first (checked as stage 3)
+                        let mut t = Aiv::new(tune.clone());
+                        t.import_original(pb);
+                        t.planes();
+                        d = t.backward();
+                        a.forward(d);
+                    }
+                }
+                let _ = d;
+                let mut r = Aiv::new(tune.clone());
+                r.import_original(o);
+                let mut ok = true;
+                let (pp, ps, _, _, pj, _) = a.line_state();
+                let (rp, rs, _, _, rj, _) = r.line_state();
+                let (pf, pn, ..) = a.samples_raw();
+                let (rf, rn, ..) = r.samples_raw();
+                if pp.iter().zip(&rp).any(|(x, y)| x.to_array().map(f32::to_bits) != y.to_array().map(f32::to_bits)) {
+                    pts_bad += 1;
+                    ok = false;
+                }
+                if stage >= 2 {
+                    if (pf, pn) != (rf, rn) {
+                        fn_bad += 1;
+                        ok = false;
+                    }
+                    if stage >= 4 && pj.to_bits() != rj.to_bits() {
+                        j_bad += 1;
+                        ok = false;
+                    }
+                    for (i, (x, y)) in ps.iter().zip(&rs).enumerate() {
+                        for q in 0..14 {
+                            if x[q].to_bits() != y[q].to_bits() {
+                                fields[q] += 1;
+                                if ok && first_bad.is_empty() {
+                                    first_bad = format!("snapshot {k} sample {i} field {q}: port {} original {}", x[q], y[q]);
+                                }
+                                ok = false;
+                            }
+                        }
+                    }
+                }
+                if stage >= 1 {
+                    let legs = u32::from_be_bytes(scr[21584..21588].try_into().unwrap()) as usize;
+                    let f = |o: usize| f32::from_be_bytes(scr[o..o + 4].try_into().unwrap());
+                    let mut bad = legs as i32 != a.sc.legs;
+                    for l in 0..legs.min(a.sc.legs.max(0) as usize) {
+                        for row in 0..4 {
+                            let c = a.sc.coef[l][row];
+                            for (q, v) in [c.x, c.y, c.z].into_iter().enumerate() {
+                                if v.to_bits() != f(20176 + 64 * l + 16 * row + 4 * q).to_bits() {
+                                    bad = true;
+                                    if first_bad.is_empty() {
+                                        first_bad = format!("snapshot {k} leg {l} coef row {row}.{q}: port {v} original {}", f(20176 + 64 * l + 16 * row + 4 * q));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if bad {
+                        coef_bad += 1;
+                        ok = false;
+                    }
+                }
+                if ok {
+                    same += 1;
+                }
+            }
+            println!("stage {stage}: {same} of {n} snapshots equal; points differ {pts_bad}, coefficients {coef_bad}, n/first {fn_bad}, J {j_bad}; per sample field {fields:?}; first: {first_bad}");
+            total_bad += n - same;
+        }
+        assert_eq!(total_bad, 0);
     }
 }

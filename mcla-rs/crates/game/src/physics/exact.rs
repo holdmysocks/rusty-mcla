@@ -168,6 +168,33 @@ pub fn guest_asin(x: f64) -> f64 {
     if x >= 0.0 { r } else { -r }
 }
 
+/// The guest C runtime's arccosine (F-11618, the worker of F-68873 with its mode set to 1): the same rational function
+/// of the square as the arcsine (F-80613, table 0x827EB068), the result taken from 0, pi/2 or pi by the
+/// side of 0.5 and the sign of the argument.
+pub fn guest_acos(x: f64) -> f64 {
+    const PI: f64 = f64::from_bits(0x400921fb54442d18);
+    let a = x.abs();
+    let (z, t, big) = if a > 0.5 {
+        let z = (1.0 - a) * 0.5;
+        (z, -(z.sqrt() * 2.0), true)
+    } else {
+        (a * a, a, false)
+    };
+    let p = ASIN_P[4].mul_add(z, ASIN_P[3]);
+    let q = ASIN_Q[4] + z;
+    let p = p.mul_add(z, ASIN_P[2]);
+    let q = q.mul_add(z, ASIN_Q[3]);
+    let p = p.mul_add(z, ASIN_P[1]);
+    let q = q.mul_add(z, ASIN_Q[2]);
+    let p = p.mul_add(z, ASIN_P[0]);
+    let q = q.mul_add(z, ASIN_Q[1]);
+    let p = p * z;
+    let q = q.mul_add(z, ASIN_Q[0]);
+    let r = (p * t) / q + t;
+    let (lo, hi) = if big { (0.0, PI) } else { (HALF_PI, HALF_PI) };
+    if x >= 0.0 { lo - r } else { hi + r }
+}
+
 /// The guest C runtime's atan2 (F-65975, table 0x827EB158), in double: the smaller of |y|, |x|
 /// over the larger, folded once more about tan(pi/6), a rational of the square, and the
 /// octant's angle added.
