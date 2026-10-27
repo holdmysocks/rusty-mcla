@@ -847,14 +847,32 @@ impl Gpu {
                     ..Default::default()
                 });
                 let surface = instance.create_surface(window.clone()).context("create surface")?;
-                let adapter = instance
-                    .request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::HighPerformance,
-                        compatible_surface: Some(&surface),
-                        force_fallback_adapter: false,
-                    })
-                    .await
-                    .context("no suitable GPU adapter")?;
+                // (test hook MCLA_ADAPTER=<part of a name>: that GPU instead of the high-performance one - a second card or
+                // the CPU's own, for driver-specific reports such as GitHub #14; none matching: the usual choice)
+                let named = std::env::var("MCLA_ADAPTER").ok().filter(|v| !v.trim().is_empty()).and_then(|want| {
+                    let want = want.trim().to_ascii_lowercase();
+                    let all = instance.enumerate_adapters(if dx12_od { wgpu::Backends::DX12 } else { backends });
+                    for a in &all {
+                        let i = a.get_info();
+                        log::info!("adapter: {} ({:?}, {:?}, driver {})", i.name, i.backend, i.device_type, i.driver_info);
+                    }
+                    let a = all.into_iter().find(|a| a.get_info().name.to_ascii_lowercase().contains(&want) && a.is_surface_supported(&surface));
+                    if a.is_none() {
+                        log::warn!("MCLA_ADAPTER: no adapter named like {want:?} can draw to the window; the usual one instead");
+                    }
+                    a
+                });
+                let adapter = match named {
+                    Some(a) => a,
+                    None => instance
+                        .request_adapter(&wgpu::RequestAdapterOptions {
+                            power_preference: wgpu::PowerPreference::HighPerformance,
+                            compatible_surface: Some(&surface),
+                            force_fallback_adapter: false,
+                        })
+                        .await
+                        .context("no suitable GPU adapter")?,
+                };
                 if adapter.get_info().backend == wgpu::Backend::Dx12 && !dx12_od && !flags.contains(wgpu::InstanceFlags::DEBUG) {
                     dx12_od = true;
                     continue;
