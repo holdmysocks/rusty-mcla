@@ -5097,7 +5097,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if climbing {
                         self.roam.near = None;
                         self.roam.near_is_rival = false;
-                    } else if let Some(race) = self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) {
+                    } else if let Some(race) = (if self.game.bmt_end.is_some() { None } else { self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) }).filter(|&race| {
+                        // (a beat me there run's end comes first: its race-over sequence or menu - `Game::bmt_end`)
+                        let Some((place, rep, wrecked)) = self.roam.bmt_over.take() else { return true };
+                        self.game.bmt_end = Some(game::BmtEnd { race, hookman: self.roam.won_against_rival, place, rep, wrecked, t: 0.0, sel: 0 });
+                        log::info!("beat me there: the run is over - place {}, {} REP, wrecked {} (frame {})", place, rep, wrecked, self.tick_no);
+                        if !wrecked {
+                            self.game.race_slow_wait = Some(game::Game::RACE_END_PANEL);
+                            self.game.race_end_t = Some(0.0);
+                        }
+                        false
+                    }).or_else(|| {
+                        // (... and then the race: BEAT_ME_THERE_WITH_CUT / SKIP_BEAT_ME_THERE_WITH_CUT)
+                        let (race, hookman) = self.game.bmt_go.take()?;
+                        self.roam.won_against_rival = hookman;
+                        Some(race)
+                    }) {
                         warped = self.roam.warp_greeting.is_some();
                         self.game.current_race = Some(race);
                         // only a race against the hookman himself counts for his mission
@@ -6541,7 +6556,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // the garage's own cameras: the view that goes with the highlighted row
                 let mut own_view = false;
                 // (the race's end before its menu: the driving camera, swung to the standings form's)
-                let race_end_on = self.game.mode == Mode::Results && self.game.replay.is_none() && self.cuts.playing.is_none() && self.game.race_end_t.is_some();
+                // (and a beat me there run's end in free roam: the same EndOfRaceSequence - `Game::bmt_end`)
+                let bmt_run_end = self.game.mode == Mode::FreeRoam && self.game.bmt_end.as_ref().map_or(false, |e| !e.wrecked);
+                let race_end_on = (self.game.mode == Mode::Results || bmt_run_end) && self.game.replay.is_none() && self.cuts.playing.is_none() && self.game.race_end_t.is_some();
                 let race_end_swing = race_end_on && self.game.race_end_t.map_or(false, |t| t < game::Game::RACE_END_MENU);
                 if !race_end_on {
                     self.race_end_cam = None;
@@ -6714,7 +6731,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.chase.look = look;
                     self.cam.fov_y = fov.to_radians();
                     own_view = true;
-                } else if (matches!(self.game.mode, Mode::Paused) || (self.game.mode == Mode::Results && !race_end_swing) || (self.game.mode == Mode::RaceSelect && self.game.hangout_key.as_deref().map_or(false, |k| k.contains("delivery")))) && self.cuts.playing.is_none() {
+                } else if (matches!(self.game.mode, Mode::Paused) || (self.game.mode == Mode::Results && !race_end_swing) || (self.game.mode == Mode::FreeRoam && self.game.bmt_end.as_ref().map_or(false, |e| e.wrecked)) || (self.game.mode == Mode::RaceSelect && self.game.hangout_key.as_deref().map_or(false, |k| k.contains("delivery")))) && self.cuts.playing.is_none() {
                     if let Some((eye, look, fov)) = self.game.pause_cam {
                         let fwd = render_state.forward();
                         let fwd = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);

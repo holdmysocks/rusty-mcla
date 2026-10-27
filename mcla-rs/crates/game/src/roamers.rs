@@ -124,6 +124,9 @@ pub struct Roamers {
     pub near_type: u8,
     /// the challenge that just ended was against that hookman
     pub won_against_rival: bool,
+    /// the run to the line is over: (place, its reputation, wrecked) - the race-over sequence or the
+    /// damaged-out menu comes before the race (`Game::bmt_end`)
+    pub bmt_over: Option<(usize, i64, bool)>,
     rival_challenged: bool,
     /// cruising loops of the hookmen (junction to junction)
     pub slots: Vec<Vec<Vec3>>,
@@ -322,6 +325,7 @@ impl Roamers {
             near_is_rival: false,
             near_type: 0,
             won_against_rival: false,
+            bmt_over: None,
             rival_challenged: false,
             slots: Vec::new(),
             loops: HashMap::new(),
@@ -523,7 +527,7 @@ impl Roamers {
                 let Some(h) = s.hookman.as_ref() else { continue };
                 let stem = s.script.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
                 let Some(pts) = self.loops.get(&stem) else { continue };
-                // (the slot's script hands the hookman's core its loop: sub_826D4488 starts the
+                // (the slot's script hands the hookman's core its loop: F-94535 starts the
                 // slot's script as the slot is given, and the script starts the core with its
                 // static block - `hw_slot1` 0x1d0..0x1df. A story core may write its own loop over
                 // it - `core_loop` - and every story core puts him at point 0 with the heading as
@@ -671,7 +675,7 @@ impl Roamers {
         let only = std::env::var("MCLA_HOOKMAN_TEST").ok().or_else(|| std::env::var("MCLA_ROAM_TEST").ok().map(|_| "slot".to_string()));
         // ---- the men go round their loops; those near the player are cars ----
         // (step 19d: a cruising brain that was given no speed drives at its rail's own -
-        // sub_82745EE0: the road's, `mc4::RAIL_SPEED`)
+        // F-90476: the road's, `mc4::RAIL_SPEED`)
         const CRUISE: f32 = crate::mc4::RAIL_SPEED;
         self.timer -= dt;
         self.load_timer -= dt;
@@ -865,6 +869,17 @@ impl Roamers {
                 vehicles.cars.retain(|c| !c.racer);
                 return Some(race);
             }
+            // (damaged out on the run: Race_IsDamagedOut - no EndOfRaceSequence, no BEAT_ME_THERE_RACE_COMPLETE,
+            // the race-over menu - game/race/0xb8b948b6 0x120a..0x1217, 0x1f9f..)
+            if flash && vehicles.player().map_or(false, |c| c.state.damage >= 1.0) {
+                game.opt_x.arcade.bmt_left.set(None);
+                let race = ch.race;
+                self.challenge = None;
+                self.won_against_rival = self.rival_challenged;
+                vehicles.cars.retain(|c| !c.racer);
+                self.bmt_over = Some((0, 0, true));
+                return Some(race);
+            }
             // (the line is one checkpoint at the race's start beacon with an activation radius
             // of 20: generic_local_hookman.sco 0x1091..0x11c9)
             // (by the checkpoint's own test - checkpoints::CpSpec::hit, radius 20 - from where each
@@ -895,7 +910,7 @@ impl Roamers {
                 let race = ch.race;
                 log::info!("roamers: run to the line over after {:.1} s, player first: {}, place {} ({:?} s after the first man)", ch.time, player_there, s15b_place, ch.close.since);
                 // (the run to the line gives the reputation - and only it - half an event's
-                // experience by the place: sub_826B99A0; the event is as hard as the rival is)
+                // experience by the place: F-90736; the event is as hard as the rival is)
                 // (the racers are the player, the man and whoever rides with him - `+3080 = extra
                 // + 2` in the hookmen's scripts; the place is the rank at the line; the
                 // difficulty is the hookman's own - mcHookman_GetDifficulty: his mission's
@@ -905,12 +920,16 @@ impl Roamers {
                 let diff = game.mc4_hookman_diff().filter(|_| self.rival_challenged).or(ch.diff).unwrap_or_else(|| vehicles.cars.iter().find(|c| c.racer).map_or(1, |c| game.mc4_difficulty_of_setup(&c.model.name, &c.vinyl_name)).clamp(0, 3) as usize);
                 let exp = crate::rewards::beat_me_there_exp(game.rep, diff, place, field);
                 game.rep += exp;
-                let what = if place == 1 { "BEAT ME THERE" } else { "BEATEN TO THE LINE" };
-                if exp > 0 {
-                    game.show_message(&format!("{what}   +{exp} REP"));
-                } else {
-                    game.show_message(what);
+                // (with the movie the place and the REP line are form 54's - `Game::bmt_end`)
+                if !flash {
+                    let what = if place == 1 { "BEAT ME THERE" } else { "BEATEN TO THE LINE" };
+                    if exp > 0 {
+                        game.show_message(&format!("{what}   +{exp} REP"));
+                    } else {
+                        game.show_message(what);
+                    }
                 }
+                self.bmt_over = Some((place, exp, false));
                 self.challenge = None;
                 self.won_against_rival = self.rival_challenged;
                 vehicles.cars.retain(|c| !c.racer);
@@ -960,7 +979,7 @@ impl Roamers {
             let d = rel.length();
             let ok = crate::mc4::can_flash(d, pspeed - c.state.speed(), pf.dot(rel.normalize_or_zero()));
             // (step 19d: and nothing stands between the two - a segment from 0.5 above the one
-            // to 0.5 above the other, sub_822AB318 0x822AB540..0x822AB61C; the port asks the
+            // to 0.5 above the other, F-96972 A-94661..A-37010; the port asks the
             // city's collision)
             let ok = ok && {
                 let from = pp + Vec3::Y * 0.5;
@@ -1068,7 +1087,8 @@ impl Roamers {
         // within 250 of the player, "COPS ARE TOO CLOSE" and no run to the line - `mc4_meet`)
         self.accepted = true;
         self.rival_challenged = !vehicles.cars[ri].driver.is_empty();
-        let s19d_cops = vehicles.cars.iter().any(|c| c.cop && c.state.pos.distance(pp) < 250.0);
+        // (MCLA_ROAM_TEST=nocops: the self-test runs to the line whatever police are about)
+        let s19d_cops = vehicles.cars.iter().any(|c| c.cop && c.state.pos.distance(pp) < 250.0) && std::env::var("MCLA_ROAM_TEST").map_or(true, |v| v != "nocops");
         let s19d_man = man.as_ref().map(|m| (m.name.clone(), m.car.clone(), m.config.clone()));
         game.man_mod = man.as_ref().map(|m| (m.name.clone(), m.mod_value));
         game.man_diff = man.as_ref().map(|m| m.difficulty);

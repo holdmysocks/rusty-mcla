@@ -25,6 +25,23 @@ pub enum Mode {
 
 /// The mark of a delivery's results panel in `mission_results` (form 51, F-52975 / F-88581)
 pub const DL_PANEL: char = '\u{2}';
+/// The end of a beat me there run (`game/race/0xb8b948b6`): finished - EndOfRaceSequence (form 60 and the
+/// slow motion, form 54 with the place and the run's REP for its 2.2 s), `raceEndNoMenu`, the warp
+/// BEAT_ME_THERE_WITH_CUT to the race; damaged out - `raceEnd`, the race-over menu, the warp
+/// SKIP_BEAT_ME_THERE_WITH_CUT on JUMP TO RACE START, back to the game on QUIT RACE
+#[derive(Clone, Debug)]
+pub struct BmtEnd {
+    pub race: usize,
+    pub hookman: bool,
+    pub place: usize,
+    /// the run's experience: form 54's +1008 (F-90736 -> F-37515)
+    pub rep: i64,
+    pub wrecked: bool,
+    /// real seconds since the line
+    pub t: f32,
+    pub sel: usize,
+}
+
 /// GAME OPTIONS' AUTO SAVE row
 const PAGE_AUTOSAVE: u8 = 39;
 /// The mark of a satisfied objective in a mission's panel (`Career::objective_texts`)
@@ -622,6 +639,10 @@ pub struct Game {
     pub place_tied: bool,
     /// a team game's end: form 58, mcEndOfBattleForm (F-34603), in the place splash's stead - (red, blue)
     pub eob: Option<(i32, i32)>,
+    /// a beat me there run is over and its race not yet begun (`bmt_end_ui`)
+    pub bmt_end: Option<BmtEnd>,
+    /// ... and now the race: (race, against the hookman himself)
+    pub bmt_go: Option<(usize, bool)>,
     /// MISSION RESULTS after an event: the missions it finished (title, objectives)
     /// (title, objectives, done: false for a mission the event did not finish - stamped FAIL)
     pub mission_results: Vec<(String, Vec<String>, bool)>,
@@ -1240,6 +1261,8 @@ impl Game {
             race_place: 0,
             place_tied: false,
             eob: None,
+            bmt_end: None,
+            bmt_go: None,
             mission_results: Vec::new(),
             race_slow: crate::mc4::SlowMo::default(),
             race_slow_wait: None,
@@ -2759,7 +2782,8 @@ impl Game {
     }
 
     pub fn in_menu(&self) -> bool {
-        matches!(self.mode, Mode::MainMenu | Mode::RaceSelect | Mode::Garage | Mode::Results | Mode::Paused) || self.starter_pick.is_some()
+        // (a beat me there run's end is a race's end: its panels, the car's input off - `bmt_end`)
+        matches!(self.mode, Mode::MainMenu | Mode::RaceSelect | Mode::Garage | Mode::Results | Mode::Paused) || self.starter_pick.is_some() || self.bmt_end.is_some()
     }
 
     /// A box or screen that answers the menu buttons is up outside a menu mode: a message box
@@ -3923,7 +3947,8 @@ impl Game {
             ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.intro_mask.clamp(0.0, 1.0) * 255.0).round() as u8));
             return MenuAction::None;
         }
-        if !matches!(self.mode, Mode::Paused | Mode::Results) && !(self.mode == Mode::RaceSelect && self.hangout_key.is_some()) {
+        // (a beat me there run's end keeps its form up in free roam - `bmt_end_ui`)
+        if !matches!(self.mode, Mode::Paused | Mode::Results) && !(self.mode == Mode::RaceSelect && self.hangout_key.is_some()) && self.bmt_end.is_none() {
             if let Some(fm) = self.flash_menu.as_mut() {
                 fm.hide();
             }
@@ -4202,6 +4227,12 @@ impl Game {
                     self.mission_results.push(("NEW KID IN TOWN".to_string(), vec![format!("{}WIN A RACE", OBJ_DONE), "TALK TO HENRY".to_string()], false));
                 }
             }
+            // (=bmt: a beat me there run just over, first with 120 REP, in free roam; =bmtwreck: damaged out)
+            if v.contains("bmt") {
+                self.mode = Mode::FreeRoam;
+                self.bmt_end = Some(BmtEnd { race: 0, hookman: false, place: 1, rep: 120, wrecked: v.contains("wreck"), t: 0.0, sel: 0 });
+                self.race_end_t = (!v.contains("wreck")).then_some(0.0);
+            }
             // (=battle: a team game's end, red 2 against blue 3 - form 58)
             if v.contains("battle") {
                 self.eob = Some((2, 3));
@@ -4304,6 +4335,20 @@ impl Game {
                 10 => self.pause_do = Some(241),
                 // (AUTO SAVE's WARNING answered OK: it stays off - F-77184, result 3)
                 11 => {}
+                // (QUIT RACE on a beat me there's damaged-out menu: the quit question's YES repairs, raceOverCommand
+                // `quit`, back to the game; JUMP TO RACE START's repair form - F-77942: raceOverCommand empty, the
+                // warp SKIP_BEAT_ME_THERE_WITH_CUT)
+                c @ 12..=13 => {
+                    self.quick_fix = true;
+                    if let Some(e) = self.bmt_end.take() {
+                        if c == 13 {
+                            self.bmt_go = Some((e.race, e.hookman));
+                        }
+                    }
+                    if let Some(fm) = self.flash_menu.as_mut() {
+                        fm.hide();
+                    }
+                }
                 c @ 4..=8 => {
                     // (ARCADE / GOAL ATTACK / RACE EDITOR: the repair form's YES repairs, DAMAGED OUT's
                     // always; then out of the race - F-35999 / F-40647: F-30951 - and on)
@@ -8207,6 +8252,7 @@ impl Game {
                 // race is over (vt+52) - every variant hands B to it; no BACK prompt, `sr_raceover`)
                 let _ = back;
             }
+            Mode::FreeRoam if self.bmt_end.is_some() => action = self.bmt_end_ui(ctx, up, down, enter),
             Mode::FreeRoam | Mode::Race => {
                 if self.mode == Mode::FreeRoam && std::mem::take(&mut self.go_garage) {
                     action = MenuAction::OpenGarage;
@@ -10499,6 +10545,77 @@ impl Game {
         }
     }
 
+    /// A beat me there run is over (`BmtEnd`). Finished: nothing for the 0.2 s of WAITUNWARPED(200), then form 54 -
+    /// the place, and with the run's experience above 0 its row 0 `POST_BEAT_ME_THERE_REP_FORMAT` (F-73144) - until
+    /// its WAITUNWARPED(2200) is over, then the race (`bmt_go`). Damaged out: the race-over tab of the hookman's
+    /// menu (F-63937): QUIT RACE (RO_AbortRace, `pause_quit_race` = `race_quit` offline) and JUMP TO RACE START
+    /// (RO_ContinueToRaceStart) - RETURN TO CRUISE is hidden with the car wrecked - in the scene's order.
+    fn bmt_end_ui(&mut self, ctx: &egui::Context, up: bool, down: bool, enter: bool) -> MenuAction {
+        let Some(mut e) = self.bmt_end.clone() else { return MenuAction::None };
+        let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        e.t += dt;
+        // (test hook MCLA_BMT_HOLD: the clock held at 1 s, for a screenshot of the panel)
+        if std::env::var("MCLA_BMT_HOLD").is_ok() {
+            e.t = e.t.min(1.0);
+        }
+        // (test hook MCLA_BMT_SHOT=<seconds>: the screenshot that long after the line, at 60 frames a second)
+        static SHOT_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let frames = SHOT_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if std::env::var("MCLA_BMT_SHOT").ok().and_then(|v| v.parse::<f32>().ok()).map_or(false, |t| frames as f32 >= t * 60.0) {
+            self.shot_now = true;
+        }
+        let s = |k: &str, f: &str| self.career.strings.get(k).filter(|v| !v.contains('<')).map(|v| v.to_uppercase()).unwrap_or_else(|| f.to_string());
+        if !e.wrecked {
+            let end = Self::RACE_END_MENU;
+            if e.t >= end || self.flash_menu.is_none() {
+                self.place_splash = None;
+                self.bmt_end = None;
+                self.bmt_go = Some((e.race, e.hookman));
+                if let Some(fm) = self.flash_menu.as_mut() {
+                    fm.hide();
+                }
+                return MenuAction::None;
+            }
+            self.bmt_end = Some(e.clone());
+            if e.t >= Self::RACE_END_PANEL {
+                self.place_splash = Some((e.place, end - e.t));
+                self.place_tied = false;
+                self.results_movie(ctx, &[], 0);
+            }
+            return MenuAction::None;
+        }
+        let ro = vec![(s("race_quit", "QUIT RACE"), 0u8), (s("pause_racestart", "JUMP TO RACE START"), 1u8)];
+        if self.message_box.is_none() {
+            if up {
+                e.sel = e.sel.saturating_sub(1);
+            }
+            if down {
+                e.sel = (e.sel + 1).min(ro.len() - 1);
+            }
+            if enter {
+                if e.sel == 0 {
+                    // (the class's quit question - F-33773 for RO_AbortRace: the repair form, YES alone with the
+                    // car wrecked)
+                    let (title, desc, _, _) = self.quit_box();
+                    let def = crate::flash_ui::MessageBoxDef { title: title.into(), description: desc.into(), options: Self::repair_options(true, "go_yes", "") };
+                    self.message_box = Some((def, 0, MenuAction::None));
+                    self.menu_confirm = 12;
+                } else {
+                    // (F-80224: the repair form Dialog_Title_ContinueRaceStart, one button JUMP TO RACE START)
+                    let def = crate::flash_ui::MessageBoxDef { title: "Dialog_Title_ContinueRaceStart".into(), description: "Dialog_Desc_ContinueRaceStart".into(), options: vec![("repair_yes".into(), "Dialog_ContinueRaceStart_Action".into())] };
+                    self.message_box = Some((def, 0, MenuAction::None));
+                    self.menu_confirm = 13;
+                }
+            }
+            let sel = e.sel;
+            self.bmt_end = Some(e);
+            self.results_movie(ctx, &ro, sel);
+        } else {
+            self.bmt_end = Some(e);
+        }
+        MenuAction::None
+    }
+
     /// The quit question of the race's menu class (vt+108 title, vt+104 text, vt+56 repair form, vt+112
     /// second button): series, tournament, time trial, delivery, payback, wager, pink slip, else
     /// Dialog_Title_QuitRace. Time trial, delivery and payback ask YES / NO (vt+56 = 0); the pink slip's
@@ -12326,8 +12443,10 @@ impl Game {
         let mut at = match self.starter_pick {
             Some(a) => a,
             None => {
-                self.starter_swap = Some(STARTERS[0].to_string());
-                0
+                // (test hook MCLA_STARTER_PICK=<0..2>: the cursor starts on that starter - GitHub #14's 240SX is 1)
+                let first = std::env::var("MCLA_STARTER_PICK").ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|&i| i < n).unwrap_or(0);
+                self.starter_swap = Some(STARTERS[first].to_string());
+                first
             }
         };
         if left || right {
@@ -12631,7 +12750,16 @@ impl Game {
             let suffix = match place { 1 => "st", 2 => "nd", 3 => "rd", _ => "th" };
             let look = if place == 0 { 2 } else if self.place_tied { 1 } else { 0 };
             // (the movie's own rule: TIED stands over the place; DNF is the name itself, larger)
-            MenuPage { layout: MenuLayout::Position { suffix: if look == 2 { String::new() } else { st(suffix, &suffix.to_uppercase()) }, look }, title: if look == 2 { st("RACE_RESULT_DNF", "DNF") } else { place.to_string() }, select: usize::MAX, ..MenuPage::default() }
+            // (after a beat me there run with experience: row 0 POST_BEAT_ME_THERE_REP_FORMAT, its AMOUNT the
+            // "%d" of +1008 - F-73144)
+            let rep = self.bmt_end.as_ref().map_or(0, |e| e.rep);
+            let rows = if rep > 0 {
+                let fmt = self.career.strings.get("POST_BEAT_ME_THERE_REP_FORMAT").map(|v| v.to_string()).unwrap_or_else(|| "<D>POST_BEAT_ME_THERE_REP_AMOUNT</D> REP".into());
+                vec![MenuRow { label: fmt.replace("<D>POST_BEAT_ME_THERE_REP_AMOUNT</D>", &rep.to_string()).to_uppercase(), value: String::new(), enabled: true, part: None }]
+            } else {
+                Vec::new()
+            };
+            MenuPage { layout: MenuLayout::Position { suffix: if look == 2 { String::new() } else { st(suffix, &suffix.to_uppercase()) }, look }, title: if look == 2 { st("RACE_RESULT_DNF", "DNF") } else { place.to_string() }, rows, select: usize::MAX, ..MenuPage::default() }
         } else if let Some(page) = s19d_banner {
             // (step 19d: a time trial's event results banner - form 56 - before its panel)
             page
