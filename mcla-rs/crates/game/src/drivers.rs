@@ -506,3 +506,26 @@ impl Drivers {
         self.buf.draw(pass, gpu, false, draws);
     }
 }
+
+/// F-80898, F-40322, F-82819, F-95452, F-59643 (the gestures' round-robin pickers) against the original's code run offline
+/// (tools/people_gesture_reference.py -> testdata/people_gesture_ref.txt): the clip name picked and the counter afterwards.
+#[cfg(test)]
+mod original_tests {
+    use super::*;
+
+    #[test]
+    fn gesture_round_robins_match_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/people_gesture_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            let (kind, human, ctr): (usize, bool, usize) = (w[1].parse().unwrap(), w[2] == "1", w[3].parse().unwrap());
+            let g = [Gesture::Neutral, Gesture::Left, Gesture::Right, Gesture::TalkLeft, Gesture::TalkRight][kind];
+            let mut rr = [0usize; 5];
+            rr[kind] = ctr;
+            let name = gesture_clip(g, &mut rr, human);
+            assert_eq!((name.as_str(), rr[kind]), (w[5], w[6].parse::<usize>().unwrap()), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 144);
+    }
+}

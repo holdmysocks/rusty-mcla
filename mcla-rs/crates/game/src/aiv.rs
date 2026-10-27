@@ -2665,6 +2665,57 @@ mod tests {
         assert_eq!(n, 1080);
     }
 
+    /// F-83981 (the stock / upgraded tune blend) with F-49493 (its post-load step: best-gear row 0, the derived scales at words 8 - 11)
+    /// against the original's code run offline (tools/people_tune_reference.py -> testdata/people_tune_ref.txt; inputs from a seed by the
+    /// xorshift below). Every word the original writes is compared: 0 .. 7, the rows, the tables, row 0, and 8 .. 11 against `Veh::new`;
+    /// the idle speeds (words 12 .. 18) are the one block the original does not write (the port blends them).
+    #[test]
+    fn tune_blend_matches_the_original() {
+        let words = |seed: u32| -> Vec<f32> {
+            let mut x = seed;
+            (0..2195)
+                .map(|i| {
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    if i == 0 { 20.0 + ((x >> 20) as f32 / 4096.0) * 80.0 } else { ((x >> 8) as f32 / 16777216.0) * 30.0 }
+                })
+                .collect()
+        };
+        let mut n = 0;
+        for line in include_str!("testdata/people_tune_ref.txt").lines() {
+            let (head, out) = line.split_once(" -> ").unwrap();
+            let h: Vec<&str> = head.split(' ').collect();
+            let (a, b) = (words(h[1].parse().unwrap()), words(h[2].parse().unwrap()));
+            let t = f32::from_bits(u32::from_str_radix(h[3], 16).unwrap());
+            let want: Vec<u32> = out.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            assert_eq!(want.len(), 2195);
+            let blended = AiTune::lerp(&AiTune::from_floats(&a).unwrap(), &AiTune::from_floats(&b).unwrap(), t);
+            let veh = Veh::new(Arc::new(blended.clone()));
+            let mut got = vec![0u32; 2195];
+            let put = |got: &mut Vec<u32>, at: usize, v: &[f32]| v.iter().enumerate().for_each(|(i, x)| got[at + i] = x.to_bits());
+            put(&mut got, 0, &[blended.max_speed, blended.min_curvature, blended.max_curvature, blended.max_total_accel, blended.max_brake_decel]);
+            put(&mut got, 5, &blended.drag);
+            put(&mut got, 8, &[veh.low_k, veh.knee, veh.high_k, veh.spd_k]);
+            for (r, row) in blended.accel_rows.iter().enumerate() {
+                put(&mut got, 19 + 128 * r, row);
+            }
+            for (r, row) in blended.decel.iter().enumerate().skip(1) {
+                put(&mut got, 915 + 128 * r, row);
+            }
+            put(&mut got, 1939, &blended.speed_high_curv);
+            put(&mut got, 2003, &blended.speed_low_curv);
+            put(&mut got, 2067, &blended.steer_scalar);
+            assert_eq!(blended.accel, blended.accel_rows[0]);
+            assert_eq!(blended.decel[0], blended.accel_rows[7]);
+            for i in (0..2195).filter(|i| !(12..=18).contains(i)) {
+                assert_eq!(got[i], want[i], "word {i} of {head}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 7);
+    }
+
     #[test]
     fn pedal_mapping_cases() {
         let veh = Veh::new(tune());

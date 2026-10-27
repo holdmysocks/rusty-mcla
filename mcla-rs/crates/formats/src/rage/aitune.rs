@@ -121,9 +121,30 @@ impl AiTune {
         sample(&self.accel, speed.abs() * 127.0 / self.max_speed.max(1.0))
     }
 
+    /// F-83981: the blend of the stock and the upgraded tune by `t`: every float the original blends (words 0 .. 7, the 7 + 8 acceleration and
+    /// deceleration rows, both curvature tables, SteerScalar) as one fused `fma(y - x, t, x)`, then F-49493's post-load step: the best-gear
+    /// row 0 is the element-wise maximum of 0 and rows 1 .. 7 of the blended tune. (The idle speeds, words 12 .. 18, are not part of the
+    /// original's blend - it leaves them as the destination held them, unknown here - and the port still blends them.)
     pub fn lerp(a: &AiTune, b: &AiTune, t: f32) -> AiTune {
-        let l = |x: f32, y: f32| x + (y - x) * t;
+        fn fma(x: f32, y: f32, z: f32) -> f32 {
+            (x as f64).mul_add(y as f64, z as f64) as f32
+        }
+        let l = |x: f32, y: f32| fma(y - x, t, x);
         let lv = |x: &[f32], y: &[f32]| x.iter().zip(y).map(|(p, q)| l(*p, *q)).collect::<Vec<f32>>();
+        let mut accel_rows: Vec<Vec<f32>> = a.accel_rows.iter().zip(&b.accel_rows).map(|(p, q)| lv(p, q)).collect();
+        if accel_rows.len() > 1 {
+            let best: Vec<f32> = (0..accel_rows[0].len())
+                .map(|i| {
+                    let mut v = 0.0f32;
+                    for r in &accel_rows[1..] {
+                        let x = r[i];
+                        v = if v - x >= 0.0 { v } else { x };
+                    }
+                    v
+                })
+                .collect();
+            accel_rows[0] = best;
+        }
         AiTune {
             max_speed: l(a.max_speed, b.max_speed),
             min_curvature: l(a.min_curvature, b.min_curvature),
@@ -131,13 +152,13 @@ impl AiTune {
             max_total_accel: l(a.max_total_accel, b.max_total_accel),
             max_brake_decel: l(a.max_brake_decel, b.max_brake_decel),
             idle_speed: std::array::from_fn(|i| l(a.idle_speed[i], b.idle_speed[i])),
-            accel: lv(&a.accel, &b.accel),
+            accel: accel_rows.first().cloned().unwrap_or_else(|| lv(&a.accel, &b.accel)),
             decel: a.decel.iter().zip(&b.decel).map(|(p, q)| lv(p, q)).collect(),
             speed_high_curv: lv(&a.speed_high_curv, &b.speed_high_curv),
             speed_low_curv: lv(&a.speed_low_curv, &b.speed_low_curv),
             steer_scalar: lv(&a.steer_scalar, &b.steer_scalar),
             drag: std::array::from_fn(|i| l(a.drag[i], b.drag[i])),
-            accel_rows: a.accel_rows.iter().zip(&b.accel_rows).map(|(p, q)| lv(p, q)).collect(),
+            accel_rows,
         }
     }
 
