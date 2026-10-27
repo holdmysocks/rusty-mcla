@@ -572,6 +572,8 @@ struct App {
     pad_look_up: f32,
     /// the event camera's pad edges this frame: CAM_PAN_LEFT / RIGHT and CAM_UP / CAM_DOWN pressed
     pad_pan: (bool, bool),
+    /// CAM_PAN_LEFT held -1, CAM_PAN_RIGHT +1 (Hydraulics' look yaw, F-38892)
+    pad_pan_side: f32,
     pad_cam_ud: bool,
     /// the player's own handbrake this frame (mcPlayerInput +20), before the port's parked hold
     own_handbrake: bool,
@@ -995,6 +997,7 @@ impl App {
             look: Default::default(),
             pad_look_up: 0.0,
             pad_pan: (false, false),
+            pad_pan_side: 0.0,
             pad_cam_ud: false,
             own_handbrake: false,
             sst_view: 0.0,
@@ -1980,8 +1983,10 @@ impl App {
             let back = down >> 19 & 1 != 0 || (crate::mc4::pad_down(&st, &slots, "CAMERA_LEFT") && crate::mc4::pad_down(&st, &slots, "CAMERA_RIGHT"));
             self.pad_look = (right - left, if back { -1.0 } else { 0.0 });
             self.pad_look_up = crate::mc4::pad_analog(&st, &live, "CAMERA_UP");
-            let pan = crate::mc4::pad_down(&st, &live, "CAM_PAN_LEFT") || crate::mc4::pad_down(&st, &live, "CAM_PAN_RIGHT");
+            let (pl, pr) = (crate::mc4::pad_down(&st, &live, "CAM_PAN_LEFT"), crate::mc4::pad_down(&st, &live, "CAM_PAN_RIGHT"));
+            let pan = pl || pr;
             self.pad_pan = (pan && !self.pad_pan.1, pan);
+            self.pad_pan_side = if pl { -1.0 } else if pr { 1.0 } else { 0.0 };
             self.pad_cam_ud = a(10) || a(11);
             self.pad_horn = down >> 18 & 1 != 0;
             self.pad_pending |= acted & 127;
@@ -6628,6 +6633,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let shake_dv = self.vehicles.player_mut().map_or(0.0, |c| std::mem::take(&mut c.state.shake_dv));
             if let Some(car) = self.vehicles.player() {
                 let render_state = car.render_state(self.vehicles.render_alpha);
+                // the level the cameras' probes see (physics/camprobe.rs): the city and every other
+                // placed car's hull where it is drawn; the camera's own car is not in it
+                let cam_level = physics::camprobe::CamLevel {
+                    city: &world.collider,
+                    cars: self
+                        .vehicles
+                        .cars
+                        .iter()
+                        .filter(|c| c.placed && !c.is_player && !c.pu_ghost)
+                        .filter_map(|c| {
+                            let h = c.tuned.as_deref().unwrap_or(&c.model.params).hull.as_ref()?;
+                            let s = c.render_state(self.vehicles.render_alpha);
+                            Some(physics::camprobe::CamObj::of_hull(h, s.pos, s.rot))
+                        })
+                        .collect(),
+                };
                 // the garage's own cameras: the view that goes with the highlighted row
                 let mut own_view = false;
                 // (the race's end before its menu: the driving camera, swung to the standings form's)
@@ -6744,7 +6765,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // is left to the boom cameras below)
                 let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                 let car_view = replay::CarView::of(&render_state, car.model.max.y);
-                let mut probe = |a: Vec3, b: Vec3, r: f32| replay_probe(&world.collider, a, b, r);
+                let mut probe = ReplayProbe(&cam_level);
                 if let Some(p) = self.game.replay.as_mut() {
                     // (the right stick turns the polar camera, F-79918; the triggers' zoom is not wired)
                     p.stick(self.pad_look.0, self.pad_look.1, 0.0, dt);
@@ -6991,6 +7012,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             air_time: render_state.airborne_time,
                             // (mcCarAero +4: AeroDampFactor while wiped out and over 4.47 m/s)
                             aero: if self.crash_bits & 0x10 != 0 && render_state.speed() > 4.47 { car.model.simtunes.as_ref().map_or(1.0, |s| s.base.s.aero_damp_factor) } else { 1.0 },
+                            model_offset_y: car.model.simtunes.as_ref().map_or(0.75, |s| s.base.s.model_offset_y),
+                            sst: render_state.veh.as_ref().map_or((0.0, 1.0), |v| (v.sst.fov, v.sst.dist)),
+                            nitro_view: render_state.veh.as_ref().map_or(0.0, |v| v.nitro_view),
+                            grounded: render_state.wheels.iter().filter(|w| w.grounded).count(),
+                            wheels: render_state.wheels.len(),
+                            // (body +320: the moments in the body's axes times the spin there, back to the world)
+                            ang_mom: car.params().veh.as_ref().map_or(Vec3::ZERO, |vt| {
+                                let i = crate::physics::vehsim::moments(car.params(), &vt.t);
+                                render_state.rot * (i * (render_state.rot.inverse() * render_state.ang_vel))
+                            }),
                         };
                         let charge = render_state.veh.as_ref().map_or(0.0, |v| v.burn);
                         // the chooser's inputs (F-24075; boomcam::EventIn)
@@ -7030,6 +7061,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             yaw_rate: render_state.ang_vel.y,
                             hyd_on: vs.map_or(false, |v| v.hyd.on),
                             pan_pressed: self.pad_pan.0,
+                            pan_side: self.pad_pan_side,
                             cam_pressed: self.pad_cam_ud,
                             reverse_gear: render_state.gear < 0,
                             air_time,
@@ -7069,7 +7101,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.boom.reset();
                         }
                         let out = if self.crash_cam.active() {
-                            self.crash_cam.frame(&track_car, out, dt, sim_dt, &|c, r| world.collider.sphere(c, r).map(|(d, n, _)| (d, n)), gpu.config.width as f32 / gpu.config.height.max(1) as f32)
+                            self.crash_cam.frame(&track_car, out, dt, sim_dt, &cam_level, gpu.config.width as f32 / gpu.config.height.max(1) as f32)
                         } else {
                             out
                         };
@@ -7086,12 +7118,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             &track_car,
                             out,
                             dt,
-                            &|c, r| world.collider.sphere(c, r).map(|(d, n, _)| (d, n)),
-                            &|a, b| {
-                                let d = b - a;
-                                let l = d.length();
-                                l > 1e-4 && world.collider.raycast(a, d / l, l).is_some()
-                            },
+                            &cam_level,
+                            // (the line probe: one-sided, the fixed objects - F-20855)
+                            &|a, b| cam_level.line(a, b),
                             gpu.config.width as f32 / gpu.config.height.max(1) as f32,
                         );
                         if std::env::var("MCLA_EVENT_DEBUG").is_ok() && self.frame_no % 10 == 0 {
@@ -7117,7 +7146,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             let inside_car = boomcam::VIEW_OF_PORT[(mode as usize).min(5)] < 2 && !self.look_back;
                             let r = if inside_car { corner * 2.0 } else { corner + 0.01 };
                             let from = self.boom.collide_from(tune, &target);
-                            if let Some(m) = boomcam::boom_collide(from, self.chase.pos, r, inside_car, |c, r| world.collider.sphere(c, r).map(|(d, n, _)| (d, n))) {
+                            if let Some(m) = boomcam::boom_collide(from, self.chase.pos, r, inside_car, &cam_level) {
                                 self.chase.pos += m;
                                 self.chase.look += m;
                             }
@@ -11956,10 +11985,6 @@ fn radio_ctx(vehicles: &vehicles::Vehicles, world: &world::World, hour: f32) -> 
     ctx
 }
 
-/// The replay director's test (replay::Probe): a ball of radius `r` swept from `a` to `b`
-/// through the city's collision; the last place it stood free when it touches. (approx.) The
-/// original sweeps a true ball (F-58512) and also counts the cars and props its type
-/// flags name; here balls in steps of at most `r` against the city's triangles.
 /// The city pass (`load`: its second part, which keeps what the first stored - docs/PERFORMANCE.md 2026-10-24).
 fn begin_city_pass<'e>(enc: &'e mut wgpu::CommandEncoder, gpu: &Gpu, clear: [f32; 4], load: bool) -> wgpu::RenderPass<'e> {
     enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -12073,18 +12098,27 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
     }
 }
 
-fn replay_probe(c: &physics::collision::WorldCollider, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
-    let d = b - a;
-    let n = ((d.length() / r.max(0.05)).ceil() as usize).clamp(1, 96);
-    let mut free = a;
-    for i in 0..=n {
-        let p = a + d * (i as f32 / n as f32);
-        if c.sphere(p, r).is_some() {
-            return Some(free);
+/// The replay director's tests (replay::Probe, F-51014) on the cameras' level: a ball at a
+/// point (a == b) touching the city or a car, else the ball swept a -> b, directed (F-43031),
+/// the place where it first touches; the heli's look at the car: city only, both ways
+/// (approx.: the original's undirected sweep F-80278 - the ball at both ends and the sweep in
+/// both directions).
+struct ReplayProbe<'a>(&'a physics::camprobe::CamLevel<'a>);
+
+impl replay::Probe for ReplayProbe<'_> {
+    fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+        if (b - a).length_squared() < 1e-12 {
+            return (!self.0.contacts(a, r, true, 1).is_empty()).then_some(a);
         }
-        free = p;
+        self.0.sweep(a, b, r, true).map(|(t, _)| a + (b - a) * t)
     }
-    None
+    fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+        let l = self.0;
+        if !l.contacts(a, r, false, 1).is_empty() || !l.contacts(b, r, false, 1).is_empty() {
+            return Some(a);
+        }
+        l.sweep(a, b, r, false).or_else(|| l.sweep(b, a, r, false).map(|(t, n)| (1.0 - t, n))).map(|(t, _)| a + (b - a) * t)
+    }
 }
 
 fn main() -> std::process::ExitCode {

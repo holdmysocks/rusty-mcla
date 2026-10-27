@@ -1,5 +1,6 @@
 //! Physics: static world collision + arcade car model.
 
+pub mod camprobe;
 pub mod car;
 pub mod collision;
 pub mod drivetrain;

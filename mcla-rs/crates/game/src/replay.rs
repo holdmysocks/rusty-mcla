@@ -541,6 +541,10 @@ impl Shot {
 /// `r` from `a` to `b` through the city and gives the last place it is free when it touches.
 pub trait Probe {
     fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3>;
+    /// the heli's test of its view of the car: the city only, undirected (F-80278 with r10 0)
+    fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+        self.sweep(a, b, r)
+    }
 }
 
 impl<F: FnMut(Vec3, Vec3, f32) -> Option<Vec3>> Probe for F {
@@ -723,7 +727,7 @@ impl Director {
         if ahead && probe.sweep(eye, eye + car.vel * tune.cut[2], r).is_some() {
             return false;
         }
-        if self.state == HELI && probe.sweep(eye, car.pos + Vec3::Y * car.top, 0.5).is_some() {
+        if self.state == HELI && probe.heli(eye, car.pos + Vec3::Y * car.top, 0.5).is_some() {
             return false;
         }
         true
