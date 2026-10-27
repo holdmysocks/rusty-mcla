@@ -736,7 +736,7 @@ impl Aiv {
         self.n_obst = (i(25104).max(0) as usize).min(32);
         for k in 0..32usize {
             let o = 23056 + 64 * k;
-            self.obst[k] = Obstacle { pos: v3(o), vel: v3(o + 16), dir: v3(o + 32), extent: (f(o + 48), f(o + 52)), flags: b[25120 + k] };
+            self.obst[k] = Obstacle { pos: v3(o), vel: v3(o + 16), dir: v3(o + 32), extent: (f(o + 48), f(o + 56)), flags: b[25120 + k] };
         }
         // car state
         self.size = v3(25168);
@@ -1431,7 +1431,8 @@ impl Aiv {
         while i != stop {
             let c = self.portals.get(i);
             if let Some((s, t)) = seg_portal(xa, xb, c.sa, c.sb, false) {
-                if (0.0..=1.0).contains(&s) && !(0.0..=1.0).contains(&t) {
+                // (compares as the original's: a NaN is neither below nor above the range)
+                if !(s < 0.0 || s > 1.0) && (t < 0.0 || t > 1.0) {
                     return false;
                 }
             }
@@ -1710,9 +1711,11 @@ impl Aiv {
             let p0 = self.ln.pts.get(i - 1);
             let dvec = if i == end - 1 { self.ln.pts.get(i) - p0 } else { self.ln.pts.get(i + 1) - p0 };
             let dxz = Vec3::new(dvec.x, 0.0, dvec.z);
-            let dn = if dxz.length_squared() > 1e-12 { norm0(dxz) } else { Vec3::ZERO };
-            let lt = (self.ln.pts.get(i) - p0).length() * inv;
-            let lat = Vec3::new(-dn.z, 0.0, dn.x);
+            let l2 = dot3(dxz, dxz);
+            let dn = if l2.abs() > 1e-12 { dxz * vrsqrt1(l2) } else { Vec3::ZERO };
+            let lt = vlen(self.ln.pts.get(i) - p0) * inv;
+            // (up x dn) as the vector unit forms it: products with the unit vector's zeros kept, so the zeros keep their signs
+            let lat = Vec3::new(0.0 * dn.y - dn.z, 0.0 * dn.z - 0.0 * dn.x, dn.x - 0.0 * dn.y);
             let (mut e_neg, mut e_pos) = (false, false);
             for o in 0..self.n_obst {
                 let ob = self.obst[o];
@@ -1730,7 +1733,7 @@ impl Aiv {
                     continue;
                 }
                 self.counters[0] += 1;
-                let r = Vec3::new(-ob.dir.z, 0.0, ob.dir.x);
+                let r = Vec3::new(0.0 * ob.dir.y - ob.dir.z, 0.0 * ob.dir.z - 0.0 * ob.dir.x, ob.dir.x - 0.0 * ob.dir.y);
                 let (hx, hz) = ob.extent;
                 let c1 = r * hx + ob.dir * hz;
                 let c2 = ob.dir * hz - r * hx;
@@ -1742,7 +1745,9 @@ impl Aiv {
                         continue;
                     }
                     let den = b - a;
-                    let rcp = if den == 0.0 { f32::MAX } else { 1.0 / den };
+                    // the reciprocal estimate (1/x) refined by one Newton step; f32::MAX for a zero denominator
+                    let r0 = 1.0 / den;
+                    let rcp = if den == 0.0 { f32::MAX } else { r0 * (-(r0 * den - 1.0)) + r0 };
                     let u = (rcp * b).min(1.0).max(0.0);
                     let pc = ob.vel * (lt * u + t) + ob.pos;
                     a_end = self.ln.pts.get(i) - pc;
