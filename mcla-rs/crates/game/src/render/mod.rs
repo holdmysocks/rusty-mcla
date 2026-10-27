@@ -232,6 +232,8 @@ pub struct CascUniform {
     pub right_half: [f32; 4],
     /// x = 1: the maps are drawn this frame; y, z = gFadeOutLastSMap (the fade's start and length)
     pub params: [f32; 4],
+    /// the direction to the light the taps are gated by (n . l > 0; VS_ShadowBlend's gLightPosDir c16)
+    pub light: [f32; 4],
 }
 
 /// What one cascade's depth pass is drawn with (shadow.wgsl `ShadowGlobals`).
@@ -2582,7 +2584,12 @@ impl Gpu {
     ///   - the scene takes a tile for a point only 0.1 m inside its rectangle (c83 .. c87).
     /// Writes the passes' uniforms and the scene's; returns the tiles' world -> clip matrices
     /// (x along `right`, y along `top`, depth down the rays), or None when off.
-    pub fn set_cascades(&self, on: bool, cam: Vec3, fwd: Vec3, up: Vec3, side: Vec3, tan_v: f32, aspect: f32, ray: Vec3) -> Option<[Mat4; 4]> {
+    /// `scale` = the shadow map object's slice and angle scales (+160, +164 of F-87623's object;
+    /// (1, 1) in the city, eased to (0.3, 0.8) under the garage's lighting - `casc_scale` in main.rs):
+    /// every FarSlice x scale[0], every half angle x scale[1], gFadeOutLastSMap x scale[0];
+    /// ViewportZShift as it is (the garage's six recorded views to 0.1 mm, work/lighting-gaps/gs/fit.py).
+    /// `light`: the direction to the light the scene's taps are gated by.
+    pub fn set_cascades(&self, on: bool, cam: Vec3, fwd: Vec3, up: Vec3, side: Vec3, tan_v: f32, aspect: f32, ray: Vec3, scale: [f32; 2], light: Vec3) -> Option<[Mat4; 4]> {
         let mut u = CascUniform::zeroed();
         if !on {
             self.queue.write_buffer(&self.casc_buf, 0, bytemuck::bytes_of(&u));
@@ -2595,7 +2602,8 @@ impl Gpu {
         let mut out = [Mat4::IDENTITY; 4];
         for i in 0..4 {
             let [far, zshift, fov_div, slope] = CASC_TUNE[i];
-            let a = half_fov * fov_div;
+            let far = far * scale[0];
+            let a = half_fov * fov_div * scale[1];
             let (tv, th) = (a.tan(), (a * aspect).tan());
             let apex = cam - fwd * zshift;
             let (mut t0, mut t1, mut r0, mut r1) = (top.dot(apex), top.dot(apex), right.dot(apex), right.dot(apex));
@@ -2666,7 +2674,8 @@ impl Gpu {
         u.right = [right.x, right.y, right.z, car_shift];
         // (params.w = 1, MCLA_CASC_PXGRID=1: the taps' turn taken at the centres of a 1280 x 720 grid, as the
         // original's collector has it, whatever the window's size - a trial)
-        u.params = [1.0, 82.0, 78.0, if std::env::var("MCLA_CASC_PXGRID").map_or(false, |v| v.trim() == "1") { 1.0 } else { 0.0 }];
+        u.light = [light.x, light.y, light.z, 0.0];
+        u.params = [1.0, 82.0 * scale[0], 78.0 * scale[0], if std::env::var("MCLA_CASC_PXGRID").map_or(false, |v| v.trim() == "1") { 1.0 } else { 0.0 }];
         self.queue.write_buffer(&self.casc_buf, 0, bytemuck::bytes_of(&u));
         if let Ok(mut l) = CASC_LAST.lock() {
             *l = bytemuck::bytes_of(&u).to_vec();

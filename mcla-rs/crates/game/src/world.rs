@@ -378,6 +378,9 @@ pub mod ph {
 
 /// Added to the packed uv2.y of an interior wall's vertices (bit 20; the bump terms end at bit 18).
 pub const INTERIOR_MARK: f32 = 1048576.0;
+/// Added to the packed uv2.y of the garage sets' floor (`CityGarageFloor`, bit 22): its program (VSCityGarageFloor +
+/// PSMultiLight) multiplies the baked light V by the car's cascade shadow, 2 x the collector, which the walls' does not.
+pub const GARAGE_FLOOR_MARK: f32 = 4194304.0;
 
 /// The classes of SpecularExponent a CityGrimeDecal batch can carry (see `mark_decal_spec`).
 pub const DECAL_SPEC_EXP: [f32; 8] = [8.0, 15.0, 25.0, 50.0, 100.0, 150.0, 175.0, 255.0];
@@ -860,6 +863,11 @@ pub fn decode_set(id: usize, path: &Path) -> Result<CpuSector> {
             // frames, work/lighting/cap/gar_*.bin: 174 + 54 + 24 draws - where the port lit them as outdoor night
             // walls, with the ambient and the lamps at 1.5. MCLA_SET_INTERIOR=0: as before.)
             mark_grime(&mut vertices, sh, mode, std::env::var("MCLA_SET_INTERIOR").map_or(true, |v| v != "0")); mark_window(&mut vertices, sh, mode);
+            if sname.contains("citygaragefloor") && matches!(mode, MatMode::Opaque | MatMode::AlphaTest) {
+                for v in vertices.iter_mut() {
+                    v.uv2[1] += GARAGE_FLOOR_MARK;
+                }
+            }
             mark_lod(&mut vertices, sh, mode, &mut third);
             mark_binormal(&mut vertices, &m.tangents, sh);
             mark_water(&mut vertices, mode);

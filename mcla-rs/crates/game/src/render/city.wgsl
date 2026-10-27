@@ -58,6 +58,7 @@ struct Casc {
     right_off: vec4<f32>,      // c86
     right_half: vec4<f32>,     // c87
     params: vec4<f32>,         // x = 1: drawn this frame; y, z = gFadeOutLastSMap (82, 78)
+    light: vec4<f32>,          // the direction to the light the taps are gated by (gLightPosDir c16)
 };
 @group(0) @binding(12) var<uniform> casc: Casc;
 @group(0) @binding(13) var t_casc: texture_depth_2d;
@@ -276,7 +277,7 @@ fn sun_shadow_casc(wpos: vec3<f32>, n: vec3<f32>) -> f32 {
     let k = g.shadow_params.x;
     let fade = clamp((distance(wpos, g.cam_pos.xyz) - casc.params.y) / casc.params.z, 0.0, 1.0);
     var pcf = 0.0;
-    if (fade < 1.0 && (dot(n, g.sun_dir.xyz) > 0.0 || (g.params.w > 68.5 && g.params.w < 69.5))) {
+    if (fade < 1.0 && (dot(n, casc.light.xyz) > 0.0 || (g.params.w > 68.5 && g.params.w < 69.5))) {
         let t = vec4<f32>(dot(wpos, casc.top.xyz)) + casc.top_off;
         let r = vec4<f32>(dot(wpos, casc.right.xyz)) + casc.right_off;
         let held = vec4<f32>(casc.top_half > abs(t)) * vec4<f32>(casc.right_half > abs(r));
@@ -3020,7 +3021,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         if (int_new) {
             int_wall = mat.mode == 0u || mat.mode == 1u;
             int_tile = tile_in;
-            let v1 = in.color1.rgb;
+            // (the garage floor - world::GARAGE_FLOOR_MARK, bit 22: its PSMultiLight multiplies V by 2 x the shadow
+            // collector while ShaderGlobals.z < 23 - the car's cascade shadow, light straight down, the dark pool
+            // under the car. Diagnostics 715: without.)
+            let gfloor = (u32(round(in.uv2.y)) & 4194304u) != 0u && !(g.params.w > 714.5 && g.params.w < 715.5);
+            let v1 = in.color1.rgb * select(1.0, sun_shadow(in.wpos, ng), gfloor);
             let no_spec = g.params.w > 77.5 && g.params.w < 78.5;
             if (tile_in) {
                 let il = interior_lamps(in.wpos, n, reflect(-v, n), select(0.0, 2.0 * max(wall_spec.x, 1.0), hs_k != 0u), 3);

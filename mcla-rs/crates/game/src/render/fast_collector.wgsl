@@ -44,6 +44,7 @@ struct Casc {
     right_off: vec4<f32>,
     right_half: vec4<f32>,
     params: vec4<f32>,
+    light: vec4<f32>,          // the direction to the light the taps are gated by (gLightPosDir c16)
 };
 @group(0) @binding(5) var<uniform> casc: Casc;
 @group(0) @binding(6) var t_casc: texture_depth_2d;

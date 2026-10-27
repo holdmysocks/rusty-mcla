@@ -253,6 +253,11 @@ struct App {
     weather: sky::Weather,
     /// weather being blended in: (sky, weather, progress 0..1)
     sky_next: Option<(sky::Sky, sky::Weather, f32)>,
+    /// The shadow map object's slice and angle scales (+160 / +164 of F-87623's object), eased each
+    /// frame by F-55997 towards (0.3, 0.8) - the shadow state's +100 / +104 (F-28724) - while the
+    /// garage's lighting is on (renderer +390 = the light manager's +14546), else towards (1, 1):
+    /// a step of max(|d|, 0.2) x rate 1.0 x the frame's unscaled time.
+    casc_scale: [f32; 2],
     /// the weather's change (F-18159): seconds of game time to the next draw (0x8287E12C,
     /// 0 at boot), the auto change (0x8287E138: off until hw_local_hangout2_setup runs), the
     /// draws (the shared MWC, 0x82860890 - the port's own instance) and a scene seen last frame
@@ -779,6 +784,7 @@ impl App {
             sky: sky::Sky::load_weather(&opt.data_dir, opt.weather.unwrap_or(sky::Weather::Nice)),
             weather: opt.weather.unwrap_or(sky::Weather::Nice),
             sky_next: None,
+            casc_scale: [1.0, 1.0],
             weather_timer: 0.0,
             weather_auto: false,
             weather_rng: Default::default(),
@@ -7762,8 +7768,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             crate::props::set_paused(self.game.mode == Mode::Paused);
         }
         let mut globals = self.lighting(vp);
+        // The garage casts the cars' shadows too (its frames draw the four cascades and the collector,
+        // work/lighting/cap/gar_*): straight down (the garage's light, TODGarage's orbit), with the
+        // collector's c63.z = (1 - m_ShadowFade) / 2 of the garage's keys - the port's night path
+        // would leave the strength 0. (MCLA_GARAGE_SHADOW=0: none, as before.)
+        let gar_light = self.garage_light().filter(|_| std::env::var("MCLA_GARAGE_SHADOW").map_or(true, |v| v.trim() != "0"));
+        if let Some((_, gt)) = gar_light.as_ref() {
+            globals.shadow_params[0] = gt.shadow_fade.clamp(0.0, 1.0);
+        }
         // sun shadow map: an orthographic box around the area in front of the camera
-        let shadow_on = globals.shadow_params[0] > 0.0 && !self.opt.no_shadows && !map3d && self.game.mode != Mode::Garage;
+        let shadow_on = globals.shadow_params[0] > 0.0 && !self.opt.no_shadows && !map3d && (self.game.mode != Mode::Garage || gar_light.is_some());
         if map3d {
             // from the air: only a thin haze
             let d = self.cam.pos.distance(self.chase.look);
@@ -7808,6 +7822,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             } else {
                 to_light_sum(hour).map_or(sun, |r| r.normalize_or(sun))
             };
+            let sun = match gar_light.as_ref() {
+                Some((_, gt)) => gt.to_light,
+                None => sun,
+            };
+            let sun = if gar.is_some() && self.cine.playing.is_some() { sky::shadow_ray_cutscene(sun) } else { sun };
             // (the direction the frame is drawn in: in a car that is the chase camera's, not the
             // free camera's - which stood still behind it and left the box beside the view)
             let fwd = if self.drive && self.vehicles.player().is_some() { self.chase.look - self.chase.pos } else { self.cam.forward() };
@@ -7821,7 +7840,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         globals.light_vp = light_vp.to_cols_array_2d();
         globals.shadow_params = [if shadow_on { globals.shadow_params[0] } else { 0.0 }, 1.0 / render::SHADOW_SIZE as f32, globals.shadow_params[2], 0.0];
         gpu.queue.write_buffer(&gpu.shadow_buf, 0, bytemuck::bytes_of(&globals.light_vp));
-            let sun = if gar.is_some() && self.cine.playing.is_some() { sky::shadow_ray_cutscene(sun) } else { sun };
         // The original's four shadow cascades (render/mod.rs `Gpu::set_cascades`; drawn after
         // the single map below, which the fast collector and the plants' masks still use):
         // down the same rays, fitted to this frame's view. ON by default since 2026-10-14: with the
@@ -7837,7 +7855,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let ray = light_vp.row(2).truncate().normalize_or(Vec3::NEG_Y);
             let ray = if ray.y > 0.0 { -ray } else { ray };
             let on = shadow_on && std::env::var("MCLA_CASCADES").map_or(true, |v| v.trim() != "0") && std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "67");
-            gpu.set_cascades(on, eye, (mid - eye) / depth, up.normalize_or(Vec3::Y), side.normalize_or(Vec3::X), up.length() / depth, side.length() / up.length().max(1e-6), ray)
+            let target = if self.garage_light().is_some() { [0.3f32, 0.8] } else { [1.0, 1.0] };
+            for (p, t) in self.casc_scale.iter_mut().zip(target) {
+                let step = (t - *p).abs().max(0.2) * 1.0 * dt;
+                *p = if *p < t { (*p + step).min(t) } else { (*p - step).max(t) };
+            }
+            let gate = gar_light.as_ref().map_or(Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]), |(_, gt)| gt.to_light);
+            gpu.set_cascades(on, eye, (mid - eye) / depth, up.normalize_or(Vec3::Y), side.normalize_or(Vec3::X), up.length() / depth, side.length() / up.length().max(1e-6), ray, self.casc_scale, gate)
         };
         // the fast shadow collector's map is kept up while the sun casts shadows (its pass
         // follows the shadow pass below): where it lies, for the shaders that read it
@@ -8325,6 +8349,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let gpu = &gpu;
             // (of the world only its sectors: the rest of it is not shared between threads)
             let (loaded, sets) = (&world.loaded, &world.sets);
+            // (in the garage neither the room nor the city round it casts: the original's garage frames draw no set and
+            // no sector into its shadow passes - work/lighting/cap/gar_top, gar_cust, gar_rb_top, gar_paint_gloss_blue:
+            // the car's 640 VS_CarShadowDepthLocal draws, a few locals and characters, no city program. MCLA_DEBUG_VIEW=716:
+            // as before.)
+            let room_casts = self.garage_light().is_none() || std::env::var("MCLA_DEBUG_VIEW").map_or(false, |v| v.trim() == "716");
+            let sets_cast = || sets.values().filter(move |_| room_casts);
+            let loaded_cast = || loaded.values().filter(move |_| room_casts);
             let (vehicles, cine, props, cam_pos) = (&self.vehicles, &self.cine, &self.props, self.cam.pos);
             // (the walkers as the shadow passes have drawn them: last frame's draw over the vertices this frame's
             // `peds.prepare` writes before the submit - prepare now runs beside these passes, below)
@@ -8351,7 +8382,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     sp.set_pipeline(&gpu.pipeline_shadow);
                     sp.set_bind_group(0, &gpu.shadow_bg, &[]);
                     sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
-                    for sec in loaded.values().chain(sets.values()) {
+                    for sec in loaded_cast().chain(sets_cast()) {
                         let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
                         let mut bound = false;
                         // every plain opaque caster of the sector in a single draw
@@ -8465,7 +8496,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let unit = |p: glam::Vec4| p / p.truncate().length().max(1e-9);
                         [unit(cvp.row(3) + cvp.row(0)), unit(cvp.row(3) - cvp.row(0)), unit(cvp.row(3) + cvp.row(1)), unit(cvp.row(3) - cvp.row(1))]
                     };
-                    for (detailed, sec) in loaded.values().map(|s| (true, s)).chain(sets.values().map(|s| (false, s))) {
+                    for (detailed, sec) in loaded_cast().map(|s| (true, s)).chain(sets_cast().map(|s| (false, s))) {
                         let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
                         if let (true, Some((eye, d, main_pl, blend))) = (detailed, casc_sel.as_ref()) {
                             // the sector: its box within 200 m of the eye, flat
