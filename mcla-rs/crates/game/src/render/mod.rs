@@ -373,6 +373,143 @@ pub fn half_value(h: u16) -> f32 {
     f32::from_bits((h as u32 & 0x8000) << 16 | (e as u32 + 112) << 23 | (h as u32 & 0x3ff) << 13)
 }
 
+/// The night grid's cell lists: each cell keeps (score, 1-based lamp number) of the four lamps that light its middle most.
+///
+/// The game's own rule (its grid builder, F-12750 of the executable, LIGHTING_WORK.md):
+/// a lamp reaches as far as it still gives a hundredth of its light; a spot that points
+/// down covers the stretch of ground (15 m below) its cone falls on instead. A cell keeps
+/// the four lamps with the highest score `term / distance squared` taken at the cell's
+/// centre from the lamp's own position, the score a 16 bit number in steps of 1 / 256
+/// that wraps round; equal scores keep the earlier lamp.
+pub fn bin_lamps(lamps: &[Lamp]) -> Vec<[(u16, u16); 4]> {
+    let (gw, gh) = (LAMP_GRID.0 as usize, LAMP_GRID.1 as usize);
+    let (cw, ch) = (LAMP_SPAN.0 / gw as f32, LAMP_SPAN.1 / gh as f32);
+    let mut best = vec![[(0u16, 0u16); 4]; gw * gh];
+    for (i, l) in lamps.iter().enumerate() {
+        if l.intensity <= 0.0 {
+            continue;
+        }
+        let reach = (l.intensity * 100.0).sqrt();
+        let (mut cx, mut cz, mut radius) = (l.pos.x, l.pos.z, reach);
+        let dir = -l.back;
+        if l.cone[0] > 0.0 && dir.y < 0.0 {
+            let half = (-l.cone[1] / l.cone[0]).clamp(-1.0, 1.0).acos();
+            let tilt = (dir.x * dir.x + dir.z * dir.z).sqrt().atan2(-dir.y);
+            let (mut far, mut near) = ((tilt + half).tan() * 15.0, (tilt - half).tan() * 15.0);
+            if far.abs() > reach {
+                far = reach;
+            }
+            if near.abs() > reach {
+                near = -reach;
+            }
+            let flat = dir.x * dir.x + dir.z * dir.z;
+            let (hx, hz) = if flat < 0.001 { (1.0, 0.0) } else { (dir.x / flat.sqrt(), dir.z / flat.sqrt()) };
+            cx += hx * (far + near) * 0.5;
+            cz += hz * (far + near) * 0.5;
+            radius = (far - near) * 0.5;
+        }
+        let term = radius * radius * 0.01 * l.intensity;
+        let cell = |v: f32, origin: f32, span: f32, n: usize| -> usize { ((((v - origin) / span) * n as f32) as i64).clamp(0, n as i64 - 1) as usize };
+        let (x0, x1) = (cell(cx - radius, LAMP_ORIGIN.0, LAMP_SPAN.0, gw), cell(cx + radius, LAMP_ORIGIN.0, LAMP_SPAN.0, gw));
+        let (z0, z1) = (cell(cz - radius, LAMP_ORIGIN.1, LAMP_SPAN.1, gh), cell(cz + radius, LAMP_ORIGIN.1, LAMP_SPAN.1, gh));
+        for gz in z0..=z1 {
+            for gx in x0..=x1 {
+                let (mx, mz) = (LAMP_ORIGIN.0 + (gx as f32 + 0.5) * cw, LAMP_ORIGIN.1 + (gz as f32 + 0.5) * ch);
+                let score = ((cell_score(true, term, (l.pos.x, l.pos.z), (mx, mz)) * 256.0) as i64 & 0xffff) as u16;
+                if score == 0 {
+                    continue;
+                }
+                let slot = &mut best[gz * gw + gx];
+                if let Some(k) = slot.iter().position(|s| score > s.0) {
+                    slot.copy_within(k..3, k + 1);
+                    slot[k] = (score, (i + 1) as u16);
+                }
+            }
+        }
+    }
+    best
+}
+
+/// One lamp's row of the three lamp tables as the game's writer (F-85100) stores it: `a` = x, z, cone scale, cone bias as
+/// cut half floats; `b` = the intensity over 256 and the colour halved, each clamped to 0..1, times 255, cut to a byte;
+/// `c` = the height byte (`y x 0.00909091 + 0.28181821` as one fused multiply-add) and the axis bytes (`0.5 + 0.5 x back`).
+/// Checked on 36 calls of the original's writer and 391 lamps of its whole tables (`lamp_row_tests`).
+pub struct LampRow {
+    pub a: [u16; 4],
+    pub b: [u8; 4],
+    pub c: [u8; 4],
+}
+
+pub fn lamp_row(l: &Lamp) -> LampRow {
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0) as u8;
+    let y = (0.00909091f32 as f64).mul_add(l.pos.y as f64, 0.28181821f32 as f64) as f32;
+    let axis = |v: f32| byte(0.5 + 0.5 * v);
+    LampRow {
+        a: [half_cut(l.pos.x), half_cut(l.pos.z), half_cut(l.cone[0]), half_cut(l.cone[1])],
+        b: [byte(l.intensity / 256.0), byte(l.color.x * 0.5), byte(l.color.y * 0.5), byte(l.color.z * 0.5)],
+        c: [byte(y), axis(l.back.x), axis(l.back.y), axis(l.back.z)],
+    }
+}
+
+#[cfg(test)]
+mod lamp_row_tests {
+    use super::*;
+
+    /// The writer's rows (F-85100): 36 recorded calls of the original (the record it was given and the row it wrote into
+    /// the three tables) and 391 lamps of the whole tables of an open-city build (every 40th of the 15,174 lamps whose cone
+    /// halves agree; the cone itself comes from the lamp loader, not the writer). `tools/objdump_export.py lamprow`.
+    #[test]
+    fn lamp_row_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/lamp_row_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let v: Vec<f32> = i.split(' ').map(f).collect();
+            let l = Lamp { pos: Vec3::new(v[0], v[1], v[2]), color: Vec3::new(v[3], v[4], v[5]), back: Vec3::new(v[6], v[7], v[8]), intensity: v[9], cone: [v[10], v[11]] };
+            let r = lamp_row(&l);
+            let w: Vec<&str> = o.split(' ').collect();
+            let a: Vec<u16> = w[..4].iter().map(|x| u16::from_str_radix(x, 16).unwrap()).collect();
+            assert_eq!(r.a.to_vec(), a, "{line}");
+            assert_eq!(r.b.iter().map(|b| format!("{b:02x}")).collect::<String>(), w[4], "{line}");
+            assert_eq!(r.c.iter().map(|b| format!("{b:02x}")).collect::<String>(), w[5], "{line}");
+            n += 1;
+        }
+        assert!(n > 300);
+    }
+}
+
+#[cfg(test)]
+mod lamp_tile_tests {
+    use super::*;
+
+    /// The night grid's cell lists (the footprint F-58353, the score F-47404 and the builder's four-best rule F-12750):
+    /// two windows of the open city, the lamps that can reach them and the original's list of every cell inside whose lamps are
+    /// all from the checked rows (the original's whole tables decoded with its own lookup, `lamp_grid_reference.py`;
+    /// `objdump_export.py lamptile`). The lists come out equal in rank order.
+    #[test]
+    fn cell_lists_match_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let (mut lamps, mut rows, mut cells) = (Vec::new(), Vec::new(), Vec::new());
+        for line in include_str!("testdata/lamp_tile_ref.txt").lines() {
+            let t: Vec<&str> = line.split(' ').collect();
+            if t[0] == "L" {
+                let v: Vec<f32> = t[2..].iter().map(|x| f(x)).collect();
+                rows.push(t[1].parse::<u16>().unwrap());
+                lamps.push(Lamp { pos: Vec3::new(v[0], v[1], v[2]), color: Vec3::new(v[3], v[4], v[5]), back: Vec3::new(v[6], v[7], v[8]), intensity: v[9], cone: [v[10], v[11]] });
+            } else {
+                cells.push(t[1..].iter().map(|x| x.parse::<usize>().unwrap()).collect::<Vec<_>>());
+            }
+        }
+        let best = bin_lamps(&lamps);
+        for c in &cells {
+            // (the windows' lamps are listed in the original's order, so the ties keep the same lamp)
+            let got: Vec<usize> = best[c[0]].iter().map(|s| if s.1 == 0 { 0 } else { rows[s.1 as usize - 1] as usize }).collect();
+            assert_eq!(got, c[1..].to_vec(), "cell {}", c[0]);
+        }
+        assert!(cells.len() > 1000);
+    }
+}
+
 /// A lamp's score at a grid cell's centre (F-47404): its term over the flat distance squared - the distance's square
 /// root taken and squared again, as the game does; 0 for a lamp that is not lit. The f32 steps of the original.
 pub fn cell_score(lit: bool, term: f32, lamp: (f32, f32), at: (f32, f32)) -> f32 {
@@ -2548,70 +2685,22 @@ impl Gpu {
     /// the three placed lamps agree).
     pub fn set_lamps(&self, lamps: &[Lamp]) {
         let (gw, gh) = (LAMP_GRID.0 as usize, LAMP_GRID.1 as usize);
-        let (cw, ch) = (LAMP_SPAN.0 / gw as f32, LAMP_SPAN.1 / gh as f32);
         let max = (LAMP_DATA.0 / 4 * LAMP_DATA.1) as usize - 1;
         let lamps = &lamps[..lamps.len().min(max)];
-        // The game's own rule (its grid builder, F-12750 of the executable, LIGHTING_WORK.md):
-        // a lamp reaches as far as it still gives a hundredth of its light; a spot that points
-        // down covers the stretch of ground (15 m below) its cone falls on instead. A cell keeps
-        // the four lamps with the highest score `term / distance squared` taken at the cell's
-        // centre from the lamp's own position, the score a 16 bit number in steps of 1 / 256
-        // that wraps round; equal scores keep the earlier lamp.
-        let mut best = vec![[(0u16, 0u16); 4]; gw * gh];
-        for (i, l) in lamps.iter().enumerate() {
-            if l.intensity <= 0.0 {
-                continue;
-            }
-            let reach = (l.intensity * 100.0).sqrt();
-            let (mut cx, mut cz, mut radius) = (l.pos.x, l.pos.z, reach);
-            let dir = -l.back;
-            if l.cone[0] > 0.0 && dir.y < 0.0 {
-                let half = (-l.cone[1] / l.cone[0]).clamp(-1.0, 1.0).acos();
-                let tilt = (dir.x * dir.x + dir.z * dir.z).sqrt().atan2(-dir.y);
-                let (mut far, mut near) = ((tilt + half).tan() * 15.0, (tilt - half).tan() * 15.0);
-                if far.abs() > reach {
-                    far = reach;
-                }
-                if near.abs() > reach {
-                    near = -reach;
-                }
-                let flat = dir.x * dir.x + dir.z * dir.z;
-                let (hx, hz) = if flat < 0.001 { (1.0, 0.0) } else { (dir.x / flat.sqrt(), dir.z / flat.sqrt()) };
-                cx += hx * (far + near) * 0.5;
-                cz += hz * (far + near) * 0.5;
-                radius = (far - near) * 0.5;
-            }
-            let term = radius * radius * 0.01 * l.intensity;
-            let cell = |v: f32, origin: f32, span: f32, n: usize| -> usize { ((((v - origin) / span) * n as f32) as i64).clamp(0, n as i64 - 1) as usize };
-            let (x0, x1) = (cell(cx - radius, LAMP_ORIGIN.0, LAMP_SPAN.0, gw), cell(cx + radius, LAMP_ORIGIN.0, LAMP_SPAN.0, gw));
-            let (z0, z1) = (cell(cz - radius, LAMP_ORIGIN.1, LAMP_SPAN.1, gh), cell(cz + radius, LAMP_ORIGIN.1, LAMP_SPAN.1, gh));
-            for gz in z0..=z1 {
-                for gx in x0..=x1 {
-                    let (mx, mz) = (LAMP_ORIGIN.0 + (gx as f32 + 0.5) * cw, LAMP_ORIGIN.1 + (gz as f32 + 0.5) * ch);
-                    let score = ((cell_score(true, term, (l.pos.x, l.pos.z), (mx, mz)) * 256.0) as i64 & 0xffff) as u16;
-                    if score == 0 {
-                        continue;
-                    }
-                    let slot = &mut best[gz * gw + gx];
-                    if let Some(k) = slot.iter().position(|s| score > s.0) {
-                        slot.copy_within(k..3, k + 1);
-                        slot[k] = (score, (i + 1) as u16);
-                    }
-                }
-            }
-        }
+        let best = bin_lamps(lamps);
         let grid: Vec<u16> = best.iter().flat_map(|c| c.iter().map(|s| s.1)).collect();
         let mut data = vec![0.0f32; (LAMP_DATA.0 * LAMP_DATA.1 * 4) as usize];
         // The game's tables are coarse (its writer F-85100): x, z and the cone's two numbers
         // half floats cut off (not rounded), the colour, the axis and the height bytes cut off -
         // the height over the 110 m from -31 m up. The same numbers here.
-        let half = |v: f32| half_value(half_cut(v));
-        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).trunc() / 255.0;
+        let unit = |b: u8| b as f32 / 255.0;
         for (i, l) in lamps.iter().enumerate() {
             let o = (i + 1) * 16;
-            let y = byte((l.pos.y + 31.0) / 110.0) * 110.0 - 31.0;
-            let axis = [byte(0.5 + 0.5 * l.back.x) * 2.0 - 1.0, byte(0.5 + 0.5 * l.back.y) * 2.0 - 1.0, byte(0.5 + 0.5 * l.back.z) * 2.0 - 1.0];
-            data[o..o + 16].copy_from_slice(&[half(l.pos.x), y, half(l.pos.z), byte(l.intensity / 256.0) * 256.0, byte(l.color.x * 0.5), byte(l.color.y * 0.5), byte(l.color.z * 0.5), 0.0, axis[0], axis[1], axis[2], half(l.cone[0]), half(l.cone[1]), 0.0, 0.0, 0.0]);
+            let r = lamp_row(l);
+            let (hx, hz, c0, c1) = (half_value(r.a[0]), half_value(r.a[1]), half_value(r.a[2]), half_value(r.a[3]));
+            let y = unit(r.c[0]) * 110.0 - 31.0;
+            let axis = [unit(r.c[1]) * 2.0 - 1.0, unit(r.c[2]) * 2.0 - 1.0, unit(r.c[3]) * 2.0 - 1.0];
+            data[o..o + 16].copy_from_slice(&[hx, y, hz, unit(r.b[0]) * 256.0, unit(r.b[1]), unit(r.b[2]), unit(r.b[3]), 0.0, axis[0], axis[1], axis[2], c0, c1, 0.0, 0.0, 0.0]);
         }
         let write = |tex: &wgpu::Texture, bytes: &[u8], w: u32, h: u32, bpp: u32| {
             self.queue.write_texture(
@@ -2645,7 +2734,15 @@ impl Gpu {
                 }
             }
             out.extend_from_slice(bytemuck::cast_slice(&grid));
-            let _ = std::fs::write(path, out);
+            let _ = std::fs::write(&path, out);
+            // (the lamps as given, before the writer's cuts: pos, colour, back, intensity, cone - 11 floats each)
+            let mut raw: Vec<u8> = Vec::new();
+            for l in lamps {
+                for v in [l.pos.x, l.pos.y, l.pos.z, l.color.x, l.color.y, l.color.z, l.back.x, l.back.y, l.back.z, l.intensity, l.cone[0], l.cone[1]] {
+                    raw.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            let _ = std::fs::write(format!("{path}.raw"), raw);
         }
     }
 
