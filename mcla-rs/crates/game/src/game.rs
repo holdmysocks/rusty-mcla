@@ -5557,6 +5557,12 @@ impl Game {
                     // (step 23b: a hangout's tutorial stands over its scene, the panel waits under
                     // it; PINKSLIP RACE's choice is the camera's on the cars, under the prompt bar)
                     let key = self.hangout_key.clone().unwrap_or_default();
+                    // (the delivery's panel - form 67 - is made visible at the trigger, before its
+                    // tutorial: delivery_hangout_core 0x4c2, Ctrl_SetVisible; it stands under the box,
+                    // on its own camera, taking no input until the box is answered)
+                    if self.opt_x.s23.hangout_hold.is_some() && key.contains("delivery") && self.tutorial_box.is_some() {
+                        let _ = self.hangout_ui(ctx, false, false, false, false, false, false);
+                    }
                     if self.mc4_hangout_tut_ui(ctx, f_enter) {
                     } else if self.hangout_page.0 == 2 && key.contains("_wager_") {
                         if let Some(a) = self.mc4_pink_choice_ui(ctx, &key, left, right, f_enter, f_back) {

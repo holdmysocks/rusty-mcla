@@ -604,7 +604,9 @@ impl Game {
         if let Some(fp) = self.flash_popup.as_mut() {
             fp.show(&page);
             fp.movie.player.update(dt);
-            fp.movie.paint(ctx, &ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("tutorial"))));
+            let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("tutorial"));
+            ctx.move_to_top(layer);
+            fp.movie.paint(ctx, &ctx.layer_painter(layer));
         }
         self.tutorial_box = Some((title, text, 0.0, left - dt));
         true
