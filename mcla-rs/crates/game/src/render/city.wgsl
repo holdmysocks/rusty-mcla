@@ -1485,7 +1485,18 @@ fn mini_sky(r: vec2<f32>) -> vec3<f32> {
 }
 
 // procedural environment used for reflections (sky gradient, ground, sun highlight)
-fn env_color(d: vec3<f32>) -> vec3<f32> {
+// (MCLA_DEBUG_VIEW=701: both environment reads with a NaN taken to 0 and the value cut to 0 .. 4; 702: no
+// environment reflection at all - to tell, on a driver that draws a car's paint white, whether the
+// environment maps are the cause. GitHub #14.)
+fn env_dbg(c: vec3<f32>) -> vec3<f32> {
+    if (g.params.w > 701.5 && g.params.w < 702.5) { return vec3<f32>(0.0); }
+    if (g.params.w > 700.5 && g.params.w < 701.5) { return clamp(select(c, vec3<f32>(0.0), c != c), vec3<f32>(0.0), vec3<f32>(4.0)); }
+    return c;
+}
+
+fn env_color(d: vec3<f32>) -> vec3<f32> { return env_dbg(env_color0(d)); }
+
+fn env_color0(d: vec3<f32>) -> vec3<f32> {
     let up = clamp(d.y, -1.0, 1.0);
     // same model as the sky dome (sky.wgsl), without stars
     var sky = mix(g.sky_zenith.rgb, g.sky_horizon.rgb, pow(1.0 - max(up, 0.0), 6.0)) * 1.25;
@@ -1532,7 +1543,9 @@ fn cf_ward(h: vec3<f32>, t: vec3<f32>, b: vec3<f32>, n: vec3<f32>, ax: f32, ay: 
     return exp(-2.0 * (hb * hb + ht * ht) / (1.0 + clamp(dot(h, n), 0.0, 1.0))) / (12.5664 * ax * ay);
 }
 fn cf_unit(a: vec3<f32>) -> vec3<f32> { return a * inverseSqrt(max(dot(a, a), 1e-24)); }
-fn env_soft(d: vec3<f32>) -> vec3<f32> {
+fn env_soft(d: vec3<f32>) -> vec3<f32> { return env_dbg(env_soft0(d)); }
+
+fn env_soft0(d: vec3<f32>) -> vec3<f32> {
     if (g.shadow_params.w < 0.5) {
         return env_color(d);
     }
