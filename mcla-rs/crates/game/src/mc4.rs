@@ -8911,7 +8911,8 @@ pub fn setup_mod_value(s: [f32; 3], perf: f32, d: i32) -> i32 {
 /// F-34010: the vehicle's performance value at a mod value.
 pub fn setup_perf(s: [f32; 3], m: i32) -> f32 {
     let (pa, va, pb, vb) = if m < 50 { (0.0, s[0], 50.0, s[1]) } else { (50.0, s[1], 100.0, s[2]) };
-    (m as f32 - pa) / (pb - pa) * (vb - va) + va
+    // (the original's fmadds: the product and the sum rounded once)
+    ((m as f32 - pa) / (pb - pa)).mul_add(vb - va, va)
 }
 
 /// Racer_CanFlashHookman (F-57747 -> F-96972): the hookman is within 30 m, the two
@@ -11521,7 +11522,9 @@ impl Game {
     /// the main loop's floor of 0.1 until the race is left.
     pub fn race_slow_tick(&mut self, dt: f32) {
         let finished = self.race.as_ref().map_or(false, |r| r.finish_time.first().map_or(false, |t| t.is_some()));
-        if !matches!(self.mode, crate::game::Mode::Race | crate::game::Mode::Results) || (self.mode == crate::game::Mode::Race && !finished) {
+        // (a beat me there run's end slows down as a race's: its EndOfRaceSequence - `Game::bmt_end`)
+        let bmt = self.mode == crate::game::Mode::FreeRoam && self.bmt_end.as_ref().map_or(false, |e| !e.wrecked);
+        if !bmt && (!matches!(self.mode, crate::game::Mode::Race | crate::game::Mode::Results) || (self.mode == crate::game::Mode::Race && !finished)) {
             if self.race_slow_wait.is_some() || self.race_slow.global != 1.0 {
                 self.race_slow = SlowMo::default();
                 self.race_slow_wait = None;
@@ -17267,5 +17270,168 @@ mod tests {
         ];
         g.mc4_payback_place_panel(glam::Vec3::from(PAYBACK_AT));
         assert_eq!((g.current_race, g.hangout_key.as_deref(), g.mode, g.hangout_diff), (Some(1), Some("be_payback"), crate::game::Mode::RaceSelect, 1));
+    }
+
+    // ---- verify-save stage 1 (docs/reference/save/verify_save_stage1.md): the original's own code (work/verify-save/stage1.py)
+    // run on random cases against the music order container and generator, the difficulty / set-up functions and the time of day.
+    fn save_fixture(name: &str) -> String {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/verify-save");
+        std::fs::read_to_string(dir.join(name)).unwrap()
+    }
+
+    #[test]
+    #[ignore = "reads the original's reference output (work/verify-save/stage1_original.txt)"]
+    fn stage1_original_music_orders_and_difficulty() {
+        let cases = save_fixture("cases1.txt");
+        let want = save_fixture("stage1_original.txt");
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let hx = |v: &[usize]| v.iter().map(|x| format!("{:x}", x)).collect::<Vec<_>>().join(" ");
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        assert_eq!(cases.lines().count(), want.lines().count());
+        for (c, w) in cases.lines().zip(want.lines()) {
+            let f: Vec<&str> = c.split(' ').collect();
+            let op = f[0];
+            let arr_at = |k: usize| f[k..].iter().map(|x| h(x) as usize).collect::<Vec<usize>>();
+            let got = match op {
+                "R" => {
+                    let mut m = MusicLists { rng: (h(f[1]), h(f[2])), ..Default::default() };
+                    let v = m.rand(h(f[3]) as usize, h(f[4]) as usize);
+                    format!("R {:x} {:x} {:x}", v, m.rng.0, m.rng.1)
+                }
+                "S" => {
+                    let (n, cap) = (h(f[1]) as usize, h(f[2]) as usize);
+                    let mut m = MusicLists { rng: (h(f[4]), h(f[5])), ..Default::default() };
+                    m.order[0] = MusicOrder { arr: arr_at(6), count: n, pos: h(f[3]) as usize };
+                    m.shuffle_order(0);
+                    format!("S {:x} {:x} {:x} 1 {} {:x} {:x}", n, cap, m.order[0].pos, hx(&m.order[0].arr), m.rng.0, m.rng.1)
+                }
+                "Z" => {
+                    let cap = h(f[1]) as usize;
+                    let mut m = MusicLists::default();
+                    m.order[0] = MusicOrder { arr: arr_at(2), count: cap, pos: 0 };
+                    m.set_shuffle(false);
+                    format!("Z {:x} {:x} 0 1 {}", cap, cap, hx(&m.order[0].arr)).trim_end().to_string()
+                }
+                "N" | "P" => {
+                    let (n, cap, pos) = (h(f[1]) as usize, h(f[2]) as usize, h(f[3]) as usize);
+                    let mut m = MusicLists::default();
+                    m.order[0] = MusicOrder { arr: arr_at(4), count: n, pos };
+                    m.step(op == "N");
+                    format!("{} {:x} {:x} {:x} 1 {} {:x}", op, n, cap, m.order[0].pos, hx(&m.order[0].arr), m.cur)
+                }
+                "F" => {
+                    let (n, cap, pos) = (h(f[1]) as usize, h(f[2]) as usize, h(f[3]) as usize);
+                    let mut m = MusicLists::default();
+                    m.order[0] = MusicOrder { arr: arr_at(5), count: n, pos };
+                    m.play_index(h(f[4]) as usize);
+                    format!("F {:x} {:x} {:x} 1 {}", n, cap, m.order[0].pos, hx(&m.order[0].arr))
+                }
+                "C" => {
+                    let cap = h(f[2]) as usize;
+                    let n = if h(f[6]) == u32::MAX { cap } else { h(f[6]) as usize };
+                    let mut m = MusicLists { rng: (h(f[4]), h(f[5])), ..Default::default() };
+                    m.order[0] = MusicOrder { arr: arr_at(7), count: h(f[1]) as usize, pos: h(f[3]) as usize };
+                    m.resize(0, n);
+                    format!("C {:x} {:x} {:x} 80 {} {:x} {:x}", n, cap, m.order[0].pos, hx(&m.order[0].arr), m.rng.0, m.rng.1)
+                }
+                "W" => {
+                    let n = h(f[1]) as usize;
+                    let mut m = MusicLists { rng: (h(f[3]), h(f[4])), ..Default::default() };
+                    m.order[0].arr = (0..n).collect();
+                    m.resize(0, n);
+                    format!("W {:x} {:x} 80 3000 {} {:x} {:x}", n, n, hx(&m.order[0].arr), m.rng.0, m.rng.1)
+                }
+                "G" => format!("G {}", gap_difficulty(f32::from_bits(h(f[1])))),
+                "D" | "M" | "Q" => {
+                    let (perf, d, m) = (f32::from_bits(h(f[1])), h(f[2]) as i32, h(f[3]) as i32);
+                    let mut s = [0f32; 3];
+                    for e in 0..3 {
+                        let (pc, v) = (h(f[4 + 2 * e]), f32::from_bits(h(f[5 + 2 * e])));
+                        s[(pc / 50) as usize] = v;
+                    }
+                    match op {
+                        "D" => format!("D {}", setup_can_reach(s, perf, d) as i32),
+                        "M" => {
+                            let v = setup_mod_value(s, perf, d);
+                            if w.trim() == "M -2147483648" && v != i32::MIN {
+                                // two neighbouring samples equal: the original divides 0 by 0 and converts the NaN (0x80000000); the port returns the segment's start
+                                assert!(s[0] == s[1] || s[1] == s[2], "case {c}");
+                                *counts.entry("M-equal-samples-differ".to_string()).or_default() += 1;
+                                continue;
+                            }
+                            format!("M {}", v)
+                        }
+                        _ => format!("Q {:x}", setup_perf(s, m).to_bits()),
+                    }
+                }
+                "T" => {
+                    let t = h(f[1]) as usize;
+                    match arcade_env(0, 0, t).hour {
+                        Some(x) => format!("T {:x}", x.to_bits()),
+                        None => "T 7fc01234".to_string(), // the original leaves f1 as it was (the caller's value)
+                    }
+                }
+                _ => panic!("op {op}"),
+            };
+            assert_eq!(got.split_whitespace().collect::<Vec<_>>(), w.split_whitespace().collect::<Vec<_>>(), "case {c}");
+            *counts.entry(op.to_string()).or_default() += 1;
+        }
+        println!("stage1 cases per op: {counts:?}");
+    }
+    /// F-63809 (LocalOptions defaults): the original's constructor run on a zeroed 1340-byte block (work/verify-save/stage2.py;
+    /// the platform language query is stubbed to 0) against `Options::default()` at the offsets of options__options.md.
+    #[test]
+    #[ignore = "reads the original's reference output (work/verify-save/stage2_original.txt)"]
+    fn stage2_original_option_defaults() {
+        let hex = save_fixture("stage2_original.txt");
+        let orig: Vec<u8> = (0..1340).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect();
+        let o = Options::default();
+        let mut mine = vec![0u8; 1340];
+        let mut put = |off: usize, b: &[u8]| mine[off..off + b.len()].copy_from_slice(b);
+        put(0, &(o.control_config_pad as u16).to_be_bytes());
+        put(2, &(o.control_config_wheel as u16).to_be_bytes());
+        put(1188, &(o.vibration as u32).to_be_bytes());
+        put(1192, &o.cinematics.to_be_bytes());
+        put(1204, &o.gps_arrow.to_be_bytes());
+        put(1208, &o.camera.to_be_bytes());
+        put(1224, &(o.steering_sensitivity.0 as f32).to_be_bytes());
+        put(1228, &[o.convertible_top_down as u8]);
+        put(1238, &(o.subtitles as u16).to_be_bytes());
+        for (off, v) in [(1240, &o.volume_effects), (1244, &o.volume_music), (1248, &o.volume_voice), (1252, &o.volume_player_vehicle), (1256, &o.volume_cutscene)] {
+            put(off, &(v.0 as f32).to_be_bytes());
+        }
+        put(1316, &o.online_character.to_be_bytes());
+        put(1320, &o.language.to_be_bytes());
+        put(1324, &[o.airride_pattern]);
+        put(1325, &[o.music_shuffle as u8]);
+        put(1328, &o.music_genre.to_be_bytes());
+        put(1332, &(o.time_of_day_hours.0 as f32).to_be_bytes());
+        let fields: [(usize, usize); 20] = [(0, 2), (2, 2), (1188, 4), (1192, 4), (1204, 4), (1208, 4), (1224, 4), (1228, 1), (1238, 2), (1240, 4), (1244, 4), (1248, 4), (1252, 4), (1256, 4), (1316, 4), (1320, 4), (1324, 1), (1325, 1), (1328, 4), (1332, 4)];
+        for (off, len) in fields {
+            assert_eq!(orig[off..off + len], mine[off..off + len], "offset {off}");
+        }
+        // what the original sets that the port has no field for (kept as unknown bytes by the importer)
+        let mut covered = vec![false; 1340];
+        for (off, len) in fields {
+            covered[off..off + len].iter_mut().for_each(|c| *c = true);
+        }
+        let extra: Vec<usize> = (0..1340).filter(|i| !covered[*i] && orig[*i] != 0).collect();
+        println!("original default bytes without a port field (offsets): {extra:?}");
+        assert_eq!(extra, vec![1203, 1219, 1232, 1233, 1234, 1235, 1336]);
+    }
+
+    /// F-34172 (an editor slot is offered in the city): the original on all 65,536 (slot city byte, current city) pairs
+    /// (work/verify-save/stage3.py) against `editor_city_ok`.
+    #[test]
+    #[ignore = "reads the original's reference output (work/verify-save/stage3_original.txt)"]
+    fn stage3_original_editor_city_ok() {
+        let want = save_fixture("stage3_original.txt");
+        let mut n = 0;
+        for line in want.lines() {
+            let v: Vec<u32> = line.split(' ').map(|x| x.parse().unwrap()).collect();
+            assert_eq!(editor_city_ok(v[0], v[1]) as u32, v[2], "city {} current {}", v[0], v[1]);
+            n += 1;
+        }
+        assert_eq!(n, 65536);
     }
 }
