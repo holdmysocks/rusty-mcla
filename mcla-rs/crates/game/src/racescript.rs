@@ -298,6 +298,19 @@ pub fn whoosh_lines(data_dir: &str) -> Vec<(Vec3, Vec3)> {
 /// Places of the open city where the police dispatcher reports reckless driving (the
 /// same global scripts: `Sound` actions with a `DISPATCH_REPORT_VIOLATION_*` call):
 /// centre, radius and the call.
+/// A trigger line's centre (mcTriggerLine vtable slot 9, F-73482): the sum of its two ends
+/// times one half.
+pub fn line_center(a: Vec3, b: Vec3) -> Vec3 {
+    (a + b) * 0.5
+}
+
+/// Half the length of a trigger line (slot 10, F-21032): the square root of x*x, then the
+/// fused y*y and z*z added on (single-precision fused multiply-adds), times one half.
+pub fn line_half_length(a: Vec3, b: Vec3) -> f32 {
+    let d = a - b;
+    d.z.mul_add(d.z, d.y.mul_add(d.y, d.x * d.x)).sqrt() * 0.5
+}
+
 pub fn dispatch_zones(data_dir: &str) -> Vec<(Vec3, f32, String)> {
     let dir = Path::new(data_dir).join("script_obj/game/race/global/0x2b7901de");
     let mut out: Vec<(Vec3, f32, String)> = Vec::new();
@@ -311,7 +324,7 @@ pub fn dispatch_zones(data_dir: &str) -> Vec<(Vec3, f32, String)> {
                 _ => None,
             }) else { continue };
             let (c, r) = match t.shape {
-                Shape::Line { a, b } => ((a + b) * 0.5, a.distance(b) * 0.5),
+                Shape::Line { a, b } => (line_center(a, b), line_half_length(a, b)),
                 Shape::Cylinder { c, r, .. } | Shape::Ring { c, r, .. } => (c, r),
                 Shape::Timer(_) => continue,
             };
@@ -1034,6 +1047,69 @@ mod tests {
         e.float();
         let n = ((e.next() & 0x7FFF_FFFF) % 2) as usize;
         assert_eq!(got.len(), n);
+    }
+
+    /// The trigger's selection, F-35087, run unchanged offline (`mcla-rs/tools/career_reference/select_fx.py`: the
+    /// trigger's action objects are fakes that record which virtual call - slot +16 (reset) or +12
+    /// (arm) - they got; CSV in `MCLA_SELECT_REFERENCE`): the chosen actions in order and the shared
+    /// random generator's state afterwards equal the port's `select`. The cases where the
+    /// original traps (a zero span) are skipped.
+    #[test]
+    #[ignore = "requires CSV from mcla-rs/tools/career_reference/select_fx.py; set MCLA_SELECT_REFERENCE"]
+    fn select_matches_the_original_bit_for_bit() {
+        let path = std::env::var("MCLA_SELECT_REFERENCE").expect("set MCLA_SELECT_REFERENCE to the reference CSV");
+        let text = std::fs::read_to_string(path).unwrap();
+        let (mut done, mut traps, mut bad) = (0, 0, 0);
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split(',').collect();
+            if f[6] == "TRAP" {
+                traps += 1;
+                continue;
+            }
+            let n: usize = f[0].parse().unwrap();
+            let (mn, mx): (i32, i32) = (f[1].parse().unwrap(), f[2].parse().unwrap());
+            let rand = f32::from_bits(f[3].parse().unwrap());
+            let mut m = Mwc { lo: f[4].parse().unwrap(), carry: f[5].parse().unwrap() };
+            let chosen = select(&mut m, n, mn, mx, rand);
+            let mut calls: Vec<String> = (0..n).map(|i| format!("16:{i}")).collect();
+            if let Some(v) = chosen {
+                calls.extend(v.iter().map(|i| format!("12:{i}")));
+            }
+            let want_state: (u32, u32) = (f[6].parse().unwrap(), f[7].parse().unwrap());
+            done += 1;
+            if calls.join(" ") != f[8] || (m.lo, m.carry) != want_state {
+                bad += 1;
+                if bad <= 10 {
+                    eprintln!("differs: {line} -> {calls:?} {:?}", (m.lo, m.carry));
+                }
+            }
+        }
+        eprintln!("compared {done} cases ({traps} traps skipped), {bad} differ");
+        assert!(done > 10_000);
+        assert_eq!(bad, 0);
+    }
+
+    /// A trigger line's centre and half length, F-73482 / F-21032, run unchanged offline
+    /// (`mcla-rs/tools/career_reference/line_fx.py`, CSV in `MCLA_LINE_REFERENCE`): bit for bit.
+    #[test]
+    #[ignore = "requires CSV from mcla-rs/tools/career_reference/line_fx.py; set MCLA_LINE_REFERENCE"]
+    fn line_getters_match_the_original_bit_for_bit() {
+        let path = std::env::var("MCLA_LINE_REFERENCE").expect("set MCLA_LINE_REFERENCE to the reference CSV");
+        let text = std::fs::read_to_string(path).unwrap();
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split(',').collect();
+            let v: Vec<f32> = f[..6].iter().map(|x| x.parse().unwrap()).collect();
+            let u: Vec<u32> = f[6..].iter().map(|x| x.parse().unwrap()).collect();
+            let (a, b) = (Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5]));
+            let c = line_center(a, b);
+            n += 1;
+            if line_half_length(a, b).to_bits() != u[0] || [c.x.to_bits(), c.y.to_bits(), c.z.to_bits()] != [u[1], u[2], u[3]] {
+                bad += 1;
+            }
+        }
+        eprintln!("compared {n} lines, {bad} differ");
+        assert_eq!(bad, 0);
     }
 
     /// The curve rail (sub_827383B8 / sub_825867F8 / sub_82587A78): clamped uniform knots, degree

@@ -258,4 +258,40 @@ mod tests {
         assert_eq!(a.step(0, None), 0);
         assert_eq!(a.step(2, Some(1)), 4);
     }
+
+    /// The experience manager's arithmetic against the original's own code: the unchanged
+    /// F-90390 (curve), F-62421 / F-15114 (level), F-14176 (share), F-31900 (experience of an
+    /// event) and F-78976 (race money) run offline on a manager made as its constructor makes it
+    /// (`mcla-rs/tools/career_reference/rewards_fx.py`, CSV in `MCLA_REWARDS_REFERENCE`); every output is
+    /// compared bit for bit.
+    #[test]
+    #[ignore = "requires CSV from mcla-rs/tools/career_reference/rewards_fx.py; set MCLA_REWARDS_REFERENCE"]
+    fn rewards_match_the_original_bit_for_bit() {
+        let path = std::env::var("MCLA_REWARDS_REFERENCE").expect("set MCLA_REWARDS_REFERENCE to the reference CSV");
+        let text = std::fs::read_to_string(path).unwrap();
+        let (mut n, mut bad) = ([0usize; 5], 0usize);
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split(',').collect();
+            let kind: usize = f[0].parse().unwrap();
+            let (a, b, c, d): (f64, f64, f64, f64) = (f[1].parse().unwrap(), f[2].parse().unwrap(), f[3].parse().unwrap(), f[4].parse().unwrap());
+            let (bits, int): (u32, i32) = (f[5].parse().unwrap(), f[6].parse().unwrap());
+            let ok = match kind {
+                0 => rep_curve(a as f32).to_bits() == bits,
+                1 => progress(a as i64).0 as i32 == int,
+                2 => progress((a as i64).min(b as i64).max(0)).1.to_bits() == bits,
+                3 => dynamic_exp(a as i64, b as usize).to_bits() == bits,
+                4 => race_money(a as i64, b as usize, c as usize, d as f32).to_bits() == bits,
+                _ => unreachable!(),
+            };
+            n[kind] += 1;
+            if !ok {
+                bad += 1;
+                if bad <= 10 {
+                    eprintln!("differs: {line}");
+                }
+            }
+        }
+        eprintln!("compared {n:?}, {bad} differ");
+        assert_eq!(bad, 0);
+    }
 }

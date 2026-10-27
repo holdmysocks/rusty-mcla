@@ -2515,3 +2515,37 @@ impl Career {
         SCENE_ELSEWHERE.contains(&id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Money text as the original writes it, F-36073 (language, currency flag) with its separator
+    /// inserter F-33429, run unchanged offline (`mcla-rs/tools/career_reference/money_fx.py`, CSV in
+    /// `MCLA_MONEY_REFERENCE`; the C run-time's `sprintf` and the engine's `snprintf` are the host's):
+    /// every text equals `money_text_in`, negative values and the languages past the table included.
+    #[test]
+    #[ignore = "requires CSV from mcla-rs/tools/career_reference/money_fx.py; set MCLA_MONEY_REFERENCE"]
+    fn money_text_matches_the_original() {
+        let path = std::env::var("MCLA_MONEY_REFERENCE").expect("set MCLA_MONEY_REFERENCE to the reference CSV");
+        let text = std::fs::read_to_string(path).unwrap();
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.splitn(6, ',').collect();
+            if f[0] != "0" || f[5].is_empty() || f[4] != "1" {
+                continue;
+            }
+            let (lang, v): (usize, i64) = (f[1].parse().unwrap(), f[3].parse().unwrap());
+            n += 1;
+            if money_text_in(v, lang) != f[5] {
+                bad += 1;
+                if bad <= 10 {
+                    eprintln!("differs: {line} -> {}", money_text_in(v, lang));
+                }
+            }
+        }
+        eprintln!("compared {n} texts, {bad} differ");
+        assert!(n > 1000);
+        assert_eq!(bad, 0);
+    }
+}
