@@ -856,6 +856,41 @@ mod tests {
 mod original_tests {
     use super::*;
 
+    /// F-38432 (the grid set-up from the level bounds: widened by 20 m along the diagonal, out to whole 40 m cells; the accumulators
+    /// start beyond the bounds, so the points are the bounds) against the original's code run offline (`GR` lines): the cell counts, the
+    /// origin and the stored upper bounds (the original computes those as n x 40 + origin, fused).
+    /// F-86835 (the racers' polygon cost: 1.0 for the start or goal flags and for road / jump bits, else 5.0) against the original's code run
+    /// offline (`RC` lines, 400 flag combinations).
+    #[test]
+    fn racer_cost_matches_the_original() {
+        let hx = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/people_small_ref.txt").lines().filter(|l| l.starts_with("RC ")) {
+            let w: Vec<&str> = line.split(' ').collect();
+            let cost = mcla_formats::rage::navmesh::racer_cost(hx(w[1]), hx(w[2]));
+            assert_eq!(cost(hx(w[3])).to_bits(), hx(w[5]), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 400);
+    }
+
+    #[test]
+    fn grid_setup_matches_the_original() {
+        let hx = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/people_small_ref.txt").lines().filter(|l| l.starts_with("GR ")) {
+            let w: Vec<&str> = line.split(' ').collect();
+            let f = |i: usize| f32::from_bits(hx(w[i]));
+            let g = ObjectGrid::from_bounds(Vec3::new(f(1), 0.0, f(2)), Vec3::new(f(3), 0.0, f(4)));
+            let want_n: [i32; 2] = [w[6].parse().unwrap(), w[7].parse().unwrap()];
+            assert_eq!(g.n, want_n, "{line}");
+            assert_eq!([g.min[0].to_bits(), g.min[1].to_bits()], [hx(w[8]), hx(w[9])], "{line}");
+            assert_eq!([(g.n[0] as f32).mul_add(CELL, g.min[0]).to_bits(), (g.n[1] as f32).mul_add(CELL, g.min[1]).to_bits()], [hx(w[10]), hx(w[11])], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 301);
+    }
+
     #[test]
     fn grid_cell_and_key_match_the_original() {
         let hx = |x: &str| u32::from_str_radix(x, 16).unwrap();
