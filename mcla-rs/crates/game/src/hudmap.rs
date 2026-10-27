@@ -245,6 +245,20 @@ impl Assets {
         self.mask0_gpu.clone()
     }
 
+    /// The icon meshes the HUD draws, read and parsed ahead (at start-up, on the loading thread): read at its first
+    /// draw, a race's first checkpoint icons took 20 - 45 ms of one frame (docs/PERFORMANCE.md 2026-10-27 (5)).
+    pub fn warm(&mut self) {
+        const MESHES: [&str; 16] = [
+            // (the 3D icons - hookicons.rs `mesh_name` - and the racers' markers)
+            "iconmesh", "icon_arrow", "icon_arrow2", "target_ripple_ingame", "ctf_bomb", "ctf_flag", "icon_racer",
+            // (the minimap and the GPS map)
+            "target_ripple", "checkpoint_sphere", "icon_ring_car", "icon_ring_hangout", "icon_gasStation", "icon_ingame1", "caricon", "icon_flag", "icon_flagBase",
+        ];
+        for m in MESHES {
+            self.mesh(m);
+        }
+    }
+
     pub fn mesh(&mut self, name: &str) -> Option<Arc<IconMesh>> {
         if let Some(m) = self.meshes.get(name) {
             return m.clone();

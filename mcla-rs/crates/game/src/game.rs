@@ -3824,6 +3824,9 @@ impl Game {
                 if std::env::var("MCLA_OLD_MINIMAP").is_err() {
                     let mut hm = crate::hudmap::State::new(&self.data_dir);
                     hm.street = crate::hudmap::StreetNames::load(&self.data_dir, &shared);
+                    let t = std::time::Instant::now();
+                    hm.assets.warm();
+                    log::info!("hudmap: icon meshes read ahead in {} ms", t.elapsed().as_millis());
                     self.hm = Some(hm);
                 }
                 self.flash_menu = crate::flash_ui::FlashMenu::load(&self.data_dir, crate::flash_ui::PAUSE_MOVIE, [70.0, 104.0], &shared);
