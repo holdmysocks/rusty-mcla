@@ -967,12 +967,15 @@ impl Particles {
     }
 
     /// One step of the particles of the effect list's rules (`F-12752`).
-    fn step_rule_particles(&mut self, fx: &FxList, dt: f32, moved: &[(u32, Vec3)]) {
+    fn step_rule_particles(&mut self, fx: &FxList, dt: f32, moved: &[(u32, Vec3)], born_from: usize) {
+        let mut idx = 0usize;
         let mut rng = Rng(self.rng);
         // (the trails' history moves once a draw of the original's 30 Hz frame: every other step here)
         let shift = self.frame % 2 == 0;
         let coll = &self.coll;
         self.rule_list.retain_mut(|p| {
+            let newborn = idx >= born_from;
+            idx += 1;
             let pr = &fx.particle_rules[p.rule as usize];
             // (the rule's keyframes with its event's evolutions, list 3 by the particle's birth values:
             // `F-57835` ids 9 / 10 acceleration, 11 / 12 damping, 13 matrix weight, 17 playback, 20 / 21 noise;
@@ -1032,7 +1035,7 @@ impl Particles {
             let mw = pev(13, pr.matrix_weight.eval(t), t);
             let mw = (lerp(mw[0], mw[1], p.r[6]) * p.mw_ot).clamp(0.0, 1.0);
             // the share of its effect's movement it follows
-            if let Some(m) = moved.iter().find(|m| m.0 == p.inst) {
+            if let Some(m) = moved.iter().find(|m| m.0 == p.inst).filter(|_| !newborn) {
                 p.pos += m.1 * mw;
             }
             p.vel *= (Vec3::ONE - damp * dt).max(Vec3::ZERO);
@@ -1252,6 +1255,9 @@ impl Particles {
         let mut effects = std::mem::take(&mut self.effects);
         let mut moved: Vec<(u32, Vec3)> = Vec::new();
         let frame = self.frame;
+        // (the particles let out from here on are born at their emitter's new place: they do not follow its
+        // movement of this step as well - else a moving car's flames start a step's travel ahead of the tips)
+        let born_from = self.rule_list.len();
         for e in effects.iter_mut() {
             // (asked for in the last ticks: it runs; not any more: what it has let out lives on)
             let live = frame - e.seen <= 3 || e.oneshot;
@@ -1266,7 +1272,7 @@ impl Particles {
             let alive: Vec<u32> = self.effects.iter().map(|e| e.id).collect();
             self.coll.retain(|id, _| alive.contains(id));
         }
-        self.step_rule_particles(&fx, dt, &moved);
+        self.step_rule_particles(&fx, dt, &moved, born_from);
         if self.frame % 60 == 0 && std::env::var("MCLA_FX_LOG").is_ok() {
             let names: Vec<String> = self.effects.iter().map(|e| format!("{} t {:.2} kids {} em {}", fx.effects[e.effect].name, e.t, e.kids.len(), e.em.iter().filter(|m| m.playing).count())).collect();
             log::info!("fx: dt {:.4} effects {} particles {} first {:?}: {:?}", dt, self.effects.len(), self.rule_list.len(), self.rule_list.first().map(|p| (p.pos, p.t, p.ts)), names);

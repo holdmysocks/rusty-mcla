@@ -7513,6 +7513,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         // diagnostics: look at the nearest parked ("parked") or moving ("traffic") ambient car
         if let Ok(v) = std::env::var("MCLA_CAR_CAM") {
+            // ("player_side": beside the player's car at its tail, looking at the exhaust - carfx.rs checks)
+            if v == "player_side" {
+                if let Some(c) = self.vehicles.player() {
+                    let rs = c.render_state(self.vehicles.render_alpha);
+                    let (f, r) = (rs.forward(), rs.right());
+                    let tail = rs.pos - f * 2.3 + Vec3::Y * 0.4;
+                    self.chase.pos = tail + r * 3.2 - f * 0.6 + Vec3::Y * 0.2;
+                    self.chase.look = tail - f * 0.5;
+                    self.cam.pos = self.chase.pos;
+                    self.cam.fov_y = 0.7;
+                }
+            }
             let want_parked = v == "parked";
             let from = self.cam.pos;
             if let Some(c) = self.vehicles.cars.iter().filter(|c| !c.is_player && c.placed && c.parked.is_some() == want_parked && c.model.name.starts_with("va_")).min_by(|a, b| a.state.pos.distance_squared(from).partial_cmp(&b.state.pos.distance_squared(from)).unwrap()) {
