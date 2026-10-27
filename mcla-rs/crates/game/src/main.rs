@@ -9421,12 +9421,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 })
                 .map_or(secs.len(), |i| i + 1)
         };
-        let city_a = |pass: &mut wgpu::RenderPass<'_>, draws: &mut usize, part: &[&world::GpuSector], first: bool| {
+        let city_a = |pass: &mut wgpu::RenderPass<'_>, draws: &mut usize, part: &[&world::GpuSector], first: bool, mut probe: Option<&mut gpuprof::Probe>| {
             let gpu = &gpu;
             pass.set_bind_group(0, &gpu.globals_bg, &[]);
             if first {
                 // (the sky writes stencil 1: ps_main_withstarfield, ref 1 in 0x210D)
                 pass.set_stencil_reference(1);
+                if let Some(p) = probe.as_deref_mut() {
+                    p.stamp(pass, || "sky".into());
+                }
                 if let (false, true, Some(tb)) = (map_baked, sky_hat_on, gpu.sky_hat.tex_bg.as_ref()) {
                     pass.set_pipeline(&gpu.sky_hat.pipeline);
                     pass.set_bind_group(1, tb, &[]);
@@ -9458,8 +9461,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 *draws += 1;
             }
             if !map_baked {
-                draw_sectors(pass, &sector_view, part.iter().copied(), 0, false, draws);
+                draw_sectors(pass, &sector_view, part.iter().copied(), 0, false, draws, probe.as_deref_mut());
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+            }
+            if let Some(p) = probe {
+                p.close(pass);
             }
         };
         // (the original's ground sheet: after the opaque city and the sky, before the props; then the instanced foliage)
@@ -9476,6 +9482,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "city A");
         let split_secs = split_city && !map_baked;
         let slot_b1 = if split_secs { gpuprof::slot(&gpu.device, &gpu.queue, "B props") } else { None };
+        // (a probe frame of the GPU times: pass A's draws timed one by one - gpuprof.rs; the same draws)
+        let [mut probe_a1, mut probe_a2] = match gpuprof::probe_frame(&gpu.device).filter(|_| split_secs) {
+            Some([a, b]) => [Some(a), Some(b)],
+            None => [None, None],
+        };
         if split_city {
             early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
             gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "city B");
@@ -9484,12 +9495,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if split_city {
                 let [o1, o2, o3] = &mut parts_out;
                 let (city_a, city_b1, secs, gpu) = (&city_a, &city_b1, &secs, &gpu);
+                let (pr1, pr2) = (&mut probe_a1, &mut probe_a2);
                 scope.spawn(move |_| {
                     let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("city sky and sectors") });
                     let mut n = 0usize;
                     {
                         let mut pass = begin_city_pass(&mut e, gpu, clear, false);
-                        city_a(&mut pass, &mut n, if split_secs { &secs[..half] } else { &secs[..] }, true);
+                        city_a(&mut pass, &mut n, if split_secs { &secs[..half] } else { &secs[..] }, true, pr1.as_mut());
                     }
                     *o1 = Some((e.finish(), n));
                 });
@@ -9499,7 +9511,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let mut n = 0usize;
                         {
                             let mut pass = begin_city_pass(&mut e, gpu, clear, true);
-                            city_a(&mut pass, &mut n, &secs[half..], false);
+                            city_a(&mut pass, &mut n, &secs[half..], false, pr2.as_mut());
                         }
                         *o2 = Some((e.finish(), n));
                     });
@@ -9522,7 +9534,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                 pass.set_pipeline(&gpu.pipeline_opaque);
             } else {
-                city_a(&mut pass, &mut draws, &secs, true);
+                city_a(&mut pass, &mut draws, &secs, true, None);
             }
             if !map_baked {
                 if !split_secs {
@@ -9547,7 +9559,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (shop panes write depth as the original's pane draws do; MCLA_DEBUG_VIEW=330: as before, no depth writes)
                 let pane_zw = std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "330");
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B blended sectors");
-                draw_sectors(&mut pass, &sector_view, loaded.values().chain(sets.values()), 1, pane_zw, &mut draws);
+                draw_sectors(&mut pass, &sector_view, loaded.values().chain(sets.values()), 1, pane_zw, &mut draws, None);
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
             }
             if !map3d {
@@ -9578,6 +9590,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             pass.set_pipeline(&gpu.pipeline_blend);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
         });
+        gpuprof::probe_end(&mut enc, [probe_a1, probe_a2].into_iter().flatten().collect());
         for (k, (cb, n)) in parts_out.into_iter().enumerate().filter_map(|(k, o)| o.map(|o| (k, o))) {
             early_cbs.push(cb);
             draws += n;
@@ -12122,7 +12135,8 @@ struct SectorView<'a> {
 }
 
 /// The city's sector batches of one phase: 0 the opaque ones, 1 the blended ones.
-fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: impl Iterator<Item = &'a world::GpuSector>, phase: usize, pane_zw: bool, draws: &mut usize) {
+/// `probe`: a probe frame's stamps (gpuprof.rs), one before each draw, labelled with its material and shader.
+fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: impl Iterator<Item = &'a world::GpuSector>, phase: usize, pane_zw: bool, draws: &mut usize, mut probe: Option<&mut gpuprof::Probe>) {
     let gpu = v.gpu;
     let mut last_mode = u32::MAX;
     let mut pane_pipe = false;
@@ -12187,6 +12201,9 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
                     pass.set_pipeline(if want_pane { &gpu.pipeline_pane } else { &gpu.pipeline_blend });
                     pane_pipe = want_pane;
                 }
+            }
+            if let Some(p) = probe.as_deref_mut() {
+                p.stamp(pass, || format!("{:?} {}", b.mode, b.shader));
             }
             pass.draw_indexed(b.first..b.first + b.count, 0, 0..1);
             *draws += 1;
