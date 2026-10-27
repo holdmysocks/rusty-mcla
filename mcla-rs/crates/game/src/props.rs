@@ -1548,7 +1548,7 @@ impl Props {
 
     /// The same for the scene pass: the plants' far cards are their impostors where the type
     /// has one (props/impostor.rs; `update_impostors` must have run this frame).
-    pub fn draw_scene<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, cam: Vec3, frustum: &Frustum, occluded: Option<&crate::occluder::Selected>, draws: &mut usize) {
+    pub fn draw_scene<'a>(&'a self, pass: &mut wgpu::RenderPass<'_>, gpu: &'a Gpu, cam: Vec3, frustum: &Frustum, occluded: Option<&crate::occluder::Selected>, draws: &mut usize) {
         self.draw_with(pass, gpu, cam, frustum, occluded, draws, true, false)
     }
 
@@ -1556,7 +1556,7 @@ impl Props {
     /// blend pipeline. The original draws them near the end of the frame, after the shop panes, blended, both
     /// sides, without depth writes - and not at all into the shadow maps (no depth draw of the 6-index panes
     /// in the captures: only their metal frames cast), so `draw` / `draw_scene` leave them out.
-    pub fn draw_glass<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, cam: Vec3, frustum: &Frustum, occluded: Option<&crate::occluder::Selected>, draws: &mut usize) {
+    pub fn draw_glass<'a>(&'a self, pass: &mut wgpu::RenderPass<'_>, gpu: &'a Gpu, cam: Vec3, frustum: &Frustum, occluded: Option<&crate::occluder::Selected>, draws: &mut usize) {
         self.draw_with(pass, gpu, cam, frustum, occluded, draws, true, true)
     }
 
@@ -1575,7 +1575,7 @@ impl Props {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_with<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, cam: Vec3, frustum: &Frustum, occluded: Option<&crate::occluder::Selected>, draws: &mut usize, scene: bool, glass: bool) {
+    fn draw_with<'a>(&'a self, pass: &mut wgpu::RenderPass<'_>, gpu: &'a Gpu, cam: Vec3, frustum: &Frustum, occluded: Option<&crate::occluder::Selected>, draws: &mut usize, scene: bool, glass: bool) {
         let Some(ibuf) = self.inst_buf.as_ref() else { return };
         // (the card a run names -> what is drawn for it)
         let imp = self.impostors.as_ref();

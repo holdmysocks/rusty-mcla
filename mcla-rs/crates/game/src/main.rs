@@ -7884,7 +7884,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let mut glows: Vec<(f32, halo::Glow)> = Vec::new();
             // (the same lamps' rectangles in the road's reflection picture: siglrefl.rs)
             let mut sig_refl: Vec<siglrefl::Rect> = Vec::new();
-            if let (Some(tune), false, false) = (halo::tune(), map_baked || matches!(self.game.mode, Mode::Garage), halo::old_look()) {
+            if let (Some(mut tune), false, false) = (halo::tune(), map_baked || matches!(self.game.mode, Mode::Garage), halo::old_look()) {
                 let w = match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 };
                 // (StarSize is the one glow member the light manager blends by the weather weights, F-86405:
                 // a blend in progress moves it smoothly instead of at the blend's end)
@@ -9119,25 +9119,42 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let split_city = std::env::var("MCLA_CITY_ONE_PASS").is_err();
         let sector_view = SectorView { gpu: &gpu, occluded: &occluded, frustum: &frustum, cam_pos, lens, only: self.opt.only.as_deref(), hide: self.opt.hide.as_deref() };
         let (sky_bind, citymap, loaded, sets) = (self.sky_bind.as_ref(), self.citymap.as_ref(), &world.loaded, &world.sets);
-        let city_a = |pass: &mut wgpu::RenderPass<'_>, draws: &mut usize| {
+        // (2026-10-27 (3): A in two halves of the sector list, A1 with the sky, and B's ground sheet and props (B1) each on
+        // a worker too, each a pass of its own that loads what the one before stored; this thread records the rest of B.
+        // The halves split between sectors, and every sector sets its own object, buffers and binds: A2 and B2 start from
+        // the state the pass before leaves - the globals, the identity object, the opaque pipeline, stencil reference 0)
+        let secs: Vec<&world::GpuSector> = if map_baked { Vec::new() } else { loaded.values().chain(sets.values()).collect() };
+        let half = {
+            let total: usize = secs.iter().map(|s| s.batches.len()).sum();
+            let mut acc = 0;
+            secs.iter()
+                .position(|s| {
+                    acc += s.batches.len();
+                    acc * 2 >= total
+                })
+                .map_or(secs.len(), |i| i + 1)
+        };
+        let city_a = |pass: &mut wgpu::RenderPass<'_>, draws: &mut usize, part: &[&world::GpuSector], first: bool| {
             let gpu = &gpu;
             pass.set_bind_group(0, &gpu.globals_bg, &[]);
-            // (the sky writes stencil 1: ps_main_withstarfield, ref 1 in 0x210D)
-            pass.set_stencil_reference(1);
-            if let (false, true, Some(tb)) = (map_baked, sky_hat_on, gpu.sky_hat.tex_bg.as_ref()) {
-                pass.set_pipeline(&gpu.sky_hat.pipeline);
-                pass.set_bind_group(1, tb, &[]);
-                pass.set_bind_group(2, &gpu.sky_hat.buf_bg, &[]);
-                pass.draw(0..3, 0..1);
-            } else if let (false, Some(sb)) = (map_baked, sky_bind) {
-                pass.set_pipeline(&gpu.pipeline_sky);
-                pass.set_bind_group(1, sb.as_ref(), &[]);
-                pass.draw(0..3, 0..1);
+            if first {
+                // (the sky writes stencil 1: ps_main_withstarfield, ref 1 in 0x210D)
+                pass.set_stencil_reference(1);
+                if let (false, true, Some(tb)) = (map_baked, sky_hat_on, gpu.sky_hat.tex_bg.as_ref()) {
+                    pass.set_pipeline(&gpu.sky_hat.pipeline);
+                    pass.set_bind_group(1, tb, &[]);
+                    pass.set_bind_group(2, &gpu.sky_hat.buf_bg, &[]);
+                    pass.draw(0..3, 0..1);
+                } else if let (false, Some(sb)) = (map_baked, sky_bind) {
+                    pass.set_pipeline(&gpu.pipeline_sky);
+                    pass.set_bind_group(1, sb.as_ref(), &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                pass.set_stencil_reference(0);
             }
-            pass.set_stencil_reference(0);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
             pass.set_pipeline(&gpu.pipeline_opaque);
-            if let (true, Some(cm)) = (map_baked, citymap) {
+            if let (true, true, Some(cm)) = (first, map_baked, citymap) {
                 pass.set_bind_group(1, cm.bind.as_ref(), &[]);
                 pass.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Opaque as u32)], &[]);
                 if let Some((vb, ib, n, _)) = cm.patch.as_ref() {
@@ -9154,29 +9171,63 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 *draws += 1;
             }
             if !map_baked {
-                draw_sectors(pass, &sector_view, loaded.values().chain(sets.values()), 0, false, draws);
+                draw_sectors(pass, &sector_view, part.iter().copied(), 0, false, draws);
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
             }
         };
-        let mut city_a_out: Option<(wgpu::CommandBuffer, usize)> = None;
+        // (the original's ground sheet: after the opaque city and the sky, before the props; then the instanced foliage)
+        let (props, frustum_r, occluded_r, cam_eye) = (&self.props, &frustum, &occluded, self.cam.pos);
+        let city_b1 = |pass: &mut wgpu::RenderPass<'_>, draws: &mut usize| {
+            let gpu = &gpu;
+            ground_sheet::draw(pass, gpu, vp);
+            pass.set_pipeline(&gpu.pipeline_inst);
+            pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+            props.draw_scene(pass, gpu, cam_eye, frustum_r, Some(occluded_r), draws);
+        };
+        // (the parts' command buffers in their order: A1, A2, B1)
+        let mut parts_out: [Option<(wgpu::CommandBuffer, usize)>; 3] = [None, None, None];
         gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "city A");
+        let split_secs = split_city && !map_baked;
+        let slot_b1 = if split_secs { gpuprof::slot(&gpu.device, &gpu.queue, "B props") } else { None };
         if split_city {
             early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
             gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "city B");
         }
         mcla_flash::raster::pool().in_place_scope(|scope| {
             if split_city {
-                let (city_a, out) = (&city_a, &mut city_a_out);
-                let gpu = &gpu;
+                let [o1, o2, o3] = &mut parts_out;
+                let (city_a, city_b1, secs, gpu) = (&city_a, &city_b1, &secs, &gpu);
                 scope.spawn(move |_| {
                     let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("city sky and sectors") });
                     let mut n = 0usize;
                     {
                         let mut pass = begin_city_pass(&mut e, gpu, clear, false);
-                        city_a(&mut pass, &mut n);
+                        city_a(&mut pass, &mut n, if split_secs { &secs[..half] } else { &secs[..] }, true);
                     }
-                    *out = Some((e.finish(), n));
+                    *o1 = Some((e.finish(), n));
                 });
+                if split_secs {
+                    scope.spawn(move |_| {
+                        let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("city sectors (2)") });
+                        let mut n = 0usize;
+                        {
+                            let mut pass = begin_city_pass(&mut e, gpu, clear, true);
+                            city_a(&mut pass, &mut n, &secs[half..], false);
+                        }
+                        *o2 = Some((e.finish(), n));
+                    });
+                    scope.spawn(move |_| {
+                        let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("city ground and props") });
+                        gpuprof::write(&mut e, slot_b1);
+                        let mut n = 0usize;
+                        {
+                            let mut pass = begin_city_pass(&mut e, gpu, clear, true);
+                            pass.set_bind_group(0, &gpu.globals_bg, &[]);
+                            city_b1(&mut pass, &mut n);
+                        }
+                        *o3 = Some((e.finish(), n));
+                    });
+                }
             }
             let mut pass = begin_city_pass(&mut enc, &gpu, clear, split_city);
             if split_city {
@@ -9184,18 +9235,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                 pass.set_pipeline(&gpu.pipeline_opaque);
             } else {
-                city_a(&mut pass, &mut draws);
+                city_a(&mut pass, &mut draws, &secs, true);
             }
             if !map_baked {
-                // (the original's ground sheet: after the opaque city and the sky, before the props)
-                ground_sheet::draw(&mut pass, &gpu, vp);
-                gpuprof::stamp_pass(&gpu.device, &mut pass, "B props");
-                // instanced foliage
-                pass.set_pipeline(&gpu.pipeline_inst);
-                pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
-                let d0 = draws;
-                self.props.draw_scene(&mut pass, &gpu, self.cam.pos, &frustum, Some(&occluded), &mut draws);
-                stat_props = draws - d0;
+                if !split_secs {
+                    gpuprof::stamp_pass(&gpu.device, &mut pass, "B props");
+                    let d0 = draws;
+                    city_b1(&mut pass, &mut draws);
+                    stat_props = draws - d0;
+                }
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B cars");
                 pass.set_pipeline(&gpu.pipeline_opaque);
                 let d1 = draws;
@@ -9243,9 +9291,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             pass.set_pipeline(&gpu.pipeline_blend);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
         });
-        if let Some((cb, n)) = city_a_out {
+        for (k, (cb, n)) in parts_out.into_iter().enumerate().filter_map(|(k, o)| o.map(|o| (k, o))) {
             early_cbs.push(cb);
             draws += n;
+            if k == 2 {
+                stat_props = n;
+            }
         }
         passprof::mark("mirror+particles+post+ui");
         gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "mirror+particles");

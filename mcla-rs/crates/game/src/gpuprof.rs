@@ -4,7 +4,7 @@
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const MAX: u32 = 32;
 /// read-back buffers in turn: a frame's stamps are read while the next frames run
@@ -18,8 +18,10 @@ struct Read {
     mapping: bool,
 }
 
+/// (shared: a worker thread writes the stamp `slot` gave it into its own command buffer)
+static SET: OnceLock<wgpu::QuerySet> = OnceLock::new();
+
 struct Prof {
-    set: wgpu::QuerySet,
     resolve: wgpu::Buffer,
     reads: Vec<Read>,
     names: Vec<&'static str>,
@@ -54,13 +56,19 @@ pub fn begin() {
 
 /// The part `name` starts here, in `enc` (the stamps of a frame in the order the GPU runs them).
 pub fn stamp(device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, name: &'static str) {
+    write(enc, slot(device, queue, name));
+}
+
+/// The part `name` starts where `write` puts the stamp - in a command buffer a worker records, submitted where the part
+/// runs among the frame's others (the stamps' order is the order of `slot` / `stamp` calls).
+pub fn slot(device: &wgpu::Device, queue: &wgpu::Queue, name: &'static str) -> Option<u32> {
     if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
-        return;
+        return None;
     }
+    SET.get_or_init(|| device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("gpu times"), ty: wgpu::QueryType::Timestamp, count: MAX }));
     P.with(|p| {
         let mut p = p.borrow_mut();
         let p = p.get_or_insert_with(|| Prof {
-            set: device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("gpu times"), ty: wgpu::QueryType::Timestamp, count: MAX }),
             resolve: device.create_buffer(&wgpu::BufferDescriptor { label: Some("gpu times"), size: MAX as u64 * 8, usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false }),
             reads: (0..RING)
                 .map(|_| Read {
@@ -77,10 +85,19 @@ pub fn stamp(device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::Command
             period: queue.get_timestamp_period(),
         });
         if (p.names.len() as u32) < MAX {
-            enc.write_timestamp(&p.set, p.names.len() as u32);
             p.names.push(name);
+            Some(p.names.len() as u32 - 1)
+        } else {
+            None
         }
-    });
+    })
+}
+
+/// The stamp `slot` gave, into `enc` (any thread).
+pub fn write(enc: &mut wgpu::CommandEncoder, slot: Option<u32>) {
+    if let (Some(i), Some(set)) = (slot, SET.get()) {
+        enc.write_timestamp(set, i);
+    }
 }
 
 /// The same inside a render pass (`stamp` made the query set before it); nothing where the device cannot.
@@ -89,9 +106,9 @@ pub fn stamp_pass(device: &wgpu::Device, pass: &mut wgpu::RenderPass<'_>, name: 
         return;
     }
     P.with(|p| {
-        if let Some(p) = p.borrow_mut().as_mut() {
+        if let (Some(p), Some(set)) = (p.borrow_mut().as_mut(), SET.get()) {
             if (p.names.len() as u32) < MAX {
-                pass.write_timestamp(&p.set, p.names.len() as u32);
+                pass.write_timestamp(set, p.names.len() as u32);
                 p.names.push(name);
             }
         }
@@ -122,7 +139,7 @@ pub fn end(device: &wgpu::Device, queue: &wgpu::Queue, enc: &mut wgpu::CommandEn
             return;
         }
         if let Some(i) = (0..RING).find(|&i| p.reads[i].names.is_empty()) {
-            enc.resolve_query_set(&p.set, 0..n, &p.resolve, 0);
+            enc.resolve_query_set(SET.get().expect("made by the first stamp"), 0..n, &p.resolve, 0);
             enc.copy_buffer_to_buffer(&p.resolve, 0, &p.reads[i].buf, 0, n as u64 * 8);
             p.reads[i].names = names;
             p.pending = Some(i);
