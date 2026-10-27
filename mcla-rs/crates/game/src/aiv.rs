@@ -19,7 +19,7 @@
 //! (they are the fallback of the normalisations and the floor of the half-space clamps
 //! vmaxfp(dot, c) in F-15125, where only 0 makes sense).
 #![allow(dead_code)] // (wired into the racers by brain.rs)
-use crate::physics::exact::{dot3, fma, fms, fnms, guest_acos, guest_cos, guest_sin};
+use crate::physics::exact::{dot3, dot_xyz, fma, fms, fnms, guest_acos, guest_cos, guest_sin};
 use glam::Vec3;
 use mcla_formats::rage::aitune::AiTune;
 use std::sync::Arc;
@@ -1101,7 +1101,7 @@ impl Aiv {
             loop {
                 let c = self.portals.get(*idx);
                 let nx = self.portals.get(*idx + 1);
-                if c.fwd.dot(x - nx.a) >= 1e-6 {
+                if dot3(c.fwd, x - nx.a) >= 1e-6 {
                     if *idx >= hi {
                         return false;
                     }
@@ -1116,7 +1116,7 @@ impl Aiv {
         }
         while *idx >= lo {
             let c = self.portals.get(*idx);
-            if c.back.dot(x - c.a) >= 1e-6 {
+            if dot3(c.back, x - c.a) >= 1e-6 {
                 if *idx <= lo {
                     return false;
                 }
@@ -1179,15 +1179,15 @@ impl Aiv {
         let last = base + self.portals.count - 2;
         if *idx == base {
             let c = self.portals.get(*idx);
-            *x -= c.back * c.back.dot(*x - c.a).max(0.0);
+            *x -= c.back * dot3(c.back, *x - c.a).max(0.0);
         } else if *idx == last {
             let c = self.portals.get(*idx);
             let nx = self.portals.get(*idx + 1);
-            *x -= c.fwd * c.fwd.dot(*x - nx.a).max(0.0);
+            *x -= c.fwd * dot3(c.fwd, *x - nx.a).max(0.0);
         }
         let c = self.portals.get(*idx);
-        *x -= c.sside_a * c.sside_a.dot(*x - c.sa).max(0.0);
-        *x -= c.sside_b * c.sside_b.dot(*x - c.sb).max(0.0);
+        *x -= c.sside_a * dot3(c.sside_a, *x - c.sa).max(0.0);
+        *x -= c.sside_b * dot3(c.sside_b, *x - c.sb).max(0.0);
     }
 
     /// F-84036: height of x on the cell's surface triangle.
@@ -1196,11 +1196,14 @@ impl Aiv {
         let nx = self.portals.get(idx + 1);
         let a = c.a;
         let e1 = c.b - a;
-        let f10 = e1.z * e1.z * 1e-4 + e1.x * e1.x * 1e-4;
+        // the original's operation order: the products rounded, the sums fused where it fuses them
+        let f10 = fma(e1.z * e1.z, 1e-4, (e1.x * e1.x) * 1e-4);
         let test = |e2: Vec3| {
-            let thr = ((e2.z * e2.z + e2.x * e2.x) * f10).max(1e-12);
-            let cr = e1.z * e2.x - e2.z * e1.x;
-            (cr * cr >= thr, cr.abs())
+            let f2 = fma(e2.z, e2.z, e2.x * e2.x) * f10;
+            let thr = if 1e-12 - f2 >= 0.0 { 1e-12 } else { f2 };
+            let cr = fms(e1.z, e2.x, e2.z * e1.x);
+            let cr = cr.abs();
+            (!(cr * cr < thr), cr)
         };
         let mut e2 = nx.a - a;
         let (mut ok, mut cr) = test(e2);
@@ -1214,12 +1217,16 @@ impl Aiv {
         }
         let d = *x - a;
         let inv = 1.0 / cr;
-        let u = (e2.z * d.x - d.z * e2.x).abs() * inv;
-        let w = (e1.z * d.x - d.z * e1.x).abs() * inv;
-        let y = w * e2.y + u * e1.y + a.y;
-        let ymin = e1.y.min(0.0).min(e2.y) + a.y;
-        let ymax = e1.y.max(0.0).max(e2.y) + a.y;
-        x.y = y.max(ymin).min(ymax);
+        let u = fms(e2.z, d.x, d.z * e2.x).abs() * inv;
+        let w = fms(e1.z, d.x, d.z * e1.x).abs() * inv;
+        // (the selects are the original's fsel on the differences)
+        let (hi, lo) = if -e1.y >= 0.0 { (0.0, e1.y) } else { (e1.y, 0.0) };
+        let lo = if lo - e2.y >= 0.0 { e2.y } else { lo };
+        let hi = if hi - e2.y >= 0.0 { hi } else { e2.y };
+        let y = fma(w, e2.y, u * e1.y) + a.y;
+        let (ymin, ymax) = (lo + a.y, hi + a.y);
+        let y = if y - ymin >= 0.0 { y } else { ymin };
+        x.y = if y - ymax >= 0.0 { ymax } else { y };
     }
 
     /// F-80559: can p (in cell b) be reached from x (in cell a), bending the line once
@@ -1449,7 +1456,7 @@ impl Aiv {
             return false;
         }
         let c = self.portals.get(*out);
-        if c.sside_a.dot(p - c.sa) >= 1e-6 || c.sside_b.dot(p - c.sb) >= 1e-6 {
+        if dot3(c.sside_a, p - c.sa) >= 1e-6 || dot3(c.sside_b, p - c.sb) >= 1e-6 {
             return false;
         }
         if k >= self.progress && !self.link_ok(k - 1, k) {
@@ -1469,16 +1476,24 @@ impl Aiv {
             let p = self.ln.pts.get(k);
             if g.gate() {
                 let e = g.p1 - g.p0;
-                let s = (p - g.p0).dot(e) / e.length_squared();
+                // (the scalar chains x x' + (y y' + z z') with the innermost product rounded)
+                let s = dot_xyz(p - g.p0, e) / dot_xyz(e, e);
                 let s = if s >= 0.0 { s } else { 0.0 };
                 let s = if s - 1.0 >= 0.0 { 1.0 } else { s };
                 self.ln.pts.set(k, e * s + g.p0);
             } else {
                 let d = g.p0 - p;
-                let d2 = d.x * d.x + d.z * d.z;
+                let d2 = fma(d.z, d.z, d.x * d.x);
                 if d2 > g.w * g.w {
-                    let rs = if d2 > 0.0 { 1.0 / d2.sqrt() } else { 0.0 };
-                    let f = (rs * d2 - g.w) * rs;
+                    // frsqrte, two Newton steps in double, rounded to single (zero where -d2 >= 0)
+                    let x = d2 as f64;
+                    let y0 = (1.0 / x.sqrt()) as f32 as f64;
+                    let e0 = -((y0 * y0).mul_add(x, -1.0));
+                    let y1 = e0.mul_add(y0 * 0.5, y0);
+                    let e1 = -((y1 * y1).mul_add(x, -1.0));
+                    let rs = e1.mul_add(y1 * 0.5, y1) as f32;
+                    let rs = if -d2 >= 0.0 { 0.0 } else { rs };
+                    let f = fms(rs, d2, g.w) * rs;
                     self.ln.pts.set(k, d * f + p);
                 }
             }
@@ -1543,7 +1558,12 @@ impl Aiv {
             loop {
                 let pivot = self.ln.pts.get(k - 1);
                 let d = self.ln.pts.get(i) - pivot;
-                self.ln.pts.set(i, rot_y(d, a) + pivot);
+                // the rotation as this function carries it inline (F-57591 with the x row's fused multiply on the
+                // other product: x' = z sin + (x cos), z' = z cos - x sin)
+                let s = guest_sin(a as f64) as f32;
+                let c = guest_cos(a as f64) as f32;
+                let r = Vec3::new(fma(d.z, s, d.x * c), d.y, fms(d.z, c, d.x * s));
+                self.ln.pts.set(i, r + pivot);
                 self.constrain(i);
                 if !self.fix_link(i - 1, i) {
                     return false;
@@ -1582,7 +1602,10 @@ impl Aiv {
         if mode != 0 {
             let d = self.ln.pts.get(k + 1) - self.ln.pts.get(k - 1);
             let d = Vec3::new(d.x, 0.0, d.z);
-            dv = if d.length_squared() > 1e-12 { norm0(d) } else { Vec3::X };
+            // the vector unit's normalisation (dot3, the refined reciprocal root, one multiply), the unit x where the
+            // squared length is not above 1e-12
+            let l2 = dot3(d, d);
+            dv = if l2.abs() > 1e-12 { d * vrsqrt1(l2) } else { Vec3::X };
             if mode == 2 {
                 dv = Vec3::new(-dv.z, 0.0, dv.x);
             }
@@ -2899,6 +2922,7 @@ mod tests {
                     1 => a.spline(),
                     2 => a.samples(),
                     3 => d = a.backward(),
+                    5 => {} // (the whole optimiser has run above)
                     _ => {
                         // forward takes backward's result in f1: the original's own, recovered by running the port's backward
                         // on the original's samples first (checked as stage 3)
