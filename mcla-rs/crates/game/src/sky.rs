@@ -218,6 +218,11 @@ pub struct Sky {
     pub moon_color: Track,
     pub moon_glow: Track,
     pub hdr: [f32; 2],
+    /// the weather's HDRExposureClamp (the mini sky's c100 ceiling)
+    pub hdr_clamp: [f32; 3],
+    /// SkyhatMiniNoise StarFieldRepeat (the dome's StarFieldUVRepeat), the one tune file of
+    /// the sky control object
+    pub star_repeat: f32,
     /// how far over the dome shows its keyframes (the older "clear" set is authored
     /// close to display values, the HDR weather sets much darker)
     pub gain: f32,
@@ -419,6 +424,17 @@ mod shadow_fade_tests {
     }
 }
 
+/// `<tag x="" y="" z=""/>` of a tune file.
+fn xyz(x: &str, tag: &str) -> Option<[f32; 3]> {
+    let r = &x[x.find(&format!("<{} ", tag))?..];
+    let r = &r[..r.find('>')?];
+    let get = |a: &str| -> Option<f32> {
+        let i = r.find(&format!("{}=\"", a))? + 3;
+        r[i..i + r[i..].find('"')?].trim().parse().ok()
+    };
+    Some([get("x")?, get("y")?, get("z")?])
+}
+
 impl Sky {
     pub fn load(data_dir: &str) -> Sky {
         Self::load_weather(data_dir, Weather::Clear)
@@ -496,8 +512,14 @@ impl Sky {
                 }).unwrap_or(d)
             };
             s.hdr = [value("HDRExposure", 0.8), value("HDRSunExposure", 0.1)];
+            s.hdr_clamp = xyz(&x, "HDRExposureClamp").unwrap_or([2.38, 1.52, 1.48]);
             s.gain = if weather == Weather::Clear { 1.5 } else { 2.4 };
         }
+        // rage__SkyhatMiniNoise (the sky control object's own tune)
+        s.star_repeat = read("0xbe56a98a").and_then(|x| {
+            let i = x.find("<StarFieldRepeat value=\"")? + 24;
+            x[i..i + x[i..].find('"')?].trim().parse().ok()
+        }).unwrap_or(26.1875);
         if let Some(x) = read("SunDirection.xml") {
             s.sun_dir = tracks(&x, "SunDirectionKF").into_iter().next().unwrap_or_default();
         }
@@ -621,8 +643,9 @@ impl Sky {
                 one(cso[0]),
                 one(cso[3]),
                 thick,
-                // (StarFieldUVRepeat: 26.19 in every recording; its source was not found)
-                one(26.19),
+                // StarFieldUVRepeat: SkyhatMiniNoise StarFieldRepeat (26.1875; the recordings'
+                // 26.19), pushed as it is by the sky control object (F-52332)
+                one(self.star_repeat),
                 [0.0; 4],
                 [0.0; 4],
                 v3(sky, 0.0),
@@ -649,10 +672,10 @@ impl Sky {
                 one(ct[3]),
                 one(cso[1]),
                 thick,
-                // StarFieldBrightness: (0, 0, 0, 4) in Nice weather, whose star brightness key is 0.
-                // (What feeds y and z - the galaxy's strength and the stars' threshold - could not
-                // be told from that weather.)
-                [mg[2], 0.0, 0.0, 4.0],
+                // StarFieldBrightness (F-52332): with s the star brightness and t the threshold
+                // (channels 2 and 3 of m_MoonBrightnessGlowStarBrightnessKF), (3 s s, 0.24 s,
+                // 3 s s t, 4); (0, 0, 0, 4) in Nice weather, whose s is 0
+                [mg[2] * mg[2] * 3.0, mg[2] * 0.24, mg[3] * (mg[2] * mg[2] * 3.0), 4.0],
                 // MoonLight, MoonVisiblity, SunSize, MoonColorConstant, MoonPosition, MoonXVector,
                 // MoonYVector: the same in every recording (the moon below the horizon)
                 [0.25, 1.0 / 6.0, 0.75, 1.0 / 3.0],
@@ -669,6 +692,8 @@ impl Sky {
             // clump as recorded (their source is not the sky file); NoiseWarp is the third
             // channel of the detail key; [8] = (phase, cloud speed)
             perlin: [[-0.01, 0.01, 0.0, 0.0], [0.005, 0.02, 0.0, 0.0], one(1.9), one(1.0), one(1.1), one(0.76), one(ds[2]), one(1.0 / 1.3), [0.0, st[1], 0.0, 0.0], one(1.0)],
+            // HDRExposureClamp of the weather (w as recorded)
+            clamp: [self.hdr_clamp[0], self.hdr_clamp[1], self.hdr_clamp[2], 2.0],
         })
     }
 
@@ -744,6 +769,29 @@ mod tod_tests {
         assert!(near(night.light, [0.047059, 0.047059, 0.047059], 1e-5));
         assert!(near(night.to_light, [0.5, -0.86589, -0.015114], 2e-3), "{:?}", night.to_light);
         assert!(night.nfl > 0.99);
+    }
+
+    /// The sky control object's own constants: StarFieldUVRepeat from its tune file, the
+    /// weather's HDRExposureClamp (the mini sky's c100, recorded clear and stormy).
+    #[test]
+    #[ignore = "requires user's extracted lighting; set MCLA_DATA_DIR"]
+    fn sky_control_constants() {
+        let root = std::env::var("MCLA_DATA_DIR").expect("set MCLA_DATA_DIR to extracted/cache");
+        let nice = Sky::load_weather(&root, Weather::Nice);
+        let storm = Sky::load_weather(&root, Weather::Stormy);
+        let h = nice.hat(0.0, Vec3::Y).unwrap();
+        assert_eq!(h.vs[3][0], 26.1875);
+        assert_eq!(h.clamp, [2.38, 1.52, 1.48, 2.0]);
+        assert_eq!(storm.hat(0.0, Vec3::Y).unwrap().clamp, [2.0, 2.0, 2.6625, 2.0]);
+        // StarFieldBrightness at night where the weather has stars
+        for w in Weather::ALL {
+            let s = Sky::load_weather(&root, w);
+            if let Some(h) = s.hat(0.0, Vec3::Y) {
+                let mg = s.moon_glow.sample(0.0);
+                assert_eq!(h.ps[14], [mg[2] * mg[2] * 3.0, mg[2] * 0.24, mg[3] * (mg[2] * mg[2] * 3.0), 4.0]);
+                println!("{:?}: star brightness {} threshold {} -> c78 {:?}", w, mg[2], mg[3], h.ps[14]);
+            }
+        }
     }
 }
 /// The garage's own light state (garage round, 2026-10-13; LIGHTING_WORK.md "The garage"), as

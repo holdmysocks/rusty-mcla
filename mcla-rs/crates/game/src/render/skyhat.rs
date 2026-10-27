@@ -24,6 +24,8 @@ pub struct HatConsts {
     /// the Perlin pass: c64 Velocity1, c65 Velocity2, c66 Frequency1, c67 Frequency2,
     /// c68 Contrast, c69 Brightness, c70 NoiseWarp, c71 Persistance, c72 Phase, c73 ClumpBump
     pub perlin: [[f32; 4]; 10],
+    /// ps_miniSky c100 HDRExposureClamp (the weather's)
+    pub clamp: [f32; 4],
 }
 
 impl HatConsts {
@@ -44,6 +46,7 @@ impl HatConsts {
         for i in 0..10 {
             mix(&mut out.perlin[i], &o.perlin[i]);
         }
+        mix(&mut out.clamp, &o.clamp);
         out
     }
 }
@@ -227,6 +230,7 @@ impl SkyHat {
         data[..12].copy_from_slice(&c.vs);
         data[12..36].copy_from_slice(&c.ps);
         data[36..46].copy_from_slice(&c.perlin);
+        data[46] = c.clamp;
         queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(&data));
     }
 

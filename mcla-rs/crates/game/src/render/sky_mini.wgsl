@@ -17,7 +17,8 @@ struct Hat {
     vs: array<vec4<f32>, 12>,       // c64 c65 c66 c67 c68 c69 c72 c73 c75 c96 c97 c98
     ps: array<vec4<f32>, 24>,       // c64 .. c83, c100 .. c103
     perlin: array<vec4<f32>, 10>,
-    pad: array<vec4<f32>, 2>,
+    clamp: vec4<f32>,               // c100 HDRExposureClamp
+    pad: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> hat: Hat;
 @group(0) @binding(1) var s_rep: sampler;
@@ -57,9 +58,8 @@ fn fs_mini(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     // c72 SunsetColor, c73 CloudThreshold, c74 CloudBias, c75 CloudFadeOut, c76 the top clouds'
     // numbers, c77 the top clouds' colour, c78 CloudShadowStrength, c79 AzimuthStrength,
     // c80 thickness / edge / detail scale / detail strength, c81 SunSize, c82 HDRExposure,
-    // c83 HDRSunExposure. c100 is not the sky's (a register left by an earlier program: 2.38
-    // 1.52 1.48 on clear days, 2 2 2.66 in the storm - a ceiling over values that the 8-bit
-    // target cuts at 1 anyway).
+    // c83 HDRSunExposure, c100 the weather's HDRExposureClamp (recorded 2.38 1.52 1.48 on clear
+    // days, 2 2 2.66 in the storm - a ceiling over values that the 8-bit target cuts at 1 anyway).
     xs_c[64] = hat.ps[0];
     xs_c[65] = hat.ps[1];
     xs_c[66] = hat.vs[6];
@@ -80,7 +80,7 @@ fn fs_mini(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     xs_c[81] = hat.ps[17];
     xs_c[82] = hat.ps[22];
     xs_c[83] = hat.ps[23];
-    xs_c[100] = vec4<f32>(2.38, 1.52, 1.48, 2.0);
+    xs_c[100] = hat.clamp;
     var rin: array<vec4<f32>, 16>;
     var uv = floor(pos.xy) / 128.0;
     // (texel (64, 64) lies on the zenith itself, where the program divides by rho = 0; the map
