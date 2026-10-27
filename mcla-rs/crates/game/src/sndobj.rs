@@ -66,7 +66,7 @@ impl Req {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Handle(u64);
 
-/// The original's random generator: multiply-with-carry, x = lo * 0x5CDCFAA7 + carry (sub_82145020 / sub_82145080).
+/// The original's random generator: multiply-with-carry, x = lo * 0x5CDCFAA7 + carry (F-62480 / F-60851).
 struct Mwc {
     lo: u32,
     carry: u32,
@@ -88,11 +88,12 @@ impl Mwc {
     }
     /// float in [a, b)
     fn float(&mut self, a: f32, b: f32) -> f32 {
-        (self.next() & 0x7F_FFFF) as f32 * (1.0 / 8_388_608.0) * (b - a) + a
+        // (F-60851: (b - a) * the 23 bits, then one fused multiply-add with the scale 2^-23 and a)
+        ((b - a) * (self.next() & 0x7F_FFFF) as f32).mul_add(1.0 / 8_388_608.0, a)
     }
 }
 
-/// Settings handed down the tree each update (sub_8213BC50 / sub_8213B0F0).
+/// Settings handed down the tree each update (F-63029 / F-57176).
 #[derive(Clone, Copy)]
 struct Ctx {
     vol: f32,
@@ -140,8 +141,8 @@ struct Node {
     /// ms since the node was made / since it started playing
     t: f32,
     play_t: f32,
-    /// set at the node's first update (sub_8213CBD8, from the parent's offset then): the predelay to wait (ms of `t`),
-    /// the start offset, and the envelope's time origin in `t` (own predelay - the parent's offset, sub_8215C5B8 +176)
+    /// set at the node's first update (F-90115, from the parent's offset then): the predelay to wait (ms of `t`),
+    /// the start offset, and the envelope's time origin in `t` (own predelay - the parent's offset, F-82485 +176)
     wait: Option<(f32, f32, f32)>,
     /// release: (start, end) in `t` ms
     release: Option<(f32, f32)>,
@@ -228,7 +229,7 @@ struct Scene {
     playing: [Option<Handle>; 3],
 }
 
-/// The volume sliders' categories (sub_821E7770 0x821E7A4C): effects, music, voice, player vehicle, cutscene.
+/// The volume sliders' categories (F-22027 A-61259): effects, music, voice, player vehicle, cutscene.
 pub const SLIDER_CATEGORIES: [&str; 5] = ["SFX", "MUSIC", "SPEECH", "PLAYER_VEHICLES", "CUTSCENES"];
 
 /// Voice id bit for the player vehicle's sounds: the mixer's time-slow (Zone, race end) applies to them.
@@ -329,7 +330,7 @@ impl SoundLib {
         self.cats.get(&joaat(name)).copied()
     }
     /// The five AUDIO OPTIONS sliders, 0..10 each (effects, music, voice, player vehicle, cutscene): gain = value x 0.1
-    /// on the slider's category (sub_8264C2E0, sub_8238C090), as dB (-100 at 0).
+    /// on the slider's category (F-54340, F-29638), as dB (-100 at 0).
     pub fn set_sliders(&mut self, values: [u8; 5]) {
         let mut changed = false;
         for (name, v) in SLIDER_CATEGORIES.iter().zip(values) {
@@ -343,7 +344,7 @@ impl SoundLib {
         }
     }
 
-    /// The audio camera mode (sub_821ED418 with game.dat MANAGER_CAMERA): 0 bumper, 1 driver, 2 near, 3 medium, 4 far,
+    /// The audio camera mode (F-33257 with game.dat MANAGER_CAMERA): 0 bumper, 1 driver, 2 near, 3 medium, 4 far,
     /// 5 cinematic, 6 other cameras, -1 / 7 none; `bike` picks the bike groups of modes 0 / 1. Volumes only (the
     /// table's LPF / HPF are not applied by the port's mixer).
     pub fn set_camera_mode(&mut self, mode: i32, bike: bool) {
@@ -419,7 +420,7 @@ impl SoundLib {
         }
     }
 
-    /// A scene stopped without its exit sound (sub_821EC060(h, 0): the camera table's apply on NAVMAP).
+    /// A scene stopped without its exit sound (F-55770(h, 0): the camera table's apply on NAVMAP).
     pub fn scene_cut(&mut self, name: &str) {
         self.scene_stop(joaat(name), false);
     }
@@ -428,7 +429,7 @@ impl SoundLib {
         self.scenes.get(&joaat(name)).is_some_and(|s| s.on)
     }
 
-    /// sub_821EC620: refused while its blocking scene runs or another exclusive scene runs; the enter, loop and stream
+    /// F-38026: refused while its blocking scene runs or another exclusive scene runs; the enter, loop and stream
     /// sounds on the start; an exclusive scene stops the others.
     fn scene_start(&mut self, h: u32, strength: f32) {
         let sc = &self.scenes[&h];
@@ -465,7 +466,7 @@ impl SoundLib {
         }
     }
 
-    /// sub_821EC060: the enter, loop and stream sounds stop, the exit sound plays (`exit`), the records fade back.
+    /// F-55770: the enter, loop and stream sounds stop, the exit sound plays (`exit`), the records fade back.
     fn scene_stop(&mut self, h: u32, exit: bool) {
         let Some(sc) = self.scenes.get_mut(&h).filter(|s| s.on) else { return };
         sc.on = false;
@@ -482,7 +483,7 @@ impl SoundLib {
         }
     }
 
-    /// MANAGER_OPPONENT_GAINS (sub_821EE868 @821EE8F8): `w` = the racers' presence weight; above 1 its categories get
+    /// MANAGER_OPPONENT_GAINS (F-40102 @A-21706): `w` = the racers' presence weight; above 1 its categories get
     /// -3 dB x log2(w) (the object's s16 mB per doubling), at once.
     pub fn set_presence(&mut self, w: f32) {
         if self.presence.0.is_empty() {
@@ -506,7 +507,7 @@ impl SoundLib {
         }
     }
 
-    /// A category's runtime volume moved to `db` over `secs` (sub_82547F00: linear in dB, I).
+    /// A category's runtime volume moved to `db` over `secs` (F-83232: linear in dB, I).
     pub fn ramp_category(&mut self, name: &str, db: f32, secs: f32) {
         let e = self.ramps.entry(joaat(name)).or_insert((0.0, 0.0, 0.0));
         if e.1 != db {
@@ -515,8 +516,8 @@ impl SoundLib {
         }
     }
 
-    /// AudioManager_SetActiveTimeSlow for SFX_HARD (sub_821EC620 / sub_821EC060): its pitch ratio ramped to 0.1, or
-    /// back to 1, at 1 a second (K / fade time, sub_825484C8 / sub_82548768).
+    /// AudioManager_SetActiveTimeSlow for SFX_HARD (F-38026 / F-55770): its pitch ratio ramped to 0.1, or
+    /// back to 1, at 1 a second (K / fade time, F-83565 / F-44036).
     pub fn set_time_slow(&mut self, on: bool) {
         self.slow_hard.1 = if on { 0.1 } else { 1.0 };
     }
@@ -535,7 +536,7 @@ impl SoundLib {
                 changed = true;
             }
         }
-        // the per-frame scene update (sub_821ECA10): auto-stop, blocking scene, the exclusive scene, loops kept alive
+        // the per-frame scene update (F-76740): auto-stop, blocking scene, the exclusive scene, loops kept alive
         let mut stops: Vec<(u32, bool)> = Vec::new();
         let excl = self.scenes.iter().find(|(_, s)| s.on && s.flags & 8 != 0).map(|x| *x.0);
         let mut alive: Vec<(u32, usize, u32)> = Vec::new();
@@ -708,7 +709,7 @@ impl SoundLib {
         let o = self.snd.get(hash)?.to_vec();
         let s = audcfg::parse_sound(&o);
         let h = s.header.clone();
-        // variances, drawn once (sub_8213DBC0)
+        // variances, drawn once (F-40563)
         let vol = (h.volume as i32 + self.rng.int(-(h.volume_var as i32), h.volume_var as i32)) as f32 * 0.01;
         let pitch = (h.pitch as i32 + self.rng.int(-(h.pitch_var as i32), h.pitch_var as i32)) as i16 as i32;
         let pan = if h.pan == -1 { -1 } else { ((h.pan as i32 + self.rng.int(-(h.pan_var as i32), h.pan_var as i32) + 360).rem_euclid(360)) as i16 };
@@ -777,7 +778,7 @@ impl SoundLib {
         VOICE_BASE + self.next_voice
     }
 
-    /// Randomized (sub_82152F18 / sub_82152CB8): step mode with tristate 5, else a weighted pick avoiding the history.
+    /// Randomized (F-15148 / F-39111): step mode with tristate 5, else a weighted pick avoiding the history.
     fn pick(&mut self, hash: u32, h: &SoundHeader, hlen: usize, children: &[(u32, f32)]) -> Option<u32> {
         let n = children.len();
         if n == 0 {
@@ -860,7 +861,7 @@ impl SoundLib {
         }
     }
 
-    /// A story scene's audio (sub_821F5F98 prepares, sub_821F5AA0 plays): game.dat `CUTSCENES_<scene>` (type 21) - +11 the
+    /// A story scene's audio (F-16992 prepares, F-58551 plays): game.dat `CUTSCENES_<scene>` (type 21) - +11 the
     /// dialogue (+15 instead while it is wet, audio manager +1044, unless NULL_SOUND), +19 the effects stream unless
     /// NULL_SOUND, +23 the mixer scene. Flags +10: 0x1 the speech stops, 0x2 the police speech stops (`main.rs`), 0x4 the
     /// garage district (not ported); +27 the music manager's bits (none set on a story scene). None: no such object.
@@ -953,7 +954,7 @@ impl SoundLib {
         let mut insts = std::mem::take(&mut self.insts);
         let (lp, lr, lf) = self.listener;
         for inst in insts.iter_mut() {
-            // Doppler (sub_8215F568): radial speed from the distance change, ratio c / (c + v), smoothed 50/50
+            // Doppler (F-42745): radial speed from the distance change, ratio c / (c + v), smoothed 50/50
             if let Some(p) = inst.req.pos {
                 let d = (p - lp).length();
                 if let Some(pd) = inst.prev_dist {
@@ -988,7 +989,7 @@ impl SoundLib {
         }
         n.t += ms;
         if n.st == St::Waiting {
-            // predelay and start offset (sub_8213CBD8): the parent's elapsed offset first eats the predelay - worked out
+            // predelay and start offset (F-90115): the parent's elapsed offset first eats the predelay - worked out
             // once, when the sound is played (the wait then runs on the sound's own clock; recorded: SST_ENV_TAIL's 250 ms
             // predelay under SST_MULTI starts its envelope 250 ms after the burn's start, work/slipstream/audiorec)
             let (pd, so, _) = *n.wait.get_or_insert_with(|| {
@@ -1003,7 +1004,7 @@ impl SoundLib {
         } else {
             n.play_t += ms;
         }
-        // settings (sub_8213BC50 / sub_8213B0F0)
+        // settings (F-63029 / F-57176)
         let h = &n.h;
         let mut vol = n.vol + if h.no_inherit & 0x80 != 0 { 0.0 } else { parent.vol };
         let pitch = n.pitch + if h.no_inherit & 0x40 != 0 { 0 } else { parent.pitch };
@@ -1013,7 +1014,7 @@ impl SoundLib {
             (a, -1) => a,
             (a, b) => ((a as i32 + b as i32).rem_euclid(360)) as i16,
         };
-        // attack (sub_8213C4C8) and release (sub_8213C3D0): linear amplitude, in dB
+        // attack (F-37133) and release (F-31923): linear amplitude, in dB
         if h.attack > 0 && n.play_t < h.attack as f32 {
             vol += lin2db((n.play_t / h.attack as f32).clamp(0.0, 1.0));
         }
@@ -1095,7 +1096,7 @@ impl SoundLib {
                     if *count != -1 && *plays >= *count as i32 {
                         true
                     } else {
-                        // made again from its reference and played from the restart offset (sub_8215DE68)
+                        // made again from its reference and played from the restart offset (F-87646)
                         let restart = *restart_ms as f32;
                         match self.make(*child_hash, 1) {
                             Some(c) => **child = c,
@@ -1144,7 +1145,7 @@ impl SoundLib {
                 live.is_empty() && *count != -1 && *made >= *count as i32
             }
             Kind::Envelope { a, d, s, hold, r, curves, child, rel_from } => {
-                // ADSR on the child's volume (sub_8215C5B8): value = a * d * r, linear. Its times count from its play
+                // ADSR on the child's volume (F-82485): value = a * d * r, linear. Its times count from its play
                 // time + own predelay - the parent's offset (+176 = +88 - +108 + +96): the start offset is not in them
                 // (recorded: SST_ENV_TAIL, PreDelay 250, StartOffset 250, rises as sin((t - 250)/500 * pi/2) from the burn's
                 // start)
@@ -1194,14 +1195,14 @@ impl SoundLib {
         }
     }
 
-    /// A playing wave to the mixer: the voice's gain chain (sub_8214BBD0), the pan law (sub_821653A0 / sub_821651B8),
+    /// A playing wave to the mixer: the voice's gain chain (F-24161), the pan law (F-56973 / F-67363),
     /// pitch and Doppler.
     fn emit(&mut self, v: Leaf, inst: &Instance, listener: (Vec3, Vec3, Vec3), audio: &mut Audio) {
         let cat = self.cats.get(&v.ctx.category).copied().unwrap_or(Category { volume: 0.0, pitch: 0, lpf: 23900, hpf: 0, rolloff_scale: 1.0 });
         let (lp, lr, lf) = listener;
         let k = std::f32::consts::FRAC_1_SQRT_2;
         let mut rolloff = 0.0;
-        // positional: unset counts as positional unless a pan or speaker mask is set (0x8214BCD8)
+        // positional: unset counts as positional unless a pan or speaker mask is set (A-47267)
         let positional = inst.req.pos.is_some() && if v.ctx.pan == -1 && v.ctx.mask == 0 { v.ctx.positional != 0 } else { v.ctx.positional == 1 };
         let dir: Option<Vec3> = if positional {
             let p = inst.req.pos.unwrap() - lp;
@@ -1223,7 +1224,7 @@ impl SoundLib {
         let (gl, gr) = if v.stereo {
             (1.0, 1.0)
         } else if v.ctx.mask != 0 && !positional {
-            // speaker mask in stereo (sub_821651B8): front to its side, centre / surround add 0.7071, / sqrt(bits)
+            // speaker mask in stereo (F-67363): front to its side, centre / surround add 0.7071, / sqrt(bits)
             let m = v.ctx.mask;
             let mut l = if m & 1 != 0 { 1.0 } else { 0.0 };
             let mut r = if m & 2 != 0 { 1.0 } else { 0.0 };
@@ -1253,7 +1254,7 @@ impl SoundLib {
     }
 }
 
-/// The stereo pan of a direction in listener space (x right, y up, z forward; sub_821653A0, folded to stereo:
+/// The stereo pan of a direction in listener space (x right, y up, z forward; F-56973, folded to stereo:
 /// L = FL + 0.7071 SL, R = FR + 0.7071 SR).
 pub fn pan_gains(d: Vec3) -> (f32, f32) {
     let k = std::f32::consts::FRAC_1_SQRT_2;
@@ -1280,13 +1281,13 @@ struct Leaf {
     stereo: bool,
 }
 
-/// A stop request down the tree (sub_8213D9D8): the release time, or done at once without one.
+/// A stop request down the tree (F-58485): the release time, or done at once without one.
 fn stop_node(n: &mut Node) {
     if n.st == St::Done || n.release.is_some() {
         return;
     }
     if n.h.release >= 0 && n.st == St::Playing {
-        // sub_8213D9D8: a sound with a ReleaseTime only marks its own release (start = now, end = now + release) and
+        // F-58485: a sound with a ReleaseTime only marks its own release (start = now, end = now + release) and
         // returns; its children are not stopped and play on under the fading parent until the release ends (recorded:
         // the slipstream burn SLIPSTREAM_NITROUS_MASTER, ReleaseTime 2000, kept both SST envelopes at their full value
         // for the 2 s after the stop - work/slipstream/audiorec)
@@ -1410,6 +1411,23 @@ fn decode_mp3_whole_from(dec: rodio::Decoder<std::io::BufReader<std::fs::File>>,
 
 #[cfg(test)]
 mod tests {
+
+    /// F-60851 against the original's own code on 4000 cases (work/audio2/verify/ref2.py): value and next state
+    #[test]
+    fn mwc_float_is_the_originals() {
+        let mut bad = 0;
+        for line in include_str!("mwc_float_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<u32> = i.split(' ').map(|x| u32::from_str_radix(&x.replace('_', ""), 16).unwrap()).collect();
+            let w: Vec<u32> = o.split(' ').map(|x| u32::from_str_radix(&x.replace('_', ""), 16).unwrap()).collect();
+            let mut m = Mwc { lo: v[0], carry: v[1] };
+            let f = m.float(f32::from_bits(v[2]), f32::from_bits(v[3]));
+            if f.to_bits() != w[0] || m.lo != w[1] || m.carry != w[2] {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0);
+    }
     use super::*;
 
     /// The streamed decode gives the same samples as the whole decode (MCLA_AUDIO_DIR = the converted audio,
@@ -1482,7 +1500,7 @@ mod tests {
         assert_eq!(p(&lib, "SFX_HARD"), hard);
     }
 
-    /// A story scene's audio (sub_821F5F98): the new career's two scenes - CUT_INTRO has its stream and no effects,
+    /// A story scene's audio (F-16992): the new career's two scenes - CUT_INTRO has its stream and no effects,
     /// GH_06 its dialogue and its effects stream; GH_06's mixer scene takes the cars out (-100 dB) and ambient traffic
     /// down 8 dB.
     #[test]

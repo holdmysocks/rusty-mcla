@@ -36,7 +36,7 @@ pub fn lin2db(x: f32) -> f32 {
     }
 }
 
-/// dB to linear gain (sub_821493F8): `10^(dB * 0.05)`, 0 below -100 dB.
+/// dB to linear gain (F-42985): `10^(dB * 0.05)`, 0 below -100 dB.
 pub fn db2lin(db: f32) -> f32 {
     if db - (-100.0) >= 0.0 {
         10f32.powf(db * 0.05)
@@ -46,7 +46,7 @@ pub fn db2lin(db: f32) -> f32 {
 }
 
 /// One `.dat` file: `u32 version, u32 size, data[size], u32 strsize, strings, u32 count, u32 namebytes`, then per object
-/// `{u8 len, name, u32 offset (into data), u32 size}` (loader sub_8214D930).
+/// `{u8 len, name, u32 offset (into data), u32 size}` (loader F-76779).
 pub struct Dat {
     pub version: u32,
     data: Vec<u8>,
@@ -187,10 +187,10 @@ impl Dat {
 
 // ------------------------------------------------------------------------------------------------ sound objects
 
-/// Field sizes of the sound header by mask bit (sub_8213B2E0).
+/// Field sizes of the sound header by mask bit (F-65201).
 const FIELD_SIZE: [usize; 24] = [2, 2, 2, 2, 2, 2, 2, 2, 4, 4, 2, 2, 2, 4, 4, 2, 1, 1, 4, 4, 4, 4, 4, 4];
 
-/// The common header of a sound object, with the defaults of sub_8213AF28 for absent fields.
+/// The common header of a sound object, with the defaults of F-11939 for absent fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SoundHeader {
     pub kind: u8,
@@ -401,7 +401,7 @@ pub fn parse_sound(o: &[u8]) -> Sound {
 /// DEFAULT_ROLLOFF's polynomial constants (0x82006BBC..0x82006BEC, float32).
 const ROLL: [f32; 11] = [63.95, 0.027_052_762, -17.042_1, 62.4395, 4.3724, -2.5018, 0.715, 0.9942, -0.2507, -0.5388, 0.2201];
 
-/// The built-in DEFAULT_ROLLOFF (sub_8215F2D0, curve type 13): 0 dB below 4.99, -100 dB from 128.
+/// The built-in DEFAULT_ROLLOFF (F-98578, curve type 13): 0 dB below 4.99, -100 dB from 128.
 pub fn default_rolloff_db(d: f32) -> f32 {
     if d - 128.0 >= 0.0 {
         return -100.0;
@@ -426,7 +426,7 @@ pub fn scaled_distance(d: f32, s: f32) -> Option<f32> {
     }
 }
 
-/// A curves.dat object (Init sub_82164840, Eval sub_82164DB8).
+/// A curves.dat object (Init F-57265, Eval F-33490).
 #[derive(Clone, Debug)]
 pub struct Curve {
     pub kind: u8,
@@ -484,7 +484,7 @@ impl Curve {
 
     pub fn eval(&self, x: f32) -> f32 {
         if let (4, CurveParams::Points(p)) = (self.kind, &self.params) {
-            // piecewise linear; input clamped to the first / last point (sub_82164090)
+            // piecewise linear; input clamped to the first / last point (F-37998)
             let Some(first) = p.first() else { return 0.0 };
             let last = p[p.len() - 1];
             let x = x.clamp(first.0, last.0.max(first.0));
@@ -497,7 +497,7 @@ impl Curve {
             }
             return last.1;
         }
-        // (sub_82164DB8 @82164E04: fsel against the range's min, then its max - a NaN input becomes the min)
+        // (F-33490 @A-60868: fsel against the range's min, then its max - a NaN input becomes the min)
         let x = if self.flags & 3 == 1 { fsel(fsel(x - self.min, x, self.min) - self.max, self.max, fsel(x - self.min, x, self.min)) } else { x };
         match &self.params {
             CurveParams::Const(c) => *c,
@@ -510,7 +510,8 @@ impl Curve {
                 } else if y0 == y1 {
                     y0
                 } else {
-                    y0 + (x - x0) / (x1 - x0) * (y1 - y0)
+                    // (F-11926: the divide, then one fused multiply-add)
+                    ((x - x0) / (x1 - x0)).mul_add(y1 - y0, y0)
                 };
                 if self.kind == 2 {
                     y
@@ -519,7 +520,7 @@ impl Curve {
                 }
             }
             CurveParams::Sine { flip_in, flip_out } => {
-                // (sub_821642A0: fsel to 0, then to 1 - a NaN input becomes 0)
+                // (F-87850: fsel to 0, then to 1 - a NaN input becomes 0)
                 let xi = if *flip_in { 1.0 - x } else { x };
                 let xi = fsel(xi, xi, 0.0);
                 let xi = fsel(xi - 1.0, 1.0, xi);
@@ -576,7 +577,7 @@ impl Curve {
 
 // ------------------------------------------------------------------------------------------------ categories
 
-/// A category after resolution from BASE down (sub_82149818).
+/// A category after resolution from BASE down (F-52968).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Category {
     /// dB
@@ -595,14 +596,14 @@ pub fn resolve_categories(cats: &Dat) -> HashMap<u32, Category> {
 }
 
 /// As [`resolve_categories`] with the run-time volume of the categories' controllers (the volume sliders, the camera
-/// table ...): `runtime[hash]` dB (20 log10 of the product of the controllers' gains, sub_82548888) is added to that
+/// table ...): `runtime[hash]` dB (20 log10 of the product of the controllers' gains, F-61464) is added to that
 /// category's own volume and so passed down to its children.
 pub fn resolve_categories_with(cats: &Dat, runtime: &HashMap<u32, f32>) -> HashMap<u32, Category> {
     resolve_categories_rt(cats, runtime, &HashMap::new())
 }
 
 /// The same with the controllers' pitch too: `cents[hash]` (trunc(1200 log2 of the product of the controllers'
-/// ratios), sub_82548888) is added to that category's own pitch and passed down.
+/// ratios), F-61464) is added to that category's own pitch and passed down.
 pub fn resolve_categories_rt(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &HashMap<u32, i32>) -> HashMap<u32, Category> {
     let mut out = HashMap::new();
     fn walk(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &HashMap<u32, i32>, h: u32, parent: Option<Category>, out: &mut HashMap<u32, Category>, depth: usize) {
@@ -635,6 +636,22 @@ pub fn resolve_categories_rt(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &Ha
 
 #[cfg(test)]
 mod tests {
+
+    /// F-11926 (type 2 curve: segment eval) against the original's own code on 4000 cases (work/audio2/verify/ref1.py)
+    #[test]
+    fn curve2_is_the_originals() {
+        let mut bad = 0;
+        for line in include_str!("fixtures/curve2_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<f32> = i.split(' ').skip(1).map(|x| f32::from_bits(u32::from_str_radix(&x.replace('_', ""), 16).unwrap())).collect();
+            let want: u32 = { let x = o.split(' ').nth(1).unwrap(); u32::from_str_radix(&x.replace('_', ""), 16).unwrap() };
+            let c = Curve { kind: 2, flags: 0, min: 0.0, max: 0.0, params: CurveParams::Points(vec![(v[1], v[2]), (v[3], v[4])]) };
+            if c.eval(v[0]).to_bits() != want {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0);
+    }
     use super::*;
 
     #[test]

@@ -1,5 +1,5 @@
 //! The cars' sounds beside the engine and the collisions, as the original's car audio entity makes them
-//! (mcCarAudioEntity, base update sub_8234F9A0): the tyres' rolling, skid and chirp sounds by the surface's MATERIALS_*
+//! (mcCarAudioEntity, base update F-36837): the tyres' rolling, skid and chirp sounds by the surface's MATERIALS_*
 //! object, the suspension's damper and bottom-out one-shots, the hydraulics' rams and rocking, the wipeout and
 //! two-wheel loops, the horn, the police siren, the turbo whine and blow-off, the nitrous loops and the damage loop;
 //! the computer racers' engines (the 7 nearest, `_O_` objects) and the ambient traffic's engines, tyres, skids and
@@ -48,16 +48,22 @@ fn is_null(h: u32) -> bool {
     h == 0 || h == joaat("NULL_SOUND")
 }
 
-/// Linear step toward a target, clamped there (sub_821CE490).
+/// Linear step toward a target, clamped there (F-90102).
 fn approach(p: &mut f32, target: f32, step: f32) {
+    approach_fma(p, target, step, 1.0);
+}
+
+/// F-90102 (audio2 2026-10-27): `p` steps toward `target` by `a * b` with the multiply and the add fused
+/// (the original's fmadds / fnmsubs), clamped at the target. Verified bit for bit against the original (b1 evidence).
+fn approach_fma(p: &mut f32, target: f32, a: f32, b: f32) {
     if *p < target {
-        *p = (*p + step).min(target);
-    } else {
-        *p = (*p - step).max(target);
+        *p = a.mul_add(b, *p).min(target);
+    } else if *p > target {
+        *p = (-a).mul_add(b, *p).max(target);
     }
 }
 
-/// `map(curve, lo, hi, x0, x1, x)` = sub_82165128.
+/// `map(curve, lo, hi, x0, x1, x)` = F-82373.
 fn map(lib: &SoundLib, curve: u32, lo: f32, hi: f32, x0: f32, x1: f32, x: f32) -> f32 {
     let t = if x <= x0 {
         0.0
@@ -73,7 +79,7 @@ fn cents(ratio: f32) -> i32 {
     (1200.0 * ratio.max(1e-6).log2()) as i32
 }
 
-/// A pitch ratio as sub_8213CB40 turns it into the voice's cents (+80): log10 in double (sub_823DB918 = ln x
+/// A pitch ratio as F-98474 turns it into the voice's cents (+80): log10 in double (F-46044 = ln x
 /// 0.4342944819032518, 0x8205D018), rounded to single, times 3.321928 (0x82002C44) and 1200 (0x82002C40) in single,
 /// truncated (fctiwz). (Recorded on the slipstream loop: 292 updates, every value equal - work/slipstream/audiorec.)
 fn voice_cents(ratio: f32) -> i32 {
@@ -213,7 +219,7 @@ struct WheelRec {
 /// One racing car's sounds (player or computer racer).
 pub struct CarSounds {
     player: bool,
-    /// ONESHOT_PARAMS +92: the pass-by whoosh (sub_8234A5F0) and when it last played (5 s apart)
+    /// ONESHOT_PARAMS +92: the pass-by whoosh (F-50805) and when it last played (5 s apart)
     whoosh_hash: u32,
     whoosh_at: f32,
     skid_db: f32,
@@ -257,7 +263,7 @@ pub struct CarSounds {
     sst_burn: Option<Handle>,
     sst_loop: Option<Handle>,
     sst_full: Option<Handle>,
-    /// this frame the player's burn asked for PLAYER_NITROUS (sub_82327598: mix slot 18 was not on yet)
+    /// this frame the player's burn asked for PLAYER_NITROUS (F-58518: mix slot 18 was not on yet)
     pub sst_speech: bool,
     /// MCLA_CAR_AUDIO trace: the slots last printed and when
     sst_seen: (u8, f32),
@@ -379,14 +385,14 @@ impl CarSounds {
     pub fn update(&mut self, lib: &mut SoundLib, mats: &Materials, c: &CarIn, cam_mode: i32, dt: f32) {
         self.clock += dt;
         if c.shift > 0 && self.prev_shift == 0 {
-            // the upshift's start (this+260, sub_82347580 @8234763C)
+            // the upshift's start (this+260, F-33101 @A-66878)
             self.upshift_at = self.clock;
         }
         self.turbo(lib, c, dt);
         self.tyres(lib, mats, c, dt);
         self.suspension(lib, c);
         self.hydraulics(lib, c, dt);
-        // (the base update calls vt+132 after the gear shift sub_82347580, before the horn sub_8234A560 and the nitro vt+68)
+        // (the base update calls vt+132 after the gear shift F-33101, before the horn F-21226 and the nitro vt+68)
         self.slipstream(lib, mats, c);
         self.horn(lib, c);
         self.nitrous(lib, mats, c, cam_mode);
@@ -394,7 +400,7 @@ impl CarSounds {
         self.prev_shift = c.shift;
     }
 
-    // ---- 1. tyres (sub_8234F428)
+    // ---- 1. tyres (F-21922)
     fn tyres(&mut self, lib: &mut SoundLib, mats: &Materials, c: &CarIn, dt: f32) {
         let mut max_slide = 0.0f32;
         let mut ground = 0;
@@ -450,7 +456,7 @@ impl CarSounds {
         }
     }
 
-    /// update_wheel (sub_8234EB00); record 4 is the car-level one; `wet` picks the wet fields.
+    /// update_wheel (F-84461); record 4 is the car-level one; `wet` picks the wet fields.
     #[allow(clippy::too_many_arguments)]
     fn wheel(&mut self, lib: &mut SoundLib, i: usize, v: f32, slide: f32, m: u32, pos: Vec3, burn: bool, wet: bool, dt: f32) {
         let Some(o) = lib.game.get(m).map(|o| o.to_vec()) else { return };
@@ -500,7 +506,7 @@ impl CarSounds {
         if r.skid.is_none() && slide <= thr {
             r.s = thr;
         } else {
-            approach(&mut r.s, slide, rate * dt);
+            approach_fma(&mut r.s, slide, rate, dt);
         }
         if r.s > thr {
             r.t = (r.s - thr) / (1.0 - thr).max(1e-6);
@@ -516,7 +522,7 @@ impl CarSounds {
                 (false, true) => be_u32(&o, 150 + w),
                 (false, false) => be_u32(&o, 166 + w),
             };
-            // skid_voice (sub_8234DBE8): GLOBAL_SKIDS' offsets on top; the LPF (voice +88) is not applied by the mixer
+            // skid_voice (F-75975): GLOBAL_SKIDS' offsets on top; the LPF (voice +88) is not applied by the mixer
             let req = Req { volume: lin2db(r.gain) + self.skid_db, pitch: cents(r.ratio) + self.skid_cents, start_pct: if car_level { 0.0 } else { 25.0 * i as f32 }, player, ..Req::at(pos) };
             keep(lib, &mut r.skid, hash, req);
         } else {
@@ -526,7 +532,7 @@ impl CarSounds {
         r.prev = slide;
     }
 
-    // ---- 2.2 suspension (sub_8234CAC0)
+    // ---- 2.2 suspension (F-61593)
     fn suspension(&mut self, lib: &mut SoundLib, c: &CarIn) {
         if self.susp.is_empty() {
             return;
@@ -560,7 +566,7 @@ impl CarSounds {
         }
     }
 
-    // ---- 2.3 / 2.4 hydraulics, rocking, wipeout loops (sub_8234D518), two wheels
+    // ---- 2.3 / 2.4 hydraulics, rocking, wipeout loops (F-81129), two wheels
     fn hydraulics(&mut self, lib: &mut SoundLib, c: &CarIn, dt: f32) {
         if self.susp.is_empty() {
             return;
@@ -634,10 +640,10 @@ impl CarSounds {
                 }
             }
         }
-        // two wheels (sub_823488B0 / sub_82348978): the loop from the lean's start, the end once more than two wheels
+        // two wheels (F-90315 / F-12477): the loop from the lean's start, the end once more than two wheels
         // touch again (tyres)
         if c.bike {
-            // a motorcycle (@8234FCCC..FD44): the gyro's stunt state from 0 starts the loop, back to 0 stops it and plays
+            // a motorcycle (@A-69806..FD44): the gyro's stunt state from 0 starts the loop, back to 0 stops it and plays
             // the DOWN sound; 1 <-> 99 and -1 <-> -99 change nothing
             let on = c.gyro != 0;
             if on && !self.prev_two {
@@ -680,14 +686,14 @@ impl CarSounds {
     }
 
     // ---- 5. siren
-    /// sub_8234A000: the alert, only when nothing runs in the siren's slot.
+    /// F-10917: the alert, only when nothing runs in the siren's slot.
     pub fn siren_alert(&mut self, lib: &mut SoundLib, pos: Vec3) {
         if free(lib, &self.siren) {
             self.siren = lib.play_hash(be_u32(&self.police, 10), self.req(pos));
         }
     }
 
-    /// The AI's start siren (sub_8270C638): at once, or after `delay` s (the countdown +1140; sub_8234A180 sets the
+    /// The AI's start siren (F-60528): at once, or after `delay` s (the countdown +1140; F-39258 sets the
     /// siren flag even while the slot plays something else, the loop follows when it ends).
     pub fn siren_start(&mut self, delay: f32) {
         if delay <= 0.0 {
@@ -701,7 +707,7 @@ impl CarSounds {
         }
     }
 
-    /// sub_8234A5F0: the player passing this car (traffic/RULE.md 5) - a one-shot at most every 5 s.
+    /// F-50805: the player passing this car (traffic/RULE.md 5) - a one-shot at most every 5 s.
     pub fn whoosh(&mut self, lib: &mut SoundLib, pos: Vec3, vol: f32, pitch: i32) {
         if self.clock - self.whoosh_at < 5.0 || is_null(self.whoosh_hash) {
             return;
@@ -710,7 +716,7 @@ impl CarSounds {
         lib.play_hash(self.whoosh_hash, Req::at(pos).vol(vol).pitch(pitch));
     }
 
-    /// warn(cop, on) (sub_8270CEC0): on - the INTERSECTION loop (+14) if the siren slot is free; off - the siren starts
+    /// warn(cop, on) (F-12823): on - the INTERSECTION loop (+14) if the siren slot is free; off - the siren starts
     /// at once in a pursuit (the loop that held the slot stops first: whether it ends by itself is open, siren/RULE.md 8.4).
     pub fn siren_warn(&mut self, lib: &mut SoundLib, pos: Vec3, on: bool, pursuit: bool) {
         if on {
@@ -733,7 +739,7 @@ impl CarSounds {
         }
     }
 
-    /// sub_8234A280: the slot stops, the siren flag clears.
+    /// F-59693: the slot stops, the siren flag clears.
     pub fn siren_stop(&mut self, lib: &mut SoundLib) {
         self.siren_delay = None;
         self.warn = 0.0;
@@ -741,7 +747,7 @@ impl CarSounds {
         stop(lib, &mut self.siren);
     }
 
-    /// Per frame (sub_8270D800 countdown, sub_8234C768): the delayed start, then the loop kept running, wound down
+    /// Per frame (F-79540 countdown, F-92699): the delayed start, then the loop kept running, wound down
     /// (600 cents/s to -2400, then -100 dB) while the car is wrecked, +10 dB on the player's car.
     pub fn siren_frame(&mut self, lib: &mut SoundLib, pos: Vec3, wrecked: bool, dt: f32) {
         // (a running warn pauses the delayed start)
@@ -789,7 +795,7 @@ impl CarSounds {
         let level = c.parts[1].min(3) as usize;
         let r = 19 + 40 * level;
         let s = c.rpm_s;
-        // blow-off and boost (sub_8234BF60)
+        // blow-off and boost (F-32506)
         let thr = be_f32(t, r + 20);
         let fall = (c.throttle - self.prev_throttle) / dt.max(1e-6);
         let shift_event = c.shift != 0 && self.prev_shift == 0;
@@ -811,7 +817,7 @@ impl CarSounds {
             approach(&mut self.boost, 0.0, rate);
         }
         self.prev_throttle = c.throttle;
-        // whine (sub_8234C1F8)
+        // whine (F-19395)
         let (hash, start) = if level != 0 {
             (be_u32(t, r), be_f32(t, r + 4))
         } else if c.parts[0] != 0 {
@@ -830,7 +836,7 @@ impl CarSounds {
         keep(lib, &mut self.turbo_v, hash, req);
     }
 
-    /// The launch chirp (sub_8234C978, the nitrous fire's first call and the slipstream burn's start): when the
+    /// The launch chirp (F-40027, the nitrous fire's first call and the slipstream burn's start): when the
     /// clock (this+156) is at least 0.5 s (0x82003A24) past the last chirp (this+264), TIRE_CHIRP_MASTER (the
     /// surface's MATERIALS_* +182) at every driven wheel (entity+1516+44i) with contact (+529) and a material (+464);
     /// this+264 = the clock once a wheel chirped.
@@ -868,7 +874,7 @@ impl CarSounds {
         // every start: 0 dB at the entity (P+20 = this+80), flags |0x20
         let at = Req { player: self.player, ..Req::at(c.pos) };
         let live = |lib: &SoundLib, h: &Option<Handle>| h.is_some_and(|h| lib.playing(h));
-        // a slot's stop (sub_8213C218) is only made when the slot holds a handle
+        // a slot's stop (F-31667) is only made when the slot holds a handle
         let halt = |lib: &mut SoundLib, slot: &mut Option<Handle>, what: &str| {
             if live(lib, slot) {
                 sst_log(format_args!("STOP {what} f={f}"));
@@ -876,7 +882,7 @@ impl CarSounds {
             stop(lib, slot);
         };
         if !self.player {
-            // mcOpponentAudioEntity vt+132 (sub_82364DC8): only the burn
+            // mcOpponentAudioEntity vt+132 (F-47862): only the burn
             if c.sst.is_some_and(|(l, b)| b || l > 0.0) || live(lib, &self.sst_burn) {
                 sst_log(format_args!("O f={f} L={level:.5} burn={} h={}", burning as u8, live(lib, &self.sst_burn) as u8));
             }
@@ -891,7 +897,7 @@ impl CarSounds {
             }
             return;
         }
-        // mcPlayerAudioEntity vt+132 (sub_82327598)
+        // mcPlayerAudioEntity vt+132 (F-58518)
         if c.sst.is_some_and(|(l, b)| b || l > 0.0) || live(lib, &self.sst_burn) || live(lib, &self.sst_loop) || live(lib, &self.sst_full) {
             sst_log(format_args!(
                 "P f={f} clk={:.4} chirp={:.4} L={level:.5} burn={} burnh={} loop={} beep={}",
@@ -961,7 +967,7 @@ impl CarSounds {
             if level >= 1.0 {
                 halt(lib, &mut self.sst_loop, "loop");
             } else {
-                // the loop's volume (dB, voice +64: sub_82148CB0) and pitch (cents, voice +80: sub_8213CB40) set every
+                // the loop's volume (dB, voice +64: F-46088) and pitch (cents, voice +80: F-98474) set every
                 // frame; a new loop is started with the request's volume = this frame's
                 let h = be_u32(p, 99);
                 if free(lib, &self.sst_loop) {
@@ -1019,7 +1025,7 @@ impl CarSounds {
 
     // ---- the moving damage parts (DAMAGE_PARTS_RULE.md): TUNERS_DAMAGE +15 hood / +43 trunk / +71 rear / +99 front
     // bumper records {move threshold, move loop, open-stop threshold, open-stop, shut threshold, shut, break-off}
-    /// A window's hit sum passing 1 or 2 (0x82376B78 -> `sub_82348BD0` on the car's sound entity): the
+    /// A window's hit sum passing 1 or 2 (F-66214 -> `F-45199` on the car's sound entity): the
     /// entity's GLOBAL_CAR_PARTICLES (+1256) +18 - CAR_BANGERS_GLASS_LARGE - once at the window's place,
     /// 0 dB, LPF field 23900, flags 4; heard whether or not the car is drawn.
     pub fn glass(&mut self, lib: &mut SoundLib, dmg: &crate::damagemap::CarDamage, pos: Vec3, rot: glam::Quat) {
@@ -1045,7 +1051,7 @@ impl CarSounds {
         let rec = |r: usize| 15 + 28 * r;
         let fdt = DamageParts::FRAME;
         let (clock, player) = (self.clock, self.player);
-        // the flaps' move loops (sub_8234A680): while loose, |drawn - last| / dt >= rec+0 (0.6 rad/s), at the particle
+        // the flaps' move loops (F-32243): while loose, |drawn - last| / dt >= rec+0 (0.6 rad/s), at the particle
         for (i, f) in [&parts.hood, &parts.trunk].into_iter().enumerate() {
             let r = rec(i);
             let rate = (f.drawn() - f.drawn_prev()).abs() / fdt;
@@ -1056,7 +1062,7 @@ impl CarSounds {
                 stop(lib, &mut self.flap_move[i]);
             }
         }
-        // the bumpers' creak loops (sub_8234A768): the fastest loose end relative to the car >= rec+0 (0.4 m/s)
+        // the bumpers' creak loops (F-27481): the fastest loose end relative to the car >= rec+0 (0.4 m/s)
         for (i, b) in parts.bumpers.iter().enumerate() {
             let r = rec(2 + i);
             match b.as_ref().and_then(|b| b.creak(fdt)) {
@@ -1077,7 +1083,7 @@ impl CarSounds {
         for &(serial, e) in parts.events.iter().filter(|(n, _)| *n > seen) {
             self.parts_seen = Some(serial);
             match e {
-                // (sub_82348CE0 / sub_82348DC0: shut at rate >= rec+16 plays rec+20, the open stop at >= rec+8 rec+12)
+                // (F-28953 / F-47714: shut at rate >= rec+16 plays rec+20, the open stop at >= rec+8 rec+12)
                 PartEvent::FlapStop { flap, open, rate, pos } => {
                     let r = rec(flap as usize);
                     let (thr, h) = if open { (be_f32(&d, r + 8), be_u32(&d, r + 12)) } else { (be_f32(&d, r + 16), be_u32(&d, r + 20)) };
@@ -1085,14 +1091,14 @@ impl CarSounds {
                         lib.play_hash(h, self.req(pos));
                     }
                 }
-                // (sub_8234A868: rec+24 BUMPER_BREAK_OFF at the piece, 0 dB)
+                // (F-82611: rec+24 BUMPER_BREAK_OFF at the piece, 0 dB)
                 PartEvent::BumperOff { bumper, pos } => {
                     let h = be_u32(&d, rec(2 + bumper as usize) + 24);
                     if !is_null(h) {
                         lib.play_hash(h, self.req(pos));
                     }
                 }
-                // (sub_8234CF80: the largest approach of the new contacts, from +131 (3 mph): +127 at
+                // (F-80340: the largest approach of the new contacts, from +131 (3 mph): +127 at
                 // dB(1.5 .. 2.0 over 3 .. 70 mph))
                 PartEvent::BumperImpact { speed, pos, .. } => {
                     let mph = speed * MPH;
@@ -1119,7 +1125,7 @@ impl CarSounds {
                 }
             }
         }
-        // (sub_823414C8 @82341D30: the scrape stops 1/15 s after the last slide)
+        // (F-44446 @A-78327: the scrape stops 1/15 s after the last slide)
         for (h, last) in self.scrape.iter_mut() {
             if h.is_some() && clock >= *last + 1.0 / 15.0 {
                 stop(lib, h);
@@ -1160,14 +1166,14 @@ fn sst_replay_load(text: &str) -> Vec<(f32, bool)> {
 }
 
 /// A speech scenario's Probability (percent, clamped 0..100, 100 when missing) and Frequency (s, 10 when missing) as
-/// the speech script loader sub_821F3E88 reads them (scenario +64, +20).
+/// the speech script loader F-66242 reads them (scenario +64, +20).
 fn scenario_gate(xml: &str, name: &str) -> (i32, f32) {
     let tag = xml.split("<Scenario ").find(|s| s.starts_with(&format!("name=\"{name}\""))).and_then(|s| s.split('>').next()).unwrap_or("");
     let attr = |a: &str| tag.split(&format!(" {a}=\"")).nth(1).and_then(|r| r.split('"').next()).and_then(|v| v.trim().parse::<f32>().ok());
     (attr("Probability").map_or(100, |p| (p as i32).clamp(0, 100)), attr("Frequency").unwrap_or(10.0))
 }
 
-/// Record +40 (sub_8234DE50 @8234E0DC) of the port's wheel `i` (FL, FR, RL, RR): chassis +372 layout 1 or 3 -> +412 /
+/// Record +40 (F-43725 @A-65200) of the port's wheel `i` (FL, FR, RL, RR): chassis +372 layout 1 or 3 -> +412 /
 /// +420 (the front pair) are the driven ones, any other layout -> +416 / +424 (the rear pair). So an all-wheel-drive car
 /// with layout 2 (the R8) chirps from its rear wheels only (recorded: records 2 and 3, work/slipstream/audiorec).
 fn driven_record(drive: u8, i: usize) -> bool {
@@ -1316,7 +1322,7 @@ impl Traffic {
         }
     }
 
-    /// The update sub_826DE240 of a car with a driver: engine (7.3), tyres (7.4), skid (RULE 2), blocked horn (3.1).
+    /// The update F-70175 of a car with a driver: engine (7.3), tyres (7.4), skid (RULE 2), blocked horn (3.1).
     fn update(&mut self, lib: &mut SoundLib, c: &CarInstance, selected: bool, wet: bool, horn: HornIn, dt: f32) {
         let a = self.obj.clone();
         let f = |at: usize| be_f32(&a, at);
@@ -1392,7 +1398,7 @@ impl Traffic {
             self.deselect(lib);
         }
         self.in_state += dt;
-        // skid (sub_826DD748): above 10 mph the largest tyre stretch of the sliding wheels - |contact-point velocity -
+        // skid (F-50163): above 10 mph the largest tyre stretch of the sliding wheels - |contact-point velocity -
         // forward x |v|| without its normal part, over one 30 Hz frame, past fTireStretch - or the emergency brake
         let mut s = 0.0f32;
         if st.vel.length_squared() > 19.98 {
@@ -1409,7 +1415,7 @@ impl Traffic {
                 }
             }
         }
-        // sub_826E5950: the car ahead in charge of the speed, the mean of the last 4 updates' asked
+        // F-37906: the car ahead in charge of the speed, the mean of the last 4 updates' asked
         // acceleration a deceleration of fMaxDecel, at 5 mph or more (traffic.rs `Lock`)
         let emergency = c.rail.as_ref().is_some_and(|r| r.lock.now());
         if emergency || s > 0.15 {
@@ -1418,7 +1424,7 @@ impl Traffic {
         } else {
             stop(lib, &mut self.skid);
         }
-        // the blocked horn (sub_826DD948): 3 s blocked, not at an obstacle that has stood without input for 30 s
+        // the blocked horn (F-90275): 3 s blocked, not at an obstacle that has stood without input for 30 s
         if horn.blocked {
             self.wait += dt;
             if self.wait >= 3.0 && !horn.idle {
@@ -1445,7 +1451,7 @@ impl Traffic {
         }
     }
 
-    /// sub_826DCDE0 (A+90 horn, next after rand(2, 6) s) / sub_826DCFD8 (A+94 bystander horn, 6 s): the slot free and
+    /// F-86335 (A+90 horn, next after rand(2, 6) s) / F-39477 (A+94 bystander horn, 6 s): the slot free and
     /// the hold-off over.
     fn honk(&mut self, lib: &mut SoundLib, pos: Vec3, at: usize, hold: Option<f32>) {
         if self.age < self.next_horn || !free(lib, &self.horn) {
@@ -1455,7 +1461,7 @@ impl Traffic {
         self.next_horn = self.age + hold.unwrap_or_else(|| lib.rand_float(2.0, 6.0));
     }
 
-    /// E vt+36 (sub_826DD0B8): the car's contacts of the frame. With a driver: a vehicle hit gives the horn (A+115 %),
+    /// E vt+36 (F-58581): the car's contacts of the frame. With a driver: a vehicle hit gives the horn (A+115 %),
     /// the driver's line (33 %, under 35 mph, iBoundGroup < 2), 4 s hold-off. Parked: any contact may start the alarm
     /// (A+114 %), 4 s hold-off.
     fn contacts(&mut self, lib: &mut SoundLib, c: &CarInstance, speech_pct: u8, driver: bool) {
@@ -1489,7 +1495,7 @@ impl Traffic {
         }
     }
 
-    /// sub_826DCCA0: the player passing; A+98 / +102 when the car moves faster than 10 mph, else A+106; 5 s apart.
+    /// F-74101: the player passing; A+98 / +102 when the car moves faster than 10 mph, else A+106; 5 s apart.
     fn whoosh(&mut self, lib: &mut SoundLib, c: &CarInstance, vol: f32, pitch: i32) {
         if self.age < self.next_whoosh {
             return;
@@ -1502,7 +1508,7 @@ impl Traffic {
         self.next_whoosh = self.age + 5.0;
     }
 
-    /// set(s) of sub_826DC708: a new state only after 1 s in the last; STEADY from ACCEL once its clock is through.
+    /// set(s) of F-32926: a new state only after 1 s in the last; STEADY from ACCEL once its clock is through.
     fn set_checked(&mut self, lib: &mut SoundLib, s: u8, v: f32, pos: Vec3) {
         if s == self.state || self.in_state < 1.0 {
             return;
@@ -1532,7 +1538,7 @@ impl Traffic {
     }
 }
 
-/// The call signs the cruisers are given, in the order of the PoliceVoices OFFICER group (sub_8270C2D8).
+/// The call signs the cruisers are given, in the order of the PoliceVoices OFFICER group (F-23825).
 const CALLSIGNS: [&str; 6] = ["3ADAM5", "1LINCOLN4", "4ADAM8", "4ADAM13", "2ADAM6", "1EDWARD7"];
 
 struct Entry {
@@ -1554,11 +1560,11 @@ pub struct Fleet {
     chatter: Option<(usize, Handle, f32)>,
     trace_t: f32,
     pol: PoliceAudio,
-    /// the ambient cars chosen for engine and tyre loops at the end of the last frame (sub_826DC630)
+    /// the ambient cars chosen for engine and tyre loops at the end of the last frame (F-21924)
     sel: Vec<usize>,
     /// racing vehicles' seconds without driving input ((car+896)->+112)
     idle: HashMap<usize, f32>,
-    /// the speech manager's gate for PLAYER_NITROUS (CareerScript.xml Probability, Frequency; sub_821F2B60): its
+    /// the speech manager's gate for PLAYER_NITROUS (CareerScript.xml Probability, Frequency; F-95157): its
     /// clock (+2244) and the scenario's last start (+24, -FLT_MAX at load)
     nitrous_line: (i32, f32, f32),
     speech_clock: f32,
@@ -1596,7 +1602,7 @@ struct PoliceAudio {
 }
 
 impl PoliceAudio {
-    /// A cruiser's call sign (sub_8270C2D8): handed out round robin the first time one is needed.
+    /// A cruiser's call sign (F-23825): handed out round robin the first time one is needed.
     fn callsign(&mut self, car: usize) -> &'static str {
         let n = CALLSIGNS.len();
         let cursor = &mut self.cursor;
@@ -1662,7 +1668,7 @@ impl Fleet {
         c.racer || c.pinned || c.cop || c.goon
     }
 
-    /// sub_826DD948's inputs for ambient car `i`: the racing vehicle its brain reacts to (the port's brake-for-car-ahead
+    /// F-90275's inputs for ambient car `i`: the racing vehicle its brain reacts to (the port's brake-for-car-ahead
     /// sensor: ahead within 18 m, 2.5 m aside), and whether it counts as blocking.
     fn horn_in(v: &Vehicles, i: usize, idle: &HashMap<usize, f32>) -> HornIn {
         let me = &v.cars[i];
@@ -1684,7 +1690,7 @@ impl Fleet {
         let lim = 40.0 * 0.44704;
         let slow = o.state.vel.length_squared() < (0.5 * lim) * (0.5 * lim);
         if let Some((ji, _, _)) = v.signals.ahead(o.state.pos, ofwd, v.clock) {
-            // sub_8273A178: the approach is within 25 degrees of the green phase, less than 6.5 s into it
+            // F-78185: the approach is within 25 degrees of the green phase, less than 6.5 s into it
             let jn = &v.signals.junctions[ji];
             let h = Vec3::new(ofwd.x, 0.0, ofwd.z).normalize_or_zero();
             let cur = jn.current as usize;
@@ -1698,7 +1704,7 @@ impl Fleet {
         HornIn { blocked, idle: idle.get(&j).is_some_and(|t| *t >= 30.0) }
     }
 
-    /// The player's pass-by scan (sub_823279C8, GLOBAL_WHOOSHES): every car within 22 m passed at 40 mph or more
+    /// The player's pass-by scan (F-11431, GLOBAL_WHOOSHES): every car within 22 m passed at 40 mph or more
     /// (closer passes need less: ts >= (d - 10) / 12) whooshes; an ambient car may then honk at a player in front of
     /// its nose (45 deg, 30 %, else a 6 s hold-off).
     fn pass_by(&mut self, lib: &mut SoundLib, v: &Vehicles, pi: usize) {
@@ -1790,7 +1796,7 @@ impl Fleet {
                 Self::release(lib, &mut e);
             }
         }
-        // the 7 nearest opponents get engine loops (sub_82365760), the 8 nearest traffic cars engine and tyres
+        // the 7 nearest opponents get engine loops (F-25575), the 8 nearest traffic cars engine and tyres
         let mut opp: Vec<(f32, usize)> = Vec::new();
         let mut amb: Vec<(f32, usize)> = Vec::new();
         let mut parked: Vec<usize> = Vec::new();
@@ -1840,8 +1846,8 @@ impl Fleet {
             }
             if let Some(s) = &mut e.sounds {
                 s.update(lib, &self.mats, &c, ctl.cam_mode, dt);
-                // the slipstream burn's PLAYER_NITROUS request when no speech line plays (sub_82327598 @82327674): the
-                // speech manager (sub_821F2B60) refuses it within Frequency s of its last start, then unless
+                // the slipstream burn's PLAYER_NITROUS request when no speech line plays (F-58518 @A-83150): the
+                // speech manager (F-95157) refuses it within Frequency s of its last start, then unless
                 // rand(0, 99) < Probability; the start time is kept when it passes
                 if s.sst_speech && !pol.speech_busy {
                     let (prob, freq, last) = &mut self.nitrous_line;
@@ -1856,7 +1862,7 @@ impl Fleet {
                 }
                 s.damage_parts(lib, &p.state.parts);
                 s.glass(lib, &p.state.dmg, p.state.pos, p.state.rot);
-                // a police car's horn button chirps the siren (sub_822A1058)
+                // a police car's horn button chirps the siren (F-44589)
                 if p.cop && ctl.horn {
                     s.siren_alert(lib, c.pos);
                 }
@@ -1901,7 +1907,7 @@ impl Fleet {
                 }
             }
         }
-        // the junction warn (sub_82711628): the cop nearest the player, inside a junction or within its size / 2 + 10 m of
+        // the junction warn (F-63286): the cop nearest the player, inside a junction or within its size / 2 + 10 m of
         // the next one ahead (the port's signalled junctions: centre, radius), 20 % -> warn, else 15 s without
         let mut warn_on = None;
         let mut warn_off = None;
@@ -1992,7 +1998,7 @@ impl Fleet {
                     } else if warn_off == Some(i) {
                         s.siren_warn(lib, ci.pos, false, heat == 2 || heat == 3);
                     }
-                    // pull-over (sub_82709AD0): the chirp on cop 0 once no speech plays (after REPORT_PULL_SUSPECT_OVER);
+                    // pull-over (F-22530): the chirp on cop 0 once no speech plays (after REPORT_PULL_SUSPECT_OVER);
                     // at law score 500 the bullhorn once - skipped for good if speech is playing then
                     if heat == 1 && Some(i) == lead {
                         if self.pol.chirp_pending && !pol.speech_busy {
@@ -2018,7 +2024,7 @@ impl Fleet {
         }
         // call signs go back when their cruiser leaves
         self.pol.callsigns.retain(|i, _| v.cars.get(*i).is_some_and(|c| c.cop && c.placed));
-        // the worldized chatter (sub_82326E10 / sub_8234C680), every frame in any state: the nearest police car within
+        // the worldized chatter (F-65788 / F-33221), every frame in any state: the nearest police car within
         // 35 m of the listener (not the player's); started for 4 s, kept alive 0.15 s at a time while it stays nearest
         if let Some((i, h, t)) = &mut self.chatter {
             *t -= dt;
@@ -2081,11 +2087,11 @@ impl Fleet {
                 }
             }
         }
-        // the player's pass-by scan (sub_823279C8)
+        // the player's pass-by scan (F-11431)
         if let Some(pi) = v.cars.iter().position(|c| c.is_player) {
             self.pass_by(lib, v, pi);
         }
-        // the selection for the next frame (sub_826F8C68): the 3 x 3 40 m cells around the listener, rows (z) then
+        // the selection for the next frame (F-47008): the 3 x 3 40 m cells around the listener, rows (z) then
         // columns (x), each cell's newest entrant first; the first 8 fill the list, a later one replaces the first
         // listed car that is farther away
         let cell = |p: Vec3| ((p.x * 0.025).floor() as i32, (p.z * 0.025).floor() as i32);
@@ -2177,12 +2183,12 @@ fn entry<'a>(cars: &'a mut HashMap<usize, Entry>, types: &HashMap<String, Traffi
         }
         cars.entry(i).or_insert_with(|| {
             let amb = traffic.then(|| {
-                // the type's object by name, else "<name>_0<0|1>" (sub_826DC9B8)
+                // the type's object by name, else "<name>_0<0|1>" (F-89483)
                 let tt = types.get(&c.model.name.to_ascii_lowercase()).cloned().unwrap_or(TrafficType { audio: "AMBIENT_SEDAN".into(), bound_group: 0, max_decel: 22.5, tire_stretch: 0.15 });
                 let ty = tt.audio.clone();
                 let pick = lib.rand_int(0, 1);
                 let obj = lib.game.get_name(&ty).or_else(|| lib.game.get_name(&format!("{ty}_0{pick}"))).or_else(|| lib.game.get_name("AMBIENT_SEDAN_00")).map(|o| o.to_vec()).unwrap_or_default();
-                // the driver's voice (sub_826DC9B8): a random AMBIENT_VEHICLE_DRIVER_MGR entry, its +10 sound
+                // the driver's voice (F-89483): a random AMBIENT_VEHICLE_DRIVER_MGR entry, its +10 sound
                 let mgr = lib.game.get_name("AMBIENT_VEHICLE_DRIVER_MGR").map(|o| o.to_vec()).unwrap_or_default();
                 let n = mgr.get(11).copied().unwrap_or(0) as i32;
                 let voice = if n > 0 { {
@@ -2227,6 +2233,23 @@ fn entry<'a>(cars: &'a mut HashMap<usize, Entry>, types: &HashMap<String, Traffi
 
 #[cfg(test)]
 mod tests {
+
+    /// F-90102 against the original's own code on 4000 cases (work/audio2/verify/ref1.py; evidence docs/reference/audio/verify_audio_b1.md)
+    #[test]
+    fn approach_is_the_originals() {
+        let mut bad = 0;
+        for line in include_str!("approach_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<u32> = i.split(' ').skip(1).map(|x| u32::from_str_radix(&x.replace('_', ""), 16).unwrap()).collect();
+            let want: f32 = f32::from_bits({ let x = o.split(' ').nth(1).unwrap(); u32::from_str_radix(&x.replace('_', ""), 16).unwrap() });
+            let mut p = f32::from_bits(v[0]);
+            approach_fma(&mut p, f32::from_bits(v[1]), f32::from_bits(v[2]), f32::from_bits(v[3]));
+            if p.to_bits() != want.to_bits() {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0);
+    }
     use super::*;
 
     /// The Camaro's tyre, suspension, horn and siren objects from the disc, a frame of rolling and sliding, and the
@@ -2348,7 +2371,7 @@ mod tests {
         assert_eq!(scenario_gate(&xml, "PLAYER_HORN"), (30, 10.0));
     }
 
-    /// sub_8213CB40's pitch arithmetic against the running original (work/slipstream/audiorec, r5: the charge loop's
+    /// F-98474's pitch arithmetic against the running original (work/slipstream/audiorec, r5: the charge loop's
     /// ratio as passed and the cents found in the voice block right after): the recorded pairs, and a ratio where the
     /// plain single-precision 1200 log2 would be one cent off.
     #[test]

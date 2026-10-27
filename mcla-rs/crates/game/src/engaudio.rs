@@ -22,12 +22,18 @@ fn be_f32(o: &[u8], at: usize) -> f32 {
     f32::from_bits(be_u32(o, at))
 }
 
-/// Linear step toward a target, clamped there (sub_821CE490).
+/// Linear step toward a target, clamped there (F-90102).
 fn approach(p: &mut f32, target: f32, step: f32) {
+    approach_fma(p, target, step, 1.0);
+}
+
+/// F-90102 (audio2 2026-10-27): `p` steps toward `target` by `a * b` with the multiply and the add fused
+/// (the original's fmadds / fnmsubs), clamped at the target. Verified bit for bit against the original (b1 evidence).
+fn approach_fma(p: &mut f32, target: f32, a: f32, b: f32) {
     if *p < target {
-        *p = (*p + step).min(target);
-    } else {
-        *p = (*p - step).max(target);
+        *p = a.mul_add(b, *p).min(target);
+    } else if *p > target {
+        *p = (-a).mul_add(b, *p).max(target);
     }
 }
 
@@ -159,7 +165,7 @@ struct Lfo {
     running: bool,
 }
 
-/// The three oscillators (sub_8271E6D8): 0 sine, 1 triangle in phase with the sine, 2 square (width 0.5).
+/// The three oscillators (F-79529): 0 sine, 1 triangle in phase with the sine, 2 square (width 0.5).
 fn osc(kind: usize, p: f32) -> f32 {
     match kind {
         0 => (p * std::f32::consts::TAU).sin(),
@@ -286,14 +292,14 @@ impl EngineSound {
 
     pub fn update(&mut self, lib: &mut SoundLib, e: &EngineIn, dt: f32) {
         self.clock += dt;
-        // inputs (sub_8234F9A0)
+        // inputs (F-36837)
         let load = if e.full_torque > 0.0 { e.torque / e.full_torque } else { 0.0 };
-        approach(&mut self.load_smooth, load, 6.0 * dt);
+        approach_fma(&mut self.load_smooth, load, 6.0, dt);
         let load_abs = load.abs().min(1.0);
         let reversing = e.gear == -1 && e.speed > 1.0;
-        // load volume (player sub_823265E0, opponent sub_82364E78)
+        // load volume (player F-42554, opponent F-57529)
         if reversing {
-            approach(&mut self.load_vol, self.load_rev, 0.8 * dt);
+            approach_fma(&mut self.load_vol, self.load_rev, 0.8, dt);
         } else if !self.player {
             let drive = load_abs.max(e.pedal).max(self.load_floor).max(self.load_brake);
             let full = if e.racing { 1.0 } else { drive };
@@ -306,20 +312,20 @@ impl EngineSound {
             } else {
                 full
             };
-            approach(&mut self.load_vol, target, self.load_rate * dt);
+            approach_fma(&mut self.load_vol, target, self.load_rate, dt);
         } else {
             let drive = load_abs.max(e.throttle_in).max(e.pedal).max(self.load_floor).max(self.load_brake);
             if self.load_smooth > 0.0 {
-                approach(&mut self.load_vol, drive, self.load_rate * dt);
+                approach_fma(&mut self.load_vol, drive, self.load_rate, dt);
             } else if e.speed < self.load_slow {
                 approach(&mut self.load_vol, 1.0, dt);
             } else if e.throttle_in < 0.5 || e.shift != 0 {
-                approach(&mut self.load_vol, self.load_brake, self.load_rate * dt);
+                approach_fma(&mut self.load_vol, self.load_brake, self.load_rate, dt);
             } else {
-                approach(&mut self.load_vol, drive, self.load_rate * dt);
+                approach_fma(&mut self.load_vol, drive, self.load_rate, dt);
             }
         }
-        // the kick: throttle re-applied (sub_8234B8A8)
+        // the kick: throttle re-applied (F-12996)
         let first = self.recs[0];
         let last = self.recs[self.recs.len() - 1];
         let audio_rpm_prev = {
@@ -336,15 +342,15 @@ impl EngineSound {
             self.lfo.running = false;
         }
         let lfo_cents = self.step_lfo(dt);
-        // rpm slew (sub_8234B000, state 4 = running)
+        // rpm slew (F-10725, state 4 = running)
         let target = if e.idle_only { e.idle_rpm } else { e.rpm };
         let rpm_rate = (target - self.s) / dt.max(1e-6);
-        approach(&mut self.s, target, self.slew * dt);
+        approach_fma(&mut self.s, target, self.slew, dt);
         // normalised rpm, audio rpm, master gain
         let mut norm = ((self.s - e.idle_rpm) / (e.max_rpm - e.idle_rpm).max(1.0)).min(1.0);
         if !self.player {
-            // the RPM_RACE_OPPONENT blend (sub_823655F0; the brain's share, brain +380 / +404 / +428, is not decoded:
-            // the speed term alone) and the wobble (sub_8234B000 @8234B378)
+            // the RPM_RACE_OPPONENT blend (F-98304; the brain's share, brain +380 / +404 / +428, is not decoded:
+            // the speed term alone) and the wobble (F-10725 @A-74853)
             let want = if e.racing { (e.speed_ratio * 3.0).min(1.0) } else { 0.0 };
             let rate = if want < self.blend { 0.125 } else { 0.25 } * dt;
             approach(&mut self.blend, want, rate);
@@ -352,7 +358,7 @@ impl EngineSound {
                 let c = lib.curve_eval(self.racing_curve, norm).unwrap_or(norm);
                 norm += (c - norm) * self.blend;
                 let (target, rate, mut w) = self.wobble;
-                approach(&mut w, target, rate * dt);
+                approach_fma(&mut w, target, rate, dt);
                 if w == target {
                     self.wobble.0 = lib.rand_float(self.wobble_target.0, self.wobble_target.1);
                     self.wobble.1 = lib.rand_float(self.wobble_rate.0, self.wobble_rate.1);
@@ -385,7 +391,7 @@ impl EngineSound {
             };
             self.gains[i] = fade * g;
             if !self.player {
-                // opponents (sub_82365960): record 0 and the sounding records live, and the neighbour the revs are
+                // opponents (F-51617): record 0 and the sounding records live, and the neighbour the revs are
                 // moving towards fast
                 let prev_start = if i == 0 { f32::MIN } else { self.recs[i - 1].start };
                 let next_end = if i + 1 == n { f32::MAX } else { self.recs[i + 1].end };
@@ -397,7 +403,7 @@ impl EngineSound {
                     continue;
                 }
             }
-            // sub_82329010: every record's voice runs, silent ones at -100 dB
+            // F-74444: every record's voice runs, silent ones at -100 dB
             let vol = lin2db(fade * g) + self.effect_db + self.vol_a;
             let cents = (self.pitch_off + 1200.0 * (x / r.reference).log2() + lfo_cents) as i32;
             let req = Req { pos: Some(e.pos), volume: vol, pitch: cents, player: self.player, ..Default::default() };
@@ -407,7 +413,7 @@ impl EngineSound {
             }
         }
         self.audio_rpm = x;
-        // gear-shift one-shot (sub_82347580 / sub_823486A0): on the shift's start; upshift a little later
+        // gear-shift one-shot (F-33101 / F-40912): on the shift's start; upshift a little later
         if e.shift != 0 && self.prev_shift == 0 && e.gear != self.prev_gear {
             // original gear indices: reverse 0, neutral 1 - none into those
             let (old, new) = (self.prev_gear + 1, e.gear + 1);
@@ -429,7 +435,7 @@ impl EngineSound {
             }
         }
         self.prev_shift = e.shift;
-        // backfire (sub_82347368): armed at full throttle, fires after 0.1 s of closed throttle with the revs falling
+        // backfire (F-91044): armed at full throttle, fires after 0.1 s of closed throttle with the revs falling
         if e.throttle_in >= 1.0 {
             self.backfire_armed = Some(self.backfire_time);
         } else if let Some(t) = self.backfire_armed {
@@ -447,7 +453,7 @@ impl EngineSound {
         self.prev_rpm = e.rpm;
     }
 
-    /// The kick event (sub_82347A00): restart LFO 1 with randomised rates and depth, and the amp-mod bump.
+    /// The kick event (F-75866): restart LFO 1 with randomised rates and depth, and the amp-mod bump.
     fn kick(&mut self, lib: &mut SoundLib) {
         for k in 0..3 {
             let v = self.lfo_freq_var;
@@ -466,7 +472,7 @@ impl EngineSound {
         }
     }
 
-    /// LFO 1 (sub_8234B8A8 @8234BA74): delay, hold with the oscillators running, release; cents, upward only.
+    /// LFO 1 (F-12996 @A-46053): delay, hold with the oscillators running, release; cents, upward only.
     fn step_lfo(&mut self, dt: f32) -> f32 {
         let l = &mut self.lfo;
         if !l.running {
@@ -508,6 +514,23 @@ impl EngineSound {
 
 #[cfg(test)]
 mod tests {
+
+    /// F-90102 against the original's own code on 4000 cases (work/audio2/verify/ref1.py; evidence docs/reference/audio/verify_audio_b1.md)
+    #[test]
+    fn approach_is_the_originals() {
+        let mut bad = 0;
+        for line in include_str!("approach_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<u32> = i.split(' ').skip(1).map(|x| u32::from_str_radix(&x.replace('_', ""), 16).unwrap()).collect();
+            let want: f32 = f32::from_bits({ let x = o.split(' ').nth(1).unwrap(); u32::from_str_radix(&x.replace('_', ""), 16).unwrap() });
+            let mut p = f32::from_bits(v[0]);
+            approach_fma(&mut p, f32::from_bits(v[1]), f32::from_bits(v[2]), f32::from_bits(v[3]));
+            if p.to_bits() != want.to_bits() {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0);
+    }
     use super::*;
 
     /// The Camaro's loops over an rpm sweep, rendered alone (`MCLA_ENGINE_WAV` = where to write the mix).
