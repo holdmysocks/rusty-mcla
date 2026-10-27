@@ -99,7 +99,10 @@ impl CarDamage {
         for i in 0..13 {
             let p = &mut self.pieces[i];
             let before = p.hits;
-            if p.local.distance(local) >= p.radius {
+            // (F-63094: y squared first, then z and x fused into it, in double, each step rounded to a float)
+            let (dx, dy, dz) = ((p.local.x - local.x) as f64, (p.local.y - local.y) as f64, (p.local.z - local.z) as f64);
+            let dist = (dx.mul_add(dx, (dz.mul_add(dz, (dy * dy) as f32 as f64)) as f32 as f64) as f32 as f64).sqrt() as f32;
+            if !(dist < p.radius) {
                 continue;
             }
             if kind != 0 && a > p.scrape_min {
@@ -168,6 +171,8 @@ impl CarDamage {
     pub fn reset(&mut self) {
         self.repair();
         self.reset = true;
+        // (F-50602 also clears +2154, the map's "has been stamped")
+        self.stamped = false;
     }
 }
 

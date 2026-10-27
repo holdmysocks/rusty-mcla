@@ -63,19 +63,15 @@ pub struct Livery {
     pub zones: [Vec<Layer>; 5],
 }
 
-fn half(b: &[u8]) -> f32 {
-    let h = u16::from_be_bytes([b[0], b[1]]);
-    let (s, e, m) = ((h >> 15) & 1, (h >> 10) & 0x1f, h & 0x3ff);
-    let v = match e {
-        0 => m as f32 * 2f32.powi(-24),
-        31 => f32::INFINITY,
-        _ => (1.0 + m as f32 / 1024.0) * 2f32.powi(e as i32 - 15),
-    };
-    if s == 1 {
-        -v
-    } else {
-        v
+/// The record's half float as the original unpacks it (F-38353): 0 is 0.0, anything else is the bit pattern
+/// sign | (exponent + 112) << 23 | mantissa << 13 - so the original's "denormals" are normal numbers, 0x8000 is
+/// -2^-15 and the exponent 31 is no infinity (all 65536 values compared, carparts_small_tests.rs).
+pub(crate) fn half(b: &[u8]) -> f32 {
+    let h = u32::from(u16::from_be_bytes([b[0], b[1]]));
+    if h == 0 {
+        return 0.0;
     }
+    f32::from_bits((h & 0x8000) << 16 | (((h >> 10) & 0x1f) + 112) << 23 | (h & 0x3ff) << 13)
 }
 
 impl Livery {

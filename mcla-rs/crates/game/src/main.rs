@@ -10,6 +10,8 @@ mod pads;
 mod rewards;
 mod vinyl;
 mod ai;
+#[cfg(test)]
+mod carparts_small_tests;
 mod ambient;
 mod assets;
 mod audio;
