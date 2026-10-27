@@ -1254,21 +1254,52 @@ impl SoundLib {
     }
 }
 
-/// The stereo pan of a direction in listener space (x right, y up, z forward; F-56973, folded to stereo:
-/// L = FL + 0.7071 SL, R = FR + 0.7071 SR).
+/// `fmadds`: the fused multiply-add in double, rounded once to single (how the recompiled code and the console do it).
+fn fmadds(a: f32, b: f32, c: f32) -> f32 {
+    (a as f64).mul_add(b as f64, c as f64) as f32
+}
+
+/// F-41334 (normalise `v` if its squared length is above `eps`, else `fallback`): the reciprocal root is `frsqrte` plus
+/// two Newton steps in double, then `frsp`; the components are multiplied by it in single.
+fn norm_or(v: [f32; 3], eps: f32, fallback: [f32; 3]) -> [f32; 3] {
+    let y2 = v[1] * v[1];
+    let l = fmadds(v[2], v[2], fmadds(v[0], v[0], y2));
+    if !(l > eps) {
+        return fallback;
+    }
+    let x = l as f64;
+    let y0 = (1.0 / x.sqrt()) as f32 as f64;
+    // (fnmsub: 1 - y*y*x rounded once, as -fma(y*y, x, -1))
+    let e0 = -((y0 * y0).mul_add(x, -1.0));
+    let y1 = e0.mul_add(y0 * 0.5, y0);
+    let e1 = -((y1 * y1).mul_add(x, -1.0));
+    let y2 = e1.mul_add(y1 * 0.5, y1);
+    let k = y2 as f32;
+    [v[0] * k, v[1] * k, v[2] * k]
+}
+
+/// The stereo pan of a direction in listener space (x right, y up, z forward; F-56973 with the stereo fold
+/// L = FL + 0.7071 SL, R = FR + 0.7071 SR; the voice's +176 factor, unset, is 1). Same operations in the same order
+/// as the original (verified bit for bit by `pan_gains_is_the_originals`).
 pub fn pan_gains(d: Vec3) -> (f32, f32) {
-    let k = std::f32::consts::FRAC_1_SQRT_2;
-    let flat = Vec3::new(d.x, 0.0, d.z);
-    let v = if flat.length_squared() > 1e-12 { flat.normalize() } else { Vec3::X };
-    let w = if d.length_squared() > 1e-12 { d.normalize() } else { Vec3::X };
-    let h = v.dot(w);
-    let (x, z) = (v.x, v.z);
-    let e = (1.0 - h) / 2.0;
-    let fl = (k * (z - x)).max(0.0) * h + e;
-    let fr = (k * (x + z)).max(0.0) * h + e;
-    let sl = (-k * (x + z)).max(0.0) * h + e;
-    let sr = (k * (x - z)).max(0.0) * h + e;
-    (fl + k * sl, fr + k * sr)
+    let kn = -0.707_106_77_f32;
+    let kp = 0.707_106_77_f32;
+    let v = norm_or([d.x, 0.0, d.z], 9.999_999_7e-6, [1.0, 0.0, 0.0]);
+    let w = norm_or([d.x, d.y, d.z], 9.999_999_7e-6, [1.0, 0.0, 0.0]);
+    let h = fmadds(w[1], v[1], fmadds(v[2], w[2], v[0] * w[0]));
+    let e = (1.0 - h) * 0.5;
+    let f8 = v[1] * 0.0;
+    let (f6, f5, f4, f3) = (v[0] * kn, v[0] * kp, v[2] * kn, v[2] * kp);
+    let a = (f8 + f6) + f3;
+    let b = (f5 + f8) + f3;
+    let c = (f4 + f8) + f6;
+    let dd = (f4 + f5) + f8;
+    let m = |x: f32| if -x >= 0.0 { 0.0 } else { x };
+    let fl = fmadds(m(a), h, e);
+    let fr = fmadds(m(b), h, e);
+    let sl = fmadds(m(c), h, e);
+    let sr = fmadds(m(dd), h, e);
+    (fmadds(sl * 1.0, kp, fl * 1.0), fmadds(sr * 1.0, kp, fr * 1.0))
 }
 
 struct Leaf {
@@ -1279,6 +1310,16 @@ struct Leaf {
     start_frame: f64,
     looping: bool,
     stereo: bool,
+}
+
+/// The release ramp of F-31923 on the original's integer clock: `ratio = (end - now) / (end - start)` (0.0 when `end <= start`
+/// or `now >= end`, which also marks the sound ended: -100 dB), `vol += 20 * log2(ratio) * 0.301` in dB (-100 below 1e-5). Returns the
+/// new volume and whether the sound goes on (an ended sound stops only when `flags & 0x10` is clear in the original's +58).
+/// Verified bit for bit by `release_step_is_the_originals`; `step` still keeps its float clock and ends the sound at `now >= end`.
+#[allow(dead_code)]
+pub(crate) fn release_step(start: u32, end: u32, now: u32, vol: f32, flags: u8) -> (f32, bool) {
+    let (ratio, ended) = if end <= start || now >= end { (0.0, true) } else { ((end - now) as f32 / (end - start) as f32, false) };
+    (vol + lin2db(ratio), !(ended && flags & 0x10 != 0))
 }
 
 /// A stop request down the tree (F-58485): the release time, or done at once without one.
@@ -1411,6 +1452,45 @@ fn decode_mp3_whole_from(dec: rodio::Decoder<std::io::BufReader<std::fs::File>>,
 
 #[cfg(test)]
 mod tests {
+
+    /// F-56973 (pan of a direction, stereo fold) against the original's own code on 4000 cases
+    /// (work/audio2/verify/ref5.py, vector shim; the voice's +176 factor unset)
+    #[test]
+    fn pan_gains_is_the_originals() {
+        let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
+        let mut bad = 0;
+        let mut first = Vec::new();
+        for line in include_str!("pan_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<f32> = i.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let w: Vec<u32> = o.split(' ').map(h).collect();
+            let (l, r) = pan_gains(Vec3::new(v[0], v[1], v[2]));
+            if l.to_bits() != w[0] || r.to_bits() != w[1] {
+                bad += 1;
+                if first.len() < 4 {
+                    first.push((v.clone(), (l, r), (f32::from_bits(w[0]), f32::from_bits(w[1]))));
+                }
+            }
+        }
+        assert_eq!(bad, 0, "{first:?}");
+    }
+
+    /// F-31923 (release step) against the original's own code on 4000 cases (work/audio2/verify/ref4.py, vector shim)
+    #[test]
+    fn release_step_is_the_originals() {
+        let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
+        let mut bad = 0;
+        for line in include_str!("release_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<&str> = i.split(' ').collect();
+            let w: Vec<&str> = o.split(' ').collect();
+            let (vol, alive) = release_step(v[0].parse().unwrap(), v[1].parse().unwrap(), v[2].parse().unwrap(), f32::from_bits(h(v[3])), v[4].parse().unwrap());
+            if vol.to_bits() != h(w[0]) || alive != (w[1] == "1") {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0);
+    }
 
     /// F-60851 against the original's own code on 4000 cases (work/audio2/verify/ref2.py): value and next state
     #[test]

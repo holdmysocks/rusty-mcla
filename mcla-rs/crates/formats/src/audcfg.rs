@@ -30,7 +30,8 @@ const LOG10_2: f32 = 0.301;
 /// Linear gain to dB as the original computes it: `20 * log2(x) * 0.301`, -100 dB below 1e-5.
 pub fn lin2db(x: f32) -> f32 {
     if x - 1e-5 >= 0.0 {
-        20.0 * x.log2() * LOG10_2
+        // (the original multiplies log2 by 0.301 first, then by 20: vmulfp128 with the table, then fmuls)
+        x.log2() * LOG10_2 * 20.0
     } else {
         -100.0
     }
@@ -636,6 +637,23 @@ pub fn resolve_categories_rt(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &Ha
 
 #[cfg(test)]
 mod tests {
+
+    /// F-90404 (type 3 curve: segment, then dB) against the original's own code on 4000 cases, run with the
+    /// vector shim (work/audio2/verify/ref3.py); the shim was checked against an independent f32 evaluation
+    #[test]
+    fn curve3_is_the_originals() {
+        let mut bad = 0;
+        let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
+        for line in include_str!("fixtures/curve3_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<f32> = i.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let c = Curve { kind: 3, flags: 0, min: 0.0, max: 0.0, params: CurveParams::Points(vec![(v[1], v[2]), (v[3], v[4])]) };
+            if c.eval(v[0]).to_bits() != h(o) {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0);
+    }
 
     /// F-11926 (type 2 curve: segment eval) against the original's own code on 4000 cases (work/audio2/verify/ref1.py)
     #[test]
