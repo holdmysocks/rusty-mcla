@@ -25,6 +25,10 @@ pub enum Mode {
 
 /// The mark of a delivery's results panel in `mission_results` (form 51, F-52975 / F-88581)
 pub const DL_PANEL: char = '\u{2}';
+/// GAME OPTIONS' AUTO SAVE row
+const PAGE_AUTOSAVE: u8 = 39;
+/// The mark of a satisfied objective in a mission's panel (`Career::objective_texts`)
+pub const OBJ_DONE: char = '\u{3}';
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RaceKind {
@@ -3981,6 +3985,7 @@ impl Game {
                 self.standings_view = true;
                 self.pause_page = 0;
             }
+            Some(PAGE_AUTOSAVE) => self.autosave_step(),
             Some(p @ 241..=245) => {
                 let wrecked = vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
                 let goal = matches!(p, 241 | 244);
@@ -4185,10 +4190,10 @@ impl Game {
                 self.money = 5100;
                 self.last_reward = (100, 50);
                 self.reward_panel = true;
-                self.mission_results.push(("FIRST IMPRESSIONS".to_string(), vec!["RACE HENRY".to_string()], !v.contains("fail"))); self.career_over = true;
+                self.mission_results.push(("FIRST IMPRESSIONS".to_string(), vec![format!("{}RACE HENRY", OBJ_DONE)], !v.contains("fail"))); self.career_over = true;
                 // (=missions: two missions finished by the one event share the panel)
                 if v.contains("missions") {
-                    self.mission_results.push(("NEW KID IN TOWN".to_string(), vec!["WIN A RACE".to_string(), "TALK TO HENRY".to_string()], false));
+                    self.mission_results.push(("NEW KID IN TOWN".to_string(), vec![format!("{}WIN A RACE", OBJ_DONE), "TALK TO HENRY".to_string()], false));
                 }
             }
             // (=delivery: a delivery's panel, 1:52.30 against 2:00.00 with 37 % damage)
@@ -4286,6 +4291,8 @@ impl Game {
                 }
                 9 => self.pause_do = Some(242),
                 10 => self.pause_do = Some(241),
+                // (AUTO SAVE's WARNING answered OK: it stays off - F-77184, result 3)
+                11 => {}
                 c @ 4..=8 => {
                     // (ARCADE / GOAL ATTACK / RACE EDITOR: the repair form's YES repairs, DAMAGED OUT's
                     // always; then out of the race - F-35999 / F-40647: F-30951 - and on)
@@ -4322,6 +4329,10 @@ impl Game {
             self.sell_pending = None;
             self.buy_pending = None;
             self.fav_remove_pending = None;
+            // (AUTO SAVE's WARNING closed without OK: the row back on, index 1 - F-77184)
+            if self.menu_confirm == 11 {
+                self.no_save = false;
+            }
             self.menu_confirm = 0;
             self.mc4_misc_idle();
         }
@@ -4813,11 +4824,11 @@ impl Game {
                                 }
                             }
                             6 => {
-                                // (AUTO SAVE and ARROW have no counterpart in the port: shown, greyed)
                                 title = s("Game_Options", "GAME OPTIONS");
                                 let on = |b: bool| format!("{}{}", CHOICE, if b { s("G_On", "ON") } else { s("G_Off", "OFF") });
                                 items.push((s("option_subtitles", "SUBTITLES"), on(self.opts.subtitles), Go::Page(42)));
-                                items.push((s("option_autosave", "AUTO SAVE"), on(true), Go::Off));
+                                // (AUTO SAVE: the file manager's disable flag, the port's `no_save` - F-87944)
+                                items.push((s("option_autosave", "AUTO SAVE"), on(!self.no_save), Go::Page(PAGE_AUTOSAVE)));
                                 // (option_arrow_compass / _top / _none: where the GPS arrow is - `mc4`, options)
                                 let arrow = [("option_arrow_compass", "COMPASS"), ("option_arrow_top", "TOP"), ("option_arrow_none", "NONE")][self.mc4_gps_arrow() as usize];
                                 items.push((s("option_arrow", "ARROW"), format!("{}{}", CHOICE, s(arrow.0, arrow.1)), Go::Page(51)));
@@ -4976,6 +4987,7 @@ impl Game {
                         Some(Go::Page(40)) => adj(&mut self.opts.master),
                         Some(Go::Page(41)) => adj(&mut self.opts.music),
                         Some(Go::Page(42)) => self.opts.subtitles = !self.opts.subtitles,
+                        Some(Go::Page(PAGE_AUTOSAVE)) => self.pause_do = Some(PAGE_AUTOSAVE),
                         Some(Go::Page(43)) => self.opts.shake = !self.opts.shake,
                         Some(Go::Page(44)) => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, right, false, self.fresh_game),
                         Some(Go::Page(p)) if p == 48 || p == 49 || p == 50 || p == 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, right, self.fresh_game),
@@ -5206,6 +5218,7 @@ impl Game {
                                 self.dirty = true;
                             }
                         }
+                        Some(Go::Page(PAGE_AUTOSAVE)) => self.pause_do = Some(PAGE_AUTOSAVE),
                         // (the music lists, `mc4`: PLAY on a song; VIEW SONGS on a list)
                         Some(Go::Page(240)) => {
                             if let Some(g) = crate::mc4::music_play(&self.opt_x, self.stat_idx[0], self.menu_sel) {
@@ -10454,6 +10467,26 @@ impl Game {
         self.mission_results.iter().take_while(|m| !m.0.starts_with(crate::mc4::TT_PANEL) && !m.0.starts_with(DL_PANEL)).count()
     }
 
+    /// AUTO SAVE stepped on GAME OPTIONS. Off (F-52677, the row's change callback): the WARNING box of type 2,
+    /// OK alone, `Dlg_Title_AutoSave` / `Dlg_Desc_AutoSave`; OK keeps it off, closing the box otherwise puts the
+    /// row back on (F-77184). The options' accept (F-87944) sets the file manager's disable flag (+10096,
+    /// F-90219) to the row's opposite and, with the row on, writes `mc4.sav`: the port applies the row at once.
+    fn autosave_step(&mut self) {
+        log::info!("options: AUTO SAVE {}", if self.no_save { "on" } else { "off" });
+        if self.no_save {
+            self.no_save = false;
+            let dir = self.data_dir.clone();
+            self.write_save(&dir);
+        } else if self.flash_popup.is_some() {
+            self.no_save = true;
+            let def = crate::flash_ui::MessageBoxDef { title: "Dlg_Title_AutoSave".into(), description: "Dlg_Desc_AutoSave".into(), options: vec![("ok_yes".into(), "messagebox_ok".into())] };
+            self.message_box = Some((def, 0, MenuAction::None));
+            self.menu_confirm = 11;
+        } else {
+            self.no_save = true;
+        }
+    }
+
     /// The quit question of the race's menu class (vt+108 title, vt+104 text, vt+56 repair form, vt+112
     /// second button): series, tournament, time trial, delivery, payback, wager, pink slip, else
     /// Dialog_Title_QuitRace. Time trial, delivery and payback ask YES / NO (vt+56 = 0); the pink slip's
@@ -12680,13 +12713,15 @@ impl Game {
             // rows at the most)
             let more: Vec<(String, Vec<String>, bool)> = if s19a_tt || dl { Vec::new() } else { self.mission_results[1..self.plain_missions()].to_vec() };
             let objectives: Vec<String> = objectives.iter().take(7).cloned().collect();
+            // (each objective ticked by its own requirement's +116, F-66221)
+            let tick = |o: &str| if o.starts_with(OBJ_DONE) { "1" } else { "0" };
             for (k, o) in objectives.iter().enumerate() {
                 if dl && k == 2 {
                     rows.push(MenuRow { label: o.to_uppercase(), value: if self.dl_damage_ok { "1" } else { "0" }.to_string(), enabled: true, part: None });
                     props.push(26);
                     continue;
                 }
-                rows.push(MenuRow { label: o.to_uppercase(), value: if s19a_tt || dl { String::new() } else { mark.to_string() }, enabled: true, part: None });
+                rows.push(MenuRow { label: o.trim_start_matches(OBJ_DONE).to_uppercase(), value: if s19a_tt || dl { String::new() } else { tick(o).to_string() }, enabled: true, part: None });
                 props.push(if s19a_tt || dl { 19 } else { 6 });
             }
             for (t, objs, ok) in more {
@@ -12697,7 +12732,7 @@ impl Game {
                 rows.push(MenuRow { label: t.to_uppercase(), value: m.to_string(), enabled: true, part: None });
                 props.push(18);
                 for o in objs.iter().take(8 - rows.len()) {
-                    rows.push(MenuRow { label: o.to_uppercase(), value: m.to_string(), enabled: true, part: None });
+                    rows.push(MenuRow { label: o.trim_start_matches(OBJ_DONE).to_uppercase(), value: tick(o).to_string(), enabled: true, part: None });
                     props.push(6);
                 }
             }

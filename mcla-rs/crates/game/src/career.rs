@@ -547,7 +547,7 @@ impl Career {
                         let field = |n: &str| r.split_whitespace().skip_while(|w| *w != n).nth(1).unwrap_or("").to_string();
                         match field("Type").as_str() {
                             "PerformanceLevel" => {
-                                // (a threshold is reached by the system's share, not by pct x MaxAmount: sub_826BC090)
+                                // (a threshold is reached by the system's share, not by pct x MaxAmount: F-61830)
                                 c.perf_unlocks.entry(field("PerformanceId").to_ascii_uppercase()).or_insert(crate::mc4::main_amount_at(pct));
                             }
                             "PartUnlock" => {
@@ -684,7 +684,7 @@ impl Career {
         let before = self.ability_level(system, stat);
         *self.stats.entry(stat.to_string()).or_insert(0) += 1;
         // (the ability's system does not count uses: it gets one point for every race
-        // finished with the ability fitted - sub_826B9AE8 / sub_826BB750; `mc4_race_experience`)
+        // finished with the ability fitted - F-48818 / F-51495; `mc4_race_experience`)
         let after = self.ability_level(system, stat);
         if after > before { Some(after) } else { None }
     }
@@ -786,7 +786,7 @@ impl Career {
         }
         self.state[i] = MState { stage: Stage::Active, progress: vec![0; self.missions[i].objectives.len()], won: Vec::new(), pts: Default::default() };
         // (READY_TO_START waits for the mission's call unless bAutoStart passes it on; the
-        // log takes the mission at CHECKING_OBJECTIVES: sub_826CD880, sub_826C7710 - step 20b)
+        // log takes the mission at CHECKING_OBJECTIVES: F-99322, F-58560 - step 20b)
         self.freeze_prereqs(i);
         if self.waits_for_call(i) {
             self.on_ready(i);
@@ -1027,7 +1027,7 @@ impl Career {
                         if let Cond::Event { event, ident } = c {
                             kinds.push(event.as_str());
                             // (the event's prize car and money are the event's own rewards:
-                            // given when the event completes - sub_826CD1E8, `mc4_event_complete`)
+                            // given when the event completes - F-67065, `mc4_event_complete`)
                             let _ = ident;
                         }
                     }
@@ -1155,7 +1155,7 @@ impl Career {
     }
 
     /// South Central's set-up script (`sc/Career/CareerSetup_SC`, started at every career start
-    /// with the add-on: sub_826C0C50 0x826C0CAC) six seconds after the player's car is there
+    /// with the add-on: F-64159 A-25462) six seconds after the player's car is there
     /// (0x6d): a mission still at CHECKING_PREREQUISITES whose missions are complete goes to
     /// READY_TO_START (0xf4 .. 0x303). The missions started.
     pub fn sc_setup(&mut self) -> Vec<String> {
@@ -1174,7 +1174,7 @@ impl Career {
     /// Id of the mission that is waiting for a race against a roaming racer.
     /// A race of an active tournament was run, `order` its finishing order ("YOU" the player).
     /// Every race of a tournament is run once and pays points by place - 7, 4, 2, 1, the
-    /// table the game's career manager is built with (0x826c1a64) and its
+    /// table the game's career manager is built with (A-96970) and its
     /// calculateResultsTournament adds up; after the last race the racer with the most points
     /// has won. A lost tournament starts over. Returns a line for the results screen.
     pub fn tournament_race(&mut self, race_id: &str, order: &[String]) -> Option<String> {
@@ -1214,7 +1214,7 @@ impl Career {
                 set(st, 1);
                 st.pts.clear();
                 // (TOURNAMENT_COMPLETE with the event's name, and TOURNAMENT_COMPLETE_HARD only
-                // when the tournament was entered on Hard: sub_826CA6D8 0x826CA88C..0x826CA8B4)
+                // when the tournament was entered on Hard: F-66541 A-25857..A-17203)
                 let done = self.missions[i].objectives[oi].conds.first().and_then(|c| match c {
                     Cond::Event { event, ident } => Some((ident.clone(), event.ends_with("_HARD"))),
                     _ => None,
@@ -1347,11 +1347,11 @@ impl Career {
     }
 
     /// The objective of mission `id` whose target racer's icon flashes (racer +466, `icon_subtype`
-    /// 1 of the 3D icon): the refresh sub_8220A0B8 takes each mission that is not bAlwaysHidden
-    /// (+685) and, through sub_826C72D8, in state 2 READY_TO_START or 3 CHECKING_OBJECTIVES, the
+    /// 1 of the 3D icon): the refresh F-92169 takes each mission that is not bAlwaysHidden
+    /// (+685) and, through F-96100, in state 2 READY_TO_START or 3 CHECKING_OBJECTIVES, the
     /// first objective that is not satisfied (+116), not always hidden (+117) and not hidden (+118);
-    /// its target's vehicle element and racer are flagged (sub_822378F8), every other one cleared
-    /// (sub_82238080).
+    /// its target's vehicle element and racer are flagged (F-39702), every other one cleared
+    /// (F-44139).
     pub fn pulse_objective(&self, id: &str) -> Option<usize> {
         let &i = self.index.get(id)?;
         let m = &self.missions[i];
@@ -1431,8 +1431,23 @@ impl Career {
     }
 
     /// The lines of mission `id`'s objectives (those it shows), whatever its stage.
+    ///
+    /// A satisfied objective (requirement +116: its progress at the target, as `pulse_objective`
+    /// reads it) starts with `crate::game::OBJ_DONE`: MISSION RESULTS ticks it (F-66221).
     pub fn objective_texts(&self, id: &str) -> Vec<String> {
-        self.index.get(id).map(|&i| self.missions[i].objectives.iter().filter(|r| !r.hidden).map(|r| self.text(&r.desc)).filter(|t| !t.is_empty()).collect()).unwrap_or_default()
+        let Some(&i) = self.index.get(id) else { return Vec::new() };
+        let m = &self.missions[i];
+        m.objectives
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.hidden)
+            .map(|(k, r)| {
+                let met = self.state[i].progress.get(k).copied().unwrap_or(0) >= r.conds.first().map_or(1, |c| self.target(m, c));
+                (met, self.text(&r.desc))
+            })
+            .filter(|(_, t)| !t.is_empty())
+            .map(|(met, t)| if met { format!("{}{}", crate::game::OBJ_DONE, t) } else { t })
+            .collect()
     }
 
     /// The active missions, oldest first, for the mission log.
@@ -1442,9 +1457,9 @@ impl Career {
 
     fn views(&self, want: impl Fn(&Stage) -> bool) -> Vec<MissionView> {
         // (the log's two lists: the open missions in the order they entered it, the completed
-        // ones in the order of completion - lists 1 and 2 of the mission manager, sub_826C3F20 /
-        // sub_826C4058; mcMissionLog sub_8262F7A8 reads list 1 for "active", list 2 for
-        // "completed": sub_8262C5B0)
+        // ones in the order of completion - lists 1 and 2 of the mission manager, F-26006 /
+        // F-18577; mcMissionLog F-19994 reads list 1 for "active", list 2 for
+        // "completed": F-64028)
         (if want(&Stage::Complete) { &self.done } else { &self.order })
             .iter()
             .filter(|&&i| !self.missions[i].hidden && want(&self.state[i].stage))
@@ -1508,7 +1523,7 @@ impl Career {
     }
 
     /// The mission is in the log: active and past READY_TO_START (state 3 or 4). Its own script
-    /// `Game/Career/Missions/<ID>` starts then (sub_826C7710 -> sub_826C6CC8), and with it the
+    /// `Game/Career/Missions/<ID>` starts then (F-58560 -> F-68362), and with it the
     /// slot request of its man (`missions/race_gh_06.sco` 0x4e).
     pub fn mission_in_log(&self, id: &str) -> bool {
         self.index.get(id).map_or(false, |&i| self.state[i].stage == Stage::Active && self.ext.get(i).map_or(true, |e| e.state != 2))
@@ -1615,7 +1630,7 @@ pub const STORY_POINTS: [(&str, [f32; 3], f32); 4] = [
 
 impl Career {
     /// The mission waits in READY_TO_START for its READY_TO_START_ON_ENTER script (the
-    /// sidekick's call, then mcMission_ChangeState(3)): bAutoStart not set (sub_826CD880 moves
+    /// sidekick's call, then mcMission_ChangeState(3)): bAutoStart not set (F-99322 moves
     /// it on by itself otherwise) and the script there. A mission the log never lists (always
     /// hidden) has no call in the port and goes on at once; so does one without the script.
     fn waits_for_call(&self, i: usize) -> bool {
@@ -1623,7 +1638,7 @@ impl Career {
         !m.auto_start && m.on_enter && !m.hidden
     }
 
-    /// READY_TO_START entered (sub_826CD8A8): the objectives shown unless always hidden and
+    /// READY_TO_START entered (F-97429): the objectives shown unless always hidden and
     /// armed; the READY_TO_START_ON_ENTER script runs (the port's: `ready_now`, the call).
     fn on_ready(&mut self, i: usize) {
         if let Some(e) = self.ext.get_mut(i) {
@@ -1642,7 +1657,7 @@ impl Career {
         }
     }
 
-    /// CHECKING_OBJECTIVES entered: into the log (list 1), objectives armed (sub_826CD9D8).
+    /// CHECKING_OBJECTIVES entered: into the log (list 1), objectives armed (F-73549).
     fn enter_checking(&mut self, i: usize) {
         if let Some(e) = self.ext.get_mut(i) {
             e.state = 3;
@@ -1695,7 +1710,7 @@ impl Career {
     }
 
     /// A save's record in READY_TO_START: the mission re-enters it with the loading flag, which
-    /// posts its ON_ENTER event again (sub_826CD528): out of the log, the call again.
+    /// posts its ON_ENTER event again (F-83568): out of the log, the call again.
     pub fn resume_ready(&mut self, i: usize) {
         if self.state[i].stage != Stage::Active {
             return;
@@ -1716,7 +1731,7 @@ impl Career {
     }
 
     /// The bCareerScript READY_TO_START_ON_ENTER scripts of the missions waiting for their call
-    /// (children of the career's start-up script while they run: sub_826D3910 -> sub_826BD870).
+    /// (children of the career's start-up script while they run: F-68175 -> F-22458).
     pub fn waiting_career_scripts(&self) -> Vec<String> {
         (0..self.missions.len()).filter(|&i| self.state[i].stage == Stage::Active && self.ext.get(i).map_or(false, |e| e.state == 2)).filter_map(|i| self.missions[i].on_enter_career.clone()).collect()
     }
@@ -1765,7 +1780,7 @@ impl Career {
         None
     }
 
-    /// The completion statistic `k%AG` (sub_826C4388): the completed list's missions over all
+    /// The completion statistic `k%AG` (F-20532): the completed list's missions over all
     /// missions, both without the always hidden (+685) and the repeatable (+693) ones - 100 in
     /// the 100 % save (107 of 107), 1 in the new game (2 of 107) - cut to a whole number.
     pub fn percent_complete(&self) -> i64 {
@@ -1775,14 +1790,14 @@ impl Career {
         if total == 0 { 0 } else { (done * 100 / total) as i64 }
     }
 
-    /// The statistic is posted when a mission joins the completed list (sub_826CDB60) and when
-    /// a save has been read (sub_826C5DB8).
+    /// The statistic is posted when a mission joins the completed list (F-97326) and when
+    /// a save has been read (F-23748).
     pub fn post_percent(&mut self) {
         let v = self.percent_complete();
         self.stats.insert("k%AG".to_string(), v);
     }
 
-    /// A Stat condition's last value stops with the update that meets it (sub_826D25E8): the
+    /// A Stat condition's last value stops with the update that meets it (F-16469): the
     /// statistic at that moment is kept.
     fn freeze_met(&mut self, i: usize) {
         if !self.ext_ok(i) {
@@ -1886,20 +1901,20 @@ impl Career {
 // ---------------------------------------------------------------------------------------
 
 /// What the original keeps per mission beside its state (mission records, written by
-/// sub_826C69C8 / sub_826CC3F8, read by sub_826C7530 / sub_826CCC50):
+/// F-56966 / F-57390, read by F-60562 / F-47948):
 /// - `obj_hidden`: each objective's byte +118. 1 when the requirement is made
-///   (sub_826CCA30); set to 0 when the mission enters READY_TO_START, CHECKING_OBJECTIVES or
-///   READY_TO_COMPLETE and to 1 when it enters CHECKING_PREREQUISITES (sub_826CD8A8 /
-///   sub_826CD9D8 / sub_826CDAF0 / sub_826CD768 -> sub_826CC168, which leaves it alone while
-///   +117 is set); mcRequirement_Hide (sub_826CC8A0) sets it from a script;
+///   (F-61179); set to 0 when the mission enters READY_TO_START, CHECKING_OBJECTIVES or
+///   READY_TO_COMPLETE and to 1 when it enters CHECKING_PREREQUISITES (F-97429 /
+///   F-73549 / F-49654 / F-89508 -> F-78896, which leaves it alone while
+///   +117 is set); mcRequirement_Hide (F-82003) sets it from a script;
 /// - `obj_always`: byte +117 - the XML's bAlwaysHidden, changed by mcRequirement_AlwaysHide
-///   (sub_826CC810). Not saved: after a load it is the XML's again. The mission log lists an
-///   objective when neither is set (sub_8262E8D8 0x8262E9EC);
+///   (F-61276). Not saved: after a load it is the XML's again. The mission log lists an
+///   objective when neither is set (F-74020 A-10736);
 /// - `obj_base` / `pre_base`: the baseline of an objective's / a prerequisite's Stat condition
-///   (the statistic's value when the condition was armed, sub_826D1938) or Experience
-///   condition (the system's amount, sub_826D2020). Armed when the mission enters
-///   CHECKING_OBJECTIVES (objectives: sub_826CD9D8 -> sub_826CC4B0) or CHECKING_PREREQUISITES
-///   (prerequisites: sub_826CD768); kept as saved when a save is loaded (the load re-enters the
+///   (the statistic's value when the condition was armed, F-70875) or Experience
+///   condition (the system's amount, F-95975). Armed when the mission enters
+///   CHECKING_OBJECTIVES (objectives: F-73549 -> F-19696) or CHECKING_PREREQUISITES
+///   (prerequisites: F-89508); kept as saved when a save is loaded (the load re-enters the
 ///   state with the loading flag, which skips the capture). None: not known (a save of the
 ///   port from before): counted from 0, as the port did;
 /// - `obj_pending`: an Experience baseline waiting for the reputation of the race whose end
@@ -1926,8 +1941,8 @@ pub struct MissionExt {
 /// `Game/Career/Story/<ID>_CORE.sco` (BESTOF_SH_05 0x8bf..0x8ed / 0x123d..0x126b, CITY_CHAMP,
 /// BEAT_SH_02_EXOTIC; RACE_SH_01's is on no mission list).
 /// The standings after a tournament's race (mcTournamentResultsForm, form 49, filled by
-/// sub_826CA1E8): each racer's name ("YOU" the player), this race's points and the total, in
-/// the race's order; `decided` won / lost with this race (only its last: sub_826CA6D8), `last`
+/// F-26722): each racer's name ("YOU" the player), this race's points and the total, in
+/// the race's order; `decided` won / lost with this race (only its last: F-66541), `last`
 /// the event's last race was run.
 #[derive(Clone, Debug, Default)]
 pub struct TourTable {
@@ -1991,9 +2006,9 @@ fn cond_kind(c: &Cond) -> &'static str {
     }
 }
 
-/// Money as sub_82217820 writes it (with the currency sign), by the language (the string
+/// Money as F-36073 writes it (with the currency sign), by the language (the string
 /// table's +28: 0 English, 1 Spanish, 2 French, 3 German, 4 Italian): digits grouped by three
-/// (sub_82217680) with ',' (0 and others), '.' (1, 3, 4) or '|' (2); "$" before (0, 3 and
+/// (F-33429) with ',' (0 and others), '.' (1, 3, 4) or '|' (2); "$" before (0, 3 and
 /// others) or after (1, 2, 4).
 pub fn money_text_in(v: i64, lang: usize) -> String {
     let d = v.abs().to_string();
@@ -2079,7 +2094,7 @@ impl Career {
         self.ext.get(i).map_or(false, |e| e.obj_hidden.len() == self.missions[i].objectives.len() && e.pre_base.len() == self.missions[i].prereq.len())
     }
 
-    /// A statistic counted from a baseline (sub_826D2538): a Purse statistic as it stands,
+    /// A statistic counted from a baseline (F-13232): a Purse statistic as it stands,
     /// any other from its value when the condition was armed (not below 0).
     fn stat_since(&self, stat: &str, purse: bool, base: Option<i64>) -> i64 {
         let v = self.stats.get(stat).copied().unwrap_or(0);
@@ -2091,8 +2106,8 @@ impl Career {
     }
 
     /// The mission enters the mission log (the port's Active: CHECKING_OBJECTIVES): it leaves
-    /// the completed list if it was in it (sub_826C6C50); its objectives are shown unless
-    /// always hidden; their Stat / Experience conditions are armed (sub_826CD9D8).
+    /// the completed list if it was in it (F-97266); its objectives are shown unless
+    /// always hidden; their Stat / Experience conditions are armed (F-73549).
     fn on_log(&mut self, i: usize) {
         self.done.retain(|&x| x != i);
         self.journal.push((true, i));
@@ -2118,7 +2133,7 @@ impl Career {
         }
     }
 
-    /// The mission enters CHECKING_PREREQUISITES (sub_826CD768): its objectives are hidden
+    /// The mission enters CHECKING_PREREQUISITES (F-89508): its objectives are hidden
     /// unless always hidden (that is, they keep +118), its prerequisites armed.
     fn on_armed(&mut self, i: usize) {
         if !self.ext_ok(i) {
@@ -2139,8 +2154,8 @@ impl Career {
         }
     }
 
-    /// The mission is complete: it joins the completed list at its end (sub_826CDB60 ->
-    /// sub_826C3F20 list 2, unless it is in it).
+    /// The mission is complete: it joins the completed list at its end (F-97326 ->
+    /// F-26006 list 2, unless it is in it).
     fn mark_done(&mut self, i: usize) {
         if !self.done.contains(&i) {
             self.done.push(i);
@@ -2161,14 +2176,14 @@ impl Career {
         }
     }
 
-    /// An objective's Stat progress (sub_826D2538, up to the target).
+    /// An objective's Stat progress (F-13232, up to the target).
     fn ext_stat_progress(&self, i: usize, oi: usize, stat: &str, target: u32) -> u32 {
         let base = self.ext.get(i).and_then(|e| e.obj_base.get(oi).copied()).flatten();
         let purse = Self::purse(&self.missions[i].objectives[oi], 0);
         self.stat_since(stat, purse, base).clamp(0, target as i64) as u32
     }
 
-    /// An objective's Experience progress: the amount since its baseline (sub_826D1F38); 0
+    /// An objective's Experience progress: the amount since its baseline (F-79261); 0
     /// while the baseline waits for the race's reputation.
     fn ext_exp_progress(&self, i: usize, oi: usize, target: u32) -> u32 {
         let e = self.ext.get(i);
@@ -2223,7 +2238,7 @@ impl Career {
 
     /// The text the mission log puts after an objective (the condition's +40 routine, for the
     /// classes whose byte +41 is set - Experience, Tally, TallyRace, TallyMission, Stat:
-    /// sub_826D2090, sub_826D24C8, sub_826D2500, sub_826D2718): "(n/target)", for a Money or
+    /// F-34957, F-62132, F-95375, F-97850): "(n/target)", for a Money or
     /// Purse statistic "($n/$target)", nothing for a statistic of another type, a String or a
     /// Mission condition.
     fn objective_count(&self, i: usize, oi: usize, cur: u32, target: u32) -> Option<String> {
@@ -2385,7 +2400,7 @@ impl Career {
             .map(|(k, r)| {
                 let met = stage != Stage::Locked && self.prereq_req_met(i, k);
                 // (a TallyMission condition counts completions only without the LessThan
-                // heuristic - sub_826D2870; not before it is armed)
+                // heuristic - F-12302; not before it is armed)
                 let count = match r.conds.first() {
                     Some(Cond::TallyMission { less_than: false, district, .. }) if stage != Stage::Locked => self.missions.iter().zip(self.state.iter()).filter(|(m, s)| s.stage == Stage::Complete && same_district(district, &m.district)).count() as u32,
                     _ => 0,
