@@ -79,11 +79,57 @@ fn cents(ratio: f32) -> i32 {
     (1200.0 * ratio.max(1e-6).log2()) as i32
 }
 
+/// F-46044: the original's log10 in double, `ln x * 0.4342944819032518` (F-96865 is its own ln routine).
+fn log10_guest(x: f64) -> f64 {
+    ln_guest(x) * 0.4342944819032518
+}
+
+/// The original's own natural logarithm (F-96865, a rational polynomial in double on the mantissa in [0.5, 1) and the
+/// exponent), same operations and fused multiply-adds, for positive finite x (other inputs fall back to the library).
+fn ln_guest(x: f64) -> f64 {
+    if x == 1.0 {
+        return 0.0;
+    }
+    if !(x > 0.0 && x <= f64::MAX) {
+        return x.ln();
+    }
+    let (mut bits, mut e) = (x.to_bits(), 0i32);
+    if x >= f64::MIN_POSITIVE {
+        e = ((bits >> 52) & 0x7ff) as i32 - 1022;
+    } else {
+        bits = (x * 9007199254740992.0).to_bits();
+        e = ((bits >> 52) & 0x7ff) as i32 - 1075 + e;
+    }
+    let m = f64::from_bits((bits & 0x800f_ffff_ffff_ffff) | 0x3fe0_0000_0000_0000);
+    let (f, den) = if m > 0.7071067811865476 {
+        ((m - 0.5) - 0.5, (m + 1.0) * 0.5)
+    } else {
+        e -= 1;
+        let f = m - 0.5;
+        (f, (f + 1.0) * 0.5)
+    };
+    let s = f / den;
+    let z = s * s;
+    let ef = e as f64;
+    let (c28, c40) = (f64::from_bits(0x4030624a2016afed), f64::from_bits(0x40738083fa15267e));
+    let (c70, c68, c60, c58, c50) = (f64::from_bits(0x3fe94415b356bd29), f64::from_bits(0x4041d5804b67ce0f), f64::from_bits(0x405007ff12b3b59a), f64::from_bits(0x40880bfe9c0d9077), f64::from_bits(0x3f2bd0105c610ca8));
+    let t0 = ef * c50;
+    let a = (-z).mul_add(c70, c28);
+    let b = z - c68;
+    let a = a.mul_add(z, -c60);
+    let b = b.mul_add(z, c40);
+    let a = a * z;
+    let b = b.mul_add(z, -c58);
+    let q = a / b + 1.0;
+    let r = q.mul_add(s, -t0);
+    ef.mul_add(0.693359375, r)
+}
+
 /// A pitch ratio as F-98474 turns it into the voice's cents (+80): log10 in double (F-46044 = ln x
 /// 0.4342944819032518, 0x8205D018), rounded to single, times 3.321928 (0x82002C44) and 1200 (0x82002C40) in single,
 /// truncated (fctiwz). (Recorded on the slipstream loop: 292 updates, every value equal - work/slipstream/audiorec.)
 fn voice_cents(ratio: f32) -> i32 {
-    let l = ((ratio.max(1e-6) as f64).ln() * 0.4342944819032518) as f32;
+    let l = log10_guest(ratio.max(1e-6) as f64) as f32;
     (l * f32::from_bits(0x4054_9A78) * 1200.0) as i32
 }
 
@@ -2233,6 +2279,25 @@ fn entry<'a>(cars: &'a mut HashMap<usize, Entry>, types: &HashMap<String, Traffi
 
 #[cfg(test)]
 mod tests {
+
+    /// F-46044 against the original's own code on 20000 inputs (work/audio2/verify/ref6.py)
+    #[test]
+    fn log10_is_the_originals() {
+        let mut bad = 0;
+        let mut first = Vec::new();
+        for line in include_str!("log10_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let x = f64::from_bits(u64::from_str_radix(i, 16).unwrap());
+            let want = u64::from_str_radix(o, 16).unwrap();
+            if log10_guest(x).to_bits() != want {
+                bad += 1;
+                if first.len() < 3 {
+                    first.push((x, f64::from_bits(want), log10_guest(x)));
+                }
+            }
+        }
+        assert_eq!(bad, 0, "{first:?}");
+    }
 
     /// F-90102 against the original's own code on 4000 cases (work/audio2/verify/ref1.py; evidence docs/reference/audio/verify_audio_b1.md)
     #[test]
