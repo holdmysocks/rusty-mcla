@@ -5711,7 +5711,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     t.step(&mut self.fx, &self.vehicles.cars, wet, sim_dt * 2.0, self.tick_no % 2 == 0, self.cam.pos);
                 }
-                carfx::step(&mut self.fx, &self.vehicles.cars, self.cam.pos);
+                carfx::step(&mut self.fx, &self.vehicles.cars, self.cam.pos, self.hide_player);
                 self.fx.hour = self.time_of_day;
                 self.fx.update(sim_dt);
             }

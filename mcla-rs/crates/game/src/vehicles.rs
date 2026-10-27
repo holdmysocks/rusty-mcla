@@ -95,9 +95,10 @@ pub struct CarModel {
     pub part_rig: crate::damageparts::PartRig,
     pub hood_slot: Option<Mat4>,
     pub trunk_bone: Option<Mat4>,
-    /// where the exhaust and nitrous effects come out (car space, at most two) and whether the first is a
+    /// where the exhaust and nitrous effects come out (car space, at most two, each with whether it moves with the
+    /// rear bumper) and whether the first is a
     /// bone of the rear bumper (`CarAsset::fx_anchors`, `carfx.rs`)
-    pub fx_anchors: Vec<Mat4>,
+    pub fx_anchors: Vec<(Mat4, bool)>,
     pub fx_anchor_rear: bool,
     /// a traffic model's own wheels (tyre, rim, disc in its body fragment, on its wheel
     /// bones `wheel_0` .. `wheel_5` - `CarPart::mesh_wheel`): their hubs; drawn as batch groups 7 - 12 turned about these -

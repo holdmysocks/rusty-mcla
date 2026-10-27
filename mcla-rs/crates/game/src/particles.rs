@@ -147,6 +147,9 @@ struct RuleParticle {
     accel_ot: Vec3,
     damp_ot: Vec3,
     mw_ot: f32,
+    /// its effect's evolution values at its birth (`F-61736`: instance +436.. copied to the particle's +76..; the
+    /// particle rule's evolutions, list 3, read this copy)
+    evo: [f32; 4],
     zoom: f32,
     /// the effect's turn at its birth (accelerations in the effect's frame)
     rot: Quat,
@@ -913,6 +916,7 @@ impl Particles {
                 accel_ot: v3(ev(0, 5, er.accel_ot.eval(te))) * 0.01,
                 damp_ot: v3(ev(0, 6, er.damp_ot.eval(te))) * 0.01,
                 mw_ot: ev(0, 7, er.matrix_weight_ot.eval(te))[0] * 0.01,
+                evo: evo_v,
                 zoom,
                 rot: e.rot,
                 fade: e.fade,
@@ -936,7 +940,8 @@ impl Particles {
                 // first frame, first turn (degrees), first spin (turns a second)
                 p.frame = (s.frame_start + (rng.f() * (s.frame_end - s.frame_start + 1) as f32) as i32).clamp(0, 255) as u8;
                 p.frame0 = p.frame;
-                let (th, rv) = (s.init_theta.eval(te), s.init_rot_vel.eval(te));
+                // (InitTheta, InitRotateVel with their evolutions, list 3 ids 6 / 7: `F-70576`, `F-61736`)
+                let (th, rv) = (ev(3, 6, s.init_theta.eval(te)), ev(3, 7, s.init_rot_vel.eval(te)));
                 p.theta = rng.range(th[0], th[1]).to_radians();
                 p.spin0 = rng.range(rv[0], rv[1]) * std::f32::consts::TAU;
                 if pr.flags & flag::USE_PARTICLE_TRAILS != 0 {
@@ -969,27 +974,38 @@ impl Particles {
         let coll = &self.coll;
         self.rule_list.retain_mut(|p| {
             let pr = &fx.particle_rules[p.rule as usize];
+            // (the rule's keyframes with its event's evolutions, list 3 by the particle's birth values:
+            // `F-57835` ids 9 / 10 acceleration, 11 / 12 damping, 13 matrix weight, 17 playback, 20 / 21 noise;
+            // `F-53755`, `F-28037`)
+            let evo_g = fx.effects.get(p.eff as usize).and_then(|r| r.events.get(p.ev as usize)).and_then(|e| e.evo.as_ref());
+            let pevo = p.evo;
+            let pev = |id: u8, base: [f32; 4], t: f32| -> [f32; 4] {
+                match evo_g {
+                    Some(g) => g.evolve(3, id, base, t, &pevo),
+                    None => base,
+                }
+            };
             p.prev = p.pos;
             let dt = dt * p.ts;
-            let pb = pr.playback_rate.eval(p.t);
+            let pb = pev(17, pr.playback_rate.eval(p.t), p.t);
             let t = p.t + lerp(pb[0], pb[1], p.r[5]) * p.inv_life * dt;
             if t > 1.0 {
                 return false;
             }
-            let mut acc = v3(pr.accel_min.eval(t)).lerp(v3(pr.accel_max.eval(t)), p.r[3]) * p.accel_ot;
+            let mut acc = v3(pev(9, pr.accel_min.eval(t), t)).lerp(v3(pev(10, pr.accel_max.eval(t), t)), p.r[3]) * p.accel_ot;
             if pr.flags & flag::WORLD_SPACE_ACCELERATION == 0 {
                 acc = turn(p.rot, p.flip, acc);
             }
             if pr.flags & flag::ZOOM_ACCELERATION != 0 {
                 acc *= p.zoom;
             }
-            let damp = v3(pr.damp_min.eval(t)).lerp(v3(pr.damp_max.eval(t)), p.r[4]) * p.damp_ot;
+            let damp = v3(pev(11, pr.damp_min.eval(t), t)).lerp(v3(pev(12, pr.damp_max.eval(t), t)), p.r[4]) * p.damp_ot;
             p.vel += acc * dt;
             // position / velocity noise (`F-92194`, after the acceleration): amplitudes by one
             // random number of the particle at its life, three fresh numbers in -1..1 each time,
             // the restricted axes masked; the direction noise turns the velocity, keeping its speed
-            let pn = pr.position_noise.eval(t);
-            let vn = pr.velocity_noise.eval(t);
+            let pn = pev(20, pr.position_noise.eval(t), t);
+            let vn = pev(21, pr.velocity_noise.eval(t), t);
             let (pa, va, da) = (lerp(pn[0], pn[1], p.r[9]), lerp(vn[0], vn[1], p.r[9]), lerp(vn[2], vn[3], p.r[9]));
             if pa > 0.0 || va > 0.0 || da > 0.0 {
                 let mask = Vec3::new(
@@ -1013,7 +1029,7 @@ impl Particles {
                     p.vel *= mask;
                 }
             }
-            let mw = pr.matrix_weight.eval(t);
+            let mw = pev(13, pr.matrix_weight.eval(t), t);
             let mw = (lerp(mw[0], mw[1], p.r[6]) * p.mw_ot).clamp(0.0, 1.0);
             // the share of its effect's movement it follows
             if let Some(m) = moved.iter().find(|m| m.0 == p.inst) {
@@ -1402,11 +1418,12 @@ impl Particles {
                 let pr = &fx.particle_rules[p.rule as usize];
                 let rank = em_rank.get(&p.uid).copied().unwrap_or(u64::MAX);
                 let skey = if pr.flags & flag::SORT_PARTICLES == 0 { pi as f32 } else if pr.flags & flag::SORT_RANDOM != 0 { p.sort_key } else { p.pos.distance_squared(cam) };
-                let (ialpha, ievo) = inst.get(&p.inst).copied().unwrap_or((1.0, [0.0; 4]));
+                let (ialpha, _) = inst.get(&p.inst).copied().unwrap_or((1.0, [0.0; 4]));
                 let evo_g = fx.effects.get(p.eff as usize).and_then(|r| r.events.get(p.ev as usize)).and_then(|e| e.evo.as_ref());
+                // (list 3 by the particle's birth copy of the evolution values, as the step)
                 let pev = |id: u8, base: [f32; 4]| -> [f32; 4] {
                     match evo_g {
-                        Some(g) => g.evolve(3, id, base, p.t, &ievo),
+                        Some(g) => g.evolve(3, id, base, p.t, &p.evo),
                         None => base,
                     }
                 };

@@ -1217,29 +1217,35 @@ impl CarAsset {
         self.parts_for(cfg).into_iter().filter(|p| !p.sockets.is_empty()).min_by_key(|p| outlet_rank(p))
     }
 
-    /// The two places the car's exhaust and nitrous effects come out of, in car space (F-21553): the first two
-    /// `nitro0` bones of the drawn parts, else the outlets `exh_primary0` / `exh_secondary0` - the second NOT
-    /// mirrored here (only the tip's draw mirrors it); and whether the first is a bone of the rear bumper
-    /// (H+33: a broken rear bumper end then stops both effects).
-    /// (approx.) the `nitro0` search runs over the drawn parts in the outlet order (base first, then by slot):
-    /// the original's bone iterator was not traced.
-    pub fn fx_anchors(&self, cfg: &CarConfig) -> (Vec<Mat4>, bool) {
+    /// The two places the car's exhaust and nitrous effects come out of, in car space (F-21553), each with whether it
+    /// is a bone of the rear bumper (it then moves with that bumper's pose); and whether the first is (H+33: a broken
+    /// rear bumper end then stops both effects). The first two `nitro0` bones (F-88325 / F-59267, started by F-20205, name search F-90899):
+    /// the base fragment first, then the drawn slots in slot order, each fragment's bones in skeleton order - one part
+    /// may give both; else the outlets `exh_primary0` / `exh_secondary0` - the second NOT mirrored here (only the
+    /// tip's draw mirrors it). With a side exhaust the bone's own (local, rest) matrix in car space is taken, without
+    /// it the bone's global of the car's skeleton (here the part's transform x the bone's world, moved each frame with
+    /// a hanging rear bumper by `carfx.rs`).
+    pub fn fx_anchors(&self, cfg: &CarConfig) -> (Vec<(Mat4, bool)>, bool) {
         let mut parts = self.parts_for(cfg);
         parts.sort_by_key(|p| outlet_rank(p));
+        let side = parts.iter().any(|p| p.primary.to_ascii_lowercase().starts_with("exh_side"));
         let mut nitro: Vec<(Mat4, bool)> = Vec::new();
         for p in &parts {
             if let Some(sk) = p.skeleton.as_deref() {
+                let rear = !side && p.primary.to_ascii_lowercase().starts_with("bumper_r");
                 for b in sk.bones.iter().filter(|b| b.name.eq_ignore_ascii_case("nitro0")) {
-                    nitro.push((p.transform * b.world, p.primary.to_ascii_lowercase().starts_with("bumper_r")));
+                    nitro.push((if side { b.local } else { p.transform * b.world }, rear));
                 }
             }
         }
         if nitro.len() >= 2 {
-            return (nitro.iter().take(2).map(|n| n.0).collect(), nitro[0].1);
+            nitro.truncate(2);
+            let first = nitro[0].1;
+            return (nitro, first);
         }
         let Some(o) = self.outlet_part(cfg) else { return (Vec::new(), false) };
         let rear = o.primary.to_ascii_lowercase().starts_with("bumper_r");
-        let find = |pre: &str| o.sockets.iter().find(|(n, _)| n.starts_with(pre)).map(|(_, m)| o.transform * *m);
+        let find = |pre: &str| o.sockets.iter().find(|(n, _)| n.starts_with(pre)).map(|(_, m)| (o.transform * *m, rear));
         (["exh_primary", "exh_secondary"].iter().filter_map(|n| find(n)).collect(), rear)
     }
 
