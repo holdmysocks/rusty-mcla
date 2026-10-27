@@ -47,7 +47,7 @@ impl Keyframe {
         Keyframe { keys: (0..n).map(|i| p + i * 0x30).map(|k| Key { t: rd.f32(k), v: f4(k + 0x10), d: f4(k + 0x20) }).collect() }
     }
 
-    /// The executable's evaluation (the loop at the head of `sub_824B3B18`): the key before
+    /// The executable's evaluation (the loop at the head of F-42828 and of the emit rule's three evaluators F-87862, F-96958, F-56010): the key before
     /// the first one whose time is not below `t` (the last key when none is), value + slope *
     /// (t - its time).
     pub fn eval(&self, t: f32) -> [f32; 4] {
@@ -60,7 +60,8 @@ impl Keyframe {
         }
         let k = &self.keys[i - 1];
         let dt = t - k.t;
-        [k.v[0] + k.d[0] * dt, k.v[1] + k.d[1] * dt, k.v[2] + k.d[2] * dt, k.v[3] + k.d[3] * dt]
+        // (the original's fmadds: one rounding for value + slope * dt)
+        [k.d[0].mul_add(dt, k.v[0]), k.d[1].mul_add(dt, k.v[1]), k.d[2].mul_add(dt, k.v[2]), k.d[3].mul_add(dt, k.v[3])]
     }
 
     /// No key has a value other than zero.
@@ -1064,5 +1065,32 @@ mod tests {
         assert_eq!(pt.len(), 14);
         assert!(pt.iter().all(|n| !of(n).is_empty()));
         assert!(of("la_prop_trash_can_04x").is_empty());
+    }
+    /// The key-frame evaluation against the original's own code run offline (tools/map_keyframe_reference.py):
+    /// four functions, 1,500 random key tables each (0..9 keys, times on and between the keys), every output bit for bit.
+    #[test]
+    fn keyframe_eval_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/map_keyframe_ref.txt").lines() {
+            let (head, table) = l.split_once(" | ").unwrap();
+            let h: Vec<&str> = head.split_whitespace().collect();
+            let count: usize = h[1].parse().unwrap();
+            let t = f(h[2]);
+            let w: Vec<f32> = table.split_whitespace().map(f).collect();
+            assert_eq!(w.len(), count * 9);
+            let keys = (0..count)
+                .map(|i| {
+                    let k = &w[i * 9..i * 9 + 9];
+                    Key { t: k[0], v: [k[1], k[2], k[3], k[4]], d: [k[5], k[6], k[7], k[8]] }
+                })
+                .collect();
+            let got = Keyframe { keys }.eval(t);
+            for j in 0..4 {
+                assert_eq!(got[j].to_bits(), f(h[3 + j]).to_bits(), "{l} lane {j}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 6000);
     }
 }

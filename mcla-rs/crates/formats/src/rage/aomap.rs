@@ -12,6 +12,7 @@ use std::path::Path;
 
 pub struct AoMap {
     pub min: Vec3,
+    pub max: Vec3,
     pub cell: f32,
     pub nx: usize,
     pub nz: usize,
@@ -25,22 +26,36 @@ impl AoMap {
         let text = std::fs::read_to_string(dir.join("grid.aogrid")).ok()?;
         let key = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|r| r.split_whitespace().filter_map(|v| v.parse::<f32>().ok()).collect::<Vec<f32>>()));
         let min = key("m_ext_Min ")?;
+        let max = key("m_ext_Max ")?;
         let (cell, nx, nz) = (*key("m_cellsize ")?.first()?, *key("m_numCells_x ")?.first()? as usize, *key("m_numCells_z ")?.first()? as usize);
         let raw = std::fs::read(dir.join("ambientnight.raw")).ok()?;
         let palette = std::fs::read(dir.join("ambientnight.act")).ok()?;
-        if min.len() < 3 || cell <= 0.0 || raw.len() < nx * nz || palette.len() < 768 {
+        if min.len() < 3 || max.len() < 3 || cell <= 0.0 || raw.len() < nx * nz || palette.len() < 768 {
             return None;
         }
-        Some(AoMap { min: Vec3::new(min[0], min[1], min[2]), cell, nx, nz, raw, palette })
+        Some(AoMap { min: Vec3::new(min[0], min[1], min[2]), max: Vec3::new(max[0], max[1], max[2]), cell, nx, nz, raw, palette })
+    }
+
+    /// The cell a place lies in, as F-36356 finds it: outside the map's rectangle (min / max, both edges
+    /// inside) none; then `(p - min) x (1 / cell)` cut towards zero, and none beyond the cell counts.
+    pub fn index(&self, x: f32, z: f32) -> Option<usize> {
+        if x < self.min.x || z < self.min.z || x > self.max.x || z > self.max.z {
+            return None;
+        }
+        let inv = 1.0 / self.cell;
+        // (fctiwz: cut towards zero, a NaN gives the most negative int)
+        let cut = |v: f32| if v.is_nan() { i32::MIN } else { v as i32 };
+        let (ix, iz) = (cut((x - self.min.x) * inv), cut((z - self.min.z) * inv));
+        if ix < 0 || ix as usize >= self.nx || iz < 0 || iz as usize >= self.nz {
+            return None;
+        }
+        Some(iz as usize * self.nx + ix as usize)
     }
 
     /// The fill colour at a place: the cell's palette entry; black outside the map.
     pub fn color_at(&self, x: f32, z: f32) -> [u8; 3] {
-        let (fx, fz) = ((x - self.min.x) / self.cell, (z - self.min.z) / self.cell);
-        if fx < 0.0 || fz < 0.0 || fx as usize >= self.nx || fz as usize >= self.nz {
-            return [0; 3];
-        }
-        let i = self.raw[fz as usize * self.nx + fx as usize] as usize * 3;
+        let Some(c) = self.index(x, z) else { return [0; 3] };
+        let i = self.raw[c] as usize * 3;
         [self.palette[i], self.palette[i + 1], self.palette[i + 2]]
     }
 
@@ -60,6 +75,32 @@ impl AoMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cell lookup against the original's own code run offline (tools/map_aomap_reference.py): four grids
+    /// (the city's and three odd ones whose 1 / cell is not exact), places inside, on the cell edges (+-1 ulp), on and
+    /// just outside the rectangle.
+    #[test]
+    fn cell_index_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/map_aomap_ref.txt").lines() {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            let m = AoMap {
+                min: Vec3::new(f(t[0]), 0.0, f(t[1])),
+                max: Vec3::new(f(t[2]), 0.0, f(t[3])),
+                cell: f(t[4]),
+                nx: t[5].parse().unwrap(),
+                nz: t[6].parse().unwrap(),
+                raw: Vec::new(),
+                palette: Vec::new(),
+            };
+            let want: i64 = t[9].parse().unwrap();
+            let got = m.index(f(t[7]), f(t[8])).map_or(-1, |i| i as i64);
+            assert_eq!(got, want, "{l}");
+            n += 1;
+        }
+        assert!(n > 8000, "{n}");
+    }
 
     /// Every plant carries the map's colour at its place in its own record: the check that
     /// fixes the files' layout, row order and axes (95,192 of the 95,523; 330 lie off the map

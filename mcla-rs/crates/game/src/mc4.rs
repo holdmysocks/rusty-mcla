@@ -2587,19 +2587,44 @@ impl Default for StripIdx {
     }
 }
 
+/// RGB to hue / saturation / value as F-47840 does it (the arithmetic order, the reciprocal of the
+/// range, the fused multiply-subtract, hue turned by 1/6 last); bit-equal on 4,716 cases (map_hsv_matches_the_original).
 fn rgb_hsv(c: [f32; 3]) -> [f32; 3] {
-    let (mx, mn) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
-    let d = mx - mn;
-    let h = if d < 1e-6 {
-        0.0
-    } else if mx == c[0] {
-        ((c[1] - c[2]) / d).rem_euclid(6.0) / 6.0
-    } else if mx == c[1] {
-        ((c[2] - c[0]) / d + 2.0) / 6.0
+    let (r, g, b) = (c[0], c[1], c[2]);
+    let mut v = r;
+    if r < g {
+        v = g;
+    }
+    if v < b {
+        v = b;
+    }
+    let mut m = r;
+    if r > g {
+        m = g;
+    }
+    if m > b {
+        m = b;
+    }
+    let d = v - m;
+    if d == 0.0 {
+        return [0.0, 0.0, v];
+    }
+    let s = d / v;
+    let inv = 1.0 / d;
+    let mut h = if r == v {
+        let t = (v - g) * inv;
+        (v - b).mul_add(inv, -t)
+    } else if g == v {
+        let t = (v - b) * inv;
+        (v - r).mul_add(inv, -t) + 2.0
     } else {
-        ((c[0] - c[1]) / d + 4.0) / 6.0
+        let t = (v - r) * inv;
+        (v - g).mul_add(inv, -t) + 4.0
     };
-    [h, if mx > 0.0 { d / mx } else { 0.0 }, mx]
+    if h < 0.0 {
+        h += 6.0;
+    }
+    [h * 0.16666667, s, v]
 }
 
 /// The part bytes of a record that the port keeps in `xparts` under its own keys:
@@ -12432,6 +12457,23 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
+    /// F-47840 (the original's rgb to hsv) run offline on its own generated code
+    /// (tools/map_hsv_reference.py): 4,716 inputs, every output float bit for bit.
+    #[test]
+    fn map_hsv_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/map_hsv_ref.txt").lines() {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            let got = super::rgb_hsv([f(t[1]), f(t[2]), f(t[3])]);
+            for k in 0..3 {
+                assert_eq!(got[k].to_bits(), f(t[4 + k]).to_bits(), "{l} lane {k}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 4716);
+    }
+
     use super::*;
 
     fn fixture(name: &str) -> Option<Value> {
