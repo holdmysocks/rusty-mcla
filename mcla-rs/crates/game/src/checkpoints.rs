@@ -2,25 +2,25 @@
 //!
 //! Sources (static recompilation, image base 0x82000000; notes in `SAVE_WORK.md`, "Race
 //! checkpoints"):
-//! - the checkpoint object (368 bytes, constructor `sub_82266208`): +0 the look ("type") per
+//! - the checkpoint object (368 bytes, constructor `F-64962`): +0 the look ("type") per
 //!   racer (16 words), +64 position, +80 second position (a line), +96 the gate's offset,
 //!   +112 where it is drawn, +164 5, +168 activation radius (10), +172 where along a line it is
 //!   drawn (0.5), +176 height (100), +180 activation height (50), +184 3 (the depth below),
 //!   +188 max speed (-1), +200 state per racer (3 closed; 2 opening, 0 open, 1 closing),
 //!   +264 their timers, +330 a line, +336 / +340 the two effects, +348 its light, +352 the
-//!   light's flicker phase. Natives `sub_822671C8` (`Checkpoint_*`), `sub_82264418`
+//!   light's flicker phase. Natives `F-63293` (`Checkpoint_*`), `F-38379`
 //!   (`CheckpointManager_*`).
-//! - the hit test `sub_822653A8`, asked by `CheckpointManager_HasHitCheckpoint`
-//!   (`sub_822633F0`) and `..._GetWhichHitCheckpoint` (`sub_82263338`) with the car's last
+//! - the hit test `F-78734`, asked by `CheckpointManager_HasHitCheckpoint`
+//!   (`F-51496`) and `..._GetWhichHitCheckpoint` (`F-37765`) with the car's last
 //!   position and a point 2 m ahead of it along its velocity.
 //! - the race scripts set every checkpoint from their tables (positions, radii, heights,
 //!   activation heights, arrow look-at x / z, second positions, draw fractions, "Normal" /
 //!   "Line", max speeds - e.g. `be_circuit_jj_02.sco` 0x774b..0x78bc);
 //!   OrderedCheckpointCore (`script_obj/game/0x3ae26fc8/0xf637b18a` 0x824) and the unordered
 //!   core (`0xd82fca9b` 0x745, 0x16e0) choose the looks.
-//! - the looks: `tune/checkpoint/<name>.mccp` (`mcCP`, members `sub_82269C48`, defaults
-//!   `sub_82269A70`, loader and its fixed disc colours `sub_8226A0A8`); the per-frame update
-//!   `sub_822664F8` plays the effect `checkpoint_ctf_generic` (the road flare) tinted with
+//! - the looks: `tune/checkpoint/<name>.mccp` (`mcCP`, members `F-15093`, defaults
+//!   `F-26586`, loader and its fixed disc colours `F-16373`); the per-frame update
+//!   `F-76770` plays the effect `checkpoint_ctf_generic` (the road flare) tinted with
 //!   `m_ParticleColor` and, for some looks, `light_column` tinted with `m_LightColumnColor`.
 
 use glam::Vec3;
@@ -69,7 +69,7 @@ pub struct CpTune {
 }
 
 impl Default for CpTune {
-    /// The constructor's values (`sub_82269A70`).
+    /// The constructor's values (`F-26586`).
     fn default() -> Self {
         let disc = [0.15, 0.95, 0.9, 0.25];
         CpTune {
@@ -82,7 +82,8 @@ impl Default for CpTune {
             inner1: disc,
             inner2: disc,
             outer1: disc,
-            outer2: disc,
+            // (the second outer colour's alpha lane is overwritten with 0 after the copy of the disc colour)
+            outer2: [disc[0], disc[1], disc[2], 0.0],
             icon_scale: 7.0,
             icon_height: 10.0,
             icon_color: [0.15, 0.95, 0.9, 1.0],
@@ -95,11 +96,15 @@ impl Default for CpTune {
     }
 }
 
+/// The tune folder (`F-19793`; the original's developer build reads `t://mc4//assets//tune//checkpoint` when its
+/// developer flag is set, which the shipped game never does).
+pub const TUNE_DIR: &str = "tune/checkpoint";
+
 /// The 18 looks: each file read over the constructor's values, then the loader's fixed disc
-/// colours for cp, activecp, finalcp, finallapcp and greencp (`sub_8226A0A8`; they equal the
+/// colours for cp, activecp, finalcp, finallapcp and greencp (`F-16373`; they equal the
 /// files' own).
 pub fn load_tunes(data_dir: &str) -> Vec<CpTune> {
-    let dir = Path::new(data_dir).join("tune/checkpoint");
+    let dir = Path::new(data_dir).join(TUNE_DIR);
     let mut out: Vec<CpTune> = NAMES.iter().map(|n| {
         let mut t = CpTune::default();
         let file = dir.join(format!("0x{:08x}", mcla_formats::hash::joaat(&format!("{n}.mccp"))));
@@ -167,7 +172,13 @@ fn parse_tune(text: &str, t: &mut CpTune) {
     }
 }
 
-/// The looks that get the light column besides the flare: the jump table at 0x82266A08
+/// `Checkpoint_SetArrowLookatPosition` (`F-27552`): the vector (x, 0, z) is stored at +144, and the flag +331 is set
+/// unless x and z are both 0 (comparing as floats: -0 is 0, NaN is not).
+pub fn look_at_of(x: f32, z: f32) -> Option<Vec3> {
+    (x != 0.0 || z != 0.0).then(|| Vec3::new(x, 0.0, z))
+}
+
+/// The looks that get the light column besides the flare: the jump table at A-90356
 /// (finalcp, the six flag pick-up / drop-off looks, lightcolumncp).
 pub fn has_column(kind: u8) -> bool {
     matches!(kind, 2 | 5..=10 | 17)
@@ -193,14 +204,14 @@ pub struct CpSpec {
     pub act_height: f32,
     /// +188 (-1): `Checkpoint_SetMaxSpeed` x 0.447 when above 0
     pub max_speed: f32,
-    /// +144 with +331: `Checkpoint_SetArrowLookAt` (`sub_82266F70`): (x, 0, z), set when x or z
+    /// +144 with +331: `Checkpoint_SetArrowLookAt` (`F-27552`): (x, 0, z), set when x or z
     /// is not 0 - where the arrows projected onto the smoke point; none: the next checkpoint
     pub look_at: Option<Vec3>,
 }
 
 /// +184: how far below the checkpoint it still counts (no native sets it).
 pub const DEPTH: f32 = 3.0;
-/// +96: the line is also crossed 10 m before and after it (`sub_82265FE0`).
+/// +96: the line is also crossed 10 m before and after it (`F-34461`).
 pub const GATE_BAND: f32 = 10.0;
 
 impl CpSpec {
@@ -231,7 +242,7 @@ impl CpSpec {
         }
     }
 
-    /// `sub_822653A8`: did the way from `prev` (the car's last position) to `ahead` (2 m on
+    /// `F-78734`: did the way from `prev` (the car's last position) to `ahead` (2 m on
     /// along its velocity) touch the checkpoint.
     pub fn hit(&self, ahead: Vec3, prev: Vec3) -> bool {
         match self.second {
@@ -280,18 +291,19 @@ pub fn spec_at(specs: &[CpSpec], marker: Vec3) -> Option<&CpSpec> {
     })
 }
 
-/// `sub_822633F0`: the point 2 m ahead of a car along its velocity (none when it stands).
+/// `F-51496`: the point 2 m ahead of a car along its velocity (none when it stands).
 pub fn ahead_point(pos: Vec3, vel: Vec3) -> Vec3 {
     pos + vel.normalize_or_zero() * 2.0
 }
 
-/// `sub_8261B020` on the ground plane (x, z): where the line a0 -> a1 meets b0 -> b1, as the
+/// `F-66886` on the ground plane (x, z): where the line a0 -> a1 meets b0 -> b1, as the
 /// fractions (t along a, u along b); None when they are parallel.
 pub fn cross_xz(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> Option<(f32, f32)> {
     const E: f32 = 1e-5;
     let (dax, day) = (a1.x - a0.x, a1.z - a0.z);
     let (dbx, dby) = (b1.x - b0.x, b1.z - b0.z);
-    let den = dby * dax - dbx * day;
+    // (the original's fused multiply-subtract / multiply-add: one rounding where the code has fmsubs / fmadds)
+    let den = dby.mul_add(dax, -(dbx * day));
     if den.abs() < E {
         return None;
     }
@@ -300,17 +312,17 @@ pub fn cross_xz(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> Option<(f32, f32)> {
             return None;
         }
         let t = (b0.x - a0.x) / dax;
-        return Some((t, (a0.z + t * day - b0.z) / dby));
+        return Some((t, (t.mul_add(day, a0.z) - b0.z) / dby));
     }
     if dby.abs() < E {
         if day.abs() < E {
             return None;
         }
         let t = (b0.z - a0.z) / day;
-        return Some((t, (a0.x + t * dax - b0.x) / dbx));
+        return Some((t, (t.mul_add(dax, a0.x) - b0.x) / dbx));
     }
-    let t = ((b0.x - a0.x) * dby + (a0.z - b0.z) * dbx) / den;
-    Some((t, (a0.x + t * dax - b0.x) / dbx))
+    let t = (a0.z - b0.z).mul_add(dbx, (b0.x - a0.x) * dby) / den;
+    Some((t, (t.mul_add(dax, a0.x) - b0.x) / dbx))
 }
 
 // ---------------------------------------------------------------------------------
@@ -408,7 +420,7 @@ fn specs_from(a: &[Arr]) -> Option<Vec<CpSpec>> {
                 height: height[k],
                 act_height: act[k],
                 max_speed: if speed[k] > 0.0 { speed[k] * 0.447 } else { -1.0 },
-                look_at: (lx[k] != 0.0 || lz[k] != 0.0).then(|| Vec3::new(lx[k], 0.0, lz[k])),
+                look_at: look_at_of(lx[k], lz[k]),
             })
             .collect(),
     )
@@ -437,7 +449,7 @@ pub fn ordered_kind(idx_in_lap: usize, lap_len: usize, lap: usize, laps: usize) 
 // The markers in the world
 
 /// What the player's open checkpoints show: per checkpoint the time it has been opening
-/// (`sub_822664F8`: state 2 runs its timer up at 2 a second, then it is open; the flare's
+/// (`F-76770`: state 2 runs its timer up at 2 a second, then it is open; the flare's
 /// render setup takes that as its opacity). A checkpoint no longer open stops its effects -
 /// what they let out lives on.
 #[derive(Default)]
@@ -452,17 +464,17 @@ pub struct Markers {
     last: std::collections::HashMap<u64, (Vec3, u8)>,
     /// set by the caller before `update`: what the projected arrows show
     pub arrows: Option<ArrowPlan>,
-    /// seconds since the arrows were first drawn (`sub_82262960` keeps the time base's first
+    /// seconds since the arrows were first drawn (`F-85367` keeps the time base's first
     /// reading at 0x8286ECC8)
     clock: f32,
     rng: u32,
-    /// the checkpoint light the dynamic lights carry this frame (`sub_822F7CE0`): the enabled
+    /// the checkpoint light the dynamic lights carry this frame (`F-62430`): the enabled
     /// one nearest the camera within 500 m - its place (3.25 m above the marker) and colour (x 4)
     pub light: Option<(Vec3, [f32; 3])>,
 }
 
-/// The arrows projected onto the low smoke (`sub_82262960` draws them, `sub_82263128` /
-/// `sub_82265BB0` hand them to the flares' render setups):
+/// The arrows projected onto the low smoke (`F-85367` draws them, `F-45072` /
+/// `F-71936` hand them to the flares' render setups):
 /// - `from`: +112 of the first checkpoint, in list order, that is open or opening for the player;
 /// - `to`: its arrow look-at (+144, when the script set one) or the next checkpoint's +64;
 /// - `on`: the keys whose render setup has EffectPos.w = 1 - every open / opening checkpoint but
@@ -518,7 +530,7 @@ pub fn arrow_plan(race: &crate::game::Race, shown: &[Shown], raw: &[Vec3], unord
     Some(plan)
 }
 
-/// The turn of the arrow quad drawn into the 128 x 128 target (`sub_82262960`): about the
+/// The turn of the arrow quad drawn into the 128 x 128 target (`F-85367`): about the
 /// target camera's axis by `pi / 2 + atan2(c x d, c . d)` and then about x by
 /// `(1 - |c . d|) pi + 1.9 |c . d|`, where d = the unit vector from the checkpoint to where the
 /// arrow points and c = the unit vector from it to the camera (both in 3D, taken in x and z).
@@ -533,13 +545,13 @@ pub fn arrow_angles(from: Vec3, to: Vec3, cam: Vec3) -> (f32, f32) {
 }
 
 /// Which of the four `checkpoint_arrows_anim_*` textures is drawn: 1..3 in turn at 4 a second
-/// (the arrow object's +76 = 4; `sub_82262560`), from the first draw on. (`anim_0`, still and
+/// (the arrow object's +76 = 4; `A-47848`), from the first draw on. (`anim_0`, still and
 /// spun with the clock, is for a game mode the port does not have: 0x8286EBF8 +3096 == 2.)
 pub fn arrow_frame(t: f32) -> u32 {
     ((t * 4.0) as i32).rem_euclid(3) as u32 + 1
 }
 
-/// The checkpoint light's colour (`sub_822664F8` 0x82266BE8..0x82266D30, before the light
+/// The checkpoint light's colour (`F-76770` A-78366..A-84641, before the light
 /// manager's x 4): opening - m_lightColor1 x the timer; open - between m_lightColor1 and
 /// m_lightColor2 by (sin(phase / 8) + 1) / 2; closing - m_lightColor2 x (1 - its timer).
 pub fn light_color(t: &CpTune, opening: Option<f32>, phase: f32, closing: Option<f32>) -> [f32; 3] {
@@ -565,9 +577,9 @@ pub fn flicker_step(t: &CpTune, phase: f32, rand01: f32, dt: f32) -> f32 {
     }
 }
 
-/// The light manager's gain on the colour (`sub_822F14C8`, 0x827E25F4) and the light's height
-/// over the marker (`sub_82264FD0` 0.25 + `sub_822F1478` 3, 0x827E25F0); its strength +64 = 40
-/// for all 64 slots (`sub_822F98D8`): colour x sat(40 / d squared) x n.l, all round.
+/// The light manager's gain on the colour (`F-39031`, 0x827E25F4) and the light's height
+/// over the marker (`F-41523` 0.25 + `F-63326` 3, 0x827E25F0); its strength +64 = 40
+/// for all 64 slots (`F-66001`): colour x sat(40 / d squared) x n.l, all round.
 pub const LIGHT_GAIN: f32 = 4.0;
 pub const LIGHT_HEIGHT: f32 = 3.25;
 pub const LIGHT_INTENSITY: f32 = 40.0;
@@ -582,14 +594,14 @@ pub struct Shown {
     pub height: f32,
 }
 
-/// The flare's "Height" evolution value: (height - 13) / (34 - 13), 0..1 (`sub_822664F8`
-/// 0x82266870..0x822668A0; 13 and 34 put at 0x8286EF90 / 0x827DD01C by `sub_8226A0A8`).
+/// The flare's "Height" evolution value: (height - 13) / (34 - 13), 0..1 (`F-76770`
+/// A-21072..A-52077; 13 and 34 put at 0x8286EF90 / 0x827DD01C by `F-16373`).
 pub fn height_evo(height: f32) -> f32 {
     ((height - 13.0) / (34.0 - 13.0)).clamp(0.0, 1.0)
 }
 
 /// The light column's "time" evolution value from the clock: hours / 12 up to noon, then down
-/// again - 0 at midnight, 1 at noon (`sub_822664F8` 0x82266B98..0x82266BE4).
+/// again - 0 at midnight, 1 at noon (`F-76770` A-28517..A-88081).
 pub fn time_evo(hour: f32) -> f32 {
     let h = hour.rem_euclid(24.0);
     if h < 12.0 {
@@ -668,7 +680,7 @@ impl Markers {
             lights.push((s.pos + Vec3::Y * LIGHT_HEIGHT, col));
         }
         // (the dynamic lights' fourth slot: the enabled checkpoint light nearest the camera,
-        // within 500 m - `sub_822F7CE0`; enabled = its colour is not black, `sub_822FD988`)
+        // within 500 m - `F-62430`; enabled = its colour is not black, `F-27408`)
         self.light = lights
             .into_iter()
             .filter(|(p, c)| c.iter().any(|v| *v != 0.0) && p.distance_squared(cam) < 250_000.0)
@@ -755,15 +767,135 @@ mod tests {
         assert!(!c.hit(Vec3::new(0.0, -3.5, 1.0), Vec3::new(0.0, -3.5, -1.0)));
     }
 
+    /// The original's line-line intersection (F-66886) and segment test (F-95591), run offline by
+    /// `tools/checkpoint_cross_reference.py` on 3200 generated cases x flag 0 / 1 (axis-aligned, parallel, threshold values,
+    /// random, car-step moves): the port equals them bit for bit. Evidence: docs/reference/checkpoints/verify_small_evidence.md.
     #[test]
-    fn crossing_fractions_follow_the_original() {
-        // t along a (ahead -> prev), u along b
-        let (t, u) = cross_xz(Vec3::new(0.0, 0.0, 2.0), Vec3::new(0.0, 0.0, -2.0), Vec3::new(-4.0, 0.0, 1.0), Vec3::new(4.0, 0.0, 1.0)).unwrap();
-        assert!((t - 0.25).abs() < 1e-5 && (u - 0.5).abs() < 1e-5);
-        // b vertical in x, b horizontal in z: the special branches agree
-        let (t, u) = cross_xz(Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(1.0, 0.0, -1.0), Vec3::new(1.0, 0.0, 3.0)).unwrap();
-        assert!((t - 0.75).abs() < 1e-5 && (u - 0.25).abs() < 1e-5);
-        assert!(cross_xz(Vec3::ZERO, Vec3::X, Vec3::Z, Vec3::Z + Vec3::X).is_none());
+    fn cross_matches_the_original() {
+        let text = include_str!("../tests/data/cross_reference.txt");
+        let (mut n, mut hits) = (0, 0);
+        for line in text.lines() {
+            let p: Vec<&str> = line.split(' ').collect();
+            let h = |i: usize| u32::from_str_radix(p[i], 16).unwrap();
+            let f = |i: usize| f32::from_bits(h(i));
+            let (fnc, flag): (u32, u32) = (p[0].parse().unwrap(), p[1].parse().unwrap());
+            let v = |x: f32, z: f32| Vec3::new(x, 0.0, z);
+            let (a0, a1, b0, b1) = (v(f(2), f(3)), v(f(4), f(5)), v(f(6), f(7)), v(f(8), f(9)));
+            let ret: u32 = p[10].parse().unwrap();
+            let (ot, ou) = (h(11), h(12));
+            let got = match (fnc, flag) {
+                (0, 0) => cross_xz(a0, a1, b0, b1),
+                // the one-way flag: the hangout entry's `meet` (u along the move, t along the line)
+                (0, _) => crate::hangoutin::meet_xz(a0, a1, b0, b1),
+                (_, 0) => cross_xz(a0, a1, b0, b1).filter(|(t, u)| (0.0..=1.0).contains(t) && (0.0..=1.0).contains(u)),
+                (_, _) => crate::hangoutin::crossed_xz(b0, b1, a0, a1),
+            };
+            assert_eq!(got.is_some(), ret != 0, "fn {fnc} flag {flag} case {line}");
+            if let Some((t, u)) = got {
+                hits += 1;
+                assert_eq!((t.to_bits(), u.to_bits()), (ot, ou), "fn {fnc} flag {flag} case {line}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 4 * 3200);
+        assert!(hits > 4000, "{hits} crossings compared");
+    }
+
+    /// The constructor (F-26586), the member registration (F-15093), the tune folder (F-19793), the arrow look-at setter
+    /// (F-27552) and the two light wrappers (F-63326, F-39031), run offline by `tools/checkpoint_small_reference.py`
+    /// (vector mode of `tools/recomp_closure.py`), against the port. Evidence: docs/reference/checkpoints/verify_small_evidence.md.
+    #[test]
+    fn small_functions_match_the_original() {
+        let text = include_str!("../tests/data/checkpoint_small_reference.txt");
+        let hex = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        // the port's tune fields at the object offsets the original uses (3 floats for the colour triples, 4 for the discs)
+        let fields = |t: &CpTune| -> Vec<(usize, Vec<f32>)> {
+            vec![
+                (16, t.light1.to_vec()), (32, t.light2.to_vec()), (48, t.particle.to_vec()), (64, t.column.to_vec()),
+                (80, t.shadow.to_vec()), (96, t.glow.to_vec()), (112, t.inner1.to_vec()), (128, t.inner2.to_vec()),
+                (144, t.outer1.to_vec()), (160, t.outer2.to_vec()), (176, vec![t.icon_scale]), (180, vec![t.icon_height]),
+                (192, t.icon_color.to_vec()), (208, vec![t.flicker_random]), (212, vec![t.flicker_speed]),
+                (216, vec![t.color_influence]), (220, vec![t.opacity_influence]), (224, vec![t.opacity]),
+            ]
+        };
+        let (mut regs, mut looks, mut lpos, mut lcol) = (0, 0, 0, 0);
+        let mut lpos_refold_differs = 0;
+        let mut ctor_seen = false;
+        for line in text.lines() {
+            let p: Vec<&str> = line.split(' ').collect();
+            match p[0] {
+                "CTOR" => {
+                    ctor_seen = true;
+                    let bytes: Vec<u8> = p[1..].iter().map(|b| u8::from_str_radix(b, 16).unwrap()).collect();
+                    assert_eq!(bytes.len(), 232);
+                    let mut modelled = vec![false; 232];
+                    for (off, vals) in fields(&CpTune::default()) {
+                        for (i, v) in vals.iter().enumerate() {
+                            let w = &bytes[off + 4 * i..off + 4 * i + 4];
+                            assert_eq!(v.to_bits(), u32::from_be_bytes([w[0], w[1], w[2], w[3]]), "constructor field at +{off} lane {i}");
+                            modelled[off + 4 * i..off + 4 * i + 4].fill(true);
+                        }
+                    }
+                    // everything the constructor writes between +16 and +232 is a modelled field (the unwritten bytes stay 0xaa)
+                    for (i, b) in bytes.iter().enumerate().skip(16) {
+                        assert!(modelled[i] || *b == 0xaa, "constructor wrote +{i} which the port does not model");
+                    }
+                }
+                "REG" => {
+                    // type 8 = three floats, 9 = four, 6 = one: the port's parser must put the values into exactly that field
+                    let (ty, name, off): (usize, &str, usize) = (p[1].parse().unwrap(), p[2], p[3].parse().unwrap());
+                    assert_eq!((p[4], p[5]), ("1", "0"));
+                    let n = match ty { 8 => 3, 9 => 4, 6 => 1, _ => panic!("type {ty}") };
+                    let base = CpTune::default();
+                    let mut t = base.clone();
+                    let vals: Vec<f32> = (0..n).map(|i| 11.0 + i as f32 + off as f32 * 0.001).collect();
+                    let text: Vec<String> = vals.iter().map(|v| format!("{v:?}")).collect();
+                    parse_tune(&format!("{name} {}{}", text.join(" "), char::from(10)), &mut t);
+                    for ((o, got), (_, was)) in fields(&t).into_iter().zip(fields(&base)) {
+                        if o == off {
+                            assert_eq!(got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), vals.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{name}");
+                        } else {
+                            assert_eq!(got, was, "{name} changed the field at +{o}");
+                        }
+                    }
+                    regs += 1;
+                }
+                "DIR" if p[1] == "0" => assert_eq!(p[2], TUNE_DIR),
+                "DIR" => assert_eq!(p[2], "t://mc4//assets//tune//checkpoint"),
+                "LOOK" => {
+                    let (x, z) = (f32::from_bits(hex(p[1])), f32::from_bits(hex(p[2])));
+                    let flag = p[3] == "01";
+                    let got = look_at_of(x, z);
+                    assert_eq!(got.is_some(), flag, "look-at ({x}, {z})");
+                    if let Some(v) = got {
+                        assert_eq!([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()], [hex(p[4]), hex(p[5]), hex(p[6])]);
+                    }
+                    looks += 1;
+                }
+                "LPOS" => {
+                    // the wrapper adds exactly 3.0 to y and keeps the other lanes; the port folds this 3 m and the caller's
+                    // 0.25 m into one LIGHT_HEIGHT = 3.25 (`(y + 0.25) + 3` vs `y + 3.25`: counted below)
+                    let w: Vec<u32> = p[1..].iter().map(|x| hex(x)).collect();
+                    let y = f32::from_bits(w[1]);
+                    assert_eq!([w[4], w[5], w[6], w[7]], [w[0], (y + 3.0).to_bits(), w[2], w[3]]);
+                    if ((y + 0.25) + 3.0).to_bits() != (y + LIGHT_HEIGHT).to_bits() {
+                        lpos_refold_differs += 1;
+                    }
+                    lpos += 1;
+                }
+                "LCOL" => {
+                    let w: Vec<u32> = p[1..].iter().map(|x| hex(x)).collect();
+                    for i in 0..4 {
+                        assert_eq!(w[4 + i], (f32::from_bits(w[i]) * LIGHT_GAIN).to_bits(), "colour lane {i}");
+                    }
+                    lcol += 1;
+                }
+                other => panic!("unknown record {other}"),
+            }
+        }
+        assert!(ctor_seen);
+        assert_eq!((regs, looks, lpos, lcol), (18, 49, 302, 302));
+        eprintln!("light height: {lpos_refold_differs} of {lpos} cases differ between (y + 0.25) + 3 and y + 3.25");
     }
 
     #[test]
@@ -962,7 +1094,7 @@ mod tests {
 
 /// The GPS destination (`UILogic_SetGPSDestination`): an ordered race's next checkpoint; in an
 /// unordered race the open checkpoint nearest the player by straight distance
-/// (`CheckpointManager_FindClosestOpenCheckpoint`, `sub_822636A0`) - the finish once it is
+/// (`CheckpointManager_FindClosestOpenCheckpoint`, `F-98939`) - the finish once it is
 /// the only one left.
 pub fn gps_target(checkpoints: &[Vec3], next: usize, unordered: bool, player: Vec3) -> Option<Vec3> {
     let n = checkpoints.len();

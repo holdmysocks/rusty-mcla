@@ -4,7 +4,7 @@
 //! (docs/reference/cutscenes/hangout_entry.md):
 //!
 //! 1. The entry is a line trigger (`TriggerArray_AddTriggerLine`: `oPosStart` +28, `oPosEnd` +40, `rHeight`
-//!    20), checked every loop (`Trigger_CheckTrigger`, the line's vtable[3] `sub_826881A8`): the player's
+//!    20), checked every loop (`Trigger_CheckTrigger`, the line's vtable[3] `F-37517`): the player's
 //!    move of the frame (racer+400 -> the matrix position) crosses the line in x/z one way only, and the
 //!    crossing point's height is within [-2, +20) of the line's. No speed test; not with the police
 //!    activity above 1 (the barrier is up then), only in the offline cruise.
@@ -151,14 +151,15 @@ pub const SLOW_IN: f32 = 0.2;
 /// "ease from pause" after the warp: rate 1 / 0.5
 pub const SLOW_OUT: f32 = 0.5;
 
-/// `sub_8261B020` with the one-way flag (+100 of the line, 1): where the move `p -> q` meets the line
+/// `F-66886` with the one-way flag (+100 of the line, 1): where the move `p -> q` meets the line
 /// `a -> b` in x/z, as (s along the move, t along the line); None when parallel or crossed the other way.
 fn meet(p: [f32; 2], q: [f32; 2], a: [f32; 2], b: [f32; 2]) -> Option<(f32, f32)> {
     let dx_ab = b[0] - a[0];
     let dz_pq = q[1] - p[1];
     let dx_pq = q[0] - p[0];
     let dz_ab = b[1] - a[1];
-    let den = dz_ab * dx_pq - dx_ab * dz_pq;
+    // (fused multiply-subtract / multiply-add, as the original's code)
+    let den = dz_ab.mul_add(dx_pq, -(dx_ab * dz_pq));
     if den < EPS || den.abs() < EPS {
         return None;
     }
@@ -167,28 +168,38 @@ fn meet(p: [f32; 2], q: [f32; 2], a: [f32; 2], b: [f32; 2]) -> Option<(f32, f32)
             return None;
         }
         let s = (a[0] - p[0]) / dx_pq;
-        return Some((s, (s * dz_pq + p[1] - a[1]) / dz_ab));
+        return Some((s, (s.mul_add(dz_pq, p[1]) - a[1]) / dz_ab));
     }
     if dz_ab.abs() < EPS {
         if dz_pq.abs() < EPS {
             return None;
         }
         let s = (a[1] - p[1]) / dz_pq;
-        return Some((s, (s * dx_pq + p[0] - a[0]) / dx_ab));
+        return Some((s, (s.mul_add(dx_pq, p[0]) - a[0]) / dx_ab));
     }
-    let s = ((p[1] - a[1]) * dx_ab + (a[0] - p[0]) * dz_ab) / den;
-    Some((s, (s * dx_pq + p[0] - a[0]) / dx_ab))
+    let s = (p[1] - a[1]).mul_add(dx_ab, (a[0] - p[0]) * dz_ab) / den;
+    Some((s, (s.mul_add(dx_pq, p[0]) - a[0]) / dx_ab))
 }
 
-/// `Trigger_CheckTrigger` of the entry line (`sub_826881A8`): the player moved from `prev` to `cur`.
+/// `meet` on x/z of 3-vectors (the move `p -> q` against the line `a -> b`): for the cross-check test.
+#[cfg(test)]
+pub(crate) fn meet_xz(p: Vec3, q: Vec3, a: Vec3, b: Vec3) -> Option<(f32, f32)> {
+    meet([p.x, p.z], [q.x, q.z], [a.x, a.z], [b.x, b.z])
+}
+
+/// The ground-plane part of `Trigger_CheckTrigger` (`F-95591`): the move `prev -> cur` against the line `a -> b`,
+/// as (along the move, along the line) when both are within [0, 1].
+pub(crate) fn crossed_xz(a: Vec3, b: Vec3, prev: Vec3, cur: Vec3) -> Option<(f32, f32)> {
+    let xz = |v: Vec3| [v.x, v.z];
+    let (u, t) = meet(xz(prev), xz(cur), xz(a), xz(b))?;
+    // (`F-95591`: both within [0, 1])
+    ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&t)).then_some((u, t))
+}
+
+/// `Trigger_CheckTrigger` of the entry line (`F-37517`): the player moved from `prev` to `cur`.
 pub fn crossed(s: &Setup, prev: Vec3, cur: Vec3) -> bool {
     let [a, b] = s.line;
-    let xz = |v: Vec3| [v.x, v.z];
-    let Some((u, t)) = meet(xz(prev), xz(cur), xz(a), xz(b)) else { return false };
-    // (`sub_8261B168`: both within [0, 1])
-    if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&t) {
-        return false;
-    }
+    let Some((u, t)) = crossed_xz(a, b, prev, cur) else { return false };
     let on_line = a.y + (b.y - a.y) * t;
     let at = prev.y + (cur.y - prev.y) * u;
     at < on_line + HEIGHT && at >= on_line - BELOW
