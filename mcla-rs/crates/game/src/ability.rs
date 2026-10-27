@@ -69,6 +69,8 @@ pub struct AbilityTune {
     pub min_gauge: f32,
     /// how far the blast reaches: ExplosionVelocity x ExplosionDuration (m)
     pub reach: f32,
+    /// the Agro strike's fields (F-70024; only the agro file's are used)
+    pub agro: crate::physics::agro::Tune,
 }
 
 impl AbilityTune {
@@ -79,7 +81,7 @@ impl AbilityTune {
             Kind::Roar => (0.225, 10.0, 0.75, 1.0, 0.5, 0.8),
             Kind::Emp => (0.225, 0.0, 1.0, 1.0, 1.0, 1.0),
         };
-        AbilityTune { drain, in_time, out_time, fov_offset, dist_scale, time_warp, increase: 0.01, decrease: 0.15, threshold_speed: 20.0, threshold_factor: 10.0, strike: [0.2, 0.15, 0.05], strike_timer: 0.333, min_gauge: if matches!(kind, Kind::Roar | Kind::Emp) { 0.1 } else { 0.0 }, reach: match kind { Kind::Roar => 180.0, Kind::Emp => 60.0, _ => 0.0 } }
+        AbilityTune { drain, in_time, out_time, fov_offset, dist_scale, time_warp, increase: 0.01, decrease: 0.15, threshold_speed: 20.0, threshold_factor: 10.0, strike: [0.2, 0.15, 0.05], strike_timer: 0.333, min_gauge: if matches!(kind, Kind::Roar | Kind::Emp) { 0.1 } else { 0.0 }, reach: match kind { Kind::Roar => 180.0, Kind::Emp => 60.0, _ => 0.0 }, agro: crate::physics::agro::Tune::FILE }
     }
 
     fn load(data_dir: &str, kind: Kind) -> AbilityTune {
@@ -120,6 +122,7 @@ impl AbilityTune {
         if ev * ed > 1.0 && matches!(kind, Kind::Roar | Kind::Emp) {
             t.reach = ev * ed;
         }
+        t.agro = crate::physics::agro::Tune::read(&text, t.agro);
         t
     }
 }
@@ -144,6 +147,13 @@ pub struct Abilities {
     near_miss_cool: f32,
     /// level of each ability (0..2; they grow with use), in the order of `Kind::ALL`
     pub levels: [u8; 4],
+    /// the cameras' ramp (ab +44, F-75610): up at 1 / InTime a second while it runs, down at 1 / OutTime
+    cam_b: f32,
+    /// the clock the strike cooldown reads (F-41549: the unpaused seconds)
+    clock: f32,
+    /// what Agro's strikes left for the game: camera jolts (ShakeTime, amplitude) and the strikes counted (stat gAGH)
+    agro_jolts: Vec<(f32, f32)>,
+    agro_strikes: u32,
 }
 
 impl Abilities {
@@ -158,6 +168,10 @@ impl Abilities {
             last_impact: 0.0,
             tints: [[[0.0, 0.333, 0.8, 0.0], [0.204, 0.294, 0.659, 0.118]], [[0.012, 0.0, 0.0, 0.49], [0.051, 0.0, 0.0, 1.0]]],
             meter: 0.0,
+            cam_b: 0.0,
+            clock: 0.0,
+            agro_jolts: Vec::new(),
+            agro_strikes: 0,
             active: 0.0,
             near_miss_cool: 0.0,
             levels: [0; 4],
@@ -207,11 +221,30 @@ impl Abilities {
         (self.since / t.in_time.max(0.05)).min(1.0).min((self.active / t.out_time.max(0.05)).min(1.0))
     }
 
-    /// What the running ability does to the driving camera: degrees added to the lens, and
-    /// the scale of its distance.
+    /// The cameras' ramp, once a frame on real time (F-75610).
+    pub fn cam_step(&mut self, dt: f32) {
+        let t = self.tune();
+        let (i, o) = (t.in_time, t.out_time);
+        self.cam_b = if self.running { (self.cam_b + dt / i.max(1e-4)).min(1.0) } else { (self.cam_b - dt / o.max(1e-4)).max(0.0) };
+    }
+
+    /// What the ability does to the bumper and cockpit lens (F-75610: ab +36 / +40): FovOffset
+    /// and 1 + (DistScale - 1) by k = (1 - cos(pi b)) / 2 of the ramp.
     pub fn camera(&self) -> (f32, f32) {
-        let (b, t) = (self.blend(), self.tune());
-        (t.fov_offset * b, 1.0 + (t.dist_scale - 1.0) * b)
+        let t = self.tune();
+        let k = (1.0 - (std::f32::consts::PI * self.cam_b).cos()) * 0.5;
+        (t.fov_offset * k, 1.0 + (t.dist_scale - 1.0) * k)
+    }
+
+    /// The ability runs (ab +48 == 3): the chase views go to the ability camera.
+    pub fn running(&self) -> bool {
+        self.running
+    }
+
+    /// InTime / OutTime of the ability in use: the ability camera's blends in and out.
+    pub fn cam_times(&self) -> (f32, f32) {
+        let t = self.tune();
+        (t.in_time, t.out_time)
     }
 
     /// Screen tint of the running ability (inner, outer RGBA), if it has one.
@@ -295,13 +328,37 @@ impl Abilities {
         }
     }
 
+    /// What Agro's strikes of the frames since the last call asked of the game: the camera jolts
+    /// (ShakeTime, ShakeScale; the user's camera, F-70024) and how many strikes to count in gAGH.
+    pub fn take_agro(&mut self) -> (Vec<(f32, f32)>, u32) {
+        (std::mem::take(&mut self.agro_jolts), std::mem::take(&mut self.agro_strikes))
+    }
+
     /// Advance: fill the meter from the player's driving, trigger on `fire`, and apply
     /// the instant effects to the cars around. `dt` is real time.
-    /// `prop_hit`: a prop was knocked this frame (its strike costs less than a car's, the
-    /// city's walls least).
-    pub fn update(&mut self, vehicles: &mut Vehicles, fire: bool, prop_hit: bool, dt: f32) -> Option<Kind> {
+    /// `prop_hit`: a prop was knocked this frame - only for a player car that has no hook (no
+    /// original body: no per-contact classes), where the old trigger stays (approx.).
+    /// `crashed`: the player's crash flags (chassis +592) are set: no gauge strike is armed.
+    pub fn update(&mut self, vehicles: &mut Vehicles, fire: bool, prop_hit: bool, crashed: bool, dt: f32) -> Option<Kind> {
         self.since += dt;
+        self.clock += dt;
         self.near_miss_cool = (self.near_miss_cool - dt).max(0.0);
+        // ---- the contact hook's side (F-46500, physics/agro.rs): the player's car is told what runs; the
+        // strikes its contacts left since the last frame come back ----
+        let agro_run = self.running && self.kind == Kind::Agro;
+        let agro_tune = self.tunes[Kind::ALL.iter().position(|k| *k == Kind::Agro).unwrap_or(1)].agro;
+        let mut armed = None;
+        for c in vehicles.cars.iter_mut() {
+            let Some(vs) = c.state.veh.as_deref_mut() else { continue };
+            let h = &mut vs.agro;
+            h.armed = c.is_player;
+            if c.is_player {
+                (h.agro_run, h.running, h.crashed, h.tune, h.now) = (agro_run, self.running, crashed, Some(agro_tune), self.clock);
+                self.agro_jolts.append(&mut h.out.jolts);
+                self.agro_strikes += std::mem::take(&mut h.out.strikes);
+                armed = Some(h.out.gauge.take());
+            }
+        }
         let Some(pi) = vehicles.cars.iter().position(|c| c.is_player) else { return None };
         let (ppos, pvel, pfwd, impact) = {
             let c = &vehicles.cars[pi];
@@ -319,7 +376,12 @@ impl Abilities {
         let tune = *self.tune();
         let level = self.levels[Kind::ALL.iter().position(|k| *k == self.kind).unwrap_or(0)] as f32;
         let warp = if self.kind == Kind::Zone { tune.time_warp.clamp(0.05, 1.0) } else { 1.0 };
-        let hit = impact > self.last_impact + 0.05 || prop_hit;
+        // (a contact of the car re-arms its strike: vehicle / prop / the city's wall; a car without a hook keeps the
+        // old trigger - the car's impact or a prop knocked - and cannot tell a car from the city: approx.)
+        let hit = match armed {
+            Some(g) => g,
+            None => (impact > self.last_impact + 0.05 || prop_hit).then_some(if prop_hit { 1 } else { 2 }),
+        };
         self.last_impact = impact;
         if self.running {
             let drain = tune.drain.max(0.02) / (1.0 + 0.3 * level);
@@ -334,10 +396,9 @@ impl Abilities {
             }
         } else {
             self.active = 0.0;
-            if hit {
+            if let Some(g) = hit {
                 // a car, a prop, or the city itself
-                let car = vehicles.cars.iter().enumerate().any(|(i, c)| i != pi && c.state.pos.distance(ppos) < 5.5);
-                self.strike_rate = if car { tune.strike[0] } else if prop_hit { tune.strike[1] } else { tune.strike[2] };
+                self.strike_rate = tune.strike[g];
                 self.strike_left = tune.strike_timer;
             }
             if self.strike_left > 0.0 {

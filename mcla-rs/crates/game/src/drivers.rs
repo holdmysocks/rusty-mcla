@@ -38,6 +38,8 @@ struct Rig {
     /// the pack's gesture clips by their name after the car prefix ("drv_gest_listen_lft", "drv_win",
     /// "drv_gest_jawflap"); the car's own first, the shared Challenger ones otherwise
     gestures: HashMap<String, Clip>,
+    /// DRV_HIT_HRD's length (the wreck's hit, F-47123's machine: then 4 s of DRV_IDLE_START)
+    hit_hard: Option<f32>,
 }
 
 /// The gesture a scene event asks of a driver (racer+684; the event ids of table 0x827EAD60).
@@ -291,6 +293,12 @@ impl Drivers {
         Some(c[hash(s.id as u32 + 17) as usize % c.len()])
     }
 
+    /// The length of a car's DRV_HIT_HRD clip, once its driver is loaded.
+    pub fn hit_hard_secs(&self, car: &str) -> Option<f32> {
+        let k = car_key(car);
+        self.rigs.iter().filter(|((c, _), _)| *c == k).find_map(|(_, r)| r.as_ref()?.hit_hard)
+    }
+
     fn rig(&mut self, gpu: &mut Gpu, car: &str, si: usize) -> bool {
         let key = (car_key(car), si);
         if !self.rigs.contains_key(&key) {
@@ -323,7 +331,8 @@ impl Drivers {
                         gestures.insert(l[i..].to_string(), Clip::bind(&Arc::new(a), &model.ids, false, false));
                     }
                 }
-                Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures })
+                let hit_hard = clip(&["drv_hit_hrd"]).map(|c| c.anim.duration);
+                Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard })
             })();
             if rig.is_none() {
                 log::warn!("drivers: no animations for {}", car);

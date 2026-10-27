@@ -142,6 +142,8 @@ pub struct BoomCam {
     nitro: f32,
     /// the move-speed limit in use (+656)
     rate: f32,
+    /// the ability's lens offset (+224 = min(+224, ab +36), F-38892; 0 again when the view is set)
+    ab_fov: f32,
 }
 
 fn norm_range(v: f32, range: f32) -> f32 {
@@ -321,8 +323,17 @@ impl BoomCam {
         } else {
             self.nitro = (self.nitro - dt / car.nitro_fov.2.max(0.05)).max(0.0);
         }
-        let fov = t.s("SSFovMin") + (t.s("SSFovMax") - t.s("SSFovMin")) * k + car.nitro_fov.0 * self.nitro + car.sst.0 + car.ability.0;
-        let dist_scale = (1.0 + (t.s("SSDistScale") - 1.0) * k) * car.sst.1 * car.ability.1;
+        // (the ability's terms reach the bumper and cockpit only: the lens offset held at its lowest
+        // since the view was set, the distance scale as it is - F-38892; the chase views go to the
+        // ability camera instead, `AbilityCam`)
+        let (ab_fov, ab_dist) = if car.fixed_mount {
+            self.ab_fov = self.ab_fov.min(car.ability.0);
+            (self.ab_fov, car.ability.1)
+        } else {
+            (0.0, 1.0)
+        };
+        let fov = t.s("SSFovMin") + (t.s("SSFovMax") - t.s("SSFovMin")) * k + car.nitro_fov.0 * self.nitro + car.sst.0 + ab_fov;
+        let dist_scale = (1.0 + (t.s("SSDistScale") - 1.0) * k) * car.sst.1 * ab_dist;
 
         // ---- where the camera and its focus want to be ----
         let (off0, foc0) = if car.rev { (t.v3("RevOffset"), t.v3("RevFocus")) } else { (t.v3("Offset"), t.v3("Focus")) };
@@ -652,6 +663,8 @@ pub struct Switch {
     /// CAM_PAN_LEFT/RIGHT (-1 / +1) and CAM_PAN_UP/DOWN (+1 / -1) held, from the pad
     pub pan_in: (f32, f32),
     seed: u32,
+    /// the look back went off this frame (F-39925: the look-back slow motion is released)
+    pub look_off: bool,
 }
 
 impl Switch {
@@ -673,8 +686,10 @@ impl Switch {
     /// camera's history goes (the new camera is started afresh, vt+36), the old view is
     /// blended out or the mask is put up.
     pub fn frame(&mut self, set: &BoomSet, view: u8, back: bool, cinematic: bool, moving: bool, cam: &mut BoomCam, dt: f32) {
+        self.look_off = false;
         let Some((was_view, was_back)) = self.last.replace((view, back)) else { return };
         let chase = VIEW_OF_PORT[(view as usize).min(5)] >= 2;
+        self.look_off = was_back && !back;
         if back != was_back {
             // (both ways a cut with the mask's quick fade: 0.01, 0.1, 0.01)
             self.blend.stop();
@@ -1130,6 +1145,9 @@ pub struct TrackTune {
     /// event's ApproachOn (off: no hill, the car's own frame)
     pub hill: (f32, f32, f32),
     pub approach_on: bool,
+    /// the car's turbo / nitrous lens terms (F-92343: the event camera's class; not the wipeout
+    /// or ability camera, plain vehTrackCS)
+    pub car_lens: bool,
     /// the collision (F-91096): CollideType (1 / 3 in the files), CollideMinDist, the
     /// camera's near plane (CameraNear, base +172)
     pub collide_type: i32,
@@ -1175,6 +1193,7 @@ impl TrackTune {
             base_app_xz: f(&b, "MaxAppXZPos", 7.0),
             hill: (f(&b, "HillMin", 0.0), f(&b, "HillMax", 0.0), f(&b, "HillLerp", 0.0)),
             approach_on: f(&e, "ApproachOn", 1.0) != 0.0,
+            car_lens: true,
             collide_type: f(&b, "CollideType", 1.0) as i32,
             collide_min: f(&b, "CollideMinDist", 2.0),
             near: { let n = f(&b, "CameraNear", 0.2); if n > 0.0 { n } else { 0.2 } },
@@ -1214,10 +1233,117 @@ impl TrackTune {
             base_app_xz: 5.0,
             hill: (-0.8, 1.25, 0.1),
             approach_on: true,
+            car_lens: false,
             collide_type: 1,
             collide_min: 0.5,
             near: 0.2,
         }
+    }
+
+    /// The ability camera (mcPlayerCamera +68, F-42437): a plain vehTrackCS with no file - the
+    /// constructors' values (F-59764 over camAppCS / vehBaseCS; r5_rules 5.1): TrackTo (0, 0.8, 0),
+    /// Offset (0, 1.9, 7.7), lens 60, 1..10 m from the point, AppRot 60 / AppXRot 10, XZ 2..12 and
+    /// Y 5 m/s over 5..35 m/s, RevAppXZPos 20, AppInc 5 / AppDec 10, the hill, CollideType 1 with
+    /// no minimum, near 0.2; no collision at all when the car's ability was Agro at its load.
+    pub fn ability(agro: bool) -> TrackTune {
+        TrackTune {
+            blend: 1.2,
+            ret: 0.0,
+            track: Vec3::new(0.0, 0.8, 0.0),
+            offset: Vec3::new(0.0, 1.9, 7.7),
+            dist: (1.0, 10.0),
+            dist_scale: 1.0,
+            fov: (60.0, 60.0),
+            app_rot: 60.0,
+            app_x_rot: 10.0,
+            app_app: 0.7,
+            app_rot_min: 0.01,
+            look_at: 1.0,
+            ss_speed: (0.0, 50.0),
+            ss_filter: 0.1,
+            app_xz: (2.0, 12.0),
+            app_y: (5.0, 5.0),
+            rev_app_xz: 20.0,
+            app_speed: (5.0, 35.0),
+            app_inc: 5.0,
+            app_dec: 10.0,
+            app_pos_min: 0.25,
+            base_app_xz: 0.0,
+            hill: (-0.8, 1.25, 0.1),
+            approach_on: true,
+            car_lens: false,
+            collide_type: if agro { 0 } else { 1 },
+            collide_min: 0.0,
+            near: 0.2,
+        }
+    }
+}
+
+/// The ability camera's place in the director (F-38892, r5_rules 5.2): with the ability running in a
+/// chase view and neither the reverse camera nor a blend under way it is pushed over InTime (the event
+/// camera's event cleared); when the ability stops it hands back to the view's camera over OutTime.
+/// The blends are the director's cosine orbit mix.
+#[derive(Default)]
+pub struct AbilityCam {
+    cam: TrackCam,
+    /// 0 off, 1 blending in, 2 on, 3 blending out
+    phase: u8,
+    left: f32,
+    time: f32,
+}
+
+impl AbilityCam {
+    /// The ability camera is current or the target of a blend (it holds the camera buttons and the
+    /// event chooser).
+    pub fn active(&self) -> bool {
+        self.phase == 1 || self.phase == 2
+    }
+    pub fn reset(&mut self) {
+        self.phase = 0;
+    }
+    /// One frame. `push`: the ability runs and the pushing gates hold; `running`: it runs at all;
+    /// (in, out): InTime / OutTime; `drive` the view's own output. Returns the camera to show and
+    /// whether it was pushed this frame.
+    pub fn frame(&mut self, push: bool, running: bool, times: (f32, f32), agro: bool, car: &TrackCar, drive: BoomOut, dt: f32, test: SphereTest, aspect: f32) -> (BoomOut, bool) {
+        let mut pushed = false;
+        if push && !self.active() {
+            let t = TrackTune::ability(agro);
+            // (a push while handing back turns the blend round)
+            let w = if self.phase == 3 { self.left / self.time.max(1e-4) } else { 0.0 };
+            if self.phase == 0 {
+                self.cam.set(&t, car, 99, 0.0);
+            }
+            self.phase = 1;
+            self.time = times.0;
+            self.left = times.0 * (1.0 - w);
+            pushed = true;
+        } else if !running && self.active() {
+            let w = if self.phase == 1 { 1.0 - self.left / self.time.max(1e-4) } else { 1.0 };
+            self.phase = 3;
+            self.time = times.1;
+            self.left = times.1 * w;
+        }
+        if self.phase == 0 {
+            return (drive, pushed);
+        }
+        let t = TrackTune::ability(agro);
+        let out = self.cam.update(&t, car, dt, dt, test, aspect);
+        self.left -= dt;
+        let w = match self.phase {
+            1 if self.left <= 0.0 => {
+                self.phase = 2;
+                1.0
+            }
+            1 => 1.0 - self.left / self.time.max(1e-4),
+            2 => 1.0,
+            _ if self.left <= 0.0 => {
+                self.phase = 0;
+                return (drive, pushed);
+            }
+            _ => self.left / self.time.max(1e-4),
+        };
+        let w = (1.0 - (std::f32::consts::PI * w.clamp(0.0, 1.0)).cos()) * 0.5;
+        (if w >= 1.0 { out } else { orbit_mix(&drive, &out, car.pos, w) }, pushed)
     }
 }
 
@@ -1364,11 +1490,9 @@ impl TimeWarper {
         self.cur = self.tune[1];
         self.update(dt);
     }
-    /// F-79714: back to 1 from where it is.
+    /// F-79714: back to 1 from the scale of the moment `now` (also when idle: the original returns
+    /// only for a disabled warper, and the port's are never disabled).
     pub fn release(&mut self, now: f32) {
-        if self.state == 2 {
-            return;
-        }
         self.to = 1.0;
         self.state = 1;
         self.from = now;
@@ -1590,9 +1714,10 @@ impl TrackCam {
             0.0
         };
         // (F-92343: the car's slipstream turbo adds its lens degrees and scales the distance,
-        // the nitrous shot adds its widening - whatever the event)
-        let fov = t.fov.0 + (t.fov.1 - t.fov.0) * k + car.sst.0 + car.nitro_view;
-        let dsc = (1.0 + (t.dist_scale - 1.0) * k) * car.sst.1;
+        // the nitrous shot adds its widening - whatever the event; the event camera's class only)
+        let (lf, ld) = if t.car_lens { (car.sst.0 + car.nitro_view, car.sst.1) } else { (0.0, 1.0) };
+        let fov = t.fov.0 + (t.fov.1 - t.fov.0) * k + lf;
+        let dsc = (1.0 + (t.dist_scale - 1.0) * k) * ld;
         // the grounded filter (F-70292, game time): more than 0.51 of the wheels down for over
         // 0.1 s is on the ground, fewer for over 0.1 s off it; off it and spinning with |L| over
         // 1500 the place's XZ rate goes for MinAppXZPos (+592)
@@ -2034,6 +2159,15 @@ impl EventDirector {
         if self.running() {
             if let Some(t) = self.tune(data_dir, car_name, self.ev) {
                 self.off(&t, -1.0);
+            }
+        }
+    }
+    /// F-94591(0, -1, b): the running (or leaving) event goes back over `b`; the event is cleared
+    /// either way (the gas station's close asks 0.7, F-81587).
+    pub fn off_with(&mut self, data_dir: &str, car_name: &str, b: f32) {
+        if self.running() || self.leaving() {
+            if let Some(t) = self.tune(data_dir, car_name, self.ev) {
+                self.off(&t, b);
             }
         }
     }
@@ -2586,6 +2720,31 @@ mod tests {
         c.look_yaw = 0.3;
         c.update(&t2, &air, 1.0 / 30.0, 1.0 / 30.0, none, 16.0 / 9.0);
         assert!((c.app_xz - (9.0 - 8.0 / 30.0 + 6.0 / 30.0)).abs() < 1e-4, "{}", c.app_xz);
+    }
+
+    /// The look-back warper (F-49780's defaults: no tune file on the disc): started every frame
+    /// from 1 it is at 0.96 after the first; released every frame on the ground it eases back at
+    /// sin(Fall dt pi/2) a frame; a release of an idle warper re-seeds from the scale given.
+    #[test]
+    fn lookback_warper() {
+        let mut w = TimeWarper::new([0.0, 0.239, 2.009, 3.009]);
+        let dt = 1.0 / 60.0;
+        w.start(1.0, dt);
+        assert!((w.cur - (1.0 - 0.761 * (2.009f32 * dt * std::f32::consts::FRAC_PI_2).sin())).abs() < 1e-5, "{}", w.cur);
+        let mut s = w.cur;
+        for _ in 0..60 {
+            w.update(dt);
+            s = w.cur;
+            w.start(s, dt);
+        }
+        assert!((w.cur - 0.239).abs() < 1e-3, "{}", w.cur);
+        let k = (3.009f32 * dt * std::f32::consts::FRAC_PI_2).sin();
+        w.release(s);
+        w.update(dt);
+        assert!((w.cur - (s + (1.0 - s) * k)).abs() < 1e-5, "{} {}", w.cur, s);
+        let mut idle = TimeWarper::new([0.0, 0.239, 2.009, 3.009]);
+        idle.release(0.239);
+        assert_eq!(idle.cur, 0.239);
     }
 
     /// The Burnout view on the R8's file: in on a handbrake spin above 1.5 rad/s with the

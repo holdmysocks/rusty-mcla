@@ -776,11 +776,13 @@ pub struct VehState {
     /// idle, wheels and shafts still, no burnout charge, the drive layout and centre of mass as tuned), done at
     /// the head of the next update
     pub grid_reset: bool,
+    /// the special-ability contact hook (F-46500; agro.rs): the human player's car only
+    pub agro: super::agro::Hook,
 }
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, grid_reset: false }
+        VehState { shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, grid_reset: false, agro: Default::default() }
     }
 }
 
@@ -5406,6 +5408,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 vs.loose.tick += 1;
                 vs.loose.collide(lw, &car_in, world, car_city_pair);
                 vs.loose.refresh(lw, &car_in);
+                // (the ability's hook, F-46500, once the contacts are as the solve gets them: Agro's strike on a struck
+                // ambient car, else the gauge's strikes; the city's contacts follow below)
+                if vs.agro.armed {
+                    vs.loose.agro_contacts(&car_in, &mut vs.agro);
+                }
             }
             let loose_ids = if loose_world.is_some() { vs.loose.car_island() } else { Vec::new() };
             let loose_touch = !loose_ids.is_empty();
@@ -5485,6 +5492,23 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     hull_at.push(contacts.len());
                     contacts.push(*c);
                 }
+            }
+            // (the ability hook's city contacts, F-46500: every enabled one, the normal as it pushes the car)
+            if vs.agro.armed {
+                for m in vs.manifolds.iter() {
+                    for slot in m.slots.iter().filter(|s| s.enabled) {
+                        vs.agro.arm(super::agro::Class::Other, slot.c.normal.y);
+                    }
+                }
+            }
+            // (Agro's strike, F-70024: the car's aerodynamic damping at 3.0 - not a bike's - and PlayerAccel as a force
+            // along the back axis, a x mass; both land in the next steps)
+            if std::mem::take(&mut vs.agro.damp) && !vt.bike {
+                vs.aero_damp = 3.0;
+            }
+            let accel = std::mem::take(&mut vs.agro.accel);
+            if accel != 0.0 {
+                force += (rows1[2] * -accel) * mass;
             }
             // (F-12537, called for every wheel contact that is not handed to the solver: its
             // record is emptied - a wheel's contacts are not kept from tick to tick)

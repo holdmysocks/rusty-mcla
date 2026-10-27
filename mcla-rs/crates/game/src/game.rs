@@ -405,7 +405,9 @@ pub enum MenuAction {
     RestartTournament,
     /// the SERVICE STATION menu's FULL FIX (true) or REFILL NITRO (false), then back to the
     /// world (mcGasStationMenuForm, F-57940)
-    GasStation(bool),
+    /// the gas station's form closes (F-81587): after FULL FIX (Some(true)) / REFILL NITRO
+    /// (Some(false)), or BACK (None)
+    GasStation(Option<bool>),
     /// the GPS map, and the race editor on it
     OpenMap,
     OpenEditor,
@@ -12327,11 +12329,11 @@ impl Game {
                 }
                 let fix = self.hangout_page.1 == 0;
                 leave(self);
-                return Some(MenuAction::GasStation(fix));
+                return Some(MenuAction::GasStation(Some(fix)));
             }
             if back {
                 leave(self);
-                return Some(MenuAction::Resume);
+                return Some(MenuAction::GasStation(None));
             }
             return None;
         }

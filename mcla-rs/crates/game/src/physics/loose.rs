@@ -1645,6 +1645,70 @@ impl LooseState {
         self.pieces_touched(car);
     }
 
+    /// The ability hook on the car's contacts (F-46500, mcCarInstance slot 23, pre-solve, after `refresh`): for each
+    /// enabled contact of the car with another instance, Agro's strike (F-70024, `agro.rs`) on an ambient car's body
+    /// while Agro runs, else the gauge's strike for the class of the other instance. The struck body takes the car's
+    /// velocity, then the push as an impulse and the spin as an angular impulse, which this step's end consumes.
+    /// A car of the session that the level only holds as a vehicle for this step (parked, riding, not in the level)
+    /// is told by its answer: the change of its momentum goes into the impulse. (approx.: an mcCar - class 8 -
+    /// is never struck: which instances carry the archetype flags 0x0C that let it through is not traced.)
+    pub fn agro_contacts(&mut self, car: &CarIn, hook: &mut super::agro::Hook) {
+        use super::agro::{strike, Class, PUSH_SCALE};
+        for k in 0..self.manis.len() {
+            let (a, b) = (self.manis[k].a, self.manis[k].b);
+            let car_is_a = a == Who::Car;
+            if !(car_is_a || b == Who::Car) || self.manis[k].rope {
+                continue;
+            }
+            let other = if car_is_a { b } else { a };
+            for i in 0..self.manis[k].slots.len() {
+                let s = self.manis[k].slots[i];
+                if !s.enabled {
+                    continue;
+                }
+                // (the normal into the car)
+                let n = if car_is_a { s.t.normal } else { Vec3::ZERO - s.t.normal };
+                let Who::Obj(o) = other else {
+                    hook.arm(Class::Other, n.y);
+                    continue;
+                };
+                let obj = &self.objs[o];
+                // (approx.: a torn-off part's instance class is not read - it is sorted with the city's)
+                let class = if obj.veh.is_some() {
+                    Class::Vehicle
+                } else if obj.inst.is_some() {
+                    Class::Prop
+                } else {
+                    Class::Other
+                };
+                if !hook.agro_run {
+                    hook.arm(class, n.y);
+                    continue;
+                }
+                // (Agro: the other instance is ambient traffic with a body - a parked or fixed one has none)
+                let (Some(vh), Some(tune), true) = (obj.veh.filter(|v| v.class == 6), hook.tune, obj.body.is_some()) else { continue };
+                // (the user's car damps its turning harder from here on, before the cooldown)
+                hook.damp = true;
+                if hook.ring.inside(hook.now, vh.index.wrapping_add(1), tune.delay) {
+                    continue;
+                }
+                let live = obj.amb.is_none();
+                let b = self.objs[o].body.as_mut().unwrap();
+                let st = strike(&tune, false, b.w.y, &[car.now[0], car.now[1], car.now[2]], car.speed, &mut crate::brain::rng());
+                let (mass, was) = (b.mass, b.p);
+                b.v = car.vel;
+                b.p = car.vel * mass;
+                if live {
+                    b.jf = b.jf + (b.p - was);
+                }
+                b.jf = b.jf + st.push * (mass * PUSH_SCALE);
+                let spin = b.momentum_of(st.spin);
+                b.jt = b.jt + spin;
+                hook.struck(st.amp);
+            }
+        }
+    }
+
 }
 
 // ---------------------------------------------------------------------------------------------

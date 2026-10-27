@@ -3356,19 +3356,6 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         }
                         continue;
                     }
-                    // Agro: the player is an unstoppable ram
-                    let (ai, aj) = (self.agro && self.cars[i].is_player, self.agro && self.cars[j].is_player);
-                    if ai || aj {
-                        let (ram, hit, sign) = if ai { (i, j, 1.0) } else { (j, i, -1.0) };
-                        let rv = self.cars[ram].state.vel;
-                        self.cars[hit].state.correct_position(nrm * sign * (r - dist));
-                        let closing = (rv - self.cars[hit].state.vel).dot(nrm * sign).max(0.0);
-                        self.cars[hit].state.vel += nrm * sign * (closing * 1.4 + 4.0) + Vec3::Y * (1.5 + closing * 0.08);
-                        self.cars[hit].state.ang_vel += Vec3::new(0.0, 2.5 * sign, 1.0);
-                        self.cars[hit].state.damage = (self.cars[hit].state.damage + 0.2).min(1.0);
-                        self.cars[hit].stunned = self.cars[hit].stunned.max(2.0);
-                        continue;
-                    }
                     if solved {
                         continue;
                     }
