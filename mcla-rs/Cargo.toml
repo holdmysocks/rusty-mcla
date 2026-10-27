@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/formats", "crates/flash", "crates/tool", "crates/game", "crates/config", "crates/install", "crates/savedecode", "crates/shaders", "crates/mods"]
 
 [workspace.package]
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 license = "GPL-3.0-only"
 
