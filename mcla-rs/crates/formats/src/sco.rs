@@ -555,3 +555,26 @@ mod tests {
         assert!(to_plain(&file[..file.len() - 1], &key).is_err());
     }
 }
+
+#[cfg(test)]
+mod verify_small_tests {
+    //! FORMATS_TOOLS verification pass (docs/reference/formats/verify_small_evidence.md): F-92179, the
+    //! instruction length, run offline by work/verify-small/FORMATS_TOOLS/stage2.py.
+    use super::*;
+
+    /// The original's instruction-length function on all 65,536 (opcode, next byte) pairs against
+    /// `op_len`; the outputs are held as an FNV-1a 64 hash of the u32 results (values 1 .. 2042).
+    #[test]
+    fn op_len_matches_the_original() {
+        let mut h = 0xcbf29ce484222325u64;
+        for op in 0..=255u8 {
+            for b in 0..=255u8 {
+                let code = [op, b];
+                for x in (op_len(&code, 0) as u32).to_le_bytes() {
+                    h = (h ^ x as u64).wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+        assert_eq!(h, 0x5d06879d5c8e1b89);
+    }
+}

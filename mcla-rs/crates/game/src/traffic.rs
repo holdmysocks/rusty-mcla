@@ -3312,19 +3312,142 @@ fn lerp(a: [f32; 2], t: f32) -> f32 {
     a[0] + (a[1] - a[0]) * t
 }
 
-/// Do two oriented rectangles (centre, unit x axis, half sizes along it and across) meet
-/// (sub_8261B200, a 2D separating-axis test)?
-pub(super) fn rects_meet(c1: glam::Vec2, u1: glam::Vec2, h1: glam::Vec2, c2: glam::Vec2, u2: glam::Vec2, h2: glam::Vec2) -> bool {
-    let d = c2 - c1;
-    let (v1, v2) = (u1.perp(), u2.perp());
-    for ax in [u1, v1, u2, v2] {
-        let r1 = h1.x * u1.dot(ax).abs() + h1.y * v1.dot(ax).abs();
-        let r2 = h2.x * u2.dot(ax).abs() + h2.y * v2.dot(ax).abs();
-        if d.dot(ax).abs() > r1 + r2 {
+/// Does the segment (x1, z1) - (x2, z2) meet the box +-hx, +-hz (F-43122, the original's parametric
+/// clip: x then z, entry / exit parameters from -1 / 2, one flag set when an entry parameter is taken)?
+/// Written with the original's branch order and tests, so that unordered values (NaN) go the way
+/// the compares send them there; true when the clip leaves a segment that entered the box.
+fn segment_meets_box(x1: f32, z1: f32, x2: f32, z2: f32, hx: f32, hz: f32) -> bool {
+    let (mut tmin, mut tmax, mut entered) = (-1.0f32, 2.0f32, false);
+    let dx = x2 - x1;
+    let mut x_done = false;
+    if dx == 0.0 {
+        if x1.abs() > hx {
+            return false;
+        }
+        x_done = true;
+    }
+    if !x_done {
+        let inv = 1.0 / dx;
+        let a = (hx - x1) * inv;
+        if x1 < x2 {
+            if a < 0.0 {
+                return false;
+            }
+            if !(a > 1.0) {
+                tmax = a;
+            }
+            let b = (-hx - x1) * inv;
+            if b > 1.0 {
+                return false;
+            }
+            if !(b < 0.0) {
+                entered = true;
+                tmin = b;
+            }
+        } else {
+            if a > 1.0 {
+                return false;
+            }
+            if !(a < 0.0) {
+                entered = true;
+                tmin = a;
+            }
+            let b = (-hx - x1) * inv;
+            if b < 0.0 {
+                return false;
+            }
+            if !(b > 1.0) {
+                tmax = b;
+            }
+        }
+        if tmin > tmax {
             return false;
         }
     }
-    true
+    let dz = z2 - z1;
+    if dz == 0.0 {
+        if z1.abs() > hz {
+            return false;
+        }
+    } else {
+        let inv = 1.0 / dz;
+        let a = (hz - z1) * inv;
+        if z1 < z2 {
+            if a < 0.0 {
+                return false;
+            }
+            if !(a > 1.0) && a < tmax {
+                tmax = a;
+            }
+            let b = (-hz - z1) * inv;
+            if b > 1.0 {
+                return false;
+            }
+            if !(b < 0.0) && b > tmin {
+                entered = true;
+                tmin = b;
+            }
+        } else {
+            if a > 1.0 {
+                return false;
+            }
+            if !(a < 0.0) && a > tmin {
+                entered = true;
+                tmin = a;
+            }
+            let b = (-hz - z1) * inv;
+            if b < 0.0 {
+                return false;
+            }
+            if !(b > 1.0) && b < tmax {
+                tmax = b;
+            }
+        }
+    }
+    if tmin > tmax {
+        return false;
+    }
+    entered
+}
+
+/// Do two oriented rectangles (centre, unit x axis, half sizes along it and across) meet (F-71037, the
+/// original's test: each rectangle's corners in the other's frame, then the first one's four edges
+/// clipped against the second, F-43122; the corner products are fused multiply-adds as the original's)?
+pub(super) fn rects_meet(c1: glam::Vec2, u1: glam::Vec2, h1: glam::Vec2, c2: glam::Vec2, u2: glam::Vec2, h2: glam::Vec2) -> bool {
+    let d = c2 - c1;
+    let (u1x, u1z, u2x, u2z) = (u1.x, u1.y, u2.x, u2.y);
+    let outside = |x: f32, z: f32, hx: f32, hz: f32| x > hx || x < -hx || z > hz || z < -hz;
+    // the second rectangle's corners in the first's frame
+    let c = u2z.mul_add(u1z, u2x * u1x);
+    let sn = u2z.mul_add(u1x, -(u2x * u1z));
+    let a = u1x.mul_add(d.x, u1z * d.y);
+    let b = u1x.mul_add(d.y, -(u1z * d.x));
+    let (p, q, r, t) = (h2.x * c, sn * h2.y, sn * h2.x, h2.y * c);
+    let (ap, am, aq) = (a + p, a - p, a + q);
+    let (br, bm) = (b + r, b - r);
+    let cs = [((ap) - q, br + t), (aq + p, br - t), (am + q, bm - t), (am - q, bm + t)];
+    if cs.iter().any(|&(x, z)| !outside(x, z, h1.x, h1.y)) {
+        return true;
+    }
+    // the first rectangle's corners in the second's frame
+    let (ndx, ndz) = (0.0 - d.x, 0.0 - d.y);
+    let c2f = u1z.mul_add(u2z, u2x * u1x);
+    let s2 = u1z.mul_add(u2x, -(u2z * u1x));
+    let a2 = u2z.mul_add(ndz, u2x * ndx);
+    let b2 = u2x.mul_add(ndz, -(u2z * ndx));
+    let (e1, e2, e3, e4) = (h1.y * c2f, h1.x * c2f, h1.y * s2, h1.x * s2);
+    let (am2, ap2, aq2) = (a2 - e2, a2 + e2, a2 + e3);
+    let (bp2, bm2) = (b2 + e4, b2 - e4);
+    let ds = [(ap2 - e3, bp2 + e1), (aq2 + e2, bp2 - e1), (am2 + e3, bm2 - e1), (am2 - e3, bm2 + e1)];
+    if ds.iter().any(|&(x, z)| !outside(x, z, h2.x, h2.y)) {
+        return true;
+    }
+    for (i, j) in [(3, 0), (0, 1), (1, 2), (2, 3)] {
+        if segment_meets_box(ds[i].0, ds[i].1, ds[j].0, ds[j].1, h2.x, h2.y) {
+            return true;
+        }
+    }
+    false
 }
 
 impl Spawner {
@@ -5471,5 +5594,193 @@ impl Vehicles {
             self.remove_layout_item(h);
         }
         self.item_followers_due.retain(|(h, _)| !handles.contains(h));
+    }
+}
+
+#[cfg(test)]
+mod verify_small_tests {
+    //! FORMATS_TOOLS verification pass (docs/reference/formats/verify_small_evidence.md): the original's
+    //! unchanged code (work/verify-small/FORMATS_TOOLS/stage1.py, offline) against the port. The original's
+    //! outputs are held as 64-bit FNV-1a hashes of the u32 word streams (no game data in the repo); the
+    //! synthetic cases come from a splitmix64 generator mirrored in the script (gen.py).
+    use super::*;
+    use glam::Vec2;
+
+    fn fnv(h: &mut u64, w: u32) {
+        for b in w.to_le_bytes() {
+            *h = (*h ^ b as u64).wrapping_mul(0x100000001b3);
+        }
+    }
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn uni(&mut self, lo: f64, hi: f64) -> f64 {
+            lo + (hi - lo) * ((self.next() >> 11) as f64 / 9007199254740992.0)
+        }
+        fn randint(&mut self, a: i64, b: i64) -> i64 {
+            a + (self.next() % (b - a + 1) as u64) as i64
+        }
+        fn angle(&mut self) -> Vec2 {
+            let a = self.uni(-1.0, 1.0);
+            let b = self.uni(-1.0, 1.0);
+            let n = (a * a + b * b).sqrt();
+            if n < 1e-3 {
+                Vec2::new(1.0, 0.0)
+            } else {
+                Vec2::new((a / n) as f32, (b / n) as f32)
+            }
+        }
+    }
+
+    type Case = (Vec2, Vec2, Vec2, Vec2, Vec2, Vec2);
+
+    /// The 33,000 rectangle pairs of gen.py (random, axis aligned touching +-1 ulp, crosses and nested,
+    /// diamonds at the corner-touch distance).
+    fn rect_cases() -> Vec<Case> {
+        let mut r = Rng(0x4D434C4152454354);
+        let mut v: Vec<Case> = Vec::new();
+        let f = |x: f64| x as f32;
+        for _ in 0..20000 {
+            let s = [1.0f64, 10.0, 100.0, 1000.0][(r.next() % 4) as usize];
+            let u1 = r.angle();
+            let u2 = r.angle();
+            let h1 = Vec2::new(f(r.uni(0.05, s)), f(r.uni(0.05, s)));
+            let h2 = Vec2::new(f(r.uni(0.05, s)), f(r.uni(0.05, s)));
+            let c1 = Vec2::new(f(r.uni(-s, s)), f(r.uni(-s, s)));
+            let c2 = Vec2::new(f(r.uni(-s, s)), f(r.uni(-s, s)));
+            v.push((c1, u1, h1, c2, u2, h2));
+        }
+        let up = |x: f32, k: i32| f32::from_bits((x.to_bits() as i32).wrapping_add(k) as u32);
+        for _ in 0..3000 {
+            let h1 = [r.randint(1, 20) as f64, r.randint(1, 20) as f64];
+            let h2 = [r.randint(1, 20) as f64, r.randint(1, 20) as f64];
+            let c1 = [r.randint(-50, 50) as f64, r.randint(-50, 50) as f64];
+            let ax = (r.next() % 2) as usize;
+            let sgn = [-1.0f64, 1.0][(r.next() % 2) as usize];
+            let gap = if ax == 0 { h1[0] + h2[0] } else { h1[1] + h2[1] };
+            let mut c2 = c1;
+            let r5 = r.randint(-5, 5);
+            c2[1 - ax] += [0.0, 1.0, -1.0, r5 as f64][(r.next() % 4) as usize];
+            let e = [0.0, 0.0, 1e-5, -1e-5][(r.next() % 4) as usize];
+            c2[ax] += sgn * (gap + e);
+            let k = [-1, 0, 0, 1][(r.next() % 4) as usize];
+            c2[ax] = up(f(c2[ax]), k) as f64;
+            let x = Vec2::new(1.0, 0.0);
+            v.push((Vec2::new(c1[0] as f32, c1[1] as f32), x, Vec2::new(h1[0] as f32, h1[1] as f32), Vec2::new(c2[0] as f32, c2[1] as f32), x, Vec2::new(h2[0] as f32, h2[1] as f32)));
+        }
+        for _ in 0..2000 {
+            let hh = f(r.uni(1.0, 30.0));
+            let w = f(r.uni(0.1, 1.0));
+            let c = Vec2::new(f(r.uni(-9.0, 9.0)), f(r.uni(-9.0, 9.0)));
+            let (x, y) = (Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0));
+            v.push((c, x, Vec2::new(hh, w), c, y, Vec2::new(hh, w)));
+            let dx = r.uni(-1.0, 1.0);
+            let dy = r.uni(-1.0, 1.0);
+            let c2 = Vec2::new(f(c.x as f64 + dx), f(c.y as f64 + dy));
+            let u = r.angle();
+            v.push((c, x, Vec2::new(hh, w), c2, u, Vec2::new(w, hh)));
+            let u = r.angle();
+            v.push((c, x, Vec2::new(hh, hh), c, u, Vec2::new(w, w)));
+            let u = r.angle();
+            v.push((c, x, Vec2::new(w, w), c, u, Vec2::new(hh, hh)));
+        }
+        let r2 = f(0.5f64.sqrt());
+        let s2 = 2.0f64.sqrt();
+        for _ in 0..1000 {
+            let h = r.randint(1, 10) as f64;
+            let e = [0.0, 1e-5, -1e-5, 1e-3, -1e-3][(r.next() % 5) as usize];
+            let d = h + h * s2 + e;
+            let hv = Vec2::new(h as f32, h as f32);
+            let x = Vec2::new(1.0, 0.0);
+            v.push((Vec2::ZERO, x, hv, Vec2::new(f(d), 0.0), Vec2::new(r2, r2), hv));
+            v.push((Vec2::ZERO, x, hv, Vec2::new(f(d / s2), f(d / s2)), Vec2::new(r2, r2), hv));
+        }
+        v
+    }
+
+    /// F-27898 (the rail speed of a lane): the original on every lane object of the city
+    /// navsys (10,031 lanes: the owner / road found by its own road_of, flags, +0x10 word, the road's
+    /// limit) against `rail_speed` of the lane's first link, and on 128 owner-flag words x 2 values of
+    /// the owner's +0x10 word with no road (port: no zone) and a lane without an owner.
+    #[test]
+    #[ignore = "requires user's extracted data (MCLA_DATA_DIR)"]
+    fn rail_speed_matches_the_original() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let nav = NavSys::parse(&res).unwrap();
+        let mut first_link = vec![usize::MAX; nav.curves.len()];
+        for (k, l) in nav.links.iter().enumerate().rev() {
+            first_link[l.lane] = k;
+        }
+        let mut h = 0xcbf29ce484222325u64;
+        let mut differing = 0;
+        for lane in 0..first_link.len() {
+            fnv(&mut h, rail_speed(&nav, first_link[lane]).0.to_bits());
+        }
+        // lanes whose owner is not a road but has a road as parent: the original's road_of finds the road
+        for (lane, &k) in first_link.iter().enumerate() {
+            let l = &nav.links[k];
+            if l.zone.is_none() && l.owner_flags & 2 == 0 && l.parent_zone.is_some() {
+                differing += 1;
+                let _ = lane;
+            }
+        }
+        println!("rail_speed: {} lanes; {} with a parent road and no road of their own", first_link.len(), differing);
+        assert_eq!(h, 0x0f61e061dfe2d429, "rail speed of the 10,031 lanes");
+        // F-36686 (the lane box): min / max over the control vertices from the curve accessor
+        let mut bh = 0xcbf29ce484222325u64;
+        for b in lane_boxes(&nav) {
+            for v in [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z] {
+                fnv(&mut bh, v.to_bits());
+            }
+        }
+        assert_eq!(bh, 0x2935e7d6e6ed9002, "lane boxes of the 10,031 lanes");
+        let mut nav = nav;
+        nav.links[0].zone = None;
+        nav.links[0].parent_zone = None;
+        let mut sh = 0xcbf29ce484222325u64;
+        let mut n = 0;
+        for f in 0..128u32 {
+            for w in 0..2u32 {
+                nav.links[0].owner_flags = f;
+                nav.links[0].owner_w10 = w;
+                fnv(&mut sh, rail_speed(&nav, 0).0.to_bits());
+                n += 1;
+            }
+        }
+        nav.links[0].owner_flags = 0;
+        nav.links[0].owner_w10 = 0;
+        fnv(&mut sh, rail_speed(&nav, 0).0.to_bits());
+        assert_eq!(n, 256);
+        assert_eq!(sh, 0x671d93d903813d8a, "synthetic owner flags");
+    }
+
+    /// F-43122 (the segment clip) is the helper of F-71037: the rectangle test
+    /// `rects_meet` against the original's whole test (corners of each in the other's box, then the four
+    /// edges against the box) on 33,000 pairs. Prints the number of pairs that differ.
+    #[test]
+    fn rects_meet_against_the_original() {
+        let cases = rect_cases();
+        assert_eq!(cases.len(), 33000);
+        let (mut ch, mut oh) = (0xcbf29ce484222325u64, 0xcbf29ce484222325u64);
+        let mut hits = 0;
+        for (c1, u1, h1, c2, u2, h2) in &cases {
+            for v in [c1.x, c1.y, u1.x, u1.y, h1.x, h1.y, c2.x, c2.y, u2.x, u2.y, h2.x, h2.y] {
+                fnv(&mut ch, v.to_bits());
+            }
+            let m = rects_meet(*c1, *u1, *h1, *c2, *u2, *h2);
+            hits += m as usize;
+            fnv(&mut oh, m as u32);
+        }
+        println!("rects_meet: {hits} of {} pairs meet", cases.len());
+        assert_eq!(ch, 0x59a082b80219e753, "case generator");
+        assert_eq!(oh, 0x00c52807c8002dc4, "rects_meet outputs");
     }
 }

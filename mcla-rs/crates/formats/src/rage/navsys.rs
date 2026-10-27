@@ -2068,3 +2068,108 @@ mod verify_lanes_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod verify_small_tests {
+    //! FORMATS_TOOLS verification pass (docs/reference/formats/verify_small_evidence.md): the original's
+    //! unchanged code (work/verify-small/FORMATS_TOOLS/stage1.py, offline) against the port. The original's
+    //! outputs are held as 64-bit FNV-1a hashes of the u32 word streams (no game data in the repo); the
+    //! cases come from a splitmix64 generator mirrored in the script (gen.py).
+    use super::*;
+
+    fn fnv(h: &mut u64, w: u32) {
+        for b in w.to_le_bytes() {
+            *h = (*h ^ b as u64).wrapping_mul(0x100000001b3);
+        }
+    }
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn uni(&mut self, lo: f64, hi: f64) -> f64 {
+            lo + (hi - lo) * ((self.next() >> 11) as f64 / 9007199254740992.0)
+        }
+    }
+
+    /// F-34126 and F-77217 (the phase step and the lane's vfunc that calls it) against `LaneCurve::advance`: 26,859 (phase, metres, curve speed) cases, the
+    /// 19^3 grid of edge values (+-0, 1e-6 and its neighbours, +-inf, NaN, +-1e30 ...) and 20,000 random.
+    #[test]
+    fn advance_matches_the_original() {
+        let mut fl: Vec<f32> = vec![0.0, -0.0, 1e-6, 1e-7, 2e-6, 0.01, -0.01, 1.0, -1.0, 0.5, 100.0, 0.35, 1e30, -1e30, f32::INFINITY, f32::NEG_INFINITY, f32::NAN];
+        fl.push(f32::from_bits(1e-6f32.to_bits() - 1));
+        fl.push(f32::from_bits(1e-6f32.to_bits() + 1));
+        let (mut ch, mut oh) = (0xcbf29ce484222325u64, 0xcbf29ce484222325u64);
+        let mut n = 0;
+        let mut one = |t: f32, d: f32, s: f32| {
+            for v in [t, d, s] {
+                fnv(&mut ch, v.to_bits());
+            }
+            fnv(&mut oh, LaneCurve::advance(t, d, s).to_bits());
+            n += 1;
+        };
+        for &t in &fl {
+            for &d in &fl {
+                for &s in &fl {
+                    one(t, d, s);
+                }
+            }
+        }
+        let mut r = Rng(0x4D434C41444E4345);
+        for _ in 0..20000 {
+            let t = r.uni(-2.0, 2.0);
+            let d = r.uni(-50.0, 50.0);
+            let s = match r.next() % 3 {
+                0 => r.uni(0.0, 400.0),
+                1 => r.uni(-1.0, 1.0) * 1e-5,
+                _ => r.uni(0.0, 1e-5),
+            };
+            one(t as f32, d as f32, s as f32);
+        }
+        assert_eq!(n, 26859);
+        assert_eq!(ch, 0xdb5ac0e32adc58eb, "case generator");
+        assert_eq!(oh, 0x20e453be5e3fdf36, "advance outputs");
+    }
+
+    /// F-48295 / F-48224 (the control-vertex and knot-entry accessors of a
+    /// lane's curve): on all 10,031 lanes of the city navsys the original's accessors, run on the real
+    /// resource, return the vertices (145,901 words with the counts) and knot vectors (88,942 words) the
+    /// port's parse holds.
+    #[test]
+    #[ignore = "requires user's extracted data (MCLA_DATA_DIR)"]
+    fn curve_accessors_match_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let bytes = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let data = bytes[16..].to_vec();
+        let virtual_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let res = Resource { rtype: 66, flags: 0, virtual_size, physical_size: data.len() - virtual_size, data };
+        let nav = NavSys::parse(&res).unwrap();
+        assert_eq!(nav.curves.len(), 10031);
+        let (mut vh, mut kh) = (0xcbf29ce484222325u64, 0xcbf29ce484222325u64);
+        let (mut vw, mut kw) = (0usize, 0usize);
+        for c in &nav.curves {
+            fnv(&mut vh, c.pts.len() as u32);
+            vw += 1;
+            for p in &c.pts {
+                for v in [p.x, p.y, p.z] {
+                    fnv(&mut vh, v.to_bits());
+                    vw += 1;
+                }
+            }
+            fnv(&mut kh, c.knots.len() as u32);
+            kw += 1;
+            for k in &c.knots {
+                fnv(&mut kh, k.to_bits());
+                kw += 1;
+            }
+        }
+        assert_eq!((vw, kw), (145901, 88942), "word counts (lane numbers excluded)");
+        assert_eq!(vh, 0x0afb56ee6ebfdfdf, "control vertices");
+        assert_eq!(kh, 0xab3b448743ac3989, "knot vectors");
+    }
+}
