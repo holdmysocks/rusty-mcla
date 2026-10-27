@@ -235,7 +235,7 @@ fn vert_lit(wp: vec3<f32>, n: vec3<f32>, v: vec4<f32>, ec: vec3<f32>, fill: vec3
                 hl = i;
             }
         }
-        let uv = ec.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.5485759, 0.5282554);
+        let uv = ec.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.54857594, 0.5282554);
         if (uv.x >= 0.0 && uv.x < 1.0 && uv.y >= 0.0 && uv.y < 1.0) {
             let cell = textureLoad(t_lamp_grid, vec2<i32>(uv * vec2<f32>(512.0, 640.0)), 0);
             for (var k = 0; k < select(4, 3, hl >= 0); k = k + 1) {

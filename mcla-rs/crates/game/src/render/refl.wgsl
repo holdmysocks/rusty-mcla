@@ -118,7 +118,7 @@ fn vs_refl(@location(0) pos: vec3<f32>, @location(1) normal: vec3<f32>, @locatio
 
 // The city's lamps at night (city.wgsl `grid_lamps_by`).
 fn grid_lamps(wpos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.5485759, 0.5282554);
+    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.54857594, 0.5282554);
     if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
         return vec3<f32>(0.0);
     }

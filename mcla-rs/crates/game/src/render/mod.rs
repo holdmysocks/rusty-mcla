@@ -304,13 +304,50 @@ pub struct LampTables {
 
 impl LampTables {
     /// The four lamps of the cell under `p` (the programs' cell: uv = (x, z) x (1 / 6320,
-    /// 1 / 4463.75) + (0.5485759, 0.5282554), x (512, 640); clamped to the grid as sub_82303900).
+    /// 1 / 4463.75) + (0.54857594, 0.5282554), x (512, 640); clamped to the grid as F-25968).
     pub fn cell(&self, p: Vec3) -> [u16; 4] {
-        let u = p.x * (1.0 / 6320.0) + 0.5485759;
-        let v = p.z * (1.0 / 4463.75) + 0.5282554;
-        let cx = ((u * LAMP_GRID.0 as f32) as i64).clamp(0, LAMP_GRID.0 as i64 - 1) as usize;
-        let cz = ((v * LAMP_GRID.1 as f32) as i64).clamp(0, LAMP_GRID.1 as i64 - 1) as usize;
-        self.cells.get(cz * LAMP_GRID.0 as usize + cx).copied().unwrap_or([0; 4])
+        self.cells.get(lamp_cell_index(p)).copied().unwrap_or([0; 4])
+    }
+}
+
+/// The cell index F-25968 reads for a place: `(p x scale - bias) x grid size` cut towards zero (a NaN cuts to
+/// the most negative int) and clamped into the grid, row `z` times the grid width plus column `x`. Scale and bias are
+/// the floats the grid builder (F-12750) stores in the grid object: 1 / (max - min) and min x scale per axis, the
+/// bias negated and subtracted (so added). Checked on 1,114 places against the original's code run offline
+/// (`lamp_cell_reference.py`, test `lamp_cell_index_matches_the_original`).
+pub fn lamp_cell_index(p: Vec3) -> usize {
+    let u = p.x * (1.0 / 6320.0) + 0.54857594;
+    let v = p.z * (1.0 / 4463.75) + 0.5282554;
+    let cx = ((u * LAMP_GRID.0 as f32) as i64).clamp(0, LAMP_GRID.0 as i64 - 1) as usize;
+    let cz = ((v * LAMP_GRID.1 as f32) as i64).clamp(0, LAMP_GRID.1 as i64 - 1) as usize;
+    cz * LAMP_GRID.0 as usize + cx
+}
+
+#[cfg(test)]
+mod lamp_cell_tests {
+    use super::*;
+
+    /// F-25968 (the cell lookup) and its index arithmetic, run offline from the original's code on 1,114 places:
+    /// the 14 of a recording of the open city, random places over and around the map, the places on cell edges
+    /// (+-1 ulp) and NaN / infinite / huge ones. The scale and bias the original reads are the recorded floats.
+    #[test]
+    fn lamp_cell_index_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/lamp_cell_ref.txt").lines() {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            assert_eq!((t[0], t[1]), ("512", "640"));
+            // the constants the port uses are the floats the original's builder stored
+            assert_eq!((1.0f32 / 6320.0).to_bits(), f(t[2]).to_bits());
+            assert_eq!((1.0f32 / 4463.75).to_bits(), f(t[4]).to_bits());
+            assert_eq!(0.54857594f32.to_bits(), (-f(t[5])).to_bits());
+            assert_eq!(0.5282554f32.to_bits(), (-f(t[7])).to_bits());
+            let p = Vec3::new(f(t[8]), f(t[9]), f(t[10]));
+            let want: usize = t[11].parse().unwrap();
+            assert_eq!(lamp_cell_index(p), want, "{l}");
+            n += 1;
+        }
+        assert!(n > 1000);
     }
 }
 
@@ -711,7 +748,7 @@ pub struct Gpu {
     pub depth_ui: wgpu::TextureView,
     depth_down: (wgpu::BindGroupLayout, wgpu::RenderPipeline),
     depth_down_bg: Option<wgpu::BindGroup>,
-    /// the globals' bind group with the city's sampler at maximum anisotropy 16 (sub_822E60E0: while the scene
+    /// the globals' bind group with the city's sampler at maximum anisotropy 16 (F-23692: while the scene
     /// is 4x) while `globals_bg` has the device default 4 (`*(0x827E19C4)`) - `set_aniso16` swaps them
     pub globals_bg_alt: wgpu::BindGroup,
     pub aniso16: bool,
@@ -1347,7 +1384,7 @@ impl Gpu {
             .collect();
         let env_dp_depth = create_depth(&device, ENV_DP_SIZE, ENV_DP_SIZE);
         let env_sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("environment"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        // (sub_822E60E0 each frame: grc sampler state 9, maximum anisotropy, = 16 while the 4x flag is set, else
+        // (F-23692 each frame: grc sampler state 9, maximum anisotropy, = 16 while the 4x flag is set, else
         // `*(0x827E19C4)` = 4; the city's fetches take it from the fetch constant - driving trace aniso field 3 = 4 : 1,
         // GPS map 5 = 16 : 1. MCLA_ANISO=<n> forces one value.)
         let aniso_env = std::env::var("MCLA_ANISO").ok().and_then(|v| v.parse::<u16>().ok()).map(|v| v.clamp(1, 16));
@@ -2514,7 +2551,7 @@ impl Gpu {
         let (cw, ch) = (LAMP_SPAN.0 / gw as f32, LAMP_SPAN.1 / gh as f32);
         let max = (LAMP_DATA.0 / 4 * LAMP_DATA.1) as usize - 1;
         let lamps = &lamps[..lamps.len().min(max)];
-        // The game's own rule (its grid builder, sub_82303A58 of the executable, LIGHTING_WORK.md):
+        // The game's own rule (its grid builder, F-12750 of the executable, LIGHTING_WORK.md):
         // a lamp reaches as far as it still gives a hundredth of its light; a spot that points
         // down covers the stretch of ground (15 m below) its cone falls on instead. A cell keeps
         // the four lamps with the highest score `term / distance squared` taken at the cell's
@@ -2565,7 +2602,7 @@ impl Gpu {
         }
         let grid: Vec<u16> = best.iter().flat_map(|c| c.iter().map(|s| s.1)).collect();
         let mut data = vec![0.0f32; (LAMP_DATA.0 * LAMP_DATA.1 * 4) as usize];
-        // The game's tables are coarse (its writer sub_823033F0): x, z and the cone's two numbers
+        // The game's tables are coarse (its writer F-85100): x, z and the cone's two numbers
         // half floats cut off (not rounded), the colour, the axis and the height bytes cut off -
         // the height over the 110 m from -31 m up. The same numbers here.
         let half = |v: f32| half_value(half_cut(v));

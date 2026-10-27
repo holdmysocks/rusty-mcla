@@ -74,7 +74,7 @@ fn grid_lamps(wpos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
 
 // (`nfl`: gPropNFLColor.w - 1.5 x m_NFLFade outdoors, 1 at every hour for interiors)
 fn grid_lamps_by(wpos: vec3<f32>, n: vec3<f32>, nfl: f32) -> vec3<f32> {
-    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.5485759, 0.5282554);
+    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.54857594, 0.5282554);
     if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
         return vec3<f32>(0.0);
     }
@@ -100,7 +100,7 @@ fn grid_lamps_by(wpos: vec3<f32>, n: vec3<f32>, nfl: f32) -> vec3<f32> {
 
 // The one lamp the environment map's night program takes (see its use).
 fn grid_lamp_env(wpos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.5485759, 0.5282554);
+    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.54857594, 0.5282554);
     if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
         return vec3<f32>(0.0);
     }
@@ -121,7 +121,7 @@ fn grid_lamp_env(wpos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
 
 // (diagnostics 240 - 243: lamp `k` of the cell alone, as grid_lamps counts it)
 fn grid_lamp_one(wpos: vec3<f32>, n: vec3<f32>, k: i32) -> vec3<f32> {
-    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.5485759, 0.5282554);
+    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.54857594, 0.5282554);
     let cell = textureLoad(t_lamp_grid, vec2<i32>(uv * vec2<f32>(512.0, 640.0)), 0);
     let i = i32(cell[k]);
     if (i == 0) { return vec3<f32>(0.0); }
@@ -142,7 +142,7 @@ fn grid_lamp_one(wpos: vec3<f32>, n: vec3<f32>, k: i32) -> vec3<f32> {
 // gPropNFLColor.w at all (the walls' program multiplies the intensity by c99.w; this one has no
 // such constant): the map's road is as lamp-lit at 18:15 and 05:45 as at midnight.
 fn grid_lamps_env_road(wpos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.5485759, 0.5282554);
+    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.54857594, 0.5282554);
     if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
         return vec3<f32>(0.0);
     }
@@ -170,7 +170,7 @@ fn grid_lamps_env_road(wpos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
 // effects): per lamp the same reach and cone, without n.l, times s / (2E - (2E - 1) s) with
 // s = sat(r . l), r the view ray mirrored at the surface and E the material's SpecularExponent.
 fn grid_lamps_spec(wpos: vec3<f32>, r: vec3<f32>, e2: f32) -> vec3<f32> {
-    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.5485759, 0.5282554);
+    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.54857594, 0.5282554);
     if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
         return vec3<f32>(0.0);
     }
@@ -208,7 +208,7 @@ struct Lamps {
 }
 fn interior_lamps(wpos: vec3<f32>, n: vec3<f32>, r: vec3<f32>, e2: f32, count: i32) -> Lamps {
     var out = array<vec3<f32>, 2>(vec3<f32>(0.0), vec3<f32>(0.0));
-    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.5485759, 0.5282554);
+    let uv = wpos.xz * vec2<f32>(1.0 / 6320.0, 1.0 / 4463.75) + vec2<f32>(0.54857594, 0.5282554);
     if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
         return Lamps(out[0], out[1]);
     }
@@ -870,7 +870,7 @@ fn road_night_program(wpos: vec3<f32>, nrm: vec3<f32>, color: vec4<f32>, color1:
     xs_c[93] = vec4<f32>(hd[0].z, hd[1].z, 0.0, 0.0);
     xs_c[94] = vec4<f32>(g.key_dir.xyz, -435311680.0);
     xs_c[95] = vec4<f32>(-2.872, -2.872, 1.0, 1.0);
-    xs_c[96] = vec4<f32>(1.0 / 6320.0, 1.0 / 4463.75, 0.5485759, 0.5282554);
+    xs_c[96] = vec4<f32>(1.0 / 6320.0, 1.0 / 4463.75, 0.54857594, 0.5282554);
     xs_c[97] = vec4<f32>(-3467.0, -31.0, -2358.0, 0.0);
     xs_c[98] = vec4<f32>(6320.0, 110.0, 4463.75, 0.0);
     xs_c[99] = vec4<f32>(0.0, 0.0, 0.0, g.ambient_ground.x);

@@ -2056,7 +2056,7 @@ impl Props {
                                         let frac = if closing > 0.0 && t > 0.0 { (dt / t).clamp(0.01, 1.0) } else { 0.01 };
                                         let p = -l * (overlap * frac);
                                         let astern = -fwd.dot(dn);
-                                        let w = v.clamp_length_max(25.0).cross(p) * (-astern.signum() * astern.abs().powf(0.3) * 1.5);
+                                        let w = { let c = clamp_length([v.x, v.y, v.z, 0.0], 0.0, 25.0); Vec3::new(c[0], c[1], c[2]) }.cross(p) * (-astern.signum() * astern.abs().powf(0.3) * 1.5);
                                         st.correct_position(p);
                                         st.vel += p * (60.0 * dt);
                                         st.ang_vel += w * dt;
@@ -2387,6 +2387,69 @@ fn bake_card(prop: &mcla_formats::rage::props::Prop, texture: &mut dyn FnMut(&st
 fn plant_mesh_shadow() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MCLA_PLANT_MESH_SHADOW").map_or(false, |v| v != "0"))
+}
+
+/// The vector length clamp F-38357 in place on a vec4, as the original's code does it (the deflection pass calls it with
+/// 0 and 25): the squared length in single precision from fused multiply-adds (each rounded to single), above max^2 the
+/// vector is scaled by max x 1/length, below min^2 by min x 1/length, a (nearly) zero vector becomes (0, min, 0, 0), a
+/// NaN or infinite squared length too; the 1/length is `1/sqrt` rounded to single, two Newton steps in double with fused
+/// multiply-adds, rounded to single, and 0 when the squared length is not above zero. All four lanes, w too, are scaled.
+/// Checked against the original's code run offline on 3,091 vectors (tools/clamp_length_reference.py).
+pub fn clamp_length(v: [f32; 4], min: f32, max: f32) -> [f32; 4] {
+    let (x, y, z) = (v[0] as f64, v[1] as f64, v[2] as f64);
+    let yy = (y * y) as f32;
+    let l1 = x.mul_add(x, yy as f64) as f32;
+    let l = z.mul_add(z, l1 as f64) as f32;
+    let unit_min = [0.0 * min, 1.0 * min, 0.0 * min, 0.0 * min];
+    let scale = |k: f32| -> [f32; 4] {
+        let ld = l as f64;
+        let r0 = (1.0 / ld.sqrt()) as f32 as f64;
+        let f6 = -(r0 * r0).mul_add(ld, -1.0);
+        let f5 = f6.mul_add(r0 * 0.5, r0);
+        let f1 = -(f5 * f5).mul_add(ld, -1.0);
+        let r = f1.mul_add(f5 * 0.5, f5) as f32 as f64;
+        let r = if -ld >= 0.0 { 0.0 } else { r };
+        let s = (r * k as f64) as f32;
+        [v[0] * s, v[1] * s, v[2] * s, v[3] * s]
+    };
+    if l > max * max {
+        scale(max)
+    } else if l < min * min {
+        if l > 9.999999960041972e-13 {
+            scale(min)
+        } else {
+            unit_min
+        }
+    } else if l.to_bits() & 0x7F80_0000 == 0x7F80_0000 {
+        unit_min
+    } else {
+        v
+    }
+}
+
+#[cfg(test)]
+mod clamp_length_tests {
+    use super::*;
+
+    /// F-38357 against the original's own code run offline on 3,091 vectors and limit pairs (random magnitudes 1e-7 .. 1e3,
+    /// zero lanes, a non-zero w, zero / tiny / NaN / infinite / huge vectors, equal and zero limits): every lane bit for bit
+    /// (a NaN lane only needs to be a NaN).
+    #[test]
+    fn clamp_length_matches_the_original() {
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/clamp_length_ref.txt").lines() {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let a: Vec<f32> = a.split(' ').map(h).collect();
+            let want: Vec<f32> = b.split(' ').map(h).collect();
+            let got = clamp_length([a[0], a[1], a[2], a[3]], a[4], a[5]);
+            for k in 0..4 {
+                assert!(got[k].to_bits() == want[k].to_bits() || (got[k].is_nan() && want[k].is_nan()), "{l}: lane {k} {:08x}", got[k].to_bits());
+            }
+            n += 1;
+        }
+        assert!(n > 3000);
+    }
 }
 
 #[cfg(test)]
