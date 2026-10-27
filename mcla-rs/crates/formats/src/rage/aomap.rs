@@ -76,6 +76,26 @@ impl AoMap {
 mod tests {
     use super::*;
 
+    /// The grid file's parse (F-39732: min, max, cell size and cell counts) against the object the original's own
+    /// parse leaves, read from the running original by the object-dump recorder (docs/reference/map/objdump_signals.md):
+    /// `AoMap::load` of the shipped grid gives the same bits for every field the port keeps. Skipped without the data.
+    #[test]
+    fn grid_parse_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Some(m) = AoMap::load(&std::path::Path::new(&root).join("tune/city/sc")) else { return };
+        let w: Vec<u32> = include_str!("testdata/aogrid_object_ref.txt").lines().next().unwrap().split(' ').map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+        let f = |i: usize| f32::from_bits(w[i]);
+        assert_eq!([m.min.x.to_bits(), m.min.y.to_bits(), m.min.z.to_bits()], [w[0], w[1], w[2]]);
+        assert_eq!([m.max.x.to_bits(), m.max.y.to_bits(), m.max.z.to_bits()], [w[4], w[5], w[6]]);
+        assert_eq!(m.cell.to_bits(), w[10]);
+        assert_eq!((m.nx as u32, m.nz as u32), (w[11], w[12]));
+        assert_eq!((w[11], w[12]), (1024, 768));
+        // size and total are derived: the original stores max - min and nx * nz
+        assert_eq!(f(8), m.max.x - m.min.x);
+        assert_eq!(f(9), m.max.z - m.min.z);
+        assert_eq!(w[13], m.nx as u32 * m.nz as u32);
+    }
+
     /// The cell lookup against the original's own code run offline (tools/map_aomap_reference.py): four grids
     /// (the city's and three odd ones whose 1 / cell is not exact), places inside, on the cell edges (+-1 ulp), on and
     /// just outside the rectangle.

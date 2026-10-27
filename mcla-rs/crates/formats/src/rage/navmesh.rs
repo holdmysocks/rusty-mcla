@@ -1005,6 +1005,26 @@ impl NavMesh {
 mod tests {
     use super::*;
 
+    /// F-27305's answers (nav polygon filter, true for the sidewalk flag) recorded in the running original by
+    /// the object-dump recorder (docs/reference/map/objdump_signals.md, 300 calls): `NavPoly::sidewalk` agrees
+    /// on every distinct (flags, result) pair.
+    #[test]
+    fn sidewalk_filter_matches_the_original() {
+        let text = include_str!("testdata/nav_sidewalk_ref.txt");
+        for l in text.lines() {
+            let (f, r) = l.split_once(' ').unwrap();
+            let want = r == "1";
+            let got = if f == "-" {
+                false // a null polygon: the original gives false
+            } else {
+                let p = NavPoly { chunk: 0, material: 0, flags: u32::from_str_radix(f, 16).unwrap(), area: 0.0, center: Vec3::ZERO, normal: Vec3::Y, nv: 3, verts: [Vec3::ZERO; 4], first_link: 0, n_links: 0 };
+                p.sidewalk()
+            };
+            assert_eq!(got, want, "{l}");
+        }
+        assert!(text.lines().count() >= 4);
+    }
+
     fn file() -> Option<Resource> {
         let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
         let d = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x69d17d57.r26")).ok()?;

@@ -429,6 +429,31 @@ mod tests {
         Junction { center: Vec3::ZERO, arms: vec![Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z], radius: 12.0, reach: 12.0, forced: -1, current: 0, timer: START, demand: vec![0; 4] }
     }
 
+    /// F-23734 / F-23525 / F-59460 (green, yellow, red test of arm i) recorded in the running original by
+    /// the object-dump recorder (docs/reference/map/objdump_signals.md): the port's `arm_state` of a free
+    /// junction (forced -1) gives the same answer for every recorded call.
+    #[test]
+    fn arm_tests_match_the_original() {
+        let text = include_str!("testdata/signals_arm_ref.txt");
+        let mut n = [0usize; 3];
+        for l in text.lines() {
+            let t: Vec<&str> = l.split(' ').collect();
+            let (cur, timer, arm, allgreen, ret): (i32, u32, usize, u8, u8) =
+                (t[1].parse().unwrap(), u32::from_str_radix(t[2], 16).unwrap(), t[3].parse().unwrap(), t[4].parse().unwrap(), t[5].parse().unwrap());
+            assert!((0..256).contains(&cur), "{l}");
+            assert_eq!(allgreen, 0, "{l}: the all-green byte is not modelled");
+            let mut j = cross();
+            j.current = cur as u8;
+            j.timer = f32::from_bits(timer);
+            let state = j.arm_state(arm, 0.0);
+            let (idx, want) = match t[0] { "g" => (0, 2), "y" => (1, 1), _ => (2, 0) };
+            // red's answer is "the arm is not green and not yellow" = state 0
+            assert_eq!(state == want, ret == 1, "{l}: port state {state}");
+            n[idx] += 1;
+        }
+        assert!(n.iter().all(|&k| k >= 10), "{n:?}");
+    }
+
     fn one() -> Signals {
         let nj = NavJunction { center: Vec3::ZERO, arms: vec![Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z], half: [12.0, 12.0] };
         Signals::build(&[nj], &[]).0
