@@ -551,12 +551,12 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             push(e);
         }
     }
-    // race opponents (type 1 subtype 6, the race scripts' SetVehicleElement - the red light's and the
-    // freeway's man keep their own element, which the racer renderer draws the same way while a race
-    // is current): the arrow in RacerColor. The original draws them in a race - work/hookmen2
+    // the red light's and the freeway's man keep their racer element through the race, which the
+    // racer renderer draws as the arrow in RacerColor while a race is current - work/hookmen2
     // `cap/rl_14`, `rl_15`, `fw_06` (the green arrow by the player's, a cop's blue one beside); the
-    // "checkpoints and player only" filter of rule_elements.md 4.1 does not hold in its races
-    if let Some(race) = game.race.as_ref() {
+    // career's races show no arrow for their opponents (work/ui/ref/ng_race_044..047, RACE_GH_06)
+    let alt = game.active_def.as_ref().map_or(false, |d| crate::althk::is_alt_race(&d.id));
+    if let Some(race) = game.race.as_ref().filter(|_| alt) {
         for (k, &i) in race.participants.iter().enumerate() {
             let Some(c) = vehicles.cars.get(i).filter(|c| !c.is_player) else { continue };
             let mut e = Element::at(Kind::OtherCar, c.state.pos);
