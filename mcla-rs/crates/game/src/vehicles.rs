@@ -800,7 +800,7 @@ pub struct Vehicles {
     parsed_stamp: u64,
     /// car builds' CPU part (`prep_car`) made ahead on worker threads, by car folder and configuration, taken by
     /// `load_model_cfg`: the read-ahead's plain build (`prefetch`), the racers' set-ups (`dress_setups`) -
-    /// docs/PERFORMANCE.md 2026-10-27 (13); the last `PREPS_KEEP`
+    /// docs/PERFORMANCE.md 2026-10-27 (14); the last `PREPS_KEEP`
     preps: Vec<(String, CarConfig, PrepSlot)>,
     /// the cars and set-ups whose build `dress_setups` has had made ahead
     dress_ahead: std::collections::HashSet<(String, String)>,
@@ -1786,7 +1786,7 @@ impl Vehicles {
 
     /// The CPU part of a car's build (`load_model_cfg`): its meshes placed, merged by program and marked, in build
     /// order, with the lamp places, the wheel hubs and glow bones gathered on the way - without the GPU or the world, so
-    /// that it can run on a worker thread (docs/PERFORMANCE.md 2026-10-27 (13)). The textures are found, and the
+    /// that it can run on a worker thread (docs/PERFORMANCE.md 2026-10-27 (14)). The textures are found, and the
     /// batches made and uploaded, by `load_model_cfg` on the main thread.
     fn prep_car(car: &CarAsset, dir: &Path, cfg: &CarConfig) -> CarPrep {
         let car_is_ambient = dir.file_name().map_or(false, |n| n.to_string_lossy().to_ascii_lowercase().starts_with("va_"));
@@ -2273,7 +2273,7 @@ impl Vehicles {
         let t_dress = std::time::Instant::now();
         let i = self.cars.iter().position(|c| !c.is_player && !c.dressed && !c.vinyl_name.is_empty() && c.parked.is_none())?;
         // (the builds of every car waiting to be dressed made ahead on workers, once each: the cars are still dressed one
-        // a call, as before, and each finds its build's CPU part made - docs/PERFORMANCE.md 2026-10-27 (13))
+        // a call, as before, and each finds its build's CPU part made - docs/PERFORMANCE.md 2026-10-27 (14))
         let waiting: Vec<(String, String)> = self.cars.iter().filter(|c| !c.is_player && !c.dressed && !c.vinyl_name.is_empty() && c.parked.is_none()).map(|c| (c.model.name.clone(), c.vinyl_name.clone())).collect();
         for (car, setup) in waiting {
             if self.dress_ahead.insert((car.clone(), setup.clone())) {

@@ -46,7 +46,7 @@ pub struct CarPart {
     /// bumpers, the wide body), in the part's space
     pub sockets: Vec<(String, Mat4)>,
     /// the part file's own skeleton, as parsed here (the glow places - vehicles.rs `load_model_cfg`, which had parsed
-    /// the file again at every build: docs/PERFORMANCE.md 2026-10-27 (13))
+    /// the file again at every build: docs/PERFORMANCE.md 2026-10-27 (14))
     pub skeleton: Option<std::sync::Arc<Skeleton>>,
 }
 
