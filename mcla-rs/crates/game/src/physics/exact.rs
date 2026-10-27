@@ -711,4 +711,19 @@ mod tests {
             assert!(bad.is_empty(), "{name}: {} differ, first {:?}", bad.len(), &bad[..bad.len().min(4)]);
         }
     }
+
+    #[test]
+    fn guest_atan2_is_the_originals() {
+        let mut bad = Vec::new();
+        let mut n = 0;
+        for line in include_str!("guest_atan2_cases.txt").lines() {
+            let mut w = line.split(' ').map(|h| u64::from_str_radix(h, 16).unwrap());
+            let (y, x, want) = (f64::from_bits(w.next().unwrap()), f64::from_bits(w.next().unwrap()), w.next().unwrap());
+            n += 1;
+            if guest_atan2(y, x).to_bits() != want {
+                bad.push((y, x, f64::from_bits(want), guest_atan2(y, x)));
+            }
+        }
+        assert!(bad.is_empty(), "{} of {n} differ, first {:?}", bad.len(), &bad[..bad.len().min(4)]);
+    }
 }
