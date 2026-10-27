@@ -3880,6 +3880,11 @@ impl Game {
                 if self.hook_icons.is_none() && std::env::var("MCLA_NO_HOOK_ICONS").is_err() {
                     self.hook_icons = crate::hookicons::HookIcons::new(&self.data_dir, &shared);
                 }
+                // (and their and the racers' markers' tune, the 155 files of tune/ui read for it: 9 - 11 ms in the first
+                // frame that drew them - docs/PERFORMANCE.md 2026-10-27 (9))
+                if self.mark_tune.is_none() {
+                    self.mark_tune = Some(crate::racemark::MarkTune::load(&self.data_dir));
+                }
                 self.ui_shared = Some(shared);
             }
         }
