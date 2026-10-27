@@ -3822,7 +3822,10 @@ impl App {
         // places are the original's three car objects on this screen (the body's origin and its z axis - the
         // script's own placements are (-173.088, 18.169, -762.769) 34.025, (-176.355, 18.199, -761.178) 35.091,
         // (-179.104, 18.203, -759.119) 36.12, before the cars settle)
-        if self.game.fresh_game && self.intro_stage >= 1 && !self.starters_made {
+        // (made under the fade's black, the frame it is full, and the film waits for them (`opening_tick`): the original
+        // makes them just before its fade, but their models (~90 ms here) would stop the fade's first frame;
+        // nothing can see them until VEHICLE SELECT - docs/PERFORMANCE.md 2026-10-27)
+        if self.game.fresh_game && self.intro_stage >= 1 && (self.intro_mask.full() || self.intro_stage >= 2) && !self.starters_made {
             self.starters_made = true;
             const LOT: [([f32; 3], [f32; 2]); 3] = [([-173.088, 18.137, -762.768], [0.559, 0.829]), ([-176.354, 18.147, -761.177], [0.575, 0.818]), ([-179.103, 18.192, -759.120], [0.589, 0.808])];
             self.vehicles.cars.retain(|c| c.driver != "starter");
@@ -6442,12 +6445,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the climb after START is still the press-start script's: its hour and streaming - startwarp.rs)
             let climbing = self.startwarp.as_ref().map_or(false, |w| w.climbing());
             if let Some(a) = self.titlecam.frame(self.game.mode == Mode::MainMenu || climbing, attract, self.time_of_day) {
-                let w = if a.weather == 1 { sky::Weather::Cloudy } else { sky::Weather::Nice };
-                if self.weather != w || self.sky_next.is_some() {
-                    self.sky = sky::Sky::load_weather(&self.opt.data_dir, w);
-                    self.weather = w;
-                    self.sky_next = None;
-                }
+                self.title_weather(a);
             }
             if let Some(i) = self.titlecam.shot {
                 self.time_of_day = titlecam::SHOTS[i].hour;
@@ -10469,7 +10467,7 @@ impl App {
         match self.intro_stage {
             // (the film once the black is up; settings.toml game.intro `fast` puts CUT_INTRO in its place, `skip` (OFF)
             // keeps it - the original always plays it, GitHub #8 - `hooks::intro_film`)
-            1 if self.intro_mask.full() => {
+            1 if self.intro_mask.full() && self.starters_made => {
                 // (a new career's held camera goes under the black - the career script's UILogic_UnPauseCamera)
                 if self.startwarp.take().is_some() {
                     log::info!("start warp: released under CarSelection's black");
@@ -11211,6 +11209,36 @@ impl App {
         }
         self.gpu = Some(gpu);
         self.world = Some(world);
+        self.start_screen_ahead();
+    }
+
+    /// A start-screen shot's weather (titlecam.rs `Apply`): snapped.
+    fn title_weather(&mut self, a: titlecam::Apply) {
+        let w = if a.weather == 1 { sky::Weather::Cloudy } else { sky::Weather::Nice };
+        if self.weather != w || self.sky_next.is_some() {
+            self.sky = sky::Sky::load_weather(&self.opt.data_dir, w);
+            self.weather = w;
+            self.sky_next = None;
+        }
+    }
+
+    /// The start screen's first shot drawn and the game's first tick run on the loading thread, behind LOADING: that tick
+    /// holds the ambient manager's front-end frames (traffic.rs `FRONT_END_PREROLL`: 120 frames of the spawners, the cars
+    /// and the walkers), which the original runs behind its loading logo too - at the hand-over it was one 250 ms tick
+    /// (docs/PERFORMANCE.md 2026-10-27 (2)). The same calls as the first frame's, in the same order. MCLA_FE_AHEAD=0: not.
+    fn start_screen_ahead(&mut self) {
+        if self.game.mode != Mode::MainMenu || std::env::var("MCLA_FE_AHEAD").map_or(false, |v| v.trim() == "0") {
+            return;
+        }
+        if let Some(a) = self.titlecam.frame(true, None, self.time_of_day) {
+            self.title_weather(a);
+        }
+        if let Some(i) = self.titlecam.shot {
+            self.time_of_day = titlecam::SHOTS[i].hour;
+        }
+        let t = Instant::now();
+        self.update_gameplay(fixed_step::DT);
+        log::info!("startup: the start screen's first tick run behind LOADING in {} ms", t.elapsed().as_millis());
     }
 }
 
