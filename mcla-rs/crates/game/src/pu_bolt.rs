@@ -372,6 +372,41 @@ pub fn ray_hull(rot: Quat, pos: Vec3, verts: &[Vec3], tris: &[[u16; 3]], a: Vec3
 mod tests {
     use super::*;
 
+    /// The arc style's constructor run offline (tools/powerups_small_reference.py, table
+    /// tests/powerups_small_reference.txt): the rates, the seed and the generator's state after, bit for bit.
+    /// Evidence: docs/reference/powerups/verify_small_evidence.md section 2.
+    #[test]
+    fn arc_init_matches_the_original() {
+        const REF: &str = include_str!("../tests/powerups_small_reference.txt");
+        let mut n = 0;
+        for line in REF.lines().filter(|l| l.starts_with("ARC ")) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let dec = |s: &str| s[1..].parse::<u32>().unwrap();
+            let v: Vec<f32> = w[3..11].iter().map(|s| f32::from_bits(dec(s))).collect();
+            let tune = ArcTune {
+                color_min: [0.0; 4],
+                color_max: [0.0; 4],
+                end_color: [0.0; 4],
+                arc_growth: [v[0], v[1]],
+                growth_speed: [v[2], v[3]],
+                flux_tangent: [v[4], v[5]],
+                flux_normal: [0.0; 2],
+                flicker_speed: [v[6], v[7]],
+                thickness: 0.0,
+                tex_anim_rate: 0.0,
+                iterations: 0,
+            };
+            let mut rng = Mwc { lo: dec(w[1]), carry: dec(w[2]) };
+            let a = arc_init(&tune, &mut rng);
+            assert_eq!(a.growth_rate.to_bits(), dec(w[12]), "growth rate (+20) of {line}");
+            assert_eq!(a.flicker_rate.to_bits(), dec(w[14]), "flicker rate (+28) of {line}");
+            assert_eq!(a.seed as u64, w[15][1..].parse::<u64>().unwrap(), "seed of {line}");
+            assert_eq!((rng.lo, rng.carry), (dec(w[18]), dec(w[19])), "generator after {line}");
+            n += 1;
+        }
+        assert_eq!(n, 1200);
+    }
+
     #[test]
     fn bezier_and_random_numbers() {
         let p = [Vec3::ZERO, Vec3::new(1.0, 2.0, 0.0), Vec3::new(2.0, 0.0, 0.0)];

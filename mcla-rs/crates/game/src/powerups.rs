@@ -270,7 +270,8 @@ pub fn load_looks(data_dir: &str) -> [Look; 24] {
             powerup_color: cd("m_powerupColor", [1.0; 4]),
             ground_glow_color1: cd("m_groundGlowColor1", [0.0, 1.0, 1.0, 0.24]),
             ground_glow_color2: cd("m_groundGlowColor2", [0.0, 1.0, 1.0, 0.0]),
-            beam_color: cd("m_beamColor", [1.0; 4]),
+            // (the constructor F-88402's default; 5 look files have no m_beamColor)
+            beam_color: cd("m_beamColor", [0.372, 0.702, 0.831, 1.0]),
         }
     })
 }
@@ -1800,5 +1801,117 @@ mod tests {
             }
         }
         assert!(with > 200 && bad.is_empty(), "{with} scripts with a list, {read} read; not read: {:?}", &bad[..bad.len().min(8)]);
+    }
+    /// The power-up type constructors run by the original's own code offline (tools/powerup_ctor_reference.py:
+    /// the unchanged constructors and their direct callees on a flat guest memory, the two name callees
+    /// - atString init and the string-table lookup, which only fill the name fields - stubbed). Per type:
+    /// id, mega partner (+8), ActiveTime, Shootable, ShootTime, ShootRange, width (+32), DrawIcon, as f32 bits.
+    /// Evidence: docs/reference/powerups/verify_small_evidence.md.
+    #[test]
+    fn constructors_match_the_original() {
+        const ORIGINAL: [(u8, u8, u32, u8, u32, u32, u32, u8); 13] = [
+        (25, 25, 0x41200000, 0, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-34625 base
+        (0, 25, 0x41200000, 0, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-86562
+        (2, 13, 0x41200000, 1, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-47630
+        (13, 13, 0x41200000, 1, 0x40a00000, 0x41a00000, 0xbf800000, 1), // F-88704
+        (3, 14, 0x41200000, 0, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-89556
+        (14, 14, 0x41200000, 0, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-17229
+        (8, 19, 0x41200000, 0, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-43339
+        (19, 19, 0x41200000, 0, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-41737
+        (9, 20, 0x41200000, 0, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-59527
+        (20, 20, 0x41200000, 0, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-56106
+        (10, 25, 0x41200000, 0, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-77222
+        (21, 25, 0x41200000, 0, 0x40a00000, 0x41a00000, 0x41200000, 1), // F-98423
+        (18, 18, 0x41200000, 1, 0x40a00000, 0x41a00000, 0xbf800000, 1), // F-44279
+        ];
+        for (id, mega, active, shoot, st, sr, w, icon) in ORIGINAL {
+            let t = TypeTune::constructed(id);
+            assert_eq!(t.mega, mega, "type {id} mega partner");
+            assert_eq!(t.active_time.to_bits(), active, "type {id} ActiveTime");
+            assert_eq!(t.shootable, shoot != 0, "type {id} Shootable");
+            assert_eq!(t.shoot_time.to_bits(), st, "type {id} ShootTime");
+            assert_eq!(t.shoot_range.to_bits(), sr, "type {id} ShootRange");
+            assert_eq!(t.width.to_bits(), w, "type {id} width");
+            assert_eq!(t.draw_icon, icon != 0, "type {id} DrawIcon");
+            assert_eq!(t.fade.map(f32::to_bits), [0x3f333333, 0x41a00000, 0x40800000, 0x40000000], "type {id} fade");
+        }
+    }
+
+    /// The original's options-record reader and the k-th-allowed-type helper, the two Stealth getters, the holder
+    /// constructor and the look constructor, run offline (tools/powerups_small_reference.py): table
+    /// tests/powerups_small_reference.txt. Evidence: docs/reference/powerups/verify_small_evidence.md section 2.
+    #[test]
+    fn small_functions_match_the_original() {
+        const REF: &str = include_str!("../tests/powerups_small_reference.txt");
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let types: [TypeTune; 24] = std::array::from_fn(|i| TypeTune::constructed(i as u8));
+        let dir = std::env::temp_dir().join("mcla_powerup_look_defaults");
+        std::fs::create_dir_all(dir.join("tune/powerup")).unwrap();
+        for t in 0..24 {
+            let file = format!("0x{:08x}", mcla_formats::hash::joaat(&format!("powerup_{}.mcpowerup", NAMES[t])));
+            std::fs::write(dir.join("tune/powerup").join(file), "type: mcPowerup
+").unwrap();
+        }
+        let looks = load_looks(dir.to_str().unwrap());
+        let mut n = [0usize; 4];
+        for line in REF.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            match w[0] {
+                "OPT" => {
+                    let mut rec = [0u8; 28];
+                    rec[0] = hex(w[1]) as u8;
+                    rec[1] = hex(w[2]) as u8;
+                    let (bits, mystery) = allowed(&rec);
+                    assert_eq!(bits, hex(w[4]), "allowed word of {line}");
+                    assert_eq!(mystery, w[3] != "00", "RANDOM flag of {line}");
+                    for (k, s) in w[5..].iter().enumerate() {
+                        let want: i32 = s.parse().unwrap();
+                        if k < bits.count_ones() as usize {
+                            assert_eq!(roll(bits, false, (k as i32) << 2, false).0 as i32, want, "k={k} of {line}");
+                        } else {
+                            assert_eq!(want, -1, "past the end: {line}");
+                        }
+                    }
+                    n[0] += 1;
+                }
+                "HLD" => {
+                    let k: i32 = w[1].parse().unwrap();
+                    let want = w[2] != "0" || w[3] != "0";
+                    let effect = if k < 0 { None } else { Some((k as u8, types.get(k as usize).map_or(1.0, |t| t.active_time))) };
+                    assert_eq!(car_look(effect, &types, true).1, want, "stealth getters, effect type {k}");
+                    n[1] += 1;
+                }
+                "NEW" => {
+                    let b: Vec<u8> = w[1..].iter().map(|x| hex(x) as u8).collect();
+                    let u = |o: usize| u32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+                    let h = Holder::new(0);
+                    assert_eq!((u(136), u(140)), (h.slots[0] as u32, h.slots[1] as u32));
+                    assert_eq!((u(228) == 0, u(236) == 0, u(104)), (h.shot.is_none(), h.effect.is_none(), h.shield_hits as u32));
+                    n[2] += 1;
+                }
+                "LOOK" => {
+                    let b: Vec<u8> = w[1..].iter().map(|x| hex(x) as u8).collect();
+                    let f = |o: usize| u32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+                    let c = |o: usize| [f(o), f(o + 4), f(o + 8), f(o + 12)];
+                    let bits = |a: [f32; 4]| a.map(f32::to_bits);
+                    for l in &looks {
+                        assert_eq!(l.sphere_scale.to_bits(), f(12));
+                        assert_eq!(l.ground_glow_scale.to_bits(), f(28));
+                        assert_eq!(l.powerup_width.to_bits(), f(32));
+                        assert_eq!(l.icon_height.to_bits(), f(48));
+                        assert_eq!(l.powerup_height.to_bits(), f(52));
+                        assert_eq!(bits(l.glow_color), c(64));
+                        assert_eq!(bits(l.sphere_color), c(80));
+                        assert_eq!(bits(l.powerup_color), c(112));
+                        assert_eq!(bits(l.ground_glow_color1), c(128));
+                        assert_eq!(bits(l.ground_glow_color2), c(144));
+                        assert_eq!(bits(l.beam_color), c(192));
+                    }
+                    n[3] += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(n, [2048, 32, 1, 1]);
     }
 }
