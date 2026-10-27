@@ -26,8 +26,9 @@ use std::sync::Mutex;
 
 /// particles of the original (a 128 x 64 target, 32768 vertices a draw)
 const DROPS: usize = 8192;
-/// most cones a frame (the original drew 79 at the reference spot, lamps up to 235 m away)
-const CONES: usize = 160;
+/// most cones a frame: the original's list holds 256 (F-59499; it drew 79 at the reference spot,
+/// lamps up to 235 m away)
+const CONES: usize = 256;
 /// how far a lamp's cone is drawn
 const CONE_REACH: f32 = 300.0;
 /// vertices of a cone (render/rain.wgsl CONE_SEGS x 3)
@@ -87,6 +88,9 @@ pub struct Frame<'a> {
     pub lamps: &'a [PropLamp],
     /// the weather as GlowTuning.xml counts it (0 nice, 1 cloudy, 2 stormy, 3 foggy) and the hour
     pub weather: usize,
+    /// the weather being blended towards and how far (the light manager's weighted sum of the four
+    /// weathers' m_LampGlows, which feeds the cone pass of F-59499)
+    pub next: Option<(usize, f32)>,
     pub hour: f32,
     /// the city's collision, for what is over a drop's place
     pub collider: Option<&'a crate::physics::collision::WorldCollider>,
@@ -316,8 +320,8 @@ impl Rain {
         }
     }
 
-    /// The lamps' cones (rage_spotlightfog) as the game lists and draws them (sub_823029D0,
-    /// sub_82302810, sub_82302460; LIGHTING_WORK.md "Lamps, round 2"): none at all unless the
+    /// The lamps' cones (rage_spotlightfog) as the game lists and draws them (F-59499,
+    /// F-71942, F-19533; LIGHTING_WORK.md "Lamps, round 2"): none at all unless the
     /// weather's m_LampGlows x times y reaches 0.01 (storm 0.033, fog 0.033, nice and cloudy
     /// 0.003 - recorded: 68 cones a frame on a stormy and on a foggy night, none on a nice or
     /// cloudy one or by day); a cone for every LIT spot lamp 20 .. 300 m from the camera,
@@ -325,7 +329,14 @@ impl Rain {
     /// the lamp's brightness (0.3 r + 0.6 g + 0.1 b) x Intensity / d^2 falls to m_LampGlows.z, at
     /// most 16 m (storm: 16 m but two kinds of 10.72 and 12.87; fog 7.68 .. 14.44).
     fn cones(&mut self, gpu: &Gpu, f: &Frame) {
-        let [density, strength, edge, colw] = self.lamp_glows[f.weather.min(3)];
+        let mut lg = self.lamp_glows[f.weather.min(3)];
+        if let Some((nw, k)) = f.next {
+            let b = self.lamp_glows[nw.min(3)];
+            for i in 0..4 {
+                lg[i] += (b[i] - lg[i]) * k;
+            }
+        }
+        let [density, strength, edge, colw] = lg;
         if density * strength < 0.01 {
             return;
         }

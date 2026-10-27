@@ -7886,6 +7886,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let mut sig_refl: Vec<siglrefl::Rect> = Vec::new();
             if let (Some(tune), false, false) = (halo::tune(), map_baked || matches!(self.game.mode, Mode::Garage), halo::old_look()) {
                 let w = match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 };
+                // (StarSize is the one glow member the light manager blends by the weather weights, F-86405:
+                // a blend in progress moves it smoothly instead of at the blend's end)
+                if let Some((_, nw, f)) = self.sky_next.as_ref() {
+                    let nw = match nw { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 };
+                    let (a, b) = (tune.star[w], tune.star[nw]);
+                    tune.star[w] = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+                }
                 let cam = self.cam.pos;
                 // (a light whose place is off the screen has no quads - both vertex programs - and
                 // the game's list holds 96: keep the list for those on it)
@@ -8617,7 +8624,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         });
         self.fx.prepare(&gpu, self.cam.pos);
         // (the rain and the lamps' cones in it, as the original draws them - rain.rs)
-        rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, hour: self.time_of_day, collider: Some(&world.collider) });
+        rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, next: self.sky_next.as_ref().map(|(_, w, f)| (match w { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, *f)), hour: self.time_of_day, collider: Some(&world.collider) });
         self.peds.prepare(&gpu, self.cam.pos, &frustum);
         // (the story scenes' characters: their own programs, lit by the light manager's state -
         // skin.rs `CharLight`; MCLA_CHAR_OLD=1: the generic look as before)
