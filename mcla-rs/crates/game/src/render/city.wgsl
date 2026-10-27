@@ -2007,6 +2007,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     }
     var second_uv = in.uv0;
     if (mat.mode == 3u || mat.mode == 4u || mat.mode == 14u || mat.mode == 20u || ((mat.mode == 0u || mat.mode == 1u) && in.uv2.x > 0.5)) { second_uv = in.uv1; }
+    // (the garage floor's decal - world::mark_garage_floor - on the second texture coordinates too)
+    if ((mat.mode == 0u || mat.mode == 1u) && (u32(round(in.uv2.y)) & 4194304u) != 0u) { second_uv = in.uv1; }
     // signs: lit between the material's own clock times (sign_on), their strength (sign_gain)
     var sign_on = false;
     var sign_gain = 0.0;
@@ -3000,6 +3002,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     var int_tile = false;
     var int_wall = false;
     var int_spec = vec3<f32>(0.0);
+    // (the garage floor's mirror term: rgb the picture's sample to the power 0.7, a its weight - laid over at the end)
+    var floor_refl = vec4<f32>(0.0);
     if (((mat.mode == 0u || mat.mode == 1u) && (u32(round(in.uv2.y)) & 1048576u) != 0u) || interior_obj) {
         // (pass 7, work/map/pass7_notes.md: the program takes NO gLightAmbient while
         // ShaderGlobals.z >= 4 - 8 + (1 - m_ShadowFade) by day, 4 at night in the recordings -
@@ -3037,7 +3041,51 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 v1 = v1 * select(c2, (c2 - zf) / (1.0 - zf), gfloor && z23);
             }
             let no_spec = g.params.w > 77.5 && g.params.w < 78.5;
-            if (tile_in) {
+            // The garage floor's own program (VSCityGarageFloor + PSMultiLight 9b325c564d103bf0, work/lighting/gar/floor_prog.txt):
+            //   relief: N' = normalise(N + dx T + dy B), B = cross(T, N) x w, dx = Bumpiness x (a(u - 1/2 texel) - a(u + 1/2)),
+            //     dy the same along v - a the DIFFUSE map's alpha (four taps, instructions 17 - 33)
+            //   colour = lerp(diffuse, decal, decal alpha) (decal on the second coordinates)
+            //   out = colour x occ x (1.25 V' + the key light x n.l + the cell's four lamps x 3) + SpecularIntensity x colour x
+            //     lerp(1, colour, SpecularColorMixer) x (0.3125 V' + the lamps' highlights, exponent 2 SpecularExponent)
+            //     (V' = V x the collector term above; at z < 4 gLightAmbient joins the diffuse sum - the garage runs at 8.4)
+            //   then lerp(out, ReflectionSampler(screen uv + 0.2 N'.xz)^0.7, w), w = 0.5 a0 x lerp(ReflectionIntensityA, B,
+            //     decal alpha x a0) x sat(1 - N'.v), a0 the first vertex colour's alpha (instructions 93 - 178)
+            // The picture is the mirrored pass (floormirror.rs). MCLA_DEBUG_VIEW=718: the walls' form as before; 719: no mirror.
+            let gfl = (u32(round(in.uv2.y)) & 4194304u) != 0u && in.uv2.x < -0.5 && !(g.params.w > 717.5 && g.params.w < 718.5);
+            if (gfl) {
+                let fp = u32(round(-in.uv2.x - 1.0));
+                let fl_ra = f32(fp % 101u) * 0.01;
+                let fl_rb = f32((fp / 101u) % 101u) * 0.01;
+                let fl_bump = f32(fp / 10201u) * 0.25;
+                let fk = u32(round(in.uv2.y)) & 524287u;
+                let fl_e = f32(fk & 255u);
+                let fl_si = f32((fk >> 8u) & 127u) / 100.0;
+                let fl_mix = f32((fk >> 15u) & 15u) / 10.0;
+                let dsz = vec2<f32>(textureDimensions(t_diffuse));
+                let h_l = textureSampleGrad(t_diffuse, s_diffuse, in.uv0 - vec2<f32>(0.5 / dsz.x, 0.0), uv0_dx, uv0_dy).a;
+                let h_u = textureSampleGrad(t_diffuse, s_diffuse, in.uv0 - vec2<f32>(0.0, 0.5 / dsz.y), uv0_dx, uv0_dy).a;
+                let h_r = textureSampleGrad(t_diffuse, s_diffuse, in.uv0 + vec2<f32>(0.5 / dsz.x, 0.0), uv0_dx, uv0_dy).a;
+                let h_d = textureSampleGrad(t_diffuse, s_diffuse, in.uv0 + vec2<f32>(0.0, 0.5 / dsz.y), uv0_dx, uv0_dy).a;
+                // (the frame as the walls': T the way u grows, from the derivatives; w the stored sign, world::mark_binormal_any)
+                let fl_p2 = cross(tb_dp2, ng);
+                let fl_p1 = cross(ng, tb_dp1);
+                let fl_t0 = fl_p2 * tb_duv1.x + fl_p1 * tb_duv2.x;
+                let fl_t = fl_t0 * inverseSqrt(max(dot(fl_t0, fl_t0), 1e-12)) * select(-1.0, 1.0, dot(cross(tb_dp1, tb_dp2), ng) >= 0.0);
+                let fl_b = cross(fl_t, ng) * (1.0 - 2.0 * in.bflip);
+                let nf = normalize(ng + fl_bump * (h_l - h_r) * fl_t + fl_bump * (h_u - h_d) * fl_b);
+                n = nf;
+                let alb = mix(albedo.rgb, second.rgb, second.a);
+                base = alb;
+                let il = interior_lamps(in.wpos, nf, reflect(-v, nf), 2.0 * fl_e, 4);
+                light_in = (v1 * 1.25 + il.x + g.sun_color.rgb * g.sun_dir.w * max(dot(nf, g.sun_dir.xyz), 0.0)) * occ;
+                if (!no_spec) { int_spec = fl_si * alb * mix(vec3<f32>(1.0), alb, fl_mix) * (v1 * 0.3125 + il.y); }
+                if (g.collector.w > 0.5 && !(g.params.w > 718.5 && g.params.w < 719.5)) {
+                    let fsc = g.view_proj * vec4<f32>(in.wpos, 1.0);
+                    let fuv = vec2<f32>((fsc.x / fsc.w + 1.0) * 0.5, (1.0 - fsc.y / fsc.w) * 0.5) + nf.xz * 0.2;
+                    let fpic = textureSampleLevel(t_refl, s_env, fuv, 0.0).rgb;
+                    floor_refl = vec4<f32>(pow(abs(fpic), vec3<f32>(0.7)), 0.5 * in.color.a * mix(fl_ra, fl_rb, second.a * in.color.a) * clamp(1.0 - dot(nf, v), 0.0, 1.0));
+                }
+            } else if (tile_in) {
                 let il = interior_lamps(in.wpos, n, reflect(-v, n), select(0.0, 2.0 * max(wall_spec.x, 1.0), hs_k != 0u), 3);
                 light_in = v1 * 1.25 + il.x + dir_in;
                 if (hs_k != 0u && !no_spec) { int_spec = (il.y + v1 * 0.3125) * wall_spec.w; }
@@ -4701,6 +4749,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // program writes is stored above 31.875 / 16 = 1.992 a channel; the fog pass and the bloom read
     // that. The port's 16-bit float target kept a lit sign's 5 .. 16 and bloomed it into a halo
     // (the wall lamps of the shop fronts, the poster). Diagnostics 311: no ceiling, as before.
+    // (the garage floor: the mirrored pass's picture laid over last - see `floor_refl`)
+    lit = mix(lit, floor_refl.rgb, floor_refl.a);
     if (!(g.params.w > 310.5 && g.params.w < 311.5)) { lit = min(lit, vec3<f32>(1.9921875)); }
     // (754, water work: no fog at all - beside an override of the original's fog pass, alpha 0)
     let col = mix(lit, fog_rgb, select(clamp(fg * g.fog_color.a, 0.0, 1.0), 0.0, g.params.w > 753.5 && g.params.w < 754.5));

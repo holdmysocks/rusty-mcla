@@ -811,6 +811,10 @@ pub struct Gpu {
     /// also clears the strip's depth.
     pub mirror_globals: wgpu::Buffer,
     pub mirror_bg: wgpu::BindGroup,
+    /// The garage floor's mirrored pass (floormirror.rs): its globals (the main view's, the view mirrored about the floor)
+    /// and their bind group - the collector's map in the picture's slot, which cannot be read while it is drawn into.
+    pub floor_globals: wgpu::Buffer,
+    pub floor_bg: wgpu::BindGroup,
     pub pipeline_mirror_sky: ms::MsPipe,
     pub sampler: wgpu::Sampler,
     pub white: Arc<GpuTexture>,
@@ -1447,6 +1451,8 @@ impl Gpu {
         // view's textures bound - rearview.rs)
         let mirror_globals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("rear-view mirror globals"), contents: bytemuck::bytes_of(&Globals::default()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
         let mirror_bg = make_globals_bg(&mirror_globals, &env_cube, &env_soft_cube, &refl_view);
+        let floor_globals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("garage floor mirror globals"), contents: bytemuck::bytes_of(&Globals::default()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
+        let floor_bg = make_globals_bg(&floor_globals, &env_cube, &env_soft_cube, &fc_view);
         let tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tex layout"),
             entries: &[
@@ -2208,6 +2214,8 @@ impl Gpu {
             pipeline_refl_sky,
             mirror_globals,
             mirror_bg,
+            floor_globals,
+            floor_bg,
             pipeline_mirror_sky,
             sampler,
             white,
@@ -2946,7 +2954,8 @@ impl Gpu {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &self.refl_view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.refl_depth,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
+                // (kept: the garage floor's mirrored pass draws the room and the car over it - floormirror.rs)
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
                 stencil_ops: None,
             }),
             timestamp_writes: None,

@@ -103,6 +103,7 @@ mod hookicons;
 mod ground_sheet;
 mod fillmap;
 mod rearview;
+mod floormirror;
 mod titlecam;
 mod startwarp;
 
@@ -8739,6 +8740,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     stat_shadow += n;
                 }
                 early_cbs.push(cb);
+            }
+            // The garage floor's mirror (floormirror.rs): in the garage the reflection picture also holds the room
+            // and the car, mirrored about the plane. MCLA_DEBUG_VIEW=719: without (the floor's mirror term off too).
+            if refl_on && globals.car_amb[3] > 0.5 && (globals.params[3] - 719.0).abs() > 0.5 {
+                let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("garage floor mirror") });
+                let n = floormirror::draw(&mut e, &gpu, &world, &self.vehicles, &globals, plane);
+                if self.frame_no % 300 == 0 && std::env::var("MCLA_GARAGE_FLOOR_LOG").is_ok() {
+                    log::info!("garage floor mirror: plane {:.4}, {} draws", plane, n);
+                }
+                early_cbs.push(e.finish());
             }
         }
         passprof::mark("impostors+prepare");

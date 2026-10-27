@@ -382,6 +382,31 @@ pub const INTERIOR_MARK: f32 = 1048576.0;
 /// PSMultiLight) multiplies the baked light V by the car's cascade shadow, 2 x the collector, which the walls' does not.
 pub const GARAGE_FLOOR_MARK: f32 = 4194304.0;
 
+/// The garage floor's material terms, laid on its vertices for its program (city.wgsl, the garage floor): the floor
+/// mark, and below it SpecularExponent, SpecularIntensity in hundredths and SpecularColorMixer in tenths in the walls'
+/// layout (bits 0 - 18 of uv2.y); in uv2.x, negative, -(1 + ReflectionIntensityA + 101 ReflectionIntensityB + 10201
+/// Bumpiness), the first two in hundredths, Bumpiness in quarters up to 1.5 (above -77000: not the sea's mark).
+/// Recorded in the Hollywood garage (cap/gar_*.gpu.bin, all four floor batches): 8, 0.4, 0.7, 0.1, 0.1, 1.
+fn mark_garage_floor(vertices: &mut [Vertex], sh: &mcla_formats::rage::drawable::Shader) {
+    use mcla_formats::rage::drawable::ShaderParam;
+    let f = |h: u32, d: f32| {
+        sh.params.iter().find_map(|(ph, p)| match p {
+            ShaderParam::Vector(v) if *ph == h && !v.is_empty() => Some(v[0].x),
+            _ => None,
+        }).unwrap_or(d)
+    };
+    let spec = f(0x93d520e8, 8.0).round().clamp(1.0, 255.0) + (f(0xa95fc535, 0.4) * 100.0).round().clamp(0.0, 127.0) * 256.0 + (f(0xbaf643f4, 0.7) * 10.0).round().clamp(0.0, 10.0) * 32768.0;
+    let (ra, rb, bump) = (f(0x99dcb623, 0.1), f(0xf1f66655, 0.1), f(0xf6712b81, 1.0));
+    let packed = 1.0 + (ra * 100.0).round().clamp(0.0, 100.0) + 101.0 * (rb * 100.0).round().clamp(0.0, 100.0) + 10201.0 * (bump * 4.0).round().clamp(0.0, 6.0);
+    if std::env::var("MCLA_GARAGE_FLOOR_LOG").is_ok() {
+        log::info!("garage floor {}: SpecularExponent / Intensity / ColorMixer {:.3} {:.3} {:.3}, ReflectionIntensityA / B {:.3} {:.3}, Bumpiness {:.3}", sh.name, f(0x93d520e8, -1.0), f(0xa95fc535, -1.0), f(0xbaf643f4, -1.0), f(0x99dcb623, -1.0), f(0xf1f66655, -1.0), f(0xf6712b81, -1.0));
+    }
+    for v in vertices.iter_mut() {
+        v.uv2[0] = -packed;
+        v.uv2[1] += GARAGE_FLOOR_MARK + spec;
+    }
+}
+
 /// The classes of SpecularExponent a CityGrimeDecal batch can carry (see `mark_decal_spec`).
 pub const DECAL_SPEC_EXP: [f32; 8] = [8.0, 15.0, 25.0, 50.0, 100.0, 150.0, 175.0, 255.0];
 
@@ -476,7 +501,16 @@ fn mark_grime(vertices: &mut [Vertex], sh: &mcla_formats::rage::drawable::Shader
 /// stages take off again (city.wgsl `bflip`; fast_collector.wgsl and refl.wgsl normalise).
 /// Only batches with a height / specular map are touched.
 pub fn mark_binormal(vertices: &mut [Vertex], tangents: &[glam::Vec4], sh: &mcla_formats::rage::drawable::Shader) {
-    if tangents.len() != vertices.len() || !sh.textures().any(|(h, _)| h == ph::HEIGHT_SPEC) {
+    if !sh.textures().any(|(h, _)| h == ph::HEIGHT_SPEC) {
+        return;
+    }
+    mark_binormal_any(vertices, tangents);
+}
+
+/// `mark_binormal` for a batch whose program reads the tangent without a height / specular map (the garage floor's
+/// VSCityGarageFloor: cross(T, N) x w too).
+pub fn mark_binormal_any(vertices: &mut [Vertex], tangents: &[glam::Vec4]) {
+    if tangents.len() != vertices.len() {
         return;
     }
     for (v, t) in vertices.iter_mut().zip(tangents) {
@@ -863,13 +897,21 @@ pub fn decode_set(id: usize, path: &Path) -> Result<CpuSector> {
             // frames, work/lighting/cap/gar_*.bin: 174 + 54 + 24 draws - where the port lit them as outdoor night
             // walls, with the ambient and the lamps at 1.5. MCLA_SET_INTERIOR=0: as before.)
             mark_grime(&mut vertices, sh, mode, std::env::var("MCLA_SET_INTERIOR").map_or(true, |v| v != "0")); mark_window(&mut vertices, sh, mode);
-            if sname.contains("citygaragefloor") && matches!(mode, MatMode::Opaque | MatMode::AlphaTest) {
-                for v in vertices.iter_mut() {
-                    v.uv2[1] += GARAGE_FLOOR_MARK;
+            let gfloor = sname.contains("citygaragefloor") && matches!(mode, MatMode::Opaque | MatMode::AlphaTest);
+            let mut second = second;
+            if gfloor {
+                // (its program blends the DecalSampler over the diffuse by the decal's alpha, on the second
+                // texture coordinates - `mark_garage_floor`)
+                if let Some((_, n)) = sh.textures().find(|(h, _)| *h == ph::DECAL) {
+                    second = mcla_formats::hash::joaat(n);
                 }
+                mark_garage_floor(&mut vertices, sh);
             }
             mark_lod(&mut vertices, sh, mode, &mut third);
             mark_binormal(&mut vertices, &m.tangents, sh);
+            if gfloor {
+                mark_binormal_any(&mut vertices, &m.tangents);
+            }
             mark_water(&mut vertices, mode);
             mark_pond(&mut vertices, sh, mode);
             batches.push(CpuBatch { vertices, indices: m.indices.clone(), diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts: Vec::new() });
