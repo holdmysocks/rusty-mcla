@@ -53,3 +53,38 @@ fn member_table_matches_the_original() {
     }
     assert!(seqs > 300 && ops_n > 20000, "{seqs} {ops_n}");
 }
+
+/// F-43980 (slot by name, created when missing), F-59146 / F-66095 / F-11028 / F-16600 (set int / float / bool / string), F-94547 (get int
+/// with the value conversion): the host's accessors for the movie's globals. Both running-flag states of the context (tools/flash_global_reference.py).
+#[test]
+fn global_accessors_match_the_original() {
+    let (mut cases, mut gets) = (0, 0);
+    for line in include_str!("testdata/flash_global_ref.txt").lines() {
+        let (ops, res) = line.split_once(" ->").unwrap();
+        let mut p = Player::new(Arc::new(Movie { stage: [0.0, 1280.0, 0.0, 720.0], fps: 30, root: mcla_formats::rage::swf::Sprite { frames: Vec::new() }, chars: Vec::new(), exports: Vec::new() }));
+        let mut it = ops.split_whitespace().skip(1);
+        let mut got = Vec::new();
+        let hx = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        while let Some(op) = it.next() {
+            let name = it.next().unwrap();
+            match op {
+                "SI" => p.set_global(name, Value::Int(hx(it.next().unwrap()) as i32)),
+                "SF" => p.set_global(name, Value::Float(f32::from_bits(hx(it.next().unwrap())))),
+                "SB" => p.set_global(name, Value::Bool(hx(it.next().unwrap()) != 0)),
+                "SS" => p.set_global(name, Value::str(it.next().unwrap())),
+                _ => {
+                    gets += 1;
+                    got.push(match p.get_global(name) {
+                        Some(v) => format!("g1:{:x}", v.to_i32() as u32),
+                        None => "g0:0".to_string(),
+                    });
+                    continue;
+                }
+            }
+            got.push("s".to_string());
+        }
+        assert_eq!(got.join(" "), res.trim(), "{line}");
+        cases += 1;
+    }
+    assert!(cases == 500 && gets > 1000, "{cases} {gets}");
+}

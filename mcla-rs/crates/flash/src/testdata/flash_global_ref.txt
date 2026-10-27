@@ -1,0 +1,500 @@
+F0 SI zone_1 7 SI d_Speedvalue ff SS zone_1 1e3 SI ABC 80000000 SB d_Speedvalue 0 GI lang SI d_Speedvalue ffffffff SF title_text 7fc00000 -> s s s s s g0:0 s s
+F0 SB Speed 1 SF speed 407f5c29 GI lang SI ABC 7 SB title_text 0 SI lang ffffffff SS x 42 GI ABC SI speed 80000000 SI zone_1 1 SF rpm 4effffff SS rpm -17 GI speed SF x 40200000 GI lang GI x GI title_text SI zone_1 ffffffff -> s s g0:0 s s s s g1:7 s s s s g1:80000000 s g1:ffffffff g1:2 g1:0 s
+F0 GI rpm SI zone_1 1e240 GI lang GI d_Speedvalue GI Speed SI lang 1e240 SI online 0 SI lang 10000 -> g0:0 s g0:0 g0:0 g0:0 s s s
+F0 SB zone_1 1 SI ABC 0 GI lang GI zone_1 SF d_Speedvalue ce6e6b28 GI Speed SI lang 7 SF zone_1 bf800000 -> s s g0:0 g1:1 s g0:0 s s
+F0 GI zone_1 SI online 10000 SS x 007 SB online 1 GI zone_1 SI title_text 3081b7ed GI title_text SI x 7 -> g0:0 s s s g0:0 s g1:3081b7ed s
+F0 GI speed GI online GI d_Speedvalue GI rpm GI online SB d_Speedvalue 1 SI zone_1 1e240 SI d_Speedvalue ffffffff -> g0:0 g0:0 g0:0 g0:0 g0:0 s s s
+F0 GI x GI online SB zone_1 1 GI d_Speedvalue GI Speed SS Speed 0 SF zone_1 446b67c2 SF title_text cf32d05e GI zone_1 SB online 0 GI rpm SB zone_1 0 SF lang c3e26c0a SI zone_1 80000000 GI title_text GI x SS Speed x SI ABC 80000000 SF Speed 43e9ba44 SF ABC 4effffff -> g0:0 g0:0 s g0:0 g0:0 s s s g1:3ad s g0:0 s s s g1:80000000 g0:0 s s s s
+F0 SI online 0 SI zone_1 1e240 SS d_Speedvalue 3.75 GI rpm GI speed SI zone_1 1 SI x 10000 SS Speed -17 -> s s s g0:0 g0:0 s s s
+F0 GI rpm SI ABC 1 GI rpm SS rpm 0 GI ABC SF rpm c07f5c29 GI title_text SI title_text 0 GI lang SI zone_1 1 SB rpm 0 SF d_Speedvalue 3f000000 SS d_Speedvalue 1e3 GI title_text GI Speed GI rpm GI rpm SF lang 433297d9 SI zone_1 ffffffff GI rpm -> g0:0 s g0:0 s g1:1 s g0:0 s g0:0 s s s s g1:0 g0:0 g1:0 g1:0 s s g1:0
+F0 SF ABC 60ad78ec SI Speed 14fc766b GI lang GI lang SF speed c07f5c29 SI ABC 0 GI online SS zone_1 007 -> s s g0:0 g0:0 s s g0:0 s
+F0 SS rpm 0 SI d_Speedvalue ffffffff SI title_text 8d85c1 -> s s s
+F0 SI d_Speedvalue ffffffff SI online ff SS rpm 12abc -> s s s
+F0 GI speed SS speed 007 SI x 7 -> g0:0 s s
+F0 SI zone_1 755de2ef SF Speed c42a0f86 SI x 1 GI zone_1 SI rpm 7 GI rpm SI online 1e240 SI ABC 1e240 -> s s s g1:755de2ef s g1:7 s s
+F0 SF zone_1 c07f5c29 SF online ff800000 SI d_Speedvalue 0 -> s s s
+F0 SI zone_1 0 SI online ff SS speed 3.75 -> s s s
+F0 SI lang 7fffffff GI rpm SF ABC 0 -> s g0:0 s
+F0 SI d_Speedvalue 7fffffff SF speed cf32d05e SS d_Speedvalue 0x10 SI Speed 7 SF d_Speedvalue bf800000 SB speed 1 GI Speed SB lang 1 -> s s s s s s g1:1 s
+F0 SF online 3f000000 SS online 1 SI speed 29bc6c61 SF Speed c07f5c29 SB d_Speedvalue 1 SI ABC ff GI Speed GI Speed SB online 1 GI zone_1 SS lang -17 GI title_text GI Speed GI zone_1 SS Speed 3.75 GI x SS speed -2147483649 GI rpm -> s s s s s s g1:fffffffd g1:fffffffd s g0:0 s g0:0 g1:fffffffd g0:0 s g0:0 s g0:0
+F0 GI zone_1 SS title_text 0 GI Speed -> g0:0 s g0:0
+F0 GI d_Speedvalue SI Speed ff GI rpm -> g0:0 s g0:0
+F0 GI online SI zone_1 ffffffff SF zone_1 4e6e6b28 SF ABC c0200000 GI online GI speed SF Speed ce6e6b28 SB title_text 1 SF x c0200000 SF x 7fc00000 GI rpm GI d_Speedvalue SS title_text -17 SB ABC 0 SI title_text 7fffffff GI title_text SB speed 1 SI x 7 GI Speed SI online ff -> g0:0 s s s g0:0 g0:0 s s s s g0:0 g0:0 s s s g1:7fffffff s s g1:1 s
+F0 SI online 7 GI Speed SI lang 7 SB online 0 GI x SB online 1 SF d_Speedvalue 4effffff GI ABC GI d_Speedvalue GI ABC GI x SF title_text 7fc00000 SF ABC c471cad5 SI lang 0 SS Speed -2147483649 SF ABC 42f6e979 GI lang SI online 10000 SI zone_1 0 -> s g0:0 s s g0:0 s s g0:0 g1:7fffff80 g0:0 g0:0 s s s s s g1:0 s s
+F0 SB Speed 1 SS ABC abc GI title_text -> s s g0:0
+F0 SI online 10000 SI rpm 1 SF speed c07f5c29 SI title_text ff SB online 0 GI rpm SF rpm 0 SS ABC 3.75 -> s s s s s g1:1 s s
+F0 SB d_Speedvalue 0 SF online bf800000 SI lang 7 -> s s s
+F0 SB Speed 1 GI d_Speedvalue SI speed 1 SS lang 42 GI ABC SI Speed 0 SI x 80000000 -> s g0:0 s s g0:0 s s
+F0 SI speed 5b7ab3b SI d_Speedvalue 7fffffff GI rpm SB ABC 0 SF speed c07f5c29 SF title_text ff800000 SF rpm 40200000 GI speed -> s s g0:0 s s s s g1:fffffffd
+F0 SS lang -17 GI zone_1 SI online 80000000 SF Speed 4e6e6b28 SF title_text c0200000 GI speed SI d_Speedvalue 0 SS rpm -17 SF online cf32d05e SI speed 80000000 GI online GI x SF rpm 3f800000 SF ABC 40200000 SI x 7fffffff SF ABC bf800000 SI Speed 7 -> s g0:0 s s s g1:3b9aca00 s s s s g1:80000000 g0:0 s s s s s
+F0 GI rpm GI zone_1 SF d_Speedvalue 3f800000 GI Speed SI zone_1 ff SF x c0200000 GI ABC SS zone_1 -2147483649 -> g0:0 g0:0 s g0:0 s s g0:0 s
+F0 SF lang 40200000 SS x 1e3 GI rpm SB x 1 SB ABC 1 SB ABC 1 SB Speed 1 SI d_Speedvalue 0 -> s s g0:0 s s s s s
+F0 GI zone_1 GI lang SI d_Speedvalue 1 SB ABC 0 SI Speed 7 GI rpm SI online 0 GI speed -> g0:0 g0:0 s s s g0:0 s g1:7
+F0 SI d_Speedvalue 7 SS d_Speedvalue 0 SB rpm 1 -> s s s
+F0 SF lang c07f5c29 SI online 1 SS rpm 0 GI d_Speedvalue GI zone_1 GI online SF lang ff800000 GI lang -> s s s g0:0 g0:0 g1:1 s g1:80000000
+F0 GI x SB speed 1 GI ABC SI lang 0 GI zone_1 GI lang SI speed 10000 SF title_text 4effffff SF online c07f5c29 GI online SI ABC 80000000 GI Speed SI d_Speedvalue 10000 GI d_Speedvalue GI speed SF ABC c0200000 GI speed SI lang 80000000 SI rpm 5ae6577d GI speed -> g0:0 s g0:0 s g0:0 g1:0 s s s g1:fffffffd s g1:10000 s g1:10000 g1:10000 s g1:10000 s s g1:10000
+F0 SF speed 40200000 SI speed 10000 SF title_text c07f5c29 -> s s s
+F0 SF d_Speedvalue bf800000 SI ABC 518c4e9c SF d_Speedvalue 40200000 -> s s s
+F0 SI d_Speedvalue 1e240 SF x 407f5c29 GI x SS online 1e3 GI d_Speedvalue GI x SI d_Speedvalue 0 SI rpm ff SI zone_1 ffffffff SI speed 1 SI Speed ff GI lang SB rpm 0 SI zone_1 1e240 SF x c0200000 SS online -2147483649 GI d_Speedvalue SS speed abc GI d_Speedvalue -> s s g1:3 s g1:1e240 g1:3 s s s s s g0:0 s s s s g1:0 s g1:0
+F0 GI online GI zone_1 SI Speed 1 -> g0:0 g0:0 s
+F0 SI d_Speedvalue 7fffffff SS Speed  5 SI online 7 -> s s s
+F0 SI ABC 80000000 SB title_text 1 GI title_text SB ABC 1 SF ABC ff800000 GI d_Speedvalue GI title_text SI rpm 1 GI rpm SI ABC 7fffffff GI online SF online 3f800000 GI Speed GI ABC SI lang 80000000 SS lang x SF rpm 407f5c29 SF online 435e55f0 GI Speed GI x -> s s g1:1 s s g0:0 g1:1 s g1:1 s g0:0 s g0:0 g1:7fffffff s s s s g0:0 g0:0
+F0 SF x c0200000 GI d_Speedvalue GI online -> s g0:0 g0:0
+F0 SF x 0 GI zone_1 SS title_text _ SI Speed 1e240 SF ABC 0 SI ABC d647376 SF zone_1 cf32d05e GI x SI title_text 4a077671 SF title_text 3f000000 GI speed GI Speed GI d_Speedvalue SI title_text 1d498cf7 GI x SI online 80000000 GI online SI speed 1 -> s g0:0 s s s s s g1:0 s s g1:1e240 g1:1e240 g0:0 s g1:0 s g1:80000000 s
+F0 SI zone_1 37ee067d SI rpm ff SI Speed 10000 -> s s s
+F0 SI rpm 1 SF Speed ff800000 GI d_Speedvalue SS lang 007 GI title_text SB rpm 0 SB rpm 1 GI online -> s s g0:0 s g0:0 s s g0:0
+F0 SF zone_1 3f800000 SB d_Speedvalue 0 GI x SS zone_1 -2147483649 GI d_Speedvalue SS x -2147483649 SB zone_1 0 SI d_Speedvalue 7fffffff SI rpm 10000 GI zone_1 GI lang GI title_text SI x 7fffffff SB ABC 0 GI speed SF ABC 3f000000 SB d_Speedvalue 1 GI lang GI zone_1 GI rpm -> s s g0:0 s g1:0 s s s s g1:0 g0:0 g0:0 s s g0:0 s s g0:0 g1:0 g1:10000
+F0 GI Speed SS title_text _ SS lang 3.75 -> g0:0 s s
+F0 GI speed SB speed 0 GI online SF zone_1 4e6e6b28 SB title_text 1 SI speed 1 SS x -17 GI rpm -> g0:0 s g0:0 s s s s g0:0
+F0 SI lang 1 GI x GI title_text GI title_text GI speed SF rpm 4e6e6b28 GI rpm SF speed 407f5c29 -> s g0:0 g0:0 g0:0 g0:0 s g1:3b9aca00 s
+F0 SS x  5 SI online 0 SI lang ffffffff SI lang ffffffff SS zone_1 abc SB ABC 1 GI lang SF Speed 40200000 -> s s s s s s g1:ffffffff s
+F0 SS speed 12abc SF speed 4e6e6b28 GI rpm -> s s g0:0
+F0 SF speed 60ad78ec SI ABC 1 SI x ffffffff -> s s s
+F0 SF Speed 60ad78ec SI Speed 6a9ea5c8 GI x GI lang SS ABC 007 GI x GI Speed GI rpm -> s s g0:0 g0:0 s g0:0 g1:6a9ea5c8 g0:0
+F0 SF d_Speedvalue 407f5c29 GI title_text GI zone_1 -> s g0:0 g0:0
+F0 SB d_Speedvalue 1 GI online GI x -> s g0:0 g0:0
+F0 SI title_text ff SF d_Speedvalue 40200000 SI title_text 29cf2c82 -> s s s
+F0 GI title_text SI rpm ffffffff SI d_Speedvalue 0 SI lang 80000000 GI online SS d_Speedvalue 0x10 SI zone_1 6ba1827e GI online -> g0:0 s s s g0:0 s s g0:0
+F0 SF Speed bf800000 GI Speed SI title_text 7fffffff -> s g1:ffffffff s
+F0 SS d_Speedvalue 1 GI title_text SF d_Speedvalue 60ad78ec -> s g0:0 s
+F0 SB online 1 SF online 4e6e6b28 SB lang 0 -> s s s
+F0 GI x SI ABC 1b9c8e6f SB ABC 1 SS x 3.75 SF online ce6e6b28 SF Speed 60ad78ec SI title_text 1 SI zone_1 80000000 SB title_text 0 SS speed 2147483648 GI ABC SI title_text 0 SB lang 0 SF title_text 4effffff GI title_text SI Speed ffffffff SS d_Speedvalue -2147483649 SI speed 1e240 SI lang 0 -> g0:0 s s s s s s s s s g1:1 s s s g1:7fffff80 s s s s
+F0 SF lang 7fc00000 GI lang GI zone_1 SF d_Speedvalue 42f6e979 SS Speed -2147483649 SF Speed 42f6e979 GI Speed SI rpm 7fffffff -> s g1:80000000 g0:0 s s s g1:7b s
+F0 SI lang 80000000 SF x 60ad78ec SS d_Speedvalue 3.75 GI Speed GI title_text SB rpm 1 GI rpm SS x 1 -> s s s g0:0 g0:0 s g1:1 s
+F0 GI title_text SI speed 89ee612 SI speed ff -> g0:0 s s
+F0 GI lang SS Speed 42 GI x SB zone_1 0 SF speed c469f419 SF Speed c07f5c29 GI lang GI online SS Speed 1e3 SI speed ffffffff GI lang SB speed 0 SI x 7fffffff GI online GI Speed SF x 4f32d05e SI lang 7 -> g0:0 s g0:0 s s s g0:0 g0:0 s s g0:0 s s g0:0 g1:0 s s
+F0 GI zone_1 GI speed GI title_text GI ABC GI ABC SS title_text 007 SI speed ff GI rpm SI Speed 7fffffff GI online SI ABC 80000000 GI ABC SS rpm 12abc GI online SF speed c0200000 SF ABC 3f000000 SF rpm 7fc00000 SF d_Speedvalue 3f000000 SI online 7 -> g0:0 g0:0 g0:0 g0:0 g0:0 s s g0:0 s g0:0 s g1:80000000 s g0:0 s s s s s
+F0 GI zone_1 GI x SI zone_1 1e240 SI online 0 GI Speed SS speed 0 GI lang SF d_Speedvalue 407f5c29 SB rpm 0 SF x 4f32d05e SB ABC 0 GI rpm GI rpm SB online 1 SS Speed -2147483649 GI online SS speed 1e3 SF d_Speedvalue bf800000 GI x -> g0:0 g0:0 s s g0:0 s g0:0 s s s s g1:0 g1:0 s s g1:1 s s g1:7fffffff
+F0 SI x 1e240 GI x GI Speed SS d_Speedvalue abc SI x ffffffff SF lang 7f800000 SI lang 7fffffff SB d_Speedvalue 1 SF Speed 40200000 SI Speed 55baa70a SF rpm 4f32d05e SF speed c07f5c29 SI d_Speedvalue 80000000 GI title_text SI zone_1 80000000 SI title_text ff SI Speed 7 GI x GI title_text GI title_text -> s g1:1e240 g0:0 s s s s s s s s s s g0:0 s s s g1:ffffffff g1:ff g1:ff
+F0 SI lang 7fffffff SI zone_1 10000 GI speed SI x 10000 SI speed 10000 GI title_text SI zone_1 7fffffff SI x 80000000 SS rpm abc SB lang 0 SI rpm 54c3ba0e GI lang SB d_Speedvalue 1 SF Speed 4e6e6b28 GI rpm GI online SB online 1 GI title_text SI online 0 GI rpm -> s s g0:0 s s g0:0 s s s s s g1:0 s s g1:54c3ba0e g0:0 s g0:0 s g1:54c3ba0e
+F0 GI speed SI x 0 SI x 1777faae GI online SI ABC 10000 GI lang GI rpm SF d_Speedvalue c423dd80 SF Speed 0 GI d_Speedvalue GI speed GI ABC SF Speed c07f5c29 SB Speed 0 GI lang SB speed 1 GI Speed SI x 80000000 GI d_Speedvalue GI d_Speedvalue -> g0:0 s s g0:0 s g0:0 g0:0 s s g1:fffffd71 g1:0 g1:10000 s s g0:0 s g1:1 s g1:fffffd71 g1:fffffd71
+F0 SS rpm 0 SS online 42 GI x -> s s g0:0
+F0 SS x 007 GI speed SS Speed abc SI ABC 7 SB lang 0 SI Speed 10000 SF Speed 7fc00000 GI lang GI lang SS title_text 007 SI speed 7 SI lang 7764514e SI ABC 7fffffff SF x ce6e6b28 GI x GI zone_1 SF ABC 442f8c9b GI d_Speedvalue SF d_Speedvalue 60ad78ec -> s g0:0 s s s s s g1:0 g1:0 s s s s s g1:c4653600 g0:0 s g0:0 s
+F0 SF x 7f800000 GI speed SI x 7 -> s g0:0 s
+F0 SS x 3.75 GI lang GI zone_1 GI online GI lang GI d_Speedvalue SF ABC 7fc00000 SB rpm 0 SS rpm 3.75 GI Speed GI zone_1 GI zone_1 GI ABC SS ABC x GI Speed SF rpm 40200000 GI lang SI lang 7 SB rpm 1 SB lang 0 -> s g0:0 g0:0 g0:0 g0:0 g0:0 s s s g0:0 g0:0 g0:0 g1:80000000 s g0:0 s g0:0 s s s
+F0 SI Speed 7fffffff SF lang 4effffff SI d_Speedvalue 7 SF speed 4256c9ae SI lang 80000000 SS rpm 1 SB zone_1 0 SB Speed 0 SS x 3.75 GI ABC GI online SS ABC  5 GI title_text SF zone_1 3f000000 SB rpm 0 SS d_Speedvalue -17 SF lang c0200000 SI online 1e240 SB x 1 -> s s s s s s s s s g0:0 g0:0 s g0:0 s s s s s s
+F0 SI online 1 SF rpm 407f5c29 SB x 1 -> s s s
+F0 SS speed x SI rpm 7 SF rpm 4effffff SB speed 1 SB lang 0 GI x SS rpm  5 SS online 0x10 GI Speed GI x GI Speed SB d_Speedvalue 1 GI ABC GI title_text SB speed 0 SS speed 0 SB Speed 0 GI zone_1 -> s s s s s g0:0 s s g1:1 g0:0 g1:1 s g0:0 g0:0 s s s g0:0
+F0 SI Speed 1 SS x 2147483648 SF ABC ce6e6b28 SF lang 60ad78ec SF x 3f800000 SF ABC bf800000 GI x GI ABC -> s s s s s s g1:1 g1:ffffffff
+F0 SS speed 1e3 SI title_text 7 SS zone_1 2147483648 -> s s s
+F0 GI lang SB lang 0 SI speed 10000 GI Speed SF title_text 42f6e979 SF online 407f5c29 GI x GI speed SI online ffffffff GI rpm SB speed 0 SF online 3f000000 GI d_Speedvalue GI Speed SF ABC 4f32d05e SF d_Speedvalue 7fc00000 GI lang GI online SI zone_1 ffffffff SS zone_1 0x10 -> g0:0 s s g1:10000 s s g0:0 g1:10000 s g0:0 s s g0:0 g1:0 s s g1:0 g1:0 s s
+F0 GI speed GI d_Speedvalue SI Speed ff GI d_Speedvalue SI speed 80000000 GI online SI zone_1 ffffffff SS title_text 0 GI x SI Speed 2ee4cd06 GI speed GI speed SI zone_1 0 GI Speed GI lang SI title_text 80000000 GI x SI zone_1 7 SI x 0 GI speed -> g0:0 g0:0 s g0:0 s g0:0 s s g0:0 s g1:2ee4cd06 g1:2ee4cd06 s g1:2ee4cd06 g0:0 s g0:0 s s g1:2ee4cd06
+F0 GI title_text SI title_text ff SF ABC 4f32d05e -> g0:0 s s
+F0 SF d_Speedvalue 3f800000 SB d_Speedvalue 1 GI speed GI Speed SI title_text 80000000 GI title_text SF Speed 0 GI rpm SS ABC x SI title_text 7 SI x 56b6eef SI online 0 GI online GI zone_1 GI lang GI zone_1 SI x 7 GI Speed GI x SI x 80000000 -> s s g0:0 g0:0 s g1:80000000 s g0:0 s s s s g1:0 g0:0 g0:0 g0:0 s g1:0 g1:7 s
+F0 SI d_Speedvalue 1e240 SI title_text 7fffffff SS x 0 -> s s s
+F0 GI title_text GI online GI Speed -> g0:0 g0:0 g0:0
+F0 SI Speed 7fffffff SB ABC 0 SI ABC 10000 SS Speed _ GI online SI zone_1 10000 GI ABC SF speed 7fc00000 SF x ce6e6b28 SI online 0 SI ABC 717988fc SF title_text 42f6e979 SI zone_1 0 GI ABC SI zone_1 10000 GI online GI x GI zone_1 GI speed GI online -> s s s s g0:0 s g1:10000 s s s s s s g1:717988fc s g1:0 g1:c4653600 g1:10000 g1:80000000 g1:0
+F0 GI Speed GI lang SI rpm 1e240 -> g0:0 g0:0 s
+F0 SF ABC 4e6e6b28 SB ABC 1 GI ABC GI d_Speedvalue GI ABC GI title_text GI x GI lang GI speed SB d_Speedvalue 0 GI speed SI ABC 80000000 GI d_Speedvalue SF zone_1 3f000000 SI online ffffffff SF rpm cf32d05e SS zone_1 -2147483649 SF online 7fc00000 GI lang GI speed -> s s g1:1 g0:0 g1:1 g0:0 g0:0 g0:0 g0:0 s g0:0 s g1:0 s s s s s g0:0 g0:0
+F0 GI x GI zone_1 GI rpm GI Speed SF zone_1 cf32d05e SB title_text 1 GI zone_1 SS online 3.75 -> g0:0 g0:0 g0:0 g0:0 s s g1:80000000 s
+F0 SI lang 7 GI d_Speedvalue SF title_text ff800000 -> s g0:0 s
+F0 SB zone_1 1 SS rpm x SI x 0 GI title_text SI zone_1 1e240 GI Speed GI d_Speedvalue GI ABC -> s s s g0:0 s g0:0 g0:0 g0:0
+F0 GI online SS zone_1  5 GI speed SS lang 007 SI title_text 80000000 SI zone_1 10000 SF zone_1 7fc00000 GI Speed GI Speed GI zone_1 SS rpm 12abc GI online GI Speed SI ABC ff GI zone_1 GI zone_1 SS x _ GI zone_1 -> g0:0 s g0:0 s s s s g0:0 g0:0 g1:80000000 s g0:0 g0:0 s g1:80000000 g1:80000000 s g1:80000000
+F0 SI Speed 1e240 GI title_text SI x 250405d4 SB speed 1 GI speed GI lang SF speed c422bd02 SS d_Speedvalue 0x10 GI x SS title_text -17 SI rpm 1 GI lang SI title_text 1 GI Speed SS rpm 3.75 GI lang SS rpm -2147483649 SF title_text 4e6e6b28 GI speed -> s g0:0 s s g1:1 g0:0 s s g1:250405d4 s s g0:0 s g1:fffffd76 s g0:0 s s g1:fffffd76
+F0 SB rpm 1 SF speed 3f000000 GI online SI online 0 GI ABC GI zone_1 GI speed SI title_text ff SI lang 10000 SF Speed 7fc00000 SF ABC c0200000 GI title_text SB x 0 SS ABC 2147483648 SS lang 007 SS rpm 12abc SS zone_1 1e3 SF lang 407f5c29 GI Speed SF title_text 3f800000 -> s s g0:0 s g0:0 g0:0 g1:0 s s s s g1:ff s s s s s s g1:80000000 s
+F0 GI zone_1 SS rpm abc SI rpm 7fffffff -> g0:0 s s
+F0 SI x 10000 GI zone_1 SS x abc SB lang 0 SI x 0 GI speed SB x 1 SF title_text c07f5c29 SI d_Speedvalue 1e240 SB lang 1 SF d_Speedvalue 4e6e6b28 SB lang 0 GI ABC SI zone_1 1 GI rpm GI zone_1 SF speed ce6e6b28 SI x 1e240 GI zone_1 SB d_Speedvalue 0 -> s g0:0 s s s g0:0 s s s s s s g0:0 s g0:0 g1:1 s s g1:1 s
+F0 GI d_Speedvalue SF zone_1 60ad78ec GI x -> g0:0 s g0:0
+F0 SB online 1 SB speed 1 GI speed GI ABC SI title_text 10000 GI title_text SI speed 7 GI d_Speedvalue SF title_text ce6e6b28 GI d_Speedvalue SI Speed ff SS title_text 3.75 SB Speed 0 SI Speed 0 SF online 3f000000 SI online 80000000 SI Speed ff SF d_Speedvalue 7fc00000 -> s s g1:1 g0:0 s g1:10000 s g0:0 s g0:0 s s s s s s s s
+F0 SF lang 3f800000 SB x 1 SF lang 4e6e6b28 -> s s s
+F0 GI rpm SF title_text 4f32d05e GI x -> g0:0 s g0:0
+F0 GI x GI rpm GI x -> g0:0 g0:0 g0:0
+F0 GI ABC SI ABC 7 SF Speed 43d40d31 SF x ff800000 GI rpm SI zone_1 7 SI title_text 0 GI title_text SB d_Speedvalue 0 SF d_Speedvalue 42f6e979 SS Speed  5 SF d_Speedvalue c07f5c29 GI rpm SI lang ff GI online SB title_text 1 GI zone_1 SI title_text ff SS Speed 0 SI d_Speedvalue 0 -> g0:0 s s s g0:0 s s g1:0 s s s s g0:0 s g0:0 s g1:7 s s s
+F0 SF ABC 4f32d05e SF online 4f32d05e SI Speed ffffffff SF online 431c5ea4 SI x ff GI ABC SF lang ff800000 GI d_Speedvalue -> s s s s s g1:7fffffff s g0:0
+F0 SF zone_1 4e6e6b28 SF Speed 3f800000 GI x SB title_text 1 SF online c21807ff SI d_Speedvalue 0 SB ABC 0 SF ABC 4f32d05e GI Speed SI zone_1 80000000 GI rpm GI ABC GI x SI Speed 10000 SS x _ SB x 1 GI d_Speedvalue GI x SB Speed 0 SF Speed 7fc00000 -> s s g0:0 s s s s s g1:1 s g0:0 g1:7fffffff g0:0 s s s g1:0 g1:1 s s
+F0 GI x SB rpm 1 SI online ff SI lang 7fffffff GI d_Speedvalue SS title_text 0 SF x 3f000000 GI ABC GI d_Speedvalue GI online GI online GI rpm SF rpm 0 GI rpm GI ABC GI zone_1 GI online SS speed 1 SI title_text 1e240 SI Speed 5db9e1ca -> g0:0 s s s g0:0 s s g0:0 g0:0 g1:ff g1:ff g1:1 s g1:0 g0:0 g0:0 g1:ff s s s
+F0 SS d_Speedvalue -2147483649 SI rpm 0 SF ABC c0200000 GI zone_1 SF d_Speedvalue 407f5c29 GI speed SI lang 10000 GI ABC GI x SF lang 4f32d05e GI Speed SI title_text 80000000 SB x 0 GI x GI ABC SS rpm 1e3 SI zone_1 0 SS d_Speedvalue _ SF zone_1 bf800000 SS x 2147483648 -> s s s g0:0 s g0:0 s g1:fffffffe g0:0 s g0:0 s s g1:0 g1:fffffffe s s s s s
+F0 GI rpm SI speed 7fffffff GI x GI rpm SI title_text ff GI d_Speedvalue GI title_text SB ABC 1 -> g0:0 s g0:0 g0:0 s g0:0 g1:ff s
+F0 SS online 007 GI rpm GI zone_1 SI speed 7fffffff SI lang 7 SI online 5230d52a SB title_text 1 SF Speed 4f32d05e SB zone_1 0 SI d_Speedvalue 1e240 SI speed 1 SB online 0 SI d_Speedvalue 1 SI x 1 SS speed 1 SB d_Speedvalue 1 GI lang SI lang 1e240 SI title_text 7fffffff GI x -> s g0:0 g0:0 s s s s s s s s s s s s s g1:7 s s g1:1
+F0 GI d_Speedvalue SI rpm 10000 SS ABC _ -> g0:0 s s
+F0 SF x 3f800000 GI zone_1 SI online ff -> s g0:0 s
+F0 GI speed SF rpm c3451226 GI Speed SI ABC 44377d8b SF online bf800000 GI title_text GI x SB online 0 -> g0:0 s g0:0 s s g0:0 g0:0 s
+F0 SI Speed ffffffff GI title_text SI Speed 68f86bf2 GI rpm GI zone_1 GI x SI d_Speedvalue ff GI speed -> s g0:0 s g0:0 g0:0 g0:0 s g1:68f86bf2
+F0 SF rpm 4effffff SS lang 3.75 SI x 1 -> s s s
+F0 SI online 0 SF zone_1 cf32d05e GI ABC SF d_Speedvalue 40200000 SI rpm ffffffff GI x SI title_text 1 SI rpm 0 -> s s g0:0 s s g0:0 s s
+F0 GI rpm SI rpm 80000000 SF rpm c07f5c29 -> g0:0 s s
+F0 GI x SS title_text  5 GI online SS lang -17 SF d_Speedvalue bf800000 SS d_Speedvalue 3.75 GI online SF online 4effffff GI zone_1 GI x GI rpm GI x GI zone_1 SF d_Speedvalue 3f800000 GI d_Speedvalue GI online SB Speed 0 GI x GI x -> g0:0 s g0:0 s s s g0:0 s g0:0 g0:0 g0:0 g0:0 g0:0 s g1:1 g1:7fffff80 s g0:0 g0:0
+F0 GI ABC SI online 7fffffff GI d_Speedvalue -> g0:0 s g0:0
+F0 SS x 007 GI online SF lang 40200000 GI online SB ABC 0 SF online 3f000000 SF Speed 7f800000 SB speed 0 GI rpm SI d_Speedvalue 6ccc5b7e GI lang SI rpm 7 GI speed SI speed 1 SI lang ffffffff SF online 4f32d05e GI ABC GI Speed GI Speed GI ABC -> s g0:0 s g0:0 s s s s g0:0 s g1:2 s g1:0 s s s g1:0 g1:1 g1:1 g1:0
+F0 GI lang SF lang 407f5c29 GI speed SS x 3.75 SB ABC 1 SB lang 1 GI d_Speedvalue SI zone_1 80000000 SF zone_1 c400c249 SB online 0 SI speed 1 SI online 63146fb4 SS Speed -17 SI rpm 1 GI zone_1 SF Speed 42f6e979 GI lang SI Speed 10000 -> g0:0 s g0:0 s s s g0:0 s s s s s s s g1:fffffdfd s g1:1 s
+F0 SI rpm ff SB x 0 GI x -> s s g1:0
+F0 SB rpm 1 GI d_Speedvalue SF rpm 4e6e6b28 SI lang 7fffffff GI zone_1 GI Speed GI title_text SF online c07f5c29 GI title_text SI d_Speedvalue ffffffff SB Speed 1 SI ABC ffffffff SI d_Speedvalue ffffffff SF title_text 40200000 SS online -2147483649 SI ABC 246b1cb2 SF d_Speedvalue 42f6e979 SI zone_1 1 SF zone_1 4effffff SI rpm 306cc380 -> s g0:0 s s g0:0 g0:0 g0:0 s g0:0 s s s s s s s s s s s
+F0 SF Speed 4f32d05e SF online c0200000 SB lang 0 SI x ff SS d_Speedvalue -2147483649 SS online 42 SI speed 7 GI Speed SB ABC 1 SB speed 1 SF title_text 4e6e6b28 SI x 7 SI rpm 2a8fbde6 SI x ffffffff SF ABC c0200000 GI Speed GI Speed SI lang 10000 -> s s s s s s s g1:7 s s s s s s s g1:1 g1:1 s
+F0 SF Speed c0200000 SI speed 7fffffff SF d_Speedvalue 4f32d05e -> s s s
+F0 SF Speed 407f5c29 GI rpm SF zone_1 407f5c29 SF rpm 40200000 SF ABC 42f6e979 GI lang GI ABC GI Speed -> s g0:0 s s s g0:0 g1:7b g1:3
+F0 SS ABC 3.75 SS ABC x SF rpm 4effffff GI zone_1 SB speed 1 GI zone_1 GI speed SI online ff SI online 10000 SI speed 80000000 SS d_Speedvalue 0x10 SI ABC ff SI title_text ffffffff GI ABC SB zone_1 1 SS rpm 2147483648 SI rpm ff SI title_text 7 GI online -> s s s g0:0 s g0:0 g1:1 s s s s s s g1:ff s s s s g1:10000
+F0 SS x  5 GI online SI online 80000000 SS speed  5 GI lang GI title_text GI d_Speedvalue SB x 0 SB d_Speedvalue 0 SF lang 60ad78ec GI rpm SI Speed ff SF Speed c0200000 SI Speed 7fffffff SI ABC 1 GI x SF rpm 40200000 SS rpm 1e3 SS lang 12abc GI online -> s g0:0 s s g0:0 g0:0 g0:0 s s s g0:0 s s s s g1:0 s s s g1:80000000
+F0 GI zone_1 GI online SI online 2cec1160 GI lang SI ABC 7 GI online SB Speed 1 GI speed SF lang 3f000000 GI ABC SI d_Speedvalue 776f3ecd GI online GI lang GI d_Speedvalue SF x 4effffff SS zone_1 12abc SS online 1 SI online ffffffff SI online ffffffff -> g0:0 g0:0 s g0:0 s g1:2cec1160 s g1:1 s g1:7 s g1:2cec1160 g1:0 g1:776f3ecd s s s s s
+F0 SF zone_1 407f5c29 SI zone_1 1e240 GI x SI Speed ff SS lang 007 SS x 007 GI speed SF rpm c07f5c29 -> s s g0:0 s s s g1:ff s
+F0 SI lang 0 SF Speed cf32d05e GI lang SI lang 80000000 GI rpm GI speed GI lang SI Speed 7fffffff GI lang SI title_text ffffffff SF Speed 4e6e6b28 SI lang 80000000 GI Speed GI ABC GI lang GI x GI title_text GI speed SI online 1e240 SI speed 7fffffff -> s s g1:0 s g0:0 g1:80000000 g1:80000000 s g1:80000000 s s s g1:3b9aca00 g0:0 g1:80000000 g0:0 g1:ffffffff g1:3b9aca00 s s
+F0 SI rpm 7 SI title_text 5e9b245f GI online GI online SI rpm ff SI Speed 80000000 GI rpm SI d_Speedvalue 1e240 -> s s g0:0 g0:0 s s g1:ff s
+F0 GI Speed SF Speed 7f800000 SI online 1e240 -> g0:0 s s
+F0 SI zone_1 1 SI title_text ffffffff SI rpm ff GI Speed GI lang SI ABC 1e240 GI Speed SF d_Speedvalue 3f800000 -> s s s g0:0 g0:0 s g0:0 s
+F0 SI zone_1 1 SI title_text 7 SF ABC 4e6e6b28 -> s s s
+F0 GI d_Speedvalue SI d_Speedvalue ffffffff SI title_text 1e240 GI Speed SF speed 42f6e979 SI online 1e240 GI Speed SS ABC abc -> g0:0 s s g0:0 s s g1:7b s
+F0 SI online 55dae61a SS title_text 0 GI ABC -> s s g0:0
+F0 GI title_text SB title_text 1 GI lang SF zone_1 ff800000 SF online 407f5c29 GI lang GI ABC GI rpm GI speed GI online SI d_Speedvalue 1e240 SI Speed 1e240 SF x 444b1365 SF ABC c2df9641 SS d_Speedvalue 3.75 SF lang ce6e6b28 GI ABC SB rpm 1 SI rpm 7fffffff SF d_Speedvalue 60ad78ec -> g0:0 s g0:0 s s g0:0 g0:0 g0:0 g0:0 g1:3 s s s s s s g1:ffffff91 s s s
+F0 SI x 1 SI speed 7fffffff SF Speed ce6e6b28 SF d_Speedvalue c07f5c29 SS Speed 3.75 SS Speed _ SF Speed 42f6e979 SB ABC 1 -> s s s s s s s s
+F0 GI d_Speedvalue SI title_text 5c70ad91 SI ABC 5ca120f7 -> g0:0 s s
+F0 SF lang c07f5c29 GI title_text GI speed SB d_Speedvalue 0 SF x 407f5c29 SB ABC 0 SB lang 0 SS lang 007 -> s g0:0 g0:0 s s s s s
+F0 GI ABC SI online 7fffffff GI d_Speedvalue GI lang SI zone_1 10000 SI online ffffffff SF x 7fc00000 SI x 0 GI Speed GI d_Speedvalue SS lang 3.75 SS ABC 2147483648 SF d_Speedvalue 3f000000 SF x 7f800000 SS Speed 007 SF Speed bf800000 GI zone_1 SI lang ffffffff SB lang 1 SS d_Speedvalue -2147483649 -> g0:0 s g0:0 g0:0 s s s s g0:0 g0:0 s s s s s s g1:10000 s s s
+F0 GI speed SF online 407f5c29 GI Speed GI x SI rpm 74c692d8 GI d_Speedvalue SI online 10000 SI speed 0 SF lang 3f000000 SF online 4effffff GI speed GI lang GI ABC SI speed ff GI rpm SB lang 1 SF lang ff800000 SS online -2147483649 SB ABC 0 GI zone_1 -> g0:0 s g0:0 g0:0 s g0:0 s s s s g1:0 g1:0 g0:0 s g1:74c692d8 s s s s g0:0
+F0 SI lang 1 SB title_text 0 SF rpm c07f5c29 GI Speed SB rpm 1 SF lang 4e6e6b28 SB online 1 GI Speed -> s s s g0:0 s s s g0:0
+F0 SF d_Speedvalue bf800000 GI d_Speedvalue SF online 3f000000 SI title_text ff SI speed 1e240 SB lang 1 SI online 7 GI ABC -> s g1:ffffffff s s s s s g0:0
+F0 SI x 377a0500 SB zone_1 0 SF rpm 4effffff SI title_text 10000 SF d_Speedvalue 3f800000 SF zone_1 4e6e6b28 GI online SI speed 1e240 -> s s s s s s g0:0 s
+F0 GI lang SB lang 0 GI rpm -> g0:0 s g0:0
+F0 GI x SF title_text 7f800000 GI speed SS lang 1 GI d_Speedvalue GI rpm SB rpm 0 GI title_text -> g0:0 s g0:0 s g0:0 g0:0 s g1:7fffffff
+F0 SB lang 1 GI rpm GI zone_1 -> s g0:0 g0:0
+F0 GI rpm SI title_text 10000 GI x -> g0:0 s g0:0
+F0 GI Speed SI speed ffffffff GI online -> g0:0 s g0:0
+F0 SF Speed 407f5c29 SB speed 1 SI Speed 1 -> s s s
+F0 SI d_Speedvalue 7fffffff GI d_Speedvalue GI rpm SI speed ff SB ABC 1 SS x 3.75 GI ABC SI online 1e240 SF online ff800000 SF Speed ce6e6b28 GI d_Speedvalue SI lang ffffffff SI rpm 1e240 SI rpm 80000000 GI lang SF rpm 4e6e6b28 GI speed SF title_text 3f800000 SF lang bf800000 -> s g1:7fffffff g0:0 s s s g1:1 s s s g1:7fffffff s s s g1:ffffffff s g1:c4653600 s s
+F0 GI speed SS Speed abc SI rpm 7 GI online SB d_Speedvalue 1 GI rpm SS ABC 1 SI Speed 5f8e440b -> g0:0 s s g0:0 s g1:7 s s
+F0 SS x abc SF Speed 7f800000 GI lang -> s s g0:0
+F0 GI rpm SF Speed 4e6e6b28 GI rpm -> g0:0 s g0:0
+F0 GI d_Speedvalue SI title_text 10000 SF lang c0200000 SI zone_1 2b249d1e SB x 0 GI zone_1 GI lang SI x 1e240 -> g0:0 s s s s g1:2b249d1e g1:fffffffe s
+F0 SI rpm 1e240 SI x 1e240 GI zone_1 SS speed 3.75 SI zone_1 80000000 SS d_Speedvalue  5 GI online SI online 80000000 GI ABC SB d_Speedvalue 0 SI online 0 SI online 1e240 SI online ffffffff SF speed 3f000000 GI online GI ABC GI title_text SI speed 69675b6c GI zone_1 -> s s g0:0 s s s g0:0 s g0:0 s s s s s g1:ffffffff g0:0 g0:0 s g1:80000000
+F0 GI zone_1 GI title_text SF Speed 3f000000 -> g0:0 g0:0 s
+F0 SF speed c0200000 SI lang 1e240 SI title_text e32365f GI ABC SF speed 42f6e979 GI title_text GI d_Speedvalue SI x 0 SI rpm 7 SS online  5 SF title_text 3f000000 GI Speed SS title_text 007 SF d_Speedvalue ff800000 GI rpm GI x SS rpm 42 -> s s s g0:0 s g1:e32365f g0:0 s s s s g1:7b s s g1:7 g1:0 s
+F0 SI speed ffffffff SB rpm 1 SI zone_1 7fffffff SI rpm 1 GI x SF speed 7fc00000 SF online 60ad78ec GI d_Speedvalue -> s s s s g0:0 s s g0:0
+F0 GI Speed GI lang SI Speed 7fffffff -> g0:0 g0:0 s
+F0 GI online SI x 1 SB speed 1 -> g0:0 s s
+F0 SF online ce6e6b28 SS d_Speedvalue 3.75 SI d_Speedvalue 1 SB online 0 SI d_Speedvalue 6cb8cc11 SF ABC ce6e6b28 SF speed c07f5c29 GI zone_1 GI speed SF lang 4f32d05e GI d_Speedvalue GI rpm SI zone_1 10000 GI title_text GI x GI lang GI lang SI zone_1 10000 GI lang GI lang -> s s s s s s s g0:0 g1:fffffffd s g1:6cb8cc11 g0:0 s g0:0 g0:0 g1:7fffffff g1:7fffffff s g1:7fffffff g1:7fffffff
+F0 GI ABC SF ABC c07f5c29 SB d_Speedvalue 0 GI speed SS zone_1 2147483648 GI ABC SF title_text c07f5c29 GI lang SB speed 0 GI online SS title_text x SI d_Speedvalue 7fffffff SS speed 3.75 GI rpm SS Speed 0 SS speed 2147483648 SI zone_1 80000000 SF x 0 -> g0:0 s s g0:0 s g1:fffffffd s g0:0 s g0:0 s s s g0:0 s s s s
+F0 SI Speed 80000000 SB lang 1 SB d_Speedvalue 0 GI lang GI d_Speedvalue SF rpm cf32d05e GI speed SS online 12abc -> s s s g1:1 g1:0 s g1:80000000 s
+F0 SI Speed 0 GI lang SI rpm 80000000 SI rpm 7fffffff SF zone_1 ff800000 GI x SF ABC 3f800000 SS zone_1 -2147483649 -> s g0:0 s s s g0:0 s s
+F0 GI lang SI x 1 SS Speed 1 -> g0:0 s s
+F0 SI zone_1 ff GI Speed GI ABC -> s g0:0 g0:0
+F0 GI online GI online SB rpm 1 SS lang 2147483648 GI zone_1 GI x SI online 7fffffff SI ABC 0 SF Speed 4e6e6b28 SB x 1 SI x 0 GI x SI lang 1e240 SI rpm 1 GI d_Speedvalue GI ABC SB zone_1 1 GI lang SI zone_1 1e240 -> g0:0 g0:0 s s g0:0 g0:0 s s s s s g1:0 s s g0:0 g1:0 s g1:1e240 s
+F0 SI x ff SF online 445d2da4 GI online -> s s g1:374
+F0 SI d_Speedvalue 7fffffff GI speed SF ABC 42f6e979 GI zone_1 SI ABC 1 SB title_text 1 SF Speed 4e6e6b28 SS zone_1 007 -> s g0:0 s g0:0 s s s s
+F0 SF Speed ff800000 SF online 7fc00000 GI lang SF lang 7f800000 SB d_Speedvalue 1 GI d_Speedvalue SF Speed c07f5c29 GI online -> s s g0:0 s s g1:1 s g1:80000000
+F0 SI rpm ffffffff GI ABC GI d_Speedvalue GI d_Speedvalue GI title_text SI d_Speedvalue 80000000 GI Speed SS Speed -17 SI Speed 7fffffff GI d_Speedvalue GI speed SS ABC 0x10 GI zone_1 SI title_text 0 GI d_Speedvalue SS ABC 1e3 SS online -17 SB Speed 1 GI lang SI Speed 1e240 -> s g0:0 g0:0 g0:0 g0:0 s g0:0 s s g1:80000000 g1:7fffffff s g0:0 s g1:80000000 s s s g0:0 s
+F0 GI speed SI x 0 SS Speed abc -> g0:0 s s
+F0 GI x SB title_text 0 GI lang SI lang 1e240 GI speed SI x 7 GI Speed GI lang -> g0:0 s g0:0 s g0:0 s g0:0 g1:1e240
+F0 SI online 1e240 SI ABC 7190956 SS speed -2147483649 SI x 3466f684 GI zone_1 SF zone_1 60ad78ec GI online GI zone_1 -> s s s s g0:0 s g1:1e240 g1:7fffffff
+F0 GI ABC SI ABC 10000 SS online 12abc SI zone_1 7 GI title_text SS speed 12abc GI title_text SI d_Speedvalue 1e240 SF Speed ce6e6b28 GI title_text SI online 10000 GI rpm SI ABC 80000000 GI lang GI ABC SI x 7fffffff SI Speed 80000000 GI zone_1 SI lang 0 GI speed -> g0:0 s s s g0:0 s g0:0 s s g0:0 s g0:0 s g0:0 g1:80000000 s s g1:7 s g1:80000000
+F0 GI ABC SI title_text 1e240 GI online SS ABC 3.75 SF rpm 43c6d61f SI zone_1 7 GI online SI title_text 1 GI title_text SF ABC 42f6e979 GI title_text SS zone_1  5 SB x 0 SI title_text ffffffff SI title_text 39fbc5c8 SB online 1 SF speed ce6e6b28 SB Speed 1 -> g0:0 s g0:0 s s s g0:0 s g1:1 s g1:1 s s s s s s s
+F0 GI lang SB rpm 1 GI zone_1 SI lang 10000 GI online SF lang 60ad78ec GI lang SI d_Speedvalue 7fffffff -> g0:0 s g0:0 s g0:0 s g1:7fffffff s
+F0 GI x SI title_text 10000 SI speed 7 -> g0:0 s s
+F0 GI speed SS speed 12abc GI online GI zone_1 SI online ffffffff GI ABC SB online 0 -> g0:0 s g0:0 g0:0 s g0:0 s
+F0 SI rpm 1 SI zone_1 52b1105c SF d_Speedvalue 44704bf7 GI Speed SF Speed ff800000 SB speed 0 GI ABC SS lang _ -> s s s g0:0 s s g0:0 s
+F0 GI x SI rpm 0 SI title_text 10000 -> g0:0 s s
+F0 SF lang ce6e6b28 SI ABC 7 GI Speed GI rpm GI ABC SS Speed 3.75 GI lang SF x 7f800000 GI x SB speed 0 SS online 1 GI ABC SS Speed 2147483648 GI rpm SS Speed 1e3 SB zone_1 0 SS title_text x SI speed 10000 GI speed -> s s g0:0 g0:0 g1:7 s g1:c4653600 s g1:7fffffff s s g1:7 s g0:0 s s s s g1:10000
+F0 SI Speed 7 GI lang GI lang GI x SF Speed 4e6e6b28 SS title_text 007 GI ABC SF speed 42f6e979 SI zone_1 1 GI speed SI speed 0 GI d_Speedvalue GI Speed GI lang GI d_Speedvalue SB title_text 0 SI x 7fffffff GI rpm GI online -> s g0:0 g0:0 g0:0 s s g0:0 s s g1:7b s g0:0 g1:0 g0:0 g0:0 s s g0:0 g0:0
+F0 SB online 1 GI zone_1 SI ABC 1 -> s g0:0 s
+F0 GI x SI title_text ff SF zone_1 c07f5c29 -> g0:0 s s
+F0 GI title_text GI d_Speedvalue SB speed 1 -> g0:0 g0:0 s
+F0 GI online GI ABC SI d_Speedvalue 10000 GI online SB speed 1 SI x ff SB ABC 0 SI d_Speedvalue 80000000 SI online 7fffffff GI zone_1 GI Speed SI lang 80000000 GI speed SI Speed 56278262 SI lang 1e240 SF Speed 42f6e979 GI online GI online GI title_text SI lang 7fffffff -> g0:0 g0:0 s g0:0 s s s s s g0:0 g1:1 s g1:1 s s s g1:7fffffff g1:7fffffff g0:0 s
+F0 SI x 1e240 SB Speed 1 SF title_text 3f800000 SB online 0 GI Speed GI x GI d_Speedvalue SI title_text ff SS d_Speedvalue 1e3 SF speed ce6e6b28 GI ABC GI x SF zone_1 42f6e979 SI title_text 10000 SB x 0 SI ABC 0 SI speed 10000 SI Speed 1e240 GI ABC -> s s s s g1:1 g1:1e240 g0:0 s s s g0:0 g1:1e240 s s s s s s g1:0
+F0 SS zone_1 0x10 SI d_Speedvalue 7fffffff SF lang 40200000 SF lang cf32d05e SI title_text 10000 SS x 0 SB x 1 GI ABC GI d_Speedvalue GI title_text SB ABC 1 GI speed SF Speed 42f6e979 SI online 7fffffff SI online 80000000 SF lang 40200000 GI lang SI Speed ff GI online -> s s s s s s s g0:0 g1:7fffffff g1:10000 s g0:0 s s s s g1:2 s g1:80000000
+F0 GI Speed SI d_Speedvalue 1e240 SF rpm 4f32d05e -> g0:0 s s
+F0 SF x c2f7a95b SB speed 1 SI d_Speedvalue 1 GI x SS d_Speedvalue -17 SF Speed cf32d05e SS ABC _ SI title_text 10836c37 SI speed 1 GI lang GI online SB d_Speedvalue 1 SI lang 1ed0f7b9 GI x SI x 80000000 GI lang SS x 42 SF Speed 42f6e979 SI title_text 10000 GI zone_1 -> s s s g1:ffffff85 s s s s s g0:0 g0:0 s s g1:ffffff85 s g1:1ed0f7b9 s s s g0:0
+F0 GI d_Speedvalue SF Speed 0 GI speed -> g0:0 s g1:0
+F0 SI zone_1 10000 GI Speed GI online -> s g0:0 g0:0
+F0 SI rpm 7fffffff GI rpm GI speed SB Speed 0 GI online SI speed 7 GI Speed SI d_Speedvalue 1e240 GI rpm GI ABC GI lang SI title_text ffffffff GI d_Speedvalue SI online 7 SF title_text 43368f81 SI speed 1 GI title_text SF d_Speedvalue bf800000 GI title_text SI d_Speedvalue 1e240 -> s g1:7fffffff g0:0 s g0:0 s g1:7 s g1:7fffffff g0:0 g0:0 s g1:1e240 s s s g1:b6 s g1:b6 s
+F0 SI zone_1 ffffffff SF rpm 40200000 SI d_Speedvalue 2a442d GI rpm GI online SS Speed 42 SI speed ff GI x -> s s s g1:2 g0:0 s s g0:0
+F0 SI zone_1 80000000 GI online SB d_Speedvalue 1 GI zone_1 SS Speed _ SS Speed 0x10 GI title_text SS Speed -17 -> s g0:0 s g1:80000000 s s g0:0 s
+F0 GI zone_1 GI zone_1 GI title_text -> g0:0 g0:0 g0:0
+F0 SB ABC 0 SI online 80000000 GI x GI online SI online 0 SI speed 1e240 SF ABC 3f800000 SF title_text 4e6e6b28 GI lang SI online 1 GI title_text GI x SB Speed 0 SS rpm 3.75 GI ABC SF lang 0 SI title_text 7 GI d_Speedvalue SI title_text 7 SF x 4f32d05e -> s s g0:0 g1:80000000 s s s s g0:0 s g1:3b9aca00 g0:0 s s g1:1 s s g0:0 s s
+F0 GI d_Speedvalue GI x GI lang -> g0:0 g0:0 g0:0
+F0 GI online SI x 10000 SI zone_1 6cee5e4e SB ABC 0 GI ABC GI speed SS ABC -17 GI online -> g0:0 s s s g1:0 g0:0 s g0:0
+F0 GI Speed SF speed c07f5c29 SI online 7fffffff -> g0:0 s s
+F0 SI rpm 1 SI x 1e240 GI lang SF zone_1 ff800000 SS x 1e3 SI d_Speedvalue 80000000 SF speed bf800000 SF Speed 407f5c29 -> s s g0:0 s s s s s
+F0 SF zone_1 c0200000 SF online 3f000000 SI speed ffffffff -> s s s
+F0 SI ABC 1 SI zone_1 ffffffff SI zone_1 ff -> s s s
+F0 GI online SF Speed c0200000 GI ABC -> g0:0 s g0:0
+F0 SF x c07f5c29 SI speed 1e240 SF speed 7fc00000 SF Speed 42f6e979 SI Speed 0 SF ABC cf32d05e SI d_Speedvalue 1 SI lang ffffffff -> s s s s s s s s
+F0 SI d_Speedvalue 80000000 SI title_text 7 GI rpm SI rpm 3e86e0b4 GI online SB ABC 0 SI rpm 1 GI title_text GI lang GI speed GI d_Speedvalue SI speed 1 GI speed GI speed GI Speed SI ABC ff SB d_Speedvalue 0 SI Speed 1e240 GI zone_1 SB zone_1 0 -> s s g0:0 s g0:0 s s g1:7 g0:0 g0:0 g1:80000000 s g1:1 g1:1 g1:1 s s s g0:0 s
+F0 SF x 42f6e979 SI x 10000 SF online 7fc00000 SB ABC 1 SF lang c0200000 SI ABC 10000 GI Speed GI Speed -> s s s s s s g0:0 g0:0
+F0 SI rpm 1 SI zone_1 1 GI online -> s s g0:0
+F0 SB zone_1 0 GI ABC GI lang GI speed GI online GI Speed GI rpm GI d_Speedvalue -> s g0:0 g0:0 g0:0 g0:0 g0:0 g0:0 g0:0
+F0 GI d_Speedvalue GI title_text GI title_text -> g0:0 g0:0 g0:0
+F0 SI Speed 1509931f SI x 0 GI title_text GI ABC GI zone_1 SI ABC 7 SI online 1e240 GI Speed -> s s g0:0 g0:0 g0:0 s s g1:1509931f
+F0 SF lang 4effffff GI d_Speedvalue SI Speed 7712c319 -> s g0:0 s
+F0 GI title_text GI speed GI online SS Speed 1e3 SI speed 80000000 SF rpm c0200000 GI title_text GI ABC SB rpm 1 SI online 7 SI lang ff GI x SI zone_1 1 SF rpm 7fc00000 SB online 0 SS online _ GI zone_1 SI rpm 7fffffff SI lang ffffffff SS lang 0 -> g0:0 g0:0 g0:0 s s s g0:0 g0:0 s s s g0:0 s s s s g1:1 s s s
+F0 GI title_text SI rpm 7fffffff SI speed 7ae9e038 -> g0:0 s s
+F0 GI title_text GI Speed SI ABC 10000 SF title_text 3f800000 GI zone_1 SB x 0 SI online ffffffff SB ABC 0 -> g0:0 g0:0 s s g0:0 s s s
+F0 SI ABC 0 GI title_text SF lang c0200000 SI zone_1 10000 SF title_text c07f5c29 GI Speed SS x 0x10 SI rpm ff -> s g0:0 s s s g0:0 s s
+F0 SF Speed 407f5c29 GI ABC SI zone_1 10000 GI ABC SB x 0 SI zone_1 7 SI zone_1 7fffffff SF rpm 7f800000 -> s g0:0 s g0:0 s s s s
+F0 SF x 4f32d05e GI rpm SI rpm 80000000 GI rpm GI lang SI zone_1 0 SS ABC 1e3 GI Speed -> s g0:0 s g1:80000000 g0:0 s s g0:0
+F0 GI online SI online 1 SI Speed 1 GI online GI x SB Speed 1 SB lang 1 SS zone_1 -2147483649 -> g0:0 s s g1:1 g0:0 s s s
+F0 GI speed GI ABC GI zone_1 -> g0:0 g0:0 g0:0
+F0 GI Speed SS ABC abc SS lang  5 SB title_text 0 SF speed cf32d05e GI x SS ABC 3.75 SI Speed ffffffff SF lang 3f800000 SF lang 7f800000 GI online SF x 7fc00000 GI rpm GI rpm SF speed 40200000 SB d_Speedvalue 0 SS Speed 007 GI title_text SS online 2147483648 -> g0:0 s s s s g0:0 s s s s g0:0 s g0:0 g0:0 s s s g1:0 s
+F0 GI d_Speedvalue SI zone_1 7 SI rpm 7 SI ABC 1e240 GI online SB x 1 GI d_Speedvalue SS title_text 3.75 -> g0:0 s s s g0:0 s g0:0 s
+F0 SB online 1 GI title_text SS x _ SI ABC ffffffff GI zone_1 GI online GI lang GI d_Speedvalue GI zone_1 SF x 42f6e979 GI lang SF zone_1 3f000000 SF zone_1 c425e9f2 SS online 1e3 GI speed SB Speed 0 SS title_text -2147483649 SB d_Speedvalue 1 GI ABC -> s g0:0 s s g0:0 g1:1 g0:0 g0:0 g0:0 s g0:0 s s s g0:0 s s s g1:ffffffff
+F0 GI title_text GI rpm GI ABC -> g0:0 g0:0 g0:0
+F0 SI speed 1e240 GI speed GI online SI rpm 2a65f0b3 GI x SI rpm 588172e5 GI x SI d_Speedvalue 7 -> s g1:1e240 g0:0 s g0:0 s g0:0 s
+F0 SI Speed 3f75d9c4 SI ABC ff SS lang _ GI rpm SI d_Speedvalue 7 SB title_text 0 SI d_Speedvalue 4b8ca70f SB speed 1 SB speed 0 GI rpm GI online SF lang 407f5c29 SF ABC c0200000 GI Speed GI d_Speedvalue SI d_Speedvalue ff SS title_text 2147483648 SS zone_1 _ SI d_Speedvalue 80000000 SI x 10000 -> s s s g0:0 s s s s s g0:0 g0:0 s s g1:0 g1:4b8ca70f s s s s s
+F0 SS speed 007 SS rpm 12abc GI online SI d_Speedvalue 7fffffff SF ABC 407f5c29 SI online ffffffff SF zone_1 3f800000 SB ABC 1 SI online 7 SS rpm -2147483649 SB x 0 GI d_Speedvalue SF title_text 3f800000 SI title_text 1e240 SI Speed 7fffffff SB zone_1 0 SF online 3f800000 SI rpm ff -> s s g0:0 s s s s s s s s g1:7fffffff s s s s s s
+F0 GI d_Speedvalue SI zone_1 10000 SI speed 80000000 SF Speed 407f5c29 GI d_Speedvalue GI rpm GI Speed SS rpm _ -> g0:0 s s s g0:0 g0:0 g1:3 s
+F0 GI online GI speed GI online -> g0:0 g0:0 g0:0
+F0 SI d_Speedvalue ff SF zone_1 7f800000 SB lang 1 SB speed 1 SF ABC ff800000 SS d_Speedvalue -17 SI title_text ffffffff -> s s s s s s s
+F0 SI Speed 10000 SS speed -2147483649 SF x 0 SS d_Speedvalue -2147483649 SF rpm 7fc00000 SI zone_1 7fffffff SS zone_1 -2147483649 GI x GI ABC GI rpm SI zone_1 1e240 SF lang ce6e6b28 SF online bf800000 SI speed 1 SF Speed bf800000 SF title_text 3f800000 GI zone_1 -> s s s s s s s g1:0 g0:0 g1:80000000 s s s s s s g1:1e240
+F0 SS rpm 0x10 SS Speed 007 SI zone_1 1 SB lang 0 GI ABC SI title_text 7 -> s s s s g0:0 s
+F0 GI title_text SS zone_1 1 GI Speed GI x GI online SF lang 0 SI online 7fffffff GI lang -> g0:0 s g0:0 g0:0 g0:0 s s g1:0
+F0 GI ABC GI title_text GI title_text SB Speed 0 SI online 7 SI lang 1 GI d_Speedvalue GI ABC SF lang 407f5c29 SS ABC  5 SB ABC 0 SB ABC 1 GI speed SI Speed ff SI d_Speedvalue 80000000 GI title_text GI Speed SI rpm 1 SF lang 42f6e979 GI online -> g0:0 g0:0 g0:0 s s s g0:0 g0:0 s s s s g1:0 s s g0:0 g1:ff s s g1:7
+F0 GI Speed GI d_Speedvalue GI lang -> g0:0 g0:0 g0:0
+F0 SB d_Speedvalue 0 SS d_Speedvalue 2147483648 SF Speed 4e6e6b28 GI Speed GI online SI online 7fffffff SI zone_1 1ea5395d SI Speed ffffffff -> s s s g1:3b9aca00 g0:0 s s s
+F0 SB lang 0 GI zone_1 SI ABC 7 -> s g0:0 s
+F0 SS speed 007 GI ABC SS ABC abc SS speed 007 SI Speed 1e240 SB online 0 GI speed SF lang 407f5c29 SI ABC 0 SF title_text c07f5c29 GI d_Speedvalue SI ABC ff GI ABC GI d_Speedvalue SF x 40200000 SI rpm 10000 SI rpm 1 GI zone_1 GI Speed GI d_Speedvalue -> s g0:0 s s s s g1:1e240 s s s g0:0 s g1:ff g0:0 s s s g0:0 g1:1e240 g0:0
+F0 GI title_text SF lang cf32d05e GI online -> g0:0 s g0:0
+F0 GI speed SI d_Speedvalue 10000 SF ABC 4effffff GI rpm SF ABC ff800000 GI zone_1 GI ABC SI x 2a5d911e SI speed ff GI lang GI zone_1 SI d_Speedvalue 1e240 GI x SB lang 1 SS rpm 1 GI x GI x GI d_Speedvalue SS speed -17 SI x 7 -> g0:0 s s g0:0 s g0:0 g1:80000000 s s g0:0 g0:0 s g1:2a5d911e s s g1:2a5d911e g1:2a5d911e g1:1e240 s s
+F0 GI zone_1 GI title_text GI rpm SB Speed 0 GI title_text GI rpm SF online bf800000 SI speed 10000 -> g0:0 g0:0 g0:0 s g0:0 g0:0 s s
+F0 GI zone_1 SI online 54374833 SI Speed 7fffffff GI d_Speedvalue SI d_Speedvalue 10000 GI d_Speedvalue SB title_text 0 SF d_Speedvalue c41a1cd9 -> g0:0 s s g0:0 s g1:10000 s s
+F0 GI ABC SB rpm 1 GI lang -> g0:0 s g0:0
+F0 GI speed GI title_text SB x 0 GI Speed GI rpm GI d_Speedvalue GI lang GI speed GI lang SF rpm c4429c3a GI zone_1 GI title_text GI Speed SS Speed abc GI lang SI zone_1 0 GI rpm GI zone_1 SS zone_1 42 -> g0:0 g0:0 s g0:0 g0:0 g0:0 g0:0 g0:0 g0:0 s g0:0 g0:0 g0:0 s g0:0 s g1:fffffcf6 g1:0 s
+F0 GI lang SS x 007 GI lang -> g0:0 s g0:0
+F0 SB lang 0 SB speed 1 SI rpm 7 -> s s s
+F0 GI ABC GI Speed SF rpm 0 GI d_Speedvalue GI Speed SI speed 10000 GI d_Speedvalue SI speed 7fffffff -> g0:0 g0:0 s g0:0 g0:0 s g0:0 s
+F0 GI zone_1 GI speed GI x GI Speed GI speed GI x SI zone_1 10000 GI ABC GI speed SF x 60ad78ec SI title_text ffffffff SB zone_1 0 GI online GI title_text GI ABC GI d_Speedvalue SB ABC 0 GI zone_1 GI x SB online 0 -> g0:0 g0:0 g0:0 g0:0 g0:0 g0:0 s g0:0 g0:0 s s s g0:0 g1:ffffffff g0:0 g0:0 s g1:0 g1:7fffffff s
+F1 GI rpm GI title_text GI Speed GI lang SF speed ff800000 SI speed 1e240 SI x 45ec8561 GI x SS ABC 0 SI rpm 1e240 GI online GI title_text GI rpm GI lang GI x SS title_text 0x10 GI online SS speed 0x10 GI d_Speedvalue SI speed 80000000 -> g0:0 g0:0 g0:0 g0:0 s s s g1:45ec8561 s s g0:0 g0:0 g1:1e240 g0:0 g1:45ec8561 s g0:0 s g0:0 s
+F1 SI title_text 1 GI title_text SI d_Speedvalue 7fffffff SI x 0 GI d_Speedvalue SS speed 0 SI zone_1 7 SS speed 2147483648 -> s g1:1 s s g1:7fffffff s s s
+F1 SI speed 80000000 GI zone_1 SF Speed ce6e6b28 -> s g0:0 s
+F1 SI Speed ffffffff SF d_Speedvalue ff800000 GI rpm GI zone_1 GI title_text SS online abc GI rpm SB online 1 SI Speed 10000 GI d_Speedvalue SI zone_1 7fffffff GI zone_1 GI title_text GI online GI zone_1 SI d_Speedvalue ffffffff SS lang -17 SF title_text 407f5c29 GI online SI online 0 -> s s g0:0 g0:0 g0:0 s g0:0 s s g1:80000000 s g1:7fffffff g0:0 g1:1 g1:7fffffff s s s g1:1 s
+F1 GI lang GI d_Speedvalue SI online 7 -> g0:0 g0:0 s
+F1 SI x 1 SI zone_1 ffffffff SI speed 5ee6a853 SB speed 1 GI zone_1 SF title_text bf800000 SI rpm 7fffffff SS d_Speedvalue 12abc SB zone_1 0 GI ABC GI ABC SF Speed 44776688 SI d_Speedvalue ff SI title_text 1 SS d_Speedvalue 0 SF lang 7f800000 GI title_text SF ABC 407f5c29 GI lang -> s s s s g1:ffffffff s s s s g0:0 g0:0 s s s s s g1:1 s g1:7fffffff
+F1 GI rpm SB title_text 1 GI title_text SI d_Speedvalue 1 GI zone_1 GI rpm SF speed cf32d05e GI Speed GI rpm GI online SI x 10000 SI ABC 10000 SI Speed 80000000 SI lang ffffffff GI Speed SF zone_1 7f800000 GI ABC SI ABC 1 SI online 58efe4c7 SI online 10000 -> g0:0 s g1:1 s g0:0 g0:0 s g1:80000000 g0:0 g0:0 s s s s g1:80000000 s g1:10000 s s s
+F1 SI ABC 7 SI x 7 SI ABC 10000 -> s s s
+F1 GI title_text SS Speed -2147483649 SI lang 61a09a70 -> g0:0 s s
+F1 SB lang 1 SF ABC ff800000 SB Speed 0 -> s s s
+F1 SF title_text 3f000000 SI Speed ffffffff SI speed 80000000 GI title_text GI rpm SF Speed cf32d05e GI Speed GI lang SF Speed c07f5c29 SF rpm 40200000 GI rpm SS ABC 3.75 GI zone_1 SF d_Speedvalue 42f6e979 SF x 0 GI rpm GI zone_1 SB zone_1 1 SF speed c40cda71 SS rpm -2147483649 -> s s s g1:0 g0:0 s g1:80000000 g0:0 s s g1:2 s g0:0 s s g1:2 g0:0 s s s
+F1 GI rpm SS rpm 3.75 SI d_Speedvalue 1 SF speed 7fc00000 SB d_Speedvalue 1 GI speed SI ABC 0 -> g0:0 s s s s g1:80000000 s
+F1 GI rpm GI zone_1 GI x -> g0:0 g0:0 g0:0
+F1 SI title_text 1 SI speed ffffffff SB zone_1 1 SS ABC 0x10 SI speed ffffffff GI d_Speedvalue GI title_text GI d_Speedvalue GI zone_1 SI Speed 1 SS d_Speedvalue -2147483649 SI Speed 10000 GI title_text SI online ffffffff SF x c07f5c29 GI speed SS d_Speedvalue 2147483648 SF rpm 407f5c29 GI rpm -> s s s s s g0:0 g1:1 g0:0 g1:1 s s s g1:1 s s g1:10000 s s g1:3
+F1 SF Speed 7fc00000 SI speed 7 SF d_Speedvalue 4effffff -> s s s
+F1 SS x x SI lang 10000 SI zone_1 7fffffff SI title_text 1 SI lang 554c7a9a SS lang abc GI title_text SB Speed 1 -> s s s s s s g1:1 s
+F1 GI speed GI zone_1 GI d_Speedvalue SI zone_1 1 GI Speed SS title_text 42 SS d_Speedvalue 1e3 GI x -> g0:0 g0:0 g0:0 s g0:0 s s g0:0
+F1 SI rpm ffffffff GI lang GI zone_1 GI Speed GI Speed SI rpm 597f996f SF ABC c07f5c29 GI d_Speedvalue -> s g0:0 g0:0 g0:0 g0:0 s s g0:0
+F1 GI ABC GI title_text SS zone_1 12abc -> g0:0 g0:0 s
+F1 GI rpm SF x 60ad78ec SS rpm 0x10 -> g0:0 s s
+F1 SF rpm cf32d05e SF Speed 7f800000 SF ABC 4f32d05e GI ABC SF x c07f5c29 SS zone_1 1 GI ABC GI speed GI speed GI d_Speedvalue SF online 0 SS x 007 GI Speed SB speed 0 GI d_Speedvalue GI lang SI rpm 1e240 SS x 12abc SS online 12abc -> s s s g1:7fffffff s s g1:7fffffff g1:7fffffff g1:7fffffff g0:0 s s g1:7fffffff s g0:0 g0:0 s s s
+F1 GI ABC GI speed SF ABC c452f782 -> g0:0 g0:0 s
+F1 SS Speed abc SS speed 2147483648 SF x 4e6e6b28 SS rpm  5 SS online -2147483649 SI zone_1 0 SI ABC ffffffff GI x SI online 1 SI x 10000 SS zone_1 _ GI title_text SF title_text 3f000000 SS ABC 007 SI x 7 GI x SF online 7fc00000 GI d_Speedvalue -> s s s s s s s g1:3b9aca00 s s s g0:0 s s s g1:7 s g0:0
+F1 SI zone_1 80000000 SI zone_1 10000 GI speed GI ABC GI zone_1 SI title_text 1e240 GI rpm SB Speed 1 -> s s g0:0 g0:0 g1:10000 s g0:0 s
+F1 GI speed GI zone_1 GI d_Speedvalue SI speed 7c2b208 SF rpm 42f6e979 SI Speed 7fffffff SS speed abc SI rpm ffffffff GI rpm SI Speed 7fffffff SF speed ff800000 GI d_Speedvalue SI online ffffffff SI online 80000000 SF title_text 0 SF Speed 3f800000 SI Speed ff -> g0:0 g0:0 g0:0 s s s s s g1:ffffffff s s g0:0 s s s s s
+F1 SI title_text 80000000 GI ABC GI lang SB rpm 0 SF rpm 42f6e979 GI online SS speed 0x10 GI title_text GI x GI ABC SB online 0 SF title_text 40200000 SB lang 1 SS ABC -2147483649 SI lang ffffffff GI d_Speedvalue SB title_text 0 SI zone_1 10000 SI ABC 10000 SF title_text c0200000 -> s g0:0 g0:0 s s g0:0 s g1:80000000 g0:0 g0:0 s s s s s g0:0 s s s s
+F1 SI speed 7 GI ABC SI title_text 80000000 -> s g0:0 s
+F1 SS speed _ GI ABC SS lang 12abc -> s g0:0 s
+F1 SI zone_1 80000000 SI online 80000000 SB title_text 1 SS Speed 3.75 GI lang SI online 10000 SI x 4e215bfc GI rpm -> s s s s g0:0 s s g0:0
+F1 SI rpm 1 GI lang SF Speed 7fc00000 SF speed ff800000 SS d_Speedvalue  5 SB ABC 1 SS zone_1 3.75 SI ABC 1 SF x 7f800000 GI title_text GI x SI rpm 1e240 GI online GI Speed SF speed 3f800000 SF Speed 7fc00000 GI lang SI ABC ffffffff -> s g0:0 s s s s s s s g0:0 g1:7fffffff s g0:0 g1:80000000 s s g0:0 s
+F1 SI lang 1 GI lang SF rpm 60ad78ec GI online SI zone_1 80000000 SF online 3f000000 SF rpm 0 GI lang -> s g1:1 s g0:0 s s s g1:1
+F1 GI rpm GI x SI Speed 1 -> g0:0 g0:0 s
+F1 SI Speed ff GI speed GI speed -> s g1:ff g1:ff
+F1 GI title_text GI speed SB speed 0 SF speed 4f32d05e SI x 7fffffff GI lang SF zone_1 0 SF ABC 4effffff -> g0:0 g0:0 s s s g0:0 s s
+F1 GI rpm SI lang ff GI Speed SI rpm ff GI Speed SI zone_1 80000000 SS zone_1 0x10 GI x SF d_Speedvalue 60ad78ec GI Speed GI lang SI rpm 7 GI online GI d_Speedvalue GI rpm GI rpm GI online GI ABC GI Speed -> g0:0 s g0:0 s g0:0 s s g0:0 s g0:0 g1:ff s g0:0 g1:7fffffff g1:7 g1:7 g0:0 g0:0 g0:0
+F1 GI x SB ABC 0 GI d_Speedvalue -> g0:0 s g0:0
+F1 SB zone_1 1 GI Speed GI Speed -> s g0:0 g0:0
+F1 SB online 0 SI x ffffffff SB online 1 -> s s s
+F1 SI Speed ffffffff SF d_Speedvalue 0 SF online c3f7ac59 -> s s s
+F1 GI ABC GI speed SF zone_1 c07f5c29 -> g0:0 g0:0 s
+F1 GI rpm SB Speed 0 SI ABC 0 SS zone_1 007 SS lang 42 GI title_text GI speed SF ABC 4f32d05e -> g0:0 s s s s g0:0 g1:0 s
+F1 SF lang bf800000 SI rpm 1e240 SB x 1 GI rpm SF online 4f32d05e SS Speed 12abc GI title_text -> s s s g1:1e240 s s g0:0
+F1 SS d_Speedvalue 0 GI rpm SF zone_1 ff800000 -> s g0:0 s
+F1 SF x 4f32d05e SF Speed c41593fa GI lang -> s s g0:0
+F1 SI lang 10000 GI online SI online 7fffffff SI online 0 GI online GI Speed SI Speed 80000000 SF rpm cf32d05e SF speed ce6e6b28 SF online 4e6e6b28 SI zone_1 7 GI ABC GI online SS online 12abc SI online 6a808fb3 SF speed c07f5c29 GI online GI rpm GI rpm SF speed c07f5c29 -> s g0:0 s s g1:0 g0:0 s s s s s g0:0 g1:3b9aca00 s s s g1:6a808fb3 g1:80000000 g1:80000000 s
+F1 GI lang SS ABC abc SI rpm 0 -> g0:0 s s
+F1 GI ABC GI d_Speedvalue SI online ff GI x SI online 0 SI speed 13736b7 SI online 7fffffff SI rpm 0 -> g0:0 g0:0 s g0:0 s s s s
+F1 GI zone_1 SS lang -17 SB rpm 1 GI online GI ABC SF online ce6e6b28 GI zone_1 GI ABC SI speed 47f849d4 GI rpm SI online 3729b9f2 GI Speed SI Speed 7 GI ABC GI title_text GI title_text SF x 4e6e6b28 GI speed GI d_Speedvalue SI x 0 -> g0:0 s s g0:0 g0:0 s g0:0 g0:0 s g1:1 s g1:47f849d4 s g0:0 g0:0 g0:0 s g1:7 g0:0 s
+F1 SI x ffffffff SI zone_1 0 SI x 1 SS rpm x SI ABC 1e240 SF ABC cf32d05e GI ABC SI title_text ff GI online GI speed SI title_text 1e240 SI lang 7fffffff GI ABC GI title_text SB speed 0 GI speed SF zone_1 bf800000 GI zone_1 SI Speed 10000 SI rpm 7fffffff -> s s s s s s g1:80000000 s g0:0 g0:0 s s g1:80000000 g1:1e240 s g1:0 s g1:ffffffff s s
+F1 SB lang 0 GI d_Speedvalue SB x 0 -> s g0:0 s
+F1 GI rpm SS x 1e3 SI lang 7fffffff -> g0:0 s s
+F1 GI speed SI ABC ffffffff SI d_Speedvalue 7bc9f233 GI lang SI speed 1e240 GI x SS speed 1e3 SF lang 43dc6b57 -> g0:0 s s g0:0 s g0:0 s s
+F1 GI title_text SB title_text 0 SI x 1e240 SI d_Speedvalue 10000 SI x 10000 SI zone_1 263ba06b SF x 0 SS online 2147483648 -> g0:0 s s s s s s s
+F1 SI ABC 10000 GI speed SI d_Speedvalue 7fffffff -> s g0:0 s
+F1 SS title_text 12abc SS speed x SF ABC ff800000 -> s s s
+F1 GI title_text SS x 12abc SF title_text 4effffff -> g0:0 s s
+F1 GI rpm GI rpm GI lang SI speed 1e240 SI speed ff SF zone_1 0 GI online GI ABC -> g0:0 g0:0 g0:0 s s s g0:0 g0:0
+F1 GI ABC GI speed SS ABC -17 -> g0:0 g0:0 s
+F1 GI title_text SF ABC 43a88eb2 SI Speed ffffffff -> g0:0 s s
+F1 GI rpm GI title_text GI lang GI Speed GI online GI lang SS online 0x10 GI lang -> g0:0 g0:0 g0:0 g0:0 g0:0 g0:0 s g0:0
+F1 SI title_text 7 GI online GI title_text -> s g0:0 g1:7
+F1 GI Speed SI online ffffffff GI title_text GI rpm GI zone_1 GI lang SF lang ce6e6b28 SI ABC ff SS lang 1e3 SS x 2147483648 SI lang ffffffff GI online GI zone_1 SI rpm 1e240 SB speed 1 SS rpm x SF x 4e6e6b28 SF lang 7fc00000 SS zone_1 _ GI online -> g0:0 s g0:0 g0:0 g0:0 g0:0 s s s s s g1:ffffffff g0:0 s s s s s s g1:ffffffff
+F1 SB d_Speedvalue 1 SI online ffffffff GI x GI Speed GI rpm SF ABC 42f6e979 GI d_Speedvalue SI speed 10000 SS title_text x GI d_Speedvalue SF zone_1 4e6e6b28 GI speed SB rpm 1 SS ABC 12abc SB ABC 0 GI ABC SF rpm 42f6e979 SF lang 3f000000 -> s s g0:0 g0:0 g0:0 s g1:1 s s g1:1 s g1:10000 s s s g1:0 s s
+F1 GI Speed SI ABC 7 GI rpm -> g0:0 s g0:0
+F1 SS online -2147483649 GI d_Speedvalue GI d_Speedvalue GI rpm GI lang GI x GI x SB title_text 1 GI zone_1 SB Speed 0 GI title_text SF online 407f5c29 SF speed ff800000 SB Speed 1 SB d_Speedvalue 0 GI x SS online x GI rpm GI x -> s g0:0 g0:0 g0:0 g0:0 g0:0 g0:0 s g0:0 s g1:1 s s s s g0:0 s g0:0 g0:0
+F1 GI title_text SI d_Speedvalue ffffffff SS x 1 SS speed 1 SF online c39f85d8 SF title_text 3f800000 GI d_Speedvalue SI x 80000000 SI speed 7fffffff SF d_Speedvalue 7f800000 SB rpm 1 SI online 10000 GI ABC SI zone_1 10000 GI online GI d_Speedvalue SI x 10000 GI online GI Speed SI Speed 80000000 -> g0:0 s s s s s g1:ffffffff s s s s s g0:0 s g1:10000 g1:7fffffff s g1:10000 g1:7fffffff s
+F1 GI zone_1 SI zone_1 80000000 SF ABC 407f5c29 SF ABC 4effffff SI title_text 80000000 SI x 0 GI speed GI ABC GI x GI rpm SF d_Speedvalue 407f5c29 SS online 1 SI d_Speedvalue 0 SI zone_1 0 SI ABC 10000 SI online 7 GI Speed GI online SI ABC 80000000 GI Speed -> g0:0 s s s s s g0:0 g1:7fffff80 g1:0 g0:0 s s s s s s g0:0 g1:7 s g0:0
+F1 GI lang GI online GI Speed SB Speed 1 SF online c0200000 SS ABC 42 SB x 0 SB zone_1 0 -> g0:0 g0:0 g0:0 s s s s s
+F1 SS rpm x GI x SB x 0 GI online GI lang SI speed 80000000 SS rpm 007 SB title_text 0 SI Speed 10000 GI online GI x SF Speed 7fc00000 SB speed 1 SS title_text 0 SS x _ SF rpm ce6e6b28 SS speed abc SI speed 1 SI x ff SF d_Speedvalue c07f5c29 -> s g0:0 s g0:0 g0:0 s s s s g0:0 g1:0 s s s s s s s s s
+F1 GI online SI online 80000000 GI x GI rpm SF speed 4f32d05e GI x SI Speed 80000000 GI d_Speedvalue GI Speed GI Speed GI rpm GI rpm SF x 42f6e979 GI lang GI online SI rpm 80000000 SI Speed 10000 GI zone_1 SI speed 10000 GI online -> g0:0 s g0:0 g0:0 s g0:0 s g0:0 g1:80000000 g1:80000000 g0:0 g0:0 s g0:0 g1:80000000 s s g0:0 s g1:80000000
+F1 GI online SF Speed 40200000 GI online -> g0:0 s g0:0
+F1 SF Speed 60ad78ec GI title_text SF x ff800000 SI lang 10000 SB title_text 0 SS title_text _ SF ABC 3f000000 SI d_Speedvalue 4ed88522 SF zone_1 3f000000 GI Speed SI speed ff SI zone_1 1 SF speed ce6e6b28 SF x ce6e6b28 GI ABC SS rpm _ SF d_Speedvalue 60ad78ec SB d_Speedvalue 0 SB speed 0 -> s g0:0 s s s s s s s g1:7fffffff s s s s g1:0 s s s s
+F1 SS zone_1  5 SI x 10000 SB title_text 0 SB Speed 0 GI title_text GI x GI speed GI lang SB speed 1 SI title_text 3cc83416 GI online GI Speed SF lang c4643e6f SF d_Speedvalue c4263746 SI zone_1 ffffffff GI x SF lang 7f800000 SF title_text 7fc00000 GI online GI d_Speedvalue -> s s s s g1:0 g1:10000 g1:0 g0:0 s s g0:0 g1:1 s s s g1:10000 s s g0:0 g1:fffffd68
+F1 GI d_Speedvalue GI d_Speedvalue SI zone_1 1 -> g0:0 g0:0 s
+F1 SF zone_1 42f6e979 GI Speed SI rpm 1 SI zone_1 ff SF title_text 4f32d05e SI speed 1 SI online 10000 GI x SS ABC _ SF rpm cf32d05e GI speed SF d_Speedvalue bf800000 SF Speed 4e6e6b28 SF online 40200000 SF d_Speedvalue c3e37d8b GI rpm SS x x GI zone_1 SI rpm 1 GI lang -> s g0:0 s s s s s g0:0 s s g1:1 s s s s g1:80000000 s g1:ff s g0:0
+F1 GI d_Speedvalue SF title_text 407f5c29 GI speed -> g0:0 s g0:0
+F1 SS ABC 0 SI lang 1e240 SI Speed 25a74f85 GI Speed GI title_text SS ABC x GI lang GI speed -> s s s g1:25a74f85 g0:0 s g1:1e240 g1:25a74f85
+F1 SI x 10000 GI online SI d_Speedvalue 10000 GI lang GI zone_1 SF online 42f6e979 GI lang SI online 7fffffff SF lang 7f800000 GI Speed SS Speed 12abc SI speed 1 SI online 80000000 GI ABC SF x 42f6e979 GI Speed SS online 3.75 SB title_text 0 SB speed 1 SI lang cc32458 -> s g0:0 s g0:0 g0:0 s g0:0 s s g0:0 s s s g0:0 s g1:1 s s s s
+F1 GI d_Speedvalue GI x GI online SI online ff SS lang 0x10 GI speed SS Speed -2147483649 -> g0:0 g0:0 g0:0 s s g0:0 s
+F1 SI title_text ff SF speed ff800000 SI online 7 -> s s s
+F1 GI Speed SI ABC 10000 GI zone_1 -> g0:0 s g0:0
+F1 GI zone_1 SF zone_1 4e6e6b28 SS Speed 1e3 SI Speed 1e240 SI ABC 0 GI x SI lang ffffffff SI online 562542a1 SB speed 1 SS zone_1 1e3 SF online c387b254 SS zone_1 2147483648 SS ABC _ SI x 10000 GI Speed SS x 3.75 SI x 7 SI x 7 SB zone_1 0 GI zone_1 -> g0:0 s s s s g0:0 s s s s s s s s g1:1 s s s s g1:0
+F1 GI zone_1 GI Speed GI zone_1 -> g0:0 g0:0 g0:0
+F1 SI speed ff SF speed 42f6e979 SF Speed 40200000 SI zone_1 0 GI rpm GI x SF rpm 60ad78ec SB Speed 0 SF title_text cf32d05e SI online 10000 SI zone_1 80000000 SI x ff GI lang GI x SF zone_1 cf32d05e GI title_text SB d_Speedvalue 1 SS d_Speedvalue -2147483649 SF online 7fc00000 SI rpm 7 -> s s s s g0:0 g0:0 s s s s s s g0:0 g1:ff s g1:80000000 s s s s
+F1 GI zone_1 SF ABC c07f5c29 SI speed 1e240 GI x GI speed SS ABC _ GI speed GI lang -> g0:0 s s g0:0 g1:1e240 s g1:1e240 g0:0
+F1 GI title_text SB speed 0 SI ABC 7fffffff SI d_Speedvalue 0 SF d_Speedvalue 7fc00000 GI zone_1 GI x SI zone_1 7 -> g0:0 s s s s g0:0 g0:0 s
+F1 SS x 007 SI x ffffffff GI Speed SI rpm ff SF ABC 0 GI title_text GI Speed SI x 1 SF x 4e6e6b28 GI rpm GI d_Speedvalue GI rpm GI d_Speedvalue GI x SI Speed 1e240 GI online GI rpm GI ABC GI speed GI ABC -> s s g0:0 s s g0:0 g0:0 s s g1:ff g0:0 g1:ff g0:0 g1:3b9aca00 s g0:0 g1:ff g1:0 g1:1e240 g1:0
+F1 SI ABC ffffffff GI x SI Speed ff GI ABC SI title_text ff SB ABC 0 SF x ff800000 GI zone_1 SI d_Speedvalue 7 SF ABC 42f6e979 GI online SI zone_1 10000 GI rpm GI x SB x 1 SS ABC 0 SI ABC 7 SS d_Speedvalue  5 SI d_Speedvalue 0 -> s g0:0 s g1:ffffffff s s s g0:0 s s g0:0 s g0:0 g1:80000000 s s s s s
+F1 SI title_text 7 SS title_text x SI lang c052966 SB zone_1 1 SI title_text ff SB x 0 SS ABC abc SF online 4effffff GI x SF Speed 4e6e6b28 GI rpm SS title_text 1 SB x 0 SI d_Speedvalue 7fffffff SS x x GI online SS x -2147483649 SI x 0 GI speed GI speed -> s s s s s s s s g1:0 s g0:0 s s s s g1:7fffff80 s s g1:3b9aca00 g1:3b9aca00
+F1 SI title_text ff SI lang ff SI rpm 1cf9f800 -> s s s
+F1 GI Speed SI d_Speedvalue 7fffffff SF rpm 42f6e979 -> g0:0 s s
+F1 GI zone_1 GI lang SS speed _ -> g0:0 g0:0 s
+F1 GI ABC GI online SS x 2147483648 GI online SB ABC 1 SI zone_1 611de6d9 SB zone_1 1 SI ABC 1 GI lang GI title_text GI ABC SB d_Speedvalue 1 GI zone_1 GI d_Speedvalue GI ABC SI ABC 0 SB speed 1 GI online GI rpm SI rpm 1e240 -> g0:0 g0:0 s g0:0 s s s s g0:0 g0:0 g1:1 s g1:1 g1:1 g1:1 s s g0:0 g0:0 s
+F1 SI speed 80000000 SF lang c0200000 GI ABC GI Speed SI title_text 1 SI lang 1 SI rpm 7fffffff SI Speed ffffffff -> s s g0:0 g1:80000000 s s s s
+F1 SI ABC 0 GI title_text SS Speed 12abc SS title_text 0 SB title_text 1 GI ABC SS Speed 3.75 -> s g0:0 s s s g1:0 s
+F1 SI ABC 7 SI ABC 0 SF ABC 60ad78ec -> s s s
+F1 GI Speed GI x SS title_text 42 GI d_Speedvalue GI zone_1 SI Speed 1 SB d_Speedvalue 0 SI d_Speedvalue 0 -> g0:0 g0:0 s g0:0 g0:0 s s s
+F1 GI zone_1 SF d_Speedvalue 4effffff GI rpm GI Speed SB Speed 0 GI d_Speedvalue GI x GI online -> g0:0 s g0:0 g0:0 s g1:7fffff80 g0:0 g0:0
+F1 SF speed 42f6e979 SB ABC 1 SI Speed ffffffff GI title_text SI x 1e240 GI title_text GI Speed SS rpm 1e3 GI Speed SI x 1 SF lang 60ad78ec GI d_Speedvalue GI Speed SI title_text ff GI online GI x GI speed GI online GI online SF d_Speedvalue 407f5c29 -> s s s g0:0 s g0:0 g1:ffffffff s g1:ffffffff s s g0:0 g1:ffffffff s g0:0 g1:1 g1:ffffffff g0:0 g0:0 s
+F1 GI title_text SS online abc SI d_Speedvalue 81cd584 -> g0:0 s s
+F1 SB Speed 1 SF x ce6e6b28 GI d_Speedvalue SF zone_1 40200000 GI title_text SS d_Speedvalue 1 GI rpm SF title_text ce6e6b28 -> s s g0:0 s g0:0 s g0:0 s
+F1 GI online SI ABC 0 SI Speed ffffffff -> g0:0 s s
+F1 SB rpm 1 GI Speed SI online ff -> s g0:0 s
+F1 SI lang 2af47dd4 GI Speed SI d_Speedvalue 7fffffff GI lang SF online bf800000 GI lang SS zone_1 _ SI rpm 80000000 SI online 7fffffff SF x cf32d05e SS rpm 42 GI Speed SI Speed ff GI lang SF zone_1 60ad78ec SB ABC 0 SS x  5 GI title_text GI zone_1 GI d_Speedvalue -> s g0:0 s g1:2af47dd4 s g1:2af47dd4 s s s s s g0:0 s g1:2af47dd4 s s s g0:0 g1:7fffffff g1:7fffffff
+F1 GI lang SI ABC 652ae378 GI speed SS speed 42 GI title_text SI title_text 40ea50a3 SB title_text 0 -> g0:0 s g0:0 s g0:0 s s
+F1 SF zone_1 cf32d05e SB speed 0 GI Speed -> s s g1:0
+F1 SB ABC 1 SI speed ff GI d_Speedvalue SI title_text 1e240 GI rpm GI rpm GI lang SI title_text 7 GI rpm SF ABC bf800000 SI title_text 7fffffff SI speed 1 GI online SB x 0 GI online GI rpm GI online GI title_text SF title_text 42b9480f SF title_text ff800000 -> s s g0:0 s g0:0 g0:0 g0:0 s g0:0 s s s g0:0 s g0:0 g0:0 g0:0 g1:7fffffff s s
+F1 SS zone_1 3.75 SI title_text 7fffffff SS Speed 42 SI x 1e240 SB ABC 0 GI online GI lang SI rpm 1e240 SF speed ce6e6b28 GI title_text SF zone_1 4effffff SF ABC 407f5c29 GI online SF Speed 42f6e979 GI online GI online SI lang 10000 GI lang GI x GI Speed -> s s s s s g0:0 g0:0 s s g1:7fffffff s s g0:0 s g0:0 g0:0 s g1:10000 g1:1e240 g1:7b
+F1 SS title_text  5 GI online SF ABC 4f32d05e -> s g0:0 s
+F1 SB lang 0 GI Speed SB lang 1 SI ABC 10000 SI Speed 7 GI zone_1 SI d_Speedvalue ffffffff SF zone_1 ce6e6b28 -> s g0:0 s s s g0:0 s s
+F1 GI rpm SS Speed 42 SF ABC ff800000 GI lang SF rpm 60ad78ec GI online GI online SF online c0200000 SI Speed 80000000 SI online ffffffff GI speed SI Speed 0 SF rpm 4effffff SF title_text 407f5c29 SI online 7 GI ABC SF title_text 0 GI d_Speedvalue SF online 60ad78ec SI d_Speedvalue 7fffffff -> g0:0 s s g0:0 s g0:0 g0:0 s s s g1:80000000 s s s s g1:80000000 s g0:0 s s
+F1 SI online 3a2b2d7a GI online GI ABC -> s g1:3a2b2d7a g0:0
+F1 SI online 1 SF ABC 7fc00000 SI zone_1 7 SI speed 4f243643 SB title_text 1 SI speed 0 SB speed 0 SS zone_1 abc GI d_Speedvalue SF ABC c0200000 SF d_Speedvalue 60ad78ec GI x SF ABC cf32d05e SI Speed 10000 SI Speed 0 SF ABC 4e6e6b28 SB online 1 GI rpm GI lang SB zone_1 0 -> s s s s s s s s g0:0 s s g0:0 s s s s s g0:0 g0:0 s
+F1 SI rpm 80000000 SF speed cf32d05e SI x ffffffff -> s s s
+F1 GI x SI lang 1e240 SI d_Speedvalue 7fffffff -> g0:0 s s
+F1 SI zone_1 7fffffff SF speed 0 GI rpm -> s s g0:0
+F1 SS rpm 2147483648 SS speed 2147483648 SI zone_1 1e240 -> s s s
+F1 SI d_Speedvalue 10000 GI Speed GI lang GI ABC GI lang SS Speed 007 GI rpm GI ABC -> s g0:0 g0:0 g0:0 g0:0 s g0:0 g0:0
+F1 SS zone_1 0 GI d_Speedvalue GI Speed -> s g0:0 g0:0
+F1 SI rpm 1e240 SI d_Speedvalue 7 GI ABC GI rpm SB zone_1 0 SI rpm 1 SI speed 7fffffff GI rpm SS speed abc SF zone_1 42f6e979 SF Speed 3f000000 GI ABC SS online -2147483649 GI Speed SI Speed 7fffffff SI zone_1 ffffffff GI lang SS lang 1 GI speed SS Speed 0 -> s s g0:0 g1:1e240 s s s g1:1 s s s g0:0 s g1:0 s s g0:0 s g1:7fffffff s
+F1 GI rpm SF zone_1 bf800000 SF speed 3f000000 GI x SF title_text 0 SF online c0200000 SF zone_1 40200000 SF x c07f5c29 GI online SI online 1 GI title_text SB ABC 1 GI x GI online SI rpm ffffffff GI zone_1 SI online 1 SS zone_1 42 GI lang GI online -> g0:0 s s g0:0 s s s s g1:fffffffe s g1:0 s g1:fffffffd g1:1 s g1:2 s s g0:0 g1:1
+F1 SI ABC 0 SI title_text 0 SB online 1 SB ABC 1 SB x 1 SI ABC 7fffffff GI x GI Speed -> s s s s s s g1:1 g0:0
+F1 GI ABC GI rpm SI x 7 GI Speed SS Speed x SF Speed ce6e6b28 SS speed  5 SS rpm 42 GI ABC SS online 007 GI lang GI x SI rpm 7 GI title_text SI rpm ff GI x SB online 0 GI zone_1 SI online 1 -> g0:0 g0:0 s g0:0 s s s s g0:0 s g0:0 g1:7 s g0:0 s g1:7 s g0:0 s
+F1 SF title_text c07f5c29 SF rpm c07f5c29 GI online SS online x SI zone_1 ffffffff GI zone_1 SB zone_1 1 SF rpm ce6e6b28 -> s s g0:0 s s g1:ffffffff s s
+F1 SS rpm _ SS online 2147483648 SF ABC c2a0fd5b GI speed SF Speed 7fc00000 SF Speed 4f32d05e GI x -> s s s g0:0 s s g0:0
+F1 GI title_text GI d_Speedvalue SF lang 4f32d05e -> g0:0 g0:0 s
+F1 SF rpm ff800000 GI d_Speedvalue GI ABC -> s g0:0 g0:0
+F1 SI zone_1 ffffffff GI title_text SB lang 0 SI speed ff SF lang 3f000000 GI Speed SS Speed 1 GI ABC -> s g0:0 s s s g1:ff s g0:0
+F1 GI speed SI rpm 7fffffff GI ABC SF online 407f5c29 SS title_text 007 GI lang GI zone_1 SI lang 1 GI ABC GI Speed SI Speed 1 SF online 407f5c29 SF online ce6e6b28 SS speed abc SI zone_1 7fffffff SF lang cf32d05e SS speed 0 SB zone_1 1 GI x -> g0:0 s g0:0 s s g0:0 g0:0 s g0:0 g0:0 s s s s s s s s g0:0
+F1 SI ABC 0 SI speed 7 SS rpm -17 GI ABC SF x c0200000 SB rpm 1 SB speed 0 SI lang 10000 SS title_text 1e3 SF title_text c07f5c29 GI zone_1 SF rpm cf32d05e GI rpm SI Speed 80000000 GI ABC SI d_Speedvalue ffffffff SF lang 4f32d05e SF speed 7f800000 GI title_text SI x ffffffff -> s s s g1:0 s s s s s s g0:0 s g1:80000000 s g1:0 s s s g1:fffffffd s
+F1 GI ABC GI lang SI zone_1 7 GI x GI ABC GI x SB ABC 0 GI d_Speedvalue -> g0:0 g0:0 s g0:0 g0:0 g0:0 s g0:0
+F1 SB rpm 0 SB d_Speedvalue 1 SF lang 7f800000 GI title_text SS ABC x GI zone_1 SS title_text 12abc GI lang GI online SI d_Speedvalue 1 GI Speed SF ABC 4effffff GI ABC SI title_text 80000000 GI x SF Speed 3f800000 SS x 007 GI rpm SF zone_1 4effffff GI speed -> s s s g0:0 s g0:0 s g1:7fffffff g0:0 s g0:0 s g1:7fffff80 s g0:0 s s g1:0 s g1:1
+F1 SI zone_1 1e240 SB title_text 0 GI ABC GI title_text SS x 2147483648 GI d_Speedvalue SI online ffffffff SB x 1 -> s s g0:0 g1:0 s g0:0 s s
+F1 SB d_Speedvalue 1 GI lang SI speed 1 -> s g0:0 s
+F1 SI online 80000000 GI zone_1 GI online SF zone_1 4effffff SS speed 2147483648 GI online SS ABC 3.75 SS rpm x GI online GI lang GI d_Speedvalue SS online 42 SI lang ff SF zone_1 ce6e6b28 GI zone_1 SI x 55634c72 -> s g0:0 g1:80000000 s s g1:80000000 s s g1:80000000 g0:0 g0:0 s s s g1:c4653600 s
+F1 GI zone_1 SF title_text c0200000 SS Speed 1 GI lang SB online 1 GI d_Speedvalue GI ABC SI Speed 10000 SS Speed 0x10 GI x SS Speed 12abc GI ABC SB online 0 GI rpm GI online SB d_Speedvalue 0 GI title_text SS d_Speedvalue 3.75 -> g0:0 s s g0:0 s g0:0 g0:0 s s g0:0 s g0:0 s g0:0 g1:0 s g1:fffffffe s
+F1 SB Speed 0 SF title_text 407f5c29 SB d_Speedvalue 1 GI d_Speedvalue SS zone_1 abc SS Speed 3.75 GI rpm SF Speed c07f5c29 GI d_Speedvalue GI speed GI lang GI x SF title_text 3f000000 GI online GI online SB zone_1 1 SI speed ffffffff SB d_Speedvalue 0 SB Speed 0 SS ABC 0x10 -> s s s g1:1 s s g0:0 s g1:1 g1:fffffffd g0:0 g0:0 s g0:0 g0:0 s s s s s
+F1 SB speed 0 SI d_Speedvalue 397a21da SI Speed 80000000 GI rpm SI rpm 7 GI speed GI ABC SF title_text ff800000 -> s s s g0:0 s g1:80000000 g0:0 s
+F1 GI zone_1 SF zone_1 0 SB x 0 SI online 3c35b971 GI zone_1 SI online ff GI d_Speedvalue SF title_text bf800000 SF rpm 441524e1 GI title_text SI online 0 GI d_Speedvalue SS speed 1e3 GI zone_1 SI online 1 SI x 0 SF ABC 60ad78ec GI zone_1 SI ABC 80000000 -> g0:0 s s s g1:0 s g0:0 s s g1:ffffffff s g0:0 s g1:0 s s s g1:0 s
+F1 SS Speed -17 SB rpm 0 SI title_text 70bdf33c SS lang 2147483648 SF online bf800000 GI rpm -> s s s s s g1:0
+F1 GI online GI ABC GI zone_1 SF speed 7f800000 SF x 60ad78ec GI title_text GI d_Speedvalue GI x SS title_text 007 SI ABC ff SS ABC _ GI speed GI rpm SI speed 7 GI online GI Speed SF zone_1 40200000 SI lang 7 SS Speed 0x10 -> g0:0 g0:0 g0:0 s s g0:0 g0:0 g1:7fffffff s s s g1:7fffffff g0:0 s g0:0 g1:7 s s s
+F1 SI zone_1 ff SS lang 3.75 SB speed 1 GI title_text SI title_text 15cdc9 SS online _ SB x 1 -> s s s g0:0 s s s
+F1 GI rpm GI x SI zone_1 10000 SB title_text 0 GI rpm SB Speed 1 GI ABC SB title_text 1 GI zone_1 SI online 1 SI title_text 7fffffff GI lang SF online 60ad78ec GI d_Speedvalue SF rpm ce6e6b28 GI ABC SF lang 3f800000 GI online GI x SS Speed abc -> g0:0 g0:0 s s g0:0 s g0:0 s g1:10000 s s g0:0 s g0:0 s g0:0 s g1:7fffffff g0:0 s
+F1 SS zone_1  5 GI d_Speedvalue SI zone_1 0 SI Speed 7 GI online GI rpm GI ABC SF x ce6e6b28 -> s g0:0 s s g0:0 g0:0 g0:0 s
+F1 SF rpm 7f800000 SB Speed 1 GI speed GI x SF rpm 40200000 SB lang 0 SI title_text b28d851 SI x 10000 SI x 10000 SI d_Speedvalue 1e240 GI x GI zone_1 SB x 0 GI title_text SI ABC ff GI rpm GI Speed SF ABC 0 GI d_Speedvalue SS d_Speedvalue abc -> s s g1:1 g0:0 s s s s s s g1:10000 g0:0 s g1:b28d851 s g1:2 g1:1 s g1:1e240 s
+F1 SI d_Speedvalue 1e240 GI lang GI lang GI online GI x GI ABC GI x SI title_text 0 SB online 1 SF title_text 3f800000 SS Speed abc SF title_text ff800000 SI ABC 0 SF online cf32d05e GI rpm SI title_text 10000 GI lang GI ABC -> s g0:0 g0:0 g0:0 g0:0 g0:0 g0:0 s s s s s s s g0:0 s g0:0 g1:0
+F1 SI ABC 1 SB title_text 1 SI rpm ffffffff -> s s s
+F1 SS online 3.75 SI x 1 SF title_text 40200000 SS d_Speedvalue 0 GI Speed SB title_text 0 GI lang GI ABC -> s s s s g0:0 s g0:0 g0:0
+F1 SF speed c07f5c29 SI ABC 1 GI online SI Speed 7 SF online 4effffff GI speed GI online SB d_Speedvalue 0 -> s s g0:0 s s g1:7 g1:7fffff80 s
+F1 GI zone_1 GI lang GI rpm -> g0:0 g0:0 g0:0
+F1 SF ABC 3f800000 GI speed SS ABC abc -> s g0:0 s
+F1 GI online GI speed GI online -> g0:0 g0:0 g0:0
+F1 SB title_text 1 SS ABC 0x10 GI title_text SI speed 1 SI title_text 10000 GI d_Speedvalue SI x 7 GI rpm -> s s g1:1 s s g0:0 s g0:0
+F1 SS speed _ GI title_text GI zone_1 GI x SI online 7 SF d_Speedvalue 7f800000 GI zone_1 SF speed 3f000000 SI x 1e240 GI x GI speed SI online 7 SS x 1e3 GI speed SI speed 0 SI rpm 7 GI rpm GI ABC SF lang 43ad1486 -> s g0:0 g0:0 g0:0 s s g0:0 s s g1:1e240 g1:0 s s g1:0 s s g1:7 g0:0 s
+F1 GI ABC SF online 0 GI title_text -> g0:0 s g0:0
+F1 SS Speed 1e3 SI lang 80000000 SI ABC 80000000 SB zone_1 0 SB d_Speedvalue 1 SI lang 7fffffff SS d_Speedvalue 2147483648 GI x SF rpm 3f000000 SI Speed 7 GI title_text SI Speed 0 GI Speed SS rpm 0 GI Speed SB title_text 1 SI d_Speedvalue 0 GI d_Speedvalue SI Speed 3516624f -> s s s s s s s g0:0 s s g0:0 s g1:0 s g1:0 s s g1:0 s
+F1 GI x GI d_Speedvalue SF ABC 3f000000 -> g0:0 g0:0 s
+F1 GI d_Speedvalue SB online 0 GI Speed SI online 80000000 SI rpm ff SI Speed 0 SF zone_1 7f800000 GI zone_1 SF online 3f800000 SI zone_1 2bc1b310 GI zone_1 SI d_Speedvalue 7 SB speed 0 GI ABC GI speed GI title_text SB Speed 1 SI ABC 80000000 SB d_Speedvalue 1 SI zone_1 80000000 -> g0:0 s g0:0 s s s s g1:7fffffff s s g1:2bc1b310 s s g0:0 g1:0 g0:0 s s s s
+F1 SF Speed bf800000 GI online SS Speed _ GI x SI ABC 1 GI online SI speed bbb18af SI d_Speedvalue 0 SI ABC ff SI d_Speedvalue ffffffff SI lang ffffffff SF online 40200000 SB Speed 1 GI online GI online GI title_text SF online ce6e6b28 SB lang 0 -> s g0:0 s g0:0 s g0:0 s s s s s s s g1:2 g1:2 g0:0 s s
+F1 SI title_text 7 SF d_Speedvalue 3f000000 SI zone_1 1 SF online c0200000 SI rpm 80000000 SI lang 4539a232 GI rpm GI title_text -> s s s s s s g1:80000000 g1:7
+F1 GI title_text SS Speed x GI d_Speedvalue -> g0:0 s g0:0
+F1 GI speed SS lang x GI online SF lang cf32d05e GI rpm GI lang SI zone_1 3f95a953 GI zone_1 SI speed ff SF ABC 7f800000 GI d_Speedvalue GI lang SS rpm  5 GI ABC SI rpm 80000000 SS x 0x10 GI zone_1 SI online 1 SF x 4f32d05e SI speed 1e240 -> g0:0 s g0:0 s g0:0 g1:80000000 s g1:3f95a953 s s g0:0 g1:80000000 s g1:7fffffff s s g1:3f95a953 s s s
+F1 GI lang GI x SI online ffffffff GI x SF title_text 0 GI d_Speedvalue SS x 0 SF title_text 43f086e6 -> g0:0 g0:0 s g0:0 s g0:0 s s
+F1 GI online GI d_Speedvalue SI online 7 -> g0:0 g0:0 s
+F1 SI zone_1 ff SF title_text 4e6e6b28 GI x -> s s g0:0
+F1 SI Speed 7fffffff GI ABC GI x GI x SF Speed 3f000000 SB title_text 1 SS rpm 1e3 SI online 1e240 -> s g0:0 g0:0 g0:0 s s s s
+F1 GI x GI ABC SF x bf800000 SF rpm 60ad78ec GI rpm SF zone_1 40200000 SB zone_1 0 SF x ff800000 SS d_Speedvalue 42 SI title_text 7 SS Speed 007 SF x 42f6e979 SS title_text abc SI Speed 7fffffff GI ABC SS lang 1e3 SF ABC 40200000 GI ABC SB online 1 GI ABC -> g0:0 g0:0 s s g1:7fffffff s s s s s s s s s g0:0 s s g1:2 s g1:2
+F1 SB x 0 SI ABC 7fffffff SB x 1 -> s s s
+F1 GI online SS d_Speedvalue x GI x GI x SI title_text 7fffffff SF speed cf32d05e GI Speed SI Speed ff SB zone_1 1 SI rpm 80000000 SF zone_1 7f800000 SF online c0200000 SS ABC abc SF lang 42d26f3b SF ABC 0 GI rpm SF d_Speedvalue 7f800000 GI ABC GI rpm -> g0:0 s g0:0 g0:0 s s g1:80000000 s s s s s s s s g1:80000000 s g1:0 g1:80000000
+F1 GI online SI d_Speedvalue 7fffffff GI zone_1 SI zone_1 6c6160ec SI x ff SF lang c0200000 SB speed 0 SF d_Speedvalue 40200000 SI title_text 80000000 SF online 40200000 SI d_Speedvalue ffffffff SI x 7 SI d_Speedvalue 80000000 SI speed 80000000 SS rpm 3.75 GI speed SI lang ffffffff SF online 7f800000 SI zone_1 7 -> g0:0 s g0:0 s s s s s s s s s s s s g1:80000000 s s s
+F1 GI lang SI speed 10000 GI speed SS online -17 GI zone_1 SI lang ffffffff GI Speed GI d_Speedvalue SI d_Speedvalue 7 SF speed c07f5c29 SS online _ SB d_Speedvalue 0 SF zone_1 40200000 SB speed 0 GI ABC SB speed 0 SF x 7fc00000 SI title_text 1 GI speed GI ABC -> g0:0 s g1:10000 s g0:0 s g1:10000 g0:0 s s s s s s g0:0 s s s g1:0 g0:0
+F1 GI zone_1 GI title_text SS d_Speedvalue 007 -> g0:0 g0:0 s
+F1 GI d_Speedvalue SI online 10000 SB online 0 GI zone_1 SI Speed ffffffff GI Speed SB x 0 GI title_text GI x SF Speed ce6e6b28 SB ABC 0 SF d_Speedvalue 0 SI d_Speedvalue 7 SS title_text 0x10 SI x ff SB rpm 1 GI lang GI speed SB zone_1 0 SI lang 7 -> g0:0 s s g0:0 s g1:ffffffff s g0:0 g1:0 s s s s s s s g0:0 g1:c4653600 s s
+F1 SF d_Speedvalue 3f000000 SS x 0x10 SS online _ SF x 43fadc1f SI rpm ffffffff GI ABC SF d_Speedvalue bf800000 SI lang ff -> s s s s s g0:0 s s
+F1 SF zone_1 0 SB rpm 0 GI d_Speedvalue GI online SI ABC 3f4c020a SB rpm 1 GI zone_1 SB online 1 -> s s g0:0 g0:0 s s g1:0 s
+F1 GI Speed GI x GI speed SS ABC 0x10 GI d_Speedvalue SI online 7 SF lang 7f800000 GI zone_1 -> g0:0 g0:0 g0:0 s g0:0 s s g0:0
+F1 SI d_Speedvalue 1 GI lang SS rpm _ SI zone_1 ffffffff GI online GI speed GI lang GI lang -> s g0:0 s s g0:0 g0:0 g0:0 g0:0
+F1 SF lang ff800000 GI online SI lang ff GI zone_1 GI title_text SF title_text 7f800000 GI ABC SI ABC 7fffffff -> s g0:0 s g0:0 g0:0 s g0:0 s
+F1 GI d_Speedvalue GI rpm SI d_Speedvalue 1e240 GI speed SS zone_1 _ SB d_Speedvalue 0 SI x 7fffffff GI rpm SB zone_1 0 SI speed 0 SF title_text 4f32d05e GI d_Speedvalue SI ABC ffffffff GI zone_1 SB lang 1 SB speed 1 SB online 1 GI ABC GI online GI zone_1 -> g0:0 g0:0 s g0:0 s s s g0:0 s s s g1:0 s g1:0 s s s g1:ffffffff g1:1 g1:0
+F1 SI rpm ffffffff GI title_text SS lang 3.75 -> s g0:0 s
+F1 SF x c07f5c29 SB speed 0 GI title_text -> s s g0:0
+F1 SI ABC 74dcd33f SF online 3f800000 GI x -> s s g0:0
+F1 GI rpm GI ABC GI title_text SI d_Speedvalue 0 GI x SI zone_1 1e240 SS zone_1  5 GI Speed SF online 7f800000 SI speed 10000 SI d_Speedvalue 7 GI lang GI lang SF ABC cf32d05e SI Speed 1e240 SF x 60ad78ec SI d_Speedvalue 7 GI rpm GI title_text SS title_text 0x10 -> g0:0 g0:0 g0:0 s g0:0 s s g0:0 s s s g0:0 g0:0 s s s s g0:0 g0:0 s
+F1 SB rpm 1 GI online SS ABC  5 SF rpm bf800000 SI rpm 7fffffff SF ABC 60ad78ec SF zone_1 4e6e6b28 SI zone_1 7 -> s g0:0 s s s s s s
+F1 SI d_Speedvalue 1e240 SB speed 1 SI lang 7 -> s s s
+F1 SF d_Speedvalue c07f5c29 SI zone_1 7 SI speed 1 SI lang ff GI online SI speed 1 SI rpm ff SF Speed cf32d05e -> s s s s g0:0 s s s
+F1 GI title_text SF ABC 4f32d05e GI d_Speedvalue SI lang 1e240 SI zone_1 2cbbd32a SB d_Speedvalue 0 SS zone_1 1e3 SB x 1 -> g0:0 s g0:0 s s s s s
+F1 SI Speed 10000 GI zone_1 SB online 0 -> s g0:0 s
+F1 SF d_Speedvalue 60ad78ec GI d_Speedvalue SI ABC 7fffffff SF speed 0 SI zone_1 ff SF Speed 4f32d05e GI Speed SI d_Speedvalue 7fffffff -> s g1:7fffffff s s s s g1:7fffffff s
+F1 GI title_text SI zone_1 7fffffff GI title_text -> g0:0 s g0:0
+F1 GI lang GI title_text SF Speed 7f800000 SI speed 80000000 GI online GI ABC GI rpm GI zone_1 -> g0:0 g0:0 s s g0:0 g0:0 g0:0 g0:0
+F1 SB d_Speedvalue 1 SS title_text 0 SS lang 1 SB d_Speedvalue 1 SF online 4f32d05e GI d_Speedvalue SF x c07f5c29 SS ABC 12abc GI speed SB lang 1 SS x 1 GI zone_1 SF rpm 42f6e979 GI rpm SF Speed 3f800000 SI speed 7fffffff SB online 1 SF Speed bf800000 SF speed 4e6e6b28 SI zone_1 ff -> s s s s s g1:1 s s g0:0 s s g0:0 s g1:7b s s s s s s
+F1 SI d_Speedvalue 0 SS d_Speedvalue 42 GI Speed GI lang GI speed SF rpm 42f6e979 SI d_Speedvalue ff SS Speed 42 SF speed 7fc00000 GI x SF rpm 7f800000 GI Speed SF online 60ad78ec SS lang  5 GI Speed GI d_Speedvalue SI x 10000 SB title_text 0 GI ABC -> s s g0:0 g0:0 g0:0 s s s s g0:0 s g1:80000000 s s g1:80000000 g1:ff s s g0:0
+F1 SB Speed 1 GI speed SI online 1 SF ABC 42f6e979 SS title_text _ SF d_Speedvalue ff800000 SI online ffffffff GI lang SF zone_1 60ad78ec SI online ff GI d_Speedvalue SF Speed bf800000 GI online SI online 1 GI rpm GI ABC GI lang SS lang 0x10 GI speed SI rpm 2a880a63 -> s g1:1 s s s s s g0:0 s s g1:80000000 s g1:ff s g0:0 g1:7b g0:0 s g1:ffffffff s
+F1 SF speed 42f6e979 SI speed 1 SS online -2147483649 SF ABC 7fc00000 SI lang 1e240 SB x 1 GI Speed SB ABC 0 SI title_text ff GI ABC GI rpm SB d_Speedvalue 1 SF rpm 4e6e6b28 SF rpm 7f800000 SI zone_1 1e240 SI online 7fffffff GI zone_1 SI title_text 10000 SI speed 10000 -> s s s s s s g1:1 s s g1:0 g0:0 s s s s s g1:1e240 s s
+F1 SB online 0 SF x bf800000 SF title_text 40200000 GI x SF speed 7f800000 SS title_text _ SB d_Speedvalue 0 GI d_Speedvalue SS title_text 12abc GI x GI x GI zone_1 SB speed 0 GI speed SI Speed 570ce4ff SI d_Speedvalue ff SF rpm 407f5c29 GI d_Speedvalue GI d_Speedvalue -> s s s g1:ffffffff s s s g1:0 s g1:ffffffff g1:ffffffff g0:0 s g1:0 s s s g1:ff g1:ff
+F1 GI title_text SB ABC 1 GI title_text SI Speed 7fffffff GI ABC SI x 0 SS rpm 1 SS d_Speedvalue 12abc -> g0:0 s g0:0 s g1:1 s s s
+F1 SB speed 1 SB speed 1 GI x -> s s g0:0
+F1 SI ABC ffffffff SI online ffffffff GI zone_1 -> s s g0:0
+F1 SB speed 1 SB rpm 1 SS Speed abc SB speed 0 SI speed 1e240 SF x ff800000 SB ABC 0 SI rpm 10000 -> s s s s s s s s
+F1 GI speed SF online ce6e6b28 SI online ff GI x GI title_text SI x ff SF speed ff800000 SI zone_1 1 SS ABC 3.75 GI rpm SB rpm 0 GI lang GI d_Speedvalue SS x 0x10 GI speed SI zone_1 7fffffff SI zone_1 1e240 SI d_Speedvalue 1 SB speed 0 -> g0:0 s s g0:0 g0:0 s s s s g0:0 s g0:0 g0:0 s g1:80000000 s s s s
+F1 SS title_text _ SB x 1 SI d_Speedvalue 1 SI title_text 10000 SS Speed -2147483649 SI zone_1 ffffffff GI title_text SS Speed 12abc -> s s s s s s g1:10000 s
+F1 SI online 7fffffff SB d_Speedvalue 0 GI rpm SB speed 0 GI x SF title_text 40200000 SI x 10000 GI d_Speedvalue -> s s g0:0 s g0:0 s s g1:0
+F1 SB x 1 SI d_Speedvalue 7fffffff GI ABC SF speed 3f800000 GI d_Speedvalue SB rpm 1 SF Speed 407f5c29 SI lang 10000 SI Speed ffffffff GI ABC GI x SF d_Speedvalue cf32d05e SI x 1e8e1d20 SI speed 80000000 GI speed GI Speed SI speed 1 GI ABC SF zone_1 3f000000 GI rpm -> s s g0:0 s g1:7fffffff s s s s g0:0 g1:1 s s s g1:80000000 g1:80000000 s g0:0 s g1:1
+F1 GI lang SS d_Speedvalue abc SB d_Speedvalue 1 SB d_Speedvalue 0 SF rpm c0200000 SI d_Speedvalue 19631cef SI Speed ffffffff SF lang 7f800000 -> g0:0 s s s s s s s
+F1 GI Speed GI speed SS online -2147483649 -> g0:0 g0:0 s
+F1 GI zone_1 GI ABC GI Speed SB rpm 0 SF zone_1 0 SB zone_1 0 SB speed 1 SB online 1 SI x ff SI title_text 80000000 SI rpm 10000 SF lang 4f32d05e SF online 42f6e979 GI x SB lang 0 SS rpm -17 GI title_text GI title_text SS title_text 0x10 GI d_Speedvalue -> g0:0 g0:0 g0:0 s s s s s s s s s s g1:ff s s g1:80000000 g1:80000000 s g0:0
+F1 GI ABC SI ABC 7fffffff SB online 1 SF ABC 0 SS speed -2147483649 GI d_Speedvalue GI d_Speedvalue SI speed 7 -> g0:0 s s s s g0:0 g0:0 s
+F1 GI Speed GI online GI ABC SF ABC c0200000 SB d_Speedvalue 0 GI d_Speedvalue SS d_Speedvalue x SS lang 42 SS speed 2147483648 GI online GI ABC SS Speed -17 SI zone_1 1 SI title_text 7fffffff SB title_text 0 SB rpm 1 SS Speed -17 SI Speed 7 SI Speed 10000 -> g0:0 g0:0 g0:0 s s g1:0 s s s g0:0 g1:fffffffe s s s s s s s s
+F1 GI Speed SS ABC 1 GI Speed -> g0:0 s g0:0
+F1 SI online 7 SB ABC 0 SB d_Speedvalue 0 -> s s s
+F1 SB online 1 GI title_text SS ABC 12abc GI d_Speedvalue SS x 12abc SI speed ff GI title_text GI title_text GI d_Speedvalue SB Speed 1 GI rpm GI zone_1 SI x 7 SF Speed 4e6e6b28 GI d_Speedvalue SI speed 1 GI Speed GI d_Speedvalue SF lang 60ad78ec -> s g0:0 s g0:0 s s g0:0 g0:0 g0:0 s g0:0 g0:0 s s g0:0 s g1:1 g0:0 s
+F1 SI ABC 1e240 GI online SB speed 0 SF rpm 4e6e6b28 GI lang SF x c0200000 GI lang GI ABC SB x 1 SS rpm 0x10 SF rpm c07f5c29 SS online  5 GI d_Speedvalue GI zone_1 SF lang ff800000 GI Speed GI x SF x 0 SF Speed c07f5c29 GI zone_1 -> s g0:0 s s g0:0 s g0:0 g1:1e240 s s s s g0:0 g0:0 s g1:0 g1:1 s s g0:0
+F1 SB speed 1 SF x 4e6e6b28 GI rpm GI rpm SI speed 74023cc GI ABC SF Speed ff800000 GI title_text GI x GI ABC SB rpm 0 GI lang SI ABC 0 SI ABC 1 SB x 0 GI ABC SB zone_1 1 GI ABC GI speed GI zone_1 -> s s g0:0 g0:0 s g0:0 s g0:0 g1:3b9aca00 g0:0 s g0:0 s s s g1:1 s g1:1 g1:80000000 g1:1
+F1 SF speed 0 SB title_text 1 SF lang c0200000 -> s s s
+F1 GI speed SB lang 1 GI ABC SB rpm 0 GI lang GI title_text SF d_Speedvalue bf800000 GI x -> g0:0 s g0:0 s g1:1 g0:0 s g0:0
+F1 SF d_Speedvalue c07f5c29 GI title_text GI online SB online 0 SF speed c0200000 GI title_text SF lang 0 GI Speed -> s g0:0 g0:0 s s g0:0 s g1:fffffffe
+F1 SB ABC 0 SS ABC 0x10 GI rpm GI lang SI speed 10000 SF speed ff800000 SI speed 80000000 GI lang -> s s g0:0 g0:0 s s s g0:0
+F1 SI Speed 80000000 GI lang GI d_Speedvalue GI lang GI d_Speedvalue SI ABC ffffffff SI title_text 7 SS ABC abc SI Speed ffffffff SI Speed 1e240 SS zone_1 3.75 GI lang SI lang 7 SI Speed 1e240 SS zone_1 -17 SI lang ff SB Speed 0 GI rpm SI online ffffffff -> s g0:0 g0:0 g0:0 g0:0 s s s s s s g0:0 s s s s s g0:0 s
+F1 GI speed GI title_text SB x 0 GI zone_1 SF Speed c39ce5da SI Speed 0 SF zone_1 7fc00000 SF ABC 3f800000 GI speed GI Speed GI rpm SF title_text 407f5c29 SI lang 0 SF Speed c0200000 SB speed 1 GI online SF d_Speedvalue 0 SI ABC 4e186e0 GI speed GI zone_1 -> g0:0 g0:0 s g0:0 s s s s g1:0 g1:0 g0:0 s s s s g0:0 s s g1:1 g1:80000000
+F1 SI ABC 80000000 SI Speed ffffffff SS d_Speedvalue x GI speed GI zone_1 SB rpm 1 SF Speed c0200000 GI lang -> s s s g1:ffffffff g0:0 s s g0:0
+F1 SI x ffffffff GI online SI title_text 10000 SB d_Speedvalue 0 SF lang 4e6e6b28 SF lang 40200000 GI title_text SF d_Speedvalue ce6e6b28 -> s g0:0 s s s s g1:10000 s
+F1 SB speed 1 SS zone_1 -2147483649 SI lang 1 SB title_text 1 SI speed 1e240 GI title_text SF rpm ff800000 SB zone_1 0 -> s s s s s g1:1 s s
+F1 SB d_Speedvalue 0 SF zone_1 4e6e6b28 SI lang 10000 -> s s s
+F1 GI ABC GI Speed SB online 0 -> g0:0 g0:0 s
+F1 GI Speed GI rpm GI x GI zone_1 GI x GI ABC SI title_text 7fffffff SI speed ff SI d_Speedvalue 0 GI online SF Speed 4f32d05e GI ABC GI rpm SB lang 1 SI d_Speedvalue 1e240 SS zone_1 007 SF Speed 4effffff SI rpm 10000 SI online 7 GI speed -> g0:0 g0:0 g0:0 g0:0 g0:0 g0:0 s s s g0:0 s g0:0 g0:0 s s s s s s g1:7fffff80
+F1 SI zone_1 0 SI title_text 1 SS zone_1 2147483648 GI d_Speedvalue SS speed 1e3 GI ABC GI x SI zone_1 0 SS x 42 SB Speed 1 SI zone_1 80000000 SB title_text 0 SI lang 80000000 SS title_text 1e3 SI title_text 10000 GI title_text SI title_text 0 SF online 7fc00000 SI speed ff SB zone_1 0 -> s s s g0:0 s g0:0 g0:0 s s s s s s s s g1:10000 s s s s
+F1 GI speed SF speed bf800000 GI online SI zone_1 10000 GI zone_1 GI speed GI online GI online GI rpm SF d_Speedvalue 3f000000 GI rpm SI zone_1 1 SS rpm x GI speed SF online ff800000 SI ABC 80000000 SS zone_1 0 SI x 1 SI ABC 7fffffff SB speed 1 -> g0:0 s g0:0 s g1:10000 g1:ffffffff g0:0 g0:0 g0:0 s g0:0 s s g1:ffffffff s s s s s s
+F1 SS title_text 2147483648 SI d_Speedvalue ffffffff SI Speed 1e240 SF zone_1 3f000000 SB online 1 SF x 7f800000 GI x SS Speed 007 SF speed 40200000 GI online SF Speed 60ad78ec SF zone_1 4e6e6b28 GI online GI Speed GI Speed SI d_Speedvalue 7f634fd4 SI title_text 1e240 SI lang 1 SB online 1 SF speed 7fc00000 -> s s s s s s g1:7fffffff s s g1:1 s s g1:1 g1:7fffffff g1:7fffffff s s s s s
+F1 GI rpm GI ABC SS zone_1 3.75 SF rpm 3f800000 GI lang SB title_text 1 SS d_Speedvalue x GI speed -> g0:0 g0:0 s s g0:0 s s g0:0
+F1 SF lang 4f32d05e SF online 3f800000 GI online -> s s g1:1
+F1 SF speed 7f800000 SI speed ffffffff GI Speed SB online 0 GI title_text SB Speed 0 SI Speed 1 SF Speed 40200000 SI title_text 1e240 GI ABC SB Speed 0 SB title_text 0 SF online ff800000 SS title_text -17 GI online SI online 80000000 SB ABC 1 GI zone_1 SS zone_1 -17 -> s s g1:ffffffff s g0:0 s s s s g0:0 s s s s g1:80000000 s s g0:0 s
+F1 SS rpm -17 SF title_text 60ad78ec SB lang 1 SS Speed 0x10 SS online 0x10 SS d_Speedvalue _ GI x -> s s s s s s g0:0
+F1 GI rpm SI Speed 10000 SB x 1 GI ABC GI title_text SI Speed 7a189bef GI rpm GI Speed -> g0:0 s s g0:0 g0:0 s g0:0 g1:7a189bef
+F1 SI title_text 80000000 SF ABC c07f5c29 SI speed 1e240 GI title_text GI zone_1 SI zone_1 10000 GI ABC SI d_Speedvalue ff GI ABC GI d_Speedvalue GI zone_1 GI title_text SB online 1 GI online SB x 1 GI x GI Speed SB title_text 0 GI title_text SI ABC 0 -> s s s g1:80000000 g0:0 s g1:fffffffd s g1:fffffffd g1:ff g1:10000 g1:80000000 s g1:1 s g1:1 g1:1e240 s g1:0 s
+F1 SB ABC 1 GI x SI d_Speedvalue 0 -> s g0:0 s
+F1 GI title_text GI ABC SS zone_1 2147483648 -> g0:0 g0:0 s
+F1 GI ABC GI speed SF zone_1 ce6e6b28 -> g0:0 g0:0 s
+F1 GI d_Speedvalue SF x c0200000 SS title_text 42 SI d_Speedvalue 58d082fe SB title_text 0 GI ABC SI title_text 80000000 SB zone_1 0 -> g0:0 s s s s g0:0 s s
+F1 SI x ffffffff SB online 1 SB speed 0 -> s s s
+F1 GI lang GI title_text GI zone_1 GI ABC GI d_Speedvalue GI speed SB x 0 GI ABC SI lang ffffffff GI d_Speedvalue SI rpm 80000000 SB x 0 GI lang GI zone_1 SI Speed 1e240 SF Speed 0 SF rpm c0200000 GI title_text GI lang SI speed ffffffff -> g0:0 g0:0 g0:0 g0:0 g0:0 g0:0 s g0:0 s g0:0 s s g1:ffffffff g0:0 s s s g0:0 g1:ffffffff s
+F1 SF online 60ad78ec SI rpm 7fffffff GI Speed GI ABC GI ABC GI rpm GI online GI title_text -> s s g0:0 g0:0 g0:0 g1:7fffffff g1:7fffffff g0:0
+F1 SF x ff800000 SB speed 1 GI lang -> s s g0:0
+F1 GI x GI online GI Speed -> g0:0 g0:0 g0:0
+F1 GI online GI zone_1 SI Speed 80000000 -> g0:0 g0:0 s
+F1 SF lang 3f800000 GI Speed GI online -> s g0:0 g0:0
+F1 SI ABC ff SI ABC 7 SI Speed 0 GI d_Speedvalue SI ABC 80000000 GI zone_1 GI x SI speed 0 -> s s s g0:0 s g0:0 g0:0 s
+F1 SF x 4effffff GI x SF title_text 407f5c29 SI title_text ffffffff GI zone_1 SI title_text 1e240 SF ABC ce6e6b28 GI title_text -> s g1:7fffff80 s s g0:0 s s g1:1e240
+F1 GI online SI ABC 6c37c8f3 SF lang 4f32d05e GI x SF online 3f000000 SB x 1 SI online ffffffff GI ABC -> g0:0 s s g0:0 s s s g1:6c37c8f3
+F1 SF d_Speedvalue 60ad78ec GI online GI speed -> s g0:0 g0:0
