@@ -18,6 +18,8 @@ pub struct MonitorView {
     width: u32,
     height: u32,
     primary: bool,
+    /// its refresh rate in Hz (0 = not known)
+    hz: u32,
 }
 
 #[derive(Serialize)]
@@ -65,6 +67,28 @@ fn short_name(n: Option<&String>) -> String {
     n.trim_start_matches(r"\\.\").to_string()
 }
 
+/// A monitor's current refresh rate in Hz from its device name (`\\.\DISPLAY1`); 0 when Windows does not say.
+#[cfg(windows)]
+fn refresh_hz(device: &str) -> u32 {
+    use windows_sys::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
+    let name: Vec<u16> = device.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: a zeroed DEVMODEW with dmSize set is what the call expects; the name is NUL-terminated.
+    unsafe {
+        let mut dm: DEVMODEW = std::mem::zeroed();
+        dm.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+        if EnumDisplaySettingsW(name.as_ptr(), ENUM_CURRENT_SETTINGS, &mut dm) != 0 && dm.dmDisplayFrequency > 1 {
+            dm.dmDisplayFrequency
+        } else {
+            0
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn refresh_hz(_device: &str) -> u32 {
+    0
+}
+
 /// The monitors in the game's order: the primary first, then the rest as listed.
 pub fn monitors(window: &WebviewWindow) -> Vec<MonitorView> {
     let all = window.available_monitors().unwrap_or_default();
@@ -79,7 +103,7 @@ pub fn monitors(window: &WebviewWindow) -> Vec<MonitorView> {
         .enumerate()
         .map(|(n, i)| {
             let m = &all[i];
-            MonitorView { index: n as u32, name: short_name(m.name()), width: m.size().width, height: m.size().height, primary: n == 0 }
+            MonitorView { index: n as u32, name: short_name(m.name()), width: m.size().width, height: m.size().height, primary: n == 0, hz: m.name().map_or(0, |s| refresh_hz(s)) }
         })
         .collect()
 }
@@ -104,10 +128,13 @@ pub fn view(window: &WebviewWindow) -> DisplayView {
     res.sort();
     res.dedup();
     let mut caps = FPS_CAPS.to_vec();
-    if !caps.contains(&d.fps_cap) {
-        caps.push(d.fps_cap);
-        caps.sort();
+    // (the file's own cap, and the chosen monitor's refresh rate - the game's DISPLAY page offers it too, GitHub #11)
+    for c in [d.fps_cap, mon.map_or(0, |m| m.hz)] {
+        if c > 0 && !caps.contains(&c) {
+            caps.push(c);
+        }
     }
+    caps.sort();
     let live_keys = mcla_config::schema().iter().filter(|k| k.implemented && LIVE_KEYS.contains(&k.key)).map(|k| k.key).collect();
     DisplayView {
         monitors: mons,

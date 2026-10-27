@@ -300,6 +300,7 @@
   "set.o_res": "Resolution",
   "set.o_fps": "Frame rate cap",
   "set.mon_fps": "{0} fps",
+  "set.fps_judder": "A {0} fps cap with vsync on this {1} Hz monitor keeps frames on screen for uneven times, so motion judders. Pick {1} fps or off.",
   "set.mon_res": "{0} x {1}",
   "set.o_vsync": "VSync",
   "set.o_fpsmon": "FPS counter",

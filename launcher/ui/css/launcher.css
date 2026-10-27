@@ -218,12 +218,13 @@ a { color: var(--accent2); }
 
 /* greyed "not in the game yet" settings */
 .opt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 48px; margin-top: 4px; }
-.opt { height: 86px; padding-top: 13px; border-bottom: 1px solid var(--line); }
+.opt { min-height: 86px; padding-top: 13px; border-bottom: 1px solid var(--line); }
 .opt[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
 .opt-h { grid-column: 1 / -1; padding: 18px 0 2px; }
 .opt-h:first-child { padding-top: 4px; }
 .mon-status { font-size: 12.5px; font-weight: 500; color: var(--accent2); }
 .mon-status[data-kind="bad"] { color: var(--bad); }
+.fps-warn { margin: 8px 0 12px; color: var(--warn); }
 .opt-t { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
 .banner-box { margin-top: 12px; padding: 10px 14px; background: var(--warn-a16); border: 1px solid var(--warn); border-radius: 6px; font-size: 13.5px; line-height: 1.45; }
 .fan-note { padding: 14px 16px; background: var(--accent-a16); border: 1px solid var(--accent-a60); border-radius: 6px; font-size: 14px; line-height: 1.55; }

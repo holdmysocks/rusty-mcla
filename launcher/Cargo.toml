@@ -29,6 +29,10 @@ tokio = { version = "1", features = ["rt", "time"] }
 rfd = "0.15"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
+[target.'cfg(windows)'.dependencies]
+# (the monitors' refresh rates for the frame-rate cap row: EnumDisplaySettingsW - Tauri's Monitor has none)
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
+
 [dev-dependencies]
 tempfile = "3"
 
