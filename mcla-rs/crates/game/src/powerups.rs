@@ -813,6 +813,11 @@ impl Holder {
     }
 }
 
+/// A PowerUptype cell's word (F-56191): the type + 1, none (25) 0
+pub fn hud_cell(t: i32) -> i32 {
+    if t == NONE as i32 { 0 } else { t + 1 }
+}
+
 /// The HUD's power-up control (sub_82203AC8 -> sub_8223E200): `PowerUptype_0`,
 /// `PowerUptype_1` (the type + 1, 0 empty; a mega shows as its base) and `PowerUpvalue`.
 /// With a shot out: its type - less 11 when under 22, as the original does it - then the
@@ -820,8 +825,7 @@ impl Holder {
 pub fn hud_values(h: &Holder, types: &[TypeTune; 24]) -> [f32; 3] {
     let map = |t: u8| -> i32 {
         let t = t as i32;
-        let t = if (11..22).contains(&t) { t - 11 } else { t };
-        if t == NONE as i32 { 0 } else { t + 1 }
+        hud_cell(if (11..22).contains(&t) { t - 11 } else { t })
     };
     match &h.shot {
         Some(s) => {
@@ -829,7 +833,7 @@ pub fn hud_values(h: &Holder, types: &[TypeTune; 24]) -> [f32; 3] {
             if a < 22 {
                 a -= 11;
             }
-            let a = if a == NONE as i32 { 0 } else { a + 1 };
+            let a = hud_cell(a);
             [a as f32, map(h.slots[0]) as f32, s.left / types[s.kind as usize].active_time.max(1e-3)]
         }
         None => [map(h.slots[0]) as f32, map(h.slots[1]) as f32, 1.0],

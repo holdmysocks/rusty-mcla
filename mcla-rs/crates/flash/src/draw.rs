@@ -1,8 +1,8 @@
 //! Display list -> triangle batches, following the original draw routines:
-//! instance traversal `0x825FB348`, colour transform combine `0x825F8B20`,
-//! shape `0x82608548` (fill/line styles, triangle lists, gradients evaluated
-//! per vertex `0x82607930`), thick lines `0x82608240`, static text
-//! `0x82603BB8` with glyph quads `0x82603388`.
+//! instance traversal `F-92070`, colour transform combine `F-57014`,
+//! shape `F-19892` (fill/line styles, triangle lists, gradients evaluated
+//! per vertex `F-54894`), thick lines `F-78733`, static text
+//! `F-11515` with glyph quads `F-83474`.
 //!
 //! Output coordinates are stage pixels; the host scales the stage to its screen.
 
@@ -66,7 +66,7 @@ impl DrawList {
     }
 }
 
-/// World colour transform of an instance (`0x825F8B20`): the runtime's byte
+/// World colour transform of an instance (`F-57014`): the runtime's byte
 /// arithmetic, including truncation of the multiplier product to a signed byte,
 /// then the parent's tint bytes (RGB from `setRGB`/`textColor`, A from `_alpha`).
 pub fn combine_cx(local: &CxForm, parent: &CxForm, tint: [u8; 4]) -> CxForm {
@@ -78,7 +78,7 @@ pub fn combine_cx(local: &CxForm, parent: &CxForm, tint: [u8; 4]) -> CxForm {
     out
 }
 
-/// ARGB through a colour transform -> RGBA (`0x82607CA0`); the alpha is then
+/// ARGB through a colour transform -> RGBA (`F-25297`); the alpha is then
 /// scaled by the drawn instance's own alpha byte.
 pub fn apply_cx(argb: u32, cx: &CxForm, alpha: u8) -> [u8; 4] {
     let ch = |c: u32, i: usize| -> u8 { (((c as i32 * cx.mult[i] as i32) >> 6) + cx.add[i] as i32 * 4).clamp(0, 255) as u8 };
@@ -86,12 +86,15 @@ pub fn apply_cx(argb: u32, cx: &CxForm, alpha: u8) -> [u8; 4] {
     [ch((argb >> 16) & 0xff, 0), ch((argb >> 8) & 0xff, 1), ch(argb & 0xff, 2), a as u8]
 }
 
-/// Gradient colour at a point in twips (`0x82607930`), ARGB.
+/// Gradient colour at a point in twips (`F-54894`), ARGB.
 pub fn gradient_color(fill: &FillStyle, x: f32, y: f32) -> u32 {
     let Some(g) = &fill.gradient else { return fill.color };
-    let (gx, gy) = g.matrix.apply(x, y);
-    let t = if g.radial { (gx * gx + gy * gy).sqrt() * 0.015_563_964 } else { (gx + 16384.0) * 0.007_781_982_4 };
-    let t = t.clamp(0.0, 255.0) as u32 as u8;
+    let m = &g.matrix;
+    let (gx, gy) = (m.c.mul_add(y, m.a * x) + m.tx, m.b.mul_add(x, m.d * y) + m.ty);
+    let t = if g.radial { gx.mul_add(gx, gy * gy).sqrt() * 0.015_563_964 } else { (gx + 16384.0) * 0.007_781_982_4 };
+    // (below 0 -> 0; not up to 255, NaN included -> 255)
+    let t = if t < 0.0 { 0.0 } else if t <= 255.0 { t } else { 255.0 };
+    let t = t as u32 as u8;
     let n = g.ratios.len().min(g.colors.len());
     for i in 0..n.saturating_sub(1) {
         let (r0, r1) = (g.ratios[i], g.ratios[i + 1]);
@@ -102,10 +105,12 @@ pub fn gradient_color(fill: &FillStyle, x: f32, y: f32) -> u32 {
             if span == 0 {
                 return c0;
             }
+            // (each channel's sum in unsigned 32 bits, shifted into place and or'ed without a mask: a falling
+            // channel's wrapped quotient spills into the channels above it, as in the original)
             let lerp = |sh: u32| -> u32 {
                 let a = (c0 >> sh) & 0xff;
                 let b = (c1 >> sh) & 0xff;
-                (a.wrapping_add((b.wrapping_sub(a)).wrapping_mul(f) / span)) & 0xff
+                a.wrapping_add((b.wrapping_sub(a)).wrapping_mul(f) / span)
             };
             return lerp(24) << 24 | lerp(16) << 16 | lerp(8) << 8 | lerp(0);
         }
@@ -159,7 +164,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// `0x825FB348`: world transform and colour, then children if the instance
+    /// `F-92070`: world transform and colour, then children if the instance
     /// has any, else its character.
     pub fn instance(&mut self, p: &Player, id: InstId, parent: &Matrix, pcx: &CxForm, ptint: [u8; 4]) {
         let Some(inst) = p.inst(id) else { return };
@@ -386,8 +391,8 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Dynamic text field (`0x82605B28`, layout `0x82604548`, line measure
-    /// `0x826041F0`): em-unit layout from the field origin, first baseline at
+    /// Dynamic text field (`F-88391`, layout `F-50496`, line measure
+    /// `F-53874`): em-unit layout from the field origin, first baseline at
     /// the font ascent, lines `ascent + descent + leading` apart, broken at
     /// carriage returns and wrapped at spaces beyond the field width, aligned
     /// left/right/centre/justified. The colour is the instance tint.

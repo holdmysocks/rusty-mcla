@@ -1,0 +1,73 @@
+PT 0 0 -> 1 aaaaaaaa
+PT 0 1 -> aaaaaaaa 1
+PT 1 0 -> 2 aaaaaaaa
+PT 1 1 -> aaaaaaaa 2
+PT 2 0 -> 3 aaaaaaaa
+PT 2 1 -> aaaaaaaa 3
+PT 3 0 -> 4 aaaaaaaa
+PT 3 1 -> aaaaaaaa 4
+PT 4 0 -> 5 aaaaaaaa
+PT 4 1 -> aaaaaaaa 5
+PT 5 0 -> 6 aaaaaaaa
+PT 5 1 -> aaaaaaaa 6
+PT 6 0 -> 7 aaaaaaaa
+PT 6 1 -> aaaaaaaa 7
+PT 7 0 -> 8 aaaaaaaa
+PT 7 1 -> aaaaaaaa 8
+PT 8 0 -> 9 aaaaaaaa
+PT 8 1 -> aaaaaaaa 9
+PT 9 0 -> a aaaaaaaa
+PT 9 1 -> aaaaaaaa a
+PT 10 0 -> b aaaaaaaa
+PT 10 1 -> aaaaaaaa b
+PT 11 0 -> c aaaaaaaa
+PT 11 1 -> aaaaaaaa c
+PT 12 0 -> d aaaaaaaa
+PT 12 1 -> aaaaaaaa d
+PT 13 0 -> e aaaaaaaa
+PT 13 1 -> aaaaaaaa e
+PT 14 0 -> f aaaaaaaa
+PT 14 1 -> aaaaaaaa f
+PT 15 0 -> 10 aaaaaaaa
+PT 15 1 -> aaaaaaaa 10
+PT 16 0 -> 11 aaaaaaaa
+PT 16 1 -> aaaaaaaa 11
+PT 17 0 -> 12 aaaaaaaa
+PT 17 1 -> aaaaaaaa 12
+PT 18 0 -> 13 aaaaaaaa
+PT 18 1 -> aaaaaaaa 13
+PT 19 0 -> 14 aaaaaaaa
+PT 19 1 -> aaaaaaaa 14
+PT 20 0 -> 15 aaaaaaaa
+PT 20 1 -> aaaaaaaa 15
+PT 21 0 -> 16 aaaaaaaa
+PT 21 1 -> aaaaaaaa 16
+PT 22 0 -> 17 aaaaaaaa
+PT 22 1 -> aaaaaaaa 17
+PT 23 0 -> 18 aaaaaaaa
+PT 23 1 -> aaaaaaaa 18
+PT 24 0 -> 19 aaaaaaaa
+PT 24 1 -> aaaaaaaa 19
+PT 25 0 -> 0 aaaaaaaa
+PT 25 1 -> aaaaaaaa 0
+PT 26 0 -> 1b aaaaaaaa
+PT 26 1 -> aaaaaaaa 1b
+PT 27 0 -> 1c aaaaaaaa
+PT 27 1 -> aaaaaaaa 1c
+PT 28 0 -> 1d aaaaaaaa
+PT 28 1 -> aaaaaaaa 1d
+PT 29 0 -> 1e aaaaaaaa
+PT 29 1 -> aaaaaaaa 1e
+PT 30 0 -> 1f aaaaaaaa
+PT 30 1 -> aaaaaaaa 1f
+PT 31 0 -> 20 aaaaaaaa
+PT 31 1 -> aaaaaaaa 20
+PR F-73259 -> 1:PA_snap_photo 2:prompt_cancel 4:PA_photo_album 15:prompt_Rotate_Camera 23:Zoom In/Out 11:Pan
+PR F-29965 -> 2:prompt_exit 3:PA_publish 1:PA_view_photo 19:PA_select_photo
+PR F-22161 -> 2:prompt_cancel 1:PA_Choose_Slot
+PR F-44052 -> 2:PA_photo_album 3:PA_publish 21:PA_nextprev_photo
+PR F-90804 -> 2:prompt_cancel 1:PA_save_photo
+VD F-84077 -> Dialog_Description_GarageConfirm
+VD F-46420 -> Dialog_Description_ViewReplay
+VD F-79373 -> Dialog_Desc_ViewReplaySeries
+VD F-69707 -> Dialog_Desc_ViewReplayTourn

@@ -2,20 +2,20 @@
 //! the AVM1 interpreter, following the original player in the executable.
 //!
 //! Timeline (verified in the recomp):
-//! * per tick, pre-order over the instance tree (`0x825FB0D8`): an instance whose
+//! * per tick, pre-order over the instance tree (`F-94080`): an instance whose
 //!   alpha byte is 0 is skipped with its subtree; otherwise its `onEnterFrame`
-//!   runs, then a sprite processes its current frame (`0x825FDB30`): playing ->
+//!   runs, then a sprite processes its current frame (`F-27252`): playing ->
 //!   fire frame events (mask 2) and execute every command of the current frame
 //!   including actions; stopped -> re-apply PlaceObject commands and fire frame
 //!   events of named children only. Then pending stop/play requests apply and a
 //!   playing sprite steps to the next frame executing only display commands
-//!   (`0x825F93F0`, `0x825F9178`, `0x825F90C0`). Children follow.
+//!   (`F-48063`, `F-41374`, `F-85946`). Children follow.
 //! * `goto` only steps forward, wrapping through the last frame; at the wrap the
 //!   children's "placed" marks are cleared so frame 0 places them again. Nothing
 //!   is removed except by RemoveObject commands.
 //! * `_x`/`_y` are offsets added to the timeline translation; `_xscale`/`_yscale`
 //!   replace the timeline scale when either differs from 100; `_rotation`
-//!   replaces the timeline rotation when non-zero (`0x825F8C70`).
+//!   replaces the timeline rotation when non-zero (`F-74625`).
 //!
 //! Scripts: values are single precision, a function object is its own
 //! activation (parameters in registers, other names forward to the scope it was
@@ -153,25 +153,31 @@ impl Inst {
         }
     }
 
-    /// `0x825F8C70`
+    /// `F-74625`
     pub fn compose(&mut self) {
         let rot = if self.rotation != 0.0 { self.rotation } else { self.placed_rot };
-        let (s, c) = (rot * std::f32::consts::PI / 180.0).sin_cos();
+        let (s, c) = rotation(rot);
         let (sx, sy) = if self.xscale == 100.0 && self.yscale == 100.0 { (self.placed_sx, self.placed_sy) } else { (self.xscale, self.yscale) };
         let (sx, sy) = (sx * 0.01, sy * 0.01);
+        // (the placed 2x2 times the rotation, fused as the original, then the scale; the terms of the
+        // rotation's zero translation stay in: x * 0 added)
         let [k0, k1, k2, k3] = self.skew;
+        let p0 = k1.mul_add(-s, k0 * c);
+        let p1 = k0.mul_add(s, k1 * c);
+        let p2 = k3.mul_add(-s, k2 * c);
+        let p3 = k2.mul_add(s, k3 * c);
         self.matrix = Matrix {
-            a: (k0 * c - k1 * s) * sx,
-            b: (k0 * s + k1 * c) * sx,
-            c: (k2 * c - k3 * s) * sy,
-            d: (k2 * s + k3 * c) * sy,
-            tx: self.x + self.placed_tx,
-            ty: self.y + self.placed_ty,
+            a: p0.mul_add(sx, p2 * 0.0),
+            b: p1.mul_add(sx, p3 * 0.0),
+            c: p2.mul_add(sy, p0 * 0.0),
+            d: p3.mul_add(sy, p1 * 0.0),
+            tx: self.placed_tx + self.x,
+            ty: self.placed_ty + self.y,
         };
     }
 
     /// Split a PlaceObject matrix into the timeline rotation, scale and the
-    /// remaining 2x2 factor (polar decomposition, as `0x8260AAD8` does), then
+    /// remaining 2x2 factor (polar decomposition, as `F-54074` does), then
     /// compose again.
     pub fn set_placed(&mut self, m: &Matrix) {
         let det = m.a * m.d - m.b * m.c;
@@ -399,18 +405,17 @@ impl Player {
         let math = self.alloc(ObjKind::Script);
         {
             let m = &mut self.obj_mut(math).unwrap().members;
-            fn un(p: &mut Player, a: &[Value], f: fn(f32) -> f32) -> Value {
-                let _ = p;
-                Value::Float(f(a.first().map_or(0.0, |v| v.to_f32())))
+            fn un(a: &[Value], k: usize) -> Value {
+                Value::Float((MATH[k].1)(a.first().map_or(0.0, |v| v.to_f32())))
             }
-            Self::reg_native(m, "sin", |p, _, a| un(p, a, f32::sin));
-            Self::reg_native(m, "cos", |p, _, a| un(p, a, f32::cos));
-            Self::reg_native(m, "tan", |p, _, a| un(p, a, f32::tan));
-            Self::reg_native(m, "atan", |p, _, a| un(p, a, f32::atan));
-            Self::reg_native(m, "asin", |p, _, a| un(p, a, f32::asin));
-            Self::reg_native(m, "acos", |p, _, a| un(p, a, f32::acos));
-            Self::reg_native(m, "sqrt", |p, _, a| un(p, a, f32::sqrt));
-            Self::reg_native(m, "abs", |p, _, a| un(p, a, f32::abs));
+            Self::reg_native(m, MATH[0].0, |_, _, a| un(a, 0));
+            Self::reg_native(m, MATH[1].0, |_, _, a| un(a, 1));
+            Self::reg_native(m, MATH[2].0, |_, _, a| un(a, 2));
+            Self::reg_native(m, MATH[3].0, |_, _, a| un(a, 3));
+            Self::reg_native(m, MATH[4].0, |_, _, a| un(a, 4));
+            Self::reg_native(m, MATH[5].0, |_, _, a| un(a, 5));
+            Self::reg_native(m, MATH[6].0, |_, _, a| un(a, 6));
+            Self::reg_native(m, MATH[7].0, |_, _, a| un(a, 7));
             Self::reg_native(m, "random", |p, _, _| Value::Float(p.random() as f32 / 4_294_967_296.0));
         }
         let key = self.alloc(ObjKind::Script);
@@ -454,7 +459,7 @@ impl Player {
 
     // ----------------------------------------------------------- host API
 
-    /// `_global.<name> = v` (the game's `0x825EE0E0` / `0x825EE188` / `0x825EE2D8`).
+    /// `_global.<name> = v` (the game's `F-59146` / `F-66095` / `F-16600`).
     pub fn set_global(&mut self, name: &str, v: Value) {
         let g = self.global;
         let n: Rc<str> = Rc::from(name);
@@ -612,7 +617,7 @@ impl Player {
         }
     }
 
-    /// `0x825FDB30` + `0x825F93F0`
+    /// `F-27252` + `F-48063`
     fn sprite_frame(&mut self, id: InstId) {
         let playing = self.inst(id).map_or(false, |i| i.playing);
         if playing {
@@ -639,7 +644,7 @@ impl Player {
         }
     }
 
-    /// `0x825F90C0` with display-only frames.
+    /// `F-85946` with display-only frames.
     pub fn goto(&mut self, id: InstId, target: usize) {
         let n = self.frame_count(id);
         let Some(cur) = self.inst(id).map(|i| i.frame as usize) else { return };
@@ -683,7 +688,7 @@ impl Player {
                 (Cmd::Place(p), FrameMode::Full | FrameMode::Display) => {
                     let child = self.place(id, p, key);
                     if let (Some(c), true) = (child, p.name.is_some() || !p.events.is_empty()) {
-                        // swfCMD_PlaceObject2ClipEvent (0x8260B250)
+                        // swfCMD_PlaceObject2ClipEvent (F-33189)
                         if p.character.is_some() {
                             if let Some(n) = &p.name {
                                 let name: Rc<str> = Rc::from(n.as_str());
@@ -729,7 +734,7 @@ impl Player {
         self.inst(parent).and_then(|i| i.children.get(&depth).copied())
     }
 
-    /// `0x8260B038` / `0x825FC5E0`
+    /// `F-70772` / `F-89132`
     fn place(&mut self, parent: InstId, p: &Place, key: u64) -> Option<InstId> {
         let existing = self.child_at(parent, p.depth);
         let id = match (existing, p.character) {
@@ -768,7 +773,7 @@ impl Player {
         Some(id)
     }
 
-    /// `0x8260AA48`
+    /// `F-12139`
     fn remove_child(&mut self, parent: InstId, depth: u16) {
         let Some(c) = self.child_at(parent, depth) else { return };
         let name = self.inst(c).map(|i| i.name.clone()).unwrap_or_else(|| Rc::from(""));
@@ -786,7 +791,7 @@ impl Player {
         self.free_inst_tree(c);
     }
 
-    /// `0x825F9390`
+    /// `F-27448`
     fn fire_events(&mut self, id: InstId, mask: u32) {
         let ev: Vec<Code> = match self.inst(id) {
             Some(i) => i.events.iter().filter(|e| e.0 & mask != 0).map(|e| e.1.clone()).collect(),
@@ -818,7 +823,7 @@ impl Player {
         (hash(&s), s)
     }
 
-    /// `0x825FC7B0`
+    /// `F-41319`
     fn inst_get(&mut self, id: InstId, name: &Value) -> Option<Value> {
         let (h, s) = Self::key(name);
         let i = self.inst(id)?;
@@ -861,7 +866,7 @@ impl Player {
         self.obj_get(m, name)
     }
 
-    /// `0x825FCD58`
+    /// `F-26264`
     fn inst_set(&mut self, id: InstId, name: &Value, v: Value) {
         let (h, _) = Self::key(name);
         let Some(i) = self.inst_mut(id) else { return };
@@ -912,7 +917,7 @@ impl Player {
         }
     }
 
-    /// `0x825FCBD8` (script objects) / `0x825FD748` (arrays) / `0x825FE0D8` (functions)
+    /// `F-42184` (script objects) / `F-39441` (arrays) / `F-41439` (functions)
     fn obj_get(&mut self, o: ObjId, name: &Value) -> Option<Value> {
         let obj = self.obj(o)?;
         match &obj.kind {
@@ -1019,7 +1024,7 @@ impl Player {
                         None => Value::Undef,
                     };
                 }
-                // 0x825F9990
+                // F-44997
                 match self.obj_get(o, &Value::str(name)) {
                     Some(Value::Native(f)) => f(self, r, args),
                     Some(Value::Obj(fr)) if self.is_func(fr) => self.call_function(fr, args, r),
@@ -1037,7 +1042,7 @@ impl Player {
         matches!(r, Ref::Obj(o) if matches!(self.obj(o).map(|x| &x.kind), Some(ObjKind::Func(_))))
     }
 
-    /// `0x825FBF48`
+    /// `F-36699`
     fn inst_call(&mut self, id: InstId, name: &str, args: &[Value]) -> Value {
         let frame_arg = |a: &[Value]| (a.first().map_or(0, |v| v.to_i32()) - 1) as u16 as usize;
         match name {
@@ -1141,7 +1146,7 @@ impl Player {
         Value::Obj(Ref::Inst(id))
     }
 
-    /// Call a function object (`0x82603170`).
+    /// Call a function object (`F-66672`).
     pub fn call_function(&mut self, f: Ref, args: &[Value], scope: Ref) -> Value {
         let Ref::Obj(fo) = f else { return Value::Undef };
         let Some(Obj { kind: ObjKind::Func(func), .. }) = self.obj_mut(fo) else { return Value::Undef };
@@ -1382,7 +1387,7 @@ impl Player {
                 self.stack.push(Value::Int(a.len() as i32));
             }
             0x15 | 0x35 => {
-                // StringExtract(string, index, count) — `0x82600034`: the index is
+                // StringExtract(string, index, count) — `A-75332`: the index is
                 // 0-based (not Flash's 1-based); an index outside the string gives ""
                 // with a warning; the count is clipped to the end
                 let count = self.pop().to_i32();
@@ -1668,7 +1673,7 @@ pub fn common_fscommand(p: &mut Player, cmd: &str, arg: &str) -> bool {
             let w = measure_string(&p.movie, &font, &s, size);
             p.set_global("fs_measure_width", Value::Float(w));
         }
-        // `0x827203A8`: how many lines `fs_measure_string` takes in a field
+        // `F-33151`: how many lines `fs_measure_string` takes in a field
         // `fs_measure_slotWidth` wide (an integer; the movies multiply it by the text
         // size to make room for a description). Lines break at spaces and at CR/LF.
         "measureslotheight" => {
@@ -1697,6 +1702,30 @@ pub fn common_fscommand(p: &mut Player, cmd: &str, arg: &str) -> bool {
     }
     true
 }
+
+/// The Math natives (F-25737 sin, F-86511 cos, F-18756 tan, F-13576 atan, F-57109 asin, F-54807 acos, F-58006 sqrt,
+/// F-84682 abs): the argument to float, the C library's double function of it, rounded to float
+pub const MATH: [(&str, fn(f32) -> f32); 8] = [
+    ("sin", |x| (x as f64).sin() as f32),
+    ("cos", |x| (x as f64).cos() as f32),
+    ("tan", |x| (x as f64).tan() as f32),
+    ("atan", |x| (x as f64).atan() as f32),
+    ("asin", |x| (x as f64).asin() as f32),
+    ("acos", |x| (x as f64).acos() as f32),
+    ("sqrt", |x| (x as f64).sqrt() as f32),
+    ("abs", |x| x.abs()),
+];
+
+/// The sine and cosine of a rotation in degrees (F-98882): the angle times the float constant pi/180, the C library's
+/// double sine and cosine of it rounded to float
+pub fn rotation(deg: f32) -> (f32, f32) {
+    let a = (deg * (std::f32::consts::PI / 180.0)) as f64;
+    (a.sin() as f32, a.cos() as f32)
+}
+
+#[cfg(test)]
+#[path = "original_tests.rs"]
+mod original_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1750,7 +1779,7 @@ mod tests {
     }
 }
 
-/// Equals2 (`0x82601A28`): strings compare as strings, otherwise floats, ints,
+/// Equals2 (`A-88557`): strings compare as strings, otherwise floats, ints,
 /// booleans in that order; two objects compare equal (the original warns).
 fn equals2(a: &Value, b: &Value) -> bool {
     if a.is_str() || b.is_str() {
@@ -1771,7 +1800,7 @@ fn equals2(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// `Array` constructor (`0x825FC6F8`): the arguments become the elements.
+/// `Array` constructor (`F-77768`): the arguments become the elements.
 fn native_array(p: &mut Player, this: Ref, args: &[Value]) -> Value {
     if let Ref::Obj(o) = this {
         if let Some(Obj { kind: ObjKind::Array(v), .. }) = p.obj_mut(o) {
@@ -1781,14 +1810,14 @@ fn native_array(p: &mut Player, this: Ref, args: &[Value]) -> Value {
     Value::Undef
 }
 
-/// `Color` constructor (`0x825FB768`): `setRGB` native plus `_target`.
+/// `Color` constructor (`F-82626`): `setRGB` native plus `_target`.
 fn native_color(p: &mut Player, this: Ref, args: &[Value]) -> Value {
     p.set_member(this, &Value::str("setRGB"), Value::Native(native_set_rgb));
     p.set_member(this, &Value::str("_target"), args.first().cloned().unwrap_or(Value::Int(0)));
     Value::Undef
 }
 
-/// `setRGB` (`0x825FB6A8`): the target's RGB multiplier bytes.
+/// `setRGB` (`F-96389`): the target's RGB multiplier bytes.
 fn native_set_rgb(p: &mut Player, this: Ref, args: &[Value]) -> Value {
     let t = p.get_member(this, &Value::str("_target"));
     let c = args.first().map_or(0, |v| v.to_i32());

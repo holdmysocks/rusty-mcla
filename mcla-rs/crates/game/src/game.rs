@@ -8204,7 +8204,7 @@ impl Game {
                     // (GO TO GARAGE asks while vt+32 holds: for a series or a tournament (F-71834) until it is
                     // won or lost - bComplete / bFailure; every other class only while its race is not over)
                     Some(13) if self.flash_popup.is_some() && ((self.series.is_some() && !self.series_decided()) || self.career.tour_table.as_ref().is_some_and(|t| !t.last && t.decided.is_none())) => {
-                        self.open_confirm("Dialog_Title_GarageConfirm", "Dialog_Description_GarageConfirm", MenuAction::StartFreeRoam);
+                        self.open_confirm("Dialog_Title_GarageConfirm", GARAGE_CONFIRM_DESC, MenuAction::StartFreeRoam);
                         self.menu_confirm = 2;
                     }
                     Some(13) => {
@@ -13485,6 +13485,13 @@ pub mod savedir {
         }
     }
 }
+
+/// The garage question's text (mcBaseMenu vt+84, F-84077)
+const GARAGE_CONFIRM_DESC: &str = "Dialog_Description_GarageConfirm";
+
+#[cfg(test)]
+#[path = "ui_original_tests.rs"]
+mod ui_original_tests;
 
 #[cfg(test)]
 mod tests {
