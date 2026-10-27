@@ -205,22 +205,42 @@ pub fn warming() -> bool {
     WARMING.load(Ordering::Acquire) > 0
 }
 
+/// How many of those threads are still building (the loading log line - bootload.rs).
+pub fn warming_count() -> u32 {
+    WARMING.load(Ordering::Acquire)
+}
+
+/// One of `warming`'s threads: counted down when it ends, also by a panic (a driver error is fatal in wgpu) - else the
+/// start-up movie's LOADING would wait for it for ever (GitHub #15).
+struct WarmGuard;
+
+impl WarmGuard {
+    fn new() -> WarmGuard {
+        WARMING.fetch_add(1, Ordering::AcqRel);
+        WarmGuard
+    }
+}
+
+impl Drop for WarmGuard {
+    fn drop(&mut self) {
+        WARMING.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// `v` of each of `pipes` now, each on a thread of its own (counted in `warming`): for pipelines that take
 /// seconds to compile (the city's environment-map pair, ~4 s each with the driver's cache cold), so that
 /// `Gpu::build` and the loading go on beside them (docs/PERFORMANCE.md 2026-10-26).
 pub fn build_ahead(pipes: &[&MsPipe], v: Variant) {
     for p in pipes {
         let inner = p.inner.clone();
-        WARMING.fetch_add(1, Ordering::AcqRel);
+        let guard = WarmGuard::new();
         let t = std::time::Instant::now();
-        let spawned = std::thread::Builder::new().name("msaa warm".into()).spawn(move || {
+        // (a thread that cannot be made drops the guard with the closure)
+        let _ = std::thread::Builder::new().name("msaa warm".into()).spawn(move || {
+            let _guard = guard;
             inner.at(v);
             log::info!("pipeline: one built ahead in {} ms (a thread of its own)", t.elapsed().as_millis());
-            WARMING.fetch_sub(1, Ordering::AcqRel);
         });
-        if spawned.is_err() {
-            WARMING.fetch_sub(1, Ordering::AcqRel);
-        }
     }
 }
 
@@ -231,26 +251,25 @@ pub fn warm(variants: Vec<Variant>) {
     let list: Vec<Arc<Inner>> = REGISTRY.lock().map(|r| r.iter().filter_map(|w| w.upgrade()).collect()).unwrap_or_default();
     let jobs: Arc<Vec<(Arc<Inner>, Variant)>> = Arc::new(variants.iter().flat_map(|&v| list.iter().filter(move |p| p.drawn_in(v)).map(move |p| (p.clone(), v))).collect());
     let next = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let threads = std::thread::available_parallelism().map_or(2, |n| (n.get() / 4).clamp(1, 4));
+    // (up to 4 threads; on DX12, where FXC takes 30 s and more a city pipeline and nothing keeps them between starts, half the
+    // CPU's threads up to 12 - GitHub #15)
+    let threads = std::thread::available_parallelism().map_or(2, |n| if crate::hooks::on_dx12() { (n.get() / 2).clamp(1, 12) } else { (n.get() / 4).clamp(1, 4) });
     let t = std::time::Instant::now();
     // (its own threads still building: the last logs the time)
     let left = Arc::new(AtomicU32::new(threads as u32));
     for _ in 0..threads {
         let (jobs, next, left) = (jobs.clone(), next.clone(), left.clone());
-        WARMING.fetch_add(1, Ordering::AcqRel);
-        let spawned = std::thread::Builder::new().name("msaa warm".into()).spawn(move || {
+        let guard = WarmGuard::new();
+        let _ = std::thread::Builder::new().name("msaa warm".into()).spawn(move || {
+            let _guard = guard;
             loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some((p, v)) = jobs.get(i) else { break };
                 p.at(*v);
             }
-            WARMING.fetch_sub(1, Ordering::AcqRel);
             if left.fetch_sub(1, Ordering::AcqRel) == 1 {
                 log::info!("pipeline: {} scene pipelines built ahead in {} ms ({} threads)", jobs.len(), t.elapsed().as_millis(), threads);
             }
         });
-        if spawned.is_err() {
-            WARMING.fetch_sub(1, Ordering::AcqRel);
-        }
     }
 }

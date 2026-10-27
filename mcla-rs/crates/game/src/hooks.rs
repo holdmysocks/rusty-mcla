@@ -284,9 +284,18 @@ fn header(rt: &Runtime, log_path: &Path) -> String {
 }
 
 static ADAPTER: Mutex<String> = Mutex::new(String::new());
+/// The game draws through DX12: its swap chain cannot be made on an exclusive-fullscreen window (DXGI_ERROR_INVALID_CALL,
+/// every card - GitHub #12), so fullscreen is borderless there (`fullscreen_on`, `render::Gpu::base`).
+static ON_DX12: AtomicBool = AtomicBool::new(false);
+
+/// The game draws through DX12 (`set_adapter`).
+pub fn on_dx12() -> bool {
+    ON_DX12.load(Ordering::Relaxed)
+}
 
 /// Called by `Gpu::new` with the adapter wgpu chose.
 pub fn set_adapter(info: &wgpu::AdapterInfo) {
+    ON_DX12.store(info.backend == wgpu::Backend::Dx12, Ordering::Relaxed);
     let line = format!("{} (backend {:?}, {:?}, driver {} {}, vendor 0x{:04x} device 0x{:04x})", info.name, info.backend, info.device_type, info.driver, info.driver_info, info.vendor, info.device);
     log::info!("adapter: {line}");
     if let Ok(mut a) = ADAPTER.lock() {
@@ -432,6 +441,10 @@ pub fn chosen_monitor(event_loop: &winit::event_loop::ActiveEventLoop, index: u3
 /// warning.
 fn fullscreen_on(monitor: Option<winit::monitor::MonitorHandle>, res: mcla_config::Resolution) -> winit::window::Fullscreen {
     use winit::window::Fullscreen;
+    if ON_DX12.load(Ordering::Relaxed) {
+        log::warn!("fullscreen: borderless on DX12 (no swap chain on an exclusive-fullscreen window there)");
+        return Fullscreen::Borderless(monitor);
+    }
     let want = winit::dpi::PhysicalSize::new(res.w, res.h);
     let mode = monitor.as_ref().and_then(|m| m.video_modes().filter(|v| v.size() == want).max_by_key(|v| (v.refresh_rate_millihertz(), v.bit_depth())));
     match mode {

@@ -827,93 +827,117 @@ impl Gpu {
         // On DX12 the instance is made again with InstanceFlags::DEBUG, which is what makes wgpu compile with FXC's
         // optimiser off (/Od): that optimiser recurses without end on city.wgsl's fs_main and overflows any stack
         // (docs/LIGHTING.md, 2026-10-24). The driver still optimises the program; Vulkan is untouched.
-        let backends = wgpu::Backends::from_env().unwrap_or(match crate::hooks::display().backend {
+        let mut backends = wgpu::Backends::from_env().unwrap_or(match crate::hooks::display().backend {
             mcla_config::Backend::Auto => wgpu::Backends::PRIMARY,
             mcla_config::Backend::Vulkan => wgpu::Backends::VULKAN,
             mcla_config::Backend::Dx12 => wgpu::Backends::DX12,
         });
-        let mut dx12_od = false;
-        let (surface, adapter) = loop {
-            let mut flags = wgpu::InstanceFlags::from_build_config().with_env();
-            if dx12_od {
-                flags |= wgpu::InstanceFlags::DEBUG;
+        // (a swap chain that cannot be made: on DX12 in exclusive fullscreen the window goes borderless and it is tried
+        // again; what still fails starts over on Vulkan - GitHub #12, `configure_checked`)
+        loop {
+            let mut dx12_od = false;
+            let (instance, surface, adapter) = loop {
+                let mut flags = wgpu::InstanceFlags::from_build_config().with_env();
+                if dx12_od {
+                    flags |= wgpu::InstanceFlags::DEBUG;
+                }
+                let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                    backends: if dx12_od { wgpu::Backends::DX12 } else { backends },
+                    flags,
+                    ..Default::default()
+                });
+                let surface = instance.create_surface(window.clone()).context("create surface")?;
+                let adapter = instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        compatible_surface: Some(&surface),
+                        force_fallback_adapter: false,
+                    })
+                    .await
+                    .context("no suitable GPU adapter")?;
+                if adapter.get_info().backend == wgpu::Backend::Dx12 && !dx12_od && !flags.contains(wgpu::InstanceFlags::DEBUG) {
+                    dx12_od = true;
+                    continue;
+                }
+                break (instance, surface, adapter);
+            };
+            let info = adapter.get_info();
+            log::info!("GPU: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+            crate::hooks::set_adapter(&info);
+            let feats = adapter.features();
+            let bc_supported = feats.contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+            let mut required = wgpu::Features::empty();
+            if bc_supported {
+                required |= wgpu::Features::TEXTURE_COMPRESSION_BC;
             }
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                backends: if dx12_od { wgpu::Backends::DX12 } else { backends },
-                flags,
-                ..Default::default()
-            });
-            let surface = instance.create_surface(window.clone()).context("create surface")?;
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: Some(&surface),
-                    force_fallback_adapter: false,
-                })
-                .await
-                .context("no suitable GPU adapter")?;
-            if adapter.get_info().backend == wgpu::Backend::Dx12 && !dx12_od && !flags.contains(wgpu::InstanceFlags::DEBUG) {
-                dx12_od = true;
-                continue;
+            // (2-sample targets, the original's "fullscreenself" - selfmovie.rs; WebGPU guarantees only 1 and 4)
+            if feats.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
+                required |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
             }
-            break (surface, adapter);
-        };
-        let info = adapter.get_info();
-        log::info!("GPU: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
-        crate::hooks::set_adapter(&info);
-        let feats = adapter.features();
-        let bc_supported = feats.contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
-        let mut required = wgpu::Features::empty();
-        if bc_supported {
-            required |= wgpu::Features::TEXTURE_COMPRESSION_BC;
-        }
-        // (2-sample targets, the original's "fullscreenself" - selfmovie.rs; WebGPU guarantees only 1 and 4)
-        if feats.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
-            required |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
-        }
-        // (the scene's depth-stencil: the original's ids in the stencil - render/ms.rs)
-        if feats.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) {
-            required |= wgpu::Features::DEPTH32FLOAT_STENCIL8;
-            ms::set_scene_ds_format(wgpu::TextureFormat::Depth32FloatStencil8);
-        } else {
-            ms::set_scene_ds_format(wgpu::TextureFormat::Depth24PlusStencil8);
-        }
-        // (the timestamps of the `gputimes:` log line, where the adapter has them - gpuprof.rs)
-        required |= crate::gpuprof::features(feats);
-        let limits = adapter.limits();
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("mcla"),
-                    required_features: required,
-                    required_limits: wgpu::Limits {
-                        max_texture_dimension_2d: limits.max_texture_dimension_2d.max(4096),
-                        max_buffer_size: limits.max_buffer_size,
-                        ..wgpu::Limits::default()
+            // (the scene's depth-stencil: the original's ids in the stencil - render/ms.rs)
+            if feats.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) {
+                required |= wgpu::Features::DEPTH32FLOAT_STENCIL8;
+                ms::set_scene_ds_format(wgpu::TextureFormat::Depth32FloatStencil8);
+            } else {
+                ms::set_scene_ds_format(wgpu::TextureFormat::Depth24PlusStencil8);
+            }
+            // (the timestamps of the `gputimes:` log line, where the adapter has them - gpuprof.rs)
+            required |= crate::gpuprof::features(feats);
+            let limits = adapter.limits();
+            let (device, queue) = adapter
+                .request_device(
+                    &wgpu::DeviceDescriptor {
+                        label: Some("mcla"),
+                        required_features: required,
+                        required_limits: wgpu::Limits {
+                            max_texture_dimension_2d: limits.max_texture_dimension_2d.max(4096),
+                            max_buffer_size: limits.max_buffer_size,
+                            ..wgpu::Limits::default()
+                        },
+                        memory_hints: wgpu::MemoryHints::Performance,
                     },
-                    memory_hints: wgpu::MemoryHints::Performance,
-                },
-                None,
-            )
-            .await
-            .context("request device")?;
-        let size = window.inner_size();
-        let mut config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
-            .context("surface config")?;
-        // (settings.toml display.vsync - `hooks::present_mode`)
-        config.present_mode = crate::hooks::present_mode();
-        config.format = if config.format.is_srgb() { config.format } else { config.format.add_srgb_suffix() };
-        // (the UI pass writes through the plain view of the same surface, so that its alpha
-        // blending happens on the encoded values as the original's does - see main.rs "ui")
-        config.view_formats = vec![config.format, config.format.remove_srgb_suffix()];
-        config.usage |= wgpu::TextureUsages::COPY_SRC;
-        surface.configure(&device, &config);
-        crate::selfmovie::set_two_samples(
-            required.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
-                && adapter.get_texture_format_features(config.format.remove_srgb_suffix()).flags.sample_count_supported(2),
-        );
-        Ok(GpuBase { device, queue, surface: Arc::new(surface), config, bc_supported, max_tex: limits.max_texture_dimension_2d })
+                    None,
+                )
+                .await
+                .context("request device")?;
+            let size = window.inner_size();
+            let mut config = surface
+                .get_default_config(&adapter, size.width.max(1), size.height.max(1))
+                .context("surface config")?;
+            // (settings.toml display.vsync - `hooks::present_mode`)
+            config.present_mode = crate::hooks::present_mode();
+            config.format = if config.format.is_srgb() { config.format } else { config.format.add_srgb_suffix() };
+            // (the UI pass writes through the plain view of the same surface, so that its alpha
+            // blending happens on the encoded values as the original's does - see main.rs "ui")
+            config.view_formats = vec![config.format, config.format.remove_srgb_suffix()];
+            config.usage |= wgpu::TextureUsages::COPY_SRC;
+            let mut surface = surface;
+            let mut ok = configure_checked(&device, &surface, &config).await;
+            if !ok && info.backend == wgpu::Backend::Dx12 && matches!(window.fullscreen(), Some(winit::window::Fullscreen::Exclusive(_))) {
+                log::warn!("surface: no DX12 swap chain on the exclusive-fullscreen window; borderless fullscreen instead");
+                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(window.current_monitor())));
+                // (leaving the exclusive mode gives the monitor its own mode back: the window's size is the screen's now)
+                let size = window.inner_size();
+                surface = instance.create_surface(window.clone()).context("create surface")?;
+                config.width = size.width.max(1);
+                config.height = size.height.max(1);
+                ok = configure_checked(&device, &surface, &config).await;
+            }
+            if !ok {
+                if info.backend != wgpu::Backend::Vulkan && backends != wgpu::Backends::VULKAN {
+                    log::warn!("surface: no swap chain on {:?}; starting over on Vulkan", info.backend);
+                    backends = wgpu::Backends::VULKAN;
+                    continue;
+                }
+                anyhow::bail!("surface configuration failed on {:?}", info.backend);
+            }
+            log::info!("surface: {}x{} {:?} {:?}", config.width, config.height, config.format, config.present_mode);
+            crate::selfmovie::set_two_samples(
+                required.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+                    && adapter.get_texture_format_features(config.format.remove_srgb_suffix()).flags.sample_count_supported(2),
+            );
+            return Ok(GpuBase { device, queue, surface: Arc::new(surface), config, bc_supported, max_tex: limits.max_texture_dimension_2d });
+        }
     }
 
     /// The rest of the renderer on a [`GpuBase`] (any thread).
@@ -3424,5 +3448,19 @@ impl Frustum {
     /// True when every point lies outside the same plane.
     pub fn points_outside(&self, pts: &[Vec3]) -> bool {
         self.planes.iter().any(|p| pts.iter().all(|v| p.truncate().dot(*v) + p.w < 0.0))
+    }
+}
+
+/// `surface.configure` with its error caught (wgpu's default handler panics on it): false when the swap chain could not
+/// be made (GitHub #12: DX12 on an exclusive-fullscreen window, DXGI_ERROR_INVALID_CALL).
+async fn configure_checked(device: &wgpu::Device, surface: &wgpu::Surface<'_>, config: &wgpu::SurfaceConfiguration) -> bool {
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    surface.configure(device, config);
+    match device.pop_error_scope().await {
+        None => true,
+        Some(e) => {
+            log::warn!("surface: configuration failed: {e}");
+            false
+        }
     }
 }

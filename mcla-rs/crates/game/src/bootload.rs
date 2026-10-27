@@ -257,7 +257,22 @@ impl Loading {
         let sound_ready = self.sound.is_some() || self.sound_rx.is_none();
         // (and the scene's pipelines built ahead - render/ms.rs `warm`, started by the loading thread: the game's
         // first frame waited 2.5 - 6.5 s for them under the movie's held LOADING with a cold shader cache)
-        sound_ready && self.job.as_ref().map_or(true, |j| j.is_finished()) && !render::ms::warming()
+        let job_done = self.job.as_ref().map_or(true, |j| j.is_finished());
+        let done = sound_ready && job_done && !render::ms::warming();
+        // (every 15 s of LOADING: what it still waits for - a first start on DX12 compiles its programs for minutes;
+        // GitHub #15)
+        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let s = self.started.elapsed().as_secs();
+        if !done && s >= 15 && s / 15 > LAST.load(std::sync::atomic::Ordering::Relaxed) {
+            LAST.store(s / 15, std::sync::atomic::Ordering::Relaxed);
+            log::info!(
+                "startup: still loading after {s} s - loading thread {}, sound library {}, pipeline threads building {}",
+                if job_done { "done" } else { "running" },
+                if sound_ready { "ready" } else { "reading" },
+                render::ms::warming_count()
+            );
+        }
+        done
     }
 }
 
