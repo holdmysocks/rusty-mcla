@@ -37,7 +37,7 @@ struct Actor {
 }
 
 /// Track kind of a blend-shape weight (`crCreatureComponentBlendShapes` reads kind 21 by target id,
-/// `sub_8253EE48`).
+/// `F-77597`).
 const KIND_BLEND_SHAPE: u8 = 21;
 
 struct Mover {
@@ -58,6 +58,11 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// The length the event-time rule compares with: the scene camera's own clip (header +12), else the scene's.
+    pub fn camera_len(&self) -> f32 {
+        self.camera.as_ref().map_or(self.duration, |c| c.duration)
+    }
+
     /// The cutscene form of the cascades (F-34053's second branch): the cine core script (0x95ca1d1b 0xD1D, 0xE1F) pushes
     /// every character and car event it launches into kill buffer 1 (CineScript_PushKillBuffer, F-73266), which sets the
     /// renderer's +389 until F-60657 clears the buffer at the scene's end; the form is skipped while the scene's name holds
@@ -123,17 +128,18 @@ pub const STORY_MARKS: &[(&str, &[(u8, f32)])] = &[
     ("story/cut_story_beat_sh_02_exotic", &[(73, 35.2333)]),
 ];
 
-/// An event's time as Events_LaunchEvent files it (sub_823C4FA8): countdown (58), bookmark_cut_to_game (72)
-/// and cut_to_game (74) at the camera clip's very end are moved 0.1 s earlier.
+/// An event's time as Events_LaunchEvent files it (`F-73781`): countdown (58), bookmark_cut_to_game (72)
+/// and cut_to_game (74) at or past the camera clip's length (its header +12, `max(len, 0.1)`) are moved 0.1 s earlier.
 fn mark_time(id: u8, t: f32, cam_len: f32) -> f32 {
-    if matches!(id, 58 | 72 | 74) && t >= (cam_len - 0.1).max(0.1) {
+    // (fsel: len - 0.1 >= 0 ? len : 0.1)
+    if matches!(id, 58 | 72 | 74) && t >= if cam_len - 0.1 >= 0.0 { cam_len } else { 0.1 } {
         t - 0.1
     } else {
         t
     }
 }
 
-/// Where a skip takes a story scene (the cine manager's skip request +305: sub_823BEEB0 -> sub_823BBB98):
+/// Where a skip takes a story scene (the cine manager's skip request +305: F-19408 -> F-61676):
 /// the earliest bookmark / bookmark_cut_to_game / countdown of the scene, if the clock is not past it yet
 /// (the clock jumps there and the scene plays on; with none, or past it, the skip does nothing).
 pub fn skip_to(scene: &str, t: f32, cam_len: f32) -> Option<f32> {
@@ -142,7 +148,7 @@ pub fn skip_to(scene: &str, t: f32, cam_len: f32) -> Option<f32> {
     (at.is_finite() && at > t).then_some(at)
 }
 
-/// When a story scene hands the picture to the game camera (bookmark_cut_to_game / cut_to_game: sub_823CC200,
+/// When a story scene hands the picture to the game camera (bookmark_cut_to_game / cut_to_game: F-45212,
 /// a hard cut); the scene's clock and cars run on to its end.
 pub fn cut_to_game(scene: &str, cam_len: f32) -> Option<f32> {
     let marks = STORY_MARKS.iter().find(|m| m.0.eq_ignore_ascii_case(scene))?.1;
@@ -155,16 +161,16 @@ pub fn is_player_car(label: &str) -> bool {
 }
 
 /// The driver sets Boot.sco registers with a cutscene copy (CineScript_Characters_RegisterDriverMappings, its sixth
-/// argument: "<set>_HackedScale" - native sub_823C0828, the map at the manager's +116 / +128). The copy is the same
+/// argument: "<set>_HackedScale" - native F-67461, the map at the manager's +116 / +128). The copy is the same
 /// figure about 7.6 % taller, the rig the scenes' face packs were made on; every other set plays as itself.
 const HACKED_SCALE: [&str; 14] = [
     "drv_fc_002_set", "drv_fc_003_set", "drv_ma_001_set", "drv_ma_03_set", "drv_mb_001_set", "drv_mb_008_set", "drv_mb_04_set",
     "drv_mc_001_set", "drv_mc_003_set", "drv_mc_02_set", "drv_mh_006_set", "drv_mh_02_set", "drv_mp_01_set", "mec_mc_01_set",
 ];
 
-/// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, sub_823BC348 / sub_823BC268). Not ported:
+/// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, F-58832 / F-81189). Not ported:
 /// a slot marked to use the unscaled character (CineScript_Characters_GetSlotToUseUnscaledCharacter) and the jacket
-/// copy (`drv_mp_jacket_01_set_hackedscale`, chosen by sub_822A7D90 - not decoded); GH_06 marks no slot.
+/// copy (`drv_mp_jacket_01_set_hackedscale`, chosen by F-17373 - not decoded); GH_06 marks no slot.
 fn cutscene_set(set: &str) -> String {
     if HACKED_SCALE.iter().any(|s| s.eq_ignore_ascii_case(set)) {
         format!("{}_hackedscale", set.to_ascii_lowercase())
@@ -561,7 +567,7 @@ impl Cine {
     }
 
     /// A scene's camera at scene time `t` without starting it (the race-start warp flies to the start
-    /// scene's camera at t 1.0 before the scene plays - `sub_823C0D10`): (eye, forward, up, vertical
+    /// scene's camera at t 1.0 before the scene plays - `F-62707`): (eye, forward, up, vertical
     /// field of view in radians) through `origin`.
     pub fn peek_camera(&self, scene: &str, origin: Mat4, t: f32) -> Option<(Vec3, Vec3, Vec3, f32)> {
         let key = scene.to_ascii_lowercase();
@@ -593,7 +599,7 @@ impl Cine {
 
     /// A story scene past its cut_to_game: the game camera shows the rest (`STORY_MARKS`).
     pub fn at_game_camera(&self) -> bool {
-        self.playing.as_ref().map_or(false, |sc| cut_to_game(&sc.name, sc.duration).map_or(false, |c| sc.t >= c))
+        self.playing.as_ref().map_or(false, |sc| cut_to_game(&sc.name, sc.camera_len()).map_or(false, |c| sc.t >= c))
     }
 
     fn scene_camera(sc: &Scene) -> Option<(Vec3, Vec3, Vec3, f32)> {
@@ -602,9 +608,9 @@ impl Cine {
         let pos = cam.track(KIND_TRANSLATION, 0)?.data.vec(f);
         let rot = cam.track(KIND_ROTATION, 0).map(|t| t.data.rot(f)).unwrap_or(Quat::IDENTITY);
         // (the lens track is a focal length in mm on a 35 mm gate: cam+104 = 2 atan(0.7085 in /
-        // (v mm * 0.03937)), the horizontal angle (sub_823CDAE8); the render camera's vertical
-        // angle is that divided by the viewport's aspect, 16:9 (sub_822C0320, the warp's
-        // target, cam_to_menu sub_82206F18). Without the track the camera keeps its reset
+        // (v mm * 0.03937)), the horizontal angle (F-25555); the render camera's vertical
+        // angle is that divided by the viewport's aspect, 16:9 (F-79297, the warp's
+        // target, cam_to_menu F-14139). Without the track the camera keeps its reset
         // lens, pi/4.)
         let h = cam.track(KIND_FOV, 0).map(|t| t.data.vec(f).x).filter(|v| *v > 0.0).map_or(std::f32::consts::FRAC_PI_4, |v| 2.0 * (0.7085 / (v * 0.03937)).atan());
         let fov = h / (16.0 / 9.0);
@@ -677,7 +683,7 @@ impl Cine {
             if let Some(face) = a.face.as_ref() {
                 let ff = face.anim.frame_at(sc.t);
                 if let (Some((shapes, tracks)), Some(m)) = (a.shapes.as_mut(), a.model.morph.as_ref()) {
-                    // a target without a track keeps its weight (sub_8253EE48 writes only what the frame has)
+                    // a target without a track keeps its weight (F-77597 writes only what the frame has)
                     for (i, t) in tracks.iter().enumerate() {
                         if let Some(t) = *t {
                             shapes.set(i, face.anim.tracks[t].data.vec(ff).x);
@@ -703,7 +709,7 @@ impl Cine {
                 }
             }
             let (mt, mr) = a.clip.mover(f);
-            // (sub_823A10A8: a cine character whose name holds "ped" is drawn with the manager's own
+            // (F-65008: a cine character whose name holds "ped" is drawn with the manager's own
             // lights - the scenes' bystanders pedsit1_ped00, benchsit_ped05 ...; the cast with three
             // lights of its own)
             self.buf.next_bystander = a.label.to_ascii_lowercase().contains("ped");
@@ -730,10 +736,13 @@ mod tests {
         // 74.333 at the clip's end, filed 0.1 s earlier)
         let to = skip_to("story/cut_story_district_champs", 0.036, 74.3333).unwrap();
         assert!((to - 74.2333).abs() < 1e-3);
-        // RACE_GH_06: the bookmark 57.633, the cut to the game camera 64.167 (0.1 s earlier at a 64.2 s clip)
-        assert_eq!(skip_to("story/cut_story_race_gh_06", 10.0, 64.2), Some(57.6333));
-        assert_eq!(skip_to("story/cut_story_race_gh_06", 58.0, 64.2), None);
-        assert!((cut_to_game("story/cut_story_race_gh_06", 64.2).unwrap() - 64.0667).abs() < 1e-3);
+        // RACE_GH_06: the bookmark 57.633, the cut to the game camera 64.167; a mark is filed 0.1 s earlier only when it is at
+        // or past the camera clip's length (F-73781: t >= max(len, 0.1)), so a clip ending exactly there moves it ...
+        assert_eq!(skip_to("story/cut_story_race_gh_06", 10.0, 64.1667), Some(57.6333));
+        assert_eq!(skip_to("story/cut_story_race_gh_06", 58.0, 64.1667), None);
+        assert!((cut_to_game("story/cut_story_race_gh_06", 64.1667).unwrap() - 64.0667).abs() < 1e-3);
+        // ... and a longer clip leaves it where the script put it
+        assert!((cut_to_game("story/cut_story_race_gh_06", 64.2).unwrap() - 64.1667).abs() < 1e-3);
         // no marks: the skip does nothing
         assert_eq!(skip_to("story/cut_story_motorcycle_rep_A", 1.0, 40.0), None);
     }

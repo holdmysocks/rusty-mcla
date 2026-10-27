@@ -5,10 +5,10 @@
 //! has a mover animation an mcBrainAnimated (BrainFactory_CreateBrainAnimated) unless the scene's
 //! description sets its game-driven word (+1288: only `cut_cop_alert` does), launches its car event
 //! (CineScript_Cars_LaunchEvent) and deletes the brain when the scene finishes (BrainFactory_DeleteBrain,
-//! 0x1926). The event's update (`sub_823D4CD0`, once a frame with the time before it advances) asks for
+//! 0x1926). The event's update (`F-31853`, once a frame with the time before it advances) asks for
 //! an acceleration and a curvature from the mover's path and the car's state; on its first frame and on
-//! a cut in the path it sets the car down on the path (`sub_822A9930`). The brain's update
-//! (`sub_822B97E0` -> `sub_8254A280`) turns the two into the chassis's steering, pedals and gear from the
+//! a cut in the path it sets the car down on the path (`F-86308`). The brain's update
+//! (`F-91361` -> `F-28541`) turns the two into the chassis's steering, pedals and gear from the
 //! car's calibration tables (`aivVehicleTuning`); the physics moves the car.
 use crate::physics::car::{CarInput, CarState};
 use crate::physics::exact::{ease, guest_atan2};
@@ -36,14 +36,14 @@ pub struct CarEvent {
     pub done: bool,
 }
 
-/// The pose, velocity and turn the car is set down with (`sub_822A9930`'s arguments).
+/// The pose, velocity and turn the car is set down with (`F-86308`'s arguments).
 pub struct Snap {
     pub m: [Vec3; 4],
     pub vel: Vec3,
     pub ang_vel: Vec3,
 }
 
-/// `sub_8216C9C0`: the signed xz angle turning `a` onto `b`, 0 when either is vertical.
+/// `F-32060`: the signed xz angle turning `a` onto `b`, 0 when either is vertical.
 fn sangle(a: Vec3, b: Vec3) -> f32 {
     let n = ((a.z * a.z + a.x * a.x) * (b.z * b.z + b.x * b.x)).sqrt();
     if n - 1e-12 < 0.0 {
@@ -57,9 +57,10 @@ fn sangle(a: Vec3, b: Vec3) -> f32 {
     }
 }
 
-/// `sub_821D59C8`: the angle between two rotations, 2 acos |q0 . q1| (0 outside (-1, 1)).
+/// `F-94425`: the angle between two rotations, 2 acos |q0 . q1| (0 outside (-1, 1)).
 fn quat_angle(a: Quat, b: Quat) -> f32 {
-    let d = b.x * a.x + (b.y * a.y + (b.w * a.w + b.z * a.z));
+    // (fmadds chain of the original: z first, then w, y, x; each a fused multiply-add)
+    let d = b.x.mul_add(a.x, b.y.mul_add(a.y, b.w.mul_add(a.w, b.z * a.z)));
     if d > -1.0 && d < 1.0 {
         (d.abs() as f64).acos() as f32 * 2.0
     } else {
@@ -67,7 +68,7 @@ fn quat_angle(a: Quat, b: Quat) -> f32 {
     }
 }
 
-/// `sub_82165300`: a unit vector, or `other` when its squared length is not above `least`.
+/// `F-41334`: a unit vector, or `other` when its squared length is not above `least`.
 fn unit_or(v: Vec3, least: f32, other: Vec3) -> Vec3 {
     let l2 = v.x * v.x + v.y * v.y + v.z * v.z;
     if l2 > least {
@@ -85,27 +86,33 @@ fn rot_at(a: &Animation, t: f32) -> Option<Quat> {
     a.track(KIND_MOVER_ROTATION, 0).map(|k| k.data.rot(a.frame_at(t)))
 }
 
-/// `sub_823D46B0`: the cut test. t0 = t on the 1/30 s grid (from where the last test stood plus 1/30 if it
+/// `F-13038`: the cut test. t0 = t on the 1/30 s grid (from where the last test stood plus 1/30 if it
 /// skipped more than 0.05 s), t1 the grid step after the plain t0; a move over 2 m or a turn over 20
 /// degrees of the mover between them is a cut, and the update goes on from t1. +156 = the plain t0.
 fn cut_test(prev: &mut f32, a: &Animation, t: f32) -> (f32, bool) {
+    cut_rule(prev, t, 2.0, 20.0, |s| pos_at(a, s), |s| rot_at(a, s))
+}
+
+/// The cut test's rule on its two samplers (the mover's place and rotation at a time), with the distance (m) and turn
+/// (deg) limits the update passes in. Test: `cut_rule_matches_the_original`.
+fn cut_rule(prev: &mut f32, t: f32, metres: f32, degrees: f32, pos: impl Fn(f32) -> Option<Vec3>, rot: impl Fn(f32) -> Option<Quat>) -> (f32, bool) {
     let step = 1.0f32 / 30.0;
     let t0 = t - (t as f64 % (1.0f32 / 30.0) as f64) as f32;
     let at = if t0 - *prev > 0.05 { *prev + step } else { t0 };
     let t1 = t0 + step;
-    let mut d = pos_at(a, at).unwrap_or(Vec3::ZERO);
-    if let Some(p1) = pos_at(a, t1) {
+    let mut d = pos(at).unwrap_or(Vec3::ZERO);
+    if let Some(p1) = pos(t1) {
         d -= p1;
     }
-    let q0 = rot_at(a, at).unwrap_or(Quat::IDENTITY);
-    let turn = rot_at(a, t1).map_or(0.0, |q1| quat_angle(q0, q1));
-    let cut = d.x * d.x + (d.y * d.y + d.z * d.z) > 2.0 * 2.0 || turn > 20.0 * 0.017_453_292;
+    let q0 = rot(at).unwrap_or(Quat::IDENTITY);
+    let turn = rot(t1).map_or(0.0, |q1| quat_angle(q0, q1));
+    let cut = d.x.mul_add(d.x, d.y.mul_add(d.y, d.z * d.z)) > metres * metres || turn > degrees * 0.017_453_292;
     *prev = t0;
     (if cut { t1 } else { t }, cut)
 }
 
-/// One frame of the car event (`sub_823D4CD0`): `t` the event's time before this frame, `dt` the frame,
-/// `scene` the scene's frame in the world (the coordinate-system binding, `sub_823A3F00`), `idle0` the
+/// One frame of the car event (`F-31853`): `t` the event's time before this frame, `dt` the frame,
+/// `scene` the scene's frame in the world (the coordinate-system binding, `F-88556`), `idle0` the
 /// car's calibration [12] (IdleSpeed of its first row). Gives the brain's acceleration and curvature, and
 /// the pose to set the car down in on the first frame or a cut.
 pub fn update(ev: &mut CarEvent, a: &Animation, scene: Mat4, t: f32, dt: f32, car: &CarState, idle0: f32) -> (f32, f32, Option<Snap>) {
@@ -175,7 +182,7 @@ pub fn update(ev: &mut CarEvent, a: &Animation, scene: Mat4, t: f32, dt: f32, ca
     (accel, curv, snap)
 }
 
-/// The brain's inputs (`sub_822B97E0` with `sub_8254A280`): the steering for the curvature at this speed
+/// The brain's inputs (`F-91361` with `F-28541`): the steering for the curvature at this speed
 /// (SteerScalar), the pedals for the acceleration against what the car can do in its gear (the engine's
 /// pull and braking tables, more pull while sliding or steering - DriftTorque over the engine's +20), the
 /// drag the tables model (DragConstant1..3), the nitrous / slipstream push and the slope; no handbrake;
@@ -223,6 +230,59 @@ pub fn solve(b: &AnimBrain, st: &CarState, vt: Option<&VehTune>) -> CarInput {
 mod tests {
     use super::*;
 
+    fn word(x: &str) -> u32 {
+        u32::from_str_radix(x, 16).unwrap()
+    }
+    fn fl(x: &str) -> f32 {
+        f32::from_bits(word(x))
+    }
+
+    /// F-94425 against the original's code run offline (`tools/cutscenes_small_reference.py`, QANG lines: random pairs of
+    /// unit rotations, near-equal pairs, +-1 dots, zero and NaN quaternions): the result bit for bit.
+    #[test]
+    fn quat_angle_matches_the_original() {
+        let text = include_str!("../tests/data/cutscenes_small_reference.txt");
+        let mut n = 0;
+        let mut bad = Vec::new();
+        for l in text.lines().filter(|l| l.starts_with("QANG")) {
+            let p: Vec<&str> = l.split(' ').collect();
+            let q = |i: usize| Quat::from_xyzw(fl(p[i]), fl(p[i + 1]), fl(p[i + 2]), fl(p[i + 3]));
+            let got = quat_angle(q(1), q(5));
+            n += 1;
+            if got.to_bits() != word(p[9]) && !(got.is_nan() && fl(p[9]).is_nan()) {
+                bad.push((l.to_string(), got.to_bits()));
+            }
+        }
+        assert!(n > 800);
+        assert!(bad.is_empty(), "{} of {n} differ, first {:?}", bad.len(), bad.first());
+    }
+
+    /// F-13038 against the original's code run offline (CUT lines: the cut rule with the mover sampler replaced by a stub that
+    /// returns synthetic place / rotation samples, 2000 cases of time, previous time and path): the returned time, the cut
+    /// flag and the stored previous time bit for bit. The sampler is not compared here.
+    #[test]
+    fn cut_rule_matches_the_original() {
+        let text = include_str!("../tests/data/cutscenes_small_reference.txt");
+        let (mut n, mut cuts) = (0, 0);
+        let mut bad = Vec::new();
+        for l in text.lines().filter(|l| l.starts_with("CUT")) {
+            let p: Vec<&str> = l.split(' ').collect();
+            let (t, prev, found) = (fl(p[1]), fl(p[2]), p[3].parse::<u32>().unwrap());
+            let k: Vec<f32> = (0..14).map(|i| fl(p[4 + i])).collect();
+            let pos = |s: f32| (found & 1 != 0).then(|| Vec3::new(k[0] + k[1] * s, k[2] + k[3] * s, k[4] + k[5] * s * s));
+            let rot = |s: f32| (found & 2 != 0).then(|| Quat::from_xyzw(k[6] + k[7] * s, k[8] + k[9] * s, k[10] + k[11] * s, k[12] + k[13] * s));
+            let mut pv = prev;
+            let (nt, cut) = cut_rule(&mut pv, t, 2.0, 20.0, pos, rot);
+            n += 1;
+            cuts += cut as u32;
+            if nt.to_bits() != word(p[18]) || cut != (p[19] == "1") || pv.to_bits() != word(p[20]) {
+                bad.push(l.to_string());
+            }
+        }
+        assert!(n >= 2000 && cuts > 500 && n - cuts > 300, "{n} cases, {cuts} cuts");
+        assert!(bad.is_empty(), "{} of {n} differ, first {:?}", bad.len(), bad.first());
+    }
+
     #[test]
     fn sangle_signs() {
         // turning right from straight ahead (-z) is negative, as the original's
@@ -231,7 +291,7 @@ mod tests {
         assert_eq!(sangle(Vec3::Y, Vec3::X), 0.0);
     }
 
-    /// The brain's pedals (sub_8254A280): asked for more than the gear's pull in a straight line at rest,
+    /// The brain's pedals (F-28541): asked for more than the gear's pull in a straight line at rest,
     /// full throttle; asked to slow harder than engine braking, the brakes for the rest of MaxBrakeDecel.
     #[test]
     fn pedals_from_the_tables() {

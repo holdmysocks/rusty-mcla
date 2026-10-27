@@ -2999,7 +2999,7 @@ impl App {
             // (F-86493 -> F-80555 -> F-19408 / F-61676, `cine::skip_to`); A does nothing)
             std::mem::take(&mut self.game.nav_enter);
             if std::mem::take(&mut self.game.nav_y) {
-                let at = self.cine.playing.as_ref().and_then(|sc| cine::skip_to(&sc.name, sc.t, sc.duration));
+                let at = self.cine.playing.as_ref().and_then(|sc| cine::skip_to(&sc.name, sc.t, sc.camera_len()));
                 if let (Some(at), Some(p)) = (at, self.cuts.playing.as_mut()) {
                     log::info!("cutscene: skip from {:.2} s to the bookmark at {:.2} s", p.t, at);
                     p.t = at;
