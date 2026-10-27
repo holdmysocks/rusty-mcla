@@ -4619,11 +4619,24 @@ pub fn path_rails(nav: &NavSys, verts: &[Vec3], snap: &[bool], parked: bool, min
     out
 }
 
+/// F-10286: the heading of a matrix row (x, z): the guest C runtime's atan2 (F-65975, in double) rounded to single,
+/// 2 pi (6.2831855) added while it is not above 0 and taken off while it is above 2 pi.
+pub fn heading_of(x: f32, z: f32) -> f32 {
+    const TAU: f32 = 6.2831855;
+    let mut h = crate::physics::exact::guest_atan2(x as f64, z as f64) as f32;
+    while h <= 0.0 {
+        h += TAU;
+    }
+    while h > TAU {
+        h -= TAU;
+    }
+    h
+}
+
 impl PathRails {
-    /// The heading of the spawn matrix (sub_8278F690: atan2(z row x, z row z) in (0, 2 pi]).
+    /// The heading of the spawn matrix (F-10286: atan2(z row x, z row z) in (0, 2 pi]).
     pub fn heading(&self) -> f32 {
-        let h = self.row2.x.atan2(self.row2.z);
-        if h <= 0.0 { h + std::f32::consts::TAU } else { h }
+        heading_of(self.row2.x, self.row2.z)
     }
 
     /// The follower's route (sub_8279FA00): more than one vertex - the curve rail, then the
@@ -5820,5 +5833,51 @@ mod original_curve_tests {
             n += 1;
         }
         assert_eq!(n, 126);
+    }
+
+    /// F-10286: the spawn matrix heading (guest atan2 wrapped to (0, 2 pi]) against the original's code run offline
+    /// (tools/people_small_reference.py -> testdata/people_small_ref.txt).
+    #[test]
+    fn heading_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/people_small_ref.txt").lines().filter(|l| l.starts_with("HD ")) {
+            let w: Vec<&str> = line.split(' ').collect();
+            let hx = |x: &str| u32::from_str_radix(x, 16).unwrap();
+            let got = heading_of(f32::from_bits(hx(w[1])), f32::from_bits(hx(w[2])));
+            assert_eq!(got.to_bits(), hx(w[4]), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 313);
+    }
+
+    /// F-71868 (point and unscaled derivative of the two-output evaluator) and F-75457 (B-spline basis and derivative) against the
+    /// original's code run offline on path curves of degree 1 - 3 (tools/people_curve_reference.py -> testdata/people_curve_ref.txt).
+    /// The fourth vector lane (the weight sum) is not compared.
+    #[test]
+    fn curve_pair_and_basis_match_the_original() {
+        let hx = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut curve: Option<LaneCurve> = None;
+        let (mut ev, mut ba) = (0, 0);
+        for line in include_str!("testdata/people_curve_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            if w[0] == "C" {
+                let (k, flag): (usize, u32) = (w[1].parse().unwrap(), w[2].parse().unwrap());
+                let f = |i: usize| f32::from_bits(hx(w[3 + i]));
+                let pts: Vec<Vec3> = (0..k).map(|i| Vec3::new(f(4 * i), f(4 * i + 1), f(4 * i + 2))).collect();
+                curve = Some(path_curve(&pts[..if flag != 0 { k - 1 } else { k }]));
+            } else if w[0] == "EV" {
+                let c = curve.as_ref().unwrap();
+                let (p, d) = c.eval_pair(f32::from_bits(hx(w[1])));
+                let want: Vec<u32> = w[3..].iter().map(|x| hx(x)).collect();
+                assert_eq!([p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), d.x.to_bits(), d.y.to_bits(), d.z.to_bits()], [want[0], want[1], want[2], want[4], want[5], want[6]], "{line}");
+                ev += 1;
+            } else {
+                let c = curve.as_ref().unwrap();
+                let (n, d) = c.basis_pair(w[1].parse().unwrap(), w[2].parse().unwrap(), f32::from_bits(hx(w[3])));
+                assert_eq!([n.to_bits(), d.to_bits()], [hx(w[5]), hx(w[6])], "{line}");
+                ba += 1;
+            }
+        }
+        assert_eq!((ev, ba), (1428, 840));
     }
 }

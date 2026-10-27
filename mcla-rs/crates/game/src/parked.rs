@@ -787,3 +787,37 @@ mod tests {
         assert_eq!(m.index(20), (0x5CDC_FAA7u32 & 0x7FFF_FFFF) % 20);
     }
 }
+
+/// F-97347 (the parking tree descent) against the original's code run offline on random trees
+/// (tools/people_small_reference.py -> testdata/people_small_ref.txt: `IT` a tree, `IN` queries; margin 1.0 as the callers set).
+#[cfg(test)]
+mod original_tests {
+    use super::*;
+    use mcla_formats::rage::parking::ParkNode;
+
+    #[test]
+    fn item_node_matches_the_original() {
+        let hx = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut tree = ParkingTree::default();
+        let mut n = 0;
+        for line in include_str!("testdata/people_small_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            if w[0] == "IT" {
+                let k: usize = w[1].parse().unwrap();
+                tree = ParkingTree::default();
+                for i in 0..k {
+                    let b = &w[2 + 8 * i..10 + 8 * i];
+                    let ch = |c: usize| b[c].parse::<i32>().ok().filter(|v| *v >= 0).map(|v| v as u32);
+                    let f = |c: usize| f32::from_bits(hx(b[4 + c]));
+                    tree.nodes.push(ParkNode { spots: vec![], children: [ch(0), ch(1), ch(2), ch(3)], centre: Vec2::ZERO, min: Vec2::new(f(0), f(1)), max: Vec2::new(f(2), f(3)), depth: 0 });
+                }
+                tree.root = Some(0);
+            } else if w[0] == "IN" {
+                let p = Vec2::new(f32::from_bits(hx(w[1])), f32::from_bits(hx(w[2])));
+                assert_eq!(item_node(&tree, p), Some(w[4].parse().unwrap()), "{line}");
+                n += 1;
+            }
+        }
+        assert_eq!(n, 960);
+    }
+}

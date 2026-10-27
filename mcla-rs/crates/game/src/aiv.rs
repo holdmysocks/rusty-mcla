@@ -319,7 +319,8 @@ impl Veh {
         let knee = t.max_curvature * 0.1;
         Veh { spd_k: 127.0 / t.max_speed, knee, low_k: 64.0 / knee, high_k: 63.0 / (t.max_curvature - knee), t }
     }
-    /// The class's read of a 128-entry speed table at x = speed index (unclamped fraction).
+    /// The class's read of a 128-entry speed table at x = speed index (unclamped fraction): the lower entry plus the step
+    /// times the fraction as one fused multiply-add (F-67089, F-45930, F-71244 do it so).
     fn read(row: &[f32], x: f32) -> f32 {
         if row.len() < 2 {
             return 0.0;
@@ -328,7 +329,7 @@ impl Veh {
         let i = x.min(126.1).floor();
         let k = (i as usize).min(row.len() - 2);
         let (a, b) = (row[k], row[k + 1]);
-        (b - a) * (x - i) + a
+        fma(b - a, x - i, a)
     }
     /// F-45930: max(0.1, MaxEngineAccelByGear [147 + 128 g + i]) = accel row g + 1.
     fn accel(&self, g: i32, v: f32) -> f32 {
@@ -2629,6 +2630,39 @@ mod tests {
         // and the slowest allowed speed of the profile is the bend's
         let vmin = s.iter().map(|s| s.allowed).fold(f32::MAX, f32::min);
         assert!(vmin < 30.0 && vmin <= apex.v_curve + 1e-4, "{vmin}");
+    }
+
+    /// F-67089 (steer scalar), F-45930 (engine accel by gear), F-71244 (engine decel by gear) against the original's code run offline
+    /// on random racer tunes (tools/people_small_reference.py -> testdata/people_small_ref.txt). The tune's derived scale at word 11 is
+    /// 127 / MaxSpeed as `Veh::new` derives it (the setup that writes it is not part of the comparison).
+    #[test]
+    fn tune_lookups_match_the_original() {
+        let hx = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut veh: Option<Veh> = None;
+        let mut n = 0;
+        for line in include_str!("testdata/people_small_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            match w[0] {
+                "TU" => {
+                    let f: Vec<f32> = w[1..].iter().map(|x| f32::from_bits(hx(x))).collect();
+                    assert_eq!(f[11], 127.0 / f[0]);
+                    veh = Some(Veh::new(Arc::new(AiTune::from_floats(&f).unwrap())));
+                }
+                "ST" => {
+                    let got = veh.as_ref().unwrap().steer_scalar(f32::from_bits(hx(w[1])));
+                    assert_eq!(got.to_bits(), hx(w[3]), "{line}");
+                    n += 1;
+                }
+                "AC" | "DC" => {
+                    let (g, v) = (w[1].parse::<i32>().unwrap(), f32::from_bits(hx(w[2])));
+                    let got = if w[0] == "AC" { veh.as_ref().unwrap().accel(g, v) } else { veh.as_ref().unwrap().decel(g, v) };
+                    assert_eq!(got.to_bits(), hx(w[4]), "{line}");
+                    n += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(n, 1080);
     }
 
     #[test]

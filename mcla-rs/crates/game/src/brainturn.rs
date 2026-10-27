@@ -848,3 +848,43 @@ mod tests {
         assert_eq!(got.iter().map(|o| o.pos.z).collect::<Vec<_>>(), vec![-60.0]);
     }
 }
+
+/// F-59709 (the object grid's cell of a point) and F-74216 (the cell number) against the original's code run offline
+/// (tools/people_small_reference.py -> testdata/people_small_ref.txt: `CE`, `KE`). The grid's stored upper bounds are n x 40 + min as
+/// the port derives them (the setup that writes them is F-38432, not part of this comparison).
+#[cfg(test)]
+mod original_tests {
+    use super::*;
+
+    #[test]
+    fn grid_cell_and_key_match_the_original() {
+        let hx = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let (mut ce, mut ke) = (0, 0);
+        for line in include_str!("testdata/people_small_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            if w[0] == "CE" {
+                let (nx, nz): (i32, i32) = (w[1].parse().unwrap(), w[2].parse().unwrap());
+                let f = |i: usize| f32::from_bits(hx(w[i]));
+                let g = ObjectGrid { min: [f(3), f(4)], n: [nx, nz], bounded: true };
+                assert_eq!(f(5), nx as f32 * CELL + f(3));
+                assert_eq!(f(6), nz as f32 * CELL + f(4));
+                let (id, ix, iz): (i32, i32, i32) = (w[10].parse().unwrap(), w[11].parse().unwrap(), w[12].parse().unwrap());
+                match g.cell(f(7), f(8)) {
+                    None => assert_eq!((id, ix, iz), (-1, 0, 0), "{line}"),
+                    Some((x, z)) => {
+                        assert_eq!((x, z), (ix, iz), "{line}");
+                        assert_eq!(g.key(x, z), Some(id as i64), "{line}");
+                    }
+                }
+                ce += 1;
+            } else if w[0] == "KE" {
+                let g = ObjectGrid { min: [0.0; 2], n: [w[1].parse().unwrap(), w[2].parse().unwrap()], bounded: true };
+                let id: i32 = w[6].parse().unwrap();
+                let got = g.key(w[3].parse().unwrap(), w[4].parse().unwrap());
+                assert_eq!(got, if id < 0 { None } else { Some(id as i64) }, "{line}");
+                ke += 1;
+            }
+        }
+        assert_eq!((ce, ke), (800, 800));
+    }
+}

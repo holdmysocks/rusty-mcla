@@ -226,6 +226,70 @@ impl LaneCurve {
         (p, dp * self.t_range)
     }
 
+    /// F-75457: the B-spline basis N(i, k) at u and its derivative, in the original's recursion and arithmetic: the
+    /// derivative by the product rule from the lower order's pair, the reciprocal span widths multiplied in, the sums as
+    /// fused multiply-adds (the generated code fuses in double and rounds to single); a zero width drops its term.
+    pub fn basis_pair(&self, i: usize, k: usize, u: f32) -> (f32, f32) {
+        fn fma(a: f32, b: f32, c: f32) -> f32 {
+            (a as f64).mul_add(b as f64, c as f64) as f32
+        }
+        let kn = &self.knots;
+        if k == 1 {
+            return (if kn[i] <= u && u < kn[i + 1] { 1.0 } else { 0.0 }, 0.0);
+        }
+        let k0 = kn[i];
+        let (f28, f30) = (u - k0, kn[i + k - 1] - k0);
+        let (f27, f29) = (kn[i + k] - u, kn[i + k] - kn[i + 1]);
+        if f30 != 0.0 {
+            let (n0, d0) = self.basis_pair(i, k - 1, u);
+            if f29 != 0.0 {
+                let (n1, d1) = self.basis_pair(i + 1, k - 1, u);
+                let (f10, f9) = (1.0 / f30, 1.0 / f29);
+                let (f8, f7) = (f10 * f28, f9 * f27);
+                let f4 = fma(f10, n0, f8 * d0);
+                (fma(f7, n1, f8 * n0), fma(f7, d1, -fma(f9, n1, -f4)))
+            } else {
+                let f11 = 1.0 / f30;
+                let f10 = f11 * f28;
+                (f10 * n0, fma(f11, n0, f10 * d0))
+            }
+        } else if f29 != 0.0 {
+            let (n1, d1) = self.basis_pair(i + 1, k - 1, u);
+            let f12 = 1.0 / f29;
+            let f11 = f12 * f27;
+            (f11 * n1, fma(f11, d1, -(f12 * n1)))
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    /// F-71868: the point at phase `t` and the derivative with respect to the knot parameter u (not scaled by TRange), as the
+    /// original's two-output evaluator computes them: t clamped to 0 .. 1 (a NaN gives 0), u = t x TRange capped at TMax, the
+    /// knot span holding u (first j with K[j] <= u < K[j + 1]), then the degree + 1 control points from j - degree on, each
+    /// multiplied by its `basis_pair` weight and added in turn (separate multiply and add). The fourth lane the original also
+    /// writes (the weight sum) is not kept. Needs a curve of degree >= 1 whose knot vector has its span.
+    pub fn eval_pair(&self, t: f32) -> (Vec3, Vec3) {
+        let t13 = if t >= 0.0 { t } else { 0.0 };
+        let t = if t13 - 1.0 >= 0.0 { 1.0 } else { t13 };
+        let prod = self.t_range * t;
+        let u = if prod - self.t_max >= 0.0 { self.t_max } else { prod };
+        let d = self.degree as usize;
+        let kn = &self.knots;
+        let mut j = 0;
+        while j + 2 < kn.len() && !(kn[j] <= u && u < kn[j + 1]) {
+            j += 1;
+        }
+        let start = j.saturating_sub(d).min(self.pts.len().saturating_sub(d + 1));
+        let (mut p, mut dp) = (Vec3::ZERO, Vec3::ZERO);
+        for i in start..=start + d {
+            let (w, dw) = self.basis_pair(i, d + 1, u);
+            let c = self.pts[i];
+            p = Vec3::new(c.x * w + p.x, c.y * w + p.y, c.z * w + p.z);
+            dp = Vec3::new(c.x * dw + dp.x, c.y * dw + dp.y, c.z * dw + dp.z);
+        }
+        (p, dp)
+    }
+
     /// |dP/dt| at `t` (lane vfunc 11, sub_82586CD0)
     pub fn speed(&self, t: f32) -> f32 {
         self.eval(t).1.length()
