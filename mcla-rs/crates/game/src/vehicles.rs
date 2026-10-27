@@ -798,6 +798,12 @@ pub struct Vehicles {
     /// 2026-10-23 (4)); the last `PARSED_KEEP` kept, by the order they were taken
     parsed: hashbrown::HashMap<String, Parsed>,
     parsed_stamp: u64,
+    /// car builds' CPU part (`prep_car`) made ahead on worker threads, by car folder and configuration, taken by
+    /// `load_model_cfg`: the read-ahead's plain build (`prefetch`), the racers' set-ups (`dress_setups`) -
+    /// docs/PERFORMANCE.md 2026-10-27 (13); the last `PREPS_KEEP`
+    preps: Vec<(String, CarConfig, PrepSlot)>,
+    /// the cars and set-ups whose build `dress_setups` has had made ahead
+    dress_ahead: std::collections::HashSet<(String, String)>,
     /// police light bars are flashing
     pub sirens: bool,
     /// running time for light flashing (s)
@@ -1076,6 +1082,64 @@ struct MergeAcc {
 }
 
 impl MergeAcc {
+    /// A mesh's geometry (`MeshGeo`, its indices from 0) after what the batch holds: as `MeshGeo::push` into the batch
+    /// itself had put it.
+    fn append(&mut self, g: MeshGeo) {
+        let base = self.verts.len() as u32;
+        self.min = self.min.min(g.min);
+        self.max = self.max.max(g.max);
+        self.verts.extend(g.verts);
+        self.indices.extend(g.indices.iter().map(|i| i + base));
+    }
+}
+
+/// One mesh of a car build: its vertices and indices as `load_model_cfg` merges them, made apart from the GPU
+/// (`Vehicles::prep_car`).
+struct MeshGeo {
+    verts: Vec<Vertex>,
+    indices: Vec<u32>,
+    min: Vec3,
+    max: Vec3,
+}
+
+/// A mesh of `prep_car`: its geometry and what the build needs to find its textures and batch.
+struct MeshPrep {
+    sname: String,
+    mode: MatMode,
+    /// the colour and second maps' names
+    dn: Option<String>,
+    sn: Option<String>,
+    /// the plate's own map, the carbon weave, the windows' glass maps (`plate_texture`, `carbon_weave`, `glass_maps`)
+    plate: bool,
+    carbon: bool,
+    win_cand: bool,
+    /// the batch key's third part: mode, moving group, LOD
+    kbits: u32,
+    /// with the glass maps (lens -1) where `win_cand`; `geo_alt` without them, where that differs
+    geo: MeshGeo,
+    geo_alt: Option<MeshGeo>,
+}
+
+/// A car build's CPU part (`Vehicles::prep_car`): the meshes in build order and what is gathered with them.
+struct CarPrep {
+    car_is_ambient: bool,
+    meshes: Vec<MeshPrep>,
+    lamp_acc: hashbrown::HashMap<(i32, bool), (Vec3, u32)>,
+    own_hubs: [Option<Vec3>; 6],
+    glow_bones: Vec<(u8, Vec3, Vec3)>,
+    variants: Vec<(Slot, Vec<String>)>,
+    variant_labels: Vec<(Slot, Vec<String>)>,
+    extra_variants: std::collections::HashSet<(String, usize)>,
+    part_rig: crate::damageparts::PartRig,
+    hood_slot: Option<Mat4>,
+    trunk_bone: Option<Mat4>,
+}
+
+impl MeshGeo {
+    fn new() -> MeshGeo {
+        MeshGeo { verts: Vec::new(), indices: Vec::new(), min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) }
+    }
+
     fn push(&mut self, mesh: &mcla_formats::rage::geometry::Mesh, xf: Mat4, dark_above: Option<f32>, lens: f32, amb: u8) {
         let base = self.verts.len() as u32;
         let identity = xf == Mat4::IDENTITY;
@@ -1380,10 +1444,19 @@ pub fn warm_dress(root: &Path, d: &Dress) {
 
 /// A car's files being read on a worker thread, or read (`Vehicles::parsed`).
 enum Parsed {
-    /// (and when it was asked for)
-    Reading(std::thread::JoinHandle<Result<CarAsset>>, u64),
+    /// (and when it was asked for; with the plain build's CPU part, `prep_car`)
+    Reading(std::thread::JoinHandle<Result<(CarAsset, CarPrep)>>, u64),
     Read(Arc<CarAsset>, u64),
 }
+
+/// A car build's CPU part made ahead (`Vehicles::preps`).
+enum PrepSlot {
+    Ready(CarPrep),
+    Making(std::thread::JoinHandle<CarPrep>),
+}
+
+/// builds made ahead and not taken, at most
+const PREPS_KEEP: usize = 12;
 
 const PARSED_KEEP: usize = 6;
 /// read ahead but not taken yet, at most
@@ -1413,7 +1486,12 @@ impl Vehicles {
         let stamp = self.parsed_stamp;
         let assets = crate::assets::Assets::new(world.assets.root.clone());
         let d = dir.to_path_buf();
-        if let Ok(h) = std::thread::Builder::new().name("car read".into()).spawn(move || vehicle_model::load_car(&assets, &d)) {
+        // (and its plain build's CPU part: the race start builds the grid so before it dresses it)
+        let read = move || vehicle_model::load_car(&assets, &d).map(|c| {
+            let p = Vehicles::prep_car(&c, &d, &CarConfig::default());
+            (c, p)
+        });
+        if let Ok(h) = std::thread::Builder::new().name("car read".into()).spawn(read) {
             log::info!("vehicles: reading {} ahead", dir.display());
             self.parsed.insert(key, Parsed::Reading(h, stamp));
         }
@@ -1424,6 +1502,39 @@ impl Vehicles {
         matches!(self.parsed.get(&parsed_key(dir)), Some(Parsed::Reading(h, _)) if !h.is_finished())
     }
 
+    fn keep_prep(&mut self, key: String, cfg: CarConfig, slot: PrepSlot) {
+        self.preps.retain(|(k, c, _)| !(*k == key && *c == cfg));
+        self.preps.push((key, cfg, slot));
+        if self.preps.len() > PREPS_KEEP {
+            self.preps.remove(0);
+        }
+    }
+
+    /// The CPU part of the build of `dir` in `cfg` made ahead (`preps`), waiting for its worker if it is still making it.
+    fn take_prep(&mut self, dir: &Path, cfg: &CarConfig) -> Option<CarPrep> {
+        let key = parsed_key(dir);
+        let i = self.preps.iter().position(|(k, c, _)| *k == key && c == cfg)?;
+        match self.preps.remove(i).2 {
+            PrepSlot::Ready(p) => Some(p),
+            PrepSlot::Making(h) => h.join().ok(),
+        }
+    }
+
+    /// The build of `dir` in `cfg`: its CPU part (`prep_car`) made on a worker thread now, for `load_model_cfg` to
+    /// take - when the car has been read (`parsed`) and the build is neither made nor being made.
+    fn prepare_ahead(&mut self, dir: &Path, cfg: &CarConfig) {
+        let key = parsed_key(dir);
+        let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        if self.models.iter().any(|m| m.name == name && m.cfg == *cfg) || self.preps.iter().any(|(k, c, _)| *k == key && c == cfg) {
+            return;
+        }
+        let Some(Parsed::Read(car, _)) = self.parsed.get(&key) else { return };
+        let (car, d, c) = (car.clone(), dir.to_path_buf(), cfg.clone());
+        if let Ok(h) = std::thread::Builder::new().name("car prep".into()).spawn(move || Vehicles::prep_car(&car, &d, &c)) {
+            self.keep_prep(key, cfg.clone(), PrepSlot::Making(h));
+        }
+    }
+
     /// The car in `dir` as read: from `parsed` (waiting for its worker if it is still reading), else read now.
     fn car_asset(&mut self, world: &World, dir: &Path) -> Result<Arc<CarAsset>> {
         self.parsed_stamp += 1;
@@ -1431,7 +1542,11 @@ impl Vehicles {
         let key = parsed_key(dir);
         let car = match self.parsed.remove(&key) {
             Some(Parsed::Read(c, _)) => c,
-            Some(Parsed::Reading(h, _)) => Arc::new(h.join().map_err(|_| anyhow::anyhow!("car read thread panicked"))??),
+            Some(Parsed::Reading(h, _)) => {
+                let (c, p) = h.join().map_err(|_| anyhow::anyhow!("car read thread panicked"))??;
+                self.keep_prep(key.clone(), CarConfig::default(), PrepSlot::Ready(p));
+                Arc::new(c)
+            }
             None => Arc::new(vehicle_model::load_car(&world.assets, dir)?),
         };
         self.parsed.insert(key, Parsed::Read(car.clone(), stamp));
@@ -1484,430 +1599,42 @@ impl Vehicles {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
-        let car_is_ambient = dir.file_name().map_or(false, |n| n.to_string_lossy().to_ascii_lowercase().starts_with("va_"));
+        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone } = match self.take_prep(dir, cfg) {
+            Some(p) => p,
+            None => Self::prep_car(&car, dir, cfg),
+        };
         let mut batches = Vec::new();
         let mut merged: hashbrown::HashMap<(u32, u32, u32), MergeAcc> = hashbrown::HashMap::new();
-        // (which colour group each zone of the cabin trim takes: the vehicle's own table, its .r83)
-        let zone_table = crate::mc4::zone_groups_dir(dir);
-        // (lamp faces by type and side: the sum of their vertices and how many)
-        let mut lamp_acc: hashbrown::HashMap<(i32, bool), (Vec3, u32)> = hashbrown::HashMap::new();
-        let variants: Vec<(Slot, Vec<String>)> = vehicle_model::CUSTOM_SLOTS.iter().map(|&s| (s, car.variants(s))).collect();
-        let variant_labels: Vec<(Slot, Vec<String>)> = vehicle_model::CUSTOM_SLOTS.iter().map(|&s| (s, car.variant_labels(s))).collect();
-        let mut extra_variants: std::collections::HashSet<(String, usize)> = car.parts.iter().filter(|p| p.placed)
-            .filter_map(|p| vehicle_model::extra_part(&p.primary))
-            .map(|(sec, index)| (sec.to_string(), index)).collect();
-        // (a convertible whose roof moves: the options' CONVERTIBLE TOP row is its)
-        if car.has_roof_animation() {
-            extra_variants.insert((vehicle_model::ROOF_DOWN.to_string(), 0));
-        }
-        let only_part = std::env::var("MCLA_ONLY_PART").ok();
-        let hide_part = std::env::var("MCLA_HIDE_PART").ok();
-        let lamp_dump = std::env::var("MCLA_LAMP_DUMP").is_ok();
-        let mut glow_bones: Vec<(u8, Vec3, Vec3)> = Vec::new();
-        // (the moving damage parts, DAMAGE_PARTS_RULE.md 1.4 / 2.3: the slot pass moves the parts of the slots
-        // hood / hood_wide (2, 40), bumper_r (3), intercooler and bumper_f (5, 6); the trunk_0 bone turns with
-        // whatever hangs on it - the base fragment's meshes bound to it or to its children, the parts placed there)
-        let sk = car.skeleton.as_ref();
-        let bone_world = |tag: u16| sk.and_then(|s| s.bone_by_tag(tag).map(|i| s.bones[i].world));
-        let trunk_i = sk.and_then(|s| s.bones.iter().position(|b| b.name.eq_ignore_ascii_case("trunk_0")).or_else(|| s.bone_by_tag(33531)));
-        let trunk_set: Vec<usize> = match (sk, trunk_i) {
-            (Some(s), Some(t)) => (0..s.bones.len()).filter(|&i| {
-                let mut j = i;
-                for _ in 0..64 {
-                    if j == t {
-                        return true;
-                    }
-                    if j >= s.bones.len() || s.bones[j].parent == j {
-                        return false;
-                    }
-                    j = s.bones[j].parent;
+        // (meshes sharing textures and material mode are merged into one draw, in build order: `prep_car`)
+        for m in meshes {
+            let resolve = |gpu: &mut Gpu, world: &mut World, name: Option<&str>| -> (Arc<GpuTexture>, u32) {
+                let Some(name) = name else { return (gpu.white.clone(), 0) };
+                let h = mcla_formats::hash::joaat(name);
+                if let Some(t) = gpu.textures.get(&h) {
+                    return (t.clone(), h);
                 }
-                false
-            }).collect(),
-            _ => Vec::new(),
-        };
-        let trunk_tags: Vec<u16> = trunk_set.iter().filter_map(|&i| sk.map(|s| s.bones[i].tag)).filter(|t| *t != 0).collect();
-        let trunk_worlds: Vec<Mat4> = trunk_set.iter().filter_map(|&i| sk.map(|s| s.bones[i].world)).collect();
-        let hood_slot = bone_world(vehicle_model::slot_tag(Slot::Hood).unwrap_or(0));
-        let trunk_bone = trunk_i.and_then(|i| sk.map(|s| s.bones[i].world));
-        let part_rig = crate::damageparts::PartRig {
-            movement: car.simtune.as_ref().and_then(|s| s.part_movement).unwrap_or(crate::damageparts::DEFAULT_MOVEMENT),
-            bumper_rest: [bone_world(13699), bone_world(13687)],
-        };
-        let part_group = |part: &vehicle_model::CarPart, part_xf: &Mat4, mi: usize| -> u32 {
-            let p = part.primary.to_ascii_lowercase();
-            if part.is_base {
-                return if part.mesh_tag.get(mi).map_or(false, |t| trunk_tags.contains(t)) { 4 } else { 0 };
-            }
-            if p.starts_with("hood") && !p.contains("scoop") && hood_slot.is_some() {
-                3
-            } else if p.starts_with("bumper_r") && part_rig.bumper_rest[0].is_some() {
-                5
-            } else if (p.starts_with("bumper_f") || p.starts_with("intercooler")) && part_rig.bumper_rest[1].is_some() {
-                6
-            } else if *part_xf != Mat4::IDENTITY && trunk_worlds.iter().any(|w| w.w_axis.distance(part_xf.w_axis) < 1e-3) {
-                4
-            } else {
-                0
-            }
-        };
-        if std::env::var("MCLA_PARTS_LOG").is_ok() {
-            log::info!("damage parts {}: rig {:?} hood slot {:?} trunk bone {:?} (set {:?})", car.name, part_rig, hood_slot.map(|m| m.w_axis), trunk_bone.map(|m| m.w_axis), trunk_tags);
-        }
-        let mut own_hubs: [Option<Vec3>; 6] = [None; 6];
-        // (a traffic model's LOD 1 and LOD 2: its other two base fragments, built as LOD 0's body is)
-        let mut todo: Vec<(&vehicle_model::CarPart, Mat4, u32)> = car.placed_parts_for(cfg).into_iter().map(|(p, x)| (p, x, 0)).collect();
-        if car_is_ambient {
-            for (lod, h) in [(1u32, "7b0cd281"), (2, "0de3ddb3")] {
-                if let Some(p) = car.lod_parts.iter().find(|p| p.primary.contains(h)) {
-                    todo.push((p, p.transform, lod));
+                if let Some(t) = car.textures.get(&h) {
+                    log::debug!("car texture {} from car dict: {}x{} {:?} name {:?} levels {}", name, t.width, t.height, t.format, t.name, t.levels.len());
+                    return (gpu.upload_texture(h, t), h);
                 }
-            }
-        }
-        for (part, part_xf, lod) in todo {
-            if let Some(f) = only_part.as_deref() {
-                if !f.split(',').any(|n| part.primary == n) {
-                    continue;
+                if let Some(t) = world.texture_any(gpu, h) {
+                    return (t, h);
                 }
-            }
-            if let Some(f) = hide_part.as_deref() {
-                if f.split(',').any(|n| part.primary == n) {
-                    continue;
-                }
-            }
-            log::debug!("draw part {} ({} meshes, from_parent {})", part.primary, part.meshes.len(), part.from_parent);
-            // (the glow places: bones of the part's own skeleton, children of the `glow<kind>0` bones)
-            if let Some(sk) = part.skeleton.as_deref().filter(|_| lod == 0) {
-                for (bi, b) in sk.bones.iter().enumerate() {
-                    let parent = sk.bones.get(b.parent).map_or(String::new(), |q| q.name.to_ascii_lowercase());
-                    let w = (part_xf * b.world).w_axis.truncate();
-                    if lamp_dump {
-                        eprintln!("lampbone {} {} {} {} parent {} {:.4} {:.4} {:.4} z {:.3} {:.3} {:.3}", car.name, part.primary, bi, if b.name.is_empty() { "-" } else { b.name.as_str() }, if parent.is_empty() { "-" } else { parent.as_str() }, w.x, w.y, w.z, b.world.z_axis.x, b.world.z_axis.y, b.world.z_axis.z);
-                    }
-                    if let Some(kind) = glow_bone_kind(&b.name.to_ascii_lowercase()) {
-                        glow_bones.push((kind, w, -(part_xf * b.world).z_axis.truncate().normalize_or_zero()));
-                    }
-                }
-            }
-            for (mi, (mesh, si)) in part.meshes.iter().enumerate() {
-                let bone_m = part.mesh_bone.get(mi).copied().unwrap_or(Mat4::IDENTITY);
-                let sh = if part.from_parent && !car.shaders_parent.is_empty() { car.shaders_parent.get(*si as usize) } else { car.shaders.get(*si as usize) };
-                let sname = sh.map(|s| s.name.as_str()).unwrap_or("");
-                // (CarbonFiberHood: the hood's painted meshes - part slots hood and hood_wide - are
-                // drawn by the carbon fibre program in place of the paint, F-92759 at A-17085.
-                // (approx.) by the port's branch for the CarbonFiber material; the hood's own
-                // program, PS_HoodCarbonFiber of cars/0x0d96b4f8, has other constants - lighting work)
-                let sname = if car_mode(sname) == MatMode::Paint && cfg.extra.get("carbon_hood").copied().unwrap_or(0) != 0 && vehicle_model::classify_slot(&part.primary, &part.names) == Slot::Hood { "CarbonFiber" } else { sname };
-                let mode = car_mode(sname);
-                // (lighting diagnostics: MCLA_MESH_DUMP lists a car's meshes - part, index, shader, size, box in the
-                // part's space; MCLA_HIDE_MESH=part:index,... leaves meshes out)
-                if std::env::var("MCLA_MESH_DUMP").is_ok() {
-                    log::info!("meshdump-xf {} {} part placement {:?}", car.name, part.primary, part_xf);
-                    let (mut mn, mut mx) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-                    for v in &mesh.positions {
-                        let w = bone_m.transform_point3(*v);
-                        mn = mn.min(w);
-                        mx = mx.max(w);
-                    }
-                    log::info!("meshdump {} {}:{} shader {} #{} verts {} box {:.2?} .. {:.2?} tex {:?}", car.name, part.primary, mi, sname, si, mesh.positions.len(), mn.to_array(), mx.to_array(), sh.map(|s| s.textures().map(|(_, n)| n.to_string()).collect::<Vec<_>>()));
-                }
-                if let Ok(h) = std::env::var("MCLA_HIDE_MESH") {
-                    if h.split(',').any(|e| e == format!("{}:{}", part.primary, mi)) {
-                        continue;
-                    }
-                }
-                if std::env::var("MCLA_TRIM_DUMP").is_ok() && (mode == MatMode::Interior || sname.to_ascii_lowercase().contains("carbon") || sname.to_ascii_lowercase().contains("caliper") || sname.to_ascii_lowercase().contains("brake")) {
-                    let mut u1: std::collections::BTreeMap<i32, u32> = Default::default();
-                    for u in &mesh.uv1 {
-                        *u1.entry((u.x * 10.0).round() as i32).or_insert(0) += 1;
-                    }
-                    log::info!("trim: part {} shader {} verts {} uv1x10 {:?} tex {:?} params {:?}", part.primary, sname, mesh.positions.len(), u1, sh.map(|s| s.textures().map(|(_, n)| n.to_string()).collect::<Vec<_>>()), sh.map(|s| s.params.iter().filter(|(_, p)| format!("{:?}", p).len() < 90).map(|(h, p)| format!("{:08x}={:?}", h, p)).collect::<Vec<_>>()));
-                }
-                // (render only - every traffic car's glass, AmbientCarGlass, is drawn by its own program,
-                // PSAmbientGlassFront: marked per vertex for city.wgsl, which tells windows from lamp
-                // lenses by the zone in uv1.x; until 2026-10-20 only the glass above 0.82 m was marked)
-                let dark_above = if mode == MatMode::CarGlass && car_is_ambient { Some(f32::NEG_INFINITY) } else { None };
-                // pick the colour map by its sampler name; never a normal map
-                const NORMAL_SAMPLERS: [u32; 2] = [0x8ac11cb0, 0x28038e05];
-                // (the traffic lamps' program, PSAmbientCarLight, has ONE texture and it is a colour map - the car's trim sheet - bound to the sampler called NormalSampler)
-                let amb_lamp_map = sname.eq_ignore_ascii_case("AmbientCarLight") && std::env::var("MCLA_CARPARTS_OLD").is_err();
-                // (and the badges' program, PS_BumpedChrome of cars/0x1d68d869 (BumpedAlphaChrome): its one
-                // texture, on NormalSampler, is a bump map whose alpha is the badge's outline - kept for its alpha)
-                let badge = sname.eq_ignore_ascii_case("BumpedAlphaChrome") && std::env::var("MCLA_BADGE_OLD").is_err();
-                let amb_lamp_map = amb_lamp_map || badge;
-                let all_tex: Vec<(u32, String)> = sh.map(|s| s.textures().filter(|(h, _)| !NORMAL_SAMPLERS.contains(h) || amb_lamp_map).map(|(h, n)| (h, n.to_string())).collect()).unwrap_or_default();
-                let is_normal = |n: &str| {
-                    let l = n.to_ascii_lowercase();
-                    l.ends_with("_n.dds") || l.ends_with("_nm.dds") || l.contains("normal") || l.ends_with("_bs.dds")
-                };
-                let dn = all_tex
-                    .iter()
-                    .find(|(h, n)| *h == crate::world::ph::DIFFUSE && !is_normal(n))
-                    .or_else(|| all_tex.iter().find(|(_, n)| !is_normal(n)))
-                    .map(|x| x.1.clone());
-                let sn = all_tex.iter().find(|(_, n)| Some(n) != dn.as_ref() && !is_normal(n)).map(|x| x.1.clone()).or_else(|| dn.clone());
-                if log::log_enabled!(log::Level::Debug) && dn.is_none() && !all_tex.is_empty() {
-                    log::debug!("shader {} has only normal maps: {:?}", sname, all_tex);
-                }
-                let resolve = |gpu: &mut Gpu, world: &mut World, name: Option<&str>| -> (Arc<GpuTexture>, u32) {
-                    let Some(name) = name else { return (gpu.white.clone(), 0) };
-                    let h = mcla_formats::hash::joaat(name);
-                    if let Some(t) = gpu.textures.get(&h) {
-                        return (t.clone(), h);
-                    }
-                    if let Some(t) = car.textures.get(&h) {
-                        log::debug!("car texture {} from car dict: {}x{} {:?} name {:?} levels {}", name, t.width, t.height, t.format, t.name, t.levels.len());
-                        return (gpu.upload_texture(h, t), h);
-                    }
-                    if let Some(t) = world.texture_any(gpu, h) {
-                        return (t, h);
-                    }
-                    log::debug!("car texture miss: {} ({:#010x})", name, h);
-                    (gpu.white.clone(), 0)
-                };
-                log::debug!("mat {} mesh {} shader#{} {} mode {:?} tex {:?}", part.primary, mi, si, sname, mode, dn);
-                if mode == MatMode::Paint {
-                    if let Ok(f) = std::env::var("MCLA_VINYL_DUMP") {
-                        // the painted body in car space with its unwrap: "v pos normal uv", "t indices"
-                        use std::io::Write;
-                        let m = part_xf * bone_m;
-                        if let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
-                            let _ = writeln!(out, "m {} {} {}", car.name, part.primary, mi);
-                            for k in 0..mesh.positions.len() {
-                                let p = m.transform_point3(mesh.positions[k]);
-                                let n = m.transform_vector3(mesh.normals.get(k).copied().unwrap_or(Vec3::Y));
-                                let u = mesh.uv0.get(k).copied().unwrap_or_default();
-                                let u1 = mesh.uv1.get(k).copied().unwrap_or_default();
-                                let u2 = mesh.uv2.get(k).copied().unwrap_or_default();
-                                let c = mesh.colors.get(k).copied().unwrap_or_default();
-                                let _ = writeln!(out, "v {:.4} {:.4} {:.4} {:.3} {:.3} {:.3} {:.5} {:.5} {:.5} {:.5} {:.5} {:.5} {} {} {} {}", p.x, p.y, p.z, n.x, n.y, n.z, u.x, u.y, u1.x, u1.y, u2.x, u2.y, c[0], c[1], c[2], c[3]);
-                            }
-                            for t in mesh.indices.chunks_exact(3) {
-                                let _ = writeln!(out, "t {} {} {}", t[0], t[1], t[2]);
-                            }
-                        }
-                    }
-                }
-                if mode == MatMode::Paint && std::env::var("MCLA_UV_LOG").is_ok() {
-                    let (mut u0, mut u1) = (glam::Vec2::splat(9e9), glam::Vec2::splat(-9e9));
-                    for u in &mesh.uv0 {
-                        u0 = u0.min(*u);
-                        u1 = u1.max(*u);
-                    }
-                    log::info!("paint uv {} {} mesh {} verts {} uv0 {} range {:?}..{:?}", car.name, part.primary, mi, mesh.positions.len(), mesh.uv0.len(), u0, u1);
-                }
-                if log::log_enabled!(log::Level::Debug) && std::env::var("MCLA_SHADER_DUMP").is_ok() {
-                    if let Some(sh) = sh {
-                        log::debug!("shaderdump {} #{} params {:?}", sname, si, sh.params.iter().map(|(h, p)| format!("{:08x}={:?}", h, p)).collect::<Vec<_>>());
-                    }
-                }
-                if log::log_enabled!(log::Level::Debug) && mode == MatMode::Light {
-                    if let Some(sh) = sh {
-                        log::debug!("light shader {} params {:?}", sname, sh.params.iter().map(|(h, p)| format!("{:08x}={:?}", h, p)).collect::<Vec<_>>());
-                    }
-                    let mut cols: hashbrown::HashMap<[u8; 4], u32> = hashbrown::HashMap::new();
-                    for c in &mesh.colors {
-                        *cols.entry(*c).or_insert(0) += 1;
-                    }
-                    let mut c1: hashbrown::HashMap<[u8; 4], u32> = hashbrown::HashMap::new();
-                    for c in &mesh.colors1 {
-                        *c1.entry(*c).or_insert(0) += 1;
-                    }
-                    let (mut u0, mut u1) = (glam::Vec2::splat(9e9), glam::Vec2::splat(-9e9));
-                    for u in &mesh.uv1 {
-                        u0 = u0.min(*u);
-                        u1 = u1.max(*u);
-                    }
-                    let mut cv: Vec<_> = cols.into_iter().collect();
-                    cv.sort_by_key(|x| std::cmp::Reverse(x.1));
-                    cv.truncate(6);
-                    let mut c1v: Vec<_> = c1.into_iter().collect();
-                    c1v.sort_by_key(|x| std::cmp::Reverse(x.1));
-                    c1v.truncate(4);
-                    log::debug!("light mesh {} #{} verts {} colors(argb) {:?} colors1 {:?} uv1 {:?}..{:?} names {:?}", part.primary, mi, mesh.positions.len(), cv, c1v, u0, u1, part.names.iter().take(12).collect::<Vec<_>>());
-                }
-                let (d, k0) = if sname.eq_ignore_ascii_case("LicensePlate") && dn.is_none() {
-                    plate_texture(gpu, world)
-                } else {
-                    resolve(gpu, world, dn.as_deref())
-                };
-                let (s2, k1) = resolve(gpu, world, sn.as_deref());
-                // (render only, blade round - PS_CarbonFiber's NormalSampler, the weave's normal map, rides as the CarbonFiber
-                // meshes' second texture; city.wgsl reads it in the carbon branch. MCLA_CARBON_OLD=1: none)
-                let (s2, k1) = if sname.eq_ignore_ascii_case("CarbonFiber") && !car_is_ambient && std::env::var("MCLA_CARBON_OLD").is_err() { carbon_weave(gpu, world) } else { (s2, k1) };
-                // (the windows of a car with the full glass program, PS_GlassFront: the detail mask and the
-                // crack map in the two slots, marked by lens -1 below; city.wgsl reads them for a cracked
-                // or broken pane and draws the pane white as before)
-                let win_maps = if sname.eq_ignore_ascii_case("CarGlass") && !car_is_ambient && dn.is_none() && sn.is_none() { glass_maps(gpu, world) } else { None };
-                let ((d, k0), (s2, k1)) = win_maps.clone().unwrap_or(((d, k0), (s2, k1)));
-                // meshes sharing textures and material mode are merged into one draw (the side
-                // windows' glass apart, by side: it moves with its bone)
-                let win_side = if part.is_base { car.windows.iter().position(|w| w.as_ref().map_or(false, |w| part.mesh_tag.get(mi) == Some(&w.tag))).map_or(0, |k| k as u32 + 1) } else { 0 };
-                let win_side = if win_side != 0 { win_side } else { part_group(part, &part_xf, mi) };
-                // (a traffic model's own wheel: tyre, rim and disc on one of its wheel bones -
-                // groups 7 - 12, the bone's place its hub)
-                let own_wheel = if car_is_ambient && !car.bike { part.mesh_wheel.get(mi).copied().flatten() } else { None };
-                if let Some(i) = own_wheel.filter(|_| lod == 0) {
-                    own_hubs[i] = Some((part_xf * bone_m).w_axis.truncate());
-                }
-                let win_side = own_wheel.map_or(win_side, |i| 7 + i as u32);
-                if win_side >= 3 && std::env::var("MCLA_PARTS_LOG").is_ok() {
-                    log::info!("damage parts {}: {} mesh {} -> group {}", car.name, part.primary, mi, win_side);
-                }
-                let acc = merged.entry((k0, k1, mode as u32 | win_side << 16 | lod << 24)).or_insert_with(|| MergeAcc { verts: Vec::new(), indices: Vec::new(), d, s2, sname: sname.to_string(), mode, min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) });
-                // (the glass over a lamp is its lens: red over the tail lamps, clear elsewhere -
-                // the game tints it from a table per lamp, BumpedTintColors)
-                let pn = part.primary.to_ascii_lowercase();
-                let (glass, lamp) = (sname.to_ascii_lowercase().contains("bumpedglass"), mode == MatMode::Light);
-                if lamp && lod == 0 {
-                    let xf = part_xf * bone_m;
-                    // (MCLA_LAMP_DUMP: every lamp mesh in full - vertices with their lamp id, triangles; work/lighting/fe_lamps.py)
-                    if std::env::var("MCLA_LAMP_DUMP").is_ok() {
-                        for (k, p) in mesh.positions.iter().enumerate() {
-                            let w = xf.transform_point3(*p);
-                            eprintln!("lampv {} {} {} {} {} {:.4} {:.4} {:.4}", car.name, part.primary, mi, k, mesh.uv1.get(k).map_or(-1, |u| u.x.round() as i32), w.x, w.y, w.z);
-                        }
-                        for t in mesh.indices.chunks_exact(3) {
-                            eprintln!("lampt {} {} {} {} {} {}", car.name, part.primary, mi, t[0], t[1], t[2]);
-                        }
-                    }
-                    for (k, p) in mesh.positions.iter().enumerate() {
-                        let id = mesh.uv1.get(k).map_or(-1, |u| u.x.round() as i32);
-                        if matches!(id, 0 | 1 | 3 | 6 | 12 | 13 | 14) {
-                            let w = xf.transform_point3(*p);
-                            let e = lamp_acc.entry((id, w.x > 0.0)).or_insert((Vec3::ZERO, 0));
-                            e.0 += w;
-                            e.1 += 1;
-                            if std::env::var("MCLA_GLOW_DUMP").is_ok() {
-                                eprintln!("lampvert {} {} mesh {} id {} {:.4} {:.4} {:.4}", car.name, part.primary, mi, id, w.x, w.y, w.z);
-                            }
-                        }
-                    }
-                }
-                let lens = if (glass || lamp) && (pn.contains("tail") || pn.contains("brake")) {
-                    1.0
-                } else if glass {
-                    2.0
-                } else if win_maps.is_some() {
-                    -1.0
-                } else {
-                    0.0
-                };
-                let first = acc.verts.len();
-                acc.push(mesh, part_xf * bone_m, dark_above, lens, if !car_is_ambient { 0 } else if sname.eq_ignore_ascii_case("AmbientTire") { 2 } else { 1 });
-                // (render only - car parts drawn by their own programs' rules in city.wgsl, see
-                // work/lighting bs3.py / bmprobe.py / cglassprobe.py: the material's terms ride in
-                // the vertices. BumpSpec family: uv2 = (-(1 + 200 smoothness + 256 x 200
-                // SpecularColor), 1 + base r + 256 base g), uv1 = (base b + 256 x 32 SpecMapExp, 0),
-                // colour alpha = 10 metallic + 16 cut-out + 32 cabin part + 64 GrillOpaque (its
-                // soft reflection goes by the texture). Brushed metal: uv2.x =
-                // 1 + ReflectColorMod. Opaque black glass: uv2.x = 1. Cabin paint: colour alpha 32
-                // (the cabin's own-lamp colours are the gauge colours, not the outside lamps').)
-                // (MCLA_CARPARTS_OLD=1 with MCLA_DEBUG_VIEW=72: everything as it was before this, for comparison)
-                if !car_is_ambient && std::env::var("MCLA_CARPARTS_OLD").is_err() {
-                    use mcla_formats::rage::drawable::ShaderParam;
-                    let pv = |h: u32, d: f32| sh.and_then(|s| s.params.iter().find_map(|(ph, p)| match p { ShaderParam::Vector(v) if *ph == h && !v.is_empty() => Some(v[0]), _ => None })).unwrap_or(glam::Vec4::splat(d));
-                    let by = |x: f32, k: f32| if x.is_finite() { (x.abs() * k).round().clamp(0.0, 255.0) } else { 0.0 };
-                    let cabin = pn.starts_with("interior") || pn.contains("_int") || pn.starts_with("seats") || pn.starts_with("steer_whl");
-                    let alpha_cut = sname.eq_ignore_ascii_case("BumpSpecAlpha");
-                    let spec_map = sname.eq_ignore_ascii_case("GrillOpaque");
-                    if sname.eq_ignore_ascii_case("BumpSpec") || alpha_cut || spec_map {
-                        let (bc, e, k, s, m) = (pv(0x1468b111, 1.0), pv(0xb37a7946, 1.0).x, pv(0xa98e2243, 0.0).x, pv(0x5e315fd1, 0.0).x, pv(0x83697767, 0.0).x);
-                        let a = (by(m, 10.0).min(15.0) + if alpha_cut { 16.0 } else { 0.0 } + if cabin { 32.0 } else { 0.0 } + if spec_map { 64.0 } else { 0.0 }) as u8;
-                        for v in &mut acc.verts[first..] {
-                            v.uv2 = [-(1.0 + by(s, 200.0) + 256.0 * by(k, 200.0)), 1.0 + by(bc.x, 255.0) + 256.0 * by(bc.y, 255.0)];
-                            v.uv1 = [by(bc.z, 255.0) + 256.0 * by(e, 32.0), 0.0];
-                            v.color[3] = a;
-                        }
-                    } else if sname.eq_ignore_ascii_case("BrushedMetal") {
-                        let rc = pv(0xaffa32ba, 1.0).x;
-                        for v in &mut acc.verts[first..] {
-                            v.uv2 = [1.0 + if rc.is_finite() { rc.clamp(0.0, 4.0) } else { 1.0 }, 0.0];
-                        }
-                    } else if sname.eq_ignore_ascii_case("BlackOpaqueGlass") {
-                        for v in &mut acc.verts[first..] {
-                            v.uv2 = [1.0, 0.0];
-                        }
-                    } else if badge {
-                        // (BumpedAlphaChrome, PS_BumpedChrome of cars/0x1d68d869: PS_Chrome's mirror x
-                        // (0.125 + 1.185 sat(collector - 0.25)) x baked occlusion, alpha = 2 x the
-                        // texture's alpha - 1; city.wgsl cuts it out where that is not above 0 (uv2.y = 3))
-                        for v in &mut acc.verts[first..] {
-                            v.uv2 = [0.0, 3.0];
-                        }
-                    } else if sname.eq_ignore_ascii_case("CarbonFiber") && std::env::var("MCLA_CARBON_OLD").is_err() {
-                        // (render only - PS_CarbonFiber of cars/0x84fc57d9, city.wgsl: uv2.x = 2)
-                        for v in &mut acc.verts[first..] {
-                            v.uv2 = [2.0, 0.0];
-                        }
-                    } else if cabin && mode == MatMode::Paint {
-                        for v in &mut acc.verts[first..] {
-                            v.color[3] = 32;
-                        }
-                    } else if sname.eq_ignore_ascii_case("LicensePlate") && std::env::var("MCLA_PLATE_OLD").is_err() {
-                        // (render only - the number plate is drawn by its own program's rule,
-                        // PS_Plate of cars/0x94eca68d, city.wgsl: marked like a BumpSpec part with
-                        // the cut-out and the GrillOpaque bits both set, 16 + 64)
-                        for v in &mut acc.verts[first..] {
-                            v.uv2 = [-1.0, 1.0];
-                            v.uv1 = [0.0, 0.0];
-                            v.color[3] = 80;
-                        }
-                    }
-                }
-                // cabin trim: the colour group of the mesh's zone (uv1.x), by the vehicle's own
-                // table, rides in uv2.y as 100 + group (city.wgsl, mode 17; nothing else of that
-                // mode reads uv2.y) - the original builds the trim program's colour table from
-                // the same table every frame (F-19629)
-                if mode == MatMode::Interior {
-                    if let Some(table) = zone_table.as_ref() {
-                        for v in &mut acc.verts[first..] {
-                            let z = v.uv1[0].round();
-                            if (0.0..25.0).contains(&z) {
-                                v.uv2[1] = 100.0 + table[z as usize] as f32;
-                            }
-                        }
-                    }
-                }
-                // a part painted by itself: its colour in the vertices' own colour, marked by its
-                // alpha - the paint shader takes it in place of the car's (city.wgsl, mode paint)
-                if mode == MatMode::Paint {
-                    let kind = match vehicle_model::classify_slot(&part.primary, &part.names) {
-                        Slot::Hood => "hood",
-                        Slot::Trunk => "trunk",
-                        Slot::BumperF => "bumper_f",
-                        Slot::BumperR => "bumper_r",
-                        Slot::Spoiler => "spoiler",
-                        Slot::Skirts => "skirts",
-                        Slot::DoorL | Slot::DoorR => "doors",
-                        _ => "",
-                    };
-                    // (the part's paint area rides in uv2.y, 8 + area, for the player's own
-                    // entry per area - the original's table per part slot, 0x82050FD0: hood and
-                    // hood_wide 2, bumper_r 4, bumper_f 3, skirts 5, the doors and their wide
-                    // ones 1, every other slot the body's. Nothing else of the paint reads uv2.y.)
-                    let area = match kind {
-                        "doors" => 1.0,
-                        "hood" => 2.0,
-                        "bumper_f" => 3.0,
-                        "bumper_r" => 4.0,
-                        "skirts" => 5.0,
-                        _ => 0.0,
-                    };
-                    if area > 0.0 && !pn.starts_with("subbum") {
-                        for v in &mut acc.verts[first..] {
-                            v.uv2[1] = 8.0 + area;
-                        }
-                    }
-                    if let Some(c) = cfg.part_paint.get(kind) {
-                        // (the colour is the screen's: the shader's paint is linear)
-                        let lin = |v: u8| ((v as f32 / 255.0).powf(2.2) * 255.0).round() as u8;
-                        for v in &mut acc.verts[first..] {
-                            v.color = [lin(c[0]), lin(c[1]), lin(c[2]), 255];
-                        }
-                    }
-                }
-            }
+                log::debug!("car texture miss: {} ({:#010x})", name, h);
+                (gpu.white.clone(), 0)
+            };
+            let (d, k0) = if m.plate { plate_texture(gpu, world) } else { resolve(gpu, world, m.dn.as_deref()) };
+            let (s2, k1) = resolve(gpu, world, m.sn.as_deref());
+            let (s2, k1) = if m.carbon { carbon_weave(gpu, world) } else { (s2, k1) };
+            let win_maps = if m.win_cand { glass_maps(gpu, world) } else { None };
+            let ((d, k0), (s2, k1)) = win_maps.clone().unwrap_or(((d, k0), (s2, k1)));
+            let geo = match (win_maps.is_none(), m.geo_alt) {
+                (true, Some(g)) => g,
+                _ => m.geo,
+            };
+            let (sname, mode) = (m.sname, m.mode);
+            let acc = merged.entry((k0, k1, m.kbits)).or_insert_with(|| MergeAcc { verts: Vec::new(), indices: Vec::new(), d, s2, sname, mode, min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) });
+            acc.append(geo);
         }
         let mut keys: Vec<(u32, u32, u32)> = merged.keys().copied().collect();
         let mut batch_window: Vec<u8> = Vec::new();
@@ -2057,6 +1784,427 @@ impl Vehicles {
         Ok(m)
     }
 
+    /// The CPU part of a car's build (`load_model_cfg`): its meshes placed, merged by program and marked, in build
+    /// order, with the lamp places, the wheel hubs and glow bones gathered on the way - without the GPU or the world, so
+    /// that it can run on a worker thread (docs/PERFORMANCE.md 2026-10-27 (13)). The textures are found, and the
+    /// batches made and uploaded, by `load_model_cfg` on the main thread.
+    fn prep_car(car: &CarAsset, dir: &Path, cfg: &CarConfig) -> CarPrep {
+        let car_is_ambient = dir.file_name().map_or(false, |n| n.to_string_lossy().to_ascii_lowercase().starts_with("va_"));
+        // (which colour group each zone of the cabin trim takes: the vehicle's own table, its .r83)
+        let zone_table = crate::mc4::zone_groups_dir(dir);
+        // (lamp faces by type and side: the sum of their vertices and how many)
+        let mut lamp_acc: hashbrown::HashMap<(i32, bool), (Vec3, u32)> = hashbrown::HashMap::new();
+        let variants: Vec<(Slot, Vec<String>)> = vehicle_model::CUSTOM_SLOTS.iter().map(|&s| (s, car.variants(s))).collect();
+        let variant_labels: Vec<(Slot, Vec<String>)> = vehicle_model::CUSTOM_SLOTS.iter().map(|&s| (s, car.variant_labels(s))).collect();
+        let mut extra_variants: std::collections::HashSet<(String, usize)> = car.parts.iter().filter(|p| p.placed)
+            .filter_map(|p| vehicle_model::extra_part(&p.primary))
+            .map(|(sec, index)| (sec.to_string(), index)).collect();
+        // (a convertible whose roof moves: the options' CONVERTIBLE TOP row is its)
+        if car.has_roof_animation() {
+            extra_variants.insert((vehicle_model::ROOF_DOWN.to_string(), 0));
+        }
+        let only_part = std::env::var("MCLA_ONLY_PART").ok();
+        let hide_part = std::env::var("MCLA_HIDE_PART").ok();
+        let lamp_dump = std::env::var("MCLA_LAMP_DUMP").is_ok();
+        let mut glow_bones: Vec<(u8, Vec3, Vec3)> = Vec::new();
+        // (the moving damage parts, DAMAGE_PARTS_RULE.md 1.4 / 2.3: the slot pass moves the parts of the slots
+        // hood / hood_wide (2, 40), bumper_r (3), intercooler and bumper_f (5, 6); the trunk_0 bone turns with
+        // whatever hangs on it - the base fragment's meshes bound to it or to its children, the parts placed there)
+        let sk = car.skeleton.as_ref();
+        let bone_world = |tag: u16| sk.and_then(|s| s.bone_by_tag(tag).map(|i| s.bones[i].world));
+        let trunk_i = sk.and_then(|s| s.bones.iter().position(|b| b.name.eq_ignore_ascii_case("trunk_0")).or_else(|| s.bone_by_tag(33531)));
+        let trunk_set: Vec<usize> = match (sk, trunk_i) {
+            (Some(s), Some(t)) => (0..s.bones.len()).filter(|&i| {
+                let mut j = i;
+                for _ in 0..64 {
+                    if j == t {
+                        return true;
+                    }
+                    if j >= s.bones.len() || s.bones[j].parent == j {
+                        return false;
+                    }
+                    j = s.bones[j].parent;
+                }
+                false
+            }).collect(),
+            _ => Vec::new(),
+        };
+        let trunk_tags: Vec<u16> = trunk_set.iter().filter_map(|&i| sk.map(|s| s.bones[i].tag)).filter(|t| *t != 0).collect();
+        let trunk_worlds: Vec<Mat4> = trunk_set.iter().filter_map(|&i| sk.map(|s| s.bones[i].world)).collect();
+        let hood_slot = bone_world(vehicle_model::slot_tag(Slot::Hood).unwrap_or(0));
+        let trunk_bone = trunk_i.and_then(|i| sk.map(|s| s.bones[i].world));
+        let part_rig = crate::damageparts::PartRig {
+            movement: car.simtune.as_ref().and_then(|s| s.part_movement).unwrap_or(crate::damageparts::DEFAULT_MOVEMENT),
+            bumper_rest: [bone_world(13699), bone_world(13687)],
+        };
+        let part_group = |part: &vehicle_model::CarPart, part_xf: &Mat4, mi: usize| -> u32 {
+            let p = part.primary.to_ascii_lowercase();
+            if part.is_base {
+                return if part.mesh_tag.get(mi).map_or(false, |t| trunk_tags.contains(t)) { 4 } else { 0 };
+            }
+            if p.starts_with("hood") && !p.contains("scoop") && hood_slot.is_some() {
+                3
+            } else if p.starts_with("bumper_r") && part_rig.bumper_rest[0].is_some() {
+                5
+            } else if (p.starts_with("bumper_f") || p.starts_with("intercooler")) && part_rig.bumper_rest[1].is_some() {
+                6
+            } else if *part_xf != Mat4::IDENTITY && trunk_worlds.iter().any(|w| w.w_axis.distance(part_xf.w_axis) < 1e-3) {
+                4
+            } else {
+                0
+            }
+        };
+        if std::env::var("MCLA_PARTS_LOG").is_ok() {
+            log::info!("damage parts {}: rig {:?} hood slot {:?} trunk bone {:?} (set {:?})", car.name, part_rig, hood_slot.map(|m| m.w_axis), trunk_bone.map(|m| m.w_axis), trunk_tags);
+        }
+        let mut own_hubs: [Option<Vec3>; 6] = [None; 6];
+        let mut meshes: Vec<MeshPrep> = Vec::new();
+        // (a traffic model's LOD 1 and LOD 2: its other two base fragments, built as LOD 0's body is)
+        let mut todo: Vec<(&vehicle_model::CarPart, Mat4, u32)> = car.placed_parts_for(cfg).into_iter().map(|(p, x)| (p, x, 0)).collect();
+        if car_is_ambient {
+            for (lod, h) in [(1u32, "7b0cd281"), (2, "0de3ddb3")] {
+                if let Some(p) = car.lod_parts.iter().find(|p| p.primary.contains(h)) {
+                    todo.push((p, p.transform, lod));
+                }
+            }
+        }
+        for (part, part_xf, lod) in todo {
+            if let Some(f) = only_part.as_deref() {
+                if !f.split(',').any(|n| part.primary == n) {
+                    continue;
+                }
+            }
+            if let Some(f) = hide_part.as_deref() {
+                if f.split(',').any(|n| part.primary == n) {
+                    continue;
+                }
+            }
+            log::debug!("draw part {} ({} meshes, from_parent {})", part.primary, part.meshes.len(), part.from_parent);
+            // (the glow places: bones of the part's own skeleton, children of the `glow<kind>0` bones)
+            if let Some(sk) = part.skeleton.as_deref().filter(|_| lod == 0) {
+                for (bi, b) in sk.bones.iter().enumerate() {
+                    let parent = sk.bones.get(b.parent).map_or(String::new(), |q| q.name.to_ascii_lowercase());
+                    let w = (part_xf * b.world).w_axis.truncate();
+                    if lamp_dump {
+                        eprintln!("lampbone {} {} {} {} parent {} {:.4} {:.4} {:.4} z {:.3} {:.3} {:.3}", car.name, part.primary, bi, if b.name.is_empty() { "-" } else { b.name.as_str() }, if parent.is_empty() { "-" } else { parent.as_str() }, w.x, w.y, w.z, b.world.z_axis.x, b.world.z_axis.y, b.world.z_axis.z);
+                    }
+                    if let Some(kind) = glow_bone_kind(&b.name.to_ascii_lowercase()) {
+                        glow_bones.push((kind, w, -(part_xf * b.world).z_axis.truncate().normalize_or_zero()));
+                    }
+                }
+            }
+            for (mi, (mesh, si)) in part.meshes.iter().enumerate() {
+                let bone_m = part.mesh_bone.get(mi).copied().unwrap_or(Mat4::IDENTITY);
+                let sh = if part.from_parent && !car.shaders_parent.is_empty() { car.shaders_parent.get(*si as usize) } else { car.shaders.get(*si as usize) };
+                let sname = sh.map(|s| s.name.as_str()).unwrap_or("");
+                // (CarbonFiberHood: the hood's painted meshes - part slots hood and hood_wide - are
+                // drawn by the carbon fibre program in place of the paint, F-92759 at A-17085.
+                // (approx.) by the port's branch for the CarbonFiber material; the hood's own
+                // program, PS_HoodCarbonFiber of cars/0x0d96b4f8, has other constants - lighting work)
+                let sname = if car_mode(sname) == MatMode::Paint && cfg.extra.get("carbon_hood").copied().unwrap_or(0) != 0 && vehicle_model::classify_slot(&part.primary, &part.names) == Slot::Hood { "CarbonFiber" } else { sname };
+                let mode = car_mode(sname);
+                // (lighting diagnostics: MCLA_MESH_DUMP lists a car's meshes - part, index, shader, size, box in the
+                // part's space; MCLA_HIDE_MESH=part:index,... leaves meshes out)
+                if std::env::var("MCLA_MESH_DUMP").is_ok() {
+                    log::info!("meshdump-xf {} {} part placement {:?}", car.name, part.primary, part_xf);
+                    let (mut mn, mut mx) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                    for v in &mesh.positions {
+                        let w = bone_m.transform_point3(*v);
+                        mn = mn.min(w);
+                        mx = mx.max(w);
+                    }
+                    log::info!("meshdump {} {}:{} shader {} #{} verts {} box {:.2?} .. {:.2?} tex {:?}", car.name, part.primary, mi, sname, si, mesh.positions.len(), mn.to_array(), mx.to_array(), sh.map(|s| s.textures().map(|(_, n)| n.to_string()).collect::<Vec<_>>()));
+                }
+                if let Ok(h) = std::env::var("MCLA_HIDE_MESH") {
+                    if h.split(',').any(|e| e == format!("{}:{}", part.primary, mi)) {
+                        continue;
+                    }
+                }
+                if std::env::var("MCLA_TRIM_DUMP").is_ok() && (mode == MatMode::Interior || sname.to_ascii_lowercase().contains("carbon") || sname.to_ascii_lowercase().contains("caliper") || sname.to_ascii_lowercase().contains("brake")) {
+                    let mut u1: std::collections::BTreeMap<i32, u32> = Default::default();
+                    for u in &mesh.uv1 {
+                        *u1.entry((u.x * 10.0).round() as i32).or_insert(0) += 1;
+                    }
+                    log::info!("trim: part {} shader {} verts {} uv1x10 {:?} tex {:?} params {:?}", part.primary, sname, mesh.positions.len(), u1, sh.map(|s| s.textures().map(|(_, n)| n.to_string()).collect::<Vec<_>>()), sh.map(|s| s.params.iter().filter(|(_, p)| format!("{:?}", p).len() < 90).map(|(h, p)| format!("{:08x}={:?}", h, p)).collect::<Vec<_>>()));
+                }
+                // (render only - every traffic car's glass, AmbientCarGlass, is drawn by its own program,
+                // PSAmbientGlassFront: marked per vertex for city.wgsl, which tells windows from lamp
+                // lenses by the zone in uv1.x; until 2026-10-20 only the glass above 0.82 m was marked)
+                let dark_above = if mode == MatMode::CarGlass && car_is_ambient { Some(f32::NEG_INFINITY) } else { None };
+                // pick the colour map by its sampler name; never a normal map
+                const NORMAL_SAMPLERS: [u32; 2] = [0x8ac11cb0, 0x28038e05];
+                // (the traffic lamps' program, PSAmbientCarLight, has ONE texture and it is a colour map - the car's trim sheet - bound to the sampler called NormalSampler)
+                let amb_lamp_map = sname.eq_ignore_ascii_case("AmbientCarLight") && std::env::var("MCLA_CARPARTS_OLD").is_err();
+                // (and the badges' program, PS_BumpedChrome of cars/0x1d68d869 (BumpedAlphaChrome): its one
+                // texture, on NormalSampler, is a bump map whose alpha is the badge's outline - kept for its alpha)
+                let badge = sname.eq_ignore_ascii_case("BumpedAlphaChrome") && std::env::var("MCLA_BADGE_OLD").is_err();
+                let amb_lamp_map = amb_lamp_map || badge;
+                let all_tex: Vec<(u32, String)> = sh.map(|s| s.textures().filter(|(h, _)| !NORMAL_SAMPLERS.contains(h) || amb_lamp_map).map(|(h, n)| (h, n.to_string())).collect()).unwrap_or_default();
+                let is_normal = |n: &str| {
+                    let l = n.to_ascii_lowercase();
+                    l.ends_with("_n.dds") || l.ends_with("_nm.dds") || l.contains("normal") || l.ends_with("_bs.dds")
+                };
+                let dn = all_tex
+                    .iter()
+                    .find(|(h, n)| *h == crate::world::ph::DIFFUSE && !is_normal(n))
+                    .or_else(|| all_tex.iter().find(|(_, n)| !is_normal(n)))
+                    .map(|x| x.1.clone());
+                let sn = all_tex.iter().find(|(_, n)| Some(n) != dn.as_ref() && !is_normal(n)).map(|x| x.1.clone()).or_else(|| dn.clone());
+                if log::log_enabled!(log::Level::Debug) && dn.is_none() && !all_tex.is_empty() {
+                    log::debug!("shader {} has only normal maps: {:?}", sname, all_tex);
+                }
+                log::debug!("mat {} mesh {} shader#{} {} mode {:?} tex {:?}", part.primary, mi, si, sname, mode, dn);
+                if mode == MatMode::Paint {
+                    if let Ok(f) = std::env::var("MCLA_VINYL_DUMP") {
+                        // the painted body in car space with its unwrap: "v pos normal uv", "t indices"
+                        use std::io::Write;
+                        let m = part_xf * bone_m;
+                        if let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                            let _ = writeln!(out, "m {} {} {}", car.name, part.primary, mi);
+                            for k in 0..mesh.positions.len() {
+                                let p = m.transform_point3(mesh.positions[k]);
+                                let n = m.transform_vector3(mesh.normals.get(k).copied().unwrap_or(Vec3::Y));
+                                let u = mesh.uv0.get(k).copied().unwrap_or_default();
+                                let u1 = mesh.uv1.get(k).copied().unwrap_or_default();
+                                let u2 = mesh.uv2.get(k).copied().unwrap_or_default();
+                                let c = mesh.colors.get(k).copied().unwrap_or_default();
+                                let _ = writeln!(out, "v {:.4} {:.4} {:.4} {:.3} {:.3} {:.3} {:.5} {:.5} {:.5} {:.5} {:.5} {:.5} {} {} {} {}", p.x, p.y, p.z, n.x, n.y, n.z, u.x, u.y, u1.x, u1.y, u2.x, u2.y, c[0], c[1], c[2], c[3]);
+                            }
+                            for t in mesh.indices.chunks_exact(3) {
+                                let _ = writeln!(out, "t {} {} {}", t[0], t[1], t[2]);
+                            }
+                        }
+                    }
+                }
+                if mode == MatMode::Paint && std::env::var("MCLA_UV_LOG").is_ok() {
+                    let (mut u0, mut u1) = (glam::Vec2::splat(9e9), glam::Vec2::splat(-9e9));
+                    for u in &mesh.uv0 {
+                        u0 = u0.min(*u);
+                        u1 = u1.max(*u);
+                    }
+                    log::info!("paint uv {} {} mesh {} verts {} uv0 {} range {:?}..{:?}", car.name, part.primary, mi, mesh.positions.len(), mesh.uv0.len(), u0, u1);
+                }
+                if log::log_enabled!(log::Level::Debug) && std::env::var("MCLA_SHADER_DUMP").is_ok() {
+                    if let Some(sh) = sh {
+                        log::debug!("shaderdump {} #{} params {:?}", sname, si, sh.params.iter().map(|(h, p)| format!("{:08x}={:?}", h, p)).collect::<Vec<_>>());
+                    }
+                }
+                if log::log_enabled!(log::Level::Debug) && mode == MatMode::Light {
+                    if let Some(sh) = sh {
+                        log::debug!("light shader {} params {:?}", sname, sh.params.iter().map(|(h, p)| format!("{:08x}={:?}", h, p)).collect::<Vec<_>>());
+                    }
+                    let mut cols: hashbrown::HashMap<[u8; 4], u32> = hashbrown::HashMap::new();
+                    for c in &mesh.colors {
+                        *cols.entry(*c).or_insert(0) += 1;
+                    }
+                    let mut c1: hashbrown::HashMap<[u8; 4], u32> = hashbrown::HashMap::new();
+                    for c in &mesh.colors1 {
+                        *c1.entry(*c).or_insert(0) += 1;
+                    }
+                    let (mut u0, mut u1) = (glam::Vec2::splat(9e9), glam::Vec2::splat(-9e9));
+                    for u in &mesh.uv1 {
+                        u0 = u0.min(*u);
+                        u1 = u1.max(*u);
+                    }
+                    let mut cv: Vec<_> = cols.into_iter().collect();
+                    cv.sort_by_key(|x| std::cmp::Reverse(x.1));
+                    cv.truncate(6);
+                    let mut c1v: Vec<_> = c1.into_iter().collect();
+                    c1v.sort_by_key(|x| std::cmp::Reverse(x.1));
+                    c1v.truncate(4);
+                    log::debug!("light mesh {} #{} verts {} colors(argb) {:?} colors1 {:?} uv1 {:?}..{:?} names {:?}", part.primary, mi, mesh.positions.len(), cv, c1v, u0, u1, part.names.iter().take(12).collect::<Vec<_>>());
+                }
+                // (the maps are found at the build, on the main thread - `load_model_cfg`: which ones)
+                let plate = sname.eq_ignore_ascii_case("LicensePlate") && dn.is_none();
+                // (render only, blade round - PS_CarbonFiber's NormalSampler, the weave's normal map, rides as the CarbonFiber
+                // meshes' second texture; city.wgsl reads it in the carbon branch. MCLA_CARBON_OLD=1: none)
+                let carbon = sname.eq_ignore_ascii_case("CarbonFiber") && !car_is_ambient && std::env::var("MCLA_CARBON_OLD").is_err();
+                // (the windows of a car with the full glass program, PS_GlassFront: the detail mask and the
+                // crack map in the two slots, marked by lens -1 below; city.wgsl reads them for a cracked
+                // or broken pane and draws the pane white as before)
+                let win_cand = sname.eq_ignore_ascii_case("CarGlass") && !car_is_ambient && dn.is_none() && sn.is_none();
+                // meshes sharing textures and material mode are merged into one draw (the side
+                // windows' glass apart, by side: it moves with its bone)
+                let win_side = if part.is_base { car.windows.iter().position(|w| w.as_ref().map_or(false, |w| part.mesh_tag.get(mi) == Some(&w.tag))).map_or(0, |k| k as u32 + 1) } else { 0 };
+                let win_side = if win_side != 0 { win_side } else { part_group(part, &part_xf, mi) };
+                // (a traffic model's own wheel: tyre, rim and disc on one of its wheel bones -
+                // groups 7 - 12, the bone's place its hub)
+                let own_wheel = if car_is_ambient && !car.bike { part.mesh_wheel.get(mi).copied().flatten() } else { None };
+                if let Some(i) = own_wheel.filter(|_| lod == 0) {
+                    own_hubs[i] = Some((part_xf * bone_m).w_axis.truncate());
+                }
+                let win_side = own_wheel.map_or(win_side, |i| 7 + i as u32);
+                if win_side >= 3 && std::env::var("MCLA_PARTS_LOG").is_ok() {
+                    log::info!("damage parts {}: {} mesh {} -> group {}", car.name, part.primary, mi, win_side);
+                }
+                let kbits = mode as u32 | win_side << 16 | lod << 24;
+                // (the glass over a lamp is its lens: red over the tail lamps, clear elsewhere -
+                // the game tints it from a table per lamp, BumpedTintColors)
+                let pn = part.primary.to_ascii_lowercase();
+                let (glass, lamp) = (sname.to_ascii_lowercase().contains("bumpedglass"), mode == MatMode::Light);
+                if lamp && lod == 0 {
+                    let xf = part_xf * bone_m;
+                    // (MCLA_LAMP_DUMP: every lamp mesh in full - vertices with their lamp id, triangles; work/lighting/fe_lamps.py)
+                    if std::env::var("MCLA_LAMP_DUMP").is_ok() {
+                        for (k, p) in mesh.positions.iter().enumerate() {
+                            let w = xf.transform_point3(*p);
+                            eprintln!("lampv {} {} {} {} {} {:.4} {:.4} {:.4}", car.name, part.primary, mi, k, mesh.uv1.get(k).map_or(-1, |u| u.x.round() as i32), w.x, w.y, w.z);
+                        }
+                        for t in mesh.indices.chunks_exact(3) {
+                            eprintln!("lampt {} {} {} {} {} {}", car.name, part.primary, mi, t[0], t[1], t[2]);
+                        }
+                    }
+                    for (k, p) in mesh.positions.iter().enumerate() {
+                        let id = mesh.uv1.get(k).map_or(-1, |u| u.x.round() as i32);
+                        if matches!(id, 0 | 1 | 3 | 6 | 12 | 13 | 14) {
+                            let w = xf.transform_point3(*p);
+                            let e = lamp_acc.entry((id, w.x > 0.0)).or_insert((Vec3::ZERO, 0));
+                            e.0 += w;
+                            e.1 += 1;
+                            if std::env::var("MCLA_GLOW_DUMP").is_ok() {
+                                eprintln!("lampvert {} {} mesh {} id {} {:.4} {:.4} {:.4}", car.name, part.primary, mi, id, w.x, w.y, w.z);
+                            }
+                        }
+                    }
+                }
+                let lens_of = |win_maps: bool| {
+                    if (glass || lamp) && (pn.contains("tail") || pn.contains("brake")) {
+                        1.0
+                    } else if glass {
+                        2.0
+                    } else if win_maps {
+                        -1.0
+                    } else {
+                        0.0
+                    }
+                };
+                // (the mesh's vertices as the batch takes them: placed, then marked by its program's rules)
+                let make = |lens: f32| -> MeshGeo {
+                    let mut acc = MeshGeo::new();
+                    let first = 0;
+                    acc.push(mesh, part_xf * bone_m, dark_above, lens, if !car_is_ambient { 0 } else if sname.eq_ignore_ascii_case("AmbientTire") { 2 } else { 1 });
+                    // (render only - car parts drawn by their own programs' rules in city.wgsl, see
+                    // work/lighting bs3.py / bmprobe.py / cglassprobe.py: the material's terms ride in
+                    // the vertices. BumpSpec family: uv2 = (-(1 + 200 smoothness + 256 x 200
+                    // SpecularColor), 1 + base r + 256 base g), uv1 = (base b + 256 x 32 SpecMapExp, 0),
+                    // colour alpha = 10 metallic + 16 cut-out + 32 cabin part + 64 GrillOpaque (its
+                    // soft reflection goes by the texture). Brushed metal: uv2.x =
+                    // 1 + ReflectColorMod. Opaque black glass: uv2.x = 1. Cabin paint: colour alpha 32
+                    // (the cabin's own-lamp colours are the gauge colours, not the outside lamps').)
+                    // (MCLA_CARPARTS_OLD=1 with MCLA_DEBUG_VIEW=72: everything as it was before this, for comparison)
+                    if !car_is_ambient && std::env::var("MCLA_CARPARTS_OLD").is_err() {
+                        use mcla_formats::rage::drawable::ShaderParam;
+                        let pv = |h: u32, d: f32| sh.and_then(|s| s.params.iter().find_map(|(ph, p)| match p { ShaderParam::Vector(v) if *ph == h && !v.is_empty() => Some(v[0]), _ => None })).unwrap_or(glam::Vec4::splat(d));
+                        let by = |x: f32, k: f32| if x.is_finite() { (x.abs() * k).round().clamp(0.0, 255.0) } else { 0.0 };
+                        let cabin = pn.starts_with("interior") || pn.contains("_int") || pn.starts_with("seats") || pn.starts_with("steer_whl");
+                        let alpha_cut = sname.eq_ignore_ascii_case("BumpSpecAlpha");
+                        let spec_map = sname.eq_ignore_ascii_case("GrillOpaque");
+                        if sname.eq_ignore_ascii_case("BumpSpec") || alpha_cut || spec_map {
+                            let (bc, e, k, s, m) = (pv(0x1468b111, 1.0), pv(0xb37a7946, 1.0).x, pv(0xa98e2243, 0.0).x, pv(0x5e315fd1, 0.0).x, pv(0x83697767, 0.0).x);
+                            let a = (by(m, 10.0).min(15.0) + if alpha_cut { 16.0 } else { 0.0 } + if cabin { 32.0 } else { 0.0 } + if spec_map { 64.0 } else { 0.0 }) as u8;
+                            for v in &mut acc.verts[first..] {
+                                v.uv2 = [-(1.0 + by(s, 200.0) + 256.0 * by(k, 200.0)), 1.0 + by(bc.x, 255.0) + 256.0 * by(bc.y, 255.0)];
+                                v.uv1 = [by(bc.z, 255.0) + 256.0 * by(e, 32.0), 0.0];
+                                v.color[3] = a;
+                            }
+                        } else if sname.eq_ignore_ascii_case("BrushedMetal") {
+                            let rc = pv(0xaffa32ba, 1.0).x;
+                            for v in &mut acc.verts[first..] {
+                                v.uv2 = [1.0 + if rc.is_finite() { rc.clamp(0.0, 4.0) } else { 1.0 }, 0.0];
+                            }
+                        } else if sname.eq_ignore_ascii_case("BlackOpaqueGlass") {
+                            for v in &mut acc.verts[first..] {
+                                v.uv2 = [1.0, 0.0];
+                            }
+                        } else if badge {
+                            // (BumpedAlphaChrome, PS_BumpedChrome of cars/0x1d68d869: PS_Chrome's mirror x
+                            // (0.125 + 1.185 sat(collector - 0.25)) x baked occlusion, alpha = 2 x the
+                            // texture's alpha - 1; city.wgsl cuts it out where that is not above 0 (uv2.y = 3))
+                            for v in &mut acc.verts[first..] {
+                                v.uv2 = [0.0, 3.0];
+                            }
+                        } else if sname.eq_ignore_ascii_case("CarbonFiber") && std::env::var("MCLA_CARBON_OLD").is_err() {
+                            // (render only - PS_CarbonFiber of cars/0x84fc57d9, city.wgsl: uv2.x = 2)
+                            for v in &mut acc.verts[first..] {
+                                v.uv2 = [2.0, 0.0];
+                            }
+                        } else if cabin && mode == MatMode::Paint {
+                            for v in &mut acc.verts[first..] {
+                                v.color[3] = 32;
+                            }
+                        } else if sname.eq_ignore_ascii_case("LicensePlate") && std::env::var("MCLA_PLATE_OLD").is_err() {
+                            // (render only - the number plate is drawn by its own program's rule,
+                            // PS_Plate of cars/0x94eca68d, city.wgsl: marked like a BumpSpec part with
+                            // the cut-out and the GrillOpaque bits both set, 16 + 64)
+                            for v in &mut acc.verts[first..] {
+                                v.uv2 = [-1.0, 1.0];
+                                v.uv1 = [0.0, 0.0];
+                                v.color[3] = 80;
+                            }
+                        }
+                    }
+                    // cabin trim: the colour group of the mesh's zone (uv1.x), by the vehicle's own
+                    // table, rides in uv2.y as 100 + group (city.wgsl, mode 17; nothing else of that
+                    // mode reads uv2.y) - the original builds the trim program's colour table from
+                    // the same table every frame (F-19629)
+                    if mode == MatMode::Interior {
+                        if let Some(table) = zone_table.as_ref() {
+                            for v in &mut acc.verts[first..] {
+                                let z = v.uv1[0].round();
+                                if (0.0..25.0).contains(&z) {
+                                    v.uv2[1] = 100.0 + table[z as usize] as f32;
+                                }
+                            }
+                        }
+                    }
+                    // a part painted by itself: its colour in the vertices' own colour, marked by its
+                    // alpha - the paint shader takes it in place of the car's (city.wgsl, mode paint)
+                    if mode == MatMode::Paint {
+                        let kind = match vehicle_model::classify_slot(&part.primary, &part.names) {
+                            Slot::Hood => "hood",
+                            Slot::Trunk => "trunk",
+                            Slot::BumperF => "bumper_f",
+                            Slot::BumperR => "bumper_r",
+                            Slot::Spoiler => "spoiler",
+                            Slot::Skirts => "skirts",
+                            Slot::DoorL | Slot::DoorR => "doors",
+                            _ => "",
+                        };
+                        // (the part's paint area rides in uv2.y, 8 + area, for the player's own
+                        // entry per area - the original's table per part slot, 0x82050FD0: hood and
+                        // hood_wide 2, bumper_r 4, bumper_f 3, skirts 5, the doors and their wide
+                        // ones 1, every other slot the body's. Nothing else of the paint reads uv2.y.)
+                        let area = match kind {
+                            "doors" => 1.0,
+                            "hood" => 2.0,
+                            "bumper_f" => 3.0,
+                            "bumper_r" => 4.0,
+                            "skirts" => 5.0,
+                            _ => 0.0,
+                        };
+                        if area > 0.0 && !pn.starts_with("subbum") {
+                            for v in &mut acc.verts[first..] {
+                                v.uv2[1] = 8.0 + area;
+                            }
+                        }
+                        if let Some(c) = cfg.part_paint.get(kind) {
+                            // (the colour is the screen's: the shader's paint is linear)
+                            let lin = |v: u8| ((v as f32 / 255.0).powf(2.2) * 255.0).round() as u8;
+                            for v in &mut acc.verts[first..] {
+                                v.color = [lin(c[0]), lin(c[1]), lin(c[2]), 255];
+                            }
+                        }
+                    }
+                    acc
+                };
+                let geo = make(lens_of(win_cand));
+                let geo_alt = (win_cand && lens_of(false) != lens_of(true)).then(|| make(lens_of(false)));
+                meshes.push(MeshPrep { sname: sname.to_string(), mode, dn, sn, plate, carbon, win_cand, kbits, geo, geo_alt });
+            }
+        }
+        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone }
+    }
+
     /// Tyre + rim model for a rim directory, loaded once.
     /// The garage's BRAKES choice on the player's car (`None`: the car's own).
     pub fn set_player_brake(&mut self, gpu: &mut Gpu, world: &mut World, name: Option<&str>) {
@@ -2124,6 +2272,17 @@ impl Vehicles {
     pub fn dress_setups(&mut self, gpu: &mut Gpu, world: &mut World, resolve: &mut dyn FnMut(&str, &str) -> Option<Dress>) -> Option<usize> {
         let t_dress = std::time::Instant::now();
         let i = self.cars.iter().position(|c| !c.is_player && !c.dressed && !c.vinyl_name.is_empty() && c.parked.is_none())?;
+        // (the builds of every car waiting to be dressed made ahead on workers, once each: the cars are still dressed one
+        // a call, as before, and each finds its build's CPU part made - docs/PERFORMANCE.md 2026-10-27 (13))
+        let waiting: Vec<(String, String)> = self.cars.iter().filter(|c| !c.is_player && !c.dressed && !c.vinyl_name.is_empty() && c.parked.is_none()).map(|c| (c.model.name.clone(), c.vinyl_name.clone())).collect();
+        for (car, setup) in waiting {
+            if self.dress_ahead.insert((car.clone(), setup.clone())) {
+                if let Some(d) = resolve(&car, &setup) {
+                    let dir = world.assets.root.join("resources/vehicle").join(&car);
+                    self.prepare_ahead(&dir, &d.cfg);
+                }
+            }
+        }
         self.cars[i].dressed = true;
         let name = self.cars[i].model.name.clone();
         let d = resolve(&name, &self.cars[i].vinyl_name)?;
