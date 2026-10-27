@@ -94,7 +94,7 @@ pub struct BoomTarget {
     /// a running special ability's change to the lens (degrees) and to the distance (scale)
     pub ability: (f32, f32),
     /// the slipstream turbo's lens (mcCarSSTurbo +20, degrees added) and distance scale (+24) - the chase
-    /// cameras add the one and multiply by the other (mcTrackCS 0x8231CF48, camDynamicBoomCS 0x8231DCE8)
+    /// cameras add the one and multiply by the other (mcTrackCS F-92343, camDynamicBoomCS F-44852)
     pub sst: (f32, f32),
     /// the look-back camera's turn about the car: yaw and pitch, radians (camBoomCS +452 /
     /// +456, set by mcPlayerCamera: the look-back's turn, or the look-around's)
@@ -163,7 +163,7 @@ impl BoomCam {
         self.started = false;
     }
 
-    /// Where the camera's collision probe starts (sub_8231E700): the file's Collide point in
+    /// Where the camera's collision probe starts (F-20517): the file's Collide point in
     /// this frame's boom frame, P = origin + frame * (Collide - Center), origin = the car's
     /// place + car * Center. Call after `update`.
     pub fn collide_from(&self, t: &BoomTune, car: &BoomTarget) -> Vec3 {
@@ -175,8 +175,8 @@ impl BoomCam {
     }
 }
 
-/// The boom camera's collision (camBoomCS CollideType 2, sub_8231FD60 -> sub_8231E700 for the
-/// chase and reverse views, sub_8231EC50 for POV / bumper; rule in
+/// The boom camera's collision (camBoomCS CollideType 2, F-12669 -> F-20517 for the
+/// chase and reverse views, F-77832 for POV / bumper; rule in
 /// `docs/reference/cameras/boom_collision_rule.md`). A ball the size of the near plane's corner
 /// (near * sqrt(tanX^2 + tanY^2), + 0.01; POV / bumper twice the corner) goes from the probe
 /// point `p` to the camera `c`; on a touch the camera stands where the ball stopped, held its
@@ -284,7 +284,7 @@ impl BoomCam {
             self.ang = ang;
         } else {
             // (the VelocityFilter is halved below 60 frames a second - always, at the game's 30:
-            // 0x82320420)
+            // A-12557)
             let (kv, ka) = (per_frame(t.s("VelocityFilter") * 0.5), per_frame(t.s("AccelFilter")));
             let (v0, w0) = (self.vel, self.ang);
             self.vel = v0.lerp(vel, kv);
@@ -345,7 +345,7 @@ impl BoomCam {
         let (off0, foc0) = if car.rev { (t.v3("RevOffset"), t.v3("RevFocus")) } else { (t.v3("Offset"), t.v3("Focus")) };
         let (off0, foc0) = (off0 - t.v3("Center"), foc0 - t.v3("Center"));
         // (the distance scale shortens the offset's own length from Center, along the boom from the focus:
-        // off - normalize(off - focus) x |off| x (1 - scale), 0x82320A5C..0x82320B2C)
+        // off - normalize(off - focus) x |off| x (1 - scale), A-81111..A-85412)
         let boom = off0 - foc0;
         let mut off = off0 - boom.normalize_or_zero() * off0.length() * (1.0 - dist_scale);
         // (accelerating and braking have their own sets)
@@ -370,7 +370,7 @@ impl BoomCam {
             d_off.y -= t.s("AngleXOffsetY") * z.y;
         }
         // (a turned look-back camera moves less with the car: the yaw takes the side and
-        // fore-aft terms by 1 - min(yaw^2, 1), the pitch the height terms - 0x82320D8C..0x82320E10)
+        // fore-aft terms by 1 - min(yaw^2, 1), the pitch the height terms - A-27754..A-63970)
         let mut d_foc = d_foc;
         let (pan_yaw, pan_pitch) = car.pan;
         if pan_yaw != 0.0 {
@@ -390,7 +390,7 @@ impl BoomCam {
         // the look-around's rise lifts camera and focus together (+460)
         off.y += car.rise;
         foc_target.y += car.rise;
-        // and turns its boom: pitch about x, then yaw about y (0x82320ED0..0x82320F80), about the
+        // and turns its boom: pitch about x, then yaw about y (A-96068..A-15453), about the
         // car tune's ModelOffset for the chase views (chassis +368 -> +32; here less Center, as
         // offset and focus are), in place for the bumper and the cockpit (last frame's place, +416)
         if pan_yaw != 0.0 || pan_pitch != 0.0 {
@@ -417,7 +417,7 @@ impl BoomCam {
         let mut foc = foc_target;
         let mut roll = roll_target;
         if !snap {
-            // (0x82320F90: once a game frame, 1/30 s, the last place seen from the new frame goes h of the
+            // (A-29979: once a game frame, 1/30 s, the last place seen from the new frame goes h of the
             // way to the target, homed = last + (off - last) h, then takes the target's length. The lag
             // that leaves is fed by the car's move over the frame, so at another step the place keeps the
             // original's decay q = (1 - h)^(dt 30) and takes the move at the original's weight
@@ -440,7 +440,7 @@ impl BoomCam {
             }
             // and nothing moves faster than the approach rate (+656: 25 m/s while the camera is
             // turned, else the file's ApproachRate, moving there at 50 per second; none when the
-            // file has none - 0x823210A0)
+            // file has none - A-69633)
             let file_rate = t.s("ApproachRate");
             let goal = if pan_yaw != 0.0 || pan_pitch != 0.0 { 25.0 } else { file_rate };
             // (approx.: a fresh camera starts at the file's rate)
@@ -474,7 +474,7 @@ impl BoomCam {
     }
 }
 
-// ---- the player's choice of view (mcPlayerCamera, sub_822B1648 / sub_822B35E8) ----
+// ---- the player's choice of view (mcPlayerCamera, F-89557 / F-67519) ----
 //
 // The original keeps its views in a list: 0 Bumper (+44), 1 POV (+48), 2 Boom 1 (+52), 3 Boom 2,
 // 4 Boom 3 (+60); index at +80. The port's `cam_mode` keeps its own order (0 boom1, 1 boom2,
@@ -484,11 +484,11 @@ impl BoomCam {
 pub const PORT_OF_VIEW: [u8; 5] = [4, 3, 0, 1, 2];
 /// The original's list place of each port view (5, the event camera, counts as Boom 3).
 pub const VIEW_OF_PORT: [usize; 6] = [2, 3, 4, 1, 0, 4];
-/// The names the HUD shows (`_global.cameras`, sub_8223D300): string table keys of the list
+/// The names the HUD shows (`_global.cameras`, F-13512): string table keys of the list
 /// places 0..4, then the overhead view of the race editor (`Cheat_RE_OverHeadCam`).
 pub const VIEW_KEYS: [&str; 6] = ["Bumper", "POV", "Boom 1", "Boom 2", "Boom 3", "Cheat_RE_OverHeadCam"];
 
-/// The camera buttons outside the race editor (sub_822B35E8, 0x822B38E0..0x822B3A84):
+/// The camera buttons outside the race editor (F-67519, A-11943..A-79101):
 /// CAM_UP takes the list's previous place, CAM_DOWN the next; both wrap within the five.
 /// The event camera is never a place of the list.
 pub fn next_view(port: u8, cam_up: bool) -> u8 {
@@ -497,7 +497,7 @@ pub fn next_view(port: u8, cam_up: bool) -> u8 {
 }
 
 /// A change between two views is a cut (transition type 4) when either is Bumper or POV,
-/// else a blend (type 3) over the new view's own BlendTime (sub_822B35E8 -> sub_822B0F10).
+/// else a blend (type 3) over the new view's own BlendTime (F-67519 -> F-41662).
 pub fn is_cut(from_port: u8, to_port: u8) -> bool {
     VIEW_OF_PORT[(from_port as usize).min(5)] <= 1 || VIEW_OF_PORT[(to_port as usize).min(5)] <= 1
 }
@@ -513,7 +513,7 @@ impl BoomTune {
     }
 }
 
-/// The blend from one view to the next (the camera manager's MCCAMERATRANSITION, sub_8271F438):
+/// The blend from one view to the next (the camera manager's MCCAMERATRANSITION, F-18583):
 /// both cameras keep running; the share of the new one is s = 1 - goal * left / time, eased
 /// (1 - cos(pi s)) / 2 (type 3), and position, aim and lens go from the old to the new by it.
 #[derive(Default)]
@@ -561,7 +561,7 @@ impl ViewBlend {
     }
 }
 
-/// The black mask of a cut (TRANSITIONMOVIE as sub_82207EF0 starts it: mask_color 0,
+/// The black mask of a cut (TRANSITIONMOVIE as F-28091 starts it: mask_color 0,
 /// fade_speed_in, fade_speed_out, wait_delay). The movie (30 frames a second) adds
 /// 3.333 / fade_speed_in to its alpha each frame up to 100, waits until 3.333 / wait_delay a
 /// frame has counted to 100, then takes 3.333 / fade_speed_out a frame off; all three can
@@ -581,7 +581,7 @@ pub struct CutMask {
 
 impl CutMask {
     pub fn start(&mut self, fade_in: f32, fade_out: f32, delay: f32) {
-        // (only when no transition is running: sub_82207EF0 reads StartOfTransitionin and
+        // (only when no transition is running: F-28091 reads StartOfTransitionin and
         // TransitionOutisReady first)
         if self.on {
             return;
@@ -644,9 +644,9 @@ impl CutMask {
 
 /// The camera file a view runs and whether it looks along its Rev* boom: looking back from a
 /// chase view cuts to the car's `_reverse` camera; from Bumper or POV the same camera turns
-/// round (sub_822B23D0: vt+80(1) on the camera in use). Backing up changes nothing: the update
-/// takes RevOffset / RevFocus only on +208 (0x823209D8), which only vt+80 (sub_8231D1F8) sets - at
-/// the start for the `_reverse` camera (sub_822B1B58) and for the look back (GitHub #10).
+/// round (F-39925: vt+80(1) on the camera in use). Backing up changes nothing: the update
+/// takes RevOffset / RevFocus only on +208 (A-47729), which only vt+80 (F-38722) sets - at
+/// the start for the `_reverse` camera (F-42437) and for the look back (GitHub #10).
 pub fn tune_for(set: &BoomSet, view: u8, back: bool) -> (&BoomTune, bool) {
     let i = (view as usize).min(set.views.len() - 1);
     let chase = VIEW_OF_PORT[(view as usize).min(5)] >= 2;
@@ -658,7 +658,7 @@ pub fn tune_for(set: &BoomSet, view: u8, back: bool) -> (&BoomTune, bool) {
 }
 
 /// What the player's camera does when the view or the look back changes (mcPlayerCamera:
-/// sub_822B35E8 the buttons, sub_822B23D0 the look back, sub_822B4C98 its turning).
+/// F-67519 the buttons, F-39925 the look back, F-38892 its turning).
 #[derive(Default)]
 pub struct Switch {
     pub blend: ViewBlend,
@@ -700,7 +700,7 @@ impl Switch {
             self.pan = (0.0, 0.0);
             if back && chase && cinematic && moving {
                 // the look back of the cinematic camera stands off to one side: 22.5 .. 67.5
-                // degrees either way (0x822B24F4..0x822B25D4)
+                // degrees either way (A-94637..A-37192)
                 let sign = if self.rand23() * 2.384_185_8e-7 - 1.0 >= 0.0 { 1.0 } else { -1.0 };
                 self.pan.0 = sign * (0.392_699 + self.rand23() * 9.362_68e-8);
             }
@@ -716,7 +716,7 @@ impl Switch {
             cam.reset();
         }
         // turning the look-back camera with CAM_PAN_*: 2 rad/s round, 1.25 rad/s up, the
-        // pitch kept in 0 .. 1.2566 (0x822B5048..0x822B5140)
+        // pitch kept in 0 .. 1.2566 (A-28508..A-14649)
         if back && chase {
             self.pan.0 += self.pan_in.0 * 2.0 * dt;
             self.pan.1 = (self.pan.1 + self.pan_in.1 * 1.25 * dt).clamp(0.0, 1.256_64);
@@ -734,7 +734,7 @@ impl Switch {
 }
 
 /// The camera effects tune (`camera/default` = `tune/camera/default.camfx`, class camFX,
-/// sub_82314838 into the player camera's +24 object): the times and thresholds the event
+/// F-53685 into the player camera's +24 object): the times and thresholds the event
 /// camera's chooser reads.
 #[derive(Clone, Debug)]
 pub struct CamFx {
@@ -742,7 +742,7 @@ pub struct CamFx {
     pub idle_delay: f32,
     /// yaw rate (rad/s) that makes a burnout the Burnout view (+44)
     pub burnout_turn: f32,
-    /// the look-around (sub_822B2AB0): the chase views' yaw at full stick left / right (+60,
+    /// the look-around (F-36289): the chase views' yaw at full stick left / right (+60,
     /// +64), the cockpit's (+68, +72) and its pitch limits up / down (+76, +80), the chase
     /// views' rise at full CAMERA_UP (+16, m), the cockpit's lens at full CAMERA_UP (+32,
     /// degrees; not in the file: the constructor's 15) and the ease per call (+48, 0.2: idem)
@@ -758,7 +758,7 @@ pub struct CamFx {
 
 impl Default for CamFx {
     fn default() -> CamFx {
-        // (the constructor's defaults, sub_82314C30)
+        // (the constructor's defaults, F-25608)
         CamFx { idle_delay: 10.0, burnout_turn: 1.5, pan: (1.0472, 1.0472), limit: (1.0, 1.0, 0.471_239, 0.471_239), rise_up: 0.75, zoom_in: 15.0, look_lerp: 0.2, look_delay: 3.0 }
     }
 }
@@ -803,7 +803,7 @@ struct ShakeBlock {
     state: u8,
 }
 
-/// The camera shake (camFX blocks, sub_82315000 applied to the camera in use each frame).
+/// The camera shake (camFX blocks, F-10707 applied to the camera in use each frame).
 #[derive(Clone, Debug, Default)]
 pub struct CamShake {
     blocks: Vec<ShakeBlock>,
@@ -834,7 +834,7 @@ impl CamShake {
         CamShake { blocks, rng: (0x1234_5678, 0) }
     }
 
-    /// Every block off (sub_82314790: the phases are kept).
+    /// Every block off (F-29203: the phases are kept).
     pub fn reset(&mut self) {
         for b in &mut self.blocks {
             b.timer = 0.0;
@@ -842,7 +842,7 @@ impl CamShake {
         }
     }
 
-    /// A one-shot on the Shake block (sub_822AFA88 -> sub_823147F0): `fixed_mount` (bumper /
+    /// A one-shot on the Shake block (F-68650 -> F-48972): `fixed_mount` (bumper /
     /// cockpit) takes 0.4 of the scale; a stronger shake still running is kept.
     pub fn jolt(&mut self, duration: f32, scale: f32, fixed_mount: bool) {
         let scale = if fixed_mount { scale * 0.4 } else { scale };
@@ -855,7 +855,7 @@ impl CamShake {
         b.timer = duration;
     }
 
-    /// A continuous block's strength (sub_823147C0).
+    /// A continuous block's strength (F-54070).
     pub fn set(&mut self, i: usize, scale: f32) {
         if let Some(b) = self.blocks.get_mut(i) {
             b.timer = 1.0;
@@ -871,7 +871,7 @@ impl CamShake {
         (self.rng.0 & 0x7F_FFFF) as f32 * (1.0 / 8_388_608.0)
     }
 
-    /// Shakes the camera (eye `pos`, `look`, `up`) about the car at `car` (sub_82315000).
+    /// Shakes the camera (eye `pos`, `look`, `up`) about the car at `car` (F-10707).
     pub fn apply(&mut self, dt: f32, pos: &mut Vec3, look: &mut Vec3, up: &mut Vec3, car: Vec3) {
         let reach = pos.distance(*look).max(0.1);
         // the camera's rows: a right, b up, c back
@@ -894,7 +894,7 @@ impl CamShake {
             if m == 0.0 {
                 continue;
             }
-            // the oscillator (sub_82314E58): phase += freq dt; (amp sin phase + uniform(-r, r)) m
+            // the oscillator (F-17992): phase += freq dt; (amp sin phase + uniform(-r, r)) m
             let mut out = [Vec3::ZERO; 3];
             for k in 0..3 {
                 let [amp, freq, rnd, ph] = self.blocks[i].parts[k];
@@ -939,7 +939,7 @@ impl CamShake {
                 rot_local_x(&mut b, &mut c, -cr.x);
                 d = car - fc * dist;
             }
-            // Rot and Tran in the camera's own frame (EulerXYZ, sub_821B4B00)
+            // Rot and Tran in the camera's own frame (EulerXYZ, F-28753)
             d += tr.x * a + tr.y * b + tr.z * c;
             let (sx, cx) = rt.x.sin_cos();
             let (sy, cy) = rt.y.sin_cos();
@@ -958,7 +958,7 @@ impl CamShake {
     }
 }
 
-/// The original's dead zone with rescale (sub_8260C5C8).
+/// The original's dead zone with rescale (F-93983).
 fn dead_zone(v: f32, d: f32) -> f32 {
     if v > d {
         (v - d) / (1.0 - d)
@@ -969,7 +969,7 @@ fn dead_zone(v: f32, d: f32) -> f32 {
     }
 }
 
-/// The driving camera's look-around (mcPlayerCamera sub_822B2AB0, once a game frame; rule in
+/// The driving camera's look-around (mcPlayerCamera F-36289, once a game frame; rule in
 /// `docs/reference/cameras/lookaround_rule.md`): the stick's CAMERA_LEFT / CAMERA_RIGHT set a
 /// yaw goal (a place, not a rate: full stick = PanLeft / PanRight in the chase views, the
 /// cockpit's LimitLeft / LimitRight, 45 degrees on the bumper), CAMERA_UP raises a chase
@@ -1033,7 +1033,7 @@ impl LookAround {
             }
         }
         // the cockpit parked: the left stick (dead zone 0.25) turns the head at 1.5 rad/s and
-        // pitches it at 0.75; else the held angles run back to 0 at those rates (0x822B2EE8)
+        // pitches it at 0.75; else the held angles run back to 0 at those rates (A-18051)
         match free {
             Some((x, y)) if input && view == 1 && !bike && yaw_in == 0.0 && pitch_in == 0.0 => {
                 let (x, y) = (dead_zone(x, 0.25), dead_zone(y, 0.25));
@@ -1057,27 +1057,27 @@ impl LookAround {
     }
 }
 
-/// The event camera's events (camTrackCS records at +800 + 112 e, sub_82315E08).
+/// The event camera's events (camTrackCS records at +800 + 112 e, F-87722).
 pub const EVENT_NAMES: [&str; 18] = [
     "SSTurbo", "Nitrous", "Tuck", "Wheelie", "Nosie", "TwoWheelSide", "TwoWheelUp", "Burnout", "Air", "Turn", "Reverse", "Hydraulics", "AirRide", "Idle", "Finish", "Results", "Over", "Damageout",
 ];
 pub const EV_BURNOUT: usize = 7;
 pub const EV_IDLE: usize = 13;
 
-/// The Burnout view begins (sub_822B3BF0, 0x822B4038..0x822B4080): the handbrake (input +20)
+/// The Burnout view begins (F-24075, A-10955..A-35765): the handbrake (input +20)
 /// is held, the burnout charge (chassis +580) is full and the car turns faster than
 /// BurnoutTurnThreshold (|angular velocity y|, phys +292) - donuts and 360s on the handbrake.
 pub fn burnout_starts(fx: &CamFx, handbrake: f32, charge: f32, yaw_rate: f32) -> bool {
     handbrake > 0.0 && yaw_rate.abs() > fx.burnout_turn && charge >= 1.0
 }
 
-/// It ends (0x822B47F8..0x822B4840) when the handbrake is let go, the charge falls under one
+/// It ends (A-28109..A-73572) when the handbrake is let go, the charge falls under one
 /// half or the turn under half the threshold.
 pub fn burnout_ends(fx: &CamFx, handbrake: f32, charge: f32, yaw_rate: f32) -> bool {
     handbrake == 0.0 || charge < 0.5 || yaw_rate.abs() < fx.burnout_turn * 0.5
 }
 
-// ---- the event camera's track view (camTrackCS, sub_8231CF48; rule in
+// ---- the event camera's track view (camTrackCS, F-92343; rule in
 // work/cameras2/camtrack_rule.md), as the Burnout event runs it ----
 
 /// The fields of one block of a `.camtrackcs` file (`None` = the base block).
@@ -1113,7 +1113,7 @@ fn track_block(text: &str, name: Option<&str>) -> HashMap<String, Vec<f32>> {
 }
 
 /// What the track camera reads of a car's event camera file for one event: the base block's
-/// approach and lens fields, the event's own record (sub_823154F0 -> sub_82316148).
+/// approach and lens fields, the event's own record (F-68099 -> F-26269).
 #[derive(Clone, Debug)]
 pub struct TrackTune {
     pub blend: f32,
@@ -1130,7 +1130,7 @@ pub struct TrackTune {
     pub look_at: f32,
     pub ss_speed: (f32, f32),
     pub ss_filter: f32,
-    /// the place's approach rates (sub_8231B368): the event's Min/MaxAppXZPos, Min/MaxAppYPos,
+    /// the place's approach rates (F-91254): the event's Min/MaxAppXZPos, Min/MaxAppYPos,
     /// RevAppXZPos over the speed range MinSpeed..MaxSpeed (10..25 m/s but Hydraulics' 2..10);
     /// the base block's AppInc / AppDec (how fast the XZ rate moves) and AppPosMin
     pub app_xz: (f32, f32),
@@ -1140,11 +1140,11 @@ pub struct TrackTune {
     pub app_inc: f32,
     pub app_dec: f32,
     pub app_pos_min: f32,
-    /// the hill angle (sub_8231A468): HillMin, HillMax, HillLerp of the base block; the
+    /// the hill angle (F-66356): HillMin, HillMax, HillLerp of the base block; the
     /// event's ApproachOn (off: no hill, the car's own frame)
     pub hill: (f32, f32, f32),
     pub approach_on: bool,
-    /// the collision (sub_8231B740): CollideType (1 / 3 in the files), CollideMinDist, the
+    /// the collision (F-91096): CollideType (1 / 3 in the files), CollideMinDist, the
     /// camera's near plane (CameraNear, base +172)
     pub collide_type: i32,
     pub collide_min: f32,
@@ -1197,7 +1197,7 @@ impl TrackTune {
 
 impl TrackTune {
     /// The wipeout camera (mcPlayerCamera +72, vehTrackCS): its `<class>_wipeout.camtrackcs` is not
-    /// on the disc, so these are the constructors' values and sub_822B1648's (crash_camera_rule.md
+    /// on the disc, so these are the constructors' values and F-89557's (crash_camera_rule.md
     /// 1.2): TrackTo 0.75 x the tune's ModelOffset, lens 40, held 6..10 m from the point, the place
     /// nearly still (XZ 0..0.1 m/s, Y 1..2 m/s over 5..10 m/s), turning at AppRot 60 / AppXRot 30;
     /// the Offset is set at each start.
@@ -1234,7 +1234,7 @@ impl TrackTune {
 }
 
 /// The wipeout camera (mcPlayerCamera +72, vehTrackCS; crash_camera_rule.md 1 and 2): taken by
-/// sub_822AFF10 while the car is wiped out, damaged out or held by the police, and left with a
+/// F-37740 while the car is wiped out, damaged out or held by the police, and left with a
 /// cut when that is over.
 #[derive(Default)]
 pub struct CrashCam {
@@ -1248,7 +1248,7 @@ pub struct CrashCam {
     used: bool,
 }
 
-/// Where sub_822AFF10 puts the wipeout camera and how it comes in.
+/// Where F-37740 puts the wipeout camera and how it comes in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CrashStart {
     /// the Offset (+448): (0, 1, 7) behind, or (+-6, 0, 0) to the side the car slides toward
@@ -1260,7 +1260,7 @@ pub struct CrashStart {
 }
 
 impl CrashStart {
-    /// sub_822AFF10's choice: BUMPER / POV or an exploding car cut (with the TRANSITIONMOVIE mask
+    /// F-37740's choice: BUMPER / POV or an exploding car cut (with the TRANSITIONMOVIE mask
     /// 0.01, 0.1, 0.01); a bust or a car past 84 degrees over blends 0.5 s to 7 m behind and 1 m
     /// up; else 0.25 s to 6 m on the side the car slides toward (its right axis . velocity).
     pub fn choose(view: u8, exploding: bool, police: bool, up_y: f32, right: Vec3, vel: Vec3) -> CrashStart {
@@ -1280,7 +1280,7 @@ impl CrashCam {
     pub fn active(&self) -> bool {
         self.phase != 0
     }
-    /// The drive view comes back (a cut, sub_8271E930), or the Damageout view has taken over.
+    /// The drive view comes back (a cut, F-53309), or the Damageout view has taken over.
     pub fn stop(&mut self) {
         self.phase = 0;
     }
@@ -1365,7 +1365,7 @@ impl TimeWarper {
         }
         TimeWarper::new(tune)
     }
-    /// sub_822EB400: `now` is the game's time scale of the moment; one update follows at once.
+    /// F-85638: `now` is the game's time scale of the moment; one update follows at once.
     pub fn start(&mut self, now: f32, dt: f32) {
         self.since = 0.0;
         self.state = 0;
@@ -1376,7 +1376,7 @@ impl TimeWarper {
         self.cur = self.tune[1];
         self.update(dt);
     }
-    /// sub_822EB078: back to 1 from where it is.
+    /// F-79714: back to 1 from where it is.
     pub fn release(&mut self, now: f32) {
         if self.state == 2 {
             return;
@@ -1391,18 +1391,23 @@ impl TimeWarper {
     pub fn reset(&mut self) {
         *self = TimeWarper::new(self.tune);
     }
-    /// sub_822EB3A8, once a frame on the unscaled frame time.
-    pub fn update(&mut self, dt: f32) {
-        if self.state <= 1 {
-            self.t += self.rate * dt;
-            self.cur = if self.t >= 1.0 {
-                self.to
-            } else if self.t <= 0.0 {
-                self.from
-            } else {
-                self.from + (self.to - self.from) * (self.t * std::f32::consts::FRAC_PI_2).sin()
-            };
+    /// The ramp (F-73069): in the two easing states t += rate dt (fused), the value `to` from
+    /// t = 1, `from` up to t = 0, between them from + (to - from) sin(t pi/2) (the guest's sin, fused).
+    fn ramp(&mut self, dt: f32) {
+        if self.state > 1 {
+            return;
         }
+        self.t = self.rate.mul_add(dt, self.t);
+        self.cur = if self.t >= 1.0 {
+            self.to
+        } else {
+            let k = if self.t > 0.0 { crate::physics::exact::guest_sin((self.t * std::f32::consts::FRAC_PI_2) as f64) as f32 } else { 0.0 };
+            (self.to - self.from).mul_add(k, self.from)
+        };
+    }
+    /// F-25863, once a frame on the unscaled frame time.
+    pub fn update(&mut self, dt: f32) {
+        self.ramp(dt);
         self.since += dt;
         if self.tune[0] > 0.0 && self.since > self.tune[0] && self.state == 3 {
             let now = self.cur;
@@ -1462,22 +1467,30 @@ impl TrackCar {
     }
 }
 
-/// camTrackCS' approach step (sub_823223E8): `cur` goes towards `tgt` by s * rate * dt, s the
+/// camTrackCS' approach step (F-54792): `cur` goes towards `tgt` by s * rate * dt, s the
 /// distance (quadratic within `min`) through the AppApp lag `st`; no overshoot. The lag is
 /// per call of the original's camera update (once a 30 Hz game frame).
 fn approach(cur: f32, tgt: f32, min: f32, rate_dt: f32, app: f32, st: &mut f32, frames: f32) -> f32 {
     let d = (tgt - cur).abs();
-    let mut s = if min != 0.0 && d <= min { d * d / min } else { d };
-    let lag = 1.0 - (1.0 - app.clamp(0.0, 1.0)).powf(frames);
-    *st += (s - *st) * lag;
-    if (*st < 0.0) != (s < 0.0) && *st != 0.0 && s != 0.0 {
+    let mut s = if min != 0.0 && d <= min { d / min * d } else { d };
+    // (the original: st = fma(s - st, AppApp, st) once per call, the fused add of the asm; a
+    // different frame length takes the lag to that step)
+    let lag = if frames == 1.0 { app } else { 1.0 - (1.0 - app.clamp(0.0, 1.0)).powf(frames) };
+    *st = (s - *st).mul_add(lag, *st);
+    if (*st < 0.0 && s > 0.0) || (*st > 0.0 && s < 0.0) {
         *st = 0.0;
         s = 0.0;
     } else {
         s = *st;
     }
-    let step = (s * rate_dt).min(d);
-    cur + step * (tgt - cur).signum()
+    // (cur = fma(s, rate dt, cur) towards the target, held there when it would pass it)
+    if cur < tgt {
+        s.mul_add(rate_dt, cur).min(tgt)
+    } else if cur > tgt {
+        (-s).mul_add(rate_dt, cur).max(tgt)
+    } else {
+        cur
+    }
 }
 
 fn wrap_pi(a: f32) -> f32 {
@@ -1501,7 +1514,7 @@ fn dir_of(yaw: f32, pitch: f32) -> Vec3 {
     Vec3::new(-yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos())
 }
 
-/// The track camera with one event view on (sub_82316148 then sub_8231CF48 each frame).
+/// The track camera with one event view on (F-26269 then F-92343 each frame).
 #[derive(Default)]
 struct TrackCam {
     snap: bool,
@@ -1529,9 +1542,9 @@ struct TrackCam {
 }
 
 impl TrackCam {
-    /// The event is set (sub_82316148): Burnout's TrackTo.z = the front axle; Offset and
+    /// The event is set (F-26269): Burnout's TrackTo.z = the front axle; Offset and
     /// TrackTo mirrored when the event's side (`EventDirector::side`) is above zero; the next
-    /// frame snaps (reset sub_8231AC50: the filtered speed starts at the car's).
+    /// frame snaps (reset F-88984: the filtered speed starts at the car's).
     fn set(&mut self, t: &TrackTune, car: &TrackCar, ev: usize, side: f32) {
         let mut track = if ev == EV_BURNOUT { Vec3::new(t.track.x, t.track.y, car.front_z) } else { t.track };
         let mut offset = t.offset;
@@ -1543,7 +1556,7 @@ impl TrackCam {
         *self = TrackCam { snap: true, track, offset, speed: if car.reverse_gear { 0.0 } else { car.speed }, app_xz, hill, ..Default::default() };
     }
 
-    /// Where the camera wants to stand (sub_8231C4F8): the Offset in the car's level heading
+    /// Where the camera wants to stand (F-10185): the Offset in the car's level heading
     /// (behind the motion after half a second in the air above 10 m/s), its y along the world's up.
     fn place(&self, car: &TrackCar, at: Vec3) -> Vec3 {
         let m = Mat3::from_quat(car.rot);
@@ -1572,7 +1585,7 @@ impl TrackCam {
         // the point it tracks: TrackTo through the whole car matrix
         let m = Mat3::from_quat(car.rot);
         let at = car.pos + m * self.track;
-        // the hill angle (sub_8231A468): the slope under the wheels (its sign turned for a
+        // the hill angle (F-66356): the slope under the wheels (its sign turned for a
         // camera ahead of the car), eased per frame by HillLerp into asin(s * HillMax) up or
         // asin(s * HillMin) down; none without ApproachOn. (HillLerp per 30 Hz
         // frame: the game halves it only at a 60 Hz refresh (-framelock=1), never in play)
@@ -1586,13 +1599,13 @@ impl TrackCam {
             self.hill += (goal - self.hill) * l;
         }
         // the place, turned about the point by the hill angle round the camera's level right
-        // axis (sub_8231C4F8: rows * R(A, -pitch))
+        // axis (F-10185: rows * R(A, -pitch))
         let want = self.place(car, at);
         let rel = want - at;
         let a = Vec3::Y.cross(rel.normalize_or(Vec3::Z)).normalize_or(Vec3::X);
         let want = if self.hill != 0.0 { at + Quat::from_axis_angle(a, -self.hill) * rel } else { want };
         let want = deflect(at, want, t, test);
-        // the place's approach rates (sub_8231B368): over the speed range, the XZ one moving
+        // the place's approach rates (F-91254): over the speed range, the XZ one moving
         // towards its goal at AppInc / AppDec a second, in reverse gear RevAppXZPos
         let s = car.speed;
         let u = if t.app_speed.1 != t.app_speed.0 && s > t.app_speed.0 { ((s - t.app_speed.0) / (t.app_speed.1 - t.app_speed.0)).min(1.0) } else { 0.0 };
@@ -1613,8 +1626,8 @@ impl TrackCam {
             self.pitch = p;
             self.snap = false;
         } else {
-            // the place follows (sub_823228F0; Burnout's App*Pos are 0: it stays), then the
-            // distance is held in [DistMin, DistMax] x the lens' scale (sub_82321EE8)
+            // the place follows (F-48560; Burnout's App*Pos are 0: it stays), then the
+            // distance is held in [DistMin, DistMax] x the lens' scale (F-59594)
             for i in 0..3 {
                 let rate = if i == 1 { app_y } else { self.app_xz };
                 self.pos[i] = approach(self.pos[i], want[i], t.app_pos_min, rate * dt, t.app_app, &mut self.st_pos[i], frames);
@@ -1637,12 +1650,12 @@ impl TrackCam {
         }
         let reach = (at - self.pos).length().max(1.0);
         let look = self.pos + dir_of(self.yaw, self.pitch) * reach;
-        // the shown camera pulled in from walls (sub_8231B740); the look keeps its direction
+        // the shown camera pulled in from walls (F-91096); the look keeps its direction
         let pos = self.pull_in(t, at, dt, test, fov, aspect);
         BoomOut { pos, look: look + (pos - self.pos), up: Vec3::Y, fov }
     }
 
-    /// CollideType 1 / 3 (sub_8231B740, TYPE13): a ball of the near plane's corner + 0.1 from
+    /// CollideType 1 / 3 (F-91096, TYPE13): a ball of the near plane's corner + 0.1 from
     /// the track point to the camera; on a touch the kept distance (+672) goes in 30 % a
     /// frame to the touch (never under CollideMinDist), when clear it goes back out at
     /// MinAppXZPos m/s while the state bits last (as coded: with MinAppXZPos 0 it snaps back).
@@ -1716,7 +1729,7 @@ impl TrackCam {
         }
         if active {
             let shown = if rate > 0.0 {
-                // (sub_821CE490: linear at MinAppXZPos m/s, shown until it is there)
+                // (F-90102: linear at MinAppXZPos m/s, shown until it is there)
                 self.dist += (l - self.dist).clamp(-rate * dt, rate * dt);
                 (self.dist - l).abs() > 1e-6
             } else {
@@ -1738,7 +1751,7 @@ impl TrackCam {
 /// The world's sphere test the cameras use: a ball's deepest contact (depth, normal).
 pub type SphereTest<'a> = &'a dyn Fn(Vec3, f32) -> Option<(f32, Vec3)>;
 
-/// A ball swept from  to  (sub_82574C38, directed): the fraction of the way at the first
+/// A ball swept from  to  (F-58512, directed): the fraction of the way at the first
 /// touch and the normal there; a surface facing along the sweep does not count. (approx.:
 /// steps of half the radius and a bisection, on the port's sphere test)
 pub fn sweep(test: SphereTest, a: Vec3, b: Vec3, r: f32) -> Option<(f32, Vec3)> {
@@ -1769,7 +1782,7 @@ pub fn sweep(test: SphereTest, a: Vec3, b: Vec3, r: f32) -> Option<(f32, Vec3)> 
     None
 }
 
-/// The event camera's target turned away from what blocks it (sub_8231C4F8, 0x8231CB0C): with
+/// The event camera's target turned away from what blocks it (F-10185, A-24782): with
 /// CollideHeight (0.5 for an ApproachOn event, else 0) a ball at the track point, else swept
 /// from it to the place; on a touch the place turns about the point by yaw 2 atan(n.A) (at
 /// most 45 degrees) and pitch 0.5 atan(n.y) (scaled by 1 - t for the sweep), and never stands
@@ -1801,7 +1814,7 @@ fn deflect(at: Vec3, want: Vec3, t: &TrackTune, test: SphereTest) -> Vec3 {
     p
 }
 
-/// The camera director's orbit blend (sub_8271F438): the focus point (each camera's line of
+/// The camera director's orbit blend (F-18583): the focus point (each camera's line of
 /// sight out to its distance from the car), the view's angles and the distance go from one
 /// camera to the other by w.
 pub fn orbit_mix(a: &BoomOut, b: &BoomOut, pivot: Vec3, w: f32) -> BoomOut {
@@ -1818,7 +1831,7 @@ pub fn orbit_mix(a: &BoomOut, b: &BoomOut, pivot: Vec3, w: f32) -> BoomOut {
     BoomOut { pos: focus - dir * d, look: focus, up: a.up.lerp(b.up, w).normalize_or(Vec3::Y), fov: a.fov + (b.fov - a.fov) * w }
 }
 
-/// What the event camera's chooser (sub_822B3BF0) reads of the car, the pad and the camera
+/// What the event camera's chooser (F-24075) reads of the car, the pad and the camera
 /// manager in a frame (rule in docs/reference/cameras/event_chooser_rule.md).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EventIn {
@@ -1834,10 +1847,10 @@ pub struct EventIn {
     pub stunt: i16,
     /// gyro +18: a car's two-wheel side, a bike's turn intent (+1 / -1 / 0)
     pub g18: i16,
-    /// mcCarSSTurbo +40 (running) and its lens ramp complete (sub_82345DD0)
+    /// mcCarSSTurbo +40 (running) and its lens ramp complete (F-58729)
     pub sst_on: bool,
     pub sst_full: bool,
-    /// mcCarNitro +32 (a shot burning) and its lens ramp complete (sub_82345638)
+    /// mcCarNitro +32 (a shot burning) and its lens ramp complete (F-94357)
     pub nitro_on: bool,
     pub nitro_full: bool,
     /// a bike's tuck: mcCarAero +40, the low-drag flag (stick Y < -0.5 and under 0.5 s in the air)
@@ -1875,12 +1888,12 @@ pub struct EventIn {
     pub destroyed: bool,
 }
 
-/// A segment probe of the world (sub_82574418, one result): something lies between the points.
+/// A segment probe of the world (F-20855, one result): something lies between the points.
 pub type RayTest<'a> = &'a dyn Fn(Vec3, Vec3) -> bool;
 
 /// The event camera (camTrackCS at mgr+84) as mcPlayerCamera's chooser runs it: each frame the
 /// first event whose start holds is set and blended in over the record's BlendTime with the
-/// director's cosine orbit blend (sub_822AFCD0); its end test sends it back to the drive view
+/// director's cosine orbit blend (F-94591); its end test sends it back to the drive view
 /// over the record's ReturnTime (0: its BlendTime) or a time the test passes.
 #[derive(Default)]
 pub struct EventDirector {
@@ -1931,7 +1944,7 @@ impl EventDirector {
     pub fn leaving(&self) -> bool {
         self.phase == 3
     }
-    /// sub_822AFCD0(0, -1, -1): the running event goes back over the record's time.
+    /// F-94591(0, -1, -1): the running event goes back over the record's time.
     pub fn end(&mut self, data_dir: &str, car_name: &str) {
         if self.running() {
             if let Some(t) = self.tune(data_dir, car_name, self.ev) {
@@ -1939,7 +1952,7 @@ impl EventDirector {
             }
         }
     }
-    /// CAM_UP leaves it (sub_822B35E8: sub_822AFCD0(0, -1, 0.2)).
+    /// CAM_UP leaves it (F-67519: F-94591(0, -1, 0.2)).
     pub fn leave(&mut self) {
         self.quit = true;
     }
@@ -1965,7 +1978,7 @@ impl EventDirector {
         self.tune(data_dir, car_name, ev).map_or(0.0, |t| t.blend)
     }
 
-    /// The chooser's start section (sub_822B3BF0, part 2): the first event whose test holds.
+    /// The chooser's start section (F-24075, part 2): the first event whose test holds.
     fn pick(&mut self, data_dir: &str, car_name: &str, fx: &CamFx, i: &EventIn, car: &TrackCar, test: SphereTest, ray: RayTest) -> Option<usize> {
         let fast = i.speed > 10.0;
         if i.sst_on && i.sst_full && i.view == 4 && self.blend_of(data_dir, car_name, EV_SSTURBO) > 0.0 && i.g18 == 0 {
@@ -2012,7 +2025,7 @@ impl EventDirector {
         (fx.idle_delay > 0.0 && i.idle >= fx.idle_delay).then_some(EV_IDLE)
     }
 
-    /// The side an event is set to (sub_82316148): its Offset and TrackTo are mirrored when it
+    /// The side an event is set to (F-26269): its Offset and TrackTo are mirrored when it
     /// is above zero.
     fn side(&mut self, ev: usize, i: &EventIn, car: &TrackCar) -> f32 {
         match ev {
@@ -2070,7 +2083,7 @@ impl EventDirector {
         }
     }
 
-    /// Turns the event off (sub_822AFCD0(0, -1, b)): back to the drive view over b, else the
+    /// Turns the event off (F-94591(0, -1, b)): back to the drive view over b, else the
     /// record's ReturnTime, else its BlendTime.
     fn off(&mut self, t: &TrackTune, b: f32) {
         let back = if b >= 0.0 { b } else if t.ret > 0.0 { t.ret } else { t.blend };
@@ -2329,6 +2342,62 @@ impl EventCam {
 mod tests {
     use super::*;
 
+    /// Lines of `<name>` rows of the original's reference run (`work/triage-cameras/verify/b1.py`
+    /// runs the recompiled functions on `ref/b1_cases.txt`; `MCLA_CAMERA_REF_DIR` = its `ref` folder).
+    fn reference(file: &str, name: &str) -> Option<Vec<Vec<u32>>> {
+        let dir = std::env::var("MCLA_CAMERA_REF_DIR").ok()?;
+        let text = std::fs::read_to_string(Path::new(&dir).join(file)).ok()?;
+        Some(
+            text.lines()
+                .filter(|l| l.split(' ').next() == Some(name))
+                .map(|l| l.split(' ').skip(1).map(|h| u32::from_str_radix(h, 16).unwrap()).collect())
+                .collect(),
+        )
+    }
+
+    /// F-73069 (the time warper's ramp) against the original's code, 8,000 cases of state, t, rate,
+    /// ends and frame time (`b2.py`).
+    #[test]
+    fn time_warper_ramp_is_the_originals() {
+        let Some(rows) = reference("b1_ref.txt", "tw") else { return };
+        assert!(rows.len() >= 8000);
+        for r in &rows {
+            let f = |i: usize| f32::from_bits(r[i]);
+            let mut w = TimeWarper::new([0.0; 4]);
+            w.state = r[0] as u8;
+            (w.t, w.rate, w.from, w.to, w.cur) = (f(1), f(2), f(3), f(4), 10.0);
+            w.ramp(f(5));
+            assert_eq!((w.t.to_bits(), w.cur.to_bits()), (r[6], r[7]), "case {r:x?}");
+        }
+    }
+
+    /// F-93983 (the dead zone with rescale) against the original's own code, 4000 cases.
+    #[test]
+    fn dead_zone_is_the_originals() {
+        let Some(rows) = reference("b1_ref.txt", "dz") else { return };
+        assert!(rows.len() >= 4000);
+        for r in &rows {
+            let got = dead_zone(f32::from_bits(r[0]), f32::from_bits(r[1]));
+            assert_eq!(got.to_bits(), r[2], "v {:x} d {:x}", r[0], r[1]);
+        }
+    }
+
+    /// The camTrackCS approach step at the original's own step (one game frame) against the
+    /// original's code: 10,000 cases of position, lag state and rates (cap argument 0, lag on).
+    #[test]
+    fn approach_is_the_originals_at_one_frame() {
+        let Some(rows) = reference("b1_ref.txt", "ap") else { return };
+        let mut n = 0;
+        for r in rows.iter().filter(|r| r[7] == 1) {
+            let f = |i: usize| f32::from_bits(r[i]);
+            let mut st = f(6);
+            let cur = approach(f(0), f(1), f(2), f(4), f(5), &mut st, 1.0);
+            assert_eq!((cur.to_bits(), st.to_bits()), (r[8], r[9]), "case {r:x?}");
+            n += 1;
+        }
+        assert!(n >= 7000);
+    }
+
     /// CAM_UP from COCKPIT runs BUMPER, ACTION, CLASSIC, STATIC, COCKPIT (recorded in the
     /// recomp, work/cameras2/cap s_p1..s_p6); CAM_DOWN the other way.
     #[test]
@@ -2417,7 +2486,7 @@ mod tests {
         EventIn { allowed: true, view: 3, front_down: true, rear_down: true, handbrake, hb_sim: handbrake, charge, yaw_rate, idle, ..Default::default() }
     }
 
-    /// The chooser's order and gates (sub_822B3BF0): a wheelie over 10 m/s with the front wheel
+    /// The chooser's order and gates (F-24075): a wheelie over 10 m/s with the front wheel
     /// up; a car on two wheels is TwoWheelSide in ACTION, TwoWheelUp in the other chase views;
     /// Air only with nothing in reach of the probes; in ACTION a nitrous shot ends any other
     /// event; nothing in the bumper or cockpit.
@@ -2451,7 +2520,7 @@ mod tests {
         assert_eq!(d.event(), None);
     }
 
-    /// The crash cameras (crash_camera_rule.md): sub_822AFF10's choice of start; the wipeout camera
+    /// The crash cameras (crash_camera_rule.md): F-37740's choice of start; the wipeout camera
     /// on the R8 snaps 6 m to the side the car slides toward at T = 0.75 x ModelOffset, lens 40,
     /// comes in over 0.25 s and keeps 6..10 m from T while the car slides away; the wipeout warper
     /// is at 0.1 after 0.2 s, held to 1.25 s, back to 1 by 1.35 s.

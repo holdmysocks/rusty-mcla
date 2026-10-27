@@ -415,7 +415,7 @@ impl CarView {
 }
 
 /// The original's random numbers (0x82860880): a multiply-with-carry generator; a shot's
-/// length is a normal deviate by the polar method (sub_821CE328, the spare one kept).
+/// length is a normal deviate by the polar method (F-66400, the spare one kept).
 #[derive(Clone, Debug)]
 struct Mwc {
     x: u32,
@@ -462,7 +462,7 @@ impl Mwc {
 }
 
 /// The camera's turn from its row c (the way it looks away from) and the world's up
-/// (sub_82202EC0: a = up x c, b = c x a).
+/// (F-97951: a = up x c, b = c x a).
 fn look_rot(c: Vec3) -> Quat {
     let c = c.normalize_or(Vec3::Z);
     let a = Vec3::Y.cross(c).normalize_or(Vec3::X);
@@ -470,16 +470,18 @@ fn look_rot(c: Vec3) -> Quat {
     Quat::from_mat3(&glam::Mat3::from_cols(a, b, c))
 }
 
-/// about y (sub_8216C890): x' = x cos + z sin, z' = z cos - x sin
+/// about y (F-57591): x' = x cos + z sin, z' = z cos - x sin
 fn rot_y(v: Vec3, a: f32) -> Vec3 {
     let (s, c) = a.sin_cos();
     Vec3::new(v.x * c + v.z * s, v.y, v.z * c - v.x * s)
 }
 
-/// about x (sub_82300250): y' = y cos - z sin, z' = z cos + y sin
+/// about x (F-43547): y' = y cos - z sin, z' = z cos + y sin
 fn rot_x(v: Vec3, a: f32) -> Vec3 {
-    let (s, c) = a.sin_cos();
-    Vec3::new(v.x, v.y * c - v.z * s, v.z * c + v.y * s)
+    // (the guest's sin and cos rounded to f32, the two fused sums of the asm)
+    let s = crate::physics::exact::guest_sin(a as f64) as f32;
+    let c = crate::physics::exact::guest_cos(a as f64) as f32;
+    Vec3::new(v.x, v.y.mul_add(c, -(v.z * s)), v.z.mul_add(c, v.y * s))
 }
 
 /// the point on the car the helicopter and the polar camera look at (+240)
@@ -547,8 +549,8 @@ impl<F: FnMut(Vec3, Vec3, f32) -> Option<Vec3>> Probe for F {
     }
 }
 
-/// mcReplayCamera: which camera the replay shows and when it cuts (sub_823189D0, choose
-/// sub_823186C8; `docs/reference/cameras/replay_camera_rule.md`).
+/// mcReplayCamera: which camera the replay shows and when it cuts (F-19930, choose
+/// F-53721; `docs/reference/cameras/replay_camera_rule.md`).
 #[derive(Clone, Debug)]
 pub struct Director {
     pub state: usize,
@@ -570,7 +572,7 @@ pub struct Director {
 }
 
 impl Director {
-    /// as mcPlayerCamera's reset leaves it (sub_82318168): BUMPER, switching on
+    /// as mcPlayerCamera's reset leaves it (F-80435): BUMPER, switching on
     pub fn new(tune: &CamTune, seed: u32, car: &CarView) -> Director {
         let mut d = Director { state: 0, time: 0.0, switching: true, next: false, rng: Mwc::new(seed), heli: Heli::default(), polar: Polar::default(), cut: true, aspect: 16.0 / 9.0, drive_eye: None };
         d.polar_activate(tune);
@@ -586,14 +588,14 @@ impl Director {
     }
 
     fn polar_activate(&mut self, tune: &CamTune) {
-        // (sub_823173D0: a side, then 22.5 .. 67.5 degrees)
+        // (F-82095: a side, then 22.5 .. 67.5 degrees)
         let sign = if self.rng.u23() * 2.384_19e-7 - 1.0 >= 0.0 { 1.0 } else { -1.0 };
         let a = self.rng.u23() * 9.362_68e-8 + 0.392_699;
         self.polar = Polar { pitch: 0.0, yaw: a * sign, fov: tune.polar_fov_range[2] };
     }
 
     fn heli_activate(&mut self, tune: &CamTune, car: &CarView) {
-        // (sub_82317710: the polar camera's first, then its own)
+        // (F-79727: the polar camera's first, then its own)
         self.polar_activate(tune);
         let t = car.at(TARGET);
         let angle = 0.078_539_8 + self.rng.u23() * 3.183_31e-7;
@@ -649,7 +651,7 @@ impl Director {
         (place, look_rot(place - t))
     }
 
-    /// The right stick and the triggers while the polar camera is on (sub_82316690): x, y in
+    /// The right stick and the triggers while the polar camera is on (F-63907): x, y in
     /// -1..1 past the dead zone, `zoom` = (LT - RT) in -1..1.
     pub fn polar_stick(&mut self, tune: &CamTune, x: f32, y: f32, zoom: f32, dt: f32) {
         if self.state != POLAR {
@@ -675,7 +677,7 @@ impl Director {
     fn own(&self, tune: &CamTune, car: &CarView, state: usize, probe: &mut dyn Probe) -> Option<(Vec3, Quat, f32)> {
         match state {
             6..=17 => {
-                // (sub_82317240: down the car's length, level about its line of sight)
+                // (F-77143: down the car's length, level about its line of sight)
                 let (o, back) = Self::mount(tune, state);
                 let c = if back { -car.c() } else { car.c() };
                 Some((car.at(o), look_rot(c), tune.fixed_fov))
@@ -689,7 +691,7 @@ impl Director {
         }
     }
 
-    /// activate(state) (sub_823184D8): the camera starts afresh and is cut to
+    /// activate(state) (F-82762): the camera starts afresh and is cut to
     fn activate(&mut self, tune: &CamTune, car: &CarView) {
         match self.state {
             HELI => self.heli_activate(tune, car),
@@ -699,7 +701,7 @@ impl Director {
         self.cut = true;
     }
 
-    /// Can the shot be used (sub_82318220)? Its camera is updated, then a ball the size of the
+    /// Can the shot be used (F-51014)? Its camera is updated, then a ball the size of the
     /// near plane's corner must stand free at its place; `ahead`: and stay free swept along the
     /// car's velocity for MinCutDuration; the helicopter must see the car's roof.
     fn shot_ok(&mut self, tune: &CamTune, car: &CarView, ahead: bool, dt: f32, probe: &mut dyn Probe) -> bool {
@@ -727,7 +729,7 @@ impl Director {
         true
     }
 
-    /// choose() (sub_823186C8): NEXT CAMERA steps to the next state; otherwise any other
+    /// choose() (F-53721): NEXT CAMERA steps to the next state; otherwise any other
     /// state but the polar one with equal chance (a chase view never after a chase view),
     /// up to six tries until one passes its test.
     fn choose(&mut self, tune: &CamTune, car: &CarView, dt: f32, probe: &mut dyn Probe) {
@@ -762,7 +764,7 @@ impl Director {
         self.time = self.rng.length(tune.cut);
     }
 
-    /// One frame (sub_823189D0); `dt` 0 while the replay is paused.
+    /// One frame (F-19930); `dt` 0 while the replay is paused.
     pub fn update(&mut self, tune: &CamTune, car: &CarView, dt: f32, probe: &mut dyn Probe) -> Shot {
         self.cut = false;
         if self.switching && !self.next {
@@ -874,7 +876,7 @@ impl Playback {
     }
 
     /// The right stick (x, y in -1..1) and the triggers (`zoom` = LT - RT): the polar camera
-    /// turns and zooms (sub_82316690: past a dead zone of 0.3).
+    /// turns and zooms (F-63907: past a dead zone of 0.3).
     pub fn stick(&mut self, x: f32, y: f32, zoom: f32, dt: f32) {
         let dead = |v: f32| {
             let v = v.clamp(-1.0, 1.0);
@@ -906,7 +908,7 @@ impl Playback {
             d.next = true;
         }
         if dt <= 0.0 {
-            // (sub_822B58F0: paused, only NEXT CAMERA runs the director)
+            // (F-10533: paused, only NEXT CAMERA runs the director)
             if d.next {
                 return Some(d.update(tune, car, 0.0, probe));
             }
@@ -920,6 +922,22 @@ impl Playback {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-43547 (rotation about x) against the original's own code on 6,000 cases
+    /// (`work/triage-cameras/verify/b1.py`; `MCLA_CAMERA_REF_DIR` = its `ref` folder).
+    #[test]
+    fn rot_x_is_the_originals() {
+        let Ok(dir) = std::env::var("MCLA_CAMERA_REF_DIR") else { return };
+        let text = std::fs::read_to_string(std::path::Path::new(&dir).join("b1_ref.txt")).unwrap();
+        let mut n = 0;
+        for l in text.lines().filter(|l| l.starts_with("rx ")) {
+            let w: Vec<u32> = l.split(' ').skip(1).map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+            let v = rot_x(Vec3::new(0.25, f32::from_bits(w[0]), f32::from_bits(w[1])), f32::from_bits(w[2]));
+            assert_eq!((v.y.to_bits(), v.z.to_bits()), (w[3], w[4]), "case {w:x?}");
+            n += 1;
+        }
+        assert!(n >= 6000);
+    }
 
     fn car() -> CarView {
         CarView { pos: Vec3::new(10.0, 2.0, -5.0), rot: Quat::from_rotation_y(0.7), vel: Vec3::new(3.0, 0.0, -12.0), top: 1.3 }
