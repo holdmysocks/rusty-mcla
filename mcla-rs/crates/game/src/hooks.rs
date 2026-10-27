@@ -409,7 +409,15 @@ pub fn chosen_monitor(event_loop: &winit::event_loop::ActiveEventLoop, index: u3
     let name = |m: &winit::monitor::MonitorHandle| format!("{} ({}x{} at {},{})", m.name().unwrap_or_default(), m.size().width, m.size().height, m.position().x, m.position().y);
     match order.get(index as usize) {
         Some(&i) => {
-            log::info!("monitor: display.monitor = {index} -> {} of {} ({})", name(&all[i]), all.len(), if index == 0 { "primary" } else { "listed" });
+            let hz = all[i].refresh_rate_millihertz().map_or(0, |m| (m + 500) / 1000);
+            MONITOR_HZ.store(hz, std::sync::atomic::Ordering::Relaxed);
+            log::info!("monitor: display.monitor = {index} -> {} of {} ({}), {hz} Hz", name(&all[i]), all.len(), if index == 0 { "primary" } else { "listed" });
+            let d = display();
+            // (a cap that is not the refresh rate or a whole fraction of it, with vsync: frames stay up for one refresh or
+            // two in turn - a steady judder; GitHub #11, 60 on a 75 Hz monitor)
+            if d.vsync && d.fps_cap > 0 && hz > 0 && d.fps_cap < hz && hz % d.fps_cap != 0 {
+                log::warn!("monitor: fps_cap {} with vsync on a {hz} Hz monitor shows frames for uneven numbers of refreshes (judder); a cap of {hz} or none is even", d.fps_cap);
+            }
             Some(all[i].clone())
         }
         None => {
@@ -586,6 +594,8 @@ pub fn log_window(window: &winit::window::Window) {
 // ---------------------------------------------------------------- frame limiter
 
 static LAST_FRAME: Mutex<Option<Instant>> = Mutex::new(None);
+/// The chosen monitor's refresh rate in Hz (0 = not known): offered among the DISPLAY page's caps.
+static MONITOR_HZ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// How long to wait so frames start at least `period` apart.
 pub fn frame_wait(last: Instant, now: Instant, period: Duration) -> Duration {
@@ -680,10 +690,14 @@ fn resolutions(d: &mcla_config::Display) -> Vec<(u32, u32)> {
 
 fn fps_caps(d: &mcla_config::Display) -> Vec<u32> {
     let mut v = FPS_CAPS.to_vec();
-    if !v.contains(&d.fps_cap) {
-        v.push(d.fps_cap);
-        v.sort();
+    // (the monitor's own rate too - 75, 100, 180 Hz ...: a cap that is even with vsync, GitHub #11)
+    let hz = MONITOR_HZ.load(std::sync::atomic::Ordering::Relaxed);
+    for c in [d.fps_cap, hz] {
+        if c > 0 && !v.contains(&c) {
+            v.push(c);
+        }
     }
+    v.sort();
     v
 }
 
