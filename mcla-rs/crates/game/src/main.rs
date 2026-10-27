@@ -9791,6 +9791,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.vehicles.parked_target = 36;
                 self.game.mode = Mode::FreeRoam;
                 self.game.menu_sel = 0;
+                self.game.pink_over = None;
             }
             // Warper_Warp('DEFAULT_WITH_CUT') (a series' / tournament's next race, its restart, a tournament's
             // first race - CAREER_RACES.md "DEFAULT_WITH_CUT climb"): the camera climbs from where it is
@@ -9845,6 +9846,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // accepted; a restart or the next delivery goes straight to the intro)
                 let p080_again = action == MenuAction::RestartRace || self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery);
                 self.prerace_replay = action == MenuAction::RestartRace;
+                // (the last pink slip race's race-over tab is not this race's)
+                self.game.pink_over = None;
                 // (a race started from another's results - NEXT RACE IN SERIES, CONTINUE, RESTART - never
                 // passes through `race == None`, so the last race's start plan and warp go here)
                 self.prerace_plan = None;

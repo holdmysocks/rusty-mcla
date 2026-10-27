@@ -643,6 +643,8 @@ pub struct Game {
     pub bmt_end: Option<BmtEnd>,
     /// ... and now the race: (race, against the hookman himself)
     pub bmt_go: Option<(usize, bool)>,
+    /// a pink slip race of a hangout is over: lost (`bFailure`) - its race-over tab (F-36093)
+    pub pink_over: Option<bool>,
     /// MISSION RESULTS after an event: the missions it finished (title, objectives)
     /// (title, objectives, done: false for a mission the event did not finish - stamped FAIL)
     pub mission_results: Vec<(String, Vec<String>, bool)>,
@@ -1263,6 +1265,7 @@ impl Game {
             eob: None,
             bmt_end: None,
             bmt_go: None,
+            pink_over: None,
             mission_results: Vec::new(),
             race_slow: crate::mc4::SlowMo::default(),
             race_slow_wait: None,
@@ -2664,7 +2667,9 @@ impl Game {
             money = 0;
         }
         // (step 21: won - the car, lost - the stake stays in the lot)
+        let pink_hangout = self.opt_x.arcade.pink.run.is_some();
         if let Some(key) = self.mc4_pink_end(place == 1) {
+            self.pink_over = pink_hangout.then_some(place != 1);
             let m = self.career.strings.get(key).map(|s| s.to_uppercase()).unwrap_or_else(|| if place == 1 { "PINKSLIP WON".into() } else { "PINKSLIP LOST".into() });
             self.show_message(&m);
         }
@@ -4232,6 +4237,10 @@ impl Game {
                 self.mode = Mode::FreeRoam;
                 self.bmt_end = Some(BmtEnd { race: 0, hookman: false, place: 1, rep: 120, wrecked: v.contains("wreck"), t: 0.0, sel: 0 });
                 self.race_end_t = (!v.contains("wreck")).then_some(0.0);
+            }
+            // (=pink: a hangout's pink slip race just won; =pinklost: lost - its race-over tab)
+            if v.contains("pink") {
+                self.pink_over = Some(v.contains("lost"));
             }
             // (=battle: a team game's end, red 2 against blue 3 - form 58)
             if v.contains("battle") {
@@ -7961,6 +7970,20 @@ impl Game {
                         (s("pause_go_to_garage", "GO TO GARAGE"), 13),
                     ]);
                 }
+                // (a hangout's pink slip race - mcPinkslipMenu's race-over tab, F-36093: not lost (`bFailure`,
+                // F-51353) and the car not wrecked - RETURN TO CRUISE, RETURN TO HANGOUT, the favourites row, VIEW
+                // REPLAY, GO TO GARAGE; else the favourites row, VIEW REPLAY, GO TO GARAGE. The rows are the scene's,
+                // in its order; no RACE RESULTS, no RACE AGAIN)
+                if let (true, Some(lost)) = (movie, self.pink_over) {
+                    let wrecked = vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
+                    let fav = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| self.race_favs.iter().any(|f| f.eq_ignore_ascii_case(&d.id)));
+                    ro = if lost || wrecked { Vec::new() } else { vec![(s("pause_return_cruise", "RETURN TO CRUISE"), 2), (s("pause_return_hangout", "RETURN TO HANGOUT"), 22)] };
+                    ro.extend([
+                        (if fav { s("pause_remove_favorites", "REMOVE RACE FROM FAVORITES") } else { s("pause_add_favorites", "ADD RACE TO FAVORITES") }, 11),
+                        (s("pause_view_replay", "VIEW REPLAY"), 12),
+                        (s("pause_go_to_garage", "GO TO GARAGE"), 13),
+                    ]);
+                }
                 // (the place splash stands by itself for a moment)
                 let splash_on = match self.place_splash {
                     Some((p, left)) if movie && left > 0.0 => {
@@ -8002,6 +8025,12 @@ impl Game {
                             8 => action = MenuAction::RestartTournament,
                             // NEXT RACE (ARCADE): the race after this one
                             9 => self.pause_do = Some(250),
+                            // RETURN TO HANGOUT (F-97524 on either button: raceOverTrigger 1, raceOverCommand the
+                            // empty string, scene Cruising): the hangout script tests the command against
+                            // `returnToHangout` and the rest, none matches, and its race returns 3 - "Player opted to
+                            // ignore exit event": `cruising`, the hangout left (`game/Hangouts/0x16e89a34` 0x3959..0x436c,
+                            // 0x647c -> 0x6641). Back to the cruise as RETURN TO CRUISE, without its taunt.
+                            10 => action = MenuAction::StartFreeRoam,
                             // RESTART SERIES / RACE SERIES AGAIN: from its first race, every tally at
                             // nought (OrderedSeriesCore `restart`, 0x247c)
                             2 | 5 => {
@@ -8218,6 +8247,11 @@ impl Game {
                     // F-37838), unless the police are after the player (F-54212))
                     Some(2) if movie && !self.police_on_player => {
                         self.series_ask_kind = 4;
+                        self.series_ask = Some(0);
+                    }
+                    // (RETURN TO HANGOUT asks the repair question - Dialog_Title_ReturnHangout, YES and NO)
+                    Some(22) if movie => {
+                        self.series_ask_kind = 10;
                         self.series_ask = Some(0);
                     }
                     Some(21) => {
@@ -12777,9 +12811,9 @@ impl Game {
             }
         } else if let Some(cur) = self.series_ask {
             MenuPage {
-                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc", "Dialog_Description_NextTournament", "Dialog_Description_QuitTournament", if self.career.tour_table.as_ref().is_some_and(|t| t.decided.is_some()) { "Dlg_Desc_Tourn_Restart_Lossless" } else { "Dlg_Desc_Tourn_Restart" }, "Dialog_Description_NextRace"][self.series_ask_kind.min(9) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
+                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc", "Dialog_Description_NextTournament", "Dialog_Description_QuitTournament", if self.career.tour_table.as_ref().is_some_and(|t| t.decided.is_some()) { "Dlg_Desc_Tourn_Restart_Lossless" } else { "Dlg_Desc_Tourn_Restart" }, "Dialog_Description_NextRace", "Dialog_Description_ReturnHangout"][self.series_ask_kind.min(10) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
                 icon: std::env::var("MCLA_RES_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(13),
-                title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK"), st("Dialog_Title_ReturnToCruise", "RETURN TO CRUISE"), st("Dlg_RaceAgainSeries_Title", "RACE AGAIN"), st("Dialog_Title_NextTournament", "CONTINUE TOURNAMENT"), st("Dialog_Title_QuitTournament", "QUIT TOURNAMENT"), st("Dlg_Title_Tourn_Restart", "RESTART TOURNAMENT"), st("Dialog_Title_NextRace", "NEXT RACE")][self.series_ask_kind.min(9) as usize].clone(),
+                title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK"), st("Dialog_Title_ReturnToCruise", "RETURN TO CRUISE"), st("Dlg_RaceAgainSeries_Title", "RACE AGAIN"), st("Dialog_Title_NextTournament", "CONTINUE TOURNAMENT"), st("Dialog_Title_QuitTournament", "QUIT TOURNAMENT"), st("Dlg_Title_Tourn_Restart", "RESTART TOURNAMENT"), st("Dialog_Title_NextRace", "NEXT RACE"), st("Dialog_Title_ReturnHangout", "RETURN TO HANGOUT")][self.series_ask_kind.min(10) as usize].clone(),
                 rows: vec![MenuRow { label: st("Common_Yes", "YES"), value: String::new(), enabled: self.fix_now > 0, part: None }, MenuRow { label: st("Common_No", "NO"), value: String::new(), enabled: true, part: None }],
                 select: cur,
                 prompts: vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("prompt_back", "BACK"), ICON_B)],
