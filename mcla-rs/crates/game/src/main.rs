@@ -423,6 +423,10 @@ struct App {
     delivery_armed: bool,
     /// The delivery core's LOSE_COPS count (100 polls of 0.1 s between splashes), seconds left.
     delivery_cops: f32,
+    /// The delivery's ease to pause under way: (seconds, its hangout).
+    delivery_ease: Option<(f32, usize)>,
+    /// The delivery's visit: 1 its panel is up, 2 answered (the police come up once back in the cruise).
+    delivery_visit: u8,
     /// (p080) a delivery's intro still to come after the walk to the car: (scene, grid slot 0, yaw)
     delivery_intro: Option<(String, Vec3, f32)>,
     /// (p080) a delivery intro after its cut to the game camera: (scene, scene time) - its map and
@@ -628,6 +632,8 @@ struct App {
 const PAYBACK_PLACE_CAM: usize = 1;
 /// The deliveries' trigger points (the set-ups' static 3276: `game/Hangouts/0x4dd86889` 0x256,
 /// `sc/Hangouts/0xc8c6051d` 0x259) - Hollywood's, South Central's.
+/// The delivery's ease to pause before its panel (delivery_hangout_core 0x4b0: 0.25 s, form 67).
+const DELIVERY_EASE_IN: f32 = 0.25;
 const DELIVERY_POINT: [[f32; 3]; 2] = [[834.47, 18.07, -843.32], [-37.614, -19.674, 1316.65]];
 
 impl App {
@@ -907,6 +913,8 @@ impl App {
             starter_was: false,
             delivery_armed: true,
             delivery_cops: 0.0,
+            delivery_ease: None,
+            delivery_visit: 0,
             delivery_intro: None,
             delivery_tail: None,
             door_armed: std::env::var("MCLA_DOOR_IN").is_ok(),
@@ -3043,8 +3051,6 @@ impl App {
                             // (step 21b: the delivery's set-up ends with the visit too)
                             let k = if self.hangouts[h].0.ends_with("_sc") { "sc_delivery" } else { "hw_delivery" };
                             self.game.mc4_hangout_left(k);
-                            // (the core's end of the visit, 0x351d: SetAllPoliceUnderground(0, 1))
-                            self.police.units_up();
                         }
                     }
                 } else if free && self.hangouts[i].0.starts_with("delivery") && cur.is_some_and(|p| p.distance(Vec3::from(DELIVERY_POINT[self.hangouts[i].0.ends_with("_sc") as usize])) < 12.0) {
@@ -3059,19 +3065,15 @@ impl App {
                             self.game.show_message(&m);
                             self.delivery_cops = 10.0;
                         }
-                    } else if self.game.flash_hud.is_some() && self.delivery_armed {
+                    } else if self.game.flash_hud.is_some() && self.delivery_armed && self.delivery_ease.is_none() && self.delivery_visit == 0 {
+                        // (0x4a7: the police underground, then "ease to pause" - form 67 shown,
+                        // PerspectiveForm_SetSlowMotion(67, 0, 1 / 0.25, 0, 1, 1), WAITUNWARPED(250))
                         self.delivery_armed = false;
                         self.police.units_down(&mut self.vehicles);
-                        if let Some(c) = self.vehicles.player_mut() {
-                            c.state.vel = Vec3::ZERO;
-                            c.state.ang_vel = Vec3::ZERO;
-                        }
-                        self.hangout_in = Some(i);
-                        self.game.wager_here = false;
-                        self.game.hangout_key = Some(if self.hangouts[i].0.ends_with("_sc") { "sc_delivery" } else { "hw_delivery" }.to_string());
-                        // (the delivery panel keeps its last choice - mcDeliveryForm, F-17823)
-                        self.game.hangout_diff = self.game.delivery_diff;
-                        self.pending_action = MenuAction::OpenRaceSelect;
+                        self.game.hangout_slow.set(0.0, 1.0 / DELIVERY_EASE_IN, false, true, 1.0);
+                        self.game.hangout_slow.visible = true;
+                        self.delivery_ease = Some((0.0, i));
+                        log::info!("delivery: triggered at {:?}, ease to pause", cur);
                     }
                 } else if let Some((si, j)) = line.filter(|&(_, j)| free && self.cuts.idle() && self.hangout_entry.is_none() && std::env::var("MCLA_NO_CINE").is_err() && self.game.mc4_hangout_open(&self.hangouts[j].0) && !matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted)) {
                     // the core's entry line crossed - no speed test, not with the police activity above 1 (the
@@ -3081,6 +3083,37 @@ impl App {
                     self.game.hangout_slow.visible = true;
                     self.hangout_entry = Some(hangoutin::Entry { setup: si, hangout: j, stage: hangoutin::Stage::Slow, t: 0.0, warp: None });
                 }
+            }
+            // ---- the delivery's visit (delivery_hangout_core): after the ease to pause Racer_Deactivate and
+            // the panel (form 67, 0x7b6); its answer - BACK or ACCEPT - is followed by "ease from pause" (form 108,
+            // 0.5 s, 0x831); the police come up at the end of the visit (0x351d: at once after BACK, after
+            // the delivery when it was accepted) ----
+            if let Some((t, i)) = self.delivery_ease.as_mut() {
+                *t += dt;
+                if *t >= DELIVERY_EASE_IN {
+                    let i = *i;
+                    self.delivery_ease = None;
+                    if let Some(c) = self.vehicles.player_mut() {
+                        c.state.vel = Vec3::ZERO;
+                        c.state.ang_vel = Vec3::ZERO;
+                    }
+                    self.hangout_in = Some(i);
+                    self.game.wager_here = false;
+                    self.game.hangout_key = Some(if self.hangouts[i].0.ends_with("_sc") { "sc_delivery" } else { "hw_delivery" }.to_string());
+                    // (the delivery panel keeps its last choice - mcDeliveryForm, F-17823)
+                    self.game.hangout_diff = self.game.delivery_diff;
+                    self.pending_action = MenuAction::OpenRaceSelect;
+                    self.delivery_visit = 1;
+                }
+            } else if self.delivery_visit == 1 && self.mode_before == Mode::RaceSelect && self.game.mode != Mode::RaceSelect {
+                self.game.hangout_slow.set(1.0, 1.0 / 0.5, false, true, 1.0);
+                self.game.hangout_slow.visible = false;
+                self.delivery_visit = 2;
+                log::info!("delivery: panel answered, ease from pause");
+            } else if self.delivery_visit == 2 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.cuts.idle() && self.cine.playing.is_none() && self.game.movie.is_none() {
+                self.police.units_up();
+                self.delivery_visit = 0;
+                log::info!("delivery: visit over, police up");
             }
             // ---- pulling into a hangout (`hangoutin`): the ease to pause, the warp, the event, the scene ----
             let mut enter: Option<(usize, usize)> = None;
