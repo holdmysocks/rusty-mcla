@@ -1380,11 +1380,14 @@ pub fn warm_dress(root: &Path, d: &Dress) {
 
 /// A car's files being read on a worker thread, or read (`Vehicles::parsed`).
 enum Parsed {
-    Reading(std::thread::JoinHandle<Result<CarAsset>>),
+    /// (and when it was asked for)
+    Reading(std::thread::JoinHandle<Result<CarAsset>>, u64),
     Read(Arc<CarAsset>, u64),
 }
 
 const PARSED_KEEP: usize = 6;
+/// read ahead but not taken yet, at most
+const PREFETCH_KEEP: usize = 8;
 
 /// `Vehicles::parsed`'s key: the car's folder name (the callers spell the path differently).
 fn parsed_key(dir: &Path) -> String {
@@ -1400,17 +1403,25 @@ impl Vehicles {
         if self.parsed.contains_key(&key) {
             return;
         }
+        // (read ones nobody took - a race's guessed grid that was not drawn: the oldest go past PREFETCH_KEEP)
+        loop {
+            let idle: Vec<(String, u64)> = self.parsed.iter().filter_map(|(k, v)| if let Parsed::Reading(h, t) = v { h.is_finished().then(|| (k.clone(), *t)) } else { None }).collect();
+            let Some(old) = idle.iter().min_by_key(|(_, t)| *t).filter(|_| idle.len() >= PREFETCH_KEEP) else { break };
+            self.parsed.remove(&old.0);
+        }
+        self.parsed_stamp += 1;
+        let stamp = self.parsed_stamp;
         let assets = crate::assets::Assets::new(world.assets.root.clone());
         let d = dir.to_path_buf();
         if let Ok(h) = std::thread::Builder::new().name("car read".into()).spawn(move || vehicle_model::load_car(&assets, &d)) {
             log::info!("vehicles: reading {} ahead", dir.display());
-            self.parsed.insert(key, Parsed::Reading(h));
+            self.parsed.insert(key, Parsed::Reading(h, stamp));
         }
     }
 
     /// True while the car in `dir` is still being read on its worker thread (`prefetch`).
     pub fn reading(&self, dir: &Path) -> bool {
-        matches!(self.parsed.get(&parsed_key(dir)), Some(Parsed::Reading(h)) if !h.is_finished())
+        matches!(self.parsed.get(&parsed_key(dir)), Some(Parsed::Reading(h, _)) if !h.is_finished())
     }
 
     /// The car in `dir` as read: from `parsed` (waiting for its worker if it is still reading), else read now.
@@ -1420,7 +1431,7 @@ impl Vehicles {
         let key = parsed_key(dir);
         let car = match self.parsed.remove(&key) {
             Some(Parsed::Read(c, _)) => c,
-            Some(Parsed::Reading(h)) => Arc::new(h.join().map_err(|_| anyhow::anyhow!("car read thread panicked"))??),
+            Some(Parsed::Reading(h, _)) => Arc::new(h.join().map_err(|_| anyhow::anyhow!("car read thread panicked"))??),
             None => Arc::new(vehicle_model::load_car(&world.assets, dir)?),
         };
         self.parsed.insert(key, Parsed::Read(car.clone(), stamp));

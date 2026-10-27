@@ -457,6 +457,8 @@ struct App {
     intro_tod: Option<f32>,
     /// VEHICLE SELECT: where the first of the three starters stands
     starters_made: bool,
+    /// the pending race whose guessed grid was read ahead (`grid_ahead`)
+    grid_warm: Option<(usize, bool)>,
     /// a new career's opening read ahead on worker threads (`opening_read_ahead`): 1 the three starters, 2 the
     /// first story scene's cars and people
     opening_read: u8,
@@ -916,6 +918,7 @@ impl App {
             intro_mask: Default::default(),
             intro_tod: None,
             starters_made: false,
+            grid_warm: None,
             opening_read: 0,
             starter_stand: None,
             sel_cam: None,
@@ -3816,6 +3819,7 @@ impl App {
         }
         // (a new career's starters and first story scene read ahead on worker threads - docs/PERFORMANCE.md 2026-10-25)
         self.opening_read_ahead(&world);
+        self.grid_ahead(&world);
         // CarSelection (game/career/0xebb682f7, 0x214 - 0x35a) makes the three starters before the film: opponents
         // loaded into the lot (OpponentManager_LoadOpponent, AddOpponentToWorld), deactivated, their icons hidden;
         // VEHICLE SELECT only moves the camera between them (`sel_cam`), and the one taken stays in the lot. The
@@ -11304,6 +11308,80 @@ impl App {
         self.gpu = Some(gpu);
         self.world = Some(world);
         self.start_screen_ahead();
+    }
+
+    /// A race about to start (a roamer's challenge, a beat-me-there's race, the race chosen while none runs): its grid
+    /// guessed as `handle_action`'s StartRace will draw it, on a copy of the career's generator and with the game's
+    /// state put back, and the guessed cars read on worker threads (`Vehicles::prefetch`; unused ones age out) and their
+    /// set-ups' files into the OS's file cache. The draw at the start is
+    /// unchanged (it may differ from the guess: then only a read was wasted); a car read cold had stopped the start's
+    /// frame for 746 ms, warm ~90 ms - docs/PERFORMANCE.md 2026-10-27 (6).
+    fn grid_ahead(&mut self, world: &world::World) {
+        let pending = self.roam.challenge.as_ref().map(|c| (c.race, true))
+            .or(self.game.bmt_go)
+            .or_else(|| self.game.current_race.filter(|_| self.game.race.is_none()).map(|r| (r, self.game.hookman_race)));
+        if pending.is_none() || pending == self.grid_warm {
+            return;
+        }
+        self.grid_warm = pending;
+        let Some((race, hookman)) = pending else { return };
+        let was = (self.game.current_race, self.game.hookman_race);
+        (self.game.current_race, self.game.hookman_race) = (Some(race), hookman);
+        let t = Instant::now();
+        let guess = self.guess_grid();
+        (self.game.current_race, self.game.hookman_race) = was;
+        for (car, setup) in &guess {
+            if let Some(d) = self.game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(car))).cloned() {
+                if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(car)) {
+                    self.vehicles.prefetch(world, &d);
+                }
+            }
+            if let Some(d) = self.game.mc4_dress_of(car, setup) {
+                vehicles::warm_dress(&world.assets.root, &d);
+            }
+        }
+        log::info!("grid ahead: race {} guessed {:?} ({} ms)", self.game.race_defs.get(race).map_or("?", |d| d.id.as_str()), guess.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), t.elapsed().as_millis());
+    }
+
+    /// The grid StartRace would draw now, as (car, set-up) - its composition in `handle_action` without its side
+    /// effects: the named men by their ids only, the script's pick on a copy of the generator.
+    fn guess_grid(&self) -> Vec<(String, String)> {
+        let g = &self.game;
+        let usable = |car: &str| g.car_dirs.iter().any(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(car)));
+        let pink = g.mc4_pink_rival();
+        let field = if pink.is_some() { 1 } else if g.series.is_some() { 3 } else { 7 };
+        let mut out: Vec<(String, String)> = Vec::new();
+        let mut used: Vec<String> = Vec::new();
+        if let Some((id, car, cfg)) = pink.filter(|m| usable(&m.1)) {
+            used.push(id);
+            out.push((car, cfg));
+        }
+        let kept = g.series.as_ref().map(|s| s.rivals.clone()).unwrap_or_default();
+        if !kept.is_empty() {
+            return kept.into_iter().map(|r| (r.car, r.config)).collect();
+        } else if let Some(id) = g.series.as_ref().and_then(|s| g.career.event_rival_char(&s.key)) {
+            used.push(id);
+        }
+        let alt = g.current_race.and_then(|i| g.race_defs.get(i)).map_or(false, |d| d.id.ends_with("red_light_race") || d.id == althk::FREEWAY_RACE_ID);
+        let man = if g.mc4_local_man_race() { g.opt_x.arcade.d.race_man.clone() } else if alt { g.opt_x.arcade.d.redlight_man.clone() } else { None };
+        if let Some((id, car, cfg)) = man.filter(|m| usable(&m.1)) {
+            used.push(id);
+            out.push((car, cfg));
+        }
+        if g.hookman_race {
+            used.extend(g.career.rival_id());
+        }
+        let tour_event = g.current_race.and_then(|i| g.race_defs.get(i)).and_then(|d| g.career.tournament_of(&d.id)).map(|t| t.0);
+        if let (Some(ev), Some((fe, kept))) = (tour_event.as_ref(), self.tour_field.as_ref()) {
+            if ev == fe {
+                return kept.iter().map(|r| (r.car.clone(), r.config.clone())).collect();
+            }
+        }
+        let p = std::env::var("MCLA_PLAYER_PERF").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| g.player_perf());
+        let mut rng = *oppick::career_rng();
+        let need = (field as usize).saturating_sub(used.len());
+        out.extend(g.oppick.pick_with(&mut rng, need, p, g.grid_difficulty(), g.grid_masks(), &used, &usable).into_iter().map(|pk| (pk.car, pk.setup)));
+        out
     }
 
     /// A start-screen shot's weather (titlecam.rs `Apply`): snapped.
