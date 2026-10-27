@@ -7858,13 +7858,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let ray = light_vp.row(2).truncate().normalize_or(Vec3::NEG_Y);
             let ray = if ray.y > 0.0 { -ray } else { ray };
             let on = shadow_on && std::env::var("MCLA_CASCADES").map_or(true, |v| v.trim() != "0") && std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "67");
-            let target = if self.garage_light().is_some() { [0.3f32, 0.8] } else { [1.0, 1.0] };
+            // (F-34053: the garage's lighting, or a cutscene that has launched character / car events - `Scene::close_shadows`)
+            let close = self.garage_light().is_some() || self.cine.playing.as_ref().map_or(false, |sc| sc.close_shadows());
+            let target = if close { [0.3f32, 0.8] } else { [1.0, 1.0] };
             for (p, t) in self.casc_scale.iter_mut().zip(target) {
                 let step = (t - *p).abs().max(0.2) * 1.0 * dt;
                 *p = if *p < t { (*p + step).min(t) } else { (*p - step).max(t) };
             }
             let gate = gar_light.as_ref().map_or(Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]), |(_, gt)| gt.to_light);
-            gpu.set_cascades(on, eye, (mid - eye) / depth, up.normalize_or(Vec3::Y), side.normalize_or(Vec3::X), up.length() / depth, side.length() / up.length().max(1e-6), ray, self.casc_scale, gate)
+            // (ShaderGlobals.z, F-45287: 8 + (1 - ShadowFade), plus 16 while a cine scene runs under the garage's lighting
+            // (F-22850 and the renderer's +393) and 1 - ShadowFade <= 0.95; the floor and the interior walls then take
+            // their z >= 23 forms - city.wgsl `z23`)
+            let z23 = gar_light.as_ref().filter(|(_, gt)| self.cine.playing.is_some() && 1.0 - gt.shadow_fade <= 0.95).map_or(0.0, |(_, gt)| 1.0 + (1.0 - gt.shadow_fade));
+            gpu.set_cascades(on, eye, (mid - eye) / depth, up.normalize_or(Vec3::Y), side.normalize_or(Vec3::X), up.length() / depth, side.length() / up.length().max(1e-6), ray, self.casc_scale, gate.extend(z23))
         };
         // the fast shadow collector's map is kept up while the sun casts shadows (its pass
         // follows the shadow pass below): where it lies, for the shaders that read it

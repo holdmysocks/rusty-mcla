@@ -1816,7 +1816,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // the original's far ground does not lie over its road where both run on behind the plane
     // (there the last one drawn wins, and the roads come after their sector's far model); the
     // port's depth would put the far model's sheet across the road. MCLA_DEBUG_VIEW=372: whole.)
-    if (g.moon_dir.w > 0.5 && !(g.params.w > 369.5 && g.params.w < 372.5) && in.uv2.y > 2000000.0 && in.clip.z > 0.5) { discard; }
+    // (below 4e6: the garage floor - world::GARAGE_FLOOR_MARK, 2^22 - is no far model)
+    if (g.moon_dir.w > 0.5 && !(g.params.w > 369.5 && g.params.w < 372.5) && in.uv2.y > 2000000.0 && in.uv2.y < 4000000.0 && in.clip.z > 0.5) { discard; }
     // The city's programs all draw with back faces culled (register 0x2205 = 2 on every PSCity*
     // draw of the captures, the cut-out ones too); the port's meshes are not wound consistently,
     // so it draws both sides - and of a two-sided pair laid in one plane (the shop awnings: a
@@ -3024,8 +3025,17 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // (the garage floor - world::GARAGE_FLOOR_MARK, bit 22: its PSMultiLight multiplies V by 2 x the shadow
             // collector while ShaderGlobals.z < 23 - the car's cascade shadow, light straight down, the dark pool
             // under the car. Diagnostics 715: without.)
+            // While ShaderGlobals.z >= 23 (casc.light.w = 1 + f, f = z - 24: the garage's lighting under a cine scene) the
+            // floor takes k = (2 x collector - f) / (1 - f) instead (its literals c252 = (0, -24, -1, 8), c253.w = 1,
+            // c255.x = 15: z - 8 >= 15), and the interior walls' V is x 2 x collector as well.
             let gfloor = (u32(round(in.uv2.y)) & 4194304u) != 0u && !(g.params.w > 714.5 && g.params.w < 715.5);
-            let v1 = in.color1.rgb * select(1.0, sun_shadow(in.wpos, ng), gfloor);
+            let z23 = casc.light.w > 0.5 && !(g.params.w > 716.5 && g.params.w < 717.5);
+            var v1 = in.color1.rgb;
+            if (gfloor || (z23 && !tile_in)) {
+                let c2 = sun_shadow(in.wpos, ng);
+                let zf = casc.light.w - 1.0;
+                v1 = v1 * select(c2, (c2 - zf) / (1.0 - zf), gfloor && z23);
+            }
             let no_spec = g.params.w > 77.5 && g.params.w < 78.5;
             if (tile_in) {
                 let il = interior_lamps(in.wpos, n, reflect(-v, n), select(0.0, 2.0 * max(wall_spec.x, 1.0), hs_k != 0u), 3);

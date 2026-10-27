@@ -57,6 +57,19 @@ pub struct Scene {
     pub origin: Mat4,
 }
 
+impl Scene {
+    /// The cutscene form of the cascades (F-34053's second branch): the cine core script (0x95ca1d1b 0xD1D, 0xE1F) pushes
+    /// every character and car event it launches into kill buffer 1 (CineScript_PushKillBuffer, F-73266), which sets the
+    /// renderer's +389 until F-60657 clears the buffer at the scene's end; the form is skipped while the scene's name holds
+    /// "racestart" but neither "red" nor "payback" (cine manager +319, F-81251; +335, CineScript_SetRaceStarterLighting, is
+    /// called by no script).
+    pub fn close_shadows(&self) -> bool {
+        let n = self.name.to_ascii_lowercase();
+        let racestart = n.contains("racestart") && !n.contains("red") && !n.contains("payback");
+        (!self.actors.is_empty() || !self.movers.is_empty()) && !racestart
+    }
+}
+
 /// The character sets of the hangouts' people (`Cine::set_ambient`).
 const AMBIENT_FEMALE: [&str; 4] = ["ped_fa_001_set", "ped_fb_002_set", "ped_fc_001_set", "ped_fh_001_set"];
 const AMBIENT_MALE: [&str; 5] = ["ped_ma_001_set", "ped_mb_001_set", "ped_mc_001_set", "ped_mh_001_set", "ped_ma_003_set"];

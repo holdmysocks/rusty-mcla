@@ -191,6 +191,7 @@ pub const CASC_BIAS_M: [f32; 4] = [0.0096, 0.024, 0.078, 0.0];
 /// The cascades' constant depth bias in metres: tune/360CascadedShadowMaps.xml's DepthBias (1e-7, 1e-7, 4e-7, 0)
 /// times the tile's depth range as the original's matrices have it in the standard view's recordings
 /// (tg_6.25, 7, 9, 12, 15, 17.5b: 1 / |z row| of c64 ..), interpolated by the shadow ray's x.
+/// Only under MCLA_CASC_ZOLD=1 now: the depth rule is decoded (`set_cascades`).
 fn casc_const_bias(tile: usize, ray_x: f32) -> f32 {
     const X: [f32; 6] = [-0.847, -0.675, -0.263, 0.108, 0.470, 0.874];
     const R: [[f32; 6]; 3] = [
@@ -206,6 +207,13 @@ fn casc_const_bias(tile: usize, ray_x: f32) -> f32 {
     let k = (0..5).find(|&k| x <= X[k + 1]).unwrap_or(4);
     let t = (x - X[k]) / (X[k + 1] - X[k]);
     DEPTH_BIAS[tile] * (R[tile][k] + (R[tile][k + 1] - R[tile][k]) * t)
+}
+/// tune/360CascadedShadowMaps.xml, per tile: LightDepthScale and DepthBias.
+const CASC_LDS: [f32; 4] = [35.0, 25.0, 9.0, 5.0];
+const CASC_DEPTH_BIAS: [f32; 4] = [1e-7, 1e-7, 4e-7, 0.0];
+fn casc_zold() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("MCLA_CASC_ZOLD").map_or(false, |v| v.trim() == "1"))
 }
 /// (diagnostics: the scene's cascade uniform of the last frame, for `Gpu::dump_casc`)
 static CASC_LAST: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
@@ -232,7 +240,8 @@ pub struct CascUniform {
     pub right_half: [f32; 4],
     /// x = 1: the maps are drawn this frame; y, z = gFadeOutLastSMap (the fade's start and length)
     pub params: [f32; 4],
-    /// the direction to the light the taps are gated by (n . l > 0; VS_ShadowBlend's gLightPosDir c16)
+    /// xyz: the direction to the light the taps are gated by (n . l > 0; VS_ShadowBlend's gLightPosDir c16);
+    /// w: 1 + f while ShaderGlobals.z >= 23 (f = z - 24: the garage's lighting under a cine scene), else 0
     pub light: [f32; 4],
 }
 
@@ -2588,8 +2597,8 @@ impl Gpu {
     /// (1, 1) in the city, eased to (0.3, 0.8) under the garage's lighting - `casc_scale` in main.rs):
     /// every FarSlice x scale[0], every half angle x scale[1], gFadeOutLastSMap x scale[0];
     /// ViewportZShift as it is (the garage's six recorded views to 0.1 mm, work/lighting-gaps/gs/fit.py).
-    /// `light`: the direction to the light the scene's taps are gated by.
-    pub fn set_cascades(&self, on: bool, cam: Vec3, fwd: Vec3, up: Vec3, side: Vec3, tan_v: f32, aspect: f32, ray: Vec3, scale: [f32; 2], light: Vec3) -> Option<[Mat4; 4]> {
+    /// `light`: the direction to the light the scene's taps are gated by; its w goes to `CascUniform::light.w`.
+    pub fn set_cascades(&self, on: bool, cam: Vec3, fwd: Vec3, up: Vec3, side: Vec3, tan_v: f32, aspect: f32, ray: Vec3, scale: [f32; 2], light: glam::Vec4) -> Option<[Mat4; 4]> {
         let mut u = CascUniform::zeroed();
         if !on {
             self.queue.write_buffer(&self.casc_buf, 0, bytemuck::bytes_of(&u));
@@ -2607,6 +2616,7 @@ impl Gpu {
             let (tv, th) = (a.tan(), (a * aspect).tan());
             let apex = cam - fwd * zshift;
             let (mut t0, mut t1, mut r0, mut r1) = (top.dot(apex), top.dot(apex), right.dot(apex), right.dot(apex));
+            let (mut d0, mut d1) = (ray.dot(apex), ray.dot(apex));
             for (sv, sh) in [(-1.0f32, -1.0f32), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
                 let p = apex + (fwd + up * (sv * tv) + side * (sh * th)) * far;
                 let (t, r) = (top.dot(p), right.dot(p));
@@ -2614,13 +2624,25 @@ impl Gpu {
                 t1 = t1.max(t);
                 r0 = r0.min(r);
                 r1 = r1.max(r);
+                d0 = d0.min(ray.dot(p));
+                d1 = d1.max(ray.dot(p));
             }
+            // The depth (F-87623's end, 2026-10-27): the box's extent along the rays D times the tile's LightDepthScale
+            // is F; the light's eye stands 0.5 F + CameraOffset (10) up the rays from the box's middle, its near plane
+            // 5 m below the eye; the matrices' depth is (d - 5) / (F (F - 5)), d the way down the ray from the eye -
+            // the recorded depth rows of every tile in the garage's views and the city's 09:00 / noon recordings to
+            // 1e-5 (work/lighting-gaps/gs/zfit.py, zvar.py). The pyramid's near quad sits at the apex: the slices'
+            // NearSlice goes in times the shadow map object's +168, which is 0. (MCLA_CASC_ZOLD=1: the port's fixed
+            // 800 m from 600 m up, as before.)
+            let fz = (d1 - d0) * CASC_LDS[i];
+            let eye_d = (d0 + d1) * 0.5 - (0.5 * fz + 10.0);
+            let (z_scale, z_off) = if casc_zold() { (1.0 / CASC_Z_RANGE, (CASC_Z_NEAR - ray.dot(cam)) / CASC_Z_RANGE) } else { let k = 1.0 / (fz * (fz - 5.0)); (k, -(eye_d + 5.0) * k) };
             let (tc, thh, rc, rh) = ((t0 + t1) * 0.5, (t1 - t0) * 0.5, (r0 + r1) * 0.5, (r1 - r0) * 0.5);
             let m = Mat4::from_cols(
-                Vec4::new(right.x / rh, top.x / thh, ray.x / CASC_Z_RANGE, 0.0),
-                Vec4::new(right.y / rh, top.y / thh, ray.y / CASC_Z_RANGE, 0.0),
-                Vec4::new(right.z / rh, top.z / thh, ray.z / CASC_Z_RANGE, 0.0),
-                Vec4::new(-rc / rh, -tc / thh, (CASC_Z_NEAR - ray.dot(cam)) / CASC_Z_RANGE, 1.0),
+                Vec4::new(right.x / rh, top.x / thh, ray.x * z_scale, 0.0),
+                Vec4::new(right.y / rh, top.y / thh, ray.y * z_scale, 0.0),
+                Vec4::new(right.z / rh, top.z / thh, ray.z * z_scale, 0.0),
+                Vec4::new(-rc / rh, -tc / thh, z_off, 1.0),
             );
             out[i] = m;
             let (ox, oy) = ((i % 2) as f32 * 0.5, (i / 2) as f32 * 0.5);
@@ -2659,8 +2681,9 @@ impl Gpu {
             // is clean. The range's rule was not found: `casc_const_bias` interpolates the standard view's six
             // recordings by the ray's east-west part - approx., the left view's ranges are up to 25 % smaller.
             // MCLA_CASC_BIASK=1,0: without; MCLA_CASC_BIASM=1: the three fixed means of 2026-10-13.)
-            let cbias = if std::env::var("MCLA_CASC_BIASM").is_ok() { CASC_BIAS_M[i] } else { casc_const_bias(i, ray.x) };
-            let pass = CascPass { light_vp: m.to_cols_array_2d(), bias: [slope * bk.first().copied().unwrap_or(1.0), cbias / CASC_Z_RANGE * bk.get(1).copied().unwrap_or(1.0), alpha, 0.0] };
+            // (with the decoded depth the file's DepthBias goes in as it is, in the depth's own units)
+            let cbias = if casc_zold() { (if std::env::var("MCLA_CASC_BIASM").is_ok() { CASC_BIAS_M[i] } else { casc_const_bias(i, ray.x) }) / CASC_Z_RANGE } else { CASC_DEPTH_BIAS[i] };
+            let pass = CascPass { light_vp: m.to_cols_array_2d(), bias: [slope * bk.first().copied().unwrap_or(1.0), cbias * bk.get(1).copied().unwrap_or(1.0), alpha, 0.0] };
             self.queue.write_buffer(&self.casc_pass_bufs[i], 0, bytemuck::bytes_of(&pass));
         }
         // (c82.w: recorded as top . camera + 13.4 .. 14.1 - what it is was not found; the scene's
@@ -2674,7 +2697,7 @@ impl Gpu {
         u.right = [right.x, right.y, right.z, car_shift];
         // (params.w = 1, MCLA_CASC_PXGRID=1: the taps' turn taken at the centres of a 1280 x 720 grid, as the
         // original's collector has it, whatever the window's size - a trial)
-        u.light = [light.x, light.y, light.z, 0.0];
+        u.light = light.to_array();
         u.params = [1.0, 82.0 * scale[0], 78.0 * scale[0], if std::env::var("MCLA_CASC_PXGRID").map_or(false, |v| v.trim() == "1") { 1.0 } else { 0.0 }];
         self.queue.write_buffer(&self.casc_buf, 0, bytemuck::bytes_of(&u));
         if let Ok(mut l) = CASC_LAST.lock() {
