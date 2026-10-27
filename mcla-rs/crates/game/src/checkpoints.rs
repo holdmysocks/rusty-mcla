@@ -1031,6 +1031,19 @@ mod tests {
         assert_eq!((mode("cp_flare_fire"), mode("checkpoint_sparks"), mode("light_column")), (4.0, 5.0, 0.0));
         // (its cull sphere - the lit sprites' light picker works at its centre: 68 m straight up, x zoom)
         assert_eq!((e.cull_offset, e.cull_radius), ([0.0, 68.0, 0.0], 72.0));
+        // (the draw order: events in the timeline's order (no SortEvents), the plume's emitter before
+        // the low smoke that carries the arrows - so the arrows are drawn over the plume; both
+        // sort their particles by a random key - docs/reference/checkpoints/arrow_draw_order.md)
+        assert!(!e.sort_events);
+        let rules: Vec<&str> = e.events.iter().filter_map(|ev| match &ev.kind { mcla_formats::rage::ptfx::EventKind::Emitter { particle: Some(pi), .. } => Some(fx.particle_rules[*pi].name.as_str()), _ => None }).collect();
+        let at = |n: &str| rules.iter().position(|r| *r == n).unwrap();
+        assert!(at("rage_flare_smoke_plume") < at("rage_flare_smoke"), "{:?}", rules);
+        for n in ["rage_flare_smoke", "rage_flare_smoke_plume"] {
+            let f = fx.particle_rules.iter().find(|r| r.name == n).unwrap().flags;
+            assert!(f & mcla_formats::rage::ptfx::flag::SORT_PARTICLES != 0 && f & mcla_formats::rage::ptfx::flag::SORT_RANDOM != 0, "{} {:#x}", n, f);
+        }
+        // (no effect on the disc sets SortEvents: the timeline's order is every effect's)
+        assert_eq!(fx.effects.iter().filter(|q| q.sort_events).count(), 0);
     }
 
     #[test]

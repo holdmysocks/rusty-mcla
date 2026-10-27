@@ -7,10 +7,10 @@
 //! keyed by joaat(name).
 //!
 //! The member offsets come from the executable's own registration of these classes with its
-//! parser (name -> offset tables filled by `sub_824B1E78`, `sub_824B4638`, `sub_824BFEE8`,
-//! `sub_824DE248` ...), what a member means from the code that uses it (`sub_824B3B18` spawn
-//! count, `sub_824B32D8` spawn, `sub_824BD930` particle start, `sub_824BE248` particle step,
-//! `sub_824C2D78` / `3250` / `3488` domain points, `sub_824DAF28` timeline). The notes with the
+//! parser (name -> offset tables filled by `F-43039`, `F-22325`, `F-62740`,
+//! `F-51412` ...), what a member means from the code that uses it (`F-63457` spawn
+//! count, `F-70396` spawn, `F-61736` particle start, `F-12752` particle step,
+//! `F-91662` / `3250` / `3488` domain points, `F-31524` timeline). The notes with the
 //! full tables are in `work/map/ptfx_rule.md`.
 
 use super::drawable::Shader;
@@ -70,7 +70,7 @@ impl Keyframe {
     }
 }
 
-/// `ptxDomain` +08 (the class the loader gives it, `sub_824C5BA8`).
+/// `ptxDomain` +08 (the class the loader gives it, `F-67552`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     Box = 0,
@@ -116,8 +116,8 @@ impl Domain {
     }
 
     /// A point of the domain at the emitter's time `t`, in the domain's own frame turned by
-    /// `DirectionKF` but without its position (`sub_824C2D78` box, `sub_824C3250` sphere,
-    /// `sub_824C3488` cylinder). `rnd` gives numbers in 0..1.
+    /// `DirectionKF` but without its position (`F-91662` box, `F-70386` sphere,
+    /// `F-79490` cylinder). `rnd` gives numbers in 0..1.
     pub fn point(&self, t: f32, rnd: &mut dyn FnMut() -> f32) -> Vec3 {
         self.point_sized(t, self.size.eval(t), self.inner_size.eval(t), rnd)
     }
@@ -160,7 +160,7 @@ impl Domain {
         self.turn(t) * p
     }
 
-    /// The turn of `DirectionKF` at `t` (`sub_824C37B8`: about x, then y, then z).
+    /// The turn of `DirectionKF` at `t` (`F-84330`: about x, then y, then z).
     pub fn turn(&self, t: f32) -> glam::Quat {
         let d = self.direction.eval(t);
         if d[0] == 0.0 && d[1] == 0.0 && d[2] == 0.0 {
@@ -232,8 +232,8 @@ impl EmitRule {
     }
 }
 
-/// Bits of `ptxRule` +11c that the particle step and start test (`sub_824BE248`,
-/// `sub_824BD930`). The names are the parser's member names, matched to the bits by what the
+/// Bits of `ptxRule` +11c that the particle step and start test (`F-12752`,
+/// `F-61736`). The names are the parser's member names, matched to the bits by what the
 /// code does with them and by their order.
 pub mod flag {
     /// position noise not on x / y / z
@@ -255,8 +255,8 @@ pub mod flag {
     pub const SCALE_TEX_ANIM_RATE_BY_LIFE: u32 = 1 << 21;
     pub const HOLD_LAST_TEX_FRAME: u32 = 1 << 22;
     /// sprite: the colour lies between `ColorKF` and `ColorMaxKF` by a random number of the
-    /// particle; without it `ColorMaxKF` is not read (`sub_824B5728` 0x824B5834, the bit from
-    /// `sub_824BB3E8` 0x824BB6B8; model particles: bit 7, `sub_824B6E40` 0x824B6FD4)
+    /// particle; without it `ColorMaxKF` is not read (`F-66151` A-14861, the bit from
+    /// `F-89961` A-32260; model particles: bit 7, `F-29887` A-24501)
     pub const RANDOM_COLOR: u32 = 1 << 23;
     pub const MODEL_RANDOM_COLOR: u32 = 1 << 7;
     /// the acceleration is multiplied by the event's zoom
@@ -270,8 +270,13 @@ pub mod flag {
     pub const USE_DIRECTIONAL_IDENTITY: u32 = 1 << 28;
     /// DrawDirectional: the side is direction x `Sprite::axis` (not x the way to the camera)
     pub const ALIGN_TO_AXIS: u32 = 1 << 30;
+    /// bit 9 (its name not read): the sprite draw sorts the emitter's particles, largest key
+    /// first - the distance squared to the camera, or with `SORT_RANDOM` the random number the
+    /// particle was born with (F-43541; docs/reference/checkpoints/arrow_draw_order.md)
+    pub const SORT_PARTICLES: u32 = 1 << 9;
+    pub const SORT_RANDOM: u32 = 1 << 29;
     /// UseParticleTrails: a strip along the particle's last positions instead of the sprite
-    /// (`sub_824BC788`; `Sprite::trail`)
+    /// (`F-56257`; `Sprite::trail`)
     pub const USE_PARTICLE_TRAILS: u32 = 1 << 31;
 }
 
@@ -315,13 +320,13 @@ pub struct Sprite {
     /// `RotateVelKF`: x..y spin (turns a second) over the particle's life
     pub rot_vel: Keyframe,
     /// `DirectionalKF`, `DirectionalVelKF`: DrawDirectional's extents = (Zy, Zy, Zx, Zx) x
-    /// DirectionalKF + DirectionalVelKF x speed (front, back, left, right; `sub_824BBB20`)
+    /// DirectionalKF + DirectionalVelKF x speed (front, back, left, right; `F-35603`)
     pub directional: Keyframe,
     pub directional_vel: Keyframe,
     /// `TextureAnimRateKF`: x..y frames a second
     pub tex_anim_rate: Keyframe,
     /// `TrailPropsKF`: x..y the trail's length (m), z..w its number of points (at least 3), by
-    /// one random number of the particle, on the emitter's time (`sub_824BD930`, `sub_824BC788`)
+    /// one random number of the particle, on the emitter's time (`F-61736`, `F-56257`)
     pub trail: Keyframe,
     /// +678 shader data: the effect file, its technique and the sprite's texture
     pub shader: String,
@@ -359,8 +364,8 @@ pub struct ModelMesh {
     pub indices: Vec<u32>,
 }
 
-/// What a `ptxModel` adds to the rule (`sub_824B5BA8` birth, `sub_824B7930` step,
-/// `sub_824B6E40` draw; `work/map2/model/model_particle_rule.md`).
+/// What a `ptxModel` adds to the rule (`F-34386` birth, `F-91023` step,
+/// `F-29887` draw; `work/map2/model/model_particle_rule.md`).
 #[derive(Debug, Clone)]
 pub struct Model {
     pub drawables: Vec<ModelDrawable>,
@@ -408,7 +413,7 @@ pub struct ParticleRule {
     /// `AlphaKF` x..y over the particle's life
     pub alpha: Keyframe,
     /// `PositionNoiseKF` x..y, `VelocityNoiseKF` x..y (velocity) and z..w (direction): noise
-    /// amplitudes over the particle's life (`sub_824DD5C0`)
+    /// amplitudes over the particle's life (`F-92194`)
     pub position_noise: Keyframe,
     pub velocity_noise: Keyframe,
     /// `WindInfluenceKF` x..y: share of the wind the particle takes
@@ -638,7 +643,7 @@ pub struct Event {
     pub evo: Option<EvoGroup>,
 }
 
-/// One property an evolution changes (`sub_824AFF80`): the list (0 the emit rule's
+/// One property an evolution changes (`F-31783`): the list (0 the emit rule's
 /// properties - 0 SpawnRate, 1 TimeScale, 2 SpawnLife, 3 Speed, 4 SizeOT, 5 AccelerationOT,
 /// 6 DampeningOT, 7 MatrixWeightOT, 8 InheritVelOT, 9 SpawnDist -; 1 the emitter domain, 2 the
 /// velocity domain - 0 position, 1 direction, 2 size, 3 inner size -; 3 the particle rule's
@@ -648,9 +653,9 @@ pub struct Event {
 pub struct EvoProp {
     pub list: u8,
     pub prop: u8,
-    /// 0 the mean of base..value by weight over the evolutions on (`sub_824AF940`), 1 the base
-    /// plus the sum of weight x (value - base) (`sub_824AF760`), 2 the largest
-    /// (`sub_824AFD60`), 3 the mean over all evolutions, the base for those off (`sub_824AFB58`)
+    /// 0 the mean of base..value by weight over the evolutions on (`F-18828`), 1 the base
+    /// plus the sum of weight x (value - base) (`F-76095`), 2 the largest
+    /// (`F-81297`), 3 the mean over all evolutions, the base for those off (`F-39561`)
     pub mode: u8,
     pub overrides: Vec<(u8, Keyframe)>,
 }
@@ -698,7 +703,7 @@ impl EvoGroup {
         EvoGroup { names, props }
     }
 
-    /// A property's value with the evolutions applied (`sub_824AFF80` and its four modes):
+    /// A property's value with the evolutions applied (`F-31783` and its four modes):
     /// `base` is the property's own value at `t`, `values` the instance's evolution values.
     pub fn evolve(&self, list: u8, prop: u8, base: [f32; 4], t: f32, values: &[f32]) -> [f32; 4] {
         let Some(p) = self.props.iter().find(|p| p.list == list && p.prop == prop) else { return base };
@@ -767,7 +772,7 @@ impl EvoGroup {
         }
     }
 
-    /// Index of the evolution called `name` (`sub_8247BC80`).
+    /// Index of the evolution called `name` (`F-95887`).
     pub fn index(&self, name: &str) -> Option<usize> {
         self.names.iter().position(|n| n == name)
     }
@@ -792,16 +797,19 @@ pub struct EffectRule {
     pub lod_far: f32,
     /// +0x58 `ZoomKF` (per cent, x..y by a random number of the instance, over the effect's
     /// time): scales every particle's size and the emitter / velocity domains with the event's
-    /// zoom (`sub_824B1058` 0x824B13AC -> instance +500; `sub_824BB3E8` 0x824BB670)
+    /// zoom (`F-11951` A-89936 -> instance +500; `F-89961` A-55427)
     pub zoom: Keyframe,
     /// +0x180 / +0x148: the cull sphere's centre offset in the effect's frame and its radius
-    /// (`sub_824C1B08`: centre = effect matrix x offset x scale, radius x scale, 1 when <= 0) -
+    /// (`F-66872`: centre = effect matrix x offset x scale, radius x scale, 1 when <= 0) -
     /// the lit sprites' light picker works at its centre
     pub cull_offset: [f32; 3],
     pub cull_radius: f32,
+    /// +0x178 `SortEvents`: the draw takes the emitter events farthest first instead of in
+    /// the timeline's order (draw_order_rule.md; ptxEffectRuleStd::Draw F-20173)
+    pub sort_events: bool,
     pub events: Vec<Event>,
     /// +100 -> `PtxEvoGroup`: the effect's evolutions by name (the instance keeps a value for
-    /// each, `sub_8247A6A0`; "LOD" is set from the camera's distance, `sub_824B1058`)
+    /// each, `F-38579`; "LOD" is set from the camera's distance, `F-11951`)
     pub evo_names: Vec<String>,
 }
 
@@ -845,7 +853,7 @@ impl FxList {
                     events.push(Event { time: rd.f32(e + 0x08), cap: rd.u32(e + 0x18) as i32, kind, evo: rd.ptr(e + 0x0c).map(|g| EvoGroup::parse(&rd, g)) });
                 }
             }
-            effects.push(EffectRule { name: rd.cstr_ptr(o + 0xf8).unwrap_or_default(), duration: [rd.f32(o + 0x15c), rd.f32(o + 0x160)], time_scalar: [rd.f32(o + 0x164), rd.f32(o + 0x168)], pre_update: rd.f32(tl + 0x08), num_loops: rd.u32(tl + 0x0c) as i32, cull_distance: rd.f32(o + 0x14c), fade_distance: rd.f32(o + 0x144), lod_near: rd.f32(o + 0x150), lod_far: rd.f32(o + 0x154), zoom: Keyframe::parse(&rd, o + 0x58), cull_offset: [rd.f32(o + 0x180), rd.f32(o + 0x184), rd.f32(o + 0x188)], cull_radius: rd.f32(o + 0x148), events, evo_names: rd.ptr(o + 0x100).map(|g| EvoGroup::parse(&rd, g).names).unwrap_or_default() });
+            effects.push(EffectRule { name: rd.cstr_ptr(o + 0xf8).unwrap_or_default(), duration: [rd.f32(o + 0x15c), rd.f32(o + 0x160)], time_scalar: [rd.f32(o + 0x164), rd.f32(o + 0x168)], pre_update: rd.f32(tl + 0x08), num_loops: rd.u32(tl + 0x0c) as i32, cull_distance: rd.f32(o + 0x14c), fade_distance: rd.f32(o + 0x144), lod_near: rd.f32(o + 0x150), lod_far: rd.f32(o + 0x154), zoom: Keyframe::parse(&rd, o + 0x58), cull_offset: [rd.f32(o + 0x180), rd.f32(o + 0x184), rd.f32(o + 0x188)], cull_radius: rd.f32(o + 0x148), sort_events: rd.u8(o + 0x178) != 0, events, evo_names: rd.ptr(o + 0x100).map(|g| EvoGroup::parse(&rd, g).names).unwrap_or_default() });
         }
         Ok(FxList { effects, emit_rules, particle_rules, effect_hashes: df.hashes.clone() })
     }
