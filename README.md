@@ -36,6 +36,10 @@ log export, a save manager and Play are in.
 Most of the game is in: the city, cars and the garage, the vehicle physics, the front end and menus, the minimap, career missions
 and races, police and rivals, audio and cutscenes. Details that differ from the original, and what is still open, are tracked by the project.
 
+The project's standard is 1:1 with the original, and every function of the original executable is tracked with a status (ported and verified, ported but not yet compared,
+known but not ported, replaced by converted data, not needed). About 17 % of the functions are closed so far (verified against the original, recorded as a deliberate deviation, or not needed);
+the rest is the work list: record the original, verify what is ported, port the gaps (opponent racers, vehicle physics, audio, police and lighting first).
+
 Postponed for later: online play, custom music (including Spotify), car mods, controller rumble and adaptive triggers, racing wheels.
 
 ## Building from source

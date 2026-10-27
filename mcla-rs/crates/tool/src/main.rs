@@ -9,6 +9,7 @@
 //! ```
 
 mod cmds;
+mod registry;
 mod swfcmd;
 
 use anyhow::{bail, Context, Result};
@@ -28,6 +29,7 @@ fn main() -> Result<()> {
     }
     match args[1].as_str() {
         "ls" => cmd_ls(&args[2..]),
+        "registry" => registry::run(&args[2..]),
         "rpf" => cmd_rpf(&args[2..]),
         "extract" => cmd_extract(&args[2..]),
         "install" => cmd_install(&args[2..]),
