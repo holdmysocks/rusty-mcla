@@ -5778,7 +5778,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 match ev {
-                    Some(police::Event::PullOver) | Some(police::Event::Pursuit) => {}
+                    // (the scenes that may follow - the officer's walk after a pull-over, the arrest after a chase - read
+                    // ahead on workers: their packs and officers' sets had stopped the scene's first frame for 16 - 90 ms,
+                    // docs/PERFORMANCE.md 2026-10-27 (11). Which one plays and when is unchanged.)
+                    Some(police::Event::PullOver) => {
+                        for s in ["cut_cop_walk", "cut_cop_walk_02"] {
+                            if self.cine.has(s) {
+                                self.cine.read_ahead_scene(s);
+                            }
+                        }
+                    }
+                    Some(police::Event::Pursuit) => {
+                        for s in self.cine.scenes("cut_cop_arrest").into_iter().filter(|s| !s.contains("bike")) {
+                            self.cine.read_ahead_scene(&s);
+                        }
+                    }
                     Some(police::Event::Escaped) => {
                         let exp = rewards::pursuit_exp(self.game.rep, std::mem::take(&mut self.police.chase_time));
                         if exp > 0 {

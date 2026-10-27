@@ -294,9 +294,17 @@ impl Cine {
                     continue;
                 }
                 // (as `start` names them; an entity without a set of its own gets `default_set`'s by its place among
-                // the actors, which only `start` knows - not read ahead)
+                // the actors, which only `start` knows. In the police scenes: every set that place could give it, the
+                // officers' four - docs/PERFORMANCE.md 2026-10-27 (11))
                 if let Some((_, s)) = ent.split_once("_name_") {
                     sets.push(cutscene_set(s));
+                } else if key.contains("cut_cop") {
+                    for n in 0..4 {
+                        let s = cutscene_set(default_set(&key, &ent, n));
+                        if !sets.contains(&s) {
+                            sets.push(s);
+                        }
+                    }
                 }
             }
         }
