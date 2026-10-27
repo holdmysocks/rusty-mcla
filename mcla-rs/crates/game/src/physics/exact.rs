@@ -396,6 +396,51 @@ fn columns(m: &[Vec3; 3]) -> [Vec3; 3] {
     [Vec3::new(m[0].x, m[1].x, m[2].x), Vec3::new(m[0].y, m[1].y, m[2].y), Vec3::new(m[0].z, m[1].z, m[2].z)]
 }
 
+/// The share of the way from the medium to the maximum damage a car has taken, to the power 0.3 (F-10364: the
+/// damage points' place between the tune's MedDamage and MaxDamage by two `fsel`s - a NaN gives 0 - then the C
+/// library's pow, which single-precision `powf` matches bit for bit on every recorded case).
+pub fn damage_share(points: f32, med: f32, max: f32) -> f32 {
+    let x = (points - med) / (max - med);
+    let x = if x >= 0.0 { x } else { 0.0 };
+    let x = if x - 1.0 >= 0.0 { 1.0 } else { x };
+    x.powf(0.3)
+}
+
+/// The inverse of a frame (F-30106; the 4x4 wrapper F-43153): three rows `m` and a place `t` (a row-vector
+/// frame, the place in the fourth row), by cofactors in the scalar unit's fused operations. `None` where the
+/// original answers 0 (and leaves its output untouched): |det| not above 3.6e-7 times the largest |element|
+/// of the 3x3. The result rows 0-2 are the 3x3 inverse, row 3 carries the place back.
+pub fn inverse_frame(m: &[Vec3; 3], t: Vec3) -> Option<[Vec3; 4]> {
+    let (a, b, c) = (m[0], m[1], m[2]);
+    let cx = fms(b.y, c.z, b.z * c.y);
+    let cy = fms(b.x, c.z, c.x * b.z);
+    let cz = fms(b.x, c.y, c.x * b.y);
+    let det = fma(a.z, cz, fms(a.x, cx, a.y * cy));
+    let big = |v: Vec3| {
+        let (p, q, r) = (v.x.abs(), v.y.abs(), v.z.abs());
+        let pq = if p - q >= 0.0 { p } else { q };
+        if pq - r >= 0.0 { pq } else { r }
+    };
+    let (r0, r1, r2) = (big(a), big(b), big(c));
+    let r01 = if r0 - r1 >= 0.0 { r0 } else { r1 };
+    let all = if r01 - r2 >= 0.0 { r01 } else { r2 };
+    if !(det.abs() > all * f32::from_bits(0x34c1_4606)) {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let (o0, o16, o32) = (inv * cx, -(inv * cy), inv * cz);
+    let o48 = fnma(o0, t.x, fma(t.y, o16, o32 * t.z));
+    let o4 = -(fms(a.y, c.z, c.y * a.z) * inv);
+    let o20 = inv * fms(c.z, a.x, a.z * c.x);
+    let o36 = -(inv * fms(c.y, a.x, a.y * c.x));
+    let o52 = fnma(o36, t.z, fma(t.y, o20, t.x * o4));
+    let o8 = fms(b.z, a.y, b.y * a.z) * inv;
+    let o24 = -(inv * fms(b.z, a.x, b.x * a.z));
+    let o40 = inv * fms(b.y, a.x, b.x * a.y);
+    let o56 = fnma(o40, t.z, fma(t.y, o24, t.x * o8));
+    Some([Vec3::new(o0, o4, o8), Vec3::new(o16, o20, o24), Vec3::new(o32, o36, o40), Vec3::new(o48, o52, o56)])
+}
+
 /// The inverse of a 3x3 given by rows (F-76283): cross products over the determinant.
 pub fn inverse3(m: &[Vec3; 3]) -> [Vec3; 3] {
     let (ab, bc, ca) = (cross(m[0], m[1]), cross(m[1], m[2]), cross(m[2], m[0]));

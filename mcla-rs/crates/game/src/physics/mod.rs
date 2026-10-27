@@ -19,6 +19,8 @@ mod engine;
 mod engine_curve;
 mod transmission;
 mod tyre;
+#[cfg(test)]
+mod original_math_tests;
 
 pub use car::{CarInput, CarParams, CarState};
 pub use collision::{SectorMesh, WorldCollider};

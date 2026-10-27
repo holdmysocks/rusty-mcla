@@ -863,12 +863,18 @@ fn diag(s: f32, t: Vec3) -> Mat4 {
 
 /// The heading of a matrix whose row 2 is `back` (`F-94892`).
 pub fn heading(back: Vec3) -> f32 {
-    let c = Vec3::new(back.x, 0.0, back.z).normalize_or(Vec3::Z);
-    let h = c.z.clamp(-1.0, 1.0).acos();
-    if c.x < 0.0 {
-        -h
-    } else {
+    // (F-94892 in the original's arithmetic: the flattened row made a unit vector by the vector unit's reciprocal root
+    // estimate with one Newton step, z clamped to -1..1 by two `fsel`, the C library's acos, the sign from x)
+    use crate::physics::exact::{dot3, guest_acos, rsqrt};
+    let flat = Vec3::new(back.x, 0.0, back.z);
+    let c = flat * rsqrt(dot3(flat, flat));
+    let z = if c.z - 1.0 >= 0.0 { 1.0 } else { c.z };
+    let z = if z + 1.0 >= 0.0 { z } else { -1.0 };
+    let h = guest_acos(z as f64) as f32;
+    if !(c.x < 0.0) {
         h
+    } else {
+        h * -1.0
     }
 }
 
@@ -2659,7 +2665,8 @@ impl CamRows {
 
     /// roll about its own r2 (`F-83846`)
     fn roll(mut self, th: f32) -> CamRows {
-        let (s, c) = th.sin_cos();
+        // (F-83846: the C library's cosine and sine of the original, then the vector unit's unfused products)
+        let (c, s) = (crate::physics::exact::guest_cos(th as f64) as f32, crate::physics::exact::guest_sin(th as f64) as f32);
         let (r0, r1) = (self.r0, self.r1);
         self.r0 = r0 * c + r1 * s;
         self.r1 = r1 * c - r0 * s;
@@ -4667,3 +4674,7 @@ mod tests {
         assert!((o[0] - 251.0 / 255.0).abs() < 1e-6 && (o[1] - 156.0 / 255.0).abs() < 1e-6);
     }
 }
+
+#[cfg(test)]
+#[path = "hudmap_original_tests.rs"]
+mod original_tests;

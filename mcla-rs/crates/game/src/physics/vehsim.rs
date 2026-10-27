@@ -1907,8 +1907,8 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // times SteerDamageBias, fading out up to SteerDamageSpeedThreshold)
     let pad_pull;
     let pull = if !input_ai && t.input.steer_damage_bias > 0.0 && t.input.steer_damage_speed_threshold > 1.0 && t.damage.max_damage > t.damage.med_damage {
-        let over = ((st.damage * t.damage.max_damage - t.damage.med_damage) / (t.damage.max_damage - t.damage.med_damage)).clamp(0.0, 1.0);
-        if over > 0.0 { (1.0 - (speed / t.input.steer_damage_speed_threshold).clamp(0.0, 1.0)) * over.powf(0.3) * t.input.steer_damage_bias } else { 0.0 }
+        let share = super::exact::damage_share(st.damage * t.damage.max_damage, t.damage.med_damage, t.damage.max_damage);  // F-10364
+        if share > 0.0 { (1.0 - (speed / t.input.steer_damage_speed_threshold).clamp(0.0, 1.0)) * share * t.input.steer_damage_bias } else { 0.0 }
     } else {
         0.0
     };
@@ -6614,9 +6614,9 @@ mod transmission_reference_tests {
     }
 
     #[test]
-    #[ignore = "requires MCLA_TRANSMISSION_REFERENCE from tools/transmission_reference.py"]
+    // (1,133 of the 1,152 cases of tools/transmission_reference.py (those without a digit run the registry check reads as an address), the original's Init run offline: testdata/transmission_init_ref.csv)
     fn transmission_initialization_matches_original_generated_code() {
-        let csv = std::fs::read_to_string(std::env::var("MCLA_TRANSMISSION_REFERENCE").expect("MCLA_TRANSMISSION_REFERENCE")).unwrap();
+        let csv = include_str!("testdata/transmission_init_ref.csv");
         let (mut cases, mut ratios, mut shifts) = (0, 0, 0);
         let (mut ratio_error, mut shift_error) = (0.0_f32, 0.0_f32);
         for line in csv.lines().skip(1) {
@@ -6639,7 +6639,7 @@ mod transmission_reference_tests {
             let radii = &p[14..14+p[13] as usize];
             let prepared_ratios = super::super::transmission::ratios(&tune.trans, p[2] * RPM, radii);
             let mut vt = VehTune::new(tune);
-            if cases < 128 {
+            if cases < 126 {   // (the first 128 cases are the disc's own layouts; two of them are among the lines left out of the committed data)
                 // Actual disc layouts must also select/average the same radii.
                 assert_eq!(vt.ratios, prepared_ratios);
             }
@@ -6662,7 +6662,7 @@ mod transmission_reference_tests {
             cases += 1;
         }
         println!("{cases} transmission cases; ratio mismatches {ratios} max error {ratio_error}; shift mismatches {shifts} max error {shift_error}");
-        assert_eq!(cases, 1152);
+        assert_eq!(cases, 1133);
         assert_eq!((ratios, shifts), (0,0));
     }
 }
@@ -6670,10 +6670,10 @@ mod transmission_reference_tests {
 #[cfg(test)]
 mod engine_curve_tests {
     #[test]
-    #[ignore = "requires MCLA_ENGINE_CURVE_REFERENCE from tools/engine_curve_reference.py"]
+    /// Every fourth engine of the 128 player tunings (testdata/engine_curve_ref.csv: 3,520 of the 14,080 cases of tools/engine_curve_reference.py, the
+    /// original's node, coefficient and evaluation code run offline; F-36517 / F-47353 are the full functions of the two evaluations).
     fn engine_curves_match_original_generated_code() {
-        let path = std::env::var("MCLA_ENGINE_CURVE_REFERENCE").expect("MCLA_ENGINE_CURVE_REFERENCE");
-        let csv = std::fs::read_to_string(path).unwrap();
+        let csv = include_str!("testdata/engine_curve_ref.csv");
         let (mut count, mut mismatches, mut max_error) = (0, 0, 0.0_f32);
         for line in csv.lines().skip(1) {
             let p: Vec<f32> = line.split(',').map(|s| s.parse().unwrap()).collect();
@@ -6696,7 +6696,7 @@ mod engine_curve_tests {
             count += 1;
         }
         println!("{count} curve cases, {mismatches} mismatches, maximum absolute error {max_error}");
-        assert_eq!(count, 14080);
+        assert_eq!(count, 3520);
         assert_eq!(mismatches, 0);
     }
 }

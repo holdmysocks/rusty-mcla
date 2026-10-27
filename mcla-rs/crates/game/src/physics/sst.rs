@@ -6,10 +6,10 @@
 //! burns the level runs down over turboUseTime and pushes the car; otherwise the strongest slipstream
 //! around (0x82346438 over the player manager's list, 0x82346140 for each car) charges it.
 
-use glam::{Mat3, Vec3};
+use glam::Vec3;
 use mcla_formats::rage::simtune::SsTurboTune;
 
-use super::exact::{approach, fma, fnms, unit_or_zero};
+use super::exact::{approach, fma, fnms, inverse_frame, point_through, unit_or_zero};
 
 /// The object's state (offsets of mcCarSSTurbo).
 #[derive(Clone, Copy, Debug)]
@@ -219,9 +219,11 @@ pub fn strength(t: &SsTurboTune, leader: &DraftCar, me: Vec3) -> f32 {
     let back = -unit_or_zero(leader.vel);
     let up = leader.up;
     let right = unit_or_zero(up.cross(back));
-    // (0x821B4C50 -> 0x821713C0: the matrix inverted; the point taken through it)
-    let m = Mat3::from_cols(right, up, back);
-    let local = m.inverse() * (me - leader.pos);
+    // (F-43153 -> F-30106: the frame inverted with its place in the fourth row, in the original's cofactor
+    // arithmetic; the point taken through it. The original answers 0 for a frame all but singular and then
+    // leaves its output alone: no slipstream here.)
+    let Some(inv) = inverse_frame(&[right, up, back], leader.pos) else { return 0.0 };
+    let local = point_through(me, &inv);
     let (l, w1, w2) = (t.envelope_length, t.envelope_width1, t.envelope_width2);
     if local.z < 0.0 || local.z > l || local.x.abs() > w2 || local.y.abs() > w2 {
         return 0.0;

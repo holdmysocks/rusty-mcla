@@ -203,6 +203,8 @@ def vector_shim() -> str:
     s = rc.vector_shim()
     for a, b in SHIM_FIXES:
         s = s.replace(a, b, 1)
+    # a stray access names its address (the leaf shim's message does not)
+    s = s.replace('throw std::runtime_error("unexpected guest access");', 'throw std::runtime_error("unexpected guest access at 0x" + [&]{char t[12]; snprintf(t, sizeof t, "%08x", a); return std::string(t);}());', 1)
     # the arena is part of guest memory
     s = s.replace('static uint8_t* pointer(uint32_t a) {',
                   'static uint8_t* pointer(uint32_t a) {\n    if (a>=0x40000000u && a<0x40000000u+0x1000000u) return arena+a-0x40000000u;', 1)

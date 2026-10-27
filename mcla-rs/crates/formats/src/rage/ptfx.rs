@@ -711,17 +711,18 @@ impl EvoGroup {
         let w_of = |ei: u8| values.get(ei as usize).copied().unwrap_or(0.0);
         match p.mode {
             1 => {
-                let mut out = base;
+                // (F-76095: the sum of w x (value - base) over the evolutions on is built from zero with fused multiply-adds, then added to the base)
+                let mut acc = [0.0f32; 4];
                 for (ei, kf) in &p.overrides {
                     let w = w_of(*ei);
                     if w > 0.0 {
                         let v = kf.eval(t);
                         for c in 0..4 {
-                            out[c] += (v[c] - base[c]) * w;
+                            acc[c] = ((v[c] - base[c]) as f64).mul_add(w as f64, acc[c] as f64) as f32;
                         }
                     }
                 }
-                out
+                [base[0] + acc[0], base[1] + acc[1], base[2] + acc[2], base[3] + acc[3]]
             }
             2 => {
                 let mut out = base;
@@ -737,20 +738,27 @@ impl EvoGroup {
                 out
             }
             3 => {
-                let n = self.names.len().max(1);
+                // (F-39561: every evolution counts, whatever its weight - no test of w > 0 - and the sum is scaled by 1 / n)
+                let n = self.names.len();
+                if n == 0 {
+                    return base;
+                }
                 let mut acc = [0.0f32; 4];
                 for ei in 0..n as u8 {
                     let w = w_of(ei);
                     let v = match p.overrides.iter().find(|o| o.0 == ei) {
-                        Some((_, kf)) if w > 0.0 => lerp(kf.eval(t), w),
-                        _ => base,
+                        Some((_, kf)) => lerp(kf.eval(t), w),
+                        None => base,
                     };
                     for c in 0..4 {
                         acc[c] += v[c];
                     }
                 }
-                acc.map(|x| x / n as f32)
+                let r = 1.0 / n as f32;
+                acc.map(|x| x * r)
             }
+            // (F-31783: a mode above 3 leaves the value alone)
+            4..=255 => base,
             _ => {
                 let (mut acc, mut k) = ([0.0f32; 4], 0);
                 for (ei, kf) in &p.overrides {
@@ -766,7 +774,9 @@ impl EvoGroup {
                 if k == 0 {
                     base
                 } else {
-                    acc.map(|x| x / k as f32)
+                    // (F-18828: scaled by 1 / k, a division then products)
+                    let r = 1.0 / k as f32;
+                    acc.map(|x| x * r)
                 }
             }
         }
@@ -1102,3 +1112,7 @@ mod tests {
         assert_eq!(n, 6000);
     }
 }
+
+#[cfg(test)]
+#[path = "ptfx_original_tests.rs"]
+mod original_tests;

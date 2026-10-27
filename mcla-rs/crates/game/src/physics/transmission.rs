@@ -159,10 +159,10 @@ mod automatic_tests {
     }
 
     #[test]
-    #[ignore = "requires MCLA_AUTOMATIC_REFERENCE original prepared Update capture"]
+    // (2,032 of every eighth of the 16,384 cases of tools/automatic_transmission_reference.py, the original's Update run offline:
+    // testdata/automatic_update_ref.csv)
     fn automatic_update_matches_complete_original_function() {
-        let path = std::env::var("MCLA_AUTOMATIC_REFERENCE").expect("MCLA_AUTOMATIC_REFERENCE");
-        let text = std::fs::read_to_string(path).unwrap();
+        let text = include_str!("testdata/automatic_update_ref.csv");
         let mut mismatches = Vec::new();
         let mut count = 0;
         for (case, line) in text.lines().skip(1).enumerate() {
@@ -189,7 +189,7 @@ mod automatic_tests {
             }
             count += 1;
         }
-        assert_eq!(count, 16384);
+        assert_eq!(count, 2032);
         assert!(mismatches.is_empty(), "{} mismatches; first {:?}", mismatches.len(), &mismatches[..mismatches.len().min(3)]);
     }
 }

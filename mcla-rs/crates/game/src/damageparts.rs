@@ -65,10 +65,16 @@ pub fn perlin(x: f32) -> f32 {
     let i = x.floor();
     let f = x - i;
     let i = (i as i32 & 255) as usize;
-    let g0 = GRAD_X[(PERM[i] & 15) as usize] * f;
-    let g1 = GRAD_X[(PERM[(i + 1) & 255] & 15) as usize] * (f - 1.0);
-    let s = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    g0 + (g1 - g0) * s
+    // (the gradient's dot with (f, 0, 0) is fma(f, gx, 0*gy + 0*gz) in the original: the zero's sign only decides the sign of a zero result;
+    // it is -0 where gy and gz are both negative, gradients 11 and 15)
+    let zero = |k: usize| if k == 11 || k == 15 { -0.0 } else { 0.0 };
+    let (k0, k1) = ((PERM[i] & 15) as usize, (PERM[(i + 1) & 255] & 15) as usize);
+    let g0 = crate::physics::exact::fma(f, GRAD_X[k0], zero(k0));
+    let g1 = crate::physics::exact::fma(f - 1.0, GRAD_X[k1], zero(k1));
+    // (F-52219: the scalar unit's fused operations: ((fma(fms(f, 6, 15), f, 10) f) f) f, then fma(g1 - g0, s, g0))
+    use crate::physics::exact::{fma, fms};
+    let s = ((fma(fms(f, 6.0, 15.0), f, 10.0) * f) * f) * f;
+    fma(g1 - g0, s, g0)
 }
 
 fn clamp01(x: f32) -> f32 {
