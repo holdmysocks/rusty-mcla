@@ -19,7 +19,7 @@
 //! (they are the fallback of the normalisations and the floor of the half-space clamps
 //! vmaxfp(dot, c) in F-15125, where only 0 makes sense).
 #![allow(dead_code)] // (wired into the racers by brain.rs)
-use crate::physics::exact::{fma, fms, fnms, guest_acos, guest_cos, guest_sin};
+use crate::physics::exact::{dot3, fma, fms, fnms, guest_acos, guest_cos, guest_sin};
 use glam::Vec3;
 use mcla_formats::rage::aitune::AiTune;
 use std::sync::Arc;
@@ -509,6 +509,22 @@ fn sqrt_nr(x: f32) -> f32 {
     let y = (1.0 / xd.sqrt()) as f32 as f64;
     let e = -((y * y).mul_add(xd, -1.0));
     (e.mul_add(y * 0.5, y) * xd) as f32
+}
+
+/// The vector unit's refined reciprocal root of a squared length: 1/sqrt, zero where that is infinite, then one Newton step
+/// (all single-precision, products rounded before the sums).
+#[inline]
+fn vrsqrt1(l2: f32) -> f32 {
+    let y0 = 1.0 / l2.sqrt();
+    let y = if y0 == f32::INFINITY { 0.0 } else { y0 };
+    -(l2 * (y * y) - 1.0) * (0.5 * y) + y
+}
+
+/// The vector unit's length: the squared length (z + (y + x)) times its refined reciprocal root.
+#[inline]
+fn vlen(v: Vec3) -> f32 {
+    let l2 = dot3(v, v);
+    l2 * vrsqrt1(l2)
 }
 
 const UP: Vec3 = Vec3::Y;
@@ -1124,7 +1140,8 @@ impl Aiv {
             while *idx <= hi {
                 let c = self.portals.get(*idx);
                 let nx = self.portals.get(*idx + 1);
-                if c.fwd.dot(x - nx.a) >= 1e-6 {
+                // (the vector unit's three-term dot, (0 + z z') + (y y' + x x'))
+                if dot3(c.fwd, x - nx.a) >= 1e-6 {
                     if *idx >= hi {
                         return false;
                     }
@@ -1137,7 +1154,7 @@ impl Aiv {
             }
             while *idx >= lo {
                 let c = self.portals.get(*idx);
-                if c.back.dot(x - c.a) >= 1e-6 {
+                if dot3(c.back, x - c.a) >= 1e-6 {
                     if *idx <= lo {
                         return false;
                     }
@@ -1783,8 +1800,8 @@ impl Aiv {
             return;
         }
         let p = |s: &Self, i: i32| s.ln.pts.get(i);
-        let v = if n > 2 { self.h * (p(self, pr + 1) - p(self, pr - 1)).length() } else { Vec3::ZERO };
-        let ph = if v.length_squared() > 1e-12 { p(self, pr) - v } else { (p(self, pr - 1) - p(self, pr)) * 2.0 + p(self, pr) };
+        let v = if n > 2 { self.h * vlen(p(self, pr + 1) - p(self, pr - 1)) } else { Vec3::ZERO };
+        let ph = if dot3(v, v) > 1e-12 { p(self, pr) - v } else { (p(self, pr - 1) - p(self, pr)) * 2.0 + p(self, pr) };
         let mut w = [ph, p(self, pr - 1), p(self, pr), Vec3::ZERO];
         let mut k = 0usize;
         let mut r = pr - 1;
@@ -1799,15 +1816,45 @@ impl Aiv {
         }
         let v = if end < self.ln.pts.end() && n > 2 {
             p(self, end) - p(self, end - 2)
-        } else if pr < end - 1 && n > 2 && self.goal_dir.length_squared() > 1e-12 {
-            norm0(self.goal_dir) * (p(self, end - 1) - p(self, end - 3)).length()
+        } else if pr < end - 1 && n > 2 && dot3(self.goal_dir, self.goal_dir) > 1e-12 {
+            // the goal direction times (the length of the chord times its refined reciprocal root)
+            self.goal_dir * (vlen(p(self, end - 1) - p(self, end - 3)) * vrsqrt1(dot3(self.goal_dir, self.goal_dir)))
         } else {
             Vec3::ZERO
         };
-        w[3] = if v.length_squared() > 1e-12 { v + p(self, end - 2) } else { (p(self, end - 1) - p(self, end - 2)) * 2.0 + p(self, end - 2) };
+        w[3] = if dot3(v, v) > 1e-12 { v + p(self, end - 2) } else { (p(self, end - 1) - p(self, end - 2)) * 2.0 + p(self, end - 2) };
         if k < 64 {
             self.sc.coef[k] = cr(&w);
         }
+    }
+
+    fn dp4(a: [f32; 4], b: [f32; 4]) -> f32 {
+        (a[3] * b[3] + a[2] * b[2]) + (a[1] * b[1] + a[0] * b[0])
+    }
+
+    /// The cross product a x b as F-27864's vector code forms it: the products of the shuffled operands are rounded, then
+    /// `vnmsubfp` gives -(p - q), so an exact cancellation leaves -0 (a plain difference would leave +0).
+    #[inline]
+    fn vcross(a: Vec3, b: Vec3) -> Vec3 {
+        let nm = |p: f32, q: f32| -(p - q);
+        Vec3::new(nm(b.y * a.z, b.z * a.y), nm(b.z * a.x, b.x * a.z), nm(b.x * a.y, b.y * a.x))
+    }
+
+    /// The curvature speed table read as F-27864 reads it (the class's tables at [1939 + i] / [2003 + i], blob scales [8..10]):
+    /// the index by the add / subtract floor, the fraction from the unclamped argument, the interpolation fused, floored at 0.
+    #[inline]
+    fn curve_speed_exact(&self, k_abs: f32) -> f32 {
+        let (row, x) = if k_abs < self.veh.knee { (&self.veh.t.speed_low_curv, self.veh.low_k * k_abs) } else { (&self.veh.t.speed_high_curv, (k_abs - self.veh.knee) * self.veh.high_k) };
+        let c = fsel(x - 62.1, 62.1, x);
+        let m = fsel(c, -8388608.0, 8388608.0);
+        let r = (c - m) + m;
+        let fl = fsel(c - r, r, r - 1.0);
+        let i = fl as i32;
+        let frac = x - fl;
+        let i = (i.max(0) as usize).min(row.len().saturating_sub(2));
+        let (lo, hi) = (row[i], row[i + 1]);
+        let v = fma(hi - lo, frac, lo);
+        fsel(-v, 0.0, v)
     }
 
     /// F-27864: sample the dirty legs (curvature, grip, table speeds, weights).
@@ -1817,9 +1864,14 @@ impl Aiv {
         let sps = self.tun.samples_per_segment;
         let isl = self.tun.initial_segment_length;
         let n = end - pr + 1;
+        // the first leg's sample count: the length of the first segment (the squared length (dy², then dz², then dx², fused),
+        // the single-precision root) times samples per segment over the nominal length, plus a half, cut to a whole number
         let p0 = self.ln.pts.get(pr - 1);
         let p1 = self.ln.pts.get(pr);
-        let n0 = ((p1 - p0).length() * (sps as f32 / isl) + 0.5) as i32;
+        let (dx, dy, dz) = (p1.x - p0.x, p1.y - p0.y, p1.z - p0.z);
+        let len2 = fma(dx, dx, fma(dz, dz, dy * dy));
+        let len = (len2 as f64).sqrt() as f32;
+        let n0 = fma(len, sps as f32 / isl, 0.5) as i32;
         let n0 = if n0 < 1 { 1 } else if n0 > 2 * sps { 2 * sps } else { n0 };
         self.ln.f = 2 * sps - n0;
         self.ln.n = sps * n + 1;
@@ -1827,9 +1879,10 @@ impl Aiv {
         let inv_s = 1.0 / sps as f32;
         let t_tab = self.veh.t.clone();
         let g = self.g;
+        let msc = self.tun.max_speed_scalar;
         let port0 = self.port(pr - 1);
         let nrm0 = self.portals.get(port0).n;
-        let l0 = self.h.cross(nrm0);
+        let l0 = Self::vcross(self.h, nrm0);
         let mut th = ang3(UP, self.h);
         let f = self.ln.f as usize;
         if f < NS {
@@ -1841,7 +1894,7 @@ impl Aiv {
             s.v_table = t_tab.max_speed;
             s.g_ty = g * self.h.y;
             s.g_ly = g * l0.y;
-            s.a_max = nrm0.y.max(1e-6) * t_tab.max_total_accel;
+            s.a_max = fsel(1e-6 - nrm0.y, 1e-6, nrm0.y) * t_tab.max_total_accel;
             s.coll = -1.0;
             s.ty = self.h.y;
             s.xy = self.pos.y;
@@ -1888,45 +1941,72 @@ impl Aiv {
                         tv = self.ln.pts.get(r + 2) - self.ln.pts.get(r);
                         port = self.port(r + 1);
                     } else {
-                        let tt = (j + 1) as f32 * inv;
+                        // the parameter: the reciprocal of the leg's count times the sample number (rounded to single)
+                        let tt = inv * (j + 1) as f32;
+                        let tt2 = tt * tt;
+                        let tt3 = tt2 * tt;
+                        let wp = [tt3, tt2, tt, 1.0];
+                        let wt = Vec3::new(tt2 * 3.0, tt * 2.0, 1.0);
                         let c = self.sc.coef[(k as usize).min(63)];
-                        x = c[0] * (tt * tt * tt) + c[1] * (tt * tt) + c[2] * tt + c[3];
-                        tv = c[0] * (3.0 * tt * tt) + c[1] * (2.0 * tt) + c[2];
+                        // position: the four-term dot of the powers with each column of the coefficient rows; tangent:
+                        // the three-term dot of (3 t^2, 2 t, 1) with the first three rows
+                        x = Vec3::new(
+                            Self::dp4(wp, [c[0].x, c[1].x, c[2].x, c[3].x]),
+                            Self::dp4(wp, [c[0].y, c[1].y, c[2].y, c[3].y]),
+                            Self::dp4(wp, [c[0].z, c[1].z, c[2].z, c[3].z]),
+                        );
+                        tv = Vec3::new(
+                            dot3(wt, Vec3::new(c[0].x, c[1].x, c[2].x)),
+                            dot3(wt, Vec3::new(c[0].y, c[1].y, c[2].y)),
+                            dot3(wt, Vec3::new(c[0].z, c[1].z, c[2].z)),
+                        );
                         let mut idx = port;
                         self.bracket(&mut idx, lo_port, self.port(r + 1), x);
                         port = idx;
                     }
-                    tn = if tv.length_squared() > 1e-12 { norm0(tv) } else { Vec3::ZERO };
+                    // the unit tangent: the refined reciprocal root times the vector where the squared length exceeds 1e-12
+                    let l2 = dot3(tv, tv);
+                    let rs = vrsqrt1(l2);
+                    tn = if l2 > 1e-12 { Vec3::new(rs * tv.x, rs * tv.y, rs * tv.z) } else { Vec3::ZERO };
                     let cell = self.portals.get(port);
-                    let l = tn.cross(cell.n);
+                    let l = Self::vcross(tn, cell.n);
                     th = ang3(UP, tn);
-                    let d2 = (x - xp).length_squared();
-                    let (ds, inv_ds) = if d2 >= 1e-12 { let rs = 1.0 / d2.sqrt(); (rs * d2, rs) } else { (1e-6, 1e8) };
+                    // the step: squared length (dy^2, dz^2, dx^2 fused), the scalar reciprocal root (frsqrte as 1/sqrt rounded
+                    // to single, two Newton steps in double) and its product with the squared length
+                    let (ex, ey, ez) = (x.x - xp.x, x.y - xp.y, x.z - xp.z);
+                    let d2 = fma(ex, ex, fma(ez, ez, ey * ey));
+                    let xd = d2 as f64;
+                    let y0 = (1.0 / xd.sqrt()) as f32 as f64;
+                    let e0 = -((y0 * y0).mul_add(xd, -1.0));
+                    let y1 = e0.mul_add(y0 * 0.5, y0);
+                    let e1 = -((y1 * y1).mul_add(xd, -1.0));
+                    let rs_d = e1.mul_add(y1 * 0.5, y1) as f32;
+                    let rs_d = fsel(-d2, 0.0, rs_d);
+                    let inv_ds = fsel(d2 - 1e-12, rs_d, 1e8);
+                    let ds = fsel(d2 - 1e-12, inv_ds * d2, 1e-6);
                     let kappa = ang_xz(tp, tn) * inv_ds;
-                    let mut dth = th - thp;
-                    if dth - std::f32::consts::PI > 0.0 {
-                        dth -= std::f32::consts::TAU;
-                    }
-                    if dth + std::f32::consts::PI < 0.0 {
-                        dth += std::f32::consts::TAU;
-                    }
+                    // the heading change, wrapped into [-pi, pi] by two fsel pairs
+                    let dth0 = th - thp;
+                    let dth1 = fsel(-(dth0 - std::f32::consts::PI), dth0, dth0 - std::f32::consts::TAU);
+                    let dth = fsel(dth1 + std::f32::consts::PI, dth1, dth1 + std::f32::consts::TAU);
                     let kv = -(dth * inv_ds);
                     let coll = if last_j && self.ln.pp.get(r + 1) & 1 != 0 { 1.0 } else { -1.0 };
                     let tag = if last_j { self.pg.get(r + 1) } else { -1 };
                     let goal_speed = if tag != -1 { self.goals.get(tag).speed } else { -1.0 };
                     let k_abs = kappa.abs();
-                    let vt = self.veh.curve_speed(k_abs);
-                    let v_table = self.tun.max_speed_scalar * vt;
-                    let a_max = if k_abs - t_tab.min_curvature >= 0.0 { (vt * vt * k_abs).min(t_tab.max_total_accel) * cell.n.y.max(1e-6) } else { t_tab.max_total_accel };
-                    let v_curve = if k_abs - t_tab.min_curvature >= 0.0 {
-                        let den = (a_max * self.inv_g * kv + k_abs).max(1e-6);
-                        let vv = (a_max * (1.0 / den)).sqrt() * self.tun.max_speed_scalar;
-                        v_table.min(vv)
-                    } else {
-                        v_table
-                    };
+                    let vt = self.curve_speed_exact(k_abs);
+                    let v_table = msc * vt;
+                    let big = k_abs - t_tab.min_curvature;
+                    let a_lim = (vt * vt) * k_abs;
+                    let a_max = fsel(big, fsel(a_lim - t_tab.max_total_accel, t_tab.max_total_accel, a_lim) * fsel(1e-6 - cell.n.y, 1e-6, cell.n.y), t_tab.max_total_accel);
+                    // the speed the grip allows: sqrt(a_max / (|kappa| + a_max kv / g)) times the scalar
+                    let den0 = fma(a_max * self.inv_g, kv, k_abs);
+                    let den = fsel(1e-6 - den0, 1e-6, den0);
+                    let rcp = (1.0f64 / den as f64) as f32;
+                    let vv = sqrt_nr(rcp * a_max) * msc;
+                    let v_curve = fsel(big, fsel(v_table - vv, vv, v_table), v_table);
                     let mut w = 1.0;
-                    if cell.offroad && (cell.side_a.dot(x - cell.a) >= 1e-6 || cell.side_b.dot(x - cell.b) >= 1e-6) {
+                    if cell.offroad && (dot3(cell.side_a, x - cell.a) >= 1e-6 || dot3(cell.side_b, x - cell.b) >= 1e-6) {
                         w = self.tun.off_road_weight + 1.0;
                     }
                     let si = (first + j) as usize;
@@ -2015,49 +2095,232 @@ impl Aiv {
         if n - f <= 1 || n as usize > NS {
             return;
         }
+        // The original's registers are doubles that hold single values; each operation below is the
+        // original's instruction (the comment names it), in its order, with its rounding.
+        let r = |x: f64| x as f32 as f64; // frsp / the single-precision form of the instruction
+        let fsel = |c: f64, a: f64, b: f64| if c >= 0.0 { a } else { b };
+        let fma = |a: f64, b: f64, c: f64| r(a.mul_add(b, c)); // fmadds
+        let fms = |a: f64, b: f64, c: f64| r(a.mul_add(b, -c)); // fmsubs
+        let fnms = |a: f64, b: f64, c: f64| r(-a.mul_add(b, -c)); // fnmsubs
+        let rsqrte = |x: f64| ((1.0 / x.sqrt()) as f32) as f64; // frsqrte
+        let fres = |x: f64| ((1.0 / x) as f32) as f64; // fres
+        let ctiw = |x: f64| -> i32 { if x.is_nan() { i32::MIN } else { x as i32 } }; // fctiwz
         let t = self.veh.t.clone();
-        let (d1, d2, d3) = (t.drag[0], t.drag[1], t.drag[2]);
-        let inv_maxc = 1.0 / t.max_curvature;
-        let (c1, c2) = (self.b1[1], self.b2[1]);
-        let (mut t1, mut t2) = (self.t1, self.t2);
-        let mtas = self.tun.max_total_accel_scalar;
-        let csp = self.tun.collision_speed_penalty;
-        let mcp = self.tun.max_curvature_penalty;
-        let (mut sumabs, mut svdt) = (0.0f32, 0.0f32);
-        for i in (f + 1) as usize..n as usize {
-            let s = self.ln.s[i];
-            let vp = self.ln.s[i - 1].v;
-            let b1 = t1.max(0.0);
-            let b2 = t2.max(0.0);
-            let nn = (1.0 - s.kv * self.inv_g * vp * vp).clamp(0.0, 1.0);
-            let alat = s.kappa * vp * vp + s.g_ly;
-            let drag = ((s.kappa.abs() * d3 + d2) * vp + d1).max(0.0);
-            let acc = self.veh.accel0(vp);
-            let mut a = b2 * b2 * b2 * c2 + b1 * b1 * c1 + acc + s.g_ty - drag * drag * drag * drag;
-            let gl = nn * mtas * s.a_max;
-            a = a.min((gl * gl - alat * alat).max(0.1).sqrt());
-            let mut vi = (a * s.ds * 2.0 + vp * vp).max(0.1).sqrt().min(s.allowed);
-            if s.coll >= 0.0 {
-                vi -= csp;
-            }
-            let vi = vi.max(0.1);
-            self.ln.s[i].v = vi;
-            // (approx.: fres, the hardware reciprocal estimate, taken as 1/x)
-            let dt = (1.0 / (vi + vp).max(0.1)) * s.ds * 2.0;
-            self.ln.t += dt;
-            self.ln.j += s.w * dt;
-            self.ln.j += (s.kappa.abs() * inv_maxc - 1.0).max(0.0) * mcp;
-            t1 -= dt;
-            t2 -= dt;
+        // constants of the image (1.0, 0.0, 126.1, +-2^23, 2.0, 0.1, 1e-6, 0.5)
+        let (f12, f13) = (1.0f64, 0.0f64);
+        let f9 = 126.1f32 as f64;
+        let c_neg23 = -8388608.0f64;
+        let c_pos23 = 8388608.0f64;
+        let two = 2.0f64;
+        let f0 = 0.1f32 as f64;
+        let eps = 9.999999974752427e-07f64;
+        let half = 0.5f64;
+        let one_d = 1.0f64;
+        let (mut f1, mut f2, mut f3, mut f4, mut f5, mut f6, mut f7, mut f8);
+        let (mut f10, mut f11);
+        let (mut f14, mut f15, mut f16, mut f17, mut f18, mut f19, mut f20, mut f21, mut f22, mut f23);
+        let (mut f24, mut f25, mut f26, mut f27, mut f28, mut f29, mut f30, mut f31);
+        let d_arg = d as f64;
+        // prologue: the index of the first sample's speed in the acceleration table
+
+        f4 = self.ln.s[f as usize].v as f64;
+        f3 = r(f4 * self.veh.spd_k as f64);
+        f2 = r(f12 / t.max_curvature as f64);
+        let m208 = f2;
+        f11 = self.t1 as f64;
+        f10 = self.t2 as f64;
+        f6 = f13;
+        f8 = f13;
+        let m192 = c_neg23;
+        let m188 = c_pos23;
+        f5 = -f3;
+        f4 = fsel(f5, f13, f3);
+        f3 = fsel(f4, f4, f13);
+        f2 = r(f3 - f9);
+        f5 = fsel(f2, f9, f3);
+        f3 = fsel(f5, c_neg23, c_pos23);
+        f2 = r(f5 - f3);
+        let f0b = r(f2 + f3);
+        f7 = r(f5 - f0b);
+        f5 = r(f0b - f12);
+        f3 = fsel(f7, f0b, f5);
+        let mut r9 = ctiw(f3);
+        f7 = r(f4 - f3);
+        let mut ptr = (f + 1) as usize;
+        let mut left = n - (f + 1);
+        // keep the compiler's view of the registers the loop leaves behind
+        f1 = d_arg;
+        f14 = 0.0; f15 = 0.0; f16 = 0.0; f17 = 0.0; f18 = 0.0; f19 = 0.0; f20 = 0.0; f21 = 0.0;
+        f22 = 0.0; f23 = 0.0; f24 = 0.0; f25 = 0.0; f26 = 0.0; f27 = 0.0; f28 = 0.0; f29 = 0.0;
+        f30 = 0.0; f31 = 0.0;
+        let _ = (f1, f14, f15, f16, f17, f18, f19, f20, f21, f22, f23, f24, f25, f26, f27, f28, f29, f30, f31, one_d);
+        while left > 0 {
+            let s = self.ln.s[ptr];
+            let pv = self.ln.s[ptr - 1].v as f64;
+            f31 = self.inv_g as f64;
+            f2 = -f11;
+            f3 = s.kv as f64;
+            f30 = -f10;
+            f3 = r(f3 * f31);
+            f31 = pv;
+            f29 = s.kappa as f64;
+            f28 = r(f29 * f31);
+            f23 = t.drag[1] as f64;
+            f29 = f29.abs();
+            f24 = t.drag[2] as f64;
+            f14 = m208;
+            f20 = self.b1[1] as f64;
+            f26 = s.g_ly as f64;
+            f22 = t.drag[0] as f64;
+            f21 = r(f31 * f31);
+            f2 = fsel(f2, f13, f11);
+            f19 = self.b2[1] as f64;
+            f30 = fsel(f30, f13, f10);
+            f27 = self.tun.max_total_accel_scalar as f64;
+            f3 = r(f3 * f31);
+            // acceleration table at the index of the previous sample's speed
+            f18 = t.accel[r9 as usize] as f64;
+            f17 = t.accel[r9 as usize + 1] as f64;
+            f17 = r(f17 - f18);
+            f25 = s.a_max as f64;
+            f24 = fma(f29, f24, f23);
+            f16 = s.ds as f64;
+            f29 = fms(f29, f14, f12);
+            f15 = self.tun.collision_speed_penalty as f64;
+            f28 = fma(f28, f31, f26);
+            f26 = s.g_ty as f64;
+            f23 = s.coll as f64;
+            f1 = r(f16 - d_arg);
+            f23 = fsel(f23, f15, f13);
+            f15 = s.allowed as f64;
+            f20 = r(f20 * f2);
+            f14 = r(f30 * f30);
+            f3 = fnms(f3, f31, f12);
+            f18 = fma(f17, f7, f18);
+            f7 = two;
+            f31 = fma(f24, f31, f22);
+            f28 = r(f28 * f28);
+            f2 = r(f20 * f2);
+            f30 = r(f14 * f30);
+            f3 = fsel(f3, f3, f13);
+            f24 = r(f0 - f18);
+            f22 = -f31;
+            f2 = fma(f30, f19, f2);
+            f30 = r(f3 - f12);
+            f24 = fsel(f24, f0, f18);
+            f31 = fsel(f22, f13, f31);
+            f3 = fsel(f30, f12, f3);
+            f2 = r(f2 + f24);
+            f30 = r(f31 * f31);
+            f3 = r(f3 * f27);
+            f2 = r(f2 + f26);
+            f30 = r(f30 * f31);
+            f3 = r(f3 * f25);
+            f2 = fnms(f30, f31, f2);
+            f3 = fms(f3, f3, f28);
+            f31 = r(f0 - f3);
+            f3 = fsel(f31, f0, f3);
+            // square root: frsqrte, one refinement step, frsp
+            f31 = rsqrte(f3);
+            f30 = f31 * f31;
+            f28 = f31 * half;
+            f30 = -f30.mul_add(f3, -one_d);
+            f31 = f30.mul_add(f28, f31);
+            f3 = f31 * f3;
+            f3 = r(f3);
+            f31 = r(f2 - f3);
+            f2 = fsel(f31, f3, f2);
+            f3 = r(f2 * f16);
+            f2 = fma(f3, f7, f21);
+            f3 = r(f0 - f2);
+            f2 = fsel(f3, f0, f2);
+            f3 = rsqrte(f2);
+            f1 = f1.abs();
+            f30 = m188;
+            f27 = f3 * f3;
+            f31 = m192;
+            f26 = f3 * half;
+            f28 = -f29;
+            f6 = r(f1 + f6);
+            f1 = -f27.mul_add(f2, -one_d);
+            f29 = fsel(f28, f13, f29);
+            f3 = f1.mul_add(f26, f3);
+            f2 = f3 * f2;
+            f1 = r(f2);
+            f3 = r(f1 - f15);
+            f2 = fsel(f3, f15, f1);
+            f1 = r(f2 - f23);
+            f3 = r(f0 - f1);
+            f2 = fsel(f3, f0, f1);
+            self.ln.s[ptr].v = f2 as f32;
+            let vnew = f2;
+            f1 = self.veh.spd_k as f64;
+            f3 = pv;
+            f28 = self.ln.t as f64;
+            f27 = self.ln.j as f64;
+            f3 = r(f2 + f3);
+            f2 = r(f2 * f1);
             self.counters[2] += 1;
-            svdt += dt * vi;
-            sumabs += (s.ds - d).abs();
+            f1 = r(f0 - f3);
+            f26 = -f2;
+            f3 = fsel(f1, f0, f3);
+            f2 = fsel(f26, f13, f2);
+            f1 = fres(f3);
+            f3 = fsel(f2, f2, f13);
+            f1 = r(f1 * f16);
+            f26 = r(f3 - f9);
+            f7 = r(f1 * f7);
+            f3 = fsel(f26, f9, f3);
+            f1 = r(f28 + f7);
+            self.ln.t = f1 as f32;
+            f1 = s.w as f64;
+            f1 = fma(f1, f7, f27);
+            self.ln.j = f1 as f32;
+            f31 = fsel(f3, f31, f30);
+            f30 = vnew;
+            f11 = r(f11 - f7);
+            f28 = self.tun.max_curvature_penalty as f64;
+            f1 = fma(f29, f28, f1);
+            f29 = r(f3 - f31);
+            self.ln.j = f1 as f32;
+            f10 = r(f10 - f7);
+            f8 = fma(f7, f30, f8);
+            ptr += 1;
+            left -= 1;
+            f7 = r(f29 + f31);
+            f3 = r(f3 - f7);
+            f1 = r(f7 - f12);
+            f7 = fsel(f3, f7, f1);
+            r9 = ctiw(f7);
+            f1 = d_arg;
+            f7 = r(f2 - f7);
         }
-        let vbar = svdt / self.ln.t.max(1e-6);
-        if vbar > 1e-6 {
-            self.ln.j += self.tun.average_speed_weight / vbar * (n - 1) as f32 * d;
+        // epilogue: the average-speed term and the length-variance factor
+        f3 = f13;
+        let f13t = self.ln.t as f64;
+        f11 = r(eps - f13t);
+        f10 = fsel(f11, eps, f13t);
+        let f13v = r(f8 / f10);
+        if f13v > eps {
+            f11 = self.tun.average_speed_weight as f64;
+            f10 = r(f11 / f13v);
+            f3 = self.ln.j as f64;
+            f5 = (n - 1) as f64;
+            f5 = r(f5);
+            f4 = r(f10 * f5);
+            f3 = fma(f4, f1, f3);
+            self.ln.j = f3 as f32;
         }
-        self.ln.j *= self.tun.length_variance_weight * sumabs / ((n - 2) as f32 * d).max(1e-6) + 1.0;
+        f11 = r(self.tun.length_variance_weight as f64 * f6);
+        f10 = self.ln.j as f64;
+        f6 = r((n - 2) as f64);
+        f6 = r(f6 * f1);
+        f5 = r(eps - f6);
+        f4 = fsel(f5, eps, f6);
+        f3 = r(f11 / f4);
+        f2 = r(f3 + f12);
+        f1 = r(f2 * f10);
+        self.ln.j = f1 as f32;
     }
 
     /// F-41825: commanded curvature and acceleration at the next sample; turns H.
@@ -2571,7 +2834,8 @@ mod tests {
     #[test]
     fn evaluation_chain_is_the_originals() {
         let dir = "D:/MCLA/work/ai-verify/scalar";
-        let Ok(inp) = std::fs::read(format!("{dir}/chain_in.bin")) else {
+        let sfx = std::env::var("AIV_SET").map(|v| format!("_{v}")).unwrap_or_default();
+        let Ok(inp) = std::fs::read(format!("{dir}/chain_in{sfx}.bin")) else {
             println!("chain fixtures missing: skipped");
             return;
         };
@@ -2583,20 +2847,21 @@ mod tests {
         let n = inp.len() / BS;
         let mut total_bad = 0;
         let only: Option<usize> = std::env::var("AIV_STAGE").ok().and_then(|v| v.parse().ok());
-        for stage in 0..5usize {
-            if only.is_some_and(|o| o != stage) {
+        for stage in 0..6usize {
+            if only.is_some_and(|o| o != stage) || (only.is_none() && matches!(stage, 0 | 5)) {
+                // (stages 0 and 5 - the obstacle pass and the whole optimiser - run only when asked: AIV_STAGE=0 / 5)
                 continue;
             }
-            let out = std::fs::read(format!("{dir}/chain_out_{stage}.bin")).unwrap();
+            let out = std::fs::read(format!("{dir}/chain_out_{stage}{sfx}.bin")).unwrap();
             let (mut same, mut first_bad) = (0, String::new());
-            let (mut pts_bad, mut fn_bad, mut j_bad, mut coef_bad) = (0, 0, 0, 0);
+            let (mut pts_bad, mut fn_bad, mut j_bad, mut coef_bad, mut sc_bad) = (0, 0, 0, 0, 0);
             let mut fields = [0usize; 14];
             for k in 0..n {
                 let b = &inp[k * BS..(k + 1) * BS];
                 let o = &out[k * (BS + SS)..k * (BS + SS) + BS];
                 let scr = &out[k * (BS + SS) + BS..(k + 1) * (BS + SS)];
                 // each stage starts from the original's state after the stage before (decoupled), the first from the snapshot
-                let prev = if stage == 0 { None } else { Some(std::fs::read(format!("{dir}/chain_out_{}.bin", stage - 1)).unwrap()) };
+                let prev = if stage == 0 || stage == 5 { None } else { Some(std::fs::read(format!("{dir}/chain_out_{}{sfx}.bin", stage - 1)).unwrap()) };
                 let (pb, pscr): (&[u8], Option<&[u8]>) = match &prev {
                     Some(pv) => (&pv[k * (BS + SS)..k * (BS + SS) + BS], Some(&pv[k * (BS + SS) + BS..(k + 1) * (BS + SS)])),
                     None => (b, None),
@@ -2604,7 +2869,10 @@ mod tests {
                 let mut a = Aiv::new(tune.clone());
                 a.import_original(pb);
                 a.planes();
-                if stage == 0 {
+                if stage == 5 {
+                    // the whole optimiser from the snapshot (it sets up its own scratch)
+                    a.optimise();
+                } else if stage == 0 {
                     a.ln.s = [Sample::default(); NS];
                     a.ln.n = 0;
                     a.sc.dirty[0] = 0x3F_FFFF;
@@ -2640,12 +2908,28 @@ mod tests {
                 let mut r = Aiv::new(tune.clone());
                 r.import_original(o);
                 let mut ok = true;
+                if stage == 5 {
+                    let rd = |off: usize| i32::from_be_bytes(o[off..off + 4].try_into().unwrap());
+                    let want = [rd(30772), rd(30780), rd(25440 + 5348), rd(25440 + 5352), rd(25440 + 5356)];
+                    let got = [a.cursor, a.mode, a.counters[0], a.counters[1], a.counters[2]];
+                    if want != got || a.step.to_bits() != r.step.to_bits() || a.j_prev.to_bits() != r.j_prev.to_bits() || a.progress != r.progress {
+                        sc_bad += 1;
+                        ok = false;
+                        if first_bad.is_empty() {
+                            first_bad = format!("snapshot {k}: cursor/mode/counters port {got:?} original {want:?}; step {} / {}, j_prev {} / {}", a.step, r.step, a.j_prev, r.j_prev);
+                        }
+                    }
+                }
                 let (pp, ps, _, _, pj, _) = a.line_state();
                 let (rp, rs, _, _, rj, _) = r.line_state();
                 let (pf, pn, ..) = a.samples_raw();
                 let (rf, rn, ..) = r.samples_raw();
                 if pp.iter().zip(&rp).any(|(x, y)| x.to_array().map(f32::to_bits) != y.to_array().map(f32::to_bits)) {
                     pts_bad += 1;
+                    if first_bad.is_empty() {
+                        let i = pp.iter().zip(&rp).position(|(x, y)| x.to_array().map(f32::to_bits) != y.to_array().map(f32::to_bits)).unwrap();
+                        first_bad = format!("snapshot {k} point {i} (of {} from {}): port {:?} original {:?}; obstacles {}", pp.len(), a.ln.pts.start, pp[i], rp[i], a.n_obst);
+                    }
                     ok = false;
                 }
                 if stage >= 2 {
@@ -2695,7 +2979,7 @@ mod tests {
                     same += 1;
                 }
             }
-            println!("stage {stage}: {same} of {n} snapshots equal; points differ {pts_bad}, coefficients {coef_bad}, n/first {fn_bad}, J {j_bad}; per sample field {fields:?}; first: {first_bad}");
+            println!("stage {stage}: {same} of {n} snapshots equal; points differ {pts_bad}, coefficients {coef_bad}, n/first {fn_bad}, J {j_bad}, cursor/mode/step/counters {sc_bad}; per sample field {fields:?}; first: {first_bad}");
             total_bad += n - same;
         }
         assert_eq!(total_bad, 0);
