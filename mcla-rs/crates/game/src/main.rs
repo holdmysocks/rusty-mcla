@@ -4295,6 +4295,12 @@ impl App {
                 let won = flags::FlagGame::player_won(&res);
                 let sides = res.len().max(2);
                 self.game.award_race(if won { 1 } else { sides }, sides);
+                // (a team game's panel is form 58, the end of battle, index 3 of the race-over list: up for its
+                // WAITUNWARPED(4400) instead of the standings' 2200 - F-34603)
+                if let Some(t) = self.game.flag.as_ref().and_then(|fg| fg.team_scores()) {
+                    self.game.eob = Some(t);
+                    self.game.place_splash = self.game.place_splash.map(|(p, left)| (p, left + 2.2));
+                }
                 self.game.career.event(career::Ev::Rep(self.game.rep));
                 // (the results screen stamps a win when the first row starts with "YOU")
                 let mut res = res;

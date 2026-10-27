@@ -620,6 +620,8 @@ pub struct Game {
     pub race_place: usize,
     /// the finish was level with another car's: the splash reads TIED
     pub place_tied: bool,
+    /// a team game's end: form 58, mcEndOfBattleForm (F-34603), in the place splash's stead - (red, blue)
+    pub eob: Option<(i32, i32)>,
     /// MISSION RESULTS after an event: the missions it finished (title, objectives)
     /// (title, objectives, done: false for a mission the event did not finish - stamped FAIL)
     pub mission_results: Vec<(String, Vec<String>, bool)>,
@@ -1237,6 +1239,7 @@ impl Game {
             place_splash: None,
             race_place: 0,
             place_tied: false,
+            eob: None,
             mission_results: Vec::new(),
             race_slow: crate::mc4::SlowMo::default(),
             race_slow_wait: None,
@@ -4198,6 +4201,11 @@ impl Game {
                 if v.contains("missions") {
                     self.mission_results.push(("NEW KID IN TOWN".to_string(), vec![format!("{}WIN A RACE", OBJ_DONE), "TALK TO HENRY".to_string()], false));
                 }
+            }
+            // (=battle: a team game's end, red 2 against blue 3 - form 58)
+            if v.contains("battle") {
+                self.eob = Some((2, 3));
+                self.place_splash = Some((1, 30.0));
             }
             // (=delivery: a delivery's panel, 1:52.30 against 2:00.00 with 37 % damage)
             if v.contains("delivery") {
@@ -7916,6 +7924,7 @@ impl Game {
                     }
                     _ => {
                         self.place_splash = None;
+                        self.eob = None;
                         false
                     }
                 };
@@ -12603,7 +12612,21 @@ impl Game {
         // (step 19d: form 56's banner, after the place's splash - `mc4_banner_page`)
         let s19d_banner = if self.place_splash.filter(|_| self.replay.is_none()).is_none() { self.mc4_banner_page(ctx.input(|i| i.stable_dt).min(0.1)) } else { None };
         let st = |k: &str, d: &str| self.career.strings.get(k).map(|v| v.to_uppercase()).filter(|v| !v.contains('<')).unwrap_or_else(|| d.to_string());
-        let page = if let Some((place, _)) = self.place_splash.filter(|_| self.replay.is_none()) {
+        let page = if let (Some((red, blue)), Some(_)) = (self.eob, self.place_splash.filter(|_| self.replay.is_none())) {
+            // (a team game's end - form 58, F-34603: the mcform's template 2, the plain menu; title YOUR TEAM WON /
+            // LOST / TEAMS TIED by the two scores and the player's team (1, blue); a row of kind 11 "RED TEAM:\t<n>
+            // POINTS" and one of kind 12 for blue, "%s:\t%s" with DNF for a team without a score (-1))
+            let line = |team: &str, fb: &str, n: i32| if n < 0 { format!("{}:\t{}", st(team, fb), st("RACE_RESULT_DNF", "DNF")) } else { format!("{}:\t{} {}", st(team, fb), n, st("CTF_SCORE_METRIC", "POINTS")) };
+            let title = if red == blue { st("TEAMGAME_TIE_TITLE", "TEAMS TIED") } else if blue > red { st("TEAMGAME_WIN_TITLE", "YOUR TEAM WON") } else { st("TEAMGAME_LOOSE_TITLE", "YOUR TEAM LOST") };
+            MenuPage {
+                layout: MenuLayout::List,
+                title,
+                rows: vec![MenuRow { label: line("CTF_REDTEAM", "RED TEAM", red), value: String::new(), enabled: true, part: None }, MenuRow { label: line("CTF_BLUETEAM", "BLUE TEAM", blue), value: String::new(), enabled: true, part: None }],
+                row_props: vec![11, 12],
+                select: usize::MAX,
+                ..MenuPage::default()
+            }
+        } else if let Some((place, _)) = self.place_splash.filter(|_| self.replay.is_none()) {
             // the place, in its ring, before anything else (reference `ng_finish_2nd`)
             let suffix = match place { 1 => "st", 2 => "nd", 3 => "rd", _ => "th" };
             let look = if place == 0 { 2 } else if self.place_tied { 1 } else { 0 };

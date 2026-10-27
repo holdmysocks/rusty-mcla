@@ -279,6 +279,12 @@ impl FlagGame {
         }
     }
 
+    /// A team game's scores for the end-of-battle panel (F-34603): (red, blue) - the player's side is blue (team 1),
+    /// the other red (team 2), as `marker_looks` colours them
+    pub fn team_scores(&self) -> Option<(i32, i32)> {
+        self.teams.then(|| (self.score.get(1).map_or(0, |s| s.floor() as i32), self.score.first().map_or(0, |s| s.floor() as i32)))
+    }
+
     fn side_name(&self, side: usize) -> String {
         if self.teams {
             if side == 0 { "YOUR TEAM".into() } else { "RIVAL TEAM".into() }
