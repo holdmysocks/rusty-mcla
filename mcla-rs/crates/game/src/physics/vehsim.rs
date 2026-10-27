@@ -43,7 +43,7 @@ pub struct VehTune {
 }
 
 /// The radius of a wheel's collision shape `aside` of its middle. The original's wheel is a
-/// curved bound (0x8255BB80 scales a unit one to TireWidth and TireRadius - 0.04, its margin):
+/// curved bound (F-55382 scales a unit one to TireWidth and TireRadius - 0.04, its margin):
 /// across the tread an arc through the two shoulders about a point (sqrt 6 - 1) (r - 0.04)
 /// beyond the axle, so the shoulders are at the tyre's radius and the middle stands proud of
 /// it - 0.3072 on a tyre of 0.2953 x 0.245 (ten recorded wheels agree to 0.2 mm).
@@ -61,7 +61,7 @@ pub fn crown_half_width(radius: f32, width: f32) -> f32 {
 }
 
 impl VehTune {
-    /// The car's set-up (0x82363210) moves the tuned centre of mass by how the car sits on its
+    /// The car's set-up (F-62931) moves the tuned centre of mass by how the car sits on its
     /// wheels: f = SuspensionOffset + tyre radius - the height its wheels were modelled at
     /// (each the mean of front and rear); lower than modelled (f < 0) it goes up a quarter of
     /// that, higher it comes down by all of it, never under 1 cm. The routine runs twice when a
@@ -192,7 +192,7 @@ pub struct WheelSim {
     /// stands at between ticks
     pub camber: f32,
     /// the wheel's matrix among the car's parts as the last update left it (rows axle, up,
-    /// way; place) - what its collision shape stands at until the next (0x8255CEA0)
+    /// way; place) - what its collision shape stands at until the next (F-24284)
     pub part: Option<[Vec3; 4]>,
     /// wheel byte +530: its last contact stood deeper than SuspensionLimit and went to the solver
     pub bottomed: bool,
@@ -222,7 +222,7 @@ pub struct WheelSim {
     pub tyre_torque: f32,
     /// Last assigned wheel speed, positive forward in this port.
     pub spin_rate: f32,
-    /// The road's roughness under this wheel (vehWheel 0x82565B90): the height the surface adds
+    /// The road's roughness under this wheel (vehWheel F-84335): the height the surface adds
     /// to the suspension's compression right now (+436), how far along the current bump the car
     /// is (+460) and this bump's random share of height and length (+452, +456).
     pub bump: f32,
@@ -286,13 +286,13 @@ pub struct RevLimit {
     pub pad: f32,
 }
 
-/// What mcCarSim::Update's burnout rules (0x8232F7C0..0x8232FD7C) decided this tick, for the
+/// What mcCarSim::Update's burnout rules (A-29219..A-87401) decided this tick, for the
 /// parts of the tick that follow it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BurnTick {
     /// the rules ran in the original's place this tick (cars; MCLA_DBG_Y6: the port's older block)
     pub exact: bool,
-    /// chassis +578 as the tick came in (what re-arms the engine's boost, 0x8232F170)
+    /// chassis +578 as the tick came in (what re-arms the engine's boost, A-91058)
     pub state_in: u8,
     /// transmission +33: held in its gear
     pub held: bool,
@@ -300,9 +300,9 @@ pub struct BurnTick {
     pub brake_layout: Option<u8>,
     /// charging: the centre of mass goes to (x, 0, this)
     pub cg: Option<f32>,
-    /// the centre of mass may go back along the car this tick (0x8232F62C)
+    /// the centre of mass may go back along the car this tick (A-82101)
     pub cg_return: bool,
-    /// launching: the push's size before the mass (0x8232FC64), and the drive layout it finds
+    /// launching: the push's size before the mass (A-84907), and the drive layout it finds
     pub launch: Option<f32>,
     pub launch_layout: u8,
 }
@@ -471,7 +471,7 @@ impl GearChange {
             return throttle;
         }
         let mut pedal = throttle;
-        // sub_82559A70: the shift into first/reverse does not alter the pedal.
+        // F-55648: the shift into first/reverse does not alter the pedal.
         if self.remaining > 0.0 {
             if self.direction > 0 && gear > 1 {
                 let blend = ((tune.gcl - self.remaining) * 10.0).clamp(0.0, 1.0);
@@ -525,7 +525,7 @@ pub static REPLAY_WAY: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI
 pub static REPLAY_NITRO_PAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// a replay's: the gearbox's way as the tick's physics step finds it (the pad code has run in between)
 pub static REPLAY_WAY_AFTER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-/// 0x82007FA8 (mcCarSim::Update 0x8232EFB4)
+/// 0x82007FA8 (mcCarSim::Update A-21430)
 const BIKE_BURN_STEER: f32 = 0.9;
 /// Z3: motorcycles go through the cars' exact code (wheel rows about the fork's axis, suspension,
 /// tyres, sums, integrator, collision) and mcBikeGyro in the original's place and operations.
@@ -536,7 +536,7 @@ pub fn bike_old(vt: &VehTune) -> bool {
     vt.bike && *V.get_or_init(|| std::env::var_os("MCLA_DBG_Z3").is_some())
 }
 
-/// 0x82333C2C: the gear is not reverse (neutral counts) as the contact callbacks find it
+/// A-73788: the gear is not reverse (neutral counts) as the contact callbacks find it
 fn gear_not_reverse(gear: i32, way_after: i32) -> bool {
     if dbg_flag("MCLA_DBG_Y2") { return gear > 0; }
     match REPLAY_WAY_AFTER.load(std::sync::atomic::Ordering::Relaxed) { 0 => if way_after != 0 { way_after > 0 } else { gear >= 0 }, w => w > 0 }
@@ -572,7 +572,7 @@ pub struct VehState {
     pub engine_pedal: f32,
     /// Torque evaluated by engine Update, before automatic transmission Update.
     pub engine_torque: f32,
-    /// the turning acceleration about the car's length the engine gives the body this tick (0x82559F80)
+    /// the turning acceleration about the car's length the engine gives the body this tick (A-76445)
     pub engine_roll: f32,
     pub engine_auxiliary: f32,
     /// Original transmission +32; independent of shaft engine binding.
@@ -733,7 +733,7 @@ pub struct VehState {
     /// `physics::replay` to lay beside a recording's
     pub last_force: Vec3,
     pub last_torque: Vec3,
-    /// step 19f: a Pulse power-up's push waiting for the next tick (sub_82380418): the force per
+    /// step 19f: a Pulse power-up's push waiting for the next tick (F-19990): the force per
     /// unit of mass and the torque per unit of the body's own inertia, world axes
     pub pulse: Option<(Vec3, Vec3)>,
     pub last_gyro: Vec3,
@@ -792,7 +792,7 @@ impl VehState {
         (t as u32 & 0x7F_FFFF) as f32
     }
 
-    /// A normally distributed number (0x821CE328: the polar method, the second value kept).
+    /// A normally distributed number (F-66400: the polar method, the second value kept).
     fn random_normal(&mut self, mean: f32, deviation: f32) -> f32 {
         if let Some(v) = self.gauss_spare.take() {
             return v * deviation + mean;
@@ -841,7 +841,7 @@ pub(super) fn friction(wt: &WheelTune, sliding_fric: f32, surf: f32, s: f32) -> 
     if sliding_fric == 0.0 && s > opt {
         s = opt;
     }
-    // sub_825648C8 multiplies the cached inverse optimum-slip square before
+    // F-84621 multiplies the cached inverse optimum-slip square before
     // multiplying slip. Reordering this expression changes tyre-force bits.
     let inverse_opt_squared = 1.0 / (opt * opt);
     let x = ((wt.static_fric * surf * opt.mul_add(2.0, -s)) * inverse_opt_squared) * s;
@@ -874,7 +874,7 @@ pub(super) fn displace(disp: &mut f32, limit: f32, step: f32, relax: f32) -> (f3
 }
 
 pub(super) fn synchronize_engine(current: f32, target: f32, torque: f32, inertia: f32, dt: f32) -> f32 {
-    // sub_82568F10 uses fmadds/fnmsubs, then selects the target directly when
+    // F-92115 uses fmadds/fnmsubs, then selects the target directly when
     // reached. Adding a clamped delta loses precision at both operations.
     let rate = torque / inertia.max(0.01);
     if current < target {
@@ -892,15 +892,15 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
     // (chassis +816, set on every car but the player's: its boost is never started - a recorded
     // police cruiser's timer stays 0 - and, +817, the automatic brake does not act on it)
     let computer = input.ai || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed);
-    // mcCarSim::Update (0x8232F0D4..0x8232F1A0), ahead of the engine: while a gear above first is
+    // mcCarSim::Update (A-37124..A-11698), ahead of the engine: while a gear above first is
     // being changed the boost is cancelled and the transmission held off (the engine's
-    // sub_82558710, then transmission +32 = 1), likewise in neutral; the frame that hold ends,
-    // the engine's boost starts afresh (sub_825586E8: timer = BoostDuration). And with the pedal
+    // F-19727, then transmission +32 = 1), likewise in neutral; the frame that hold ends,
+    // the engine's boost starts afresh (F-50158: timer = BoostDuration). And with the pedal
     // fully released the boost is re-armed every frame - so each time the driver gets back on
     // the throttle, and after every upshift, the engine pulls BoostTorque harder, fading over
     // BoostDuration. (Checked against the running original: timer 2.0 at rest, 1.983 on the
     // first frame of throttle and again after the change into second.)
-    // (0x8232F098: on the grid - chassis +592 bit 0x2 - with the handbrake off and less than 0.95 of
+    // (A-13403: on the grid - chassis +592 bit 0x2 - with the handbrake off and less than 0.95 of
     // burnout charge, 0x82007FB4, the transmission is held, +32 = 1, ahead of the rules below and
     // skipping them: the engine revs free against the held wheels and saws on the rev limiter. Recorded:
     // the player's throttle-only grid (a.2), the opponents' revving phases.)
@@ -913,7 +913,7 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
     } else if vs.gear == 0 {
         vs.trans_inhibited = true;
     } else if vt.bike && vs.gear < 0 && !bike_old(vt) && !dbg_flag("MCLA_DBG_A1") {
-        // (0x8232F118: on two wheels the reverse gear is always held off - the engine never drives a
+        // (A-70945: on two wheels the reverse gear is always held off - the engine never drives a
         // motorcycle backwards; the gyro's reverse drive pushes it)
         vs.trans_inhibited = true;
     } else {
@@ -923,12 +923,12 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
         vs.trans_inhibited = false;
     }
     // (in reverse the brake is the pedal that drives)
-    // (0x8232F170: and all through a burnout - it launches with the whole boost)
+    // (A-91058: and all through a burnout - it launches with the whole boost)
     let burn_then = if vs.by.exact { vs.by.state_in } else { vs.burn_state };
     if !computer && (burn_then == 1 || burn_then == 2 || if vs.gear < 0 { pedal_released.1 } else { pedal_released.0 }) {
         vs.boost_timer = e.boost_duration;
     }
-    // (0x8232F2FC, after the rules above: the automatic brake holds the transmission - a car
+    // (A-20216, after the rules above: the automatic brake holds the transmission - a car
     // standing still is held, which is why the first frame of throttle starts a whole boost)
     // (N-VP-1: on the grid, chassis +592 bit 0x2, the computer drivers' cars get the automatic brake and its hold
     // too - recorded: the opponents' transmission +32 = 1 and their wheels' +480 rising 45 a tick, 1389, 1434 ..,
@@ -961,7 +961,7 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
     }, dt);
     vs.engine_w = out.speed;
     vs.engine_torque = out.torque;
-    // (the end of vehEngine::Update, 0x82559F80: out of gear - in neutral, or while the
+    // (the end of vehEngine::Update, A-76445: out of gear - in neutral, or while the
     // transmission is held for a gear change - an engine turning faster than a quarter over
     // its idle speed rocks the body about its length against its own torque:
     // -(inertia * ((torque / greatest torque) * inertia)) rad/s^2. MCLA_DBG_NOENGINEROLL: none.)
@@ -979,7 +979,7 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
     }
 }
 
-/// The steering's factor for the car's speed along its length (0x8232D800, chassis +568):
+/// The steering's factor for the car's speed along its length (F-40603, chassis +568):
 /// 1 below SSSThresholdMin, SSSValue from SSSThresholdMax, eased between.
 pub fn sss_factor(s: &mcla_formats::rage::simtune::SimScalars, speed: f32) -> f32 {
     if !(s.sss_threshold_max > 0.0) || speed < s.sss_threshold_min {
@@ -993,7 +993,7 @@ pub fn sss_factor(s: &mcla_formats::rage::simtune::SimScalars, speed: f32) -> f3
     }
 }
 
-/// mcCarTireFric::Update (0x82380BF8): the driven tyres' melt and, with it, an all-wheel-drive
+/// mcCarTireFric::Update (F-67816): the driven tyres' melt and, with it, an all-wheel-drive
 /// car's switch to two driven wheels and back. `gear`: the gear the transmission's update of
 /// this tick finds (the routine runs ahead of the engine and the transmission).
 fn tire_fric_update(vs: &mut VehState, t: &SimTune, input: CarInput, gear: i32, dt: f32) {
@@ -1004,7 +1004,7 @@ fn tire_fric_update(vs: &mut VehState, t: &SimTune, input: CarInput, gear: i32, 
     {
         let tf = &t.tire_fric;
         if tf.spinning_fric != 0.0 && tf.melt_rate != 0.0 && tf.skidding_threshold < 1.0 {
-            // mcCarTireFric::Update (0x82380BF8). The slide is the worst of the wheels the
+            // mcCarTireFric::Update (F-67816). The slide is the worst of the wheels the
             // engine turns at the moment; the gear counts from first up to GearThreshold.
             let drive = vs.drive;
             let driven = |i: usize| match drive {
@@ -1045,7 +1045,7 @@ fn tire_fric_update(vs: &mut VehState, t: &SimTune, input: CarInput, gear: i32, 
                     vs.drive = 3;
                 }
             }
-            // (0x8238135C: the routine ends by lifting a melt below zero back to it - after
+            // (A-41990: the routine ends by lifting a melt below zero back to it - after
             // the layout's switch has seen it. MCLA_DBG_OLDMELT: left below zero.)
             if vs.melt < 0.0 && !dbg_flag("MCLA_DBG_OLDMELT") {
                 vs.melt = 0.0;
@@ -1075,7 +1075,7 @@ pub fn moments(p: &CarParams, t: &SimTune) -> Vec3 {
 }
 
 /// The car as another car's step meets it in the shared level: its body (place +256, rows, momenta,
-/// mass, moments) moved as a tick's pre-collide moves a body (0x8259E768: by the velocities it has),
+/// mass, moments) moved as a tick's pre-collide moves a body (F-10928: by the velocities it has),
 /// the matrix its last collide had, and the forces its last update left. With its place offset.
 pub fn island_body(st: &CarState, p: &CarParams, vt: &VehTune, dt: f32) -> Option<(super::loose::PBody, Vec3)> {
     use super::exact as ex;
@@ -1101,9 +1101,30 @@ pub fn island_body(st: &CarState, p: &CarParams, vt: &VehTune, dt: f32) -> Optio
     Some((b, pivot_local))
 }
 
+/// The car as the simulator's soft push (F-49821) reads it: the body's place and rows as the
+/// tick left them, and whether it is a motorcycle.
+pub fn soft_body(st: &CarState, vt: &VehTune) -> Option<super::softpush::SoftBody> {
+    let vs = st.veh.as_ref()?;
+    let t = &vt.t;
+    let pivot_local = Vec3::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z);
+    let kept = vs.body.filter(|b| b.snap == (st.pos, st.rot, st.vel, st.ang_vel));
+    let m = Mat3::from_quat(st.rot);
+    let rows = kept.map(|b| b.rows).unwrap_or([m.x_axis, m.y_axis, m.z_axis]);
+    let at = kept.map(|b| b.at).unwrap_or(st.pos + m * pivot_local);
+    Some(super::softpush::SoftBody { at, rows, bike: vt.bike })
+}
+
+/// F-12566 on the car's body from outside its step: `by` joins the push pending for the head
+/// of the next step (the slot the gyro's queued push uses, F-44566 -> F-67019).
+pub fn queue_push(st: &mut CarState, by: Vec3) {
+    let Some(vs) = st.veh.as_mut() else { return };
+    let (turn, pending) = vs.bike_pending.unwrap_or((Vec3::ZERO, Vec3::ZERO));
+    vs.bike_pending = Some((turn, super::solver::direct(pending, by)));
+}
+
 /// What another car's step gave this car (the shared level's solves): the impulse and its turn into the
-/// momenta, the push solve's move and turn into the pose - as the car's own body takes them (0x8259BE30,
-/// 0x8259E790), so the next step keeps its exact body.
+/// momenta, the push solve's move and turn into the pose - as the car's own body takes them (F-94789,
+/// F-67019), so the next step keeps its exact body.
 pub fn take_answer(st: &mut CarState, p: &CarParams, vt: &VehTune, jf: Vec3, jt: Vec3, push: Vec3, turn: Vec3) {
     use super::exact as ex;
     let t = &vt.t;
@@ -1154,9 +1175,9 @@ pub fn take_answer(st: &mut CarState, p: &CarParams, vt: &VehTune, jf: Vec3, jt:
 pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, world: &WorldCollider, dt: f32) {
     // (a replay of a recorded computer driver gives the chassis' own pedals: no mapping)
     let replay_ai = REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed);
-    // (a deactivated racer, chassis +592 bit 0x1: throttle, brake and handbrake written 0 (0x8232EC70)
+    // (a deactivated racer, chassis +592 bit 0x1: throttle, brake and handbrake written 0 (A-14335)
     // after its brain - no driver's pedal share - and the steering its default direction, which the
-    // input brings (0x8232EDB0))
+    // input brings (A-57251))
     let input = if input.deactivated { CarInput { throttle: 0.0, brake: 0.0, handbrake: false, nitro: false, ai: false, ..input } } else { input };
     let input = CarInput { ai: input.ai && !replay_ai, ..input };
     let input_ai = input.ai || replay_ai;
@@ -1172,7 +1193,7 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
         input
     };
     let mut vs = st.veh.take().map(|b| *b).unwrap_or_default();
-    // (P3, mcCarSim::Update 0x8232EDEC: a motorcycle whose rider is off - no throttle, half the brake, no handbrake)
+    // (P3, mcCarSim::Update A-33822: a motorcycle whose rider is off - no throttle, half the brake, no handbrake)
     let wiped = vs.wipe.is_some() && vt.bike && !bike_old(vt) && !dbg_flag("MCLA_DBG_P3");
     let input = if wiped { CarInput { throttle: 0.0, brake: 0.5, handbrake: false, ..input } } else { input };
     if vs.drive == 255 {
@@ -1256,12 +1277,12 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     // full one on every tick - while throttle and handbrake pass: the throttle alone revs the engine
     // against the brake in first gear (the rev limiter cutting from a half), throttle and handbrake burn
     // out as anywhere. A computer driver gets no such write: its brain brakes itself (ai.rs). ----
-    // (the grid rule itself, mcCarSim::Update 0x8232EC8C..0x8232EDB8, on every car with chassis +592 bit 0x2:
-    // first gear is set out of reverse or neutral (0x82561D90); throttle and handbrake together - a burnout -
+    // (the grid rule itself, mcCarSim::Update A-88204..A-50978, on every car with chassis +592 bit 0x2:
+    // first gear is set out of reverse or neutral (F-16736); throttle and handbrake together - a burnout -
     // keep the throttle, the handbrake is written 1; otherwise the brake is written 1, and with burnout charge
     // left under the handbrake the throttle 0. The steering, +132, is written 0 in every case - here it is
     // zeroed where the grid input is made, vehicles.rs. The `noburnout` switch, 0x8288E614, is 0 in a game.)
-    // (Racer_Deactivate's sub_8232C788 puts the gearbox into first out of reverse or neutral, 0x82561D90)
+    // (Racer_Deactivate's F-30391 puts the gearbox into first out of reverse or neutral, F-16736)
     if input.deactivated && vs.gear <= 0 {
         vs.gear = 1;
         vs.shift_timer = 0.0;
@@ -1293,7 +1314,7 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
             vs.rev.pad = shown;
         }
     }
-    // (RB3, the head of mcCarSim::Update, 0x8232EF30: while a nitrous shot burns (nitro +32) the chassis's
+    // (RB3, the head of mcCarSim::Update, A-81262: while a nitrous shot burns (nitro +32) the chassis's
     // throttle, +136, is set to 1 - ahead of everything that reads it: the boost's "pedal released" rule, the
     // automatic brake, the burnout, the rev limiter, the engine. Only the pad's own stomp test goes by the
     // pad's pedal (input +12). A shot fired with the throttle up, sd.0: the engine pulls from the first
@@ -1320,14 +1341,14 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
         }
     }
     let pedal_released = (input.throttle <= if input.ai { 0.01 } else { 0.0 }, input.brake <= if input.ai { 0.01 } else { 0.0 });
-    // (not on the grid, `hold`: the gearbox is held there whenever the handbrake is off (0x8232F098) and
+    // (not on the grid, `hold`: the gearbox is held there whenever the handbrake is off (A-13403) and
     // every recorded racer stays in first gear through its braking phases)
     let reverse_wanted = !input.hold && input.brake > 0.1 && input.throttle < 0.1 && fwd_speed < 1.0;
     let old_gear = vs.gear;
     // (a replay goes the way its recording's gearbox did: choosing reverse is the pad code's)
     let replay_way = REPLAY_WAY.load(std::sync::atomic::Ordering::Relaxed);
     if input.animated {
-        // (an mcBrainAnimated writes input +44 = max(gear, first) every time, sub_822B97E0)
+        // (an mcBrainAnimated writes input +44 = max(gear, first) every time, F-91361)
         if vs.gear <= 0 {
             vs.gear = 1;
             vs.shift_timer = 0.0;
@@ -1368,14 +1389,14 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
             vt.ratios[(g.max(1) as usize).min(vt.ratios.len() - 1)]
         }
     };
-    // Kick-down (mcPlayerInput + mcCarSim 0x8232d4b8): a pedal that jumps up faster than
+    // Kick-down (mcPlayerInput + mcCarSim F-65097): a pedal that jumps up faster than
     // ThrottleInputVelocityThreshold drops the box at once to the lowest gear that is not past
     // its shift point at this speed - MaxDownshifts gears at most, first gear below 10 m/s.
     // (the chassis' throttle is the pedal that drives: in reverse this port's brake)
     let drive_pedal = if vs.gear < 0 { pad_input.brake } else { pad_input.throttle };
     let pedal_now = drive_pedal.max(0.5);
-    // (computer drivers too: their input object carries the same flag, 0x822b9504)
-    // (RB1, mcPlayerInput::Update 0x822A2EBC..0x822A32A0: the player's test is made once a FRAME by the pad's
+    // (computer drivers too: their input object carries the same flag, A-22997)
+    // (RB1, mcPlayerInput::Update A-48966..A-35065: the player's test is made once a FRAME by the pad's
     // code - (max(new, 0.5) - max(old, 0.5)) x the frame's 1 / step (0x827D750C there: 30 a second, two
     // ticks) against ThrottleInputVelocityThreshold; flag 0x2000 of input +40. A pedal going 0 -> 0.677
     // (5.3 a second) or 0.677 -> 1 (9.7) is no stomp for a threshold of 10; 0 -> 1 (15) is. The pedal a
@@ -1385,10 +1406,10 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     let stomped = t.input.throttle_input_velocity_threshold > 0.0 && (pedal_now - vs.pedal_was.max(0.5)) * stomp_rate > t.input.throttle_input_velocity_threshold;
     vs.pedal_was = drive_pedal;
     // (mc4 step 13b: the pad's driver hands the stomp on only to an automatic - flag 8 of its state,
-    // manual gears, stops the call of 0x8232D4B8 at 0x822A1120: no kick-down, no boost restart)
+    // manual gears, stops the call of F-65097 at A-20709: no kick-down, no boost restart)
     let stomped = stomped && !(input.manual && !input_ai);
     if stomped {
-        // (0x8232D4B8 begins by starting the engine's boost afresh, whatever the gearbox then
+        // (F-65097 begins by starting the engine's boost afresh, whatever the gearbox then
         // does - seen in a recording the moment reverse engages under a held pedal)
         vs.boost_timer = e.boost_duration;
     }
@@ -1416,7 +1437,7 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
         vs.gear_change.start(old_gear, vs.gear, e.gcl);
     }
     let engine_ratio = ratio_of(vs.gear);
-    // ---- the automatic brake (mcCarSim::Update 0x8232F1A0..0x8232F304, chassis +396): off the
+    // ---- the automatic brake (mcCarSim::Update A-11698..A-87142, chassis +396): off the
     // throttle (0.1 or less; any pedal in neutral), slower than the engine's idle speed in this
     // gear plus 5 mph - by the body's speed and by the drive shaft's - every wheel is braked with
     // a quarter of its grip, rising by half a second^-1, and the transmission is held; above
@@ -1424,7 +1445,7 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     {
         let pedal = if vs.gear < 0 { input.brake } else { input.throttle };
         let first_radius = if vs.drive == 0 { t.wheel_back.radius } else { t.wheel_front.radius };
-        // (0x8232F250: the body's speed is chassis +224 - what vehAero left there, the speed the car
+        // (A-23426: the body's speed is chassis +224 - what vehAero left there, the speed the car
         // came into the tick BEFORE with; the shaft's is chassis +572 as this update began, signed)
         let old = dbg_flag("MCLA_DBG_OLDAUTOBRAKE");
         let threshold = if engine_ratio == 0.0 { 4.47 } else if old { first_radius / engine_ratio.abs() * (e.idle_rpm * 0.104_719_76) + 2.235 } else { fma32(first_radius / engine_ratio.abs(), e.idle_rpm * 0.104_719_76, 2.235) };
@@ -1437,13 +1458,13 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
         } else if pedal > 0.05 {
             vs.auto_brake = 0.0;
         }
-        // (0x8232F214: a deactivated racer, chassis +592 bit 0x1, has the automatic brake at 1.0 on every
-        // tick, and every wheel gets it, 0x8232F2AC)
+        // (A-16188: a deactivated racer, chassis +592 bit 0x1, has the automatic brake at 1.0 on every
+        // tick, and every wheel gets it, A-30794)
         if input.deactivated {
             vs.auto_brake = 1.0;
         }
     }
-    // ---- the burnout (mcCarSim::Update 0x8232F768..0x8232FD7C, operation for operation; after the
+    // ---- the burnout (mcCarSim::Update A-36751..A-87401, operation for operation; after the
     // automatic brake, ahead of the tyres' melt, the engine and the transmission). Throttle and
     // handbrake together, slower than BurnThreshold (BurnRevThreshold in reverse) by chassis +224 -
     // the speed the car came into the tick BEFORE with - and a wheel on the ground: first gear (or
@@ -1456,7 +1477,7 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     // block further down. ----
     // (the drive layout as the tick came in: chassis +572 is formed by it at the head of mcCarSim::Update)
     let drive_before = vs.drive;
-    // (RB6: the charge as the tick came in - what the head of mcCarSim::Update, 0x8232EF9C, steers a
+    // (RB6: the charge as the tick came in - what the head of mcCarSim::Update, A-49738, steers a
     // motorcycle by, ahead of the burnout's own rules. V: se.1 k 170, the first steered tick of a launch.)
     let burn_in = if dbg_flag("MCLA_DBG_RB6") { None } else { Some(vs.burn) };
     vs.by = BurnTick { exact: !bike_old(vt) && !dbg_flag("MCLA_DBG_Y6"), state_in: vs.burn_state, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: vs.drive };
@@ -1468,7 +1489,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     if vs.by.exact {
         let (thr, brk) = if vs.gear < 0 { (input.brake, input.throttle) } else { (input.throttle, input.brake) };
         let hand: f32 = if input.handbrake { 1.0 } else { 0.0 };
-        // (0x8232F62C: with charge left and the handbrake on, the centre of mass stays where it is)
+        // (A-82101: with charge left and the handbrake on, the centre of mass stays where it is)
         vs.by.cg_return = !(vs.burn > 0.0 && hand != 0.0);
         let grounded = st.wheels.iter().filter(|w| w.grounded).count();
         let way = if vs.gear < 0 { -1 } else if vs.gear == 0 { 0 } else { 1 };
@@ -1477,7 +1498,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         if vs.two == 0 && wanted {
             let target = if way < 0 { -1 } else { 1 };
             if vs.gear != target {
-                // (0x825617E8: the gear is set, its timer starts again)
+                // (F-59013: the gear is set, its timer starts again)
                 let was = vs.gear;
                 vs.gear = target;
                 vs.shift_timer = 0.0;
@@ -1497,7 +1518,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
                 if vs.drive == 3 { vs.drive = 1; }
                 rest_z(2)
             };
-            // (0x8232F8E4: on the grid - chassis +592 bit 0x2 - the share is 0.75, 0x8201CCA4, not the tuning's)
+            // (A-94507: on the grid - chassis +592 bit 0x2 - the share is 0.75, 0x8201CCA4, not the tuning's)
             vs.by.cg = Some(held_z * if input.hold { 0.75 } else { t.s.burn_weightxfer });
             if vs.burn < 1.0 && grounded > 0 {
                 vs.burn = fma32(t.s.burn_incval, dt, vs.burn);
@@ -1526,7 +1547,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         st.burnout = if vs.burn_state == 1 || vs.burn_state == 2 { vs.burn } else { 0.0 };
         st.launch = if vs.burn_state == 3 { vs.burn } else { 0.0 };
     }
-    // ---- the rev limiter (mcCarSim::Update 0x8232FD7C..0x8232FF28, after the burnout's rules): with the
+    // ---- the rev limiter (mcCarSim::Update A-87401..A-89883, after the burnout's rules): with the
     // transmission held, in neutral, in first gear with burnout charge, or in the air, an engine past
     // RevLimitMax of the way from its speed of best power to its greatest counts time; after
     // RevLimitDelay the throttle is cut - to RevLimitThrottleRate, or (a negative rate) from the pedal
@@ -1583,7 +1604,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         vs.rev.left = allowed;
     }
     let engine_ratio = ratio_of(vs.gear);
-    // (mcCarTireFric::Update runs ahead of the engine and the transmission, 0x82330378: the
+    // (mcCarTireFric::Update runs ahead of the engine and the transmission, F-97237: the
     // layout it switches is the one the transmission's update finds. What mcCarSim::Update
     // takes from the melt - the air's damping factor - is the melt of the tick before.)
     let melt_before = vs.melt;
@@ -1592,7 +1613,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         tire_fric_update(&mut vs, t, input, gear_in, dt);
     }
     let drive_melted = vs.drive;
-    // (the chassis update, 0x82330930, ahead of the engine: while the burnout's state is not 0 -
+    // (the chassis update, A-50926, ahead of the engine: while the burnout's state is not 0 -
     // charging, charged, or the launch - the engine turns at no less than charge x the speed of
     // its best power (engine +72). When the tyres bite in the launch and the shaft drags the
     // engine down faster than the charge decays, the engine's torque, the converter and the
@@ -1604,10 +1625,10 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             vs.engine_w = floor;
         }
     }
-    // (A1, the chassis update 0x82330378 ahead of the vehicle's: in the tick a car comes down - a wheel has
+    // (A1, the chassis update F-97237 ahead of the vehicle's: in the tick a car comes down - a wheel has
     // a contact record again, byte +529, after air time - the air time is negated for that one tick and the
     // transmission's timer, +28, starts again: no change of gear for GearChangeDelay after a landing)
-    // (the air time itself, chassis +584, 0x82330554: counted while no wheel has a record and mcCarStuck
+    // (the air time itself, chassis +584, A-55250: counted while no wheel has a record and mcCarStuck
     // is at rest (its +56); the tick that ends, it is negated - what vfunc 13 hands out is negative for that
     // one tick - then nothing. mcCarSim::Update, which runs ahead, sees the value of the tick before.)
     vs.air584_before = vs.air584;
@@ -1639,7 +1660,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         }
     }
     let automatic = super::transmission::update_prepared(super::transmission::AutomaticState {
-        // (vehTransmission + 16, set each tick by sub_8232CB28: 0 manual, 1 automatic)
+        // (vehTransmission + 16, set each tick by F-68619: 0 manual, 1 automatic)
         mode: if forced == 0 && !(input.manual && !input_ai) { 1 } else { 0 }, gear: vs.gear,
         direction: vs.gear_change.direction as i32, inhibited: vs.trans_inhibited,
         held: vs.by.exact && vs.by.held, elapsed: vs.shift_timer, modulation: vs.shift_mod,
@@ -1651,8 +1672,8 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     vs.shift_timer = if forced == 0 { automatic.elapsed } else { 1.0 };
     vs.shift_mod = automatic.modulation;
     // (manual gears: a shift asked for by the pad, in a forward gear - up while there is a gear
-    // above, sub_825619E8; down not below first, sub_8255AE20; the gear is set as the automatic's
-    // own shifts set it, 0x825617E8)
+    // above, F-54646; down not below first, F-31773; the gear is set as the automatic's
+    // own shifts set it, F-59013)
     if input.manual && !input_ai && forced == 0 && vs.gear >= 1 {
         let to = vs.gear + input.shift.signum() as i32;
         if to != vs.gear && to >= 1 && to <= t.trans.gears as i32 - 2 {
@@ -1712,12 +1733,12 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     let grounded_now = st.wheels.iter().filter(|w| w.grounded).count();
     // (mcCarNitro: a shot takes one from the count; the next can go once the view has come
     // back from the last one, NitroFovOutTime after it ended. Nothing refills it on the road.)
-    // (A1, the exact path: mcCarNitro's own update 0x82345A80 runs after the vehicle's - the level comes
+    // (A1, the exact path: mcCarNitro's own update F-84636 runs after the vehicle's - the level comes
     // down and the force is formed there, further down; what mcCarSim::Update sees here is the byte
-    // "burning" as the last update or the pad's fire routine 0x82345820 left it. MCLA_DBG_A1: before.)
+    // "burning" as the last update or the pad's fire routine F-62883 left it. MCLA_DBG_A1: before.)
     let exact_nitro = vs.by.exact && !dbg_flag("MCLA_DBG_A1");
     // (the wheels with a contact record, byte +529, as the tick came in: mcCarNitro's update runs in the
-    // chassis update, ahead of the pass that updates the wheels - 0x8255AC20 counts the last tick's)
+    // chassis update, ahead of the pass that updates the wheels - F-33415 counts the last tick's)
     vs.nitro_records = (0..4).filter(|i| (!vt.bike || i % 2 == 0) && vs.wheels[*i].record).count();
     // (RB3: the player's shot is fired by the pad's code, between this update and the physics step - further
     // down, `nitro_try`. Here only: computer drivers, the older paths, and a replay's hint column of a
@@ -1747,15 +1768,15 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     if !exact_nitro && vs.nitro_level > 0.0 && st.up().y < 0.1 && st.wheels.iter().any(|w| w.grounded) {
         vs.nitro_level = 0.0;
     }
-    // (0x8232EF30: while the nitrous burns the chassis's throttle, +136, is 1 - whatever the gear; in
+    // (A-81262: while the nitrous burns the chassis's throttle, +136, is 1 - whatever the gear; in
     // reverse this port's brake is that pedal. The slipstream turbo leaves the pedal alone: its push is
-    // scaled by it, 0x823465C8.)
+    // scaled by it, F-60935.)
     let input = if exact_nitro && vs.nitro_burning {
         if vs.gear < 0 { CarInput { brake: 1.0, ..input } } else { CarInput { throttle: 1.0, ..input } }
     } else if !exact_nitro && vs.nitro_level > 0.0 && vs.gear > 0 { CarInput { throttle: 1.0, ..input } } else { input };
     // angular damping: AeroDampFactor after AeroDampDelay in the air, LandingDampFactor on
     // touching down after a quarter second of flight, back to 1 over a second
-    // (0x82330554: "in the air" is no wheel with a contact record, 0x8255AC20)
+    // (A-55250: "in the air" is no wheel with a contact record, F-33415)
     if (if exact_nitro { vs.nitro_records } else { grounded_now }) == 0 {
         vs.air_time += dt;
         if vs.air_time > t.s.aero_damp_delay.max(0.0) && t.s.aero_damp_factor > 0.0 {
@@ -1768,17 +1789,17 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         vs.air_time = 0.0;
         if bike_old(vt) || dbg_flag("MCLA_DBG_OLDSUMS") {
             vs.aero_damp += (1.0 - vs.aero_damp).clamp(-dt, dt);
-            // (mcCarSim::Update 0x8232FFEC: with melted tyres the damping of the body's turning
+            // (mcCarSim::Update A-78018: with melted tyres the damping of the body's turning
             // goes towards TireMeltDampFactor - a car leaving a burnt launch swings round freely)
             if !vt.bike && t.s.tire_melt_damp_factor < 1.0 && melt_before > 0.01 {
                 vs.aero_damp = (t.s.tire_melt_damp_factor - 1.0) * melt_before + 1.0;
             }
         } else {
-            // (the original's order and operations: mcCarSim::Update, 0x8232FFEC, sets the
+            // (the original's order and operations: mcCarSim::Update, A-78018, sets the
             // factor from the melt of the tick before - fused - and the chassis's update that
-            // follows, 0x823308E4, moves whatever it finds one time step towards 1; so with
+            // follows, A-55564, moves whatever it finds one time step towards 1; so with
             // melted tyres the factor in use is the melt's value plus dt)
-            // (0x8232FFEC: not on two wheels - chassis +24 == 2 skips it)
+            // (A-78018: not on two wheels - chassis +24 == 2 skips it)
             if !vt.bike && t.s.tire_melt_damp_factor < 1.0 && melt_before > 0.01 {
                 vs.aero_damp = fma32(t.s.tire_melt_damp_factor - 1.0, melt_before, 1.0);
             }
@@ -1798,7 +1819,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             vs.gear = 1;
             vs.burn = (vs.burn + t.s.burn_incval.max(0.1) * dt).min(1.0);
             vs.burn_state = if vs.burn >= 1.0 { 2 } else { 1 };
-            // (0x8232F96C / 0x8232F948: a burnout turns one axle only)
+            // (A-30271 / A-54306: a burnout turns one axle only)
             if vs.drive == 2 { vs.drive = 0; } else if vs.drive == 3 { vs.drive = 1; }
             let want = -input.steer.clamp(-1.0, 1.0) * t.gyro.burnout_limit.max(0.0);
             let rate = t.gyro.burnout_rate.max(0.5) * dt;
@@ -1810,7 +1831,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             if vs.burn <= 0.0 {
                 vs.burn = 0.0;
                 vs.burn_state = 0;
-                // (0x8232FD4C: the launch is over - all four wheels again)
+                // (A-50737: the launch is over - all four wheels again)
                 if matches!(t.drivetrain_type, 2 | 3) {
                     vs.drive = t.drivetrain_type as u8;
                 }
@@ -1877,7 +1898,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     }
     // (on two wheels the steering is held to LeanSteerLimit of its lock)
     let lock = if vs.two != 0 && t.gyro.lean_steer_limit > 0.0 { t.gyro.lean_steer_limit.min(1.0) } else { 1.0 };
-    // (mcPlayerInput 0x822a3034 with mcCarDamage 0x82342718: a badly damaged car pulls to one
+    // (mcPlayerInput A-62088 with mcCarDamage F-10364: a badly damaged car pulls to one
     // side at low speed - past MedDamage the pull grows as (share of the way to MaxDamage)^0.3,
     // times SteerDamageBias, fading out up to SteerDamageSpeedThreshold)
     let pad_pull;
@@ -1893,7 +1914,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // SteerInputExp, the damaged car's pull added, approached at SteerRate / ReturnRate about the
     // countersteer reference, with mcPlayerInput's own speed factor on the TARGET - and
     // mcCarSim::Update steers every tick with P x the chassis's factor for the speed along the
-    // car (0x8232D800), leaving that product in chassis +132. A computer driver's input object
+    // car (F-40603), leaving that product in chassis +132. A computer driver's input object
     // gives its P directly: its value is only rate limited here, as before, and scaled the same
     // way. MCLA_DBG_Z2: the port's older smoothing of stick x both factors.)
     let exact_pad = !bike_old(vt) && !dbg_flag("MCLA_DBG_Z2") && !REPLAY_STEER.load(std::sync::atomic::Ordering::Relaxed);
@@ -1901,7 +1922,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         let row2 = vs.body.as_ref().filter(|b| b.snap == (st.pos, st.rot, st.vel, st.ang_vel)).map(|b| b.rows)
             .unwrap_or_else(|| { let m = Mat3::from_quat(st.rot); [m.x_axis, m.y_axis, m.z_axis] });
         if input.animated {
-            // (an animated brain writes the steering value itself, sub_822B97E0: no pad code, no rate)
+            // (an animated brain writes the steering value itself, F-91361: no pad code, no rate)
             vs.pad_steer = input.steer.clamp(-1.0, 1.0);
         } else if !input_ai {
             let sens = ((f32::from_bits(STEER_SENS.load(std::sync::atomic::Ordering::Relaxed)) - 1.0) / 0.5).clamp(-1.0, 1.0);
@@ -1947,12 +1968,12 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     }
     vs.steer += (want - vs.steer).clamp(-rate * dt, rate * dt);
     }
-    // (P3, 0x8232FF6C: with the rider off the air's damping factor is AeroDampFactor - and the chassis's update
+    // (P3, A-24665: with the rider off the air's damping factor is AeroDampFactor - and the chassis's update
     // that follows moves it one time step towards one)
     if wiped && t.s.aero_damp_factor < 1.0 {
         vs.aero_damp = (dt + t.s.aero_damp_factor).min(1.0);
     }
-    // (0x82330864, further down the chassis's update, the gyro at rest: lying past flat - the chassis's up below
+    // (A-20487, further down the chassis's update, the gyro at rest: lying past flat - the chassis's up below
     // level - or in the air longer than AeroDampDelay, the factor is AeroDampFactor itself)
     if wiped && vs.bg.state == 0 && vs.bg.intent == 0 && ((st.rot * Vec3::Y).y < 0.0 || vs.air584 > t.s.aero_damp_delay) {
         vs.aero_damp = t.s.aero_damp_factor;
@@ -1962,10 +1983,10 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         if bike_old(vt) || dbg_flag("MCLA_DBG_OLDSTEER") {
             vs.steer = input.steer;
         } else {
-            // (mcCarSim::Update, 0x8232EF50..0x8232EFC0 and 0x823302C4, operation for operation.
+            // (mcCarSim::Update, A-44931..A-20547 and A-82372, operation for operation.
             // The pad's code leaves its steering in chassis +132 once a frame - every other
             // tick, as a rule; each update turns the wheels with that value times the factor
-            // for the car's speed along its length, 0x8232D800, and leaves the PRODUCT in +132.
+            // for the car's speed along its length, F-40603, and leaves the PRODUCT in +132.
             // So a recording's +132 at a tick's entry is the pad's value where the pad has just
             // written it, and the last update's product where it has not - and then the update
             // steers with the frame's pad value again, taken from the input object, not with
@@ -1980,7 +2001,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             let along = super::exact::fma(row2.x, st.vel.x, super::exact::fma(row2.z, st.vel.z, row2.y * st.vel.y)).abs();
             let k = sss_factor(&t.s, along);
             vs.steer = vs.pad_steer * k;
-            // (P3, 0x8232EDEC: the steering walks at 2.5 a second from the pad's value towards the body's
+            // (P3, A-33822: the steering walks at 2.5 a second from the pad's value towards the body's
             // turning rate about the world's z, within one either way)
             if wiped {
                 let w = st.ang_vel.z;
@@ -1990,7 +2011,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
                 super::exact::approach(&mut held, target, 2.5, dt);
                 vs.steer = held * k;
             }
-            // (0x8232EF9C: a motorcycle - two wheels - with burnout charge steers less by charge x 0.9)
+            // (A-49738: a motorcycle - two wheels - with burnout charge steers less by charge x 0.9)
             if vt.bike {
                 vs.sss_chassis = k;
                 if burn_in.unwrap_or(vs.burn) > 0.0 {
@@ -2032,7 +2053,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             let wf = &t.wheel_front;
             // (steering right turns the car clockwise seen from above: a negative rate about up)
             let target = -(1.0 - wf.optimum_slip) * wf.steering_limit * vs.steer * fwd_speed / wheelbase * gt.turn_bias * ((input.throttle - 0.5) * 2.0 * gt.turn_oversteer + 1.0);
-            // (mcCarGyro 0x82367F40..0x82368038, gyro +72: melted tyres take the gyro's say away;
+            // (mcCarGyro A-89897..A-45740, gyro +72: melted tyres take the gyro's say away;
             // it grows with the speed up to SSSThresholdMin; a charged burnout gives it back)
             let mut x = 1.0 - vs.melt;
             if fwd_speed.abs() < t.s.sss_threshold_min {
@@ -2062,7 +2083,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             let burning = vs.burn_state == 1 || vs.burn_state == 2;
             // (the player's car only: the original gates both with a flag of the gyro)
             // (Spin and RevSpin are angular accelerations: times the body's inertia about its
-            // height, 0x82367D30 / 0x82367E48; the turn's output is taken times the mass)
+            // height, A-58509 / A-60350; the turn's output is taken times the mass)
             let mut scale = t.s.mass * st.wheels.iter().find(|w| w.grounded).map_or(1.0, |w| super::collision::surface(super::collision::Surface::from_u8(w.surface)).0);
             if input_ai {
             } else if input.handbrake && input.brake > 0.0 && !burning && gt.spin > 0.0 && vs.gear >= 0 {
@@ -2074,7 +2095,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
                 scale = vt.inertia_yaw;
                 vs.turn_err = 0.0;
             } else if input.handbrake && !burning {
-                // (0x82367DD8 -> 0x82367EA4: on the handbrake the turn is left out altogether -
+                // (A-53534 -> A-44276: on the handbrake the turn is left out altogether -
                 // the recorded target and error are 0 for as long as it is held)
                 out = 0.0;
                 vs.turn_err = 0.0;
@@ -2116,12 +2137,12 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         }
         vs.air_roll = roll;
         // DriftTorque: the engine pulls harder the more the car steers or slides sideways
-        // (mcCarGyro 0x82366CF8..0x82366E64: only while no burnout is charged and the car moves
+        // (mcCarGyro A-79226..A-87897: only while no burnout is charged and the car moves
         // faster than 1 m/s - below that the multiplier keeps its last value, so a car that
         // rolled to a stop up a hill pulls away with the hill's extra. The extra is a share of
         // the engine's torque at its speed of best power, vehEngine +20.)
         if !vt.bike && !dbg_flag("MCLA_DBG_OLDSUMS") && !dbg_flag("MCLA_DBG_OLDGYRO") {
-            // (0x82366D1C..0x82366E64, operation for operation: the velocity made a unit
+            // (A-89112..A-87897, operation for operation: the velocity made a unit
             // vector, its share along the car's right through the eased sine, the steering,
             // DriftTorque; the climb by the guest runtime's arcsine; the larger over the
             // engine's reference torque, plus one)
@@ -2159,7 +2180,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     if bike_old(vt) {
         let gt = &t.gyro;
         let up = st.up();
-        // ---- mcBikeGyro::Update 0x823688B8 (translated from the original, checked on recorded
+        // ---- mcBikeGyro::Update F-63842 (translated from the original, checked on recorded
         // rides). The velocity and its change, low-passed (0.4 and 0.15 a tick at 60 Hz) ----
         let filtered = st.vel * 0.4 + vs.bike_vel * 0.6;
         let acc = (filtered - vs.bike_vel) / dt;
@@ -2169,7 +2190,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         let down = front.grounded as u32 + rear.grounded as u32;
         let wheelbase = (p.wheel_pos[2].z - p.wheel_pos[0].z).abs().max(0.5);
         let body = st.pos + st.rot * Vec3::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z);
-        // ---- the turn (0x82368BB4): with Turn at 0, as the bikes have it, the rate of turning
+        // ---- the turn (A-54318): with Turn at 0, as the bikes have it, the rate of turning
         // about the ground under the rear wheel is moved straight towards what the steering
         // asks, by TurnFactor of the way where the chassis has taken steering lock away for
         // the speed (1 - its factor) - none at town speeds ----
@@ -2187,7 +2208,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             let grip = if front.grounded { super::collision::surface(super::collision::Surface::from_u8(front.surface)).0 } else { 1.0 };
             st.ang_vel += n * ((1.0 - gt.turn_damp) * (grip * scale) * (target - yaw));
         }
-        // ---- the lean (0x82369A38): the rider leans to a share (LeanAngle; LeanAngleMax on
+        // ---- the lean (A-64729): the rider leans to a share (LeanAngle; LeanAngleMax on
         // the weight button; six tenths in a wheelie) of the angle that balances the sideways
         // pull - the measured one, low-passed, less where the chassis steers fully, mixed by
         // LeanFactor with what the steering asks for at this speed. The roll asked of the
@@ -2320,7 +2341,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
 
     vs.hyd.step(&t.hydraulics, if vt.bike { 0 } else { input.hyd }, dt);
     st.upset = (st.upset - dt / t.damage.wipeout_delay.max(0.1)).max(0.0);
-    // ---- A2: the pad's code (mcPlayerInput::Update 0x822A2988), on the first of a frame's two ticks,
+    // ---- A2: the pad's code (mcPlayerInput::Update F-56064), on the first of a frame's two ticks,
     // between this update and the physics step - with the frame's step, 0x827D7558 = two ticks. It
     // reads the chassis as the update left it: +224 (the speed the tick came in with), the body's
     // velocity along and across the car, +568 (this update's speed factor). Its pedals and way are
@@ -2333,7 +2354,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             let v = st.vel;
             let speed224 = fma32(v.z, v.z, fma32(v.x, v.x, v.y * v.y)).sqrt();
             let forward = -super::exact::fma(rows[2].x, v.x, super::exact::fma(rows[2].z, v.z, rows[2].y * v.y));
-            // (RB4: what the pad's code is handed is the mapper's value of the pad's BYTE, 0x822A4BB8 - a trigger
+            // (RB4: what the pad's code is handed is the mapper's value of the pad's BYTE, F-33017 - a trigger
             // over 255 through a dead zone of 0.05, a stick's axis (byte - 127.5) / 127.5 through 0.1 - ahead of
             // mcPlayerInput's own zones. V: every logged frame of the stage-R recordings, physics/pad.rs
             // `recorded_frames`. MCLA_DBG_RB4: this port's floats straight in, no cruise, the older lean.)
@@ -2348,7 +2369,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             if replay_way == 0 && forced == 0 {
                 vs.way_after = vs.pad.pedals.way as i32;
             }
-            // (RB4, the cruise 0x822A25E0, after the pedals and ahead of the steering: on a road with a speed
+            // (RB4, the cruise F-43388, after the pedals and ahead of the steering: on a road with a speed
             // limit a half-pressed trigger holds that speed. The limit is the world's: `CRUISE_LIMIT_MPH`.)
             if rb4 {
                 let driving = !wiped && vs.pad.pedals.way > 0 && !vs.nitro_burning && if vt.bike { vs.bg.intent == 0 } else { vs.two == 0 };
@@ -2358,7 +2379,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             } else {
                 vs.pad.cruise = Default::default();
             }
-            // (the steering, 0x822A2F74.. and 0x822A1520, after the pedals: it reads the brake just made)
+            // (the steering, A-58585.. and F-63605, after the pedals: it reads the brake just made)
             let sens = ((f32::from_bits(STEER_SENS.load(std::sync::atomic::Ordering::Relaxed)) - 1.0) / 0.5).clamp(-1.0, 1.0);
             let target = (super::pad::steer_target(stick_x, sens, &t.input) + pad_pull).clamp(-1.0, 1.0);
             let sideways = super::exact::fma(rows[0].x, v.x, super::exact::fma(rows[0].z, v.z, rows[0].y * v.y));
@@ -2366,9 +2387,9 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
                 speed: speed224, sideways, chassis_factor: vs.sss_chassis_exact, steering_limit: t.wheel_front.steering_limit,
                 brake: vs.pad.pedals.brake, handbrake: if raw_input.handbrake { 1.0 } else { 0.0 }, sens, dt: frame, cruise: vs.pad.cruise.on,
             });
-            // (0x822A3110: the stick's other axis, input +32, goes towards the stick at 5 a second)
+            // (A-43963: the stick's other axis, input +32, goes towards the stick at 5 a second)
             if rb4 {
-                // (RB4, 0x822A30AC: read only while the weight button was down the frame BEFORE - this port's
+                // (RB4, A-70968: read only while the weight button was down the frame BEFORE - this port's
                 // one key for the rider's weight is the button and the stick together - through the stick's two
                 // dead zones; otherwise nothing at once)
                 vs.pad.stick_next = super::pad::lean_step(vs.pad.stick_y, super::pad::stick_byte(raw_input.lean), vs.pad.button, frame);
@@ -2381,11 +2402,11 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         }
         vs.pad.second_tick = !vs.pad.second_tick;
     }
-    // ---- RB3: the nitrous button (mcPlayerInput::Update 0x822A337C..0x822A3458: the button DOWN - a level,
-    // not a press - sets flag 8 of input +40; 0x822A1058 at the end of the same frame calls the fire routine
-    // 0x82345988 -> 0x82345698: not burning (nitro +32), the view back at rest (+24 == +20), a shot left
-    // (+18 > 0), the car answering its pad, not lying on the ground (0x823455B8: air time <= 0 and the
-    // chassis's up.y < 0.1) -> 0x82345820: level 1, burning, one shot less). The pad's frame stands between
+    // ---- RB3: the nitrous button (mcPlayerInput::Update A-23103..A-47529: the button DOWN - a level,
+    // not a press - sets flag 8 of input +40; F-44589 at the end of the same frame calls the fire routine
+    // F-58553 -> F-50530: not burning (nitro +32), the view back at rest (+24 == +20), a shot left
+    // (+18 > 0), the car answering its pad, not lying on the ground (F-75615: air time <= 0 and the
+    // chassis's up.y < 0.1) -> F-62883: level 1, burning, one shot less). The pad's frame stands between
     // this tick's vehicle update - mcCarNitro's own update with it - and the physics step, so what it reads is
     // the object as this tick's update leaves it: the port's mcCarNitro block is inside `physics_frame`, the
     // test is finished right after it. V: sd.0 (fired once, refused while burning and 2 and 20 ticks after
@@ -2404,11 +2425,11 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     };
     let backup = (st.pos, st.rot, st.wheels);
     physics_frame(st, &mut vs, p, vt, input, ratio, world, dt);
-    // ---- the slipstream turbo's button (mcPlayerInput 0x822A3374..0x822A344C): the nitrous button down in the
-    // pad's frame, the turbo ready (0x82345FE0) and the nitrous neither burning nor its view away from rest
-    // (+32, 0x82345660) sets flag 4 instead of the nitrous's 8, which needs the turbo not burning and its lens
-    // back (0x82345DF8); 0x822A1058 fires it at the frame's end (0x823460A0). A computer driver's flag 4 is
-    // `CarInput::sst` (0x822B91F0). Ready: car state +592 0, or 16 on a car (0x8232C368) - not on the grid,
+    // ---- the slipstream turbo's button (mcPlayerInput A-17808..A-32015): the nitrous button down in the
+    // pad's frame, the turbo ready (F-29462) and the nitrous neither burning nor its view away from rest
+    // (+32, F-91794) sets flag 4 instead of the nitrous's 8, which needs the turbo not burning and its lens
+    // back (F-50750); F-44589 fires it at the frame's end (F-28681). A computer driver's flag 4 is
+    // `CarInput::sst` (F-94408). Ready: car state +592 0, or 16 on a car (F-71660) - not on the grid,
     // not with the rider off. ----
     let sst_btn = if pad_exact || REPLAY_STEER.load(std::sync::atomic::Ordering::Relaxed) { pressed } else { input.sst || (!input_ai && raw_input.nitro) };
     let sst_go = sst_btn && vs.sst.can_fire(!input.hold && !wiped) && !vs.nitro_burning && vs.nitro_view == 0.0;
@@ -2467,7 +2488,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     let speed_in = st.vel.length();
     let air_then = st.airborne_time;
     // (the car's up as its last update had it: what the wheels' contacts are weighed against,
-    // 0x8255D028 - they are found after the body has moved on, and judged before the car's
+    // F-50733 - they are found after the body has moved on, and judged before the car's
     // own matrix follows)
     let up_then = vs.prev_up.unwrap_or(st.rot * Vec3::Y);
     vs.prev_up = Some(st.rot * Vec3::Y);
@@ -2484,7 +2505,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let v: Vec<u32> = std::env::var("MCLA_REPLAY_WIPE").ok()?.split(',').filter_map(|x| x.trim().parse().ok()).collect();
             (v.len() == 3).then(|| (v[0], v[1], v[2]))
         });
-        // (R2: a stage-R recording logs the damage object's frame update, 0x82342EF0 - which ticks it runs
+        // (R2: a stage-R recording logs the damage object's frame update, F-32386 - which ticks it runs
         // ahead of, and the thrown rider's term, his velocity with the vertical part tenfold: no count while
         // the bike is faster than 4.47 m/s (chassis +224) with a wheel off the ground, nor while the rider's
         // term is 4.47 or more. MCLA_DBG_R2: the older hints.)
@@ -2508,7 +2529,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             eprintln!("WIPE age {} timer {:?} counts {} v {:?}", *age, *timer, counts, vs.last_speed);
         }
     }
-    // (mcCarSim, 0x82330724: a car that stands - no throttle, no brake, every wheel with a
+    // (mcCarSim, A-39591: a car that stands - no throttle, no brake, every wheel with a
     // contact, no faster than 5 cm/s the tick before and turning no faster than 0.5 rad/s -
     // counts the time; anything else starts the count again. Past one second its body is
     // frozen each tick, further down.)
@@ -2523,10 +2544,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     let g = vt.gravity;
     let rm = Mat3::from_quat(st.rot);
     let (right, up, fwd) = (rm.x_axis, rm.y_axis, -rm.z_axis);
-    // (mcCarSim 0x82330378: wiped out, the centre of gravity jumps UpsetCG of the way from its
+    // (mcCarSim F-97237: wiped out, the centre of gravity jumps UpsetCG of the way from its
     // tuned place to the middle of the body and comes back as the wipeout's delay runs down -
     // the car tumbles; wrecked, it stays up there)
-    // (mcCarSim::Update 0x8232F910..0x8232FAB4: a burnout puts the centre of mass on the road
+    // (mcCarSim::Update A-16035..A-10371: a burnout puts the centre of mass on the road
     // under BurnWeightxfer of the way to the axle that is held - the weight goes onto the braked
     // wheels; afterwards it comes back, 1.5 m/s along the car and 0.5 m/s in height. Recorded:
     // (0, 0, -0.331) on the R8, static loads 6517 / 3910 N against 4741 / 5686.)
@@ -2544,10 +2565,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             }
         }
         if vs.by.exact {
-            // (0x8232F64C: back along the car at 1.5 m/s - unless charge and handbrake hold it; then
-            // the burnout's own place, 0x8232F988; then DriftCG; then, in the chassis's update
-            // 0x823304EC, back up at 0.5 m/s)
-            // (Z3, a motorcycle in a stunt, 0x8232F35C..0x8232F5DC: by the gyro's state as its last
+            // (A-88239: back along the car at 1.5 m/s - unless charge and handbrake hold it; then
+            // the burnout's own place, A-64863; then DriftCG; then, in the chassis's update
+            // A-82394, back up at 0.5 m/s)
+            // (Z3, a motorcycle in a stunt, A-98027..A-90753: by the gyro's state as its last
             // update left it - in a stoppie the centre of mass goes to a quarter of the front
             // wheel's place along the bike, once, from the tune's; and for as long as the state is
             // not 0 (or the turn's intent with the button is set) it is not brought back)
@@ -2573,7 +2594,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             vs.cg = [0.0, held * if input.hold { 0.75 } else { t.s.burn_weightxfer }];
         } else {
             vs.cg[1] += (tuned[1] - vs.cg[1]).clamp(-1.5 * dt, 1.5 * dt);
-            // (the end of mcCarSim::Update, 0x823302D8: with the handbrake held a car with a
+            // (the end of mcCarSim::Update, A-79976: with the handbrake held a car with a
             // DriftCG - the Golf '07 and the Range Rovers, 0.75 - has its centre of mass go
             // towards that share of its height at 1.5 m/s. Read from the code; no recording
             // has it.)
@@ -2608,7 +2629,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     let com = st.pos + rm * com_local;
     // (the body the original integrates sits at ModelOffset above the model's origin: its
     // velocity is that point's and it turns about it; only the arms of the forces are taken
-    // from the centre of mass - vehWheel::Update 0x82566738 moves each force's point by the
+    // from the centre of mass - vehWheel::Update A-59987 moves each force's point by the
     // difference. Seen in a recording: body position = chassis position + 0.708 up.)
     let pivot_local = Vec3::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z);
     let pivot = st.pos + rm * pivot_local;
@@ -2623,14 +2644,14 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // is applied, in single precision, so the sums' last bits depend on the order: the air
     // (vehAero, ahead of the wheels), each wheel in turn - front left, front right, rear
     // left, rear right; its damping's force, its tyre and spring force, that force's torque -
-    // the axles, the gyro, and gravity last (0x82335AA8, 0x82336F8C). `calls` holds what is
+    // the axles, the gyro, and gravity last (F-84012, A-59284). `calls` holds what is
     // applied with a key for its place in that order; they are summed at the end.
     // MCLA_DBG_OLDSUMS: the port's older sums. ----
     let exact_sums = !bike_old(vt) && !dbg_flag("MCLA_DBG_OLDSUMS") && !dbg_flag("MCLA_DBG_OLDROWS") && !dbg_flag("MCLA_DBG_OLDTYREIN");
     let mut calls: Vec<(u16, Vec3, Vec3)> = Vec::new();
     // (the launch's lift, finished where the sums are made: the axle's line, the way it is measured along, the rear contacts' slope, the point)
     let mut lift: Option<(Vec3, Vec3, f32, Vec3)> = None;
-    // (0x8232FBF4..0x8232FD0C, in mcCarSim::Update - ahead of everything else in the tick's sums: the
+    // (A-86673..A-92910, in mcCarSim::Update - ahead of everything else in the tick's sums: the
     // launch pushes along the driven wheels' way - the sum of their contact frames' forwards as their
     // last update left them, wheel +352 of those with a record, made a unit - with BurnBoost x the mass)
     let launch_dir = if vs.by.exact && vs.by.launch.is_some() {
@@ -2662,7 +2683,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     let wheel_share = if vt.bike { 1.0 } else { 0.5 };
     let w_front = wheel_share * mass * g * zr / (zf + zr);
     let w_rear = wheel_share * mass * g * zf / (zf + zr);
-    // (0x825673A0 -> 0x825646E0, operation for operation: each wheel's share of the weight by
+    // (F-73903 -> F-11389, operation for operation: each wheel's share of the weight by
     // its own place along the car - the weight over twice its distance from the model's
     // origin, times its distance from the centre of mass on the other side - and, where it
     // stands wider than its tyre, halved the same way across)
@@ -2676,7 +2697,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let w = weight / (at.z.abs() * 2.0) * (z + at.z).abs();
             if at.x.abs() > width { (com_local.x + at.x).abs() / (at.x.abs() * 2.0) * w } else { w }
         };
-        // (wheel +428 as 0x8232F87C finds it: weighed before the burnout moved the centre of mass this tick)
+        // (wheel +428 as A-69686 finds it: weighed before the burnout moved the centre of mass this tick)
         if let Some(z) = cg_before_burn {
             w_burn_brake = (share_at(0, t.wheel_front.width, z), share_at(2, t.wheel_back.width, z));
         }
@@ -2686,7 +2707,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // (on one wheel - a wheelie or a stoppie - a motorcycle's wheels are each set up for the
     // whole weight: recorded, both wheels' static load is 3,636 N = 265 kg x 13.72 for as long
     // as the stunt lasts, springs and dampers twice as stiff with it)
-    // (Z3, 0x8232F370: ((gravity factor x mass) x 9.8) x (2 / wheels), set while the gyro's state is
+    // (Z3, A-41627: ((gravity factor x mass) x 9.8) x (2 / wheels), set while the gyro's state is
     // 1 or -1 and left standing while it is 99 / -99 - the weights are only made afresh at state 0)
     let (w_front, w_rear) = if vt.bike && vs.wheelie != 0 {
         if bike_old(vt) { (mass * g, mass * g) } else {
@@ -2707,7 +2728,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     };
     let train_of = |i: usize| if powered(i) { 0 } else { 1 };
 
-    // Original dispatchers 0x82569AC8 / 0x82335AA8 run shafts before tyres.
+    // Original dispatchers F-98311 / F-84012 run shafts before tyres.
     // Keep the preceding tyre torque/velocity/slip available while contacts are prepared.
     let exact_sums_early = !bike_old(vt) && !dbg_flag("MCLA_DBG_OLDSUMS");
     let previous_wheels = vs.wheels;
@@ -2729,7 +2750,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
 
     let vs_burn_state = vs.burn_state;
     let vs_melt = vs.melt;
-    // ---- the road's roughness (vehChassis 0x8255AE68): the car runs along bumps as long as the
+    // ---- the road's roughness (vehChassis F-79815): the car runs along bumps as long as the
     // shortest `width` of the surfaces under its wheels, at a random 0.618..1.618 of its speed
     // (above 1 m/s the speed to the power 0.35); each new bump draws its own height and length ----
     {
@@ -2829,7 +2850,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         };
         // (the ram's length moves the wheel's place of rest)
         // (and so does the tuning's SuspensionOffset, wheel +432: a lowered car's wheels sit
-        // that much higher in its body at the same load - 0x8255C640, 0x82564E08)
+        // that much higher in its body at the same load - A-57909, F-86255)
         let ram = if hyd_fitted { hyd.height[i] } else { 0.0 } + wt.suspension_offset;
         let radius = wt.radius.max(0.1);
         // (what the ground is measured with: the wheel's collision shape)
@@ -2848,7 +2869,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         } else {
             0.0
         };
-        // (the wheel as this update rebuilds it, 0x825652B8 and 0x82567508, in the original's
+        // (the wheel as this update rebuilds it, F-57353 and F-70434, in the original's
         // own operations: its angle, and its rows and place of rest carried through the
         // chassis's matrix. MCLA_DBG_OLDROWS: the port's older construction.)
         let exact_rows = !bike_old(vt) && !dbg_flag("MCLA_DBG_OLDROWS");
@@ -2870,7 +2891,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let w = &mut st.wheels[i];
         // (what the wheel's shape stood at when the collision ran: the wheel as the last
         // update left it - its steering then; and a steered wheel turns about a point
-        // PivotOffset of its place across the car inboard of it, 0x825673A0 / 0x82567508:
+        // PivotOffset of its place across the car inboard of it, F-73903 / F-70434:
         // at full lock its centre is 27 mm from where it stands straight)
         let steer_then = w.steer;
         let pivot_arm = if wt.steering_limit <= 0.0 || vt.bike { 0.0 } else if wt.pivot_offset > 0.0 { local.x * wt.pivot_offset } else if local.x.abs() > wt.width { local.x.signum() * wt.width * 0.25 } else { 0.0 };
@@ -2885,7 +2906,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let hit = world.raycast(attach + up * top, -up, ray_len);
         // ---- the wheel's own shape. In the original every wheel is a part of the car's bound -
         // a rounded disc as wide as the tyre - and the suspension is pressed in by how deep
-        // that shape stands in the ground (vehWheel 0x82564C48, chassis +544 == 2). On level
+        // that shape stands in the ground (vehWheel F-11915, chassis +544 == 2). On level
         // ground that is the distance under the axle; at a step it is the tyre's round that
         // meets the edge first, ahead of the axle, and the wheel climbs it over several ticks
         // instead of being knocked up in one; leaving a ledge it rests on the lip a while
@@ -2899,7 +2920,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let attach = if dbg_flag("MCLA_DBG_NOPIVOT") { attach } else { attach + (axle - right) * pivot_arm };
             let along = axle.cross(up).normalize_or(fwd);
             // (the shape leans as the wheel does - about the car's way forward, its top inwards)
-            // (vehAxle::Update, 0x825681E0: about the axle's own third row - the car's, which
+            // (vehAxle::Update, F-33566: about the axle's own third row - the car's, which
             // leans the top inwards; or, on a live rear axle, that of its bone, which is
             // authored turned right round and pitches with the mean of its two wheels, so
             // those wheels lean outwards. Recorded on an S281: rear 0.3667 rad a metre outwards,
@@ -2912,7 +2933,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let (axle_w, up_w, along_w) = if bike_old(vt) || dbg_flag("MCLA_DBG_NOCAMBER") { (axle, up, along) } else { (lean * axle, lean * up, lean * along) };
             // (the shape's matrix as the original's collision forms it: the wheel's matrix
             // among the car's parts as the last update left it, times the body's matrix now -
-            // 0x8255CEA0, 0x82575450. MCLA_DBG_OLDWHEELPOSE: built from the suspension's state
+            // F-24284, F-35644. MCLA_DBG_OLDWHEELPOSE: built from the suspension's state
             // as before.)
             let posed = ws.part.filter(|_| !bike_old(vt) && !dbg_flag("MCLA_DBG_OLDWHEELPOSE")).map(|part| super::gjk::world_matrix(&part, seen_rows.as_ref().unwrap_or(&body_rows)));
             let (centre_w, axes_w) = match posed {
@@ -2937,7 +2958,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 let (pos0, rot0) = (st.pos - st.vel * dt, (back * st.rot).normalize());
                 let m0 = Mat3::from_quat(rot0);
                 // (the body's last matrix as the tick's collision had it - which a tick with a deep push
-                // does not renew, 0x8259E920: the box then reaches back to where the car stood before)
+                // does not renew, F-32811: the box then reaches back to where the car stood before)
                 let (pos0, m0) = match vs.last_seen.filter(|_| !dbg_flag("MCLA_DBG_Y5")) {
                     Some(l) => (l[3], Mat3::from_cols(l[0], l[1], l[2])),
                     None => (pos0, m0),
@@ -2946,7 +2967,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 super::hull::WheelBox::new((centre, axes_w), (crown_half_width(radius, tyre_width), round), (last, [m0.x_axis, m0.y_axis, -m0.z_axis]))
             });
             // ---- one contact a wheel: of every triangle that touches the shape's box, what
-            // the original's narrow phase makes of it; the deepest is the wheel's (0x8255D028).
+            // the original's narrow phase makes of it; the deepest is the wheel's (F-50733).
             // Nothing is kept from tick to tick ----
             let touched = (tyre_width > 0.0 && !bike_old(vt) && !dbg_flag("MCLA_DBG_OLDWHEEL")).then(|| {
                 let core = super::gjk::WheelCore::of(&super::gjk::wheel_shape(front, radius, tyre_width), centre_w, axes_w, radius, tyre_width);
@@ -2955,7 +2976,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 if dbg_flag("MCLA_DBG_HANG") {
                     eprintln!("CON {} {i} comp {:.4} touch {:?}", DBG_TICK.load(std::sync::atomic::Ordering::Relaxed), ws.comp, touch.map(|t| (t.depth, t.surface, t.normal.dot(up), t.deep, rm.transpose() * (t.point - st.pos))));
                 }
-                // (0x82564C48: the depth goes into the suspension over how squarely the wheel
+                // (F-11915: the depth goes into the suspension over how squarely the wheel
                 // stands on the contact - the lesser of its axle's share of the contact's
                 // sideways and its way's share of the contact's forwards, never under 0.75: a
                 // wall's contact presses the wheel in by a third more than its depth. Recorded
@@ -2969,7 +2990,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 };
                 // (as a ray under the axle would have measured it)
                 if let (Some(t), Some(_), false) = (touch.as_ref(), posed.as_ref(), dbg_flag("MCLA_DBG_OLDSUSP")) {
-                    // (the wheel's rows as this update's rebuild has them, 0x82567508: the
+                    // (the wheel's rows as this update's rebuild has them, F-70434: the
                     // chassis's own for a wheel that is not turned)
                     let rows = match rebuilt[i] {
                         Some(m) => [m[0], m[1], m[2]],
@@ -3024,9 +3045,9 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     probe(&mut found, aside, crown(radius, tyre_width, aside));
                 }
             }
-            // ---- one contact a wheel: the deepest of those its shape is given (0x8255D028),
+            // ---- one contact a wheel: the deepest of those its shape is given (F-50733),
             // and it is given one for every triangle that touches the shape's box (above) and
-            // is no farther than 2 cm from the tyre (0x825C65E8; recorded depths end at
+            // is no farther than 2 cm from the tyre (F-90136; recorded depths end at
             // -0.0199 in 23,889 samples). Nothing is kept from tick to tick: a wheel past the
             // edge of the polygon it stood on is found against that polygon again, at its edge.
             // The depth: how far the suspension would be pressed in from where it is, and the
@@ -3049,7 +3070,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // ---- and walls. The wheels are the widest thing about a car down low, and it is they
         // that meet a wall there: the shape's contact presses the suspension in like any other -
         // by its depth, over at least 0.75 for the tilt of the face against the wheel, less the
-        // 7 mm a wheel stands in what it touches (0x82564C48) - and the spring then pushes
+        // 7 mm a wheel stands in what it touches (F-11915) - and the spring then pushes
         // along the wall's normal. (Recorded: a front wheel on a wall polygon, normal level,
         // 23 kN at the suspension's clamp, the car turned aside by it; tyre grip 0.01.) ----
         let mut steep = false;
@@ -3063,7 +3084,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             match super::hull::deepest_steep(&vt.wheel_shape[if front { 0 } else { 1 }], centre, frame, world, up, 0.7) {
                 Some(wall) => {
                     // (what the wheel is told of a contact is its depth's share along the
-                    // car's up, 0x8255D028 - next to nothing on an upright wall unless the wheel
+                    // car's up, F-50733 - next to nothing on an upright wall unless the wheel
                     // is far into it - and only of faces that do not look down; then the
                     // deepest such share is the wheel's contact. Recorded on a Range Rover
                     // turned into a wall: 0.0301 from a face with normal (0.52, 0.04, 0.86),
@@ -3083,21 +3104,21 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // (left wheels are the even ones)
         prepared[i].torque = previous_wheels[i].tyre_torque;
         prepared[i].brake = if let (true, Some(found)) = (vs.by.exact, vs.by.brake_layout) {
-            // (0x8232F87C / 0x82565320: the wheels the engine does not turn - by the layout as the
+            // (A-69686 / F-48988: the wheels the engine does not turn - by the layout as the
             // rules found it, before they switched it - are braked with twice their grip, the
             // others not at all whatever the pedals say)
             let driven = match found { 1 | 4 => i < 2, 2 | 3 => true, _ => i >= 2 };
             let w_then = if front { w_burn_brake.0 } else { w_burn_brake.1 };
             if driven { 0.0 } else { ((wt.static_fric * w_then) * wt.radius) * 2.0 }
         } else if burnout_now {
-            // (0x8232F87C: the wheels the engine does not turn are braked with twice their grip)
+            // (A-69686: the wheels the engine does not turn are braked with twice their grip)
             if powered(i) { 0.0 } else { wt.static_fric * w_static * radius * 2.0 }
         } else if exact_rows && !dbg_flag("MCLA_DBG_OLDTYREIN") {
-            // (0x82564758 and 0x825652B8, operation for operation: the two torques at full
+            // (F-51861 and F-57353, operation for operation: the two torques at full
             // pedal, wheel +484 / +488, and their sum by the pedals; the front wheels are
-            // handed no handbrake at all, 0x8255C850)
-            // (Z3: the pedals' torque, wheel +480, is made at the head of mcCarSim::Update (0x8232EFC0 ->
-            // 0x825652B8) from +484 / +488 as they stand - which 0x82564758 only makes afresh further
+            // handed no handbrake at all, F-53667)
+            // (Z3: the pedals' torque, wheel +480, is made at the head of mcCarSim::Update (A-20547 ->
+            // F-57353) from +484 / +488 as they stand - which F-51861 only makes afresh further
             // down that update: the static weight they hold is the one of the tick before. Seen where
             // the weight jumps: a motorcycle's first tick of a stoppie.)
             let w_brake = if vt.bike && vs.w_then[i] > 0.0 { vs.w_then[i] } else { w_static };
@@ -3109,10 +3130,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         };
         let w_before = vs.w_then[i];
         vs.w_then[i] = w_static;
-        // (the automatic brake replaces the pedals' torque: vehWheel 0x82565320, no BrakeCoef)
+        // (the automatic brake replaces the pedals' torque: vehWheel F-48988, no BrakeCoef)
         if hold > 0.0 && !burnout_now && (input.hold || !(input.ai || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed))) {
-            // (RB2: 0x8232F2D8 stands in mcCarSim::Update AHEAD of the centre of mass's way back
-            // (0x8232F64C -> 0x82565758 weighs the wheels afresh): the weight in wheel +428 is still the
+            // (RB2: A-45935 stands in mcCarSim::Update AHEAD of the centre of mass's way back
+            // (A-88239 -> F-52728 weighs the wheels afresh): the weight in wheel +428 is still the
             // one of the tick before. Seen where a burnout is let go at a standstill - the centre of mass
             // comes back at 1.5 m/s while the automatic brake holds. MCLA_DBG_RB2: this tick's weight.)
             let w_hold = if w_before > 0.0 && vs.by.exact && !dbg_flag("MCLA_DBG_RB2") { w_before } else { w_static };
@@ -3122,7 +3143,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // pedal's - +480 = 10 x +484 on every tick of the pre-race, a.0 k1..654 and a.2 with the throttle
         // down - and the normal one from the GO tick on; a burnout's own braking of the held axle replaces
         // it, a.3. The rear wheels keep the pedal's / the automatic brake's torque.)
-        // (0x8232F304: 0x82565320 with 10.0, 0x82003A8C - grip x weight (+428, the tick before's, as the
+        // (A-87142: F-48988 with 10.0, 0x82003A8C - grip x weight (+428, the tick before's, as the
         // automatic brake reads it) x radius x 10, no BrakeCoef; for the wheels of chassis +404's list: the
         // wheels the drive layout as it stands does not turn - the Saleen's fronts (a.0, a.2), the R8's fronts
         // while a burnout has put it on its rear axle (a.1 k608..616: 87 251 = 10 x 8 725) and none while it
@@ -3131,10 +3152,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let w_lock = if w_before > 0.0 && vs.by.exact { w_before } else { w_static };
             prepared[i].brake = ((wt.static_fric * w_lock) * radius) * 10.0;
         }
-        // ---- suspension (vehWheel 0x82565858, constants from 0x82564758):
+        // ---- suspension (vehWheel F-43321, constants from F-51861):
         // N = W + k (x + bump) (1 + k2 (x + bump)) + c v, v the compression's change over the tick ----
         let span = (wt.suspension_limit + wt.suspension_extent) * wt.suspension_extent;
-        // (0x82564758, operation for operation: one division, by the span, and the products after it)
+        // (F-51861, operation for operation: one division, by the span, and the products after it)
         let over_span = 1.0 / span;
         let k = fma32(wt.suspension_factor, wt.suspension_extent, wt.suspension_limit) * over_span * w_static;
         let (k2, c) = if k.abs() > 1e-6 {
@@ -3142,7 +3163,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         } else {
             ((wt.suspension_factor - 1.0) / fma32(wt.suspension_factor, wt.suspension_extent, wt.suspension_limit), 0.0)
         };
-        // (nothing under the wheel, 0x82566600: the same routine is asked for the full extension -
+        // (nothing under the wheel, A-52697: the same routine is asked for the full extension -
         // which the damper will not give at once: the wheel lets out against it, tick by tick)
         let hang_load = std::cell::Cell::new(0.0f32);
         let hang = |before: f32, bump: f32| -> (f32, f32) {
@@ -3153,7 +3174,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 let comp = if load < 0.0 && c + k * dt > 0.0 { (c * before - k * dt * wt.travel_extent) / (c + k * dt) } else { x };
                 return (comp, (comp - before) / dt);
             }
-            // (0x82565858 with no contact, operation for operation)
+            // (F-43321 with no contact, operation for operation)
             let per = 1.0 / dt;
             let x = -wt.travel_extent;
             let xb = bump + x;
@@ -3177,7 +3198,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             w.slip = 0.0;
             w.load = 0.0;
             w.f_lon = 0.0;
-            // (0x82566F9C: a wheel with no contact loses its slide, its tyre's displacements, forces
+            // (A-48925: a wheel with no contact loses its slide, its tyre's displacements, forces
             // and torque - not its slips or its contact speeds, which the next contact starts from.
             // MCLA_DBG_OLDHANG: those too.)
             let keep = if dbg_flag("MCLA_DBG_OLDHANG") { (0.0, 0.0, 0.0, 0.0) } else { (ws.slip_lat, ws.slip_long, ws.velocity_long, ws.velocity_lat) };
@@ -3185,14 +3206,14 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             continue;
         };
         let centre_drop = hit.t - top - round;
-        // (a wheel stands 7 mm in what it touches: 0x82564C48 takes that off the contact's depth)
+        // (a wheel stands 7 mm in what it touches: F-11915 takes that off the contact's depth)
         let x = exact_x.unwrap_or((p.susp_rest + ram - centre_drop - if steep { 0.0 } else { 0.007 }).min(limit + 0.05));
         if dbg_flag("MCLA_DBG_HANG") { eprintln!("WHL {} {i} {:.5} {x:.5} {:.3} {:.3} {:.3} {}", DBG_TICK.load(std::sync::atomic::Ordering::Relaxed), ws.comp, hit.normal.dot(up), st.vel.dot(up), (st.vel + st.ang_vel.cross(hit.point - pivot)).dot(hit.normal), steep); }
-        // (0x82565858: a contact that would let the wheel out past TravelExtent is taken at
+        // (F-43321: a contact that would let the wheel out past TravelExtent is taken at
         // TravelExtent - and, carrying nothing, the wheel then goes through the routine once
         // more as one in the air, below. MCLA_DBG_OLDHANG: once, as a wheel with no contact.)
         let clamp_exact = exact_x.is_some() && !dbg_flag("MCLA_DBG_OLDHANG");
-        // (0x82565B28: and a contact taken at TravelExtent hands the body no damping, wheel +508 = 0)
+        // (A-29835: and a contact taken at TravelExtent hands the body no damping, wheel +508 = 0)
         let let_out = clamp_exact && x < -wt.travel_extent && !dbg_flag("MCLA_DBG_Y5");
         let x = if clamp_exact && x < -wt.travel_extent { -wt.travel_extent } else { x };
         if x < -extent && !clamp_exact {
@@ -3203,7 +3224,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             w.slip = 0.0;
             w.load = 0.0;
             w.f_lon = 0.0;
-            // (0x82566F9C: a wheel with no contact loses its slide, its tyre's displacements, forces
+            // (A-48925: a wheel with no contact loses its slide, its tyre's displacements, forces
             // and torque - not its slips or its contact speeds, which the next contact starts from.
             // MCLA_DBG_OLDHANG: those too.)
             let keep = if dbg_flag("MCLA_DBG_OLDHANG") { (0.0, 0.0, 0.0, 0.0) } else { (ws.slip_lat, ws.slip_long, ws.velocity_long, ws.velocity_lat) };
@@ -3221,7 +3242,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
 
         // ---- suspension: N = W + k x (1 + k2 x) + c v ----
         let arm = hit.point - com;
-        // (0x82566738: the arm of everything the wheel applies - from the model's origin plus
+        // (A-59987: the arm of everything the wheel applies - from the model's origin plus
         // the centre of mass carried through the body's rows, to the contact record's point)
         let arm = if exact_sums {
             let cols = [Vec3::new(body_rows[0].x, body_rows[1].x, body_rows[2].x), Vec3::new(body_rows[0].y, body_rows[1].y, body_rows[2].y), Vec3::new(body_rows[0].z, body_rows[1].z, body_rows[2].z)];
@@ -3241,7 +3262,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let wheel_lat = if wheel_lat.dot(right) < 0.0 { -wheel_lat } else { wheel_lat };
         let v_lat = cvel.dot(wheel_lat);
         let v_fwd = cvel.dot(wheel_fwd);
-        // (0x82565E00, operation for operation: the contact's own directions from the wheel's
+        // (F-56921, operation for operation: the contact's own directions from the wheel's
         // axle as this update rebuilt it - forwards = unit(axle x n), which points to the car's
         // rear, sideways = n x forwards - and the body's velocity at the contact record's
         // point, turning about the body's own place. MCLA_DBG_OLDTYREIN: the port's vectors.)
@@ -3260,12 +3281,12 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         vs.wheels[i].velocity_lat = v_lat;
         let ws = &mut vs.wheels[i];
         let (mut surf_grip, surf_drag) = super::collision::surface(hit.surface);
-        // (vehWheel 0x82565B90: a tyre without SurfaceDragCoefLat keeps its whole grip on a
+        // (vehWheel F-84335: a tyre without SurfaceDragCoefLat keeps its whole grip on a
         // surface that drags)
         if wt.surface_drag_lat == 0.0 && surf_drag > 0.0 {
             surf_grip = 1.0;
         }
-        // (0x82565FC0: against a face too steep for the wheel the tyre has no hold - the
+        // (A-14864: against a face too steep for the wheel the tyre has no hold - the
         // recorded grip there is 0.01)
         if steep {
             surf_grip = 0.01;
@@ -3283,7 +3304,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let h = fma32(t.s.friction_handling_standard - t.s.friction_handling_wipeout, t.s.aero_damp_factor, t.s.friction_handling_wipeout);
             surf_grip = if h < 1.0 { fma32(1.0 - h, 1.0 - surf_grip, surf_grip) } else { surf_grip / h };
         }
-        // (step 19e: the Ice power-up - vehicle +624 bit 0x80, sub_8232EA78 0x823300EC: every
+        // (step 19e: the Ice power-up - vehicle +624 bit 0x80, F-17997 A-34557: every
         // wheel's +524 is 10 when the car is not wiped out, so the grip is divided by 10)
         if input.ice && !wiped {
             surf_grip /= 10.0;
@@ -3291,7 +3312,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // (wheel +444 is set for every wheel that has a contact, whether it carries or not)
         vs.wheel_grip[i.min(3)] = surf_grip;
 
-        // ---- the surface's roughness under this wheel (vehWheel 0x82565B90): one bump is a
+        // ---- the surface's roughness under this wheel (vehWheel F-84335): one bump is a
         // sine over an eased share of its length; the wheels of the axle behind (the front one
         // in reverse) are a quarter of a wave behind; sideways sliding and low speed flatten it ----
         {
@@ -3333,7 +3354,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let before = ws.comp;
         let mut comp = x;
         let exact = !dbg_flag("MCLA_DBG_OLDSUSP");
-        // (0x82565858, operation for operation: the rate is the change times 1 / dt, the
+        // (F-43321, operation for operation: the rate is the change times 1 / dt, the
         // products are fused as the original's are)
         let per = 1.0 / dt;
         let mut comp_rate = if exact { (comp - before) * per } else { (comp - before) / dt };
@@ -3369,11 +3390,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 comp = limit;
             } else {
                 impedance = k * dt / up.dot(n).abs().clamp(0.25, 1.0) + c;
-                // (0x825662CC and 0x82565B0C, operation for operation: the stiffness over how
+                // (A-67912 and A-64094, operation for operation: the stiffness over how
                 // squarely the contact faces the car's up - between a quarter and one - times
                 // the time step, plus the damping, fused)
                 if let (true, Some(_)) = (exact_sums, rebuilt[i]) {
-                    // (0x82565E80: against the CHASSIS's up, chassis +256 - a car's wheel has the same
+                    // (A-47078: against the CHASSIS's up, chassis +256 - a car's wheel has the same
                     // second row; a motorcycle's front wheel, in its raked fork, has not)
                     let m = [body_rows[0], body_rows[1], body_rows[2]];
                     let facing = fma32(n.x, m[1].x, fma32(m[1].z, n.z, m[1].y * n.y)).abs();
@@ -3389,7 +3410,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             load = load.min(wt.suspension_clamp * w_static);
         }
         ws.comp = comp;
-        // (the end of vehWheel::Update, 0x825666A0, and the axle after it, 0x825681E0: a wheel
+        // (the end of vehWheel::Update, F-68594, and the axle after it, F-33566: a wheel
         // pressed in past its SuspensionOffset leans its top in by that share of
         // SuspensionLimit times CamberLimit - and keeps the lean it last had while it hangs)
         if rebuilt[i].is_none() && wt.camber_limit > 0.0 && comp - ram > 0.0 && wt.suspension_limit > 0.0 {
@@ -3398,18 +3419,18 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         ws.comp_rate = comp_rate;
         ws.load = load;
         if load == 0.0 {
-            // (0x825665D8: a wheel that carries nothing is off the ground for everything that
+            // (A-39203: a wheel that carries nothing is off the ground for everything that
             // follows - no tyre, no grip, a slide of 0 that lets the gearbox shift - and the
             // suspension routine runs once more as for a wheel in the air)
             if dbg_flag("MCLA_DBG_HANG") { eprintln!("HANG t {} wheel {i} before {before:.4} ground {x:.4} relaxed {comp:.4}", DBG_TICK.load(std::sync::atomic::Ordering::Relaxed)); }
             let (comp, rate) = hang(comp, ws.bump);
             // (the second run's own answer stays in wheel +500: let out all the way against a damper that
             // now moves slower, the spring can come out carrying something after all - and the tyre, which
-            // 0x825666A0 runs next, works with that load in the frame 0x8256663C has just left: the wheel's
+            // F-68594 runs next, works with that load in the frame A-54055 has just left: the wheel's
             // own axle, up and way. Seen in rh 161: 154 N on a rear wheel at -TravelExtent.)
             let second = if dbg_flag("MCLA_DBG_Y5") { 0.0 } else { hang_load.get() };
             // (to everything that asks whether the wheel is on the ground - wheel +288, set
-            // from the contact alone at the head of 0x825666A0 - it still is)
+            // from the contact alone at the head of F-68594 - it still is)
             if dbg_flag("MCLA_DBG_ZEROTYRE") {
                 grounded_count -= 1;
                 w.grounded = false;
@@ -3419,7 +3440,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             w.slip = 0.0;
             w.load = 0.0;
             w.f_lon = 0.0;
-            // (but vehWheel::Update, 0x825666A0, still runs its tyre for it - the wheel has a
+            // (but vehWheel::Update, F-68594, still runs its tyre for it - the wheel has a
             // contact, and a load of nothing: no force, and the tyre's displacements, which a
             // wheel in the air loses, go on by what the tread slips. Recorded on an R8's front
             // wheel over a lip: 0.01244 -> 0.00898 in the tick it carried nothing, and 2,900 N
@@ -3460,12 +3481,12 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         if dbg_flag("MCLA_DBG_TERMS") {
             eprintln!("SUSP {i} local {:?} n local {:?} rate {:.4} fix {:.1}", rm.transpose() * f_susp, rm.transpose() * n, comp_rate, comp_rate * dt * k * wt.suspension_damp_factor);
         }
-        // (vehWheel::Update 0x825666A0 hands the body SuspensionDampFactor of that spring as a
+        // (vehWheel::Update F-68594 hands the body SuspensionDampFactor of that spring as a
         // damping matrix along the ground's normal, with the force the spring gains in a tick)
         let mut damp_call: Option<(f32, Vec3)> = None;
         if impedance > 0.0 && wt.suspension_damp_factor > 0.0 {
             if exact_sums {
-                // (0x825667C4..0x825668A8: the matrix's strength, and the force - the rate
+                // (A-79526..A-54738: the matrix's strength, and the force - the rate
                 // times the step, times the stiffness, times the factor - along the normal,
                 // nothing past the limit)
                 let fd = if comp < wt.suspension_limit { n * (((comp_rate * dt) * k) * wt.suspension_damp_factor) } else { Vec3::ZERO };
@@ -3487,7 +3508,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // 10,970 N on 3,720 N of load - the car is held by its other axle's brakes alone)
         let _ = burning;
         // melted driven tyres slide on SpinningFric
-        // (0x82380BF8 at 0x82381224: the difference times the melt plus the sliding friction, fused)
+        // (F-67816 at A-64726: the difference times the melt plus the sliding friction, fused)
         let sliding_fric = if vs_melt > 0.0 && powered(i) { fma32(t.tire_fric.spinning_fric - wt.sliding_fric, vs_melt, wt.sliding_fric) } else { wt.sliding_fric };
         let k_lat = 2.0 * w_static / wt.disp_limit_lat.max(0.005);
         let k_long = 2.0 * w_static / wt.disp_limit_long.max(0.005);
@@ -3496,7 +3517,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         prepared[i].contact = true;
         prepared[i].response = super::drivetrain::WheelResponse {
             spring: k_long, damper: c_long, inverse_step: 1.0 / dt,
-            // (wheel +296: sub_82565E00 writes this tick's contact velocity at 0x82566134, ahead
+            // (wheel +296: F-56921 writes this tick's contact velocity at A-78532, ahead
             // of the response block - only the spin and the slip are the preceding tyre update's.
             // Seen in a recorded launch of the original: with last tick's velocity the wheels
             // of a standing car hook up instead of spinning.)
@@ -3516,7 +3537,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     }
 
     // (wheel +320..+383 as this update leaves them: the contact's frame - sideways, normal, forwards
-    // (which points to the car's rear), the record's point; 0x8256663C: a wheel that stands on nothing -
+    // (which points to the car's rear), the record's point; A-54055: a wheel that stands on nothing -
     // no record, or one that carries nothing - has its own matrix there instead, as this update
     // rebuilt it before lift and lean: axle, up, way, and its place less its up x its radius. Seen in rn's samples.)
     for i in 0..4 {
@@ -3530,11 +3551,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         vs.wheels[i].side_then = vs.wheels[i].frame[0];
     }
     // ---- what the wheels' collision shapes stand at until the next update: the last thing
-    // the original's vehicle update does (0x8255CEA0) is to write each wheel's matrix - its
-    // steering about its pivot (0x82567508), its place with the new compression, its lean
-    // (0x825681E0) - taken back through the chassis's matrix of this update into the car's
+    // the original's vehicle update does (F-24284) is to write each wheel's matrix - its
+    // steering about its pivot (F-70434), its place with the new compression, its lean
+    // (F-33566) - taken back through the chassis's matrix of this update into the car's
     // bound, as that wheel part's matrix among the car's parts. The collision after the
-    // physics step multiplies it with the body's matrix as that then stands (0x82575450).
+    // physics step multiplies it with the body's matrix as that then stands (F-35644).
     // Here the matrix is formed among the car's parts directly, from this update's own
     // steering, compression and lean. ----
     if !bike_old(vt) && !dbg_flag("MCLA_DBG_OLDWHEELPOSE") {
@@ -3563,11 +3584,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             vs.wheels[i].world = None;
         }
         // ---- the same in the original's own operations: the end of vehWheel::Update
-        // (0x825666A0: the lean's angle from the new compression - kept where the wheel is not
+        // (F-68594: the lean's angle from the new compression - kept where the wheel is not
         // pressed in past its offset - and the place lifted along the wheel's up by the
-        // compression), vehAxle::Update (0x825681E0: the rows turned by that angle about the
+        // compression), vehAxle::Update (F-33566: the rows turned by that angle about the
         // axle's third row - the chassis's, or that of a live axle's bone, pitched by the mean
-        // of its two wheels) and 0x8255CEA0 (the matrix taken back through the chassis's). ----
+        // of its two wheels) and F-24284 (the matrix taken back through the chassis's). ----
         for i in 0..4 {
             let Some(m) = rebuilt[i] else { continue };
             let front = i < 2;
@@ -3588,7 +3609,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             if wt.camber_limit > 0.0 && !dbg_flag("MCLA_DBG_NOCAMBER") {
                 let axis = match t.axle_bone.filter(|_| !front) {
                     Some(bone) => {
-                        // (0x82567DA0 and 0x825681E0: the bone's third row with its height
+                        // (F-61274 and F-33566: the bone's third row with its height
                         // set from the mean of the two wheels over the bone's distance from
                         // the left wheel along that row, carried through the chassis's matrix)
                         let l2 = Vec3::from(bone[2]);
@@ -3636,7 +3657,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let engine = (k == 0 && vs.clutch).then_some(super::drivetrain::EngineDrive {
             ratio, speed: vs.engine_w, torque: vs.engine_torque, inertia: e.inertia,
             sync_torque: vt.sync_torque, idle_speed: e.idle_rpm * 0.104_719_76,
-            // (the computer drivers' update, 0x822B9848 and 0x827453EC, writes IdleRPM over their
+            // (the computer drivers' update, A-76185 and A-54822, writes IdleRPM over their
             // car's EngageRPM every frame: their engines never get the converter's extra ratio)
             max_speed: e.max_rpm * 0.104_719_76, engage_rpm: if input.ai || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed) { e.idle_rpm } else { e.engage_rpm }, cvt: e.engage_cvt,
             pedal: thr_eng, gear_change_inertia: t.trans.s.gear_change_inertia,
@@ -3669,7 +3690,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         ws.slide = if bike_old(vt) || dbg_flag("MCLA_DBG_OLDTYREIN") {
             tyre.slide
         } else {
-            // (the end of the tyre's update, 0x82566C24..0x82566CF8, as written: which of the
+            // (the end of the tyre's update, A-12145..A-17805, as written: which of the
             // two friction evaluations' slide values counts depends on which displacement
             // held and on the contact's speeds; a value that crosses one half from below
             // jumps to one; under 2 m/s all round it is nothing, else at least 0.01)
@@ -3694,7 +3715,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 now
             }
         };
-        // (the end of vehWheel::Update, 0x82566D38: the surface's drag on the tyre - the
+        // (the end of vehWheel::Update, A-94479: the surface's drag on the tyre - the
         // material's drag times the wheel's load times the square of the contact's speed,
         // sideways by SurfaceDragCoefLat and along the wheel by SurfaceDragCoefLong, the
         // latter grown by the share the tyre sinks in. The cars' tunes have 0.05 sideways
@@ -3711,10 +3732,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
         if exact_sums {
             // ---- what vehWheel::Update applies to the body, operation for operation
-            // (0x825667A4..0x82566F80) ----
+            // (A-80096..A-13136) ----
             use super::exact::{cross, dot3, fnms};
             let key = 300 + 3 * i as u16;
-            // the damping's hand-off (body vfunc 11, 0x8259EA40): its force at the arm set
+            // the damping's hand-off (body vfunc 11, F-70848): its force at the arm set
             // off from the body's place
             ws.damp_value = frame.damp.map_or(0.0, |d| d.0);
             if let Some((value, fd)) = frame.damp {
@@ -3769,10 +3790,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // nitrous pushes the car along its length: NitroBoostAmount m/s^2 times level^NitroBoostExp
     let exact_nitro = vs.by.exact && !dbg_flag("MCLA_DBG_A1");
     if exact_nitro {
-        // ---- mcCarNitro::Update 0x82345A80 (from the chassis update 0x82330378 after the vehicle's update,
+        // ---- mcCarNitro::Update F-84636 (from the chassis update F-97237 after the vehicle's update,
         // and so after the launch and the engine's roll, ahead of the air and the wheels - call 150): level -= dt / NitroBoostTime; out at nothing, or lying on the ground with the
-        // up under 0.1 (0x823455B8); the force along the car's length -(NitroBoostAmount x level^NitroBoostExp)
-        // x throttle (+136) x wheels with a record / wheels x the gear's way, times the mass (0x8259BEF8) ----
+        // up under 0.1 (F-75615); the force along the car's length -(NitroBoostAmount x level^NitroBoostExp)
+        // x throttle (+136) x wheels with a record / wheels x the gear's way, times the mass (F-14399) ----
         if vs.nitro_burning {
             vs.nitro_level = fnms32(1.0 / t.nitro.boost_time, dt, vs.nitro_level);
             let upset = !(vs.air584 > 0.0) && body_rows[1].y < 0.1;
@@ -3785,27 +3806,27 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let share = vs.nitro_records as f32 / wheels_in as f32;
             let way: f32 = if vs.gear < 0 { -1.0 } else if vs.gear == 0 { 0.0 } else { 1.0 };
             calls.push((150, ((((body_rows[2] * k) * throttle_in) * share) * way) * mass, Vec3::ZERO));
-            // (RB3, 0x82345C10: the view goes out towards NitroFov at NitroFov / NitroFovOutTime a second -
+            // (RB3, A-70093: the view goes out towards NitroFov at NitroFov / NitroFovOutTime a second -
             // also in the tick the burn ends)
             if vs.nitro_view != t.nitro.fov {
                 super::exact::approach(&mut vs.nitro_view, t.nitro.fov, t.nitro.fov / t.nitro.fov_out_time, dt);
             }
         } else if vs.nitro_view != 0.0 {
-            // (RB3, 0x82345C80: and comes back to its rest, nitro +20, at NitroFov / NitroFovInTime)
+            // (RB3, A-29153: and comes back to its rest, nitro +20, at NitroFov / NitroFovInTime)
             super::exact::approach(&mut vs.nitro_view, 0.0, t.nitro.fov / t.nitro.fov_in_time, dt);
         }
     } else if vs.nitro_level > 0.0 && grounded_count > 0 {
         force += fwd * (t.nitro.boost_amount.max(0.0) * vs.nitro_level.powf(t.nitro.boost_exp.max(0.1)) * mass * grounded_count as f32 / wheel_count);
     }
-    // ---- mcCarSSTurbo::Update 0x823465C8 (the chassis update 0x82330378, right after mcCarNitro's): burning,
+    // ---- mcCarSSTurbo::Update F-60935 (the chassis update F-97237, right after mcCarNitro's): burning,
     // the level runs down and pushes along the car's length -(turboBoostAmount x level^turboBoostExp) x
     // throttle (+136) x wheels with a record / wheels, times the mass - no gear's way, the pedal not forced;
     // otherwise the slipstream found before the step charges it (physics/sst.rs) ----
-    // (0x82330024 read the turbo's +72 in mcCarSim::Update, before this: a car in a slipstream gets DragMin)
+    // (A-63908 read the turbo's +72 in mcCarSim::Update, before this: a car in a slipstream gets DragMin)
     let draft_then = vs.sst.leader > -1;
-    // (mcCarSim::Update 0x8232EC2C..0x8232EE84: a car not answering its pad - vfunc 12, 0x8232C368: car state +592
+    // (mcCarSim::Update A-90592..A-31987: a car not answering its pad - vfunc 12, F-71660: car state +592
     // not 0, nor 16 on a car; here the grid's bit 0x2 and the rider off a motorcycle - has its nitrous and its
-    // turbo reset every tick, sub_82345E20: nothing charged, nothing burning)
+    // turbo reset every tick, F-74056: nothing charged, nothing burning)
     if input.hold || wiped {
         vs.sst.reset();
     }
@@ -3826,7 +3847,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         vs.sst.charge(&t.ss_turbo, speed224, dt);
     }
     // burnout: the launch pushes the car forward (BurnBoost), the charge swings it with the steering
-    // (0x8232FC64: BurnBoost times the mass for as long as the charge lasts, whatever is left
+    // (A-84907: BurnBoost times the mass for as long as the charge lasts, whatever is left
     // of it - 13,680 N on the R8 - less with the brake or the handbrake on)
     if !vs.by.exact && vs.burn_state == 3 && grounded_count > 0 && !input.handbrake {
         force += fwd * (t.s.burn_boost * thr * (1.0 - brake_in.clamp(0.0, 1.0)) * mass);
@@ -3835,11 +3856,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let have = st.ang_vel.dot(up);
         torque += up * ((vs.burn_yaw - have) * inertia.y * 8.0);
     }
-    // The wheelie and the stoppie (mcBikeGyro 0x8236A5C0 / 0x8236AA28 through vehGyro
-    // 0x82563018): a torque about the axle of the wheel that stays down - the controller's
+    // The wheelie and the stoppie (mcBikeGyro A-52985 / A-52935 through vehGyro
+    // F-81152): a torque about the axle of the wheel that stays down - the controller's
     // output times the mass - with the force that leaves that wheel's contact where it is,
     // less what of it would push down into the road. The wheelie's boost pushes at the rear
-    // contact along the wheel (0x82562D20), so it lifts the nose as well.
+    // contact along the wheel (F-96311), so it lifts the nose as well.
     if vs.wheelie != 0 && bike_old(vt) {
         let stoppie = vs.wheelie == 2 || vs.wheelie == 98;
         let w = st.wheels[if stoppie { 0 } else { 2 }];
@@ -3861,7 +3882,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             // body: the higher the bike stands, the longer this push's arm)
             let push = (fwd - n * fwd.dot(n)).normalize_or(fwd) * k;
             force += push;
-            // (a plain force on the body, 0x82562D20: its arm is from the body's own place - the
+            // (a plain force on the body, F-96311: its arm is from the body's own place - the
             // point high in the bike it turns about - not from the low centre of mass the wheels'
             // forces are moved to; reared up, that arm is a metre)
             // (that helper's arm ends at chassis +112 carried into the world - the tuned centre
@@ -3871,7 +3892,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             if dbg_flag("MCLA_DBG_GYRO") { eprintln!("BOOST push {:.1} torque {:.1} v {:.2}", k, (contact - (pivot + rm * com_local)).cross(push).length(), st.vel.length()); }
         }
     }
-    // DriftThrust (mcCarGyro, 0x82366B3C..0x82366D1C): a push along the car's length of
+    // DriftThrust (mcCarGyro, A-80595..A-89112): a push along the car's length of
     // DriftThrust x the drive shaft's speed at its wheel (chassis +572 - with the wheels
     // spinning far more than the car's own speed) x a level x the share of the wheels on the
     // ground x sin(pi/2 x the sideways share of the velocity) x the throttle x the grip of the
@@ -3881,7 +3902,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // second sample on, the handbrake never touched. Recorded on a Range Rover leaving at
     // full lock with its rear wheels spinning at 20 m/s: 140 N at a sideways share of 0.04,
     // 455 at 0.11, 710 at 0.21 - DriftThrust 0.05 to 2%.
-    // ---- Z3: mcBikeGyro::Update (0x823688B8), after the wheels and the axles as in the original,
+    // ---- Z3: mcBikeGyro::Update (F-63842), after the wheels and the axles as in the original,
     // from the listing: the filters, the turn (Turn = 0: the body's turning rate is SET), the
     // handbrake's level and the engine's torque multiplier, the lean (Lean = 0: the body is turned
     // about the line through its contacts by the collider's pending turn and push), the wheelie
@@ -3912,7 +3933,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let new_acc = fz(fz(acc * b) + fz(vs.bg.acc * (1.0 - b)));
         vs.bg.vel = new_vel;
         vs.bg.acc = new_acc;
-        // (P3, 0x82368A44: with the rider off the gyro does nothing more)
+        // (P3, A-24202: with the rider off the gyro does nothing more)
         if wiped {
             // (the engine's torque multiplier, +32, stays as the last whole update left it: V rp.0 129..)
             break 'gyro;
@@ -3933,14 +3954,14 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let wb = rest_zs[2] - rest_zs[0];
         let inverse = Vec3::new(ex::recip(inertia.x), ex::recip(inertia.y), ex::recip(inertia.z));
         let chassis = [rows[0], rows[1], rows[2], chassis_at];
-        // (0x82563018 with a ground normal: the torque through the chassis's frame, the force that
+        // (F-81152 with a ground normal: the torque through the chassis's frame, the force that
         // leaves the point where it is, less what of it points along the normal)
         let torque_about = |tq: Vec3, off: Vec3, n: Vec3| -> (Vec3, Vec3) {
             let (tq, f) = ex::gyro_turn(tq, off, &chassis, &rows, inverse, mass);
             let lift = fma(f.x, n.x, fma(n.y, f.y, n.z * f.z));
             (tq, if lift > 0.0 { f - n * lift } else { f })
         };
-        // (0x82562D20: a force at a point, its arm from the centre of mass carried through the chassis's frame)
+        // (F-96311: a force at a point, its arm from the centre of mass carried through the chassis's frame)
         let cg = ex::point_through(com_local, &chassis);
         let mut w = st.ang_vel;
         let mut spin_set = false;
@@ -3981,7 +4002,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             }
             vs.bg.yaw_err = err;
         }
-        // (RB6, section 4, 0x82368F44..0x82369194: the burnout - handbrake on, throttle (chassis +136) above
+        // (RB6, section 4, A-43995..A-67241: the burnout - handbrake on, throttle (chassis +136) above
         // 0.1, charge (chassis +580), the gearbox forward. With a wheel on the ground: the burnout's rate,
         // gyro +120, goes towards -(sqrt(engine speed / its speed of best power) x charge x the pad's
         // steering x BurnoutLimit) at BurnoutRate; its error against the body's turning about the FRONT
@@ -4030,7 +4051,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
         // (section 5: the front tyre's slide is cleared every tick)
         vs.wheels[0].slide = 0.0;
-        // (section 6, 0x82369378..0x82369708: the spin on both brakes and the wobble. With the brake or
+        // (section 6, A-54773..A-70213: the spin on both brakes and the wobble. With the brake or
         // the handbrake on and Spin, RevSpin or WobbleAmplitude above nothing: with both on, a torque
         // through vehGyro's routine about the front wheel's ground normal at its contact,
         // -(|sideways speed| x the share of the wheels down - a whole-number division: 1 only with both -
@@ -4169,7 +4190,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     calls.push((535, Vec3::ZERO, tq));
                     calls.push((536, f, Vec3::ZERO));
                 } else {
-                    // (0x82562E18: no force - the body's pending turn and push)
+                    // (F-29993: no force - the body's pending turn and push)
                     let turn = fd * -(((1.0 - gt.lean_damp) * err) * vs.aero_damp);
                     let turn_all = ex::pending_add(vs.push_turn_left, turn);
                     let push = ex::pending_add(Vec3::ZERO, ex::cross(off, turn));
@@ -4258,7 +4279,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             }
             if vs.bg.state < 0 {
                 let x = (1.0 - stick_y) * 0.5;
-                // (0x82227C70: nothing at or below 0, one from 1 up, 1 - cos of that share of a quarter turn between)
+                // (F-86323: nothing at or below 0, one from 1 up, 1 - cos of that share of a quarter turn between)
                 let ease_cos = if !(x > 0.0) { 0.0 } else if !(x < 1.0) { 1.0 } else { 1.0 - ex::guest_cos((x * f32::from_bits(0x3fc90fdb)) as f64) as f32 };
                 let mut m = ease_cos * brake_in;
                 if speed224 < 10.0 {
@@ -4288,7 +4309,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 }
             }
         }
-        // (section 11, 0x8236AA90: in the air the nose follows the flight path - GravityPitch x (the
+        // (section 11, A-84347: in the air the nose follows the flight path - GravityPitch x (the
         // path's climb, within 30 degrees, less the nose's) as a turning acceleration about the
         // bike's right, body vfunc 30)
         if gt.gravity_pitch != 0.0 && air > 0.0 {
@@ -4297,12 +4318,12 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let a = climb - ex::guest_asin(-rows[2].y as f64) as f32;
             calls.push((542, Vec3::ZERO, rows[0] * (inertia.x * (gt.gravity_pitch * a))));
         }
-        // (section 12, 0x8236AB84..0x8236ADAC, air control: in the air with the weight button, no stunt
+        // (section 12, A-27031..A-40968, air control: in the air with the weight button, no stunt
         // and no turn intent left from the ground (gyro +16, +18), Yaw, Pitch or Roll above nothing -
         // once past a tenth of the timer's +84 (0x827D7554: the main loop's global time scale, never
         // under 0.1) - the stick turns the bike: -(Yaw / scale x stick X) about the body's up and
         // Pitch / scale x stick Y about its right, as turning accelerations (body vfunc 30). Roll only
-        // takes part in the test. Chassis +576 bit 0 (a script's mask, sub_822ADF90) is never set in
+        // takes part in the test. Chassis +576 bit 0 (a script's mask, F-17816) is never set in
         // the port. Before the tenth the original writes gyro +104, which nothing reads.)
         if air > 0.0 && btn && vs.bg.intent == 0 && vs.bg.state == 0 && (gt.yaw > 0.0 || gt.pitch > 0.0 || gt.roll > 0.0) {
             let scale = f32::from_bits(TIME_SCALE84.load(std::sync::atomic::Ordering::Relaxed));
@@ -4312,13 +4333,13 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 calls.push((544, Vec3::ZERO, rows[0] * (inertia.x * ((gt.pitch * inv) * stick_y))));
             }
         }
-        // (RB6, section 13, 0x8236ADB0..0x8236AFD4, the reverse drive - the engine never drives a motorcycle
+        // (RB6, section 13, A-91934..A-57076, the reverse drive - the engine never drives a motorcycle
         // backwards, the gyro pushes it: in reverse gear, throttle (chassis +136) above nothing, the handbrake
         // off, air time under 0.25 s, the rear wheel with a contact record: the speed along the bike is
         // driven towards -RevGearMPH x 0.447 - the error kept within ReverseLimit - by a force
         // -(ReverseAcc x mass x error) along the bike's back (a tenth of it while mcCarStuck is busy),
         // at the point halfway between the body's place and the chassis's first axle's (its matrix is the
-        // chassis's: the model's origin) - body vfunc 31, 0x8259E0F0: the torque's two products go into
+        // chassis's: the model's origin) - body vfunc 31, F-18006: the torque's two products go into
         // the sum one after the other. V: sf.2 k 180.. . MCLA_DBG_RB6: none.)
         if vs.gear < 0 && throttle_in > 0.0 && hand == 0.0 && vs.air584 < 0.25 && wr.record && !dbg_flag("MCLA_DBG_RB6") {
             let e = ex::fms(-t.trans.s.rev_gear_mph, f32::from_bits(0x3EE4_DD2F), fwd_speed);
@@ -4343,7 +4364,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     } }
     let exact_gyro = exact_sums && !dbg_flag("MCLA_DBG_OLDGYRO");
     if exact_gyro {
-        // ---- mcCarGyro, 0x82366B3C..0x82366D1C, operation for operation ----
+        // ---- mcCarGyro, A-80595..A-89112, operation for operation ----
         use super::exact::{approach, ease, fma, unit_or_zero};
         if t.gyro.drift_thrust > 0.0 && vs.burn == 0.0 {
             let hb: f32 = if input.handbrake { 1.0 } else { 0.0 };
@@ -4378,7 +4399,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let ease = if side <= 0.0 { 0.0 } else if side >= 1.0 { 1.0 } else { (side * std::f32::consts::FRAC_PI_2).sin() };
             let first = if vs.drive == 0 { 2 } else { 0 };
             let mut k = t.gyro.drift_thrust * shaft_speed_then * vs.drift_level * (grounded_count as f32 / wheel_count) * ease * thr;
-            // (the bikes' gyro, 0x8236970C, has neither of these two)
+            // (the bikes' gyro, A-41298, has neither of these two)
             if !vt.bike {
                 k *= vs.wheel_grip[first];
             }
@@ -4388,7 +4409,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             force += fwd * (k * mass);
         }
     }
-    // the drift gyro (mcCarGyro 0x82366950): on the handbrake, off the foot brake, faster than
+    // the drift gyro (mcCarGyro A-41026): on the handbrake, off the foot brake, faster than
     // 10 m/s, the car is turned the way it is steered - a torque about the ground under the
     // rear wheels like the turn's, Drift times the mass, the steering and the speed (eased in
     // up to 25 m/s: v^2 / 25). Recorded on the R8: +4,000 N m at 0.8 of lock and 13 m/s.
@@ -4401,7 +4422,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
     }
     vs.last_gyro = Vec3::ZERO;
-    // the turn gyro (vehGyro 0x82563018): a torque about the ground's normal under the rear
+    // the turn gyro (vehGyro F-81152): a torque about the ground's normal under the rear
     // wheels, and with it the force that leaves the middle of the rear axle where it is - the
     // car is turned about its rear axle, not about its middle
     if vs.turn_force != 0.0 && grounded_count > 0 {
@@ -4414,8 +4435,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         vs.last_gyro = t_gyro;
     }
 
-    // ---- the turn in the original's own operations (mcCarGyro 0x82367BCC..0x823681A8 and
-    // vehGyro 0x82563018): about the mean of the two rear wheels' normals - the wheel's own
+    // ---- the turn in the original's own operations (mcCarGyro A-11615..A-73994 and
+    // vehGyro F-81152): about the mean of the two rear wheels' normals - the wheel's own
     // up where it carries nothing - the turning rate is moved towards what the steering asks;
     // the torque goes through the car's frame and back (and loses its last digits to the
     // body's place on the way), and with it the force that leaves the middle of the rear
@@ -4450,12 +4471,12 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let back = body_rows[2];
         let along = fnma(v.x, back.x, fma(back.z, v.z, back.y * v.y));
         let inverse = Vec3::new(super::exact::recip(inertia.x), super::exact::recip(inertia.y), super::exact::recip(inertia.z));
-        // ---- the handbrake's drift (0x8236694C, the player's car, ahead of DriftThrust): on the
+        // ---- the handbrake's drift (A-56016, the player's car, ahead of DriftThrust): on the
         // handbrake, off the brake, faster than 10 m/s forwards, a torque about the same normal
         // and point as the turn's - Drift times the mass, times the pad's steering of the frame
         // (the input object's, not the chassis's scaled value) and the speed (v^2 / 25 under
         // 25 m/s), by the share of the wheels down. MCLA_DBG_OLDDRIFT: the port's older code. ----
-        // ---- the burnout's turn (0x82366558..0x82366944, ahead of the drift): BurnoutTurn > 0, on the
+        // ---- the burnout's turn (A-54818..A-89761, ahead of the drift): BurnoutTurn > 0, on the
         // handbrake, with charge, every wheel down. The steering - times the root of the engine's speed
         // over its speed of best power, times the charge, twice that where the front axle is the held
         // one - asks for a turning rate of BurnoutLimit times it, approached at BurnoutRate; the torque
@@ -4504,7 +4525,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 let err = vs.burn_yaw - turning;
                 let rows = [body_rows[0], body_rows[1], body_rows[2]];
                 let (tq, f) = gyro_turn(n * -((err * hold) * mass), arm, &[rows[0], rows[1], rows[2], chassis_at], &rows, inverse, mass);
-                // (0x82563238, with the normal handed in - here only: what of the force points along it is left out)
+                // (A-18277, with the normal handed in - here only: what of the force points along it is left out)
                 let lift = fma(f.x, n.x, fma(n.y, f.y, n.z * f.z));
                 let f = if lift > 0.0 { f - n * lift } else { f };
                 calls.push((490, Vec3::ZERO, tq));
@@ -4525,7 +4546,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             calls.push((500, Vec3::ZERO, tq));
             calls.push((501, f, Vec3::ZERO));
         }
-        // ---- the launch's lift (0x82367894..0x82367BB8, gyro flag 0x100000; ahead of the turn): with
+        // ---- the launch's lift (A-22070..A-57456, gyro flag 0x100000; ahead of the turn): with
         // charge and the handbrake off, the car's pitch is driven to the lean its acceleration asks
         // for - a torque about the rear axle's line (from the left rear contact to the right; one
         // wheel's sideways if only one has a record), at the rear contacts' middle, through vehGyro's
@@ -4566,7 +4587,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
         if t.gyro.turn > 0.0 {
         if hand > 0.0 && brake_in > 0.0 && vs.burn == 0.0 {
-            // (0x82367CE0, brake and handbrake together: Spin - the car is turned by its steering alone)
+            // (A-78592, brake and handbrake together: Spin - the car is turned by its steering alone)
             let mut k = vs.steer;
             if along.abs() < 25.0 {
                 k = (along.abs() * k) * f32::from_bits(0x3d23_d70a);
@@ -4574,11 +4595,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             size = -((((grounded_count as f32 / wheel_count) * k) * gt.spin) * inertia.y);
             vs.turn_err = 0.0;
         } else if hand > 0.0 && (vs.burn == 0.0 || throttle_in == 0.0) {
-            // (0x82367DCC: on the handbrake the turn stands down - its last error forgotten -
+            // (A-80698: on the handbrake the turn stands down - its last error forgotten -
             // and what goes through vehGyro's routine is a torque of nothing, which is not
             // quite nothing once it has been through the body's place.)
             vs.turn_err = 0.0;
-            // (RB5, 0x82367DF0..0x82367EA4, RevSpin: in reverse gear (transmission +20 == 0), backing up
+            // (RB5, A-17645..A-44276, RevSpin: in reverse gear (transmission +20 == 0), backing up
             // faster than 5 m/s (0x820390F8), the handbrake turns the car by its steering alone, the other
             // way round from Spin: -steering (chassis +132), times |speed| x 0.1 under 10 m/s, times
             // RevSpin x the inertia about the up, by the wheels on the ground. V: sc.0 k 290..360 in the
@@ -4636,7 +4657,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // ---- aerodynamics: drag and downforce grow with the square of the share of top speed ----
     let top = vt.top_speed.max(10.0);
     if exact_sums {
-        // ---- vehAero::Update (0x8256ADA8) with mcCarAero's numbers (0x82380750, 0x82380838),
+        // ---- vehAero::Update (F-30576) with mcCarAero's numbers (F-31519, F-14825),
         // operation for operation. It runs ahead of the wheels. The body's turning as it came
         // into the tick, in the car's frame; about each axis an acceleration
         // -(C sign(w) + V w + V2 |w| w), no more than stops it within the tick, times |w|
@@ -4688,16 +4709,16 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let speed = fma32(v.z, v.z, fma32(v.x, v.x, v.y * v.y)).sqrt();
         let top = t.trans.s.high_gear_mph * f32::from_bits(0x3ee4dd2f);
         let over = 1.0 / ((top as f64 * top as f64) as f32);
-        // (mcCarSim::Update 0x82330024: the aero's byte +40 picks DragMin. Four wheels: a slipstream target.
-        // Two wheels (0x8233005C): the rider's stick, input +32, under -0.5 with an air time under 0.5 -
+        // (mcCarSim::Update A-63908: the aero's byte +40 picks DragMin. Four wheels: a slipstream target.
+        // Two wheels (A-68612): the rider's stick, input +32, under -0.5 with an air time under 0.5 -
         // the stoppie's lean; the ZX-14's DragMin is 3 against DragMax 2. MCLA_DBG_A1: cars' rule for all.)
         let other = if vt.bike && !dbg_flag("MCLA_DBG_A1") { input.lean < -0.5 && vs.air584_before < 0.5 } else { input.draft || draft_then };
-        // (R2: vehAero's drag, 0x8256B14C, asks only for a speed above 1 m/s - nothing about the wheels: V se.0
+        // (R2: vehAero's drag, A-57982, asks only for a speed above 1 m/s - nothing about the wheels: V se.0
         // 168.., a quarter second after the last wheel left the ground. MCLA_DBG_R2: none in the air, as before.)
         let drag = if st.airborne_time > 0.25 && dbg_flag("MCLA_DBG_R2") { 0.0 } else if other { t.aero.drag_min * over } else { t.aero.drag_max * over };
-        // (0x8256B070: the force along the car's up is given whether or not a wheel is down, less
+        // (A-76310: the force along the car's up is given whether or not a wheel is down, less
         // the share of the wheels the last collision handed to the solver - bottomed out, byte
-        // +530, 0x8255AD28. MCLA_DBG_OLDDOWN: none with no wheel down, as before.)
+        // +530, F-31583. MCLA_DBG_OLDDOWN: none with no wheel down, as before.)
         let old_down = dbg_flag("MCLA_DBG_OLDDOWN");
         if speed > 1.5 && (grounded_count > 0 || !old_down) {
             let mut down = rows[1] * -(((speed * speed) * mass) * (t.aero.down * over));
@@ -4728,16 +4749,16 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // Contact/drivetrain/tyre math runs once per 60 Hz simulation frame.
     // Preserve the existing smaller motion/collision steps until the original
     // chassis constraint solver has been ported as well.
-    // The change of velocity over the tick (the body's 0x8259EC10): with the suspension's damping
+    // The change of velocity over the tick (the body's F-20578): with the suspension's damping
     // D = sum s [n; r x n][n; r x n]^T,  (diag(m, I) + dt D) [dv; dw] = dt [F; T].
-    // (vehAero, 0x8256ADA8: the air's damping of the body's turning is a torque like any
+    // (vehAero, F-30576: the air's damping of the body's turning is a torque like any
     // other, worked out once a tick from the turning the body had BEFORE this tick's forces:
     // about each of the car's axes an acceleration -(C sign(w) + V w + V2 |w| w), no more than
     // stops it within the tick, times |w| under 1 rad/s, times its moment of inertia. Checked
     // against the recorded torque sums of an R8's launch to 0.1 N m: -16.2, -109.0, -209.8.)
     let tick_damping = !dbg_flag("MCLA_DBG_NODAMP") && !dbg_flag("MCLA_DBG_SUBDAMP");
     if exact_sums {
-        // ---- vehAxle::Update (0x825681E0), operation for operation: where an axle's wheels
+        // ---- vehAxle::Update (F-33566), operation for operation: where an axle's wheels
         // are pressed in more than a centimetre apart and the one pressed in more has a
         // contact, a turning acceleration about the car's length. Front axle, then rear. ----
         if !dbg_flag("MCLA_DBG_NOROLLBAR") {
@@ -4774,7 +4795,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         };
         let acc = Vec3::new(acc(w.x, a.ang_c_damp_x, a.ang_vel_damp_x, a.ang_vel2_damp_x), acc(w.y, a.ang_c_damp_y, a.ang_vel_damp_y, a.ang_vel2_damp_y), acc(w.z, a.ang_c_damp_z, a.ang_vel_damp_z, a.ang_vel2_damp_z));
         torque += rm * (inertia * acc);
-        // (vehAxle::Update, 0x825681E0, the same way - a turning acceleration about the car's
+        // (vehAxle::Update, F-33566, the same way - a turning acceleration about the car's
         // length, once a tick: where an axle's wheels are pressed in more than a centimetre
         // apart and the one pressed in more has a contact, -(difference / (SuspensionLimit +
         // SuspensionExtent) * coefficient + 2 damping sqrt(coefficient) * (their rates'
@@ -4804,7 +4825,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     }
     if exact_sums {
         // (what the code above still added in its own order - the gyro's forces and the
-        // port's own extras - goes in after the axles as one; gravity last, 0x8259D7F0:
+        // port's own extras - goes in after the axles as one; gravity last, F-37896:
         // the world's gravity times the car's factor, times the mass)
         calls.push((520, force, torque));
         // (the port's own extras that act on the turning rate - levelling and steering in the
@@ -4889,10 +4910,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         force = f;
         torque = q;
     }
-    // (step 19f: a Pulse power-up, sub_82380418: Force x the archetype's mass and the world torque
+    // (step 19f: a Pulse power-up, F-19990: Force x the archetype's mass and the world torque
     // x its inertia (component by component, as the original multiplies them) go into the body's
-    // force and torque sums, +336 / +352, through the collider's slots 31 / 33 (0x8259E0F0,
-    // 0x8259C0F0) - the sums the next tick integrates over its dt (0x8259BE30) and then clears.)
+    // force and torque sums, +336 / +352, through the collider's slots 31 / 33 (F-18006,
+    // F-93816) - the sums the next tick integrates over its dt (F-94789) and then clears.)
     if let Some((pf, pt)) = vs.pulse.take() {
         force += pf * mass;
         torque += pt * inertia;
@@ -4939,7 +4960,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
         let x: Vec<f32> = (0..6).map(|r| if a[r][r].abs() < 1e-12 { 0.0 } else { (a[r][6] / a[r][r]) as f32 }).collect();
         let dw = Vec3::new(x[3], x[4], x[5]);
-        // (the integrator, 0x8259EC10, solves the turning by elimination - the same answer -
+        // (the integrator, F-20578, solves the turning by elimination - the same answer -
         // and then goes back for the velocity with the coupling's sign the other way:
         // (m + dt K) dv = dt F + dt sum(s n (arm x n . dw)), where the solve itself has it
         // minus. With the four wheels' damping in balance about the centre of mass nothing
@@ -4960,10 +4981,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         };
         (dv, dw)
     };
-    // (0x82336F8C: the frozen body - velocities, sums, impulses and push all nothing; its
+    // (A-59284: the frozen body - velocities, sums, impulses and push all nothing; its
     // wheels have run, and what they asked for is thrown away. Recorded: a car creeping at
     // 4 cm/s reads exactly nothing on the tick its count passes a second.)
-    // (mcCarStuck, 0x823509F0, between the car's update and the physics step: a car whose
+    // (mcCarStuck, F-72170, between the car's update and the physics step: a car whose
     // body has touched something and that, 0.3 s on, is still within 3.5 m of where it was,
     // under throttle in a driving gear with a wheel on the ground, is turned by hand - its
     // matrix, not its turning rate - by 1.05 rad/s times the pad's steering (input +24), until it is 5 m from
@@ -4997,7 +5018,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 vs.stuck_timer = 0.0;
             } else {
                 // (the steering of the input object, +24 - the pad's value of the frame, not the
-                // chassis's product with the speed factor: 0x82350F50, V s_rtv s256 - s270)
+                // chassis's product with the speed factor: A-26582, V s_rtv s256 - s270)
                 let rate = vs.pad_steer * f32::from_bits(0x3f86_6666);
                 let rate = if vs.gear < 0 { -rate } else { rate };
                 stuck_turn = Some(-(dt * rate));
@@ -5025,11 +5046,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     let dbg_yaw0 = st.ang_vel;
     let body_step = dt / 4.0;
     // ---- the body's step in the original's own operations (MCLA_DBG_OLDSTEP: the port's four
-    // smaller steps). First the move, 0x8259F300: the place by the velocity the tick came in
-    // with (0x8259E768), the rows turned by the turning rate it came in with times the step
-    // (0x8259D030) and, every 33rd time, made square again (0x8259E2C0); the model's origin
-    // from the place (0x8259D1E8). Then the integrator, 0x8259BE30: the sums times the step,
-    // through the damping the wheels handed over (0x8259EC10), into the momenta; and the
+    // smaller steps). First the move, F-44566: the place by the velocity the tick came in
+    // with (F-10928), the rows turned by the turning rate it came in with times the step
+    // (F-54600) and, every 33rd time, made square again (F-84832); the model's origin
+    // from the place (F-18040). Then the integrator, F-94789: the sums times the step,
+    // through the damping the wheels handed over (F-20578), into the momenta; and the
     // velocities from those - the turning rate through the rows as they now stand. ----
     let exact_step = exact_sums && !dbg_flag("MCLA_DBG_OLDSTEP");
     // (whether the hull's contacts were answered by an impulse, and how many of them stand all but upright)
@@ -5046,7 +5067,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let m = Mat3::from_quat(st.rot);
             [m.x_axis, m.y_axis, m.z_axis]
         };
-        // (mcCarStuck's turn of the body's rows, 0x82350940 about the world's up)
+        // (mcCarStuck's turn of the body's rows, F-41945 about the world's up)
         let rows0 = match stuck_turn.take() {
             Some(angle) => ex::leaned(&rows0, Vec3::Y, angle),
             None => rows0,
@@ -5068,10 +5089,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let exact_collide = !dbg_flag("MCLA_DBG_OLDCOLLIDE") && p.hull.is_some();
         let _ = momentum_carried;
         // (Z3, a motorcycle: the turning rate its gyro set in the update is the body's from then on -
-        // body vfunc 43, 0x8259E180: +288, and the angular momentum made from it through the
+        // body vfunc 43, F-47804: +288, and the angular momentum made from it through the
         // inertia in the world; and what the gyro queued in body +416 / +400 is applied at the
-        // head of the step, 0x8259F300 -> 0x8259E790, before the move)
-        // (R4: a frozen body, 0x8259BC48, has lost all of it - the rate the gyro set and what it queued: V se.0
+        // head of the step, F-44566 -> F-67019, before the move)
+        // (R4: a frozen body, F-50121, has lost all of it - the rate the gyro set and what it queued: V se.0
         // 269, a motorcycle creeping at 4 cm/s as its still timer passes a second. MCLA_DBG_R4: kept.)
         if frozen && !dbg_flag("MCLA_DBG_R4") {
             vs.bike_spin = None;
@@ -5110,16 +5131,16 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
         // (P3: the rider comes off - the bit, and the damage object's timer at WipeoutDelay; the update of the
         // next tick is the first to find it.)
-        // (R4: the timer run out, the bit goes, mcCar::Update 0x823363D0: the tyres' melt, the nitrous, mcCarStuck
-        // and the gyro are made new (0x82380B38, 0x823457D8, 0x82350638, 0x82368780), a gearbox in reverse or
-        // neutral goes to first (0x82561D90), and the motorcycle is stood up, 0x822A9930: its length along the
+        // (R4: the timer run out, the bit goes, mcCar::Update A-23262: the tyres' melt, the nitrous, mcCarStuck
+        // and the gyro are made new (F-63079, F-40379, F-80245, F-99380), a gearbox in reverse or
+        // neutral goes to first (F-16736), and the motorcycle is stood up, F-86308: its length along the
         // direction saved as the rider came off (chassis +608: the velocity then, a unit vector; under 1 m/s
         // the car's own forwards), level - X = unit(d x up), Z = unit(X x up) - at the body's place; a probe
         // of the level from a metre above that place to three below; on a hit the place is the hit, the up the
-        // polygon's normal and the rows made square about it. That is the MODEL's matrix (0x8232C3D0 ->
-        // 0x82588990: every manifold of the car emptied, the instance's matrix and its last one, the body's
-        // place from it through the bound's offset, 0x8259D280); the velocities are nothing, the shaft and its
-        // wheels stand, the gear is the one for no speed, the engine at its idle (0x8255A1B0); the still
+        // polygon's normal and the rows made square about it. That is the MODEL's matrix (F-35877 ->
+        // F-68574: every manifold of the car emptied, the instance's matrix and its last one, the body's
+        // place from it through the bound's offset, F-59487); the velocities are nothing, the shaft and its
+        // wheels stand, the gear is the one for no speed, the engine at its idle (F-72737); the still
         // timer and the air time start again. The tick's forces are integrated from there; the car's pairs
         // are made again only in the next step. MCLA_DBG_R4: only the bit goes, as before.)
         let mut stood = false;
@@ -5130,7 +5151,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     vs.wipe = Some((t.damage.wipeout_delay, 0));
                     // (chassis +112 = chassis +96: the centre of mass at ModelOffset's height on the model's origin)
                     vs.cg = [t.s.model_offset_y, 0.0];
-                    // (0x8232C788: chassis +608)
+                    // (F-30391: chassis +608)
                     let v = v_in;
                     let len = ex::fma(v.z, v.z, ex::fma(v.x, v.x, v.y * v.y)).sqrt();
                     vs.wipe_dir = if len > 1.0 { v * ex::recip(len) } else { Vec3::ZERO - body_rows[2] };
@@ -5141,7 +5162,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                         vs.melt = 0.0;
                         vs.nitro_level = 0.0;
                         vs.nitro_burning = false;
-                        // (0x82336128: then the turbo's reset, 0x82345D58)
+                        // (F-53665: then the turbo's reset, F-21020)
                         vs.sst.reset_all();
                         vs.stuck = 0;
                         vs.stuck_timer = 0.0;
@@ -5182,7 +5203,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                         vs.still_timer = 0.0;
                         vs.air584 = 0.0;
                         vs.air_time = 0.0;
-                        // (0x8255A1B0 with no velocity: the shaft, its wheels, the gear, the engine)
+                        // (F-72737 with no velocity: the shaft, its wheels, the gear, the engine)
                         vs.omega[0] = 0.0;
                         vs.diff[0] = 1.0;
                         vs.wheels[2].spin_rate = 0.0;
@@ -5203,7 +5224,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         }
         let (v_in, w_in) = if stood { (Vec3::ZERO, Vec3::ZERO) } else { (v_in, w_in) };
         let exact_collide = exact_collide && !stood;
-        // ---- the body against the city (0x825CCE00, 0x82594068): what the hull touches where
+        // ---- the body against the city (F-82759, F-68442): what the hull touches where
         // the move has brought it, the contacts kept from earlier ticks, the car's callback,
         // and the velocity solve - whose impulses go into the momenta with the tick's forces ----
         let mut origin1 = origin1;
@@ -5215,14 +5236,14 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let mut solve_body: Option<super::solver::Body> = None;
         let mut loose_answered = false;
         // (the normals of the car's contacts with the city that the callbacks took from the solver - the wheels'
-        // - which mcCarDamage's scrape normal still sums, 0x82343F8C: every contact of its run)
+        // - which mcCarDamage's scrape normal still sums, A-49818: every contact of its run)
         let mut city_off_n = Vec3::ZERO;
         let (mut impulse, mut turning) = (Vec3::ZERO, Vec3::ZERO);
         let mut reordered: Option<Vec<usize>> = None;
         if exact_collide {
             let hull = p.hull.as_ref().unwrap();
             let last = vs.hull_last.unwrap_or([rows0[0], rows0[1], rows0[2], body_rows[3]]);
-            // (stage P: the loose bodies' move, gravity and damping, 0x8259F300)
+            // (stage P: the loose bodies' move, gravity and damping, F-44566)
             if let Some(lw) = world.loose.as_ref().filter(|_| !dbg_flag("MCLA_DBG_P1")) {
                 if !vs.loose.skip_pre {
                     vs.loose.pre_collide(lw, dt);
@@ -5234,16 +5255,16 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 eprintln!("HULLTICK {}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
                 if std::env::var_os("MCLA_DBG_HULLBOX").is_some() { eprintln!("HULLBOX min {:?} max {:?} verts {:?} parts {:?}", hull.min, hull.max, hull.verts, vs.wheels.map(|w| w.part)); }
             }
-            // (which of the city's cells the car is handed, 0x825CD4E8: by the ball of the whole car's box -
+            // (which of the city's cells the car is handed, A-11357: by the ball of the whole car's box -
             // the hull's and the wheels' - swept from the body's last matrix. The box's floor, 0.48 below the
             // model's origin, is what three live cars' composite bounds held; its rule is not decoded.)
             let mut car_box = bbox;
             let cell_ball = if !dbg_flag("MCLA_DBG_P2") {
-                // (P2: the composite bound's box as the wheels' fit leaves it, 0x8255BB80's tail -> 0x8259ADA8 ->
-                // 0x82599FB0: the union of every part's own box swept from its "last" matrix to its current one,
+                // (P2: the composite bound's box as the wheels' fit leaves it, F-55382's tail -> F-65996 ->
+                // F-32566: the union of every part's own box swept from its "last" matrix to its current one,
                 // with every wheel part put at its place of rest less max(SuspensionExtent, 0.5) and its last
                 // matrix at (SuspensionLimit + rest) + 0.1. A wheel bound's box is its own support along each
-                // axis and the margin, 0x825D3808; the hull's its corners' box and 0.041. It stands as it is
+                // axis and the margin, F-63967; the hull's its corners' box and 0.041. It stands as it is
                 // between fits. A decision only: written plainly.)
                 use super::gjk::Support;
                 let (mut lo, mut hi) = bbox;
@@ -5256,7 +5277,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                         let up = (limit + rest.y) + 0.1;
                         // (R1: the part's own rows as the fit finds them. A car's wheel stands square in
                         // the car; a motorcycle's front wheel part has the fork's rake in its rows, and
-                        // 0x82599FB0's two absolute-value passes - the last pose in the part's axes, then
+                        // F-32566's two absolute-value passes - the last pose in the part's axes, then
                         // that box in the composite's - make its swept box larger than the true sweep:
                         // live ZX-14 min (-0.4270, -0.5947, -1.4288). MCLA_DBG_R1: rows taken as square.)
                         let rows = if dbg_flag("MCLA_DBG_R1") || !(i < 2) { super::exact::IDENTITY } else {
@@ -5283,7 +5304,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     }
                 }
                 car_box = (lo, hi);
-                // (the deform pieces' places from this box, once (0x8235CBD0, `sub_8255B9A8(car + 8)`): V the R8's
+                // (the deform pieces' places from this box, once (F-10977, `F-98453(car + 8)`): V the R8's
                 // window pieces at mid y 0.4007 of the box -0.4759 .. 1.2772, work/dmgmap)
                 if !st.dmg.pieces_set {
                     st.dmg.set_up(p.hub_bones.unwrap_or(p.wheel_pos), lo, hi);
@@ -5319,10 +5340,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             // (the wheels' parts after the hull's: every contact of a wheel's shape where the
             // move has brought it. What the wheel itself is told of them the next update reads
             // afresh from the same pose; here they are kept for the one case the solver gets
-            // one - a wheel in deeper than its suspension goes, 0x8255D360.
+            // one - a wheel in deeper than its suspension goes, A-38429.
             // MCLA_DBG_NOBOTTOM: the wheels' contacts never reach the solver.)
             let bottoming = !dbg_flag("MCLA_DBG_NOBOTTOM");
-            // (0x8255CEA0 ends every update with the wheels' bytes +530 cleared)
+            // (F-24284 ends every update with the wheels' bytes +530 cleared)
             for w in vs.wheels.iter_mut() {
                 w.bottomed = false;
             }
@@ -5373,7 +5394,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     });
                 }
             }
-            // (the car's underside for the hydrant's water, `sub_822A76B8`: the composite box's floor + 0.2 m, car-local corners
+            // (the car's underside for the hydrant's water, `F-16834`: the composite box's floor + 0.2 m, car-local corners
             // (max.x, min.z) (max.x, max.z) (min.x, max.z) (min.x, min.z) into the world by the car's matrix)
             st.underside = {
                 let y = car_box.0.y + 0.2;
@@ -5401,12 +5422,12 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 for slot in m.slots.iter_mut() {
                     city_rows.push(true);
                     city_part.push(slot.part);
-                    // (0x825A2C88: the two materials' friction and elasticity multiplied; the
+                    // (F-43430: the two materials' friction and elasticity multiplied; the
                     // impulse of the tick before forgotten)
                     let c = &mut slot.c;
                     c.impulse = Vec3::ZERO;
                     if slot.part != 0 {
-                        // (the wheel's callback, 0x8255D028: its contact is the suspension's
+                        // (the wheel's callback, F-50733: its contact is the suspension's
                         // business and is taken from the solver - unless it stands deeper along
                         // the car's up, as the update had it, than SuspensionLimit against what
                         // is fixed: then the solver has it, less that limit, without friction
@@ -5443,7 +5464,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     let e = own.1 * other.1;
                     c.elasticity = if e - 1.0 >= 0.0 { 1.0 } else { e };
                     slot.enabled = true;
-                    // (the car's callback, 0x82332D30, for a contact with what is fixed: head-on
+                    // (the car's callback, F-55998, for a contact with what is fixed: head-on
                     // and fast, the tuning's own friction and elasticity and the body's point
                     // taken lower; while mcCarStuck turns the car, no friction)
                     let n = c.normal;
@@ -5465,7 +5486,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     contacts.push(*c);
                 }
             }
-            // (0x825A2E00, called for every wheel contact that is not handed to the solver: its
+            // (F-12537, called for every wheel contact that is not handed to the solver: its
             // record is emptied - a wheel's contacts are not kept from tick to tick)
             for m in vs.manifolds.iter_mut() {
                 m.slots.retain(|s| s.part == 0 || s.enabled);
@@ -5478,7 +5499,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             }
             if !contacts.is_empty() || loose_touch {
                 let mut body = super::solver::Body { at: at1, rows: rows1, vel: if frozen { Vec3::ZERO } else { v_in }, ang: if frozen { Vec3::ZERO } else { w_in }, inv_mass: 1.0 / mass, inv_moments: inverse, force: if frozen { Vec3::ZERO } else { force }, torque: if frozen { Vec3::ZERO } else { torque } };
-                // (the move's turn of the rows, 0x8259D030, ends by taking the turning rate from
+                // (the move's turn of the rows, F-54600, ends by taking the turning rate from
                 // the angular momentum again through the rows as they then stand - before the
                 // 33rd move makes them square: that, not the rate the tick came in with, is what
                 // the solver starts from)
@@ -5525,7 +5546,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     loose_island = Some((body, contacts, out));
                 } else {
                 // (R3: an island of more than 16 contacts is sorted by a sort that does not keep equal keys
-                // in their order, 0x82593CC8 - with the thrown rider's contacts among them the hull's own
+                // in their order, F-98871 - with the thrown rider's contacts among them the hull's own
                 // can come out exchanged. A replay is told the order the recording's island had them in.)
                 let code = REPLAY_ORDER.load(std::sync::atomic::Ordering::Relaxed);
                 if code != 0 && r3 {
@@ -5564,8 +5585,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             pm = Vec3::ZERO;
             lm = Vec3::ZERO;
         }
-        // (the head-on rule, sub_82333CE8: mcCarInstance slot 25 runs it in the velocity apply's callbacks
-        // (0x82590DB0), after each run's mcCarDamage call and before the integrate takes +368 / +384 (gjk_exact.md
+        // (the head-on rule, F-43509: mcCarInstance slot 25 runs it in the velocity apply's callbacks
+        // (F-15350), after each run's mcCarDamage call and before the integrate takes +368 / +384 (gjk_exact.md
         // 29) - its angular impulse is this tick's; its damage, melt and wipeout go in at the damage calls below)
         let head_hits = {
             let own = |dv: Vec3| super::headon::Own { dv, speed: speed_in, vel: solve_body.as_ref().map_or(v_in, |b| b.vel), body_pos: solve_body.as_ref().map_or(at1, |b| b.at), back: rows1[2], wipeout_threshold: t.damage.wipeout_threshold, max_damage: t.damage.max_damage, spin_mult: t.s.head_on_spin_mult, no_damage: false, agro: st.agro };
@@ -5584,7 +5605,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let (f, tq) = if frozen { (Vec3::ZERO, Vec3::ZERO) } else { (force, torque) };
             (pm, lm) = ex::integrate_with(pm, lm, f, tq, impulse, turning, &damping, &rows1, inertia, mass, dt);
         }
-        // (0x8259C178 / 0x8259E230 with their caps, body +200 and +204: 300 mph and two turns a second)
+        // (F-72870 / F-80680 with their caps, body +200 and +204: 300 mph and two turns a second)
         let mut v1 = pm * (1.0 / mass);
         if v1.length_squared() > 134.1 * 134.1 {
             let k = 134.1 / v1.length();
@@ -5597,10 +5618,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             w1 *= k;
             lm *= k;
         }
-        // ---- and the second solve, which only moves the body out (0x82591108, 0x8259E920) ----
+        // ---- and the second solve, which only moves the body out (F-56590, F-32811) ----
         let turn_left = if dbg_flag("MCLA_DBG_Y4") { Vec3::ZERO } else { vs.push_turn_left };
         // (in a tick with something loose in the car's island: mcCarDamage's calls, one per run of the
-        // car's rows in each of the island's two lists - 0x82590DB0 walks the list sorted by instance A,
+        // car's rows in each of the island's two lists - F-15350 walks the list sorted by instance A,
         // then the one sorted by instance B, and calls the instance once per run of rows with it on that
         // side. The car is A against the city and against what has a higher level index, B against what
         // has a lower one. V work/proppath k311 / k329: the scrape is the A run's, whose first row is a
@@ -5620,7 +5641,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             car_runs = out.car_runs.clone();
             // (mcCarDamage's calls: the car's run of the A-sorted list - its rows with the city and with what it is
             // A against, in the island's order - then its run of the B-sorted list; each sums the impulses on the car
-            // over its mass, 0.4 of those against the fixed city (0x82567A08), and takes the first row's point and other)
+            // over its mass, 0.4 of those against the fixed city (F-19931), and takes the first row's point and other)
             let a_rows: Vec<usize> = (0..out.links.len()).filter(|&i| out.links[i].a == Some(super::loose::Who::Car)).collect();
             let b_rows: Vec<usize> = out.by_b.iter().copied().filter(|&i| out.links[i].b == Some(super::loose::Who::Car)).collect();
             for (rows, off) in [(a_rows, city_off_n + out.off_a), (b_rows, out.off_b)] {
@@ -5645,11 +5666,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     r
                 }));
             }
-            // (the ambient car's post-solve callback, slot 25 sub_826FAF98, for each contact it has with this car - an
+            // (the ambient car's post-solve callback, slot 25 F-13089, for each contact it has with this car - an
             // mcCarInstance: v = its impulse (negated on the pair's second side) x its collider's inverse mass (+196),
             // x 0.4 were this car fixed (level state 2); w = sat((sqrt|v| - 0.5) x 0.2); w > 0 is added to one of
             // its render instance's four side sums (+560) by the contact's point on it in its frame (the instance's
-            // matrix inverted, sub_821713C0): x for (x > 0, z > 0), y (x > 0, z <= 0), z (x <= 0, z > 0), w (x <= 0,
+            // matrix inverted, F-30106): x for (x > 0, z > 0), y (x > 0, z <= 0), z (x <= 0, z > 0), w (x <= 0,
             // z <= 0). A car without a collider (riding, not made active) is skipped.)
             for (l, t) in out.links.iter().zip(out.touches.iter()) {
                 let (amb_side, j, o) = match (l.a, l.b) {
@@ -5711,7 +5732,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let (moved_rows, moved_origin) = (rows1, origin1);
             at1 = at1 + pushed.push;
             rows1 = super::solver::rows_pushed(&rows1, pushed.turn);
-            // (0x8259E790: a turn of under a millionth of a radian is not made and not cleared)
+            // (F-67019: a turn of under a millionth of a radian is not made and not cleared)
             vs.push_turn_left = if super::solver::turn_applies(pushed.turn) { Vec3::ZERO } else { pushed.turn };
             origin1 = ex::origin_of(at1, &rows1, pivot_local);
             if dbg_flag("MCLA_DBG_HIT") {
@@ -5724,7 +5745,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let mut answered = loose_answered && dbg_flag("MCLA_DBG_RA4");
             let mut walls = 0u32;
             st.touch_calls += 1;
-            // (mcCarDamage's view, 0x82343880 / 0x82567A08: every enabled contact's impulse over the
+            // (mcCarDamage's view, F-11688 / F-19931: every enabled contact's impulse over the
             // mass, 0.4 of it against the fixed city; the first one's point, the last one's on a car
             // lying over)
             let (mut hit_dv, mut hit_first, mut hit_last, mut hit_any) = (Vec3::ZERO, None, Vec3::ZERO, false);
@@ -5742,7 +5763,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     hit_last = c.on_body;
                     hit_n += c.normal;
                     hit_n0.get_or_insert(c.normal);
-                    // (the collision audio's view of it: sub_82381FB0 reads every enabled contact)
+                    // (the collision audio's view of it: F-24302 reads every enabled contact)
                     st.touches.push(super::car::AudioTouch {
                         call: st.touch_calls,
                         pos: c.on_body,
@@ -5755,7 +5776,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     slot.c.kept = c.kept;
                     slot.c.pushed = c.pushed;
                     slot.c.impulse = c.impulse;
-                    // (A1, 0x8232E8E0: SettleCG counts every enabled contact with what is fixed that stands
+                    // (A1, F-68237: SettleCG counts every enabled contact with what is fixed that stands
                     // all but upright - a wheel's too, when it is in past its suspension against a wall: a
                     // motorcycle's front wheel in a crash. MCLA_DBG_A1: the hull's only.)
                     if slot.part != 0 {
@@ -5775,20 +5796,20 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             // loose in the island the calls are the runs below)
             if hit_any && loose_runs.is_empty() && !dbg_flag("MCLA_DBG_NOWORLDHIT") {
                 let at = if st.up().y < f32::from_bits(0x3dcc_cccd) { hit_last } else { hit_first.unwrap_or(hit_last) };
-                // (0x82343378: in the instance's matrix, which the tick's move has already set)
+                // (F-96323: in the instance's matrix, which the tick's move has already set)
                 let d = at - moved_origin;
                 let local = Vec3::new(d.dot(moved_rows[0]), d.dot(moved_rows[1]), d.dot(moved_rows[2]));
                 if dbg_flag("MCLA_DBG_WORLDHIT") {
                     eprintln!("WORLDHIT dv {:.6} at local {:.6} {:.6} {:.6} zones {:?} damage {:.6} zone box {:?}", hit_dv.length(), local.x, local.y, local.z, st.zones, st.damage * p.dmg[0], st.zone_half);
                 }
-                // (a scrape's inputs, 0x82343CA8 .. 0x823441F0: the car's velocity at the point as the solve started
+                // (a scrape's inputs, A-40484 .. A-91755: the car's velocity at the point as the solve started
                 // from it - no impulses, no pending forces - and at its centre after the solve; the city's none; the
                 // normals summed, unit over 0.001, else the first's. V work/dmgmap: a 26 m/s head-on 26.08445 |
                 // 26.084 m/s at the point, the scrape then let through by the centre's 4.54 m/s after the solve)
                 let hit_n = hit_n + city_off_n;
                 let n = if hit_n.length() > f32::from_bits(0x3a83_126f) { hit_n.normalize() } else { hit_n0.unwrap_or(Vec3::Y) };
                 let v_pt = start_velocity(solve_body.as_ref(), at).unwrap_or(v1 + w1.cross(at - (at1 - pushed.push)));
-                // (the gate's velocity, 0x823441FC: the car's body +272 as the callback reads it - the solve leaves it as
+                // (the gate's velocity, A-41879: the car's body +272 as the callback reads it - the solve leaves it as
                 // it began, its impulses go in at the Update (V s_rtv, car forced: of every tick with |dv| over 0.1 the
                 // scrape ticks are the original's exactly - k167 and k224 included - with it and with no other))
                 let v_c = solve_body.filter(|_| !dbg_flag("MCLA_DBG_SCRAPEPOST")).map_or(v1, |b| b.vel);
@@ -5803,14 +5824,14 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     eprintln!("SCRAPE t{} dv {:.5} |v1| {:.5} |rel| {:.4} c {:.4} n {:.4?} amount {:.6}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), hit_dv.length(), v_pt.length(), v_c.length(), v_c.dot(n) / v_c.length().max(1e-9), n, scrape.amount());
                 }
                 st.world_hit(p, hit_dv.length(), at, local, Some(scrape));
-                // (then the head-on rule's effects on the same run, 0x82567818 -> sub_82333CE8)
+                // (then the head-on rule's effects on the same run, F-40838 -> F-43509)
                 if let Some(h) = head_hits.first() {
                     super::headon::apply(st, p, h, &mut vs.melt, &mut vs.cg, t.s.model_offset_y);
                 }
             }
             // (the island's calls, the A run's first: in a recorded tick with both, mcCarDamage +56 - the last
             // call's - is the sum of the pieces the car is B against, exactly - sa.0 k230..k292)
-            // (mcCarStuck's callback in the same calls (mcCarDamage's, sub_82343880 -> 0x8256A078): every run of the
+            // (mcCarStuck's callback in the same calls (mcCarDamage's, F-11688 -> F-37716): every run of the
             // car's rows that the solve gave an impulse, unless its first row's other object is active (level state 0),
             // arms it with the chassis's place when a row of the run is on a part of the car that is not a wheel (outside
             // car +392, +24 of them). V on the recorders' mcCarStuck +56: sb.0 k232 / k307 armed, k231 / k306 not (a
@@ -5841,7 +5862,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 st.damage_call(p, dv, r.mult, at, local, Some(scrape));
                 super::headon::apply(st, p, h, &mut vs.melt, &mut vs.cg, t.s.model_offset_y);
             }
-            // (0x8259E920: the matrix the next tick's collision takes for the last one)
+            // (F-32811: the matrix the next tick's collision takes for the last one)
             let end = [rows1[0], rows1[1], rows1[2], origin1];
             if !pushed.deep {
                 vs.hull_last = Some(end);
@@ -5952,11 +5973,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     }
     // ---- the body against the world, once a tick as the original collides: the hull's
     // contacts, each with the product of its two materials' friction and of their elasticity
-    // (0x825A2C88: the hull is car_side, car_roof on top and car_undercarriage below, told
+    // (F-43430: the hull is car_side, car_roof on top and car_undercarriage below, told
     // here by the way the body is pushed) ----
     let new_collide = exact_step && !dbg_flag("MCLA_DBG_OLDCOLLIDE") && p.hull.is_some();
     if new_collide {
-        // (the car's callbacks after the solve, 0x8232E8E0: a contact the solver has starts the
+        // (the car's callbacks after the solve, F-68237: a contact the solver has starts the
         // standing count again; if the solver answered any, mcCarStuck is armed, and for every
         // contact that stands all but upright the centre of mass comes 0.8 of the way down to
         // SettleCG x ModelOffset's height)
@@ -5966,7 +5987,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 if vs.stuck == 0 && (!island_calls || dbg_flag("MCLA_DBG_RA9")) {
                     if dbg_flag("MCLA_DBG_STUCK") { eprintln!("STUCKARM city tick {} island {}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), island_calls); }
                     vs.stuck = 1;
-                    // (0x8256A078: the chassis's own place as the tick's update had it - the model's
+                    // (F-37716: the chassis's own place as the tick's update had it - the model's
                     // origin - which mcCarStuck then measures the BODY's place from)
                     vs.stuck_at = body_rows[3];
                     vs.stuck_timer = 0.0;
@@ -5981,7 +6002,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     } else if !dbg_flag("MCLA_DBG_NORESOLVE") && !dbg_flag("MCLA_DBG_SPHERES") {
         if let Some(hull) = p.hull.as_ref() {
             let up = st.up();
-            // (0x82333C2C: while mcCarStuck turns the car, going forwards, what its body rubs
+            // (A-73788: while mcCarStuck turns the car, going forwards, what its body rubs
             // on does not hold it)
             let slippery = vs.stuck == 2 && gear_not_reverse(vs.gear, vs.way_after);
             let touch = |surface: super::collision::Surface, normal: Vec3, height: f32| -> (f32, f32) {
@@ -5997,7 +6018,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             if let Some((speed, at)) = super::hull::resolve(st, hull, world, t.s.mass, inertia, pivot_local, dt, touch, (speed_in > 22.35).then_some((t.s.bound_friction, t.s.bound_elasticity, t.s.head_on_cg_offset)), &mut vs.hull_kept, (dv, dw)) {
                 st.blow(p, speed, at);
             }
-            // (the car's contact callback, 0x8232E8E0: a contact the solver has - the hull's,
+            // (the car's contact callback, F-68237: a contact the solver has - the hull's,
             // not the wheels' - starts the standing count again)
             if super::hull::TOUCHED.with(|t| t.get()) {
                 vs.still_timer = 0.0;
@@ -6008,7 +6029,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     vs.stuck_timer = 0.0;
                 }
             }
-            // (the same callback, 0x8232E8E0, after the solve: for every contact with something
+            // (the same callback, F-68237, after the solve: for every contact with something
             // fixed that stands all but upright - if the solver gave any impulse at all - the
             // centre of mass comes 0.8 of the way down to SettleCG x ModelOffset's height. With
             // it on the road the tyres' side force no longer rolls the car: a Range Rover
@@ -6073,9 +6094,9 @@ fn fnms32(a: f32, b: f32, c: f32) -> f32 {
     (-(a as f64).mul_add(b as f64, -(c as f64))) as f32
 }
 
-/// How far in a wheel's contact puts its suspension (0x82565E00 and 0x82564C48, operation for
+/// How far in a wheel's contact puts its suspension (F-56921 and F-11915, operation for
 /// operation): `rows` the wheel's axle, up and way as this update rebuilt them; `n`, `depth`
-/// the contact record's normal and depth (0x8255D028); `comp` the compression before. The
+/// the contact record's normal and depth (F-50733); `comp` the compression before. The
 /// contact's own forward and sideways directions, how squarely the wheel stands on them
 /// (never under 0.75), the depth over that, less the 7 mm a wheel stands in what it touches.
 fn suspension_target(rows: [Vec3; 3], n: Vec3, depth: f32, comp: f32) -> Option<f32> {
@@ -6100,14 +6121,14 @@ fn suspension_target(rows: [Vec3; 3], n: Vec3, depth: f32, comp: f32) -> Option<
 }
 
 /// A car set down where a cine car event puts it, with a velocity (docs/reference/cutscenes/cine_car_event.md, snap):
-/// sub_822A9930 with its probe - from a metre above the place to three below; on a hit the place is the hit, the up
+/// F-86308 with its probe - from a metre above the place to three below; on a hit the place is the hit, the up
 /// the polygon's normal and the rows made square about it (as the stand-up, R4) - the velocities as given, the still
-/// timer (chassis +588) 0, a burning nitrous shot and a running slipstream turbo stopped (sub_82345680, sub_82345E20);
-/// then sub_8255A1B0: both shafts and their wheels at the speed along the car (-row 2 . v) over the first wheel's
-/// radius, the differentials even, the gear the one for that speed (sub_82561050: reverse under -1 m/s, first under
+/// timer (chassis +588) 0, a burning nitrous shot and a running slipstream turbo stopped (F-74215, F-74056);
+/// then F-72737: both shafts and their wheels at the speed along the car (-row 2 . v) over the first wheel's
+/// radius, the differentials even, the gear the one for that speed (F-24547: reverse under -1 m/s, first under
 /// 10, else the lowest gear the speed does not over-rev), the engine at the gear's speed held between IdleRPM and the
 /// engine's +72 (the port: the torque curve's peak, else OptRPM - approximate). The car's pairs are made again only
-/// in the next step (0x82588990, as the stand-up).
+/// in the next step (F-68574, as the stand-up).
 pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3; 4], vel: Vec3, ang_vel: Vec3) {
     use super::exact as ex;
     let [x0, y0, z0, place] = m;
@@ -6181,7 +6202,7 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
     vs.engine_w = (ratio * power).min(peak).max(e.idle_rpm * RPM);
 }
 
-/// R4: the level's probe as the stand-up asks it (0x82574418), plainly written: the first polygon of the city
+/// R4: the level's probe as the stand-up asks it (F-20855), plainly written: the first polygon of the city
 /// a segment meets - the point, and the polygon's normal as the collision forms it.
 fn level_probe(world: &WorldCollider, from: Vec3, to: Vec3) -> Option<(Vec3, Vec3)> {
     let mut best: Option<(f32, Vec3, Vec3)> = None;
@@ -6780,7 +6801,7 @@ mod primitive_reference_tests {
 
 /// A body's velocity at the point `p` as the tick's solve starts from it (its velocity and turning, no contact
 /// impulses, not the tick's pending forces) - what mcCarDamage's contact callback reads at the point from the
-/// collider (0x82343CA8, vslot 21). MCLA_DBG_SCRAPEPOST: the velocity after the solve, as before 2026-10-20.
+/// collider (A-40484, vslot 21). MCLA_DBG_SCRAPEPOST: the velocity after the solve, as before 2026-10-20.
 fn start_velocity(body: Option<&super::solver::Body>, p: Vec3) -> Option<Vec3> {
     let b = body.filter(|_| !dbg_flag("MCLA_DBG_SCRAPEPOST"))?;
     Some(b.vel + b.ang.cross(p - b.at))

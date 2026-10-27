@@ -10,6 +10,7 @@ pub mod hull;
 pub mod loose;
 pub mod pad;
 pub mod replay;
+pub mod softpush;
 pub mod solver;
 pub mod sst;
 mod engine;

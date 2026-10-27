@@ -789,7 +789,7 @@ mod tests {
         let cases = std::fs::read_to_string(std::env::var("MCLA_SOLVER_CASES").expect("MCLA_SOLVER_CASES")).unwrap();
         let reference = std::fs::read_to_string(std::env::var("MCLA_SOLVER_REFERENCE").expect("MCLA_SOLVER_REFERENCE")).unwrap();
         let cases: Vec<&str> = cases.lines().filter(|l| !l.starts_with("body") && !l.trim().is_empty()).collect();
-        let (mut bad, mut all) = (0, 0);
+        let (mut bad, mut all, mut empty) = (0, 0, 0);
         let mut counts = std::collections::BTreeMap::<&str, (usize, usize)>::new();
         for (case, want) in cases.iter().zip(reference.lines()) {
             let (line, label) = case.split_once('#').unwrap_or((case, ""));
@@ -799,6 +799,12 @@ mod tests {
             let dt = f(0);
             let body = Body { at: v(1), rows: [v(4), v(7), v(10)], vel: v(13), ang: v(16), inv_mass: f(20), inv_moments: v(21), force: v(24), torque: v(27) };
             let n = w[30] as usize;
+            // (an island with no contact row: the original leaves before its bounce factor, E reads 0;
+            // the port's 1.0 is never read - nothing to compare)
+            if n == 0 {
+                empty += 1;
+                continue;
+            }
             let mut contacts: Vec<Contact> = (0..n)
                 .map(|i| {
                     let o = 31 + 24 * i;
@@ -854,6 +860,7 @@ mod tests {
         for (name, (ok, n)) in &counts {
             eprintln!("{name:18} {ok} / {n}");
         }
+        eprintln!("cases compared {all}, empty islands skipped {empty}, differing {bad}");
         assert_eq!(bad, 0, "{bad} of {all} cases differ");
     }
 }

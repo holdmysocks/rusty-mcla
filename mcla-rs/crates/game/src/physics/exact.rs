@@ -65,7 +65,7 @@ pub fn sign(x: f32) -> f32 {
     if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }
 }
 
-// ---- the guest C runtime's sine and cosine (0x823DBAE8, 0x823DBBC8), in double: the argument
+// ---- the guest C runtime's sine and cosine (F-72580, F-63589), in double: the argument
 // less a whole number of half turns in two steps, then an odd polynomial of nine terms. The
 // table is at 0x827EAFD0.
 const HALF_PI: f64 = f64::from_bits(0x3ff921fb54442d18);
@@ -126,7 +126,7 @@ pub fn guest_sin(x: f64) -> f64 {
     v * if x >= 0.0 { 1.0 } else { -1.0 }
 }
 
-// ---- the guest runtime's arcsine (0x823DCA68): a rational function of the square, about
+// ---- the guest runtime's arcsine (F-80613): a rational function of the square, about
 // zero below one half and about one above it. Table at 0x827EB068.
 const ASIN_P: [f64; 5] = [
     f64::from_bits(0xc03b5e55a83a0a62),
@@ -168,7 +168,7 @@ pub fn guest_asin(x: f64) -> f64 {
     if x >= 0.0 { r } else { -r }
 }
 
-/// The guest C runtime's atan2 (0x823DCDD8, table 0x827EB158), in double: the smaller of |y|, |x|
+/// The guest C runtime's atan2 (F-65975, table 0x827EB158), in double: the smaller of |y|, |x|
 /// over the larger, folded once more about tan(pi/6), a rational of the square, and the
 /// octant's angle added.
 pub fn guest_atan2(y: f64, x: f64) -> f64 {
@@ -211,7 +211,7 @@ pub fn guest_atan2(y: f64, x: f64) -> f64 {
     if y.is_sign_negative() { -r } else { r }
 }
 
-/// 0x8259DD00 / 0x8259DC58: `v` added to the body's pending turn (body +416) or push (+400):
+/// F-85884 / F-12566: `v` added to the body's pending turn (body +416) or push (+400):
 /// no longer than 100, and less its share along what is already pending.
 pub fn pending_add(pending: Vec3, v: Vec3) -> Vec3 {
     let l2 = dot3(v, v);
@@ -224,7 +224,7 @@ pub fn pending_add(pending: Vec3, v: Vec3) -> Vec3 {
     pending + v
 }
 
-/// 0x82227C18: nothing at or below 0, one at or above 1, between them the sine of that share
+/// F-17888: nothing at or below 0, one at or above 1, between them the sine of that share
 /// of a quarter turn.
 pub fn ease(x: f32) -> f32 {
     if !(x > 0.0) {
@@ -236,7 +236,7 @@ pub fn ease(x: f32) -> f32 {
     }
 }
 
-/// 0x825A3D90: the steady acceleration that covers `to - from` in `time` from the speed `v`
+/// F-89809: the steady acceleration that covers `to - from` in `time` from the speed `v`
 /// (2 (d - v t) / t^2 with t = time / 2) - or, where the car would be past it sooner, the one that
 /// ends at the speed `v_end` there.
 pub fn stop_rate(time: f32, from: f32, v: f32, to: f32, v_end: f32) -> f32 {
@@ -262,7 +262,7 @@ pub fn stop_rate(time: f32, from: f32, v: f32, to: f32, v_end: f32) -> f32 {
     }
 }
 
-/// 0x821CE490: `value` moved towards `target` by rate times step, not past it.
+/// F-90102: `value` moved towards `target` by rate times step, not past it.
 pub fn approach(value: &mut f32, target: f32, rate: f32, step: f32) {
     if *value < target {
         *value = fma(rate, step, *value);
@@ -287,7 +287,7 @@ pub fn unit_or_zero(v: Vec3) -> Vec3 {
     v * ((-(l2 * (e * e) - 1.0)) * (0.5 * e) + e)
 }
 
-/// The body's inverse inertia in the world (0x825A4148 through body vfunc 17): rows
+/// The body's inverse inertia in the world (F-16702 through body vfunc 17): rows
 /// (r0[i] (r0 d.x) + r1[i] (r1 d.y)) + r2[i] (r2 d.z).
 pub fn world_inverse_inertia(rows: &[Vec3; 3], inverse: Vec3) -> [Vec3; 3] {
     let (a, b, c) = (rows[0] * inverse.x, rows[1] * inverse.y, rows[2] * inverse.z);
@@ -302,7 +302,7 @@ fn dot4_one(a: Vec3, b: Vec3, bw: f32) -> f32 {
     (1.0 * bw + a.z * b.z) + (a.y * b.y + a.x * b.x)
 }
 
-/// vehGyro's turn (0x82563018): the torque is taken into the car's frame and back as if it
+/// vehGyro's turn (F-81152): the torque is taken into the car's frame and back as if it
 /// were a point - through the chassis's place, which costs it the last digits a coordinate
 /// of some hundred metres has - and applied; and with it the force that leaves the point at
 /// `offset` from the body's place where it is: -mass (inverse inertia . torque) x offset.
@@ -338,7 +338,7 @@ pub struct Damping {
 }
 
 impl Damping {
-    /// One hand-off (0x8259EA40 as vehWheel::Update calls it, 0x825667C4): a matrix
+    /// One hand-off (F-70848 as vehWheel::Update calls it, A-79526): a matrix
     /// strength x n n^T at the offset `r` from the body's place. `n_s` = (n x value) x factor.
     pub fn add(&mut self, n: Vec3, n_s: Vec3, r: Vec3) {
         let m = [
@@ -369,14 +369,14 @@ fn columns(m: &[Vec3; 3]) -> [Vec3; 3] {
     [Vec3::new(m[0].x, m[1].x, m[2].x), Vec3::new(m[0].y, m[1].y, m[2].y), Vec3::new(m[0].z, m[1].z, m[2].z)]
 }
 
-/// The inverse of a 3x3 given by rows (0x8259C9D8): cross products over the determinant.
+/// The inverse of a 3x3 given by rows (F-76283): cross products over the determinant.
 pub fn inverse3(m: &[Vec3; 3]) -> [Vec3; 3] {
     let (ab, bc, ca) = (cross(m[0], m[1]), cross(m[1], m[2]), cross(m[2], m[0]));
     let r = recip(dot3(ab, m[2]));
     [Vec3::new(bc.x, ca.x, ab.x) * r, Vec3::new(bc.y, ca.y, ab.y) * r, Vec3::new(bc.z, ca.z, ab.z) * r]
 }
 
-/// The body's inertia in the world (0x8259D348): rows ((r0[i] Ix) r0 + (r1[i] Iy) r1) + (r2[i] Iz) r2.
+/// The body's inertia in the world (F-24854): rows ((r0[i] Ix) r0 + (r1[i] Iy) r1) + (r2[i] Iz) r2.
 pub fn world_inertia(rows: &[Vec3; 3], inertia: Vec3) -> [Vec3; 3] {
     let cols = columns(rows);
     let row = |i: usize| {
@@ -386,14 +386,14 @@ pub fn world_inertia(rows: &[Vec3; 3], inertia: Vec3) -> [Vec3; 3] {
     [row(0), row(1), row(2)]
 }
 
-/// The turning rate that goes with an angular momentum (body vfunc 46, 0x8259E230).
+/// The turning rate that goes with an angular momentum (body vfunc 46, F-80680).
 pub fn spin_of(l: Vec3, rows: &[Vec3; 3], inverse: Vec3) -> Vec3 {
     let local = Vec3::new(dot3(rows[0], l), dot3(rows[1], l), dot3(rows[2], l)) * inverse;
     let cols = columns(rows);
     Vec3::new(dot3(cols[0], local), dot3(cols[1], local), dot3(cols[2], local))
 }
 
-/// The solver of the integrator's 3x3 system where it has full rank (0x8259C1A0): the
+/// The solver of the integrator's 3x3 system where it has full rank (F-12385): the
 /// cofactors' rows times the right side, over the determinant. `None` where the original
 /// takes one of its other ways (a matrix all but singular).
 pub fn solve3(m: &[Vec3; 3], rhs: Vec3) -> Option<Vec3> {
@@ -425,7 +425,7 @@ pub fn solve3(m: &[Vec3; 3], rhs: Vec3) -> Option<Vec3> {
     Some(Vec3::new(dot3(c0, rhs), dot3(c1, rhs), dot3(c2, rhs)) * recip(det))
 }
 
-/// What the integrator leaves (0x8259BE30 with 0x8259EC10 or 0x8259D100): the new momenta.
+/// What the integrator leaves (F-94789 with F-20578 or F-21091): the new momenta.
 /// `p`, `l` the momenta before; `force`, `torque` the tick's sums; `rows`, `inertia` the
 /// body's matrix and moments as they stand when it runs (after the move).
 #[allow(clippy::too_many_arguments)]
@@ -475,7 +475,7 @@ pub fn integrate_with(p: Vec3, l: Vec3, force: Vec3, torque: Vec3, impulse: Vec3
     (dv * mass + p, l)
 }
 
-/// The body's rows turned by `turn` = turning rate times step (0x8259D030): nothing below a
+/// The body's rows turned by `turn` = turning rate times step (F-54600): nothing below a
 /// millionth of a radian.
 pub fn rows_turned(rows: &[Vec3; 3], turn: Vec3) -> [Vec3; 3] {
     let l2 = dot3(turn, turn);
@@ -490,7 +490,7 @@ pub fn rows_turned(rows: &[Vec3; 3], turn: Vec3) -> [Vec3; 3] {
     turned(rows, &rotation_about_unit(turn * recip(angle), angle))
 }
 
-/// The body's rows made square again (0x8259E2C0, every 33rd move): the second made a unit
+/// The body's rows made square again (F-84832, every 33rd move): the second made a unit
 /// vector, the third the first across it, the first those two's.
 pub fn rows_squared(rows: &[Vec3; 3]) -> [Vec3; 3] {
     if rows.iter().any(|r| *r == Vec3::ZERO) {
@@ -509,7 +509,7 @@ pub fn rows_squared(rows: &[Vec3; 3]) -> [Vec3; 3] {
     [cross(up, back), up, back]
 }
 
-/// The model's origin that goes with the body's place (0x8259D1E8): the place less the
+/// The model's origin that goes with the body's place (F-18040): the place less the
 /// bound's offset carried through the rows.
 pub fn origin_of(at: Vec3, rows: &[Vec3; 3], offset: Vec3) -> Vec3 {
     let cols = columns(rows);
@@ -518,7 +518,7 @@ pub fn origin_of(at: Vec3, rows: &[Vec3; 3], offset: Vec3) -> Vec3 {
 
 pub const IDENTITY: [Vec3; 3] = [Vec3::X, Vec3::Y, Vec3::Z];
 
-/// The rotation by `angle` about the unit vector `n` (0x82227F50), as three rows.
+/// The rotation by `angle` about the unit vector `n` (F-65964), as three rows.
 pub fn rotation_about_unit(n: Vec3, angle: f32) -> [Vec3; 3] {
     let c = guest_cos(angle as f64) as f32;
     let s = guest_sin(angle as f64) as f32;
@@ -531,7 +531,7 @@ pub fn rotation_about_unit(n: Vec3, angle: f32) -> [Vec3; 3] {
     ]
 }
 
-/// The rotation by `angle` about `axis` (0x822F1778): nothing for no angle, the plain
+/// The rotation by `angle` about `axis` (F-10410): nothing for no angle, the plain
 /// forms about a coordinate axis, else about the axis made a unit vector.
 pub fn rotation_about(axis: Vec3, angle: f32) -> [Vec3; 3] {
     if angle == 0.0 {
@@ -539,17 +539,17 @@ pub fn rotation_about(axis: Vec3, angle: f32) -> [Vec3; 3] {
     }
     if axis.x == 0.0 {
         if axis.y == 0.0 {
-            // about z (0x82234FC0)
+            // about z (F-16906)
             let (c, s) = c_s(if axis.z > 0.0 { angle } else { -angle });
             return [Vec3::new(c, s, 0.0), Vec3::new(-s, c, 0.0), Vec3::Z];
         }
         if axis.z == 0.0 {
-            // about y (0x82202E38)
+            // about y (F-92665)
             let (c, s) = c_s(if axis.y > 0.0 { angle } else { -angle });
             return [Vec3::new(c, 0.0, -s), Vec3::Y, Vec3::new(s, 0.0, c)];
         }
     } else if axis.y == 0.0 && axis.z == 0.0 {
-        // about x (0x82224A40)
+        // about x (F-67091)
         let (c, s) = c_s(if axis.x > 0.0 { angle } else { -angle });
         return [Vec3::X, Vec3::new(0.0, c, s), Vec3::new(0.0, -s, c)];
     }
@@ -561,7 +561,7 @@ fn c_s(a: f32) -> (f32, f32) {
     (guest_cos(a as f64) as f32, guest_sin(a as f64) as f32)
 }
 
-/// `m` turned by `r` (0x82350940's product): each row (r0 x + r1 y) + r2 z.
+/// `m` turned by `r` (F-41945's product): each row (r0 x + r1 y) + r2 z.
 pub fn turned(m: &[Vec3; 3], r: &[Vec3; 3]) -> [Vec3; 3] {
     let row = |v: Vec3| (r[0] * v.x + r[1] * v.y) + r[2] * v.z;
     [row(m[0]), row(m[1]), row(m[2])]
@@ -579,14 +579,14 @@ pub fn point_through(p: Vec3, c: &[Vec3; 4]) -> Vec3 {
     c[2] * p.z + (c[1] * p.y + (c[0] * p.x + c[3]))
 }
 
-/// The wheel's steering angle (0x825652B8, wheel +492): `steer` the chassis's value as handed
+/// The wheel's steering angle (F-57353, wheel +492): `steer` the chassis's value as handed
 /// to this wheel (negated for the rear ones), `side` the wheel's place across the car.
 pub fn steer_angle(steer: f32, side: f32, limit: f32, offset: f32) -> f32 {
     let a = -(limit * steer);
     fnms(sign(side) * offset, a, 1.0) * a
 }
 
-/// How far a steered wheel's pivot is inboard of it (0x825673A0, wheel +416).
+/// How far a steered wheel's pivot is inboard of it (F-73903, wheel +416).
 pub fn pivot_arm(side: f32, pivot_offset: f32, width: f32) -> f32 {
     if pivot_offset > 0.0 {
         side * pivot_offset
@@ -597,7 +597,7 @@ pub fn pivot_arm(side: f32, pivot_offset: f32, width: f32) -> f32 {
     }
 }
 
-/// The wheel's matrix as the update rebuilds it (0x82567508): its steering about its own up
+/// The wheel's matrix as the update rebuilds it (F-70434): its steering about its own up
 /// through a pivot `arm` inboard, the hub at rest less `offset` (wheel +432), carried through
 /// the chassis's matrix `c`. Rows axle, up, way; place. `steered`: the tuning has a
 /// SteeringLimit at all. No compression in the place, no lean.
@@ -605,7 +605,7 @@ pub fn wheel_rebuilt(c: &[Vec3; 4], rest: Vec3, arm: f32, offset: f32, steered: 
     wheel_rebuilt_about(c, rest, arm, offset, steered, angle, Vec3::Y)
 }
 
-/// 0x82565480 (-> 0x823CC330, 0x82227F50): the frame a steered wheel turns in - the rotation
+/// F-49981 (-> F-81327, F-65964): the frame a steered wheel turns in - the rotation
 /// that takes straight up to the wheel's steering axis (wheel +400). Nothing where the two are
 /// within 3.6 degrees (their product at least 0.998001), which is every car.
 pub fn steer_frame(axis: Vec3) -> [Vec3; 3] {
@@ -631,8 +631,8 @@ pub fn steer_frame(axis: Vec3) -> [Vec3; 3] {
     }
 }
 
-/// `wheel_rebuilt` for a wheel whose steering axis is `axis` in the car's frame (0x82567508:
-/// the frame of 0x82565480, turned about its own second row by the steering angle).
+/// `wheel_rebuilt` for a wheel whose steering axis is `axis` in the car's frame (F-70434:
+/// the frame of F-49981, turned about its own second row by the steering angle).
 pub fn wheel_rebuilt_about(c: &[Vec3; 4], rest: Vec3, arm: f32, offset: f32, steered: bool, angle: f32, axis: Vec3) -> [Vec3; 4] {
     let (l, mut p) = if steered {
         let frame = steer_frame(axis);
@@ -646,12 +646,12 @@ pub fn wheel_rebuilt_about(c: &[Vec3; 4], rest: Vec3, arm: f32, offset: f32, ste
     [row_through(l[0], c), row_through(l[1], c), row_through(l[2], c), point_through(p, c)]
 }
 
-/// The wheel's rows leaned by `angle` about `axis` (0x825681E0 -> 0x82350940).
+/// The wheel's rows leaned by `angle` about `axis` (F-33566 -> F-41945).
 pub fn leaned(rows: &[Vec3; 3], axis: Vec3, angle: f32) -> [Vec3; 3] {
     turned(rows, &rotation_about(axis, angle))
 }
 
-/// How far a wheel is pressed in as the axle reads it (0x82564E50): within the travel, less
+/// How far a wheel is pressed in as the axle reads it (F-48387): within the travel, less
 /// the offset.
 pub fn axle_disp(comp: f32, travel_extent: f32, travel_limit: f32, offset: f32) -> f32 {
     let low = -travel_extent;
@@ -673,5 +673,42 @@ mod tests {
         }
         assert_eq!(guest_cos(0.0), 1.0);
         assert_eq!(guest_sin(-0.0).to_bits(), (-0.0f64).to_bits());
+    }
+
+    /// 1,107 cases of the original asin (F-80613) run offline on its generated code
+    /// (work/physics-gaps/asin_ref.py): the port gives the same bits, on both sides of 0.5.
+    #[test]
+    fn guest_asin_is_the_originals() {
+        let text = include_str!("guest_asin_cases.txt");
+        let mut bad = Vec::new();
+        let mut n = 0;
+        for line in text.lines() {
+            let (i, o) = line.split_once(' ').unwrap();
+            let x = f64::from_bits(u64::from_str_radix(i, 16).unwrap());
+            let want = u64::from_str_radix(o, 16).unwrap();
+            if guest_asin(x).to_bits() != want {
+                bad.push((x, f64::from_bits(want), guest_asin(x)));
+            }
+            n += 1;
+        }
+        assert!(bad.is_empty(), "{} of {} differ, first {:?}", bad.len(), n, &bad[..bad.len().min(4)]);
+    }
+
+    /// 1,804 cases each of the original cosine (F-63589) and sine (F-72580) run offline on their
+    /// generated code (work/physics-gaps/trig_ref.py).
+    #[test]
+    fn guest_sin_cos_are_the_originals() {
+        for (name, text, f) in [("cos", include_str!("guest_cos_cases.txt"), guest_cos as fn(f64) -> f64), ("sin", include_str!("guest_sin_cases.txt"), guest_sin as fn(f64) -> f64)] {
+            let mut bad = Vec::new();
+            for line in text.lines() {
+                let (i, o) = line.split_once(' ').unwrap();
+                let x = f64::from_bits(u64::from_str_radix(i, 16).unwrap());
+                let want = u64::from_str_radix(o, 16).unwrap();
+                if f(x).to_bits() != want {
+                    bad.push((x, f64::from_bits(want), f(x)));
+                }
+            }
+            assert!(bad.is_empty(), "{name}: {} differ, first {:?}", bad.len(), &bad[..bad.len().min(4)]);
+        }
     }
 }

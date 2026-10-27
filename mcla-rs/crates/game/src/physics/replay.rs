@@ -355,12 +355,12 @@ for i in 0..4 {
                 vs.still_timer = 0.0;
                 // (and, to the bit: the body's matrix, and each wheel's world matrix as the
                 // recorded car's last update wrote it with the chassis's matrix of that update
-                // - what the original's collision stood the wheels' shapes at, 0x8255CEA0)
+                // - what the original's collision stood the wheels' shapes at, F-24284)
                 if q.len() >= 125 {
                     let v = |i: usize| Vec3::new(q[i], q[i + 1], q[i + 2]);
                     vs.body_exact = Some([v(3), v(6), v(9), v(0)]);
                     let then = [v(113), v(116), v(119), v(122)];
-                    // (and the chassis's up of that update: what the wheels' contacts were weighed against, 0x8255D028)
+                    // (and the chassis's up of that update: what the wheels' contacts were weighed against, F-50733)
                     vs.prev_up = Some(then[1]);
                     for i in 0..4 {
                         let o = 65 + 12 * i;
@@ -416,7 +416,7 @@ for i in 0..4 {
                         vs.momentum_exact = Some((v(171), v(174), q[177] as u32));
                     }
                     // ([196..202]: the push and turn the end of the recorded update gave the body,
-                    // body +432 / +448, 0x8259E790. The sample's chassis block and body place are
+                    // body +432 / +448, F-67019. The sample's chassis block and body place are
                     // after them; the wheels' contacts the next update reads were found by the
                     // collision before them, at the pose the port keeps as `BodyExact::seen` - against
                     // a wall, deep pushes in a row, the front wheels 2.75 mm deeper than from the
@@ -571,6 +571,8 @@ for i in 0..4 {
                     // (176..194: a motorcycle's gyro state, as [178..196] of a state line)
                     let g = &vs.bg;
                     v.extend([g.state as f32, g.roll, g.roll_err, g.level, g.yaw_target, g.yaw_err, g.vel.x, g.vel.y, g.vel.z, g.acc.x, g.acc.y, g.acc.z, g.share, g.lat, g.boost, g.pitch, g.pitch_err, g.burn]);
+                    // (194: the body's count of moves since its rows were made square)
+                    v.push(vs.body.map_or(0.0, |b| f32::from_bits(b.count)));
                     let line: Vec<String> = v.iter().map(|x| format!("{:08x}", x.to_bits())).collect();
                     let _ = writeln!(file.lock().unwrap(), "{}", line.join(" "));
                 }
