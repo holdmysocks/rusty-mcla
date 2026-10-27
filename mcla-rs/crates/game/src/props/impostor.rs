@@ -281,7 +281,7 @@ impl Impostors {
     }
 
     /// The model to draw in the scene pass where a run names the baked card `baked`: the type's
-    /// impostor card (and the type is noted as drawn this frame - sub_8230B1F8's stamp).
+    /// impostor card (and the type is noted as drawn this frame - F-48007's stamp).
     pub(super) fn card(&self, baked: usize) -> usize {
         match self.by_baked.get(baked) {
             Some(&t) if t != u32::MAX => {
@@ -294,7 +294,7 @@ impl Impostors {
     }
 
     /// The model to draw in the shadow pass where a run names the baked card `baked`: the type's
-    /// shadow card once its mask has been drawn (sub_8230BAF0 with the shadow flag).
+    /// shadow card once its mask has been drawn (F-48104 with the shadow flag).
     pub(super) fn shadow_card(&self, baked: usize) -> usize {
         match self.by_baked.get(baked) {
             Some(&t) if t != u32::MAX && self.mask_on && self.types[t as usize].mask_valid => self.types[t as usize].mask_card,
@@ -302,7 +302,7 @@ impl Impostors {
         }
     }
 
-    /// Before the shadow pass (sub_8230D988 / sub_8230C860): the silhouette masks along the
+    /// Before the shadow pass (F-80686 / F-61167): the silhouette masks along the
     /// pass's light direction - one type a frame in turn, all of them when the time of day
     /// moved by 1 / 120 h or more since the last call (and at the first call). The tile camera
     /// of 3b with the axis -L, the whole target, no wind; the model as it is (the original
@@ -357,12 +357,13 @@ impl Impostors {
         }
     }
 
-    /// The tile camera of sub_8230BC38 for the main camera's back vector `c`: world -> clip of
-    /// an orthographic view along -c, world up, the plant filling the width.
+    /// The tile camera of F-73098 for the main camera's back vector `c`: world -> clip of
+    /// an orthographic view along -c, world up, the plant filling the width. The side and up
+    /// vectors and the projected height are `tile_vectors`' (the original's arithmetic).
     fn tile_camera(c: Vec3, width: f32, height: f32, centre_y: f32) -> Mat4 {
-        let side = Vec3::new(c.z, 0.0, -c.x).normalize_or(Vec3::X);
-        let up = c.cross(side);
-        let hproj = ((1.0 - up.y * up.y) * width + height * up.y).max(1e-3);
+        let (side, up, hproj) = tile_vectors([c.x, c.y, c.z, 0.0], width, height);
+        let (side, up) = (Vec3::new(side[0], side[1], side[2]), Vec3::new(up[0], up[1], up[2]));
+        let hproj = hproj.max(1e-3);
         let centre = Vec3::new(0.0, centre_y, 0.0);
         let (kx, ky) = (2.0 / width, 2.0 / hproj);
         // clip.x = 2/W dot(p, side); clip.y = 2/Hproj dot(p - centre, U);
@@ -375,7 +376,7 @@ impl Impostors {
         )
     }
 
-    /// Once a frame, before the scene pass (sub_8230EE20): draw the pictures of the types that
+    /// Once a frame, before the scene pass (F-65228): draw the pictures of the types that
     /// are due - those whose cards were drawn in the last frame and whose `ScheduledFrame` has
     /// this frame's bits (0 and 2 on even frames, 1 and 3 on odd ones), or whose picture is of
     /// the other half of the day, or was never drawn.
@@ -437,5 +438,90 @@ impl Impostors {
             let live = self.types.iter().filter(|t| t.stamp.load(Ordering::Relaxed) + 1 >= frame).count();
             log::info!("impostors: frame {} drew {} pictures ({} types in view, {} pictures so far), back vector {:.3} {:.3} {:.3}", frame, drawn, live, self.total, c.x, c.y, c.z);
         }
+    }
+}
+
+/// One lane operation of the original's vector code: the cross product it builds from two shuffles, two multiplies and a
+/// subtraction (each rounded to single, no fused multiply-add), the sign bit flipped last. `a` and `b` as given are `a x b`
+/// negated, i.e. `b x a`.
+fn cross_flipped(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let (a9, a7) = ([a[1], a[2], a[0], a[3]], [a[2], a[0], a[1], a[3]]);
+    let (b9, b7) = ([b[1], b[2], b[0], b[3]], [b[2], b[0], b[1], b[3]]);
+    std::array::from_fn(|i| f32::from_bits((a9[i] * b7[i] - a7[i] * b9[i]).to_bits() ^ 0x8000_0000))
+}
+
+/// The tile camera's side vector, up vector and projected height as F-73098 computes them for the back vector `c` (w lane
+/// included) and a plant of width `w` (the larger of the box's x and z extent) and height `h`: the side direction
+/// `(c.z, 0, -c.x)` made unit with the hardware dot product (z^2 + (y^2 + x^2)), `1 / sqrt` and one Newton step, all single
+/// precision (0 where the length is 0), the up vector `c x side`, and `(1 - up.y^2) w + h up.y` as a fused multiply-add
+/// of the doubles rounded to single. The vectors written into the camera object are these times half the width.
+pub fn tile_vectors(c: [f32; 4], w: f32, h: f32) -> ([f32; 4], [f32; 4], f32) {
+    let mc = c.map(|v| 0.0 - v);
+    let raw = cross_flipped([0.0, 1.0, 0.0, 0.0], mc);
+    let l2 = raw[2] * raw[2] + (raw[1] * raw[1] + raw[0] * raw[0]);
+    let r0 = 1.0 / l2.sqrt();
+    let r = if r0 == f32::INFINITY { 0.0 } else { r0 };
+    let (r2, half_r) = (r * r, 0.5 * r);
+    let step = f32::from_bits((l2 * r2 - 1.0).to_bits() ^ 0x8000_0000);
+    let k = step * half_r + r;
+    let side = raw.map(|v| v * k);
+    let up = cross_flipped(mc, side);
+    let one_minus = -((up[1] as f64) * (up[1] as f64) - 1.0) as f32;
+    let hproj = ((one_minus as f64).mul_add(w as f64, (h * up[1]) as f64)) as f32;
+    (side, up, hproj)
+}
+
+/// `tile_vectors` for the plant's box (`mn`, `mx`, the corners the function reads): the width is the larger of the x and z
+/// extents (the x one when it is not smaller), the height the y extent. Returns the camera object's two vectors (side and up
+/// times half the width, the up vector's y lane times 0), and the six numbers of the orthographic projection call (left,
+/// right, bottom, top, near, far).
+pub fn tile_frame(c: [f32; 4], mn: [f32; 4], mx: [f32; 4]) -> ([f32; 4], [f32; 3], [f32; 6]) {
+    let ext = [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]];
+    let w = if ext[0] - ext[2] >= 0.0 { ext[0] } else { ext[2] };
+    let h = mx[1] - mn[1];
+    let w2 = w * 0.5;
+    let (side, up, hproj) = tile_vectors(c, w, h);
+    (side.map(|v| v * w2), [up[0] * w2, up[1] * 0.0, up[2] * w2], [w * -0.5, w2, hproj * -0.5, hproj * 0.5, -100.0, 100.0])
+}
+
+#[cfg(test)]
+mod tile_camera_tests {
+    use super::*;
+
+    /// F-73098 run offline from the original's code (`tools/tile_camera_reference.py`): the recorded call (title screen) and
+    /// back vectors of an open-city recording with random boxes, random unit vectors and the edge cases (straight up / down,
+    /// zero, tiny horizontal part, not unit). The back vector, box corners and result words are hex float bits.
+    #[test]
+    fn tile_frame_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let d = |s: &str| f64::from_bits(u64::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/tile_camera_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let t: Vec<&str> = i.split(' ').collect();
+            let v4 = |k: usize| [f(t[k]), f(t[k + 1]), f(t[k + 2]), f(t[k + 3])];
+            let r5: i32 = t[12].parse().unwrap();
+            let (c, mn, mx) = (v4(0), v4(4), v4(8));
+            let (vecs, stubs) = o.split_once(" | ").unwrap();
+            let w: Vec<&str> = vecs.split(' ').collect();
+            let (side, up, ortho) = tile_frame(c, mn, mx);
+            let bits = |x: f32| format!("{:08x}", x.to_bits());
+            let got: Vec<String> = side.iter().chain(up.iter()).map(|x| bits(*x)).collect();
+            assert_eq!(got, w.iter().map(|x| x.to_string()).collect::<Vec<_>>(), "{line}");
+            for st in stubs.split(" ; ") {
+                let p: Vec<&str> = st.split(' ').collect();
+                let want: Vec<f64> = p[1..].iter().map(|x| d(x)).collect();
+                let got: Vec<f64> = match p[0] {
+                    "ortho" => ortho.iter().map(|x| *x as f64).collect(),
+                    "ortho2" if r5 < 0 => vec![0.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+                    "ortho2" => vec![(r5 as f32 * 1.0) as f64, 0.0, 1.0, 1.0, 0.0, 1.0],
+                    _ => continue,
+                };
+                let b = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(b(&got), b(&want), "{} {line}", p[0]);
+            }
+            n += 1;
+        }
+        assert!(n > 100);
     }
 }
