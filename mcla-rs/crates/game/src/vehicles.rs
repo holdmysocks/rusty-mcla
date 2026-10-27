@@ -95,6 +95,10 @@ pub struct CarModel {
     pub part_rig: crate::damageparts::PartRig,
     pub hood_slot: Option<Mat4>,
     pub trunk_bone: Option<Mat4>,
+    /// where the exhaust and nitrous effects come out (car space, at most two) and whether the first is a
+    /// bone of the rear bumper (`CarAsset::fx_anchors`, `carfx.rs`)
+    pub fx_anchors: Vec<Mat4>,
+    pub fx_anchor_rear: bool,
     /// a traffic model's own wheels (tyre, rim, disc in its body fragment, on its wheel
     /// bones `wheel_0` .. `wheel_5` - `CarPart::mesh_wheel`): their hubs; drawn as batch groups 7 - 12 turned about these -
     /// no rim set of `resources/rims` is put on
@@ -1776,7 +1780,8 @@ impl Vehicles {
         let lod_radius = 0.5 * std::f32::consts::SQRT_2 * bw.max(bl);
         let lod_centre = if car_is_ambient { traffic::bound_centre(&world.assets.root, &car.name) } else { None }.unwrap_or((car.min + car.max) * 0.5);
         let lod_steps = if car_is_ambient { traffic::lod_steps(&world.assets.root, &car.name) } else { None }.unwrap_or([40.0, 155.0]);
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone });
+        let (fx_anchors, fx_anchor_rear) = car.fx_anchors(cfg);
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -1837,8 +1842,22 @@ impl Vehicles {
             movement: car.simtune.as_ref().and_then(|s| s.part_movement).unwrap_or(crate::damageparts::DEFAULT_MOVEMENT),
             bumper_rest: [bone_world(13699), bone_world(13687)],
         };
+        // (the exhaust tips are drawn at the outlet bones of the part that holds them, as those bones stand:
+        // they move with that part - a hanging rear bumper takes them along)
+        let outlet_src = car.outlet_part(cfg).map(|o| (o.primary.to_ascii_lowercase(), o.is_base, o.transform));
         let part_group = |part: &vehicle_model::CarPart, part_xf: &Mat4, mi: usize| -> u32 {
-            let p = part.primary.to_ascii_lowercase();
+            let mut p = part.primary.to_ascii_lowercase();
+            let mut part_xf = *part_xf;
+            if p.starts_with("exh_pipe") {
+                match &outlet_src {
+                    Some((name, false, xf)) => {
+                        p = name.clone();
+                        part_xf = *xf;
+                    }
+                    _ => return 0,
+                }
+            }
+            let part_xf = &part_xf;
             if part.is_base {
                 return if part.mesh_tag.get(mi).map_or(false, |t| trunk_tags.contains(t)) { 4 } else { 0 };
             }

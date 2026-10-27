@@ -420,7 +420,7 @@ const MAX_RULE: usize = 5000;
 const MAX_EFFECTS: usize = 160;
 /// the effects whose sprites are loaded: the particle props' and the litter's
 // (step 19g: + the power-up shots' sparks, powerup_sparks - F-72989)
-const PLAYED: [&str; 18] = ["col_", "water_hydrant", "coin", "bang_concrete", "exp_gas", "tree_trunk", "damage_scrape", "water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks", "damage_glassbreak", "wheel_"];
+const PLAYED: [&str; 19] = ["col_", "water_hydrant", "coin", "bang_concrete", "exp_gas", "tree_trunk", "damage_scrape", "water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks", "damage_glassbreak", "wheel_", "veh_"];
 
 /// A vector of an effect's frame into the world: x negated first when the frame is a mirror image.
 fn turn(rot: Quat, flip: bool, v: Vec3) -> Vec3 {
@@ -1206,28 +1206,6 @@ impl Particles {
         let grey = if size > 2.0 { 0.55 } else { 0.92 };
         let p = Particle { kind: Kind::Smoke, pos: pos + j * 0.3 * size, vel: j * 0.4 + Vec3::Y * (0.9 + self.rand() * 0.6) * size.sqrt(), age: 0.0, life, size0: 0.35 * size, size1: 1.8 * size, color: [grey, grey, grey, 0.22], rot, spin, frame, gravity: -0.3, drag: 0.5 };
         self.push(p);
-    }
-
-    /// Nitrous flame out of an exhaust tip.
-    pub fn nitro_flame(&mut self, pos: Vec3, back: Vec3, car_vel: Vec3) {
-        let frame = (self.rand() * 64.0) as u32;
-        let rot = self.rand() * 0.4 - 0.2;
-        let p = Particle { kind: Kind::Flame, pos, vel: car_vel + back * (5.0 + self.rand() * 3.0), age: 0.0, life: 0.14 + self.rand() * 0.08, size0: 0.22, size1: 0.06, color: [0.45, 0.65, 1.6, 0.9], rot, spin: 0.0, frame, gravity: 0.0, drag: 3.0 };
-        self.push(p);
-        if self.rand() < 0.35 {
-            self.push(Particle { kind: Kind::Glow, pos, vel: car_vel, age: 0.0, life: 0.06, size0: 0.55, size1: 0.4, color: [0.3, 0.5, 1.4, 0.5], rot: 0.0, spin: 0.0, frame: 0, gravity: 0.0, drag: 0.0 });
-        }
-    }
-
-    /// Exhaust pop when lifting off at high revs.
-    pub fn backfire(&mut self, pos: Vec3, back: Vec3, car_vel: Vec3) {
-        for _ in 0..5 {
-            let frame = (self.rand() * 64.0) as u32;
-            let j = Vec3::new(self.rand() - 0.5, self.rand() - 0.5, self.rand() - 0.5) * 1.5;
-            let p = Particle { kind: Kind::Flame, pos, vel: car_vel + back * (4.0 + self.rand() * 4.0) + j, age: 0.0, life: 0.16 + self.rand() * 0.1, size0: 0.3, size1: 0.08, color: [1.6, 0.9, 0.35, 0.9], rot: 0.0, spin: 0.0, frame, gravity: 0.0, drag: 3.0 };
-            self.push(p);
-        }
-        self.push(Particle { kind: Kind::Glow, pos, vel: car_vel, age: 0.0, life: 0.09, size0: 0.9, size1: 0.3, color: [1.5, 0.8, 0.3, 0.6], rot: 0.0, spin: 0.0, frame: 0, gravity: 0.0, drag: 0.0 });
     }
 
     /// Shower of sparks from a scrape or crash.

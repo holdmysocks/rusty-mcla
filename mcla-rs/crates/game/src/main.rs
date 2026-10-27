@@ -65,6 +65,7 @@ mod particles;
 mod propfx;
 mod modelfx;
 mod tyrefx;
+mod carfx;
 mod part_audit;
 mod rain;
 mod halo;
@@ -631,7 +632,6 @@ struct App {
     fx_impact: f32,
     /// the last drawn frame's view frustum (the glass break plays only for a car in view)
     last_frustum: Option<Frustum>,
-    fx_throttle: f32,
     ability: ability::Abilities,
     fire_ability: bool,
     cycle_ability: bool,
@@ -1041,7 +1041,6 @@ impl App {
             drivers: drivers::Drivers::default(),
             fx_impact: 0.0,
             last_frustum: None,
-            fx_throttle: 0.0,
             ability: ability::Abilities::new(),
             fire_ability: false,
             cycle_ability: false,
@@ -5584,21 +5583,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.fx.spray(w.contact, st.vel, rain * (speed / 30.0).min(1.0));
                         }
                     }
-                    // exhaust tips: just inside the rear corners
+                    // (the exhaust and nitrous effects: carfx.rs; the original has no backfire effect)
                     let h = c.model.params.body_half;
-                    let back = -st.forward();
-                    let tips = [st.pos + st.rot * Vec3::new(-h.x * 0.55, 0.32, h.z * 0.98), st.pos + st.rot * Vec3::new(h.x * 0.55, 0.32, h.z * 0.98)];
-                    if st.nitro_on() {
-                        for t in tips {
-                            self.fx.nitro_flame(t, back, st.vel);
-                            self.fx.nitro_flame(t, back, st.vel);
-                        }
-                    }
                     if c.is_player {
-                        if self.fx_throttle > 0.8 && c.input.throttle < 0.2 && st.rpm > c.model.params.redline * 0.75 {
-                            self.fx.backfire(tips[0], back, st.vel);
-                        }
-                        self.fx_throttle = c.input.throttle;
                         if st.last_impact > self.fx_impact + 0.2 {
                             let n = ((st.last_impact * 4.0) as usize).clamp(6, 30);
                             self.fx.sparks(st.pos + st.forward() * h.z * 0.8 + Vec3::Y * 0.4, -st.vel.normalize_or(Vec3::Y) * 0.4 + Vec3::Y * 0.5, n);
@@ -5707,15 +5694,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // test helper: every effect at once on the player's car
                     if let Some(c) = self.vehicles.player() {
                         let st = &c.state;
-                        let h = c.model.params.body_half;
-                        let back = -st.forward();
                         for w in &st.wheels[2..] {
                             self.fx.tyre_smoke(w.contact, st.vel, 1.0);
-                        }
-                        for sx in [-0.55f32, 0.55] {
-                            let t = st.pos + st.rot * Vec3::new(h.x * sx, 0.32, h.z * 0.98);
-                            self.fx.nitro_flame(t, back, st.vel);
-                            self.fx.nitro_flame(t, back, st.vel);
                         }
                         if self.tick_no % 20 == 0 {
                             self.fx.sparks(st.pos + st.right() * 1.5 + Vec3::Y * 0.4, Vec3::Y, 20);
@@ -5731,6 +5711,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     t.step(&mut self.fx, &self.vehicles.cars, wet, sim_dt * 2.0, self.tick_no % 2 == 0, self.cam.pos);
                 }
+                carfx::step(&mut self.fx, &self.vehicles.cars, self.cam.pos);
                 self.fx.hour = self.time_of_day;
                 self.fx.update(sim_dt);
             }

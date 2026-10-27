@@ -29,7 +29,7 @@ pub struct CarPart {
     /// per-mesh tag of that bone (the window glass rides on `win_l_anim` / `win_r_anim`)
     pub mesh_tag: Vec<u16>,
     /// per-mesh: the index i of a `wheel_<i>` bone it rides on (a traffic model's own wheels; the
-    /// original finds them by that name, sub_82790E68 - their tags differ between models)
+    /// original finds them by that name, F-19769 - their tags differ between models)
     pub mesh_wheel: Vec<Option<usize>>,
     pub tris: usize,
     pub min: Vec3,
@@ -88,8 +88,8 @@ pub struct CarAsset {
 /// A side window's clip as the base fragment holds it: `win_l_open` / `win_r_open`, a plain
 /// crAnimation (21 frames, 0.667 s on the DB9) with a translation and a rotation track on one
 /// bone - `win_l_anim` (tag 0x4137) / `win_r_anim` (0xd554), the bone the glass mesh is bound
-/// to. The car's anim object binds it (sub_8233D908 / sub_823404E0) and the window controller
-/// sets the player to clamp(time, 0, duration) (sub_8233BEC0).
+/// to. The car's anim object binds it (F-26362 / F-53023) and the window controller
+/// sets the player to clamp(time, 0, duration) (F-27851).
 #[derive(Debug, Clone)]
 pub struct WindowClip {
     pub tag: u16,
@@ -457,6 +457,16 @@ pub fn best_anchor(slot: Slot, cands: &[Vec3], pmin: Vec3, pmax: Vec3, body_min:
     best.map(|b| b.1)
 }
 
+/// The order in which the outlet bones are looked for (F-59267): the base body's skeleton first, then
+/// the drawn parts in the order of their slots (the part-name table 0x827E9608).
+fn outlet_rank(p: &CarPart) -> usize {
+    if p.is_base {
+        return 0;
+    }
+    let n = p.primary.to_ascii_lowercase();
+    1 + crate::mc4::PARTS.iter().position(|s| n.strip_prefix(s).is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))).unwrap_or(99)
+}
+
 /// The three LOD levels of the body fragment that carries the car skeleton (same hashes on every car).
 const BASE_FRAGMENTS: &[&str] = &["0x0de3ddb3.r63", "0x7b0cd281.r63", "0xf9785b04.r63"];
 
@@ -615,7 +625,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     if let Some(f) = fit.as_ref() {
         log::info!("car {}: wheels as set up: {:?}", name, f);
     }
-    // (a live rear axle: the part whose skeleton has the bone `axle0` - 0x82357B80 looks it up
+    // (a live rear axle: the part whose skeleton has the bone `axle0` - F-13644 looks it up
     // by that name and hands its matrix to the rear vehAxle)
     if let Some(s) = simtune.as_mut() {
         let bone = r63.iter().filter(|p| p.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case("0x038c6bf5.r63"))).find_map(|p| {
@@ -1096,9 +1106,9 @@ impl CarAsset {
                 }
             }
         }
-        // (the trunk piece: the body draw sub_8235D500 shows slot 4 `trunk_swap` without the wide
+        // (the trunk piece: the body draw F-92759 shows slot 4 `trunk_swap` without the wide
         // body kit and slot 43 `trunk_wide` with it - tables 0x82050D9C / 0x82050DDC at
-        // 0x8235DCAC - at the record's index, 0 on every car; a car without the piece shows none)
+        // A-85545 - at the record's index, 0 on every car; a car without the piece shows none)
         want.insert(Slot::Trunk, if wide_body { "trunk_wide0" } else { "trunk_swap0" }.to_string());
         // hinge slots that are not customisable (doors, trunk, steering wheel, door interiors)
         // still need exactly one part even when none of the variants carries a stock name
@@ -1119,8 +1129,8 @@ impl CarAsset {
             let slot = classify_slot(&p.primary, &p.names);
             let passenger_seat = p.primary.strip_prefix("seats_p").and_then(|s| s.parse::<usize>().ok());
             // (the convertible roof at rest: raised -> conv_topup, lowered -> conv_topdown where the
-            // model has one; the skinned roof is drawn only while it moves - sub_8233B5E0,
-            // sub_8233B608, sub_8233EEF0. Only a vehicle with the roof's animation lowers it.)
+            // model has one; the skinned roof is drawn only while it moves - F-36938,
+            // F-80163, F-91671. Only a vehicle with the roof's animation lowers it.)
             let take = if let Some(kind) = roof_part(&p.primary) {
                 match kind {
                     0 => !roof_down,
@@ -1167,16 +1177,8 @@ impl CarAsset {
     /// round: with both, its half-metre pipes would stand out of the back of the car).
     pub fn placed_parts_for(&self, cfg: &CarConfig) -> Vec<(&CarPart, Mat4)> {
         let parts = self.parts_for(cfg);
-        // (the outlet bones as sub_82357960 finds them: the base body's skeleton first, then the
-        // drawn parts in the order of their slots - the part-name table 0x827E9608)
-        let rank = |p: &CarPart| {
-            if p.is_base {
-                return 0;
-            }
-            let n = p.primary.to_ascii_lowercase();
-            1 + crate::mc4::PARTS.iter().position(|s| n.strip_prefix(s).is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))).unwrap_or(99)
-        };
-        // (sub_82359C10: the tip at `exh_primary0` as the bone stands and at `exh_secondary0` with the
+        let rank = |p: &CarPart| outlet_rank(p);
+        // (F-39836: the tip at `exh_primary0` as the bone stands and at `exh_secondary0` with the
         // bone's x row negated - the mirror image, drawn with the cull mode flipped; vehicles.rs
         // reverses the winding of a mirrored instance)
         let outlets: Vec<Mat4> = if std::env::var("MCLA_MOUNT_OLD").is_ok() {
@@ -1209,6 +1211,38 @@ impl CarAsset {
         out
     }
 
+    /// The drawn part whose skeleton holds the exhaust outlet bones (see `placed_parts_for`): the tips are
+    /// drawn at its bones as they stand, so they move with it (a hanging rear bumper takes them along).
+    pub fn outlet_part(&self, cfg: &CarConfig) -> Option<&CarPart> {
+        self.parts_for(cfg).into_iter().filter(|p| !p.sockets.is_empty()).min_by_key(|p| outlet_rank(p))
+    }
+
+    /// The two places the car's exhaust and nitrous effects come out of, in car space (F-21553): the first two
+    /// `nitro0` bones of the drawn parts, else the outlets `exh_primary0` / `exh_secondary0` - the second NOT
+    /// mirrored here (only the tip's draw mirrors it); and whether the first is a bone of the rear bumper
+    /// (H+33: a broken rear bumper end then stops both effects).
+    /// (approx.) the `nitro0` search runs over the drawn parts in the outlet order (base first, then by slot):
+    /// the original's bone iterator was not traced.
+    pub fn fx_anchors(&self, cfg: &CarConfig) -> (Vec<Mat4>, bool) {
+        let mut parts = self.parts_for(cfg);
+        parts.sort_by_key(|p| outlet_rank(p));
+        let mut nitro: Vec<(Mat4, bool)> = Vec::new();
+        for p in &parts {
+            if let Some(sk) = p.skeleton.as_deref() {
+                for b in sk.bones.iter().filter(|b| b.name.eq_ignore_ascii_case("nitro0")) {
+                    nitro.push((p.transform * b.world, p.primary.to_ascii_lowercase().starts_with("bumper_r")));
+                }
+            }
+        }
+        if nitro.len() >= 2 {
+            return (nitro.iter().take(2).map(|n| n.0).collect(), nitro[0].1);
+        }
+        let Some(o) = self.outlet_part(cfg) else { return (Vec::new(), false) };
+        let rear = o.primary.to_ascii_lowercase().starts_with("bumper_r");
+        let find = |pre: &str| o.sockets.iter().find(|(n, _)| n.starts_with(pre)).map(|(_, m)| o.transform * *m);
+        (["exh_primary", "exh_secondary"].iter().filter_map(|n| find(n)).collect(), rear)
+    }
+
     /// Stock parts, de-duplicated by primary name (highest triangle count wins = LOD0).
     pub fn stock_parts(&self) -> Vec<&CarPart> {
         let mut best: HashMap<&str, &CarPart> = HashMap::new();
@@ -1236,8 +1270,8 @@ fn always_on(primary: &str, cfg: &CarConfig) -> bool {
         return true;
     }
     // (the intercooler: fitted by its own switch, and the model is the front bumper's number -
-    // the set-part mirrors the bumper's byte into the intercooler's, sub_82391E78; the body
-    // draw shows slot 5 when UseIntercooler is set, sub_8235D500 at 0x8235DA14)
+    // the set-part mirrors the bumper's byte into the intercooler's, F-66380; the body
+    // draw shows slot 5 when UseIntercooler is set, F-92759 at A-73586)
     if let Some(n) = p.strip_prefix("intercooler").and_then(|r| r.parse::<usize>().ok()) {
         return cfg.extra.get("intercooler").copied().unwrap_or(0) != 0 && n == cfg.get(Slot::BumperF);
     }
