@@ -129,8 +129,13 @@ fn ln_guest(x: f64) -> f64 {
 /// 0.4342944819032518, 0x8205D018), rounded to single, times 3.321928 (0x82002C44) and 1200 (0x82002C40) in single,
 /// truncated (fctiwz). (Recorded on the slipstream loop: 292 updates, every value equal - work/slipstream/audiorec.)
 fn voice_cents(ratio: f32) -> i32 {
+    pitch_cents_f32(ratio) as i32
+}
+
+/// The cents of a pitch ratio before the truncation: `float(log10) * 3.321928 * 1200`, single precision.
+pub(crate) fn pitch_cents_f32(ratio: f32) -> f32 {
     let l = log10_guest(ratio.max(1e-6) as f64) as f32;
-    (l * f32::from_bits(0x4054_9A78) * 1200.0) as i32
+    l * f32::from_bits(0x4054_9A78) * 1200.0
 }
 
 /// MCLA_SST_REPLAY: the recording's update the player's sounds are fed this frame (-1: no replay)

@@ -405,7 +405,8 @@ impl EngineSound {
             }
             // F-74444: every record's voice runs, silent ones at -100 dB
             let vol = lin2db(fade * g) + self.effect_db + self.vol_a;
-            let cents = (self.pitch_off + 1200.0 * (x / r.reference).log2() + lfo_cents) as i32;
+            // (F-74444: cents = trunc(offset + float(log10 ratio) * 3.321928 * 1200); recorded in the running original)
+            let cents = (self.pitch_off + crate::caraudio::pitch_cents_f32(x / r.reference) + lfo_cents) as i32;
             let req = Req { pos: Some(e.pos), volume: vol, pitch: cents, player: self.player, ..Default::default() };
             match self.voices[i] {
                 Some(h) if lib.playing(h) => lib.set(h, req),
@@ -514,6 +515,27 @@ impl EngineSound {
 
 #[cfg(test)]
 mod tests {
+
+    /// F-74444's voice request (layer A: cents and dB handed to the voice) against 7899 distinct (pitch, gain) pairs
+    /// recorded in the running original (work/audio2/cap/eng1.txt, recomp-trace MCLA_SST_AUDIO ENG / EP / EV lines; R8,
+    /// offsets XF+12, XF+14 and the effect's +10 all 0 there)
+    #[test]
+    fn engine_voice_request_recorded() {
+        let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
+        let mut bad = 0;
+        for line in include_str!("eng_voice_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<&str> = i.split(' ').collect();
+            let w: Vec<&str> = o.split(' ').collect();
+            let (pitch, gain) = (f32::from_bits(h(v[0])), f32::from_bits(h(v[1])));
+            let cents = (0.0 + crate::caraudio::pitch_cents_f32(pitch) + 0.0) as i32;
+            let db = lin2db(gain) + 0.0 + 0.0;
+            if cents != w[0].parse::<i32>().unwrap() || db.to_bits() != h(w[1]) {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0);
+    }
 
     /// F-90102 against the original's own code on 4000 cases (work/audio2/verify/ref1.py; evidence docs/reference/audio/verify_audio_b1.md)
     #[test]
