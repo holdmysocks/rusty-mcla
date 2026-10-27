@@ -1255,7 +1255,7 @@ impl SoundLib {
 }
 
 /// `fmadds`: the fused multiply-add in double, rounded once to single (how the recompiled code and the console do it).
-fn fmadds(a: f32, b: f32, c: f32) -> f32 {
+pub(crate) fn fmadds(a: f32, b: f32, c: f32) -> f32 {
     (a as f64).mul_add(b as f64, c as f64) as f32
 }
 

@@ -76,7 +76,9 @@ fn map(lib: &SoundLib, curve: u32, lo: f32, hi: f32, x0: f32, x1: f32, x: f32) -
 }
 
 fn cents(ratio: f32) -> i32 {
-    (1200.0 * ratio.max(1e-6).log2()) as i32
+    // (every pitch of the original's sound code goes through its log10 routine: update_wheel F-84461 ends in
+    // frsp, x 3.321928, x 1200, fctiwz exactly as the engine's voices do - recorded equal on 5134 pairs)
+    voice_cents(ratio)
 }
 
 /// F-46044: the original's log10 in double, `ln x * 0.4342944819032518` (F-96865 is its own ln routine).
@@ -2449,7 +2451,7 @@ mod tests {
         for (r, c) in [(0.406076461f32, -1560), (0.703386903, -609), (1.04511762, 76), (1.42090929, 608), (0.829858959, -322), (1.37913656, 556), (0.642281413, -766)] {
             assert_eq!(voice_cents(r), c, "{r}");
         }
-        assert_eq!((voice_cents(0.411_082_54), cents(0.411_082_54)), (-1538, -1539));
+        assert_eq!((voice_cents(0.411_082_54), cents(0.411_082_54)), (-1538, -1538));
     }
 
     /// The driven records (+40): layout 0 / 2 / 4 the rear pair, 1 / 3 the front pair (the recorded R8, layout 2: records 2

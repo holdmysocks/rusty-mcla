@@ -93,6 +93,7 @@ pub struct EngineSound {
     recs: Vec<Rec>,
     /// XF+12 cents, XF+14 mB as dB, EFFECT+10 mB as dB
     pitch_off: f32,
+    /// the XF table's s16 +14 and the effect object's s16 +10, raw (hundredths of a dB)
     vol_a: f32,
     effect_db: f32,
     /// XF+18 / +22 / +26 / +30 / +34
@@ -227,8 +228,8 @@ impl EngineSound {
             wobble: (1.0, 0.0, 1.0),
             racing_curve: joaat("RPM_RACE_OPPONENT"),
             pitch_off: s16(xf, 12),
-            vol_a: s16(xf, 14) * 0.01,
-            effect_db: if eff.is_empty() { 0.0 } else { s16(eff, 10) * 0.01 },
+            vol_a: s16(xf, 14),
+            effect_db: if eff.is_empty() { 0.0 } else { s16(eff, 10) },
             load_brake: be_f32(xf, 18),
             load_floor: be_f32(xf, 22),
             load_rate: be_f32(xf, 26),
@@ -404,7 +405,9 @@ impl EngineSound {
                 }
             }
             // F-74444: every record's voice runs, silent ones at -100 dB
-            let vol = lin2db(fade * g) + self.effect_db + self.vol_a;
+            // (F-74444 / F-51617: dB = fmadds(xf14, 0.01, fmadds(effect10, 0.01, lin2db(gain))) - the order recorded in the
+            // original is only fixed for zero offsets; the asm fuses both)
+            let vol = crate::sndobj::fmadds(self.vol_a, 0.01, crate::sndobj::fmadds(self.effect_db, 0.01, lin2db(fade * g)));
             // (F-74444: cents = trunc(offset + float(log10 ratio) * 3.321928 * 1200); recorded in the running original)
             let cents = (self.pitch_off + crate::caraudio::pitch_cents_f32(x / r.reference) + lfo_cents) as i32;
             let req = Req { pos: Some(e.pos), volume: vol, pitch: cents, player: self.player, ..Default::default() };
@@ -516,6 +519,28 @@ impl EngineSound {
 #[cfg(test)]
 mod tests {
 
+    /// F-51617's voice request (cents and dB handed to the voice) for the computer racers' engines, against pairs
+    /// recorded in the running original in a street race (work/audio2/cap/eng2.txt, OEN / OEP / OEV lines): offsets XF+12
+    /// 100..300 and effect+10 0 / -300 occur, XF+14 is 0
+    #[test]
+    fn opponent_voice_request_recorded() {
+        let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
+        let mut bad = 0;
+        for line in include_str!("opp_voice_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<&str> = i.split(' ').collect();
+            let w: Vec<&str> = o.split(' ').collect();
+            let (pitch, gain) = (f32::from_bits(h(v[0])), f32::from_bits(h(v[1])));
+            let (xf12, fx): (f32, f32) = (v[2].parse().unwrap(), v[3].parse().unwrap());
+            let cents = (xf12 + crate::caraudio::pitch_cents_f32(pitch) + 0.0) as i32;
+            let db = crate::sndobj::fmadds(0.0, 0.01, crate::sndobj::fmadds(fx, 0.01, lin2db(gain)));
+            if cents != w[0].parse::<i32>().unwrap() || !w[1..].iter().any(|x| h(x) == db.to_bits()) {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0);
+    }
+
     /// F-74444's voice request (layer A: cents and dB handed to the voice) against 7899 distinct (pitch, gain) pairs
     /// recorded in the running original (work/audio2/cap/eng1.txt, recomp-trace MCLA_SST_AUDIO ENG / EP / EV lines; R8,
     /// offsets XF+12, XF+14 and the effect's +10 all 0 there)
@@ -529,7 +554,7 @@ mod tests {
             let w: Vec<&str> = o.split(' ').collect();
             let (pitch, gain) = (f32::from_bits(h(v[0])), f32::from_bits(h(v[1])));
             let cents = (0.0 + crate::caraudio::pitch_cents_f32(pitch) + 0.0) as i32;
-            let db = lin2db(gain) + 0.0 + 0.0;
+            let db = crate::sndobj::fmadds(0.0, 0.01, crate::sndobj::fmadds(0.0, 0.01, lin2db(gain)));
             if cents != w[0].parse::<i32>().unwrap() || db.to_bits() != h(w[1]) {
                 bad += 1;
             }
