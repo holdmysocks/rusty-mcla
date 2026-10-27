@@ -311,7 +311,8 @@ impl<'a> Builder<'a> {
 
     fn glyph_quad(&mut self, font_id: u16, height: i16, glyph: usize, ox: f32, oy: f32, m: &Matrix, color: [u8; 4]) {
         let Some(Character::Font(font)) = self.movie.char(font_id) else { return };
-        let Some((pi, page)) = font.pages.iter().enumerate().find(|(_, p)| p.height == height) else { return };
+        let Some(pi) = glyph_page(&font.pages, height) else { return };
+        let page = &font.pages[pi];
         let Some(g) = page.glyphs.get(glyph) else { return };
         let scale = height as f32 * (1.0 / 20480.0);
         let k = 1.0 / 256.0;
@@ -433,6 +434,11 @@ impl<'a> Builder<'a> {
 }
 
 /// Greedy word wrap in em units; a width of 0 or less never wraps.
+/// The first glyph page of a font made for this height (`F-23783`: the page list in order, equal heights).
+pub(crate) fn glyph_page(pages: &[mcla_formats::rage::swf::FontPage], height: i16) -> Option<usize> {
+    pages.iter().position(|p| p.height == height)
+}
+
 fn wrap<'t>(s: &'t str, width: f32, adv: &dyn Fn(char) -> f32) -> Vec<&'t str> {
     if width <= 0.0 {
         return vec![s];

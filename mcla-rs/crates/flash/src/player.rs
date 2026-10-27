@@ -1728,6 +1728,14 @@ pub fn rotation(deg: f32) -> (f32, f32) {
 mod original_tests;
 
 #[cfg(test)]
+#[path = "player_dispatch_tests.rs"]
+mod dispatch_tests;
+
+#[cfg(test)]
+#[path = "player_inst_tests.rs"]
+mod inst_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use mcla_formats::rage::swf::Sprite;

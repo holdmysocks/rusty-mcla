@@ -1,0 +1,2547 @@
+CH 1 0 ffffffff 0 -> 0 0
+CH 1 0 ffffffff 0 -> 0 0
+CH 2 3 7 ffffffff 7 -> 1 7
+CH 2 3 7 ffffffff 3 -> 0 3
+CH 2 3 7 ffffffff 5 -> -1 ffff
+CH 1 5 0 5 -> 0 5
+CH 1 5 0 1 -> -1 5
+CH 3 1 3 5 ffffffff 5 -> 2 5
+CH 3 1 3 5 ffffffff 3 -> 1 3
+CH 3 1 3 5 ffffffff 1 -> 0 1
+CH 3 1 3 5 ffffffff b -> -1 ffff
+CH 1 1 0 1 -> 0 1
+CH 1 1 0 ffff -> -1 1
+CH 5 0 5 64 7fff 8000 ffffffff 64 -> 2 64
+CH 5 0 5 64 7fff 8000 ffffffff 8000 -> 4 8000
+CH 5 0 5 64 7fff 8000 ffffffff 5 -> 1 5
+CH 5 0 5 64 7fff 8000 ffffffff ffff -> -1 ffff
+CH 2 4 6 0 6 -> 1 6
+CH 2 4 6 0 4 -> 0 4
+CH 2 4 6 0 fffe -> -1 4
+CH 0 ffffffff 10003 -> -1 ffff
+CH 0 ffffffff fffe -> -1 ffff
+CH 0 ffffffff ffff -> -1 ffff
+CH 2 9 64 0 9 -> 0 9
+CH 2 9 64 0 64 -> 1 64
+CH 2 9 64 0 ffff -> -1 9
+CH 2 6 9 0 9 -> 1 9
+CH 2 6 9 0 6 -> 0 6
+CH 2 6 9 0 5 -> -1 6
+CH 1 64 0 64 -> 0 64
+CH 1 64 0 0 -> -1 64
+CH 1 5 0 5 -> 0 5
+CH 1 5 0 b -> -1 5
+CH 1 64 0 64 -> 0 64
+CH 1 64 0 6 -> -1 64
+CH 2 1 5 ffffffff 5 -> 1 5
+CH 2 1 5 ffffffff 1 -> 0 1
+CH 2 1 5 ffffffff fffe -> -1 ffff
+CH 5 2 4 7 14 8000 ffffffff 8000 -> 4 8000
+CH 5 2 4 7 14 8000 ffffffff 4 -> 1 4
+CH 5 2 4 7 14 8000 ffffffff 14 -> 3 14
+CH 5 2 4 7 14 8000 ffffffff 18000 -> 4 8000
+CH 9 0 2 3 4 6 14 3e8 7fff fffe ffffffff 0 -> 0 0
+CH 9 0 2 3 4 6 14 3e8 7fff fffe ffffffff 14 -> 5 14
+CH 9 0 2 3 4 6 14 3e8 7fff fffe ffffffff 3 -> 2 3
+CH 9 0 2 3 4 6 14 3e8 7fff fffe ffffffff 63 -> -1 ffff
+CH 3 1 3e8 fffe 1 fffe -> 2 fffe
+CH 3 1 3e8 fffe 1 1 -> 0 1
+CH 3 1 3e8 fffe 1 3e8 -> 1 3e8
+CH 3 1 3e8 fffe 1 fffe -> 2 fffe
+CH 1 8 0 8 -> 0 8
+CH 1 8 0 b -> -1 8
+CH 9 6 8 9 14 64 3e8 7fff 8000 fffe ffffffff 14 -> 3 14
+CH 9 6 8 9 14 64 3e8 7fff 8000 fffe ffffffff fffe -> 8 fffe
+CH 9 6 8 9 14 64 3e8 7fff 8000 fffe ffffffff 8 -> 1 8
+CH 9 6 8 9 14 64 3e8 7fff 8000 fffe ffffffff 5 -> -1 ffff
+CH 9 0 1 3 5 6 8 9 8000 fffe ffffffff fffe -> 8 fffe
+CH 9 0 1 3 5 6 8 9 8000 fffe ffffffff 1 -> 1 1
+CH 9 0 1 3 5 6 8 9 8000 fffe ffffffff 6 -> 4 6
+CH 9 0 1 3 5 6 8 9 8000 fffe ffffffff 5 -> 3 5
+CH 2 7fff fffe 1 fffe -> 1 fffe
+CH 2 7fff fffe 1 7fff -> 0 7fff
+CH 2 7fff fffe 1 5 -> -1 fffe
+CH 5 9 a 64 7fff fffe ffffffff 9 -> 0 9
+CH 5 9 a 64 7fff fffe ffffffff fffe -> 4 fffe
+CH 5 9 a 64 7fff fffe ffffffff 7fff -> 3 7fff
+CH 5 9 a 64 7fff fffe ffffffff fffe -> 4 fffe
+CH 0 ffffffff 6 -> -1 ffff
+CH 3 5 8 8000 2 8 -> 1 8
+CH 3 5 8 8000 2 8000 -> 2 8000
+CH 3 5 8 8000 2 5 -> 0 5
+CH 3 5 8 8000 2 fffe -> -1 8000
+CH 9 0 1 2 3 5 6 9 14 fffe ffffffff 1 -> 1 1
+CH 9 0 1 2 3 5 6 9 14 fffe ffffffff fffe -> 8 fffe
+CH 9 0 1 2 3 5 6 9 14 fffe ffffffff 0 -> 0 0
+CH 9 0 1 2 3 5 6 9 14 fffe ffffffff 1 -> 1 1
+CH 2 64 3e8 1 3e8 -> 1 3e8
+CH 2 64 3e8 1 64 -> 0 64
+CH 2 64 3e8 1 5 -> -1 3e8
+CH 2 2 3e8 ffffffff 2 -> 0 2
+CH 2 2 3e8 ffffffff 3e8 -> 1 3e8
+CH 2 2 3e8 ffffffff 10002 -> 0 2
+CH 9 0 2 4 5 6 7 a 3e8 8000 ffffffff 4 -> 2 4
+CH 9 0 2 4 5 6 7 a 3e8 8000 ffffffff 3e8 -> 7 3e8
+CH 9 0 2 4 5 6 7 a 3e8 8000 ffffffff a -> 6 a
+CH 9 0 2 4 5 6 7 a 3e8 8000 ffffffff 6 -> 4 6
+CH 1 0 0 0 -> 0 0
+CH 1 0 0 ffff -> -1 0
+CH 9 0 1 3 5 6 9 a 8000 fffe ffffffff 8000 -> 7 8000
+CH 9 0 1 3 5 6 9 a 8000 fffe ffffffff a -> 6 a
+CH 9 0 1 3 5 6 9 a 8000 fffe ffffffff 0 -> 0 0
+CH 9 0 1 3 5 6 9 a 8000 fffe ffffffff 63 -> -1 ffff
+CH 0 ffffffff ffff -> -1 ffff
+CH 5 0 3 4 7fff 8000 4 4 -> 2 4
+CH 5 0 3 4 7fff 8000 4 3 -> 1 3
+CH 5 0 3 4 7fff 8000 4 0 -> 0 0
+CH 5 0 3 4 7fff 8000 4 1 -> -1 8000
+CH 0 ffffffff b -> -1 ffff
+CH 9 0 3 4 5 7 8 a 7fff fffe 6 8 -> 5 8
+CH 9 0 3 4 5 7 8 a 7fff fffe 6 3 -> 1 3
+CH 9 0 3 4 5 7 8 a 7fff fffe 6 0 -> 0 0
+CH 9 0 3 4 5 7 8 a 7fff fffe 6 fffe -> 8 fffe
+CH 3 2 3 fffe 1 3 -> 1 3
+CH 3 2 3 fffe 1 fffe -> 2 fffe
+CH 3 2 3 fffe 1 2 -> 0 2
+CH 3 2 3 fffe 1 1 -> -1 3
+CH 2 0 fffe ffffffff 0 -> 0 0
+CH 2 0 fffe ffffffff fffe -> 1 fffe
+CH 2 0 fffe ffffffff ffff -> -1 ffff
+CH 2 5 7fff ffffffff 5 -> 0 5
+CH 2 5 7fff ffffffff 7fff -> 1 7fff
+CH 2 5 7fff ffffffff 0 -> -1 ffff
+CH 1 3 0 3 -> 0 3
+CH 1 3 0 fffe -> -1 3
+CH 0 ffffffff 5 -> -1 ffff
+CH 5 1 3 14 3e8 7fff ffffffff 14 -> 2 14
+CH 5 1 3 14 3e8 7fff ffffffff 7fff -> 4 7fff
+CH 5 1 3 14 3e8 7fff ffffffff 3e8 -> 3 3e8
+CH 5 1 3 14 3e8 7fff ffffffff 103e8 -> 3 3e8
+CH 2 2 64 1 64 -> 1 64
+CH 2 2 64 1 2 -> 0 2
+CH 2 2 64 1 ffff -> -1 64
+CH 0 ffffffff fffe -> -1 ffff
+CH 9 1 3 4 5 6 8 a 64 3e8 1 3e8 -> 8 3e8
+CH 9 1 3 4 5 6 8 a 64 3e8 1 6 -> 4 6
+CH 9 1 3 4 5 6 8 a 64 3e8 1 3 -> 1 3
+CH 9 1 3 4 5 6 8 a 64 3e8 1 b -> -1 3
+CH 5 0 3 9 64 8000 0 0 -> 0 0
+CH 5 0 3 9 64 8000 0 9 -> 2 9
+CH 5 0 3 9 64 8000 0 8000 -> 4 8000
+CH 5 0 3 9 64 8000 0 0 -> 0 0
+CH 5 5 6 7 a fffe 0 fffe -> 4 fffe
+CH 5 5 6 7 a fffe 0 5 -> 0 5
+CH 5 5 6 7 a fffe 0 a -> 3 a
+CH 5 5 6 7 a fffe 0 1 -> -1 5
+CH 2 7fff 8000 ffffffff 8000 -> 1 8000
+CH 2 7fff 8000 ffffffff 7fff -> 0 7fff
+CH 2 7fff 8000 ffffffff fffe -> -1 ffff
+CH 1 1 ffffffff 1 -> 0 1
+CH 1 1 ffffffff 63 -> -1 ffff
+CH 3 4 6 7 2 6 -> 1 6
+CH 3 4 6 7 2 4 -> 0 4
+CH 3 4 6 7 2 7 -> 2 7
+CH 3 4 6 7 2 6 -> 1 6
+CH 0 ffffffff 5 -> -1 ffff
+CH 1 4 ffffffff 4 -> 0 4
+CH 1 4 ffffffff 5 -> -1 ffff
+CH 2 9 7fff 1 9 -> 0 9
+CH 2 9 7fff 1 7fff -> 1 7fff
+CH 2 9 7fff 1 0 -> -1 7fff
+CH 3 2 9 fffe 1 fffe -> 2 fffe
+CH 3 2 9 fffe 1 9 -> 1 9
+CH 3 2 9 fffe 1 2 -> 0 2
+CH 3 2 9 fffe 1 ffff -> -1 9
+CH 3 4 6 3e8 ffffffff 4 -> 0 4
+CH 3 4 6 3e8 ffffffff 6 -> 1 6
+CH 3 4 6 3e8 ffffffff 3e8 -> 2 3e8
+CH 3 4 6 3e8 ffffffff fffe -> -1 ffff
+CH 0 ffffffff fffe -> -1 ffff
+CH 5 3 4 6 7 9 3 6 -> 2 6
+CH 5 3 4 6 7 9 3 9 -> 4 9
+CH 5 3 4 6 7 9 3 3 -> 0 3
+CH 5 3 4 6 7 9 3 5 -> -1 7
+CH 3 3 a 64 0 3 -> 0 3
+CH 3 3 a 64 0 64 -> 2 64
+CH 3 3 a 64 0 a -> 1 a
+CH 3 3 a 64 0 b -> -1 3
+CH 0 ffffffff fffe -> -1 ffff
+CH 9 0 1 2 8 9 a 14 7fff fffe 1 2 -> 2 2
+CH 9 0 1 2 8 9 a 14 7fff fffe 1 9 -> 4 9
+CH 9 0 1 2 8 9 a 14 7fff fffe 1 1 -> 1 1
+CH 9 0 1 2 8 9 a 14 7fff fffe 1 5 -> -1 1
+CH 9 2 6 8 9 a 64 7fff 8000 fffe 8 8 -> 2 8
+CH 9 2 6 8 9 a 64 7fff 8000 fffe 8 6 -> 1 6
+CH 9 2 6 8 9 a 64 7fff 8000 fffe 8 64 -> 5 64
+CH 9 2 6 8 9 a 64 7fff 8000 fffe 8 63 -> -1 fffe
+CH 5 2 3 4 64 7fff 4 7fff -> 4 7fff
+CH 5 2 3 4 64 7fff 4 2 -> 0 2
+CH 5 2 3 4 64 7fff 4 3 -> 1 3
+CH 5 2 3 4 64 7fff 4 10003 -> 1 3
+CH 2 4 9 1 4 -> 0 4
+CH 2 4 9 1 9 -> 1 9
+CH 2 4 9 1 b -> -1 9
+CH 3 8 a 3e8 2 8 -> 0 8
+CH 3 8 a 3e8 2 3e8 -> 2 3e8
+CH 3 8 a 3e8 2 a -> 1 a
+CH 3 8 a 3e8 2 ffff -> -1 3e8
+CH 3 4 6 fffe 0 fffe -> 2 fffe
+CH 3 4 6 fffe 0 6 -> 1 6
+CH 3 4 6 fffe 0 4 -> 0 4
+CH 3 4 6 fffe 0 fffe -> 2 fffe
+CH 5 0 7 8 64 fffe 0 fffe -> 4 fffe
+CH 5 0 7 8 64 fffe 0 64 -> 3 64
+CH 5 0 7 8 64 fffe 0 8 -> 2 8
+CH 5 0 7 8 64 fffe 0 b -> -1 0
+CH 5 5 6 a 3e8 7fff 2 5 -> 0 5
+CH 5 5 6 a 3e8 7fff 2 7fff -> 4 7fff
+CH 5 5 6 a 3e8 7fff 2 6 -> 1 6
+CH 5 5 6 a 3e8 7fff 2 fffe -> -1 a
+CH 9 1 2 5 6 9 a 14 64 7fff ffffffff 5 -> 2 5
+CH 9 1 2 5 6 9 a 14 64 7fff ffffffff 1 -> 0 1
+CH 9 1 2 5 6 9 a 14 64 7fff ffffffff 64 -> 7 64
+CH 9 1 2 5 6 9 a 14 64 7fff ffffffff 10064 -> 7 64
+CH 5 3 4 5 6 7fff ffffffff 4 -> 1 4
+CH 5 3 4 5 6 7fff ffffffff 7fff -> 4 7fff
+CH 5 3 4 5 6 7fff ffffffff 5 -> 2 5
+CH 5 3 4 5 6 7fff ffffffff 10006 -> 3 6
+CH 1 7fff 0 7fff -> 0 7fff
+CH 1 7fff 0 5 -> -1 7fff
+CH 9 2 3 4 5 9 64 3e8 7fff 8000 0 5 -> 3 5
+CH 9 2 3 4 5 9 64 3e8 7fff 8000 0 3e8 -> 6 3e8
+CH 9 2 3 4 5 9 64 3e8 7fff 8000 0 8000 -> 8 8000
+CH 9 2 3 4 5 9 64 3e8 7fff 8000 0 fffe -> -1 2
+CH 0 ffffffff 6 -> -1 ffff
+CH 2 3 8 1 8 -> 1 8
+CH 2 3 8 1 3 -> 0 3
+CH 2 3 8 1 6 -> -1 8
+CH 1 14 ffffffff 14 -> 0 14
+CH 1 14 ffffffff 63 -> -1 ffff
+CH 0 ffffffff ffff -> -1 ffff
+CH 5 2 6 8 a 3e8 3 2 -> 0 2
+CH 5 2 6 8 a 3e8 3 6 -> 1 6
+CH 5 2 6 8 a 3e8 3 a -> 3 a
+CH 5 2 6 8 a 3e8 3 0 -> -1 a
+CH 3 4 6 64 ffffffff 64 -> 2 64
+CH 3 4 6 64 ffffffff 4 -> 0 4
+CH 3 4 6 64 ffffffff 6 -> 1 6
+CH 3 4 6 64 ffffffff 6 -> 1 6
+CH 9 0 1 3 6 7 9 7fff 8000 fffe ffffffff fffe -> 8 fffe
+CH 9 0 1 3 6 7 9 7fff 8000 fffe ffffffff 9 -> 5 9
+CH 9 0 1 3 6 7 9 7fff 8000 fffe ffffffff 3 -> 2 3
+CH 9 0 1 3 6 7 9 7fff 8000 fffe ffffffff fffe -> 8 fffe
+CH 0 ffffffff 5 -> -1 ffff
+CH 1 6 ffffffff 6 -> 0 6
+CH 1 6 ffffffff 0 -> -1 ffff
+CH 3 2 5 14 2 14 -> 2 14
+CH 3 2 5 14 2 5 -> 1 5
+CH 3 2 5 14 2 2 -> 0 2
+CH 3 2 5 14 2 10005 -> 1 5
+CH 2 8 64 ffffffff 64 -> 1 64
+CH 2 8 64 ffffffff 8 -> 0 8
+CH 2 8 64 ffffffff 1 -> -1 ffff
+CH 2 0 8 0 0 -> 0 0
+CH 2 0 8 0 8 -> 1 8
+CH 2 0 8 0 5 -> -1 0
+CH 5 0 4 9 a fffe ffffffff 9 -> 2 9
+CH 5 0 4 9 a fffe ffffffff fffe -> 4 fffe
+CH 5 0 4 9 a fffe ffffffff 4 -> 1 4
+CH 5 0 4 9 a fffe ffffffff 63 -> -1 ffff
+CH 9 0 2 6 8 14 64 3e8 7fff 8000 4 3e8 -> 6 3e8
+CH 9 0 2 6 8 14 64 3e8 7fff 8000 4 6 -> 2 6
+CH 9 0 2 6 8 14 64 3e8 7fff 8000 4 7fff -> 7 7fff
+CH 9 0 2 6 8 14 64 3e8 7fff 8000 4 ffff -> -1 14
+CH 9 0 1 3 4 9 a 14 7fff 8000 ffffffff 9 -> 4 9
+CH 9 0 1 3 4 9 a 14 7fff 8000 ffffffff 0 -> 0 0
+CH 9 0 1 3 4 9 a 14 7fff 8000 ffffffff a -> 5 a
+CH 9 0 1 3 4 9 a 14 7fff 8000 ffffffff 5 -> -1 ffff
+CH 0 ffffffff 1 -> -1 ffff
+CH 9 0 1 3 4 5 7 14 7fff fffe 3 fffe -> 8 fffe
+CH 9 0 1 3 4 5 7 14 7fff fffe 3 7 -> 5 7
+CH 9 0 1 3 4 5 7 14 7fff fffe 3 0 -> 0 0
+CH 9 0 1 3 4 5 7 14 7fff fffe 3 0 -> 0 0
+CH 5 0 4 14 64 3e8 1 3e8 -> 4 3e8
+CH 5 0 4 14 64 3e8 1 4 -> 1 4
+CH 5 0 4 14 64 3e8 1 0 -> 0 0
+CH 5 0 4 14 64 3e8 1 ffff -> -1 4
+CH 5 2 4 5 7 8000 0 2 -> 0 2
+CH 5 2 4 5 7 8000 0 7 -> 3 7
+CH 5 2 4 5 7 8000 0 5 -> 2 5
+CH 5 2 4 5 7 8000 0 fffe -> -1 2
+CH 5 0 3 9 a 8000 4 3 -> 1 3
+CH 5 0 3 9 a 8000 4 a -> 3 a
+CH 5 0 3 9 a 8000 4 0 -> 0 0
+CH 5 0 3 9 a 8000 4 fffe -> -1 8000
+CH 2 5 6 1 5 -> 0 5
+CH 2 5 6 1 6 -> 1 6
+CH 2 5 6 1 fffe -> -1 6
+CH 9 0 1 3 4 6 8 a 14 64 ffffffff 14 -> 7 14
+CH 9 0 1 3 4 6 8 a 14 64 ffffffff 3 -> 2 3
+CH 9 0 1 3 4 6 8 a 14 64 ffffffff 6 -> 4 6
+CH 9 0 1 3 4 6 8 a 14 64 ffffffff 6 -> 4 6
+CH 3 0 3 8 2 8 -> 2 8
+CH 3 0 3 8 2 3 -> 1 3
+CH 3 0 3 8 2 0 -> 0 0
+CH 3 0 3 8 2 b -> -1 8
+CH 5 1 8 3e8 7fff 8000 ffffffff 3e8 -> 2 3e8
+CH 5 1 8 3e8 7fff 8000 ffffffff 8 -> 1 8
+CH 5 1 8 3e8 7fff 8000 ffffffff 1 -> 0 1
+CH 5 1 8 3e8 7fff 8000 ffffffff ffff -> -1 ffff
+CH 1 64 0 64 -> 0 64
+CH 1 64 0 6 -> -1 64
+CH 5 5 7 a 7fff 8000 ffffffff 8000 -> 4 8000
+CH 5 5 7 a 7fff 8000 ffffffff 7fff -> 3 7fff
+CH 5 5 7 a 7fff 8000 ffffffff a -> 2 a
+CH 5 5 7 a 7fff 8000 ffffffff ffff -> -1 ffff
+CH 2 3e8 fffe 1 3e8 -> 0 3e8
+CH 2 3e8 fffe 1 fffe -> 1 fffe
+CH 2 3e8 fffe 1 5 -> -1 fffe
+CH 3 2 5 7fff 1 7fff -> 2 7fff
+CH 3 2 5 7fff 1 5 -> 1 5
+CH 3 2 5 7fff 1 2 -> 0 2
+CH 3 2 5 7fff 1 1 -> -1 5
+CH 3 0 3 9 2 3 -> 1 3
+CH 3 0 3 9 2 9 -> 2 9
+CH 3 0 3 9 2 0 -> 0 0
+CH 3 0 3 9 2 ffff -> -1 9
+CH 0 ffffffff fffe -> -1 ffff
+CH 2 2 5 1 5 -> 1 5
+CH 2 2 5 1 2 -> 0 2
+CH 2 2 5 1 b -> -1 5
+CH 3 6 a fffe ffffffff a -> 1 a
+CH 3 6 a fffe ffffffff 6 -> 0 6
+CH 3 6 a fffe ffffffff fffe -> 2 fffe
+CH 3 6 a fffe ffffffff 1 -> -1 ffff
+CH 3 1 64 fffe ffffffff fffe -> 2 fffe
+CH 3 1 64 fffe ffffffff 1 -> 0 1
+CH 3 1 64 fffe ffffffff 64 -> 1 64
+CH 3 1 64 fffe ffffffff 5 -> -1 ffff
+CH 9 2 5 6 7 8 a 14 3e8 7fff ffffffff 6 -> 2 6
+CH 9 2 5 6 7 8 a 14 3e8 7fff ffffffff a -> 5 a
+CH 9 2 5 6 7 8 a 14 3e8 7fff ffffffff 7 -> 3 7
+CH 9 2 5 6 7 8 a 14 3e8 7fff ffffffff 63 -> -1 ffff
+CH 3 3 64 3e8 2 3 -> 0 3
+CH 3 3 64 3e8 2 64 -> 1 64
+CH 3 3 64 3e8 2 3e8 -> 2 3e8
+CH 3 3 64 3e8 2 0 -> -1 3e8
+CH 9 0 1 2 3 5 6 a 14 fffe 5 fffe -> 8 fffe
+CH 9 0 1 2 3 5 6 a 14 fffe 5 3 -> 3 3
+CH 9 0 1 2 3 5 6 a 14 fffe 5 2 -> 2 2
+CH 9 0 1 2 3 5 6 a 14 fffe 5 6 -> 5 6
+CH 3 3 8 64 ffffffff 3 -> 0 3
+CH 3 3 8 64 ffffffff 8 -> 1 8
+CH 3 3 8 64 ffffffff 64 -> 2 64
+CH 3 3 8 64 ffffffff 5 -> -1 ffff
+CH 9 0 2 3 4 5 6 7 3e8 fffe 7 2 -> 1 2
+CH 9 0 2 3 4 5 6 7 3e8 fffe 7 0 -> 0 0
+CH 9 0 2 3 4 5 6 7 3e8 fffe 7 7 -> 6 7
+CH 9 0 2 3 4 5 6 7 3e8 fffe 7 6 -> 5 6
+CH 1 4 ffffffff 4 -> 0 4
+CH 1 4 ffffffff b -> -1 ffff
+CH 5 0 1 3 5 3e8 ffffffff 3e8 -> 4 3e8
+CH 5 0 1 3 5 3e8 ffffffff 0 -> 0 0
+CH 5 0 1 3 5 3e8 ffffffff 5 -> 3 5
+CH 5 0 1 3 5 3e8 ffffffff fffe -> -1 ffff
+CH 2 0 14 ffffffff 14 -> 1 14
+CH 2 0 14 ffffffff 0 -> 0 0
+CH 2 0 14 ffffffff fffe -> -1 ffff
+CH 2 0 5 1 5 -> 1 5
+CH 2 0 5 1 0 -> 0 0
+CH 2 0 5 1 5 -> 1 5
+CH 1 a ffffffff a -> 0 a
+CH 1 a ffffffff 6 -> -1 ffff
+CH 5 2 3 9 a 7fff ffffffff 9 -> 2 9
+CH 5 2 3 9 a 7fff ffffffff 2 -> 0 2
+CH 5 2 3 9 a 7fff ffffffff a -> 3 a
+CH 5 2 3 9 a 7fff ffffffff ffff -> -1 ffff
+CH 2 7 a 1 a -> 1 a
+CH 2 7 a 1 7 -> 0 7
+CH 2 7 a 1 5 -> -1 a
+CH 9 0 2 7 9 a 3e8 7fff 8000 fffe ffffffff fffe -> 8 fffe
+CH 9 0 2 7 9 a 3e8 7fff 8000 fffe ffffffff 3e8 -> 5 3e8
+CH 9 0 2 7 9 a 3e8 7fff 8000 fffe ffffffff 8000 -> 7 8000
+CH 9 0 2 7 9 a 3e8 7fff 8000 fffe ffffffff 1 -> -1 ffff
+CH 5 1 3 7 a 7fff 3 1 -> 0 1
+CH 5 1 3 7 a 7fff 3 7fff -> 4 7fff
+CH 5 1 3 7 a 7fff 3 3 -> 1 3
+CH 5 1 3 7 a 7fff 3 ffff -> -1 a
+CH 1 9 0 9 -> 0 9
+CH 1 9 0 b -> -1 9
+CH 5 0 1 8 7fff fffe ffffffff 1 -> 1 1
+CH 5 0 1 8 7fff fffe ffffffff 8 -> 2 8
+CH 5 0 1 8 7fff fffe ffffffff fffe -> 4 fffe
+CH 5 0 1 8 7fff fffe ffffffff 0 -> 0 0
+CH 1 2 ffffffff 2 -> 0 2
+CH 1 2 ffffffff ffff -> -1 ffff
+CH 3 0 3 a 2 3 -> 1 3
+CH 3 0 3 a 2 0 -> 0 0
+CH 3 0 3 a 2 a -> 2 a
+CH 3 0 3 a 2 ffff -> -1 a
+CH 3 1 9 8000 ffffffff 9 -> 1 9
+CH 3 1 9 8000 ffffffff 8000 -> 2 8000
+CH 3 1 9 8000 ffffffff 1 -> 0 1
+CH 3 1 9 8000 ffffffff 5 -> -1 ffff
+CH 3 2 7 8 ffffffff 8 -> 2 8
+CH 3 2 7 8 ffffffff 2 -> 0 2
+CH 3 2 7 8 ffffffff 7 -> 1 7
+CH 3 2 7 8 ffffffff 0 -> -1 ffff
+CH 3 0 5 7 1 0 -> 0 0
+CH 3 0 5 7 1 5 -> 1 5
+CH 3 0 5 7 1 7 -> 2 7
+CH 3 0 5 7 1 ffff -> -1 5
+CH 0 ffffffff 6 -> -1 ffff
+CH 2 0 3e8 ffffffff 0 -> 0 0
+CH 2 0 3e8 ffffffff 3e8 -> 1 3e8
+CH 2 0 3e8 ffffffff 5 -> -1 ffff
+CH 1 7 0 7 -> 0 7
+CH 1 7 0 63 -> -1 7
+CH 0 ffffffff 0 -> -1 ffff
+CH 9 0 1 2 5 6 a 14 64 3e8 5 a -> 5 a
+CH 9 0 1 2 5 6 a 14 64 3e8 5 5 -> 3 5
+CH 9 0 1 2 5 6 a 14 64 3e8 5 3e8 -> 8 3e8
+CH 9 0 1 2 5 6 a 14 64 3e8 5 5 -> 3 5
+CH 3 1 4 64 0 4 -> 1 4
+CH 3 1 4 64 0 64 -> 2 64
+CH 3 1 4 64 0 1 -> 0 1
+CH 3 1 4 64 0 10001 -> 0 1
+CH 3 0 6 8 1 8 -> 2 8
+CH 3 0 6 8 1 6 -> 1 6
+CH 3 0 6 8 1 0 -> 0 0
+CH 3 0 6 8 1 ffff -> -1 6
+CH 1 5 ffffffff 5 -> 0 5
+CH 1 5 ffffffff fffe -> -1 ffff
+CH 3 9 a 64 2 a -> 1 a
+CH 3 9 a 64 2 9 -> 0 9
+CH 3 9 a 64 2 64 -> 2 64
+CH 3 9 a 64 2 63 -> -1 64
+CH 1 8 ffffffff 8 -> 0 8
+CH 1 8 ffffffff 10008 -> 0 8
+CH 0 ffffffff ffff -> -1 ffff
+CH 5 0 4 9 a 3e8 1 0 -> 0 0
+CH 5 0 4 9 a 3e8 1 3e8 -> 4 3e8
+CH 5 0 4 9 a 3e8 1 9 -> 2 9
+CH 5 0 4 9 a 3e8 1 5 -> -1 4
+CH 3 6 7 9 1 7 -> 1 7
+CH 3 6 7 9 1 6 -> 0 6
+CH 3 6 7 9 1 9 -> 2 9
+CH 3 6 7 9 1 b -> -1 7
+CH 2 2 14 ffffffff 14 -> 1 14
+CH 2 2 14 ffffffff 2 -> 0 2
+CH 2 2 14 ffffffff 0 -> -1 ffff
+CH 2 6 3e8 0 6 -> 0 6
+CH 2 6 3e8 0 3e8 -> 1 3e8
+CH 2 6 3e8 0 0 -> -1 6
+CH 0 ffffffff 10003 -> -1 ffff
+CH 0 ffffffff ffff -> -1 ffff
+CH 9 1 3 5 6 7 8 3e8 7fff fffe 5 7fff -> 7 7fff
+CH 9 1 3 5 6 7 8 3e8 7fff fffe 5 3e8 -> 6 3e8
+CH 9 1 3 5 6 7 8 3e8 7fff fffe 5 5 -> 2 5
+CH 9 1 3 5 6 7 8 3e8 7fff fffe 5 fffe -> 8 fffe
+CH 0 ffffffff fffe -> -1 ffff
+CH 1 8 ffffffff 8 -> 0 8
+CH 1 8 ffffffff ffff -> -1 ffff
+CH 3 2 7 3e8 1 7 -> 1 7
+CH 3 2 7 3e8 1 2 -> 0 2
+CH 3 2 7 3e8 1 3e8 -> 2 3e8
+CH 3 2 7 3e8 1 5 -> -1 7
+CH 9 1 4 6 7 9 a 14 64 fffe 5 9 -> 4 9
+CH 9 1 4 6 7 9 a 14 64 fffe 5 6 -> 2 6
+CH 9 1 4 6 7 9 a 14 64 fffe 5 14 -> 6 14
+CH 9 1 4 6 7 9 a 14 64 fffe 5 1 -> 0 1
+CH 0 ffffffff 1 -> -1 ffff
+CH 1 2 ffffffff 2 -> 0 2
+CH 1 2 ffffffff 1 -> -1 ffff
+CH 9 1 2 5 7 8 a 14 3e8 8000 4 5 -> 2 5
+CH 9 1 2 5 7 8 a 14 3e8 8000 4 7 -> 3 7
+CH 9 1 2 5 7 8 a 14 3e8 8000 4 1 -> 0 1
+CH 9 1 2 5 7 8 a 14 3e8 8000 4 b -> -1 8
+CH 2 14 8000 0 8000 -> 1 8000
+CH 2 14 8000 0 14 -> 0 14
+CH 2 14 8000 0 6 -> -1 14
+CH 5 0 3 4 5 8000 ffffffff 8000 -> 4 8000
+CH 5 0 3 4 5 8000 ffffffff 4 -> 2 4
+CH 5 0 3 4 5 8000 ffffffff 3 -> 1 3
+CH 5 0 3 4 5 8000 ffffffff 63 -> -1 ffff
+CH 3 0 2 3 ffffffff 3 -> 2 3
+CH 3 0 2 3 ffffffff 2 -> 1 2
+CH 3 0 2 3 ffffffff 0 -> 0 0
+CH 3 0 2 3 ffffffff 63 -> -1 ffff
+CH 9 2 3 7 8 a 64 7fff 8000 fffe ffffffff 2 -> 0 2
+CH 9 2 3 7 8 a 64 7fff 8000 fffe ffffffff 7fff -> 6 7fff
+CH 9 2 3 7 8 a 64 7fff 8000 fffe ffffffff 64 -> 5 64
+CH 9 2 3 7 8 a 64 7fff 8000 fffe ffffffff 1 -> -1 ffff
+CH 2 2 7 ffffffff 2 -> 0 2
+CH 2 2 7 ffffffff 7 -> 1 7
+CH 2 2 7 ffffffff 10007 -> 1 7
+CH 2 4 8 0 4 -> 0 4
+CH 2 4 8 0 8 -> 1 8
+CH 2 4 8 0 ffff -> -1 4
+CH 2 1 5 ffffffff 1 -> 0 1
+CH 2 1 5 ffffffff 5 -> 1 5
+CH 2 1 5 ffffffff 0 -> -1 ffff
+CH 5 2 7 8 a fffe ffffffff 2 -> 0 2
+CH 5 2 7 8 a fffe ffffffff a -> 3 a
+CH 5 2 7 8 a fffe ffffffff 7 -> 1 7
+CH 5 2 7 8 a fffe ffffffff fffe -> 4 fffe
+CH 0 ffffffff 10003 -> -1 ffff
+CH 2 6 fffe 1 6 -> 0 6
+CH 2 6 fffe 1 fffe -> 1 fffe
+CH 2 6 fffe 1 ffff -> -1 fffe
+CH 5 2 6 8 3e8 fffe 1 fffe -> 4 fffe
+CH 5 2 6 8 3e8 fffe 1 2 -> 0 2
+CH 5 2 6 8 3e8 fffe 1 6 -> 1 6
+CH 5 2 6 8 3e8 fffe 1 b -> -1 6
+CH 1 3 0 3 -> 0 3
+CH 1 3 0 ffff -> -1 3
+CH 1 3 0 3 -> 0 3
+CH 1 3 0 1 -> -1 3
+CH 1 7 0 7 -> 0 7
+CH 1 7 0 63 -> -1 7
+CH 5 7 9 a 3e8 8000 0 a -> 2 a
+CH 5 7 9 a 3e8 8000 0 9 -> 1 9
+CH 5 7 9 a 3e8 8000 0 3e8 -> 3 3e8
+CH 5 7 9 a 3e8 8000 0 1 -> -1 7
+CH 5 0 9 a 3e8 fffe ffffffff 9 -> 1 9
+CH 5 0 9 a 3e8 fffe ffffffff fffe -> 4 fffe
+CH 5 0 9 a 3e8 fffe ffffffff a -> 2 a
+CH 5 0 9 a 3e8 fffe ffffffff 5 -> -1 ffff
+CH 3 6 9 8000 ffffffff 9 -> 1 9
+CH 3 6 9 8000 ffffffff 6 -> 0 6
+CH 3 6 9 8000 ffffffff 8000 -> 2 8000
+CH 3 6 9 8000 ffffffff fffe -> -1 ffff
+CH 3 0 8 64 2 8 -> 1 8
+CH 3 0 8 64 2 64 -> 2 64
+CH 3 0 8 64 2 0 -> 0 0
+CH 3 0 8 64 2 10008 -> 1 8
+CH 1 a ffffffff a -> 0 a
+CH 1 a ffffffff 6 -> -1 ffff
+CH 1 9 0 9 -> 0 9
+CH 1 9 0 10009 -> 0 9
+CH 0 ffffffff 63 -> -1 ffff
+CH 1 8000 ffffffff 8000 -> 0 8000
+CH 1 8000 ffffffff 1 -> -1 ffff
+CH 3 0 a 3e8 0 a -> 1 a
+CH 3 0 a 3e8 0 3e8 -> 2 3e8
+CH 3 0 a 3e8 0 0 -> 0 0
+CH 3 0 a 3e8 0 0 -> 0 0
+CH 2 0 5 ffffffff 0 -> 0 0
+CH 2 0 5 ffffffff 5 -> 1 5
+CH 2 0 5 ffffffff 6 -> -1 ffff
+CH 0 ffffffff fffe -> -1 ffff
+CH 1 3e8 0 3e8 -> 0 3e8
+CH 1 3e8 0 103e8 -> 0 3e8
+CH 9 0 1 2 3 4 9 a 3e8 fffe 8 2 -> 2 2
+CH 9 0 1 2 3 4 9 a 3e8 fffe 8 3 -> 3 3
+CH 9 0 1 2 3 4 9 a 3e8 fffe 8 9 -> 5 9
+CH 9 0 1 2 3 4 9 a 3e8 fffe 8 5 -> -1 fffe
+CH 3 0 14 3e8 2 14 -> 1 14
+CH 3 0 14 3e8 2 3e8 -> 2 3e8
+CH 3 0 14 3e8 2 0 -> 0 0
+CH 3 0 14 3e8 2 5 -> -1 3e8
+CH 1 2 0 2 -> 0 2
+CH 1 2 0 63 -> -1 2
+CH 5 3 6 8 3e8 7fff ffffffff 8 -> 2 8
+CH 5 3 6 8 3e8 7fff ffffffff 3 -> 0 3
+CH 5 3 6 8 3e8 7fff ffffffff 3e8 -> 3 3e8
+CH 5 3 6 8 3e8 7fff ffffffff 17fff -> 4 7fff
+CH 5 0 3 6 a 64 ffffffff 64 -> 4 64
+CH 5 0 3 6 a 64 ffffffff a -> 3 a
+CH 5 0 3 6 a 64 ffffffff 6 -> 2 6
+CH 5 0 3 6 a 64 ffffffff 63 -> -1 ffff
+CH 0 ffffffff 0 -> -1 ffff
+CH 5 1 5 8 64 8000 ffffffff 64 -> 3 64
+CH 5 1 5 8 64 8000 ffffffff 8000 -> 4 8000
+CH 5 1 5 8 64 8000 ffffffff 5 -> 1 5
+CH 5 1 5 8 64 8000 ffffffff 6 -> -1 ffff
+CH 2 7 8000 0 8000 -> 1 8000
+CH 2 7 8000 0 7 -> 0 7
+CH 2 7 8000 0 fffe -> -1 7
+CH 0 ffffffff 63 -> -1 ffff
+CH 9 0 2 4 6 8 9 14 64 3e8 ffffffff 9 -> 5 9
+CH 9 0 2 4 6 8 9 14 64 3e8 ffffffff 8 -> 4 8
+CH 9 0 2 4 6 8 9 14 64 3e8 ffffffff 3e8 -> 8 3e8
+CH 9 0 2 4 6 8 9 14 64 3e8 ffffffff b -> -1 ffff
+CH 1 a 0 a -> 0 a
+CH 1 a 0 63 -> -1 a
+CH 0 ffffffff 1 -> -1 ffff
+CH 0 ffffffff 1 -> -1 ffff
+CH 5 4 14 3e8 8000 fffe 2 14 -> 1 14
+CH 5 4 14 3e8 8000 fffe 2 8000 -> 3 8000
+CH 5 4 14 3e8 8000 fffe 2 fffe -> 4 fffe
+CH 5 4 14 3e8 8000 fffe 2 63 -> -1 3e8
+CH 0 ffffffff 0 -> -1 ffff
+CH 0 ffffffff 0 -> -1 ffff
+CH 2 a 3e8 0 3e8 -> 1 3e8
+CH 2 a 3e8 0 a -> 0 a
+CH 2 a 3e8 0 1 -> -1 a
+CH 0 ffffffff 6 -> -1 ffff
+CH 3 8 14 64 0 14 -> 1 14
+CH 3 8 14 64 0 8 -> 0 8
+CH 3 8 14 64 0 64 -> 2 64
+CH 3 8 14 64 0 10064 -> 2 64
+CH 9 0 2 4 6 7 a 3e8 8000 fffe ffffffff 7 -> 4 7
+CH 9 0 2 4 6 7 a 3e8 8000 fffe ffffffff a -> 5 a
+CH 9 0 2 4 6 7 a 3e8 8000 fffe ffffffff 8000 -> 7 8000
+CH 9 0 2 4 6 7 a 3e8 8000 fffe ffffffff 0 -> 0 0
+CH 9 2 3 5 7 8 9 a 64 7fff 0 8 -> 4 8
+CH 9 2 3 5 7 8 9 a 64 7fff 0 5 -> 2 5
+CH 9 2 3 5 7 8 9 a 64 7fff 0 2 -> 0 2
+CH 9 2 3 5 7 8 9 a 64 7fff 0 0 -> -1 2
+CH 2 a fffe ffffffff fffe -> 1 fffe
+CH 2 a fffe ffffffff a -> 0 a
+CH 2 a fffe ffffffff 5 -> -1 ffff
+CH 3 6 7 7fff 1 6 -> 0 6
+CH 3 6 7 7fff 1 7fff -> 2 7fff
+CH 3 6 7 7fff 1 7 -> 1 7
+CH 3 6 7 7fff 1 0 -> -1 7
+CH 9 1 3 4 9 a 3e8 7fff 8000 fffe ffffffff fffe -> 8 fffe
+CH 9 1 3 4 9 a 3e8 7fff 8000 fffe ffffffff 4 -> 2 4
+CH 9 1 3 4 9 a 3e8 7fff 8000 fffe ffffffff a -> 4 a
+CH 9 1 3 4 9 a 3e8 7fff 8000 fffe ffffffff 0 -> -1 ffff
+CH 9 1 4 5 6 7 8 a 7fff 8000 ffffffff a -> 6 a
+CH 9 1 4 5 6 7 8 a 7fff 8000 ffffffff 5 -> 2 5
+CH 9 1 4 5 6 7 8 a 7fff 8000 ffffffff 8 -> 5 8
+CH 9 1 4 5 6 7 8 a 7fff 8000 ffffffff 6 -> 3 6
+CH 9 1 2 3 7 9 a 7fff 8000 fffe 1 fffe -> 8 fffe
+CH 9 1 2 3 7 9 a 7fff 8000 fffe 1 1 -> 0 1
+CH 9 1 2 3 7 9 a 7fff 8000 fffe 1 8000 -> 7 8000
+CH 9 1 2 3 7 9 a 7fff 8000 fffe 1 6 -> -1 2
+CH 1 7fff 0 7fff -> 0 7fff
+CH 1 7fff 0 5 -> -1 7fff
+CH 5 0 5 6 14 64 ffffffff 0 -> 0 0
+CH 5 0 5 6 14 64 ffffffff 5 -> 1 5
+CH 5 0 5 6 14 64 ffffffff 6 -> 2 6
+CH 5 0 5 6 14 64 ffffffff 6 -> 2 6
+CH 9 0 2 5 7 9 64 3e8 7fff fffe 6 7fff -> 7 7fff
+CH 9 0 2 5 7 9 64 3e8 7fff fffe 6 0 -> 0 0
+CH 9 0 2 5 7 9 64 3e8 7fff fffe 6 fffe -> 8 fffe
+CH 9 0 2 5 7 9 64 3e8 7fff fffe 6 ffff -> -1 3e8
+CH 1 14 ffffffff 14 -> 0 14
+CH 1 14 ffffffff b -> -1 ffff
+CH 9 0 1 4 5 9 64 7fff 8000 fffe 2 0 -> 0 0
+CH 9 0 1 4 5 9 64 7fff 8000 fffe 2 64 -> 5 64
+CH 9 0 1 4 5 9 64 7fff 8000 fffe 2 fffe -> 8 fffe
+CH 9 0 1 4 5 9 64 7fff 8000 fffe 2 6 -> -1 4
+CH 9 0 3 4 5 9 a 14 3e8 7fff 7 0 -> 0 0
+CH 9 0 3 4 5 9 a 14 3e8 7fff 7 5 -> 3 5
+CH 9 0 3 4 5 9 a 14 3e8 7fff 7 4 -> 2 4
+CH 9 0 3 4 5 9 a 14 3e8 7fff 7 1 -> -1 3e8
+CH 9 0 3 4 6 7 9 a 14 7fff 8 9 -> 5 9
+CH 9 0 3 4 6 7 9 a 14 7fff 8 14 -> 7 14
+CH 9 0 3 4 6 7 9 a 14 7fff 8 6 -> 3 6
+CH 9 0 3 4 6 7 9 a 14 7fff 8 10004 -> 2 4
+CH 5 3 5 7 9 3e8 ffffffff 3e8 -> 4 3e8
+CH 5 3 5 7 9 3e8 ffffffff 5 -> 1 5
+CH 5 3 5 7 9 3e8 ffffffff 3 -> 0 3
+CH 5 3 5 7 9 3e8 ffffffff 1 -> -1 ffff
+CH 5 2 3 6 7 a 3 a -> 4 a
+CH 5 2 3 6 7 a 3 6 -> 2 6
+CH 5 2 3 6 7 a 3 3 -> 1 3
+CH 5 2 3 6 7 a 3 fffe -> -1 7
+CH 3 9 3e8 7fff ffffffff 7fff -> 2 7fff
+CH 3 9 3e8 7fff ffffffff 3e8 -> 1 3e8
+CH 3 9 3e8 7fff ffffffff 9 -> 0 9
+CH 3 9 3e8 7fff ffffffff 5 -> -1 ffff
+CH 5 0 3 6 3e8 fffe ffffffff 3e8 -> 3 3e8
+CH 5 0 3 6 3e8 fffe ffffffff fffe -> 4 fffe
+CH 5 0 3 6 3e8 fffe ffffffff 0 -> 0 0
+CH 5 0 3 6 3e8 fffe ffffffff b -> -1 ffff
+CH 1 8 ffffffff 8 -> 0 8
+CH 1 8 ffffffff b -> -1 ffff
+CH 9 0 1 2 4 8 14 64 3e8 fffe ffffffff 8 -> 4 8
+CH 9 0 1 2 4 8 14 64 3e8 fffe ffffffff fffe -> 8 fffe
+CH 9 0 1 2 4 8 14 64 3e8 fffe ffffffff 3e8 -> 7 3e8
+CH 9 0 1 2 4 8 14 64 3e8 fffe ffffffff ffff -> -1 ffff
+CH 2 0 fffe 1 0 -> 0 0
+CH 2 0 fffe 1 fffe -> 1 fffe
+CH 2 0 fffe 1 0 -> 0 0
+CH 0 ffffffff b -> -1 ffff
+CH 9 1 2 5 6 7 64 3e8 8000 fffe 0 7 -> 4 7
+CH 9 1 2 5 6 7 64 3e8 8000 fffe 0 2 -> 1 2
+CH 9 1 2 5 6 7 64 3e8 8000 fffe 0 5 -> 2 5
+CH 9 1 2 5 6 7 64 3e8 8000 fffe 0 63 -> -1 1
+CH 3 0 6 7 ffffffff 0 -> 0 0
+CH 3 0 6 7 ffffffff 7 -> 2 7
+CH 3 0 6 7 ffffffff 6 -> 1 6
+CH 3 0 6 7 ffffffff b -> -1 ffff
+CH 3 1 6 9 1 9 -> 2 9
+CH 3 1 6 9 1 1 -> 0 1
+CH 3 1 6 9 1 6 -> 1 6
+CH 3 1 6 9 1 0 -> -1 6
+CH 9 1 2 5 6 8 a 14 3e8 fffe 3 3e8 -> 7 3e8
+CH 9 1 2 5 6 8 a 14 3e8 fffe 3 5 -> 2 5
+CH 9 1 2 5 6 8 a 14 3e8 fffe 3 2 -> 1 2
+CH 9 1 2 5 6 8 a 14 3e8 fffe 3 fffe -> 8 fffe
+CH 9 3 6 7 8 9 a 14 64 3e8 7 a -> 5 a
+CH 9 3 6 7 8 9 a 14 64 3e8 7 64 -> 7 64
+CH 9 3 6 7 8 9 a 14 64 3e8 7 7 -> 2 7
+CH 9 3 6 7 8 9 a 14 64 3e8 7 1 -> -1 64
+CH 9 0 3 7 9 a 14 3e8 8000 fffe 8 8000 -> 7 8000
+CH 9 0 3 7 9 a 14 3e8 8000 fffe 8 a -> 4 a
+CH 9 0 3 7 9 a 14 3e8 8000 fffe 8 7 -> 2 7
+CH 9 0 3 7 9 a 14 3e8 8000 fffe 8 b -> -1 fffe
+CH 1 5 0 5 -> 0 5
+CH 1 5 0 ffff -> -1 5
+CH 3 3 5 a 0 a -> 2 a
+CH 3 3 5 a 0 3 -> 0 3
+CH 3 3 5 a 0 5 -> 1 5
+CH 3 3 5 a 0 ffff -> -1 3
+CH 0 ffffffff 0 -> -1 ffff
+CH 1 3e8 ffffffff 3e8 -> 0 3e8
+CH 1 3e8 ffffffff 1 -> -1 ffff
+CH 5 5 6 8 7fff 8000 ffffffff 7fff -> 3 7fff
+CH 5 5 6 8 7fff 8000 ffffffff 6 -> 1 6
+CH 5 5 6 8 7fff 8000 ffffffff 8 -> 2 8
+CH 5 5 6 8 7fff 8000 ffffffff 63 -> -1 ffff
+CH 5 2 3 4 64 3e8 0 4 -> 2 4
+CH 5 2 3 4 64 3e8 0 3e8 -> 4 3e8
+CH 5 2 3 4 64 3e8 0 3 -> 1 3
+CH 5 2 3 4 64 3e8 0 10002 -> 0 2
+CH 3 14 64 fffe ffffffff 64 -> 1 64
+CH 3 14 64 fffe ffffffff fffe -> 2 fffe
+CH 3 14 64 fffe ffffffff 14 -> 0 14
+CH 3 14 64 fffe ffffffff 0 -> -1 ffff
+CH 2 2 8000 ffffffff 2 -> 0 2
+CH 2 2 8000 ffffffff 8000 -> 1 8000
+CH 2 2 8000 ffffffff 18000 -> 1 8000
+CH 0 ffffffff 10003 -> -1 ffff
+CH 5 2 7 a 14 fffe 4 14 -> 3 14
+CH 5 2 7 a 14 fffe 4 2 -> 0 2
+CH 5 2 7 a 14 fffe 4 a -> 2 a
+CH 5 2 7 a 14 fffe 4 6 -> -1 fffe
+CH 5 0 1 5 64 fffe 1 0 -> 0 0
+CH 5 0 1 5 64 fffe 1 fffe -> 4 fffe
+CH 5 0 1 5 64 fffe 1 1 -> 1 1
+CH 5 0 1 5 64 fffe 1 10064 -> 3 64
+CH 0 ffffffff ffff -> -1 ffff
+CH 5 2 3 4 7 8000 2 4 -> 2 4
+CH 5 2 3 4 7 8000 2 3 -> 1 3
+CH 5 2 3 4 7 8000 2 8000 -> 4 8000
+CH 5 2 3 4 7 8000 2 6 -> -1 4
+CH 3 1 5 7 2 7 -> 2 7
+CH 3 1 5 7 2 5 -> 1 5
+CH 3 1 5 7 2 1 -> 0 1
+CH 3 1 5 7 2 1 -> 0 1
+CH 3 5 9 7fff ffffffff 9 -> 1 9
+CH 3 5 9 7fff ffffffff 7fff -> 2 7fff
+CH 3 5 9 7fff ffffffff 5 -> 0 5
+CH 3 5 9 7fff ffffffff 1 -> -1 ffff
+CH 1 4 0 4 -> 0 4
+CH 1 4 0 6 -> -1 4
+CH 9 0 1 4 6 14 64 7fff 8000 fffe ffffffff fffe -> 8 fffe
+CH 9 0 1 4 6 14 64 7fff 8000 fffe ffffffff 14 -> 4 14
+CH 9 0 1 4 6 14 64 7fff 8000 fffe ffffffff 6 -> 3 6
+CH 9 0 1 4 6 14 64 7fff 8000 fffe ffffffff b -> -1 ffff
+CH 1 8000 0 8000 -> 0 8000
+CH 1 8000 0 fffe -> -1 8000
+CH 3 1 2 9 2 2 -> 1 2
+CH 3 1 2 9 2 9 -> 2 9
+CH 3 1 2 9 2 1 -> 0 1
+CH 3 1 2 9 2 b -> -1 9
+CH 0 ffffffff ffff -> -1 ffff
+CH 0 ffffffff 0 -> -1 ffff
+CH 1 7fff 0 7fff -> 0 7fff
+CH 1 7fff 0 63 -> -1 7fff
+CH 3 a 14 64 2 14 -> 1 14
+CH 3 a 14 64 2 a -> 0 a
+CH 3 a 14 64 2 64 -> 2 64
+CH 3 a 14 64 2 ffff -> -1 64
+CH 9 1 2 4 8 a 14 3e8 7fff fffe ffffffff a -> 4 a
+CH 9 1 2 4 8 a 14 3e8 7fff fffe ffffffff 8 -> 3 8
+CH 9 1 2 4 8 a 14 3e8 7fff fffe ffffffff 2 -> 1 2
+CH 9 1 2 4 8 a 14 3e8 7fff fffe ffffffff 5 -> -1 ffff
+CH 9 1 2 3 4 8 9 14 64 3e8 ffffffff 64 -> 7 64
+CH 9 1 2 3 4 8 9 14 64 3e8 ffffffff 8 -> 4 8
+CH 9 1 2 3 4 8 9 14 64 3e8 ffffffff 9 -> 5 9
+CH 9 1 2 3 4 8 9 14 64 3e8 ffffffff fffe -> -1 ffff
+CH 9 2 7 8 9 a 64 3e8 7fff 8000 5 a -> 4 a
+CH 9 2 7 8 9 a 64 3e8 7fff 8000 5 2 -> 0 2
+CH 9 2 7 8 9 a 64 3e8 7fff 8000 5 3e8 -> 6 3e8
+CH 9 2 7 8 9 a 64 3e8 7fff 8000 5 ffff -> -1 64
+CH 2 4 64 1 64 -> 1 64
+CH 2 4 64 1 4 -> 0 4
+CH 2 4 64 1 0 -> -1 64
+CH 1 fffe 0 fffe -> 0 fffe
+CH 1 fffe 0 5 -> -1 fffe
+CH 5 6 9 a 64 3e8 0 6 -> 0 6
+CH 5 6 9 a 64 3e8 0 3e8 -> 4 3e8
+CH 5 6 9 a 64 3e8 0 64 -> 3 64
+CH 5 6 9 a 64 3e8 0 0 -> -1 6
+CH 9 0 2 4 5 6 8 a 64 7fff 5 8 -> 5 8
+CH 9 0 2 4 5 6 8 a 64 7fff 5 5 -> 3 5
+CH 9 0 2 4 5 6 8 a 64 7fff 5 7fff -> 8 7fff
+CH 9 0 2 4 5 6 8 a 64 7fff 5 0 -> 0 0
+CH 2 64 fffe 0 fffe -> 1 fffe
+CH 2 64 fffe 0 64 -> 0 64
+CH 2 64 fffe 0 63 -> -1 64
+CH 1 8 0 8 -> 0 8
+CH 1 8 0 5 -> -1 8
+CH 2 5 3e8 ffffffff 5 -> 0 5
+CH 2 5 3e8 ffffffff 3e8 -> 1 3e8
+CH 2 5 3e8 ffffffff 5 -> 0 5
+CH 2 4 6 ffffffff 6 -> 1 6
+CH 2 4 6 ffffffff 4 -> 0 4
+CH 2 4 6 ffffffff fffe -> -1 ffff
+CH 5 2 7 8 14 3e8 2 2 -> 0 2
+CH 5 2 7 8 14 3e8 2 8 -> 2 8
+CH 5 2 7 8 14 3e8 2 14 -> 3 14
+CH 5 2 7 8 14 3e8 2 ffff -> -1 8
+CH 2 4 8000 ffffffff 4 -> 0 4
+CH 2 4 8000 ffffffff 8000 -> 1 8000
+CH 2 4 8000 ffffffff fffe -> -1 ffff
+CH 5 1 2 9 3e8 8000 4 9 -> 2 9
+CH 5 1 2 9 3e8 8000 4 3e8 -> 3 3e8
+CH 5 1 2 9 3e8 8000 4 1 -> 0 1
+CH 5 1 2 9 3e8 8000 4 b -> -1 8000
+CH 9 3 5 6 7 9 a 14 8000 fffe ffffffff a -> 5 a
+CH 9 3 5 6 7 9 a 14 8000 fffe ffffffff 9 -> 4 9
+CH 9 3 5 6 7 9 a 14 8000 fffe ffffffff 7 -> 3 7
+CH 9 3 5 6 7 9 a 14 8000 fffe ffffffff 1 -> -1 ffff
+CH 9 0 2 3 6 8 9 a 3e8 7fff 1 3e8 -> 7 3e8
+CH 9 0 2 3 6 8 9 a 3e8 7fff 1 7fff -> 8 7fff
+CH 9 0 2 3 6 8 9 a 3e8 7fff 1 3 -> 2 3
+CH 9 0 2 3 6 8 9 a 3e8 7fff 1 10003 -> 2 3
+CH 1 8000 ffffffff 8000 -> 0 8000
+CH 1 8000 ffffffff fffe -> -1 ffff
+CH 5 0 5 14 3e8 8000 ffffffff 5 -> 1 5
+CH 5 0 5 14 3e8 8000 ffffffff 8000 -> 4 8000
+CH 5 0 5 14 3e8 8000 ffffffff 0 -> 0 0
+CH 5 0 5 14 3e8 8000 ffffffff 5 -> 1 5
+CH 5 0 4 5 6 a 1 4 -> 1 4
+CH 5 0 4 5 6 a 1 a -> 4 a
+CH 5 0 4 5 6 a 1 0 -> 0 0
+CH 5 0 4 5 6 a 1 b -> -1 4
+CH 5 6 8 9 64 8000 4 8 -> 1 8
+CH 5 6 8 9 64 8000 4 9 -> 2 9
+CH 5 6 8 9 64 8000 4 8000 -> 4 8000
+CH 5 6 8 9 64 8000 4 5 -> -1 8000
+CH 2 64 7fff ffffffff 64 -> 0 64
+CH 2 64 7fff ffffffff 7fff -> 1 7fff
+CH 2 64 7fff ffffffff 6 -> -1 ffff
+CH 2 0 3 ffffffff 3 -> 1 3
+CH 2 0 3 ffffffff 0 -> 0 0
+CH 2 0 3 ffffffff 10000 -> 0 0
+CH 0 ffffffff 1 -> -1 ffff
+CH 3 2 4 8000 ffffffff 4 -> 1 4
+CH 3 2 4 8000 ffffffff 8000 -> 2 8000
+CH 3 2 4 8000 ffffffff 2 -> 0 2
+CH 3 2 4 8000 ffffffff fffe -> -1 ffff
+CH 9 0 5 6 7 64 3e8 7fff 8000 fffe 3 7 -> 3 7
+CH 9 0 5 6 7 64 3e8 7fff 8000 fffe 3 8000 -> 7 8000
+CH 9 0 5 6 7 64 3e8 7fff 8000 fffe 3 64 -> 4 64
+CH 9 0 5 6 7 64 3e8 7fff 8000 fffe 3 1 -> -1 7
+CH 2 5 7fff ffffffff 7fff -> 1 7fff
+CH 2 5 7fff ffffffff 5 -> 0 5
+CH 2 5 7fff ffffffff 6 -> -1 ffff
+CH 0 ffffffff fffe -> -1 ffff
+CH 1 14 0 14 -> 0 14
+CH 1 14 0 63 -> -1 14
+CH 0 ffffffff b -> -1 ffff
+CH 3 7 9 14 2 14 -> 2 14
+CH 3 7 9 14 2 9 -> 1 9
+CH 3 7 9 14 2 7 -> 0 7
+CH 3 7 9 14 2 10009 -> 1 9
+CH 1 14 ffffffff 14 -> 0 14
+CH 1 14 ffffffff b -> -1 ffff
+CH 0 ffffffff ffff -> -1 ffff
+CH 2 7 14 1 14 -> 1 14
+CH 2 7 14 1 7 -> 0 7
+CH 2 7 14 1 63 -> -1 14
+CH 2 2 7 1 2 -> 0 2
+CH 2 2 7 1 7 -> 1 7
+CH 2 2 7 1 0 -> -1 7
+CH 5 4 6 64 3e8 8000 4 64 -> 2 64
+CH 5 4 6 64 3e8 8000 4 3e8 -> 3 3e8
+CH 5 4 6 64 3e8 8000 4 8000 -> 4 8000
+CH 5 4 6 64 3e8 8000 4 6 -> 1 6
+CH 5 0 3 5 7 7fff ffffffff 5 -> 2 5
+CH 5 0 3 5 7 7fff ffffffff 7fff -> 4 7fff
+CH 5 0 3 5 7 7fff ffffffff 0 -> 0 0
+CH 5 0 3 5 7 7fff ffffffff b -> -1 ffff
+CH 9 0 3 6 7 8 9 64 3e8 fffe ffffffff 3 -> 1 3
+CH 9 0 3 6 7 8 9 64 3e8 fffe ffffffff 64 -> 6 64
+CH 9 0 3 6 7 8 9 64 3e8 fffe ffffffff 0 -> 0 0
+CH 9 0 3 6 7 8 9 64 3e8 fffe ffffffff ffff -> -1 ffff
+CH 1 0 0 0 -> 0 0
+CH 1 0 0 0 -> 0 0
+CH 1 7 ffffffff 7 -> 0 7
+CH 1 7 ffffffff ffff -> -1 ffff
+CH 2 7 8000 ffffffff 7 -> 0 7
+CH 2 7 8000 ffffffff 8000 -> 1 8000
+CH 2 7 8000 ffffffff 0 -> -1 ffff
+CH 5 3 5 6 8 14 1 8 -> 3 8
+CH 5 3 5 6 8 14 1 14 -> 4 14
+CH 5 3 5 6 8 14 1 6 -> 2 6
+CH 5 3 5 6 8 14 1 63 -> -1 5
+CH 2 5 7fff 1 5 -> 0 5
+CH 2 5 7fff 1 7fff -> 1 7fff
+CH 2 5 7fff 1 10005 -> 0 5
+CH 2 5 3e8 1 5 -> 0 5
+CH 2 5 3e8 1 3e8 -> 1 3e8
+CH 2 5 3e8 1 fffe -> -1 3e8
+CH 2 3 8 0 3 -> 0 3
+CH 2 3 8 0 8 -> 1 8
+CH 2 3 8 0 b -> -1 3
+CH 3 9 a 7fff 2 a -> 1 a
+CH 3 9 a 7fff 2 7fff -> 2 7fff
+CH 3 9 a 7fff 2 9 -> 0 9
+CH 3 9 a 7fff 2 6 -> -1 7fff
+CH 1 0 0 0 -> 0 0
+CH 1 0 0 5 -> -1 0
+CH 5 2 3 5 7 8 1 8 -> 4 8
+CH 5 2 3 5 7 8 1 7 -> 3 7
+CH 5 2 3 5 7 8 1 5 -> 2 5
+CH 5 2 3 5 7 8 1 6 -> -1 3
+CH 2 3 14 ffffffff 3 -> 0 3
+CH 2 3 14 ffffffff 14 -> 1 14
+CH 2 3 14 ffffffff b -> -1 ffff
+CH 9 0 4 5 6 8 a 3e8 8000 fffe 8 6 -> 3 6
+CH 9 0 4 5 6 8 a 3e8 8000 fffe 8 5 -> 2 5
+CH 9 0 4 5 6 8 a 3e8 8000 fffe 8 fffe -> 8 fffe
+CH 9 0 4 5 6 8 a 3e8 8000 fffe 8 103e8 -> 6 3e8
+CH 1 6 0 6 -> 0 6
+CH 1 6 0 fffe -> -1 6
+CH 0 ffffffff ffff -> -1 ffff
+CH 2 4 3e8 1 4 -> 0 4
+CH 2 4 3e8 1 3e8 -> 1 3e8
+CH 2 4 3e8 1 6 -> -1 3e8
+CH 9 1 2 3 5 6 7 3e8 7fff fffe 8 6 -> 4 6
+CH 9 1 2 3 5 6 7 3e8 7fff fffe 8 7 -> 5 7
+CH 9 1 2 3 5 6 7 3e8 7fff fffe 8 7fff -> 7 7fff
+CH 9 1 2 3 5 6 7 3e8 7fff fffe 8 5 -> 3 5
+CH 1 5 ffffffff 5 -> 0 5
+CH 1 5 ffffffff 0 -> -1 ffff
+CH 1 7fff 0 7fff -> 0 7fff
+CH 1 7fff 0 fffe -> -1 7fff
+CH 0 ffffffff 1 -> -1 ffff
+CH 0 ffffffff 10003 -> -1 ffff
+CH 2 64 7fff 0 7fff -> 1 7fff
+CH 2 64 7fff 0 64 -> 0 64
+CH 2 64 7fff 0 10064 -> 0 64
+CH 2 a 3e8 ffffffff 3e8 -> 1 3e8
+CH 2 a 3e8 ffffffff a -> 0 a
+CH 2 a 3e8 ffffffff 0 -> -1 ffff
+CH 5 0 3 5 8 64 2 64 -> 4 64
+CH 5 0 3 5 8 64 2 3 -> 1 3
+CH 5 0 3 5 8 64 2 8 -> 3 8
+CH 5 0 3 5 8 64 2 1 -> -1 5
+CH 3 4 64 8000 ffffffff 4 -> 0 4
+CH 3 4 64 8000 ffffffff 8000 -> 2 8000
+CH 3 4 64 8000 ffffffff 64 -> 1 64
+CH 3 4 64 8000 ffffffff 63 -> -1 ffff
+CH 3 5 7 7fff ffffffff 7fff -> 2 7fff
+CH 3 5 7 7fff ffffffff 5 -> 0 5
+CH 3 5 7 7fff ffffffff 7 -> 1 7
+CH 3 5 7 7fff ffffffff 10007 -> 1 7
+CH 1 6 ffffffff 6 -> 0 6
+CH 1 6 ffffffff 1 -> -1 ffff
+CH 2 4 8 0 8 -> 1 8
+CH 2 4 8 0 4 -> 0 4
+CH 2 4 8 0 ffff -> -1 4
+CH 2 a 64 ffffffff a -> 0 a
+CH 2 a 64 ffffffff 64 -> 1 64
+CH 2 a 64 ffffffff b -> -1 ffff
+CH 2 8 fffe 0 fffe -> 1 fffe
+CH 2 8 fffe 0 8 -> 0 8
+CH 2 8 fffe 0 0 -> -1 8
+CH 1 a 0 a -> 0 a
+CH 1 a 0 ffff -> -1 a
+CH 9 0 1 3 5 7 a 64 7fff fffe 6 5 -> 3 5
+CH 9 0 1 3 5 7 a 64 7fff fffe 6 7fff -> 7 7fff
+CH 9 0 1 3 5 7 a 64 7fff fffe 6 fffe -> 8 fffe
+CH 9 0 1 3 5 7 a 64 7fff fffe 6 ffff -> -1 64
+CH 5 2 6 8 64 7fff ffffffff 64 -> 3 64
+CH 5 2 6 8 64 7fff ffffffff 6 -> 1 6
+CH 5 2 6 8 64 7fff ffffffff 8 -> 2 8
+CH 5 2 6 8 64 7fff ffffffff ffff -> -1 ffff
+CH 9 0 2 3 7 8 9 a 14 3e8 3 8 -> 4 8
+CH 9 0 2 3 7 8 9 a 14 3e8 3 a -> 6 a
+CH 9 0 2 3 7 8 9 a 14 3e8 3 0 -> 0 0
+CH 9 0 2 3 7 8 9 a 14 3e8 3 0 -> 0 0
+CH 3 0 5 8 ffffffff 5 -> 1 5
+CH 3 0 5 8 ffffffff 0 -> 0 0
+CH 3 0 5 8 ffffffff 8 -> 2 8
+CH 3 0 5 8 ffffffff 5 -> 1 5
+CH 1 9 0 9 -> 0 9
+CH 1 9 0 fffe -> -1 9
+CH 0 ffffffff ffff -> -1 ffff
+CH 3 7 a fffe 1 fffe -> 2 fffe
+CH 3 7 a fffe 1 7 -> 0 7
+CH 3 7 a fffe 1 a -> 1 a
+CH 3 7 a fffe 1 ffff -> -1 a
+CH 3 1 4 64 0 64 -> 2 64
+CH 3 1 4 64 0 1 -> 0 1
+CH 3 1 4 64 0 4 -> 1 4
+CH 3 1 4 64 0 10001 -> 0 1
+CH 9 1 2 5 9 a 14 64 7fff fffe ffffffff 9 -> 3 9
+CH 9 1 2 5 9 a 14 64 7fff fffe ffffffff 64 -> 6 64
+CH 9 1 2 5 9 a 14 64 7fff fffe ffffffff 14 -> 5 14
+CH 9 1 2 5 9 a 14 64 7fff fffe ffffffff 6 -> -1 ffff
+CH 3 6 14 3e8 2 6 -> 0 6
+CH 3 6 14 3e8 2 3e8 -> 2 3e8
+CH 3 6 14 3e8 2 14 -> 1 14
+CH 3 6 14 3e8 2 6 -> 0 6
+CH 3 9 14 8000 0 14 -> 1 14
+CH 3 9 14 8000 0 9 -> 0 9
+CH 3 9 14 8000 0 8000 -> 2 8000
+CH 3 9 14 8000 0 0 -> -1 9
+CH 9 4 6 7 9 a 14 64 7fff 8000 ffffffff 8000 -> 8 8000
+CH 9 4 6 7 9 a 14 64 7fff 8000 ffffffff 4 -> 0 4
+CH 9 4 6 7 9 a 14 64 7fff 8000 ffffffff a -> 4 a
+CH 9 4 6 7 9 a 14 64 7fff 8000 ffffffff b -> -1 ffff
+CH 5 0 14 3e8 7fff fffe 1 0 -> 0 0
+CH 5 0 14 3e8 7fff fffe 1 7fff -> 3 7fff
+CH 5 0 14 3e8 7fff fffe 1 14 -> 1 14
+CH 5 0 14 3e8 7fff fffe 1 6 -> -1 14
+CH 2 2 5 ffffffff 5 -> 1 5
+CH 2 2 5 ffffffff 2 -> 0 2
+CH 2 2 5 ffffffff 5 -> 1 5
+CH 1 64 0 64 -> 0 64
+CH 1 64 0 10064 -> 0 64
+CH 1 0 ffffffff 0 -> 0 0
+CH 1 0 ffffffff 10000 -> 0 0
+CH 5 0 2 9 a 8000 0 9 -> 2 9
+CH 5 0 2 9 a 8000 0 a -> 3 a
+CH 5 0 2 9 a 8000 0 8000 -> 4 8000
+CH 5 0 2 9 a 8000 0 ffff -> -1 0
+CH 9 2 3 4 7 8 9 14 64 8000 2 2 -> 0 2
+CH 9 2 3 4 7 8 9 14 64 8000 2 3 -> 1 3
+CH 9 2 3 4 7 8 9 14 64 8000 2 64 -> 7 64
+CH 9 2 3 4 7 8 9 14 64 8000 2 0 -> -1 4
+CH 1 7fff ffffffff 7fff -> 0 7fff
+CH 1 7fff ffffffff fffe -> -1 ffff
+CH 3 3 7 fffe 0 fffe -> 2 fffe
+CH 3 3 7 fffe 0 7 -> 1 7
+CH 3 3 7 fffe 0 3 -> 0 3
+CH 3 3 7 fffe 0 10003 -> 0 3
+CH 9 1 2 4 6 9 a 14 7fff 8000 ffffffff 2 -> 1 2
+CH 9 1 2 4 6 9 a 14 7fff 8000 ffffffff 6 -> 3 6
+CH 9 1 2 4 6 9 a 14 7fff 8000 ffffffff 1 -> 0 1
+CH 9 1 2 4 6 9 a 14 7fff 8000 ffffffff 18000 -> 8 8000
+CH 0 ffffffff 1 -> -1 ffff
+CH 2 0 a ffffffff 0 -> 0 0
+CH 2 0 a ffffffff a -> 1 a
+CH 2 0 a ffffffff 10000 -> 0 0
+CH 2 7 14 0 7 -> 0 7
+CH 2 7 14 0 14 -> 1 14
+CH 2 7 14 0 0 -> -1 7
+CH 5 7 a 14 8000 fffe 4 8000 -> 3 8000
+CH 5 7 a 14 8000 fffe 4 fffe -> 4 fffe
+CH 5 7 a 14 8000 fffe 4 7 -> 0 7
+CH 5 7 a 14 8000 fffe 4 b -> -1 fffe
+CH 1 8000 0 8000 -> 0 8000
+CH 1 8000 0 63 -> -1 8000
+CH 2 7 3e8 1 7 -> 0 7
+CH 2 7 3e8 1 3e8 -> 1 3e8
+CH 2 7 3e8 1 103e8 -> 1 3e8
+CH 3 1 4 5 0 1 -> 0 1
+CH 3 1 4 5 0 5 -> 2 5
+CH 3 1 4 5 0 4 -> 1 4
+CH 3 1 4 5 0 b -> -1 1
+CH 3 1 3 7 0 3 -> 1 3
+CH 3 1 3 7 0 7 -> 2 7
+CH 3 1 3 7 0 1 -> 0 1
+CH 3 1 3 7 0 6 -> -1 1
+CH 1 3e8 ffffffff 3e8 -> 0 3e8
+CH 1 3e8 ffffffff ffff -> -1 ffff
+CH 9 0 2 6 8 9 14 64 3e8 8000 ffffffff 9 -> 4 9
+CH 9 0 2 6 8 9 14 64 3e8 8000 ffffffff 14 -> 5 14
+CH 9 0 2 6 8 9 14 64 3e8 8000 ffffffff 2 -> 1 2
+CH 9 0 2 6 8 9 14 64 3e8 8000 ffffffff 5 -> -1 ffff
+CH 5 8 9 14 64 fffe 3 9 -> 1 9
+CH 5 8 9 14 64 fffe 3 14 -> 2 14
+CH 5 8 9 14 64 fffe 3 fffe -> 4 fffe
+CH 5 8 9 14 64 fffe 3 fffe -> 4 fffe
+CH 0 ffffffff 10003 -> -1 ffff
+CH 3 2 8 14 ffffffff 8 -> 1 8
+CH 3 2 8 14 ffffffff 2 -> 0 2
+CH 3 2 8 14 ffffffff 14 -> 2 14
+CH 3 2 8 14 ffffffff 5 -> -1 ffff
+CH 3 2 a 64 ffffffff 64 -> 2 64
+CH 3 2 a 64 ffffffff 2 -> 0 2
+CH 3 2 a 64 ffffffff a -> 1 a
+CH 3 2 a 64 ffffffff 10002 -> 0 2
+CH 3 1 2 8000 ffffffff 1 -> 0 1
+CH 3 1 2 8000 ffffffff 2 -> 1 2
+CH 3 1 2 8000 ffffffff 8000 -> 2 8000
+CH 3 1 2 8000 ffffffff 63 -> -1 ffff
+CH 0 ffffffff 1 -> -1 ffff
+CH 9 0 1 3 7 9 a 14 64 fffe ffffffff 9 -> 4 9
+CH 9 0 1 3 7 9 a 14 64 fffe ffffffff 64 -> 7 64
+CH 9 0 1 3 7 9 a 14 64 fffe ffffffff a -> 5 a
+CH 9 0 1 3 7 9 a 14 64 fffe ffffffff ffff -> -1 ffff
+CH 9 0 1 3 5 6 7 9 3e8 8000 1 7 -> 5 7
+CH 9 0 1 3 5 6 7 9 3e8 8000 1 5 -> 3 5
+CH 9 0 1 3 5 6 7 9 3e8 8000 1 3 -> 2 3
+CH 9 0 1 3 5 6 7 9 3e8 8000 1 ffff -> -1 1
+CH 1 3e8 0 3e8 -> 0 3e8
+CH 1 3e8 0 5 -> -1 3e8
+CH 0 ffffffff b -> -1 ffff
+CH 2 1 2 ffffffff 2 -> 1 2
+CH 2 1 2 ffffffff 1 -> 0 1
+CH 2 1 2 ffffffff 6 -> -1 ffff
+CH 9 0 1 2 3 4 6 7 8000 fffe ffffffff 4 -> 4 4
+CH 9 0 1 2 3 4 6 7 8000 fffe ffffffff 3 -> 3 3
+CH 9 0 1 2 3 4 6 7 8000 fffe ffffffff 6 -> 5 6
+CH 9 0 1 2 3 4 6 7 8000 fffe ffffffff fffe -> 8 fffe
+CH 1 0 0 0 -> 0 0
+CH 1 0 0 10000 -> 0 0
+CH 2 0 4 1 4 -> 1 4
+CH 2 0 4 1 0 -> 0 0
+CH 2 0 4 1 fffe -> -1 4
+CH 9 0 3 4 6 7 9 a 7fff 8000 5 9 -> 5 9
+CH 9 0 3 4 6 7 9 a 7fff 8000 5 6 -> 3 6
+CH 9 0 3 4 6 7 9 a 7fff 8000 5 a -> 6 a
+CH 9 0 3 4 6 7 9 a 7fff 8000 5 0 -> 0 0
+CH 5 4 8 14 64 8000 ffffffff 4 -> 0 4
+CH 5 4 8 14 64 8000 ffffffff 8 -> 1 8
+CH 5 4 8 14 64 8000 ffffffff 14 -> 2 14
+CH 5 4 8 14 64 8000 ffffffff 0 -> -1 ffff
+CH 5 0 3 4 5 8 ffffffff 8 -> 4 8
+CH 5 0 3 4 5 8 ffffffff 0 -> 0 0
+CH 5 0 3 4 5 8 ffffffff 5 -> 3 5
+CH 5 0 3 4 5 8 ffffffff 1 -> -1 ffff
+CH 3 0 2 3 0 3 -> 2 3
+CH 3 0 2 3 0 2 -> 1 2
+CH 3 0 2 3 0 0 -> 0 0
+CH 3 0 2 3 0 1 -> -1 0
+CH 3 4 64 3e8 0 64 -> 1 64
+CH 3 4 64 3e8 0 3e8 -> 2 3e8
+CH 3 4 64 3e8 0 4 -> 0 4
+CH 3 4 64 3e8 0 10004 -> 0 4
+CH 1 1 0 1 -> 0 1
+CH 1 1 0 0 -> -1 1
+CH 3 4 5 14 ffffffff 14 -> 2 14
+CH 3 4 5 14 ffffffff 4 -> 0 4
+CH 3 4 5 14 ffffffff 5 -> 1 5
+CH 3 4 5 14 ffffffff ffff -> -1 ffff
+CH 5 1 2 5 6 fffe ffffffff 6 -> 3 6
+CH 5 1 2 5 6 fffe ffffffff 5 -> 2 5
+CH 5 1 2 5 6 fffe ffffffff fffe -> 4 fffe
+CH 5 1 2 5 6 fffe ffffffff fffe -> 4 fffe
+CH 0 ffffffff 5 -> -1 ffff
+CH 2 5 7 ffffffff 5 -> 0 5
+CH 2 5 7 ffffffff 7 -> 1 7
+CH 2 5 7 ffffffff 10005 -> 0 5
+CH 5 5 7 8 14 3e8 ffffffff 8 -> 2 8
+CH 5 5 7 8 14 3e8 ffffffff 7 -> 1 7
+CH 5 5 7 8 14 3e8 ffffffff 3e8 -> 4 3e8
+CH 5 5 7 8 14 3e8 ffffffff 63 -> -1 ffff
+CH 5 0 4 5 a fffe 4 4 -> 1 4
+CH 5 0 4 5 a fffe 4 fffe -> 4 fffe
+CH 5 0 4 5 a fffe 4 0 -> 0 0
+CH 5 0 4 5 a fffe 4 5 -> 2 5
+CH 2 3 7 0 7 -> 1 7
+CH 2 3 7 0 3 -> 0 3
+CH 2 3 7 0 6 -> -1 3
+CH 3 1 3 8000 ffffffff 1 -> 0 1
+CH 3 1 3 8000 ffffffff 8000 -> 2 8000
+CH 3 1 3 8000 ffffffff 3 -> 1 3
+CH 3 1 3 8000 ffffffff 6 -> -1 ffff
+CH 9 0 1 2 7 8 a 3e8 7fff fffe 0 8 -> 4 8
+CH 9 0 1 2 7 8 a 3e8 7fff fffe 0 3e8 -> 6 3e8
+CH 9 0 1 2 7 8 a 3e8 7fff fffe 0 7fff -> 7 7fff
+CH 9 0 1 2 7 8 a 3e8 7fff fffe 0 ffff -> -1 0
+CH 0 ffffffff fffe -> -1 ffff
+CH 5 6 9 3e8 8000 fffe ffffffff 6 -> 0 6
+CH 5 6 9 3e8 8000 fffe ffffffff fffe -> 4 fffe
+CH 5 6 9 3e8 8000 fffe ffffffff 9 -> 1 9
+CH 5 6 9 3e8 8000 fffe ffffffff 6 -> 0 6
+CH 5 1 2 7 8 fffe ffffffff 8 -> 3 8
+CH 5 1 2 7 8 fffe ffffffff 1 -> 0 1
+CH 5 1 2 7 8 fffe ffffffff 2 -> 1 2
+CH 5 1 2 7 8 fffe ffffffff 5 -> -1 ffff
+CH 1 a 0 a -> 0 a
+CH 1 a 0 b -> -1 a
+CH 0 ffffffff fffe -> -1 ffff
+CH 3 4 14 fffe 0 4 -> 0 4
+CH 3 4 14 fffe 0 14 -> 1 14
+CH 3 4 14 fffe 0 fffe -> 2 fffe
+CH 3 4 14 fffe 0 10014 -> 1 14
+CH 9 0 1 5 6 8 64 7fff 8000 fffe 2 7fff -> 6 7fff
+CH 9 0 1 5 6 8 64 7fff 8000 fffe 2 6 -> 3 6
+CH 9 0 1 5 6 8 64 7fff 8000 fffe 2 1 -> 1 1
+CH 9 0 1 5 6 8 64 7fff 8000 fffe 2 b -> -1 5
+CH 0 ffffffff 63 -> -1 ffff
+CH 9 1 2 3 7 9 14 7fff 8000 fffe ffffffff 7fff -> 6 7fff
+CH 9 1 2 3 7 9 14 7fff 8000 fffe ffffffff 2 -> 1 2
+CH 9 1 2 3 7 9 14 7fff 8000 fffe ffffffff 14 -> 5 14
+CH 9 1 2 3 7 9 14 7fff 8000 fffe ffffffff 63 -> -1 ffff
+CH 0 ffffffff 0 -> -1 ffff
+CH 3 2 3 7fff ffffffff 3 -> 1 3
+CH 3 2 3 7fff ffffffff 7fff -> 2 7fff
+CH 3 2 3 7fff ffffffff 2 -> 0 2
+CH 3 2 3 7fff ffffffff 1 -> -1 ffff
+CH 1 1 0 1 -> 0 1
+CH 1 1 0 63 -> -1 1
+CH 0 ffffffff b -> -1 ffff
+CH 5 5 a 14 64 fffe ffffffff a -> 1 a
+CH 5 5 a 14 64 fffe ffffffff 5 -> 0 5
+CH 5 5 a 14 64 fffe ffffffff 14 -> 2 14
+CH 5 5 a 14 64 fffe ffffffff 0 -> -1 ffff
+CH 2 7 a ffffffff a -> 1 a
+CH 2 7 a ffffffff 7 -> 0 7
+CH 2 7 a ffffffff 0 -> -1 ffff
+CH 5 4 6 7 8 a 4 4 -> 0 4
+CH 5 4 6 7 8 a 4 7 -> 2 7
+CH 5 4 6 7 8 a 4 6 -> 1 6
+CH 5 4 6 7 8 a 4 ffff -> -1 a
+CH 1 3 ffffffff 3 -> 0 3
+CH 1 3 ffffffff 10003 -> 0 3
+CH 0 ffffffff 0 -> -1 ffff
+CH 2 0 6 ffffffff 0 -> 0 0
+CH 2 0 6 ffffffff 6 -> 1 6
+CH 2 0 6 ffffffff 63 -> -1 ffff
+CH 2 5 fffe ffffffff 5 -> 0 5
+CH 2 5 fffe ffffffff fffe -> 1 fffe
+CH 2 5 fffe ffffffff 63 -> -1 ffff
+CH 9 1 2 4 5 8 9 64 3e8 8000 ffffffff 4 -> 2 4
+CH 9 1 2 4 5 8 9 64 3e8 8000 ffffffff 2 -> 1 2
+CH 9 1 2 4 5 8 9 64 3e8 8000 ffffffff 5 -> 3 5
+CH 9 1 2 4 5 8 9 64 3e8 8000 ffffffff 63 -> -1 ffff
+CH 1 8000 0 8000 -> 0 8000
+CH 1 8000 0 1 -> -1 8000
+CH 0 ffffffff ffff -> -1 ffff
+CH 0 ffffffff 5 -> -1 ffff
+CH 9 2 3 4 6 8 a 14 3e8 7fff ffffffff 6 -> 3 6
+CH 9 2 3 4 6 8 a 14 3e8 7fff ffffffff 14 -> 6 14
+CH 9 2 3 4 6 8 a 14 3e8 7fff ffffffff 3 -> 1 3
+CH 9 2 3 4 6 8 a 14 3e8 7fff ffffffff b -> -1 ffff
+CH 2 7 64 0 64 -> 1 64
+CH 2 7 64 0 7 -> 0 7
+CH 2 7 64 0 5 -> -1 7
+CH 0 ffffffff 5 -> -1 ffff
+CH 2 5 ffff ffffffff ffff -> -1 ffff
+CH 2 5 ffff ffffffff fffe -> -1 ffff
+CH 2 5 ffff 0 ffff -> 1 ffff
+CH 2 5 ffff 0 fffe -> -1 5
+CH 2 5 ffff 1 ffff -> 1 ffff
+CH 2 5 ffff 1 fffe -> -1 ffff
+PL 3 2 2 2 -> 1 0 0
+PL 2 2 2 -> 1 0
+PL 1 2 -> 1
+PL 2 1 1 -> 1 1
+PL 3 2 3 2 -> 1 0 0
+PL 1 2 -> 1
+PL 2 1 3 -> 1 1
+PL 4 1 1 5 2 -> 1 1 1 1
+PL 2 1 2 -> 1 1
+PL 2 2 5 -> 1 0
+PL 3 5 5 1 -> 1 1 1
+PL 2 1 3 -> 1 1
+PL 2 1 3 -> 1 1
+PL 1 2 -> 1
+PL 2 3 1 -> 1 1
+PL 4 3 3 1 3 -> 1 1 1 1
+PL 2 2 3 -> 1 0
+PL 3 5 2 3 -> 1 1 0
+PL 3 2 5 2 -> 1 0 0
+PL 3 5 1 5 -> 1 1 1
+PL 1 5 -> 1
+PL 3 3 3 2 -> 1 1 1
+PL 4 1 3 2 5 -> 1 1 1 0
+PL 1 1 -> 1
+PL 1 2 -> 1
+PL 4 5 5 3 1 -> 1 1 1 1
+PL 1 2 -> 1
+PL 2 2 2 -> 1 0
+PL 4 1 1 1 3 -> 1 1 1 1
+PL 2 3 3 -> 1 1
+PL 3 1 2 2 -> 1 1 0
+PL 2 2 1 -> 1 0
+PL 4 3 5 5 3 -> 1 1 1 1
+PL 1 2 -> 1
+PL 3 2 1 2 -> 1 0 0
+PL 1 2 -> 1
+PL 3 2 3 1 -> 1 0 0
+PL 3 1 1 1 -> 1 1 1
+PL 4 1 5 5 3 -> 1 1 1 1
+PL 2 1 2 -> 1 1
+PL 4 2 2 5 1 -> 1 0 0 0
+PL 3 1 2 5 -> 1 1 0
+PL 3 3 3 3 -> 1 1 1
+PL 3 2 2 2 -> 1 0 0
+PL 3 1 3 3 -> 1 1 1
+PL 2 1 2 -> 1 1
+PL 4 1 5 2 5 -> 1 1 1 0
+PL 4 2 3 5 3 -> 1 0 0 0
+PL 3 5 2 2 -> 1 1 0
+PL 2 3 3 -> 1 1
+PL 1 2 -> 1
+PL 4 5 2 2 2 -> 1 1 0 0
+PL 3 3 2 2 -> 1 1 0
+PL 1 2 -> 1
+PL 1 3 -> 1
+PL 1 1 -> 1
+PL 4 3 2 2 2 -> 1 1 0 0
+PL 2 5 2 -> 1 1
+PL 4 1 1 2 5 -> 1 1 1 0
+PL 1 3 -> 1
+PL 4 2 2 2 3 -> 1 0 0 0
+PL 4 5 2 2 2 -> 1 1 0 0
+PL 1 1 -> 1
+PL 4 5 1 3 1 -> 1 1 1 1
+PL 2 1 2 -> 1 1
+PL 2 5 3 -> 1 1
+PL 3 5 1 2 -> 1 1 1
+PL 4 2 2 2 2 -> 1 0 0 0
+PL 4 1 5 2 2 -> 1 1 1 0
+PL 3 2 2 2 -> 1 0 0
+PL 4 2 3 1 2 -> 1 0 0 0
+PL 3 3 5 2 -> 1 1 1
+PL 1 2 -> 1
+PL 1 3 -> 1
+PL 4 2 2 2 5 -> 1 0 0 0
+PL 2 1 3 -> 1 1
+PL 1 1 -> 1
+PL 4 1 2 2 1 -> 1 1 0 0
+PL 4 3 1 3 3 -> 1 1 1 1
+PL 1 5 -> 1
+PL 2 2 1 -> 1 0
+PL 1 5 -> 1
+PL 3 5 2 3 -> 1 1 0
+PL 1 2 -> 1
+PL 3 2 3 5 -> 1 0 0
+PL 1 3 -> 1
+PL 1 1 -> 1
+PL 4 2 2 2 1 -> 1 0 0 0
+PL 4 5 2 2 2 -> 1 1 0 0
+PL 1 2 -> 1
+PL 3 3 5 5 -> 1 1 1
+PL 4 5 1 3 5 -> 1 1 1 1
+PL 4 2 5 1 5 -> 1 0 0 0
+PL 1 3 -> 1
+PL 4 2 1 5 2 -> 1 0 0 0
+PL 4 2 2 2 3 -> 1 0 0 0
+PL 2 1 3 -> 1 1
+PL 4 1 1 3 3 -> 1 1 1 1
+PL 2 5 5 -> 1 1
+PL 2 2 2 -> 1 0
+PL 3 1 2 1 -> 1 1 0
+PL 1 2 -> 1
+PL 2 2 2 -> 1 0
+PL 2 1 5 -> 1 1
+PL 2 5 2 -> 1 1
+PL 1 3 -> 1
+PL 4 2 5 2 1 -> 1 0 0 0
+PL 2 3 5 -> 1 1
+PL 3 2 2 1 -> 1 0 0
+PL 3 3 1 1 -> 1 1 1
+PL 1 1 -> 1
+PL 4 1 2 1 1 -> 1 1 0 0
+PL 1 2 -> 1
+PL 2 2 1 -> 1 0
+PL 3 1 2 1 -> 1 1 0
+PL 1 2 -> 1
+PL 3 1 5 5 -> 1 1 1
+PL 3 3 3 2 -> 1 1 1
+PL 3 2 1 2 -> 1 0 0
+PL 3 5 5 2 -> 1 1 1
+SP 0 0 0 -> 0 0 0 0
+SP 0 0 1 -> 0 0 0 0
+SP 0 1 0 -> 1 0 0 1
+SP 0 1 1 -> 1 0 0 1
+SP 1 0 0 -> 1 0 0 1
+SP 1 0 1 -> 0 0 0 0
+SP 1 1 0 -> 1 0 0 1
+SP 1 1 1 -> 1 0 0 1
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO 3 1 2 0 2 -> 2 | d2 | 0 0
+GO 3 0 4 0 2 -> 0 | | 0 0
+GO 2 1 1 1 2 -> 1 | | 0 0
+GO 6 1 2 1 0 -> 2 | f2 | 0 0
+GO 0 0 0 0 0 -> 0 | | 0 0
+GO 0 0 0 0 0 -> 0 | | 0 0
+GO a 0 a 0 2 -> 0 | | 0 0
+GO 1 0 2 1 0 -> 0 | | 0 0
+GO a 6 3 1 0 -> 3 | f7 f8 f9 f0 f1 f2 f3 | 0 0
+GO 0 0 0 0 0 -> 0 | | 0 0
+GO 4 3 3 0 2 -> 3 | | 0 0
+GO 6 4 3 0 2 -> 3 | d5 d0 d1 d2 d3 | 2 0
+GO 1 0 0 1 2 -> 0 | | 0 0
+GO 6 5 2 0 2 -> 2 | d0 d1 d2 | 2 0
+GO 0 0 0 1 0 -> 0 | | 0 0
+GO 3 2 1 0 0 -> 1 | d0 d1 | 0 0
+GO 4 3 4 1 2 -> 3 | | 0 0
+GO 4 3 1 0 2 -> 1 | d0 d1 | 2 0
+GO 2 1 3 0 2 -> 1 | | 0 0
+GO 2 1 1 1 0 -> 1 | | 0 0
+GO 4 1 2 1 0 -> 2 | f2 | 0 0
+GO 4 3 2 1 2 -> 2 | f0 f1 f2 | 2 0
+GO 1 0 2 1 0 -> 0 | | 0 0
+GO 0 0 0 1 2 -> 0 | | 0 0
+GO 2 1 2 1 0 -> 1 | | 0 0
+GO 4 1 3 0 0 -> 3 | d2 d3 | 0 0
+GO 2 0 1 0 2 -> 1 | d1 | 0 0
+GO 1 0 2 1 0 -> 0 | | 0 0
+GO a 8 a 0 2 -> 8 | | 0 0
+GO 3 2 1 0 2 -> 1 | d0 d1 | 2 0
+GO a 9 0 1 0 -> 0 | f0 | 0 0
+GO 4 3 5 0 2 -> 3 | | 0 0
+GO 3 1 3 1 2 -> 1 | | 0 0
+GO 3 1 2 0 2 -> 2 | d2 | 0 0
+GO 2 1 1 1 0 -> 1 | | 0 0
+GO 6 2 0 0 0 -> 0 | d3 d4 d5 d0 | 0 0
+GO a 4 9 1 0 -> 9 | f5 f6 f7 f8 f9 | 0 0
+GO 6 3 5 0 0 -> 5 | d4 d5 | 0 0
+GO 2 1 0 1 0 -> 0 | f0 | 0 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO 6 4 4 0 0 -> 4 | | 0 0
+GO 6 5 6 1 0 -> 5 | | 0 0
+GO a 8 0 0 2 -> 0 | d9 d0 | 2 0
+GO 2 0 0 0 2 -> 0 | | 0 0
+GO a 9 8 0 0 -> 8 | d0 d1 d2 d3 d4 d5 d6 d7 d8 | 0 0
+GO 4 3 3 0 2 -> 3 | | 0 0
+GO 2 0 2 0 2 -> 0 | | 0 0
+GO 3 0 3 1 0 -> 0 | | 0 0
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO 6 1 0 1 2 -> 0 | f2 f3 f4 f5 f0 | 2 0
+GO 0 0 1 0 0 -> 0 | | 0 0
+GO a 6 1 0 0 -> 1 | d7 d8 d9 d0 d1 | 0 0
+GO a 2 0 0 0 -> 0 | d3 d4 d5 d6 d7 d8 d9 d0 | 0 0
+GO 3 0 1 0 2 -> 1 | d1 | 0 0
+GO 6 3 3 0 0 -> 3 | | 0 0
+GO 1 0 2 1 2 -> 0 | | 0 0
+GO 3 2 1 0 2 -> 1 | d0 d1 | 2 0
+GO 2 0 1 0 0 -> 1 | d1 | 0 0
+GO 4 3 0 0 2 -> 0 | d0 | 2 0
+GO 4 0 5 1 0 -> 0 | | 0 0
+GO a 6 5 1 0 -> 5 | f7 f8 f9 f0 f1 f2 f3 f4 f5 | 0 0
+GO 3 0 3 0 0 -> 0 | | 0 0
+GO 3 0 0 0 0 -> 0 | | 0 0
+GO 6 1 2 0 2 -> 2 | d2 | 0 0
+GO a 5 3 0 0 -> 3 | d6 d7 d8 d9 d0 d1 d2 d3 | 0 0
+GO 4 3 0 0 0 -> 0 | d0 | 0 0
+GO 3 1 3 0 2 -> 1 | | 0 0
+GO 4 0 5 0 0 -> 0 | | 0 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO 2 0 0 0 0 -> 0 | | 0 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO 0 0 0 1 2 -> 0 | | 0 0
+GO 2 0 1 0 2 -> 1 | d1 | 0 0
+GO 6 1 5 0 2 -> 5 | d2 d3 d4 d5 | 0 0
+GO 3 1 3 1 0 -> 1 | | 0 0
+GO 2 0 2 0 0 -> 0 | | 0 0
+GO 2 1 3 0 0 -> 1 | | 0 0
+GO 2 1 0 0 0 -> 0 | d0 | 0 0
+GO a 1 7 0 0 -> 7 | d2 d3 d4 d5 d6 d7 | 0 0
+GO 1 0 0 0 2 -> 0 | | 0 0
+GO a 5 5 0 2 -> 5 | | 0 0
+GO 4 0 3 1 0 -> 3 | f1 f2 f3 | 0 0
+GO a 7 7 0 2 -> 7 | | 0 0
+GO a 0 8 0 2 -> 8 | d1 d2 d3 d4 d5 d6 d7 d8 | 0 0
+GO a 8 9 1 2 -> 9 | f9 | 0 0
+GO a 4 a 0 2 -> 4 | | 0 0
+GO 6 3 2 1 2 -> 2 | f4 f5 f0 f1 f2 | 2 0
+GO 4 3 4 1 2 -> 3 | | 0 0
+GO a 1 7 1 0 -> 7 | f2 f3 f4 f5 f6 f7 | 0 0
+GO 2 0 0 1 0 -> 0 | | 0 0
+GO 1 0 2 1 0 -> 0 | | 0 0
+GO 6 3 7 0 0 -> 3 | | 0 0
+GO 1 0 1 1 0 -> 0 | | 0 0
+GO 4 0 5 0 2 -> 0 | | 0 0
+GO 3 2 0 0 0 -> 0 | d0 | 0 0
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO a 4 b 0 2 -> 4 | | 0 0
+GO 4 2 0 0 0 -> 0 | d3 d0 | 0 0
+GO 6 5 1 1 0 -> 1 | f0 f1 | 0 0
+GO 4 1 1 0 2 -> 1 | | 0 0
+GO 3 2 3 1 0 -> 2 | | 0 0
+GO 1 0 2 0 2 -> 0 | | 0 0
+GO 1 0 1 0 0 -> 0 | | 0 0
+GO 2 1 3 0 0 -> 1 | | 0 0
+GO 4 3 4 0 2 -> 3 | | 0 0
+GO 1 0 2 0 0 -> 0 | | 0 0
+GO 2 0 0 0 0 -> 0 | | 0 0
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO 4 2 2 1 0 -> 2 | | 0 0
+GO 0 0 1 0 0 -> 0 | | 0 0
+GO a 9 0 1 2 -> 0 | f0 | 2 0
+GO 3 0 2 0 2 -> 2 | d1 d2 | 0 0
+GO 2 1 1 0 2 -> 1 | | 0 0
+GO a 3 0 1 0 -> 0 | f4 f5 f6 f7 f8 f9 f0 | 0 0
+GO a 2 0 1 0 -> 0 | f3 f4 f5 f6 f7 f8 f9 f0 | 0 0
+GO a 6 b 1 2 -> 6 | | 0 0
+GO a 0 2 0 2 -> 2 | d1 d2 | 0 0
+GO 4 3 2 0 0 -> 2 | d0 d1 d2 | 0 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO 4 1 2 0 0 -> 2 | d2 | 0 0
+GO 4 2 1 1 0 -> 1 | f3 f0 f1 | 0 0
+GO 6 1 0 0 0 -> 0 | d2 d3 d4 d5 d0 | 0 0
+GO 3 2 0 0 0 -> 0 | d0 | 0 0
+GO 6 5 1 0 2 -> 1 | d0 d1 | 2 0
+GO 2 1 3 1 0 -> 1 | | 0 0
+GO 6 0 4 0 0 -> 4 | d1 d2 d3 d4 | 0 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO 2 0 3 0 2 -> 0 | | 0 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO 2 0 2 0 2 -> 0 | | 0 0
+GO 2 0 0 0 2 -> 0 | | 0 0
+GO 1 0 2 0 2 -> 0 | | 0 0
+GO 6 1 0 1 0 -> 0 | f2 f3 f4 f5 f0 | 0 0
+GO 6 2 1 1 0 -> 1 | f3 f4 f5 f0 f1 | 0 0
+GO 4 0 1 1 2 -> 1 | f1 | 0 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO 1 0 2 0 2 -> 0 | | 0 0
+GO 0 0 1 0 0 -> 0 | | 0 0
+GO 6 0 3 0 2 -> 3 | d1 d2 d3 | 0 0
+GO 4 0 1 0 0 -> 1 | d1 | 0 0
+GO 4 2 2 1 2 -> 2 | | 0 0
+GO a 4 7 0 2 -> 7 | d5 d6 d7 | 0 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO 1 0 2 1 2 -> 0 | | 0 0
+GO 1 0 2 0 2 -> 0 | | 0 0
+GO 6 3 1 0 0 -> 1 | d4 d5 d0 d1 | 0 0
+GO 2 0 2 1 2 -> 0 | | 0 0
+GO 2 0 3 1 2 -> 0 | | 0 0
+GO 2 0 2 0 2 -> 0 | | 0 0
+GO 4 0 1 1 0 -> 1 | f1 | 0 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO 2 1 1 0 0 -> 1 | | 0 0
+GO 3 0 1 0 2 -> 1 | d1 | 0 0
+GO 3 1 3 0 2 -> 1 | | 0 0
+GO 6 4 1 0 0 -> 1 | d5 d0 d1 | 0 0
+GO 0 0 1 1 0 -> 0 | | 0 0
+GO 6 0 1 0 2 -> 1 | d1 | 0 0
+GO 2 1 2 0 0 -> 1 | | 0 0
+GO 3 0 4 1 0 -> 0 | | 0 0
+GO 0 0 0 0 0 -> 0 | | 0 0
+GO 3 0 1 1 0 -> 1 | f1 | 0 0
+GO a 2 a 0 2 -> 2 | | 0 0
+GO 4 0 3 0 0 -> 3 | d1 d2 d3 | 0 0
+GO 6 3 2 0 0 -> 2 | d4 d5 d0 d1 d2 | 0 0
+GO 1 0 1 0 2 -> 0 | | 0 0
+GO a 8 7 0 0 -> 7 | d9 d0 d1 d2 d3 d4 d5 d6 d7 | 0 0
+GO a 4 7 1 2 -> 7 | f5 f6 f7 | 0 0
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO a 9 a 1 2 -> 9 | | 0 0
+GO 3 0 4 1 0 -> 0 | | 0 0
+GO 4 0 3 0 0 -> 3 | d1 d2 d3 | 0 0
+GO 2 1 1 0 2 -> 1 | | 0 0
+GO 6 0 3 0 0 -> 3 | d1 d2 d3 | 0 0
+GO a 3 0 0 2 -> 0 | d4 d5 d6 d7 d8 d9 d0 | 2 0
+GO 2 0 1 1 2 -> 1 | f1 | 0 0
+GO 3 0 0 0 0 -> 0 | | 0 0
+GO 1 0 2 1 0 -> 0 | | 0 0
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO 6 5 2 0 2 -> 2 | d0 d1 d2 | 2 0
+GO a 9 6 0 0 -> 6 | d0 d1 d2 d3 d4 d5 d6 | 0 0
+GO a 5 a 0 2 -> 5 | | 0 0
+GO 4 1 5 1 2 -> 1 | | 0 0
+GO 2 1 2 0 0 -> 1 | | 0 0
+GO 4 2 0 1 2 -> 0 | f3 f0 | 2 0
+GO 6 5 7 0 0 -> 5 | | 0 0
+GO 2 1 2 0 0 -> 1 | | 0 0
+GO 4 1 0 1 2 -> 0 | f2 f3 f0 | 2 0
+GO 2 0 1 0 2 -> 1 | d1 | 0 0
+GO 4 1 5 0 0 -> 1 | | 0 0
+GO 3 1 3 1 2 -> 1 | | 0 0
+GO a 6 a 1 2 -> 6 | | 0 0
+GO 4 3 1 1 2 -> 1 | f0 f1 | 2 0
+GO a 6 7 0 2 -> 7 | d7 | 0 0
+GO 4 2 1 0 2 -> 1 | d3 d0 d1 | 2 0
+GO 1 0 0 0 2 -> 0 | | 0 0
+GO 2 0 3 1 0 -> 0 | | 0 0
+GO 6 0 3 1 0 -> 3 | f1 f2 f3 | 0 0
+GO 3 0 3 0 0 -> 0 | | 0 0
+GO 4 0 5 0 0 -> 0 | | 0 0
+GO 6 3 0 0 2 -> 0 | d4 d5 d0 | 2 0
+GO a 8 4 0 0 -> 4 | d9 d0 d1 d2 d3 d4 | 0 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO 3 1 0 1 2 -> 0 | f2 f0 | 2 0
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO a 7 9 0 2 -> 9 | d8 d9 | 0 0
+GO a 9 3 0 0 -> 3 | d0 d1 d2 d3 | 0 0
+GO a 4 9 0 2 -> 9 | d5 d6 d7 d8 d9 | 0 0
+GO 2 0 2 0 2 -> 0 | | 0 0
+GO 1 0 0 1 0 -> 0 | | 0 0
+GO 4 0 2 0 2 -> 2 | d1 d2 | 0 0
+GO 2 0 3 1 2 -> 0 | | 0 0
+GO 2 1 3 1 0 -> 1 | | 0 0
+GO 3 1 1 0 0 -> 1 | | 0 0
+GO a 7 9 0 2 -> 9 | d8 d9 | 0 0
+GO 6 1 2 0 0 -> 2 | d2 | 0 0
+GO 3 1 4 0 0 -> 1 | | 0 0
+GO 6 5 5 0 0 -> 5 | | 0 0
+GO 4 1 1 1 2 -> 1 | | 0 0
+GO 6 0 0 1 0 -> 0 | | 0 0
+GO 4 3 0 1 2 -> 0 | f0 | 2 0
+GO 2 1 2 0 0 -> 1 | | 0 0
+GO 3 0 3 0 0 -> 0 | | 0 0
+GO a 2 0 0 0 -> 0 | d3 d4 d5 d6 d7 d8 d9 d0 | 0 0
+GO 6 5 3 0 2 -> 3 | d0 d1 d2 d3 | 2 0
+GO a 9 2 0 0 -> 2 | d0 d1 d2 | 0 0
+GO 6 0 5 0 2 -> 5 | d1 d2 d3 d4 d5 | 0 0
+GO a 1 2 0 2 -> 2 | d2 | 0 0
+GO 0 0 0 1 0 -> 0 | | 0 0
+GO 3 2 1 0 2 -> 1 | d0 d1 | 2 0
+GO 2 1 3 1 2 -> 1 | | 0 0
+GO 6 0 1 0 0 -> 1 | d1 | 0 0
+GO 6 0 4 1 2 -> 4 | f1 f2 f3 f4 | 0 0
+GO 2 1 3 0 2 -> 1 | | 0 0
+GO 4 2 4 0 0 -> 2 | | 0 0
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO 0 0 1 1 2 -> 0 | | 0 0
+GO 3 0 2 0 2 -> 2 | d1 d2 | 0 0
+GO a 2 7 0 2 -> 7 | d3 d4 d5 d6 d7 | 0 0
+GO 0 0 1 1 0 -> 0 | | 0 0
+GO 4 2 3 0 0 -> 3 | d3 | 0 0
+GO 2 1 2 0 0 -> 1 | | 0 0
+GO 3 2 4 1 0 -> 2 | | 0 0
+GO 2 0 1 1 0 -> 1 | f1 | 0 0
+GO a 2 7 1 0 -> 7 | f3 f4 f5 f6 f7 | 0 0
+GO a 4 2 1 2 -> 2 | f5 f6 f7 f8 f9 f0 f1 f2 | 2 0
+GO 6 2 1 0 2 -> 1 | d3 d4 d5 d0 d1 | 2 0
+GO 3 1 4 0 0 -> 1 | | 0 0
+GO 4 1 5 0 2 -> 1 | | 0 0
+GO 0 0 0 0 0 -> 0 | | 0 0
+GO 2 1 1 0 0 -> 1 | | 0 0
+GO 4 1 4 1 2 -> 1 | | 0 0
+GO a 7 b 1 2 -> 7 | | 0 0
+GO 6 5 2 0 0 -> 2 | d0 d1 d2 | 0 0
+GO a 1 0 1 2 -> 0 | f2 f3 f4 f5 f6 f7 f8 f9 f0 | 2 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO 6 4 0 1 2 -> 0 | f5 f0 | 2 0
+GO 3 1 4 1 0 -> 1 | | 0 0
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO 1 0 0 0 2 -> 0 | | 0 0
+GO 6 3 3 0 2 -> 3 | | 0 0
+GO 3 0 2 1 0 -> 2 | f1 f2 | 0 0
+GO a 8 b 0 0 -> 8 | | 0 0
+GO 3 2 1 0 0 -> 1 | d0 d1 | 0 0
+GO 3 2 2 0 0 -> 2 | | 0 0
+GO 6 0 3 0 0 -> 3 | d1 d2 d3 | 0 0
+GO 6 0 6 0 2 -> 0 | | 0 0
+GO 1 0 0 0 2 -> 0 | | 0 0
+GO 6 5 6 0 2 -> 5 | | 0 0
+GO a 3 6 0 2 -> 6 | d4 d5 d6 | 0 0
+GO 4 1 1 0 2 -> 1 | | 0 0
+GO 2 1 3 1 2 -> 1 | | 0 0
+GO 4 3 3 1 0 -> 3 | | 0 0
+GO a 5 2 0 2 -> 2 | d6 d7 d8 d9 d0 d1 d2 | 2 0
+GO 4 1 3 0 0 -> 3 | d2 d3 | 0 0
+GO 3 1 1 1 2 -> 1 | | 0 0
+GO 0 0 1 0 0 -> 0 | | 0 0
+GO 1 0 1 0 2 -> 0 | | 0 0
+GO a 2 3 1 2 -> 3 | f3 | 0 0
+GO 4 2 0 1 0 -> 0 | f3 f0 | 0 0
+GO 2 0 2 0 0 -> 0 | | 0 0
+GO a 0 6 0 0 -> 6 | d1 d2 d3 d4 d5 d6 | 0 0
+GO 2 1 3 1 0 -> 1 | | 0 0
+GO 6 2 7 0 0 -> 2 | | 0 0
+GO 1 0 1 0 2 -> 0 | | 0 0
+GO 1 0 2 0 2 -> 0 | | 0 0
+GO 2 1 1 1 2 -> 1 | | 0 0
+GO 3 2 3 1 0 -> 2 | | 0 0
+GO a 8 7 0 0 -> 7 | d9 d0 d1 d2 d3 d4 d5 d6 d7 | 0 0
+GO 4 0 2 1 0 -> 2 | f1 f2 | 0 0
+GO 3 2 4 0 0 -> 2 | | 0 0
+GO 3 0 4 1 0 -> 0 | | 0 0
+GO 6 4 0 1 0 -> 0 | f5 f0 | 0 0
+GO 6 4 5 0 0 -> 5 | d5 | 0 0
+GO 3 0 3 0 0 -> 0 | | 0 0
+GO 6 0 2 0 0 -> 2 | d1 d2 | 0 0
+GO 2 1 2 0 2 -> 1 | | 0 0
+GO a 1 7 1 2 -> 7 | f2 f3 f4 f5 f6 f7 | 0 0
+GO 1 0 0 1 2 -> 0 | | 0 0
+GO 4 3 2 0 0 -> 2 | d0 d1 d2 | 0 0
+GO 4 3 5 0 2 -> 3 | | 0 0
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO 4 0 3 0 0 -> 3 | d1 d2 d3 | 0 0
+GO 2 1 0 0 2 -> 0 | d0 | 2 0
+GO 4 1 2 1 0 -> 2 | f2 | 0 0
+GO 3 2 0 1 0 -> 0 | f0 | 0 0
+GO 3 2 0 0 0 -> 0 | d0 | 0 0
+GO a 1 7 0 2 -> 7 | d2 d3 d4 d5 d6 d7 | 0 0
+GO 6 2 1 0 2 -> 1 | d3 d4 d5 d0 d1 | 2 0
+GO 4 0 2 1 0 -> 2 | f1 f2 | 0 0
+GO 4 3 0 0 2 -> 0 | d0 | 2 0
+GO a 1 8 1 0 -> 8 | f2 f3 f4 f5 f6 f7 f8 | 0 0
+GO 0 0 1 1 2 -> 0 | | 0 0
+GO 3 2 4 1 0 -> 2 | | 0 0
+GO 2 1 0 0 0 -> 0 | d0 | 0 0
+GO 6 5 5 0 2 -> 5 | | 0 0
+GO 3 0 2 1 0 -> 2 | f1 f2 | 0 0
+GO 3 1 1 0 0 -> 1 | | 0 0
+GO 2 0 1 0 0 -> 1 | d1 | 0 0
+GO 3 1 2 0 0 -> 2 | d2 | 0 0
+GO a 7 5 0 2 -> 5 | d8 d9 d0 d1 d2 d3 d4 d5 | 2 0
+GO 4 3 2 1 0 -> 2 | f0 f1 f2 | 0 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO 1 0 2 0 0 -> 0 | | 0 0
+GO 3 1 1 0 0 -> 1 | | 0 0
+GO 0 0 0 1 2 -> 0 | | 0 0
+GO 6 3 2 0 0 -> 2 | d4 d5 d0 d1 d2 | 0 0
+GO 1 0 1 1 0 -> 0 | | 0 0
+GO a 3 1 0 2 -> 1 | d4 d5 d6 d7 d8 d9 d0 d1 | 2 0
+GO 4 1 3 1 2 -> 3 | f2 f3 | 0 0
+GO 1 0 1 0 2 -> 0 | | 0 0
+GO 1 0 2 1 0 -> 0 | | 0 0
+GO 6 0 5 1 0 -> 5 | f1 f2 f3 f4 f5 | 0 0
+GO 0 0 1 0 0 -> 0 | | 0 0
+GO a 8 4 0 0 -> 4 | d9 d0 d1 d2 d3 d4 | 0 0
+GO a 2 1 1 2 -> 1 | f3 f4 f5 f6 f7 f8 f9 f0 f1 | 2 0
+GO 4 3 2 0 2 -> 2 | d0 d1 d2 | 2 0
+GO 1 0 1 0 2 -> 0 | | 0 0
+GO 6 5 6 0 2 -> 5 | | 0 0
+GO a 5 1 0 2 -> 1 | d6 d7 d8 d9 d0 d1 | 2 0
+GO 3 0 2 1 2 -> 2 | f1 f2 | 0 0
+GO 2 1 2 0 2 -> 1 | | 0 0
+GO 2 0 3 0 0 -> 0 | | 0 0
+GO 3 0 3 0 0 -> 0 | | 0 0
+GO 0 0 1 0 0 -> 0 | | 0 0
+GO 1 0 2 1 0 -> 0 | | 0 0
+GO a 5 3 0 0 -> 3 | d6 d7 d8 d9 d0 d1 d2 d3 | 0 0
+GO 1 0 1 0 2 -> 0 | | 0 0
+GO 4 0 4 0 2 -> 0 | | 0 0
+GO a 1 a 0 0 -> 1 | | 0 0
+GO 6 4 7 0 2 -> 4 | | 0 0
+GO 4 0 3 1 0 -> 3 | f1 f2 f3 | 0 0
+GO 1 0 1 0 2 -> 0 | | 0 0
+GO 6 5 7 1 2 -> 5 | | 0 0
+GO 4 0 1 0 0 -> 1 | d1 | 0 0
+GO 2 0 2 1 0 -> 0 | | 0 0
+GO 0 0 0 1 0 -> 0 | | 0 0
+GO 2 0 2 1 0 -> 0 | | 0 0
+GO 0 0 0 1 2 -> 0 | | 0 0
+GO a 8 7 1 2 -> 7 | f9 f0 f1 f2 f3 f4 f5 f6 f7 | 2 0
+GO 2 1 3 1 0 -> 1 | | 0 0
+GO a 8 5 0 0 -> 5 | d9 d0 d1 d2 d3 d4 d5 | 0 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO a 0 3 0 2 -> 3 | d1 d2 d3 | 0 0
+GO 1 0 0 1 0 -> 0 | | 0 0
+GO 4 3 2 1 0 -> 2 | f0 f1 f2 | 0 0
+GO 0 0 0 0 0 -> 0 | | 0 0
+GO 6 0 3 0 0 -> 3 | d1 d2 d3 | 0 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO 3 1 2 0 0 -> 2 | d2 | 0 0
+GO 2 0 3 1 2 -> 0 | | 0 0
+GO 4 2 5 0 2 -> 2 | | 0 0
+GO 4 1 3 1 0 -> 3 | f2 f3 | 0 0
+GO 2 0 3 1 0 -> 0 | | 0 0
+GO 4 2 1 1 0 -> 1 | f3 f0 f1 | 0 0
+GO a 1 b 0 0 -> 1 | | 0 0
+GO 1 0 1 0 2 -> 0 | | 0 0
+GO 3 0 2 1 0 -> 2 | f1 f2 | 0 0
+GO 3 2 4 0 0 -> 2 | | 0 0
+GO 2 1 3 0 2 -> 1 | | 0 0
+GO 1 0 0 0 2 -> 0 | | 0 0
+GO 6 1 4 0 0 -> 4 | d2 d3 d4 | 0 0
+GO 2 0 2 0 0 -> 0 | | 0 0
+GO 0 0 1 0 0 -> 0 | | 0 0
+GO 1 0 0 0 2 -> 0 | | 0 0
+GO 2 0 3 1 2 -> 0 | | 0 0
+GO 6 2 1 0 0 -> 1 | d3 d4 d5 d0 d1 | 0 0
+GO 2 1 1 1 2 -> 1 | | 0 0
+GO 6 2 3 0 2 -> 3 | d3 | 0 0
+GO a 9 6 1 0 -> 6 | f0 f1 f2 f3 f4 f5 f6 | 0 0
+GO 4 0 3 0 2 -> 3 | d1 d2 d3 | 0 0
+GO 1 0 2 0 2 -> 0 | | 0 0
+GO 6 3 6 0 2 -> 3 | | 0 0
+GO 1 0 2 1 2 -> 0 | | 0 0
+GO 1 0 0 0 2 -> 0 | | 0 0
+GO 3 1 4 0 0 -> 1 | | 0 0
+GO 2 0 1 0 0 -> 1 | d1 | 0 0
+GO 6 4 1 0 0 -> 1 | d5 d0 d1 | 0 0
+GO 4 3 4 0 0 -> 3 | | 0 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO 2 0 1 1 0 -> 1 | f1 | 0 0
+GO 1 0 1 1 0 -> 0 | | 0 0
+GO 3 0 4 1 0 -> 0 | | 0 0
+GO 4 2 0 0 0 -> 0 | d3 d0 | 0 0
+GO 2 1 3 1 2 -> 1 | | 0 0
+GO a 2 8 1 0 -> 8 | f3 f4 f5 f6 f7 f8 | 0 0
+GO 1 0 1 0 2 -> 0 | | 0 0
+GO 1 0 2 0 2 -> 0 | | 0 0
+GO 4 3 1 0 2 -> 1 | d0 d1 | 2 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO 4 1 4 1 2 -> 1 | | 0 0
+GO 6 4 7 0 2 -> 4 | | 0 0
+GO 6 1 4 0 2 -> 4 | d2 d3 d4 | 0 0
+GO 4 3 2 0 0 -> 2 | d0 d1 d2 | 0 0
+GO 1 0 1 0 0 -> 0 | | 0 0
+GO a 3 2 0 0 -> 2 | d4 d5 d6 d7 d8 d9 d0 d1 d2 | 0 0
+GO 3 1 0 0 2 -> 0 | d2 d0 | 2 0
+GO 2 0 0 0 0 -> 0 | | 0 0
+GO 2 0 1 0 0 -> 1 | d1 | 0 0
+GO 4 0 5 1 2 -> 0 | | 0 0
+GO 3 2 1 0 0 -> 1 | d0 d1 | 0 0
+GO 4 3 0 0 0 -> 0 | d0 | 0 0
+GO 6 4 7 0 2 -> 4 | | 0 0
+GO 3 1 4 0 0 -> 1 | | 0 0
+GO 4 0 2 1 2 -> 2 | f1 f2 | 0 0
+GO 3 2 2 0 0 -> 2 | | 0 0
+GO 6 1 6 0 0 -> 1 | | 0 0
+GO 4 3 0 0 0 -> 0 | d0 | 0 0
+GO 6 4 3 0 2 -> 3 | d5 d0 d1 d2 d3 | 2 0
+GO 6 2 0 0 0 -> 0 | d3 d4 d5 d0 | 0 0
+GO 6 0 7 0 2 -> 0 | | 0 0
+GO 0 0 1 0 0 -> 0 | | 0 0
+GO 4 0 2 0 0 -> 2 | d1 d2 | 0 0
+GO 3 2 3 0 2 -> 2 | | 0 0
+GO 2 1 1 1 0 -> 1 | | 0 0
+GO 0 0 1 1 2 -> 0 | | 0 0
+GO 3 2 4 0 0 -> 2 | | 0 0
+GO 0 0 0 0 0 -> 0 | | 0 0
+GO 4 1 2 1 0 -> 2 | f2 | 0 0
+GO 3 0 3 0 2 -> 0 | | 0 0
+GO a 7 9 1 0 -> 9 | f8 f9 | 0 0
+GO 0 0 0 0 2 -> 0 | | 0 0
+GO 1 0 0 0 2 -> 0 | | 0 0
+GO a 8 7 0 2 -> 7 | d9 d0 d1 d2 d3 d4 d5 d6 d7 | 2 0
+GO 6 4 1 1 2 -> 1 | f5 f0 f1 | 2 0
+GO 0 0 0 1 2 -> 0 | | 0 0
+GO 6 5 3 0 2 -> 3 | d0 d1 d2 d3 | 2 0
+GO 1 0 1 1 2 -> 0 | | 0 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO 3 1 0 0 0 -> 0 | d2 d0 | 0 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO 2 1 1 1 2 -> 1 | | 0 0
+GO 4 2 1 0 2 -> 1 | d3 d0 d1 | 2 0
+GO 6 0 6 0 2 -> 0 | | 0 0
+GO 1 0 2 0 0 -> 0 | | 0 0
+GO 4 3 5 0 2 -> 3 | | 0 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO a 5 1 0 0 -> 1 | d6 d7 d8 d9 d0 d1 | 0 0
+GO a 4 b 0 2 -> 4 | | 0 0
+GO 4 1 5 1 0 -> 1 | | 0 0
+GO 6 2 0 0 0 -> 0 | d3 d4 d5 d0 | 0 0
+GO 3 0 2 0 0 -> 2 | d1 d2 | 0 0
+GO 3 0 0 1 2 -> 0 | | 0 0
+GO 4 2 5 0 2 -> 2 | | 0 0
+GO 2 0 2 0 2 -> 0 | | 0 0
+GO 2 0 2 1 0 -> 0 | | 0 0
+GO 6 0 7 0 0 -> 0 | | 0 0
+GO 3 0 2 0 0 -> 2 | d1 d2 | 0 0
+GO 2 0 2 1 0 -> 0 | | 0 0
+GO 3 1 2 1 0 -> 2 | f2 | 0 0
+GO 2 1 2 1 0 -> 1 | | 0 0
+GO 2 1 0 0 2 -> 0 | d0 | 2 0
+GO 4 3 2 0 0 -> 2 | d0 d1 d2 | 0 0
+GO 3 0 1 0 0 -> 1 | d1 | 0 0
+GO a 9 a 1 0 -> 9 | | 0 0
+GO 0 0 1 0 2 -> 0 | | 0 0
+GO 4 3 2 0 2 -> 2 | d0 d1 d2 | 2 0
+GO 6 3 2 0 2 -> 2 | d4 d5 d0 d1 d2 | 2 0
+GO 3 1 1 1 2 -> 1 | | 0 0
+GO a 6 3 1 0 -> 3 | f7 f8 f9 f0 f1 f2 f3 | 0 0
+GO 2 0 2 0 2 -> 0 | | 0 0
+GO 2 1 0 0 0 -> 0 | d0 | 0 0
+GO 2 1 0 0 2 -> 0 | d0 | 2 0
+GO 1 0 0 0 0 -> 0 | | 0 0
+GO 3 2 4 1 2 -> 2 | | 0 0
+GO 4 3 3 0 0 -> 3 | | 0 0
+GO 6 0 3 0 0 -> 3 | d1 d2 d3 | 0 0
+GO 2 1 0 1 0 -> 0 | f0 | 0 0
+GO 3 0 1 0 0 -> 1 | d1 | 0 0
+GO 0 0 0 0 0 -> 0 | | 0 0
+GO 0 0 1 1 2 -> 0 | | 0 0
+GO 1 0 2 1 2 -> 0 | | 0 0
+GO a 2 8 1 0 -> 8 | f3 f4 f5 f6 f7 f8 | 0 0
+GO 4 0 0 0 2 -> 0 | | 0 0
+GO 4 2 5 0 0 -> 2 | | 0 0
+GO 3 0 2 1 0 -> 2 | f1 f2 | 0 0
+GO 1 0 1 0 2 -> 0 | | 0 0
+GO a 2 3 0 2 -> 3 | d3 | 0 0
+GO 4 2 5 0 0 -> 2 | | 0 0
+NX 6 3 0 -> 4 | d4 | 0 0
+PV 6 3 2 -> 2 | d4 d5 d0 d1 d2 | 2 0
+NX 6 1 0 -> 2 | d2 | 0 0
+PV 6 1 0 -> 0 | d2 d3 d4 d5 d0 | 0 0
+NX 3 0 2 -> 1 | d1 | 0 0
+PV 3 0 0 -> 2 | d1 d2 | 0 0
+NX 0 0 2 -> 0 | | 0 0
+PV 0 0 2 -> 0 | | 0 0
+NX 1 0 2 -> 0 | | 0 0
+PV 1 0 2 -> 0 | | 0 0
+NX 1 0 0 -> 0 | | 0 0
+PV 1 0 2 -> 0 | | 0 0
+NX 1 0 0 -> 0 | | 0 0
+PV 1 0 0 -> 0 | | 0 0
+NX 2 1 2 -> 0 | d0 | 2 0
+PV 2 1 0 -> 0 | d0 | 0 0
+NX 3 1 0 -> 2 | d2 | 0 0
+PV 3 1 2 -> 0 | d2 d0 | 2 0
+NX a 5 2 -> 6 | d6 | 0 0
+PV a 5 2 -> 4 | d6 d7 d8 d9 d0 d1 d2 d3 d4 | 2 0
+NX a 4 2 -> 5 | d5 | 0 0
+PV a 4 0 -> 3 | d5 d6 d7 d8 d9 d0 d1 d2 d3 | 0 0
+NX 6 0 0 -> 1 | d1 | 0 0
+PV 6 0 0 -> 5 | d1 d2 d3 d4 d5 | 0 0
+NX 2 1 2 -> 0 | d0 | 2 0
+PV 2 1 0 -> 0 | d0 | 0 0
+NX 1 0 2 -> 0 | | 0 0
+PV 1 0 0 -> 0 | | 0 0
+NX 0 0 2 -> 0 | | 0 0
+PV 0 0 2 -> 0 | | 0 0
+NX 1 0 0 -> 0 | | 0 0
+PV 1 0 2 -> 0 | | 0 0
+NX a 0 0 -> 1 | d1 | 0 0
+PV a 0 2 -> 9 | d1 d2 d3 d4 d5 d6 d7 d8 d9 | 0 0
+NX 2 1 2 -> 0 | d0 | 2 0
+PV 2 1 0 -> 0 | d0 | 0 0
+NX 6 1 0 -> 2 | d2 | 0 0
+PV 6 1 2 -> 0 | d2 d3 d4 d5 d0 | 2 0
+NX a 3 2 -> 4 | d4 | 0 0
+PV a 3 0 -> 2 | d4 d5 d6 d7 d8 d9 d0 d1 d2 | 0 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 2 -> 0 | | 0 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 0 -> 0 | | 0 0
+NX 2 0 0 -> 1 | d1 | 0 0
+PV 2 0 2 -> 1 | d1 | 0 0
+NX 3 1 2 -> 2 | d2 | 0 0
+PV 3 1 0 -> 0 | d2 d0 | 0 0
+NX 6 2 0 -> 3 | d3 | 0 0
+PV 6 2 0 -> 1 | d3 d4 d5 d0 d1 | 0 0
+NX a 4 2 -> 5 | d5 | 0 0
+PV a 4 2 -> 3 | d5 d6 d7 d8 d9 d0 d1 d2 d3 | 2 0
+NX a 2 0 -> 3 | d3 | 0 0
+PV a 2 2 -> 1 | d3 d4 d5 d6 d7 d8 d9 d0 d1 | 2 0
+NX a 2 2 -> 3 | d3 | 0 0
+PV a 2 0 -> 1 | d3 d4 d5 d6 d7 d8 d9 d0 d1 | 0 0
+NX 1 0 2 -> 0 | | 0 0
+PV 1 0 0 -> 0 | | 0 0
+NX 1 0 0 -> 0 | | 0 0
+PV 1 0 0 -> 0 | | 0 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 0 -> 0 | | 0 0
+NX 1 0 2 -> 0 | | 0 0
+PV 1 0 2 -> 0 | | 0 0
+NX 6 3 0 -> 4 | d4 | 0 0
+PV 6 3 0 -> 2 | d4 d5 d0 d1 d2 | 0 0
+NX 0 0 2 -> 0 | | 0 0
+PV 0 0 2 -> 0 | | 0 0
+NX 6 5 0 -> 0 | d0 | 0 0
+PV 6 5 2 -> 4 | d0 d1 d2 d3 d4 | 2 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 0 -> 0 | | 0 0
+NX 0 0 2 -> 0 | | 0 0
+PV 0 0 0 -> 0 | | 0 0
+NX 2 1 0 -> 0 | d0 | 0 0
+PV 2 1 0 -> 0 | d0 | 0 0
+NX 3 1 0 -> 2 | d2 | 0 0
+PV 3 1 2 -> 0 | d2 d0 | 2 0
+NX 3 0 0 -> 1 | d1 | 0 0
+PV 3 0 2 -> 2 | d1 d2 | 0 0
+NX 2 1 0 -> 0 | d0 | 0 0
+PV 2 1 2 -> 0 | d0 | 2 0
+NX 6 0 2 -> 1 | d1 | 0 0
+PV 6 0 2 -> 5 | d1 d2 d3 d4 d5 | 0 0
+NX 6 1 0 -> 2 | d2 | 0 0
+PV 6 1 0 -> 0 | d2 d3 d4 d5 d0 | 0 0
+NX 1 0 0 -> 0 | | 0 0
+PV 1 0 0 -> 0 | | 0 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 2 -> 0 | | 0 0
+NX 3 2 2 -> 0 | d0 | 2 0
+PV 3 2 0 -> 1 | d0 d1 | 0 0
+NX 2 0 2 -> 1 | d1 | 0 0
+PV 2 0 2 -> 1 | d1 | 0 0
+NX a 9 2 -> 0 | d0 | 2 0
+PV a 9 2 -> 8 | d0 d1 d2 d3 d4 d5 d6 d7 d8 | 2 0
+NX 3 1 0 -> 2 | d2 | 0 0
+PV 3 1 0 -> 0 | d2 d0 | 0 0
+NX 2 0 2 -> 1 | d1 | 0 0
+PV 2 0 0 -> 1 | d1 | 0 0
+NX 3 1 0 -> 2 | d2 | 0 0
+PV 3 1 2 -> 0 | d2 d0 | 2 0
+NX a 1 0 -> 2 | d2 | 0 0
+PV a 1 0 -> 0 | d2 d3 d4 d5 d6 d7 d8 d9 d0 | 0 0
+NX 2 0 2 -> 1 | d1 | 0 0
+PV 2 0 0 -> 1 | d1 | 0 0
+NX 1 0 0 -> 0 | | 0 0
+PV 1 0 0 -> 0 | | 0 0
+NX 3 2 0 -> 0 | d0 | 0 0
+PV 3 2 2 -> 1 | d0 d1 | 2 0
+NX 1 0 0 -> 0 | | 0 0
+PV 1 0 0 -> 0 | | 0 0
+NX 6 3 2 -> 4 | d4 | 0 0
+PV 6 3 2 -> 2 | d4 d5 d0 d1 d2 | 2 0
+NX 2 1 2 -> 0 | d0 | 2 0
+PV 2 1 0 -> 0 | d0 | 0 0
+NX 3 0 2 -> 1 | d1 | 0 0
+PV 3 0 0 -> 2 | d1 d2 | 0 0
+NX 1 0 0 -> 0 | | 0 0
+PV 1 0 0 -> 0 | | 0 0
+NX 3 2 2 -> 0 | d0 | 2 0
+PV 3 2 2 -> 1 | d0 d1 | 2 0
+NX a 2 0 -> 3 | d3 | 0 0
+PV a 2 0 -> 1 | d3 d4 d5 d6 d7 d8 d9 d0 d1 | 0 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 2 -> 0 | | 0 0
+NX 1 0 2 -> 0 | | 0 0
+PV 1 0 2 -> 0 | | 0 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 0 -> 0 | | 0 0
+NX 6 3 0 -> 4 | d4 | 0 0
+PV 6 3 0 -> 2 | d4 d5 d0 d1 d2 | 0 0
+NX 2 1 2 -> 0 | d0 | 2 0
+PV 2 1 0 -> 0 | d0 | 0 0
+NX a 6 2 -> 7 | d7 | 0 0
+PV a 6 2 -> 5 | d7 d8 d9 d0 d1 d2 d3 d4 d5 | 2 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 0 -> 0 | | 0 0
+NX 3 2 2 -> 0 | d0 | 2 0
+PV 3 2 2 -> 1 | d0 d1 | 2 0
+NX 0 0 2 -> 0 | | 0 0
+PV 0 0 2 -> 0 | | 0 0
+NX 3 0 0 -> 1 | d1 | 0 0
+PV 3 0 2 -> 2 | d1 d2 | 0 0
+NX 3 1 0 -> 2 | d2 | 0 0
+PV 3 1 0 -> 0 | d2 d0 | 0 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 0 -> 0 | | 0 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 2 -> 0 | | 0 0
+NX 6 2 2 -> 3 | d3 | 0 0
+PV 6 2 2 -> 1 | d3 d4 d5 d0 d1 | 2 0
+NX 6 4 0 -> 5 | d5 | 0 0
+PV 6 4 0 -> 3 | d5 d0 d1 d2 d3 | 0 0
+NX 3 1 2 -> 2 | d2 | 0 0
+PV 3 1 0 -> 0 | d2 d0 | 0 0
+NX 6 3 2 -> 4 | d4 | 0 0
+PV 6 3 2 -> 2 | d4 d5 d0 d1 d2 | 2 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 0 -> 0 | | 0 0
+NX a 4 0 -> 5 | d5 | 0 0
+PV a 4 2 -> 3 | d5 d6 d7 d8 d9 d0 d1 d2 d3 | 2 0
+NX 2 1 0 -> 0 | d0 | 0 0
+PV 2 1 2 -> 0 | d0 | 2 0
+NX 3 0 0 -> 1 | d1 | 0 0
+PV 3 0 2 -> 2 | d1 d2 | 0 0
+NX a 7 0 -> 8 | d8 | 0 0
+PV a 7 0 -> 6 | d8 d9 d0 d1 d2 d3 d4 d5 d6 | 0 0
+NX 1 0 2 -> 0 | | 0 0
+PV 1 0 2 -> 0 | | 0 0
+NX 3 2 2 -> 0 | d0 | 2 0
+PV 3 2 2 -> 1 | d0 d1 | 2 0
+NX 2 0 2 -> 1 | d1 | 0 0
+PV 2 0 0 -> 1 | d1 | 0 0
+NX 0 0 2 -> 0 | | 0 0
+PV 0 0 2 -> 0 | | 0 0
+NX 0 0 0 -> 0 | | 0 0
+PV 0 0 2 -> 0 | | 0 0
+NX 3 0 0 -> 1 | d1 | 0 0
+PV 3 0 0 -> 2 | d1 d2 | 0 0
+NX a 5 2 -> 6 | d6 | 0 0
+PV a 5 2 -> 4 | d6 d7 d8 d9 d0 d1 d2 d3 d4 | 2 0
+NX 6 1 2 -> 2 | d2 | 0 0
+PV 6 1 2 -> 0 | d2 d3 d4 d5 d0 | 2 0
+NX 3 0 2 -> 1 | d1 | 0 0
+PV 3 0 2 -> 2 | d1 d2 | 0 0
+NX a 6 2 -> 7 | d7 | 0 0
+PV a 6 2 -> 5 | d7 d8 d9 d0 d1 d2 d3 d4 d5 | 2 0
+NX a 5 0 -> 6 | d6 | 0 0
+PV a 5 0 -> 4 | d6 d7 d8 d9 d0 d1 d2 d3 d4 | 0 0
+NX 3 0 0 -> 1 | d1 | 0 0
+PV 3 0 0 -> 2 | d1 d2 | 0 0
+NX 2 0 2 -> 1 | d1 | 0 0
+PV 2 0 2 -> 1 | d1 | 0 0
+NX 2 0 0 -> 1 | d1 | 0 0
+PV 2 0 0 -> 1 | d1 | 0 0
+NX 1 0 0 -> 0 | | 0 0
+PV 1 0 0 -> 0 | | 0 0
+NX a 2 2 -> 3 | d3 | 0 0
+PV a 2 2 -> 1 | d3 d4 d5 d6 d7 d8 d9 d0 d1 | 2 0
+GL 8 a a 20 20 c 0 18 0 a -> 0
+GL ffff  0 -> -1
+GL 1 a 14 -> -1
+GL 4 8 c 8000 fff0 fff0 -> -1
+GL 8 8000 20 c 18 18 a fff0 a 20 -> 1
+GL 8 0 a 0 0 0 0 18 7fff fffffff0 -> -1
+GL ffff  0 -> -1
+GL 2 8000 7fff ffff8000 -> 0
+GL 4 18 8000 c 20 8000 -> -1
+GL 1 7fff fff0 -> -1
+GL 4 20 20 10 c 0 -> -1
+GL 2 18 20 c -> -1
+GL 8000  c -> -1
+GL 4 8000 0 7fff 8 0 -> 1
+GL 8 0 7fff c a 8 20 fff0 20 fff0 -> -1
+GL ffff  0 -> -1
+GL 8 c 10 0 a a 18 fff0 8000 10008 -> -1
+GL 8000  c -> -1
+GL 2 20 20 10008 -> -1
+GL 8 18 c 8 10 0 7fff fff0 10 c -> 1
+GL 0  c -> -1
+GL ffff  c -> -1
+GL 2 7fff 18 0 -> -1
+GL 0  0 -> -1
+GL 2 0 8000 10008 -> -1
+GL 8000  c -> -1
+GL 8000  c -> -1
+GL 2 c 18 ffff8000 -> -1
+GL 2 18 20 fffffff0 -> -1
+GL 8000  0 -> -1
+GL 1 8 8 -> 0
+GL 1 10 14 -> -1
+GL 1 0 7fff -> -1
+GL ffff  0 -> -1
+GL ffff  0 -> -1
+GL 8000  0 -> -1
+GL 0  c -> -1
+GL 2 7fff a a -> 1
+GL 4 7fff 7fff 18 0 c -> -1
+GL 2 20 8000 ffff8000 -> 1
+GL 0  0 -> -1
+GL 0  c -> -1
+GL 4 8000 0 fff0 10 fff0 -> -1
+GL 8 0 10 20 fff0 fff0 18 8 20 8 -> 6
+GL 8000  0 -> -1
+GL 4 8000 c 8000 c c -> 1
+GL 1 10 fffffff0 -> -1
+GL ffff  c -> -1
+GL 8 8000 a 20 8000 fff0 a a 18 18 -> 7
+GL 2 18 18 ffff8000 -> -1
+GL 0  c -> -1
+GL ffff  0 -> -1
+GL 8000  c -> -1
+GL 1 8000 0 -> -1
+GL 8000  c -> -1
+GL ffff  0 -> -1
+GL 4 7fff 0 a 0 10008 -> -1
+GL 0  0 -> -1
+GL 8000  c -> -1
+GL ffff  0 -> -1
+GL 8 a 18 c a a 0 7fff a 0 -> 5
+GL 8000  c -> -1
+GL 8 c 18 0 8 20 a fff0 10 c -> 0
+GL ffff  c -> -1
+GL 4 fff0 10 0 7fff c -> -1
+GL 0  c -> -1
+GL 4 8 0 8 7fff 7fff -> 3
+GL ffff  c -> -1
+GL 0  0 -> -1
+GL 0  0 -> -1
+GL 8000  c -> -1
+GL ffff  0 -> -1
+GL ffff  c -> -1
+GL 8 fff0 0 7fff 0 18 7fff 18 8000 18 -> 4
+GL 8 fff0 c a 0 18 a 7fff 18 c -> 1
+GL 1 8000 10008 -> -1
+GL 8000  c -> -1
+GL 0  0 -> -1
+GL 4 c 20 a c 7fff -> -1
+GL 8000  0 -> -1
+GL 2 8 10 ffff8000 -> -1
+GL 8000  0 -> -1
+GL 0  0 -> -1
+GL 8 fff0 20 8 c 0 10 8 0 ffff8000 -> -1
+GL 4 8000 10 8 10 8000 -> -1
+GL ffff  c -> -1
+GL 0  c -> -1
+GL ffff  0 -> -1
+GL 8000  c -> -1
+GL 0  0 -> -1
+GL 8 18 a 0 fff0 a 20 fff0 c a -> 1
+GL 2 8 10 7fff -> -1
+GL 8000  c -> -1
+GL ffff  0 -> -1
+GL 2 18 18 0 -> -1
+GL ffff  0 -> -1
+GL 8 18 c 8 0 fff0 fff0 c a a -> 7
+GL 2 7fff 0 14 -> -1
+GL 4 0 8 18 8 10008 -> -1
+GL 2 fff0 0 0 -> 1
+GL 1 18 ffff8000 -> -1
+GL 4 7fff 0 0 0 7fff -> 0
+GL ffff  0 -> -1
+GL 4 20 c 0 c 0 -> 2
+GL 8000  c -> -1
+GL 8 18 7fff 8 c c 20 a 8000 20 -> 5
+GL 2 8000 18 c -> -1
+GL 2 a 0 0 -> 1
+GL 1 7fff 14 -> -1
+GL 2 20 18 18 -> 1
+GL 2 18 10 10008 -> -1
+GL 8 c 20 7fff a 8 8000 c a 7fff -> 2
+GL 4 0 8 0 7fff fff0 -> -1
+GL 0  0 -> -1
+GL 2 0 0 10008 -> -1
+GL 2 c 20 fff0 -> -1
+GL 1 8 fff0 -> -1
+GL 8 7fff 18 20 0 8000 fff0 10 0 7fff -> 0
+GL ffff  c -> -1
+GL ffff  0 -> -1
+GL 8 8000 8000 7fff c 8 7fff 10 c 8000 -> -1
+GL 8000  c -> -1
+GL 4 c 18 c 8000 c -> 0
+GL 1 20 20 -> 0
+GL ffff  c -> -1
+GL 4 0 10 8 fff0 10008 -> -1
+GL ffff  0 -> -1
+GL ffff  c -> -1
+GL 8000  c -> -1
+GL 1 18 0 -> -1
+GL 8 10 a 10 c 10 8000 7fff 18 7fff -> 6
+GL 0  c -> -1
+GL 1 a 14 -> -1
+GL 4 0 7fff 8000 8000 8000 -> -1
+GL 8 10 c a 18 18 18 7fff c 10008 -> -1
+GL 4 c 7fff 20 20 fff0 -> -1
+GL 8000  0 -> -1
+GL 8000  c -> -1
+GL 8 fff0 0 8 20 fff0 a 10 fff0 ffff8000 -> -1
+GL 4 18 fff0 c a fff0 -> -1
+GL ffff  c -> -1
+GL 8000  0 -> -1
+GL 8000  c -> -1
+GL 2 8 fff0 8 -> 0
+GL 8 fff0 20 7fff 8 8 0 18 a c -> -1
+GL 4 10 8000 a c a -> 2
+GL 4 0 c c a 10008 -> -1
+GL 8000  0 -> -1
+GL 0  c -> -1
+GL 0  0 -> -1
+GL 8000  0 -> -1
+GL 0  0 -> -1
+GL 0  0 -> -1
+GL 2 10 fff0 10008 -> -1
+GL 8000  0 -> -1
+GL 1 8000 c -> -1
+GL 8 fff0 20 a 18 c 10 0 18 20 -> 1
+GL 4 a c 8 8 14 -> -1
+GL 1 8000 c -> -1
+GL ffff  c -> -1
+GL 1 7fff ffff8000 -> -1
+GL 8000  0 -> -1
+GL 8000  0 -> -1
+GL ffff  c -> -1
+GL 8 10 c 7fff a 18 8 fff0 c 18 -> 4
+GL 2 8000 20 10008 -> -1
+GL 8000  0 -> -1
+GL 4 8000 8000 20 8 c -> -1
+GL 2 20 0 0 -> 1
+GL 1 fff0 fff0 -> -1
+GL ffff  0 -> -1
+GL ffff  0 -> -1
+GL 2 8000 c 8000 -> -1
+GL 4 18 7fff fff0 0 fff0 -> -1
+GL 8 10 c 0 c 20 a 7fff 20 0 -> 2
+GL 1 8000 0 -> -1
+GL 8000  0 -> -1
+GL 1 18 7fff -> -1
+GL 1 7fff 10008 -> -1
+GL 8 8 8000 8000 10 20 a a fff0 fff0 -> -1
+GL 4 0 10 20 fff0 fffffff0 -> 3
+GL 1 18 fffffff0 -> -1
+GL 8000  c -> -1
+GL 0  c -> -1
+GL 8 8000 0 fff0 20 8 a 8000 18 c -> -1
+GL 1 8 fffffff0 -> -1
+GL ffff  0 -> -1
+GL 8 8 8 20 7fff a a 8000 18 fffffff0 -> -1
+GL 0  0 -> -1
+GL 4 20 8000 7fff 18 18 -> 3
+GL 2 20 c c -> 1
+GL 2 c 20 fffffff0 -> -1
+GL 2 8 20 0 -> -1
+GL 1 10 c -> -1
+GL 8 0 10 c 20 fff0 0 10 7fff 7fff -> 7
+GL 4 8000 20 7fff fff0 7fff -> 2
+GL 8 20 18 8 8 18 c 8000 c c -> 5
+GL 8 18 0 7fff a c c fff0 7fff ffff8000 -> -1
+GL ffff  0 -> -1
+GL 1 c fffffff0 -> -1
+GL ffff  0 -> -1
+GL 8 8 18 0 10 20 10 10 18 c -> -1
+GL 4 7fff c a 7fff 7fff -> 0
+GL 4 7fff 7fff 8000 8 ffff8000 -> 2
+GL 1 20 ffff8000 -> -1
+GL 1 10 10008 -> -1
+GL ffff  c -> -1
+GL ffff  0 -> -1
+GL 4 18 c 20 8 10008 -> -1
+GL ffff  c -> -1
+GL 0  0 -> -1
+GL ffff  c -> -1
+GL 2 18 7fff 7fff -> 1
+GL 2 0 8 0 -> 0
+GL 0  0 -> -1
+GL 8 8 fff0 10 8 0 c 18 8 10 -> 2
+GL ffff  0 -> -1
+GL ffff  c -> -1
+GL 2 20 c 7fff -> -1
+GL ffff  c -> -1
+GL 8 c a 18 10 a 8000 20 8000 c -> 0
+GL 0  0 -> -1
+GL 0  c -> -1
+GL 2 0 fff0 c -> -1
+GL 8000  0 -> -1
+GL 1 18 0 -> -1
+GL 8 10 c fff0 a a 8000 18 7fff fffffff0 -> 2
+GL 4 7fff 8000 0 fff0 10008 -> -1
+GL ffff  c -> -1
+GL 4 0 8000 7fff 7fff 7fff -> 2
+GL 0  c -> -1
+GL ffff  c -> -1
+GL 8 7fff 7fff 20 10 7fff 10 7fff 20 10008 -> -1
+GL 8 0 a fff0 fff0 8000 7fff 18 8000 ffff8000 -> 4
+GL ffff  c -> -1
+GL 8 7fff 0 8 10 7fff a fff0 8000 14 -> -1
+GL 4 10 7fff 18 fff0 7fff -> 1
+GL ffff  0 -> -1
+GL 0  0 -> -1
+GL 2 8 18 fffffff0 -> -1
+GL 2 a 10 fff0 -> -1
+GL 4 10 fff0 8000 18 18 -> 3
+GL 8000  c -> -1
+GL 1 7fff 10008 -> -1
+GL 2 18 7fff fff0 -> -1
+GL 8000  c -> -1
+GL 2 c 0 0 -> 1
+GL ffff  0 -> -1
+GL 0  0 -> -1
+GL 8 7fff 8000 0 8000 20 7fff c 8000 7fff -> 0
+GL 1 8 fff0 -> -1
+GL 0  0 -> -1
+GL 2 0 18 10008 -> -1
+GL 4 c 10 10 8000 ffff8000 -> 3
+GL 8 8 c 0 c fff0 fff0 8000 a c -> 1
+GL 4 8000 0 7fff 7fff 0 -> 1
+GL 0  0 -> -1
+GL 1 20 fffffff0 -> -1
+GL 8000  0 -> -1
+GL 1 18 fff0 -> -1
+GL 0  0 -> -1
+GL 4 8 8 20 8000 c -> -1
+GL 2 a c 10008 -> -1
+GL 8000  0 -> -1
+GL 8 fff0 0 10 8 8000 8000 fff0 20 fff0 -> -1
+GL 2 8 7fff 14 -> -1
+GL 8000  c -> -1
+GL 4 c 10 fff0 0 fff0 -> -1
+GL 2 7fff 10 7fff -> 0
+GL 0  c -> -1
+GL 0  0 -> -1
+GL 0  c -> -1
+GL 8000  0 -> -1
+GL 4 c 0 c fff0 fff0 -> -1
+GL 8000  0 -> -1
+GL 8000  0 -> -1
+GL 8000  0 -> -1
+GL 1 fff0 0 -> -1
+GL ffff  0 -> -1
+GL 8 7fff 10 7fff 0 a 8 a 10 c -> -1
+GL 2 a fff0 fff0 -> -1
+GL 2 c a 0 -> -1
+GL 4 10 7fff fff0 a 10 -> 0
+GL 0  0 -> -1
+GL 4 c 7fff 0 18 c -> 0
+GL ffff  c -> -1
+GL 1 c 14 -> -1
+GL 1 a 0 -> -1
+GL 0  0 -> -1
+GL 4 a 8 18 8 ffff8000 -> -1
+GL 8 20 7fff fff0 8000 18 7fff 7fff c c -> 7
+GL 8 18 8 0 c fff0 fff0 fff0 8 7fff -> -1
+GL 8 10 a c 18 fff0 8000 8 7fff 10008 -> -1
+GL 2 8 10 7fff -> -1
+GL 1 0 fff0 -> -1
+GL ffff  0 -> -1
+GL 2 a 10 a -> 0
+GL 8000  0 -> -1
+GL 4 fff0 20 a fff0 ffff8000 -> -1
+GL 1 7fff 7fff -> 0
+PO P f68f052c 4 P 40b32b55 3 P 97572f36 3 ->
+PO Q Q P 4bc5b26a 4 P d89ea762 2 Q P 8a337014 3 P 588cb217 2 Q Q Q -> 0:3 0:3 d89ea762:2 588cb217:2 8a337014:3 4bc5b26a:4
+PO Q P 44e44c43 2 P 51a513a6 3 P 74422063 4 Q Q P 89183909 4 P bf479a96 4 P 3cc1f05b 4 P 9593af87 2 Q P 813248cc 2 P 431d651a 2 Q P 530deb93 4 P ac0b70b7 4 Q Q Q Q P e915c1b4 3 Q P d3bc7fae 4 Q Q P d3520a3d 2 P 2d682486 3 P a2165def 4 P 6d5779b7 3 Q Q P d28b6a31 4 Q Q Q P 601f955 4 Q P 86c4c937 4 Q P 30056e1c 2 -> 0:3 74422063:4 51a513a6:3 9593af87:2 431d651a:2 ac0b70b7:4 530deb93:4 813248cc:2 3cc1f05b:4 e915c1b4:3 d3bc7fae:4 bf479a96:4 6d5779b7:3 a2165def:4 d28b6a31:4 2d682486:3 d3520a3d:2 601f955:4 86c4c937:4
+PO Q P bf321967 3 Q -> 0:3 bf321967:3
+PO P 5c755d26 2 P 52cc6988 2 P 2f84ab1c 3 P 32aabd81 3 Q Q P 1e892008 4 Q P 29c4b78e 3 P 991cceb7 2 -> 32aabd81:3 2f84ab1c:3 1e892008:4
+PO Q Q P 7276c28b 3 -> 0:3 0:3
+PO Q P 8daf4663 3 Q -> 0:3 8daf4663:3
+PO P 1ff47b54 4 Q Q P c1ce37fc 2 P d50e6125 3 P 203948a8 4 P 32d51cca 3 Q Q P 549f6dae 4 P d878e6f9 3 Q Q Q P 97408a9a 3 Q Q Q Q P bbb1a17 3 Q Q P ce8a0cb9 4 P abd26897 4 Q P b1f19822 3 Q Q P b82d804 3 Q P f0e515c1 3 P 1ef74943 2 Q P 2efdc93c 2 Q P 99eb8f19 3 Q Q P d26fa9f7 4 P 60a20e0a 3 -> 1ff47b54:4 0:3 32d51cca:3 203948a8:4 d878e6f9:3 549f6dae:4 d50e6125:3 97408a9a:3 c1ce37fc:2 0:3 0:3 bbb1a17:3 0:3 abd26897:4 b1f19822:3 ce8a0cb9:4 b82d804:3 1ef74943:2 2efdc93c:2 99eb8f19:3 f0e515c1:3
+PO Q P a67778d0 4 P 88b05574 4 -> 0:3
+PO Q P ac25edd8 3 P f9754277 4 Q Q P ed3dcdd8 2 P b1f6fe65 4 P 564c02e5 2 Q Q Q P be376065 2 P a8d78cbd 4 P 931b7305 2 P 3f7d36cd 3 P 4e4dbf59 3 P 12c3f9aa 4 Q Q Q P 66e6c64b 3 Q Q P 3c42eafa 3 Q P de0bdfc 2 Q Q Q Q Q P ab44fa61 3 P a0e3687b 3 Q P 8589314a 2 Q Q P ce35b6f9 3 P 29e61fde 3 P 787635ed 3 -> 0:3 f9754277:4 ac25edd8:3 564c02e5:2 b1f6fe65:4 ed3dcdd8:2 12c3f9aa:4 4e4dbf59:3 3f7d36cd:3 66e6c64b:3 931b7305:2 3c42eafa:3 de0bdfc:2 a8d78cbd:4 be376065:2 0:3 0:3 a0e3687b:3 8589314a:2 ab44fa61:3
+PO Q Q P 9705a09b 3 P ce5bb83e 3 Q P 9a322153 4 Q P e4b89f65 2 Q Q -> 0:3 0:3 ce5bb83e:3 9a322153:4 e4b89f65:2 9705a09b:3
+PO Q Q Q Q P b8224f5b 3 P 621bf667 4 P 78c1cbd6 3 P 71211ad9 3 P 98d69d13 3 P b8a1e277 3 -> 0:3 0:3 0:3 0:3
+PO P c4c67d3d 3 P f8d01127 3 P e906cd5f 3 ->
+PO Q P 840202c0 3 P 643466eb 3 P f447f016 4 Q P 74573075 3 Q Q Q Q P 856717b2 4 Q P 71314cc 3 Q P bccede64 2 Q P 53cb50db 3 P 8ed3265a 2 P f33e8cc7 3 P c48cbc88 2 P 8abedcdb 2 P c621ff4 4 P 53b07700 2 P b853af93 4 P dd4533ad 4 P 9fa122a 3 P fe9f82c8 3 P 54e85b33 4 Q Q Q P fd689037 2 P c0b40020 4 Q P 236fa1f9 2 Q P 843246f7 3 P e6280b9a 3 Q P e7bb09ee 4 -> 0:3 f447f016:4 74573075:3 643466eb:3 840202c0:3 0:3 856717b2:4 71314cc:3 bccede64:2 54e85b33:4 fe9f82c8:3 9fa122a:3 c0b40020:4 236fa1f9:2 e6280b9a:3
+PO P a3bb76a2 3 P 147ed20b 3 Q Q P 6b394d0a 3 P f182e216 4 Q Q P e1ab592f 2 Q Q Q P 1946553d 2 P f11f36d0 2 Q P 67d5013e 3 P 2fb46cc7 3 P d6a1993 4 P 6c9c1a67 4 P d56993e7 2 Q P a737cd3c 4 Q P e6e03e2d 3 P ffa639f9 2 P d2d5fee1 2 P 7361b3a6 3 Q Q P ad1c51d5 4 P 35f02873 4 Q P 26e090c7 2 P 28eacd18 2 P a2163579 2 P 45f4fc08 3 Q P 8f675745 3 Q Q -> 147ed20b:3 a3bb76a2:3 f182e216:4 6b394d0a:3 e1ab592f:2 0:3 0:3 f11f36d0:2 d56993e7:2 a737cd3c:4 7361b3a6:3 d2d5fee1:2 35f02873:4 45f4fc08:3 8f675745:3 a2163579:2
+PO Q P e2c944f2 2 P 5552d0d4 3 P f0541a8c 3 Q Q P e36662cc 3 Q P 109cf768 3 P 8ac083f5 2 P 4adfc8f0 2 Q Q Q Q P 627f5d89 3 Q P 41249da5 4 P 3ee5776e 3 P 397bd32e 3 Q Q P 3e9fe5f1 3 P 846179e6 2 P f415e884 3 Q Q Q P ab88aab3 3 P f2db028a 3 P 1a82a9cb 3 P 51ec6b83 3 Q P 47fcceef 2 P 24ce3065 4 P 5557983f 4 Q Q Q P fcf28818 3 -> 0:3 f0541a8c:3 5552d0d4:3 e36662cc:3 4adfc8f0:2 8ac083f5:2 109cf768:3 e2c944f2:2 627f5d89:3 397bd32e:3 3ee5776e:3 f415e884:3 846179e6:2 3e9fe5f1:3 51ec6b83:3 5557983f:4 24ce3065:4 47fcceef:2
+PO P 96243bb 3 P 8178cd13 3 Q -> 8178cd13:3
+PO Q P 83a50f 4 P e23fb9e7 4 Q Q P c77a2550 4 Q P b263d6fc 3 Q P b4247d9d 2 -> 0:3 e23fb9e7:4 83a50f:4 c77a2550:4 b263d6fc:3
+PO Q P 98c9951 2 P a79c30f6 4 P 88155278 3 Q Q Q P 7cc6ffca 3 P 3caa8bd4 3 P 34405995 3 -> 0:3 88155278:3 a79c30f6:4 98c9951:2
+PO P f4b95fc9 3 Q Q P feca17e5 2 Q Q P 503c2cc9 4 P 80c05ed6 2 P fe962da4 2 Q -> f4b95fc9:3 0:3 feca17e5:2 0:3 fe962da4:2
+PO P 387223fb 4 P 4eedb0be 4 Q Q P d8b60ce2 3 P a539f0bc 2 P ffa34838 3 P 5b24d934 3 Q P fc892992 4 -> 4eedb0be:4 387223fb:4 5b24d934:3
+PO Q P 66694a1 3 Q P 67e9db54 4 P 620467d0 4 P cf4becc1 3 P 56237453 3 P 2bb56bea 3 P 93199c8f 3 P 4e499534 3 -> 0:3 66694a1:3
+PO P 203d06d5 2 Q P 31a89ab 4 P d5f37c95 4 P 5b23df32 4 P 413308a0 3 P ddb17a7 4 P aef55537 2 P 691b7fbd 2 P 54f64405 3 P f766e6a5 3 Q P 7656a239 2 P 62d9b33d 3 P 33d75eb6 2 Q Q Q P 15c2b43c 2 Q Q Q Q P a8e5222c 3 P 5387ce82 3 P 137902e6 4 Q P c9d92ed3 2 P e59d68bd 2 P c41cf161 3 P fc429ab1 2 P eb6d3525 4 Q Q Q Q Q P f7dc3896 3 P 7ed4d107 3 P 67bdc277 3 -> 203d06d5:2 f766e6a5:3 33d75eb6:2 62d9b33d:3 7656a239:2 15c2b43c:2 54f64405:3 691b7fbd:2 aef55537:2 137902e6:4 eb6d3525:4 fc429ab1:2 c41cf161:3 e59d68bd:2 c9d92ed3:2
+PO Q Q P 8cd3cb59 3 P 138b998e 3 Q Q Q Q P 2ba47a66 3 Q -> 0:3 0:3 138b998e:3 8cd3cb59:3 0:3 0:3 2ba47a66:3
+PO P 8ef3eda9 2 Q Q P 68266726 4 Q Q P 1e079f9c 4 Q P b105544e 2 Q -> 8ef3eda9:2 0:3 68266726:4 0:3 1e079f9c:4 b105544e:2
+PO Q P ab6a8688 3 Q -> 0:3 ab6a8688:3
+PO Q P 4e295dea 2 Q Q P 87a7176 3 P 85ea68d1 3 P d4e11000 4 Q Q P 8411a36f 3 -> 0:3 4e295dea:2 0:3 d4e11000:4 85ea68d1:3
+PO Q Q Q Q P 6e7265a5 4 P 97486728 2 P d4a8a16e 3 P 155c2bde 3 Q Q Q Q P a77234ef 3 Q P df230b3e 4 P 66f0254b 4 P ed73d1ee 4 P d00a76b2 4 P 1d80c1af 2 P 52f070db 3 P e9c2451a 2 Q P 188c715a 3 Q P 6b7a87fd 3 Q Q P e7f8502f 3 P 130439e1 4 Q P 5fd6cff6 3 P 8405033b 4 Q P 6a09c665 2 P 1243b274 3 Q P 1fffaaef 4 P 79a34e1c 2 P e188e27d 2 P 654e90c0 2 -> 0:3 0:3 0:3 0:3 155c2bde:3 d4a8a16e:3 97486728:2 6e7265a5:4 a77234ef:3 e9c2451a:2 188c715a:3 6b7a87fd:3 52f070db:3 130439e1:4 8405033b:4 1243b274:3
+PO Q Q Q P 42bbc76d 3 P b0aefda7 3 Q Q P db8bc563 2 Q P 4c1f9afe 3 -> 0:3 0:3 0:3 b0aefda7:3 42bbc76d:3 db8bc563:2
+PO P afb6a4cd 3 Q Q Q P a36a514d 3 Q P 528ced3f 2 P 1e9409a3 3 P de75e4aa 4 Q P bb5da1b9 2 P e69e98fe 4 P 9e663c25 3 P 6127368f 3 P b5ac3a56 3 Q P d33d3249 3 Q P 2572e857 2 P 7ab97c3a 4 Q Q P 4b6d77ac 3 Q P 5c623e9a 2 Q Q P 8ab129dc 2 Q Q Q P 719da4c8 3 P 31980605 3 P a80154d 2 Q P f0f58bf7 2 Q Q Q Q -> afb6a4cd:3 0:3 0:3 a36a514d:3 de75e4aa:4 b5ac3a56:3 d33d3249:3 7ab97c3a:4 2572e857:2 4b6d77ac:3 5c623e9a:2 6127368f:3 8ab129dc:2 9e663c25:3 e69e98fe:4 a80154d:2 f0f58bf7:2 31980605:3 719da4c8:3 bb5da1b9:2
+PO P 6614b7ec 3 Q P 43e6bf63 3 P 1d8f8d86 2 P 545f47b8 4 P dc3c7ff5 3 Q Q P 13143d22 4 P af5924f4 3 -> 6614b7ec:3 dc3c7ff5:3 545f47b8:4
+PO P a596c9c9 4 P a469d2d9 3 Q -> a469d2d9:3
+PO Q Q Q Q Q Q P 93b88488 4 Q Q Q P 4852750c 2 Q Q Q P 391b4b17 4 Q Q Q P 8af451cd 3 Q P 686da4c5 3 Q P a4d15cde 2 Q P 2d5f1908 4 Q P e6ff4947 2 P c54cb77e 4 P 73b26ddc 3 P ebb4ebd4 3 P 2e41c8a5 4 Q Q P ee442ea0 3 Q Q Q P 93fc8cae 4 P 8df901af 3 P f87f36a8 3 -> 0:3 0:3 0:3 0:3 0:3 0:3 93b88488:4 0:3 0:3 4852750c:2 0:3 0:3 391b4b17:4 0:3 0:3 8af451cd:3 686da4c5:3 a4d15cde:2 2d5f1908:4 2e41c8a5:4 ebb4ebd4:3 ee442ea0:3 73b26ddc:3 c54cb77e:4
+PO Q P 95787881 3 P e8cc2404 4 P f2cec757 4 P bebd922b 3 Q Q P f1a37f23 3 P 8ed22530 2 P 122995b3 3 -> 0:3 bebd922b:3 f2cec757:4
+PO P 1af702e9 3 P a47b062c 3 P 4ac8c8c6 3 P f47a2c90 3 P f05c726d 3 P 27583668 3 P 2c6a1c34 2 P 40075056 3 Q Q Q Q P ae0d9a8b 4 P 9113f3fb 3 Q P 6d44af0b 3 P 8ff6d306 3 P 19f4152c 4 Q P 1db53536 3 P 8e98fe79 3 P e2125230 4 Q P a57bc4b8 4 P 85bd25af 2 P b82a4ad3 3 P 5904e642 2 Q Q Q Q P ad8d6618 4 Q P 65787ec4 3 P 84f22c76 3 P 5ee2c4c 3 P 2a67d1b1 3 P f43720c3 3 Q P 9f407725 3 -> 40075056:3 2c6a1c34:2 27583668:3 f05c726d:3 9113f3fb:3 19f4152c:4 e2125230:4 5904e642:2 b82a4ad3:3 85bd25af:2 a57bc4b8:4 ad8d6618:4 f43720c3:3
+PO P 3ab2fcc5 2 P 19fd36c8 3 Q Q Q Q P 542bb8b8 2 Q Q P 2d9c68d8 2 -> 19fd36c8:3 3ab2fcc5:2 0:3 0:3 542bb8b8:2 0:3
+PO Q Q P 9c9c03d5 3 P 8ce47907 4 P 22c8633b 3 P 92f446c6 3 Q P f2078f21 3 P 3da2c68 3 P 92f69ddf 2 P 206c013 4 Q P 61103c81 4 P d167d039 3 P 7c7941c7 3 P 550c412a 3 P 94fbc57c 3 Q Q Q Q P e0923966 3 P 69bb5ab3 3 P c96ef463 4 P 6f25733d 3 Q P 5b8568e1 3 P 866fe6b1 3 P 15cfec40 3 P 254e420 4 P c339b69e 4 Q P c0e14caf 4 P 5cb8d2e2 3 P b385cb1e 3 P c90dd736 4 P 6d9ebea1 3 Q P 9c1a8e7 2 Q -> 0:3 0:3 92f446c6:3 206c013:4 94fbc57c:3 550c412a:3 7c7941c7:3 d167d039:3 6f25733d:3 c339b69e:4 6d9ebea1:3 9c1a8e7:2
+PO Q P 5b337744 4 Q -> 0:3 5b337744:4
+PO P e544c73f 3 Q P 6e77db8e 3 P 7c74a193 3 Q Q Q Q Q P f3eb53c 2 -> e544c73f:3 7c74a193:3 6e77db8e:3 0:3 0:3 0:3
+PO P 72c1fd42 3 Q P 84e20559 3 Q Q Q P 2593c0ee 3 Q Q P c6c84079 4 -> 72c1fd42:3 84e20559:3 0:3 0:3 2593c0ee:3 0:3
+PO P 79d629a5 3 P 651f713f 3 Q -> 651f713f:3
+PO P 544799da 3 P 87e19d6d 3 P 6cdc1b19 3 ->
+PO P 826ff1b 4 Q P c89c87d9 4 P 312b6831 3 Q P c404a30e 2 Q Q Q Q -> 826ff1b:4 312b6831:3 c404a30e:2 c89c87d9:4 0:3 0:3
+PO P af5c39b4 4 P b9690c9f 3 Q P abeb1142 2 Q P 7679ebf4 3 P 3b07a2ea 4 P 1ecb52eb 4 Q P c0ff5fa0 3 -> b9690c9f:3 abeb1142:2 1ecb52eb:4
+PO Q P 4fc61c2d 3 Q P bd888260 3 Q P 5419599 3 Q P fc476949 4 Q P b0957299 3 -> 0:3 4fc61c2d:3 bd888260:3 5419599:3 fc476949:4
+PO Q Q P 8a835142 4 Q Q P b1124079 3 Q P 8f0e249d 3 Q Q -> 0:3 0:3 8a835142:4 0:3 b1124079:3 8f0e249d:3 0:3
+PO P 8f028c5f 4 Q P a33dafcf 3 Q P 31c079f8 3 Q Q P d92cde09 3 P 9eba0665 3 P 164afd38 3 -> 8f028c5f:4 a33dafcf:3 31c079f8:3 0:3
+PO P 4e44f853 4 Q P 9e5b2e53 4 -> 4e44f853:4
+PO Q P e17d152 2 P 346e376b 2 Q P 93b46308 3 P 4149a253 3 P 790e9011 4 P fdd608b5 3 Q Q -> 0:3 346e376b:2 fdd608b5:3 790e9011:4
+PO P b4177dea 3 P b1ab9aef 3 Q P 9cbe50a4 3 P af8c759e 4 Q P 7b554d2d 4 P 2e3c24c5 3 Q Q -> b1ab9aef:3 af8c759e:4 2e3c24c5:3 7b554d2d:4
+PO P 2e1c4bd2 3 Q Q P d3afe9f3 2 Q P 4a227418 4 P 44f4dddd 2 P 91e6073a 2 P f39b7be2 3 P d8fd4bb1 3 -> 2e1c4bd2:3 0:3 d3afe9f3:2
+PO P b231a5d7 3 Q P 24d759b5 3 Q P b3aef67e 4 P 5eb8277a 4 Q P 70faec7c 3 P e18fee98 3 P ad39b774 3 Q Q P d75ef9dd 4 Q P f1beac43 4 Q P 44bec184 4 P d62ded9a 4 P 7a643d06 4 P cbf2a0fd 4 Q Q P ba42b372 3 Q P 49566e9e 3 P 1689ca8f 2 P 55dbe1aa 2 Q P faad4dc 2 Q P 66220acd 3 P b704a44 2 P 4eafc6e4 4 P 3e63b295 3 Q P 44a804af 3 P 15125f4c 3 P 6174430e 3 P 23eebb00 3 Q -> b231a5d7:3 24d759b5:3 5eb8277a:4 ad39b774:3 e18fee98:3 d75ef9dd:4 f1beac43:4 cbf2a0fd:4 7a643d06:4 ba42b372:3 55dbe1aa:2 faad4dc:2 3e63b295:3 23eebb00:3
+PO P d28bd154 2 Q P f6dba669 3 -> d28bd154:2
+PO Q P d0219ae5 3 Q -> 0:3 d0219ae5:3
+PO P 64e0426 4 P bb52645a 3 Q P ff9aac51 4 Q P 8ab67aca 3 P 131e62db 3 P 2074c218 3 P ce687cb 4 Q Q Q P a5841680 3 P 5855744d 4 P 42fc36c4 2 P 11e143a7 3 Q P 76db4fc2 2 P 50f739b1 3 P c017cf7 3 P d8a11d61 3 Q P 4d8f3a20 3 P af88338b 4 Q P f1de5f5e 3 P 66698c71 3 P cabaa898 3 P 21a80937 3 Q P f9a5d381 3 P a43f0494 3 P a8c0507 2 P d7a4a939 4 P 385a7cfa 3 P 89eef683 3 Q Q Q Q -> bb52645a:3 ff9aac51:4 ce687cb:4 2074c218:3 131e62db:3 11e143a7:3 d8a11d61:3 af88338b:4 21a80937:3 89eef683:3 385a7cfa:3 d7a4a939:4 a8c0507:2
+PO P ab6ca956 2 Q Q -> ab6ca956:2 0:3
+PO P 7285667 4 P e0c78ddc 4 Q P 4a982c5d 4 P a8e6b0e3 4 P 716c9bd4 3 P 3c23884a 3 Q P d26f64fe 3 P cde93ef6 3 -> e0c78ddc:4 3c23884a:3
+PO Q Q P 6f89bbff 4 Q Q Q P e533c79 3 P 59f7fd 2 Q P 88438af8 4 -> 0:3 0:3 6f89bbff:4 0:3 0:3 59f7fd:2
+PO Q P 9b8e5c73 3 Q P 364a95f5 3 P 52a63235 3 P 1f43067c 2 P c37a0527 2 Q Q Q P 7deca366 2 P 5f4b8187 4 P 9b4470c5 3 Q P d1975d0e 4 P cd75c3a7 2 P 7ebee2c1 4 Q P 28fd6751 3 Q P e30f65eb 3 P 7af61e55 4 Q P fcc54ea5 2 P 4b691a6a 2 Q Q P 44e2f968 3 Q Q Q Q Q P 503d1e9f 2 P 16f394b2 3 Q P 7b79746b 3 P 60d57fc0 3 Q Q -> 0:3 9b8e5c73:3 c37a0527:2 1f43067c:2 52a63235:3 9b4470c5:3 7ebee2c1:4 28fd6751:3 7af61e55:4 4b691a6a:2 fcc54ea5:2 44e2f968:3 e30f65eb:3 cd75c3a7:2 d1975d0e:4 5f4b8187:4 16f394b2:3 60d57fc0:3 7b79746b:3
+PO Q P 97a36d74 2 P 7777ffe9 2 -> 0:3
+PO Q Q Q Q P be46774 3 Q Q P a340228c 2 P ff20672f 3 P 3e4badce 3 -> 0:3 0:3 0:3 0:3 be46774:3 0:3
+PO Q P a26d600a 3 Q -> 0:3 a26d600a:3
+PO P 4ea101a 3 P a86da1bf 3 P 79236098 3 ->
+PO Q Q P 3ba884dc 3 P e5df57a2 3 Q P c54c9d1f 2 P 3787819 2 Q Q P 1649deb2 3 -> 0:3 0:3 e5df57a2:3 3787819:2 c54c9d1f:2
+PO Q P e0a6ca2 3 Q P ef9a4452 3 Q Q P fc2d683c 4 P 22e416ec 3 P 604eb3f9 3 Q P 236e4860 2 Q P 3dacaa56 3 Q Q P 2989e1e5 2 Q P 94d47c7d 3 Q P 19ab51bc 2 Q P 13320c3 3 P 39456a97 3 P 3a62647b 4 Q Q Q P cbe543c4 3 Q P 6058e288 4 Q P b6897fec 3 P 9bc37488 4 Q Q P 29daae0d 4 P 288d98d6 2 P 3b24dc0f 3 P 4ada069d 3 Q -> 0:3 e0a6ca2:3 ef9a4452:3 0:3 604eb3f9:3 236e4860:2 3dacaa56:3 22e416ec:3 2989e1e5:2 94d47c7d:3 19ab51bc:2 3a62647b:4 39456a97:3 13320c3:3 cbe543c4:3 6058e288:4 9bc37488:4 b6897fec:3 4ada069d:3
+PO Q P 41adec9e 2 Q Q P 97932cf0 3 Q P 208274b6 4 P f03da6df 2 P f3d80b67 3 P 50ea2e7c 3 P 952a3940 3 P 7d8b3c2 2 Q Q Q P f26d9663 2 P 4f7eed8 3 P 133c9ff 3 Q Q P d379e4f3 4 P e2938473 2 Q P b7ab3b80 4 P 49bb3abf 3 P a6755244 2 Q Q Q Q Q P 7d71f827 3 P d16da3e1 2 P 325d6858 3 Q P 257432b2 3 P 3909bd15 4 P fa8bd55a 2 Q Q -> 0:3 41adec9e:2 0:3 97932cf0:3 7d8b3c2:2 952a3940:3 50ea2e7c:3 133c9ff:3 4f7eed8:3 e2938473:2 a6755244:2 49bb3abf:3 b7ab3b80:4 d379e4f3:4 f26d9663:2 325d6858:3 fa8bd55a:2 3909bd15:4
+PO P af1775c8 3 Q P 58fea318 3 -> af1775c8:3
+PO Q Q Q Q Q P f0be7c4 3 P a17b9cc8 3 P 7f9e5832 4 P 5c1b32c2 3 P 131257a7 2 P a3a66093 2 Q Q Q Q Q Q Q Q P 890367c6 2 P 8d276f5b 4 P db071b52 2 P fd1750af 3 P c36a51eb 3 Q P 3c15ca47 3 P 4f8c196c 3 Q Q Q Q P 9837418f 3 Q P e4e5094b 4 Q P 8812ed31 3 Q P 37ffcdc0 3 Q Q -> 0:3 0:3 0:3 0:3 0:3 a3a66093:2 131257a7:2 5c1b32c2:3 7f9e5832:4 a17b9cc8:3 f0be7c4:3 0:3 0:3 c36a51eb:3 4f8c196c:3 3c15ca47:3 fd1750af:3 db071b52:2 9837418f:3 e4e5094b:4 8812ed31:3 37ffcdc0:3 8d276f5b:4
+PO P b54cdbd2 3 P ca374fef 4 P 135015d3 3 P eeacce06 2 Q Q Q Q Q P 4860bf74 3 -> eeacce06:2 135015d3:3 ca374fef:4 b54cdbd2:3 0:3
+PO P 31300d63 3 P 5d1f6bad 4 P f2540ce9 4 ->
+PO P fea9f301 3 Q P abddc683 3 -> fea9f301:3
+PO P e736b719 4 P a797388b 3 Q P 4199a4e0 4 P 679856be 4 P 6ccd70d2 3 Q P eaad8d0b 2 P 47a9955b 4 Q Q P 69740dd2 3 Q P b654e3c7 3 Q Q P 8b15ae6e 2 P bbd003fe 3 P 550a5439 3 P e5ffca21 3 Q P 621f76d8 3 P 541883f 4 P d703e18f 3 Q P a09eb401 2 Q Q P 32d110a5 4 P bd0a39f4 2 Q P 9a08d8ee 4 P 8771e98d 2 P d86d2113 3 P e78cf880 3 Q P 6bd10dfa 4 P 687e5758 3 P 32d3eb41 2 P 56e917a4 4 -> a797388b:3 6ccd70d2:3 47a9955b:4 eaad8d0b:2 69740dd2:3 b654e3c7:3 679856be:4 e5ffca21:3 d703e18f:3 a09eb401:2 541883f:4 bd0a39f4:2 e78cf880:3
+PO P 9b25e549 3 Q Q P 2b523f76 3 Q P b879082f 3 Q P a4ef321 3 Q Q -> 9b25e549:3 0:3 2b523f76:3 b879082f:3 a4ef321:3 0:3
+PO P f6e0d04f 4 Q Q P 10a77d9a 3 Q P 75b3fdf6 4 P c916f4e7 2 Q P 4486c615 2 P 440197d5 2 -> f6e0d04f:4 0:3 10a77d9a:3 c916f4e7:2
+PO P a342132c 3 Q P 5fbff23f 3 Q P 2bbb2064 3 Q P 91e0a035 3 Q Q P 8f011148 3 -> a342132c:3 5fbff23f:3 2bbb2064:3 91e0a035:3 0:3
+PO Q P 2d7f2a06 2 P a299e5da 2 Q P 2c998ebc 4 Q P 389fdc72 4 P 4cfba557 2 Q P f9a49a8e 3 -> 0:3 a299e5da:2 2c998ebc:4 4cfba557:2
+PO P 7a919e52 3 Q P 4bf7246 4 Q P 7c8014e0 3 Q P 615aff71 2 Q Q P d4ddc08a 4 -> 7a919e52:3 4bf7246:4 7c8014e0:3 615aff71:2 0:3
+PO P bfcd603c 4 P 56a58fad 3 P 62ecbe8d 3 P 33fb2d17 4 P a7569185 2 Q Q Q P 24f54d0c 3 P c43f4cde 2 Q P 9c892882 3 P 135f3fe7 3 P 4f02244b 3 P b5d87d75 2 P c74d887 2 P a1c87cbc 3 P ce614c7e 4 Q P a492b279 3 Q Q P 2d66f99e 3 Q P 64c2c86d 3 P 3ccc1416 2 Q P bb4b7430 2 P b955f2ca 3 Q Q P e863deb6 3 P 75af2e66 2 P b743526a 4 Q P d317445b 3 P 3c974eb 2 P 55cefc55 3 Q Q -> a7569185:2 33fb2d17:4 62ecbe8d:3 c43f4cde:2 ce614c7e:4 a492b279:3 a1c87cbc:3 2d66f99e:3 3ccc1416:2 b955f2ca:3 bb4b7430:2 b743526a:4 55cefc55:3 3c974eb:2
+PO P 62a06b21 3 Q Q Q Q P bcf64825 2 P 8931fac3 4 P c8073f2c 4 P ac7ab715 3 P ce9112bb 4 P 354bab8c 3 Q Q P a96f8e6 3 P 7bb91f65 2 Q Q Q Q P 455d7e08 2 Q Q Q Q P ded09a1 2 P 54c65d7f 3 Q Q P 8778ec7 4 P 28e7f6db 3 Q Q P d694b8be 3 Q Q Q Q Q P 3616b9d1 3 P 525a5727 2 -> 62a06b21:3 0:3 0:3 0:3 354bab8c:3 ce9112bb:4 7bb91f65:2 a96f8e6:3 ac7ab715:3 c8073f2c:4 455d7e08:2 8931fac3:4 bcf64825:2 0:3 54c65d7f:3 ded09a1:2 28e7f6db:3 8778ec7:4 d694b8be:3 0:3 0:3 0:3 0:3
+PO P 1e38c68a 3 Q Q Q P a6132a8 3 P 41446a22 3 Q P 45ecb562 3 Q P 7b183455 3 -> 1e38c68a:3 0:3 0:3 41446a22:3 45ecb562:3
+PO P 38125fe9 4 Q Q P e9266f78 3 P c37f4271 3 P 43cfe7d 2 P 6c8d99c1 4 P ed5c963e 3 Q P 43839314 4 Q P dd506af1 3 Q P accfcf2e 3 Q P b9a42dfc 2 P 641e7218 2 Q P b9e95bae 2 P e73c840 3 Q Q P 735c72e2 3 Q Q P 315d3e6c 3 Q P 9276df65 4 P e8da404e 3 Q Q Q P 45dbb803 3 Q Q P b2b5398e 3 Q P f3085b04 2 P e3cfdba7 3 P 9e6ba9a1 2 -> 38125fe9:4 0:3 ed5c963e:3 43839314:4 dd506af1:3 accfcf2e:3 641e7218:2 e73c840:3 b9e95bae:2 735c72e2:3 b9a42dfc:2 315d3e6c:3 e8da404e:3 9276df65:4 6c8d99c1:4 45dbb803:3 43cfe7d:2 b2b5398e:3
+PO P 4edb997b 4 P a063a6f2 4 P 62fbfa79 2 Q Q P 3125542b 3 P 5afdfd7f 4 Q P e4f39d62 4 P d625f857 3 P e97ae7bb 3 P a32d14cd 3 P 38aea249 2 P fd2008c4 3 P d8f61d86 3 P 37861c05 3 Q P e104759f 3 P 40d2826e 3 P 3d06f4ab 2 P 58e4d8c9 3 P 6963b56c 4 P 2819f33c 4 P 6b0f0dde 3 Q Q P ee6145a2 2 Q Q Q Q P 24fe2ac1 4 Q P 864dfbc8 3 Q P 74fcd625 4 P b4a82928 3 Q P d787a066 3 P da855dc6 4 -> 62fbfa79:2 a063a6f2:4 5afdfd7f:4 37861c05:3 6b0f0dde:3 2819f33c:4 ee6145a2:2 6963b56c:4 58e4d8c9:3 3d06f4ab:2 24fe2ac1:4 864dfbc8:3 b4a82928:3
+PO Q P 6778a3c9 4 P 3b30fff 4 P 6545590a 3 Q Q Q P b557ad96 3 Q P 25e7ad09 3 P a77850a 3 P 44171706 3 P 9a6ccc6f 2 P d3588332 2 P d145206e 4 P 48468474 3 Q P a622254f 3 P d3538d40 2 P aa8f6a8a 3 Q Q Q P ca40b0c4 3 Q P 81e36bf9 3 Q P 7d3ae702 3 Q P 8573eccb 3 P f43b5859 3 P a6f81826 3 Q P 9c1148ce 2 Q P ce9dcf03 2 Q P b8c1454 2 P 7afb24ee 3 Q -> 0:3 6545590a:3 3b30fff:4 6778a3c9:4 b557ad96:3 48468474:3 aa8f6a8a:3 d3538d40:2 a622254f:3 ca40b0c4:3 81e36bf9:3 7d3ae702:3 a6f81826:3 9c1148ce:2 ce9dcf03:2 7afb24ee:3
+PO Q Q Q P d80ccdae 3 P 6d4dc563 4 P fbd851aa 2 P 688f6ea6 2 Q Q P e4b27db1 2 P 4512cf47 3 Q Q Q Q Q P 98f49750 2 Q P f9d98f19 3 Q Q Q P 190664cf 4 P 630aac43 3 P 56ff8899 4 P eee860bd 4 Q P 8dc5c98d 3 Q P b5a0da49 2 P 785ab0d5 4 P faa081aa 3 P ab983def 3 P 61e41cdf 2 P 217fbebb 3 P 7efdcab7 2 Q Q P a286315e 4 P cb0d9562 2 -> 0:3 0:3 0:3 688f6ea6:2 fbd851aa:2 4512cf47:3 e4b27db1:2 6d4dc563:4 d80ccdae:3 0:3 98f49750:2 f9d98f19:3 0:3 0:3 eee860bd:4 8dc5c98d:3 7efdcab7:2 217fbebb:3
+PO P 6008abe0 3 P 5d0266e5 3 Q Q P 9035fc10 4 Q P 30180cfa 3 Q Q Q Q Q Q P 5bfb3e85 3 Q Q P de8be568 3 P e7a5b17d 3 P d09e1f24 4 P 5ed9f9e2 3 Q P 73db7c7b 4 P b1905209 3 P 5778b430 4 Q P abc88ef6 4 Q P a416c865 2 Q Q P 81ae828a 3 P 5a99f2e5 3 P cd39e2d3 4 Q Q P 2254cb6 4 P ab26a6c 3 Q P 3b132d15 3 Q -> 5d0266e5:3 6008abe0:3 9035fc10:4 30180cfa:3 0:3 0:3 0:3 0:3 0:3 5bfb3e85:3 0:3 5ed9f9e2:3 5778b430:4 abc88ef6:4 a416c865:2 b1905209:3 cd39e2d3:4 5a99f2e5:3 ab26a6c:3 3b132d15:3
+PO P f26ee43a 2 P 1b4f84cc 3 P d8c8c3c6 3 P c6e91b0d 4 P 66f20d26 3 Q Q P e69e053c 3 Q Q -> 66f20d26:3 c6e91b0d:4 e69e053c:3 d8c8c3c6:3
+PO P 4142c7da 2 Q Q -> 4142c7da:2 0:3
+PO P 5e9a44f7 4 P 807bf76c 3 Q P 76a4f8ab 3 P d51c0013 3 P 5de16aef 3 Q Q Q Q Q Q P cf199701 2 P 35a1f75e 3 Q P 56b5f631 3 P f5f7f5a0 3 P 3f44c98b 2 P 2381059b 3 P f72c0327 3 P 5690b324 2 P 897cb6bc 3 Q P 3b50afcd 2 P 14a53812 3 P 604e1ed7 4 P 15f59cd2 2 Q P bf0130db 2 P 1bc5e441 3 P 2664a6b1 3 Q P fe3bf179 3 Q Q P c8b49a10 3 P 1663c899 2 P f5d07c6b 3 P 38364884 3 Q -> 807bf76c:3 5de16aef:3 d51c0013:3 76a4f8ab:3 5e9a44f7:4 0:3 0:3 35a1f75e:3 897cb6bc:3 15f59cd2:2 2664a6b1:3 fe3bf179:3 1bc5e441:3 38364884:3
+PO P fba0459 2 Q Q P 460ce8cc 3 P 89baf1e5 4 Q P 7646356f 3 Q Q P 51e4c5f5 4 -> fba0459:2 0:3 89baf1e5:4 7646356f:3 460ce8cc:3
+PO P a561f4c 3 Q P 8482d56c 3 P a54881ee 3 Q Q Q P c45a998f 4 Q P fba8490e 4 P dd7bf36c 2 Q Q Q P 4a14c665 3 P 81d98bdb 4 P e6ff4701 3 Q P 2c376427 3 Q P 77683ce1 4 Q P aa525c00 2 Q Q P 966c0bb7 4 Q P 194622f9 2 P 65319dd9 3 P 6f9bc603 4 P dc9bdb5c 4 Q Q Q P 68be0aa5 3 Q P c9629e3d 3 P 69c5aa9b 3 Q P f0f31228 4 -> a561f4c:3 a54881ee:3 8482d56c:3 0:3 c45a998f:4 dd7bf36c:2 fba8490e:4 0:3 e6ff4701:3 2c376427:3 77683ce1:4 aa525c00:2 81d98bdb:4 966c0bb7:4 dc9bdb5c:4 6f9bc603:4 65319dd9:3 68be0aa5:3 69c5aa9b:3
+PO P c55976b7 2 Q P 21667df8 3 -> c55976b7:2
+PO P fa4bb3cd 3 P b35bc34a 3 Q P 58532859 2 P a80ca4ba 3 Q P 40683c09 4 P f4339b41 3 P 20acebb0 2 P 60806ba4 3 -> b35bc34a:3 a80ca4ba:3
+PO Q P bc920541 4 P 2f7d6191 4 Q Q Q P 38c6caf0 2 P 39263471 3 P 638cd8e5 4 P b156abfe 3 P a92bb5aa 4 Q P 66716966 3 P 99131b91 4 Q P a4a95c5 3 P ceeda793 2 P 87c1b21a 2 P 52ea8cdf 4 P 4d4e670f 3 Q P a6340338 3 P 630c5cd8 3 Q P f5fe2e90 4 Q P 17f31599 4 Q P bb7d5574 3 P a6b29a22 2 Q P ea0096e2 4 P 245c4a98 2 P b2d70917 3 P b1f3bd87 2 P f5ad7566 3 Q P 734fe686 2 Q P d8623ac0 4 -> 0:3 2f7d6191:4 bc920541:4 0:3 a92bb5aa:4 99131b91:4 4d4e670f:3 630c5cd8:3 f5fe2e90:4 17f31599:4 a6b29a22:2 f5ad7566:3 734fe686:2
+PO Q P 6ac62319 4 Q Q Q P 1bea53b2 2 P 9669fe 3 P 528cf6d5 3 Q P e19b46d8 2 -> 0:3 6ac62319:4 0:3 0:3 528cf6d5:3
+PO P 3f00022b 4 Q P 1fba3037 4 P b04ce58b 4 Q Q P 8fba0c51 2 P 4681d1c8 3 P cdd900c1 3 P 9a809807 3 -> 3f00022b:4 b04ce58b:4 1fba3037:4
+PO P 6ceb70b0 4 P d85f1b24 3 P f1e61315 4 ->
+PO Q Q P 2bc21801 2 Q Q Q P 8e6b0179 4 P 93cfb4f0 4 P 69ad7dbe 2 Q P c6b4e01f 3 P b21e5ce8 3 P ef367a17 2 P e8ab1de8 4 Q P 420f96af 2 Q Q Q P a53c5432 2 P 5d887661 3 P eab9a241 3 P 61673d30 2 Q Q Q Q Q P bfc2870d 4 Q Q P ccd59972 3 P 7455e126 3 P 70e1a97f 3 Q Q P b5c18b90 4 P 3a047950 2 Q Q -> 0:3 0:3 2bc21801:2 0:3 0:3 69ad7dbe:2 e8ab1de8:4 420f96af:2 ef367a17:2 b21e5ce8:3 61673d30:2 eab9a241:3 5d887661:3 a53c5432:2 c6b4e01f:3 bfc2870d:4 93cfb4f0:4 70e1a97f:3 7455e126:3 3a047950:2 b5c18b90:4
+PO P 184a4bce 4 Q P 526b7ff8 2 P 4d6959c7 3 P c35e311d 3 P 8b19a593 4 P 5101f774 3 Q Q Q Q P c50449b0 4 P 9184f8da 4 P 333fc924 4 P 8e13b9f2 2 Q Q P dd80751a 3 P 4a358cfd 2 P 946c60b9 2 P 3977b04c 2 P 71f2fbec 4 P 12fe6144 3 P da8ab325 3 Q P 7dea231e 2 Q P 36a4790a 4 P 28fbe0af 2 Q Q Q Q P a103934f 3 P 41024368 4 P e8aa25ac 3 Q P 4142e2f4 3 Q Q -> 184a4bce:4 5101f774:3 8b19a593:4 c35e311d:3 4d6959c7:3 8e13b9f2:2 333fc924:4 da8ab325:3 7dea231e:2 28fbe0af:2 36a4790a:4 12fe6144:3 71f2fbec:4 e8aa25ac:3 4142e2f4:3 41024368:4
+PO P 19c10b02 2 Q P 9e2ced56 4 Q P 76a0f90b 4 P 53c96227 2 P c1a2b7f6 2 P 4660de41 4 Q P ff8e0505 3 P c7e611da 3 Q P d1c2d43f 4 P 576feb04 4 P 87f09201 3 Q Q P 3fa57a16 3 P 6d59f33f 4 P c93115c1 3 P c5d31c73 2 P 7377b324 3 Q Q P 7a94c83e 3 P 9b1e2530 3 Q Q P 168afe3d 2 P 4357969e 3 P 4797d77e 3 Q P c30723a4 2 Q Q P 51ca658d 4 Q P e1c7d98d 4 P fb5fb49c 2 P 4f18793a 3 -> 19c10b02:2 9e2ced56:4 4660de41:4 c7e611da:3 87f09201:3 576feb04:4 7377b324:3 c5d31c73:2 9b1e2530:3 7a94c83e:3 4797d77e:3 c30723a4:2 4357969e:3 51ca658d:4
+PO P 8b72761e 2 P 13d74d52 3 Q P 7062ca7f 3 Q P b8eda1b3 4 Q P fbebbab5 3 Q Q P 36f25c17 3 P c4fc8503 4 P e5fd262 3 P d1c5e3b0 2 P 37bbde05 2 P 616321a 3 P f35544a6 3 P 2e4cc415 3 Q Q Q P c3274b8f 3 P 8d90731c 3 Q P 48444329 2 Q Q Q Q P cc1ee9 2 Q P c252c5f 3 P 47d4b6b5 3 P ea82712f 2 P 6d0d9d95 4 Q Q P 8634be68 3 Q Q -> 13d74d52:3 7062ca7f:3 b8eda1b3:4 fbebbab5:3 8b72761e:2 2e4cc415:3 f35544a6:3 616321a:3 8d90731c:3 48444329:2 c3274b8f:3 37bbde05:2 d1c5e3b0:2 cc1ee9:2 6d0d9d95:4 ea82712f:2 8634be68:3 47d4b6b5:3
+PO Q Q Q -> 0:3 0:3 0:3
+PO Q P f7f8df21 2 P 4d4e291f 3 P 4ba24eb9 3 P eb8984d 2 P 5353ac29 3 P 334dd218 4 P 87725f66 4 P 57bc8165 4 Q Q P 7e3d0129 4 Q P 834dabd3 4 P db907334 3 Q P a3706de3 3 P c0dfa8f9 3 P d68eb8cc 3 P ca2234da 3 P 22fa0823 2 P ea3e4776 2 Q Q Q Q Q Q Q Q Q Q Q P fea7898d 2 P 158312f8 3 P eb7aee66 4 Q Q P 88c87d43 3 P 6a33817 4 -> 0:3 57bc8165:4 87725f66:4 7e3d0129:4 db907334:3 ea3e4776:2 22fa0823:2 ca2234da:3 d68eb8cc:3 c0dfa8f9:3 a3706de3:3 834dabd3:4 334dd218:4 5353ac29:3 eb8984d:2 4ba24eb9:3 eb7aee66:4 158312f8:3
+PO P c756ec97 3 Q P 436cc10b 4 Q P 7a4d40b6 2 Q P 5abb8f93 4 P fe5e8ced 2 P 14f459d3 3 Q -> c756ec97:3 436cc10b:4 7a4d40b6:2 14f459d3:3
+PO P 8942612c 4 P c23db9a0 2 Q Q Q Q P 5091fa9f 2 P b63d1d04 2 Q Q Q Q P 591bdb87 3 Q Q Q P e41c93cd 3 P f074b667 2 P 5db871ab 2 P af10786a 3 P ae1241f0 3 Q P c5d8c3c9 3 Q P 2b338ac4 4 Q Q Q P 8784f867 2 P fd66253b 4 P df3ae362 3 Q P 6b8c97dc 4 Q P 1c341da5 2 Q P c06bc1df 3 P c7911ea9 3 Q P cfb4a796 2 -> c23db9a0:2 8942612c:4 0:3 0:3 b63d1d04:2 5091fa9f:2 0:3 0:3 591bdb87:3 0:3 0:3 ae1241f0:3 c5d8c3c9:3 2b338ac4:4 af10786a:3 5db871ab:2 df3ae362:3 6b8c97dc:4 1c341da5:2 c7911ea9:3
+PO P 3ecf9f02 2 P be403501 4 Q -> be403501:4
+PO P 887e1335 2 P b55f301b 3 P 7783f477 3 Q Q Q P 9ce9aa10 4 P c837462d 4 P a22fb381 2 P 99ace732 2 -> 7783f477:3 b55f301b:3 887e1335:2
+PO Q Q P a7840b3f 3 P 47719883 4 Q P 2b5c44e7 4 Q P 5b494225 3 P afb57517 3 P 97944054 3 -> 0:3 0:3 47719883:4 2b5c44e7:4
+PO P bab1414e 2 Q Q -> bab1414e:2 0:3
+PO P 487b546c 4 Q P ab2e643f 3 P 49597028 3 P 883fb019 3 Q Q Q Q P 593e0b35 3 Q P 7ac8a6da 2 P 246bc3cb 3 Q P 4bdb32c8 2 Q P d1283efa 3 Q P 80b646be 3 P 73520c2e 4 Q Q Q Q P 9b18688 4 Q P fb2447a6 3 P 5effc490 2 P 8649a46a 3 P 94a5b175 3 P 75189192 3 P 7b2fba93 3 P b11ff113 4 Q Q Q P c0ec5a71 3 P 6d15eabe 4 P d62956b9 3 Q -> 487b546c:4 883fb019:3 49597028:3 ab2e643f:3 0:3 593e0b35:3 246bc3cb:3 4bdb32c8:2 d1283efa:3 73520c2e:4 80b646be:3 7ac8a6da:2 0:3 9b18688:4 b11ff113:4 7b2fba93:3 75189192:3 d62956b9:3
+PO Q P 60ee421d 3 P f97a65e 2 Q Q P 778a1fcd 3 Q P 4cb61c04 3 Q Q Q P c944b0cf 2 Q P f5c7455b 3 Q Q Q Q Q P bb62d10e 3 P 7bba70bb 3 Q P 46858172 2 P 71f52d8d 2 P 3ae15c43 2 Q Q P 867bfe06 2 P 2d02770b 2 P edde73b7 3 P 6d9d4cf8 2 Q P 158af077 4 P 30fef435 3 P 59a224ab 3 P ec5ffa34 2 P 3ec5cfc4 2 P 54b4214 3 Q P 8fdb7c1e 3 -> 0:3 f97a65e:2 60ee421d:3 778a1fcd:3 4cb61c04:3 0:3 0:3 c944b0cf:2 f5c7455b:3 0:3 0:3 0:3 0:3 7bba70bb:3 3ae15c43:2 71f52d8d:2 6d9d4cf8:2 54b4214:3
+PO Q Q P 37258103 4 Q P 9a2830be 4 Q P bc199386 3 P 92e39901 2 P 26dccabe 3 P a1ade4e6 3 -> 0:3 0:3 37258103:4 9a2830be:4
+PO P 17ad08c8 2 Q P 1cc2bf29 3 -> 17ad08c8:2
+PO Q P bec467a9 3 Q -> 0:3 bec467a9:3
+PO Q P e74e687d 3 P 328b6303 3 Q P 7bf83d54 4 Q P dad79487 2 Q Q P d03c9860 3 P 8ee8742e 3 P 8f0bc05f 3 P a42c6a3f 3 P cad0dcb 4 P f53739c3 3 P bc1a48f5 3 P bfee7589 4 P a6835794 4 P 2c9bf5d4 3 P e32697d 3 Q P d2b90681 2 Q P af0b6290 2 P 288411a8 3 P 8722143 2 Q P 10cb6864 3 P 7bd8491c 2 P 53ca87cc 4 P bfc3772c 4 Q Q Q P 538381ff 2 P 462ed4a1 4 P d0a57397 2 P f18c5889 2 Q P d2bd0002 3 -> 0:3 328b6303:3 7bf83d54:4 dad79487:2 e74e687d:3 e32697d:3 d2b90681:2 8722143:2 bfc3772c:4 53ca87cc:4 7bd8491c:2 f18c5889:2
+PO P a18441d2 3 Q Q P e94d44c9 2 P 65874f6d 4 P 3c397cd8 2 P 5129fa93 2 P 6ee4d77f 4 Q Q P 42714df9 2 Q Q P d799f420 4 P 40acfc97 4 P d2cfcd3c 2 P c3aa9cab 4 P 496040a 3 P 36c60ad7 3 P 75ac0b22 3 P 249ab30f 4 Q P 8c1736d4 3 Q P 925ce0fe 2 Q P 89b0da3c 4 P 32ecb254 4 P bc53d278 2 Q P 97ad4021 2 P 2eee994d 3 Q Q P 257d25ad 4 P 1eae1d10 4 P 62ae4635 3 P d60eae6a 3 P 32c8fd14 4 P c6620ca3 4 -> a18441d2:3 0:3 6ee4d77f:4 5129fa93:2 42714df9:2 3c397cd8:2 249ab30f:4 8c1736d4:3 925ce0fe:2 bc53d278:2 2eee994d:3 97ad4021:2
+PO Q Q Q Q Q P 659f7384 3 P d3db1843 3 Q P 2d39a496 4 P b4067720 4 -> 0:3 0:3 0:3 0:3 0:3 d3db1843:3
+PO Q P 2ad3dcf7 3 Q Q Q Q Q Q P 3752ce87 3 Q -> 0:3 2ad3dcf7:3 0:3 0:3 0:3 0:3 0:3 3752ce87:3
+PO P 2b3fca9d 4 Q Q Q Q Q P 9232c04c 3 P 450163b 2 P 32389102 4 P a183e8c9 4 P 4191c778 3 P 6f858d8c 3 P 5058224c 2 Q Q Q Q P ec517403 3 Q P 38807f45 3 P 961bd7a6 3 Q Q Q P 1ad0392b 4 Q P 330a7450 4 Q Q Q Q Q P d0a72bed 3 Q Q P bc66d005 2 Q P 344e0840 2 Q Q -> 2b3fca9d:4 0:3 0:3 0:3 0:3 5058224c:2 6f858d8c:3 4191c778:3 a183e8c9:4 ec517403:3 961bd7a6:3 38807f45:3 32389102:4 1ad0392b:4 330a7450:4 450163b:2 9232c04c:3 0:3 0:3 d0a72bed:3 0:3 bc66d005:2 344e0840:2 0:3
+PO P aa7a77de 3 Q P e7bac002 3 P cd428694 2 P cbbf8dc2 3 Q P bcba7adc 3 P ad11b44 4 P 886bcb87 2 P 5bb63da7 2 -> aa7a77de:3 cbbf8dc2:3
+PO P 4ec274e0 3 Q Q -> 4ec274e0:3 0:3
+PO Q P e93617b4 2 P 7154bc1 3 -> 0:3
+PO Q Q P d7ffcc2a 3 Q Q P 96f8b6bd 3 Q Q P 422194df 3 P 97c0d5ea 4 Q Q P 549f13ee 2 Q P 5f55d757 3 P 24021e6b 4 Q P c076e731 4 P b3a98367 3 Q P 482fda4d 3 P f1ab8d0f 2 P 7fd33baa 2 P b0351256 4 Q Q P fe38f67a 3 P 14cc1be5 3 Q Q P 34f39b31 2 Q P aeeeef22 3 Q Q P b13c7b9b 3 Q P b2201018 2 Q Q -> 0:3 0:3 d7ffcc2a:3 0:3 96f8b6bd:3 0:3 97c0d5ea:4 422194df:3 549f13ee:2 24021e6b:4 b3a98367:3 b0351256:4 7fd33baa:2 14cc1be5:3 fe38f67a:3 34f39b31:2 aeeeef22:3 f1ab8d0f:2 b13c7b9b:3 b2201018:2 482fda4d:3
+PO P 474eedd4 3 P 75f07894 3 Q -> 75f07894:3
+PO Q P c50113f0 3 P e86c2a9b 3 Q P b356fb02 2 Q Q Q P acc3aef5 4 P 70cbaa03 2 Q Q Q Q P a836644b 3 Q Q Q Q Q Q Q Q Q P 4bf13c86 3 Q P a78cc3 2 Q Q P cfa86d98 4 P 43d8edd1 2 P fd3bff33 4 P d03e76c4 3 P ba4a7cf2 3 P 9295edbd 4 Q Q Q P eadcd580 3 P 762da1e5 2 -> 0:3 e86c2a9b:3 b356fb02:2 c50113f0:3 0:3 70cbaa03:2 acc3aef5:4 0:3 0:3 a836644b:3 0:3 0:3 0:3 0:3 0:3 0:3 0:3 0:3 4bf13c86:3 a78cc3:2 0:3 9295edbd:4 ba4a7cf2:3 d03e76c4:3
+PO Q P 1d76a9d 2 P 34a8c59c 2 P 91bdceff 3 P d0e8d8a7 3 P ccc4ed8b 2 Q Q P 77dd9653 3 Q -> 0:3 ccc4ed8b:2 d0e8d8a7:3 77dd9653:3
+PO P 1a4bf57b 3 P 6fd03173 3 P 94fa9862 3 P b52320e8 4 P e1a2efa8 2 P d50d1880 3 Q Q P eee19a4a 2 P 9b324650 3 -> d50d1880:3 e1a2efa8:2
+PO P efdadc27 3 P ae536308 2 P 3fd5ca00 3 P f3a63f9b 3 P 47a19cf4 3 Q P ea7de34f 3 Q P d4e5f280 2 P 4eda6838 2 -> 47a19cf4:3 ea7de34f:3
+PO P 3da3c517 3 Q P 30fcd85b 2 P eede3b79 3 Q Q P efb6c19e 2 Q P 52f27501 2 Q P 5d48fe08 2 P 3e2d28d1 4 P 834fe541 2 Q Q P ea9a6c06 3 P 20fb1f1b 3 P 379eff75 3 P f0137d 3 P 18622117 2 P bd7d582d 4 Q Q Q P 5cfa8a09 3 P f4afb760 3 Q P 59a2762b 4 Q P a8faf682 2 P 7327fbff 4 P 2deba9d6 3 Q Q Q P e9a68931 4 P dd64c4c9 4 Q P 2e0f9b9 3 Q -> 3da3c517:3 eede3b79:3 30fcd85b:2 efb6c19e:2 52f27501:2 834fe541:2 3e2d28d1:4 bd7d582d:4 18622117:2 f0137d:3 f4afb760:3 59a2762b:4 2deba9d6:3 7327fbff:4 a8faf682:2 dd64c4c9:4 2e0f9b9:3
+PO Q P c42aaf1 3 P ee896134 3 Q Q Q P 6ec84e42 4 P 6a0595d5 2 Q P eeb90c6f 4 Q P 23c6844d 3 P e0c4a8b0 2 P 4eeefac6 4 P 4f49b832 3 P dcf6ebb6 2 P afc3dadc 2 P c986132f 4 P 6e3c4079 4 Q P 29b20e5 3 P 7a2fa8b8 3 Q Q P 44dece59 3 P fbb158ec 4 Q P a90d1ae6 2 P 1d85160 4 P 743455ce 3 Q Q P 96961816 2 P 2326cf42 3 P c2a8f915 2 Q Q Q Q Q -> 0:3 ee896134:3 c42aaf1:3 0:3 6a0595d5:2 eeb90c6f:4 6e3c4079:4 7a2fa8b8:3 29b20e5:3 fbb158ec:4 743455ce:3 1d85160:4 c2a8f915:2 2326cf42:3 96961816:2 a90d1ae6:2 44dece59:3
+PO P 420eb434 3 P 88b35fc5 4 P 39c96867 3 Q Q P 4aecc009 2 P c1835146 3 Q P e2220a3c 4 P 71b428f3 3 -> 39c96867:3 88b35fc5:4 c1835146:3
+PO Q Q Q Q P 16a4a2a7 3 P a7f6d3f5 3 Q P 334d5d2e 3 Q P 63da9c29 3 -> 0:3 0:3 0:3 0:3 a7f6d3f5:3 334d5d2e:3
+PO P 23b1845f 2 P db470c4b 3 Q Q P a4cb12da 3 P 1a7816ec 2 Q Q P 4da64f37 4 P 22fc262e 4 -> db470c4b:3 23b1845f:2 1a7816ec:2 a4cb12da:3
+PO P d8f5ce57 3 P 6a649b7d 3 Q -> 6a649b7d:3
+PO Q Q Q Q P be6b5043 2 Q P d8cfbf4b 2 P 4529df95 3 Q P 3bc3b771 4 P 553995df 4 P 6b7911a3 3 Q Q P 22e4b83a 3 P 7e2faa2f 3 P e7ae2fb5 4 Q P 2a7494f4 3 P 4f723dfe 3 Q Q P cb1bad51 4 Q Q Q P ac7c20e4 2 Q P e30e0f3c 2 Q P 564e468c 4 P e7f57c05 2 P cc5f563 2 P 1ee4aa2b 3 Q P 8c315568 3 P 75182c62 3 P b1757f33 3 P a47983ed 3 Q -> 0:3 0:3 0:3 0:3 be6b5043:2 4529df95:3 6b7911a3:3 553995df:4 e7ae2fb5:4 4f723dfe:3 2a7494f4:3 cb1bad51:4 7e2faa2f:3 22e4b83a:3 ac7c20e4:2 e30e0f3c:2 1ee4aa2b:3 a47983ed:3
+PO Q Q P 669a101 3 Q P 47818610 2 P 16511799 3 P 51d286e7 4 P 220be41f 3 P 6ebeaf62 3 P 896098a3 3 Q Q P 38fe8f89 2 P bacb32a9 2 P 6b30a7d7 3 Q P 48c031d4 3 P 2e353be6 2 Q P c3695d75 4 P ed3976cd 2 Q P 9d0abec5 4 P 5fa7c742 3 P f1074a6b 2 P 1d7e4655 3 P c90d036d 4 Q Q P b87f2173 3 Q P c81ded1a 2 P 7e1024f8 3 P acfdf824 4 Q P d01dca63 4 Q P 7ef94fe 3 P c60930aa 3 Q -> 0:3 0:3 669a101:3 896098a3:3 6ebeaf62:3 6b30a7d7:3 2e353be6:2 ed3976cd:2 c90d036d:4 1d7e4655:3 b87f2173:3 acfdf824:4 d01dca63:4 c60930aa:3
+PO Q P 5247276 3 Q P 44074851 3 P ead39af5 3 Q P fef52283 3 Q P daae2f2c 4 P a7af3ae6 3 -> 0:3 5247276:3 ead39af5:3 fef52283:3
+PO P a419b7d7 3 Q Q Q Q P b5096383 2 P 84ce05ba 3 Q P 36289c7a 2 P 977466c0 3 P 4f99df37 2 Q P 753560dd 3 P 7d5e6c6c 3 Q P 752b7d19 4 P a13f4075 3 P e6743e29 3 Q P ef36046f 4 P 4e25673f 3 P e1942f0c 3 P 1a358d2e 2 P d21f3f6d 3 P b2d6be17 3 P a8a5e2e9 2 Q Q P e57ab0f2 4 P 7ce274e4 3 P 117fa496 4 Q P 8946a2cf 4 Q Q P 31bda1b4 4 P bb7f3950 3 Q P ccb5d99d 3 Q -> a419b7d7:3 0:3 0:3 0:3 84ce05ba:3 4f99df37:2 7d5e6c6c:3 e6743e29:3 a8a5e2e9:2 b2d6be17:3 117fa496:4 8946a2cf:4 7ce274e4:3 bb7f3950:3 ccb5d99d:3
+PO P d7b33aa1 4 P 2fe34e9 2 Q P 7c9c6e66 3 P 1d508c48 3 P d872c2a3 3 Q P 7ee7973d 2 Q Q P d36d8f06 2 P 8a6e8e1a 2 Q P 76851c95 3 Q P 11cddae6 2 P 28b45c0f 3 Q Q P ecfa5be9 3 Q P b0c61fa1 2 P ef66978a 4 Q Q Q P e5fcf695 3 Q P a9a1255a 3 P 7acb6e51 4 P 6487b6ae 4 P 6dc5e756 3 P e95be2b8 2 Q Q P 97c8e6ba 2 Q P 97df41a0 3 P 1a567dd 4 P 4902bb23 3 -> 2fe34e9:2 d872c2a3:3 7ee7973d:2 1d508c48:3 8a6e8e1a:2 76851c95:3 28b45c0f:3 11cddae6:2 ecfa5be9:3 ef66978a:4 b0c61fa1:2 d36d8f06:2 e5fcf695:3 e95be2b8:2 6dc5e756:3 97c8e6ba:2
+PO Q P 5665bb6c 4 P 1b424744 2 P e42cd433 2 Q P 5fc9dff0 3 P 145a043e 4 P 9f55aa8a 4 Q Q P de569e8e 3 P e9f7266c 2 Q P a7db8918 2 P 2feb90bf 4 Q Q P 9d57eb10 3 P c00eabeb 3 P 7a31eb81 3 P df6667c 4 P ad2359f9 3 Q Q Q P 65b32148 4 Q P d417f5aa 3 Q Q Q Q Q P 8df17f1d 2 P 63db8ae3 3 P 45e781de 2 P 94d34948 3 P 53693aa4 4 P 7377c60a 3 Q -> 0:3 e42cd433:2 9f55aa8a:4 145a043e:4 e9f7266c:2 2feb90bf:4 a7db8918:2 ad2359f9:3 df6667c:4 7a31eb81:3 65b32148:4 d417f5aa:3 c00eabeb:3 9d57eb10:3 de569e8e:3 5fc9dff0:3 7377c60a:3
+PO Q P 9d2c436 3 P 85e87c97 2 Q P c9e057c2 3 P feaeefa5 4 Q Q Q Q -> 0:3 85e87c97:2 feaeefa5:4 c9e057c2:3 9d2c436:3 0:3
+PO P f65bf1aa 2 P 5b8846ae 3 Q P ef091093 3 Q Q P c2d03daa 2 P 7df728fc 2 P f2ed540 4 Q Q P fdac1738 4 Q P c8feaa8a 4 P 9221d52f 3 P f531c479 2 P 6afff520 3 P 94cba5c9 4 P 7a251a9b 2 P f820432a 3 P 3ff7cc74 2 P 95969fe0 2 P 55576473 4 P bea2260e 3 P 5fe00295 3 P 20a22819 3 P d1a0fa35 3 P 84042f0a 3 Q Q P 83f58515 4 Q Q Q Q P 65f1b941 3 Q Q P f2de377 4 Q -> 5b8846ae:3 ef091093:3 f65bf1aa:2 f2ed540:4 7df728fc:2 fdac1738:4 84042f0a:3 d1a0fa35:3 83f58515:4 20a22819:3 5fe00295:3 bea2260e:3 65f1b941:3 55576473:4 f2de377:4
+PO P ecce5ec8 3 Q P 20470d93 4 P 66a581b8 4 Q Q P af754b82 3 P ba3b0417 4 Q P 23112dee 3 Q P 65360438 2 P 2602b340 2 P 9ea7c2c4 2 Q Q P 67752f9e 2 Q P a66d9992 4 P 427107f 2 P 2ddebb14 3 Q Q P 6eebd013 3 P 777e40c0 4 P 62fe4764 3 Q P eb6fc399 3 P 524ad27c 3 Q P 31a64104 2 Q Q Q P dac964fb 3 P 37b06f83 4 P bfe2d416 4 P c188c44f 2 P 21fb0228 2 P a29f7ee3 4 -> ecce5ec8:3 66a581b8:4 20470d93:4 ba3b0417:4 23112dee:3 9ea7c2c4:2 2602b340:2 67752f9e:2 2ddebb14:3 427107f:2 62fe4764:3 524ad27c:3 31a64104:2 eb6fc399:3 777e40c0:4
+PO P 5c17e4f6 3 Q Q -> 5c17e4f6:3 0:3
+PO Q P 5517bd2c 3 Q -> 0:3 5517bd2c:3
+PO P 977079ce 4 P ae1becdc 3 P 5153b7b1 2 Q Q Q P e0e82d61 4 Q P 35072941 3 P c893d477 3 -> 5153b7b1:2 ae1becdc:3 977079ce:4 e0e82d61:4
+PO Q P 68b7ab3e 4 P e0e626af 3 P 4264b93b 3 P e5ce26d1 3 P d99ab937 3 P 3cbbed61 3 Q Q P 698c7525 2 -> 0:3 3cbbed61:3 d99ab937:3
+PO P 7b82cd5f 3 Q P 2d4b5ab9 4 -> 7b82cd5f:3
+PO Q P 88d913cd 4 Q P 240fcc38 4 P 39ec0a62 4 P fe9ddb8a 4 Q P 1bfb0956 3 P d3eb7f62 3 P ab046942 3 -> 0:3 88d913cd:4 fe9ddb8a:4
+PO P 757bbfc8 2 Q P bd503389 2 P d31175be 2 P 2c9190b0 3 Q P 1c30b9ec 3 Q P 255bbc89 3 Q P dc9a8722 3 P 3f13fa5a 4 P 84d4bdf0 3 P dc6bfec5 4 P 3be78883 2 P f962c6c2 3 P e159bdf7 3 Q P a4fb8c65 2 Q Q P 1d8ef04f 4 Q P ff99d400 3 P 15cf23a 3 Q P 29966b25 2 P 5809b797 3 P aca2c57b 3 Q P 67f25097 2 P b7266a4f 3 Q P fc62b208 4 P a16cbd05 3 Q P e9d2528d 2 Q Q Q -> 757bbfc8:2 2c9190b0:3 1c30b9ec:3 255bbc89:3 e159bdf7:3 a4fb8c65:2 f962c6c2:3 1d8ef04f:4 15cf23a:3 aca2c57b:3 b7266a4f:3 a16cbd05:3 e9d2528d:2 fc62b208:4 67f25097:2
+PO P cfe9fe0f 3 P 773222a2 2 Q -> 773222a2:2
+PO P 28324055 3 Q Q -> 28324055:3 0:3
+PO P 97a42f48 4 P 6d9d0561 3 Q -> 6d9d0561:3
+PO P cde5e1cd 4 Q P c7de0389 4 Q P 467fb2ea 2 P 27bcc4e3 3 P 6b2ed630 2 Q P cd587254 2 Q -> cde5e1cd:4 c7de0389:4 6b2ed630:2 cd587254:2
+PO Q Q Q P 9474c3a3 4 Q P 275064ba 3 P bc57fa6e 3 P c2628767 3 Q P f7711419 2 -> 0:3 0:3 0:3 9474c3a3:4 c2628767:3
+PO P d00b0808 2 P ee644265 4 P 51c723e1 4 P 1ad4d25d 3 Q P c09f8125 3 Q Q P 17bfee24 2 P 9b71973c 2 -> 1ad4d25d:3 c09f8125:3 51c723e1:4
+PO Q P f718521a 4 P 24ff6a4d 4 Q P 5eacb35e 3 P ca2dad96 4 P b605a73f 4 P b60803d4 3 Q P 5b8ab345 3 -> 0:3 24ff6a4d:4 b60803d4:3
+PO Q P 40e042f7 3 Q -> 0:3 40e042f7:3
+PO P 1b3c38ba 2 Q Q Q Q P 50ff1c13 3 Q P f03a63be 4 Q Q -> 1b3c38ba:2 0:3 0:3 0:3 50ff1c13:3 f03a63be:4 0:3
+PO Q P fc386312 3 Q P 37d146c8 2 Q P fb3eac7c 3 Q Q Q P a3db333 3 -> 0:3 fc386312:3 37d146c8:2 fb3eac7c:3 0:3 0:3
+PO Q P ffd517fe 3 P b7ae9dd6 3 P 445b55ca 3 Q P 1c2717e3 3 P 22cddcf1 4 Q P 95ba35dc 4 Q -> 0:3 445b55ca:3 22cddcf1:4 95ba35dc:4
+PO P f045bc60 2 P 9ad0660e 4 P 9f226c11 3 P 62d6e80b 4 P 8e311534 4 Q P c2b1915 2 P 330511b0 4 P ade7aebf 2 P b3299044 4 P 409582e1 2 P cf740d83 4 Q P c5704332 4 Q Q P 8e7b69ad 3 P 1502d97f 3 P 47692e0e 3 Q Q Q Q P a8f41e8f 3 Q P 6a26e774 4 Q Q P 2e63256 3 P 3643f1e8 3 Q P c8e64ce4 4 Q Q P d9a22675 4 P 16de1410 2 Q Q P eb7503e8 3 P f9019377 4 -> 8e311534:4 cf740d83:4 c5704332:4 409582e1:2 47692e0e:3 1502d97f:3 8e7b69ad:3 b3299044:4 a8f41e8f:3 6a26e774:4 ade7aebf:2 3643f1e8:3 c8e64ce4:4 2e63256:3 16de1410:2 d9a22675:4
+PO P fddc2754 3 Q P 654a1da3 2 P 396427b6 2 Q Q Q Q Q Q -> fddc2754:3 396427b6:2 654a1da3:2 0:3 0:3 0:3 0:3
+PO Q Q Q P 3adf8388 2 P e4f072e8 3 Q Q Q P 2d3a856a 3 P 728c2fca 3 -> 0:3 0:3 0:3 e4f072e8:3 3adf8388:2 0:3
+PO Q Q P c6c5d90e 4 Q P a5c08407 2 P ee8d0b82 3 Q Q P 46fdb83c 4 P 9b80e88b 3 -> 0:3 0:3 c6c5d90e:4 ee8d0b82:3 a5c08407:2
+PO P 547040ee 2 Q P b1ab5e66 2 Q Q Q P 4028f548 3 Q Q P b3b8b8be 2 -> 547040ee:2 b1ab5e66:2 0:3 0:3 4028f548:3 0:3
+PO P 8cdf61bb 4 Q P 2932bc25 4 -> 8cdf61bb:4
+PO Q P 4585f856 3 P 58e852c9 3 -> 0:3
+PO Q Q P 18b9a7b7 2 P ffe4393a 3 Q P 337b4485 3 P fe98baa7 3 P 8ef90e82 3 Q P 4cac1e4d 2 -> 0:3 0:3 ffe4393a:3 8ef90e82:3
+PO Q Q P b08ba313 3 Q Q Q Q P 2945190e 4 P d45b35ad 3 P 886401e4 4 Q P 64f46ea0 3 P 8525e043 2 P 8707bd66 3 P fb8466b5 4 Q Q P 75a9e3e9 4 Q P cd8b94d5 3 P 4f98b014 4 Q P c84a736c 4 Q P 1f3db0f1 3 P d361d49b 3 P 14b39a4e 3 Q Q P fa2ae62b 3 P 3bf06e9e 3 Q Q Q P e0d7a91d 3 P 7d0bce37 2 P fa7e4620 3 Q P 61a0783d 4 Q -> 0:3 0:3 b08ba313:3 0:3 0:3 0:3 886401e4:4 fb8466b5:4 8707bd66:3 75a9e3e9:4 4f98b014:4 c84a736c:4 14b39a4e:3 d361d49b:3 3bf06e9e:3 fa2ae62b:3 1f3db0f1:3 fa7e4620:3 61a0783d:4
+PO Q Q P 2bba2979 3 Q Q P 1dd87cd8 2 P 50422b28 2 P 9fcc8a59 2 P 63ea2305 4 Q -> 0:3 0:3 2bba2979:3 0:3 63ea2305:4
+PO P 7ac10f42 3 P 27e99daa 4 Q -> 27e99daa:4
+PO P b44c44ab 3 Q Q -> b44c44ab:3 0:3
+PO Q P 4808fd57 4 Q Q Q P b533fca0 2 Q Q Q P 1d06a45e 2 -> 0:3 4808fd57:4 0:3 0:3 b533fca0:2 0:3 0:3
+PO Q P 5590a8d1 2 P 9730944d 4 P a29a53e1 3 Q P 1102cb0a 4 P 39cf423a 2 P e7392b6d 3 P 8c79d3ea 4 Q Q Q Q P 7f8c426b 2 P f668ddc3 4 P f05e75b7 2 Q Q Q Q P 13f107d0 3 P ff172cf9 3 P efe423a9 3 P d3731a93 2 Q P b02231ea 3 Q Q Q P c793c33d 3 P a0fac6e0 3 P 1ab3cb14 3 P ee97af55 3 Q Q P 5ed23bf0 3 P 9baca2ef 2 P 83b8db34 3 Q Q -> 0:3 a29a53e1:3 8c79d3ea:4 e7392b6d:3 39cf423a:2 1102cb0a:4 f05e75b7:2 f668ddc3:4 7f8c426b:2 9730944d:4 d3731a93:2 b02231ea:3 efe423a9:3 ff172cf9:3 ee97af55:3 1ab3cb14:3 83b8db34:3 9baca2ef:2
+PO P 5d33877e 3 P a7b6a87a 3 P 972def85 4 P d7dcbf23 2 P dbabd438 2 Q P f7a727b8 4 Q P dd55ec91 2 Q P b59f02d5 2 Q P ba8578be 3 P 9e233945 3 P b184e72d 3 Q P a7c5bb9e 3 Q Q Q P 871df92f 3 P 3469ed06 2 Q Q P c830309e 3 Q P aa9c771c 3 Q P f3e77a2d 4 P 2166ef58 3 Q P 9a101a25 3 Q Q P 1ea72c8a 3 Q P 6c93cfda 3 P 5b5a8cf2 2 Q P 64fac858 2 -> dbabd438:2 f7a727b8:4 dd55ec91:2 b59f02d5:2 b184e72d:3 a7c5bb9e:3 9e233945:3 ba8578be:3 3469ed06:2 871df92f:3 c830309e:3 aa9c771c:3 2166ef58:3 9a101a25:3 f3e77a2d:4 1ea72c8a:3 5b5a8cf2:2
+PO P 3ed1f1b2 3 Q P 2fcb55c0 3 Q Q P b013ffed 2 P 9843c5cf 4 Q Q P ba83140e 4 P a0087c88 4 Q Q Q Q P d504c1e4 2 P 5acfc8f4 4 Q Q P 3a8b1f2c 2 P 623e9eb6 3 P ff7e244d 3 P 7c757024 2 P a12c9656 3 Q P ac1912c9 3 P 8a7afa30 3 P 6a93ae18 2 P e40da198 4 Q P fa661b6b 3 P 5dbc4dd0 2 P b7bf11d9 3 Q Q P 32c35992 4 Q P 16037614 3 P bd2a939c 3 Q -> 3ed1f1b2:3 2fcb55c0:3 0:3 9843c5cf:4 b013ffed:2 a0087c88:4 ba83140e:4 0:3 0:3 5acfc8f4:4 d504c1e4:2 a12c9656:3 e40da198:4 b7bf11d9:3 5dbc4dd0:2 32c35992:4 bd2a939c:3
+PO P ff613c2a 3 Q Q Q P 90f57b5d 3 Q P 65cecff3 3 P 250fcd39 3 P c7fd8690 4 P e769be35 3 P 53ebfc8b 3 P 197ec2a7 2 Q P 7c6ae134 2 P 9f1bb502 2 Q P 90cb674c 3 P 5a45ee62 3 Q P dbfc3273 2 P d25b5657 2 P 9d6a2ccb 2 Q Q P 4669a16e 3 P fcaa55aa 3 Q P d0941877 3 P f49aad5a 3 P 89c9899b 3 P 781b0ca0 4 Q P 9fb6cdea 3 Q P 54928d88 2 Q Q P f457f426 3 P 49bc8435 4 Q -> ff613c2a:3 0:3 0:3 90f57b5d:3 197ec2a7:2 9f1bb502:2 5a45ee62:3 9d6a2ccb:2 d25b5657:2 fcaa55aa:3 781b0ca0:4 9fb6cdea:3 54928d88:2 89c9899b:3 49bc8435:4
+PO P fe201fba 3 Q Q -> fe201fba:3 0:3
+PO P 618282ad 2 P ab513858 3 Q -> ab513858:3
+PO Q P cb67bb03 3 Q Q P ef5e9c93 2 P 793ac9d3 3 Q Q P 59f60441 3 Q -> 0:3 cb67bb03:3 0:3 793ac9d3:3 ef5e9c93:2 59f60441:3
+PO P 6bed31ce 2 P 5842fe4e 3 Q Q P 69af01eb 3 P 459da814 4 Q P dd413e0e 3 P be432f7a 3 Q Q Q P c814fd21 2 P c467abf0 4 Q P 9648c20 3 Q P 1784664b 3 Q Q P 613ab458 2 Q Q P cc18e91c 4 Q Q Q Q P f9e2a70e 2 P f20e87d1 3 P 1f4aaa12 3 P 3d770d9a 3 P 928be49a 3 Q Q Q P d54f51b7 4 Q P afc06482 3 P 4b5c3d7e 3 -> 5842fe4e:3 6bed31ce:2 459da814:4 be432f7a:3 dd413e0e:3 69af01eb:3 c467abf0:4 9648c20:3 1784664b:3 c814fd21:2 613ab458:2 0:3 cc18e91c:4 0:3 0:3 0:3 928be49a:3 3d770d9a:3 1f4aaa12:3 d54f51b7:4
+PO P 27608096 3 Q Q P 54e1520b 2 P fbc40735 3 Q P d482a564 2 P 7c6634d9 3 P bd416610 3 Q -> 27608096:3 0:3 fbc40735:3 bd416610:3
+PO P 807d3efb 2 P e183cac7 4 P 78bb9abe 2 Q Q P 1a1a7b25 3 P 404ea58c 4 P 8348d55a 2 P 4a0a002f 4 P f60aa8c1 4 -> 78bb9abe:2 e183cac7:4
+PO Q P 51ba98f 3 P 7174351a 3 P b2e3ab91 3 Q Q Q P 2ea495cf 4 Q Q -> 0:3 b2e3ab91:3 7174351a:3 51ba98f:3 2ea495cf:4 0:3
+PO P 6eb817b8 4 P 4d77ad1f 4 P dab2e21b 3 ->
+PO Q Q P 5fcc86ca 3 -> 0:3 0:3
+PO P c6398d9f 4 P f93c613d 4 Q P e3599725 2 P 77d71b14 3 P d9a854e 2 P 181d717 3 P d0dba186 3 Q Q P cab6e04f 4 P 3a9efe49 3 Q P 1ddf7906 2 P b96807c2 4 Q P 8593f8c 3 P 289c89ba 3 Q Q P 7a9e0824 2 Q P b7b3fb4d 4 P d7ed7861 3 P 88cf0796 3 P 35cb1641 3 Q P 9f4ec2b5 3 P 1530149e 3 Q Q P 45843ca1 3 P fecbfb48 3 Q Q P e71d0539 2 P 2cb3e280 3 P 184466af 4 P 336048c7 3 Q -> f93c613d:4 d0dba186:3 181d717:3 3a9efe49:3 b96807c2:4 289c89ba:3 8593f8c:3 7a9e0824:2 35cb1641:3 1530149e:3 9f4ec2b5:3 fecbfb48:3 45843ca1:3 336048c7:3
+PO Q P 60cb7bf6 3 Q -> 0:3 60cb7bf6:3
+PO P 26bf32e1 4 P 3723ca49 3 Q P 99bf99e9 3 Q P 31f2ffc0 2 Q Q P 2c2037fd 2 Q Q Q P f78b5d92 2 P d850d957 2 Q Q Q Q P 7d7b279e 3 Q P 4000d279 3 Q Q Q Q Q Q P 911c2bcf 4 Q Q P 1674ec24 3 Q P b1d59c6 3 Q Q Q Q Q Q P 24d1de6e 3 -> 3723ca49:3 99bf99e9:3 31f2ffc0:2 26bf32e1:4 2c2037fd:2 0:3 0:3 d850d957:2 f78b5d92:2 0:3 0:3 7d7b279e:3 4000d279:3 0:3 0:3 0:3 0:3 0:3 911c2bcf:4 0:3 1674ec24:3 b1d59c6:3 0:3 0:3 0:3 0:3 0:3
+PO Q Q Q Q P fe300116 4 P bf151d7c 2 Q P 94af1a92 3 Q P b3e4d431 3 -> 0:3 0:3 0:3 0:3 bf151d7c:2 94af1a92:3
+PO Q Q Q P bcf69d75 3 Q P 3b50393c 2 Q P 6af3fdbd 3 P e7c1c1f3 2 Q -> 0:3 0:3 0:3 bcf69d75:3 3b50393c:2 e7c1c1f3:2
+PO Q Q P 2e440621 2 P a6cfd4b4 3 Q P 6933f49e 3 Q P 185f180b 4 Q P a3a29479 4 Q P ad2412f0 4 P c9294530 2 Q Q P 5ce8e554 3 P b185b475 3 P f352879f 3 P df73a13b 2 Q Q P f698f7a9 3 P e6b96787 3 Q Q P 56dcf037 3 Q P 73b516d2 2 P 488bb94a 3 P bacf7502 3 Q Q P 15b4deab 2 Q Q Q P ccdf659d 3 Q Q P caafe029 3 -> 0:3 0:3 a6cfd4b4:3 6933f49e:3 185f180b:4 a3a29479:4 c9294530:2 ad2412f0:4 df73a13b:2 f352879f:3 e6b96787:3 f698f7a9:3 56dcf037:3 bacf7502:3 488bb94a:3 15b4deab:2 73b516d2:2 b185b475:3 ccdf659d:3 5ce8e554:3
+PO Q Q P 49f6a9ea 2 -> 0:3 0:3
+PO P f241fc57 3 P 8f8b3605 3 P e0850e00 3 P 7d69f330 3 P d6c26e94 4 P d1543de5 3 Q Q Q P ac72216a 4 -> d1543de5:3 d6c26e94:4 7d69f330:3
+PO P 4995c2ee 4 Q P dcbc0552 3 Q Q Q P 4a0e6878 4 Q Q Q Q P 8b904b9e 3 P 4f7eee73 3 Q Q P 967c352f 4 Q Q P d6aabed2 3 Q P 5c8fe0af 3 Q Q P 998f96b5 4 Q P 472cd1dd 2 P fd918bad 3 P 87ee1e7c 2 Q Q P 4e810d49 2 Q Q P 89ec498 3 P 65eec2b9 3 P 8ef94978 2 P 5d56ae11 2 P ebd1af5 2 Q P 98e00fc9 2 -> 4995c2ee:4 dcbc0552:3 0:3 0:3 4a0e6878:4 0:3 0:3 0:3 4f7eee73:3 8b904b9e:3 967c352f:4 0:3 d6aabed2:3 5c8fe0af:3 0:3 998f96b5:4 87ee1e7c:2 fd918bad:3 4e810d49:2 472cd1dd:2 ebd1af5:2
+PO P c1b50a86 4 Q Q Q Q P 47f557ae 4 P 8a7c058e 4 Q P b621cec6 2 Q P b0b9ea7f 3 P d058e6d3 2 P 47bad195 3 P 71b77f90 3 Q P 7d13c2fc 4 P b9e81c2d 3 P 51434681 2 Q P 1e458b56 4 P 38d89196 4 P 49c0f9d8 4 Q Q P f0fd81fb 3 Q P 7c6ad6cd 4 P 326a1442 2 Q Q P c15fd9d 4 P 5661edda 4 Q Q P e4527a66 3 Q P 6228823a 3 Q Q P 89122e1a 3 -> c1b50a86:4 0:3 0:3 0:3 8a7c058e:4 b621cec6:2 71b77f90:3 51434681:2 49c0f9d8:4 38d89196:4 f0fd81fb:3 326a1442:2 7c6ad6cd:4 5661edda:4 c15fd9d:4 e4527a66:3 6228823a:3 1e458b56:4
+PO P 8bad48ce 3 Q Q -> 8bad48ce:3 0:3
+PO P be16d484 2 P c5bc0d5e 3 Q P a99c6821 4 Q P 3c6cdd79 3 P 86a1f284 3 Q Q Q P 265e42fa 2 P 9d520e0c 3 P df34251e 2 Q Q P 4284037f 4 P 395fd914 4 P 51c2047c 3 Q Q P f9a8937 3 Q P 5708b949 4 P d5ca9f6c 3 Q P 2fb7cd60 3 Q P bce1aaf4 2 P aadbfd55 3 P c0492677 2 P 1a188e1d 4 P 5485752a 2 P ba735c59 3 P a001affa 3 Q P fa6d3616 2 Q P 576a063a 3 P fe5e9dc7 3 P 6315d389 4 -> c5bc0d5e:3 a99c6821:4 86a1f284:3 3c6cdd79:3 be16d484:2 df34251e:2 9d520e0c:3 51c2047c:3 395fd914:4 f9a8937:3 d5ca9f6c:3 2fb7cd60:3 a001affa:3 fa6d3616:2
+PO P cebd000f 3 P 22613999 4 Q Q Q Q P 88fbca79 2 P b63c3e18 4 Q P 5373b749 3 Q P a2ff78fe 2 Q Q P 2a893827 4 P 7d6b06cc 2 P d0e8625d 2 Q P 448a909e 4 P 4af90c9b 4 Q P ab400c3b 3 P 5bc3a64f 3 P 1d38c84e 3 P 69098538 3 P 41672dd 3 Q P 456c5f65 2 Q Q Q P b1da84a3 3 P af6a4b5e 3 Q P d96a016e 3 Q P fa5aef8a 3 Q P 5442621e 3 Q -> 22613999:4 cebd000f:3 0:3 0:3 b63c3e18:4 5373b749:3 a2ff78fe:2 88fbca79:2 d0e8625d:2 4af90c9b:4 41672dd:3 456c5f65:2 69098538:3 1d38c84e:3 af6a4b5e:3 d96a016e:3 fa5aef8a:3 5442621e:3
+PO P 79bb3ac9 3 Q P de96f897 3 P 26c129ef 2 Q P 3d774e57 2 P 6fb94ec6 3 Q P f8e0e03b 4 P 621b3a34 4 -> 79bb3ac9:3 26c129ef:2 6fb94ec6:3
