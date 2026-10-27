@@ -17,6 +17,9 @@ pub const SCHEMA: u32 = 1;
 pub struct WindowState {
     pub x: Option<i32>,
     pub y: Option<i32>,
+    /// the size the user gave the window (logical pixels, the content inside is scaled to it)
+    pub w: Option<u32>,
+    pub h: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

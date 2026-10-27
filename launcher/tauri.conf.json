@@ -13,7 +13,9 @@
         "height": 760,
         "center": true,
         "decorations": false,
-        "resizable": false,
+        "resizable": true,
+        "minWidth": 640,
+        "minHeight": 380,
         "maximizable": false,
         "shadow": true
       }

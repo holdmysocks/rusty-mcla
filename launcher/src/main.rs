@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{Manager, PhysicalPosition, WebviewWindow};
+use tauri::{LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 
 use settings::Settings;
 
@@ -554,7 +554,12 @@ fn save_window_position(window: &WebviewWindow) {
     if !remember || window.is_minimized().unwrap_or(false) {
         return;
     }
-    let patch = json!({ "window": { "x": pos.x, "y": pos.y } });
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.5);
+    let size = window.inner_size().ok().map(|s| ((s.width as f64 / scale).round() as u32, (s.height as f64 / scale).round() as u32));
+    let patch = match size {
+        Some((w, h)) => json!({ "window": { "x": pos.x, "y": pos.y, "w": w, "h": h } }),
+        None => json!({ "window": { "x": pos.x, "y": pos.y } }),
+    };
     let next = state.settings.lock().ok().and_then(|g| settings::apply_patch(&g, &patch).ok());
     if let Some(next) = next {
         if settings::save(&state.user_dir, &next).is_ok() {
@@ -563,6 +568,37 @@ fn save_window_position(window: &WebviewWindow) {
             }
         }
     }
+}
+
+/// The design is 1280 x 760 logical pixels; the page scales it to whatever size the window has (GitHub #7). This gives the window the
+/// size the user left it at (or the design size), then shrinks it, keeping the proportions, until it fits the work area of its screen
+/// at the screen's display scale (a laptop at 150 % has less than 1280 logical pixels of width), and never below the minimum size.
+fn fit_window_size(window: &WebviewWindow, s: &Settings) {
+    const DESIGN: (f64, f64) = (1280.0, 760.0);
+    const MIN: (f64, f64) = (640.0, 380.0);
+    let (mut w, mut h) = DESIGN;
+    if s.remember_window {
+        if let (Some(sw), Some(sh)) = (s.window.w, s.window.h) {
+            if sw as f64 >= MIN.0 && sh as f64 >= MIN.1 {
+                (w, h) = (sw as f64, sh as f64);
+            }
+        }
+    }
+    let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten());
+    if let Some(m) = monitor {
+        let scale = m.scale_factor().max(0.5);
+        let area = m.work_area();
+        // a little air round the window: the shadow, and the taskbar's own edge
+        let (aw, ah) = (area.size.width as f64 / scale - 16.0, area.size.height as f64 / scale - 16.0);
+        let k = (aw / w).min(ah / h).min(1.0);
+        if k < 1.0 {
+            (w, h) = ((w * k).floor(), (h * k).floor());
+        }
+        logging::info(&format!("window {w} x {h} logical on a {}x{} work area at {:.0} %", area.size.width, area.size.height, scale * 100.0));
+    }
+    let (w, h) = (w.max(MIN.0), h.max(MIN.1));
+    let _ = window.set_size(LogicalSize::new(w, h));
+    let _ = window.center();
 }
 
 /// Puts the window back where it was, but only if that place is still on a screen.
@@ -579,6 +615,17 @@ fn restore_window_position(window: &WebviewWindow, s: &Settings) {
     });
     if visible {
         let _ = window.set_position(PhysicalPosition::new(x, y));
+        // the window may have changed size since: keep all of it on its screen
+        if let (Ok(size), Some(m)) = (window.outer_size(), window.current_monitor().ok().flatten()) {
+            let area = m.work_area();
+            let max_x = area.position.x + area.size.width as i32 - size.width as i32;
+            let max_y = area.position.y + area.size.height as i32 - size.height as i32;
+            let nx = x.min(max_x).max(area.position.x);
+            let ny = y.min(max_y).max(area.position.y);
+            if (nx, ny) != (x, y) {
+                let _ = window.set_position(PhysicalPosition::new(nx, ny));
+            }
+        }
     } else {
         logging::info("saved window position is off screen, keeping it centred");
     }
@@ -669,6 +716,7 @@ fn main() {
         ])
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
+                fit_window_size(&window, &settings);
                 restore_window_position(&window, &settings);
             }
             Ok(())

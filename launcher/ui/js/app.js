@@ -244,6 +244,19 @@
     });
     document.addEventListener('contextmenu', (e) => { if (!dev.has('dev')) e.preventDefault(); });
 
+    // the design is 1280 x 760: the window may be any size, so the page is scaled to fit it (centred, proportions kept; GitHub #7)
+    const fit = () => {
+      let k = Math.min(innerWidth / 1280, innerHeight / 760);
+      if (Math.abs(k - 1) < 0.004) k = 1;
+      const x = Math.max(0, (innerWidth - 1280 * k) / 2), y = Math.max(0, (innerHeight - 760 * k) / 2);
+      const app = $('#app');
+      app.style.transformOrigin = '0 0';
+      app.style.transform = k === 1 && x < 1 && y < 1 ? '' : `translate(${x.toFixed(2)}px, ${y.toFixed(2)}px) scale(${k.toFixed(4)})`;
+      document.documentElement.style.setProperty('--ui-scale', k.toFixed(4));
+    };
+    window.addEventListener('resize', fit);
+    fit();
+
     // window chrome: drag by the title bar and the top of the rail
     const dragStart = (e) => { if (e.button === 0 && !e.target.closest('button')) Bridge.drag(); };
     $('#head').addEventListener('mousedown', dragStart);
