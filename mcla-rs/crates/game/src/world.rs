@@ -1096,6 +1096,8 @@ pub struct World {
     /// the shown ones are among `sets`
     far_hidden: HashMap<usize, GpuSector>,
     last_fade: std::time::Instant,
+    /// what is left of this frame's upload time (`new_frame`), shared by the frame's ticks
+    frame_left_ms: f32,
     pub pending: hashbrown::HashSet<usize>,
     tx: Sender<Result<CpuSector>>,
     rx: Receiver<Result<CpuSector>>,
@@ -1210,6 +1212,7 @@ impl World {
             set_bounds: HashMap::new(),
             far_hidden: HashMap::new(),
             last_fade: std::time::Instant::now(),
+            frame_left_ms: f32::INFINITY,
             pending: Default::default(),
             tx,
             rx,
@@ -1286,7 +1289,15 @@ impl World {
         300.0 * (1.5 - 0.5 * ((lens_deg - 25.0) * 0.04).clamp(0.0, 1.0)) * detail.max(1.0)
     }
 
+    /// A rendered frame starts: the uploads of its ticks share one `budget_ms` of `update` (each tick had its own: after a
+    /// long frame its catch-up ticks spent 6 ms each, 25 - 35 ms, and made the next frame long too - docs/PERFORMANCE.md
+    /// 2026-10-27 (8)).
+    pub fn new_frame(&mut self, budget_ms: f32) {
+        self.frame_left_ms = budget_ms;
+    }
+
     pub fn update(&mut self, gpu: &mut Gpu, pos: Vec3, budget_ms: f32) {
+        let budget_ms = budget_ms.min(self.frame_left_ms);
         // The original draws a sector in detail while the level distance from the camera to its
         // box is under 300 m times a lens scale - 1.5 at the 25 degree lens of a standing car,
         // falling to 1 at 50 degrees (450 m .. 300 m) - and its far model beyond; it keeps
@@ -1395,6 +1406,7 @@ impl World {
                 break;
             }
         }
+        self.frame_left_ms = (self.frame_left_ms - t0.elapsed().as_secs_f32() * 1000.0).max(0.0);
         if ms_up + ms_col > 8.0 {
             log::info!("streaming: {} sectors in, upload {:.1} ms, collision {:.1} ms", n_up, ms_up, ms_col);
         }

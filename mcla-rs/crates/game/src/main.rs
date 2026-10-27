@@ -6506,6 +6506,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             else if self.opt.fixed_dt > 0.0 { 1 }
             else { self.sim_clock.advance(render_seconds) };
         let sim_t0 = Instant::now();
+        if let Some(w) = self.world.as_mut() {
+            w.new_frame(6.0);
+        }
         for _ in 0..ticks {
             self.update_gameplay(fixed_step::DT);
         }
