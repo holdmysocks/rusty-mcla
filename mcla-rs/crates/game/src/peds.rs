@@ -2131,6 +2131,16 @@ mod tests {
         assert_eq!(Tod::default().at(5.0), 1.0);
     }
 
+    /// F-59108 (static init of the on-the-spot turn rate) run on the original's code and image
+    /// (work/verify-people/peds/gen_and_run.py): the original's float is 13 ULP above TURN_RATE
+    /// (the constant is the rounded decimal 2.94524; the original divides f32 pi/4 by 8 * f32 1/30).
+    #[test]
+    fn turn_rate_is_the_originals_static_init() {
+        let Ok(t) = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/verify-people/peds/turn_reference.txt")) else { return };
+        let want = u32::from_str_radix(t.trim(), 16).unwrap();
+        assert_eq!(want - TURN_RATE.to_bits(), 13, "port {:08x} original {want:08x}", TURN_RATE.to_bits());
+    }
+
     #[test]
     fn view_cone_and_band() {
         let mut p = Peds::new();

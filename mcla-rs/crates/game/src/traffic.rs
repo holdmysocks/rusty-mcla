@@ -2499,6 +2499,207 @@ impl Vehicles {
 }
 
 #[cfg(test)]
+mod verify_lanes_tests {
+    //! Per-case comparison with the original's unchanged generated code, run offline by
+    //! work/verify-people/lanes/stage1.py (docs/reference/people/verify_people_lanes.md).
+    use super::*;
+
+    fn fixture(name: &str) -> String {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/verify-people/lanes");
+        std::fs::read_to_string(dir.join(name)).unwrap()
+    }
+
+    /// F-41621 lane_junction, F-86691 road_of, F-50269 junction_lane: the original on every lane of
+    /// the city's navsys resource (10,031 lanes) and on all owner / parent flag combinations.
+    #[test]
+    #[ignore = "requires user's extracted data (MCLA_DATA_DIR) and the original's reference csv"]
+    fn lane_owner_functions_match_the_original() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let nav = NavSys::parse(&res).unwrap();
+        let be = |o: usize| u32::from_be_bytes(res.data[o..o + 4].try_into().unwrap());
+        let jarr = (be(0x58) & 0x0FFF_FFFF) as usize;
+        // the zones' offsets, scanned as NavSys::parse does
+        let (mut zone_offs, mut o) = (Vec::new(), 0usize);
+        while o + 0x30 <= res.virtual_size {
+            match u32::from_le_bytes(res.data[o..o + 4].try_into().unwrap()) {
+                0x0047_9f0c => o += 0x70,
+                0x0047_a13c => {
+                    zone_offs.push(o);
+                    o += 0xb0;
+                }
+                0x0047_a0c4 => o += 0xc0,
+                _ => o += 4,
+            }
+        }
+        let spawner = Spawner::new(&nav, &root);
+        let mut first_link = vec![usize::MAX; nav.lane_junction.len()];
+        for (k, l) in nav.links.iter().enumerate().rev() {
+            first_link[l.lane] = k;
+        }
+        let (mut real, mut with_junction, mut with_road) = (0, 0, 0);
+        for line in fixture("stage1_original.csv").lines().filter(|l| l.starts_with("R,")) {
+            let f: Vec<u32> = line.split(',').skip(1).map(|v| v.parse().unwrap()).collect();
+            let (lane, junction, road, isj) = (f[0] as usize, f[2], f[3], f[4]);
+            let ptr = |p: u32| if p == 0 { None } else { Some((p & 0x0FFF_FFFF) as usize) };
+            let want_j = ptr(junction).map(|p| (p - jarr) / 0xc0);
+            assert_eq!(lane_junction(&nav, lane), want_j, "lane {lane}");
+            let want_road = ptr(road).map(|p| zone_offs.binary_search(&p).expect("owner is a zone") as u32);
+            let k = first_link[lane];
+            assert_eq!(spawner.road_of(&nav, k), want_road, "lane {lane}");
+            assert_eq!(junction_lane(&nav.links[k]), isj == 1, "lane {lane}");
+            real += 1;
+            with_junction += want_j.is_some() as usize;
+            with_road += want_road.is_some() as usize;
+        }
+        assert_eq!((real, with_junction, with_road), (10031, 3567, 6464));
+        // synthetic: owner flags -1 (no owner) / 0..15, parent flags -1 / 0..15
+        let mut base = nav.links[0].clone();
+        let mut n = 0;
+        for line in fixture("stage1_original.csv").lines().filter(|l| l.starts_with("S,")) {
+            let f: Vec<i32> = line.split(',').skip(1).map(|v| v.parse().unwrap()).collect();
+            base.owner_flags = f[0].max(0) as u32;
+            base.parent_flags = if f[0] < 0 { 0 } else { f[1].max(0) as u32 };
+            assert_eq!(junction_lane(&base), f[4] == 1, "owner {} parent {}", f[0], f[1]);
+            n += 1;
+        }
+        assert_eq!(n, 17 * 17);
+    }
+
+    /// The original's arithmetic for the lane green test (F-16432 after the Online byte): the
+    /// entry flattened, normalised by 1/sqrt with one Newton step (dp_ps, sqrt, div, then
+    /// mul / sub / mul / add), arm . entry by two fused multiply-adds, against 0.9063078; x87-free,
+    /// denormals flushed as the original's vector unit does.
+    fn original_green(arm: Option<[f32; 3]>, timer: f32, e: [f32; 3]) -> bool {
+        let ftz = |x: f32| if x.is_subnormal() { 0.0f32.copysign(x) } else { x };
+        let (x, z) = (ftz(e[0]), ftz(e[2]));
+        let s = ftz(ftz(x * x) + ftz(z * z));
+        let sq = s.sqrt();
+        let mut r0 = ftz(1.0 / sq);
+        if r0 == 0.0 {
+            r0 = 0.0;
+        }
+        let v9 = ftz(r0 * r0);
+        let v8 = ftz(0.5 * r0);
+        let v7 = -ftz(ftz(s * v9) - 1.0);
+        let v6 = ftz(ftz(v7 * v8) + r0);
+        let n = [ftz(x * v6), ftz(0.0 * v6), ftz(z * v6)];
+        let a = arm.unwrap_or([0.0; 3]);
+        let f12 = a[1] * n[1];
+        let f7 = a[2].mul_add(n[2], f12);
+        let f6 = a[0].mul_add(n[0], f7);
+        timer < 6.5 && f6 > f32::from_bits(0x3f6803ca)
+    }
+
+    /// F-78185 (via lane_entry + Junction::lane_state), F-16432 (Junction::lane_state): the
+    /// original's lane green tests on 17,031 junction set-ups (every one of the city's 10,031
+    /// lanes, 4,000 with the first span 0.0003 degrees round the threshold, 3,000 entry vectors,
+    /// degenerate ones among them) and F-35280 (Signals::release) on 300 states.
+    #[test]
+    #[ignore = "requires user's extracted data (MCLA_DATA_DIR) and the original's reference csv"]
+    fn lane_green_and_release_match_the_original() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let nav = NavSys::parse(&res).unwrap();
+        let mut first_link = vec![usize::MAX; nav.lane_junction.len()];
+        for (k, l) in nav.links.iter().enumerate().rev() {
+            first_link[l.lane] = k;
+        }
+        let orig: Vec<(u32, u32)> = fixture("stage2_original.csv").lines().filter(|l| l.starts_with("C,")).map(|l| {
+            let f: Vec<u32> = l.split(',').skip(2).map(|v| v.parse().unwrap()).collect();
+            (f[0], f[1])
+        }).collect();
+        let cases = fixture("cases2.txt");
+        let (mut n, mut d178, mut d360, mut replica_bad, mut greens) = (0usize, Vec::new(), Vec::new(), 0, 0);
+        for (line, o) in cases.lines().zip(&orig) {
+            let w: Vec<u32> = line.split(' ').map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+            let fl = |i: usize| f32::from_bits(w[i]);
+            let narms = w[1] as usize;
+            let arms: Vec<Vec3> = (0..narms).map(|k| Vec3::new(fl(2 + 3 * k), fl(3 + 3 * k), fl(4 + 3 * k))).collect();
+            let cur = w[17] as i32;
+            let (timer, ent) = (fl(18), Vec3::new(fl(19), fl(20), fl(21)));
+            let j = crate::signals::Junction { center: Vec3::ZERO, arms: arms.clone(), radius: 10.0, reach: 10.0, forced: -1, current: if (0..256).contains(&cur) { cur as u8 } else { 255 }, timer, demand: vec![0; narms] };
+            let link = first_link[w[0] as usize];
+            let (p0, p1) = lane_entry(&nav, link);
+            let port178 = j.lane_state(p0 - p1) == 2;
+            let port360 = j.lane_state(ent) == 2;
+            let arm = (cur >= 0 && (cur as usize) < narms).then(|| [arms[cur as usize].x, arms[cur as usize].y, arms[cur as usize].z]);
+            let le = p0 - p1;
+            let rep178 = original_green(arm, timer, [le.x, le.y, le.z]);
+            let rep360 = original_green(arm, timer, [ent.x, ent.y, ent.z]);
+            replica_bad += (rep178 != (o.0 == 1)) as usize + (rep360 != (o.1 == 1)) as usize;
+            if port178 != (o.0 == 1) {
+                d178.push(n);
+            }
+            if port360 != (o.1 == 1) {
+                d360.push(n);
+            }
+            greens += (o.0 == 1) as usize;
+            n += 1;
+        }
+        println!("lane green: {n} cases, {greens} green (A178); port differs A178 {} cases, A360 {}; replica differs {replica_bad}; first {:?} / {:?}", d178.len(), d360.len(), d178.iter().take(6).collect::<Vec<_>>(), d360.iter().take(6).collect::<Vec<_>>());
+        let grp = |v: &Vec<usize>| (v.iter().filter(|&&i| i < 10031).count(), v.iter().filter(|&&i| (10031..14031).contains(&i)).count(), v.iter().filter(|&&i| i >= 14031).count());
+        println!("port differences by group (real lanes / threshold band / entry vectors): A178 {:?}, A360 {:?}", grp(&d178), grp(&d360));
+        // the online byte: the original says green regardless; not ported
+        assert!(fixture("stage2_original.csv").lines().any(|l| l == "O,0,1,1"));
+        // release
+        let rel = fixture("rel2.txt");
+        let out: Vec<Vec<i64>> = fixture("stage2_original.csv").lines().filter(|l| l.starts_with("R,")).map(|l| l.split(',').skip(2).map(|v| v.parse().unwrap()).collect()).collect();
+        for (line, o) in rel.lines().zip(&out) {
+            let w: Vec<u32> = line.split(' ').map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+            let mut s = crate::signals::Signals::default();
+            s.junctions.push(crate::signals::Junction { center: Vec3::ZERO, arms: vec![Vec3::X], radius: 10.0, reach: 10.0, forced: (w[4] as i32).clamp(-2, 5) as i8, current: w[2] as u8, timer: f32::from_bits(w[3]), demand: (0..w[0]).map(|k| w[6 + k as usize] + 1).collect() });
+            s.release();
+            let j = &s.junctions[0];
+            // original: +176 = -1, +160 = 0, +164 = 2 + 6.5, ints zeroed to the count, floats zeroed, byte +180 zeroed
+            assert_eq!((j.forced as i64, j.current as i64, j.timer.to_bits() as i64), (o[0], o[1], o[2]));
+            assert!(j.demand.len() == o[3] as usize && j.demand.iter().all(|&d| d == 0) && o[5] == 1 && o[6] == 1 && o[7] == 0 && o[8] == 1);
+        }
+        assert_eq!(replica_bad, 0, "the replica of the original's arithmetic reproduces the original");
+        assert_eq!((n, d360.len() > 0), (17031, true));
+        let _ = d178;
+    }
+
+    /// F-24415 (the 4-chord call) and F-53741 (n chords): `curve_nearest` against the original's
+    /// nearest-point search on all 10,031 lanes, 3 positions each (0.5 - 30 m round a control
+    /// point), 4 or 8 chords, 10 refinements. Bit-for-bit counts per output, by lane degree.
+    #[test]
+    #[ignore = "requires user's extracted data (MCLA_DATA_DIR) and the original's reference csv"]
+    fn curve_nearest_against_the_original() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let nav = NavSys::parse(&res).unwrap();
+        let cases = fixture("cases5.txt");
+        let orig = fixture("stage5_original.csv");
+        let u = |s: &str| f32::from_bits(s.parse::<u32>().unwrap());
+        // [cases, all three outputs equal, phase equal, d2 equal] per (call, degree)
+        let mut stat: std::collections::BTreeMap<(u8, u8), [usize; 4]> = Default::default();
+        let mut max_phase = [0.0f32; 2];
+        let mut max_d2_rel = [0.0f32; 2];
+        for (c, o) in cases.lines().zip(orig.lines().skip(1)) {
+            let w: Vec<u32> = c.split(' ').map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+            let lane = w[0] as usize;
+            let p = Vec3::new(f32::from_bits(w[1]), f32::from_bits(w[2]), f32::from_bits(w[3]));
+            let v: Vec<&str> = o.split(',').collect();
+            let curve = &nav.curves[lane];
+            for (call, n, base) in [(0u8, 4usize, 1usize), (1, w[4] as usize, 6)] {
+                let (t, d2, q) = curve_nearest(curve, p, n, 10);
+                let want = (u(v[base]), u(v[base + 1]), Vec3::new(u(v[base + 2]), u(v[base + 3]), u(v[base + 4])));
+                let e = stat.entry((call, curve.degree)).or_default();
+                e[0] += 1;
+                e[1] += (t.to_bits() == want.0.to_bits() && d2.to_bits() == want.1.to_bits() && q.to_array().map(f32::to_bits) == want.2.to_array().map(f32::to_bits)) as usize;
+                e[2] += (t.to_bits() == want.0.to_bits()) as usize;
+                e[3] += (d2.to_bits() == want.1.to_bits()) as usize;
+                max_phase[call as usize] = max_phase[call as usize].max((t - want.0).abs());
+                max_d2_rel[call as usize] = max_d2_rel[call as usize].max(((d2 - want.1).abs() / want.1.max(1e-3)).min(1e9));
+            }
+        }
+        println!("nearest [cases, all equal, phase equal, d2 equal] by (call 0 = 4 chords / 1 = n chords, degree): {stat:?}");
+        println!("max |phase diff| {max_phase:?}, max relative d2 diff {max_d2_rel:?}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2615,6 +2816,307 @@ mod tests {
         // standing with the target standing: go while there is room (the creep to the line)
         assert_eq!(needed(0.0, 0.0, 6.0, 5.0, up, down), up);
         assert_eq!(needed(0.0, 0.0, 5.0, 5.0, up, down), -down);
+    }
+
+    // ---- verify-people / traffic: the port against the original's unchanged generated code
+    // (work/verify-people/traffic/run_traffic.py; evidence docs/reference/people/verify_people_traffic.md).
+    // Run with: cargo test -p mcla --release verify_traffic -- --ignored --nocapture
+
+    /// 0.14912909269 (the original's constant in turn radius; the port's literal 0.149129 is one ulp lower)
+    const VTURN_K: u32 = 0x3E18_B54C;
+
+    const VFIX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../work/verify-people/traffic/fix/");
+
+    /// The rows of a fixture file as numbers; `skip` leading tokens (the mode word) are dropped.
+    fn vrows(name: &str, skip: usize) -> Vec<Vec<u32>> {
+        let text = std::fs::read_to_string(format!("{VFIX}{name}")).unwrap_or_else(|_| panic!("fixture {name} missing: run run_traffic.py"));
+        text.lines().filter(|l| !l.trim().is_empty()).map(|l| l.split_whitespace().skip(skip).map(|t| t.parse::<u32>().unwrap()).collect()).collect()
+    }
+
+    /// Equal as floats (+0 and -0 equal), else bit patterns equal.
+    fn veq(a: f32, b: f32) -> bool {
+        a == b || a.to_bits() == b.to_bits()
+    }
+
+    fn vrider(ty: AmbType) -> Rider {
+        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, rail_seq: 0, rail_key: None, rail_fresh: true }
+    }
+
+    /// The needed acceleration (F-20809) on 800 cases.
+    #[test]
+    #[ignore]
+    fn verify_traffic_needed() {
+        let (inp, rf) = (vrows("needed_in.txt", 1), vrows("needed_ref.txt", 0));
+        assert_eq!(inp.len(), rf.len());
+        let mut bad = 0;
+        for (c, o) in inp.iter().zip(&rf) {
+            let f = |i: usize| f32::from_bits(c[i]);
+            // the original reads the speed off the velocity (x, z); the cases keep z = 0 or an
+            // exact Pythagorean pair, where sqrt(x^2 + z^2) is exact in f32 and in the original
+            let v = (f(0) * f(0) + f(1) * f(1)).sqrt();
+            let got = needed(v, f(2), f(3), f(4), f(5), f(6));
+            if !veq(got, f32::from_bits(o[0])) {
+                bad += 1;
+                if bad < 6 {
+                    println!("needed differs: v {v} vt {} dist {} margin {} -> port {got} original {}", f(2), f(3), f(4), f32::from_bits(o[0]));
+                }
+            }
+        }
+        println!("needed: {} cases, {} differ", inp.len(), bad);
+        assert_eq!(bad, 0);
+    }
+
+    /// The turning radius (non-pivot branch) on 709 cases.
+    #[test]
+    #[ignore]
+    fn verify_traffic_turn_radius() {
+        let (inp, rf) = (vrows("turn_in.txt", 1), vrows("turn_ref.txt", 0));
+        assert_eq!(inp.len(), rf.len());
+        let (mut bad, mut maxulp) = (0, 0u32);
+        for (c, o) in inp.iter().zip(&rf) {
+            let ty = AmbType { min_turn: f32::from_bits(c[1]), ..AmbType::default() };
+            let got = turn_radius(&ty, f32::from_bits(c[0]), false);
+            if !veq(got, f32::from_bits(o[0])) {
+                bad += 1;
+                maxulp = maxulp.max(got.to_bits().abs_diff(o[0]));
+                if bad < 6 {
+                    println!("turn differs: v {} base {} -> port {got} original {}", f32::from_bits(c[0]), ty.min_turn, f32::from_bits(o[0]));
+                }
+            }
+        }
+        println!("turn_radius: {} cases, {} differ, max {} ulp", inp.len(), bad, maxulp);
+        // (diagnostic only: the cause of the differences)
+        let (mut bad_c, mut bad_cf) = (0, 0);
+        for (c, o) in inp.iter().zip(&rf) {
+            let (v, base) = (f32::from_bits(c[0]), f32::from_bits(c[1]));
+            let k = f32::from_bits(VTURN_K);
+            let x = ((v - 4.4704) * k).clamp(0.0, 1.0);
+            if !veq(base * (1.0 + 6.0 * x), f32::from_bits(o[0])) { bad_c += 1; }
+            if !veq(6.0f32.mul_add(x, 1.0) * base, f32::from_bits(o[0])) { bad_cf += 1; }
+        }
+        println!("  with the image's constant 0.14912909 instead of the literal: {} differ; with it and a fused 1 + 6x: {} differ", bad_c, bad_cf);
+        // known difference (the literal constant and the unfused 1 + 6x), see the evidence file: 143 of 709
+        assert_eq!((bad, bad_c, bad_cf), (143, 2, 0));
+    }
+
+    /// The speed integrator against the original's first block (offset draw excluded) on 2000 cases.
+    #[test]
+    #[ignore]
+    fn verify_traffic_integrate() {
+        let (inp, rf) = (vrows("integ_in.txt", 1), vrows("integ_ref.txt", 0));
+        assert_eq!(inp.len(), rf.len());
+        let (mut bad, mut maxulp, mut cap_nonpos, mut fma_only) = (0, 0u32, 0, 0);
+        for (c, o) in inp.iter().zip(&rf) {
+            let (a, v, dt) = (f32::from_bits(c[0]), f32::from_bits(c[1]), f32::from_bits(c[2]));
+            let ty = AmbType { max_speed: f32::from_bits(c[3]), max_accel: f32::from_bits(c[4]), ..AmbType::default() };
+            let mut r = vrider(ty);
+            r.v = v;
+            integrate(&mut r, a, dt);
+            let want = f32::from_bits(o[0]);
+            if !veq(r.v, want) {
+                bad += 1;
+                maxulp = maxulp.max(r.v.to_bits().abs_diff(o[0]));
+                if a <= 0.0 && v > ty.max_speed {
+                    cap_nonpos += 1;
+                } else if (r.v - want).abs() <= want.abs() * 2.5e-7 {
+                    fma_only += 1;
+                }
+                if bad < 8 {
+                    println!("integrate differs: a {a} v {v} dt {dt} max_speed {} max_accel {} -> port {} original {want}", ty.max_speed, ty.max_accel, r.v);
+                }
+            }
+        }
+        // (diagnostic only: the original's rule, fused, capped only while accelerating)
+        let mut bad_orig_rule = 0;
+        for (c, o) in inp.iter().zip(&rf) {
+            let (a0, v, dt) = (f32::from_bits(c[0]), f32::from_bits(c[1]), f32::from_bits(c[2]));
+            let (ms, ma) = (f32::from_bits(c[3]), f32::from_bits(c[4]));
+            let a = if a0 > 0.0 && a0 > ma { ma } else { a0 };
+            let mut nv = a.mul_add(dt, v);
+            if a < 0.0 && nv < 0.22352 { nv = 0.0 } else if a > 0.0 && nv > ms { nv = ms }
+            if !veq(nv, f32::from_bits(o[0])) { bad_orig_rule += 1; }
+        }
+        println!("  the rule read off the original's code (fused, cap only while accelerating): {} differ", bad_orig_rule);
+        println!("integrate: {} cases, {} differ (max {} ulp; {} of them the port capping a non-positive acceleration at max speed, {} within 2.5e-7 relative)", inp.len(), bad, maxulp, cap_nonpos, fma_only);
+        // known difference, see the evidence file
+        assert_eq!((bad, bad_orig_rule), (270, 0));
+    }
+
+    /// The 4-ring (F-60856) and the lock predicate (F-37906) on 1500 cases: N pushes, then the predicate.
+    #[test]
+    #[ignore]
+    fn verify_traffic_lock_ring_and_predicate() {
+        let (inp, rf) = (vrows("lock_in.txt", 1), vrows("lock_ref.txt", 0));
+        assert_eq!(inp.len(), rf.len());
+        let dt = 1.0f32 / 30.0;
+        let (mut ring_bad, mut pred_bad, mut pred_true, mut pred_near, mut diag_bad, mut diag_bad_plain) = (0, 0, 0, 0, 0, 0);
+        for (c, o) in inp.iter().zip(&rf) {
+            let n = c[0] as usize;
+            let xs: Vec<f32> = c[1..1 + n].iter().map(|&b| f32::from_bits(b)).collect();
+            let k = 1 + n;
+            let delta = Vec3::new(f32::from_bits(c[k]), f32::from_bits(c[k + 1]), f32::from_bits(c[k + 2]));
+            let slot = c[k + 8] as usize;
+            let md = f32::from_bits(o[7]);
+            let mut l = Lock::default();
+            for (i, &x) in xs.iter().enumerate() {
+                if i + 1 == n {
+                    l.prev = Some(Vec3::ZERO);
+                    l.update(delta, x, Some(slot), md, dt);
+                } else {
+                    l.update(Vec3::ZERO, x, None, md, dt);
+                }
+            }
+            // the velocity the port forms is the one the original was given
+            let v = (delta - Vec3::ZERO) / dt;
+            assert!(veq(v.x, f32::from_bits(c[k + 3])) && veq(v.y, f32::from_bits(c[k + 4])) && veq(v.z, f32::from_bits(c[k + 5])));
+            let ring_ok = l.n as u32 == o[0] && l.i as u32 == o[1] % 4 && veq(l.sum, f32::from_bits(o[2])) && (0..4).all(|j| veq(l.e[j], f32::from_bits(o[3 + j])));
+            if !ring_ok {
+                ring_bad += 1;
+                if ring_bad < 6 {
+                    println!("ring differs: n {} i {} sum {} e {:?} | original {:?}", l.n, l.i, l.sum, l.e, o);
+                }
+            }
+            let pred = o[8] != 0;
+            if pred { pred_true += 1; }
+            // (diagnostic only: the original's threshold constant is 4.9961185 = 0x409FE034 and |v|^2 is fused z*z + (x*x + y*y*...))
+            let v2f = v.z.mul_add(v.z, v.x.mul_add(v.x, v.y * v.y));
+            let mean = l.sum / l.n as f32;
+            if (slot == 0 && -mean >= md && v2f >= f32::from_bits(0x409F_E034)) != pred { diag_bad += 1; }
+            if (slot == 0 && -mean >= md && v.length_squared() >= f32::from_bits(0x409F_E034)) != pred { diag_bad_plain += 1; }
+            if l.now() != pred {
+                pred_bad += 1;
+                if pred_bad < 6 {
+                    println!("predicate differs: port {} original {pred}: v2 {} mean {} md {md}", l.now(), v.length_squared(), l.sum / l.n as f32);
+                }
+            }
+            if (v.length_squared() - 4.99612).abs() < 1e-4 { pred_near += 1; }
+        }
+        println!("lock ring: {} cases, {} differ; predicate: {} differ ({} true, {} within 1e-4 of the speed threshold)", inp.len(), ring_bad, pred_bad, pred_true, pred_near);
+        println!("  with the image's threshold 4.9961185: {} differ (fused |v|^2), {} differ (the port's own |v|^2)", diag_bad, diag_bad_plain);
+        assert_eq!(ring_bad, 0);
+        // known difference (the port's threshold literal 4.99612 is one ulp above the original's 4.9961185), see the evidence file
+        assert_eq!((pred_bad, diag_bad, diag_bad_plain), (5, 0, 0));
+    }
+
+    /// The tilt's velocity step (F-84582) and 10-ring (F-14882). Step 1 (always rewrites the inputs,
+    /// the port's side of every step is dumped): cargo test; then run_traffic.py run; step 2: cargo test again.
+    #[test]
+    #[ignore]
+    fn verify_traffic_tilt_velocity_and_ring() {
+        use std::fmt::Write;
+        let mut rng = 0x1234_5678u32;
+        let mut rnd = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            (rng >> 8) as f32 / 16777216.0
+        };
+        // per step: (seq, step, old pos, new pos, old vel, dt, port vel, s, count, idx, sum, ring, fwd kind)
+        struct Step { seq: u32, step: u32, old: Vec3, new: Vec3, oldv: Vec3, dt: f32, vel: Vec3, s: (f32, f32), count: usize, idx: usize, sum: (f32, f32), ring: [(f32, f32); 10], fwd_y: bool }
+        let mut steps: Vec<Step> = Vec::new();
+        for seq in 0..80u32 {
+            let fwd_y = seq % 2 == 1;
+            let (fwd, right) = if fwd_y { (Vec3::Y, Vec3::Z) } else { (Vec3::X, Vec3::Z) };
+            let accel = if seq % 8 < 6 { 0.6 } else { 8.0 };
+            let mut t = Tilt::default();
+            let mut pos = Vec3::new(rnd() * 100.0 - 50.0, rnd() * 10.0, rnd() * 100.0 - 50.0);
+            let mut vel = Vec3::new(rnd() * 6.0 - 3.0, rnd() - 0.5, rnd() * 6.0 - 3.0);
+            for step in 0..45u32 {
+                let dt = if seq % 5 == 0 { 1.0 / 30.0 + 0.015 * rnd() } else { 1.0 / 30.0 };
+                vel += Vec3::new(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5) * accel * dt;
+                pos += vel * dt;
+                let before = t.prev;
+                let (count0, idx0) = (t.count, t.idx);
+                t.update(pos, fwd, right, 0.0, dt);
+                let w = if count0 < 10 { idx0 } else if idx0 == 10 { 0 } else { idx0 };
+                let (old, oldv) = before.unwrap_or((pos, Vec3::ZERO));
+                let nv = t.prev.unwrap().1;
+                steps.push(Step { seq, step, old, new: pos, oldv, dt, vel: nv, s: t.ring[w], count: t.count, idx: t.idx, sum: t.sum, ring: t.ring, fwd_y });
+            }
+        }
+        let (mut vin, mut rin) = (String::new(), String::new());
+        for s in &steps {
+            let b = |f: f32| f.to_bits();
+            if s.step > 0 {
+                let _ = writeln!(vin, "vel {} {} {} {} {} {} {} {} {} {} {} {}", s.seq, s.step, b(s.old.x), b(s.old.y), b(s.old.z), b(s.new.x), b(s.new.y), b(s.new.z), b(s.oldv.x), b(s.oldv.y), b(s.oldv.z), b(s.dt));
+            }
+            let _ = writeln!(rin, "ring {} {} {} {}", s.seq, s.step, b(s.s.0), b(s.s.1));
+        }
+        std::fs::write(format!("{VFIX}vel_in.txt"), vin).unwrap();
+        std::fs::write(format!("{VFIX}ring_in.txt"), rin).unwrap();
+        let (vref, rref) = match (std::fs::read_to_string(format!("{VFIX}vel_ref.txt")), std::fs::read_to_string(format!("{VFIX}ring_ref.txt"))) {
+            (Ok(a), Ok(b)) => (a, b),
+            _ => {
+                println!("inputs written; run run_traffic.py run, then run this test again");
+                return;
+            }
+        };
+        let parse = |t: &str| t.lines().map(|l| l.split_whitespace().map(|x| x.parse::<u32>().unwrap()).collect::<Vec<_>>()).collect::<Vec<_>>();
+        let (vref, rref) = (parse(&vref), parse(&rref));
+        let moving: Vec<&Step> = steps.iter().filter(|s| s.step > 0).collect();
+        assert_eq!(vref.len(), moving.len());
+        assert_eq!(rref.len(), steps.len());
+        let (mut vel_bad, mut dv_bad, mut dv_unclamped, mut maxulp, mut newton_bad, mut dv_checked) = (0, 0, 0, 0u32, 0, 0);
+        for (s, o) in moving.iter().zip(&vref) {
+            assert_eq!((o[0], o[1]), (s.seq, s.step));
+            let orig_v = Vec3::new(f32::from_bits(o[2]), f32::from_bits(o[3]), f32::from_bits(o[4]));
+            if !(veq(orig_v.x, s.vel.x) && veq(orig_v.y, s.vel.y) && veq(orig_v.z, s.vel.z)) {
+                vel_bad += 1;
+                for (a, b) in [(orig_v.x, s.vel.x), (orig_v.y, s.vel.y), (orig_v.z, s.vel.z)] {
+                    maxulp = maxulp.max(a.to_bits().abs_diff(b.to_bits()));
+                }
+                if vel_bad < 6 {
+                    println!("velocity differs seq {} step {}: port {:?} original {:?}", s.seq, s.step, s.vel, orig_v);
+                }
+            }
+            // (diagnostic only: the original's velocity is the position change times the reciprocal of dt
+            // refined by one Newton step, r = r0 + r0 * -(r0 * dt - 1), r0 = 1 / dt, in f32)
+            let r0 = 1.0 / s.dt;
+            let r = r0.mul_add(-(r0 * s.dt - 1.0), r0);
+            let dp = s.new - s.old;
+            let nv = Vec3::new(dp.x * r, dp.y * r, dp.z * r);
+            if !(veq(orig_v.x, nv.x) && veq(orig_v.y, nv.y) && veq(orig_v.z, nv.z)) {
+                newton_bad += 1;
+            }
+            // dv: the original's dv is its velocity minus the old one (checked), the port keeps only s: the
+            // original's dv through the port's formula must give s - compared where the velocities agree
+            let dv = Vec3::new(f32::from_bits(o[5]), f32::from_bits(o[6]), f32::from_bits(o[7]));
+            assert!(veq(dv.x, orig_v.x - s.oldv.x) && veq(dv.y, orig_v.y - s.oldv.y) && veq(dv.z, orig_v.z - s.oldv.z));
+            let same_vel = veq(orig_v.x, s.vel.x) && veq(orig_v.y, s.vel.y) && veq(orig_v.z, s.vel.z);
+            if !same_vel {
+                continue;
+            }
+            dv_checked += 1;
+            let (fwd, right) = if s.fwd_y { (Vec3::Y, Vec3::Z) } else { (Vec3::X, Vec3::Z) };
+            let want = ((dv.dot(fwd) / PITCH_DOT).clamp(-1.0, 1.0) * PITCH_ANGLE.to_radians(), (dv.dot(right) / ROLL_DOT).clamp(-1.0, 1.0) * ROLL_ANGLE.to_radians());
+            if (dv.dot(fwd) / PITCH_DOT).abs() < 1.0 && (dv.dot(right) / ROLL_DOT).abs() < 1.0 {
+                dv_unclamped += 1;
+            }
+            if !(veq(want.0, s.s.0) && veq(want.1, s.s.1)) {
+                dv_bad += 1;
+                if dv_bad < 6 {
+                    println!("dv differs seq {} step {}: port s {:?} from original dv {:?}", s.seq, s.step, s.s, want);
+                }
+            }
+        }
+        let mut ring_bad = 0;
+        for (s, o) in steps.iter().zip(&rref) {
+            assert_eq!((o[0], o[1]), (s.seq, s.step));
+            let mut ok = o[2] as usize == s.count && o[3] as usize == s.idx && veq(s.sum.0, f32::from_bits(o[4])) && veq(s.sum.1, f32::from_bits(o[5]));
+            for k in 0..10 {
+                ok &= veq(s.ring[k].0, f32::from_bits(o[6 + 2 * k])) && veq(s.ring[k].1, f32::from_bits(o[7 + 2 * k]));
+            }
+            if !ok {
+                ring_bad += 1;
+                if ring_bad < 6 {
+                    println!("ring differs seq {} step {}: port count {} idx {} sum {:?} | original {:?}", s.seq, s.step, s.count, s.idx, s.sum, &o[2..6]);
+                }
+            }
+        }
+        println!("tilt: {} velocity steps, velocity differs {} (max {} ulp); the reciprocal-and-Newton form differs {}; dv->s checked on {} steps ({} unclamped), differs {}; ring: {} steps, {} differ", moving.len(), vel_bad, maxulp, newton_bad, dv_checked, dv_unclamped, dv_bad, steps.len(), ring_bad);
+        assert_eq!(ring_bad, 0);
+        // known difference (true division in the port, reciprocal + Newton in the original), see the evidence file
+        assert_eq!((vel_bad, newton_bad, dv_bad), (1562, 0, 0));
     }
 
     #[test]

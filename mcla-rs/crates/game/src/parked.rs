@@ -608,6 +608,123 @@ impl Vehicles {
 }
 
 #[cfg(test)]
+mod verify_lanes_tests {
+    //! Per-case comparison with the original's unchanged generated code, run offline by
+    //! work/verify-people/lanes (docs/reference/people/verify_people_lanes.md).
+    use super::*;
+    use mcla_formats::rage::parking::{ParkNode, ParkingSpot};
+
+    fn fixture(name: &str) -> String {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/verify-people/lanes");
+        std::fs::read_to_string(dir.join(name)).unwrap()
+    }
+
+    /// F-80185: the node-box-against-circle test, which the port does inline in `query`: a
+    /// one-node tree with one listed spot is returned by `query` exactly when the original
+    /// returns true (6,500 cases: random boxes, boundary and one-ulp radii).
+    #[test]
+    #[ignore = "requires the original's reference csv (work/verify-people/lanes)"]
+    fn node_box_circle_test_matches_the_original() {
+        let want: Vec<u32> = fixture("stage1_original.csv").lines().filter(|l| l.starts_with("B,")).map(|l| l.rsplit(',').next().unwrap().parse().unwrap()).collect();
+        let cases = fixture("boxcases.txt");
+        let (mut n, mut hits, mut bad) = (0, 0, Vec::new());
+        for (line, w) in cases.lines().zip(&want) {
+            let v: Vec<f32> = line.split(' ').map(|h| f32::from_bits(u32::from_str_radix(h, 16).unwrap())).collect();
+            let node = ParkNode { spots: vec![0], children: [None; 4], centre: Vec2::ZERO, min: Vec2::new(v[0], v[1]), max: Vec2::new(v[2], v[3]), depth: 0 };
+            let tree = ParkingTree { spots: vec![ParkingSpot { pos: Vec3::ZERO, heading: 0.0, flags: 1, cruise_only: false, node: 0 }], nodes: vec![node], root: Some(0) };
+            let mut out = Vec::new();
+            query(&tree, &[], 0, Vec2::new(v[4], v[5]), v[6], MAX_LISTS, &mut out);
+            if out.len() as u32 != *w {
+                bad.push(n);
+            }
+            // the original's arithmetic (fmuls on the x side, then fmadds z*z + x part)
+            let (min, max, c) = (Vec2::new(v[0], v[1]), Vec2::new(v[2], v[3]), Vec2::new(v[4], v[5]));
+            let mut d2 = 0.0f32;
+            if c.x < min.x {
+                d2 = (c.x - min.x) * (c.x - min.x);
+            } else if c.x > max.x {
+                d2 = (c.x - max.x) * (c.x - max.x);
+            }
+            if c.y < min.y {
+                d2 = (c.y - min.y).mul_add(c.y - min.y, d2);
+            } else if c.y > max.y {
+                d2 = (c.y - max.y).mul_add(c.y - max.y, d2);
+            }
+            assert_eq!(d2 <= v[6] * v[6], *w == 1, "fused replica, case {n}");
+            hits += *w;
+            n += 1;
+        }
+        assert_eq!(n, want.len());
+        println!("box test: {n} cases, {hits} true in the original, {} differ (first {:?})", bad.len(), bad.iter().take(5).collect::<Vec<_>>());
+        assert_eq!((n, hits), (6500, 3481));
+        // The port's inline test (d2 += dz * dz, two roundings) differs from the original's
+        // fused z term: recorded as a difference, not corrected here.
+        assert_eq!(bad.len(), 47);
+    }
+
+    fn parking() -> ParkingTree {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let d = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x2e3038ce.r62")).unwrap();
+        let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u(4), flags: u(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        mcla_formats::rage::parking::parse_parking(&res)
+    }
+
+    /// F-35598 (`query`) and F-48973 (`node_count`) against the original's functions on the real
+    /// parking quadtree (3,656 nodes, 10,998 spots): 4,000 circles (random centres, radii to 3 km,
+    /// caps 1 - 64, 0 - 40 nodes with a layout item) and 3,000 spot states.
+    #[test]
+    #[ignore = "requires user's extracted data (MCLA_DATA_DIR) and the original's reference csv"]
+    fn parked_query_and_node_count_match_the_original() {
+        let tree = parking();
+        assert_eq!((tree.nodes.len(), tree.spots.len()), (3656, 10998));
+        let orig = fixture("stage3_indexed.csv");
+        let q: Vec<Vec<usize>> = orig.lines().filter(|l| l.starts_with("Q,")).map(|l| l.split(',').skip(3).map(|v| v.parse().unwrap()).collect()).collect();
+        let (mut nq, mut total_nodes) = (0, 0);
+        for (line, want) in fixture("qcases3.txt").lines().zip(&q) {
+            let w: Vec<u32> = line.split(' ').map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+            let mut items = vec![Vec::new(); tree.nodes.len()];
+            for &n in &w[5..5 + w[4] as usize] {
+                items[n as usize].push(0u32);
+            }
+            let mut out = Vec::new();
+            query(&tree, &items, tree.root.unwrap(), Vec2::new(f32::from_bits(w[0]), f32::from_bits(w[1])), f32::from_bits(w[2]), w[3] as usize, &mut out);
+            let got: Vec<usize> = out.iter().map(|&n| n as usize).collect();
+            assert_eq!(&got, want, "query case {nq}: {line}");
+            nq += 1;
+            total_nodes += got.len();
+        }
+        assert_eq!(nq, 4000);
+        println!("query: {nq} cases, {total_nodes} nodes listed, all identical");
+        let c: Vec<(u32, u32)> = orig.lines().filter(|l| l.starts_with("N,")).map(|l| {
+            let f: Vec<u32> = l.split(',').skip(2).map(|v| v.parse().unwrap()).collect();
+            (f[0], f[1])
+        }).collect();
+        let mut nc = 0;
+        for (line, want) in fixture("ccases3.txt").lines().zip(&c) {
+            let w: Vec<u32> = line.split(' ').map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+            let (ni, cruise, ns) = (w[0], w[1] != 0, w[2] as usize);
+            let mut t = tree.clone();
+            let mut occupied = vec![false; t.spots.len()];
+            let spots = t.nodes[ni as usize].spots.clone();
+            assert_eq!(spots.len(), ns);
+            for (k, &sidx) in spots.iter().enumerate() {
+                let (a8, a12, flags, cb) = (w[3 + 4 * k], w[4 + 4 * k], w[5 + 4 * k], w[6 + 4 * k]);
+                occupied[sidx as usize] = a8 != 0 || (a12 as i32) >= 0;
+                t.spots[sidx as usize].flags = flags;
+                t.spots[sidx as usize].cruise_only = cb != 0;
+            }
+            // the original returns (occupied, free); the port (occupied, occupied + free)
+            assert_eq!(node_count(&t, ni, &occupied, cruise), (want.0 as i32, (want.0 + want.1) as i32), "count case {nc}: {line}");
+            nc += 1;
+        }
+        assert_eq!(nc, 3000);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

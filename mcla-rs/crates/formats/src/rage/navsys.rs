@@ -1977,3 +1977,94 @@ mod reach_tests {
         eprintln!("{} links, {} components; {} found, {} none; full search {:.1} ms, with the shortcut {:.1} ms", n, nav.sccs().succ.len(), found, none, t_full * 1000.0, t_new * 1000.0);
     }
 }
+
+#[cfg(test)]
+mod verify_lanes_tests {
+    //! Per-case comparison with the original's unchanged generated code, run offline by
+    //! work/verify-people/lanes/stage4.py (docs/reference/people/verify_people_lanes.md).
+    use super::*;
+
+    fn ulps(a: f32, b: f32) -> u32 {
+        if a.to_bits() == b.to_bits() || (a == 0.0 && b == 0.0) {
+            return 0;
+        }
+        let k = |x: f32| {
+            let i = x.to_bits() as i32;
+            if i < 0 { i32::MIN.wrapping_sub(i) } else { i }
+        };
+        (k(a) as i64 - k(b) as i64).unsigned_abs().min(u32::MAX as u64) as u32
+    }
+
+    /// F-99015 (point), F-26650 / F-26180 (derivative sum), F-42884 and F-71868 (point, derivative
+    /// and speed), F-42559 (speed): `LaneCurve::eval` / `speed` against the original's lane curve
+    /// functions on all 10,031 city lanes at 84,547 phases.
+    #[test]
+    #[ignore = "requires user's extracted data (MCLA_DATA_DIR) and the original's reference csv"]
+    fn lane_curve_eval_against_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let bytes = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let data = bytes[16..].to_vec();
+        let virtual_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let res = Resource { rtype: 66, flags: 0, virtual_size, physical_size: data.len() - virtual_size, data };
+        let nav = NavSys::parse(&res).unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/verify-people/lanes");
+        let cases = std::fs::read_to_string(dir.join("cases4.txt")).unwrap();
+        let orig = std::fs::read_to_string(dir.join("stage4_original.csv")).unwrap();
+        let f = |s: &str| f32::from_bits(s.parse::<u32>().unwrap());
+        // per quantity: exact count, max ulps, worst case
+        let names = ["point", "deriv sum x TRange (vs port derivative)", "E00 point", "speed (E00)", "speed (ED0)"];
+        let mut exact = [0usize; 5];
+        let mut worst = [(0u32, 0usize); 5];
+        let mut maxabs = [(0.0f32, 0usize, 0.0f32, 0u8, 0.0f32, 0.0f32); 5];
+        let mut n = 0usize;
+        let mut by_degree: std::collections::BTreeMap<u8, [usize; 3]> = Default::default();
+        for (i, (c, o)) in cases.lines().zip(orig.lines().skip(1)).enumerate() {
+            let lane = usize::from_str_radix(c.split(' ').next().unwrap(), 16).unwrap();
+            let t = f32::from_bits(u32::from_str_radix(c.split(' ').nth(1).unwrap(), 16).unwrap());
+            let v: Vec<&str> = o.split(',').collect();
+            assert_eq!(v[0].parse::<usize>().unwrap(), i);
+            let curve = &nav.curves[lane];
+            let (p, d) = curve.eval(t);
+            let tr = curve.t_range;
+            // E70 / E00's derivative sum is unscaled; the original scales only the speed
+            let dsum = glam::Vec3::new(f(v[5]), f(v[6]), f(v[7]));
+            let want_p = glam::Vec3::new(f(v[1]), f(v[2]), f(v[3]));
+            let want_e = glam::Vec3::new(f(v[9]), f(v[10]), f(v[11]));
+            let sp_e = f(v[17]);
+            let sp_i = f(v[23]);
+            let _ = tr;
+            let port_speed = curve.speed(t);
+            let q = [
+                [ulps(p.x, want_p.x), ulps(p.y, want_p.y), ulps(p.z, want_p.z)].into_iter().max().unwrap(),
+                [ulps(d.x, dsum.x * tr), ulps(d.y, dsum.y * tr), ulps(d.z, dsum.z * tr)].into_iter().max().unwrap(),
+                [ulps(p.x, want_e.x), ulps(p.y, want_e.y), ulps(p.z, want_e.z)].into_iter().max().unwrap(),
+                ulps(port_speed, sp_e),
+                ulps(port_speed, sp_i),
+            ];
+            for k in 0..5 {
+                exact[k] += (q[k] == 0) as usize;
+                if q[k] > worst[k].0 {
+                    worst[k] = (q[k], i);
+                }
+            }
+            let abs = [(p - want_p).abs().max_element(), (d - dsum * tr).abs().max_element(), (p - want_e).abs().max_element(), (port_speed - sp_e).abs(), (port_speed - sp_i).abs()];
+            for k in 0..5 {
+                if abs[k] > maxabs[k].0 {
+                    maxabs[k] = (abs[k], i, t, curve.degree, if k == 3 { sp_e } else if k == 4 { sp_i } else { 0.0 }, port_speed);
+                }
+            }
+            let e = by_degree.entry(curve.degree).or_default();
+            e[0] += 1;
+            e[1] += (q[0] == 0) as usize;
+            e[2] += (q[3] == 0) as usize;
+            n += 1;
+        }
+        for k in 0..5 {
+            println!("{:45} exact {}/{} max ulp {} (case {})", names[k], exact[k], n, worst[k].0, worst[k].1);
+        }
+        println!("by degree [cases, point exact, speed exact]: {by_degree:?}");
+        for k in 0..5 {
+            println!("{:45} max abs {:e} (case {}, t {}, degree {}, original speed {}, port speed {})", names[k], maxabs[k].0, maxabs[k].1, maxabs[k].2, maxabs[k].3, maxabs[k].4, maxabs[k].5);
+        }
+    }
+}

@@ -176,3 +176,101 @@ impl Distribution {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fixture dir of the verification run against the original's recompiled functions
+    /// (work/verify-people/peds/gen_and_run.py; docs/reference/people/verify_people_peds.md).
+    fn fixture(name: &str) -> Option<String> {
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/verify-people/peds").join(name)).ok()
+    }
+
+    /// F-90692 on 4200 cases: tables of 0..8 rows, every minute of the day at the row edges. The
+    /// original takes the clock as HHMM; `at` takes the hour and makes the HHMM itself, so the hour is
+    /// built from the HHMM (middle of the minute).
+    #[test]
+    fn tod_at_matches_original_bits() {
+        let (Some(inp), Some(refs)) = (fixture("tod_inputs.txt"), fixture("tod_reference.txt")) else { return };
+        let (mut cases, mut empty, mut bad) = (0, 0, 0);
+        for (line, want) in inp.lines().zip(refs.lines()) {
+            let mut it = line.split_whitespace();
+            let n: usize = it.next().unwrap().parse().unwrap();
+            let t: i32 = it.next().unwrap().parse().unwrap();
+            let rows: Vec<(i32, i32, f32)> = (0..n)
+                .map(|_| {
+                    let s: i32 = it.next().unwrap().parse().unwrap();
+                    let e: i32 = it.next().unwrap().parse().unwrap();
+                    (s, e, f32::from_bits(u32::from_str_radix(it.next().unwrap(), 16).unwrap()))
+                })
+                .collect();
+            let want = u32::from_str_radix(want, 16).unwrap();
+            let hour = (t / 100) as f32 + ((t % 100) as f32 + 0.5) / 60.0;
+            let got = Tod(rows).at(hour).to_bits();
+            if n == 0 {
+                // the one known difference: no rows is 0.0 in the original, 1.0 here (the tree's start value)
+                empty += 1;
+                assert_eq!(want, 0.0f32.to_bits());
+                assert_eq!(got, 1.0f32.to_bits());
+                continue;
+            }
+            cases += 1;
+            if got != want {
+                bad += 1;
+                eprintln!("tod mismatch: {line} -> port {got:08x} original {want:08x}");
+            }
+        }
+        eprintln!("tod: {cases} non-empty cases, {bad} mismatches; {empty} empty-table cases (differ as documented)");
+        assert_eq!(bad, 0);
+    }
+
+    /// F-36934 on 4500 cases: the weighted draw from the original's 23-bit random value
+    /// (`r` = value * 2^-23, exact), each type's weight a one-row table over the whole day.
+    #[test]
+    fn pick_matches_original_choice() {
+        let (Some(full), Some(refs)) = (fixture("pick_full.txt"), fixture("pick_reference.txt")) else { return };
+        let (mut cases, mut bad, mut le, mut clamp) = (0, 0, 0, 0);
+        for (line, want) in full.lines().zip(refs.lines()) {
+            let tok: Vec<&str> = line.split_whitespace().collect();
+            let n: usize = tok[0].parse().unwrap();
+            let ws: Vec<f32> = (0..n).map(|i| f32::from_bits(u32::from_str_radix(tok[3 + i], 16).unwrap())).collect();
+            let r23 = u32::from_str_radix(tok[3 + n], 16).unwrap();
+            let want = u32::from_str_radix(want, 16).unwrap();
+            let want = if want == 0 { None } else { Some((want - 0xA000) as usize) };
+            let mut d = Distribution::default();
+            d.map = vec![5u8; 65536];
+            d.types.insert(5, ws.iter().enumerate().map(|(i, w)| (format!("t{i}"), Tod(vec![(0, 0, *w)]))).collect());
+            let r = r23 as f32 * (1.0 / 8388608.0);
+            let got = d.pick(Vec3::ZERO, 12.0, r, &|_| true).map(|s| s[1..].parse::<usize>().unwrap());
+            cases += 1;
+            if got != want {
+                bad += 1;
+                // classify: the original's strict u < 0 against this port's x <= 0, and the 0.9999 clamp
+                let total: f32 = ws.iter().fold(0.0, |a, w| a + w);
+                let mut u = r * total;
+                let mut exact = false;
+                for w in &ws {
+                    u -= w;
+                    if u == 0.0 {
+                        exact = true;
+                    }
+                    if u < 0.0 {
+                        break;
+                    }
+                }
+                if r > 0.9999 {
+                    clamp += 1;
+                } else if exact {
+                    le += 1;
+                }
+                if bad <= 5 {
+                    eprintln!("pick mismatch: {line} -> port {got:?} original {want:?}");
+                }
+            }
+        }
+        eprintln!("pick: {cases} cases, {bad} mismatches ({le} on exact zero, {clamp} on r > 0.9999)");
+        // known differences (partly-decoded): every mismatch is one of the two, none else
+        assert_eq!(bad, le + clamp, "a mismatch outside the two known differences");
+    }
+}
