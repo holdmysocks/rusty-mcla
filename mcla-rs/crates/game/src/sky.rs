@@ -424,6 +424,19 @@ mod shadow_fade_tests {
     }
 }
 
+/// The hour the light manager (F-70200) evaluates every weather's keys at a second time for the
+/// shadows: 9 + (h - 5) / 12 x 6 between 5:00 and 18:00 (9:00 .. 15:30), none outside.
+pub fn shadow_hour(h: f32) -> Option<f32> {
+    (h > 5.0 && h < 18.0).then(|| ((h - 5.0) * (1.0 / 12.0)).mul_add(6.0, 9.0))
+}
+
+/// The shadow pass's light direction (F-16780 for the cascades of F-55997): x of the light
+/// direction at `shadow_hour`, y and z of the one at the hour itself, normalised - the shadows'
+/// east-west swing runs at half speed round 11:00, so dawn and dusk shadows are short.
+pub fn shadow_ray(to_light: Vec3, x_at_shadow_hour: f32) -> Vec3 {
+    Vec3::new(x_at_shadow_hour, to_light.y, to_light.z).normalize_or(to_light)
+}
+
 /// `<tag x="" y="" z=""/>` of a tune file.
 fn xyz(x: &str, tag: &str) -> Option<[f32; 3]> {
     let r = &x[x.find(&format!("<{} ", tag))?..];
@@ -769,6 +782,24 @@ mod tod_tests {
         assert!(near(night.light, [0.047059, 0.047059, 0.047059], 1e-5));
         assert!(near(night.to_light, [0.5, -0.86589, -0.015114], 2e-3), "{:?}", night.to_light);
         assert!(night.nfl > 0.99);
+    }
+
+    /// The cascades' shadow ray (`shadow_ray`) against the eleven hours read off the original's
+    /// shadow matrices (LIGHTING.md, "Shadows are not cast along the light"): (az, el) in degrees.
+    #[test]
+    #[ignore = "requires user's extracted lighting; set MCLA_DATA_DIR"]
+    fn shadow_ray_matches_the_recorded_cascades() {
+        let root = std::env::var("MCLA_DATA_DIR").expect("set MCLA_DATA_DIR to extracted/cache");
+        let nice = Sky::load_weather(&root, Weather::Nice);
+        let rec = [(6.25, -57.8, 32.1), (7.0, -42.5, 47.2), (9.0, -15.3, 68.4), (10.0, -6.8, 68.7), (11.0, 0.0, 65.0), (12.0, 6.2, 59.5), (13.0, 12.5, 62.0), (15.0, 28.0, 58.2), (17.0, 52.8, 36.9), (17.5, 60.9, 29.1), (17.9, 67.7, 22.3)];
+        for (h, az, el) in rec {
+            let real = nice.tod(h).unwrap().to_light;
+            let x = shadow_hour(h).map_or(real.x, |h2| nice.tod(h2).unwrap().to_light.x);
+            let r = shadow_ray(real, x);
+            let (a, e) = ((-r.x).asin().to_degrees(), r.y.asin().to_degrees());
+            println!("{h:5.2}: az {a:6.2} (rec {az}) el {e:5.2} (rec {el})");
+            assert!((a - az).abs() < 0.15 && (e - el).abs() < 0.15, "{h}: {a} {e}");
+        }
     }
 
     /// The sky control object's own constants: StarFieldUVRepeat from its tune file, the

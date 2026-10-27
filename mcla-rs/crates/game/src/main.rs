@@ -7753,17 +7753,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.map_vp = if map3d { Some(vp) } else { None };
         let light_vp = {
             let sun = Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]).normalize();
-            // The game does not cast its shadows along the light: the cascades' rays (read off
-            // their matrices at eleven hours of the day, LIGHTING_WORK.md) run along the light's
-            // direction with its east-west part taken at HALF the orbit's angle, counted from
-            // the 12.5 degrees of 13:00 - (-sin(a / 2 + 6.25 deg), y, z), normalised. Shadows
+            // The game does not cast its shadows along the light (F-70200, F-16780): between 5:00
+            // and 18:00 the x of the shadows' direction is the light's at 9 + (h - 5) / 2 h, y and
+            // z the light's own (`sky::shadow_ray`) - the eleven hours read off the cascades'
+            // matrices to 0.07 degrees (test `shadow_ray_matches_the_recorded_cascades`). Shadows
             // are shorter than the light is low: 32 degrees up at 06:15 for a light at 18.
-            // (MCLA_SHADOW_L: along the light, as before.)
+            // (MCLA_SHADOW_L: along the light. The night path, nfl > 0, keeps its own light.)
             let sun = if std::env::var("MCLA_SHADOW_L").is_ok() || self.sky_now().tod.map_or(true, |t| t.nfl > 0.0) {
                 sun
             } else {
-                let a = (-sun.x).atan2((sun.y * sun.y + sun.z * sun.z).sqrt());
-                Vec3::new(-(a * 0.5 + 6.25f32.to_radians()).sin(), sun.y, sun.z).normalize()
+                let x = sky::shadow_hour(self.time_of_day).and_then(|h| {
+                    let mut st = self.sky.at(h);
+                    if let Some((next, _, f)) = self.sky_next.as_ref() {
+                        st = st.lerp(&next.at(h), *f);
+                    }
+                    st.tod.map(|t| t.to_light.x)
+                });
+                sky::shadow_ray(sun, x.unwrap_or(sun.x))
             };
             // (the direction the frame is drawn in: in a car that is the chase camera's, not the
             // free camera's - which stood still behind it and left the box beside the view)
