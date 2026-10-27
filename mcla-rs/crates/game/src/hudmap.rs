@@ -551,10 +551,20 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             push(e);
         }
     }
-    // race opponents (subtype 6, the race scripts' SetVehicleElement) are listed by the original but
-    // never drawn in a race: while the race's checkpoint provider is set (HudMap+24, every race but
-    // the online flag modes) only the player and type-0 elements pass (rule_elements.md 4.1, 7); the
-    // original's RACE_GH_06 shows no arrow for the man beside the player (work/ui/ref/ng_race_045..047)
+    // race opponents (type 1 subtype 6, the race scripts' SetVehicleElement - the red light's and the
+    // freeway's man keep their own element, which the racer renderer draws the same way while a race
+    // is current): the arrow in RacerColor. The original draws them in a race - work/hookmen2
+    // `cap/rl_14`, `rl_15`, `fw_06` (the green arrow by the player's, a cop's blue one beside); the
+    // "checkpoints and player only" filter of rule_elements.md 4.1 does not hold in its races
+    if let Some(race) = game.race.as_ref() {
+        for (k, &i) in race.participants.iter().enumerate() {
+            let Some(c) = vehicles.cars.get(i).filter(|c| !c.is_player) else { continue };
+            let mut e = Element::at(Kind::OtherCar, c.state.pos);
+            e.uid = 5000 + k as u32;
+            e.back = -c.state.forward();
+            push(e);
+        }
+    }
     // police (PoliceManager: listed within 500 m of a racer while no pursuit; always, pulsing, in
     // a pursuit)
     for c in vehicles.cars.iter().filter(|c| c.cop) {
