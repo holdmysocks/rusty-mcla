@@ -3511,7 +3511,7 @@ impl PadState {
     /// axes; 22..25 (26..29) the left (right) stick's four half-axes, up / down / left / right.
     pub fn byte(&self, device: u32, key: u32) -> u8 {
         let half = |b: u8, low: bool| if low { 255i32 - 2 * b as i32 } else { 2 * b as i32 - 255 }.clamp(0, 255) as u8;
-        let signed = |b: u8| (b as f32 - 127.5) / 127.5;
+        let signed = stick_float;
         let switch = |main: u8, other: u8, low: bool| {
             let (m, o) = (signed(main), signed(other));
             if (if low { -m } else { m }) > 0.8 && o.abs() < 0.57 { 255 } else { 0 }
@@ -3855,6 +3855,17 @@ pub fn control_assign(device: u32, key: u32, slot: usize, m: &mut SlotMap, wheel
     true
 }
 
+/// A stick byte as a float (F-73799 the right stick's X, F-43402 its Y): (byte - 127.5) * 1/127 as an f32 (3c010204; not
+/// the literal 0.00787402, one ulp off, and not 127.5), held to -1..1. The mapper's switch tests (past 0.8 / under 0.57) and the poll read it so.
+pub fn stick_float(b: u8) -> f32 {
+    ((b as f32 - 127.5) * (1.0f32 / 127.0)).clamp(-1.0, 1.0)
+}
+
+/// The slots of the analog actions STEER_AXIS, GAS and BRAKE (the predicate F-56931).
+pub fn is_analog_slot(slot: usize) -> bool {
+    matches!(slot, 0 | 2 | 3)
+}
+
 /// What the editor takes as the new button while it waits (F-56470), from the pad now
 /// and the buttons that were down the frame before. In this order -
 /// an action that is no axis (every one but STEER_AXIS, GAS, BRAKE): the lowest newly
@@ -3868,8 +3879,8 @@ pub fn control_assign(device: u32, key: u32, slot: usize, m: &mut SlotMap, wheel
 /// down as (9, 21); then the lowest newly pressed button.
 pub fn control_poll(slot: usize, now: &PadState, prev_buttons: u16) -> Option<(u32, u32)> {
     let new = now.buttons & !prev_buttons;
-    let stick = now.sticks.map(|b| ((b as f32 - 127.5) * 0.007_874_02).clamp(-1.0, 1.0));
-    if !matches!(slot, 0 | 2 | 3) {
+    let stick = now.sticks.map(stick_float);
+    if !is_analog_slot(slot) {
         if new != 0 {
             return Some((8, new.trailing_zeros()));
         }
@@ -9207,6 +9218,18 @@ pub const DISTRICT_CODES: [&str; 5] = ["hw", "be", "hl", "dt", "sc"];
 /// The mission a district's tournament man looks at (generic_tournament_hookman's static +460),
 /// written as a constant by `<code>_tournament_hk1` before it starts him: hw `0xddd89a62`, be
 /// `0x40c110a8`, hl `0x1f2efed7`, dt `0x2cb25834`, sc `sc/CruisingHookmen/0x5025ae01`.
+/// The beat-me-there sort's comparator (F-33494, on the float at +8): 0 when equal, 1 when `a` is
+/// greater, else -1 (also for NaN) - lowest first.
+pub fn bmt_order(a: f32, b: f32) -> i32 {
+    if a == b {
+        0
+    } else if a > b {
+        1
+    } else {
+        -1
+    }
+}
+
 pub const TOURNAMENT_MISSIONS: [&str; 5] = ["TOURNAMENT_HOLLYWOOD", "TOURNAMENT_BEACHES", "TOURNAMENT_HILLS", "TOURNAMENT_DOWNTOWN", "TOURNAMENT_SC"];
 
 impl Game {
@@ -9373,7 +9396,7 @@ impl Game {
             let flat = ((pos.x - p.x).powi(2) + (pos.z - p.z).powi(2)).sqrt();
             cands.push((k, flat, back.dot((p - pos).normalize_or_zero())));
         }
-        cands.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        cands.sort_by(|a, b| bmt_order(a.2, b.2).cmp(&0));
         let mut best: Option<(usize, usize)> = None;
         for c in cands.iter().filter(|c| c.1 > min_dist) {
             match self.mc4_history_at(arr[c.0]) {
