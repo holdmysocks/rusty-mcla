@@ -259,3 +259,38 @@ fn math_natives_match_the_original() {
     }
     assert!(n > 20000, "{n}");
 }
+
+/// F-24664: a value as text (string copy, "true" / "false", int "%d", float "%0.f" when integral else "%f"); the original's own C library
+/// formatting run offline with tools/ui_tostring_reference.py (testdata/ui_tostring_ref.txt)
+#[test]
+fn to_string_matches_the_original() {
+    let mut n = 0;
+    for line in include_str!("testdata/ui_tostring_ref.txt").lines() {
+        let (a, out) = line.split_once(" ->").unwrap();
+        let a: Vec<&str> = a.split(' ').skip(1).collect();
+        let (ty, p) = (u32::from_str_radix(a[0], 16).unwrap(), u32::from_str_radix(a[1], 16).unwrap());
+        let want: Vec<u8> = out.split(' ').filter(|w| !w.is_empty()).map(|w| u8::from_str_radix(w, 16).unwrap()).collect();
+        let v = match ty {
+            // type 0 is the string (the original keeps it as a chain of 12-byte chunks; the text ends at the first NUL)
+            0 => {
+                let raw: Vec<u8> = (0..a[2].len() / 2).map(|i| u8::from_str_radix(&a[2][2 * i..2 * i + 2], 16).unwrap()).collect();
+                let end = raw.iter().position(|&b| b == 0).unwrap();
+                Value::str(std::str::from_utf8(&raw[..end]).unwrap())
+            }
+            1 | 5 | 6 | 7 => {
+                // not a text value: the empty text whatever the payload (the port's undefined / object values answer the same)
+                assert!(want.is_empty(), "TS {line}");
+                assert_eq!(Value::Undef.to_string().len(), 0);
+                n += 1;
+                continue;
+            }
+            2 => Value::Bool(p >> 24 != 0),
+            3 => Value::Int(p as i32),
+            4 => Value::Float(f(p)),
+            _ => unreachable!(),
+        };
+        assert_eq!(v.to_string().as_bytes(), &want[..], "TS {line}");
+        n += 1;
+    }
+    assert_eq!(n, 773, "{n}");
+}

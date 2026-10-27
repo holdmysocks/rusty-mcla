@@ -116,10 +116,38 @@ pub fn format_float(x: f32) -> String {
     if t as f32 == x {
         format!("{:.0}", xd)
     } else if x.is_infinite() {
-        if x > 0.0 { "inf".into() } else { "-inf".into() }
+        // the original's C library: "1.#INF00"
+        if x > 0.0 { "1.#INF00".into() } else { "-1.#INF00".into() }
+    } else if x.is_nan() {
+        // ... and "1.#QNAN0" for every NaN but the default negative one, "-1.#IND00" (F-24664 run offline, all payloads tried)
+        let bits = x.to_bits();
+        match (bits >> 31 != 0, bits & 0x7f_ffff) {
+            (true, 0x40_0000) => "-1.#IND00".into(),
+            (true, _) => "-1.#QNAN0".into(),
+            (false, _) => "1.#QNAN0".into(),
+        }
+    } else if xd.abs() >= 1e17 {
+        big_fixed(xd)
     } else {
         format!("{:.6}", xd)
     }
+}
+
+/// `%f` of a double of 1e17 or more as the original's C library prints it (F-24664 run offline): 17 significant digits, correctly
+/// rounded, the rest zeros ("300000000549775580000000000000000000000.000000", not the exact expansion).
+fn big_fixed(x: f64) -> String {
+    let s = format!("{:.16e}", x.abs());
+    let (m, e) = s.split_once('e').unwrap();
+    let digits: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
+    let exp: usize = e.parse().unwrap();
+    let mut out = String::new();
+    if x < 0.0 {
+        out.push('-');
+    }
+    out += &digits;
+    out.extend(std::iter::repeat('0').take(exp + 1 - digits.len()));
+    out += ".000000";
+    out
 }
 
 /// C `atof`: leading whitespace, optional sign, digits, fraction, exponent.

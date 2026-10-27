@@ -5784,3 +5784,41 @@ mod verify_small_tests {
         assert_eq!(oh, 0x00c52807c8002dc4, "rects_meet outputs");
     }
 }
+
+/// F-86418 / F-80887 / F-42351: the path curve's builder, constructor and knot padding against the original's own code run offline
+/// (tools/traffic_curve_reference.py -> testdata/traffic_curve_ref.txt; a closed path - flag word set - builds from one point less).
+#[cfg(test)]
+mod original_curve_tests {
+    use super::*;
+
+    #[test]
+    fn path_curve_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/traffic_curve_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let a: Vec<&str> = a.split(' ').skip(1).collect();
+            let (k, flag): (usize, u32) = (a[0].parse().unwrap(), a[1].parse().unwrap());
+            let w: Vec<u32> = a[2..].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let pts: Vec<Vec3> = (0..k).map(|i| Vec3::new(f32::from_bits(w[4 * i]), f32::from_bits(w[4 * i + 1]), f32::from_bits(w[4 * i + 2]))).collect();
+            let used = if flag != 0 { k - 1 } else { k };
+            let c = path_curve(&pts[..used]);
+            let o: Vec<&str> = b.split(' ').collect();
+            let (deg, cnt): (u8, usize) = (o[0].parse().unwrap(), o[1].parse().unwrap());
+            let kn: Vec<u32> = o[2..2 + cnt].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let (tr, tm) = (u32::from_str_radix(o[2 + cnt], 16).unwrap(), u32::from_str_radix(o[3 + cnt], 16).unwrap());
+            assert_eq!(c.degree, deg, "{line}");
+            assert_eq!(c.knots.iter().map(|f| f.to_bits()).collect::<Vec<_>>(), kn, "{line}");
+            assert_eq!((c.t_range.to_bits(), c.t_max.to_bits()), (tr, tm), "{line}");
+            // the control points the constructor copied (16 bytes each; the port keeps x y z)
+            let np: usize = o[4 + cnt].parse().unwrap();
+            assert_eq!(np, used, "{line}");
+            assert_eq!(c.pts.len(), np, "{line}");
+            for (i, q) in c.pts.iter().enumerate() {
+                let w: Vec<u32> = o[5 + cnt + 4 * i..9 + cnt + 4 * i].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+                assert_eq!([q.x.to_bits(), q.y.to_bits(), q.z.to_bits()], [w[0], w[1], w[2]], "{line}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 126);
+    }
+}
