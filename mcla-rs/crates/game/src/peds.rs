@@ -2027,6 +2027,11 @@ impl Peds {
         self.buf.upload(gpu);
     }
 
+    /// What the shadow passes draw of the walkers (`draw` with `shadow`), apart from them.
+    pub fn shadow_part(&self) -> Option<crate::skin::ShadowSkin> {
+        self.buf.shadow_part()
+    }
+
     /// Draw with the pipeline already set (opaque pass or shadow pass).
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, shadow: bool, draws: &mut usize) {
         self.buf.draw(pass, gpu, shadow, draws);

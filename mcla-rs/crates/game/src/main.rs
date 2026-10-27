@@ -8281,7 +8281,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let gpu = &gpu;
             // (of the world only its sectors: the rest of it is not shared between threads)
             let (loaded, sets) = (&world.loaded, &world.sets);
-            let (vehicles, peds, cine, props, cam_pos) = (&self.vehicles, &self.peds, &self.cine, &self.props, self.cam.pos);
+            let (vehicles, cine, props, cam_pos) = (&self.vehicles, &self.cine, &self.props, self.cam.pos);
+            // (the walkers as the shadow passes have drawn them: last frame's draw over the vertices this frame's
+            // `peds.prepare` writes before the submit - prepare now runs beside these passes, below)
+            let peds_shadow = self.peds.shadow_part();
             let shadow_job = || -> (wgpu::CommandBuffer, usize, usize) {
                 let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shadow") });
                 let mut n = 0usize;
@@ -8342,7 +8345,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.vehicles.draw_glass_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, 140.0)));
                     self.vehicles.draw_solid_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, 140.0)));
                     sp.set_pipeline(&gpu.pipeline_shadow);
-                    self.peds.draw(&mut sp, &gpu, true, &mut n);
+                    if let Some(s) = &peds_shadow {
+                        s.draw(&mut sp, gpu, &mut n);
+                    }
                     self.cine.draw(&mut sp, &gpu, true, &mut n);
                     sp.set_pipeline(&gpu.pipeline_shadow_inst);
                     sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
@@ -8542,7 +8547,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.vehicles.draw_solid_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, render::CASC_TUNE[ci][0] + 20.0)));
                     }
                     sp.set_pipeline(casc_pl(render::CASC_CULL_PED));
-                    self.peds.draw(&mut sp, &gpu, true, &mut n);
+                    if let Some(s) = &peds_shadow {
+                        s.draw(&mut sp, gpu, &mut n);
+                    }
                     self.cine.draw(&mut sp, &gpu, true, &mut n);
                     sp.set_pipeline(if gpu.casc_cull_kinds & render::CASC_CULL_PROP != 0 { &gpu.pipeline_casc_inst_cull } else { &gpu.pipeline_casc_inst });
                     sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
@@ -8577,7 +8584,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             };
             let tiles = if casc.is_some() { 4 } else { 0 };
             use rayon::prelude::*;
-            let mut parts: Vec<(usize, wgpu::CommandBuffer, usize, usize)> = mcla_flash::raster::pool().install(|| {
+            // (the walkers' skinning for this frame, docs/PERFORMANCE.md 2026-10-27 (4): beside the shadow passes)
+            let (peds, ped_eye, ped_frustum) = (&mut self.peds, self.cam.pos, &frustum);
+            let (mut parts, ()): (Vec<(usize, wgpu::CommandBuffer, usize, usize)>, ()) = mcla_flash::raster::pool().install(|| rayon::join(|| {
                 // (0 the shadow map, 1 - 4 the cascade tiles, 5 the collector, 6 the reflection)
                 (0..7usize)
                     .into_par_iter()
@@ -8599,7 +8608,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         _ => (j, reflection_job(), 0, 0),
                     })
                     .collect()
-            });
+            }, || peds.prepare(gpu, ped_eye, ped_frustum)));
             parts.sort_by_key(|p| p.0);
             for (j, cb, n, sec_n) in parts {
                 if j == 0 {
@@ -8625,7 +8634,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.fx.prepare(&gpu, self.cam.pos);
         // (the rain and the lamps' cones in it, as the original draws them - rain.rs)
         rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, next: self.sky_next.as_ref().map(|(_, w, f)| (match w { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, *f)), hour: self.time_of_day, collider: Some(&world.collider) });
-        self.peds.prepare(&gpu, self.cam.pos, &frustum);
         // (the story scenes' characters: their own programs, lit by the light manager's state -
         // skin.rs `CharLight`; MCLA_CHAR_OLD=1: the generic look as before)
         let hour = globals.sun_color[3];

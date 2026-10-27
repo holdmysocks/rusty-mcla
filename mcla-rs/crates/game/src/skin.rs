@@ -700,6 +700,14 @@ impl SkinBuffer {
         gpu.flush_uniforms(&mut self.uniforms);
     }
 
+    /// What a shadow pass draws of it (`draw` with `shadow`), kept apart so the next frame's skinning can run while
+    /// the shadow passes are recorded (main.rs: the same buffers, bind and count they recorded before).
+    pub fn shadow_part(&self) -> Option<ShadowSkin> {
+        let (Some(vb), Some(ib)) = (self.vb.as_ref(), self.ib.as_ref()) else { return None };
+        let bind = self.draws.first()?.0.clone();
+        Some(ShadowSkin { vb: vb.clone(), ib: ib.clone(), bind, count: self.indices.len() as u32 })
+    }
+
     /// Draw with the pipeline already set (opaque pass or shadow pass).
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, shadow: bool, draws: &mut usize) {
         let (Some(vb), Some(ib)) = (self.vb.as_ref(), self.ib.as_ref()) else { return };
@@ -739,6 +747,27 @@ impl SkinBuffer {
             pass.draw_indexed(*first..*first + *count, 0, 0..1);
             *draws += 1;
         }
+    }
+}
+
+/// A skin buffer's shadow draw (`SkinBuffer::shadow_part`).
+pub struct ShadowSkin {
+    vb: wgpu::Buffer,
+    ib: wgpu::Buffer,
+    bind: Arc<wgpu::BindGroup>,
+    count: u32,
+}
+
+impl ShadowSkin {
+    /// `SkinBuffer::draw` with `shadow`: with the pipeline already set.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, gpu: &Gpu, draws: &mut usize) {
+        pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+        pass.set_vertex_buffer(0, self.vb.slice(..));
+        pass.set_index_buffer(self.ib.slice(..), wgpu::IndexFormat::Uint32);
+        pass.set_bind_group(1, self.bind.as_ref(), &[]);
+        pass.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Opaque as u32)], &[]);
+        pass.draw_indexed(0..self.count, 0, 0..1);
+        *draws += 1;
     }
 }
 
