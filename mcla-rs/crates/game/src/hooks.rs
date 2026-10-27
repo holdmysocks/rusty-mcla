@@ -149,22 +149,78 @@ fn scene_for(m: Intro) -> bool {
 
 #[derive(Default)]
 struct LogState {
-    file: Option<std::fs::File>,
-    /// everything logged before the file was opened, written to it when it is
-    pre: Vec<u8>,
     tail: VecDeque<String>,
     partial: String,
     path: Option<PathBuf>,
 }
 
-static LOG: Mutex<LogState> = Mutex::new(LogState { file: None, pre: Vec::new(), tail: VecDeque::new(), partial: String::new(), path: None });
+static LOG: Mutex<LogState> = Mutex::new(LogState { tail: VecDeque::new(), partial: String::new(), path: None });
 
-/// The writer env_logger is given: stderr as before, plus the file once [`start_file_log`] has opened it.
+/// What the log writer thread is given, in order.
+enum LogMsg {
+    Bytes(Vec<u8>),
+    /// the file is open: its header, then what was logged before it, then the rest
+    Open(std::fs::File, String),
+    /// answered once everything sent before it is written
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
+/// The log's writes (stderr and the file) on a thread of their own: a line written on the main thread waited for the
+/// disk - 15 - 75 ms frames while other programs used it (docs/PERFORMANCE.md 2026-10-27 (7)). [`flush_log`] waits for it.
+fn log_sender() -> Option<&'static Mutex<std::sync::mpsc::Sender<LogMsg>>> {
+    static TX: std::sync::OnceLock<Option<Mutex<std::sync::mpsc::Sender<LogMsg>>>> = std::sync::OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<LogMsg>();
+        std::thread::Builder::new()
+            .name("log writer".into())
+            .spawn(move || {
+                let mut file: Option<std::fs::File> = None;
+                // (everything logged before the file was opened, written to it when it is)
+                let mut pre: Vec<u8> = Vec::new();
+                for m in rx {
+                    match m {
+                        LogMsg::Bytes(b) => {
+                            let _ = std::io::stderr().write_all(&b);
+                            match file.as_mut() {
+                                Some(f) => {
+                                    let _ = f.write_all(&b);
+                                }
+                                None if pre.len() < 1 << 20 => pre.extend_from_slice(&b),
+                                None => {}
+                            }
+                        }
+                        LogMsg::Open(mut f, header) => {
+                            let _ = f.write_all(header.as_bytes());
+                            let _ = f.write_all(&std::mem::take(&mut pre));
+                            file = Some(f);
+                        }
+                        LogMsg::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            })
+            .ok()
+            .map(|_| Mutex::new(tx))
+    })
+    .as_ref()
+}
+
+/// Waits (at most 2 s) until every line logged so far is written - before the process exits.
+pub fn flush_log() {
+    let Some(tx) = log_sender() else { return };
+    let (done, wait) = std::sync::mpsc::channel();
+    if tx.lock().map(|t| t.send(LogMsg::Flush(done)).is_ok()).unwrap_or(false) {
+        let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
+    }
+}
+
+/// The writer env_logger is given: stderr as before, plus the file once [`start_file_log`] has opened it (both
+/// written by the log writer thread).
 struct Tee;
 
 impl Write for Tee {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = std::io::stderr().write_all(buf);
         if let Ok(mut st) = LOG.lock() {
             let text = String::from_utf8_lossy(buf);
             st.partial.push_str(&text);
@@ -175,12 +231,15 @@ impl Write for Tee {
                     st.tail.pop_front();
                 }
             }
-            if st.file.is_some() {
-                if let Some(f) = st.file.as_mut() {
-                    let _ = f.write_all(buf);
+        }
+        match log_sender() {
+            Some(tx) => {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send(LogMsg::Bytes(buf.to_vec()));
                 }
-            } else if st.pre.len() < 1 << 20 {
-                st.pre.extend_from_slice(buf);
+            }
+            None => {
+                let _ = std::io::stderr().write_all(buf);
             }
         }
         Ok(buf.len())
@@ -247,11 +306,18 @@ pub fn start_file_log() {
         log::warn!("log: cannot create {}", path.display());
         return;
     };
-    let _ = f.write_all(header(rt, &path).as_bytes());
+    let head = header(rt, &path);
+    match log_sender() {
+        Some(tx) => {
+            if let Ok(t) = tx.lock() {
+                let _ = t.send(LogMsg::Open(f, head));
+            }
+        }
+        None => {
+            let _ = f.write_all(head.as_bytes());
+        }
+    }
     if let Ok(mut st) = LOG.lock() {
-        let pre = std::mem::take(&mut st.pre);
-        let _ = f.write_all(&pre);
-        st.file = Some(f);
         st.path = Some(path.clone());
     }
     log::info!("log file: {}", path.display());
@@ -312,13 +378,15 @@ pub fn run(game: fn() -> anyhow::Result<()>) -> std::process::ExitCode {
     let _ = MAIN_THREAD.set(std::thread::current().id());
     init_logging();
     std::panic::set_hook(Box::new(panic_hook));
-    match game() {
+    let code = match game() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             log::error!("fatal: {e:#}");
             std::process::ExitCode::from(1)
         }
-    }
+    };
+    flush_log();
+    code
 }
 
 fn panic_hook(info: &std::panic::PanicHookInfo<'_>) {
@@ -329,6 +397,7 @@ fn panic_hook(info: &std::panic::PanicHookInfo<'_>) {
     let place = info.location().map_or_else(|| "(unknown place)".to_string(), |l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
     let bt = std::backtrace::Backtrace::force_capture().to_string();
     let report = crash_report(&name, &msg, &place, &trim_backtrace(&bt));
+    flush_log();
     eprintln!("panic in thread '{name}': {msg}\n  at {place}");
     let rt = get();
     match rt.filter(|r| !r.shot_run) {

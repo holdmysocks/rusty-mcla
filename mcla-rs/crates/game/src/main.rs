@@ -9609,6 +9609,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             if exit_after {
+                hooks::flush_log();
                 std::process::exit(0);
             }
         }
