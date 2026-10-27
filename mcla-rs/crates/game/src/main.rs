@@ -7764,18 +7764,28 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // z the light's own (`sky::shadow_ray`) - the eleven hours read off the cascades'
             // matrices to 0.07 degrees (test `shadow_ray_matches_the_recorded_cascades`). Shadows
             // are shorter than the light is low: 32 degrees up at 06:15 for a light at 18.
-            // (MCLA_SHADOW_L: along the light. The night path, nfl > 0, keeps its own light.)
-            let sun = if std::env::var("MCLA_SHADOW_L").is_ok() || self.sky_now().tod.map_or(true, |t| t.nfl > 0.0) {
+            // The weathers' light directions are summed by weight without normalising (as the
+            // manager does), at every hour of the window whatever the night fade. Outside 5 .. 18 h:
+            // the light itself by day; the night path (nfl > 0) keeps its own light.
+            // In the garage with a cine scene running: F-16780's offset (`sky::shadow_ray_cutscene`).
+            // (MCLA_SHADOW_L: along the light.)
+            let gar = self.garage_light();
+            let hour = gar.as_ref().map_or(self.time_of_day, |g| g.0.hour);
+            let to_light_sum = |h: f32| -> Option<Vec3> {
+                let a = self.sky.tod(h)?.to_light;
+                Some(match self.sky_next.as_ref() {
+                    Some((next, _, f)) => next.tod(h).map_or(a, |b| a.lerp(b.to_light, *f)),
+                    None => a,
+                })
+            };
+            let sun = if std::env::var("MCLA_SHADOW_L").is_ok() {
+                sun
+            } else if let Some((real, at)) = sky::shadow_hour(hour).and_then(|h| Some((to_light_sum(hour)?, to_light_sum(h)?))) {
+                sky::shadow_ray(real, at.x)
+            } else if self.sky_now().tod.map_or(true, |t| t.nfl > 0.0) {
                 sun
             } else {
-                let x = sky::shadow_hour(self.time_of_day).and_then(|h| {
-                    let mut st = self.sky.at(h);
-                    if let Some((next, _, f)) = self.sky_next.as_ref() {
-                        st = st.lerp(&next.at(h), *f);
-                    }
-                    st.tod.map(|t| t.to_light.x)
-                });
-                sky::shadow_ray(sun, x.unwrap_or(sun.x))
+                to_light_sum(hour).map_or(sun, |r| r.normalize_or(sun))
             };
             // (the direction the frame is drawn in: in a car that is the chase camera's, not the
             // free camera's - which stood still behind it and left the box beside the view)
@@ -7790,6 +7800,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         globals.light_vp = light_vp.to_cols_array_2d();
         globals.shadow_params = [if shadow_on { globals.shadow_params[0] } else { 0.0 }, 1.0 / render::SHADOW_SIZE as f32, globals.shadow_params[2], 0.0];
         gpu.queue.write_buffer(&gpu.shadow_buf, 0, bytemuck::bytes_of(&globals.light_vp));
+            let sun = if gar.is_some() && self.cine.playing.is_some() { sky::shadow_ray_cutscene(sun) } else { sun };
         // The original's four shadow cascades (render/mod.rs `Gpu::set_cascades`; drawn after
         // the single map below, which the fast collector and the plants' masks still use):
         // down the same rays, fitted to this frame's view. ON by default since 2026-10-14: with the

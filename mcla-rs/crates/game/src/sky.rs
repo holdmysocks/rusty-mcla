@@ -433,8 +433,17 @@ pub fn shadow_hour(h: f32) -> Option<f32> {
 /// The shadow pass's light direction (F-16780 for the cascades of F-55997): x of the light
 /// direction at `shadow_hour`, y and z of the one at the hour itself, normalised - the shadows'
 /// east-west swing runs at half speed round 11:00, so dawn and dusk shadows are short.
+/// `to_light` and `x_at_shadow_hour` are the weathers' weighted sums of their (unit) light
+/// directions, not normalised: the manager sums x, y and z apart and normalises once.
 pub fn shadow_ray(to_light: Vec3, x_at_shadow_hour: f32) -> Vec3 {
     Vec3::new(x_at_shadow_hour, to_light.y, to_light.z).normalize_or(to_light)
+}
+
+/// F-16780's other branch: with a cine script running (or the scripts' force-cutscene-lighting
+/// byte) while the garage's lighting is on, the light's way (-ray) gets (-0.2, 0, 0.1) added and
+/// is normalised again.
+pub fn shadow_ray_cutscene(ray: Vec3) -> Vec3 {
+    (-ray + Vec3::new(-0.2, 0.0, 0.1)).normalize_or(-ray) * -1.0
 }
 
 /// `<tag x="" y="" z=""/>` of a tune file.
@@ -800,6 +809,14 @@ mod tod_tests {
             println!("{h:5.2}: az {a:6.2} (rec {az}) el {e:5.2} (rec {el})");
             assert!((a - az).abs() < 0.15 && (e - el).abs() < 0.15, "{h}: {a} {e}");
         }
+    }
+
+    /// F-16780's cutscene branch on the light's way: normalize(way + (-0.2, 0, 0.1)).
+    #[test]
+    fn shadow_ray_cutscene_offset() {
+        let ray = Vec3::new(0.0, 0.6, 0.8);
+        let way = (Vec3::new(0.0, -0.6, -0.8) + Vec3::new(-0.2, 0.0, 0.1)).normalize();
+        assert!((shadow_ray_cutscene(ray) + way).length() < 1e-6);
     }
 
     /// The sky control object's own constants: StarFieldUVRepeat from its tune file, the
