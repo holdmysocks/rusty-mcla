@@ -4605,8 +4605,12 @@ impl Game {
                         title = s("Pause_Race_Stats", "RACE STATS");
                         let list = self.arcade_races(self.stat_idx[0]);
                         if !list.is_empty() {
+                            // (mcRaceSpecificStatForm, F-75783: LT / RT step and stop at the ends -
+                            // UI_MENU_SELECT on a step, UI_MENU_ERROR at an end; the car page wraps)
                             if left || right {
-                                self.stat_idx[1] = (self.stat_idx[1] + if right { 1 } else { list.len() - 1 }) % list.len();
+                                let (at, snd) = Self::stat_step(self.stat_idx[1], right, list.len());
+                                self.stat_idx[1] = at;
+                                self.opt_x.s23b.ui_obj = Some(snd);
                             }
                             sub_title = list[self.stat_idx[1].min(list.len() - 1)].1.clone();
                         }
@@ -4630,8 +4634,12 @@ impl Game {
                     }
                     67 => {
                         title = s("Pause_Collectables", "COLLECTABLES");
+                        // (mcCollectableSectionForm, F-97172: the four districts stepped and stopped
+                        // at the ends with the same two sounds, then F-34137 fills the section)
                         if left || right {
-                            self.stat_idx[0] = (self.stat_idx[0] + if right { 1 } else { 3 }) % 4;
+                            let (at, snd) = Self::stat_step(self.stat_idx[0], right, 4);
+                            self.stat_idx[0] = at;
+                            self.opt_x.s23b.ui_obj = Some(snd);
                         }
                         sub_title = [s("Hollywood", "HOLLYWOOD"), s("Beaches", "BEACH"), s("Downtown", "DOWNTOWN"), s("Hills", "HILLS")][self.stat_idx[0].min(3)].clone();
                         // (approx.) fifteen to a district, in the order the port numbers them
@@ -10391,6 +10399,13 @@ impl Game {
         self.message_box = Some((def, 0, confirm));
     }
 
+    /// A statistics page's LT / RT on a list of `n` (F-75783 / F-97172): one step, UI_MENU_SELECT; at
+    /// an end no step, UI_MENU_ERROR
+    fn stat_step(at: usize, next: bool, n: usize) -> (usize, &'static str) {
+        let to = if next { (at + 1 < n).then(|| at + 1) } else { at.checked_sub(1) };
+        (to.unwrap_or(at.min(n.saturating_sub(1))), if to.is_some() { "UI_MENU_SELECT" } else { "UI_MENU_ERROR" })
+    }
+
     /// The quit question of the race's menu class (vt+108 title, vt+104 text, vt+56 repair form, vt+112
     /// second button): series, tournament, time trial, delivery, payback, wager, pink slip, else
     /// Dialog_Title_QuitRace. Time trial, delivery and payback ask YES / NO (vt+56 = 0); the pink slip's
@@ -13158,5 +13173,19 @@ pub mod savedir {
             Ok(_) => log::info!("save: copied {} to {}", old.display(), new.display()),
             Err(e) => log::warn!("save: could not copy {} to {}: {}", old.display(), new.display(), e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Game;
+
+    /// F-75783 / F-97172: LT / RT on a race's or the collectables' statistics stop at the ends
+    #[test]
+    fn stat_pages_stop_at_the_ends() {
+        assert_eq!(Game::stat_step(0, false, 4), (0, "UI_MENU_ERROR"));
+        assert_eq!(Game::stat_step(0, true, 4), (1, "UI_MENU_SELECT"));
+        assert_eq!(Game::stat_step(3, true, 4), (3, "UI_MENU_ERROR"));
+        assert_eq!(Game::stat_step(3, false, 4), (2, "UI_MENU_SELECT"));
     }
 }
