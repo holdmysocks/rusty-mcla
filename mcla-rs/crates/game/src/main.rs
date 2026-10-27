@@ -2089,6 +2089,20 @@ impl App {
         if self.input.down(KeyCode::KeyQ) {
             mv -= Vec3::Y;
         }
+        // (photo mode's free camera - DECISIONS.md D35 - on the pad as its prompt bar says, through the
+        // active map's PHOTO_CAM_* actions: ROTATE (MOVE_*, the right stick) turns it at the original
+        // photo camera's rates, 2 and 1.25 rad/s (F-84170); ZOOM IN / OUT (the triggers) moves along the
+        // view and PAN (PAN_*, the left stick) in the screen's plane, at the keyboard's speed)
+        if self.photo.is_some() && self.game.album.camera_input() {
+            let slots = self.game.mc4_controls(false);
+            if let (Some(st), false) = (self.pad_state(), slots.is_empty()) {
+                let v = |a: &str| crate::mc4::pad_analog(&st, &slots, a);
+                self.cam.yaw += 2.0 * dt * (v("PHOTO_CAM_MOVE_RT") - v("PHOTO_CAM_MOVE_LT"));
+                self.cam.pitch = (self.cam.pitch + 1.25 * dt * (v("PHOTO_CAM_MOVE_UP") - v("PHOTO_CAM_MOVE_DN"))).clamp(-1.5, 1.5);
+                let up = r.cross(f).normalize_or(Vec3::Y);
+                mv += f * (v("PHOTO_CAM_ZOOM_IN") - v("PHOTO_CAM_ZOOM_OUT")) + r * (v("PHOTO_CAM_PAN_RT") - v("PHOTO_CAM_PAN_LT")) + up * (v("PHOTO_CAM_PAN_UP") - v("PHOTO_CAM_PAN_DN"));
+            }
+        }
         self.cam.pos += mv * speed * dt;
     }
 

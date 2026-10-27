@@ -2714,5 +2714,28 @@ mod tests {
             assert!((at - Vec3::new(-0.35, 1.038, -0.083)).length() < 0.005, "{hz} Hz: {at:?}");
         }
     }
+
+    /// Photo mode's free camera reads PHOTO_CAM_* (DECISIONS.md D35): every one of the disc's
+    /// control styles binds them where the prompt bar shows them - ROTATE the right stick, ZOOM
+    /// the triggers, PAN the left stick.
+    #[test]
+    fn photo_pad_bindings() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let maps = crate::mc4::control_maps(&data);
+        if maps.is_empty() {
+            return;
+        }
+        let s = crate::mc4::control_slots(&maps, None, false);
+        let get = |a: &str| s.get(a).copied().unwrap_or((0, 0));
+        // (axis keys 22..25 are the left stick's half axes, 26..29 the right stick's; button keys 0 / 1
+        // the left / right trigger - `mc4::PadState::byte`)
+        for (i, a) in ["MOVE_UP", "MOVE_DN", "MOVE_LT", "MOVE_RT"].iter().enumerate() {
+            assert_eq!(get(&format!("PHOTO_CAM_{a}")), (9, 26 + i as u32), "{a}");
+        }
+        for (i, a) in ["PAN_UP", "PAN_DN", "PAN_LT", "PAN_RT"].iter().enumerate() {
+            assert_eq!(get(&format!("PHOTO_CAM_{a}")), (9, 22 + i as u32), "{a}");
+        }
+        assert_eq!((get("PHOTO_CAM_ZOOM_IN"), get("PHOTO_CAM_ZOOM_OUT")), ((8, 1), (8, 0)));
+    }
 }
 
