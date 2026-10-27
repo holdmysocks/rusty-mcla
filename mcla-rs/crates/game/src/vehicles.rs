@@ -1577,7 +1577,7 @@ impl Vehicles {
             }
             log::debug!("draw part {} ({} meshes, from_parent {})", part.primary, part.meshes.len(), part.from_parent);
             // (the glow places: bones of the part's own skeleton, children of the `glow<kind>0` bones)
-            if let Some(sk) = (lod == 0).then(|| crate::assets::load_resource_file(&part.file).ok()).flatten().and_then(|res| mcla_formats::rage::skeleton::Skeleton::parse(&res).ok().flatten()) {
+            if let Some(sk) = part.skeleton.as_deref().filter(|_| lod == 0) {
                 for (bi, b) in sk.bones.iter().enumerate() {
                     let parent = sk.bones.get(b.parent).map_or(String::new(), |q| q.name.to_ascii_lowercase());
                     let w = (part_xf * b.world).w_axis.truncate();

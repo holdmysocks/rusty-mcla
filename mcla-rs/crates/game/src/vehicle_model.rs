@@ -45,6 +45,9 @@ pub struct CarPart {
     /// the exhaust outlets of the part's own skeleton (`exh_primary0`, `exh_secondary0`: rear
     /// bumpers, the wide body), in the part's space
     pub sockets: Vec<(String, Mat4)>,
+    /// the part file's own skeleton, as parsed here (the glow places - vehicles.rs `load_model_cfg`, which had parsed
+    /// the file again at every build: docs/PERFORMANCE.md 2026-10-27 (13))
+    pub skeleton: Option<std::sync::Arc<Skeleton>>,
 }
 
 pub struct CarAsset {
@@ -750,7 +753,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
             let is_base = BASE_FRAGMENTS.contains(&fname.as_str());
             let stock = (!is_anim || is_base) && (is_base || names.iter().any(|n| n.ends_with("_stk") || n.to_ascii_lowercase().ends_with("_dub")) || BASE_PARTS.contains(&primary.as_str()));
             let sockets: Vec<(String, Mat4)> = frag_sk.as_ref().map(|s| s.bones.iter().filter(|b| { let n = b.name.to_ascii_lowercase(); n.starts_with("exh_primary") || n.starts_with("exh_secondary") }).map(|b| (b.name.to_ascii_lowercase(), b.world)).collect()).unwrap_or_default();
-            Some(CarPart { file: p.clone(), names, primary: if is_base { format!("body_{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) } else { primary }, stock, meshes, mesh_bone, mesh_tag, mesh_wheel, tris, min: mn, max: mx, transform: Mat4::IDENTITY, placed: true, is_base, bones: nbones, from_parent: parent_files.contains(p), sockets })
+            Some(CarPart { file: p.clone(), names, primary: if is_base { format!("body_{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) } else { primary }, stock, meshes, mesh_bone, mesh_tag, mesh_wheel, tris, min: mn, max: mx, transform: Mat4::IDENTITY, placed: true, is_base, bones: nbones, from_parent: parent_files.contains(p), sockets, skeleton: frag_sk.map(std::sync::Arc::new) })
         })
         .collect();
     // skeleton: the LOD0 base fragment; otherwise the part file with the most bone matrices
