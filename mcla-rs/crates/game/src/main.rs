@@ -11230,7 +11230,7 @@ impl App {
         // movie the loading runs behind it instead, bootload.rs)
         let window = self.open_window(event_loop);
         let t0 = Instant::now();
-        let gpu = pollster::block_on(Gpu::new(window.clone())).expect("gpu init");
+        let gpu = pollster::block_on(Gpu::new(window.clone())).unwrap_or_else(|e| crate::hooks::gpu_init_failed(&e));
         log::info!("startup: gpu at {} ms", t0.elapsed().as_millis());
         self.egui = Some(App::make_egui(&window, &gpu.device, &gpu.queue, gpu.config.format));
         if self.opt.shot.is_none() {
