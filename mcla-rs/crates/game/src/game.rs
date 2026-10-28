@@ -5032,7 +5032,11 @@ impl Game {
                             items.push((s("TD_Return_To_Garage", "RETURN TO GARAGE"), String::new(), Go::Act(MenuAction::OpenGarage)));
                         }
                         0 => {
-                            items.push((s("pause_continue", "CONTINUE"), String::new(), Go::Act(MenuAction::Resume)));
+                            // (chased: CONTINUE reads RETURN TO CHASE, and the rows that would leave the
+                            // chase - PM_Restart, PM_AbortRace, PM_ViewReplay, PM_NextRace - are greyed:
+                            // F-43165, F-98682)
+                            let chased = self.chased_menu();
+                            items.push((if chased { s("pause_ReturntoChase", "RETURN TO CHASE") } else { s("pause_continue", "CONTINUE") }, String::new(), Go::Act(MenuAction::Resume)));
                             if racing {
                                 let series_race = self.event_diff.is_some() && self.wager.is_none() && self.flash_menu.is_some();
                                 let (restart, quit) = match kind {
@@ -5049,10 +5053,10 @@ impl Game {
                                 // ADD RACE TO FAVORITES, VIEW REPLAY; the three the port lacks are greyed)
                                 let arcade_race = self.arcade_restore.is_some() && self.flash_menu.is_some();
                                 if arcade_race {
-                                    items.push((s("pause_next_race", "NEXT RACE"), String::new(), Go::Page(250)));
+                                    items.push((s("pause_next_race", "NEXT RACE"), String::new(), if chased { Go::Off } else { Go::Page(250) }));
                                 }
-                                items.push((quit, String::new(), Go::Act(MenuAction::QuitRace)));
-                                items.push((restart, String::new(), Go::Act(MenuAction::RestartRace)));
+                                items.push((quit, String::new(), if chased { Go::Off } else { Go::Act(MenuAction::QuitRace) }));
+                                items.push((restart, String::new(), if chased { Go::Off } else { Go::Act(MenuAction::RestartRace) }));
                                 if series_race {
                                     // (live once a race of the series is run - `sr_pause2`)
                                     items.push((s("pause_series_standings", "SERIES STANDINGS"), String::new(), if self.series.as_ref().map_or(false, |sr| !sr.wins.is_empty()) { Go::Page(254) } else { Go::Off }));
@@ -5067,7 +5071,7 @@ impl Game {
                                     items.push((if fav { s("pause_remove_favorites", "REMOVE RACE FROM FAVORITES") } else { s("pause_add_favorites", "ADD RACE TO FAVORITES") }, String::new(), Go::Page(251)));
                                     // (white in the original's pause of a running race - `ng_racepause`,
                                     // `sr_racepause`: the race so far, then back to this menu)
-                                    items.push((s("pause_view_replay", "VIEW REPLAY"), String::new(), if self.replay_rec.len() >= 1.0 { Go::Page(253) } else { Go::Off }));
+                                    items.push((s("pause_view_replay", "VIEW REPLAY"), String::new(), if self.replay_rec.len() >= 1.0 && !chased { Go::Page(253) } else { Go::Off }));
                                 }
                                 if road_race && !arcade_race {
                                     items.push((s("pause_save_game", "SAVE GAME"), String::new(), Go::Page(252)));
@@ -8089,6 +8093,12 @@ impl Game {
                     // repair, the cursor then on NO (mcFixForm, F-47698)
                     let cur = if fix == 0 { 1 } else if up { 0 } else if down { 1 } else { cur };
                     self.series_ask = Some(cur);
+                // (chased: RO_ReturnToCruise reads RETURN TO CHASE - F-43165; greyed with the others, `ro_grey`)
+                if self.chased_menu() {
+                    for r in ro.iter_mut().filter(|r| r.1 == 2) {
+                        r.0 = s("pause_ReturntoChase", "RETURN TO CHASE");
+                    }
+                }
                     if enter {
                         if cur == 0 {
                             self.quick_fix = true;
@@ -8232,7 +8242,7 @@ impl Game {
                 for (i, (label, id)) in ro.iter().enumerate() {
                     let r = egui::Rect::from_min_size(egui::pos2(panel.left() + 6.0 * sc, base + 34.0 * sc + row_h * i as f32), egui::vec2(w - 12.0 * sc, row_h));
                     let hovered = pointer.0.map_or(false, |p| r.contains(p));
-                    if hovered && pointer.1 {
+                    if hovered && pointer.1 && !self.ro_grey(*id) {
                         self.menu_sel = i;
                         picked = Some(*id);
                     }
@@ -8242,7 +8252,7 @@ impl Game {
                     let col = if i == ro_sel { egui::Color32::from_rgb(20, 14, 6) } else { egui::Color32::from_gray(200) };
                     self.text(&painter, egui::pos2(tx, r.center().y), egui::Align2::LEFT_CENTER, label, 18.0 * sc, col);
                 }
-                if enter {
+                if enter && !self.ro_grey(ro[ro_sel].1) {
                     picked = Some(ro[ro_sel].1);
                 }
                 // (test hook MCLA_NEXT_RACE=<n>: `mc4_next_race_hook`)
@@ -13095,7 +13105,7 @@ impl Game {
                 tabs: vec![st("pause_tab_mainmenu", "PAUSE"), st("pause_tab_gamemodes", "MODES"), st("pause_tab_settings", "SETTINGS")],
                 cur_tab: 0,
                 title: st("pause_tab_mainmenu", "PAUSE"),
-                rows: ro.iter().map(|(l, _)| MenuRow { label: l.clone(), value: String::new(), enabled: true, part: None }).collect(),
+                rows: ro.iter().map(|(l, c)| MenuRow { label: l.clone(), value: String::new(), enabled: !self.ro_grey(*c), part: None }).collect(),
                 select: sel,
                 prompts: vec![(st("prompt_accept", "ACCEPT"), ICON_A)],
                 list_max: 6,
@@ -13202,6 +13212,18 @@ const HANGOUT_ICON: i32 = 8;
 pub const GAS_MENU: &str = "gas_station";
 /// a wager hangout's: the dollar (frame 6, as captured)
 const WAGER_ICON: i32 = 6;
+
+    /// The police are on the player (F-54212: pulled over or pursued) and the race running, if any, is
+    /// not GOAL ATTACK's (race +3152): the menus grey the rows that would leave the chase (F-43165, F-98682).
+    pub fn chased_menu(&self) -> bool {
+        self.police_on_player && !(self.race.is_some() && self.goal_attack)
+    }
+
+    /// A race-over row greyed while chased (F-43165: RO_Restart, RO_AbortRace, RO_Replay,
+    /// RO_ReturnToCruise; F-98682: RO_NextRace) - the port's row codes of those.
+    pub fn ro_grey(&self, code: u8) -> bool {
+        self.chased_menu() && matches!(code, 0 | 1 | 2 | 10 | 12 | 14 | 20)
+    }
 
 /// (approx.) how long the place stands after a race before REWARDS
 const PLACE_SPLASH_SECS: f32 = 3.0;

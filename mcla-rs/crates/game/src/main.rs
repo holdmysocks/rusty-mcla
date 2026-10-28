@@ -2909,8 +2909,10 @@ impl App {
             }
         }
         if let Ok(v) = std::env::var("MCLA_PAUSE_TEST") {
-            if self.tick_no == 60 && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
-                let n: Vec<usize> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            // ("tab,page,row[,tick]": the pause at that tick, 60 by default)
+            let n: Vec<usize> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if self.tick_no >= n.get(3).copied().unwrap_or(60) as u64 && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 self.game.mode = Mode::Paused;
                 self.game.pause_tab = n.first().copied().unwrap_or(0);
                 self.game.pause_page = n.get(1).copied().unwrap_or(0) as u8;
