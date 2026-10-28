@@ -1206,7 +1206,7 @@ fn vs_body(in: VsIn) -> VsOut {
         if (in.uv2.x > 0.5) {
             o.fill = vec4<f32>(ray, 0.025 + 0.825 * pow(clamp(1.0 - abs(nv), 0.0, 1.0), 4.5125));
         } else {
-            let tbv = PAINT_B[min((u32(round(obj.params.w)) / 32u) % 8u, 5u)];
+            let tbv = paint_row(PAINT_B, min((u32(round(obj.params.w)) / 32u) % 8u, 5u));
             o.fill = vec4<f32>(normalize(ray), tbv.y + (tbv.z - tbv.y) * pow(clamp(1.0 - nv, 0.0, 1.0), tbv.x));
             o.neon_hl = nv + 4.0;
         }
@@ -1617,8 +1617,7 @@ const PAINT_C: array<vec4<f32>, 6> = array<vec4<f32>, 6>(vec4<f32>(0.29, 0.068, 
 // the paint type - the very expressions of the paint's lower half in fs_main, where the soft
 // highlight is looked up along it; the two-tone shift of the colour goes by the same normal.
 fn paint_flake_n(n: vec3<f32>, uv0: vec2<f32>, ti: u32, scraped: f32) -> vec3<f32> {
-    var pc = PAINT_C;
-    let tc = pc[ti];
+    let tc = paint_row(PAINT_C, ti);
     let uvn = uv0 * tc.y * 4.0;
     let tp = max(length(dpdx(uvn)), length(dpdy(uvn))) * 128.0;
     let fade = exp2(-2.0 * max(log2(max(tp, 0.0001)) - 1.0, 0.0));
@@ -2509,11 +2508,15 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         // (0.19 off on a metallic's flakes close up, 0.16 on dirty matte) and the directional
         // fades were worked out per pixel (the same but for the kinks of sat(2 t - 0.5) inside a
         // triangle). Diagnostics 690: as before.
+        // (GitHub #14: the paint table's falloff and the flake normal are worked out once, here, before the branches:
+        // the row by constant indices (paint_row - an AMD driver read the copied table at a runtime index as noise,
+        // single-pixel grain on matte, debug view 712), the normal's screen derivatives outside a branch.)
+        let fall6 = paint_row(PAINT_B, pti).w;
+        let nf6 = paint_flake_n(n, in.uv0, pti, scraped6);
         var paint = pc_a;
         if (g.params.w > 689.5 && g.params.w < 690.5) {
             if (fade == 1u) {
-                var pbt0 = PAINT_B;
-                paint = mix(pc_b, pc_a, pow(clamp(dot(n, v), 0.0, 1.0), max(pbt0[pti].w, 0.05)));
+                paint = mix(pc_b, pc_a, pow(clamp(dot(n, v), 0.0, 1.0), max(fall6, 0.05)));
             } else if (fade >= 2u) {
                 let rel = (in.lpos - obj.fade_min.xyz) / obj.fade_size.xyz;
                 var t = rel.z;
@@ -2522,17 +2525,14 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 paint = mix(pc_a, pc_b, clamp(2.0 * clamp(t, 0.0, 1.0) - 0.5, 0.0, 1.0));
             }
         } else if (fade == 1u) {
-            var pbt = PAINT_B;
-            let nf6 = paint_flake_n(n, in.uv0, pti, scraped6);
-            paint = mix(pc_b, pc_a, clamp(pow(abs(dot(nf6, v)), pbt[pti].w), 0.0, 1.0));
+            paint = mix(pc_b, pc_a, clamp(pow(abs(dot(nf6, v)), fall6), 0.0, 1.0));
         } else if (fade >= 2u) {
             paint = mix(pc_a, pc_b, in.paint_s);
         }
         // (diagnostics 691: the directional fade's vertex value itself; 692: the two-tone's weight)
         if (g.params.w > 690.5 && g.params.w < 691.5) { return vec4<f32>(to_scene(vec3<f32>(in.paint_s)), 1.0); }
         if (g.params.w > 691.5 && g.params.w < 692.5) {
-            var pbt2 = PAINT_B;
-            return vec4<f32>(to_scene(vec3<f32>(clamp(pow(abs(dot(paint_flake_n(n, in.uv0, pti, scraped6), v)), pbt2[pti].w), 0.0, 1.0))), 1.0);
+            return vec4<f32>(to_scene(vec3<f32>(clamp(pow(abs(dot(nf6, v)), fall6), 0.0, 1.0))), 1.0);
         }
         // (a part painted by itself carries its colour in the vertex colour, alpha set)
         if (in.color.a > 0.5 && p_area == 0u) { paint = in.color.rgb; }
