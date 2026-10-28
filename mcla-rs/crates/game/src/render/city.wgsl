@@ -3819,6 +3819,18 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                     if (g.params.w > 708.5) { bv = max(hm.x, max(hm.y, hm.z)); }
                     return vec4<f32>(to_scene(dbg_band(bv)), 1.0);
                 }
+                // (710 - 715, GitHub #14: the matte paint's parts as they are, before the screen - 710 the colour without the
+                // highlight, 711 the light / 2, 712 the paint colour, 713 the lights' occlusion, 714 the car's own lamps,
+                // 715 n.l to the first light)
+                if (g.params.w > 709.5 && g.params.w < 715.5) {
+                    var dv = env_finite(m6);
+                    if (g.params.w > 710.5) { dv = light * 0.5; }
+                    if (g.params.w > 711.5) { dv = base; }
+                    if (g.params.w > 712.5) { dv = vec3<f32>(aok); }
+                    if (g.params.w > 713.5) { dv = own6; }
+                    if (g.params.w > 714.5) { dv = vec3<f32>(max(dot(n, select(g.sun_dir.xyz, g.car_key.xyz, lamp_first)), 0.0)); }
+                    return vec4<f32>(to_scene(dv), 1.0);
+                }
                 if (g.params.w > 703.5 && g.params.w < 704.5) {
                     return vec4<f32>(to_scene(vec3<f32>(pow(max(length(soft), 0.00001), ta.w - 1.0) * 0.25, length(soft) * 0.25, kk * ao_v * 0.5)), 1.0);
                 }
