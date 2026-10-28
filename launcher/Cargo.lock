@@ -2327,7 +2327,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-config"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "log",
  "serde",
@@ -2337,7 +2337,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-formats"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2354,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-install"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "fs2",
  "log",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-savedecode"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aes",
  "serde_json",
@@ -2378,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "mcla-shaders"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "regex",
 ]
@@ -3654,7 +3654,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty-mcla"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
