@@ -175,13 +175,26 @@ pub struct Police {
     zone_go: bool,
     /// the zone of the race running was picked
     pub zone_picked: bool,
-    pullover_time: f32,
+    /// the pull-over's bullhorn (its tactic +92 = 2 at iBullhornLawBreakScore, F-22530): seconds left of
+    /// fBullhornTime; Some(0) = run out (the 599 cap is lifted)
+    bullhorn: Option<f32>,
+    /// the ticket hold (FsmPullOver StateTicket, F-25878 / F-46174): seconds left before COP_PULLOVER
+    ticket_hold: Option<f32>,
+    /// COP_PULLOVER is running (CopPullover.sco): the police wait for `ticket_done` or `suspect_fled`
+    ticketing: bool,
+    /// after a tactic on the player ends: no scoring for 5 s (the record's +116, F-22530 / F-54211)
+    grace: f32,
+    /// the pursuit after a bolt from the ticket starts with its cruisers held this long (the Pursuit
+    /// tactic's Delay state, F-10824 / F-50798: request +20 = the bolt's time x fPullOverFleeDelayScale)
+    flee_hold: f32,
+    /// the highest speed band whose start points were paid (the record's "started" bits +100: kept to `clear`)
     speed_level: u8,
     /// the highest speed band of the offences so far (1..3; 0 = none): the fine counts that one
     speed_top: u8,
     /// the seconds counters of the per-second points (F-52240: they pay whole seconds): 0 speed,
-    /// 1 wrong way, 2 burn-out, 3 two-wheel driving, 4 off-road
-    sec: [f32; 5],
+    /// 1 wrong way, 2 burn-out, 3 two-wheel driving, 4 off-road, 5 the fall below iPullOverLawBreakScore,
+    /// 6 the climb from it
+    sec: [f32; 7],
     /// the player is off the roads, since the start points were paid
     off_active: bool,
     /// two-wheel driving has been going on since its start points were paid
@@ -252,10 +265,14 @@ impl Police {
             zone: None,
             zone_go: false,
             zone_picked: false,
-            pullover_time: 0.0,
+            bullhorn: None,
+            ticket_hold: None,
+            ticketing: false,
+            grace: 0.0,
+            flee_hold: 0.0,
             speed_level: 0,
             speed_top: 0,
-            sec: [0.0; 5],
+            sec: [0.0; 7],
             off_active: false,
             two_active: false,
             jump_paid: false,
@@ -448,11 +465,36 @@ impl Police {
     /// Test helper: start a pursuit right now with a cruiser close by.
     pub fn debug_force(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles) {
         self.score = 700.0;
+        // (started as a cop zone's chase is: no cop has to see the car first)
+        self.zone_go = true;
         self.dispatch = 0.0;
         if let Some((pos, fwd)) = vehicles.player().map(|c| (c.state.pos, c.state.forward())) {
             let ok = self.spawn_cop(gpu, world, vehicles, pos, fwd, 18.0, 80.0, None);
             log::info!("police: test cruiser spawned: {}", ok);
         }
+    }
+
+    /// CopPullover.sco is over with the ticket: the police record is cleared (ResetAllPolice / the tactic's end)
+    /// and nothing is scored for 5 s.
+    pub fn ticket_done(&mut self) {
+        self.clear();
+        self.grace = 5.0;
+    }
+
+    /// The suspect bolted from the ticket scene `secs` into its walk (PoliceManager_SuspectFleeing, F-72120):
+    /// the run is on the fine (`iPullOverFleeFine`) and a pursuit starts whose cruisers wait
+    /// secs x fPullOverFleeDelayScale first.
+    pub fn suspect_fled(&mut self, secs: f32, at: Vec3) {
+        self.ticketing = false;
+        self.heat = Heat::Pursuit;
+        self.fled = true;
+        self.score = self.score.max(self.tun.get("iPursuitLawBreakScore", 600.0));
+        self.flee_hold = secs * self.tun.get("fPullOverFleeDelayScale", 2.0);
+        self.last_known = at;
+        self.fine = self.law_fines();
+        self.lost = 0.0;
+        self.arrest = 0.0;
+        self.dispatch = self.tun.get("fDispatchRdoDelayTime", 3.0);
     }
 
     pub fn lights_on(&self) -> bool {
@@ -655,7 +697,7 @@ impl Police {
             Heat::PullOver | Heat::Busted => self.chase_time = 0.0,
             Heat::None => {}
         }
-        if (!self.enabled && !self.goons) || dt <= 0.0 {
+        if (!self.enabled && !self.goons) || dt <= 0.0 || self.ticketing {
             return None;
         }
         self.time += dt;
@@ -694,8 +736,13 @@ impl Police {
             n_cops += 1;
             let d = c.state.pos.distance(ppos);
             nearest = nearest.min(d);
-            if d < detect {
-                detected = true;
+            // (F-94676 for a free cop, F-52240: within fDetectDist in 3D and a clear line from 2 m above the cop
+            // to 2 m above the target, F-69576; the half angle fDetectHalfAngle 180 is no cone)
+            if d <= detect && !matches!(self.heat, Heat::Pursuit | Heat::Search | Heat::PullOver | Heat::Busted) {
+                let (from, to) = (c.state.pos + Vec3::Y * 2.0, ppos + Vec3::Y * 2.0);
+                if world.collider.raycast(from, (to - from).normalize_or(Vec3::X), from.distance(to)).is_none() {
+                    detected = true;
+                }
             }
             if d < vision {
                 let from = c.state.pos + Vec3::Y * 1.2;
@@ -706,7 +753,15 @@ impl Police {
                 }
             }
         }
-        let watching = detected || (matches!(self.heat, Heat::Pursuit | Heat::PullOver) && seen);
+        // (a free cop touching the player is a detecting cop as well: F-52240's fallback, the cop's contacts)
+        let touched = damage > self.last_damage + 0.004 && vehicles.cars.iter().any(|c| pursuer(c) && c.state.pos.distance(ppos) < 3.4);
+        detected |= touched;
+        // (F-52240: with a tactic on the player that has a cop, offences count with no sight test; else only a
+        // detecting cop counts them - and nothing is scored in the 5 s after a tactic on the player ended)
+        let in_tactic = n_cops > 0 && !matches!(self.heat, Heat::None);
+        let scoring = self.grace <= 0.0;
+        self.grace = (self.grace - dt).max(0.0);
+        let watching = scoring && (in_tactic || detected);
 
         // ---- offences ---------------------------------------------------------
         let mut breaking = false;
@@ -729,21 +784,23 @@ impl Police {
             breaking = true;
             self.offences |= LAW_SPEED;
             self.speed_top = self.speed_top.max(lvl);
+            // (F-52240 / F-19359: a band higher than any paid pays its start points that tick and nothing else;
+            // then the three bands share one seconds counter, the current band's rate. Dropping to no speeding
+            // re-arms nothing: the started bits stay until the record is cleared)
             if lvl > self.speed_level {
                 add += match lvl {
                     3 => t("iHighSpeedStartPoints", 600.0),
                     2 => t("iMidSpeedStartPoints", 250.0),
                     _ => t("iLowSpeedStartPoints", 130.0),
                 };
+                self.speed_level = lvl;
+            } else {
+                add += self.whole_seconds(0, dt) * match lvl {
+                    3 => t("iHighSpeedPerSecPoints", 10.0),
+                    2 => t("iMidSpeedPerSecPoints", 10.0),
+                    _ => t("iLowSpeedPerSecPoints", 38.0),
+                };
             }
-            add += self.whole_seconds(0, dt) * match lvl {
-                3 => t("iHighSpeedPerSecPoints", 10.0),
-                2 => t("iMidSpeedPerSecPoints", 10.0),
-                _ => t("iLowSpeedPerSecPoints", 38.0),
-            };
-            self.speed_level = lvl;
-        } else if lvl == 0 {
-            self.speed_level = 0;
         }
         // driving against the traffic
         self.nav_check -= dt;
@@ -769,9 +826,9 @@ impl Police {
             self.wrong_way += dt;
         } else {
             self.wrong_way = 0.0;
-            self.wrong_active = false;
         }
-        if watching && self.wrong_way > t("fWrongWayThresholdTime", 1.2) {
+        // (a started offence is on every frame its condition holds; the threshold only for its start)
+        if watching && self.against_traffic && (self.wrong_active || self.wrong_way > t("fWrongWayThresholdTime", 1.2)) {
             breaking = true;
             self.offences |= LAW_WRONG_WAY;
             if !self.wrong_active {
@@ -787,9 +844,8 @@ impl Police {
             self.burnout += dt;
         } else {
             self.burnout = 0.0;
-            self.burnout_active = false;
         }
-        if watching && self.burnout > t("fBurnOutThresholdTime", 1.5) {
+        if watching && self.burnout > 0.0 && (self.burnout_active || self.burnout > t("fBurnOutThresholdTime", 1.5)) {
             breaking = true;
             self.offences |= LAW_BURNOUT;
             if !self.burnout_active {
@@ -806,14 +862,12 @@ impl Police {
             breaking = true;
             self.offences |= LAW_OFF_ROAD;
             if !self.off_active {
+                // (its seconds counter is not reset at the start, as the speed bands')
                 self.off_active = true;
-                self.sec[4] = 0.0;
                 add += t("iOffRoadStartPoints", 50.0);
             } else {
                 add += self.whole_seconds(4, dt) * t("iOffRoadPerSecPoints", 50.0);
             }
-        } else if !off_road {
-            self.off_active = false;
         }
         // driving on two wheels: start points, then per second
         if watching && p_two {
@@ -826,8 +880,6 @@ impl Police {
             } else {
                 add += self.whole_seconds(3, dt) * t("iTwoWheelPerSecPoints", 50.0);
             }
-        } else if !p_two {
-            self.two_active = false;
         }
         // a jump: in the air for longer than fAirJumpThresholdTime (F-29122, the car sim's air
         // time), paid once per jump
@@ -867,11 +919,13 @@ impl Police {
             self.last_knocked = knocked;
         }
         // hitting other vehicles
+        let mut hit_cop = false;
         if damage > self.last_damage + 0.004 {
             let hit = vehicles.cars.iter().filter(|c| !c.is_player && c.state.pos.distance(ppos) < 3.4).map(|c| c.cop).fold(None, |a: Option<bool>, cop| Some(a.unwrap_or(false) || cop));
             if let Some(cop) = hit {
                 if cop {
                     // ramming a cruiser is always noticed
+                    hit_cop = true;
                     breaking = true;
                     self.offences |= LAW_POLICE_VEHICLE;
                     add += t("iDamagePoliceVehPoints", 600.0);
@@ -884,14 +938,34 @@ impl Police {
         }
         self.last_damage = damage;
 
+        // (AddPoints, F-19359: the score is held to iMaxLawBreakingScore, in a pull-over to iPursuitLawBreakScore - 1
+        // until its bullhorn has run out, in a pursuit to iMax - 1)
         let max_score = t("iMaxLawBreakingScore", 1000.0);
+        let pull = t("iPullOverLawBreakScore", 250.0);
+        let cap = match self.heat {
+            Heat::PullOver if self.bullhorn != Some(0.0) => t("iPursuitLawBreakScore", 600.0) - 1.0,
+            Heat::Pursuit | Heat::Search | Heat::Busted => max_score - 1.0,
+            _ => max_score,
+        };
         if breaking {
-            self.score = (self.score + add).min(max_score);
-        } else if !matches!(self.heat, Heat::Pursuit | Heat::Search) {
-            let rate = if detected { t("iNoLawBrokenPerSecPoints", 10.0) } else { t("iUndetectedPerSecPoints", 30.0) };
-            self.score = (self.score - rate * dt).max(0.0);
-            if self.score <= 0.0 {
-                self.offences = 0;
+            self.score = (self.score + add).clamp(0.0, cap);
+        }
+        if scoring {
+            // (F-52240 after the offences: under iPullOverLawBreakScore the score falls iNoLawBrokenPerSecPoints a
+            // whole second while no offence is counted - iUndetectedPerSecPoints is read by nothing -; from it on it
+            // climbs iPullOverPerSecPoints a whole second, offences or not, and never falls)
+            if self.score > 0.0 && self.score < pull {
+                if !breaking {
+                    self.score = (self.score - self.whole_seconds(5, dt) * t("iNoLawBrokenPerSecPoints", 10.0)).max(0.0);
+                    if self.score <= 0.0 {
+                        self.offences = 0;
+                    }
+                }
+            } else if self.score >= pull && self.score < max_score {
+                let n = self.whole_seconds(6, dt);
+                if n > 0.0 {
+                    self.score = (self.score + n * t("iPullOverPerSecPoints", 10.0)).clamp(0.0, cap);
+                }
             }
         }
 
@@ -900,44 +974,62 @@ impl Police {
         let arrest_speed = t("fArrestTgtThresholdSpd", 10.0) / MPH;
         match self.heat {
             Heat::None => {
-                if self.score >= t("iPursuitLawBreakScore", 600.0) || std::mem::take(&mut self.zone_go) {
+                // (F-52240's ladder needs a detecting cop; StartTactic, F-33550, raises the score to the tactic's
+                // floor - the zone's scripted chase too)
+                let zone = std::mem::take(&mut self.zone_go);
+                if zone || (detected && self.score >= t("iPursuitLawBreakScore", 600.0)) {
+                    self.score = self.score.max(t("iPursuitLawBreakScore", 600.0));
                     self.heat = Heat::Pursuit;
                     self.last_known = ppos;
                     self.fine = self.law_fines();
                     self.lost = 0.0;
                     self.dispatch = t("fDispatchRdoDelayTime", 3.0);
                     event = Some(Event::Pursuit);
-                } else if self.score >= t("iPullOverLawBreakScore", 250.0) {
+                } else if detected && self.score >= pull {
                     self.heat = Heat::PullOver;
-                    self.pullover_time = 0.0;
+                    self.bullhorn = None;
+                    self.ticket_hold = None;
                     self.arrest = 0.0;
                     event = Some(Event::PullOver);
                 }
             }
             Heat::PullOver => {
-                self.pullover_time += dt;
-                if speed < arrest_speed && nearest < t("fPullOverDist", 15.0) {
+                // (F-22530's pull-over block: at iBullhornLawBreakScore the bullhorn and fBullhornTime; hitting a
+                // police car turns it into a pursuit at once; else the score - held at 599 until the bullhorn has run
+                // out - reaching iPursuitLawBreakScore does)
+                if self.bullhorn.is_none() && self.score >= t("iBullhornLawBreakScore", 500.0) {
+                    self.bullhorn = Some(t("fBullhornTime", 10.0));
+                    log::info!("police: bullhorn");
+                }
+                if let Some(b) = self.bullhorn.as_mut() {
+                    *b = (*b - dt).max(0.0);
+                }
+                if let Some(h) = self.ticket_hold.as_mut() {
+                    // (StateTicket: the cop halted, fArrestStateTime - 0.5 s more when the car is damaged out -,
+                    // then the tactic's result and COP_PULLOVER)
+                    *h -= dt;
+                    if *h <= 0.0 {
+                        self.ticket_hold = None;
+                        self.ticketing = true;
+                        event = Some(Event::Ticket(self.law_fines() as i64));
+                    }
+                } else if hit_cop || self.score >= t("iPursuitLawBreakScore", 600.0) {
+                    self.heat = Heat::Pursuit;
+                    self.last_known = ppos;
+                    self.fine = self.law_fines();
+                    self.lost = 0.0;
+                    self.dispatch = t("fDispatchRdoDelayTime", 3.0);
+                    event = Some(Event::Pursuit);
+                } else if speed < arrest_speed && nearest < t("fPullOverDist", 15.0) {
                     self.arrest += dt;
                     if self.arrest >= t("fArrestTime", 1.0) {
-                        let fine = self.law_fines() as i64;
+                        self.ticket_hold = Some(t("fArrestStateTime", 1.75) + if damage >= 0.999 { 0.5 } else { 0.0 });
                         // (what the ticket is for - the panel lists it: 1 reckless driving,
                         // 2 traffic violation, 4 destruction of property)
                         self.ticket_for = (if self.offences & (LAW_BURNOUT | LAW_VEHICLE | LAW_POLICE_VEHICLE) != 0 { 1 } else { 0 }) | (if self.offences & (LAW_SPEED | LAW_WRONG_WAY | LAW_RED_LIGHT) != 0 { 2 } else { 0 }) | (if self.offences & LAW_PROP != 0 { 4 } else { 0 });
-                        self.clear();
-                        event = Some(Event::Ticket(fine));
                     }
                 } else {
                     self.arrest = 0.0;
-                    let flee_delay = t("fBullhornTime", 10.0) * t("fPullOverFleeDelayScale", 2.0);
-                    if self.score >= t("iPursuitLawBreakScore", 600.0) || (self.pullover_time > flee_delay && speed > arrest_speed * 2.0) || nearest > 120.0 {
-                        self.heat = Heat::Pursuit;
-                        self.last_known = ppos;
-                        self.fled = true;
-                        self.fine = self.law_fines();
-                        self.lost = 0.0;
-                        self.dispatch = t("fDispatchRdoDelayTime", 3.0);
-                        event = Some(Event::Pursuit);
-                    }
                 }
             }
             Heat::Pursuit => {
@@ -990,6 +1082,7 @@ impl Police {
                 }
                 if self.heat == Heat::Search && self.search > t("fSearchMaxTime", 35.0) {
                     self.clear();
+                    self.grace = 5.0;
                     event = Some(Event::Escaped);
                 }
             }
@@ -999,6 +1092,7 @@ impl Police {
                     // (step 19d: the payback's chasers stay until their script takes them away)
                     let goons = self.goons;
                     self.clear();
+                    self.grace = 5.0;
                     self.goons = goons;
                     // (F-22530: the arrest tactic succeeded - for a cops' tactic, not the payback's
                     // goons, a race running gets raceOverCommand `returnToCruise`)
@@ -1021,9 +1115,13 @@ impl Police {
             Heat::Search => 22.0,
             _ => 14.0,
         };
+        self.flee_hold = (self.flee_hold - dt).max(0.0);
         for c in vehicles.cars.iter_mut().filter(|c| pursuer(c)) {
             if let Some(ai) = c.ai.as_mut() {
-                if chasing && self.heat != Heat::Busted {
+                if self.flee_hold > 0.0 && self.heat == Heat::Pursuit {
+                    // (the Delay state: brain command 1, halt, until its time is up)
+                    ai.chase = Some((c.state.pos, Vec3::ZERO));
+                } else if chasing && self.heat != Heat::Busted {
                     ai.chase = Some(target);
                     ai.target_speed = cop_speed;
                 } else if self.heat == Heat::Busted {
@@ -1141,6 +1239,16 @@ impl Police {
         self.speed_level = 0;
         self.speed_top = 0;
         self.fled = false;
+        // (F-88677 clears the whole record: the started bits and the counters too)
+        self.off_active = false;
+        self.two_active = false;
+        self.wrong_active = false;
+        self.burnout_active = false;
+        self.sec = [0.0; 7];
+        self.bullhorn = None;
+        self.ticket_hold = None;
+        self.ticketing = false;
+        self.flee_hold = 0.0;
         self.arrest = 0.0;
         self.lost = 0.0;
         self.search = 0.0;
@@ -1252,5 +1360,90 @@ mod tests {
         q.heat = Heat::Pursuit;
         q.chase_time = 1000.0;
         assert_eq!(q.law_fines(), 5000.0);
+    }
+}
+
+/// The arrest's scene (CopArrest.sco 0xc33 - 0xeef): one cop in the latest tactic -> `cut_cop_arrest` or `_07`
+/// (RAND_INT_RANGE(0, 1), upper bound included: F-32828), more -> `_02`, `_03` or `_08` (RAND_INT_RANGE(0, 2)).
+/// `r` stands in for the game's random number. (The payback's goons scenes and the wiped-out biker's
+/// `cut_cop_arrest_bikestand` are not ported.)
+pub fn arrest_scene(cops: usize, r: u32) -> &'static str {
+    if cops <= 1 {
+        ["cut_cop_arrest_07", "cut_cop_arrest"][(r % 2) as usize]
+    } else {
+        ["cut_cop_arrest_02", "cut_cop_arrest_03", "cut_cop_arrest_08"][(r % 3) as usize]
+    }
+}
+
+/// When the arrest scene's `gesture_cophandsup` puts the player's hands up: (start, duration) in the scene's
+/// seconds, from the generated scene scripts' event records (slot 0 = the player). `cut_cop_arrest` aims its
+/// one at slot 1, the first cop car, whose driver is off - so no hands up there.
+pub fn arrest_hands_up(scene: &str) -> Option<(f32, f32)> {
+    Some(match scene.rsplit('/').next().unwrap_or(scene).to_ascii_lowercase().as_str() {
+        "cut_cop_arrest_02" => (1.8333, 4.1667),
+        "cut_cop_arrest_03" => (1.3333, 3.6667),
+        "cut_cop_arrest_07" => (3.5, 1.5),
+        "cut_cop_arrest_08" => (0.0, 6.6667),
+        _ => return None,
+    })
+}
+
+/// The police scenes' place (CopPullover.sco 0x54c, CopArrest.sco 0xa1f): the player's car put upright where it
+/// stands with its heading (Racer_InitializeResetPosition, F-40200, and ResetWithDamageIntact, F-67152), and the
+/// scene's frame - that heading alone, snapped to the ground from 5 m above to 5 m below and leaned with it when it
+/// is off by more than 0.002 rad (SetGameCoordSysBindingCopyRacer, F-94483: F-88556, F-33119); never the car's
+/// own pitch or roll. (The nearest scene safezone or road point, FindClosestSceneSafezone, is not ported: the
+/// car's own place, the original's "none found".)
+pub fn scene_frame(vehicles: &mut Vehicles, world: &World) -> Option<glam::Mat4> {
+    let c = vehicles.player_mut()?;
+    let f = c.state.forward();
+    let q = glam::Quat::from_rotation_y((-f.x).atan2(-f.z));
+    let pos = c.state.pos;
+    if let Some(vt) = c.params().veh.clone() {
+        crate::physics::vehsim::set_pose(&mut c.state, &vt, &world.collider, [q * Vec3::X, q * Vec3::Y, q * Vec3::Z, pos], Vec3::ZERO, Vec3::ZERO);
+    } else {
+        c.state.rot = q;
+        c.state.vel = Vec3::ZERO;
+        c.state.ang_vel = Vec3::ZERO;
+    }
+    c.pose_history.reset();
+    let (place, lean) = match world.collider.ground(pos, 5.0, 5.0) {
+        Some(h) if h.normal.angle_between(Vec3::Y) > 0.002 => (Vec3::new(pos.x, h.point.y, pos.z), glam::Quat::from_rotation_arc(Vec3::Y, h.normal.normalize())),
+        Some(h) => (Vec3::new(pos.x, h.point.y, pos.z), glam::Quat::IDENTITY),
+        None => (pos, glam::Quat::IDENTITY),
+    };
+    Some(glam::Mat4::from_rotation_translation(lean * q, place))
+}
+
+/// The ticket scene after the officer's walk (CopPullover.sco 0x57f - 0x75b): a motorcycle's `cut_cop_fidget_bike`,
+/// a car whose type name holds `_lr_` `sc_cut_cop_ticket_suv`, else `cut_cop_fidget_02`.
+pub fn ticket_scene(car: &str, bike: bool) -> &'static str {
+    if bike {
+        "cut_cop_fidget_bike"
+    } else if car.to_ascii_lowercase().contains("_lr_") {
+        "sc_cut_cop_ticket_suv"
+    } else {
+        "cut_cop_fidget_02"
+    }
+}
+
+#[cfg(test)]
+mod scene_tests {
+    use super::*;
+
+    #[test]
+    fn the_arrest_scene_goes_by_the_cops_of_the_chase() {
+        // (CopArrest.sco: RAND_INT_RANGE's upper bound is included - two scenes for one cop, three for more)
+        assert_eq!([0, 1].map(|r| arrest_scene(1, r)), ["cut_cop_arrest_07", "cut_cop_arrest"]);
+        assert_eq!([0, 1, 2].map(|r| arrest_scene(3, r)), ["cut_cop_arrest_02", "cut_cop_arrest_03", "cut_cop_arrest_08"]);
+        assert_eq!(arrest_hands_up("cut_cop_arrest"), None);
+        assert_eq!(arrest_hands_up("cutscene/CUT_COP_ARREST_07"), Some((3.5, 1.5)));
+    }
+
+    #[test]
+    fn the_ticket_scene_goes_by_the_car() {
+        assert_eq!(ticket_scene("vp_dge_charger_69", false), "cut_cop_fidget_02");
+        assert_eq!(ticket_scene("vp_cad_escalade_lr_06", false), "sc_cut_cop_ticket_suv");
+        assert_eq!(ticket_scene("vp_duc_monster_09", true), "cut_cop_fidget_bike");
     }
 }

@@ -59,6 +59,8 @@ pub enum Gesture {
     ListenRight,
     ThumbDownLeft,
     ThumbDownRight,
+    /// the arrests' `gesture_cophandsup` (gesture 18): hands up
+    CopHandsUp,
 }
 
 impl Gesture {
@@ -80,6 +82,7 @@ impl Gesture {
             "listen_right" => Gesture::ListenRight,
             "thm_dwn_lft" => Gesture::ThumbDownLeft,
             "thm_dwn_rgt" => Gesture::ThumbDownRight,
+            "cophandsup" => Gesture::CopHandsUp,
             _ => return None,
         })
     }
@@ -175,6 +178,8 @@ fn gesture_clip(g: Gesture, rr: &mut [usize; 5], human: bool) -> String {
         Gesture::ListenRight => "drv_gest_listen_rgt".into(),
         Gesture::ThumbDownLeft => "drv_gest_thm_dwn_lft".into(),
         Gesture::ThumbDownRight => "drv_gest_thm_dwn_rgt".into(),
+        // (event 53 sets racer+684 = 18; F-20767's case 18)
+        Gesture::CopHandsUp => "drv_gest_rspnd".into(),
     }
 }
 
@@ -421,8 +426,11 @@ impl Drivers {
                 if let Some((g, left, human)) = a.asked.take() {
                     let name = gesture_clip(g, &mut a.rr, human);
                     if rig.gestures.contains_key(&name) {
+                        log::info!("drivers: seat {} plays {}", s.id, name);
                         a.playing = Some(Playing { clip: name, t: 0.0, left });
                         a.leaving = None;
+                    } else {
+                        log::info!("drivers: seat {} has no {}", s.id, name);
                     }
                 }
                 let mut over = false;

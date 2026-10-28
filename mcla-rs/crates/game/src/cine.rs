@@ -30,6 +30,8 @@ struct Actor {
     label: String,
     model: Arc<SkinModel>,
     clip: Clip,
+    /// the scene time the clip began (0; a slot animated again mid-scene: then - `reanimate`)
+    t0: f32,
     /// facial animation
     face: Option<Clip>,
     /// the face's blend shapes and the facial pack's kind-21 track of every target (by the target's id)
@@ -55,6 +57,8 @@ pub struct Scene {
     pub t: f32,
     /// scene space -> world
     pub origin: Mat4,
+    /// CineScript_Camera_Kill: the game camera shows the rest
+    camera_killed: bool,
 }
 
 impl Scene {
@@ -195,14 +199,19 @@ fn cutscene_set(set: &str) -> String {
     }
 }
 
+/// The officers' sets of CineScript_Characters_AssignCopToSlot (F-61680, its table).
+const COPS: [&str; 5] = ["pol_mb_01_set", "pol_mc_01_set", "pol_mc_02_set", "pol_mc_03_set", "pol_mc_04_set"];
+/// Its counter: one for the whole game, never reset, stepped before each officer it places.
+static COP_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Character set of a scene entity that does not name one.
 fn default_set(scene: &str, entity: &str, n: usize) -> &'static str {
-    const COPS: [&str; 4] = ["pol_mc_01_set", "pol_mb_01_set", "pol_mc_02_set", "pol_mc_03_set"];
     const RACERS: [&str; 4] = ["drv_mb_02_set", "drv_mc_02_set", "drv_ma_02_set", "drv_mh_02_set"];
     let player = entity.starts_with("player") || entity == "cut_drv00";
     if entity.contains("cop") || (scene.contains("cut_cop") && !player) {
-        // in the police scenes everybody but the player is an officer
-        COPS[n % COPS.len()]
+        // in the police scenes everybody but the player is an officer: the next of the five (F-61680:
+        // ++counter % 5 - the first officer ever is pol_mc_01)
+        COPS[(COP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1) % COPS.len()]
     } else if entity.ends_with("_f") {
         "drv_fa_001_set"
     } else if player {
@@ -316,13 +325,13 @@ impl Cine {
                     continue;
                 }
                 // (as `start` names them; an entity without a set of its own gets `default_set`'s by its place among
-                // the actors, which only `start` knows. In the police scenes: every set that place could give it, the
-                // officers' four - docs/PERFORMANCE.md 2026-10-27 (11))
+                // the actors, which only `start` knows. In the police scenes: every set the officers' counter could give it,
+                // the five - docs/PERFORMANCE.md 2026-10-27 (11))
                 if let Some((_, s)) = ent.split_once("_name_") {
                     sets.push(cutscene_set(s));
                 } else if key.contains("cut_cop") {
-                    for n in 0..4 {
-                        let s = cutscene_set(default_set(&key, &ent, n));
+                    for c in COPS {
+                        let s = cutscene_set(c);
                         if !sets.contains(&s) {
                             sets.push(s);
                         }
@@ -384,7 +393,7 @@ impl Cine {
         if !self.index.contains_key(&key) {
             return false;
         }
-        let mut sc = Scene { name: key.clone(), camera: None, actors: Vec::new(), movers: Vec::new(), duration: 0.0, t: 0.0, origin };
+        let mut sc = Scene { name: key.clone(), camera: None, actors: Vec::new(), movers: Vec::new(), duration: 0.0, t: 0.0, origin, camera_killed: false };
         // the scene itself, its bystanders, then the faces
         let short = key.rsplit('/').next().unwrap_or("").to_string();
         let parts = [(key.clone(), false), (format!("hangout/{short}_peds"), false), (format!("{key}_im"), true)];
@@ -449,17 +458,15 @@ impl Cine {
                         Some((l, s)) => (l, s.to_string()),
                         None => (ent.as_str(), default_set(&key, &ent, sc.actors.len()).to_string()),
                     };
-                    // hand props without a path of their own (guns) hang off a hand bone
-                    // in the original; on their own they would float where the scene starts
-                    if set.starts_with("prp_") && anim.tracks.len() <= 4 {
-                        continue;
-                    }
+                    // (props - the arrests' pistols and shotguns, prp_handgun_001_set / prp_shotgun_001_set - are
+                    // characters of the scene like the others, with their own root path next to their officer: the
+                    // scene script attaches nothing to a bone; GitHub #17)
                     // (the cutscene loader script, 0x95ca1d1b 0x4f - 0x1d8: a slot not marked for the unscaled
                     // character takes its set's cutscene copy - LookupDriverToCutscenePath / Name)
                     let set = cutscene_set(&set);
                     let Some(model) = self.model(gpu, &set) else { continue };
                     let clip = Clip::bind(&anim, &model.ids, false, false);
-                    sc.actors.push(Actor { label: label.to_string(), model, clip, face: None, shapes: None });
+                    sc.actors.push(Actor { label: label.to_string(), model, clip, t0: 0.0, face: None, shapes: None });
                 }
             }
         }
@@ -510,7 +517,7 @@ impl Cine {
             };
             let Some(model) = self.model(gpu, set) else { continue };
             let clip = Clip::bind(&Arc::new(anim), &model.ids, false, false);
-            self.ambient.push(Actor { label, model, clip, face: None, shapes: None });
+            self.ambient.push(Actor { label, model, clip, t0: 0.0, face: None, shapes: None });
         }
         log::info!("cine: {} people at {} ({:.0} ms)", self.ambient.len(), name, t0.elapsed().as_secs_f32() * 1000.0);
     }
@@ -577,6 +584,30 @@ impl Cine {
         true
     }
 
+    /// CineScript_Characters_ReAnimateSlot: the playing scene's character `label` plays `entity`'s clip of another
+    /// scene's pack from now on (CopPullover: the officer's `cut_cop_alert_02/Entity/cut_drv01` when the suspect bolts).
+    pub fn reanimate(&mut self, label: &str, scene: &str, entity: &str) -> bool {
+        let Some(entries) = self.index.get(&scene.to_ascii_lowercase()).cloned() else { return false };
+        let want = format!("/{}", entity.to_ascii_lowercase());
+        let Some((name, f)) = entries.into_iter().find(|(n, _)| n.to_ascii_lowercase().ends_with(&want)) else { return false };
+        let Some(res) = self.pack(&f) else { return false };
+        let rd = Rd::new(&res);
+        let Some(anim) = pack_entries(&res).into_iter().find(|(_, n)| *n == name).and_then(|(o, _)| animation_named(&rd, o)) else { return false };
+        let Some(sc) = self.playing.as_mut() else { return false };
+        let Some(a) = sc.actors.iter_mut().find(|a| a.label == label) else { return false };
+        a.clip = Clip::bind(&Arc::new(anim), &a.model.ids, false, false);
+        a.t0 = sc.t;
+        a.face = None;
+        true
+    }
+
+    /// CineScript_Camera_Kill: the playing scene goes on under the game camera.
+    pub fn kill_camera(&mut self) {
+        if let Some(sc) = self.playing.as_mut() {
+            sc.camera_killed = true;
+        }
+    }
+
     pub fn stop(&mut self) {
         self.playing = None;
         self.buf.clear();
@@ -598,7 +629,7 @@ impl Cine {
                     continue;
                 }
                 let anim = animation_named(&rd, o)?;
-                let sc = Scene { name: key.clone(), camera: Some(Arc::new(anim)), actors: Vec::new(), movers: Vec::new(), duration: 0.0, t, origin };
+                let sc = Scene { name: key.clone(), camera: Some(Arc::new(anim)), actors: Vec::new(), movers: Vec::new(), duration: 0.0, t, origin, camera_killed: false };
                 return Self::scene_camera(&sc);
             }
         }
@@ -615,7 +646,7 @@ impl Cine {
 
     /// A story scene past its cut_to_game: the game camera shows the rest (`STORY_MARKS`).
     pub fn at_game_camera(&self) -> bool {
-        self.playing.as_ref().map_or(false, |sc| cut_to_game(&sc.name, sc.camera_len()).map_or(false, |c| sc.t >= c))
+        self.playing.as_ref().map_or(false, |sc| sc.camera_killed || cut_to_game(&sc.name, sc.camera_len()).map_or(false, |c| sc.t >= c))
     }
 
     fn scene_camera(sc: &Scene) -> Option<(Vec3, Vec3, Vec3, f32)> {
@@ -639,7 +670,7 @@ impl Cine {
         let Some(sc) = self.playing.as_ref() else { return Vec::new() };
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
         sc.actors.iter().map(|a| {
-            let f = a.clip.anim.frame_at(sc.t);
+            let f = a.clip.anim.frame_at(sc.t - a.t0);
             a.clip.local(&a.model.bones, f, &mut local);
             let (mt, mr) = a.clip.mover(f);
             let root = local.first().map_or(Vec3::ZERO, |l| l.1);
@@ -694,7 +725,7 @@ impl Cine {
         }
         for sc in self.playing.iter_mut().chain(self.linger.iter_mut()) {
         for a in &mut sc.actors {
-            let f = a.clip.anim.frame_at(sc.t);
+            let f = a.clip.anim.frame_at(sc.t - a.t0);
             a.clip.local(&a.model.bones, f, &mut local);
             if let Some(face) = a.face.as_ref() {
                 let ff = face.anim.frame_at(sc.t);

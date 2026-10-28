@@ -731,6 +731,9 @@ pub struct Vehicles {
     /// under the grid hold, the racers are not placed yet (the port's dive in front of the start scene):
     /// held by the grid rules with no pedals, the computer drivers' antics not begun (main.rs PLACE_TICKS)
     pub grid_wait: bool,
+    /// the player's car held as on the grid (CopPullover: Racer_PreRaceBurnout over the officer's walk) - its
+    /// pedals go through under the hold, so it can be spun to bolt
+    pub player_hold: bool,
     /// no car has its lamps on (VEHICLE SELECT: three cars standing in a lot)
     pub lights_off: bool,
     /// the finish of the player's rims by zone - spoke A, spoke B, lip (the rim meshes'
@@ -3080,7 +3083,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             } else if self.cars[i].is_player {
                 // (on the grid the player's own pedals go through under the hold: `CarInput::hold`)
                 // (the steering is written 0 on the grid, A-88204 - only there)
-                let hold = self.grid_hold.is_some();
+                let hold = self.grid_hold.is_some() || self.player_hold;
                 CarInput { hold, steer: if hold { 0.0 } else { player_input.steer }, ..player_input }
             } else if self.cars[i].ai.as_ref().map_or(false, |a| a.brain.is_some()) {
                 // (a racer: the original's brain, aiv race line and mcOpponentInput - brain.rs)

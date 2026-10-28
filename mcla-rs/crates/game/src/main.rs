@@ -353,6 +353,10 @@ struct App {
     /// the running scene keeps its own time (start-line cameras) instead of a story scene's
     cine_free: bool,
     /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
+    /// the arrest scene's hands-up has been given (police::arrest_hands_up)
+    arrest_hands: bool,
+    /// CopPullover.sco running: (the fine, the walk's time of a bolt, the ticket scene begun)
+    ticket_run: Option<(i64, Option<f32>, bool)>,
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
     tips: std::collections::VecDeque<(String, String, String)>,
@@ -728,6 +732,66 @@ impl App {
     /// Fire the start scene's racer events as its clock passes them; the jaw flap follows the speech lines; at
     /// the clip's end `FinishScene` rolls the two windows up.
     fn prerace_acts_tick(&mut self, dt: f32) {
+    /// CopPullover.sco after COP_PULLOVER (GitHub #17): over the walk, spinning the held car (Racer_IsBurningOut,
+    /// F-48805: chassis +578, the burnout state) from 1 s in until 1 s before the walk's camera ends is a bolt -
+    /// the car let go, the officer re-animated with `cut_cop_alert_02`'s run back to his car, the scene camera killed
+    /// 1.5 s later, and PoliceManager_SuspectFleeing (police::suspect_fled) with the bolt's time; no ticket. Else the
+    /// ticket scene, then the ticket form (the TICKETED panel; the fine is taken there), the police record cleared
+    /// (ResetAllPolice) and the car let go.
+    fn ticket_tick(&mut self, gpu: &mut Gpu, world: &mut World) {
+        let Some((fine, bolt, second)) = self.ticket_run else { return };
+        let playing = self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t, sc.camera_len()));
+        match playing {
+            Some((name, t, len)) if name.ends_with("cut_cop_walk_02") => {
+                let spun = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(false, |v| v.burn_state != 0);
+                if bolt.is_none() && spun && t >= 1.0 && t < len - 1.0 {
+                    log::info!("police: the suspect bolts {:.2} s into the walk", t);
+                    self.ticket_run = Some((fine, Some(t), false));
+                    self.vehicles.player_hold = false;
+                    self.cine.reanimate("cut_drv01", "cut_cop_alert_02", "cut_drv01");
+                    let at = self.vehicles.player().map(|c| c.state.pos).unwrap_or_default();
+                    self.police.suspect_fled(t, at);
+                    if !self.speech.busy() {
+                        self.speech.say("PLAYER_COPS_ESCAPE_TICKET");
+                    }
+                    if self.radio.loaded() {
+                        let rctx = radio_ctx(&self.vehicles, world, self.time_of_day);
+                        self.radio.say("REPORT_SUSPECT_FLEES", true, &rctx);
+                        self.radio_next = 9.0;
+                    }
+                } else if bolt.is_some_and(|b| t >= b + 1.5) {
+                    self.cine.kill_camera();
+                }
+            }
+            Some(_) => {}
+            None if bolt.is_some() => self.ticket_run = None,
+            None if !second => {
+                // the walk is over: the ticket scene (the car stays held, Racer_Deactivate)
+                self.ticket_run = Some((fine, None, true));
+                let (car, bike) = self.vehicles.player().map_or((String::new(), false), |c| (c.model.name.clone(), c.model.bike));
+                let scene = police::ticket_scene(&car, bike);
+                let frame = police::scene_frame(&mut self.vehicles, world);
+                if let (Some(frame), true) = (frame, self.cine.has(scene) && std::env::var("MCLA_NO_CINE").is_err()) {
+                    if self.cine.start_bound(gpu, scene, frame) {
+                        self.cine_spawn_cars(gpu, world);
+                        self.cine_free = true;
+                        self.cine_caption = None;
+                    }
+                }
+            }
+            None => {
+                // the ticket form: the TICKETED panel, the fine
+                self.ticket_run = None;
+                self.vehicles.player_hold = false;
+                self.game.money = (self.game.money - fine).max(0);
+                self.game.ticket_for = Some(self.police.ticket_for.max(1));
+                self.game.arrest_panel = Some((0.0, 0.0, fine));
+                self.police.ticket_done();
+                self.game.write_save(&self.opt.data_dir);
+            }
+        }
+    }
+
         let Some(mut a) = self.prerace_acts.take() else { return };
         if self.game.race.is_none() {
             self.drivers.stop_acting();
@@ -895,6 +959,8 @@ impl App {
             cine_audio: None,
             cine_free: false,
             cine_events: (String::new(), Vec::new()),
+            arrest_hands: false,
+            ticket_run: None,
             tips: Default::default(),
             pending_call: None,
             pending_log: None,
@@ -2262,6 +2328,12 @@ impl App {
                 self.hyd_on = false;
             }
         // (test hook: MCLA_GRID_NITRO=1 holds the nitrous button all the time)
+        // (test hook MCLA_COP_TEST=bolt: a burnout - throttle and handbrake - from 2.5 s into the officer's walk, a bolt,
+        // then full throttle away)
+        if std::env::var("MCLA_COP_TEST").is_ok_and(|v| v == "bolt") && self.ticket_run.is_some() && self.cine.playing.as_ref().is_some_and(|sc| sc.t >= 2.5) {
+            player_input.throttle = 1.0;
+            player_input.handbrake = self.ticket_run.is_some_and(|r| r.1.is_none());
+        }
         if std::env::var("MCLA_GRID_NITRO").is_ok() {
             player_input.nitro = true;
         }
@@ -3741,7 +3813,11 @@ impl App {
                     } else {
                         self.cine.stop();
                     }
-                    self.vehicles.cars.retain(|c| !c.driver.starts_with("cine:"));
+                    // (a cruiser the scene borrowed stays in the world: CopPullover gives it back to the police)
+                    self.vehicles.cars.retain(|c| !c.driver.starts_with("cine:") || c.cop);
+                    for c in self.vehicles.cars.iter_mut().filter(|c| c.cop && c.driver.starts_with("cine:")) {
+                        c.driver.clear();
+                    }
                 }
             }
         }
@@ -3865,6 +3941,23 @@ impl App {
                 }
             }
             // (test hook MCLA_RACE_END_SHOTS=<dir>;t1,t2,...: pictures t seconds after the line,
+            // (test hook MCLA_CINE_SHOTS=<dir>;t1,t2,...: pictures t seconds into the scenes' clock - the first of
+            // the run whose name contains MCLA_CINE_SHOTS_SCENE, any by default)
+            if let (Ok(v), Some(sc)) = (std::env::var("MCLA_CINE_SHOTS"), self.cine.playing.as_ref()) {
+                static NEXT_C: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                if sc.name.contains(std::env::var("MCLA_CINE_SHOTS_SCENE").unwrap_or_default().as_str()) {
+                    let (dir, ts) = v.split_once(';').unwrap_or((".", v.as_str()));
+                    let ts: Vec<f32> = ts.split(',').filter_map(|x| x.parse().ok()).collect();
+                    let n = NEXT_C.load(std::sync::atomic::Ordering::Relaxed);
+                    if let (Some(&due), true) = (ts.get(n), self.photo_request.is_none()) {
+                        if sc.t >= due {
+                            NEXT_C.store(n + 1, std::sync::atomic::Ordering::Relaxed);
+                            log::info!("cine shot {} of {} at {:.3} s", n, sc.name, sc.t);
+                            self.photo_request = Some(format!("{}/cs_{:02}_{:05}.png", dir, n, (sc.t * 1000.0) as u32));
+                        }
+                    }
+                }
+            }
             // the camera logged in the car's frame - x right, y up, z rear)
             if let (Ok(v), Some(t)) = (std::env::var("MCLA_RACE_END_SHOTS"), self.game.race_end_t) {
                 static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -5844,20 +5937,33 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !self.vehicles.frozen {
                 if let Ok(v) = std::env::var("MCLA_COP_TEST") {
                     // ("park": a cruiser waiting at the kerb ahead of the player, no pursuit - to look at it)
-                    if v == "park" && self.tick_no >= 150 && !self.vehicles.cars.iter().any(|c| c.cop) && self.tick_no % 30 == 0 {
+                    // ("pull": the same cruiser, free to drive, and the score at 260 - the pull-over starts when it sees the car)
+                    let pull = v == "pull" || v == "bolt";
+                    if (v == "park" || pull) && self.tick_no >= 150 && !self.vehicles.cars.iter().any(|c| c.cop) && self.tick_no % 30 == 0 {
                         if let Some(c) = self.vehicles.player().map(|c| c.state.pos + c.state.forward() * 14.0) {
                             let ok = self.police.station(&gpu, &world, &mut self.vehicles, c, 0);
                             log::info!("police: test cruiser parked: {}", ok);
                             // (held where it stands with its driver seated: not a parked car)
                             if let Some(c) = self.vehicles.cars.iter_mut().rev().find(|c| c.cop).filter(|_| ok) {
                                 c.parked = None;
-                                c.ai = None;
+                                if pull {
+                                    self.police.score = 260.0;
+                                } else {
+                                    c.ai = None;
+                                }
                             }
                         }
-                    } else if v != "park" && self.tick_no == 150 {
+                    } else if v != "park" && !pull && self.tick_no == 150 {
                         self.police.debug_force(&gpu, &world, &mut self.vehicles);
                     }
                     if self.tick_no % 60 == 0 {
+                    // ("flip": the player's car laid on its roof first - the arrest of a car upside down)
+                    if v == "flip" && self.tick_no == 140 {
+                        if let Some(c) = self.vehicles.player_mut() {
+                            c.state.pos += Vec3::Y * 1.5;
+                            c.state.rot = c.state.rot * glam::Quat::from_rotation_z(std::f32::consts::PI);
+                        }
+                    }
                         let pp = self.vehicles.player().map(|c| c.state.pos).unwrap_or_default();
                         let cops: Vec<String> = self.vehicles.cars.iter().filter(|c| c.cop).map(|c| format!("{:.0}m@{:.0}", c.state.pos.distance(pp), c.state.speed())).collect();
                         log::info!("police: heat {:?} score {:.0} fine {:.0} search {:.1} cops {:?} player speed {:.1}", self.police.heat, self.police.score, self.police.fine, self.police.search, cops, self.vehicles.player().map_or(0.0, |c| c.state.speed()));
@@ -5945,7 +6051,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // ahead on workers: their packs and officers' sets had stopped the scene's first frame for 16 - 90 ms,
                     // docs/PERFORMANCE.md 2026-10-27 (11). Which one plays and when is unchanged.)
                     Some(police::Event::PullOver) => {
-                        for s in ["cut_cop_walk", "cut_cop_walk_02"] {
+                        for s in ["cut_cop_walk_02", "cut_cop_alert_02", "cut_cop_fidget_02"] {
                             if self.cine.has(s) {
                                 self.cine.read_ahead_scene(s);
                             }
@@ -5968,29 +6074,24 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.career.event(career::Ev::EscapedPolice);
                     }
                     Some(police::Event::Ticket(f)) => {
-                        self.game.money = (self.game.money - f).max(0);
                         // (StateTicket's enter, F-14125: the bust bits 0x28 on a car not damaged out -
                         // the wipeout camera behind the car)
                         if self.vehicles.player().is_some_and(|c| c.state.damage < 0.999) {
                             self.crash_bits |= 0x28;
                         }
-                        // (TICKETED   FINE: $n - the game's ticket_title and cop_fine_header)
-                        let st = |k: &str, fb: &str| self.game.career.strings.get(k).map(|s| s.to_uppercase()).unwrap_or_else(|| fb.to_string());
-                        let _ = st;
-                        // (the TICKETED panel - reference `y_ticketed`)
-                        self.game.ticket_for = Some(self.police.ticket_for.max(1));
-                        self.game.arrest_panel = Some((1.5, 0.0, f));
-                        // the officer walks up to the car
-                        let scenes: Vec<String> = ["cut_cop_walk", "cut_cop_walk_02"].iter().filter(|s| self.cine.has(s)).map(|s| s.to_string()).collect();
-                        let car = self.vehicles.player().map(|c| glam::Mat4::from_rotation_translation(c.state.rot, c.state.pos));
-                        if let (Some(car), false, true) = (car, scenes.is_empty(), self.cine.playing.is_none() && std::env::var("MCLA_NO_CINE").is_err()) {
-                            if self.cine.start_bound(&mut gpu, &scenes[self.tick_no as usize % scenes.len()], car) {
+                        // COP_PULLOVER -> CopPullover.sco: the car put upright and held as on the grid, the officer's
+                        // walk from the cruiser 10 m behind (always cut_cop_walk_02), no skipping; the ticket scene and
+                        // the TICKETED panel (the ticket form) come after it - `ticket_tick`
+                        let car = police::scene_frame(&mut self.vehicles, &world);
+                        self.ticket_run = Some((f, None, false));
+                        if let (Some(car), true, true) = (car, self.cine.has("cut_cop_walk_02"), self.cine.playing.is_none() && std::env::var("MCLA_NO_CINE").is_err()) {
+                            if self.cine.start_bound(&mut gpu, "cut_cop_walk_02", car) {
                                 self.cine_spawn_cars(&mut gpu, &mut world);
                                 self.cine_free = true;
-                                self.cine_caption = Some(String::new());
+                                self.cine_caption = None;
+                                self.vehicles.player_hold = true;
                             }
                         }
-                        self.game.write_save(&self.opt.data_dir);
                     }
                     Some(police::Event::Busted(f)) => {
                         self.game.money = (self.game.money - f).max(0);
@@ -6004,11 +6105,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let st = |k: &str, fb: &str| self.game.career.strings.get(k).map(|s| s.to_uppercase()).unwrap_or_else(|| fb.to_string());
                         let m = format!("{}   {} ${}", st("arrest_title", "ARRESTED"), st("cop_fine_header", "FINE:"), f);
                         self.game.show_message(&m);
-                        // the arrest, staged around the car
-                        let scenes: Vec<String> = self.cine.scenes("cut_cop_arrest").into_iter().filter(|s| !s.contains("bike")).collect();
-                        let car = self.vehicles.player().map(|c| glam::Mat4::from_rotation_translation(c.state.rot, c.state.pos));
-                        if let (Some(car), false, true) = (car, scenes.is_empty(), self.cine.playing.is_none() && std::env::var("MCLA_NO_CINE").is_err()) {
-                            if self.cine.start_bound(&mut gpu, &scenes[self.tick_no as usize % scenes.len()], car) {
+                        // the arrest (CopArrest.sco): the scene by the number of cops in the chase
+                        let cops = self.vehicles.cars.iter().filter(|c| c.cop && c.ai.as_ref().map_or(false, |a| a.chase.is_some())).count();
+                        let scene = police::arrest_scene(cops, (self.tick_no as u32).wrapping_mul(2654435761) >> 8);
+                        // (placed as the pull-over's: police::scene_frame - never the car's own roll; GitHub #17)
+                        let car = police::scene_frame(&mut self.vehicles, &world);
+                        self.arrest_hands = false;
+                        if let (Some(car), true, true) = (car, self.cine.has(scene), self.cine.playing.is_none() && std::env::var("MCLA_NO_CINE").is_err()) {
+                            if self.cine.start_bound(&mut gpu, scene, car) {
                                 self.cine_spawn_cars(&mut gpu, &mut world);
                                 self.cine_free = true;
                                 self.cine_caption = Some(String::new());
@@ -6022,6 +6126,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             crate::ticktimes::mark(crate::ticktimes::S::Other);
+            self.ticket_tick(&mut gpu, &mut world);
             if let (Ok(t), 90) = (std::env::var("MCLA_PROPFX_AIM"), self.tick_no) {
                 // test helper "x,y,z[,run]": line the player up with the prop at that place, `run` (14) m away on the first clear line
                 let v: Vec<f32> = t.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -6407,6 +6512,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (the start scene's events on the racers: gestures, windows, the taunt's speech and jaws)
         self.prerace_acts_tick(dt);
         if let Some(a) = self.audio.as_mut() {
+        // the arrests' gesture_cophandsup on racer slot 0, the player (event 53: racer+684 = 18 until its end call)
+        match self.cine.playing.as_ref().and_then(|sc| police::arrest_hands_up(&sc.name).map(|h| (h, sc.t))) {
+            Some(((t, dur), now)) if now >= t && !self.arrest_hands => {
+                self.arrest_hands = true;
+                if let Some(i) = self.vehicles.cars.iter().position(|c| c.is_player) {
+                    self.drivers.gesture(i, drivers::Gesture::CopHandsUp, dur, true);
+                }
+            }
+            Some(_) => {}
+            None => self.arrest_hands = false,
+        }
             let fwd = self.cam.forward();
             let right = Vec3::new(-fwd.z, 0.0, fwd.x).normalize_or(Vec3::X);
             let horn = (self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::HORN, |k| self.input.down(k)) || self.pad_horn) && !self.game.in_menu();
