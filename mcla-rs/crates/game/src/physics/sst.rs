@@ -379,6 +379,68 @@ mod tests {
         assert!(!u.burning);
     }
 
+    #[test]
+    fn bike_follower_matches_recording() {
+        // The player on the ZX-14 held 12 m behind racer 304 in his freeway race, the original polled every tick
+        // (work/slipstream/bike/cap/b1.pkl, sst_trail_evidence_2026-10-28 s.11): level before, the update's strength
+        // +64, level after - a motorcycle charges, fills, holds, falls and burns by the same object and tune as a car.
+        let t = SsTurboTune { dist: 1.0, ..tune() };
+        let dt = 1.0f32 / 60.0;
+        let f = f32::from_bits;
+        for (l0, s, l1) in [
+            (0x3f425e78, 0x3d10091c, 0x3f427813),
+            (0x3e212fa6, 0x3eee3bee, 0x3e267af0),
+            (0x3ea067a0, 0x3f09b4e3, 0x3ea37706),
+            (0x3f4fbb16, 0x3f2abd25, 0x3f51a0be),
+            (0x3f5a35de, 0x3f692257, 0x3f5ccd01),
+            (0x3ea072c2, 0x3f7f8957, 0x3ea6207a),
+        ] {
+            let mut st = SsTurbo { level: f(l0), found: (f(s), 5), ..Default::default() };
+            st.charge(&t, 40.0, dt);
+            assert_eq!(st.level.to_bits(), l1, "charge {} x {}", f(l0), f(s));
+            assert_eq!((st.strength, st.leader), (f(s), 5));
+        }
+        // the filling tick: level 1, full, held stayFullTime
+        let mut st = SsTurbo { level: 0.9988753795623779, found: (0.7006515264511108, 5), ..Default::default() };
+        st.charge(&t, 40.0, dt);
+        assert!(st.level == 1.0 && st.full && st.stay == 1.2);
+        // held out of the stream: 1.2 -> 1.18333 -> 1.16667
+        st.found = (0.0, -1);
+        st.charge(&t, 57.0, dt);
+        assert_eq!(st.stay.to_bits(), 0x3f977778);
+        st.charge(&t, 57.0, dt);
+        assert_eq!(st.stay.to_bits(), 0x3f955556);
+        // a full charge falling at 1 / chargedFalloffTime (57 m/s)
+        for (l0, l1) in [(0x3f800000, 0x3f7b4258), (0x3f7b4258, 0x3f7684b0), (0x3d3f3646, 0x3ce6b788), (0x3ce6b788, 0x3c1e0509)] {
+            let mut st = SsTurbo { level: f(l0), full: true, ..Default::default() };
+            st.charge(&t, 57.0, dt);
+            assert_eq!(st.level.to_bits(), l1, "fall {}", f(l0));
+        }
+        // the burn: 1 / turboUseTime a tick, 150 ticks; the last one leaves 8.1e-7 and burns one tick more
+        let mut st = SsTurbo { level: 1.0, full: true, ..Default::default() };
+        st.fire();
+        let mut seen = vec![];
+        while st.burning {
+            st.burn(&t, false, dt);
+            seen.push(st.level.to_bits());
+        }
+        assert_eq!(&seen[..2], &[0x3f7e4b18, 0x3f7c9630]);
+        assert_eq!(&seen[148..150], &[0x3bda7ae3, 0x355a8c60]);
+        assert_eq!(seen.len(), 151);
+        // the strength the bike got (+64) from 304's polled up row, place, body velocity and +224 and the bike's
+        // matrix row 3 (b2.pkl, polls between two updates)
+        let v3 = |a: [u32; 3]| Vec3::new(f(a[0]), f(a[1]), f(a[2]));
+        for (up, pos, vel, speed, me, s) in [
+            ([0xbc385c05, 0x3f7fce33, 0xbd18d83c], [0x445f13e0, 0x42158f26, 0xc4ce0a7b], [0x4189984f, 0x401fd2d1, 0x42828f66], 0x42871ba6, [0x445e398d, 0x4213768f, 0xc4cf9f9c], 0x3f69da7d),
+            ([0xbc943030, 0x3f7ff368, 0xbbf76162], [0x4464fc95, 0x421dd47f, 0xc4c50069], [0x41dc3d07, 0x3f9cea2e, 0x428263f9], 0x428d8f62, [0x4463a77a, 0x421d5a3a, 0xc4c681c7], 0x3f668db7),
+            ([0xbc9db897, 0x3f7ff3bf, 0xbae6a4ee], [0x4466b7e0, 0x421ed274, 0xc4c31f0f], [0x420273e6, 0x3f550ed5, 0x427d6898], 0x428e8478, [0x446545a1, 0x421e22af, 0xc4c49b46], 0x3f63d46d),
+        ] {
+            let lead = DraftCar { pos: v3(pos), up: v3(up), vel: v3(vel), speed: f(speed) };
+            let got = strength(&t, &lead, v3(me));
+            assert!((got - f(s)).abs() < 1e-6, "strength {got} recorded {}", f(s));
+        }
+    }
+
     /// Every script call of Racer_LockFeature on the disc (MCLA_DATA_DIR=...\extracted\cache).
     #[test]
     #[ignore]
