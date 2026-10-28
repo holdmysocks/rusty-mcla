@@ -2174,7 +2174,10 @@ mod verify_small_tests {
             for v in [t, d, s] {
                 fnv(&mut ch, v.to_bits());
             }
-            fnv(&mut oh, LaneCurve::advance(t, d, s).to_bits());
+            // A NaN result is hashed as one value: the sign of the NaN made by inf-inf or inf/inf is the
+            // host's (x86 0xFFC00000, aarch64 0x7FC00000), not the rule.
+            let o = LaneCurve::advance(t, d, s);
+            fnv(&mut oh, if o.is_nan() { 0x7FC00000 } else { o.to_bits() });
             n += 1;
         };
         for &t in &fl {
@@ -2197,7 +2200,7 @@ mod verify_small_tests {
         }
         assert_eq!(n, 26859);
         assert_eq!(ch, 0xdb5ac0e32adc58eb, "case generator");
-        assert_eq!(oh, 0x20e453be5e3fdf36, "advance outputs");
+        assert_eq!(oh, 15373144637846678326, "advance outputs");
     }
 
     /// F-48295 / F-48224 (the control-vertex and knot-entry accessors of a
