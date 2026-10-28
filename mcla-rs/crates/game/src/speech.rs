@@ -12,8 +12,10 @@ use std::path::Path;
 
 #[derive(Clone, Debug)]
 enum Step {
-    /// `voice`: the profile whose banks say it (GH_01 ...), None - any
-    Play { asset: String, player: bool, voice: Option<String> },
+    /// `voice`: the profile whose banks say it (GH_01 ...), None - any; `rec`: the asset record (its own last take, +20 of
+    /// the record: F-70477); `force`: ForceVariation (+21, 0 = none); `post`: SoundPostFix (the voice's sound object
+    /// "<voice>_<post>"); `attach`: said by the requesting entity (F-30989 gives the line the entity, F-18143)
+    Play { asset: String, player: bool, voice: Option<String>, rec: u32, force: u8, post: Option<String>, attach: bool },
     /// a clip by its full name (the taunts' special-case assets): from `voice`'s banks, or the player's
     Clip { name: String, player: bool, voice: Option<String> },
     Wait(f32),
@@ -86,8 +88,15 @@ pub struct Speech {
     /// the speech manager's clock (+2244): the update (F-85023, from F-57187 every frame) adds G+92, the frame's real time, also while the game is
     /// paused (recorded: work/slipstream/audio3/cap/n0.txt, 9.03 s in 9.05 s of a pause)
     clock: f32,
-    /// the shared random numbers (F-62480: lo, carry); (approx.) seeded here, the original's stream position is not modelled
-    mwc: (u32, u32),
+    /// each asset record's last take (+20 of the record, F-70477: global per record)
+    last_take: HashMap<u32, i32>,
+    /// the player's voice (CareerVoices.xml, profile PLAYER_01): its sound objects are CAREER_SPEECH_<voice>_<SoundPostFix>
+    player_voice: String,
+    /// the game is paused: the line's voice is on the audio timer 0 (the defaults of its request, F-70477), which F-99037
+    /// pauses - it holds where it is and the line with it (set by the game each frame)
+    pub paused: bool,
+    /// the wait running now is a line playing (it holds in a pause), not a WaitTime
+    line_wait: bool,
     /// the Priority (+12) of the scenario `request` started, while it plays
     cur_priority: Option<i32>,
 }
@@ -101,7 +110,7 @@ fn attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
 
 impl Speech {
     pub fn load(data_dir: &str, audio_root: &Path) -> Speech {
-        let mut sp = Speech { rng: 0x2545_f491, mwc: (0x2545_f491, 1), ..Default::default() };
+        let mut sp = Speech { rng: 0x2545_f491, ..Default::default() };
         // clip index of the speech banks
         if let Ok(rd) = std::fs::read_dir(audio_root.join("career_speech")) {
             for e in rd.flatten() {
@@ -139,6 +148,12 @@ impl Speech {
             t.push_str(&sc);
         }
         let mut player_only: HashMap<String, u32> = HashMap::new();
+        // (each PlayAsset / SpecialCase is an asset record of its own)
+        let mut recs = 0u32;
+        // the player's voice (CareerVoices.xml: the Voice whose ProfileName is PLAYER_01 - DRV_MP_01_SET)
+        if let Ok(v) = read("CareerVoices.xml") {
+            sp.player_voice = v.split("<Voice ").skip(1).find(|t| attr(t, "ProfileName") == Some("PLAYER_01")).and_then(|t| attr(t, "name")).unwrap_or("").to_string();
+        }
         for sc in t.split("<Scenario ").skip(1) {
             let Some(name) = attr(sc, "name") else { continue };
             let body = sc.split("</Scenario>").next().unwrap_or("");
@@ -170,12 +185,16 @@ impl Speech {
                             }
                         }
                     }
-                    steps.push(Step::Play { asset: asset.to_string(), player, voice: None });
+                    let force = attr(l, "ForceVariation").and_then(|v| v.trim().parse::<u8>().ok()).unwrap_or(0);
+                    let post = attr(l, "SoundPostFix").map(|v| v.to_string());
+                    recs += 1;
+                    steps.push(Step::Play { asset: asset.to_string(), player, voice: None, rec: recs, force, post, attach: false });
                 } else if l.starts_with("<SpecialCase") {
                     // (the career radio's squelch clicks around a line: RADIO_PRE_SQUELCH_01..03 / RADIO_POST_SQUELCH_01..03,
                     // bank 0x52b9ce47 - a take of three, like any asset)
                     if let Some(n) = attr(l, "name").filter(|n| *n == "RADIO_PRE_SQUELCH" || *n == "RADIO_POST_SQUELCH") {
-                        steps.push(Step::Play { asset: n.to_string(), player: false, voice: None });
+                        recs += 1;
+                        steps.push(Step::Play { asset: n.to_string(), player: false, voice: None, rec: recs, force: 0, post: None, attach: false });
                     }
                     if let Some(n) = attr(l, "name").filter(|n| *n == "SIDEKICK_TELEPHONE_INVITE" || *n == "SIDEKICK_TELEPHONE_DECLINE") {
                         steps.push(Step::Phone { name: n.to_string(), player: attr(l, "VoiceGroup") == Some("PLAYER") });
@@ -212,11 +231,11 @@ impl Speech {
         self.gates.get(&scenario.to_ascii_uppercase()).copied()
     }
 
-    /// F-62480(lo, hi): state x 0x5CDCFAA7 + carry; lo + its low 31 bits mod (hi - lo + 1). Always draws.
+    /// F-62480(lo, hi) on the audio's shared state (`sndobj::audio_rand`: the sound objects' variances and Randomized
+    /// picks draw from the same state in the original - not the game's other generator, `sst_trail::game_rng`).
+    /// Always draws.
     fn rand(&mut self, lo: i32, hi: i32) -> i32 {
-        let t = self.mwc.0 as u64 * 0x5CDC_FAA7 + self.mwc.1 as u64;
-        self.mwc = (t as u32, (t >> 32) as u32);
-        lo + ((self.mwc.0 & 0x7FFF_FFFF) % (hi - lo + 1).max(1) as u32) as i32
+        crate::sndobj::audio_rand(lo, hi)
     }
 
     /// A speech request as F-30989 / F-62728 make it (`"PLAYER_NITROUS"`, voice group "PLAYER", not forced): the start
@@ -252,6 +271,11 @@ impl Speech {
         }
         let steps = self.scenarios[&key][pick as usize].clone();
         let steps = self.phone_steps(steps, "");
+        // (F-30989 then gives the lines the requesting entity, F-18143: the player's car for PLAYER_NITROUS / PLAYER_IN_AIR)
+        let steps = steps.into_iter().map(|st| match st {
+            Step::Play { asset, player, voice, rec, force, post, .. } => Step::Play { asset, player, voice, rec, force, post, attach: true },
+            o => o,
+        });
         if g.delay > 0.0 {
             self.queue.push_back(Step::Wait(g.delay));
         }
@@ -287,7 +311,7 @@ impl Speech {
         }
         let voice = (!profile.is_empty()).then(|| profile.to_ascii_uppercase());
         self.queue.extend(steps.into_iter().map(|s| match s {
-            Step::Play { asset, player: false, .. } => Step::Play { asset, player: false, voice: voice.clone() },
+            Step::Play { asset, player: false, rec, force, post, attach, .. } => Step::Play { asset, player: false, voice: voice.clone(), rec, force, post, attach },
             Step::Clip { name, player: false, .. } => Step::Clip { name, player: false, voice: voice.clone() },
             o => o,
         }));
@@ -401,33 +425,46 @@ impl Speech {
         true
     }
 
-    fn resolve(&mut self, asset: &str, player: bool, voice: Option<&str>) -> Option<String> {
-        // numbered takes of the same line
+    /// The take of a line (F-70477): n = the takes of the context in the speaker's voice (F-99296 counts them), v =
+    /// rand(1, n) from the shared generator; when v is the asset record's last take and n > 1, one on (past n: 1);
+    /// ForceVariation, when set, replaces it (at most n); v is the record's new last take; the clip is "<context>_%02u".
+    fn resolve(&mut self, asset: &str, player: bool, voice: Option<&str>, rec: u32, force: u8) -> Option<String> {
+        // numbered takes of the same line (F-99296 counts them from speech.dat: up to 22 for PLAYER_NITROUS - not 8)
         let mut takes: Vec<&Vec<String>> = Vec::new();
-        for n in 1..=8 {
+        for n in 1..=99 {
             match self.clips.get(&joaat(&format!("{asset}_{n:02}"))) {
                 Some(c) => takes.push(c),
                 None => break,
             }
         }
-        // (in the speaker's own voice: the takes his banks hold, one of them)
+        let bank_of = |k: &String| k.rsplit_once('/').map(|x| x.0.to_string()).unwrap_or_default();
+        // (in the speaker's own voice: the takes his banks hold)
+        let mut cand: Vec<String> = Vec::new();
         if let Some(vb) = voice.and_then(|v| self.voice_banks.get(v)) {
-            let bank_of = |k: &String| k.rsplit_once('/').map(|x| x.0.to_string()).unwrap_or_default();
-            let mine: Vec<String> = takes.iter().filter_map(|t| t.iter().find(|k| vb.contains(&bank_of(k))).cloned()).collect();
-            if !mine.is_empty() {
-                self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
-                let k = mine[(self.rng >> 16) as usize % mine.len()].clone();
-                log::info!("speech: {} in {}'s voice: {}", asset, voice.unwrap_or(""), k);
-                return Some(k);
-            }
+            cand = takes.iter().filter_map(|t| t.iter().find(|k| vb.contains(&bank_of(k))).cloned()).collect();
         }
-        if takes.is_empty() {
+        if cand.is_empty() {
+            let is_player = |k: &String| self.player_banks.contains(&bank_of(k));
+            cand = takes.iter().filter_map(|t| t.iter().find(|k| is_player(k) == player).or(t.first()).cloned()).collect();
+        }
+        if cand.is_empty() {
             return None;
         }
-        self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
-        let take = takes[(self.rng >> 16) as usize % takes.len()];
-        let is_player = |k: &String| k.rsplit_once('/').map_or(false, |x| self.player_banks.contains(x.0));
-        take.iter().find(|k| is_player(k) == player).or(take.first()).cloned()
+        let n = cand.len() as i32;
+        let mut v = self.rand(1, n);
+        if self.last_take.get(&rec) == Some(&v) && n > 1 {
+            v += 1;
+            if v > n {
+                v = 1;
+            }
+        }
+        if force != 0 {
+            v = (force as i32).min(n);
+        }
+        self.last_take.insert(rec, v);
+        let k = cand[v as usize - 1].clone();
+        log::debug!("speech: {} take {} of {} -> {}", asset, v, n, k);
+        Some(k)
     }
 
     pub fn update(&mut self, a: &mut Audio, dt: f32) {
@@ -435,8 +472,12 @@ impl Speech {
         if !self.busy() {
             self.cur_priority = None;
         }
-        self.wait -= dt;
-        if let Some(l) = self.line.as_mut() {
+        // a line's voice holds in a pause (its sound is on the paused timer 0: F-89113 skips it, so the line's end - its
+        // sound slot freed, F-78934 - waits); WaitTime delays run on the real frame time (+392 += G+92, F-35459)
+        if !(self.paused && self.line_wait) {
+            self.wait -= dt;
+        }
+        if let Some(l) = self.line.as_mut().filter(|_| !self.paused) {
             l.1 -= dt;
             if l.1 <= 0.0 {
                 self.line = None;
@@ -458,7 +499,10 @@ impl Speech {
                 return;
             };
             match step {
-                Step::Wait(t) => self.wait = t,
+                Step::Wait(t) => {
+                    self.wait = t;
+                    self.line_wait = false;
+                }
                 Step::Phone { .. } => {}
                 Step::Mixer(m) => {
                     if m != self.mixer {
@@ -475,22 +519,34 @@ impl Speech {
                     if dur > 0.0 {
                         log::info!("speech: taunt line {} ({}) -> {} ({:.1} s)", name, if player { "player" } else { "hookman" }, key, dur);
                         // (the career speech plays through its Speech sound: category SPEECH_CAREER)
-                        if !a.obj_clip(&key, "SPEECH_CAREER", None) {
+                        if !a.obj_line(&key, "SPEECH_CAREER", false) {
                             a.play(&key, 1.0);
                         }
                         self.wait = dur;
+                        self.line_wait = true;
                         self.line = Some((player, dur));
                     }
                 }
-                Step::Play { asset, player, voice } => {
-                    let Some(key) = self.resolve(&asset, player, voice.as_deref()) else { continue };
+                Step::Play { asset, player, voice, rec, force, post, attach } => {
+                    let Some(key) = self.resolve(&asset, player, voice.as_deref(), rec, force) else { continue };
                     let dur = a.clip(&key).map_or(0.0, |c| c.data.len() as f32 / c.rate.max(1) as f32);
                     if dur > 0.0 {
                         log::debug!("speech: {} -> {} ({:.1} s)", asset, key, dur);
-                        if !a.obj_clip(&key, "SPEECH_CAREER", None) {
+                        // the player's line through his voice's sound object "CAREER_SPEECH_<voice>_<SoundPostFix>" (F-70477;
+                        // POS_YELL: category SPEECH_CAREER_POS, positional) at his car when the request gave it (F-32206);
+                        // (approx.) the other speakers' lines keep the category SPEECH_CAREER
+                        let object = match (&post, player && !self.player_voice.is_empty()) {
+                            (Some(p), true) if p == "POS_YELL" => format!("CAREER_SPEECH_{}_{}", self.player_voice, p),
+                            _ => "SPEECH_CAREER".to_string(),
+                        };
+                        if !a.obj_line(&key, &object, attach && object != "SPEECH_CAREER") {
                             a.play(&key, 1.0);
                         }
-                        self.wait = dur + 0.15;
+                        // the line ends when its sound does (F-78934: the slot's sound gone -> the next line, whose delay
+                        // is its WaitTime only; recorded n2: REMINDER_.._B started 0.44 s after A, its WaitTime 0.4, in
+                        // two 0.2 s updates) - no gap of its own (was + 0.15 s)
+                        self.wait = dur;
+                        self.line_wait = true;
                     }
                 }
             }
@@ -519,47 +575,47 @@ mod tests {
         // n0.txt f=311, the nitrous' first burn: clock 279.983, state 505886d5 04f6b060 -> gate draw 27 < 30, the script draw 0,
         // state after 4f0f6058 1c169b0a
         sp.clock = 279.983;
-        sp.mwc = (0x5058_86d5, 0x04f6_b060);
+        crate::sndobj::set_audio_rng_state((0x5058_86d5, 0x04f6_b060));
         assert!(sp.request("PLAYER_NITROUS"));
-        assert_eq!(sp.mwc, (0x4f0f_6058, 0x1c16_9b0a));
+        assert_eq!(crate::sndobj::audio_rng_state(), (0x4f0f_6058, 0x1c16_9b0a));
         let g = sp.gate("PLAYER_NITROUS").unwrap();
         assert_eq!((g.last, g.last_script), (279.983, 0));
         sp.stop();
         sp.wait = 0.0;
         // f=639: clock 346.263 < 279.983 + 120: refused before the draw
         sp.clock = 346.263;
-        let st = sp.mwc;
+        let st = crate::sndobj::audio_rng_state();
         assert!(!sp.request("PLAYER_NITROUS"));
-        assert_eq!(sp.mwc, st);
+        assert_eq!(crate::sndobj::audio_rng_state(), st);
         // f=852: clock 400.699, state 52c60400 2a421f84 -> draw 36: refused, the last start kept
         sp.clock = 400.699;
-        sp.mwc = (0x52c6_0400, 0x2a42_1f84);
+        crate::sndobj::set_audio_rng_state((0x52c6_0400, 0x2a42_1f84));
         assert!(!sp.request("PLAYER_NITROUS"));
         assert_eq!(sp.gate("PLAYER_NITROUS").unwrap().last, 279.983);
         // s0.txt f=467, the slipstream burn: clock 115.061, state cb06e3f0 3347957c -> draw 68: refused
         let mut s0 = Speech::load(&data, Path::new("."));
         s0.clock = 115.061;
-        s0.mwc = (0xcb06_e3f0, 0x3347_957c);
+        crate::sndobj::set_audio_rng_state((0xcb06_e3f0, 0x3347_957c));
         assert!(!s0.request("PLAYER_NITROUS"));
         assert_eq!(s0.gate("PLAYER_NITROUS").unwrap().last, -f32::MAX);
         // n1.txt (the gate hook printing the draw): f=360 clock 63.031, state 541d8400 24164598 -> 72 (state 463f6198
         // 1e833729): refused; f=573 clock 119.423, state 0154510f 3d3d6924 -> 17, script draw 1 (state 9457687f 2e2ccf41)
         let mut n1 = Speech::load(&data, Path::new("."));
         n1.clock = 63.031;
-        n1.mwc = (0x541d_8400, 0x2416_4598);
+        crate::sndobj::set_audio_rng_state((0x541d_8400, 0x2416_4598));
         assert!(!n1.request("PLAYER_NITROUS"));
-        assert_eq!(n1.mwc, (0x463f_6198, 0x1e83_3729));
+        assert_eq!(crate::sndobj::audio_rng_state(), (0x463f_6198, 0x1e83_3729));
         n1.clock = 119.423;
-        n1.mwc = (0x0154_510f, 0x3d3d_6924);
+        crate::sndobj::set_audio_rng_state((0x0154_510f, 0x3d3d_6924));
         assert!(n1.request("PLAYER_NITROUS"));
-        assert_eq!((n1.mwc, n1.gate("PLAYER_NITROUS").unwrap().last_script), ((0x9457_687f, 0x2e2c_cf41), 1));
+        assert_eq!((crate::sndobj::audio_rng_state(), n1.gate("PLAYER_NITROUS").unwrap().last_script), ((0x9457_687f, 0x2e2c_cf41), 1));
         // two scripts alternate: after script 0 the next start takes 1 whatever the draw, and back
         for seed in 0..64u32 {
             sp.stop();
             sp.wait = 0.0;
             let before = sp.gate("PLAYER_NITROUS").unwrap().last_script;
             sp.clock += 1000.0;
-            sp.mwc = (seed.wrapping_mul(0x9E37_79B9), seed);
+            crate::sndobj::set_audio_rng_state((seed.wrapping_mul(0x9E37_79B9), seed));
             // (a draw below 30 passes the gate: try draws until one does)
             while !sp.request("PLAYER_NITROUS") {
                 sp.clock += 1000.0;
@@ -568,8 +624,44 @@ mod tests {
         }
         // a line plays: another of the same Priority is refused
         sp.clock += 1000.0;
-        sp.mwc = (0x5058_86d5, 0x04f6_b060);
+        crate::sndobj::set_audio_rng_state((0x5058_86d5, 0x04f6_b060));
         assert!(sp.busy() && !sp.request("PLAYER_IN_AIR"));
+    }
+
+    /// The take of a line (F-70477) against the running original (work/slipstream/audio4/cap/n2.txt, TAKER / TAKE lines): the
+    /// draw rand(1, n) from the shared audio state, n the takes of the context (22 for PLAYER_NITROUS, not 8), the clip
+    /// "<context>_%02u"; the bump past the record's last take and ForceVariation as decoded.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn take_pick_as_recorded() {
+        let data = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&data).expect("audio");
+        let mut sp = Speech::load(&data, a.root());
+        let file = |n: &str| format!("{:08x}", joaat(n));
+        // f=346: state 11f1e126 593987cc, rand(1, 22) -> 7, state after 688a8396 06826a59: PLAYER_NITROUS_07
+        crate::sndobj::set_audio_rng_state((0x11f1_e126, 0x5939_87cc));
+        let k = sp.resolve("PLAYER_NITROUS", true, None, 1, 0).unwrap();
+        assert!(k.ends_with(&file("PLAYER_NITROUS_07")), "{k}");
+        assert_eq!(crate::sndobj::audio_rng_state(), (0x688a_8396, 0x0682_6a59));
+        // f=447: one take - rand(1, 1) still draws: state 5406f025 21dfaa6c -> 64b6748f 1e7b0689
+        crate::sndobj::set_audio_rng_state((0x5406_f025, 0x21df_aa6c));
+        let k = sp.resolve("REMINDER_REPEAT_BESTOF_HILLS_A", true, None, 2, 0).unwrap();
+        assert!(k.ends_with(&file("REMINDER_REPEAT_BESTOF_HILLS_A_01")), "{k}");
+        assert_eq!(crate::sndobj::audio_rng_state(), (0x64b6_748f, 0x1e7b_0689));
+        // the same record drawing its last take again says the next one (22 -> 1)
+        crate::sndobj::set_audio_rng_state((0x11f1_e126, 0x5939_87cc));
+        let k = sp.resolve("PLAYER_NITROUS", true, None, 1, 0).unwrap();
+        assert!(k.ends_with(&file("PLAYER_NITROUS_08")), "{k}");
+        sp.last_take.insert(1, 22);
+        let st = (0..u32::MAX).map(|i| (i, 1)).find(|&s| {
+            crate::sndobj::set_audio_rng_state(s);
+            crate::sndobj::audio_rand(1, 22) == 22
+        });
+        crate::sndobj::set_audio_rng_state(st.unwrap());
+        assert!(sp.resolve("PLAYER_NITROUS", true, None, 1, 0).unwrap().ends_with(&file("PLAYER_NITROUS_01")));
+        // ForceVariation (at most n)
+        assert!(sp.resolve("PLAYER_NITROUS", true, None, 9, 30).unwrap().ends_with(&file("PLAYER_NITROUS_22")));
+        assert!(sp.resolve("PLAYER_NITROUS", true, None, 9, 3).unwrap().ends_with(&file("PLAYER_NITROUS_03")));
     }
 
     /// N-AU-2: the telephone invite / decline are `<SpecialCase>` scenarios; each caller of the challenge has all

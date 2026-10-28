@@ -23,7 +23,8 @@
 //!   globaltex), no gamma, clamped, trilinear. VS_Trail and PS_Trail are in render/sst_trail.wgsl. The fog pass
 //!   (PSBlendedHeightFogInFogNoPFog, SRCALPHA / INVSRCALPHA where stencil != 1) comes after it in the original
 //!   and so takes its share of the trail's light; the port fogs in its materials, so the trail's alpha takes it
-//!   (the fog of the scene's depth under the pixel, as that program computes it: [`fog_share`]).
+//!   (the fog of the scene's depth under the pixel, as that program computes it: [`fog_share`]), and a second draw
+//!   puts on the ceiling the original's 7e3 target gives scene + trail before that fog ([`compose`]).
 
 use crate::render::Gpu;
 use glam::{Quat, Vec3};
@@ -203,6 +204,25 @@ pub fn fog_share(dist: f32, drawn: bool, near: f32, far: f32, alpha: f32) -> f32
     (alpha * (1.0 - e).clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
+/// The original's scene target holds at most this a channel (2_10_10_10_FLOAT, 7e3: largest value 31.875, with the
+/// exponent bias 4 of the target: 31.875 / 16 - recorded `d.target` 2101010_FLOAT_AS_16, exp_bias 4).
+pub const SCENE_MAX: f32 = 1.992_187_5;
+
+/// One channel of the port's scene after the trail, from the port's scene there (`fogged` = S(1 - f) + F f: the port's
+/// materials fog themselves), the trail layers' adds before the fog (`adds`: rgb x alpha of each layer that passed
+/// the alpha test), the fog's share `f` and colour `fog` at the pixel. The original adds each layer into its 7e3
+/// target, which clamps every blend's result to [0, 31.875] (stored = x 16; the reference's accurate output merger,
+/// rexglue ROV path: clamp the blended colour to the format's range, then pack round-to-nearest-even), and only then
+/// its fog pass lerps the target to F by f: min(S + sum, M)(1 - f) + F f. That equals min(fogged + sum (1 - f),
+/// M (1 - f) + F f) for any 0 <= f <= 1 - the port's add (fs_trail) and its MIN draw (fs_trail_cap). (The recorder
+/// runs the reference's host render target path, 16-bit float with no clamp after a blend, so its own frames do not
+/// show this ceiling.) *(not modelled)* the 7e3 rounding of each blend's result (7 mantissa bits; the port's target
+/// keeps 10): at most half a 7e3 step a blend - test `sst_trail_compose_matches_7e3_target`.
+pub fn compose(fogged: f32, adds: &[f32], f: f32, fog: f32) -> f32 {
+    let sum: f32 = adds.iter().sum();
+    (fogged + sum * (1.0 - f)).min(SCENE_MAX * (1.0 - f) + fog * f)
+}
+
 // ---------------------------------------------------------------------------------------
 // GPU
 
@@ -215,6 +235,8 @@ struct Inst {
 
 struct State {
     pipe: crate::render::ms::MsPipe,
+    // (the second draw: the target's ceiling under the trail, `compose`)
+    cap: crate::render::ms::MsPipe,
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
     count: u32,
@@ -290,13 +312,18 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
     let globals_layout = gpu.pipeline_particle.get_bind_group_layout(0);
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sst_trail"), source: wgpu::ShaderSource::Wgsl(include_str!("render/sst_trail.wgsl").into()) });
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("sst_trail pl"), bind_group_layouts: &[&globals_layout, &layout, &scene_layout], push_constant_ranges: &[] });
-    let pipe = crate::render::ms::MsPipe::new(device, move |device, v| {
+    let make = |entry: &'static str, ceiling: bool| {
+    let (pl, shader) = (pl.clone(), shader.clone());
+    crate::render::ms::MsPipe::new(device, move |device, v| {
         let attrs = [
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 1 },
         ];
         // (SrcBlend SRCALPHA, DestBlend ONE; the alpha test's alpha > 0 changes nothing under it)
         let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+        // (the ceiling: each channel kept at most the program's value)
+        let min = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Min };
+        let add = if ceiling { min } else { add };
         // (stencil NOT EQUAL the player's car's id + 1, kept - recorded depth control 0x00700563, stencil ref / mask
         // / write mask 0x00ffff05; the reference is set per frame - 255 when the player's car has none, which no
         // pixel holds)
@@ -308,7 +335,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_trail"), buffers: &[wgpu::VertexBufferLayout { array_stride: 32, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attrs }], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_trail"),
+                entry_point: Some(entry),
                 targets: &[Some(wgpu::ColorTargetState { format: crate::render::post::SCENE_FORMAT, blend: Some(wgpu::BlendState { color: add, alpha: add }), write_mask: wgpu::ColorWrites::COLOR })],
                 compilation_options: Default::default(),
             }),
@@ -320,8 +347,11 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             multiview: None,
             cache: None,
         })
-    });
-    *STATE.lock().unwrap() = Some(State { pipe, vb, ib, count: idx.len() as u32, ub, bg, scene_layout });
+    })
+    };
+    let pipe = make("fs_trail", false);
+    let cap = make("fs_trail_cap", true);
+    *STATE.lock().unwrap() = Some(State { pipe, cap, vb, ib, count: idx.len() as u32, ub, bg, scene_layout });
 }
 
 /// The trails drawn this frame: each car with a turbo whose faded value is over 0.001 and that is drawn, its
@@ -423,6 +453,12 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
     pass.set_vertex_buffer(0, s.vb.slice(..));
     pass.set_index_buffer(s.ib.slice(..), wgpu::IndexFormat::Uint32);
     pass.draw_indexed(0..s.count, 0, 0..list.len() as u32);
+    // (then the original's target ceiling under all of them, `compose`; MCLA_SST_TRAIL_NOCAP=1: without, as before
+    // 2026-10-28)
+    if !std::env::var("MCLA_SST_TRAIL_NOCAP").is_ok_and(|v| v.trim() == "1") {
+        pass.set_pipeline(&s.cap);
+        pass.draw_indexed(0..s.count, 0, 0..list.len() as u32);
+    }
 }
 
 #[cfg(test)]
@@ -628,5 +664,78 @@ mod tests {
         // head: 0.75 up, 2.0 back (+z)
         assert_eq!(head(Vec3::ZERO, Quat::IDENTITY), Vec3::new(0.0, 0.75, 2.0));
         assert_eq!(alpha(1.0, 1.0, 1.0), 0.08);
+    }
+
+    /// The reference's 7e3 packing (rexglue dxbc_translator_om.cpp PreClampedFloat32To7e3: round to nearest even,
+    /// denormals below 2^-2) and unpacking (Float7e3To32), on a value clamped to the format's [0, 31.875].
+    fn q7e3(x: f32) -> f32 {
+        let b = x.clamp(0.0, 31.875).to_bits();
+        let biased = if b < 0x3E80_0000 { ((b & 0x7F_FFFF) | 0x80_0000) >> (125 - (b >> 23) as i32).min(24) as u32 } else { b.wrapping_add(0xC200_0000) };
+        let v = ((biased + 0x7FFF + ((biased >> 16) & 1)) >> 16) & 0x3FF;
+        let (e, mut m) = ((v >> 7) & 7, v & 0x7F);
+        let exp = if e != 0 {
+            e as i32
+        } else if m != 0 {
+            let shift = 7 - (31 - m.leading_zeros()) as i32;
+            m <<= shift;
+            1 - shift
+        } else {
+            -124
+        };
+        f32::from_bits(((exp + 124) as u32) << 23 | (m & 0x7F) << 16)
+    }
+
+    /// `compose` against the original's sequence on its target (stored = scene x 16, 7e3: each blend's result clamped
+    /// to [0, 31.875] and packed): the trail layers added (SRCALPHA / ONE), then the fog pass (SRCALPHA /
+    /// INVSRCALPHA, colour F x 16 by the bias, alpha = the share) - with the fog constants of two recorded fog draws
+    /// (trailrec g.0 1714: c64 (0.0171229, 0.0193244, 0.0324974, 0.0266093), c66.y 0.25, c67 0.019608 x3, c68
+    /// (0.058824, 0.031373, 0.019608), near / far 50 / 500; trail3 g.0 1201: c64 (0, 0.000758086, 0.00227385,
+    /// 0.588235), c67 (0.003922, 0.007843, 0.007843), c68 (0.039216, 0.019608, 0.011765), 50 / 300), the recorded
+    /// trail's alpha 0.08 x fade 1 x along, scene values up to the ceiling and 1 - 4 layers. The difference left is
+    /// the 7e3 rounding (at most half a step a blend); without the ceiling it is up to the whole overflow.
+    #[test]
+    fn sst_trail_compose_matches_7e3_target() {
+        let draws: [([f32; 4], [f32; 3], [f32; 3], f32, f32); 2] = [
+            ([0.0171229, 0.0193244, 0.0324974, 0.0266093], [0.019608; 3], [0.058824, 0.031373, 0.019608], 50.0, 500.0),
+            ([0.0, 0.000758086, 0.00227385, 0.588235], [0.003922, 0.007843, 0.007843], [0.039216, 0.019608, 0.011765], 50.0, 300.0),
+        ];
+        let mut rng = crate::vehicles::parked::Mwc { lo: 0x1234_5678, carry: 0x9abc_def0 };
+        let (mut worst, mut worst_old, mut n_sat) = (0.0f32, 0.0f32, 0);
+        for (c64, c67, c68, near, far) in draws {
+            for _ in 0..20000 {
+                let dist = 0.3 + rng.float() * 6000.0;
+                let f = fog_share(dist, true, near, far, c64[3]);
+                let dx = rng.float() * 2.0 - 1.0;
+                let ch = (rng.float() * 3.0) as usize % 3;
+                let fog = c64[ch] + (c67[ch] + (c68[ch] - c67[ch]) * (0.5 + 0.5 * dx) - c64[ch]) * 0.25;
+                // (the scene as the target holds it, half the cases near the ceiling)
+                let s = q7e3(16.0 * if rng.float() < 0.5 { rng.float() * SCENE_MAX } else { SCENE_MAX - rng.float() * 0.3 }) / 16.0;
+                let layers = 1 + (rng.float() * 4.0) as usize % 4;
+                let adds: Vec<f32> = (0..layers).map(|_| rng.float() * alpha(1.0, 1.0, rng.float())).collect();
+                // the original: stored values, a blend at a time
+                let mut v = 16.0 * s;
+                for a in &adds {
+                    v = q7e3(v + 16.0 * a);
+                }
+                v = q7e3(16.0 * fog * f + v * (1.0 - f));
+                let orig = v / 16.0;
+                let fogged = s * (1.0 - f) + fog * f;
+                let port = compose(fogged, &adds, f, fog);
+                let old = fogged + adds.iter().sum::<f32>() * (1.0 - f);
+                // (half a 7e3 step at the value, per blend)
+                let half = (orig.max(fogged)).max(1.0 / 64.0) / 256.0;
+                let e = (port - orig).abs() / half;
+                worst = worst.max(e / (layers + 1) as f32);
+                worst_old = worst_old.max((old - orig).abs());
+                if s + adds.iter().sum::<f32>() > SCENE_MAX {
+                    n_sat += 1;
+                }
+            }
+        }
+        eprintln!("compose: worst {worst} half 7e3 steps per blend; without the ceiling {worst_old}; {n_sat} of 40000 cases over it");
+        // (within the rounding: at most a half step per blend, the layers and the fog)
+        assert!(worst <= 1.0, "worst {worst} half steps per blend");
+        // (and the ceiling matters: without it the port was off by the overflow, in about a tenth of the cases)
+        assert!(worst_old > 0.1 && n_sat > 1000, "old {worst_old}, saturated {n_sat}");
     }
 }

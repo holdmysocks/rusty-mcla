@@ -24,6 +24,20 @@ struct Globals {
     fog_color: vec4<f32>,    // a = the fog's most
     params: vec4<f32>,       // x = fog start, y = fog end
     inv_view_proj: mat4x4<f32>,
+    // (the rest of city.wgsl's Globals up to the fog's horizon colours, read by `fog_at`)
+    sky_zenith: vec4<f32>,
+    sky_horizon: vec4<f32>,
+    sky_sunset: vec4<f32>,
+    true_sun: vec4<f32>,
+    moon_dir: vec4<f32>,
+    light_vp: mat4x4<f32>,
+    shadow_params: vec4<f32>,
+    cloud_color: vec4<f32>,
+    cloud_shade: vec4<f32>,
+    tone: vec4<f32>,
+    grade: vec4<f32>,
+    fog_east: vec4<f32>,     // rgb, w = lean towards the horizon colours
+    fog_west: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(2) @binding(0) var t_depth: texture_depth_2d;
@@ -80,25 +94,36 @@ fn vs_trail(@builtin(instance_index) ii: u32, @location(0) pos: vec3<f32>, @loca
 // with SuperFogParams2 c65.z = 1 / (far - near), c65.w = -(near / (far - near)) (F-88930 makes them from the fog's
 // near / far so; recorded c65 = (0.001, 0, 1/450, -50/450) at near 50, far 500). None where the stencil is 1 (the
 // sky, the ground dome: the pass's stencil test NOT EQUAL 1).
-fn fog_share(px: vec2<f32>) -> f32 {
+// (rgb: the fog's colour there as the materials take it - city.wgsl fs_main: leaning towards the horizon's colour,
+// east or west by where one looks; a: the share)
+fn fog_at(px: vec2<f32>) -> vec4<f32> {
     let ip = vec2<i32>(px);
     let s = textureLoad(t_stencil, ip, 0).r * 255.0;
     if (abs(s - 1.0) < 0.5) {
-        return 0.0;
+        return vec4<f32>(g.fog_color.rgb, 0.0);
     }
     let dim = vec2<f32>(textureDimensions(t_depth));
     let dz = textureLoad(t_depth, ip, 0);
     var dist = 0.0;
+    var dir_x = 0.0;
     if (dz > 0.0) {
         let ndc = vec2<f32>(px.x / dim.x * 2.0 - 1.0, 1.0 - px.y / dim.y * 2.0);
         let h = g.inv_view_proj * vec4<f32>(ndc, dz, 1.0);
-        dist = length(h.xyz / h.w - g.cam_pos.xyz);
+        let to_px = h.xyz / h.w - g.cam_pos.xyz;
+        dist = length(to_px);
+        dir_x = to_px.x / max(dist, 0.001);
     }
     let span = g.params.y - g.params.x;
     let k = 1.0 / span;
     let k0 = -(g.params.x / span);
     let e = exp2(-1.4426950216293335 * (dist * k + k0));
-    return clamp(g.fog_color.a * clamp(1.0 - e, 0.0, 1.0), 0.0, 1.0);
+    let horizon = mix(g.fog_east.rgb, g.fog_west.rgb, 0.5 + 0.5 * dir_x);
+    let fog_rgb = g.fog_color.rgb + (horizon - g.fog_color.rgb) * g.fog_east.w;
+    return vec4<f32>(fog_rgb, clamp(g.fog_color.a * clamp(1.0 - e, 0.0, 1.0), 0.0, 1.0));
+}
+
+fn fog_share(px: vec2<f32>) -> f32 {
+    return fog_at(px).a;
 }
 
 @fragment
@@ -110,4 +135,22 @@ fn fs_trail(in: VOut) -> @location(0) vec4<f32> {
         discard;
     }
     return vec4<f32>(t.rgb, a * (1.0 - fog_share(in.clip.xy)));
+}
+
+// The ceiling of the original's scene target under the trail (sst_trail.rs `compose`): the original adds the trail
+// into its 2_10_10_10_FLOAT target (7e3, exponent bias 4: nothing above 31.875 / 16 = 1.9921875 a channel is kept;
+// each blend's result is clamped there) BEFORE its fog pass lerps the target to the fog colour F by the share f.
+// So the original shows min(S + T, M)(1 - f) + F f with S the scene unfogged, M = 1.9921875; the port's scene
+// already holds S(1 - f) + F f, adds T(1 - f) in fs_trail, and then this pass (blend MIN, the same pixels: the trail's
+// coverage with its alpha > 0) keeps each channel at most M(1 - f) + F f - the same value, in any order of layers
+// and trails (all the adds are positive).
+@fragment
+fn fs_trail_cap(in: VOut) -> @location(0) vec4<f32> {
+    let t = textureSample(t_diff, s_diff, in.uv);
+    let a = t.a * 0.08 * in.fade * in.along;
+    if (!(a > 0.0)) {
+        discard;
+    }
+    let fog = fog_at(in.clip.xy);
+    return vec4<f32>(vec3<f32>(1.9921875) * (1.0 - fog.a) + fog.rgb * fog.a, 0.0);
 }

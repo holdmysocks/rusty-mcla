@@ -93,6 +93,51 @@ impl Mwc {
     }
 }
 
+thread_local! {
+    /// The audio's shared generator state (lo, carry): one state in the original (F-62480 / F-60851 step it), drawn by
+    /// the sound objects' variances and Randomized picks and by the speech manager (its gate, script and take draws,
+    /// F-95157 / F-70477). (approx.) The seed: the original's boot state is not known; the game's other callers of
+    /// this state (outside the audio) are not modelled, so the sequence is the original's kind, never its numbers.
+    static AUDIO_MWC: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0x1234_5678, 0x9ABC)) };
+}
+
+/// The shared audio generator (`AUDIO_MWC`) as the sound library draws it.
+struct SharedMwc;
+
+impl SharedMwc {
+    fn with<R>(&self, f: impl FnOnce(&mut Mwc) -> R) -> R {
+        AUDIO_MWC.with(|c| {
+            let (lo, carry) = c.get();
+            let mut m = Mwc { lo, carry };
+            let r = f(&mut m);
+            c.set((m.lo, m.carry));
+            r
+        })
+    }
+    fn int(&self, a: i32, b: i32) -> i32 {
+        self.with(|m| m.int(a, b))
+    }
+    fn float(&self, a: f32, b: f32) -> f32 {
+        self.with(|m| m.float(a, b))
+    }
+}
+
+/// F-62480 on the shared audio state: an integer in [lo, hi] = lo + (new lo & 0x7FFFFFFF) mod (hi - lo + 1). It always
+/// draws (also for lo == hi), as the original.
+pub fn audio_rand(lo: i32, hi: i32) -> i32 {
+    SharedMwc.with(|m| lo + ((m.next() & 0x7FFF_FFFF) % (hi - lo + 1).max(1) as u32) as i32)
+}
+
+/// The shared audio generator's state (lo, carry), and setting it (tests against recorded states).
+#[cfg(test)]
+pub fn audio_rng_state() -> (u32, u32) {
+    AUDIO_MWC.with(|c| c.get())
+}
+#[cfg(test)]
+pub fn set_audio_rng_state(s: (u32, u32)) {
+    AUDIO_MWC.with(|c| c.set(s));
+}
+
 /// Settings handed down the tree each update (F-63029 / F-57176).
 #[derive(Clone, Copy)]
 struct Ctx {
@@ -158,6 +203,9 @@ struct Instance {
     prev_dist: Option<f32>,
     doppler: f32,
     stop: bool,
+    /// the audio timer the sound runs on (P+69 of its request, F-33564); None: not modelled (every sound but the
+    /// speech lines - the original's game sounds are on timer 0 too)
+    timer: Option<u8>,
 }
 
 pub struct SoundLib {
@@ -175,7 +223,10 @@ pub struct SoundLib {
     /// stream channel hash -> (converted .mp3, the stream's lowest channel headroom)
     stream_of: Option<HashMap<u32, (PathBuf, i16)>>,
     clips: HashMap<PathBuf, Option<Arc<Clip>>>,
-    rng: Mwc,
+    rng: SharedMwc,
+    /// the audio controller's three timers (F-46276: engine+572 + 12 k: time, rate, paused): a sound on a paused timer is
+    /// not updated (F-89113 skips it; its voice holds). Timer 0 is paused while the game is (F-99037, `sound.rs`).
+    pub timer_paused: [bool; 3],
     /// Randomized objects' history (kept per object, as the original writes it into the metadata)
     history: HashMap<u32, (usize, Vec<u8>)>,
     insts: Vec<Instance>,
@@ -294,7 +345,8 @@ impl SoundLib {
             waves: HashMap::new(),
             stream_of: None,
             clips: HashMap::new(),
-            rng: Mwc { lo: 0x1234_5678, carry: 0x9ABC },
+            rng: SharedMwc,
+            timer_paused: [false; 3],
             history: HashMap::new(),
             insts: Vec::new(),
             next: 1,
@@ -824,7 +876,7 @@ impl SoundLib {
         let root = self.make(hash, 0)?;
         let id = self.next;
         self.next += 1;
-        self.insts.push(Instance { id, hash, root, req, prev_dist: None, doppler: 1.0, stop: false });
+        self.insts.push(Instance { id, hash, root, req, prev_dist: None, doppler: 1.0, stop: false, timer: None });
         Some(Handle(id))
     }
 
@@ -833,17 +885,24 @@ impl SoundLib {
     pub fn play_clip(&mut self, key: &str, category: &str, req: Req) -> Option<Handle> {
         let file = self.root.join(format!("{key}.wav"));
         let clip = self.clip_of(&file, -1)?;
-        // a header with every tristate inherited and only the category field (mask bit 13)
+        // `category` may name the voice's Speech sound (type 4, e.g. CAREER_SPEECH_DRV_MP_01_SET_POS_YELL: F-70477 plays
+        // the take through "<voice>_<SoundPostFix>"): its header (volume, Doppler, category, mask, tristates) is the voice's
+        let speech = self.snd.get(joaat(category)).filter(|o| o.first() == Some(&4)).map(|o| audcfg::parse_sound(o).header);
+        // else a header with every tristate inherited and only the category field (mask bit 13)
         let mut o = vec![12u8, 0, 0, 0, 0, 0xAA, 0xAA, 0xAA, 0xAA, 0, 0];
         o.extend_from_slice(&(1u32 << 13).to_be_bytes());
         o.extend_from_slice(&joaat(category).to_be_bytes());
-        let (h, _) = audcfg::parse_header(&o);
+        let (h, _) = match speech {
+            Some(h) => (h, 0),
+            None => audcfg::parse_header(&o),
+        };
+        let (vol, pitch) = (h.volume as f32 * 0.01, h.pitch as i32);
         let dur_ms = clip.frames() as f32 * 1000.0 / clip.rate as f32;
         let voice = self.voice_id();
-        let root = Node { h, vol: 0.0, pitch: 0, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
+        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
         let id = self.next;
         self.next += 1;
-        self.insts.push(Instance { id, hash: 0, root, req, prev_dist: None, doppler: 1.0, stop: false });
+        self.insts.push(Instance { id, hash: 0, root, req, prev_dist: None, doppler: 1.0, stop: false, timer: None });
         Some(Handle(id))
     }
 
@@ -851,6 +910,13 @@ impl SoundLib {
     pub fn set(&mut self, h: Handle, req: Req) {
         if let Some(i) = self.insts.iter_mut().find(|i| i.id == h.0) {
             i.req = req;
+        }
+    }
+
+    /// The audio timer a playing sound runs on (see `Instance::timer`).
+    pub fn set_timer(&mut self, h: Handle, t: u8) {
+        if let Some(i) = self.insts.iter_mut().find(|i| i.id == h.0) {
+            i.timer = Some(t.min(2));
         }
     }
 
@@ -954,6 +1020,10 @@ impl SoundLib {
         let mut insts = std::mem::take(&mut self.insts);
         let (lp, lr, lf) = self.listener;
         for inst in insts.iter_mut() {
+            // a sound on a paused timer is not updated (F-89113): its voice is not driven, it goes on from where it was
+            if inst.timer.is_some_and(|t| self.timer_paused[t as usize]) {
+                continue;
+            }
             // Doppler (F-42745): radial speed from the distance change, ratio c / (c + v), smoothed 50/50
             if let Some(p) = inst.req.pos {
                 let d = (p - lp).length();
@@ -1667,5 +1737,43 @@ mod tests {
             let f = g.float(2.0, 5.0);
             assert!((2.0..5.0).contains(&f));
         }
+    }
+
+    /// A career speech line as the original plays it (work/slipstream/audio4/cap/n2.txt): PLAYER_NITROUS through the player
+    /// voice's Speech sound CAREER_SPEECH_DRV_MP_01_SET_POS_YELL (SND line: request defaults, +69 = 0 -> timer 0), whose
+    /// category SPEECH_CAREER_POS resolves to 3.4997 dB at the sliders 10 (CAT 98) and own volume -3 dB, Doppler 0; on the
+    /// paused timer 0 (F-89113 skips it; recorded: t0 held at 93.4585 through a 10.26 s pause) the line's wave does not move.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn speech_line_object_and_timer() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        lib.set_sliders([10; 5]);
+        let c = lib.category("SPEECH_CAREER_POS").expect("category").volume;
+        assert!((c - 3.4997).abs() < 0.0015, "SPEECH_CAREER_POS {c}");
+        let key = format!("career_speech/0x0624a35b/{:08x}", joaat("PLAYER_NITROUS_07"));
+        let h = lib.play_clip(&key, "CAREER_SPEECH_DRV_MP_01_SET_POS_YELL", Req::at(Vec3::new(10.0, 0.0, 0.0))).expect("clip");
+        lib.set_timer(h, 0);
+        {
+            let i = lib.insts.iter().find(|i| i.id == h.0).unwrap();
+            assert_eq!((i.root.h.category, i.root.vol, i.root.h.doppler), (joaat("SPEECH_CAREER_POS"), -3.0, 0));
+        }
+        let pos = |lib: &SoundLib| match &lib.insts.iter().find(|i| i.id == h.0).unwrap().root.kind {
+            Kind::Wave { pos_ms, .. } => *pos_ms,
+            _ => -1.0,
+        };
+        lib.update(0.1, &mut a);
+        let p0 = pos(&lib);
+        lib.timer_paused[0] = true;
+        for _ in 0..30 {
+            lib.update(0.1, &mut a);
+        }
+        assert_eq!(pos(&lib), p0, "held in the pause");
+        lib.timer_paused[0] = false;
+        lib.update(0.1, &mut a);
+        assert!((pos(&lib) - p0 - 100.0).abs() < 1.0, "goes on after the pause");
+        // (still playing)
+        assert!(lib.playing(h));
     }
 }

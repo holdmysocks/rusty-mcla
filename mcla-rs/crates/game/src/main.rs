@@ -6335,7 +6335,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (steering sensitivity: the middle of the scale is the tuning's own steer rate)
             // (the save's own step where it lies between two of the port's: `mc4`)
             physics::vehsim::STEER_SENS.store((0.5 + self.game.sens_exact() * 0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
-            self.speech.update(a, dt);
+            // (the speech clock adds G+92, the frame's real time, not clamped - F-85023; a line holds while timer 0 is paused)
+            self.speech.paused = self.game.mode == Mode::Paused && self.game.replay.is_none();
+            let real_dt = if self.opt.fixed_dt > 0.0 || self.test_render_dt.is_some() { dt } else { self.frame_ms * 0.001 };
+            self.speech.update(a, real_dt);
             self.radio.update(a, dt);
             // pedestrians shouting as they jump clear (their speech banks looked up ahead)
             self.peds.scan_voices_ahead(a.root());

@@ -2496,7 +2496,7 @@ impl Vehicles {
 
     /// The search half of car `idx`'s mcCarSSTurbo::Update (F-60935), made right before the car's step - in
     /// the list's order, with the cars before it already moved this tick, as the original makes it in each car's
-    /// update. A car that does not burn and finds a slipstream tells its leader so (+68 = this car) and fades the
+    /// update. A car that does not burn and finds a slipstream tells its leader so (+68 = this car if it is the player, else -1) and fades the
     /// leader's trail in (its model +7976 = clamp(strength + 0.75, 0, 1)); the car's own +68 is checked by the
     /// search of the car it names.
     fn sst_search_step(&mut self, idx: usize) {
@@ -2504,6 +2504,7 @@ impl Vehicles {
             return;
         }
         let found = self.sst_search(idx);
+        let is_player = self.cars[idx].is_player;
         let d = self.cars[idx].state.veh.as_ref().map_or(-1, |v| v.sst.drafter);
         let drafting = d >= 0 && (d as usize) < self.cars.len() && self.sst_search(d as usize).0 > 0.0;
         let Some(vs) = self.cars[idx].state.veh.as_deref_mut() else { return };
@@ -2515,7 +2516,9 @@ impl Vehicles {
         }
         if let Some(lv) = self.cars[j as usize].state.veh.as_deref_mut() {
             lv.sst.trail_target = (s + 0.75).clamp(0.0, 1.0);
-            lv.sst.drafter = idx as i32;
+            // +68 = the follower's player index (F-55794: the driver's +136), -1 for a computer racer - so an
+            // AI-drafted car's own update drops the target again (recorded, sst_trail_evidence_2026-10-28 s.10)
+            lv.sst.drafter = if is_player { idx as i32 } else { -1 };
         }
     }
 

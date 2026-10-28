@@ -120,6 +120,8 @@ pub struct Sound {
     nitro_btn: bool,
     /// a speech or police radio line is playing (set by the game each frame)
     pub speech_busy: bool,
+    /// the career speech line said at the player's car (F-32206 puts it at the entity's position), followed while it plays
+    speech_line: Option<crate::sndobj::Handle>,
     /// cruisers already reported disabled on the radio
     pub cop_disabled: std::collections::HashSet<usize>,
     /// set by the game each frame: the HUD movie's `damage_alpha`, a splash posted to the HUD's queue 1, the pause
@@ -275,6 +277,16 @@ impl Sound {
                             log::warn!("audio: no sound object {name}");
                         }
                     }
+                    crate::audio::ObjCmd::Line { key, object, player } => {
+                        // a speech line's request (F-70477): the defaults of F-35212 - audio timer 0, so it holds in a pause
+                        let pos = if player { vehicles.player().map(|c| c.state.pos) } else { None };
+                        if let Some(h) = lib.play_clip(&key, &object, crate::sndobj::Req { pos, ..Default::default() }) {
+                            lib.set_timer(h, 0);
+                            if pos.is_some() {
+                                self.speech_line = Some(h);
+                            }
+                        }
+                    }
                     crate::audio::ObjCmd::Clip { key, category, pos } => {
                         lib.play_clip(&key, category, crate::sndobj::Req { pos, ..Default::default() });
                     }
@@ -414,6 +426,16 @@ impl Sound {
             let endrace = lib.scene_on("DYNAMIC_MIXER_ENDRACE") || lib.scene_on("DYNAMIC_MIXER_ENDRACE_BEATMETHERE");
             let viewer = game.replay.as_ref().is_some_and(|r| !r.paused);
             lib.scene("DYNAMIC_MIXER_PAUSE", game.mode == Mode::Paused && !lib.scene_on("DYNAMIC_MIXER_NAVMAP") && !(viewer && !endrace));
+            // the audio timer 0 (F-99037: engine+580): paused while the game is, unless the replay viewer is open outside the
+            // race end; (approx.) only the speech lines run on it in the port, the original's other game sounds do too
+            lib.timer_paused[0] = game.mode == Mode::Paused && !(game.replay.is_some() && !endrace);
+            // the line at the player's car follows it (F-32206 each update: the entity's position)
+            if let Some(h) = self.speech_line {
+                match vehicles.player().map(|c| c.state.pos) {
+                    Some(p) if lib.playing(h) => lib.set(h, crate::sndobj::Req { pos: Some(p), ..Default::default() }),
+                    _ => self.speech_line = None,
+                }
+            }
             lib.scene("DYNAMIC_MIXER_GARAGE", game.mode == Mode::Garage);
             // REPLAY_*: the replay viewer's speed (F-42247; the port's viewer plays at 1 or is paused)
             match &game.replay {

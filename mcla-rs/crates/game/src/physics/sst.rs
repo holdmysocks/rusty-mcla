@@ -312,6 +312,44 @@ mod tests {
     }
 
     #[test]
+    fn ai_drafted_trail_by_list_order() {
+        // A computer racer in a slipstream writes -1 to its leader's +68 (its player index, F-55794), so the
+        // leader's own update drops the trail target (sst_trail_evidence_2026-10-28 s.10). Leader after the
+        // follower in the list: cleared before the model's fade, never drawn (5001 -> 5003 recorded: 0 in every
+        // poll). Leader before the follower: set again after its update each tick, so it fades in at 4.5 a second
+        // and out at 4.5 a second once the follower leaves (5003 -> 5002 recorded: 0.075 a frame both ways).
+        let t = tune();
+        let dt = 1.0 / 60.0;
+        let follow = |l: &mut SsTurbo| {
+            l.trail_target = (0.5f32 + 0.75).clamp(0.0, 1.0);
+            l.drafter = -1;
+        };
+        let mut after = SsTurbo::default();
+        for _ in 0..60 {
+            follow(&mut after);
+            after.charge(&t, 40.0, dt);
+            after.fade_trail(false, dt);
+            assert_eq!(after.trail, 0.0);
+        }
+        let mut before = SsTurbo::default();
+        let mut seen = vec![];
+        for _ in 0..16 {
+            before.charge(&t, 40.0, dt);
+            follow(&mut before);
+            before.fade_trail(false, dt);
+            seen.push(before.trail);
+        }
+        assert!((seen[0] - 0.075).abs() < 1e-6 && (seen[1] - 0.15).abs() < 1e-6 && seen[15] == 1.0, "{seen:?}");
+        let mut n = 0;
+        while before.trail > 0.0 {
+            before.charge(&t, 40.0, dt);
+            before.fade_trail(false, dt);
+            n += 1;
+        }
+        assert_eq!(n, 14, "out at 0.075 a frame, the last step the rest");
+    }
+
+    #[test]
     fn burn_runs_down_and_lens() {
         let t = tune();
         let dt = 1.0 / 60.0;

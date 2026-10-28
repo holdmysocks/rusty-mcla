@@ -445,6 +445,9 @@ pub enum ObjCmd {
     /// a converted wave (`<bank>/<wave>` below the audio root) played as a voice of the category (speech lines:
     /// the speech system picks the take, the category and the scenario's mixer set the level)
     Clip { key: String, category: &'static str, pos: Option<Vec3> },
+    /// a career speech line's take (`speech.rs`): played through `object` (the voice's Speech sound, or a category name)
+    /// on the audio timer 0 (it holds while the game is paused); `player`: at the player's car, followed while it plays
+    Line { key: String, object: String, player: bool },
     /// a dynamic mixer scene on / off
     Scene { name: String, on: bool },
     /// the sound (or, for a type-23 object, the scene) whose hash sits at `offset` of a game.dat object
@@ -626,6 +629,13 @@ impl Audio {
     pub fn obj_clip(&mut self, key: &str, category: &'static str, pos: Option<Vec3>) -> bool {
         if self.objects {
             self.obj_cmds.push(ObjCmd::Clip { key: key.to_string(), category, pos });
+        }
+        self.objects
+    }
+    /// A career speech line's take (see [`ObjCmd::Line`]).
+    pub fn obj_line(&mut self, key: &str, object: &str, player: bool) -> bool {
+        if self.objects {
+            self.obj_cmds.push(ObjCmd::Line { key: key.to_string(), object: object.to_string(), player });
         }
         self.objects
     }
