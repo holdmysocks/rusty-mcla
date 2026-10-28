@@ -216,8 +216,17 @@ pub fn parked_steer(u1: f32, u2: f32) -> f32 {
 /// the drawn 0.025 m drop - while it rides; rows X, up, Z, place.
 pub fn instance_matrix(c: &super::CarInstance) -> [Vec3; 4] {
     let m = glam::Mat3::from_quat(c.state.rot);
-    let at = c.rail.as_ref().filter(|r| !r.active).and_then(|r| r.seat.as_ref()).map_or(c.state.pos, |s| s.at.0);
+    let at = c.rail.as_ref().filter(|r| seat_poses(r)).and_then(|r| r.seat.as_ref()).map_or(c.state.pos, |s| s.at.0);
     [m.x_axis, m.y_axis, m.z_axis, at]
+}
+
+/// Whether the rail's seat places the instance: only while a rail poses the car. Physical (state 4) or at
+/// rest (5) the instance is where the collider left it - the car's place, which the body's pose kept (the
+/// original's recording: no instance moves when its body goes, th.0 / th7.0, 10 of 10 at 0.000 - 0.001 m). A
+/// seat from before the hit would move it there in one frame, and the next activation takes that jump over
+/// the frame as its velocity (1.4 m: 78 m/s).
+fn seat_poses(r: &Rider) -> bool {
+    !r.active && !matches!(r.state, 4 | 5)
 }
 
 /// An ambient type's physics (loose.rs `AmbTune`): `mcAmbientTypePhysicsTuning.xml`,
@@ -2235,6 +2244,8 @@ impl Vehicles {
                             r.path = None;
                             r.then = None;
                             r.rest = 0.0;
+                            // (back from physics the seat starts from the car's pose, as `let_go`)
+                            r.seat = None;
                             c.state.vel = c.state.forward() * if back { -r.v } else { r.v };
                             continue;
                         }
@@ -2319,6 +2330,20 @@ impl Vehicles {
                     // (MCLA_TRAFFIC_RAM_PARKED: a held parked car standing still instead)
                     let parked = std::env::var("MCLA_TRAFFIC_RAM_PARKED").is_ok();
                     let pick = (0..self.cars.len()).filter(|&i| if parked { self.cars[i].park_held && self.cars[i].state.vel.length() == 0.0 && self.cars[i].state.pos.distance(m) > 20.0 } else { self.cars[i].rail.as_ref().is_some_and(|r| (r.state == 1 && r.v > 2.0 && !semi && !r.ty.cab && !r.ty.trailer) || (semi && r.ty.trailer && r.state == 0 && !r.physical)) } && self.cars[i].state.pos.distance(m) < if parked { 400.0 } else { 150.0 }).min_by(|&a, &b| self.cars[a].state.pos.distance(m).total_cmp(&self.cars[b].state.pos.distance(m)));
+                    // (the spot the player is put at and the run-up to the target clear of every other car: a car
+                    // following within the 9 m would have the player dropped onto it)
+                    let pick = pick.filter(|&k| {
+                        let (tp, tr) = (self.cars[k].state.pos, self.cars[k].state.rot);
+                        let from = std::env::var("MCLA_TRAFFIC_RAM_FROM").unwrap_or_default();
+                        let f = if parked || from == "side" { tr * Vec3::NEG_X } else if from == "front" { tr * Vec3::Z } else { tr * Vec3::NEG_Z };
+                        let reach = if semi { 13.0 } else { 9.0 };
+                        (0..self.cars.len()).all(|j| j == k || self.cars[j].is_player || {
+                            let d = self.cars[j].state.pos - (tp - f * reach);
+                            let along = d.dot(f);
+                            let across = (d - f * along).length();
+                            !(along > -4.0 && along < reach && across < 3.5)
+                        })
+                    });
                     if let Some(k) = pick {
                         *last = self.clock;
                         let (tp, tr, tv) = (self.cars[k].state.pos, self.cars[k].state.rot, if parked { 0.0 } else if semi { self.cars[k].state.vel.length() } else { self.cars[k].rail.as_ref().unwrap().v });
@@ -2337,6 +2362,12 @@ impl Vehicles {
                         log::info!("traffic ram {} {} at {:?}", self.cars[k].rail.as_ref().map_or(self.cars[k].uid, |r| r.rng_id()), self.cars[k].model.name, tp);
                     }
                 }
+            }
+        }
+        if std::env::var_os("MCLA_TRAFFIC_TRACE").is_some() {
+            for c in self.cars.iter().filter(|c| c.rail.as_ref().is_some_and(|r| r.active || r.physical)) {
+                let r = c.rail.as_ref().unwrap();
+                log::info!("ttr {} {} t {:.3} st {} act {} phys {} at {:?} v {:?} w {:?} up {:.3}", c.model.name, c.uid, self.clock, r.state, r.active, r.physical, c.state.pos, c.state.vel, c.state.ang_vel, c.state.up().y);
             }
         }
         // (test hook MCLA_TRAFFIC_RAM: each frame an active riding car rises faster than 1 m/s or tips past 25 degrees)
@@ -3132,6 +3163,24 @@ mod tests {
     }
 
     /// sub_8273A848's box: |a70 . d| < 0.4 h3c and |a60 . d| < 0.4 h40, the height left out.
+    #[test]
+    fn a_physical_or_resting_car_is_not_put_back_on_its_seat() {
+        // (a seat from before the hit: physical or at rest the instance stays where the collider left it)
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, rail_seq: 0, rail_key: None, rail_fresh: true };
+        r.seat = Some(Seat::new(Vec3::ZERO, Vec3::Y, Vec3::NEG_Z));
+        assert!(seat_poses(&r));
+        for (state, active) in [(4, false), (4, true), (5, false), (5, true), (1, true)] {
+            r.state = state;
+            r.active = active;
+            assert!(!seat_poses(&r), "state {state} active {active}");
+        }
+        r.active = false;
+        for state in [1, 2, 3, 6, 7, 8] {
+            r.state = state;
+            assert!(seat_poses(&r), "state {state}");
+        }
+    }
+
     #[test]
     fn the_junction_box_is_four_tenths_of_its_half_extents() {
         let b = JunctionBox { c: (10.0, -20.0), a60: [1.0, 5.0, 0.0], a70: [0.0, 5.0, 1.0], h3c: 10.0, h40: 20.0 };
