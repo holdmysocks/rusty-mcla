@@ -582,6 +582,8 @@ pub struct Game {
     pub cart_open: Option<usize>,
     /// the LOADING tag: time left, whether it is up, its fade-out, and the place last seen
     pub loading_tag: f32,
+    /// seconds left of a pause menu SAVE GAME's SAVING tag (SG_VerifyAndSaveGame's spinner, `Save_Icon_Saving`)
+    pub manual_save_t: f32,
     pub loading_on: bool,
     /// the text the tag was given
     pub loading_text: String,
@@ -1055,8 +1057,13 @@ pub struct SaveData {
     pub color: usize,
     pub cfg: CarConfig,
     pub best_time: Option<f32>,
+    // (an original save imported with no save of the port to merge into has no `color` - the swatch is the port's own:
+    // the file must still be readable, not silently a new game)
+    #[serde(default)]
+    #[serde(default)]
     #[serde(default)]
     pub money: Option<i64>,
+    #[serde(default)]
     #[serde(default)]
     pub rep: i64,
     #[serde(default)]
@@ -1242,6 +1249,7 @@ impl Game {
             stat_idx: [0; 2],
             song_line: None,
             vinyl_clip: None,
+            manual_save_t: 0.0,
             results_table: false,
             arcade: (0, 0, [0; 3]),
             arcade_opts: ARCADE_DEFAULTS,
@@ -4103,7 +4111,9 @@ impl Game {
                 }
             }
             Some(252) => {
-                // SAVE GAME
+                // SAVE GAME: the save manager's SaveFile does nothing with AUTO SAVE off (the file manager's
+                // disable flag +10096, F-74254); else the file is written and SG_VerifyAndSaveGame's
+                // SAVING spinner stands for the save's 0.93 s (SaveGame.sc.xml)
                 let d = self.data_dir.clone();
                 self.write_save(&d);
             }
@@ -4119,6 +4129,10 @@ impl Game {
                             self.message_box = Some((def, 0, MenuAction::None));
                             self.fav_remove_pending = Some(id);
                         } else {
+                if !self.no_save {
+                    self.manual_save_t = SAVE_WRITE_T;
+                    log::info!("pause: SAVE GAME - writing the save");
+                }
                             self.remove_favourite(&id);
                         }
                     } else if self.race_favs.len() >= 100 {
@@ -10859,6 +10873,15 @@ impl Game {
                         // (SG_SaveFile goes, SG_LoadFile comes)
                         fp.movie.player.set_global("savegame_text", Value::str(&text));
                         fp.movie.player.set_global("savegame_anim", Value::Int(1));
+            if self.manual_save_t > 0.0 {
+                self.manual_save_t -= dt;
+                self.loading_tag = dt.max(1e-3);
+                self.tag_saving = Some(true);
+                if self.manual_save_t <= 0.0 {
+                    self.loading_tag = 0.0;
+                    self.tag_saving = None;
+                }
+            }
                         self.loading_text = text.clone();
                     }
                     self.loading_tag -= dt;

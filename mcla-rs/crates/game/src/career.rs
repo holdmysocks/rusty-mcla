@@ -908,7 +908,8 @@ impl Career {
                 }
             }
             Ev::Delivery => *self.stats.entry("xCDL".into()).or_default() += 1,
-            Ev::EscapedPolice => *self.stats.entry("tPUR".into()).or_default() += 1,
+            // (`tPUR` is the purse statistic, mirrored from the money at every change - F-71075 / F-38145: never a count of escapes)
+            Ev::EscapedPolice => {}
             Ev::Money(m) => *self.stats.entry("k$WA".into()).or_default() += m.max(0),
             Ev::Rep(r) => {
                 self.rep = r;

@@ -4,20 +4,20 @@
 //! slots (tPTS, aFAB) and the audio's slow-motion switch during the tutorials.
 //!
 //! The original (scratch `work/save/port/s23b/`):
-//! - The odometer (sub_82562480, once a frame for the player's vehicle): speed = |(vx, vz)| x
+//! - The odometer (F-53047, once a frame for the player's vehicle): speed = |(vx, vz)| x
 //!   2.237 (mph); +20 += speed x the frame time x 1/3600 - miles; flushed into gkDS (add) by
-//!   sub_822A61B0 (with vkDT for the vehicle). aDST: gkDS >= 5000.
-//! - Two wheels (mcCarGyro sub_823663D0 0x823673D4..0x823674C0): while the gyro's lean state
+//!   F-15445 (with vkDT for the vehicle). aDST: gkDS >= 5000.
+//! - Two wheels (mcCarGyro F-10637 A-68829..A-14840): while the gyro's lean state
 //!   (+18) is on and the tuning has Lean (> 0), for the player: gk2W += speed (+224, m/s) x
 //!   2.237 x frame time / 3600. a2WD: gk2W >= 50.
-//! - Wheelie (mcBikeGyro sub_823688B8 0x8236A33C..0x8236A3E0): while the stunt state (+16) is
+//! - Wheelie (mcBikeGyro F-63842 A-50974..A-48212): while the stunt state (+16) is
 //!   above 0 (1 up, 99 coming down): gkWL += the same. aWHL: gkWL >= 50.
-//! - Jumps (sub_82330378 0x82330554..0x82330720): no wheel down - the air time (+584) grows by
+//! - Jumps (F-97237 A-55250..A-91720): no wheel down - the air time (+584) grows by
 //!   the frame time; a wheel down with air time > 0 - for the player's vehicle gsJT += the air
 //!   time, gmJD = max(gmJD, the flat distance from where it left the ground (+640) to here),
 //!   then air time = -air time; a wheel down with air time <= 0 - air time 0, the take-off
 //!   point = here. aJTM: gsJT >= 600; aJDS: gmJD >= 310.896.
-//! - The race-end statistics (sub_822D0438 0x822D0BA0..0x822D0C0C -> sub_822CD720): won (place
+//! - The race-end statistics (F-98556 A-15849..A-93208 -> F-96807): won (place
 //!   1), the time under the race's GoalTargetTime x 1000 ms (the city table's +136), the damage
 //!   under a quarter of MaxDamage ((max - damage) > 0.75 max): rWIN / rBTT / rMDG of the race (max
 //!   1); all three: rCGL of the race, aAOR; then, by the race's content (+144: ContentID, else 4
@@ -25,10 +25,10 @@
 //!   race (sub types 1, 2, 3, 5) not DevOnly of content bit 0 has rCGL; bit 2: aARC the same for
 //!   content 4. (The races' GoalTargetTime / TargetDamage are those of the GOAL ATTACK mode
 //!   - ArcadeMenuGoalAttack, pause MODES' GOAL ATTACK; the check runs only for a race started
-//!   from it: sub_822D0438 0x822D0974 tests the mode object's +796 - `goal_attack`.)
-//! - The showroom's TEST DRIVE (sub_826A6330): tTST + 1; the vehicle table's +48
+//!   from it: F-98556 A-77758 tests the mode object's +796 - `goal_attack`.)
+//! - The showroom's TEST DRIVE (F-22067): tTST + 1; the vehicle table's +48
 //!   (ContentDownloadFlags, else ContentFlags - `tune/vehicle` lists) >= 4: aTDV (set once).
-//! - The photo album (sub_8263DCF8): a picture saved into slot k of the album (16 slots,
+//! - The photo album (F-67304): a picture saved into slot k of the album (16 slots,
 //!   `PhotoAlbum.s0..s15`; PHOTO_ALBUM): a slot not used before raises the album's count (+856),
 //!   aFAB as it reaches 16; tPTS + 1 for every picture; the slot marked used (+860).
 
@@ -90,12 +90,12 @@ pub struct S23bLive {
     pub ui_obj: Option<&'static str>,
 }
 
-/// The content mask (0x827E9174) of the running game: 317, what startup adds (sub_82388848)
+/// The content mask (0x827E9174) of the running game: 317, what startup adds (F-68286)
 /// with no package downloaded (tDL2 = 317 in every sample).
 pub const CONTENT_MASK: u32 = 317;
 
 /// The vehicle table's ContentFlags (+52; none read as 0, in the mask) and PortalRewardIdx
-/// (+56; -1 none) of a vehicle (parser sub_823964C0).
+/// (+56; -1 none) of a vehicle (parser F-87336).
 pub fn vehicle_content(data_dir: &str, car: &str) -> (u32, i32) {
     static TABLE: std::sync::OnceLock<std::collections::HashMap<String, (u32, i32)>> = std::sync::OnceLock::new();
     let t = TABLE.get_or_init(|| {
@@ -117,9 +117,9 @@ pub fn vehicle_content(data_dir: &str, car: &str) -> (u32, i32) {
 }
 
 impl Game {
-    /// A vehicle the game offers (sub_823961C0): its ContentFlags in the content mask, else a
+    /// A vehicle the game offers (F-87177): its ContentFlags in the content mask, else a
     /// portal reward the career holds - the statistic `tREW` of its index above 0 (earned on
-    /// line, sub_822D1260). Only `vp_aud_r8_08` (ContentFlags 2, index 0) is outside the mask.
+    /// line, F-53037). Only `vp_aud_r8_08` (ContentFlags 2, index 0) is outside the mask.
     pub fn mc4_vehicle_available(&self, car: &str) -> bool {
         let (flags, portal) = vehicle_content(&self.data_dir, car);
         // (the port has no online play: a portal reward is offered like any other car -
@@ -235,7 +235,7 @@ impl GasVisit {
 }
 
 impl Game {
-    /// The SERVICE STATION menu comes up (mcGasStationMenuForm open, sub_82646618): the cursor
+    /// The SERVICE STATION menu comes up (mcGasStationMenuForm open, F-78208): the cursor
     /// on FULL FIX, REFILL NITRO enabled with nitrous fitted, UI_MENU_SELECT.
     pub fn gas_menu_open(&mut self, nitro: bool) {
         self.hangout_key = Some(crate::game::GAS_MENU.to_string());
@@ -250,11 +250,11 @@ pub const MPH: f32 = 2.237;
 pub const PER_HOUR: f32 = 0.000_277_778;
 
 /// The races of the city table that count for aAAR / aARC: sub types Ordered, Circuit,
-/// Unordered, Blitz (1, 2, 3, 5 of sub_8238E748's table 0x827E930C).
+/// Unordered, Blitz (1, 2, 3, 5 of F-93280's table 0x827E930C).
 pub const GOAL_SUB_TYPES: [&str; 4] = ["Ordered", "Circuit", "Unordered", "Blitz"];
 
-/// A race's content (+144): ContentID, else 4 for South Central, 1 otherwise (sub_82388E48
-/// 0x823895D0). No race file on the disc has a ContentID.
+/// A race's content (+144): ContentID, else 4 for South Central, 1 otherwise (F-95490
+/// A-45474). No race file on the disc has a ContentID.
 pub fn race_content(district: &str) -> u32 {
     if district.eq_ignore_ascii_case("SouthCentral") { 4 } else { 1 }
 }
@@ -293,7 +293,7 @@ pub const ALBUM_SLOTS: usize = 16;
 impl Game {
     /// Once a frame from the step 23 tick: the driving statistics, the test drive.
     pub fn mc4b_tick(&mut self, dt: f32, d: S23Drive) {
-        // ---- the showroom's test drive (sub_826A6330) ----
+        // ---- the showroom's test drive (F-22067) ----
         let td = self.test_drive;
         if td.is_some() && self.opt_x.s23b.td_was.is_none() {
             self.mc4_stat_add("tTST", 0, 1.0);
@@ -322,6 +322,26 @@ impl Game {
         }
         let miles = |v: f32| (v * MPH * sim * PER_HOUR) as f64;
         self.mc4_stat_add("gkDS", 0, miles(d.vel_xz));
+        // (the flush F-15445 adds the same distance to the vehicle's own `vkDT` - the sub id is the vehicle table's index, kept
+        // here under the vehicle's name like the importer's keys - sets the top speed `gvTS` (operation 2, the larger) once
+        // the speed is over 10 mph, and adds the hours: `ghTP` always, `khTC` and `ghTC` while the game is in "Cruising"
+        // (free roam). The hours' clock is taken as the game's own, stopped in the pause and slowed by slow motion
+        // (the clock object's +20: not checked); the first flush's hours are not decoded.)
+        let car = self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase());
+        if let Some(car) = car {
+            *self.career.ostats.entry(format!("vkDT/{car}")).or_insert(0.0) += miles(d.vel_xz);
+        }
+        let mph = (d.speed * MPH) as f64;
+        if mph > 10.0 {
+            let was = self.mc4_stat("gvTS", 0);
+            self.mc4_stat_set("gvTS", 0, was.max(mph));
+        }
+        let hours = (sim * PER_HOUR) as f64;
+        self.mc4_stat_add("ghTP", 0, hours);
+        if self.mode == Mode::FreeRoam {
+            self.mc4_stat_add("khTC", 0, hours);
+            self.mc4_stat_add("ghTC", 0, hours);
+        }
         if d.two {
             self.mc4_stat_add("gk2W", 0, miles(d.speed));
         }
@@ -361,7 +381,7 @@ impl Game {
         }
     }
 
-    /// sub_822CD720 from the race-end statistics: the race's goals (won, under its goal time,
+    /// F-96807 from the race-end statistics: the race's goals (won, under its goal time,
     /// under a quarter of the damage), rCGL and aAOR when all three are met; aAAR / aARC once
     /// every race of its content has them.
     pub fn mc4_race_goals(&mut self, place: usize, time: Option<f32>, damage: f32) {
@@ -406,7 +426,7 @@ impl Game {
         }
     }
 
-    /// A race's goals as GOAL ATTACK's list shows them (sub_82655E58): the mask "0".."15" from
+    /// A race's goals as GOAL ATTACK's list shows them (F-33135): the mask "0".."15" from
     /// the save's rWIN 8, rMDG 4, rBTT 2, rCGL 1 of the race's table index.
     pub fn mc4_goal_mask(&self, race: usize) -> u8 {
         let Some(k) = self.race_defs.get(race).and_then(|d| self.mc4_race_index(&d.id)) else { return 0 };
@@ -415,7 +435,7 @@ impl Game {
 
     /// The goal panel's four lines for a race (columns 2..5 of the list: GOALATTACK_WIN,
     /// GOALATTACK_DAMAGE, GOAL_TIME with GOAL_TIME_ENTRY = the race's GoalTargetTime by
-    /// sub_8223DE50 - set on a selection change, sub_82656048 -, GOALATTACK_ALLGOALS).
+    /// F-26034 - set on a selection change, F-28168 -, GOALATTACK_ALLGOALS).
     pub fn mc4_goal_lines(&self, race: usize) -> [String; 4] {
         let ms = self.race_defs.get(race).map_or(0, |d| (d.goal_time * 1000.0).round() as i32);
         let st = |k: &str, d: &str| self.career.strings.get(k).map(|v| v.to_string()).unwrap_or_else(|| d.to_string());
@@ -427,9 +447,9 @@ impl Game {
         ]
     }
 
-    /// The race start badge's second line in GOAL ATTACK (GetRaceInfo sub_82640AE0
-    /// 0x82640D78..0x82640DB4) and in a time trial (event kind 2, the jump table 0x82640B70 ->
-    /// 0x82640D00: the race's target time, sub_82256150): RACE_INFO_GOALATTACK_FORMAT
+    /// The race start badge's second line in GOAL ATTACK (GetRaceInfo F-24355
+    /// A-69161..A-73729) and in a time trial (event kind 2, the jump table A-51741 ->
+    /// A-63596: the race's target time, F-89467): RACE_INFO_GOALATTACK_FORMAT
     /// "TARGET TIME: <D>RACE_INFO_GOAL_TIME</D>" (work/hookmen2 `cap/tt_07`).
     pub fn mc4_goal_badge(&self) -> Option<String> {
         let d = self.current_race.and_then(|i| self.race_defs.get(i))?;
@@ -443,7 +463,7 @@ impl Game {
     }
 
     /// A picture taken in photo mode, written at once into the slot the album's chooser opens on
-    /// (sub_8263DC38: the first free one, slot 0 when all sixteen are used) - the test hook
+    /// (F-93904: the first free one, slot 0 when all sixteen are used) - the test hook
     /// MCLA_PHOTO_TEST=album; the game's own flow chooses the slot (`photoalbum`).
     pub fn mc4b_photo_path(&mut self) -> String {
         let dir = album_dir(&self.data_dir);
@@ -452,7 +472,7 @@ impl Game {
         self.mc4b_photo_save(slot)
     }
 
-    /// A picture saved into slot k of the album (sub_8263DCF8): a slot not used before raises
+    /// A picture saved into slot k of the album (F-67304): a slot not used before raises
     /// the count of used slots (+856), aFAB as it reaches 16; tPTS + 1 for every picture, an
     /// overwrite too. The file to write.
     pub fn mc4b_photo_save(&mut self, slot: usize) -> String {
@@ -538,7 +558,7 @@ mod tests {
         assert_eq!(g.step(dt, c, 20.0, false, false, false, false), GasStep::RefillOne);
     }
 
-    /// sub_823961C0 on the disc's vehicle table: the R8 alone is outside the mask (ContentFlags 2,
+    /// F-87177 on the disc's vehicle table: the R8 alone is outside the mask (ContentFlags 2,
     /// PortalRewardIdx 0) and comes with tREW/0 - which the port, without online play, offers
     /// anyway (docs/DECISIONS.md); the base cars, the DUB cars and the cut GT-R are offered.
     #[test]

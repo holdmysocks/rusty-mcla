@@ -6059,6 +6059,8 @@ pub const REDLIGHT_HOOKMEN: [u32; 5] = [350, 351, 352, 353, 354];
 /// (table 0x82906FE4). The script shows it after the banner of form 56 (the end of race
 /// sequence's indices 12 and 5: generic_timetrial_hookman.sco 0x255d..0x2647, 0x2952..0x2990).
 pub const TT_PANEL: char = '\u{1}';
+/// the purse's limit either way (AddMoney F-71075 clamps above, SpendMoney F-38145 below)
+pub const PURSE_CAP: i64 = 2_140_000_000;
 
 /// One row of the ARCADE menu's options page.
 #[derive(Clone, Debug, PartialEq)]
@@ -12032,6 +12034,10 @@ impl Game {
             }
         }
         // (the money: aMIL as the purse grows to $1,000,000 or more)
+        // (the purse is held in [-2,140,000,000, 2,140,000,000] and mirrored into the statistic `tPUR` at every change:
+        // AddMoney F-71075, SpendMoney F-38145)
+        self.money = self.money.clamp(-PURSE_CAP, PURSE_CAP);
+        self.career.stats.insert("tPUR".to_string(), self.money);
         if let Some(was) = self.opt_x.s23.money_was.replace(self.money) {
             if self.money > was && self.money >= 1_000_000 {
                 self.mc4_award("aMIL");
@@ -17503,3 +17509,105 @@ mod tests {
         assert_eq!(n, 65536);
     }
 }
+    /// The five real saves (the 100 % save, a new game, a trace save, the PS3 one, Xenia's current one), imported by
+    /// `tools/import_mc4_save.py` onto an empty port save (`imp`) and onto a copy of a real one (`imp2`) (the folders
+    /// under `MCLA_ROUNDTRIP_FIXTURES`, default `D:/MCLA/work/save-audit`), loaded by the game with its career tables and
+    /// written: every difference between the file the importer wrote and the file the game writes is listed in
+    /// `<folder>/roundtrip_<set>_<name>.txt`; the block `mc4` must come back as it went in. Skipped without the fixtures
+    /// or the data folder.
+    #[test]
+    fn real_saves_round_trip() {
+        let root = std::env::var("MCLA_ROUNDTRIP_FIXTURES").unwrap_or_else(|_| "D:/MCLA/work/save-audit".to_string());
+        for set in ["imp", "imp2"] {
+            std::env::set_var("MCLA_SAVE_FIXTURES", format!("{root}/{set}"));
+            for name in ["full_v15", "newgame_v14", "ps3_RAGE_dec", "recomp_trace_v14", "xenia_current_v14"] {
+                if let Some(save) = fixture(&format!("{name}.json")) {
+                    // (the game reads the importer's file: an unreadable one is silently a new game)
+                    if let Err(e) = serde_json::from_value::<crate::game::SaveData>(save) {
+                        panic!("{set}/{name}: the game cannot read the importer's file: {e}");
+                    }
+                }
+                let Some((mut g, dir, save)) = career_game(&format!("{name}.json"), "rt") else {
+                    eprintln!("(no fixture {set}/{name}: skipped)");
+                    continue;
+                };
+                g.write_save(&dir);
+                let t = std::fs::read_to_string(std::path::Path::new(&dir).join("mcla_save.json")).unwrap();
+                let after: Value = serde_json::from_str(&t).unwrap();
+                let mut diff = Vec::new();
+                lost(&save, &after, "save", &mut diff);
+                lost(&after, &save, "save(added)", &mut diff);
+                let _ = std::fs::write(std::path::Path::new(&root).join(format!("roundtrip_{set}_{name}.txt")), diff.join("
+"));
+                let block: Vec<&String> = diff.iter().filter(|d| d.starts_with("save/mc4") || d.starts_with("save(added)/mc4")).collect();
+                assert!(block.is_empty(), "{set}/{name}: {:#?}", &block[..block.len().min(40)]);
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
+    /// A key the types do not name, put into every kind of object of the block of the 100 % save, comes back where it
+    /// was (the block is never narrowed to the keys the port knows).
+    #[test]
+    fn unknown_keys_come_back() {
+        let root = std::env::var("MCLA_ROUNDTRIP_FIXTURES").unwrap_or_else(|_| "D:/MCLA/work/save-audit".to_string());
+        let Some(mut save) = std::fs::read_to_string(format!("{root}/imp2/full_v15.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
+            eprintln!("(no fixture: skipped)");
+            return;
+        };
+        let spots = ["", "/options", "/garage/0", "/garage/0/visual", "/garage/0/performance", "/vehicle_records/0", "/career", "/career/missions/0",
+            "/career/missions/0/objectives/0", "/career/experience", "/career/events/0", "/editor", "/editor/races/0", "/vinyl_packages/0", "/career/pink_slips"];
+        let mut put = Vec::new();
+        for sp in spots {
+            if let Some(Value::Object(o)) = save["mc4"].pointer_mut(sp) {
+                o.insert("zz_unknown".to_string(), Value::from(4242));
+                put.push(sp);
+            }
+        }
+        assert!(put.len() >= 12, "the spots: {put:?}");
+        let dir = std::env::temp_dir().join(format!("mcla_unk_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("unk.json"), serde_json::to_string(&save).unwrap()).unwrap();
+        std::env::set_var("MCLA_SAVE_FIXTURES", dir.to_string_lossy().to_string());
+        let (mut g, d, _) = career_game("unk.json", "unk").unwrap();
+        g.write_save(&d);
+        let after = saved_block(&d);
+        let mut gone = Vec::new();
+        for sp in &put {
+            if after.pointer(&format!("{sp}/zz_unknown")) != Some(&Value::from(4242)) {
+                gone.push(*sp);
+            }
+        }
+        assert!(gone.is_empty(), "unknown keys lost at {gone:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    /// The purse is held within +-2,140,000,000 and mirrored into the statistic `tPUR` (F-71075, F-38145); an escape
+    /// from the police does not touch it; the driving flush (F-15445) counts `vkDT` / `gvTS` / `ghTP` / `khTC` / `ghTC`.
+    #[test]
+    fn purse_cap_and_driving_flush() {
+        let root = std::env::var("MCLA_ROUNDTRIP_FIXTURES").unwrap_or_else(|_| "D:/MCLA/work/save-audit".to_string());
+        std::env::set_var("MCLA_SAVE_FIXTURES", format!("{root}/imp2"));
+        let Some((mut g, dir, _)) = career_game("full_v15.json", "purse") else { return };
+        g.money = 3_000_000_000;
+        g.mc4_s23_tick(0.016, S23In::default());
+        assert_eq!((g.money, g.career.stats.get("tPUR").copied()), (PURSE_CAP, Some(PURSE_CAP)));
+        g.money = -3_000_000_000;
+        g.mc4_s23_tick(0.016, S23In::default());
+        assert_eq!(g.money, -PURSE_CAP);
+        g.money = 12_345;
+        g.career.event(crate::career::Ev::EscapedPolice);
+        g.mc4_s23_tick(0.016, S23In::default());
+        assert_eq!(g.career.stats.get("tPUR").copied(), Some(12_345), "an escape is not money");
+        // (the flush: one second at 20 m/s in free roam)
+        g.fresh_game = false;
+        g.mode = crate::game::Mode::FreeRoam;
+        let d = crate::mc4b::S23Drive { present: true, vel_xz: 20.0, speed: 20.0, ..Default::default() };
+        let (p0, c0) = (g.mc4_stat("ghTP", 0), g.mc4_stat("khTC", 0));
+        g.mc4b_tick(1.0, d);
+        let hours = 1.0 / 3600.0;
+        assert!((g.mc4_stat("ghTP", 0) - p0 - hours).abs() < 1e-6 && (g.mc4_stat("khTC", 0) - c0 - hours).abs() < 1e-6);
+        assert!((g.mc4_stat("gvTS", 0) - 20.0 * 2.237).abs() < 1e-3 || g.mc4_stat("gvTS", 0) > 20.0 * 2.237);
+        let car = g.car_dirs.get(g.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap();
+        assert!(g.career.ostats.get(&format!("vkDT/{car}")).copied().unwrap_or(0.0) > 0.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
