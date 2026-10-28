@@ -332,8 +332,12 @@ impl BoomCam {
         } else {
             (0.0, 1.0)
         };
-        let fov = t.s("SSFovMin") + (t.s("SSFovMax") - t.s("SSFovMin")) * k + car.nitro_fov.0 * self.nitro + car.sst.0 + ab_fov;
-        let dist_scale = (1.0 + (t.s("SSDistScale") - 1.0) * k) * car.sst.1 * ab_dist;
+        // (the car's own terms - the slipstream turbo's lens and distance scale, the nitrous lens - only on a
+        // chase view not looking back: F-44852 skips them on a fixed mount (+668) and while vt+56 (+208) is set;
+        // GitHub #17: the cockpit took the turbo's 0.8 and 15 degrees and went up into the roof)
+        let (car_fov, car_dist) = if car.fixed_mount || car.rev { (0.0, 1.0) } else { (car.nitro_fov.0 * self.nitro + car.sst.0, car.sst.1) };
+        let fov = t.s("SSFovMin") + (t.s("SSFovMax") - t.s("SSFovMin")) * k + car_fov + ab_fov;
+        let dist_scale = (1.0 + (t.s("SSDistScale") - 1.0) * k) * car_dist * ab_dist;
 
         // ---- where the camera and its focus want to be ----
         let (off0, foc0) = if car.rev { (t.v3("RevOffset"), t.v3("RevFocus")) } else { (t.v3("Offset"), t.v3("Focus")) };
@@ -3083,6 +3087,21 @@ mod tests {
             eprintln!("{hz} Hz: {}", seen.join(" | "));
             assert!((at - Vec3::new(-0.35, 1.038, -0.083)).length() < 0.005, "{hz} Hz: {at:?}");
         }
+        // (GitHub #17: the slipstream turbo burning and the nitrous change nothing on a fixed mount - F-44852)
+        let run = |sst: (f32, f32), nitro: bool| {
+            let mut cam = BoomCam::default();
+            let (mut z, mut v, mut o) = (0.0f32, 0.0f32, None);
+            for _ in 0..360 {
+                v = (v + 6.0 / 30.0).min(55.0);
+                z -= v / 30.0;
+                let car = BoomTarget { pos: Vec3::new(0.0, 0.0, z), rot: Quat::IDENTITY, vel: Vec3::new(0.0, 0.0, -v), ang_vel: Vec3::ZERO, grounded: 4, gear: 3, rev: false, nitro, nitro_fov: (10.0, 0.5, 1.0), ability: (0.0, 1.0), sst, pan: (0.0, 0.0), rise: 0.0, fixed_mount: true, model_offset: Vec3::ZERO };
+                let out = cam.update(t, &car, 1.0 / 30.0);
+                o = Some((out.pos - car.pos, out.fov));
+            }
+            o.unwrap()
+        };
+        let (plain, boosted) = (run((0.0, 1.0), false), run((15.0, 0.8), true));
+        assert!((plain.0 - boosted.0).length() < 1e-5 && plain.1 == boosted.1, "{plain:?} {boosted:?}");
     }
 
     /// Photo mode's free camera reads PHOTO_CAM_* (DECISIONS.md D35): every one of the disc's
