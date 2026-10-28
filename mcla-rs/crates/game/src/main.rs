@@ -2675,6 +2675,10 @@ impl App {
             if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !mission && self.cine.playing.is_none() {
                 if self.wreck_timer > 0.0 {
                     self.wreck_timer -= dt;
+                    // (still damaged out: 0x04 stands until the reset below)
+                    if let Some(c) = self.vehicles.player_mut() {
+                        c.stunned = c.stunned.max(0.5);
+                    }
                     if self.wreck_timer <= 0.0 {
                         // the wreck event's end (F-79134 -> F-89773). (approx.: the original then opens the
                         // PauseMenu in the cruise - its QUICK FIX row, free - or ends the race into the
@@ -2687,6 +2691,8 @@ impl App {
                             c.pose_history.reset();
                             c.state.gear = gear;
                             c.placed = false;
+                            // (the reset's F-30391(0): the flags +592 to 0, so the damaged-out hold ends)
+                            c.stunned = 0.0;
                         }
                         self.crash_bits = 0;
                         self.crash_exploding = false;
@@ -2741,7 +2747,8 @@ impl App {
                             self.crash_exploding = c.state.last_hit > dm.explode_threshold && dm.explode_threshold > 0.0;
                             self.crash_bits = 0x14;
                             self.crash_timer = if self.crash_exploding { dm.explosion_delay } else { dm.damage_out_delay };
-                            c.stunned = 1e6;
+                            // (held while 0x04 stands - the branch below; the reset or QUICK FIX clears it)
+                            c.stunned = c.stunned.max(0.5);
                             let p = c.state.pos;
                             self.fx.sparks(p + Vec3::Y * 0.6, Vec3::Y, 60);
                         } else if head_on || rolled || (c.model.bike && big > 1.8) {
@@ -6472,6 +6479,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 p.state.relocate(pos, glam::Quat::from_mat3(&glam::Mat3::from_cols(right, Vec3::Y, -f)).normalize());
                 p.state.vel = Vec3::ZERO;
                 p.state.ang_vel = Vec3::ZERO;
+                // (and the flags +592 set to 0, F-30391(0): no longer damaged out, the hold off)
+                p.stunned = 0.0;
+                self.crash_bits = 0;
             }
         }
         // ---- nitrous: none until the garage's nitrous part is fitted, then as many canisters
