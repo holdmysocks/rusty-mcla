@@ -1841,6 +1841,8 @@ impl Game {
         }
         let mut m = self.mc4.clone().unwrap_or_else(|| Mc4::seeded(self.fresh_game));
         self.mc4_store(&mut m);
+        // (the models' refund values before the block is written: F-80786)
+        crate::save_gaps::refund_values(&mut m, |car| crate::save_gaps::download_and_price(&self.data_dir, car));
         Some(m.to_value())
     }
 
@@ -1864,21 +1866,28 @@ impl Game {
             let root = std::path::Path::new(&self.data_dir);
             let read = |n: &str| crate::render::car_lamps::setup_file(root, n).and_then(|f| std::fs::read(f).ok());
             let made = read(&cfg).and_then(|b| Car::from_xcc(&b, car, &cfg, slot)).or_else(|| read(car).and_then(|b| Car::from_xcc(&b, car, car, slot)));
-            // (no set-up file at hand: the constructor's record - F-35798)
+            // (no set-up file at hand: the record as its constructor leaves it - F-13631 with the look's
+            // F-35798 and a random plate from the game's generator, save_gaps.rs)
             let made = made.unwrap_or_else(|| {
-                let mut c = Car { slot, TypeName: car.to_string(), vehicle: car.to_ascii_lowercase(), in_garage: 1, source_config: Some(cfg.clone()), source_config_hash: format!("0x{:08x}", joaat(&cfg)), ..Default::default() };
+                let b = crate::save_gaps::record_ctor_bytes(&mut crate::sst_trail::game_rng(), 0);
+                let mut c = Car::from_xcc(&b, car, &cfg, slot).unwrap_or_default();
+                c.slot = slot;
+                c.TypeName = car.to_string();
+                c.vehicle = car.to_ascii_lowercase();
+                c.in_garage = 1;
+                c.source_config = Some(cfg.clone());
+                c.source_config_hash = format!("0x{:08x}", joaat(&cfg));
                 c.vehicle_index = vehicle_index(&c.vehicle);
-                c.visual.m_vWindowTintColorNew = fv(&[0.0, 0.0035, 0.005, 0.372]);
-                c.visual.ExtNeonColor = fv(&[0.52, 0.52, 1.0]);
-                c.visual.LicenseBG = 4;
-                c.visual.vinyl_preset_group = -1;
-                c.visual.vinyl_preset_index = -1;
                 c.set_ability(None);
                 c.derived.origin = Some(c.origin());
-                c.derived.window_tint_level = Some(0);
                 c
             });
             m.garage.push(made);
+            // (the slot's profile name: `<model>_shrt` and how many others of the model - F-80615)
+            let k = m.garage.len() - 1;
+            if let Some(n) = crate::save_gaps::profile_name(&m.garage, k, |key| self.career.strings.get(key).map(|s| s.to_string())) {
+                m.garage[k].ProfileName = n;
+            }
         }
         m.car_mut(car)
     }
@@ -5217,6 +5226,7 @@ impl Game {
                 });
                 let new_a = if same { body_a.unwrap() } else { to_screen(lin) };
                 for (k, p) in c.visual.paint.iter_mut().enumerate() {
+                let mut colour_stored = false;
                     let own = if k == 0 { None } else { cfg.and_then(|g| g.part_paint.get(AREA_KEYS[k - 1])).copied() };
                     let have = p.color_a();
                     match own {
@@ -5225,6 +5235,7 @@ impl Game {
                             if have.map_or(true, |h| (0..3).any(|i| ((h[i] * 255.0).round() - rgb[i] as f32).abs() > 1.0)) {
                                 p.ColorA = rgb_f([rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0]);
                             }
+                                colour_stored = true;
                         }
                         // (the body's: an area that stood within the importer's 0.02 of the
                         // body's colour is the body's)
@@ -5239,6 +5250,7 @@ impl Game {
                             if reset && have.map_or(true, |h| !close(h, new_a)) {
                                 p.ColorA = rgb_f(new_a);
                             }
+                                colour_stored = true;
                         }
                     }
                     // (type and fade: the body's, and the areas that had the body's)
@@ -5262,9 +5274,15 @@ impl Game {
                         if p.color_b().map_or(true, |b| !close(b, a.b)) {
                             p.ColorB = vec![r6(a.b[0]), r6(a.b[1]), r6(a.b[2])];
                         }
+                            colour_stored = true;
                     }
                 }
             }
+                // (a colour stored into a paint area takes the paint override off: F-87462 writes
+                // +2068 of the look = -1 before every colour it stores)
+                if colour_stored {
+                    c.visual.m_iCarPaintOverride = -1;
+                }
             // --- parts ---
             let xp = self.xparts.get(&name);
             for (port, byte, mirror) in PART_MAP {
@@ -10461,6 +10479,8 @@ pub struct PinkLive {
     pub just_ended: bool,
 }
 
+    /// the locations' own profiles (mcCareer +8768, not saved: save_gaps.rs)
+    pub locals: std::cell::RefCell<crate::save_gaps::PinkLocals>,
 fn pink_empty(k: usize) -> PinkSlip {
     PinkSlip { slot: k as u32, kind: -1, empty: true, name: String::new(), uid: -1, extra: Extra::new() }
 }
@@ -10552,7 +10572,9 @@ impl Game {
         let mut out = Vec::new();
         if let Some((h, (_, _, mission, setup))) = PINK_HANGOUTS.iter().enumerate().find(|(_, p)| p.0.eq_ignore_ascii_case(key)) {
             if !mission.is_empty() && self.career.mission_no(mission).map_or(false, |i| self.career.log_order().contains(&i)) {
-                out.push(PinkProfile { uid: -(h as i32) - 2, kind: 0, car: setup_vehicle(setup), setup: setup.to_string(), record: None });
+                // (its id: the location's own profile's, once its script has loaded it - save_gaps.rs)
+                let own = self.opt_x.arcade.pink.locals.borrow().at[h].record.is_some().then(|| self.opt_x.arcade.pink.locals.borrow().at[h].uid);
+                out.push(PinkProfile { uid: own.unwrap_or(-(h as i32) - 2), kind: 0, car: setup_vehicle(setup), setup: setup.to_string(), record: None });
             }
         } else {
             return out;
@@ -10715,12 +10737,17 @@ impl Game {
                 self.owned.push(c);
             }
             let m = self.mc4.get_or_insert_with(|| Mc4::seeded(fresh));
-            m.career.pink_slips.remove(run.stake_uid);
+            // (RemovePinkSlipProfile(location, stake), then (location, profile): 0x6026 / 0x6037 -
+            // the hangout's own car leaves the location's profile, a held car the lot)
+            let loc = PINK_HANGOUTS.iter().find(|p| p.0.eq_ignore_ascii_case(&run.key)).map_or(-1, |p| p.1 as i32);
+            let mut locals = self.opt_x.arcade.pink.locals.borrow_mut();
+            locals.remove(&mut m.career.pink_slips, loc, run.stake_uid);
+            locals.remove(&mut m.career.pink_slips, loc, run.profile.uid);
+            drop(locals);
             if run.profile.kind == 0 {
                 self.career.give_car(&run.profile.setup);
                 self.career.pink_slip_won(&run.key);
             } else {
-                m.career.pink_slips.remove(run.profile.uid);
                 let car = run.profile.car.to_ascii_lowercase();
                 if let Some(mut rec) = run.profile.record.clone() {
                     if m.car(&car).is_none() {
@@ -10760,8 +10787,14 @@ impl Game {
         let j = &self.career.journal;
         let from = self.opt_x.arcade.pink.counted.get().min(j.len());
         for &(entered, i) in &j[from..] {
-            if entered && PINK_HANGOUTS.iter().any(|p| !p.2.is_empty() && p.2.eq_ignore_ascii_case(self.career.mission_id(i))) {
-                m.career.pink_slips.next_uid();
+            // (mcCareer_LoadPinkSlipProfile(location, set-up, 0): the location's own profile, a new id)
+            if let Some(&(_, loc, _, setup)) = PINK_HANGOUTS.iter().find(|p| entered && !p.2.is_empty() && p.2.eq_ignore_ascii_case(self.career.mission_id(i))) {
+                let v = setup_vehicle(setup);
+                let car = crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), setup)
+                    .and_then(|f| std::fs::read(f).ok())
+                    .and_then(|b| Car::from_xcc(&b, &v, setup, 0))
+                    .unwrap_or_else(|| Car { TypeName: v.clone(), vehicle: v.clone(), ..Default::default() });
+                self.opt_x.arcade.pink.locals.borrow_mut().load(&mut m.career.pink_slips, loc as i32, setup, &car, 0);
             }
         }
         self.opt_x.arcade.pink.counted.set(j.len());
@@ -10895,7 +10928,14 @@ impl Game {
         let car = self.vinyl_for.clone();
         match ask {
             VinylAsk::Load(PkgRow::Preset(p)) => {
-                self.vinyls.insert(car, format!("preset:{p}"));
+                // (LoadPresetVinyl, F-58362: the preset's five zone files go into the vehicle's layers
+                // as it is put on - the vehicle wears them as its own from then on)
+                self.liveries.insert(car.clone(), self.vinyl_presets.livery(&p));
+                self.livery_rev += 1;
+                self.vinyls.insert(car, "custom".to_string());
+                if !self.vinyl_list.iter().any(|v| v == "custom") {
+                    self.vinyl_list.insert(0, "custom".to_string());
+                }
                 self.dirty = true;
             }
             VinylAsk::Load(PkgRow::User(k)) => {
@@ -16558,7 +16598,9 @@ mod tests {
         assert_eq!(g.mc4_vinyl_rows(), vec![p("preset_apexi"), p("preset_bboy"), PkgRow::User(0), PkgRow::User(1), PkgRow::User(2)]);
         // a preset put on (no popup movie in a test: the box's YES at once)
         g.mc4_vinyl_ask(VinylAsk::Load(p("preset_apexi")));
-        assert_eq!(g.vinyls.get("vp_aud_r8_08").map(|s| s.as_str()), Some("preset:preset_apexi"));
+        // (LoadPresetVinyl F-58362: the preset's layers are the vehicle's from now on)
+        assert_eq!(g.vinyls.get("vp_aud_r8_08").map(|s| s.as_str()), Some("custom"));
+        assert_eq!(g.liveries.get("vp_aud_r8_08"), Some(&g.vinyl_presets.livery("preset_apexi")));
         assert!(g.mc4_vinyl_has_layers() && g.car_x.vinyl_ask.is_none());
         // STORE VINYL PACKAGES -> PACKAGE 1: the preset's layers into slot 0
         g.car_x.vinyl_save = Some(0);

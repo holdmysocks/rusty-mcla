@@ -7,6 +7,7 @@ mod bootload;
 mod figlight;
 mod hooks;
 mod mc4;
+mod save_gaps;
 mod pads;
 mod rewards;
 mod vinyl;
