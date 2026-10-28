@@ -321,7 +321,7 @@ impl Police {
     /// The units that are up stand at their home as the script made them (heading in degrees -
     /// the port's yaw is the heading in radians) while the player is within 380 m; a unit whose
     /// car has gone counts as underground again.
-    pub fn update_units(&mut self, gpu: &Gpu, vehicles: &mut Vehicles) {
+    pub fn update_units(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles) {
         let Some(pp) = vehicles.player().map(|c| c.state.pos) else { return };
         let Some(model) = vehicles.models.iter().find(|m| m.name == COP_CAR).cloned() else { return };
         for u in self.units.iter_mut() {
@@ -337,6 +337,7 @@ impl Police {
             let c = &mut vehicles.cars[idx];
             c.cop = true;
             c.vinyl_name = tag;
+            Self::dress_cruiser(world, vehicles, idx);
             log::info!("police: unit {} up at its home ({:.0} m from the player)", u.id, u.home.distance(pp));
         }
     }
@@ -500,6 +501,7 @@ impl Police {
         let c = &mut vehicles.cars[idx];
         c.cop = true;
         if let Some(ai) = c.ai.as_mut() {
+        Self::dress_cruiser(world, vehicles, idx);
             ai.link = Some(best);
             ai.t = 0.5;
             ai.target_speed = 14.0;
@@ -511,6 +513,23 @@ impl Police {
     /// Put a cruiser in wait beside the road at `pos` (the cop zones of a race).
     pub fn station(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles, pos: Vec3, slot: usize) -> bool {
         let Some(model) = vehicles.models.iter().find(|m| m.name == COP_CAR).cloned() else { return false };
+    /// A cruiser wears its stock set-up's paint and plate (`resources/vehicle/configs/vp_chv_police_96.xcc`: black body,
+    /// light grey where the model marks the sixth paint area - doors and roof -, grey metallic bumpers): black and white,
+    /// as the original's own showroom picture of it (GitHub #17: the port painted it all white). Which set-up the
+    /// original's police manager gives its cars was not traced in its code.
+    fn dress_cruiser(world: &World, vehicles: &mut Vehicles, idx: usize) {
+        let Ok(b) = std::fs::read(world.assets.root.join("resources/vehicle/configs").join(format!("{COP_CAR}.xcc"))) else { return };
+        let Some(s) = crate::mc4::setup_look(&b) else { return };
+        let c = &mut vehicles.cars[idx];
+        c.color = s.color;
+        c.look = Some(std::sync::Arc::new(s.look));
+        let plate = crate::mc4::setup_plate(&b);
+        if !plate.is_empty() {
+            c.plate_text = plate;
+            c.plate = None;
+        }
+    }
+
         let Some(nav) = world.nav.as_ref() else { return false };
         let Some((li, t, d)) = nav.nearest_link(pos) else { return false };
         if d > 60.0 {
@@ -532,6 +551,7 @@ impl Police {
         let c = &mut vehicles.cars[idx];
         c.cop = true;
         c.pinned = true;
+        Self::dress_cruiser(world, vehicles, idx);
         c.parked = Some(usize::MAX - 9000 - slot);
         c.settle = 1.5;
         if let Some(ai) = c.ai.as_mut() {

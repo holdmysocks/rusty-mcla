@@ -5773,7 +5773,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let heat_before = self.police.heat;
                 let (score_before, search_before) = (self.police.score, self.police.search);
                 if self.police.enabled {
-                    self.police.update_units(&gpu, &mut self.vehicles);
+                    self.police.update_units(&gpu, &world, &mut self.vehicles);
                 }
                 self.police.progress = rewards::progress(self.game.rep).1;
                 let ev = self.police.update(&gpu, &world, &mut self.vehicles, self.props.knocked, sim_dt);
