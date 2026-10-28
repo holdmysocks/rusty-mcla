@@ -36,9 +36,17 @@ fn vs_perlin(@builtin(vertex_index) i: u32) -> VsOut {
 
 @fragment
 fn fs_perlin(in: VsOut) -> @location(0) vec4<f32> {
-    for (var i = 0; i < 10; i = i + 1) {
-        xs_c[64 + i] = hat.perlin[i];
-    }
+    // (written out: constant places only - sky_hat.wgsl fs_hat says why)
+    xs_c[64] = hat.perlin[0];
+    xs_c[65] = hat.perlin[1];
+    xs_c[66] = hat.perlin[2];
+    xs_c[67] = hat.perlin[3];
+    xs_c[68] = hat.perlin[4];
+    xs_c[69] = hat.perlin[5];
+    xs_c[70] = hat.perlin[6];
+    xs_c[71] = hat.perlin[7];
+    xs_c[72] = hat.perlin[8];
+    xs_c[73] = hat.perlin[9];
     var rin: array<vec4<f32>, 16>;
     rin[0] = vec4<f32>(in.uv, 0.0, 0.0);
     return xs_perlin_ps(rin);

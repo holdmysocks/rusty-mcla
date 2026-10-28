@@ -142,10 +142,26 @@ fn fs_hat(in: VsOut) -> @location(0) vec4<f32> {
     let vs = hat_vs(in.ndc);
     // (hat.ps holds the constants of the variant with the moon, c64 .. c83 and c100 .. c103;
     // this program's c64 .. c80 are those without the moon's: c67, c79, c80, c82, c83, c100, c101)
-    var slot = array<i32, 17>(0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 22, 23);
-    for (var i = 0; i < 17; i = i + 1) {
-        xs_c[64 + i] = hat.ps[slot[i]];
-    }
+    // (written out, constant places only: filled by a loop the whole xs_c array had to live in memory on drivers that
+    // do not unroll it, and every constant read of the program was a memory read - the sky alone 46 ms a frame at
+    // 1440p on an RTX 5060, GitHub #12; docs/PERFORMANCE.md 2026-10-28)
+    xs_c[64] = hat.ps[0];
+    xs_c[65] = hat.ps[1];
+    xs_c[66] = hat.ps[2];
+    xs_c[67] = hat.ps[4];
+    xs_c[68] = hat.ps[5];
+    xs_c[69] = hat.ps[6];
+    xs_c[70] = hat.ps[7];
+    xs_c[71] = hat.ps[8];
+    xs_c[72] = hat.ps[9];
+    xs_c[73] = hat.ps[10];
+    xs_c[74] = hat.ps[11];
+    xs_c[75] = hat.ps[12];
+    xs_c[76] = hat.ps[13];
+    xs_c[77] = hat.ps[14];
+    xs_c[78] = hat.ps[17];
+    xs_c[79] = hat.ps[22];
+    xs_c[80] = hat.ps[23];
     let c = xs_sky_ps(vs.o);
     return vec4<f32>(max(c.rgb, vec3<f32>(0.0)), 1.0);
 }
