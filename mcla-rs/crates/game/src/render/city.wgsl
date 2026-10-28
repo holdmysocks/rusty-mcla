@@ -1509,6 +1509,31 @@ fn paint_pow(x: f32, e: f32) -> f32 {
     return select(pow(max(x, 0.00001), e), 1.0, e == 0.0);
 }
 
+// A row of a paint table by constant indices only - no runtime index into a copied array (GitHub #14: a driver
+// that mis-reads such an index would hand one paint type another's factors)
+fn paint_row(r: array<vec4<f32>, 6>, i: u32) -> vec4<f32> {
+    var o = r[0];
+    if (i == 1u) { o = r[1]; }
+    if (i == 2u) { o = r[2]; }
+    if (i == 3u) { o = r[3]; }
+    if (i == 4u) { o = r[4]; }
+    if (i == 5u) { o = r[5]; }
+    return o;
+}
+
+// A value as a band colour, on the bits (diagnostics 705 - 709, GitHub #14): negative blue, below 0.25 green,
+// below 1 yellow, below 4 orange, below 16 red, 16 and over magenta, not a number white
+fn dbg_band(x: f32) -> vec3<f32> {
+    let b = bitcast<u32>(x);
+    if ((b & 0x7f800000u) == 0x7f800000u) { return vec3<f32>(1.0); }
+    if ((b & 0x80000000u) != 0u && (b & 0x7fffffffu) != 0u) { return vec3<f32>(0.0, 0.0, 1.0); }
+    if (b < bitcast<u32>(0.25)) { return vec3<f32>(0.0, 1.0, 0.0); }
+    if (b < bitcast<u32>(1.0)) { return vec3<f32>(1.0, 1.0, 0.0); }
+    if (b < bitcast<u32>(4.0)) { return vec3<f32>(1.0, 0.4, 0.0); }
+    if (b < bitcast<u32>(16.0)) { return vec3<f32>(1.0, 0.0, 0.0); }
+    return vec3<f32>(1.0, 0.0, 1.0);
+}
+
 fn env_finite(c: vec3<f32>) -> vec3<f32> {
     let e = bitcast<vec3<u32>>(c) & vec3<u32>(0x7f800000u);
     return select(c, vec3<f32>(0.0), e == vec3<u32>(0x7f800000u));
@@ -3679,12 +3704,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // (a paint area with its own entry has its own paint type)
             let ti_area = paint_area(in.uv2.y);
             if (ti_area > 0u) { ti = min(u32(round(obj.area_b[ti_area - 1u].w)) % 8u, 5u); }
-            var pa = PAINT_A;
-            var pb = PAINT_B;
-            var pc = PAINT_C;
-            let ta = pa[ti];
-            let tb = pb[ti];
-            let tc = pc[ti];
+            let ta = paint_row(PAINT_A, ti);
+            let tb = paint_row(PAINT_B, ti);
+            let tc = paint_row(PAINT_C, ti);
             let ndv = clamp(dot(n, v), 0.0, 1.0);
             if (g.ambient_ground.w > -0.5) {
                 // The game's own rule (VS_CarPaint + PS_CarPaint, LIGHTING_WORK.md), DL0 = ta
@@ -3784,6 +3806,19 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 // dark red scrape, dark green the highlight before its clamp, pink the soft highlight, orange the
                 // mirror mix; grey (darker than mid grey, brighter with the highlight): all in range)
                 // (704: red = the power term as pow() gives it / 4, green = |soft| / 4, blue = k x occlusion / 2)
+                // (705 - 709: one value as a band colour, dbg_band - 705 the highlight before its clamp (largest channel),
+                // 706 DL0.y, 707 the pearlescence, 708 the power term as the paint uses it, 709 the colour it lerps
+                // (largest channel))
+                if (g.params.w > 704.5 && g.params.w < 709.5) {
+                    let hm = mix(base * s_lum, soft, tc.x);
+                    let hx = hm * (ta.y * paint_pow(length(soft), ta.w - 1.0) * kk * ao_v);
+                    var bv = max(hx.x, max(hx.y, hx.z));
+                    if (g.params.w > 705.5) { bv = ta.y; }
+                    if (g.params.w > 706.5) { bv = tc.x; }
+                    if (g.params.w > 707.5) { bv = paint_pow(length(soft), ta.w - 1.0); }
+                    if (g.params.w > 708.5) { bv = max(hm.x, max(hm.y, hm.z)); }
+                    return vec4<f32>(to_scene(dbg_band(bv)), 1.0);
+                }
                 if (g.params.w > 703.5 && g.params.w < 704.5) {
                     return vec4<f32>(to_scene(vec3<f32>(pow(max(length(soft), 0.00001), ta.w - 1.0) * 0.25, length(soft) * 0.25, kk * ao_v * 0.5)), 1.0);
                 }
