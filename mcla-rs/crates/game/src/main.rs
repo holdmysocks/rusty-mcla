@@ -2327,13 +2327,20 @@ impl App {
                 player_input.hyd = 0;
                 self.hyd_on = false;
             }
-        // (test hook: MCLA_GRID_NITRO=1 holds the nitrous button all the time)
         // (test hook MCLA_COP_TEST=bolt: a burnout - throttle and handbrake - from 2.5 s into the officer's walk, a bolt,
         // then full throttle away)
         if std::env::var("MCLA_COP_TEST").is_ok_and(|v| v == "bolt") && self.ticket_run.is_some() && self.cine.playing.as_ref().is_some_and(|sc| sc.t >= 2.5) {
             player_input.throttle = 1.0;
             player_input.handbrake = self.ticket_run.is_some_and(|r| r.1.is_none());
         }
+        // (test hook MCLA_TEST_THROTTLE=<0..1>[,<from tick>]: that much throttle from that tick on - a slow car for the cops)
+        if let Ok(v) = std::env::var("MCLA_TEST_THROTTLE") {
+            let n: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if self.tick_no as f32 >= n.get(1).copied().unwrap_or(0.0) {
+                player_input.throttle = n.first().copied().unwrap_or(0.0);
+            }
+        }
+        // (test hook: MCLA_GRID_NITRO=1 holds the nitrous button all the time)
         if std::env::var("MCLA_GRID_NITRO").is_ok() {
             player_input.nitro = true;
         }

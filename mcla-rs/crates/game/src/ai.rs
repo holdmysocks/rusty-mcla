@@ -34,6 +34,15 @@ pub enum GridPhase {
     HandOnly,
 }
 
+/// Pedals and steering a police brain forces over its driver's own (None = the driver's).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Overrides {
+    pub throttle: Option<f32>,
+    pub brake: Option<f32>,
+    pub handbrake: Option<bool>,
+    pub steer: Option<f32>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AiDriver {
     pub link: Option<usize>,
@@ -64,6 +73,12 @@ pub struct AiDriver {
     pub dodge: f32,
     /// pursuit target (position, velocity): police cruisers
     pub chase: Option<(Vec3, Vec3)>,
+    /// the chase target is the police brain's own goal point (police.rs `CopTac`): driven at as it is - no lead of
+    /// its own, no stop beside it
+    pub chase_exact: bool,
+    /// the police brain's control overrides for this update (the brain's +744 throttle, +748 brake, +752 handbrake,
+    /// +756 steer, put over the driver's input and cleared each update - F-88118)
+    pub ovr: Option<Overrides>,
     /// the car as its driver knows it: the game's calibration (speed for a bend, braking, steering)
     pub tune: Option<std::sync::Arc<mcla_formats::rage::aitune::AiTune>>,
     /// the pre-race antics on the grid (`grid_input`)
@@ -428,6 +443,17 @@ impl AiDriver {
     }
 
     pub fn drive(&mut self, nav: &NavSys, car: &CarState, dt: f32) -> CarInput {
+        let mut inp = self.drive_own(nav, car, dt);
+        if let Some(o) = self.ovr.take() {
+            inp.throttle = o.throttle.unwrap_or(inp.throttle);
+            inp.brake = o.brake.unwrap_or(inp.brake);
+            inp.handbrake = o.handbrake.unwrap_or(inp.handbrake);
+            inp.steer = o.steer.unwrap_or(inp.steer);
+        }
+        inp
+    }
+
+    fn drive_own(&mut self, nav: &NavSys, car: &CarState, dt: f32) -> CarInput {
         let pos = car.pos;
         let speed = car.fwd_speed();
         let look = (7.0 + speed * 0.9).clamp(7.0, 45.0);
@@ -451,6 +477,9 @@ impl AiDriver {
             if direct {
                 self.path = None;
                 self.stuck_long = 0.0;
+                if self.chase_exact {
+                    return self.steer_towards(car, tp, tp, dt);
+                }
                 if dist < 6.5 && tv.length() < 3.0 {
                     // boxed the target in (or told to hold): stop
                     return CarInput { brake: 1.0, handbrake: speed.abs() < 2.0, ..Default::default() };

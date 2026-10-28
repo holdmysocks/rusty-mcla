@@ -88,6 +88,8 @@ pub struct CarModel {
     pub batch_window: Vec<u8>,
     /// the side windows' clips (left, right), where the base fragment has them
     pub windows: [Option<vehicle_model::WindowClip>; 2],
+    /// the police light bar's beacons (vehicle_model::CopLights)
+    pub cop_lights: Option<Arc<vehicle_model::CopLights>>,
     /// the damage map's layout texture (`<car>_maxdamage`: width, height, RGBA8), when the car has it
     pub damage_layout: Option<Arc<(u32, u32, Vec<u8>)>>,
     /// the moving damage parts (`damageparts.rs`): the car's movement settings and bumper slot bones, and the bones
@@ -1796,7 +1798,7 @@ impl Vehicles {
         let lod_centre = if car_is_ambient { traffic::bound_centre(&world.assets.root, &car.name) } else { None }.unwrap_or((car.min + car.max) * 0.5);
         let lod_steps = if car_is_ambient { traffic::lod_steps(&world.assets.root, &car.name) } else { None }.unwrap_or([40.0, 155.0]);
         let (fx_anchors, fx_anchor_rear) = car.fx_anchors(cfg);
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -4564,10 +4566,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 continue;
             }
             let rows = self.lamp_rows(c);
+            // (the beacons turn all the time, each car from its own start - the port: its uid as the phase)
+            let spin_t = self.clock + c.uid as f32 * 0.137;
             for (id, local, facing) in c.model.glow_bones.iter().filter(|g| g.0 == 13 || g.0 == 14) {
                 let i = *id as usize;
                 let col = rows.as_ref().map_or([1.0; 3], |t| [0, 1, 2].map(|k| (t.bulb[i][k] * t.cover[i][k] + 0.5).clamp(0.0, 1.0)));
-                out.push((pose.pos + pose.rot * *local, pose.rot * *facing, col, c.amb_lamps.s[2]));
+                // (the glow on the lamp's turning matrix: its place and its -z, F-73214)
+                let spun = c.model.cop_lights.as_ref().and_then(|cl| cl.lamps.iter().position(|l| l.4.distance(*local) < 0.01).map(|li| cl.lamp_at(li, spin_t)));
+                let (l, f) = spun.map_or((*local, *facing), |m| (m.w_axis.truncate(), -m.z_axis.truncate().normalize_or_zero()));
+                out.push((pose.pos + pose.rot * l, pose.rot * f, col, c.amb_lamps.s[2]));
             }
         }
         out

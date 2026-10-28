@@ -114,6 +114,42 @@ pub enum Event {
     Busted(i64),
 }
 
+/// A cruiser's state in the pull-over or pursuit tactic (GitHub #17; docs/reference/hookmen/pursuit_tactics.md).
+/// Pursuit (F-68032's FSM): CatchUp, AlongSide, Block, Halt (Delay is `flee_hold`, Search `Heat::Search`, Arrest the
+/// port's busted test); pull-over (F-36876's): CatchUp, AvoidCollision (`Avoid`), Halt.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Tac {
+    #[default]
+    CatchUp,
+    AlongSide,
+    Block,
+    Halt,
+    Avoid,
+}
+
+/// One cruiser's tactic state and its brain's goal plan (F-74140 / F-67303).
+#[derive(Clone, Copy, Debug, Default)]
+struct CopTac {
+    st: Tac,
+    /// seconds in `st`
+    t: f32,
+    /// the side of the target it drives beside: true = the target's right (F-14848)
+    side: bool,
+    side_t: f32,
+    /// AlongSide: seconds out of reach (> 1.5 x fAlongSideDist)
+    far_t: f32,
+    /// pull-over Halt: seconds the gap has been growing while the target moves
+    grow_t: f32,
+    d_prev: f32,
+    /// the plan's countdown (+588), its two goals and the speed to arrive with (-1: full pace)
+    replan: f32,
+    goals: [Vec3; 2],
+    speed: f32,
+    plan_fwd: Vec3,
+    plan_speed: f32,
+    head_on: bool,
+}
+
 /// The race's cop zone (PoliceManager +188 zone, +192 lap, +196 state, +212 timer).
 #[derive(Clone, Debug)]
 pub struct CopZone {
@@ -187,6 +223,9 @@ pub struct Police {
     /// the pursuit after a bolt from the ticket starts with its cruisers held this long (the Pursuit
     /// tactic's Delay state, F-10824 / F-50798: request +20 = the bolt's time x fPullOverFleeDelayScale)
     flee_hold: f32,
+    /// each pursuing cruiser's tactic state (by car uid), and the target's speed at the last update (tactic +64)
+    tacs: HashMap<u32, CopTac>,
+    last_tspeed: f32,
     /// the highest speed band whose start points were paid (the record's "started" bits +100: kept to `clear`)
     speed_level: u8,
     /// the highest speed band of the offences so far (1..3; 0 = none): the fine counts that one
@@ -265,6 +304,8 @@ impl Police {
             zone: None,
             zone_go: false,
             zone_picked: false,
+            tacs: HashMap::new(),
+            last_tspeed: 0.0,
             bullhorn: None,
             ticket_hold: None,
             ticketing: false,
@@ -715,6 +756,7 @@ impl Police {
         let ppos = p.state.pos;
         let pvel = p.state.vel;
         let pfwd = p.state.forward();
+        let pright = p.state.right();
         let speed = pvel.length();
         let mph = speed * MPH;
         let slip = p.state.wheels.iter().map(|w| w.slip).fold(0.0, f32::max);
@@ -1020,7 +1062,9 @@ impl Police {
                     self.lost = 0.0;
                     self.dispatch = t("fDispatchRdoDelayTime", 3.0);
                     event = Some(Event::Pursuit);
-                } else if speed < arrest_speed && nearest < t("fPullOverDist", 15.0) {
+                } else if speed < arrest_speed && nearest < t("fPullOverDist", 15.0) + 1.0 {
+                    // (F-29906's arrest timer: a cop of the tactic within its radius + 1 m - the pull-over's
+                    // fPullOverDist, F-66453 -, the target under fArrestTgtThresholdSpd)
                     self.arrest += dt;
                     if self.arrest >= t("fArrestTime", 1.0) {
                         self.ticket_hold = Some(t("fArrestStateTime", 1.75) + if damage >= 0.999 { 0.5 } else { 0.0 });
@@ -1046,7 +1090,8 @@ impl Police {
                         self.radio = t("fMinPerRdoTime", 15.0);
                     }
                 }
-                if speed < arrest_speed && nearest < t("fBlockDist", 6.0) + 2.5 {
+                // (F-29906: within the pursuit's radius, fSafeDist (F-54202), + 1 m)
+                if speed < arrest_speed && nearest < t("fSafeDist", 30.0) + 1.0 {
                     self.arrest += dt;
                     if self.arrest >= t("fArrestTime", 1.0) {
                         self.heat = Heat::Busted;
@@ -1105,25 +1150,220 @@ impl Police {
 
         // ---- cruisers ---------------------------------------------------------
         let chasing = matches!(self.heat, Heat::Pursuit | Heat::Search | Heat::PullOver | Heat::Busted);
-        let target = match self.heat {
-            Heat::Search => (self.last_known, Vec3::ZERO),
-            _ => (ppos, pvel),
-        };
-        let cop_speed = match self.heat {
-            Heat::Pursuit => (speed + 14.0).clamp(28.0, 85.0),
-            Heat::PullOver => (speed + 6.0).clamp(18.0, 45.0),
-            Heat::Search => 22.0,
-            _ => 14.0,
-        };
         self.flee_hold = (self.flee_hold - dt).max(0.0);
+        if !matches!(self.heat, Heat::Pursuit | Heat::PullOver) {
+            self.tacs.clear();
+        }
+        let tactic = matches!(self.heat, Heat::Pursuit | Heat::PullOver) && self.flee_hold <= 0.0;
+        let pull = self.heat == Heat::PullOver;
+        let safe = t("fSafeDist", 30.0);
+        let along = t("fAlongSideDist", 5.0);
+        let period = t("fMinSetGoalTime", 1.0);
+        let moving_v = t("fMovingSpeed", 1.0) * 0.447;
+        let t_moving = speed > moving_v;
+        let dropped = self.last_tspeed - speed;
+        self.last_tspeed = speed;
+        // (every cop of the tactic within r of the target: F-90575, F-36876)
+        let within = |r: f32| vehicles.cars.iter().filter(|c| pursuer(c)).all(|c| c.state.pos.distance(ppos) < r);
+        let (all_block, all_halt) = (within(0.5 * safe), within(safe - 1.0));
+        let on_road = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_road(q));
         for c in vehicles.cars.iter_mut().filter(|c| pursuer(c)) {
-            if let Some(ai) = c.ai.as_mut() {
-                if self.flee_hold > 0.0 && self.heat == Heat::Pursuit {
-                    // (the Delay state: brain command 1, halt, until its time is up)
-                    ai.chase = Some((c.state.pos, Vec3::ZERO));
-                } else if chasing && self.heat != Heat::Busted {
+            let Some(ai) = c.ai.as_mut() else { continue };
+            ai.chase_exact = false;
+            if self.flee_hold > 0.0 && self.heat == Heat::Pursuit {
+                // (the Delay state: brain command 1, halt, until its time is up)
+                ai.chase = Some((c.state.pos, Vec3::ZERO));
+            } else if tactic {
+                // ---- the tactic's state and its brain (docs/reference/hookmen/pursuit_tactics.md) ----
+                let tac = self.tacs.entry(c.uid).or_default();
+                let (cpos, cvel, cfwd, cright) = (c.state.pos, c.state.vel, c.state.forward(), c.state.right());
+                let cspeed = cvel.length();
+                let to = ppos - cpos;
+                let d = to.length();
+                // (the brain's predicates, F-74140's helpers: in front of the cop, on its right, going the same way,
+                // facing the same way, the angle off the cop's right axis, and "closing in": the cop moving, faster
+                // than the target and heading at it within 25.8 deg)
+                let ahead = cfwd.dot(to) > 0.0;
+                let on_right = cright.dot(to) > 0.0;
+                let same_dir = pvel.dot(cvel) > 0.0;
+                let same_facing = pfwd.dot(cfwd) > 0.0;
+                let bearing = cright.angle_between(to).to_degrees();
+                let closing = |r: f32| (r == 0.0 || d < r) && cspeed > moving_v && cspeed > speed && to.normalize_or_zero().dot(cvel / cspeed.max(1e-6)) > 0.9;
+                // (head-on, +774: in front, coming the other way, seen, travel directions more than fHeadOnAngle apart)
+                let tdir = if t_moving { pvel.normalize_or_zero() } else { pfwd };
+                let cdir = if cspeed > moving_v { cvel / cspeed } else { cfwd };
+                let was_head_on = tac.head_on;
+                tac.head_on = ahead && !same_dir && !same_facing && seen && tdir.angle_between(cdir).to_degrees() > t("fHeadOnAngle", 145.0);
+                // (F-14848: beside the target on the side over the road, the right first; else the side the cop is on)
+                let pick_side = || {
+                    let (r, l) = (on_road(ppos + pright * along), on_road(ppos - pright * along));
+                    if r { true } else if l { false } else { !on_right }
+                };
+                let enter = |tac: &mut CopTac, st: Tac| {
+                    tac.st = st;
+                    tac.t = 0.0;
+                    tac.far_t = 0.0;
+                    tac.side_t = 0.0;
+                    tac.grow_t = 0.0;
+                    tac.replan = 0.0;
+                };
+                tac.t += dt;
+                let st = tac.st;
+                if pull {
+                    // pull-over (F-36876; CatchUp F-91234, AvoidCollision F-18622 / F-69591, Halt F-82776)
+                    if st != Tac::Halt && all_halt && !t_moving && (cspeed < 4.47 || !closing(0.0)) {
+                        enter(tac, Tac::Halt);
+                    } else {
+                        match st {
+                            Tac::CatchUp if tac.t > 0.5 && closing(50.0) => {
+                                enter(tac, Tac::Avoid);
+                                tac.side = pick_side();
+                                // (on entering: the cop's velocity x 0.7, F-19124)
+                                c.state.vel *= 0.7;
+                            }
+                            Tac::Avoid => {
+                                tac.side_t += dt;
+                                if tac.side_t >= 1.0 {
+                                    tac.side_t = 0.0;
+                                    tac.side = pick_side();
+                                }
+                                if tac.t > 0.5 && d >= 50.0 {
+                                    enter(tac, Tac::CatchUp);
+                                }
+                            }
+                            Tac::Halt => {
+                                tac.grow_t = if t_moving && d > tac.d_prev { tac.grow_t + dt } else { 0.0 };
+                                if tac.grow_t > 0.5 || d >= safe {
+                                    enter(tac, Tac::CatchUp);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // (every update: a stopped target and the cop closing in within 7 m - its velocity halved)
+                    if !t_moving && closing(7.0) {
+                        c.state.vel *= 0.5;
+                    }
+                } else {
+                    // pursuit (F-68032; CatchUp F-88702, AlongSide F-85137, Block F-85039, Halt F-84018)
+                    if !matches!(st, Tac::Halt | Tac::Block) && dropped > 4.0 && d < 5.0 {
+                        // (the target just stopped hard beside it)
+                        enter(tac, Tac::Halt);
+                    } else {
+                        match st {
+                            Tac::CatchUp if d < safe => {
+                                if !t_moving {
+                                    enter(tac, Tac::Halt);
+                                } else if tac.t > 3.0 && same_dir && ahead && bearing > 75.0 && bearing < 105.0 {
+                                    enter(tac, Tac::AlongSide);
+                                    tac.side = pick_side();
+                                }
+                            }
+                            Tac::AlongSide => {
+                                if d >= 1.5 * along {
+                                    tac.far_t += dt;
+                                    if tac.far_t > 10.0 {
+                                        enter(tac, Tac::CatchUp);
+                                    }
+                                } else {
+                                    tac.far_t = 0.0;
+                                    tac.side_t += dt;
+                                    if tac.side_t >= 1.0 {
+                                        tac.side_t = 0.0;
+                                        tac.side = pick_side();
+                                    }
+                                }
+                                // (on its side - the target on the cop's other hand -, level or ahead, facing the same way)
+                                if tac.st == Tac::AlongSide && same_facing && on_right != tac.side && !ahead {
+                                    enter(tac, Tac::Block);
+                                }
+                            }
+                            Tac::Block if !all_block => enter(tac, Tac::CatchUp),
+                            Tac::Halt if !(d < safe && speed * MPH < t("fArrestTgtThresholdSpd", 10.0)) => enter(tac, Tac::CatchUp),
+                            _ => {}
+                        }
+                    }
+                }
+                if tac.st != st {
+                    log::info!("police: cruiser {} {:?} -> {:?} ({:.0} m)", c.uid, st, tac.st, d);
+                }
+                tac.d_prev = d;
+                // ---- the goal plan (F-67303): every fMinSetGoalTime, half that head-on; at once when the target has
+                // turned more than 30 deg or changed speed by more than 15 mph (then its own place and speed) ----
+                let per = if tac.head_on { 0.5 * period } else { period };
+                tac.replan -= dt;
+                let turned = tac.plan_fwd != Vec3::ZERO && tac.plan_fwd.angle_between(pfwd) > 0.5236;
+                let changed = (speed - tac.plan_speed).abs() > 6.705;
+                if tac.replan <= 0.0 || (was_head_on && !tac.head_on) || (tac.replan < 0.3 * per && (turned || changed)) {
+                    let quick = tac.replan > 0.0 && !(was_head_on && !tac.head_on);
+                    tac.replan = per;
+                    tac.plan_fwd = pfwd;
+                    tac.plan_speed = speed;
+                    let ho = if tac.head_on { 2.0 } else { 1.0 };
+                    let (g, v) = if quick {
+                        // (the junction prediction on a turn is not ported: the target's place)
+                        ([ppos, ppos], speed)
+                    } else {
+                        match (tac.st, pull) {
+                            // Pursuit brain (F-15067): 1 and 2 periods ahead; a stopped target: fSafeDist off it on the
+                            // cop's side. Arrival speed: full pace beyond 60 m, 1.2 x the target's when behind it going
+                            // the same way, nothing (full pace) otherwise
+                            (Tac::CatchUp, false) => {
+                                if t_moving {
+                                    let g0 = ppos + pvel * per * ho;
+                                    ([g0, g0 + pvel * per * ho], if d < 2.0 * safe && same_dir && ahead { 1.2 * speed } else { -1.0 })
+                                } else {
+                                    let g = ppos + (cpos - ppos).normalize_or(-pfwd) * safe;
+                                    ([g, g], 0.0)
+                                }
+                            }
+                            // PullOver brain (F-50661's command; goal F-51787): the target itself, or fPullOverDist behind it stopped
+                            (Tac::CatchUp, true) => {
+                                let g = if t_moving { ppos } else { ppos - pfwd * t("fPullOverDist", 15.0) };
+                                ([g, g], if t_moving { speed } else { 0.0 })
+                            }
+                            // AlongSide brain (F-13443): fAlongSideDist beside the target, 1.15 periods ahead
+                            (Tac::AlongSide | Tac::Avoid, _) => {
+                                let b = ppos + pright * if tac.side { along } else { -along };
+                                let k = 1.15 * per * ho;
+                                let g0 = b + pvel * k;
+                                ([g0, g0 + pvel * k], if t_moving { speed } else { 0.0 })
+                            }
+                            // Stopping (Block, Halt): stay
+                            _ => ([ppos, ppos], 0.0),
+                        }
+                    };
+                    tac.goals = g;
+                    tac.speed = v;
+                }
+                // the goals in turn, 5 m each (the racing brain's goal pair, F-67303)
+                let goal = if cpos.distance(tac.goals[0]) < 5.0 { tac.goals[1] } else { tac.goals[0] };
+                ai.chase = Some((goal, Vec3::ZERO));
+                ai.chase_exact = true;
+                // (the speed to arrive with: -1 is the racer's full pace; the port's driver has a cruise speed, not an
+                // arrival speed - it gets the speed it can still brake from to that one over the distance left)
+                ai.target_speed = if tac.speed < 0.0 { 85.0 } else { (tac.speed * tac.speed + 2.0 * 7.0 * cpos.distance(goal)).sqrt().min(85.0) };
+                // ---- the brain's overrides (F-88118 puts them over the driver's input) ----
+                let away = Some(if on_right { -1.0 } else { 1.0 });
+                ai.ovr = match (tac.st, pull) {
+                    (Tac::CatchUp, false) if (!t_moving && d < safe) || (ahead && same_dir && d < 20.0 && cspeed > speed) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
+                    (Tac::AlongSide | Tac::Avoid, _) if (!t_moving && d < along + 1.0) || (t_moving && same_dir && !ahead && cspeed > speed && d > 1.5 * along) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
+                    // Block (F-56982): handbrake, no throttle, full lock towards the target
+                    (Tac::Block, _) => Some(crate::ai::Overrides { handbrake: Some(true), throttle: Some(0.0), steer: Some(if on_right { 1.0 } else { -1.0 }), brake: None }),
+                    // Halt (F-29519): stopped beside the target; steering away while closing in
+                    (Tac::Halt, false) => Some(crate::ai::Overrides { brake: (d < safe).then_some(1.0), steer: if closing(safe) { away } else { None }, ..Default::default() }),
+                    (Tac::Halt, true) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
+                    _ => None,
+                };
+            } else if let Some(ai) = Some(ai) {
+                let target = match self.heat {
+                    Heat::Search => (self.last_known, Vec3::ZERO),
+                    _ => (ppos, pvel),
+                };
+                ai.ovr = None;
+                if chasing && self.heat != Heat::Busted {
                     ai.chase = Some(target);
-                    ai.target_speed = cop_speed;
+                    ai.target_speed = 22.0;
                 } else if self.heat == Heat::Busted {
                     ai.chase = Some((c.state.pos, Vec3::ZERO));
                 } else if ai.chase.is_some() {

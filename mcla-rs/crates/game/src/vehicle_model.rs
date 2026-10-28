@@ -80,6 +80,8 @@ pub struct CarAsset {
     /// the side windows' roll-down clips (`win_l_open`, `win_r_open` of the base fragment), left
     /// then right
     pub windows: [Option<WindowClip>; 2],
+    /// the police light bar's spin (`cop_lights` of the base fragment; the cruiser only)
+    pub cop_lights: Option<CopLights>,
     /// the damage map's layout (`<car>_maxdamage`, the largest of the car's .r83 files, decoded RGBA8; the map's G
     /// and A after a reset - damagemap.rs)
     pub damage_layout: Option<(u32, u32, Vec<u8>)>,
@@ -126,6 +128,52 @@ impl WindowClip {
     /// rest pose, so this maps the rest pose to the pose at `time`.
     pub fn delta(&self, time: f32) -> Mat4 {
         self.parent_world * self.local_at(time) * self.rest_world.inverse()
+    }
+}
+
+/// The police light bar's beacons (GitHub #17; docs/reference/hookmen/cop_lamps.md): the base fragment's `cop_lights`
+/// clip (0.333 s, 11 frames) turns seven pivot bones a full turn about the vertical, each from its own start angle;
+/// a `coplightred` / `coplightblue` bone hangs 0.05 m out from each. The car's animation object loops it all the time
+/// (F-35036 stores the loop state every frame, F-27851 steps it: time += the frame's dt, back to 0 at the end), and
+/// the glow pass faces each glow by its lamp's turning matrix - so each one sweeps past the camera three times a second.
+#[derive(Debug, Clone)]
+pub struct CopLights {
+    pub duration: f32,
+    pub anim: mcla_formats::rage::anim::Animation,
+    /// per lamp: its pivot's tag, the pivot's parent in car space, the pivot's rest local matrix, the lamp bone's
+    /// local matrix under the pivot and its rest place in car space
+    pub lamps: Vec<(u16, Mat4, Mat4, Mat4, Vec3)>,
+}
+
+impl CopLights {
+    pub fn load(res: &mcla_formats::rsc::Resource, sk: &Skeleton) -> Option<CopLights> {
+        use mcla_formats::rage::anim::KIND_ROTATION;
+        let anim = mcla_formats::rage::anim::animation_by_name(res, "cop_lights")?;
+        let mut lamps = Vec::new();
+        for tr in anim.tracks.iter().filter(|t| t.kind == KIND_ROTATION) {
+            let Some(pi) = sk.bone_by_tag(tr.bone_id) else { continue };
+            let pivot = &sk.bones[pi];
+            let parent_world = sk.bones.get(pivot.parent).map_or(Mat4::IDENTITY, |p| p.world);
+            for b in sk.bones.iter().filter(|b| b.parent == pi) {
+                let n = b.name.to_ascii_lowercase();
+                if n.starts_with("coplightred") || n.starts_with("coplightblue") {
+                    lamps.push((tr.bone_id, parent_world, pivot.local, b.local, b.world.w_axis.truncate()));
+                }
+            }
+        }
+        (!lamps.is_empty()).then(|| CopLights { duration: anim.duration, anim, lamps })
+    }
+
+    /// Lamp `i`'s matrix in car space at clip time `time` (looped: back to 0 at the end, F-27851).
+    pub fn lamp_at(&self, i: usize, time: f32) -> Mat4 {
+        use mcla_formats::rage::anim::KIND_ROTATION;
+        let (tag, parent, rest, child, _) = self.lamps[i];
+        let last = (self.anim.frames.max(1) - 1) as f32;
+        let t = if self.duration > 0.0 { time.rem_euclid(self.duration) } else { 0.0 };
+        let f = if self.duration > 0.0 { (t / self.duration * last).clamp(0.0, last) } else { 0.0 };
+        let (_, rest_r, rest_t) = rest.to_scale_rotation_translation();
+        let r = self.anim.track(KIND_ROTATION, tag).map_or(rest_r, |tr| tr.data.rot(f));
+        parent * Mat4::from_rotation_translation(r, rest_t) * child
     }
 }
 
@@ -804,6 +852,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     }
     // (the side windows' clips: in every base fragment; the LOD0 one first)
     let mut windows: [Option<WindowClip>; 2] = [None, None];
+    let mut cop_lights: Option<CopLights> = None;
     if let Some(sk) = skeleton.as_ref() {
         for f in BASE_FRAGMENTS.iter().rev() {
             if windows.iter().all(|w| w.is_some()) {
@@ -814,6 +863,12 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
             for (k, n) in ["win_l_open", "win_r_open"].iter().enumerate() {
                 if windows[k].is_none() {
                     windows[k] = WindowClip::load(&res, sk, n);
+                }
+            }
+            if cop_lights.is_none() {
+                cop_lights = CopLights::load(&res, sk);
+                if let Some(c) = cop_lights.as_ref() {
+                    log::info!("car {}: cop_lights clip {:.3} s, {} frames, {} lamps", name, c.duration, c.anim.frames, c.lamps.len());
                 }
             }
         }
@@ -982,7 +1037,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
         max = max.max(p.max);
     }
     log::info!("car {}: {} shaders, {} textures, {} parts ({} stock)", name, shaders.len(), textures.len(), parts.len(), parts.iter().filter(|p| p.stock).count());
-    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows, damage_layout })
+    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows, cop_lights, damage_layout })
 }
 
 /// Display name of a part from its internal names, e.g. "exstPipe05_Borla_single_round"
