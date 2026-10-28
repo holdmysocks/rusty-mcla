@@ -114,6 +114,20 @@ pub enum Event {
     Busted(i64),
 }
 
+/// The race's cop zone (PoliceManager +188 zone, +192 lap, +196 state, +212 timer).
+#[derive(Clone, Debug)]
+pub struct CopZone {
+    pub idx: usize,
+    pub lap: usize,
+    /// 0 waiting for its lap, 1 armed, 2 set off
+    pub state: u8,
+    pub timer: f32,
+    /// the player set it off
+    pub player: bool,
+    /// a cruiser waits there (the port's: where the original's unit comes from was not read)
+    pub stationed: bool,
+}
+
 /// One of the three cruisers the hookmen's scripts make (`create_units`).
 #[derive(Clone, Debug)]
 pub struct Unit {
@@ -153,6 +167,14 @@ pub struct Police {
     pub search: f32,
     arrest: f32,
     busted_timer: f32,
+    /// the cops' arrest is over (its hold run out): a race running ends back in the cruise (F-22530)
+    pub arrest_over: bool,
+    /// the race's cop zone (F-88125 picks it, F-71212: the zone machine) - None outside a race
+    pub zone: Option<CopZone>,
+    /// the zone's chase is due: the pursuit starts on the next update
+    zone_go: bool,
+    /// the zone of the race running was picked
+    pub zone_picked: bool,
     pullover_time: f32,
     speed_level: u8,
     /// the highest speed band of the offences so far (1..3; 0 = none): the fine counts that one
@@ -226,6 +248,10 @@ impl Police {
             search: 0.0,
             arrest: 0.0,
             busted_timer: 0.0,
+            arrest_over: false,
+            zone: None,
+            zone_go: false,
+            zone_picked: false,
             pullover_time: 0.0,
             speed_level: 0,
             speed_top: 0,
@@ -361,6 +387,62 @@ impl Police {
         if self.heat == Heat::Busted {
             self.busted_timer = self.busted_timer.max(secs);
         }
+    }
+
+    /// PoliceManager_EvaluateCopZones (F-88125): of the race's zones ONE is picked, and ONE lap
+    /// (`rand % laps` when the race has more than one, else lap 0); lap 0's zone is armed at once,
+    /// another's when the race's lap changes to it (F-82127, "[COP ZONE] lap [%d], cop zone enabled").
+    /// (approx.: the port's own random numbers, not the game's LCG)
+    pub fn pick_zone(&mut self, zones: usize, laps: usize) {
+        self.zone_go = false;
+        self.zone = (zones > 0).then(|| {
+            let idx = (self.rand() * zones as f32) as usize % zones;
+            let lap = if laps > 1 { (self.rand() * laps as f32) as usize % laps } else { 0 };
+            log::info!("police: cop zone {} enabled on lap {}", idx, lap);
+            CopZone { idx, lap, state: if lap == 0 { 1 } else { 0 }, timer: 0.0, player: false, stationed: false }
+        });
+        if zones == 0 {
+            log::info!("police: no cops in this race");
+        }
+    }
+
+    /// The zone machine of a race (F-71212), per frame: `lap` is the race's current lap, `inside`
+    /// whether a racer is in the zone (and whether it is the player). State 1 (armed): the first
+    /// racer in the zone sets it off (state 2, 5.5 s). State 2: when the time is up the pursuit
+    /// starts. (approx./not ported: the pursuit on an AI racer - the original's target is the racer
+    /// that set it off, or with iRaceTgtAiProbPrcnt the nearest AI racer; the port's police chase
+    /// only the player, so a zone set off for an AI racer starts nothing; the earlier start when the
+    /// target comes in range (F-12032) and the state 3 wait after it)
+    pub fn zone_step(&mut self, lap: usize, inside: Option<bool>, dt: f32) -> Option<&'static str> {
+        let Some(z) = self.zone.as_mut() else { return None };
+        let mut say = None;
+        match z.state {
+            0 if lap == z.lap => {
+                z.state = 1;
+                log::info!("police: lap {}, cop zone enabled", lap);
+            }
+            1 => {
+                if let Some(player) = inside {
+                    z.state = 2;
+                    z.timer = 5.5;
+                    z.player = player;
+                    log::info!("police: cop zone {} set off by {}", z.idx, if player { "the player" } else { "an AI racer" });
+                    say = Some("PLAYER_COPS_BEGIN_PURSUIT");
+                }
+            }
+            2 => {
+                z.timer -= dt;
+                if z.timer < 0.0 {
+                    z.state = 0;
+                    z.lap = usize::MAX;
+                    if z.player && matches!(self.heat, Heat::None | Heat::PullOver) {
+                        self.zone_go = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        say
     }
 
     /// Test helper: start a pursuit right now with a cruiser close by.
@@ -816,7 +898,7 @@ impl Police {
         let arrest_speed = t("fArrestTgtThresholdSpd", 10.0) / MPH;
         match self.heat {
             Heat::None => {
-                if self.score >= t("iPursuitLawBreakScore", 600.0) {
+                if self.score >= t("iPursuitLawBreakScore", 600.0) || std::mem::take(&mut self.zone_go) {
                     self.heat = Heat::Pursuit;
                     self.last_known = ppos;
                     self.fine = self.law_fines();
@@ -916,6 +998,9 @@ impl Police {
                     let goons = self.goons;
                     self.clear();
                     self.goons = goons;
+                    // (F-22530: the arrest tactic succeeded - for a cops' tactic, not the payback's
+                    // goons, a race running gets raceOverCommand `returnToCruise`)
+                    self.arrest_over = !goons;
                     // the cruisers drive off
                     vehicles.cars.retain(|c| !c.cop || c.state.pos.distance(ppos) > 60.0);
                 }

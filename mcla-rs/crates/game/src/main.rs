@@ -4535,13 +4535,35 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 self.vehicles.prop_objects = objs;
             }
-            // the race's cop zones: a cruiser waits at each once the player comes near
-            if self.tick_no % 30 == 0 && self.police.enabled {
-                if let Some(race) = self.game.race.as_mut() {
+            // the race's cop zone (F-88125, F-71212): one zone of the race's, on one lap; the first
+            // racer in it sets it off and the pursuit starts 5.5 s later (police.rs `zone_step`)
+            if self.game.race.is_none() {
+                self.police.zone = None;
+                self.police.zone_picked = false;
+            } else if self.police.enabled && !self.vehicles.frozen {
+                let race = self.game.race.as_mut().unwrap();
+                if !self.police.zone_picked {
+                    self.police.zone_picked = true;
+                    self.police.pick_zone(race.cop_zones.len(), race.laps);
+                }
+                if let Some(z) = self.police.zone.clone().filter(|_| race.countdown <= 0.0) {
+                    let lap = race.next.first().map_or(0, |&n| n / race.lap_len.max(1));
+                    let (zp, zr) = (race.cop_zones[z.idx].0, race.cop_zones[z.idx].1);
+                    let inside = race.participants.iter().find_map(|&ci| {
+                        self.vehicles.cars.get(ci).filter(|c| c.state.pos.distance_squared(zp) < zr * zr).map(|c| c.is_player)
+                    });
+                    if let Some(line) = self.police.zone_step(lap, inside, sim_dt) {
+                        if !self.speech.busy() {
+                            self.speech.say(line);
+                        }
+                    }
+                    // (approx.: a cruiser waits at the armed zone once the player comes near - which
+                    // unit the original sends, from where, was not read)
                     let pp = self.vehicles.player().map(|c| c.state.pos).unwrap_or(Vec3::ZERO);
-                    for (k, z) in race.cop_zones.iter_mut().enumerate() {
-                        if !z.2 && z.0.distance(pp) < 320.0 && z.0.distance(pp) > 90.0 && world.ready_at(z.0) {
-                            z.2 = self.police.station(&gpu, &world, &mut self.vehicles, z.0, k);
+                    if z.state == 1 && !z.stationed && self.tick_no % 30 == 0 && zp.distance(pp) < 320.0 && zp.distance(pp) > 90.0 && world.ready_at(zp) {
+                        let ok = self.police.station(&gpu, &world, &mut self.vehicles, zp, z.idx);
+                        if let Some(zz) = self.police.zone.as_mut() {
+                            zz.stationed = ok;
                         }
                     }
                 }
@@ -5796,6 +5818,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.police.progress = rewards::progress(self.game.rep).1;
                 let ev = self.police.update(&gpu, &world, &mut self.vehicles, self.props.knocked, sim_dt);
                 // (step 19d: the payback's chase - the pursuers are the client's friends, their
+                // (F-22530: an arrest by the cops ends a race running - raceOverCommand `returnToCruise`,
+                // raceOverTrigger 1: back to the cruise as RETURN TO CRUISE does)
+                if std::mem::take(&mut self.police.arrest_over) && self.game.race.is_some() {
+                    log::info!("police: arrested during the race - back to the cruise");
+                    self.pending_action = MenuAction::StartFreeRoam;
+                }
                 // two results the leg's own: no radio, no fine, no arrest form - `mc4`)
                 let s19d_goons = self.police.goons;
                 let ev = self.game.mc4_payback_chase(&mut self.police, &mut self.vehicles, &mut gpu, &mut world, ev, sim_dt);
