@@ -1491,8 +1491,17 @@ fn mini_sky(r: vec2<f32>) -> vec3<f32> {
 // environment maps are the cause. GitHub #14.)
 fn env_dbg(c: vec3<f32>) -> vec3<f32> {
     if (g.params.w > 701.5 && g.params.w < 702.5) { return vec3<f32>(0.0); }
-    if (g.params.w > 700.5 && g.params.w < 701.5) { return clamp(select(c, vec3<f32>(0.0), c != c), vec3<f32>(0.0), vec3<f32>(4.0)); }
+    if (g.params.w > 700.5 && g.params.w < 701.5) { return clamp(env_finite(c), vec3<f32>(0.0), vec3<f32>(4.0)); }
     return c;
+}
+
+// A texel of the environment maps that is not a number (NaN or infinite) read as 0. The test is on
+// the bits: a float compare (c != c) is folded away by drivers that compile with "no NaNs" (AMD's
+// Vulkan compiler on RDNA 3, GitHub #14: the 701 view above did not help there, 702 did). A finite
+// value is left as it is.
+fn env_finite(c: vec3<f32>) -> vec3<f32> {
+    let e = bitcast<vec3<u32>>(c) & vec3<u32>(0x7f800000u);
+    return select(c, vec3<f32>(0.0), e == vec3<u32>(0x7f800000u));
 }
 
 fn env_color(d: vec3<f32>) -> vec3<f32> { return env_dbg(env_color0(d)); }
@@ -1522,7 +1531,7 @@ fn env_color0(d: vec3<f32>) -> vec3<f32> {
     let sun = pow(max(dot(d, g.sun_dir.xyz), 0.0), 180.0) * g.sun_dir.w;
     // (shadow_params.w: the cube map of the real surroundings is there to be mirrored)
     if (g.shadow_params.w > 0.5) {
-        let real = textureSampleLevel(t_env, s_env, vec3<f32>(d.x, d.y, d.z), 0.0).rgb;
+        let real = env_finite(textureSampleLevel(t_env, s_env, vec3<f32>(d.x, d.y, d.z), 0.0).rgb);
         // (under the weather's keys the map is taken as it is, as the game's programs take
         // theirs: the sun in it is the dome's own. MCLA_DEBUG_VIEW 39: the older gains.)
         if (g.dome.w > 0.5 && !(g.params.w > 38.5 && g.params.w < 39.5)) { return real; }
@@ -1552,7 +1561,7 @@ fn env_soft0(d: vec3<f32>) -> vec3<f32> {
     }
     // PS_BlurVert's end: x imgExposure (0.473 by day, 1.29 by night: car_key.w), half way to
     // grey, a contrast of imgExp (1.023) about 0.5, nothing below 0
-    var c = textureSampleLevel(t_env_soft, s_env, d, 0.0).rgb * g.car_key.w;
+    var c = env_finite(textureSampleLevel(t_env_soft, s_env, d, 0.0).rgb) * g.car_key.w;
     c = mix(c, vec3<f32>(dot(c, vec3<f32>(0.3, 0.59, 0.11))), 0.5);
     return max((c - vec3<f32>(0.5)) * 1.023 + vec3<f32>(0.5), vec3<f32>(0.0));
 }

@@ -81,7 +81,11 @@ fn small_texel(x: i32, y: i32) -> vec3<f32> {
             let uv = vec2<f32>((xx + 3.5 + f32(a)) / 512.0, (yy + 3.5 + f32(b)) / 256.0);
             // (the original's map holds no more than about 2.3 anywhere at noon - its sky has no
             // sun disc of the main sky's strength; the reads are held to that)
-            s = s + min(textureSampleLevel(t_env, s_env, dp_dir(uv), 0.0).rgb, vec3<f32>(2.3));
+            // (a texel that is not a number - NaN or infinite - counts as 0: tested on the bits, which a
+            // "no NaNs" compiler cannot fold away; GitHub #14)
+            let t = textureSampleLevel(t_env, s_env, dp_dir(uv), 0.0).rgb;
+            let bad = (bitcast<vec3<u32>>(t) & vec3<u32>(0x7f800000u)) == vec3<u32>(0x7f800000u);
+            s = s + min(select(t, vec3<f32>(0.0), bad), vec3<f32>(2.3));
         }
     }
     return s * 0.25;
