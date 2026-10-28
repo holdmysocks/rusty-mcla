@@ -66,7 +66,7 @@ impl Runner {
         let t0 = Instant::now();
         let mut app = self.app.take().expect("app");
         let window = app.open_window(event_loop);
-        let base = pollster::block_on(render::Gpu::base(window.clone())).expect("gpu init");
+        let base = pollster::block_on(render::Gpu::base(window.clone())).unwrap_or_else(|e| crate::hooks::gpu_init_failed(&e));
         log::info!("startup: device and surface at {} ms", t0.elapsed().as_millis());
         let egui = App::make_egui(&window, &base.device, &base.queue, base.config.format);
         let data_dir = app.opt.data_dir.clone();

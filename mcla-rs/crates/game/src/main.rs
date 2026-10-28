@@ -5823,8 +5823,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.fx.update(sim_dt);
             }
             if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !self.vehicles.frozen {
-                if std::env::var("MCLA_COP_TEST").is_ok() {
-                    if self.tick_no == 150 {
+                if let Ok(v) = std::env::var("MCLA_COP_TEST") {
+                    // ("park": a cruiser waiting at the kerb ahead of the player, no pursuit - to look at it)
+                    if v == "park" && self.tick_no >= 150 && !self.vehicles.cars.iter().any(|c| c.cop) && self.tick_no % 30 == 0 {
+                        if let Some(c) = self.vehicles.player().map(|c| c.state.pos + c.state.forward() * 14.0) {
+                            let ok = self.police.station(&gpu, &world, &mut self.vehicles, c, 0);
+                            log::info!("police: test cruiser parked: {}", ok);
+                            // (held where it stands with its driver seated: not a parked car)
+                            if let Some(c) = self.vehicles.cars.iter_mut().rev().find(|c| c.cop).filter(|_| ok) {
+                                c.parked = None;
+                                c.ai = None;
+                            }
+                        }
+                    } else if v != "park" && self.tick_no == 150 {
                         self.police.debug_force(&gpu, &world, &mut self.vehicles);
                     }
                     if self.tick_no % 60 == 0 {
@@ -7666,11 +7677,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             let want_parked = v == "parked";
             let from = self.cam.pos;
-            if let Some(c) = self.vehicles.cars.iter().filter(|c| !c.is_player && c.placed && c.parked.is_some() == want_parked && c.model.name.starts_with("va_")).min_by(|a, b| a.state.pos.distance_squared(from).partial_cmp(&b.state.pos.distance_squared(from)).unwrap()) {
+            // ("cop": the nearest cruiser, from its left side - into the driver's window)
+            let cop = v == "cop";
+            if let Some(c) = self.vehicles.cars.iter().filter(|c| !c.is_player && if cop { c.cop } else { c.placed && c.parked.is_some() == want_parked && c.model.name.starts_with("va_") }).min_by(|a, b| a.state.pos.distance_squared(from).partial_cmp(&b.state.pos.distance_squared(from)).unwrap()) {
                 let render_state = c.render_state(self.vehicles.render_alpha);
                 let (f, r) = (render_state.forward(), render_state.right());
-                self.chase.pos = render_state.pos + f * 4.2 - r * 1.6 + Vec3::Y * 1.3;
-                self.chase.look = render_state.pos + Vec3::Y * 0.8;
+                self.chase.pos = render_state.pos + if cop { f * 0.2 - r * 2.4 + Vec3::Y * 1.2 } else { f * 4.2 - r * 1.6 + Vec3::Y * 1.3 };
+                self.chase.look = render_state.pos + if cop { f * 0.2 + Vec3::Y * 0.9 } else { Vec3::Y * 0.8 };
                 self.cam.pos = self.chase.pos;
                 self.cam.fov_y = 0.7;
             }
@@ -9073,7 +9086,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // in a cutscene the people of its cars are the scene's own characters
                     let staged = self.cine.playing.is_some() && ((c.is_player && self.cine.has_actor("player")) || c.driver.starts_with("cine:"));
                     // (VEHICLE SELECT: the three stand empty - `ng_vsel_0`)
-                    c.placed && c.parked.is_none() && !n.starts_with("va_") && self.game.mode != Mode::Garage && !staged && !self.vehicles.lights_off && !c.driver.starts_with("hangout:")
+                    // (the cruiser has no driver: mcRacer::LoadDriver, F-39898, returns before it makes one when
+                    // the car is vp_chv_police_96 - its own black interior is what shows; GitHub #17)
+                    c.placed && c.parked.is_none() && !c.model.name.eq_ignore_ascii_case(police::COP_CAR) && !n.starts_with("va_") && self.game.mode != Mode::Garage && !staged && !self.vehicles.lights_off && !c.driver.starts_with("hangout:")
                 })
                 .map(|(i, c)| {
                     let pose = c.render_pose(self.vehicles.render_alpha);
@@ -9086,7 +9101,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // trucks and SUVs seat their driver higher than the shared animation does
                         mat = mat * glam::Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0));
                     }
-                    drivers::Seat { id: i, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str() }
+                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str() }
                 })
                 .collect();
             self.drivers.headless = self.view_mode == 3 && !self.look_back && !self.event_dir.idle() && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));

@@ -35,3 +35,7 @@ egui-winit = { version = "0.31", default-features = false, features = ["links"] 
 sdl3-sys = { version = "0.7", default-features = false, features = ["build-from-source-static", "no-default-subsystems", "sdl-joystick", "sdl-audio", "sdl-haptic", "sdl-hidapi", "sdl-sensor"] }
 png = "0.17"
 rodio = { version = "0.20", default-features = false, features = ["symphonia-all"] }
+
+# (the message box when no graphics device can be made - hooks::gpu_init_failed, GitHub #16)
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }

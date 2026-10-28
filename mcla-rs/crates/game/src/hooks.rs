@@ -9,6 +9,7 @@
 //! - Crash: a panic writes `logs/crash-<time>.txt` (message, place, backtrace, adapter, settings, the last 50 log lines);
 //!   a panic on the main thread then ends the process with exit code 101. A worker thread's panic is reported the same
 //!   way but the game goes on as it always did. A clean exit is 0.
+//! - No graphics device: [`gpu_init_failed`] says why in a message box and ends with exit code 1 (GitHub #16).
 //! - F12: `App::screenshot_key` saves the next frame as a PNG in the screenshots folder.
 
 use crate::App;
@@ -350,6 +351,8 @@ fn header(rt: &Runtime, log_path: &Path) -> String {
 }
 
 static ADAPTER: Mutex<String> = Mutex::new(String::new());
+/// the adapter's name and backend (`set_adapter`), for [`gpu_init_failed`]
+static ADAPTER_GPU: Mutex<Option<(String, wgpu::Backend)>> = Mutex::new(None);
 /// The game draws through DX12: its swap chain cannot be made on an exclusive-fullscreen window (DXGI_ERROR_INVALID_CALL,
 /// every card - GitHub #12), so fullscreen is borderless there (`fullscreen_on`, `render::Gpu::base`).
 static ON_DX12: AtomicBool = AtomicBool::new(false);
@@ -367,7 +370,76 @@ pub fn set_adapter(info: &wgpu::AdapterInfo) {
     if let Ok(mut a) = ADAPTER.lock() {
         *a = line;
     }
+    if let Ok(mut a) = ADAPTER_GPU.lock() {
+        *a = Some((info.name.clone(), info.backend));
+    }
 }
+
+/// The graphics device could not be made (`render::Gpu::base` failed): the reason in the log and, for a normal run, in a
+/// message box the player sees, then exit code 1 - not a panic that only closes the window (GitHub #16: a card whose
+/// driver has neither Vulkan nor DX12, where wgpu falls back to OpenGL and the device cannot be made).
+pub fn gpu_init_failed(e: &anyhow::Error) -> ! {
+    let gpu = ADAPTER_GPU.lock().ok().and_then(|a| a.clone());
+    let (title, text) = gpu_failure_text(gpu.as_ref().map(|(n, b)| (n.as_str(), *b)), &format!("{e:#}"), &paths::logs_dir());
+    log::error!("gpu init failed: {e:#}");
+    flush_log();
+    eprintln!("{title}
+
+{text}");
+    if get().is_some_and(|r| !r.shot_run) {
+        message_box(&title, &text);
+    }
+    std::process::exit(1)
+}
+
+fn gpu_failure_text(gpu: Option<(&str, wgpu::Backend)>, err: &str, logs: &Path) -> (String, String) {
+    let tail = format!("Details: {err}
+
+The game's log is in {}. The launcher's Export Logs collects it.", logs.display());
+    match gpu {
+        Some((name, backend)) if backend != wgpu::Backend::Gl => (
+            "Rusty MCLA - the graphics driver could not start the game".into(),
+            format!(
+                "The graphics driver could not start the game.
+
+Graphics: {name} ({})
+
+Updating the graphics driver may help. If it keeps happening, please report it on GitHub with the logs.
+
+{tail}",
+                backend.to_str()
+            ),
+        ),
+        _ => (
+            "Rusty MCLA - graphics card not supported".into(),
+            format!(
+                "Rusty MCLA cannot start on this graphics card.
+
+Graphics: {}
+
+The game needs a graphics card whose driver supports Vulkan or DirectX 12. This one has neither, so the game cannot create its graphics device on it.
+
+If the PC has another graphics card, make sure the game runs on that one and its driver is up to date.
+
+{tail}",
+                gpu.map_or_else(|| "none found that can draw to the window".to_string(), |(n, _)| format!("{n} (OpenGL only)"))
+            ),
+        ),
+    }
+}
+
+#[cfg(windows)]
+fn message_box(title: &str, text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST};
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (t, c) = (wide(text), wide(title));
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+    }
+}
+
+#[cfg(not(windows))]
+fn message_box(_title: &str, _text: &str) {}
 
 // ---------------------------------------------------------------- entry, panic hook
 
@@ -1320,6 +1392,18 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_failure_says_why() {
+        let logs = Path::new("C:/logs");
+        let (title, text) = gpu_failure_text(Some(("Intel(R) HD Graphics 4000", wgpu::Backend::Gl)), "request device", logs);
+        assert!(title.contains("not supported") && text.contains("HD Graphics 4000 (OpenGL only)") && text.contains("Vulkan or DirectX 12"));
+        assert!(text.contains("Details: request device") && text.contains("C:/logs"));
+        let (title, _) = gpu_failure_text(None, "no suitable GPU adapter", logs);
+        assert!(title.contains("not supported"));
+        let (title, text) = gpu_failure_text(Some(("RTX", wgpu::Backend::Vulkan)), "x", logs);
+        assert!(title.contains("driver") && text.contains("RTX (vulkan)"));
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("mcla-hooks-test-{}-{name}", std::process::id()));

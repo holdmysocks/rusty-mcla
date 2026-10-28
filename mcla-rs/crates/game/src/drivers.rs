@@ -16,6 +16,9 @@ use std::sync::Arc;
 /// What the driver of one car needs to know this frame.
 pub struct Seat<'a> {
     pub id: usize,
+    /// the car's number in the session (`CarInstance::uid`): fixed while the car lives, unlike its
+    /// place in the list, which moves when an earlier car goes
+    pub uid: u32,
     pub car: &'a str,
     pub mat: Mat4,
     pub pos: Vec3,
@@ -290,7 +293,9 @@ impl Drivers {
         if c.is_empty() {
             return self.sets.iter().position(|n| n.1 == s.bike);
         }
-        Some(c[hash(s.id as u32 + 17) as usize % c.len()])
+        // (by the car's own number: the place in the list moved when cars went, and the driver - his
+        // face - changed with it; GitHub #17)
+        Some(c[hash(s.uid + 17) as usize % c.len()])
     }
 
     /// The length of a car's DRV_HIT_HRD clip, once its driver is loaded.
