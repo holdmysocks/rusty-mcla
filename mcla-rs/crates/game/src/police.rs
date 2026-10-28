@@ -597,8 +597,10 @@ impl Police {
         let Some(model) = vehicles.models.iter().find(|m| m.name == COP_CAR).cloned() else { return false };
     /// A cruiser wears its stock set-up's paint and plate (`resources/vehicle/configs/vp_chv_police_96.xcc`: black body,
     /// light grey where the model marks the sixth paint area - doors and roof -, grey metallic bumpers): black and white,
-    /// as the original's own showroom picture of it (GitHub #17: the port painted it all white). Which set-up the
-    /// original's police manager gives its cars was not traced in its code.
+    /// as the original's own showroom picture of it (GitHub #17: the port painted it all white). This is the set-up the
+    /// original hands every cruiser: its police manager loads this file once at start-up (F-46996 through F-67050), and
+    /// the spawn (F-49535) copies that set-up (F-62644) when the car asked for is this one - which every script's
+    /// CreatePolice call asks for - instead of loading one by name (F-51560).
     fn dress_cruiser(world: &World, vehicles: &mut Vehicles, idx: usize) {
         let Ok(b) = std::fs::read(world.assets.root.join("resources/vehicle/configs").join(format!("{COP_CAR}.xcc"))) else { return };
         let Some(s) = crate::mc4::setup_look(&b) else { return };
