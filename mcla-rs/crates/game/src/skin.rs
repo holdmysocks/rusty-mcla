@@ -516,6 +516,11 @@ pub struct SkinBuffer {
     /// the next figure is one of a scene's bystanders (an entity named "ped": sub_823A10A8 sets
     /// +149, the draw takes the manager's own lights - path B); taken by `emit`
     pub next_bystander: bool,
+    /// the stencil reference the next figure draws with (a car's driver: render/mb.rs `driver_stencil_of`; 0 the
+    /// world's); taken by `emit`
+    pub next_stencil: u32,
+    /// each draw's stencil reference
+    draw_stencil: Vec<u32>,
     /// this frame's figures (character programs): the model's origin, bystander
     figs: Vec<(Vec3, bool)>,
     /// and each draw's figure and material
@@ -534,6 +539,7 @@ impl SkinBuffer {
         self.draw_fig.clear();
         self.figs.clear();
         self.char_draws.clear();
+        self.draw_stencil.clear();
     }
 
     /// Skin one character in the given local pose, standing at `root`.
@@ -562,6 +568,7 @@ impl SkinBuffer {
             self.skin.push(if gone { Mat4::from_translation(w.w_axis.truncate()) * Mat4::from_scale(Vec3::ZERO) } else { w * Mat4::from_translation(-b.bind) });
         }
         self.hide_from = None;
+        let stencil = std::mem::take(&mut self.next_stencil);
         let fig = match self.next_lanes.take() {
             Some(l) => {
                 self.lanes.push(l);
@@ -629,6 +636,7 @@ impl SkinBuffer {
                 }
             }
             self.draw_fig.push(fig);
+            self.draw_stencil.push(stencil);
         }
     }
 
@@ -727,7 +735,14 @@ impl SkinBuffer {
         pass.set_bind_group(2, &gpu.mat_bgs[&(MatMode::Object as u32)], &[]);
         let mut last: *const wgpu::BindGroup = std::ptr::null();
         let mut obj = usize::MAX;
+        // (the stencil reference as the pass has it - 0, the world's - changed only for the figures that carry one)
+        let mut stencil = 0u32;
         for (k, (bind, first, count)) in self.draws.iter().enumerate() {
+            let st = self.draw_stencil.get(k).copied().unwrap_or(0);
+            if st != stencil {
+                pass.set_stencil_reference(st);
+                stencil = st;
+            }
             if Arc::as_ptr(bind) != last {
                 pass.set_bind_group(1, bind.as_ref(), &[]);
                 last = Arc::as_ptr(bind);
@@ -746,6 +761,9 @@ impl SkinBuffer {
             }
             pass.draw_indexed(*first..*first + *count, 0, 0..1);
             *draws += 1;
+        }
+        if stencil != 0 {
+            pass.set_stencil_reference(0);
         }
     }
 }

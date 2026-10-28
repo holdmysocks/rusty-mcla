@@ -536,6 +536,8 @@ struct App {
     shake_sst: bool,
     /// the player's SsTurbo::fires last frame (stats gSST / nSST)
     sst_fires: u32,
+    /// the player's VehState::nitro_fires last frame (stats gNIT / nNIT)
+    nitro_fires: u32,
     shake_jolts: Vec<(f32, f32)>,
     district_timer: f32,
     flash: bool,
@@ -979,6 +981,7 @@ impl App {
             shake_land: false,
             shake_sst: false,
             sst_fires: 0,
+            nitro_fires: 0,
             shake_jolts: Vec::new(),
             district_timer: 0.0,
             flash: false,
@@ -2572,6 +2575,15 @@ impl App {
             }
         }
         self.sst_fires = fires;
+        // mcCarNitro's Fire (F-62883): the player's car counts "gNIT" and "nNIT", 1 each - the same gate as the turbo's
+        let fires = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(0, |v| v.nitro_fires);
+        if fires > self.nitro_fires {
+            for _ in self.nitro_fires..fires {
+                self.game.mc4_stat_add("gNIT", 0, 1.0);
+                self.game.mc4_stat_add("nNIT", 0, 1.0);
+            }
+        }
+        self.nitro_fires = fires;
         // ---- story scenes ----
         // (once the car stands on its wheels: the world is frozen while a scene runs)
         let on_wheels = self.vehicles.player().map_or(false, |c| c.placed && c.state.wheels.iter().filter(|w| w.grounded).count() >= 3 && c.state.vel.y.abs() < 0.3);
@@ -8510,7 +8522,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 .map(|c| {
                     (!c.pu_stealth).then(|| {
                         let p = c.render_pose(alpha);
-                        render::mb::Car { pos: p.pos, rot: p.rot, vel: c.state.vel, player: c.is_player }
+                        render::mb::Car { pos: p.pos, rot: p.rot, vel: c.state.vel, bike: c.model.bike }
                     })
                 })
                 .collect();

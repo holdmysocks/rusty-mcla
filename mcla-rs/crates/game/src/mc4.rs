@@ -11661,7 +11661,10 @@ impl Game {
                 log::info!("SST_Tutorial started (RACE_GH_06)");
             }
         }
-        let racing = race && self.race.as_ref().map_or(false, |r| r.countdown <= 0.0 && r.finish_time.first().map_or(true, |t| t.is_none())) && self.message_box.is_none() && self.tutorial_box.is_none() && !self.in_menu();
+        // (the UI's Racing state, tune/gamestate/Racing.sc.xml: entered on mc.missionRace - the core's event right after
+        // it starts this script, so the grid and countdown are in it - and left on game.raceEnd / raceEndNoMenu; the game is
+        // paused once the end of race's form 60 freezes it, RACE_END_FREEZE after the line)
+        let racing = race && self.race_end_t.map_or(true, |t| t < Self::RACE_END_FREEZE) && self.message_box.is_none() && self.tutorial_box.is_none() && !self.in_menu();
         self.mc4_sst_tut_step(dt, sst.unwrap_or(0.0), racing);
     }
 

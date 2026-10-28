@@ -488,6 +488,8 @@ impl Drivers {
             if s.player && self.headless {
                 self.buf.hide_from = rig.model.head;
             }
+            // (the driver's stencil id: his car's + 1, a rider's his bike's - render/mb.rs, F-10884)
+            self.buf.next_stencil = crate::render::mb::driver_stencil_of(s.id);
             self.buf.emit(&rig.model, 0, &local, s.mat);
             if s.player {
                 self.player_head = rig.model.head.and_then(|h| self.buf.bone_pos(h)).map(|w| s.mat.inverse().transform_point3(w));

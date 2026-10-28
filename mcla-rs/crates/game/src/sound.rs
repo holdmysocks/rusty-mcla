@@ -135,7 +135,7 @@ pub struct Sound {
     /// the warp's step last frame, and whether its NAVMAP scene is the warp's (started by the climb, not yet stopped)
     warp_prev: u8,
     warp_navmap: bool,
-    /// the audio camera mode last frame (a change applies the camera table, sub_821ED418)
+    /// the audio camera mode last frame (a change applies the camera table, F-33257)
     cam_prev: i32,
     /// set by the game once the props are placed: every prop's audio object and place (`Props::audio_places`)
     pub prop_places: Vec<(u32, Vec3)>,
@@ -147,7 +147,7 @@ pub struct Sound {
     dmg_prev: f32,
     dmg_armed: bool,
     pan_cam: Option<i32>,
-    /// AIRTIME (sub_823267E8): the wheel probed this frame, misses so far, on, time in the air
+    /// AIRTIME (F-22751): the wheel probed this frame, misses so far, on, time in the air
     air_i: usize,
     air_miss: usize,
     air_on: bool,
@@ -156,7 +156,7 @@ pub struct Sound {
     obj_loops: std::collections::HashMap<String, crate::sndobj::Handle>,
     /// loops asked for whose object the library does not have (said once)
     obj_loops_missing: std::collections::HashSet<String>,
-    /// the story scene's audio (sub_821F5AA0): its dialogue and effects sounds and its mixer scene
+    /// the story scene's audio (F-58551): its dialogue and effects sounds and its mixer scene
     cut: Vec<crate::sndobj::Handle>,
     /// set by the game: the player's car is the port's stand-in, hidden - a new career has no player vehicle until
     /// CarSelection gives one (AddVehicleToPlayer), so it has no engine sound
@@ -241,7 +241,7 @@ impl Sound {
     #[allow(clippy::too_many_arguments)]
     /// `rain`: the weather's rain share (wet = not 0); `probe(from, to)`: the city's collision has something on that line.
     /// The tach's rpm: the HUD's d_RPMvalue is the player's engine sound's slewed rpm (engine sound +204,
-    /// sub_822112A8 from sub_8234B000's follower: at most its slew a second - 250 rpm a frame for most cars),
+    /// F-86111 from F-10725's follower: at most its slew a second - 250 rpm a frame for most cars),
     /// not the engine's own. None while the car has no engine sound of the original's.
     pub fn tach_rpm(&self) -> Option<f32> {
         self.engine.as_ref().map(|(_, e)| e.smoothed_rpm())
@@ -279,12 +279,12 @@ impl Sound {
                         lib.play_clip(&key, category, crate::sndobj::Req { pos, ..Default::default() });
                     }
                     crate::audio::ObjCmd::Scene { name, on } => {
-                        // (a speech line's scene, sub_821F1038: strength = dB2lin(the SPEECH category's runtime volume))
+                        // (a speech line's scene, F-77322: strength = dB2lin(the SPEECH category's runtime volume))
                         let s = if name.starts_with("DYNAMIC_MIXER_SPEECH") || name == "DYNAMIC_MIXER_PRERACE_TAUNT" { lib.category("SPEECH").map_or(1.0, |c| mcla_formats::audcfg::db2lin(c.volume)) } else { 1.0 };
                         lib.scene_at(&name, on, s)
                     }
                     crate::audio::ObjCmd::Cutscene { name, on, sounds } => {
-                        // the scene's audio ends (sub_821F5C38): its sounds stop, its mixer scene stops with its exit
+                        // the scene's audio ends (F-27469): its sounds stop, its mixer scene stops with its exit
                         for h in self.cut.drain(..) {
                             lib.stop(h);
                         }
@@ -344,13 +344,13 @@ impl Sound {
                 lib.scene("DYNAMIC_MIXER_NAVMAP", game.show_map);
                 self.navmap = game.show_map;
             }
-            // the start warp's navmap audio (mcWarper -> sub_8262BAB0(event)): Warper_Warp('MAXHEIGHT') (sub_8221A440 case
-            // 9, 0x8221B2D8) sends event 0 - GLOBAL_UI_NAVMAP +66 (GPS_UP_HIGH) and, unless it already runs, NAVMAP (stream
+            // the start warp's navmap audio (mcWarper -> F-52643(event)): Warper_Warp('MAXHEIGHT') (F-32081 case
+            // 9, A-24009) sends event 0 - GLOBAL_UI_NAVMAP +66 (GPS_UP_HIGH) and, unless it already runs, NAVMAP (stream
             // GPS_SKY_AMBIENCE; beds, SFX_HARD - every car, the people, the tyres - and PLAYER_VEHICLES to -100 dB, fade in
-            // 1 s); the way down (USER_WAIT_NO_CUT_DOWN: sub_8221BE98 after the GPS chooser sub_82219DA0) sends event 1 from
+            // 1 s); the way down (USER_WAIT_NO_CUT_DOWN: F-31347 after the GPS chooser F-18267) sends event 1 from
             // the held 9000 m (> 6000, 0x82018A20) - +70 (GPS_DOWN_LOW) and NAVMAP stopped with its exit (fade out 2 s).
             // A new career has no way down: the scene stays until the camera table is next applied for another mode than 5
-            // (sub_821ED418 from sub_822C0320 stops NAVMAP without its exit)
+            // (F-33257 from F-79297 stops NAVMAP without its exit)
             if self.warp != self.warp_prev {
                 let field = |lib: &crate::sndobj::SoundLib, at: usize| lib.game.get_name("GLOBAL_UI_NAVMAP").and_then(|o| o.get(at..at + 4)).map(|b| u32::from_be_bytes(b.try_into().unwrap()));
                 if self.warp == 1 && self.warp_prev == 0 {
@@ -377,7 +377,7 @@ impl Sound {
                 }
                 self.cam_prev = self.cam_audio;
             }
-            // the props' distance loops (sub_82735918 -> sub_8272D5F0, COLLISION_AUDIO_RULE.md 3.5): a prop whose type
+            // the props' distance loops (F-39846 -> F-32775, COLLISION_AUDIO_RULE.md 3.5): a prop whose type
             // object (LA_PROP_<type>, type 43) has a loop at +86 - the parked and flying aircraft (CESSNA, CESSNA_BEACH,
             // the 737 JET, HELICOPTER) and road flares - plays it at its place while the listener is within +90 m
             // (700 / 800 / 780 / 50), and stops beyond. (The aircraft's flag +85 bit 0 keeps it while the prop moves; the
@@ -407,15 +407,15 @@ impl Sound {
                     (false, None) => {}
                 }
             }
-            // BINK_DEFAULT: a film (BINK_INTRO / BINK_ATTRACT +10) while it plays - the Bink player's sub_822CBC10 starts
-            // it at strength 1.0, its cleanup sub_822CBE30 stops it (MUSIC, SPEECH, CUTSCENES, PLAYER_VEHICLES, SFX -100 dB)
+            // BINK_DEFAULT: a film (BINK_INTRO / BINK_ATTRACT +10) while it plays - the Bink player's F-45360 starts
+            // it at strength 1.0, its cleanup F-66695 stops it (MUSIC, SPEECH, CUTSCENES, PLAYER_VEHICLES, SFX -100 dB)
             lib.scene("DYNAMIC_MIXER_BINK_DEFAULT", game.movie.is_some());
-            // PAUSE (sub_821E63F0): paused, not the map, not the replay viewer playing outside the race end
+            // PAUSE (F-99037): paused, not the map, not the replay viewer playing outside the race end
             let endrace = lib.scene_on("DYNAMIC_MIXER_ENDRACE") || lib.scene_on("DYNAMIC_MIXER_ENDRACE_BEATMETHERE");
             let viewer = game.replay.as_ref().is_some_and(|r| !r.paused);
             lib.scene("DYNAMIC_MIXER_PAUSE", game.mode == Mode::Paused && !lib.scene_on("DYNAMIC_MIXER_NAVMAP") && !(viewer && !endrace));
             lib.scene("DYNAMIC_MIXER_GARAGE", game.mode == Mode::Garage);
-            // REPLAY_*: the replay viewer's speed (sub_82640958; the port's viewer plays at 1 or is paused)
+            // REPLAY_*: the replay viewer's speed (F-42247; the port's viewer plays at 1 or is paused)
             match &game.replay {
                 Some(r) if r.paused => {
                     lib.scene("DYNAMIC_MIXER_REPLAY_FRAME_ADVANCE", false);
@@ -428,7 +428,7 @@ impl Sound {
                     }
                 }
             }
-            // MUSIC (sub_821EED90): while a song plays, strength = dB2lin(MUSIC + MUSIC_USER), continuous; off when the
+            // MUSIC (F-42730): while a song plays, strength = dB2lin(MUSIC + MUSIC_USER), continuous; off when the
             // song stops or MUSIC_USER is at -95 dB or below
             let vol = |n: &str| lib.category(n).map_or(0.0, |c| c.volume);
             let (mv, mu) = (vol("MUSIC"), vol("MUSIC_USER"));
@@ -440,13 +440,17 @@ impl Sound {
                 lib.play(if phone { "UI_CELLPHONE_RING" } else { "UI_CELLPHONE_CLOSE" }, crate::sndobj::Req::default());
                 self.phone = phone;
             }
-            // a tutorial box opens / closes
-            let tut = game.tutorial_box.as_ref().is_some_and(|t| t.2 <= 0.0);
+            // a tutorial box opens / closes: its form's OnShow / OnHide (mcForm slots 400 / 756) play
+            // UI_MENU_TUTORIAL_OPEN_MASTER / _CLOSE_MASTER - all but the forms whose slots play none: 79 slipstream_use
+            // (F-61402's class), 82 challenge / 83 flash (one OnShow, no OnHide), 85 gas_station, 89 telephone_challenge
+            // (work/slipstream/tut/forms2.py; forms 94 .. 105 not read)
+            const SILENT: [&str; 5] = ["tutorial_slipstream_use_title", "tutorial_challenge_title", "tutorial_flash_title", "tutorial_gas_station_title", "tutorial_telephone_challenge_title"];
+            let tut = game.tutorial_box.as_ref().is_some_and(|t| t.2 <= 0.0 && !SILENT.contains(&t.0.as_str()));
             if tut != self.tutorial {
                 lib.play(if tut { "UI_MENU_TUTORIAL_OPEN_MASTER" } else { "UI_MENU_TUTORIAL_CLOSE_MASTER" }, crate::sndobj::Req::default());
                 self.tutorial = tut;
             }
-            // DAMAGE_METER_BEEP (sub_82328078): one beep per rise of the HUD's damage_alpha, re-armed when it falls
+            // DAMAGE_METER_BEEP (F-89429): one beep per rise of the HUD's damage_alpha, re-armed when it falls
             let v = if matches!(game.mode, Mode::FreeRoam | Mode::Race) && game.flash_hud.is_some() { self.damage_alpha } else { 0.0 };
             if v < self.dmg_prev {
                 self.dmg_armed = true;
@@ -459,7 +463,7 @@ impl Sound {
             if std::mem::take(&mut self.racer_found) {
                 lib.play("RACER_FOUND_MASTER", crate::sndobj::Req::default());
             }
-            // END_OF_RACE_CAMERA_PAN (sub_82653450): the menu camera changes while the end-race scene is on
+            // END_OF_RACE_CAMERA_PAN (F-63176): the menu camera changes while the end-race scene is on
             if self.menu_cam != self.pan_cam {
                 if self.pan_cam.is_some() && self.menu_cam.is_some() && endrace {
                     lib.play("END_OF_RACE_CAMERA_PAN", crate::sndobj::Req::default());
@@ -636,7 +640,7 @@ impl Sound {
         let st = &p.state;
         let speed = st.speed();
         let grounded = st.wheels.iter().any(|w| w.grounded);
-        // AIRTIME (sub_823267E8): in the air and a 10 m probe down from each wheel in turn (one a frame) hits nothing;
+        // AIRTIME (F-22751): in the air and a 10 m probe down from each wheel in turn (one a frame) hits nothing;
         // after 0.5 s in the air PLAYER_IN_AIR is asked for once
         if let Some(lib) = &mut self.lib {
             let order: &[usize] = if p.model.bike { &[0, 2] } else { &[0, 2, 1, 3] };
@@ -724,7 +728,7 @@ impl Sound {
             self.heat = Some(police.heat);
         }
         if let (Some(lib), Some(fleet)) = (&mut self.lib, &mut self.fleet) {
-            // COP_FORM (sub_82653B30): the ticket form with its prepared audio stream (CopPullover); the arrest form has none
+            // COP_FORM (F-37653): the ticket form with its prepared audio stream (CopPullover); the arrest form has none
             lib.scene("DYNAMIC_MIXER_COP_FORM", game.ticket_for.is_some() && game.arrest_panel.is_some_and(|p| p.0 <= 0.0));
             let press = p.input.nitro && !self.nitro_btn;
             let ctl = crate::caraudio::PlayerCtl {
@@ -983,7 +987,7 @@ impl Sound {
         let on = ability.active > 0.0;
         if let Some(lib) = &mut self.lib {
             // GLOBAL_SPECIAL_ABILITIES: 17-byte blocks {flag, +1 start, +5 exit, +9 extra} at +10 Zone, +27 Agro,
-            // +44 Roar, +61 Pulse; the exit stops the start sound (sub_8237BEA0); the ability's dynamic mixer while on
+            // +44 Roar, +61 Pulse; the exit stops the start sound (F-43041); the ability's dynamic mixer while on
             let block = match ability.kind {
                 crate::ability::Kind::Zone => 10,
                 crate::ability::Kind::Agro => 27,
@@ -1079,7 +1083,7 @@ impl Sound {
         self.finish(a, dt);
     }
 
-    /// A frontend sound by name (sub_821E6800: 0 dB, no position; the tree's speaker masks place it); the port's own
+    /// A frontend sound by name (F-42664: 0 dB, no position; the tree's speaker masks place it); the port's own
     /// sample `old` where the sound objects are missing.
     fn ui(&mut self, a: &mut Audio, name: &str, old: &str, vol: f32) {
         match &mut self.lib {

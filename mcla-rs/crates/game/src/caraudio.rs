@@ -318,6 +318,8 @@ pub struct CarSounds {
     sst_full: Option<Handle>,
     /// this frame the player's burn asked for PLAYER_NITROUS (F-58518: mix slot 18 was not on yet)
     pub sst_speech: bool,
+    /// the nitrous burn's PLAYER_NITROUS request this update (the same scenario and gate as `sst_speech`)
+    pub nitro_speech: bool,
     /// MCLA_CAR_AUDIO trace: the slots last printed and when
     sst_seen: (u8, f32),
     /// the charge loop's last volume (dB) and pitch (cents)
@@ -386,6 +388,7 @@ impl CarSounds {
             sst_loop: None,
             sst_full: None,
             sst_speech: false,
+            nitro_speech: false,
             sst_seen: (0, 0.0),
             sst_vp: (0.0, 0),
             sst_f: 0,
@@ -1045,6 +1048,7 @@ impl CarSounds {
 
     // ---- 8.4 nitrous: FIRE / FIRE_FRONT_END loops by the camera, the launch chirp, EMPTY
     fn nitrous(&mut self, lib: &mut SoundLib, mats: &Materials, c: &CarIn, cam_mode: i32) {
+        self.nitro_speech = false;
         let n = &self.nitro_obj;
         let base = 11 + 24 * c.parts[2].min(3) as usize;
         if n.len() < base + 24 {
@@ -1063,9 +1067,22 @@ impl CarSounds {
             if first && self.player {
                 self.launch_chirp(lib, mats, c);
             }
-        } else if let Some((a, b)) = self.nitro.take() {
-            for mut s in [a, b] {
-                stop(lib, &mut s);
+            // mcPlayerAudioEntity's nitrous update (F-68821, after its Fire): mix slot 8 (mgr+1740 bit 0x100) not on
+            // yet - the speech request PLAYER_NITROUS (if no speech line plays - the caller's test), then the slot on
+            // at strength 1.0
+            if self.player && !lib.scene_on("DYNAMIC_MIXER_NITROUS") {
+                self.nitro_speech = true;
+                lib.scene("DYNAMIC_MIXER_NITROUS", true);
+            }
+        } else {
+            if let Some((a, b)) = self.nitro.take() {
+                for mut s in [a, b] {
+                    stop(lib, &mut s);
+                }
+            }
+            // (not burning: the slot off when it is on)
+            if self.player && lib.scene_on("DYNAMIC_MIXER_NITROUS") {
+                lib.scene("DYNAMIC_MIXER_NITROUS", false);
             }
         }
         if c.nitro_empty && self.player && free(lib, &self.nitro_empty) {
@@ -1902,7 +1919,7 @@ impl Fleet {
                 // the slipstream burn's PLAYER_NITROUS request when no speech line plays (F-58518 @A-83150): the
                 // speech manager (F-95157) refuses it within Frequency s of its last start, then unless
                 // rand(0, 99) < Probability; the start time is kept when it passes
-                if s.sst_speech && !pol.speech_busy {
+                if (s.sst_speech || s.nitro_speech) && !pol.speech_busy {
                     let (prob, freq, last) = &mut self.nitrous_line;
                     sst_log(format_args!("SCEN clk {:.3} name PLAYER_NITROUS freq {freq:.3} last {last:.3} prob {prob}", self.speech_clock));
                     if self.speech_clock >= *last + *freq && lib.rand_int(0, 99) < *prob {
@@ -2365,6 +2382,32 @@ mod tests {
 
     /// The slipstream turbo's sounds (work/slipstream/audio/audio_rule.md): GLOBAL_SPECIAL_ABILITIES' fields, the charge
     /// loop's level / pitch along the charge, the beep at full, the burn (player and opponent), mix slot 18 and the
+    /// The nitrous burn's mix slot 8 (DYNAMIC_MIXER_NITROUS) and its PLAYER_NITROUS request (F-68821): the player's only.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn nitrous_mix_and_speech_from_disc() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mats = Materials::load(Path::new(&dir));
+        let dt = 1.0 / 30.0;
+        let w = WheelIn { contact: true, driven: true, surface: Surface::Road as u8, ..Default::default() };
+        let mut c = CarIn { wheels: [w; 4], n_wheels: 4, nitro_firing: true, ..Default::default() };
+        let mut s = CarSounds::new(&lib, "vp_chv_camaro_06", false, true);
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(lib.scene_on("DYNAMIC_MIXER_NITROUS") && s.nitro_speech, "slot 8 on, the speech asked");
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(!s.nitro_speech, "asked once a burn");
+        c.nitro_firing = false;
+        s.update(&mut lib, &mats, &c, 2, dt);
+        assert!(!lib.scene_on("DYNAMIC_MIXER_NITROUS"));
+        // (an opponent's nitrous: neither)
+        let mut o = CarSounds::new(&lib, "vp_chv_camaro_06", false, false);
+        c.nitro_firing = true;
+        o.update(&mut lib, &mats, &c, 2, dt);
+        assert!(!lib.scene_on("DYNAMIC_MIXER_NITROUS") && !o.nitro_speech);
+    }
+
     /// PLAYER_NITROUS gate (Probability 30, Frequency 120 s).
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]

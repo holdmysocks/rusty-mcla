@@ -3,22 +3,26 @@
 //! pass writes so that a pixel finds its own (k = stencil / 4).
 //!
 //! The original (all read from the recompiled code):
-//! - sub_822E8448 (renderer, the object's matrix, its previous matrix, its velocity) registers an object for the
+//! - F-94650 (renderer, the object's matrix, its previous matrix, its velocity) registers an object for the
 //!   frame: at most 24 (else -1), record k = (camera matrix, world matrix) at renderer +320 + 128 k / +384 + 128 k,
-//!   returns 4 k - the stencil reference the object is drawn with. The car draw (sub_82360518) keeps it at car +6028
-//!   and adds 1 when sub_82332098 says the car is not a player's (blobs: "4 the player's, 5 the others'").
-//!   sub_822E8780 (frame end) makes record 0 the world (identity) for the next frame.
-//! - sub_822E8780 (frame start) sets each record's camera and world on the device and reads the composite
-//!   (device +512 = world x inverse(camera) x projection) into the array; sub_8260E5C8 copies the 24 into the
-//!   post object (+1712) and sub_8260E9A0 uploads them (SetMatrixArray, handle +3248).
+//!   returns 4 k - the stencil reference the object is drawn with. The car draw (F-10884, its main opaque phase)
+//!   keeps it at car +6028 and draws every part of the car - body, wheels, glass, lamps - with it; it hands the
+//!   driver (F-17918, the character's id) +6028 + 1, or +6028 when F-54299 says the car is a motorbike. Recorded
+//!   (work/slipstream/trailrec g.0.bin, three frames, and the paused g.1.bin): the player's body and glass 4, his
+//!   driver 5, the other racer's body and glass 8, its driver 9, the far traffic 12 .. 48 (their stencil-only cheap
+//!   draws). Until 2026-10-28 the port read the + 1 as the other cars' bodies and gave the drivers 0.
+//!   F-46851 (frame end) makes record 0 the world (identity) for the next frame.
+//! - F-46851 (frame start) sets each record's camera and world on the device and reads the composite
+//!   (device +512 = world x inverse(camera) x projection) into the array; F-47680 copies the 24 into the
+//!   post object (+1712) and F-12598 uploads them (SetMatrixArray, handle +3248).
 //! - The records a frame's streak pass reads were registered during the frame BEFORE (the count is reset and the
-//!   world re-registered at the end of sub_822E8780; the cars register while they are drawn): the matrices are the
+//!   world re-registered at the end of F-46851; the cars register while they are drawn): the matrices are the
 //!   previous frame's camera and the cars' previous poses, under this frame's projection - recorded frames in
 //!   motion show the camera's turn in them (far points move: checkpoints2 col5 2.6 px, lighting car_r 23 px) and a
 //!   car's own record follows the car (its pixels 2 px where the world's are 70 px; mb_fit.py).
-//! - With the renderer's byte +374 set (1 from the constructor sub_822E47E0, never cleared) and the time scale
+//! - With the renderer's byte +374 set (1 from the constructor F-76712, never cleared) and the time scale
 //!   (`0x827D7500` +84, the port's mc4_time_scale) not below 1, each record's camera is pulled back by a quarter of
-//!   the camera's last step (+272 = 0.25 x (this - last), sub_822E8780 / sub_822E8448) and a car's place by a
+//!   the camera's last step (+272 = 0.25 x (this - last), F-46851 / F-94650) and a car's place by a
 //!   quarter of its velocity x the frame time (`0x827D7500` +8). With the time scale below 1: the plain previous
 //!   camera and the caller's previous matrix. With the pause / replay condition of 0x828CCFC4 +76 bit 0x40 (and
 //!   0x828CCEA0): this frame's camera, no motion.
@@ -35,12 +39,19 @@ pub const RECORDS: usize = 24;
 /// The original's frame time (TIME +8 at its 30 frames a second).
 pub const FRAME: f32 = 1.0 / 30.0;
 
-/// What the scene pass draws a car with: its stencil reference (index into the frame's car list; 0 = none / world).
-static STENCIL: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+/// What the scene pass draws a car with: its stencil reference and its driver's (index into the frame's car list;
+/// 0 = none / world).
+static STENCIL: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 
-/// The stencil reference of car `ci` this frame (0 when it has no record).
+/// The stencil reference of car `ci`'s body this frame (0 when it has no record).
 pub fn stencil_of(ci: usize) -> u32 {
-    STENCIL.lock().ok().and_then(|s| s.get(ci).copied()).unwrap_or(0)
+    STENCIL.lock().ok().and_then(|s| s.get(ci).copied()).map_or(0, |r| r.0)
+}
+
+/// The stencil reference car `ci`'s driver draws with this frame: the body's + 1, a rider the body's (0 when the car
+/// has no record).
+pub fn driver_stencil_of(ci: usize) -> u32 {
+    STENCIL.lock().ok().and_then(|s| s.get(ci).copied()).map_or(0, |r| r.1)
 }
 
 static MB: Mutex<MotionBlur> = Mutex::new(MotionBlur { prev_cam: None, prev_cars: Vec::new() });
@@ -57,12 +68,17 @@ pub struct MotionBlur {
     prev_cars: Vec<Option<(Vec3, Quat)>>,
 }
 
-/// A car as the frame sees it: its place, rotation, velocity (m/s), whether it is the player's.
+/// Record `k`'s stencil ids: the body's 4 k (F-94650), the driver's 4 k + 1, a rider's 4 k (F-10884).
+pub fn ids(k: usize, bike: bool) -> (u32, u32) {
+    (4 * k as u32, 4 * k as u32 + if bike { 0 } else { 1 })
+}
+
+/// A car as the frame sees it: its place, rotation, velocity (m/s), whether it is a motorbike.
 pub struct Car {
     pub pos: Vec3,
     pub rot: Quat,
     pub vel: Vec3,
-    pub player: bool,
+    pub bike: bool,
 }
 
 /// `rot` turned back by `s` times the turn from `prev` to it.
@@ -96,7 +112,7 @@ impl MotionBlur {
         };
         let pv = proj * cam_view;
         out[0] = pv.to_cols_array_2d();
-        let mut refs = vec![0u32; cars.len()];
+        let mut refs = vec![(0u32, 0u32); cars.len()];
         let mut k = 1usize;
         self.prev_cars.resize(cars.len(), None);
         for (ci, c) in cars.iter().enumerate() {
@@ -114,7 +130,7 @@ impl MotionBlur {
                     None => Mat4::IDENTITY,
                 };
                 out[k] = (pv * world_step).to_cols_array_2d();
-                refs[ci] = 4 * k as u32 + if c.player { 0 } else { 1 };
+                refs[ci] = ids(k, c.bike);
                 k += 1;
             }
             self.prev_cars[ci] = Some((c.pos, c.rot));
@@ -162,11 +178,13 @@ mod tests {
     }
 
     #[test]
-    fn cars_get_four_k_and_one_for_the_others() {
+    /// The ids recorded in the original (work/slipstream/trailrec g.0.bin): the player's body 4 and driver 5, the
+    /// next racer's 8 and 9; a rider keeps his bike's id.
+    fn cars_get_four_k_and_drivers_one_more() {
         let mut m = MotionBlur::default();
         let proj = Mat4::perspective_infinite_reverse_rh(1.0, 16.0 / 9.0, 0.1);
-        let car = |player| Some(Car { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(30.0, 0.0, 0.0), player });
-        m.frame(Mat4::IDENTITY, proj, &[car(true), None, car(false)], 1.0 / 60.0, false, false);
-        assert_eq!((stencil_of(0), stencil_of(1), stencil_of(2)), (4, 0, 9));
+        let car = |bike| Some(Car { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(30.0, 0.0, 0.0), bike });
+        m.frame(Mat4::IDENTITY, proj, &[car(false), None, car(false), car(true)], 1.0 / 60.0, false, false);
+        assert_eq!((ids(1, false), ids(2, false), ids(3, true)), ((4, 5), (8, 9), (12, 12)));
     }
 }

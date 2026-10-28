@@ -1,19 +1,19 @@
 //! The slipstream trail (`vehicle/shared_utility/sst_trail`), drawn behind a car another car is drafting, as
 //! the original draws it (decode: work/slipstream/trail/trail_rule.md; docs/VEHICLE_SIM.md slipstream section).
 //!
-//! - The points (mcCarModel +7200 block, update sub_82379D48 from the car's frame update sub_823567F8): 32 float4
+//! - The points (mcCarModel +7200 block, update F-66688 from the car's frame update F-16712): 32 float4
 //!   (+0, the program's skinningData) and 32 float2 drifts (+512). Each frame every point moves one place back
 //!   (k <- k - 1, k = 31..1), rising 0.25 m/s (0x82008DD0) x dt and its w (the texture's v offset) growing by its
 //!   drift's x x dt; point 0 = the car's place + 0.75 (0x8201CCA4) x its up row + 2.0 (0x82040E94) x its back
-//!   (+z) row, w 0, with a new drift ((r - 0.5) x 0.1 (0x82004288), two 23-bit draws of the game's MWC 0x82860880,
-//!   the first into y). The car's model makes them all 0 and the drifts (r - 0.5) x 5.0 (sub_82379A58). The "moved
+//!   (+z) row, w 0, with a new drift ((r - 0.5) x 0.1, two 23-bit draws of the game's shared generator
+//!   [`game_rng`], the first into y). The car's model makes them all 0 and the drifts (r - 0.5) x 5.0 (F-56083). The "moved
 //!   more than 0.05 m" test compares with +800, which only the model's set-up writes (-100000, -1e6, -1e6), so the
 //!   points move every frame. Recorded in the running original (work/slipstream/trailrec, 2026-10-23): one move
 //!   a frame, after the frame's ticks (point 0 = the drawn pose, point k = point 0 of k frames before), rise and
 //!   v offset with the frame's step (TIME +8); at the console's 30 frames a second that is 1/30 s. The port moves
 //!   them every 1/30 s of the car's ticks with dt = 1/30 and draws them read back by the time since the move
 //!   (`Trail::render_points`).
-//! - The draw (sub_82379B30, from the vehicle's alpha pass sub_82360518 after the car's own draws, unless the
+//! - The draw (F-44538, from the vehicle's alpha pass F-10884 after the car's own draws, unless the
 //!   "nossttrail" switch or the renderer's garage flag): while the faded value (+780 = `sst.trail`) > 0.001
 //!   (0x820022B4), the trail model with the identity matrix (the points are in the world), skinningData = the 32
 //!   points, effectFade = the faded value, stencil test NOT EQUAL against the local player's car's +6028 + 1 (the
@@ -38,15 +38,44 @@ pub const DRAW_MIN: f32 = 0.001;
 /// Most trails drawn in a frame (the original keeps at most the player's own and the one it drafts).
 const MAX: usize = 8;
 
-/// The game's shared random numbers (MWC 0x82860880, a = 0x5CDCFAA7) as the trail draws them. *(approx.)* the
-/// original's generator is shared with everything else and seeded at run time: the port's draws are its own.
-static RNG: Mutex<(u32, u32)> = Mutex::new((0x2545_F491, 1));
+/// The game's first shared generator (multiply with carry, a = 0x5CDCFAA7; a 23-bit draw is the new low word's
+/// low 23 bits x 2^-23) - the one the trail's block init F-56083 and its frame update F-66688 draw from (code;
+/// recorded 2026-10-28, work/slipstream/trail2: 300 of 300 new drifts in a row were, bit for bit, the next two
+/// draws from the state polled just before). Its state is made by the reset F-37317 (lo = s + (s == 0), carry =
+/// s ^ rot16(s)): first with s = 1 by the static constructor F-78620, then again at boot by the game state's init
+/// F-71171 with s = the low word of the CPU's time base (never 0) - unless the "randomseed" start-up parameter
+/// gives s. The port does the same at its first draw with the clock's nanoseconds; MCLA_RANDOMSEED=<n> stands
+/// for the parameter. *(approx.)* the original's particles, cameras, check points, people, power-ups, plates and
+/// the rest draw from this state too (about 34 - 70 draws a frame between two of the player's pairs in free roam,
+/// recorded); the port's versions of those keep their own states, and the original's seed is the boot moment's
+/// time base: the sequence is the original's kind, never the original's numbers.
+pub fn game_rng() -> std::sync::MutexGuard<'static, crate::vehicles::parked::Mwc> {
+    static RNG: std::sync::OnceLock<Mutex<crate::vehicles::parked::Mwc>> = std::sync::OnceLock::new();
+    RNG.get_or_init(|| {
+        let s = std::env::var("MCLA_RANDOMSEED").ok().and_then(|v| v.trim().parse::<i64>().ok()).map(|v| v as u32).unwrap_or_else(|| {
+            // (the time base read until it is not 0)
+            loop {
+                let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u32);
+                if t != 0 {
+                    break t;
+                }
+            }
+        });
+        Mutex::new(rng_reset(s))
+    })
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+}
 
-fn rand23() -> f32 {
-    let mut s = RNG.lock().unwrap_or_else(|e| e.into_inner());
-    let x = s.0 as u64 * 0x5CDC_FAA7 + s.1 as u64;
-    *s = (x as u32, (x >> 32) as u32);
-    (s.0 & 0x7F_FFFF) as f32 * (1.0 / 8_388_608.0)
+/// F-37317: the generator's state for a seed.
+pub fn rng_reset(s: u32) -> crate::vehicles::parked::Mwc {
+    crate::vehicles::parked::Mwc { lo: s.wrapping_add((s == 0) as u32), carry: s ^ s.rotate_left(16) }
+}
+
+/// A new drift of F-66688: the first draw into y, the second into x, each (r - 0.5) x 0.1.
+fn new_drift(rng: &mut crate::vehicles::parked::Mwc) -> [f32; 2] {
+    let (a, b) = (rng.float(), rng.float());
+    [(b - 0.5) * 0.1, (a - 0.5) * 0.1]
 }
 
 /// One car's trail block (mcCarModel +7200).
@@ -61,11 +90,12 @@ pub struct Trail {
 }
 
 impl Default for Trail {
-    /// sub_82379A58 (from the model's set-up sub_8235AF90): points 0, drifts (r - 0.5) x 5.0 (0x82006BF8).
+    /// F-56083 (from the model's set-up F-60786): points 0, drifts (r - 0.5) x 5.0 (0x82006BF8).
     fn default() -> Self {
         let mut drift = [[0.0f32; 2]; POINTS];
+        let mut rng = game_rng();
         for d in drift.iter_mut() {
-            let (a, b) = (rand23(), rand23());
+            let (a, b) = (rng.float(), rng.float());
             *d = [(b - 0.5) * 5.0, (a - 0.5) * 5.0];
         }
         Trail { pts: [[0.0; 4]; POINTS], drift, acc: 0.0 }
@@ -99,7 +129,7 @@ impl Trail {
         out
     }
 
-    /// One frame of sub_82379D48 (`dt` = the frame's step): the points move one place back, then the new head.
+    /// One frame of F-66688 (`dt` = the frame's step): the points move one place back, then the new head.
     pub fn shift(&mut self, head: Vec3, dt: f32) {
         for k in (1..POINTS).rev() {
             let d = self.drift[k - 1];
@@ -110,8 +140,7 @@ impl Trail {
             self.drift[k] = d;
         }
         self.pts[0] = [head.x, head.y, head.z, 0.0];
-        let (a, b) = (rand23(), rand23());
-        self.drift[0] = [(b - 0.5) * 0.1, (a - 0.5) * 0.1];
+        self.drift[0] = new_drift(&mut game_rng());
     }
 }
 
@@ -304,9 +333,16 @@ fn instances(vehicles: &crate::vehicles::Vehicles) -> Vec<Inst> {
 }
 
 /// The pass: over the scene after its draws and the depth / stencil resolve (gpu.depth / stencil_copy, read for the
-/// fog), before the particles. The original draws it last of the cars' alpha draws (after every car's glass and
-/// lamps and the far cars' cheap draws), before the cars' shadow blobs, the fog pass and the particles - recorded
-/// draw order, trailrec g.0.bin draws 1651 - 1714.
+/// fog), before the particles. Where the original draws it: the vehicle draw F-10884 runs one phase for every car
+/// before the next phase; the cars' glass and lamps are its phase 0x400000 (F-73214's glass branch), the trail is
+/// the first draw of each car's phase 0x2000000 (F-73214 draws nothing of the car there), followed in the same
+/// call by the power-up effects (F-24071) and the lightning (F-79192). So: after every car's glass and lamps, the
+/// props' glass, the skid marks and the people (and after eight stencil-only xTestRimBlur draws of the far cars,
+/// ids 12 .. 40, whose caller was not traced); before the cars' shadow blobs, the sun glow, the fog pass and the
+/// particles (recorded order, trailrec g.0.bin frames 0 - 2 draws 1640 - 1733 and the paused g.1.bin, the same in
+/// all four; work/slipstream/trail2/order.py). The trails among themselves (one per drafted car, in the cars'
+/// order) add light and commute. *(not the original's)* the port's power-up effects (pu_fx.rs) come after the
+/// particles and the blobs instead of right after each car's trail.
 pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles::Vehicles, view_proj: [[f32; 4]; 4]) {
     let guard = STATE.lock().unwrap();
     let Some(s) = guard.as_ref() else { return };
@@ -339,12 +375,13 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
         return;
     }
     gpu.queue.write_buffer(&s.ub, 0, bytemuck::cast_slice(&list));
-    // (the stencil reference: 0x827E7628 = the local player's car's +6028 + 1. +6028 is the id its body draws
-    // with; the car draw sub_82360518 hands the driver +6028 + 1 unless sub_82332098 (a motorbike: + 0) -
-    // 0x82360818 .. 0x8236085C. Recorded (trailrec g.0.bin): the player's body 4, his driver 5, the drafted
-    // car's body 8, driver 9, the trail NOT EQUAL 5 - so the trail is drawn over the player's car (its glass,
-    // drawn before the trail with 4, covers the driver). The port's drivers write 0, the bodies 4 k (mb.rs): the
-    // reference id + 1 matches no pixel of the port, as no visible pixel of a closed car in the original.)
+    // (the stencil reference: the local player's car's +6028 + 1, set by the car draw F-10884 whether the car is a
+    // bike or not. +6028 is the id its body draws with; the driver draws with +6028 + 1 unless F-54299 (a
+    // motorbike: + 0) - A-18970 .. A-97490. Recorded (trailrec g.0.bin): the player's body 4, his driver 5, the
+    // drafted car's body 8, driver 9, the trail NOT EQUAL 5 - so the trail is drawn over the player's car but not
+    // over his driver where the driver's pixels keep 5 (the glass, drawn before the trail with 4, takes them where
+    // it covers him); a rider keeps the body's id, so the trail is drawn over him. render/mb.rs gives the port the
+    // same ids.)
     let reference = vehicles.cars.iter().position(|c| c.is_player).map(crate::render::mb::stencil_of).filter(|&r| r != 0).map_or(255, |r| r + 1);
     let scene_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("sst_trail scene"),
@@ -486,6 +523,28 @@ mod tests {
         assert_eq!(&c[1..], &t.pts[..POINTS - 1]);
         let d = t.render_points(h, -0.5);
         assert!((d[31][0] - 31.0).abs() < 1e-6 && (d[30][0] - 30.5).abs() < 1e-6);
+    }
+
+    /// The new drift against the running original (work/slipstream/trail2/cap/mwc0.pkl, the player's car in free
+    /// roam, 2026-10-28): the shared generator's state polled just before the update and the drift it wrote (+512 x,
+    /// +516 y), bit for bit - three of the 300 recorded frames (mwccheck.py: 300 of 300).
+    #[test]
+    fn sst_trail_new_drift_matches_recording() {
+        let cases: [(u32, u32, u32, u32); 3] = [
+            (0x69c4_61ae, 0x3a50_c9d4, 0xbc02_1fa7, 0x3c9c_5bc0),
+            (0xd751_2602, 0x1aa9_ca15, 0xbce4_4e1a, 0x3d18_1e0a),
+            (0x0b11_6d74, 0x08ec_9fca, 0xbd18_d933, 0x3cc1_f627),
+        ];
+        for (lo, carry, x, y) in cases {
+            let mut r = crate::vehicles::parked::Mwc { lo, carry };
+            let d = new_drift(&mut r);
+            assert_eq!((d[0].to_bits(), d[1].to_bits()), (x, y), "state {lo:08x} {carry:08x}");
+        }
+        // (the reset: s = 1 from the static constructor gives lo 1, carry 0x10001)
+        let r = rng_reset(1);
+        assert_eq!((r.lo, r.carry), (1, 0x0001_0001));
+        let r = rng_reset(0);
+        assert_eq!((r.lo, r.carry), (1, 0));
     }
 
     #[test]
