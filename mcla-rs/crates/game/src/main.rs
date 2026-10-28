@@ -137,6 +137,7 @@ mod mc4b;
 mod photoalbum;
 mod world;
 
+mod saveflow;
 use anyhow::Result;
 use assets::Assets;
 use camera::{Camera, ChaseCam};

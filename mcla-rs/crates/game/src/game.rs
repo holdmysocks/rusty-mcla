@@ -584,6 +584,10 @@ pub struct Game {
     pub loading_tag: f32,
     /// seconds left of a pause menu SAVE GAME's SAVING tag (SG_VerifyAndSaveGame's spinner, `Save_Icon_Saving`)
     pub manual_save_t: f32,
+    /// the message a failed `write_save` posted (5 saveError, 28 noRoomToSave; 0 none) - `saveflow.rs`
+    pub save_fail: std::sync::atomic::AtomicU8,
+    /// the save manager's dialog on the screen (SaveGameDialogs) and whether its box is up yet
+    pub save_dlg: Option<(crate::saveflow::SgBox, bool)>,
     pub loading_on: bool,
     /// the text the tag was given
     pub loading_text: String,
@@ -1250,6 +1254,8 @@ impl Game {
             song_line: None,
             vinyl_clip: None,
             manual_save_t: 0.0,
+            save_fail: Default::default(),
+            save_dlg: None,
             results_table: false,
             arcade: (0, 0, [0; 3]),
             arcade_opts: ARCADE_DEFAULTS,
@@ -1606,7 +1612,55 @@ impl Game {
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            let _ = std::fs::write(path, t);
+            // (a write that fails posts the manager's saveError / noRoomToSave: `save_dialog_step`)
+            if let Err(e) = std::fs::write(&path, t) {
+                log::warn!("save: {} not written: {}", path.display(), e);
+                self.save_fail.store(crate::saveflow::message_for(&e), std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// SaveGame.sc.xml's dialogs for a write that failed (messages 5 / 28, SaveGameDialogs): the box stands over the
+    /// game until it is answered, B does nothing. YES writes the save again behind the SAVING tag, CONTINUE WITHOUT
+    /// SAVING goes to SG_AutoSaveDisabled, whose accept turns AUTO SAVE off. (approx.: the original's SaveGameDialogs
+    /// also pauses the game - `game.pause()` - while the box is up.)
+    pub fn save_dialog_step(&mut self) {
+        use crate::saveflow::{dialog_for, Next};
+        use std::sync::atomic::Ordering;
+        if self.save_dlg.is_none() {
+            let msg = self.save_fail.swap(0, Ordering::Relaxed);
+            if let Some(b) = dialog_for(msg) {
+                self.save_dlg = Some((b, false));
+            }
+        }
+        let Some((b, up)) = self.save_dlg else { return };
+        if !up {
+            if self.message_box.is_some() || self.flash_popup.is_none() {
+                // (no popup movie: nothing can be shown, the save stays unwritten)
+                if self.flash_popup.is_none() {
+                    self.save_dlg = None;
+                }
+                return;
+            }
+            let (title, desc, opts) = b.spec();
+            let def = crate::flash_ui::MessageBoxDef { title: title.into(), description: desc.into(), options: opts.iter().map(|(i, k)| (i.to_string(), k.to_string())).collect() };
+            self.message_box = Some((def, 0, MenuAction::None));
+            self.save_dlg = Some((b, true));
+        } else if self.message_box.is_none() {
+            match b.answer(self.box_sel) {
+                Next::Retry => {
+                    self.save_dlg = None;
+                    self.manual_save_t = SAVE_WRITE_T;
+                    let d = self.data_dir.clone();
+                    self.write_save(&d);
+                }
+                Next::Box(n) => self.save_dlg = Some((n, false)),
+                Next::DisableAutosave => {
+                    self.save_dlg = None;
+                    self.no_save = true;
+                    log::info!("save: AUTO SAVE disabled from SG_AutoSaveDisabled");
+                }
+            }
         }
     }
 
@@ -4331,7 +4385,8 @@ impl Game {
         // a message box (popup movie) takes the input while it is up
         let boxed = self.message_box.is_some();
         // (the start-up boxes answer ACCEPT alone)
-        let box_back = back && !(self.fresh_game && matches!(self.save_box, 1 | 3 | 4));
+        self.save_dialog_step();
+        let box_back = back && !(self.fresh_game && matches!(self.save_box, 1 | 3 | 4)) && self.save_dlg.is_none();
         if let Some(a) = self.message_box_ui(ctx, up, down, enter, box_back) {
             action = a;
             // (YES in the garage's SELL VEHICLE box: `garage.FinishVehicleSale`)
