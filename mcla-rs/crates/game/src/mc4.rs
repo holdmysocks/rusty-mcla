@@ -6058,7 +6058,19 @@ pub const REDLIGHT_HOOKMEN: [u32; 5] = [350, 351, 352, 353, 354];
 /// and TARGET_TIME_FORMAT, YOUR_TIME_FORMAT as rows of kind 19; one prompt, CONTINUE
 /// (table 0x82906FE4). The script shows it after the banner of form 56 (the end of race
 /// sequence's indices 12 and 5: generic_timetrial_hookman.sco 0x255d..0x2647, 0x2952..0x2990).
-pub const TT_PANEL: char = '\u{1}';
+/// the statistics file's record limit (the submit F-79933 refuses a new record at 1000)
+pub const STAT_RECORDS: usize = 1000;
+
+/// A record's sub id as the port keys it: the vehicle's name for the `v...` statistics (the importer's keys), else the number.
+pub fn stat_sub(code: &str, sub: u32) -> String {
+    if code.starts_with('v') {
+        if let Some(n) = VEHICLES.get(sub as usize) {
+            return (*n).to_string();
+        }
+    }
+    sub.to_string()
+}
+
 /// the purse's limit either way (AddMoney F-71075 clamps above, SpendMoney F-38145 below)
 pub const PURSE_CAP: i64 = 2_140_000_000;
 
@@ -11395,12 +11407,41 @@ impl Game {
 
     /// A statistic's whole value (the port's count, else the save's).
     pub fn mc4_stat(&self, code: &str, sub: u32) -> f64 {
-        self.career.stat(code, &sub.to_string()).unwrap_or(0.0)
+        self.career.stat(code, &stat_sub(code, sub)).unwrap_or(0.0)
     }
 
-    /// StatsManager_UpdateStatInt(code, sub, 3 (set), v).
-    pub fn mc4_stat_set(&mut self, code: &str, sub: u32, v: f64) {
-        self.career.ostats.insert(format!("{code}/{sub}"), v);
+    /// IsStatPresent (F-56726): the record exists, whatever its value.
+    pub fn mc4_stat_present(&self, code: &str, sub: u32) -> bool {
+        self.career.stat(code, &stat_sub(code, sub)).is_some()
+    }
+
+    /// The statistics manager's submit (F-79933, operations: 0 add, 1 keep the lower, 2 keep the higher, 3 set, 4 set once):
+    /// nothing is recorded in a goal attack race (the race's +3152), the on-line statistics (`n...` with two racers,
+    /// `o...`) need a session, the file holds 1000 records at most; a new record starts the operation from zero
+    /// (1 and 2 take the value). True when the record was written.
+    pub fn mc4_stat_submit(&mut self, code: &str, sub: u32, op: u8, v: f64) -> bool {
+        if self.goal_attack && self.race.is_some() {
+            return false;
+        }
+        if matches!(code.as_bytes().first(), Some(b'n' | b'o')) {
+            return false;
+        }
+        let key = format!("{code}/{}", stat_sub(code, sub));
+        let present = self.mc4_stat_present(code, sub);
+        if op == 4 && present {
+            return false;
+        }
+        if !present && self.career.ostats.len() >= STAT_RECORDS {
+            return false;
+        }
+        let old = self.mc4_stat(code, sub);
+        let nv = match op {
+            0 => old + v,
+            1 if present && !(v < old) => return false,
+            2 if present && !(old < v) => return false,
+            _ => v,
+        };
+        self.career.ostats.insert(key, nv);
         // (the port's own counts are whole numbers: a float statistic lives in `ostats` alone)
         if sub == 0 && v.fract() == 0.0 {
             self.career.stats.insert(code.to_string(), v as i64);
@@ -11409,10 +11450,15 @@ impl Game {
         }
     }
 
+        true
+    }
+
+    /// StatsManager_UpdateStatInt(code, sub, 3 (set), v).
+    pub fn mc4_stat_set(&mut self, code: &str, sub: u32, v: f64) {
+        self.mc4_stat_submit(code, sub, 3, v);
     /// StatsManager_UpdateStatInt(code, sub, 0 (add), n).
     pub fn mc4_stat_add(&mut self, code: &str, sub: u32, n: f64) {
-        let v = self.mc4_stat(code, sub) + n;
-        self.mc4_stat_set(code, sub, v);
+        self.mc4_stat_submit(code, sub, 0, n);
     }
 
     pub fn mc4_awarded(&self, id: &str) -> bool {
@@ -17611,3 +17657,26 @@ mod tests {
         assert!(g.career.ostats.get(&format!("vkDT/{car}")).copied().unwrap_or(0.0) > 0.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// The statistics submit (F-79933): the five operations, the 1000-record limit, nothing on line or in a goal attack,
+    /// existence (not value) for IsStatPresent and the set-once operation.
+    #[test]
+    fn stat_submit_operations() {
+        let mut g = Game::new(Vec::new(), 0);
+        assert!(g.mc4_stat_submit("kXXX", 0, 1, 5.0) && g.mc4_stat("kXXX", 0) == 5.0, "keep-lower takes the first value");
+        assert!(!g.mc4_stat_submit("kXXX", 0, 1, 6.0) && g.mc4_stat("kXXX", 0) == 5.0);
+        assert!(g.mc4_stat_submit("kXXX", 0, 1, 4.0) && g.mc4_stat("kXXX", 0) == 4.0);
+        assert!(!g.mc4_stat_submit("kXXX", 0, 2, 3.0) && g.mc4_stat_submit("kXXX", 0, 2, 9.0) && g.mc4_stat("kXXX", 0) == 9.0);
+        assert!(g.mc4_stat_submit("kXXX", 0, 0, 1.0) && g.mc4_stat("kXXX", 0) == 10.0);
+        assert!(g.mc4_stat_submit("kZER", 0, 3, 0.0) && g.mc4_stat_present("kZER", 0), "a zero record is present");
+        assert!(!g.mc4_stat_submit("kZER", 0, 4, 1.0), "set once: not over an existing record, even a zero one");
+        assert!(g.mc4_stat_submit("aNEW", 0, 4, 1.0) && g.mc4_stat("aNEW", 0) == 1.0);
+        assert!(!g.mc4_stat_submit("nkDS", 0, 0, 1.0) && !g.mc4_stat_submit("oXXX", 0, 0, 1.0), "on-line statistics need a session");
+        assert!(g.mc4_stat_submit("vWIN", 3, 0, 1.0) && g.career.ostats.contains_key("vWIN/vp_vw_scirocco_88"), "per-vehicle by name");
+        let n = g.career.ostats.len();
+        for i in n..STAT_RECORDS + 5 {
+            g.mc4_stat_submit("kFIL", i as u32, 3, 1.0);
+        }
+        assert_eq!(g.career.ostats.len(), STAT_RECORDS, "the file holds 1000 records");
+        assert!(!g.mc4_stat_submit("kNEW", 0, 3, 1.0) && g.mc4_stat_submit("kXXX", 0, 0, 1.0), "existing records still change");
+    }
+}
