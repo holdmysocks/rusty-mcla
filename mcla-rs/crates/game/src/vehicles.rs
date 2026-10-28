@@ -3097,6 +3097,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
             } else {
                 CarInput::default()
             };
+            // (the brain's off-mesh teleport: F-86308 at the polygon's centre, brain.rs)
+            if let Some(p) = self.cars[i].ai.as_mut().and_then(|a| a.teleport.take()) {
+                let c = &mut self.cars[i];
+                if let Some(vt) = c.params().veh.clone() {
+                    let r = c.state.rot;
+                    crate::physics::vehsim::set_pose(&mut c.state, &vt, &world.collider, [r * Vec3::X, r * Vec3::Y, r * Vec3::Z, p], Vec3::ZERO, Vec3::ZERO);
+                    c.pose_history.reset();
+                }
+            }
             let pursuing = self.cars[i].cop && self.cars[i].ai.as_ref().map_or(false, |a| a.chase.is_some());
             // Racers do not queue behind traffic: they pull out and pass, on whichever side
             // is free of cars and walls.
@@ -3403,7 +3412,24 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     // A set-up's standing car too (`hangout_scene::stand_car`): its place is the set-up's, at ground
                     // height - the payback client's car stands under Classic Autos' canopy, not on it)
                     let near = if c.is_player || c.driver.starts_with("hangout:") { world.collider.ground(c.state.pos, 2.0, 200.0) } else { None };
-                    if let Some(g) = near.or_else(|| world.collider.ground(c.state.pos + Vec3::Y * 2.0, 50.0, 200.0)) {
+                    if c.racer {
+                        // (a cruising hookman: set down on the nearest rail with ground under it, as the cruising brain's
+                        // teleport, at the speed it had along the rail - `roamers::rail_place`; nothing within 80 m: it waits
+                        // unplaced. The first surface from 52 m above put a car on whatever was highest there, and with
+                        // none - a loop point inside a block - let it fall through the map, AI.md NEW 6)
+                        let place = crate::roamers::rail_place(world, c.state.pos);
+                        let Some((at, up, f, _)) = place else { continue };
+                        let f = (f - up * f.dot(up)).normalize_or(f);
+                        let right = f.cross(up).normalize_or(Vec3::X);
+                        let speed = Vec3::new(c.state.vel.x, 0.0, c.state.vel.z).length();
+                        c.state.rot = Quat::from_mat3(&glam::Mat3::from_cols(right, up, -f)).normalize();
+                        c.state.pos = at;
+                        c.state.vel = f * speed;
+                        c.state.ang_vel = Vec3::ZERO;
+                        c.placed = true;
+                    }
+                    let gg = if c.racer { None } else { near.or_else(|| world.collider.ground(c.state.pos + Vec3::Y * 2.0, 50.0, 200.0)) };
+                    if let Some(g) = gg {
                         // straight onto its springs (the model's origin is at road level), tilted with the road
                         let fwd = c.state.forward();
                         let n = g.normal;

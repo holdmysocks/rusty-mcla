@@ -1073,12 +1073,11 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
     // (flag 4: F-94408 fires the slipstream turbo through F-28681 - vehsim's step)
     input.sst = out.sling;
     brain.held = Some(input);
-    if let Some(p) = out.teleport {
-        c.state.pos = p + Vec3::Y * 0.9;
-        c.state.vel = Vec3::ZERO;
-        c.state.ang_vel = Vec3::ZERO;
-    }
     if let Some(a) = c.ai.as_mut() {
+        // (off the mesh: F-86308 sets the car down at the place with its own rows and the static zero vector as both
+        // velocities - the level probe from 1 m above to 3 m below, the chassis reset; `Vehicles::update` has the
+        // collider. The port put the body 0.9 m over the polygon and kept its old contacts, AI.md NEW 6)
+        a.teleport = out.teleport;
         // (over the line nothing changes: the script's RecordTime / EndRace are no-ops and nothing else touches a
         // computer racer; it drives its finishing route (the final wrap's weight-0 alt paths) and, its line used up,
         // the "no line" branch above holds it on the brake - docs/reference/ai/after_finish.md. The port's own

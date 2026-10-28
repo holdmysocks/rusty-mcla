@@ -310,6 +310,33 @@ pub fn first_dest(pts: &[Vec3], pos: Vec3) -> usize {
     if (pos - pts[k]).dot(pts[n] - pts[k]) > 0.0 || pos.distance(pts[k]) < 1.0 { n } else { k }
 }
 
+/// Where a cruising hookman's car is set down near `p` (mcBrainCruising's teleport F-90476: F-97236 with the ground
+/// probe F-29307; docs/reference/ai/brain_cruising.md section 3): the nearest rail within 5, 10, 20, 40, 80 m in
+/// that order, any heading; the rail's point, a ground hit of a probe from 5 m above it to 5 m below - the car's origin
+/// at the hit, its up the hit's normal, its forward the rail's way; no hit: the next radius; none at 80 m: nowhere.
+/// Returns (place, up, forward, the rail's speed). (approx.: the port's lane links for the rails' curves, the probe a ray
+/// for the shape test, no SetOffset - no script sets one for a hookman)
+pub fn rail_place(world: &World, p: Vec3) -> Option<(Vec3, Vec3, Vec3, f32)> {
+    let nav = world.nav.as_ref()?;
+    for r in [5.0f32, 10.0, 20.0, 40.0, 80.0] {
+        let best = nav
+            .links_near(p, r)
+            .map(|i| {
+                let l = &nav.links[i];
+                let t = l.project(p);
+                (i, t, l.point_at(t).distance(p))
+            })
+            .filter(|c| c.2 <= r)
+            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+        let Some((i, t, _)) = best else { continue };
+        let q = nav.links[i].point_at(t);
+        let Some(hit) = world.collider.ground(q, 5.0, 5.0) else { continue };
+        let fwd = nav.links[i].dir();
+        return Some((hit.point, hit.normal, fwd, crate::vehicles::traffic::rail_speed(nav, i).0));
+    }
+    None
+}
+
 impl Roamers {
     pub fn new() -> Roamers {
         Roamers {
@@ -821,15 +848,20 @@ impl Roamers {
                     let stops: Vec<Vec3> = (0..n * 3).map(|j| m.pts[(next + j) % n]).collect();
                     let (line, _) = nav.route_through(pos, dir, &stops, 25.0);
                     let at = if line.len() > 8 && !m.fresh { line[0] } else { pos };
-                    if let Some((li, t, d)) = nav.nearest_link(at) {
+                    // (set down on the nearest rail with ground under it, as the cruising brain's teleport - `rail_place`; the
+                    // loop's point itself can be 30 m off the road, inside a block with no collision: the car fell through the
+                    // map, AI.md NEW 6. No rail with ground within 80 m: not this time)
+                    let placed = rail_place(world, at);
+                    if let (Some((li, t, d)), Some((at, _, rail_fwd, rail_v))) = (nav.nearest_link(at), placed) {
                         if d < 30.0 && (m.fresh || !vehicles.cars.iter().any(|c| c.state.pos.distance(at) < 25.0)) {
-                            let l = &nav.links[li];
-                            let dir = if m.fresh { dir } else if line.len() > 8 { (line[1] - line[0]).normalize_or(l.dir()) } else { l.dir() };
+                            let dir = if m.fresh { dir } else { rail_fwd };
                             let rgb = game.rivals.paint_of(&m.config);
                             let color = rgb.map(|c| [c[0], c[1], c[2], 1.0]).unwrap_or(PALETTE[(self.rand() * PALETTE.len() as f32) as usize % PALETTE.len()]);
-                            let idx = vehicles.spawn(gpu, model, at + Vec3::Y * 0.8, (-dir.x).atan2(-dir.z), color, false);
+                            let idx = vehicles.spawn(gpu, model, at, (-dir.x).atan2(-dir.z), color, false);
                             let c = &mut vehicles.cars[idx];
                             c.racer = true;
+                            // (going at the rail's speed along it, as the teleport's F-86308 sets it)
+                            c.state.vel = dir * rail_v;
                             // (the man the career is waiting for answers to his name)
                             c.driver = if !m.mission.is_empty() && game.career.hookman_mission() == Some(m.mission.as_str()) { m.name.clone() } else { String::new() };
                             c.vinyl_name = m.config.clone();

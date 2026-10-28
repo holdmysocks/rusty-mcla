@@ -87,6 +87,8 @@ pub struct AiDriver {
     /// racing: another car ran into this one (the contact walker's notify, `Vehicles::notify_contact`); the brain takes it as its
     /// 1.5 s collision timer at its next update
     pub hit_pending: bool,
+    /// racing: the brain's off-mesh teleport this update - the place the car is set down at (`Vehicles::update`)
+    pub teleport: Option<Vec3>,
     /// racing: the race's checkpoints and alt paths for the brain, and this racer's index in the race
     /// (the bit of the alt paths' opponent masks; the player is 0)
     pub course: Option<std::sync::Arc<crate::brain::Course>>,
