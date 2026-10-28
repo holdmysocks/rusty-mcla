@@ -1503,6 +1503,12 @@ fn env_dbg(c: vec3<f32>) -> vec3<f32> {
 fn dbg_bad(x: f32, lim: f32) -> bool { return (bitcast<u32>(x) & 0x7fffffffu) > bitcast<u32>(lim); }
 fn dbg_bad3(v: vec3<f32>, lim: f32) -> bool { return dbg_bad(v.x, lim) || dbg_bad(v.y, lim) || dbg_bad(v.z, lim); }
 
+// The soft highlight's |soft|^(DL0.w - 1): exactly 1 for the paints whose exponent is 0 (dirty matte, matte, gloss),
+// as the power is, without relying on the driver's pow(x, 0) (GitHub #14: matte paint saturates on RDNA 3)
+fn paint_pow(x: f32, e: f32) -> f32 {
+    return select(pow(max(x, 0.00001), e), 1.0, e == 0.0);
+}
+
 fn env_finite(c: vec3<f32>) -> vec3<f32> {
     let e = bitcast<vec3<u32>>(c) & vec3<u32>(0x7f800000u);
     return select(c, vec3<f32>(0.0), e == vec3<u32>(0x7f800000u));
@@ -3760,7 +3766,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 let nf = normalize(n + flake * tc.z * fade * clamp(1.0 - 2.0 * scraped, 0.0, 1.0));
                 let soft = env_soft(reflect(-v, nf));
                 let s_lum = dot(soft, vec3<f32>(0.3, 0.59, 0.11));
-                let sp = clamp(mix(base * s_lum, soft, tc.x) * (ta.y * pow(max(length(soft), 0.00001), ta.w - 1.0) * kk * ao_v), vec3<f32>(0.0), vec3<f32>(1.0)) * (1.0 - scraped) * ao_v;
+                let sp = clamp(mix(base * s_lum, soft, tc.x) * (ta.y * paint_pow(length(soft), ta.w - 1.0) * kk * ao_v), vec3<f32>(0.0), vec3<f32>(1.0)) * (1.0 - scraped) * ao_v;
                 // (the soft highlight goes on as a SCREEN, a + b - sat(a b), not a sum: PS_CarPaint
                 // per pixel on the port's own maps gave each of the three terms to a level and their
                 // total 10 levels under the port's sum on the lid at 05:45 - scene 0.3345 where the
@@ -3777,6 +3783,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 // the bits - red base, green k, blue occlusion, yellow flake normal, magenta soft map, cyan its power,
                 // dark red scrape, dark green the highlight before its clamp, pink the soft highlight, orange the
                 // mirror mix; grey (darker than mid grey, brighter with the highlight): all in range)
+                // (704: red = the power term as pow() gives it / 4, green = |soft| / 4, blue = k x occlusion / 2)
+                if (g.params.w > 703.5 && g.params.w < 704.5) {
+                    return vec4<f32>(to_scene(vec3<f32>(pow(max(length(soft), 0.00001), ta.w - 1.0) * 0.25, length(soft) * 0.25, kk * ao_v * 0.5)), 1.0);
+                }
                 if (g.params.w > 702.5 && g.params.w < 703.5) {
                     var pc3 = vec3<f32>(0.1);
                     let pw = pow(max(length(soft), 0.00001), ta.w - 1.0);
@@ -3812,7 +3822,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                     let ray_a = select(reflect(-v, n), in.fill.xyz, pv_a);
                     let m_a = mix(dif, select(env, env_color(ray_a), pv_a), w_a);
                     let soft_a = env_soft(ray_a);
-                    let sp_a = clamp(mix(base * dot(soft_a, vec3<f32>(0.3, 0.59, 0.11)), soft_a, tc.x) * (ta.y * ao_v * pow(max(length(soft_a), 0.00001), ta.w - 1.0) * kk), vec3<f32>(0.0), vec3<f32>(1.0));
+                    let sp_a = clamp(mix(base * dot(soft_a, vec3<f32>(0.3, 0.59, 0.11)), soft_a, tc.x) * (ta.y * ao_v * paint_pow(length(soft_a), ta.w - 1.0) * kk), vec3<f32>(0.0), vec3<f32>(1.0));
                     lit = m_a + sp_a - clamp(m_a * sp_a, vec3<f32>(0.0), vec3<f32>(1.0));
                     // (the scrapes, PSAmbientCarPaint 31 - 50: ScrapeSampler = dmg_scrape at uv0 x (4, 3), its green and
                     // alpha; lerp(out, lerp(soft, lum(soft), 0.75) x green, alpha x o6.w) - o6.w in dmg.x as -1 - a)
