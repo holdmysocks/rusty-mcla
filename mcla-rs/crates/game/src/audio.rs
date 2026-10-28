@@ -113,6 +113,8 @@ struct Voice {
     looping: bool,
     /// loop voices fade out and die when the game stops updating them
     fresh: bool,
+    /// held by a paused audio timer (`Audio::hold`): not mixed, its position kept
+    held: bool,
 }
 
 #[derive(Default)]
@@ -186,6 +188,9 @@ impl MixSource {
         // (step 23b: the slow-down state on the player's vehicle - the engine's slot 0)
         let slow = m.slow.map(|r| r.now()).unwrap_or(SLOWDOWN_OFF);
         for v in m.voices.iter_mut() {
+            if v.held {
+                continue;
+            }
             let mine = (v.id >= 0x1000_0000 && v.id < 0x1000_0040) || v.id & crate::sndobj::SLOWED != 0;
             let (cat_gain, cat_pitch) = if mine { (slow[0], slow[1]) } else { (1.0, 1.0) };
             let n = v.clip.frames();
@@ -223,7 +228,7 @@ impl MixSource {
         m.voices.retain(|v| {
             let n = v.clip.frames();
             let ended = !v.looping && v.pos >= n.saturating_sub(1) as f64;
-            let silent = v.id != 0 && v.tl == 0.0 && v.tr == 0.0 && v.gl.abs() < 1e-4 && v.gr.abs() < 1e-4;
+            let silent = !v.held && v.id != 0 && v.tl == 0.0 && v.tr == 0.0 && v.gl.abs() < 1e-4 && v.gr.abs() < 1e-4;
             !(ended || silent)
         });
         // soft clip
@@ -793,7 +798,7 @@ impl Audio {
 
     pub fn play_ex(&mut self, key: &str, vol: f32, speed: f32) {
         if let Some(clip) = self.clip(key) {
-            self.push(Voice { id: 0, clip, pos: 0.0, speed, gl: vol, gr: vol, tl: vol, tr: vol, looping: false, fresh: true });
+            self.push(Voice { id: 0, clip, pos: 0.0, speed, gl: vol, gr: vol, tl: vol, tr: vol, looping: false, fresh: true, held: false });
         }
     }
 
@@ -802,7 +807,7 @@ impl Audio {
         if let Some(clip) = self.clip(key) {
             let (l, r) = spatial(self.ear, self.ear_right, pos, vol, ref_dist);
             if l + r > 0.004 {
-                self.push(Voice { id: 0, clip, pos: 0.0, speed: 1.0, gl: l, gr: r, tl: l, tr: r, looping: false, fresh: true });
+                self.push(Voice { id: 0, clip, pos: 0.0, speed: 1.0, gl: l, gr: r, tl: l, tr: r, looping: false, fresh: true, held: false });
             }
         }
     }
@@ -828,7 +833,7 @@ impl Audio {
         }
         // start at a random phase so identical loops do not comb
         let start = (id.wrapping_mul(2654435761) % clip.frames().max(1) as u64) as f64;
-        m.voices.push(Voice { id, clip, pos: start, speed, gl: 0.0, gr: 0.0, tl: gains.0, tr: gains.1, looping: true, fresh: true });
+        m.voices.push(Voice { id, clip, pos: start, speed, gl: 0.0, gr: 0.0, tl: gains.0, tr: gains.1, looping: true, fresh: true, held: false });
     }
 
     /// Create or update a voice that lives while it is driven every frame (the sound objects' waves): `start` is the
@@ -840,13 +845,24 @@ impl Audio {
             v.tr = gains.1;
             v.speed = speed;
             v.fresh = true;
+            v.held = false;
             return;
         }
         // a one-shot the mixer has just finished is not started again from its last frames
         if m.voices.len() >= 96 || (!looping && start > 0.0 && start + clip.rate as f64 * 0.05 >= clip.frames() as f64) {
             return;
         }
-        m.voices.push(Voice { id, clip: clip.clone(), pos: start, speed, gl: gains.0, gr: gains.1, tl: gains.0, tr: gains.1, looping, fresh: true });
+        m.voices.push(Voice { id, clip: clip.clone(), pos: start, speed, gl: gains.0, gr: gains.1, tl: gains.0, tr: gains.1, looping, fresh: true, held: false });
+    }
+
+    /// Hold a driven voice where it is, silent, for this frame (its sound is on a paused audio timer: F-89113 skips the
+    /// sound and the type's pause method stops its voice); the next `drive` goes on from there.
+    pub fn hold(&mut self, id: u64) {
+        let Ok(mut m) = self.mixer.lock() else { return };
+        if let Some(v) = m.voices.iter_mut().find(|v| v.id == id) {
+            v.held = true;
+            v.fresh = true;
+        }
     }
 
     pub fn gains_at(&self, pos: Vec3, vol: f32, ref_dist: f32) -> (f32, f32) {
@@ -951,6 +967,7 @@ impl Audio {
         if let Ok(mut m) = self.mixer.lock() {
             for v in m.voices.iter_mut().filter(|v| v.id != 0 && v.id != STREAM_VOICE) {
                 if !v.fresh {
+                    v.held = false;
                     v.tl = 0.0;
                     v.tr = 0.0;
                 }
@@ -1088,7 +1105,7 @@ impl Audio {
             }
             if let Some(c) = rel.and_then(|r| crate::sndobj::decode_mp3(&self.root.join(r))) {
                 let pos = (at.max(0.0) * c.rate as f32) as f64;
-                self.push_any(Voice { id: STREAM_VOICE, clip: Arc::new(c), pos, speed: 1.0, gl: volume, gr: volume, tl: volume, tr: volume, looping: false, fresh: true });
+                self.push_any(Voice { id: STREAM_VOICE, clip: Arc::new(c), pos, speed: 1.0, gl: volume, gr: volume, tl: volume, tr: volume, looping: false, fresh: true, held: false });
             }
             return;
         }

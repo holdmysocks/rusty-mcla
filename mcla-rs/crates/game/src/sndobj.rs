@@ -203,8 +203,9 @@ struct Instance {
     prev_dist: Option<f32>,
     doppler: f32,
     stop: bool,
-    /// the audio timer the sound runs on (P+69 of its request, F-33564); None: not modelled (every sound but the
-    /// speech lines - the original's game sounds are on timer 0 too)
+    /// the audio timer the sound runs on (sound +65 >> 2: request +56, -1 = the root sound's category's tristate pair 1 -
+    /// docs/reference/audio/SOUND_TIMER_RULE.md; F-33564): every request but the speech take's has -1, so the root's
+    /// header category's (`SoundLib::cat_timer`); `set_timer` for a request that gives one
     timer: Option<u8>,
 }
 
@@ -227,6 +228,8 @@ pub struct SoundLib {
     /// the audio controller's three timers (F-46276: engine+572 + 12 k: time, rate, paused): a sound on a paused timer is
     /// not updated (F-89113 skips it; its voice holds). Timer 0 is paused while the game is (F-99037, `sound.rs`).
     pub timer_paused: [bool; 3],
+    /// each category's timer (`audcfg::category_timers`: categories.dat tristate pair 1 from BASE down)
+    cat_timer: HashMap<u32, u8>,
     /// Randomized objects' history (kept per object, as the original writes it into the metadata)
     history: HashMap<u32, (usize, Vec<u8>)>,
     insts: Vec<Instance>,
@@ -347,6 +350,7 @@ impl SoundLib {
             clips: HashMap::new(),
             rng: SharedMwc,
             timer_paused: [false; 3],
+            cat_timer: audcfg::category_timers(&cat).into_iter().collect(),
             history: HashMap::new(),
             insts: Vec::new(),
             next: 1,
@@ -876,8 +880,16 @@ impl SoundLib {
         let root = self.make(hash, 0)?;
         let id = self.next;
         self.next += 1;
-        self.insts.push(Instance { id, hash, root, req, prev_dist: None, doppler: 1.0, stop: false, timer: None });
+        let timer = Some(self.timer_of(&root.h));
+        self.insts.push(Instance { id, hash, root, req, prev_dist: None, doppler: 1.0, stop: false, timer });
         Some(Handle(id))
+    }
+
+    /// The timer of a root sound whose request leaves it to the category (request +56 = -1, sound +65 = 63): its header's
+    /// category (none: BASE) by categories.dat pair 1 (docs/reference/audio/SOUND_TIMER_RULE.md).
+    fn timer_of(&self, h: &audcfg::SoundHeader) -> u8 {
+        let cat = if h.category != 0 { h.category } else { joaat("BASE") };
+        self.cat_timer.get(&cat).copied().unwrap_or(0)
     }
 
     /// A converted wave file played as a one-shot voice of `category` (a speech take chosen by the speech system: the
@@ -902,7 +914,8 @@ impl SoundLib {
         let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
         let id = self.next;
         self.next += 1;
-        self.insts.push(Instance { id, hash: 0, root, req, prev_dist: None, doppler: 1.0, stop: false, timer: None });
+        let timer = Some(self.timer_of(&root.h));
+        self.insts.push(Instance { id, hash: 0, root, req, prev_dist: None, doppler: 1.0, stop: false, timer });
         Some(Handle(id))
     }
 
@@ -1020,8 +1033,11 @@ impl SoundLib {
         let mut insts = std::mem::take(&mut self.insts);
         let (lp, lr, lf) = self.listener;
         for inst in insts.iter_mut() {
-            // a sound on a paused timer is not updated (F-89113): its voice is not driven, it goes on from where it was
+            // a sound on a paused timer is not updated (F-89113): its voices hold where they are, silent, and go on from
+            // there when the timer runs again
             if inst.timer.is_some_and(|t| self.timer_paused[t as usize]) {
+                let slowed = if inst.req.player { SLOWED } else { 0 };
+                hold_voices(&inst.root, &mut |v| audio.hold(v | slowed));
                 continue;
             }
             // Doppler (F-42745): radial speed from the distance change, ratio c / (c + v), smoothed 50/50
@@ -1321,6 +1337,28 @@ impl SoundLib {
         let amp = db2lin(a) * db2lin(b);
         let ratio = 2f32.powf((v.ctx.pitch + cat.pitch) as f32 / 1200.0) * if positional { inst.doppler } else { 1.0 };
         audio.drive(v.voice | if inst.req.player { SLOWED } else { 0 }, &v.clip, (amp * gl, amp * gr), ratio, v.looping, v.start_frame);
+    }
+}
+
+/// Every wave / stream voice of a sound's tree.
+fn hold_voices(n: &Node, f: &mut dyn FnMut(u64)) {
+    match &n.kind {
+        Kind::Wave { voice, .. } | Kind::Stream { voice, .. } => f(*voice),
+        Kind::Group { children } => children.iter().for_each(|c| hold_voices(c, f)),
+        Kind::Looping { child, .. } | Kind::Envelope { child, .. } => hold_voices(child, f),
+        Kind::Sequential { cur, .. } => {
+            if let Some(c) = cur {
+                hold_voices(c, f)
+            }
+        }
+        Kind::Retrig { live, .. } => live.iter().for_each(|c| hold_voices(c, f)),
+        Kind::OnStop { child, stopped, .. } => {
+            hold_voices(child, f);
+            if let Some(s) = stopped {
+                hold_voices(s, f)
+            }
+        }
+        Kind::Empty => {}
     }
 }
 
@@ -1739,8 +1777,44 @@ mod tests {
         }
     }
 
+    /// Which timer a sound runs on (docs/reference/audio/SOUND_TIMER_RULE.md): categories.dat pair 1 from BASE down puts
+    /// MUSIC, AMBIENCE (not its weather beds), UI, the end-of-race and replay effects, SPEECH_ENDRACE and ZZZ_DEBUG and all below
+    /// them on timer 1, the other 117 on timer 0; with timer 0 paused a UI sound plays on and a game sound holds.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn sound_timers_by_category() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let one: Vec<&str> = lib.cat_dat.objects.iter().map(|o| o.0.as_str()).filter(|n| lib.cat_timer.get(&joaat(n)) == Some(&1)).collect();
+        assert_eq!(lib.cat_timer.len(), 145, "every category below BASE (one of the 146 is in no tree; the original builds 145 records)");
+        assert_eq!(one.len(), 29, "{one:?}");
+        for n in ["MUSIC", "MUSIC_USER", "AMBIENCE", "AMBIENCE_BEDS_NIGHT", "UI", "UI_MENU", "UI_SAVE", "SPECIAL_EFFECTS_END_OF_RACE", "SPECIAL_EFFECTS_REPLAY", "SPEECH_ENDRACE", "ZZZ_DEBUG"] {
+            assert_eq!(lib.cat_timer.get(&joaat(n)), Some(&1), "{n}");
+        }
+        for n in ["BASE", "AMBIENCE_BEDS_WEATHER", "SPEECH_CAREER", "SPEECH_CAREER_POS", "PLAYER_VEHICLES_ENGINES", "SFX"] {
+            assert_eq!(lib.cat_timer.get(&joaat(n)).copied().unwrap_or(0), 0, "{n}");
+        }
+        let key = format!("career_speech/0x0624a35b/{:08x}", joaat("PLAYER_NITROUS_07"));
+        let ui = lib.play_clip(&key, "UI_MENU", Req::default()).expect("clip");
+        let game = lib.play_clip(&key, "SPEECH_CAREER", Req::default()).expect("clip");
+        let pos = |lib: &SoundLib, h: Handle| match &lib.insts.iter().find(|i| i.id == h.0).unwrap().root.kind {
+            Kind::Wave { pos_ms, .. } => *pos_ms,
+            _ => -1.0,
+        };
+        assert_eq!(lib.insts.iter().map(|i| i.timer).collect::<Vec<_>>(), vec![Some(1), Some(0)]);
+        lib.update(0.1, &mut a);
+        let (u0, g0) = (pos(&lib, ui), pos(&lib, game));
+        lib.timer_paused[0] = true;
+        for _ in 0..5 {
+            lib.update(0.1, &mut a);
+        }
+        assert_eq!(pos(&lib, game), g0, "the game sound holds");
+        assert!((pos(&lib, ui) - u0 - 500.0).abs() < 1.0, "the UI sound plays on");
+    }
+
     /// A career speech line as the original plays it (work/slipstream/audio4/cap/n2.txt): PLAYER_NITROUS through the player
-    /// voice's Speech sound CAREER_SPEECH_DRV_MP_01_SET_POS_YELL (SND line: request defaults, +69 = 0 -> timer 0), whose
+    /// voice's Speech sound CAREER_SPEECH_DRV_MP_01_SET_POS_YELL (SND line: request defaults, category SPEECH_CAREER_POS -> timer 0), whose
     /// category SPEECH_CAREER_POS resolves to 3.4997 dB at the sliders 10 (CAT 98) and own volume -3 dB, Doppler 0; on the
     /// paused timer 0 (F-89113 skips it; recorded: t0 held at 93.4585 through a 10.26 s pause) the line's wave does not move.
     #[test]

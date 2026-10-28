@@ -637,6 +637,31 @@ pub fn resolve_categories_rt(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &Ha
     out
 }
 
+/// The audio timer of every category (by name hash), from BASE down: tristate pair 1 of the object's +5 word (the run-time
+/// record's +76, copied by F-41684 and read by F-24707 - docs/reference/audio/SOUND_TIMER_RULE.md): 1 =
+/// timer 1, 2 = the parent's, 0 / 3 = timer 0; BASE's parent is timer 0.
+pub fn category_timers(cats: &Dat) -> HashMap<u32, u8> {
+    let mut out = HashMap::new();
+    fn walk(cats: &Dat, h: u32, parent: u8, out: &mut HashMap<u32, u8>, depth: usize) {
+        let Some(o) = cats.get(h) else { return };
+        if depth > 32 {
+            return;
+        }
+        let t = match (be_u32(o, 5) >> 2) & 3 {
+            1 => 1,
+            2 => parent,
+            _ => 0,
+        };
+        out.insert(h, t);
+        let n = o.get(35).copied().unwrap_or(0) as usize;
+        for i in 0..n {
+            walk(cats, be_u32(o, 36 + 4 * i), t, out, depth + 1);
+        }
+    }
+    walk(cats, joaat("BASE"), 0, &mut out, 0);
+    out
+}
+
 #[cfg(test)]
 mod tests {
 
