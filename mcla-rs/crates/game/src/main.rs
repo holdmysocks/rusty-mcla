@@ -1,5 +1,6 @@
 //! Midnight Club: Los Angeles – Rust runtime.
 
+
 mod ability;
 mod boot;
 mod bootload;
@@ -9,9 +10,9 @@ mod mc4;
 mod pads;
 mod rewards;
 mod vinyl;
-mod ai;
 #[cfg(test)]
 mod carparts_small_tests;
+mod ai;
 mod ambient;
 mod assets;
 mod audio;
@@ -50,9 +51,9 @@ mod drivers;
 mod game;
 mod glyphs;
 mod keybinds;
-mod hud;
 #[cfg(test)]
 mod controls_ref;
+mod hud;
 mod flash_ui;
 mod selfmovie;
 mod flashpic;
