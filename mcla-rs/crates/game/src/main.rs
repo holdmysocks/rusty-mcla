@@ -8894,7 +8894,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             sec_n += 1;
                         }
                     }
-                    self.vehicles.draw(&mut sp, &gpu, false, &mut n, Some((self.cam.pos, 140.0)), None);
+                    self.vehicles.draw_shadow(&mut sp, &gpu, &mut n, Some((self.cam.pos, 140.0)));
                     // (the windows cast too, as in the original's shadow passes)
                     self.vehicles.draw_glass_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, 140.0)));
                     self.vehicles.draw_solid_casters(&mut sp, &gpu, &mut n, Some((self.cam.pos, 140.0)));
@@ -9093,7 +9093,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // had 0.9. MCLA_CAR_CASC_ALL=1: into all four, as before.)
                     if ci < 2 || car_casc_all {
                         sp.set_pipeline(casc_pl(render::CASC_CULL_CAR));
-                        self.vehicles.draw(&mut sp, &gpu, false, &mut n, Some((self.cam.pos, render::CASC_TUNE[ci][0] + 20.0)), None);
+                        self.vehicles.draw_shadow(&mut sp, &gpu, &mut n, Some((self.cam.pos, render::CASC_TUNE[ci][0] + 20.0)));
                         // (the glass, the lamps' lenses, the occluder box and the wheels' spheres: both sides, as the
                         // original's - 0x18000 on its PS_GlassFront / PS_Light / PS_fixupAlpha meshes' depth draws)
                         sp.set_pipeline(&gpu.pipeline_casc);

@@ -908,6 +908,12 @@ pub fn ambient_paint(c: [f32; 4]) -> [f32; 4] {
     [f(c[0]), f(c[1]), f(c[2]), c[3]]
 }
 
+/// Traffic and parked cars cast no sun shadow (`Vehicles::draw_shadow`); MCLA_TRAFFIC_CASTS=1: they do, as before.
+fn traffic_casts_none() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("MCLA_TRAFFIC_CASTS").is_err())
+}
+
 fn car_mode(shader: &str) -> MatMode {
     let s = shader.to_ascii_lowercase();
     if s.contains("paint") {
@@ -988,7 +994,7 @@ fn mesh_to_batch_xf(gpu: &mut Gpu, mesh: &mcla_formats::rage::geometry::Mesh, sn
     }
     let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
     let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&mesh.indices), usage: wgpu::BufferUsages::INDEX });
-    GpuBatch { shader: sname.to_string(), vb, ib, count: mesh.indices.len() as u32, bind, mode, min: mn, max: mx }
+    GpuBatch { shader: sname.to_string(), vb, ib, count: mesh.indices.len() as u32, bind, mode, min: mn, max: mx, bucket: 0 }
 }
 
 /// The California plate background of the disc (`resources/license_plates/backgrounds`),
@@ -1171,12 +1177,15 @@ impl MeshGeo {
                 Some(t) => [0, ((t.x * 0.5 + 0.5) * 255.0).round() as u8, ((t.y * 0.5 + 0.5) * 255.0).round() as u8, ((t.z * 0.5 + 0.5) * 255.0).round() as u8],
                 None => c,
             };
-            let ca = if tw.is_some() { 255 } else { 0 };
+            // (a traffic tyre, amb 2: colour alpha 128 - city.wgsl's mark for PSAmbientTire, and no dent)
+            let ca = if tw.is_some() { 255 } else if amb == 2 { 128 } else { 0 };
             // (a traffic model's vertex: its stored tangent in the car's frame in the second colour's rgb, t x 0.5
             // + 0.5 - the ambient programs bend the normal along it where the car is dented (city.wgsl vs_body);
             // its meshes have no second colour set, so those three bytes are otherwise unused; 0 0 0 - no unit
             // tangent comes out so - marks the tyre, whose program, VSAmbientTire, has no dent: amb 2)
-            let at = if amb == 2 && mesh.colors1.is_empty() { Some(Vec3::splat(-1.0)) } else if amb == 1 && mesh.colors1.is_empty() { mesh.tangents.get(i).filter(|_| mesh.tangents.len() == n).map(|t| xf.transform_vector3(t.truncate()).normalize_or_zero()) } else { None };
+            // (a tyre keeps its tangent too since 2026-10-28: PSAmbientTire's normal map needs the frame; it is told by
+            // the colour's alpha, 128, instead)
+            let at = if amb >= 1 && mesh.colors1.is_empty() { mesh.tangents.get(i).filter(|_| mesh.tangents.len() == n).map(|t| xf.transform_vector3(t.truncate()).normalize_or_zero()) } else { None };
             let c1 = match at {
                 Some(t) => [c1[0], ((t.x * 0.5 + 0.5) * 255.0).round() as u8, ((t.y * 0.5 + 0.5) * 255.0).round() as u8, ((t.z * 0.5 + 0.5) * 255.0).round() as u8],
                 None => c1,
@@ -1689,11 +1698,12 @@ impl Vehicles {
             };
             let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.verts), usage: wgpu::BufferUsages::VERTEX });
             let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.indices), usage: wgpu::BufferUsages::INDEX });
-            let (group, lod) = ((k.2 >> 16) as u8, (k.2 >> 24) as usize);
+            // (bit 31: a traffic mesh of the blended bucket, bits 26 - 30 its place among them - `prep_car`)
+            let (group, lod) = ((k.2 >> 16) as u8, ((k.2 >> 24) & 3) as usize);
             if group != 0 {
                 log::debug!("car {}: moving group {} (1/2 windows, 3 hood, 4 trunk, 5/6 bumpers) batch shader {} tris {}", car.name, group, acc.sname, acc.indices.len() / 3);
             }
-            let b = GpuBatch { shader: acc.sname, vb, ib, count: acc.indices.len() as u32, bind, mode: acc.mode, min: acc.min, max: acc.max };
+            let b = GpuBatch { shader: acc.sname, vb, ib, count: acc.indices.len() as u32, bind, mode: acc.mode, min: acc.min, max: acc.max, bucket: (k.2 >> 31) as u8 };
             if lod == 0 {
                 batch_window.push(group);
                 batches.push(b);
@@ -1892,6 +1902,8 @@ impl Vehicles {
                 }
             }
         }
+        // (a traffic model's meshes of the blended bucket, counted per LOD: their draw order - `Vehicles::draw`)
+        let mut b1_seq = [0u32; 4];
         for (part, part_xf, lod) in todo {
             if let Some(f) = only_part.as_deref() {
                 if !f.split(',').any(|n| part.primary == n) {
@@ -1974,6 +1986,8 @@ impl Vehicles {
                     .or_else(|| all_tex.iter().find(|(_, n)| !is_normal(n)))
                     .map(|x| x.1.clone());
                 let sn = all_tex.iter().find(|(_, n)| Some(n) != dn.as_ref() && !is_normal(n)).map(|x| x.1.clone()).or_else(|| dn.clone());
+                // (a traffic tyre: PSAmbientTire reads its NormalSampler map - the second slot, city.wgsl)
+                let sn = if car_is_ambient && sname.eq_ignore_ascii_case("AmbientTire") { sh.and_then(|s| s.textures().find(|(h, _)| NORMAL_SAMPLERS.contains(h)).map(|(_, n)| n.to_string())).or(sn) } else { sn };
                 if log::log_enabled!(log::Level::Debug) && dn.is_none() && !all_tex.is_empty() {
                     log::debug!("shader {} has only normal maps: {:?}", sname, all_tex);
                 }
@@ -2062,6 +2076,21 @@ impl Vehicles {
                     log::info!("damage parts {}: {} mesh {} -> group {}", car.name, part.primary, mi, win_side);
                 }
                 let kbits = mode as u32 | win_side << 16 | lod << 24;
+                // The draw bucket, header byte +0x09 of the shader (`Shader::bucket`): grmModel's draw (F-73936)
+                // draws a geometry only in the pass whose bucket number equals its shader's, and the traffic car's
+                // lit draw (F-73627) asks for bucket 0 in the main opaque pass (2 at LOD 2) and bucket 1 in the main
+                // alpha pass (bucket lists F-80884 / F-48841). So a traffic mesh of bucket 1 - the decals, logos,
+                // the diamond panels, the plate, the glass - is drawn after every opaque, blended, in its model's
+                // order: such meshes are not merged with others (bit 31 + their place, bits 26 - 30, in the key;
+                // the keys are drawn in sorted order). (MCLA_TRAFFIC_BUCKET_OLD=1: every mesh by its mode, as before)
+                let bucket1 = car_is_ambient && sh.map_or(0, |s| s.bucket) == 1 && std::env::var("MCLA_TRAFFIC_BUCKET_OLD").is_err();
+                let kbits = if bucket1 {
+                    let li = (lod as usize).min(3);
+                    b1_seq[li] += 1;
+                    kbits | 1 << 31 | (b1_seq[li] - 1).min(31) << 26
+                } else {
+                    kbits
+                };
                 // (the glass over a lamp is its lens: red over the tail lamps, clear elsewhere -
                 // the game tints it from a table per lamp, BumpedTintColors)
                 let pn = part.primary.to_ascii_lowercase();
@@ -2165,6 +2194,39 @@ impl Vehicles {
                                 v.uv1 = [0.0, 0.0];
                                 v.color[3] = 80;
                             }
+                        }
+                    }
+                    // (traffic: PSAmbientBumpSpec of cars/0x2a82f172, ported in city.wgsl - the material's terms in the
+                    // vertices: uv2 = (-(1 + 255 smoothness + 256 x 255 metallic), -(1 + 4095 base r + 4096 x 4095 base g)),
+                    // uv1 = (-(1 + 4095 base b + 4096 x 4095 SpecularColor), -(1 + 1023.75 SpecMapExp + 4096 x 1023.75
+                    // ambientMod)), colour alpha 255 on a mesh of the blended bucket (its texture's alpha is then the
+                    // pixel's); uv0 x detailTiling as VSAmbientBumpSpec hands it on (o4)
+                    if car_is_ambient && sname.eq_ignore_ascii_case("AmbientBumpSpec") && std::env::var("MCLA_TRAFFIC_BS_OLD").is_err() {
+                        use mcla_formats::rage::drawable::ShaderParam;
+                        let pv = |h: u32, d: f32| sh.and_then(|s| s.params.iter().find_map(|(ph, p)| match p { ShaderParam::Vector(v) if *ph == h && !v.is_empty() => Some(v[0]), _ => None })).unwrap_or(glam::Vec4::splat(d));
+                        let q = |x: f32, k: f32| if x.is_finite() { (x.abs() * k).round().clamp(0.0, k) } else { 0.0 };
+                        let (bc, am, e, k, m, sm, dt) = (pv(0x1468b111, 1.0), pv(0xfd110c9f, 1.0).x, pv(0xb37a7946, 1.0).x, pv(0xa98e2243, 0.0).x, pv(0x83697767, 0.0).x, pv(0x5e315fd1, 0.0).x, pv(0x250f72fc, 1.0).x);
+                        let blended = sh.map_or(0, |s| s.bucket) == 1;
+                        for v in &mut acc.verts[first..] {
+                            v.uv2 = [-(1.0 + q(sm, 255.0) + 256.0 * q(m, 255.0)), -(1.0 + q(bc.x, 4095.0) + 4096.0 * q(bc.y, 4095.0))];
+                            v.uv1 = [-(1.0 + q(bc.z, 4095.0) + 4096.0 * q(k, 4095.0)), -(1.0 + q(e / 4.0, 4095.0) + 4096.0 * q(am / 4.0, 4095.0))];
+                            v.color[3] = if blended { 255 } else { 0 };
+                            if dt.is_finite() {
+                                v.uv0 = [v.uv0[0] * dt, v.uv0[1] * dt];
+                            }
+                        }
+                    }
+                    // (traffic tyres: PSAmbientTire of cars/0xed26c1fb, ported in city.wgsl - its terms in the vertices:
+                    // uv2.y = -(1 + 1023.75 AmbientIntensity + 4096 x 1023.75 DiffuseIntensity), uv1 = (-(1 + 63.98
+                    // SpecularExponentLow + 4096 x 63.98 SpecularExponentHigh), -(1 + 1023.75 SpecularIntensity)))
+                    if car_is_ambient && sname.eq_ignore_ascii_case("AmbientTire") {
+                        use mcla_formats::rage::drawable::ShaderParam;
+                        let pv = |h: u32, d: f32| sh.and_then(|s| s.params.iter().find_map(|(ph, p)| match p { ShaderParam::Vector(v) if *ph == h && !v.is_empty() => Some(v[0].x), _ => None })).filter(|x| x.is_finite()).unwrap_or(d);
+                        let q = |x: f32, k: f32| (x.abs() * k).round().clamp(0.0, 4095.0);
+                        let (ai, di, lo, hi, si) = (pv(0x3098c6f5, 1.0), pv(0xf7ba0d6e, 1.0), pv(0xe59064e1, 1.0), pv(0xea99b41e, 40.0), pv(0xa95fc535, 1.0));
+                        for v in &mut acc.verts[first..] {
+                            v.uv2[1] = -(1.0 + q(ai, 4095.0 / 4.0) + 4096.0 * q(di, 4095.0 / 4.0));
+                            v.uv1 = [-(1.0 + q(lo, 4095.0 / 64.0) + 4096.0 * q(hi, 4095.0 / 64.0)), -(1.0 + q(si, 4095.0 / 4.0))];
                         }
                     }
                     // cabin trim: the colour group of the mesh's zone (uv1.x), by the vehicle's own
@@ -4522,9 +4584,24 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
     /// Draw all cars. `blend_pass` selects glass-only.
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>) {
+        self.draw_x(pass, gpu, blend_pass, draws, range, frustum, false);
+    }
+
+    /// The cars into a sun shadow pass (the cascades, the near map). Traffic and parked cars cast none: the ambient
+    /// cars' pass dispatcher (F-27833) sends the shadow modes 4 / 8 to F-89353, which never ran in any recording
+    /// (registry hits 0), and the recorded frames (work/traffic-detail/fix/shadowchk.py) hold no depth draw of the
+    /// food truck's meshes - only its occlusion blob (PS_CalcShadowsQuad). (MCLA_TRAFFIC_CASTS=1: as before)
+    pub fn draw_shadow<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize, range: Option<(Vec3, f32)>) {
+        self.draw_x(pass, gpu, false, draws, range, None, traffic_casts_none());
+    }
+
+    fn draw_x<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, skip_ambient: bool) {
         for (ci, c) in self.cars.iter().enumerate() {
             // (step 19g: a car under Stealth is not drawn in either pass of its own - pu_fx.rs)
             if c.pu_stealth {
+                continue;
+            }
+            if skip_ambient && c.is_ambient() {
                 continue;
             }
             let Some((batches, groups)) = self.lod_batches(ci) else { continue };
@@ -4565,7 +4642,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                     pass.set_pipeline(pl);
                     for (bi, b) in batches.iter().enumerate() {
-                        if b.mode != MatMode::CarGlass || b.shader.to_ascii_lowercase().contains("bumped") {
+                        if b.mode != MatMode::CarGlass || b.shader.to_ascii_lowercase().contains("bumped") || b.bucket == 1 {
                             continue;
                         }
                         pass.set_bind_group(3, c.group_object(groups[bi]), &[]);
@@ -4579,8 +4656,33 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
                 pass.set_pipeline(&gpu.pipeline_blend);
             }
+            // A traffic car's blended bucket (`GpuBatch::bucket`, prep_car), in the main alpha pass, in its model's order
+            // as F-73627 draws it: blended (SRC_ALPHA / INV_SRC_ALPHA), depth writes on, back faces culled (recorded
+            // 0x07060706 / 0x00708767 / 0x00018002); city.wgsl drops the pixels whose alpha is not above 0 (alpha test
+            // GREATER 0, 0x8700000c). Each window twice, back faces first (cull 0x00018006), then front faces.
+            if blend_pass && batches.iter().any(|b| b.bucket == 1) {
+                for (bi, b) in batches.iter().enumerate() {
+                    if b.bucket != 1 {
+                        continue;
+                    }
+                    pass.set_bind_group(3, c.group_object(groups[bi]), &[]);
+                    pass.set_bind_group(1, b.bind.as_ref(), &[]);
+                    pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
+                    pass.set_vertex_buffer(0, b.vb.slice(..));
+                    pass.set_index_buffer(b.ib.slice(..), wgpu::IndexFormat::Uint32);
+                    if b.mode == MatMode::CarGlass {
+                        pass.set_pipeline(&gpu.pipeline_glass_back);
+                        pass.draw_indexed(0..b.count, 0, 0..1);
+                        *draws += 1;
+                    }
+                    pass.set_pipeline(&gpu.pipeline_glass_front);
+                    pass.draw_indexed(0..b.count, 0, 0..1);
+                    *draws += 1;
+                }
+                pass.set_pipeline(&gpu.pipeline_blend);
+            }
             for (bi, b) in batches.iter().enumerate() {
-                if b.mode.blended() != blend_pass {
+                if b.mode.blended() != blend_pass || b.bucket == 1 {
                     continue;
                 }
                 if glass2 && b.mode == MatMode::CarGlass && !b.shader.to_ascii_lowercase().contains("bumped") {
@@ -4749,6 +4851,11 @@ fn parts_test(st: &mut CarState, cm: &Mat4, clock: f32) {
 }
 
 impl CarInstance {
+    /// A traffic or parked car (an ambient render instance, a `va_` model that is not the player's).
+    pub fn is_ambient(&self) -> bool {
+        !self.is_player && self.model.name.to_ascii_lowercase().starts_with("va_")
+    }
+
     /// The object (group 3) a batch of the car's model is drawn with: the body's, or a side
     /// window's for that window's glass.
     pub fn batch_object(&self, bi: usize) -> &wgpu::BindGroup {
@@ -4896,6 +5003,9 @@ impl Vehicles {
                     continue;
                 }
             }
+            if traffic_casts_none() && c.is_ambient() {
+                continue;
+            }
             let Some((batches, groups)) = self.lod_batches(ci) else { continue };
             pass.set_bind_group(3, &c.binding.bg, &[]);
             for (bi, b) in batches.iter().enumerate() {
@@ -4953,7 +5063,7 @@ impl Vehicles {
             let Some((batches, groups)) = self.lod_batches(ci) else { continue };
             pass.set_bind_group(3, &c.binding.bg, &[]);
             for (bi, b) in batches.iter().enumerate() {
-                if !b.mode.blended() {
+                if !b.mode.blended() && b.bucket != 1 {
                     continue;
                 }
                 pass.set_bind_group(3, c.group_object(groups[bi]), &[]);
@@ -4981,7 +5091,7 @@ impl Vehicles {
                     continue;
                 }
             }
-            if c.model.bike || (self.hide_player && c.is_player) {
+            if c.model.bike || (self.hide_player && c.is_player) || (traffic_casts_none() && c.is_ambient()) {
                 continue;
             }
             let Some((batches, _)) = self.lod_batches(ci) else { continue };

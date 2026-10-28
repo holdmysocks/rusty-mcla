@@ -1097,7 +1097,9 @@ fn vs_body(in: VsIn) -> VsOut {
     var amb_lp = in.pos;
     var amb_n = normalize(in.normal);
     var amb_a = 0.0;
-    if (amb_obj && dot(obj.dents[1], obj.dents[1]) > 0.0 && dot(in.color1.rgb, vec3<f32>(1.0)) > 0.001 && !(g.params.w > 704.5 && g.params.w < 705.5)) {
+    // (a tyre - colour alpha 128, vehicles.rs - keeps its tangent for PSAmbientTire but takes no dent)
+    let amb_tyre = abs(in.color.a * 255.0 - 128.0) < 0.5;
+    if (amb_obj && !amb_tyre && dot(obj.dents[1], obj.dents[1]) > 0.0 && dot(in.color1.rgb, vec3<f32>(1.0)) > 0.001 && !(g.params.w > 704.5 && g.params.w < 705.5)) {
         // (a wheel's vertex in its bone's frame: p - hub, dents[2] - vehicles.rs; the body's bone is the car's)
         let pp = in.pos - select(vec3<f32>(0.0), obj.dents[2].xyz, obj.dents[2].w > 0.5);
         let pl = length(pp);
@@ -1147,7 +1149,7 @@ fn vs_body(in: VsIn) -> VsOut {
     o.normal = normalize((obj.model * vec4<f32>(in.normal, 0.0)).xyz);
     // (world.rs marks it: the vertical at a quarter of the length - x 1.5 or x 2 by world::mark_binormal)
     if (dot(in.normal, in.normal) < 0.3 && !(g.params.w > 399.5 && g.params.w < 400.5)) { o.normal = vec3<f32>(0.0); }
-    if (amb_obj && dot(obj.dents[1], obj.dents[1]) > 0.0 && dot(in.color1.rgb, vec3<f32>(1.0)) > 0.001) { o.normal = normalize((obj.model * vec4<f32>(amb_n, 0.0)).xyz); }
+    if (amb_obj && !amb_tyre && dot(obj.dents[1], obj.dents[1]) > 0.0 && dot(in.color1.rgb, vec3<f32>(1.0)) > 0.001) { o.normal = normalize((obj.model * vec4<f32>(amb_n, 0.0)).xyz); }
     o.bflip = clamp(round(2.0 * (length(in.normal) - 1.0)) * 0.5, 0.0, 1.0);
     o.uv0 = in.uv0;
     o.uv1 = in.uv1;
@@ -2380,6 +2382,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // (the sun's highlight on car paint goes by the paint type's specular intensity)
     var spec_k = 1.0;
     var alpha = 1.0;
+    // (a traffic mesh of the blended bucket keeps its alpha to the end - PSAmbientBumpSpec below)
+    var amb_keep_a = false;
     var emissive = vec3<f32>(0.0);
     // paint scraped off (damage): no clear coat there - the damage map's bare metal mask (PS_CarPaint's
     // m); its rubbed paint
@@ -3602,6 +3606,132 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             ltp = ltp + ownp - clamp(ltp * ownp, vec3<f32>(0.0), vec3<f32>(1.0));
             ltp = ltp + ownp - clamp(ltp * ownp, vec3<f32>(0.0), vec3<f32>(1.0));
             lit = pow(max(car_raw(albedo.rgb), vec3<f32>(0.000001)), vec3<f32>(1.6)) * ltp;
+            base = vec3<f32>(0.0);
+            emissive = vec3<f32>(0.0);
+            spec_k = 0.0;
+        } else if (mat.mode == 9u && abs(in.color.a * 255.0 - 128.0) < 0.5 && in.uv2.y < -0.5 && obj.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 772.5 && g.params.w < 773.5)) {
+            // Traffic and parked cars' tyres: PSAmbientTire of cars/0xed26c1fb (work/traffic-detail/fix/ps_tire.txt, read
+            // line by line; VSAmbientTire vs_tire.txt):
+            //   N'    = normalize(T x m.x + B x m.y + N x m.z), m = 2 x normal map - 1, B = cross(T, N) x w
+            //   each light i: d_i = colour x sat(N'.L) x sat(4 N'.L) x range x DiffuseIntensity x occ
+            //                 s_i = colour x sat(N'.H)^p x sat(4 N'.L) x range x SpecularIntensity x (0.15 a^5 + 0.05) x occ
+            //                 H = normalize(V + L), p = SpecularExponentLow + (High - Low) x a, a = the texture's alpha
+            //   out   = screen(texture x screen(d_0, d_1, d_2, ambYPos x AmbientIntensity x occ), screen(s_0, s_1, s_2))
+            // No collector at all. Both maps at their top level: the program sets its gradients to (tireMotionBlur, 0),
+            // recorded 0. The texture as stored. The lights as the other car programs take them (the hour's light, the
+            // second key, the city lamp; the program's third, c18 / c41, is 0 in the recorded frames). (MCLA_DEBUG_VIEW
+            // 773: as before)
+            let pa_t = u32(round(-in.uv2.y - 1.0));
+            let pb_t = u32(round(-in.uv1.x - 1.0));
+            let pc_t = u32(round(-in.uv1.y - 1.0));
+            let ai_t = f32(pa_t & 4095u) / 1023.75;
+            let di_t = f32((pa_t >> 12u) & 4095u) / 1023.75;
+            let lo_t = f32(pb_t & 4095u) / 63.984375;
+            let hi_t = f32((pb_t >> 12u) & 4095u) / 63.984375;
+            let si_t = f32(pc_t & 4095u) / 1023.75;
+            let dt_t = textureSampleLevel(t_diffuse, s_diffuse, in.uv0, 0.0);
+            let col_t = car_raw(dt_t.rgb);
+            let m_t = car_raw(textureSampleLevel(t_second, s_diffuse, in.uv0, 0.0).rgb) * 2.0 - vec3<f32>(1.0);
+            let nn_t = normalize(in.normal);
+            let tt_t = normalize((obj.model * vec4<f32>(in.color1.rgb * 2.0 - vec3<f32>(1.0), 0.0)).xyz);
+            let bb_t = cross(tt_t, nn_t) * (1.0 - 2.0 * in.bflip);
+            let np_t = normalize(tt_t * m_t.x + bb_t * m_t.y + nn_t * m_t.z);
+            let occ_t = in.color1.a;
+            let att_t = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
+            let p_t = lo_t + (hi_t - lo_t) * dt_t.a;
+            let a5_t = dt_t.a * dt_t.a * dt_t.a * dt_t.a * dt_t.a;
+            let ks_t = (0.15 * a5_t + 0.05) * si_t * att_t * occ_t;
+            var ld_t = vec3<f32>(0.0);
+            var ls_t = vec3<f32>(0.0);
+            for (var li = 0; li < 3; li = li + 1) {
+                var ldir = g.sun_dir.xyz;
+                var lcol = g.sun_color.rgb * g.sun_dir.w;
+                if (li == 1) { ldir = car_kd(); lcol = car_kc(); }
+                if (li == 2) { ldir = g.car_key.xyz; lcol = g.car_key_col.rgb; }
+                let nl = clamp(dot(np_t, ldir), 0.0, 1.0);
+                let dl = lcol * (nl * clamp(4.0 * nl, 0.0, 1.0) * att_t * di_t * occ_t);
+                let nh = clamp(dot(np_t, normalize(v + ldir)), 0.0, 1.0);
+                let sl = lcol * (pow(max(nh, 1e-20), p_t) * clamp(4.0 * nl, 0.0, 1.0) * ks_t);
+                ld_t = ld_t + dl - clamp(ld_t * dl, vec3<f32>(0.0), vec3<f32>(1.0));
+                ls_t = ls_t + sl - clamp(ls_t * sl, vec3<f32>(0.0), vec3<f32>(1.0));
+            }
+            let am_t = hemi * (ai_t * occ_t);
+            ld_t = ld_t + am_t - clamp(ld_t * am_t, vec3<f32>(0.0), vec3<f32>(1.0));
+            let df_t = col_t * ld_t;
+            lit = env_finite(df_t + ls_t - clamp(df_t * ls_t, vec3<f32>(0.0), vec3<f32>(1.0)));
+            base = vec3<f32>(0.0);
+            emissive = vec3<f32>(0.0);
+            spec_k = 0.0;
+        } else if (mat.mode == 9u && in.uv2.y < -0.5 && obj.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 770.5 && g.params.w < 771.5)) {
+            // Traffic and parked cars' bumpers, trim, decals, plate, rims: PSAmbientBumpSpec of cars/0x2a82f172
+            // (work/traffic-detail/fix/ps_bs.txt, read line by line; VSAmbientBumpSpec vs_bs.txt):
+            //   A     = baseColor x texture^1.6                          (the texture as stored)
+            //   L0    = light 0 x sat(n.l) x sat(4 n.l) x range x occ x s, s = sat((collector - 0.25) x 4 / 3)
+            //   L1    = light 1 x sat(n.l) x sat(4 n.l) x range x occ    (no collector)
+            //   light = screen(screen(screen(screen(L0, L1), ambYPos x ambientMod x occ), own), own)
+            //   lit   = screen(A x light, occ x SpecularColor x soft^SpecMapExp)
+            //   refl  = 0.5 x sharp x lerp(1, A, metallic x (1 - (1 - sat(n.v))^5)) x occ
+            //   out   = lerp(lit, refl, sm^5 + (1 - |n.v|)^5 (sm - sm^5)),   alpha = texture alpha x gLightAmbient.w
+            // sharp / soft = the two environment maps along V - 2 (n.v) N; occ = the vertex's occlusion byte. No own-lamp
+            // term on traffic (siColor0..2 unset, car_own_lamps). Which light is light 0 and takes the collector: as the
+            // ambient paint has it (`amb6`). The material's terms ride in the vertices (vehicles.rs prep_car).
+            // (MCLA_DEBUG_VIEW 771: traffic through the generic object branch, as before)
+            let pa = u32(round(-in.uv2.x - 1.0));
+            let pb = u32(round(-in.uv2.y - 1.0));
+            let pc = u32(round(-in.uv1.x - 1.0));
+            let pd = u32(round(-in.uv1.y - 1.0));
+            let sm_a = f32(pa & 255u) / 255.0;
+            let met_a = f32((pa >> 8u) & 255u) / 255.0;
+            let bc_a = vec3<f32>(f32(pb & 4095u), f32((pb >> 12u) & 4095u), f32(pc & 4095u)) / 4095.0;
+            let k_a = f32((pc >> 12u) & 4095u) / 4095.0;
+            let e_a = f32(pd & 4095u) / 4095.0 * 4.0;
+            let am_a = f32((pd >> 12u) & 4095u) / 4095.0 * 4.0;
+            let occ_a = in.color1.a;
+            let col_a = bc_a * pow(max(car_raw(albedo.rgb), vec3<f32>(0.000001)), vec3<f32>(1.6));
+            var fc_a = 127.0 / 255.0;
+            if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
+                fc_a = car_collector(in.wpos);
+            } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
+                fc_a = 1.0;
+            }
+            let sh_a = clamp((fc_a * FC_LIT - 0.25) * 1.33333, 0.0, 1.0);
+            let nls_a = clamp(dot(n, g.sun_dir.xyz), 0.0, 1.0);
+            let nlk_a = clamp(dot(n, car_kd()), 0.0, 1.0);
+            let nlc_a = clamp(dot(n, g.car_key.xyz), 0.0, 1.0);
+            let att_a = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
+            let lh_a = (g.sun_color.rgb * (g.sun_dir.w * nls_a * clamp(4.0 * nls_a, 0.0, 1.0)) + car_kc() * (nlk_a * clamp(4.0 * nlk_a, 0.0, 1.0))) * (occ_a * att_a);
+            let ll_a = g.car_key_col.rgb * (nlc_a * clamp(4.0 * nlc_a, 0.0, 1.0) * occ_a * att_a);
+            let first_a = g.car_key_col.w > 0.5;
+            let l0_a = select(lh_a, ll_a, first_a) * sh_a;
+            let l1_a = select(ll_a, lh_a, first_a);
+            var lt_a = l0_a + l1_a - clamp(l0_a * l1_a, vec3<f32>(0.0), vec3<f32>(1.0));
+            let amb_a = hemi * (am_a * occ_a);
+            lt_a = lt_a + amb_a - clamp(lt_a * amb_a, vec3<f32>(0.0), vec3<f32>(1.0));
+            let dif_a = col_a * lt_a;
+            let sp_a = pow(max(env_soft(r), vec3<f32>(0.000001)), vec3<f32>(e_a)) * (k_a * occ_a);
+            let lit_a = dif_a + sp_a - clamp(dif_a * sp_a, vec3<f32>(0.0), vec3<f32>(1.0));
+            let nv_a = dot(n, v);
+            let f5m_a = pow(1.0 - clamp(nv_a, 0.0, 1.0), 5.0);
+            let f5k_a = pow(clamp(1.0 - abs(nv_a), 0.0, 1.0), 5.0);
+            let s5_a = sm_a * sm_a * sm_a * sm_a * sm_a;
+            let w_a = s5_a + (sm_a - s5_a) * f5k_a;
+            let mir_a = env * 0.5 * (vec3<f32>(1.0) + (col_a - vec3<f32>(1.0)) * (met_a * (1.0 - f5m_a))) * occ_a;
+            lit = env_finite(mix(lit_a, mir_a, w_a));
+            // (a mesh of the blended bucket - colour alpha 255: the texture's alpha x gLightAmbient.w (1 in every
+            // recorded frame), the alpha test GREATER 0 of its draw)
+            if (in.color.a > 0.5) {
+                if (albedo.a <= 0.0) { discard; }
+                alpha = albedo.a;
+                amb_keep_a = true;
+            }
+            base = vec3<f32>(0.0);
+            emissive = vec3<f32>(0.0);
+            spec_k = 0.0;
+        } else if (mat.mode == 10u && obj.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 771.5 && g.params.w < 772.5)) {
+            // Traffic and parked cars' grilles and black parts: PSAmbientBlackMatte of cars/0x9202d72d is one
+            // instruction, o0.w = gLightAmbient.w - the export's x, y, z are in neither write mask: black.
+            // (MCLA_DEBUG_VIEW 772: as before, the rubber branch)
+            lit = vec3<f32>(0.0);
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
             spec_k = 0.0;
@@ -4846,6 +4976,6 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     if (!(g.params.w > 310.5 && g.params.w < 311.5)) { lit = min(lit, vec3<f32>(1.9921875)); }
     // (754, water work: no fog at all - beside an override of the original's fog pass, alpha 0)
     let col = mix(lit, fog_rgb, select(clamp(fg * g.fog_color.a, 0.0, 1.0), 0.0, g.params.w > 753.5 && g.params.w < 754.5));
-    if (mat.mode != 2u && mat.mode != 12u && mat.mode != 22u) { alpha = 1.0; }
+    if (mat.mode != 2u && mat.mode != 12u && mat.mode != 22u && !amb_keep_a) { alpha = 1.0; }
     return vec4<f32>(tonemap(col), alpha);
 }

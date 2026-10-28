@@ -26,9 +26,9 @@ impl ShaderGroup {
             for i in 0..count.min(512) {
                 if let Some(so) = rd.ptr(arr + i * 4) {
                     // one unreadable shader must not cost the whole group
-                    g.shaders.push(Shader::parse(rd, so).unwrap_or(Shader { name: String::new(), name_hash: 0, source_path: String::new(), params: vec![] }));
+                    g.shaders.push(Shader::parse(rd, so).unwrap_or(Shader { name: String::new(), name_hash: 0, source_path: String::new(), params: vec![], bucket: 0 }));
                 } else {
-                    g.shaders.push(Shader { name: String::new(), name_hash: 0, source_path: String::new(), params: vec![] });
+                    g.shaders.push(Shader { name: String::new(), name_hash: 0, source_path: String::new(), params: vec![], bucket: 0 });
                 }
             }
         }

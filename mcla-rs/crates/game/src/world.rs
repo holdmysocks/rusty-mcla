@@ -192,6 +192,8 @@ pub struct GpuBatch {
     pub mode: MatMode,
     pub min: Vec3,
     pub max: Vec3,
+    /// the shader's draw bucket (`Shader::bucket`; only traffic cars' batches carry 1 - vehicles.rs `Vehicles::draw`)
+    pub bucket: u8,
 }
 
 /// One material range inside a sector's shared vertex / index buffers.

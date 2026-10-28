@@ -147,7 +147,7 @@ pub fn parse_props(res: &Resource) -> Vec<Prop> {
                 for i in 0..count.min(64) {
                     match rd.ptr(arr + i * 4).and_then(|so| Shader::parse(&rd, so).ok()) {
                         Some(s) => shaders.push(s),
-                        None => shaders.push(Shader { name: String::new(), name_hash: 0, source_path: String::new(), params: vec![] }),
+                        None => shaders.push(Shader { name: String::new(), name_hash: 0, source_path: String::new(), params: vec![], bucket: 0 }),
                     }
                 }
             }

@@ -21,6 +21,9 @@ pub struct Shader {
     pub source_path: String,
     /// (parameter name hash, value)
     pub params: Vec<(u32, ShaderParam)>,
+    /// header byte +0x09: the draw bucket - grmModel's draw (F-73936) draws a geometry only in the pass whose bucket
+    /// equals its shader's: 0 opaque, 1 the blended pass after the opaques, 2 LOD only (the cars, F-73627)
+    pub bucket: u8,
 }
 
 impl Shader {
@@ -30,6 +33,7 @@ impl Shader {
         let types_ptr = rd.ptr(off + 0x1c);
         let hashes_ptr = rd.ptr(off + 0x24);
         let name_hash = rd.u32(off + 0x20);
+        let bucket = rd.u8(off + 0x09);
         let name = rd.cstr_ptr(off + 0x30).unwrap_or_default();
         let source_path = rd.cstr_ptr(off + 0x38).unwrap_or_default();
         let mut params = Vec::with_capacity(count);
@@ -60,7 +64,7 @@ impl Shader {
                 params.push((h, value));
             }
         }
-        Ok(Shader { name, name_hash, source_path, params })
+        Ok(Shader { name, name_hash, source_path, params, bucket })
     }
 
     /// First texture parameter name, usually the diffuse map.
