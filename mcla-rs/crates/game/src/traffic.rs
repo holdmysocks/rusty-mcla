@@ -3923,6 +3923,31 @@ impl Vehicles {
             self.spawner = Some(Spawner::new(nav, &world.assets.root));
         }
         let mut sp = self.spawner.take().unwrap();
+        // (test hook MCLA_TRAFFIC_PLACE=<type>,x,y,z,heading[,steer]: one parked car of that type as a
+        // script's layout item - AddAmbientToLayout, no visibility test - heading in degrees as a parking
+        // spot's (z row (sin h, 0, cos h), the car facing -z), its front wheels turned `steer` radians when
+        // given; for side-by-side shots with a recording of the original)
+        if let Ok(v) = std::env::var("MCLA_TRAFFIC_PLACE") {
+            static PLACED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let f: Vec<&str> = v.split(',').collect();
+            let num = |i: usize| f.get(i).and_then(|x| x.trim().parse::<f32>().ok());
+            if let (Some(name), Some(x), Some(y), Some(z), Some(h)) = (f.first(), num(1), num(2), num(3), num(4)) {
+                let held = PLACED.load(std::sync::atomic::Ordering::Relaxed);
+                if held == 0 {
+                    if let Some(item) = self.add_layout_item(name.trim(), Vec3::new(x, y, z), h.to_radians(), None) {
+                        PLACED.store(item + 1, std::sync::atomic::Ordering::Relaxed);
+                        log::info!("MCLA_TRAFFIC_PLACE: layout item {item} {name} at ({x}, {y}, {z}) heading {h}");
+                    }
+                } else if let Some(steer) = num(5) {
+                    for c in self.cars.iter_mut().filter(|c| c.item == Some(held - 1)) {
+                        c.park_steer = steer;
+                        for wh in c.state.wheels.iter_mut().take(2) {
+                            wh.steer = steer;
+                        }
+                    }
+                }
+            }
+        }
         // trailers whose cab is gone
         self.cars.retain(|c| c.rail.as_ref().map_or(true, |r| r.state != 0 || r.partner.is_some()));
         // cars on their way out (car +500 bit 0x4, sub_826E9AD0): the fade +484 falls by 2 a second

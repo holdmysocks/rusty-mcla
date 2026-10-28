@@ -672,6 +672,21 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     // (the collision hull: any of the car's own fragment files carries it; a "_dub" edition's
     // may be its parent's)
     let hull = r83.iter().chain(parent_r83.iter()).find_map(|p| load_resource_file(p).ok().and_then(|res| mcla_formats::rage::bound::find_hull(&res)));
+    // (a car's two texture dictionaries `<car>.xtp` and `<car>.xtl` hold the same textures, the
+    // .xtl's at half size: the player car's getter F-70899 takes the .xtp when it is loaded, and the
+    // traffic type loader F-39685 asks for the .xtp only - so it goes first, and a traffic car
+    // never reads the .xtl)
+    let tp = format!("{:#010x}.r83", mcla_formats::hash::joaat(&format!("{name}.xtp")));
+    let tl = format!("{:#010x}.r83", mcla_formats::hash::joaat(&format!("{name}.xtl")));
+    let file_is = |p: &PathBuf, f: &str| p.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case(f));
+    if name.starts_with("va_") && r83.iter().any(|p| file_is(p, &tp)) {
+        r83.retain(|p| !file_is(p, &tl));
+    }
+    r83.sort_by_key(|p| !file_is(p, &tp));
+    if let Some(parent_name) = name.strip_suffix("_dub") {
+        let ptp = format!("{:#010x}.r83", mcla_formats::hash::joaat(&format!("{parent_name}.xtp")));
+        parent_r83.sort_by_key(|p| !file_is(p, &ptp));
+    }
     // main: the r83 whose shader group has the most named shaders
     let mut shaders = Vec::new();
     let mut textures: HashMap<u32, Texture> = HashMap::new();
@@ -1322,4 +1337,39 @@ pub fn load_simple(path: &Path, shared_textures: Option<&Dictionary>) -> Result<
         }
     }
     Ok(SimpleModel { shaders: d.shader_group.shaders, textures, meshes, min: mn, max: mx })
+}
+
+#[cfg(test)]
+mod tests {
+    /// every car, traffic or not, takes its textures from its `<car>.xtp` (F-39685 / F-70899);
+    /// a traffic car holds no texture besides the .xtp's
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn textures_from_the_xtp() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let mut checked = 0;
+        for e in std::fs::read_dir(&root).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let tp = e.path().join(format!("{:#010x}.r83", mcla_formats::hash::joaat(&format!("{name}.xtp"))));
+            if !tp.is_file() || name.ends_with("_dub") {
+                continue;
+            }
+            let res = super::load_resource_file(&tp).unwrap();
+            let d = super::Drawable::parse(&res).unwrap();
+            let rd = super::Rd::new(&res);
+            let car = super::load_car(&assets, &e.path()).unwrap();
+            for (h, o) in &d.texture_offsets {
+                let want = super::Texture::parse(&rd, *o).unwrap();
+                let got = car.textures.get(h).unwrap_or_else(|| panic!("{name}: {h:#010x} missing"));
+                assert_eq!((got.width, got.height), (want.width, want.height), "{name}: {h:#010x}");
+            }
+            if name.starts_with("va_") {
+                assert_eq!(car.textures.len(), d.texture_offsets.len(), "{name}");
+            }
+            checked += 1;
+        }
+        assert!(checked > 100, "{checked}");
+    }
 }
