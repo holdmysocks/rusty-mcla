@@ -414,10 +414,13 @@ impl GoalPlan {
     }
 
     /// BrainRacing_AppendGoal (F-84673): a goal of its own - checkpoint bit set, gate clear, the
-    /// checkpoint field its index, lap 0; +16 and +28 not written (taken as the point itself and -1).
+    /// checkpoint field its index, lap 0; +16 .. +28 not written: they hold the allocator's fill 0xCDCDCDCD
+    /// (F-97118), read from the running original's cop brains (docs/reference/hookmen/cop_brain_recording.md) -
+    /// the middle goal speed +28 is -431602080.0, below 0: no limit. (+16, the second point, is used only by a
+    /// gate, which this goal is not: taken as the point itself.)
     pub fn append(&mut self, pos: Vec3, radius: f32) {
         let k = self.goals.len() as u32;
-        self.goals.push(Goal { pos, w: radius, p1: pos, speed: -1.0, flags: 2 | (k << 6 & 0x1FC0) });
+        self.goals.push(Goal { pos, w: radius, p1: pos, speed: f32::from_bits(0xCDCD_CDCD), flags: 2 | (k << 6 & 0x1FC0) });
     }
 }
 
@@ -619,7 +622,7 @@ impl Brain {
 
     /// The police brain's goal plan (F-67303): BrainRacing Reset (F-68035; the goal count 0), AppendGoal (F-84673)
     /// for each goal with a 5 m radius, SetFinalSpeed (+208) and SetFinalHeading (the zero vector). The middle
-    /// goal's speed (+28, never written for these goals) is taken as none (-1; open).
+    /// goal's speed (+28) is never written: the allocator's fill, below 0 (`GoalPlan::append`).
     pub fn set_goals(&mut self, goals: &[Vec3], final_speed: f32) {
         self.plan.goals.clear();
         self.replan(0);
@@ -628,6 +631,19 @@ impl Brain {
         }
         self.final_speed = final_speed;
         self.final_heading = Vec3::ZERO;
+    }
+
+    /// The search route (F-55529: GoToPosition F-19329 for the first point, AppendGoal F-13831 for the others): the
+    /// goals with a 5 m radius each, the final speed and the final heading (normalised; (1, 0, 0) when its
+    /// length^2 is 1e-5 or less - the search passes none).
+    pub fn set_route(&mut self, goals: &[Vec3], final_speed: f32, heading: Vec3) {
+        self.set_goals(goals, final_speed);
+        self.final_heading = if heading.length_squared() <= 1e-5 { Vec3::X } else { heading.normalize() };
+    }
+
+    /// The index of the goal the car heads for (F-68139) and that goal's place.
+    pub fn heading_for(&self) -> (usize, Option<Vec3>) {
+        (self.cur, self.goal_at(self.cur).map(|g| g.pos))
     }
 
     /// The goals the brain has (none: plan at once, F-67303's empty-route case).

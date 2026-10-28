@@ -5978,7 +5978,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 let heat_before = self.police.heat;
-                let (score_before, search_before) = (self.police.score, self.police.search);
+                let score_before = self.police.score;
                 if self.police.enabled {
                     self.police.update_units(&gpu, &world, &mut self.vehicles);
                 }
@@ -6029,10 +6029,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         None => {}
                     }
-                    if heat_before == police::Heat::Pursuit && self.police.heat == police::Heat::Search {
-                        self.radio.say("REPORT_SUSPECT_LOST", true, &rctx);
-                    } else if heat_before == police::Heat::Search && self.police.heat == police::Heat::Pursuit {
-                        self.radio.say(if search_before < 17.5 { "REPORT_SUSPECT_SPOTTED" } else { "REPORT_SUSPECT_REACQUIRE" }, true, &rctx);
+                    // (the search's lines, F-40917: LOST when its clock starts, SPOTTED / REACQUIRE on a sighting after 2 s)
+                    if let Some(cue) = self.police.radio_cue.take() {
+                        if cue == "REPORT_SUSPECT_LOST" {
+                            self.radio.stop();
+                        }
+                        self.radio.say(cue, true, &rctx);
                     }
                     // a cruiser wrecked or destroyed: REPORT_COP_CAR_DISABLED once (per car)
                     for (i, c) in self.vehicles.cars.iter().enumerate() {

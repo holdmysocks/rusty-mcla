@@ -10,6 +10,7 @@ use crate::vehicles::Vehicles;
 use crate::world::World;
 use glam::Vec3;
 use hashbrown::HashMap;
+use mcla_formats::rage::navsys::{NavNode, NavSys};
 use std::path::Path;
 
 pub const COP_CAR: &str = "vp_chv_police_96";
@@ -150,6 +151,156 @@ struct CopTac {
     head_on: bool,
 }
 
+/// The searching cop's brain state 7, STATE_SEARCH (enter F-57507, tick F-15801; docs/reference/hookmen/search_and_connections.md 2):
+/// up to 10 points with the road or junction each lies on, driven by the racers' brain.
+#[derive(Clone, Debug, Default)]
+struct CopSearch {
+    uid: u32,
+    pts: Vec<(Vec3, Option<NavNode>)>,
+    /// +340: the route is set
+    routed: bool,
+    /// +604: the cop has passed where the target was last seen (heads for point 1), has been near a goal over
+    /// 5 s, or reached a one-point route; the search clock runs from then
+    started: bool,
+    /// +605: the list came out empty
+    no_goals: bool,
+    /// +580: seconds within 8 m of the goal it heads for (F-74140)
+    near_t: f32,
+    /// the state's time
+    t: f32,
+    /// +736 search from the cop's own place and turn at random at every junction; +740 the turn at the first
+    /// junction (radians) - the pursuit's lone searcher: neither (F-72765)
+    random: bool,
+    angle: f32,
+}
+
+/// The search's points (F-52110): from `start` along the target's last known velocity `v` (at least 22.35 m/s)
+/// x fMinSetGoalTime `per` until a point lies on a road or junction (within 3 m), then along the connection list
+/// to the neighbour best in line with that direction, each next point the middle of the node's lane; 10 at most.
+fn search_points(nav: &NavSys, world: &World, start: Vec3, v: Vec3, per: f32, first: bool, random: bool, angle: f32, rnd: &mut dyn FnMut() -> f32) -> Vec<(Vec3, Option<NavNode>)> {
+    let mesh = crate::offroad::mesh();
+    // F-58319: over the mesh, or F-45363's polygon within 10 m - which moves the point to its centre
+    let nav_ok = |p: Vec3| -> Option<Vec3> {
+        match mesh {
+            None => Some(p),
+            Some(m) if m.on_mesh(p) => Some(p),
+            Some(m) => m.teleport_target(p),
+        }
+    };
+    let probe = |p: Vec3, h: f32| -> Option<Vec3> { world.collider.raycast(p + Vec3::Y * h, -Vec3::Y, 2.0 * h).map(|hit| hit.point) };
+    let v = if v.length_squared() < 499.523 { (if v.length_squared() <= 1e-5 { Vec3::X } else { v.normalize() }) * 22.35 } else { v };
+    let s = v * per;
+    let mut pts: Vec<(Vec3, Option<NavNode>)> = Vec::new();
+    let mut p = start;
+    let mut node = None;
+    // phase 1: dead reckoning along S
+    for _ in 0..10 {
+        let mut ok = nav_ok(p);
+        if ok.is_none() {
+            if let Some(h) = probe(p, 15.0) {
+                p = h;
+                ok = nav_ok(p);
+            }
+        }
+        if let Some(q) = ok {
+            p = q;
+        }
+        if let Some(&(last, _)) = pts.last() {
+            let mut k = 0;
+            while k < 20 {
+                if ok.is_some() && (p - last).length_squared() >= 1.0 {
+                    break;
+                }
+                p += s;
+                ok = nav_ok(p);
+                if let Some(q) = ok {
+                    p = q;
+                }
+                k += 1;
+            }
+            if k == 20 {
+                if let Some(h) = crate::vehicles::traffic::snap_to_lane(nav, p, 50.0).0 {
+                    p = h.point;
+                    ok = nav_ok(p);
+                    if let Some(q) = ok {
+                        p = q;
+                    }
+                }
+            }
+        }
+        if ok.is_some() {
+            node = nav.node_within(p, 3.0, false).or_else(|| nav.node_within(p, 3.0, true));
+            pts.push((p, node));
+        }
+        p += s;
+        if node.is_some() {
+            break;
+        }
+    }
+    // phase 2: the connection list
+    if !pts.is_empty() && pts.len() < 10 && pts.last().is_some_and(|q| q.1.is_some()) {
+        let mut dir = glam::Vec2::new(s.x, s.z);
+        dir = if dir.length_squared() < 1e-12 { glam::Vec2::ZERO } else { dir.normalize() };
+        let mut turn = first || random;
+        loop {
+            let Some(r) = pts.last().and_then(|q| q.1) else { break };
+            let rc = nav.node_rect(r).c;
+            let mut best = -999.0f32;
+            let mut n = None;
+            for &x in nav.next_of(r) {
+                if pts.iter().any(|q| q.1 == Some(x)) {
+                    continue;
+                }
+                let xc = nav.node_rect(x).c;
+                let d = glam::Vec2::new(xc[0] - rc[0], xc[1] - rc[1]);
+                if d == glam::Vec2::ZERO {
+                    continue;
+                }
+                let sc = d.normalize().dot(dir);
+                if sc > best {
+                    best = sc;
+                    n = Some(x);
+                }
+            }
+            let Some(n) = n else { break };
+            if matches!(n, NavNode::Junction(_)) {
+                if turn {
+                    let (sn, cs) = angle.sin_cos();
+                    let t = glam::Vec2::new(dir.x * cs + dir.y * sn, dir.y * cs - dir.x * sn);
+                    dir = if t.length_squared() < 1e-12 { glam::Vec2::ZERO } else { t.normalize() };
+                }
+                turn = random && rnd() < 0.5;
+            }
+            // (F-59248: the node's lane at its middle; F-90092 on a road, else F-53622 / nav_ok - approx.: F-53622's
+            // filtered move is taken as nav_ok's)
+            let Some(lane) = nav.node_rect(n).lane else { break };
+            let Some(q) = nav.curves.get(lane).map(|c| c.eval(0.5).0) else { break };
+            let q = if mesh.map_or(true, |m| m.on_road(q)) { Some(q) } else { nav_ok(q) };
+            let Some(q) = q else { break };
+            pts.push((q, Some(n)));
+            if pts.len() >= 10 {
+                break;
+            }
+        }
+    }
+    pts
+}
+
+/// F-94676: the cop sees the target - within `r` (3D), within `half` degrees of its forward when `half` > 0, and a
+/// clear line from 2 m above the target to 2 m above the cop (F-69576).
+fn cop_sees(world: &World, cop: &crate::vehicles::CarInstance, tpos: Vec3, r: f32, half: f32) -> bool {
+    let to = tpos - cop.state.pos;
+    if r > 0.0 && to.length_squared() > r * r {
+        return false;
+    }
+    if half > 0.0 && cop.state.forward().angle_between(to) >= half.to_radians() {
+        return false;
+    }
+    let (a, b) = (tpos + Vec3::Y * 2.0, cop.state.pos + Vec3::Y * 2.0);
+    let d = a.distance(b);
+    d < 1e-4 || world.collider.raycast(a, (b - a) / d, d).is_none()
+}
+
 /// The race's cop zone (PoliceManager +188 zone, +192 lap, +196 state, +212 timer).
 #[derive(Clone, Debug)]
 pub struct CopZone {
@@ -200,7 +351,24 @@ pub struct Police {
     pub ticket_for: u32,
     lost: f32,
     seen_time: f32,
+    /// the search clock (the Search state's +16, F-40917): runs only once the searcher has started
     pub search: f32,
+    /// the tactic's cop 0 (+76[0], the request cop - the port: the pursuer nearest the target when the pursuit
+    /// begins): its brain tells the tactic it lost the target, and in a pursuit only it searches (F-72765)
+    lead: Option<u32>,
+    /// +136: while above 0 the brains' lost flag +773 is off (F-79519; F-63286 counts it down and sets the flag
+    /// again); the tactic's begin (F-82656) sets fTrackTgtTime - the manager's track byte is 1 by default (F-39756)
+    track_t: f32,
+    /// the lead's brain: unseen time +596, the time in the search cone +600, the last known velocity +624
+    unseen: f32,
+    cone_t: f32,
+    last_known_v: Vec3,
+    /// the searcher's brain state 7
+    srch: Option<CopSearch>,
+    prev_heat: Heat,
+    /// a line for the police radio from the search (F-40917): REPORT_SUSPECT_LOST when the clock starts, _SPOTTED or
+    /// _REACQUIRE when it ends with a sighting after 2 s
+    pub radio_cue: Option<&'static str>,
     arrest: f32,
     busted_timer: f32,
     /// the cops' arrest is over (its hold run out): a race running ends back in the cruise (F-22530)
@@ -300,6 +468,14 @@ impl Police {
             search: 0.0,
             arrest: 0.0,
             busted_timer: 0.0,
+            lead: None,
+            track_t: 0.0,
+            unseen: 0.0,
+            cone_t: 0.0,
+            last_known_v: Vec3::ZERO,
+            srch: None,
+            prev_heat: Heat::None,
+            radio_cue: None,
             arrest_over: false,
             zone: None,
             zone_go: false,
@@ -770,6 +946,27 @@ impl Police {
         let Some(p) = vehicles.player() else { return None };
         let ppos = p.state.pos;
         let pvel = p.state.vel;
+        // (a pursuit begins, F-82656: +136 = fTrackTgtTime; its cop 0 - the port: the pursuer nearest the target)
+        let prev_heat = std::mem::replace(&mut self.prev_heat, self.heat);
+        if self.heat == Heat::Pursuit && !matches!(prev_heat, Heat::Pursuit | Heat::Search | Heat::Busted) {
+            self.track_t = self.tun.get("fTrackTgtTime", 25.0);
+            self.unseen = 0.0;
+            self.cone_t = 0.0;
+            self.lead = None;
+            self.srch = None;
+            self.last_known_v = pvel;
+        }
+        if matches!(self.heat, Heat::Pursuit | Heat::Search) && !self.lead.is_some_and(|u| vehicles.cars.iter().any(|c| c.uid == u && pursuer(c))) {
+            self.lead = vehicles.cars.iter().filter(|c| pursuer(c)).min_by(|a, b| a.state.pos.distance_squared(ppos).total_cmp(&b.state.pos.distance_squared(ppos))).map(|c| c.uid);
+        }
+        // (F-63286: +136 runs down; at 0 the brains' lost flag +773 is set again)
+        if self.track_t > 0.0 {
+            self.track_t -= dt;
+            if self.track_t <= 0.0 {
+                self.track_t = 0.0;
+            }
+        }
+        let track_flag = self.track_t <= 0.0;
         let pfwd = p.state.forward();
         let pright = p.state.right();
         let speed = pvel.length();
@@ -1093,16 +1290,37 @@ impl Police {
             }
             Heat::Pursuit => {
                 self.fine = self.law_fines();
-                if seen {
-                    self.lost = 0.0;
+                // (the lead's brain, F-54688 outside the search: seen within fVisionDist with a clear line - unseen 0
+                // and the last known place / velocity the target's; unseen with the lost flag +773: unseen time,
+                // the last known kept once it passes fLostTgtThresholdTime; else the last known follows the target)
+                let lead_sees = self.lead.and_then(|u| vehicles.cars.iter().find(|c| c.uid == u)).is_some_and(|c| cop_sees(world, c, ppos, vision, 0.0));
+                let thr = t("fLostTgtThresholdTime", 1.5);
+                if lead_sees {
+                    self.unseen = 0.0;
+                } else if track_flag {
+                    self.unseen += dt;
+                    if self.unseen > thr {
+                        self.cone_t = 0.0;
+                    }
+                }
+                if lead_sees || !(track_flag && self.unseen > thr) {
                     self.last_known = ppos;
-                } else {
-                    self.lost += dt;
-                    if self.lost > t("fLostTgtThresholdTime", 1.5) {
-                        self.heat = Heat::Search;
-                        self.search = 0.0;
-                        self.seen_time = 0.0;
-                        self.radio = t("fMinPerRdoTime", 15.0);
+                    self.last_known_v = pvel;
+                }
+                self.lost = self.unseen;
+                // (F-68032: into Search when the lead's +773 is set and its unseen time passes the threshold; the
+                // pursuit's searcher is its cop 0 alone, with no random turns and no turn angle, F-72765)
+                if track_flag && self.unseen > thr {
+                    self.heat = Heat::Search;
+                    self.search = 0.0;
+                    self.seen_time = 0.0;
+                    self.radio = t("fMinPerRdoTime", 15.0);
+                    self.srch = None;
+                    if let (Some(u), Some(nav)) = (self.lead, world.nav.as_ref()) {
+                        let mut rnd = || crate::brain::rng().float();
+                        let pts = search_points(nav, world, self.last_known, self.last_known_v, t("fMinSetGoalTime", 1.0), true, false, 0.0, &mut rnd);
+                        log::info!("police: cruiser {} search goals: {}", u, pts.len());
+                        self.srch = Some(CopSearch { uid: u, no_goals: pts.is_empty(), pts, ..Default::default() });
                     }
                 }
                 // (F-29906: within the pursuit's radius, fSafeDist (F-54202), + 1 m)
@@ -1121,29 +1339,66 @@ impl Police {
                 }
             }
             Heat::Search => {
-                self.search += dt;
-                // periodic radio reports: someone may have called in where the target is
-                self.radio -= dt;
-                if self.radio <= 0.0 {
-                    let (lo, hi) = (t("fMinPerRdoTime", 15.0), t("fMaxPerRdoTime", 30.0));
-                    self.radio = lo + (hi - lo) * self.rand();
-                    if self.rand() * 100.0 < t("iPerRdoTgtLocProbPrcnt", 70.0) {
-                        self.last_known = ppos;
+                // (the searcher's brain, F-54688 in state 7: unseen time grows; with no search goals only +576 = 2; a
+                // sighting within 15 m once started - fVisionDist before - finds it at once; else within
+                // fVisionDist and fSearchHalfAngle of its forward for over fReacquireTgtThresholdTime. The last
+                // known place and velocity stay.)
+                let thr = t("fLostTgtThresholdTime", 1.5);
+                let reacq = t("fReacquireTgtThresholdTime", 0.3);
+                let cop = self.srch.as_ref().and_then(|s| vehicles.cars.iter().find(|c| c.uid == s.uid));
+                let (started, no_goals) = self.srch.as_ref().map_or((false, true), |s| (s.started, s.no_goals));
+                self.unseen += dt;
+                if let Some(c) = cop.filter(|_| !no_goals) {
+                    if cop_sees(world, c, ppos, if started { 15.0 } else { vision }, 0.0) {
+                        self.cone_t = reacq;
+                        self.unseen = 0.0;
+                    } else if cop_sees(world, c, ppos, vision, t("fSearchHalfAngle", 45.0)) {
+                        self.cone_t += dt;
+                        if self.cone_t > reacq {
+                            self.unseen = 0.0;
+                        }
+                    } else {
+                        self.cone_t = 0.0;
                     }
                 }
-                if seen {
-                    self.seen_time += dt;
-                    if self.seen_time > t("fReacquireTgtThresholdTime", 0.3) {
+                self.lost = self.unseen;
+                // (the tactic's Search, F-40917: lost = +773 and unseen past the threshold; with no goals a sighting
+                // within fVisionDist counts)
+                let lost = track_flag && self.unseen > thr;
+                let found = !lost || (no_goals && cop.is_some_and(|c| cop_sees(world, c, ppos, vision, 0.0)));
+                if started && self.search == 0.0 && !self.goons {
+                    // (the clock's first tick: the radio stopped, REPORT_SUSPECT_LOST)
+                    self.radio_cue = Some("REPORT_SUSPECT_LOST");
+                }
+                if found {
+                    if self.search <= 0.0 {
                         self.heat = Heat::Pursuit;
-                        self.lost = 0.0;
+                    } else if self.search < 2.0 {
+                        // (F-79519 with 1 s: +773 off for a second; the clock goes on)
+                        self.track_t = 1.0;
+                        self.search += dt;
+                    } else {
+                        self.track_t = 20.0;
+                        if !self.goons {
+                            self.radio_cue = Some(if self.search / t("fSearchMaxTime", 35.0) < 0.5 { "REPORT_SUSPECT_SPOTTED" } else { "REPORT_SUSPECT_REACQUIRE" });
+                        }
+                        self.search = 0.0;
+                        self.heat = Heat::Pursuit;
+                    }
+                    if self.heat == Heat::Pursuit {
+                        self.unseen = 0.0;
+                        self.srch = None;
+                        self.tacs.clear();
                     }
                 } else {
-                    self.seen_time = 0.0;
-                }
-                if self.heat == Heat::Search && self.search > t("fSearchMaxTime", 35.0) {
-                    self.clear();
-                    self.grace = 5.0;
-                    event = Some(Event::Escaped);
+                    if started {
+                        self.search += dt;
+                    }
+                    if self.search > t("fSearchMaxTime", 35.0) {
+                        self.clear();
+                        self.grace = 5.0;
+                        event = Some(Event::Escaped);
+                    }
                 }
             }
             Heat::Busted => {
@@ -1166,10 +1421,13 @@ impl Police {
         // ---- cruisers ---------------------------------------------------------
         let chasing = matches!(self.heat, Heat::Pursuit | Heat::Search | Heat::PullOver | Heat::Busted);
         self.flee_hold = (self.flee_hold - dt).max(0.0);
-        if !matches!(self.heat, Heat::Pursuit | Heat::PullOver) {
+        if !matches!(self.heat, Heat::Pursuit | Heat::PullOver | Heat::Search) {
             self.tacs.clear();
         }
-        let tactic = matches!(self.heat, Heat::Pursuit | Heat::PullOver) && self.flee_hold <= 0.0;
+        // (in the Search the tactic's other cops keep the command they had: their states do not change)
+        let searching = self.heat == Heat::Search;
+        let tactic = matches!(self.heat, Heat::Pursuit | Heat::PullOver | Heat::Search) && self.flee_hold <= 0.0;
+        let searcher = self.srch.as_ref().map(|s| s.uid);
         let pull = self.heat == Heat::PullOver;
         let safe = t("fSafeDist", 30.0);
         let along = t("fAlongSideDist", 5.0);
@@ -1189,6 +1447,75 @@ impl Police {
                 // (the Delay state: brain command 1, halt, until its time is up)
                 ai.chase = Some((c.state.pos, Vec3::ZERO));
                 ai.ovr = Some(crate::ai::Overrides { brake: Some(1.0), throttle: Some(0.0), ..Default::default() });
+            } else if searching && searcher == Some(c.uid) {
+                // ---- the search (brain state 7: F-57507, F-15801, the route F-55529) ----
+                let Some(s) = self.srch.as_mut() else { continue };
+                if ai.brain.0.is_none() {
+                    if let Some(tu) = c.model.aitunes.as_ref() {
+                        let tune = std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&tu.base, &tu.mods, c.perf));
+                        ai.tune = Some(tune.clone());
+                        ai.brain.0 = Some(Box::new(crate::brain::Brain::police(tune)));
+                    }
+                }
+                ai.ovr = None;
+                s.t += dt;
+                let mesh = crate::offroad::mesh();
+                let nav_ok = |p: Vec3| -> Option<Vec3> {
+                    match mesh {
+                        None => Some(p),
+                        Some(m) if m.on_mesh(p) => Some(p),
+                        Some(m) => m.teleport_target(p),
+                    }
+                };
+                if !s.routed && !s.pts.is_empty() {
+                    // (GoToPosition F-19329: off the mesh a probe 3 m up and down and F-45363; then it must be over
+                    // the mesh. AppendGoal F-13831: a point not nav_ok is left out.)
+                    let mut p0 = s.pts[0].0;
+                    if !mesh.map_or(true, |m| m.on_mesh(p0)) && nav_ok(p0).is_none() {
+                        if let Some(h) = world.collider.raycast(p0 + Vec3::Y * 3.0, -Vec3::Y, 6.0) {
+                            p0 = nav_ok(h.point).unwrap_or(h.point);
+                        }
+                    } else if let Some(q) = nav_ok(p0) {
+                        p0 = q;
+                    }
+                    if mesh.map_or(true, |m| m.on_mesh(p0)) {
+                        let mut g = vec![p0];
+                        g.extend(s.pts[1..].iter().filter_map(|q| nav_ok(q.0)));
+                        if let Some(b) = ai.brain.0.as_mut() {
+                            b.set_route(&g, -1.0, Vec3::ZERO);
+                        }
+                        s.routed = true;
+                    }
+                }
+                let (idx, goal) = ai.brain.0.as_ref().map_or((0, None), |b| b.heading_for());
+                // (+580: within 8 m of the goal it heads for, F-74140)
+                s.near_t = if goal.is_some_and(|g| g.distance_squared(c.state.pos) < 64.0) { s.near_t + dt } else { 0.0 };
+                let n = s.pts.len();
+                if n > 1 {
+                    if idx == 1 || s.near_t > 5.0 {
+                        s.started = true;
+                    } else if idx == n - 1 {
+                        // (the rebuild from the last point; the direction is still the target's last known velocity)
+                        if let Some(nav) = world.nav.as_ref() {
+                            let last = s.pts[n - 1].0;
+                            let mut rnd = || crate::brain::rng().float();
+                            s.pts = search_points(nav, world, last, self.last_known_v, period, false, s.random, s.angle, &mut rnd);
+                            s.routed = false;
+                            if s.pts.is_empty() {
+                                s.no_goals = true;
+                            }
+                        }
+                    }
+                } else if n == 1 && (s.near_t > 5.0 || (s.t > 0.0 && ai.brain.0.as_ref().is_some_and(|b| b.route_done()))) {
+                    s.started = true;
+                }
+                if let Some(b) = ai.brain.0.as_mut() {
+                    b.allow_nitro = c.state.pos.distance(ppos) > t("fAllowNitroDist", 125.0);
+                }
+                let goal = goal.unwrap_or(self.last_known);
+                ai.chase = Some((goal, Vec3::ZERO));
+                ai.chase_exact = true;
+                ai.target_speed = 85.0;
             } else if tactic {
                 // ---- the tactic's state and its brain (docs/reference/hookmen/pursuit_tactics.md) ----
                 let tac = self.tacs.entry(c.uid).or_default();
@@ -1225,7 +1552,9 @@ impl Police {
                 };
                 tac.t += dt;
                 let st = tac.st;
-                if pull {
+                if searching {
+                    // (no tactic state changes during the Search)
+                } else if pull {
                     // pull-over (F-36876; CatchUp F-91234, AvoidCollision F-18622 / F-69591, Halt F-82776)
                     if st != Tac::Halt && all_halt && !t_moving && (cspeed < 4.47 || !closing(0.0)) {
                         enter(tac, Tac::Halt);
@@ -1316,7 +1645,8 @@ impl Police {
                         ai.brain.0 = Some(Box::new(crate::brain::Brain::police(tune)));
                     }
                 }
-                let plans = matches!(tac.st, Tac::CatchUp | Tac::AlongSide | Tac::Avoid);
+                // (the port's other cops of a search keep the route they had - the original's pursuit has one cop)
+                let plans = matches!(tac.st, Tac::CatchUp | Tac::AlongSide | Tac::Avoid) && !searching;
                 let per = if tac.head_on { 0.5 * period } else { period };
                 tac.replan = (tac.replan - dt).max(0.0);
                 let (empty, done) = ai.brain.0.as_ref().map_or((true, false), |b| (b.goal_count() == 0, b.route_done()));
@@ -1600,6 +1930,8 @@ impl Police {
         self.arrest = 0.0;
         self.lost = 0.0;
         self.search = 0.0;
+        self.srch = None;
+        self.lead = None;
         self.spawn_timer = 12.0;
     }
 

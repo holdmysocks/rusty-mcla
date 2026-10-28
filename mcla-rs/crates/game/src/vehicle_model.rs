@@ -170,7 +170,8 @@ impl CopLights {
         let (tag, parent, rest, _, _) = self.lamps[i];
         let last = (self.anim.frames.max(1) - 1) as f32;
         let t = if self.duration > 0.0 { time.rem_euclid(self.duration) } else { 0.0 };
-        let f = if self.duration > 0.0 { (t / self.duration * last).clamp(0.0, last) } else { 0.0 };
+        // (F-50482: the clip's frame is ((n - 1) / duration) x t, not rounded to a key; docs/reference/hookmen/clip_time_and_tactics.md A)
+        let f = if self.duration > 0.0 { (last / self.duration * t).clamp(0.0, last) } else { 0.0 };
         let (_, rest_r, rest_t) = rest.to_scale_rotation_translation();
         let r = self.anim.track(KIND_ROTATION, tag).map_or(rest_r, |tr| tr.data.rot(f));
         parent * Mat4::from_rotation_translation(r, rest_t)

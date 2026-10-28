@@ -4503,6 +4503,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let gt = &t.gyro;
         let (v, w) = (st.vel, st.ang_vel);
         let hand: f32 = if input.handbrake && !input_computer && exact_drift { 1.0 } else { 0.0 };
+        // (the burnout's turn reads only the chassis' own handbrake, charge and wheels - no driver test: a computer
+        // driver's handbrake pivot from a standstill is a burnout turned on the spot, as the player's. Every opponent
+        // has the gyro flag 0x20000 (the opponent build F-42073 makes its mcCarGyro, F-85916, with flags 0x1F0001). The port had it for
+        // the player only, so a computer car stood in its burnout. docs/reference/hookmen/turnaround_burnout.md)
+        let hand_turn: f32 = if input.handbrake && exact_drift { 1.0 } else { 0.0 };
         let seen = |j: usize| -> (Vec3, Vec3) {
             match (contacts[j].filter(|c| c.contact.load != 0.0), rebuilt[j]) {
                 (Some(c), _) => (c.normal, c.point),
@@ -4542,7 +4547,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // and the held wheel's sideways speed is braked: the acceleration that would stop it over
         // half of (1 - BurnoutGrip) seconds, times the charge and the mass, along the contact's
         // sideways. The two held wheels' slide (+520) is zeroed. ----
-        if !dbg_flag("MCLA_DBG_Y6") && gt.burnout_turn > 0.0 && hand > 0.0 && vs.burn > 0.0 {
+        if !dbg_flag("MCLA_DBG_Y6") && gt.burnout_turn > 0.0 && hand_turn > 0.0 && vs.burn > 0.0 {
             if grounded_count as f32 == wheel_count {
                 // (engine +72: the speed of its best power, as vehEngine::Init finds it on the curve)
                 let best = vt.torque_curve.as_ref().map_or(t.engine.s.opt_rpm * 0.104_719_76, |c| c.peak().0);

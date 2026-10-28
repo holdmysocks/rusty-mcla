@@ -399,6 +399,44 @@ impl LaneCurve {
     }
 }
 
+/// A road or a junction: an item of the connection list (root +0x3c) and of the quadtree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavNode {
+    Road(usize),
+    Junction(usize),
+}
+
+/// The rectangle both node kinds share (F-46547): +0x24 a lane, +0x34 / +0x38 the centre's x / z, +0x3c width,
+/// +0x40 length, +0x60 / +0x68 the direction's x / z.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NodeRect {
+    pub lane: Option<usize>,
+    pub c: [f32; 2],
+    pub width: f32,
+    pub len: f32,
+    pub dir: [f32; 2],
+}
+
+impl NodeRect {
+    /// F-46547: the squared distance from `p` (x / z) to the rectangle when it is within `r`
+    /// (0 inside). A pre-test on 0.70711 x the length + r from the centre, then `p - c` turned by
+    /// -atan2(dir.x, dir.z) and measured against half the width (x) and half the length (z).
+    pub fn dist2_within(&self, p: Vec3, r: f32) -> Option<f32> {
+        let (dx, dz) = (p.x - self.c[0], p.z - self.c[1]);
+        let pre = 0.707_107 * self.len + r;
+        if dx * dx + dz * dz > pre * pre {
+            return None;
+        }
+        let b = -self.dir[0].atan2(self.dir[1]);
+        let (sn, cs) = b.sin_cos();
+        let (lx, lz) = (dx * cs + dz * sn, dz * cs - dx * sn);
+        let excess = |v: f32, h: f32| if v < -h { v + h } else if v > h { v - h } else { 0.0 };
+        let (ex, ez) = (excess(lx, 0.5 * self.width), excess(lz, 0.5 * self.len));
+        let e = ex * ex + ez * ez;
+        (e <= r * r).then_some(e)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct NavSys {
     pub links: Vec<Link>,
@@ -426,6 +464,13 @@ pub struct NavSys {
     /// per junction: the x / z of its region (+0x34, +0x38, as a road's `rect_c`)
     pub junction_c: Vec<[f32; 2]>,
     pub junction_lanes: Vec<Vec<usize>>,
+    /// per junction: its rectangle (the same fields as a road's, F-46547)
+    pub junction_rects: Vec<NodeRect>,
+    /// the connection list (root +0x3c, 16 bytes per node id +0x20: -> u32 node pointers, u16 count;
+    /// count root +0x4c), per road and per junction, in the file's order: a junction lists roads, a
+    /// road junctions and roads (docs/reference/hookmen/search_and_connections.md 1)
+    pub road_next: Vec<Vec<NavNode>>,
+    pub junction_next: Vec<Vec<NavNode>>,
     /// the lane quadtree (root +130; node class 0x47b4dc), node 0 the root
     pub quad: Vec<QuadNode>,
     /// the longest link (`path_to_point`'s look-up of the links near its goal)
@@ -450,6 +495,9 @@ struct Sccs {
 #[derive(Debug, Clone, Default)]
 pub struct QuadNode {
     pub lanes: Vec<usize>,
+    /// its roads (flags +4 bit 2) and junctions (bit 4), in the node's item order
+    pub roads: Vec<usize>,
+    pub junctions: Vec<usize>,
     pub kids: [Option<usize>; 4],
     pub split: [f32; 2],
     pub min: [f32; 2],
@@ -489,16 +537,73 @@ struct RawLane {
 }
 
 impl NavSys {
-    /// The roads next to junction `j` (the police's junction prediction, F-67303: the original reads a list
-    /// the game builds at run time, net +60[J +0x20], not decoded). The port: the roads with a lane that
-    /// ends where one of the junction's lanes starts or starts where one ends (by the shared vertex), in
-    /// road order. (inferred)
+    /// The roads next to junction `j` (the police's junction prediction, F-67303): its connection list, in
+    /// the file's order.
     pub fn junction_roads(&self, j: usize) -> Vec<usize> {
-        let Some(jl) = self.junction_lanes.get(j) else { return Vec::new() };
-        let ends: Vec<(u16, u16)> = jl.iter().filter_map(|&l| self.raw.get(l)).map(|r| r.vi).collect();
-        (0..self.zones.len())
-            .filter(|&z| self.zone_lanes.get(z).is_some_and(|ls| ls.iter().filter_map(|&l| self.raw.get(l)).any(|r| ends.iter().any(|e| r.vi.1 == e.0 || r.vi.0 == e.1))))
-            .collect()
+        self.junction_next.get(j).map_or(Vec::new(), |l| l.iter().filter_map(|n| if let NavNode::Road(r) = n { Some(*r) } else { None }).collect())
+    }
+
+    /// A node's connection list.
+    pub fn next_of(&self, n: NavNode) -> &[NavNode] {
+        match n {
+            NavNode::Road(r) => self.road_next.get(r),
+            NavNode::Junction(j) => self.junction_next.get(j),
+        }
+        .map_or(&[], |v| v.as_slice())
+    }
+
+    /// A node's rectangle.
+    pub fn node_rect(&self, n: NavNode) -> NodeRect {
+        match n {
+            NavNode::Road(r) => self.zones.get(r).map_or(NodeRect::default(), |z| NodeRect { lane: z.lane, c: z.rect_c, width: z.width, len: z.rect_len, dir: [z.dir.x, z.dir.z] }),
+            NavNode::Junction(j) => self.junction_rects.get(j).copied().unwrap_or_default(),
+        }
+    }
+
+    /// The road (`junction` false: F-55639, mask 2) or junction (F-85231, mask 4) within `r` of `p`: the
+    /// quadtree walk F-21575 - a node whose box is within r (F-80185), its children first in the order the
+    /// side of its split `p` lies on picks, then its own items; at most 8 hits, the least distance wins
+    /// (the first on ties).
+    pub fn node_within(&self, p: Vec3, r: f32, junction: bool) -> Option<NavNode> {
+        const ORDER: [[usize; 4]; 4] = [[0, 1, 2, 3], [1, 3, 0, 2], [2, 0, 3, 1], [3, 2, 1, 0]];
+        fn walk(nav: &NavSys, q: usize, p: Vec3, r: f32, junction: bool, hits: &mut Vec<(f32, NavNode)>) {
+            let Some(n) = nav.quad.get(q) else { return };
+            if hits.len() >= 8 {
+                return;
+            }
+            let ax = |v: f32, lo: f32, hi: f32| if v < lo { v - lo } else if v > hi { v - hi } else { 0.0 };
+            let (ex, ez) = (ax(p.x, n.min[0], n.max[0]), ax(p.z, n.min[1], n.max[1]));
+            if ex * ex + ez * ez > r * r {
+                return;
+            }
+            let code = (if p.x - n.split[0] > -1e-6 { 2 } else { 0 }) | (if p.z - n.split[1] > -1e-6 { 1 } else { 0 });
+            for &k in &ORDER[code] {
+                if let Some(c) = n.kids[k] {
+                    walk(nav, c, p, r, junction, hits);
+                }
+            }
+            let items = if junction { &n.junctions } else { &n.roads };
+            for &i in items {
+                if hits.len() >= 8 {
+                    return;
+                }
+                let node = if junction { NavNode::Junction(i) } else { NavNode::Road(i) };
+                if let Some(d2) = nav.node_rect(node).dist2_within(p, r) {
+                    hits.push((d2, node));
+                }
+            }
+        }
+        let mut hits = Vec::new();
+        if !self.quad.is_empty() {
+            walk(self, 0, p, r, junction, &mut hits);
+        }
+        let mut best: Option<(f32, NavNode)> = None;
+        for h in hits {
+            if best.map_or(true, |b| h.0 < b.0) {
+                best = Some(h);
+            }
+        }
+        best.map(|b| b.1)
     }
 
     pub fn parse(res: &Resource) -> Result<NavSys> {
@@ -667,18 +772,27 @@ impl NavSys {
             let Some(o) = jarr.map(|a| a + i * 0xc0).filter(|&o| rd.has(o, 0xc0)) else { break };
             nav.junction_centers.push(Vec3::new(rd.f32(o + 0x80), rd.f32(o + 0x84), rd.f32(o + 0x88)));
             nav.junction_c.push([rd.f32(o + 0x34), rd.f32(o + 0x38)]);
+            nav.junction_rects.push(NodeRect { lane: rd.ptr(o + 0x24).and_then(link_index), c: [rd.f32(o + 0x34), rd.f32(o + 0x38)], width: rd.f32(o + 0x3c), len: rd.f32(o + 0x40), dir: [rd.f32(o + 0x60), rd.f32(o + 0x68)] });
             let mut out = Vec::new();
             walk(&rd, o, false, &link_index, &mut out, 0);
             nav.junction_lanes.push(out);
         }
         // the lane quadtree (root +130)
-        fn quad(rd: &Rd, o: usize, li: &dyn Fn(usize) -> Option<usize>, out: &mut Vec<QuadNode>, depth: usize) -> usize {
+        let node_of = |o: usize| -> Option<NavNode> { zone_index(o).map(NavNode::Road).or_else(|| jindex(o).map(NavNode::Junction)) };
+        fn quad(rd: &Rd, o: usize, li: &dyn Fn(usize) -> Option<usize>, ni: &dyn Fn(usize) -> Option<NavNode>, out: &mut Vec<QuadNode>, depth: usize) -> usize {
             let me = out.len();
             let mut q = QuadNode { split: [rd.f32(o + 0x2c), rd.f32(o + 0x30)], min: [rd.f32(o + 0x34), rd.f32(o + 0x38)], max: [rd.f32(o + 0x3c), rd.f32(o + 0x40)], ..Default::default() };
             if let Some(a) = rd.ptr(o + 4) {
                 for k in 0..rd.u16(o + 8) as usize {
-                    if let Some(l) = rd.ptr(a + k * 4).and_then(li) {
+                    let Some(it) = rd.ptr(a + k * 4) else { continue };
+                    if let Some(l) = li(it) {
                         q.lanes.push(l);
+                    } else {
+                        match ni(it) {
+                            Some(NavNode::Road(r)) => q.roads.push(r),
+                            Some(NavNode::Junction(j)) => q.junctions.push(j),
+                            None => {}
+                        }
                     }
                 }
             }
@@ -686,7 +800,7 @@ impl NavSys {
             if depth < 32 {
                 for k in 0..4 {
                     if let Some(c) = rd.ptr(o + 0x1c + k * 4).filter(|&c| rd.has(c, 0x44)) {
-                        let ci = quad(rd, c, li, out, depth + 1);
+                        let ci = quad(rd, c, li, ni, out, depth + 1);
                         out[me].kids[k] = Some(ci);
                     }
                 }
@@ -695,9 +809,20 @@ impl NavSys {
         }
         if let Some(r) = rd.ptr(0x130).filter(|&r| rd.has(r, 0x44)) {
             let mut q = Vec::new();
-            quad(&rd, r, &link_index, &mut q, 0);
+            quad(&rd, r, &link_index, &node_of, &mut q, 0);
             nav.quad = q;
         }
+        // the connection list (root +0x3c, count +0x4c), by each node's id (+0x20)
+        let conn = rd.ptr(0x3c);
+        let conn_n = rd.u32(0x4c) as usize;
+        let items = |o: usize| -> Vec<NavNode> {
+            let id = rd.u32(o + 0x20) as usize;
+            let Some(e) = conn.filter(|_| id < conn_n).map(|c| c + id * 16).filter(|&e| rd.has(e, 16)) else { return Vec::new() };
+            let Some(a) = rd.ptr(e) else { return Vec::new() };
+            (0..rd.u16(e + 4) as usize).filter_map(|k| rd.ptr(a + k * 4).and_then(node_of)).collect()
+        };
+        nav.road_next = zone_offs.iter().map(|&o| items(o)).collect();
+        nav.junction_next = (0..nav.junction_rects.len()).filter_map(|i| jarr.map(|a| items(a + i * 0xc0))).collect();
         nav.build_graph(raw, zone_lanes);
         Ok(nav)
     }
@@ -723,7 +848,7 @@ impl NavSys {
         for z in &mut zones {
             z.links.clear();
         }
-        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), lane_junction: self.lane_junction.clone(), junction_centers: self.junction_centers.clone(), junction_c: self.junction_c.clone(), junction_lanes: self.junction_lanes.clone(), quad: self.quad.clone(), ..Default::default() };
+        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), lane_junction: self.lane_junction.clone(), junction_centers: self.junction_centers.clone(), junction_c: self.junction_c.clone(), junction_lanes: self.junction_lanes.clone(), junction_rects: self.junction_rects.clone(), road_next: self.road_next.clone(), junction_next: self.junction_next.clone(), quad: self.quad.clone(), ..Default::default() };
         nav.build_graph(raw, self.zone_lanes.clone());
         nav
     }
@@ -1802,9 +1927,21 @@ mod speed_tests {
         let nav = NavSys::parse(&res).unwrap();
         // a road's +0x24 is one of its lanes (the police's junction prediction), for 1620 of the 1663 roads
         assert_eq!((nav.zones.len(), nav.zones.iter().filter(|z| z.lane.is_some()).count()), (1663, 1620));
-        // the junctions' regions sit at their centres; 339 of 351 find their roads by the shared lane ends
+        // the junctions' regions sit at their centres; the connection list: 339 of 351 junctions list roads
+        // (1271 in all, only roads), 43 roads list nothing; junction 205 in the file's order
         assert!(nav.junction_c.iter().zip(&nav.junction_centers).all(|(c, j)| (c[0] - j.x).abs() < 25.0 && (c[1] - j.z).abs() < 25.0));
         assert_eq!((nav.junction_c.len(), (0..nav.junction_c.len()).filter(|&j| !nav.junction_roads(j).is_empty()).count()), (351, 339));
+        assert_eq!(nav.junction_next.iter().map(|l| l.len()).sum::<usize>(), 1271);
+        assert!(nav.junction_next.iter().flatten().all(|n| matches!(n, NavNode::Road(_))));
+        assert_eq!(nav.road_next.iter().filter(|l| l.is_empty()).count(), 43);
+        assert_eq!(nav.road_next.iter().flatten().filter(|n| matches!(n, NavNode::Junction(_))).count(), 1271);
+        assert_eq!(nav.junction_roads(205), vec![710, 699, 709, 697, 1425, 1430]);
+        // the quadtree holds the roads with a lane and the junctions with one
+        assert_eq!((nav.quad.iter().map(|q| q.roads.len()).sum::<usize>(), nav.quad.iter().map(|q| q.junctions.len()).sum::<usize>()), (1620, 339));
+        // a junction's own centre finds that junction within 3 m
+        let j = (0..351).find(|&j| nav.junction_rects[j].lane.is_some()).unwrap();
+        let c = nav.junction_rects[j].c;
+        assert_eq!(nav.node_within(Vec3::new(c[0], 0.0, c[1]), 3.0, true), Some(NavNode::Junction(j)));
     }
 
     #[test]
