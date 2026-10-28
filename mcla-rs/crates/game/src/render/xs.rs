@@ -66,7 +66,7 @@ pub fn load(data: &Path) {
         for name in mcla_shaders::OUTPUTS {
             match std::fs::read_to_string(dir.join(name)) {
                 Ok(t) if t.contains("fn xs_") => {
-                    text.insert(name, t);
+                    text.insert(name, unroll_copy(&t));
                 }
                 Ok(_) | Err(_) => {
                     bad.push(name);
@@ -89,6 +89,19 @@ pub fn load(data: &Path) {
         }
         Programs { text, problem }
     });
+}
+
+/// The pixel programs' first line, `r[i] = rin[i]` for i < 16 as a loop, written out as the same 16 copies (files from an
+/// installer keep the loop: the translation stays byte for byte the reference one, crates/shaders/tests/outputs.rs). A register array indexed by a loop
+/// counter has to live in memory on a driver that does not unroll the loop, and then every register of the program is a
+/// memory access: the roads 15x a 3090's time on an RTX 5060 (GitHub #12, docs/PERFORMANCE.md 2026-10-28 (2)). The same
+/// arithmetic; the driver may round a few results one step apart (measured there). MCLA_XS_LOOP=1: the loop as before.
+fn unroll_copy(t: &str) -> String {
+    const LOOP: &str = "for (var i = 0; i < 16; i = i + 1) { r[i] = rin[i]; }";
+    if std::env::var("MCLA_XS_LOOP").is_ok() {
+        return t.to_string();
+    }
+    t.replace(LOOP, &(0..16).map(|i| format!("r[{i}] = rin[{i}];")).collect::<Vec<_>>().join(" "))
 }
 
 /// The text of one translated file (or its stub). Empty before [`load`].
