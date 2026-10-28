@@ -73,6 +73,7 @@ mod rain;
 mod halo;
 mod siglrefl;
 mod sunglow;
+mod ticktimes;
 mod carblob;
 mod carshadow;
 mod peds;
@@ -2423,7 +2424,9 @@ impl App {
             self.vehicles.amb_frontend_tan = [ty, ty * gpu.config.width as f32 / gpu.config.height.max(1) as f32];
         }
         let t_stream = Instant::now();
+        crate::ticktimes::mark(crate::ticktimes::S::World);
         world.update(&mut gpu, focus, 6.0);
+        crate::ticktimes::mark(crate::ticktimes::S::Other);
         self.fl_stream_ms += t_stream.elapsed().as_secs_f32() * 1000.0;
         // special abilities (real time); Zone slows the whole simulation down
         let mut fire = std::mem::take(&mut self.fire_ability);
@@ -3339,6 +3342,7 @@ impl App {
             self.mode_before = self.game.mode;
             // (step 23b: the hangouts' scenes - the cars of their set-ups, the panel's camera, the
             // pink slip choice's camera on the profiles' cars)
+            crate::ticktimes::mark(crate::ticktimes::S::Hangouts);
             {
                 let near_h = near.map(|(i, d)| (self.hangouts[i].0.clone(), d));
                 let scene = self.cine.playing.as_ref().map(|s| s.name.clone());
@@ -3346,6 +3350,7 @@ impl App {
                 self.hscene.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, near_h.as_ref().map(|(n, d)| (n.as_str(), *d)), scene.as_deref(), cam, dt);
                 self.layout.update(&self.game, &mut self.vehicles, &self.opt.data_dir, scene.as_deref(), dt);
             }
+            crate::ticktimes::mark(crate::ticktimes::S::Other);
             // (a story hookman waits at his place: within his radius, not chased, he is met -
             // the CORE scripts' loop, step 20b)
             if self.tick_no % 15 == 0 && self.game.mode == Mode::FreeRoam && self.game.race.is_none() {
@@ -4224,7 +4229,9 @@ impl App {
                 self.vehicles.player_area_b = l.area_b;
                 self.vehicles.player_tint = l.tint;
             }
+            crate::ticktimes::mark(crate::ticktimes::S::Traffic);
             self.vehicles.manage_traffic(&gpu, &world, focus, sim_dt);
+            crate::ticktimes::mark(crate::ticktimes::S::Other);
             self.vehicles.manage_parked(&gpu, focus);
         }
         if self.tick_no == 20 && std::env::var("MCLA_WHOOSH_STAT").is_ok() {
@@ -4373,7 +4380,9 @@ impl App {
             let lap = (race.next.first().copied().unwrap_or(0) / race.lap_len.max(1)) as i32 + 1;
             let time = if race.countdown > 0.0 { -race.countdown } else { race.time };
             let subjects = race.participants.clone();
+            crate::ticktimes::mark(crate::ticktimes::S::RaceScript);
             rt.update(&mut self.vehicles, &gpu, &world, &mut self.props.signals, &subjects, time, lap, sim_dt);
+            crate::ticktimes::mark(crate::ticktimes::S::Other);
             // the dispatcher reports the racing where the script says so
             for call in std::mem::take(&mut rt.radio) {
                 let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
@@ -4738,11 +4747,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     log::info!("cine car after: {} pos {:.3} {:.3} {:.3} speed {:.3} in {:?}", 90 - left, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.speed(), c.input);
                 }
             }
+            crate::ticktimes::mark(crate::ticktimes::S::Vehicles);
             self.vehicles.update(&world, player_input, sim_dt);
+            crate::ticktimes::mark(crate::ticktimes::S::Other);
             if std::env::var_os("MCLA_STEER_DBG").is_some() && self.tick_no % 30 == 0 {
                 log::info!("steer dbg: tick {} drive {} menu {} mode {:?} in steer {:.2} thr {:.2} -> car input steer {:?} state steer {:?} veh steer {:?}", self.tick_no, self.drive, menu_open, self.game.mode, player_input.steer, player_input.throttle, self.vehicles.player().map(|c| c.input.steer), self.vehicles.player().map(|c| c.state.steer), self.vehicles.player().and_then(|c| c.state.veh.as_ref().map(|v| (v.pad_steer, v.steer))));
             }
+            crate::ticktimes::mark(crate::ticktimes::S::Props);
             self.props.collide(&gpu, &world, &mut self.vehicles.cars, sim_dt);
+            crate::ticktimes::mark(crate::ticktimes::S::Other);
             // ---- the pad's rumble (crate::rumble): the player car's tick asked its effects (hits, landing,
             // nitrous, turbo, posts...), Agro's strikes theirs; then mcFeedback's update F-25579 ----
             {
@@ -4759,9 +4772,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // (the loose props as the cars' shared physics level moved them, physics/loose.rs)
+            crate::ticktimes::mark(crate::ticktimes::S::Props);
             if let Some(lw) = world.collider.loose.as_deref() {
                 self.props.follow_level(&gpu, &self.vehicles.level, lw);
             }
+            crate::ticktimes::mark(crate::ticktimes::S::Other);
             // ---- pulling up at a garage opens it ----
             {
                 let want = std::mem::take(&mut self.enter_garage);
@@ -5268,6 +5283,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // ---- roaming racers ----
+            crate::ticktimes::mark(crate::ticktimes::S::Roamers);
             {
                 let mut flash = std::mem::take(&mut self.flash) || (std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "once" || self.game.career.completed() == 0) && self.tick_no % 30 < 2 && self.roam.challenge.is_none());
                 // (a hookman who only races a certain class of car says so)
@@ -5517,6 +5533,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.roam.cancel(&mut self.vehicles);
                 }
             }
+            crate::ticktimes::mark(crate::ticktimes::S::Other);
             if std::env::var("MCLA_SIGNAL_TEST").is_ok() && self.tick_no % 600 == 0 {
                 let moving = self.vehicles.cars.iter().filter(|c| !c.is_player && c.parked.is_none() && c.state.speed() > 3.0).count();
                 log::info!("signals: car-frames braking for red {}, standing at red {}, traffic moving now {}", self.vehicles.held_at_red, self.vehicles.stopped_at_red, moving);
@@ -5642,6 +5659,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // ---- particle effects ----
+            crate::ticktimes::mark(crate::ticktimes::S::Particles);
             {
                 let rain = self.rain_amount();
                 let cam = self.cam.pos;
@@ -5822,6 +5840,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.fx.hour = self.time_of_day;
                 self.fx.update(sim_dt);
             }
+            crate::ticktimes::mark(crate::ticktimes::S::Police);
             if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !self.vehicles.frozen {
                 if let Ok(v) = std::env::var("MCLA_COP_TEST") {
                     // ("park": a cruiser waiting at the kerb ahead of the player, no pursuit - to look at it)
@@ -6002,6 +6021,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     None => {}
                 }
             }
+            crate::ticktimes::mark(crate::ticktimes::S::Other);
             if let (Ok(t), 90) = (std::env::var("MCLA_PROPFX_AIM"), self.tick_no) {
                 // test helper "x,y,z[,run]": line the player up with the prop at that place, `run` (14) m away on the first clear line
                 let v: Vec<f32> = t.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -6454,7 +6474,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.sound.damage_alpha = self.game.flash_hud.as_ref().and_then(|h| h.movie.player.get_global("damage_alpha")).map_or(0.0, |v| v.to_f32());
             self.sound.racer_found |= self.game.flash_hud.as_mut().is_some_and(|h| std::mem::take(&mut h.racer_found));
             self.sound.menu_cam = self.game.flash_menu.as_ref().filter(|_| self.game.in_menu()).and_then(|m| m.movie.player.get_global("cur_camera")).map(|v| v.to_f32() as i32);
+            crate::ticktimes::mark(crate::ticktimes::S::Sound);
             self.sound.update(a, &self.vehicles, &self.game, &self.police, &self.ability, &self.props.hits, self.cam.pos, right, rain_snd, horn, self.time_of_day > 19.5 || self.time_of_day < 6.0, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); l > 0.0 && world.collider.raycast(p, d / l, l).is_some() }, dt);
+            crate::ticktimes::mark(crate::ticktimes::S::Other);
             if let Some(v) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_mut()) {
                 (v.hyd.ev_rise, v.hyd.ev_drop, v.hyd.ev_end, v.hyd.ev_switch) = (0, 0, 0, 0);
             }
@@ -6745,7 +6767,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             w.new_frame(6.0);
         }
         for _ in 0..ticks {
+            crate::ticktimes::start();
             self.update_gameplay(fixed_step::DT);
+            crate::ticktimes::end(self.vehicles.level.objs.len());
         }
         // ---- the pad's rumble to the pad (crate::rumble): game.SetForceFeedback as the game state has it
         // (GameState.sc.xml: off in the hangout and the garage, on for its test drive), the stops while the
