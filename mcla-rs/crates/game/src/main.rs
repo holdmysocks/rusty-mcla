@@ -6338,12 +6338,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
+            // (PLAYER_NITROUS / PLAYER_IN_AIR: F-30989 requests, gated by the speech manager - `Speech::request`)
             if let Some(l) = self.sound.want_speech.take() {
-                if !self.speech.busy() {
-                    self.speech.say(l);
-                }
+                self.speech.request(l);
             }
-            self.sound.speech_busy = self.speech.busy() || self.radio.busy();
+            // the speech manager's "a line plays" test (+2256 and +2260, F-58518 / F-68821 and the police chirp): the
+            // career speech only, the police radio has a manager of its own
+            self.sound.speech_busy = self.speech.busy();
             // (nor on the start screen and the start-up movie before it: the career script makes the player's car only at
             // loadSuccess, after START - the port's car stands at the garage from the start)
             self.sound.no_player_car = self.game.fresh_game || self.game.starter_pick.is_some() || self.game.mode == Mode::MainMenu;

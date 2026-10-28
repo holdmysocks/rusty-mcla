@@ -1235,14 +1235,6 @@ fn sst_replay_load(text: &str) -> Vec<(f32, bool)> {
     v
 }
 
-/// A speech scenario's Probability (percent, clamped 0..100, 100 when missing) and Frequency (s, 10 when missing) as
-/// the speech script loader F-66242 reads them (scenario +64, +20).
-fn scenario_gate(xml: &str, name: &str) -> (i32, f32) {
-    let tag = xml.split("<Scenario ").find(|s| s.starts_with(&format!("name=\"{name}\""))).and_then(|s| s.split('>').next()).unwrap_or("");
-    let attr = |a: &str| tag.split(&format!(" {a}=\"")).nth(1).and_then(|r| r.split('"').next()).and_then(|v| v.trim().parse::<f32>().ok());
-    (attr("Probability").map_or(100, |p| (p as i32).clamp(0, 100)), attr("Frequency").unwrap_or(10.0))
-}
-
 /// Record +40 (F-43725 @A-65200) of the port's wheel `i` (FL, FR, RL, RR): chassis +372 layout 1 or 3 -> +412 /
 /// +420 (the front pair) are the driven ones, any other layout -> +416 / +424 (the rear pair). So an all-wheel-drive car
 /// with layout 2 (the R8) chirps from its rear wheels only (recorded: records 2 and 3, work/slipstream/audiorec).
@@ -1634,10 +1626,6 @@ pub struct Fleet {
     sel: Vec<usize>,
     /// racing vehicles' seconds without driving input ((car+896)->+112)
     idle: HashMap<usize, f32>,
-    /// the speech manager's gate for PLAYER_NITROUS (CareerScript.xml Probability, Frequency; F-95157): its
-    /// clock (+2244) and the scenario's last start (+24, -FLT_MAX at load)
-    nitrous_line: (i32, f32, f32),
-    speech_clock: f32,
     /// MCLA_SST_REPLAY (test hook): the recorded level / burn per original update (30 a second) and the time into it
     sst_replay: Option<(Vec<(f32, bool)>, f32)>,
     /// a player line the cars' sounds ask for this frame (the game says it if no speech plays)
@@ -1713,7 +1701,6 @@ impl Fleet {
                 }
             }
         }
-        let (prob, freq) = scenario_gate(&std::fs::read_to_string(data_dir.join("tune/audio/CareerScript.xml")).unwrap_or_default(), "PLAYER_NITROUS");
         Fleet {
             mats: Materials::load(data_dir),
             types,
@@ -1723,8 +1710,6 @@ impl Fleet {
             pol: PoliceAudio::default(),
             sel: Vec::new(),
             idle: HashMap::new(),
-            nitrous_line: (prob, freq, -f32::MAX),
-            speech_clock: 0.0,
             // "<recording>[;<seconds to wait first>]"
             sst_replay: std::env::var("MCLA_SST_REPLAY").ok().and_then(|v| {
                 let (p, wait) = v.split_once(';').map_or((v.as_str(), 0.0), |(p, w)| (p, w.parse::<f32>().unwrap_or(0.0)));
@@ -1832,7 +1817,6 @@ impl Fleet {
     /// A frame of every car's sounds; `pol`: the police's state for the sirens, chirp, bullhorn and chatter.
     #[allow(clippy::too_many_arguments)]
     pub fn update(&mut self, lib: &mut SoundLib, v: &Vehicles, listener: Vec3, ctl: PlayerCtl, wet: bool, racing: bool, pol: PoliceIn, dt: f32) {
-        self.speech_clock += dt;
         // (the entries are kept by the car's place in the list: when cars before it go - traffic despawning - a car
         // moves down, and its sounds move with it rather than being dropped and loaded again on every move)
         let at: HashMap<u32, usize> = v.cars.iter().enumerate().map(|(i, c)| (c.uid, i)).collect();
@@ -1916,19 +1900,11 @@ impl Fleet {
             }
             if let Some(s) = &mut e.sounds {
                 s.update(lib, &self.mats, &c, ctl.cam_mode, dt);
-                // the slipstream burn's PLAYER_NITROUS request when no speech line plays (F-58518 @A-83150): the
-                // speech manager (F-95157) refuses it within Frequency s of its last start, then unless
-                // rand(0, 99) < Probability; the start time is kept when it passes
+                // the slipstream / nitrous burn's PLAYER_NITROUS request when no speech line plays (F-58518 @A-83150,
+                // F-68821): the speech manager's gate (Frequency, Probability, the script) is `Speech::request`
                 if (s.sst_speech || s.nitro_speech) && !pol.speech_busy {
-                    let (prob, freq, last) = &mut self.nitrous_line;
-                    sst_log(format_args!("SCEN clk {:.3} name PLAYER_NITROUS freq {freq:.3} last {last:.3} prob {prob}", self.speech_clock));
-                    if self.speech_clock >= *last + *freq && lib.rand_int(0, 99) < *prob {
-                        *last = self.speech_clock;
-                        self.want_speech = Some("PLAYER_NITROUS");
-                        sst_log(format_args!("SPEECHRET started"));
-                    } else {
-                        sst_log(format_args!("SPEECHRET 0"));
-                    }
+                    sst_log(format_args!("SPEECHREQ name=PLAYER_NITROUS"));
+                    self.want_speech = Some("PLAYER_NITROUS");
                 }
                 s.damage_parts(lib, &p.state.parts);
                 s.glass(lib, &p.state.dmg, p.state.pos, p.state.rot);
@@ -2408,7 +2384,40 @@ mod tests {
         assert!(!lib.scene_on("DYNAMIC_MIXER_NITROUS") && !o.nitro_speech);
     }
 
-    /// PLAYER_NITROUS gate (Probability 30, Frequency 120 s).
+    /// The gains while DYNAMIC_MIXER_SST (slot 18) and DYNAMIC_MIXER_NITROUS (slot 8) run, against the running original
+    /// (work/slipstream/audio3/cap s0.txt: charge, full, a slipstream burn; n0.txt: four nitrous burns; the recorder's CAT
+    /// lines = the resolved category table): every category's runtime volume is continuous at each slot's on and off
+    /// (no step there larger than twice the largest of the 10 updates around, tools/catcmp.py), and the categories of
+    /// the burn sounds read, all sliders at 10: PLAYER_VEHICLES_SST -25.497, PLAYER_VEHICLES_NITROUS 0.500,
+    /// NITROUS_FRONT_END -4.500, PLAYER_VEHICLES -19.998, MUSIC -17.498 dB, with the slots on and off.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn sst_and_nitrous_scenes_leave_the_gains() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        lib.set_sliders([10; 5]);
+        let rec = [("PLAYER_VEHICLES_SST", -25.497), ("PLAYER_VEHICLES_NITROUS", 0.500), ("NITROUS_FRONT_END", -4.500), ("PLAYER_VEHICLES", -19.998), ("MUSIC", -17.498)];
+        let vols = |lib: &SoundLib| rec.map(|(n, _)| lib.category(n).expect(n).volume);
+        let off = vols(&lib);
+        for ((n, r), v) in rec.iter().zip(off) {
+            assert!((v - r).abs() < 0.0015, "{n}: port {v}, original {r}");
+        }
+        for scene in ["DYNAMIC_MIXER_SST", "DYNAMIC_MIXER_NITROUS"] {
+            lib.scene(scene, true);
+            for _ in 0..30 {
+                lib.update(1.0 / 30.0, &mut a);
+            }
+            assert!(lib.scene_on(scene));
+            assert_eq!(vols(&lib), off, "{scene} on");
+            lib.scene(scene, false);
+            lib.update(1.0 / 30.0, &mut a);
+            assert_eq!(vols(&lib), off, "{scene} off");
+        }
+    }
+
+    /// The slipstream sounds from the disc: GLOBAL_SPECIAL_ABILITIES, the loop / beep / burn rule, the opponent (the
+    /// PLAYER_NITROUS gate is `speech::tests::request_gate_from_disc`).
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
     fn slipstream_sounds_from_disc() {
@@ -2481,9 +2490,6 @@ mod tests {
         c.sst = Some((0.7, true));
         o.update(&mut lib, &mats, &c, -1, dt);
         assert!(live(&lib, &o.sst_burn) && !lib.scene_on("DYNAMIC_MIXER_SST"));
-        let xml = std::fs::read_to_string(Path::new(&dir).join("tune/audio/CareerScript.xml")).unwrap();
-        assert_eq!(scenario_gate(&xml, "PLAYER_NITROUS"), (30, 120.0));
-        assert_eq!(scenario_gate(&xml, "PLAYER_HORN"), (30, 10.0));
     }
 
     /// F-98474's pitch arithmetic against the running original (work/slipstream/audiorec, r5: the charge loop's

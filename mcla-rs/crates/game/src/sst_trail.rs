@@ -23,7 +23,7 @@
 //!   globaltex), no gamma, clamped, trilinear. VS_Trail and PS_Trail are in render/sst_trail.wgsl. The fog pass
 //!   (PSBlendedHeightFogInFogNoPFog, SRCALPHA / INVSRCALPHA where stencil != 1) comes after it in the original
 //!   and so takes its share of the trail's light; the port fogs in its materials, so the trail's alpha takes it
-//!   (the fog of the scene's depth under the pixel).
+//!   (the fog of the scene's depth under the pixel, as that program computes it: [`fog_share`]).
 
 use crate::render::Gpu;
 use glam::{Quat, Vec3};
@@ -92,14 +92,20 @@ pub struct Trail {
 impl Default for Trail {
     /// F-56083 (from the model's set-up F-60786): points 0, drifts (r - 0.5) x 5.0 (0x82006BF8).
     fn default() -> Self {
-        let mut drift = [[0.0f32; 2]; POINTS];
-        let mut rng = game_rng();
-        for d in drift.iter_mut() {
-            let (a, b) = (rng.float(), rng.float());
-            *d = [(b - 0.5) * 5.0, (a - 0.5) * 5.0];
-        }
-        Trail { pts: [[0.0; 4]; POINTS], drift, acc: 0.0 }
+        Trail { pts: [[0.0; 4]; POINTS], drift: init_drifts(&mut game_rng()), acc: 0.0 }
     }
+}
+
+/// F-56083's drifts: 64 consecutive draws, per drift the first into y (+4), the second into x (+0), each
+/// (r - 0.5) x 5.0. Recorded 2026-10-28 (work/slipstream/trail3, initcatch.py / initana.py): three blocks made while
+/// the game loaded held, bit for bit, the 64 draws right after the generator's state polled before them.
+fn init_drifts(rng: &mut crate::vehicles::parked::Mwc) -> [[f32; 2]; POINTS] {
+    let mut drift = [[0.0f32; 2]; POINTS];
+    for d in drift.iter_mut() {
+        let (a, b) = (rng.float(), rng.float());
+        *d = [(b - 0.5) * 5.0, (a - 0.5) * 5.0];
+    }
+    drift
 }
 
 /// Point 0 for a car at `pos` turned by `rot`: + 0.75 x its up row + 2.0 x its +z (back) row.
@@ -181,6 +187,20 @@ pub fn vertex(pts: &[[f32; 4]; POINTS], x: f32, y: f32, u: f32, v: f32) -> (Vec3
 /// PS_Trail's alpha (before the target's exponent bias, which takes gInvColorExpBias back; gLightAmbient.w 1).
 pub fn alpha(tex_a: f32, fade: f32, along: f32) -> f32 {
     tex_a * 0.08 * fade * along
+}
+
+/// The share the original's fog pass (PSBlendedHeightFogInFogNoPFog, after the trail) takes of the trail's light at
+/// a pixel whose scene point is `dist` from the camera (`drawn` = its depth is not the cleared one), with the fog's
+/// near / far and its colour's alpha (SuperFogMaxColor.w). The program (microcode): d = drawn ? dist : 0,
+/// share = sat(c64.w x sat(1 - 2^(-1.4426950 (d x c65.z + c65.w)))); c65.z = 1 / (far - near), c65.w =
+/// -(near / (far - near)) as F-88930 makes them. render/sst_trail.wgsl `fog_share` does the same on the GPU (and
+/// none where the stencil is 1, the pass's test).
+pub fn fog_share(dist: f32, drawn: bool, near: f32, far: f32, alpha: f32) -> f32 {
+    let span = far - near;
+    let (k, k0) = (1.0 / span, -(near / span));
+    let d = if drawn { dist } else { 0.0 };
+    let e = (-1.442_695_f32 * (d * k + k0)).exp2();
+    (alpha * (1.0 - e).clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -545,6 +565,53 @@ mod tests {
         assert_eq!((r.lo, r.carry), (1, 0x0001_0001));
         let r = rng_reset(0);
         assert_eq!((r.lo, r.carry), (1, 0));
+    }
+
+    /// The fog share against the original's fog program run on a recorded fog draw (work/slipstream/trailrec
+    /// cap/g.0.bin draw 1714, the frame of trail draw 1697; work/slipstream/trail3/fogcase.py: the microcode translated
+    /// and run on the recorded constants c64.w = 0x3cd9fbae, c65 = (0.001, 0, 0x3b11a2b4, 0xbde38e39), the distance
+    /// as the program itself computes it from its WorldViewProjInverse and camera row, in single precision): window
+    /// depth 0 (cleared) and five depths at 98 .. 3950 m.
+    #[test]
+    fn sst_trail_fog_share_matches_fog_program() {
+        let alpha = f32::from_bits(0x3cd9_fbae);
+        // (the constants F-88930 makes from near 50, far 500 are the recorded ones, bit for bit)
+        let span = 500.0f32 - 50.0;
+        assert_eq!(((1.0 / span).to_bits(), (-(50.0 / span)).to_bits()), (0x3b11_a2b4, 0xbde3_8e39));
+        let cases: [(f32, bool, f32); 6] = [
+            (5984.02637, false, 0.0),
+            (98.2890854, true, 0.00270754629),
+            (461.308563, true, 0.0159413541),
+            (885.421997, true, 0.0224523821),
+            (2087.76196, true, 0.0263219313),
+            (3950.30005, true, 0.0266046881),
+        ];
+        for (d, drawn, want) in cases {
+            let got = fog_share(d, drawn, 50.0, 500.0, alpha);
+            assert!((got - want).abs() < 2e-7, "d {d}: {got} against {want}");
+        }
+    }
+
+    /// The block init against the running original (work/slipstream/trail3/cap/catch1.pkl, the player's ZX-14 block
+    /// made while the save loaded, 2026-10-28): the generator's state polled 9 ms before the block was read and the 32
+    /// drifts it held (+512 x, +516 y), all bit for bit (initana.py: the same for the two racers' blocks).
+    #[test]
+    fn sst_trail_init_drifts_match_recording() {
+        let want: [(u32, u32); POINTS] = [
+            (0xbff4_6d0c, 0x3f0a_9a58), (0xc005_7325, 0xbfa0_9e7f), (0xbfc6_b8cb, 0x3ff0_8c28), (0xbf14_6592, 0x3f5f_1aa6),
+            (0x3fca_cd76, 0xbf95_f7ea), (0xbfe3_1cd7, 0xbfb3_da3a), (0xc015_dcc9, 0x4013_289c), (0xbfd2_14f0, 0x3fd6_eaed),
+            (0xbfe5_92f0, 0x3ecf_3988), (0xbf91_ed0d, 0x3fe6_cbde), (0xbefd_7974, 0xbe92_3df8), (0x3f73_5048, 0xbf20_3bec),
+            (0x3f5c_e7ae, 0x3ea1_fc5c), (0x4012_675b, 0xc017_dc4a), (0x3f5d_bf8a, 0x3f88_65df), (0xbf7a_eda8, 0x3fa6_57a2),
+            (0xbebc_ceb0, 0x3f17_296c), (0xbfb6_7f0b, 0x3f49_9802), (0xbfc2_3cab, 0x3fd2_bf9f), (0x3e92_179c, 0x3e80_41e8),
+            (0xbf60_374c, 0xc01c_b3a8), (0x3f4d_71a2, 0xbf1b_90ec), (0x3f9f_9b7e, 0x3f08_555e), (0xbf86_4e3f, 0x4003_4606),
+            (0x4003_5176, 0x3f81_1d2a), (0xbed2_efec, 0x3fa5_eb8c), (0x3fe9_4ba2, 0xbfe7_eeec), (0xbfaa_da61, 0xbfb5_4d84),
+            (0x3f85_7e60, 0xbfde_3a96), (0xbf6c_effa, 0x3f61_d0ca), (0x3fed_c45c, 0x400b_1e30), (0x3f49_ca8e, 0xc012_4feb),
+        ];
+        let mut r = crate::vehicles::parked::Mwc { lo: 0x5311_1c6c, carry: 0x3312_d9c8 };
+        let d = init_drifts(&mut r);
+        for k in 0..POINTS {
+            assert_eq!((d[k][0].to_bits(), d[k][1].to_bits()), want[k], "drift {k}");
+        }
     }
 
     #[test]

@@ -30,6 +30,34 @@ const PLAYER_TAUNT_BANK: &str = "0x0624a35b";
 /// The bank of the player's telephone lines (`SIDEKICK_TELEPHONE_INVITE_` / `_DECLINE_<profile>_<A..E>_01`).
 const PLAYER_PHONE_BANK: &str = "0xb84d2992";
 
+/// A scenario's speech-manager fields (the loader F-66242): Priority (+12, default 3), Delay (+16, s, default 0),
+/// Frequency (+20, s, default 10), Probability (+64, percent clamped 0..100, default 100), the time of its last start
+/// (+24, -FLT_MAX at load) and its last script (+28, -1 at load).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gate {
+    pub priority: i32,
+    pub delay: f32,
+    pub frequency: f32,
+    pub probability: i32,
+    pub last: f32,
+    pub last_script: i32,
+}
+
+impl Gate {
+    /// The fields of a `<Scenario ...>` tag.
+    pub fn parse(tag: &str) -> Gate {
+        let num = |a: &str| attr(tag, a).and_then(|v| v.trim().parse::<f32>().ok());
+        Gate {
+            priority: num("Priority").map_or(3, |v| v as i32),
+            delay: num("Delay").unwrap_or(0.0),
+            frequency: num("Frequency").unwrap_or(10.0),
+            probability: num("Probability").map_or(100, |v| (v as i32).clamp(0, 100)),
+            last: -f32::MAX,
+            last_script: -1,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Speech {
     /// each scenario's `<Script>` blocks: alternatives, one of them is said
@@ -53,6 +81,15 @@ pub struct Speech {
     /// the dynamic mixer of the scenario playing now, and whether it was switched on
     mixer: String,
     mixer_on: bool,
+    /// each scenario's gate fields (`Gate`)
+    gates: HashMap<String, Gate>,
+    /// the speech manager's clock (+2244): the update (F-85023, from F-57187 every frame) adds G+92, the frame's real time, also while the game is
+    /// paused (recorded: work/slipstream/audio3/cap/n0.txt, 9.03 s in 9.05 s of a pause)
+    clock: f32,
+    /// the shared random numbers (F-62480: lo, carry); (approx.) seeded here, the original's stream position is not modelled
+    mwc: (u32, u32),
+    /// the Priority (+12) of the scenario `request` started, while it plays
+    cur_priority: Option<i32>,
 }
 
 fn attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
@@ -64,7 +101,7 @@ fn attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
 
 impl Speech {
     pub fn load(data_dir: &str, audio_root: &Path) -> Speech {
-        let mut sp = Speech { rng: 0x2545_f491, ..Default::default() };
+        let mut sp = Speech { rng: 0x2545_f491, mwc: (0x2545_f491, 1), ..Default::default() };
         // clip index of the speech banks
         if let Ok(rd) = std::fs::read_dir(audio_root.join("career_speech")) {
             for e in rd.flatten() {
@@ -151,6 +188,7 @@ impl Speech {
                 scripts.push(steps);
             }
             if !scripts.is_empty() {
+                sp.gates.insert(name.to_ascii_uppercase(), Gate::parse(sc.split('>').next().unwrap_or("")));
                 sp.scenarios.insert(name.to_ascii_uppercase(), scripts);
             }
         }
@@ -166,6 +204,61 @@ impl Speech {
 
     pub fn busy(&self) -> bool {
         !self.queue.is_empty() || self.wait > 0.0
+    }
+
+    /// A scenario's gate fields (None: no such scenario).
+    #[cfg(test)]
+    pub fn gate(&self, scenario: &str) -> Option<Gate> {
+        self.gates.get(&scenario.to_ascii_uppercase()).copied()
+    }
+
+    /// F-62480(lo, hi): state x 0x5CDCFAA7 + carry; lo + its low 31 bits mod (hi - lo + 1). Always draws.
+    fn rand(&mut self, lo: i32, hi: i32) -> i32 {
+        let t = self.mwc.0 as u64 * 0x5CDC_FAA7 + self.mwc.1 as u64;
+        self.mwc = (t as u32, (t >> 32) as u32);
+        lo + ((self.mwc.0 & 0x7FFF_FFFF) % (hi - lo + 1).max(1) as u32) as i32
+    }
+
+    /// A speech request as F-30989 / F-62728 make it (`"PLAYER_NITROUS"`, voice group "PLAYER", not forced): the start
+    /// F-95157 refuses it while the clock is below its last start + Frequency, then unless rand(0, 99) < Probability (the
+    /// draw only when the clock passed); a scenario playing is cut only by a higher Priority (+12). On a start: the last
+    /// start = the clock, the script = rand(0, count - 1), one on (wrapping) when it equals the last one (so a scenario of
+    /// two scripts alternates), the Delay before the first line. Recorded (work/slipstream/audio3/cap/n0.txt): the gate
+    /// draw 27 < 30 passes, the script draw 0 next, a request 66.3 s after the start refused with no draw, one at 120.7 s
+    /// drawn 36 and refused (the last start kept).
+    pub fn request(&mut self, scenario: &str) -> bool {
+        let key = scenario.to_ascii_uppercase();
+        let (Some(g), Some(count)) = (self.gates.get(&key).copied(), self.scenarios.get(&key).map(|s| s.len())) else { return false };
+        if self.clock < g.last + g.frequency || self.rand(0, 99) >= g.probability || count == 0 {
+            return false;
+        }
+        if self.busy() {
+            if self.cur_priority.is_some_and(|p| g.priority <= p) {
+                return false;
+            }
+            self.queue.clear();
+            self.wait = 0.0;
+        }
+        let mut pick = self.rand(0, count as i32 - 1);
+        if pick == g.last_script {
+            pick += 1;
+            if pick == count as i32 {
+                pick = 0;
+            }
+        }
+        if let Some(e) = self.gates.get_mut(&key) {
+            e.last = self.clock;
+            e.last_script = pick;
+        }
+        let steps = self.scenarios[&key][pick as usize].clone();
+        let steps = self.phone_steps(steps, "");
+        if g.delay > 0.0 {
+            self.queue.push_back(Step::Wait(g.delay));
+        }
+        self.queue.extend(steps);
+        self.cur_priority = Some(g.priority);
+        log::debug!("speech: {} started at {:.3} s (script {})", key, self.clock, pick);
+        true
     }
 
     /// Queue a scenario; returns false if it does not exist.
@@ -338,6 +431,10 @@ impl Speech {
     }
 
     pub fn update(&mut self, a: &mut Audio, dt: f32) {
+        self.clock += dt;
+        if !self.busy() {
+            self.cur_priority = None;
+        }
         self.wait -= dt;
         if let Some(l) = self.line.as_mut() {
             l.1 -= dt;
@@ -404,6 +501,76 @@ impl Speech {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The speech manager's gate and script pick (F-95157) against the running original (work/slipstream/audio3/cap,
+    /// recorder sst_audio: GATE / PICK / SCEN lines): the generator's state words before the draws, the clock, the outcome.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR (data dir)"]
+    fn request_gate_from_disc() {
+        let data = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut sp = Speech::load(&data, Path::new("."));
+        // the loader's fields (F-66242)
+        let g = sp.gate("PLAYER_NITROUS").unwrap();
+        assert_eq!((g.priority, g.delay, g.frequency, g.probability, g.last, g.last_script), (3, 0.0, 120.0, 30, -f32::MAX, -1));
+        assert_eq!(sp.gate("PLAYER_HORN").map(|g| (g.probability, g.frequency)), Some((30, 10.0)));
+        assert_eq!(sp.gate("PLAYER_IN_AIR").map(|g| (g.probability, g.frequency)), Some((50, 10.0)));
+        assert_eq!(sp.gate("PLAYER_WIPE_OUT_TIMEWARP").map(|g| (g.probability, g.frequency, g.delay)), Some((50, 0.0, 1.5)));
+        assert_eq!(sp.scenarios["PLAYER_NITROUS"].len(), 2);
+        // n0.txt f=311, the nitrous' first burn: clock 279.983, state 505886d5 04f6b060 -> gate draw 27 < 30, the script draw 0,
+        // state after 4f0f6058 1c169b0a
+        sp.clock = 279.983;
+        sp.mwc = (0x5058_86d5, 0x04f6_b060);
+        assert!(sp.request("PLAYER_NITROUS"));
+        assert_eq!(sp.mwc, (0x4f0f_6058, 0x1c16_9b0a));
+        let g = sp.gate("PLAYER_NITROUS").unwrap();
+        assert_eq!((g.last, g.last_script), (279.983, 0));
+        sp.stop();
+        sp.wait = 0.0;
+        // f=639: clock 346.263 < 279.983 + 120: refused before the draw
+        sp.clock = 346.263;
+        let st = sp.mwc;
+        assert!(!sp.request("PLAYER_NITROUS"));
+        assert_eq!(sp.mwc, st);
+        // f=852: clock 400.699, state 52c60400 2a421f84 -> draw 36: refused, the last start kept
+        sp.clock = 400.699;
+        sp.mwc = (0x52c6_0400, 0x2a42_1f84);
+        assert!(!sp.request("PLAYER_NITROUS"));
+        assert_eq!(sp.gate("PLAYER_NITROUS").unwrap().last, 279.983);
+        // s0.txt f=467, the slipstream burn: clock 115.061, state cb06e3f0 3347957c -> draw 68: refused
+        let mut s0 = Speech::load(&data, Path::new("."));
+        s0.clock = 115.061;
+        s0.mwc = (0xcb06_e3f0, 0x3347_957c);
+        assert!(!s0.request("PLAYER_NITROUS"));
+        assert_eq!(s0.gate("PLAYER_NITROUS").unwrap().last, -f32::MAX);
+        // n1.txt (the gate hook printing the draw): f=360 clock 63.031, state 541d8400 24164598 -> 72 (state 463f6198
+        // 1e833729): refused; f=573 clock 119.423, state 0154510f 3d3d6924 -> 17, script draw 1 (state 9457687f 2e2ccf41)
+        let mut n1 = Speech::load(&data, Path::new("."));
+        n1.clock = 63.031;
+        n1.mwc = (0x541d_8400, 0x2416_4598);
+        assert!(!n1.request("PLAYER_NITROUS"));
+        assert_eq!(n1.mwc, (0x463f_6198, 0x1e83_3729));
+        n1.clock = 119.423;
+        n1.mwc = (0x0154_510f, 0x3d3d_6924);
+        assert!(n1.request("PLAYER_NITROUS"));
+        assert_eq!((n1.mwc, n1.gate("PLAYER_NITROUS").unwrap().last_script), ((0x9457_687f, 0x2e2c_cf41), 1));
+        // two scripts alternate: after script 0 the next start takes 1 whatever the draw, and back
+        for seed in 0..64u32 {
+            sp.stop();
+            sp.wait = 0.0;
+            let before = sp.gate("PLAYER_NITROUS").unwrap().last_script;
+            sp.clock += 1000.0;
+            sp.mwc = (seed.wrapping_mul(0x9E37_79B9), seed);
+            // (a draw below 30 passes the gate: try draws until one does)
+            while !sp.request("PLAYER_NITROUS") {
+                sp.clock += 1000.0;
+            }
+            assert_eq!(sp.gate("PLAYER_NITROUS").unwrap().last_script, 1 - before);
+        }
+        // a line plays: another of the same Priority is refused
+        sp.clock += 1000.0;
+        sp.mwc = (0x5058_86d5, 0x04f6_b060);
+        assert!(sp.busy() && !sp.request("PLAYER_IN_AIR"));
+    }
 
     /// N-AU-2: the telephone invite / decline are `<SpecialCase>` scenarios; each caller of the challenge has all
     /// five letters of both lines and the player's line is in the player's phone bank (needs the user's data).

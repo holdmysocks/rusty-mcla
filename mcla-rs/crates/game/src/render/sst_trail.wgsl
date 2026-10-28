@@ -9,9 +9,10 @@
 // PS_Trail: rgb = tex.rgb; a = tex.a x 0.08 x effectFade x gInvColorExpBias.x x gLightAmbient.w x along
 // (the scene target's exponent bias takes gInvColorExpBias back - the emulator scales all four channels;
 // gLightAmbient.w 1, recorded), blended SRCALPHA / ONE.
-// The original's fog pass after it lerps the target towards the fog colour by the fog of the scene's depth (not
-// the trail's, which writes none), except where the stencil is 1 (the sky, the ground dome): the trail keeps
-// 1 - that share. The port's materials fog themselves (city.wgsl, the same fog), so the trail's alpha takes it.
+// The original's fog pass after it (PSBlendedHeightFogInFogNoPFog, SRCALPHA / INVSRCALPHA, stencil NOT EQUAL 1) lerps
+// the target towards the fog colour by the fog of the scene's depth (not the trail's, which writes none): the
+// trail keeps 1 - that share. The port's materials fog themselves (city.wgsl, the same share), so the trail's alpha
+// takes it - computed as that program computes it (`fog_share`, sst_trail.rs `fog_share`).
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -70,8 +71,15 @@ fn vs_trail(@builtin(instance_index) ii: u32, @location(0) pos: vec3<f32>, @loca
     return o;
 }
 
-// The fog pass's share at this pixel (city.wgsl's fog: 1 - exp(-(d - start) / (end - start)), at most the fog
-// colour's alpha), d = the distance to the scene's point under the pixel; none on stencil 1.
+// The fog pass's share at this pixel, as the original's program PSBlendedHeightFogInFogNoPFog (xrage_postfx)
+// computes it from the scene's depth under the pixel (microcode, work/slipstream/trail3/fogps.wgsl):
+//   d = |the scene's point - the camera| (WorldViewProjInverse of the pixel and the depth; gViewInverse row 3),
+//   0 where the depth is the cleared one (1 - depth < 1 fails: nothing drawn there)
+//   share = sat(SuperFogMaxColor.w x sat(1 - 2^(-1.4426950 (d x c65.z + c65.w)))), output alpha x
+//   gInvColorExpBias.x, which the target's exponent bias takes back
+// with SuperFogParams2 c65.z = 1 / (far - near), c65.w = -(near / (far - near)) (F-88930 makes them from the fog's
+// near / far so; recorded c65 = (0.001, 0, 1/450, -50/450) at near 50, far 500). None where the stencil is 1 (the
+// sky, the ground dome: the pass's stencil test NOT EQUAL 1).
 fn fog_share(px: vec2<f32>) -> f32 {
     let ip = vec2<i32>(px);
     let s = textureLoad(t_stencil, ip, 0).r * 255.0;
@@ -79,15 +87,18 @@ fn fog_share(px: vec2<f32>) -> f32 {
         return 0.0;
     }
     let dim = vec2<f32>(textureDimensions(t_depth));
-    let d = textureLoad(t_depth, ip, 0);
-    let ndc = vec2<f32>(px.x / dim.x * 2.0 - 1.0, 1.0 - px.y / dim.y * 2.0);
-    let h = g.inv_view_proj * vec4<f32>(ndc, d, 1.0);
-    var dist = 1e9;
-    if (abs(h.w) > 1e-12) {
+    let dz = textureLoad(t_depth, ip, 0);
+    var dist = 0.0;
+    if (dz > 0.0) {
+        let ndc = vec2<f32>(px.x / dim.x * 2.0 - 1.0, 1.0 - px.y / dim.y * 2.0);
+        let h = g.inv_view_proj * vec4<f32>(ndc, dz, 1.0);
         dist = length(h.xyz / h.w - g.cam_pos.xyz);
     }
-    let fg = clamp(1.0 - exp(-(dist - g.params.x) / max(g.params.y - g.params.x, 1.0)), 0.0, 1.0);
-    return clamp(fg * g.fog_color.a, 0.0, 1.0);
+    let span = g.params.y - g.params.x;
+    let k = 1.0 / span;
+    let k0 = -(g.params.x / span);
+    let e = exp2(-1.4426950216293335 * (dist * k + k0));
+    return clamp(g.fog_color.a * clamp(1.0 - e, 0.0, 1.0), 0.0, 1.0);
 }
 
 @fragment
