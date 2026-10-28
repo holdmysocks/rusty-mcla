@@ -524,6 +524,7 @@ mod tests {
     /// 100..300 and effect+10 0 / -300 occur, XF+14 is 0
     #[test]
     fn opponent_voice_request_recorded() {
+        let near = near_log2;
         let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
         let mut bad = 0;
         for line in include_str!("opp_voice_cases.txt").lines() {
@@ -534,7 +535,7 @@ mod tests {
             let (xf12, fx): (f32, f32) = (v[2].parse().unwrap(), v[3].parse().unwrap());
             let cents = (xf12 + crate::caraudio::pitch_cents_f32(pitch) + 0.0) as i32;
             let db = crate::sndobj::fmadds(0.0, 0.01, crate::sndobj::fmadds(fx, 0.01, lin2db(gain)));
-            if cents != w[0].parse::<i32>().unwrap() || !w[1..].iter().any(|x| h(x) == db.to_bits()) {
+            if cents != w[0].parse::<i32>().unwrap() || !w[1..].iter().any(|x| near(h(x), db)) {
                 bad += 1;
             }
         }
@@ -546,6 +547,7 @@ mod tests {
     /// offsets XF+12, XF+14 and the effect's +10 all 0 there)
     #[test]
     fn engine_voice_request_recorded() {
+        let near = near_log2;
         let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
         let mut bad = 0;
         for line in include_str!("eng_voice_cases.txt").lines() {
@@ -555,7 +557,7 @@ mod tests {
             let (pitch, gain) = (f32::from_bits(h(v[0])), f32::from_bits(h(v[1])));
             let cents = (0.0 + crate::caraudio::pitch_cents_f32(pitch) + 0.0) as i32;
             let db = crate::sndobj::fmadds(0.0, 0.01, crate::sndobj::fmadds(0.0, 0.01, lin2db(gain)));
-            if cents != w[0].parse::<i32>().unwrap() || db.to_bits() != h(w[1]) {
+            if cents != w[0].parse::<i32>().unwrap() || !near(h(w[1]), db) {
                 bad += 1;
             }
         }
@@ -579,6 +581,13 @@ mod tests {
         assert_eq!(bad, 0);
     }
     use super::*;
+
+    /// The recorder's host `log2f` stands in for the console's log instruction and is not correctly rounded for a few
+    /// inputs (and differs between platforms); the port takes the correctly rounded value, so a recorded dB is accepted
+    /// within 4 ulp of it (the same split as audcfg's `curve3_log2_ambiguous_cases`).
+    fn near_log2(want: u32, got: f32) -> bool {
+        (want as i64 - got.to_bits() as i64).abs() <= 4
+    }
 
     /// The Camaro's loops over an rpm sweep, rendered alone (`MCLA_ENGINE_WAV` = where to write the mix).
     /// The cut GT-R sounds like the 350Z (catalog::sound_car), not its own profile's R8.

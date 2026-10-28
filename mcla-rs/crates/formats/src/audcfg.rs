@@ -31,7 +31,9 @@ const LOG10_2: f32 = 0.301;
 pub fn lin2db(x: f32) -> f32 {
     if x - 1e-5 >= 0.0 {
         // (the original multiplies log2 by 0.301 first, then by 20: vmulfp128 with the table, then fmuls)
-        x.log2() * LOG10_2 * 20.0
+        // (log2 through f64 and one rounding: the f32 libm routines differ in the last bit between platforms, e.g. on
+        // Apple Silicon; this gives the correctly rounded value everywhere)
+        (x as f64).log2() as f32 * LOG10_2 * 20.0
     } else {
         -100.0
     }
@@ -653,6 +655,25 @@ mod tests {
             }
         }
         assert_eq!(bad, 0);
+    }
+
+    /// The 12 of the 4000 cases above where the recorder's host `log2f` is not correctly rounded (the shim stands in for
+    /// the console's log instruction with the host library, which differs from platform to platform, e.g. Apple Silicon):
+    /// the port takes the correctly rounded log2, the recorded value is within 4 ulp of it. The console's own log
+    /// instruction is an estimate whose bits were not recorded, so these stay unverified to the bit.
+    #[test]
+    fn curve3_log2_ambiguous_cases() {
+        let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("fixtures/curve3_log2_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<f32> = i.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let c = Curve { kind: 3, flags: 0, min: 0.0, max: 0.0, params: CurveParams::Points(vec![(v[1], v[2]), (v[3], v[4])]) };
+            let (got, want) = (c.eval(v[0]).to_bits() as i64, h(o) as i64);
+            assert!((got - want).abs() <= 4, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 12);
     }
 
     /// F-11926 (type 2 curve: segment eval) against the original's own code on 4000 cases (work/audio2/verify/ref1.py)
