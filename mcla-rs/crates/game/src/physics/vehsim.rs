@@ -1272,9 +1272,19 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
         }
         if vt.bike {
             // (the game has one key for the rider's weight: the stick - smoothed, input +32 - and the
-            // button together)
-            input.xfer = input.xfer || raw_input.lean != 0.0;
+            // button together. The button, input +40 bit 0, as the pad's last frame wrote it, like the
+            // handbrake: se.0 k41, the frame that sets it comes after this tick's gyro - the lean share
+            // starts a tick later. MCLA_DBG_A7: this tick's raw button.)
+            input.xfer = if dbg_flag("MCLA_DBG_A7") { input.xfer || raw_input.lean != 0.0 } else { vs.pad.button };
             input.lean = vs.pad.stick_y;
+        }
+        // (P3 again: the update writes the rider-off pedals over what the pad's last frame left, every tick - the
+        // pad's frame writes its own after the update, which the samples show every other tick (se.0 k128 0 / 0.5,
+        // k129 the pad's 1 / 0) but no update uses. MCLA_DBG_A8: the pad's pedals.)
+        if wiped && !dbg_flag("MCLA_DBG_A8") {
+            input.throttle = 0.0;
+            input.brake = 0.5;
+            input.handbrake = false;
         }
     } else {
         vs.pad = super::pad::PadHeld::default();
@@ -1965,6 +1975,17 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         vs.steer = (vs.pad_steer * k).clamp(-lock, lock);
         if vt.bike && burn_in.unwrap_or(vs.burn) > 0.0 {
             vs.steer = super::exact::fnms(burn_in.unwrap_or(vs.burn) * vs.steer, BIKE_BURN_STEER, vs.steer);
+        }
+        // (P3, A-33822: the rider off a motorcycle - chassis +592 bit 0x10, two wheels - the update does not copy
+        // the steering value into +132 but moves +132 from what it holds towards the body's turning rate about
+        // the world's z (body +296) within one either way, at 2.5 a second (the approach F-90102). What
+        // +132 holds is what the tick before left: the pad's frame writes its own after the update (se.0 k128
+        // -0.04167, k129 0, the front wheel at 0.02056 throughout). MCLA_DBG_A9: the steering as with the rider on.)
+        if wiped && !dbg_flag("MCLA_DBG_A9") {
+            let held = if pad_exact { vs.pad.steer_next * vs.sss_chassis_exact } else { vs.steer_back };
+            let mut s = held;
+            super::exact::approach(&mut s, st.ang_vel.z.clamp(-1.0, 1.0), f32::from_bits(0x4020_0000), dt);
+            vs.steer = s;
         }
         vs.steer_back = vs.steer;
     } else {
@@ -4231,6 +4252,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     vs.bike_pending = Some((turn_all, push));
                 }
                 vs.bg.roll_err = err;
+                if dbg_flag("MCLA_DBG_GYRO") { eprintln!("LEAN tick {} roll {:08x} share {:08x} lat {:08x} err {:08x} target {:08x} asin {:08x} ground {}", super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed), vs.bg.roll.to_bits(), vs.bg.share.to_bits(), vs.bg.lat.to_bits(), err.to_bits(), target.to_bits(), roll.to_bits(), ground); }
             }
         }
         // (sections 9 and 10: the wheelie and the stoppie)
@@ -6307,7 +6329,7 @@ struct DamageRun {
 
 pub(super) fn dbg_flag(name: &'static str) -> bool {
     static FLAGS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    FLAGS.get_or_init(|| ["MCLA_DBG_R1", "MCLA_DBG_R2", "MCLA_DBG_R3", "MCLA_DBG_R4", "MCLA_DBG_RB2", "MCLA_DBG_RB3", "MCLA_DBG_RB4", "MCLA_DBG_RB5", "MCLA_DBG_RB6", "MCLA_DBG_P1", "MCLA_DBG_P2", "MCLA_DBG_P3", "MCLA_DBG_RA1", "MCLA_DBG_RA2", "MCLA_DBG_RA3", "MCLA_DBG_RA4", "MCLA_DBG_RA5", "MCLA_DBG_RA6", "MCLA_DBG_RA7", "MCLA_DBG_RA8", "MCLA_DBG_RA9", "MCLA_DBG_RB1", "MCLA_DBG_RD1", "MCLA_DBG_A1", "MCLA_DBG_A2", "MCLA_DBG_A3", "MCLA_DBG_A4", "MCLA_DBG_A6", "MCLA_DBG_Z1", "MCLA_DBG_Z2", "MCLA_DBG_HIT", "MCLA_DBG_OLDCOLLIDE", "MCLA_DBG_NORESOLVE", "MCLA_DBG_NODAMP", "MCLA_DBG_NOROLLBAR", "MCLA_DBG_YAW", "MCLA_DBG_SPHERES", "MCLA_DBG_RAYWHEEL", "MCLA_DBG_HANG", "MCLA_DBG_GYRO", "MCLA_DBG_NOBOX", "MCLA_DBG_NOSTEEP", "MCLA_DBG_NOCAMBER", "MCLA_DBG_NOLEANPROBE", "MCLA_DBG_OLDWHEEL", "MCLA_DBG_ZEROTYRE", "MCLA_DBG_TERMS", "MCLA_DBG_SUBDAMP", "MCLA_DBG_NOFREEZE", "MCLA_DBG_STEEPWHEEL", "MCLA_DBG_NOPIVOT", "MCLA_DBG_NOSETTLE", "MCLA_DBG_NOSTUCK", "MCLA_DBG_STUCK", "MCLA_DBG_SYMSOLVE", "MCLA_DBG_OLDWHEELPOSE", "MCLA_DBG_OLDSUSP", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDSTEP", "MCLA_DBG_OLDPOSE", "MCLA_DBG_AXLEORDER", "MCLA_DBG_CALLS", "MCLA_DBG_OLDGYRO", "MCLA_DBG_NOBOTTOM", "MCLA_DBG_WHEELORDER", "MCLA_DBG_OLDMELT", "MCLA_DBG_OLDHANG", "MCLA_DBG_GEAR", "MCLA_DBG_OLDORDER", "MCLA_DBG_OLDSTEER", "MCLA_DBG_OLDDOWN", "MCLA_DBG_OLDDRIFT", "MCLA_DBG_NOENGINEROLL", "MCLA_DBG_OLDAUTOBRAKE", "MCLA_DBG_Y1", "MCLA_DBG_Y2", "MCLA_DBG_Y3", "MCLA_DBG_Y4", "MCLA_DBG_Y5", "MCLA_DBG_Y6", "MCLA_DBG_Y7", "MCLA_DBG_Y8", "MCLA_DBG_Y9", "MCLA_DBG_TRACE", "MCLA_DBG_WORLDHIT", "MCLA_DBG_NOWORLDHIT", "MCLA_DBG_SCRAPEPOST"].into_iter().filter(|n| std::env::var(n).is_ok()).collect()).contains(&name)
+    FLAGS.get_or_init(|| ["MCLA_DBG_R1", "MCLA_DBG_R2", "MCLA_DBG_R3", "MCLA_DBG_R4", "MCLA_DBG_RB2", "MCLA_DBG_RB3", "MCLA_DBG_RB4", "MCLA_DBG_RB5", "MCLA_DBG_RB6", "MCLA_DBG_P1", "MCLA_DBG_P2", "MCLA_DBG_P3", "MCLA_DBG_RA1", "MCLA_DBG_RA2", "MCLA_DBG_RA3", "MCLA_DBG_RA4", "MCLA_DBG_RA5", "MCLA_DBG_RA6", "MCLA_DBG_RA7", "MCLA_DBG_RA8", "MCLA_DBG_RA9", "MCLA_DBG_RB1", "MCLA_DBG_RD1", "MCLA_DBG_A1", "MCLA_DBG_A2", "MCLA_DBG_A3", "MCLA_DBG_A4", "MCLA_DBG_A6", "MCLA_DBG_A7", "MCLA_DBG_A8", "MCLA_DBG_A9", "MCLA_DBG_Z1", "MCLA_DBG_Z2", "MCLA_DBG_HIT", "MCLA_DBG_OLDCOLLIDE", "MCLA_DBG_NORESOLVE", "MCLA_DBG_NODAMP", "MCLA_DBG_NOROLLBAR", "MCLA_DBG_YAW", "MCLA_DBG_SPHERES", "MCLA_DBG_RAYWHEEL", "MCLA_DBG_HANG", "MCLA_DBG_GYRO", "MCLA_DBG_NOBOX", "MCLA_DBG_NOSTEEP", "MCLA_DBG_NOCAMBER", "MCLA_DBG_NOLEANPROBE", "MCLA_DBG_OLDWHEEL", "MCLA_DBG_ZEROTYRE", "MCLA_DBG_TERMS", "MCLA_DBG_SUBDAMP", "MCLA_DBG_NOFREEZE", "MCLA_DBG_STEEPWHEEL", "MCLA_DBG_NOPIVOT", "MCLA_DBG_NOSETTLE", "MCLA_DBG_NOSTUCK", "MCLA_DBG_STUCK", "MCLA_DBG_SYMSOLVE", "MCLA_DBG_OLDWHEELPOSE", "MCLA_DBG_OLDSUSP", "MCLA_DBG_OLDROWS", "MCLA_DBG_OLDTYREIN", "MCLA_DBG_OLDSUMS", "MCLA_DBG_OLDSTEP", "MCLA_DBG_OLDPOSE", "MCLA_DBG_AXLEORDER", "MCLA_DBG_CALLS", "MCLA_DBG_OLDGYRO", "MCLA_DBG_NOBOTTOM", "MCLA_DBG_WHEELORDER", "MCLA_DBG_OLDMELT", "MCLA_DBG_OLDHANG", "MCLA_DBG_GEAR", "MCLA_DBG_OLDORDER", "MCLA_DBG_OLDSTEER", "MCLA_DBG_OLDDOWN", "MCLA_DBG_OLDDRIFT", "MCLA_DBG_NOENGINEROLL", "MCLA_DBG_OLDAUTOBRAKE", "MCLA_DBG_Y1", "MCLA_DBG_Y2", "MCLA_DBG_Y3", "MCLA_DBG_Y4", "MCLA_DBG_Y5", "MCLA_DBG_Y6", "MCLA_DBG_Y7", "MCLA_DBG_Y8", "MCLA_DBG_Y9", "MCLA_DBG_TRACE", "MCLA_DBG_WORLDHIT", "MCLA_DBG_NOWORLDHIT", "MCLA_DBG_SCRAPEPOST"].into_iter().filter(|n| std::env::var(n).is_ok()).collect()).contains(&name)
 }
 
 fn dbg_angdrag() -> f32 {
@@ -6337,6 +6359,16 @@ mod crown_tests {
             assert!((super::crown(r, w, 0.0) - measured).abs() < 2.5e-4, "{r} {w}: {} for {measured}", super::crown(r, w, 0.0));
             assert!((super::crown(r, w, w * 0.5) - r).abs() < 1e-5);
         }
+    }
+
+    /// The rider off a motorcycle (A-33822): the update moves chassis +132 from what the pad's last frame left
+    /// towards the body's turning rate about z (body +296) within one either way, at 2.5 a second. se.0 k128:
+    /// from 0 with the body at -1.3151 rad/s (sample k127, 0xbfa856a3) the recording's +132 is 0xbd2aaaab.
+    #[test]
+    fn the_rider_off_steering_is_the_recordings() {
+        let mut s = 0.0f32;
+        super::super::exact::approach(&mut s, f32::from_bits(0xbfa8_56a3).clamp(-1.0, 1.0), f32::from_bits(0x4020_0000), f32::from_bits(0x3c88_8889));
+        assert_eq!(s.to_bits(), 0xbd2a_aaab);
     }
 }
 
