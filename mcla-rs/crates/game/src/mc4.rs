@@ -11483,13 +11483,11 @@ impl Game {
         };
         self.career.ostats.insert(key, nv);
         // (the port's own counts are whole numbers: a float statistic lives in `ostats` alone)
-        if sub == 0 && v.fract() == 0.0 {
-            self.career.stats.insert(code.to_string(), v as i64);
+        if sub == 0 && nv.fract() == 0.0 {
+            self.career.stats.insert(code.to_string(), nv as i64);
         } else if sub == 0 {
             self.career.stats.remove(code);
         }
-    }
-
         true
     }
 
@@ -11498,6 +11496,8 @@ impl Game {
         self.mc4_stat_submit(code, sub, 3, v);
     /// StatsManager_UpdateStatInt(code, sub, 0 (add), n).
     pub fn mc4_stat_add(&mut self, code: &str, sub: u32, n: f64) {
+    }
+
         self.mc4_stat_submit(code, sub, 0, n);
     }
 
@@ -11541,18 +11541,65 @@ impl Game {
     /// wins, the streak and the longest streak, the last race won; second / third places; any
     /// place but the first ends the streak. A red light race won counts kRLW (the red light
     /// hookmen's scripts). The class wins are the career's (`Ev::Race`); aLOW / aSUV at ten.
-    pub fn mc4_race_stats(&mut self, place: usize) {
+    /// Also (session save-stats): kARS = (kTRS / kRCP, an integer division) x 100 kept the higher;
+    /// the race's best time r:TI (sub = its place in the race table, the finish in ms, kept the
+    /// lower) with "New best time" in the top splash for 2 s when it beat a time already there;
+    /// vWIN of the vehicle on a win; xMOW + 1 twice for a motorcycle win; aLOW / aSUV only on a win
+    /// of that class. `class` is the vehicle's class, `finish` the player's time in seconds.
+    pub fn mc4_race_stats(&mut self, place: usize, class: &str, finish: Option<f32>) {
         self.mc4_stat_add("gRCP", 0, 1.0);
         self.mc4_stat_add("kRCP", 0, 1.0);
         if place == 1 {
             self.mc4_stat_set("xLRW", 0, 1.0);
-            self.mc4_stat_add("kWIN", 0, 1.0);
+        self.mc4_stat_add("nRCP", 0, 1.0);
+        // (GetIntValue kTRS and kRCP; kRCP not 0: kARS = float(kTRS / kRCP) x 100.0, operation 2)
+        let (trs, rcp) = (self.mc4_stat("kTRS", 0) as i32, self.mc4_stat("kRCP", 0) as i32);
+        if rcp != 0 {
+            self.mc4_stat_submit("kARS", 0, 2, ((trs / rcp) as f32 * 100.0) as f64);
+        }
+        // (r:TI under the race id (+0, low 16 bits) when it is not below 0, the player has a time (+40 not -1) and the
+        // race is not LastManOut (F-53909 on +3160, never off line): operation 1; when it is written over a record that
+        // was there (F-56726 before the submit) the splash "New best time", type 4 (the top slot), 2.0 s - F-71442)
+        let idx = self.current_race.and_then(|i| self.race_defs.get(i)).and_then(|d| self.race_table.iter().position(|id| id.eq_ignore_ascii_case(&d.id)));
+        if let (Some(k), Some(t)) = (idx, finish) {
+            let k = (k & 0xFFFF) as u32;
+            let had = self.mc4_stat_present("r:TI", k);
+            let ms = (t as f64 * 1000.0).round();
+            if self.mc4_stat_submit("r:TI", k, 1, ms) && had {
+                let m = self.career.strings.get("New best time").map(|s| s.to_string()).unwrap_or_else(|| "New best time".into());
+                self.show_message(&m);
+                self.message_timer = 2.0;
+            }
+        }
+        // (the class switch on a win, F-68824 per class - the class counts are the career's, `Ev::Race`): class 3
+        // (SportBike) adds xMOW too; 6 (SUV) and 7 (LowRider) give aSUV / aLOW at ten wins of the class unless it is 1)
+        let class_u = class.to_ascii_uppercase();
+        if place == 1 {
+            match class_u.as_str() {
+                "SPORTBIKE" => self.mc4_stat_add("xMOW", 0, 1.0),
+                "SUV" | "LOWRIDER" => {
+                    let (id, stat) = if class_u == "SUV" { ("aSUV", "kSUW") } else { ("aLOW", "kLOW") };
+                    if self.mc4_stat(stat, 0) >= 10.0 && self.mc4_stat(id, 0) != 1.0 {
+                        self.mc4_award(id);
+                    }
+                }
+                _ => {}
+            }
+        }
             self.mc4_stat_add("gWIN", 0, 1.0);
             self.mc4_stat_add("kCWN", 0, 1.0);
             self.mc4_stat_add("gCWN", 0, 1.0);
-            let (cwn, ccw) = (self.mc4_stat("kCWN", 0), self.mc4_stat("kCCW", 0));
-            if cwn > ccw {
-                self.mc4_stat_set("kCCW", 0, cwn);
+            self.mc4_stat_add("kWIN", 0, 1.0);
+            // (vWIN under the vehicle table's index of the car: `stat_sub` keys it by the name)
+            let car = self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            if let Some(v) = VEHICLES.iter().position(|n| n.eq_ignore_ascii_case(&car)) {
+                self.mc4_stat_submit("vWIN", v as u32, 0, 1.0);
+            }
+            let cwn = self.mc4_stat("kCWN", 0) as i32;
+            self.mc4_stat_submit("kCCW", 0, 2, cwn as f64);
+            // (the plain branch counts the motorcycle win once more)
+            if class_u == "SPORTBIKE" && !self.goal_attack {
+                self.mc4_stat_add("xMOW", 0, 1.0);
             }
             let red = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| d.sub_type == "RedLight" || d.id.ends_with("red_light_race"));
             if red {
@@ -11568,11 +11615,6 @@ impl Game {
             }
             self.mc4_stat_set("kCWN", 0, 0.0);
             self.mc4_stat_set("gCWN", 0, 0.0);
-        }
-        for (id, stat) in [("aLOW", "kLOW"), ("aSUV", "kSUW")] {
-            if self.mc4_stat(stat, 0) >= 10.0 {
-                self.mc4_award(id);
-            }
         }
         self.dirty = true;
     }
@@ -12119,13 +12161,13 @@ impl Game {
                 self.mc4_award("aSRE");
             }
         }
-        // (the money: aMIL as the purse grows to $1,000,000 or more)
         // (the purse is held in [-2,140,000,000, 2,140,000,000] and mirrored into the statistic `tPUR` at every change:
         // AddMoney F-71075, SpendMoney F-38145)
         self.money = self.money.clamp(-PURSE_CAP, PURSE_CAP);
         self.career.stats.insert("tPUR".to_string(), self.money);
         if let Some(was) = self.opt_x.s23.money_was.replace(self.money) {
             if self.money > was && self.money >= 1_000_000 {
+        // (the money: aMIL as the purse grows to $1,000,000 or more)
                 self.mc4_award("aMIL");
             }
         }
@@ -16847,12 +16889,12 @@ mod tests {
         g.fresh_game = false;
         // (the race-end statistics: wins, the streak and its best, places)
         for _ in 0..4 {
-            g.mc4_race_stats(1);
+            g.mc4_race_stats(1, "Tuner", None);
         }
-        g.mc4_race_stats(2);
+        g.mc4_race_stats(2, "Tuner", None);
         assert_eq!((g.mc4_stat("kWIN", 0), g.mc4_stat("gRCP", 0), g.mc4_stat("kCWN", 0), g.mc4_stat("kCCW", 0), g.mc4_stat("k2ND", 0)), (4.0, 5.0, 0.0, 4.0, 1.0));
         for _ in 0..5 {
-            g.mc4_race_stats(1);
+            g.mc4_race_stats(1, "Tuner", None);
         }
         assert!(g.mc4_achievements_check().contains(&"aw5C".to_string()));
         assert_eq!(g.career.ostats.get("aw5C/0"), Some(&1.0));
@@ -16862,7 +16904,7 @@ mod tests {
         // (equality: kWIN 180 awards, 181 would not have; kRLW past 15 never does)
         g.mc4_stat_set("kWIN", 0, 179.0);
         assert!(!g.mc4_achievements_check().contains(&"aW18".to_string()));
-        g.mc4_race_stats(1);
+        g.mc4_race_stats(1, "Tuner", None);
         assert!(g.mc4_achievements_check().contains(&"aW18".to_string()));
         g.mc4_stat_set("kRLW", 0, 16.0);
         assert!(!g.mc4_achievements_check().contains(&"aRRR".to_string()));
@@ -17596,7 +17638,6 @@ mod tests {
         }
         assert_eq!(n, 65536);
     }
-}
     /// The five real saves (the 100 % save, a new game, a trace save, the PS3 one, Xenia's current one), imported by
     /// `tools/import_mc4_save.py` onto an empty port save (`imp`) and onto a copy of a real one (`imp2`) (the folders
     /// under `MCLA_ROUNDTRIP_FIXTURES`, default `D:/MCLA/work/save-audit`), loaded by the game with its career tables and

@@ -4448,6 +4448,16 @@ impl App {
             let ready = self.vehicles.player().map_or(true, |c| world.ready_at(c.state.pos));
             race_finished = self.game.update_race(&mut self.vehicles, sim_dt, ready);
             self.game.ui_sim_dt += sim_dt;
+            // (the race scripts' CalculateRankOrdered / Unordered for racer 0 while the player has not finished and the
+            // race is not over: the lead-change count kLED - F-37138, F-90700)
+            if let Some(r) = self.game.race.as_ref() {
+                let pi = self.vehicles.cars.iter().position(|c| c.is_player);
+                let done = pi.map_or(true, |i| r.finish_time.get(i).copied().flatten().is_some());
+                if !done && !race_finished && self.game.race_end_t.is_none() {
+                    let (rank, _) = self.game.player_position(&self.vehicles);
+                    self.game.mc4_lead_rank(rank as i32);
+                }
+            }
             // (test hook MCLA_GO_TRACE=1: the race clock and the player's car around GO, every tick)
             if std::env::var("MCLA_GO_TRACE").is_ok() {
                 if let (Some(r), Some(c)) = (self.game.race.as_ref(), self.vehicles.player()) {
@@ -6080,7 +6090,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (a finished race is an unlocked race: `mc4`)
                     self.game.mc4_race_finished(&race_id);
                     // (step 23: the race-end statistics, F-98556)
-                    self.game.mc4_race_stats(place);
+                    self.game.mc4_race_stats(place, &class, my_time);
                     // (step 23b: the race's goals - F-96807 from F-98556)
                     let s23b_dmg = self.vehicles.player().map_or(0.0, |c| c.state.damage);
                     self.game.mc4_race_goals(place, my_time, s23b_dmg);
@@ -6400,8 +6410,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.songs = a.songs();
             }
             if std::mem::take(&mut a.track_changed) && !a.now_playing.is_empty() {
+            // (the music manager's playing state, F-61726: the song line's clock while its song plays)
+            if a.music_playing() && !a.track_changed {
+                self.game.mc4_song_tick(dt, a.song_place);
+            }
                 let t = a.now_playing.clone();
                 // the HUD movie's bottom splash shows the song ("BAD RELIGION - 21st
+                // (the song line's statistics, F-73849: tMTC, tMTP of list x 256 + place)
+                if let Some((g, k)) = a.song_place {
+                    self.game.mc4_song_line(g as i32, k as i32);
+                }
                 // Century Digital Boy" is its sample text)
                 // (the original runs the song across the cluster's info line - references
                 // `u02`, `u04`: "KILL MEMORY", "... ARTISTES (SWITCH REMIX)" - not as a splash)
@@ -9994,6 +10012,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.startwarp_t = 0.0;
                 }
                 if let Some(sp) = self.game.alt_leave(action == MenuAction::QuitRace) {
+                // (the race object goes: its destructor's Race_Reset, F-83102 - kMRS, xRRT)
+                if self.game.race.is_some() && !self.game.goal_attack {
+                    self.game.mc4_race_reset();
+                }
                     log::info!("alt hookman: {} leaving the race", sp);
                     self.speech.say_as(sp, &self.game.althk.voice);
                 }
@@ -10101,6 +10123,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // accepted; a restart or the next delivery goes straight to the intro)
                 let p080_again = action == MenuAction::RestartRace || self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery);
                 self.prerace_replay = action == MenuAction::RestartRace;
+                // (the race scripts' `restart`: kTRS, xRRT, kARS; then the set-up's Race_Reset - F-83102)
+                if action == MenuAction::RestartRace {
+                    self.game.mc4_restart_stats();
+                }
+                if !self.game.goal_attack {
+                    self.game.mc4_race_reset();
+                }
                 // (the last pink slip race's race-over tab is not this race's)
                 self.game.pink_over = None;
                 // (a race started from another's results - NEXT RACE IN SERIES, CONTINUE, RESTART - never
@@ -10643,6 +10672,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             MenuAction::RestartTournament => {
                 if self.game.tournament_restart() {
                     self.pending_action = MenuAction::StartRace;
+                    // (TournamentCore's `restart`: kTRS, xRRT, kARS)
+                    self.game.mc4_restart_stats();
                     // (TournamentCore `restart` 0x2191: Warper_Warp('DEFAULT_WITH_CUT'))
                     self.game.warp_with_cut = true;
                 }

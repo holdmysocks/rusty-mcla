@@ -32,6 +32,10 @@
 //!   `PhotoAlbum.s0..s15`; PHOTO_ALBUM): a slot not used before raises the album's count (+856),
 //!   aFAB as it reaches 16; tPTS + 1 for every picture; the slot marked used (+860).
 
+//! - Restarts, lead changes, the song line (session save-stats, 2026-10-28):
+//!   `mc4_restart_stats`, `mc4_race_reset`, `mc4_lead_rank`, `mc4_song_line` below;
+//!   docs/reference/save/stats_more.md.
+
 use crate::game::{Game, Mode};
 use glam::Vec3;
 
@@ -88,6 +92,120 @@ pub struct S23bLive {
     pub gas_nitro: bool,
     /// a frontend sound object for the loop to play
     pub ui_obj: Option<&'static str>,
+    /// the lead changes of the race under way (kLED, `LeadCount`) and the race's serial (a new race object each start)
+    pub led: LeadCount,
+    pub race_serial: u64,
+    /// the music manager's song-line clock (+36; +40 = 15 s): the line and its statistics again when it runs out
+    pub song_t: f32,
+}
+
+/// The music manager's interval between two song lines (+40, set to 15.0 by its constructor F-96264;
+/// +44, which would stop the clock, is 0 and written nowhere else).
+pub const SONG_LINE_EVERY: f32 = 15.0;
+
+/// The lead-change count of CalculateRankOrdered / CalculateRankUnordered (F-37138 / F-90700), held
+/// in three statics (the race object, the last rank, the count: 0x8286ECB4..BC). Only for the race's
+/// racer 0 while the player has not finished, off line: a race object other than the last one starts
+/// the count at nought (the last rank is kept); then each step from first place to another, or from
+/// another to first (also the first step of a race when it is first), adds one. The count is posted
+/// as kLED with operation 2 (keep the higher) at every step.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LeadCount {
+    pub race: Option<u64>,
+    pub last: i32,
+    pub count: i32,
+}
+
+impl LeadCount {
+    pub fn step(&mut self, race: u64, rank: i32) -> i32 {
+        if self.race != Some(race) {
+            self.race = Some(race);
+            self.count = 0;
+            if rank == 1 {
+                self.count += 1;
+            }
+        } else if self.last == 1 {
+            if rank != 1 {
+                self.count += 1;
+            }
+        } else if rank == 1 {
+            self.count += 1;
+        }
+        self.last = rank;
+        self.count
+    }
+}
+
+/// The ability statistics an ability's level 3 posts (F-99233; operation 4, set once): its jump
+/// table has no breaks, so Zone posts all four, Agro the last three, Roar two, Pulse one. The disc's
+/// AbilityLevel rewards (career tables `0x3b8ff776`, `0x327a2cd4`) give levels 1 and 2 only.
+pub fn ability_level3_stats(ability: usize) -> &'static [&'static str] {
+    const ALL: [&str; 4] = ["aZON", "aAGR", "aROR", "aPUL"];
+    if ability > 3 {
+        return &[];
+    }
+    &ALL[ability..]
+}
+
+impl Game {
+    /// RESTART of a race (raceOverCommand `restart`, set by the RESTART rows' callback F-90541):
+    /// every race script that handles it (the story races, tournament, series, payback, pink slip,
+    /// delivery, telephone, beat-me-there and hookman races: 41 scripts) runs, before its race
+    /// is set up again, kTRS + 1, xRRT + 1 and kARS = TO_FLOAT(kTRS) / TO_FLOAT(kRCP) (0 when kRCP
+    /// is not above 0), set (operation 3).
+    pub fn mc4_restart_stats(&mut self) {
+        self.mc4_stat_submit("kTRS", 0, 0, 1.0);
+        self.mc4_stat_submit("xRRT", 0, 0, 1.0);
+        let trs = self.mc4_stat("kTRS", 0) as i32;
+        let rcp = self.mc4_stat("kRCP", 0) as i32;
+        let ars = if rcp > 0 { trs as f32 / rcp as f32 } else { 0.0 };
+        self.mc4_stat_submit("kARS", 0, 3, ars as f64);
+    }
+
+    /// Race_Reset (F-83102: the script native Race_Reset at each race's set-up, and the race
+    /// object's destructor): kMRS = the higher of kMRS and xRRT (operation 2), xRRT = 0
+    /// (operation 3). The port runs it at every race start and when a race is left; a new race
+    /// object for the lead-change count.
+    pub fn mc4_race_reset(&mut self) {
+        let rrt = self.mc4_stat("xRRT", 0) as i32;
+        self.mc4_stat_submit("kMRS", 0, 2, rrt as f64);
+        self.mc4_stat_submit("xRRT", 0, 3, 0.0);
+        self.opt_x.s23b.race_serial += 1;
+    }
+
+    /// The player's rank while racing, not finished (F-37138 / F-90700 for racer 0): kLED.
+    pub fn mc4_lead_rank(&mut self, rank: i32) {
+        let serial = self.opt_x.s23b.race_serial;
+        let n = self.opt_x.s23b.led.step(serial, rank);
+        self.mc4_stat_submit("kLED", 0, 2, n as f64);
+    }
+
+    /// The song line (F-73849 through its wrapper F-69753, the music manager's callback F-17609
+    /// with the song, the playing list +52 and the place in it +48): a call with a list or place
+    /// below 0 counts tUSR (the only such calls are the MUSIC_OFF notice of F-78917, -1 / -1);
+    /// else tMTC + 1 and tMTP of sub list x 256 + place + 1. The clock of the next line starts.
+    pub fn mc4_song_line(&mut self, group: i32, track: i32) {
+        if group < 0 || track < 0 {
+            self.mc4_stat_submit("tUSR", 0, 0, 1.0);
+        } else {
+            self.mc4_stat_submit("tMTC", 0, 0, 1.0);
+            self.mc4_stat_submit("tMTP", (group * 256 + track) as u32, 0, 1.0);
+        }
+        self.opt_x.s23b.song_t = SONG_LINE_EVERY;
+    }
+
+    /// The music manager's playing state (F-61726), every frame while its song plays: the line's
+    /// clock runs down by the frame time and, below 0, the line comes again (F-17609).
+    pub fn mc4_song_tick(&mut self, dt: f32, place: Option<(usize, usize)>) {
+        self.opt_x.s23b.song_t -= dt;
+        if self.opt_x.s23b.song_t < 0.0 {
+            if let Some((g, t)) = place {
+                self.mc4_song_line(g as i32, t as i32);
+            } else {
+                self.opt_x.s23b.song_t = SONG_LINE_EVERY;
+            }
+        }
+    }
 }
 
 /// The content mask (0x827E9174) of the running game: 317, what startup adds (F-68286)
@@ -556,6 +674,129 @@ mod tests {
         let mut g = GasVisit::default();
         assert_eq!(g.step(dt, c, 0.0, false, false, false, false), GasStep::None);
         assert_eq!(g.step(dt, c, 20.0, false, false, false, false), GasStep::RefillOne);
+    }
+
+    /// kLED: the original's CalculateRankOrdered / Unordered (F-37138 / F-90700, generated code run off line by
+    /// work/save-stats/led_verify.py on 1,413 random race states) posts the same count as `LeadCount` for every
+    /// rank it computed (1,311 posts); where it posts nothing (the player finished, the race over, on line) the
+    /// port does not step.
+    #[test]
+    fn lead_changes_as_the_original() {
+        let text = include_str!("testdata/save_stats_led_ref.txt");
+        let mut lead = LeadCount::default();
+        let (mut posts, mut races) = (0, std::collections::HashMap::new());
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let race = u64::from_str_radix(w[1], 16).unwrap();
+            let n = races.len() as u64;
+            let id = *races.entry(race).or_insert(n);
+            let eq = w.iter().position(|x| *x == "=").unwrap();
+            let rank: i32 = w.last().unwrap().trim_start_matches('R').parse().unwrap();
+            match w[eq + 1..].iter().find(|x| x.starts_with("kLED:")) {
+                Some(p) => {
+                    let f: Vec<&str> = p.split(':').collect();
+                    assert_eq!(f[1], "2", "{line}");
+                    // (the race object: the port's race serial)
+                    assert_eq!(lead.step(id, rank), f[2].parse::<i32>().unwrap(), "{line}");
+                    posts += 1;
+                }
+                None => {}
+            }
+        }
+        assert_eq!(posts, 1311);
+    }
+
+    /// The race-end statistics: the original F-98556 (generated code, off line, out of GOAL ATTACK; the stats
+    /// manager a store with the submit's rules - work/save-stats/raceend_verify.py, 1,500 random races) against
+    /// `mc4_race_stats` after the career's class win (`Ev::Race`): every record the same (the on-line `n...`
+    /// ones aside, which the submit refuses off line), no other record, "New best time" in the same races.
+    #[test]
+    fn race_end_stats_as_the_original() {
+        const CLASS: [&str; 8] = ["TUNER", "MUSCLE", "EXOTIC", "SPORTBIKE", "LUXURY", "COP", "SUV", "LowRider"];
+        const CLASS_STAT: [&str; 8] = ["kTUW", "kMUW", "kEXW", "kMOW", "kLUW", "", "kSUW", "kLOW"];
+        let text = include_str!("testdata/save_stats_raceend_ref.txt");
+        let mut n = 0;
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let (head, after) = line.split_once(" | ").map_or((line.trim_end_matches(" |"), ""), |(a, b)| (a, b));
+            let (input, calls) = head.split_once(" =").unwrap();
+            let w: Vec<&str> = input.split_whitespace().collect();
+            let (raceid, place, cls, ms, veh, k): (usize, usize, usize, i64, usize, usize) =
+                (w[1].parse().unwrap(), w[2].parse().unwrap(), w[3].parse().unwrap(), w[4].parse().unwrap(), w[5].parse().unwrap(), w[6].parse().unwrap());
+            let mut g = Game::new(vec![std::path::PathBuf::from(format!("x/{}", crate::mc4::VEHICLES[veh]))], 0);
+            g.fresh_game = false;
+            g.current_car = 0;
+            g.race_table = (0..40).map(|i| format!("race{i}")).collect();
+            g.race_defs = vec![crate::races::RaceDef { id: format!("race{raceid}"), ..Default::default() }];
+            g.current_race = Some(0);
+            for i in 0..k {
+                let (key, v): (&str, f64) = (w[7 + 2 * i], w[8 + 2 * i].parse().unwrap());
+                let (code, sub) = key.split_once('/').unwrap();
+                let sub = crate::mc4::stat_sub(code, sub.parse().unwrap());
+                g.career.ostats.insert(format!("{code}/{sub}"), v);
+                if sub == "0" && v.fract() == 0.0 {
+                    g.career.stats.insert(code.to_string(), v as i64);
+                }
+            }
+            if place == 1 && !CLASS_STAT[cls].is_empty() {
+                *g.career.stats.entry(CLASS_STAT[cls].to_string()).or_default() += 1;
+            }
+            let finish = (ms >= 0).then(|| ms as f32 / 1000.0);
+            g.mc4_race_stats(place, CLASS[cls], finish);
+            let mut want = std::collections::BTreeMap::new();
+            let a: Vec<&str> = after.split_whitespace().collect();
+            for p in a.chunks(2) {
+                if p[0].starts_with('n') {
+                    continue;
+                }
+                let (code, sub) = p[0].split_once('/').unwrap();
+                let v: f64 = p[1].parse().unwrap();
+                let sub = crate::mc4::stat_sub(code, sub.parse().unwrap());
+                assert_eq!(g.career.stat(code, &sub), Some(v), "{code}/{sub} in {line}");
+                want.insert(format!("{code}/{sub}"), v);
+            }
+            for key in g.career.ostats.keys().filter(|k| !k.starts_with('n')) {
+                assert!(want.contains_key(key), "{key} the port has, in {line}");
+            }
+            assert_eq!(calls.contains("SPLASH:0:4:2.000"), g.message == "New best time" && g.message_timer == 2.0, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 1500);
+    }
+
+    /// The restarts (the race scripts' `restart`) and Race_Reset (F-83102); the song line (F-73849); level 3's
+    /// posts without breaks (F-99233).
+    #[test]
+    fn restart_reset_song_and_ability_rules() {
+        let mut g = Game::new(Vec::new(), 0);
+        g.fresh_game = false;
+        g.mc4_stat_set("kRCP", 0, 4.0);
+        g.mc4_restart_stats();
+        g.mc4_restart_stats();
+        assert_eq!((g.mc4_stat("kTRS", 0), g.mc4_stat("xRRT", 0), g.mc4_stat("kARS", 0)), (2.0, 2.0, 0.5));
+        g.mc4_race_reset();
+        assert_eq!((g.mc4_stat("kMRS", 0), g.mc4_stat("xRRT", 0)), (2.0, 0.0));
+        g.mc4_restart_stats();
+        g.mc4_race_reset();
+        assert_eq!(g.mc4_stat("kMRS", 0), 2.0, "kept the higher");
+        // (no race completed: kARS 0)
+        let mut h = Game::new(Vec::new(), 0);
+        h.mc4_restart_stats();
+        assert_eq!((h.mc4_stat("kARS", 0), h.mc4_stat_present("kARS", 0)), (0.0, true));
+        // (a new race object: the count from nought; first place at the first step counts)
+        let mut l = LeadCount::default();
+        assert_eq!([3, 1, 1, 2, 1].map(|r| l.step(1, r)), [0, 1, 1, 2, 3]);
+        assert_eq!(l.step(2, 1), 1);
+        // (the song line: list 2, place 5 -> tMTP 517; a place below 0 is tUSR; 15 s on, again)
+        g.mc4_song_line(2, 5);
+        g.mc4_song_line(-1, -1);
+        assert_eq!((g.mc4_stat("tMTC", 0), g.mc4_stat("tMTP", 517), g.mc4_stat("tUSR", 0)), (1.0, 1.0, 1.0));
+        g.mc4_song_tick(14.9, Some((2, 5)));
+        assert_eq!(g.mc4_stat("tMTC", 0), 1.0);
+        g.mc4_song_tick(0.2, Some((2, 5)));
+        assert_eq!((g.mc4_stat("tMTC", 0), g.mc4_stat("tMTP", 517)), (2.0, 2.0));
+        assert_eq!(ability_level3_stats(0), ["aZON", "aAGR", "aROR", "aPUL"]);
+        assert_eq!(ability_level3_stats(2), ["aROR", "aPUL"]);
+        assert!(ability_level3_stats(4).is_empty());
     }
 
     /// F-87177 on the disc's vehicle table: the R8 alone is outside the mask (ContentFlags 2,

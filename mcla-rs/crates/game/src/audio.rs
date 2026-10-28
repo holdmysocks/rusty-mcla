@@ -421,6 +421,9 @@ pub struct Audio {
     pub lists: Option<crate::mc4::MusicShared>,
     /// set when a new track starts (the HUD shows the title once)
     pub track_changed: bool,
+    /// the song that started, as the music manager's callback hands it on (F-17609): the playing
+    /// list (+52) and the place in it (+48); None for a track the lists did not choose
+    pub song_place: Option<(usize, usize)>,
     /// looping stereo bed (city ambience): (path, sink)
     bed: Option<(PathBuf, Sink)>,
     /// listener
@@ -548,6 +551,7 @@ impl Audio {
             playlist: None,
             lists: None,
             track_changed: false,
+            song_place: None,
             bed: None,
             voice: None,
             stream_name: None,
@@ -1259,6 +1263,7 @@ impl Audio {
                 self.now_playing = t;
             }
             self.track_changed = true;
+            self.song_place = self.lists.as_ref().and_then(|l| l.lock().ok().and_then(|l| (l.now_file() == Some(self.music_next)).then_some((l.genre, l.cur))));
             log::info!("audio: now playing {} ({})", self.now_playing, p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
             self.music = Some(s);
         }
