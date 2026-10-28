@@ -1499,6 +1499,10 @@ fn env_dbg(c: vec3<f32>) -> vec3<f32> {
 // the bits: a float compare (c != c) is folded away by drivers that compile with "no NaNs" (AMD's
 // Vulkan compiler on RDNA 3, GitHub #14: the 701 view above did not help there, 702 did). A finite
 // value is left as it is.
+// |x| above `lim`, infinite or NaN - on the bits, so a "no NaNs" compiler keeps the test (diagnostics, GitHub #14)
+fn dbg_bad(x: f32, lim: f32) -> bool { return (bitcast<u32>(x) & 0x7fffffffu) > bitcast<u32>(lim); }
+fn dbg_bad3(v: vec3<f32>, lim: f32) -> bool { return dbg_bad(v.x, lim) || dbg_bad(v.y, lim) || dbg_bad(v.z, lim); }
+
 fn env_finite(c: vec3<f32>) -> vec3<f32> {
     let e = bitcast<vec3<u32>>(c) & vec3<u32>(0x7f800000u);
     return select(c, vec3<f32>(0.0), e == vec3<u32>(0x7f800000u));
@@ -3765,8 +3769,30 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 // (step 19g: + DL6.w, the Mirror power-up's weight - obj.fade_min.w, 0 but on the
                 // player's car under Mirror; PS_CarPaint 111)
                 let m6 = mix(dif, envm, w + obj.fade_min.w);
-                lit = m6 + sp - clamp(m6 * sp, vec3<f32>(0.0), vec3<f32>(1.0));
+                // (GitHub #14: a term that is not a number is dropped here, tested on the bits - a "no NaNs" compiler
+                // folds a float test away and saturates the NaN to white; finite values pass unchanged)
+                lit = env_finite(m6) + env_finite(sp) - clamp(env_finite(m6) * env_finite(sp), vec3<f32>(0.0), vec3<f32>(1.0));
                 if (g.params.w > 100.5 && g.params.w < 101.5) { lit = m6 + sp; }
+                // (diagnostics 703, GitHub #14: the first term of the paint that is not a number or out of range, tested on
+                // the bits - red base, green k, blue occlusion, yellow flake normal, magenta soft map, cyan its power,
+                // dark red scrape, dark green the highlight before its clamp, pink the soft highlight, orange the
+                // mirror mix; grey (darker than mid grey, brighter with the highlight): all in range)
+                if (g.params.w > 702.5 && g.params.w < 703.5) {
+                    var pc3 = vec3<f32>(0.1);
+                    let pw = pow(max(length(soft), 0.00001), ta.w - 1.0);
+                    if (dbg_bad3(base, 4.0)) { pc3 = vec3<f32>(1.0, 0.0, 0.0); }
+                    else if (dbg_bad(kk, 2.0)) { pc3 = vec3<f32>(0.0, 1.0, 0.0); }
+                    else if (dbg_bad(ao_v, 1.5)) { pc3 = vec3<f32>(0.0, 0.0, 1.0); }
+                    else if (dbg_bad3(nf, 1.5)) { pc3 = vec3<f32>(1.0, 1.0, 0.0); }
+                    else if (dbg_bad3(soft, 16.0)) { pc3 = vec3<f32>(1.0, 0.0, 1.0); }
+                    else if (dbg_bad(pw, 16.0)) { pc3 = vec3<f32>(0.0, 1.0, 1.0); }
+                    else if (dbg_bad(scraped, 1.5)) { pc3 = vec3<f32>(0.5, 0.0, 0.0); }
+                    else if (dbg_bad3(mix(base * s_lum, soft, tc.x) * (ta.y * pw * kk * ao_v), 64.0)) { pc3 = vec3<f32>(0.0, 0.5, 0.0); }
+                    else if (dbg_bad3(sp, 1.5)) { pc3 = vec3<f32>(1.0, 0.4, 0.7); }
+                    else if (dbg_bad3(m6, 16.0)) { pc3 = vec3<f32>(1.0, 0.5, 0.0); }
+                    else { pc3 = vec3<f32>(0.05 + 0.25 * clamp(sp.x, 0.0, 1.0)); }
+                    return vec4<f32>(to_scene(pc3), 1.0);
+                }
                 if (amb6) {
                     // PSAmbientCarPaint (work/trafpaint/dis/amb_carpaint.txt; docs/LIGHTING.md "Traffic paint:
                     // the ambient cars' own program"): no flakes, no vinyl, no two-tone - the paint is the
