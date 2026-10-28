@@ -545,6 +545,8 @@ struct App {
     nitro_fires: u32,
     shake_jolts: Vec<(f32, f32)>,
     district_timer: f32,
+    /// the GPS target last routed (place bits, mission): a change re-makes the route at once
+    gps_key: (Option<[u32; 3]>, Option<String>),
     flash: bool,
     enter_garage: bool,
     /// 0 chase, 1 hood, 2 cockpit
@@ -990,6 +992,7 @@ impl App {
             nitro_fires: 0,
             shake_jolts: Vec::new(),
             district_timer: 0.0,
+            gps_key: (None, None),
             flash: false,
             enter_garage: false,
             cam_mode: std::env::var("MCLA_CAM_MODE").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
@@ -5418,21 +5421,29 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.rival_mark = self.vehicles.cars.iter().find(|c| c.racer && !c.driver.is_empty() && want.as_ref().map_or(true, |w| c.driver.eq_ignore_ascii_case(w))).map(|c| (c.state.pos, self.game.career.name_of(&c.driver), c.model.name.clone()));
                     }
                     self.district_timer -= sim_dt;
-                    if self.district_timer <= 0.0 {
+                    // (a target set or cleared on the GPS map takes effect at once, as F-83952 hands the arrow the new
+                    // target when it is set: the route is made again now, not at the next 3 s round)
+                    let key = (self.game.gps_pick.map(|p| p.to_array().map(f32::to_bits)), self.game.mission_target.clone());
+                    let fresh = key != self.gps_key;
+                    if fresh {
+                        self.gps_key = key;
+                    }
+                    if fresh || self.district_timer <= 0.0 {
                         self.district_timer = 3.0;
                         let wanted = self.game.career.mission_races();
                         self.game.mission_races = (0..self.game.race_defs.len()).filter(|&i| wanted.iter().any(|(r, _)| self.game.race_defs[i].id.to_ascii_lowercase().ends_with(r.as_str()))).collect();
                         // (the GPS map's events: those open, and those done - to be driven again)
                         let done = self.game.career.done_races();
                         self.game.map_races = (0..self.game.race_defs.len()).filter(|&i| self.game.mission_races.contains(&i) || done.iter().any(|r| self.game.race_defs[i].id.to_ascii_lowercase().ends_with(r.as_str()))).collect();
-                        // GPS: to the rival if the mission is about meeting him, else to the nearest career event
-                        let rival = self.vehicles.cars.iter().find(|c| c.racer && !c.driver.is_empty()).map(|c| c.state.pos);
+                        // GPS: to the rival if the mission is about meeting him (the mission's own man, `rival_mark` - not
+                        // whichever racer comes first), else to the nearest career event
+                        let rival = self.game.rival_mark.as_ref().map(|m| m.0);
 
                         let event = self.game.mission_races.iter().filter_map(|&i| self.game.race_start(i)).min_by(|a, b| a.distance_squared(focus).partial_cmp(&b.distance_squared(focus)).unwrap());
-                        // (a target set on the GPS map comes first)
+                        // (the target set on the GPS map comes first: the place, or the mission's man / event)
                         let target = match self.roam.challenge.as_ref() {
                             Some(ch) => Some(ch.goal),
-                            None => self.game.gps_pick.or(rival).or(event),
+                            None => self.game.gps_target_pos().or(rival).or(event),
                         };
                         self.game.gps = match (target, world.nav.as_ref(), self.vehicles.player()) {
                             (Some(t), Some(nav), Some(c)) if t.distance(c.state.pos) > 60.0 => nav.route_points(c.state.pos, Some(c.state.forward()), t).map(std::sync::Arc::new),

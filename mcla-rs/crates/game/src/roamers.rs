@@ -494,7 +494,7 @@ impl Roamers {
                     // RACE_GH_06_CORE 0x43a..0x47b. The HUD map's element is then selected, so the
                     // icon over him shows `icon_ripple` and the minimap the route)
                     if self.gps_cores.iter().any(|m| m == row.0) {
-                        game.mission_target = Some(row.0.to_string());
+                        game.set_gps_target(None, Some(row.0.to_string()));
                         log::info!("slots: the man of {} is made the GPS target", row.0);
                     }
                 }

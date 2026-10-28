@@ -54,3 +54,20 @@ fn dialog_descriptions_match_the_original() {
     g.series = Some(Default::default());
     assert_eq!(g.view_replay_desc(false), want["F-79373"]);
 }
+
+/// F-83952: the GPS map keeps one target - a place picked replaces a mission set as the target and back; the arrow
+/// takes the target's own position
+#[test]
+fn one_gps_target() {
+    let mut g = Game::new(Vec::new(), 0);
+    g.set_gps_target(None, Some("RACE_GH_06".into()));
+    let p = glam::Vec3::new(10.0, 0.0, -20.0);
+    g.set_gps_target(Some(p), Some("RACE_GH_06".into()));
+    assert_eq!((g.gps_pick, g.mission_target.as_deref()), (Some(p), None));
+    assert_eq!(g.gps_target_pos(), Some(p));
+    assert!(!g.gps_on_man());
+    g.set_gps_target(None, Some("RACE_GH_06".into()));
+    assert_eq!((g.gps_pick, g.mission_target.as_deref()), (None, Some("RACE_GH_06")));
+    g.set_gps_target(None, None);
+    assert_eq!(g.gps_target_pos(), None);
+}

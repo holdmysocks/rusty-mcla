@@ -547,7 +547,8 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             e.icon = 4;
             // (flashing while his mission's current objective points at him - `Career::pulse_objective`)
             e.mission = game.career.rival_mission().map_or(false, |m| game.career.pulse_objective(&m) == Some(0));
-            e.selected = game.mission_target.is_some();
+            // (selected only while he is the one GPS target - F-83952 deselects the old target)
+            e.selected = game.gps_on_man();
             push(e);
         }
     }

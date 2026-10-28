@@ -1321,6 +1321,12 @@ impl Career {
             .collect()
     }
 
+    /// The races of one mission's event not yet won (`mission_races` for one mission)
+    pub fn races_of(&self, id: &str) -> Vec<String> {
+        let Some(&i) = self.index.get(id) else { return Vec::new() };
+        self.event_of(&self.missions[i]).map_or(Vec::new(), |e| e.races.iter().filter(|r| !self.state[i].won.contains(*r)).cloned().collect())
+    }
+
     pub fn hookman_mission(&self) -> Option<&str> {
         self.order.iter().map(|&i| self.missions[i].id.as_str()).find(|id| id.starts_with("RACE_") || id.starts_with("BEAT_") || id.starts_with("REDLIGHT_"))
     }

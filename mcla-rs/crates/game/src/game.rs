@@ -8812,6 +8812,8 @@ impl Game {
                         ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha((self.cut_mask.clamp(0.0, 1.0) * 255.0).round() as u8));
                     }
                     let hm_els = if self.hm.is_some() { crate::hudmap::elements(self, vehicles, hud.heat >= 2) } else { Vec::new() };
+                    // (the one GPS target where it is now - `gps_target_pos`)
+                    let gps_tp = self.gps_target_pos();
                     if let (Some(fm), false) = (self.flash_map.as_mut(), (self.hud_map_big && (self.hm.is_none() || crate::hudmap::old_bigmap())) || idle_cam) {
                         let dt = ctx.input(|i| i.stable_dt).min(0.1);
                         // the arrow on the ring points at the next checkpoint (`gpsArrowRotation`,
@@ -8830,7 +8832,7 @@ impl Game {
                             // straight at it - the signed angle in the car's yaw frame, no route
                             // (rule_frame.md 5). The port's own guidance route is not a target.
                             gps.or_else(|| {
-                                let t = if self.mission_target.is_some() || self.gps_pick.is_some() { self.gps.as_ref().and_then(|p| p.last().copied()).or(self.gps_pick)? } else { return None };
+                                let t = gps_tp?;
                                 let d = t - hud.player_pos;
                                 Some(((d.x.atan2(-d.z) - hud.player_heading).to_degrees(), d))
                             })
@@ -9543,7 +9545,7 @@ impl Game {
                         // dark disc in a ring of his difficulty's colour, a wedge the way he heads.
                         // The mission's man set as the GPS target is yellow, with the mission's
                         // mark (`ng_tut_minimap`).
-                        let target = named && self.mission_target.is_some();
+                        let target = named && self.gps_on_man();
                         let col = if target { egui::Color32::from_rgb(250, 235, 20) } else { accent };
                         let f = cinst.state.forward();
                         let d = to_map(cinst.state.pos + Vec3::new(f.x, 0.0, f.z) * 30.0) - q;
@@ -10250,7 +10252,7 @@ impl Game {
                 // (the ring is his difficulty's colour - TREVOR green in `ng_gps_1`; yellow once
                 // his mission is the GPS target)
                 let dc = crate::rewards::DIFF_COLORS[self.mc4_hookman_diff().filter(|_| named).unwrap_or(self.difficulty_of(&c.model.name).clamp(0, 3) as usize)];
-                let col = if named && self.mission_target.is_some() { egui::Color32::from_rgb(250, 235, 20) } else { egui::Color32::from_rgb(dc[0], dc[1], dc[2]) };
+                let col = if named && self.gps_on_man() { egui::Color32::from_rgb(250, 235, 20) } else { egui::Color32::from_rgb(dc[0], dc[1], dc[2]) };
                 let f = c.state.forward();
                 // (the heading as the map shows it: a point ahead of him, through the map's own projection)
                 let d = to(c.state.pos + Vec3::new(f.x, 0.0, f.z) * 30.0) - q;
@@ -10264,7 +10266,7 @@ impl Game {
                     painter.circle_stroke(q, 15.0 * k, egui::Stroke::new(4.0 * k, col));
                 }
                 // (the flag; the mission's mark once he is the target - `ng_gps_2`, `ng_gps_1`)
-                self.map_icon(&painter, if named && self.mission_target.is_some() { "icon_ingame1" } else { "icon_ingame4" }, q, 38.0 * k, egui::Color32::WHITE);
+                self.map_icon(&painter, if named && self.gps_on_man() { "icon_ingame1" } else { "icon_ingame4" }, q, 38.0 * k, egui::Color32::WHITE);
                 continue;
             }
             // (the racer icon is an arrow standing on its place)
@@ -11204,7 +11206,7 @@ impl Game {
         if tab == 0 && !views.is_empty() {
             prompts.insert(0, (st("Navmap_Prompt_SetTarget", "SET AS TARGET"), crate::flash_ui::ICON_A));
             if enter && !hidden && !guided {
-                self.mission_target = views.get(sel).map(|v| v.id.clone());
+                (self.gps_pick, self.mission_target) = (None, views.get(sel).map(|v| v.id.clone()));
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             }
         }
@@ -11212,7 +11214,7 @@ impl Game {
             prompts = if tab == 0 { vec![(st("Prompt_SetMissionAsTarget", "SET TO ACTIVE TARGET"), crate::flash_ui::ICON_A)] } else { vec![(st("Prompt_NavigateToMissionLog", "VIEW MISSIONS"), crate::flash_ui::ICON_LB)] };
             if tab == 0 && enter && !views.is_empty() {
                 // the target set: the lesson is over, and the MINI MAP box follows
-                self.mission_target = views.get(sel).map(|v| v.id.clone());
+                (self.gps_pick, self.mission_target) = (None, views.get(sel).map(|v| v.id.clone()));
                 self.mlog_guided = false;
                 self.show_map = false;
                 self.career.stats.insert("tut:target_set".into(), 1);
@@ -11306,10 +11308,11 @@ impl Game {
             let enter = enter && !free;
             if enter && on_man {
                 // SET AS TARGET / UNSET TARGET on the mission's man
-                self.mission_target = if self.mission_target.is_some() { None } else { self.career.hookman_mission().map(|m| m.to_string()) };
+                let m = if self.gps_on_man() { None } else { self.career.rival_mission().or_else(|| self.career.hookman_mission().map(|m| m.to_string())) };
+                (self.gps_pick, self.mission_target) = (None, m);
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             } else if enter && self.map_cursor > 0 {
-                self.gps_pick = Some(places[self.map_cursor].0);
+                (self.gps_pick, self.mission_target) = (Some(places[self.map_cursor].0), None);
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             }
             let (w, name, kind) = match self.map_free {
@@ -11385,6 +11388,7 @@ impl Game {
         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_navsys"));
         ctx.move_to_top(layer);
         let lp = ctx.layer_painter(layer);
+        let on_man_target = self.gps_on_man();
         if let Some(fm) = self.flash_navsys.as_mut() {
             fm.show(&page);
             // The cursor as the game hands it to the movie (`F-31695`): place = cursor + NM+544,
@@ -11412,7 +11416,7 @@ impl Game {
             let panel = fm.movie.player.find("screen.menu.target_panel");
             if let (true, Some(id)) = (hidden, panel) {
                 use mcla_flash::value::Value;
-                let unset = self.map_cursor == 1 && self.rival_mark.is_some() && self.mission_target.is_some();
+                let unset = self.map_cursor == 1 && self.rival_mark.is_some() && on_man_target;
                 fm.movie.player.set_path("menu.elements.0.text4", Value::str(&if unset { st("Nav_UnSetAsTarget", "UNSET TARGET") } else { st("Navmap_Prompt_SetTarget", "SET AS TARGET") }));
                 fm.movie.player.set_global("cursorpanel_visibility", Value::Int(cursor_at.as_ref().map_or(false, |c| !c.1.is_empty()) as i32));
                 if let Some((q, _, _)) = cursor_at.as_ref() {
@@ -13561,6 +13565,37 @@ pub mod savedir {
             Ok(_) => log::info!("save: copied {} to {}", old.display(), new.display()),
             Err(e) => log::warn!("save: could not copy {} to {}: {}", old.display(), new.display(), e),
         }
+    }
+}
+
+impl Game {
+    /// The GPS map's one target (F-83952, NM+616): a new one takes the old one's place - the old is cleared first
+    /// (F-26916: arrow off, deselected) - so a place picked on the map and a mission set as the target never stand
+    /// side by side. `place`: a place on the map; `mission`: a mission (its man, else its event).
+    pub fn set_gps_target(&mut self, place: Option<Vec3>, mission: Option<String>) {
+        self.gps_pick = place;
+        self.mission_target = if place.is_some() { None } else { mission };
+    }
+
+    /// The mission's man is the GPS target (his mission set, nothing else picked)
+    pub fn gps_on_man(&self) -> bool {
+        self.gps_pick.is_none() && self.mission_target.is_some() && self.mission_target == self.career.rival_mission()
+    }
+
+    /// Where the GPS target is now (F-83952 hands the HUD arrow the target's own position, so it follows a moving
+    /// man): the place picked on the map; for a mission its man while he is the one on the map (`rival_mark`), else the
+    /// start of its first race still to win.
+    pub fn gps_target_pos(&self) -> Option<Vec3> {
+        if let Some(p) = self.gps_pick {
+            return Some(p);
+        }
+        let id = self.mission_target.as_ref()?;
+        if self.career.rival_mission().as_deref() == Some(id.as_str()) {
+            if let Some(m) = &self.rival_mark {
+                return Some(m.0);
+            }
+        }
+        self.career.races_of(id).iter().find_map(|r| (0..self.race_defs.len()).find(|&i| self.race_defs[i].id.to_ascii_lowercase().ends_with(r.as_str())).and_then(|i| self.race_start(i)))
     }
 }
 
