@@ -607,6 +607,40 @@ impl Brain {
         b
     }
 
+    /// mcBrainPolice's racing brain (docs/reference/hookmen/goal_speed.md): a BrainRacing with no course, no
+    /// rubber band and no revving; the police brain gives it its goals (`set_goals`).
+    pub fn police(tune: Arc<AiTune>) -> Brain {
+        let mut b = Brain::setup_race(Arc::new(Course::default()), tune, 0, 1, 0, false);
+        b.stage = 3;
+        let u = rng().float();
+        b.rev.set_enabled(false, u);
+        b
+    }
+
+    /// The police brain's goal plan (F-67303): BrainRacing Reset (F-68035; the goal count 0), AppendGoal (F-84673)
+    /// for each goal with a 5 m radius, SetFinalSpeed (+208) and SetFinalHeading (the zero vector). The middle
+    /// goal's speed (+28, never written for these goals) is taken as none (-1; open).
+    pub fn set_goals(&mut self, goals: &[Vec3], final_speed: f32) {
+        self.plan.goals.clear();
+        self.replan(0);
+        for g in goals {
+            self.plan.append(*g, 5.0);
+        }
+        self.final_speed = final_speed;
+        self.final_heading = Vec3::ZERO;
+    }
+
+    /// The goals the brain has (none: plan at once, F-67303's empty-route case).
+    pub fn goal_count(&self) -> usize {
+        self.plan.goals.len()
+    }
+
+    /// The last goal reached and the line used up (F-43234 with the current goal the last).
+    pub fn route_done(&self) -> bool {
+        let n = self.plan.goals.len();
+        n > 0 && self.cur + 1 >= n && self.nav_state == 0 && self.path.is_none() && self.aiv.line_used_up()
+    }
+
     fn goal_at(&self, i: usize) -> Option<Goal> {
         self.plan.goals.get(i).copied()
     }
@@ -1070,6 +1104,15 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         input = CarInput { hold: true, animated: false, ..input };
     }
     input.nitro = out.nitro;
+    // (a police brain's overrides over the racing brain's output, F-88118: +744 throttle, +748 brake, +752 handbrake,
+    // +756 steer)
+    if let Some(o) = v.cars[i].ai.as_mut().and_then(|a| a.ovr.take()) {
+        input.throttle = o.throttle.unwrap_or(input.throttle);
+        input.brake = o.brake.unwrap_or(input.brake);
+        input.handbrake = o.handbrake.unwrap_or(input.handbrake);
+        input.steer = o.steer.unwrap_or(input.steer);
+    }
+    let c = &mut v.cars[i];
     // (flag 4: F-94408 fires the slipstream turbo through F-28681 - vehsim's step)
     input.sst = out.sling;
     brain.held = Some(input);

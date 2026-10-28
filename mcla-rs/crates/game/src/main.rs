@@ -4803,7 +4803,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.vehicles.cars.retain(|c| !(c.cop && c.pinned && c.parked.is_some()));
         }
         if sim_dt > 0.0 {
-            self.vehicles.sirens = self.police.lights_on();
+            // (each cruiser has its own siren target now, `CarInstance::siren` set by the police; this one forces them all)
+            self.vehicles.sirens = false;
             // (test hook MCLA_SIREN_TEST: the player's car is a cruiser with its siren on - the police lamps' states and glows)
             if std::env::var("MCLA_SIREN_TEST").is_ok() {
                 self.vehicles.sirens = true;

@@ -164,16 +164,33 @@ impl CopLights {
         (!lamps.is_empty()).then(|| CopLights { duration: anim.duration, anim, lamps })
     }
 
-    /// Lamp `i`'s matrix in car space at clip time `time` (looped: back to 0 at the end, F-27851).
-    pub fn lamp_at(&self, i: usize, time: f32) -> Mat4 {
+    /// Lamp `i`'s pivot in car space at clip time `time` (looped: back to 0 at the end, F-27851).
+    fn pivot_at(&self, i: usize, time: f32) -> Mat4 {
         use mcla_formats::rage::anim::KIND_ROTATION;
-        let (tag, parent, rest, child, _) = self.lamps[i];
+        let (tag, parent, rest, _, _) = self.lamps[i];
         let last = (self.anim.frames.max(1) - 1) as f32;
         let t = if self.duration > 0.0 { time.rem_euclid(self.duration) } else { 0.0 };
         let f = if self.duration > 0.0 { (t / self.duration * last).clamp(0.0, last) } else { 0.0 };
         let (_, rest_r, rest_t) = rest.to_scale_rotation_translation();
         let r = self.anim.track(KIND_ROTATION, tag).map_or(rest_r, |tr| tr.data.rot(f));
-        parent * Mat4::from_rotation_translation(r, rest_t) * child
+        parent * Mat4::from_rotation_translation(r, rest_t)
+    }
+
+    /// Lamp `i`'s matrix in car space at clip time `time` (the glow's place and facing).
+    pub fn lamp_at(&self, i: usize, time: f32) -> Mat4 {
+        self.pivot_at(i, time) * self.lamps[i].3
+    }
+
+    /// What lamp `i`'s pivot does to its lens mesh at `time`, in car space: the lens meshes are rigid, each
+    /// bound to its pivot bone and baked at the rest pose (docs/reference/hookmen/cop_lamps.md).
+    pub fn lens_delta(&self, i: usize, time: f32) -> Mat4 {
+        let (_, parent, rest, _, _) = self.lamps[i];
+        self.pivot_at(i, time) * (parent * rest).inverse()
+    }
+
+    /// The lamp whose pivot has this bone tag.
+    pub fn lamp_of_tag(&self, tag: u16) -> Option<usize> {
+        self.lamps.iter().position(|l| l.0 == tag)
     }
 }
 

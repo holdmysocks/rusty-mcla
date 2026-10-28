@@ -346,6 +346,11 @@ pub struct CarInstance {
     pub amb_lift: [f32; 6],
     /// the slipstream trail's points (mcCarModel +7200 block - sst_trail.rs)
     pub sst_trail: crate::sst_trail::Trail,
+    /// a cruiser's siren target (+304), set by the police (F-78189's callers: on for the cops of a pull-over or
+    /// pursuit and through a police scene, off after an escape or the scene; a cop in no tactic keeps it)
+    pub siren: bool,
+    /// the light bar clip's time (`CopLights`): from the car's making, looped
+    pub light_t: f32,
 }
 
 /// A traffic car's lamps as the original's mcAmbientRenderCarInstance keeps them (F-81135,
@@ -2074,6 +2079,11 @@ impl Vehicles {
                     own_hubs[i] = Some((part_xf * bone_m).w_axis.truncate());
                 }
                 let win_side = own_wheel.map_or(win_side, |i| 7 + i as u32);
+                // (the light bar's lens meshes: each bound to one of the cop_lights clip's pivots - groups 13 - 19)
+                let win_side = match car.cop_lights.as_ref().filter(|_| part.is_base).and_then(|cl| cl.lamp_of_tag(*part.mesh_tag.get(mi)?)) {
+                    Some(li) => 13 + li as u32,
+                    None => win_side,
+                };
                 if win_side >= 3 && std::env::var("MCLA_PARTS_LOG").is_ok() {
                     log::info!("damage parts {}: {} mesh {} -> group {}", car.name, part.primary, mi, win_side);
                 }
@@ -2441,6 +2451,7 @@ impl Vehicles {
         let caliper_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
         let window_bindings = if model.windows.iter().any(|w| w.is_some()) { (0..2).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect() } else { Vec::new() };
         let part_bindings = match model.batch_window.iter().copied().max().unwrap_or(0) {
+            g if g >= 13 => (0..17).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
             g if g >= 7 => (0..10).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
             g if g >= 3 => (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
             _ => Vec::new(),
@@ -2455,7 +2466,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default() });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0 });
         self.cars.len() - 1
     }
 
@@ -3051,6 +3062,14 @@ if keep || c.state.pos.distance(center) < 450.0 {
         static WINDOW_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let window_test = *WINDOW_TEST.get_or_init(|| std::env::var("MCLA_WINDOW_TEST").is_ok_and(|v| v == "1"));
         for c in self.cars.iter_mut() {
+            // (the light bar's clip: its own time from the car's making, the game frame's step each frame, back to 0 at
+            // its end - F-35036 / F-27851; docs/reference/hookmen/cop_lamps.md)
+            if let Some(cl) = c.model.cop_lights.as_ref() {
+                c.light_t += dt;
+                if c.light_t >= cl.duration {
+                    c.light_t = 0.0;
+                }
+            }
             for k in 0..2 {
                 if let Some(clip) = c.model.windows[k].as_ref() {
                     if window_test && c.is_player {
@@ -4131,7 +4150,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 m = m * Mat4::from_quat(q);
             }
             // lamp state for the light shader: siren phase (0 off, 1 red, 2 blue) + 4 x reversing
-            let siren = if c.cop && self.sirens { 1.0 + ((self.clock * 5.0) as i32 % 2) as f32 } else { 0.0 };
+            let siren = if c.cop && (c.siren || self.sirens) { 1.0 + ((self.clock * 5.0) as i32 % 2) as f32 } else { 0.0 };
             let reversing = if c.state.gear < 0 { 4.0 } else { 0.0 };
             // parked cars are dark, everything else drives with its lights on at night
             let lights = if c.parked.is_some() || self.lights_off { 0.0 } else { night };
@@ -4209,6 +4228,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             for (k, pb) in c.part_bindings.iter().enumerate() {
                 let parts = &c.state.parts;
                 let pm = match k {
+                    // (a light bar lens, on its turning pivot)
+                    l if l >= 10 => c.model.cop_lights.as_ref().filter(|cl| l - 10 < cl.lamps.len()).map_or(m, |cl| m * cl.lens_delta(l - 10, c.light_t)),
                     0 => c.model.hood_slot.map_or(m, |s| m * parts.hood_delta(&s)),
                     1 => c.model.trunk_bone.map_or(m, |b| m * parts.trunk_delta(&b)),
                     // (a traffic model's own wheel: turned about its hub - steer, then the roll -
@@ -4242,7 +4263,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (a traffic model's own wheel: its rim's and matte's programs dent it too, the vertex taken in its
                 // wheel bone's frame - every va_ wheel bone is its hub with no turn or scale, so p - hub; the third
                 // slot carries the hub)
-                if k >= 4 {
+                if (4..10).contains(&k) {
                     if let Some(h) = c.model.own_wheels.and_then(|h| h[k - 4]) {
                         pu.dents[2] = [h.x, h.y, h.z, 1.0];
                     }
@@ -4305,7 +4326,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             let lights = if c.parked.is_some() || self.lights_off { 0.0 } else { night };
             let braking = (c.input.brake * 4.0).clamp(0.0, 1.0);
-            let siren = if c.cop && self.sirens { 1 + (self.clock * 5.0) as i32 % 2 } else { 0 };
+            let siren = if c.cop && (c.siren || self.sirens) { 1 + (self.clock * 5.0) as i32 % 2 } else { 0 };
             for (id, local) in &c.model.lamps {
                 let (k, col, size) = match *id {
                     3 => (2.0 * lights, [1.0, 0.96, 0.86], 0.85),
@@ -4435,7 +4456,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // (the siren state +300, rate 18: its target +304 is what the car's police tactic writes each update -
             // F-63286 -> F-78189, 1 in pull-over / pursuit / arrow trap, cleared at the tactic's end; the
             // port's police has one state for all its cars: `sirens` on a cruiser)
-            let siren = c.cop && sirens;
+            let siren = c.cop && (c.siren || sirens);
             let a = &mut c.amb_lamps;
             for (k, (v, on)) in a.s.iter_mut().zip(flags).enumerate() {
                 *v = if k == 2 { ease_at(*v, siren, 18.0, dt) } else { traffic_ease(*v, on, dt) };
@@ -4566,8 +4587,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 continue;
             }
             let rows = self.lamp_rows(c);
-            // (the beacons turn all the time, each car from its own start - the port: its uid as the phase)
-            let spin_t = self.clock + c.uid as f32 * 0.137;
+            let spin_t = c.light_t;
             for (id, local, facing) in c.model.glow_bones.iter().filter(|g| g.0 == 13 || g.0 == 14) {
                 let i = *id as usize;
                 let col = rows.as_ref().map_or([1.0; 3], |t| [0, 1, 2].map(|k| (t.bulb[i][k] * t.cover[i][k] + 0.5).clamp(0.0, 1.0)));

@@ -738,6 +738,21 @@ impl Police {
             Heat::PullOver | Heat::Busted => self.chase_time = 0.0,
             Heat::None => {}
         }
+        // each cruiser's siren target (F-78189, only for a cop made with lights - not the payback's goons): every
+        // tick of a pull-over or pursuit tactic its cops get 1 (F-63286, the tactic's vt+52), a police scene sets
+        // every cop to 1 each frame while it runs (F-54211) and its end every cop to 0 (F-30655); a tactic's end
+        // turns its cops' lights off unless the target was arrested (F-67316). A cop in no tactic keeps its value.
+        // (The port's search is the pursuit's lost-target part: lit.)
+        if !self.goons {
+            let lit = matches!(self.heat, Heat::Pursuit | Heat::PullOver | Heat::Search | Heat::Busted) || self.ticketing;
+            for c in vehicles.cars.iter_mut().filter(|c| c.cop) {
+                if lit {
+                    c.siren = true;
+                } else if self.heat == Heat::None && c.siren {
+                    c.siren = false;
+                }
+            }
+        }
         if (!self.enabled && !self.goons) || dt <= 0.0 || self.ticketing {
             return None;
         }
@@ -1173,6 +1188,7 @@ impl Police {
             if self.flee_hold > 0.0 && self.heat == Heat::Pursuit {
                 // (the Delay state: brain command 1, halt, until its time is up)
                 ai.chase = Some((c.state.pos, Vec3::ZERO));
+                ai.ovr = Some(crate::ai::Overrides { brake: Some(1.0), throttle: Some(0.0), ..Default::default() });
             } else if tactic {
                 // ---- the tactic's state and its brain (docs/reference/hookmen/pursuit_tactics.md) ----
                 let tac = self.tacs.entry(c.uid).or_default();
@@ -1288,61 +1304,151 @@ impl Police {
                     log::info!("police: cruiser {} {:?} -> {:?} ({:.0} m)", c.uid, st, tac.st, d);
                 }
                 tac.d_prev = d;
-                // ---- the goal plan (F-67303): every fMinSetGoalTime, half that head-on; at once when the target has
-                // turned more than 30 deg or changed speed by more than 15 mph (then its own place and speed) ----
+                // ---- the goal plan (F-67303; docs/reference/hookmen/goal_speed.md). The cop is driven by the racers'
+                // brain (brain.rs, mcBrainPolice is an mcBrainRacing): its goals, a 5 m radius each, and the speed to
+                // reach the last with; the speed on the way is the race line's speed profile. Only the PullOver,
+                // Pursuit and AlongSide brains plan (slot 22); the stopping states keep the route they had and their
+                // overrides decide. ----
+                if ai.brain.0.is_none() {
+                    if let Some(tu) = c.model.aitunes.as_ref() {
+                        let tune = std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&tu.base, &tu.mods, c.perf));
+                        ai.tune = Some(tune.clone());
+                        ai.brain.0 = Some(Box::new(crate::brain::Brain::police(tune)));
+                    }
+                }
+                let plans = matches!(tac.st, Tac::CatchUp | Tac::AlongSide | Tac::Avoid);
                 let per = if tac.head_on { 0.5 * period } else { period };
-                tac.replan -= dt;
+                tac.replan = (tac.replan - dt).max(0.0);
+                let (empty, done) = ai.brain.0.as_ref().map_or((true, false), |b| (b.goal_count() == 0, b.route_done()));
                 let turned = tac.plan_fwd != Vec3::ZERO && tac.plan_fwd.angle_between(pfwd) > 0.5236;
                 let changed = (speed - tac.plan_speed).abs() > 6.705;
-                if tac.replan <= 0.0 || (was_head_on && !tac.head_on) || (tac.replan < 0.3 * per && (turned || changed)) {
-                    let quick = tac.replan > 0.0 && !(was_head_on && !tac.head_on);
+                let ended_head_on = was_head_on && !tac.head_on;
+                let quick = tac.replan < 0.3 * per && (turned || changed);
+                if plans && (tac.replan <= 0.0 || done || ended_head_on || quick || empty) {
+                    let ho = if tac.head_on { 2.0 } else { 1.0 };
+                    let nav = world.nav.as_ref();
+                    // (F-72689 over the mesh, or F-45363 a polygon within 10 m)
+                    let nav_ok = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_mesh(q) || m.teleport_target(q).is_some());
+                    // F-19210: the lane within 5 m of q gives the direction, scaled to the target's speed - its velocity
+                    // itself when there is none, it is a junction's, or it is 45 deg or more off the velocity
+                    let dir_at = |q: Vec3| -> Vec3 {
+                        let lane = nav.and_then(|n| crate::vehicles::traffic::snap_to_lane(n, q, 5.0).0.filter(|h| n.lane_junction.get(h.lane).map_or(true, |j| j.is_none())));
+                        match lane.map(|h| h.dir.normalize_or_zero()).filter(|l| *l != Vec3::ZERO) {
+                            Some(l) => {
+                                let l = if l.dot(pvel) < 0.0 { -l } else { l };
+                                if l.angle_between(pvel) < 0.785_398 { l * speed } else { pvel }
+                            }
+                            None => pvel,
+                        }
+                    };
+                    // the two-goal chain from b, k seconds of D each; a goal off the mesh is moved back and forth
+                    // along D by a quarter of k (4 tries each way, from the goal; D read again at the last point tried)
+                    let chain = |b: Vec3, k: f32| -> [Vec3; 2] {
+                        let mut out = [b; 2];
+                        let mut q = b;
+                        for g in out.iter_mut() {
+                            let p0 = q + dir_at(q) * k;
+                            *g = p0;
+                            q = p0;
+                            if !nav_ok(p0) {
+                                for j in 1..=4 {
+                                    let dd = dir_at(q);
+                                    q = p0 + dd * (k - 0.25 * j as f32);
+                                    if nav_ok(q) {
+                                        *g = q;
+                                        break;
+                                    }
+                                    q = p0 + dd * (k + 0.25 * j as f32);
+                                    if nav_ok(q) {
+                                        *g = q;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        out
+                    };
+                    let (g, v): ([Vec3; 2], f32) = if quick && turned {
+                        // the junction prediction: the road out of the junction the target is in that lies most along
+                        // its heading (x / z from the junction's centre), at the middle of that road's lane
+                        let pick = nav.and_then(|n| {
+                            let hit = crate::vehicles::traffic::snap_to_lane(n, ppos, 5.0).0?;
+                            let j = (*n.lane_junction.get(hit.lane)?)?;
+                            let jc = n.junction_c.get(j)?;
+                            let mut best: Option<(f32, usize)> = None;
+                            for r in n.junction_roads(j) {
+                                let z = &n.zones[r];
+                                let d2 = glam::Vec2::new(z.rect_c[0] - jc[0], z.rect_c[1] - jc[1]).normalize_or_zero();
+                                if d2 == glam::Vec2::ZERO {
+                                    continue;
+                                }
+                                let sc = d2.dot(glam::Vec2::new(pfwd.x, pfwd.z));
+                                if sc > 0.0 && best.map_or(true, |b| sc > b.0) {
+                                    best = Some((sc, r));
+                                }
+                            }
+                            let lane = n.zones[best?.1].lane?;
+                            Some(n.curves.get(lane)?.eval(0.5).0)
+                        });
+                        let q = pick.filter(|&q| on_road(q) || nav_ok(q)).unwrap_or(ppos);
+                        ([q, q], speed)
+                    } else if quick {
+                        ([ppos, ppos], speed)
+                    } else {
+                        // the target's own speed when it is moving, else 0 (F-85634)
+                        let default_v = if t_moving { speed } else { 0.0 };
+                        match (tac.st, pull) {
+                            // Pursuit brain (F-15067): from the target, P and 2P (head-on 2P, 4P) along D; a stopped target:
+                            // from fSafeDist off it towards the cop. Final speed (F-49680): 0 for a stopped target, full
+                            // pace (-1) beyond 2 x fSafeDist, 1.2 x its speed when it is near, going the same way and
+                            // ahead of the cop, else full pace
+                            (Tac::CatchUp, false) => {
+                                let b = if t_moving { ppos } else { ppos + (cpos - ppos).normalize_or(Vec3::X) * safe };
+                                let v = if !t_moving { 0.0 } else if d >= 2.0 * safe { -1.0 } else if same_dir && ahead { 1.2 * speed } else { -1.0 };
+                                (chain(b, per * ho), v)
+                            }
+                            // PullOver brain (F-51787): one point, both goals - the target; 15 m behind it stopped
+                            // (fPullOverDist); driving the wrong way, P of its velocity on and 8 m to the side of its lane;
+                            // off the mesh, back by P of its velocity up to 5 times
+                            (Tac::CatchUp, true) => {
+                                let lane_dir = nav.and_then(|n| crate::vehicles::traffic::snap_to_lane(n, ppos, 5.0).0).map(|h| h.dir.normalize_or_zero());
+                                let mut q = match lane_dir {
+                                    Some(tn) if self.against_traffic => ppos + pvel * per + Vec3::new(tn.z, 0.0, -tn.x) * 8.0,
+                                    _ if !t_moving => ppos - pfwd * t("fPullOverDist", 15.0),
+                                    _ => ppos,
+                                };
+                                if !nav_ok(q) {
+                                    if let Some(k) = (1..=5).find(|&i| nav_ok(q - pvel * per * i as f32)) {
+                                        q -= pvel * per * k as f32;
+                                    }
+                                }
+                                ([q, q], default_v)
+                            }
+                            // AlongSide brain (F-13443): from fAlongSideDist beside the target, 1.15 P (head-on 2.3 P) along D
+                            _ => {
+                                let b = ppos + pright * if tac.side { along } else { -along };
+                                (chain(b, 1.15 * per * ho), default_v)
+                            }
+                        }
+                    };
                     tac.replan = per;
                     tac.plan_fwd = pfwd;
                     tac.plan_speed = speed;
-                    let ho = if tac.head_on { 2.0 } else { 1.0 };
-                    let (g, v) = if quick {
-                        // (the junction prediction on a turn is not ported: the target's place)
-                        ([ppos, ppos], speed)
-                    } else {
-                        match (tac.st, pull) {
-                            // Pursuit brain (F-15067): 1 and 2 periods ahead; a stopped target: fSafeDist off it on the
-                            // cop's side. Arrival speed: full pace beyond 60 m, 1.2 x the target's when behind it going
-                            // the same way, nothing (full pace) otherwise
-                            (Tac::CatchUp, false) => {
-                                if t_moving {
-                                    let g0 = ppos + pvel * per * ho;
-                                    ([g0, g0 + pvel * per * ho], if d < 2.0 * safe && same_dir && ahead { 1.2 * speed } else { -1.0 })
-                                } else {
-                                    let g = ppos + (cpos - ppos).normalize_or(-pfwd) * safe;
-                                    ([g, g], 0.0)
-                                }
-                            }
-                            // PullOver brain (F-50661's command; goal F-51787): the target itself, or fPullOverDist behind it stopped
-                            (Tac::CatchUp, true) => {
-                                let g = if t_moving { ppos } else { ppos - pfwd * t("fPullOverDist", 15.0) };
-                                ([g, g], if t_moving { speed } else { 0.0 })
-                            }
-                            // AlongSide brain (F-13443): fAlongSideDist beside the target, 1.15 periods ahead
-                            (Tac::AlongSide | Tac::Avoid, _) => {
-                                let b = ppos + pright * if tac.side { along } else { -along };
-                                let k = 1.15 * per * ho;
-                                let g0 = b + pvel * k;
-                                ([g0, g0 + pvel * k], if t_moving { speed } else { 0.0 })
-                            }
-                            // Stopping (Block, Halt): stay
-                            _ => ([ppos, ppos], 0.0),
-                        }
-                    };
                     tac.goals = g;
                     tac.speed = v;
+                    if let Some(b) = ai.brain.0.as_mut() {
+                        b.set_goals(&g, v);
+                    }
                 }
-                // the goals in turn, 5 m each (the racing brain's goal pair, F-67303)
+                // (brain +236: the race nitro logic only beyond fAllowNitroDist)
+                if let Some(b) = ai.brain.0.as_mut() {
+                    b.allow_nitro = d > t("fAllowNitroDist", 125.0);
+                }
+                // (the port's own driver when the car has no racing tune: at the goals in turn)
                 let goal = if cpos.distance(tac.goals[0]) < 5.0 { tac.goals[1] } else { tac.goals[0] };
                 ai.chase = Some((goal, Vec3::ZERO));
                 ai.chase_exact = true;
-                // (the speed to arrive with: -1 is the racer's full pace; the port's driver has a cruise speed, not an
-                // arrival speed - it gets the speed it can still brake from to that one over the distance left)
-                ai.target_speed = if tac.speed < 0.0 { 85.0 } else { (tac.speed * tac.speed + 2.0 * 7.0 * cpos.distance(goal)).sqrt().min(85.0) };
+                ai.target_speed = 85.0;
                 // ---- the brain's overrides (F-88118 puts them over the driver's input) ----
                 let away = Some(if on_right { -1.0 } else { 1.0 });
                 ai.ovr = match (tac.st, pull) {
@@ -1356,6 +1462,8 @@ impl Police {
                     _ => None,
                 };
             } else if let Some(ai) = Some(ai) {
+                // (out of the tactics: the port's own driver again)
+                ai.brain.0 = None;
                 let target = match self.heat {
                     Heat::Search => (self.last_known, Vec3::ZERO),
                     _ => (ppos, pvel),

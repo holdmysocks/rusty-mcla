@@ -131,6 +131,10 @@ pub struct Zone {
     pub density: i32,
     /// the x / z the region's sphere test measures from (+34, +38: vfunc 3 sub_8224D4C0)
     pub rect_c: [f32; 2],
+    /// one of the road's lanes (+0x24, a pointer: 1620 of 1663 roads; the police's junction
+    /// prediction takes its point at t = 0.5, F-67303). (The word is not a centre: `center` reads it
+    /// as floats.)
+    pub lane: Option<usize>,
 }
 
 pub const DEFAULT_ROAD_SPEED: f32 = 40.0 * 0.44704;
@@ -419,6 +423,8 @@ pub struct NavSys {
     /// its own lanes (+14 array, +18 u16 count), then its first child (+0c) and, below the
     /// junction, each node's next sibling (+10), depth first
     pub junction_centers: Vec<Vec3>,
+    /// per junction: the x / z of its region (+0x34, +0x38, as a road's `rect_c`)
+    pub junction_c: Vec<[f32; 2]>,
     pub junction_lanes: Vec<Vec<usize>>,
     /// the lane quadtree (root +130; node class 0x47b4dc), node 0 the root
     pub quad: Vec<QuadNode>,
@@ -483,6 +489,18 @@ struct RawLane {
 }
 
 impl NavSys {
+    /// The roads next to junction `j` (the police's junction prediction, F-67303: the original reads a list
+    /// the game builds at run time, net +60[J +0x20], not decoded). The port: the roads with a lane that
+    /// ends where one of the junction's lanes starts or starts where one ends (by the shared vertex), in
+    /// road order. (inferred)
+    pub fn junction_roads(&self, j: usize) -> Vec<usize> {
+        let Some(jl) = self.junction_lanes.get(j) else { return Vec::new() };
+        let ends: Vec<(u16, u16)> = jl.iter().filter_map(|&l| self.raw.get(l)).map(|r| r.vi).collect();
+        (0..self.zones.len())
+            .filter(|&z| self.zone_lanes.get(z).is_some_and(|ls| ls.iter().filter_map(|&l| self.raw.get(l)).any(|r| ends.iter().any(|e| r.vi.1 == e.0 || r.vi.0 == e.1))))
+            .collect()
+    }
+
     pub fn parse(res: &Resource) -> Result<NavSys> {
         let rd = Rd::new(res);
         let vs = res.virtual_size;
@@ -573,6 +591,7 @@ impl NavSys {
             z.no_box = rd.u8(zo + 0x4c) != 0;
             z.density = rd.u32(zo + 0x98) as i32;
             z.rect_c = [rd.f32(zo + 0x34), rd.f32(zo + 0x38)];
+            z.lane = rd.ptr(zo + 0x24).and_then(link_index);
             if let Some(np) = rd.ptr(zo + 0x90) {
                 let s = rd.cstr(np);
                 if s.len() < 64 && s.bytes().all(|b| (0x20..0x7f).contains(&b)) {
@@ -647,6 +666,7 @@ impl NavSys {
         for i in 0..jn {
             let Some(o) = jarr.map(|a| a + i * 0xc0).filter(|&o| rd.has(o, 0xc0)) else { break };
             nav.junction_centers.push(Vec3::new(rd.f32(o + 0x80), rd.f32(o + 0x84), rd.f32(o + 0x88)));
+            nav.junction_c.push([rd.f32(o + 0x34), rd.f32(o + 0x38)]);
             let mut out = Vec::new();
             walk(&rd, o, false, &link_index, &mut out, 0);
             nav.junction_lanes.push(out);
@@ -703,7 +723,7 @@ impl NavSys {
         for z in &mut zones {
             z.links.clear();
         }
-        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), lane_junction: self.lane_junction.clone(), junction_centers: self.junction_centers.clone(), junction_lanes: self.junction_lanes.clone(), quad: self.quad.clone(), ..Default::default() };
+        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), lane_junction: self.lane_junction.clone(), junction_centers: self.junction_centers.clone(), junction_c: self.junction_c.clone(), junction_lanes: self.junction_lanes.clone(), quad: self.quad.clone(), ..Default::default() };
         nav.build_graph(raw, self.zone_lanes.clone());
         nav
     }
@@ -1769,6 +1789,22 @@ mod speed_tests {
         }
         assert_eq!(census.into_iter().collect::<Vec<_>>(), vec![(10, 1), (15, 3), (25, 1), (30, 133), (40, 646), (45, 356), (55, 37), (60, 2), (65, 484)]);
         assert!(nav.links.iter().enumerate().any(|(i, _)| nav.speed_limit_mps(i).is_some_and(|s| s > 29.0)));
+    }
+
+    #[test]
+    #[ignore = "requires user's extracted Complete Edition data; set MCLA_DATA_DIR"]
+    fn complete_edition_road_lanes_and_junction_roads() {
+        let root = std::env::var("MCLA_DATA_DIR").expect("set MCLA_DATA_DIR to extracted/cache");
+        let bytes = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let data = bytes[16..].to_vec();
+        let virtual_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let res = Resource { rtype: 66, flags: 0, virtual_size, physical_size: data.len() - virtual_size, data };
+        let nav = NavSys::parse(&res).unwrap();
+        // a road's +0x24 is one of its lanes (the police's junction prediction), for 1620 of the 1663 roads
+        assert_eq!((nav.zones.len(), nav.zones.iter().filter(|z| z.lane.is_some()).count()), (1663, 1620));
+        // the junctions' regions sit at their centres; 339 of 351 find their roads by the shared lane ends
+        assert!(nav.junction_c.iter().zip(&nav.junction_centers).all(|(c, j)| (c[0] - j.x).abs() < 25.0 && (c[1] - j.z).abs() < 25.0));
+        assert_eq!((nav.junction_c.len(), (0..nav.junction_c.len()).filter(|&j| !nav.junction_roads(j).is_empty()).count()), (351, 339));
     }
 
     #[test]
