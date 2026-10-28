@@ -347,6 +347,8 @@ struct App {
     cine_hold: Option<(Option<String>, u32)>,
     /// the story scene's audio was started through the sound objects (`start_scene_audio`)
     cut_audio_objects: bool,
+    /// the in-game scene whose audio stream plays (`cine::scene_audio`)
+    cine_audio: Option<String>,
     /// the running scene keeps its own time (start-line cameras) instead of a story scene's
     cine_free: bool,
     /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
@@ -889,6 +891,7 @@ impl App {
             cine: Default::default(),
             cine_hold: None,
             cut_audio_objects: false,
+            cine_audio: None,
             cine_free: false,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
@@ -3087,6 +3090,24 @@ impl App {
         self.opening_tick(dt, world.streaming());
         // ---- hangouts: the people there, pulling in, leaving ----
         self.cine.tick(dt);
+        // an in-game scene's audio (core_rolling_prototype): its stream prepared by the name its script gives
+        // (F-27055), played as the scene plays (F-16075 -> F-58551: the speech and the police radio stop, flags 0x3
+        // on every one of them), stopped with the scene (F-19749)
+        let want = self.cine.playing.as_ref().and_then(|s| cine::scene_audio(&s.name));
+        if want != self.cine_audio && self.cuts.playing.is_none() {
+            if let Some(a) = self.audio.as_mut() {
+                if let Some(old) = self.cine_audio.take() {
+                    a.obj_cutscene(&old, false, false);
+                }
+                if let Some(n) = &want {
+                    if a.obj_cutscene(n, true, true) {
+                        self.speech.stop();
+                        self.radio.stop();
+                    }
+                }
+            }
+            self.cine_audio = want;
+        }
         {
             let pp = self.vehicles.player().map(|c| (c.state.pos, c.state.speed()));
             let near = pp.and_then(|(p, _)| self.hangouts.iter().enumerate().map(|(i, h)| (i, h.1.distance(p))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()));
@@ -6385,6 +6406,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.speech.paused = self.game.mode == Mode::Paused && self.game.replay.is_none();
             let real_dt = if self.opt.fixed_dt > 0.0 || self.test_render_dt.is_some() { dt } else { self.frame_ms * 0.001 };
             self.speech.update(a, real_dt);
+            self.radio.units = self.sound.radio_units();
             self.radio.update(a, dt);
             // pedestrians shouting as they jump clear (their speech banks looked up ahead)
             self.peds.scan_voices_ahead(a.root());

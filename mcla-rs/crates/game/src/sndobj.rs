@@ -1503,14 +1503,21 @@ fn reset_node(n: &mut Node) {
 }
 
 /// A converted stream (stereo MP3): decoded while it plays when its length is known (`<name>.mp3.txt`, the
-/// stream's frames - the same as decoded, checked on the disc's streams), else decoded whole.
+/// stream's frames at its rate - the same as decoded, checked on the disc's streams; a rate the MP3 cannot hold,
+/// the landmark bells' 4800 Hz, was resampled by the converter to 8000 Hz, so the frames are counted at the file's
+/// rate), else decoded whole.
 pub(crate) fn decode_mp3(p: &Path) -> Option<Clip> {
     use rodio::Source;
-    let frames = std::fs::read_to_string(format!("{}.txt", p.display())).ok().and_then(|t| t.lines().next().and_then(|l| l.split('\t').nth(3)).and_then(|v| v.parse::<usize>().ok())).filter(|&n| n > 0);
+    let first = std::fs::read_to_string(format!("{}.txt", p.display())).ok().and_then(|t| t.lines().next().map(str::to_string));
+    let col = |k: usize| first.as_deref().and_then(|l| l.split('\t').nth(k)).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
     let f = std::fs::File::open(p).ok()?;
     let dec = rodio::Decoder::new(std::io::BufReader::new(f)).ok()?;
     let channels = dec.channels() as usize;
     let rate = dec.sample_rate();
+    let frames = col(3).map(|n| match col(4) {
+        Some(r) if r != rate as usize => ((n as u64 * rate as u64).div_ceil(r as u64)) as usize,
+        _ => n,
+    });
     if let Some(frames) = frames {
         // (stereo kept, otherwise the first channel - as the whole decode below)
         let out = if channels == 2 { 2 } else { 1 };
@@ -1619,7 +1626,8 @@ mod tests {
     use super::*;
 
     /// The streamed decode gives the same samples as the whole decode (MCLA_AUDIO_DIR = the converted audio,
-    /// `<data>/../audio_pc`): every 25th stream of the stream folders.
+    /// `<data>/../audio_pc`): every 25th stream of the stream folders, and the landmark bells (4800 Hz on the disc,
+    /// 8000 Hz in the MP3: their length had been taken at the disc's rate, so the end of every bell was cut off).
     #[test]
     #[ignore = "requires MCLA_AUDIO_DIR"]
     fn streamed_decode_matches_whole() {
@@ -1628,7 +1636,8 @@ mod tests {
         for dir in ["ambience_stream", "vehicles_stream", "ambience_landmarks", "music"] {
             let mut files: Vec<_> = std::fs::read_dir(root.join(dir)).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "mp3")).collect();
             files.sort();
-            for p in files.iter().step_by(25) {
+            let bell = |p: &std::path::Path| std::fs::read_to_string(format!("{}.txt", p.display())).is_ok_and(|t| t.contains("	BELL_"));
+            for p in files.iter().enumerate().filter(|(i, p)| i % 25 == 0 || bell(p)).map(|(_, p)| p) {
                 let a = decode_mp3(p).unwrap();
                 let b = decode_mp3_whole(p).unwrap();
                 let Some(s) = a.stream.as_ref() else { continue };
@@ -1711,6 +1720,35 @@ mod tests {
         assert!(v(&lib, "PLAYER_VEHICLES") - pv < -99.0);
         assert!((v(&lib, "AMBIENT_VEHICLES") - av + 8.0).abs() < 0.01);
         assert!(lib.cutscene_parts("CUT_STORY_NO_SUCH", false).is_none());
+    }
+
+    /// The arrest's audio (core_rolling_prototype's stream, F-27055 -> F-16992): CUTSCENES_CUT_COP_ARREST plays the
+    /// officers' lines (one of the five takes) and the scene's effects stream, no mixer scene.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn arrest_scene_audio() {
+        fn streams(n: &Node, out: &mut Vec<f32>) {
+            match &n.kind {
+                Kind::Stream { clip: Some(_), dur_ms, .. } => out.push(*dur_ms),
+                Kind::Group { children } => children.iter().for_each(|c| streams(c, out)),
+                Kind::Looping { child, .. } | Kind::Envelope { child, .. } | Kind::OnStop { child, .. } => streams(child, out),
+                Kind::Sequential { cur: Some(c), .. } => streams(c, out),
+                _ => {}
+            }
+        }
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let (p, s) = lib.cutscene_parts("CUT_COP_ARREST", false).unwrap();
+        assert_eq!(p, vec![joaat("CUT_COP_ARREST_MASTER"), joaat("CUT_COP_ARREST_SFX_MASTER")]);
+        assert_eq!(s, None);
+        let mut clips = Vec::new();
+        for h in p {
+            let h = lib.play_hash(h, Req::default()).expect("plays");
+            streams(&lib.insts.iter().find(|i| i.id == h.0).unwrap().root, &mut clips);
+        }
+        // (the lines' take and the effects: each a converted stream of the scene's length)
+        assert!(clips.len() >= 2 && clips.iter().all(|&ms| ms > 3000.0), "{clips:?}");
     }
 
     /// VOLUME_RULE.md: slider 5 = -6.02 dB on its category and its children; the camera table's engine +3 dB in the

@@ -1647,8 +1647,9 @@ struct PoliceAudio {
     heat: u8,
     chirp_pending: bool,
     bullhorn_done: bool,
-    /// the cruisers of the running tactic
+    /// the cruisers of the running tactic, and every chasing cruiser of the last update (spawn order, cop 0 leads)
     tactic: Vec<usize>,
+    cops: Vec<usize>,
     /// call signs handed out (car -> index into CALLSIGNS) and the round-robin cursor
     callsigns: HashMap<usize, usize>,
     cursor: usize,
@@ -1685,6 +1686,15 @@ pub struct PlayerCtl {
 }
 
 impl Fleet {
+    /// The call signs the radio's requests name: the tactic's cop 0 (the lead, the sender of a REPORT_* call) and a
+    /// second cruiser (the receiver of an officer-to-officer call); the cruisers of the last update when no tactic runs.
+    pub fn radio_units(&mut self) -> (Option<String>, Option<String>) {
+        let list = if self.pol.tactic.is_empty() { self.pol.cops.clone() } else { self.pol.tactic.clone() };
+        let first = list.first().map(|&i| self.pol.callsign(i).to_string());
+        let second = list.get(1).map(|&i| self.pol.callsign(i).to_string());
+        (first, second)
+    }
+
     pub fn new(data_dir: &Path) -> Fleet {
         let mut types = HashMap::new();
         if let Ok(rd) = std::fs::read_dir(data_dir.join("tune/ambients/traffic")) {
@@ -1918,6 +1928,7 @@ impl Fleet {
         let mut cops: Vec<usize> = opp.iter().map(|x| x.1).filter(|&i| v.cars[i].cop && !v.cars[i].goon).collect();
         cops.sort_unstable();
         let lead = cops.first().copied();
+        self.pol.cops = cops.clone();
         let heat = if pol.goons { 0 } else { pol.heat };
         let mut starts: Vec<(usize, f32)> = Vec::new();
         let mut stop_all = false;

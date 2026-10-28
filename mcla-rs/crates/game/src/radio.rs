@@ -9,10 +9,16 @@
 //! * `LOCATION1` / `LOCATION2` -> `LOCATION1_SUNSET_BLVD`: the street and the cross
 //!   street, named as in the road network's zones ("HW_oh_Sunset Blvd.")
 //! * `VEHICLE_MODEL` -> `MODEL_VP_VW_GOLF_83`
-//! * `CALL` / `REPLY` / `ACKNOWLEDGE` -> the officer's plain line or the dispatcher's
-//!   with a unit's call sign (`CALL_3ADAM5`)
+//! * `CALL` / `REPLY` / `ACKNOWLEDGE` -> the officer's plain line (`CALL_DISPATCH`, `REPLY`), or the
+//!   dispatcher's with the other party's call sign (`CALL_3ADAM5`)
 //! * `PRE_SQUELCH` / `POST_SQUELCH` -> the clicks of the dispatcher's or the car's set
 //! (`CALL_NEIGHBORHOOD` and a few rare ones have no recognisable assets: left out.)
+//!
+//! Who speaks (docs/reference/audio/POLICE_RADIO_VOICES.md): a call has one sender and one receiver voice for all
+//! its lines (F-95157 keeps them at mgr +2200 / +2204; a step of type Sender or Receiver takes that side's voice,
+//! F-62806). The request names them (F-14569: 0 "DISPATCH", 1 "OFFICER", 2 the lead cruiser's call
+//! sign); "DISPATCH" is the dispatcher on shift (PoliceVoices.xml TimeStart / TimeEnd), "OFFICER" one of the
+//! officers at random, a call sign that officer's voice (F-69140).
 
 use crate::audio::Audio;
 use glam::Vec3;
@@ -47,8 +53,13 @@ pub struct Radio {
     scenarios: HashMap<String, Vec<Vec<Step>>>,
     /// clip hash -> clips of the voices that have it ("police_radio/<bank>/<file>")
     clips: HashMap<u32, Vec<String>>,
-    /// the dispatchers' banks (the others are officers)
-    dispatchers: Vec<String>,
+    /// PoliceVoices.xml: the OFFICER group's voices, the DISPATCH group's with their shift (start, end hour)
+    officers: Vec<String>,
+    dispatchers: Vec<(String, f32, f32)>,
+    /// a voice -> its banks (speech.dat's POLICE_RADIO\<voice>_<part> and SC_<voice>)
+    voice_banks: HashMap<String, HashSet<String>>,
+    /// the call signs of the lead cruiser and of a second one, as the cars' sounds hand them out (`Sound::radio_units`)
+    pub units: (Option<String>, Option<String>),
     /// clips to play, in order
     queue: VecDeque<(String, f32)>,
     wait: f32,
@@ -63,8 +74,6 @@ fn attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
     let e = s[i..].find('"')?;
     Some(&s[i..i + e])
 }
-
-const UNITS: [&str; 6] = ["3ADAM5", "1LINCOLN4", "4ADAM8", "4ADAM13", "2ADAM6", "1EDWARD7"];
 
 /// "HW_oh_Sunset Blvd." -> "SUNSET_BLVD"
 fn street_asset(zone: &str) -> String {
@@ -92,11 +101,46 @@ impl Radio {
                 }
             }
         }
-        // only the dispatchers call "any unit"
-        let mut d: Vec<String> = r.clips.get(&joaat("CALL_ANY_01")).map(|c| c.iter().map(|k| bank_of(k).to_string()).collect()).unwrap_or_default();
-        d.sort();
-        d.dedup();
-        r.dispatchers = d;
+        // the voice groups (F-27393: OFFICER, DISPATCH with optional shifts; the SQUELCH group is the clicks)
+        if let Ok(t) = std::fs::read_to_string(Path::new(data_dir).join("tune/audio/PoliceVoices.xml")) {
+            let mut group = String::new();
+            for l in t.lines().map(str::trim) {
+                if l.starts_with("<!--") {
+                    continue;
+                }
+                if l.starts_with("<VoiceGroup") {
+                    group = attr(l, "name").unwrap_or("").to_string();
+                } else if l.starts_with("<Voice ") {
+                    let Some(n) = attr(l, "name") else { continue };
+                    match group.as_str() {
+                        "OFFICER" => r.officers.push(n.to_string()),
+                        "DISPATCH" => {
+                            let h = |k: &str| attr(l, k).and_then(|v| v.parse::<f32>().ok());
+                            r.dispatchers.push((n.to_string(), h("TimeStart").unwrap_or(0.0), h("TimeEnd").unwrap_or(24.0)));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // each voice's banks: speech.dat names them POLICE_RADIO\<voice>_<part> (the add-on's SC_<voice>); dispatcher
+        // 2's are spelled DISPATCHER_2_*
+        if let Ok(d) = std::fs::read(Path::new(data_dir).join("audio/X360/config/speech.dat")) {
+            let pat = b"POLICE_RADIO\\";
+            let voices: Vec<String> = r.officers.iter().cloned().chain(r.dispatchers.iter().map(|d| d.0.clone())).collect();
+            let mut i = 0;
+            while let Some(k) = d[i..].windows(pat.len()).position(|w| w == pat) {
+                let st = i + k + pat.len();
+                let end = d[st..].iter().position(|c| !(c.is_ascii_alphanumeric() || *c == b'_')).map_or(d.len(), |e| st + e);
+                let name = String::from_utf8_lossy(&d[st..end]).to_string();
+                let core = name.strip_prefix("SC_").unwrap_or(&name).replace("DISPATCHER_2_", "DISPATCHER_02_");
+                let core = if core == "DISPATCHER_2" { "DISPATCHER_02".to_string() } else { core };
+                if let Some(v) = voices.iter().filter(|v| core == **v || core.starts_with(&format!("{v}_"))).max_by_key(|v| v.len()) {
+                    r.voice_banks.entry(v.clone()).or_default().insert(format!("police_radio/0x{:08x}", joaat(&name)));
+                }
+                i = end.max(st);
+            }
+        }
         let Ok(bytes) = std::fs::read(Path::new(data_dir).join("tune/audio/PoliceScript.xml")) else { return r };
         let t = String::from_utf8_lossy(&bytes);
         for sc in t.split("<Scenario ").skip(1) {
@@ -127,7 +171,7 @@ impl Radio {
                 r.scenarios.insert(name.to_ascii_uppercase(), wordings);
             }
         }
-        log::info!("police radio: {} calls, {} clips, {} dispatchers", r.scenarios.len(), r.clips.len(), r.dispatchers.len());
+        log::info!("police radio: {} calls, {} clips, {} officers, {} dispatchers, {} voices with banks", r.scenarios.len(), r.clips.len(), r.officers.len(), r.dispatchers.len(), r.voice_banks.len());
         r
     }
 
@@ -156,6 +200,52 @@ impl Radio {
         out
     }
 
+    /// The takes of an asset in one voice's banks (_01, _02 ... while they go on).
+    fn voice_takes(&self, asset: &str, voice: &str) -> Vec<String> {
+        let Some(vb) = self.voice_banks.get(voice) else { return Vec::new() };
+        let mut out = Vec::new();
+        for n in 1..=99 {
+            match self.clips.get(&joaat(&format!("{asset}_{n:02}"))).and_then(|c| c.iter().find(|k| vb.contains(bank_of(k)))) {
+                Some(k) => out.push(k.clone()),
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// The dispatcher whose shift holds the hour (F-67536 via F-84173: start..end, through midnight when end < start).
+    fn on_shift(&self, hour: f32) -> Option<String> {
+        self.dispatchers.iter().find(|(_, s, e)| if s <= e { (*s..*e).contains(&hour) } else { hour >= *s || hour < *e }).map(|d| d.0.clone())
+    }
+
+    /// A party's voice (F-69140): "DISPATCH" the dispatcher on shift, "OFFICER" one of the officers at random,
+    /// else the voice of that name (a call sign).
+    fn voice_of(&mut self, who: &str, hour: f32) -> Option<String> {
+        match who {
+            "DISPATCH" => self.on_shift(hour),
+            "OFFICER" if !self.officers.is_empty() => {
+                let k = self.rand() as usize % self.officers.len();
+                Some(self.officers[k].clone())
+            }
+            "" => None,
+            n => Some(n.to_string()),
+        }
+    }
+
+    /// Sender and receiver of a scenario, as its request class sets them (F-72931 .. F-19465: +16 / +20 = 0 DISPATCH,
+    /// 1 OFFICER, 2 a call sign - the lead cruiser's for the sender, the request's +24 for the receiver;
+    /// DISPATCH_REPORT_* go from the dispatcher to an officer).
+    fn parties(&self, scenario: &str) -> (String, String) {
+        let lead = self.units.0.clone().unwrap_or_default();
+        if scenario.starts_with("DISPATCH_") {
+            return ("DISPATCH".into(), "OFFICER".into());
+        }
+        if scenario.ends_with("OFFICER_TO_OFFICER") || scenario == "REPORT_PURSUIT_STATEMENT" || scenario.starts_with("REPORT_UPGRADE_") {
+            return (lead, self.units.1.clone().unwrap_or_default());
+        }
+        (lead, "DISPATCH".into())
+    }
+
     /// Put a call on the air. Chatter (`urgent` false) waits its turn: it is dropped
     /// while another call is running or has only just ended.
     pub fn say(&mut self, scenario: &str, urgent: bool, ctx: &Ctx) -> bool {
@@ -166,7 +256,13 @@ impl Radio {
         let Some(n) = self.scenarios.get(&key).map(|w| w.len()) else { return false };
         let pick = self.rand() as usize % n;
         let steps = self.scenarios[&key][pick].clone();
-        let unit = UNITS[self.rand() as usize % UNITS.len()];
+        // the call's two voices, fixed for all its lines (F-95157 +2200 / +2204); no sender: no call
+        let (sender, receiver) = self.parties(&key);
+        let Some(sv) = self.voice_of(&sender, ctx.hour) else { return false };
+        let rv = self.voice_of(&receiver, ctx.hour);
+        let voice: [Option<String>; 2] = [Some(sv), rv];
+        let disp: Vec<String> = self.dispatchers.iter().map(|d| d.0.clone()).collect();
+        let is_dispatch = |v: &Option<String>| v.as_ref().is_some_and(|v| disp.contains(v));
         let dir = if ctx.heading.x.abs() > ctx.heading.z.abs() {
             if ctx.heading.x > 0.0 { "EAST" } else { "WEST" }
         } else if ctx.heading.z < 0.0 {
@@ -174,65 +270,47 @@ impl Radio {
         } else {
             "SOUTH"
         };
-        let dispatchers: HashSet<String> = self.dispatchers.iter().cloned().collect();
-        // the dispatcher on shift (two of them, changing at 7 and 19 h)
-        let on_shift = self.dispatchers.get(if (7.0..19.0).contains(&ctx.hour) { 1 } else { 0 }.min(self.dispatchers.len().saturating_sub(1))).cloned();
-        // who speaks for the sender and the receiver in this call, once they have said something
-        let mut voice: [Option<String>; 2] = [None, None];
-        // (clip, role) in order; squelches are filled in afterwards, when the voices are known
+        // (clip, role) in order; squelches are filled in afterwards
         let mut line: Vec<(Option<String>, u8, bool)> = Vec::new();
         let mut said: Vec<String> = Vec::new();
         for st in &steps {
-            let (cands, role): (Vec<String>, u8) = match st {
-                Step::Play { asset, role, .. } => (vec![asset.clone()], *role),
+            let (asset, role): (String, u8) = match st {
+                Step::Play { asset, role, .. } => (asset.clone(), *role),
                 Step::Special { name, role } => {
-                    let c = match name.as_str() {
+                    let r = *role as usize;
+                    // the dispatcher names the other party's call sign; an officer calls dispatch (F-28061)
+                    let other = voice[1 - r].clone().filter(|_| is_dispatch(&voice[r]));
+                    let with = |base: &str, plain: &str| match &other {
+                        Some(o) => format!("{base}_{o}"),
+                        None => plain.to_string(),
+                    };
+                    let a = match name.as_str() {
                         "PRE_SQUELCH" | "POST_SQUELCH" => {
                             line.push((None, *role, name == "PRE_SQUELCH"));
                             continue;
                         }
-                        "DIRECTION_PLAYER" | "DIRECTION_STREETRACE" | "DIRECTION_CHANGE_PLAYER" | "DIRECTION_CHANGE_STREETRACE" => vec![format!("{name}_{dir}")],
-                        "LOCATION1" if !ctx.street.is_empty() => vec![format!("LOCATION1_{}", street_asset(&ctx.street))],
-                        "LOCATION2" if !ctx.cross.is_empty() => vec![format!("LOCATION2_{}", street_asset(&ctx.cross))],
-                        "VEHICLE_MODEL" if !ctx.car.is_empty() => vec![format!("MODEL_{}", ctx.car.to_ascii_uppercase())],
-                        "CALL" => vec!["CALL_DISPATCH".to_string(), format!("CALL_{unit}")],
-                        "REPLY" => vec!["REPLY".to_string(), format!("REPLY_{unit}")],
-                        "ACKNOWLEDGE" => vec!["ACKNOWLEDGE".to_string(), format!("ACKNOWLEDGE_{unit}")],
-                        "ACKNOWLEDGE_STANDBY" => vec!["ACKNOWLEDGE_STANDBY".to_string()],
+                        "DIRECTION_PLAYER" | "DIRECTION_STREETRACE" | "DIRECTION_CHANGE_PLAYER" | "DIRECTION_CHANGE_STREETRACE" => format!("{name}_{dir}"),
+                        "LOCATION1" if !ctx.street.is_empty() => format!("LOCATION1_{}", street_asset(&ctx.street)),
+                        "LOCATION2" if !ctx.cross.is_empty() => format!("LOCATION2_{}", street_asset(&ctx.cross)),
+                        "VEHICLE_MODEL" if !ctx.car.is_empty() => format!("MODEL_{}", ctx.car.to_ascii_uppercase()),
+                        "CALL" => with("CALL", "CALL_DISPATCH"),
+                        "REPLY" => with("REPLY", "REPLY"),
+                        "ACKNOWLEDGE" => with("ACKNOWLEDGE", "ACKNOWLEDGE"),
+                        "ACKNOWLEDGE_STANDBY" => "ACKNOWLEDGE_STANDBY".to_string(),
                         _ => continue,
                     };
-                    (c, *role)
+                    (a, *role)
                 }
             };
-            let all: Vec<String> = cands.iter().flat_map(|a| self.takes(a)).collect();
-            if all.is_empty() {
+            // the side's own voice speaks the line; a word that voice does not have stays silent (the line does not
+            // resolve), no other voice takes it
+            let Some(v) = voice[role as usize].as_ref() else { continue };
+            let takes = self.voice_takes(&asset, v);
+            if takes.is_empty() {
                 continue;
             }
-            let r = role as usize;
-            // the voice already speaking for this side goes on if it has the line; a new voice
-            // is a dispatcher when the other side is an officer (and the other way round), and
-            // the dispatcher is the one on shift
-            let own: Vec<&String> = match voice[r].as_ref() {
-                Some(v) => all.iter().filter(|k| bank_of(k) == v).collect(),
-                None => Vec::new(),
-            };
-            let pool: Vec<&String> = if !own.is_empty() {
-                own
-            } else {
-                let other_is_dispatch = voice[1 - r].as_ref().map(|v| dispatchers.contains(v));
-                let fits: Vec<&String> = all
-                    .iter()
-                    .filter(|k| {
-                        let d = dispatchers.contains(bank_of(k));
-                        let shift_ok = !d || on_shift.as_deref().map_or(true, |s| s == bank_of(k));
-                        shift_ok && other_is_dispatch.map_or(true, |o| o != d) && voice[1 - r].as_deref() != Some(bank_of(k))
-                    })
-                    .collect();
-                if fits.is_empty() { all.iter().collect() } else { fits }
-            };
-            let k = pool[self.rand() as usize % pool.len()].clone();
-            voice[r] = Some(bank_of(&k).to_string());
-            said.push(cands[0].clone());
+            let k = takes[self.rand() as usize % takes.len()].clone();
+            said.push(format!("{v}:{asset}"));
             line.push((Some(k), role, false));
         }
         if !line.iter().any(|l| l.0.is_some()) {
@@ -246,8 +324,7 @@ impl Radio {
                 Some(k) => self.queue.push_back((k, 0.7)),
                 None => {
                     // the click of the speaker's set
-                    let is_dispatch = voice[role as usize].as_ref().map_or(false, |v| dispatchers.contains(v));
-                    let bank = format!("police_radio/0x{:08x}", joaat(if is_dispatch { "POLICE_RADIO_SQUELCH_DISPATCH" } else { "POLICE_RADIO_SQUELCH_OFFICER" }));
+                    let bank = format!("police_radio/0x{:08x}", joaat(if is_dispatch(&voice[role as usize]) { "POLICE_RADIO_SQUELCH_DISPATCH" } else { "POLICE_RADIO_SQUELCH_OFFICER" }));
                     let takes: Vec<String> = self.takes(if pre { "PRE_SQUELCH" } else { "POST_SQUELCH" }).into_iter().filter(|k| bank_of(k) == bank).collect();
                     if !takes.is_empty() {
                         let k = takes[self.rand() as usize % takes.len()].clone();
@@ -284,5 +361,64 @@ impl Radio {
                 self.wait = dur + 0.04;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A call keeps its two voices for all its lines (GitHub #17: the description changed voice word by word): every
+    /// clip a call queues is in the sender's or the receiver's banks or a squelch set, the sender of a REPORT_* call is
+    /// the lead cruiser, its receiver the dispatcher on shift; DISPATCH_REPORT_* go the other way.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn a_call_keeps_its_voices() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut r = Radio::load(&dir, a.root());
+        assert_eq!((r.officers.len(), r.dispatchers.len()), (6, 2));
+        assert_eq!(r.voice_banks.len(), 8, "{:?}", r.voice_banks.keys().collect::<Vec<_>>());
+        assert_eq!(r.on_shift(12.0).as_deref(), Some("DISPATCHER_02"));
+        assert_eq!(r.on_shift(23.0).as_deref(), Some("DISPATCHER_01"));
+        assert_eq!(r.on_shift(3.0).as_deref(), Some("DISPATCHER_01"));
+        r.units = (Some("4ADAM8".into()), Some("2ADAM6".into()));
+        let squelch: HashSet<String> = ["POLICE_RADIO_SQUELCH_DISPATCH", "POLICE_RADIO_SQUELCH_OFFICER"].iter().map(|n| format!("police_radio/0x{:08x}", joaat(n))).collect();
+        let ctx = Ctx { heading: Vec3::X, street: "HW_oh_Sunset Blvd.".into(), cross: "HW_oh_Vine St.".into(), car: "vp_vw_golf_83".into(), hour: 12.0 };
+        let mut calls = 0;
+        let names: Vec<String> = r.scenarios.keys().cloned().collect();
+        for (k, name) in names.iter().enumerate() {
+            for hour in [3.0, 12.0] {
+                r.queue.clear();
+                let c = Ctx { hour, ..ctx.clone() };
+                if !r.say(name, true, &c) {
+                    continue;
+                }
+                calls += 1;
+                let (s, rcv) = r.parties(name);
+                let sv = r.voice_of(&s, hour).unwrap();
+                let rv = if rcv == "OFFICER" { None } else { r.voice_of(&rcv, hour) };
+                if name.starts_with("REPORT_") {
+                    // (officer to officer: the pursuit statement, the upgrades and *_OFFICER_TO_OFFICER)
+                    let o2o = name.ends_with("OFFICER_TO_OFFICER") || name == "REPORT_PURSUIT_STATEMENT" || name.starts_with("REPORT_UPGRADE_");
+                    let want = if o2o { Some("2ADAM6".to_string()) } else { r.on_shift(hour) };
+                    assert_eq!((sv.as_str(), rv.clone()), ("4ADAM8", want), "{name}");
+                }
+                let mut voices: HashSet<&str> = HashSet::new();
+                for (clip, _) in &r.queue {
+                    let b = bank_of(clip).to_string();
+                    if squelch.contains(&b) {
+                        continue;
+                    }
+                    let v = r.voice_banks.iter().find(|(_, bs)| bs.contains(&b)).map(|(v, _)| v.as_str()).unwrap_or("?");
+                    voices.insert(v);
+                }
+                assert!(voices.len() <= 2, "{name} ({k}) at {hour} h: {voices:?}");
+                if rv.is_some() || s != "DISPATCH" {
+                    assert!(voices.iter().all(|v| *v == sv || Some(*v) == rv.as_deref() || rcv == "OFFICER" || s == "OFFICER"), "{name}: {voices:?} not {sv} / {rv:?}");
+                }
+            }
+        }
+        assert!(calls > 100, "{calls} calls");
     }
 }

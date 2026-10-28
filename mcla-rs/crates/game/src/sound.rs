@@ -220,6 +220,11 @@ impl Preloaded {
 }
 
 impl Sound {
+    /// The call signs of the lead cruiser and of a second one, for the police radio (`Fleet::radio_units`).
+    pub fn radio_units(&mut self) -> (Option<String>, Option<String>) {
+        self.fleet.as_mut().map(|f| f.radio_units()).unwrap_or_default()
+    }
+
     /// Take a [`Preloaded`] sound library (the first sound update does it itself when nothing was handed over).
     pub fn adopt(&mut self, p: Preloaded) {
         self.lib_tried = true;

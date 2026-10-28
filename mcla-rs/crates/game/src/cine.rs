@@ -102,6 +102,22 @@ pub struct Cine {
     linger: Option<Scene>,
 }
 
+/// The in-game scenes whose generated scripts name an audio stream (their static block's upper-case scene name,
+/// handed to core_rolling_prototype: CineScript_Audio_PrepareStream, F-27055 -> F-16992 looks up `CUTSCENES_<name>`).
+/// The other generated scenes (cut_cop_arrest_04 - _06, the reward scenes, cut_cop_alert_02 ...) name none; CUT_INTRO
+/// is left out, its audio is the story scene path's (`start_scene_audio`). cut_cop_fidget has no object: no sound.
+pub const SCENE_AUDIO: &[&str] = &[
+    "cut_cop_alert", "cut_cop_arrest", "cut_cop_arrest_02", "cut_cop_arrest_03", "cut_cop_arrest_07", "cut_cop_arrest_08",
+    "cut_cop_fidget", "cut_cop_fidget_02", "cut_cop_fidget_bike", "cut_cop_walk", "cut_cop_walk_02", "cut_cop_walk_plyr_02",
+    "cut_loss_chung_hee", "cut_loss_lester", "cut_loss_pete",
+];
+
+/// The audio stream an in-game scene plays (`SCENE_AUDIO`), upper case as its script names it.
+pub fn scene_audio(scene: &str) -> Option<String> {
+    let n = scene.rsplit('/').next().unwrap_or(scene).to_ascii_lowercase();
+    SCENE_AUDIO.contains(&n.as_str()).then(|| n.to_ascii_uppercase())
+}
+
 /// The story scenes' skip and cut events, from their generated scripts (`Game/CineScripts/generated/story/
 /// cut_story_*`, CineScript_Events_LaunchEvent): the scene, its `bookmark` (73), `bookmark_cut_to_game` (72)
 /// and `cut_to_game` (74) times. A scene not listed has none (cut_story_motorcycle_rep_A / _B, cut_intro).
@@ -745,5 +761,28 @@ mod tests {
         assert!((cut_to_game("story/cut_story_race_gh_06", 64.2).unwrap() - 64.1667).abs() < 1e-3);
         // no marks: the skip does nothing
         assert_eq!(skip_to("story/cut_story_motorcycle_rep_A", 1.0, 40.0), None);
+    }
+
+    /// `SCENE_AUDIO` is every generated scene script that names its audio stream (besides CUT_INTRO), read from
+    /// the scripts themselves; scene_audio gives the arrest's CUT_COP_ARREST.
+    #[test]
+    #[ignore]
+    fn scene_audio_from_the_scripts() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "../extracted/cache".into());
+        let dir = Path::new(&data).join("script_obj/game/CineScripts/generated");
+        let mut named: Vec<String> = Vec::new();
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let Ok(b) = std::fs::read(e.path()) else { continue };
+            let Ok(sco) = mcla_formats::sco::decode(&b) else { continue };
+            let strs = sco.strings(3);
+            let Some(scene) = strs.iter().filter_map(|s| s.trim().strip_prefix("cutscene/")).find(|s| !s.contains('/')).map(str::to_string) else { continue };
+            if strs.iter().any(|s| s.trim() == scene.to_ascii_uppercase()) && scene != "cut_intro" {
+                named.push(scene);
+            }
+        }
+        named.sort();
+        assert_eq!(named, SCENE_AUDIO.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(scene_audio("cut_cop_arrest").as_deref(), Some("CUT_COP_ARREST"));
+        assert_eq!(scene_audio("cut_cop_arrest_05"), None);
     }
 }
