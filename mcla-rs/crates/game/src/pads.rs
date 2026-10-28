@@ -171,6 +171,12 @@ impl Pad {
         unsafe { SDL_GetBooleanProperty(SDL_GetGamepadProperties(self.raw), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) }
     }
 
+    /// Runs the pad's two motors (left / low frequency, right / high frequency, 0..65535) for `ms`
+    /// milliseconds (`crate::rumble`: the original's XInputSetState values).
+    pub fn rumble(&self, low: u16, high: u16, ms: u32) -> bool {
+        unsafe { SDL_RumbleGamepad(self.raw, low, high, ms) }
+    }
+
     /// The layout line SDL uses for this pad (for the log).
     pub fn mapping(&self) -> String {
         unsafe {

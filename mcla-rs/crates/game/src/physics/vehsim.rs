@@ -1179,6 +1179,8 @@ pub fn take_answer(st: &mut CarState, p: &CarParams, vt: &VehTune, jf: Vec3, jt:
 }
 
 pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, world: &WorldCollider, dt: f32) {
+    // (chassis +224 as the tick comes in: what mcCarDamage's rumble test and mcFeedback's update read, crate::rumble)
+    st.rumble.speed = st.vel.length();
     // (a replay of a recorded computer driver gives the chassis' own pedals: no mapping)
     let replay_ai = REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed);
     // (a deactivated racer, chassis +592 bit 0x1: throttle, brake and handbrake written 0 (A-14335)
@@ -1755,6 +1757,8 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         vs.nitro_level = 1.0;
         vs.nitro_burning = true;
         vs.nitro_fires = vs.nitro_fires.wrapping_add(1);
+        // (the fire routine F-62883: the pad's rumble 3)
+        st.rumble.play(3);
         st.nitro_shots -= 1;
     }
     vs.nitro_held = input.nitro;
@@ -2432,6 +2436,20 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     };
     let backup = (st.pos, st.rot, st.wheels);
     physics_frame(st, &mut vs, p, vt, input, ratio, world, dt);
+    // (mcCar::Update F-53665, after the chassis update: a car down again after more than 0.5 s in the air -
+    // chassis +584 negated for that tick, under -0.5 - sets byte +473; while it is set the pad's rumble 1 is
+    // asked every tick, and it is cleared when no wheel is bottomed (+530, F-31583))
+    if vs.by.exact {
+        if vs.air584 < -0.5 {
+            st.rumble.landing = true;
+        }
+        if st.rumble.landing {
+            st.rumble.play(1);
+            if !vs.wheels.iter().any(|w| w.bottomed) {
+                st.rumble.landing = false;
+            }
+        }
+    }
     // ---- the slipstream turbo's button (mcPlayerInput A-17808..A-32015): the nitrous button down in the
     // pad's frame, the turbo ready (F-29462) and the nitrous neither burning nor its view away from rest
     // (+32, F-91794) sets flag 4 instead of the nitrous's 8, which needs the turbo not burning and its lens
@@ -2442,12 +2460,16 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     let sst_go = sst_btn && vs.sst.can_fire(!input.hold && !wiped) && !vs.nitro_burning && vs.nitro_view == 0.0;
     if sst_go {
         vs.sst.fire();
+        // (F-68670's caller: the pad's rumble 3, unless a racing wheel took it - F-86040, none in the port)
+        st.rumble.play(3);
         log::info!("slipstream turbo fired ({})", if input_ai { "computer" } else { "player" });
     }
     if nitro_try && !sst_go && !vs.sst.burning && vs.sst.fov == 0.0 && !vs.nitro_burning && vs.nitro_view == 0.0 && st.nitro_shots > 0 {
         vs.nitro_level = 1.0;
         vs.nitro_burning = true;
         vs.nitro_fires = vs.nitro_fires.wrapping_add(1);
+        // (the fire routine F-62883: the pad's rumble 3)
+        st.rumble.play(3);
         st.nitro_shots -= 1;
     }
     if dbg_flag("MCLA_DBG_TRACE") {
@@ -3803,6 +3825,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // up under 0.1 (F-75615); the force along the car's length -(NitroBoostAmount x level^NitroBoostExp)
         // x throttle (+136) x wheels with a record / wheels x the gear's way, times the mass (F-14399) ----
         if vs.nitro_burning {
+            // (F-84636: every tick that comes in burning, the human's pad rumble 8 - also the tick it runs out)
+            st.rumble.play(8);
             vs.nitro_level = fnms32(1.0 / t.nitro.boost_time, dt, vs.nitro_level);
             let upset = !(vs.air584 > 0.0) && body_rows[1].y < 0.1;
             if !(vs.nitro_level > 0.0) || upset {
@@ -3841,6 +3865,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     if vs.sst.burning {
         let upset = !(vs.air584 > 0.0) && body_rows[1].y < 0.1;
         let k = vs.sst.burn(&t.ss_turbo, upset, dt);
+        // (F-60935: every tick that comes in burning, the human's pad rumble 8)
+        st.rumble.play(8);
         let share = vs.nitro_records as f32 / wheels_in as f32;
         let f = (((body_rows[2] * k) * throttle_in) * share) * mass;
         if exact_nitro {
@@ -5157,6 +5183,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             match vs.wipe {
                 None if body_rows[1].y <= 0.1 && !(vs.air584 > 0.0) => {
                     vs.wipe = Some((t.damage.wipeout_delay, 0));
+                    // (the wipeout's start F-69183: the pad's rumble 1)
+                    st.rumble.play(1);
                     // (chassis +112 = chassis +96: the centre of mass at ModelOffset's height on the model's origin)
                     vs.cg = [t.s.model_offset_y, 0.0];
                     // (F-30391: chassis +608)

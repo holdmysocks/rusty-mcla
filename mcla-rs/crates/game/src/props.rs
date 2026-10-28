@@ -2060,6 +2060,11 @@ impl Props {
                                         st.correct_position(p);
                                         st.vel += p * (60.0 * dt);
                                         st.ang_vel += w * dt;
+                                        // (F-35508, after the push: a human's pad rumble 1 - unless a racing
+                                        // wheel took the side push, F-17707; none in the port)
+                                        if human {
+                                            st.rumble.play(1);
+                                        }
                                     }
                                     continue;
                                 }

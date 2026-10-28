@@ -124,6 +124,7 @@ const FILM_CUT_INTRO_AT: f32 = 58.2;
 const PAUSE_FRAME: Vec3 = Vec3::new(0.0, 1.42, 0.08);
 mod rivals;
 mod rubber;
+mod rumble;
 mod aiv;
 mod brain;
 mod brainpath;
@@ -284,6 +285,8 @@ struct App {
     /// the pad being played with: the last one whose button or stick was used (Windows can
     /// list several - one controller as XInput and as a raw HID device, a dongle's spare slots)
     pad_id: Option<pads::PadId>,
+    /// the pad's rumble: the player car's feedback object (`rumble`), made on first use
+    pad_rumble: Option<rumble::PadRumble>,
     /// when each pad was last used (a button, or a stick or trigger past half way)
     pad_used: std::collections::HashMap<pads::PadId, std::time::Instant>,
     game: Game,
@@ -843,6 +846,7 @@ impl App {
             vehicles: Vehicles::new(),
             gamepad: open_pads(),
             pad_id: None,
+            pad_rumble: None,
             pad_used: Default::default(),
             game: Game::new(Vec::new(), 0),
             cp_markers: Default::default(),
@@ -4672,6 +4676,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 log::info!("steer dbg: tick {} drive {} menu {} mode {:?} in steer {:.2} thr {:.2} -> car input steer {:?} state steer {:?} veh steer {:?}", self.tick_no, self.drive, menu_open, self.game.mode, player_input.steer, player_input.throttle, self.vehicles.player().map(|c| c.input.steer), self.vehicles.player().map(|c| c.state.steer), self.vehicles.player().and_then(|c| c.state.veh.as_ref().map(|v| (v.pad_steer, v.steer))));
             }
             self.props.collide(&gpu, &world, &mut self.vehicles.cars, sim_dt);
+            // ---- the pad's rumble (crate::rumble): the player car's tick asked its effects (hits, landing,
+            // nitrous, turbo, posts...), Agro's strikes theirs; then mcFeedback's update F-25579 ----
+            {
+                let pad = self.gamepad.as_ref().map_or(false, |g| active_pad(g, self.pad_id).is_some());
+                let data_dir = self.opt.data_dir.clone();
+                let r = self.pad_rumble.get_or_insert_with(|| rumble::PadRumble::new(std::path::Path::new(&data_dir)));
+                if let Some(c) = self.vehicles.cars.iter_mut().find(|c| c.is_player) {
+                    if let Some(vs) = c.state.veh.as_deref_mut() {
+                        for _ in 0..std::mem::take(&mut vs.agro.out.rumble) {
+                            c.state.rumble.play(3);
+                        }
+                    }
+                    r.tick(&mut c.state, pad, false);
+                }
+            }
             // (the loose props as the cars' shared physics level moved them, physics/loose.rs)
             if let Some(lw) = world.collider.loose.as_deref() {
                 self.props.follow_level(&gpu, &self.vehicles.level, lw);
@@ -6619,6 +6638,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         for _ in 0..ticks {
             self.update_gameplay(fixed_step::DT);
+        }
+        // ---- the pad's rumble to the pad (crate::rumble): game.SetForceFeedback as the game state has it
+        // (GameState.sc.xml: off in the hangout and the garage, on for its test drive), the stops while the
+        // game's tick is held (the pause menu F-54667 / F-77444, recorded; the port's other holds alike) ----
+        if let Some(r) = self.pad_rumble.as_mut() {
+            let ff = !(self.game.mode == Mode::Garage && self.game.test_drive.is_none()) && self.hangout_in.is_none();
+            let held = self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() || self.game.in_menu();
+            let vibration = self.game.mc4.as_ref().map_or(true, |m| m.options.vibration);
+            let pad = self.gamepad.as_ref().and_then(|g| active_pad(g, self.pad_id));
+            r.frame(pad, ff, vibration, held);
         }
         let sim_ms = sim_t0.elapsed().as_secs_f32() * 1000.0;
         // (the start screen's black around the attract movie, over the garage entry's own mask - set by the ticks)

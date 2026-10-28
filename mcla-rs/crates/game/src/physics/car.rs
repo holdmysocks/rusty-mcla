@@ -8,7 +8,7 @@ use glam::{Mat3, Quat, Vec3};
 pub struct CarParams {
     pub mass: f32,
     pub wheel_pos: [Vec3; 4], // FL, FR, RL, RR attachment points (local, at ride height)
-    /// the skeleton's `hub_0` .. `hub_3` bones as the model has them (the deform pieces' places, 0x8235CBD0)
+    /// the skeleton's `hub_0` .. `hub_3` bones as the model has them (the deform pieces' places, F-10977)
     pub hub_bones: Option<[Vec3; 4]>,
     pub wheel_radius: f32,
     /// tyre width (m)
@@ -53,11 +53,13 @@ pub struct CarParams {
     /// hard blow finishes it, and the impact speeds (m/s) that count at all, that finish a
     /// battered car, and that wreck any car outright
     pub dmg: [f32; 5],
+    /// mcCarDamageTune +48 JoltThreshold: the hit a slow car needs for the pad's rumble (F-11688)
+    pub jolt: f32,
 }
 
 impl CarParams {
-    /// Half the width and length of the box the zone damage measures a hit against (0x82356D98):
-    /// the car instance's composite bound box (+0x10 max / +0x20 min), which `sub_82599FB0` makes
+    /// Half the width and length of the box the zone damage measures a hit against (F-74840):
+    /// the car instance's composite bound box (+0x10 max / +0x20 min), which `F-32566` makes
     /// the union of its parts' boxes - the hull's and each fitted wheel bound's at the wheel's place
     /// (recorded R8: hull x 1.0009, rear wheel 0.7775 + 0.2263 = 1.0038; z 2.1064 .. -2.3572, half
     /// 2.2318; the same box all through a crash). Without a hull: the body box.
@@ -66,7 +68,7 @@ impl CarParams {
         [(hi.x - lo.x) * 0.5, (hi.z - lo.z) * 0.5]
     }
 
-    /// The box of the car's composite bound (0x8259ADA8 / 0x82599FB0): the hull's, margin included,
+    /// The box of the car's composite bound (F-65996 / F-32566): the hull's, margin included,
     /// and the wheels' crowned boxes. (lo, hi) in the car.
     pub fn composite_box(&self) -> (Vec3, Vec3) {
         let Some(h) = self.hull.as_ref() else { return (-self.body_half, self.body_half) };
@@ -172,6 +174,7 @@ impl Default for CarParams {
             brake_bias: 0.6,
             veh: None,
             dmg: [300.0, 250.0, 2.0, 14.0, 17.0],
+            jolt: 10.0,
         }
     }
 }
@@ -193,7 +196,7 @@ pub struct CarInput {
     pub hyd: u8,
     /// in another car's slipstream: the air's drag falls to the tuning's DragMin
     pub draft: bool,
-    /// a computer driver's flag 4 (0x822B91F0): fire the slipstream turbo if it is ready
+    /// a computer driver's flag 4 (F-94408): fire the slipstream turbo if it is ready
     pub sst: bool,
     /// the weight-transfer button: with the steering, at speed, it tips a car onto two wheels
     pub xfer: bool,
@@ -205,18 +208,18 @@ pub struct CarInput {
     pub ice: bool,
     /// the race's grid flag (chassis +592 bit 0x2, set on every racer from placement until GO;
     /// N-VP-1): mcCarSim::Update holds the gearbox while the handbrake is off and the burnout charge
-    /// is under 0.95 (0x8232F098), uses a burnout weight transfer of 0.75 (0x8232F8E4) and locks the
-    /// front wheels with ten times their grip (0x8232F304 - seen on the player's car only); the
+    /// is under 0.95 (A-13403), uses a burnout weight transfer of 0.75 (A-94507) and locks the
+    /// front wheels with ten times their grip (A-87142 - seen on the player's car only); the
     /// player's chassis brake is also written 1 by the race code. A computer driver's pedals with it
     /// are the chassis's own (no coasting share).
     pub hold: bool,
-    /// a deactivated racer (Racer_Deactivate sub_822AB258 -> sub_8232C788(sim, 1): chassis +592 bit 0x1;
+    /// a deactivated racer (Racer_Deactivate F-12981 -> F-30391(sim, 1): chassis +592 bit 0x1;
     /// the new career's three starters on VEHICLE SELECT, `game/career/0xebb682f7`): mcCarSim::Update writes
-    /// the pedals 0 (0x8232EC70) and the steering the default steer direction +656 (0x8232EDB0; the input's
-    /// `steer` carries it), the automatic brake 1.0 on every wheel and the gearbox held (0x8232F214,
-    /// 0x8232F2AC). The pedals at 0, the stop timer runs and the body is frozen after a second standing.
+    /// the pedals 0 (A-14335) and the steering the default steer direction +656 (A-57251; the input's
+    /// `steer` carries it), the automatic brake 1.0 on every wheel and the gearbox held (A-16188,
+    /// A-30794). The pedals at 0, the stop timer runs and the body is frozen after a second standing.
     pub deactivated: bool,
-    /// a cine car event's mcBrainAnimated writes the chassis's inputs (sub_822B97E0): as they are - no pad
+    /// a cine car event's mcBrainAnimated writes the chassis's inputs (F-91361): as they are - no pad
     /// code, no computer driver's pedal share - and the gearbox set to first out of reverse or neutral
     pub animated: bool,
 }
@@ -266,13 +269,13 @@ pub struct CarState {
     pub launch: f32,
     pub damage: f32,
     pub last_impact: f32,
-    /// the biggest change of velocity a contact callback of mcCarDamage (0x82343880) has seen
+    /// the biggest change of velocity a contact callback of mcCarDamage (F-11688) has seen
     /// since the camera last took it (its shake reads the same dv; main.rs zeroes it)
     pub shake_dv: f32,
-    /// the last hit that counted (sub_82342B70): the one that destroys a car tells whether it
+    /// the last hit that counted (F-74220): the one that destroys a car tells whether it
     /// explodes (over ExplodeThreshold)
     pub last_hit: f32,
-    /// the head-on rule (physics::headon, sub_82333CE8) wiped the car out in a step since the game
+    /// the head-on rule (physics::headon, F-43509) wiped the car out in a step since the game
     /// last took it: main.rs makes it the wipeout and the slow motion
     pub head_on: bool,
     /// the player's Agro is running (ability +52 == 1, +48 == 3): no head-on wipeout (main.rs sets it)
@@ -299,9 +302,11 @@ pub struct CarState {
     pub touch_calls: u32,
     /// the hood, trunk lid and bumpers that come loose (`crate::damageparts`), with this tick's queued hits
     pub parts: crate::damageparts::DamageParts,
+    /// what this car's tick asked of the pad's rumble (`crate::rumble`; only the player's is read)
+    pub rumble: crate::rumble::CarRumble,
 }
 
-/// What the contact callback reads for a scrape (0x82343CA8 .. 0x82344254): the car's velocity at the
+/// What the contact callback reads for a scrape (A-40484 .. A-74833): the car's velocity at the
 /// point (`v1`) and the other's (`v2`, zero against the city), the centres' velocity difference
 /// (`rel`) and the call's contact normals summed and made unit (`n`).
 #[derive(Clone, Copy, Debug)]
@@ -313,9 +318,21 @@ pub struct ScrapeIn {
 }
 
 impl ScrapeIn {
-    /// The scrape's amount (0x82344254 / 0x82344394): over 3 m/s of closing and along the surface -
+    /// The scrape's amount (A-74833 / A-46588): over 3 m/s of closing and along the surface -
     /// the closing velocity's share against the normal strictly under 0.7 on a floor (n.y over
     /// 0.5), 0.6 else - the difference of the two points' squared speeds x 0.0001, at most 0.125.
+    /// The scrape's test without its amount: over 3 m/s of closing and along the surface (F-11688, the
+    /// pad's rumble 2).
+    pub fn along(&self) -> bool {
+        let r = self.rel.length();
+        if r <= 3.0 {
+            return false;
+        }
+        let c = self.rel.dot(self.n) / r;
+        let thr = if self.n.y > 0.5 { f32::from_bits(0x3f33_3333) } else { f32::from_bits(0x3f19_999a) };
+        -thr < c && c < thr
+    }
+
     pub fn amount(&self) -> f32 {
         let r = self.rel.length();
         if r <= 3.0 {
@@ -330,7 +347,7 @@ impl ScrapeIn {
     }
 }
 
-/// A contact of the car as the original's collision audio reads it (sub_82381FB0, docs/reference/audio/COLLISION_AUDIO_RULE.md).
+/// A contact of the car as the original's collision audio reads it (F-24302, docs/reference/audio/COLLISION_AUDIO_RULE.md).
 #[derive(Clone, Copy, Debug)]
 pub struct AudioTouch {
     /// which solve it came from (`CarState::touch_calls` at the time): each solve is one call of the audio callback
@@ -377,6 +394,7 @@ impl CarState {
             touches: Vec::new(),
             touch_calls: 0,
             parts: Default::default(),
+            rumble: Default::default(),
         }
     }
 
@@ -431,7 +449,7 @@ impl CarState {
     }
 
     /// An impact that changes the car's speed by `hit` m/s, counted as the original counts it
-    /// (mcCarDamage, 0x82343378): under ImpactThreshold nothing; otherwise the hit itself is
+    /// (mcCarDamage, F-96323): under ImpactThreshold nothing; otherwise the hit itself is
     /// added to the damage points. At MaxDamage the car is a wreck - but only a blow above
     /// FatalBlow can finish it, a softer one leaves it one point short. A single hit above
     /// WipeoutThreshold is a wipeout (`wipeout` holds how many thresholds it was worth).
@@ -440,6 +458,9 @@ impl CarState {
         if hit <= impact {
             return;
         }
+        // (F-96323: the pad's rumble 1 for a hit over ImpactThreshold - gated only by a racing wheel taking it)
+        self.rumble.play(1);
+        let was_wreck = self.damage >= 1.0;
         // (a blow above the WeightxferThreshold, 10 on every car, knocks a car off its two wheels)
         if hit > 10.0 {
             if let Some(v) = self.veh.as_mut() {
@@ -454,21 +475,34 @@ impl CarState {
         }
         self.damage = (points / max).min(1.0);
         if hit > wipeout && wipeout > 0.0 && self.damage < 1.0 {
+            // (the wipeout's start, F-69183: rumble 1)
+            if self.wipeout <= 0.0 {
+                self.rumble.play(1);
+            }
             self.wipeout = self.wipeout.max(hit / wipeout);
+        }
+        // (the car wrecked, F-74220: rumble 7)
+        if !was_wreck && self.damage >= 1.0 {
+            self.rumble.play(7);
         }
     }
 
-    /// Damage added outright (sub_82343178, the head-on's): `hit` points on top, at MaxDamage
+    /// Damage added outright (F-15289, the head-on's): `hit` points on top, at MaxDamage
     /// only when it is over FatalBlow, else one point short.
     pub fn add_damage(&mut self, p: &CarParams, hit: f32) {
         let [max, _med, _impact, fatal, _wipeout] = p.dmg;
         let max = max.max(1.0);
         self.last_hit = hit;
+        let was_wreck = self.damage >= 1.0;
         let mut points = self.damage * max + hit;
         if points >= max {
             points = if hit > fatal { max } else { max - 1.0 };
         }
         self.damage = (points / max).min(1.0);
+        // (the car wrecked, F-74220: rumble 7)
+        if !was_wreck && self.damage >= 1.0 {
+            self.rumble.play(7);
+        }
     }
 
     /// The mean of the zones (each at most 1).
@@ -489,22 +523,22 @@ impl CarState {
         self.zone_hit(point, local, ((hit - 0.5) * 0.2).clamp(0.0, 1.0));
     }
 
-    /// What the original's contact callback (mcCarDamage, 0x82343880) does with the tick's
+    /// What the original's contact callback (mcCarDamage, F-11688) does with the tick's
     /// contacts of the car against the city: `dv` is the change of velocity they gave it - the sum
-    /// of their impulses over the mass, each 0.4 of itself against something fixed (0x82567A08) -
+    /// of their impulses over the mass, each 0.4 of itself against something fixed (F-19931) -
     /// and `at` the first of them (on a car lying over, under 0.1 of upright, the last), `local` the
     /// same point in the car's pose after the tick's move (the instance's matrix then). A wrecked
     /// car takes nothing more. Over 0.1 m/s the zones and the bumpers' queue take
-    /// clamp((sqrt dv - 0.5) x 0.2) at that point (0x82344394, zone damage kind 0); then the
-    /// damage points take dv itself (0x82343378: a city hit counts 1.0 of it, mcCarDamage +12).
+    /// clamp((sqrt dv - 0.5) x 0.2) at that point (A-46588, zone damage kind 0); then the
+    /// damage points take dv itself (F-96323: a city hit counts 1.0 of it, mcCarDamage +12).
     pub(super) fn world_hit(&mut self, p: &CarParams, dv: f32, at: Vec3, local: Vec3, scrape: Option<ScrapeIn>) {
         self.damage_call(p, dv, 1.0, at, local, scrape);
     }
 
     /// The same callback for the car's contacts with another car or a loose prop (not fixed: their
-    /// impulses count whole, 0x82567A08): `dv` the change of velocity they gave this car, `at` the
+    /// impulses count whole, F-19931): `dv` the change of velocity they gave this car, `at` the
     /// first contact's point (world, in the car's pose now). The damage points take dv x `mult`
-    /// (0x82342EA8): against another car this car's own +16 (1: Racer_SetDamageMultiplierFlag's
+    /// (F-61340): against another car this car's own +16 (1: Racer_SetDamageMultiplierFlag's
     /// factor, which nothing sets) times the other car's mcCarDamage +20 - its "damage inflicted"
     /// factor (Racer_SetDamageInflictedFactor; 1 but in a payback); against anything else +12 = 1.
     /// Recorded: sa.0 (R8 among loose pieces, 40 ticks) and sd.3 (R8 ramming traffic, 340 ticks)
@@ -522,14 +556,28 @@ impl CarState {
         if self.damage >= 1.0 {
             return;
         }
+        // (the pad's rumble 1 for a hard hit, F-11688 A-1: dv over JoltThreshold at a standstill, easing to
+        // ImpactThreshold from 5 to 30 m/s of chassis +224 - the speed the tick came in with)
+        {
+            let t = ((self.rumble.speed - 5.0) * f32::from_bits(0x3d23_d70a)).clamp(0.0, 1.0);
+            if dv > p.jolt + t * (p.dmg[2] - p.jolt) {
+                self.rumble.play(1);
+            }
+        }
         if dv > f32::from_bits(0x3dcc_cccd) {
-            // (kind 1 first, 0x82344254 .. 0x82344470: a scrape along the surface)
+            // (rumble 2 for a scrape, F-11688 A-2: closing over 3 m/s along the surface)
+            if scrape.map_or(false, |s| s.along()) {
+                self.rumble.play(2);
+            }
+            // (kind 1 first, A-74833 .. A-89239: a scrape along the surface)
             let amount = scrape.map_or(0.0, |s| s.amount());
             if amount != 0.0 {
                 self.scrape_hit(at, local, amount, scrape.unwrap());
             }
             let amount = ((dv.sqrt() - 0.5) * 0.2).clamp(0.0, 1.0);
             if amount != 0.0 {
+                // (F-11688 A-3: rumble 1 with the zone damage)
+                self.rumble.play(1);
                 self.zone_hit(at, local, amount);
             }
         }
@@ -539,7 +587,7 @@ impl CarState {
         }
     }
 
-    /// The zone damage for a scrape (0x82356D98, kind 1, work/cardmg scrape_rule.md 2): above 0.12
+    /// The zone damage for a scrape (F-74840, kind 1, work/cardmg scrape_rule.md 2): above 0.12
     /// of the way up, the pieces (1000 on a car upside down) and the bumpers' queue (which take no
     /// scrape but keep its slot); the sparks; then eight stamps of half the amount into the map's
     /// blue, every 0.25 m back along the car's own velocity from the point - each that lies above
@@ -551,7 +599,7 @@ impl CarState {
             self.dmg.pieces_hit(local, a, 1);
             self.parts.queue(crate::damageparts::PartHit { point, amount: a, kind: 1 });
         }
-        // (a car upside down makes them twice, the first with the amount, 0x82356F60 / 0x823571A4;
+        // (a car upside down makes them twice, the first with the amount, A-47810 / A-96456;
         // the port keeps 32 for the effects to take)
         if self.dmg.sparks.len() >= 32 {
             self.dmg.sparks.drain(..16);
@@ -569,11 +617,11 @@ impl CarState {
         }
     }
 
-    /// The game's zone damage (0x82356d98, a collision: kind 0) with `amount` at `point` (world;
+    /// The game's zone damage (F-74840, a collision: kind 0) with `amount` at `point` (world;
     /// `local` in the car). False when the hit is too low on the car to count.
     fn zone_hit(&mut self, point: Vec3, local: Vec3, amount: f32) -> bool {
-        // (the game's zone damage, 0x82356d98: only a hit above 0.12 of the way up from the car's
-        // origin counts - the deform pieces, the bumpers' queue @82356F60 and the zones @82357444 -
+        // (the game's zone damage, F-74840: only a hit above 0.12 of the way up from the car's
+        // origin counts - the deform pieces, the bumpers' queue @A-47810 and the zones @A-82665 -
         // and on a car upside down the zones take 1.0 and the bumpers 1000, DAMAGE_PARTS_RULE.md 1.2)
         if std::env::var_os("MCLA_PARTS_LOG").is_some() {
             eprintln!("parts hit: {amount:.4} at car-local {local:.2?} counts {}", crate::damageparts::hit_counts(local));
@@ -601,14 +649,14 @@ impl CarState {
         if local.x > 0.5 * hx {
             self.zones[1] += amount;
         }
-        // (@82357514: a wrecked rear zone lets the trunk lid fall open, a wrecked front the hood)
+        // (@A-38703: a wrecked rear zone lets the trunk lid fall open, a wrecked front the hood)
         if self.zones[3] >= 1.0 {
             self.parts.trunk.loose = true;
         }
         if self.zones[2] >= 1.0 {
             self.parts.hood.loose = true;
         }
-        // (a dent into the damage map's red at the hit's direction, 0x8230A180)
+        // (a dent into the damage map's red at the hit's direction, F-13899)
         self.dmg.stamp(0, local.normalize_or_zero(), amount);
         true
     }
@@ -628,8 +676,8 @@ impl CarState {
 
     pub fn step(&mut self, p: &CarParams, input: CarInput, world: &WorldCollider, dt: f32) {
         self.zone_half = p.zone_box();
-        // (the deform pieces' places, once the model is in (0x8235CBD0): the hubs at the skeleton's hub bones,
-        // the windows by the composite bound's box `sub_8255B9A8(car + 8)` - the one the collision's cell test
+        // (the deform pieces' places, once the model is in (F-10977): the hubs at the skeleton's hub bones,
+        // the windows by the composite bound's box `F-98453(car + 8)` - the one the collision's cell test
         // reads, set up there (vehsim.rs); V: the R8's as the original's DMAP record, test
         // the_r8_pieces_and_layout_are_the_originals. A car without the original's sim: the body box here.)
         if !self.dmg.pieces_set && (p.veh.is_none() || p.hull.is_none()) {

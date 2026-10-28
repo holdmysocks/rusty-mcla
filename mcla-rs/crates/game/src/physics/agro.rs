@@ -31,7 +31,7 @@ pub struct Tune {
     pub threshold_speed: f32,
     /// DelayBetweenAgroStrikes (T +128): a struck car is struck again after this many seconds
     pub delay: f32,
-    /// RandomSide (T +133), AgroFeedback (T +134, the rumble: D5), ScaleAgroBasedOnSpeed (T +132)
+    /// RandomSide (T +133), AgroFeedback (T +134, the pad's rumble 3), ScaleAgroBasedOnSpeed (T +132)
     pub random_side: bool,
     pub feedback: bool,
     pub scale_by_speed: bool,
@@ -197,6 +197,8 @@ pub struct Out {
     pub strikes: u32,
     /// the gauge's strike last armed: 0 vehicle, 1 prop, 2 city
     pub gauge: Option<usize>,
+    /// the pad's rumble 3 asked by strikes (F-70024 with AgroFeedback, T +134; taken by main.rs)
+    pub rumble: u32,
 }
 
 /// The hook of the car whose driver owns the ability: the ability's state as the game sets it each frame, the
@@ -241,6 +243,11 @@ impl Hook {
         let Some(t) = self.tune else { return };
         self.out.jolts.push((t.shake_time, amp));
         self.out.strikes += 1;
+        // (F-70024: AgroFeedback set, the pause manager's byte +6 clear and the driver's vt+44 0 - both
+        // unread in the port - and no racing wheel taking it: the user's pad rumble 3)
+        if t.feedback {
+            self.out.rumble += 1;
+        }
         self.accel += t.player_accel;
     }
 }

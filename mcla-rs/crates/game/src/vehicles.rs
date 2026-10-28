@@ -1716,6 +1716,7 @@ impl Vehicles {
             let d = &s.base.damage;
             if d.max_damage > 1.0 && d.wipeout_threshold > 1.0 {
                 params.dmg = [d.max_damage, d.med_damage, d.impact_threshold, d.fatal_blow, d.wipeout_threshold];
+                params.jolt = d.jolt_threshold;
             }
         }
         log::info!("car {}: hubs {:?} bounds {:?}..{:?} wheel radius {:.3}", car.name, car.hubs, car.min, car.max, params.wheel_radius);
