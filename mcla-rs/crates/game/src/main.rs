@@ -482,6 +482,19 @@ struct App {
     phone_challenge_in: f32,
     /// the racer whose telephone challenge is up (GH_03 ..): his voice says the invite and the decline
     phone_caller: &'static str,
+    /// the racer's countdown has run out: his call waits for the phone's gates
+    phone_challenge_due: bool,
+    /// the phone form's +788 (held: sidekickDelay, after each call) and the delayed sidekickResume that clears it
+    /// (Cruising.sc.xml: 8 s after entering Cruising_Offline; after a call SidekickDelayTime)
+    phone_hold: bool,
+    phone_resume: Option<f32>,
+    /// in Cruising_Offline last tick; a call was on the phone last tick; a call went away and its close (F-37697's
+    /// tail: the hold and the resume) waits for the gates
+    phone_cruise: bool,
+    phone_was_up: bool,
+    phone_done: bool,
+    /// UILogic's SidekickDelayTime (read when first needed)
+    phone_delay: Option<f32>,
     /// a new career's opening (the film, the arrival) has been started - before VEHICLE SELECT
     intro_played: bool,
     /// the opening's step: 1 fading to black, 2 the film and the wait for the city, 3 VEHICLE SELECT, 4 black
@@ -1053,6 +1066,13 @@ impl App {
             garage_out: None,
             phone_challenge_in: 0.0,
             phone_caller: "",
+            phone_challenge_due: false,
+            phone_hold: false,
+            phone_resume: None,
+            phone_cruise: false,
+            phone_was_up: false,
+            phone_done: false,
+            phone_delay: None,
             intro_played: false,
             intro_stage: 0,
             intro_t: 0.0,
@@ -5320,13 +5340,50 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // its call done - dropped, not queued again)
             if std::mem::take(&mut self.police.phone_cut) && self.game.tip.is_some() {
                 log::info!("phone: call put away, a police tactic started");
+                // (TelephoneChallenge.sco ends while the police level is over 1 (0x359, 0x437): no decline line)
+                if self.police.activity().0 > 1 {
+                    self.game.phone_challenge = false;
+                }
                 self.game.tip = None;
                 self.game.phone_prompt.clear();
             }
-            let phone_held = self.phone_held();
-            let career_up = career_up && !phone_held;
+            // (Cruising.sc.xml, Cruising_Offline: on enter sidekickClean, sidekickDelay and sidekickResume in 8 s; on exit the
+            // resume removed, sidekickDelay, sidekickInterrupt (the call up dropped, F-51256) and sidekickClean. The pause
+            // menu and the scenes are no state of their own there)
+            let cruising = matches!(self.game.mode, Mode::FreeRoam | Mode::Paused) && self.game.race.is_none() && self.game.hangout_key.is_none() && !self.game.fresh_game;
+            if cruising != self.phone_cruise {
+                self.phone_cruise = cruising;
+                self.phone_hold = true;
+                self.phone_resume = cruising.then_some(8.0);
+                if !cruising && self.game.tip.is_some() {
+                    self.game.tip = None;
+                    self.game.phone_prompt.clear();
+                }
+            }
+            if let Some(t) = self.phone_resume.as_mut() {
+                *t -= dt;
+                if *t <= 0.0 {
+                    self.phone_resume = None;
+                    self.phone_hold = false;
+                }
+            }
+            if self.phone_was_up && self.game.tip.is_none() {
+                self.phone_done = true;
+            }
+            let gates = self.phone_held();
+            // (F-37697's tail, once its gates let it run: the call cleaned away, +788 = 1 and, in Cruising_Offline,
+            // sidekickResume after SidekickDelayTime)
+            if self.phone_done && !gates && !self.phone_hold {
+                self.phone_done = false;
+                self.phone_hold = true;
+                if cruising {
+                    let data_dir = self.opt.data_dir.clone();
+                    self.phone_resume = Some(*self.phone_delay.get_or_insert_with(|| menu3d::UiLogic::load(&data_dir).sidekick_delay));
+                }
+            }
+            let phone_held = gates || self.phone_hold || self.phone_done;
             // the mechanic rings when nothing else is going on
-            if career_up && self.news.is_empty() && self.game.tip.is_none() && self.news_timer <= -4.0 && matches!(self.game.mode, Mode::FreeRoam) {
+            if career_up && !phone_held && self.news.is_empty() && self.game.tip.is_none() && self.news_timer <= -4.0 && matches!(self.game.mode, Mode::FreeRoam) {
                 if let Some((key, title, text)) = self.tips.pop_front() {
                     let secs = (6.0 + text.len() as f32 * 0.055).min(22.0);
                     self.game.tip = Some((title, text, secs));
@@ -5340,7 +5397,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             self.news_timer = (self.news_timer - dt).max(-30.0);
-            if career_up && self.news_timer <= 0.0 && matches!(self.game.mode, Mode::FreeRoam) {
+            // (a splash line is no call: only the calls wait for the phone)
+            if career_up && self.news_timer <= 0.0 && matches!(self.game.mode, Mode::FreeRoam) && self.news.front().map_or(false, |n| n.1.is_none() || !phone_held) {
                 if let Some((m, call)) = self.news.pop_front() {
                     log::info!("news: {:?} call {:?}", m, call);
                     // (a mission's call is on the phone alone - no line across the top:
@@ -5422,9 +5480,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.phone_challenge_in <= 0.0 {
                     self.phone_challenge_in = std::env::var("MCLA_PHONE_CHALLENGE").ok().and_then(|v| v.parse().ok()).unwrap_or(200.0 + (self.tick_no % 500) as f32 * 0.1);
                 }
-                if self.game.tip.is_none() && self.news.is_empty() && self.tips.is_empty() && self.cuts.idle() && !self.game.show_map && !phone_held {
-                    self.phone_challenge_in -= sim_dt;
-                    if self.phone_challenge_in <= 0.0 {
+                if self.game.tip.is_none() && self.news.is_empty() && self.tips.is_empty() && self.cuts.idle() && !self.game.show_map {
+                    // (the script's rounds count only while the police level is under 2 (0x13c); the call it appends
+                    // then waits for the phone's gates)
+                    if !self.phone_challenge_due && self.police.activity().0 < 2 {
+                        self.phone_challenge_in -= sim_dt;
+                        self.phone_challenge_due = self.phone_challenge_in <= 0.0;
+                        self.phone_challenge_in = self.phone_challenge_in.max(f32::MIN_POSITIVE);
+                    }
+                    if self.phone_challenge_due && !phone_held {
+                        self.phone_challenge_due = false;
+                        self.phone_challenge_in = 0.0;
                         const WHO: [&str; 5] = ["GH_03", "GH_07", "GH_13", "GH_16", "GH_22"];
                         let caller = WHO[(self.tick_no / 7) as usize % 5];
                         let who = self.game.career.name_of(caller);
@@ -5441,6 +5507,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (not taken)
                 self.speech.say_as("HOOKMAN_PHONE_PLAYER_DECLINES", self.phone_caller);
             }
+            self.phone_was_up = self.game.tip.is_some();
             if std::mem::take(&mut self.game.phone_accept) {
                 self.pending_action = MenuAction::OpenRaceSelect;
             }
@@ -11359,10 +11426,14 @@ impl App {
     /// given (save boxes, film, VEHICLE SELECT, its black) and the story scenes are cinematics or the
     /// intro state. Docs: UI.md "Where START opens the pause menu (2026-10-23)".
     /// The phone's update (F-37697) brings up no call while the police level F-35540(1) is 1 or more (pull-over,
-    /// pursuit, search, arrest), while a scene script runs (F-52539: the ticket and arrest scenes) or a form other than
-    /// the HUD's is up (F-85659: the ARRESTED form); the calls wait in the queue.
+    /// pursuit, search, arrest) or -1 (a dispatch to the player) unless that dispatch responds (state 2, F-85485 ->
+    /// F-48923), while a career speech line plays (the speech manager's +2256 and +2260), a scene script runs
+    /// (F-52539: the ticket and arrest scenes) or a form other than the HUD's is up (F-85659: the ARRESTED form);
+    /// the calls wait in the queue. (The phone's own hold after a call is `phone_hold`.)
     fn phone_held(&self) -> bool {
-        self.police.heat != police::Heat::None
+        let (level, dsp) = self.police.activity();
+        level >= 1 || (level == -1 && dsp < 2)
+            || self.speech.busy()
             || self.cuts.playing.is_some() || self.cine.playing.is_some() || self.game.movie.is_some()
             || self.ticket_run.is_some() || self.arrest_form.is_some() || self.game.arrest_panel.is_some() || self.arrest_station.is_some()
     }

@@ -922,6 +922,20 @@ impl Police {
         }
     }
 
+    /// PoliceManager_CheckPoliceActivity(1) (F-35540) as far as the port's states reach: -1 a dispatch (group 0) to
+    /// the player past its wait (state > 0, tested first), 2 a pursuit, its search or the arrest, 1 a pull-over, else 0.
+    /// With -1 the dispatch's state (F-48923 reads it: 2 = Respond).
+    pub fn activity(&self) -> (i32, u8) {
+        if let Some(d) = self.dsp.as_ref().filter(|d| d.st > 0) {
+            return (-1, d.st);
+        }
+        (match self.heat {
+            Heat::None => 0,
+            Heat::PullOver => 1,
+            Heat::Pursuit | Heat::Search | Heat::Busted => 2,
+        }, 0)
+    }
+
     /// The number of cops in the latest tactic (police manager +80, PoliceManager_GetNumCopsInLatestTactic).
     pub fn tactic_cops(&self) -> usize {
         self.cops.len()
@@ -3326,6 +3340,16 @@ mod scene_tests {
             p.phone_cut = false;
             p.start_tactic(k, vec![], true, 25.0);
             assert!(p.phone_cut, "{:?}", k);
+        }
+    }
+
+    #[test]
+    fn the_police_level_for_the_phone() {
+        let mut p = Police::new();
+        assert_eq!(p.activity(), (0, 0));
+        for (h, l) in [(Heat::PullOver, 1), (Heat::Pursuit, 2), (Heat::Search, 2), (Heat::Busted, 2)] {
+            p.heat = h;
+            assert_eq!(p.activity().0, l);
         }
     }
 

@@ -52,6 +52,9 @@ pub struct UiLogic {
     pub pause_cams: Vec<PauseCam>,
     /// RadarNear, RadarFalloff, RadarExponent (the tune loader F-59198; read by the police radar, F-61846)
     pub radar: [f32; 3],
+    /// SidekickDelayTime (the loader F-59198 into UILogic +0x117E8; the ctor's 100 when the tune has none): the
+    /// seconds the phone stays held after a call (F-37697 -> sidekickResume)
+    pub sidekick_delay: f32,
 }
 
 impl UiLogic {
@@ -76,9 +79,14 @@ impl UiLogic {
     pub fn parse(text: &str) -> UiLogic {
         let mut cams: Vec<PauseCam> = Vec::new();
         let mut radar = [0.0f32; 3];
+        let mut sidekick_delay = 100.0;
         for line in text.lines() {
             let mut it = line.split_whitespace();
             let Some(key) = it.next() else { continue };
+            if key == "SidekickDelayTime" {
+                sidekick_delay = it.next().and_then(|x| x.parse().ok()).unwrap_or(sidekick_delay);
+                continue;
+            }
             if let Some(i) = ["RadarNear", "RadarFalloff", "RadarExponent"].iter().position(|k| *k == key) {
                 radar[i] = it.next().and_then(|x| x.parse().ok()).unwrap_or(0.0);
                 continue;
@@ -106,7 +114,7 @@ impl UiLogic {
                 _ => {}
             }
         }
-        UiLogic { pause_cams: cams, radar }
+        UiLogic { pause_cams: cams, radar, sidekick_delay }
     }
 
     /// Write the table into a movie the way `F-92151` does.
@@ -708,6 +716,13 @@ mod tests {
     #[test]
     fn radar_tune_values() {
         assert_eq!(UiLogic::parse("UILogic {\n  RadarNear 40 \n  RadarFalloff 140 \n  RadarExponent 1 \n}\n").radar, [40.0, 140.0, 1.0]);
+    }
+
+    /// SidekickDelayTime of the disc's UILogic block (120; the 4 : 3 block has 250), the ctor's 100 without one
+    #[test]
+    fn sidekick_delay_tune_value() {
+        assert_eq!(UiLogic::parse("UILogic {\n  SidekickDelayTime 120 \n  RadarNear 40 \n}\n").sidekick_delay, 120.0);
+        assert_eq!(UiLogic::parse(TUNE).sidekick_delay, 100.0);
     }
 
     const TUNE: &str = "type: a\nUILogic {\n  RadarNear 40 \n  PauseCamera1Position -0.22499999\t0.94999999\t2.575001 \n  PauseCamera2Position -2.2750001\t-0.34999999\t3.5999999 \n  PauseCamera2LookAt -0.22499999\t-0.25\t-0.97500002 \n  PauseCamera2MenuPos -2\t-0.30000001\t0.050000001 \n  PauseCamera2MenuScale 1.6\t1.6 \n  PauseCamera2MenuRot 0 \n  PauseCamera2Speed 5 \n  PauseCamera2FOVY 53.75 \n}\n";
