@@ -46,6 +46,7 @@ mod vehicle_pose;
 mod video;
 mod cine;
 mod cinecar;
+mod cinedriver;
 mod damageparts;
 mod damagemap;
 mod cutscene;
@@ -9914,7 +9915,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (ambient cars have opaque windows: nobody to see in there)
                     let _ = big;
                     // in a cutscene the people of its cars are the scene's own characters
-                    let staged = self.cine.playing.as_ref().is_some_and(|sc| (c.is_player && (self.cine.has_actor("player") || !police::arrest_shows_driver(&sc.name))) || c.driver.starts_with("cine:"));
+                    // (in a scene a driver is drawn only with its show flag, the draw gate F-14542: cinedriver.rs; the
+                    // port's cast figure of the player on foot and the cars brought for the scene keep theirs hidden)
+                    let staged = self.cine.playing.is_some() && (!c.show_driver || (c.is_player && self.cine.has_actor("player")) || c.driver.starts_with("cine:"));
                     // (VEHICLE SELECT: the three stand empty - `ng_vsel_0`)
                     // (the cruiser has no driver: mcRacer::LoadDriver, F-39898, returns before it makes one when
                     // the car is vp_chv_police_96 - its own black interior is what shows; GitHub #17)
@@ -12054,13 +12057,18 @@ impl App {
             // FinishScene (F-62501 with 1) leaves the engine word alone; the story scenes' callers run Racer_Activate
             // (F-76651(racer, 0) -> F-30391(0): +46 = 1) or Racer_Reset right after (payback_intro's three, race_gh_06,
             // bestof_sh_05, beat_sh_02_exotic, rep_on_strip_garage, hangout_series_hollywoodc, district_champs, the
-            // pinkslip hills). (approx.: the others - the downtown hangouts', hollywood_garage_intro, find_sh_02c,
-            // city_champ - go on into their hangout / garage / ending, whose reset was not traced; the engine comes
-            // back at the scene's end there too)
+            // pinkslip hills). find_sh_02c's core plays Racer_PlayIgnition and then Racer_Activate after its fade.
+            // The downtown hangouts' and city_champ's go on into a race, whose core (OrderedCheckpointCore) runs
+            // Racer_ResetWithDamageIntact / Racer_Activate at its set-up; hollywood_garage_intro goes into the garage,
+            // whose core activates the car at its exit. (approx.: the engine comes back at the scene's end, not at
+            // that later set-up / exit / fade, which the player does not drive through)
             if ended.starts_with("story/") || ended.starts_with("racestart/") {
                 if let Some(c) = self.vehicles.player_mut() {
                     c.engine_off = false;
                     c.deactivated = false;
+                }
+                if ended == "story/cut_story_find_sh_02c" {
+                    self.sound.play_ignition();
                 }
             }
         }
@@ -12068,6 +12076,16 @@ impl App {
         if self.cine_lamps.is_none() {
             let kept = self.vehicles.cars.iter().map(|c| (c.uid, c.amb_lamps.off)).collect();
             self.cine_lamps = Some((name.clone(), -1.0, kept));
+            // EndDescription (F-39589): every UseRacerNativeCharacter slot's racer shows its driver (F-13669(racer, 1))
+            let slots = cinedriver::native_slots(&name);
+            let mut shown = Vec::new();
+            for n in (0..16u8).filter(|n| slots >> n & 1 != 0) {
+                if let Some(i) = self.cine_slot_car(n) {
+                    self.vehicles.cars[i].show_driver = true;
+                    shown.push(self.vehicles.cars[i].uid);
+                }
+            }
+            log::info!("cine: {} - UseRacerNativeCharacter slots {:#x}, drivers shown (uid) {:?}; shown before it {:?}", name, slots, shown, self.vehicles.cars.iter().filter(|c| c.show_driver && !shown.contains(&c.uid)).map(|c| c.uid).collect::<Vec<_>>());
         }
         let last = self.cine_lamps.as_ref().map_or(-1.0, |l| l.1);
         for &(scene, on, slot, at) in vehicles::CINE_LAMP_EVENTS {
@@ -12103,6 +12121,14 @@ impl App {
                             c.engine_off = false;
                         }
                     }
+                }
+            }
+        }
+        // showdriver / hidedriver (events 11 / 12, F-91263 -> F-13669 on the event's car slot)
+        for &(scene, show, slot, at) in cinedriver::DRIVER_EVENTS {
+            if scene == name && at > last && at <= t {
+                if let Some(i) = self.cine_slot_car(slot) {
+                    self.vehicles.cars[i].show_driver = show;
                 }
             }
         }

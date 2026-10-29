@@ -3463,16 +3463,6 @@ pub fn pullover_acts(scene: &str) -> &'static [(f32, SceneAct)] {
     }
 }
 
-/// Whether an arrest scene shows the player's own driver in his car. In a scene the in-car driver is drawn only when
-/// its instance's +420 is set (the draw gate F-14542 while the scene byte F-37136 sets is on): by EndDescription
-/// (F-39589) for the slots the script passed to CineScript_UseRacerNativeCharacter (F-94066), or by a showdriver event.
-/// CopArrest resets the car before the scene (ResetWithDamageIntact F-39106: +420 = 0); the car scenes call
-/// UseRacerNativeCharacter(0), the bikestand neither it nor showdriver - its seated rider is hidden (the standing
-/// character is the scene's own).
-pub fn arrest_shows_driver(scene: &str) -> bool {
-    !scene.rsplit('/').next().unwrap_or(scene).eq_ignore_ascii_case("cut_cop_arrest_bikestand")
-}
-
 /// The arrest scenes whose t 0 event turns the player's engine off (car_off on slot 0, or engine_off in _07; F-91263).
 pub fn arrest_engine_off(scene: &str) -> bool {
     matches!(scene.rsplit('/').next().unwrap_or(scene).to_ascii_lowercase().as_str(), "cut_cop_arrest" | "cut_cop_arrest_02" | "cut_cop_arrest_03" | "cut_cop_arrest_07" | "cut_cop_arrest_08" | "cut_cop_arrest_bikestand")
@@ -3526,6 +3516,8 @@ pub fn hide_opponents(vehicles: &mut Vehicles, world: &World, player: bool) {
             c.state.ang_vel = Vec3::ZERO;
         }
         c.pose_history.reset();
+        // (Racer Reset, F-89258: +676 = 0 and the driver instance's reset - its scene show flag off, cinedriver.rs)
+        c.show_driver = false;
         c.deactivated = !c.is_player;
         log::info!("police: HideOpponents - race entry {} (uid {}) to the lot {:?}", k, c.uid, pos);
     }
@@ -3581,6 +3573,8 @@ pub fn station_reset(vehicles: &mut Vehicles, world: &World, n: u32) -> Option<u
         c.state.ang_vel = Vec3::ZERO;
     }
     c.pose_history.reset();
+    // (ResetWithDamageIntact, F-39106: the scene show flag off, cinedriver.rs)
+    c.show_driver = false;
     if n == 0 {
         log::info!("police: after the form - the car at the police station {:?} (damage {:.3})", pos, c.state.damage);
         if c.state.damage >= 0.999 {
@@ -3617,6 +3611,9 @@ pub fn scene_frame(vehicles: &mut Vehicles, world: &World, zones: &[(Vec3, f32)]
         c.state.ang_vel = Vec3::ZERO;
     }
     c.pose_history.reset();
+    // (ResetWithDamageIntact, F-39106: racer +676 = 0 and the driver instance's reset - its scene show flag off,
+    // cinedriver.rs; the car scenes' UseRacerNativeCharacter(0) shows it again, the bikestand's script does not)
+    c.show_driver = false;
     let (place, lean) = match world.collider.ground(pos, 5.0, 5.0) {
         Some(h) if h.normal.angle_between(Vec3::Y) > 0.002 => (Vec3::new(pos.x, h.point.y, pos.z), glam::Quat::from_rotation_arc(Vec3::Y, h.normal.normalize())),
         Some(h) => (Vec3::new(pos.x, h.point.y, pos.z), glam::Quat::IDENTITY),
@@ -4003,7 +4000,6 @@ mod scene_tests {
         assert_eq!([0, 1, 2].map(|r| arrest_scene(3, r, false, false)), ["cut_cop_arrest_02", "cut_cop_arrest_03", "cut_cop_arrest_08"]);
         // (the wiped-out biker's scene before the count and the payback; the payback's walk-ups 1 / 2 each)
         assert_eq!(arrest_scene(3, 0, true, true), "cut_cop_arrest_bikestand");
-        assert!(!arrest_shows_driver("cut_cop_arrest_bikestand") && arrest_shows_driver("cut_cop_arrest_02"));
         assert_eq!([0, 1].map(|r| arrest_scene(1, r, false, true)), ["payback_goons_walkup_02", "payback_goons_walkup_01"]);
         assert_eq!(arrest_gesture("payback_goons_walkup_02"), Some((crate::drivers::Gesture::ListenLeft, 0.3333, 9.0)));
         assert_eq!(arrest_gesture("cut_cop_arrest_07"), Some((crate::drivers::Gesture::CopHandsUp, 3.5, 1.5)));
