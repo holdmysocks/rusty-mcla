@@ -104,6 +104,8 @@ pub struct Sound {
     engine_running: bool,
     /// the player engine's stop asked for (`stop_engine`), applied at the next update
     engine_stop: bool,
+    /// the player engine's sound set running at once (`engine_set_running`), applied at the next update
+    engine_run: bool,
     /// the original's collision sounds (with `lib`)
     coll: Option<crate::collaudio::CollisionAudio>,
     /// the original's district ambience (with `lib`)
@@ -243,6 +245,12 @@ impl Sound {
         if !self.speech_busy {
             self.want_speech = Some("DAMAGE_OUT");
         }
+    }
+
+    /// The player engine's sound set running at once (the racer's restore F-39432 after a QUICK FIX -> vt+48,
+    /// engaudio.rs `set_running`): a start or stop asked for and not yet applied is dropped with it.
+    pub fn engine_set_running(&mut self) {
+        self.engine_run = true;
     }
 
     /// Whether the player's engine sound holds the car (its state below 4, or a start / stop asked for and not yet
@@ -771,8 +779,16 @@ impl Sound {
                     log::info!("audio: engine stop (1): loops stopped, the kaput after the wait");
                 }
             }
+            if self.engine_run {
+                if let Some((_, e)) = &mut self.engine {
+                    e.set_running();
+                    log::info!("audio: engine set running (restore)");
+                }
+                self.ignition = 0;
+            }
         }
         self.engine_stop = false;
+        self.engine_run = false;
         if self.ignition != 0 && self.engine.is_none() {
             // (no engine objects for this car: nothing to crank, it runs at once)
             self.ignition = 0;

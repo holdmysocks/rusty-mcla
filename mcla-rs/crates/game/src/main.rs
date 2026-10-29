@@ -3113,8 +3113,10 @@ impl App {
             } else {
                 self.wreck_timer = 0.0;
                 // (approx.: a scene, a mission or a menu cutting "impact start car" short - the original's driver
-                // goes back to cruising on IsRaceFinish without the start, its sound reset there was not traced -
-                // starts the engine sound)
+                // goes back to cruising on IsRaceFinish without the start. The engine sound's state is written only by
+                // its start (vt+52), its stop (vt+56), the restore's set-running (vt+48, the QUICK FIX) and a new car's
+                // constructor, so it stays stopped until one of them; which of them follows the race's end was not
+                // traced - here the start)
                 match self.wreck_engine {
                     1 => self.wreck_engine = 0,
                     2 => {
@@ -7335,6 +7337,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 p.deactivated = false;
                 self.crash_bits = 0;
             }
+            // (F-39432 also sets the engine sound running at once, vt+48 F-79364: state 4, no crank)
+            self.sound.engine_set_running();
         }
         // ---- nitrous: none until the garage's nitrous part is fitted, then as many canisters
         // as the tuning counts (up to 4 fully fitted). They are filled when the part changes

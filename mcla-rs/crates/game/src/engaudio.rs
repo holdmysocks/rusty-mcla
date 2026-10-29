@@ -354,6 +354,14 @@ impl EngineSound {
         self.boost = db2lin(self.boost_db);
     }
 
+    /// The engine sound set running at once (F-79364, vt+48): state 4 and the timer +288 = 0, no crank, no flare. The
+    /// racer's restore F-39432 (the QUICK FIX, quickFixCar / quickFixResetCar) calls it; a new car's engine sound
+    /// starts in state 4 too (its constructor).
+    pub fn set_running(&mut self) {
+        self.state = 4;
+        self.timer = 0.0;
+    }
+
     /// Whether the start machine holds the car (states 0 .. 3: the start's wait, the crank, the stop's wait, stopped):
     /// the control step F-17997 reads this+1928 < 4.
     pub fn held(&self) -> bool {
@@ -902,5 +910,11 @@ mod tests {
         e.start(&mut lib, false);
         e.update(&mut lib, &inp, dt);
         assert_eq!(e.state, 1);
+        // the restore's set-running (vt+48): state 4 at once, the loops back on the next update, no crank
+        e.stop_engine(&mut lib, true);
+        e.set_running();
+        assert!(!e.held() && e.timer == 0.0);
+        e.update(&mut lib, &inp, dt);
+        assert!(e.state == 4 && e.voices[0].is_some());
     }
 }
