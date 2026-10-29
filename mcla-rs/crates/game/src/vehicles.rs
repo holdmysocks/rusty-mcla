@@ -3126,6 +3126,21 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// Physics + AI for every car.
     pub fn update(&mut self, world: &World, player_input: CarInput, dt: f32) {
         self.clock += dt;
+        // (test hook MCLA_GROUND_PROBE=x,y,z;x,y,z;...: the parked cars' ground probe (traffic::probe_ground) at each
+        // point, printed once all of them are loaded - for comparing with the original's probe records)
+        if let Ok(v) = std::env::var("MCLA_GROUND_PROBE") {
+            static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            let pts: Vec<Vec3> = v.split(';').filter_map(|t| { let f: Vec<f32> = t.split(',').filter_map(|x| x.trim().parse().ok()).collect(); (f.len() == 3).then(|| Vec3::new(f[0], f[1], f[2])) }).collect();
+            if !DONE.load(std::sync::atomic::Ordering::Relaxed) && pts.iter().all(|p| world.ready_at(*p)) {
+                DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+                for p in pts {
+                    match traffic::probe_ground(&world.collider, p) {
+                        Some((h, n)) => eprintln!("groundprobe at {:.4} {:.4} {:.4} hit {:.4} {:.4} {:.4} normal {:.4} {:.4} {:.4}", p.x, p.y, p.z, h.x, h.y, h.z, n.x, n.y, n.z),
+                        None => eprintln!("groundprobe at {:.4} {:.4} {:.4} none", p.x, p.y, p.z),
+                    }
+                }
+            }
+        }
         for c in self.cars.iter_mut() {
             c.state.touches.clear();
         }
