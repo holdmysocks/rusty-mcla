@@ -239,6 +239,12 @@ impl Drivers {
                 }
             }
         }
+        // (the index holds full paths: after the game folder was moved, or the data rebuilt elsewhere, they
+        // point nowhere and no driver loads - every car seen empty, GitHub #24; then it is made again)
+        if self.packs.values().any(|f| !f.is_file()) {
+            log::warn!("drivers: {} names packs that are not there - indexing again", index.display());
+            self.packs.clear();
+        }
         if self.packs.is_empty() {
             let mut dirs: Vec<PathBuf> = std::fs::read_dir(root.join("resources/animation")).map(|d| d.flatten().map(|e| e.path().join("opponent/male")).filter(|p| p.is_dir()).collect()).unwrap_or_default();
             dirs.sort();
