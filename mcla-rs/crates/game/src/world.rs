@@ -1309,6 +1309,25 @@ impl World {
         None
     }
 
+    /// `texture_any` as stored, not gamma-decoded, under the key `h ^ 0x0052_4157` (the cars' maps, vehicles.rs)
+    pub fn texture_any_raw(&mut self, gpu: &mut Gpu, h: u32) -> Option<Arc<GpuTexture>> {
+        let key = h ^ 0x0052_4157;
+        if let Some(t) = gpu.textures.get(&key) {
+            return Some(t.clone());
+        }
+        if let Some(p) = self.globaltex.get(&h) {
+            if let Ok(d) = std::fs::read(p) {
+                if let Ok(t) = mcla_formats::dds::parse_dds(&p.to_string_lossy(), &d) {
+                    return Some(gpu.upload_texture_raw(key, &t));
+                }
+            }
+        }
+        if let Some(t) = self.shared.get(h) {
+            return Some(gpu.upload_texture_raw(key, &t));
+        }
+        None
+    }
+
     /// Are the sectors around `p` resident (so physics can run)?
     pub fn ready_at(&self, p: Vec3) -> bool {
         self.index.sectors.iter().enumerate().all(|(id, s)| Self::dist_to(s, p) > 60.0 || self.loaded.contains_key(&id))

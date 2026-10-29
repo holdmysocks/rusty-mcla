@@ -1838,6 +1838,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // of two pictures decoded AFTER the filter (see `sign_raw`), white clipping in the tone map - so how wide the
     // filter reaches changes the sign's mean, not only its sharpness. The original reads them at 1280 x 720 with
     // 4 : 1 anisotropy (fetch words of the neon draws: linear / linear / linear, aniso 3, levels 0 .. 2); this
+    // (the cars' maps: no car program's fetch constant asks for gamma - every DiffuseSampler, NormalSampler,
+    // IllumMapSampler, PlateBgSampler, FontSampler of the recorded frame has word 0 bits 2 - 9 clear - so the
+    // program filters the stored texels and its own rule follows (PS_Plate: ^1.6 after the filter). vehicles.rs
+    // uploads them as stored (`car_tex_raw`); decoded here after the filter so that the paths below get what they
+    // had, and `car_raw` gives the filtered stored value back exactly. MCLA_DEBUG_VIEW=780: the gamma upload as before)
+    let car_raw_tex = obj.params.w > 15.5 && !(g.params.w > 779.5 && g.params.w < 780.5);
+    if (car_raw_tex) { albedo = vec4<f32>(srgb_decode(albedo.rgb), albedo.a); }
     // window has more rows and an 8 : 1 sampler. The sectors' sign textures are read with the original's
     // footprint: the derivatives scaled to 720 rows, the minor axis no less than a quarter of the major one
     // (main view only). In a 1280 x 720 window it changes nothing (SKATEBOARD box to 0.1); at 1600 x 900 the
@@ -2121,6 +2128,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     var ch_d = vec4<f32>(0.0);
     var ch_det = 1.0;
     var ch_m4 = vec4<f32>(0.0);
+    if (car_raw_tex) { second = vec4<f32>(srgb_decode(second.rgb), second.a); }
     var ch_m4b = vec4<f32>(0.0);
     if (ch_obj) {
         ch_d = textureSample(t_diffuse, s_diffuse, in.uv0);
@@ -3661,8 +3669,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let hi_t = f32((pb_t >> 12u) & 4095u) / 63.984375;
             let si_t = f32(pc_t & 4095u) / 1023.75;
             let dt_t = textureSampleLevel(t_diffuse, s_diffuse, in.uv0, 0.0);
-            let col_t = car_raw(dt_t.rgb);
-            let m_t = car_raw(textureSampleLevel(t_second, s_diffuse, in.uv0, 0.0).rgb) * 2.0 - vec3<f32>(1.0);
+            let col_t = select(car_raw(dt_t.rgb), dt_t.rgb, car_raw_tex);
+            let m_t_s = textureSampleLevel(t_second, s_diffuse, in.uv0, 0.0).rgb;
+            let m_t = select(car_raw(m_t_s), m_t_s, car_raw_tex) * 2.0 - vec3<f32>(1.0);
             let nn_t = normalize(in.normal);
             let tt_t = normalize((obj.model * vec4<f32>(in.color1.rgb * 2.0 - vec3<f32>(1.0), 0.0)).xyz);
             let bb_t = cross(tt_t, nn_t) * (1.0 - 2.0 * in.bflip);
@@ -3855,8 +3864,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             var env_c = env;
             if (setup_b1_badge && in.uv2.x < -1.5) {
                 let bms = textureSampleBias(t_diffuse, s_diffuse, in.uv0, select(-1.0, 0.0, g.params.w > 741.5 && g.params.w < 742.5)).rgb;
-                // (the map as stored when uploaded raw - uv2.x = -3, its fetch asks for no gamma - else re-encoded)
-                let bm = select(car_raw(bms), bms, in.uv2.x < -2.5) * 2.0 - vec3<f32>(1.0);
+                // (the map as stored when uploaded raw - car_raw_tex, or uv2.x = -3 - else re-encoded)
+                let bm = select(car_raw(bms), bms, in.uv2.x < -2.5 || car_raw_tex) * 2.0 - vec3<f32>(1.0);
                 let bn_n = normalize(in.normal);
                 let bt0 = (obj.model * vec4<f32>(in.color.rgb * 2.0 - 1.0, 0.0)).xyz;
                 let bn_t = bt0 * inverseSqrt(max(dot(bt0, bt0), 1e-12));

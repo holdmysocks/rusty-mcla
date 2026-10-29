@@ -188,8 +188,8 @@ fn load_brakes(gpu: &mut Gpu, world: &mut World, dir: &Path, k: f32, shift: f32)
         let own = [&model.textures, look.as_ref().map(|l| &l.textures).unwrap_or(&model.textures)].into_iter().find_map(|d| keys.iter().find_map(|k| d.get(k).map(|t| (*k, t))));
         let key = own.map_or(keys[0], |o| o.0);
         let tex = match own {
-            Some((k, t)) => gpu.upload_texture(k, t),
-            None if !name.is_empty() => keys.iter().find_map(|k| world.texture_any(gpu, *k)).unwrap_or_else(|| gpu.white.clone()),
+            Some((k, t)) => car_upload(gpu, k, t).0,
+            None if !name.is_empty() => keys.iter().find_map(|k| car_any(gpu, world, *k)).unwrap_or_else(|| gpu.white.clone()),
             None => gpu.white.clone(),
         };
         if std::env::var("MCLA_WHEEL_DUMP").is_ok() {
@@ -1054,9 +1054,11 @@ fn mesh_to_batch_xf(gpu: &mut Gpu, mesh: &mcla_formats::rage::geometry::Mesh, sn
 /// The California plate background of the disc (`resources/license_plates/backgrounds`),
 /// uploaded once. The files hold a single texture object behind the root pointer.
 fn plate_texture(gpu: &mut Gpu, world: &World) -> (Arc<GpuTexture>, u32) {
-    const KEY: u32 = 0xb59c_dcaf; // joaat("plate_ca_00")
-    if let Some(t) = gpu.textures.get(&KEY) {
-        return (t.clone(), KEY);
+    const KEY0: u32 = 0xb59c_dcaf; // joaat("plate_ca_00")
+    let raw = car_tex_raw();
+    let key = if raw { KEY0 ^ 0x0052_4157 } else { KEY0 };
+    if let Some(t) = gpu.textures.get(&key) {
+        return (t.clone(), key);
     }
     let dir = world.assets.root.join("resources/license_plates/backgrounds/plate_ca_00");
     let file = std::fs::read_dir(&dir).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.extension().map_or(false, |x| x == "r1")));
@@ -1065,7 +1067,7 @@ fn plate_texture(gpu: &mut Gpu, world: &World) -> (Arc<GpuTexture>, u32) {
             let rd = mcla_formats::rage::Rd::new(&res);
             if let Some(o) = rd.ptr(0) {
                 if let Ok(t) = mcla_formats::rage::texture::Texture::parse(&rd, o) {
-                    return (gpu.upload_texture(KEY, &t), KEY);
+                    return (if raw { gpu.upload_texture_raw(key, &t) } else { gpu.upload_texture(key, &t) }, key);
                 }
             }
         }
@@ -1079,6 +1081,29 @@ fn plate_texture(gpu: &mut Gpu, world: &World) -> (Arc<GpuTexture>, u32) {
 fn carbon_weave(gpu: &mut Gpu, world: &World) -> (Arc<GpuTexture>, u32) {
     const KEY: u32 = 0x9499_fb74 ^ 0x0052_4157; // joaat("cf_bump2.dds"), kept apart from a gamma-decoded upload of the same file
     if let Some(t) = gpu.textures.get(&KEY) {
+/// The cars' maps are uploaded as stored, not gamma-decoded: no car program's fetch constant asks for gamma
+/// (the recorded noon frame, every sampler of PS_BumpSpec, PS_Light, PS_Plate, PS_Emissive, PS_BumpedChrome ...:
+/// word 0 bits 2 - 9 clear), so the original filters the stored texels and its rule follows; city.wgsl decodes
+/// after the filter (`car_raw_tex`). Keyed `hash ^ 0x0052_4157`, apart from a gamma upload of the same file.
+/// MCLA_DEBUG_VIEW=780: the gamma uploads as before (city.wgsl reads the same switch).
+pub fn car_tex_raw() -> bool {
+    std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "780")
+}
+
+/// A car's map from its own dictionary, as stored or gamma-decoded by `car_tex_raw`, with the key it is under.
+fn car_upload(gpu: &mut Gpu, key: u32, t: &mcla_formats::rage::texture::Texture) -> (Arc<GpuTexture>, u32) {
+    if car_tex_raw() {
+        (gpu.upload_texture_raw(key ^ 0x0052_4157, t), key ^ 0x0052_4157)
+    } else {
+        (gpu.upload_texture(key, t), key)
+    }
+}
+
+/// ... and a global or shared one (`World::texture_any`).
+fn car_any(gpu: &mut Gpu, world: &mut World, key: u32) -> Option<Arc<GpuTexture>> {
+    if car_tex_raw() { world.texture_any_raw(gpu, key) } else { world.texture_any(gpu, key) }
+}
+
         return (t.clone(), KEY);
     }
     if let Some(p) = world.globaltex.get(&mcla_formats::hash::joaat("cf_bump2.dds")) {
@@ -1681,15 +1706,16 @@ impl Vehicles {
             let resolve = |gpu: &mut Gpu, world: &mut World, name: Option<&str>| -> (Arc<GpuTexture>, u32) {
                 let Some(name) = name else { return (gpu.white.clone(), 0) };
                 let h = mcla_formats::hash::joaat(name);
-                if let Some(t) = gpu.textures.get(&h) {
-                    return (t.clone(), h);
+                let hk = if car_tex_raw() { h ^ 0x0052_4157 } else { h };
+                if let Some(t) = gpu.textures.get(&hk) {
+                    return (t.clone(), hk);
                 }
                 if let Some(t) = car.textures.get(&h) {
                     log::debug!("car texture {} from car dict: {}x{} {:?} name {:?} levels {}", name, t.width, t.height, t.format, t.name, t.levels.len());
-                    return (gpu.upload_texture(h, t), h);
+                    return car_upload(gpu, h, t);
                 }
-                if let Some(t) = world.texture_any(gpu, h) {
-                    return (t, h);
+                if let Some(t) = car_any(gpu, world, h) {
+                    return (t, hk);
                 }
                 log::debug!("car texture miss: {} ({:#010x})", name, h);
                 (gpu.white.clone(), 0)
@@ -5345,7 +5371,7 @@ fn tire_textures(gpu: &mut Gpu, root: &Path, set: &str) -> Option<[(Arc<GpuTextu
     for off in [8usize, 12] {
         let t = Texture::parse(&rd, rd.ptr(off)?).ok()?;
         let key = mcla_formats::hash::joaat(&t.name.to_ascii_lowercase());
-        out.push((gpu.upload_texture(key, &t), key));
+        out.push(car_upload(gpu, key, &t));
     }
     let b = out.pop()?;
     Some([out.pop()?, b])
@@ -5518,8 +5544,8 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
             });
             let k = own.map_or(k, |o| o.0);
             let tex = match own {
-                Some((key, t)) => gpu.upload_texture(key, t),
-                None if k != 0 => world.texture_any(gpu, k).unwrap_or_else(|| gpu.white.clone()),
+                Some((key, t)) => car_upload(gpu, key, t).0,
+                None if k != 0 => car_any(gpu, world, k).unwrap_or_else(|| gpu.white.clone()),
                 None => gpu.white.clone(),
             };
             if std::env::var("MCLA_WHEEL_DUMP").is_ok() {
