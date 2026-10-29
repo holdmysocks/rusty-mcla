@@ -37,6 +37,9 @@ pub struct Character {
     pub models: Vec<Vec<(Mesh, u16)>>,
     /// model indices per level of detail (high, medium, low)
     pub lods: [Vec<usize>; 3],
+    /// the cockpit view model (root+0x18: the type's +24, drawn by F-56050): the arms and hands the player sees from the
+    /// driver's seat - its high LOD's model indices; empty when the set has none (16 of the 57 `_set_h` sets have one)
+    pub cockpit: Vec<usize>,
     /// diffuse texture name per shader
     pub shader_tex: Vec<String>,
     /// shader names
@@ -80,6 +83,9 @@ impl Character {
         let mut shader_names = Vec::new();
         let mut shaders = Vec::new();
         let mut lods: [Vec<usize>; 3] = Default::default();
+        let mut cockpit = Vec::new();
+        let offs: Vec<usize> = d.models.iter().map(|m| m.off).collect();
+        let mut models: Vec<Vec<(Mesh, u16)>> = d.models.into_iter().map(|m| m.parts).collect();
         // usually at root+0x10; some sets (bike riders) keep it elsewhere: find the object
         // whose +08 points at a shader group {+08 -> shaders, +0c count == +0e} and that has
         // a LOD list at +40
@@ -95,23 +101,44 @@ impl Character {
                 shader_names = g.shaders.iter().map(|s| s.name.clone()).collect();
                 shaders = g.shaders;
             }
-            for (l, lod) in lods.iter_mut().enumerate() {
-                let Some(list) = rd.ptr(dr + 0x40 + l * 4) else { continue };
+            let list_of = |dr: usize, l: usize| -> Vec<usize> {
+                let mut out = Vec::new();
+                let Some(list) = rd.ptr(dr + 0x40 + l * 4) else { return out };
                 let n = rd.u16(list + 4) as usize;
-                let Some(arr) = rd.ptr(list) else { continue };
+                let Some(arr) = rd.ptr(list) else { return out };
                 for i in 0..n.min(64) {
                     if let Some(m) = rd.ptr(arr + i * 4) {
-                        if let Some(mi) = d.models.iter().position(|dm| dm.off == m) {
-                            lod.push(mi);
+                        if let Some(mi) = offs.iter().position(|&o| o == m) {
+                            out.push(mi);
+                        }
+                    }
+                }
+                out
+            };
+            for (l, lod) in lods.iter_mut().enumerate() {
+                *lod = list_of(dr, l);
+            }
+            // the cockpit view model hangs off root+0x18 (the character type's +24, placed by the type fixup
+            // F-11329): a drawable of its own; with a shader group of its own its shaders follow the main ones
+            if let Some(cd) = rd.ptr(0x18).filter(|&o| o != dr && looks_like(o)) {
+                cockpit = list_of(cd, 0);
+                let (sg0, sg1) = (rd.ptr(dr + 0x08), rd.ptr(cd + 0x08));
+                if sg1 != sg0 {
+                    if let Some(Ok(g)) = sg1.map(|sg| ShaderGroup::parse(&rd, sg)) {
+                        let base = shaders.len() as u16;
+                        shader_tex.extend(g.shaders.iter().map(|s| s.diffuse().unwrap_or("").to_string()));
+                        shader_names.extend(g.shaders.iter().map(|s| s.name.clone()));
+                        shaders.extend(g.shaders);
+                        for &mi in &cockpit {
+                            models[mi].iter_mut().for_each(|(_, si)| *si += base);
                         }
                     }
                 }
             }
         }
         if lods[0].is_empty() {
-            lods[0] = (0..d.models.len()).collect();
+            lods[0] = (0..offs.len()).filter(|i| !cockpit.contains(i)).collect();
         }
-        let models = d.models.into_iter().map(|m| m.parts).collect();
         // embedded textures: scan the virtual segment for texture objects
         let mut textures = Vec::new();
         let vs = res.virtual_size;
@@ -126,7 +153,7 @@ impl Character {
             }
             o += 4;
         }
-        Ok(Character { name, bones, models, lods, shader_tex, shader_names, shaders, textures })
+        Ok(Character { name, bones, models, lods, cockpit, shader_tex, shader_names, shaders, textures })
     }
 
     pub fn bone(&self, name: &str) -> Option<usize> {

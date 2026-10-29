@@ -8873,9 +8873,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         // (the driver's camera: the original's POV camera sets G+122 of the car it follows - F-95074 -
-        // and its windows take the in-car glass program; damage_map_rule.md Part C 6. As the cockpit's
-        // headless driver: not while looking back, in a replay or the idle camera.)
-        self.vehicles.interior_glass = self.view_mode == 3 && !self.look_back && !self.event_dir.idle() && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
+        // and its windows take the in-car glass program; damage_map_rule.md Part C 6. The draw mode (racer
+        // +680, F-60712): 5 in the POV view, forced to 3 while the wipeout camera or the Damageout event has
+        // the view or a cutscene runs - the glass is bit 4 of it, looking back or not)
+        let pov = self.view_mode == 3 && !self.event_dir.idle() && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT)) && self.cine.playing.is_none();
+        self.vehicles.interior_glass = pov;
+        // (the player's driver, F-60712 -> F-45131 -> F-14542 / F-56050: in the POV view the set's cockpit view
+        // model (arms and hands), none at all while looking back from it; in the bumper view none either)
+        self.drivers.cockpit = if pov { if self.look_back { 2 } else { 1 } } else if self.view_mode == 4 && self.cine.playing.is_none() && !self.crash_cam.active() { 2 } else { 0 };
         // (m_NFLFade for the night fill light the traffic cars add to their ambient - fillmap.rs)
         fillmap::set_fade(self.sky_now().tod.map_or(0.0, |t| t.nfl));
         // (the traffic cars' lamp states and glow levels, for the cars drawn now - vehicles.rs
@@ -9945,7 +9950,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver }
                 })
                 .collect();
-            self.drivers.headless = self.view_mode == 3 && !self.look_back && !self.event_dir.idle() && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
         }
         passprof::mark("main setup");

@@ -137,8 +137,9 @@ pub struct Drivers {
     buf: SkinBuffer,
     /// the player's head in car space (for the cockpit camera)
     pub player_head: Option<Vec3>,
-    /// the camera sits in the player's head
-    pub headless: bool,
+    /// the player's driver as the view draws him (the draw mode, F-60712): 0 the full model, 1 the set's
+    /// cockpit view model (F-56050), 2 none (looking back from the POV view, the bumper view - F-14542)
+    pub cockpit: u8,
     time: f32,
     frame: u32,
     acting: HashMap<usize, Acting>,
@@ -429,6 +430,9 @@ impl Drivers {
             if dist > reach || !frustum.intersects_aabb(s.pos - Vec3::splat(2.5), s.pos + Vec3::splat(2.5)) {
                 continue;
             }
+            if s.player && self.cockpit == 2 {
+                continue;
+            }
             let Some(si) = self.pick_set(s) else { continue };
             self.set_of.insert(s.id, self.sets[si].0.clone());
             if !self.rig(gpu, s.car, si) {
@@ -541,10 +545,10 @@ impl Drivers {
                     }
                 }
             }
-            // (the cockpit view shows the arms and the wheel, not the driver's own head -
-            // `ref/cockpit_view.png`)
-            if s.player && self.headless {
-                self.buf.hide_from = rig.model.head;
+            // (the POV view draws the set's cockpit view model - arms and hands - in place of the driver; a
+            // set without one draws its full model, as the original does after its warning - F-56050)
+            if s.player && self.cockpit == 1 {
+                self.buf.next_cockpit = true;
             }
             // (the driver's stencil id: his car's + 1, a rider's his bike's - render/mb.rs, F-10884)
             self.buf.next_stencil = crate::render::mb::driver_stencil_of(s.id);

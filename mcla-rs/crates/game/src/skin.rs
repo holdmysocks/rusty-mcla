@@ -158,6 +158,8 @@ pub struct SkinModel {
     /// animation track id of every bone
     pub ids: Vec<u16>,
     pub lods: [Vec<Part>; 3],
+    /// the cockpit view model's parts (the set's root+0x18, F-56050): arms and hands only; empty when the set has none
+    pub cockpit: Vec<Part>,
     pub binds: Vec<Arc<wgpu::BindGroup>>,
     /// per shader, for the character programs: diffuse, normal map, detail map, and the spec map
     /// (alpha effects) or the normal offset map (skin_arm) - all but the diffuse uploaded as stored
@@ -323,8 +325,8 @@ impl SkinModel {
             let _ = si;
         }
         let nb = bones.len() as u16;
-        let mut lods: [Vec<Part>; 3] = Default::default();
-        for (l, models) in c.lods.iter().enumerate() {
+        let mut lods: [Vec<Part>; 4] = Default::default();
+        for (l, models) in c.lods.iter().chain(std::iter::once(&c.cockpit)).enumerate() {
             for &mi in models {
                 for (mesh, si) in &c.models[mi] {
                     let mut verts = Vec::with_capacity(mesh.positions.len());
@@ -366,6 +368,8 @@ impl SkinModel {
         if lods[0].is_empty() {
             return None;
         }
+        let [l0, l1, l2, cockpit] = lods;
+        let lods = [l0, l1, l2];
         let morph = load_morph(path, &c, &lods[0]);
         if binds4.is_empty() {
             binds4 = binds.clone();
@@ -383,7 +387,7 @@ impl SkinModel {
                 false
             })
             .collect();
-        Some(SkinModel { bones, ids, lods, binds, binds4, mats, head: c.bone("head"), morph, face_bones })
+        Some(SkinModel { bones, ids, lods, cockpit, binds, binds4, mats, head: c.bone("head"), morph, face_bones })
     }
 }
 
@@ -518,6 +522,8 @@ pub struct SkinBuffer {
     /// the next figure is drawn without this bone and what hangs on it (the driver's head
     /// in the cockpit view: its vertices are gathered in the joint)
     pub hide_from: Option<usize>,
+    /// the next `emit` draws the model's cockpit view model instead of its LODs (when it has one; F-56050)
+    pub next_cockpit: bool,
     hidden: Vec<bool>,
     /// the next figure is lit by these four lanes (a walker at night - figlight.rs); taken by `emit`
     pub next_lanes: Option<[[f32; 4]; 12]>,
@@ -593,7 +599,7 @@ impl SkinBuffer {
             None => usize::MAX,
         };
         let first = (lod.min(2)..3).find(|&l| !model.lods[l].is_empty()).unwrap_or(0);
-        let parts = &model.lods[first];
+        let parts = if std::mem::take(&mut self.next_cockpit) && !model.cockpit.is_empty() { &model.cockpit } else { &model.lods[first] };
         let chars = self.char_light.is_some();
         let cfig = self.figs.len();
         if chars {
@@ -842,6 +848,40 @@ mod tests {
             for k in 0..4 {
                 assert!((r[k] - w[k]).abs() < 0.01, "{r:?} vs {w:?}");
             }
+        }
+    }
+
+    /// The player's driver sets carry the cockpit view model at root+0x18 (F-56050 draws it in the POV view):
+    /// skinned to the arms and hands only - no head, neck or spine - next to a full main model.
+    #[test]
+    fn player_set_has_an_arms_only_cockpit_model() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let dir = std::path::Path::new(&data).join("resources").join("character");
+        for set in ["drv_mp_01_set_h", "drv_mp_01_mot_set_h"] {
+            let Some(f) = std::fs::read_dir(dir.join(set)).ok().and_then(|d| d.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "r6"))) else { return };
+            let c = SkinModel::read(&f).expect(set);
+            assert!(!c.cockpit.is_empty(), "{set}: no cockpit model");
+            let used = |models: &[usize]| {
+                let mut b = std::collections::BTreeSet::new();
+                for &mi in models {
+                    for (m, _) in &c.models[mi] {
+                        for (vi, ix) in m.blend_indices.iter().enumerate() {
+                            let w = m.blend_weights.get(vi).map(|w| w.to_array()).unwrap_or([1.0, 0.0, 0.0, 0.0]);
+                            for k in 0..4 {
+                                if w[k] > 0.0 {
+                                    let bone = m.bone_palette.get(ix[k] as usize).copied().unwrap_or(ix[k] as u16) as usize;
+                                    b.insert(c.bones.get(bone).map_or(String::new(), |x| x.name.to_ascii_lowercase()));
+                                }
+                            }
+                        }
+                    }
+                }
+                b
+            };
+            let (cock, main) = (used(&c.cockpit), used(&c.lods[0]));
+            assert!(cock.iter().all(|n| !n.contains("head") && !n.contains("neck") && !n.contains("spine")), "{set}: {cock:?}");
+            assert!(main.iter().any(|n| n.contains("head")), "{set}: {main:?}");
+            assert!(c.cockpit.iter().all(|i| !c.lods[0].contains(i)), "{set}");
         }
     }
 }
