@@ -1695,6 +1695,17 @@ impl Vehicles {
                 (gpu.white.clone(), 0)
             };
             let (d, k0) = if m.plate { plate_texture(gpu, world) } else { resolve(gpu, world, m.dn.as_deref()) };
+            // (a badge's bump map, PS_BumpedChrome's NormalSampler: its fetch constant asks for no gamma - word 0 of the
+            // trim atlas, 0x84000002, in the recorded frame - so the program filters the texels as stored; uploaded as
+            // they are, under a key of its own. MCLA_BADGE_GAMMA_OLD=1: the gamma-decoded upload re-encoded in city.wgsl, as before)
+            let (d, k0) = if m.sname.eq_ignore_ascii_case("BumpedAlphaChrome") && std::env::var("MCLA_BADGE_OLD").is_err() && std::env::var("MCLA_BADGE_GAMMA_OLD").is_err() {
+                match m.dn.as_deref().map(mcla_formats::hash::joaat).and_then(|h| car.textures.get(&h).map(|t| (h, t))) {
+                    Some((h, t)) => (gpu.upload_texture_raw(h ^ 0x0052_4157, t), h ^ 0x0052_4157),
+                    None => (d, k0),
+                }
+            } else {
+                (d, k0)
+            };
             let (s2, k1) = resolve(gpu, world, m.sn.as_deref());
             let (s2, k1) = if m.carbon { carbon_weave(gpu, world) } else { (s2, k1) };
             let win_maps = if m.win_cand { glass_maps(gpu, world) } else { None };
@@ -2255,7 +2266,8 @@ impl Vehicles {
                                     if t != Vec3::ZERO {
                                         let e = |x: f32| ((x * 0.5 + 0.5) * 255.0).round() as u8;
                                         v.color = [e(t.x), e(t.y), e(t.z), v.color[3]];
-                                        v.uv2[0] = -2.0;
+                                        // (-3: and its map uploaded as stored, load_model_cfg)
+                                        v.uv2[0] = if std::env::var("MCLA_BADGE_GAMMA_OLD").is_err() { -3.0 } else { -2.0 };
                                     }
                                 }
                             }

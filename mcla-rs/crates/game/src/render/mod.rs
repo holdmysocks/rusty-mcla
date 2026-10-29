@@ -542,6 +542,9 @@ pub const ENV_GLOWS: usize = 96;
 pub const ENV_SOFT_SIZE: u32 = 16;
 /// edge of one paraboloid half of the environment map as the city is drawn into it
 pub const ENV_DP_SIZE: u32 = 256;
+/// levels of the environment cube: the base and three made from it, as the original's map has (levels 0 .. 3,
+/// PSFastMipMap; env_mip.wgsl)
+pub const ENV_MIPS: u32 = 4;
 
 /// Dynamic lights near the camera (street lamps, headlights).
 #[repr(C)]
@@ -952,6 +955,11 @@ pub struct Gpu {
     pub env_fill_bg: wgpu::BindGroup,
     pub env_blur_bg: wgpu::BindGroup,
     pub env_soft_faces: Vec<wgpu::TextureView>,
+    /// the cube's levels 1 .. ENV_MIPS - 1 (env_mip.wgsl): per (level - 1) x 6 + face, the face's view of that level
+    /// to draw into and the bind group reading the level above
+    pub pipeline_env_mip: wgpu::RenderPipeline,
+    pub env_mip_views: Vec<wgpu::TextureView>,
+    pub env_mip_bgs: Vec<wgpu::BindGroup>,
     /// the cars' environment cube and its blurred copy (kept for `dump_env`)
     pub env_tex: wgpu::Texture,
     pub env_soft_tex: wgpu::Texture,
@@ -1484,7 +1492,7 @@ impl Gpu {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 6 },
-                mip_level_count: 1,
+                mip_level_count: if size == ENV_SIZE && label == "environment" { ENV_MIPS } else { 1 },
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: post::SCENE_FORMAT,
@@ -1499,7 +1507,8 @@ impl Gpu {
         let env_soft_tex = cube_tex(ENV_SOFT_SIZE, "environment, blurred");
         let env_soft_cube = cube_view(&env_soft_tex);
         let env_soft_faces: Vec<wgpu::TextureView> = (0..6).map(|i| env_soft_tex.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2), base_array_layer: i, array_layer_count: Some(1), ..Default::default() })).collect();
-        let env_faces: Vec<wgpu::TextureView> = (0..6).map(|i| env_tex.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2), base_array_layer: i, array_layer_count: Some(1), ..Default::default() })).collect();
+        let env_face_level = |level: u32, i: u32| env_tex.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2), base_mip_level: level, mip_level_count: Some(1), base_array_layer: i, array_layer_count: Some(1), ..Default::default() });
+        let env_faces: Vec<wgpu::TextureView> = (0..6).map(|i| env_face_level(0, i)).collect();
         let env_depth = create_depth(&device, ENV_SIZE, ENV_SIZE);
         // the two paraboloid halves the city is drawn into for the cars' map (256 x 256 each, as
         // the halves of the original's 512 x 256), and their depth
@@ -1520,7 +1529,9 @@ impl Gpu {
             })
             .collect();
         let env_dp_depth = create_depth(&device, ENV_DP_SIZE, ENV_DP_SIZE);
-        let env_sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("environment"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+        // (mip filter linear: the badge's fetch of the map, cars/0x1d68d869 dpFrontSampler, word 3 0x00a80d11 - mag, min and
+        // mip filter linear, levels 0 .. 3; every other read of the cube names its level)
+        let env_sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("environment"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::FilterMode::Linear, ..Default::default() });
         // (F-23692 each frame: grc sampler state 9, maximum anisotropy, = 16 while the 4x flag is set, else
         // `*(0x827E19C4)` = 4; the city's fetches take it from the fetch constant - driving trace aniso field 3 = 4 : 1,
         // GPS map 5 = 16 : 1. MCLA_ANISO=<n> forces one value.)
@@ -1602,6 +1613,50 @@ impl Gpu {
             fragment: Some(wgpu::FragmentState {
                 module: &env_blur_shader,
                 entry_point: Some("fs_blur"),
+                targets: &[Some(wgpu::ColorTargetState { format: post::SCENE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                compilation_options: Default::default(),
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+        // the cube's levels 1 .. 3, each a 4 x 4 box of the level above (env_mip.wgsl)
+        let env_mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("environment mips"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
+        let mut env_mip_views = Vec::new();
+        let mut env_mip_bgs = Vec::new();
+        for level in 1..ENV_MIPS {
+            for face in 0..6 {
+                let src = env_face_level(level - 1, face);
+                env_mip_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("environment mips"),
+                    layout: &env_mip_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&src) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&env_sampler) }],
+                }));
+                env_mip_views.push(env_face_level(level, face));
+            }
+        }
+        let env_mip_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("environment mips"), source: wgpu::ShaderSource::Wgsl(include_str!("env_mip.wgsl").into()) });
+        let env_mip_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("environment mips"), bind_group_layouts: &[&env_mip_layout], push_constant_ranges: &[] });
+        let pipeline_env_mip = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("environment mips"),
+            layout: Some(&env_mip_pl),
+            vertex: wgpu::VertexState { module: &env_mip_shader, entry_point: Some("vs_mip"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &env_mip_shader,
+                entry_point: Some("fs_mip"),
                 targets: &[Some(wgpu::ColorTargetState { format: post::SCENE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                 compilation_options: Default::default(),
             }),
@@ -2375,6 +2430,9 @@ impl Gpu {
             env_fill_bg,
             env_blur_bg,
             env_soft_faces,
+            pipeline_env_mip,
+            env_mip_views,
+            env_mip_bgs,
             env_tex,
             env_soft_tex,
             env_glow_buf,

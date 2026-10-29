@@ -1826,7 +1826,11 @@ fn oct_dec(e: vec2<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> {
     car_wp = in.wpos;
-    var albedo = textureSample(t_diffuse, s_diffuse, in.uv0);
+    // (a badge's map - PS_BumpedChrome's NormalSampler, normal in rgb, outline in alpha - is read one level sharper: its
+    // fetch constant has LOD bias -1 and anisotropy 4 : 1 (word 4 0x003e0dc3, word 3 0x06a80d10 of the recorded frame);
+    // the other car maps have no bias. MCLA_DEBUG_VIEW=742: no bias, as before)
+    let badge_px = mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && in.uv2.x < -1.5 && !(g.params.w > 741.5 && g.params.w < 742.5);
+    var albedo = textureSampleBias(t_diffuse, s_diffuse, in.uv0, select(0.0, -1.0, badge_px));
     // (diagnostics 542 .. 545, p2day: the upper windows' diffuse read at level 0 .. 3; 546: at one level coarser than the sampler's choice)
     if (mat.mode == 3u && g.params.w > 541.5 && g.params.w < 545.5) { albedo = textureSampleLevel(t_diffuse, s_diffuse, in.uv0, round(g.params.w) - 542.0); }
     if (mat.mode == 3u && g.params.w > 545.5 && g.params.w < 546.5) { albedo = textureSampleBias(t_diffuse, s_diffuse, in.uv0, 1.0); }
@@ -3850,16 +3854,46 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // uv2.x = -2; MCLA_BADGE_BUMP_OLD=1 leaves it out: the true normal, as before)
             var env_c = env;
             if (setup_b1_badge && in.uv2.x < -1.5) {
-                let bm = car_raw(textureSample(t_diffuse, s_diffuse, in.uv0).rgb) * 2.0 - vec3<f32>(1.0);
+                let bms = textureSampleBias(t_diffuse, s_diffuse, in.uv0, select(-1.0, 0.0, g.params.w > 741.5 && g.params.w < 742.5)).rgb;
+                // (the map as stored when uploaded raw - uv2.x = -3, its fetch asks for no gamma - else re-encoded)
+                let bm = select(car_raw(bms), bms, in.uv2.x < -2.5) * 2.0 - vec3<f32>(1.0);
                 let bn_n = normalize(in.normal);
                 let bt0 = (obj.model * vec4<f32>(in.color.rgb * 2.0 - 1.0, 0.0)).xyz;
                 let bn_t = bt0 * inverseSqrt(max(dot(bt0, bt0), 1e-12));
                 let bn_b = cross(bn_t, bn_n) * ((1.0 - 2.0 * in.bflip) * select(-1.0, 1.0, dot(cross(obj.model[0].xyz, obj.model[1].xyz), obj.model[2].xyz) >= 0.0));
                 let bn_p = normalize(bn_t * bm.x + bn_b * bm.y + bn_n * bm.z);
                 env_c = env_color(reflect(-v, bn_p));
+                // (its read of the map takes the level from the screen, as the plain `tex` of listing line 45 does: the
+                // fetch constant gives trilinear over levels 0 .. 3 (word 3 0x00a80d11, word 4 0xc3), the level from the
+                // derivatives of the map coordinates - lines 36 - 44: R in the world (the port's and the original's are one),
+                // z < 0 the left half, u = 0.25 + x / (4 (1 - z)), else u = 0.75 - x / (4 (1 + z)), v = 0.5 - y / (2 (1 +- z)),
+                // in the 512 x 256 map's texels. The cube's faces have the original's texel density (64 a radian at a
+                // half's centre, 128 at its rim), so level k reads level k. MCLA_DEBUG_VIEW=736: level 0, as before)
+                if (!(g.params.w > 735.5 && g.params.w < 736.5) && g.shadow_params.w > 0.5 && g.dome.w > 0.5) {
+                    let br = reflect(-v, bn_p);
+                    let bro = br;
+                    let bw = select(1.0 + bro.z, 1.0 - bro.z, bro.z < 0.0);
+                    let buv = vec2<f32>(select(0.75 - bro.x / (4.0 * bw), 0.25 + bro.x / (4.0 * bw), bro.z < 0.0), 0.5 - bro.y / (2.0 * bw)) * vec2<f32>(512.0, 256.0);
+                    let blod = clamp(log2(max(max(length(dpdx(buv)), length(dpdy(buv))), 1e-6)), 0.0, 3.0);
+                    env_c = env_finite(textureSampleLevel(t_env, s_env, br, blod).rgb);
+                }
+                // (diagnostics 738 / 739 / 740 / 741: the badge's mirror direction / bumped normal / true normal / the
+                // triangle's own normal from the position's derivatives)
+                if (g.params.w > 737.5 && g.params.w < 741.5) {
+                    let fn_ = normalize(cross(dpdx(in.wpos), dpdy(in.wpos)));
+                    let fnd = fn_ * select(-1.0, 1.0, dot(fn_, normalize(in.normal)) >= 0.0);
+                    let dsel = select(select(select(normalize(in.normal), fnd, g.params.w > 740.5), bn_p, g.params.w < 739.5), reflect(-v, bn_p), g.params.w < 738.5);
+                    // (the y (up) component in eight bands of 0.1 from -0.2: black, red, yellow, green, cyan, blue, magenta, white)
+                    let kb = clamp(i32(floor((dsel.y + 0.2) * 10.0)), 0, 7);
+                    var yb = vec3<f32>(f32(kb == 1 || kb == 2 || kb == 6 || kb == 7), f32(kb == 2 || kb == 3 || kb == 4 || kb == 7), f32(kb == 4 || kb == 5 || kb == 6 || kb == 7));
+                    return vec4<f32>(to_scene(yb * 0.9), 1.0);
+                }
             }
             let cur_c = select(clamp(clamp(length(dpdx(n)) - 0.15, 0.0, 1.0) + clamp(length(dpdy(n)) - 0.15, 0.0, 1.0), 0.0, 1.0), 0.0, setup_b1_badge);
-            lit = mix(env_c, hemi, cur_c) * (0.125 + 1.18518 * clamp(fc_c - 0.25, 0.0, 1.0)) * in.color1.a;
+            // (the badge's occlusion: VS_BumpedChrome hands over 0.5 + 0.5 x the colour's occlusion byte (o5.w, listing
+            // line 64), and the pixel program multiplies by it twice - lines 47 and 48 - where PS_Chrome takes the byte once; MCLA_DEBUG_VIEW=737: once, raw, as before)
+            let occ_c = select(in.color1.a, (0.5 + 0.5 * in.color1.a) * (0.5 + 0.5 * in.color1.a), setup_b1_badge && !(g.params.w > 736.5 && g.params.w < 737.5));
+            lit = mix(env_c, hemi, cur_c) * (0.125 + 1.18518 * clamp(fc_c - 0.25, 0.0, 1.0)) * occ_c;
             spec_k = 0.0;
         } else if (mat.mode == 7u) {
             // polished metal: mostly mirror, darker face-on so spokes and lips read

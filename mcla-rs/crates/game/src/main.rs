@@ -8332,6 +8332,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         self.vehicles.hide_player = self.hide_player || (self.game.fresh_game && self.intro_stage != 0) || self.game.starter_pick.is_some();
+        // (test hook: MCLA_CAM_FIX=px,py,pz,bx,by,bz,ux,uy,uz,fov_y_deg - the chase camera put where a recorded frame of the
+        // original had it, for pixel comparisons: its position and back / up axes (gViewInverse c15, c14, c13 of the frame,
+        // the same world as the port's) and its vertical field of view)
+        if let Ok(s) = std::env::var("MCLA_CAM_FIX") {
+            let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if v.len() == 10 {
+                let (p, b, u) = (Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5]), Vec3::new(v[6], v[7], v[8]));
+                self.chase.pos = p;
+                self.chase.look = p - b;
+                self.chase.up = u;
+                self.cam.fov_y = v[9].to_radians();
+            }
+        }
         // (the driver's camera: the original's POV camera sets G+122 of the car it follows - F-95074 -
         // and its windows take the in-car glass program; damage_map_rule.md Part C 6. As the cockpit's
         // headless driver: not while looking back, in a replay or the idle camera.)
@@ -9856,6 +9869,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 bp.set_pipeline(&gpu.pipeline_env_blur);
                 bp.set_bind_group(0, &gpu.env_blur_bg, &[]);
                 bp.draw(0..3, face..face + 1);
+            }
+            // ... and its levels 1 .. 3, as the original's map has (PSFastMipMap; render/env_mip.wgsl)
+            for (k, view) in gpu.env_mip_views.iter().enumerate() {
+                let mut mp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("environment mips"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                mp.set_pipeline(&gpu.pipeline_env_mip);
+                mp.set_bind_group(0, &gpu.env_mip_bgs[k], &[]);
+                mp.draw(0..3, 0..1);
             }
         }
         render::ms::set_scene(gpu.scene_n);
