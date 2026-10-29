@@ -1180,6 +1180,29 @@ impl NavSys {
     /// 1: 1 3 0 2, 2: 2 0 3 1, 3: 3 2 1 0), then its own lanes whose flags (+4) meet `mask` and
     /// whose box (+10 / +20) is within w in 3D (lane slot 5 sub_82244DC0: w^2 > the squared
     /// distance), until `max` are found.
+    /// A lane's road (F-86691 by lane): its owner when that is a road (flags bit 2), else the owner's parent
+    /// when that is one; a junction's lanes have none.
+    pub fn lane_road(&self, lane: usize) -> Option<usize> {
+        let r = self.raw.get(lane)?;
+        if r.owner.0 & 2 != 0 {
+            r.zone
+        } else if r.owner.3 & 2 != 0 {
+            r.parent_zone
+        } else {
+            None
+        }
+    }
+
+    /// A road's own lanes (+0x14 / +0x18), in the file's order.
+    pub fn road_lanes(&self, road: usize) -> &[usize] {
+        self.zone_lanes.get(road).map_or(&[], |v| v.as_slice())
+    }
+
+    /// A lane's length (+0x0c).
+    pub fn lane_len(&self, lane: usize) -> f32 {
+        self.raw.get(lane).map_or(0.0, |r| r.len)
+    }
+
     pub fn lanes_near(&self, p: Vec3, w: f32, mask: u32, max: usize) -> Vec<usize> {
         const ORDER: [[usize; 4]; 4] = [[0, 1, 2, 3], [1, 3, 0, 2], [2, 0, 3, 1], [3, 2, 1, 0]];
         fn go(nav: &NavSys, n: usize, p: Vec3, w: f32, mask: u32, max: usize, out: &mut Vec<usize>) {

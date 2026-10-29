@@ -61,6 +61,8 @@ pub enum Gesture {
     ThumbDownRight,
     /// the arrests' `gesture_cophandsup` (gesture 18): hands up
     CopHandsUp,
+    /// the ticket scenes' `gesture_copfidget` (gesture 17, F-41149)
+    CopFidget,
 }
 
 impl Gesture {
@@ -83,6 +85,7 @@ impl Gesture {
             "thm_dwn_lft" => Gesture::ThumbDownLeft,
             "thm_dwn_rgt" => Gesture::ThumbDownRight,
             "cophandsup" => Gesture::CopHandsUp,
+            "copfidget" => Gesture::CopFidget,
             _ => return None,
         })
     }
@@ -180,6 +183,8 @@ fn gesture_clip(g: Gesture, rr: &mut [usize; 5], human: bool) -> String {
         Gesture::ThumbDownRight => "drv_gest_thm_dwn_rgt".into(),
         // (event 53 sets racer+684 = 18; F-20767's case 18)
         Gesture::CopHandsUp => "drv_gest_rspnd".into(),
+        // (case 17, F-57037: one clip, its counter unused)
+        Gesture::CopFidget => "drv_gest_disapnt".into(),
     }
 }
 

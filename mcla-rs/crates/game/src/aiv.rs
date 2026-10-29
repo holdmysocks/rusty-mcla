@@ -372,7 +372,7 @@ impl Veh {
 // geometry helpers
 
 /// F-41334: normalise if |v|^2 > eps, else the fallback.
-fn norm_or(v: Vec3, eps: f32, fb: Vec3) -> Vec3 {
+pub(crate) fn norm_or(v: Vec3, eps: f32, fb: Vec3) -> Vec3 {
     let l2 = fma(v.z, v.z, fma(v.x, v.x, v.y * v.y));
     if !(l2 > eps) {
         return fb;

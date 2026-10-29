@@ -687,6 +687,45 @@ struct DmgMap {
     _view: wgpu::TextureView,
 }
 
+/// The chassis' scramble word applied to the pad's pedals (mcCarSim::Update after its copy of the input, before the
+/// grid block and the burnout): 0x1 brake 0, else 0x2 brake 1; 0x100 handbrake off, else 0x200 on; 0x8 throttle 1,
+/// else 0x4 throttle 0; 0x400 steer 0, else 0x10 -1, 0x20 +1, 0x40 negated; 0x800 throttle 0 and handbrake 0.25,
+/// else 0x1000 steer negated and handbrake 0.25 (the port's handbrake is on or off: 0.25 counts as on).
+pub fn scramble(mut i: CarInput, f: u32) -> CarInput {
+    if f & 0x1 != 0 {
+        i.brake = 0.0;
+    } else if f & 0x2 != 0 {
+        i.brake = 1.0;
+    }
+    if f & 0x100 != 0 {
+        i.handbrake = false;
+    } else if f & 0x200 != 0 {
+        i.handbrake = true;
+    }
+    if f & 0x8 != 0 {
+        i.throttle = 1.0;
+    } else if f & 0x4 != 0 {
+        i.throttle = 0.0;
+    }
+    if f & 0x400 != 0 {
+        i.steer = 0.0;
+    } else if f & 0x10 != 0 {
+        i.steer = -1.0;
+    } else if f & 0x20 != 0 {
+        i.steer = 1.0;
+    } else if f & 0x40 != 0 {
+        i.steer = -i.steer;
+    }
+    if f & 0x800 != 0 {
+        i.throttle = 0.0;
+        i.handbrake = true;
+    } else if f & 0x1000 != 0 {
+        i.steer = -i.steer;
+        i.handbrake = true;
+    }
+    i
+}
+
 #[derive(Default)]
 pub struct Vehicles {
     pub render_alpha: f32,
@@ -741,6 +780,9 @@ pub struct Vehicles {
     /// the player's car held as on the grid (CopPullover: Racer_PreRaceBurnout over the officer's walk) - its
     /// pedals go through under the hold, so it can be spun to bolt
     pub player_hold: bool,
+    /// the player's chassis scramble word (+624, Racer_SetScrambleInputFlags): pedals forced after the pad's copy
+    /// (`scramble`)
+    pub player_scramble: u32,
     /// no car has its lamps on (VEHICLE SELECT: three cars standing in a lot)
     pub lights_off: bool,
     /// the finish of the player's rims by zone - spoke A, spoke B, lip (the rim meshes'
@@ -3167,7 +3209,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (on the grid the player's own pedals go through under the hold: `CarInput::hold`)
                 // (the steering is written 0 on the grid, A-88204 - only there)
                 let hold = self.grid_hold.is_some() || self.player_hold;
-                CarInput { hold, steer: if hold { 0.0 } else { player_input.steer }, ..player_input }
+                scramble(CarInput { hold, steer: if hold { 0.0 } else { player_input.steer }, ..player_input }, self.player_scramble)
             } else if self.cars[i].ai.as_ref().map_or(false, |a| a.brain.is_some()) {
                 // (a racer: the original's brain, aiv race line and mcOpponentInput - brain.rs)
                 crate::brain::tick(self, i, None, dt)

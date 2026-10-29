@@ -36,6 +36,28 @@ struct Actor {
     face: Option<Clip>,
     /// the face's blend shapes and the facial pack's kind-21 track of every target (by the target's id)
     shapes: Option<(FaceShapes, Vec<Option<usize>>)>,
+    /// a slot animated again (`reanimate`): the old clip's root at the switch, its height 0, added to the new clip's
+    /// root - rotation on the left, translation summed (the AddSubtract over the root-bone filter)
+    root_add: Option<(Quat, Vec3)>,
+    /// and the old pose it blends out of over 0.25 s from that scene time
+    fade: Option<(Vec<(Quat, Vec3)>, f32)>,
+}
+
+impl Actor {
+    /// The pose at frame `f` of its clip, scene time `t`.
+    fn pose(&self, f: f32, t: f32, local: &mut Vec<(Quat, Vec3)>) {
+        self.clip.local(&self.model.bones, f, local);
+        if let (Some((r, p)), Some(l)) = (self.root_add, local.first_mut()) {
+            l.0 = (r * l.0).normalize();
+            l.1 += p;
+        }
+        if let Some((old, t1)) = self.fade.as_ref() {
+            let k = ((t - t1) / 0.25).clamp(0.0, 1.0);
+            if k < 1.0 {
+                crate::skin::blend_pose(local, old, 1.0 - k);
+            }
+        }
+    }
 }
 
 /// Track kind of a blend-shape weight (`crCreatureComponentBlendShapes` reads kind 21 by target id,
@@ -208,7 +230,12 @@ static COP_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUs
 fn default_set(scene: &str, entity: &str, n: usize) -> &'static str {
     const RACERS: [&str; 4] = ["drv_mb_02_set", "drv_mc_02_set", "drv_ma_02_set", "drv_mh_02_set"];
     let player = entity.starts_with("player") || entity == "cut_drv00";
-    if entity.contains("cop") || (scene.contains("cut_cop") && !player) {
+    // (CopPullover.sco names its officer itself, AssignNameToSlot("pol_mc_01_set", 0) before the walk and again
+    // before the ticket scene: one officer in every pull-over, the arrests' counter untouched)
+    const PULLOVER: [&str; 5] = ["cut_cop_walk_02", "cut_cop_fidget_02", "sc_cut_cop_ticket_suv", "cut_cop_fidget_bike", "cut_cop_alert_02"];
+    if !player && PULLOVER.iter().any(|s| scene.ends_with(s)) {
+        "pol_mc_01_set"
+    } else if entity.contains("cop") || (scene.contains("cut_cop") && !player) {
         // in the police scenes everybody but the player is an officer: the next of the five (F-61680:
         // ++counter % 5 - the first officer ever is pol_mc_01)
         COPS[(COP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1) % COPS.len()]
@@ -466,7 +493,7 @@ impl Cine {
                     let set = cutscene_set(&set);
                     let Some(model) = self.model(gpu, &set) else { continue };
                     let clip = Clip::bind(&anim, &model.ids, false, false);
-                    sc.actors.push(Actor { label: label.to_string(), model, clip, t0: 0.0, face: None, shapes: None });
+                    sc.actors.push(Actor { label: label.to_string(), model, clip, t0: 0.0, face: None, shapes: None, root_add: None, fade: None });
                 }
             }
         }
@@ -517,7 +544,7 @@ impl Cine {
             };
             let Some(model) = self.model(gpu, set) else { continue };
             let clip = Clip::bind(&Arc::new(anim), &model.ids, false, false);
-            self.ambient.push(Actor { label, model, clip, t0: 0.0, face: None, shapes: None });
+            self.ambient.push(Actor { label, model, clip, t0: 0.0, face: None, shapes: None, root_add: None, fade: None });
         }
         log::info!("cine: {} people at {} ({:.0} ms)", self.ambient.len(), name, t0.elapsed().as_secs_f32() * 1000.0);
     }
@@ -595,6 +622,12 @@ impl Cine {
         let Some(anim) = pack_entries(&res).into_iter().find(|(_, n)| *n == name).and_then(|(o, _)| animation_named(&rd, o)) else { return false };
         let Some(sc) = self.playing.as_mut() else { return false };
         let Some(a) = sc.actors.iter_mut().find(|a| a.label == label) else { return false };
+        // (CineScript_Characters_ReAnimateSlot, F-56094 -> F-52646: the new clip from 0 added on the root bone to
+        // the old clip frozen at its time with its root height 0, cross-faded in over 0.25 s; played once)
+        let mut old = Vec::new();
+        a.pose(a.clip.anim.frame_at(sc.t - a.t0), sc.t, &mut old);
+        a.root_add = old.first().map(|l| (l.0, Vec3::new(l.1.x, 0.0, l.1.z)));
+        a.fade = Some((old, sc.t));
         a.clip = Clip::bind(&Arc::new(anim), &a.model.ids, false, false);
         a.t0 = sc.t;
         a.face = None;
@@ -671,7 +704,7 @@ impl Cine {
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
         sc.actors.iter().map(|a| {
             let f = a.clip.anim.frame_at(sc.t - a.t0);
-            a.clip.local(&a.model.bones, f, &mut local);
+            a.pose(f, sc.t, &mut local);
             let (mt, mr) = a.clip.mover(f);
             let root = local.first().map_or(Vec3::ZERO, |l| l.1);
             (a.label.clone(), (sc.origin * Mat4::from_rotation_translation(mr, mt)).transform_point3(root))
@@ -726,7 +759,7 @@ impl Cine {
         for sc in self.playing.iter_mut().chain(self.linger.iter_mut()) {
         for a in &mut sc.actors {
             let f = a.clip.anim.frame_at(sc.t - a.t0);
-            a.clip.local(&a.model.bones, f, &mut local);
+            a.pose(f, sc.t, &mut local);
             if let Some(face) = a.face.as_ref() {
                 let ff = face.anim.frame_at(sc.t);
                 if let (Some((shapes, tracks)), Some(m)) = (a.shapes.as_mut(), a.model.morph.as_ref()) {
