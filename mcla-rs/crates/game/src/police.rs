@@ -430,6 +430,12 @@ pub struct Unit {
     pub cd: f32,
     /// +1156: the next assign may move it (out of sight; 0 after a successful assign)
     pub relocate: bool,
+    /// the random Follow (cmd 2, F-24671): following the player (+1076), its roll / down timer +1104, the 1 s timers
+    /// +1108 (the racer behind) / +1112 (facing away) / +1116 (moving away) and the last goal +1088
+    pub follow: bool,
+    pub fol_t: f32,
+    pub fol_tm: [f32; 3],
+    pub fol_goal: Option<Vec3>,
 }
 
 /// The three of `red_light_hk1` 0x436e / `freeway_hookman<n>` 0x2c73: (home, heading, slot).
@@ -491,6 +497,8 @@ pub struct Police {
     t_burn: f32,
     t_still: f32,
     prev_pos: Option<Vec3>,
+    /// the Pursuit's Delay (`flee_hold`) ran last frame: its exit F-25831 zeroes +108, +140, +144
+    arrest_delay: bool,
     /// the arrest safe zones (`load_safe_zones`)
     pub safe_zones: Vec<(Vec3, f32)>,
     /// the arrest's COP_ARREST is posted (its scene may hold the arrest on, `hold_busted`)
@@ -564,7 +572,9 @@ pub struct Police {
     glow_count: u32,
     pub enabled: bool,
     /// per tactic cop: the teleport cooldown (+1132) and its brain's time off the nav mesh (+584, F-74140)
-    tel: HashMap<u32, (f32, f32)>,
+    tel: HashMap<u32, (f32, f32, f32)>,
+    /// the target's last nav road is a freeway or a ramp (law record +60, F-28783: its name starts "FW" / "XT")
+    fw_road: bool,
     /// the tactic's +120 (no teleport while above 0) and its duration +104 (F-63286)
     tel_lock: f32,
     tac_t: f32,
@@ -613,6 +623,7 @@ impl Police {
             t_burn: 0.0,
             t_still: 0.0,
             prev_pos: None,
+            arrest_delay: false,
             safe_zones: Vec::new(),
             arrest_posted: false,
             t_seen: 0.0,
@@ -670,6 +681,7 @@ impl Police {
             glow_count: 0,
             enabled: true,
             tel: HashMap::new(),
+            fw_road: false,
             tel_lock: 0.0,
             tac_t: 0.0,
             grow_flip: true,
@@ -708,7 +720,7 @@ impl Police {
         for (i, (home, heading, slot)) in SCRIPT_UNITS.iter().enumerate() {
             let id = 400 + i as u32;
             self.units.retain(|u| u.id != id);
-            self.units.push(Unit { id, home: Vec3::from(*home), heading: *heading, slot: Vec3::from(*slot), under: true, at: Vec3::from(*home), path: None, pi: 0, cd: 0.0, relocate: true });
+            self.units.push(Unit { id, home: Vec3::from(*home), heading: *heading, slot: Vec3::from(*slot), under: true, at: Vec3::from(*home), path: None, pi: 0, cd: 0.0, relocate: true, follow: false, fol_t: 0.0, fol_tm: [0.0; 3], fol_goal: None });
         }
         log::info!("police: units 400..402 made, underground");
     }
@@ -722,8 +734,9 @@ impl Police {
         self.units.clear();
     }
 
-    /// PoliceManager_SetAllPoliceUnderground(1, 1): the units go underground (no new car is put
-    /// up for them; a unit's car already on the road is left where it is - approx.).
+    /// PoliceManager_SetAllPoliceUnderground(1, 1) (F-24122 -> F-47166 / F-97540): the manager's record cleared, then
+    /// every unit with +872 == 1 - all three, wherever they are - ends its tactic or command and is put at its slot
+    /// with no speed and no map icon; the port takes their cars off the road.
     pub fn units_down(&mut self, vehicles: &mut Vehicles) {
         for u in self.units.iter_mut() {
             u.under = true;
@@ -772,8 +785,9 @@ impl Police {
         let c = &mut vehicles.cars[idx];
         c.cop = true;
         c.vinyl_name = format!("police_unit:{}", self.units[ui].id);
+        let rail_v = world.nav.as_ref().and_then(|n| Some(crate::vehicles::traffic::rail_speed(n, n.nearest_link(q)?.0).0)).unwrap_or(crate::mc4::RAIL_SPEED);
         if let Some(ai) = c.ai.as_mut() {
-            ai.target_speed = 14.0;
+            ai.target_speed = rail_v;
         }
         self.units[ui].under = false;
         Some(c.uid)
@@ -786,11 +800,13 @@ impl Police {
     /// route from the nearest point; then it drives its path, round and round.
     fn patrol(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles, tun: &Tuning, busy: &[u32], dt: f32) {
         let Some(pp) = vehicles.player().map(|c| c.state.pos) else { return };
-        let vis = tun.get("fCopHudIconVisibleDist", 500.0);
+        let vis = tun.get("fCopHudIconVisibleDist", 800.0);
         let change = tun.get("iChangePathProbPrcnt", 1.0) * 0.01;
         for ui in 0..self.units.len() {
             let car = Self::unit_car(vehicles, self.units[ui].id);
             if car.is_some_and(|i| busy.contains(&vehicles.cars[i].uid)) {
+                // (a tactic's command replaces the follow's)
+                self.units[ui].follow = false;
                 continue;
             }
             if !self.enabled {
@@ -811,6 +827,8 @@ impl Police {
                     }
                     if r == 0 {
                         self.units[ui].relocate = false;
+                        // (AssignPath, F-55649: +1128 = fPatrolTime, the hold before the next reassign)
+                        self.units[ui].cd = tun.get("fPatrolTime", 5.0);
                     } else if let Some(i) = car.filter(|_| !self.units[ui].under) {
                         vehicles.cars.remove(i);
                         self.units[ui].under = true;
@@ -833,10 +851,27 @@ impl Police {
             }
             let Some(i) = car else { continue };
             let pos = vehicles.cars[i].state.pos;
+            // (the cop's per-frame F-79540: +1104 counts down to 0)
+            self.units[ui].fol_t = (self.units[ui].fol_t - dt).max(0.0);
+            if self.follow_step(world, vehicles, tun, ui, i, dt) {
+                if !self.units[ui].follow {
+                    // (F-69094's end: the patrol loop finds the brain idle and assigns the patrol path again, F-90720
+                    // without moving it)
+                    if self.assign(gpu, world, vehicles, ui, true, false, vis) == 0 {
+                        self.units[ui].cd = tun.get("fPatrolTime", 5.0);
+                    } else if let Some(path) = self.units[ui].path.and_then(|g| self.paths.get(g)) {
+                        self.units[ui].pi = nearest_point(path, pos);
+                    }
+                }
+                continue;
+            }
             self.units[ui].cd -= dt;
             if self.units[ui].cd <= 0.0 && pos.distance(pp) > vis {
-                if self.assign(gpu, world, vehicles, ui, false, true, vis) == 4 {
-                    self.units[ui].cd = 5.0;
+                // (assigned: AssignPath's fPatrolTime hold; the path taken: 5 s before the next try)
+                match self.assign(gpu, world, vehicles, ui, false, true, vis) {
+                    0 => self.units[ui].cd = tun.get("fPatrolTime", 5.0),
+                    4 => self.units[ui].cd = 5.0,
+                    _ => {}
                 }
                 continue;
             }
@@ -845,22 +880,109 @@ impl Police {
                     self.units[ui].pi = nearest_point(path, pos);
                 }
             }
-            // its route: the path's points in turn, wrapping (the port's driver between them, 14 m/s)
+            // its route: the path's points in turn, wrapping (mcBrainCruising with looping waypoints and no speed of its
+            // own: the rail's speed, the port's driver steers between the points)
             let Some(path) = self.units[ui].path.and_then(|g| self.paths.get(g)).filter(|p| !p.is_empty()) else { continue };
             let mut k = self.units[ui].pi % path.len();
             if pos.distance(path[k]) < 15.0 {
                 k = (k + 1) % path.len();
                 self.units[ui].pi = k;
             }
+            let rail_v = world.nav.as_ref().and_then(|n| Some(crate::vehicles::traffic::rail_speed(n, n.nearest_link(pos)?.0).0)).unwrap_or(crate::mc4::RAIL_SPEED);
             if let Some(ai) = vehicles.cars[i].ai.as_mut() {
                 ai.chase = Some((path[k], Vec3::ZERO));
                 ai.chase_exact = false;
-                ai.target_speed = 14.0;
+                ai.target_speed = rail_v;
             }
             if std::env::var_os("MCLA_PATROL_TRACE").is_some() && (self.time * 30.0) as u32 % 150 == 0 {
                 log::info!("police: unit {} patrols at {:?} speed {:.1}, point {} of path {:?}, {:.0} m from the player", self.units[ui].id, pos, vehicles.cars[i].state.speed(), k, self.units[ui].path, pos.distance(pp));
             }
         }
+    }
+
+    /// The random Follow (F-24233's start and break-off rolls, cmd 2 F-24671, its tick F-68135, the end F-69094), for
+    /// a patrolling unit's car `i`. Start, while +1104 is 0 and the player is no tactic's target and no other unit
+    /// follows him: the cop sees him within fDetectDist (40 m) in a 45 degree half cone (F-94676, a line 2 m up),
+    /// he is ahead of the cop, both face and move the same way; then an iRndFollowOnProbPrcnt (5 %) roll, failed: +1104
+    /// = 1 s. Following: +1104 = fFollowDownTime (5 s); it ends after 1 s of the player behind the cop, facing or moving
+    /// away, beyond fStopFollowDist (500 m), with no rail within 5 m of the goal, or on an iRndFollowOffProbPrcnt (8 %)
+    /// roll each time +1104 runs out (failed: 1 s). The goal: 10 m (fGoalFollowDist) behind the player's lane point
+    /// along his row 2, else behind the player, on the nearest rail within 5 m; re-planned when it moved over 1 m. The
+    /// end sets +1104 = fFollowDownTime. True while it follows (and in the frame it ends). (The player is the only
+    /// racer; the port's driver steers to the goal at the rail's speed for the brain's traffic ghost.)
+    fn follow_step(&mut self, world: &World, vehicles: &mut Vehicles, tun: &Tuning, ui: usize, i: usize, dt: f32) -> bool {
+        let Some(p) = vehicles.player() else { return false };
+        let (ppos, pvel, prow2) = (p.state.pos, p.state.vel, -p.state.forward());
+        let lane_pt = vehicles.driver_lanes.get(&p.uid).and_then(|d| Some((d.best?.0, d.best_t))).and_then(|(l, t)| Some(world.nav.as_ref()?.curves.get(l)?.eval(t).0));
+        let c = &vehicles.cars[i];
+        let (cpos, cvel, crow2) = (c.state.pos, c.state.vel, -c.state.forward());
+        let d = ppos - cpos;
+        let down = tun.get("fFollowDownTime", 5.0);
+        if !self.units[ui].follow {
+            if self.units[ui].fol_t > 0.0 || self.kind != TacKind::None || self.units.iter().any(|u| u.follow) {
+                return false;
+            }
+            let ok = cop_sees(world, c, ppos, tun.get("fDetectDist", 40.0), 45.0) && crow2.dot(d) < 0.0 && crow2.dot(prow2) > 0.0 && cvel.dot(pvel) > 0.0;
+            if !ok {
+                return false;
+            }
+            if self.rand() < tun.get("iRndFollowOnProbPrcnt", 5.0) * 0.01 {
+                log::info!("police: unit {} randomly starting to follow the player", self.units[ui].id);
+                let u = &mut self.units[ui];
+                u.follow = true;
+                u.fol_t = down;
+                u.fol_tm = [0.0; 3];
+                u.fol_goal = None;
+            } else {
+                self.units[ui].fol_t = 1.0;
+                return false;
+            }
+        }
+        let conds = [crow2.dot(d) > 0.0, crow2.dot(prow2) < 0.0, cvel.dot(pvel) < 0.0];
+        let mut end = false;
+        for (t, c) in self.units[ui].fol_tm.iter_mut().zip(conds) {
+            *t = if c { *t + dt } else { 0.0 };
+            end |= *t > 1.0;
+        }
+        end |= d.length() > tun.get("fStopFollowDist", 500.0);
+        let goal = if end {
+            None
+        } else {
+            let back = tun.get("fGoalFollowDist", 10.0);
+            let snap = |q: Vec3| {
+                let nav = world.nav.as_ref()?;
+                let (l, t, dd) = nav.nearest_link(q)?;
+                (dd <= 5.0).then(|| (nav.links[l].point_at(t), crate::vehicles::traffic::rail_speed(nav, l).0))
+            };
+            lane_pt.and_then(|q| snap(q + prow2 * back)).or_else(|| snap(ppos + prow2 * back))
+        };
+        end |= goal.is_none();
+        if !end && self.units[ui].fol_t <= 0.0 {
+            if self.rand() < tun.get("iRndFollowOffProbPrcnt", 8.0) * 0.01 {
+                log::info!("police: unit {} randomly breaking off the follow", self.units[ui].id);
+                end = true;
+            } else {
+                self.units[ui].fol_t = 1.0;
+            }
+        }
+        if end {
+            let u = &mut self.units[ui];
+            u.follow = false;
+            u.fol_t = down;
+            u.fol_goal = None;
+            return true;
+        }
+        let (g, v) = goal.unwrap();
+        if self.units[ui].fol_goal.map_or(true, |q| q.distance(g) > 1.0) {
+            self.units[ui].fol_goal = Some(g);
+        }
+        let g = self.units[ui].fol_goal.unwrap_or(g);
+        if let Some(ai) = vehicles.cars[i].ai.as_mut() {
+            ai.chase = Some((g, Vec3::ZERO));
+            ai.chase_exact = false;
+            ai.target_speed = v;
+        }
+        true
     }
 
     /// F-90720: the patrol path whose points' mean squared distance to the player is least (`free`: only the paths no
@@ -1072,7 +1194,7 @@ impl Police {
             let Some(p) = vehicles.player() else { break };
             let dims = vehicles.models.iter().find(|m| m.name == COP_CAR).map_or((2.5, 1.0, 1.5), |m| (0.5 * (m.max.z - m.min.z), 0.5 * (m.max.x - m.min.x), m.max.y - m.min.y));
             let tgt = (p.state.pos, p.state.vel, p.state.forward(), p.model.max.y - p.model.min.y);
-            let Some((q, row2, vel)) = self.place_cop(world, tgt, d2, all_need, &mut junctions, dims) else { return None };
+            let Some((q, row2, vel)) = self.place_cop(world, tgt, d2, all_need, &mut junctions, dims, self.fw_road && self.offences & LAW_WRONG_WAY == 0) else { return None };
             let Some(uid) = self.unit_surface(gpu, world, vehicles, ui, q, -row2) else { return None };
             if let Some(c) = vehicles.cars.iter_mut().find(|c| c.uid == uid) {
                 c.state.vel = vel;
@@ -1088,7 +1210,8 @@ impl Police {
     /// hops away (F-92039); no road: a 45 degree ring 125 m ahead. A point is closer to the target than the cop is now
     /// (`cop_d2`) and its 4 footprint corners are hidden from the target's roof. Out: the place (+0.25 m), row 2 (the
     /// car's forward is -row 2) and the velocity: 80 mph forward when the target moves along row 2, else standing.
-    fn place_cop(&mut self, world: &World, tgt: (Vec3, Vec3, Vec3, f32), cop_d2: f32, all_need: bool, junctions: &mut bool, dims: (f32, f32, f32)) -> Option<(Vec3, Vec3, Vec3)> {
+    #[allow(clippy::too_many_arguments)]
+    fn place_cop(&mut self, world: &World, tgt: (Vec3, Vec3, Vec3, f32), cop_d2: f32, all_need: bool, junctions: &mut bool, dims: (f32, f32, f32), fw: bool) -> Option<(Vec3, Vec3, Vec3)> {
         let nav = world.nav.as_ref()?;
         let (tpos, tvel, tfwd, th) = tgt;
         let (hl, hw, ch) = dims;
@@ -1100,7 +1223,8 @@ impl Police {
         let ok = |q: Vec3, dir: Vec3| {
             let dir = Vec3::new(dir.x, 0.0, dir.z).normalize_or(Vec3::Z);
             let side = Vec3::new(-dir.z, 0.0, dir.x);
-            q.distance_squared(tpos) < cop_d2 && [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)].iter().all(|&(a, b)| hidden(q + dir * hl * a + side * hw * b))
+            // (FW: only points not ahead of the target, dot(target row2, q - target) >= 0)
+            (!fw || (-tfwd).dot(q - tpos) >= 0.0) && q.distance_squared(tpos) < cop_d2 && [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)].iter().all(|&(a, b)| hidden(q + dir * hl * a + side * hw * b))
         };
         let try_node = |n: NavNode| -> Option<(Vec3, Vec3)> {
             let curve = nav.curves.get(nav.node_rect(n).lane?)?;
@@ -1123,10 +1247,10 @@ impl Police {
                         (c[0] - tpos.x) * heading.x + (c[1] - tpos.z) * heading.z > 0.0
                     };
                     let (a, b): (Vec<NavNode>, Vec<NavNode>) = ends.into_iter().partition(ahead);
-                    // (FW / XT records - the freeway's - never look ahead; the port has no record: not FW)
+                    // (FW / XT records - the freeway's - never take the junction ahead)
                     match (b.first(), a.first()) {
                         (Some(&jb), _) if all_need => order.push(jb),
-                        (_, Some(&ja)) => order.push(ja),
+                        (_, Some(&ja)) if !fw => order.push(ja),
                         _ => {}
                     }
                     *junctions = false;
@@ -1208,13 +1332,24 @@ impl Police {
             e.0 = (e.0 - dt).max(0.0);
             if let Some(c) = vehicles.cars.iter().find(|c| c.uid == *uid) {
                 e.1 = if mesh.map_or(true, |m| m.on_mesh(c.state.pos)) { 0.0 } else { e.1 + dt };
+                // (the car's mcCarDamage: damaged out (+36 >= MaxDamage), then its DamageOutDelay countdown +44; -1 = not
+                // damaged out)
+                e.2 = if c.state.damage < 0.999 {
+                    -1.0
+                } else if e.2 < 0.0 {
+                    c.model.simtunes.as_ref().map_or(0.0, |s| s.base.damage.damage_out_delay)
+                } else {
+                    (e.2 - dt).max(0.0)
+                };
             }
         }
         for u in &self.cops {
-            self.tel.entry(*u).or_insert((0.0, 0.0));
+            self.tel.entry(*u).or_insert((0.0, 0.0, -1.0));
         }
         let cops = self.cops.clone();
-        let needs = |s: &Self, u: u32| s.tel.get(&u).is_some_and(|e| e.1 > 5.0);
+        // (F-14059: underground - no car here -, over 5 s off the nav mesh (brain +584), or damaged out with its
+        // damage-out delay at or under 0 (car +20 -> +36 >= MaxDamage and +44 <= 0))
+        let needs = |s: &Self, u: u32| s.tel.get(&u).is_some_and(|e| e.1 > 5.0 || e.2 == 0.0);
         let any_need = cops.iter().any(|&u| needs(self, u));
         let no_tel = tun.get("fNoTeleportTime", 60.0);
         let gate = self.tel_lock <= 0.0
@@ -1256,7 +1391,7 @@ impl Police {
                 }
             }
             let dims = (0.5 * (c.model.max.z - c.model.min.z), 0.5 * (c.model.max.x - c.model.min.x), ch);
-            match self.place_cop(world, tgt, d * d, all_need, &mut junctions, dims) {
+            match self.place_cop(world, tgt, d * d, all_need, &mut junctions, dims, self.fw_road && self.offences & LAW_WRONG_WAY == 0) {
                 Some((q, row2, vel)) => {
                     let c = &mut vehicles.cars[i];
                     let f = -row2;
@@ -1623,7 +1758,6 @@ impl Police {
         let detect = t("fDetectDist", 40.0);
         let vision = t("fVisionDist", 500.0);
         let mut seen = false;
-        let mut nearest = f32::INFINITY;
         let mut nearest_ok = f32::INFINITY;
         let mut n_cops = 0;
         // (F-94676 for a free cop - in no tactic, not the dispatch's -, F-52240: within fDetectDist in 3D and a clear
@@ -1669,7 +1803,6 @@ impl Police {
         for c in vehicles.cars.iter().filter(|c| pursuer(c)) {
             n_cops += 1;
             let d = c.state.pos.distance(ppos);
-            nearest = nearest.min(d);
             if c.state.damage < 0.999 {
                 nearest_ok = nearest_ok.min(d);
             }
@@ -1755,6 +1888,14 @@ impl Police {
             }
         };
         self.against_traffic = wrong_cond;
+        // (the law record's last road +60, F-28783: the road of the target's lane, kept while it has none; FW when its
+        // name starts "FW" or "XT")
+        if let (Some(nav), Some(l)) = (world.nav.as_ref(), vehicles.driver_lanes.get(&p.uid).and_then(|d| d.best).map(|b| b.0)) {
+            if let Some(r) = nav.lane_road(l) {
+                let n = &nav.zones[r].name;
+                self.fw_road = n.starts_with("FW") || n.starts_with("XT");
+            }
+        }
         let wrong_bit = offence_gate(wrong_cond, self.wrong_active, &mut self.sec[1], t("fWrongWayThresholdTime", 1.2), dt);
         if watching && wrong_bit {
             breaking = true;
@@ -1916,7 +2057,13 @@ impl Police {
         let mut event = None;
         let arrest_speed = t("fArrestTgtThresholdSpd", 10.0) / MPH;
         let burning = p.state.veh.as_ref().map_or(false, |v| v.burn > 0.0);
-        let ain = |slow: bool| ArrestIn { nearest, nearest_ok, slow, bike_down, wrecked: damage >= 0.999, burning, pos: ppos };
+        // (the tactic's radius vt+32: fPullOverDist in a pull-over (F-66453), fSafeDist in the others (F-54202))
+        let arr_r = if self.heat == Heat::PullOver { t("fPullOverDist", 15.0) } else { t("fSafeDist", 30.0) };
+        let bike_r = t("fBikerWipeoutArrestDist", 50.0);
+        let seer = |r: f32| vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| cop_sees(world, c, ppos, r, 0.0));
+        let (seer_r1, seer_bike) = (seer(arr_r + 1.0), bike_down && seer(bike_r));
+        let delay = self.kind == TacKind::Pursuit && self.flee_hold > 0.0;
+        let ain = |slow: bool, search: bool| ArrestIn { seer_r1, seer_bike, delay, search, nearest_ok, slow, bike_down, wrecked: damage >= 0.999, burning, pos: ppos };
         match self.heat {
             Heat::None => {
                 // (F-52240's ladder needs a detecting cop, the request cop: at iMaxLawBreakingScore an Arrow Trap, from
@@ -1987,7 +2134,7 @@ impl Police {
                     self.fine = self.law_fines();
                     self.lost = 0.0;
                     event = Some(Event::Pursuit);
-                } else if self.arrest_step(ain(speed < arrest_speed), t("fPullOverDist", 15.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt) {
+                } else if self.arrest_step(ain(speed < arrest_speed, false), t("fPullOverDist", 15.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt) {
                     // (the pull-over's radius fPullOverDist, F-66453)
                     if self.ticket_hold.is_none() {
                         self.ticket_hold = Some(t("fArrestStateTime", 1.75) + if damage >= 0.999 { 0.5 } else { 0.0 });
@@ -2086,7 +2233,7 @@ impl Police {
                     }
                 }
                 // (the pursuit's radius fSafeDist, F-54202)
-                if self.arrest_step(ain(speed < arrest_speed), t("fSafeDist", 30.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt) {
+                if self.arrest_step(ain(speed < arrest_speed, false), t("fSafeDist", 30.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt) {
                     {
                         self.heat = Heat::Busted;
                         self.arrest_posted = false;
@@ -2099,6 +2246,8 @@ impl Police {
                 }
             }
             Heat::Search => {
+                // (the Pursuit's state 6: the target lost - no arrest, +140 / +144 zeroed and +48 kept, F-63286)
+                self.arrest_step(ain(speed < arrest_speed, true), t("fSafeDist", 30.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt);
                 // (the second-cop upgrade runs for a searching tactic too: F-22881 tests only the tactic's +28 - a free
                 // cop that sees the target makes the Pursuit a Double Pursuit, that an Arrow Trap, in CatchUp)
                 if let (true, Some((_, u))) = (self.may_escalate && !goons && matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl), detector) {
@@ -2198,10 +2347,10 @@ impl Police {
                     // goons, a race running gets raceOverCommand `returnToCruise`)
                     self.arrest_over = !goons;
                     // (CopArrest.sco 0xa9f / 0xaa8: SetAllPoliceActive(0), SetAllPoliceUnderground(1, 1) - every unit
-                    // underground until (0, 1) at the script's end, F-30655's CutSceneDone; the port's other cruisers near
-                    // drive off. The goons' path has no form: their end comes at once)
+                    // underground until (0, 1) at the script's end, F-30655's CutSceneDone. SetAllPoliceActive(0)
+                    // (F-11309 -> F-75974) only clears +1072 / +1073; no cop near the arrest is moved or removed by
+                    // anything else. The goons' path has no form: their end comes at once)
                     self.units_down(vehicles);
-                    vehicles.cars.retain(|c| !c.cop || c.state.pos.distance(ppos) > 60.0);
                     if goons {
                         self.units_up();
                     }
@@ -2982,15 +3131,29 @@ impl Police {
     /// biker with a cop of the tactic within fBikerWipeoutArrestDist; else, with a cop of the tactic within the
     /// tactic's radius + 1 m (F-43276), it grows while the target is under fArrestTgtThresholdSpd and seen this frame
     /// (+128 < +124) and holds otherwise; out of range it is zeroed only once the target has been unseen over 0.5 s.
-    /// True when it is past fArrestTime. (+140 / +144 over 5 s also arrest in the original: not ported.)
+    /// The test (F-36806) reads last frame's values, before this frame's step: +108 > fArrestTime, +140 > 5, +144 > 5;
+    /// not while the Pursuit's Delay runs, whose end zeroes all three (F-25831), nor in the Search (target lost).
     #[allow(clippy::too_many_arguments)]
     fn arrest_step(&mut self, a: ArrestIn, radius: f32, at: f32, bike_r: f32, still_d2: f32, dt: f32) -> bool {
-        // (F-29906: a damaged-out target first, with no distance test; then the downed biker; then the radius + 1 growth)
-        if a.wrecked {
+        let _ = bike_r;
+        // (the tactic's update runs the test before F-63286 steps the timers: last frame's values)
+        let fire = !a.delay && !a.search && (self.arrest > at || self.t_burn > 5.0 || self.t_still > 5.0);
+        if self.arrest_delay && !a.delay {
+            // (the Pursuit's Delay exit, F-25831)
+            self.arrest = 0.0;
+            self.t_burn = 0.0;
+            self.t_still = 0.0;
+        }
+        self.arrest_delay = a.delay;
+        // (F-29906: a damaged-out target first, with no distance test; then the downed biker seen by a cop within
+        // fBikerWipeoutArrestDist; then a cop seeing it within the radius + 1 (F-43276, a line of sight): grows while the
+        // target is seen this frame and slow, else holds; with no such cop zeroed once unseen over 0.5 s)
+        if a.search {
+        } else if a.wrecked {
             self.arrest = at + 1.0;
-        } else if a.bike_down && a.nearest < bike_r {
+        } else if a.bike_down && a.seer_bike {
             self.arrest = at + 1.0;
-        } else if a.nearest < radius + 1.0 {
+        } else if a.seer_r1 {
             if self.t_seen_prev < self.t_seen && a.slow {
                 self.arrest += dt;
             }
@@ -3001,7 +3164,7 @@ impl Police {
         // damaged out - +140 counts while the target's burnout charge is up (F-25339) and +144 while it is barely moving
         // (from last frame's place less than (fArrestTgtThresholdSpd x 0.447) x dt, only the left side squared, as
         // coded); without one both are 0; then +48 = the target's place)
-        if a.nearest_ok < radius {
+        if a.nearest_ok < radius && !a.search {
             self.t_burn = if a.burning { self.t_burn + dt } else { 0.0 };
             let still = self.prev_pos.map_or(false, |q| (a.pos - q).length_squared() < still_d2);
             self.t_still = if still { self.t_still + dt } else { 0.0 };
@@ -3011,7 +3174,7 @@ impl Police {
         }
         self.prev_pos = Some(a.pos);
         // (F-36806: +108 > fArrestTime, or either timer over 5 s - a literal)
-        self.arrest > at || self.t_burn > 5.0 || self.t_still > 5.0
+        fire
     }
 
     /// The tactic's arrest state zeroed (its reset and constructor: +104 .. +144 and +48).
@@ -3257,8 +3420,15 @@ pub fn arrest_scene(cops: usize, r: u32, bike_down: bool, goons: bool) -> &'stat
 /// What the arrest timer reads of the target and the tactic's cops this frame.
 #[derive(Clone, Copy)]
 struct ArrestIn {
-    /// the nearest tactic cop (3D)
-    nearest: f32,
+    /// a tactic cop sees the target within the tactic's radius + 1 m (F-43276 -> F-94676: in range, a clear line 2 m
+    /// above both cars, no cone)
+    seer_r1: bool,
+    /// the same within fBikerWipeoutArrestDist
+    seer_bike: bool,
+    /// the Pursuit's Delay is running (no arrest from it, F-20593 / F-25831)
+    delay: bool,
+    /// the Search: the target is lost (vt+44, F-77220) - no +108 step, no arrest, +140 / +144 zeroed
+    search: bool,
     /// the nearest one not damaged out (F-29443's cop test)
     nearest_ok: f32,
     slow: bool,
