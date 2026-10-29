@@ -498,6 +498,7 @@ a { color: var(--accent2); }
 .ub-actions .link { height: 34px; padding: 0 6px; background: transparent; border: 0; color: var(--muted); font-size: 13px; text-decoration: underline; }
 .ubanner.bad .btn.primary { background: var(--ink); color: var(--bg); }
 .ubanner.bad .btn.edge { border-color: var(--bad); }
+.stepper .st-manual { display: block; margin-top: 2px; }
 .stepper .st-actions { margin-top: 1px; }
 .stepper .st-actions a { font-weight: 600; }
 #upd-card-icon.warn { stroke: var(--warn); }

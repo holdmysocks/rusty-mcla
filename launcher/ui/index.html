@@ -223,7 +223,7 @@
   <!-- ================= INSTALL ================= -->
   <section class="page" data-page="install" data-title-key="nav.install" data-head="plain" hidden>
     <section class="card stepper" style="--x:128;--y:88;--w:1120;--h:64;padding:0 24px">
-      <div class="st todo" data-step="1"><span class="dot">1</span><div><b data-i18n="ins.st1"></b><small data-step-d="1" data-i18n="ins.st1_d"></small><small class="st-actions" id="pkg-actions" hidden><a href="#" id="pkg-retry" data-i18n="upd.retry_link"></a> &middot; <a href="#" id="pkg-local" data-i18n="fr.offline_link"></a></small></div></div>
+      <div class="st todo" data-step="1"><span class="dot">1</span><div><b data-i18n="ins.st1"></b><small data-step-d="1" data-i18n="ins.st1_d"></small><small class="st-actions" id="pkg-actions" hidden><a href="#" id="pkg-retry" data-i18n="upd.retry_link"></a> &middot; <a href="#" id="pkg-local" data-i18n="fr.offline_link"></a> &middot; <a href="#" id="pkg-howto" data-i18n="upd.howto_link"></a></small></div></div>
       <span class="join" data-join="1"></span>
       <div class="st todo" data-step="2"><span class="dot">2</span><div><b data-i18n="ins.st2"></b><small data-step-d="2" data-i18n="ins.st2_d"></small></div></div>
       <span class="join" data-join="2"></span>
@@ -680,6 +680,15 @@
   </div>
 
   <!-- Support: asks before a save is replaced (restore, import) or the game folder is changed (js/support.js `ask`) -->
+  <!-- Install > step 1 / Home: the game package by hand (GitHub #20) -->
+  <div class="dlg-back" id="pkg-dialog" hidden>
+    <section class="dlg narrow" role="dialog" aria-modal="true" aria-labelledby="pkg-dlg-title">
+      <div class="label" id="pkg-dlg-title" data-i18n="upd.howto_title"></div>
+      <div class="note mt10" style="font-size:15px;color:var(--ink);line-height:1.5;white-space:pre-line" data-i18n="upd.howto_text"></div>
+      <div class="flex gap10 mt18" style="justify-content:flex-end"><button class="btn md" id="pkg-dlg-close" data-i18n="upd.howto_close"></button><button class="btn md" id="pkg-dlg-web" data-i18n="upd.open_releases"></button><button class="btn md primary" id="pkg-dlg-pick" data-i18n="upd.howto_pick"></button></div>
+    </section>
+  </div>
+
   <div class="dlg-back" id="sup-dialog" hidden>
     <section class="dlg narrow" role="dialog" aria-modal="true" aria-labelledby="sup-dlg-title">
       <div class="label" id="sup-dlg-title"></div>

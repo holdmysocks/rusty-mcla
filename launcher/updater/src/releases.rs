@@ -230,8 +230,60 @@ impl Releases {
     }
 
     /// Asks GitHub for the latest release (conditional request) and its manifest. Never fails: every problem is a [`CheckState`] and the
-    /// cached answer (if there is one) comes back with it.
+    /// cached answer (if there is one) comes back with it. When the API cannot be used (no connection to `api.github.com`, a rate limit, an
+    /// HTTP error) the release's manifest.json is fetched through github.com's own `releases/latest/download/` redirect instead: some
+    /// networks block the API host and not github.com (GitHub #20).
     pub async fn check_latest(&self) -> Checked {
+        let c = self.check_api().await;
+        let usable = matches!(&c.state, CheckState::Offline | CheckState::RateLimited { .. }) || matches!(&c.state, CheckState::Failed { code, .. } if code == Kind::Http.code());
+        if !usable {
+            return c;
+        }
+        match self.check_web().await {
+            Some(w) => w,
+            None => c,
+        }
+    }
+
+    /// The latest release without the API: manifest.json from `<web_base>/<repo>/releases/latest/download/` (a redirect to the newest
+    /// published release's asset; drafts and pre-releases are not served there). The manifest's signature is checked as always, and the
+    /// release is rebuilt from it: tag `v<version>`, the game package and the launcher by the names the manifest gives, no notes text.
+    async fn check_web(&self) -> Option<Checked> {
+        let cfg = self.cfg();
+        let url = format!("{}/{}/releases/latest/download/{}", cfg.web_base.trim_end_matches('/'), cfg.repo, cfg.manifest_asset);
+        let reply = match self.http.get(&url, None, "application/octet-stream", crate::manifest::MAX_MANIFEST_BYTES, API_TIMEOUT).await {
+            Ok(r) if r.status == 200 => r,
+            Ok(r) => {
+                log::info!("update check through github.com: HTTP {}", r.status);
+                return None;
+            }
+            Err(e) => {
+                log::info!("update check through github.com: {e}");
+                return None;
+            }
+        };
+        let text = String::from_utf8(reply.body).ok()?;
+        let m = match ReleaseManifest::parse(&text, cfg) {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!("update check through github.com: manifest refused: {e}");
+                return None;
+            }
+        };
+        let rel = release_from_manifest(cfg, &m);
+        let now = now_unix();
+        let mut cache = load_cache(&self.dir);
+        cache.checked_at = now;
+        cache.blocked_until = 0;
+        cache.etag = None;
+        cache.release_json = Some(release_json_of(&rel));
+        cache.manifest_json = Some(text);
+        save_cache(&self.dir, &cache);
+        log::info!("update check through github.com (the API was not usable): latest is {} (manifest ok)", rel.tag);
+        Some(Checked { state: CheckState::Fresh, release: Some(rel), manifest: Some(m), checked_at: now, manifest_error: None })
+    }
+
+    async fn check_api(&self) -> Checked {
         let mut cache = load_cache(&self.dir);
         let now = now_unix();
         if cache.blocked_until > now {
@@ -364,6 +416,33 @@ impl Releases {
         out.truncate(limit);
         Ok(out)
     }
+}
+
+/// The release a manifest belongs to, for a check that did not use the API: the asset URLs are the release downloads of this repository.
+fn release_from_manifest(cfg: &ReleaseConfig, m: &ReleaseManifest) -> Release {
+    let tag = format!("v{}", m.version);
+    let dl = |name: &str| format!("{}/{}/releases/download/{}/{}", cfg.web_base.trim_end_matches('/'), cfg.repo, tag, name);
+    Release {
+        name: tag.clone(),
+        body: String::new(),
+        published_at: None,
+        html_url: cfg.web_release_url(&tag),
+        assets: vec![
+            Asset { name: cfg.manifest_asset.clone(), size: 0, url: dl(&cfg.manifest_asset) },
+            Asset { name: m.game.asset.clone(), size: m.game.size, url: dl(&m.game.asset) },
+            Asset { name: m.launcher.asset.clone(), size: m.launcher.size, url: dl(&m.launcher.asset) },
+        ],
+        tag,
+    }
+}
+
+/// The release as the API's JSON, so the cache (which holds the API's shape) can read it back.
+fn release_json_of(r: &Release) -> String {
+    serde_json::json!({
+        "tag_name": r.tag, "name": r.name, "body": r.body, "html_url": r.html_url, "draft": false, "prerelease": false,
+        "assets": r.assets.iter().map(|a| serde_json::json!({"name": a.name, "size": a.size, "browser_download_url": a.url})).collect::<Vec<_>>(),
+    })
+    .to_string()
 }
 
 fn check_manifest_matches(rel: &Release, m: &ReleaseManifest) -> Result<()> {

@@ -164,7 +164,7 @@
       if (cs.state === 'rate_limited') text.textContent = t('dyn.upd.rate', [cs.reset_at ? clock(cs.reset_at) : '...']);
       else if (cs.state === 'failed' && cs.code === 'manifest') text.textContent = t('dyn.upd.manifest_failed', [cs.detail || '']);
       else if (cs.state === 'failed') text.textContent = t('dyn.upd.failed');
-      else text.textContent = t('dyn.upd.offline');
+      else text.textContent = t(st.installed.game_version ? 'dyn.upd.offline' : 'dyn.upd.offline_nogame');
       actions.append(
         button('btn', 'dyn.upd.retry', () => { S.offlineDismissed = false; Bridge.updateCheck(false).then(poll); }),
         button('link', 'dyn.upd.dismiss', () => { S.offlineDismissed = true; render(); }),
@@ -253,7 +253,7 @@
     if (ab) ab.disabled = busy();
     $$('[data-i18n="sys.v_ver"]').forEach((n) => { n.textContent = gv ? t('dyn.upd.game_ver', [gv]) : t('dyn.upd.no_game'); });
     const rl = $('#hero-line');
-    if (rl) rl.textContent = gv ? t('home.ready_line', [gv]) : t('dyn.upd.ready_no_game');
+    if (rl) rl.textContent = gv ? t('home.ready_line', [gv]) : t(unreached(st) ? 'dyn.upd.ready_no_game_offline' : 'dyn.upd.ready_no_game');
     $$('[data-web]').forEach((a) => {
       // "licences" is a file in the repository (THIRD-PARTY-NOTICES.md), not a field of the release links
       a.dataset.href = st.links[a.dataset.web] || (a.dataset.web === 'licences' && st.links.repo ? st.links.repo + '/blob/main/THIRD-PARTY-NOTICES.md' : '');
@@ -273,10 +273,16 @@
       return { s: 'now', text };
     }
     if (st.busy === 'updating' && st.progress && st.progress.job === 'setup') return { s: 'now', text: t('dyn.upd.st1_check') };
-    if (st.error && pk.includes(st.error.job)) return { s: 'now', text: t('dyn.upd.st1_error'), actions: true, title: errText(st.error) + (st.error.detail ? ' (' + st.error.detail + ')' : '') };
+    if (st.error && pk.includes(st.error.job)) return { s: 'now', text: st.error.code === 'offline' ? t('dyn.upd.st1_noreach') : t('dyn.upd.st1_error'), actions: true, title: errText(st.error) + (st.error.detail ? ' (' + st.error.detail + ')' : '') };
     const gv = st.installed.game_version;
     if (gv) return { s: 'done', text: t('dyn.upd.st1_done', [gv]) };
+    if (unreached(st)) return { s: 'now', text: t('dyn.upd.st1_noreach'), actions: true };
     return Object.assign(none, { s: 'now' });
+  }
+
+  // no game files and the last look for a release found no usable answer from GitHub (no connection, a limit or an HTTP error)
+  function unreached(st) {
+    return !st.installed.game_version && ['offline', 'rate_limited', 'failed'].includes(st.check.state) && st.busy === 'idle';
   }
 
   function renderStepOne() {
@@ -306,6 +312,7 @@
     if (kind === 'stopped') base.error = { code: 'hash', detail: 'sha256 is 3f2a..., the manifest says 9c1d...', job: 'update' };
     if (kind === 'offline') { base.check = { state: 'offline', checked_at: Math.floor(Date.now() / 1000) - 7200, enabled: true }; base.plan.offer = false; }
     if (kind === 'rate') { base.check = { state: 'rate_limited', reset_at: Math.floor(Date.now() / 1000) + 1500, checked_at: Math.floor(Date.now() / 1000) - 7200, enabled: true }; base.plan.offer = false; }
+    if (kind === 'nogame') { base.check = { state: 'offline', checked_at: 0, enabled: true }; base.plan.offer = false; base.installed.game_version = null; base.release = null; }
     if (kind === 'rebuild') { base.plan.offer = false; base.plan.rebuild_pending = true; base.installed.game_data_version = 2; }
     if (kind === 'rebuildwarn') base.plan.update_needs_rebuild = true;
     if (kind === 'done') base.done = { job: 'update', game_version: '0.2.0', needs_rebuild: false };
@@ -428,6 +435,12 @@
     $('#fr-local-package').addEventListener('click', (e) => { e.preventDefault(); app.beginSetup(); useLocalPackage(); });
     $('#pkg-local').addEventListener('click', (e) => { e.preventDefault(); useLocalPackage(); });
     $('#pkg-retry').addEventListener('click', (e) => { e.preventDefault(); retry(); });
+    const hd = $('#pkg-dialog');
+    const hide = () => { hd.hidden = true; };
+    $('#pkg-howto').addEventListener('click', (e) => { e.preventDefault(); hd.hidden = false; });
+    $('#pkg-dlg-close').addEventListener('click', hide);
+    $('#pkg-dlg-web').addEventListener('click', () => { const u = S.st && S.st.links && S.st.links.releases; if (u) Bridge.openUrl(u); });
+    $('#pkg-dlg-pick').addEventListener('click', () => { hide(); useLocalPackage(); });
     // links in the release notes and the web links open in the system browser (Rust opens http(s) only)
     const open = (e) => {
       const a = e.target.closest('a[href], [data-href]');

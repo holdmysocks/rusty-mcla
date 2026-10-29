@@ -99,7 +99,7 @@ async fn rate_limit_falls_back_to_the_cache_and_stops_asking() {
     r.mock.clear_hits();
     let c2 = r.releases.check_latest().await;
     assert_eq!(c2.state, CheckState::RateLimited { reset_at: Some(reset) });
-    assert_eq!(r.mock.total_hits(), 0);
+    assert_eq!(r.mock.hits(&fx.paths.latest).len(), 0, "the API is left alone (github.com's own redirect is asked instead)");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -514,4 +514,28 @@ async fn a_rollback_to_an_old_signed_launcher_is_refused() {
     assert!(e.detail.contains("RustyMCLA 0.1.0"), "{e}");
     assert_eq!(std::fs::read(&exe).unwrap(), b"OLD LAUNCHER");
     assert!(!selfupdate::part_path(&exe).exists() && !selfupdate::new_path(&exe).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocked_api_falls_back_to_the_manifest_on_github_com() {
+    // GitHub #20: api.github.com cannot be reached, github.com can: the latest release comes from its manifest.json alone
+    let r = rig();
+    let fx = fixture(&r.mock.base, "0.2.0", &r.key, 1, "notes");
+    r.mock.set(&fx.paths.latest, Route::Status { code: 502, headers: vec![], body: vec![] });
+    r.mock.set(&format!("/{REPO}/releases/latest/download/manifest.json"), Route::Ok { body: fx.manifest_json.clone().into_bytes(), etag: None });
+    let c = r.releases.check_latest().await;
+    assert_eq!(c.state, CheckState::Fresh);
+    let rel = c.release.unwrap();
+    assert_eq!(rel.tag, "v0.2.0");
+    let zip = rel.asset("game-0.2.0.zip").expect("the game package is named by the manifest");
+    assert_eq!(zip.url, format!("{}/{REPO}/releases/download/v0.2.0/game-0.2.0.zip", r.mock.base));
+    assert_eq!(c.manifest.unwrap().game.version, "0.2.0");
+    // the cache reads back as the same release
+    assert_eq!(r.releases.cached().release.unwrap().tag, "v0.2.0");
+
+    // a manifest that cannot be read is refused: the state stays what the API said
+    r.mock.set(&format!("/{REPO}/releases/latest/download/manifest.json"), Route::Ok { body: br#"{"schema": 2}"#.to_vec(), etag: None });
+    let d = tempfile::tempdir().unwrap();
+    let fresh = Releases::new(r.http.clone(), d.path().join("cache"));
+    assert!(matches!(fresh.check_latest().await.state, CheckState::Failed { .. }));
 }
