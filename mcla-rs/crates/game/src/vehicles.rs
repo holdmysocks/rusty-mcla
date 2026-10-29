@@ -2143,6 +2143,17 @@ impl Vehicles {
                 // order: such meshes are not merged with others (bit 31 + their place, bits 26 - 30, in the key;
                 // the keys are drawn in sorted order). (MCLA_TRAFFIC_BUCKET_OLD=1: every mesh by its mode, as before)
                 let bucket1 = car_is_ambient && sh.map_or(0, |s| s.bucket) == 1 && std::env::var("MCLA_TRAFFIC_BUCKET_OLD").is_err();
+                // A set-up car (the player's, a racer's, a cop's) draws its bucket 1 the same way, straight after its
+                // bucket 0 (recorded frame work/police17/cap/g.gpu.bin, the cruiser: draws 1883 - 1895 after 1867 - 1882):
+                // blended SRC_ALPHA / INV_SRC_ALPHA, depth writes on, alpha test GREATER 4/255 (0x07060706 / 0x00708767 /
+                // 0x8700000c, RB_ALPHA_REF 0x3c808081). The BumpSpec family's alpha is the texture's (o0.w = gLightAmbient.w
+                // x gInvColorExpBias.x x A, the bias 1/16 undoing the target's x16), the badge's 2A - 1: the light bar's
+                // domes (BumpSpecAlpha, A = 0.69) show the lit lenses under them. (MCLA_SETUP_BUCKET_OLD=1: cut out, opaque)
+                let setup_b1 = !car_is_ambient
+                    && sh.map_or(0, |s| s.bucket) == 1
+                    && (["BumpSpec", "BumpSpecAlpha", "GrillOpaque"].iter().any(|n| sname.eq_ignore_ascii_case(n)) || badge)
+                    && std::env::var("MCLA_SETUP_BUCKET_OLD").is_err();
+                let bucket1 = bucket1 || setup_b1;
                 let kbits = if bucket1 {
                     let li = (lod as usize).min(3);
                     b1_seq[li] += 1;
@@ -2199,7 +2210,7 @@ impl Vehicles {
                     // work/lighting bs3.py / bmprobe.py / cglassprobe.py: the material's terms ride in
                     // the vertices. BumpSpec family: uv2 = (-(1 + 200 smoothness + 256 x 200
                     // SpecularColor), 1 + base r + 256 base g), uv1 = (base b + 256 x 32 SpecMapExp, 0),
-                    // colour alpha = 10 metallic + 16 cut-out + 32 cabin part + 64 GrillOpaque (its
+                    // colour alpha = 10 metallic + 16 cut-out + 32 cabin part + 64 GrillOpaque + 128 blended bucket (its
                     // soft reflection goes by the texture). Brushed metal: uv2.x =
                     // 1 + ReflectColorMod. Opaque black glass: uv2.x = 1. Cabin paint: colour alpha 32
                     // (the cabin's own-lamp colours are the gauge colours, not the outside lamps').)
@@ -2213,7 +2224,7 @@ impl Vehicles {
                         let spec_map = sname.eq_ignore_ascii_case("GrillOpaque");
                         if sname.eq_ignore_ascii_case("BumpSpec") || alpha_cut || spec_map {
                             let (bc, e, k, s, m) = (pv(0x1468b111, 1.0), pv(0xb37a7946, 1.0).x, pv(0xa98e2243, 0.0).x, pv(0x5e315fd1, 0.0).x, pv(0x83697767, 0.0).x);
-                            let a = (by(m, 10.0).min(15.0) + if alpha_cut { 16.0 } else { 0.0 } + if cabin { 32.0 } else { 0.0 } + if spec_map { 64.0 } else { 0.0 }) as u8;
+                            let a = (by(m, 10.0).min(15.0) + if alpha_cut { 16.0 } else { 0.0 } + if cabin { 32.0 } else { 0.0 } + if spec_map { 64.0 } else { 0.0 } + if setup_b1 { 128.0 } else { 0.0 }) as u8;
                             for v in &mut acc.verts[first..] {
                                 v.uv2 = [-(1.0 + by(s, 200.0) + 256.0 * by(k, 200.0)), 1.0 + by(bc.x, 255.0) + 256.0 * by(bc.y, 255.0)];
                                 v.uv1 = [by(bc.z, 255.0) + 256.0 * by(e, 32.0), 0.0];
@@ -2232,8 +2243,9 @@ impl Vehicles {
                             // (BumpedAlphaChrome, PS_BumpedChrome of cars/0x1d68d869: PS_Chrome's mirror x
                             // (0.125 + 1.185 sat(collector - 0.25)) x baked occlusion, alpha = 2 x the
                             // texture's alpha - 1; city.wgsl cuts it out where that is not above 0 (uv2.y = 3))
+                            // (uv2.x = -1: drawn in the blended bucket, alpha 2A - 1 - `setup_b1`)
                             for v in &mut acc.verts[first..] {
-                                v.uv2 = [0.0, 3.0];
+                                v.uv2 = [if setup_b1 { -1.0 } else { 0.0 }, 3.0];
                             }
                         } else if sname.eq_ignore_ascii_case("CarbonFiber") && std::env::var("MCLA_CARBON_OLD").is_err() {
                             // (render only - PS_CarbonFiber of cars/0x84fc57d9, city.wgsl: uv2.x = 2)
@@ -4197,7 +4209,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 m = m * Mat4::from_quat(q);
             }
             // lamp state for the light shader: siren phase (0 off, 1 red, 2 blue) + 4 x reversing
-            let siren = if c.cop && (c.siren || self.sirens) { 1.0 + ((self.clock * 5.0) as i32 % 2) as f32 } else { 0.0 };
+            let siren = if (c.cop && (c.siren || self.sirens)) || (c.is_player && c.siren) { 1.0 + ((self.clock * 5.0) as i32 % 2) as f32 } else { 0.0 };
             let reversing = if c.state.gear < 0 { 4.0 } else { 0.0 };
             // parked cars are dark, everything else drives with its lights on at night
             let lights = if c.parked.is_some() || self.lights_off { 0.0 } else { night };
@@ -4373,7 +4385,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             let lights = if c.parked.is_some() || self.lights_off { 0.0 } else { night };
             let braking = (c.input.brake * 4.0).clamp(0.0, 1.0);
-            let siren = if c.cop && (c.siren || self.sirens) { 1 + (self.clock * 5.0) as i32 % 2 } else { 0 };
+            let siren = if (c.cop && (c.siren || self.sirens)) || (c.is_player && c.siren) { 1 + (self.clock * 5.0) as i32 % 2 } else { 0 };
             for (id, local) in &c.model.lamps {
                 let (k, col, size) = match *id {
                     3 => (2.0 * lights, [1.0, 0.96, 0.86], 0.85),
@@ -4505,7 +4517,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // (the siren state +300, rate 18: its target +304 is what the car's police tactic writes each update -
             // F-63286 -> F-78189, 1 in pull-over / pursuit / arrow trap, cleared at the tactic's end; the
             // port's police has one state for all its cars: `sirens` on a cruiser)
-            let siren = c.cop && (c.siren || sirens);
+            // (the player's cruiser: its HEADLIGHTS toggle, main.rs)
+            let siren = (c.cop && (c.siren || sirens)) || (c.is_player && c.siren);
             let a = &mut c.amb_lamps;
             for (k, (v, on)) in a.s.iter_mut().zip(flags).enumerate() {
                 *v = if k == 2 { ease_at(*v, siren, 18.0, dt) } else { traffic_ease(*v, on, dt) };

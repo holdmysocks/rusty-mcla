@@ -2041,11 +2041,19 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     }
     // (the cars' badges, BumpedAlphaChrome - chrome marked uv2.y = 3: alpha 2 x the bump map's alpha - 1, cut out
     // where it is not above 0; the alpha test's own reference is not recorded - approx.)
-    if (mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && albedo.a <= 0.5) {
+    // A set-up car's mesh of the blended bucket (vehicles.rs `setup_b1`: the badge's uv2.x = -1, the BumpSpec
+    // family's colour alpha bit 128) has its draw's alpha test instead, GREATER 4/255 (RB_ALPHA_REF 0x3c808081 in
+    // the recorded cruiser), and keeps its alpha to the end (below)
+    let setup_b1_badge = mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && in.uv2.x < -0.5;
+    let setup_b1_bs = mat.mode == 9u && in.uv2.y > 0.5 && obj.params.w > 15.5 && obj.lamp_a[0].w < 0.5 && (u32(round(in.color.a * 255.0)) & 128u) != 0u;
+    if ((setup_b1_badge && 2.0 * albedo.a - 1.0 <= 4.0 / 255.0) || (setup_b1_bs && albedo.a <= 4.0 / 255.0)) {
+        discard;
+    }
+    if (mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && !setup_b1_badge && albedo.a <= 0.5) {
         discard;
     }
     // (the cars' BumpSpecAlpha parts - marked in uv2.y, bit 16 of the colour's alpha: cut out as before)
-    if (mat.mode == 9u && in.uv2.y > 0.5 && obj.params.w > 15.5 && (u32(round(in.color.a * 255.0)) & 16u) != 0u && albedo.a < 0.5) {
+    if (mat.mode == 9u && in.uv2.y > 0.5 && obj.params.w > 15.5 && !setup_b1_bs && (u32(round(in.color.a * 255.0)) & 16u) != 0u && albedo.a < 0.5) {
         discard;
     }
     // characters' hair cards (flagged per vertex): cut out, the fringe fades to dark
@@ -4981,6 +4989,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     if (!(g.params.w > 310.5 && g.params.w < 311.5)) { lit = min(lit, vec3<f32>(1.9921875)); }
     // (754, water work: no fog at all - beside an override of the original's fog pass, alpha 0)
     let col = mix(lit, fog_rgb, select(clamp(fg * g.fog_color.a, 0.0, 1.0), 0.0, g.params.w > 753.5 && g.params.w < 754.5));
+    // (a set-up car's blended bucket: PS_BumpSpec* o0.w = gLightAmbient.w x gInvColorExpBias.x x A, PS_BumpedChrome
+    // the same x (2A - 1); the bias 1/16 undoes the target's exp bias 4 and gLightAmbient.w is 1: A, 2A - 1)
+    if (setup_b1_bs) { alpha = albedo.a; amb_keep_a = true; }
+    if (setup_b1_badge) { alpha = clamp(2.0 * albedo.a - 1.0, 0.0, 1.0); amb_keep_a = true; }
     if (mat.mode != 2u && mat.mode != 12u && mat.mode != 22u && !amb_keep_a) { alpha = 1.0; }
     return vec4<f32>(tonemap(col), alpha);
 }

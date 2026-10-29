@@ -1116,7 +1116,8 @@ impl Police {
         if !self.goons {
             let lit = matches!(self.heat, Heat::Pursuit | Heat::PullOver | Heat::Search | Heat::Busted) || self.ticketing;
             let dsp_lit = self.dsp.as_ref().filter(|d| d.st >= 2).map(|d| d.cop);
-            for c in vehicles.cars.iter_mut().filter(|c| c.cop) {
+            // (the player's own cruiser is not one of them: its lights follow its HEADLIGHTS button - main.rs)
+            for c in vehicles.cars.iter_mut().filter(|c| c.cop && !c.is_player) {
                 if (lit && self.cops.contains(&c.uid)) || dsp_lit == Some(c.uid) {
                     c.siren = true;
                 } else if self.heat == Heat::None && c.siren && self.dsp.as_ref().map_or(true, |d| d.cop != c.uid) {
