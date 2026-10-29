@@ -660,6 +660,8 @@ pub struct Game {
     /// the flag as last seen, and the place whose core was in its own flow when it was set (the garage driven into)
     place_sus: bool,
     place_own: Option<u32>,
+    /// GO TO GARAGE's garage (state 4), until the flag is next set
+    place_goto: Option<u32>,
     /// a pink slip race of a hangout is over: lost (`bFailure`) - its race-over tab (F-36093)
     pub pink_over: Option<bool>,
     /// MISSION RESULTS after an event: the missions it finished (title, objectives)
@@ -1307,6 +1309,7 @@ impl Game {
             place_hold: std::collections::HashMap::new(),
             place_sus: false,
             place_own: None,
+            place_goto: None,
             pink_over: None,
             mission_results: Vec::new(),
             race_slow: crate::mc4::SlowMo::default(),
@@ -13675,15 +13678,32 @@ impl Game {
     /// payback_hangout_core (0xfc2c6c0a 0x56c..0x61e) at once. Not held: the garage driven into (its core is in its
     /// own flow - "garage" thrown at 0x43e, "cruising" at 0x1b99, its element added back at 0x1dad) and the hangout
     /// the player is in. A new career's start (`fresh_game`, approx.) holds nothing.
+    /// garage_core of garage `g` (`garagein::SETUPS`) is holding back after Script_SuspendAllOpponents
+    pub fn garage_held(&self, g: usize) -> bool {
+        self.place_hold.contains_key(&garage_uid(g))
+    }
+
+    /// GO TO GARAGE (F-17595): the garage nearest the player by the handler's own points gets state 4. Its core, held
+    /// within 8 m of the door with the flag clear, lets go at once (garage_core 0x255..0x2bc, "force unsuspend"), and it
+    /// is the garage driven into: never held. (The handler's state 2 filter and its Career_Loading box are not modelled.)
+    pub fn go_to_garage(&mut self, player: Option<Vec3>) {
+        let Some(p) = player else { return };
+        let pts = crate::garagein::GOTO_POINTS;
+        let Some(g) = (0..pts.len()).min_by(|&a, &b| pts[a].distance(p).total_cmp(&pts[b].distance(p))) else { return };
+        let uid = garage_uid(g);
+        self.place_goto = Some(uid);
+        if !self.suspend_all_opponents() {
+            self.place_hold.remove(&uid);
+        }
+    }
+
     pub fn update_place_holds(&mut self, player: Option<Vec3>, dt: f32) {
         use crate::hudmap::{Kind, PLACES};
         let sus = self.suspend_all_opponents() && !self.fresh_game;
         if sus && !self.place_sus {
             // (the drive-in is garage_core's own trigger, 0x402..0x428: within 8 m of the door)
-            self.place_own = player.and_then(crate::garagein::at_door).and_then(|g| {
-                let door = crate::garagein::SETUPS[g].door;
-                PLACES.iter().filter(|x| x.1 == Kind::Garage).min_by(|a, b| Vec3::from(a.2).distance(door).total_cmp(&Vec3::from(b.2).distance(door))).map(|x| x.0)
-            });
+            // (GO TO GARAGE: state 4 takes its core into the drive-in from wherever the player is, 0x37e..0x3a9)
+            self.place_own = player.and_then(crate::garagein::at_door).map(garage_uid).or(self.place_goto.take());
         }
         self.place_sus = sus;
         if sus {
@@ -13827,6 +13847,19 @@ mod tests {
         g.hangout_key = Some("hw_local_hangout1".into());
         g.update_place_holds(Some(c), 0.1);
         assert!(!g.place_hold.contains_key(&500) && g.place_hold.contains_key(&501));
+        // GO TO GARAGE: the held garage lets go at once (flag clear), and the one it picks is not held next time
+        g.hangout_key = None;
+        assert_eq!((super::garage_uid(0), super::garage_uid(1), super::garage_uid(2)), (505, 512, 543));
+        g.bmt_goal = Some(Vec3::ZERO);
+        g.update_place_holds(Some(hw_door + Vec3::new(30.0, 0.0, 0.0)), 0.1);
+        g.bmt_goal = None;
+        g.update_place_holds(Some(hw_door + Vec3::new(3.0, 0.0, 0.0)), 0.1);
+        assert!(g.garage_held(0));
+        g.go_to_garage(Some(hw_door + Vec3::new(3.0, 0.0, 0.0)));
+        assert!(!g.garage_held(0));
+        g.mode = Mode::Garage;
+        g.update_place_holds(Some(Vec3::new(0.0, 0.0, 0.0)), 0.1);
+        assert!(!g.garage_held(0) && g.garage_held(1));
     }
 }
 
@@ -13834,4 +13867,11 @@ mod tests {
 /// hangout's element, within 30 m of the core's centre)
 pub fn place_hangout(p: Vec3) -> Option<&'static crate::layout::HangoutItems> {
     crate::layout::HANGOUT_ITEMS.iter().filter(|h| Vec3::from(h.centre).distance(p) < 30.0).min_by(|a, b| Vec3::from(a.centre).distance(p).total_cmp(&Vec3::from(b.centre).distance(p)))
+}
+
+/// The map place (uid) of garage `g` (`garagein::SETUPS` order): the garage element nearest its door point
+pub fn garage_uid(g: usize) -> u32 {
+    use crate::hudmap::{Kind, PLACES};
+    let door = crate::garagein::SETUPS[g.min(crate::garagein::SETUPS.len() - 1)].door;
+    PLACES.iter().filter(|x| x.1 == Kind::Garage).min_by(|a, b| Vec3::from(a.2).distance(door).total_cmp(&Vec3::from(b.2).distance(door))).map_or(0, |x| x.0)
 }

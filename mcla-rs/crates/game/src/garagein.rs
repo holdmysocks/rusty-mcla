@@ -62,6 +62,9 @@ pub const SETUPS: [Setup; 3] = [
 
 /// garage_core's test: `Racer_DistanceToPoint(player, +92) < 8`
 pub const RADIUS: f32 = 8.0;
+/// GO TO GARAGE's handler (F-17595): the fixed points it measures the player against, in `SETUPS` order; the nearest
+/// garage (of those whose state is 2 - not modelled) gets state 4, which its garage_core takes as the drive-in
+pub const GOTO_POINTS: [Vec3; 3] = [Vec3::new(819.693, 17.731, -804.765), Vec3::new(-3049.5, -25.0, 160.0), Vec3::new(-53.6, -19.6, 1331.6)];
 /// `sub_8221A440` case 17: Warp_Target_Close below this distance of the render camera to the wait camera
 pub const CLOSE: f32 = 100.0;
 /// req+96 of Warp_Target_Close (0x8201F9D8), degrees

@@ -170,6 +170,12 @@ pub struct Roamers {
     alt_car: String,
     /// Script_SuspendAllOpponents as last seen (`suspend`)
     suspended: bool,
+    /// a red light / freeway man's reset position once his race has started (uid -> place, heading in degrees): the
+    /// red light script puts him on grid slot 0 of the light with the light's heading (0x5239..0x5251), the freeway
+    /// script where he is with heading 0 (0x114e..0x116b); before that it is LoadOpponent's (`alt_men`)
+    alt_reset: HashMap<u32, (Vec3, f32)>,
+    /// the alternative man whose race is starting: his core has left by its flashed exit, no reset
+    alt_racing: Option<u32>,
     alt_suspended: bool,
 }
 
@@ -378,6 +384,8 @@ impl Roamers {
             alt_flash: None,
             alt_car: String::new(),
             suspended: false,
+            alt_reset: HashMap::new(),
+            alt_racing: None,
             alt_suspended: false,
         }
     }
@@ -696,7 +704,10 @@ impl Roamers {
             let Some(r) = self.alt_roll.get(&d.id) else { continue };
             let kind = if d.kind == crate::althk::AltKind::RedLight { ManKind::RedLight } else { ManKind::Freeway };
             let key = format!("{}:{}", if kind == ManKind::RedLight { "rl" } else { "fw" }, d.id);
-            men.push(Man { key, kind, district: d.district, name: r.name.clone(), car: r.car.clone(), config: r.config.clone(), difficulty: r.difficulty, mission: if r.mission { "REDLIGHT_GH_01".into() } else { String::new() }, event: String::new(), hidden: !game.alt_visible(d.id), pts: d.pts.clone(), at: 0.0, mod_value: r.mod_value, uid: d.id, heading: None, start: None, fresh: false, reset: false });
+            // (his reset position: OpponentManager_LoadOpponent's - the last point of his loop, heading 0 (red light
+            // 0x36e9..0x36f9, freeway 0x7b1..0x7c1; the AI racer keeps it, car_pick.md 3.6) - until his race moves it)
+            let reset = self.alt_reset.get(&d.id).copied().unwrap_or((d.pts.last().copied().unwrap_or_default(), 0.0));
+            men.push(Man { key, kind, district: d.district, name: r.name.clone(), car: r.car.clone(), config: r.config.clone(), difficulty: r.difficulty, mission: if r.mission { "REDLIGHT_GH_01".into() } else { String::new() }, event: String::new(), hidden: !game.alt_visible(d.id), pts: d.pts.clone(), at: 0.0, mod_value: r.mod_value, uid: d.id, heading: Some(reset.1), start: Some(reset.0), fresh: false, reset: false });
         }
     }
 
@@ -723,7 +734,8 @@ impl Roamers {
     pub fn suspend(&mut self, on: bool, race: bool, vehicles: &mut Vehicles) {
         if on && !self.suspended {
             self.alt_suspended = true;
-            for m in self.men.iter_mut().filter(|m| m.uid == 0) {
+            let racing = self.alt_racing.take();
+            for m in self.men.iter_mut().filter(|m| m.uid == 0 || Some(m.uid) != racing) {
                 let car = vehicles.cars.iter().position(|c| c.racer && c.vinyl_name == m.config);
                 // (the run keeps only the flashed man's car)
                 if self.challenge.is_some() && car.is_some() {
@@ -733,12 +745,23 @@ impl Roamers {
                 if let (Some(ci), false) = (car, race) {
                     vehicles.cars.remove(ci);
                 }
-                m.at = 0.0;
+                m.at = match (m.uid, m.start) {
+                    (0, _) | (_, None) => 0.0,
+                    (_, Some(p)) => loop_project(&m.pts, p),
+                };
                 m.reset = true;
             }
             log::info!("roamers: opponents suspended, the hookmen reset to their reset positions");
         }
         self.suspended = on;
+    }
+
+    /// A red light / freeway man's race starts: his reset position from now on is his grid slot (`alt_reset`)
+    pub fn alt_raced(&mut self, uid: u32, slot: (Vec3, f32), freeway: bool) {
+        // (the freeway script passes heading 0; the red light script the light's, the slot's own)
+        let heading = if freeway { 0.0 } else { slot.1.to_degrees() };
+        self.alt_reset.insert(uid, (slot.0, heading));
+        self.alt_racing = Some(uid);
     }
 
     pub fn update(&mut self, game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mut World, flash: bool, dt: f32) -> Option<usize> {

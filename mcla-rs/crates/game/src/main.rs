@@ -470,7 +470,6 @@ struct App {
     /// countdown events go on (the scene script runs to its end in the original)
     delivery_tail: Option<(String, f32)>,
     /// the garage's door takes the car in (not straight after leaving it)
-    door_armed: bool,
     /// driving into a garage: the warp to its sign, the scene, the fade up (`garagein`)
     garage_in: Option<garagein::Entry>,
     /// pulling into a hangout: the ease to pause, the warp to its wait camera (`hangoutin`)
@@ -1072,7 +1071,6 @@ impl App {
             delivery_visit: 0,
             delivery_intro: None,
             delivery_tail: None,
-            door_armed: std::env::var("MCLA_DOOR_IN").is_ok(),
             garage_in: None,
             hangout_entry: None,
             hangout_title: None,
@@ -5073,14 +5071,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // (garage_core: within 8 m of the set-up's door point, the police doing nothing with
                         // the player - no speed test; `garagein`. The door is armed again once the car has
                         // been well away - the port's guard against driving straight back in.)
-                        let door = garagein::SETUPS.iter().map(|s| s.door.distance(p)).fold(f32::MAX, f32::min);
-                        if door > 30.0 {
-                            self.door_armed = true;
-                        }
+                        // (garage_core 0x37e..0x428: only while the game state is Cruising_Offline (its listener, local 25)
+                        // and the core is not holding back after Script_SuspendAllOpponents (0x1e4..0x301: until 8 m
+                        // from the door) - which is what keeps a car that has just come out from going straight back in;
+                        // the drive-out scene leaves it about 26 m from the door)
+                        let held = garagein::at_door(p).map_or(false, |g| self.game.garage_held(g));
                         let quiet = matches!(self.police.heat, police::Heat::None);
-                        let drive_in = self.game.flash_hud.is_some() && self.door_armed && self.garage_in.is_none() && quiet && garagein::at_door(p).is_some() && (!self.game.career.loaded() || self.game.career.reached("GARAGE_HOLLYWOOD")) && self.opt.shot.is_none() | std::env::var("MCLA_DOOR_IN").is_ok();
+                        let drive_in = self.game.flash_hud.is_some() && self.game.cruising_offline() && !held && self.garage_in.is_none() && quiet && garagein::at_door(p).is_some() && (!self.game.career.loaded() || self.game.career.reached("GARAGE_HOLLYWOOD")) && self.opt.shot.is_none() | std::env::var("MCLA_DOOR_IN").is_ok();
                         if drive_in {
-                            self.door_armed = false;
                             // Warper_TransitionTo('STORY_LOCATION_CUT_SIMPLE', ..): from the render camera to
                             // the garage's wait camera (Warp_Target_Close within 100 of it)
                             let g = garagein::at_door(p).unwrap_or(0);
@@ -5755,6 +5753,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // ---- the red light and freeway racers on their loops (althk.rs) ----
                     if let Some(man) = self.roam.alt_flash.take() {
                         if let Some(st) = self.game.alt_race(&self.roam.alt, &mut self.redlights, &self.vehicles, &man) {
+                            if let Some(slot) = st.def.grid.first() {
+                                self.roam.alt_raced(man.uid, *slot, man.kind == roamers::ManKind::Freeway);
+                            }
                             let id = st.def.id.clone();
                             match self.game.race_defs.iter().position(|d| d.id == id) {
                                 Some(i) => self.game.race_defs[i] = st.def,
@@ -11356,6 +11357,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             MenuAction::OpenGarage => {
                 self.game.career.event(career::Ev::Garage);
+                // (GO TO GARAGE: the nearest garage gets state 4 - `Game::go_to_garage`)
+                if matches!(self.game.mode, Mode::Paused | Mode::FreeRoam) {
+                    let pp = self.vehicles.player().map(|c| c.state.pos);
+                    self.game.go_to_garage(pp);
+                }
                 // (the garage does not repair the car by itself: it asks, before MANAGE VEHICLES /
                 // CUSTOMIZE VEHICLE / VEHICLE SHOWROOM for a dented car and before the way out for
                 // a wreck - `Game::mc4_repair_gate`; a car goes in, stands there and is put away
