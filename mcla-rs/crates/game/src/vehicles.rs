@@ -4816,6 +4816,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                     pass.set_pipeline(&gpu.pipeline_glass_front);
                     pass.draw_indexed(0..b.count, 0, 0..1);
+                    // (test hook MCLA_AMB_GLASS_SKIP=1: the traffic glass left out, to compare the colour behind it with
+                    // the original's - the recorder's "skip <PSAmbientGlassFront>" line)
+                    static SKIP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    if b.mode == MatMode::CarGlass && *SKIP.get_or_init(|| std::env::var_os("MCLA_AMB_GLASS_SKIP").is_some()) {
+                        continue;
+                    }
                     *draws += 1;
                 }
                 pass.set_pipeline(&gpu.pipeline_blend);
