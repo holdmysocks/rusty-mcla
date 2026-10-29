@@ -1662,7 +1662,7 @@ impl App {
         });
         if sl.frame != self.frame_no || !sl.init {
             let at = self.vehicles.player().filter(|_| self.drive).map(|c| c.state.pos).unwrap_or(self.cam.pos);
-            let cand = self.slot_candidates(at, nfl, hour_light);
+            let cand = self.slot_candidates(at, nfl, hour_light, None);
             let hw = cand.last().map_or(0.0, |c| c.1);
             let (b0, w0, b1, w1) = pick_two(&cand);
             let swap = slot_swap(sl.held, b0, b1);
@@ -1729,7 +1729,7 @@ impl App {
     /// The candidates for a car's two light slots where it stands (F-24398): (id, weight, direction
     /// towards it, colour, strength) - from dusk to dawn the lamps and the checkpoint's light, and
     /// always the hour's light, last.
-    fn slot_candidates(&self, at: Vec3, nfl: f32, hour_light: (Vec3, Vec3)) -> Vec<(i32, f32, Vec3, Vec3, f32)> {
+    fn slot_candidates(&self, at: Vec3, nfl: f32, hour_light: (Vec3, Vec3), dynamic: Option<&figlight::Dynamic>) -> Vec<(i32, f32, Vec3, Vec3, f32)> {
         const HOUR: i32 = 65545;
         let mut cand: Vec<(i32, f32, Vec3, Vec3, f32)> = Vec::new();
         if nfl > 0.0 {
@@ -1762,6 +1762,23 @@ impl App {
                 }
             }
         }
+        // (a traffic car's candidates - `dynamic`, F-24398's loop over the light manager's dynamic list,
+        // ids 65536 + entry, inside the same dusk-to-dawn gate: entries 0 and 1 the player's head lamps,
+        // weighed by F-60154 - sat(strength / d^2) x their cone - which is also the strength the slot
+        // takes (F-77922); entry 2 the key light, weighed and carried by the luminance of its colour,
+        // 0.30 r + 0.59 g + 0.11 b, from 100 km off; the player's own car takes none of them here)
+        if let Some(d) = dynamic.filter(|_| nfl > 0.0) {
+            for (j, h) in d.heads.iter().enumerate() {
+                let Some(h) = h else { continue };
+                let s = figlight::light_score(true, h.pos, -h.back, h.strength, h.cone[0], h.cone[1], at);
+                let v = h.pos - at;
+                cand.push((65536 + j as i32, s, v.normalize_or(Vec3::Y), h.color.max(Vec3::ZERO), s));
+            }
+            if let Some((col, dir)) = d.key {
+                let s = col.max(Vec3::ZERO).dot(Vec3::new(0.30, 0.59, 0.11));
+                cand.push((65538, s, dir.normalize_or(Vec3::Y), col.max(Vec3::ZERO), s));
+            }
+        }
         // (the light manager's dynamic list at night: its fourth record is the race checkpoint's
         // light, id 65539, weighed sat(40 / d squared) all round like the lamps - checkpoints.rs)
         if nfl > 0.0 {
@@ -1779,32 +1796,82 @@ impl App {
         cand
     }
 
-    /// The traffic and parked cars' light slots, each car its own (F-99357, from the ambient cars' pass
-    /// dispatcher F-27833): the ids at render instance + 612 / + 660 start at -1 (F-19499, run once per
-    /// instance when the title builds the pool) and are kept by the rule of the player's car (F-56246):
-    /// the two best of F-24398 where the car stands, a light keeping its slot while it stays chosen. By
-    /// day the hour's light is the only candidate, so a car keeps the order its last night left: the
-    /// hour's light second (the first slot black) once it came second to a lamp. The shader takes the
-    /// order from `ObjectUniform::slots`; the lights in the slots are still the player's car's (GAP:
-    /// each car's own lamps, the player's head lamps as a candidate, the update only while the car is
-    /// drawn, and the original's pool - its instances keep their ids from one traffic car to the next,
-    /// here a new car starts at -1). Recorded live (`work/traffic-detail/fix9/slots.py`, `mon.py`).
+    /// The traffic and parked cars' light slots, each car its own (F-99357, run by the ambient cars' pass
+    /// dispatcher F-27833 for an instance drawn in the main pass - LOD 0 or more - and again in the blended
+    /// bucket's pass). The ids at render instance + 612 / + 660 start at -1 (F-19499, once per instance when
+    /// the title builds the pool) and are kept by the player car's rule (F-56246): the two best of F-24398
+    /// where the car stands - lamps, the dynamic list (the player's head lamps, the key light, the
+    /// checkpoint's light) from dusk to dawn, the hour's light always - a light keeping its slot while it
+    /// stays chosen. Each slot is then built by F-77922 (the light's place, colour and strength) and eased
+    /// once a call: the direction from the car to the slot's stored point turns 2.5 % of the way to the
+    /// light, the point is put 100 m off along it, colour and strength go 6 % of the way; an empty slot (-1)
+    /// heads for the world's origin with colour and strength 0. A car not drawn keeps all of it. GAP: the
+    /// original's pool - an instance keeps ids and lights from one traffic car to the next, a new car here
+    /// starts at -1 and 0 as an instance never drawn. Recorded live: `work/traffic-detail/fix10`.
     fn traffic_light_slots(&mut self) {
         let Some((nfl, hour_light)) = *LAST_HOUR.lock().unwrap() else { return };
-        let picks: Vec<(usize, (i32, i32))> = self
+        let dynamic = self.peds.night_lights.as_ref().map(|d| d.0);
+        let now = self.sim_time;
+        let calls = amb_slot_calls();
+        let picks: Vec<(usize, Vec<(i32, f32, Vec3, Vec3, f32)>)> = self
             .vehicles
             .cars
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.is_ambient())
-            .map(|(i, c)| {
-                let (b0, _, b1, _) = pick_two(&self.slot_candidates(c.state.pos, nfl, hour_light));
-                (i, (b0, b1))
-            })
+            .filter(|(i, c)| c.is_ambient() && self.vehicles.lod_pick.get(*i).is_some_and(|&l| l >= 0))
+            .map(|(i, c)| (i, self.slot_candidates(c.state.pos, nfl, hour_light, dynamic.as_ref())))
             .collect();
-        for (i, (b0, b1)) in picks {
+        let drawn: Vec<usize> = picks.iter().map(|p| p.0).collect();
+        // (test hook MCLA_AMB_CAND_AT=x,y,z with MCLA_AMB_SLOT_DUMP: the six strongest candidates F-24398 weighs for
+        // a car standing there - for comparisons with the slots read from the running original)
+        if let (true, Ok(w)) = (std::env::var("MCLA_AMB_SLOT_DUMP").is_ok() && self.frame_no % 30 == 0, std::env::var("MCLA_AMB_CAND_AT")) {
+            let v: Vec<f32> = w.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if v.len() == 3 {
+                let mut cd = self.slot_candidates(Vec3::new(v[0], v[1], v[2]), nfl, hour_light, dynamic.as_ref());
+                cd.sort_by(|a, b| b.1.total_cmp(&a.1));
+                for x in cd.iter().take(6) {
+                    eprintln!("ambslot-cand {} w {:.4} dir {:?} col {:?} s {:.4}", x.0, x.1, x.2, x.3, x.4);
+                }
+            }
+        }
+        for c in self.vehicles.cars.iter_mut() {
+            c.amb_light.seen = false;
+        }
+        for (i, cand) in picks {
             let c = &mut self.vehicles.cars[i];
+            let (b0, _, b1, _) = pick_two(&cand);
             c.amb_slot = if slot_swap(c.amb_slot, b0, b1) { [b1, b0] } else { [b0, b1] };
+            // (the calls since the last: one a drawn 30 Hz frame and pass; a car drawn again after a gap gets one)
+            let l = &mut c.amb_light;
+            let frames = if l.drawn_before { ((now - l.time) * 30.0).clamp(0.0, 300.0) } else { 1.0 };
+            let n = frames * calls;
+            let (kc, kd) = (1.0 - 0.94f32.powf(n), 1.0 - 0.975f32.powf(n));
+            let pos = c.state.pos;
+            for k in 0..2 {
+                // (F-77922's light: a lamp at its place, the hour's light 100 km off along it - here its
+                // direction; an empty slot is the default record of F-91871: place 0, colour 0, strength 0)
+                let (td, tc, ti) = match cand.iter().find(|x| x.0 == c.amb_slot[k] && c.amb_slot[k] >= 0) {
+                    Some(x) => (x.2, x.3, x.4),
+                    None => ((-pos).normalize_or(Vec3::Y), Vec3::ZERO, 0.0),
+                };
+                let from = (l.point[k] - pos).normalize_or(td);
+                let d = figlight::turn(from, td, kd);
+                l.point[k] = pos + d * 100.0;
+                l.col[k] += (tc - l.col[k]) * kc;
+                l.int[k] += (ti - l.int[k]) * kc;
+            }
+            l.time = now;
+            l.seen = true;
+        }
+        for c in self.vehicles.cars.iter_mut() {
+            c.amb_light.drawn_before = c.amb_light.seen;
+        }
+        if std::env::var("MCLA_AMB_SLOT_DUMP").is_ok() && self.frame_no % 30 == 0 {
+            for &i in &drawn {
+                let c = &self.vehicles.cars[i];
+                let l = &c.amb_light;
+                eprintln!("ambslot {} {} at {:?} ids {:?} p0 {:?} c0 {:?} s0 {:.4} p1 {:?} c1 {:?} s1 {:.4}", c.model.name, c.uid, c.state.pos, c.amb_slot, l.point[0], l.col[0], l.int[0], l.point[1], l.col[1], l.int[1]);
+            }
         }
     }
 
@@ -13767,4 +13834,12 @@ fn pick_two(cand: &[(i32, f32, Vec3, Vec3, f32)]) -> (i32, f32, i32, f32) {
 /// in the first (and not in the second).
 fn slot_swap(held: [i32; 2], b0: i32, b1: i32) -> bool {
     (b0 != held[0] && b0 == held[1]) || (b1 != held[1] && b1 == held[0])
+}
+
+/// F-99357's calls per drawn frame: the ambient cars' pass dispatcher F-27833 runs it in the main pass and
+/// again in the blended bucket's pass (0x100000), so twice for a car drawn in both. Read live (2026-10-29,
+/// a parked Cobalt's first-slot strength knocked to 0 and polled): it steps by 6 % twice ~3 ms apart, then
+/// waits ~31 ms - two calls per 30 Hz frame, every step exactly one call (log ratio 1.00).
+fn amb_slot_calls() -> f32 {
+    2.0
 }

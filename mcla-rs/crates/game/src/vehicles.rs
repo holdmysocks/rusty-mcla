@@ -357,6 +357,21 @@ pub struct CarInstance {
     /// a traffic or parked car's two light slot ids (render instance + 612 / + 660, F-99357; -1 = empty,
     /// 65545 = the hour's light) - main.rs `traffic_light_slots`
     pub amb_slot: [i32; 2],
+    /// ... and the lights in them, eased (F-99357; all 0 at the start, F-19499)
+    pub amb_light: AmbSlotLights,
+}
+
+/// A traffic or parked car's two slot lights (render instance +576 / +624, F-99357): each slot's point
+/// (the car's place + 100 m along the eased direction), colour and strength; and when they were last eased.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct AmbSlotLights {
+    pub point: [Vec3; 2],
+    pub col: [Vec3; 2],
+    pub int: [f32; 2],
+    pub time: f32,
+    /// drawn (eased) this frame / the frame before
+    pub seen: bool,
+    pub drawn_before: bool,
 }
 
 /// A traffic car's lamps as the original's mcAmbientRenderCarInstance keeps them (F-81135,
@@ -2581,7 +2596,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, amb_slot: amb_slot_start() });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default() });
         self.cars.len() - 1
     }
 
@@ -4371,7 +4386,19 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let int_glass = if self.interior_glass && c.is_player { 256.0 } else { 0.0 };
             // (a traffic or parked car's own light-slot order, F-99357: x = 1 when the hour's light is in the
             // second slot, the first holding a lamp or nothing; w = 1: given. Other cars take the player's.)
-            let amb_slots = if c.is_ambient() { [if c.amb_slot[1] == 65545 { 1.0 } else { 0.0 }, 0.0, 0.0, 1.0] } else { [0.0; 4] };
+            // (and its slots' lights, F-99357: row 1 / 2 the slot not holding the hour's light - direction from the
+            // car to its point, colour x strength -, row 3 / 4 the one holding it, or the second; the shader takes
+            // them at night, by day the scene's light as the player's car)
+            let amb_slots = if c.is_ambient() {
+                let hs = if c.amb_slot[0] == 65545 { 0 } else { 1 };
+                let ls = 1 - hs;
+                let l = &c.amb_light;
+                let dir = |k: usize| (l.point[k] - c.state.pos).normalize_or(Vec3::Y);
+                let (ld, lc, hd, hc) = (dir(ls), l.col[ls] * l.int[ls], dir(hs), l.col[hs] * l.int[hs]);
+                [[if hs == 1 { 1.0 } else { 0.0 }, 0.0, 0.0, 1.0], [ld.x, ld.y, ld.z, 0.0], [lc.x, lc.y, lc.z, 0.0], [hd.x, hd.y, hd.z, 0.0], [hc.x, hc.y, hc.z, 0.0]]
+            } else {
+                [[0.0; 4]; 5]
+            };
             let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots };
             batch.push_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)

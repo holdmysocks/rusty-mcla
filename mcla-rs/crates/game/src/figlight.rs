@@ -39,7 +39,7 @@ fn target(t: &LampTables, p: Vec3) -> [LampRec; 4] {
 
 /// sub_822F2960: `from` turned towards `to` by `frac` of the angle between them (to them at
 /// once when they stand at right angles: |cos| < 0.001).
-fn turn(from: Vec3, to: Vec3, frac: f32) -> Vec3 {
+pub fn turn(from: Vec3, to: Vec3, frac: f32) -> Vec3 {
     let c = from.dot(to);
     if c.abs() < 0.001 {
         return to;

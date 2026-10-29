@@ -413,11 +413,23 @@ fn fast_collector_high(p: vec3<f32>) -> f32 {
 var<private> car_wp: vec3<f32>;
 fn car_kd() -> vec3<f32> {
     if (g.car_key2.w > 1.5) { return normalize(g.car_key2.xyz - car_wp); }
+    if (g.car_key2.w > 0.5 && obj.slots[0].w > 0.5) { return obj.slots[3].xyz; }
     return select(g.key_dir.xyz, g.car_key2.xyz, g.car_key2.w > 0.5);
 }
 fn car_kc() -> vec3<f32> {
     if (g.car_key2.w > 1.5) { return g.car_key2_col.rgb * (clamp(1.0 - distance(g.car_key2.xyz, car_wp) * 0.001, 0.0, 1.0) / 0.9); }
+    if (g.car_key2.w > 0.5 && obj.slots[0].w > 0.5) { return obj.slots[4].rgb; }
     return select(g.key_col.rgb, g.car_key2_col.rgb, g.car_key2.w > 0.5);
+}
+// The cars' other slot (the lamp): the player car's (car_key / car_key_col), or at night a traffic or
+// parked car's own (obj.slots[1] / [2], F-99357; by day both are nothing but the eased black of an empty slot).
+fn car_ld() -> vec3<f32> {
+    if (g.car_key2.w > 0.5 && g.car_key2.w < 1.5 && obj.slots[0].w > 0.5) { return obj.slots[1].xyz; }
+    return g.car_key.xyz;
+}
+fn car_lc() -> vec3<f32> {
+    if (g.car_key2.w > 0.5 && g.car_key2.w < 1.5 && obj.slots[0].w > 0.5) { return obj.slots[2].rgb; }
+    return g.car_key_col.rgb;
 }
 
 // The collector as the cars' programs read it: PS_CarPaint, PS_Chrome and PS_BumpSpec all take
@@ -507,13 +519,13 @@ struct Object {
     lamp_b: array<vec4<f32>, 19>, // and cover (lens) colours
     area_a: array<vec4<f32>, 5>,  // the player's paint areas after the body (doors, hood, bumpers, skirts): first colour, w 1 = own paint
     area_b: array<vec4<f32>, 5>,  // and second colour, w = paint type + 8 x fade
-    slots: vec4<f32>,     // a traffic or parked car's own light-slot order (F-99357): x = 1 the hour's light second; w = 1 given
+    slots: array<vec4<f32>, 5>, // a traffic or parked car's own light slots (F-99357): [0].x = 1 the hour's light second, [0].w = 1 given; [1] / [2] the other slot's direction and colour x strength, [3] / [4] the hour's slot's
 };
 @group(3) @binding(0) var<uniform> obj: Object;
 // Which of a car's two light slots holds the lamp first (the hour's light second): a traffic or parked
 // car's own (obj.slots, F-99357), else the player's car's (car_key_col.w).
 fn car_lamp_first() -> bool {
-    if (obj.slots.w > 0.5) { return obj.slots.x > 0.5; }
+    if (obj.slots[0].w > 0.5) { return obj.slots[0].x > 0.5; }
     return g.car_key_col.w > 0.5;
 }
 // a car's vertex damage map (damagemap.rs, the original's DmgTex): r the dents, g / a the layout,
@@ -3499,13 +3511,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let fc_ = 0.005 + 0.1075 * pow(1.0 - nvc, 5.0);
             let nls_c = max(dot(n_cf, g.sun_dir.xyz), 0.0);
             let nlk_c = max(dot(n_cf, car_kd()), 0.0);
-            let nlc_c = max(dot(n_cf, g.car_key.xyz), 0.0);
+            let nlc_c = max(dot(n_cf, car_ld()), 0.0);
             let hs_c = normalize(g.sun_dir.xyz + v);
             let hk_c = normalize(car_kd() + v);
-            let hc_c = normalize(g.car_key.xyz + v);
+            let hc_c = normalize(car_ld() + v);
             let ws_c = g.sun_color.rgb * (g.sun_dir.w * 0.9 * clamp(4.0 * nls_c, 0.0, 1.0));
             let wk_c = car_kc() * (0.9 * clamp(4.0 * nlk_c, 0.0, 1.0));
-            let wc_c = g.car_key_col.rgb * (0.9 * clamp(4.0 * nlc_c, 0.0, 1.0));
+            let wc_c = car_lc() * (0.9 * clamp(4.0 * nlc_c, 0.0, 1.0));
             let dh_c = ws_c * nls_c + wk_c * nlk_c;
             let dl_c = wc_c * nlc_c;
             let dif_c = (dh_c + dl_c - clamp(dh_c * dl_c * 0.1025, vec3<f32>(0.0), vec3<f32>(1.0))) * (0.03 * 0.1025);
@@ -3564,9 +3576,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             } else {
                 let nls18 = max(dot(n, g.sun_dir.xyz), 0.0);
                 let nlk18 = max(dot(n, car_kd()), 0.0);
-                let nlc18 = max(dot(n, g.car_key.xyz), 0.0);
+                let nlc18 = max(dot(n, car_ld()), 0.0);
                 let lh18 = (g.sun_color.rgb * (g.sun_dir.w * nls18) + car_kc() * nlk18) * (0.9 * occ18);
-                let ll18 = g.car_key_col.rgb * (nlc18 * 0.9 * occ18);
+                let ll18 = car_lc() * (nlc18 * 0.9 * occ18);
                 var lt18 = lh18 + ll18 - clamp(lh18 * ll18, vec3<f32>(0.0), vec3<f32>(1.0));
                 let am18 = hemi * occ18;
                 lt18 = lt18 + am18 - clamp(lt18 * am18, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -3600,9 +3612,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let st_ = clamp(fct * FC_LIT - 0.25, 0.0, 1.0) * 1.33333;
             let nlst = max(dot(n, g.sun_dir.xyz), 0.0);
             let nlkt = max(dot(n, car_kd()), 0.0);
-            let nlct = max(dot(n, g.car_key.xyz), 0.0);
+            let nlct = max(dot(n, car_ld()), 0.0);
             let lht = (g.sun_color.rgb * (g.sun_dir.w * nlst * clamp(4.0 * nlst, 0.0, 1.0)) + car_kc() * (nlkt * clamp(4.0 * nlkt, 0.0, 1.0))) * (0.9 * 0.775);
-            let llt = g.car_key_col.rgb * (nlct * clamp(4.0 * nlct, 0.0, 1.0) * 0.9 * 0.775);
+            let llt = car_lc() * (nlct * clamp(4.0 * nlct, 0.0, 1.0) * 0.9 * 0.775);
             var ltt = (lht + llt - clamp(lht * llt, vec3<f32>(0.0), vec3<f32>(1.0))) * st_;
             let amt = hemi * 0.75;
             ltt = ltt + amt - clamp(ltt * amt, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -3639,9 +3651,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let sp_ = clamp(fcp * FC_LIT - 0.25, 0.0, 1.0) * 1.33333;
             let nlsp = max(dot(n, g.sun_dir.xyz), 0.0);
             let nlkp = max(dot(n, car_kd()), 0.0);
-            let nlcp = max(dot(n, g.car_key.xyz), 0.0);
+            let nlcp = max(dot(n, car_ld()), 0.0);
             let lhp = (g.sun_color.rgb * (g.sun_dir.w * nlsp * clamp(4.0 * nlsp, 0.0, 1.0)) + car_kc() * (nlkp * clamp(4.0 * nlkp, 0.0, 1.0))) * (0.9 * occp);
-            let llp = g.car_key_col.rgb * (nlcp * clamp(4.0 * nlcp, 0.0, 1.0) * 0.9 * occp);
+            let llp = car_lc() * (nlcp * clamp(4.0 * nlcp, 0.0, 1.0) * 0.9 * occp);
             let lamp_first_p = car_lamp_first();
             let l0p = select(lhp, llp, lamp_first_p) * sp_;
             let l1p = select(llp, lhp, lamp_first_p);
@@ -3694,7 +3706,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 var ldir = g.sun_dir.xyz;
                 var lcol = g.sun_color.rgb * g.sun_dir.w;
                 if (li == 1) { ldir = car_kd(); lcol = car_kc(); }
-                if (li == 2) { ldir = g.car_key.xyz; lcol = g.car_key_col.rgb; }
+                if (li == 2) { ldir = car_ld(); lcol = car_lc(); }
                 let nl = clamp(dot(np_t, ldir), 0.0, 1.0);
                 let dl = lcol * (nl * clamp(4.0 * nl, 0.0, 1.0) * att_t * di_t * occ_t);
                 let nh = clamp(dot(np_t, normalize(v + ldir)), 0.0, 1.0);
@@ -3744,10 +3756,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let sh_a = clamp((fc_a * FC_LIT - 0.25) * 1.33333, 0.0, 1.0);
             let nls_a = clamp(dot(n, g.sun_dir.xyz), 0.0, 1.0);
             let nlk_a = clamp(dot(n, car_kd()), 0.0, 1.0);
-            let nlc_a = clamp(dot(n, g.car_key.xyz), 0.0, 1.0);
+            let nlc_a = clamp(dot(n, car_ld()), 0.0, 1.0);
             let att_a = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
             let lh_a = (g.sun_color.rgb * (g.sun_dir.w * nls_a * clamp(4.0 * nls_a, 0.0, 1.0)) + car_kc() * (nlk_a * clamp(4.0 * nlk_a, 0.0, 1.0))) * (occ_a * att_a);
-            let ll_a = g.car_key_col.rgb * (nlc_a * clamp(4.0 * nlc_a, 0.0, 1.0) * occ_a * att_a);
+            let ll_a = car_lc() * (nlc_a * clamp(4.0 * nlc_a, 0.0, 1.0) * occ_a * att_a);
             let first_a = car_lamp_first();
             let l0_a = select(lh_a, ll_a, first_a) * sh_a;
             let l1_a = select(ll_a, lh_a, first_a);
@@ -3820,13 +3832,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let q9 = clamp((fc9 * FC_LIT - 0.25) * 1.33333, 0.0, 1.0) * occ9;
             let nls9 = max(dot(n, g.sun_dir.xyz), 0.0);
             let nlk9 = max(dot(n, car_kd()), 0.0);
-            let nlc9 = max(dot(n, g.car_key.xyz), 0.0);
+            let nlc9 = max(dot(n, car_ld()), 0.0);
             // (x 0.9: the lights' range factor, as in the paint - every car program that takes the two
             // lights has it: VS_BumpSpec, VS_Common, VS_Emissive, VS_Glass, VS_Layout, VS_Plate, and in
             // the pixel programs PS_Light, PS_CarbonFiber, PS_ParallaxRubber2 - work/lighting/carvs_range.py)
             let att9 = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
             let lh9 = (g.sun_color.rgb * (g.sun_dir.w * nls9 * clamp(4.0 * nls9, 0.0, 1.0)) + car_kc() * (nlk9 * clamp(4.0 * nlk9, 0.0, 1.0))) * (q9 * att9);
-            let ll9 = g.car_key_col.rgb * (nlc9 * clamp(4.0 * nlc9, 0.0, 1.0) * q9 * att9);
+            let ll9 = car_lc() * (nlc9 * clamp(4.0 * nlc9, 0.0, 1.0) * q9 * att9);
             var lt9 = lh9 + ll9 - clamp(lh9 * ll9, vec3<f32>(0.0), vec3<f32>(1.0));
             let am9 = hemi * occ9;
             lt9 = lt9 + am9 - clamp(lt9 * am9, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -3982,7 +3994,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 // gLightPosDir.w, at every hour recorded: 0.9. Diagnostics 99: without, as before.)
                 let att6 = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
                 let l_hour = (g.sun_color.rgb * g.sun_dir.w * max(dot(n, g.sun_dir.xyz), 0.0) + car_kc() * max(dot(n, car_kd()), 0.0)) * (ta.x * aok * att6);
-                let l_lamp = g.car_key_col.rgb * max(dot(n, g.car_key.xyz), 0.0) * (ta.x * aok * att6);
+                let l_lamp = car_lc() * max(dot(n, car_ld()), 0.0) * (ta.x * aok * att6);
                 let lamp_first = car_lamp_first();
                 let l0 = select(l_hour, l_lamp, lamp_first) * sk;
                 let l1 = select(l_lamp, l_hour, lamp_first);
@@ -4051,7 +4063,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                     if (g.params.w > 711.5) { dv = base; }
                     if (g.params.w > 712.5) { dv = vec3<f32>(aok); }
                     if (g.params.w > 713.5) { dv = own6; }
-                    if (g.params.w > 714.5) { dv = vec3<f32>(max(dot(n, select(g.sun_dir.xyz, g.car_key.xyz, lamp_first)), 0.0)); }
+                    if (g.params.w > 714.5) { dv = vec3<f32>(max(dot(n, select(g.sun_dir.xyz, car_ld(), lamp_first)), 0.0)); }
                     return vec4<f32>(to_scene(dv), 1.0);
                 }
                 if (g.params.w > 703.5 && g.params.w < 704.5) {
@@ -4204,7 +4216,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             if (g.params.w > 61.5 && g.params.w < 62.5) { return vec4<f32>(to_scene(vec3<f32>(illum, 0.0)), 1.0); }
             let att8 = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
             let lh8 = (g.sun_color.rgb * g.sun_dir.w * max(dot(n, g.sun_dir.xyz), 0.0) + car_kc() * max(dot(n, car_kd()), 0.0)) * att8;
-            let ll8 = g.car_key_col.rgb * max(dot(n, g.car_key.xyz), 0.0) * att8;
+            let ll8 = car_lc() * max(dot(n, car_ld()), 0.0) * att8;
             let l2 = lh8 + ll8 - clamp(lh8 * ll8, vec3<f32>(0.0), vec3<f32>(1.0));
             let lg8 = l2 + hemi - clamp(l2 * hemi, vec3<f32>(0.0), vec3<f32>(1.0));
             let b8 = mix(lb * lg8 * (0.1875 * 0.25 * (1.0 + illum.y)), env, 0.025);
@@ -4250,7 +4262,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let m12 = clamp(fr12 + 0.25 * max(dot(env, vec3<f32>(0.3, 0.59, 0.11)) - 1.0, 0.0), 0.0, 1.0);
             let att12 = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
             let lh12 = (g.sun_color.rgb * g.sun_dir.w * max(dot(n, g.sun_dir.xyz), 0.0) + car_kc() * max(dot(n, car_kd()), 0.0)) * att12;
-            let ll12 = g.car_key_col.rgb * max(dot(n, g.car_key.xyz), 0.0) * att12;
+            let ll12 = car_lc() * max(dot(n, car_ld()), 0.0) * att12;
             let l12 = lh12 + ll12 - clamp(lh12 * ll12, vec3<f32>(0.0), vec3<f32>(1.0));
             let lg12 = l12 + 2.0 * hemi - clamp(l12 * 2.0 * hemi, vec3<f32>(0.0), vec3<f32>(1.0));
             lit = tint4.rgb * lg12 + env * m12;
@@ -4292,8 +4304,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 // (the glare: the first slot is the lamp when it came first - car_key_col.w - else the hour's light)
                 let lamp0 = car_lamp_first();
                 let hn = g.car_key2.w > 0.5;
-                let l0d = select(select(g.sun_dir.xyz, car_kd(), hn), g.car_key.xyz, lamp0);
-                let l0c = select(select(g.sun_color.rgb * g.sun_dir.w, car_kc(), hn), g.car_key_col.rgb, lamp0) * att12;
+                let l0d = select(select(g.sun_dir.xyz, car_kd(), hn), car_ld(), lamp0);
+                let l0c = select(select(g.sun_color.rgb * g.sun_dir.w, car_kc(), hn), car_lc(), lamp0) * att12;
                 let fi = 4.0 * clamp(-dot(v, l0d) - 0.8, 0.0, 1.0);
                 lit = (ti + (0.5 - ti) * (nzi * qi / 11.0)) * di + l0c * (shi * fi * fi);
                 let ai1 = clamp(nzi * qi / 1.1 + 0.5 * clamp(tint4.a - 0.3, 0.0, 1.0), 0.0, 1.0);
