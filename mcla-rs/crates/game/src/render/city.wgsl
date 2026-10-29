@@ -847,6 +847,7 @@ fn road_night_program(wpos: vec3<f32>, nrm: vec3<f32>, color: vec4<f32>, color1:
     var hp: array<vec3<f32>, 2>;
     var hc: array<vec3<f32>, 2>;
     var hd: array<vec3<f32>, 2>;
+    var hk: array<vec3<f32>, 2>;
     for (var k = 0; k < 2; k = k + 1) {
         hp[k] = vec3<f32>(0.0, -100000.0, 0.0);
         hc[k] = vec3<f32>(0.0);
