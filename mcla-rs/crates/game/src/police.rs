@@ -698,10 +698,10 @@ impl Police {
                 continue;
             }
             let idx = vehicles.spawn(gpu, model.clone(), u.home + Vec3::Y * 0.8, u.heading.to_radians(), [0.92, 0.92, 0.92, 0.0], false);
+            Self::dress_cruiser(world, vehicles, idx);
             let c = &mut vehicles.cars[idx];
             c.cop = true;
             c.vinyl_name = tag;
-            Self::dress_cruiser(world, vehicles, idx);
             log::info!("police: unit {} up at its home ({:.0} m from the player)", u.id, u.home.distance(pp));
         }
     }
@@ -1010,10 +1010,10 @@ impl Police {
         }
         let dir = l.dir();
         let idx = vehicles.spawn(gpu, model, pos, (-dir.x).atan2(-dir.z), [0.92, 0.92, 0.92, 0.0], false);
+        Self::dress_cruiser(world, vehicles, idx);
         let c = &mut vehicles.cars[idx];
         c.cop = true;
         if let Some(ai) = c.ai.as_mut() {
-        Self::dress_cruiser(world, vehicles, idx);
             ai.link = Some(best);
             ai.t = 0.5;
             ai.target_speed = 14.0;
@@ -1022,9 +1022,6 @@ impl Police {
         true
     }
 
-    /// Put a cruiser in wait beside the road at `pos` (the cop zones of a race).
-    pub fn station(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles, pos: Vec3, slot: usize) -> bool {
-        let Some(model) = vehicles.models.iter().find(|m| m.name == COP_CAR).cloned() else { return false };
     /// A cruiser wears its stock set-up's paint and plate (`resources/vehicle/configs/vp_chv_police_96.xcc`: black body,
     /// light grey where the model marks the sixth paint area - doors and roof -, grey metallic bumpers): black and white,
     /// as the original's own showroom picture of it (GitHub #17: the port painted it all white). This is the set-up the
@@ -1044,6 +1041,9 @@ impl Police {
         }
     }
 
+    /// Put a cruiser in wait beside the road at `pos` (the cop zones of a race).
+    pub fn station(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles, pos: Vec3, slot: usize) -> bool {
+        let Some(model) = vehicles.models.iter().find(|m| m.name == COP_CAR).cloned() else { return false };
         let Some(nav) = world.nav.as_ref() else { return false };
         let Some((li, t, d)) = nav.nearest_link(pos) else { return false };
         if d > 60.0 {
@@ -1062,10 +1062,10 @@ impl Police {
             return false;
         }
         let idx = vehicles.spawn(gpu, model, p, (-dir.x).atan2(-dir.z), [0.92, 0.92, 0.92, 0.0], false);
+        Self::dress_cruiser(world, vehicles, idx);
         let c = &mut vehicles.cars[idx];
         c.cop = true;
         c.pinned = true;
-        Self::dress_cruiser(world, vehicles, idx);
         c.parked = Some(usize::MAX - 9000 - slot);
         c.settle = 1.5;
         if let Some(ai) = c.ai.as_mut() {
