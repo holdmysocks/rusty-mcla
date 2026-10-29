@@ -560,6 +560,9 @@ pub struct Police {
     /// their cars (`CarInstance::goon`) are the pursuers, no cruiser is sent, nothing is
     /// lit, and the two results are the payback leg's to deal with
     pub goons: bool,
+    /// a tactic of kind 1 - 4 started (StartTactic F-33550 calls the phone's interrupt F-51256: the call on the
+    /// phone is put away and dropped); the main loop takes it
+    pub phone_cut: bool,
 }
 
 const LAW_SPEED: u32 = 1;
@@ -650,6 +653,7 @@ impl Police {
             enabled: true,
             red_junction: None,
             goons: false,
+            phone_cut: false,
             units: Vec::new(),
         }
     }
@@ -902,6 +906,8 @@ impl Police {
     /// F-39756) for the kinds whose slot 7 reads it, -1 (never lost) for the pull-over.
     fn start_tactic(&mut self, kind: TacKind, cops: Vec<u32>, may_escalate: bool, track: f32) {
         log::info!("police: tactic {:?} -> {:?} with cruisers {:?}", self.kind, kind, cops);
+        // (the interrupt comes before the same-kind test: every start of a kind other than Dispatch (type 0))
+        self.phone_cut |= !matches!(kind, TacKind::None | TacKind::Dispatch);
         self.kind = kind;
         self.cops = cops;
         self.may_escalate = may_escalate;
@@ -3310,6 +3316,18 @@ pub fn ticket_scene(car: &str, bike: bool) -> &'static str {
 #[cfg(test)]
 mod scene_tests {
     use super::*;
+
+    #[test]
+    fn a_tactic_start_puts_the_phone_away() {
+        let mut p = Police::new();
+        p.start_tactic(TacKind::Dispatch, vec![], true, 25.0);
+        assert!(!p.phone_cut);
+        for k in [TacKind::PullOver, TacKind::Pursuit, TacKind::PursuitDbl, TacKind::ArrowTrap] {
+            p.phone_cut = false;
+            p.start_tactic(k, vec![], true, 25.0);
+            assert!(p.phone_cut, "{:?}", k);
+        }
+    }
 
     #[test]
     fn the_arrest_scene_goes_by_the_cops_of_the_chase() {

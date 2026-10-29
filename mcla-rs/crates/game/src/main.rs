@@ -5288,6 +5288,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the calls and tips are the career's mission scripts', which run once the career is loaded: none during the
             // start warp or before its loadSuccess, 1 s after the landing - LOADING still up)
             let career_up = self.startwarp.is_none() && self.game.loading_tag <= 0.0;
+            // (a police tactic started: StartTactic F-33550 -> the phone's interrupt F-51256 hides the phone and marks
+            // its call done - dropped, not queued again)
+            if std::mem::take(&mut self.police.phone_cut) && self.game.tip.is_some() {
+                log::info!("phone: call put away, a police tactic started");
+                self.game.tip = None;
+                self.game.phone_prompt.clear();
+            }
+            let phone_held = self.phone_held();
+            let career_up = career_up && !phone_held;
             // the mechanic rings when nothing else is going on
             if career_up && self.news.is_empty() && self.game.tip.is_none() && self.news_timer <= -4.0 && matches!(self.game.mode, Mode::FreeRoam) {
                 if let Some((key, title, text)) = self.tips.pop_front() {
@@ -5385,7 +5394,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.phone_challenge_in <= 0.0 {
                     self.phone_challenge_in = std::env::var("MCLA_PHONE_CHALLENGE").ok().and_then(|v| v.parse().ok()).unwrap_or(200.0 + (self.tick_no % 500) as f32 * 0.1);
                 }
-                if self.game.tip.is_none() && self.news.is_empty() && self.tips.is_empty() && self.cuts.idle() && !self.game.show_map {
+                if self.game.tip.is_none() && self.news.is_empty() && self.tips.is_empty() && self.cuts.idle() && !self.game.show_map && !phone_held {
                     self.phone_challenge_in -= sim_dt;
                     if self.phone_challenge_in <= 0.0 {
                         const WHO: [&str; 5] = ["GH_03", "GH_07", "GH_13", "GH_16", "GH_22"];
@@ -5415,7 +5424,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // the reminder kept for after a story scene
-            if self.pending_call.is_some() && self.cuts.idle() && self.game.movie.is_none() && self.game.tip.is_none() && matches!(self.game.mode, Mode::FreeRoam) && !self.game.fresh_game {
+            if self.pending_call.is_some() && self.cuts.idle() && self.game.movie.is_none() && self.game.tip.is_none() && matches!(self.game.mode, Mode::FreeRoam) && !self.game.fresh_game && !phone_held {
                 if let Some((who, text)) = self.pending_call.take() {
                     let secs = (6.0 + text.len() as f32 * 0.055).min(22.0);
                     self.game.tip = Some((who, text, secs));
@@ -11319,6 +11328,15 @@ impl App {
     /// (IS_BUTTON_DOWN 13 / 3, 15 / 2, 6) - START does nothing there; the opening before the car is
     /// given (save boxes, film, VEHICLE SELECT, its black) and the story scenes are cinematics or the
     /// intro state. Docs: UI.md "Where START opens the pause menu (2026-10-23)".
+    /// The phone's update (F-37697) brings up no call while the police level F-35540(1) is 1 or more (pull-over,
+    /// pursuit, search, arrest), while a scene script runs (F-52539: the ticket and arrest scenes) or a form other than
+    /// the HUD's is up (F-85659: the ARRESTED form); the calls wait in the queue.
+    fn phone_held(&self) -> bool {
+        self.police.heat != police::Heat::None
+            || self.cuts.playing.is_some() || self.cine.playing.is_some() || self.game.movie.is_some()
+            || self.ticket_run.is_some() || self.arrest_form.is_some() || self.game.arrest_panel.is_some() || self.arrest_station.is_some()
+    }
+
     fn pause_allowed(&self) -> bool {
         let g = &self.game;
         // (the new career's opening: the save boxes, the film, VEHICLE SELECT, the black to the first scene)
