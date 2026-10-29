@@ -859,6 +859,11 @@ impl NavMesh {
         self.polys_containing(p, -10.0, 100.0, usize::MAX).iter().any(|&i| self.polys[i as usize].flags & 2 != 0)
     }
 
+    /// The same query as `on_road` for any material bit (F-66554 ai_shortcut 0x8, F-75972 ai_sidewalk 0x1, F-86151 ai_grass 0x4).
+    pub fn on_flag(&self, p: Vec3, flag: u32) -> bool {
+        self.polys_containing(p, -10.0, 100.0, usize::MAX).iter().any(|&i| self.polys[i as usize].flags & flag != 0)
+    }
+
     /// Material flags of the polygon `p` lies in (nearest within 10 m, only when `p` is
     /// inside it within +-1 m, else 0), sub_826FD730.
     pub fn point_flags(&self, p: Vec3) -> u32 {

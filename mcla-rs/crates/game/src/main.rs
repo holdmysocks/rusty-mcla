@@ -360,6 +360,11 @@ struct App {
     pullover_acts: (String, usize),
     /// the arrest's form waits for its scene to end: (the pursuit's length, the fine)
     arrest_form: Option<(f32, i64)>,
+    /// the ARRESTED form is up: when it closes CopArrest.sco puts the car at the police station (frames left to wait
+    /// for its ground)
+    arrest_station: Option<u32>,
+    /// the police's game-frame clock (brain::frame_due)
+    police_acc: f32,
     /// CopPullover.sco running: (the fine, the walk's time of a bolt, the ticket scene begun)
     ticket_run: Option<(i64, Option<f32>, bool)>,
     /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
@@ -986,6 +991,8 @@ impl App {
             arrest_hands: false,
             pullover_acts: (String::new(), 0),
             arrest_form: None,
+            arrest_station: None,
+            police_acc: 0.0,
             ticket_run: None,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
@@ -6036,7 +6043,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.police.progress = rewards::progress(self.game.rep).1;
                 self.police.radio_busy = self.radio.busy();
                 self.police.in_race = self.game.race.is_some();
-                let ev = self.police.update(&gpu, &world, &mut self.vehicles, self.props.knocked, sim_dt);
+                // (the police manager and its tactics run once a game frame, 1/30 s - the chassis ticks twice in
+                // between; their timers and per-frame tests (the +144 "still" step) take that dt. The level probe
+                // meets the walkers' capsules too, F-20855)
+                let ev = if brain::frame_due(&mut self.police_acc, sim_dt) {
+                    self.police.peds = self.peds.capsule_feet();
+                    self.police.update(&gpu, &world, &mut self.vehicles, self.props.knocked, brain::FRAME)
+                } else {
+                    None
+                };
                 // (F-22530: an arrest by the cops ends a race running - raceOverCommand `returnToCruise`,
                 // raceOverTrigger 1: back to the cruise as RETURN TO CRUISE does)
                 if std::mem::take(&mut self.police.arrest_over) && self.game.race.is_some() {
@@ -6160,33 +6175,45 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                     }
-                    Some(police::Event::Busted(f)) => {
-                        self.game.money = (self.game.money - f).max(0);
-                        // (StateArrest's enter, F-14125: the bust bits 0x28 on a car not damaged out)
+                    Some(police::Event::Busted(_)) => {
+                        // (StateArrest's enter, F-14125: the bust bits 0x28 on a car not damaged out; the fine is taken
+                        // when the tactic succeeds - COP_ARREST, below)
                         if self.vehicles.player().is_some_and(|c| c.state.damage < 0.999) {
                             self.crash_bits |= 0x28;
                         }
-                        self.game.write_save(&self.opt.data_dir);
                     }
                     Some(police::Event::ArrestScene) => {
                         // (after StateArrest's fArrestStateTime: COP_ARREST, F-22530, runs CopArrest.sco - the scene,
                         // then the panel with the pursuit's length and the fine)
-                        let f = self.police.fine as i64;
-                        let chase = std::mem::take(&mut self.police.chase_time);
-                        // (Form_ShowForm(46) opens after the scene, CopArrest.sco 0x106f: the panel waits for it)
-                        self.arrest_form = Some((chase, f));
-                        let st = |k: &str, fb: &str| self.game.career.strings.get(k).map(|s| s.to_uppercase()).unwrap_or_else(|| fb.to_string());
-                        let m = format!("{}   {} ${}", st("arrest_title", "ARRESTED"), st("cop_fine_header", "FINE:"), f);
-                        self.game.show_message(&m);
-                        // the arrest (CopArrest.sco): the scene by the number of cops in the chase
+                        // (F-22530 when the tactic succeeds: a cops' tactic - not the payback's goons, whose first car has
+                        // no +872 - fills arrest_duration / cop_fine, takes the fine and opens form 46 after the scene)
+                        let goons = self.police.goons;
+                        if !goons {
+                            let f = self.police.fine as i64;
+                            let chase = std::mem::take(&mut self.police.chase_time);
+                            self.game.money = (self.game.money - f).max(0);
+                            self.game.write_save(&self.opt.data_dir);
+                            // (Form_ShowForm(46) opens after the scene, CopArrest.sco 0x106f: the panel waits for it)
+                            self.arrest_form = Some((chase, f));
+                            let st = |k: &str, fb: &str| self.game.career.strings.get(k).map(|s| s.to_uppercase()).unwrap_or_else(|| fb.to_string());
+                            let m = format!("{}   {} ${}", st("arrest_title", "ARRESTED"), st("cop_fine_header", "FINE:"), f);
+                            self.game.show_message(&m);
+                        }
+                        // the arrest (CopArrest.sco): the wiped-out biker's scene first (manager +64, F-22530), then the
+                        // payback's (race type 5), else the scene by the number of cops in the chase
                         // (PoliceManager_GetNumCopsInLatestTactic)
+                        let bike = self.vehicles.player().is_some_and(|c| c.model.bike && c.state.wipeout > 0.0);
                         let cops = self.police.tactic_cops();
-                        let scene = police::arrest_scene(cops, (self.tick_no as u32).wrapping_mul(2654435761) >> 8);
+                        let scene = police::arrest_scene(cops, (self.tick_no as u32).wrapping_mul(2654435761) >> 8, bike, goons);
                         // (placed as the pull-over's: police::scene_frame - never the car's own roll; GitHub #17)
                         let car = police::scene_frame(&mut self.vehicles, &world, &self.police.safe_zones);
                         self.arrest_hands = false;
                         if let (Some(car), true, true) = (car, self.cine.has(scene), self.cine.playing.is_none() && std::env::var("MCLA_NO_CINE").is_err()) {
-                            if self.cine.start_bound(&mut gpu, scene, car) {
+                            // (the scene is bound to the ground frame itself, SetGameCoordSysBindingCopyRacer; its car
+                            // event snaps the player's car to frame x mover at t 0 - the bikestand's mover_player_car is
+                            // 10.36 m from the origin, the bike is moved there. The car scenes' movers are at the origin.)
+                            let started = if bike { self.cine.start(&mut gpu, scene, car) } else { self.cine.start_bound(&mut gpu, scene, car) };
+                            if started {
                                 self.cine_spawn_cars(&mut gpu, &mut world);
                                 self.cine_free = true;
                                 self.cine_caption = Some(String::new());
@@ -6585,11 +6612,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (the start scene's events on the racers: gestures, windows, the taunt's speech and jaws)
         self.prerace_acts_tick(dt);
         // the arrests' gesture_cophandsup on racer slot 0, the player (event 53: racer+684 = 18 until its end call)
-        match self.cine.playing.as_ref().and_then(|sc| police::arrest_hands_up(&sc.name).map(|h| (h, sc.t))) {
-            Some(((t, dur), now)) if now >= t && !self.arrest_hands => {
+        match self.cine.playing.as_ref().and_then(|sc| police::arrest_gesture(&sc.name).map(|h| (h, sc.t))) {
+            Some(((g, t, dur), now)) if now >= t && !self.arrest_hands => {
                 self.arrest_hands = true;
                 if let Some(i) = self.vehicles.cars.iter().position(|c| c.is_player) {
-                    self.drivers.gesture(i, drivers::Gesture::CopHandsUp, dur, true);
+                    self.drivers.gesture(i, g, dur, true);
                 }
             }
             Some(_) => {}
@@ -6601,7 +6628,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.pullover_acts = (name.clone(), 0);
             }
             let acts = police::pullover_acts(&name);
-            while let Some(&(_, act)) = acts.get(self.pullover_acts.1).filter(|a| now >= a.0) {
+            // (an event at 0 fires on the scene clock's first tick after its start, a frame after the last scene's
+            // FinishScene at the earliest: the walk's stopped gesture has left by then, F-12285 / F-26895)
+            while let Some(&(_, act)) = acts.get(self.pullover_acts.1).filter(|a| now >= a.0 && now > 0.0) {
                 self.pullover_acts.1 += 1;
                 if let Some(i) = self.vehicles.cars.iter().position(|c| c.is_player) {
                     match act {
@@ -6615,7 +6644,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (CopArrest.sco: the form after the scene)
             if let Some((chase, f)) = self.arrest_form.take() {
                 self.game.arrest_panel = Some((0.0, chase, f));
+                self.arrest_station = Some(0);
             }
+        }
+        // (CopArrest.sco 0x1178 once the form is closed: Racer_InitializeResetPosition(player, (-604.5, 7, -340.5), 5 deg)
+        // + ResetWithDamageIntact - the police station, upright, standing, the damage kept; PoliceManager_CutSceneDone
+        // F-30655 then puts a damaged-out car's damage at 0.95 of its MaxDamage)
+        // (test hook MCLA_ARREST_CLOSE=1: the ARRESTED form closed by itself on a 2 s tick)
+        if std::env::var_os("MCLA_ARREST_CLOSE").is_some() && self.arrest_station == Some(0) && self.tick_no % 120 == 0 {
+            self.game.arrest_panel = None;
+        }
+        if let (Some(n), true) = (self.arrest_station, self.game.arrest_panel.is_none()) {
+            self.arrest_station = police::station_reset(&mut self.vehicles, &world, n);
         }
         if let Some(a) = self.audio.as_mut() {
             let fwd = self.cam.forward();

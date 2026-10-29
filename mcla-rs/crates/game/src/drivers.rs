@@ -107,7 +107,7 @@ struct Acting {
     playing: Option<Playing>,
     /// a gesture asked for, its clip chosen when the driver is next posed
     asked: Option<(Gesture, f32, bool)>,
-    /// fading out of a gesture that ended: (clip, frame, weight)
+    /// fading out of a gesture that ended: (clip, its time - it plays on under the fade, weight)
     leaving: Option<(String, f32, f32)>,
     jaw: bool,
     jaw_k: f32,
@@ -151,7 +151,8 @@ const RR_LEFT: [&str; 5] = ["drv_gest_mild_lft_01", "drv_gest_agro_lft_01", "drv
 const RR_RIGHT: [&str; 5] = ["drv_gest_mild_rgt_01", "drv_gest_agro_rgt_01", "drv_gest_thm_dwn_rgt", "drv_gest_thm_up_rgt", "drv_gest_cas_rgt_01"];
 const RR_TALK_LEFT: [&str; 4] = ["drv_gest_cas_lft_01", "drv_gest_agro_lft_01", "drv_gest_mild_lft_01", "drv_gest_rspnd_lft"];
 const RR_TALK_RIGHT: [&str; 4] = ["drv_gest_cas_rgt_01", "drv_gest_agro_rgt_01", "drv_gest_mild_rgt_01", "drv_gest_rspnd_rgt"];
-/// a gesture blends in over 0.25 s (sub_823A5C10); the way back to driving is not read - the same 0.25 s
+/// a gesture blends in over 0.25 s (the gesture state's enter plays it through F-24441 with 0.25 s) and back to
+/// driving over 0.25 s (the cruising state's update requests its clip through F-85393 with 0.25 s), both linear
 const GESTURE_BLEND: f32 = 0.25;
 
 /// The clip a gesture plays (sub_823B3D70); `human`: the neutral round robin skips `_rspnd_rgt` for the human
@@ -445,7 +446,7 @@ impl Drivers {
                     if rig.gestures.contains_key(&name) {
                         log::info!("drivers: seat {} plays {}", s.id, name);
                         // (a stopped gesture still on: it blends out under the new one, `end_gesture`)
-                        let old = a.playing.take().and_then(|p| rig.gestures.get(&p.clip).map(|c| (p.clip.clone(), c.frame(p.t, false), 1.0)));
+                        let old = a.playing.take().and_then(|p| rig.gestures.get(&p.clip).map(|_| (p.clip.clone(), p.t, 1.0)));
                         a.playing = Some(Playing { clip: name, t: 0.0, left });
                         a.leaving = old;
                     } else {
@@ -462,9 +463,11 @@ impl Drivers {
                         // (the gesture clips animate the arms, head and upper body only: laid over the
                         // driving pose on the bones they move)
                         overlay(&mut local, &other, c, (pl.t / GESTURE_BLEND).min(1.0));
-                        over = pl.t >= c.anim.duration || pl.left <= 0.0;
+                        // (the state leaves when under 0.033 s of the clip is left, a frame before its end - F-85393's
+                        // caller, the gesture state's exit term)
+                        over = c.anim.duration - pl.t < 0.033 || pl.left <= 0.0;
                         if over {
-                            a.leaving = Some((pl.clip.clone(), f, 1.0));
+                            a.leaving = Some((pl.clip.clone(), pl.t, 1.0));
                         }
                     } else {
                         over = true;
@@ -474,10 +477,11 @@ impl Drivers {
                     a.playing = None;
                 }
                 if a.playing.is_none() {
-                    if let Some((name, f, w)) = a.leaving.as_mut() {
+                    if let Some((name, t, w)) = a.leaving.as_mut() {
                         *w -= dt / GESTURE_BLEND;
+                        *t += dt;
                         if let Some(c) = rig.gestures.get(name.as_str()).filter(|_| *w > 0.0) {
-                            c.local(&rig.model.bones, *f, &mut other);
+                            c.local(&rig.model.bones, c.frame(*t, false), &mut other);
                             overlay(&mut local, &other, c, *w);
                         }
                     }

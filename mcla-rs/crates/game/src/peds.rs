@@ -1111,6 +1111,12 @@ impl Peds {
         self.filled = false;
     }
 
+    /// The walkers' foot positions: each one's collision capsule (radius 0.3, 0.3 to 1.5 m above the feet) is in the
+    /// level the police's line probe meets (F-20855).
+    pub fn capsule_feet(&self) -> Vec<Vec3> {
+        self.list.iter().map(|q| q.pos).collect()
+    }
+
     /// Positions and headings of the pedestrians closest to `p` (diagnostics).
     pub fn nearest(&self, p: Vec3, n: usize) -> Vec<(Vec3, Vec3, String)> {
         let mut v: Vec<&Ped> = self.list.iter().collect();

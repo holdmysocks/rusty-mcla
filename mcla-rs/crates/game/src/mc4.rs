@@ -8515,7 +8515,8 @@ impl Game {
             _ => {}
         }
         self.opt_x.arcade.pb = Some(leg);
-        None
+        // (the goons' COP_ARREST still runs CopArrest.sco: their walk-up scene)
+        ev.filter(|e| matches!(e, Event::ArrestScene))
     }
 
     /// Has the payback leg ended by its chase (or by the player's wreck)? Called once a tick

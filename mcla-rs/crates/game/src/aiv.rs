@@ -424,7 +424,7 @@ pub fn ang_xz(a: Vec3, b: Vec3) -> f32 {
 }
 
 /// F-88594: unsigned 3D angle.
-fn ang3(a: Vec3, b: Vec3) -> f32 {
+pub fn ang3(a: Vec3, b: Vec3) -> f32 {
     let aa = fma(a.z, a.z, fma(a.x, a.x, a.y * a.y));
     let bb = fma(b.z, b.z, fma(b.x, b.x, b.y * b.y));
     let norm = (bb * aa).sqrt();

@@ -167,6 +167,9 @@ pub struct SkinModel {
     pub head: Option<usize>,
     /// the set's facial blend shapes (`.r3`), when it has targets
     pub morph: Option<Morph>,
+    /// the bones of the Facial_root subtree (by the bone's place): a cine character's body request leaves them out
+    /// (F-29730's filter "every bone but Facial_root and its children")
+    pub face_bones: Vec<bool>,
 }
 
 /// A character set's blend shapes bound to its high-detail parts: the `.r3` mesh record names the model
@@ -367,7 +370,20 @@ impl SkinModel {
         if binds4.is_empty() {
             binds4 = binds.clone();
         }
-        Some(SkinModel { bones, ids, lods, binds, binds4, mats, head: c.bone("head"), morph })
+        let facial = c.bone("Facial_root");
+        let face_bones = (0..bones.len())
+            .map(|i| {
+                let mut b = Some(i);
+                while let Some(j) = b {
+                    if Some(j) == facial {
+                        return true;
+                    }
+                    b = bones[j].parent;
+                }
+                false
+            })
+            .collect();
+        Some(SkinModel { bones, ids, lods, binds, binds4, mats, head: c.bone("head"), morph, face_bones })
     }
 }
 

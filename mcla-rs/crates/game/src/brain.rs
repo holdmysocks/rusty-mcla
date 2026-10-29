@@ -1123,10 +1123,7 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
     // (a police brain's overrides over the racing brain's output, F-88118: +744 throttle, +748 brake, +752 handbrake,
     // +756 steer)
     if let Some(o) = v.cars[i].ai.as_mut().and_then(|a| a.ovr.take()) {
-        input.throttle = o.throttle.unwrap_or(input.throttle);
-        input.brake = o.brake.unwrap_or(input.brake);
-        input.handbrake = o.handbrake.unwrap_or(input.handbrake);
-        input.steer = o.steer.unwrap_or(input.steer);
+        o.apply(&mut input);
     }
     let c = &mut v.cars[i];
     // (flag 4: F-94408 fires the slipstream turbo through F-28681 - vehsim's step)

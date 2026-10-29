@@ -152,6 +152,8 @@ struct CopTac {
     plan_fwd: Vec3,
     plan_speed: f32,
     head_on: bool,
+    /// Block's steer, taken at its enter (F-56982, +700): full lock towards the side the target was on
+    block_steer: f32,
 }
 
 /// The searching cop's brain state 7, STATE_SEARCH (enter F-57507, tick F-15801; docs/reference/hookmen/search_and_connections.md 2):
@@ -466,6 +468,9 @@ pub struct Police {
     track_t: f32,
     /// the lead's brain: unseen time +596, the time in the search cone +600, the last known velocity +624
     last_known_v: Vec3,
+    /// each cop brain's +624: the target's velocity at its last sight-tracker tick (F-54688 - not under command 3 Pull Over
+    /// or 8 Go To Position, nor in the search); zero for a fresh brain (F-52769)
+    brain_tvel: HashMap<u32, Vec3>,
     /// the searchers' brain state 7
     srch: Vec<CopSearch>,
     prev_heat: Heat,
@@ -528,12 +533,14 @@ pub struct Police {
     /// the share of the career (the Progression system's fraction, 0..1) that cuts the fine;
     /// set by the game each frame
     pub progress: f32,
-    wrong_way: f32,
     wrong_active: bool,
-    burnout: f32,
     burnout_active: bool,
-    nav_check: f32,
+    /// block traffic's started bit (F-88545)
+    block_active: bool,
+    /// the wrong-way condition this tick (F-29334)
     against_traffic: bool,
+    /// the walkers' feet (`Peds::capsule_feet`), set by the caller each frame: their capsules are in the seen / block probe
+    pub peds: Vec<Vec3>,
     last_knocked: u32,
     last_damage: f32,
     spawn_timer: f32,
@@ -565,6 +572,7 @@ const LAW_RED_LIGHT: u32 = 64;
 const LAW_ROOF_JUMP: u32 = 128;
 const LAW_TWO_WHEEL: u32 = 256;
 const LAW_OFF_ROAD: u32 = 512;
+const LAW_BLOCK_TRAFFIC: u32 = 1024;
 const MAX_GLOWS: usize = 16;
 
 impl Police {
@@ -601,6 +609,7 @@ impl Police {
             in_race: false,
             track_t: 0.0,
             last_known_v: Vec3::ZERO,
+            brain_tvel: HashMap::new(),
             srch: Vec::new(),
             prev_heat: Heat::None,
             radio_cue: Vec::new(),
@@ -623,12 +632,11 @@ impl Police {
             jump_paid: false,
             fled: false,
             progress: 1.0,
-            wrong_way: 0.0,
             wrong_active: false,
-            burnout: 0.0,
             burnout_active: false,
-            nav_check: 0.0,
+            block_active: false,
             against_traffic: false,
+            peds: Vec::new(),
             last_knocked: 0,
             last_damage: 0.0,
             spawn_timer: 8.0,
@@ -877,7 +885,9 @@ impl Police {
     /// velocity of a dispatch was not read).
     fn dispatch_search(&mut self, world: &World, vehicles: &Vehicles, uid: u32, per: f32) {
         let (Some(c), Some(nav)) = (vehicles.cars.iter().find(|c| c.uid == uid), world.nav.as_ref()) else { return };
-        let v = vehicles.player().map_or(Vec3::ZERO, |p| p.state.vel);
+        // (the search reads the brain's +624, never written during the dispatch - command 8 - so it is what this cop last
+        // stored, zero for one whose first command is the dispatch: then (1, 0, 0) x 22.35 in search_points)
+        let v = self.brain_tvel.get(&uid).copied().unwrap_or(Vec3::ZERO);
         self.last_known_v = v;
         let angle = if crate::brain::rng().float() < 0.5 { std::f32::consts::FRAC_PI_2 } else { -std::f32::consts::FRAC_PI_2 };
         let mut rnd = || crate::brain::rng().float();
@@ -1172,7 +1182,6 @@ impl Police {
         let pright = p.state.right();
         let speed = pvel.length();
         let mph = speed * MPH;
-        let slip = p.state.wheels.iter().map(|w| w.slip).fold(0.0, f32::max);
         let damage = p.state.damage;
         let p_air = p.state.airborne_time;
         // (F-81388: the gyro's two-wheel state, +18, is not 0)
@@ -1212,12 +1221,10 @@ impl Police {
         // from half its height 7 m straight back hits something - F-74492 then grows +124 and zeroes +132, or the other
         // way round, +128 keeping last frame's +124)
         // (the probe, F-20855: one-sided, every level object - no instance excluded, include and type flags -1, states 7;
-        // any hit counts. Port: the city bound's one-sided probe and every other car's hull; the props and the
-        // pedestrians' capsules are not in it)
+        // any hit counts: the city, the other cars, the props and the pedestrians' capsules - `level_probe_front`)
         let probe_hit = {
             let o = ppos + Vec3::Y * (0.5 * (p.model.max.y - p.model.min.y));
-            let back = -pfwd;
-            world.collider.probe_front(o, back, 7.0).is_some() || vehicles.cars.iter().filter(|c| !c.is_player).any(|c| hull_probe_front(c, o, back, 7.0))
+            level_probe_front(world, vehicles, &self.peds, p.uid, o, -pfwd, 7.0)
         };
         let bike_down = p.model.bike && p.state.wipeout > 0.0;
         let seen_now = pvel.length() * MPH <= tun.get("fMovingSpeed", 1.0) || probe_hit;
@@ -1297,33 +1304,29 @@ impl Police {
                 };
             }
         }
-        // driving against the traffic
-        self.nav_check -= dt;
-        if self.nav_check <= 0.0 {
-            self.nav_check = 0.2;
-            self.against_traffic = false;
-            if speed > 6.0 {
-                if let Some(nav) = world.nav.as_ref() {
-                    if let Some((li, _t, d)) = nav.nearest_link(ppos) {
-                        if d < 5.0 && nav.links[li].dir().dot(pvel / speed) < -0.6 {
-                            // a lane running our way right next to it means we are just near the centre line
-                            let ok_lane = nav.links_near(ppos, 9.0).any(|j| {
-                                let l = &nav.links[j];
-                                l.dir().dot(pvel / speed) > 0.6 && l.point_at(l.project(ppos)).distance(ppos) < 4.0
-                            });
-                            self.against_traffic = !ok_lane;
-                        }
+        // (F-88545, every scored tick and with no cop: each of the three has a condition, its started bit and one float -
+        // the threshold timer and, once started, the per-second carry; `offence_gate`. Points only when a cop watches)
+        // driving against the traffic (F-29334: not over an ai_shortcut polygon; the player's best lane and its tangent
+        // at the kept phase; at or under fMovingSpeed x 0.447 the facing - the backward axis along the tangent -, else
+        // the velocity against it)
+        let wrong_cond = {
+            let shortcut = crate::offroad::mesh().map_or(false, |m| m.on_flag(ppos, 8));
+            let lane = vehicles.driver_lanes.get(&p.uid).and_then(|d| Some((d.best?.0, d.best_t)));
+            match (shortcut, lane, world.nav.as_ref()) {
+                (false, Some((l, bt)), Some(nav)) => nav.curves.get(l).map_or(false, |cv| {
+                    let tan = cv.eval(bt).1.normalize_or_zero();
+                    if speed < t("fMovingSpeed", 1.0) * 0.447 {
+                        (-pfwd).dot(tan) > 0.0
+                    } else {
+                        pvel.dot(tan) < 0.0
                     }
-                }
+                }),
+                _ => false,
             }
-        }
-        if self.against_traffic {
-            self.wrong_way += dt;
-        } else {
-            self.wrong_way = 0.0;
-        }
-        // (a started offence is on every frame its condition holds; the threshold only for its start)
-        if watching && self.against_traffic && (self.wrong_active || self.wrong_way > t("fWrongWayThresholdTime", 1.2)) {
+        };
+        self.against_traffic = wrong_cond;
+        let wrong_bit = offence_gate(wrong_cond, self.wrong_active, &mut self.sec[1], t("fWrongWayThresholdTime", 1.2), dt);
+        if watching && wrong_bit {
             breaking = true;
             self.offences |= LAW_WRONG_WAY;
             if !self.wrong_active {
@@ -1334,13 +1337,10 @@ impl Police {
                 add += self.whole_seconds(1, dt) * t("iWrongWayPerSecPoints", 25.0);
             }
         }
-        // burn-outs
-        if slip > 1.6 && speed < 9.0 {
-            self.burnout += dt;
-        } else {
-            self.burnout = 0.0;
-        }
-        if watching && self.burnout > 0.0 && (self.burnout_active || self.burnout > t("fBurnOutThresholdTime", 1.5)) {
+        // burn-outs (F-88545: the car sim's burn-out charge above 0 - the launch after it counts as well)
+        let burn_cond = p.state.veh.as_ref().map_or(false, |v| v.burn > 0.0);
+        let burn_bit = offence_gate(burn_cond, self.burnout_active, &mut self.sec[2], t("fBurnOutThresholdTime", 1.5), dt);
+        if watching && burn_bit {
             breaking = true;
             self.offences |= LAW_BURNOUT;
             if !self.burnout_active {
@@ -1349,6 +1349,20 @@ impl Police {
                 add += t("iBurnOutStartPoints", 130.0);
             } else {
                 add += self.whole_seconds(2, dt) * t("iBurnOutPerSecPoints", 25.0);
+            }
+        }
+        // blocking traffic (F-60011; not during a pull-over)
+        let block_cond = self.heat != Heat::PullOver && block_traffic_cond(world, vehicles, p, &self.peds, &tun);
+        let block_bit = offence_gate(block_cond, self.block_active, &mut self.sec[5], t("fBlockTrafficThresholdTime", 1.0), dt);
+        if watching && block_bit {
+            breaking = true;
+            self.offences |= LAW_BLOCK_TRAFFIC;
+            if !self.block_active {
+                self.block_active = true;
+                self.sec[5] = 0.0;
+                add += t("iBlockTrafficStartPoints", 50.0);
+            } else {
+                add += self.whole_seconds(5, dt) * t("iBlockTrafficPerSecPoints", 25.0);
             }
         }
         // off the roads (F-90092: no polygon of the mesh with the ai_road material under the car)
@@ -1800,6 +1814,11 @@ impl Police {
                 if d.crumb_t <= 0.0 {
                     d.crumb_t = 1.0;
                     d.crumbs.push(ppos);
+                    // (F-87106: for a racer target the trail stops once a crumb is taken while its +640 - the lane its
+                    // lane locator found this frame, F-80793 - is set: normally at the first crumb)
+                    if vehicles.player().is_some_and(|p| vehicles.driver_lanes.get(&p.uid).is_some_and(|l| l.best.is_some())) {
+                        d.crumb_t = 0.0;
+                    }
                 }
             }
             match cop {
@@ -1995,7 +2014,7 @@ impl Police {
                 let geo = |u: Option<u32>| -> Option<(f32, bool, bool, bool, f32)> {
                     let c = vehicles.cars.iter().find(|c| Some(c.uid) == u)?;
                     let to = ppos - c.state.pos;
-                    Some((to.length(), c.state.forward().dot(to) > 0.0, c.state.right().dot(to) > 0.0, pvel.dot(c.state.vel) > 0.0, c.state.right().angle_between(to).to_degrees()))
+                    Some((to.length(), c.state.forward().dot(to) > 0.0, c.state.right().dot(to) > 0.0, pvel.dot(c.state.vel) > 0.0, crate::aiv::ang3(c.state.right(), to).to_degrees()))
                 };
                 if ed78 {
                     let mut a_in = false;
@@ -2008,15 +2027,14 @@ impl Police {
                                 if !goons {
                                     self.radio_cue.push("REPORT_MANEUVER_CLOSE".into());
                                 }
-                            } else {
-                                sq.swipe_t = (sq.swipe_t - dt).max(0.0);
-                                if sq.swipe_t <= 0.0 {
-                                    swipes.insert(sq.slots[0].unwrap_or_default(), crate::ai::Overrides { steer: Some(-1.0), brake: Some(1.0), ..Default::default() });
-                                }
+                            } else if sq.swipe_t <= 0.0 {
+                                swipes.insert(sq.slots[0].unwrap_or_default(), crate::ai::Overrides { steer: Some(-1.0), brake: Some(1.0), ..Default::default() });
                             }
                         }
                     }
-                    if !a_in {
+                    if a_in {
+                        sq.swipe_t = (sq.swipe_t - dt).max(0.0);
+                    } else {
                         sq.swipe_t = 0.0;
                         sq.latch = false;
                     }
@@ -2029,7 +2047,9 @@ impl Police {
                     for u in &members {
                         if let (Some(tc), Some((d, _, on_right, _, _))) = (tacs.get(u), geo(Some(*u))) {
                             if tc.head_on && d < t("fHeadOnBlockDist", 60.0) {
-                                swipes.insert(*u, crate::ai::Overrides { handbrake: Some(true), steer: Some(if on_right { 1.0 } else { -1.0 }), ..Default::default() });
+                                let o = swipes.entry(*u).or_default();
+                                o.handbrake = Some(true);
+                                o.steer = Some(if on_right { 1.0 } else { -1.0 });
                             }
                         }
                     }
@@ -2071,12 +2091,14 @@ impl Police {
         let on_road = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_road(q));
         for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) || Some(c.uid) == dsp_cop) {
             let is_dsp = Some(c.uid) == dsp_cop && !pursuer(c);
+            // (the head-on test's sight: this cop's own, 2 m up, no range and no cone)
+            let own_sight = tactic && cop_sees(world, c, ppos, 0.0, 0.0);
             let Some(ai) = c.ai.as_mut() else { continue };
             ai.chase_exact = false;
             if self.flee_hold > 0.0 && self.heat == Heat::Pursuit && !is_dsp {
                 // (the Delay state: brain command 1, halt, until its time is up)
                 ai.chase = Some((c.state.pos, Vec3::ZERO));
-                ai.ovr = Some(crate::ai::Overrides { brake: Some(1.0), throttle: Some(0.0), ..Default::default() });
+                ai.ovr = Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() });
             } else if (searching || is_dsp) && self.srch.iter().any(|s| s.uid == c.uid) {
                 // ---- the search (brain state 7: F-57507, F-15801, the route F-55529) ----
                 let Some(s) = self.srch.iter_mut().find(|s| s.uid == c.uid) else { continue };
@@ -2175,6 +2197,9 @@ impl Police {
                 ai.target_speed = 85.0;
             } else if tactic {
                 // ---- the tactic's state and its brain (docs/reference/hookmen/pursuit_tactics.md) ----
+                if self.heat == Heat::Pursuit && self.kind != TacKind::PullOver {
+                    self.brain_tvel.insert(c.uid, pvel);
+                }
                 let tac = self.tacs.entry(c.uid).or_default();
                 let (cpos, cvel, cfwd, cright) = (c.state.pos, c.state.vel, c.state.forward(), c.state.right());
                 let cspeed = cvel.length();
@@ -2187,13 +2212,13 @@ impl Police {
                 let on_right = cright.dot(to) > 0.0;
                 let same_dir = pvel.dot(cvel) > 0.0;
                 let same_facing = pfwd.dot(cfwd) > 0.0;
-                let bearing = cright.angle_between(to).to_degrees();
+                let bearing = crate::aiv::ang3(cright, to).to_degrees();
                 let closing = |r: f32| (r == 0.0 || d < r) && cspeed > moving_v && cspeed > speed && to.normalize_or_zero().dot(cvel / cspeed.max(1e-6)) > 0.9;
                 // (head-on, +774: in front, coming the other way, seen, travel directions more than fHeadOnAngle apart)
                 let tdir = if t_moving { pvel.normalize_or_zero() } else { pfwd };
                 let cdir = if cspeed > moving_v { cvel / cspeed } else { cfwd };
                 let was_head_on = tac.head_on;
-                tac.head_on = ahead && !same_dir && !same_facing && seen && tdir.angle_between(cdir).to_degrees() > t("fHeadOnAngle", 145.0);
+                tac.head_on = ahead && !same_dir && !same_facing && own_sight && tdir.angle_between(cdir).to_degrees() > t("fHeadOnAngle", 145.0);
                 // (F-14848: beside the target on the side over the road, the right first; else the side the cop is on)
                 let pick_side = || {
                     let (r, l) = (on_road(ppos + pright * along), on_road(ppos - pright * along));
@@ -2278,6 +2303,7 @@ impl Police {
                                 // (on its side - the target on the cop's other hand -, level or ahead, facing the same way)
                                 if tac.st == Tac::AlongSide && same_facing && on_right != tac.side && !ahead {
                                     enter(tac, Tac::Block);
+                                    tac.block_steer = if on_right { 1.0 } else { -1.0 };
                                 }
                             }
                             Tac::Block if !all_block => enter(tac, Tac::CatchUp),
@@ -2452,7 +2478,7 @@ impl Police {
                     (Tac::CatchUp, false) if (!t_moving && d < safe) || (ahead && same_dir && d < 20.0 && cspeed > speed) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
                     (Tac::AlongSide | Tac::Avoid, _) if (!t_moving && d < along + 1.0) || (t_moving && same_dir && !ahead && cspeed > speed && (!ed78 || d > 1.5 * along)) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
                     // Block (F-56982): handbrake, no throttle, full lock towards the target
-                    (Tac::Block, _) => Some(crate::ai::Overrides { handbrake: Some(true), throttle: Some(0.0), steer: Some(if on_right { 1.0 } else { -1.0 }), brake: None }),
+                    (Tac::Block, _) => Some(crate::ai::Overrides { handbrake: Some(true), throttle: Some(0.0), steer: Some(tac.block_steer), brake: None }),
                     // Halt (F-29519): stopped beside the target; steering away while closing in
                     (Tac::Halt, false) => Some(crate::ai::Overrides { brake: (d < safe).then_some(1.0), steer: if closing(safe) { away } else { None }, ..Default::default() }),
                     (Tac::Halt, true) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
@@ -2600,7 +2626,7 @@ impl Police {
         if self.speed_top > 0 {
             f += t(self.speed_top as usize - 1);
         }
-        for (flag, entry) in [(LAW_PROP, 4), (LAW_VEHICLE, 7), (LAW_POLICE_VEHICLE, 5) /* (0x20 + 0x40 - entry 6) */, (LAW_RED_LIGHT, 9), (LAW_BURNOUT, 11), (LAW_WRONG_WAY, 13), (LAW_ROOF_JUMP, 12), (LAW_TWO_WHEEL, 10), (LAW_OFF_ROAD, 3)] {
+        for (flag, entry) in [(LAW_PROP, 4), (LAW_VEHICLE, 7), (LAW_POLICE_VEHICLE, 5) /* (0x20 + 0x40 - entry 6) */, (LAW_RED_LIGHT, 9), (LAW_BURNOUT, 11), (LAW_WRONG_WAY, 13), (LAW_BLOCK_TRAFFIC, 14), (LAW_ROOF_JUMP, 12), (LAW_TWO_WHEEL, 10), (LAW_OFF_ROAD, 3)] {
             if self.offences & flag != 0 {
                 f += t(entry);
             }
@@ -2640,6 +2666,7 @@ impl Police {
         self.two_active = false;
         self.wrong_active = false;
         self.burnout_active = false;
+        self.block_active = false;
         self.sec = [0.0; 7];
         self.bullhorn = None;
         self.ticket_hold = None;
@@ -2717,6 +2744,23 @@ impl Police {
 mod tests {
     use super::*;
 
+    #[test]
+    fn offence_gate_compares_before_adding() {
+        let (mut t, dt) = (0.0f32, 0.5f32);
+        // threshold 1.0: two adds, the bit on the third tick (compare before add)
+        assert!(!offence_gate(true, false, &mut t, 1.0, dt));
+        assert!(!offence_gate(true, false, &mut t, 1.0, dt));
+        assert_eq!(t, 1.0);
+        assert!(offence_gate(true, false, &mut t, 1.0, dt));
+        assert_eq!(t, 1.0);
+        // started: on with the timer untouched, kept when the condition fails; not started: zeroed
+        assert!(offence_gate(true, true, &mut t, 1.0, dt));
+        assert!(!offence_gate(false, true, &mut t, 1.0, dt));
+        assert_eq!(t, 1.0);
+        assert!(!offence_gate(false, false, &mut t, 1.0, dt));
+        assert_eq!(t, 0.0);
+    }
+
     fn cop(arrays: &[(&str, Vec<i32>)]) -> Police {
         let mut p = Police::new();
         for (k, v) in arrays {
@@ -2769,7 +2813,16 @@ mod tests {
 /// (RAND_INT_RANGE(0, 1), upper bound included: F-32828), more -> `_02`, `_03` or `_08` (RAND_INT_RANGE(0, 2)).
 /// `r` stands in for the game's random number. (The payback's goons scenes and the wiped-out biker's
 /// `cut_cop_arrest_bikestand` are not ported.)
-pub fn arrest_scene(cops: usize, r: u32) -> &'static str {
+pub fn arrest_scene(cops: usize, r: u32, bike_down: bool, goons: bool) -> &'static str {
+    // (CopArrest.sco 0xad3: PoliceManager_PlayWipedOutBikerScene F-60341 - the manager's +64, set by F-22530 when the
+    // arrested target is a motorcycle wiped out (+592 bit 0x10) - before the cop count; 0xc33: the payback (race type 5)
+    // RAND_INT_RANGE(0, 1) == 1 -> _01)
+    if bike_down {
+        return "cut_cop_arrest_bikestand";
+    }
+    if goons {
+        return ["payback_goons_walkup_02", "payback_goons_walkup_01"][(r % 2) as usize];
+    }
     if cops <= 1 {
         ["cut_cop_arrest_07", "cut_cop_arrest"][(r % 2) as usize]
     } else {
@@ -2833,6 +2886,47 @@ pub fn arrest_hands_up(scene: &str) -> Option<(f32, f32)> {
     })
 }
 
+/// The arrest scene's gesture on slot 0 (the player's driver): (gesture, start, duration) - the cops' hands up, the
+/// payback goons' walk-ups' `gesture_listen_left` (_01 at 0 for 8.6667 s, _02 at 0.3333 for 9 s).
+pub fn arrest_gesture(scene: &str) -> Option<(crate::drivers::Gesture, f32, f32)> {
+    use crate::drivers::Gesture;
+    match scene.rsplit('/').next().unwrap_or(scene).to_ascii_lowercase().as_str() {
+        "payback_goons_walkup_01" => Some((Gesture::ListenLeft, 0.0, 8.6667)),
+        "payback_goons_walkup_02" => Some((Gesture::ListenLeft, 0.3333, 9.0)),
+        _ => arrest_hands_up(scene).map(|(t, d)| (Gesture::CopHandsUp, t, d)),
+    }
+}
+
+/// CopArrest.sco after the ARRESTED form (0x1178): Racer_InitializeResetPosition(player, (-604.5, 7, -340.5), 5 deg) and
+/// ResetWithDamageIntact (F-39106: the place probed from 1 m above to 3 m below, F-15222) - the police station, upright,
+/// standing, the damage kept; PoliceManager_CutSceneDone (F-30655) then sets a damaged-out target's damage to 0.95 of its
+/// MaxDamage. `n` = frames waited so far for the station's ground; Some(n + 1) while it has not streamed in (120 at most).
+pub fn station_reset(vehicles: &mut Vehicles, world: &World, n: u32) -> Option<u32> {
+    let c = vehicles.player_mut()?;
+    let at = Vec3::new(-604.5, 7.0, -340.5);
+    let h = 5f32.to_radians();
+    let f = Vec3::new(h.sin(), 0.0, h.cos());
+    let q = glam::Quat::from_rotation_y((-f.x).atan2(-f.z));
+    let g = world.collider.ground(at, 1.0, 3.0);
+    let pos = g.map_or(at, |h| Vec3::new(at.x, h.point.y, at.z));
+    if let Some(vt) = c.params().veh.clone() {
+        crate::physics::vehsim::set_pose(&mut c.state, &vt, &world.collider, [q * Vec3::X, q * Vec3::Y, q * Vec3::Z, pos], Vec3::ZERO, Vec3::ZERO);
+    } else {
+        c.state.pos = pos;
+        c.state.rot = q;
+        c.state.vel = Vec3::ZERO;
+        c.state.ang_vel = Vec3::ZERO;
+    }
+    c.pose_history.reset();
+    if n == 0 {
+        log::info!("police: after the form - the car at the police station {:?} (damage {:.3})", pos, c.state.damage);
+        if c.state.damage >= 0.999 {
+            c.state.damage = 0.95;
+        }
+    }
+    (g.is_none() && n < 120).then_some(n + 1)
+}
+
 /// The police scenes' place (CopPullover.sco 0x54c, CopArrest.sco 0xa1f): the player's car put upright where it
 /// stands with its heading (Racer_InitializeResetPosition, F-40200, and ResetWithDamageIntact, F-67152), and the
 /// scene's frame - that heading alone, snapped to the ground from 5 m above to 5 m below and leaned with it when it
@@ -2866,6 +2960,181 @@ pub fn scene_frame(vehicles: &mut Vehicles, world: &World, zones: &[(Vec3, f32)]
         None => (pos, glam::Quat::IDENTITY),
     };
     Some(glam::Mat4::from_rotation_translation(lean * q, place))
+}
+
+/// The offence gate of F-88545 (burn-out, wrong way, block traffic): `cond` this tick, `started` = the offence's started
+/// bit (kept to the record's clear). Started: the bit on every tick the condition holds, the timer untouched (it is the
+/// per-second carry); not started: the bit once the timer has reached `thr` (compared BEFORE the add), else the timer
+/// grows by `dt`. Without the condition the timer is zeroed unless started.
+fn offence_gate(cond: bool, started: bool, timer: &mut f32, thr: f32, dt: f32) -> bool {
+    if cond {
+        if started || *timer >= thr {
+            return true;
+        }
+        *timer += dt;
+    } else if !started {
+        *timer = 0.0;
+    }
+    false
+}
+
+/// Block traffic (F-60011): over an ai_road polygon and not over an ai_shortcut / ai_sidewalk / ai_grass one (F-66554,
+/// F-75972, F-86151); no road node within 3 m (a junction box): slow (under 2.235 m/s) is blocking; else under
+/// iBlockTrafficSpeedPrcnt % of the road's limit (the limit 0: fSpeedLimitLow x 0.447), not on the arm that has green or
+/// yellow now of the junction ahead (F-65298, F-75755, F-93041: within half its reach + 10 m, the arm at 150 degrees or
+/// more from the direction to the junction centre), and an 8 m level probe forward from half the box length ahead and
+/// half its height up hits nothing.
+fn block_traffic_cond(world: &World, vehicles: &Vehicles, p: &crate::vehicles::CarInstance, peds: &[Vec3], tun: &Tuning) -> bool {
+    let (Some(nav), Some(mesh)) = (world.nav.as_ref(), crate::offroad::mesh()) else { return false };
+    let pos = p.state.pos;
+    let fwd = p.state.forward();
+    let vel = p.state.vel;
+    let v = vel.length();
+    if !mesh.on_road(pos) || mesh.on_flag(pos, 8) || mesh.on_flag(pos, 1) || mesh.on_flag(pos, 4) {
+        return false;
+    }
+    let flat = Vec3::new(pos.x, 0.0, pos.z);
+    let Some(NavNode::Road(road)) = nav.node_within(flat, 3.0, false) else { return v < 2.235 };
+    if vehicles.driver_lanes.get(&p.uid).map_or(true, |d| d.best.is_none()) {
+        return false;
+    }
+    let limit = nav.zones.get(road).map(|z| z.speed_limit).filter(|l| l.is_finite() && *l > 0.0).unwrap_or(tun.get("fSpeedLimitLow", 50.0) * 0.447);
+    if v >= tun.get("iBlockTrafficSpeedPrcnt", 10.0) * 0.01 * limit {
+        return false;
+    }
+    // (F-65298: the road's junction ends, A first; the first one ahead along the facing, or the velocity from 2.235 m/s)
+    let dir = if v < 2.235 { fwd } else { vel };
+    let ahead = nav
+        .next_of(NavNode::Road(road))
+        .iter()
+        .filter_map(|n| if let NavNode::Junction(j) = n { Some(*j) } else { None })
+        .take(2)
+        .find(|&j| nav.junction_rects.get(j).map_or(false, |r| (r.c[0] - pos.x) * dir.x + (r.c[1] - pos.z) * dir.z > 0.0));
+    // (the navsys junction list has 351 entries, the signals' only those with arms: matched by the centre)
+    let sig = ahead.and_then(|j| nav.junction_centers.get(j)).and_then(|c| vehicles.signals.junctions.iter().find(|s| (s.center - *c).length_squared() < 0.01));
+    if let Some(j) = sig.filter(|j| !j.arms.is_empty()) {
+        let d = pos - j.center;
+        let d2 = d.x * d.x + j.center.y * j.center.y + d.z * d.z;
+        let reach = 0.5 * j.reach + 10.0;
+        if d2 < reach * reach {
+            let (cur, timer) = match j.forced {
+                -2 => (None, 0.0),
+                f if f >= 0 => (Some(f as usize), 0.0),
+                _ => (Some(j.current as usize), j.timer),
+            };
+            // (green below 6.5, yellow to 8.5, red all round after)
+            let arm = cur.filter(|_| timer < 8.5).and_then(|c| j.arms.get(c));
+            let Some(arm) = arm else { return false };
+            let to = Vec3::new(j.center.x - pos.x, j.center.y, j.center.z - pos.z);
+            if arm.dot(to.normalize_or_zero()).clamp(-1.0, 1.0).acos() < 2.61799 {
+                return false;
+            }
+        }
+    }
+    let ext = p.model.max - p.model.min;
+    let s = pos + fwd * (0.5 * ext.z) + p.state.up() * (0.5 * ext.y);
+    !level_probe_front(world, vehicles, peds, p.uid, s, fwd, 8.0)
+}
+
+/// F-20855 as the seen test and block traffic call it: a one-sided line probe from `o` along `d` for `len`, any hit
+/// counts - the city bound, the other cars' hulls, the props (the level's own and the moved / broken ones) and the
+/// walkers' capsules (radius 0.3, 0.3 to 1.5 m above the feet).
+fn level_probe_front(world: &World, vehicles: &Vehicles, peds: &[Vec3], skip_uid: u32, o: Vec3, d: Vec3, len: f32) -> bool {
+    world.collider.probe_front(o, d, len).is_some()
+        || vehicles.cars.iter().filter(|c| c.uid != skip_uid).any(|c| hull_probe_front(c, o, d, len))
+        || props_probe(world.collider.loose.as_deref(), &vehicles.level, o, d, len)
+        || peds.iter().any(|&q| seg_capsule(o, d, len, q + Vec3::Y * 0.3, q + Vec3::Y * 1.5, 0.3))
+}
+
+/// The segment o -> o + d x len against a capsule (axis a -> b, radius r), entering from outside.
+fn seg_capsule(o: Vec3, d: Vec3, len: f32, a: Vec3, b: Vec3, r: f32) -> bool {
+    let (p1, q1, p2, q2) = (o, o + d * len, a, b);
+    let (d1, d2, rr) = (q1 - p1, q2 - p2, p1 - p2);
+    let (aa, ee, f) = (d1.dot(d1), d2.dot(d2), d2.dot(rr));
+    let c = d1.dot(rr);
+    let bb = d1.dot(d2);
+    let den = aa * ee - bb * bb;
+    let mut sn = if den > 1e-9 { ((bb * f - c * ee) / den).clamp(0.0, 1.0) } else { 0.0 };
+    let mut tn = if ee > 1e-9 { (bb * sn + f) / ee } else { 0.0 };
+    if tn < 0.0 {
+        tn = 0.0;
+        sn = if aa > 1e-9 { (-c / aa).clamp(0.0, 1.0) } else { 0.0 };
+    } else if tn > 1.0 {
+        tn = 1.0;
+        sn = if aa > 1e-9 { ((bb - c) / aa).clamp(0.0, 1.0) } else { 0.0 };
+    }
+    let close = (p1 + d1 * sn) - (p2 + d2 * tn);
+    // (the start inside the solid is no hit: the line enters from outside)
+    let start = {
+        let t = if ee > 1e-9 { (rr.dot(d2) / ee).clamp(0.0, 1.0) } else { 0.0 };
+        (rr - d2 * t).length_squared()
+    };
+    start > r * r && close.length_squared() <= r * r
+}
+
+/// One part of a prop against the probe, in the part's frame `f` (rigid): its bounding sphere first, then the primitive
+/// by kind (0 sphere, 1 capsule along local Y, 3 box, 4 polyhedron); a hit must enter from outside.
+fn seg_bound(b: &mcla_formats::rage::fragphys::FragBound, f: &[Vec3; 4], o: Vec3, d: Vec3, len: f32) -> bool {
+    use crate::physics::loose::{inv, v};
+    let (lo, ld) = (inv(f, o - f[3]), inv(f, d));
+    let c = v(b.centroid);
+    // (the bounding sphere)
+    let t = (c - lo).dot(ld).clamp(0.0, len);
+    if (lo + ld * t - c).length_squared() > b.radius * b.radius {
+        return false;
+    }
+    match b.kind {
+        0 => seg_capsule(lo, ld, len, c, c, b.round),
+        1 => {
+            let h = Vec3::Y * (0.5 * b.length);
+            seg_capsule(lo, ld, len, c - h, c + h, b.round)
+        }
+        3 | 4 if !b.tris.is_empty() => b.tris.iter().any(|t| {
+            let tri = [v(b.verts[t[0] as usize]), v(b.verts[t[1] as usize]), v(b.verts[t[2] as usize])];
+            crate::physics::collision::ray_tri_front(lo, ld, &tri, len).is_some()
+        }),
+        3 => {
+            // (a box without faces: the slab test, entering from outside)
+            let (mn, mx) = (v(b.min), v(b.max));
+            if lo.cmpge(mn).all() && lo.cmple(mx).all() {
+                return false;
+            }
+            let (mut t0, mut t1) = (0.0f32, len);
+            for k in 0..3 {
+                if ld[k].abs() < 1e-9 {
+                    if lo[k] < mn[k] || lo[k] > mx[k] {
+                        return false;
+                    }
+                } else {
+                    let (a, bb) = ((mn[k] - lo[k]) / ld[k], (mx[k] - lo[k]) / ld[k]);
+                    t0 = t0.max(a.min(bb));
+                    t1 = t1.min(a.max(bb));
+                }
+            }
+            t0 <= t1 && t0 < len
+        }
+        _ => false,
+    }
+}
+
+/// The props of the level on the probe (F-20855, states 7: every placed prop whatever its state): the instances of the
+/// file (at their moved place and with their remaining groups when the level holds them), and the pieces and broken-off
+/// groups only the level holds.
+fn props_probe(lw: Option<&crate::physics::loose::LooseWorld>, lv: &crate::physics::loose::LooseState, o: Vec3, d: Vec3, len: f32) -> bool {
+    use crate::physics::loose::{m4, part_present};
+    let Some(lw) = lw else { return false };
+    let moved: std::collections::HashMap<u32, &crate::physics::loose::Obj> = lv.objs.iter().filter(|x| x.veh.is_none() && x.amb.is_none()).filter_map(|x| Some((x.inst?, x))).collect();
+    let test = |ty: usize, m: &[Vec3; 4], absent: u64| {
+        let t = &lw.types[ty];
+        t.parts.iter().enumerate().filter(|(c, _)| part_present(t, absent, *c)).any(|(_, p)| match p.bound.as_ref() {
+            Some(b) => seg_bound(b, &crate::physics::gjk::world_matrix(&m4(&p.matrix), m), o, d, len),
+            None => false,
+        })
+    };
+    lw.near(o + d * (0.5 * len), 0.5 * len + 10.0).into_iter().any(|i| match moved.get(&i) {
+        Some(x) => test(x.ty, &x.matrix, x.entry.map_or(0, |e| e.absent)),
+        None => test(lw.instances[i as usize].1, &m4(&lw.instances[i as usize].0.matrix), 0),
+    }) || lv.objs.iter().filter(|x| x.inst.is_none() && x.veh.is_none() && x.amb.is_none()).any(|x| test(x.ty, &x.matrix, x.entry.map_or(0, |e| e.absent)))
 }
 
 /// A one-sided segment o -> o + d x len against a car's hull triangles (its bound's faces seen from outside).
@@ -3045,8 +3314,13 @@ mod scene_tests {
     #[test]
     fn the_arrest_scene_goes_by_the_cops_of_the_chase() {
         // (CopArrest.sco: RAND_INT_RANGE's upper bound is included - two scenes for one cop, three for more)
-        assert_eq!([0, 1].map(|r| arrest_scene(1, r)), ["cut_cop_arrest_07", "cut_cop_arrest"]);
-        assert_eq!([0, 1, 2].map(|r| arrest_scene(3, r)), ["cut_cop_arrest_02", "cut_cop_arrest_03", "cut_cop_arrest_08"]);
+        assert_eq!([0, 1].map(|r| arrest_scene(1, r, false, false)), ["cut_cop_arrest_07", "cut_cop_arrest"]);
+        assert_eq!([0, 1, 2].map(|r| arrest_scene(3, r, false, false)), ["cut_cop_arrest_02", "cut_cop_arrest_03", "cut_cop_arrest_08"]);
+        // (the wiped-out biker's scene before the count and the payback; the payback's walk-ups 1 / 2 each)
+        assert_eq!(arrest_scene(3, 0, true, true), "cut_cop_arrest_bikestand");
+        assert_eq!([0, 1].map(|r| arrest_scene(1, r, false, true)), ["payback_goons_walkup_02", "payback_goons_walkup_01"]);
+        assert_eq!(arrest_gesture("payback_goons_walkup_02"), Some((crate::drivers::Gesture::ListenLeft, 0.3333, 9.0)));
+        assert_eq!(arrest_gesture("cut_cop_arrest_07"), Some((crate::drivers::Gesture::CopHandsUp, 3.5, 1.5)));
         assert_eq!(arrest_hands_up("cut_cop_arrest"), None);
         assert_eq!(arrest_hands_up("cutscene/CUT_COP_ARREST_07"), Some((3.5, 1.5)));
     }

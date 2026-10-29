@@ -41,6 +41,27 @@ struct Actor {
     root_add: Option<(Quat, Vec3)>,
     /// and the old pose it blends out of over 0.25 s from that scene time
     fade: Option<(Vec<(Quat, Vec3)>, f32)>,
+    /// a face's start (F-19950): the pose it blends in from over 0.25 s at scene time 0 - the body's frame 0 with the
+    /// face bones at rest
+    face_in: Option<Vec<(Quat, Vec3)>>,
+}
+
+/// The crmtNodeBlend step from `old` into `local` at weight `w` (clamped): rotations nlerp with the sign fix,
+/// translations kept below 0.001 and copied from 0.999 (F-56920).
+fn blend_in(local: &mut [(Quat, Vec3)], old: &[(Quat, Vec3)], w: f32) {
+    let w = w.clamp(0.0, 1.0);
+    if w >= 1.0 {
+        return;
+    }
+    for (l, o) in local.iter_mut().zip(old.iter()) {
+        let qo = if o.0.dot(l.0) < 0.0 { -o.0 } else { o.0 };
+        l.0 = (qo * (1.0 - w) + l.0 * w).normalize();
+        if w <= 0.001 {
+            l.1 = o.1;
+        } else if w < 0.999 {
+            l.1 = o.1 + (l.1 - o.1) * w;
+        }
+    }
 }
 
 impl Actor {
@@ -54,18 +75,7 @@ impl Actor {
         // (the crmtNodeBlend of ReAnimate, rate 4, F-51260: w += 4 dt clamped, linear; per DOF F-56920:
         // rotations nlerp with the sign fix, translations kept below w 0.001 and copied from 0.999)
         if let Some((old, t1)) = self.fade.as_ref() {
-            let w = (4.0 * (t - t1)).clamp(0.0, 1.0);
-            if w < 1.0 {
-                for (l, o) in local.iter_mut().zip(old.iter()) {
-                    let qo = if o.0.dot(l.0) < 0.0 { -o.0 } else { o.0 };
-                    l.0 = (qo * (1.0 - w) + l.0 * w).normalize();
-                    if w <= 0.001 {
-                        l.1 = o.1;
-                    } else if w < 0.999 {
-                        l.1 = o.1 + (l.1 - o.1) * w;
-                    }
-                }
-            }
+            blend_in(local, old, 4.0 * (t - t1));
         }
     }
 }
@@ -523,7 +533,7 @@ impl Cine {
                     let set = cutscene_set(&set);
                     let Some(model) = self.model(gpu, &set) else { continue };
                     let clip = Clip::bind(&anim, &model.ids, false, false);
-                    sc.actors.push(Actor { label: label.to_string(), model, clip, t0: 0.0, face: None, shapes: None, root_add: None, fade: None });
+                    sc.actors.push(Actor { label: label.to_string(), model, clip, t0: 0.0, face: None, shapes: None, root_add: None, fade: None, face_in: None });
                 }
             }
         }
@@ -605,7 +615,7 @@ impl Cine {
             };
             let Some(model) = self.model(gpu, set) else { continue };
             let clip = Clip::bind(&Arc::new(anim), &model.ids, false, false);
-            self.ambient.push(Actor { label, model, clip, t0: 0.0, face: None, shapes: None, root_add: None, fade: None });
+            self.ambient.push(Actor { label, model, clip, t0: 0.0, face: None, shapes: None, root_add: None, fade: None, face_in: None });
         }
         log::info!("cine: {} people at {} ({:.0} ms)", self.ambient.len(), name, t0.elapsed().as_secs_f32() * 1000.0);
     }
@@ -836,17 +846,37 @@ impl Cine {
                         log::info!("blend shapes {} t {:.2}: {} targets on, largest delta {:.4} m", a.label, sc.t, n, d);
                     }
                 }
+                // (F-19950: the face pair - the face clip on the Facial_root subtree, the body on the rest -
+                // whatever the body clip has for those bones)
                 for i in 0..local.len() {
-                    if a.clip.rot[i].is_none() {
+                    let fb = a.model.face_bones.get(i).copied().unwrap_or(false);
+                    if fb || a.clip.rot[i].is_none() {
                         if let Some(t) = face.rot[i] {
                             local[i].0 = face.anim.tracks[t].data.rot(ff);
                         }
                     }
-                    if a.clip.pos[i].is_none() {
+                    if fb || a.clip.pos[i].is_none() {
                         if let Some(t) = face.pos[i] {
                             local[i].1 = face.anim.tracks[t].data.vec(ff);
                         }
                     }
+                }
+            }
+            // (F-19950: a character with a face blends into the face pair over 0.25 s from scene time 0, from the body's
+            // frame 0 with the face bones at rest; the body alone starts without a blend, F-12285)
+            if a.face.is_some() {
+                if a.face_in.is_none() {
+                    let mut old = Vec::new();
+                    a.clip.local(&a.model.bones, 0.0, &mut old);
+                    for (i, b) in a.model.bones.iter().enumerate() {
+                        if a.model.face_bones.get(i).copied().unwrap_or(false) {
+                            old[i] = (b.rot, b.pos);
+                        }
+                    }
+                    a.face_in = Some(old);
+                }
+                if let Some(old) = a.face_in.as_ref() {
+                    blend_in(&mut local, old, 4.0 * sc.t);
                 }
             }
             let (mt, mr) = a.clip.mover(f);

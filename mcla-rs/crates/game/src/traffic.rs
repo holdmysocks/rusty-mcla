@@ -929,6 +929,8 @@ fn next_rail_seq() -> u64 {
 pub struct DriverLanes {
     list: Vec<(usize, f32)>,
     pub best: Option<(usize, f32)>,
+    /// the best lane's phase t (the report's +648)
+    pub best_t: f32,
 }
 
 /// A lane's first two control points (sub_8273A178 reads P0 - P1); the link's ends without them.
@@ -5423,6 +5425,7 @@ impl Vehicles {
             if std::env::var_os("MCLA_DRIVER_LANE_LOG").is_some() && best.map(|b| b.0) != dl.best.map(|b| b.0) {
                 log::info!("driver car {uid}: lane {:?} ({} listed, {} near, w {w:.2})", best.map(|b| (b.0, b.1.sqrt())), dl.list.len(), found.len());
             }
+            dl.best_t = best.and_then(|b| dl.list.iter().find(|e| e.0 == b.0)).map_or(0.0, |e| e.1);
             dl.best = best;
             self.driver_lanes.insert(uid, dl);
         }

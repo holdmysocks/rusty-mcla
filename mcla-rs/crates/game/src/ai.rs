@@ -43,6 +43,31 @@ pub struct Overrides {
     pub steer: Option<f32>,
 }
 
+impl Overrides {
+    /// The merge over the driver's input (F-88118): a throttle override is taken first and, above 0, zeroes the brake;
+    /// only without one a brake override applies and, above 0, zeroes the throttle; the handbrake can only be switched
+    /// on; the steer replaces the driver's.
+    pub fn apply(&self, inp: &mut CarInput) {
+        if let Some(t) = self.throttle.filter(|t| *t >= 0.0) {
+            inp.throttle = t;
+            if t > 0.0 {
+                inp.brake = 0.0;
+            }
+        } else if let Some(b) = self.brake.filter(|b| *b >= 0.0) {
+            inp.brake = b;
+            if b > 0.0 {
+                inp.throttle = 0.0;
+            }
+        }
+        if self.handbrake == Some(true) {
+            inp.handbrake = true;
+        }
+        if let Some(s) = self.steer {
+            inp.steer = s;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AiDriver {
     pub link: Option<usize>,
@@ -79,6 +104,8 @@ pub struct AiDriver {
     /// the police brain's control overrides for this update (the brain's +744 throttle, +748 brake, +752 handbrake,
     /// +756 steer, put over the driver's input and cleared each update - F-88118)
     pub ovr: Option<Overrides>,
+    /// the last police frame's overrides, kept for the second chassis tick of the frame (the police run at 1/30 s)
+    pub ovr_held: Option<Overrides>,
     /// the car as its driver knows it: the game's calibration (speed for a bend, braking, steering)
     pub tune: Option<std::sync::Arc<mcla_formats::rage::aitune::AiTune>>,
     /// the pre-race antics on the grid (`grid_input`)
@@ -445,10 +472,10 @@ impl AiDriver {
     pub fn drive(&mut self, nav: &NavSys, car: &CarState, dt: f32) -> CarInput {
         let mut inp = self.drive_own(nav, car, dt);
         if let Some(o) = self.ovr.take() {
-            inp.throttle = o.throttle.unwrap_or(inp.throttle);
-            inp.brake = o.brake.unwrap_or(inp.brake);
-            inp.handbrake = o.handbrake.unwrap_or(inp.handbrake);
-            inp.steer = o.steer.unwrap_or(inp.steer);
+            self.ovr_held = Some(o);
+            o.apply(&mut inp);
+        } else if let Some(o) = self.ovr_held.take() {
+            o.apply(&mut inp);
         }
         inp
     }
