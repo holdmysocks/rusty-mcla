@@ -5452,7 +5452,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // race, hangout, garage, hookman and story scripts, the UI charts' throwEvent) except mc.cutsceneDone: F-17084
             // throws it by index at every scene's end (the cine manager's finish callback, F-65984 -> +232, set by F-91527);
             // only an online dialog listens. Nothing throws mc.cutscene)
-            let cruising = self.game.cruising_offline() && self.pending_log.is_none();
+            let cruising = self.game.cruising_offline() && self.pending_log.is_none() && !self.out_of_cruise_warp();
             if cruising != self.phone_cruise {
                 self.phone_cruise = cruising;
                 self.phone_hold = true;
@@ -11729,13 +11729,30 @@ impl App {
     /// cinematic warp's F-18267, the climb's F-98643 - both F-70736), by the warper's loading states 12 / 17
     /// once Career_Loading goes (F-31347), or by UILogic_UnPauseCamera (F-20502: CarSelection 0x917, the career's load
     /// 0x6fc, FIND_SH_02C's core 0xfe7 after its scene's fade). Nothing counts it down (+0x51384 is always -1).
-    /// Port: the held camera after the climb (`climb_end`, `climb_wait`) and the cinematic entries' warps (garage,
-    /// hangout, payback, the garage's way out, the race-start warp, the start-up flight) - those happen out of
-    /// Cruising_Offline too (the scripts' mc.garage / mc.*Hangout / mc.*Race), *(approx.)* the flights themselves are
-    /// hold-free in the original; the climb's flight stays here as the map's exit (its UI state is not read).
+    /// A STORY_LOCATION_CUT_SIMPLE (Warper_TransitionTo, F-68460 -> F-86808 -> Warp() F-32081, type 17: +7 = 1)
+    /// flies at once (F-98643, or F-47096 when the camera is within 100 m - both clear the hold), holds at the
+    /// flight's end (F-99030 -> F-99229, the same moment IsReadyToLoadStuff turns true) and lets go when the scene is
+    /// up: state 17 once the scene's time is >= 0 (F-31347: F-62707, then F-98849 / F-48345 -> F-70736), state 15
+    /// (the far case) at its cinematic flight (state 26, F-18267). So FIND_SH_02C's UnPauseCamera after its fade finds
+    /// the hold clear (Warper_SetPauseAtEndOfCut, F-97499 -> F-30425, sets the request's +8, which nothing reads).
+    /// Port: the camera held after the climb until the race warp's flight (`climb_end`, `climb_wait`). The warps'
+    /// flights are hold-free; the ones out of Cruising_Offline are `out_of_cruise_warp`.
     fn camera_held(&self) -> bool {
+        self.climb_end.is_some() || self.climb_wait.is_some()
+    }
+
+    /// The warps whose script has left Cruising_Offline before it warps: the race scripts throw their race event
+    /// before Warper_Warp (race/0xc4e26a20 0x21e8, PaybackCore 0x642 / 0x6b9), the climb comes after mc.seriesRace /
+    /// mc.tournamentRace (race/0xb8b948b6 0x2d82 / 0x34f7, race/0x039dd301 0xf75 / 0x2139), garage_core throws
+    /// mc.garage (0x43e) before its warp (0x4ad), the payback place mc.paybackHangout (0x72a) before its (0xd3f),
+    /// and the career loader throws mc.cruising only after the start-up flight (0x62e9486d: USER_WAIT_NO_CUT_DOWN
+    /// 0x674, mc.cruising 0x6ce, UnPauseCamera 0x6fc). The port's mode and race state do not show these yet. The
+    /// local and wager hangouts' entries warp inside Cruising_Offline (0xe166126d: TransitionTo 0x926,
+    /// mc.localHangout 0x99f once IsReadyToLoadStuff; 0x16e89a34 0xdc7 / 0xe40): a call can come up during their
+    /// ease and flight. The garage's way out runs in the garage's menu mode (mc.cruising at 0x1b99).
+    fn out_of_cruise_warp(&self) -> bool {
         self.game.start_warp_on || self.warp.is_some() || self.climb.is_some() || self.climb_end.is_some() || self.climb_wait.is_some()
-            || self.garage_in.is_some() || self.garage_out.is_some() || self.hangout_entry.is_some() || self.payback_in.is_some()
+            || self.garage_in.is_some() || self.payback_in.is_some()
     }
 
     fn pause_allowed(&self) -> bool {
