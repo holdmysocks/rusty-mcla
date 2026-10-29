@@ -124,6 +124,12 @@ pub struct WheelModel {
     /// where the rim's spokes stand along the axle (the mean x of zone 1, in the unit
     /// wheel's own measure: -0.25 is the outer face)
     pub spoke_x: f32,
+    /// `batches[rim_from..]` are the rim's (before them the tyre's)
+    pub rim_from: usize,
+    /// the wheel's back drawn in the rim's place when the camera is on the car's side of the wheel:
+    /// `whl_backside` of vehicle/shared_utility (F-31291 loads it), the barrel's inside (RimMain, zone 2)
+    /// and a black disc at -0.1723 (BlackMatte), scaled as the rim
+    pub backside: Vec<GpuBatch>,
 }
 
 /// How far a brake is moved in along the axle to stand behind the spokes of a rim
@@ -756,6 +762,10 @@ pub struct Vehicles {
     pub lod_pick: Vec<i8>,
     /// whether the glow pass draws a car's lamp glows this frame (`pick_lods`, by the cars' index)
     pub lod_glow: Vec<bool>,
+    /// the camera's eye this frame (`set_wheel_eye`)
+    wheel_eye: Vec3,
+    /// by the cars' index, bit i: wheel i is drawn from behind - its back in the rim's place (F-57869)
+    wheel_back: Vec<u8>,
     pub models: Vec<Arc<CarModel>>,
     /// this frame's uniforms, written in one upload (`upload_uniforms`)
     uniforms: crate::render::UniformBatch,
@@ -1678,6 +1688,11 @@ impl Vehicles {
 
     pub fn new() -> Vehicles {
         Vehicles { traffic_target: 0, rng: 12345, ..Default::default() }
+    }
+
+    /// The camera's eye this frame, for the wheels' side test (`upload_uniforms`).
+    pub fn set_wheel_eye(&mut self, eye: Vec3) {
+        self.wheel_eye = eye;
     }
 
     /// The lamp table a car is drawn and lit with (render/car_lamps.rs): the player's record's,
@@ -4294,7 +4309,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
         self.damage_maps(gpu);
         let player_lamps = self.player_lamps.clone();
         let mut batch = std::mem::take(&mut self.uniforms);
-        for c in self.cars.iter_mut() {
+        let mut wheel_back = std::mem::take(&mut self.wheel_back);
+        wheel_back.clear();
+        wheel_back.resize(self.cars.len(), 0);
+        let eye = self.wheel_eye;
+        for (ci, c) in self.cars.iter_mut().enumerate() {
             let pose = c.render_pose(self.render_alpha);
             let mut m = Mat4::from_rotation_translation(pose.rot, pose.pos);
             if self.hide_player && c.is_player {
@@ -4471,6 +4490,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (the original draws each axle's own tyre: as wide as fitted, 6.35 mm larger than its physics radius)
                 let (tyre_w, tyre_r) = c.params().veh.as_ref().filter(|v| v.tyre_width[0] > 0.0 && !c.model.bike).map(|v| if i < 2 { (v.tyre_width[0], v.t.wheel_front.radius + 0.00635) } else { (v.tyre_width[1], v.t.wheel_back.radius + 0.00635) }).unwrap_or((c.model.params.wheel_width, c.model.params.wheel_radius));
                 let wm = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * flip * spin) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
+                // (F-57869: the rim is drawn only while the camera is outside the wheel - the way from the eye to the
+                // hub against the wheel's x axis, which points in on every wheel, over 0; at 0 or below the
+                // wheel's back takes its place. Not on a bike. The threshold is 0.04 when the gate byte
+                // (car+80)+41 is off; it is on for the player's car in free roam, the only one compared - 0 here for all)
+                if !c.model.bike {
+                    let to_hub = (wm.w_axis.truncate() - eye).normalize_or_zero();
+                    if to_hub.dot(wm.x_axis.truncate().normalize_or_zero()) <= 0.0 && i < 8 {
+                        wheel_back[ci] |= 1 << i;
+                    }
+                }
                 // (a wheel has no dents: the first three slots carry its rim's finish)
                 let mut finish = [[0.0; 4]; 6];
                 if c.is_player {
@@ -4493,6 +4522,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
         gpu.flush_uniforms(&mut batch);
         self.uniforms = batch;
+        self.wheel_back = wheel_back;
     }
 
     /// The glow of every lit lamp near the camera, as the game's glow table rates them
@@ -4931,7 +4961,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                             continue;
                         }
                         pass.set_bind_group(3, &wb.bg, &[]);
-                        for b in &w.batches {
+                        // (seen from behind, the wheel's back in the rim's place - F-57869)
+                        let back = !w.backside.is_empty() && self.wheel_back.get(ci).is_some_and(|m| wi < 8 && m & (1 << wi) != 0);
+                        let rim_from = if back { w.rim_from.min(w.batches.len()) } else { w.batches.len() };
+                        for b in w.batches[..rim_from].iter().chain(if back { &w.backside[..] } else { &w.batches[rim_from..] }) {
                             pass.set_bind_group(1, b.bind.as_ref(), &[]);
                             pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                             pass.set_vertex_buffer(0, b.vb.slice(..));
@@ -5485,6 +5518,7 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
         return None;
     }
     let mut batches = Vec::new();
+    let mut rim_from = usize::MAX;
     // (where the rim's spokes stand: the mean x of its zone 1)
     let spoke_x = sources.last().filter(|_| sources.len() > 1).and_then(|m| m.meshes.iter().max_by_key(|(mesh, _)| mesh.indices.len())).map_or(-0.2, |(mesh, _)| {
         let (sum, n) = mesh.positions.iter().zip(mesh.uv1.iter()).filter(|(_, u)| u.x.round() == 1.0).fold((0.0f32, 0u32), |a, (p, _)| (a.0 + p.x, a.1 + 1));
@@ -5498,6 +5532,9 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
         // tyre's bead (modelled at radius 0.406, a 21 inch rim on most cars) is pulled in
         // to meet it, which makes the side wall as tall as the rim leaves room for.
         let is_rim = src_i + 1 == sources.len() && sources.len() > 1;
+        if is_rim {
+            rim_from = batches.len();
+        }
         let xf = if is_rim { Mat4::from_scale(Vec3::new(1.0, rim_ratio, rim_ratio)) } else { Mat4::IDENTITY };
         let bead = rim_ratio * 0.5;
         for (mesh, si) in &model.meshes {
@@ -5611,7 +5648,74 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
             batches.push(b);
         }
     }
-    Some(WheelModel { batches, spoke_x })
+    // (the wheel's back, with the rim's scale; only for a wheel that has a rim)
+    let backside = if rim_from < batches.len() { wheel_backside(gpu, &root, Mat4::from_scale(Vec3::new(1.0, rim_ratio, rim_ratio))) } else { Vec::new() };
+    let rim_from = rim_from.min(batches.len());
+    Some(WheelModel { batches, spoke_x, rim_from, backside })
+}
+
+/// `whl_backside` of vehicle/shared_utility (F-31291): its entity's two shaders in order (RimMain, BlackMatte)
+/// and its text mesh `whl_backside_geo.mesh`, one material each - the barrel's inside, x -0.1723 .. 0.25 at
+/// radius 0.461 .. 0.5 (zone 2), and the black disc at x -0.1723 (radius 0.4614). As the rim's own vertices: the
+/// second UV set is the zone, the first colour's red the occlusion; v as the compiled resources keep it (1 - v,
+/// the recorded vertex buffer). Empty when the files are missing.
+fn wheel_backside(gpu: &mut Gpu, root: &Path, xf: Mat4) -> Vec<GpuBatch> {
+    let dir = ["shared_utility", "0xd8bee6cc"].iter().map(|top| root.join("vehicle").join(top).join("whl_backside")).find(|d| d.is_dir());
+    let Some(dir) = dir else { return Vec::new() };
+    let mesh = std::fs::read(dir.join("whl_backside_geo.mesh")).or_else(|_| std::fs::read(dir.join(format!("0x{:08x}", mcla_formats::hash::joaat("whl_backside_geo.mesh")))));
+    let (Ok(mesh), Ok(ty)) = (mesh, std::fs::read_to_string(dir.join("entity.type"))) else { return Vec::new() };
+    let shaders: Vec<String> = ty.lines().filter_map(|l| l.trim().strip_prefix("Template ")).map(|s| s.trim().trim_matches('"').to_string()).collect();
+    let text = String::from_utf8_lossy(&mesh);
+    let mut out = Vec::new();
+    let mut rest = &text[..];
+    for sname in &shaders {
+        // (each material: its indices, then its vertices)
+        let Some(at) = rest.find("Idx ") else { break };
+        rest = &rest[at + 4..];
+        let (Some(o), Some(e)) = (rest.find('{'), rest.find('}')) else { break };
+        let idx: Vec<u32> = rest[o + 1..e].split_whitespace().filter_map(|w| w.parse().ok()).collect();
+        let Some(at) = rest.find("Verts ") else { break };
+        rest = &rest[at + 6..];
+        let Some(n) = rest.split_whitespace().next().and_then(|w| w.parse::<usize>().ok()) else { break };
+        let mut m = mcla_formats::rage::geometry::Mesh { indices: idx, ..Default::default() };
+        let f = |s: &str| -> Vec<f32> { s.split_whitespace().filter_map(|w| w.parse().ok()).collect() };
+        for line in rest.lines().skip(1).take(n) {
+            // (position / weights / normal / three colours / UV sets: count, u, v ... / tangent)
+            let p: Vec<&str> = line.split('/').collect();
+            if p.len() < 7 {
+                break;
+            }
+            let (pos, nrm, col, uv) = (f(p[0]), f(p[2]), f(p[3]), f(p[6]));
+            if pos.len() < 3 || nrm.len() < 3 || col.len() < 4 || uv.len() < 5 {
+                break;
+            }
+            m.positions.push(Vec3::new(pos[0], pos[1], pos[2]));
+            m.normals.push(Vec3::new(nrm[0], nrm[1], nrm[2]));
+            m.colors.push([0, 1, 2, 3].map(|k| (col[k].clamp(0.0, 1.0) * 255.0).round() as u8));
+            m.uv0.push(glam::Vec2::new(uv[1], 1.0 - uv[2]));
+            m.uv1.push(glam::Vec2::new(uv[3], 1.0 - uv[4]));
+        }
+        if m.positions.len() != n || m.indices.iter().any(|&i| i as usize >= n) {
+            log::warn!("whl_backside: material {sname} unreadable");
+            return Vec::new();
+        }
+        let rim = sname.eq_ignore_ascii_case("RimMain");
+        let white = gpu.white.clone();
+        let mut b = mesh_to_batch_xf(gpu, &m, sname, if rim { MatMode::Rim } else { car_mode(sname) }, white.clone(), white, 0, 0, xf);
+        if rim {
+            // (as the rim's: the zone in uv1, the occlusion in the colour's alpha; uv2.y: its colours are the rim's x 0.125 -
+            // F-94854 hands the entity the rim's hookups and its colours x 0.125, city.wgsl's PS_Multi branch)
+            let verts: Vec<Vertex> = (0..n)
+                .map(|i| {
+                    let nr = xf.transform_vector3(m.normals[i]).normalize_or(Vec3::Y);
+                    Vertex { pos: xf.transform_point3(m.positions[i]).to_array(), normal: nr.to_array(), uv0: m.uv0[i].to_array(), uv1: m.uv1[i].to_array(), color: [255, 255, 255, m.colors[i][0]], color1: [0, 0, 0, 255], uv2: [0.0, 0.125] }
+                })
+                .collect();
+            b.vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("whl_backside vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+        }
+        out.push(b);
+    }
+    out
 }
 
 #[cfg(test)]

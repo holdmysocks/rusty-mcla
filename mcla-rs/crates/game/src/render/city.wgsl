@@ -2723,6 +2723,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         // colour alpha carries baked occlusion.
         let zone = i32(round(in.uv1.x));
         occ = mix(0.25, 1.0, in.color.a);
+        // (diagnostics 781: the zone - red rotor (8), yellow caliper (9), green tyre (10+), blue barrel (0), white metal)
+        if (g.params.w > 780.5 && g.params.w < 781.5) { return vec4<f32>(to_scene(select(select(select(select(vec3<f32>(0.9), vec3<f32>(0.0, 0.0, 0.9), zone == 0), vec3<f32>(0.0, 0.9, 0.0), zone >= 10), vec3<f32>(0.9, 0.9, 0.0), zone == 9), vec3<f32>(0.9, 0.0, 0.0), zone == 8)), 1.0); }
         if (zone >= 10) {
             // a tyre with its set of textures: black rubber, the lettering's colour from the
             // first map, the side wall's relief from the second (a normal map)
@@ -3550,10 +3552,12 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             //   s = sat(collector - 0.25); occ = the rim's baked occlusion (colour alpha).
             // The recorded R8 (rim finish 1 of the save on all zones: chrome) has hookup 1 with colour
             // 0.9743 on zones 0 - 2, hookup 3 on zone 3, 0 on zone 4; its far-side wheels are a 960-index
-            // model with the colour / 8 (0.1218) and the soft map left bound. Here by the finish the
-            // wheel's object carries: 2 -> hookup 1, 1 -> hookup 0, 3 -> hookup 3. Not ported: the fade along the
-            // axle (sat(1 - 3.7037 (x + 0.22)) of the mesh's own x). MCLA_DEBUG_VIEW=135: the zones as before.
-            let fin18 = obj.dents[clamp(i32(round(in.uv1.x)) - 1, 0, 2)];
+            // model with the colour / 8 (0.1218) and the soft map left bound - the wheel's back, whl_backside (vehicles.rs
+            // `wheel_backside`). Here by the finish the wheel's object carries: 2 -> hookup 1, 1 -> hookup 0, 3 -> hookup 3.
+            // The fade along the axle below. MCLA_DEBUG_VIEW=135: the zones as before; 783: no fade.
+            // (the wheel's back, drawn in the rim's place from behind - vehicles.rs `wheel_backside`, F-57869: the rim's
+            // colours x 0.125 (uv2.y), as F-94854 sets them; its hookups the rim's)
+            let fin18 = obj.dents[clamp(i32(round(in.uv1.x)) - 1, 0, 2)] * vec4<f32>(vec3<f32>(select(1.0, in.uv2.y, in.uv2.y > 0.1 && in.uv2.y < 0.2)), 1.0);
             let occ18 = in.color.a;
             var fc18 = 127.0 / 255.0;
             if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
@@ -3586,6 +3590,12 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 let w18 = clamp(0.07 + 0.555 * pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 4.5) + 0.25 * max(dot(e18, vec3<f32>(0.3, 0.59, 0.11)) - 1.0, 0.0), 0.0, 1.0) * occ18;
                 lit = mix(fin18.rgb * lt18, e18, w18);
             }
+            // (every branch fades along the axle: o1.w = the mesh's own x - useGradient.x (c205.x, 0 on the recorded rims
+            // and backs), out x sat(1 - 3.7037 (x + 0.22)) - PS_Multi 136 - 140; black from x = 0.05 in, where the
+            // wheel's back meets the tyre's inside. The mesh's x from the wheel's matrix: rotation x scale, no shear)
+            let ax18 = obj.model[0].xyz;
+            let x18 = dot(in.wpos - obj.model[3].xyz, ax18) / max(dot(ax18, ax18), 1e-12);
+            if (!(g.params.w > 782.5 && g.params.w < 783.5)) { lit = lit * clamp(1.0 - 3.7037 * (x18 + 0.22), 0.0, 1.0); }
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
             spec_k = 0.0;

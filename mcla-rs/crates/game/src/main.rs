@@ -8680,6 +8680,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
             self.vehicles.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
             self.peds.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
+            // (and for the wheels' side test - F-57869)
+            self.vehicles.set_wheel_eye(eye);
             // (the original's renderer flag of F-31789, set while the game is paused: the plants' model angle x 0.9)
             crate::props::set_paused(self.game.mode == Mode::Paused);
         }
