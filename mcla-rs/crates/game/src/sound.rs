@@ -164,6 +164,9 @@ pub struct Sound {
     /// CarSelection gives one (AddVehicleToPlayer), so it has no engine sound
     pub no_player_car: bool,
     cut_scene: Option<String>,
+    /// CopArrest.sco's mixer scenes (0x1010 / 0x1038, detriggered at 0x14f3 / 0x151b): POLICE_SCRIPT_TRIGGERED (not for
+    /// the payback's goons) and MUTE_SHENANIGANS, from the arrest scene's start to the end of the script
+    pub arrest_mix: (bool, bool),
 }
 
 /// The ambience beds' streams: bed name -> stream file (relative to the audio root).
@@ -706,8 +709,9 @@ impl Sound {
         let name = p.model.name.clone();
         let throttle = if in_menu { 0.0 } else { p.input.throttle };
         let eng_vol = if in_menu { 0.28 } else { 0.62 };
-        // the original's engine sound (engaudio.rs); the port's own cross-fade where the car's audio objects are missing
-        if self.no_player_car {
+        // the original's engine sound (engaudio.rs); the port's own cross-fade where the car's audio objects are missing;
+        // none while the engine is off (a scene's car_off, F-91263 - no ignition crank when it comes back: not ported)
+        if self.no_player_car || p.engine_off {
             if let (Some(lib), Some((_, e))) = (&mut self.lib, &mut self.engine) {
                 e.stop(lib);
             }
@@ -741,7 +745,7 @@ impl Sound {
                 speed_ratio: 0.0,
             };
             eng.update(lib, &inp, dt);
-        } else if !self.no_player_car {
+        } else if !self.no_player_car && !p.engine_off {
             // engine sits a little towards the centre of the mix whatever the camera does
             a.engine(0, &name, st.rpm, throttle, (eng_vol, eng_vol));
         }
@@ -757,6 +761,8 @@ impl Sound {
         if let (Some(lib), Some(fleet)) = (&mut self.lib, &mut self.fleet) {
             // COP_FORM (F-37653): the ticket form with its prepared audio stream (CopPullover); the arrest form has none
             lib.scene("DYNAMIC_MIXER_COP_FORM", game.ticket_for.is_some() && game.arrest_panel.is_some_and(|p| p.0 <= 0.0));
+            lib.scene("DYNAMIC_MIXER_POLICE_SCRIPT_TRIGGERED", self.arrest_mix.0);
+            lib.scene("DYNAMIC_MIXER_MUTE_SHENANIGANS", self.arrest_mix.1);
             let press = p.input.nitro && !self.nitro_btn;
             let ctl = crate::caraudio::PlayerCtl {
                 horn: horn && !in_menu,

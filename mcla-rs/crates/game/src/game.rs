@@ -971,6 +971,11 @@ pub struct Game {
     /// what the race hands the start-scene picker (prerace.rs `PickArgs`; `front_lr` is filled when the
     /// scene starts) and the places of grid slots 0 and 1
     pub prerace_args: Option<(crate::prerace::PickArgs, [Vec3; 2])>,
+    /// the arrest's scene (CopArrest.sco): 0 its black is coming, 1 playing, 2 over (or none started) - the payback's
+    /// catch waits for it (CineScript_IsScenePlaying)
+    pub arrest_scene: u8,
+    /// PaybackCore 0xd50: the 1 s fade up that lifts the goons' walk-up's held black (main.rs releases the mask)
+    pub pb_fade_up: bool,
     /// the scene is still loading: all black
     pub cine_black: bool,
     /// results screen: state of the career event the race belonged to, and its next race
@@ -1448,6 +1453,8 @@ impl Game {
             movie_done: false,
             prerace: None,
             prerace_args: None,
+            arrest_scene: 2,
+            pb_fade_up: false,
             cine_black: false,
             event_line: String::new(),
             next_event_race: None,

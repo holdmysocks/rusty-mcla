@@ -8425,6 +8425,7 @@ impl Game {
         };
         leg.t += dt;
         leg.clock += dt;
+        let mut pass = ev;
         match leg.phase {
             2 => {
                 // (WAITUNWARPED(1000), then the call; the race timer starts again from 0)
@@ -8483,9 +8484,10 @@ impl Game {
                 // (test hook MCLA_PB_RESULT=lost@<s> | caught@<s>: that result once the pursuit
                 // has run so many seconds)
                 let ev = match std::env::var("MCLA_PB_RESULT").ok().as_deref().and_then(|v| v.split_once('@')).and_then(|(w, s)| s.parse::<f32>().ok().map(|s| (w == "lost", s))) {
-                    Some((lost, s)) if leg.clock >= s + 1.0 => Some(if lost { Event::Escaped } else { Event::Busted(0) }),
+                    Some((lost, s)) if leg.clock >= s + 1.0 => Some(if lost { Event::Escaped } else { Event::ArrestScene }),
                     _ => ev,
                 };
+                pass = ev;
                 match ev {
                     Some(Event::Escaped) => {
                         self.mc4_splash("PB_Lost", "YOU LOST THEM!");
@@ -8495,9 +8497,9 @@ impl Game {
                         police.end_goons(vehicles);
                         log::info!("payback: the client's friends are lost - the run goes on without a win");
                     }
-                    Some(Event::Busted(_)) => {
+                    // (0x1239: PoliceManager_GetTacticResult() == 1 - the tactic succeeded, COP_ARREST)
+                    Some(Event::ArrestScene) => {
                         self.mc4_splash("PB_Caught", "CAUGHT!");
-                        police.hold_busted(2.5);
                         leg.phase = 5;
                         leg.t = 0.0;
                         log::info!("payback: caught by the client's friends - the run is over");
@@ -8506,8 +8508,20 @@ impl Game {
                 }
             }
             5 => {
-                // (WAITUNWARPED(2000), nPlayerCaught)
-                if leg.t >= 2.0 {
+                // (WAITUNWARPED(2000), nPlayerCaught; 0x1465: CineScript_IsScenePlaying polled every 100 ms until the
+                // walk-up plays, then until it ends; Race_Finish; PaybackCore 0xd50: a 1 s fade up, waited, before the
+                // results)
+                if std::env::var_os("MCLA_ARREST_TRACE").is_some() && (leg.t / dt) as u32 % 60 == 0 {
+                    log::info!("payback: caught {:.2} s ago, the arrest's scene {}", leg.t, self.arrest_scene);
+                }
+                if leg.t >= 2.0 && self.arrest_scene == 2 {
+                    self.pb_fade_up = true;
+                    leg.phase = 7;
+                    leg.t = 0.0;
+                }
+            }
+            7 => {
+                if leg.t >= 1.0 {
                     leg.result = PB_CAUGHT;
                     leg.phase = 6;
                 }
@@ -8515,8 +8529,8 @@ impl Game {
             _ => {}
         }
         self.opt_x.arcade.pb = Some(leg);
-        // (the goons' COP_ARREST still runs CopArrest.sco: their walk-up scene)
-        ev.filter(|e| matches!(e, Event::ArrestScene))
+        // (the goons' COP_ARREST still runs CopArrest.sco: their walk-up scene; the test hook's catch too)
+        pass.filter(|e| matches!(e, Event::ArrestScene))
     }
 
     /// Has the payback leg ended by its chase (or by the player's wreck)? Called once a tick

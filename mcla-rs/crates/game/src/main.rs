@@ -363,6 +363,17 @@ struct App {
     /// the ARRESTED form is up: when it closes CopArrest.sco puts the car at the police station (frames left to wait
     /// for its ground)
     arrest_station: Option<u32>,
+    /// CopArrest.sco 0x6e4 AmbientMgr_SetTrafficEnable(0) for the scene: the traffic target to give back after it
+    arrest_traffic: Option<usize>,
+    /// CopArrest.sco's TRANSITIONMOVIE black: 1 s down before the scene (waited), up 1 s at its start, the scene's
+    /// fade_to_black, held over the form, up 1 s after the station reset (waited)
+    arrest_mask: boomcam::CutMask,
+    /// the arrest's scene starts once the black is full
+    arrest_wait: bool,
+    /// the running arrest scene's fade_to_black start (scene seconds)
+    arrest_fade: Option<f32>,
+    /// the station reset is done: the car gets control once the fade up has ended
+    arrest_activate: bool,
     /// the police's game-frame clock (brain::frame_due)
     police_acc: f32,
     /// CopPullover.sco running: (the fine, the walk's time of a bolt, the ticket scene begun)
@@ -1005,6 +1016,11 @@ impl App {
             pullover_acts: (String::new(), 0),
             arrest_form: None,
             arrest_station: None,
+            arrest_traffic: None,
+            arrest_mask: Default::default(),
+            arrest_wait: false,
+            arrest_fade: None,
+            arrest_activate: false,
             police_acc: 0.0,
             ticket_run: None,
             cine_events: (String::new(), Vec::new()),
@@ -2449,7 +2465,7 @@ impl App {
                 player_input.handbrake = true;
             }
         }
-        if self.police.heat == police::Heat::Busted {
+        if self.police.heat == police::Heat::Busted || self.arrest_wait || self.arrest_activate {
             player_input = CarInput { brake: 1.0, handbrake: true, ..Default::default() };
         }
         // (the warp after START: the car is not the player's to drive until it lands - Racer_Activate)
@@ -5107,7 +5123,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.place_view = None;
                 self.game.place_title = None;
             }
-            self.game.place_mask = self.garage_mask.update(dt);
+            self.game.place_mask = self.garage_mask.update(dt).max(self.arrest_mask.update(dt));
+            // (test hook MCLA_ARREST_TRACE=1: the arrest's black each frame it is on)
+            if self.arrest_mask.is_on() && std::env::var_os("MCLA_ARREST_TRACE").is_some() {
+                log::info!("arrest mask tick {} opacity {:.3} full {} wait {} scene {:?} form {} station {:?} activate {}", self.tick_no, self.game.place_mask, self.arrest_mask.full(), self.arrest_wait, self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t)), self.game.arrest_panel.is_some(), self.arrest_station, self.arrest_activate);
+            }
             // (test hook MCLA_GARAGE_TEST=0..2: at 4 s the car is put 14 m from that garage's door point, towards
             // its wait camera, facing away from the door, at 14 s 7 m from it - the place streamed in by then)
             if let Some(g) = std::env::var("MCLA_GARAGE_TEST").ok().and_then(|v| v.parse::<usize>().ok()).filter(|g| *g < 3) {
@@ -6137,7 +6157,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 }
                             }
                         }
-                    } else if v != "park" && !pull && self.tick_no == 150 {
+                    } else if v == "units" && self.tick_no == 600 {
+                        self.police.debug_units();
+                    } else if v != "park" && v != "units" && !pull && self.tick_no == 150 {
                         self.police.debug_force(&gpu, &world, &mut self.vehicles);
                     }
                     // ("flip": the player's car laid on its roof first - the arrest of a car upside down)
@@ -6300,6 +6322,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.crash_bits |= 0x28;
                         }
                     }
+                    // (one CopArrest.sco at a time: an arrest posted while one runs is not started again)
+                    Some(police::Event::ArrestScene) if self.arrest_wait || self.game.arrest_scene == 1 => {}
                     Some(police::Event::ArrestScene) => {
                         // (after StateArrest's fArrestStateTime: COP_ARREST, F-22530, runs CopArrest.sco - the scene,
                         // then the panel with the pursuit's length and the fine)
@@ -6317,6 +6341,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             let m = format!("{}   {} ${}", st("arrest_title", "ARRESTED"), st("cop_fine_header", "FINE:"), f);
                             self.game.show_message(&m);
                         }
+                        // (CopArrest.sco 0x36f: fn 0x37c(1, 1, 1.0, 0) - a 1 s fade to black, waited, before anything else;
+                        // the scene starts under the full black, below)
+                        self.arrest_mask.start(1.0, 0.01, f32::MAX);
+                        self.arrest_wait = true;
+                        self.game.arrest_scene = 0;
+                        self.police.hold_busted(1.5);
+                    }
+                    None => {}
+                }
+            }
+            if self.arrest_wait && (self.arrest_mask.full() || !self.arrest_mask.is_on()) {
+                self.arrest_wait = false;
+                let goons = self.police.goons;
+                let mut started_scene = false;
                         // the arrest (CopArrest.sco): the wiped-out biker's scene first (manager +64, F-22530), then the
                         // payback's (race type 5), else the scene by the number of cops in the chase
                         // (PoliceManager_GetNumCopsInLatestTactic)
@@ -6332,6 +6370,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             // 10.36 m from the origin, the bike is moved there. The car scenes' movers are at the origin.)
                             let started = if bike { self.cine.start(&mut gpu, scene, car) } else { self.cine.start_bound(&mut gpu, scene, car) };
                             if started {
+                                started_scene = true;
+                                self.arrest_fade = police::arrest_fade(scene);
+                                // (the scene's t 0 event on slot 0: car_off in cut_cop_arrest, _02, _03, _08 and the
+                                // bikestand, engine_off in _07 (F-91263) - the engine stays off until CopArrest's
+                                // Racer_PlayIgnition after the form)
+                                // (0x6e4: the traffic off for the scene - on again at 0x109f, after it; 0x1010 / 0x1038: the
+                                // mixer scenes, POLICE_SCRIPT_TRIGGERED only on the cops' path)
+                                self.arrest_traffic = Some(self.vehicles.traffic_target);
+                                self.vehicles.traffic_target = 0;
+                                self.sound.arrest_mix = (!goons, true);
+                                if police::arrest_engine_off(scene) {
+                                    if let Some(c) = self.vehicles.player_mut() {
+                                        c.engine_off = true;
+                                    }
+                                }
                                 self.cine_spawn_cars(&mut gpu, &mut world);
                                 self.cine_free = true;
                                 self.cine_caption = Some(String::new());
@@ -6339,9 +6392,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.police.hold_busted(secs);
                             }
                         }
-                    }
-                    None => {}
+                // (0x6d0: OpponentManager_HideOpponents - only with a race current)
+                if self.game.race.is_some() {
+                    police::hide_opponents(&mut self.vehicles, &world);
                 }
+                // (core 0xfb3: EndDescriptionAndStartClock, WAITUNWARPED(10), the fade up (0, 1, 1.0, 0) not waited)
+                self.arrest_mask.release(1.0);
+                self.game.arrest_scene = if started_scene { 1 } else { 2 };
             }
             self.ticket_tick(&mut gpu, &mut world);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
@@ -6759,21 +6816,65 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         } else {
             self.pullover_acts = (String::new(), 0);
-            // (CopArrest.sco: the form after the scene)
-            if let Some((chase, f)) = self.arrest_form.take() {
-                self.game.arrest_panel = Some((0.0, chase, f));
-                self.arrest_station = Some(0);
+            // (CopArrest.sco: the form after the scene - 0x1084 fn 0x37c(1, 1, 1.0, 0), waited: a no-op when the scene's
+            // black is full or coming, a 1 s fade down on a clear screen)
+            if !self.arrest_wait && self.arrest_form.is_some() {
+                self.arrest_mask.start(1.0, 0.01, f32::MAX);
+                if self.arrest_mask.full() {
+                    if let Some((chase, f)) = self.arrest_form.take() {
+                        self.game.arrest_panel = Some((0.0, chase, f));
+                        self.arrest_station = Some(0);
+                    }
+                }
             }
+        }
+        // (the arrest scene's fade_to_black, F-91263: game/misctasks/screen_fade_to_black (0, 1, 1.0, 0), held)
+        if let (Some(at), Some(now)) = (self.arrest_fade, self.cine.playing.as_ref().map(|sc| sc.t)) {
+            if now >= at {
+                self.arrest_fade = None;
+                self.arrest_mask.start(1.0, 0.01, f32::MAX);
+            }
+        } else if self.cine.playing.is_none() {
+            self.arrest_fade = None;
+        }
+        // (PaybackCore 0xd50: the fade up over the goons' walk-up's black; a black left with no race to lift it goes too)
+        if std::mem::take(&mut self.game.pb_fade_up) || (self.arrest_mask.is_on() && !self.arrest_wait && self.cine.playing.is_none() && self.arrest_form.is_none() && self.arrest_station.is_none() && !self.arrest_activate && self.game.race.is_none() && self.game.arrest_scene == 2) {
+            self.arrest_mask.release(1.0);
         }
         // (CopArrest.sco 0x1178 once the form is closed: Racer_InitializeResetPosition(player, (-604.5, 7, -340.5), 5 deg)
         // + ResetWithDamageIntact - the police station, upright, standing, the damage kept; PoliceManager_CutSceneDone
         // F-30655 then puts a damaged-out car's damage at 0.95 of its MaxDamage)
+        // (CopArrest.sco after the scene: 0x109f the traffic on again; the goons' path ends there - its mixer detriggered)
+        if self.cine.playing.is_none() {
+            if let Some(n) = self.arrest_traffic.take() {
+                self.game.arrest_scene = 2;
+                self.vehicles.traffic_target = n;
+                if !self.sound.arrest_mix.0 {
+                    self.sound.arrest_mix = (false, false);
+                }
+            }
+        }
         // (test hook MCLA_ARREST_CLOSE=1: the ARRESTED form closed by itself on a 2 s tick)
         if std::env::var_os("MCLA_ARREST_CLOSE").is_some() && self.arrest_station == Some(0) && self.tick_no % 120 == 0 {
             self.game.arrest_panel = None;
         }
         if let (Some(n), true) = (self.arrest_station, self.game.arrest_panel.is_none()) {
             self.arrest_station = police::station_reset(&mut self.vehicles, &world, n);
+            if self.arrest_station.is_none() {
+                // (0x1199: fn 0x11a6(1, 1, 1.0, 0) - the 1 s fade up, waited, before the car is given back)
+                self.arrest_mask.release(1.0);
+                self.arrest_activate = true;
+            }
+        }
+        if self.arrest_activate && !self.arrest_mask.is_on() {
+            self.arrest_activate = false;
+            self.sound.arrest_mix = (false, false);
+            // (CopArrest.sco 0x14ee: the mixer detriggered, 0x1524 Racer_PlayIgnition - the engine runs again -,
+            // Racer_Activate, and 0x1552 after CutSceneDone: SetAllPoliceUnderground(0, 1))
+            if let Some(c) = self.vehicles.player_mut() {
+                c.engine_off = false;
+            }
+            self.police.units_up();
         }
         if let Some(a) = self.audio.as_mut() {
             let fwd = self.cam.forward();
@@ -7021,6 +7122,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (and none before the career has unlocked them: `mc4`, flags.police_unlocked)
         // (and none in a red light race: its script destroys them all - althk.rs)
         let police_on = !self.game.cheats[4] && self.game.mc4_police_unlocked() && !self.game.alt_police_off();
+        // (the player-load flow script's CreatePolice x 3, units 400 - 402, each sent underground: the free roam's police)
+        if police_on && self.police.units.is_empty() {
+            self.police.create_units(true);
+        }
         if self.police.enabled != police_on {
             log::info!("police: {}", if police_on { "on" } else { "off" });
             self.police.enabled = police_on;
