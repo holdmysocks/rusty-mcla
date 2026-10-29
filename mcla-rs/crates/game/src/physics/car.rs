@@ -219,6 +219,9 @@ pub struct CarInput {
     /// `steer` carries it), the automatic brake 1.0 on every wheel and the gearbox held (A-16188,
     /// A-30794). The pedals at 0, the stop timer runs and the body is frozen after a second standing.
     pub deactivated: bool,
+    /// the gearbox to first out of reverse or neutral this tick (F-16736): the control step's engine hold (F-17997,
+    /// the car's engine sound below state 4)
+    pub first_gear: bool,
     /// a cine car event's mcBrainAnimated writes the chassis's inputs (F-91361): as they are - no pad
     /// code, no computer driver's pedal share - and the gearbox set to first out of reverse or neutral
     pub animated: bool,

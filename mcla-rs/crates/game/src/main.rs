@@ -2994,6 +2994,7 @@ impl App {
                             // engine word +46 = 1)
                             c.stunned = 0.0;
                             c.engine_off = false;
+                            c.deactivated = false;
                         }
                         self.crash_bits = 0;
                         self.crash_exploding = false;
@@ -5082,12 +5083,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // the control step's engine rules (F-17997): while the engine sound's start machine is below state 4 (the
             // start's wait, the crank, the stop) the engine word +46 is set to 1 and the car is held - throttle 0,
-            // brake 1, handbrake 0 (and the gearbox to first, F-16736, not ported); otherwise with +46 = 0 (a scene's
+            // brake 1, handbrake 0, the gearbox to first (F-16736, `first_gear`); otherwise with +46 = 0 (a scene's
             // car_off) the throttle is 0
             if self.sound.engine_held() {
                 player_input.throttle = 0.0;
                 player_input.brake = 1.0;
                 player_input.handbrake = false;
+                player_input.first_gear = true;
                 if let Some(c) = self.vehicles.player_mut() {
                     c.engine_off = false;
                 }
@@ -7325,6 +7327,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (and the flags +592 set to 0, F-30391(0): no longer damaged out, the hold off; the engine word +46 = 1)
                 p.stunned = 0.0;
                 p.engine_off = false;
+                p.deactivated = false;
                 self.crash_bits = 0;
             }
         }
@@ -12053,6 +12056,7 @@ impl App {
             if ended.starts_with("story/") || ended.starts_with("racestart/") {
                 if let Some(c) = self.vehicles.player_mut() {
                     c.engine_off = false;
+                    c.deactivated = false;
                 }
             }
         }
@@ -12074,7 +12078,27 @@ impl App {
                 // the player's engine word (the port keeps it for the player only: its sound and exhaust); the arrest
                 // scenes' car_off / engine_off do the same, kept until CopArrest's PlayIgnition
                 if let Some(i) = self.cine_slot_car(slot).filter(|&i| self.vehicles.cars[i].is_player) {
-                    self.vehicles.cars[i].engine_off = ev != vehicles::EngineEv::EngineOn;
+                    // (the port's +592 bits other than 0x1: the crash bits and the grid hold 0x2)
+                    let other_bits = self.crash_bits != 0 || self.vehicles.grid_hold.is_some();
+                    let c = &mut self.vehicles.cars[i];
+                    match ev {
+                        vehicles::EngineEv::CarOff => c.engine_off = true,
+                        vehicles::EngineEv::EngineOff => {
+                            // F-30391(1): +592 |= 1; standing at exactly 1 the car stops - the speeds set to 0 (F-72737,
+                            // the set-down with zero speeds), +46 = 0 - and is held (`deactivated`)
+                            if !other_bits {
+                                c.state.vel = Vec3::ZERO;
+                                c.state.ang_vel = Vec3::ZERO;
+                                c.engine_off = true;
+                            }
+                            c.deactivated = true;
+                        }
+                        vehicles::EngineEv::EngineOn => {
+                            // F-30391(0): +592 = 0, +46 = 1
+                            c.deactivated = false;
+                            c.engine_off = false;
+                        }
+                    }
                 }
             }
         }

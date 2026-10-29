@@ -3799,8 +3799,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             if c.deactivated {
                 // (the steering is the default steer direction the start script gives the three,
-                // Racer_SetDefaultSteerDirection 0.5 - chassis +656, F-69218)
-                let input = CarInput { deactivated: true, steer: 0.5, ..Default::default() };
+                // Racer_SetDefaultSteerDirection 0.5 - chassis +656, F-69218. A scene's car - the player's after
+                // the scene's engine_off, F-76651(racer, 1): the mover's inputs give way the same, and its +656 is
+                // the 0 that F-30391(0) left)
+                let steer = if c.brain.is_some() { 0.0 } else { 0.5 };
+                let input = CarInput { deactivated: true, steer, ..Default::default() };
                 c.state.step(c.tuned.as_deref().unwrap_or(&c.model.params), input, &world.collider, dt.min(1.0 / 30.0));
                 continue;
             }

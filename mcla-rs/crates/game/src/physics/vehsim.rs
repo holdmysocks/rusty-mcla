@@ -1300,8 +1300,9 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     // keep the throttle, the handbrake is written 1; otherwise the brake is written 1, and with burnout charge
     // left under the handbrake the throttle 0. The steering, +132, is written 0 in every case - here it is
     // zeroed where the grid input is made, vehicles.rs. The `noburnout` switch, 0x8288E614, is 0 in a game.)
-    // (Racer_Deactivate's F-30391 puts the gearbox into first out of reverse or neutral, F-16736)
-    if input.deactivated && vs.gear <= 0 {
+    // (Racer_Deactivate's F-30391 puts the gearbox into first out of reverse or neutral, F-16736; so does the
+    // control step's engine hold, F-17997)
+    if (input.deactivated || input.first_gear) && vs.gear <= 0 {
         vs.gear = 1;
         vs.shift_timer = 0.0;
     }
