@@ -3,7 +3,7 @@
 //! display terms, added to the frame before the display ramp (render/halo.wgsl; the tone map
 //! in post.wgsl adds the halo picture to its encoded value).
 //!
-//! The rule is the game's `AddGlow` (sub_822FC250) with the numbers of
+//! The rule is the game's `AddGlow` (F-92524) with the numbers of
 //! tune/lighting/GlowTuning.xml; every array of that file has four entries, one a weather
 //! (nice, cloudy, stormy, foggy - read from the running game while the weather was switched).
 
@@ -108,7 +108,7 @@ impl Tune {
     }
 }
 
-/// Whether a prop's lamp is lit at this hour (sub_82729438): after 17.9 - o and before 6.1 + o
+/// Whether a prop's lamp is lit at this hour (F-28456): after 17.9 - o and before 6.1 + o
 /// o'clock, o = one of sixteen steps of a minute a lamp (the original takes bits 4..7 of the
 /// prop's address x 1 / 960 h; here a hash of the lamp's place).
 pub fn lamp_lit(pos: Vec3, hour: f32) -> bool {
@@ -117,8 +117,8 @@ pub fn lamp_lit(pos: Vec3, hour: f32) -> bool {
 }
 
 /// Which props are in the frame's list of lamp and signal props (the prop manager's third
-/// per-view list, filled by sub_82734160 through the callback sub_82729E28 and read by
-/// sub_82729438 -> AddGlow): the game walks its 40 m prop grid in a square spiral from the MAIN
+/// per-view list, filled by F-79256 through the callback F-15084 and read by
+/// F-28456 -> AddGlow): the game walks its 40 m prop grid in a square spiral from the MAIN
 /// camera's cell and takes a prop when, with R = its drawable's sphere radius (1.0 for a lamp
 /// or signal prop under 0.15) and dd = max(distance from the camera to its box centre - R, 0):
 ///   dd <= 200 and dd < 80 R / tan(fov / 2) and (its box's sphere touches the view's frustum
@@ -147,7 +147,7 @@ impl ListView {
         }
         // (the near plane, 0.2 m in front)
         planes[4] = forward.extend(-forward.dot(cam) - 0.2);
-        // (the spiral of sub_82734DB8: z up, x up, z down, x down, a ring wider each round)
+        // (the spiral of F-44865: z up, x up, z down, x down, a ring wider each round)
         let n = (2 * SPIRAL_R + 1) as usize;
         let mut spiral = vec![u16::MAX; n * n];
         let (mut x, mut z, mut along_x, mut plus) = (0i32, 0i32, false, true);
@@ -181,7 +181,7 @@ impl ListView {
         dd < 250.0 && 0.030_177_67 * dd < r && !hidden()
     }
 
-    /// A sphere inside the view's planes (sub_8217C1D8: every plane's value + r >= 0).
+    /// A sphere inside the view's planes (F-91781: every plane's value + r >= 0).
     pub fn sphere_in_view(&self, centre: Vec3, r: f32) -> bool {
         self.planes.iter().all(|p| p.dot(centre.extend(1.0)) + r >= 0.0)
     }
@@ -247,7 +247,7 @@ impl Tune {
         self.glow(w, pos, [color.x, color.y, color.z], self.prop_size[w], self.prop_intensity[w], false, cam, 0.0)
     }
 
-    /// A car's lit lamp (sub_8237AC90): `facing` the way the lamp looks, `k` its level x the
+    /// A car's lit lamp (F-96521): `facing` the way the lamp looks, `k` its level x the
     /// kind's factor; the strength goes by how squarely it faces the camera.
     pub fn car(&self, w: usize, pos: Vec3, facing: Vec3, color: [f32; 3], k: f32, cam: Vec3, tan_half_fov: f32) -> Option<Glow> {
         let i = k * (cam - pos).normalize_or_zero().dot(facing).clamp(0.0, 1.0);
@@ -257,15 +257,18 @@ impl Tune {
         self.glow(w, pos, color, self.car_size[w], self.car_intensity[w] * i, true, cam, tan_half_fov)
     }
 
-    /// A police car's light bar lamp (sub_8235FB78): its own AddGlow call with the props' pull towards the
+    /// A police car's light bar lamp (F-73214): its own AddGlow call with the props' pull towards the
     /// camera (not the cars'), size 0.3 x 0.3, strength 20 (0x82002C68) x the car's siren state x how squarely
-    /// the lamp faces the camera.
+    /// the lamp faces the camera. Its slot is -2 (this frame only), and for that slot AddGlow (F-92524) writes the
+    /// seed (F-53016) and no star quads (F-79030): the glow has no star.
     pub fn police(&self, w: usize, pos: Vec3, facing: Vec3, color: [f32; 3], state: f32, cam: Vec3) -> Option<Glow> {
         let i = 20.0 * state * (cam - pos).normalize_or_zero().dot(facing).clamp(0.0, 1.0);
-        self.glow(w, pos, color, [0.3, 0.3], i, false, cam, 0.0)
+        let mut g = self.glow(w, pos, color, [0.3, 0.3], i, false, cam, 0.0)?;
+        g.col_s[3] = 0.0;
+        (g.pos_a[3] > 0.0).then_some(g)
     }
 
-    /// A signal head's lit lamp: `pos` its locator, `facing` the head's z axis (sub_82739948:
+    /// A signal head's lit lamp: `pos` its locator, `facing` the head's z axis (F-39998:
     /// the glow sits 0.3 m behind the locator and its strength goes by how squarely the lamp
     /// faces the camera).
     pub fn signal(&self, w: usize, pos: Vec3, facing: Vec3, color: [f32; 3], cam: Vec3, tan_half_fov: f32) -> Option<Glow> {
@@ -277,7 +280,7 @@ impl Tune {
         self.glow(w, p, color, [self.signal_size[w]; 2], i, true, cam, tan_half_fov)
     }
 
-    /// The same lamp's reflection call (sub_82739948 with refl = 1, siglrefl.rs): the place P (0.3 m
+    /// The same lamp's reflection call (F-39998 with refl = 1, siglrefl.rs): the place P (0.3 m
     /// behind the locator), the strength I (as `signal`'s) and rsize = sm_fSignalGlowReflectionSizes x 0.01.
     pub fn signal_reflection(&self, w: usize, pos: Vec3, facing: Vec3, cam: Vec3) -> Option<(Vec3, f32, [f32; 2])> {
         let p = pos - facing * 0.3;
