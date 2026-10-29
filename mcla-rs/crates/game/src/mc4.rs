@@ -11889,8 +11889,7 @@ impl Game {
         let race = self.race.is_some() && self.mode == Mode::Race;
         let was = std::mem::replace(&mut self.opt_x.s23.sst_race_was, race);
         if race && !was && matches!(self.opt_x.s23.sst_tut, SstTut::Idle | SstTut::Done) && !Self::mc4_no_tutorial() && !self.fresh_game {
-            let id = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| d.id.to_ascii_lowercase()).unwrap_or_default();
-            if self.hookman_race && self.career.hookman_mission() == Some("RACE_GH_06") && id.ends_with("hw_ordered_jp_11") {
+            if self.rgh06_race() {
                 self.opt_x.s23.sst_tut = SstTut::Charge;
                 self.opt_x.s23.sst_poll = 0.0;
                 log::info!("SST_Tutorial started (RACE_GH_06)");
@@ -16327,6 +16326,36 @@ mod tests {
         // (DELIVERY is not complete)
         assert_eq!(stage(&c, "DELIVERY_SC"), Some(Stage::Armed));
         assert!(c.sc_setup().is_empty());
+    }
+
+    /// GO TO GARAGE's row (F-88974 / F-58712): a new career has no garage running and no tGAR; GARAGE_HOLLYWOOD starts
+    /// the Hollywood garage's set-up, the first drive-in sets tGAR; RACE_GH_06's race (event kind 12) never offers it.
+    #[test]
+    fn go_to_garage_row_follows_the_gate() {
+        if !std::path::Path::new(&data_dir()).join("tune/career").is_dir() {
+            return;
+        }
+        let mut g = Game::new(Vec::new(), 0);
+        g.data_dir = data_dir();
+        g.career = crate::career::Career::load(&data_dir());
+        g.fresh_game = true;
+        g.career.new_game();
+        assert!(!(0..3).any(|i| g.garage_running(i)));
+        assert!(!g.go_garage_gate());
+        g.career.give_mission("GARAGE_HOLLYWOOD", "INPROGRESS");
+        assert!(g.garage_running(0), "{:?}", g.mc4_running_scripts());
+        assert!(!g.garage_running(1) && !g.garage_running(2));
+        assert!(!g.go_garage_gate());
+        g.mc4_stat_set("tGAR", 0, 1.0);
+        assert!(g.go_garage_gate());
+        // (RACE_GH_06's race: the local racer menu's kind 12)
+        g.career.call_delivered("RACE_GH_06");
+        g.hookman_race = true;
+        g.race_defs.push(crate::races::RaceDef { id: "Game/Race/Hollywood/Ordered/hw_ordered_jp_11".into(), ..Default::default() });
+        g.current_race = Some(g.race_defs.len() - 1);
+        assert!(g.rgh06_race());
+        g.hookman_race = false;
+        assert!(!g.rgh06_race());
     }
 
     /// The first career race (RACE_GH_06) runs at Easy: its core script sets the man's

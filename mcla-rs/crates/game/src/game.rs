@@ -4359,6 +4359,16 @@ impl Game {
                 self.bmt_end = Some(BmtEnd { race: 0, hookman: false, place: 1, rep: 120, wrecked: v.contains("wreck"), t: 0.0, sel: 0 });
                 self.race_end_t = (!v.contains("wreck")).then_some(0.0);
             }
+            // (=rgh06: as after RACE_GH_06's race - its mission the career's hookman mission, the man's race
+            // hw_ordered_jp_11; the run's save copy only)
+            if v.contains("rgh06") {
+                self.career.new_game();
+                self.career.call_delivered("RACE_GH_06");
+                self.hookman_race = true;
+                self.current_race = self.race_defs.iter().position(|d| d.id.to_ascii_lowercase().ends_with("hw_ordered_jp_11"));
+                self.active_def = self.current_race.and_then(|i| self.race_defs.get(i)).cloned();
+                log::info!("results test: RACE_GH_06's race {:?}, kind 12 {}", self.active_def.as_ref().map(|d| d.id.clone()), self.rgh06_race());
+            }
             // (=pink: a hangout's pink slip race just won; =pinklost: lost - its race-over tab)
             if v.contains("pink") {
                 self.pink_over = Some(v.contains("lost"));
@@ -8055,6 +8065,12 @@ impl Game {
                     ro.push((s("pause_view_replay", "VIEW REPLAY"), 12));
                     // (the seventh row, under the list's fold: reference `y_over_garage`)
                     ro.push((s("pause_go_to_garage", "GO TO GARAGE"), 13));
+                } else if movie && self.active_def.as_ref().map_or(true, |d| d.id != crate::althk::FREEWAY_RACE_ID) {
+                    // (the base builder F-72415 for every menu class - the local racer's (RACE_GH_06's, the cruising
+                    // and story men's), the wager's, ...: offline RO_Replay 1; RO_Garage = vt+28 && !online, which ends in the
+                    // gate below; the freeway menu turns both off)
+                    ro.push((s("pause_view_replay", "VIEW REPLAY"), 12));
+                    ro.push((s("pause_go_to_garage", "GO TO GARAGE"), 13));
                 }
                 // (a red light race's - mcRedLightMenu, F-90179 over the base F-72415; work/hookmen2
                 // `re/raceover.md`, `cap/rl_19`): RETURN TO CRUISE; RACE AGAIN only with the car wrecked
@@ -8129,8 +8145,7 @@ impl Game {
                 // (GO TO GARAGE, vt+28 of every race-over menu - F-59601, F-98337, F-58712, F-63937: the race over (or the car
                 // wrecked), then the gate F-88974; the local racer's (F-58712) never for event kind 12, RACE_GH_06's race (its story script sets
                 // +3096 = 12))
-                let kind12 = self.hookman_race && self.career.hookman_mission() == Some("RACE_GH_06");
-                if !self.go_garage_gate() || kind12 {
+                if !self.go_garage_gate() || self.rgh06_race() {
                     ro.retain(|r| r.1 != 13);
                 }
                 // (chased: RO_ReturnToCruise reads RETURN TO CHASE - F-43165; greyed with the others, `ro_grey`)
@@ -13707,6 +13722,13 @@ impl Game {
     /// (0x1dbe). A game without a career has them all.
     pub fn garage_running(&self, g: usize) -> bool {
         crate::garagein::SETUP_SCRIPTS.get(g).map_or(false, |s| self.alt_running(s))
+    }
+
+    /// The race under way is RACE_GH_06's (its story script, `game/career/Story/0x40a56c35`, races hw_ordered_jp_11 and
+    /// writes event kind 12 into the race data, +3096 - the only script that does)
+    pub fn rgh06_race(&self) -> bool {
+        let id = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| d.id.to_ascii_lowercase()).unwrap_or_default();
+        self.hookman_race && self.career.hookman_mission() == Some("RACE_GH_06") && id.ends_with("hw_ordered_jp_11")
     }
 
     /// GO TO GARAGE's gate (F-88974): some garage's state is 2 and the stat tGAR is not 0 - garage_core sets it the first
