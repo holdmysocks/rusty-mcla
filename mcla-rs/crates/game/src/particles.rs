@@ -701,6 +701,22 @@ impl Particles {
         true
     }
 
+    /// Stop the effect played under `key` at once (the effect rule's slot 26, F-93211, as the tyres' kill F-83592
+    /// calls it): every particle its emitters let out goes back to the pool now (F-40718 -> the emit rule F-23094 ->
+    /// the particle rule's slot 15, F-38485); a child effect it started is only forgotten (F-57248) and plays out.
+    pub fn kill(&mut self, key: u64) {
+        let (gone, kept): (Vec<Effect>, Vec<Effect>) = std::mem::take(&mut self.effects).into_iter().partition(|e| e.key == key);
+        self.effects = kept;
+        for mut e in gone {
+            self.rule_list.retain(|p| p.inst != e.id);
+            self.coll.remove(&e.id);
+            for mut k in std::mem::take(&mut e.kids) {
+                k.oneshot = true;
+                self.effects.push(k);
+            }
+        }
+    }
+
     /// Is the effect started under `key` still playing (or its particles alive)?
     pub fn is_alive(&self, key: u64) -> bool {
         self.effects.iter().any(|e| e.key == key)

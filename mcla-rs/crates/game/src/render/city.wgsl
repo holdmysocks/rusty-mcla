@@ -2529,7 +2529,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             rubbed = sc.g * s6;
         }
         // livery: the vinyl texture lies in the body's unwrap (first UV set)
-        let vinyl = textureSample(t_third, s_diffuse, in.uv0);
+        var vinyl = textureSample(t_third, s_diffuse, in.uv0);
+        // (an unpainted area - a part the quick fix put on, area_a.w 2 - takes the all-zero blank_dmg in the
+        // vinyl's place, F-13513)
+        let v_area = paint_area(in.uv2.y);
+        if (v_area > 0u && obj.area_a[v_area - 1u].w > 1.5) { vinyl = vec4<f32>(0.0); }
         scraped = clamp(k6 - vinyl.a, 0.0, 1.0);
         // (the flakes: x sat(1 - 2 m))
         let scraped6 = 1.0 - clamp(1.0 - 2.0 * scraped, 0.0, 1.0);

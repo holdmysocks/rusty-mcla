@@ -1598,6 +1598,9 @@ pub struct CarLive {
     pub int_de_hsv: [Option<[f32; 3]>; 2],
     /// (step 22) a vinyl editor box is up: what its YES does
     pub vinyl_ask: Option<VinylAsk>,
+    /// the six paint areas' unpainted flags of the vehicle in use when it has no record to keep them in
+    /// (`mc4_unpainted`)
+    pub unpainted: [bool; 6],
     /// (step 22) the STORE VINYL PACKAGES page is open: the row under the cursor (0 .. 2)
     pub vinyl_save: Option<usize>,
     /// (step 21b) a mission's scene plays at the garage's door: the garage opens after it
@@ -1647,6 +1650,21 @@ pub struct PaintOut {
 /// (F-13513 at A-97806: types 0 and 1 get (0.6, 0.6, 0.55) for ColorB, keep the
 /// type's paint falloff and have no fade direction).
 pub const MATTE_B: [f32; 3] = [0.6, 0.6, 0.55];
+
+/// An unpainted area as the per-area paint set-up F-13513 draws it: paint type 0 (DirtyMatte, so the matte second
+/// colour), the first colour splat(0.07) in the entry's place, and the plain all-zero texture `blank_dmg` in the
+/// vinyl's (w 2: the shader leaves the vinyl off). The body's entry is drawn by the body's own constants, which the
+/// port keeps apart; only the five areas after it are applied here.
+fn primer_out(out: &mut PaintOut, f: [bool; 6]) {
+    let a = to_linear([0.07; 3]);
+    let b = to_linear(MATTE_B);
+    for k in 1..6 {
+        if f[k] {
+            out.area_a[k - 1] = [a[0], a[1], a[2], 2.0];
+            out.area_b[k - 1] = [b[0], b[1], b[2], 8.0];
+        }
+    }
+}
 
 /// What the original's paint set-up makes of an entry (F-13513): a matte type shifts
 /// to `MATTE_B` by the type's falloff (the port's fade 1) and has no other fade.
@@ -4839,7 +4857,60 @@ impl Game {
             out.area_a[k - 1] = [a[0], a[1], a[2], own as u8 as f32];
             out.area_b[k - 1] = [b[0], b[1], b[2], p.ty as f32 + 8.0 * p.fade as f32];
         }
+        primer_out(&mut out, self.mc4_unpainted());
         out
+    }
+
+    /// The unpainted flags of the vehicle in use's six paint areas (body, doors, hood, front bumper, rear
+    /// bumper, skirts): byte +40 of each paint entry of the vehicle record (P+1672 + 48 i), kept in the save.
+    pub fn mc4_unpainted(&self) -> [bool; 6] {
+        let car = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
+        match self.mc4.as_ref().and_then(|m| m.car(&car)).filter(|c| c.visual.paint.len() == 6) {
+            Some(c) => [0, 1, 2, 3, 4, 5].map(|k| c.visual.paint[k].unpainted_flag != 0),
+            None => self.car_x.unpainted,
+        }
+    }
+
+    /// Set the unpainted flags of the vehicle in use (into its record when it has one).
+    pub fn mc4_set_unpainted(&mut self, f: [bool; 6]) {
+        if f == self.mc4_unpainted() {
+            return;
+        }
+        let car = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
+        self.car_x.unpainted = f;
+        if let Some(c) = self.mc4.as_mut().and_then(|m| m.car_mut(&car)).filter(|c| c.visual.paint.len() == 6) {
+            for (k, p) in c.visual.paint.iter_mut().enumerate() {
+                p.unpainted_flag = f[k] as u8;
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// The racer's restore after a quick fix (mcRacer#18, F-39432) gives a badly hit area a new, unpainted part:
+    /// `zones` [left, right, front, rear] as they stood before the repair, each capped at 1. Front above 0.85: one
+    /// roll for the hood and the front bumper; rear above 0.95: one for the rear bumper; left or right above 0.95:
+    /// one for the skirts and the doors; a roll ((x & 0x7FFFFFFF) % 100 + 1 of the shared generator) above 90 sets
+    /// them. The body is never set. The garage's repair (F-12181) clears all six (`mc4_set_unpainted([false; 6])`).
+    pub fn mc4_restore_primer(&mut self, zones: [f32; 4], roll: &mut impl FnMut() -> u32) {
+        let z = zones.map(|v| v.min(1.0));
+        let mut f = self.mc4_unpainted();
+        let mut hit = |f: &mut [bool; 6], areas: &[usize]| {
+            if roll() % 100 + 1 > 90 {
+                for &a in areas {
+                    f[a] = true;
+                }
+            }
+        };
+        if z[2] > 0.85 {
+            hit(&mut f, &[2, 3]);
+        }
+        if z[3] > 0.95 {
+            hit(&mut f, &[4]);
+        }
+        if z[1] > 0.95 || z[0] > 0.95 {
+            hit(&mut f, &[5, 1]);
+        }
+        self.mc4_set_unpainted(f);
     }
 
     /// The garage's top menu, before a row or the way out is taken: (ACCEPT, BACK) as the
@@ -14362,6 +14433,35 @@ mod tests {
         assert_eq!(g.rim_mats[2], 3);
         assert_eq!(g.rim_finish()[1][3], 4.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The quick fix's primer parts: the restore's rolls, the paint drawn, the record.
+    #[test]
+    fn restore_primer() {
+        let Some((mut g, dir, _)) = game_on("full_import.json", "primer") else { return };
+        let k = g.car_dirs.iter().position(|p| p.to_string_lossy() == "vpd_chv_impala_64").unwrap();
+        g.current_car = k;
+        g.selected_car = k;
+        g.sync_car_paint();
+        g.mc4_paint_sync();
+        assert_eq!(g.mc4_unpainted(), [false; 6]);
+        // (below the thresholds nothing is rolled; front 0.86 and a side 0.96 roll twice: 91 sets, 90 does not)
+        let mut calls = 0;
+        g.mc4_restore_primer([0.5, 0.5, 0.85, 0.95], &mut || { calls += 1; 99 });
+        assert_eq!((calls, g.mc4_unpainted()), (0, [false; 6]));
+        let mut seq = [90u32, 89].into_iter();
+        g.mc4_restore_primer([0.0, 3.0, 0.86, 0.0], &mut || seq.next().unwrap());
+        assert_eq!(g.mc4_unpainted(), [false, false, true, true, false, false]);
+        let o = g.paint_out();
+        assert_eq!((o.area_a[1][3], o.area_b[1][3], o.area_a[3][3]), (2.0, 8.0, 0.0));
+        assert!((o.area_a[2][0] - to_linear([0.07; 3])[0]).abs() < 1e-6);
+        // (in the record, so the save keeps it; the garage's repair clears it)
+        g.write_save(&dir);
+        let paint = saved_block(&dir)["garage"].as_array().unwrap().iter().find(|c| c["vehicle"] == "vpd_chv_impala_64").unwrap()["visual"]["paint"].clone();
+        assert_eq!(paint[2]["unpainted_flag"], 1);
+        assert_eq!(paint[1]["unpainted_flag"], 0);
+        g.mc4_set_unpainted([false; 6]);
+        assert_eq!(g.mc4_unpainted(), [false; 6]);
     }
 
     /// The six paint areas: from the record to the renderer, and the paint shop's rules.

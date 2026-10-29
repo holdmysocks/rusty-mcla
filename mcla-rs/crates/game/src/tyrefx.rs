@@ -135,6 +135,15 @@ impl TyreFx {
         }
     }
 
+    /// A car's reset (the model's full reset F-74884 and the restore's F-11744, through F-83592 per wheel state): the
+    /// four states' effects stop at once, their particles gone (`Particles::kill`); a state that still wants its
+    /// effect starts it anew on its next frame.
+    pub fn kill(&mut self, fx: &mut Particles, ci: usize) {
+        for si in 0..4 {
+            fx.kill(0x5459_5245_0000_0000 | ((ci as u64) << 4) | si as u64);
+        }
+    }
+
     /// `sub_82748C48` for one wheel.
     fn decide(&self, s: &mut State, w: &crate::physics::vehsim::WheelSim, wt: &mcla_formats::rage::simtune::WheelTune, flag_a: bool, drive: u8, vel: Vec3, dt: f32) {
         // (a wheel without a material - in the air - leaves its effect as it is)
