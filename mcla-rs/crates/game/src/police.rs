@@ -3463,6 +3463,16 @@ pub fn pullover_acts(scene: &str) -> &'static [(f32, SceneAct)] {
     }
 }
 
+/// Whether an arrest scene shows the player's own driver in his car. In a scene the in-car driver is drawn only when
+/// its instance's +420 is set (the draw gate F-14542 while the scene byte F-37136 sets is on): by EndDescription
+/// (F-39589) for the slots the script passed to CineScript_UseRacerNativeCharacter (F-94066), or by a showdriver event.
+/// CopArrest resets the car before the scene (ResetWithDamageIntact F-39106: +420 = 0); the car scenes call
+/// UseRacerNativeCharacter(0), the bikestand neither it nor showdriver - its seated rider is hidden (the standing
+/// character is the scene's own).
+pub fn arrest_shows_driver(scene: &str) -> bool {
+    !scene.rsplit('/').next().unwrap_or(scene).eq_ignore_ascii_case("cut_cop_arrest_bikestand")
+}
+
 /// The arrest scenes whose t 0 event turns the player's engine off (car_off on slot 0, or engine_off in _07; F-91263).
 pub fn arrest_engine_off(scene: &str) -> bool {
     matches!(scene.rsplit('/').next().unwrap_or(scene).to_ascii_lowercase().as_str(), "cut_cop_arrest" | "cut_cop_arrest_02" | "cut_cop_arrest_03" | "cut_cop_arrest_07" | "cut_cop_arrest_08" | "cut_cop_arrest_bikestand")
@@ -3490,14 +3500,19 @@ pub fn arrest_fade(scene: &str) -> Option<f32> {
 
 /// OpponentManager_HideOpponents (F-55817 -> F-41633), CopArrest.sco 0x6d0 under the held black: with a race current
 /// every race entry i is put on lot slot i (7 slots), heading 0, at once (F-15210 -> F-15222), reset (F-89258) and
-/// deactivated (F-12981). Nothing undoes it (no ShowOpponents native). The original moves entry 0, the player, too: not
-/// ported (open until a recording of a race bust confirms it); the port's entries are its pinned cars in order.
-pub fn hide_opponents(vehicles: &mut Vehicles, world: &World) {
+/// deactivated (F-12981). Nothing undoes it (no ShowOpponents native). Entry 0 is the player (F-41633, the race data
+/// block): moved with `player` - the port's payback, the one race still current here; its scene is then placed from
+/// the lot. (The player is not marked deactivated: the arrest's hold keeps his control until Racer_Activate.) The
+/// port's other entries are its pinned cars in order.
+pub fn hide_opponents(vehicles: &mut Vehicles, world: &World, player: bool) {
     const LOT: [(f32, f32); 7] = [(-520.0, -390.0), (-510.0, -390.0), (-500.0, -390.0), (-490.0, -390.0), (-480.0, -390.0), (-520.0, -380.0), (-510.0, -380.0)];
     let mut i = 1;
-    for c in vehicles.cars.iter_mut().filter(|c| c.pinned && !c.is_player && !c.cop && !c.goon) {
-        let Some(&(x, z)) = LOT.get(i) else { break };
-        i += 1;
+    for c in vehicles.cars.iter_mut().filter(|c| (player && c.is_player) || (c.pinned && !c.is_player && !c.cop && !c.goon)) {
+        let k = if c.is_player { 0 } else { i };
+        let Some(&(x, z)) = LOT.get(k) else { continue };
+        if !c.is_player {
+            i += 1;
+        }
         let at = Vec3::new(x, 9.5, z);
         let pos = world.collider.ground(at, 1.0, 3.0).map_or(at, |h| Vec3::new(at.x, h.point.y, at.z));
         // (heading 0, the station reset's convention: forward (sin h, 0, cos h))
@@ -3511,8 +3526,8 @@ pub fn hide_opponents(vehicles: &mut Vehicles, world: &World) {
             c.state.ang_vel = Vec3::ZERO;
         }
         c.pose_history.reset();
-        c.deactivated = true;
-        log::info!("police: HideOpponents - race entry {} (uid {}) to the lot {:?}", i - 1, c.uid, pos);
+        c.deactivated = !c.is_player;
+        log::info!("police: HideOpponents - race entry {} (uid {}) to the lot {:?}", k, c.uid, pos);
     }
 }
 
@@ -3988,6 +4003,7 @@ mod scene_tests {
         assert_eq!([0, 1, 2].map(|r| arrest_scene(3, r, false, false)), ["cut_cop_arrest_02", "cut_cop_arrest_03", "cut_cop_arrest_08"]);
         // (the wiped-out biker's scene before the count and the payback; the payback's walk-ups 1 / 2 each)
         assert_eq!(arrest_scene(3, 0, true, true), "cut_cop_arrest_bikestand");
+        assert!(!arrest_shows_driver("cut_cop_arrest_bikestand") && arrest_shows_driver("cut_cop_arrest_02"));
         assert_eq!([0, 1].map(|r| arrest_scene(1, r, false, true)), ["payback_goons_walkup_02", "payback_goons_walkup_01"]);
         assert_eq!(arrest_gesture("payback_goons_walkup_02"), Some((crate::drivers::Gesture::ListenLeft, 0.3333, 9.0)));
         assert_eq!(arrest_gesture("cut_cop_arrest_07"), Some((crate::drivers::Gesture::CopHandsUp, 3.5, 1.5)));

@@ -6476,6 +6476,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let bike = self.vehicles.player().is_some_and(|c| c.model.bike && c.state.wipeout > 0.0);
                         let cops = self.police.tactic_cops();
                         let scene = police::arrest_scene(cops, (self.tick_no as u32).wrapping_mul(2654435761) >> 8, bike, goons);
+                        // (0x6d0: OpponentManager_HideOpponents - only with a race current, before 0x953 / 0xa39 read the
+                        // player's place. A cops' bust ends every other race first (F-22530 -> the race scripts'
+                        // Race_ResetCurrentRace, 1 - 2 frames, inside CopArrest's waited fade down): only a payback is
+                        // still current, and its entry 0 - the player - goes to the lot too)
+                        if let Some(pb) = self.game.race.as_ref().map(|r| r.kind == game::RaceKind::Payback) {
+                            police::hide_opponents(&mut self.vehicles, &world, pb);
+                        }
                         // (placed as the pull-over's: police::scene_frame - never the car's own roll; GitHub #17)
                         let car = police::scene_frame(&mut self.vehicles, &world, &self.police.safe_zones);
                         self.arrest_hands = false;
@@ -6507,10 +6514,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.police.hold_busted(secs);
                             }
                         }
-                // (0x6d0: OpponentManager_HideOpponents - only with a race current)
-                if self.game.race.is_some() {
-                    police::hide_opponents(&mut self.vehicles, &world);
-                }
                 // (core 0xfb3: EndDescriptionAndStartClock, WAITUNWARPED(10), the fade up (0, 1, 1.0, 0) not waited)
                 self.arrest_mask.release(1.0);
                 self.game.arrest_scene = if started_scene { 1 } else { 2 };
@@ -9740,7 +9743,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (ambient cars have opaque windows: nobody to see in there)
                     let _ = big;
                     // in a cutscene the people of its cars are the scene's own characters
-                    let staged = self.cine.playing.is_some() && ((c.is_player && self.cine.has_actor("player")) || c.driver.starts_with("cine:"));
+                    let staged = self.cine.playing.as_ref().is_some_and(|sc| (c.is_player && (self.cine.has_actor("player") || !police::arrest_shows_driver(&sc.name))) || c.driver.starts_with("cine:"));
                     // (VEHICLE SELECT: the three stand empty - `ng_vsel_0`)
                     // (the cruiser has no driver: mcRacer::LoadDriver, F-39898, returns before it makes one when
                     // the car is vp_chv_police_96 - its own black interior is what shows; GitHub #17)
