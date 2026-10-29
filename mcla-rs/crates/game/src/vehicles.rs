@@ -117,6 +117,8 @@ pub struct CarModel {
     pub lod_centre: Vec3,
     /// the depths of the LOD 0 -> 1 and 1 -> 2 steps (the type's `mcAmbientRenderType.xml`, `traffic::lod_steps`)
     pub lod_steps: [f32; 2],
+    /// a traffic type's bound box (min, max; `traffic::bound_box`): what its occlusion blob is sized from (F-68081)
+    pub bound_box: Option<(Vec3, Vec3)>,
 }
 
 pub struct WheelModel {
@@ -1922,8 +1924,9 @@ impl Vehicles {
         let lod_radius = 0.5 * std::f32::consts::SQRT_2 * bw.max(bl);
         let lod_centre = if car_is_ambient { traffic::bound_centre(&world.assets.root, &car.name) } else { None }.unwrap_or((car.min + car.max) * 0.5);
         let lod_steps = if car_is_ambient { traffic::lod_steps(&world.assets.root, &car.name) } else { None }.unwrap_or([40.0, 155.0]);
+        let bound_box = if car_is_ambient { traffic::bound_box(&world.assets.root, &car.name) } else { None };
         let (fx_anchors, fx_anchor_rear) = car.fx_anchors(cfg);
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -4916,6 +4919,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     if b.bucket != 1 {
                         continue;
                     }
+                    // (test hook MCLA_AMB_GLASS_SKIP=1: the traffic glass left out, to compare the colour behind it with
+                    // the original's - the recorder's "skip <PSAmbientGlassFront>" line)
+                    static SKIP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    if b.mode == MatMode::CarGlass && *SKIP.get_or_init(|| std::env::var_os("MCLA_AMB_GLASS_SKIP").is_some()) {
+                        continue;
+                    }
+                    if amb_skip(&c.model.name, bi, b) {
+                        continue;
+                    }
                     pass.set_bind_group(3, c.group_object(groups[bi]), &[]);
                     pass.set_bind_group(1, b.bind.as_ref(), &[]);
                     pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
@@ -4928,18 +4940,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                     pass.set_pipeline(&gpu.pipeline_glass_front);
                     pass.draw_indexed(0..b.count, 0, 0..1);
-                    // (test hook MCLA_AMB_GLASS_SKIP=1: the traffic glass left out, to compare the colour behind it with
-                    // the original's - the recorder's "skip <PSAmbientGlassFront>" line)
-                    static SKIP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                    if b.mode == MatMode::CarGlass && *SKIP.get_or_init(|| std::env::var_os("MCLA_AMB_GLASS_SKIP").is_some()) {
-                        continue;
-                    }
                     *draws += 1;
                 }
                 pass.set_pipeline(&gpu.pipeline_blend);
             }
             for (bi, b) in batches.iter().enumerate() {
                 if b.mode.blended() != blend_pass || b.bucket == 1 {
+                    continue;
+                }
+                if c.is_ambient() && amb_skip(&c.model.name, bi, b) {
                     continue;
                 }
                 if glass2 && b.mode == MatMode::CarGlass && !b.shader.to_ascii_lowercase().contains("bumped") {
@@ -5305,7 +5314,13 @@ impl Vehicles {
                     wheels.push((m.transform_point3(pose.hubs[i]), axle, tyre_r, tyre_w));
                 }
             }
-            out.push(crate::carblob::CarBlob { m, min: c.model.min, max: c.model.max, ground_y, ambient: c.model.name.to_ascii_lowercase().starts_with("va_"), wheels });
+            // (a traffic car's blob is sized from its type's bound box, F-68081; MCLA_BLOB_MODEL_BOX=1: the drawn model's box)
+            static MODEL_BOX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let (min, max) = match c.model.bound_box {
+                Some(b) if !*MODEL_BOX.get_or_init(|| std::env::var_os("MCLA_BLOB_MODEL_BOX").is_some()) => b,
+                _ => (c.model.min, c.model.max),
+            };
+            out.push(crate::carblob::CarBlob { m, min, max, ground_y, ambient: c.model.name.to_ascii_lowercase().starts_with("va_"), wheels });
         }
         out
     }
@@ -5868,4 +5883,22 @@ fn amb_slot_start() -> [i32; 2] {
             })
             .unwrap_or([-1, -1])
     })
+}
+
+/// Test hook MCLA_AMB_SKIP=<batch>,<batch>,...: those batches of every traffic car's drawn LOD left out (the recorder's
+/// "skip" lines, to find which mesh paints a pixel); MCLA_AMB_BATCHES=1 lists each traffic model's batches once.
+fn amb_skip(model: &str, bi: usize, b: &GpuBatch) -> bool {
+    static LIST: std::sync::OnceLock<(Vec<usize>, bool)> = std::sync::OnceLock::new();
+    static SEEN: std::sync::Mutex<Vec<(String, usize)>> = std::sync::Mutex::new(Vec::new());
+    let (skip, list) = LIST.get_or_init(|| {
+        (std::env::var("MCLA_AMB_SKIP").map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default(), std::env::var_os("MCLA_AMB_BATCHES").is_some())
+    });
+    if *list {
+        let mut seen = SEEN.lock().unwrap();
+        if !seen.iter().any(|(m, i)| m == model && *i == bi) {
+            seen.push((model.to_string(), bi));
+            eprintln!("ambbatch {model} {bi}: shader {} mode {:?} bucket {} indices {} box {:?} {:?}", b.shader, b.mode, b.bucket, b.count, b.min, b.max);
+        }
+    }
+    skip.contains(&bi)
 }

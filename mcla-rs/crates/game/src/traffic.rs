@@ -157,6 +157,24 @@ pub fn bound_size(root: &std::path::Path, model: &str) -> Option<(f32, f32)> {
     None
 }
 
+/// The type's bound box (min, max) in the car's space: the `.r155` root's +8 bound, +0x10 max / +0x20 min. The traffic
+/// occlusion blob's record (F-68081) takes its L and H from this box (z and y extents of max - min), read there through
+/// the type's physics archetype; the drawn model's box is larger (the caravan's height 1.6775 against 1.4930).
+pub fn bound_box(root: &std::path::Path, model: &str) -> Option<(glam::Vec3, glam::Vec3)> {
+    for e in std::fs::read_dir(root.join("resources/ambients").join(model)).ok()? {
+        let p = e.ok()?.path();
+        if p.extension().is_some_and(|x| x == "r155") {
+            let res = crate::assets::load_resource_file(&p).ok()?;
+            let rd = mcla_formats::rage::Rd::new(&res);
+            let o = rd.ptr(8)?;
+            let v = |a: usize| glam::Vec3::new(rd.f32(a), rd.f32(a + 4), rd.f32(a + 8));
+            let (mx, mn) = (v(o + 0x10), v(o + 0x20));
+            return (mx.is_finite() && mn.is_finite() && (mx - mn).min_element() > 0.0).then_some((mn, mx));
+        }
+    }
+    None
+}
+
 /// A traffic type's two LOD steps, `tune/ambients/traffic/<model>/mcAmbientRenderType.xml` (the render type's
 /// parser table 0x82830414, filled by sub_82790530: fLodSwitchScale at +40, fHighToMedSwitch at +44,
 /// fMedToLowSwitch at +48): LOD 0 below +44 x +40, LOD 1 below +48 x +40 (sub_827902F0). Every type has the file;

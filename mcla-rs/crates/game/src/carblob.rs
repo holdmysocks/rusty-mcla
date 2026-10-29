@@ -160,8 +160,8 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
             let up = if c.ambient { 0.2 * r } else { 0.2326 * r };
             let foot = pos + y * c.ground_y;
             let mut first = foot + y * up - z * (span * 0.5);
-            // (a traffic car's record, F-68081 -> F-18380, decoded 2026-10-29: L and H the model box's length and
-            // height (the drawable's bounds, +16 / +32); under 8.5 m r = L / 3 and the end spheres at L / 4 from the
+            // (a traffic car's record, F-68081 -> F-18380, decoded 2026-10-29: L and H the length and
+            // height (the bound box's max +16 minus min +32: the type's bound, `traffic::bound_box`, passed in as min / max); under 8.5 m r = L / 3 and the end spheres at L / 4 from the
             // car's ORIGIN along its z, else r = L / 4 and the ends at 0.33 L; both raised H / 4 along its y; the two
             // inner spheres at 1/3 and 2/3 between them (F-18380); the cylinder centred on the origin (F-35120 takes
             // the record's matrix), its length 2 r + the ends' distance. The truck's recorded blob: r 2.395, length
