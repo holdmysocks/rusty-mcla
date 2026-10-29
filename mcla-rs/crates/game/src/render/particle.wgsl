@@ -248,8 +248,10 @@ fn vert_lit(wp: vec3<f32>, n: vec3<f32>, v: vec4<f32>, ec: vec3<f32>, fill: vec3
         if (hl >= 0) {
             let d = lights.pos_range[hl].xyz - wp;
             let inv = inverseSqrt(max(dot(d, d), 1e-6));
-            let cone = clamp(dot(d, -lights.dir[hl].xyz * 4.4696) * inv - 2.872, 0.0, 1.0);
-            dl = dl + lights.color[hl].rgb * clamp(500.0 * inv * inv, 0.0, 1.0) * cone * clamp(dot(n, d) * inv * (1.0 - v.w) + v.w, 0.0, 1.0);
+            // (while HEADLIGHTS is held - dir.w, the flash target - F-43427: strength x 2, cone x 1.2)
+            let hk = select(vec3<f32>(500.0, 4.4696, -2.872), vec3<f32>(1000.0, 3.9948, -2.2326), lights.dir[hl].w > 0.5);
+            let cone = clamp(dot(d, -lights.dir[hl].xyz * hk.y) * inv + hk.z, 0.0, 1.0);
+            dl = dl + lights.color[hl].rgb * clamp(hk.x * inv * inv, 0.0, 1.0) * cone * clamp(dot(n, d) * inv * (1.0 - v.w) + v.w, 0.0, 1.0);
         }
     }
     return 0.55 * (amb + v.x * dl);

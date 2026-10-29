@@ -794,6 +794,16 @@ fn head_lamps() -> vec2<i32> {
     return h;
 }
 
+// A head lamp's strength, cone scale and cone bias: while HEADLIGHTS is held (the flash target,
+// dir.w = 1) F-43427 adds it with twice the strength and a cone 1.2 times as wide
+// (car_lamps.rs `head_lamp_cone`; recorded c87 1000, c91..93 x 3.9948, c95 -2.2326)
+fn head_cone(i: i32) -> vec3<f32> {
+    if (lights.dir[i].w > 0.5) {
+        return vec3<f32>(1000.0, 3.9948, -2.2326);
+    }
+    return vec3<f32>(500.0, 4.4696, -2.872);
+}
+
 // The night programs' fourth dynamic light (the light manager's dynamic list +576, record 3 -
 // sub_822F7CE0): the race checkpoint's flickering light (checkpoints.rs, the light set's entry
 // with colour.w 3: its strength in dir.w, all round).
@@ -841,10 +851,12 @@ fn road_night_program(wpos: vec3<f32>, nrm: vec3<f32>, color: vec4<f32>, color1:
         hp[k] = vec3<f32>(0.0, -100000.0, 0.0);
         hc[k] = vec3<f32>(0.0);
         hd[k] = vec3<f32>(0.0, 1.0, 0.0);
+        hk[k] = vec3<f32>(500.0, 4.4696, -2.872);
         if (h[k] >= 0) {
+            hk[k] = head_cone(h[k]);
             hp[k] = lights.pos_range[h[k]].xyz;
             hc[k] = lights.color[h[k]].rgb;
-            hd[k] = -lights.dir[h[k]].xyz * 4.4696;
+            hd[k] = -lights.dir[h[k]].xyz * hk[k].y;
         }
     }
     let kp = g.key_dir.xyz * 100000.0;
@@ -861,7 +873,7 @@ fn road_night_program(wpos: vec3<f32>, nrm: vec3<f32>, color: vec4<f32>, color1:
     xs_c[84] = vec4<f32>(hc[0].r, hc[1].r, g.key_col.r, cc.r);
     xs_c[85] = vec4<f32>(hc[0].g, hc[1].g, g.key_col.g, cc.g);
     xs_c[86] = vec4<f32>(hc[0].b, hc[1].b, g.key_col.b, cc.b);
-    xs_c[87] = vec4<f32>(500.0, 500.0, 10000000000.0, ci);
+    xs_c[87] = vec4<f32>(hk[0].x, hk[1].x, 10000000000.0, ci);
     xs_c[88] = vec4<f32>(hp[0].x, hp[1].x, kp.x, cpp.x);
     xs_c[89] = vec4<f32>(hp[0].y, hp[1].y, kp.y, cpp.y);
     xs_c[90] = vec4<f32>(hp[0].z, hp[1].z, kp.z, cpp.z);
@@ -869,7 +881,7 @@ fn road_night_program(wpos: vec3<f32>, nrm: vec3<f32>, color: vec4<f32>, color1:
     xs_c[92] = vec4<f32>(hd[0].y, hd[1].y, 0.0, 0.0);
     xs_c[93] = vec4<f32>(hd[0].z, hd[1].z, 0.0, 0.0);
     xs_c[94] = vec4<f32>(g.key_dir.xyz, -435311680.0);
-    xs_c[95] = vec4<f32>(-2.872, -2.872, 1.0, 1.0);
+    xs_c[95] = vec4<f32>(hk[0].z, hk[1].z, 1.0, 1.0);
     xs_c[96] = vec4<f32>(1.0 / 6320.0, 1.0 / 4463.75, 0.54857594, 0.5282554);
     xs_c[97] = vec4<f32>(-3467.0, -31.0, -2358.0, 0.0);
     xs_c[98] = vec4<f32>(6320.0, 110.0, 4463.75, 0.0);
@@ -4764,9 +4776,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             }
             if (lc.w > 1.5) {
                 // the original's dynamic lights (the player's head lamps at night, PSMultiLight):
-                // colour x sat(500 / d squared) x sat(cos x 4.4696 - 2.872) x n.l
-                let cone = clamp(dot(-l, lights.dir[i].xyz) * 4.4696 - 2.872, 0.0, 1.0);
-                local = local + lc.rgb * (clamp(500.0 / max(dist * dist, 0.0001), 0.0, 1.0) * cone * max(dot(n, l), 0.0));
+                // colour x sat(500 / d squared) x sat(cos x 4.4696 - 2.872) x n.l (flashed: head_cone)
+                let hk = head_cone(i32(i));
+                let cone = clamp(dot(-l, lights.dir[i].xyz) * hk.y + hk.z, 0.0, 1.0);
+                local = local + lc.rgb * (clamp(hk.x / max(dist * dist, 0.0001), 0.0, 1.0) * cone * max(dot(n, l), 0.0));
                 continue;
             }
             if (lc.w > -0.5) {

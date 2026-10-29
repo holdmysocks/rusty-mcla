@@ -8681,15 +8681,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // (held HEADLIGHTS turns it towards the high beam's: the flash state, F-19475)
                         let fl = c.amb_lamps.s[3];
                         let hl_col = self.vehicles.lamp_rows(c).map_or_else(|| render::car_lamps::R8.head_light_flash(fl), |t| t.head_light_flash(fl));
+                        // (and while it is held - the flash TARGET, not the eased state - F-43427 adds them with twice
+                        // the strength and a cone 1.2 times as wide: `car_lamps::head_lamp_cone`; dir.w carries it to the
+                        // programs. MCLA_FLASH_CONE_OLD=1: as before, the colour only)
+                        let flash_t = if self.vehicles.player_flash && std::env::var("MCLA_FLASH_CONE_OLD").is_err() { 1.0 } else { 0.0 };
                         for side in [-1.0f32, 1.0] {
                             // (where the game puts them, from the lamps' positions in c88..c90 against the
                             // car's own matrix in two captures, fix_night and car_n: 3.2 m ahead of the
                             // car's origin - a metre beyond the nose -, 0.72 m to each side, 0.57 m up)
                             let p = hl_pos + fwd * 3.2 + right * (0.72 * side) + up * 0.57;
-                            if std::env::var("MCLA_TOD_DUMP").is_ok() && self.frame_no == 60 { eprintln!("head lamp at {:?} dir {:?} colour {:?}", p, dir, hl_col); }
+                            if std::env::var("MCLA_TOD_DUMP").is_ok() && (self.frame_no == 60 || (flash_t > 0.0 && self.frame_no % 60 == 0)) { eprintln!("head lamp at {:?} dir {:?} colour {:?} flash {} cone {:?}", p, dir, hl_col, flash_t, render::car_lamps::head_lamp_cone(flash_t > 0.5)); }
                             ls.pos_range[k] = [p.x, p.y, p.z, 120.0];
                             ls.color[k] = [hl_col[0], hl_col[1], hl_col[2], 2.0];
-                            ls.dir[k] = [dir.x, dir.y, dir.z, 0.0];
+                            ls.dir[k] = [dir.x, dir.y, dir.z, flash_t];
                             k += 1;
                         }
                     }
@@ -8735,7 +8739,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let mut heads = [None; 2];
                 for (h, i) in (0..k).filter(|&i| ls.color[i][3] > 1.5 && ls.color[i][3] < 2.5).take(2).enumerate() {
                     let (p, c, d) = (ls.pos_range[i], ls.color[i], ls.dir[i]);
-                    heads[h] = Some(render::LampRec { pos: Vec3::new(p[0], p[1], p[2]), color: Vec3::new(c[0], c[1], c[2]), strength: 500.0, back: -Vec3::new(d[0], d[1], d[2]), cone: [4.4696, -2.872] });
+                    // (the flash: dir.w, F-43427's strength x 2 and cone x 1.2)
+                    let (strength, cone) = if d[3] > 0.5 { let (s, k, b) = render::car_lamps::head_lamp_cone(true); (s, [k, b]) } else { (500.0, [4.4696, -2.872]) };
+                    heads[h] = Some(render::LampRec { pos: Vec3::new(p[0], p[1], p[2]), color: Vec3::new(c[0], c[1], c[2]), strength, back: -Vec3::new(d[0], d[1], d[2]), cone });
                 }
                 let key = Some((Vec3::new(globals.key_col[0], globals.key_col[1], globals.key_col[2]), Vec3::new(globals.key_dir[0], globals.key_dir[1], globals.key_dir[2])));
                 (figlight::Dynamic { heads, key }, dt * 30.0)

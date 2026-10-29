@@ -185,6 +185,21 @@ impl LampRows {
     }
 }
 
+/// The player's two head-lamp lights' strength and cone (scale, bias): F-43427 adds them with the
+/// light manager's strength (+14620, 500) and cone angle (+14612, 60 degrees) taken x 2 and x 1.2
+/// while the flash TARGET (lamp object byte +244, HEADLIGHTS held - F-44589) is set, the penumbra
+/// (+14616, 40.1) unchanged; F-51633 turns them into the program's scale / bias: half angles
+/// (x 6.28 / 360), scale = 1 / (cos a - cos(a + p)), bias = 1 - scale x cos a.
+/// Recorded (`work/flashlight`, 23:00, the R8): c87 500 -> 1000, scale 4.4703 -> 3.9948, c95
+/// -2.872 -> -2.2326. The shaders carry these numbers (`head_cone` in city / modelfx / particle.wgsl).
+pub fn head_lamp_cone(flash: bool) -> (f32, f32, f32) {
+    let k = 6.28_f32 / 720.0;
+    let (strength, cone, pen) = if flash { (1000.0, 60.0 * 1.2, 40.1) } else { (500.0, 60.0, 40.1) };
+    let (ci, co) = ((cone * k).cos(), ((cone + pen) * k).cos());
+    let scale = 1.0 / (ci - co);
+    (strength, scale, 1.0 - scale * ci)
+}
+
 fn cached(key: &str, load: impl FnOnce(&std::path::Path) -> Option<LampRows>) -> Option<Arc<LampRows>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Option<Arc<LampRows>>>>> = OnceLock::new();
     let mut c = CACHE.get_or_init(Default::default).lock().ok()?;
@@ -304,5 +319,18 @@ mod tests {
         s.bulb[3] = [1.0, 0.95, 0.85];
         s.cover[3] = [0.7215686, 0.7215686, 0.7286152];
         assert!(close(s.head_light(), [2.1647, 2.0565, 1.858]), "{:?}", s.head_light());
+    }
+
+    #[test]
+    fn head_light_flash_as_recorded() {
+        // (work/flashlight/cap/k_B.bin: the R8 at 23:00 with HEADLIGHTS held - c84..c87, c91..c93 length, c95)
+        let close = |a: f32, b: f32, e: f32| (a - b).abs() < e;
+        // (the flash state +248 was still easing up in that frame: all three channels give 0.9796)
+        let c = R8.head_light_flash(0.9796);
+        assert!(close(c[0], 2.9765, 2e-4) && close(c[1], 2.8406, 2e-4) && close(c[2], 2.5592, 2e-4), "{:?}", c);
+        let (s0, k0, b0) = head_lamp_cone(false);
+        assert!(s0 == 500.0 && close(k0, 4.4703, 5e-4) && close(b0, -2.872, 5e-4), "{} {} {}", s0, k0, b0);
+        let (s1, k1, b1) = head_lamp_cone(true);
+        assert!(s1 == 1000.0 && close(k1, 3.9948, 5e-4) && close(b1, -2.2326, 5e-4), "{} {} {}", s1, k1, b1);
     }
 }
