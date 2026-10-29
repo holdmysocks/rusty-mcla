@@ -522,6 +522,10 @@ struct App {
     audio_trace_t: f32,
     /// the opening's black (CarSelection's TRANSITIONMOVIE fades)
     intro_mask: boomcam::CutMask,
+    /// FIND_SH_02C_CORE's fade after its scene (`Story/0xb27d6524` 0xc93 / 0xff6, the helper (1, 1, 1.0, 0) twice):
+    /// 1 the fade down asked, 2 the fade up, then Racer_PlayIgnition and Racer_Activate (0x1322 / 0x132c)
+    f02c_fade: u8,
+    f02c_mask: boomcam::CutMask,
     /// the opening's `Graphics_WarpToTimeOfDay(17, 100)`: the hour aimed at, while the clock is moved there
     intro_tod: Option<f32>,
     /// VEHICLE SELECT: where the first of the three starters stands
@@ -1108,6 +1112,8 @@ impl App {
             intro_t: 0.0,
             audio_trace_t: 0.0,
             intro_mask: Default::default(),
+            f02c_fade: 0,
+            f02c_mask: Default::default(),
             intro_tod: None,
             starters_made: false,
             grid_warm: None,
@@ -5375,7 +5381,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.place_view = None;
                 self.game.place_title = None;
             }
-            self.game.place_mask = self.garage_mask.update(dt).max(self.arrest_mask.update(dt));
+            self.game.place_mask = self.garage_mask.update(dt).max(self.arrest_mask.update(dt)).max(self.f02c_mask.update(dt));
             // (test hook MCLA_ARREST_TRACE=1: the arrest's black each frame it is on)
             if self.arrest_mask.is_on() && std::env::var_os("MCLA_ARREST_TRACE").is_some() {
                 log::info!("arrest mask tick {} opacity {:.3} full {} wait {} scene {:?} form {} station {:?} activate {}", self.tick_no, self.game.place_mask, self.arrest_mask.full(), self.arrest_wait, self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t)), self.game.arrest_panel.is_some(), self.arrest_station, self.arrest_activate);
@@ -7167,6 +7173,25 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (0x1199: fn 0x11a6(1, 1, 1.0, 0) - the 1 s fade up, waited, before the car is given back)
                 self.arrest_mask.release(1.0);
                 self.arrest_activate = true;
+            }
+        }
+        // FIND_SH_02C_CORE after its scene: the 1 s fade down (fade_speed_in 1.0, held, waited until full - 0xfa1), the
+        // set dressing unloaded and UILogic_UnPauseCamera, the 1 s fade up (fade_speed_out 1.0, waited until it has
+        // gone - 0x12b9), then Racer_PlayIgnition (the engine sound's start) and Racer_Activate (F-30391(0): the
+        // engine word and the hold back). (approx.: the fade is asked at the scene's end, not after the script's
+        // 100 ms poll of IsChildFinished and its form wait)
+        if self.f02c_fade == 1 {
+            self.f02c_mask.start(1.0, 0.01, f32::MAX);
+            if self.f02c_mask.full() {
+                self.f02c_mask.release(1.0);
+                self.f02c_fade = 2;
+            }
+        } else if self.f02c_fade == 2 && !self.f02c_mask.is_on() {
+            self.f02c_fade = 0;
+            self.sound.play_ignition();
+            if let Some(c) = self.vehicles.player_mut() {
+                c.engine_off = false;
+                c.deactivated = false;
             }
         }
         if self.arrest_activate && !self.arrest_mask.is_on() {
@@ -11380,6 +11405,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // race goes on from where the two are - althk.rs)
                 if started {
                     self.game.alt_after_start(&mut self.vehicles);
+                    // (the race core's set-up, OrderedCheckpointCore 0xd4e / 0xde6: Racer_ResetWithDamageIntact on
+                    // every racer - F-30391(0): the engine word +46 = 1 and the hold off)
+                    if let Some(c) = self.vehicles.player_mut() {
+                        c.engine_off = false;
+                        c.deactivated = false;
+                    }
                 }
                 // a delivery from the garage lot opens with the walk to the customer's car
                 // (p080, the original's order - delivery_hangout_core `Hangouts/0x37c63b19`: ACCEPT ->
@@ -12090,19 +12121,21 @@ impl App {
             // FinishScene (F-62501 with 1) leaves the engine word alone; the story scenes' callers run Racer_Activate
             // (F-76651(racer, 0) -> F-30391(0): +46 = 1) or Racer_Reset right after (payback_intro's three, race_gh_06,
             // bestof_sh_05, beat_sh_02_exotic, rep_on_strip_garage, hangout_series_hollywoodc, district_champs, the
-            // pinkslip hills). find_sh_02c's core plays Racer_PlayIgnition and then Racer_Activate after its fade.
-            // The downtown hangouts' and city_champ's go on into a race, whose core (OrderedCheckpointCore) runs
-            // Racer_ResetWithDamageIntact / Racer_Activate at its set-up; hollywood_garage_intro goes into the garage,
-            // whose core activates the car at its exit. (approx.: the engine comes back at the scene's end, not at
-            // that later set-up / exit / fade, which the player does not drive through)
-            if ended.starts_with("story/") || ended.starts_with("racestart/") {
+            // pinkslip hills): here at the scene's end (approx.: the callers poll IsChildFinished every 100 ms).
+            // The others keep the car off until later (`vehicles::ENGINE_BACK_LATER`): find_sh_02c's core after its
+            // fade (`f02c_fade`); the downtown hangouts' and city_champ's go on into a race, whose core
+            // (OrderedCheckpointCore) runs Racer_ResetWithDamageIntact at its set-up (0xd4e / 0xde6) and Racer_Activate
+            // on every racer at the go (0x15ee) - as after every racestart/ scene; hollywood_garage_intro goes into the
+            // garage, whose core activates the car after its `_ext` scene (0x1557)
+            let later = vehicles::ENGINE_BACK_LATER.contains(&ended.as_str()) || ended.starts_with("racestart/");
+            if (ended.starts_with("story/") && !later) || cinedriver::GARAGE_EXIT.contains(&ended.as_str()) {
                 if let Some(c) = self.vehicles.player_mut() {
                     c.engine_off = false;
                     c.deactivated = false;
                 }
-                if ended == "story/cut_story_find_sh_02c" {
-                    self.sound.play_ignition();
-                }
+            }
+            if ended == "story/cut_story_find_sh_02c" {
+                self.f02c_fade = 1;
             }
         }
         let Some((name, t)) = now else { return };

@@ -503,6 +503,19 @@ pub enum EngineEv {
     EngineOff,
     EngineOn,
 }
+/// The story scenes with car_off / engine_off on the player whose caller brings the engine back only later, not
+/// right after the scene: the downtown hangouts' and city_champ's at the race core's set-up and go (their race),
+/// hollywood_garage_intro at the garage's exit (garage core 0x1557), find_sh_02c after its fade (its core 0x132c).
+/// (Every racestart/ scene's comes back at the race's go too.)
+pub const ENGINE_BACK_LATER: [&str; 6] = [
+    "story/cut_story_hangout_pinkslip_downtown",
+    "story/cut_story_hangout_series_downtown",
+    "story/cut_story_city_champ",
+    "story/cut_story_city_champ_night",
+    "story/cut_story_hollywood_garage_intro",
+    "story/cut_story_find_sh_02c",
+];
+
 pub const CINE_ENGINE_EVENTS: &[(&str, EngineEv, u8, f32)] = &[
     ("cut_cop_arrest", EngineEv::CarOff, 0, 0.0),
     ("cut_cop_arrest_02", EngineEv::CarOff, 0, 0.0),

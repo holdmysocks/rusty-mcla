@@ -3580,6 +3580,14 @@ impl Game {
         if race.countdown > 0.0 {
             if world_ready || race.countdown < 3.4 {
                 race.countdown -= dt;
+                // the go: the race core's Racer_Activate on every racer (OrderedCheckpointCore 0x15ee, after
+                // BrainRacing_BeginRace) - F-76651(racer, 0) -> F-30391(0): a racestart scene's engine_off ends here
+                if race.countdown <= 0.0 {
+                    if let Some(c) = vehicles.player_mut() {
+                        c.engine_off = false;
+                        c.deactivated = false;
+                    }
+                }
             }
             // (N-VP-1: the grid is not frozen - the cars simulate, held by their brakes, so revving and
             // burnouts happen as in the original: `Vehicles::grid_hold`, `CarInput::hold`, `AiDriver::grid_input`)
