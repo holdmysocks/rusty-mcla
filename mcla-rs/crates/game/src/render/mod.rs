@@ -714,13 +714,15 @@ pub struct ObjectUniform {
     pub area_a: [[f32; 4]; 5],
     /// ... and the second colour, w = paint type + 8 x fade
     pub area_b: [[f32; 4]; 5],
+    /// a traffic or parked car's own light-slot order (F-99357): x = 1 the hour's light second, w = 1 given
+    pub slots: [f32; 4],
 }
 
 impl Default for ObjectUniform {
     fn default() -> Self {
         // (lamps without a table of their own: the Audi R8's, as before the tables were read)
         let (lamp_a, lamp_b) = car_lamps::R8.uniform();
-        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5] }
+        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [0.0; 4] }
     }
 }
 

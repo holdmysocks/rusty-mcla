@@ -2085,8 +2085,11 @@ fn seat_car(r: &mut Rider, col: &WorldCollider, p: Vec3, dir: Vec3, face: Vec3, 
     s.y = pos.y;
     s.at = (pos, up);
     s.frames += 1;
-    // (a car on a rail is drawn 0.025 m lower from its second frame on: skeleton +236)
-    let drawn = if s.frames > 1 { pos - up * 0.025 } else { pos };
+    // (a car on a rail is drawn 0.025 m lower from its second frame on: F-37033 sets the skeleton's +236
+    // on the first frame its instance has a rider (instance +452 -> +188) and from then subtracts 0.025 from
+    // the drawn matrix's place y - the world's y, not along the car's up; no rider clears it. Recorded: the
+    // taxi standing at a light, drawn c3.y 22.8026 against its instance's 22.8276; a parked car 0)
+    let drawn = if s.frames > 1 { pos - Vec3::Y * 0.025 } else { pos };
     (drawn, Quat::from_mat3(&glam::Mat3::from_cols(right, up, -f)).normalize())
 }
 

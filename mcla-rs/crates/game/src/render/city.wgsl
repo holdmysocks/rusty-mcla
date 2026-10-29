@@ -507,8 +507,15 @@ struct Object {
     lamp_b: array<vec4<f32>, 19>, // and cover (lens) colours
     area_a: array<vec4<f32>, 5>,  // the player's paint areas after the body (doors, hood, bumpers, skirts): first colour, w 1 = own paint
     area_b: array<vec4<f32>, 5>,  // and second colour, w = paint type + 8 x fade
+    slots: vec4<f32>,     // a traffic or parked car's own light-slot order (F-99357): x = 1 the hour's light second; w = 1 given
 };
 @group(3) @binding(0) var<uniform> obj: Object;
+// Which of a car's two light slots holds the lamp first (the hour's light second): a traffic or parked
+// car's own (obj.slots, F-99357), else the player's car's (car_key_col.w).
+fn car_lamp_first() -> bool {
+    if (obj.slots.w > 0.5) { return obj.slots.x > 0.5; }
+    return g.car_key_col.w > 0.5;
+}
 // a car's vertex damage map (damagemap.rs, the original's DmgTex): r the dents, g / a the layout,
 // b the scrapes; all zero on everything else
 @group(3) @binding(1) var t_dmg: texture_2d<f32>;
@@ -3635,7 +3642,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let nlcp = max(dot(n, g.car_key.xyz), 0.0);
             let lhp = (g.sun_color.rgb * (g.sun_dir.w * nlsp * clamp(4.0 * nlsp, 0.0, 1.0)) + car_kc() * (nlkp * clamp(4.0 * nlkp, 0.0, 1.0))) * (0.9 * occp);
             let llp = g.car_key_col.rgb * (nlcp * clamp(4.0 * nlcp, 0.0, 1.0) * 0.9 * occp);
-            let lamp_first_p = g.car_key_col.w > 0.5;
+            let lamp_first_p = car_lamp_first();
             let l0p = select(lhp, llp, lamp_first_p) * sp_;
             let l1p = select(llp, lhp, lamp_first_p);
             var ltp = l0p + l1p - clamp(l0p * l1p, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -3741,7 +3748,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let att_a = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
             let lh_a = (g.sun_color.rgb * (g.sun_dir.w * nls_a * clamp(4.0 * nls_a, 0.0, 1.0)) + car_kc() * (nlk_a * clamp(4.0 * nlk_a, 0.0, 1.0))) * (occ_a * att_a);
             let ll_a = g.car_key_col.rgb * (nlc_a * clamp(4.0 * nlc_a, 0.0, 1.0) * occ_a * att_a);
-            let first_a = g.car_key_col.w > 0.5;
+            let first_a = car_lamp_first();
             let l0_a = select(lh_a, ll_a, first_a) * sh_a;
             let l1_a = select(ll_a, lh_a, first_a);
             var lt_a = l0_a + l1_a - clamp(l0_a * l1_a, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -3976,7 +3983,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 let att6 = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
                 let l_hour = (g.sun_color.rgb * g.sun_dir.w * max(dot(n, g.sun_dir.xyz), 0.0) + car_kc() * max(dot(n, car_kd()), 0.0)) * (ta.x * aok * att6);
                 let l_lamp = g.car_key_col.rgb * max(dot(n, g.car_key.xyz), 0.0) * (ta.x * aok * att6);
-                let lamp_first = g.car_key_col.w > 0.5;
+                let lamp_first = car_lamp_first();
                 let l0 = select(l_hour, l_lamp, lamp_first) * sk;
                 let l1 = select(l_lamp, l_hour, lamp_first);
                 let la0 = hemi * (ta.z * aok);
@@ -4283,7 +4290,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 let qi = textureSampleGrad(t_diffuse, s_diffuse, in.uv0, uv0_dx, uv0_dy).g + 0.1;
                 let ti = tint4.rgb / 12.0;
                 // (the glare: the first slot is the lamp when it came first - car_key_col.w - else the hour's light)
-                let lamp0 = g.car_key_col.w > 0.5;
+                let lamp0 = car_lamp_first();
                 let hn = g.car_key2.w > 0.5;
                 let l0d = select(select(g.sun_dir.xyz, car_kd(), hn), g.car_key.xyz, lamp0);
                 let l0c = select(select(g.sun_color.rgb * g.sun_dir.w, car_kc(), hn), g.car_key_col.rgb, lamp0) * att12;

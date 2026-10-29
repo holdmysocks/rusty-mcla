@@ -1606,6 +1606,7 @@ impl App {
         // 100 m off along that direction with range 1000 (the programs' 0.9).
         // MCLA_CAR_SLOT=0 / 1 starts with the hour's light in the first / second slot (a
         // capture's history), otherwise the slots start empty at the session's first frame.
+        *LAST_HOUR.lock().unwrap() = Some((nfl, hour_light));
         const HOUR: i32 = 65545;
         struct Slots { held: [i32; 2], dir: [Vec3; 2], col: [Vec3; 2], int: [f32; 2], frame: u64, time: f32, init: bool }
         static SLOTS: std::sync::Mutex<Option<Slots>> = std::sync::Mutex::new(None);
@@ -1625,65 +1626,10 @@ impl App {
         });
         if sl.frame != self.frame_no || !sl.init {
             let at = self.vehicles.player().filter(|_| self.drive).map(|c| c.state.pos).unwrap_or(self.cam.pos);
-            // (id, weight, direction towards it, colour, strength)
-            let mut cand: Vec<(i32, f32, Vec3, Vec3, f32)> = Vec::new();
-            if nfl > 0.0 {
-                for (i, l) in self.props.lights.iter().enumerate() {
-                    let d = l.pos - at;
-                    let d2 = d.length_squared();
-                    if d2 > 6400.0 || d2 < 1e-4 {
-                        continue;
-                    }
-                    // (the weight takes the record's cone as the prop lamps' below - F-60154)
-                    let cone = l.table_cone();
-                    let s = if l.on() { (l.range / d2).clamp(0.0, 1.0) * ((d / d2.sqrt()).dot(-l.dir) * cone[0] + cone[1]).clamp(0.0, 1.0) } else { 0.0 };
-                    cand.push((i as i32, s, d / d2.sqrt(), l.color.max(Vec3::ZERO), s));
-                }
-                // (the lamps the props carry - the street lights. Recorded at the Selma / Highland
-                // crossing, car at (735.91, 20.77, -850.46): colour (1, 0.75, 0.55), strength 0.3847,
-                // direction (0.382, 0.903, -0.196) - the lamp at (740.6, 31.6, -852.8), Intensity 55,
-                // 11.96 m off; at 02:00 the second slot holds a second one, (0.9, 0.8, 0.65) x 0.0983,
-                // Intensity 80 at 28.5 m. MCLA_CAR_LAMP_CITY=1: the baked lights only.)
-                if std::env::var("MCLA_CAR_LAMP_CITY").is_err() {
-                    for (i, l) in self.props.prop_lamps.iter().enumerate() {
-                        let d = l.pos - at;
-                        let d2 = d.length_squared();
-                        if d2 > 6400.0 || d2 < 1e-4 || l.intensity <= 0.0 {
-                            continue;
-                        }
-                        let dir = d / d2.sqrt();
-                        let s = (l.intensity / d2).clamp(0.0, 1.0) * (dir.dot(l.back) * l.cone[0] + l.cone[1]).clamp(0.0, 1.0);
-                        cand.push((30000 + i as i32, s, dir, l.color.max(Vec3::ZERO), s));
-                    }
-                }
-            }
-            // (the light manager's dynamic list at night: its fourth record is the race checkpoint's
-            // light, id 65539, weighed sat(40 / d squared) all round like the lamps - checkpoints.rs)
-            if nfl > 0.0 {
-                if let Some((p, c)) = self.cp_markers.light {
-                    let d = p - at;
-                    let d2 = d.length_squared();
-                    if d2 > 1e-4 {
-                        let s = (checkpoints::LIGHT_INTENSITY / d2).clamp(0.0, 1.0);
-                        cand.push((65539, s, d / d2.sqrt(), Vec3::from(c).max(Vec3::ZERO), s));
-                    }
-                }
-            }
-            let hw = 2.0 * hour_light.1.max(Vec3::ZERO).dot(Vec3::new(0.30, 0.59, 0.11));
-            cand.push((HOUR, hw, hour_light.0, hour_light.1.max(Vec3::ZERO), 1.0));
-            let (mut b0, mut b1, mut w0, mut w1) = (-1i32, -1i32, 0.0f32, 0.0f32);
-            for c in &cand {
-                if c.1 > w0 {
-                    b1 = b0;
-                    w1 = w0;
-                    b0 = c.0;
-                    w0 = c.1;
-                } else if c.1 > w1 {
-                    b1 = c.0;
-                    w1 = c.1;
-                }
-            }
-            let swap = (b0 != sl.held[0] && b0 == sl.held[1]) || (b1 != sl.held[1] && b1 == sl.held[0]);
+            let cand = self.slot_candidates(at, nfl, hour_light);
+            let hw = cand.last().map_or(0.0, |c| c.1);
+            let (b0, w0, b1, w1) = pick_two(&cand);
+            let swap = slot_swap(sl.held, b0, b1);
             // (a forced start keeps the hour's light where it was put until it is chosen once)
             let forced = sl.held.contains(&-2);
             sl.held = if forced && (b0 == HOUR || b1 == HOUR) {
@@ -1742,6 +1688,88 @@ impl App {
             [sl.dir[hs].x, sl.dir[hs].y, sl.dir[hs].z, if night { 1.0 } else { 0.0 }],
             [hc.x, hc.y, hc.z, 0.0],
         )
+    }
+
+    /// The candidates for a car's two light slots where it stands (F-24398): (id, weight, direction
+    /// towards it, colour, strength) - from dusk to dawn the lamps and the checkpoint's light, and
+    /// always the hour's light, last.
+    fn slot_candidates(&self, at: Vec3, nfl: f32, hour_light: (Vec3, Vec3)) -> Vec<(i32, f32, Vec3, Vec3, f32)> {
+        const HOUR: i32 = 65545;
+        let mut cand: Vec<(i32, f32, Vec3, Vec3, f32)> = Vec::new();
+        if nfl > 0.0 {
+            for (i, l) in self.props.lights.iter().enumerate() {
+                let d = l.pos - at;
+                let d2 = d.length_squared();
+                if d2 > 6400.0 || d2 < 1e-4 {
+                    continue;
+                }
+                // (the weight takes the record's cone as the prop lamps' below - F-60154)
+                let cone = l.table_cone();
+                let s = if l.on() { (l.range / d2).clamp(0.0, 1.0) * ((d / d2.sqrt()).dot(-l.dir) * cone[0] + cone[1]).clamp(0.0, 1.0) } else { 0.0 };
+                cand.push((i as i32, s, d / d2.sqrt(), l.color.max(Vec3::ZERO), s));
+            }
+            // (the lamps the props carry - the street lights. Recorded at the Selma / Highland
+            // crossing, car at (735.91, 20.77, -850.46): colour (1, 0.75, 0.55), strength 0.3847,
+            // direction (0.382, 0.903, -0.196) - the lamp at (740.6, 31.6, -852.8), Intensity 55,
+            // 11.96 m off; at 02:00 the second slot holds a second one, (0.9, 0.8, 0.65) x 0.0983,
+            // Intensity 80 at 28.5 m. MCLA_CAR_LAMP_CITY=1: the baked lights only.)
+            if std::env::var("MCLA_CAR_LAMP_CITY").is_err() {
+                for (i, l) in self.props.prop_lamps.iter().enumerate() {
+                    let d = l.pos - at;
+                    let d2 = d.length_squared();
+                    if d2 > 6400.0 || d2 < 1e-4 || l.intensity <= 0.0 {
+                        continue;
+                    }
+                    let dir = d / d2.sqrt();
+                    let s = (l.intensity / d2).clamp(0.0, 1.0) * (dir.dot(l.back) * l.cone[0] + l.cone[1]).clamp(0.0, 1.0);
+                    cand.push((30000 + i as i32, s, dir, l.color.max(Vec3::ZERO), s));
+                }
+            }
+        }
+        // (the light manager's dynamic list at night: its fourth record is the race checkpoint's
+        // light, id 65539, weighed sat(40 / d squared) all round like the lamps - checkpoints.rs)
+        if nfl > 0.0 {
+            if let Some((p, c)) = self.cp_markers.light {
+                let d = p - at;
+                let d2 = d.length_squared();
+                if d2 > 1e-4 {
+                    let s = (checkpoints::LIGHT_INTENSITY / d2).clamp(0.0, 1.0);
+                    cand.push((65539, s, d / d2.sqrt(), Vec3::from(c).max(Vec3::ZERO), s));
+                }
+            }
+        }
+        let hw = 2.0 * hour_light.1.max(Vec3::ZERO).dot(Vec3::new(0.30, 0.59, 0.11));
+        cand.push((HOUR, hw, hour_light.0, hour_light.1.max(Vec3::ZERO), 1.0));
+        cand
+    }
+
+    /// The traffic and parked cars' light slots, each car its own (F-99357, from the ambient cars' pass
+    /// dispatcher F-27833): the ids at render instance + 612 / + 660 start at -1 (F-19499, run once per
+    /// instance when the title builds the pool) and are kept by the rule of the player's car (F-56246):
+    /// the two best of F-24398 where the car stands, a light keeping its slot while it stays chosen. By
+    /// day the hour's light is the only candidate, so a car keeps the order its last night left: the
+    /// hour's light second (the first slot black) once it came second to a lamp. The shader takes the
+    /// order from `ObjectUniform::slots`; the lights in the slots are still the player's car's (GAP:
+    /// each car's own lamps, the player's head lamps as a candidate, the update only while the car is
+    /// drawn, and the original's pool - its instances keep their ids from one traffic car to the next,
+    /// here a new car starts at -1). Recorded live (`work/traffic-detail/fix9/slots.py`, `mon.py`).
+    fn traffic_light_slots(&mut self) {
+        let Some((nfl, hour_light)) = *LAST_HOUR.lock().unwrap() else { return };
+        let picks: Vec<(usize, (i32, i32))> = self
+            .vehicles
+            .cars
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.is_ambient())
+            .map(|(i, c)| {
+                let (b0, _, b1, _) = pick_two(&self.slot_candidates(c.state.pos, nfl, hour_light));
+                (i, (b0, b1))
+            })
+            .collect();
+        for (i, (b0, b1)) in picks {
+            let c = &mut self.vehicles.cars[i];
+            c.amb_slot = if slot_swap(c.amb_slot, b0, b1) { [b1, b0] } else { [b0, b1] };
+        }
     }
 
     /// A key was pressed that no fixed key of the window's handler took: the action the
@@ -8380,6 +8408,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             };
             self.vehicles.setup_lamps(due, sim_dt);
         }
+        // (each traffic and parked car's light-slot order, F-99357)
+        self.traffic_light_slots();
         self.vehicles.upload_uniforms(&gpu, night);
         // --- camera / globals ---------------------------------------------------
         let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
@@ -13515,4 +13545,32 @@ fn sel_cam_step((eye, look, se, sl): (Vec3, Vec3, f32, f32), eye_t: Vec3, look_t
     };
     let go = |p: Vec3, t: Vec3, d: f32, v: f32| if d > 0.0 { p + (t - p) / d * v } else { p };
     (go(eye, eye_t, d8, se), go(look, look_t, d9, sl), se, sl)
+}
+
+/// The hour's light and m_NFLFade of the last frame's lighting, for the traffic cars' light slots.
+static LAST_HOUR: std::sync::Mutex<Option<(f32, (Vec3, Vec3))>> = std::sync::Mutex::new(None);
+
+/// The two best of a car's light candidates, F-24398: (best id, its weight, second id, its weight);
+/// -1 where none weighs over 0. A candidate replaces the best only when strictly heavier.
+fn pick_two(cand: &[(i32, f32, Vec3, Vec3, f32)]) -> (i32, f32, i32, f32) {
+    let (mut b0, mut b1, mut w0, mut w1) = (-1i32, -1i32, 0.0f32, 0.0f32);
+    for c in cand {
+        if c.1 > w0 {
+            b1 = b0;
+            w1 = w0;
+            b0 = c.0;
+            w0 = c.1;
+        } else if c.1 > w1 {
+            b1 = c.0;
+            w1 = c.1;
+        }
+    }
+    (b0, w0, b1, w1)
+}
+
+/// The slot keeping of F-99357 / F-56246: the best goes to the first slot and the second to the other,
+/// swapped when the best already sits in the second slot (and not in the first) or the second sits
+/// in the first (and not in the second).
+fn slot_swap(held: [i32; 2], b0: i32, b1: i32) -> bool {
+    (b0 != held[0] && b0 == held[1]) || (b1 != held[1] && b1 == held[0])
 }
