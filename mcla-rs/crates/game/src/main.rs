@@ -5450,7 +5450,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // scenes are the mission scripts': only RACE_GH_06_READY_TO_START_ON_ENTER throws state events round its scene -
             // mcGame_ThrowEvent (F-96962) 'intro' at 0x9de, 'cruising' at 0xb09 -, so CUT_STORY_RACE_GH_06 alone leaves
             // Cruising_Offline (`pending_log` spans it); Cruising_Offline swallows a repeated mc.cruising, the police's after
-            // an arrest (F-22523))
+            // an arrest (F-22523). Every mc event reaches the chart by name (F-22523, mcGame_ThrowEvent from 96 calls in the
+            // race, hangout, garage, hookman and story scripts, the UI charts' throwEvent) except mc.cutsceneDone: F-17084
+            // throws it by index at every scene's end (the cine manager's finish callback, F-65984 -> +232, set by F-91527);
+            // only an online dialog listens. Nothing throws mc.cutscene)
             let cruising = self.game.cruising_offline() && self.pending_log.is_none();
             if cruising != self.phone_cruise {
                 self.phone_cruise = cruising;
@@ -5604,9 +5607,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.phone_challenge_in = std::env::var("MCLA_PHONE_CHALLENGE").ok().and_then(|v| v.parse().ok()).unwrap_or(200.0 + (self.tick_no % 500) as f32 * 0.1);
                 }
                 if self.game.tip.is_none() && self.news.is_empty() && self.tips.is_empty() && self.cuts.idle() && !self.game.show_map {
-                    // (the script's rounds count only while the police level is under 2 (0x13c); the call it appends
-                    // then waits for the phone's gates)
-                    if !self.phone_challenge_due && self.police.activity().0 < 2 {
+                    // (the script's rounds count only while (0x131..0x162) the game is not paused (Game_IsPaused F-49028:
+                    // the pause manager's flag, F-50459), the police level is under 2, the idle camera is off
+                    // (Player_IsInIdleCam F-80662: camera mode 13), no map target is selected (mcUINavMap_IsTargetSelected
+                    // F-15670: the nav map's +628, set only in its GPS selection - under the map's pause) and the camera
+                    // is not held (UILogic_IsCameraPaused F-23025); the call it appends then waits for the phone's gates)
+                    let paused = self.game.mode == Mode::Paused || self.game.show_map || self.game.album.stage != crate::photoalbum::Stage::Off;
+                    if !self.phone_challenge_due && !paused && self.police.activity().0 < 2 && !self.game.idle_cam && !self.camera_held() {
                         self.phone_challenge_in -= sim_dt;
                         self.phone_challenge_due = self.phone_challenge_in <= 0.0;
                         self.phone_challenge_in = self.phone_challenge_in.max(f32::MIN_POSITIVE);
@@ -11681,20 +11688,45 @@ impl App {
     /// The phone's update (F-37697) brings up no call while the police level F-35540(1) is 1 or more (pull-over,
     /// pursuit, search, arrest) or -1 (a dispatch to the player) unless that dispatch responds (state 2, F-85485 ->
     /// F-48923), while a career speech line plays (the speech manager's +2256 and +2260), a scene script runs
-    /// (F-52539: the ticket and arrest scenes) or a form other than the HUD's is up (F-85659: the ARRESTED form);
-    /// the calls wait in the queue. (The phone's own hold after a call is `phone_hold`.)
+    /// (F-52539: the ticket and arrest scenes), the warper holds the camera (`camera_held`) or the UI is off its HUD
+    /// (`ui_off_hud`); the calls wait in the queue. (The phone's own hold after a call is `phone_hold`.)
     fn phone_held(&self) -> bool {
         let (level, dsp) = self.police.activity();
         level >= 1 || (level == -1 && dsp < 2)
             || self.speech.busy()
-            // (the warper's camera hold, UILogic +0x51382: set when a cinematic warp starts or ends (F-83799 from
-            // F-35052 / F-99030), cleared by the warper (F-70736, F-31347) - the port's warps and the held camera after
-            // the climb. F-37697's other flag, +0x51350 (F-55498), is set only by Warper_SetWarping (F-59289), which no
-            // script calls: always clear)
-            || self.game.start_warp_on || self.warp.is_some() || self.climb.is_some() || self.climb_end.is_some() || self.climb_wait.is_some()
-            || self.garage_in.is_some() || self.garage_out.is_some() || self.hangout_entry.is_some() || self.payback_in.is_some()
+            // (F-37697's other flag, +0x51350 (F-55498), is set only by Warper_SetWarping (F-59289), which no script
+            // calls - none of the 1771 script files: always clear)
+            || self.camera_held()
+            || self.ui_off_hud()
             || self.cuts.playing.is_some() || self.cine.playing.is_some() || self.game.movie.is_some()
             || self.ticket_run.is_some() || self.arrest_form.is_some() || self.game.arrest_panel.is_some() || self.arrest_station.is_some()
+    }
+
+    /// F-37697's argument from UILogic's update (F-28336 passes !F-85659 || Game_IsPaused): the UI's current
+    /// state (F-85659: vhsmState vt#78 F-13804, every parent's current child down to it) is neither `Invisible` (the HUD,
+    /// tune/ui/UserInterface.sc.xml) nor `Tutorial` (pushed only by the mission log's lesson form, F-79137), or the pause
+    /// manager has the game paused (+4 set, +10 clear: game.pause() - the pause and race-over menus, every GPS / mission
+    /// log scene, the photo album, the save scenes). Off the HUD: the menu modes (pause menu, garage menus, results,
+    /// VEHICLE SELECT), the map, photo mode and the album. The lessons' boxes are forms, not UI states: the HUD stays
+    /// current and their OnShow only pauses the simulation (no pause flag) - they hold no call.
+    fn ui_off_hud(&self) -> bool {
+        self.game.in_menu() || self.game.show_map || self.game.album.stage != crate::photoalbum::Stage::Off
+    }
+
+    /// UILogic_IsCameraPaused (F-23025): the warper holds the camera, UILogic +0x51382. Set by F-83799 when a cinematic
+    /// request starts (F-35052) and, at a warp's end (F-99030), when the request asks for the camera to stay (its +7:
+    /// pause camera at end of warp - DEFAULT_WITH_CUT's climb, the start screen's Warper_SetPauseCameraAtEndOfWarp; a
+    /// STORY / LOCATION cut holds it on its own matrix, F-99229); cleared when the next flight starts (the
+    /// cinematic warp's F-18267, the climb's F-98643 - both F-70736), by the warper's loading states 12 / 17
+    /// once Career_Loading goes (F-31347), or by UILogic_UnPauseCamera (F-20502: CarSelection 0x917, the career's load
+    /// 0x6fc, FIND_SH_02C's core 0xfe7 after its scene's fade). Nothing counts it down (+0x51384 is always -1).
+    /// Port: the held camera after the climb (`climb_end`, `climb_wait`) and the cinematic entries' warps (garage,
+    /// hangout, payback, the garage's way out, the race-start warp, the start-up flight) - those happen out of
+    /// Cruising_Offline too (the scripts' mc.garage / mc.*Hangout / mc.*Race), *(approx.)* the flights themselves are
+    /// hold-free in the original; the climb's flight stays here as the map's exit (its UI state is not read).
+    fn camera_held(&self) -> bool {
+        self.game.start_warp_on || self.warp.is_some() || self.climb.is_some() || self.climb_end.is_some() || self.climb_wait.is_some()
+            || self.garage_in.is_some() || self.garage_out.is_some() || self.hangout_entry.is_some() || self.payback_in.is_some()
     }
 
     fn pause_allowed(&self) -> bool {
