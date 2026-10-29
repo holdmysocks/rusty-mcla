@@ -5808,6 +5808,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.roam.cancel(&mut self.vehicles);
                 }
             }
+            // (the run's race is current while it lasts - `Game::race_current`)
+            self.game.bmt_goal = self.roam.challenge.as_ref().map(|c| c.goal);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             if std::env::var("MCLA_SIGNAL_TEST").is_ok() && self.tick_no % 600 == 0 {
                 let moving = self.vehicles.cars.iter().filter(|c| !c.is_player && c.parked.is_none() && c.state.speed() > 3.0).count();

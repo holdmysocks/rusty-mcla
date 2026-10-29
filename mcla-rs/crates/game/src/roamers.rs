@@ -1007,7 +1007,18 @@ impl Roamers {
             }
             // self-test: skip the drive
             // (MCLA_ROAM_TEST=late leaves the player where he is: the rival gets there first)
-            if std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "late") && ch.time > 6.0 {
+            // (MCLA_BMT_NEAR=<m>: once, the player that far short of the line facing it, then the run goes on -
+            // for pictures of the finish)
+            let near = std::env::var("MCLA_BMT_NEAR").ok().and_then(|v| v.parse::<f32>().ok());
+            if let (true, Some(m)) = (std::env::var("MCLA_ROAM_TEST").is_ok() && ch.time > 6.0 && ch.time - dt <= 6.0, near) {
+                let goal = ch.goal;
+                let dir = Vec3::new(goal.x - pp.x, 0.0, goal.z - pp.z).normalize_or_zero();
+                if let Some(c) = vehicles.player_mut() {
+                    c.state = crate::physics::CarState::new(goal - dir * m + Vec3::Y * 2.0, (-dir.x).atan2(-dir.z));
+                    c.placed = false;
+                }
+            }
+            if std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "late") && ch.time > 6.0 && near.is_none() {
                 let goal = ch.goal;
                 if let Some(c) = vehicles.player_mut() {
                     c.state = crate::physics::CarState::new(goal + Vec3::Y * 0.8, 0.0);
@@ -1057,7 +1068,11 @@ impl Roamers {
                 let len = from.distance(to);
                 len < 0.5 || world.collider.raycast(from, (to - from) / len, len).is_none()
             };
-            // (the self-test goes for the career's rival wherever he is)
+            // (the self-test goes for the career's rival wherever he is; MCLA_ROAM_TEST=local for a local
+            // hookman, none of the career's men)
+            if test && !c.driver.is_empty() && std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v == "local") {
+                continue;
+            }
             let d = if test && !c.driver.is_empty() { d * 0.01 } else { d };
             if (ok || (test && d < 400.0)) && best.map_or(true, |b| d < b.1) {
                 best = Some((i, d));

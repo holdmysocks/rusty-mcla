@@ -651,6 +651,9 @@ pub struct Game {
     pub bmt_end: Option<BmtEnd>,
     /// ... and now the race: (race, against the hookman himself)
     pub bmt_go: Option<(usize, bool)>,
+    /// a beat me there run is on: its line (the local hookman's script makes the run's race current at
+    /// 0xb82 and puts the finish on the map at 0x1140 - `race_current`, `hudmap::elements`)
+    pub bmt_goal: Option<Vec3>,
     /// a pink slip race of a hangout is over: lost (`bFailure`) - its race-over tab (F-36093)
     pub pink_over: Option<bool>,
     /// MISSION RESULTS after an event: the missions it finished (title, objectives)
@@ -1289,6 +1292,7 @@ impl Game {
             eob: None,
             bmt_end: None,
             bmt_go: None,
+            bmt_goal: None,
             pink_over: None,
             mission_results: Vec::new(),
             race_slow: crate::mc4::SlowMo::default(),
@@ -8658,7 +8662,7 @@ impl Game {
                     // each in the 3D scene of the map camera, sized by its distance from it
                     if let (true, Some(vp)) = (self.hm.is_some() && self.flash_navsys.is_some() && self.editor.is_none(), hud.map_vp) {
                         let els = crate::hudmap::elements(self, vehicles, hud.heat >= 2);
-                        let racing = self.race.is_some();
+                        let racing = self.race_current();
                         let strobe_on = self.race.as_ref().map_or(true, |r| r.rivals_checkpoints.is_none());
                         let hm = self.hm.as_mut().unwrap();
                         let dt = ctx.input(|i| i.stable_dt).min(0.1);
@@ -8923,7 +8927,7 @@ impl Game {
                             // fixed over the city, north up, no heading turn; its own 749x430 target)
                             let over = fm.overhead;
                             let (vp, eye) = if over { (crate::hudmap::overhead_view_proj(fm.cam_eye, fm.cam_look, fm.cam_fovy, fm.aspect), fm.cam_eye) } else { crate::hudmap::minimap_view_proj(car.state.pos, h, fm.cam_eye, fm.cam_look, fm.cam_fovy) };
-                            let racing = self.race.is_some();
+                            let racing = self.race.is_some() || self.bmt_goal.is_some();
                             let target = (self.mission_target.is_some() || self.gps_pick.is_some()) && !racing;
                             let strobe_on = self.race.as_ref().map_or(true, |r| r.rivals_checkpoints.is_none());
                             let f = hm.frame(if over { 2 } else { 0 }, vp, eye, if over { 0.0 } else { h }, racing, hud.heat as i32, target, strobe_on);
@@ -9938,7 +9942,7 @@ impl Game {
         let tune = self.mark_tune.get_or_insert_with(|| crate::racemark::MarkTune::load(&self.data_dir)).clone();
         let els = crate::hudmap::elements(self, vehicles, hud.heat >= 2);
         // (a police pursuit is a race to the icon manager: `[0x8286EBF8]`)
-        let racing = self.race.is_some() || hud.heat >= 2;
+        let racing = self.race_current() || hud.heat >= 2;
         let checkpoints = self.race.as_ref().map_or(false, |r| !r.checkpoints.is_empty());
         let dt = ctx.input(|i| i.stable_dt).min(0.1);
         if self.hook_icons.is_none() {
@@ -13623,6 +13627,13 @@ impl Game {
     pub fn set_gps_target(&mut self, place: Option<Vec3>, mission: Option<String>) {
         self.gps_pick = place;
         self.mission_target = if place.is_some() { None } else { mission };
+    }
+
+    /// A race is current (Race_SetCurrentRace, F-94038: the word the map's frame and the icon manager read as
+    /// their race flag): a race, or a beat me there run - the local hookman's script creates the run's race and
+    /// makes it current when he is flashed (`CruisingHookmen/0x897fb23f` 0xb71..0xb82)
+    pub fn race_current(&self) -> bool {
+        self.race.is_some() || self.bmt_goal.is_some()
     }
 
     /// The mission's man is the GPS target (his mission set, nothing else picked)

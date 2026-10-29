@@ -471,7 +471,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
         }
     };
     let player = vehicles.cars.iter().find(|c| c.is_player);
-    let racing = game.race.is_some();
+    let racing = game.race_current();
     // service stations: always listed
     for (i, g) in GAS_STATIONS.iter().enumerate() {
         let mut e = Element::at(Kind::Gas, Vec3::from(*g));
@@ -556,6 +556,19 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     // racer renderer draws as the arrow in RacerColor while a race is current - work/hookmen2
     // `cap/rl_14`, `rl_15`, `fw_06` (the green arrow by the player's, a cop's blue one beside); the
     // career's races show no arrow for their opponents (work/ui/ref/ng_race_044..047, RACE_GH_06)
+    // the beat me there run: the hookman keeps his own element (SetVehicleElement subtype 3,
+    // `CruisingHookmen/0x897fb23f` 0x1a8) and his icon is shown (Racer_HideIcon(him, 0), 0x1311); with
+    // the run's race current the racer renderer draws him as the plain arrow in RacerColor. The port
+    // keeps no car but his as a racer once the run starts (`Roamers::update`)
+    if game.bmt_goal.is_some() {
+        for (i, c) in vehicles.cars.iter().enumerate().filter(|(_, c)| c.racer && !c.is_player) {
+            let mut e = Element::at(Kind::Racer(3), c.state.pos);
+            e.uid = 4800 + i as u32;
+            e.back = -c.state.forward();
+            e.icon = 4;
+            push(e);
+        }
+    }
     let alt = game.active_def.as_ref().map_or(false, |d| crate::althk::is_alt_race(&d.id));
     if let Some(race) = game.race.as_ref().filter(|_| alt) {
         for (k, &i) in race.participants.iter().enumerate() {
@@ -606,6 +619,11 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             };
             push(Element::at(Kind::Checkpoint(sub), race.checkpoints[i]));
         }
+    }
+    // (the run's line: SetElement(e, 0, 0, the start beacon, 0), SetMutExSubtype(e, 5) - the finish's
+    // CheckpointFinishColor -, AddElement; `CruisingHookmen/0x897fb23f` 0x1134..0x1170)
+    if let (None, Some(g)) = (game.race.as_ref(), game.bmt_goal) {
+        push(Element::at(Kind::Checkpoint(5), g));
     }
     // deliveries and paybacks wait at their garages (layer 4)
     if places {
