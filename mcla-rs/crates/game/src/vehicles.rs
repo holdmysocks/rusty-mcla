@@ -2244,8 +2244,20 @@ impl Vehicles {
                             // (0.125 + 1.185 sat(collector - 0.25)) x baked occlusion, alpha = 2 x the
                             // texture's alpha - 1; city.wgsl cuts it out where that is not above 0 (uv2.y = 3))
                             // (uv2.x = -1: drawn in the blended bucket, alpha 2A - 1 - `setup_b1`)
-                            for v in &mut acc.verts[first..] {
+                            // (and its stored tangent in the car's space in the colour's rgb, t x 0.5 + 0.5, as a window's:
+                            // VS_BumpedChrome hands over N, T and cross(T, N) x w, the pixel program tilts the normal by
+                            // the map in that frame; the badge's program reads no own-lamp weights from the colour)
+                            let bxf = part_xf * bone_m;
+                            for (i, v) in acc.verts[first..].iter_mut().enumerate() {
                                 v.uv2 = [if setup_b1 { -1.0 } else { 0.0 }, 3.0];
+                                if setup_b1 && mesh.tangents.len() == mesh.positions.len() && std::env::var("MCLA_BADGE_BUMP_OLD").is_err() {
+                                    let t = bxf.transform_vector3(mesh.tangents[i].truncate()).normalize_or_zero();
+                                    if t != Vec3::ZERO {
+                                        let e = |x: f32| ((x * 0.5 + 0.5) * 255.0).round() as u8;
+                                        v.color = [e(t.x), e(t.y), e(t.z), v.color[3]];
+                                        v.uv2[0] = -2.0;
+                                    }
+                                }
                             }
                         } else if sname.eq_ignore_ascii_case("CarbonFiber") && std::env::var("MCLA_CARBON_OLD").is_err() {
                             // (render only - PS_CarbonFiber of cars/0x84fc57d9, city.wgsl: uv2.x = 2)

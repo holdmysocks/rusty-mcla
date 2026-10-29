@@ -3830,10 +3830,23 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 fc_c = 1.0;
             }
             // (a badge drawn in the blended bucket - PS_BumpedChrome of cars/0x1d68d869 - has no fade on tight curves:
-            // the mirror along its normal x the same collector term x occlusion; its bump-mapped normal (tangent frame x
-            // (2 map.zyx - 1)) is not here, the vertices carry no tangent)
+            // the mirror along its bump-mapped normal x the same collector term x occlusion. The normal: VS_BumpedChrome
+            // hands over N, T and cross(T, N) x w (its fetches store both reversed, lines 7 - 14, 55 - 63), the pixel
+            // program normalises each and takes n' = T (2r - 1) + B (2g - 1) + N (2b - 1) of NormalSampler, normalised
+            // (lines 10 - 29); the map's alpha is the badge's 2A - 1. vehicles.rs puts the stored tangent in the colour,
+            // uv2.x = -2; MCLA_BADGE_BUMP_OLD=1 leaves it out: the true normal, as before)
+            var env_c = env;
+            if (setup_b1_badge && in.uv2.x < -1.5) {
+                let bm = car_raw(textureSample(t_diffuse, s_diffuse, in.uv0).rgb) * 2.0 - vec3<f32>(1.0);
+                let bn_n = normalize(in.normal);
+                let bt0 = (obj.model * vec4<f32>(in.color.rgb * 2.0 - 1.0, 0.0)).xyz;
+                let bn_t = bt0 * inverseSqrt(max(dot(bt0, bt0), 1e-12));
+                let bn_b = cross(bn_t, bn_n) * ((1.0 - 2.0 * in.bflip) * select(-1.0, 1.0, dot(cross(obj.model[0].xyz, obj.model[1].xyz), obj.model[2].xyz) >= 0.0));
+                let bn_p = normalize(bn_t * bm.x + bn_b * bm.y + bn_n * bm.z);
+                env_c = env_color(reflect(-v, bn_p));
+            }
             let cur_c = select(clamp(clamp(length(dpdx(n)) - 0.15, 0.0, 1.0) + clamp(length(dpdy(n)) - 0.15, 0.0, 1.0), 0.0, 1.0), 0.0, setup_b1_badge);
-            lit = mix(env, hemi, cur_c) * (0.125 + 1.18518 * clamp(fc_c - 0.25, 0.0, 1.0)) * in.color1.a;
+            lit = mix(env_c, hemi, cur_c) * (0.125 + 1.18518 * clamp(fc_c - 0.25, 0.0, 1.0)) * in.color1.a;
             spec_k = 0.0;
         } else if (mat.mode == 7u) {
             // polished metal: mostly mirror, darker face-on so spokes and lips read
