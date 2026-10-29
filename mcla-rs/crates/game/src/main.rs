@@ -472,6 +472,8 @@ struct App {
     /// the garage's door takes the car in (not straight after leaving it)
     /// driving into a garage: the warp to its sign, the scene, the fade up (`garagein`)
     garage_in: Option<garagein::Entry>,
+    /// GO TO GARAGE's garage (state 4): garage_core's next poll in Cruising_Offline goes straight to its drive-in
+    goto_garage: Option<usize>,
     /// pulling into a hangout: the ease to pause, the warp to its wait camera (`hangoutin`)
     hangout_entry: Option<hangoutin::Entry>,
     /// the place's band of a hangout entry: the clock from the warp's start
@@ -1077,6 +1079,7 @@ impl App {
             delivery_intro: None,
             delivery_tail: None,
             garage_in: None,
+            goto_garage: None,
             hangout_entry: None,
             hangout_title: None,
             hangout_prev: None,
@@ -5141,18 +5144,33 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // from the door) - which is what keeps a car that has just come out from going straight back in;
                         // the drive-out scene leaves it about 26 m from the door)
                         let held = garagein::at_door(p).map_or(false, |g| self.game.garage_held(g));
-                        let quiet = matches!(self.police.heat, police::Heat::None);
-                        let drive_in = self.game.flash_hud.is_some() && self.game.cruising_offline() && !held && self.garage_in.is_none() && quiet && garagein::at_door(p).is_some() && (!self.game.career.loaded() || self.game.career.reached("GARAGE_HOLLYWOOD")) && self.opt.shot.is_none() | std::env::var("MCLA_DOOR_IN").is_ok();
-                        if drive_in {
-                            // Warper_TransitionTo('STORY_LOCATION_CUT_SIMPLE', ..): from the render camera to
-                            // the garage's wait camera (Warp_Target_Close within 100 of it)
-                            let g = garagein::at_door(p).unwrap_or(0);
+                        // (0x3ca..0x3ee: PoliceManager_CheckPoliceActivity(1) > 1 waits 100 ms - a pursuit, a search or
+                        // a bust; a pull-over or a dispatch on its way does not stop it - `Police::activity`, F-35540)
+                        let quiet = self.police.activity().0 <= 1;
+                        let door = garagein::at_door(p).filter(|&g| !self.game.career.loaded() || self.game.garage_running(g));
+                        let drive_in = self.game.flash_hud.is_some() && self.game.cruising_offline() && !held && self.garage_in.is_none() && quiet && door.is_some() && self.opt.shot.is_none() | std::env::var("MCLA_DOOR_IN").is_ok();
+                        // (state 4, GO TO GARAGE: 0x3a9 goes straight to the drive-in at 0x42d from wherever the car is -
+                        // the listener state still first)
+                        let goto = self.goto_garage.filter(|_| self.game.cruising_offline() && self.garage_in.is_none());
+                        if drive_in || goto.is_some() {
+                            // 0x42d: PoliceManager_DestroyAllPolice, ThrowEvent 'garage', Warper_SetIsWarpingToCutscene(1),
+                            // Warper_TransitionTo('STORY_LOCATION_CUT_SIMPLE', ..): from the render camera to the garage's
+                            // wait camera - Warp_Target_Close within 100 of it (F-47096); else the climb over the car
+                            // (type 17's state 15, F-98643) and, the scene loaded, the dive onto it (state 26)
+                            let g = goto.or(door).unwrap_or(0);
+                            self.goto_garage = None;
+                            self.police.destroy_all(&mut self.vehicles);
+                            let c = self.vehicles.player().unwrap();
                             let e = garagein::wait_rows(&garagein::SETUPS[g]);
                             let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
                             let s = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.boom_up.unwrap_or(Vec3::Y));
-                            let warp = (s.eye.distance(e.eye) < garagein::CLOSE).then(|| hudmap::CineWarp::target_close(s, e, self.cam.fov_y, garagein::LENS_DEG.to_radians()));
-                            log::info!("garage entry: {} from {:?} (warp {})", garagein::SETUPS[g].key, s.eye, warp.is_some());
-                            self.garage_in = Some(garagein::Entry { garage: g, stage: garagein::Stage::Warp, t: 0.0, clock: 0.0, warp, hold: (c.state.pos, c.state.rot), opened: false });
+                            let close = s.eye.distance(e.eye) < garagein::CLOSE;
+                            let warp = close.then(|| hudmap::CineWarp::target_close(s, e, self.cam.fov_y, garagein::LENS_DEG.to_radians()));
+                            // (the climb's lens goes to the request's +96: taken as Warp_Target_Close's - approx.)
+                            let car = hudmap::CamRows { r0: c.state.rot * Vec3::X, r1: c.state.rot * Vec3::Y, r2: c.state.rot * Vec3::Z, eye: c.state.pos };
+                            let climb = (!close).then(|| hudmap::CineClimb::new(s, car, self.cam.fov_y, garagein::LENS_DEG.to_radians(), self.screen_v));
+                            log::info!("garage entry: {} from {:?} (warp {}, climb {:?}, go to garage {})", garagein::SETUPS[g].key, s.eye, warp.is_some(), climb.as_ref().map(|c| c.kind()), goto.is_some());
+                            self.garage_in = Some(garagein::Entry { garage: g, stage: garagein::Stage::Warp, t: 0.0, clock: 0.0, warp, hold: (c.state.pos, c.state.rot), opened: false, climb, dive: None });
                         } else if self.game.car_x.garage_after_scene && self.cuts.idle() {
                             self.game.car_x.garage_after_scene = false;
                             self.pending_action = MenuAction::OpenGarage;
@@ -5181,11 +5199,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             c.state.vel = Vec3::ZERO;
                             c.state.ang_vel = Vec3::ZERO;
                         }
-                        // the Lerp, then the camera waits at the wait camera (the scene's first)
-                        let warp_len = gi.warp.as_ref().map_or(0.0, |w| w.total());
-                        let (rows, fov) = match gi.warp.as_mut().and_then(|w| w.step(dt)) {
-                            Some(v) => v,
-                            None => (garagein::wait_rows(su), garagein::LENS_DEG.to_radians()),
+                        // the Lerp, then the camera waits at the wait camera (the scene's first); far, the climb and
+                        // then its last matrix held (F-99030)
+                        let warp_len = gi.warp.as_ref().map_or(0.0, |w| w.total()).max(gi.climb.as_ref().map_or(0.0, |c| c.total()));
+                        let (rows, fov) = match (gi.climb.as_mut(), gi.warp.as_mut().and_then(|w| w.step(dt))) {
+                            (Some(c), _) => c.step(dt).unwrap_or_else(|| c.end()),
+                            (None, Some(v)) => v,
+                            (None, None) => (garagein::wait_rows(su), garagein::LENS_DEG.to_radians()),
                         };
                         self.place_view = Some((rows.eye, rows.look_point(), rows.r1, fov));
                         self.game.dive_k = 1.0;
@@ -5197,10 +5217,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
                             let story = self.game.career.location_enter(su.enter).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));
                             self.place_view = None;
+                            // (far: warper state 15 waits for the scene, hides Career_Loading, then state 26 dives onto
+                            // the scene's camera at its t 1.0 - F-62707 - from the held climb's end)
+                            let dive_to = gi.climb.as_ref().filter(|_| story.is_none() && std::env::var("MCLA_NO_CINE").is_err()).and_then(|c| {
+                                let (eye, fwd, up, fov) = self.cine.peek_camera(su.scene, glam::Mat4::IDENTITY, hudmap::CINE_HANDOVER)?;
+                                let (s, lens) = c.end();
+                                Some(hudmap::CineWarp::new(s, hudmap::CamRows::look_at(eye, eye + fwd, up), Vec3::ZERO, lens, fov))
+                            });
+                            if story.is_some() || dive_to.is_none() {
+                                self.game.career_loading = false;
+                            }
                             if let Some(i) = story {
                                 self.cuts.queue(i);
                                 self.game.car_x.garage_after_scene = true;
                                 keep = false;
+                            } else if let Some(w) = dive_to {
+                                log::info!("garage entry: dive {:?} ({:.3} s) onto {}", w.kind(), w.total(), su.scene);
+                                self.place_view = Some((rows.eye, rows.look_point(), rows.r1, fov));
+                                gi.dive = Some(w);
+                                gi.stage = garagein::Stage::Dive;
+                                gi.t = 0.0;
                             } else if std::env::var("MCLA_NO_CINE").is_err() && self.cine.start(&mut gpu, su.scene, glam::Mat4::IDENTITY) {
                                 self.cine_free = true;
                                 self.cine_caption = Some(String::new());
@@ -5212,7 +5248,49 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                     }
+                    garagein::Stage::Dive => {
+                        if let Some(c) = self.vehicles.player_mut() {
+                            c.state.pos = gi.hold.0;
+                            c.state.rot = gi.hold.1;
+                            c.state.vel = Vec3::ZERO;
+                            c.state.ang_vel = Vec3::ZERO;
+                        }
+                        let (s, lens) = gi.climb.as_ref().map(|c| c.end()).unwrap_or((garagein::wait_rows(su), garagein::LENS_DEG.to_radians()));
+                        let mut view = (s, lens);
+                        if gi.t >= garagein::LOADING_OFF {
+                            self.game.career_loading = false;
+                        }
+                        if gi.t >= garagein::DIVE_WAIT {
+                            if let Some(w) = gi.dive.as_mut() {
+                                if let Some(v) = w.step(dt) {
+                                    view = v;
+                                }
+                                // (state 19: the scene starts 1 s before the flight lands, which then ends on its camera)
+                                if gi.t - garagein::DIVE_WAIT >= w.total() - hudmap::CINE_HANDOVER {
+                                    if self.cine.start(&mut gpu, su.scene, glam::Mat4::IDENTITY) {
+                                        self.cine_free = true;
+                                        self.cine_caption = Some(String::new());
+                                        gi.stage = garagein::Stage::Scene;
+                                        gi.t = 0.0;
+                                    } else {
+                                        self.pending_action = MenuAction::OpenGarage;
+                                        keep = false;
+                                    }
+                                }
+                            }
+                        }
+                        self.place_view = Some((view.0.eye, view.0.look_point(), view.0.r1, view.1));
+                        self.game.dive_k = 1.0;
+                    }
                     garagein::Stage::Scene => {
+                        // (the dive still flying over the scene's first second)
+                        let flying = gi.dive.as_mut().and_then(|w| w.step(dt));
+                        self.place_view = flying.map(|(rows, fov)| (rows.eye, rows.look_point(), rows.r1, fov));
+                        if flying.is_none() {
+                            gi.dive = None;
+                        }
+                        // (F-31347 state 17: Career_Loading hidden once the scene's time is >= 0)
+                        self.game.career_loading = false;
                         // the scene's fade_to_black (game/misctasks/screen_fade_to_black: held until the fade up)
                         if gi.t >= garagein::FADE_AT {
                             self.garage_mask.start(garagein::FADE_LEN, 0.01, f32::MAX);
@@ -5237,8 +5315,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                 }
-                // ShowLocationName: popup template 63 with the place's name and district
-                let shown = gi.clock >= garagein::TITLE_FROM && gi.clock < garagein::TITLE_FROM + garagein::TITLE_LEN && keep;
+                // ShowLocationName: popup template 63 with the place's name and district (opened by Warp_Target_Close's
+                // Lerp only - transitions/Main.sc.xml: the far warp's climb and dive open none)
+                let shown = gi.climb.is_none() && gi.clock >= garagein::TITLE_FROM && gi.clock < garagein::TITLE_FROM + garagein::TITLE_LEN && keep;
                 self.game.place_title = shown.then(|| {
                     let st = |k: &str| self.game.career.strings.get(k).map(|v| v.to_string()).unwrap_or_default();
                     (st(su.key), st(&format!("{}_desc", su.key)))
@@ -5284,6 +5363,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         c.state.vel = Vec3::ZERO;
                         c.pose_history.reset();
                     }
+                }
+            }
+            // (test hook MCLA_GOTO_GARAGE=tick: GO TO GARAGE at that tick in free roam)
+            if std::env::var("MCLA_GOTO_GARAGE").ok().and_then(|v| v.parse::<u64>().ok()) == Some(self.tick_no as u64) {
+                log::info!("go to garage test: mode {:?}", self.game.mode);
+                if self.game.mode == Mode::FreeRoam {
+                    self.pending_action = MenuAction::GoToGarage;
                 }
             }
             // (test hook MCLA_GARAGE_SHOTS=dir: a frame every 6 ticks while a garage entry runs and its black is up)
@@ -8392,7 +8478,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.chase.up = self.boom_up.unwrap_or(Vec3::Y);
         // (the race-start warp keeps the picture until it lands on the scene's camera, though the scene
         // already runs for its last second - mcWarper state 19 / 29)
-        if let Some((eye, fwd, up, fov)) = self.cine.camera().filter(|_| self.warp_view.is_none()) {
+        if let Some((eye, fwd, up, fov)) = self.cine.camera().filter(|_| self.warp_view.is_none() && !self.garage_in.as_ref().map_or(false, |g| g.dive.is_some())) {
             self.chase.pos = eye;
             self.chase.look = eye + fwd;
             self.chase.up = up;
@@ -11432,13 +11518,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.drive = false;
                 self.game.photo_on = true;
             }
+            // GO TO GARAGE (F-17595): the chosen garage gets state 4 and the Career_Loading box comes up; the menu goes, and
+            // garage_core's drive-in takes it from there (the warp, the scene, the garage)
+            MenuAction::GoToGarage => {
+                let pp = self.vehicles.player().map(|c| c.state.pos);
+                if let Some(g) = self.game.go_to_garage(pp) {
+                    log::info!("go to garage: {} (running {:?})", garagein::SETUPS[g].key, [0, 1, 2].map(|g| self.game.garage_running(g)));
+                    self.game.mode = Mode::FreeRoam;
+                    self.goto_garage = Some(g);
+                }
+            }
             MenuAction::OpenGarage => {
                 self.game.career.event(career::Ev::Garage);
-                // (GO TO GARAGE: the nearest garage gets state 4 - `Game::go_to_garage`)
-                if matches!(self.game.mode, Mode::Paused | Mode::FreeRoam) {
-                    let pp = self.vehicles.player().map(|c| c.state.pos);
-                    self.game.go_to_garage(pp);
-                }
                 // (the garage does not repair the car by itself: it asks, before MANAGE VEHICLES /
                 // CUSTOMIZE VEHICLE / VEHICLE SHOWROOM for a dented car and before the way out for
                 // a wreck - `Game::mc4_repair_gate`; a car goes in, stands there and is put away

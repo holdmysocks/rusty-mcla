@@ -62,9 +62,18 @@ pub const SETUPS: [Setup; 3] = [
 
 /// garage_core's test: `Racer_DistanceToPoint(player, +92) < 8`
 pub const RADIUS: f32 = 8.0;
-/// GO TO GARAGE's handler (F-17595): the fixed points it measures the player against, in `SETUPS` order; the nearest
-/// garage (of those whose state is 2 - not modelled) gets state 4, which its garage_core takes as the drive-in
+/// GO TO GARAGE's handler (F-17595): the fixed points it measures the player against, in `SETUPS` order (`goto_pick`)
 pub const GOTO_POINTS: [Vec3; 3] = [Vec3::new(819.693, 17.731, -804.765), Vec3::new(-3049.5, -25.0, 160.0), Vec3::new(-53.6, -19.6, 1331.6)];
+/// F-17595: the distance a garage whose state is not 2 stands at (its core not running)
+pub const GOTO_FAR: f32 = 20000.0;
+/// the set-up script that starts each garage's garage_core (and sets `<x>_garage_state` 2 through it), `SETUPS` order
+pub const SETUP_SCRIPTS: [&str; 3] = ["hw_garage_setup", "be_garage_setup", "sc_garage_setup"];
+/// warper state 15 between the climb's end and the dive, once the scene is loaded: m_CityPrestreamWaitFrames (3
+/// frames), the sector test and the scene camera (a frame each), then state 26's 0.1 s (CAREER_RACES.md "The
+/// climb's hand-over")
+pub const DIVE_WAIT: f32 = LOADING_OFF + 0.1;
+/// state 15's step (10), after those five frames: Career_Loading hidden, then state 26
+pub const LOADING_OFF: f32 = 5.0 / 30.0;
 /// `sub_8221A440` case 17: Warp_Target_Close below this distance of the render camera to the wait camera
 pub const CLOSE: f32 = 100.0;
 /// req+96 of Warp_Target_Close (0x8201F9D8), degrees
@@ -99,6 +108,20 @@ pub fn nearest(p: Vec3) -> usize {
     (0..SETUPS.len()).min_by(|&a, &b| SETUPS[a].door.distance_squared(p).total_cmp(&SETUPS[b].door.distance_squared(p))).unwrap_or(0)
 }
 
+/// GO TO GARAGE's choice (F-17595): each garage's distance from `p` to its `GOTO_POINTS` point, `GOTO_FAR` for one
+/// whose state is not 2; Hollywood if it is strictly nearer than both others, else Beaches if strictly nearer than
+/// both, else South Central (so with no garage running, South Central).
+pub fn goto_pick(p: Vec3, running: [bool; 3]) -> usize {
+    let d: [f32; 3] = std::array::from_fn(|g| if running[g] { (p - GOTO_POINTS[g]).length() } else { GOTO_FAR });
+    if d[0] < d[1] && d[0] < d[2] {
+        0
+    } else if d[1] < d[0] && d[1] < d[2] {
+        1
+    } else {
+        2
+    }
+}
+
 /// The wait camera (the Warper's destination matrix from +24, +36, +48).
 pub fn wait_rows(s: &Setup) -> CamRows {
     CamRows::look_at(s.cam[0], s.cam[2], s.cam[1] - s.cam[0])
@@ -109,6 +132,9 @@ pub fn wait_rows(s: &Setup) -> CamRows {
 pub enum Stage {
     /// the warp and the wait after it, `t` from the trigger
     Warp,
+    /// the far warp's dive onto the `_ent` scene (warper state 15's waits, then state 26), `t` from the climb's end
+    /// plus the event wait; the scene starts 1 s before it lands
+    Dive,
     /// the `_ent` scene (or a story scene) is playing
     Scene,
     /// the scene is over: garage_core's next poll of the state, `t` from the scene's end
@@ -127,6 +153,10 @@ pub struct Entry {
     pub hold: (Vec3, glam::Quat),
     /// the garage was asked for (the fade up waits for the car to stand in it)
     pub opened: bool,
+    /// the far warp (the render camera 100 or more from the wait camera): the climb over the car (F-98643)
+    pub climb: Option<crate::hudmap::CineClimb>,
+    /// then the dive onto the scene's camera at scene t 1.0 (F-18267)
+    pub dive: Option<crate::hudmap::CineWarp>,
 }
 
 #[cfg(test)]
@@ -146,6 +176,17 @@ mod tests {
         assert!(look.dot(fwd) > 0.9999, "{look:?} {fwd:?}");
         assert!(r.r1.normalize().dot(up) > 0.999, "{:?} {up:?}", r.r1);
         assert_eq!(at_door(Vec3::new(837.18, 17.37, -815.88)), Some(0));
+    }
+
+    /// F-17595's choice: the nearest running garage; one not running is at 20000; ties go to the later garage.
+    #[test]
+    fn go_to_garage_picks_the_nearest_running() {
+        let hw = GOTO_POINTS[0];
+        assert_eq!(goto_pick(hw, [true; 3]), 0);
+        assert_eq!(goto_pick(hw, [false, true, true]), 2);
+        assert_eq!(goto_pick(GOTO_POINTS[1], [false, true, true]), 1);
+        assert_eq!(goto_pick(hw, [false, true, false]), 1);
+        assert_eq!(goto_pick(hw, [false; 3]), 2);
         assert_eq!(at_door(Vec3::new(823.642, 17.5, -807.588)), None);
     }
 }

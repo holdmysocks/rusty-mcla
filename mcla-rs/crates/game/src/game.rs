@@ -387,6 +387,8 @@ pub enum MenuAction {
     /// then the ARCADE menu's race type list (F-35999 / F-40647)
     OpenArcade(bool),
     OpenGarage,
+    /// GO TO GARAGE (the free-roam pause menu, a race-over menu): F-17595, then the chosen garage's drive-in
+    GoToGarage,
     Back,
     Quit,
     ApplyCar,
@@ -593,6 +595,9 @@ pub struct Game {
     pub loading_text: String,
     pub loading_fade: f32,
     pub loading_was_garage: bool,
+    /// the Career_Loading box (Dialog.sc.xml: UIMessageBox, icontext Save_Icon_Loading, popuptype animated): shown by
+    /// GO TO GARAGE (F-17595), hidden by the warper once the garage's scene is on (F-31347) or before its dive
+    pub career_loading: bool,
     /// the songs of the playlists ("ARTIST - TITLE", genre 0..6), from the audio side
     pub songs: Vec<(String, u8)>,
     /// the statistics pages: which vehicle / race type / race / district is open
@@ -1276,6 +1281,7 @@ impl Game {
             loading_text: String::new(),
             loading_fade: 0.0,
             loading_was_garage: false,
+            career_loading: false,
             songs: Vec::new(),
             stat_idx: [0; 2],
             song_line: None,
@@ -5125,8 +5131,9 @@ impl Game {
                                 }
                                 // (a new career has no garage yet: CONTINUE / SAVE GAME - `ng_c5`; with the
                                 // 100 % save CONTINUE / GO TO GARAGE / SAVE GAME)
-                                if self.flash_menu.is_none() || !self.career.loaded() || self.career.reached("GARAGE_HOLLYWOOD") {
-                                    items.push((s("pause_go_to_garage", "GO TO GARAGE"), String::new(), Go::Act(MenuAction::OpenGarage)));
+                                // (F-88974: some garage's state is 2 - its core running - and the flag tGAR, not modelled)
+                                if self.flash_menu.is_none() || (0..3).any(|g| self.garage_running(g)) {
+                                    items.push((s("pause_go_to_garage", "GO TO GARAGE"), String::new(), Go::Act(MenuAction::GoToGarage)));
                                 }
                                 if self.flash_menu.is_some() {
                                     items.push((s("pause_save_game", "SAVE GAME"), String::new(), Go::Page(252)));
@@ -8430,7 +8437,7 @@ impl Game {
             Mode::FreeRoam if self.bmt_end.is_some() => action = self.bmt_end_ui(ctx, up, down, enter),
             Mode::FreeRoam | Mode::Race => {
                 if self.mode == Mode::FreeRoam && std::mem::take(&mut self.go_garage) {
-                    action = MenuAction::OpenGarage;
+                    action = MenuAction::GoToGarage;
                 }
                 if std::mem::take(&mut self.nav_map) {
                     // (a new career has no GPS map before its first mission is done: Back only
@@ -10966,6 +10973,9 @@ impl Game {
                 self.loading_was_garage = garage_now;
                 self.loading_tag = 1.5;
             }
+            if self.career_loading {
+                self.loading_tag = dt.max(1e-3);
+            }
             if self.manual_save_t > 0.0 {
                 self.manual_save_t -= dt;
                 self.loading_tag = dt.max(1e-3);
@@ -10976,6 +10986,7 @@ impl Game {
                 }
             }
             let key = match self.tag_saving {
+                _ if self.career_loading => "Save_Icon_Loading",
                 Some(true) => "Save_Icon_Saving",
                 Some(false) => "Save_Icon_Loading",
                 None => "VE_Loading",
@@ -13683,18 +13694,28 @@ impl Game {
         self.place_hold.contains_key(&garage_uid(g))
     }
 
-    /// GO TO GARAGE (F-17595): the garage nearest the player by the handler's own points gets state 4. Its core, held
-    /// within 8 m of the door with the flag clear, lets go at once (garage_core 0x255..0x2bc, "force unsuspend"), and it
-    /// is the garage driven into: never held. (The handler's state 2 filter and its Career_Loading box are not modelled.)
-    pub fn go_to_garage(&mut self, player: Option<Vec3>) {
-        let Some(p) = player else { return };
-        let pts = crate::garagein::GOTO_POINTS;
-        let Some(g) = (0..pts.len()).min_by(|&a, &b| pts[a].distance(p).total_cmp(&pts[b].distance(p))) else { return };
+    /// `<x>_garage_state` is 2: the garage's core is running - started by its set-up script, which a mission's script
+    /// starts (hw: GARAGE_HOLLYWOOD, DELIVERY, INSTALL_ABILITY; be: PAYBACK_INTRO, PAYBACK, PAYBACK_GH_18; sc:
+    /// GARAGE_SC, DELIVERY_SC - `mc4::MISSION_SCRIPTS`); garage_core sets 2 at its start (0x00e) and after each visit
+    /// (0x1dbe). A game without a career has them all.
+    pub fn garage_running(&self, g: usize) -> bool {
+        crate::garagein::SETUP_SCRIPTS.get(g).map_or(false, |s| self.alt_running(s))
+    }
+
+    /// GO TO GARAGE (F-17595): of the garages whose state is 2, the nearest by the handler's own points gets state 4
+    /// (`garagein::goto_pick`), and the Career_Loading box comes up. Its core, held within 8 m of the door with the
+    /// flag clear, lets go at once (garage_core 0x255..0x2bc, "force unsuspend"), and it is the garage driven into:
+    /// never held. (The handler's first test - a state 6 becomes 5 and nothing else happens - has no writer of 6.)
+    pub fn go_to_garage(&mut self, player: Option<Vec3>) -> Option<usize> {
+        let p = player?;
+        let g = crate::garagein::goto_pick(p, std::array::from_fn(|g| self.garage_running(g)));
         let uid = garage_uid(g);
         self.place_goto = Some(uid);
         if !self.suspend_all_opponents() {
             self.place_hold.remove(&uid);
         }
+        self.career_loading = true;
+        Some(g)
     }
 
     pub fn update_place_holds(&mut self, player: Option<Vec3>, dt: f32) {
