@@ -5168,9 +5168,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             let s = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.boom_up.unwrap_or(Vec3::Y));
                             let close = s.eye.distance(e.eye) < garagein::CLOSE;
                             let warp = close.then(|| hudmap::CineWarp::target_close(s, e, self.cam.fov_y, garagein::LENS_DEG.to_radians()));
-                            // (the climb's lens goes to the request's +96: taken as Warp_Target_Close's - approx.)
+                            // (far, Warp() sets the request's +96 to 25 and picks the climb as DEFAULT_WITH_CUT does, F-32081;
+                            // the climb eases the lens to it)
                             let car = hudmap::CamRows { r0: c.state.rot * Vec3::X, r1: c.state.rot * Vec3::Y, r2: c.state.rot * Vec3::Z, eye: c.state.pos };
-                            let climb = (!close).then(|| hudmap::CineClimb::new(s, car, self.cam.fov_y, garagein::LENS_DEG.to_radians(), self.screen_v));
+                            let climb = (!close).then(|| hudmap::CineClimb::new(s, car, self.cam.fov_y, garagein::FAR_LENS_DEG.to_radians(), self.screen_v));
                             log::info!("garage entry: {} from {:?} (warp {}, climb {:?}, go to garage {})", garagein::SETUPS[g].key, s.eye, warp.is_some(), climb.as_ref().map(|c| c.kind()), goto.is_some());
                             self.garage_in = Some(garagein::Entry { garage: g, stage: garagein::Stage::Warp, t: 0.0, clock: 0.0, warp, hold: (c.state.pos, c.state.rot), opened: false, climb, dive: None });
                         } else if self.game.car_x.garage_after_scene && self.cuts.idle() {
@@ -5215,6 +5216,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // mission's event script may play its story scene (REDLIGHT_GH_01_GARAGE_ON_ENTER), else
                         // <x>_garage_enter_cine plays the `_ent` scene
                         if gi.t >= warp_len + garagein::EVENT_WAIT {
+                            // ("Reached neutral point": garage_core 0x517..0x52a sets the stat tGAR to 1 unless its place
+                            // is element 506 - none of the three garages)
+                            self.game.mc4_stat_set("tGAR", 0, 1.0);
                             self.game.career.event(career::Ev::Garage);
                             let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
                             let story = self.game.career.location_enter(su.enter).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));

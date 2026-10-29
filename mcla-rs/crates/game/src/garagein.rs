@@ -78,6 +78,8 @@ pub const LOADING_OFF: f32 = 5.0 / 30.0;
 pub const CLOSE: f32 = 100.0;
 /// req+96 of Warp_Target_Close (0x8201F9D8), degrees
 pub const LENS_DEG: f32 = 21.865_47;
+/// req+96 of the far branch of Warp()'s type 17 (F-32081: 0x8201D298), the lens the climb eases to (F-98643)
+pub const FAR_LENS_DEG: f32 = 25.0;
 /// the ShowLocationName state: opened 0.1 s into the Lerp, closed by its own 2 s timer
 pub const TITLE_FROM: f32 = 0.1;
 pub const TITLE_LEN: f32 = 2.0;

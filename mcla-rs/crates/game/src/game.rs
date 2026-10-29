@@ -5131,8 +5131,8 @@ impl Game {
                                 }
                                 // (a new career has no garage yet: CONTINUE / SAVE GAME - `ng_c5`; with the
                                 // 100 % save CONTINUE / GO TO GARAGE / SAVE GAME)
-                                // (F-88974: some garage's state is 2 - its core running - and the flag tGAR, not modelled)
-                                if self.flash_menu.is_none() || (0..3).any(|g| self.garage_running(g)) {
+                                // (F-98337 with no race: F-88974)
+                                if self.flash_menu.is_none() || self.go_garage_gate() {
                                     items.push((s("pause_go_to_garage", "GO TO GARAGE"), String::new(), Go::Act(MenuAction::GoToGarage)));
                                 }
                                 if self.flash_menu.is_some() {
@@ -8060,8 +8060,8 @@ impl Game {
                 // `re/raceover.md`, `cap/rl_19`): RETURN TO CRUISE; RACE AGAIN only with the car wrecked
                 // (F-48456: health / tune >= 1), RACE BACK only with `raceBack` and the car not wrecked;
                 // RACE RESULTS; VIEW REPLAY (every race offline); GO TO GARAGE (F-59601 - the race is
-                // over and F-88974: a district's garage state 2 and the flag tGAR; approx.: taken as
-                // met); no NEXT RACE, no favourites
+                // over and F-88974: a garage's state 2 and the stat tGAR, `go_garage_gate`); no NEXT RACE, no
+                // favourites
                 if movie && self.active_def.as_ref().map_or(false, |d| d.id == crate::althk::REDLIGHT_RACE_ID) {
                     let wrecked = vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
                     ro = vec![(s("pause_return_cruise", "RETURN TO CRUISE"), 2)];
@@ -8125,6 +8125,13 @@ impl Game {
                         (s("pause_view_replay", "VIEW REPLAY"), 12),
                         (s("pause_go_to_garage", "GO TO GARAGE"), 13),
                     ]);
+                }
+                // (GO TO GARAGE, vt+28 of every race-over menu - F-59601, F-98337, F-58712, F-63937: the race over (or the car
+                // wrecked), then the gate F-88974; the local racer's (F-58712) never for event kind 12, RACE_GH_06's race (its story script sets
+                // +3096 = 12))
+                let kind12 = self.hookman_race && self.career.hookman_mission() == Some("RACE_GH_06");
+                if !self.go_garage_gate() || kind12 {
+                    ro.retain(|r| r.1 != 13);
                 }
                 // (chased: RO_ReturnToCruise reads RETURN TO CHASE - F-43165; greyed with the others, `ro_grey`)
                 if self.chased_menu() {
@@ -13700,6 +13707,12 @@ impl Game {
     /// (0x1dbe). A game without a career has them all.
     pub fn garage_running(&self, g: usize) -> bool {
         crate::garagein::SETUP_SCRIPTS.get(g).map_or(false, |s| self.alt_running(s))
+    }
+
+    /// GO TO GARAGE's gate (F-88974): some garage's state is 2 and the stat tGAR is not 0 - garage_core sets it the first
+    /// time the player drives into a garage (0x517..0x52a). A game without a career has it.
+    pub fn go_garage_gate(&self) -> bool {
+        !self.career.loaded() || ((0..3).any(|g| self.garage_running(g)) && self.mc4_stat("tGAR", 0) != 0.0)
     }
 
     /// GO TO GARAGE (F-17595): of the garages whose state is 2, the nearest by the handler's own points gets state 4
