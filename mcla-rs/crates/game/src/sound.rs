@@ -253,6 +253,11 @@ impl Sound {
         self.engine_run = true;
     }
 
+    /// Whether the player's engine sound is stopped or waiting to stop (its states 2 and 3, or a stop asked for).
+    pub fn engine_stopped(&self) -> bool {
+        self.engine_stop || self.engine.as_ref().is_some_and(|(_, e)| e.stopped())
+    }
+
     /// Whether the player's engine sound holds the car (its state below 4, or a start / stop asked for and not yet
     /// applied): the control step F-17997 then sets the engine word +46 to 1 if it is 0, puts the gearbox in first and
     /// sets throttle 0, brake 1, handbrake 0.

@@ -546,7 +546,8 @@ struct App {
     wreck_timer: f32,
     /// the driver's damage-out states for the engine sound: 1 the stop due at "impact start car", 2 stopped (the
     /// start due at the exit of "impact start car done"), 3 in "impact start car done" with no pause coming (its
-    /// time in `wreck_done`), 0 none
+    /// time in `wreck_done`), 4 cut short by the race's end with the sound stopped (the damage-out runs again once
+    /// the race is gone, if the car is still damaged out), 0 none
     wreck_engine: u8,
     wreck_done: f32,
     /// the game's time scale from the time warpers (min of them; `boomcam::TimeWarper`):
@@ -2951,6 +2952,18 @@ impl App {
                 }
             }
             if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !mission && self.cine.playing.is_none() {
+                // the race over (IsRaceFinish gone) with the car still damaged out: the driver's cruising state takes
+                // "impact damageout" again ($IsImpactDamageout ...) and runs it all - the hit clip, "impact start car"
+                // with its stop, 4 s, the what next and the start. Repaired (the QUICK FIX's F-30391(0)) it does not,
+                // and the sound stays as it is
+                if self.wreck_engine == 4 && self.wreck_timer <= 0.0 && self.game.race_end_t.is_none() {
+                    self.wreck_engine = 0;
+                    if let Some(c) = self.vehicles.player().filter(|c| c.state.damage >= 0.999) {
+                        self.wreck_timer = self.drivers.hit_hard_secs(&c.model.name).unwrap_or(0.0) + 4.0;
+                        self.wreck_engine = if (c.state.rot * Vec3::Y).y > 0.0 { 1 } else { 0 };
+                        self.crash_bits |= 0x14;
+                    }
+                }
                 if self.wreck_timer > 0.0 {
                     self.wreck_timer -= dt;
                     // (still damaged out: 0x04 stands until the reset below)
@@ -2982,6 +2995,9 @@ impl App {
                     } else if self.wreck_timer <= 0.0 {
                         if std::mem::take(&mut self.wreck_engine) == 2 {
                             self.sound.play_ignition();
+                        } else if self.sound.engine_stopped() {
+                            // (the reset stands for the menu's QUICK FIX: F-39432 sets a stopped sound running, vt+48)
+                            self.sound.engine_set_running();
                         }
                         // the wreck event's end (F-79134 -> F-89773). (approx.: the original then opens the
                         // PauseMenu in the cruise - its QUICK FIX row, free - or ends the race into the
@@ -3115,13 +3131,18 @@ impl App {
                 }
             } else {
                 self.wreck_timer = 0.0;
-                // (approx.: a scene, a mission or a menu cutting "impact start car" short - the original's driver
-                // goes back to cruising on IsRaceFinish without the start. The engine sound's state is written only by
-                // its start (vt+52), its stop (vt+56), the restore's set-running (vt+48, the QUICK FIX) and a new car's
-                // constructor, so it stays stopped until one of them; which of them follows the race's end was not
-                // traced - here the start)
+                // the race over cuts the driver's "impact damageout" / "impact start car" short: $IsRaceFinish (F-28290:
+                // the race object's +3773 set, F-84893's race end or an arrest) -> cruising, with no start. The
+                // engine sound's state is written only by its start (vt+52), its stop (vt+56), the restore's
+                // set-running (vt+48, the QUICK FIX - the race-over rows' repair question YES) and a new car, so a
+                // stopped sound stays stopped (4) until the race is gone and the driver runs the damage-out again, or
+                // a quick fix. While the race stays over the machine (at most 3 transitions a step, F-58452) only goes
+                // between cruising and "impact damageout" and never reaches the stop.
+                // (approx.: a scene or a mission cutting it - the original's driver runs on there - starts the sound)
+                let race_over = self.game.mode == Mode::Results || self.game.race_end_t.is_some();
                 match self.wreck_engine {
                     1 => self.wreck_engine = 0,
+                    2 if race_over => self.wreck_engine = 4,
                     2 => {
                         self.wreck_engine = 0;
                         self.sound.play_ignition();
