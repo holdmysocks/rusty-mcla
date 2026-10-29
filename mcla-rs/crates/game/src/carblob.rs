@@ -12,7 +12,8 @@
 //! Measured: the R8 r 1.8844 (0.99 x its width 1.9033), span 2.2318 (half the length of its
 //! lowest level of detail), middles 0.4383 above the cylinder's; traffic cars r 1.5204 / 1.4401,
 //! span exactly 1.5 r, middles 0.3211 / 0.2651 up. (approx.) here: the span is half the length
-//! of the model's box, traffic cars' r a third of it, the height 0.2326 r (R8) / 0.2 r (traffic).
+//! of the model's box, the height 0.2326 r (R8). Traffic cars follow the decoded record (F-68081 -> F-18380,
+//! see the traffic branch in `run`); the player car's own producer is not decoded.
 //!
 //! `MCLA_DEBUG_VIEW=270`: the pass off; 271: wheels only; 272: bodies only; 273: without the
 //! cars' mask (the blobs darken the cars too).
@@ -158,7 +159,22 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
             if std::env::var("MCLA_GLOW_DUMP").is_ok() { eprintln!("blob body width {width:.4} length {length:.4} r {r:.4} span {span:.4}"); }
             let up = if c.ambient { 0.2 * r } else { 0.2326 * r };
             let foot = pos + y * c.ground_y;
-            let first = foot + y * up - z * (span * 0.5);
+            let mut first = foot + y * up - z * (span * 0.5);
+            // (a traffic car's record, F-68081 -> F-18380, decoded 2026-10-29: L and H the model box's length and
+            // height (the drawable's bounds, +16 / +32); under 8.5 m r = L / 3 and the end spheres at L / 4 from the
+            // car's ORIGIN along its z, else r = L / 4 and the ends at 0.33 L; both raised H / 4 along its y; the two
+            // inner spheres at 1/3 and 2/3 between them (F-18380); the cylinder centred on the origin (F-35120 takes
+            // the record's matrix), its length 2 r + the ends' distance. The truck's recorded blob: r 2.395, length
+            // 8.383, centre = its origin. MCLA_BLOB_AMB_OLD=1: the fit as until then.)
+            let (r, span, foot) = if c.ambient && std::env::var_os("MCLA_BLOB_AMB_OLD").is_none() {
+                let h = c.max.y - c.min.y;
+                let (r, k) = if length < 8.5 { (length / 3.0, 0.25) } else { (length / 4.0, 0.33) };
+                first = pos + y * (h * 0.25) - z * (length * k);
+                if std::env::var("MCLA_GLOW_DUMP").is_ok() { eprintln!("blob amb length {length:.4} height {h:.4} r {r:.4} span {:.4}", 2.0 * k * length); }
+                (r, 2.0 * k * length, pos)
+            } else {
+                (r, span, foot)
+            };
             push(&mut data, [foot.extend(1.0).to_array(), (x * (1.05 * r)).extend(strength).to_array(), (y * (1.05 * r / 8.0)).extend(0.0).to_array(), (z * (span * 0.5 + r)).extend(0.0).to_array(), first.extend(r * r).to_array(), (z * (span / 3.0)).extend(0.0).to_array()]);
             n += 1;
         }
