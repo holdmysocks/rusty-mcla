@@ -2075,7 +2075,8 @@ impl Game {
             self.mc4_car_in(m, &car.to_ascii_lowercase(), None);
         }
         // (step 21b: while a pink slip race runs the staked vehicle is out of the garage)
-        let owned = self.mc4_owned_out();
+        // (MODS.md S3: a placeholder of a mod that is not installed keeps its record and its place)
+        let owned = crate::modgarage::merge(&self.mc4_owned_out(), &self.mod_missing);
         let cur = self.mc4_current_out().unwrap_or(cur);
         m.sync_garage(&owned, &cur);
         self.mc4_sync_cars(m);
@@ -5225,8 +5226,8 @@ impl Game {
                     (0..3).all(|i| (l[i] - lin[i]).abs() < 1.5e-3)
                 });
                 let new_a = if same { body_a.unwrap() } else { to_screen(lin) };
-                for (k, p) in c.visual.paint.iter_mut().enumerate() {
                 let mut colour_stored = false;
+                for (k, p) in c.visual.paint.iter_mut().enumerate() {
                     let own = if k == 0 { None } else { cfg.and_then(|g| g.part_paint.get(AREA_KEYS[k - 1])).copied() };
                     let have = p.color_a();
                     match own {
@@ -5234,8 +5235,8 @@ impl Game {
                         Some(rgb) => {
                             if have.map_or(true, |h| (0..3).any(|i| ((h[i] * 255.0).round() - rgb[i] as f32).abs() > 1.0)) {
                                 p.ColorA = rgb_f([rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0]);
-                            }
                                 colour_stored = true;
+                            }
                         }
                         // (the body's: an area that stood within the importer's 0.02 of the
                         // body's colour is the body's)
@@ -5249,8 +5250,8 @@ impl Game {
                             let reset = if k == 0 || was_body { !same } else { cfg.is_some() };
                             if reset && have.map_or(true, |h| !close(h, new_a)) {
                                 p.ColorA = rgb_f(new_a);
-                            }
                                 colour_stored = true;
+                            }
                         }
                     }
                     // (type and fade: the body's, and the areas that had the body's)
@@ -5273,16 +5274,16 @@ impl Game {
                         }
                         if p.color_b().map_or(true, |b| !close(b, a.b)) {
                             p.ColorB = vec![r6(a.b[0]), r6(a.b[1]), r6(a.b[2])];
-                        }
                             colour_stored = true;
+                        }
                     }
                 }
-            }
                 // (a colour stored into a paint area takes the paint override off: F-87462 writes
                 // +2068 of the look = -1 before every colour it stores)
                 if colour_stored {
                     c.visual.m_iCarPaintOverride = -1;
                 }
+            }
             // --- parts ---
             let xp = self.xparts.get(&name);
             for (port, byte, mirror) in PART_MAP {
@@ -6091,6 +6092,7 @@ pub fn stat_sub(code: &str, sub: u32) -> String {
 
 /// the purse's limit either way (AddMoney F-71075 clamps above, SpendMoney F-38145 below)
 pub const PURSE_CAP: i64 = 2_140_000_000;
+pub const TT_PANEL: char = '\u{1}';
 
 /// One row of the ARCADE menu's options page.
 #[derive(Clone, Debug, PartialEq)]
@@ -8290,6 +8292,8 @@ impl Game {
         let b = self.mc4_setup_file(config)?;
         let s = setup_look(&b)?;
         let (cfg, rim, inches) = setup_parts(&b)?;
+        // (an opponent set-up of a mod car with rims = "random": the rim drawn for this race, modcars.rs)
+        let rim = crate::modcars::rim_draw(config).map_or(rim, |r| r as u32);
         let rim_dir = self.rim_shop.entry(rim as i32).and_then(|e| self.rim_by_name.get(&e.resource)).and_then(|at| self.rim_dirs.get(*at)).cloned();
         let inches = if (13..=26).contains(&inches) { inches } else { 0 };
         let perf = self.mc4_setup_percent(car, config).clamp(0, 100) as f32 / 100.0;
@@ -10477,10 +10481,10 @@ pub struct PinkLive {
     pub counted: std::cell::Cell<usize>,
     /// (step 21b) the race that has just ended was a pink slip race (not a leg of any event)
     pub just_ended: bool,
-}
-
     /// the locations' own profiles (mcCareer +8768, not saved: save_gaps.rs)
     pub locals: std::cell::RefCell<crate::save_gaps::PinkLocals>,
+}
+
 fn pink_empty(k: usize) -> PinkSlip {
     PinkSlip { slot: k as u32, kind: -1, empty: true, name: String::new(), uid: -1, extra: Extra::new() }
 }
@@ -11494,10 +11498,10 @@ impl Game {
     /// StatsManager_UpdateStatInt(code, sub, 3 (set), v).
     pub fn mc4_stat_set(&mut self, code: &str, sub: u32, v: f64) {
         self.mc4_stat_submit(code, sub, 3, v);
-    /// StatsManager_UpdateStatInt(code, sub, 0 (add), n).
-    pub fn mc4_stat_add(&mut self, code: &str, sub: u32, n: f64) {
     }
 
+    /// StatsManager_UpdateStatInt(code, sub, 0 (add), n).
+    pub fn mc4_stat_add(&mut self, code: &str, sub: u32, n: f64) {
         self.mc4_stat_submit(code, sub, 0, n);
     }
 
@@ -11549,8 +11553,6 @@ impl Game {
     pub fn mc4_race_stats(&mut self, place: usize, class: &str, finish: Option<f32>) {
         self.mc4_stat_add("gRCP", 0, 1.0);
         self.mc4_stat_add("kRCP", 0, 1.0);
-        if place == 1 {
-            self.mc4_stat_set("xLRW", 0, 1.0);
         self.mc4_stat_add("nRCP", 0, 1.0);
         // (GetIntValue kTRS and kRCP; kRCP not 0: kARS = float(kTRS / kRCP) x 100.0, operation 2)
         let (trs, rcp) = (self.mc4_stat("kTRS", 0) as i32, self.mc4_stat("kRCP", 0) as i32);
@@ -11586,15 +11588,17 @@ impl Game {
                 _ => {}
             }
         }
+        if place == 1 {
+            self.mc4_stat_set("xLRW", 0, 1.0);
             self.mc4_stat_add("gWIN", 0, 1.0);
-            self.mc4_stat_add("kCWN", 0, 1.0);
-            self.mc4_stat_add("gCWN", 0, 1.0);
             self.mc4_stat_add("kWIN", 0, 1.0);
             // (vWIN under the vehicle table's index of the car: `stat_sub` keys it by the name)
             let car = self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
             if let Some(v) = VEHICLES.iter().position(|n| n.eq_ignore_ascii_case(&car)) {
                 self.mc4_stat_submit("vWIN", v as u32, 0, 1.0);
             }
+            self.mc4_stat_add("kCWN", 0, 1.0);
+            self.mc4_stat_add("gCWN", 0, 1.0);
             let cwn = self.mc4_stat("kCWN", 0) as i32;
             self.mc4_stat_submit("kCCW", 0, 2, cwn as f64);
             // (the plain branch counts the motorcycle win once more)
@@ -12165,9 +12169,9 @@ impl Game {
         // AddMoney F-71075, SpendMoney F-38145)
         self.money = self.money.clamp(-PURSE_CAP, PURSE_CAP);
         self.career.stats.insert("tPUR".to_string(), self.money);
+        // (the money: aMIL as the purse grows to $1,000,000 or more)
         if let Some(was) = self.opt_x.s23.money_was.replace(self.money) {
             if self.money > was && self.money >= 1_000_000 {
-        // (the money: aMIL as the purse grows to $1,000,000 or more)
                 self.mc4_award("aMIL");
             }
         }

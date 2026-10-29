@@ -11,6 +11,7 @@
 //!   returns [`InstallOutcome::NeedsConfirmation`] until confirmed.
 
 pub mod disc;
+pub mod manage;
 pub mod manifest;
 pub mod overlay;
 pub mod package;
@@ -99,6 +100,8 @@ pub struct ModCar {
     pub opponent: Option<Opponent>,
     /// resolved opponent samples (performance, speed) at mod 0 / 50 / 100
     pub samples: Option<([f32; 3], [f32; 3])>,
+    /// the resolved opponent use when the manifest marks the car for opponents (stage S4; [`opponent_text`])
+    pub opponent_use: Option<validate::OpponentUse>,
 }
 
 #[derive(Default)]
@@ -467,7 +470,38 @@ fn mod_car(c: &CarEntry, id: &str, k: validate::Checked) -> ModCar {
         donors: c.donors.clone(),
         opponent: c.opponent.clone(),
         samples: k.samples,
+        opponent_use: k.opponent,
     }
+}
+
+/// What the game's opponent pick (`oppick::OpPick::load`'s `extra`, MODS.md design 7b) gets for an opponent-marked
+/// mod car, in the format of the cut GT-R's `catalog::CUT_CATALOG` + `CUT_OPPONENT`: its `Vehicle` block with the
+/// opponent districts as its `DistrictFilter` lines, one `Character` block per driver putting the car with his set-up
+/// in his car map, and its samples at mod 0 / 50 / 100. `drivers` are the (driver, set-up) pairs the game could
+/// make (all of the manifest's when None). None for a car without the mark or whose drivers could not be made.
+pub fn opponent_text(c: &ModCar, drivers: Option<&[(String, String)]>) -> Option<String> {
+    let o = c.opponent_use.as_ref()?;
+    let all: Vec<(String, String)> = o.drivers.iter().map(|d| (d.driver.clone(), d.setup.clone())).collect();
+    let drivers = drivers.unwrap_or(&all);
+    // (no drivers declared is a car for the pick to give a free driver of the band, stage S4b; declared ones that could not
+    // be made leave the car out)
+    if (drivers.is_empty() && !o.drivers.is_empty()) || !o.samples.0.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let mut row = c.clone();
+    row.row.districts = o.districts.clone();
+    let mut s = vehicle_block(&row);
+    for (id, setup) in drivers {
+        s.push_str(&format!("Character\r\n{{\r\n\tName\t{id}\r\n\tCar\r\n\t{{\r\n\t\tName\t{}\r\n\t\tConfig\r\n\t\t{{\r\n\t\t\tName\t{setup}\r\n\t\t}}\r\n\t}}\r\n}}\r\n", c.name));
+    }
+    for (k, m) in [0, 50, 100].iter().enumerate() {
+        s.push_str(&format!("sample\r\n{{\r\n\tname\t{}\r\n\tmod\t{m}\r\n\tperformance\t{}\r\n", c.name, o.samples.0[k]));
+        if o.samples.1[k].is_finite() {
+            s.push_str(&format!("\tspeed\t{}\r\n", o.samples.1[k]));
+        }
+        s.push_str("}\r\n");
+    }
+    Some(s)
 }
 
 /// One `Vehicle` block as the disc lists write it (keys and order of the R8's block in `vehicle.lst`; no content

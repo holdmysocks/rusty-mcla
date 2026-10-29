@@ -137,6 +137,14 @@ pub struct Donors {
     pub garage: Option<String>,
     /// `<car>_parts.gtun` part price list (row 11)
     pub prices: Option<String>,
+    /// scale the `prices` donor's car-made rows (brand 0) to this disc car's price level: the ratio of its body-kit
+    /// price to the donor's, rounded to $5 (D21's recipe for the cut GT-R, DECISIONS.md D28 "Prices"); only without
+    /// an own `_parts.gtun`
+    pub prices_level: Option<String>,
+    /// or: the mod car's own body-kit price the donor's car-made rows are scaled to
+    pub prices_kit: Option<i64>,
+    /// the maker's logo id the scaled list's stock rows show (default: the donor's own)
+    pub prices_maker: Option<i32>,
     /// sound profile (row 16)
     pub sound: Option<String>,
     /// driving cameras (row 17)
@@ -147,8 +155,10 @@ pub struct Donors {
     pub pictures: Option<String>,
 }
 
-/// Opponent use (MODS.md design 7b). Parsed and checked only for completeness here; wiring into the opponent pick is
-/// stage S4.
+/// Opponent use (MODS.md design 7b, stage S4): what the original's opponent pick needs (docs/reference/ai/car_pick.md),
+/// handed to the game's `OpPick::load` as extra list text (`crate::opponent_text`). One driver can be written with
+/// the shorthand keys `driver` / `setup` / `setup_from` / `plate`, more with `[[car.opponent.drivers]]` (both may be
+/// used: the shorthand's driver comes first).
 #[derive(Clone, Debug, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Opponent {
@@ -166,7 +176,7 @@ pub struct Opponent {
     /// or: copy both from this disc car's samples
     #[serde(default)]
     pub samples_from: Option<String>,
-    /// a `Character` id of `Opponent.lst` (GH_nn); none = the first free driver (original rule)
+    /// a `Character` id of `Opponent.lst` (GH_nn) who races the car (shorthand for one entry of `drivers`)
     #[serde(default)]
     pub driver: Option<String>,
     /// the opponent's set-up name (`GH_nn_k_<car>`)
@@ -178,6 +188,41 @@ pub struct Opponent {
     /// plate text of that set-up
     #[serde(default)]
     pub plate: Option<String>,
+    /// more drivers (`[[car.opponent.drivers]]`)
+    #[serde(default)]
+    pub drivers: Vec<OpDriver>,
+    /// the rim every opponent set-up of the car wears: "setup" (default: the set-up's own) or "random" (a car rim of the
+    /// rim shop drawn per race; stage S4b, DECISIONS.md D28)
+    #[serde(default)]
+    pub rims: Option<String>,
+}
+
+/// One driver of an opponent car: a Character of `Opponent.lst`, the set-up he races it in (the mod's own
+/// `resources/vehicle/configs/<setup>.xcc`, or made from the disc set-up `setup_from` into `mods/.cache/setups`) and
+/// optionally the plate written into a made set-up.
+#[derive(Clone, Debug, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct OpDriver {
+    #[serde(default)]
+    pub driver: String,
+    #[serde(default)]
+    pub setup: String,
+    #[serde(default)]
+    pub setup_from: Option<String>,
+    #[serde(default)]
+    pub plate: Option<String>,
+}
+
+impl Opponent {
+    /// The drivers as written: the shorthand's first (when it names a driver or a set-up), then `drivers`.
+    pub fn driver_list(&self) -> Vec<OpDriver> {
+        let mut v = Vec::new();
+        if self.driver.is_some() || self.setup.is_some() || self.setup_from.is_some() || self.plate.is_some() {
+            v.push(OpDriver { driver: self.driver.clone().unwrap_or_default(), setup: self.setup.clone().unwrap_or_default(), setup_from: self.setup_from.clone(), plate: self.plate.clone() });
+        }
+        v.extend(self.drivers.iter().cloned());
+        v
+    }
 }
 
 /// Parse a manifest. Syntax and type errors come back as one message; unknown top-level keys are listed in

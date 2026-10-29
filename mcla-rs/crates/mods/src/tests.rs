@@ -335,6 +335,80 @@ fn opponent_block_stub() {
     assert!(r.iter().any(|x| x.starts_with("row 14:")) && r.iter().any(|x| x.starts_with("row 15: opponent set-up")));
 }
 
+/// Stage S4: the opponent block resolved (districts, samples, several drivers, own or made set-ups) and checked against
+/// the disc's `Opponent.lst` and set-up folder; the text the opponent pick gets.
+#[test]
+fn opponent_use_and_text() {
+    let data = data_root();
+    let cc = data.join("tune/career/carcfg");
+    std::fs::create_dir_all(&cc).unwrap();
+    std::fs::write(cc.join(format!("0x{:08x}", joaat("opponent.lst"))), "Character\r\n{\r\n\tName\tGH_12\r\n}\r\nCharacter\r\n{\r\n\tName\tGH_26\r\n\tCar\r\n\t{\r\n\t\tName\tvp_aud_r8_08\r\n\t}\r\n}\r\n").unwrap();
+    let cfg = data.join("resources/vehicle/configs");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("GH_26_3_vp_aud_r8_08.xcc"), xcc("vp_aud_r8_08")).unwrap();
+    let d = DiscInfo::load(&data);
+    assert_eq!(d.drivers, ["GH_12", "GH_26"]);
+    assert!(d.has_setup("gh_26_3_VP_AUD_R8_08") && !d.has_setup("GH_12_2_vp_aud_r8_08"));
+    let m = mods_dir(&data);
+    // one shorthand driver with a made set-up and a plate, one more with the mod's own set-up; own districts
+    let ok = "[car.opponent]\nenabled = true\ndistricts = [\"downtown\"]\nperformance = [0.5, 0.6, 0.7]\nspeed = [0.4, 0.5, 0.6]\n\
+              driver = \"GH_12\"\nsetup = \"GH_12_2_vp_opp_08\"\nsetup_from = \"GH_26_3_vp_aud_r8_08\"\nplate = \"OPP 08\"\n\
+              [[car.opponent.drivers]]\ndriver = \"gh_26\"\nsetup = \"GH_26_1_vp_opp_08\"\n";
+    let mut files = car_files("vp_opp_08");
+    files.push(("resources/vehicle/configs/GH_26_1_vp_opp_08.xcc".into(), xcc("vp_opp_08")));
+    write_folder(&m.join("opp"), &manifest("opp", "1", "vp_opp_08", ok), &files);
+    // every rule of row 15 broken once
+    let bad = "[car.opponent]\nenabled = true\nsamples_from = \"vp_aud_r8_08\"\ndriver = \"GH_99\"\nsetup = \"GH_99_1_vp_other_08\"\nsetup_from = \"vp_nope\"\nplate = \"toolong99\"\n\
+               [[car.opponent.drivers]]\ndriver = \"GH_12\"\nsetup = \"GH_26_3_vp_aud_r8_08\"\nsetup_from = \"GH_26_3_vp_aud_r8_08\"\n\
+               [[car.opponent.drivers]]\nsetup = \"GH_12_2_vp_opp2_08\"\n";
+    write_folder(&m.join("opp2"), &manifest("opp2", "1", "vp_opp2_08", bad), &car_files("vp_opp2_08"));
+    // marked, no driver at all (stage S4b: valid, the pick draws one), random rims; and a bad rims value
+    write_folder(&m.join("opp3"), &manifest("opp3", "1", "vp_opp3_08", "[car.opponent]\nenabled = true\nsamples_from = \"vp_aud_r8_08\"\nrims = \"Random\"\n"), &car_files("vp_opp3_08"));
+    write_folder(&m.join("opp5"), &manifest("opp5", "1", "vp_opp5_08", "[car.opponent]\nenabled = true\nsamples_from = \"vp_aud_r8_08\"\nrims = \"fancy\"\n"), &car_files("vp_opp5_08"));
+    // not marked (enabled false): a car of the showroom only
+    write_folder(&m.join("opp4"), &manifest("opp4", "1", "vp_opp4_08", "[car.opponent]\nenabled = false\n"), &car_files("vp_opp4_08"));
+    let set = load(&data);
+    let c = set.car("vp_opp_08").expect("loaded");
+    let u = c.opponent_use.as_ref().unwrap();
+    assert_eq!(u.districts, ["Downtown"]);
+    assert_eq!(u.samples, ([0.5, 0.6, 0.7], [0.4, 0.5, 0.6]));
+    assert_eq!(u.drivers.iter().map(|d| (d.driver.as_str(), d.setup.as_str())).collect::<Vec<_>>(), [("GH_12", "GH_12_2_vp_opp_08"), ("gh_26", "GH_26_1_vp_opp_08")]);
+    let t = opponent_text(c, None).unwrap();
+    assert!(t.starts_with("Vehicle\r\n{\r\n\tName\tvp_opp_08\r\n"));
+    assert!(t.contains("\tDistrictFilter\tDowntown\r\n") && !t.contains("Hollywood"), "{t}");
+    assert!(t.contains("Character\r\n{\r\n\tName\tGH_12\r\n\tCar\r\n\t{\r\n\t\tName\tvp_opp_08\r\n\t\tConfig\r\n\t\t{\r\n\t\t\tName\tGH_12_2_vp_opp_08\r\n"));
+    assert!(t.contains("\tName\tgh_26\r\n") && t.contains("\tName\tGH_26_1_vp_opp_08\r\n"));
+    assert!(t.contains("sample\r\n{\r\n\tname\tvp_opp_08\r\n\tmod\t100\r\n\tperformance\t0.7\r\n\tspeed\t0.6\r\n}"));
+    // only the drivers the game could make
+    let one = opponent_text(c, Some(&[("GH_12".into(), "GH_12_2_vp_opp_08".into())])).unwrap();
+    assert!(!one.contains("gh_26"));
+    assert!(opponent_text(c, Some(&[])).is_none());
+    let reasons = |id: &str| set.mods().iter().find(|i| i.id == id).unwrap().cars[0].reasons.clone();
+    let r = reasons("opp2");
+    for want in [
+        "row 15: driver GH_99 is not a Character",
+        "row 15: set-up name GH_99_1_vp_other_08 must end with _vp_opp2_08",
+        "row 15: setup_from vp_nope is not a set-up of the game",
+        "row 15: plate \"toolong99\"",
+        "row 15: set-up name GH_26_3_vp_aud_r8_08 must end",
+        "row 15: set-up name GH_26_3_vp_aud_r8_08 is a set-up of the game",
+        "row 15: set-up \"GH_12_2_vp_opp2_08\" has no driver",
+        "row 15: opponent set-up GH_12_2_vp_opp2_08 has no",
+    ] {
+        assert!(r.iter().any(|x| x.starts_with(want)), "{want}: {r:?}");
+    }
+    assert_eq!(r.len(), 8, "{r:?}");
+    let c3 = set.car("vp_opp3_08").expect("a driverless opponent car is valid");
+    let u3 = c3.opponent_use.as_ref().unwrap();
+    assert!(u3.drivers.is_empty() && u3.rims_random && !u.rims_random);
+    let t3 = opponent_text(c3, None).unwrap();
+    assert!(t3.contains("\tName\tvp_opp3_08\r\n") && !t3.contains("Character") && t3.contains("performance"), "{t3}");
+    let r5 = reasons("opp5");
+    assert!(r5.len() == 1 && r5[0].starts_with("opponent: rims \"fancy\""), "{r5:?}");
+    let c4 = set.car("vp_opp4_08").expect("loaded");
+    assert!(c4.opponent_use.is_none() && opponent_text(c4, None).is_none());
+}
+
 #[test]
 fn overlay_keys() {
     let k = overlay::keys("Resources\\UI/x/mr_vp_a.r9");
@@ -500,4 +574,37 @@ fn real_disc_profile_borrow() {
     assert!(get("ok").cars[0].warnings.is_empty(), "{:?}", get("ok").cars[0].warnings);
     assert_eq!(get("bad").state, ModState::Invalid);
     assert!(get("bad").cars[0].reasons[0].contains("+10 (player DEFAULT"), "{:?}", get("bad").cars[0].reasons);
+}
+
+/// Price scaling of the donor's list (DECISIONS.md D28 "Prices"): `prices_level` (a disc car) or `prices_kit` (a
+/// body-kit price) with `prices_maker`; it needs a prices donor, one of the two, sane values; an own `_parts.gtun`
+/// is used as written (the fields only warn).
+#[test]
+fn price_scaling_fields() {
+    let data = data_root();
+    let m = mods_dir(&data);
+    let car = |c: &str| car_files(c);
+    write_folder(&m.join("lvl"), &manifest("lvl", "1", "vp_lvl_08", "prices_level = \"vp_aud_r8_08\"\nprices_maker = 52\n"), &car("vp_lvl_08"));
+    write_folder(&m.join("kit"), &manifest("kit", "1", "vp_kit_08", "prices_kit = 30600\n"), &car("vp_kit_08"));
+    write_folder(&m.join("both"), &manifest("both", "1", "vp_both_08", "prices_level = \"vp_aud_r8_08\"\nprices_kit = 0\nprices_maker = -1\n"), &car("vp_both_08"));
+    write_folder(&m.join("nodonor"), &manifest("nodonor", "1", "vp_nod_08", "prices_level = \"vp_nope_08\"\n").replace("prices = \"vp_aud_r8_08\"\n", ""), &car("vp_nod_08"));
+    let mut own = car("vp_own_08");
+    own.push(("tune/garage/vp_own_08_parts.gtun".into(), b"<!-- body -->\r\n1\r\n".to_vec()));
+    write_folder(&m.join("own"), &manifest("own", "1", "vp_own_08", "prices_kit = 30600\n"), &own);
+    let set = load(&data);
+    let get = |id: &str| set.mods().iter().find(|i| i.id == id).unwrap();
+    for id in ["lvl", "kit", "own"] {
+        assert_eq!(get(id).state, ModState::Loaded, "{id}: {:?}", get(id).reasons);
+    }
+    let lvl = set.car("vp_lvl_08").unwrap();
+    assert_eq!((lvl.donors.prices_level.as_deref(), lvl.donors.prices_maker), (Some("vp_aud_r8_08"), Some(52)));
+    assert_eq!(set.car("vp_kit_08").unwrap().donors.prices_kit, Some(30600));
+    assert!(get("own").cars[0].warnings.iter().any(|w| w.starts_with("row 11: own") && w.contains("used as written")), "{:?}", get("own").cars[0].warnings);
+    let rs = &get("both").cars[0].reasons;
+    assert_eq!(rs.len(), 3, "{rs:?}");
+    assert!(rs[0].contains("not both") && rs[1].contains("prices_kit must be above 0") && rs[2].contains("prices_maker"), "{rs:?}");
+    let rs = &get("nodonor").cars[0].reasons;
+    assert!(rs.iter().any(|r| r.contains("no tune/garage/vp_nod_08_parts.gtun and no prices donor")), "{rs:?}");
+    assert!(rs.iter().any(|r| r.contains("name a prices donor")), "{rs:?}");
+    assert!(rs.iter().any(|r| r.contains("prices_level): donor vp_nope_08 is not a car")), "{rs:?}");
 }

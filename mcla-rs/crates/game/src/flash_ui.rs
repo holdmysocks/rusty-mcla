@@ -1253,7 +1253,9 @@ impl FlashMenu {
             }
             // (a colour row keeps its own colour)
             if !r.value.starts_with(SWATCH) && !matches!(&page.layout, MenuLayout::VinylEditTab { colors, .. } if !colors.is_empty()) {
-                p.set_path(&format!("menu.elements.{}.color", i), Value::Int(0xffffff));
+                // (a vehicle list's disabled row is a placeholder of a mod that is not installed: greyed - MODS.md S3)
+                let grey = !r.enabled && matches!(page.layout, MenuLayout::Vehicles { .. });
+                p.set_path(&format!("menu.elements.{}.color", i), Value::Int(if grey { 0x808080 } else { 0xffffff }));
             }
             if !matches!(page.layout, MenuLayout::PerfShop { .. }) {
                 p.set_path(&format!("menu.elements.{}.ID", i), Value::Int(0));

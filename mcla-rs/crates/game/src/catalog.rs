@@ -237,14 +237,33 @@ pub fn scale_price_list(
     level: &std::collections::HashMap<String, Vec<(i32, i64, usize)>>,
     maker: i32,
 ) -> std::collections::HashMap<String, Vec<(i32, i64, usize)>> {
+    scale_price_list_to(rows, body_kit_price(level), Some(level), Some(maker))
+}
+
+/// A car's part price list as the garage holds it: per section its rows (brand logo id, price, part index).
+pub type PartList = std::collections::HashMap<String, Vec<(i32, i64, usize)>>;
+
+/// The body-kit price of a part list (its `body` row of part index 1; 0 without one).
+pub fn body_kit_price(l: &std::collections::HashMap<String, Vec<(i32, i64, usize)>>) -> i64 {
+    l.get("body").and_then(|b| b.iter().find(|r| r.2 == 1)).map_or(0, |r| r.1)
+}
+
+/// [`scale_price_list`] to a body-kit price `to` (a mod car's `donors.prices_kit`, MODS.md S3): the scissor doors
+/// from `level`'s list when one is given, the stock rows' logo `maker` (None: the donor's own).
+pub fn scale_price_list_to(
+    rows: &std::collections::HashMap<String, Vec<(i32, i64, usize)>>,
+    to: i64,
+    level: Option<&std::collections::HashMap<String, Vec<(i32, i64, usize)>>>,
+    maker: Option<i32>,
+) -> std::collections::HashMap<String, Vec<(i32, i64, usize)>> {
     // (the donor's maker: the logo of its stock rows)
     let own = rows.get("bumper_front").and_then(|l| l.first()).map_or(-1, |r| r.0);
-    let kit = |l: &std::collections::HashMap<String, Vec<(i32, i64, usize)>>| l.get("body").and_then(|b| b.iter().find(|r| r.2 == 1)).map_or(0, |r| r.1);
-    let (from, to) = (kit(rows), kit(level));
+    let maker = maker.unwrap_or(own);
+    let from = body_kit_price(rows);
     rows.iter()
         .map(|(sec, list)| {
             // (the scissor doors are a fitted kit whose price each list sets itself)
-            let kit = level.get(sec.as_str()).filter(|_| sec == "scissor_door");
+            let kit = level.and_then(|level| level.get(sec.as_str())).filter(|_| sec == "scissor_door");
             let list: Vec<(i32, i64, usize)> = kit.cloned().unwrap_or_else(|| {
                 list.iter()
                     .map(|&(brand, price, index)| (brand, if brand == 0 && from > 0 && to > 0 { ((price * to) as f64 / from as f64 / 5.0).round() as i64 * 5 } else { price }, index))

@@ -557,3 +557,24 @@ a { color: var(--accent2); }
 #ins-err > b, #ins-err > .note { grid-column: 1; min-width: 0; }
 #ins-err .err-export { grid-column: 2; grid-row: 1 / span 2; position: static; width: 104px; }
 #ins-note:has(+ #ins-err:not([hidden])) { display: none; }
+
+/* ---------- Mods tab (js/mods.js) ---------- */
+#mods-list-card { display: flex; flex-direction: column; }
+#mods-list { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
+#mods-list .mod-row { cursor: pointer; }
+#mods-list .mod-row:hover:not(.sel) { background: var(--wash); }
+#mods-list .mod-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.mod-body { min-width: 0; }
+.mod-n .mod-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mod-s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mod-empty { padding: 56px 8px 0; }
+.checks.mod-facts { align-items: stretch; max-height: 232px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
+.mod-facts > div { align-items: flex-start; }
+.mod-facts .ic { flex: none; margin-top: 2px; }
+.mod-facts .mod-sub { margin-top: 2px; line-height: 1.35; }
+.mod-facts > div > span { overflow-wrap: anywhere; }
+#mods-detail.empty > * { visibility: hidden; }
+.mod-drop {
+  position: absolute; left: 128px; top: 88px; width: 1120px; height: 640px; z-index: 20; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.5); border: 2px dashed var(--accent); border-radius: 10px; font-size: 22px; letter-spacing: 0.04em; color: var(--ink); pointer-events: none;
+}

@@ -6,6 +6,7 @@ mod controls;
 mod display;
 mod install;
 mod logging;
+mod mods;
 mod platform;
 mod settings;
 mod support;
@@ -28,6 +29,7 @@ struct AppState {
     update: update::Updater,
     controls: controls::Controls,
     support: support::Support,
+    mods: mods::Mods,
     exe: PathBuf,
 }
 
@@ -52,6 +54,7 @@ impl AppState {
             "saves" => self.user_dir.join("saves"),
             "backups" => self.user_dir.join("backups"),
             "logs" => self.user_dir.join("logs"),
+            "mods" => mods::paths(&self.root).mods_dir,
             _ => return None,
         })
     }
@@ -77,6 +80,8 @@ struct Boot {
     controls_test: Option<String>,
     /// Test hook: RUSTY_MCLA_SUPPORT_TEST=<steps> makes the page drive Export Logs, the save manager and Play and report (ui/js/support.js `test`)
     support_test: Option<String>,
+    /// Test hook: RUSTY_MCLA_MODS_TEST=<steps> makes the page drive the Mods tab and report (ui/js/mods.js `test`)
+    mods_test: Option<String>,
 }
 
 #[tauri::command]
@@ -101,6 +106,7 @@ fn boot(state: tauri::State<AppState>) -> Boot {
         update_test: std::env::var("RUSTY_MCLA_UPDATE_TEST").ok().filter(|s| !s.is_empty()),
         controls_test: std::env::var("RUSTY_MCLA_CONTROLS_TEST").ok().filter(|s| !s.is_empty()),
         support_test: std::env::var("RUSTY_MCLA_SUPPORT_TEST").ok().filter(|s| !s.is_empty()),
+        mods_test: std::env::var("RUSTY_MCLA_MODS_TEST").ok().filter(|s| !s.is_empty()),
     }
 }
 
@@ -133,7 +139,7 @@ fn log_line(level: String, msg: String) {
 #[tauri::command]
 fn open_folder(state: tauri::State<AppState>, id: String) -> Result<(), String> {
     let path = state.folder(&id).ok_or_else(|| format!("unknown folder {id}"))?;
-    if !path.is_dir() && matches!(id.as_str(), "saves" | "backups" | "logs") {
+    if !path.is_dir() && matches!(id.as_str(), "saves" | "backups" | "logs" | "mods") {
         let _ = std::fs::create_dir_all(&path);
     }
     if !path.is_dir() {
@@ -447,14 +453,23 @@ async fn save_import_pick() -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(support::pick_save_file).await.map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+struct InspectView {
+    #[serde(flatten)]
+    inspection: mcla_support::saves::Inspection,
+    mod_states: Vec<mods::CarState>,
+}
+
 /// What IMPORT would do with the chosen file (a save of this game as it is, or a save of the original game converted), before the user confirms.
 #[tauri::command]
-fn save_import_inspect(state: tauri::State<AppState>, path: String) -> Result<mcla_support::saves::Inspection, mcla_support::Error> {
+fn save_import_inspect(state: tauri::State<AppState>, path: String) -> Result<InspectView, mcla_support::Error> {
     logging::info(&format!("IMPORT A SAVE: looking at {path}"));
     match mcla_support::saves::inspect(&state.user_dir, &state.root, Path::new(&path)) {
         Ok(i) => {
-            logging::info(&format!("import preview: {} {:?}", i.kind, i.converted));
-            Ok(i)
+            logging::info(&format!("import preview: {} {:?} mod cars {:?}", i.kind, i.converted, i.mod_cars));
+            // the mod cars of a port save, marked by whether their mod is installed (and on) now
+            let mod_states = mods::car_states(&mods::paths(&state.root), &i.mod_refs);
+            Ok(InspectView { inspection: i, mod_states })
         }
         Err(e) => {
             logging::warn(&format!("import preview refused: {e}"));
@@ -539,6 +554,58 @@ fn go_back_previous(state: tauri::State<AppState>, force: bool) -> Result<suppor
     env_of!(state, s, env);
     support::go_back(&env, state.update.is_updating(), force)?;
     Ok(support::play_info(&env, state.update.is_updating()))
+}
+
+// ---------- mods (see mods.rs) ----------
+
+#[tauri::command]
+async fn mods_view(state: tauri::State<'_, AppState>) -> Result<mcla_mods::manage::Listing, String> {
+    let p = mods::paths(&state.root);
+    tauri::async_runtime::spawn_blocking(move || mods::view(&p)).await.map_err(|e| e.to_string())
+}
+
+/// The page's poll while the Mods tab is open: files dropped on the window, whether a drag is over it, the mods folder's change stamp.
+#[tauri::command]
+fn mods_poll(state: tauri::State<AppState>) -> mods::Poll {
+    state.mods.poll(&mods::paths(&state.root))
+}
+
+#[tauri::command]
+async fn mods_pick() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(mods::pick_zips).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mods_install(state: tauri::State<'_, AppState>, path: String, confirm_older: bool) -> Result<mods::InstallView, String> {
+    let p = mods::paths(&state.root);
+    logging::info(&format!("mods: install {path} (older version confirmed: {confirm_older})"));
+    let r = tauri::async_runtime::spawn_blocking(move || mods::install(&p, Path::new(&path), confirm_older)).await.map_err(|e| e.to_string())?;
+    match &r {
+        Ok(mods::InstallView::Installed { id, version, status, replaced, .. }) => logging::info(&format!("mods: installed {id} {version} ({status}; {replaced} older copy(ies) replaced)")),
+        Ok(mods::InstallView::NeedsConfirmation { id, installed, incoming }) => logging::info(&format!("mods: {id} {incoming} is older than the installed {installed}: asking")),
+        Err(e) => logging::warn(&format!("mods: install refused: {e}")),
+    }
+    r
+}
+
+#[tauri::command]
+async fn mods_set(state: tauri::State<'_, AppState>, id: String, on: bool) -> Result<mcla_mods::manage::Listing, String> {
+    let p = mods::paths(&state.root);
+    logging::info(&format!("mods: {id} switched {}", if on { "on" } else { "off" }));
+    tauri::async_runtime::spawn_blocking(move || mods::set_on(&p, &id, on)).await.map_err(|e| e.to_string())?.map_err(|e| {
+        logging::warn(&format!("mods: switch failed: {e}"));
+        e
+    })
+}
+
+#[tauri::command]
+async fn mods_remove(state: tauri::State<'_, AppState>, path: String) -> Result<mcla_mods::manage::Listing, String> {
+    let p = mods::paths(&state.root);
+    logging::info(&format!("mods: remove {path}"));
+    tauri::async_runtime::spawn_blocking(move || mods::remove(&p, Path::new(&path))).await.map_err(|e| e.to_string())?.map_err(|e| {
+        logging::warn(&format!("mods: remove failed: {e}"));
+        e
+    })
 }
 
 /// Opens an http(s) link (release notes links, "Full notes on GitHub") in the system browser; nothing else is ever opened.
@@ -655,7 +722,7 @@ fn main() {
         logging::info(&format!("started after a self-update: launcher {}", updater.running_version()));
     }
     updater.startup_cleanup(updated);
-    let state = AppState { settings: Mutex::new(settings.clone()), user_dir, root, selftest_out, install: install::Runner::new(updater.clone()), update: updater, controls: controls::Controls::new(&platform::user_data_dir()), support: support::Support::default(), exe };
+    let state = AppState { settings: Mutex::new(settings.clone()), user_dir, root, selftest_out, install: install::Runner::new(updater.clone()), update: updater, controls: controls::Controls::new(&platform::user_data_dir()), support: support::Support::default(), mods: mods::Mods::default(), exe };
 
     let result = tauri::Builder::default()
         .manage(state)
@@ -712,7 +779,13 @@ fn main() {
             play,
             crash_notice,
             crash_dismiss,
-            go_back_previous
+            go_back_previous,
+            mods_view,
+            mods_poll,
+            mods_pick,
+            mods_install,
+            mods_set,
+            mods_remove
         ])
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -722,11 +795,27 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                if let Some(w) = window.app_handle().get_webview_window(window.label()) {
-                    save_window_position(&w);
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                        save_window_position(&w);
+                    }
+                    logging::info("launcher closed");
                 }
-                logging::info("launcher closed");
+                // files dropped on the window wait for the Mods tab to pick them up (mods.rs)
+                tauri::WindowEvent::DragDrop(d) => {
+                    let mods = &window.state::<AppState>().mods;
+                    match d {
+                        tauri::DragDropEvent::Enter { .. } => mods.set_hover(true),
+                        tauri::DragDropEvent::Leave => mods.set_hover(false),
+                        tauri::DragDropEvent::Drop { paths, .. } => {
+                            logging::info(&format!("dropped on the window: {} file(s)", paths.len()));
+                            mods.dropped(paths.clone());
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
         })
         .run(tauri::generate_context!());

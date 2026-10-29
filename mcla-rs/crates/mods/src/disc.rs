@@ -1,5 +1,5 @@
 //! What the loader needs from the disc data: the vehicle table (the `Vehicle` blocks of `tune/vehicle/vehicle.lst`
-//! and `vehicle0001..0008.lst` in file order, `sub_823971D0`; DEVONLY blocks dropped), the 33 manufacturers, the
+//! and `vehicle0001..0008.lst` in file order, `F-34441`; DEVONLY blocks dropped), the 33 manufacturers, the
 //! performance samples (`car_performance_sample_0..4.lst`). Reference: docs/MODS.md "How the original finds a vehicle".
 
 use crate::manifest::Figures;
@@ -36,6 +36,12 @@ pub struct DiscInfo {
     /// name hashes of the game's game.dat objects (car profiles, `_DEFAULT` objects ...) and sounds.dat sounds
     pub game_objects: HashSet<u32>,
     pub sound_objects: HashSet<u32>,
+    /// the `Character` ids of `tune/career/carcfg/Opponent.lst` (empty when the file was not found)
+    pub drivers: Vec<String>,
+    /// the set-up files of `resources/vehicle/configs`: lower-case stems of `<name>.xcc` and the hashes of `0x...` files
+    /// (empty when the folder was not found)
+    pub setups: HashSet<String>,
+    pub setup_hashes: HashSet<u32>,
 }
 
 /// A data file by name: the extracted copy is named by the joaat of the name, a file added by hand may keep its own
@@ -68,7 +74,34 @@ impl DiscInfo {
             d.game_objects = g;
             d.sound_objects = s;
         }
+        if let Some(t) = read_named(&data_root.join("tune/career/carcfg"), "opponent.lst") {
+            d.drivers = character_ids(&t);
+        }
+        for e in std::fs::read_dir(data_root.join("resources/vehicle/configs")).into_iter().flatten().flatten() {
+            let f = e.file_name().to_string_lossy().to_ascii_lowercase();
+            match f.strip_prefix("0x").and_then(|x| u32::from_str_radix(x, 16).ok()) {
+                Some(h) if f.len() == 10 => {
+                    d.setup_hashes.insert(h);
+                }
+                _ => {
+                    if let Some(stem) = f.strip_suffix(".xcc") {
+                        d.setups.insert(stem.to_string());
+                    }
+                }
+            }
+        }
         d
+    }
+
+    /// Whether the disc has the set-up `<name>.xcc` (by its plain or hashed file name).
+    pub fn has_setup(&self, name: &str) -> bool {
+        let l = name.to_ascii_lowercase();
+        self.setups.contains(&l) || self.setup_hashes.contains(&joaat(&format!("{l}.xcc"))) || self.setup_hashes.contains(&joaat(&l))
+    }
+
+    /// Whether the disc's set-up folder was read (else set-up checks are skipped).
+    pub fn setups_found(&self) -> bool {
+        !self.setups.is_empty() || !self.setup_hashes.is_empty()
     }
 
     /// Table size the mod cars follow.
@@ -152,6 +185,22 @@ fn parse_list(text: &str, d: &mut DiscInfo) {
             _ => {}
         }
     }
+}
+
+/// The `Character { Name <id> ... }` ids of `Opponent.lst`, in file order (the first `Name` after each `Character`).
+fn character_ids(text: &str) -> Vec<String> {
+    let w: Vec<&str> = text.split_whitespace().collect();
+    let mut out = Vec::new();
+    for (i, t) in w.iter().enumerate() {
+        if *t == "Character" {
+            if let Some(k) = w[i + 1..].iter().position(|x| *x == "Name") {
+                if let Some(id) = w.get(i + 1 + k + 1) {
+                    out.push(id.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// `sample { name <car> mod 0|50|100 performance <f> speed <f> }` blocks.

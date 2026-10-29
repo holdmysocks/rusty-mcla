@@ -40,6 +40,19 @@ pub struct Checked {
     pub districts: Vec<String>,
     /// opponent samples (performance, speed) when the car is opponent-enabled and they could be resolved
     pub samples: Option<([f32; 3], [f32; 3])>,
+    /// the resolved opponent use of an opponent-enabled car (stage S4)
+    pub opponent: Option<OpponentUse>,
+}
+
+/// What the opponent pick gets for a mod car (MODS.md design 7b): its district rows, samples (performance, speed) at
+/// mod 0 / 50 / 100 and drivers with their set-ups.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpponentUse {
+    pub districts: Vec<String>,
+    pub samples: ([f32; 3], [f32; 3]),
+    pub drivers: Vec<crate::manifest::OpDriver>,
+    /// `rims = "random"` (stage S4b): every opponent set-up of the car wears a car rim drawn per race
+    pub rims_random: bool,
 }
 
 pub struct CarCheck {
@@ -205,8 +218,29 @@ pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo
     }
     // row 11: part price list
     let own_prices = keys.has(&format!("tune/garage/{name}_parts.gtun"));
-    if !donor("row 11 (prices)", &car.donors.prices, &mut r) && !own_prices {
+    let prices_donor = donor("row 11 (prices)", &car.donors.prices, &mut r);
+    if !prices_donor && !own_prices {
         r.push(format!("row 11: no tune/garage/{name}_parts.gtun and no prices donor"));
+    }
+    // row 11, price scaling of the donor's list (DECISIONS.md D28 "Prices"; manifest.md section 3)
+    let d = &car.donors;
+    let scaling = d.prices_level.is_some() || d.prices_kit.is_some() || d.prices_maker.is_some();
+    if scaling {
+        if own_prices {
+            w.push(format!("row 11: own tune/garage/{name}_parts.gtun: it is used as written, prices_level / prices_kit / prices_maker are ignored"));
+        } else if !prices_donor {
+            r.push("row 11: prices_level / prices_kit / prices_maker scale the prices donor's list: name a prices donor".into());
+        }
+        if d.prices_level.is_some() && d.prices_kit.is_some() {
+            r.push("row 11: give prices_level or prices_kit, not both".into());
+        }
+        donor("row 11 (prices_level)", &d.prices_level, &mut r);
+        if d.prices_kit.is_some_and(|k| k <= 0) {
+            r.push("row 11: prices_kit must be above 0 (a body-kit price)".into());
+        }
+        if d.prices_maker.is_some_and(|m| m < 0) {
+            r.push("row 11: prices_maker must be a logo id >= 0".into());
+        }
     }
     // row 16: sound - the car's own <CAR>_PROFILE in the mod's game.dat, else the sound donor's, else the game's
     // default car / bike profile (manifest.md section 7)
@@ -239,8 +273,9 @@ pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo
     if class == Some("SPORTBIKE") {
         w.push("row 22: a bike's geometry (centre-line hubs, bike parts) is not checked by the loader".into());
     }
-    // row 14 / 15: opponent use (stub: completeness only; wiring is stage S4)
+    // row 14 / 15: opponent use (MODS.md design 7b, stage S4; what the opponent pick reads: docs/reference/ai/car_pick.md)
     let mut samples = None;
+    let mut opponent = None;
     if let Some(o) = car.opponent.as_ref().filter(|o| o.enabled) {
         if row.player_only {
             r.push("opponent: enabled but the row says player_only".into());
@@ -248,23 +283,45 @@ pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo
         if class == Some("COP") {
             r.push("opponent: a COP class car never races (opponent pick)".into());
         }
+        let mut opp_districts = Vec::new();
         for d in &o.districts {
-            if canon(&DISTRICTS, d).is_none() {
-                r.push(format!("opponent: district \"{d}\" is not one of {}", DISTRICTS.join(" ")));
+            match canon(&DISTRICTS, d) {
+                Some(c) => opp_districts.push(c.to_string()),
+                None => r.push(format!("opponent: district \"{d}\" is not one of {}", DISTRICTS.join(" "))),
             }
+        }
+        if o.districts.is_empty() {
+            opp_districts = districts.clone();
         }
         if o.districts.is_empty() && districts.is_empty() {
             r.push("opponent: no districts (row or opponent block)".into());
         }
         samples = match (&o.performance, &o.samples_from) {
-            (Some(p), None) => Some((*p, o.speed.unwrap_or([f32::NAN; 3]))),
-            (None, Some(d)) => match disc.samples.get(&d.to_ascii_lowercase()) {
-                Some(s) => Some(*s),
-                None => {
-                    r.push(format!("row 14: samples_from {d} has no performance samples on the disc"));
-                    None
+            (Some(p), None) => {
+                if !p.iter().all(|v| v.is_finite()) || p[0] > p[1] || p[1] > p[2] {
+                    r.push("row 14: performance must be three numbers rising with the mod (0 / 50 / 100)".into());
                 }
-            },
+                if o.speed.is_some_and(|s| !s.iter().all(|v| v.is_finite())) {
+                    r.push("row 14: speed must be three numbers".into());
+                }
+                Some((*p, o.speed.unwrap_or([f32::NAN; 3])))
+            }
+            (None, Some(d)) => {
+                if o.speed.is_some() {
+                    w.push("row 14: speed is ignored with samples_from (the donor's speed values are used)".into());
+                }
+                match disc.samples.get(&d.to_ascii_lowercase()) {
+                    Some(s) if s.0.iter().all(|v| v.is_finite()) => Some(*s),
+                    Some(_) => {
+                        r.push(format!("row 14: samples_from {d} lacks a sample at mod 0, 50 or 100 on the disc"));
+                        None
+                    }
+                    None => {
+                        r.push(format!("row 14: samples_from {d} has no performance samples on the disc"));
+                        None
+                    }
+                }
+            }
             (Some(_), Some(_)) => {
                 r.push("row 14: give performance or samples_from, not both".into());
                 None
@@ -274,14 +331,83 @@ pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo
                 None
             }
         };
-        match (&o.setup, &o.setup_from) {
-            (Some(s), None) if !keys.has(&format!("resources/vehicle/configs/{s}.xcc")) => r.push(format!("row 15: opponent set-up {s} has no resources/vehicle/configs/{s}.xcc and no setup_from")),
-            (None, Some(d)) => r.push(format!("row 15: setup_from {d} without a setup name")),
-            _ => {}
+        // row 15: the drivers. None is allowed (stage S4b, D28): the pick then draws a free driver of the race's
+        // performance band for the car (game `oppick`).
+        let drivers = o.driver_list();
+        let rims_random = match o.rims.as_deref().map(str::trim) {
+            None | Some("") => false,
+            Some(v) if v.eq_ignore_ascii_case("setup") => false,
+            Some(v) if v.eq_ignore_ascii_case("random") => true,
+            Some(v) => {
+                r.push(format!("opponent: rims \"{v}\" must be \"setup\" or \"random\""));
+                false
+            }
+        };
+        let mut seen_d: Vec<String> = Vec::new();
+        let mut seen_s: Vec<String> = Vec::new();
+        for dr in &drivers {
+            let id = dr.driver.trim();
+            if id.is_empty() {
+                r.push(format!("row 15: set-up \"{}\" has no driver", dr.setup));
+            } else if !disc.drivers.is_empty() && !disc.drivers.iter().any(|x| x.eq_ignore_ascii_case(id)) {
+                r.push(format!("row 15: driver {id} is not a Character of Opponent.lst"));
+            } else if seen_d.iter().any(|x| x.eq_ignore_ascii_case(id)) {
+                r.push(format!("row 15: driver {id} is given twice"));
+            }
+            seen_d.push(id.to_string());
+            let s = dr.setup.trim();
+            if s.is_empty() {
+                r.push(format!("row 15: driver {id} has no set-up name"));
+                continue;
+            }
+            if s.len() > 31 || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                r.push(format!("row 15: set-up name {s} must be letters, digits and _, at most 31 characters (the set-up's name field)"));
+            }
+            if !s.to_ascii_lowercase().ends_with(&format!("_{name}")) {
+                r.push(format!("row 15: set-up name {s} must end with _{name} (GH_nn_k_<car>, as the disc's opponent set-ups)"));
+            }
+            if disc.has_setup(s) {
+                r.push(format!("row 15: set-up name {s} is a set-up of the game"));
+            }
+            if seen_s.iter().any(|x| x.eq_ignore_ascii_case(s)) {
+                r.push(format!("row 15: set-up {s} is given twice"));
+            }
+            seen_s.push(s.to_string());
+            let own = format!("resources/vehicle/configs/{s}.xcc");
+            match (pkg.files.iter().find(|f| f.rel.eq_ignore_ascii_case(&own)), &dr.setup_from) {
+                (Some(f), from) => {
+                    match pkg.read(f) {
+                        Ok(b) if b.len() != XCC_SIZE => r.push(format!("row 15: {own} is {} bytes ({XCC_SIZE} expected)", b.len())),
+                        Ok(b) => {
+                            let tn = &b[XCC_TYPENAME..XCC_TYPENAME + 32];
+                            let tn = String::from_utf8_lossy(&tn[..tn.iter().position(|&c| c == 0).unwrap_or(32)]).into_owned();
+                            if !tn.eq_ignore_ascii_case(name) {
+                                r.push(format!("row 15: {own} TypeName is \"{tn}\", not {name}"));
+                            }
+                        }
+                        Err(e) => r.push(format!("row 15: cannot read {own}: {e}")),
+                    }
+                    if from.is_some() {
+                        w.push(format!("row 15: own {own} and setup_from: the own file is used"));
+                    }
+                    if dr.plate.is_some() {
+                        w.push(format!("row 15: plate is only written into a made set-up; {own} keeps its own"));
+                    }
+                }
+                (None, Some(from)) => {
+                    if disc.setups_found() && !disc.has_setup(from) {
+                        r.push(format!("row 15: setup_from {from} is not a set-up of the game (resources/vehicle/configs)"));
+                    }
+                }
+                (None, None) => r.push(format!("row 15: opponent set-up {s} has no resources/vehicle/configs/{s}.xcc and no setup_from")),
+            }
+            if let Some(p) = &dr.plate {
+                if p.is_empty() || p.len() > 7 || !p.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b' ') {
+                    r.push(format!("row 15: plate \"{p}\" must be 1..7 of A-Z 0-9 and space (the set-up's plate field)"));
+                }
+            }
         }
-        if o.driver.is_none() && o.setup.is_some() {
-            r.push("row 15: an opponent set-up needs a driver".into());
-        }
+        opponent = Some(OpponentUse { districts: opp_districts, samples: samples.unwrap_or(([f32::NAN; 3], [f32::NAN; 3])), drivers, rims_random });
     }
     let checked = r.is_empty().then(|| Checked {
         class: class.unwrap_or("").to_string(),
@@ -289,6 +415,7 @@ pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo
         figures: figures.unwrap_or_default(),
         districts: if districts.is_empty() { Vec::new() } else { districts },
         samples,
+        opponent,
     });
     CarCheck { reasons: r, warnings: w, checked }
 }

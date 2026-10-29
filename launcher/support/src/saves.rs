@@ -209,6 +209,42 @@ pub struct Inspection {
     /// `port` (a save of this game, taken as it is) or `original` (converted).
     pub kind: &'static str,
     pub converted: Option<ConvertedInfo>,
+    /// a port save's mod cars (`mod_cars`, docs/MODS.md S3), by their last known long names: they come over with the save as
+    /// they are, and wait as placeholders in the garage while their mod is not installed
+    pub mod_cars: Vec<String>,
+    /// the same cars with the car name and the id of their mod, for the Mods tab to mark which are installed (docs/MODS.md S5)
+    pub mod_refs: Vec<ModCarRef>,
+}
+
+/// A mod car a port save names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModCarRef {
+    /// the car name the game and the save use
+    pub car: String,
+    pub mod_id: String,
+    /// the last known long name (the car name when the save has none)
+    pub title: String,
+}
+
+/// The mod cars a port save names (its `mod_cars` member: car name -> { mod_id, long_name, short_name }), long names first.
+pub fn mod_cars_of(save: &[u8]) -> Vec<String> {
+    mod_car_refs_of(save).into_iter().map(|r| r.title).collect()
+}
+
+/// [`mod_cars_of`] with the car name and mod id of each.
+pub fn mod_car_refs_of(save: &[u8]) -> Vec<ModCarRef> {
+    let v: serde_json::Value = match serde_json::from_slice(save) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let Some(m) = v.get("mod_cars").and_then(|m| m.as_object()) else { return Vec::new() };
+    m.iter()
+        .map(|(car, e)| ModCarRef {
+            car: car.clone(),
+            mod_id: e.get("mod_id").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
+            title: e.get("long_name").and_then(|n| n.as_str()).filter(|n| !n.trim().is_empty()).unwrap_or(car).to_string(),
+        })
+        .collect()
 }
 
 /// The result of an import.
@@ -356,10 +392,10 @@ fn read_port_save(p: &Path) -> Result<Vec<u8>> {
 pub fn inspect_in(user_dir: &Path, data_dir: &Path, path: &Path) -> Result<Inspection> {
     match resolve(path)? {
         Source::Port(p) => {
-            read_port_save(&p)?;
-            Ok(Inspection { kind: "port", converted: None })
+            let bytes = read_port_save(&p)?;
+            Ok(Inspection { kind: "port", converted: None, mod_cars: mod_cars_of(&bytes), mod_refs: mod_car_refs_of(&bytes) })
         }
-        Source::Original { bytes, decrypted, package } => Ok(Inspection { kind: "original", converted: Some(convert_original(user_dir, data_dir, &bytes, decrypted, package)?.1) }),
+        Source::Original { bytes, decrypted, package } => Ok(Inspection { kind: "original", converted: Some(convert_original(user_dir, data_dir, &bytes, decrypted, package)?.1), mod_cars: Vec::new(), mod_refs: Vec::new() }),
     }
 }
 
@@ -478,6 +514,32 @@ mod tests {
         std::fs::write(&f, SAVE).unwrap();
         assert!(import(&user2, &root2, &f, 10, false).unwrap().backup.is_none());
         assert_eq!(hash(&save_path(&user2)), hash(&f));
+    }
+
+    /// docs/MODS.md S3: a port save with mod cars and a garage past the original's 30 slots (a missing-mod placeholder
+    /// among them) is imported byte for byte, and IMPORT's inspection names its mod cars.
+    #[test]
+    fn a_port_save_with_mod_cars_imports_whole() {
+        let (d, user, root) = setup(Some(SAVE));
+        let mut owned: Vec<String> = (0..33).map(|k| format!("vp_disc_car_{k:02}")).collect();
+        owned.insert(5, "vp_test_mod_01".into());
+        owned.push("vp_gone_car_08".into());
+        let save = serde_json::json!({
+            "car": "vp_test_mod_01", "money": 5, "owned": owned,
+            "mc4": { "garage": owned.iter().enumerate().map(|(k, c)| serde_json::json!({ "slot": k, "vehicle": c, "TypeName": c })).collect::<Vec<_>>() },
+            "mod_cars": {
+                "vp_gone_car_08": { "mod_id": "gone", "long_name": "", "short_name": "" },
+                "vp_test_mod_01": { "mod_id": "test.mod", "long_name": "2006 TEST MOD", "short_name": "06 TEST" }
+            }
+        });
+        let f = d.path().join("modded.json");
+        std::fs::write(&f, serde_json::to_vec_pretty(&save).unwrap()).unwrap();
+        let i = inspect_in(&user, &d.path().join("nodata"), &f).unwrap();
+        assert_eq!((i.kind, i.mod_cars.clone()), ("port", vec!["vp_gone_car_08".to_string(), "2006 TEST MOD".to_string()]));
+        assert_eq!(i.mod_refs, vec![ModCarRef { car: "vp_gone_car_08".into(), mod_id: "gone".into(), title: "vp_gone_car_08".into() }, ModCarRef { car: "vp_test_mod_01".into(), mod_id: "test.mod".into(), title: "2006 TEST MOD".into() }]);
+        import(&user, &root, &f, 10, false).unwrap();
+        assert_eq!(hash(&save_path(&user)), hash(&f), "the save as it is: every mod-car record and the 35-car garage");
+        assert!(mod_cars_of(SAVE.as_bytes()).is_empty());
     }
 
     #[test]

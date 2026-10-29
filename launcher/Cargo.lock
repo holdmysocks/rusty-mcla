@@ -2369,6 +2369,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcla-mods"
+version = "0.8.0"
+dependencies = [
+ "log",
+ "mcla-config",
+ "mcla-formats",
+ "serde",
+ "toml 1.1.8+spec-1.1.0",
+ "zip",
+]
+
+[[package]]
 name = "mcla-savedecode"
 version = "0.8.0"
 dependencies = [
@@ -3661,6 +3673,7 @@ dependencies = [
  "log",
  "mcla-config",
  "mcla-install",
+ "mcla-mods",
  "mcla-support",
  "mcla-updater",
  "rfd",
@@ -3672,6 +3685,7 @@ dependencies = [
  "tokio",
  "url",
  "windows-sys 0.59.0",
+ "zip",
 ]
 
 [[package]]

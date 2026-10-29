@@ -220,6 +220,16 @@
     }
   }
 
+  // a port save's mod cars, each marked by whether its mod is installed (and on) here
+  function modCarsText(info) {
+    const cars = (info && info.mod_states) || [];
+    if (!cars.length) return '';
+    const key = { loaded: 'dyn.sup.imp_mod_loaded', off: 'dyn.sup.imp_mod_off', missing: 'dyn.sup.imp_mod_missing' };
+    const lines = cars.map((c) => '  ' + t(key[c.state] || key.missing, [c.title]));
+    const note = cars.some((c) => c.state !== 'loaded') ? '\n' + t('dyn.sup.imp_mods_note') : '';
+    return '\n\n' + t('dyn.sup.imp_mods_head') + '\n' + lines.join('\n') + note;
+  }
+
   async function importSave(pathArg) {
     let path = pathArg || null;
     if (!path) {
@@ -237,9 +247,10 @@
       return;
     }
     const c = info && info.kind === 'original' ? info.converted : null;
+    const modLines = modCarsText(info);
     const ok = c
       ? await ask(t('dyn.sup.import_orig_title'), t('dyn.sup.import_orig_text', [t('dyn.sup.platform_' + c.platform + (c.decrypted ? '_enc' : c.from_package ? '_pkg' : '')), c.cars, '$' + Number(c.money).toLocaleString('en-US'), c.reputation == null ? '-' : c.reputation, c.missions, c.missions_complete, c.statistics, c.collectables, c.editor_races, c.favourite_races]), t('dyn.sup.import_ok'))
-      : await ask(t('dyn.sup.import_title'), t('dyn.sup.import_text'), t('dyn.sup.import_ok'));
+      : await ask(t('dyn.sup.import_title'), t('dyn.sup.import_text') + modLines, t('dyn.sup.import_ok'));
     if (!ok) return;
     try {
       const v = await withForce((force) => Bridge.saveImport(path, force), t('dyn.sup.running_title'), t('dyn.sup.import_ok'));
@@ -517,5 +528,5 @@
     return rep;
   }
 
-  window.Support = { init, exportLogs, play, openReport, render: () => { renderSave(); renderPlay(); refreshExport(); }, refresh, importSave, test, state: S };
+  window.Support = { init, ask, exportLogs, play, openReport, render: () => { renderSave(); renderPlay(); refreshExport(); }, refresh, importSave, test, state: S };
 })();

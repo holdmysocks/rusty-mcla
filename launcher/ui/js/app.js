@@ -10,8 +10,8 @@
   const FOLDERS = [['install', 'change'], ['data', 'rebuild'], ['saves', null], ['backups', 'change'], ['logs', null], ['screenshots', 'change'], ['tools', 'use_mine']];
 
   const TABS = ['home', 'install', 'mods', 'music', 'controls', 'settings', 'support'];
-  const LOCKED = ['mods', 'music']; // later features: never reachable
-  const SETUP_FIRST = ['install', 'controls']; // disabled on first run, as in the design
+  const LOCKED = ['music']; // later features: never reachable
+  const SETUP_FIRST = ['install', 'mods', 'controls']; // disabled on first run, as in the design (the mods folder sits in the game data)
   const SUB_DEFAULT = { controls: 'kbd', settings: 'general' };
 
   const state = { boot: null, settings: null, installed: false, setupStarted: false, tab: 'home', sub: Object.assign({}, SUB_DEFAULT), pageId: null };
@@ -85,6 +85,7 @@
     $$('.page').forEach((p) => { p.hidden = p.dataset.page !== pageId; });
     const page = $('.page[data-page="' + pageId + '"]');
     if (!page) return;
+    if (window.Mods) { if (pageId === 'mods') Mods.show(); else Mods.hide(); }
     $('#head-title').textContent = t(page.dataset.titleKey);
     $('#head-title').classList.toggle('wordmark', page.dataset.head === 'brand');
     $('#head-tag').hidden = page.dataset.head !== 'brand';
@@ -209,6 +210,7 @@
     syncControls();
     if (window.Install) Install.render();
     if (window.Support) Support.render();
+    if (window.Mods) Mods.render();
   }
 
   function bindStatic() {
@@ -401,6 +403,7 @@
     if (window.Controls) Controls.init({ toast, showTab, showSub: (sub) => showSub($('.page[data-page="settings"]'), sub) });
     if (window.Update) Update.init({ toast, showTab, setSetting, syncControls, exportLogs, settings: () => state.settings, beginSetup: () => { state.setupStarted = true; showTab('install'); } });
     if (window.Support) Support.init({ toast, showTab, exportLogs, settings: () => state.settings });
+    if (window.Mods) Mods.init({ toast, showTab });
 
     // preview pages (locked tabs): reachable only for design checks in a plain browser, never in the app
     const want = !Bridge.available && dev.get('page');
@@ -414,6 +417,7 @@
     if (state.boot.install_test && window.Install) Install.test(state.boot.install_test, state.boot.install_test_cancel).then((r) => Bridge.selftestReport(JSON.stringify(r, null, 1)));
     else if (state.boot.controls_test && window.Controls) Controls.test().then((r) => Bridge.selftestReport(JSON.stringify(r, null, 1)));
     else if (state.boot.support_test && window.Support) Support.test(state.boot.support_test).then((r) => Bridge.selftestReport(JSON.stringify(r, null, 1)));
+    else if (state.boot.mods_test && window.Mods) Mods.test(state.boot.mods_test).then((r) => Bridge.selftestReport(JSON.stringify(r, null, 1)));
     else if (state.boot.update_test && window.Update) Update.test(state.boot.update_test).then((r) => Bridge.selftestReport(JSON.stringify(r, null, 1)));
     else if (state.boot.selftest) selfTest();
   }

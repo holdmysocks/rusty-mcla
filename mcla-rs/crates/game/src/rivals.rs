@@ -103,7 +103,9 @@ impl Rivals {
         if let Some(p) = self.paints.get(config) {
             return p.clone();
         }
-        let p = std::fs::read(self.config_dir.join(format!("{config}.xcc"))).ok().filter(|d| d.len() >= 0x850).map(|d| {
+        // (a mod car's opponent set-up lies in the mod or its cache: modcars.rs)
+        let file = crate::modcars::setup_file(config).unwrap_or_else(|| self.config_dir.join(format!("{config}.xcc")));
+        let p = std::fs::read(file).ok().filter(|d| d.len() >= 0x850).map(|d| {
             let f = |o: usize| f32::from_be_bytes(d[o..o + 4].try_into().unwrap());
             let plate: String = d[0x847..0x84e].iter().take_while(|&&b| b.is_ascii_graphic() || b == b' ').map(|&b| b as char).collect();
             ([f(0x660).clamp(0.0, 1.0), f(0x664).clamp(0.0, 1.0), f(0x668).clamp(0.0, 1.0)], plate.trim().to_string())

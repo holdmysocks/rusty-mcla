@@ -21,6 +21,7 @@ serde_json = "1"
 dirs = "6"
 mcla-install = { path = "../mcla-rs/crates/install" }
 mcla-config = { path = "../mcla-rs/crates/config" }
+mcla-mods = { path = "../mcla-rs/crates/mods" }
 mcla-updater = { path = "updater" }
 mcla-support = { path = "support" }
 log = "0.4"
@@ -35,6 +36,7 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphic
 
 [dev-dependencies]
 tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = "s"

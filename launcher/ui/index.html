@@ -13,6 +13,7 @@
 <script src="js/update.js" defer></script>
 <script src="js/controls.js" defer></script>
 <script src="js/support.js" defer></script>
+<script src="js/mods.js" defer></script>
   <script src="js/app.js" defer></script>
 </head>
 <body>
@@ -83,7 +84,7 @@
     <div class="logo" aria-hidden="true">R</div>
     <button class="tab" data-tab="home"><svg class="ic"><use href="#i-home"/></svg><span data-i18n="nav.home"></span></button>
     <button class="tab" data-tab="install"><svg class="ic"><use href="#i-install"/></svg><span data-i18n="nav.install"></span><span class="tip" data-i18n="lock.setup"></span></button>
-    <button class="tab" data-tab="mods" aria-disabled="true" data-lock="later"><svg class="ic"><use href="#i-mods"/></svg><span data-i18n="nav.mods"></span><span class="tip" data-i18n="lock.mods"></span></button>
+    <button class="tab" data-tab="mods"><svg class="ic"><use href="#i-mods"/></svg><span data-i18n="nav.mods"></span><span class="tip" data-i18n="lock.setup"></span></button>
     <button class="tab" data-tab="music" aria-disabled="true" data-lock="later"><svg class="ic"><use href="#i-music"/></svg><span data-i18n="nav.music"></span><span class="tip" data-i18n="lock.music"></span></button>
     <button class="tab" data-tab="controls"><svg class="ic"><use href="#i-controls"/></svg><span data-i18n="nav.controls"></span><span class="tip" data-i18n="lock.setup"></span></button>
     <button class="tab" data-tab="settings"><svg class="ic"><use href="#i-settings"/></svg><span data-i18n="nav.settings"></span></button>
@@ -501,132 +502,48 @@
     </div>
   </section>
 
-  <!-- PREVIEWS: locked Mods and Music pages, a design preview only (no tab reaches them) -->
-    <section class="page locked-preview" data-page="mods-preview" data-title-key="nav.mods" data-head="preview" hidden>
-    <nav class="pills">
-      <button class="pill" role="tab" aria-selected="true" data-i18n="mods.tab_my_mods"></button>
-      <button class="pill" role="tab" aria-selected="false" data-i18n="mods.tab_find"></button>
-      <button class="pill" role="tab" aria-selected="false" data-i18n="mods.tab_folder"></button>
-    </nav>
-
-    <div class="card clip" style="--x:128;--y:132;--w:552;--h:596">
+  <!-- ===== Mods (js/mods.js): the mods found in the mods folder, on / off, install by drop or file, remove ===== -->
+  <section class="page" data-page="mods" data-title-key="nav.mods" data-head="plain" hidden>
+    <div class="card clip" id="mods-list-card" style="--x:128;--y:88;--w:552;--h:640">
       <div class="label-row">
         <span class="label" data-i18n="mods.my_mods"></span>
-        <span class="note s" data-i18n="mods.count"></span>
+        <span class="note s" id="mods-count"></span>
       </div>
-      <div class="flex gap10 mt12">
-        <div class="search"><svg class="ic"><use href="#i-search"/></svg><span data-i18n="mods.search"></span></div>
+      <div class="note s mt8" id="mods-data-note" hidden data-i18n="mods.no_data"></div>
+      <div class="mod-list mt12" id="mods-list"></div>
+      <div class="mod-empty" id="mods-empty" hidden>
+        <div class="title-d" style="font-size:20px" data-i18n="mods.empty_t"></div>
+        <div class="note mt8" data-i18n="mods.empty_d"></div>
       </div>
-      <div class="tags">
-        <span class="on" data-i18n="mods.filter_all"></span>
-        <span data-i18n="mods.filter_cars"></span>
-        <span data-i18n="mods.filter_parts"></span>
-        <span data-i18n="mods.filter_liveries"></span>
-      </div>
-      <div class="mod-list mt12">
-        <div class="mod-row sel">
-          <span class="thumb"><svg class="ic"><use href="#i-car"/></svg></span>
-          <div>
-            <div class="mod-n"><span data-i18n="mods.mod_name"></span></div>
-            <div class="mod-s" data-i18n="mods.sub_car"></div>
-          </div>
-          <span class="note xs" style="text-align:right" data-i18n="mods.state_on"></span>
-          <button class="switch" role="switch" aria-checked="true"><i></i></button>
-        </div>
-        <div class="mod-row">
-          <span class="thumb"><svg class="ic"><use href="#i-car"/></svg></span>
-          <div>
-            <div class="mod-n">
-              <span data-i18n="mods.mod_name"></span>
-              <span class="chip warn" data-i18n="mods.badge_conflict"></span>
-            </div>
-            <div class="mod-s" data-i18n="mods.sub_car"></div>
-          </div>
-          <span class="note xs" style="text-align:right" data-i18n="mods.state_on"></span>
-          <button class="switch" role="switch" aria-checked="true"><i></i></button>
-        </div>
-        <div class="mod-row">
-          <span class="thumb"><svg class="ic"><use href="#i-car"/></svg></span>
-          <div>
-            <div class="mod-n"><span data-i18n="mods.mod_name"></span></div>
-            <div class="mod-s" data-i18n="mods.sub_part"></div>
-          </div>
-          <span class="note xs" style="text-align:right" data-i18n="mods.state_on"></span>
-          <button class="switch" role="switch" aria-checked="true"><i></i></button>
-        </div>
-        <div class="mod-row">
-          <span class="thumb"><svg class="ic"><use href="#i-car"/></svg></span>
-          <div>
-            <div class="mod-n">
-              <span data-i18n="mods.mod_name"></span>
-              <span class="chip" data-i18n="mods.badge_update"></span>
-            </div>
-            <div class="mod-s" data-i18n="mods.sub_livery"></div>
-          </div>
-          <span class="note xs" style="text-align:right" data-i18n="mods.state_off"></span>
-          <button class="switch" role="switch" aria-checked="false"><i></i></button>
-        </div>
-        <div class="mod-row">
-          <span class="thumb"><svg class="ic"><use href="#i-car"/></svg></span>
-          <div>
-            <div class="mod-n"><span data-i18n="mods.mod_name"></span></div>
-            <div class="mod-s" data-i18n="mods.sub_car"></div>
-          </div>
-          <span class="note xs" style="text-align:right" data-i18n="mods.state_off"></span>
-          <button class="switch" role="switch" aria-checked="false"><i></i></button>
-        </div>
-        <div class="mod-row">
-          <span class="thumb"><svg class="ic"><use href="#i-car"/></svg></span>
-          <div>
-            <div class="mod-n"><span data-i18n="mods.mod_name"></span></div>
-            <div class="mod-s" data-i18n="mods.sub_part"></div>
-          </div>
-          <span class="note xs" style="text-align:right" data-i18n="mods.state_on"></span>
-          <button class="switch" role="switch" aria-checked="true"><i></i></button>
-        </div>
-        <div class="mod-row">
-          <span class="thumb"><svg class="ic"><use href="#i-car"/></svg></span>
-          <div>
-            <div class="mod-n"><span data-i18n="mods.mod_name"></span></div>
-            <div class="mod-s" data-i18n="mods.sub_livery"></div>
-          </div>
-          <span class="note xs" style="text-align:right" data-i18n="mods.state_on"></span>
-          <button class="switch" role="switch" aria-checked="true"><i></i></button>
-        </div>
-      </div>
-      <div class="fade" style="height:60px"></div>
     </div>
 
-    <div class="card" style="--x:696;--y:132;--w:552;--h:380">
+    <div class="card" id="mods-detail" style="--x:696;--y:88;--w:552;--h:420">
       <div class="label" data-i18n="mods.selected_mod"></div>
-      <div class="dash" data-i18n="mods.preview_picture"></div>
       <div class="label-row mt14">
-        <span class="title-d" style="font-size:22px;letter-spacing:.04em" data-i18n="mods.mod_name"></span>
-        <span class="note s" data-i18n="mods.sub_car"></span>
+        <span class="title-d" style="font-size:22px;letter-spacing:.04em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="mods-d-name"></span>
+        <span class="note s" id="mods-d-sub" style="white-space:nowrap"></span>
       </div>
-      <div class="note mt6" style="font-size:14px" data-i18n="mods.description"></div>
-      <div class="checks mt12">
-        <div><svg class="ic"><use href="#i-check"/></svg><span data-i18n="mods.compat_game"></span></div>
-        <div><svg class="ic warn"><use href="#i-warn"/></svg><span data-i18n="mods.conflict_with"></span></div>
-      </div>
-      <div class="flex gap10 mt16">
-        <button class="btn md primary" data-i18n="mods.turn_on"></button>
-        <button class="btn md" data-i18n="mods.update"></button>
-        <button class="btn md" data-i18n="mods.remove"></button>
+      <div class="note mt6" style="font-size:14px" id="mods-d-desc"></div>
+      <div class="checks mod-facts mt12" id="mods-d-facts"></div>
+      <div class="flex gap10 mt16" id="mods-d-actions" style="position:absolute;left:24px;bottom:20px">
+        <button class="btn md primary" id="mods-d-switch"></button>
+        <button class="btn md" id="mods-d-remove" data-i18n="mods.remove"></button>
       </div>
     </div>
 
-    <div class="card" style="--x:696;--y:528;--w:552;--h:200">
+    <div class="card" id="mods-folder-card" style="--x:696;--y:524;--w:552;--h:204">
       <div class="label" data-i18n="mods.mods_folder"></div>
       <div class="flex gap10 mt12">
-        <div class="field sans" style="flex:1;height:38px" data-i18n="mods.install_folder"></div>
-        <button class="btn lg" style="width:104px;padding:0" data-i18n="mods.open"></button>
+        <div class="field sans" style="flex:1;height:38px" id="mods-dir"></div>
+        <button class="btn lg" style="width:104px;padding:0" id="mods-open" data-i18n="mods.open"></button>
       </div>
       <div class="flex gap10 mt12">
-        <button class="btn md outline" data-i18n="mods.install_file"></button>
+        <button class="btn md outline" id="mods-install" data-i18n="mods.install_file"></button>
+        <span class="note s" style="align-self:center" data-i18n="mods.drop_hint"></span>
       </div>
       <div class="note s mt12" data-i18n="mods.folder_note"></div>
     </div>
+    <div class="mod-drop" id="mods-drop" hidden><span data-i18n="mods.drop_here"></span></div>
   </section>
 
   <section class="page locked-preview" data-page="music-preview" data-title-key="nav.music" data-head="preview" hidden>

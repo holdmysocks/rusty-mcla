@@ -24,6 +24,7 @@ mod career;
 mod catalog;
 mod modcars;
 mod modfs;
+mod modgarage;
 mod garagecam;
 mod garagein;
 mod hangoutin;
@@ -137,9 +138,9 @@ mod hangout_scene;
 mod layout;
 mod mc4b;
 mod photoalbum;
+mod saveflow;
 mod world;
 
-mod saveflow;
 use anyhow::Result;
 use assets::Assets;
 use camera::{Camera, ChaseCam};
@@ -353,11 +354,11 @@ struct App {
     cine_audio: Option<String>,
     /// the running scene keeps its own time (start-line cameras) instead of a story scene's
     cine_free: bool,
-    /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
     /// the arrest scene's hands-up has been given (police::arrest_hands_up)
     arrest_hands: bool,
     /// CopPullover.sco running: (the fine, the walk's time of a bolt, the ticket scene begun)
     ticket_run: Option<(i64, Option<f32>, bool)>,
+    /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
     tips: std::collections::VecDeque<(String, String, String)>,
@@ -732,7 +733,6 @@ impl App {
 
     /// Fire the start scene's racer events as its clock passes them; the jaw flap follows the speech lines; at
     /// the clip's end `FinishScene` rolls the two windows up.
-    fn prerace_acts_tick(&mut self, dt: f32) {
     /// CopPullover.sco after COP_PULLOVER (GitHub #17): over the walk, spinning the held car (Racer_IsBurningOut,
     /// F-48805: chassis +578, the burnout state) from 1 s in until 1 s before the walk's camera ends is a bolt -
     /// the car let go, the officer re-animated with `cut_cop_alert_02`'s run back to his car, the scene camera killed
@@ -793,6 +793,7 @@ impl App {
         }
     }
 
+    fn prerace_acts_tick(&mut self, dt: f32) {
         let Some(mut a) = self.prerace_acts.take() else { return };
         if self.game.race.is_none() {
             self.drivers.stop_acting();
@@ -959,9 +960,9 @@ impl App {
             cut_audio_objects: false,
             cine_audio: None,
             cine_free: false,
-            cine_events: (String::new(), Vec::new()),
             arrest_hands: false,
             ticket_run: None,
+            cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
             pending_call: None,
             pending_log: None,
@@ -3948,7 +3949,6 @@ impl App {
                     }
                 }
             }
-            // (test hook MCLA_RACE_END_SHOTS=<dir>;t1,t2,...: pictures t seconds after the line,
             // (test hook MCLA_CINE_SHOTS=<dir>;t1,t2,...: pictures t seconds into the scenes' clock - the first of
             // the run whose name contains MCLA_CINE_SHOTS_SCENE, any by default)
             if let (Ok(v), Some(sc)) = (std::env::var("MCLA_CINE_SHOTS"), self.cine.playing.as_ref()) {
@@ -3966,6 +3966,7 @@ impl App {
                     }
                 }
             }
+            // (test hook MCLA_RACE_END_SHOTS=<dir>;t1,t2,...: pictures t seconds after the line,
             // the camera logged in the car's frame - x right, y up, z rear)
             if let (Ok(v), Some(t)) = (std::env::var("MCLA_RACE_END_SHOTS"), self.game.race_end_t) {
                 static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -4393,8 +4394,8 @@ impl App {
                 }
             }
         }
-        self.whoosh_cool -= dt;
         self.dispatch_prev = pp;
+        self.whoosh_cool -= dt;
         if let Some((pp, speed)) = self.vehicles.player().map(|c| (c.state.pos, c.state.speed())) {
             let q = self.whoosh_prev;
             self.whoosh_prev = pp;
@@ -4587,7 +4588,6 @@ impl App {
         if self.game.mode == Mode::Race {
             let ready = self.vehicles.player().map_or(true, |c| world.ready_at(c.state.pos));
             race_finished = self.game.update_race(&mut self.vehicles, sim_dt, ready);
-            self.game.ui_sim_dt += sim_dt;
             // (the race scripts' CalculateRankOrdered / Unordered for racer 0 while the player has not finished and the
             // race is not over: the lead-change count kLED - F-37138, F-90700)
             if let Some(r) = self.game.race.as_ref() {
@@ -4598,6 +4598,7 @@ impl App {
                     self.game.mc4_lead_rank(rank as i32);
                 }
             }
+            self.game.ui_sim_dt += sim_dt;
             // (test hook MCLA_GO_TRACE=1: the race clock and the player's car around GO, every tick)
             if std::env::var("MCLA_GO_TRACE").is_ok() {
                 if let (Some(r), Some(c)) = (self.game.race.as_ref(), self.vehicles.player()) {
@@ -5962,7 +5963,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     } else if v != "park" && !pull && self.tick_no == 150 {
                         self.police.debug_force(&gpu, &world, &mut self.vehicles);
                     }
-                    if self.tick_no % 60 == 0 {
                     // ("flip": the player's car laid on its roof first - the arrest of a car upside down)
                     if v == "flip" && self.tick_no == 140 {
                         if let Some(c) = self.vehicles.player_mut() {
@@ -5970,6 +5970,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             c.state.rot = c.state.rot * glam::Quat::from_rotation_z(std::f32::consts::PI);
                         }
                     }
+                    if self.tick_no % 60 == 0 {
                         let pp = self.vehicles.player().map(|c| c.state.pos).unwrap_or_default();
                         let cops: Vec<String> = self.vehicles.cars.iter().filter(|c| c.cop).map(|c| format!("{:.0}m@{:.0}", c.state.pos.distance(pp), c.state.speed())).collect();
                         log::info!("police: heat {:?} score {:.0} fine {:.0} search {:.1} cops {:?} player speed {:.1}", self.police.heat, self.police.score, self.police.fine, self.police.search, cops, self.vehicles.player().map_or(0.0, |c| c.state.speed()));
@@ -5981,16 +5982,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.police.update_units(&gpu, &world, &mut self.vehicles);
                 }
                 self.police.progress = rewards::progress(self.game.rep).1;
-                let ev = self.police.update(&gpu, &world, &mut self.vehicles, self.props.knocked, sim_dt);
                 self.police.radio_busy = self.radio.busy();
                 self.police.in_race = self.game.race.is_some();
-                // (step 19d: the payback's chase - the pursuers are the client's friends, their
+                let ev = self.police.update(&gpu, &world, &mut self.vehicles, self.props.knocked, sim_dt);
                 // (F-22530: an arrest by the cops ends a race running - raceOverCommand `returnToCruise`,
                 // raceOverTrigger 1: back to the cruise as RETURN TO CRUISE does)
                 if std::mem::take(&mut self.police.arrest_over) && self.game.race.is_some() {
                     log::info!("police: arrested during the race - back to the cruise");
                     self.pending_action = MenuAction::StartFreeRoam;
                 }
+                // (step 19d: the payback's chase - the pursuers are the client's friends, their
                 // two results the leg's own: no radio, no fine, no arrest form - `mc4`)
                 let s19d_goons = self.police.goons;
                 let ev = self.game.mc4_payback_chase(&mut self.police, &mut self.vehicles, &mut gpu, &mut world, ev, sim_dt);
@@ -6136,8 +6137,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     None => {}
                 }
             }
-            crate::ticktimes::mark(crate::ticktimes::S::Other);
             self.ticket_tick(&mut gpu, &mut world);
+            crate::ticktimes::mark(crate::ticktimes::S::Other);
             if let (Ok(t), 90) = (std::env::var("MCLA_PROPFX_AIM"), self.tick_no) {
                 // test helper "x,y,z[,run]": line the player up with the prop at that place, `run` (14) m away on the first clear line
                 let v: Vec<f32> = t.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -6522,7 +6523,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let rain_snd = self.rain_amount();
         // (the start scene's events on the racers: gestures, windows, the taunt's speech and jaws)
         self.prerace_acts_tick(dt);
-        if let Some(a) = self.audio.as_mut() {
         // the arrests' gesture_cophandsup on racer slot 0, the player (event 53: racer+684 = 18 until its end call)
         match self.cine.playing.as_ref().and_then(|sc| police::arrest_hands_up(&sc.name).map(|h| (h, sc.t))) {
             Some(((t, dur), now)) if now >= t && !self.arrest_hands => {
@@ -6534,6 +6534,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             Some(_) => {}
             None => self.arrest_hands = false,
         }
+        if let Some(a) = self.audio.as_mut() {
             let fwd = self.cam.forward();
             let right = Vec3::new(-fwd.z, 0.0, fwd.x).normalize_or(Vec3::X);
             let horn = (self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::HORN, |k| self.input.down(k)) || self.pad_horn) && !self.game.in_menu();
@@ -6642,17 +6643,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.game.songs.is_empty() {
                 self.game.songs = a.songs();
             }
-            if std::mem::take(&mut a.track_changed) && !a.now_playing.is_empty() {
             // (the music manager's playing state, F-61726: the song line's clock while its song plays)
             if a.music_playing() && !a.track_changed {
                 self.game.mc4_song_tick(dt, a.song_place);
             }
+            if std::mem::take(&mut a.track_changed) && !a.now_playing.is_empty() {
                 let t = a.now_playing.clone();
-                // the HUD movie's bottom splash shows the song ("BAD RELIGION - 21st
                 // (the song line's statistics, F-73849: tMTC, tMTP of list x 256 + place)
                 if let Some((g, k)) = a.song_place {
                     self.game.mc4_song_line(g as i32, k as i32);
                 }
+                // the HUD movie's bottom splash shows the song ("BAD RELIGION - 21st
                 // Century Digital Boy" is its sample text)
                 // (the original runs the song across the cluster's info line - references
                 // `u02`, `u04`: "KILL MEMORY", "... ARTISTES (SWITCH REMIX)" - not as a splash)
@@ -10253,11 +10254,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.startwarp = Some(startwarp::StartWarp::start(eye, look, lens, car, gpu.config.width as f32 / gpu.config.height.max(1) as f32));
                     self.startwarp_t = 0.0;
                 }
-                if let Some(sp) = self.game.alt_leave(action == MenuAction::QuitRace) {
                 // (the race object goes: its destructor's Race_Reset, F-83102 - kMRS, xRRT)
                 if self.game.race.is_some() && !self.game.goal_attack {
                     self.game.mc4_race_reset();
                 }
+                if let Some(sp) = self.game.alt_leave(action == MenuAction::QuitRace) {
                     log::info!("alt hookman: {} leaving the race", sp);
                     self.speech.say_as(sp, &self.game.althk.voice);
                 }
@@ -10364,7 +10365,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (p080: delivery_hangout_core plays the walk to the car only when the panel is
                 // accepted; a restart or the next delivery goes straight to the intro)
                 let p080_again = action == MenuAction::RestartRace || self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery);
-                self.prerace_replay = action == MenuAction::RestartRace;
                 // (the race scripts' `restart`: kTRS, xRRT, kARS; then the set-up's Race_Reset - F-83102)
                 if action == MenuAction::RestartRace {
                     self.game.mc4_restart_stats();
@@ -10372,6 +10372,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if !self.game.goal_attack {
                     self.game.mc4_race_reset();
                 }
+                self.prerace_replay = action == MenuAction::RestartRace;
                 // (the last pink slip race's race-over tab is not this race's)
                 self.game.pink_over = None;
                 // (a race started from another's results - NEXT RACE IN SERIES, CONTINUE, RESTART - never
@@ -10466,7 +10467,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let p = std::env::var("MCLA_PLAYER_PERF").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| self.game.player_perf());
                     let used: Vec<String> = grid.iter().map(|r| r.id.clone()).collect();
                     let need = (field as usize).saturating_sub(grid.len());
+                    let seed = oppick::state_seed(&oppick::career_rng());
                     let picks = self.game.oppick.pick(need, p, d, masks, &used, &usable);
+                    // (a mod car with rims = "random" wears a car rim drawn from the race's seed per set-up; stage S4b)
+                    let shop_rims: Vec<i32> = self.game.rim_shop.car_rims().into_iter().filter(|r| self.game.rim_by_name.contains_key(r.1)).map(|r| r.0).collect();
+                    let draws: Vec<(String, i32)> = picks.iter().enumerate().filter(|(_, pk)| modcars::rims_random(&pk.car)).filter_map(|(i, pk)| Some((pk.setup.clone(), modcars::draw_rim(&shop_rims, seed, i)?))).collect();
+                    for (s, r) in &draws {
+                        log::info!("grid rim: {s} wears {} (rim table {r})", self.game.rim_shop.entry(*r).map_or("?", |e| e.resource.as_str()));
+                    }
+                    modcars::set_rim_draws(draws);
                     for pk in picks {
                         log::info!("grid pick: {} drew {} -> {} in {} ({}), difficulty {} player {:.4}", if pk.driver.is_empty() { "-" } else { &pk.driver }, pk.drawn, pk.driver, pk.car, pk.setup, d, p);
                         grid.push(self.game.rivals.with_config(&pk.driver, &pk.car, &pk.setup));
@@ -10685,6 +10694,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                         let rt = racescript::Runtime::new(d, self.frame_no as u32 ^ 0x9e3779b9);
+                        // (the race core's ResetTriggers resets the global arrays too, F-55754)
+                        for z in self.dispatch_zones.iter_mut() {
+                            z.done = false;
+                        }
                         // their vehicle types (a few at a time would be kinder; there are rarely more than a dozen)
                         let root = world.assets.path("resources/vehicle");
                         for t in rt.types().into_iter().take(14) {
@@ -10694,10 +10707,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                     let _ = self.vehicles.load_model(gpu, world, &dir);
                                 }
                             }
-                        // (the race core's ResetTriggers resets the global arrays too, F-55754)
-                        for z in self.dispatch_zones.iter_mut() {
-                            z.done = false;
-                        }
                         }
                         self.dress = Some(rt);
                     }
@@ -10917,9 +10926,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             MenuAction::RestartTournament => {
                 if self.game.tournament_restart() {
-                    self.pending_action = MenuAction::StartRace;
                     // (TournamentCore's `restart`: kTRS, xRRT, kARS)
                     self.game.mc4_restart_stats();
+                    self.pending_action = MenuAction::StartRace;
                     // (TournamentCore `restart` 0x2191: Warper_Warp('DEFAULT_WITH_CUT'))
                     self.game.warp_with_cut = true;
                 }
@@ -11610,7 +11619,9 @@ impl App {
         // (a car the port adds as data joins the pick with its vehicle record here)
         // (the cut GT-R races as an opponent too: DECISIONS.md D21)
         crate::catalog::write_cut_setups(&self.opt.data_dir);
-        self.game.oppick = oppick::OpPick::load(&self.opt.data_dir, &format!("{}{}", crate::catalog::CUT_CATALOG, crate::catalog::CUT_OPPONENT));
+        // (then the opponent-marked mod cars, in name order: MODS.md design 7b, stage S4)
+        self.game.oppick = oppick::OpPick::load(&self.opt.data_dir, &format!("{}{}{}", crate::catalog::CUT_CATALOG, crate::catalog::CUT_OPPONENT, crate::modcars::opponent_extra()));
+        self.game.oppick.free_cars = crate::modcars::free_driver_cars();
         if std::env::var("MCLA_CAREER_TEST").is_ok() {
             self.game.career.selftest();
         }

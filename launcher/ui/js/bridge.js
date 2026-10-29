@@ -36,6 +36,19 @@
     fixed: [['back', 'Esc'], ['accept', 'Enter'], ['window_mode', 'Alt+Enter'], ['clear', 'Backspace / Delete'], ['screenshot', 'F12'], ['developer', 'F1 F2 F7']],
   });
 
+  // design checks in a plain browser (?mods=sample): one mod of each state
+  const previewMods = () => {
+    const row = (o) => Object.assign({ id: 'x', version: '1.0.0', name: 'Mod', author: 'Author', description: 'A description written by the mod author.', file: 'x.zip', path: 'C:/mods/' + (o.file || 'x.zip'), is_zip: true, status: 'loaded', skipped_why: null, on: true, can_switch: true, reasons: [], warnings: [], contents: [{ kind: 'car', name: 'vp_x_car_08', title: '2008 EXAMPLE CAR', problems: [], notes: [] }], clashes: [], used_instead: null }, o);
+    const rows = q.get('mods') === 'sample' ? [
+      row({ id: 'a.mod', name: 'Example car', file: 'a.mod.zip' }),
+      row({ id: 'b.mod', name: 'Same car again', file: 'b.mod.zip', status: 'skipped', skipped_why: 'clash', clashes: [{ kind: 'car', name: 'vp_x_car_08', title: '2008 EXAMPLE CAR', held_by_id: 'a.mod', held_by_name: 'Example car', held_by_version: '1.0.0' }] }),
+      row({ id: 'c.mod', name: 'Switched off', file: 'c.mod.zip', status: 'off', on: false }),
+      row({ id: 'd.mod', name: 'Broken car', file: 'd', is_zip: false, status: 'invalid', can_switch: false, reasons: ['mod.toml: missing field `group`'], contents: [{ kind: 'car', name: 'vp_d', title: 'D', problems: ['no model files'], notes: [] }] }),
+      row({ id: 'e.mod', name: 'Old copy', file: 'e_old.zip', version: '1.0.0', status: 'skipped', skipped_why: 'duplicate', can_switch: false, used_instead: { version: '1.2.0', file: 'e_new.zip' } }),
+    ] : [];
+    return { mods_dir: 'C:/MCLA/data/cache/mods', data_found: q.get('mods') !== 'nodata', rows, summary: { total: rows.length, loaded: rows.filter((r) => r.status === 'loaded').length, off: 0, invalid: 0, skipped: 0, contents: 0 }, stamp: 1 };
+  };
+
   window.Bridge = {
     available: !!invoke,
     boot: () => (invoke ? invoke('boot') : Promise.resolve(previewBoot())),
@@ -99,6 +112,13 @@
     crashNotice: () => (invoke ? invoke('crash_notice') : Promise.resolve(q.get('crash') === '1' ? { report: 'crash-20261015-130000.txt', code: 101, when: 0 } : null)),
     crashDismiss: () => (invoke ? invoke('crash_dismiss') : Promise.resolve()),
     goBackPrevious: (force) => (invoke ? invoke('go_back_previous', { force: !!force }) : Promise.reject({ code: 'io', detail: 'no bridge' })),
+    // mods tab (src/mods.rs over mcla-mods). Without Tauri: an empty list, so the layout can be looked at.
+    modsView: () => (invoke ? invoke('mods_view') : Promise.resolve(previewMods())),
+    modsPoll: () => (invoke ? invoke('mods_poll') : Promise.resolve(null)),
+    modsPick: () => (invoke ? invoke('mods_pick') : Promise.resolve([])),
+    modsInstall: (path, confirmOlder) => (invoke ? invoke('mods_install', { path, confirmOlder: !!confirmOlder }) : Promise.reject('no bridge')),
+    modsSet: (id, on) => (invoke ? invoke('mods_set', { id, on: !!on }) : Promise.reject('no bridge')),
+    modsRemove: (path) => (invoke ? invoke('mods_remove', { path }) : Promise.reject('no bridge')),
     selftestReport: (text) => (invoke ? invoke("selftest_report", { text }) : Promise.resolve()),
   };
 })();

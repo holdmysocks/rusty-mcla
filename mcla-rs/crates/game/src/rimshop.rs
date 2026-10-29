@@ -93,6 +93,12 @@ impl RimShop {
         self.brands.iter().flat_map(|b| &b.rims).find(|r| r.index == index)
     }
 
+    /// The car rims (Car and Dlc brands, not Bike) in the file order, as (game rim-table index, resource folder): the
+    /// rims a mod car's random opponent rim is drawn from (stage S4b).
+    pub fn car_rims(&self) -> Vec<(i32, &str)> {
+        self.brands.iter().filter(|b| b.shop != Shop::Bike).flat_map(|b| b.rims.iter().map(|r| (r.index, r.resource.as_str()))).collect()
+    }
+
     /// The brand tab that sells a given rim, and its place in `tabs`.
     pub fn tab_of(&self, index: i32, bike: bool) -> Option<(usize, &RimBrand)> {
         self.tabs(bike).into_iter().enumerate().find(|(_, b)| b.rims.iter().any(|r| r.index == index))
