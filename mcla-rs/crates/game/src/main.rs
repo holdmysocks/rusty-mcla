@@ -1360,6 +1360,13 @@ impl App {
     }
 
     fn lighting(&self, vp: glam::Mat4) -> Globals {
+        // (test hook MCLA_HALF_PIXEL=<width>,<height>: the scene moved +0.5 screen pixels right and down, as the
+        // recorder draws a pass whose PA_SU_VTX_CNTL pix_center is 0 - the Xenos samples at integer positions;
+        // for measuring that offset against recordings, not the port's rule)
+        let vp = match std::env::var("MCLA_HALF_PIXEL").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<f32>>()) {
+            Some(v) if v.len() == 2 && v[0] > 0.0 && v[1] > 0.0 => glam::Mat4::from_translation(Vec3::new(1.0 / v[0], -1.0 / v[1], 0.0)) * vp,
+            _ => vp,
+        };
         let t = self.time_of_day;
         // (the garage - garage round, 2026-10-13: the scene's keys are TODGarage<Weather>'s, the sky's
         // and the fog's are read at sm_fGarageTOD, whatever the clock says; `garage_light`)
