@@ -3537,6 +3537,21 @@ if keep || c.state.pos.distance(center) < 450.0 {
                                     level_car = None;
                                 }
                                 c.state = CarState::new(p, (-dir.x).atan2(-dir.z));
+                                // (a cruising hookman has no physical car out here: the original poses it on its ghost,
+                                // which rides the rail on the road - every placement through the +-5 m ground hit (F-29307).
+                                // The line's points lie straight between lane points, under the road on a crest: the car
+                                // stood under the street and could not be flashed, AI.md NEW 7)
+                                if c.racer && world.own_bound {
+                                    if let Some(g) = world.collider.ground(p, 5.0, 5.0) {
+                                        let n = g.normal;
+                                        if n.y > 0.8 {
+                                            let f = (dir - n * dir.dot(n)).normalize_or(dir);
+                                            let right = f.cross(n).normalize_or(Vec3::X);
+                                            c.state.rot = Quat::from_mat3(&glam::Mat3::from_cols(right, n, -f)).normalize();
+                                        }
+                                        c.state.pos = g.point + Vec3::Y * 0.03;
+                                    }
+                                }
                                 c.pose_history.reset();
                                 c.state.vel = dir * v;
                                 c.state.gear = gear;
