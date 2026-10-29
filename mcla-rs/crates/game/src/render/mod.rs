@@ -542,6 +542,29 @@ pub const ENV_GLOWS: usize = 96;
 pub const ENV_SOFT_SIZE: u32 = 16;
 /// edge of one paraboloid half of the environment map as the city is drawn into it
 pub const ENV_DP_SIZE: u32 = 256;
+
+/// The Xenos's pixel centres (PA_SU_VTX_CNTL bit 0, set by the D3D library's render-state setter F-93002): every pass
+/// the original draws with geometry - scene, sky, cars, people, props, glows, the occlusion blobs, the soft particles,
+/// the env map's halves, the road's reflection, the mirror, the shadow and impostor maps - has pix_center 0
+/// (kD3DZero, recorded 0x4: pixel centres on whole positions, as D3D9), only the height fog and the bloom /
+/// luminance chain have 1 (0x5; LIGHTING.md "Half pixel"). A pixel of such a pass is the sample at its corner, so
+/// the picture lies half a pixel right of and below what wgpu (centres at .5) draws from the same vertices. Ported as
+/// that translation of the projection: +1 / w, -1 / h in clip x, y (x w) for a pass `w` x `h` pixels big.
+/// MCLA_HALF_PIXEL_OFF=1: none, as until 2026-10-29. (The cascades, the far collector and the damage map carry their
+/// half texel in their own look-ups / matrices already - render/mod.rs `set_cascades`, `collector_pass`.)
+pub fn half_pixel_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MCLA_HALF_PIXEL_OFF").map_or(true, |v| v.trim() != "1"))
+}
+
+/// `vp` moved by half a pixel of a `w` x `h` pass (`half_pixel_on`).
+pub fn half_pixel(vp: Mat4, w: f32, h: f32) -> Mat4 {
+    if half_pixel_on() && w > 0.0 && h > 0.0 {
+        Mat4::from_translation(Vec3::new(1.0 / w, -1.0 / h, 0.0)) * vp
+    } else {
+        vp
+    }
+}
 /// levels of the environment cube: the base and three made from it, as the original's map has (levels 0 .. 3,
 /// PSFastMipMap; env_mip.wgsl)
 pub const ENV_MIPS: u32 = 4;
@@ -1794,7 +1817,7 @@ impl Gpu {
         let identity_obj = make_object_binding(&device, &obj_layout, &ObjectUniform::default(), &blank_dmg);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("city"),
-            source: wgpu::ShaderSource::Wgsl(paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat()).into()),
+            source: wgpu::ShaderSource::Wgsl(paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat()).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("city pl"),
@@ -3172,9 +3195,9 @@ impl Gpu {
     /// draws matched to these batches by their index counts) has every far model in view whose
     /// box lies within about 960 m of the camera - the detailed sectors' neighbourhood included
     /// - a few of those between 1,000 and 1,250 m, none beyond. Here: within 1,000 m.
-    pub fn reflection_pass<'a>(&self, enc: &mut wgpu::CommandEncoder, view_proj: Mat4, cam: Vec3, plane: f32, sky: bool, models: impl Iterator<Item = &'a crate::world::GpuSector>) -> usize {
+    pub fn reflection_pass<'a>(&self, enc: &mut wgpu::CommandEncoder, view_proj: Mat4, px: [f32; 2], cam: Vec3, plane: f32, sky: bool, models: impl Iterator<Item = &'a crate::world::GpuSector>) -> usize {
         let sky = sky && self.sky_hat.tex_bg.is_some();
-        self.queue.write_buffer(&self.refl_buf, 0, bytemuck::bytes_of(&[plane, if sky { 1.0f32 } else { 0.0 }, 0.0, 0.0]));
+        self.queue.write_buffer(&self.refl_buf, 0, bytemuck::bytes_of(&[plane, if sky { 1.0f32 } else { 0.0 }, px[0], px[1]]));
         let frustum = Frustum::from_view_proj(view_proj);
         let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("road reflection"),

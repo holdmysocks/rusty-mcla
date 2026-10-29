@@ -40,7 +40,16 @@ pub fn globals(main: &Globals, h: f32) -> (Globals, Frustum) {
 /// picture, over what `Gpu::reflection_pass` left there (its colour and depth). Runs with the plain pipelines
 /// (`render::ms::set_plain` in force). Returns the draw count.
 pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::World, vehicles: &Vehicles, main: &Globals, h: f32) -> usize {
-    let (g, frustum) = globals(main, h);
+    let (mut g, frustum) = globals(main, h);
+    // (into the 256 x 256 reflection picture with pix_center 0: half ITS pixel, the main matrix carrying half a scene
+    // pixel already - render::half_pixel)
+    if crate::render::half_pixel_on() {
+        let r = crate::render::REFL_SIZE as f32;
+        let t = glam::Mat4::from_translation(Vec3::new(1.0 / r - 1.0 / gpu.scene_w as f32, -(1.0 / r - 1.0 / gpu.scene_h as f32), 0.0));
+        let vp = t * glam::Mat4::from_cols_array_2d(&g.view_proj);
+        g.view_proj = vp.to_cols_array_2d();
+        g.inv_view_proj = vp.inverse().to_cols_array_2d();
+    }
     gpu.queue.write_buffer(&gpu.floor_globals, 0, bytemuck::bytes_of(&g));
     let eye = Vec3::new(main.cam_pos[0], main.cam_pos[1], main.cam_pos[2]);
     let plain = crate::render::ms::PLAIN;

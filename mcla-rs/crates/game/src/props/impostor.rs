@@ -329,7 +329,9 @@ impl Impostors {
         for k in 0..count {
             let ty = &mut self.types[(first + k) % n];
             let Some(model) = models.get(ty.model) else { continue };
-            let u = TileUniform { view_proj: Self::tile_camera(c, ty.width, ty.height, ty.centre_y).to_cols_array_2d(), sun_dir: [0.0; 4], sun_col: [0.0; 4], ambient: [0.0; 4] };
+            // (pix_center 0, as the recorded PSGenerateImposterShadowDepth draws: half a texel - render::half_pixel)
+            let ms = ty.mask.width as f32;
+            let u = TileUniform { view_proj: crate::render::half_pixel(Self::tile_camera(c, ty.width, ty.height, ty.centre_y), ms, ms).to_cols_array_2d(), sun_dir: [0.0; 4], sun_col: [0.0; 4], ambient: [0.0; 4] };
             gpu.queue.write_buffer(&ty.mask_buf, 0, bytemuck::bytes_of(&u));
             let big = (ty.mask.width == MASK_BIG) as usize;
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -401,7 +403,8 @@ impl Impostors {
             }
             let Some(model) = models.get(ty.model) else { continue };
             let u = TileUniform {
-                view_proj: Self::tile_camera(c, ty.width, ty.height, ty.centre_y).to_cols_array_2d(),
+                // (pix_center 0, as the recorded PSGenerateImposter draws: half a texel of the picture - render::half_pixel)
+                view_proj: crate::render::half_pixel(Self::tile_camera(c, ty.width, ty.height, ty.centre_y), TILE as f32, TILE as f32).to_cols_array_2d(),
                 // (w: 1 = night; + 2 under MCLA_DEBUG_VIEW=112: the picture as it was drawn before
                 // 2026-10-14 - sRGB-decoded texture, no 8-bit steps; see impostor.wgsl)
                 sun_dir: [g.sun_dir[0], g.sun_dir[1], g.sun_dir[2], (if night { 1.0 } else { 0.0 }) + (if (g.params[3] - 112.0).abs() < 0.5 { 2.0 } else { 0.0 })],

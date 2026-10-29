@@ -67,7 +67,7 @@ struct Globals {
 @group(1) @binding(3) var t_c: texture_2d<f32>;
 
 struct Refl {
-    plane: vec4<f32>,   // x = the reflection plane's height (c43.z), y = 1: the dome is there
+    plane: vec4<f32>,   // x = the reflection plane's height (c43.z), y = 1: the dome is there, zw: the half pixel's rest (main.rs)
 };
 struct Hat {
     vs: array<vec4<f32>, 12>,       // c64 c65 c66 c67 c68 c69 c72 c73 c75 c96 c97 c98
@@ -105,6 +105,7 @@ fn vs_refl(@location(0) pos: vec3<f32>, @location(1) normal: vec3<f32>, @locatio
     // (21 - 23)
     let y = h - max(pos.y - h, 0.0);
     o.clip = g.view_proj * vec4<f32>(pos.x, y, pos.z, 1.0);
+    o.clip = vec4<f32>(o.clip.xy + rf.plane.zw * o.clip.w, o.clip.zw);
     o.wpos = pos;
     // (normalised: the length carries the binormal's sign on bump-mapped walls, world::mark_binormal)
     o.n = normal * inverseSqrt(max(dot(normal, normal), 1e-12));

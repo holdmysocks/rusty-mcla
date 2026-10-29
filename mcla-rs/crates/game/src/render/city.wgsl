@@ -1265,6 +1265,12 @@ fn vs_main(in: VsIn) -> VsOut {
 // left to right. Lines between vertices stay STRAIGHT in the map - a long pole is a straight
 // stroke where the true projection bends it - and that is what the paint mirrors.
 // g.moon_dir.w: 1 the front half, 2 the back half (each has a target of its own here).
+// (the halves are drawn with pix_center 0 as every geometry pass: half a texel of the 256 x 256 half right and
+// down - render/mod.rs `half_pixel`; 0 with MCLA_HALF_PIXEL_OFF=1)
+const HALF_PX_DP: f32 = 1.0;
+fn env_dp_px(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(c.xy + HALF_PX_DP * vec2<f32>(1.0 / 256.0, -1.0 / 256.0) * c.w, c.zw);
+}
 @vertex
 fn vs_env_dp(in: VsIn) -> VsOut {
     var o = vs_body(in);
@@ -1301,12 +1307,14 @@ fn vs_env_dp(in: VsIn) -> VsOut {
     if (g.params.w > 369.5 && g.params.w < 370.5) {
         xy = xy * (1.0 + 8.0 * max(-fwd, 0.0));
         o.clip = vec4<f32>(xy, clamp(1.0 - dist * 0.0005, 0.0001, 1.0), 1.0);
+        o.clip = env_dp_px(o.clip);
         return o;
     }
     let xy0 = select(vec2<f32>(-m.x, m.y), m.xy, g.moon_dir.w < 1.5) / max(1.0 + fwd, 0.000001);
     // (MCLA_DEBUG_VIEW=371: cut at the half's plane, as the clip control word reads)
     if (g.params.w > 370.5 && g.params.w < 371.5) {
         o.clip = vec4<f32>(xy0, 1.0 - fwd * dist * 0.0005, 1.0);
+        o.clip = env_dp_px(o.clip);
         return o;
     }
     // ... but the pictures of the original's map say the GPU does NOT cut at that plane: the
@@ -1321,6 +1329,7 @@ fn vs_env_dp(in: VsIn) -> VsOut {
     // the depth runs on behind the plane (0.5 - forward x 0.00025: nothing is cut).
     o.fill.a = select(0.0, 0.25, fwd > 0.0);
     o.clip = vec4<f32>(select(vec2<f32>(-m.x, m.y), m.xy, g.moon_dir.w < 1.5) / max(1.0 + fwd, 0.0001), 0.5 - fwd * dist * 0.00025, 1.0);
+    o.clip = env_dp_px(o.clip);
     return o;
 }
 

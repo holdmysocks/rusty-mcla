@@ -1362,13 +1362,6 @@ impl App {
     }
 
     fn lighting(&self, vp: glam::Mat4) -> Globals {
-        // (test hook MCLA_HALF_PIXEL=<width>,<height>: the scene moved +0.5 screen pixels right and down, as the
-        // recorder draws a pass whose PA_SU_VTX_CNTL pix_center is 0 - the Xenos samples at integer positions;
-        // for measuring that offset against recordings, not the port's rule)
-        let vp = match std::env::var("MCLA_HALF_PIXEL").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<f32>>()) {
-            Some(v) if v.len() == 2 && v[0] > 0.0 && v[1] > 0.0 => glam::Mat4::from_translation(Vec3::new(1.0 / v[0], -1.0 / v[1], 0.0)) * vp,
-            _ => vp,
-        };
         let t = self.time_of_day;
         // (the garage - garage round, 2026-10-13: the scene's keys are TODGarage<Weather>'s, the sky's
         // and the fog's are read at sm_fGarageTOD, whatever the clock says; `garage_light`)
@@ -8784,7 +8777,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the original's renderer flag of F-31789, set while the game is paused: the plants' model angle x 0.9)
             crate::props::set_paused(self.game.mode == Mode::Paused);
         }
-        let mut globals = self.lighting(vp);
+        // (the main view's passes have pix_center 0: half a scene pixel right and down - render::half_pixel; its
+        // globals' inverse goes with it, so what reads the depth by screen place finds the same points)
+        let vp_px = render::half_pixel(vp, gpu.scene_w as f32, gpu.scene_h as f32);
+        let mut globals = self.lighting(vp_px);
         // The garage casts the cars' shadows too (its frames draw the four cascades and the collector,
         // work/lighting/cap/gar_*): straight down (the garage's light, TODGarage's orbit), with the
         // collector's c63.z = (1 - m_ShadowFade) / 2 of the garage's keys - the port's night path
@@ -9680,9 +9676,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let plane = std::env::var("MCLA_REFL_PLANE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(plane);
             let sky = self.sky_now().hat.is_some() && gpu.sky_hat.ready();
             let frame_no = self.frame_no;
+            // (its 256 x 256 picture is drawn with pix_center 0 as well: half ITS pixel - the main view's matrix
+            // carries half a scene pixel, refl.wgsl adds the difference)
+            let refl_px = if render::half_pixel_on() {
+                let r = render::REFL_SIZE as f32;
+                [1.0 / r - 1.0 / gpu.scene_w as f32, -(1.0 / r - 1.0 / gpu.scene_h as f32)]
+            } else {
+                [0.0, 0.0]
+            };
             let reflection_job = || -> wgpu::CommandBuffer {
                 let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("reflection") });
-                let n = gpu.reflection_pass(&mut e, glam::Mat4::from_cols_array_2d(&globals.view_proj), Vec3::new(globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]), plane, sky, far.iter().copied());
+                let n = gpu.reflection_pass(&mut e, glam::Mat4::from_cols_array_2d(&globals.view_proj), refl_px, Vec3::new(globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]), plane, sky, far.iter().copied());
                 if frame_no == 100 && std::env::var("MCLA_REFL_DUMP").is_ok() {
                     eprintln!("refl: plane {:.3} camera {:.3} batches {} sky {}", plane, globals.cam_pos[1], n, sky);
                 }
@@ -10356,7 +10360,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let (props, frustum_r, occluded_r, cam_eye) = (&self.props, &frustum, &occluded, self.cam.pos);
         let city_b1 = |pass: &mut wgpu::RenderPass<'_>, draws: &mut usize| {
             let gpu = &gpu;
-            ground_sheet::draw(pass, gpu, vp);
+            ground_sheet::draw(pass, gpu, vp_px);
             pass.set_pipeline(&gpu.pipeline_inst);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
             props.draw_scene(pass, gpu, cam_eye, frustum_r, Some(occluded_r), draws);
@@ -10496,7 +10500,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             && self.game.cine.is_none()
             && !self.game.scene_hud_off;
         if let Some(pose) = self.vehicles.player().filter(|_| rear_view).map(|c| c.render_pose(self.vehicles.render_alpha)) {
-            let mv = rearview::view(&globals, pose.pos, pose.rot, self.cam.near);
+            let mv = rearview::view(&globals, pose.pos, pose.rot, self.cam.near, (gpu.scene_w, gpu.scene_h));
             let mut lods = rearview::pick_lods(&self.vehicles, mv.eye, mv.axis, self.cam.near, &mv.frustum, &occluded);
             std::mem::swap(&mut self.vehicles.lod_pick, &mut lods);
             draws += rearview::draw(&mut enc, &gpu, &world, &self.vehicles, &mv);

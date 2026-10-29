@@ -164,9 +164,11 @@ pub struct View {
     pub globals: Globals,
 }
 
-pub fn view(main: &Globals, car_pos: Vec3, car_rot: Quat, near: f32) -> View {
+pub fn view(main: &Globals, car_pos: Vec3, car_rot: Quat, near: f32, scene: (u32, u32)) -> View {
     let (eye, view) = camera(car_pos, car_rot);
-    let vp = proj(near) * view;
+    // (drawn with pix_center 0: half a pixel of its rectangle on the scene - render::half_pixel)
+    let r = rect(scene.0, scene.1);
+    let vp = crate::render::half_pixel(proj(near) * view, r[2], r[3]);
     let mut g = *main;
     g.view_proj = vp.to_cols_array_2d();
     g.inv_view_proj = vp.inverse().to_cols_array_2d();
