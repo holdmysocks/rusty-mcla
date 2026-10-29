@@ -2042,11 +2042,12 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // (the cars' badges, BumpedAlphaChrome - chrome marked uv2.y = 3: alpha 2 x the bump map's alpha - 1, cut out
     // where it is not above 0; the alpha test's own reference is not recorded - approx.)
     // A set-up car's mesh of the blended bucket (vehicles.rs `setup_b1`: the badge's uv2.x = -1, the BumpSpec
-    // family's colour alpha bit 128) has its draw's alpha test instead, GREATER 4/255 (RB_ALPHA_REF 0x3c808081 in
-    // the recorded cruiser), and keeps its alpha to the end (below)
+    // family's colour alpha bit 128) has its draw's alpha test instead, GREATER the material's reference: 4/255 on
+    // the BumpSpec family (RB_ALPHA_REF 0x3c808081, recorded cruiser and 240SX), 0 on the badge (240SX at noon), and
+    // keeps its alpha to the end (below)
     let setup_b1_badge = mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && in.uv2.x < -0.5;
     let setup_b1_bs = mat.mode == 9u && in.uv2.y > 0.5 && obj.params.w > 15.5 && obj.lamp_a[0].w < 0.5 && (u32(round(in.color.a * 255.0)) & 128u) != 0u;
-    if ((setup_b1_badge && 2.0 * albedo.a - 1.0 <= 4.0 / 255.0) || (setup_b1_bs && albedo.a <= 4.0 / 255.0)) {
+    if ((setup_b1_badge && 2.0 * albedo.a - 1.0 <= 0.0) || (setup_b1_bs && albedo.a <= 4.0 / 255.0)) {
         discard;
     }
     if (mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && !setup_b1_badge && albedo.a <= 0.5) {
@@ -3828,7 +3829,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
                 fc_c = 1.0;
             }
-            let cur_c = clamp(clamp(length(dpdx(n)) - 0.15, 0.0, 1.0) + clamp(length(dpdy(n)) - 0.15, 0.0, 1.0), 0.0, 1.0);
+            // (a badge drawn in the blended bucket - PS_BumpedChrome of cars/0x1d68d869 - has no fade on tight curves:
+            // the mirror along its normal x the same collector term x occlusion; its bump-mapped normal (tangent frame x
+            // (2 map.zyx - 1)) is not here, the vertices carry no tangent)
+            let cur_c = select(clamp(clamp(length(dpdx(n)) - 0.15, 0.0, 1.0) + clamp(length(dpdy(n)) - 0.15, 0.0, 1.0), 0.0, 1.0), 0.0, setup_b1_badge);
             lit = mix(env, hemi, cur_c) * (0.125 + 1.18518 * clamp(fc_c - 0.25, 0.0, 1.0)) * in.color1.a;
             spec_k = 0.0;
         } else if (mat.mode == 7u) {
