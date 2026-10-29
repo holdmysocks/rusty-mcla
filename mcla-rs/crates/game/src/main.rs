@@ -9526,13 +9526,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // the windows, as until then.)
             let env_3d = std::env::var("MCLA_ENV_3D").is_ok();
             let env_farhalf = std::env::var("MCLA_ENV_FARHALF").map_or(true, |v| v != "0");
+            let env_far_old = std::env::var("MCLA_ENV_FAR_OLD").is_ok();
+            // (the main camera's back axis in space - the view's own direction, pitch included; F-56244 reads the
+            // viewport's camera matrix row +224)
+            let env_main_back = -{ let d = if self.drive && self.vehicles.player().is_some() { self.chase.look - self.chase.pos } else { self.cam.forward() }; d.normalize_or(Vec3::Z) };
             let env_main_fwd = { let d = if self.drive && self.vehicles.player().is_some() { self.chase.look - self.chase.pos } else { self.cam.forward() }; Vec3::new(d.x, 0.0, d.z).normalize_or(Vec3::Z) };
             let env_farwin = std::env::var("MCLA_ENV_FARWIN").map_or(true, |v| v != "0");
-            let env_list = std::env::var("MCLA_ENV_LIST").is_ok() && (self.frame_no == 60 || self.frame_no == 61);
+            let env_list = std::env::var("MCLA_ENV_LIST").ok().map_or(false, |v| { let f0 = v.trim().parse::<u64>().ok().filter(|&f| f > 1).unwrap_or(60); self.frame_no == f0 || self.frame_no == f0 + 1 }); // (MCLA_ENV_LIST=<frame>: that frame and the next; 1: 60 / 61)
             let cam_main = self.cam.pos;
+            // (the distance F-56244 tests against the tunable 200 - F-82919 from the LOD view's position (+112) to the
+            // sector record's box (+208 / +224): the LARGER of the two plan gaps, x and z, not their hypotenuse. The
+            // LOD view is the main camera moved back along its own back axis by the tunable 10 (F-66201 copies the
+            // viewport's camera and adds +224 x 10; a second view at 20 feeds only the record's +260). Read live off
+            // the original's 109 sector records: +268 against the LOD view's position, 109 of 109 within 0.05 m, and
+            // the LOD view = viewport camera + 10.000 x back axis. MCLA_ENV_FAR_OLD=1: the camera's plan distance.)
+            let env_far_old0 = std::env::var("MCLA_ENV_FAR_OLD").is_ok();
+            let lod_eye = if env_far_old0 { cam_main } else { cam_main + env_main_back * 10.0 };
             let plan = |mn: [f32; 3], mx: [f32; 3]| -> f32 {
-                let (cx, cz) = (cam_main.x.clamp(mn[0], mx[0]), cam_main.z.clamp(mn[2], mx[2]));
-                ((cx - cam_main.x) * (cx - cam_main.x) + (cz - cam_main.z) * (cz - cam_main.z)).sqrt()
+                let (cx, cz) = (lod_eye.x.clamp(mn[0], mx[0]), lod_eye.z.clamp(mn[2], mx[2]));
+                let (gx, gz) = ((cx - lod_eye.x).abs(), (cz - lod_eye.z).abs());
+                if env_far_old0 { (gx * gx + gz * gz).sqrt() } else { gx.max(gz) }
             };
             let sec_dist = |id: usize| world.index.sectors.get(id).map(|s| plan(s.min, s.max));
             if env_list {
@@ -9602,10 +9615,29 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // is missing from the map wherever the second half would show it, and the other way round -
                     // at the gate (camera looking +z) the far blocks to the south, downtown the towers behind the
                     // camera. The port drew every far batch not wholly behind its half. MCLA_ENV_FARHALF=0: as until then.)
+                    // (2026-10-29, decoded: F-56244 sets a sector's pass bits 4 / 8 - the two passes, F-77511 / F-75080 then
+                    // draw its far model WHOLE - when the LOD view's gap to the sector's box (see `plan` above) is under the
+                    // tunable 200 (F-89368 hands it in; the gap by F-82919; pass bits 4 / 8 by F-30389): the sector's sphere
+                    // (box centre, 3D half diagonal) against the plane through the main camera's position across its back
+                    // axis (the viewport's camera matrix +224 / +240, in space): d = (c - camera) . back, |d| < r both, else
+                    // d < 0 (ahead) mask 4, d > 0 mask 8. Live in the original 10 of 10 records' bits. Mask 4 is the
+                    // capture's FIRST pass, whose view matrix has z negated - the half that looks along the world's +z,
+                    // the port's half 1; mask 8 the second, along -z, the port's half 0 (the 15 degree cone of the R8's
+                    // bumper holds far blocks 224 / 221 behind the camera only with them in the port's half 0). The far
+                    // model is not cut at the half's own plane. MCLA_ENV_FAR_OLD=1: the eye's plane, the model's box and
+                    // the cut, as until then.)
                     if !detail && !env_all && env_farhalf {
                         let (mn, mx) = sec.batches.iter().fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |a, b| (a.0.min(b.min), a.1.max(b.max)));
-                        let side = if half == 0 { env_main_fwd } else { -env_main_fwd };
-                        if ((mn + mx) * 0.5 - env_eye).dot(side) + (mx - mn).length() * 0.5 <= 0.0 { continue; }
+                        if env_far_old {
+                            let side = if half == 0 { env_main_fwd } else { -env_main_fwd };
+                            if ((mn + mx) * 0.5 - env_eye).dot(side) + (mx - mn).length() * 0.5 <= 0.0 { continue; }
+                        } else {
+                            let (smn, smx) = world.index.sectors.get(sid).map_or((mn, mx), |s| (Vec3::from(s.min), Vec3::from(s.max)));
+                            let (c, r) = ((smn + smx) * 0.5, (smx - smn).length() * 0.5);
+                            let d = (c - cam_main).dot(env_main_back);
+                            let both = d.abs() - r < 0.0;
+                            if !both && ((half == 1) != (d < 0.0)) { continue; }
+                        }
                     }
                     let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
                     let mut bound = false;
@@ -9619,7 +9651,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let c = (b.min + b.max) * 0.5;
                         let ext = (b.max - b.min).length();
                         let dist = c.distance(env_eye);
-                        let skip = (c - env_eye).dot(axis) + ext * 0.5 < 0.0 || (env_all && (ext < dist * 0.08 || dist > 420.0 + ext)) || (!env_all && (matches!(b.mode, MatMode::StoreSign) || ((env_3d || (!detail && !env_farwin)) && matches!(b.mode, MatMode::Window)))) || (env_no_default && b.shader == "CityDefault");
+                        let skip = ((detail || env_all || !env_farhalf || env_far_old) && (c - env_eye).dot(axis) + ext * 0.5 < 0.0) || (env_all && (ext < dist * 0.08 || dist > 420.0 + ext)) || (!env_all && (matches!(b.mode, MatMode::StoreSign) || ((env_3d || (!detail && !env_farwin)) && matches!(b.mode, MatMode::Window)))) || (env_no_default && b.shader == "CityDefault");
                         // (a detail model: its stored batches one by one)
                         let by_part = detail && !env_all && !b.parts.is_empty();
                         // (the windows' reach is shorter: at np1 the four window batches in the passes have the eye at
