@@ -2872,8 +2872,11 @@ impl Game {
     /// A box or screen that answers the menu buttons is up outside a menu mode: a message box
     /// (the new career's save boxes, NEW GAME / CONTINUE GAME under the start warp), a tutorial
     /// box. The keyboard's Enter / Esc reach these in every mode; the pad's A / B must too (#11).
+    /// Not forms 82 / 83 (CHALLENGE RACER / FLASH HEADLIGHTS): their one prompt is the driving action
+    /// HEADLIGHTS itself, the flash that takes the hookman's challenge (CruisingHookmanCore) - read as a
+    /// menu, the pad's flash lit the lamps and never reached the man (GitHub #22).
     pub fn takes_menu_input(&self) -> bool {
-        self.message_box.is_some() || self.start_warp_on || self.tutorial_box.is_some()
+        self.message_box.is_some() || self.start_warp_on || self.tutorial_box.as_ref().is_some_and(|t| t.0 != "tutorial_challenge_title" && t.0 != "tutorial_flash_title")
     }
 
     /// A call is on the phone with a prompt line (Back answers it: MISSION LOG, ACCEPT).

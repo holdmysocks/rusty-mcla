@@ -5552,17 +5552,29 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
                 // player - CruisingHookmanCore 0x745: PoliceManager_CheckPoliceActivity(1) < 2)
+                // (each flash the gates below drop is logged with the nearest racer: GitHub #22)
+                let pressed = flash && self.drive;
+                let refused = |why: &str, roam: &roamers::Roamers, v: &vehicles::Vehicles, w: &world::World| log::info!("headlights flashed, no challenge ({why}): {}", roam.flash_report(v, w));
                 if flash && self.roam.challenge.is_none() && !matches!(self.police.heat, police::Heat::None) {
+                    if pressed { refused(&format!("police activity {:?}", self.police.heat), &self.roam, &self.vehicles, &world); }
                     flash = false;
                 }
                 if flash && self.roam.near_is_rival && self.roam.challenge.is_none() && std::env::var("MCLA_ROAM_TEST").is_err() {
                     if let Some(text) = self.game.class_restriction() {
+                        if pressed { refused(&format!("class restriction: {text}"), &self.roam, &self.vehicles, &world); }
                         self.game.show_message(&text);
                         flash = false;
                     }
                 }
+                if flash && pressed && !(self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.vehicles.traffic_target > 0 && !self.vehicles.frozen) {
+                    refused(&format!("not cruising: mode {:?}, race {}, traffic {}, frozen {}", self.game.mode, self.game.race.is_some(), self.vehicles.traffic_target, self.vehicles.frozen), &self.roam, &self.vehicles, &world);
+                }
                 if self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.vehicles.traffic_target > 0 && !self.vehicles.frozen {
                     // (no flash while Warper_Warp's climb holds the race about to start - the red light's)
+                    let held_up = self.climb.is_some() || self.climb_end.is_some() || self.climb_wait.is_some() || self.pending_action != MenuAction::None || self.game.bmt_end.is_some();
+                    if flash && pressed && held_up {
+                        refused(&format!("a race about to start or its end: climb {}, pending {:?}, beat me there end {}", self.climb.is_some() || self.climb_end.is_some() || self.climb_wait.is_some(), self.pending_action, self.game.bmt_end.is_some()), &self.roam, &self.vehicles, &world);
+                    }
                     let flash = flash && self.climb.is_none() && self.climb_end.is_none() && self.climb_wait.is_none() && self.pending_action == MenuAction::None;
                     let mut warped = false;
                     // (nothing of the cruise runs while Warper_Warp's climb holds a race about to start: the

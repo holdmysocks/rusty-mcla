@@ -457,6 +457,43 @@ impl Roamers {
         (self.rng % 10000) as f32 / 10000.0
     }
 
+    /// For the log at every flash (GitHub #22): the nearest racer car and each test of Racer_CanFlashHookman
+    /// (`mc4::can_flash` and the clear line) on it.
+    pub fn flash_report(&self, vehicles: &Vehicles, world: &World) -> String {
+        let Some(p) = vehicles.player() else { return "no player car".into() };
+        let (pp, pf, pspeed) = (p.state.pos, p.state.forward(), p.state.speed());
+        let racers = vehicles.cars.iter().filter(|c| c.racer).count();
+        let Some(c) = vehicles.cars.iter().filter(|c| c.racer).min_by(|a, b| a.state.pos.distance(pp).total_cmp(&b.state.pos.distance(pp))) else {
+            return format!("no racer car on the road ({} men, player at {:.1} {:.1} {:.1}, {:.1} m/s)", self.men.len(), pp.x, pp.y, pp.z, pspeed);
+        };
+        let rel = c.state.pos - pp;
+        let d = rel.length();
+        let gap = pspeed - c.state.speed();
+        let ahead = pf.dot(rel.normalize_or_zero());
+        let (from, to) = (pp + Vec3::Y * 0.5, c.state.pos + Vec3::Y * 0.5);
+        let len = from.distance(to);
+        let clear = len < 0.5 || world.collider.raycast(from, (to - from) / len, len).is_none();
+        let who = if c.driver.is_empty() { self.men.iter().find(|m| m.config == c.vinyl_name).map_or_else(|| c.model.name.clone(), |m| m.name.clone()) } else { c.driver.clone() };
+        let mut why = Vec::new();
+        if d > 30.0 {
+            why.push("farther than 30 m");
+        }
+        if gap.abs() > 25.0 {
+            why.push("speed gap over 25 m/s");
+        }
+        if ahead < 0.2 {
+            why.push("not ahead of the player (dot < 0.2)");
+        }
+        if !clear {
+            why.push("something between the cars");
+        }
+        format!(
+            "nearest racer {} ({}) {:.1} m away at {:.1} {:.1} {:.1}, {:.1} m/s against the player's {:.1} (gap {:.1}), ahead {:.2}, line clear {}, {} racer cars - {}",
+            who, c.vinyl_name, d, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.speed(), pspeed, gap, ahead, clear, racers,
+            if why.is_empty() { "flashable".to_string() } else { why.join(", ") }
+        )
+    }
+
     pub fn cancel(&mut self, vehicles: &mut Vehicles) {
         if self.challenge.take().is_some() {
             for c in vehicles.cars.iter_mut().filter(|c| c.racer) {
@@ -894,6 +931,7 @@ impl Roamers {
             }
             // (flashing the headlights again skips the run: straight to the race, no reputation)
             if flash && ch.time > 0.5 {
+                log::info!("headlights flashed on the run to the line: straight to the race");
                 game.opt_x.arcade.bmt_left.set(None);
                 let race = ch.race;
                 self.challenge = None;
@@ -1025,8 +1063,8 @@ impl Roamers {
                 best = Some((i, d));
             }
         }
-        if flash && std::env::var("MCLA_ALT_LOG").is_ok() {
-            log::info!("roamers: flash - {} racer cars, in reach {:?}", vehicles.cars.iter().filter(|c| c.racer).count(), best.map(|b| (vehicles.cars[b.0].vinyl_name.clone(), b.1)));
+        if flash {
+            log::info!("headlights flashed: {}; taken by {:?}", self.flash_report(vehicles, world), best.map(|b| vehicles.cars[b.0].vinyl_name.clone()));
         }
         let Some((ri, _)) = best else { return None };
         let man = self.men.iter().find(|m| m.config == vehicles.cars[ri].vinyl_name).cloned();

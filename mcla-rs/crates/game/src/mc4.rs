@@ -17150,15 +17150,18 @@ mod tests {
         g.mc4_s23_tick(0.016, S23In { near: true, ..Default::default() });
         assert_eq!(g.tutorial_box.as_ref().map(|b| b.0.as_str()), Some("tutorial_challenge_title"));
         assert!(!g.mc4_tut_continue("tutorial_challenge_title"));
+        assert!(!g.takes_menu_input(), "form 82 up: the pad still drives - its flash takes the man (#22)");
         g.mc4_s23_tick(0.016, S23In { near: true, flashed: true, ..Default::default() });
         assert!(g.tutorial_box.is_none() && g.mc4_tut_seen("tTFL") && !g.mc4_tut_seen("tTFB"));
         g.mc4_s23_tick(0.016, S23In { near: false, ..Default::default() });
         g.mc4_s23_tick(0.016, S23In { near: true, ..Default::default() });
         assert_eq!(g.tutorial_box.as_ref().map(|b| b.0.as_str()), Some("tutorial_flash_title"));
+        assert!(!g.takes_menu_input());
         g.mc4_s23_tick(0.016, S23In { near: false, ..Default::default() });
         assert!(g.tutorial_box.is_none() && !g.mc4_tut_seen("tTFB"), "out of reach: closed, not seen");
         // (RACE_GH_02's lesson: the ease to pause with box 76, the speeches, back after box 77)
         g.tutorial_box = Some(("tutorial_mission_log_title".into(), "tutorial_mission_log_desc".into(), 0.3, 600.0));
+        assert!(g.takes_menu_input(), "other tutorial boxes answer the menu buttons (#11)");
         g.career.stats.insert("tut:mission_log".into(), 1);
         g.mc4_s23_tick(0.016, S23In::default());
         assert_eq!(g.opt_x.s23.lesson, 1);
