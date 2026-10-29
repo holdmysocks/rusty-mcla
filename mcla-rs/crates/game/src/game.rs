@@ -8069,8 +8069,67 @@ impl Game {
                     // (the base builder F-72415 for every menu class - the local racer's (RACE_GH_06's, the cruising
                     // and story men's), the wager's, ...: offline RO_Replay 1; RO_Garage = vt+28 && !online, which ends in the
                     // gate below; the freeway menu turns both off)
+                    // (the base's favourites, F-46193: on for every event kind but freeway 5, delivery 6, payback 7,
+                    // red light 11 and beat me there 13 / 14, and not for a race of the editor (+3140); the race's
+                    // content bit (+144 against the mask 0x13D) always passes. The local racer's builder F-98682 and
+                    // the wager's leave the row as it is)
+                    if !self.current_race.and_then(|i| self.race_defs.get(i)).map_or(true, |d| d.id.starts_with("user/")) {
+                        let fav = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| self.race_favs.iter().any(|f| f.eq_ignore_ascii_case(&d.id)));
+                        ro.push((if fav { s("pause_remove_favorites", "REMOVE RACE FROM FAVORITES") } else { s("pause_add_favorites", "ADD RACE TO FAVORITES") }, 11));
+                    }
                     ro.push((s("pause_view_replay", "VIEW REPLAY"), 12));
                     ro.push((s("pause_go_to_garage", "GO TO GARAGE"), 13));
+                }
+                // (the classes with their own race-over rows over the base F-72415, in RaceOverTab's order:
+                // a delivery's (mcDeliveryMenu F-69890, labels F-84417): NEXT DELIVERY (RO_NextRace: vt+36 is 1, then
+                // offline and not GOAL ATTACK), QUIT DELIVERY (RO_AbortRace), DELIVER AGAIN (RO_Restart, only with the car
+                // wrecked or bFailure, F-51353); no RETURN TO CRUISE, results, favourites, replay or garage (vt+28 is 0).
+                // A payback's (F-33129, F-41559): RESTART PAYBACK, PAYBACK RESULTS and RO_Garage set on whatever the
+                // gate says, labelled QUIT PAYBACK; no RETURN TO CRUISE, no replay. A time trial's (F-54744, F-76497):
+                // RETURN TO CRUISE, RO_Restart unless bComplete (F-27940) - RACE AGAIN after a failure, else RESTART TIME
+                // TRIAL -, TIME TRIAL RESULTS, the favourites, VIEW REPLAY; no garage (vt+28 is 0). The freeway's
+                // (F-58226): replay and results off, RO_Garage = the car wrecked (no gate), no RACE AGAIN (the base's
+                // RO_Restart 0). A time trial's bComplete / bFailure is its target beaten or not (`career.tt_last`)
+                let class_kind = self.race.as_ref().map(|r| r.kind);
+                let tt_class = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| self.career.is_time_trial(&d.id) || self.mc4_tt_of(&d.id).is_some());
+                let freeway_class = self.active_def.as_ref().map_or(false, |d| d.id == crate::althk::FREEWAY_RACE_ID);
+                let class_wrecked = vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
+                if movie && !arcade_over {
+                    if class_kind == Some(RaceKind::Delivery) {
+                        let failed = self.race.as_ref().map_or(false, |r| r.failed.is_some());
+                        ro = Vec::new();
+                        if !self.goal_attack {
+                            ro.push((s("pause_delivery_next", "NEXT DELIVERY"), 23));
+                        }
+                        ro.push((s("pause_quit_delivery", "QUIT DELIVERY"), 24));
+                        if class_wrecked || failed {
+                            ro.push((s("pause_deliver_again", "DELIVER AGAIN"), 1));
+                        }
+                    } else if class_kind == Some(RaceKind::Payback) {
+                        ro = vec![
+                            (s("pause_restart_payback", "RESTART PAYBACK"), 1),
+                            (s("pause_payback_results", "PAYBACK RESULTS"), 9),
+                            (s("pause_quit_payback", "QUIT PAYBACK"), 13),
+                        ];
+                    } else if tt_class {
+                        let fav = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| self.race_favs.iter().any(|f| f.eq_ignore_ascii_case(&d.id)));
+                        ro = vec![(s("pause_return_cruise", "RETURN TO CRUISE"), 2)];
+                        match self.career.tt_last {
+                            Some(true) => {}
+                            Some(false) => ro.push((s("pause_race_again", "RACE AGAIN"), 1)),
+                            None => ro.push((s("pause_restart_timetrial", "RESTART TIME TRIAL"), 1)),
+                        }
+                        ro.extend([
+                            (s("pause_time_trial_results", "TIME TRIAL RESULTS"), 9),
+                            (if fav { s("pause_remove_favorites", "REMOVE RACE FROM FAVORITES") } else { s("pause_add_favorites", "ADD RACE TO FAVORITES") }, 11),
+                            (s("pause_view_replay", "VIEW REPLAY"), 12),
+                        ]);
+                    } else if freeway_class {
+                        ro = vec![(s("pause_return_cruise", "RETURN TO CRUISE"), 2)];
+                        if class_wrecked {
+                            ro.push((s("pause_go_to_garage", "GO TO GARAGE"), 13));
+                        }
+                    }
                 }
                 // (a red light race's - mcRedLightMenu, F-90179 over the base F-72415; work/hookmen2
                 // `re/raceover.md`, `cap/rl_19`): RETURN TO CRUISE; RACE AGAIN only with the car wrecked
@@ -8145,7 +8204,9 @@ impl Game {
                 // (GO TO GARAGE, vt+28 of every race-over menu - F-59601, F-98337, F-58712, F-63937: the race over (or the car
                 // wrecked), then the gate F-88974; the local racer's (F-58712) never for event kind 12, RACE_GH_06's race (its story script sets
                 // +3096 = 12))
-                if !self.go_garage_gate() || self.rgh06_race() {
+                // (the payback's and the freeway's RO_Garage are their builders' own, without the gate)
+                let own_garage = movie && !arcade_over && (class_kind == Some(RaceKind::Payback) || freeway_class);
+                if (!self.go_garage_gate() || self.rgh06_race()) && !own_garage {
                     ro.retain(|r| r.1 != 13);
                 }
                 // (chased: RO_ReturnToCruise reads RETURN TO CHASE - F-43165; greyed with the others, `ro_grey`)
@@ -8411,6 +8472,39 @@ impl Game {
                     Some(2) if movie && self.series.is_some() && self.next_event_race.is_some() => {
                         self.series_ask_kind = 1;
                         self.series_ask = Some(0);
+                    }
+                    // (a delivery's NEXT DELIVERY: the race being over, F-72041 sets raceOverCommand nextRace at once
+                    // (F-25170; the Dialog_Title_NextDelivery box is the pause menu's) and delivery_hangout_core warps
+                    // with DEFAULT_WITH_CUT to another of its deliveries at the same difficulty (0x27aa..0x27c9))
+                    Some(23) => {
+                        self.menu_sel = 0;
+                        if let Some(i) = self.next_delivery() {
+                            self.current_race = Some(i);
+                            self.warp_with_cut = true;
+                            action = MenuAction::StartRace;
+                        }
+                    }
+                    // (DELIVER AGAIN: raceOverCommand restart at once (F-90541), the core's DEFAULT_WITH_CUT 0x2844..0x2863)
+                    Some(1) if class_kind == Some(RaceKind::Delivery) => {
+                        self.menu_sel = 0;
+                        self.warp_with_cut = true;
+                        action = MenuAction::RestartRace;
+                    }
+                    // (a time trial's RO_Restart asks first: F-43711 opens the YES / NO box with vt+96 / vt+92 - F-83838 /
+                    // F-57232: Dlg_Title_TimeTrial_RaceAgain after a failure, else _Restart; its YES restarts)
+                    Some(1) if tt_class && self.flash_popup.is_some() => {
+                        let again = self.career.tt_last == Some(false);
+                        self.open_confirm(
+                            if again { "Dlg_Title_TimeTrial_RaceAgain" } else { "Dlg_Title_TimeTrial_Restart" },
+                            if again { "Dlg_Desc_TimeTrial_RaceAgain" } else { "Dlg_Desc_TimeTrial_Restart" },
+                            MenuAction::RestartRace,
+                        );
+                    }
+                    // (a time trial's RETURN TO CRUISE asks nothing: F-43711 sets raceOverCommand returnToCruise and
+                    // closes the menu)
+                    Some(2) if tt_class => {
+                        self.menu_sel = 0;
+                        action = MenuAction::StartFreeRoam;
                     }
                     // (an ordinary race's RETURN TO CRUISE asks the repair question too - form 71,
                     // Dialog_Title_ReturnToCruise, F-52365 - after every race (the race-over test
@@ -10687,6 +10781,24 @@ impl Game {
     }
 
     /// A YES / NO box of the pause / race-over menus (F-48904, its YES / NO layout; B cancels)
+    /// The next delivery of a district's list (South Central's or the rest's), taken in turn - *(approx.)* the delivery
+    /// core picks a random unused one of its list (0x129f..0x13bd: GET_RANDOM_INT_IN_RANGE, the used bits, the mode
+    /// restarted when none is left)
+    fn delivery_pick(&mut self, south: bool) -> Option<usize> {
+        let list: Vec<usize> = (0..self.race_defs.len()).filter(|&i| self.race_defs[i].race_type == "Delivery" && (self.race_defs[i].district == "SouthCentral") == south).collect();
+        let n = self.career.stats.get("delivery_at").copied().unwrap_or(0).max(0) as usize;
+        let i = *list.get(n % list.len().max(1))?;
+        self.career.stats.insert("delivery_at".into(), (n + 1) as i64);
+        Some(i)
+    }
+
+    /// NEXT DELIVERY after a delivery: the next of the same district's list, at the same difficulty (`event_diff`
+    /// stays)
+    fn next_delivery(&mut self) -> Option<usize> {
+        let south = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| d.district == "SouthCentral");
+        self.delivery_pick(south)
+    }
+
     fn open_confirm(&mut self, title: &str, description: &str, confirm: MenuAction) {
         let def = crate::flash_ui::MessageBoxDef { title: title.into(), description: description.into(), options: vec![("confirm_yes".into(), "Common_Yes".into()), ("confirm_no".into(), "Common_No".into())] };
         self.message_box = Some((def, 0, confirm));
@@ -12537,10 +12649,7 @@ impl Game {
             }
         } else if enter && delivery {
             // the next delivery of the district's list, at the difficulty chosen
-            let list: Vec<usize> = (0..self.race_defs.len()).filter(|&i| self.race_defs[i].race_type == "Delivery" && (self.race_defs[i].district == "SouthCentral") == key.starts_with("sc_")).collect();
-            let n = self.career.stats.get("delivery_at").copied().unwrap_or(0).max(0) as usize;
-            if let Some(&i) = list.get(n % list.len().max(1)) {
-                self.career.stats.insert("delivery_at".into(), (n + 1) as i64);
+            if let Some(i) = self.delivery_pick(key.starts_with("sc_")) {
                 self.current_race = Some(i);
                 self.event_diff = Some(self.hangout_diff);
                 leave(self);
@@ -13279,9 +13388,12 @@ impl Game {
     }
 
     /// A race-over row greyed while chased (F-43165: RO_Restart, RO_AbortRace, RO_Replay,
-    /// RO_ReturnToCruise; F-98682: RO_NextRace) - the port's row codes of those.
+    /// RO_ReturnToCruise; F-98682: RO_NextRace) - the port's row codes of those. The base builder F-72415 blocks
+    /// RO_NextRace, RO_Results and RO_Garage (and PM_NextRace, PM_Results, PM_WarpGarage) on F-54212 alone, without
+    /// GOAL ATTACK's exception: NEXT rows, RACE / SERIES / PAYBACK / TIME TRIAL RESULTS, GO TO GARAGE (the payback's
+    /// QUIT PAYBACK is its RO_Garage), NEXT DELIVERY.
     pub fn ro_grey(&self, code: u8) -> bool {
-        self.chased_menu() && matches!(code, 0 | 1 | 2 | 10 | 12 | 14 | 20)
+        (self.chased_menu() && matches!(code, 0 | 1 | 2 | 10 | 12 | 14 | 20 | 24)) || (self.police_on_player && matches!(code, 0 | 9 | 10 | 13 | 20 | 23))
     }
 
     pub fn series_decided(&self) -> bool {
@@ -13838,6 +13950,35 @@ mod tests {
 
     /// F-88581: the delivery's panel - TIME stamped when not over the target, DNF without a time,
     /// the damage cut to an integer percent, its stamp under 0.9999
+    #[test]
+    fn race_over_rows_blocked_when_chased() {
+        let mut g = Game::new(Vec::new(), 0);
+        assert!(!(0..30).any(|c| g.ro_grey(c)));
+        g.police_on_player = true;
+        // (F-43165's rows and the base's RO_NextRace / RO_Results / RO_Garage, NEXT DELIVERY, QUIT DELIVERY)
+        for c in [0, 1, 2, 9, 10, 12, 13, 14, 20, 23, 24] {
+            assert!(g.ro_grey(c), "{c}");
+        }
+        // (the favourites, RACE BACK and RETURN TO HANGOUT stay)
+        assert!(!g.ro_grey(11) && !g.ro_grey(21) && !g.ro_grey(22));
+        // (in a GOAL ATTACK race only the base's rows)
+        g.goal_attack = true;
+        g.race = Some(super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() });
+        assert!(g.ro_grey(9) && g.ro_grey(13) && g.ro_grey(0) && !g.ro_grey(2) && !g.ro_grey(12) && !g.ro_grey(24));
+    }
+
+    #[test]
+    fn delivery_pick_in_turn() {
+        let mut g = Game::new(Vec::new(), 0);
+        assert_eq!(g.delivery_pick(false), None);
+        for (id, district) in [("a", "Hollywood"), ("b", "SouthCentral"), ("c", "Beaches")] {
+            g.race_defs.push(crate::races::RaceDef { id: id.into(), race_type: "Delivery".into(), district: district.into(), ..Default::default() });
+        }
+        assert_eq!((g.delivery_pick(false), g.delivery_pick(false), g.delivery_pick(true)), (Some(0), Some(2), Some(1)));
+        g.current_race = Some(1);
+        assert_eq!(g.next_delivery(), Some(1));
+    }
+
     #[test]
     fn delivery_results_panel() {
         let mut g = Game::new(Vec::new(), 0);
