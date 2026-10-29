@@ -471,18 +471,19 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
         }
     };
     let player = vehicles.cars.iter().find(|c| c.is_player);
-    let racing = game.race_current();
     // service stations: always listed
     for (i, g) in GAS_STATIONS.iter().enumerate() {
         let mut e = Element::at(Kind::Gas, Vec3::from(*g));
         e.uid = 700 + i as u32;
         push(e);
     }
-    // (Script_SuspendAllOpponents: missions and races take the places and the hookmen off the
-    // map; a new career shows them once the garage is reached - approx., the state scripts'
-    // start is not modelled)
+    // (Script_SuspendAllOpponents, set whenever the game leaves Cruising_Offline - a race, a beat me
+    // there run, a hangout: the place cores and the cruising hookmen's cores take their elements away,
+    // `Game::suspend_all_opponents`; a new career shows them once the garage is reached - approx., the
+    // state scripts' start is not modelled)
     let career = game.career.loaded();
-    let places = !racing && (!career || game.career.reached("GARAGE_HOLLYWOOD"));
+    let suspended = game.suspend_all_opponents();
+    let places = !suspended && (!career || game.career.reached("GARAGE_HOLLYWOOD"));
     let pick = game.gps_pick;
     if places {
         for (uid, kind, p) in PLACES.iter().filter(|x| !matches!(x.1, Kind::Delivery | Kind::Payback)) {
@@ -497,8 +498,9 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     }
     // hookmen: the cruising slots' men (`Roamers::marks`: place, heading, difficulty) - the local
     // hookman (subtype 3, icon 4 = the flag); the current mission's man (subtype 2) with the
-    // mission's pulse and "!" cross-fade, selected while he is the GPS target
-    if !racing {
+    // mission's pulse and "!" cross-fade, selected while he is the GPS target (off the map while suspended:
+    // CruisingHookmanCore 0x3d9..0x46c, the story men's scripts alike)
+    if !suspended {
         let man = game.rival_mark.as_ref().map(|m| m.0);
         // (the slot men come with `map_men` when it is filled; `cruiser_marks` otherwise)
         let have_men = game.map_men.iter().any(|m| m.2 == 3);

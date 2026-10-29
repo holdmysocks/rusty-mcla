@@ -5436,8 +5436,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (Cruising.sc.xml, Cruising_Offline: on enter sidekickClean, sidekickDelay and sidekickResume in 8 s; on exit the
             // resume removed, sidekickDelay, sidekickInterrupt (the call up dropped, F-51256) and sidekickClean. The pause
-            // menu and the scenes are no state of their own there)
-            let cruising = matches!(self.game.mode, Mode::FreeRoam | Mode::Paused) && self.game.race.is_none() && self.game.hangout_key.is_none() && !self.game.fresh_game;
+            // menu and the scenes are no state of their own there; a beat me there run is Racing_BeatMeThere)
+            let cruising = self.game.cruising_offline();
             if cruising != self.phone_cruise {
                 self.phone_cruise = cruising;
                 self.phone_hold = true;
@@ -8680,8 +8680,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
             self.vehicles.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
             self.peds.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
-            // (and for the wheels' side test - F-57869)
-            self.vehicles.set_wheel_eye(eye);
             // (the original's renderer flag of F-31789, set while the game is paused: the plants' model angle x 0.9)
             crate::props::set_paused(self.game.mode == Mode::Paused);
         }

@@ -13643,6 +13643,20 @@ impl Game {
         self.race.is_some() || self.bmt_goal.is_some()
     }
 
+    /// The game state Cruising_Offline (`tune/gamestate/Cruising.sc.xml`): free roam (the pause menu is no state
+    /// of its own) with no race, no beat me there run (its event mc.beatMeThereRace goes to Racing_BeatMeThere) and
+    /// no hangout; a new career's start is no cruise yet
+    pub fn cruising_offline(&self) -> bool {
+        matches!(self.mode, Mode::FreeRoam | Mode::Paused) && self.race.is_none() && self.bmt_goal.is_none() && self.hangout_key.is_none() && !self.fresh_game
+    }
+
+    /// Registry `Script_SuspendAllOpponents`: Cruising_Offline's onenter sets it 0, its onexit 1. The place cores
+    /// (garages, hangouts, delivery, payback) and the cruising hookmen's cores poll it: set, they take their map
+    /// element away (and a local hangout its parked cars and people); clear, they put them back
+    pub fn suspend_all_opponents(&self) -> bool {
+        !self.cruising_offline()
+    }
+
     /// The mission's man is the GPS target (his mission set, nothing else picked)
     pub fn gps_on_man(&self) -> bool {
         self.gps_pick.is_none() && self.mission_target.is_some() && self.mission_target == self.career.rival_mission()

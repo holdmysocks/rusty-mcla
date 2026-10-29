@@ -9,9 +9,11 @@
 //!   (flat) from its centre, then AddAmbientToLayout(name i, place i, heading i) for i = 2 ..
 //!   count - 1 of its set-up's table (+396 count, +476 places, +672 headings in degrees, +1080
 //!   names; a local set-up's from +3280); all removed when the core ends. (The local core also
-//!   takes them away while Script_SuspendAllOpponents is set and puts them back once the player
-//!   is that far again; only sub_82666850 - the DamagedOut dialog's callback - sets it: not
-//!   ported.)
+//!   takes them away while Script_SuspendAllOpponents is set - 0x4ab..0x5cb, at the top of its
+//!   loop - and puts them back once it is clear and the player is that far again, 0x5d3..0x6bf.
+//!   The game-state chart sets it whenever Cruising_Offline is left: `Game::suspend_all_opponents`.
+//!   The core of the hangout the player is in is in its own entry flow then, not at its loop's
+//!   top, so its items stay.)
 //! - career/Story/0x81d83d96 ("beat me there"): AddRandomCarToLayout(group 0, ...) x 15 at the
 //!   strip garage while cut_story_rep_on_strip_garage plays, removed when it ends.
 
@@ -87,13 +89,23 @@ impl Layout {
         // (test hooks: MCLA_LAYOUT_CORE=<hangout key> runs that core, MCLA_LAYOUT_STRIP=1 the
         // strip garage scene's cars)
         let forced = std::env::var("MCLA_LAYOUT_CORE").unwrap_or_default();
+        let suspended = game.suspend_all_opponents();
         for (k, h) in HANGOUT_ITEMS.iter().enumerate() {
             let run = game.mc4_place_open(h.key) || forced == h.key;
             let core = &mut self.cores[k];
             if run && !core.running {
                 core.poll = 0.0;
             }
-            if !run {
+            let hold = h.local && suspended && game.hangout_key.as_deref() != Some(h.key);
+            if run && hold {
+                if let Some(v) = core.handles.take() {
+                    for x in v {
+                        vehicles.remove_layout_item(x);
+                    }
+                    log::info!("layout: {} core suspended, its items removed", h.key);
+                }
+                core.poll = 0.0;
+            } else if !run {
                 if let Some(v) = core.handles.take() {
                     for x in v {
                         vehicles.remove_layout_item(x);
