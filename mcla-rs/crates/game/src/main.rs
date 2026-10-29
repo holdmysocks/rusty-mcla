@@ -612,6 +612,8 @@ struct App {
     /// tune/camera/default.camfx, read once
     cam_fx: Option<boomcam::CamFx>,
     pad_horn: bool,
+    /// HEADLIGHTS held on the pad (the input's +40 bit 0x2, F-56064)
+    pad_flash: bool,
     /// the pad's actions that were down a frame ago (by the active map), a shift asked for and
     /// not yet handed to the car, and the last shift with its time
     pad_act_prev: u32,
@@ -1115,6 +1117,7 @@ impl App {
             sst_view: 0.0,
             cam_fx: None,
             pad_horn: false,
+            pad_flash: false,
             pad_act_prev: 0,
             pad_shift: 0,
             pad_shift_last: None,
@@ -1953,6 +1956,7 @@ impl App {
     /// right the next song, Start pauses, Back opens the map); in the menus the D-pad or the
     /// left stick moves, A picks and B goes back.
     fn gamepad_buttons(&mut self) {
+        self.pad_flash = false;
         let (now, look, pressed) = {
             let Some(g) = self.gamepad.as_mut() else { return };
             use pads::{Axis as A, Button as B, PadEvent as E};
@@ -2034,6 +2038,7 @@ impl App {
         self.pad_look = look;
         self.pad_look_up = 0.0;
         self.pad_horn = now >> 9 & 1 != 0;
+        self.pad_flash = now >> 3 & 1 != 0;
         let p = |i: u32| hit >> i & 1 != 0;
         if hit != 0 {
             self.idle = 0.0;
@@ -2101,6 +2106,7 @@ impl App {
             self.pad_pan_side = if pl { -1.0 } else if pr { 1.0 } else { 0.0 };
             self.pad_cam_ud = a(10) || a(11);
             self.pad_horn = down >> 18 & 1 != 0;
+            self.pad_flash = down >> 9 & 1 != 0;
             self.pad_pending |= acted & 127;
             if !self.drive {
                 return;
@@ -5403,6 +5409,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.phone_prompt = self.mission_log_prompt();
                 }
             }
+            // (HEADLIGHTS held - pad or key - is the player car's flash lamp target: the high beams, F-44589)
+            let held = (self.pad_flash || self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::HEADLIGHTS, |k| self.input.down(k))) && self.drive && !self.game.in_menu();
+            if held != self.vehicles.player_flash {
+                let lv = self.vehicles.player().map(|c| (c.amb_lamps.s[3], c.amb_lamps.lens));
+                log::info!("headlights: high beams {} (flash state, lamp levels {:?})", if held { "on" } else { "off" }, lv);
+            }
+            self.vehicles.player_flash = held;
             // ---- roaming racers ----
             crate::ticktimes::mark(crate::ticktimes::S::Roamers);
             {
@@ -8647,7 +8660,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let dir = (fwd * 0.7455 - up * 0.6665).normalize();
                         // (their colour is the car's own: 3 x the head lamp's bulb x cover of its set-up's
                         // LightTune - R8 (1.85, 2.39, 3.0), Saleen S281 (2.16, 2.06, 1.86); the same at every hour)
-                        let hl_col = self.vehicles.lamp_rows(c).map_or_else(|| render::car_lamps::R8.head_light(), |t| t.head_light());
+                        // (held HEADLIGHTS turns it towards the high beam's: the flash state, F-19475)
+                        let fl = c.amb_lamps.s[3];
+                        let hl_col = self.vehicles.lamp_rows(c).map_or_else(|| render::car_lamps::R8.head_light_flash(fl), |t| t.head_light_flash(fl));
                         for side in [-1.0f32, 1.0] {
                             // (where the game puts them, from the lamps' positions in c88..c90 against the
                             // car's own matrix in two captures, fix_night and car_n: 3.2 m ahead of the

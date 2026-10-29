@@ -240,6 +240,8 @@ pub struct CarIn {
     pub wipeout: bool,
     pub two_wheels: bool,
     pub horn: bool,
+    /// the high beams (the flash target, HEADLIGHTS held)
+    pub high_beam: bool,
     pub nitro_firing: bool,
     pub nitro_empty: bool,
     /// the slipstream turbo (car +668, mcCarSSTurbo): its level (+36) and whether it burns (+40); None = no object
@@ -281,6 +283,9 @@ pub struct CarSounds {
     turbo: Vec<u8>,
     damage_obj: Vec<u8>,
     horn_hash: u32,
+    /// ONESHOT_PARAMS +68 HIGHBEAMS_ON, +72 HIGHBEAMS_OFF; the state last played (+1953)
+    beam_hash: [u32; 2],
+    beam_prev: bool,
     nitro_obj: Vec<u8>,
     police: Vec<u8>,
     w: [WheelRec; 5],
@@ -354,6 +359,8 @@ impl CarSounds {
             turbo: obj(46, "TUNERS_TURBO"),
             damage_obj: obj(54, "TUNERS_DAMAGE"),
             horn_hash: be_u32(&oneshot, 64),
+            beam_hash: [be_u32(&oneshot, 68), be_u32(&oneshot, 72)],
+            beam_prev: false,
             whoosh_hash: be_u32(&oneshot, 92),
             whoosh_at: -10.0,
             nitro_obj: obj(42, "TUNERS_NITRO"),
@@ -451,6 +458,7 @@ impl CarSounds {
         // (the base update calls vt+132 after the gear shift F-33101, before the horn F-21226 and the nitro vt+68)
         self.slipstream(lib, mats, c);
         self.horn(lib, c);
+        self.high_beams(lib, c);
         self.nitrous(lib, mats, c, cam_mode);
         self.damage(lib, c, cam_mode);
         self.prev_shift = c.shift;
@@ -738,6 +746,17 @@ impl CarSounds {
             keep(lib, &mut self.horn, self.horn_hash, req);
         } else {
             stop(lib, &mut self.horn);
+        }
+    }
+
+    /// F-38670: a one-shot when the high-beam state changes - HIGHBEAMS_ON or HIGHBEAMS_OFF
+    fn high_beams(&mut self, lib: &mut SoundLib, c: &CarIn) {
+        if c.high_beam != self.beam_prev {
+            let h = self.beam_hash[if c.high_beam { 0 } else { 1 }];
+            if !is_null(h) {
+                lib.play_hash(h, self.req(c.pos));
+            }
+            self.beam_prev = c.high_beam;
         }
     }
 
@@ -1902,6 +1921,7 @@ impl Fleet {
             }
             c.wet = wet;
             c.horn = ctl.horn && !p.cop;
+            c.high_beam = v.player_flash;
             c.nitro_empty = ctl.nitro_empty;
             c.parts = ctl.parts;
             if let Some((s, l)) = ctl.engine {

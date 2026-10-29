@@ -430,18 +430,20 @@ pub fn traffic_state(s: [f32; 5], att: u8) -> f32 {
 
 /// F-96984's state table by attachment for a set-up car (mcCar: the player, rivals, cops), from
 /// its eased states in `AmbLamps::s` (head, brake, siren, -, reversing; F-10129): 0 brake 0.25 head +
-/// 0.75 brake, 1 tail 0.25 head, 2 brake, 3 head + flash (sat), 5 and 6 head, 7 .. 9 the siren state (+308,
-/// the police lamps 13 / 14), 11 reversing, the rest 0.
-/// The flash state (+248, attachments 3 / 4) has no target but the "always rain" debug byte
-/// 0x8288E5B8, so 0; attachment 5 is the state at +188, eased from the head state's target, so equal
-/// to it.
+/// 0.75 brake, 1 tail 0.25 head, 2 brake, 3 head + flash (sat), 4 flash, 5 and 6 head, 7 .. 9 the siren
+/// state (+308, the police lamps 13 / 14), 11 reversing, the rest 0.
+/// The flash state (+248, `s[3]`) eases to the target +244 that the player's pad input writes from
+/// HEADLIGHTS held (F-44589; F-10129 overwrites it only under the "always rain" debug byte); attachment 5
+/// is the state at +188, eased from the head state's target, so equal to it.
 pub fn setup_state(s: [f32; 5], att: u8) -> f32 {
-    let [h, b, siren, _, r] = s;
+    let [h, b, siren, flash, r] = s;
     match att {
         0 => 0.25 * h + 0.75 * b,
         1 => 0.25 * h,
         2 => b,
-        3 | 5 | 6 => h,
+        3 => (h + flash).min(1.0),
+        4 => flash,
+        5 | 6 => h,
         7..=9 => siren,
         11 => r,
         _ => 0.0,
@@ -780,6 +782,9 @@ pub struct Vehicles {
     /// the player's car held as on the grid (CopPullover: Racer_PreRaceBurnout over the officer's walk) - its
     /// pedals go through under the hold, so it can be spun to bolt
     pub player_hold: bool,
+    /// HEADLIGHTS held (the pad input's +40 bit 0x2, F-56064): F-44589 writes it as the player car's flash
+    /// lamp target (+244) each update - the high beams (`setup_state` 3 and 4) and their click (F-38670)
+    pub player_flash: bool,
     /// the player's chassis scramble word (+624, Racer_SetScrambleInputFlags): pedals forced after the pad's copy
     /// (`scramble`)
     pub player_scramble: u32,
@@ -4478,6 +4483,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     pub fn setup_lamps(&mut self, lights_due: bool, dt: f32) {
         let lights_off = self.lights_off;
         let sirens = self.sirens;
+        let flash = self.player_flash;
         let player_rows = self.player_lamps.clone();
         for c in self.cars.iter_mut() {
             let rows = match (&player_rows, c.is_player) {
@@ -4494,7 +4500,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             };
             // (all three need the car's switch +597; Stealth / MegaStealth - F-54047 - puts them out)
             let on = !c.amb_lamps.off && !c.pu_stealth;
-            let flags = [on && lights_due && !lights_off, on && brake > 0.001, false, false, on && c.state.gear < 0];
+            // (the flash, +240 at rate 9: the pad input's target, not switched by +597 - F-44589)
+            let flags = [on && lights_due && !lights_off, on && brake > 0.001, false, c.is_player && flash, on && c.state.gear < 0];
             // (the siren state +300, rate 18: its target +304 is what the car's police tactic writes each update -
             // F-63286 -> F-78189, 1 in pull-over / pursuit / arrow trap, cleared at the tactic's end; the
             // port's police has one state for all its cars: `sirens` on a cruiser)
@@ -5541,6 +5548,11 @@ mod ambient_paint_tests {
         for (g, w) in b.iter().zip(want) {
             assert!((g - w).abs() < 1e-3, "{:?}", b);
         }
+        // (HEADLIGHTS held by day: the flash lights attachment 4 and sat(head + flash) 3; F-96984)
+        let f = lv([0.0, 0.0, 0.0, 1.0, 0.0]);
+        let want = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert_eq!(f, want.to_vec());
+        assert_eq!(lv([1.0, 0.0, 0.0, 0.5, 0.0])[3], 1.0);
     }
 }
 

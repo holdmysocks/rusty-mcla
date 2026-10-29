@@ -161,6 +161,21 @@ impl LampRows {
         [3.0 * b[0] * c[0], 3.0 * b[1] * c[1], 3.0 * b[2] * c[2]]
     }
 
+    /// The same with the flash state (+248): F-19475 mixes the light set's head entry (+144, id 3) and
+    /// high beam (+160, id 4) as (1 - flash) x head + flash x high beam.
+    pub fn head_light_flash(&self, flash: f32) -> [f32; 3] {
+        const HEAD: usize = 3;
+        const HIGH: usize = 4;
+        let (b, c) = (self.bulb[HEAD], self.cover[HEAD]);
+        let (hb, hc) = (self.bulb[HIGH], self.cover[HIGH]);
+        let f = flash.clamp(0.0, 1.0);
+        if f == 0.0 {
+            return self.head_light();
+        }
+        let mix = |k: usize| 3.0 * ((1.0 - f) * (b[k] * c[k]) + f * (hb[k] * hc[k]));
+        [mix(0), mix(1), mix(2)]
+    }
+
     /// The colour a lit lamp shines with (bulb through cover), brought to a full channel.
     pub fn lit(&self, id: usize) -> [f32; 3] {
         let i = id.min(IDS - 1);
