@@ -552,6 +552,8 @@ pub fn voice_of(data_dir: &str, set: &str) -> Option<String> {
         m
     });
     let key = set.to_ascii_uppercase().replace("_LOD02_", "_").replace("_LOD2_", "_");
+    // (the hi-res in-car set `drv_mb_007_set_h`, cinedriver::DRIVER_MAPS, is the same character)
+    let key = key.strip_suffix("_H").map_or(key.clone(), |k| k.to_string());
     map.get(&key).filter(|p| !p.starts_with("PLAYER") && !p.starts_with("MISSING")).cloned()
 }
 

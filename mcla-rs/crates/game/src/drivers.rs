@@ -31,6 +31,8 @@ pub struct Seat<'a> {
     pub bike: bool,
     /// step 19d: the character set this driver is ("drv_mb_009_set"), else empty
     pub set: &'a str,
+    /// LoadDriver's hi-res set (F-39898): the local human, or a racer raised by UseRacerNativeCharacter (F-94066)
+    pub hi: bool,
 }
 
 struct Rig {
@@ -224,8 +226,9 @@ impl Drivers {
         names.sort();
         for n in names {
             let l = n.to_ascii_lowercase();
-            // the in-car versions; male ones (the packs used here are the male set)
-            if !(l.ends_with("lod02_set") || l.ends_with("lod2_set")) || !(l.starts_with("drv_m") || l.starts_with("pol_")) {
+            // the in-car versions (`_lod02`, and LoadDriver's hi-res `_set_h`, cinedriver::DRIVER_MAPS); male ones (the
+            // packs used here are the male set)
+            if !(l.ends_with("lod02_set") || l.ends_with("lod2_set") || l.ends_with("_set_h")) || !(l.starts_with("drv_m") || l.starts_with("pol_")) {
                 continue;
             }
             self.sets.push((n, l.contains("_mot_"), l.starts_with("pol_")));
@@ -293,22 +296,35 @@ impl Drivers {
     }
 
     fn pick_set(&self, s: &Seat) -> Option<usize> {
-        // (step 19d: a driver who was named - Racer_SetCharacterName - is that character)
-        if !s.set.is_empty() {
-            if let Some(i) = self.sets.iter().position(|n| n.0.eq_ignore_ascii_case(s.set)) {
+        let lod = self.pick_lod_set(s)?;
+        // (LoadDriver, F-39898: the racer's name through the hi-res maps for the local human and a raised racer)
+        if s.hi {
+            if let Some(i) = crate::cinedriver::driver_set(&self.sets[lod].0, true, s.bike).and_then(|h| self.sets.iter().position(|n| n.0.eq_ignore_ascii_case(h))) {
                 return Some(i);
             }
         }
-        let want = |n: &(String, bool, bool)| n.1 == s.bike && n.2 == (s.cop && !s.bike);
+        Some(lod)
+    }
+
+    fn pick_lod_set(&self, s: &Seat) -> Option<usize> {
+        // (step 19d: a driver who was named - Racer_SetCharacterName - is that character; a key goes through
+        // Boot.sco's `_lod02` maps)
+        if !s.set.is_empty() {
+            let want = crate::cinedriver::driver_set(s.set, false, s.bike).unwrap_or(s.set);
+            if let Some(i) = self.sets.iter().position(|n| n.0.eq_ignore_ascii_case(want)) {
+                return Some(i);
+            }
+        }
+        let want = |n: &(String, bool, bool)| n.1 == s.bike && n.2 == (s.cop && !s.bike) && !n.0.ends_with("_set_h");
         if s.player {
             // "mp" is the player character
-            if let Some(i) = self.sets.iter().position(|n| n.0.to_ascii_lowercase().starts_with("drv_mp_") && n.1 == s.bike) {
+            if let Some(i) = self.sets.iter().position(|n| n.0.to_ascii_lowercase().starts_with("drv_mp_") && n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h")) {
                 return Some(i);
             }
         }
         let c: Vec<usize> = (0..self.sets.len()).filter(|&i| want(&self.sets[i]) && !self.sets[i].0.to_ascii_lowercase().starts_with("drv_mp_")).collect();
         if c.is_empty() {
-            return self.sets.iter().position(|n| n.1 == s.bike);
+            return self.sets.iter().position(|n| n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h"));
         }
         // (by the car's own number: the place in the list moved when cars went, and the driver - his
         // face - changed with it; GitHub #17)

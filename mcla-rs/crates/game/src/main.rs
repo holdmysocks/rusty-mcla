@@ -322,6 +322,8 @@ struct App {
     /// the cine scene whose lamp events run (vehicles.rs `CINE_LAMP_EVENTS`): its name, the clock already
     /// passed, every car's lamp switch as the scene found it (uid, off)
     cine_lamps: Option<(String, f32, Vec<(u32, bool)>)>,
+    /// the cars a showdriver event of the playing scene has shown (uid; cinedriver.rs)
+    cine_showdriver: Vec<u32>,
     /// the race's end: the standings form's pause camera (picked when it comes up) and the
     /// view held once the game is paused
     race_end_cam: Option<(menu3d::PauseCam, menu3d::PauseCam)>,
@@ -1001,6 +1003,7 @@ impl App {
             garage_tr: None,
             cine_lamps: None,
             race_end_cam: None,
+            cine_showdriver: Vec::new(),
             race_end_from: None,
             race_end_way: None,
             garage_built: None,
@@ -9919,9 +9922,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (ambient cars have opaque windows: nobody to see in there)
                     let _ = big;
                     // in a cutscene the people of its cars are the scene's own characters
-                    // (in a scene a driver is drawn only with its show flag, the draw gate F-14542: cinedriver.rs; the
-                    // port's cast figure of the player on foot and the cars brought for the scene keep theirs hidden)
-                    let staged = self.cine.playing.is_some() && (!c.show_driver || (c.is_player && self.cine.has_actor("player")) || c.driver.starts_with("cine:"));
+                    // (in a scene a driver is drawn only with its show flag, the draw gate F-14542: cinedriver.rs; while
+                    // the scene casts the player on foot his seat stays empty until the scene's own showdriver -
+                    // docs/reference/cutscenes/scene_driver_flag.md)
+                    let staged = self.cine.playing.is_some() && (!c.show_driver || (c.is_player && self.cine.has_actor("player") && !self.cine_showdriver.contains(&c.uid)));
                     // (VEHICLE SELECT: the three stand empty - `ng_vsel_0`)
                     // (the cruiser has no driver: mcRacer::LoadDriver, F-39898, returns before it makes one when
                     // the car is vp_chv_police_96 - its own black interior is what shows; GitHub #17)
@@ -9938,7 +9942,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // trucks and SUVs seat their driver higher than the shared animation does
                         mat = mat * glam::Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0));
                     }
-                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str() }
+                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver }
                 })
                 .collect();
             self.drivers.headless = self.view_mode == 3 && !self.look_back && !self.event_dir.idle() && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
@@ -12080,17 +12084,35 @@ impl App {
         if self.cine_lamps.is_none() {
             let kept = self.vehicles.cars.iter().map(|c| (c.uid, c.amb_lamps.off)).collect();
             self.cine_lamps = Some((name.clone(), -1.0, kept));
-            // EndDescription (F-39589): every UseRacerNativeCharacter slot's racer shows its driver (F-13669(racer, 1))
+            self.cine_showdriver.clear();
+            // EndDescription (F-39589): every UseRacerNativeCharacter slot's racer shows its driver (F-13669(racer, 1)),
+            // and one that is damaged out is set to 0.95 of its MaxDamage (damage +36 / +40, the test F-98898 of
+            // Racer_IsDamagedOut); UseRacerNativeCharacter itself (F-94066) raises slot 0 / 1's racer to the hi-res
+            // driver (+178) unless it is the local human
             let slots = cinedriver::native_slots(&name);
             let mut shown = Vec::new();
             for n in (0..16u8).filter(|n| slots >> n & 1 != 0) {
                 if let Some(i) = self.cine_slot_car(n) {
-                    self.vehicles.cars[i].show_driver = true;
-                    shown.push(self.vehicles.cars[i].uid);
+                    let c = &mut self.vehicles.cars[i];
+                    c.show_driver = true;
+                    if c.state.damage >= 1.0 {
+                        c.state.damage = 0.95;
+                    }
+                    if n <= 1 && !c.is_player {
+                        c.hi_driver = true;
+                    }
+                    shown.push(c.uid);
                 }
             }
             log::info!("cine: {} - UseRacerNativeCharacter slots {:#x}, drivers shown (uid) {:?}; shown before it {:?}", name, slots, shown, self.vehicles.cars.iter().filter(|c| c.show_driver && !shown.contains(&c.uid)).map(|c| c.uid).collect::<Vec<_>>());
         }
+            // (garage_core 0x1486, after the `_ext` scene and Racer_Activate: Racer_Reset on the player - F-89258 clears
+            // his driver's scene flag, cinedriver.rs)
+            if cinedriver::GARAGE_EXIT.contains(&ended.as_str()) {
+                if let Some(c) = self.vehicles.player_mut() {
+                    c.show_driver = false;
+                }
+            }
         let last = self.cine_lamps.as_ref().map_or(-1.0, |l| l.1);
         for &(scene, on, slot, at) in vehicles::CINE_LAMP_EVENTS {
             if scene == name && at > last && at <= t {
@@ -12158,6 +12180,11 @@ impl App {
         if slot == 0 {
             return self.vehicles.cars.iter().position(|c| c.is_player);
         }
+                    let uid = self.vehicles.cars[i].uid;
+                    self.cine_showdriver.retain(|&u| u != uid);
+                    if show {
+                        self.cine_showdriver.push(uid);
+                    }
         let label = format!("cine:drv{:02}", slot);
         self.vehicles.cars.iter().position(|c| c.driver == label)
     }
@@ -12165,11 +12192,7 @@ impl App {
     /// The car a cutscene's mover `label` is (car, colour, plate, set-up): "henry" -> the hookman called Henry in
     /// his car; "hookman" / "drv01" -> the rival of the current mission; the bus and the police bring their own models.
     fn cine_car_of(&mut self, label: &str) -> Option<(String, [f32; 4], String, String)> {
-        let ids: Vec<String> = self.game.rivals.characters.iter().map(|c| c.id.clone()).collect();
-        let who = match label {
-            "hookman" | "hookmans" | "drv01" => self.game.career.rival_id(),
-            l => ids.iter().find(|id| self.game.career.name_of(id).eq_ignore_ascii_case(l)).cloned(),
-        };
+        let who = self.cine_hookman_of(label);
         let rival = who.and_then(|id| self.game.rivals.of(&id, 0));
         match (rival, label) {
             (Some(r), _) => Some((r.car, r.color, r.plate, r.config)),
@@ -12180,6 +12203,15 @@ impl App {
     }
 
     /// A new career's opening read ahead on worker threads, so that none of it waits for the disk on the main thread
+        // (the scene's car record of the slot names its mover: slot 0 Player_GetRacer, slot k the racer the caller put
+        // there - the port's car brought for that mover, cinedriver::SLOT_MOVERS)
+        if let Some(label) = self.cine.playing.as_ref().and_then(|sc| cinedriver::slot_label(&sc.name, slot)) {
+            if cine::is_player_car(label) {
+                return self.vehicles.cars.iter().position(|c| c.is_player);
+            }
+            let tag = format!("cine:{label}");
+            return self.vehicles.cars.iter().position(|c| c.driver == tag);
+        }
     /// (docs/PERFORMANCE.md 2026-10-25): from the start screen the three starters (made under CarSelection's first
     /// black, `starters_made`: 1.7 s of reading in that frame before); from the opening's first black its story
     /// scene - CUT_INTRO in the film's place (INTRO FAST, DECISIONS.md D24) and CUT_STORY_RACE_GH_06 after VEHICLE
@@ -12204,6 +12236,15 @@ impl App {
                 for label in self.cine.read_ahead_scene(scene) {
                     if cine::is_player_car(&label) {
                         continue;
+    /// The hookman a cutscene's mover `label` is: "henry" -> the one called Henry; "hookman" / "drv01" -> the rival of
+    /// the current mission.
+    fn cine_hookman_of(&self, label: &str) -> Option<String> {
+        match label {
+            "hookman" | "hookmans" | "drv01" => self.game.career.rival_id(),
+            l => self.game.rivals.characters.iter().map(|c| c.id.clone()).find(|id| self.game.career.name_of(id).eq_ignore_ascii_case(l)),
+        }
+    }
+
                     }
                     let Some((car, _, _, config)) = self.cine_car_of(&label) else { continue };
                     if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car)) {
@@ -12272,6 +12313,10 @@ impl App {
     fn kill_player_tyre_fx(&mut self) {
         if let (Some(t), Some(ci)) = (self.tyre_fx.as_mut(), self.vehicles.cars.iter().position(|c| c.is_player)) {
             t.kill(&mut self.fx, ci);
+            // (the hookman's racer carries his character set - mcCareer_GetHookmanCharacterSet, cinedriver::HOOKMAN_SETS)
+            if let Some(set) = self.cine_hookman_of(&label).as_deref().and_then(cinedriver::hookman_set) {
+                self.vehicles.cars[idx].driver_set = set.to_string();
+            }
         }
     }
 
