@@ -7708,6 +7708,8 @@ pub struct PaybackLeg {
     pub result: u8,
     /// the leg's opening call (SIDEKICK_PAYBACK_NEXT) has been made
     pub called: bool,
+    /// the chase's call (SIDEKICK_PAYBACK_WARNING) has been appended
+    pub warned: bool,
 }
 
 /// The share of the client's damage that wins a leg, by difficulty (0x0cc6..0x0d55).
@@ -7953,8 +7955,13 @@ impl Game {
         if leg.phase == 0 && leg.since == 0.0 && (self.career.payback_wins > 0 || self.opt_x.arcade.d.next_call) && !std::mem::replace(&mut leg.called, true) {
             self.opt_x.arcade.d.next_call = true;
             self.opt_x.arcade.pb = Some(leg);
-            self.mc4_call("SIDEKICK_PAYBACK_NEXT", "SIDEKICK_PAYBACK_NEXT");
+            self.mc4_call("SIDEKICK_PAYBACK_NEXT", "SIDEKICK_PAYBACK_NEXT", 0);
             leg = self.opt_x.arcade.pb.take().unwrap_or_default();
+        }
+        // (0x80d..0x81d: the script waits until the call has been announced - Sidekick_HasDataBeenAnnounced)
+        if leg.phase == 0 && self.opt_x.arcade.d.phone_wait.is_some() {
+            self.opt_x.arcade.pb = Some(leg);
+            return thr;
         }
         let Some(race) = self.race.as_mut() else { return thr };
         if leg.phase >= 2 {
@@ -8123,6 +8130,11 @@ pub struct S19d {
     pub lost_leg: bool,
     /// the next leg opens with the mechanic's call SIDEKICK_PAYBACK_NEXT
     pub next_call: bool,
+    /// a call appended to the phone (caller, text, seconds, speech scenario) waiting for the phone's gates, and the
+    /// script's lift of the phone's hold before it (`mc4_call`): 0 Sidekick_Delay(0) at 0x77b with Sidekick_Delay(1)
+    /// once announced (0x82a), 1 sidekickResume in 0.1 s (0xee9)
+    pub phone_wait: Option<(String, String, f32, String)>,
+    pub phone_lift: Option<u8>,
     /// the look of the set-up the borrowed vehicle wears: (set-up, look, tire set, brake)
     pub borrowed: Option<(String, crate::vehicles::CarLook, String, Option<String>, [f32; 4])>,
     /// the race clock's time left (ms) at the HUD's last update (the counting down clock's
@@ -8372,14 +8384,13 @@ impl Game {
     }
 
     /// A call of the mechanic's on the phone while an event runs (Sidekick_AppendData: the
-    /// caller, the text's key, five seconds; its speech scenario).
-    fn mc4_call(&mut self, text_key: &str, scenario: &str) {
+    /// caller, the text's key, five seconds; its speech scenario). It goes onto the phone as
+    /// every call does, through the phone's gates (F-37697: the main loop), after the script's
+    /// lift of the phone's hold: 0 Sidekick_Delay(0), 1 UIManager_ReplaceDelayedEvent(sidekickResume, 0.1).
+    fn mc4_call(&mut self, text_key: &str, scenario: &str, lift: u8) {
         let text = self.career.strings.get(text_key).map(|s| s.to_string()).unwrap_or_default();
-        if !text.is_empty() {
-            self.tip = Some(("KAROL".to_string(), text, 5.0));
-            self.phone_prompt.clear();
-        }
-        self.opt_x.arcade.d.say.push(scenario.to_string());
+        self.opt_x.arcade.d.phone_wait = Some(("KAROL".to_string(), text, 5.0, scenario.to_string()));
+        self.opt_x.arcade.d.phone_lift = Some(lift);
     }
 
     fn mc4_splash(&mut self, key: &str, fallback: &str) {
@@ -8428,9 +8439,13 @@ impl Game {
         let mut pass = ev;
         match leg.phase {
             2 => {
-                // (WAITUNWARPED(1000), then the call; the race timer starts again from 0)
-                if leg.t >= 1.0 {
-                    self.mc4_call("SIDEKICK_PAYBACK_WARNING", "PAYBACK_WARNING");
+                // (WAITUNWARPED(1000), then the call (0xeca, the phone's hold lifted 0.1 s later - 0xee9); once it has
+                // been announced (0xef2) the race timer starts again from 0)
+                if leg.t >= 1.0 && !leg.warned {
+                    self.mc4_call("SIDEKICK_PAYBACK_WARNING", "PAYBACK_WARNING", 1);
+                    leg.warned = true;
+                }
+                if leg.warned && self.opt_x.arcade.d.phone_wait.is_none() {
                     leg.phase = 3;
                     leg.t = 0.0;
                     leg.clock = 0.0;

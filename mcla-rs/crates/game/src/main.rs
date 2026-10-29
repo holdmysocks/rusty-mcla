@@ -506,6 +506,8 @@ struct App {
     phone_done: bool,
     /// UILogic's SidekickDelayTime (read when first needed)
     phone_delay: Option<f32>,
+    /// a payback call lifted the hold with Sidekick_Delay(0): Sidekick_Delay(1) follows once it is announced
+    phone_redelay: bool,
     /// a new career's opening (the film, the arrival) has been started - before VEHICLE SELECT
     intro_played: bool,
     /// the opening's step: 1 fading to black, 2 the film and the wait for the city, 3 VEHICLE SELECT, 4 black
@@ -1089,6 +1091,7 @@ impl App {
             phone_was_up: false,
             phone_done: false,
             phone_delay: None,
+            phone_redelay: false,
             intro_played: false,
             intro_stage: 0,
             intro_t: 0.0,
@@ -5436,8 +5439,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (Cruising.sc.xml, Cruising_Offline: on enter sidekickClean, sidekickDelay and sidekickResume in 8 s; on exit the
             // resume removed, sidekickDelay, sidekickInterrupt (the call up dropped, F-51256) and sidekickClean. The pause
-            // menu and the scenes are no state of their own there; a beat me there run is Racing_BeatMeThere)
-            let cruising = self.game.cruising_offline();
+            // menu and the scenes are no state of their own there; a beat me there run is Racing_BeatMeThere. The story
+            // scenes are the mission scripts': only RACE_GH_06_READY_TO_START_ON_ENTER throws state events round its scene -
+            // mcGame_ThrowEvent (F-96962) 'intro' at 0x9de, 'cruising' at 0xb09 -, so CUT_STORY_RACE_GH_06 alone leaves
+            // Cruising_Offline (`pending_log` spans it); Cruising_Offline swallows a repeated mc.cruising, the police's after
+            // an arrest (F-22523))
+            let cruising = self.game.cruising_offline() && self.pending_log.is_none();
             if cruising != self.phone_cruise {
                 self.phone_cruise = cruising;
                 self.phone_hold = true;
@@ -5469,6 +5476,28 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             let phone_held = gates || self.phone_hold || self.phone_done;
+            // (PaybackLegCore's calls: the script lifts the phone's hold itself - Sidekick_Delay(0) (F-53206: the phone's +788 =
+            // its argument), or UIManager_ReplaceDelayedEvent(sidekickResume, 0.1) (F-93433) - and the call waits for the phone's other gates; once the
+            // opening call is announced the script holds the phone again with Sidekick_Delay(1))
+            match self.game.opt_x.arcade.d.phone_lift.take() {
+                Some(0) => {
+                    self.phone_hold = false;
+                    self.phone_resume = None;
+                    self.phone_redelay = true;
+                }
+                Some(_) => self.phone_resume = Some(0.1),
+                None => {}
+            }
+            if self.game.tip.is_none() && !gates && !self.phone_hold && !self.phone_done {
+                if let Some((who, text, secs, scenario)) = self.game.opt_x.arcade.d.phone_wait.take() {
+                    if !text.is_empty() {
+                        self.game.tip = Some((who, text, secs));
+                        self.game.phone_prompt.clear();
+                    }
+                    self.game.opt_x.arcade.d.say.push(scenario);
+                    self.phone_hold |= std::mem::take(&mut self.phone_redelay);
+                }
+            }
             // the mechanic rings when nothing else is going on
             if career_up && !phone_held && self.news.is_empty() && self.game.tip.is_none() && self.news_timer <= -4.0 && matches!(self.game.mode, Mode::FreeRoam) {
                 if let Some((key, title, text)) = self.tips.pop_front() {
@@ -11626,6 +11655,12 @@ impl App {
         let (level, dsp) = self.police.activity();
         level >= 1 || (level == -1 && dsp < 2)
             || self.speech.busy()
+            // (the warper's camera hold, UILogic +0x51382: set when a cinematic warp starts or ends (F-83799 from
+            // F-35052 / F-99030), cleared by the warper (F-70736, F-31347) - the port's warps and the held camera after
+            // the climb. F-37697's other flag, +0x51350 (F-55498), is set only by Warper_SetWarping (F-59289), which no
+            // script calls: always clear)
+            || self.game.start_warp_on || self.warp.is_some() || self.climb.is_some() || self.climb_end.is_some() || self.climb_wait.is_some()
+            || self.garage_in.is_some() || self.garage_out.is_some() || self.hangout_entry.is_some() || self.payback_in.is_some()
             || self.cuts.playing.is_some() || self.cine.playing.is_some() || self.game.movie.is_some()
             || self.ticket_run.is_some() || self.arrest_form.is_some() || self.game.arrest_panel.is_some() || self.arrest_station.is_some()
     }
