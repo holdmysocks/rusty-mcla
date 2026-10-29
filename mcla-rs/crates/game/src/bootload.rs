@@ -112,7 +112,15 @@ impl Runner {
     /// The loading thread is done: the game takes the window, the UI, the audio and the movie.
     fn finish(&mut self) {
         let Some(mut l) = self.loading.take() else { return };
-        let SendBox(mut app) = l.job.take().expect("job").join().expect("loading thread");
+        // (a panic on the loading thread: its own message - a wgpu validation error names the shader and line - in this
+        // thread's crash report too, not just `Any { .. }`)
+        let SendBox(mut app) = match l.job.take().expect("job").join() {
+            Ok(a) => a,
+            Err(e) => {
+                let msg = e.downcast_ref::<String>().map(String::as_str).or_else(|| e.downcast_ref::<&str>().copied()).unwrap_or("(no message)");
+                panic!("loading thread: {msg}");
+            }
+        };
         if l.sound.is_none() {
             l.sound = l.sound_rx.take().and_then(|rx| rx.recv().ok()).map(|b| b.0);
         }
