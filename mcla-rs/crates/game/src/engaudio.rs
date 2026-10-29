@@ -114,6 +114,9 @@ pub struct EngineSound {
     boost_db: f32,
     flare: (f32, f32),
     settle: f32,
+    /// the stop (F-29108): XF +113 the one-shot after the stop's wait (IGNITION_KAPUT_MASTER), +117 that wait in ms
+    kaput_sound: u32,
+    kaput_delay: f32,
     // one-shots (ONESHOT_PARAMS)
     gear_sound: u32,
     gear_special: u32,
@@ -145,7 +148,7 @@ pub struct EngineSound {
     pub gains: Vec<f32>,
     // state
     voices: Vec<Option<Handle>>,
-    /// F-10725's state (this+1928: 0 ignition wait, 1 crank, 4 running, 5 flare, 6 settle), its timer (this+288,
+    /// F-10725's state (this+1928: 0 ignition wait, 1 crank, 2 stop wait, 3 stopped, 4 running, 5 flare, 6 settle), its timer (this+288,
     /// seconds), the start boost (this+152) and the ignition one-shot (slot this+1460)
     state: u8,
     timer: f32,
@@ -261,6 +264,8 @@ impl EngineSound {
             boost_db: s16(xf, 105) * 0.01,
             flare: (be_u16(xf, 107) as f32, be_u16(xf, 109) as f32),
             settle: be_u16(xf, 111) as f32,
+            kaput_sound: be_u32(xf, 113),
+            kaput_delay: be_u16(xf, 117) as f32 * 0.001,
             gear_sound: be_u32(one, 10),
             gear_special: be_u32(one, 14),
             gear_vol: s16(one, 18) * 0.01,
@@ -336,6 +341,22 @@ impl EngineSound {
         self.stop_loops(lib);
         self.timer = if ignition { self.ign_delay } else { 0.0 };
         self.boost = db2lin(self.boost_db);
+    }
+
+    /// The engine sound's stop (F-29108, vt+56): state 2, the loops stop, the wait XF+117 ms (2250 on every car) when
+    /// `delay` is set (else 0), the start boost as in `start`. Once the wait has run out the slot's one-shot stops,
+    /// XF+113 (IGNITION_KAPUT_MASTER) plays and the state is 3: silent until the next `start`. The driver's
+    /// "impact start car" (F-80396) calls it with 1 after a damage-out.
+    pub fn stop_engine(&mut self, lib: &mut SoundLib, delay: bool) {
+        self.state = 2;
+        self.stop_loops(lib);
+        self.timer = if delay { self.kaput_delay } else { 0.0 };
+        self.boost = db2lin(self.boost_db);
+    }
+
+    /// Whether the engine sound is stopped or waiting to stop (states 2 and 3).
+    pub fn stopped(&self) -> bool {
+        matches!(self.state, 2 | 3)
     }
 
     /// True once after a crank has ended: the engine counts as running again (F-10725 sets chassis engine +46 = 1).
@@ -420,6 +441,26 @@ impl EngineSound {
                     self.started = true;
                 }
             }
+            self.end_frame(lib, e, dt);
+            return;
+        }
+        if self.state == 2 {
+            // the stop's wait: the revs fall to 0, no loop sounds; at its end the kaput one-shot, then state 3
+            self.timer -= dt;
+            approach_fma(&mut self.s, 0.0, self.slew, dt);
+            if self.timer < 0.0 {
+                if let Some(h) = self.ign.take() {
+                    lib.stop(h);
+                }
+                self.ign = lib.play_hash(self.kaput_sound, Req { pos: Some(e.pos), player: self.player, ..Default::default() });
+                self.state = 3;
+            }
+            self.end_frame(lib, e, dt);
+            return;
+        }
+        if self.state == 3 {
+            // stopped (vt+112 every update)
+            self.stop_loops(lib);
             self.end_frame(lib, e, dt);
             return;
         }
@@ -816,5 +857,44 @@ mod tests {
         }
         assert!((e.boost - (1.995_262 - 0.5)).abs() < 0.02, "{}", e.boost);
         assert!(e.voices[0].is_some());
+    }
+
+    /// The stop with 1 (the driver's "impact start car" after a damage-out) on the Camaro: the loops stop at once, the
+    /// revs fall, after XF+117 = 2250 ms IGNITION_KAPUT_MASTER plays and the sound stays silent (state 3) until the
+    /// start, which cranks as usual.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn stop_kaput_then_start() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+        let mut e = EngineSound::new(&lib, "vp_chv_camaro_06", false).expect("engine");
+        assert_eq!((e.kaput_sound, e.kaput_delay), (joaat("IGNITION_KAPUT_MASTER"), 2.25));
+        let dt = 1.0 / 60.0;
+        let idle = 900.0;
+        let inp = EngineIn { pos: Vec3::ZERO, rpm: idle, idle_rpm: idle, max_rpm: 6500.0, full_torque: 400.0, speed: 0.0, gear: 1, ..Default::default() };
+        for _ in 0..60 {
+            e.update(&mut lib, &inp, dt);
+        }
+        assert!(e.voices[0].is_some() && e.state == 4);
+        e.stop_engine(&mut lib, true);
+        assert!(e.voices.iter().all(|v| v.is_none()) && e.state == 2 && e.stopped());
+        assert!((e.boost - 1.995_262).abs() < 1e-4);
+        let mut t = 0.0;
+        while e.state == 2 {
+            e.update(&mut lib, &inp, dt);
+            t += dt;
+            assert!(e.voices.iter().all(|v| v.is_none()), "no loop in the stop's wait");
+            assert!(t < 3.0);
+        }
+        assert!((t - 2.25).abs() <= dt + 1e-4, "kaput at {t}");
+        assert!(e.ign.is_some() && e.state == 3 && e.s < 1.0);
+        for _ in 0..120 {
+            e.update(&mut lib, &inp, dt);
+            assert!(e.voices.iter().all(|v| v.is_none()) && e.state == 3);
+        }
+        e.start(&mut lib, false);
+        e.update(&mut lib, &inp, dt);
+        assert_eq!(e.state, 1);
     }
 }

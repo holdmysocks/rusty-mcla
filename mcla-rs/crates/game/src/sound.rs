@@ -102,6 +102,8 @@ pub struct Sound {
     /// the player engine's start (`play_ignition`): 1 asked for, 2 cranking; and the crank's end, for `take_engine_running`
     ignition: u8,
     engine_running: bool,
+    /// the player engine's stop asked for (`stop_engine`), applied at the next update
+    engine_stop: bool,
     /// the original's collision sounds (with `lib`)
     coll: Option<crate::collaudio::CollisionAudio>,
     /// the original's district ambience (with `lib`)
@@ -231,6 +233,16 @@ impl Sound {
     /// though the car is still `engine_off`.
     pub fn play_ignition(&mut self) {
         self.ignition = 1;
+    }
+
+    /// The player engine's stop after a damage-out (the player's vt+56, F-17073, with 1): the engine sound's stop
+    /// (engaudio.rs `stop_engine`: silent, IGNITION_KAPUT_MASTER after 2.25 s) and the DAMAGE_OUT speech request
+    /// (F-30989, "PLAYER") unless a speech line plays (+2256 and +2260).
+    pub fn stop_engine(&mut self) {
+        self.engine_stop = true;
+        if !self.speech_busy {
+            self.want_speech = Some("DAMAGE_OUT");
+        }
     }
 
     /// True once when the started engine's crank has ended: the engine runs again (F-10725 sets chassis engine
@@ -746,7 +758,14 @@ impl Sound {
                     log::info!("audio: engine start (ignition 0): loops stopped, the ignition next");
                 }
             }
+            if std::mem::take(&mut self.engine_stop) {
+                if let Some((_, e)) = &mut self.engine {
+                    e.stop_engine(lib, true);
+                    log::info!("audio: engine stop (1): loops stopped, the kaput after the wait");
+                }
+            }
         }
+        self.engine_stop = false;
         if self.ignition != 0 && self.engine.is_none() {
             // (no engine objects for this car: nothing to crank, it runs at once)
             self.ignition = 0;

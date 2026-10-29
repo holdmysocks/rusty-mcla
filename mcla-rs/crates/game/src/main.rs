@@ -539,6 +539,9 @@ struct App {
     /// the car is wrecked: seconds until it is put back on the road (the port's repair; it counts
     /// from the end of the damage-out timer)
     wreck_timer: f32,
+    /// the driver's damage-out states for the engine sound: 1 the stop due at "impact start car", 2 stopped (the
+    /// start due at the exit of "impact start car done"), 0 none
+    wreck_engine: u8,
     /// the game's time scale from the time warpers (min of them; `boomcam::TimeWarper`):
     /// "vehicle\wipeout" (`wipeout.timewarper`) and "vehicle\explosion"
     wipe_scale: f32,
@@ -1107,6 +1110,7 @@ impl App {
             photo_request: None,
             photo_msg: 0.0,
             wreck_timer: 0.0,
+            wreck_engine: 0,
             wipe_scale: 1.0,
             warp_wipe: boomcam::TimeWarper::new([1.25, 0.1, 5.0, 10.0]),
             warp_expl: boomcam::TimeWarper::new([0.5, 0.1, 3.0, 1.0]),
@@ -2940,7 +2944,25 @@ impl App {
                     if let Some(c) = self.vehicles.player_mut() {
                         c.stunned = c.stunned.max(0.5);
                     }
+                    // the driver's "impact start car" (F-80396): entered when DRV_HIT_HRD has under 0.033 s left
+                    // (F-84327), it lasts 4 s (F-76894). Its enter stops the engine sound with 1 (vt+56) unless the
+                    // police bust is on (chassis +592 bit 0x20)
+                    if self.wreck_engine == 1 && self.wreck_timer < 4.0 + 0.033 {
+                        self.wreck_engine = 0;
+                        if self.crash_bits & 0x20 == 0 {
+                            self.sound.stop_engine();
+                            self.wreck_engine = 2;
+                        }
+                    }
                     if self.wreck_timer <= 0.0 {
+                        // start car's exit (F-47123) fires the wreck's "what next" - the pause menu. "impact start car
+                        // done" then ends at its first update with the game paused (F-38554: the flags' 0x20000000,
+                        // F-28290 = the cine layer's +320, set while the pause manager pauses, F-94276), else after
+                        // 5 s in it (+156 += dt, F-71604); its exit (F-85478) is the engine sound's start with 0
+                        // (vt+52). The reset below stands for that pause, so the start goes with it
+                        if std::mem::take(&mut self.wreck_engine) == 2 {
+                            self.sound.play_ignition();
+                        }
                         // the wreck event's end (F-79134 -> F-89773). (approx.: the original then opens the
                         // PauseMenu in the cruise - its QUICK FIX row, free - or ends the race into the
                         // race-over menu; the port has neither row yet, so the car is set going here,
@@ -3044,6 +3066,10 @@ impl App {
                                 if !self.game.police_on_player {
                                     // (approx.: a driver not loaded leaves the hit clip at 0)
                                     self.wreck_timer = self.drivers.hit_hard_secs(&c.model.name).unwrap_or(0.0) + 4.0;
+                                    // the driver goes to "impact damageout" only right side up (IsUpsideDown, the
+                                    // flags' 0x800 from F-28290: [?] read as the car's up axis y <= 0); upside down
+                                    // it takes "impact damageout inverted", which never stops the engine
+                                    self.wreck_engine = if up_y > 0.0 { 1 } else { 0 };
                                 }
                             }
                         } else if self.crash_bits & 0x10 != 0 && self.crash_timer <= 0.0 {
@@ -3067,6 +3093,12 @@ impl App {
                 }
             } else {
                 self.wreck_timer = 0.0;
+                // (approx.: a scene, a mission or a menu cutting "impact start car" short - the original's driver
+                // goes back to cruising on IsRaceFinish without the start, its sound reset there was not traced -
+                // starts the engine sound)
+                if std::mem::take(&mut self.wreck_engine) == 2 {
+                    self.sound.play_ignition();
+                }
                 self.crash_bits &= 0x28;
             }
             // the bust (0x20, with 0x08: no damage hits) is cleared by the original's flag reset after the
@@ -11887,6 +11919,14 @@ impl App {
             if scene == name && at > last && at <= t {
                 if let Some(i) = self.cine_slot_car(slot) {
                     self.vehicles.cars[i].amb_lamps.off = !on;
+                }
+            }
+        }
+        for &(scene, slot, at) in vehicles::CINE_CAR_ON {
+            if scene == name && at > last && at <= t {
+                // car_on's engine start (F-91984 -> vt+52 with 0); the port's engine sound is the player's only
+                if self.cine_slot_car(slot).is_some_and(|i| self.vehicles.cars[i].is_player) {
+                    self.sound.play_ignition();
                 }
             }
         }

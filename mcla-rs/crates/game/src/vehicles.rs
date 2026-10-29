@@ -486,6 +486,17 @@ pub fn garage_lamps_due(view: &str) -> bool {
     matches!(view, "Interior" | "FrontSeats" | "Stereo" | "SteeringWheel" | "PostGauges")
 }
 
+/// The cine scripts' car_on events (generic event 22, F-91263 -> F-91984 on the racer of the event's car slot): the
+/// lamps on (in `CINE_LAMP_EVENTS` too) and the engine sound's start with 0 (vt+52, F-44510): its ignition, crank and
+/// flare. (scene, car slot, seconds), from work/lighting2/lamps/lampev.tsv - every car_on row; the hangout exits'
+/// and rep_on_strip_garage's 6.0 "on" rows are headlights_on (33), which leave the engine alone.
+pub const CINE_CAR_ON: &[(&str, u8, f32)] = &[
+    ("racestart/cut_payback_get_keys", 0, 14.5),
+    ("story/cut_story_district_champs", 0, 74.3333),
+    ("story/cut_story_district_champs_night", 0, 74.3333),
+    ("story/cut_story_rep_on_strip_garage", 0, 81.3333),
+];
+
 /// The cine scripts' lamp switching events (generic events 22 car_on, 23 car_off, 33 headlights_on,
 /// 34 headlights_off of the table at 0x827EAD60, handled by F-91263 -> F-62687 on the racer of the
 /// event's car slot; `car_restore` (24) takes the flag kept at the scene's start - used by no scene):
