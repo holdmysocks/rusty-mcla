@@ -7022,8 +7022,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 a.obj("QUICK_FIX_MASTER");
             }
             if let Some(p) = self.vehicles.player_mut() {
+                // (the racer's restore after a repair, mcRacer#18 F-39432 - its vtable +72, called by F-32850 - resets
+                // the damage and clears the map's scrapes: the model's full reset F-74884, or the map's reset F-27947
+                // as the garage's repair F-12181 does; so the scratches go with the dents)
                 p.state.damage = 0.0;
-                p.state.dmg.repair();
+                p.state.dmg.reset();
                 p.state.zones = [0.0; 4];
                 // (F-32850: set upright where it stands, its heading kept, then the racer's
                 // reset F-39432(0))
@@ -11355,8 +11358,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if let Some(fix) = what {
                     if let Some(p) = self.vehicles.player_mut() {
                         if fix {
+                            // (F-12181, the garage's full repair: the scrapes go too)
                             p.state.damage = 0.0;
-                            p.state.dmg.repair();
+                            p.state.dmg.reset();
                             p.state.zones = [0.0; 4];
                         } else {
                             p.state.nitro_shots = p.state.nitro_max;
