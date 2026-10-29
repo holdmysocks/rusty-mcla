@@ -483,10 +483,12 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     // state scripts' start is not modelled)
     let career = game.career.loaded();
     let suspended = game.suspend_all_opponents();
-    let places = !suspended && (!career || game.career.reached("GARAGE_HOLLYWOOD"));
+    // (each place back by its own core's test once the flag is clear - `Game::update_place_holds`)
+    let places = !career || game.career.reached("GARAGE_HOLLYWOOD");
+    let held = |uid: &u32| game.place_hold.contains_key(uid);
     let pick = game.gps_pick;
     if places {
-        for (uid, kind, p) in PLACES.iter().filter(|x| !matches!(x.1, Kind::Delivery | Kind::Payback)) {
+        for (uid, kind, p) in PLACES.iter().filter(|x| !matches!(x.1, Kind::Delivery | Kind::Payback) && !held(&x.0)) {
             let mut e = Element::at(*kind, Vec3::from(*p));
             e.uid = *uid;
             if matches!(kind, Kind::Series) {
@@ -629,7 +631,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     }
     // deliveries and paybacks wait at their garages (layer 4)
     if places {
-        for (uid, kind, p) in PLACES.iter().filter(|x| matches!(x.1, Kind::Delivery | Kind::Payback)) {
+        for (uid, kind, p) in PLACES.iter().filter(|x| matches!(x.1, Kind::Delivery | Kind::Payback) && !held(&x.0)) {
             let mut e = Element::at(*kind, Vec3::from(*p));
             e.uid = *uid;
             push(e);

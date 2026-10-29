@@ -654,6 +654,12 @@ pub struct Game {
     /// a beat me there run is on: its line (the local hookman's script makes the run's race current at
     /// 0xb82 and puts the finish on the map at 0x1140 - `race_current`, `hudmap::elements`)
     pub bmt_goal: Option<Vec3>,
+    /// the places whose core holds its map element back after Script_SuspendAllOpponents (uid -> time to its next
+    /// poll; `update_place_holds`)
+    pub place_hold: std::collections::HashMap<u32, f32>,
+    /// the flag as last seen, and the place whose core was in its own flow when it was set (the garage driven into)
+    place_sus: bool,
+    place_own: Option<u32>,
     /// a pink slip race of a hangout is over: lost (`bFailure`) - its race-over tab (F-36093)
     pub pink_over: Option<bool>,
     /// MISSION RESULTS after an event: the missions it finished (title, objectives)
@@ -1298,6 +1304,9 @@ impl Game {
             bmt_end: None,
             bmt_go: None,
             bmt_goal: None,
+            place_hold: std::collections::HashMap::new(),
+            place_sus: false,
+            place_own: None,
             pink_over: None,
             mission_results: Vec::new(),
             race_slow: crate::mc4::SlowMo::default(),
@@ -13657,6 +13666,58 @@ impl Game {
         !self.cruising_offline()
     }
 
+    /// The place cores' suspension, every frame. While Script_SuspendAllOpponents is set every place core at the top
+    /// of its loop has taken its element away; once it is clear each puts it back by its own test: garage_core
+    /// (`game/Garages/0x3487df6f` 0x1e4..0x301) when the player is at least 8 m from its door point (+92,
+    /// Racer_DistanceToPoint), polled every 100 ms; local_hangout_core (0xe166126d 0x5d3..0x6cb) and
+    /// wager_hangout_core (0x16e89a34 0x80e..0x941) when he is at least the hangout's radius (+64) from its centre
+    /// (+52) on the flat (VFlatDist), polled every 500 ms; delivery_hangout_core (0x37c63b19 0x330..0x3e6) and
+    /// payback_hangout_core (0xfc2c6c0a 0x56c..0x61e) at once. Not held: the garage driven into (its core is in its
+    /// own flow - "garage" thrown at 0x43e, "cruising" at 0x1b99, its element added back at 0x1dad) and the hangout
+    /// the player is in. A new career's start (`fresh_game`, approx.) holds nothing.
+    pub fn update_place_holds(&mut self, player: Option<Vec3>, dt: f32) {
+        use crate::hudmap::{Kind, PLACES};
+        let sus = self.suspend_all_opponents() && !self.fresh_game;
+        if sus && !self.place_sus {
+            // (the drive-in is garage_core's own trigger, 0x402..0x428: within 8 m of the door)
+            self.place_own = player.and_then(crate::garagein::at_door).and_then(|g| {
+                let door = crate::garagein::SETUPS[g].door;
+                PLACES.iter().filter(|x| x.1 == Kind::Garage).min_by(|a, b| Vec3::from(a.2).distance(door).total_cmp(&Vec3::from(b.2).distance(door))).map(|x| x.0)
+            });
+        }
+        self.place_sus = sus;
+        if sus {
+            let own_hangout = self.hangout_key.as_deref().and_then(|k| crate::layout::HANGOUT_ITEMS.iter().find(|h| h.key == k)).map(|h| Vec3::from(h.centre));
+            for (uid, kind, p) in PLACES.iter() {
+                let own = self.place_own == Some(*uid) || (matches!(kind, Kind::Series | Kind::Wager) && own_hangout.map_or(false, |c| place_hangout(Vec3::from(*p)).map_or(false, |h| Vec3::from(h.centre) == c)));
+                if !own {
+                    self.place_hold.insert(*uid, 0.0);
+                }
+            }
+            return;
+        }
+        self.place_own = None;
+        let Some(pp) = player else { return };
+        self.place_hold.retain(|uid, t| {
+            *t -= dt;
+            if *t > 0.0 {
+                return true;
+            }
+            let Some((_, kind, p)) = PLACES.iter().find(|x| x.0 == *uid) else { return false };
+            let p = Vec3::from(*p);
+            let (far, poll) = match kind {
+                Kind::Garage => (crate::garagein::SETUPS[crate::garagein::nearest(p)].door.distance(pp) >= crate::garagein::RADIUS, 0.1),
+                Kind::Series | Kind::Wager => match place_hangout(p) {
+                    Some(h) => (glam::Vec2::new(pp.x - h.centre[0], pp.z - h.centre[2]).length() >= h.radius, 0.5),
+                    None => (true, 0.0),
+                },
+                _ => (true, 0.0),
+            };
+            *t = poll;
+            !far
+        });
+    }
+
     /// The mission's man is the GPS target (his mission set, nothing else picked)
     pub fn gps_on_man(&self) -> bool {
         self.gps_pick.is_none() && self.mission_target.is_some() && self.mission_target == self.career.rival_mission()
@@ -13710,4 +13771,67 @@ mod tests {
         g.delivery_panel(None, 90.0, 1.0);
         assert_eq!((g.mission_results[0].1[1].as_str(), g.mission_results[0].2, g.dl_damage_ok), ("YOUR TIME: DNF", false, false));
     }
+
+    /// The place cores after Script_SuspendAllOpponents: every hangout element has its core's set-up; a garage comes
+    /// back 8 m from its door, a hangout outside its radius (flat), delivery and payback at once; the garage driven
+    /// into and the hangout the player is in are never held
+    #[test]
+    fn place_holds_follow_the_cores() {
+        use crate::hudmap::{Kind, PLACES};
+        use super::Mode;
+        use glam::Vec3;
+        for (uid, kind, p) in PLACES.iter().filter(|x| matches!(x.1, Kind::Series | Kind::Wager)) {
+            assert!(super::place_hangout(Vec3::from(*p)).is_some(), "{uid} {kind:?}");
+        }
+        let mut g = Game::new(Vec::new(), 0);
+        g.mode = Mode::FreeRoam;
+        g.fresh_game = false;
+        let hw_door = crate::garagein::SETUPS[0].door;
+        // a race near the Hollywood garage and its local hangout
+        g.update_place_holds(Some(hw_door + Vec3::new(20.0, 0.0, 0.0)), 0.1);
+        assert!(g.place_hold.is_empty());
+        g.bmt_goal = Some(Vec3::ZERO);
+        g.update_place_holds(Some(hw_door + Vec3::new(20.0, 0.0, 0.0)), 0.1);
+        assert_eq!(g.place_hold.len(), PLACES.len());
+        g.bmt_goal = None;
+        // the player 3 m from the door when it clears: the garage waits, delivery / payback and far hangouts are back
+        g.update_place_holds(Some(hw_door + Vec3::new(3.0, 0.0, 0.0)), 0.1);
+        let mut held: Vec<u32> = g.place_hold.keys().copied().collect();
+        held.sort();
+        assert_eq!(held, vec![505]);
+        // polled every 100 ms
+        g.update_place_holds(Some(hw_door + Vec3::new(9.0, 0.0, 0.0)), 0.05);
+        assert!(g.place_hold.contains_key(&505));
+        g.update_place_holds(Some(hw_door + Vec3::new(9.0, 0.0, 0.0)), 0.06);
+        assert!(g.place_hold.is_empty());
+        // a hangout: held while within its radius on the flat, polled every 500 ms
+        let hw1 = crate::layout::HANGOUT_ITEMS.iter().find(|h| h.key == "hw_local_hangout1").unwrap();
+        let c = Vec3::from(hw1.centre);
+        g.bmt_goal = Some(Vec3::ZERO);
+        g.update_place_holds(Some(c + Vec3::new(50.0, 300.0, 0.0)), 0.1);
+        g.bmt_goal = None;
+        g.update_place_holds(Some(c + Vec3::new(50.0, 300.0, 0.0)), 0.1);
+        assert_eq!(g.place_hold.keys().copied().collect::<Vec<_>>(), vec![500]);
+        g.update_place_holds(Some(c + Vec3::new(101.0, 0.0, 0.0)), 0.4);
+        assert!(g.place_hold.contains_key(&500));
+        g.update_place_holds(Some(c + Vec3::new(101.0, 0.0, 0.0)), 0.11);
+        assert!(g.place_hold.is_empty());
+        // the garage driven into: suspended while at its door, never held
+        g.mode = Mode::Garage;
+        g.update_place_holds(Some(hw_door), 0.1);
+        assert!(!g.place_hold.contains_key(&505) && g.place_hold.contains_key(&512));
+        g.mode = Mode::FreeRoam;
+        g.update_place_holds(Some(hw_door + Vec3::new(3.0, 0.0, 0.0)), 0.1);
+        assert!(g.place_hold.is_empty());
+        // the hangout the player is in
+        g.hangout_key = Some("hw_local_hangout1".into());
+        g.update_place_holds(Some(c), 0.1);
+        assert!(!g.place_hold.contains_key(&500) && g.place_hold.contains_key(&501));
+    }
+}
+
+/// The hangout set-up (`layout::HANGOUT_ITEMS`: its core's centre and radius) of a map place (a local or wager
+/// hangout's element, within 30 m of the core's centre)
+pub fn place_hangout(p: Vec3) -> Option<&'static crate::layout::HangoutItems> {
+    crate::layout::HANGOUT_ITEMS.iter().filter(|h| Vec3::from(h.centre).distance(p) < 30.0).min_by(|a, b| Vec3::from(a.centre).distance(p).total_cmp(&Vec3::from(b.centre).distance(p)))
 }

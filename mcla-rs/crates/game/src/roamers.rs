@@ -91,6 +91,11 @@ pub struct Man {
     /// a mission's man whose core script has just started: his car is still to be put at point
     /// 0 of his loop (the core's Racer_InitializeResetPosition + Racer_Reset as it starts)
     pub fresh: bool,
+    /// his core was suspended (Script_SuspendAllOpponents): Racer_Reset put him back at his reset position - point 0
+    /// of his loop with the heading, as his script set it - and his car was streamed out (CruisingHookmanCore
+    /// 0x485..0x490); once it clears he is set up from there again (0x571, 0x65a -> 0x1a1: the brain to the
+    /// nearest rail, the point nearest him first)
+    pub reset: bool,
 }
 
 /// A hookman script of a district's special man: (kind, district, id, character, set-up, loop).
@@ -163,8 +168,8 @@ pub struct Roamers {
     /// an alternative hookman has just been flashed: his race is for the caller to start
     pub alt_flash: Option<Man>,
     alt_car: String,
-    /// the clock at the last update: a gap is a race or a scene - Script_SuspendAllOpponents
-    alt_seen: f64,
+    /// Script_SuspendAllOpponents as last seen (`suspend`)
+    suspended: bool,
     alt_suspended: bool,
 }
 
@@ -372,7 +377,7 @@ impl Roamers {
             alt_drawn: Vec::new(),
             alt_flash: None,
             alt_car: String::new(),
-            alt_seen: 0.0,
+            suspended: false,
             alt_suspended: false,
         }
     }
@@ -601,7 +606,7 @@ impl Roamers {
                     Some((p, hd, st)) if !h.mission.is_empty() => (p.clone(), *hd, *st),
                     _ => (pts.clone(), self.heads.get(&stem).copied(), None),
                 };
-                men.push(Man { key: format!("slot:{d}:{i}"), kind: ManKind::Slot, district: d, name: h.name.clone(), car: h.car.clone(), config: h.config.clone(), difficulty: h.difficulty, mission: h.mission.clone(), event: String::new(), hidden: s.hidden && h.mission.is_empty(), pts, at: 0.0, mod_value: h.mod_value, uid: 0, heading, start, fresh: !h.mission.is_empty() });
+                men.push(Man { key: format!("slot:{d}:{i}"), kind: ManKind::Slot, district: d, name: h.name.clone(), car: h.car.clone(), config: h.config.clone(), difficulty: h.difficulty, mission: h.mission.clone(), event: String::new(), hidden: s.hidden && h.mission.is_empty(), pts, at: 0.0, mod_value: h.mod_value, uid: 0, heading, start, fresh: !h.mission.is_empty(), reset: false });
             }
         }
         for sp in &self.specials {
@@ -617,7 +622,7 @@ impl Roamers {
             // (generic_timetrial_hookman.sco 0x137 / 0x167: difficulty 1; the tournament man's 1 while his
             // mission is open, else 2 - `mc4_tournament_man_diff`)
             let diff = if sp.kind == ManKind::TimeTrial { 1 } else { game.mc4_tournament_man_diff(sp.district) };
-            men.push(Man { key: format!("{}:{}", if sp.kind == ManKind::TimeTrial { "tt" } else { "tour" }, sp.district), kind: sp.kind, district: sp.district, name: sp.name.clone(), car, config: sp.config.clone(), difficulty: diff, mission: String::new(), event, hidden: false, pts: sp.pts.clone(), at: 0.0, mod_value: -1, uid: 0, heading: None, start: None, fresh: false });
+            men.push(Man { key: format!("{}:{}", if sp.kind == ManKind::TimeTrial { "tt" } else { "tour" }, sp.district), kind: sp.kind, district: sp.district, name: sp.name.clone(), car, config: sp.config.clone(), difficulty: diff, mission: String::new(), event, hidden: false, pts: sp.pts.clone(), at: 0.0, mod_value: -1, uid: 0, heading: None, start: None, fresh: false, reset: false });
         }
         // the red light and freeway racers whose scripts run
         self.alt_men(game, player_car, &mut men);
@@ -627,6 +632,7 @@ impl Roamers {
             if let Some(o) = self.men.iter().find(|o| o.key == m.key && o.config == m.config) {
                 m.at = o.at;
                 m.fresh = o.fresh;
+                m.reset = o.reset;
             }
         }
         if men.len() != self.men.len() || men.iter().zip(self.men.iter()).any(|(a, b)| a.key != b.key || a.config != b.config) {
@@ -690,7 +696,7 @@ impl Roamers {
             let Some(r) = self.alt_roll.get(&d.id) else { continue };
             let kind = if d.kind == crate::althk::AltKind::RedLight { ManKind::RedLight } else { ManKind::Freeway };
             let key = format!("{}:{}", if kind == ManKind::RedLight { "rl" } else { "fw" }, d.id);
-            men.push(Man { key, kind, district: d.district, name: r.name.clone(), car: r.car.clone(), config: r.config.clone(), difficulty: r.difficulty, mission: if r.mission { "REDLIGHT_GH_01".into() } else { String::new() }, event: String::new(), hidden: !game.alt_visible(d.id), pts: d.pts.clone(), at: 0.0, mod_value: r.mod_value, uid: d.id, heading: None, start: None, fresh: false });
+            men.push(Man { key, kind, district: d.district, name: r.name.clone(), car: r.car.clone(), config: r.config.clone(), difficulty: r.difficulty, mission: if r.mission { "REDLIGHT_GH_01".into() } else { String::new() }, event: String::new(), hidden: !game.alt_visible(d.id), pts: d.pts.clone(), at: 0.0, mod_value: r.mod_value, uid: d.id, heading: None, start: None, fresh: false, reset: false });
         }
     }
 
@@ -707,6 +713,34 @@ impl Roamers {
     }
 
     /// Returns the race to start when a run to the start line has just ended.
+    /// Script_SuspendAllOpponents (`Game::suspend_all_opponents`), every frame. As it is set every hookman's
+    /// CruisingHookmanCore (0x3d9..0x490) takes his element away, locks his racer out of streaming and resets it:
+    /// Racer_Reset (F-89258 through the racer's vfunc 76) puts the car at its reset position, which his script set to
+    /// point 0 of his loop with the heading (generic_local_hookman.sco 0x164..0x181, the time trial's and the
+    /// tournament's alike, every story core) - so the men start again from there, not from where they were. Not the
+    /// flashed man: his core has left by its flashed exit (0xe35). The red light and freeway men draw again
+    /// (`alt_men`); their reset position is their own script's and their place is kept.
+    pub fn suspend(&mut self, on: bool, race: bool, vehicles: &mut Vehicles) {
+        if on && !self.suspended {
+            self.alt_suspended = true;
+            for m in self.men.iter_mut().filter(|m| m.uid == 0) {
+                let car = vehicles.cars.iter().position(|c| c.racer && c.vinyl_name == m.config);
+                // (the run keeps only the flashed man's car)
+                if self.challenge.is_some() && car.is_some() {
+                    continue;
+                }
+                // (a race clears the cars itself; its own racers are not his)
+                if let (Some(ci), false) = (car, race) {
+                    vehicles.cars.remove(ci);
+                }
+                m.at = 0.0;
+                m.reset = true;
+            }
+            log::info!("roamers: opponents suspended, the hookmen reset to their reset positions");
+        }
+        self.suspended = on;
+    }
+
     pub fn update(&mut self, game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mut World, flash: bool, dt: f32) -> Option<usize> {
         self.near = None;
         self.accepted = false;
@@ -716,13 +750,6 @@ impl Roamers {
         }
         let Some(player) = vehicles.player() else { return None };
         let (pp, pf, pname, pspeed) = (player.state.pos, player.state.forward(), player.model.name.clone(), player.state.speed());
-        // (a gap in the cruise - a race, a scene, a menu - is the opponents' suspension: the
-        // alternative hookmen draw again, `alt_men`)
-        let s_clock = vehicles.clock as f64;
-        if s_clock - self.alt_seen > 2.0 {
-            self.alt_suspended = true;
-        }
-        self.alt_seen = s_clock;
         self.sync_timer -= dt;
         if self.sync_timer <= 0.0 {
             self.sync_timer = 1.0;
@@ -746,6 +773,10 @@ impl Roamers {
         let mut spawn: Option<usize> = None;
         let mut ahead: Vec<(String, String)> = Vec::new();
         for (k, m) in self.men.iter_mut().enumerate() {
+            // (suspended, a man waits at his reset position, his car streamed out: CruisingHookmanCore 0x497..0x523)
+            if self.suspended && m.reset {
+                continue;
+            }
             match vehicles.cars.iter().position(|c| c.racer && c.vinyl_name == m.config) {
                 Some(ci) => {
                     let cp = vehicles.cars[ci].state.pos;
@@ -781,10 +812,10 @@ impl Roamers {
                     // car is in the world from then on - OpponentManager_AddOpponentToWorld,
                     // Racer_InitializeResetPosition, Racer_Reset, `0x40a56c35` 0x76..0x1a4 -: he
                     // stays there until his car is made, if the player is in reach of it)
-                    if m.fresh && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 450.0) {
+                    if (m.fresh || m.reset) && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 450.0) {
                         ahead.push((m.car.clone(), m.config.clone()));
                     }
-                    if m.fresh && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 330.0) && only.is_none() {
+                    if (m.fresh || m.reset) && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 330.0) && only.is_none() {
                         m.at = 0.0;
                         if self.challenge.is_none() {
                             spawn = Some(k);
@@ -792,6 +823,7 @@ impl Roamers {
                         continue;
                     }
                     m.fresh = false;
+                    m.reset = false;
                     m.at += CRUISE * dt;
                     let d = loop_at(&m.pts, m.at).0.distance(pp);
                     // (his car's files read ahead on a worker thread while he is still out of reach, so
@@ -861,9 +893,12 @@ impl Roamers {
                     self.timer = 1.0;
                     if let Some(x) = self.men.get_mut(k) {
                         x.fresh = false;
+                        x.reset = false;
                     }
                     let (mut pos, mut dir, mut next) = loop_at(&m.pts, m.at);
-                    if m.fresh {
+                    // (a fresh core and a resumed one start alike: at the reset position, the brain from there)
+                    let at_reset = m.fresh || m.reset;
+                    if at_reset {
                         // (point 0 with his script's heading; the cruising brain's first point
                         // from there - CruisingHookmanCore 0x1f9..0x2ea: point 1)
                         pos = m.start.unwrap_or(m.pts[0]);
@@ -884,14 +919,14 @@ impl Roamers {
                     // three times round
                     let stops: Vec<Vec3> = (0..n * 3).map(|j| m.pts[(next + j) % n]).collect();
                     let (line, _) = nav.route_through(pos, dir, &stops, 25.0);
-                    let at = if line.len() > 8 && !m.fresh { line[0] } else { pos };
+                    let at = if line.len() > 8 && !at_reset { line[0] } else { pos };
                     // (set down on the nearest rail with ground under it, as the cruising brain's teleport - `rail_place`; the
                     // loop's point itself can be 30 m off the road, inside a block with no collision: the car fell through the
                     // map, AI.md NEW 6. No rail with ground within 80 m: not this time)
                     let placed = rail_place(world, at);
                     if let (Some((li, t, d)), Some((at, _, rail_fwd, rail_v))) = (nav.nearest_link(at), placed) {
-                        if d < 30.0 && (m.fresh || !vehicles.cars.iter().any(|c| c.state.pos.distance(at) < 25.0)) {
-                            let dir = if m.fresh { dir } else { rail_fwd };
+                        if d < 30.0 && (at_reset || !vehicles.cars.iter().any(|c| c.state.pos.distance(at) < 25.0)) {
+                            let dir = if at_reset { dir } else { rail_fwd };
                             let rgb = game.rivals.paint_of(&m.config);
                             let color = rgb.map(|c| [c[0], c[1], c[2], 1.0]).unwrap_or(PALETTE[(self.rand() * PALETTE.len() as f32) as usize % PALETTE.len()]);
                             let idx = vehicles.spawn(gpu, model, at, (-dir.x).atan2(-dir.z), color, false);
@@ -906,7 +941,7 @@ impl Roamers {
                             if m.mod_value >= 0 {
                                 c.set_perf(m.mod_value.clamp(0, 100) as f32 / 100.0);
                             }
-                            log::info!("roamers: {} ({:?}, {}, difficulty {}) in his {} {:.0} m away{}", m.name, m.kind, DISTRICTS[m.district.min(4)], m.difficulty, c.model.name, at.distance(pp), if m.fresh { format!(" - put at point 0 of his loop ({:.1}, {:.1}, {:.1}), heading {:?}, first point {}", at.x, at.y, at.z, m.heading, next) } else { String::new() });
+                            log::info!("roamers: {} ({:?}, {}, difficulty {}) in his {} {:.0} m away{}", m.name, m.kind, DISTRICTS[m.district.min(4)], m.difficulty, c.model.name, at.distance(pp), if at_reset { format!(" - put at point 0 of his loop ({:.1}, {:.1}, {:.1}), heading {:?}, first point {}", at.x, at.y, at.z, m.heading, next) } else { String::new() });
                             if let Some(ai) = c.ai.as_mut() {
                                 ai.link = Some(li);
                                 ai.t = t;

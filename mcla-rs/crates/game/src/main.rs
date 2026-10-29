@@ -5933,6 +5933,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (the run's race is current while it lasts - `Game::race_current`)
             self.game.bmt_goal = self.roam.challenge.as_ref().map(|c| c.goal);
+            // (Script_SuspendAllOpponents: the hookmen's cores and the place cores - `Roamers::suspend`,
+            // `Game::update_place_holds`)
+            self.roam.suspend(self.game.suspend_all_opponents(), self.game.race.is_some(), &mut self.vehicles);
+            let pp = self.vehicles.player().map(|c| c.state.pos);
+            self.game.update_place_holds(pp, sim_dt);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             if std::env::var("MCLA_SIGNAL_TEST").is_ok() && self.tick_no % 600 == 0 {
                 let moving = self.vehicles.cars.iter().filter(|c| !c.is_player && c.parked.is_none() && c.state.speed() > 3.0).count();
