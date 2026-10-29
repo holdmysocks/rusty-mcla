@@ -4251,6 +4251,14 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     eprintln!("car pose: x {:?} y {:?} z {:?} at {:?}", m.x_axis.truncate(), m.y_axis.truncate(), m.z_axis.truncate(), m.w_axis.truncate());
                 }
             }
+            // (MCLA_CAR_POSE_DUMP=<type name part>: that traffic type's drawn body matrix too, one update in 30)
+            if !c.is_player && std::env::var("MCLA_CAR_POSE_DUMP").is_ok_and(|v| v.len() > 1 && c.model.name.contains(v.as_str())) {
+                static M: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let k = M.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if k % 30 == 0 {
+                    eprintln!("car pose {} n {}: x {:?} y {:?} z {:?} at {:?} wheel-at {:?}", c.model.name, k, m.x_axis.truncate(), m.y_axis.truncate(), m.z_axis.truncate(), m.w_axis.truncate(), wheel_m.w_axis.truncate());
+                }
+            }
             // (the car's own lamp colours: its set-up's, else its traffic type's, else the Audi R8's - render/car_lamps.rs)
             let mut lamp_rows = (if c.is_player { player_lamps.clone() } else { None }).or_else(|| crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name)).map_or_else(|| crate::render::car_lamps::R8.uniform(), |t| t.uniform());
             // (a traffic car's lamp programs take each entry's state in the cover row's w - `AmbLamps`)

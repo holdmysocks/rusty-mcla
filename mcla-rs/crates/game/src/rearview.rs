@@ -2,18 +2,18 @@
 //! the port's own switch for it - DECISIONS.md D20; rules and measurements in docs/LIGHTING.md "Rear-view
 //! mirror (2026-10-21)").
 //!
-//! In the original the HUD's `rearView` object (class vtable 0x82027A54, made by sub_82233A60 from the HUD
-//! builder sub_826521A0) runs only when the RAGE command-line parameter `rearview` is set (0x8287E0A8 +4,
-//! registered by sub_827ACB90). Each frame (sub_82233C18) it turns render pass 0x01000000 on while the HUD
+//! In the original the HUD's `rearView` object (class vtable 0x82027A54, made by F-21135 from the HUD
+//! builder F-97322) runs only when the RAGE command-line parameter `rearview` is set (0x8287E0A8 +4,
+//! registered by F-82889). Each frame (F-16951) it turns render pass 0x01000000 on while the HUD
 //! element is up (+16 bit 0x20 - off in the pause menu) and off otherwise - at once, no fade: the fade at +1216
 //! (4 / s, 0x8200308C) only sets how strongly the overlay frame textures rear_view1 / rear_view_2 / _1bg / _2bg
-//! are drawn (sub_82233E18 -> sub_82233D68), and the shipped data has none of them, so nothing of it shows.
+//! are drawn (F-64327 -> F-46997), and the shipped data has none of them, so nothing of it shows.
 //!
-//! The pass (sub_82306500 0x01000000 -> sub_82307F28, its viewport object *(0x8288D004) made by sub_82307D68):
-//! - the rectangle (960, 57, 256, 51) of the 1280 x 720 frame (+0 .. +12), the window set by sub_8217D120;
+//! The pass (F-27689 0x01000000 -> F-40143, its viewport object *(0x8288D004) made by F-95690):
+//! - the rectangle (960, 57, 256, 51) of the 1280 x 720 frame (+0 .. +12), the window set by F-99389;
 //! - a perspective of 15 degrees vertical (+20, 0x82007F9C) at the aspect of that rectangle, 256 / 51,
-//!   with the main view's near and far (main viewport +704 / +708: 0.2, 6000 recorded) - sub_8217D460;
-//! - the camera: the player's car matrix (sub_822A8108 of sub_822A39C8(*(0x82874374))) - its body's roll and
+//!   with the main view's near and far (main viewport +704 / +708: 0.2, 6000 recorded) - F-79482;
+//! - the camera: the player's car matrix (F-35658 of F-55479(*(0x82874374))) - its body's roll and
 //!   pitch with it - at the car's origin + 1.5 m straight up (world y, 0x827E5804), its first and third rows
 //!   times -1 (0x82003770): turned half round about the car's up axis, looking backwards, NOT mirrored left to
 //!   right. (Without a player car: the main view's camera.)
@@ -24,7 +24,7 @@
 //! (VSAmbient*), and the sky dome with vs_main + ps_main_cheap; no props, foliage, pedestrians, ground dome,
 //! glows, particles, player car.
 //!
-//! The traffic's LOD in the pass (sub_82793360 0x01000000 -> sub_82794308 -> sub_827902F0, flag 1): the
+//! The traffic's LOD in the pass (F-27833 0x01000000 -> F-68463 -> F-69447, flag 1): the
 //! mirror's view; a fixed sphere radius 0.9 (0x82007FA8); the steps x 0.125 (0x82003088); -1 when deeper than
 //! 125 (0x820375A8); LOD 0 drawn as LOD 1 - `mirror_lod`.
 
@@ -32,7 +32,7 @@ use crate::render::{Frustum, Globals, Gpu, MatMode};
 use crate::vehicles::Vehicles;
 use glam::{Mat4, Quat, Vec3};
 
-/// The mirror's rectangle in the original's 1280 x 720 frame: x, y, width, height (sub_82307D68).
+/// The mirror's rectangle in the original's 1280 x 720 frame: x, y, width, height (F-95690).
 pub const RECT: [f32; 4] = [960.0, 57.0, 256.0, 51.0];
 /// Vertical field of view, degrees (+20 = 0x82007F9C).
 pub const FOV_Y_DEG: f32 = 15.0;
@@ -68,7 +68,7 @@ pub fn proj(near: f32) -> Mat4 {
     Mat4::from_cols_array(&[f / aspect, 0.0, 0.0, 0.0, 0.0, f, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, near, 0.0])
 }
 
-/// sub_827902F0 with flag 1, then the caller's LOD 0 -> 1: the LOD of a traffic car at depth `d` (the
+/// F-69447 with flag 1, then the caller's LOD 0 -> 1: the LOD of a traffic car at depth `d` (the
 /// sphere's centre along the mirror's axis, less the near distance, plus 0.9) - `steps` the type's two depths
 /// of the main view (`CarModel::lod_steps`), here x 0.125. -1: not drawn.
 pub fn mirror_lod(d: f32, steps: [f32; 2]) -> i8 {
@@ -83,7 +83,7 @@ pub fn mirror_lod(d: f32, steps: [f32; 2]) -> i8 {
 }
 
 /// Every car's LOD in the mirror (`Vehicles::lod_pick`'s layout): traffic cars by `mirror_lod` when the
-/// sphere is in the mirror's view and not behind the main view's occluders (sub_82175F20 is asked as in the
+/// sphere is in the mirror's view and not behind the main view's occluders (F-87100 is asked as in the
 /// main view's pass); cars without LODs - the player's, racers, set-up cars - are not the traffic's pass and
 /// are left out (-1).
 pub fn pick_lods(v: &Vehicles, eye: Vec3, axis: Vec3, near: f32, frustum: &Frustum, occluders: &crate::occluder::Selected) -> Vec<i8> {
@@ -109,22 +109,24 @@ pub fn pick_lods(v: &Vehicles, eye: Vec3, axis: Vec3, near: f32, frustum: &Frust
         .collect()
 }
 
-/// The ground-plane distance from `p` to a sector's box (sub_822D6B78: x and z only, 0 over the box) - the
-/// record's +268, the port's `World::dist_to`.
+/// The ground-plane gap from `p` to a sector's box (F-82919: x and z only, 0 over the box) - the record's +268: the
+/// LARGER of the two plan gaps, not their hypotenuse (read live off the original's 109 sector records, 109 of 109
+/// within 0.05 m, LIGHTING.md "Env far models decoded"). MCLA_REARVIEW_DIST_OLD=1: the hypotenuse, as until then.
 pub fn sector_distance(min: [f32; 3], max: [f32; 3], p: Vec3) -> f32 {
     let c = p.clamp(Vec3::from(min), Vec3::from(max));
-    Vec3::new(c.x - p.x, 0.0, c.z - p.z).length()
+    let (gx, gz) = ((c.x - p.x).abs(), (c.z - p.z).abs());
+    if std::env::var_os("MCLA_REARVIEW_DIST_OLD").is_some() { (gx * gx + gz * gz).sqrt() } else { gx.max(gz) }
 }
 
-/// Whether the sector drawable of this bucket (the low three bits of its shader word, sub_822E0130) is drawn in the
-/// mirror: sub_822D8350 draws buckets 0, 2 and 4 for pass 0x01000000 and bucket 1 (the blended windows and signs) only
+/// Whether the sector drawable of this bucket (the low three bits of its shader word, F-21213) is drawn in the
+/// mirror: F-65459 draws buckets 0, 2 and 4 for pass 0x01000000 and bucket 1 (the blended windows and signs) only
 /// for passes with a bit of 0x1F0; bucket 3 (the sea) comes from the water's own path, as in the main view.
 pub fn mirror_bucket(flags: u32) -> bool {
     flags & 7 != 1
 }
 
-/// sub_822D87B8 in the mirror's pass (0x01000000): a sector's detailed model only when it is loaded (state 3) and
-/// its +268 - the ground-plane distance from the MAIN camera to its box - is under 20 m (0x827E0E54, never
+/// F-75080 in the mirror's pass (0x01000000): a sector's detailed model only when it is loaded (state 3) and
+/// its +268 - the larger plan gap from the LOD view (the main camera + 10 m back) to its box - is under 20 m (0x827E0E54, never
 /// written); else its far model (when the far city is there, 0x8287C7D4). No cross-fade in this pass (its alpha
 /// is set only for the passes of bits 11 .. 20), so a far model is drawn whole even where the main view has
 /// faded it out.
@@ -135,7 +137,7 @@ pub fn mirror_detail(loaded: bool, dist: f32) -> bool {
 /// The models the mirror draws, each with whether its own object uniform (the cross-fade alpha, interiors) is
 /// bound, and for a far model the sphere round its sector's box: the loaded sectors under 20 m (drawn drawable by
 /// drawable), and the far model of every other sector (the plain uniform: whole). A far model is
-/// drawn whole when that sphere is in the mirror's view (record +292 bit 0x400, sub_822D7D00 -> sub_8217C148 on
+/// drawn whole when that sphere is in the mirror's view (record +292 bit 0x400, F-56244 -> F-29884 on
 /// the mirror's viewport): o14's 100 VSCityLOD / VSCityWindowLOD draws of the strip are exactly the far batches
 /// of the port's sectors chosen so, by index count.
 fn models(world: &crate::world::World, main_eye: Vec3) -> Vec<(&crate::world::GpuSector, bool, Option<(Vec3, f32)>)> {
@@ -146,7 +148,7 @@ fn models(world: &crate::world::World, main_eye: Vec3) -> Vec<(&crate::world::Gp
     });
     let mut out: Vec<(&crate::world::GpuSector, bool, Option<(Vec3, f32)>)> = world.loaded.iter().filter(|(id, _)| near(**id)).map(|(_, s)| (s, true, None)).collect();
     // (the garage rooms - the port's interior sets, `world::SET_ID` - are not in the mirror: the original's pass draws
-    // the sectors' drawables and far models only, sub_822D87B8, and o14 has none of the rooms' index counts in any pass)
+    // the sectors' drawables and far models only, F-75080, and o14 has none of the rooms' index counts in any pass)
     out.extend(world.far_models_by_sector().filter(|(sid, _)| !near(*sid)).map(|(sid, s)| (s, false, sphere(sid))));
     out
 }
@@ -154,7 +156,8 @@ fn models(world: &crate::world::World, main_eye: Vec3) -> Vec<(&crate::world::Gp
 /// The mirror's frame: its globals (the main view's with the mirror's camera) and the matrices.
 pub struct View {
     pub eye: Vec3,
-    /// the main view's eye: the sectors' distances (+268) are measured from it
+    /// the LOD view's eye: the sectors' distances (+268) are measured from it - the main camera moved back along its
+    /// own back axis by the tunable 10 (F-66201: the viewport's camera, position + back axis x [10]; read live, 10.0000)
     pub main_eye: Vec3,
     pub axis: Vec3,
     pub frustum: Frustum,
@@ -188,7 +191,11 @@ pub fn view(main: &Globals, car_pos: Vec3, car_rot: Quat, near: f32) -> View {
         let w = view.inverse();
         eprintln!("rearview eye {:.3} {:.3} {:.3} a {:.4?} b {:.4?} c {:.4?}", eye.x, eye.y, eye.z, w.x_axis.truncate(), w.y_axis.truncate(), w.z_axis.truncate());
     }
-    View { eye, main_eye: Vec3::new(main.cam_pos[0], main.cam_pos[1], main.cam_pos[2]), axis, frustum: Frustum::from_view_proj(vp), globals: g }
+    // (the main camera's back axis: minus the clip w row of its view-projection, w = the forward depth)
+    let main_cam = Vec3::new(main.cam_pos[0], main.cam_pos[1], main.cam_pos[2]);
+    let back = -Vec3::new(main.view_proj[0][3], main.view_proj[1][3], main.view_proj[2][3]).normalize_or_zero();
+    let main_eye = if std::env::var_os("MCLA_REARVIEW_DIST_OLD").is_some() { main_cam } else { main_cam + back * 10.0 };
+    View { eye, main_eye, axis, frustum: Frustum::from_view_proj(vp), globals: g }
 }
 
 /// Draw the mirror into the scene target and depth (after the main view's city pass): the sky (which clears the
@@ -285,8 +292,8 @@ pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::Wor
                     continue;
                 }
                 // (a far model is drawn whole. A detailed sector's drawables one by one, each when its sphere - the
-                // centre and half diagonal of its box - is in the mirror's view: sub_822DF960 keeps flag 0x400 only
-                // when sub_8217C148 passes it against the mirror's viewport at ctx+2000; the distance gate after it,
+                // centre and half diagonal of its box - is in the mirror's view: F-76875 keeps flag 0x400 only
+                // when F-29884 passes it against the mirror's viewport at ctx+2000; the distance gate after it,
                 // ctx+3188 = mirror+40 = 0.0, is off, so nothing is left out for being small or far. Batches without
                 // stored drawables (the interior sets) by their box with the main pass's small-object culling.)
                 let mut runs: Vec<(u32, u32)> = Vec::new();
@@ -301,8 +308,8 @@ pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::Wor
                         }
                     } else {
                         for p in &b.parts {
-                            // (the drawable's bucket is the low three bits of its shader word, sub_822E0130; for
-                            // pass 0x01000000 sub_822D8350 draws buckets 0, 2 and 4 - bucket 1, the blended windows
+                            // (the drawable's bucket is the low three bits of its shader word, F-21213; for
+                            // pass 0x01000000 F-65459 draws buckets 0, 2 and 4 - bucket 1, the blended windows
                             // and signs, only for passes with a bit of 0x1F0)
                             if !mirror_bucket(p.4) {
                                 continue;
@@ -366,7 +373,7 @@ pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::Wor
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
         }
         if phase == 0 {
-            // the traffic (the pass 0x01000000 of sub_82793360): opaque parts here, the glass after the city's blended
+            // the traffic (the pass 0x01000000 of F-27833): opaque parts here, the glass after the city's blended
             pass.set_pipeline(&gpu.pipeline_opaque);
             vehicles.draw(&mut pass, gpu, false, &mut draws, None, Some(&mv.frustum));
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
@@ -411,7 +418,7 @@ mod tests {
         }
     }
 
-    /// sub_822D87B8's mirror rule, with the o14s recording's sectors (record, state, +268): 227 (3, 0.0) and 228
+    /// F-75080's mirror rule, with the o14s recording's sectors (record, state, +268): 227 (3, 0.0) and 228
     /// (3, 10.2) in detail; 229 (3, 40.5), 225 (3, 87.0), 218 (3, 180.0) and 219 (2, 321.6) as far models.
     #[test]
     fn buckets_in_the_mirror() {
@@ -427,7 +434,7 @@ mod tests {
         assert!(!mirror_detail(true, 40.5));
         assert!(!mirror_detail(false, 5.0));
         assert_eq!(sector_distance([0.0, 0.0, 0.0], [10.0, 5.0, 10.0], Vec3::new(5.0, 100.0, 5.0)), 0.0);
-        assert_eq!(sector_distance([0.0, 0.0, 0.0], [10.0, 5.0, 10.0], Vec3::new(13.0, -50.0, 14.0)), 5.0);
+        assert_eq!(sector_distance([0.0, 0.0, 0.0], [10.0, 5.0, 10.0], Vec3::new(13.0, -50.0, 14.0)), 4.0);
     }
 
     #[test]
