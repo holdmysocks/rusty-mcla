@@ -7111,23 +7111,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 p.state.zones = [0.0; 4];
                 p.state.dmg.reset();
             }
+            // (F-12181 clears the six paint areas' unpainted flags; F-74884 kills the tyres' effects)
+            self.game.mc4_set_unpainted([false; 6]);
+            self.kill_player_tyre_fx();
         }
         // ---- the race-over menu's quick fix ----
         if std::mem::take(&mut self.game.quick_fix) {
             if let Some(a) = self.audio.as_mut() {
                 a.obj("QUICK_FIX_MASTER");
             }
-            if let Some(p) = self.vehicles.player_mut() {
-            // (F-12181 clears the six paint areas' unpainted flags; F-74884 kills the tyres' effects)
-            self.game.mc4_set_unpainted([false; 6]);
-            self.kill_player_tyre_fx();
-                // (the racer's restore after a repair, mcRacer#18 F-39432 - its vtable +72, called by F-32850 with 0 -
-                // resets the damage through F-11744, whose map repair takes the dents and KEEPS the scrapes; F-27947
-                // there is the chassis' reset of a car on its roof, not the map's. The port clears the scrapes here
-                // too, as the user asked on 2026-10-29: not the original's rule)
-                p.state.damage = 0.0;
-                p.state.dmg.reset();
-                p.state.zones = [0.0; 4];
             // (the restore reads the zones before it resets them: a badly hit area may come back unpainted, F-39432)
             if let Some(z) = self.vehicles.player().map(|p| p.state.zones) {
                 let mut rng = brain::rng();
@@ -7135,6 +7127,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (the restore's model reset F-11744 kills the tyres' effects, F-83592 per wheel)
             self.kill_player_tyre_fx();
+            if let Some(p) = self.vehicles.player_mut() {
+                // (the racer's restore after a repair, mcRacer#18 F-39432 - its vtable +72, called by F-32850 with 0 -
+                // resets the damage through F-11744, whose map repair takes the dents and keeps the scrapes; F-27947
+                // there is the chassis' reset of a car on its roof, not the map's)
+                p.state.damage = 0.0;
+                p.state.dmg.repair();
+                p.state.zones = [0.0; 4];
                 // (F-32850: set upright where it stands, its heading kept, then the racer's
                 // reset F-39432(0))
                 let f = p.state.forward();
@@ -11475,6 +11474,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             p.state.nitro_shots = p.state.nitro_max;
                         }
                     }
+                    if fix {
+                        // (and the unpainted flags cleared, the tyres' effects killed: F-12181, F-74884)
+                        self.game.mc4_set_unpainted([false; 6]);
+                        self.kill_player_tyre_fx();
+                    }
                     if let Some(a) = self.audio.as_mut() {
                         a.obj(if fix { "QUICK_FIX_MASTER" } else { "NITROUS_REFILL_MASTER" });
                     }
@@ -11482,11 +11486,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 // the form's close (F-81587): input back, the event camera off over 0.7 s, the
                 // Idle event's clock 0, the game resumed
-                    if fix {
-                        // (and the unpainted flags cleared, the tyres' effects killed: F-12181, F-74884)
-                        self.game.mc4_set_unpainted([false; 6]);
-                        self.kill_player_tyre_fx();
-                    }
                 if let Some(name) = self.vehicles.player().map(|c| c.model.name.clone()) {
                     self.event_dir.off_with(&self.opt.data_dir, &name, 0.7);
                 }
@@ -11940,13 +11939,6 @@ impl App {
 }
 
 impl App {
-    fn start_at_once(&mut self, event_loop: &ActiveEventLoop) {
-        // (everything at once before the first frame: OFF, headless runs and the test hooks - with the start-up
-        // movie the loading runs behind it instead, bootload.rs)
-        let window = self.open_window(event_loop);
-        let t0 = Instant::now();
-        let gpu = pollster::block_on(Gpu::new(window.clone())).unwrap_or_else(|e| crate::hooks::gpu_init_failed(&e));
-        log::info!("startup: gpu at {} ms", t0.elapsed().as_millis());
     /// The player's car's tyre effects stopped at once, their particles gone (a reset or a repair of the car: F-83592).
     fn kill_player_tyre_fx(&mut self) {
         if let (Some(t), Some(ci)) = (self.tyre_fx.as_mut(), self.vehicles.cars.iter().position(|c| c.is_player)) {
@@ -11954,6 +11946,13 @@ impl App {
         }
     }
 
+    fn start_at_once(&mut self, event_loop: &ActiveEventLoop) {
+        // (everything at once before the first frame: OFF, headless runs and the test hooks - with the start-up
+        // movie the loading runs behind it instead, bootload.rs)
+        let window = self.open_window(event_loop);
+        let t0 = Instant::now();
+        let gpu = pollster::block_on(Gpu::new(window.clone())).unwrap_or_else(|e| crate::hooks::gpu_init_failed(&e));
+        log::info!("startup: gpu at {} ms", t0.elapsed().as_millis());
         self.egui = Some(App::make_egui(&window, &gpu.device, &gpu.queue, gpu.config.format));
         if self.opt.shot.is_none() {
             self.audio = audio::Audio::new(&self.opt.data_dir);
