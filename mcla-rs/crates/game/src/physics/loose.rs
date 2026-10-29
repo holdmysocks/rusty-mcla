@@ -2884,6 +2884,13 @@ impl LooseState {
                 }
                 b.deep = false;
             }
+            // (then the instance's vtable[27] (F-18540 -> F-42894) calls the prop's "moved" callback F-33764: an
+            // active prop, or a piece broken off one, whose place is below y -300 is taken out of the simulator
+            // (F-38307), inactive at that matrix - one that fell through the world stops falling. A car or a torn
+            // bumper is no prop instance)
+            if self.objs[o].veh.is_none() && !self.pieces.iter().any(|p| p.obj == o) && now[3].y < -300.0 {
+                self.deactivate(o);
+            }
         }
         // (the entries' ages; a quarter of a second after the first hit the centre of gravity
         // goes back where the parts have it)
