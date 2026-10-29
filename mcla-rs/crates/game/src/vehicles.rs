@@ -1078,12 +1078,6 @@ fn plate_texture(gpu: &mut Gpu, world: &World) -> (Arc<GpuTexture>, u32) {
     (gpu.white.clone(), 0)
 }
 
-/// (render only) The carbon weave's normal map of the disc: `__cfnormalmap` = `cf_bump2.dds` of
-/// `textures/global/cars/globaltex` (256 x 256, x / y tilt in red / green, the strand in alpha),
-/// uploaded as stored - no gamma decoding. White when the file is missing (the shader then takes a flat map).
-fn carbon_weave(gpu: &mut Gpu, world: &World) -> (Arc<GpuTexture>, u32) {
-    const KEY: u32 = 0x9499_fb74 ^ 0x0052_4157; // joaat("cf_bump2.dds"), kept apart from a gamma-decoded upload of the same file
-    if let Some(t) = gpu.textures.get(&KEY) {
 /// The cars' maps are uploaded as stored, not gamma-decoded: no car program's fetch constant asks for gamma
 /// (the recorded noon frame, every sampler of PS_BumpSpec, PS_Light, PS_Plate, PS_Emissive, PS_BumpedChrome ...:
 /// word 0 bits 2 - 9 clear), so the original filters the stored texels and its rule follows; city.wgsl decodes
@@ -1107,6 +1101,12 @@ fn car_any(gpu: &mut Gpu, world: &mut World, key: u32) -> Option<Arc<GpuTexture>
     if car_tex_raw() { world.texture_any_raw(gpu, key) } else { world.texture_any(gpu, key) }
 }
 
+/// (render only) The carbon weave's normal map of the disc: `__cfnormalmap` = `cf_bump2.dds` of
+/// `textures/global/cars/globaltex` (256 x 256, x / y tilt in red / green, the strand in alpha),
+/// uploaded as stored - no gamma decoding. White when the file is missing (the shader then takes a flat map).
+fn carbon_weave(gpu: &mut Gpu, world: &World) -> (Arc<GpuTexture>, u32) {
+    const KEY: u32 = 0x9499_fb74 ^ 0x0052_4157; // joaat("cf_bump2.dds"), kept apart from a gamma-decoded upload of the same file
+    if let Some(t) = gpu.textures.get(&KEY) {
         return (t.clone(), KEY);
     }
     if let Some(p) = world.globaltex.get(&mcla_formats::hash::joaat("cf_bump2.dds")) {
