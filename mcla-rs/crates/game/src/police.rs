@@ -271,11 +271,15 @@ fn search_points(nav: &NavSys, world: &World, start: Vec3, v: Vec3, per: f32, fi
                 }
                 turn = random && rnd() < 0.5;
             }
-            // (F-59248: the node's lane at its middle; F-90092 on a road, else F-53622 / nav_ok - approx.: F-53622's
-            // filtered move is taken as nav_ok's)
+            // (F-59248: the node's lane at its middle; F-90092 on a road, else F-53622 - the road polygon within 10 m,
+            // which moves it there -, else nav_ok)
             let Some(lane) = nav.node_rect(n).lane else { break };
             let Some(q) = nav.curves.get(lane).map(|c| c.eval(0.5).0) else { break };
-            let q = if mesh.map_or(true, |m| m.on_road(q)) { Some(q) } else { nav_ok(q) };
+            let q = match mesh {
+                None => Some(q),
+                Some(m) if m.on_road(q) => Some(q),
+                Some(m) => m.road_teleport_target(q).or_else(|| nav_ok(q)),
+            };
             let Some(q) = q else { break };
             pts.push((q, Some(n)));
             if pts.len() >= 10 {
@@ -299,6 +303,91 @@ fn cop_sees(world: &World, cop: &crate::vehicles::CarInstance, tpos: Vec3, r: f3
     let (a, b) = (tpos + Vec3::Y * 2.0, cop.state.pos + Vec3::Y * 2.0);
     let d = a.distance(b);
     d < 1e-4 || world.collider.raycast(a, (b - a) / d, d).is_none()
+}
+
+/// The police manager's tactic kinds (types 0 - 4; docs/reference/hookmen/clip_time_and_tactics.md B): how many cops
+/// each takes (+72, set by the ctors) and the floor StartTactic (F-33550) raises the law score to. A higher kind
+/// replaces a lower one on the same target.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TacKind {
+    #[default]
+    None,
+    Dispatch,
+    PullOver,
+    Pursuit,
+    PursuitDbl,
+    ArrowTrap,
+}
+
+impl TacKind {
+    fn cops(self) -> usize {
+        match self {
+            TacKind::None => 0,
+            TacKind::PursuitDbl => 2,
+            TacKind::ArrowTrap => 3,
+            _ => 1,
+        }
+    }
+
+    fn floor(self) -> f32 {
+        match self {
+            TacKind::PullOver => 250.0,
+            TacKind::Pursuit | TacKind::PursuitDbl => 600.0,
+            TacKind::ArrowTrap => 1000.0,
+            _ => 0.0,
+        }
+    }
+
+    /// the Double Pursuit's and the Arrow Trap's squad FSM (formation, swipes) instead of the Pursuit's
+    fn squad(self) -> bool {
+        matches!(self, TacKind::PursuitDbl | TacKind::ArrowTrap)
+    }
+}
+
+/// The squad tactics' state (the Arrow Trap F-76774, the Double Pursuit F-40655; clip_time_and_tactics.md B.1 / B.2): CatchUp (the
+/// Double Pursuit's AlongSide) with its formation, or the Arrow Trap's Halt; Search and Arrest are the port's heat.
+#[derive(Clone, Debug, Default)]
+struct Squad {
+    /// CatchUp (the Double Pursuit's AlongSide) entered
+    begun: bool,
+    halt: bool,
+    /// +16: the formation's lock, +20: its hysteresis
+    lock: f32,
+    hyst: f32,
+    /// +24: the right flank's wait before its swipe, +32: its window latch
+    swipe_t: f32,
+    latch: bool,
+    /// +164 the right flank (cop A), +168 the left flank (cop B), +172 the trailing cop (C)
+    slots: [Option<u32>; 3],
+}
+
+/// One cop's brain visibility (+596 unseen time, +600 the time in the search cone; F-54688).
+#[derive(Clone, Copy, Debug, Default)]
+struct Eye {
+    unseen: f32,
+    cone_t: f32,
+}
+
+/// Dispatch to Location (type 0, update F-87106; clip_time_and_tactics.md B.3): 0 WaitToDispatch, 1 Dispatch, 2 Respond,
+/// 3 WaitAtLocation.
+#[derive(Clone, Debug)]
+struct Dispatch {
+    cop: u32,
+    st: u8,
+    t: f32,
+    /// +176: where the player was when it started
+    loc: Vec3,
+    /// the trigger's DISPATCH_* call
+    call: String,
+    /// +208: the player's trail, a point a second (15 at most), +452 its timer, +456 the seen timer
+    crumbs: Vec<Vec3>,
+    crumb_t: f32,
+    seen_t: f32,
+    /// WaitAtLocation drives the trail (true) or searches
+    trail: bool,
+    /// the brain's route is set; it has arrived (brain +576 == 1)
+    routed: bool,
+    arrived: bool,
 }
 
 /// The race's cop zone (PoliceManager +188 zone, +192 lap, +196 state, +212 timer).
@@ -353,22 +442,33 @@ pub struct Police {
     seen_time: f32,
     /// the search clock (the Search state's +16, F-40917): runs only once the searcher has started
     pub search: f32,
-    /// the tactic's cop 0 (+76[0], the request cop - the port: the pursuer nearest the target when the pursuit
-    /// begins): its brain tells the tactic it lost the target, and in a pursuit only it searches (F-72765)
-    lead: Option<u32>,
+    /// the tactic on the player and its cops (+76; cop 0 the request cop, Engage F-11097): only they chase
+    pub kind: TacKind,
+    cops: Vec<u32>,
+    /// +28: may escalate (1 for the law ladder's tactics, 0 for the payback's goons)
+    may_escalate: bool,
+    sq: Squad,
+    /// each cop's brain visibility
+    eyes: HashMap<u32, Eye>,
+    /// the dispatch to the player's place (a radio dispatch trigger)
+    dsp: Option<Dispatch>,
+    /// a DISPATCH trigger fired (main: the city's global trigger scripts): its call
+    pub dispatch_call: Option<String>,
+    /// the police radio is speaking (main), the radio byte F-62213 reads; a race is running (F-42951: a police cop in a
+    /// race plans the plain way and never swipes)
+    pub radio_busy: bool,
+    pub in_race: bool,
     /// +136: while above 0 the brains' lost flag +773 is off (F-79519; F-63286 counts it down and sets the flag
     /// again); the tactic's begin (F-82656) sets fTrackTgtTime - the manager's track byte is 1 by default (F-39756)
     track_t: f32,
     /// the lead's brain: unseen time +596, the time in the search cone +600, the last known velocity +624
-    unseen: f32,
-    cone_t: f32,
     last_known_v: Vec3,
-    /// the searcher's brain state 7
-    srch: Option<CopSearch>,
+    /// the searchers' brain state 7
+    srch: Vec<CopSearch>,
     prev_heat: Heat,
     /// a line for the police radio from the search (F-40917): REPORT_SUSPECT_LOST when the clock starts, _SPOTTED or
     /// _REACQUIRE when it ends with a sighting after 2 s
-    pub radio_cue: Option<&'static str>,
+    pub radio_cue: Vec<String>,
     arrest: f32,
     busted_timer: f32,
     /// the cops' arrest is over (its hold run out): a race running ends back in the cruise (F-22530)
@@ -424,7 +524,6 @@ pub struct Police {
     spawn_timer: f32,
     /// how long the running pursuit has lasted (seconds)
     pub chase_time: f32,
-    dispatch: f32,
     last_known: Vec3,
     /// time until the next radio report of the target's position
     radio: f32,
@@ -468,14 +567,20 @@ impl Police {
             search: 0.0,
             arrest: 0.0,
             busted_timer: 0.0,
-            lead: None,
+            kind: TacKind::None,
+            cops: Vec::new(),
+            may_escalate: false,
+            sq: Squad::default(),
+            eyes: HashMap::new(),
+            dsp: None,
+            dispatch_call: None,
+            radio_busy: false,
+            in_race: false,
             track_t: 0.0,
-            unseen: 0.0,
-            cone_t: 0.0,
             last_known_v: Vec3::ZERO,
-            srch: None,
+            srch: Vec::new(),
             prev_heat: Heat::None,
-            radio_cue: None,
+            radio_cue: Vec::new(),
             arrest_over: false,
             zone: None,
             zone_go: false,
@@ -505,7 +610,6 @@ impl Police {
             last_damage: 0.0,
             spawn_timer: 8.0,
             chase_time: 0.0,
-            dispatch: 0.0,
             last_known: Vec3::ZERO,
             radio: 0.0,
             time: 0.0,
@@ -684,7 +788,6 @@ impl Police {
         self.score = 700.0;
         // (started as a cop zone's chase is: no cop has to see the car first)
         self.zone_go = true;
-        self.dispatch = 0.0;
         if let Some((pos, fwd)) = vehicles.player().map(|c| (c.state.pos, c.state.forward())) {
             let ok = self.spawn_cop(gpu, world, vehicles, pos, fwd, 18.0, 80.0, None);
             log::info!("police: test cruiser spawned: {}", ok);
@@ -711,7 +814,72 @@ impl Police {
         self.fine = self.law_fines();
         self.lost = 0.0;
         self.arrest = 0.0;
-        self.dispatch = self.tun.get("fDispatchRdoDelayTime", 3.0);
+        let (cops, tt) = (self.cops.clone(), self.tun.get("fTrackTgtTime", 25.0));
+        self.start_tactic(TacKind::Pursuit, cops, true, tt);
+    }
+
+    /// Engage (F-11097): the tactic's `n` cops - `first` (the request cop), then the manager's cops of the group nearest
+    /// the target (squared 3D distance, any distance) not taken yet. The manager's units that have no car on the road
+    /// are streamed in for it (the original waits for them, +84; the port puts one on a road 130 - 260 m away -
+    /// where the original's comes up was not read). None when a slot stays empty.
+    fn engage(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles, n: usize, first: Option<u32>, at: Vec3, fwd: Vec3) -> Option<Vec<u32>> {
+        let mut out: Vec<u32> = first.into_iter().collect();
+        let goons = self.goons;
+        let mut cands: Vec<(f32, u32)> = vehicles.cars.iter().filter(|c| if goons { c.goon } else { c.cop && !c.goon }).filter(|c| !out.contains(&c.uid)).map(|c| (c.state.pos.distance_squared(at), c.uid)).collect();
+        cands.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, u) in cands {
+            if out.len() >= n {
+                break;
+            }
+            out.push(u);
+        }
+        while out.len() < n && !goons {
+            let Some(ui) = self.units.iter().position(|u| !vehicles.cars.iter().any(|c| c.cop && c.vinyl_name == format!("police_unit:{}", u.id))) else { break };
+            if !self.spawn_cop(gpu, world, vehicles, at, fwd, 130.0, 260.0, None) {
+                break;
+            }
+            let id = self.units[ui].id;
+            self.units[ui].under = false;
+            let Some(c) = vehicles.cars.last_mut().filter(|c| c.cop) else { break };
+            c.vinyl_name = format!("police_unit:{}", id);
+            log::info!("police: unit {} streamed in for the tactic", id);
+            out.push(c.uid);
+        }
+        (out.len() >= n).then_some(out)
+    }
+
+    /// The dispatch cop's search (cmd 7, +736 = 1: from its own place, a random turn at each junction, the first
+    /// +-pi/2 at random; F-52732 / F-92001). The direction: the target's velocity now (the brain's last known
+    /// velocity of a dispatch was not read).
+    fn dispatch_search(&mut self, world: &World, vehicles: &Vehicles, uid: u32, per: f32) {
+        let (Some(c), Some(nav)) = (vehicles.cars.iter().find(|c| c.uid == uid), world.nav.as_ref()) else { return };
+        let v = vehicles.player().map_or(Vec3::ZERO, |p| p.state.vel);
+        self.last_known_v = v;
+        let angle = if crate::brain::rng().float() < 0.5 { std::f32::consts::FRAC_PI_2 } else { -std::f32::consts::FRAC_PI_2 };
+        let mut rnd = || crate::brain::rng().float();
+        let pts = search_points(nav, world, c.state.pos, v, per, true, true, angle, &mut rnd);
+        log::info!("police: dispatch cruiser {} searches: {} goals", uid, pts.len());
+        self.srch.retain(|s| s.uid != uid);
+        self.srch.push(CopSearch { uid, no_goals: pts.is_empty(), pts, random: true, angle, ..Default::default() });
+    }
+
+    /// StartTactic (F-33550): the old tactic ends with flag 0 (its cops lose their commands; lights kept), the score
+    /// goes to the kind's floor; the base begin (F-82656): +136 = fTrackTgtTime (the manager's track byte, 1 by default -
+    /// F-39756) for the kinds whose slot 7 reads it, -1 (never lost) for the pull-over.
+    fn start_tactic(&mut self, kind: TacKind, cops: Vec<u32>, may_escalate: bool, track: f32) {
+        log::info!("police: tactic {:?} -> {:?} with cruisers {:?}", self.kind, kind, cops);
+        self.kind = kind;
+        self.cops = cops;
+        self.may_escalate = may_escalate;
+        self.tacs.clear();
+        self.srch.clear();
+        self.eyes.clear();
+        self.sq = Squad { hyst: 2.0, lock: 0.0, ..Default::default() };
+        self.score = self.score.max(kind.floor());
+        self.track_t = if kind == TacKind::PullOver { -1.0 } else { track };
+        if kind != TacKind::Dispatch {
+            self.dsp = None;
+        }
     }
 
     pub fn lights_on(&self) -> bool {
@@ -779,6 +947,9 @@ impl Police {
         vehicles.cars.retain(|c| !c.cop);
         self.goons = true;
         self.heat = Heat::Pursuit;
+        // (PoliceManager_StartPursuit kind 3, F-92929: an Arrow Trap of the group-0 cars, may-escalate byte 0)
+        let (cops, tt) = (vehicles.cars.iter().filter(|c| c.goon).map(|c| c.uid).collect(), self.tun.get("fTrackTgtTime", 25.0));
+        self.start_tactic(TacKind::ArrowTrap, cops, false, tt);
         self.score = self.tun.get("iMaxLawBreakingScore", 1000.0);
         self.fine = 0.0;
         self.lost = 0.0;
@@ -921,10 +1092,11 @@ impl Police {
         // (The port's search is the pursuit's lost-target part: lit.)
         if !self.goons {
             let lit = matches!(self.heat, Heat::Pursuit | Heat::PullOver | Heat::Search | Heat::Busted) || self.ticketing;
+            let dsp_lit = self.dsp.as_ref().filter(|d| d.st >= 2).map(|d| d.cop);
             for c in vehicles.cars.iter_mut().filter(|c| c.cop) {
-                if lit {
+                if (lit && self.cops.contains(&c.uid)) || dsp_lit == Some(c.uid) {
                     c.siren = true;
-                } else if self.heat == Heat::None && c.siren {
+                } else if self.heat == Heat::None && c.siren && self.dsp.as_ref().map_or(true, |d| d.cop != c.uid) {
                     c.siren = false;
                 }
             }
@@ -933,9 +1105,16 @@ impl Police {
             return None;
         }
         self.time += dt;
-        // (step 19d: in the payback's chase the pursuers are the client's friends)
+        // (step 19d: in the payback's chase the pursuers are the client's friends - all of them, as the original's
+        // tactic waits for the three to be streamed in)
         let goons = self.goons;
-        let pursuer = move |c: &crate::vehicles::CarInstance| if goons { c.goon } else { c.cop };
+        if goons {
+            self.cops = vehicles.cars.iter().filter(|c| c.goon).map(|c| c.uid).collect();
+        }
+        // (only the tactic's cops chase; F-76774 result 3: one of them gone - the police are lost)
+        let gone = self.kind > TacKind::Dispatch && !goons && self.cops.iter().any(|u| !vehicles.cars.iter().any(|c| c.uid == *u));
+        let members = self.cops.clone();
+        let pursuer = |c: &crate::vehicles::CarInstance| members.contains(&c.uid);
         // cruisers lying in wait join in once there is something to chase
         if !matches!(self.heat, Heat::None) {
             for c in vehicles.cars.iter_mut().filter(|c| c.cop && c.parked.is_some()) {
@@ -946,18 +1125,9 @@ impl Police {
         let Some(p) = vehicles.player() else { return None };
         let ppos = p.state.pos;
         let pvel = p.state.vel;
-        // (a pursuit begins, F-82656: +136 = fTrackTgtTime; its cop 0 - the port: the pursuer nearest the target)
         let prev_heat = std::mem::replace(&mut self.prev_heat, self.heat);
         if self.heat == Heat::Pursuit && !matches!(prev_heat, Heat::Pursuit | Heat::Search | Heat::Busted) {
-            self.track_t = self.tun.get("fTrackTgtTime", 25.0);
-            self.unseen = 0.0;
-            self.cone_t = 0.0;
-            self.lead = None;
-            self.srch = None;
             self.last_known_v = pvel;
-        }
-        if matches!(self.heat, Heat::Pursuit | Heat::Search) && !self.lead.is_some_and(|u| vehicles.cars.iter().any(|c| c.uid == u && pursuer(c))) {
-            self.lead = vehicles.cars.iter().filter(|c| pursuer(c)).min_by(|a, b| a.state.pos.distance_squared(ppos).total_cmp(&b.state.pos.distance_squared(ppos))).map(|c| c.uid);
         }
         // (F-63286: +136 runs down; at 0 the brains' lost flag +773 is set again)
         if self.track_t > 0.0 {
@@ -982,22 +1152,34 @@ impl Police {
         // ---- what the cruisers can see ---------------------------------------
         let detect = t("fDetectDist", 40.0);
         let vision = t("fVisionDist", 500.0);
-        let mut detected = false;
         let mut seen = false;
         let mut nearest = f32::INFINITY;
         let mut n_cops = 0;
+        // (F-94676 for a free cop - in no tactic, not the dispatch's -, F-52240: within fDetectDist in 3D and a clear
+        // line from 2 m above the cop to 2 m above the target, F-69576; the half angle fDetectHalfAngle 180 is no cone.
+        // The nearest such cop is the request cop of the tactic it starts or joins.)
+        let dsp_cop = self.dsp.as_ref().map(|d| d.cop);
+        let mut detector: Option<(f32, u32)> = None;
+        for c in vehicles.cars.iter().filter(|c| c.cop && !c.goon && !pursuer(c) && Some(c.uid) != dsp_cop) {
+            let d = c.state.pos.distance(ppos);
+            if d <= detect && cop_sees(world, c, ppos, detect, 0.0) && detector.map_or(true, |b| d < b.0) {
+                detector = Some((d, c.uid));
+            }
+        }
+        // (the dispatch's cop is in its tactic: the ladder takes it as the request cop)
+        if detector.is_none() {
+            if let Some(c) = vehicles.cars.iter().find(|c| Some(c.uid) == dsp_cop) {
+                let d = c.state.pos.distance(ppos);
+                if d <= detect && cop_sees(world, c, ppos, detect, 0.0) {
+                    detector = Some((d, c.uid));
+                }
+            }
+        }
+        let mut detected = detector.is_some();
         for c in vehicles.cars.iter().filter(|c| pursuer(c)) {
             n_cops += 1;
             let d = c.state.pos.distance(ppos);
             nearest = nearest.min(d);
-            // (F-94676 for a free cop, F-52240: within fDetectDist in 3D and a clear line from 2 m above the cop
-            // to 2 m above the target, F-69576; the half angle fDetectHalfAngle 180 is no cone)
-            if d <= detect && !matches!(self.heat, Heat::Pursuit | Heat::Search | Heat::PullOver | Heat::Busted) {
-                let (from, to) = (c.state.pos + Vec3::Y * 2.0, ppos + Vec3::Y * 2.0);
-                if world.collider.raycast(from, (to - from).normalize_or(Vec3::X), from.distance(to)).is_none() {
-                    detected = true;
-                }
-            }
             if d < vision {
                 let from = c.state.pos + Vec3::Y * 1.2;
                 let to = ppos + Vec3::Y * 1.0;
@@ -1008,8 +1190,11 @@ impl Police {
             }
         }
         // (a free cop touching the player is a detecting cop as well: F-52240's fallback, the cop's contacts)
-        let touched = damage > self.last_damage + 0.004 && vehicles.cars.iter().any(|c| pursuer(c) && c.state.pos.distance(ppos) < 3.4);
-        detected |= touched;
+        let touched = (damage > self.last_damage + 0.004).then_some(()).and_then(|_| vehicles.cars.iter().find(|c| c.cop && !c.goon && !pursuer(c) && c.state.pos.distance(ppos) < 3.4)).map(|c| c.uid);
+        if detector.is_none() {
+            detector = touched.map(|u| (0.0, u));
+        }
+        detected |= touched.is_some();
         // (F-52240: with a tactic on the player that has a cop, offences count with no sight test; else only a
         // detecting cop counts them - and nothing is scored in the 5 s after a tactic on the player ended)
         let in_tactic = n_cops > 0 && !matches!(self.heat, Heat::None);
@@ -1196,9 +1381,12 @@ impl Police {
         // until its bullhorn has run out, in a pursuit to iMax - 1)
         let max_score = t("iMaxLawBreakingScore", 1000.0);
         let pull = t("iPullOverLawBreakScore", 250.0);
+        // (in a Pursuit or Double Pursuit 999 until it may escalate, vt+24: F-62213 / F-73000, F-38605 - not in its Delay, no radio line
+        // playing, its may-escalate byte, not searching or arresting, no arrest timer running; 1000 in an Arrow Trap)
+        let escalates = !self.radio_busy && self.may_escalate && !matches!(self.heat, Heat::Search | Heat::Busted) && self.arrest <= 0.0 && (self.kind != TacKind::Pursuit || self.flee_hold <= 0.0);
         let cap = match self.heat {
             Heat::PullOver if self.bullhorn != Some(0.0) => t("iPursuitLawBreakScore", 600.0) - 1.0,
-            Heat::Pursuit | Heat::Search | Heat::Busted => max_score - 1.0,
+            _ if matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl) && !escalates => max_score - 1.0,
             _ => max_score,
         };
         if breaking {
@@ -1228,23 +1416,38 @@ impl Police {
         let arrest_speed = t("fArrestTgtThresholdSpd", 10.0) / MPH;
         match self.heat {
             Heat::None => {
-                // (F-52240's ladder needs a detecting cop; StartTactic, F-33550, raises the score to the tactic's
-                // floor - the zone's scripted chase too)
+                // (F-52240's ladder needs a detecting cop, the request cop: at iMaxLawBreakingScore an Arrow Trap, from
+                // iPursuitLawBreakScore a Pursuit, from iPullOverLawBreakScore a Pull Over; StartTactic, F-33550, raises
+                // the score to the tactic's floor - the zone's scripted chase too, its cop the nearest)
                 let zone = std::mem::take(&mut self.zone_go);
-                if zone || (detected && self.score >= t("iPursuitLawBreakScore", 600.0)) {
-                    self.score = self.score.max(t("iPursuitLawBreakScore", 600.0));
-                    self.heat = Heat::Pursuit;
-                    self.last_known = ppos;
-                    self.fine = self.law_fines();
-                    self.lost = 0.0;
-                    self.dispatch = t("fDispatchRdoDelayTime", 3.0);
-                    event = Some(Event::Pursuit);
+                let first = detector.map(|d| d.1);
+                let tt = t("fTrackTgtTime", 25.0);
+                let kind = if detected && self.score >= max_score {
+                    TacKind::ArrowTrap
+                } else if zone || (detected && self.score >= t("iPursuitLawBreakScore", 600.0)) {
+                    TacKind::Pursuit
                 } else if detected && self.score >= pull {
-                    self.heat = Heat::PullOver;
-                    self.bullhorn = None;
-                    self.ticket_hold = None;
-                    self.arrest = 0.0;
-                    event = Some(Event::PullOver);
+                    TacKind::PullOver
+                } else {
+                    TacKind::None
+                };
+                if kind != TacKind::None {
+                    if let Some(cops) = self.engage(gpu, world, vehicles, kind.cops(), if zone && !detected { None } else { first }, ppos, pfwd) {
+                        self.start_tactic(kind, cops, true, tt);
+                        if kind == TacKind::PullOver {
+                            self.heat = Heat::PullOver;
+                            self.bullhorn = None;
+                            self.ticket_hold = None;
+                            self.arrest = 0.0;
+                            event = Some(Event::PullOver);
+                        } else {
+                            self.heat = Heat::Pursuit;
+                            self.last_known = ppos;
+                            self.fine = self.law_fines();
+                            self.lost = 0.0;
+                            event = Some(Event::Pursuit);
+                        }
+                    }
                 }
             }
             Heat::PullOver => {
@@ -1268,11 +1471,18 @@ impl Police {
                         event = Some(Event::Ticket(self.law_fines() as i64));
                     }
                 } else if hit_cop || self.score >= t("iPursuitLawBreakScore", 600.0) {
+                    // (the pull-over's cop is the request cop; at 1000 an Arrow Trap)
+                    let kind = if self.score >= max_score { TacKind::ArrowTrap } else { TacKind::Pursuit };
+                    let first = self.cops.first().copied();
+                    let cops = self.engage(gpu, world, vehicles, kind.cops(), first, ppos, pfwd).or_else(|| self.engage(gpu, world, vehicles, 1, first, ppos, pfwd));
+                    if let Some(cops) = cops {
+                        let kind = if cops.len() >= 3 { kind } else { TacKind::Pursuit };
+                        self.start_tactic(kind, cops, true, t("fTrackTgtTime", 25.0));
+                    }
                     self.heat = Heat::Pursuit;
                     self.last_known = ppos;
                     self.fine = self.law_fines();
                     self.lost = 0.0;
-                    self.dispatch = t("fDispatchRdoDelayTime", 3.0);
                     event = Some(Event::Pursuit);
                 } else if speed < arrest_speed && nearest < t("fPullOverDist", 15.0) + 1.0 {
                     // (F-29906's arrest timer: a cop of the tactic within its radius + 1 m - the pull-over's
@@ -1293,34 +1503,87 @@ impl Police {
                 // (the lead's brain, F-54688 outside the search: seen within fVisionDist with a clear line - unseen 0
                 // and the last known place / velocity the target's; unseen with the lost flag +773: unseen time,
                 // the last known kept once it passes fLostTgtThresholdTime; else the last known follows the target)
-                let lead_sees = self.lead.and_then(|u| vehicles.cars.iter().find(|c| c.uid == u)).is_some_and(|c| cop_sees(world, c, ppos, vision, 0.0));
                 let thr = t("fLostTgtThresholdTime", 1.5);
-                if lead_sees {
-                    self.unseen = 0.0;
-                } else if track_flag {
-                    self.unseen += dt;
-                    if self.unseen > thr {
-                        self.cone_t = 0.0;
+                // (each cop's brain; a Pursuit loses the target when its cop 0 does (F-68032), a squad when every cop
+                // has (F-76774 / F-40655), and a squad's cops share the last known place and velocity)
+                let mut lost_n = 0;
+                let mut know = false;
+                for u in self.cops.clone() {
+                    let Some(c) = vehicles.cars.iter().find(|c| c.uid == u) else { continue };
+                    let sees = cop_sees(world, c, ppos, vision, 0.0);
+                    let e = self.eyes.entry(u).or_default();
+                    if sees {
+                        e.unseen = 0.0;
+                    } else if track_flag {
+                        e.unseen += dt;
+                        if e.unseen > thr {
+                            e.cone_t = 0.0;
+                        }
+                    }
+                    let lost = track_flag && e.unseen > thr;
+                    if lost {
+                        lost_n += 1;
+                    } else {
+                        know = true;
                     }
                 }
-                if lead_sees || !(track_flag && self.unseen > thr) {
+                let lead_lost = self.cops.first().and_then(|u| self.eyes.get(u)).is_some_and(|e| track_flag && e.unseen > thr);
+                let all_lost = lost_n > 0 && lost_n == self.cops.len();
+                if know && (self.kind.squad() || !lead_lost) {
                     self.last_known = ppos;
                     self.last_known_v = pvel;
                 }
-                self.lost = self.unseen;
-                // (F-68032: into Search when the lead's +773 is set and its unseen time passes the threshold; the
-                // pursuit's searcher is its cop 0 alone, with no random turns and no turn angle, F-72765)
-                if track_flag && self.unseen > thr {
+                self.lost = self.cops.first().and_then(|u| self.eyes.get(u)).map_or(0.0, |e| e.unseen);
+                let into_search = if self.kind.squad() { all_lost } else { lead_lost };
+                // (into Search; the pursuit's searcher is its cop 0 alone, no random turns, no turn angle (F-72765); the
+                // Arrow Trap's: the cop nearest the target 0, the others +pi/2, -pi/2 in turn (F-17906); the Double
+                // Pursuit's: the nearer 0, the other +-pi/2 at random (F-68396))
+                if into_search {
                     self.heat = Heat::Search;
                     self.search = 0.0;
                     self.seen_time = 0.0;
                     self.radio = t("fMinPerRdoTime", 15.0);
-                    self.srch = None;
-                    if let (Some(u), Some(nav)) = (self.lead, world.nav.as_ref()) {
-                        let mut rnd = || crate::brain::rng().float();
-                        let pts = search_points(nav, world, self.last_known, self.last_known_v, t("fMinSetGoalTime", 1.0), true, false, 0.0, &mut rnd);
-                        log::info!("police: cruiser {} search goals: {}", u, pts.len());
-                        self.srch = Some(CopSearch { uid: u, no_goals: pts.is_empty(), pts, ..Default::default() });
+                    self.srch.clear();
+                    let mut order: Vec<(f32, u32)> = self.cops.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u)).map(|c| (c.state.pos.distance_squared(ppos), c.uid)).collect();
+                    if self.kind.squad() {
+                        order.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    } else {
+                        order.truncate(1);
+                    }
+                    if let Some(nav) = world.nav.as_ref() {
+                        let mut sign = 1.0;
+                        for (k, (_, u)) in order.into_iter().enumerate() {
+                            let angle = if k == 0 {
+                                0.0
+                            } else if self.kind == TacKind::PursuitDbl {
+                                if crate::brain::rng().float() < 0.5 { std::f32::consts::FRAC_PI_2 } else { -std::f32::consts::FRAC_PI_2 }
+                            } else {
+                                let a = sign * std::f32::consts::FRAC_PI_2;
+                                sign = -sign;
+                                a
+                            };
+                            let mut rnd = || crate::brain::rng().float();
+                            let pts = search_points(nav, world, self.last_known, self.last_known_v, t("fMinSetGoalTime", 1.0), true, false, angle, &mut rnd);
+                            log::info!("police: cruiser {} search goals: {} (turn {:.2})", u, pts.len(), angle);
+                            self.srch.push(CopSearch { uid: u, no_goals: pts.is_empty(), pts, angle, ..Default::default() });
+                        }
+                    }
+                }
+                // (the second-cop upgrade, F-22881: a free patrolling cop that detects the pursued target joins - a Pursuit
+                // becomes a Double Pursuit, a Double Pursuit an Arrow Trap, the joining cop first - when the tactic may
+                // escalate; at iMaxLawBreakingScore the ladder makes it an Arrow Trap with its own cop 0)
+                if self.heat == Heat::Pursuit && self.may_escalate && !goons {
+                    let up = if self.score >= max_score && self.kind != TacKind::ArrowTrap {
+                        Some((TacKind::ArrowTrap, self.cops.first().copied()))
+                    } else if let Some((_, u)) = detector.filter(|_| matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl)) {
+                        Some((if self.kind == TacKind::Pursuit { TacKind::PursuitDbl } else { TacKind::ArrowTrap }, Some(u)))
+                    } else {
+                        None
+                    };
+                    if let Some((kind, first)) = up {
+                        if let Some(cops) = self.engage(gpu, world, vehicles, kind.cops(), first, ppos, pfwd) {
+                            self.start_tactic(kind, cops, true, t("fTrackTgtTime", 25.0));
+                        }
                     }
                 }
                 // (F-29906: within the pursuit's radius, fSafeDist (F-54202), + 1 m)
@@ -1345,30 +1608,38 @@ impl Police {
                 // known place and velocity stay.)
                 let thr = t("fLostTgtThresholdTime", 1.5);
                 let reacq = t("fReacquireTgtThresholdTime", 0.3);
-                let cop = self.srch.as_ref().and_then(|s| vehicles.cars.iter().find(|c| c.uid == s.uid));
-                let (started, no_goals) = self.srch.as_ref().map_or((false, true), |s| (s.started, s.no_goals));
-                self.unseen += dt;
-                if let Some(c) = cop.filter(|_| !no_goals) {
-                    if cop_sees(world, c, ppos, if started { 15.0 } else { vision }, 0.0) {
-                        self.cone_t = reacq;
-                        self.unseen = 0.0;
-                    } else if cop_sees(world, c, ppos, vision, t("fSearchHalfAngle", 45.0)) {
-                        self.cone_t += dt;
-                        if self.cone_t > reacq {
-                            self.unseen = 0.0;
+                // (each searcher's brain; the tactic's Search, F-40917 / F-32025: found when some cop is not lost, or
+                // is lost with no search goals and sees it within fVisionDist; the clock runs once a searcher started)
+                let mut found = false;
+                let mut started = false;
+                for s in &self.srch {
+                    let Some(c) = vehicles.cars.iter().find(|c| c.uid == s.uid) else { continue };
+                    started |= s.started;
+                    let e = self.eyes.entry(s.uid).or_default();
+                    e.unseen += dt;
+                    if !s.no_goals {
+                        if cop_sees(world, c, ppos, if s.started { 15.0 } else { vision }, 0.0) {
+                            e.cone_t = reacq;
+                            e.unseen = 0.0;
+                        } else if cop_sees(world, c, ppos, vision, t("fSearchHalfAngle", 45.0)) {
+                            e.cone_t += dt;
+                            if e.cone_t > reacq {
+                                e.unseen = 0.0;
+                            }
+                        } else {
+                            e.cone_t = 0.0;
                         }
-                    } else {
-                        self.cone_t = 0.0;
                     }
+                    let lost = track_flag && e.unseen > thr;
+                    found |= !lost || (s.no_goals && cop_sees(world, c, ppos, vision, 0.0));
                 }
-                self.lost = self.unseen;
-                // (the tactic's Search, F-40917: lost = +773 and unseen past the threshold; with no goals a sighting
-                // within fVisionDist counts)
-                let lost = track_flag && self.unseen > thr;
-                let found = !lost || (no_goals && cop.is_some_and(|c| cop_sees(world, c, ppos, vision, 0.0)));
+                if self.srch.is_empty() {
+                    found = !track_flag;
+                }
+                self.lost = self.srch.first().and_then(|s| self.eyes.get(&s.uid)).map_or(0.0, |e| e.unseen);
                 if started && self.search == 0.0 && !self.goons {
                     // (the clock's first tick: the radio stopped, REPORT_SUSPECT_LOST)
-                    self.radio_cue = Some("REPORT_SUSPECT_LOST");
+                    self.radio_cue.push("REPORT_SUSPECT_LOST".into());
                 }
                 if found {
                     if self.search <= 0.0 {
@@ -1380,15 +1651,16 @@ impl Police {
                     } else {
                         self.track_t = 20.0;
                         if !self.goons {
-                            self.radio_cue = Some(if self.search / t("fSearchMaxTime", 35.0) < 0.5 { "REPORT_SUSPECT_SPOTTED" } else { "REPORT_SUSPECT_REACQUIRE" });
+                            self.radio_cue.push(if self.search / t("fSearchMaxTime", 35.0) < 0.5 { "REPORT_SUSPECT_SPOTTED" } else { "REPORT_SUSPECT_REACQUIRE" }.into());
                         }
                         self.search = 0.0;
                         self.heat = Heat::Pursuit;
                     }
                     if self.heat == Heat::Pursuit {
-                        self.unseen = 0.0;
-                        self.srch = None;
+                        self.eyes.clear();
+                        self.srch.clear();
                         self.tacs.clear();
+                        self.sq = Squad { hyst: 2.0, ..Default::default() };
                     }
                 } else {
                     if started {
@@ -1418,6 +1690,298 @@ impl Police {
             }
         }
 
+        // (result 3, a tactic cop gone: the manager loses the police, F-22530)
+        if gone && matches!(self.heat, Heat::Pursuit | Heat::Search | Heat::PullOver) {
+            log::info!("police: a cruiser of the {:?} is gone - the police are lost", self.kind);
+            self.clear();
+            self.grace = 5.0;
+            event = Some(Event::Escaped);
+        }
+
+        // (a ticket or a lost pull-over: the tactic is over)
+        if self.heat == Heat::None && self.kind > TacKind::Dispatch {
+            self.kind = TacKind::None;
+            self.cops.clear();
+        }
+
+        // ---- Dispatch to Location (F-86831 starts it, F-87106 runs it) --------
+        // (a DISPATCH trigger: nothing when the player is in a tactic; the cop the nearest not underground and in no
+        // tactic, no distance limit; the location the player's place now; no score change)
+        if let Some(call) = self.dispatch_call.take() {
+            if self.heat == Heat::None && self.kind == TacKind::None && !goons {
+                let cop = vehicles.cars.iter().filter(|c| c.cop && !c.goon).min_by(|a, b| a.state.pos.distance_squared(ppos).total_cmp(&b.state.pos.distance_squared(ppos))).map(|c| c.uid);
+                if let Some(cop) = cop {
+                    log::info!("police: dispatch {} - cruiser {}", call, cop);
+                    self.kind = TacKind::Dispatch;
+                    self.cops.clear();
+                    self.dsp = Some(Dispatch { cop, st: 0, t: 0.0, loc: ppos, call, crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0, trail: false, routed: false, arrived: false });
+                }
+            }
+        }
+        if self.kind != TacKind::Dispatch || self.heat != Heat::None {
+            self.dsp = None;
+        }
+        if let Some(mut d) = self.dsp.take() {
+            let cop = vehicles.cars.iter().find(|c| c.uid == d.cop);
+            let mut result = 0;
+            d.t += dt;
+            // (the player's trail: a point a second, 15 at most, while the cop has not reached the place)
+            if d.st < 3 && d.crumbs.len() < 15 && d.crumb_t > 0.0 {
+                d.crumb_t -= dt;
+                if d.crumb_t <= 0.0 {
+                    d.crumb_t = 1.0;
+                    d.crumbs.push(ppos);
+                }
+            }
+            match cop {
+                None => result = 3,
+                Some(c) => {
+                    // (Respond / WaitAtLocation: the cop sees the target within fRdoVicinityDist, line of sight, over 0.5 s)
+                    if d.st >= 2 && cop_sees(world, c, ppos, t("fRdoVicinityDist", 100.0), 0.0) {
+                        d.seen_t += dt;
+                        if d.seen_t > 0.5 {
+                            result = 1;
+                        }
+                    } else {
+                        d.seen_t = 0.0;
+                    }
+                }
+            }
+            if result == 0 {
+                match d.st {
+                    // WaitToDispatch (F-64066): fDispatchRdoDelayTime and no radio line playing
+                    0 if d.t > t("fDispatchRdoDelayTime", 3.0) && !self.radio_busy => {
+                        d.st = 1;
+                        d.t = 0.0;
+                        // (Dispatch F-44635: the DISPATCH line of the trigger's sound record)
+                        self.radio_cue.push(d.call.clone());
+                    }
+                    // (F-52633: on to Respond when the line has played)
+                    1 if d.t > 0.0 && !self.radio_busy => {
+                        d.st = 2;
+                        d.t = 0.0;
+                        d.routed = false;
+                        d.arrived = false;
+                        // (Respond F-81858: REPORT_ACCEPT_CALL, GoToPosition to the place, siren on)
+                        self.radio_cue.push("REPORT_ACCEPT_CALL".into());
+                    }
+                    2 if d.arrived => {
+                        // (WaitAtLocation F-52732: along the player's trail, else a search at once, +-pi/2 at random)
+                        d.st = 3;
+                        d.t = 0.0;
+                        d.routed = false;
+                        d.arrived = false;
+                        d.trail = !d.crumbs.is_empty();
+                        if !d.trail {
+                            self.dispatch_search(world, vehicles, d.cop, t("fMinSetGoalTime", 1.0));
+                        }
+                    }
+                    3 => {
+                        // (F-92001: fDispatchLocWaitTime at the place ends it; at the trail's last crumb a search)
+                        if d.t > t("fDispatchLocWaitTime", 30.0) {
+                            result = 2;
+                        } else if d.trail && d.arrived {
+                            d.trail = false;
+                            if let Some(&last) = d.crumbs.last() {
+                                self.last_known = last;
+                            }
+                            self.dispatch_search(world, vehicles, d.cop, t("fMinSetGoalTime", 1.0));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            match result {
+                // (F-22530: a dispatch's result 1 starts a Pursuit with its cop)
+                1 => {
+                    log::info!("police: dispatch cruiser {} sees the player - pursuit", d.cop);
+                    self.srch.clear();
+                    self.start_tactic(TacKind::Pursuit, vec![d.cop], true, t("fTrackTgtTime", 25.0));
+                    self.heat = Heat::Pursuit;
+                    self.last_known = ppos;
+                    self.fine = self.law_fines();
+                    self.lost = 0.0;
+                    event = Some(Event::Pursuit);
+                }
+                // (2: 30 s at the place, 3: its cop gone - the record cleared, 5 s grace)
+                2 | 3 => {
+                    log::info!("police: dispatch over ({})", result);
+                    self.clear();
+                    self.grace = 5.0;
+                }
+                _ => self.dsp = Some(d),
+            }
+        }
+        let dsp_cop = self.dsp.as_ref().map(|d| d.cop);
+
+        // ---- the squad tactics: the Arrow Trap's and the Double Pursuit's FSM (F-76774 / F-40655) ---------------
+        let members = self.cops.clone();
+        let pursuer = |c: &crate::vehicles::CarInstance| members.contains(&c.uid);
+        let safe = t("fSafeDist", 30.0);
+        let along = t("fAlongSideDist", 5.0);
+        let moving_v = t("fMovingSpeed", 1.0) * 0.447;
+        let t_moving = speed > moving_v;
+        // (F-42951: false only for a group cop - not a goon - while a race runs: then the brains plan the plain way and
+        // the squad never swipes)
+        let ed78 = !(self.in_race && !goons);
+        let mut swipes: HashMap<u32, crate::ai::Overrides> = HashMap::new();
+        if self.kind.squad() && self.heat == Heat::Pursuit && self.flee_hold <= 0.0 && self.cops.len() == self.kind.cops() {
+            let arrow = self.kind == TacKind::ArrowTrap;
+            // (closing(r): the cop moving, faster than the target and heading at it within 25.8 deg, within r)
+            let closing = |c: &crate::vehicles::CarInstance, r: f32| {
+                let (to, cv) = (ppos - c.state.pos, c.state.vel);
+                let cs = cv.length();
+                (r == 0.0 || to.length() < r) && cs > moving_v && cs > speed && to.normalize_or_zero().dot(cv / cs.max(1e-6)) > 0.9
+            };
+            let any_safe = vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| c.state.pos.distance(ppos) < safe);
+            // (the formation, F-80532 / F-21534: the right slot cop A's route point when it is on the target's right,
+            // else 5 m to the right; the left cop B's when it is not, else 5 m to the left; the Arrow Trap's third 5 m
+            // behind. The cops go to the slots of the smallest sum of squared distances, the flanks AlongSide (side 1 /
+            // side 0), the third Pursue - sent once a change has been wanted over 1 s)
+            let formation = |sq: &mut Squad, tacs: &mut HashMap<u32, CopTac>, vehicles: &Vehicles, dt: f32| -> bool {
+                let route = |u: Option<u32>| {
+                    let c = vehicles.cars.iter().find(|c| Some(c.uid) == u)?;
+                    Some(c.ai.as_ref().and_then(|a| a.brain.0.as_ref()).and_then(|b| b.heading_for().1).unwrap_or(c.state.pos))
+                };
+                let right_of = |q: Vec3| pright.dot(q - ppos) > 0.0;
+                let r = route(sq.slots[0]).filter(|&q| right_of(q)).unwrap_or(ppos + pright * along);
+                let l = route(sq.slots[1]).filter(|&q| !right_of(q)).unwrap_or(ppos - pright * along);
+                let slots = [r, l, ppos - pfwd * along];
+                let pos: Vec<Vec3> = members.iter().map(|u| vehicles.cars.iter().find(|c| c.uid == *u).map_or(Vec3::ZERO, |c| c.state.pos)).collect();
+                let perms: &[[usize; 3]] = if arrow { &[[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] } else { &[[0, 1, 2], [1, 0, 2]] };
+                let mut best = (f32::INFINITY, perms[0]);
+                for pm in perms {
+                    let sum: f32 = (0..pos.len()).map(|k| pos[k].distance_squared(slots[pm[k]])).sum();
+                    if sum < best.0 {
+                        best = (sum, *pm);
+                    }
+                }
+                let want = |k: usize| match best.1[k] {
+                    0 => (Tac::AlongSide, true),
+                    1 => (Tac::AlongSide, false),
+                    _ => (Tac::CatchUp, false),
+                };
+                let changed: Vec<usize> = (0..pos.len()).filter(|&k| {
+                    let (st, side) = want(k);
+                    tacs.get(&members[k]).map_or(true, |tc| tc.st != st || (st == Tac::AlongSide && tc.side != side))
+                }).collect();
+                if changed.is_empty() {
+                    sq.hyst = 0.0;
+                    return false;
+                }
+                sq.hyst += dt;
+                if sq.hyst <= 1.0 {
+                    return false;
+                }
+                sq.hyst = 0.0;
+                for k in changed {
+                    let (st, side) = want(k);
+                    let tc = tacs.entry(members[k]).or_default();
+                    *tc = CopTac { st, side, ..Default::default() };
+                }
+                // (F-80532's tail: +172 the trailing cop, +164 the side-1 cop, +168 the other)
+                sq.slots = [None; 3];
+                for k in 0..pos.len() {
+                    sq.slots[best.1[k]] = Some(members[k]);
+                }
+                true
+            };
+            let mut sq = std::mem::take(&mut self.sq);
+            let mut tacs = std::mem::take(&mut self.tacs);
+            if sq.halt {
+                // Halt (F-58305 / F-16041): the cops within fSafeDist Stop again, x 0.5 when closing; none within it, or
+                // the target over fArrestTgtThresholdSpd -> CatchUp
+                if !any_safe || mph > t("fArrestTgtThresholdSpd", 10.0) {
+                    sq.halt = false;
+                    sq.begun = false;
+                } else {
+                    for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
+                        let tc = tacs.entry(c.uid).or_default();
+                        if tc.st != Tac::Halt {
+                            *tc = CopTac { st: Tac::Halt, ..Default::default() };
+                        }
+                        if closing(c, 0.0) {
+                            c.state.vel *= 0.5;
+                        }
+                    }
+                }
+            }
+            if !sq.halt {
+                if !sq.begun {
+                    // (CatchUp's enter, F-81752 / F-86874: slots -1, hysteresis 2, the formation at once, lock 5 s)
+                    sq = Squad { begun: true, hyst: 2.0, ..Default::default() };
+                    formation(&mut sq, &mut tacs, vehicles, 0.0);
+                    sq.lock = 5.0;
+                } else {
+                    // (F-47983 / F-41674: once the lock has run out the formation every tick, the lock again on a send)
+                    sq.lock -= dt;
+                    if sq.lock < 0.0 && formation(&mut sq, &mut tacs, vehicles, dt) {
+                        sq.lock = 5.0;
+                    }
+                }
+                // the flank swipes (only when F-42951 holds for cop A): the Arrow Trap's within 10 m, behind the
+                // target, A with it on its left 135 - 160 deg off its right axis (after REPORT_MANEUVER_CLOSE and
+                // 0.5 s), B with it on its right 20 - 45 deg; the Double Pursuit's within 15 m, 160 - 180 / 0 - 20 deg
+                let (near, a_win, b_win) = if arrow { (10.0, (135.0, 160.0), (20.0, 45.0)) } else { (15.0, (160.0, 180.0), (0.0, 20.0)) };
+                let geo = |u: Option<u32>| -> Option<(f32, bool, bool, bool, f32)> {
+                    let c = vehicles.cars.iter().find(|c| Some(c.uid) == u)?;
+                    let to = ppos - c.state.pos;
+                    Some((to.length(), c.state.forward().dot(to) > 0.0, c.state.right().dot(to) > 0.0, pvel.dot(c.state.vel) > 0.0, c.state.right().angle_between(to).to_degrees()))
+                };
+                if ed78 {
+                    let mut a_in = false;
+                    if let Some((d, ahead, on_right, same_dir, bearing)) = geo(sq.slots[0]) {
+                        if d < near && same_dir && !(arrow && ahead) && !on_right && bearing > a_win.0 && bearing < a_win.1 {
+                            a_in = true;
+                            if !sq.latch {
+                                sq.latch = true;
+                                sq.swipe_t = 0.5;
+                                if !goons {
+                                    self.radio_cue.push("REPORT_MANEUVER_CLOSE".into());
+                                }
+                            } else {
+                                sq.swipe_t = (sq.swipe_t - dt).max(0.0);
+                                if sq.swipe_t <= 0.0 {
+                                    swipes.insert(sq.slots[0].unwrap_or_default(), crate::ai::Overrides { steer: Some(-1.0), brake: Some(1.0), ..Default::default() });
+                                }
+                            }
+                        }
+                    }
+                    if !a_in {
+                        sq.swipe_t = 0.0;
+                        sq.latch = false;
+                    }
+                    if let Some((d, ahead, on_right, same_dir, bearing)) = geo(sq.slots[1]) {
+                        if d < near && same_dir && !(arrow && ahead) && on_right && bearing > b_win.0 && bearing < b_win.1 {
+                            swipes.insert(sq.slots[1].unwrap_or_default(), crate::ai::Overrides { steer: Some(1.0), brake: Some(1.0), ..Default::default() });
+                        }
+                    }
+                    // (every cop head-on within fHeadOnBlockDist: handbrake, full lock to the target's side)
+                    for u in &members {
+                        if let (Some(tc), Some((d, _, on_right, _, _))) = (tacs.get(u), geo(Some(*u))) {
+                            if tc.head_on && d < t("fHeadOnBlockDist", 60.0) {
+                                swipes.insert(*u, crate::ai::Overrides { handbrake: Some(true), steer: Some(if on_right { 1.0 } else { -1.0 }), ..Default::default() });
+                            }
+                        }
+                    }
+                }
+                // (the Arrow Trap: a cop within fSafeDist of a target that has stopped -> Halt: those within it Stop,
+                // x 0.5 when closing)
+                if arrow && any_safe && !t_moving {
+                    log::info!("police: arrow trap halts");
+                    sq.halt = true;
+                    for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
+                        tacs.insert(c.uid, CopTac { st: Tac::Halt, ..Default::default() });
+                        if closing(c, 0.0) {
+                            c.state.vel *= 0.5;
+                        }
+                    }
+                }
+            }
+            self.sq = sq;
+            self.tacs = tacs;
+        }
+
         // ---- cruisers ---------------------------------------------------------
         let chasing = matches!(self.heat, Heat::Pursuit | Heat::Search | Heat::PullOver | Heat::Busted);
         self.flee_hold = (self.flee_hold - dt).max(0.0);
@@ -1427,29 +1991,26 @@ impl Police {
         // (in the Search the tactic's other cops keep the command they had: their states do not change)
         let searching = self.heat == Heat::Search;
         let tactic = matches!(self.heat, Heat::Pursuit | Heat::PullOver | Heat::Search) && self.flee_hold <= 0.0;
-        let searcher = self.srch.as_ref().map(|s| s.uid);
+        let squad = self.kind.squad();
         let pull = self.heat == Heat::PullOver;
-        let safe = t("fSafeDist", 30.0);
-        let along = t("fAlongSideDist", 5.0);
         let period = t("fMinSetGoalTime", 1.0);
-        let moving_v = t("fMovingSpeed", 1.0) * 0.447;
-        let t_moving = speed > moving_v;
         let dropped = self.last_tspeed - speed;
         self.last_tspeed = speed;
         // (every cop of the tactic within r of the target: F-90575, F-36876)
         let within = |r: f32| vehicles.cars.iter().filter(|c| pursuer(c)).all(|c| c.state.pos.distance(ppos) < r);
         let (all_block, all_halt) = (within(0.5 * safe), within(safe - 1.0));
         let on_road = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_road(q));
-        for c in vehicles.cars.iter_mut().filter(|c| pursuer(c)) {
+        for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) || Some(c.uid) == dsp_cop) {
+            let is_dsp = Some(c.uid) == dsp_cop && !pursuer(c);
             let Some(ai) = c.ai.as_mut() else { continue };
             ai.chase_exact = false;
-            if self.flee_hold > 0.0 && self.heat == Heat::Pursuit {
+            if self.flee_hold > 0.0 && self.heat == Heat::Pursuit && !is_dsp {
                 // (the Delay state: brain command 1, halt, until its time is up)
                 ai.chase = Some((c.state.pos, Vec3::ZERO));
                 ai.ovr = Some(crate::ai::Overrides { brake: Some(1.0), throttle: Some(0.0), ..Default::default() });
-            } else if searching && searcher == Some(c.uid) {
+            } else if (searching || is_dsp) && self.srch.iter().any(|s| s.uid == c.uid) {
                 // ---- the search (brain state 7: F-57507, F-15801, the route F-55529) ----
-                let Some(s) = self.srch.as_mut() else { continue };
+                let Some(s) = self.srch.iter_mut().find(|s| s.uid == c.uid) else { continue };
                 if ai.brain.0.is_none() {
                     if let Some(tu) = c.model.aitunes.as_ref() {
                         let tune = std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&tu.base, &tu.mods, c.perf));
@@ -1516,6 +2077,33 @@ impl Police {
                 ai.chase = Some((goal, Vec3::ZERO));
                 ai.chase_exact = true;
                 ai.target_speed = 85.0;
+            } else if is_dsp {
+                // ---- the dispatch's cop: GoToPosition to the place (Respond), then along the player's trail ----
+                let Some(d) = self.dsp.as_mut() else { continue };
+                if d.st < 2 {
+                    continue;
+                }
+                if ai.brain.0.is_none() {
+                    if let Some(tu) = c.model.aitunes.as_ref() {
+                        let tune = std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&tu.base, &tu.mods, c.perf));
+                        ai.tune = Some(tune.clone());
+                        ai.brain.0 = Some(Box::new(crate::brain::Brain::police(tune)));
+                    }
+                }
+                ai.ovr = None;
+                if !d.routed {
+                    let g = if d.st == 3 { d.crumbs.clone() } else { vec![d.loc] };
+                    if let Some(b) = ai.brain.0.as_mut() {
+                        b.set_route(&g, -1.0, Vec3::ZERO);
+                    }
+                    d.routed = true;
+                }
+                let (_, goal) = ai.brain.0.as_ref().map_or((0, None), |b| b.heading_for());
+                let end = if d.st == 3 { d.crumbs.last().copied().unwrap_or(d.loc) } else { d.loc };
+                d.arrived = ai.brain.0.as_ref().map_or(c.state.pos.distance(end) < 8.0, |b| b.route_done());
+                ai.chase = Some((goal.unwrap_or(end), Vec3::ZERO));
+                ai.chase_exact = true;
+                ai.target_speed = 85.0;
             } else if tactic {
                 // ---- the tactic's state and its brain (docs/reference/hookmen/pursuit_tactics.md) ----
                 let tac = self.tacs.entry(c.uid).or_default();
@@ -1552,8 +2140,8 @@ impl Police {
                 };
                 tac.t += dt;
                 let st = tac.st;
-                if searching {
-                    // (no tactic state changes during the Search)
+                if searching || squad {
+                    // (no tactic state changes during the Search; a squad's commands come from its FSM)
                 } else if pull {
                     // pull-over (F-36876; CatchUp F-91234, AvoidCollision F-18622 / F-69591, Halt F-82776)
                     if st != Tac::Halt && all_halt && !t_moving && (cspeed < 4.47 || !closing(0.0)) {
@@ -1732,6 +2320,12 @@ impl Police {
                             // from fSafeDist off it towards the cop. Final speed (F-49680): 0 for a stopped target, full
                             // pace (-1) beyond 2 x fSafeDist, 1.2 x its speed when it is near, going the same way and
                             // ahead of the cop, else full pace
+                            // (F-42951 false - a police cop in a race: from the target less P of its velocity, 1 s steps,
+                            // the default final speed)
+                            (Tac::CatchUp, false) if !ed78 => {
+                                let b = if t_moving { ppos - pvel * per } else { ppos + (cpos - ppos).normalize_or(Vec3::X) * safe };
+                                (chain(b, 1.0), default_v)
+                            }
                             (Tac::CatchUp, false) => {
                                 let b = if t_moving { ppos } else { ppos + (cpos - ppos).normalize_or(Vec3::X) * safe };
                                 let v = if !t_moving { 0.0 } else if d >= 2.0 * safe { -1.0 } else if same_dir && ahead { 1.2 * speed } else { -1.0 };
@@ -1755,6 +2349,10 @@ impl Police {
                                 ([q, q], default_v)
                             }
                             // AlongSide brain (F-13443): from fAlongSideDist beside the target, 1.15 P (head-on 2.3 P) along D
+                            _ if !ed78 => {
+                                let b = ppos + pright * if tac.side { along } else { -along } - pvel * per;
+                                (chain(b, 1.0), default_v)
+                            }
                             _ => {
                                 let b = ppos + pright * if tac.side { along } else { -along };
                                 (chain(b, 1.15 * per * ho), default_v)
@@ -1783,7 +2381,7 @@ impl Police {
                 let away = Some(if on_right { -1.0 } else { 1.0 });
                 ai.ovr = match (tac.st, pull) {
                     (Tac::CatchUp, false) if (!t_moving && d < safe) || (ahead && same_dir && d < 20.0 && cspeed > speed) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
-                    (Tac::AlongSide | Tac::Avoid, _) if (!t_moving && d < along + 1.0) || (t_moving && same_dir && !ahead && cspeed > speed && d > 1.5 * along) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
+                    (Tac::AlongSide | Tac::Avoid, _) if (!t_moving && d < along + 1.0) || (t_moving && same_dir && !ahead && cspeed > speed && (!ed78 || d > 1.5 * along)) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
                     // Block (F-56982): handbrake, no throttle, full lock towards the target
                     (Tac::Block, _) => Some(crate::ai::Overrides { handbrake: Some(true), throttle: Some(0.0), steer: Some(if on_right { 1.0 } else { -1.0 }), brake: None }),
                     // Halt (F-29519): stopped beside the target; steering away while closing in
@@ -1791,6 +2389,15 @@ impl Police {
                     (Tac::Halt, true) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
                     _ => None,
                 };
+                // (the squad's swipes and head-on blocks go over the brain's input)
+                if let Some(o) = swipes.get(&c.uid) {
+                    let mut v = ai.ovr.unwrap_or_default();
+                    v.steer = o.steer.or(v.steer);
+                    v.brake = o.brake.or(v.brake);
+                    v.handbrake = o.handbrake.or(v.handbrake);
+                    v.throttle = o.throttle.or(v.throttle);
+                    ai.ovr = Some(v);
+                }
             } else if let Some(ai) = Some(ai) {
                 // (out of the tactics: the port's own driver again)
                 ai.brain.0 = None;
@@ -1812,13 +2419,28 @@ impl Police {
                 }
             }
         }
-        // patrol / dispatch
+        // (a cop in no tactic patrols: StartTactic ends the old one with flag 0 - its commands cleared)
+        for c in vehicles.cars.iter_mut().filter(|c| c.cop && !c.goon && !pursuer(c) && Some(c.uid) != dsp_cop) {
+            let Some(ai) = c.ai.as_mut() else { continue };
+            if ai.brain.0.is_some() || ai.chase.is_some() || ai.ovr.is_some() {
+                ai.brain.0 = None;
+                ai.ovr = None;
+                ai.chase = None;
+                ai.chase_exact = false;
+                ai.path = None;
+                ai.link = None;
+                ai.target_speed = 14.0;
+                self.tacs.remove(&c.uid);
+            }
+        }
+        // patrol: a cruiser put on a patrol route when no free one is about (the port's; the original's patrol cops
+        // are the manager's units)
+        let free = vehicles.cars.iter().any(|c| c.cop && !c.goon && !pursuer(c));
         self.spawn_timer -= dt;
-        self.dispatch -= dt;
         if self.spawn_timer <= 0.0 && !self.goons {
             match self.heat {
-                Heat::None | Heat::PullOver => {
-                    if n_cops == 0 {
+                Heat::None | Heat::PullOver | Heat::Pursuit | Heat::Search => {
+                    if !free {
                         // a patrol route passing nearby, else any street
                         let near = self.paths.iter().flatten().copied().filter(|q| {
                             let d = q.distance(ppos);
@@ -1832,23 +2454,6 @@ impl Police {
                     } else {
                         self.spawn_timer = 10.0;
                     }
-                }
-                Heat::Pursuit | Heat::Search => {
-                    let want = if self.fine > 1500.0 { 3 } else { 2 };
-                    if n_cops < want && self.dispatch <= 0.0 {
-                        if self.spawn_cop(gpu, world, vehicles, ppos, pfwd, 130.0, 260.0, None) {
-                            self.dispatch = 7.0;
-                            // (an underground unit is streamed in for the pursuit: it is that car)
-                            if let Some(u) = self.units.iter_mut().find(|u| u.under) {
-                                u.under = false;
-                                if let Some(c) = vehicles.cars.last_mut().filter(|c| c.cop) {
-                                    c.vinyl_name = format!("police_unit:{}", u.id);
-                                }
-                                log::info!("police: unit {} streamed in for the pursuit", u.id);
-                            }
-                        }
-                    }
-                    self.spawn_timer = 1.0;
                 }
                 Heat::Busted => {}
             }
@@ -1930,8 +2535,12 @@ impl Police {
         self.arrest = 0.0;
         self.lost = 0.0;
         self.search = 0.0;
-        self.srch = None;
-        self.lead = None;
+        self.srch.clear();
+        self.kind = TacKind::None;
+        self.cops.clear();
+        self.eyes.clear();
+        self.sq = Squad::default();
+        self.dsp = None;
         self.spawn_timer = 12.0;
     }
 

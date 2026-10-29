@@ -335,8 +335,9 @@ struct App {
     speech: speech::Speech,
     radio: radio::Radio,
     /// where the dispatcher reports reckless driving (centre, radius, call), and the pause between reports
-    dispatch_zones: Vec<(Vec3, f32, String)>,
-    dispatch_cool: f32,
+    dispatch_zones: Vec<racescript::GlobalDispatch>,
+    /// the player's place last frame (the global triggers' line test)
+    dispatch_prev: Option<Vec3>,
     /// seconds until the next bit of pursuit chatter
     radio_next: f32,
     /// vinyl shapes (loaded when a livery is first painted) and the cars' zone layouts
@@ -948,7 +949,7 @@ impl App {
             speech: Default::default(),
             radio: radio::Radio::default(),
             dispatch_zones: Vec::new(),
-            dispatch_cool: 0.0,
+            dispatch_prev: None,
             radio_next: 0.0,
             shape_lib: None,
             car_zones: Default::default(),
@@ -4381,21 +4382,19 @@ impl App {
         }
         // ---- rushing under an overpass, a gantry sign, into a tunnel: the whoosh ----
         // driving hard through one of the dispatcher's places puts a report on the air
-        self.dispatch_cool -= dt;
-        if self.dispatch_cool <= 0.0 && self.tick_no % 10 == 0 && self.radio.loaded() && self.police.enabled && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
-            if let Some((pp, v)) = self.vehicles.player().map(|c| (c.state.pos, c.state.speed())) {
-                if v > 12.0 {
-                    let hit = self.dispatch_zones.iter().find(|z| (z.0.y - pp.y).abs() < 12.0 && Vec3::new(z.0.x - pp.x, 0.0, z.0.z - pp.z).length() < z.1).map(|z| z.2.clone());
-                    if let Some(call) = hit {
-                        let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
-                        if self.radio.say(&call, false, &rctx) {
-                            self.dispatch_cool = 30.0;
-                        }
-                    }
+        // (the city's global triggers, run by the trigger manager every frame, F-55598: a DISPATCH sound of a type-3
+        // object always starts a Dispatch to Location on the player, F-94691 -> F-86831, which plays the call)
+        let pp = self.vehicles.player().map(|c| c.state.pos);
+        if let (Some(q), Some(pp)) = (self.dispatch_prev, pp) {
+            if self.police.enabled && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
+                if let Some(call) = racescript::dispatch_test(&mut self.dispatch_zones, q, pp) {
+                    log::info!("police radio: global trigger {}", call);
+                    self.police.dispatch_call = Some(call);
                 }
             }
         }
         self.whoosh_cool -= dt;
+        self.dispatch_prev = pp;
         if let Some((pp, speed)) = self.vehicles.player().map(|c| (c.state.pos, c.state.speed())) {
             let q = self.whoosh_prev;
             self.whoosh_prev = pp;
@@ -4483,10 +4482,9 @@ impl App {
             crate::ticktimes::mark(crate::ticktimes::S::RaceScript);
             rt.update(&mut self.vehicles, &gpu, &world, &mut self.props.signals, &subjects, time, lap, sim_dt);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
-            // the dispatcher reports the racing where the script says so
+            // (a race script's DISPATCH sound starts a Dispatch to Location too, F-94691 -> F-86831)
             for call in std::mem::take(&mut rt.radio) {
-                let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
-                self.radio.say(&call, false, &rctx);
+                self.police.dispatch_call = Some(call);
             }
             if self.tick_no % 3 == 0 {
                 let cam = self.cam.pos;
@@ -5984,6 +5982,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 self.police.progress = rewards::progress(self.game.rep).1;
                 let ev = self.police.update(&gpu, &world, &mut self.vehicles, self.props.knocked, sim_dt);
+                self.police.radio_busy = self.radio.busy();
+                self.police.in_race = self.game.race.is_some();
                 // (step 19d: the payback's chase - the pursuers are the client's friends, their
                 // (F-22530: an arrest by the cops ends a race running - raceOverCommand `returnToCruise`,
                 // raceOverTrigger 1: back to the cruise as RETURN TO CRUISE does)
@@ -6029,12 +6029,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         None => {}
                     }
-                    // (the search's lines, F-40917: LOST when its clock starts, SPOTTED / REACQUIRE on a sighting after 2 s)
-                    if let Some(cue) = self.police.radio_cue.take() {
+                    // (the tactics' lines: the search's LOST when its clock starts, SPOTTED / REACQUIRE on a sighting after
+                    // 2 s (F-40917); the dispatch's DISPATCH call and REPORT_ACCEPT_CALL; a flank's REPORT_MANEUVER_CLOSE)
+                    for cue in std::mem::take(&mut self.police.radio_cue) {
                         if cue == "REPORT_SUSPECT_LOST" {
                             self.radio.stop();
                         }
-                        self.radio.say(cue, true, &rctx);
+                        self.radio.say(&cue, !cue.starts_with("DISPATCH"), &rctx);
                     }
                     // a cruiser wrecked or destroyed: REPORT_COP_CAR_DISABLED once (per car)
                     for (i, c) in self.vehicles.cars.iter().enumerate() {
@@ -10693,6 +10694,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                     let _ = self.vehicles.load_model(gpu, world, &dir);
                                 }
                             }
+                        // (the race core's ResetTriggers resets the global arrays too, F-55754)
+                        for z in self.dispatch_zones.iter_mut() {
+                            z.done = false;
+                        }
                         }
                         self.dress = Some(rt);
                     }

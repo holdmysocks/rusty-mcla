@@ -794,6 +794,10 @@ impl NavMesh {
     /// (approx.: the edge branch of sub_8254FCA8 is the point-segment distance, not stepped
     /// through; the accept test is area > 0 or any link, for a zero-width actor.)
     fn nearest_poly(&self, p: Vec3, max: f32) -> Option<u32> {
+        self.nearest_poly_by(p, max, &|_| true)
+    }
+
+    fn nearest_poly_by(&self, p: Vec3, max: f32, keep: &dyn Fn(&NavPoly) -> bool) -> Option<u32> {
         let mut cand = Vec::new();
         self.near(p, max, |i, _| cand.push(i));
         cand.sort_unstable();
@@ -801,7 +805,7 @@ impl NavMesh {
         for i in cand {
             let q = &self.local[i as usize];
             let pl = &self.polys[i as usize];
-            if pl.area <= 0.0 && pl.n_links == 0 {
+            if (pl.area <= 0.0 && pl.n_links == 0) || !keep(pl) {
                 continue;
             }
             let lp = self.chunk_local(i, p);
@@ -868,6 +872,17 @@ impl NavMesh {
     /// itself when inside it (+-1 m), else the polygon's stored centre. `None` = no polygon.
     pub fn teleport_target(&self, p: Vec3) -> Option<Vec3> {
         let i = self.nearest_poly(p, 10.0)?;
+        if self.polys_containing(p, -1.0, 1.0, 1024).contains(&i) {
+            Some(p)
+        } else {
+            Some(self.polys[i as usize].center)
+        }
+    }
+
+    /// F-53622: `teleport_target` over the road polygons only (the mcRoadFilter of `on_road`, F-94062): the nearest
+    /// road polygon within 10 m; the point itself when inside it (+-1 m), else that polygon's centre.
+    pub fn road_teleport_target(&self, p: Vec3) -> Option<Vec3> {
+        let i = self.nearest_poly_by(p, 10.0, &|pl| pl.flags & 2 != 0)?;
         if self.polys_containing(p, -1.0, 1.0, 1024).contains(&i) {
             Some(p)
         } else {

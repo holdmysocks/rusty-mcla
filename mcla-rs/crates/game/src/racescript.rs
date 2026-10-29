@@ -55,6 +55,8 @@ pub struct Trigger {
     pub by_opponent: bool,
     pub multiple: bool,
     pub actions: Vec<Action>,
+    /// a line's rHeight: it fires for a crossing from 2 m below the line to this above it (default 1000; F-37517)
+    pub line_h: f32,
 }
 
 /// A path of the race's `mcAmbientPathArray` (parser sub_82739570). (bHazard, bFire, bSmoke and
@@ -149,7 +151,7 @@ fn parse_calls(calls: &[Call]) -> (Vec<(String, Vec3, Quat)>, Vec<Trigger>) {
     // handle (offset of the creating call) -> trigger / (trigger, action)
     let mut trig_of: HashMap<usize, usize> = HashMap::new();
     let mut act_of: HashMap<usize, (usize, usize)> = HashMap::new();
-    let blank = |shape: Shape| Trigger { shape, lap: 0, randomness: 1.0, n_min: -1, n_max: -1, player_can: true, by_opponent: false, multiple: false, actions: Vec::new() };
+    let blank = |shape: Shape| Trigger { shape, lap: 0, randomness: 1.0, n_min: -1, n_max: -1, player_can: true, by_opponent: false, multiple: false, actions: Vec::new(), line_h: 1000.0 };
     for c in calls {
         let a = &c.args;
         // a prop: (group, position, euler angles, "props", name)
@@ -226,6 +228,7 @@ fn parse_calls(calls: &[Call]) -> (Vec<(String, Vec3, Quat)>, Vec<Trigger>) {
                     },
                     "rHeight" => match &mut t.shape {
                         Shape::Cylinder { h, .. } | Shape::Ring { h, .. } => *h = num.unwrap_or(20.0),
+                        Shape::Line { .. } => t.line_h = num.unwrap_or(1000.0),
                         _ => {}
                     },
                     "rRadiusInner" | "rMinSpeed" | "rMaxSpeed" => {
@@ -295,25 +298,25 @@ pub fn whoosh_lines(data_dir: &str) -> Vec<(Vec3, Vec3)> {
     out
 }
 
-/// Places of the open city where the police dispatcher reports reckless driving (the
-/// same global scripts: `Sound` actions with a `DISPATCH_REPORT_VIOLATION_*` call):
-/// centre, radius and the call.
 /// A trigger line's centre (mcTriggerLine vtable slot 9, F-73482): the sum of its two ends
 /// times one half.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn line_center(a: Vec3, b: Vec3) -> Vec3 {
     (a + b) * 0.5
 }
 
 /// Half the length of a trigger line (slot 10, F-21032): the square root of x*x, then the
 /// fused y*y and z*z added on (single-precision fused multiply-adds), times one half.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn line_half_length(a: Vec3, b: Vec3) -> f32 {
     let d = a - b;
     d.z.mul_add(d.z, d.y.mul_add(d.y, d.x * d.x)).sqrt() * 0.5
 }
 
-pub fn dispatch_zones(data_dir: &str) -> Vec<(Vec3, f32, String)> {
+/// The triggers of the open city's global scripts whose `Sound` is a `DISPATCH_REPORT_VIOLATION_*` call, armed.
+pub fn dispatch_zones(data_dir: &str) -> Vec<GlobalDispatch> {
     let dir = Path::new(data_dir).join("script_obj/game/race/global/0x2b7901de");
-    let mut out: Vec<(Vec3, f32, String)> = Vec::new();
+    let mut out: Vec<GlobalDispatch> = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else { return out };
     for e in rd.flatten() {
         let Some(sco) = std::fs::read(e.path()).ok().and_then(|d| mcla_formats::sco::decode(&d).ok()) else { continue };
@@ -323,14 +326,53 @@ pub fn dispatch_zones(data_dir: &str) -> Vec<(Vec3, f32, String)> {
                 Action::Sound { object, .. } if object.starts_with("DISPATCH") => Some(object.clone()),
                 _ => None,
             }) else { continue };
-            let (c, r) = match t.shape {
-                Shape::Line { a, b } => (line_center(a, b), line_half_length(a, b)),
-                Shape::Cylinder { c, r, .. } | Shape::Ring { c, r, .. } => (c, r),
-                Shape::Timer(_) => continue,
-            };
-            if !out.iter().any(|o| o.0.distance(c) < 1.0 && o.2 == call) {
-                out.push((c, r.max(6.0), call));
+            if matches!(t.shape, Shape::Timer(_)) {
+                continue;
             }
+            out.push(GlobalDispatch { shape: t.shape.clone(), line_h: t.line_h, call, done: false });
+        }
+    }
+    out
+}
+
+/// A trigger of the city's GlobalTriggers scripts (`0x2b7901de`) with a DISPATCH sound: armed until it fires, then
+/// dead until the next ResetTriggers (F-55754: the scripts' start, every race's start, a replay restore). None of
+/// them fires more than once (bTriggerMultipleTimes is never set).
+#[derive(Clone, Debug)]
+pub struct GlobalDispatch {
+    pub shape: Shape,
+    pub line_h: f32,
+    pub call: String,
+    pub done: bool,
+}
+
+/// The trigger manager's test (F-55598) of the global dispatch triggers for the player's move from `q` to `p`: a
+/// line fires when the move crosses it seen from above (both crossing points within their segments) at a height from
+/// the line's less 2 m to below the line's plus rHeight (F-37517); a cylinder when the player is within its radius
+/// and from its centre's height less 1 m to below it plus its height (F-94534). The call of the first one that fires.
+pub fn dispatch_test(zones: &mut [GlobalDispatch], q: Vec3, p: Vec3) -> Option<String> {
+    let mut out = None;
+    for z in zones.iter_mut().filter(|z| !z.done) {
+        let hit = match z.shape {
+            Shape::Line { a, b } => {
+                let (d, e) = (b - a, p - q);
+                let den = d.x * e.z - d.z * e.x;
+                if den.abs() < 1e-9 {
+                    false
+                } else {
+                    let w = q - a;
+                    let s = (w.x * e.z - w.z * e.x) / den;
+                    let u = (w.x * d.z - w.z * d.x) / den;
+                    let (ly, cy) = (a.y + d.y * s, q.y + e.y * u);
+                    (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&u) && cy >= ly - 2.0 && cy < ly + z.line_h
+                }
+            }
+            Shape::Cylinder { c, r, h } | Shape::Ring { c, r, h, .. } => p.y > c.y - 1.0 && p.y < c.y + h && Vec3::new(p.x - c.x, 0.0, p.z - c.z).length() < r,
+            Shape::Timer(_) => false,
+        };
+        if hit {
+            z.done = true;
+            out = out.or(Some(z.call.clone()));
         }
     }
     out
