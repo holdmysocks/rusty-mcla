@@ -2308,6 +2308,12 @@ impl Vehicles {
                             for v in &mut acc.verts[first..] {
                                 v.uv2 = [1.0 + if rc.is_finite() { rc.clamp(0.0, 4.0) } else { 1.0 }, 0.0];
                             }
+                        } else if sname.to_ascii_lowercase().contains("blackmatte") && std::env::var("MCLA_BLACKMATTE_OLD").is_err() {
+                            // (PS_BlackMatte of BlackMatte.fx writes only o0.w = gLightAmbient.w - black, as the traffic
+                            // cars' PSAmbientBlackMatte; city.wgsl: uv2.x = 4)
+                            for v in &mut acc.verts[first..] {
+                                v.uv2 = [4.0, 0.0];
+                            }
                         } else if sname.eq_ignore_ascii_case("BlackOpaqueGlass") {
                             for v in &mut acc.verts[first..] {
                                 v.uv2 = [1.0, 0.0];
@@ -4492,8 +4498,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 let wm = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * flip * spin) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
                 // (F-57869: the rim is drawn only while the camera is outside the wheel - the way from the eye to the
                 // hub against the wheel's x axis, which points in on every wheel, over 0; at 0 or below the
-                // wheel's back takes its place. Not on a bike. The threshold is 0.04 when the gate byte
-                // (car+80)+41 is off; it is on for the player's car in free roam, the only one compared - 0 here for all)
+                // wheel's back takes its place. Not on a bike. The threshold is 0.04 only when the car job's byte +41
+                // (F-11352) is off: that needs a racer who is not the local player with racer+25 set, which only the
+                // online remote-player paths do (F-62113) - 0 for every car offline, read live on four cars. The
+                // mirror flag (k < 0) and the pool draws after it run only with that byte off too: not ported, online)
                 if !c.model.bike {
                     let to_hub = (wm.w_axis.truncate() - eye).normalize_or_zero();
                     if to_hub.dot(wm.x_axis.truncate().normalize_or_zero()) <= 0.0 && i < 8 {
@@ -5712,6 +5720,15 @@ fn wheel_backside(gpu: &mut Gpu, root: &Path, xf: Mat4) -> Vec<GpuBatch> {
                 })
                 .collect();
             b.vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("whl_backside vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+        } else if sname.to_ascii_lowercase().contains("blackmatte") && std::env::var("MCLA_BLACKMATTE_OLD").is_err() {
+            // (the disc: PS_BlackMatte, black - recorded draws 2112 ... 2118 of the original, uv2.x = 4 as the car's BlackMatte parts)
+            let verts: Vec<Vertex> = (0..n)
+                .map(|i| {
+                    let nr = xf.transform_vector3(m.normals[i]).normalize_or(Vec3::Y);
+                    Vertex { pos: xf.transform_point3(m.positions[i]).to_array(), normal: nr.to_array(), uv0: m.uv0[i].to_array(), uv1: m.uv1[i].to_array(), color: [255, 255, 255, 255], color1: [0, 0, 0, 255], uv2: [4.0, 0.0] }
+                })
+                .collect();
+            b.vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("whl_backside disc vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
         }
         out.push(b);
     }

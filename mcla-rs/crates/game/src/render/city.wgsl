@@ -3800,10 +3800,12 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
             spec_k = 0.0;
-        } else if (mat.mode == 10u && obj.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 771.5 && g.params.w < 772.5)) {
+        } else if (mat.mode == 10u && ((obj.lamp_a[0].w > 0.5 && obj.params.w > 15.5 && !(g.params.w > 771.5 && g.params.w < 772.5)) || (in.uv2.x > 3.5 && in.uv2.x < 4.5))) {
             // Traffic and parked cars' grilles and black parts: PSAmbientBlackMatte of cars/0x9202d72d is one
             // instruction, o0.w = gLightAmbient.w - the export's x, y, z are in neither write mask: black.
             // (MCLA_DEBUG_VIEW 772: as before, the rubber branch)
+            // The player's cars' BlackMatte parts and the wheel's back disc (uv2.x = 4): PS_BlackMatte of
+            // BlackMatte.fx is the same instruction (recorded draws 2112 ... 2118, c26.w = 1) - black.
             lit = vec3<f32>(0.0);
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
