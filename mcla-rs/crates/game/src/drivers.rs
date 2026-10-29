@@ -361,8 +361,20 @@ impl Drivers {
     /// (the "gesture switch" exit writes "none"). `dur` > 0: the event's end call stops it then.
     pub fn gesture(&mut self, id: usize, g: Gesture, dur: f32, human: bool) {
         let a = self.acting.entry(id).or_default();
-        if a.playing.is_none() && a.asked.is_none() {
+        if a.playing.as_ref().map_or(true, |p| p.left <= 0.0) && a.asked.is_none() {
             a.asked = Some((g, if dur > 0.0 { dur } else { f32::INFINITY }, human));
+        }
+    }
+
+    /// A scene's gesture event stopped (FinishScene F-65984 -> F-10326 -> F-81612 stops every active event; the gesture
+    /// stop F-26895 sets racer +684 = 20, F-90946, for every gesture but copfidget): that seat's gesture leaves with its
+    /// blend-out, its jaw and the other seats untouched; the seat takes a new gesture at once.
+    pub fn end_gesture(&mut self, id: usize) {
+        if let Some(a) = self.acting.get_mut(&id) {
+            if let Some(p) = a.playing.as_mut() {
+                p.left = 0.0;
+            }
+            a.asked = None;
         }
     }
 
@@ -432,8 +444,10 @@ impl Drivers {
                     let name = gesture_clip(g, &mut a.rr, human);
                     if rig.gestures.contains_key(&name) {
                         log::info!("drivers: seat {} plays {}", s.id, name);
+                        // (a stopped gesture still on: it blends out under the new one, `end_gesture`)
+                        let old = a.playing.take().and_then(|p| rig.gestures.get(&p.clip).map(|c| (p.clip.clone(), c.frame(p.t, false), 1.0)));
                         a.playing = Some(Playing { clip: name, t: 0.0, left });
-                        a.leaving = None;
+                        a.leaving = old;
                     } else {
                         log::info!("drivers: seat {} has no {}", s.id, name);
                     }

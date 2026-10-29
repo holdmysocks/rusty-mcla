@@ -776,13 +776,19 @@ impl App {
             None if bolt.is_some() => {
                 self.ticket_run = None;
                 self.vehicles.player_scramble = 0;
+                // (the walk runs to its end after a bolt too: FinishScene stops its gesture)
+                if let Some(i) = self.vehicles.cars.iter().position(|c| c.is_player) {
+                    self.drivers.end_gesture(i);
+                }
             }
             None if !second => {
                 // (the walk's end: 0x404, no throttle and no steering)
                 self.vehicles.player_scramble = 0x404;
-                // (the walk's teardown ends its gesture, so the ticket scene's copfidget is played - inferred from the
-                // original's driver reacting at the window; FinishScene's event removal was not read)
-                self.drivers.stop_acting();
+                // (the walk's FinishScene stops its gesture_left, F-65984 -> F-26895: the player's gesture blends out and the
+                // ticket scene's copfidget is taken)
+                if let Some(i) = self.vehicles.cars.iter().position(|c| c.is_player) {
+                    self.drivers.end_gesture(i);
+                }
                 // the walk is over: the ticket scene (the car stays held, Racer_Deactivate)
                 self.ticket_run = Some((fine, None, true));
                 let (car, bike) = self.vehicles.player().map_or((String::new(), false), |c| (c.model.name.clone(), c.model.bike));

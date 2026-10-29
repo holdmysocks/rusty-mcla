@@ -51,10 +51,20 @@ impl Actor {
             l.0 = (r * l.0).normalize();
             l.1 += p;
         }
+        // (the crmtNodeBlend of ReAnimate, rate 4, F-51260: w += 4 dt clamped, linear; per DOF F-56920:
+        // rotations nlerp with the sign fix, translations kept below w 0.001 and copied from 0.999)
         if let Some((old, t1)) = self.fade.as_ref() {
-            let k = ((t - t1) / 0.25).clamp(0.0, 1.0);
-            if k < 1.0 {
-                crate::skin::blend_pose(local, old, 1.0 - k);
+            let w = (4.0 * (t - t1)).clamp(0.0, 1.0);
+            if w < 1.0 {
+                for (l, o) in local.iter_mut().zip(old.iter()) {
+                    let qo = if o.0.dot(l.0) < 0.0 { -o.0 } else { o.0 };
+                    l.0 = (qo * (1.0 - w) + l.0 * w).normalize();
+                    if w <= 0.001 {
+                        l.1 = o.1;
+                    } else if w < 0.999 {
+                        l.1 = o.1 + (l.1 - o.1) * w;
+                    }
+                }
             }
         }
     }
@@ -213,6 +223,22 @@ const HACKED_SCALE: [&str; 14] = [
 /// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, F-58832 / F-81189). Not ported:
 /// a slot marked to use the unscaled character (CineScript_Characters_GetSlotToUseUnscaledCharacter) and the jacket
 /// copy (`drv_mp_jacket_01_set_hackedscale`, chosen by F-17373 - not decoded); GH_06 marks no slot.
+/// The officers' face table of LaunchAnimEventWithFace (F-45542): `cut_cop_faces/Entity/<n>/<n>` by the first
+/// entry containing the slot name.
+const COP_FACES: [&str; 5] = [
+    "black_face_pol_mb_01_set_drv02",
+    "caumust_face_pol_mc_01_set_drv03",
+    "cauhair_face_pol_mc_02_set_drv04",
+    "caubuzz_face_pol_mc_03_set_drv05",
+    "mexmust_face_pol_mc_04_set_drv06",
+];
+
+/// The cine manager's auxiliary pack (+364) while a scene plays: CopArrest.sco loads `cut_cop_faces` for its arrest
+/// scenes (CopPullover's `cut_cop_alert_02` holds no faces, so the fallback finds nothing there).
+fn aux_pack(scene: &str) -> Option<&'static str> {
+    scene.starts_with("cut_cop_arrest").then_some("cut_cop_faces")
+}
+
 fn cutscene_set(set: &str) -> String {
     if HACKED_SCALE.iter().any(|s| s.eq_ignore_ascii_case(set)) {
         format!("{}_hackedscale", set.to_ascii_lowercase())
@@ -334,7 +360,8 @@ impl Cine {
         let mut movers = Vec::new();
         let mut sets = Vec::new();
         let mut files: Vec<PathBuf> = Vec::new();
-        for (part, faces) in [(key.clone(), false), (format!("hangout/{short}_peds"), false), (format!("{key}_im"), true)] {
+        let aux = aux_pack(&key).map(str::to_string);
+        for (part, faces) in [(key.clone(), false), (format!("hangout/{short}_peds"), false), (format!("{key}_im"), true)].into_iter().chain(aux.map(|a| (a, true))) {
             for (name, f) in self.index.get(&part).cloned().unwrap_or_default() {
                 if !files.contains(&f) && !self.packs.contains_key(&f) {
                     files.push(f);
@@ -425,6 +452,8 @@ impl Cine {
         let short = key.rsplit('/').next().unwrap_or("").to_string();
         let parts = [(key.clone(), false), (format!("hangout/{short}_peds"), false), (format!("{key}_im"), true)];
         let mut got: HashMap<PathBuf, Arc<mcla_formats::rsc::Resource>> = HashMap::new();
+        // (each character's slot name, the set before its cutscene copy: the face fallback matches it)
+        let mut slot_sets: Vec<(String, String)> = Vec::new();
         for (part, faces) in parts {
             let Some(entries) = self.index.get(&part).cloned() else { continue };
             let mut by_file: HashMap<PathBuf, Vec<String>> = HashMap::new();
@@ -490,10 +519,42 @@ impl Cine {
                     // scene script attaches nothing to a bone; GitHub #17)
                     // (the cutscene loader script, 0x95ca1d1b 0x4f - 0x1d8: a slot not marked for the unscaled
                     // character takes its set's cutscene copy - LookupDriverToCutscenePath / Name)
+                    slot_sets.push((label.to_string(), set.clone()));
                     let set = cutscene_set(&set);
                     let Some(model) = self.model(gpu, &set) else { continue };
                     let clip = Clip::bind(&anim, &model.ids, false, false);
                     sc.actors.push(Actor { label: label.to_string(), model, clip, t0: 0.0, face: None, shapes: None, root_add: None, fade: None });
+                }
+            }
+        }
+        // (Characters_LaunchAnimEventWithFace's face fallback, F-45542: a character with no face in the scene's pack
+        // whose slot name contains "pol" takes, from the auxiliary pack, the first entry of the officers' face table
+        // containing its slot name - `CUT_COP_FACES/ENTITY/<n>/<n>`; played as a scene face, from 0 on the scene clock)
+        if let Some(aux) = aux_pack(&key) {
+            let entries = self.index.get(aux).cloned().unwrap_or_default();
+            for a in sc.actors.iter_mut().filter(|a| a.face.is_none()) {
+                let Some((_, set)) = slot_sets.iter().find(|s| s.0 == a.label).filter(|s| s.1.contains("pol")) else { continue };
+                let Some(n) = COP_FACES.iter().find(|n| n.contains(set.as_str())) else { continue };
+                let want = format!("{aux}/entity/{n}/{n}");
+                let Some((name, f)) = entries.iter().find(|e| e.0.eq_ignore_ascii_case(&want)).cloned() else {
+                    log::warn!("cine: could not find face anim {}", want);
+                    continue;
+                };
+                let res = match got.get(&f) {
+                    Some(r) => r.clone(),
+                    None => {
+                        let Some(r) = self.pack(&f) else { continue };
+                        let r = Arc::new(r);
+                        got.insert(f.clone(), r.clone());
+                        r
+                    }
+                };
+                let rd = Rd::new(&res);
+                let Some(anim) = pack_entries(&res).into_iter().find(|e| e.1 == name).and_then(|(o, _)| animation_named(&rd, o)).map(Arc::new) else { continue };
+                a.face = Some(Clip::bind(&anim, &a.model.ids, false, false));
+                if let Some(m) = a.model.morph.as_ref() {
+                    let tracks = m.shapes.targets.iter().map(|t| anim.tracks.iter().position(|k| k.kind == KIND_BLEND_SHAPE && k.bone_id == t.id)).collect();
+                    a.shapes = Some((FaceShapes::new(m), tracks));
                 }
             }
         }
@@ -809,6 +870,17 @@ impl Cine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_cop_set_has_its_face() {
+        // (F-45542: the first table entry containing the slot name; each officer his own row)
+        for (i, c) in COPS.iter().enumerate() {
+            let hits: Vec<usize> = COP_FACES.iter().enumerate().filter(|(_, n)| n.contains(c)).map(|(j, _)| j).collect();
+            assert_eq!(hits, vec![i], "{c}");
+        }
+        assert_eq!(aux_pack("cut_cop_arrest_bikestand"), Some("cut_cop_faces"));
+        assert_eq!(aux_pack("cut_cop_walk_02"), None);
+    }
 
     #[test]
     fn story_skip_lands_on_the_bookmark() {
