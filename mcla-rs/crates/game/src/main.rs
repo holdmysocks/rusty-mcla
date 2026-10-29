@@ -540,8 +540,10 @@ struct App {
     /// from the end of the damage-out timer)
     wreck_timer: f32,
     /// the driver's damage-out states for the engine sound: 1 the stop due at "impact start car", 2 stopped (the
-    /// start due at the exit of "impact start car done"), 0 none
+    /// start due at the exit of "impact start car done"), 3 in "impact start car done" with no pause coming (its
+    /// time in `wreck_done`), 0 none
     wreck_engine: u8,
+    wreck_done: f32,
     /// the game's time scale from the time warpers (min of them; `boomcam::TimeWarper`):
     /// "vehicle\wipeout" (`wipeout.timewarper`) and "vehicle\explosion"
     wipe_scale: f32,
@@ -1111,6 +1113,7 @@ impl App {
             photo_msg: 0.0,
             wreck_timer: 0.0,
             wreck_engine: 0,
+            wreck_done: 0.0,
             wipe_scale: 1.0,
             warp_wipe: boomcam::TimeWarper::new([1.25, 0.1, 5.0, 10.0]),
             warp_expl: boomcam::TimeWarper::new([0.5, 0.1, 3.0, 1.0]),
@@ -2930,6 +2933,16 @@ impl App {
             self.warp_look.update(dt);
             self.wipe_scale = self.warp_wipe.cur.min(self.warp_expl.cur).min(self.warp_look.cur);
             let mission = self.game.race.as_ref().map_or(false, |r| r.kind != game::RaceKind::Race);
+            if self.wreck_engine == 3 {
+                // "impact start car done" with no pause: its exit after more than 5 s in it (F-38554, +156 += dt by
+                // F-71604) starts the engine sound with 0 (F-85478, vt+52). (approx.: counted through scenes and
+                // menus too - the driver update's dt there was not traced)
+                self.wreck_done += dt;
+                if self.wreck_done > 5.0 {
+                    self.wreck_engine = 0;
+                    self.sound.play_ignition();
+                }
+            }
             if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !mission && self.cine.playing.is_none() {
                 if self.wreck_timer > 0.0 {
                     self.wreck_timer -= dt;
@@ -2947,12 +2960,19 @@ impl App {
                             self.wreck_engine = 2;
                         }
                     }
-                    if self.wreck_timer <= 0.0 {
-                        // start car's exit (F-47123) fires the wreck's "what next" - the pause menu. "impact start car
-                        // done" then ends at its first update with the game paused (F-38554: the flags' 0x20000000,
-                        // F-28290 = the cine layer's +320, set while the pause manager pauses, F-94276), else after
-                        // 5 s in it (+156 += dt, F-71604); its exit (F-85478) is the engine sound's start with 0
-                        // (vt+52). The reset below stands for that pause, so the start goes with it
+                    // start car's exit (F-47123) fires the wreck's "what next" - the pause menu - unless the police
+                    // manager's target (+68) is the player (F-79134). "impact start car done" then ends at its first
+                    // update with the game paused (F-38554: the flags' 0x20000000, F-28290 = the cine layer's +320,
+                    // set while the pause manager pauses, F-94276), else after 5 s in it (+156 += dt, F-71604); its
+                    // exit (F-85478) is the engine sound's start with 0 (vt+52). The reset below stands for that
+                    // pause, so the start goes with it; with the police on the player there is neither and the car
+                    // stays damaged out
+                    if self.wreck_timer <= 0.0 && self.game.police_on_player {
+                        if self.wreck_engine == 2 {
+                            self.wreck_engine = 3;
+                            self.wreck_done = 0.0;
+                        }
+                    } else if self.wreck_timer <= 0.0 {
                         if std::mem::take(&mut self.wreck_engine) == 2 {
                             self.sound.play_ignition();
                         }
@@ -2967,8 +2987,10 @@ impl App {
                             c.pose_history.reset();
                             c.state.gear = gear;
                             c.placed = false;
-                            // (the reset's F-30391(0): the flags +592 to 0, so the damaged-out hold ends)
+                            // (the reset's F-30391(0): the flags +592 to 0, so the damaged-out hold ends; the
+                            // engine word +46 = 1)
                             c.stunned = 0.0;
+                            c.engine_off = false;
                         }
                         self.crash_bits = 0;
                         self.crash_exploding = false;
@@ -3051,19 +3073,18 @@ impl App {
                                 // wrecked notice (F-58200 -> F-16795: DAMAGED OUT in the splash slot
                                 // for 2 s); the driver's hit (DRV_HIT_HRD to its end) then 4 s of
                                 // DRV_IDLE_START, at whose end the wreck's "what next" fires (F-47123
-                                // -> F-79134) - not while the police have the player as their target
+                                // -> F-79134) - not while the police have the player as their target, tested
+                                // there; the driver's states run either way
                                 self.crash_timer = 0.0;
                                 let m = self.game.career.strings.get("splash_damaged_out").map(|s| s.to_uppercase()).unwrap_or_else(|| "DAMAGED OUT".into());
                                 self.game.show_message(&m);
                                 self.game.message_timer = 2.0;
-                                if !self.game.police_on_player {
-                                    // (approx.: a driver not loaded leaves the hit clip at 0)
-                                    self.wreck_timer = self.drivers.hit_hard_secs(&c.model.name).unwrap_or(0.0) + 4.0;
-                                    // the driver goes to "impact damageout" only right side up (IsUpsideDown, the
-                                    // flags' 0x800 from F-28290: [?] read as the car's up axis y <= 0); upside down
-                                    // it takes "impact damageout inverted", which never stops the engine
-                                    self.wreck_engine = if up_y > 0.0 { 1 } else { 0 };
-                                }
+                                // (approx.: a driver not loaded leaves the hit clip at 0)
+                                self.wreck_timer = self.drivers.hit_hard_secs(&c.model.name).unwrap_or(0.0) + 4.0;
+                                // the driver goes to "impact damageout" only right side up (IsUpsideDown, the
+                                // flags' 0x800 from F-28290: [?] read as the car's up axis y <= 0); upside down
+                                // it takes "impact damageout inverted", which never stops the engine
+                                self.wreck_engine = if up_y > 0.0 { 1 } else { 0 };
                             }
                         } else if self.crash_bits & 0x10 != 0 && self.crash_timer <= 0.0 {
                             // the wipeout is over (mcCar::Update A-23262): a car lying over (up.y
@@ -3089,8 +3110,13 @@ impl App {
                 // (approx.: a scene, a mission or a menu cutting "impact start car" short - the original's driver
                 // goes back to cruising on IsRaceFinish without the start, its sound reset there was not traced -
                 // starts the engine sound)
-                if std::mem::take(&mut self.wreck_engine) == 2 {
-                    self.sound.play_ignition();
+                match self.wreck_engine {
+                    1 => self.wreck_engine = 0,
+                    2 => {
+                        self.wreck_engine = 0;
+                        self.sound.play_ignition();
+                    }
+                    _ => {}
                 }
                 self.crash_bits &= 0x28;
             }
@@ -5050,6 +5076,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if let Some(c) = self.vehicles.player().filter(|_| left % 10 == 1) {
                     log::info!("cine car after: {} pos {:.3} {:.3} {:.3} speed {:.3} in {:?}", 90 - left, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.speed(), c.input);
                 }
+            }
+            // the control step's engine rules (F-17997): while the engine sound's start machine is below state 4 (the
+            // start's wait, the crank, the stop) the engine word +46 is set to 1 and the car is held - throttle 0,
+            // brake 1, handbrake 0 (and the gearbox to first, F-16736, not ported); otherwise with +46 = 0 (a scene's
+            // car_off) the throttle is 0
+            if self.sound.engine_held() {
+                player_input.throttle = 0.0;
+                player_input.brake = 1.0;
+                player_input.handbrake = false;
+                if let Some(c) = self.vehicles.player_mut() {
+                    c.engine_off = false;
+                }
+            } else if self.vehicles.player().is_some_and(|c| c.engine_off) {
+                player_input.throttle = 0.0;
             }
             crate::ticktimes::mark(crate::ticktimes::S::Vehicles);
             self.vehicles.update(&world, player_input, sim_dt);
@@ -7196,8 +7236,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 p.state.relocate(pos, glam::Quat::from_mat3(&glam::Mat3::from_cols(right, Vec3::Y, -f)).normalize());
                 p.state.vel = Vec3::ZERO;
                 p.state.ang_vel = Vec3::ZERO;
-                // (and the flags +592 set to 0, F-30391(0): no longer damaged out, the hold off)
+                // (and the flags +592 set to 0, F-30391(0): no longer damaged out, the hold off; the engine word +46 = 1)
                 p.stunned = 0.0;
+                p.engine_off = false;
                 self.crash_bits = 0;
             }
         }
@@ -11906,10 +11947,21 @@ impl App {
     fn cine_lamps_tick(&mut self) {
         let now = self.cine.playing.as_ref().map(|s| (s.name.clone(), s.t));
         if self.cine_lamps.as_ref().is_some_and(|(name, _, _)| now.as_ref().map_or(true, |(n, _)| n != name)) {
-            let (_, _, kept) = self.cine_lamps.take().unwrap();
+            let (ended, _, kept) = self.cine_lamps.take().unwrap();
             for (uid, off) in kept {
                 if let Some(c) = self.vehicles.cars.iter_mut().find(|c| c.uid == uid) {
                     c.amb_lamps.off = off;
+                }
+            }
+            // FinishScene (F-62501 with 1) leaves the engine word alone; the story scenes' callers run Racer_Activate
+            // (F-76651(racer, 0) -> F-30391(0): +46 = 1) or Racer_Reset right after (payback_intro's three, race_gh_06,
+            // bestof_sh_05, beat_sh_02_exotic, rep_on_strip_garage, hangout_series_hollywoodc, district_champs, the
+            // pinkslip hills). (approx.: the others - the downtown hangouts', hollywood_garage_intro, find_sh_02c,
+            // city_champ - go on into their hangout / garage / ending, whose reset was not traced; the engine comes
+            // back at the scene's end there too)
+            if ended.starts_with("story/") || ended.starts_with("racestart/") {
+                if let Some(c) = self.vehicles.player_mut() {
+                    c.engine_off = false;
                 }
             }
         }
@@ -11923,6 +11975,15 @@ impl App {
             if scene == name && at > last && at <= t {
                 if let Some(i) = self.cine_slot_car(slot) {
                     self.vehicles.cars[i].amb_lamps.off = !on;
+                }
+            }
+        }
+        for &(scene, ev, slot, at) in vehicles::CINE_ENGINE_EVENTS {
+            if scene == name && at > last && at <= t {
+                // the player's engine word (the port keeps it for the player only: its sound and exhaust); the arrest
+                // scenes' car_off / engine_off do the same, kept until CopArrest's PlayIgnition
+                if let Some(i) = self.cine_slot_car(slot).filter(|&i| self.vehicles.cars[i].is_player) {
+                    self.vehicles.cars[i].engine_off = ev != vehicles::EngineEv::EngineOn;
                 }
             }
         }

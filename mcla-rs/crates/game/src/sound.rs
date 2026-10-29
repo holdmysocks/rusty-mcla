@@ -229,8 +229,8 @@ impl Preloaded {
 
 impl Sound {
     /// The player engine's start (F-44510 with ignition 0, from CopArrest's Racer_PlayIgnition F-35902 / F-91984):
-    /// the engine sound stops and plays the ignition, cranks and flares (engaudio.rs `start`); while it cranks it runs
-    /// though the car is still `engine_off`.
+    /// the engine sound stops and plays the ignition, cranks and flares (engaudio.rs `start`); from the request on the
+    /// control step holds the car and lifts `engine_off` (`engine_held`, F-17997).
     pub fn play_ignition(&mut self) {
         self.ignition = 1;
     }
@@ -243,6 +243,13 @@ impl Sound {
         if !self.speech_busy {
             self.want_speech = Some("DAMAGE_OUT");
         }
+    }
+
+    /// Whether the player's engine sound holds the car (its state below 4, or a start / stop asked for and not yet
+    /// applied): the control step F-17997 then sets the engine word +46 to 1 if it is 0, puts the gearbox in first and
+    /// sets throttle 0, brake 1, handbrake 0.
+    pub fn engine_held(&self) -> bool {
+        self.ignition == 1 || self.engine_stop || self.engine.as_ref().is_some_and(|(_, e)| e.held())
     }
 
     /// True once when the started engine's crank has ended: the engine runs again (F-10725 sets chassis engine

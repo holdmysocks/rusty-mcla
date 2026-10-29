@@ -486,6 +486,62 @@ pub fn garage_lamps_due(view: &str) -> bool {
     matches!(view, "Interior" | "FrontSeats" | "Stereo" | "SteeringWheel" | "PostGauges")
 }
 
+/// The cine scripts' engine events (F-91263 on the racer of the event's car slot): car_off (23) the engine word
+/// (chassis+16) +46 = 0 and the lamps off; engine_off (36) Racer_Deactivate's state F-76651(racer, 1) -> F-30391(1):
+/// +592 |= 1, the car stopped and +46 = 0; engine_on (35) F-76651(racer, 0) -> F-30391(0): +592 = 0, +46 = 1.
+/// (scene, event, car slot, seconds), every such row of work/lighting2/lamps/lampev.tsv.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EngineEv {
+    CarOff,
+    EngineOff,
+    EngineOn,
+}
+pub const CINE_ENGINE_EVENTS: &[(&str, EngineEv, u8, f32)] = &[
+    ("cut_cop_arrest", EngineEv::CarOff, 0, 0.0),
+    ("cut_cop_arrest_02", EngineEv::CarOff, 0, 0.0),
+    ("cut_cop_arrest_03", EngineEv::CarOff, 0, 0.0),
+    ("cut_cop_arrest_07", EngineEv::EngineOff, 0, 0.0),
+    ("cut_cop_arrest_08", EngineEv::CarOff, 0, 0.0),
+    ("cut_cop_arrest_bikestand", EngineEv::CarOff, 0, 0.0),
+    ("cut_cop_walk_plyr_02", EngineEv::CarOff, 0, 0.0),
+    ("cut_cop_walk_plyr_bike", EngineEv::CarOff, 0, 0.0),
+    ("racestart/cut_payback_get_keys", EngineEv::CarOff, 0, 0.0),
+    ("racestart/cut_payback_get_keys", EngineEv::EngineOn, 0, 14.5),
+    ("racestart/cut_story_hangout_pinkslip_downtown", EngineEv::EngineOff, 0, 7.3),
+    ("racestart/cut_story_hangout_pinkslip_downtown", EngineEv::EngineOff, 1, 7.3),
+    ("racestart/cut_story_hangout_pinkslip_downtown", EngineEv::EngineOff, 2, 7.3),
+    ("story/cut_story_beat_sh_02_exotic", EngineEv::CarOff, 0, 2.66667),
+    ("story/cut_story_beat_sh_02_exotic", EngineEv::CarOff, 1, 2.66667),
+    ("story/cut_story_bestof_sh_05", EngineEv::CarOff, 0, 8.33333),
+    ("story/cut_story_bestof_sh_05", EngineEv::CarOff, 1, 8.33333),
+    ("story/cut_story_city_champ", EngineEv::CarOff, 0, 8.33333),
+    ("story/cut_story_city_champ_night", EngineEv::CarOff, 0, 8.33333),
+    ("story/cut_story_district_champs", EngineEv::CarOff, 0, 8.33333),
+    ("story/cut_story_district_champs_night", EngineEv::CarOff, 0, 8.33333),
+    ("story/cut_story_find_sh_02c", EngineEv::CarOff, 0, 6.66667),
+    ("story/cut_story_hangout_pinkslip_downtown", EngineEv::CarOff, 0, 7.3),
+    ("story/cut_story_hangout_pinkslip_downtown", EngineEv::CarOff, 1, 7.3),
+    ("story/cut_story_hangout_pinkslip_downtown", EngineEv::CarOff, 2, 7.3),
+    ("story/cut_story_hangout_pinkslip_hills", EngineEv::CarOff, 0, 8.33333),
+    ("story/cut_story_hangout_pinkslip_hills", EngineEv::CarOff, 1, 8.33333),
+    ("story/cut_story_hangout_pinkslip_hills", EngineEv::EngineOff, 0, 8.33333),
+    ("story/cut_story_hangout_pinkslip_hills", EngineEv::EngineOff, 1, 8.33333),
+    ("story/cut_story_hangout_series_downtown", EngineEv::CarOff, 0, 7.23333),
+    ("story/cut_story_hangout_series_downtown", EngineEv::CarOff, 1, 7.23333),
+    ("story/cut_story_hangout_series_downtown", EngineEv::CarOff, 2, 7.23333),
+    ("story/cut_story_hangout_series_hollywoodc", EngineEv::CarOff, 0, 27.6667),
+    ("story/cut_story_hollywood_garage_intro", EngineEv::CarOff, 0, 4.33333),
+    ("story/cut_story_hollywood_garage_intro", EngineEv::CarOff, 1, 4.33333),
+    ("story/cut_story_payback_intro", EngineEv::CarOff, 0, 5.33333),
+    ("story/cut_story_payback_intro", EngineEv::CarOff, 1, 5.33333),
+    ("story/cut_story_payback_intro", EngineEv::CarOff, 2, 5.33333),
+    ("story/cut_story_race_gh_06", EngineEv::EngineOff, 0, 7.06667),
+    ("story/cut_story_races_in_beach", EngineEv::CarOff, 0, 4.83333),
+    ("story/cut_story_races_in_beach", EngineEv::CarOff, 1, 4.83333),
+    ("story/cut_story_rep_on_strip_garage", EngineEv::CarOff, 0, 8.66667),
+    ("story/cut_story_rep_on_strip_garage", EngineEv::CarOff, 1, 6.0),
+];
+
 /// The cine scripts' car_on events (generic event 22, F-91263 -> F-91984 on the racer of the event's car slot): the
 /// lamps on (in `CINE_LAMP_EVENTS` too) and the engine sound's start with 0 (vt+52, F-44510): its ignition, crank and
 /// flare. (scene, car slot, seconds), from work/lighting2/lamps/lampev.tsv - every car_on row; the hangout exits'

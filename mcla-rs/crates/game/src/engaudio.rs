@@ -354,6 +354,12 @@ impl EngineSound {
         self.boost = db2lin(self.boost_db);
     }
 
+    /// Whether the start machine holds the car (states 0 .. 3: the start's wait, the crank, the stop's wait, stopped):
+    /// the control step F-17997 reads this+1928 < 4.
+    pub fn held(&self) -> bool {
+        self.state < 4
+    }
+
     /// Whether the engine sound is stopped or waiting to stop (states 2 and 3).
     pub fn stopped(&self) -> bool {
         matches!(self.state, 2 | 3)
