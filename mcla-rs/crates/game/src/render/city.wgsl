@@ -1859,13 +1859,6 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // the other car maps have no bias. MCLA_DEBUG_VIEW=742: no bias, as before)
     let badge_px = mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && in.uv2.x < -1.5 && !(g.params.w > 741.5 && g.params.w < 742.5);
     var albedo = textureSampleBias(t_diffuse, s_diffuse, in.uv0, select(0.0, -1.0, badge_px));
-    // (diagnostics 542 .. 545, p2day: the upper windows' diffuse read at level 0 .. 3; 546: at one level coarser than the sampler's choice)
-    if (mat.mode == 3u && g.params.w > 541.5 && g.params.w < 545.5) { albedo = textureSampleLevel(t_diffuse, s_diffuse, in.uv0, round(g.params.w) - 542.0); }
-    if (mat.mode == 3u && g.params.w > 545.5 && g.params.w < 546.5) { albedo = textureSampleBias(t_diffuse, s_diffuse, in.uv0, 1.0); }
-    // (neon2, 2026-10-15) Signs: a lit sign's light is far from linear in its textures - D x m x (0.6 + 2.8 m)
-    // of two pictures decoded AFTER the filter (see `sign_raw`), white clipping in the tone map - so how wide the
-    // filter reaches changes the sign's mean, not only its sharpness. The original reads them at 1280 x 720 with
-    // 4 : 1 anisotropy (fetch words of the neon draws: linear / linear / linear, aniso 3, levels 0 .. 2); this
     // (the cars' maps: no car program's fetch constant asks for gamma - every DiffuseSampler, NormalSampler,
     // IllumMapSampler, PlateBgSampler, FontSampler of the recorded frame has word 0 bits 2 - 9 clear - so the
     // program filters the stored texels and its own rule follows (PS_Plate: ^1.6 after the filter). vehicles.rs
@@ -1873,6 +1866,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // had, and `car_raw` gives the filtered stored value back exactly. MCLA_DEBUG_VIEW=780: the gamma upload as before)
     let car_raw_tex = obj.params.w > 15.5 && !(g.params.w > 779.5 && g.params.w < 780.5);
     if (car_raw_tex) { albedo = vec4<f32>(srgb_decode(albedo.rgb), albedo.a); }
+    // (diagnostics 542 .. 545, p2day: the upper windows' diffuse read at level 0 .. 3; 546: at one level coarser than the sampler's choice)
+    if (mat.mode == 3u && g.params.w > 541.5 && g.params.w < 545.5) { albedo = textureSampleLevel(t_diffuse, s_diffuse, in.uv0, round(g.params.w) - 542.0); }
+    if (mat.mode == 3u && g.params.w > 545.5 && g.params.w < 546.5) { albedo = textureSampleBias(t_diffuse, s_diffuse, in.uv0, 1.0); }
+    // (neon2, 2026-10-15) Signs: a lit sign's light is far from linear in its textures - D x m x (0.6 + 2.8 m)
+    // of two pictures decoded AFTER the filter (see `sign_raw`), white clipping in the tone map - so how wide the
+    // filter reaches changes the sign's mean, not only its sharpness. The original reads them at 1280 x 720 with
+    // 4 : 1 anisotropy (fetch words of the neon draws: linear / linear / linear, aniso 3, levels 0 .. 2); this
     // window has more rows and an 8 : 1 sampler. The sectors' sign textures are read with the original's
     // footprint: the derivatives scaled to 720 rows, the minor axis no less than a quarter of the major one
     // (main view only). In a 1280 x 720 window it changes nothing (SKATEBOARD box to 0.1); at 1600 x 900 the
@@ -2149,6 +2149,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         }
     }
     var second = textureSample(t_second, s_diffuse, second_uv);
+    if (car_raw_tex) { second = vec4<f32>(srgb_decode(second.rgb), second.a); }
     // (the story characters' maps - `char_shade`; read here, where the control flow is uniform: the
     // diffuse as stored, the detail map decoded the console's way at uv x its scales, the fourth map
     // at uv and at 20 uv; the normal map is `second`)
@@ -2156,7 +2157,6 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     var ch_d = vec4<f32>(0.0);
     var ch_det = 1.0;
     var ch_m4 = vec4<f32>(0.0);
-    if (car_raw_tex) { second = vec4<f32>(srgb_decode(second.rgb), second.a); }
     var ch_m4b = vec4<f32>(0.0);
     if (ch_obj) {
         ch_d = textureSample(t_diffuse, s_diffuse, in.uv0);

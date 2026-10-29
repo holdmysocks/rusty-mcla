@@ -5812,12 +5812,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 log::info!("headlights: high beams {} (flash state, lamp levels {:?})", if held { "on" } else { "off" }, lv);
             }
             self.vehicles.player_flash = held;
-            // ---- roaming racers ----
-            crate::ticktimes::mark(crate::ticktimes::S::Roamers);
-            {
-                let mut flash = std::mem::take(&mut self.flash) || (std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "once" || self.game.career.completed() == 0) && self.tick_no % 30 < 2 && self.roam.challenge.is_none());
-                // (a hookman who only races a certain class of car says so)
-                // (step 19d: nobody can be flashed while the police are doing something with the
             // (HEADLIGHTS pressed - its edge, F-52044; `flash` - in a car whose vehicle-table class is the police's (5,
             // F-64470) toggles the input flag 0x400 (F-56064), which F-44589 copies into the car's siren byte +304,
             // starting or stopping the siren (F-39258 / F-59693): the player's cruiser's light bar. MCLA_PLAYER_SIREN_OLD=1: none)
@@ -5830,6 +5824,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
+            // ---- roaming racers ----
+            crate::ticktimes::mark(crate::ticktimes::S::Roamers);
+            {
+                let mut flash = std::mem::take(&mut self.flash) || (std::env::var("MCLA_ROAM_TEST").map_or(false, |v| v != "once" || self.game.career.completed() == 0) && self.tick_no % 30 < 2 && self.roam.challenge.is_none());
+                // (a hookman who only races a certain class of car says so)
+                // (step 19d: nobody can be flashed while the police are doing something with the
                 // player - CruisingHookmanCore 0x745: PoliceManager_CheckPoliceActivity(1) < 2)
                 // (each flash the gates below drop is logged with the nearest racer: GitHub #22)
                 let pressed = flash && self.drive;
@@ -8870,6 +8870,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let (eye, view, vp) = if self.drive && self.vehicles.player().is_some() { (self.chase.pos, self.chase.view(), self.cam.proj(aspect) * self.chase.view()) } else { (self.cam.pos, self.cam.view(), self.cam.view_proj(aspect)) };
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
             self.vehicles.traffic_lamps(eye, axis, &Frustum::from_view_proj(vp), night, sim_dt);
+            // (and for the wheels' side test - F-57869)
+            self.vehicles.set_wheel_eye(eye);
         }
         // (the set-up cars' lamp states - vehicles.rs `setup_lamps`, F-10129: head lamps due past the
         // light manager's 18.0 or before its 6.0, or in Stormy or Foggy weather weighing over 0.85; in the
@@ -8899,8 +8901,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
             self.vehicles.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
             self.peds.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
-            // (and for the wheels' side test - F-57869)
-            self.vehicles.set_wheel_eye(eye);
             // (the original's renderer flag of F-31789, set while the game is paused: the plants' model angle x 0.9)
             crate::props::set_paused(self.game.mode == Mode::Paused);
         }
