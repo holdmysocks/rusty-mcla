@@ -3923,7 +3923,7 @@ impl Vehicles {
             self.spawner = Some(Spawner::new(nav, &world.assets.root));
         }
         let mut sp = self.spawner.take().unwrap();
-        // (test hook MCLA_TRAFFIC_PLACE=<type>,x,y,z,heading[,steer]: one parked car of that type as a
+        // (test hook MCLA_TRAFFIC_PLACE=<type>,x,y,z,heading[,steer[,colour row]]: one parked car of that type as a
         // script's layout item - AddAmbientToLayout, no visibility test - heading in degrees as a parking
         // spot's (z row (sin h, 0, cos h), the car facing -z), its front wheels turned `steer` radians when
         // given; for side-by-side shots with a recording of the original)
@@ -4299,7 +4299,7 @@ impl Vehicles {
             };
             let model = self.models[mi].clone();
             // its colour: one of the type's twenty (global RNG % 20)
-            let shade = (self.rand() * 20.0) as usize % 20;
+            let shade = test_shade((self.rand() * 20.0) as usize % 20);
             let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
             let yaw = (-dir.x).atan2(-dir.z);
             let idx = self.spawn(gpu, model, ground, yaw, color, false);
@@ -5520,6 +5520,7 @@ impl Vehicles {
             return PathSpawn::Removed;
         };
         rider.v = v;
+        let shade = test_shade(shade);
         let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
         let dir = Vec3::new(-pr.row2.x, 0.0, -pr.row2.z).normalize_or(Vec3::NEG_Z);
         let yaw = (-dir.x).atan2(-dir.z);
@@ -5543,7 +5544,7 @@ impl Vehicles {
     fn place_path_parked(&mut self, gpu: &crate::render::Gpu, root: &std::path::Path, h: u32) -> PathSpawn {
         let Some(item) = self.layout.get(h as usize).cloned().flatten() else { return PathSpawn::Removed };
         let Some(mi) = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(&item.name)) else { return PathSpawn::Removed };
-        let shade = self.park_rng.index(20) as usize;
+        let shade = test_shade(self.park_rng.index(20) as usize);
         let mname = self.models[mi].name.clone();
         let ty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(root, &mname));
         let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
@@ -5954,4 +5955,10 @@ mod original_curve_tests {
         }
         assert_eq!((ev, ba), (1428, 840));
     }
+}
+
+/// (test hook: MCLA_TRAFFIC_PLACE's seventh field, the colour row 0..19 of the type's table, for every car
+/// spawned while it is set - to match a recording of the original)
+pub(crate) fn test_shade(shade: usize) -> usize {
+    std::env::var("MCLA_TRAFFIC_PLACE").ok().and_then(|v| v.split(',').nth(6).and_then(|x| x.trim().parse::<usize>().ok())).map_or(shade, |s| s.min(19))
 }

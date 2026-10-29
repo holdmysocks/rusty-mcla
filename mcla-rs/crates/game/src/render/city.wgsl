@@ -1155,6 +1155,11 @@ fn vs_body(in: VsIn) -> VsOut {
     o.uv1 = in.uv1;
     o.uv2 = in.uv2;
     o.color = in.color;
+    // (traffic materials packed in uv2 / uv1 as integers up to 2^24 - vehicles.rs prep_car: handed on FLAT as well, in
+    // lamp_pos (unused by these meshes; only the instanced plants set it), since the interpolated copy is off by a unit
+    // or two at that size and a borrow turns e.g. PSAmbientBumpSpec's baseColor.b 0 into 1 - the blue speckle on the
+    // window seals of va_chv_cobalt_05, 2026-10-28)
+    if (amb_obj && in.uv2.y < -0.5) { o.lamp_pos = vec4<f32>(in.uv2, in.uv1); }
     o.color1 = in.color1;
     o.lpos = in.pos;
     o.fill = vec4<f32>(0.0);
@@ -3621,9 +3626,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // recorded 0. The texture as stored. The lights as the other car programs take them (the hour's light, the
             // second key, the city lamp; the program's third, c18 / c41, is 0 in the recorded frames). (MCLA_DEBUG_VIEW
             // 773: as before)
-            let pa_t = u32(round(-in.uv2.y - 1.0));
-            let pb_t = u32(round(-in.uv1.x - 1.0));
-            let pc_t = u32(round(-in.uv1.y - 1.0));
+            let pa_t = u32(round(-in.lamp_pos.y - 1.0));
+            let pb_t = u32(round(-in.lamp_pos.z - 1.0));
+            let pc_t = u32(round(-in.lamp_pos.w - 1.0));
             let ai_t = f32(pa_t & 4095u) / 1023.75;
             let di_t = f32((pa_t >> 12u) & 4095u) / 1023.75;
             let lo_t = f32(pb_t & 4095u) / 63.984375;
@@ -3676,10 +3681,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // term on traffic (siColor0..2 unset, car_own_lamps). Which light is light 0 and takes the collector: as the
             // ambient paint has it (`amb6`). The material's terms ride in the vertices (vehicles.rs prep_car).
             // (MCLA_DEBUG_VIEW 771: traffic through the generic object branch, as before)
-            let pa = u32(round(-in.uv2.x - 1.0));
-            let pb = u32(round(-in.uv2.y - 1.0));
-            let pc = u32(round(-in.uv1.x - 1.0));
-            let pd = u32(round(-in.uv1.y - 1.0));
+            let pa = u32(round(-in.lamp_pos.x - 1.0));
+            let pb = u32(round(-in.lamp_pos.y - 1.0));
+            let pc = u32(round(-in.lamp_pos.z - 1.0));
+            let pd = u32(round(-in.lamp_pos.w - 1.0));
             let sm_a = f32(pa & 255u) / 255.0;
             let met_a = f32((pa >> 8u) & 255u) / 255.0;
             let bc_a = vec3<f32>(f32(pb & 4095u), f32((pb >> 12u) & 4095u), f32(pc & 4095u)) / 4095.0;

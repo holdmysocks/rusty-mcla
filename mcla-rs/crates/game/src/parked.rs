@@ -476,7 +476,7 @@ impl Vehicles {
             self.park_why[2] += 1;
             return false;
         };
-        let shade = self.park_rng.index(20) as usize;
+        let shade = super::traffic::test_shade(self.park_rng.index(20) as usize);
         let path = item.path.unwrap_or_default();
         let parked = item.script || path.parked || (path.referenced && !path.fired);
         if !parked {
