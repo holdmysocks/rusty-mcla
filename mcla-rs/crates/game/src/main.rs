@@ -6977,12 +6977,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if self.arrest_activate && !self.arrest_mask.is_on() {
             self.arrest_activate = false;
             self.sound.arrest_mix = (false, false);
-            // (CopArrest.sco 0x14ee: the mixer detriggered, 0x1524 Racer_PlayIgnition - the engine runs again -,
-            // Racer_Activate, and 0x1552 after CutSceneDone: SetAllPoliceUnderground(0, 1))
+            // (CopArrest.sco 0x14ee: the mixer detriggered, 0x1524 Racer_PlayIgnition - the engine sound's start, its
+            // crank ends with the engine running again -, Racer_Activate, and 0x1552 after CutSceneDone:
+            // SetAllPoliceUnderground(0, 1))
+            self.sound.play_ignition();
+            self.police.units_up();
+        }
+        // (F-10725: the crank's end sets the engine running again, chassis engine +46 = 1)
+        if self.sound.take_engine_running() {
             if let Some(c) = self.vehicles.player_mut() {
                 c.engine_off = false;
             }
-            self.police.units_up();
         }
         if let Some(a) = self.audio.as_mut() {
             let fwd = self.cam.forward();

@@ -4,12 +4,14 @@
 //! Computer racers use their `_O_` objects with the opponent rules (`new_opponent`; VEHICLE_EXTRA_AUDIO_RULE.md
 //! section 6); the turbo whine and blow-off read this sound's smoothed rpm and load volume (caraudio.rs).
 //!
-//! Not ported (open there): the start / stop state machine (ignition, crank, rev flare - the port's engine is always
-//! running), the layer-B overlay (off on every player car), the reverse whine (NULL on the cars looked at).
+//! The start (F-44510, `start`) runs the ignition machine of the update (F-10725): the ignition one-shot, the crank,
+//! the rev flare and the settle (ENGINE_AUDIO_RULE.md 2.2); a sound made with `new` starts running (state 4).
+//! Not ported (open there): the stop states 2 / 3 (F-29108, vt+56: no caller in the port), the layer-B overlay (off on
+//! every player car), the reverse whine (NULL on the cars looked at).
 
 use crate::sndobj::{Handle, Req, SoundLib};
 use glam::Vec3;
-use mcla_formats::audcfg::lin2db;
+use mcla_formats::audcfg::{db2lin, lin2db};
 use mcla_formats::hash::joaat;
 
 fn be_u32(o: &[u8], at: usize) -> u32 {
@@ -104,6 +106,14 @@ pub struct EngineSound {
     load_rev: f32,
     slew: f32,
     gain_curve: u32,
+    /// the ignition (XF +95 one-shot, +99 delay ms, +101 / +103 crank ms, +105 start boost mB, +107 flare rpm,
+    /// +109 flare rate, +111 settle rate)
+    ign_sound: u32,
+    ign_delay: f32,
+    crank: (i32, i32),
+    boost_db: f32,
+    flare: (f32, f32),
+    settle: f32,
     // one-shots (ONESHOT_PARAMS)
     gear_sound: u32,
     gear_special: u32,
@@ -135,6 +145,14 @@ pub struct EngineSound {
     pub gains: Vec<f32>,
     // state
     voices: Vec<Option<Handle>>,
+    /// F-10725's state (this+1928: 0 ignition wait, 1 crank, 4 running, 5 flare, 6 settle), its timer (this+288,
+    /// seconds), the start boost (this+152) and the ignition one-shot (slot this+1460)
+    state: u8,
+    timer: f32,
+    boost: f32,
+    ign: Option<Handle>,
+    /// set when a crank ends (the engine counts as running again: chassis engine +46 = 1); taken by `take_running`
+    started: bool,
     s: f32,
     load_vol: f32,
     load_smooth: f32,
@@ -237,6 +255,12 @@ impl EngineSound {
             load_rev: be_f32(xf, 34),
             slew: (100.0 - be_f32(xf, 38)) * 100.0,
             gain_curve: be_u32(xf, 119),
+            ign_sound: be_u32(xf, 95),
+            ign_delay: be_u16(xf, 99) as f32 * 0.001,
+            crank: (be_u16(xf, 101) as i32, be_u16(xf, 103) as i32),
+            boost_db: s16(xf, 105) * 0.01,
+            flare: (be_u16(xf, 107) as f32, be_u16(xf, 109) as f32),
+            settle: be_u16(xf, 111) as f32,
             gear_sound: be_u32(one, 10),
             gear_special: be_u32(one, 14),
             gear_vol: s16(one, 18) * 0.01,
@@ -260,6 +284,11 @@ impl EngineSound {
             gains: vec![0.0; n],
             voices: vec![None; n],
             recs,
+            state: 4,
+            timer: 0.0,
+            boost: 1.0,
+            ign: None,
+            started: false,
             s: 0.0,
             load_vol: 1.0,
             load_smooth: 0.0,
@@ -286,9 +315,37 @@ impl EngineSound {
     }
 
     pub fn stop(&mut self, lib: &mut SoundLib) {
+        self.stop_loops(lib);
+        if let Some(h) = self.ign.take() {
+            lib.stop(h);
+        }
+    }
+
+    /// vt+112: every loop voice stops.
+    fn stop_loops(&mut self, lib: &mut SoundLib) {
         for h in self.voices.iter_mut().filter_map(|h| h.take()) {
             lib.stop(h);
         }
+    }
+
+    /// The engine sound's start (F-44510, vt+52): state 0, the loops stop, the ignition after XF+99 ms when
+    /// `ignition` is set (else on the next update), the start boost XF+105 (+6 dB on every car) that falls back to
+    /// 0 dB at 1 per second once the engine runs. CopArrest's Racer_PlayIgnition and the scenes' car_on call it with 0.
+    pub fn start(&mut self, lib: &mut SoundLib, ignition: bool) {
+        self.state = 0;
+        self.stop_loops(lib);
+        self.timer = if ignition { self.ign_delay } else { 0.0 };
+        self.boost = db2lin(self.boost_db);
+    }
+
+    /// True once after a crank has ended: the engine counts as running again (F-10725 sets chassis engine +46 = 1).
+    pub fn take_running(&mut self) -> bool {
+        std::mem::take(&mut self.started)
+    }
+
+    /// Whether the ignition machine is between its start and the end of the crank (states 0 and 1).
+    pub fn cranking(&self) -> bool {
+        self.state <= 1
     }
 
     pub fn update(&mut self, lib: &mut SoundLib, e: &EngineIn, dt: f32) {
@@ -343,10 +400,60 @@ impl EngineSound {
             self.lfo.running = false;
         }
         let lfo_cents = self.step_lfo(dt);
-        // rpm slew (F-10725, state 4 = running)
+        // rpm slew and the start machine (F-10725)
         let target = if e.idle_only { e.idle_rpm } else { e.rpm };
         let rpm_rate = (target - self.s) / dt.max(1e-6);
-        approach_fma(&mut self.s, target, self.slew, dt);
+        if self.state <= 1 {
+            // 0 the wait, 1 the crank: the revs fall to 0, no loop sounds; the step that ends either returns too
+            self.timer -= dt;
+            approach_fma(&mut self.s, 0.0, self.slew, dt);
+            if self.timer < 0.0 {
+                if let Some(h) = self.ign.take() {
+                    lib.stop(h);
+                }
+                if self.state == 0 {
+                    self.ign = lib.play_hash(self.ign_sound, Req { pos: Some(e.pos), player: self.player, ..Default::default() });
+                    self.state = 1;
+                    self.timer = lib.rand_int(self.crank.0, self.crank.1) as f32 * 0.001;
+                } else {
+                    self.state = 5;
+                    self.started = true;
+                }
+            }
+            self.end_frame(lib, e, dt);
+            return;
+        }
+        match self.state {
+            // the flare to XF+107 at XF+109 rpm/s, then the settle down to the target at XF+111
+            5 => {
+                approach_fma(&mut self.s, self.flare.0, self.flare.1, dt);
+                if self.s == self.flare.0 {
+                    self.state = 6;
+                }
+            }
+            6 => {
+                if self.s > target {
+                    approach_fma(&mut self.s, target, self.settle, dt);
+                    if self.s == target {
+                        self.state = 4;
+                    }
+                } else {
+                    self.state = 4;
+                }
+            }
+            _ => {
+                approach_fma(&mut self.s, target, self.slew, dt);
+                if !e.idle_only {
+                    approach_fma(&mut self.boost, 1.0, 1.0, dt);
+                }
+            }
+        }
+        // (below 1 rpm every loop stops and nothing more is played this update)
+        if self.s < 1.0 {
+            self.stop_loops(lib);
+            self.end_frame(lib, e, dt);
+            return;
+        }
         // normalised rpm, audio rpm, master gain
         let mut norm = ((self.s - e.idle_rpm) / (e.max_rpm - e.idle_rpm).max(1.0)).min(1.0);
         if !self.player {
@@ -369,7 +476,7 @@ impl EngineSound {
             }
         }
         let x = norm * (last.end - first.start) + first.start;
-        let mut g = lib.curve_eval(self.gain_curve, norm).unwrap_or(1.0) * self.load_vol;
+        let mut g = lib.curve_eval(self.gain_curve, norm).unwrap_or(1.0) * self.boost * self.load_vol;
         if self.amp_left > 0.0 {
             let c = lib.curve_eval(self.amp_curve, self.amp_left / self.amp_len.max(1e-6)).unwrap_or(0.0);
             g = (g + c * self.amp_amount).max(0.0);
@@ -417,6 +524,12 @@ impl EngineSound {
             }
         }
         self.audio_rpm = x;
+        self.end_frame(lib, e, dt);
+    }
+
+    /// The one-shots of the frame (gear shift, backfire) and the inputs kept for the next one: their own functions in
+    /// the original, run whatever the start machine's state.
+    fn end_frame(&mut self, lib: &mut SoundLib, e: &EngineIn, dt: f32) {
         // gear-shift one-shot (F-33101 / F-40912): on the shift's start; upshift a little later
         if e.shift != 0 && self.prev_shift == 0 && e.gear != self.prev_gear {
             // original gear indices: reverse 0, neutral 1 - none into those
@@ -643,5 +756,65 @@ mod tests {
         if let Ok(p) = std::env::var("MCLA_ENGINE_WAV") {
             a.write_capture(&p);
         }
+    }
+
+    /// The start with ignition 0 (CopArrest's Racer_PlayIgnition) on the Camaro: the loops stop, the next update plays
+    /// IGNITION_EXOTIC_MASTER, the crank lasts 750 - 1000 ms with no loop sounding and the revs falling at 7500 rpm/s,
+    /// then the engine runs again (`take_running` once), the revs flare to 5000 at 8000 rpm/s, settle at 3000 rpm/s
+    /// down to idle and the +6 dB start boost falls back to 0 dB at 1 per second.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn ignition_crank_flare() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+        let mut e = EngineSound::new(&lib, "vp_chv_camaro_06", false).expect("engine");
+        assert_eq!((e.crank, e.flare, e.settle, e.boost_db), ((750, 1000), (5000.0, 8000.0), 3000.0, 6.0));
+        assert_eq!(e.ign_sound, joaat("IGNITION_EXOTIC_MASTER"));
+        let dt = 1.0 / 60.0;
+        let idle = 900.0;
+        let inp = EngineIn { pos: Vec3::ZERO, rpm: idle, idle_rpm: idle, max_rpm: 6500.0, full_torque: 400.0, speed: 0.0, gear: 1, ..Default::default() };
+        for _ in 0..60 {
+            e.update(&mut lib, &inp, dt);
+        }
+        assert!(e.voices[0].is_some() && e.state == 4);
+        e.start(&mut lib, false);
+        assert!(e.voices.iter().all(|v| v.is_none()) && e.state == 0);
+        assert!((e.boost - 1.995_262).abs() < 1e-4);
+        e.update(&mut lib, &inp, dt);
+        assert_eq!(e.state, 1);
+        assert!(e.ign.is_some() && (0.75..=1.0).contains(&e.timer));
+        let crank = e.timer;
+        let mut t = 0.0;
+        while e.state == 1 {
+            e.update(&mut lib, &inp, dt);
+            t += dt;
+            assert!(e.voices.iter().all(|v| v.is_none()), "no loop during the crank");
+            assert!(t < 1.1);
+        }
+        assert!((t - crank).abs() <= dt + 1e-4, "crank {crank} ended at {t}");
+        assert!(e.take_running() && !e.take_running());
+        assert!(e.ign.is_none() && e.state == 5);
+        // the flare: 0 -> 5000 at 8000 rpm/s (0.625 s), the boost held
+        let mut t = 0.0;
+        while e.state == 5 {
+            e.update(&mut lib, &inp, dt);
+            t += dt;
+        }
+        assert!((t - 0.625).abs() < 2.0 * dt, "flare {t}");
+        assert!((e.boost - 1.995_262).abs() < 1e-4);
+        // the settle: 5000 -> 900 at 3000 rpm/s (1.37 s), then running and the boost falling
+        let mut t = 0.0;
+        while e.state == 6 {
+            e.update(&mut lib, &inp, dt);
+            t += dt;
+        }
+        assert!((t - 4100.0 / 3000.0).abs() < 2.0 * dt, "settle {t}");
+        assert_eq!((e.state, e.s), (4, idle));
+        for _ in 0..30 {
+            e.update(&mut lib, &inp, dt);
+        }
+        assert!((e.boost - (1.995_262 - 0.5)).abs() < 0.02, "{}", e.boost);
+        assert!(e.voices[0].is_some());
     }
 }

@@ -99,6 +99,9 @@ pub struct Sound {
     lib_tried: bool,
     /// the player car's engine sound, for the car it was made for
     engine: Option<(String, crate::engaudio::EngineSound)>,
+    /// the player engine's start (`play_ignition`): 1 asked for, 2 cranking; and the crank's end, for `take_engine_running`
+    ignition: u8,
+    engine_running: bool,
     /// the original's collision sounds (with `lib`)
     coll: Option<crate::collaudio::CollisionAudio>,
     /// the original's district ambience (with `lib`)
@@ -223,6 +226,19 @@ impl Preloaded {
 }
 
 impl Sound {
+    /// The player engine's start (F-44510 with ignition 0, from CopArrest's Racer_PlayIgnition F-35902 / F-91984):
+    /// the engine sound stops and plays the ignition, cranks and flares (engaudio.rs `start`); while it cranks it runs
+    /// though the car is still `engine_off`.
+    pub fn play_ignition(&mut self) {
+        self.ignition = 1;
+    }
+
+    /// True once when the started engine's crank has ended: the engine runs again (F-10725 sets chassis engine
+    /// +46 = 1 there) - the caller lifts the car's `engine_off`.
+    pub fn take_engine_running(&mut self) -> bool {
+        std::mem::take(&mut self.engine_running)
+    }
+
     /// The call signs of the lead cruiser and of a second one, for the police radio (`Fleet::radio_units`).
     pub fn radio_units(&mut self) -> (Option<String>, Option<String>) {
         self.fleet.as_mut().map(|f| f.radio_units()).unwrap_or_default()
@@ -710,8 +726,8 @@ impl Sound {
         let throttle = if in_menu { 0.0 } else { p.input.throttle };
         let eng_vol = if in_menu { 0.28 } else { 0.62 };
         // the original's engine sound (engaudio.rs); the port's own cross-fade where the car's audio objects are missing;
-        // none while the engine is off (a scene's car_off, F-91263 - no ignition crank when it comes back: not ported)
-        if self.no_player_car || p.engine_off {
+        // none while the engine is off (a scene's car_off, F-91263) unless it is being started (`play_ignition`)
+        if self.no_player_car || (p.engine_off && self.ignition == 0) {
             if let (Some(lib), Some((_, e))) = (&mut self.lib, &mut self.engine) {
                 e.stop(lib);
             }
@@ -723,6 +739,18 @@ impl Sound {
                 }
                 self.engine = crate::engaudio::EngineSound::new(lib, &name, p.model.bike).map(|e| (name.clone(), e));
             }
+            if self.ignition == 1 {
+                if let Some((_, e)) = &mut self.engine {
+                    e.start(lib, false);
+                    self.ignition = 2;
+                    log::info!("audio: engine start (ignition 0): loops stopped, the ignition next");
+                }
+            }
+        }
+        if self.ignition != 0 && self.engine.is_none() {
+            // (no engine objects for this car: nothing to crank, it runs at once)
+            self.ignition = 0;
+            self.engine_running = true;
         }
         let orig_engine = self.engine.is_some();
         if let (Some(lib), Some((_, eng))) = (&mut self.lib, &mut self.engine) {
@@ -745,6 +773,11 @@ impl Sound {
                 speed_ratio: 0.0,
             };
             eng.update(lib, &inp, dt);
+            if eng.take_running() {
+                self.ignition = 0;
+                self.engine_running = true;
+                log::info!("audio: engine crank over - running again, flare");
+            }
         } else if !self.no_player_car && !p.engine_off {
             // engine sits a little towards the centre of the mix whatever the camera does
             a.engine(0, &name, st.rpm, throttle, (eng_vol, eng_vol));
