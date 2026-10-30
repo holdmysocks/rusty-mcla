@@ -32,7 +32,7 @@ struct Globals {
     car_key2: vec4<f32>,     // the cars' OTHER light slot at night (the hour's light, or a second lamp that beat it): the direction towards it; w = 1: use it
     car_key2_col: vec4<f32>, // ... its colour x strength
     car_amb: vec4<f32>,      // the garage: rgb = the cars' own ambient (ambYPos), w = 1: in force; car_key2 is then a position (its w = 2)
-    lod: vec4<f32>,          // OPTIONS > PERFORMANCE: x = DRAW DISTANCE, y = DETAIL LEVEL (1 = the original), z = the plants' model angle factor (0.9 while paused, else 1) - props.rs `Lod`
+    lod: vec4<f32>,          // OPTIONS > PERFORMANCE: x = DRAW DISTANCE, y = DETAIL LEVEL (1 = the original), z = the plants' model angle factor (0.9 while paused, else 1) - props.rs `Lod`, w = the clock of the plants' wind
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(2) var t_shadow: texture_depth_2d;
@@ -1370,7 +1370,28 @@ fn vs_inst(in: VsIn, inst: InstIn) -> VsOut {
     // original stretches a plant's y axis apart from x and z; 1 on everything else)
     let tall = dot(inst.rot_tint, inst.rot_tint);
     let iq = inst.rot_tint * inverseSqrt(max(tall, 1e-8));
-    var ipos = in.pos * vec3<f32>(inst.pos_scale.w, inst.pos_scale.w * tall, inst.pos_scale.w);
+    var mpos = in.pos;
+    // The plants' wind (VSPropFoliage, VSPropFoliageNight, VSPropFoliageTrunk; gWindVector = g.lod.w's clock): added to the
+    // model's position, before the world matrix, though V and the normal have been through that matrix's rotation and scale.
+    // Leaves: V = colour x 2 - 1, a = 0.4 sat(0.25 (y - 0.5)) occlusion^2, k = sat(a V.x), d = a (wind.x V + wind.y V x n) + k,
+    // and sat(0.05 (y - 1)) wind.z on x. Trunks: only that last term.
+    if (in.uv1.y > 100.5 && in.uv1.y < 102.5) {
+        let wx = 0.075 * sin(6.2831855 * fract(g.lod.w / 4.0));
+        let wz = 0.075 * sin(6.2831855 * fract(g.lod.w / 5.0));
+        let tilt = clamp(0.05 * (in.pos.y - 1.0), 0.0, 1.0) * wz;
+        if (in.uv1.y > 101.125 && in.uv1.y < 101.375) {
+            mpos.x += tilt;
+        } else {
+            let sc = vec3<f32>(inst.pos_scale.w, inst.pos_scale.w * tall, inst.pos_scale.w);
+            let v = quat_rot(iq, (in.color1.rgb * 2.0 - vec3<f32>(1.0)) * sc);
+            let n = quat_rot(iq, in.normal * sc);
+            let a = 0.4 * clamp(0.25 * (in.pos.y - 0.5), 0.0, 1.0) * in.color1.a * in.color1.a;
+            var d = a * wx * (v + cross(v, n)) + vec3<f32>(clamp(a * v.x, 0.0, 1.0));
+            d.x += tilt;
+            mpos += d;
+        }
+    }
+    var ipos = mpos * vec3<f32>(inst.pos_scale.w, inst.pos_scale.w * tall, inst.pos_scale.w);
     var wp = quat_rot(iq, ipos) + inst.pos_scale.xyz;
     // Pass 8: a plant's impostor card (uv1.y = 104; props/impostor.rs) - VSPropInstanceFoliage.
     // The corner is pos = (side sign, top sign), the type's constants ride in the normal:

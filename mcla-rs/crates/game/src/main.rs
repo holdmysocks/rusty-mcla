@@ -242,6 +242,8 @@ struct App {
     cam: Camera,
     chase: ChaseCam,
     orbit: f32,
+    /// the clock of the plants' wind: the original's clock object +24, which takes the scaled frame step and stands still while paused (F-49323). Test hook MCLA_WIND_CLOCK=<seconds>
+    wind_clock: f32,
     sim_time: f32,
     tick_no: u64,
     /// frames the race-over menu has offered RACE BACK (test hooks, althk.rs)
@@ -967,6 +969,7 @@ impl App {
             cam,
             chase: ChaseCam::default(),
             orbit,
+            wind_clock: 0.0,
             sim_time: 0.0,
             tick_no: 0,
             alt_menu_frames: 0,
@@ -1275,6 +1278,7 @@ impl App {
             self.weather_set(Nice);
         }
         let game_dt = dt * self.game.mc4_time_scale();
+        if self.game.mode != Mode::Paused { self.wind_clock += game_dt; }
         let update = self.opt.time.is_none() && scene.is_none();
         if std::env::var("MCLA_WEATHER_TRACE").is_ok() && self.tick_no % 120 == 0 {
             log::info!("weather: {} -> {} blend {:.3} timer {:.1} auto {} scene {:?} mode {:?} menu {}", self.weather.name(), target(self).name(), self.sky_next.as_ref().map_or(0.0, |n| n.2), self.weather_timer, self.weather_auto, scene, self.game.mode, self.game.in_menu());
@@ -1609,7 +1613,7 @@ impl App {
             moon_dir: [-0.072, 0.215, 0.974, 0.0],
             cloud_color: [cloud_c.x, cloud_c.y, cloud_c.z, cover],
             cloud_shade: [cloud_s.x, cloud_s.y, cloud_s.z, self.sim_time * 0.0022],
-            lod: { let k = crate::props::Lod::now(); [k.draw, k.detail, k.plant_angle, 0.0] },
+            lod: { let k = crate::props::Lod::now(); [k.draw, k.detail, k.plant_angle, std::env::var("MCLA_WIND_CLOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(self.wind_clock)] },
             ..Globals::default()
         }
     }

@@ -46,6 +46,15 @@ fn vs_tile(in: VsIn) -> VsOut {
     return tile_vertex(in);
 }
 
+// VSPropFoliageTrunk: only x moves, sat(0.05 (y - 1)) wind.z.
+@vertex
+fn vs_tile_trunk(in: VsIn) -> VsOut {
+    var o = tile_vertex(in);
+    let p = in.pos + vec3<f32>(clamp(0.05 * (in.pos.y - 1.0), 0.0, 1.0) * tile.wind.z, 0.0, 0.0);
+    o.clip = tile.view_proj * vec4<f32>(p, 1.0);
+    return o;
+}
+
 // VSPropFoliageGenImpostorNight / Day's displacement (the leaves; the model's world is the identity). V = the vertex's
 // colour x 2 - 1, a = wind.w sat(0.25 (y - 0.5)) occlusion^2, k = sat(a V.x); the program adds k to all three axes,
 // a (wind.x V + wind.y V x n) and sat(0.05 (y - 1)) wind.z on x. wind.w is not the sway: it moves the leaves when

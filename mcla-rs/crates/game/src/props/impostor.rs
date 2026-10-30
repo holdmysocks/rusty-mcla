@@ -212,7 +212,7 @@ impl Impostors {
         let make = |entry: &str| gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("impostor tile"),
             layout: Some(&pl),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some(if entry == "fs_leaf" { "vs_tile_leaf" } else { "vs_tile" }), buffers: &[Vertex::LAYOUT], compilation_options: Default::default() },
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some(if entry == "fs_leaf" { "vs_tile_leaf" } else { "vs_tile_trunk" }), buffers: &[Vertex::LAYOUT], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some(entry),
@@ -461,8 +461,7 @@ impl Impostors {
                 sun_dir: [g.sun_dir[0], g.sun_dir[1], g.sun_dir[2], (if night { 1.0 } else { 0.0 }) + (if (g.params[3] - 112.0).abs() < 0.5 { 2.0 } else { 0.0 })],
                 sun_col: [g.sun_color[0] * g.sun_dir[3], g.sun_color[1] * g.sun_dir[3], g.sun_color[2] * g.sun_dir[3], g.grade[3]],
                 ambient: g.ambient_sky,
-                // (gWindVector: w 0.4 as read live; x, y, z are the sway, not ported)
-                wind: [0.0, 0.0, 0.0, 0.4],
+                wind: wind_vector(g.lod[3]),
             };
             gpu.queue.write_buffer(&ty.buf, 0, bytemuck::bytes_of(&u));
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -502,6 +501,13 @@ impl Impostors {
 /// One lane operation of the original's vector code: the cross product it builds from two shuffles, two multiplies and a
 /// subtraction (each rounded to single, no fused multiply-add), the sign bit flipped last. `a` and `b` as given are `a x b`
 /// negated, i.e. `b x a`.
+/// gWindVector (F-65228, the amplitude and periods from F-77830): x, y = 0.075 sin(2 pi frac(t / 4)), z = 0.075 sin(2 pi frac(t / 5)),
+/// w = 0.4; t = the clock `App::wind_clock`.
+pub fn wind_vector(t: f32) -> [f32; 4] {
+    let s = |period: f32| 0.075 * (std::f32::consts::TAU * (t / period).fract()).sin();
+    [s(4.0), s(4.0), s(5.0), 0.4]
+}
+
 fn cross_flipped(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let (a9, a7) = ([a[1], a[2], a[0], a[3]], [a[2], a[0], a[1], a[3]]);
     let (b9, b7) = ([b[1], b[2], b[0], b[3]], [b[2], b[0], b[1], b[3]]);

@@ -113,7 +113,7 @@ pub struct Globals {
     /// the car programs: the light manager's sm_vGarageAmbientLighting), w = 1: in force - and then
     /// `car_key2` is a POSITION when its w is 2 (the garage's second light, a point 1 m above the camera)
     pub car_amb: [f32; 4],
-    /// OPTIONS > PERFORMANCE: x = DRAW DISTANCE, y = DETAIL LEVEL (1 = the original; props.rs `Lod`, city.wgsl `vs_inst`)
+    /// OPTIONS > PERFORMANCE: x = DRAW DISTANCE, y = DETAIL LEVEL (1 = the original; props.rs `Lod`, city.wgsl `vs_inst`; w = the clock of the plants' wind)
     pub lod: [f32; 4],
 }
 

@@ -771,13 +771,13 @@ impl Props {
                     eprintln!("prop hl {} / {}: {:?} bump {:?} textures {:?}", prop.name, sname, prop_hl, prop_bump, sh.map(|s| s.textures().map(|(h, n)| format!("{:08x} {}", h, n)).collect::<Vec<_>>()));
                 }
                 // (for the fade with distance, city.wgsl vs_inst: the sphere's radius and 100 + kind
-                // - 0 prop, 1 plant, 2 hedge, 2.25 a hedge's low level - in the second UV set, which
+                // - 0 prop, 1 plant, 1.25 a plant's trunk, 2 hedge, 2.25 a hedge's low level - in the second UV set, which
                 // only the signal heads use)
                 let lname = prop.name.to_ascii_lowercase();
                 let fade_uv = if sname.to_ascii_lowercase().contains("trafficsignal") || prop.radius <= 0.0 {
                     None
                 } else {
-                    Some([prop.radius, 100.0 + if !lname.contains("_gfx_") { 0.0 } else if lname.ends_with("#low") { 2.25 } else if lname.contains("hedge") { 2.0 } else { 1.0 }])
+                    Some([prop.radius, 100.0 + if !lname.contains("_gfx_") { 0.0 } else if lname.ends_with("#low") { 2.25 } else if lname.contains("hedge") { 2.0 } else if sname.to_ascii_lowercase().contains("trunk") { 1.25 } else { 1.0 }])
                 };
                 if std::env::var("MCLA_LEAF_DUMP").is_ok() && lname.contains("_gfx_") && !mesh.colors.is_empty() {
                     let m = mesh.colors.len() as f32;
