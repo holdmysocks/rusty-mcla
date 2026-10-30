@@ -222,9 +222,30 @@ pub struct Hook {
     pub damp: bool,
     /// force the user's car is given along its back axis (PlayerAccel x mass), summed over the step's strikes
     pub accel: f32,
+    /// the law's contact word (car +484, F-83713): 1 a prop, 2 a police car it ran into, 8 another car; read and cleared
+    /// by the police manager each frame
+    pub law_word: u32,
+    /// the 8-slot contact table (car +492, F-60290): the other's key, when its 3 s run out and the value (the aggressor's
+    /// speed, F-93844 reads the largest)
+    pub law_tab: Vec<(u64, f32, f32)>,
 }
 
 impl Hook {
+    /// A contact for the law: true when `key` is not in the table, and it goes in (8 slots, the oldest out). (That the
+    /// 3 s timer retires an entry is inferred.)
+    pub fn law_new_contact(&mut self, key: u64, value: f32) -> bool {
+        let now = self.now;
+        self.law_tab.retain(|e| e.1 > now);
+        if self.law_tab.iter().any(|e| e.0 == key) {
+            return false;
+        }
+        if self.law_tab.len() >= 8 {
+            self.law_tab.remove(0);
+        }
+        self.law_tab.push((key, now + 3.0, value));
+        true
+    }
+
     /// The gauge's strike for a contact with `class`; `n_y` the contact normal's height, signed into the car.
     pub fn arm(&mut self, class: Class, n_y: f32) {
         if self.agro_run || self.running || self.crashed {

@@ -969,6 +969,11 @@ pub struct Game {
     wager_pick: Option<usize>,
     /// the wager riding on the race: the stake (already paid) and the difficulty it bought
     pub wager: Option<(i64, usize)>,
+    /// the stake and difficulty of the wager just run, past its pay-out: the race-over menu's class and REWAGER's, NEXT
+    /// WAGER's stake (the script's local 2, kept)
+    pub wager_over: Option<(i64, usize)>,
+    /// the race just paid out was not won (F-51353's `bFailure` for the story man's RACE AGAIN)
+    pub race_lost: bool,
     /// the race just paid out was a wager (its winnings count for the wager missions)
     pub wager_paid: bool,
     /// the map's own tuning (`HudMap` in tune/ui: icon colours and sizes)
@@ -1464,6 +1469,8 @@ impl Game {
             wager_here: false,
             wager_pick: None,
             wager: None,
+            wager_over: None,
+            race_lost: false,
             wager_paid: false,
             hudmap: Default::default(),
             rain_tune: Default::default(),
@@ -2786,8 +2793,11 @@ impl Game {
             money = 0;
         }
         let s15_exp = rep;
-        // a wager race pays the stake back twice over, or nothing
+        // a wager race pays the stake back twice over, or nothing (the script's AddMoney(stake), 0x2bc3, and the reward of
+        // WAGER_RACE_COMPLETE, the wager for first place)
         self.wager_paid = false;
+        self.race_lost = place != 1;
+        self.wager_over = self.wager;
         if let Some((stake, _)) = self.wager.take() {
             money = if place == 1 { stake * 2 } else { 0 };
             self.wager_paid = place == 1;
@@ -8059,12 +8069,15 @@ impl Game {
                 } else if arcade_over {
                     ro.push((s("pause_next_race", "NEXT RACE"), 10));
                 }
-                // (step 19d: a local hookman's race - RO_NextRace while `bNextRace` stands)
-                if self.mc4_next_race_on() && self.next_event_race.is_none() && !arcade_over {
+                // (a local hookman's race, RACE_GH_06's: F-98682 lists RO_NextRace for every kind but the story man's, grey
+                // unless F-71666 - `bNextRace` standing, and never for RACE_GH_06's: `ro_grey`)
+                if (self.mc4_local_man_race() || self.rgh06_race()) && self.next_event_race.is_none() && !arcade_over {
                     ro.push((s("pause_next_race", "NEXT RACE"), 20));
                 }
                 ro.push((s("pause_return_cruise", "RETURN TO CRUISE"), 2));
-                if self.next_event_race.is_none() {
+                // (the story man's, kind 8: RO_Restart only with bFailure, F-98682)
+                let lost = self.race_lost || self.race.as_ref().is_some_and(|r| r.failed.is_some());
+                if self.next_event_race.is_none() && (!self.hookman_race || self.rgh06_race() || lost) {
                     ro.push((s("pause_race_again", "RACE AGAIN"), 1));
                 }
                 // (RO_RaceBack after a red light race - the registry's raceBack: althk.rs)
@@ -8102,8 +8115,8 @@ impl Game {
                 // a delivery's (mcDeliveryMenu F-69890, labels F-84417): NEXT DELIVERY (RO_NextRace: vt+36 is 1, then
                 // offline and not GOAL ATTACK), QUIT DELIVERY (RO_AbortRace), DELIVER AGAIN (RO_Restart, only with the car
                 // wrecked or bFailure, F-51353); no RETURN TO CRUISE, results, favourites, replay or garage (vt+28 is 0).
-                // A payback's (F-33129, F-41559): RESTART PAYBACK, PAYBACK RESULTS and RO_Garage set on whatever the
-                // gate says, labelled QUIT PAYBACK; no RETURN TO CRUISE, no replay. A time trial's (F-54744, F-76497):
+                // A payback's (F-33129, F-41559, attached by F-11960): RO_Garage set on whatever the gate says, labelled QUIT
+                // PAYBACK, RESTART PAYBACK, PAYBACK RESULTS; no RETURN TO CRUISE, no replay. A time trial's (F-54744, F-76497):
                 // RETURN TO CRUISE, RO_Restart unless bComplete (F-27940) - RACE AGAIN after a failure, else RESTART TIME
                 // TRIAL -, TIME TRIAL RESULTS, the favourites, VIEW REPLAY; no garage (vt+28 is 0). The freeway's
                 // (F-58226): replay and results off, RO_Garage = the car wrecked (no gate), no RACE AGAIN (the base's
@@ -8125,9 +8138,9 @@ impl Game {
                         }
                     } else if class_kind == Some(RaceKind::Payback) {
                         ro = vec![
+                            (s("pause_quit_payback", "QUIT PAYBACK"), 13),
                             (s("pause_restart_payback", "RESTART PAYBACK"), 1),
                             (s("pause_payback_results", "PAYBACK RESULTS"), 9),
-                            (s("pause_quit_payback", "QUIT PAYBACK"), 13),
                         ];
                     } else if tt_class {
                         let fav = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| self.race_favs.iter().any(|f| f.eq_ignore_ascii_case(&d.id)));
@@ -8205,15 +8218,38 @@ impl Game {
                         (s("pause_go_to_garage", "GO TO GARAGE"), 13),
                     ]);
                 }
-                // (a hangout's pink slip race - mcPinkslipMenu's race-over tab, F-36093: not lost (`bFailure`,
-                // F-51353) and the car not wrecked - RETURN TO CRUISE, RETURN TO HANGOUT, the favourites row, VIEW
-                // REPLAY, GO TO GARAGE; else the favourites row, VIEW REPLAY, GO TO GARAGE. The rows are the scene's,
-                // in its order; no RACE RESULTS, no RACE AGAIN)
+                // (a hangout's pink slip race - mcPinkslipMenu's race-over tab, F-36093, which the base's F-17214 has emptied
+                // first, so the order is its own: not lost (`bFailure`, F-51353) and the car not wrecked - RETURN TO CRUISE, the
+                // favourites row, VIEW REPLAY, GO TO GARAGE; else GO TO GARAGE, the favourites row, VIEW REPLAY. Its RETURN TO
+                // HANGOUT's enable is overwritten by the base's after it: never listed. No RACE RESULTS, no RACE AGAIN)
                 if let (true, Some(lost)) = (movie, self.pink_over) {
                     let wrecked = vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
                     let fav = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| self.race_favs.iter().any(|f| f.eq_ignore_ascii_case(&d.id)));
-                    ro = if lost || wrecked { Vec::new() } else { vec![(s("pause_return_cruise", "RETURN TO CRUISE"), 2), (s("pause_return_hangout", "RETURN TO HANGOUT"), 22)] };
+                    let fav_row = (if fav { s("pause_remove_favorites", "REMOVE RACE FROM FAVORITES") } else { s("pause_add_favorites", "ADD RACE TO FAVORITES") }, 11);
+                    let replay = (s("pause_view_replay", "VIEW REPLAY"), 12);
+                    let garage = (s("pause_go_to_garage", "GO TO GARAGE"), 13);
+                    ro = if lost || wrecked { vec![garage, fav_row, replay] } else { vec![(s("pause_return_cruise", "RETURN TO CRUISE"), 2), fav_row, replay, garage] };
+                }
+                // (a wager's - F-44897 in the base's attach order, labels F-71580: NEXT WAGER listed only when the stake can be
+                // paid (F-89743) and not GOAL ATTACK, RETURN TO CRUISE, REWAGER grey when it cannot, RACE RESULTS, the favourites
+                // row, VIEW REPLAY, GO TO GARAGE; both labels name the stake, F-48085)
+                if let (true, false, Some((stake, _))) = (movie, arcade_over, self.wager_over.or(self.wager)) {
+                    let amount = |key: &str, fallback: &str| -> String {
+                        let t = self.career.strings.get(key).map_or(fallback.to_string(), |v| v.to_string());
+                        match (t.find("<D>"), t.find("</D>")) {
+                            (Some(a), Some(b)) if a < b => format!("{}{}{}", &t[..a], stake, &t[b + 4..]),
+                            _ => t,
+                        }
+                    };
+                    let fav = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| self.race_favs.iter().any(|f| f.eq_ignore_ascii_case(&d.id)));
+                    ro = Vec::new();
+                    if self.money >= stake && !self.goal_attack {
+                        ro.push((amount("pause_next_wager", "NEXT WAGER"), 25));
+                    }
                     ro.extend([
+                        (s("pause_return_cruise", "RETURN TO CRUISE"), 2),
+                        (amount("pause_rewager", "REWAGER"), 26),
+                        (s("pause_race_results", "RACE RESULTS"), 9),
                         (if fav { s("pause_remove_favorites", "REMOVE RACE FROM FAVORITES") } else { s("pause_add_favorites", "ADD RACE TO FAVORITES") }, 11),
                         (s("pause_view_replay", "VIEW REPLAY"), 12),
                         (s("pause_go_to_garage", "GO TO GARAGE"), 13),
@@ -8274,12 +8310,26 @@ impl Game {
                             8 => action = MenuAction::RestartTournament,
                             // NEXT RACE (ARCADE): the race after this one
                             9 => self.pause_do = Some(250),
-                            // RETURN TO HANGOUT (F-97524 on either button: raceOverTrigger 1, raceOverCommand the
-                            // empty string, scene Cruising): the hangout script tests the command against
-                            // `returnToHangout` and the rest, none matches, and its race returns 3 - "Player opted to
-                            // ignore exit event": `cruising`, the hangout left (`game/Hangouts/0x16e89a34` 0x3959..0x436c,
-                            // 0x647c -> 0x6641). Back to the cruise as RETURN TO CRUISE, without its taunt.
-                            10 => action = MenuAction::StartFreeRoam,
+                            // RACE AGAIN / RESTART RACE (F-39979, result 3: F-90541 on either button)
+                            10 | 11 => action = MenuAction::RestartRace,
+                            // REWAGER (the script's `restart`, 0x3a3a: same race, opponent and stake; SpendMoney again,
+                            // 0x285e): the restart takes the stake
+                            12 => {
+                                self.wager = self.wager_over.or(self.wager);
+                                action = MenuAction::RestartRace;
+                            }
+                            // NEXT WAGER (`nextRace`, 0x3976: the array's next race, same opponent, difficulty and stake,
+                            // with a cut; SpendMoney again)
+                            13 => {
+                                if let (Some(w), Some(n)) = (self.wager_over.or(self.wager), self.next_wager_race()) {
+                                    self.money -= w.0;
+                                    self.dirty = true;
+                                    self.wager = Some(w);
+                                    self.current_race = Some(n);
+                                    self.warp_with_cut = true;
+                                    action = MenuAction::StartRace;
+                                }
+                            }
                             // RESTART SERIES / RACE SERIES AGAIN: from its first race, every tally at
                             // nought (OrderedSeriesCore `restart`, 0x247c)
                             2 | 5 => {
@@ -8413,7 +8463,7 @@ impl Game {
                     picked = Some(ro[ro_sel].1);
                 }
                 // (test hook MCLA_NEXT_RACE=<n>: `mc4_next_race_hook`)
-                if picked.is_none() && !self.reward_panel && self.mission_results.is_empty() && !self.results_table && ro.iter().any(|r| r.1 == 20) && self.mc4_next_race_hook() {
+                if picked.is_none() && !self.reward_panel && self.mission_results.is_empty() && !self.results_table && ro.iter().any(|r| r.1 == 20) && !self.ro_grey(20) && self.mc4_next_race_hook() {
                     picked = Some(20);
                 }
                 if !self.event_line.is_empty() {
@@ -8531,9 +8581,19 @@ impl Game {
                         self.series_ask_kind = 4;
                         self.series_ask = Some(0);
                     }
-                    // (RETURN TO HANGOUT asks the repair question - Dialog_Title_ReturnHangout, YES and NO)
-                    Some(22) if movie => {
-                        self.series_ask_kind = 10;
+                    // (REWAGER: F-33773 with PM_restart_wager_*; NEXT WAGER: F-36131 with Dlg_NextWager_*)
+                    Some(26) if movie => {
+                        self.series_ask_kind = 12;
+                        self.series_ask = Some(0);
+                    }
+                    Some(25) if movie => {
+                        self.series_ask_kind = 13;
+                        self.series_ask = Some(0);
+                    }
+                    // (RO_Restart asks first, F-33773 -> F-39979: form 71 with the class's words, YES repairs, both restart. A
+                    // delivery's, a payback's and a time trial's have their own; the police on the player: no form, F-58132)
+                    Some(1) if movie && !self.police_on_player && !tt_class && !matches!(class_kind, Some(RaceKind::Delivery | RaceKind::Payback)) => {
+                        self.series_ask_kind = if self.active_def.as_ref().map_or(false, |d| d.id == crate::althk::REDLIGHT_RACE_ID) { 11 } else { 10 };
                         self.series_ask = Some(0);
                     }
                     Some(21) => {
@@ -10813,6 +10873,15 @@ impl Game {
         Some(i)
     }
 
+    /// NEXT WAGER's race (approx.: the script's mcRaceArray_FindNextRaceIndex over the hangout's array, which the port does
+    /// not load: the next of the same district and type)
+    fn next_wager_race(&self) -> Option<usize> {
+        let cur = self.current_race?;
+        let d = self.race_defs.get(cur)?;
+        let n = self.race_defs.len();
+        (1..n).map(|k| (cur + k) % n).find(|&i| self.race_defs[i].district == d.district && self.race_defs[i].race_type == d.race_type)
+    }
+
     /// NEXT DELIVERY after a delivery: the next of the same district's list, at the same difficulty (`event_diff`
     /// stays)
     fn next_delivery(&mut self) -> Option<usize> {
@@ -10923,7 +10992,11 @@ impl Game {
             }
             return MenuAction::None;
         }
-        let ro = vec![(s("race_quit", "QUIT RACE"), 0u8), (s("pause_racestart", "JUMP TO RACE START"), 1u8)];
+        // (F-63937 in the base's attach order F-40676: JUMP TO RACE START, QUIT RACE, GO TO GARAGE through its gate F-88974)
+        let mut ro = vec![(s("pause_racestart", "JUMP TO RACE START"), 1u8), (s("race_quit", "QUIT RACE"), 0u8)];
+        if self.go_garage_gate() {
+            ro.push((s("pause_go_to_garage", "GO TO GARAGE"), 2u8));
+        }
         if self.message_box.is_none() {
             if up {
                 e.sel = e.sel.saturating_sub(1);
@@ -10931,8 +11004,15 @@ impl Game {
             if down {
                 e.sel = (e.sel + 1).min(ro.len() - 1);
             }
+            if enter && ro[e.sel].1 == 2 {
+                self.go_garage = true;
+                if let Some(fm) = self.flash_menu.as_mut() {
+                    fm.hide();
+                }
+                return MenuAction::StartFreeRoam;
+            }
             if enter {
-                if e.sel == 0 {
+                if ro[e.sel].1 == 0 {
                     // (the class's quit question - F-33773 for RO_AbortRace: the repair form, YES alone with the
                     // car wrecked)
                     let (title, desc, _, _) = self.quit_box();
@@ -13128,9 +13208,9 @@ impl Game {
             }
         } else if let Some(cur) = self.series_ask {
             MenuPage {
-                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc", "Dialog_Description_NextTournament", "Dialog_Description_QuitTournament", if self.career.tour_table.as_ref().is_some_and(|t| t.decided.is_some()) { "Dlg_Desc_Tourn_Restart_Lossless" } else { "Dlg_Desc_Tourn_Restart" }, "Dialog_Description_NextRace", "Dialog_Description_ReturnHangout"][self.series_ask_kind.min(10) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
+                layout: MenuLayout::Confirm { description: self.career.strings.get(["Dialog_Description_NextSeries", "Dlg_Desc_Series_Quit", "Dlg_Desc_Series_Restart", "Dialog_Description_RaceBack", "Dialog_Description_ReturnToCruise", "Dlg_RaceAgainSeries_Desc", "Dialog_Description_NextTournament", "Dialog_Description_QuitTournament", if self.career.tour_table.as_ref().is_some_and(|t| t.decided.is_some()) { "Dlg_Desc_Tourn_Restart_Lossless" } else { "Dlg_Desc_Tourn_Restart" }, "Dialog_Description_NextRace", "Dlg_RaceAgain_Desc", "Dlg_Restart_Desc", "PM_restart_wager_desc", "Dlg_NextWager_Desc"][self.series_ask_kind.min(13) as usize]).map(|v| v.to_string()).unwrap_or_else(|| "Do you want to repair your vehicle before you CONTINUE the series?".into()) },
                 icon: std::env::var("MCLA_RES_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(13),
-                title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK"), st("Dialog_Title_ReturnToCruise", "RETURN TO CRUISE"), st("Dlg_RaceAgainSeries_Title", "RACE AGAIN"), st("Dialog_Title_NextTournament", "CONTINUE TOURNAMENT"), st("Dialog_Title_QuitTournament", "QUIT TOURNAMENT"), st("Dlg_Title_Tourn_Restart", "RESTART TOURNAMENT"), st("Dialog_Title_NextRace", "NEXT RACE"), st("Dialog_Title_ReturnHangout", "RETURN TO HANGOUT")][self.series_ask_kind.min(10) as usize].clone(),
+                title: [st("Dialog_Title_NextSeries", "CONTINUE SERIES"), st("Dlg_Title_Series_Quit", "QUIT SERIES"), st("Dlg_Title_Series_restart", "RESTART SERIES"), st("Dialog_Title_RaceBack", "RACE BACK"), st("Dialog_Title_ReturnToCruise", "RETURN TO CRUISE"), st("Dlg_RaceAgainSeries_Title", "RACE AGAIN"), st("Dialog_Title_NextTournament", "CONTINUE TOURNAMENT"), st("Dialog_Title_QuitTournament", "QUIT TOURNAMENT"), st("Dlg_Title_Tourn_Restart", "RESTART TOURNAMENT"), st("Dialog_Title_NextRace", "NEXT RACE"), st("Dlg_RaceAgain_Title", "RACE AGAIN"), st("Dlg_Restart_Title", "RESTART RACE"), st("PM_restart_wager_title", "REWAGER"), st("Dlg_NextWager_Title", "NEXT WAGER")][self.series_ask_kind.min(13) as usize].clone(),
                 rows: vec![MenuRow { label: st("Common_Yes", "YES"), value: String::new(), enabled: self.fix_now > 0, part: None }, MenuRow { label: st("Common_No", "NO"), value: String::new(), enabled: true, part: None }],
                 select: cur,
                 prompts: vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("prompt_back", "BACK"), ICON_B)],
@@ -13414,7 +13494,7 @@ impl Game {
     /// GOAL ATTACK's exception: NEXT rows, RACE / SERIES / PAYBACK / TIME TRIAL RESULTS, GO TO GARAGE (the payback's
     /// QUIT PAYBACK is its RO_Garage), NEXT DELIVERY.
     pub fn ro_grey(&self, code: u8) -> bool {
-        (self.chased_menu() && matches!(code, 0 | 1 | 2 | 10 | 12 | 14 | 20 | 24)) || (self.police_on_player && matches!(code, 0 | 9 | 10 | 13 | 20 | 23))
+        (self.chased_menu() && matches!(code, 0 | 1 | 2 | 10 | 12 | 14 | 20 | 24 | 25 | 26)) || (self.police_on_player && matches!(code, 0 | 9 | 10 | 13 | 20 | 23 | 25)) || (code == 26 && self.wager_over.or(self.wager).is_some_and(|w| self.money < w.0)) || (code == 20 && (!self.mc4_next_race_on() || self.goal_attack))
     }
 
     pub fn series_decided(&self) -> bool {
@@ -13974,7 +14054,15 @@ mod tests {
     #[test]
     fn race_over_rows_blocked_when_chased() {
         let mut g = Game::new(Vec::new(), 0);
-        assert!(!(0..30).any(|c| g.ro_grey(c)));
+        assert!(!(0..30).any(|c| c != 20 && g.ro_grey(c)));
+        // (F-71666: NEXT RACE stays listed, grey without `bNextRace`)
+        assert!(g.ro_grey(20));
+        g.wager_over = Some((500, 1));
+        g.money = 0;
+        assert!(g.ro_grey(26) && !g.ro_grey(25), "REWAGER grey when the stake cannot be paid");
+        g.money = 500;
+        assert!(!g.ro_grey(26));
+        g.wager_over = None;
         g.police_on_player = true;
         // (F-43165's rows and the base's RO_NextRace / RO_Results / RO_Garage, NEXT DELIVERY, QUIT DELIVERY)
         for c in [0, 1, 2, 9, 10, 12, 13, 14, 20, 23, 24] {

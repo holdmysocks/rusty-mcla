@@ -45,6 +45,8 @@ pub struct Ctx {
     /// his car (`vp_vw_golf_83`)
     pub car: String,
     pub hour: f32,
+    /// the ramp under him, when he is on one (`XT_...`, dots out, spaces to _, upper case)
+    pub ramp: String,
 }
 
 #[derive(Default)]
@@ -60,6 +62,12 @@ pub struct Radio {
     voice_banks: HashMap<String, HashSet<String>>,
     /// the call signs of the lead cruiser and of a second one, as the cars' sounds hand them out (`Sound::radio_units`)
     pub units: (Option<String>, Option<String>),
+    /// a scenario's `frequency` in s; its last start on `clock` and the wording it took (F-14569 -> F-95157's gate)
+    freq: HashMap<String, f32>,
+    last: HashMap<String, (f32, usize)>,
+    clock: f32,
+    /// the last ramp the suspect was on (context +124, F-21712)
+    ramp: String,
     /// clips to play, in order
     queue: VecDeque<(String, f32)>,
     wait: f32,
@@ -163,11 +171,16 @@ impl Radio {
                         }
                     }
                 }
-                if steps.iter().any(|s| matches!(s, Step::Play { .. })) {
+                // (a freeway report is all SpecialCase)
+                if steps.iter().any(|s| match s {
+                    Step::Play { .. } => true,
+                    Step::Special { name, .. } => !name.ends_with("_SQUELCH"),
+                }) {
                     wordings.push(steps);
                 }
             }
             if !wordings.is_empty() {
+                r.freq.insert(name.to_ascii_uppercase(), attr(sc, "frequency").and_then(|f| f.parse().ok()).unwrap_or(0.0));
                 r.scenarios.insert(name.to_ascii_uppercase(), wordings);
             }
         }
@@ -252,12 +265,40 @@ impl Radio {
         if !urgent && (self.busy() || self.quiet > 0.0) {
             return false;
         }
+        let parties = self.parties(&scenario.to_ascii_uppercase());
+        self.say_line(scenario, urgent, parties, ctx)
+    }
+
+    /// A line of a tactic (F-26639), its sender and receiver named. Its caller has seen no line playing.
+    pub fn say_from(&mut self, scenario: &str, sender: String, receiver: String, ctx: &Ctx) -> bool {
+        self.say_line(scenario, false, (sender, receiver), ctx)
+    }
+
+    #[cfg(test)]
+    fn first_ramp(&self) -> String {
+        "XT_HW_GRAND_AVE".to_string()
+    }
+
+    /// The ramp the suspect is on, kept when he is on none.
+    pub fn note_ramp(&mut self, ctx: &Ctx) {
+        if !ctx.ramp.is_empty() {
+            self.ramp = ctx.ramp.clone();
+        }
+    }
+
+    fn say_line(&mut self, scenario: &str, urgent: bool, (sender, receiver): (String, String), ctx: &Ctx) -> bool {
         let key = scenario.to_ascii_uppercase();
         let Some(n) = self.scenarios.get(&key).map(|w| w.len()) else { return false };
-        let pick = self.rand() as usize % n;
+        // (F-95157: refused until the scenario's Frequency has run out; the next wording never the last one)
+        let before = self.last.get(&key).copied();
+        if !urgent && before.is_some_and(|l| self.clock < l.0 + self.freq.get(&key).copied().unwrap_or(0.0)) {
+            return false;
+        }
+        let mut pick = self.rand() as usize % n;
+        if n > 1 && before.is_some_and(|l| l.1 == pick) {
+            pick = (pick + 1) % n;
+        }
         let steps = self.scenarios[&key][pick].clone();
-        // the call's two voices, fixed for all its lines (F-95157 +2200 / +2204); no sender: no call
-        let (sender, receiver) = self.parties(&key);
         let Some(sv) = self.voice_of(&sender, ctx.hour) else { return false };
         let rv = self.voice_of(&receiver, ctx.hour);
         let voice: [Option<String>; 2] = [Some(sv), rv];
@@ -289,6 +330,7 @@ impl Radio {
                             line.push((None, *role, name == "PRE_SQUELCH"));
                             continue;
                         }
+                        "FREEWAY_ENTER" | "FREEWAY_EXIT" if !self.ramp.is_empty() => format!("{name}_{}", self.ramp),
                         "DIRECTION_PLAYER" | "DIRECTION_STREETRACE" | "DIRECTION_CHANGE_PLAYER" | "DIRECTION_CHANGE_STREETRACE" => format!("{name}_{dir}"),
                         "LOCATION1" if !ctx.street.is_empty() => format!("LOCATION1_{}", street_asset(&ctx.street)),
                         "LOCATION2" if !ctx.cross.is_empty() => format!("LOCATION2_{}", street_asset(&ctx.cross)),
@@ -334,6 +376,7 @@ impl Radio {
             }
         }
         self.quiet = 6.0;
+        self.last.insert(key.clone(), (self.clock, pick));
         log::info!("police radio: {} (wording {} of {}): {}", key, pick + 1, n, said.join(" / "));
         true
     }
@@ -343,6 +386,7 @@ impl Radio {
     }
 
     pub fn update(&mut self, a: &mut Audio, dt: f32) {
+        self.clock += dt;
         self.wait -= dt;
         if self.queue.is_empty() {
             self.quiet = (self.quiet - dt).max(0.0);
@@ -368,6 +412,24 @@ impl Radio {
 mod tests {
     use super::*;
 
+    /// A freeway report is all SpecialCase and names the last ramp; its Frequency of 15 s refuses it until it has run out.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn a_freeway_report_names_the_ramp() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut r = Radio::load(&dir, a.root());
+        let ctx = Ctx { hour: 12.0, ..Default::default() };
+        let sign = || ("4ADAM8".to_string(), "DISPATCH".to_string());
+        assert!(!r.say_from("REPORT_FREEWAY_ENTER", sign().0, sign().1, &ctx), "no ramp yet");
+        r.note_ramp(&Ctx { ramp: r.first_ramp(), ..Default::default() });
+        assert!(r.say_from("REPORT_FREEWAY_ENTER", sign().0, sign().1, &ctx));
+        assert!(!r.say_from("REPORT_FREEWAY_ENTER", sign().0, sign().1, &ctx), "Frequency");
+        r.clock += 15.0;
+        assert!(r.say_from("REPORT_FREEWAY_EXIT", sign().0, sign().1, &ctx));
+        assert!(r.say_from("REPORT_FREEWAY_ENTER", sign().0, sign().1, &ctx));
+    }
+
     /// A call keeps its two voices for all its lines (GitHub #17: the description changed voice word by word): every
     /// clip a call queues is in the sender's or the receiver's banks or a squelch set, the sender of a REPORT_* call is
     /// the lead cruiser, its receiver the dispatcher on shift; DISPATCH_REPORT_* go the other way.
@@ -384,7 +446,7 @@ mod tests {
         assert_eq!(r.on_shift(3.0).as_deref(), Some("DISPATCHER_01"));
         r.units = (Some("4ADAM8".into()), Some("2ADAM6".into()));
         let squelch: HashSet<String> = ["POLICE_RADIO_SQUELCH_DISPATCH", "POLICE_RADIO_SQUELCH_OFFICER"].iter().map(|n| format!("police_radio/0x{:08x}", joaat(n))).collect();
-        let ctx = Ctx { heading: Vec3::X, street: "HW_oh_Sunset Blvd.".into(), cross: "HW_oh_Vine St.".into(), car: "vp_vw_golf_83".into(), hour: 12.0 };
+        let ctx = Ctx { heading: Vec3::X, street: "HW_oh_Sunset Blvd.".into(), cross: "HW_oh_Vine St.".into(), car: "vp_vw_golf_83".into(), hour: 12.0, ..Default::default() };
         let mut calls = 0;
         let names: Vec<String> = r.scenarios.keys().cloned().collect();
         for (k, name) in names.iter().enumerate() {

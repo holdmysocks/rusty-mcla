@@ -276,6 +276,11 @@ impl Sound {
         self.fleet.as_mut().map(|f| f.radio_units()).unwrap_or_default()
     }
 
+    /// A cruiser's call sign.
+    pub fn radio_callsign(&mut self, car: usize) -> String {
+        self.fleet.as_mut().map(|f| f.callsign_of(car)).unwrap_or_default()
+    }
+
     /// Take a [`Preloaded`] sound library (the first sound update does it itself when nothing was handed over).
     pub fn adopt(&mut self, p: Preloaded) {
         self.lib_tried = true;

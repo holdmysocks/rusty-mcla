@@ -310,6 +310,13 @@ fn cop_sees(world: &World, cop: &crate::vehicles::CarInstance, tpos: Vec3, r: f3
     d < 1e-4 || world.collider.raycast(a, (b - a) / d, d).is_none()
 }
 
+/// A line of the tactic's radio: its scenario and the cars of its parties (no receiver: the dispatcher).
+pub struct RadioCall {
+    pub name: &'static str,
+    pub sender: u32,
+    pub receiver: Option<u32>,
+}
+
 /// The police manager's tactic kinds (types 0 - 4; docs/reference/hookmen/clip_time_and_tactics.md B): how many cops
 /// each takes (+72, set by the ctors) and the floor StartTactic (F-33550) raises the law score to. A higher kind
 /// replaces a lower one on the same target.
@@ -436,6 +443,8 @@ pub struct Unit {
     pub fol_t: f32,
     pub fol_tm: [f32; 3],
     pub fol_goal: Option<Vec3>,
+    /// +1073: may patrol (off under SetAllPoliceActive(0) and after a failed assign; on again at the end of an untimed race)
+    pub may_patrol: bool,
 }
 
 /// The three of `red_light_hk1` 0x436e / `freeway_hookman<n>` 0x2c73: (home, heading, slot).
@@ -558,14 +567,21 @@ pub struct Police {
     against_traffic: bool,
     /// the walkers' feet (`Peds::capsule_feet`), set by the caller each frame: their capsules are in the seen / block probe
     pub peds: Vec<Vec3>,
-    last_knocked: u32,
     last_damage: f32,
     spawn_timer: f32,
     /// how long the running pursuit has lasted (seconds)
     pub chase_time: f32,
     last_known: Vec3,
     /// time until the next radio report of the target's position
-    radio: f32,
+    /// the tactic's radio (F-26639): the countdown +112, the law record's road +60 and its timer +64, the nitrous tries
+    /// +100, the far byte +96, this frame's hard hit's cop, the line's draw
+    rdo_t: f32,
+    rdo_road: Option<usize>,
+    rdo_fw_t: f32,
+    rdo_nitro: u8,
+    rdo_far: bool,
+    hard_cop: Option<u32>,
+    rdo_rng: (u32, u32),
     time: f32,
     rng: u32,
     glow_buf: Option<wgpu::Buffer>,
@@ -582,8 +598,14 @@ pub struct Police {
     grow_flip: bool,
     /// SetAllPoliceUnderground(1, 1) is in force: no unit comes up or patrols until (0, 1)
     pub units_held: bool,
+    /// a race with no time limit is current (F-24233: race current and race +3148 == 0), and last frame's (mgr +88):
+    /// at its end every free unit may patrol again. (F-48953 also locks the free units in the streaming during it: the
+    /// port keeps every unit's car in the world anyway)
+    pub untimed_race: bool,
+    untimed_prev: bool,
     /// junction the player was last seen approaching on red
-    red_junction: Option<usize>,
+    /// the junction of the car's nearest lane when it last entered one (law record +152, F-65840)
+    last_junction: Option<usize>,
     /// step 19d: the pursuit under way is the payback client's friends' (`start_goons`):
     /// their cars (`CarInstance::goon`) are the pursuers, no cruiser is sent, nothing is
     /// lit, and the two results are the payback leg's to deal with
@@ -669,12 +691,17 @@ impl Police {
             block_active: false,
             against_traffic: false,
             peds: Vec::new(),
-            last_knocked: 0,
             last_damage: 0.0,
             spawn_timer: 8.0,
             chase_time: 0.0,
             last_known: Vec3::ZERO,
-            radio: 0.0,
+            rdo_t: 0.0,
+            rdo_road: None,
+            rdo_fw_t: 0.0,
+            rdo_nitro: 0,
+            rdo_far: true,
+            hard_cop: None,
+            rdo_rng: (0x2f6e_2b1d, 0x51ed_270b),
             time: 0.0,
             rng: 0x51ed_270b,
             glow_buf: None,
@@ -686,7 +713,9 @@ impl Police {
             tac_t: 0.0,
             grow_flip: true,
             units_held: false,
-            red_junction: None,
+            untimed_race: false,
+            untimed_prev: false,
+            last_junction: None,
             goons: false,
             phone_cut: false,
             units: Vec::new(),
@@ -720,7 +749,7 @@ impl Police {
         for (i, (home, heading, slot)) in SCRIPT_UNITS.iter().enumerate() {
             let id = 400 + i as u32;
             self.units.retain(|u| u.id != id);
-            self.units.push(Unit { id, home: Vec3::from(*home), heading: *heading, slot: Vec3::from(*slot), under: true, at: Vec3::from(*home), path: None, pi: 0, cd: 0.0, relocate: true, follow: false, fol_t: 0.0, fol_tm: [0.0; 3], fol_goal: None });
+            self.units.push(Unit { id, home: Vec3::from(*home), heading: *heading, slot: Vec3::from(*slot), under: true, at: Vec3::from(*home), path: None, pi: 0, cd: 0.0, relocate: true, follow: false, fol_t: 0.0, fol_tm: [0.0; 3], fol_goal: None, may_patrol: true });
         }
         log::info!("police: units 400..402 made, underground");
     }
@@ -740,6 +769,7 @@ impl Police {
     pub fn units_down(&mut self, vehicles: &mut Vehicles) {
         for u in self.units.iter_mut() {
             u.under = true;
+            u.may_patrol = false;
         }
         self.units_held = true;
         // (an underground unit has no car on the road, and so none for IsAnyPoliceCloseToPlayer,
@@ -750,8 +780,11 @@ impl Police {
     /// PoliceManager_SetAllPoliceUnderground(0, 1): the units come up at their surface place;
     /// the port puts each there (`update_units`) while the player is within streaming reach.
     pub fn units_up(&mut self) {
-        // (SetUnderground(0) first puts the car at its +912: the patrol loop brings each up there)
+        // (SetUnderground(0) first puts the car at its +912: the patrol loop brings each up there; F-97540: flags = !a)
         self.units_held = false;
+        for u in self.units.iter_mut() {
+            u.may_patrol = true;
+        }
     }
 
     /// The units that are up stand at their home as the script made them (heading in degrees -
@@ -802,6 +835,8 @@ impl Police {
         let Some(pp) = vehicles.player().map(|c| c.state.pos) else { return };
         let vis = tun.get("fCopHudIconVisibleDist", 800.0);
         let change = tun.get("iChangePathProbPrcnt", 1.0) * 0.01;
+        let race_over = self.untimed_prev && !self.untimed_race;
+        self.untimed_prev = self.untimed_race;
         for ui in 0..self.units.len() {
             let car = Self::unit_car(vehicles, self.units[ui].id);
             if car.is_some_and(|i| busy.contains(&vehicles.cars[i].uid)) {
@@ -819,11 +854,22 @@ impl Police {
             if self.units_held {
                 continue;
             }
+            if race_over {
+                self.units[ui].may_patrol = true;
+            }
+            if !self.units[ui].may_patrol {
+                self.units[ui].follow = false;
+                continue;
+            }
             match self.units[ui].path {
                 None => {
                     let r = self.assign(gpu, world, vehicles, ui, true, self.units[ui].relocate, vis);
                     if r != 0 && std::env::var_os("MCLA_PATROL_TRACE").is_some() {
                         log::info!("police: unit {} assign failed ({})", self.units[ui].id, r);
+                    }
+                    if r == 2 {
+                        // (F-90720's failure: no path at all - no patrol until something allows it again)
+                        self.units[ui].may_patrol = false;
                     }
                     if r == 0 {
                         self.units[ui].relocate = false;
@@ -1019,19 +1065,26 @@ impl Police {
         u.pi = (k + 1) % path.len();
         u.at = path[k];
         let fwd = (path[(k + 1) % path.len()] - path[k]).normalize_or(Vec3::X);
+        // (relocated: put at the point, then F-19049 - onto the nearest rail, radii 5 .. 80 m with the ground probe, along
+        // it at its speed; the path's point itself with no rail found)
+        let railed = start.and_then(|_| crate::roamers::rail_place(world, path[k]));
+        let (at, dir, v) = railed.map_or((path[k] + Vec3::Y * 0.8, fwd, 0.0), |(q, _, f, s)| (q, f, s));
         match car {
             None => {
-                if self.unit_surface(gpu, world, vehicles, ui, path[k] + Vec3::Y * 0.8, fwd).is_none() {
+                let Some(uid) = self.unit_surface(gpu, world, vehicles, ui, at, dir) else {
                     // (the port's: no car where the world is not streamed in yet - tried again next frame)
                     self.units[ui].path = None;
                     return 3;
+                };
+                if let Some(c) = vehicles.cars.iter_mut().find(|c| c.uid == uid) {
+                    c.state.vel = dir * v;
                 }
             }
             Some(i) if start.is_some() => {
                 let c = &mut vehicles.cars[i];
-                let q = glam::Quat::from_rotation_y((-fwd.x).atan2(-fwd.z));
+                let q = glam::Quat::from_rotation_y((-dir.x).atan2(-dir.z));
                 if let Some(vt) = c.params().veh.clone() {
-                    crate::physics::vehsim::set_pose(&mut c.state, &vt, &world.collider, [q * Vec3::X, q * Vec3::Y, q * Vec3::Z, path[k] + Vec3::Y * 0.8], Vec3::ZERO, Vec3::ZERO);
+                    crate::physics::vehsim::set_pose(&mut c.state, &vt, &world.collider, [q * Vec3::X, q * Vec3::Y, q * Vec3::Z, at], dir * v, Vec3::ZERO);
                 }
                 c.pose_history.reset();
                 if let Some(ai) = c.ai.as_mut() {
@@ -1447,6 +1500,10 @@ impl Police {
         self.kind = kind;
         self.cops = cops;
         self.may_escalate = may_escalate;
+        // (the tactic's begin: +112 = fMinPerRdoTime; its constructor: +96 = 1, +100 = 0)
+        self.rdo_t = self.tun.get("fMinPerRdoTime", 15.0);
+        self.rdo_nitro = 0;
+        self.rdo_far = true;
         // (F-63286: the duration +104 from 0; +120 = the request's +16 - 0 here)
         self.tac_t = 0.0;
         self.tel_lock = 0.0;
@@ -1474,6 +1531,102 @@ impl Police {
             Heat::PullOver => 1,
             Heat::Pursuit | Heat::Search | Heat::Busted => 2,
         }, 0)
+    }
+
+    /// The radio's draw (F-26639): x = lo x 0x5CDCFAA7 + hi; low and high 32 bits the new state.
+    fn rdo_draw(&mut self) -> u32 {
+        let x = self.rdo_rng.0 as u64 * 0x5CDC_FAA7 + self.rdo_rng.1 as u64;
+        self.rdo_rng = (x as u32, (x >> 32) as u32);
+        x as u32 & 0x7FFF_FFFF
+    }
+
+    fn rdo_cop(&mut self, n: usize) -> usize {
+        if n > 1 { self.rdo_draw() as usize % n } else { 0 }
+    }
+
+    /// The tactic's radio, once a game frame (F-26639, from the tactic's update): the countdown always; a line only in a
+    /// Pursuit past its Delay, a Double Pursuit or an Arrow Trap, not in the Search, and with no line playing.
+    pub fn chatter(&mut self, world: &World, vehicles: &Vehicles, busy: bool, dt: f32) -> Option<RadioCall> {
+        self.rdo_t = (self.rdo_t - dt).max(0.0);
+        let on = match self.kind {
+            TacKind::Pursuit => self.flee_hold <= 0.0,
+            TacKind::PursuitDbl | TacKind::ArrowTrap => true,
+            _ => false,
+        };
+        if !on || self.heat == Heat::Search || busy || self.cops.is_empty() {
+            return None;
+        }
+        let p = vehicles.player()?;
+        let (ppos, speed, nitro) = (p.state.pos, p.state.speed(), p.state.veh.as_deref().is_some_and(|v| v.nitro_burning));
+        let cops = self.cops.clone();
+        let n = cops.len();
+        let mut call = None;
+        // A: on to or off a freeway: the road the target's lane belongs to, stable for 1 s; said once, on the expiry frame
+        if let Some(nav) = world.nav.as_ref() {
+            let is_fw = |r: usize| nav.zones.get(r).is_some_and(|z| z.name.starts_with("FW") || z.name.starts_with("XT"));
+            if let Some(r) = vehicles.driver_lanes.get(&p.uid).and_then(|d| d.best).and_then(|b| nav.lane_road(b.0)) {
+                if self.rdo_road == Some(r) {
+                    if self.rdo_fw_t > 0.0 {
+                        self.rdo_fw_t -= dt;
+                        if self.rdo_fw_t <= 0.0 {
+                            let k = self.rdo_cop(n);
+                            call = Some(RadioCall { name: if is_fw(r) { "REPORT_FREEWAY_ENTER" } else { "REPORT_FREEWAY_EXIT" }, sender: cops[k], receiver: None });
+                        }
+                    }
+                } else {
+                    if is_fw(r) != self.rdo_road.is_some_and(is_fw) {
+                        self.rdo_fw_t = 1.0;
+                    }
+                    self.rdo_road = Some(r);
+                }
+            }
+        }
+        // B: a police car hit hard, from the cop hit hardest
+        if call.is_none() {
+            if let Some(c) = self.hard_cop {
+                call = Some(RadioCall { name: "REPORT_PURSUIT_HIT_COP_CAR_HARD", sender: c, receiver: None });
+            }
+        }
+        // C: the nitrous seen, twice at most a tactic
+        if call.is_none() && self.rdo_nitro < 2 && n > 1 && nitro {
+            let k = self.rdo_cop(n);
+            call = Some(RadioCall { name: "REPORT_UPGRADE_NITROUS", sender: cops[k], receiver: Some(cops[(k + 1) % n]) });
+            self.rdo_nitro += 1;
+        }
+        // D: the periodic line, a uniform pick of those that may be said
+        if call.is_none() && self.rdo_t == 0.0 {
+            let k = self.rdo_cop(n);
+            let mut list = vec![("REPORT_LOCATION_UPDATE", false), ("REPORT_IDENTIFY_DRIVER", false)];
+            // (F-76898: the cops in the latest tactic)
+            if n == 1 {
+                list.push(("REPORT_REQUEST_BACKUP", false));
+            }
+            list.push(("REPORT_SUSPECT_DESTRUCTION", false));
+            if speed > 44.7 {
+                list.push(("REPORT_SUSPECT_SPEED", false));
+            }
+            if n > 1 {
+                list.push((if self.in_race { "RACE_OFFICER_TO_OFFICER" } else { "CRUISE_OFFICER_TO_OFFICER" }, true));
+                list.push(("REPORT_PURSUIT_STATEMENT", true));
+                list.push(("REPORT_UPGRADE_MISC", true));
+                // (F-29443: a cop within the distance; the far byte: said once each time the cops come in from beyond 100 m)
+                let within = |d: f32| cops.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u)).any(|c| c.state.pos.distance(ppos) < d);
+                if !within(self.tun.get("fRdoVicinityDist", 100.0)) {
+                    self.rdo_far = true;
+                } else if !within(10.0) && self.rdo_far {
+                    self.rdo_far = false;
+                    list.push(("REPORT_MANEUVER_VICINITY", false));
+                }
+            }
+            let (name, other) = list[self.rdo_draw() as usize % list.len()];
+            call = Some(RadioCall { name, sender: cops[k], receiver: other.then(|| cops[(k + 1) % n]) });
+        }
+        // E: any line sets the countdown again, refused by its Frequency or not
+        if call.is_some() {
+            let (lo, hi) = (self.tun.get("fMinPerRdoTime", 15.0), self.tun.get("fMaxPerRdoTime", 30.0));
+            self.rdo_t = lo + (hi - lo) * (self.rdo_draw() & 0x7F_FFFF) as f32 * 2f32.powi(-23);
+        }
+        call
     }
 
     /// The number of cops in the latest tactic (police manager +80, PoliceManager_GetNumCopsInLatestTactic).
@@ -1676,9 +1829,10 @@ impl Police {
         true
     }
 
-    /// Advance the police simulation. `knocked` is the running count of props the cars
-    /// have knocked over. Returns what happened this frame.
-    pub fn update(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles, knocked: u32, dt: f32) -> Option<Event> {
+    /// Advance the police simulation. Returns what happened this frame.
+    pub fn update(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles, dt: f32) -> Option<Event> {
+        // (F-52240 clears the word at the end of a scored tick and in the grace: one payment a frame at most)
+        let law_word = vehicles.player_mut().and_then(|c| c.state.veh.as_deref_mut()).map_or(0, |v| std::mem::take(&mut v.agro.law_word));
         match self.heat {
             Heat::Pursuit | Heat::Search => self.chase_time += dt,
             // (kept through the arrest for its form: taken by the arrest's scene)
@@ -1834,7 +1988,8 @@ impl Police {
         // speeding: three bands above the limit
         // (F-36879: the road's limit in mph, `fSpeedLimitLow` where there is none; a band starts
         // at the larger of limit + offset and limit x (100 + percent) / 100)
-        let limit = world.nav.as_ref().and_then(|n| n.speed_limit_at(ppos)).filter(|l| *l != 0.0).map_or(t("fSpeedLimitLow", 50.0), |l| l * MPH);
+        // (F-36879: the road node within 10 m of the car, F-55639; none or a limit of 0: fSpeedLimitLow)
+        let limit = world.nav.as_ref().and_then(|n| match n.node_within(ppos, 10.0, false) { Some(NavNode::Road(r)) => n.zones.get(r).map(|z| z.speed_limit), _ => None }).filter(|l| *l != 0.0).map_or(t("fSpeedLimitLow", 50.0), |l| l * MPH);
         let band = |off: &str, pct: &str, d_off: f32, d_pct: f32| (limit + t(off, d_off)).max(limit * (t(pct, d_pct) + 100.0) * 0.01);
         let lvl: u8 = if mph > band("fSpeedLimitHiOffset", "iSpeedLimitHiPrcnt", 45.0, 80.0) {
             3
@@ -1896,7 +2051,7 @@ impl Police {
                 self.fw_road = n.starts_with("FW") || n.starts_with("XT");
             }
         }
-        let wrong_bit = offence_gate(wrong_cond, self.wrong_active, &mut self.sec[1], t("fWrongWayThresholdTime", 1.2), dt);
+        let wrong_bit = scoring && offence_gate(wrong_cond, self.wrong_active, &mut self.sec[1], t("fWrongWayThresholdTime", 1.2), dt);
         if watching && wrong_bit {
             breaking = true;
             self.offences |= LAW_WRONG_WAY;
@@ -1910,7 +2065,7 @@ impl Police {
         }
         // burn-outs (F-88545: the car sim's burn-out charge above 0 - the launch after it counts as well)
         let burn_cond = p.state.veh.as_ref().map_or(false, |v| v.burn > 0.0);
-        let burn_bit = offence_gate(burn_cond, self.burnout_active, &mut self.sec[2], t("fBurnOutThresholdTime", 1.5), dt);
+        let burn_bit = scoring && offence_gate(burn_cond, self.burnout_active, &mut self.sec[2], t("fBurnOutThresholdTime", 1.5), dt);
         if watching && burn_bit {
             breaking = true;
             self.offences |= LAW_BURNOUT;
@@ -1924,7 +2079,7 @@ impl Police {
         }
         // blocking traffic (F-60011; not during a pull-over)
         let block_cond = self.heat != Heat::PullOver && block_traffic_cond(world, vehicles, p, &self.peds, &tun);
-        let block_bit = offence_gate(block_cond, self.block_active, &mut self.sec[5], t("fBlockTrafficThresholdTime", 1.0), dt);
+        let block_bit = scoring && offence_gate(block_cond, self.block_active, &mut self.sec[5], t("fBlockTrafficThresholdTime", 1.0), dt);
         if watching && block_bit {
             breaking = true;
             self.offences |= LAW_BLOCK_TRAFFIC;
@@ -1970,51 +2125,60 @@ impl Police {
                 self.offences |= LAW_ROOF_JUMP;
                 add += t("iJumpOffRoofTopPoints", 500.0);
             }
-        } else {
+        } else if watching {
+            // (byte +140 is written only inside the detection block)
             self.jump_paid = false;
         }
-        // running a red light: approached on red, then drove into the box
-        match vehicles.signals.ahead(ppos, pfwd, vehicles.clock) {
-            Some((ji, stop, 0)) if stop < 25.0 => self.red_junction = Some(ji),
-            Some((_, _, s)) if s != 0 => self.red_junction = None,
-            _ => {}
-        }
-        if let (Some(ji), Some(inside)) = (self.red_junction, vehicles.signals.inside(ppos)) {
-            if ji == inside {
-                self.red_junction = None;
-                if watching && speed > 4.0 {
+        // running a red light (F-65840): only on the tick the car's nearest lane becomes a lane of a new junction. `a` is
+        // the running arm while green or yellow (a junction with no signal or all red: none), `d` the way it is going
+        // (slow: none): a violation unless d . a >= 0.9 - so a slow or all-red entry always counts
+        if scoring {
+            let j = world.nav.as_ref().zip(vehicles.driver_lanes.get(&p.uid).and_then(|d| d.best)).and_then(|(n, b)| n.lane_junction.get(b.0).copied().flatten());
+            if self.last_junction != j {
+                self.last_junction = None;
+            }
+            if let Some(n) = j.filter(|_| self.last_junction.is_none()) {
+                self.last_junction = j;
+                let sig = world.nav.as_ref().and_then(|nv| nv.junction_centers.get(n)).and_then(|c| vehicles.signals.junctions.iter().find(|s| (s.center - *c).length_squared() < 0.01));
+                let a = sig.and_then(|s| match s.forced {
+                    -2 => None,
+                    f if f >= 0 => s.arms.get(f as usize).copied(),
+                    _ => (s.timer < 8.5).then(|| s.arms.get(s.current as usize).copied()).flatten(),
+                }).unwrap_or(Vec3::ZERO);
+                let d = if speed > t("fMovingSpeed", 1.0) * 0.447 { -pvel / speed } else { Vec3::ZERO };
+                if watching && d.dot(a) < 0.9 {
                     breaking = true;
                     self.offences |= LAW_RED_LIGHT;
                     add += t("iRedLightPoints", 250.0);
                 }
             }
         }
-        // property damage
-        if knocked > self.last_knocked {
-            if watching {
-                breaking = true;
-                self.offences |= LAW_PROP;
-                add += (knocked - self.last_knocked) as f32 * t("iDamagePropPoints", 250.0);
-            }
-            self.last_knocked = knocked;
+        // the contact word (F-83713 -> F-52240, all under the detection block, one payment each a frame): a prop touched, a
+        // police car run into (the aggressor only; a cop ramming a slower player scores nothing), other cars
+        if watching && law_word & 1 != 0 {
+            breaking = true;
+            self.offences |= LAW_PROP;
+            add += t("iDamagePropPoints", 250.0);
         }
-        // hitting other vehicles
         let mut hit_cop = false;
-        if damage > self.last_damage + 0.004 {
-            let hit = vehicles.cars.iter().filter(|c| !c.is_player && c.state.pos.distance(ppos) < 3.4).map(|c| c.cop).fold(None, |a: Option<bool>, cop| Some(a.unwrap_or(false) || cop));
-            if let Some(cop) = hit {
-                if cop {
-                    // ramming a cruiser is always noticed
-                    hit_cop = true;
-                    breaking = true;
-                    self.offences |= LAW_POLICE_VEHICLE;
-                    add += t("iDamagePoliceVehPoints", 600.0);
-                } else if watching {
-                    breaking = true;
-                    self.offences |= LAW_VEHICLE;
-                    add += t("iDamageOtherVehPoints", 130.0);
-                }
+        // (F-93844: the hard byte, the largest cop value of the table over 22.35 m/s; F-26639 B says its line from the cop
+        // with the largest)
+        self.hard_cop = None;
+        if watching && law_word & 2 != 0 {
+            hit_cop = true;
+            let now = vehicles.player().and_then(|c| c.state.veh.as_deref()).map_or(0.0, |v| v.agro.now);
+            let tab = vehicles.player().and_then(|c| c.state.veh.as_deref()).map_or(Vec::new(), |v| v.agro.law_tab.iter().filter(|e| e.0 >> 32 == 2 && e.1 > now).map(|e| (e.0 as u32, e.2)).collect());
+            if tab.iter().any(|e: &(u32, f32)| e.1 > 22.35) {
+                self.hard_cop = tab.iter().filter(|e| self.cops.contains(&e.0)).max_by(|a, b| a.1.total_cmp(&b.1)).map(|e| e.0);
             }
+            breaking = true;
+            self.offences |= LAW_POLICE_VEHICLE;
+            add += t("iDamagePoliceVehPoints", 600.0);
+        }
+        if watching && law_word & 8 != 0 {
+            breaking = true;
+            self.offences |= LAW_VEHICLE;
+            add += t("iDamageOtherVehPoints", 130.0);
         }
         self.last_damage = damage;
 
@@ -2188,7 +2352,6 @@ impl Police {
                     self.heat = Heat::Search;
                     self.search = 0.0;
                     self.seen_time = 0.0;
-                    self.radio = t("fMinPerRdoTime", 15.0);
                     self.srch.clear();
                     let mut order: Vec<(f32, u32)> = self.cops.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u)).map(|c| (c.state.pos.distance_squared(ppos), c.uid)).collect();
                     if self.kind.squad() {

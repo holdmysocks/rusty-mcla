@@ -1722,6 +1722,10 @@ impl Fleet {
         (first, second)
     }
 
+    pub fn callsign_of(&mut self, car: usize) -> String {
+        self.pol.callsign(car).to_string()
+    }
+
     pub fn new(data_dir: &Path) -> Fleet {
         let mut types = HashMap::new();
         if let Ok(rd) = std::fs::read_dir(data_dir.join("tune/ambients/traffic")) {

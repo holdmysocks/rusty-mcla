@@ -4098,6 +4098,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// (velocity . offset / speed, compared); the victim's driver is told (hit with byte 0, the aggressor's speed), the
     /// racer turning that into its brain's 1.5 s collision timer when the aggressor is the player (F-30284: the other driver's
     /// slot 10 is true for mcPlayer only; the other driver classes return false). Both drivers are told in the original, the aggressor's call (byte 1) does nothing.
+    /// The cruiser whose siren lights the world (F-88968 tests the siren's target, F-62430 takes the per-frame record
+    /// nearest the camera within 100 m): its place 2 m above the car.
+    pub fn siren_light(&self, cam: Vec3) -> Option<Vec3> {
+        self.cars.iter().filter(|c| (c.cop && (c.siren || self.sirens)) || (c.is_player && c.siren)).map(|c| c.state.pos + Vec3::Y * 2.0).map(|p| (p.distance_squared(cam), p)).filter(|x| x.0 < 10000.0).min_by(|a, b| a.0.total_cmp(&b.0)).map(|x| x.1)
+    }
+
     fn notify_contact(&mut self, a: usize, b: usize) {
         const MOVING: f32 = 4.47;
         let (sa, sb) = (self.cars[a].state.vel.length(), self.cars[b].state.vel.length());
@@ -4109,6 +4115,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
             if a_aggressor == (victim == b) && self.cars[aggressor].is_player {
                 if let Some(ai) = self.cars[victim].ai.as_mut().filter(|ai| ai.brain.is_some()) {
                     ai.hit_pending = true;
+                }
+                // (F-83713: the aggressor's law word gets 2 when the victim is a police car; a racer sets a bit no law
+                // code reads. Traffic is class 6: `agro_contacts`)
+                if self.cars[victim].cop {
+                    let key = 2u64 << 32 | self.cars[victim].uid as u64;
+                    let v = if aggressor == a { sa } else { sb };
+                    if let Some(vs) = self.cars[aggressor].state.veh.as_deref_mut() {
+                        if vs.agro.law_new_contact(key, v) {
+                            vs.agro.law_word |= 2;
+                        }
+                    }
                 }
             }
         }
@@ -6164,5 +6181,28 @@ mod amb_pool_tests {
         let mut out: Vec<_> = (2..=99).map(|u| (u, 0)).collect();
         out.push((200, 1));
         assert!(p.step(&out).is_empty());
+    }
+}
+
+/// The siren light's colour and strength (F-72231), by the wall clock in ms: t = ms x 0.01; red when fmod(t, 6) > 3, else
+/// blue; strength 0 when fmod(t, 1) > 0.5, else 200.
+pub fn siren_flash(ms: u64) -> ([f32; 3], f32) {
+    let t = ms as f64 * 0.01;
+    (if t % 6.0 > 3.0 { [1.0, 0.0, 0.0] } else { [0.0, 0.0, 1.0] }, if t % 1.0 > 0.5 { 0.0 } else { 200.0 })
+}
+
+#[cfg(test)]
+mod siren_tests {
+    use super::siren_flash;
+
+    #[test]
+    fn the_flash_by_the_clock() {
+        assert_eq!(siren_flash(0), ([0.0, 0.0, 1.0], 200.0));
+        assert_eq!(siren_flash(49), ([0.0, 0.0, 1.0], 200.0));
+        assert_eq!(siren_flash(51), ([0.0, 0.0, 1.0], 0.0));
+        assert_eq!(siren_flash(299), ([0.0, 0.0, 1.0], 0.0));
+        assert_eq!(siren_flash(301), ([1.0, 0.0, 0.0], 200.0));
+        assert_eq!(siren_flash(350), ([1.0, 0.0, 0.0], 200.0));
+        assert_eq!(siren_flash(599), ([1.0, 0.0, 0.0], 0.0));
     }
 }

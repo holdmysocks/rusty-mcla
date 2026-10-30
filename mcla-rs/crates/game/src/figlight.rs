@@ -9,7 +9,7 @@
 //!   every call the direction from the walker to the record turns 2.5 % of the way, distance,
 //!   colour, direction, strength and cone go 6 % of the way (sub_822F2A30);
 //! * then the dynamic list (the player's two head lamps, the key light) is laid over lanes 3, 2,
-//!   1: a light takes the next lane when its score strictly beats the best so far - a head lamp
+//!   1 (and the fourth record, F-44222): a light takes the next lane when its score strictly beats the best so far - a head lamp
 //!   sat(500 / d^2) x its cone at the walker, the key light (list entry 2) the luminance of its
 //!   colour (0.3 r + 0.59 g + 0.11 b). Lane 0 stays a grid lamp.
 //! Decoded 2026-10-20, docs/LIGHTING.md "The walkers' lights at night"; the rule reproduces the
@@ -25,6 +25,8 @@ pub struct Dynamic {
     pub heads: [Option<LampRec>; 2],
     /// the key light: colour and the direction towards it (100 km off)
     pub key: Option<(Vec3, Vec3)>,
+    /// the list's fourth record: the siren's or the checkpoint's light, all round
+    pub rec3: Option<LampRec>,
 }
 
 /// One walker's four eased records (the original's walker + 64).
@@ -117,7 +119,7 @@ impl FigureLight {
         let mut best = 0.0f32;
         let mut next = 3usize;
         let key = d.key.map(|(col, dir)| LampRec { pos: p + dir.normalize_or(Vec3::Y) * 1.0e5, color: col, strength: 1.0e10, back: Vec3::ZERO, cone: [0.0, 1.0] });
-        for (j, l) in [d.heads[0], d.heads[1], key].into_iter().enumerate() {
+        for (j, l) in [d.heads[0], d.heads[1], key, d.rec3].into_iter().enumerate() {
             let Some(l) = l else { continue };
             let s = if j == 2 { 0.3 * l.color.x + 0.59 * l.color.y + 0.11 * l.color.z } else { score(&l, p) };
             if s > best {
@@ -154,15 +156,20 @@ mod tests {
         let head = |z: f32| LampRec { pos: Vec3::new(-140.8, 0.0, z), color: Vec3::new(2.1647, 2.0565, 1.858), strength: 500.0, back: Vec3::new(-0.724, 0.690, 0.004), cone: [4.4696, -2.872] };
         // (146 m: sat(500 / d^2) = 0.023, cone 0.25 - a score of 0.006; head lamp 1 a little nearer
         // scores higher and takes lane 2, the key light's 0.038 beats both and takes lane 1)
-        let d = Dynamic { heads: [Some(head(40.0)), Some(head(39.0))], key: Some((Vec3::splat(0.038), Vec3::Y)) };
+        let d = Dynamic { heads: [Some(head(40.0)), Some(head(39.0))], key: Some((Vec3::splat(0.038), Vec3::Y)), rec3: None };
         let l = f.lanes(Vec3::ZERO, &d);
         assert_eq!(l[0][3], 40.0, "lane 0 stays the grid lamp");
         assert_eq!((l[9][3], l[6][3], l[3][3]), (500.0, 500.0, 1.0e10));
         // head lamp 1 outside its cone scores 0 and cannot beat head lamp 0: the key takes lane 2,
         // lane 1 keeps its grid lamp
-        let d2 = Dynamic { heads: [Some(head(39.0)), Some(head(80.0))], key: Some((Vec3::splat(0.038), Vec3::Y)) };
+        let d2 = Dynamic { heads: [Some(head(39.0)), Some(head(80.0))], key: Some((Vec3::splat(0.038), Vec3::Y)), rec3: None };
         let l2 = f.lanes(Vec3::ZERO, &d2);
         assert_eq!((l2[9][3], l2[6][3], l2[3][3]), (500.0, 1.0e10, 40.0));
+        // the fourth record beats the key light's 0.038 only with a higher score; the lanes have run out after 3
+        let siren = LampRec { pos: Vec3::new(0.0, 2.0, 5.0), color: Vec3::Z, strength: 200.0, back: Vec3::ZERO, cone: [0.0, 1.0] };
+        let d3 = Dynamic { heads: [Some(head(39.0)), Some(head(80.0))], key: Some((Vec3::splat(0.038), Vec3::Y)), rec3: Some(siren) };
+        let l3 = f.lanes(Vec3::ZERO, &d3);
+        assert_eq!((l3[9][3], l3[6][3], l3[3][3]), (500.0, 1.0e10, 200.0));
     }
 
     /// The records ease: 6 % of the distance and colour per 30 Hz call.

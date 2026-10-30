@@ -345,7 +345,9 @@ struct App {
     /// the player's place last frame (the global triggers' line test)
     dispatch_prev: Option<Vec3>,
     /// seconds until the next bit of pursuit chatter
-    radio_next: f32,
+    /// the light manager's fourth record this frame (F-62430): the siren's nearest the camera, else the checkpoint's -
+    /// place, colour, strength
+    record3: Option<(Vec3, [f32; 3], f32)>,
     /// vinyl shapes (loaded when a livery is first painted) and the cars' zone layouts
     shape_lib: Option<vinyl::ShapeLib>,
     car_zones: hashbrown::HashMap<String, Option<Arc<vinyl::CarZones>>>,
@@ -813,7 +815,6 @@ impl App {
                     if self.radio.loaded() {
                         let rctx = radio_ctx(&self.vehicles, world, self.time_of_day);
                         self.radio.say("REPORT_SUSPECT_FLEES", true, &rctx);
-                        self.radio_next = 9.0;
                     }
                 } else if bolt.is_some_and(|b| t >= b + 1.5) {
                     self.cine.kill_camera();
@@ -1023,7 +1024,7 @@ impl App {
             radio: radio::Radio::default(),
             dispatch_zones: Vec::new(),
             dispatch_prev: None,
-            radio_next: 0.0,
+            record3: None,
             shape_lib: None,
             car_zones: Default::default(),
             cuts: Default::default(),
@@ -1805,14 +1806,14 @@ impl App {
                 cand.push((65538, s, dir.normalize_or(Vec3::Y), col.max(Vec3::ZERO), s));
             }
         }
-        // (the light manager's dynamic list at night: its fourth record is the race checkpoint's
-        // light, id 65539, weighed sat(40 / d squared) all round like the lamps - checkpoints.rs)
+        // (the light manager's dynamic list at night: its fourth record, the siren's or the race checkpoint's light, id
+        // 65539, weighed sat(strength / d squared) all round like the lamps, F-24398; strength 0 is no candidate)
         if nfl > 0.0 {
-            if let Some((p, c)) = self.cp_markers.light {
+            if let Some((p, c, strength)) = self.record3.filter(|r| r.2 > 0.0) {
                 let d = p - at;
                 let d2 = d.length_squared();
                 if d2 > 1e-4 {
-                    let s = (checkpoints::LIGHT_INTENSITY / d2).clamp(0.0, 1.0);
+                    let s = (strength / d2).clamp(0.0, 1.0);
                     cand.push((65539, s, d / d2.sqrt(), Vec3::from(c).max(Vec3::ZERO), s));
                 }
             }
@@ -4774,7 +4775,7 @@ impl App {
         }
         // (the red light / freeway man's taunts in the race, and RACE BACK - althk.rs)
         if self.game.mode == Mode::Race && sim_dt > 0.0 {
-            let chased = matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search);
+            let chased = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search);
             if let Some(sc) = self.game.alt_taunt_tick(&self.vehicles, chased, self.speech.busy()) {
                 if self.speech.say_as(sc, &self.game.althk.voice) {
                     self.game.alt_taunt_said(sc);
@@ -6499,9 +6500,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (the police manager and its tactics run once a game frame, 1/30 s - the chassis ticks twice in
                 // between; their timers and per-frame tests (the +144 "still" step) take that dt. The level probe
                 // meets the walkers' capsules too, F-20855)
+                let mut chat = None;
                 let ev = if brain::frame_due(&mut self.police_acc, sim_dt) {
                     self.police.peds = self.peds.capsule_feet();
-                    self.police.update(&gpu, &world, &mut self.vehicles, self.props.knocked, brain::FRAME)
+                    self.police.untimed_race = self.game.race.as_ref().is_some_and(|r| r.time_limit <= 0.0);
+                    let ev = self.police.update(&gpu, &world, &mut self.vehicles, brain::FRAME);
+                    chat = self.police.chatter(&world, &self.vehicles, self.radio.busy(), brain::FRAME);
+                    ev
                 } else {
                     None
                 };
@@ -6518,6 +6523,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // ---- the radio traffic that goes with it ----
                 if self.radio.loaded() && !s19d_goons && !self.police.goons {
                     let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
+                    self.radio.note_ramp(&rctx);
                     match ev {
                         Some(police::Event::PullOver) => {
                             self.radio.say("REPORT_PULL_SUSPECT_OVER", true, &rctx);
@@ -6535,11 +6541,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 }
                                 self.radio.say("REPORT_SUSPECT_FLEES", true, &rctx);
                             }
-                            self.radio_next = 9.0;
                         }
                         Some(police::Event::Pursuit) => {
                             self.radio.say("REPORT_VIOLATION_PURSUIT", true, &rctx);
-                            self.radio_next = 9.0;
                         }
                         Some(police::Event::Escaped) => {
                             self.radio.say("REPORT_END_PURSUIT", true, &rctx);
@@ -6567,14 +6571,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.sound.cop_disabled.remove(&i);
                         }
                     }
-                    if self.police.heat == police::Heat::Pursuit {
-                        self.radio_next -= sim_dt;
-                        if self.radio_next <= 0.0 {
-                            const CHATTER: [&str; 7] = ["REPORT_LOCATION_UPDATE", "REPORT_PURSUIT_STATEMENT", "REPORT_SUSPECT_SPEED", "REPORT_MANEUVER", "REPORT_OFFICER_TO_OFFICER", "REPORT_REQUEST_BACKUP", "REPORT_JOIN_PURSUIT"];
-                            let fast = self.vehicles.player().map_or(false, |c| c.state.speed() > 40.0);
-                            let pick = if fast && self.tick_no % 3 == 0 { "REPORT_SUSPECT_SPEED" } else { CHATTER[(self.tick_no as usize / 7) % CHATTER.len()] };
-                            self.radio.say(pick, false, &rctx);
-                            self.radio_next = 8.0 + (self.tick_no % 5) as f32;
+                    // (the tactic's radio, F-26639: its senders and receivers are the call signs of the cops it names)
+                    if let Some(c) = chat {
+                        let mut sign = |uid: u32| self.vehicles.cars.iter().position(|v| v.uid == uid).map(|i| self.sound.radio_callsign(i));
+                        let (sender, receiver) = (sign(c.sender), c.receiver.and_then(&mut sign));
+                        if let Some(sender) = sender {
+                            self.radio.say_from(c.name, sender, receiver.unwrap_or_else(|| "DISPATCH".to_string()), &rctx);
                         }
                     }
                 }
@@ -7077,6 +7079,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.game.mode != Mode::Paused && std::env::var("MCLA_NO_MARKERS").is_err() {
                 self.cp_markers.update(&shown, dt, &mut self.fx, self.cam.pos);
             }
+        }
+        // (the power-up's hit light would come before both: not ported)
+        self.record3 = match self.vehicles.siren_light(self.cam.pos) {
+            Some(p) => {
+                let (c, s) = vehicles::siren_flash(siren_clock_ms());
+                Some((p, c, s))
+            }
+            None => self.cp_markers.light.filter(|_| std::env::var("MCLA_NO_MARKERS").is_err()).map(|(p, c)| (p, c, checkpoints::LIGHT_INTENSITY)),
+        };
+        // (test hook MCLA_SIREN_TRACE=1: the record, off the beat of the 100 ms flash)
+        if self.tick_no % 37 == 0 && std::env::var("MCLA_SIREN_TRACE").is_ok() {
+            log::info!("record3: {:?} from the camera {:?}", self.record3, self.record3.map(|r| r.0.distance(self.cam.pos)));
         }
         self.sim_time += dt;
         if self.tick_no % 240 == 0 {
@@ -9366,13 +9380,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     k += 1;
                 }
             }
-            // the race checkpoint's flickering light: the night programs' fourth dynamic light
-            // (checkpoints.rs `Markers::light`; colour.w 3 = all round, its strength in dir.w)
-            if globals.tone[3] > 0.5 && globals.car_amb[3] < 0.5 && k < render::MAX_LIGHTS && std::env::var("MCLA_NO_MARKERS").is_err() {
-                if let Some((p, c)) = self.cp_markers.light {
+            // the siren's or the race checkpoint's light: the night programs' fourth dynamic light
+            // (`record3`; colour.w 3 = all round, its strength in dir.w)
+            if globals.tone[3] > 0.5 && globals.car_amb[3] < 0.5 && k < render::MAX_LIGHTS {
+                if let Some((p, c, strength)) = self.record3 {
                     ls.pos_range[k] = [p.x, p.y, p.z, 1000.0];
                     ls.color[k] = [c[0], c[1], c[2], 3.0];
-                    ls.dir[k] = [0.0, -1.0, 0.0, checkpoints::LIGHT_INTENSITY];
+                    ls.dir[k] = [0.0, -1.0, 0.0, strength];
                     k += 1;
                 }
             }
@@ -9390,7 +9404,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     heads[h] = Some(render::LampRec { pos: Vec3::new(p[0], p[1], p[2]), color: Vec3::new(c[0], c[1], c[2]), strength, back: -Vec3::new(d[0], d[1], d[2]), cone });
                 }
                 let key = Some((Vec3::new(globals.key_col[0], globals.key_col[1], globals.key_col[2]), Vec3::new(globals.key_dir[0], globals.key_dir[1], globals.key_dir[2])));
-                (figlight::Dynamic { heads, key }, dt * 30.0)
+                let rec3 = self.record3.map(|(p, c, strength)| render::LampRec { pos: p, color: Vec3::from(c), strength, back: Vec3::ZERO, cone: [0.0, 1.0] });
+                (figlight::Dynamic { heads, key, rec3 }, dt * 30.0)
             });
         }
         // (around the city map: the dark of deep water)
@@ -11109,6 +11124,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.mode = Mode::FreeRoam;
                 self.game.menu_sel = 0;
                 self.game.pink_over = None;
+                self.game.wager_over = None;
             }
             // Warper_Warp('DEFAULT_WITH_CUT') (a series' / tournament's next race, its restart, a tournament's
             // first race - CAREER_RACES.md "DEFAULT_WITH_CUT climb"): the camera climbs from where it is
@@ -11172,6 +11188,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.prerace_replay = action == MenuAction::RestartRace;
                 // (the last pink slip race's race-over tab is not this race's)
                 self.game.pink_over = None;
+                self.game.wager_over = None;
                 // (a race started from another's results - NEXT RACE IN SERIES, CONTINUE, RESTART - never
                 // passes through `race == None`, so the last race's start plan and warp go here)
                 self.prerace_plan = None;
@@ -13398,6 +13415,12 @@ mod option_tests {
     }
 }
 
+/// The clock of the siren's flash (F-72231 reads the wall clock, not the game's).
+fn siren_clock_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
 /// What the police radio may say about the player: his street, the nearest cross street,
 /// his heading and his car.
 fn radio_ctx(vehicles: &vehicles::Vehicles, world: &world::World, hour: f32) -> radio::Ctx {
@@ -13411,6 +13434,8 @@ fn radio_ctx(vehicles: &vehicles::Vehicles, world: &world::World, hour: f32) -> 
             if d < 40.0 {
                 ctx.street = zone_name(li).unwrap_or_default();
             }
+            // (the radio's context, F-21712's: the segment's name when it starts "XT", kept otherwise: `Radio::note_ramp`)
+            ctx.ramp = zone_name(li).filter(|n| n.starts_with("XT")).map_or(String::new(), |n| n.replace('.', "").replace(' ', "_").to_ascii_uppercase());
         }
         // another street within a block
         let own = ctx.street.splitn(3, '_').nth(2).unwrap_or("").to_string();
