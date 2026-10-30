@@ -1831,6 +1831,7 @@ impl App {
     /// original's pool - an instance keeps ids and lights from one traffic car to the next, a new car here
     /// starts at -1 and 0 as an instance never drawn. Recorded live: `work/traffic-detail/fix10`.
     fn traffic_light_slots(&mut self) {
+        self.vehicles.amb_pool_step();
         let Some((nfl, hour_light)) = *LAST_HOUR.lock().unwrap() else { return };
         let dynamic = self.peds.night_lights.as_ref().map(|d| d.0);
         let now = self.sim_time;
@@ -1888,6 +1889,7 @@ impl App {
         for c in self.vehicles.cars.iter_mut() {
             c.amb_light.drawn_before = c.amb_light.seen;
         }
+        self.vehicles.amb_pool_note();
         if std::env::var("MCLA_AMB_SLOT_DUMP").is_ok() && self.frame_no % 30 == 0 {
             for &i in &drawn {
                 let c = &self.vehicles.cars[i];

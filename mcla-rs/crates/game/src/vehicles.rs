@@ -378,6 +378,58 @@ pub struct CarInstance {
 
 /// A traffic or parked car's two slot lights (render instance +576 / +624, F-99357): each slot's point
 /// (the car's place + 100 m along the eased direction), colour and strength; and when they were last eased.
+/// The ambient cars' pool as far as the light slots go. A render instance belongs to its pooled car for good
+/// (made once at the title: F-38773 stores it at car +456), so what the instance holds at +576 passes on with the
+/// car object. F-86868 builds two pools of cars: 98, and 50 for the bIsProxy types, linked in array order. F-60281 takes
+/// the head of the free list, F-72573 gives a car back to the tail: first in, first out, so all 98 are used once before
+/// a car inherits anything. Cars the port has made are noticed here once a frame by uid, not at the moment of the take.
+#[derive(Default)]
+pub struct AmbPool {
+    built: bool,
+    /// the free list of each pool; None = an instance never used (ids -1, F-19499)
+    free: [std::collections::VecDeque<Option<([i32; 2], AmbSlotLights)>>; 2],
+    /// the cars out, in the order they were taken: uid, pool, what the instance holds
+    live: Vec<(u32, usize, [i32; 2], AmbSlotLights)>,
+}
+
+impl AmbPool {
+    fn build(&mut self) {
+        if !self.built {
+            self.built = true;
+            self.free = [std::iter::repeat(None).take(98).collect(), std::iter::repeat(None).take(50).collect()];
+        }
+    }
+    /// The gone go back to the tail, then the new take the head. Returns what each new car inherits.
+    fn step(&mut self, now: &[(u32, usize)]) -> Vec<(u32, [i32; 2], AmbSlotLights)> {
+        self.build();
+        let mut back = Vec::new();
+        self.live.retain(|l| {
+            let keep = now.iter().any(|n| n.0 == l.0);
+            if !keep {
+                back.push((l.1, l.2, l.3));
+            }
+            keep
+        });
+        for (g, ids, light) in back {
+            self.free[g].push_back(Some((ids, light)));
+        }
+        let mut got = Vec::new();
+        for &(uid, g) in now {
+            if self.live.iter().any(|l| l.0 == uid) {
+                continue;
+            }
+            // (an empty pool: the spawner counts its cars, so the port should not get here; a fresh instance then)
+            let old = self.free[g].pop_front().flatten();
+            let (ids, light) = old.unwrap_or(([-1, -1], AmbSlotLights::default()));
+            if old.is_some() {
+                got.push((uid, ids, light));
+            }
+            self.live.push((uid, g, ids, light));
+        }
+        got
+    }
+}
+
 #[derive(Clone, Copy, Default, Debug)]
 pub struct AmbSlotLights {
     pub point: [Vec3; 2],
@@ -1005,6 +1057,8 @@ pub struct Vehicles {
     /// loose, the other cars as bodies; handed to each car for its step (`level_swap`)
     pub level: crate::physics::loose::LooseState,
     next_uid: u32,
+    /// the render instances' pool, for the light slots a new car inherits
+    pub amb_pool: AmbPool,
     /// the cars' damage maps (crate::damagemap): the game's pool of 8 render targets, each a car's
     /// (its uid) for as long as the car is there
     dmg_maps: Vec<DmgMap>,
@@ -5959,6 +6013,34 @@ mod hit_tests {
     }
 }
 
+impl Vehicles {
+    /// A new car takes its slots from the pool's instance (see `AmbPool`). Once a frame, before the slots run.
+    pub fn amb_pool_step(&mut self) {
+        let now: Vec<(u32, usize)> = self
+            .cars
+            .iter()
+            .filter(|c| c.is_ambient())
+            .map(|c| (c.uid, self.amb_types.get(&c.model.name).map_or(0, |t| t.proxy as usize)))
+            .collect();
+        for (uid, ids, light) in self.amb_pool.step(&now) {
+            if let Some(c) = self.cars.iter_mut().find(|c| c.uid == uid) {
+                c.amb_slot = ids;
+                c.amb_light = AmbSlotLights { seen: false, drawn_before: false, ..light };
+            }
+        }
+    }
+
+    /// What the instances hold after this frame's slots.
+    pub fn amb_pool_note(&mut self) {
+        for l in self.amb_pool.live.iter_mut() {
+            if let Some(c) = self.cars.iter().find(|c| c.uid == l.0) {
+                l.2 = c.amb_slot;
+                l.3 = c.amb_light;
+            }
+        }
+    }
+}
+
 /// A new car's light slot ids: -1, -1 (F-19499). Test hook MCLA_AMB_SLOT_START=a,b: other ids, to stand for
 /// the history an original's pooled render instance brings (e.g. -1,65545: the hour's light second, as a
 /// car last chosen at night keeps it by day).
@@ -5991,4 +6073,30 @@ fn amb_skip(model: &str, bi: usize, b: &GpuBatch) -> bool {
         }
     }
     skip.contains(&bi)
+}
+
+#[cfg(test)]
+mod amb_pool_tests {
+    use super::*;
+
+    /// First in, first out: a car given back is taken again only after every other car of its pool.
+    #[test]
+    fn fifo_carries_after_the_whole_pool() {
+        let mut p = AmbPool::default();
+        assert!(p.step(&[(1, 0)]).is_empty());
+        p.live[0].2 = [7, 65545];
+        assert!(p.step(&[]).is_empty());
+        for last in 2..=98 {
+            let out: Vec<_> = (2..=last).map(|u| (u, 0)).collect();
+            assert!(p.step(&out).is_empty(), "car {last} did not get a fresh instance");
+        }
+        // the 98th take empties the fresh ones; the next gets the first car's
+        let got = p.step(&(2..=99).map(|u| (u, 0)).collect::<Vec<_>>());
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].0, got[0].1), (99, [7, 65545]));
+        // the other pool is its own
+        let mut out: Vec<_> = (2..=99).map(|u| (u, 0)).collect();
+        out.push((200, 1));
+        assert!(p.step(&out).is_empty());
+    }
 }

@@ -3946,7 +3946,7 @@ impl Vehicles {
             self.spawner = Some(Spawner::new(nav, &world.assets.root));
         }
         let mut sp = self.spawner.take().unwrap();
-        // (test hook MCLA_TRAFFIC_PLACE=<type>,x,y,z,heading[,steer[,colour row]]: one parked car of that type as a
+        // (test hook MCLA_TRAFFIC_PLACE=<type>,x,y,z,heading[,steer[,colour row[,drawn y]]]: one parked car of that type as a
         // script's layout item - AddAmbientToLayout, no visibility test - heading in degrees as a parking
         // spot's (z row (sin h, 0, cos h), the car facing -z), its front wheels turned `steer` radians when
         // given; for side-by-side shots with a recording of the original)
@@ -3966,6 +3966,10 @@ impl Vehicles {
                         c.park_steer = steer;
                         for wh in c.state.wheels.iter_mut().take(2) {
                             wh.steer = steer;
+                        }
+                        // (eighth field: a drawn place y, for a recording of a car with a rider, 0.025 lower - F-37033)
+                        if let Some(dy) = num(7) {
+                            c.state.pos.y = dy;
                         }
                     }
                 }

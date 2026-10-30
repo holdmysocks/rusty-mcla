@@ -168,7 +168,17 @@ pub fn view(main: &Globals, car_pos: Vec3, car_rot: Quat, near: f32, scene: (u32
     let (eye, view) = camera(car_pos, car_rot);
     // (drawn with pix_center 0: half a pixel of its rectangle on the scene - render::half_pixel)
     let r = rect(scene.0, scene.1);
-    let vp = crate::render::half_pixel(proj(near) * view, r[2], r[3]);
+    // (test hook MCLA_REARVIEW_VP=<16 numbers>: the recorded c8 - c11 as the view instead, the depth row the port's, to
+    // measure the strip's offset without the car's pose in it)
+    let base = std::env::var("MCLA_REARVIEW_VP").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<f32>>()).filter(|v| v.len() == 16).map_or(proj(near) * view, |v| {
+        let mut m = v;
+        m[2] = 0.0;
+        m[6] = 0.0;
+        m[10] = 0.0;
+        m[14] = near;
+        Mat4::from_cols_array(&m.try_into().unwrap())
+    });
+    let vp = crate::render::half_pixel(base, r[2], r[3]);
     let mut g = *main;
     g.view_proj = vp.to_cols_array_2d();
     g.inv_view_proj = vp.inverse().to_cols_array_2d();
