@@ -53,6 +53,7 @@ struct TileUniform {
     sun_dir: [f32; 4],
     sun_col: [f32; 4],
     ambient: [f32; 4],
+    wind: [f32; 4],
 }
 
 /// What `Props::load` hands over for a plant type with a card.
@@ -112,6 +113,8 @@ pub(super) struct Impostors {
     ms_mask_depth: [wgpu::TextureView; 2],
     /// group 2: the materials' sampler
     samp_bg: wgpu::BindGroup,
+    /// the leaves' colour pictures: no anisotropy
+    samp_leaf_bg: wgpu::BindGroup,
     /// the type whose mask is drawn next (one a frame, in turn), the hour of the last call, masks drawn so far
     mask_next: usize,
     mask_hour: f32,
@@ -192,11 +195,23 @@ impl Impostors {
             entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None }],
         });
         let samp_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("impostor sampler"), layout: &samp_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&gpu.sampler) }] });
+        // (the leaves' fetch has no anisotropy, word 0x00a80d10; the trunk's asks 4 : 1, word 0x06a80d10)
+        let samp_leaf = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("impostor leaves"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let samp_leaf_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("impostor leaves sampler"), layout: &samp_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&samp_leaf) }] });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("impostor tile pl"), bind_group_layouts: &[&tile_layout, &gpu.tex_layout, &samp_layout], push_constant_ranges: &[] });
         let make = |entry: &str| gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("impostor tile"),
             layout: Some(&pl),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_tile"), buffers: &[Vertex::LAYOUT], compilation_options: Default::default() },
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some(if entry == "fs_leaf" { "vs_tile_leaf" } else { "vs_tile" }), buffers: &[Vertex::LAYOUT], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some(entry),
@@ -312,7 +327,7 @@ impl Impostors {
         log::info!("impostors: {} plant types with a {} x {} picture ({} named in MultiPropTuning.xml), redrawn every other frame while their cards are in view", types.len(), TILE, TILE, sched.len());
         let mask_on = !std::env::var("MCLA_NO_SHADOW_IMPOSTORS").map_or(false, |v| v != "0");
         log::info!("impostors: shadow masks {} ({} of {} x {}, the rest {} x {}), one redrawn a frame", if mask_on { "on" } else { "off (MCLA_NO_SHADOW_IMPOSTORS)" }, types.iter().filter(|t| t.mask.width == MASK_BIG).count(), MASK_BIG, MASK_BIG, TILE, TILE);
-        Some(Impostors { types, by_baked, pipeline, pipeline_trunk, ms_color, ms_normal, ms_depth, pipeline_mask, pipeline_mask_trunk, ms_mask, ms_mask_depth, samp_bg, mask_next: 0, mask_hour: f32::NAN, mask_total: 0, mask_on, frame: 2, total: 0, log_every: std::env::var("MCLA_IMPOSTOR_LOG").ok().and_then(|v| v.parse().ok()).unwrap_or(0) })
+        Some(Impostors { types, by_baked, pipeline, pipeline_trunk, ms_color, ms_normal, ms_depth, pipeline_mask, pipeline_mask_trunk, ms_mask, ms_mask_depth, samp_bg, samp_leaf_bg, mask_next: 0, mask_hour: f32::NAN, mask_total: 0, mask_on, frame: 2, total: 0, log_every: std::env::var("MCLA_IMPOSTOR_LOG").ok().and_then(|v| v.parse().ok()).unwrap_or(0) })
     }
 
     /// The model to draw in the scene pass where a run names the baked card `baked`: the type's
@@ -366,7 +381,7 @@ impl Impostors {
             let Some(model) = models.get(ty.model) else { continue };
             // (pix_center 0, as the recorded PSGenerateImposterShadowDepth draws: half a texel - render::half_pixel)
             let ms = ty.mask.width as f32;
-            let u = TileUniform { view_proj: crate::render::half_pixel(Self::tile_camera(c, ty.width, ty.height, ty.centre_y), ms, ms).to_cols_array_2d(), sun_dir: [0.0; 4], sun_col: [0.0; 4], ambient: [0.0; 4] };
+            let u = TileUniform { view_proj: crate::render::half_pixel(Self::tile_camera(c, ty.width, ty.height, ty.centre_y), ms, ms).to_cols_array_2d(), sun_dir: [0.0; 4], sun_col: [0.0; 4], ambient: [0.0; 4], wind: [0.0; 4] };
             gpu.queue.write_buffer(&ty.mask_buf, 0, bytemuck::bytes_of(&u));
             let big = (ty.mask.width == MASK_BIG) as usize;
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -445,6 +460,8 @@ impl Impostors {
                 sun_dir: [g.sun_dir[0], g.sun_dir[1], g.sun_dir[2], (if night { 1.0 } else { 0.0 }) + (if (g.params[3] - 112.0).abs() < 0.5 { 2.0 } else { 0.0 })],
                 sun_col: [g.sun_color[0] * g.sun_dir[3], g.sun_color[1] * g.sun_dir[3], g.sun_color[2] * g.sun_dir[3], g.grade[3]],
                 ambient: g.ambient_sky,
+                // (gWindVector: w 0.4 as read live; x, y, z are the sway, not ported)
+                wind: [0.0, 0.0, 0.0, 0.4],
             };
             gpu.queue.write_buffer(&ty.buf, 0, bytemuck::bytes_of(&u));
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -460,7 +477,9 @@ impl Impostors {
             pass.set_bind_group(0, &ty.bg, &[]);
             pass.set_bind_group(2, &self.samp_bg, &[]);
             for b in &model.batches {
-                pass.set_pipeline(if b.mode as u32 == MatMode::Foliage as u32 { &self.pipeline } else { &self.pipeline_trunk });
+                let leaf = b.mode as u32 == MatMode::Foliage as u32;
+                pass.set_pipeline(if leaf { &self.pipeline } else { &self.pipeline_trunk });
+                pass.set_bind_group(2, if leaf { &self.samp_leaf_bg } else { &self.samp_bg }, &[]);
                 pass.set_bind_group(1, b.bind.as_ref(), &[]);
                 pass.set_vertex_buffer(0, b.vb.slice(..));
                 pass.set_index_buffer(b.ib.slice(..), wgpu::IndexFormat::Uint32);

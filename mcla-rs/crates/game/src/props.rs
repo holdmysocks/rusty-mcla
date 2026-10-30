@@ -797,7 +797,7 @@ impl Props {
                     // taken as 1 here. MCLA_LEAF_OCC=0: as before.)
                     let leaf_byte: Option<usize> = match std::env::var("MCLA_LEAF_OCC").ok().as_deref() { Some("0") => None, Some("b1") => Some(1), Some("b2") => Some(2), Some("b3") => Some(3), Some("b0") => Some(0), _ => Some(1) };
                     let leaf_occ = match leaf_byte { Some(k) if lname.contains("_gfx_") => mesh.colors.get(i).map_or(255, |c| c[k]), _ => 255 };
-                    verts.push(Vertex { pos: mesh.positions[i].to_array(), normal: nrm.to_array(), uv0: uv0.to_array(), uv1: fade_uv.unwrap_or(uv0.to_array()), color: if prop_mode(sname) == MatMode::Object { prop_hl } else { [255, 255, 255, 0] }, color1: [0, 0, 0, leaf_occ], uv2 });
+                    verts.push(Vertex { pos: mesh.positions[i].to_array(), normal: nrm.to_array(), uv0: uv0.to_array(), uv1: fade_uv.unwrap_or(uv0.to_array()), color: if prop_mode(sname) == MatMode::Object { prop_hl } else { [255, 255, 255, 0] }, color1: { let sw = |k: usize| match leaf_byte { Some(_) if lname.contains("_gfx_") => mesh.colors.get(i).map_or(0, |c| c[k]), _ => 0 }; [sw(0), sw(2), sw(3), leaf_occ] }, uv2 });
                 }
                 // (the binormal's sign of the bump-spec props, in the normal's length: world::mark_binormal)
                 if let Some(s) = sh { crate::world::mark_binormal(&mut verts, &mesh.tangents, s); }

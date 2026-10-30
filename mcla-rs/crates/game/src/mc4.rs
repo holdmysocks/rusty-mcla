@@ -12717,8 +12717,13 @@ mod tests {
 
     use super::*;
 
+    thread_local! {
+        /// A test's own fixture folder. Per thread: the tests run in parallel, and an env var set by one was read by another.
+        static FIXTURE_DIR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
+
     fn fixture(name: &str) -> Option<Value> {
-        let dir = std::env::var("MCLA_SAVE_FIXTURES").unwrap_or_else(|_| "D:/MCLA/work/save/port".to_string());
+        let dir = FIXTURE_DIR.with(|d| d.borrow().clone()).or_else(|| std::env::var("MCLA_SAVE_FIXTURES").ok()).unwrap_or_else(|| "D:/MCLA/work/save/port".to_string());
         let t = std::fs::read_to_string(std::path::Path::new(&dir).join(name)).ok()?;
         serde_json::from_str(&t).ok()
     }
@@ -17814,7 +17819,7 @@ mod tests {
     fn real_saves_round_trip() {
         let root = std::env::var("MCLA_ROUNDTRIP_FIXTURES").unwrap_or_else(|_| "D:/MCLA/work/save-audit".to_string());
         for set in ["imp", "imp2"] {
-            std::env::set_var("MCLA_SAVE_FIXTURES", format!("{root}/{set}"));
+            FIXTURE_DIR.with(|d| *d.borrow_mut() = Some(format!("{root}/{set}")));
             for name in ["full_v15", "newgame_v14", "ps3_RAGE_dec", "recomp_trace_v14", "xenia_current_v14"] {
                 if let Some(save) = fixture(&format!("{name}.json")) {
                     // (the game reads the importer's file: an unreadable one is silently a new game)
@@ -17862,7 +17867,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mcla_unk_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("unk.json"), serde_json::to_string(&save).unwrap()).unwrap();
-        std::env::set_var("MCLA_SAVE_FIXTURES", dir.to_string_lossy().to_string());
+        FIXTURE_DIR.with(|d| *d.borrow_mut() = Some(dir.to_string_lossy().to_string()));
         let (mut g, d, _) = career_game("unk.json", "unk").unwrap();
         g.write_save(&d);
         let after = saved_block(&d);
@@ -17881,7 +17886,7 @@ mod tests {
     #[test]
     fn purse_cap_and_driving_flush() {
         let root = std::env::var("MCLA_ROUNDTRIP_FIXTURES").unwrap_or_else(|_| "D:/MCLA/work/save-audit".to_string());
-        std::env::set_var("MCLA_SAVE_FIXTURES", format!("{root}/imp2"));
+        FIXTURE_DIR.with(|d| *d.borrow_mut() = Some(format!("{root}/imp2")));
         let Some((mut g, dir, _)) = career_game("full_v15.json", "purse") else { return };
         g.money = 3_000_000_000;
         g.mc4_s23_tick(0.016, S23In::default());

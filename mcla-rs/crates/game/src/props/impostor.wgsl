@@ -12,6 +12,7 @@ struct Tile {
     sun_dir: vec4<f32>,   // xyz towards the light, w = 1: night
     sun_col: vec4<f32>,   // gLightColor x its strength, w = OcclusionInfo.w (the port's lift of the occlusion)
     ambient: vec4<f32>,   // gLightAmbient
+    wind: vec4<f32>,      // gWindVector
 };
 @group(0) @binding(0) var<uniform> tile: Tile;
 @group(1) @binding(0) var t_diffuse: texture_2d<f32>;
@@ -31,13 +32,34 @@ struct VsOut {
     @location(2) occ: f32,
 };
 
-@vertex
-fn vs_tile(in: VsIn) -> VsOut {
+fn tile_vertex(in: VsIn) -> VsOut {
     var o: VsOut;
     o.clip = tile.view_proj * vec4<f32>(in.pos, 1.0);
     o.normal = in.normal;
     o.uv0 = in.uv0;
     o.occ = mix(in.color1.a, 1.0, tile.sun_col.w);
+    return o;
+}
+
+@vertex
+fn vs_tile(in: VsIn) -> VsOut {
+    return tile_vertex(in);
+}
+
+// VSPropFoliageGenImpostorNight / Day's displacement (the leaves; the model's world is the identity). V = the vertex's
+// colour x 2 - 1, a = wind.w sat(0.25 (y - 0.5)) occlusion^2, k = sat(a V.x); the program adds k to all three axes,
+// a (wind.x V + wind.y V x n) and sat(0.05 (y - 1)) wind.z on x. wind.w is not the sway: it moves the leaves when
+// the wind vector is zero.
+@vertex
+fn vs_tile_leaf(in: VsIn) -> VsOut {
+    var o = tile_vertex(in);
+    let v = in.color1.rgb * 2.0 - vec3<f32>(1.0);
+    let occ = in.color1.a;
+    let a = tile.wind.w * clamp(0.25 * (in.pos.y - 0.5), 0.0, 1.0) * occ * occ;
+    let k = clamp(a * v.x, 0.0, 1.0);
+    var d = a * (tile.wind.x * v + tile.wind.y * cross(v, in.normal)) + vec3<f32>(k);
+    d.x += clamp(0.05 * (in.pos.y - 1.0), 0.0, 1.0) * tile.wind.z;
+    o.clip = tile.view_proj * vec4<f32>(in.pos + d, 1.0);
     return o;
 }
 
