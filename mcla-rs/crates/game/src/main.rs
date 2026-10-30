@@ -814,7 +814,7 @@ impl App {
                     }
                     if self.radio.loaded() {
                         let rctx = radio_ctx(&self.vehicles, world, self.time_of_day);
-                        self.radio.say("REPORT_SUSPECT_FLEES", true, &rctx);
+                        self.radio.say("REPORT_SUSPECT_FLEES", &rctx);
                     }
                 } else if bolt.is_some_and(|b| t >= b + 1.5) {
                     self.cine.kill_camera();
@@ -5835,6 +5835,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             self.phone_was_up = self.game.tip.is_some();
             if std::mem::take(&mut self.game.phone_accept) {
+                self.game.phone_race = true;
                 self.pending_action = MenuAction::OpenRaceSelect;
             }
             // (the mission whose scene is over enters the log)
@@ -6526,27 +6527,27 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.radio.note_ramp(&rctx);
                     match ev {
                         Some(police::Event::PullOver) => {
-                            self.radio.say("REPORT_PULL_SUSPECT_OVER", true, &rctx);
+                            self.radio.say("REPORT_PULL_SUSPECT_OVER", &rctx);
                         }
                         // (siren/RULE.md section 7: hitting the cop adds iDamagePoliceVehPoints 600 at once; the
                         // score reaching 600 by itself; driving off during the ticket)
                         Some(police::Event::Pursuit) if heat_before == police::Heat::PullOver => {
                             if self.police.score - score_before >= 599.0 {
-                                self.radio.say("REPORT_HIT_COP_CAR_HARD", true, &rctx);
+                                self.radio.say("REPORT_HIT_COP_CAR_HARD", &rctx);
                             } else if self.police.score >= 600.0 {
-                                self.radio.say("REPORT_PULL_OVER_PURSUIT", true, &rctx);
+                                self.radio.say("REPORT_PULL_OVER_PURSUIT", &rctx);
                             } else {
                                 if !self.speech.busy() {
                                     self.speech.say("PLAYER_COPS_ESCAPE_TICKET");
                                 }
-                                self.radio.say("REPORT_SUSPECT_FLEES", true, &rctx);
+                                self.radio.say("REPORT_SUSPECT_FLEES", &rctx);
                             }
                         }
                         Some(police::Event::Pursuit) => {
-                            self.radio.say("REPORT_VIOLATION_PURSUIT", true, &rctx);
+                            self.radio.say("REPORT_VIOLATION_PURSUIT", &rctx);
                         }
                         Some(police::Event::Escaped) => {
-                            self.radio.say("REPORT_END_PURSUIT", true, &rctx);
+                            self.radio.say("REPORT_END_PURSUIT", &rctx);
                         }
                         // busted and ticket: the radio line is cut, no scenario
                         Some(police::Event::Ticket(_)) | Some(police::Event::Busted(_)) => {
@@ -6560,13 +6561,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         if cue == "REPORT_SUSPECT_LOST" {
                             self.radio.stop();
                         }
-                        self.radio.say(&cue, !cue.starts_with("DISPATCH"), &rctx);
+                        self.radio.say(&cue, &rctx);
                     }
                     // a cruiser wrecked or destroyed: REPORT_COP_CAR_DISABLED once (per car)
                     for (i, c) in self.vehicles.cars.iter().enumerate() {
                         let down = c.cop && !c.goon && (c.state.wipeout > 0.0 || c.state.damage >= 1.0);
                         if down && self.sound.cop_disabled.insert(i) {
-                            self.radio.say("REPORT_COP_CAR_DISABLED", true, &rctx);
+                            self.radio.say("REPORT_COP_CAR_DISABLED", &rctx);
                         } else if !c.cop {
                             self.sound.cop_disabled.remove(&i);
                         }
@@ -7080,14 +7081,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.cp_markers.update(&shown, dt, &mut self.fx, self.cam.pos);
             }
         }
-        // (the power-up's hit light would come before both: not ported)
-        self.record3 = match self.vehicles.siren_light(self.cam.pos) {
-            Some(p) => {
-                let (c, s) = vehicles::siren_flash(siren_clock_ms());
-                Some((p, c, s))
-            }
-            None => self.cp_markers.light.filter(|_| std::env::var("MCLA_NO_MARKERS").is_err()).map(|(p, c)| (p, c, checkpoints::LIGHT_INTENSITY)),
-        };
+        // (F-62430: the power-up's hit light above all; the per-frame list's buffers do not flip in a pause, F-30560, so the
+        // siren's record holds its flash)
+        let hit = self.powerups.as_ref().and_then(|pu| pu_fx::hit_light(pu, &self.vehicles, self.cam.pos));
+        if let Some((p, c)) = hit {
+            self.record3 = Some((p, c, pu_fx::HIT_LIGHT));
+        } else if self.game.mode != Mode::Paused {
+            self.record3 = match self.vehicles.siren_light(self.cam.pos) {
+                Some(p) => {
+                    let (c, s) = vehicles::siren_flash(siren_clock_ms());
+                    Some((p, c, s))
+                }
+                None => self.cp_markers.light.filter(|_| std::env::var("MCLA_NO_MARKERS").is_err()).map(|(p, c)| (p, c, checkpoints::LIGHT_INTENSITY)),
+            };
+        }
         // (test hook MCLA_SIREN_TRACE=1: the record, off the beat of the 100 ms flash)
         if self.tick_no % 37 == 0 && std::env::var("MCLA_SIREN_TRACE").is_ok() {
             log::info!("record3: {:?} from the camera {:?}", self.record3, self.record3.map(|r| r.0.distance(self.cam.pos)));
@@ -11003,6 +11010,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
     }
 
     fn handle_action(&mut self, action: MenuAction) {
+        // (a telephone challenge's list left without a race: the script's "not 3", HOOKMAN_PHONE_PLAYER_DECLINES, 0x32f4)
+        if matches!(action, MenuAction::Back | MenuAction::StartFreeRoam | MenuAction::MainMenu) && std::mem::take(&mut self.game.phone_race) && action == MenuAction::Back {
+            self.speech.say_as("HOOKMAN_PHONE_PLAYER_DECLINES", self.phone_caller);
+        }
         if action == MenuAction::None {
             return;
         }

@@ -10524,6 +10524,12 @@ pub const HANGOUT_RESTARTERS: [(&str, &str, [f32; 3], f32, bool); 15] = [
 /// The wager hangouts' pink slip race and man (their set-ups' data: +1400 the race's name,
 /// +1404 the hookman - `Game/Hangouts/<key>_setup` 0x3c2 / 0x3d9 for Hollywood; the same
 /// places in the others): (hangout key, race, hookman).
+/// The three races of a wager hangout: the first three names of its set-up.
+pub fn wager_race_names(key: &str) -> Option<&'static [&'static str]> {
+    let setup = format!("{key}_setup");
+    LAUNCHERS.iter().find(|l| l.0.eq_ignore_ascii_case(&setup)).and_then(|l| l.1.get(..3))
+}
+
 pub const PINK_SLIP_RACES: [(&str, &str, &str); 5] = [
     ("hw_wager_hangout1", "game/Race/Hollywood/Ordered/hw_ordered_jp_04", "GH_13"),
     ("be_wager_hangout1", "game/Race/Beaches/Ordered/be_ordered_ds_02", "GH_07"),
@@ -10791,6 +10797,17 @@ impl Game {
     /// `LAUNCHERS`) the first not run lately, else the one run longest ago (the race array's
     /// FindNextRaceIndex, F-18968 - which array call the wager core makes was not
     /// followed). The race definition's index.
+    pub fn mc4_wager_race(&self, key: &str) -> Option<usize> {
+        // (wager_hangout_core 0x1a3e..0x1fac: the set-up's three names at +1288 go into a race array, each race then is
+        // mcRaceArray_FindNextRaceIndex - `Career::next_race_of`; the fourth name, +1400, is the pink slip's)
+        let kept: Vec<i64> = wager_race_names(key)?.iter().filter_map(|r| self.mc4_race_index(r)).map(|k| k as i64).collect();
+        let next = match self.mc4.as_ref() {
+            Some(m) => m.career.next_race_of(&kept),
+            None => kept.first().copied(),
+        }? as usize;
+        self.mc4_table_race(next).map(|(i, _)| i)
+    }
+
     pub fn mc4_pink_race(&self, key: &str) -> Option<usize> {
         // (step 21b: the race is the one of +1400 of the set-up's data - CityDescription_
         // GetRaceIndexByName(city, data + 1400), wager_hangout_core 0x5467)
@@ -15273,6 +15290,15 @@ mod tests {
 
     /// Step 17: the ring of the last twelve races (F-63023, F-98664) and what
     /// reads it (F-97924, F-18968).
+    #[test]
+    fn wager_hangout_races() {
+        for key in ["hw_wager_hangout1", "be_wager_hangout1", "hl_wager_hangout1", "dt_wager_hangout1", "sc_wager_hangout1"] {
+            assert_eq!(wager_race_names(key).map(|r| r.len()), Some(3), "{key}");
+        }
+        assert!(wager_race_names("hw_wager_hangout1").unwrap()[0].ends_with("hw_ordered_mb_01"));
+        assert!(wager_race_names("nobody").is_none());
+    }
+
     #[test]
     fn race_history_ring() {
         let mut c = Career::default();

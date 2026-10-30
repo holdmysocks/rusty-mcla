@@ -598,6 +598,49 @@ pub fn sparks(pu: &PowerUps, vehicles: &crate::vehicles::Vehicles, fx: &mut crat
     }
 }
 
+/// The hit light's strength (F-62430: all round, as the siren's).
+pub const HIT_LIGHT: f32 = 800.0;
+
+/// The hit light (F-24672): the target record nearest the camera within 1000 m, for its 2 s even when dark. x = 6 t - 1 from
+/// the record's start (mgr +40 = 32; (t 192 - 32) / 32). Place: the point (0, 0.5, 1.5) of the shooter and the target, blended
+/// by sat(x) (F-81450), 2 m up. Colour: 0.5 (a A + b B) sat(1 - 2 |(x + 0.5) / 2 - 0.5|), a (0.372, 0.702, 0.831), b (0.537,
+/// 0.569, 0.98), A = 0.8 g(3 x) + 0.2, B = 0.9 g(9 x) + 0.1.
+pub fn hit_light(pu: &PowerUps, vehicles: &crate::vehicles::Vehicles, cam: Vec3) -> Option<(Vec3, [f32; 3])> {
+    let mut best: Option<(f32, Vec3, f32)> = None;
+    for h in &pu.hits {
+        let (Some(a), Some(b)) = (vehicles.cars.get(h.from), vehicles.cars.get(h.to)) else { continue };
+        let x = (pu.time - h.start) * 6.0 - 1.0;
+        let local = Vec3::new(0.0, 0.5, 1.5);
+        let p = (a.state.pos + a.state.rot * local).lerp(b.state.pos + b.state.rot * local, x.clamp(0.0, 1.0));
+        let d = p.distance(cam);
+        if d < best.map_or(1000.0, |q| q.0) {
+            best = Some((d, p, x));
+        }
+    }
+    let (_, p, x) = best?;
+    Some((p + Vec3::Y * 2.0, hit_light_colour(x)))
+}
+
+fn hit_light_colour(x: f32) -> [f32; 3] {
+    let env = (1.0 - 2.0 * ((x + 0.5) * 0.5 - 0.5).abs()).clamp(0.0, 1.0);
+    let (ka, kb) = (0.8 * noise1(3.0 * x) + 0.2, 0.9 * noise1(9.0 * x) + 0.1);
+    let mix = |a: f32, b: f32| 0.5 * (a * ka + b * kb) * env;
+    [mix(0.372, 0.537), mix(0.702, 0.569), mix(0.831, 0.98)]
+}
+
+#[cfg(test)]
+mod hit_light_tests {
+    use super::*;
+
+    /// Dark at x = -1 and x = 1.5, the envelope's ends; lit between.
+    #[test]
+    fn the_envelope() {
+        assert_eq!(hit_light_colour(-1.0), [0.0; 3]);
+        assert_eq!(hit_light_colour(1.5), [0.0; 3]);
+        assert!(hit_light_colour(0.3).iter().any(|c| *c != 0.0));
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // The shot's laser fan (step 19g)
 

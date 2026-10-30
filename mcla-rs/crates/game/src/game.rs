@@ -972,6 +972,11 @@ pub struct Game {
     /// the stake and difficulty of the wager just run, past its pay-out: the race-over menu's class and REWAGER's, NEXT
     /// WAGER's stake (the script's local 2, kept)
     pub wager_over: Option<(i64, usize)>,
+    /// the wager hangout of the wager running or just run
+    pub wager_key: Option<String>,
+    /// the race picked from a telephone challenge's list runs (event kind 15): race-over rows of the local racer's class
+    /// with NEXT RACE grey (F-71666), and no nextRace in its script
+    pub phone_race: bool,
     /// the race just paid out was not won (F-51353's `bFailure` for the story man's RACE AGAIN)
     pub race_lost: bool,
     /// the race just paid out was a wager (its winnings count for the wager missions)
@@ -1470,6 +1475,8 @@ impl Game {
             wager_pick: None,
             wager: None,
             wager_over: None,
+            wager_key: None,
+            phone_race: false,
             race_lost: false,
             wager_paid: false,
             hudmap: Default::default(),
@@ -8066,6 +8073,8 @@ impl Game {
                 let arcade_over = self.arcade_restore.is_some() && self.flash_menu.is_some();
                 if self.next_event_race.is_some() {
                     ro.push((s("pause_next_series", "NEXT RACE IN SERIES"), 0));
+                } else if arcade_over && self.phone_race {
+                    ro.push((s("pause_next_race", "NEXT RACE"), 20));
                 } else if arcade_over {
                     ro.push((s("pause_next_race", "NEXT RACE"), 10));
                 }
@@ -10873,9 +10882,12 @@ impl Game {
         Some(i)
     }
 
-    /// NEXT WAGER's race (approx.: the script's mcRaceArray_FindNextRaceIndex over the hangout's array, which the port does
-    /// not load: the next of the same district and type)
+    /// NEXT WAGER's race: the hangout's next (`mc4_wager_race`); a wager from the port's old list has no hangout: the next of
+    /// the same district and type
     fn next_wager_race(&self) -> Option<usize> {
+        if let Some(i) = self.wager_key.as_deref().and_then(|k| self.mc4_wager_race(k)) {
+            return Some(i);
+        }
         let cur = self.current_race?;
         let d = self.race_defs.get(cur)?;
         let n = self.race_defs.len();
@@ -12810,11 +12822,11 @@ impl Game {
                 let m = st("Dialog_Description_WagerInsufficientFunds", "You don't have enough money to wager.").to_uppercase();
                 self.show_message(&m);
             } else {
-                // (a race of the hangout's: the nearest, as `race_sel` was put on pulling in)
                 self.money -= stake;
                 self.dirty = true;
                 self.wager = Some((stake, self.hangout_diff));
-                self.current_race = Some(self.race_sel.min(self.race_defs.len().saturating_sub(1)));
+                self.wager_key = Some(key.clone());
+                self.current_race = Some(self.mc4_wager_race(&key).unwrap_or(self.race_sel.min(self.race_defs.len().saturating_sub(1))));
                 self.wager_here = false;
                 log::info!("hangout: {} wager ${} at difficulty {}", key, stake, self.hangout_diff);
                 leave(self);
@@ -13494,7 +13506,7 @@ impl Game {
     /// GOAL ATTACK's exception: NEXT rows, RACE / SERIES / PAYBACK / TIME TRIAL RESULTS, GO TO GARAGE (the payback's
     /// QUIT PAYBACK is its RO_Garage), NEXT DELIVERY.
     pub fn ro_grey(&self, code: u8) -> bool {
-        (self.chased_menu() && matches!(code, 0 | 1 | 2 | 10 | 12 | 14 | 20 | 24 | 25 | 26)) || (self.police_on_player && matches!(code, 0 | 9 | 10 | 13 | 20 | 23 | 25)) || (code == 26 && self.wager_over.or(self.wager).is_some_and(|w| self.money < w.0)) || (code == 20 && (!self.mc4_next_race_on() || self.goal_attack))
+        (self.chased_menu() && matches!(code, 0 | 1 | 2 | 10 | 12 | 14 | 20 | 24 | 25 | 26)) || (self.police_on_player && matches!(code, 0 | 9 | 10 | 13 | 20 | 23 | 25)) || (code == 26 && self.wager_over.or(self.wager).is_some_and(|w| self.money < w.0)) || (code == 20 && (!self.mc4_next_race_on() || self.goal_attack || self.phone_race))
     }
 
     pub fn series_decided(&self) -> bool {

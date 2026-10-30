@@ -62,8 +62,10 @@ pub struct Radio {
     voice_banks: HashMap<String, HashSet<String>>,
     /// the call signs of the lead cruiser and of a second one, as the cars' sounds hand them out (`Sound::radio_units`)
     pub units: (Option<String>, Option<String>),
-    /// a scenario's `frequency` in s; its last start on `clock` and the wording it took (F-14569 -> F-95157's gate)
-    freq: HashMap<String, f32>,
+    /// a scenario's `frequency` in s (default 10) and `priority`; its last start on `clock` and the wording it took
+    /// (F-14569 -> F-95157's gate, force 0 for every request class); the playing line's priority
+    freq: HashMap<String, (f32, i32)>,
+    playing: i32,
     last: HashMap<String, (f32, usize)>,
     clock: f32,
     /// the last ramp the suspect was on (context +124, F-21712)
@@ -71,8 +73,6 @@ pub struct Radio {
     /// clips to play, in order
     queue: VecDeque<(String, f32)>,
     wait: f32,
-    /// seconds until the next unprompted call may start
-    quiet: f32,
     rng: u32,
 }
 
@@ -180,7 +180,7 @@ impl Radio {
                 }
             }
             if !wordings.is_empty() {
-                r.freq.insert(name.to_ascii_uppercase(), attr(sc, "frequency").and_then(|f| f.parse().ok()).unwrap_or(0.0));
+                r.freq.insert(name.to_ascii_uppercase(), (attr(sc, "frequency").and_then(|f| f.parse().ok()).unwrap_or(10.0), attr(sc, "priority").and_then(|p| p.parse().ok()).unwrap_or(0)));
                 r.scenarios.insert(name.to_ascii_uppercase(), wordings);
             }
         }
@@ -259,19 +259,15 @@ impl Radio {
         (lead, "DISPATCH".into())
     }
 
-    /// Put a call on the air. Chatter (`urgent` false) waits its turn: it is dropped
-    /// while another call is running or has only just ended.
-    pub fn say(&mut self, scenario: &str, urgent: bool, ctx: &Ctx) -> bool {
-        if !urgent && (self.busy() || self.quiet > 0.0) {
-            return false;
-        }
+    /// Put a call on the air, as the tactic's lead cruiser says it to the dispatcher (or as `parties` has it).
+    pub fn say(&mut self, scenario: &str, ctx: &Ctx) -> bool {
         let parties = self.parties(&scenario.to_ascii_uppercase());
-        self.say_line(scenario, urgent, parties, ctx)
+        self.say_line(scenario, parties, ctx)
     }
 
-    /// A line of a tactic (F-26639), its sender and receiver named. Its caller has seen no line playing.
+    /// A line of a tactic (F-26639), its sender and receiver named.
     pub fn say_from(&mut self, scenario: &str, sender: String, receiver: String, ctx: &Ctx) -> bool {
-        self.say_line(scenario, false, (sender, receiver), ctx)
+        self.say_line(scenario, (sender, receiver), ctx)
     }
 
     #[cfg(test)]
@@ -286,18 +282,27 @@ impl Radio {
         }
     }
 
-    fn say_line(&mut self, scenario: &str, urgent: bool, (sender, receiver): (String, String), ctx: &Ctx) -> bool {
+    /// F-95157 with force 0: refused until the scenario's Frequency has run out; over a playing line only with a higher
+    /// priority, which stops it; the start time is kept even if no line of the wording then resolves.
+    fn say_line(&mut self, scenario: &str, (sender, receiver): (String, String), ctx: &Ctx) -> bool {
         let key = scenario.to_ascii_uppercase();
         let Some(n) = self.scenarios.get(&key).map(|w| w.len()) else { return false };
-        // (F-95157: refused until the scenario's Frequency has run out; the next wording never the last one)
+        let (frequency, priority) = self.freq.get(&key).copied().unwrap_or((10.0, 0));
         let before = self.last.get(&key).copied();
-        if !urgent && before.is_some_and(|l| self.clock < l.0 + self.freq.get(&key).copied().unwrap_or(0.0)) {
+        if before.is_some_and(|l| self.clock < l.0 + frequency) {
             return false;
+        }
+        if self.busy() {
+            if priority <= self.playing {
+                return false;
+            }
+            self.stop();
         }
         let mut pick = self.rand() as usize % n;
         if n > 1 && before.is_some_and(|l| l.1 == pick) {
             pick = (pick + 1) % n;
         }
+        self.last.insert(key.clone(), (self.clock, pick));
         let steps = self.scenarios[&key][pick].clone();
         let Some(sv) = self.voice_of(&sender, ctx.hour) else { return false };
         let rv = self.voice_of(&receiver, ctx.hour);
@@ -358,9 +363,7 @@ impl Radio {
         if !line.iter().any(|l| l.0.is_some()) {
             return false;
         }
-        if urgent {
-            self.queue.clear();
-        }
+        self.playing = priority;
         for (clip, role, pre) in line {
             match clip {
                 Some(k) => self.queue.push_back((k, 0.7)),
@@ -375,8 +378,6 @@ impl Radio {
                 }
             }
         }
-        self.quiet = 6.0;
-        self.last.insert(key.clone(), (self.clock, pick));
         log::info!("police radio: {} (wording {} of {}): {}", key, pick + 1, n, said.join(" / "));
         true
     }
@@ -389,7 +390,6 @@ impl Radio {
         self.clock += dt;
         self.wait -= dt;
         if self.queue.is_empty() {
-            self.quiet = (self.quiet - dt).max(0.0);
         }
         while self.wait <= 0.0 {
             let Some((key, vol)) = self.queue.pop_front() else {
@@ -421,12 +421,15 @@ mod tests {
         let mut r = Radio::load(&dir, a.root());
         let ctx = Ctx { hour: 12.0, ..Default::default() };
         let sign = || ("4ADAM8".to_string(), "DISPATCH".to_string());
+        // (with no line that resolves the start time is kept, F-95157)
         assert!(!r.say_from("REPORT_FREEWAY_ENTER", sign().0, sign().1, &ctx), "no ramp yet");
+        r.clock += 15.0;
         r.note_ramp(&Ctx { ramp: r.first_ramp(), ..Default::default() });
         assert!(r.say_from("REPORT_FREEWAY_ENTER", sign().0, sign().1, &ctx));
+        assert!(!r.say_from("REPORT_FREEWAY_EXIT", sign().0, sign().1, &ctx), "the same priority does not cut it");
+        r.stop();
         assert!(!r.say_from("REPORT_FREEWAY_ENTER", sign().0, sign().1, &ctx), "Frequency");
         r.clock += 15.0;
-        assert!(r.say_from("REPORT_FREEWAY_EXIT", sign().0, sign().1, &ctx));
         assert!(r.say_from("REPORT_FREEWAY_ENTER", sign().0, sign().1, &ctx));
     }
 
@@ -453,7 +456,7 @@ mod tests {
             for hour in [3.0, 12.0] {
                 r.queue.clear();
                 let c = Ctx { hour, ..ctx.clone() };
-                if !r.say(name, true, &c) {
+                if !r.say(name, &c) {
                     continue;
                 }
                 calls += 1;
