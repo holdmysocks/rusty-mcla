@@ -453,6 +453,8 @@ pub struct AmbSlotLights {
 pub struct AmbLamps {
     /// head (lights on), brake, the two signal sides, reversing
     pub s: [f32; 5],
+    /// the head lamps' flag (instance byte +557 + view, bit 0x4; `s[0]` eases towards it)
+    pub head_on: bool,
     /// the glows' levels by table entry, once drawn
     pub levels: Option<[f32; crate::render::car_lamps::IDS]>,
     /// the lamp programs' state by table entry (PSAmbientCarLight's cover row w)
@@ -1059,6 +1061,8 @@ pub struct Vehicles {
     next_uid: u32,
     /// the render instances' pool, for the light slots a new car inherits
     pub amb_pool: AmbPool,
+    /// this frame's head-lamp cones (`pick_cones`), seven rows each
+    pub cones: Vec<[[f32; 4]; 7]>,
     /// the cars' damage maps (crate::damagemap): the game's pool of 8 render targets, each a car's
     /// (its uid) for as long as the car is there
     dmg_maps: Vec<DmgMap>,
@@ -4763,6 +4767,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let Some(rows) = crate::render::car_lamps::for_car(&c.model.name, &c.vinyl_name).filter(|t| t.ambient) else { continue };
             let pos = c.render_pose(alpha).pos;
             c.amb_lamps.tint = 0.25 + 1.5 * ((pos.distance(eye) / 30.0).min(1.0) - 0.5).clamp(0.0, 1.0);
+            // (the flag is the car's, whether or not the car is in the view)
+            let wet_now = night > 0.5 && (6.0..=18.0).contains(&hour);
+            c.amb_lamps.head_on = c.parked.is_none() && !lights_off && traffic_lights_due(hour, c.amb_lamps.hour_offset, wet_now) && c.removing.map_or(true, |f| f >= 0.1);
             let d = (pos - eye).dot(axis);
             let r = Vec3::splat(c.model.params.body_half.length() + 1.0);
             if d > TRAFFIC_LAMP_REACH || !frustum.intersects_aabb(pos - r, pos + r) {
@@ -5299,9 +5306,9 @@ impl Vehicles {
     /// (OPTIONS > PERFORMANCE > HIGH-DETAIL TRAFFIC, the port's own - DECISIONS.md D19): LOD 0 wherever the
     /// original draws the car at all.
     ///
-    /// The glow pass (0x8000 of F-27833 -> F-62563 -> F-96521) draws a car's glows when it is
-    /// visible in the view (the instance's per-view byte +557 + view, bit 0x4 - its setter, in the scene's
-    /// cull, was not read: here the same view test of the sphere) and either its LOD is not -1 or instance
+    /// The glow pass (0x8000 of F-27833 -> F-62563 -> F-96521) draws a car's glows when its lights
+    /// are on (the instance's per-view byte +557 + view, bit 0x4, read live: all clear at noon, set on the
+    /// driven cars at 23:00; here the view test of the sphere, the lamps' levels carrying the flag) and either its LOD is not -1 or instance
     /// +556 bit 0x20 is set: the depth below 50 (0x82006BF4, F-73443). The depth is written whether or
     /// not the sphere is in the view (F-91781 stores it before its answer), so a car hidden by an
     /// occluder or 500 deep keeps its glows within 50 - `lod_glow`.
@@ -6014,6 +6021,65 @@ mod hit_tests {
 }
 
 impl Vehicles {
+    /// The traffic cars' head-lamp cones this frame (F-68081, second half; the same strength as the blob's,
+    /// run also for a car whose LOD is -1 - only the blob needs a LOD). Lights on; a sphere of radius 3, 6 m ahead
+    /// and 2 m up, in the view; the one 6 m ahead not behind an occluder; a ray 5 m down hits the world. The
+    /// record: rows x = n x z, y = n, z = x x n scaled 15 x 0.33, 0.25, 15 x 0.75, place = hit + 0.1 n - 6 z; the cone
+    /// at car + 1.89 y - 2.23 z along -(z c - y s) for the pitch -0.823 (F-52786), squared range 225,
+    /// colour (1, 0.95, 0.75) x strength.
+    pub fn pick_cones(&mut self, eye: Vec3, frustum: &crate::render::Frustum, occluders: &crate::occluder::Selected, world: &crate::physics::collision::WorldCollider) {
+        let alpha = self.render_alpha;
+        let mut cones = std::mem::take(&mut self.cones);
+        cones.clear();
+        // (test hooks: MCLA_CONE_FORCE=<file> of lines of 28 numbers: these records and no others, for a recording's
+        // draws; MCLA_CONE_ALL=1: lit whatever the flag, for a placed car)
+        if let Ok(p) = std::env::var("MCLA_CONE_FORCE") {
+            for l in std::fs::read_to_string(p).unwrap_or_default().lines() {
+                let f: Vec<f32> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                if f.len() == 28 {
+                    let mut r = [[0.0; 4]; 7];
+                    for (i, x) in f.iter().enumerate() {
+                        r[i / 4][i % 4] = *x;
+                    }
+                    cones.push(r);
+                }
+            }
+            self.cones = cones;
+            return;
+        }
+        let all = std::env::var_os("MCLA_CONE_ALL").is_some();
+        for c in &self.cars {
+            if !c.is_ambient() || !(c.amb_lamps.head_on || all) {
+                continue;
+            }
+            let pose = c.render_pose(alpha);
+            let strength = ((60.0 - pose.pos.distance(eye)) / 30.0).clamp(0.0, 1.0);
+            if strength <= 0.001 {
+                continue;
+            }
+            let (y, z) = (pose.rot * Vec3::Y, pose.rot * Vec3::Z);
+            let ahead = pose.pos - z * 6.0;
+            let probe = ahead + y * 2.0;
+            if !frustum.intersects_sphere(probe, 3.0) || occluders.hides_sphere(ahead, 3.0) {
+                continue;
+            }
+            let Some(hit) = world.probe_front(probe, Vec3::NEG_Y, 5.0) else { continue };
+            let n = hit.normal;
+            let rx = n.cross(z).normalize_or(Vec3::X);
+            let rz = rx.cross(n).normalize_or(Vec3::Z);
+            let place = hit.point + n * 0.1;
+            let (s, co) = (-0.823f32).sin_cos();
+            let dir = -(z * co - y * s);
+            let from = pose.pos + y * 1.89 - z * 2.23;
+            let col = Vec3::new(1.0, 0.95, 0.75) * strength;
+            if std::env::var_os("MCLA_CONE_DUMP").is_some() {
+                eprintln!("cone {} car {:?} place {:?} n {:?} from {:?} dir {:?} col {:?}", c.model.name, pose.pos, place, n, from, dir, col);
+            }
+            cones.push([(rx * 4.95).extend(0.0).to_array(), (n * 0.25).extend(0.0).to_array(), (rz * 11.25).extend(0.0).to_array(), place.extend(1.0).to_array(), from.extend(225.0).to_array(), dir.extend(0.0).to_array(), col.extend(0.0).to_array()]);
+        }
+        self.cones = cones;
+    }
+
     /// A new car takes its slots from the pool's instance (see `AmbPool`). Once a frame, before the slots run.
     pub fn amb_pool_step(&mut self) {
         let now: Vec<(u32, usize)> = self

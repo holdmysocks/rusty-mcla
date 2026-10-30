@@ -41,7 +41,7 @@ fn mask_target(gpu: &Gpu, label: &str, format: wgpu::TextureFormat, samples: u32
         sample_count: samples,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: if samples > 1 { wgpu::TextureUsages::RENDER_ATTACHMENT } else { wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING },
+        usage: if samples > 1 { wgpu::TextureUsages::RENDER_ATTACHMENT } else { wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC },
         view_formats: &[],
     })
 }
@@ -139,6 +139,41 @@ fn schedule(data_dir: &str) -> Vec<(String, u32)> {
 }
 
 impl Impostors {
+    /// Diagnostics (MCLA_IMP_DUMP=<dir>): each type's colour picture as it is now, raw RGBA8 128 x 128,
+    /// `<type's model index>.raw` (with the file name logged).
+    pub fn dump(&self, gpu: &Gpu, dir: &str) {
+        for (k, t) in self.types.iter().enumerate() {
+            if !t.valid {
+                continue;
+            }
+            let bpr = TILE * 4;
+            let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("impostor dump"), size: ((bpr + 255) / 256 * 256 * TILE) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+            let stride = (bpr + 255) / 256 * 256;
+            let mut enc = gpu.device.create_command_encoder(&Default::default());
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo { texture: &t.color.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: None } },
+                wgpu::Extent3d { width: TILE, height: TILE, depth_or_array_layers: 1 },
+            );
+            gpu.queue.submit([enc.finish()]);
+            let slice = buf.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |r| {
+                let _ = tx.send(r);
+            });
+            gpu.device.poll(wgpu::Maintain::Wait);
+            if let Ok(Ok(())) = rx.recv() {
+                let data = slice.get_mapped_range();
+                let mut out = Vec::with_capacity((bpr * TILE) as usize);
+                for y in 0..TILE {
+                    out.extend_from_slice(&data[(y * stride) as usize..(y * stride + bpr) as usize]);
+                }
+                let _ = std::fs::write(format!("{dir}/{k}.raw"), &out);
+            }
+            buf.unmap();
+        }
+    }
+
     /// The pictures, the generation pipeline and one card model per type (pushed onto `models`).
     /// None with `MCLA_NO_IMPOSTORS=1` or without types.
     pub(super) fn new(gpu: &mut Gpu, data_dir: &str, models: &mut Vec<PropModel>, infos: &[TypeInfo]) -> Option<Impostors> {
@@ -200,7 +235,7 @@ impl Impostors {
                 sample_count: samples,
                 dimension: wgpu::TextureDimension::D2,
                 format,
-                usage: if samples > 1 { wgpu::TextureUsages::RENDER_ATTACHMENT } else { wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING },
+                usage: if samples > 1 { wgpu::TextureUsages::RENDER_ATTACHMENT } else { wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC },
                 view_formats: &[],
             })
         };

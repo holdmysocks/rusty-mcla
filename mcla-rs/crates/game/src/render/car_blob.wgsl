@@ -202,3 +202,36 @@ fn vs_mask(@location(0) pos: vec3<f32>) -> FullOut {
     o.clip = g.view_proj * (obj.model * vec4<f32>(pos, 1.0));
     return o;
 }
+
+// The head-lamp cone: VS_DrawCone + PS_CalcShadowsCone (F-68081's record, drawn by F-35120).
+struct ConeOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) @interpolate(flat) pos: vec4<f32>,
+    @location(1) @interpolate(flat) dir: vec4<f32>,
+    @location(2) @interpolate(flat) col: vec4<f32>,
+};
+
+@vertex
+fn vs_cone(@location(0) v: vec3<f32>, @location(1) x: vec4<f32>, @location(2) y: vec4<f32>, @location(3) z: vec4<f32>, @location(4) w: vec4<f32>, @location(5) pos: vec4<f32>, @location(6) dir: vec4<f32>, @location(7) col: vec4<f32>) -> ConeOut {
+    var o: ConeOut;
+    o.clip = g.view_proj * vec4<f32>(w.xyz + x.xyz * v.x + y.xyz * v.y + z.xyz * v.z, 1.0);
+    o.pos = pos;
+    o.dir = dir;
+    o.col = col;
+    return o;
+}
+
+@fragment
+fn fs_cone(in: ConeOut) -> @location(0) vec4<f32> {
+    let dims = vec2<i32>(textureDimensions(depth));
+    let px = clamp(vec2<i32>(in.clip.xy), vec2<i32>(0), dims - vec2<i32>(1));
+    let z = textureLoad(depth, px, 0);
+    let ndc = vec2<f32>((f32(px.x) + 0.5) / f32(dims.x) * 2.0 - 1.0, 1.0 - (f32(px.y) + 0.5) / f32(dims.y) * 2.0);
+    let d = unproject(ndc, z) - in.pos.xyz;
+    let d2 = dot(d, d);
+    let along = clamp(dot(d / sqrt(d2), in.dir.xyz) - 0.5, 0.0, 1.0) * 2.0;
+    let k = (1.0 - clamp(d2 / in.pos.w, 0.0, 1.0)) * along;
+    let k2 = k * k;
+    let s = clamp(k2 * k2, 0.0, 1.0) * 8.0;
+    return vec4<f32>(vec3<f32>(1.0) + in.col.rgb * s, 1.0);
+}

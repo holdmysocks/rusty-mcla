@@ -1568,6 +1568,13 @@ impl Props {
     }
 
     /// Once a frame, before the scene pass: redraw the impostor pictures that are due.
+    /// Diagnostics: see `Impostors::dump`.
+    pub fn dump_impostors(&self, gpu: &Gpu, dir: &str) {
+        if let Some(imp) = self.impostors.as_ref() {
+            imp.dump(gpu, dir);
+        }
+    }
+
     pub fn update_impostors(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, globals: &crate::render::Globals) {
         if let Some(imp) = self.impostors.as_mut() {
             imp.update(gpu, enc, globals, &self.models);

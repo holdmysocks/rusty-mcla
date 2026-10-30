@@ -8969,6 +8969,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let (eye, view) = if self.drive && self.vehicles.player().is_some() { (self.chase.pos, self.chase.view()) } else { (self.cam.pos, self.cam.view()) };
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
             self.vehicles.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
+            self.vehicles.pick_cones(eye, &frustum, &occluded, &world.collider);
             self.peds.pick_lods(eye, axis, self.lod_near, crate::props::Lod::now(), &frustum, &occluded);
             // (the original's renderer flag of F-31789, set while the game is paused: the plants' model angle x 0.9)
             crate::props::set_paused(self.game.mode == Mode::Paused);
@@ -10922,6 +10923,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (MCLA_MINISKY_DUMP=<file>: the mini sky the panes mirror)
             if let Ok(p) = std::env::var("MCLA_MINISKY_DUMP") {
                 gpu.dump_minisky(&p);
+            }
+            if let Ok(p) = std::env::var("MCLA_IMP_DUMP") {
+                self.props.dump_impostors(&gpu, &p);
             }
             // (MCLA_REFL_DUMP=<file>: the wet road's planar reflection picture)
             if let Ok(p) = std::env::var("MCLA_REFL_DUMP") {

@@ -43,6 +43,9 @@ struct State {
     mask: crate::render::ms::MsPipe,
     apply: crate::render::ms::MsPipe,
     one_d: crate::render::ms::MsPipe,
+    cone: crate::render::ms::MsPipe,
+    cone_inst: wgpu::Buffer,
+    cone_mesh: wgpu::Buffer,
     layout: wgpu::BindGroupLayout,
     inst: wgpu::Buffer,
 }
@@ -113,8 +116,60 @@ pub fn load(gpu: &mut Gpu) {
     let mask = make("car blob mask", &pl_city, "vs_mask", "fs_one", vtx, wgpu::BlendState::REPLACE, wgpu::ColorWrites::ALPHA, Some(depth_ro(16)));
     let apply = make("car blob apply", &pl_city, "vs_full", "fs_apply", vec![], mul_color, wgpu::ColorWrites::COLOR, Some(depth_ro(0)));
     let one_d = make("car blob one (depth)", &pl_city, "vs_full", "fs_one", vec![], wgpu::BlendState::REPLACE, wgpu::ColorWrites::ALPHA, Some(depth_ro(0)));
-    *STATE.lock().unwrap() = Some(State { blob, one, mask, apply, one_d, layout, inst });
+    // (the head-lamp cones: the colour x the program's output, as the recorded blend 0x80008 - destination colour,
+    // zero - only where the stencil is 0 and in front of the scene, back faces culled)
+    let cone_inst = device.create_buffer(&wgpu::BufferDescriptor { label: Some("car cones"), size: (64 * CONE_SIZE) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+    let cone_mesh = wgpu::util::DeviceExt::create_buffer_init(device, &wgpu::util::BufferInitDescriptor { label: Some("car cone mesh"), contents: bytemuck::cast_slice(&cone_mesh()), usage: wgpu::BufferUsages::VERTEX });
+    let cone = {
+        let (layout, shader) = (pl.clone(), shader.clone());
+        crate::render::ms::MsPipe::new(device, move |device, v| {
+            let attrs: Vec<wgpu::VertexAttribute> = (0..7).map(|i| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16 * i as u64, shader_location: i + 1 }).collect();
+            let pos = [wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 }];
+            let mut ds = v.ds(false, wgpu::CompareFunction::GreaterEqual, false, wgpu::DepthBiasState::default());
+            let face = wgpu::StencilFaceState { compare: wgpu::CompareFunction::Equal, fail_op: wgpu::StencilOperation::Keep, depth_fail_op: wgpu::StencilOperation::Keep, pass_op: wgpu::StencilOperation::Keep };
+            ds.stencil = wgpu::StencilState { front: face, back: face, read_mask: 0xff, write_mask: 0 };
+            let mult = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Dst, dst_factor: wgpu::BlendFactor::Zero, operation: wgpu::BlendOperation::Add };
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("car cone"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_cone"),
+                    buffers: &[
+                        wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &pos },
+                        wgpu::VertexBufferLayout { array_stride: CONE_SIZE as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &attrs },
+                    ],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_cone"), targets: &[Some(wgpu::ColorTargetState { format: crate::render::post::SCENE_FORMAT, blend: Some(wgpu::BlendState { color: mult, alpha: mult }), write_mask: wgpu::ColorWrites::COLOR })], compilation_options: Default::default() }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, front_face: wgpu::FrontFace::Ccw, cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+                depth_stencil: Some(ds),
+                multisample: v.ms(),
+                multiview: None,
+                cache: None,
+            })
+        })
+    };
+    *STATE.lock().unwrap() = Some(State { blob, one, mask, apply, one_d, cone, cone_inst, cone_mesh, layout, inst });
 }
+
+/// The `cone` model as read from the running original: 16 sides, radius 1 round z, z +-0.5, 180 indices.
+fn cone_mesh() -> Vec<[f32; 3]> {
+    let at = |k: i32, z: f32| {
+        let a = k as f32 * std::f32::consts::TAU / 16.0;
+        [a.cos(), a.sin(), z]
+    };
+    let mut v = Vec::with_capacity(180);
+    for k in 0..16 {
+        v.extend([at(k, -0.5), at(k + 1, -0.5), at(k + 1, 0.5), at(k, -0.5), at(k + 1, 0.5), at(k, 0.5)]);
+    }
+    for k in 1..15 {
+        v.extend([at(0, 0.5), at(k, 0.5), at(k + 1, 0.5), at(0, -0.5), at(k + 1, -0.5), at(k, -0.5)]);
+    }
+    v
+}
+
+const CONE_SIZE: usize = 112;
 
 fn push(out: &mut Vec<f32>, rows: [[f32; 4]; 6]) {
     for r in rows {
@@ -127,6 +182,25 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
     let guard = STATE.lock().unwrap();
     let Some(s) = guard.as_ref() else { return };
     let dbg = view();
+    if !vehicles.cones.is_empty() && dbg != 274 {
+        let n = vehicles.cones.len().min(64);
+        gpu.queue.write_buffer(&s.cone_inst, 0, bytemuck::cast_slice(&vehicles.cones[..n]));
+        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("car cones"), layout: &s.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&gpu.depth) }] });
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("car cones"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }) }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_bind_group(0, &gpu.globals_bg, &[]);
+        pass.set_bind_group(1, &bind, &[]);
+        pass.set_pipeline(&s.cone);
+        pass.set_stencil_reference(0);
+        pass.set_vertex_buffer(0, s.cone_mesh.slice(..));
+        pass.set_vertex_buffer(1, s.cone_inst.slice(..(n * CONE_SIZE) as u64));
+        pass.draw(0..180, 0..n as u32);
+    }
     let mut data: Vec<f32> = Vec::new();
     let mut n = 0usize;
     for c in vehicles.blob_cars() {
