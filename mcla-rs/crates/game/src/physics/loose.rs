@@ -517,6 +517,10 @@ pub struct LooseState {
     pub skip_end: bool,
     /// (the game) a car after the tick's first: the loose bodies' own pairs are made already
     pub later: bool,
+    /// (the game) this tick's collide / refresh of what is loose has been done (the first car to meet the level
+    /// does them; the original has one of each an update)
+    collided: bool,
+    refreshed: bool,
     /// the car is under MegaStealth (vehicles.rs `pu_ghost`, POWERUPS.md): it meets the map and nothing
     /// loose - its step leaves the level out
     pub ghost: bool,
@@ -1161,7 +1165,8 @@ impl LooseState {
         self.manis.retain(|m| !m.stale);
         // (a level shared by the cars: what is loose meets what is loose and the city once a tick, in the first
         // car's collide; the later cars' keep those pairs as they are)
-        let shared_later = self.live && self.later;
+        let shared_later = self.live && self.later && self.collided;
+        self.collided = true;
         for m in self.manis.iter_mut() {
             m.visited = shared_later && m.a != Who::Car && m.b != Who::Car;
         }
@@ -1494,7 +1499,15 @@ impl LooseState {
     /// that would push it down against a prop that stands (0x82332D30) - and, fast enough,
     /// feels nothing of a prop that broke two seconds ago and more (0x82332AC8).
     pub fn refresh(&mut self, world: &LooseWorld, car: &CarIn) {
+        // (a level shared by the cars: the contacts of what is loose are refreshed once a tick, in the first car's
+        // step, with its collide - a second refresh would age a fresh contact, and the slide rule below would drop it
+        // before its solve: a prop moving faster than 1.2 m/s would meet no ground)
+        let again = self.live && self.refreshed;
+        self.refreshed = true;
         for k in 0..self.manis.len() {
+            if again && self.manis[k].a != Who::Car && self.manis[k].b != Who::Car {
+                continue;
+            }
             let (ma, mb) = (self.part_matrix(world, self.manis[k].a, self.manis[k].part_a, car), self.part_matrix(world, self.manis[k].b, self.manis[k].part_b, car));
             let m = &mut self.manis[k];
             let city = m.b == Who::City;
@@ -1551,6 +1564,9 @@ impl LooseState {
             _ => false,
         };
         for m in self.manis.iter_mut() {
+            if again && m.a != Who::Car && m.b != Who::Car {
+                continue;
+            }
             // (a constraint's contact: no material, 0x825A2C88 for kind != 0 zeroes +112 only)
             if m.rope {
                 for s in m.slots.iter_mut() {
@@ -2748,6 +2764,7 @@ impl LooseState {
     /// with the velocities the tick came in with, and gravity and the type's damping go into the
     /// tick's force sums.
     pub fn pre_collide(&mut self, world: &LooseWorld, dt: f32) {
+        (self.collided, self.refreshed) = (false, false);
         let rs = super::gjk::rsqrt_as_original;
         self.replay_pieces();
         self.pieces_wake(dt);
