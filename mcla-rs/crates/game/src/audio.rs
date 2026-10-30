@@ -10,7 +10,7 @@ use glam::Vec3;
 use hashbrown::HashMap;
 use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -393,6 +393,9 @@ pub struct Audio {
     /// last checked, and the mix drained in real time while no device is open (so voices still run out)
     device: String,
     default_seen: Option<String>,
+    /// the default device's name as the watch's own thread last read it: reading it takes ~3 ms (`watch_output`)
+    default_now: Arc<Mutex<Option<String>>>,
+    default_asking: Arc<AtomicBool>,
     pulled: Arc<AtomicU64>,
     watch: Instant,
     drain: Option<(MixSource, Instant)>,
@@ -538,6 +541,8 @@ impl Audio {
             offline: off,
             device,
             default_seen,
+            default_now: Arc::new(Mutex::new(None)),
+            default_asking: Arc::new(AtomicBool::new(false)),
             pulled,
             watch: Instant::now(),
             drain,
@@ -895,8 +900,18 @@ impl Audio {
         } else if pulled < el * RATE as f32 * 2.0 * 0.25 {
             Some(format!("the stream on {:?} stopped ({:.0} of {:.0} samples pulled)", self.device, pulled, el * RATE as f32 * 2.0))
         } else {
-            use rodio::cpal::traits::{DeviceTrait, HostTrait};
-            let now = rodio::cpal::default_host().default_output_device().and_then(|d| d.name().ok());
+            let now = self.default_now.lock().ok().and_then(|n| n.clone());
+            if !self.default_asking.swap(true, Ordering::Relaxed) {
+                let (out, asking) = (self.default_now.clone(), self.default_asking.clone());
+                std::thread::spawn(move || {
+                    use rodio::cpal::traits::{DeviceTrait, HostTrait};
+                    let name = rodio::cpal::default_host().default_output_device().and_then(|d| d.name().ok());
+                    if let Ok(mut n) = out.lock() {
+                        *n = name;
+                    }
+                    asking.store(false, Ordering::Relaxed);
+                });
+            }
             (now.is_some() && now != self.default_seen).then(|| format!("the default output device changed to {:?}", now.unwrap_or_default()))
         };
         if let Some(r) = reason {
@@ -924,6 +939,9 @@ impl Audio {
         log::info!("audio: output on {:?} ({why})", o.name);
         self.device = o.name;
         self.default_seen = o.default;
+        if let Ok(mut n) = self.default_now.lock() {
+            *n = None;
+        }
         self._sink = Some(sink);
         self.handle = Some(o.handle);
         self._stream = Some(o.stream);
