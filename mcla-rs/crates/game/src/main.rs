@@ -2244,7 +2244,8 @@ impl App {
             let title = self.game.mode == Mode::MainMenu;
             self.game.nav_enter |= p(0) || (p(7) && title);
             // (B does nothing there either: the original's start screen has no way out)
-            self.game.nav_back |= ((p(1) || p(7)) && !title) && !watching;
+            // (on the GPS map Start is MAP MODE and backs out of nothing - #26)
+            self.game.nav_back |= ((p(1) || (p(7) && !self.game.show_map)) && !title) && !watching;
             // (Back answers a call on the phone over a menu too - the keyboard's map key does)
             self.game.nav_map |= p(6) && (self.game.show_map || self.game.phone_call_up());
             return;

@@ -4010,13 +4010,18 @@ impl Game {
 
     /// Draw menus / HUD. Returns the action chosen this frame.
     pub fn ui(&mut self, ctx: &egui::Context, vehicles: &Vehicles, world: &World, hud: HudInfo) -> MenuAction {
+        // (a screen closed in this frame still had the pad's buttons)
+        let menu_input = self.in_menu() || self.show_map || self.takes_menu_input();
         let action = self.ui_screens(ctx, vehicles, world, hud);
-        // (a menu's X / Y / Back from the pad is this frame's: a page that has no use for it
-        // does not keep it for the next page - #11. The replay's panel takes them outside the UI.)
-        if self.in_menu() && self.replay.is_none() {
+        // (a menu's X / Y / Back / Start from the pad is this frame's: a page that has no use for it
+        // does not keep it for the next page - #11; the GPS map and the boxes run outside the menu
+        // modes, and a Y kept there turned the mission log over every frame - #26. The replay's panel
+        // takes them outside the UI.)
+        if (menu_input || self.in_menu() || self.show_map || self.takes_menu_input()) && self.replay.is_none() {
             self.nav_x = false;
             self.nav_y = false;
             self.nav_select = false;
+            self.nav_start = false;
         }
         action
     }
