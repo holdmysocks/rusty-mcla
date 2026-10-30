@@ -11241,7 +11241,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (a pink slip race is one against one, the opponent in the car raced for -
                     // wager_hangout_core 0x54c3..0x557d: step 21)
                     let pink = self.game.mc4_pink_rival();
-                    let field = if pink.is_some() { 1 } else if self.game.series.is_some() { 3 } else { 7 };
+                    // (a telephone challenge's race is one against one, the caller: TelephoneChallenge 0x753..0x8dd)
+                    let phone_man = self.game.mc4_phone_man(self.phone_caller).filter(|m| self.game.phone_race && usable(&m.0));
+                    let field = if pink.is_some() || self.game.phone_race { 1 } else if self.game.series.is_some() { 3 } else { 7 };
+                    if let Some((car, cfg, _)) = phone_man.clone() {
+                        grid.push(self.game.rivals.with_config(self.phone_caller, &car, &cfg));
+                    }
                     if let Some((id, car, cfg)) = pink.clone().filter(|m| usable(&m.1)) {
                         grid.push(self.game.rivals.with_config(&id, &car, &cfg));
                     }
@@ -11283,6 +11288,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if !(self.game.hookman_race || self.game.mc4_local_man_race() || alt) {
                         self.game.man_mod = None;
                         self.game.man_diff = None;
+                    }
+                    if let Some((_, _, m)) = phone_man {
+                        self.game.man_mod = Some((self.phone_caller.to_string(), m));
                     }
                     // the rest of the field: the race script's pick (oppick.rs) - cars of the difficulty's band
                     // around the player's car, each with the first free driver who has it
@@ -12979,15 +12987,24 @@ impl App {
         log::info!("grid ahead: race {} guessed {:?} ({} ms)", self.game.race_defs.get(race).map_or("?", |d| d.id.as_str()), guess.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), t.elapsed().as_millis());
     }
 
+    /// The caller of the telephone challenge whose race this is: (car, set-up, mod value).
+    fn phone_man(&self) -> Option<(String, String, i32)> {
+        self.game.mc4_phone_man(self.phone_caller).filter(|_| self.game.phone_race)
+    }
+
     /// The grid StartRace would draw now, as (car, set-up) - its composition in `handle_action` without its side
     /// effects: the named men by their ids only, the script's pick on a copy of the generator.
     fn guess_grid(&self) -> Vec<(String, String)> {
         let g = &self.game;
         let usable = |car: &str| g.car_dirs.iter().any(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(car)));
         let pink = g.mc4_pink_rival();
-        let field = if pink.is_some() { 1 } else if g.series.is_some() { 3 } else { 7 };
+        let field = if pink.is_some() || g.phone_race { 1 } else if g.series.is_some() { 3 } else { 7 };
         let mut out: Vec<(String, String)> = Vec::new();
         let mut used: Vec<String> = Vec::new();
+        if let Some((car, cfg, _)) = self.phone_man().filter(|m| usable(&m.0)) {
+            used.push(self.phone_caller.to_string());
+            out.push((car, cfg));
+        }
         if let Some((id, car, cfg)) = pink.filter(|m| usable(&m.1)) {
             used.push(id);
             out.push((car, cfg));

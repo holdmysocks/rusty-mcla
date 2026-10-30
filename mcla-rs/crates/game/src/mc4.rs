@@ -9435,11 +9435,20 @@ impl Game {
     /// is nearest. (vehicle, set-up, mod value.) The original walks the cars in the order of
     /// a hash table; the port in the order of the file.
     pub fn mc4_character_car(&self, character: &str, diff: i32) -> Option<(String, String, i32)> {
+        self.mc4_character_car_of(character, diff, false)
+    }
+
+    /// The same with the class mask 255, the motorcycles too: a telephone challenge's caller (TelephoneChallenge 0x83d).
+    pub fn mc4_phone_man(&self, caller: &str) -> Option<(String, String, i32)> {
+        self.mc4_character_car_of(caller, self.arcade_opts[1].min(3) as i32, true)
+    }
+
+    fn mc4_character_car_of(&self, character: &str, diff: i32, bikes: bool) -> Option<(String, String, i32)> {
         let perf = self.player_perf();
         let ch = self.rivals.characters.iter().find(|c| c.id.eq_ignore_ascii_case(character))?;
         let mut best: Option<(usize, i32, i32)> = None;
         for (k, c) in ch.cars.iter().enumerate() {
-            if c.car.contains("_duc_") || c.car.contains("_kaw_") {
+            if !bikes && (c.car.contains("_duc_") || c.car.contains("_kaw_")) {
                 continue;
             }
             let Some(s) = self.mc4_samples_of(&c.car) else { continue };
@@ -15856,6 +15865,15 @@ mod tests {
             }
         }
         assert!(g.mc4_character_car("NOBODY", 1).is_none());
+        // (the five who telephone: each has a car at every difficulty)
+        for caller in ["GH_03", "GH_07", "GH_13", "GH_16", "GH_22"] {
+            for d in 0..4 {
+                g.arcade_opts[1] = d;
+                let (car, config, _) = g.mc4_phone_man(caller).unwrap();
+                assert!(config.to_ascii_lowercase().contains(&car.to_ascii_lowercase()));
+            }
+        }
+        assert!(g.mc4_phone_man("NOBODY").is_none());
         // (a mission's man: his set-up's vehicle, a difficulty of 1..3)
         let row = MISSION_HOOKMEN.iter().find(|r| r.0 == "BEAT_GH_04_MUSCLE").unwrap();
         let h = g.mc4_mission_hookman(row);
