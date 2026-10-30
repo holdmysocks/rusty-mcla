@@ -258,7 +258,7 @@ struct App {
     // (MCLA_FRAMELOG=<ms>: the worst-frame log - docs/PERFORMANCE.md)
     framelog: Option<f32>,
     fl_prev: [f32; 9],
-    fl_ui: [f32; 5],
+    fl_ui: [f32; 7],
     fl_stream_ms: f32,
     draws: usize,
     time_of_day: f32,
@@ -979,7 +979,7 @@ impl App {
             frame_ms: 0.0,
             framelog: std::env::var("MCLA_FRAMELOG").ok().map(|v| v.parse::<f32>().unwrap_or(25.0)),
             fl_prev: [0.0; 9],
-            fl_ui: [0.0; 5],
+            fl_ui: [0.0; 7],
             fl_stream_ms: 0.0,
             draws: 0,
             show_ui: false,
@@ -7530,7 +7530,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let p = self.fl_prev;
                 let u = self.fl_ui;
                 log::info!("slowframe: #{} {:.1} ms (limit {:.0}) | ticks {:.0} sim {:.2} (streaming {:.2}) prep {:.2} acquire {:.2} ui {:.2} (run {:.2} tessellate {:.2} textures {:.2} movies {:.2} buffers {:.2}) passes {:.2} submit+present {:.2} | loaded {} pending {} draws {}",
-                    self.frame_no, self.frame_ms, limit, p[0], p[1], p[2], p[3], p[4], p[5], u[0], u[1], u[2], u[3], u[4], p[6], p[7], p[8] as i64, self.world.as_ref().map_or(0, |w| w.pending.len()), self.draws);
+                    self.frame_no, self.frame_ms, limit, p[0], p[1], p[2], p[3], p[4], p[5], u[0], u[1], u[2], u[3] + u[5] + u[6], u[4], p[6], p[7], p[8] as i64, self.world.as_ref().map_or(0, |w| w.pending.len()), self.draws);
             }
         }
         self.fl_stream_ms = 0.0;
@@ -9502,7 +9502,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the menus' 3D-scene movies drawn into their own pictures first - selfmovie.rs)
             selfmovie::render_jobs(&eg.ctx, &gpu.device, &gpu.queue, &mut eg.renderer2, &eg.selfs, gpu.config.format.remove_srgb_suffix());
             // (and the free-roam icons' movies into their 4x targets - flashpic.rs)
+            let tu3a = Instant::now();
             flashpic::render(&gpu.device, &gpu.queue);
+            let tu3b = Instant::now();
             // (and the minimap into the HUD movie's texture of it - minimap_gpu.rs)
             minimap_gpu::render(&gpu.device, &gpu.queue, [&eg.renderer, &eg.renderer4, &eg.renderer2]);
             let tu4 = Instant::now();
@@ -9519,7 +9521,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             r.update_buffers(&gpu.device, &gpu.queue, &mut enc, &jobs, &desc);
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1000.0;
-            self.fl_ui = [ms(tu0, tu1), ms(tu1, tu2), ms(tu2, tu3), ms(tu3, tu4), ms(tu4, Instant::now())];
+            self.fl_ui = [ms(tu0, tu1), ms(tu1, tu2), ms(tu2, tu3), ms(tu3, tu3a), ms(tu4, Instant::now()), ms(tu3a, tu3b), ms(tu3b, tu4)];
             egui_jobs = Some((jobs, desc, out.textures_delta.free, ui_n));
         }
 
@@ -10886,17 +10888,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         // (the frame's parts, the mean of the 240 frames since the last line: the game ticks, the frame's preparation,
         // the swap chain, the UI, recording the passes, submit and present - docs/PERFORMANCE.md)
-        thread_local!(static PHASES: std::cell::Cell<([f64; 6], u32)> = const { std::cell::Cell::new(([0.0; 6], 0)) });
+        thread_local!(static PHASES: std::cell::Cell<([f64; 13], u32)> = const { std::cell::Cell::new(([0.0; 13], 0)) });
         PHASES.with(|c| {
             let (mut acc, mut n) = c.get();
-            for (a, v) in acc.iter_mut().zip([sim_ms, t_sim - sim_ms, t_acq - t_sim, t_ui - t_acq, t_enc - t_ui, t_end - t_enc]) {
+            for (a, v) in acc.iter_mut().zip([sim_ms, t_sim - sim_ms, t_acq - t_sim, t_ui - t_acq, t_enc - t_ui, t_end - t_enc].into_iter().chain(self.fl_ui)) {
                 *a += v as f64;
             }
             n += 1;
             if self.frame_no % 240 == 0 {
                 let m: Vec<f64> = acc.iter().map(|a| a / n as f64).collect();
-                log::info!("phases: ticks {:.2} ms, prep {:.2}, acquire {:.2} + ui {:.2}, passes {:.2}, submit+present {:.2} (mean of {} frames)", m[0], m[1], m[2], m[3], m[4], m[5], n);
-                (acc, n) = ([0.0; 6], 0);
+                log::info!("phases: ticks {:.2} ms, prep {:.2}, acquire {:.2} + ui {:.2}, passes {:.2}, submit+present {:.2} (mean of {} frames); ui: run {:.2} tessellate {:.2} textures {:.2} self movies {:.2} icons {:.2} map {:.2} buffers {:.2}", m[0], m[1], m[2], m[3], m[4], m[5], n, m[6], m[7], m[8], m[9], m[11], m[12], m[10]);
+                (acc, n) = ([0.0; 13], 0);
             }
             c.set((acc, n));
         });
