@@ -1420,7 +1420,9 @@ impl World {
         // upload finished (time-boxed)
         let t0 = std::time::Instant::now();
         let (mut n_up, mut ms_up, mut ms_col) = (0, 0.0f32, 0.0f32);
-        while let Ok(r) = self.rx.try_recv() {
+        // (none at all once the frame's time is gone: a frame's later ticks would each still take one)
+        while budget_ms > 0.0 {
+            let Ok(r) = self.rx.try_recv() else { break };
             match r {
                 Ok(cs) if cs.id >= FAR_ID => {
                     let id = cs.id;
@@ -1444,12 +1446,12 @@ impl World {
                     self.sets.insert(id, gs);
                     self.collider.sectors.insert(id, SectorMesh::build(col));
                 }
-                Ok(cs) => {
+                Ok(mut cs) => {
                     self.pending.remove(&cs.id);
                     if Self::dist_to(&self.index.sectors[cs.id], pos) <= self.unload_radius {
                         let id = cs.id;
-                        let col = std::mem::take(&mut { cs.collision.clone() });
-                        let mats = cs.collision_mat.clone();
+                        let col = std::mem::take(&mut cs.collision);
+                        let mats = std::mem::take(&mut cs.collision_mat);
                         let tu = std::time::Instant::now();
                         let gs = self.upload(gpu, cs);
                         ms_up += tu.elapsed().as_secs_f32() * 1000.0;
@@ -1459,6 +1461,8 @@ impl World {
                             let tc = std::time::Instant::now();
                             self.collider.sectors.insert(id, SectorMesh::build_with(col, mats));
                             ms_col += tc.elapsed().as_secs_f32() * 1000.0;
+                        } else {
+                            rayon::spawn(move || drop((col, mats)));
                         }
                         n_up += 1;
                     }
@@ -1745,6 +1749,8 @@ impl World {
         // (a detailed sector comes in over a third of a second; interiors and far models are just there)
         let u = if sector_id < SET_ID { 0.0 } else { 1.0 };
         let obj = Some((gpu.new_object(&sector_uniform(u, false)), gpu.new_object(&sector_uniform(u, true))));
+        // (its CPU copy is many blocks: freed off the frame)
+        rayon::spawn(move || drop(cs));
         GpuSector { vb, ib, batches, caster_count, caster_min, caster_max, caster_batches, tris, obj, u, shown: u, leaving: false }
     }
 }

@@ -3693,10 +3693,10 @@ pub fn upload_as(device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture, bc: 
         let (bytes, bpr, rows) = if direct {
             let bx = (lw + 3) / 4;
             let by = (lh + 3) / 4;
-            (data.clone(), bx * bpb as u32, by)
+            (std::borrow::Cow::Borrowed(&data[..]), bx * bpb as u32, by)
         } else {
             let rgba = mcla_formats::rage::xenos::decode_to_rgba8(tex.format, data, lw as usize, lh as usize);
-            (rgba, lw * 4, lh)
+            (std::borrow::Cow::Owned(rgba), lw * 4, lh)
         };
         queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
