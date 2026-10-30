@@ -6232,6 +6232,15 @@ impl Game {
         let circuit = def.map_or(false, |d| d.sub_type.eq_ignore_ascii_case("Circuit"));
         let allowed = def.map_or(7, |d| d.opponents).clamp(1, 15);
         let laps = def.map_or(2, |d| d.laps as usize).clamp(1, 5);
+        // (a telephone challenge's list, form 17's +8532, F-71627: the laps of a circuit, the difficulty, nothing else)
+        if self.phone_race {
+            let mut rows = Vec::new();
+            if circuit {
+                rows.push(ArcadeRow { label: st("RO_NumberofLaps", "NUMBER OF LAPS"), slot: 6, choices: (1..=5).map(|n| n.to_string()).collect(), default: laps - 1 });
+            }
+            rows.push(ArcadeRow { label: st("RO_Difficulty", "DIFFICULTY"), slot: 1, choices: list(&[("Easy", "EASIEST"), ("Medium", "MEDIUM"), ("Hard", "HARD"), ("Impossible", "HARDEST")]), default: 1 });
+            return rows;
+        }
         let mut rows = vec![ArcadeRow { label: st("RO_NumberofOpponents", "NUMBER OF OPPONENTS"), slot: 0, choices: (1..=allowed).map(|n| n.to_string()).collect(), default: allowed.min(3) - 1 }];
         if circuit {
             rows.push(ArcadeRow { label: st("RO_LastManOut", "LAST MAN OUT"), slot: 7, choices: list(&[("off", "OFF"), ("on", "ON")]), default: 0 });
@@ -6268,7 +6277,7 @@ impl Game {
     pub fn mc4_arcade_laps(&self, def: &crate::races::RaceDef) -> Option<usize> {
         // (LAST MAN OUT: as many laps as opponents - RaceWrapper, `game/race/0xc4e26a20`
         // 0x2bd1..0x2bfa: +3116 = the racers less one)
-        if self.arcade_restore.is_some() && def.sub_type.eq_ignore_ascii_case("Circuit") && self.arcade_x[1] != 0 {
+        if self.arcade_restore.is_some() && !self.phone_race && def.sub_type.eq_ignore_ascii_case("Circuit") && self.arcade_x[1] != 0 {
             return Some(def.opponents.max(1));
         }
         (self.arcade_restore.is_some() && def.sub_type.eq_ignore_ascii_case("Circuit")).then(|| self.arcade_x[0].min(4) + 1)
@@ -7823,14 +7832,15 @@ impl Game {
     /// What starting a race from the ARCADE menu does to traffic, clock and weather; None:
     /// the race is not ARCADE's.
     pub fn mc4_arcade_env(&self) -> Option<ArcadeEnv> {
-        self.arcade_restore.is_some().then(|| arcade_env(self.arcade_opts[3], self.arcade_opts[4], self.arcade_opts[5]))
+        // (a telephone challenge's race takes only the laps and the difficulty from its list)
+        (self.arcade_restore.is_some() && !self.phone_race).then(|| arcade_env(self.arcade_opts[3], self.arcade_opts[4], self.arcade_opts[5]))
     }
 
     /// The race in hand is run LAST MAN OUT: started from ARCADE with the row on. (The row
     /// is a circuit's; the launcher packs its widget whatever the race - a widget left on by
     /// a circuit and then hidden was not followed: here a circuit only.)
     pub fn mc4_lmo_on(&self) -> bool {
-        self.arcade_restore.is_some() && self.arcade_x[1] != 0 && self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| d.sub_type.eq_ignore_ascii_case("Circuit"))
+        self.arcade_restore.is_some() && !self.phone_race && self.arcade_x[1] != 0 && self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| d.sub_type.eq_ignore_ascii_case("Circuit"))
     }
 
     /// LAST MAN OUT, once a tick while the race runs (before the tick's own work). True: the
@@ -15991,6 +16001,21 @@ mod tests {
         let at = |g: &Game, id: &str| g.race_defs.iter().position(|d| d.id.eq_ignore_ascii_case(&format!("game/Race/{id}"))).unwrap();
         let k = at(&g, "Hollywood/Circuit/hw_circuit_jp_03");
         assert_eq!(g.mc4_arcade_rows(Some(k)).len(), 8);
+        // (a telephone challenge's list: the laps of a circuit, the difficulty; no environment, no last man out)
+        g.phone_race = true;
+        g.arcade_restore = Some((k, g.race_defs[k].opponents));
+        g.arcade_x[1] = 1;
+        g.current_race = Some(k);
+        assert_eq!(g.mc4_arcade_rows(Some(k)).iter().map(|r| r.slot).collect::<Vec<_>>(), vec![6, 1]);
+        let ord = at(&g, "Hollywood/Ordered/hw_ordered_jp_11");
+        assert_eq!(g.mc4_arcade_rows(Some(ord)).iter().map(|r| r.slot).collect::<Vec<_>>(), vec![1]);
+        assert!(g.mc4_arcade_env().is_none() && !g.mc4_lmo_on());
+        assert_eq!(g.mc4_arcade_laps(&g.race_defs[k].clone()), Some(g.arcade_x[0].min(4) + 1));
+        assert_eq!(g.mc4_arcade_difficulty(), Some(g.arcade_opts[1].min(3)));
+        g.phone_race = false;
+        g.arcade_restore = None;
+        g.arcade_x[1] = 0;
+        g.current_race = None;
         g.mc4_arcade_set(2, 2);
         let rows = g.mc4_arcade_rows(Some(k));
         assert_eq!(rows.len(), 19);

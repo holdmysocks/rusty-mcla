@@ -8600,10 +8600,17 @@ impl Game {
                         self.series_ask = Some(0);
                     }
                     // (RO_Restart asks first, F-33773 -> F-39979: form 71 with the class's words, YES repairs, both restart. A
-                    // delivery's, a payback's and a time trial's have their own; the police on the player: no form, F-58132)
+                    // delivery's, a payback's and a time trial's have their own; the police on the player, F-58132: the plain box with the same
+                    // words, no repair, YES restarts, NO stays)
                     Some(1) if movie && !self.police_on_player && !tt_class && !matches!(class_kind, Some(RaceKind::Delivery | RaceKind::Payback)) => {
                         self.series_ask_kind = if self.active_def.as_ref().map_or(false, |d| d.id == crate::althk::REDLIGHT_RACE_ID) { 11 } else { 10 };
                         self.series_ask = Some(0);
+                    }
+                    Some(1) if movie && !tt_class && !matches!(class_kind, Some(RaceKind::Delivery | RaceKind::Payback)) => {
+                        let (t, d) = if self.active_def.as_ref().map_or(false, |d| d.id == crate::althk::REDLIGHT_RACE_ID) { ("Dlg_Restart_Title", "Dlg_Restart_Desc") } else { ("Dlg_RaceAgain_Title", "Dlg_RaceAgain_Desc") };
+                        let word = |k: &str| self.career.strings.get(k).map(|v| v.to_string()).unwrap_or_else(|| k.to_string());
+                        let (t, d) = (word(t), word(d));
+                        self.open_confirm(&t, &d, MenuAction::RestartRace);
                     }
                     Some(21) => {
                         self.menu_sel = 0;
@@ -13743,7 +13750,8 @@ impl Game {
         if let Some(i) = started {
             self.fine_pay = true;
             self.arcade_restore = Some((i, self.race_defs[i].opponents));
-            self.race_defs[i].opponents = self.arcade_opts[0] + 1;
+            // (a telephone challenge: the caller alone, the script's one opponent)
+            self.race_defs[i].opponents = if self.phone_race { 1 } else { self.arcade_opts[0] + 1 };
         }
         let o = self.arcade_opts;
         let (description, rows, prompts): (String, Vec<MenuRow>, Vec<(String, i32)>) = match page_no {
