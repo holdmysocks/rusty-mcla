@@ -1085,9 +1085,10 @@ pub struct Vehicles {
     pub held_at_red: u64,
     pub stopped_at_red: u64,
     trace_car: Option<(usize, u32)>,
-    /// plate background and font (RGBA), and the finished plates by text
+    /// plate background and font (RGBA), and the finished plates by text (the cars hold them: every traffic car
+    /// has a plate of its own, a plate of a car that has gone goes with `Gpu::trim_textures`)
     plate_art: Option<(u32, u32, Vec<u8>, Vec<u8>)>,
-    plates: hashbrown::HashMap<String, Arc<wgpu::BindGroup>>,
+    plates: hashbrown::HashMap<String, std::sync::Weak<wgpu::BindGroup>>,
     plate_serial: u32,
     /// the background of the player's plate (a name of `resources/license_plates/backgrounds`:
     /// the vehicle record's LicenseBG - `mc4`; none = the California plate), and those loaded
@@ -3307,7 +3308,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 Some((n, (bw, bh, px))) => (format!("{text}@{n}"), bw, bh, px),
                 None => (text.clone(), w, h, bg.clone()),
             };
-            if !self.plates.contains_key(&slot) {
+            let made = self.plates.get(&slot).and_then(|b| b.upgrade());
+            if made.is_none() {
+                self.plates.retain(|_, b| b.strong_count() > 0);
                 let (w, h) = (w as usize, h as usize);
                 let mut px = bg.clone();
                 let chars: Vec<char> = text.chars().take(8).collect();
@@ -3345,9 +3348,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 let tex = Arc::new(crate::render::create_rgba(&gpu.device, &gpu.queue, w as u32, h as u32, &px, "plate"));
                 let key = mcla_formats::hash::joaat(&format!("plate:{slot}")) | 1;
                 let bind = gpu.texture_bind_group(&tex, &tex, key, key);
-                self.plates.insert(slot.clone(), bind);
+                self.plates.insert(slot.clone(), Arc::downgrade(&bind));
+                self.cars[i].plate = Some(bind);
+            } else {
+                self.cars[i].plate = made;
             }
-            self.cars[i].plate = self.plates.get(&slot).cloned();
         }
     }
 

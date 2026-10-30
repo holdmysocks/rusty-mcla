@@ -223,7 +223,9 @@ pub struct SoundLib {
     waves: HashMap<u32, Arc<HashMap<u32, WaveInfo>>>,
     /// stream channel hash -> (converted .mp3, the stream's lowest channel headroom)
     stream_of: Option<HashMap<u32, (PathBuf, i16)>>,
-    clips: HashMap<PathBuf, Option<Arc<Clip>>>,
+    /// (with the count of `clip_of` at its last use)
+    clips: HashMap<PathBuf, (Option<Arc<Clip>>, u64)>,
+    clip_uses: u64,
     rng: SharedMwc,
     /// the audio controller's three timers (F-46276: engine+572 + 12 k: time, rate, paused): a sound on a paused timer is
     /// not updated (F-89113 skips it; its voice holds). Timer 0 is paused while the game is (F-99037, `sound.rs`).
@@ -348,6 +350,7 @@ impl SoundLib {
             waves: HashMap::new(),
             stream_of: None,
             clips: HashMap::new(),
+            clip_uses: 0,
             rng: SharedMwc,
             timer_paused: [false; 3],
             cat_timer: audcfg::category_timers(&cat).into_iter().collect(),
@@ -739,8 +742,10 @@ impl SoundLib {
     }
 
     fn clip_of(&mut self, file: &Path, loop_start: i32) -> Option<Arc<Clip>> {
-        if let Some(c) = self.clips.get(file) {
-            return c.clone();
+        self.clip_uses += 1;
+        if let Some(c) = self.clips.get_mut(file) {
+            c.1 = self.clip_uses;
+            return c.0.clone();
         }
         let t = std::time::Instant::now();
         let c = if file.extension().is_some_and(|e| e == "mp3") { decode_mp3(file) } else { crate::audio::load_wav_clip(file) };
@@ -752,8 +757,29 @@ impl SoundLib {
             c.loop_start = loop_start.max(0) as usize;
             Arc::new(c)
         });
-        self.clips.insert(file.to_path_buf(), c.clone());
+        self.clips.insert(file.to_path_buf(), (c.clone(), self.clip_uses));
+        self.trim_clips();
         c
+    }
+
+    /// Keep what the clips nothing plays hold under a budget, the longest unused dropped first: the ambience
+    /// and the streams alone are gigabytes decoded (docs/PERFORMANCE.md, 2026-10-30). A clip asked for again is read again.
+    fn trim_clips(&mut self) {
+        const IDLE_CLIPS: u64 = 256 << 20;
+        let bytes = |c: &Clip| 4 * c.stream.as_ref().map_or(c.data.len(), |s| s.samples.len()) as u64;
+        let mut idle: Vec<(u64, PathBuf, u64)> = self.clips.iter().filter_map(|(p, (c, used))| c.as_ref().filter(|c| Arc::strong_count(c) == 1).map(|c| (*used, p.clone(), bytes(c)))).collect();
+        let mut total: u64 = idle.iter().map(|e| e.2).sum();
+        if total <= IDLE_CLIPS {
+            return;
+        }
+        idle.sort_unstable();
+        for (_, p, b) in idle {
+            if total <= IDLE_CLIPS {
+                break;
+            }
+            self.clips.remove(&p);
+            total -= b;
+        }
     }
 
     // ---------------------------------------------------------------------------------------------- building

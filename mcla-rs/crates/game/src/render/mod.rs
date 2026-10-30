@@ -1060,7 +1060,12 @@ pub struct Gpu {
     pub sampler: wgpu::Sampler,
     pub white: Arc<GpuTexture>,
     pub textures: HashMap<u32, Arc<GpuTexture>>,
-    pub bind_cache: HashMap<(u32, u32, u32), Arc<wgpu::BindGroup>>,
+    /// (with the textures in it: while a bind group is in use by anything, its textures stay)
+    pub bind_cache: HashMap<(u32, u32, u32), (Arc<wgpu::BindGroup>, [Arc<GpuTexture>; 4])>,
+    /// The city's textures in `textures`, which `World` can upload again from the same file when it needs them:
+    /// bytes, and the count of `trim_textures` since which nothing has used them (0: in use).
+    pub tex_idle: HashMap<u32, (u64, u64)>,
+    pub tex_trims: u64,
     /// 1x1 transparent texture (no grime layer)
     pub clear_tex: Arc<GpuTexture>,
     pub bc_supported: bool,
@@ -2513,6 +2518,8 @@ impl Gpu {
             clear_tex,
             textures: HashMap::new(),
             bind_cache: HashMap::new(),
+            tex_idle: HashMap::new(),
+            tex_trims: 0,
             bc_supported,
             max_tex,
         }
@@ -3411,7 +3418,7 @@ impl Gpu {
     #[allow(clippy::too_many_arguments)]
     pub fn texture_bind_group4(&mut self, diffuse: &Arc<GpuTexture>, second: &Arc<GpuTexture>, third: &Arc<GpuTexture>, fourth: &Arc<GpuTexture>, k0: u32, k1: u32, k2: u32, k3: u32) -> Arc<wgpu::BindGroup> {
         let k2 = k2 ^ k3.rotate_left(7);
-        if let Some(b) = self.bind_cache.get(&(k0, k1, k2)) {
+        if let Some((b, _)) = self.bind_cache.get(&(k0, k1, k2)) {
             return b.clone();
         }
         let bg = Arc::new(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -3424,8 +3431,48 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&fourth.view) },
             ],
         }));
-        self.bind_cache.insert((k0, k1, k2), bg.clone());
+        self.bind_cache.insert((k0, k1, k2), (bg.clone(), [diffuse.clone(), second.clone(), third.clone(), fourth.clone()]));
         bg
+    }
+
+    /// `key` in `textures` is a copy of a texture of the city: `trim_textures` may drop it when nothing uses it.
+    pub fn texture_evictable(&mut self, key: u32, tex: &Texture) {
+        self.tex_idle.entry(key).or_insert_with(|| (tex.levels.iter().map(|l| l.len() as u64).sum(), 0));
+    }
+
+    /// Keep what the unused city textures hold under `budget` bytes, the longest unused dropped first (without
+    /// this every sector ever driven past stays in video memory: docs/PERFORMANCE.md, 2026-10-30). A sector
+    /// that comes back uploads its textures again; the same name has the same content in every sector and
+    /// the shared dictionaries (docs/MAP.md), so nothing drawn changes. Bind groups come first: a cached one
+    /// nothing draws with would keep its textures alive.
+    pub fn trim_textures(&mut self, budget: u64) {
+        self.tex_trims += 1;
+        self.bind_cache.retain(|_, e| Arc::strong_count(&e.0) > 1);
+        let (mut idle, mut order) = (0u64, Vec::new());
+        for (key, e) in self.tex_idle.iter_mut() {
+            let unused = self.textures.get(key).is_some_and(|t| Arc::strong_count(t) == 1);
+            if !unused {
+                e.1 = 0;
+                continue;
+            }
+            if e.1 == 0 {
+                e.1 = self.tex_trims;
+            }
+            idle += e.0;
+            order.push((e.1, *key, e.0));
+        }
+        if idle <= budget {
+            return;
+        }
+        order.sort_unstable();
+        for (_, key, bytes) in order {
+            if idle <= budget {
+                break;
+            }
+            self.textures.remove(&key);
+            self.tex_idle.remove(&key);
+            idle -= bytes;
+        }
     }
 }
 

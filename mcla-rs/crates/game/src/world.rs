@@ -1499,6 +1499,9 @@ impl World {
                 gone.push(*id);
             }
         }
+        // (what the sectors just dropped leave in the texture cache: this much stays for a quick return)
+        const IDLE_TEXTURES: u64 = 512 << 20;
+        let trim = !gone.is_empty();
         for id in gone {
             if let Some(s) = self.loaded.remove(&id) {
                 self.stats_tris -= s.tris as u64;
@@ -1506,6 +1509,9 @@ impl World {
             if !self.own_bound {
                 self.collider.sectors.remove(&id);
             }
+        }
+        if trim {
+            gpu.trim_textures(IDLE_TEXTURES);
         }
         // The far city: a sector's simple model is drawn while the sector itself is not fully in.
         let sector_of = |id: usize| (id - FAR_ID) % FAR_SLOTS;
@@ -1582,6 +1588,9 @@ impl World {
                 }
             }
             local.insert(*h, gpu.upload_texture(sk(*h), t));
+            if sector_id < SET_ID {
+                gpu.texture_evictable(sk(*h), t);
+            }
         }
         // The walls' height / specular maps (HeightSpecularSampler of PSCityBumpSpec, PSCityGrime
         // ...) are read as they are: the game's fetch constants ask for no gamma decoding on
@@ -1615,8 +1624,12 @@ impl World {
             if hs != 0 && !raw.contains_key(&hs) {
                 if let Some((_, t)) = cs.textures.iter().find(|(h, _)| *h == hs) {
                     raw.insert(hs, gpu.upload_texture_raw(sk(hs) ^ RAW_KEY, t));
+                    if sector_id < SET_ID {
+                        gpu.texture_evictable(sk(hs) ^ RAW_KEY, t);
+                    }
                 } else if let Some(t) = self.shared.get(hs) {
                     raw.insert(hs, gpu.upload_texture_raw(hs ^ RAW_KEY, &t));
+                    gpu.texture_evictable(hs ^ RAW_KEY, &t);
                 }
             }
         }
@@ -1640,8 +1653,12 @@ impl World {
                     }
                     if let Some((_, t)) = cs.textures.iter().find(|(th, _)| *th == h) {
                         sign_raw.insert(h, gpu.upload_texture_raw(sk(h) ^ RAW_KEY, t));
+                        if sector_id < SET_ID {
+                            gpu.texture_evictable(sk(h) ^ RAW_KEY, t);
+                        }
                     } else if let Some(t) = self.shared.get(h) {
                         sign_raw.insert(h, gpu.upload_texture_raw(h ^ RAW_KEY, &t));
+                        gpu.texture_evictable(h ^ RAW_KEY, &t);
                     }
                 }
             }
@@ -1660,7 +1677,10 @@ impl World {
                 return gpu.white.clone();
             }
             match self.shared.get(h) {
-                Some(t) => gpu.upload_texture(h, &t),
+                Some(t) => {
+                    gpu.texture_evictable(h, &t);
+                    gpu.upload_texture(h, &t)
+                }
                 None => {
                     self.tex_fail.insert(h);
                     gpu.white.clone()
