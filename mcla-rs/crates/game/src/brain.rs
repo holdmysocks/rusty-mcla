@@ -620,6 +620,16 @@ impl Brain {
         b
     }
 
+    /// The run to the start line (beat me there, the story men: `CruisingHookmen/0x897fb23f` 0x10c5..0x1120, and
+    /// `game/race/0xb8b948b6`): CreateBrainRacing, one AppendGoal(start beacon, 5.0), SetAvoidHandbrakeTurns(1). No
+    /// SetupRace or BeginRace, so no course, no rubber band; the constructor's final speed -1 and heading 0.
+    pub fn run_to(tune: Arc<AiTune>, goal: Vec3) -> Brain {
+        let mut b = Brain::police(tune);
+        b.set_goals(&[goal], -1.0);
+        b.avoid_handbrake = true;
+        b
+    }
+
     /// The police brain's goal plan (F-67303): BrainRacing Reset (F-68035; the goal count 0), AppendGoal (F-84673)
     /// for each goal with a 5 m radius, SetFinalSpeed (+208) and SetFinalHeading (the zero vector). The middle
     /// goal's speed (+28) is never written: the allocator's fill, below 0 (`GoalPlan::append`).

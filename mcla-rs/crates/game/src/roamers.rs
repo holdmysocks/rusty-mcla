@@ -512,6 +512,7 @@ impl Roamers {
             for c in vehicles.cars.iter_mut().filter(|c| c.racer) {
                 if let Some(ai) = c.ai.as_mut() {
                     ai.path = None;
+                    ai.brain.0 = None;
                     ai.target_speed = 22.0;
                 }
             }
@@ -1206,7 +1207,13 @@ impl Roamers {
             return Some(race);
         }
         let rc = &mut vehicles.cars[ri];
+        // (his racing brain to the start beacon, as the script's: `Brain::run_to`)
+        let run_tune = rc.model.aitunes.as_ref().map(|tu| std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&tu.base, &tu.mods, rc.perf)));
         if let Some(ai) = rc.ai.as_mut() {
+            if let Some(tune) = run_tune {
+                ai.tune = Some(tune.clone());
+                ai.brain.0 = Some(Box::new(crate::brain::Brain::run_to(tune, goal)));
+            }
             let route = nav.route_points(rpos, Some(rfwd), goal);
             log::info!("roamers: rival {:.0} m from the line, route {:?} points, ends {:.0} m from it", rpos.distance(goal), route.as_ref().map(|r| r.len()), route.as_ref().and_then(|r| r.last()).map_or(-1.0, |e| e.distance(goal)));
             if let Some(path) = route {
