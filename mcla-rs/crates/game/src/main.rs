@@ -1007,8 +1007,8 @@ impl App {
             garage_cam: None,
             garage_tr: None,
             cine_lamps: None,
-            race_end_cam: None,
             cine_showdriver: Vec::new(),
+            race_end_cam: None,
             race_end_from: None,
             race_end_way: None,
             garage_built: None,
@@ -12127,6 +12127,13 @@ impl App {
             // (OrderedCheckpointCore) runs Racer_ResetWithDamageIntact at its set-up (0xd4e / 0xde6) and Racer_Activate
             // on every racer at the go (0x15ee) - as after every racestart/ scene; hollywood_garage_intro goes into the
             // garage, whose core activates the car after its `_ext` scene (0x1557)
+            // (garage_core 0x1486, after the `_ext` scene and Racer_Activate: Racer_Reset on the player - F-89258 clears
+            // his driver's scene flag, cinedriver.rs)
+            if cinedriver::GARAGE_EXIT.contains(&ended.as_str()) {
+                if let Some(c) = self.vehicles.player_mut() {
+                    c.show_driver = false;
+                }
+            }
             let later = vehicles::ENGINE_BACK_LATER.contains(&ended.as_str()) || ended.starts_with("racestart/");
             if (ended.starts_with("story/") && !later) || cinedriver::GARAGE_EXIT.contains(&ended.as_str()) {
                 if let Some(c) = self.vehicles.player_mut() {
@@ -12164,13 +12171,6 @@ impl App {
             }
             log::info!("cine: {} - UseRacerNativeCharacter slots {:#x}, drivers shown (uid) {:?}; shown before it {:?}", name, slots, shown, self.vehicles.cars.iter().filter(|c| c.show_driver && !shown.contains(&c.uid)).map(|c| c.uid).collect::<Vec<_>>());
         }
-            // (garage_core 0x1486, after the `_ext` scene and Racer_Activate: Racer_Reset on the player - F-89258 clears
-            // his driver's scene flag, cinedriver.rs)
-            if cinedriver::GARAGE_EXIT.contains(&ended.as_str()) {
-                if let Some(c) = self.vehicles.player_mut() {
-                    c.show_driver = false;
-                }
-            }
         let last = self.cine_lamps.as_ref().map_or(-1.0, |l| l.1);
         for &(scene, on, slot, at) in vehicles::CINE_LAMP_EVENTS {
             if scene == name && at > last && at <= t {
@@ -12213,6 +12213,11 @@ impl App {
             if scene == name && at > last && at <= t {
                 if let Some(i) = self.cine_slot_car(slot) {
                     self.vehicles.cars[i].show_driver = show;
+                    let uid = self.vehicles.cars[i].uid;
+                    self.cine_showdriver.retain(|&u| u != uid);
+                    if show {
+                        self.cine_showdriver.push(uid);
+                    }
                 }
             }
         }
@@ -12235,14 +12240,18 @@ impl App {
         if let Some(&ci) = self.prerace_acts.as_ref().and_then(|a| a.racers.get(slot as usize)) {
             return Some(ci);
         }
+        // (the scene's car record of the slot names its mover: slot 0 Player_GetRacer, slot k the racer the caller put
+        // there - the port's car brought for that mover, cinedriver::SLOT_MOVERS)
+        if let Some(label) = self.cine.playing.as_ref().and_then(|sc| cinedriver::slot_label(&sc.name, slot)) {
+            if cine::is_player_car(label) {
+                return self.vehicles.cars.iter().position(|c| c.is_player);
+            }
+            let tag = format!("cine:{label}");
+            return self.vehicles.cars.iter().position(|c| c.driver == tag);
+        }
         if slot == 0 {
             return self.vehicles.cars.iter().position(|c| c.is_player);
         }
-                    let uid = self.vehicles.cars[i].uid;
-                    self.cine_showdriver.retain(|&u| u != uid);
-                    if show {
-                        self.cine_showdriver.push(uid);
-                    }
         let label = format!("cine:drv{:02}", slot);
         self.vehicles.cars.iter().position(|c| c.driver == label)
     }
@@ -12260,16 +12269,16 @@ impl App {
         }
     }
 
-    /// A new career's opening read ahead on worker threads, so that none of it waits for the disk on the main thread
-        // (the scene's car record of the slot names its mover: slot 0 Player_GetRacer, slot k the racer the caller put
-        // there - the port's car brought for that mover, cinedriver::SLOT_MOVERS)
-        if let Some(label) = self.cine.playing.as_ref().and_then(|sc| cinedriver::slot_label(&sc.name, slot)) {
-            if cine::is_player_car(label) {
-                return self.vehicles.cars.iter().position(|c| c.is_player);
-            }
-            let tag = format!("cine:{label}");
-            return self.vehicles.cars.iter().position(|c| c.driver == tag);
+    /// The hookman a cutscene's mover `label` is: "henry" -> the one called Henry; "hookman" / "drv01" -> the rival of
+    /// the current mission.
+    fn cine_hookman_of(&self, label: &str) -> Option<String> {
+        match label {
+            "hookman" | "hookmans" | "drv01" => self.game.career.rival_id(),
+            l => self.game.rivals.characters.iter().map(|c| c.id.clone()).find(|id| self.game.career.name_of(id).eq_ignore_ascii_case(l)),
         }
+    }
+
+    /// A new career's opening read ahead on worker threads, so that none of it waits for the disk on the main thread
     /// (docs/PERFORMANCE.md 2026-10-25): from the start screen the three starters (made under CarSelection's first
     /// black, `starters_made`: 1.7 s of reading in that frame before); from the opening's first black its story
     /// scene - CUT_INTRO in the film's place (INTRO FAST, DECISIONS.md D24) and CUT_STORY_RACE_GH_06 after VEHICLE
@@ -12294,15 +12303,6 @@ impl App {
                 for label in self.cine.read_ahead_scene(scene) {
                     if cine::is_player_car(&label) {
                         continue;
-    /// The hookman a cutscene's mover `label` is: "henry" -> the one called Henry; "hookman" / "drv01" -> the rival of
-    /// the current mission.
-    fn cine_hookman_of(&self, label: &str) -> Option<String> {
-        match label {
-            "hookman" | "hookmans" | "drv01" => self.game.career.rival_id(),
-            l => self.game.rivals.characters.iter().map(|c| c.id.clone()).find(|id| self.game.career.name_of(id).eq_ignore_ascii_case(l)),
-        }
-    }
-
                     }
                     let Some((car, _, _, config)) = self.cine_car_of(&label) else { continue };
                     if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car)) {
@@ -12346,6 +12346,10 @@ impl App {
             let Some(model) = self.vehicles.models.iter().find(|m| m.name.eq_ignore_ascii_case(&car)).cloned() else { continue };
             let idx = self.vehicles.spawn(gpu, model, pos, 0.0, color, false);
             self.vehicles.cars[idx].driver = format!("cine:{label}");
+            // (the hookman's racer carries his character set - mcCareer_GetHookmanCharacterSet, cinedriver::HOOKMAN_SETS)
+            if let Some(set) = self.cine_hookman_of(&label).as_deref().and_then(cinedriver::hookman_set) {
+                self.vehicles.cars[idx].driver_set = set.to_string();
+            }
             self.vehicles.cars[idx].plate_text = plate;
             self.vehicles.cars[idx].vinyl_name = config;
             self.vehicles.cars[idx].ai = None;
@@ -12371,10 +12375,6 @@ impl App {
     fn kill_player_tyre_fx(&mut self) {
         if let (Some(t), Some(ci)) = (self.tyre_fx.as_mut(), self.vehicles.cars.iter().position(|c| c.is_player)) {
             t.kill(&mut self.fx, ci);
-            // (the hookman's racer carries his character set - mcCareer_GetHookmanCharacterSet, cinedriver::HOOKMAN_SETS)
-            if let Some(set) = self.cine_hookman_of(&label).as_deref().and_then(cinedriver::hookman_set) {
-                self.vehicles.cars[idx].driver_set = set.to_string();
-            }
         }
     }
 
