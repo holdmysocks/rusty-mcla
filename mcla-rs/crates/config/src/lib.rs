@@ -150,6 +150,8 @@ pub struct GameSettings {
     pub shadow_resolution: ShadowRes,
     pub draw_distance: Scale,
     pub detail_level: Scale,
+    /// the extra stick dead zone in percent, 0 .. 50 in steps of 5 (the port's own, DECISIONS.md D39; 0 = the original's)
+    pub stick_dead_zone: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -199,7 +201,7 @@ impl Default for Settings {
                 texture_filtering: TexFilter::Original,
                 backend: Backend::Auto,
             },
-            game: GameSettings { intro: Intro::Normal, shadow_resolution: ShadowRes::Original, draw_distance: Scale::Original, detail_level: Scale::Original },
+            game: GameSettings { intro: Intro::Normal, shadow_resolution: ShadowRes::Original, draw_distance: Scale::Original, detail_level: Scale::Original, stick_dead_zone: 0 },
             paths: Paths { data_dir: String::new(), screenshots: String::new() },
             launcher: LauncherSettings { language: String::new(), check_updates: true },
             extra: Table::new(),
@@ -290,6 +292,7 @@ impl Settings {
         s.game.shadow_resolution = r.word(gt, "game.shadow_resolution", "shadow_resolution", d.game.shadow_resolution, ShadowRes::parse, ShadowRes::WORDS);
         s.game.draw_distance = r.word(gt, "game.draw_distance", "draw_distance", d.game.draw_distance, Scale::parse, Scale::WORDS);
         s.game.detail_level = r.word(gt, "game.detail_level", "detail_level", d.game.detail_level, Scale::parse, Scale::WORDS);
+        s.game.stick_dead_zone = r.uint(gt, "game.stick_dead_zone", "stick_dead_zone", d.game.stick_dead_zone, |n| n <= 50 && n % 5 == 0, "0 .. 50 in steps of 5");
         let pt = sub(t, "paths");
         s.paths.data_dir = r.string(pt, "paths.data_dir", "data_dir", &d.paths.data_dir);
         s.paths.screenshots = r.string(pt, "paths.screenshots", "screenshots", &d.paths.screenshots);
@@ -336,6 +339,7 @@ impl Settings {
         put(&mut t, "game", "shadow_resolution", g.shadow_resolution.word().into());
         put(&mut t, "game", "draw_distance", g.draw_distance.word().into());
         put(&mut t, "game", "detail_level", g.detail_level.word().into());
+        put(&mut t, "game", "stick_dead_zone", Value::Integer(g.stick_dead_zone as i64));
         put(&mut t, "paths", "data_dir", p.data_dir.clone().into());
         put(&mut t, "paths", "screenshots", p.screenshots.clone().into());
         put(&mut t, "launcher", "language", l.language.clone().into());

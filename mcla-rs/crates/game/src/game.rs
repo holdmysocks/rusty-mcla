@@ -5039,6 +5039,8 @@ impl Game {
                                 items.push((s("option_arrow", "ARROW"), format!("{}{}", CHOICE, s(arrow.0, arrow.1)), Go::Page(51)));
                                 // (the slider's place, -10 .. 10: reference `q20_game` shows 0 for the save's 0.0)
                                 items.push((s("option_sensitivity", "STEERING SENS."), format!("{}{}", CHOICE, self.mc4_sens_step()), Go::Page(44)));
+                                // (the port's own, D39: settings.toml game.stick_dead_zone)
+                                items.push(("STICK DEAD ZONE".to_string(), format!("{}{}", CHOICE, crate::hooks::stick_dead_value()), Go::Page(crate::hooks::ROW_STICK_DEAD)));
                                 // (option_up / option_down: the roof of the convertibles - `mc4`, options.
                                 // Greyed, without a value, while the vehicle is no convertible: `q20_game`, the R8)
                                 let down = self.mc4.as_ref().map_or(false, |m| m.options.convertible_top_down);
@@ -5207,6 +5209,7 @@ impl Game {
                         Some(Go::Page(52)) => self.opts.hq_traffic = !self.opts.hq_traffic,
                         Some(Go::Page(53)) => self.opts.rear_view = !self.opts.rear_view,
                         Some(Go::Page(54)) => crate::hooks::intro_step(right),
+                        Some(Go::Page(crate::hooks::ROW_STICK_DEAD)) => crate::hooks::stick_dead_step(right, false),
                         Some(Go::Page(p)) if (crate::hooks::ROW_TEX_FILTER..=crate::hooks::ROW_MOTION_BLUR).contains(&p) => self.display_step = Some((p, right)),
                         _ => {}
                     }
@@ -5462,6 +5465,7 @@ impl Game {
                                 52 => self.opts.hq_traffic = !self.opts.hq_traffic,
                                 53 => self.opts.rear_view = !self.opts.rear_view,
                                 54 => crate::hooks::intro_step(true),
+                                crate::hooks::ROW_STICK_DEAD => crate::hooks::stick_dead_step(true, true),
                                 55..=69 => self.display_step = Some((p, true)),
                                 48 | 49 | 50 | 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, true, self.fresh_game),
                                 _ => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, true, true, self.fresh_game),
@@ -5647,6 +5651,7 @@ impl Game {
                             52 => self.opts.hq_traffic = !self.opts.hq_traffic,
                             53 => self.opts.rear_view = !self.opts.rear_view,
                             54 => crate::hooks::intro_step(true),
+                            crate::hooks::ROW_STICK_DEAD => crate::hooks::stick_dead_step(true, true),
                             55..=69 => self.display_step = Some((p, true)),
                             48 | 49 | 50 | 51 => crate::mc4::option_step(&mut self.mc4, &mut self.opt_x, p, true, self.fresh_game),
                             _ => crate::mc4::sens_set(&mut self.mc4, &mut self.opts.sens, true, true, self.fresh_game),

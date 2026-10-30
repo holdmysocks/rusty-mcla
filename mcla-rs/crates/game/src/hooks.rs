@@ -809,6 +809,8 @@ pub const ROW_AA: u8 = 66;
 pub const ROW_BLOOM: u8 = 67;
 pub const ROW_DOF: u8 = 68;
 pub const ROW_MOTION_BLUR: u8 = 69;
+/// OPTIONS > GAME > STICK DEAD ZONE (the port's own, DECISIONS.md D39)
+pub const ROW_STICK_DEAD: u8 = 76;
 /// The render scales the DISPLAY row steps through (1.0 = native, the original's).
 const RENDER_SCALES: [f32; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
 /// The frame-rate caps the page steps through (0 = none); a cap from the file that is not here is put in its place.
@@ -946,6 +948,31 @@ pub fn draw_distance_scale() -> f32 {
 /// Detail level multiplier (1.0 = the original's); 3.0 also keeps traffic cars at LOD 0.
 pub fn detail_level_scale() -> f32 {
     game_live().detail_level.factor()
+}
+
+/// The STICK DEAD ZONE row's text.
+pub fn stick_dead_value() -> String {
+    match game_live().stick_dead_zone {
+        0 => "OFF".to_string(),
+        n => format!("{n}%"),
+    }
+}
+
+/// Puts the setting on the pads (at start).
+pub fn stick_dead_apply() {
+    crate::pads::set_stick_dead_zone(game_live().stick_dead_zone);
+}
+
+/// LEFT / RIGHT on the STICK DEAD ZONE row: 5 % a step, 0 .. 50, applied at once and written to `settings.toml`
+/// `game.stick_dead_zone`. `round`: Enter's step, from 50 back to 0.
+pub fn stick_dead_step(fwd: bool, round: bool) {
+    let mut g = game_live();
+    let cur = g.stick_dead_zone;
+    g.stick_dead_zone = if fwd { if cur >= 50 { if round { 0 } else { 50 } } else { cur + 5 } } else { cur.saturating_sub(5) };
+    let next = g.stick_dead_zone;
+    set_game_live(g);
+    crate::pads::set_stick_dead_zone(next);
+    write_game_key("stick_dead_zone", mcla_config::toml::Value::Integer(next as i64));
 }
 
 /// Traffic cars at LOD 0 wherever the original draws them (the old HIGH-DETAIL TRAFFIC; folded into DETAIL LEVEL 3X).

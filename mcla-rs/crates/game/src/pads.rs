@@ -62,6 +62,27 @@ const COMMUNITY_DB: &str = include_str!("../data/gamecontrollerdb_windows.txt");
 /// (a trigger counts as pressed past this, as gilrs had it)
 const TRIGGER_PRESS: f32 = 0.75;
 
+/// The extra stick dead zone in percent (the port's own, DECISIONS.md D39): every stick read goes through it,
+/// ahead of the original's own zones; 0 = the stick as SDL gives it, the original's.
+static STICK_DEAD_PERCENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn set_stick_dead_zone(percent: u32) {
+    STICK_DEAD_PERCENT.store(percent, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A stick past a radial dead zone `z` (0 .. 1): nothing inside it, the rest stretched back to full tilt.
+fn stick_past_zone(x: f32, y: f32, z: f32) -> (f32, f32) {
+    let m = (x * x + y * y).sqrt();
+    if z <= 0.0 {
+        (x, y)
+    } else if m <= z {
+        (0.0, 0.0)
+    } else {
+        let k = (m.min(1.0) - z) / (1.0 - z) / m;
+        (x * k, y * k)
+    }
+}
+
 fn sdl_button(b: Button) -> Option<SDL_GamepadButton> {
     Some(match b {
         Button::South => SDL_GAMEPAD_BUTTON_SOUTH,
@@ -134,7 +155,15 @@ impl Pad {
 
     /// A stick or trigger (-1..1 / 0..1, Y up positive).
     pub fn axis(&self, a: Axis) -> f32 {
-        axis_value(a, unsafe { SDL_GetGamepadAxis(self.raw, sdl_axis(a)) })
+        let raw = |a: Axis| axis_value(a, unsafe { SDL_GetGamepadAxis(self.raw, sdl_axis(a)) });
+        let z = STICK_DEAD_PERCENT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0;
+        match a {
+            Axis::LeftX => stick_past_zone(raw(a), raw(Axis::LeftY), z).0,
+            Axis::LeftY => stick_past_zone(raw(Axis::LeftX), raw(a), z).1,
+            Axis::RightX => stick_past_zone(raw(a), raw(Axis::RightY), z).0,
+            Axis::RightY => stick_past_zone(raw(Axis::RightX), raw(a), z).1,
+            _ => raw(a),
+        }
     }
 
     pub fn pressed(&self, b: Button) -> bool {
@@ -307,5 +336,22 @@ impl Pads {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stick_past_zone;
+
+    #[test]
+    fn stick_dead_zone() {
+        // (0: untouched, the original's stick)
+        assert_eq!(stick_past_zone(0.03, -0.7, 0.0), (0.03, -0.7));
+        // (drift inside the circle: nothing; on the edge the stick starts from 0, at full tilt it is full)
+        assert_eq!(stick_past_zone(0.15, 0.1, 0.2), (0.0, 0.0));
+        let (x, y) = stick_past_zone(0.6, 0.0, 0.2);
+        assert!((x - 0.5).abs() < 1e-6 && y == 0.0);
+        let (x, y) = stick_past_zone(0.0, -1.0, 0.2);
+        assert!(x == 0.0 && (y + 1.0).abs() < 1e-6);
     }
 }

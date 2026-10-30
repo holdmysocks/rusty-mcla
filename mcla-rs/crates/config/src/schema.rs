@@ -40,6 +40,7 @@ static KEYS: &[KeyInfo] = &[
     k("game.shadow_resolution", "enum", "\"original\"", "original | 2x | 4x (the shadow map's side)", true),
     k("game.draw_distance", "enum", "\"original\"", "original | 1.5x | 2x | 3x", true),
     k("game.detail_level", "enum", "\"original\"", "original | 1.5x | 2x | 3x (model detail distances; 3x also keeps traffic cars at LOD 0)", true),
+    k("game.stick_dead_zone", "int", "0", "0 .. 50 in steps of 5 (extra stick dead zone in percent, ahead of the original's own; 0 = the original's)", true),
     k("paths.data_dir", "string", "\"\"", "empty = next to the exe; a relative path is taken from the install root", true),
     k("paths.screenshots", "string", "\"\"", "empty = <install root>/screenshots", true),
     k("launcher.language", "string", "\"\"", "empty = the system language", false),

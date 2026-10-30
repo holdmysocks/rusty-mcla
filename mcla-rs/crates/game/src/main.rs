@@ -13311,6 +13311,7 @@ fn parse_options(args: &[String]) -> Options {
         shot.frames = shot_frames;
     }
     o.data_dir = hooks::init(data_flag.as_deref(), o.settings_file.as_deref(), o.shot.is_some()).data.path.to_string_lossy().into_owned();
+    hooks::stick_dead_apply();
     // (the anti-aliasing mode from the settings, for the renderer)
     hooks::apply_aa_at_start();
     if !o.fly {
