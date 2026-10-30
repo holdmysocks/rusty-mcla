@@ -12444,6 +12444,8 @@ impl App {
         renderer2.callback_resources.insert(hudmap_gpu::XrayRes::new(device, queue, plain, selfmovie::samples(), false));
         renderer2.callback_resources.insert(selfmovie::SelfRes::new(device, selfs.clone(), plain, selfmovie::samples(), false));
         // (the 3D icons' and the minimap's pipelines - flashpic.rs, minimap_gpu.rs)
+        // (the navigation mesh, read on first use: ~40 ms in the tick the START warp begins)
+        std::thread::spawn(|| { offroad::mesh(); });
         flashpic::init(device, queue);
         minimap_gpu::init(device, queue);
         Egui { ctx, state, renderer, renderer4, ui4: None, ui2: None, renderer2, selfs }
