@@ -314,6 +314,8 @@ pub struct CarSounds {
     spool: f32,
     prev_throttle: f32,
     nitro: Option<(Option<Handle>, Option<Handle>)>,
+    /// the player's emitter type 1 place and Doppler factor (`PlayerCtl`)
+    pub loop_place: Option<(Vec3, f32)>,
     nitro_empty: Option<Handle>,
     /// GLOBAL_SPECIAL_ABILITIES (entity+1252) and the slipstream turbo's slots: 1408 the burn, 1412 the charge loop,
     /// 1416 the full charge's beep
@@ -389,6 +391,7 @@ impl CarSounds {
             spool: 0.0,
             prev_throttle: 0.0,
             nitro: None,
+            loop_place: None,
             nitro_empty: None,
             sst_obj: g.get_name("GLOBAL_SPECIAL_ABILITIES").map(|o| o.to_vec()).unwrap_or_default(),
             sst_burn: None,
@@ -1079,9 +1082,11 @@ impl CarSounds {
             let first = self.nitro.is_none();
             let (fire, fire_fe) = (be_u32(n, base), be_u32(n, base + 4));
             let slots = self.nitro.get_or_insert((None, None));
-            keep(lib, &mut slots.0, fire, Req { volume: world_db, ..Req { player: self.player, ..Req::at(c.pos) } });
+            // both fire loops are emitter type 1 (F-96250, set by F-79321)
+            let (fire_pos, fire_doppler) = self.loop_place.filter(|_| self.player).unwrap_or((c.pos, 1.0));
+            keep(lib, &mut slots.0, fire, Req { volume: world_db, doppler: fire_doppler, ..Req { player: self.player, ..Req::at(fire_pos) } });
             if self.player {
-                keep(lib, &mut slots.1, fire_fe, Req { volume: fe_db, ..Req { player: true, ..Req::at(c.pos) } });
+                keep(lib, &mut slots.1, fire_fe, Req { volume: fe_db, doppler: fire_doppler, ..Req { player: true, ..Req::at(fire_pos) } });
             }
             if first && self.player {
                 self.launch_chirp(lib, mats, c);
@@ -1332,6 +1337,7 @@ fn engine_in(c: &CarInstance, racing: bool) -> EngineIn {
     let speed = st.speed();
     EngineIn {
         pos: st.pos,
+        view: None,
         rpm: vs.map_or(st.rpm, |v| v.engine_w * 9.549_296),
         idle_rpm: e.map_or(800.0, |e| e.idle_rpm),
         max_rpm: e.map_or(7000.0, |e| e.max_rpm),
@@ -1700,6 +1706,8 @@ pub struct PlayerCtl {
     pub nitro_empty: bool,
     pub parts: [u8; 3],
     pub cam_mode: i32,
+    /// where the player's emitter type 1 sounds sit (the engine's place, F-96250) and their Doppler factor
+    pub loop_place: Option<(Vec3, f32)>,
     /// the player's engine sound: smoothed rpm, load volume
     pub engine: Option<(f32, f32)>,
 }
@@ -1929,6 +1937,7 @@ impl Fleet {
                 c.load_vol = l;
             }
             if let Some(s) = &mut e.sounds {
+                s.loop_place = ctl.loop_place;
                 s.update(lib, &self.mats, &c, ctl.cam_mode, dt);
                 // the slipstream / nitrous burn's PLAYER_NITROUS request when no speech line plays (F-58518 @A-83150,
                 // F-68821): the speech manager's gate (Frequency, Probability, the script) is `Speech::request`

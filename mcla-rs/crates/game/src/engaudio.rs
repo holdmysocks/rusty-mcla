@@ -51,6 +51,8 @@ struct Rec {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EngineIn {
     pub pos: Vec3,
+    /// the player's audio camera mode (entity +1924); the computer racers' stays 2, which is the car's position
+    pub view: Option<i32>,
     /// physics engine speed (rpm)
     pub rpm: f32,
     pub idle_rpm: f32,
@@ -98,6 +100,11 @@ pub struct EngineSound {
     /// the XF table's s16 +14 and the effect object's s16 +10, raw (hundredths of a dB)
     vol_a: f32,
     effect_db: f32,
+    /// where the loops sit in the two views from inside the car (F-96250, emitter type 1): XF +54 bumper, XF +42 driver
+    /// (x, y, z in the camera's axes, z towards the viewer)
+    view_place: [Vec3; 2],
+    /// the loops' Doppler factor (the voice's +84): 0 in those two views, else back to 1 at 2 a second
+    doppler: f32,
     /// XF+18 / +22 / +26 / +30 / +34
     load_brake: f32,
     load_floor: f32,
@@ -251,6 +258,8 @@ impl EngineSound {
             pitch_off: s16(xf, 12),
             vol_a: s16(xf, 14),
             effect_db: if eff.is_empty() { 0.0 } else { s16(eff, 10) },
+            view_place: [Vec3::new(be_f32(xf, 54), be_f32(xf, 58), be_f32(xf, 62)), Vec3::new(be_f32(xf, 42), be_f32(xf, 46), be_f32(xf, 50))],
+            doppler: 1.0,
             load_brake: be_f32(xf, 18),
             load_floor: be_f32(xf, 22),
             load_rate: be_f32(xf, 26),
@@ -537,6 +546,8 @@ impl EngineSound {
             g = (g + c * self.amp_amount).max(0.0);
             self.amp_left -= dt;
         }
+        self.step_doppler(e.view, dt);
+        let loop_pos = self.place(lib.listener, e.view, e.pos);
         // per-record cross-fade and pitch
         let n = self.recs.len();
         for i in 0..n {
@@ -572,7 +583,7 @@ impl EngineSound {
             let vol = crate::sndobj::fmadds(self.vol_a, 0.01, crate::sndobj::fmadds(self.effect_db, 0.01, lin2db(fade * g)));
             // (F-74444: cents = trunc(offset + float(log10 ratio) * 3.321928 * 1200); recorded in the running original)
             let cents = (self.pitch_off + crate::caraudio::pitch_cents_f32(x / r.reference) + lfo_cents) as i32;
-            let req = Req { pos: Some(e.pos), volume: vol, pitch: cents, player: self.player, ..Default::default() };
+            let req = Req { pos: Some(loop_pos), volume: vol, pitch: cents, doppler: self.doppler, player: self.player, ..Default::default() };
             match self.voices[i] {
                 Some(h) if lib.playing(h) => lib.set(h, req),
                 _ => self.voices[i] = lib.play_hash(r.sound, req),
@@ -580,6 +591,31 @@ impl EngineSound {
         }
         self.audio_rpm = x;
         self.end_frame(lib, e, dt);
+    }
+
+    /// The loops' place and Doppler factor this frame (F-96250, emitter type 1). In the bumper and driver views they
+    /// stay a fixed offset from the listener, whatever the car does; in every other view they are at the car.
+    pub fn place(&self, listener: (Vec3, Vec3, Vec3), view: Option<i32>, car: Vec3) -> Vec3 {
+        match view {
+            Some(v @ 0..=1) => {
+                let (p, right, fwd) = listener;
+                let o = self.view_place[v as usize];
+                p + right * o.x + right.cross(fwd) * o.y - fwd * o.z
+            }
+            _ => car,
+        }
+    }
+
+    pub fn doppler(&self) -> f32 {
+        self.doppler
+    }
+
+    fn step_doppler(&mut self, view: Option<i32>, dt: f32) {
+        if matches!(view, Some(0..=1)) {
+            self.doppler = 0.0;
+        } else {
+            approach_fma(&mut self.doppler, 1.0, 2.0, dt);
+        }
     }
 
     /// The one-shots of the frame (gear shift, backfire) and the inputs kept for the next one: their own functions in
@@ -686,6 +722,31 @@ impl EngineSound {
 
 #[cfg(test)]
 mod tests {
+
+    /// F-96250's emitter type 1: in the two inside views the loops are straight ahead of the listener at XF +54 / +42
+    /// wherever the car is, in the others at the car; the Doppler factor 0 inside, back at 2 a second outside.
+    #[test]
+    fn loops_stay_ahead_of_the_listener_inside_the_car() {
+        let dir = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let Some(a) = crate::audio::Audio::new_offline(&dir) else { return };
+        let Some(lib) = SoundLib::load(a.root(), &a.cfg.clone()) else { return };
+        let mut e = EngineSound::make(&lib, "vp_aud_r8_08", false, true).expect("engine");
+        let (p, r) = (Vec3::new(5.0, 2.0, 7.0), Vec3::X);
+        let f = Vec3::new(0.0, -0.6, -0.8);
+        let car = Vec3::new(40.0, 0.0, 9.0);
+        // in the listener's axes as `emit` takes them
+        let (u, side) = (r.cross(f), |q: Vec3| (q - p).dot(r));
+        for (view, ahead) in [(0, 1.0), (1, 2.0)] {
+            let q = e.place((p, r, f), Some(view), car);
+            assert!(side(q).abs() < 1e-5 && (q - p).dot(u).abs() < 1e-5 && ((q - p).dot(f) - ahead).abs() < 1e-5, "view {view}: {q}");
+            e.step_doppler(Some(view), 0.1);
+            assert_eq!(e.doppler(), 0.0);
+        }
+        assert_eq!(e.place((p, r, f), Some(3), car), car);
+        assert_eq!(e.place((p, r, f), None, car), car);
+        e.step_doppler(Some(3), 0.1);
+        assert!((e.doppler() - 0.2).abs() < 1e-6);
+    }
 
     /// F-51617's voice request (cents and dB handed to the voice) for the computer racers' engines, against pairs
     /// recorded in the running original in a street race (work/audio2/cap/eng2.txt, OEN / OEP / OEV lines): offsets XF+12

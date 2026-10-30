@@ -305,7 +305,7 @@ impl Sound {
         self.engine.as_ref().map(|(_, e)| e.smoothed_rpm())
     }
 
-    pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], cam_pos: Vec3, cam_right: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, dt: f32) {
+    pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], cam_pos: Vec3, cam_right: Vec3, cam_fwd: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, dt: f32) {
         let wet = rain > 0.0;
         a.set_listener(cam_pos, cam_right);
         if !self.lib_tried {
@@ -398,7 +398,8 @@ impl Sound {
                 }
                 keep
             });
-            lib.listener = (cam_pos, cam_right, Vec3::Y.cross(cam_right));
+            // the listener is the render camera's matrix (F-37562 keeps it, F-99037 hands it over every frame), pitch included
+            lib.listener = (cam_pos, cam_right, cam_fwd);
             lib.set_sliders(self.sliders);
             let bike = vehicles.player().is_some_and(|p| p.model.bike);
             lib.set_camera_mode(self.cam_audio, bike);
@@ -805,6 +806,7 @@ impl Sound {
             let e = p.model.params.veh.as_ref().map(|t| &t.t.engine.s);
             let inp = crate::engaudio::EngineIn {
                 pos: st.pos,
+                view: Some(self.cam_audio),
                 rpm: vs.map_or(st.rpm, |v| v.engine_w * 9.549_296),
                 idle_rpm: e.map_or(800.0, |e| e.idle_rpm),
                 max_rpm: e.map_or(7000.0, |e| e.max_rpm),
@@ -849,6 +851,7 @@ impl Sound {
                 nitro_empty: press && !st.nitro_on() && st.nitro_shots == 0,
                 parts: self.parts,
                 cam_mode: self.cam_audio,
+                loop_place: self.engine.as_ref().map(|(_, e)| (e.place(lib.listener, Some(self.cam_audio), st.pos), e.doppler())),
                 engine: self.engine.as_ref().map(|(_, e)| (e.smoothed_rpm(), e.load_volume())),
             };
             let pol = crate::caraudio::PoliceIn {
