@@ -11989,6 +11989,13 @@ impl Game {
                 x.lesson = 3;
                 self.opt_x.arcade.d.say.push("TUTORIAL_TARGET_INGAME".to_string());
             }
+            // (box 76 gone without the log - a race started from the pause menu takes it away: the
+            // ease to pause must not stay on, time stood still in that race - #30)
+            1 if !title.contains("tutorial_mission_log") => {
+                x.slow.ease(1.0);
+                x.lesson = 4;
+                log::info!("RACE_GH_02 lesson: box 76 left without the log - the ease from pause");
+            }
             1..=3 if !in_lesson || (x.lesson == 3 && !title.contains("tutorial_target")) => {
                 x.slow.ease(1.0);
                 x.lesson = 4;
@@ -17322,6 +17329,23 @@ mod tests {
         assert!(!g.takes_menu_input());
         g.mc4_s23_tick(0.016, S23In { near: false, ..Default::default() });
         assert!(g.tutorial_box.is_none() && !g.mc4_tut_seen("tTFB"), "out of reach: closed, not seen");
+        // (box 76 taken away without the log, as a race from the pause menu does: time comes back - #30)
+        g.tutorial_box = Some(("tutorial_mission_log_title".into(), "tutorial_mission_log_desc".into(), 0.3, 600.0));
+        g.career.stats.insert("tut:mission_log".into(), 1);
+        g.mc4_s23_tick(0.016, S23In::default());
+        assert_eq!(g.opt_x.s23.lesson, 1);
+        for _ in 0..40 {
+            g.mc4_s23_tick(0.016, S23In::default());
+        }
+        assert_eq!(g.mc4_time_scale(), 0.0);
+        g.tutorial_box = None;
+        for _ in 0..40 {
+            g.mc4_s23_tick(0.016, S23In::default());
+        }
+        assert_eq!(g.opt_x.s23.lesson, 4);
+        assert_eq!(g.mc4_time_scale(), 1.0);
+        g.opt_x.s23.lesson = 0;
+        g.career.stats.remove("tut:mission_log");
         // (RACE_GH_02's lesson: the ease to pause with box 76, the speeches, back after box 77)
         g.tutorial_box = Some(("tutorial_mission_log_title".into(), "tutorial_mission_log_desc".into(), 0.3, 600.0));
         assert!(g.takes_menu_input(), "other tutorial boxes answer the menu buttons (#11)");

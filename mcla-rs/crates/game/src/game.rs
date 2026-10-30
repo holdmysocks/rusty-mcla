@@ -8912,7 +8912,10 @@ impl Game {
                                 fp.movie.player.update(dt);
                                 fp.movie.paint(ctx, &ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("tutorial"))));
                             }
-                            self.tutorial_box = Some((title, text, 0.0, left - dt));
+                            // (form 76 waits until it is closed - RACE_GH_02_READY_TO_START_ON_ENTER: the
+                            // game stands behind it, and a box timed out left it paused for good - #30)
+                            let left = if title.contains("mission_log") { left } else { left - dt };
+                            self.tutorial_box = Some((title, text, 0.0, left));
                         }
                     }
                     self.hud(ctx, vehicles, world, hud);
