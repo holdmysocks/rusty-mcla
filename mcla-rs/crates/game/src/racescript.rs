@@ -560,7 +560,10 @@ pub fn course(data_dir: &str, race_id: &str, first_checkpoint: Option<Vec3>) -> 
         matches!((num(i + 2), num(i + 3), num(i + 4)), (Some(x), Some(y), Some(z)) if first_checkpoint.map_or(true, |f| Vec3::new(x, y, z).distance(f) < 6.0)) && num(i + 5) == Some(3.0) && num(i + 6) == Some(0.0) && num(i + 7) == Some(3.0) && num(i + 8) == num(i)
     }).map(|at| tables(&t, at)).find(|a| {
         // positions, their radii, and (a few tables on) the checkpoint kinds
-        matches!((a.first(), a.get(1)), (Some(Arr::V(p)), Some(Arr::N(r))) if p.len() == r.len()) && (first_checkpoint.is_some() || a.iter().take(12).any(|x| matches!(x, Arr::S(s) if s.len() == a[0].len() && s.iter().all(|k| k == "Normal" || k == "Line"))))
+        // (with no first checkpoint to go by, the start grid - positions, then headings - looks the same when it has as
+        // many places as the race has checkpoints, as hw_circuit_mb_04a_easy: 16. The checkpoints' radii are followed by
+        // their heights, the table the grid has not; the script's Checkpoint_SetPosition reads this one)
+        matches!((a.first(), a.get(1)), (Some(Arr::V(p)), Some(Arr::N(r))) if p.len() == r.len()) && (first_checkpoint.is_some() || matches!(a.get(2), Some(Arr::N(h)) if h.len() == a[0].len()) && a.iter().take(12).any(|x| matches!(x, Arr::S(s) if s.len() == a[0].len() && s.iter().all(|k| k == "Normal" || k == "Line"))))
     })?;
     let Some(Arr::V(pos)) = arrs.first() else { return None };
     let n = pos.len();
