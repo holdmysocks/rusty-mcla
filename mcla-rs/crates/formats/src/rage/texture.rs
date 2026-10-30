@@ -240,7 +240,9 @@ impl Texture {
             if level + 1 >= nlevels.max(1) {
                 break;
             }
-            if w < 32 && h < 32 && tiled {
+            // (a square texture's packed tail comes here with both sides under 32: 256 x 256 kept 4 of its 7 levels, 128 x 128
+            // 3 of its 6, and a tree far smaller than its leaf texture read the 32 x 32 level where the original reads the 8 x 8)
+            if w < 32 && h < 32 && tiled && !packed_mips {
                 break;
             }
         }

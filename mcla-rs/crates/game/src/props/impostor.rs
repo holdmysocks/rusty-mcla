@@ -195,15 +195,16 @@ impl Impostors {
             entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None }],
         });
         let samp_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("impostor sampler"), layout: &samp_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&gpu.sampler) }] });
-        // (the leaves' fetch has no anisotropy, word 0x00a80d10; the trunk's asks 4 : 1, word 0x06a80d10)
+        // (PSGenerateImposterDay / Night, leaves: the fetch instruction itself asks point for mag, min and
+        // mip, word 1 0x1f1c0688, whatever the constant says; the trunk's 0x1f1ff688 takes the constant's)
         let samp_leaf = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("impostor leaves"),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             address_mode_w: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
         let samp_leaf_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("impostor leaves sampler"), layout: &samp_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&samp_leaf) }] });
