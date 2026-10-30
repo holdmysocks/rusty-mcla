@@ -29,6 +29,8 @@ pub struct LooseWorld {
     /// each instance and the number of its type in `types`
     pub instances: Vec<(FragInstance, usize)>,
     cells: HashMap<(i32, i32), Vec<u32>>,
+    /// the corners of every polyhedron part (bound type 4), by type and part: what its core scans (bound +186)
+    polyhedra: HashMap<(usize, usize), Vec<Vec3>>,
 }
 
 fn cell_of(x: f32, z: f32) -> (i32, i32) {
@@ -56,7 +58,16 @@ pub fn inv(m: &[Vec3; 4], d: Vec3) -> Vec3 {
 impl LooseWorld {
     pub fn new(types: Vec<FragType>, instances: Vec<FragInstance>) -> LooseWorld {
         let by_off: HashMap<usize, usize> = types.iter().enumerate().map(|(i, t)| (t.off, i)).collect();
-        let mut out = LooseWorld { types, instances: Vec::new(), cells: HashMap::new() };
+        let mut polyhedra = HashMap::new();
+        for (i, t) in types.iter().enumerate() {
+            for (c, p) in t.parts.iter().enumerate() {
+                if let Some(b) = p.bound.as_ref().filter(|b| b.kind == 4 && !b.verts.is_empty()) {
+                    let n = if b.scan > 0 { (b.scan as usize).min(b.verts.len()) } else { b.verts.len() };
+                    polyhedra.insert((i, c), b.verts[..n].iter().map(|x| v(*x)).collect());
+                }
+            }
+        }
+        let mut out = LooseWorld { types, instances: Vec::new(), cells: HashMap::new(), polyhedra };
         // (the torn bumpers' own type, made by the game's code rather than read from the file)
         out.types.push(piece_type());
         for inst in instances {
@@ -109,7 +120,7 @@ impl LooseWorld {
 
 // ---------------------------------------------------------------------------------------------
 // Cache entries: which groups of a prop an instance still holds, and what it weighs
-// (0x824A9130, 0x8259A580, 0x8259A390, 0x8258E858 / 0x825A4088; p1/break_decode.md 3.3, 3.4).
+// (F-13409, F-99875, F-68804, F-58768 / F-88418; p1/break_decode.md 3.3, 3.4).
 
 /// A fragment cache entry: the groups it has lost, its age, and its mass properties.
 #[derive(Clone, Copy, Debug, Default)]
@@ -147,7 +158,7 @@ pub fn subtree(t: &FragType, g: usize) -> u64 {
     bits
 }
 
-/// The mass of what an entry holds (0x824A6DC8 / 0x824A9458): the children's, in their order.
+/// The mass of what an entry holds (F-49276 / F-85792): the children's, in their order.
 pub fn entry_mass(t: &FragType, absent: u64) -> f32 {
     let mut m = 0.0f32;
     for (c, child) in t.children.iter().enumerate() {
@@ -158,7 +169,7 @@ pub fn entry_mass(t: &FragType, absent: u64) -> f32 {
     m
 }
 
-/// 0x824A9130: the entry's centre of gravity (by the parts' volumes; shifted by the type's +0x40
+/// F-13409: the entry's centre of gravity (by the parts' volumes; shifted by the type's +0x40
 /// while the entry is younger than a quarter of a second), its mass, and its moments (each
 /// part's own about its place, carried to the centre without its turn; no moment under a
 /// twentieth of the largest).
@@ -193,7 +204,7 @@ pub fn entry_refresh(t: &FragType, e: &mut Entry, mass: f32) {
         inertia = inertia + Vec3::new(fma(yy + zz, m, own.x), fma(xx + zz, m, own.y), fma(xx + yy, m, own.z));
     }
     if sum > f32::MIN_POSITIVE {
-        // (0x825A4088)
+        // (F-88418)
         let mut i = inertia.to_array();
         let big = if i[0] >= i[1] { if i[0] >= i[2] { 0 } else { 2 } } else if i[1] >= i[2] { 1 } else { 2 };
         for j in 0..3 {
@@ -245,7 +256,7 @@ pub struct PBody {
     pub moves: u32,
 }
 
-/// 0x8259BCC8 / 0x8259BD78: a velocity and its momentum cut back to the body's limit.
+/// F-80759 / F-29166: a velocity and its momentum cut back to the body's limit.
 fn capped(v: Vec3, p: Vec3, max: f32) -> (Vec3, Vec3) {
     let l2 = fma(v.y, v.y, fma(v.z, v.z, v.x * v.x));
     if l2 <= max * max {
@@ -260,7 +271,7 @@ fn capped(v: Vec3, p: Vec3, max: f32) -> (Vec3, Vec3) {
 }
 
 impl PBody {
-    /// 0x8259E648 on an instance at `matrix` whose bound's centre of gravity is `cg`.
+    /// F-28128 on an instance at `matrix` whose bound's centre of gravity is `cg`.
     fn new(matrix: &[Vec3; 4], cg: Vec3, e: &Entry, max_speed: f32, max_spin: f32) -> PBody {
         PBody {
             at: xf(matrix, cg),
@@ -290,13 +301,13 @@ impl PBody {
         }
     }
 
-    /// The angular momentum of a turning rate (0x8259E180).
+    /// The angular momentum of a turning rate (F-47804).
     fn momentum_of(&self, w: Vec3) -> Vec3 {
         let iw = ex::world_inertia(&self.rows, self.inertia);
         Vec3::new(dot3(Vec3::new(iw[0].x, iw[1].x, iw[2].x), w), dot3(Vec3::new(iw[0].y, iw[1].y, iw[2].y), w), dot3(Vec3::new(iw[0].z, iw[1].z, iw[2].z), w))
     }
 
-    /// 0x8259DB98: an impulse at a point, taken into the momenta at once.
+    /// F-97724: an impulse at a point, taken into the momenta at once.
     pub fn impulse_now(&mut self, vec: Vec3, point: Vec3) {
         self.p = self.p + vec;
         (self.v, self.p) = capped(self.p * self.inv_mass, self.p, self.max_speed);
@@ -333,7 +344,7 @@ pub struct Obj {
     pub veh: Option<VehObj>,
     /// its body's sleep object (body_decode.md 6.1; a torn bumper's is the piece's own)
     pub sleep: Sleep,
-    /// taken out of the simulator asleep (0x82588D90): inactive at its last matrix until a contact wakes it (`wake_obj`)
+    /// taken out of the simulator asleep (F-38307): inactive at its last matrix until a contact wakes it (`wake_obj`)
     pub dormant: bool,
     /// an ambient (traffic) car of the session (`Amb`)
     pub amb: Option<Amb>,
@@ -379,12 +390,12 @@ pub struct Mani {
     pub island: usize,
     pub order: usize,
     pub slots: Vec<Slot2>,
-    /// a constraint's manifold (0x82591210): its one contact made afresh every update
+    /// a constraint's manifold (F-87905): its one contact made afresh every update
     pub rope: bool,
 }
 
 impl Mani {
-    /// A new contact into the manifold (0x825C65E8 -> 0x825A37A8, 0x825A3028 / 0x825A3838): it
+    /// A new contact into the manifold (F-90136 -> F-74262, F-96165 / F-28977): it
     /// takes the place of the kept one within 2 cm of it, by A's point, that a refresh has seen -
     /// and its multipliers, and its element if that one was the deeper - or is added.
     fn insert(&mut self, fresh: Touch, element: u16, surface: Surface, surface_a: Surface) {
@@ -403,7 +414,7 @@ impl Mani {
                 self.slots[i] = Slot2 { t: Touch { kept: old.t.kept, pushed: old.t.pushed, ..fresh }, element: if old.t.depth >= fresh.depth { old.element } else { element }, surface: if old.t.depth >= fresh.depth { old.surface } else { surface }, surface_a: if old.t.depth >= fresh.depth { old.surface_a } else { surface_a }, ..slot };
             }
             None if self.slots.len() < 6 => self.slots.push(slot),
-            // (the seventh, 0x825A32C0)
+            // (the seventh, F-55965)
             None => {
                 let k = super::hull::seventh_contact(std::array::from_fn(|i| self.slots[i].t.a.local), fresh.a.local);
                 if k < 6 && !super::vehsim::dbg_flag("MCLA_DBG_RA3") {
@@ -425,7 +436,7 @@ struct Shape<'a> {
 }
 
 /// The two parts' boxes, each grown to hold itself at its last matrix too, tested along their
-/// six face axes (0x825CCE00's cull; a decision only, written plainly).
+/// six face axes (F-82759's cull; a decision only, written plainly).
 fn boxes_meet(a: &Shape, b: &Shape) -> bool {
     let swept = |s: &Shape| {
         let (c, h) = ((s.bbox.1 + s.bbox.0) * 0.5, (s.bbox.1 - s.bbox.0) * 0.5);
@@ -524,9 +535,9 @@ pub struct LooseState {
     /// the car is under MegaStealth (vehicles.rs `pu_ghost`, POWERUPS.md): it meets the map and nothing
     /// loose - its step leaves the level out
     pub ghost: bool,
-    /// the constraints of the semis' cabs and trailers (sub_826E7340), in the update's list order
+    /// the constraints of the semis' cabs and trailers (F-15252), in the update's list order
     pub ropes: Vec<Rope>,
-    /// what the ambient cars' post-solve callback (slot 25, sub_826FAF98) adds to their render instance's
+    /// what the ambient cars' post-solve callback (slot 25, F-13089) adds to their render instance's
     /// four side sums (+560): (the car's uid, the side 0 .. 3, the amount) - vehsim.rs, taken by
     /// vehicles.rs after the steps
     pub amb_dmg: Vec<(u32, usize, f32)>,
@@ -543,7 +554,7 @@ pub struct FxPlay {
     pub vel: Vec3,
 }
 
-/// Where an event effect is placed (`sub_82736D38`).
+/// Where an event effect is placed (`F-75655`).
 #[derive(Clone, Copy, Debug)]
 pub enum FxAt {
     /// at a world point, unrotated (the position parameter: impact and deflection events)
@@ -698,14 +709,14 @@ fn part_core(b: &FragBound, m: &[Vec3; 4]) -> (PartCore, f32) {
         0 => (PartCore { kind: 0, centroid: v(b.centroid), half: Vec3::ZERO, rows, at: m[3] }, b.round),
         1 => (PartCore { kind: 1, centroid: v(b.centroid), half: Vec3::splat(b.length), rows, at: m[3] }, b.round),
         _ => {
-            // (0x825E03D4: half the box less the margin, each a rounded step)
+            // (A-32016: half the box less the margin, each a rounded step)
             let half = (v(b.max) - v(b.min)) * 0.5 - Vec3::splat(b.margin);
             (PartCore { kind: 3, centroid: v(b.centroid), half, rows, at: m[3] }, b.margin)
         }
     }
 }
 
-/// What the swept test gives (0x825D9268): the touch's normal, the two points in the parts'
+/// What the swept test gives (F-98094): the touch's normal, the two points in the parts'
 /// frames, how far through the tick it is, and the corners the hull's side ended on.
 struct Swept {
     normal: Vec3,
@@ -715,7 +726,7 @@ struct Swept {
     last: Nearest,
 }
 
-/// The swept test of two convex parts (0x825D9268; p1/swept_decode.md): each is carried from
+/// The swept test of two convex parts (F-98094; p1/swept_decode.md): each is carried from
 /// where its centre of gravity was to where it is, with the rows it has now; the detector is
 /// asked again and again until the parts are 2 cm apart.
 fn sweep(a: &Core, ma: f32, cga: Vec3, a_now: &[Vec3; 4], a_last: &[Vec3; 4], b: &Core, mb: f32, cgb: Vec3, b_now: &[Vec3; 4], b_last: &[Vec3; 4]) -> Option<Swept> {
@@ -763,12 +774,12 @@ fn sweep(a: &Core, ma: f32, cga: Vec3, a_now: &[Vec3; 4], a_last: &[Vec3; 4], b:
     Some(Swept { normal: r.normal, local_a: inv(&at(a_now, pa), r.on_a - pa), local_b: inv(&at(b_now, pb), r.on_b - pb), lambda, last: r })
 }
 
-/// The swept test of a convex part against one city polygon (0x825CEE38's swept branch, 0x825D9268 inside): the
+/// The swept test of a convex part against one city polygon (F-35118's swept branch, F-98094 inside): the
 /// part's places now and last taken about the polygon's first corner `origin`, the mesh at rest at the origin
 /// (its move is nil), the polygon `local` about that corner. The detector starts from (1, 0, 0) and keeps its
 /// direction from one call to the next; the touch's normal, the part's point carried to its place now, the
 /// polygon's point, and the distance between them along the normal - about `origin`, as the discrete detector
-/// answers. (No "lambda below 1" test after it here, unlike the part pairs' 0x825CC930.)
+/// answers. (No "lambda below 1" test after it here, unlike the part pairs' F-36478.)
 fn sweep_polygon(core: &Core, margin: f32, cg: Vec3, now: &[Vec3; 4], last: &[Vec3; 4], local: &[Vec3; 3], face: Vec3, bisectors: [Vec3; 3], origin: Vec3) -> Option<Nearest> {
     let now = [now[0], now[1], now[2], now[3] - origin];
     let last = [last[0], last[1], last[2], last[3] - origin];
@@ -869,7 +880,7 @@ impl LooseState {
         obj.entry.map_or(v(world.types[obj.ty].cg), |e| e.cg)
     }
 
-    /// An object's whole bound (0x8259ADA8 / 0x82599FB0 for an entry that has lost groups: the union of its
+    /// An object's whole bound (F-65996 / F-32566 for an entry that has lost groups: the union of its
     /// parts' boxes through their matrices, centroid = the box's middle, radius = its half diagonal; else the
     /// file's): box min, max, centroid, radius.
     fn whole_bound(&self, world: &LooseWorld, o: usize) -> (Vec3, Vec3, Vec3, f32) {
@@ -909,7 +920,7 @@ impl LooseState {
         (lo, hi, centroid, fma(d.z, d.z, fma(d.y, d.y, d.x * d.x)).sqrt())
     }
 
-    /// The level's broad phase for an ACTIVE object `own` and another (0x825BF438): own's sphere, moved half
+    /// The level's broad phase for an ACTIVE object `own` and another (F-84048): own's sphere, moved half
     /// the tick's way back and grown by half its length, against the other's as it stands; then the two whole
     /// boxes - each grown to hold itself at its matrix before the move, if it is active - along their six face
     /// axes. Each side: box min / max, centroid, radius, matrix now, matrix before the move (None: inactive).
@@ -976,7 +987,7 @@ impl LooseState {
             Who::Obj(o) => {
                 let obj = &self.objs[o];
                 if let Some(vh) = obj.veh {
-                    // (stage R: a vehicle's one polyhedron, 0x825E0418 as the car's hull; an ambient
+                    // (stage R: a vehicle's one polyhedron, A-51822 as the car's hull; an ambient
                     // trailer's composite: each of its two, at the identity part matrix)
                     if part >= vh.parts() || !vh.here {
                         return None;
@@ -992,12 +1003,18 @@ impl LooseState {
                 }
                 let p = &t.parts[part as usize];
                 let b = p.bound.as_ref()?;
-                if !matches!(b.kind, 0 | 1 | 3) {
+                if !matches!(b.kind, 0 | 1 | 3 | 4) {
                     return None;
                 }
                 let pm = m4(&p.matrix);
                 let now = super::gjk::world_matrix(&pm, &obj.matrix);
                 let last = super::gjk::world_matrix(&pm, &obj.body.map_or(obj.matrix, |b| b.last));
+                // (a polyhedron part, A-51822: as a vehicle's hull, its own corners and margin)
+                if b.kind == 4 {
+                    let corners = world.polyhedra.get(&(obj.ty, part as usize))?;
+                    let core = Core::Hull(HullCore { corners, rows: [now[0], now[1], now[2]], at: now[3] });
+                    return Some(Shape { core, margin: b.margin, cg: v(b.cg), bbox: (v(b.min), v(b.max)), now, last });
+                }
                 let (core, margin) = part_core(b, &now);
                 Some(Shape { core: Core::Part(core), margin, cg: v(b.cg), bbox: (v(b.min), v(b.max)), now, last })
             }
@@ -1039,7 +1056,7 @@ impl LooseState {
         level_hints().filter(|_| !r1()).and_then(|h| h.pool).map(|top| top - 0x90 * n)
     }
 
-    /// The level index a new object gets: the next of the level's free index list (0x82573200).
+    /// The level index a new object gets: the next of the level's free index list (F-72385).
     fn new_index(&mut self) -> Option<i64> {
         let h = level_hints().filter(|_| !r1())?;
         let k = REPLAY_K.load(std::sync::atomic::Ordering::Relaxed);
@@ -1059,7 +1076,7 @@ impl LooseState {
         }
     }
 
-    /// The contacts of two objects' parts (0x825CCE00 with 0x825CC930 per pair of parts): B's
+    /// The contacts of two objects' parts (F-82759 with F-36478 per pair of parts): B's
     /// parts outside, A's inside; a pair of parts whose boxes meet, with no contact yet and one
     /// of them a prop that has not broken, goes through the swept test, every other through the
     /// detector.
@@ -1085,7 +1102,7 @@ impl LooseState {
                     self.manis[k].visited = true;
                 }
                 let count = at.map_or(0, |k| self.manis[k].slots.len());
-                // (the instances' last matrices, 0x82589948: the collider's +96 only while the other instance has no
+                // (the instances' last matrices, F-65617: the collider's +96 only while the other instance has no
                 // collider record - two bodies in the simulator are each taken at +32, the matrix they had as the tick
                 // began: V s_rtv s390 / s391, 11286 x 22286 / 22320)
                 let both = [a, b].into_iter().all(|w| matches!(w, Who::Obj(o) if self.objs[o].body.is_some() && self.objs[o].veh.is_none()));
@@ -1113,7 +1130,7 @@ impl LooseState {
                     eprintln!("LOOSEPAIR tick {} {:?}/{pa} x {:?}/{pb} swept {} -> {:?}", self.tick, a, b, count == 0 && sweeps, found.map(|f| (f.0, f.3)));
                 }
                 let Some((normal, qa, qb, dist, r)) = found else { continue };
-                // (the sink, 0x825C65E8: nothing farther than 2 cm)
+                // (the sink, F-90136: nothing farther than 2 cm)
                 if !(f32::from_bits(0x3ca3_d70a) > dist) {
                     continue;
                 }
@@ -1157,7 +1174,7 @@ impl LooseState {
         }
     }
 
-    /// The tick's collide of everything loose (0x8258D9F0): the car's hull against the props and
+    /// The tick's collide of everything loose (F-27744): the car's hull against the props and
     /// pieces about it, the pieces against each other and against the props they reach, and
     /// every loose body's parts against the city.
     pub fn collide(&mut self, world: &LooseWorld, car: &CarIn, city: &super::collision::WorldCollider, car_city: bool) {
@@ -1170,7 +1187,7 @@ impl LooseState {
         for m in self.manis.iter_mut() {
             m.visited = shared_later && m.a != Who::Car && m.b != Who::Car;
         }
-        // (the constraints first, once an update: 0x82591210 ahead of the collide)
+        // (the constraints first, once an update: F-87905 ahead of the collide)
         if !shared_later {
             self.ropes_touch();
         }
@@ -1211,7 +1228,7 @@ impl LooseState {
             let t = &world.types[o.ty];
             (xf(&o.matrix, v(t.centroid)), t.radius)
         };
-        // (RA8: the pairs by the level's own test, 0x825BF438 - MCLA_DBG_RA8: by plain balls, as before)
+        // (RA8: the pairs by the level's own test, F-84048 - MCLA_DBG_RA8: by plain balls, as before)
         let exact_broad = !super::vehsim::dbg_flag("MCLA_DBG_RA8");
         let car_side = {
             let (lo, hi) = car.bound;
@@ -1241,7 +1258,7 @@ impl LooseState {
         }
         // (a pair is made only with a body in it: walked from the bodies - the level keeps every prop a
         // car came near - and taken in the order of the two indices, as a walk over every pair would;
-        // two inactive objects only when one has level byte bit 8, 0x8258D9F0: an ambient car with
+        // two inactive objects only when one has level byte bit 8, F-27744: an ambient car with
         // inst +140 bit 0x80 moved this frame, `ambient_posed`)
         let posed = |o: &Obj| o.body.is_none() && o.amb.as_ref().is_some_and(|a| a.posed);
         let start = |o: &Obj| o.body.is_some() || posed(o);
@@ -1333,12 +1350,12 @@ impl LooseState {
         }
         self.manis.retain(|m| m.visited && !m.slots.is_empty());
         // (an inactive ambient car in a manifold with contacts is activated - no threshold, before the
-        // islands and the solver: 0x8258D9F0 at 0x8258E07C -> 0x8258D3F8)
+        // islands and the solver: F-27744 at A-28475 -> F-24099)
         let woken: Vec<usize> = self.manis.iter().filter(|m| !m.rope).flat_map(|m| [m.a, m.b]).filter_map(|w| if let Who::Obj(o) = w { Some(o) } else { None }).filter(|&o| self.objs[o].amb.is_some() && self.objs[o].body.is_none()).collect();
         for o in woken {
             self.ambient_activate(o);
         }
-        // (the simulator's list emptied after the collide: level byte bit 8 cleared, sub_8258E4D0 -> sub_82588220)
+        // (the simulator's list emptied after the collide: level byte bit 8 cleared, F-96197 -> F-79250)
         if !shared_later {
             for o in self.objs.iter_mut() {
                 if let Some(a) = o.amb.as_mut() {
@@ -1346,11 +1363,11 @@ impl LooseState {
                 }
             }
         }
-        // (the islands, 0x825D80E0 at the end of the collide: every pair that holds a contact NOW joins its
+        // (the islands, F-14298 at the end of the collide: every pair that holds a contact NOW joins its
         // two objects - a contact that the update's refresh then drops has still joined them. The pairs come
         // in the cache's order, (lower, higher level index); each is a node of a union-find forest whose
-        // roots are the islands; FIND 0x825D7FD0 hangs every node it passes under the root, at the tail of
-        // the root's children; UNION 0x825D8030 by rank. The update walks each tree in pre-order.)
+        // roots are the islands; FIND F-28830 hangs every node it passes under the root, at the tail of
+        // the root's children; UNION F-91971 by rank. The update walks each tree in pre-order.)
         let n_obj = self.objs.len() + 1;
         let node = |w: Who| match w {
             Who::Car => Some(0usize),
@@ -1369,7 +1386,7 @@ impl LooseState {
             }
         }
         pairs.sort_by_key(|p| p.0);
-        // (the constraints' unions come first: 0x82591210 joins its pair before the collide)
+        // (the constraints' unions come first: F-87905 joins its pair before the collide)
         let mut first: Vec<((i64, i64), Who, Who)> = Vec::new();
         for m in self.manis.iter().filter(|m| m.rope) {
             let (la, lb) = (self.level(m.a), self.level(m.b));
@@ -1477,7 +1494,7 @@ impl LooseState {
         }
     }
 
-    /// The matrix of one side's part as the tick's update has it (0x825A38E0).
+    /// The matrix of one side's part as the tick's update has it (F-21340).
     fn part_matrix(&self, world: &LooseWorld, who: Who, part: u16, car: &CarIn) -> [Vec3; 4] {
         match who {
             Who::Car if part != 0 => car.wheels.get(part as usize - 1).copied().flatten().map_or(car.now, |w| w.now),
@@ -1493,11 +1510,11 @@ impl LooseState {
         }
     }
 
-    /// The kept contacts brought up to the two matrices as they stand (0x825A3070 with
-    /// 0x825A28C8), their materials (0x825A2C88) and the instances' callbacks: a prop's sets the
-    /// elasticity of its type on all its contacts (0x82735A90); the car's lays a normal flat
-    /// that would push it down against a prop that stands (0x82332D30) - and, fast enough,
-    /// feels nothing of a prop that broke two seconds ago and more (0x82332AC8).
+    /// The kept contacts brought up to the two matrices as they stand (F-26862 with
+    /// F-33100), their materials (F-43430) and the instances' callbacks: a prop's sets the
+    /// elasticity of its type on all its contacts (F-22759); the car's lays a normal flat
+    /// that would push it down against a prop that stands (F-55998) - and, fast enough,
+    /// feels nothing of a prop that broke two seconds ago and more (F-58598).
     pub fn refresh(&mut self, world: &LooseWorld, car: &CarIn) {
         // (a level shared by the cars: the contacts of what is loose are refreshed once a tick, in the first car's
         // step, with its collide - a second refresh would age a fresh contact, and the slide rule below would drop it
@@ -1512,7 +1529,7 @@ impl LooseState {
             let m = &mut self.manis[k];
             let city = m.b == Who::City;
             if m.rope {
-                // (0x825A28C8 on a contact of age 0: its points and depth left; +144 zeroed, age 1)
+                // (F-33100 on a contact of age 0: its points and depth left; +144 zeroed, age 1)
                 for s in m.slots.iter_mut() {
                     s.t.target = Vec3::ZERO;
                     s.age = 1;
@@ -1567,7 +1584,7 @@ impl LooseState {
             if again && m.a != Who::Car && m.b != Who::Car {
                 continue;
             }
-            // (a constraint's contact: no material, 0x825A2C88 for kind != 0 zeroes +112 only)
+            // (a constraint's contact: no material, F-43430 for kind != 0 zeroes +112 only)
             if m.rope {
                 for s in m.slots.iter_mut() {
                     s.t.impulse = Vec3::ZERO;
@@ -1575,12 +1592,12 @@ impl LooseState {
                 }
                 continue;
             }
-            // (a semi's cab and its trailer: their contacts are off every solve - slot 23, sub_826FAC50)
+            // (a semi's cab and its trailer: their contacts are off every solve - slot 23, F-45219)
             let off = partners(m.a, m.b, &self.objs);
             let (who_a, who_b) = (m.a, m.b);
             let car_is_a = who_a == Who::Car;
             let with_car = car_is_a || who_b == Who::Car;
-            // (a wheel's contact with something loose: the wheel's callback 0x8255D028 takes it from the solver;
+            // (a wheel's contact with something loose: the wheel's callback F-50733 takes it from the solver;
             // it stays in the manifold)
             let wheel = (car_is_a && m.part_a != 0) || (who_b == Who::Car && m.part_b != 0);
             // (an mcPropInst on either side: its callback writes its type's elasticity)
@@ -1619,13 +1636,13 @@ impl LooseState {
                 let Some(&o) = props.first() else { continue };
                 let obj = &self.objs[o];
                 let t = &world.types[obj.ty];
-                // (the car's, 0x82332AC8: a hull contact with a prop of a type that only breaks,
+                // (the car's, F-58598: a hull contact with a prop of a type that only breaks,
                 // broken more than two seconds ago, is not felt above 20 m/s)
                 if car.speed > 20.0 && t.min_move < 0.0 && obj.hit && obj.entry.map_or(false, |e| e.age > 2.0) {
                     s.enabled = false;
                     continue;
                 }
-                // (0x82332D30, against an mcPropInst: the normal as it pushes the car points down)
+                // (F-55998, against an mcPropInst: the normal as it pushes the car points down)
                 let mut n = if car_is_a { s.t.normal } else { Vec3::ZERO - s.t.normal };
                 if n.y < 0.0 {
                     let k = 1.0 - (obj.matrix[1].y * car.now[1].y).abs();
@@ -1728,9 +1745,9 @@ impl LooseState {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The breaking pass (0x82593680, 0x82592D08, 0x825920F8; p1/break_decode.md).
+// The breaking pass (F-12210, F-54981, F-80619; p1/break_decode.md).
 
-/// 0x8248C710: how much of the impulses on its parts (`comp`, by part) breaks or moves an
+/// F-34309: how much of the impulses on its parts (`comp`, by part) breaks or moves an
 /// instance: the share `t` and the group that leaves (255: the whole of it).
 fn break_strength(t: &FragType, obj: &Obj, comp: &[Vec3]) -> Option<(f32, u8)> {
     let entry = obj.entry;
@@ -1826,9 +1843,9 @@ fn break_strength(t: &FragType, obj: &Obj, comp: &[Vec3]) -> Option<(f32, u8)> {
     Some((t.groups[win as usize].strength / total, win))
 }
 
-/// The original's sort of an island's contact list (STLport std::sort, 0x82593F08: the introsort loop
-/// 0x82593CC8 with the partition 0x825934D8 while a range holds more than 16, then insertion sorts
-/// 0x82593928 / 0x825917B8): ascending by `key`, stable up to 16 elements, above that as its steps fall.
+/// The original's sort of an island's contact list (STLport std::sort, F-52683: the introsort loop
+/// F-98871 with the partition F-69639 while a range holds more than 16, then insertion sorts
+/// F-35665 / F-66880): ascending by `key`, stable up to 16 elements, above that as its steps fall.
 pub fn stl_sort<T: Clone>(a: &mut Vec<T>, key: impl Fn(&T) -> i64) {
     fn insertion<T: Clone>(a: &mut [T], lo: usize, hi: usize, key: &impl Fn(&T) -> i64) {
         for i in lo + 1..hi {
@@ -1947,19 +1964,19 @@ pub struct IslandOut {
     pub impulse: Vec3,
     pub turning: Vec3,
     /// the rows (numbers into `links`) in the island's second list, sorted by instance B's address
-    /// (0x82594068's list for the B side, island +296)
+    /// (F-68442's list for the B side, island +296)
     pub by_b: Vec<usize>,
     /// the car's runs of the callbacks (its A run, then its B run, those it has): the first row's other object
     /// active, a row on a part of the car that is not a wheel, a row with an impulse
     pub car_runs: Vec<(bool, bool, bool)>,
     /// the car's normals summed over the rows the callbacks disabled, of the car's A run and of its B run
-    /// (mcCarDamage's scrape normal takes every row of its run, 0x82343F8C)
+    /// (mcCarDamage's scrape normal takes every row of its run, A-49818)
     pub off_a: Vec3,
     pub off_b: Vec3,
 }
 
 impl LooseState {
-    /// Is an instance one the breaking pass lists (instance vtable[8], 0x8248AD40)?
+    /// Is an instance one the breaking pass lists (instance vtable[8], F-83042)?
     fn breakable(&self, world: &LooseWorld, o: usize) -> bool {
         let obj = &self.objs[o];
         if obj.veh.is_some() {
@@ -1996,7 +2013,7 @@ impl LooseState {
     }
 
     /// The velocity solve of the car's island with what is loose in it, and the breaking pass
-    /// (0x825DE200 whose apply stands back, then 0x82593680): the solve with every prop that has
+    /// (F-68693 whose apply stands back, then F-12210): the solve with every prop that has
     /// no body taken for immovable; the instances asked what of those impulses breaks them; the
     /// winner's share given at once to the bodies; the break; and the solve again from where the
     /// bodies then are, until nothing breaks. `city`: the car's own contacts with the world
@@ -2004,7 +2021,7 @@ impl LooseState {
     pub fn solve_car_island(&mut self, world: &LooseWorld, car_in: &CarIn, car: &mut Body, dynm: &mut CarDyn, city: &[solver::Contact], city_rows: &[bool], city_part: &[u8], ids: &[usize], dt: f32) -> IslandOut {
         let _ = car_in;
         let (car_level, car_addr) = self.car_place();
-        // (the island's contacts, 0x82594068: every contact of every manifold in the tree's pre-order - a
+        // (the island's contacts, F-68442: every contact of every manifold in the tree's pre-order - a
         // pair's sub-manifolds by (B's part, A's part), a manifold's contacts by their number - the ones the
         // callbacks disabled too; that list sorted by the address of each one's instance A with the
         // original's own sort, which is not stable above 16; the enabled ones of it are the rows.
@@ -2093,7 +2110,7 @@ impl LooseState {
                     }
                 }
                 // (a torn bumper's whole bound is its box: the thickness from the corner of the box less its margin
-                // along the normal, 0x825E03D4's support)
+                // along the normal, A-32016's support)
                 if let Who::Obj(o) = m.a {
                     if let Some(c) = piece_core(world, &self.objs[o], &t.a.rows, t.normal) {
                         t.a.core = c;
@@ -2117,7 +2134,7 @@ impl LooseState {
             eprintln!("LOOSEWARM tick {} {:?}", self.tick, list.iter().filter_map(|x| x.3.as_ref().map(|(l, t)| (l.a, l.b, t.depth, t.kept))).collect::<Vec<_>>());
         }
         // (the same walk sorted by instance B's address, the same sort: the list the callbacks' second
-        // pass walks, 0x82590DB0 - by the rows' places in the walk)
+        // pass walks, F-15350 - by the rows' places in the walk)
         let mut walk_b: Vec<(i64, usize)> = list.iter().enumerate().map(|(n, x)| (x.2, n)).collect();
         let enabled: Vec<bool> = list.iter().map(|x| x.3.is_some()).collect();
         let mut tagged: Vec<(i64, usize, Option<(Link, Touch)>)> = list.into_iter().enumerate().map(|(n, x)| (x.1, n, x.3)).collect();
@@ -2129,7 +2146,7 @@ impl LooseState {
             stl_sort(&mut walk_b, |x| x.0);
         }
         // (the car's two runs - its rows of the A-sorted list, where it is A, then of the B-sorted one - as the
-        // callbacks are handed them, 0x82590DB0: every row of the run, the disabled ones too)
+        // callbacks are handed them, F-15350: every row of the run, the disabled ones too)
         let car_runs_at: [Vec<usize>; 2] = [
             tagged.iter().filter(|x| x.0 == car_addr).map(|x| x.1).collect(),
             walk_b.iter().filter(|x| x.0 == car_addr).map(|x| x.1).collect(),
@@ -2144,9 +2161,9 @@ impl LooseState {
         let mut touches: Vec<Touch> = list.iter().map(|x| x.1).collect();
         let inv_dt = 1.0 / dt;
         let mut rounds_left = 64;
-        // (the wake, 0x82590A60 -> 0x8258D3F8: an inactive instance that was hit before, in a contact of an island
+        // (the wake, F-44716 -> F-24099: an inactive instance that was hit before, in a contact of an island
         // with something breakable in it (island +75), gets a new body at rest. The decode has the call in the
-        // breaking pass's listing (0x825914B8), after the first solve; the recording says the woken body is
+        // breaking pass's listing (F-99488), after the first solve; the recording says the woken body is
         // already in the first solve - s512 / s518 of the long scrape exact only so - so it is done before the
         // rows. Whether the island +75 condition matters is not shown by the recording: the same run without it is
         // the same, bit for bit. Every manifold of the island counts, also one whose contacts are all disabled: V s_rtv
@@ -2161,11 +2178,11 @@ impl LooseState {
                     eprintln!("LOOSESOLVE tick {} {:?}/{} x {:?}/{} depth {:?} mu {:?} e {:?} n {:?} P {:?} J {:?} |J| {}", self.tick, l.a, l.part_a, l.b, l.part_b, t.depth, t.friction, t.elasticity, t.normal, t.kept, t.impulse, t.impulse.length());
                 }
             }
-            // ---- 0x825920F8: the rounds ----
+            // ---- F-80619: the rounds ----
             let mut j: Vec<Vec3> = touches.iter().map(|t| t.impulse).collect();
             let mut broke = false;
             for _ in 0..33 {
-                // (0x825914B8: the breakable instances and the impulse on each of their parts)
+                // (F-99488: the breakable instances and the impulse on each of their parts)
                 let mut listed: Vec<(usize, Vec<Vec3>)> = Vec::new();
                 for (i, l) in links.iter().enumerate() {
                     for (who, part, first_minus) in [(l.a, l.part_a, false), (l.b, l.part_b, true)] {
@@ -2183,7 +2200,7 @@ impl LooseState {
                         }
                     }
                 }
-                // (0x82591708: the instance that breaks at the least share)
+                // (F-29199: the instance that breaks at the least share)
                 let mut win: Option<(usize, f32, u8)> = None;
                 let mut least = 1.0f32;
                 for (o, comp) in &listed {
@@ -2232,9 +2249,9 @@ impl LooseState {
                         }
                     }
                 }
-                // (the break / the activation, 0x824900A8)
+                // (the break / the activation, F-27351)
                 let target = self.break_apart(world, w, group);
-                // (the contacts of the parts that left now name the new instance, 0x82593030)
+                // (the contacts of the parts that left now name the new instance, F-79003)
                 if let Some((new, bits)) = target {
                     let t = &world.types[self.objs[w].ty];
                     for l in links.iter_mut() {
@@ -2267,7 +2284,7 @@ impl LooseState {
             if broke && rounds_left > 0 {
                 continue;
             }
-            // (nothing broke: the impulses go to the bodies' accumulators, 0x825A20E8)
+            // (nothing broke: the impulses go to the bodies' accumulators, F-71376)
             // (a body woken above is in the apply's list now: the owners are the solve's and the woken)
             let (bodies, owners) = self.bodies_of(car, &links, &mut touches);
             let given = solver::island_apply(&bodies, &touches);
@@ -2329,7 +2346,7 @@ impl LooseState {
         }
     }
 
-    /// The prop instances' impact report after the island's solve (`sub_82489EE8`, slot 25; `prop_hit_fx_rule.md` 2a):
+    /// The prop instances' impact report after the island's solve (`F-81755`, slot 25; `prop_hit_fx_rule.md` 2a):
     /// per run of an instance's rows, as A and as B, the row with the largest impulse (the contact's +12, I) gives
     /// the point on the prop, the normal turned to the prop's side and the closing speed of the two bodies' velocities;
     /// when it is over 0.1 the type's events whose least speed it reaches are started at the point (+ the event's
@@ -2377,7 +2394,7 @@ impl LooseState {
         }
     }
 
-    /// The break-from-root sets of group `g` and, below it, of its sub-groups that have not broken (`sub_824D1B68`).
+    /// The break-from-root sets of group `g` and, below it, of its sub-groups that have not broken (`F-96808`).
     fn fx_root(&mut self, t: &FragType, w: usize, g: usize, absent: u64) {
         let Some(gr) = t.groups.get(g) else { return };
         let part = fx_part(t, g);
@@ -2404,7 +2421,7 @@ impl LooseState {
         }
     }
 
-    /// 0x824900A8 -> 0x8248F320: an instance breaks at `group` (255: it goes as a whole). Gives
+    /// F-27351 -> F-97875: an instance breaks at `group` (255: it goes as a whole). Gives
     /// the new instance and the groups it took, if a piece came off.
     fn break_apart(&mut self, world: &LooseWorld, w: usize, group: u8) -> Option<(usize, u64)> {
         let ty = self.objs[w].ty;
@@ -2413,7 +2430,7 @@ impl LooseState {
         let was_hit = self.objs[w].hit;
         if self.objs[w].entry.is_none() {
             if t.flags & 1 == 0 {
-                // (it goes as it is, with the file's archetype: child 0's break set on the instance's matrix, 0x824900A8)
+                // (it goes as it is, with the file's archetype: child 0's break set on the instance's matrix, F-27351)
                 if let Some(c0) = t.children.first() {
                     self.fx_follow(w, &c0.break_events, None);
                 }
@@ -2427,7 +2444,7 @@ impl LooseState {
                 }
                 return None;
             }
-            // (the prop gets an entry that holds every group, 0x8248A3B0)
+            // (the prop gets an entry that holds every group, F-44697)
             let mut e = Entry::default();
             let mass = entry_mass(t, 0);
             entry_refresh(t, &mut e, mass);
@@ -2436,7 +2453,7 @@ impl LooseState {
             self.entry_instance();
         }
         if group == 255 {
-            // (the whole instance comes loose: the break-from-root sets of the root groups, 0x82490284)
+            // (the whole instance comes loose: the break-from-root sets of the root groups, A-75924)
             let absent = self.objs[w].entry.map_or(0, |e| e.absent);
             for g in 0..t.root_groups as usize {
                 self.fx_root(t, w, g, absent);
@@ -2472,7 +2489,7 @@ impl LooseState {
         entry_refresh(t, &mut e, mass);
         let matrix = self.objs[w].matrix;
         let mut body = PBody::new(&matrix, e.cg, &e, max_speed, max_spin);
-        // (broken off a moving parent it takes the parent's motion with it, 0x825A5AE8 / 0x825A5168)
+        // (broken off a moving parent it takes the parent's motion with it, F-47138 / F-74100)
         if let Some(pb) = self.objs[w].body {
             let pos = xf(&matrix, parent.cg);
             let r = matrix[3] - pos;
@@ -2482,7 +2499,7 @@ impl LooseState {
             body.w = pb.w;
             body.l = body.momentum_of(pb.w);
         }
-        // (the events of the break, 0x8248F320: with the instance not broken before, the break-from-root sets of the
+        // (the events of the break, F-97875: with the instance not broken before, the break-from-root sets of the
         // group's subtree, then the break sets of the group's own children, on the part that stays)
         if !was_hit {
             self.fx_root(t, w, group as usize, parent.absent);
@@ -2503,7 +2520,7 @@ impl LooseState {
         if dbg() {
             eprintln!("LOOSENEW tick {} obj {new} level {} addr {:x}", self.tick, self.objs[new].level, self.objs[new].addr);
         }
-        // (the parent loses the groups, 0x824A9458 and 0x824A9130; a body keeps its velocities)
+        // (the parent loses the groups, F-85792 and F-13409; a body keeps its velocities)
         let mut pe = parent;
         pe.absent |= bits;
         let rest = entry_mass(t, pe.absent);
@@ -2526,7 +2543,7 @@ impl LooseState {
         Some((new, bits))
     }
 
-    /// The island's push solve (0x82591108) and what it leaves on the loose bodies; gives the
+    /// The island's push solve (F-56590) and what it leaves on the loose bodies; gives the
     /// car's push.
     pub fn push_car_island(&mut self, out: &mut IslandOut, car: &Body, car_start: Pushed, dt: f32) -> Pushed {
         // (the bodies as the integration left them: only their inverse masses and matrices
@@ -2562,8 +2579,8 @@ impl LooseState {
 
 // ---------------------------------------------------------------------------------------------
 // The loose bodies' own tick (p1/body_decode.md): the move, gravity and damping ahead of the
-// collide (0x8259F300), the integration after the solves (0x8259BE30), the push applied
-// (0x8259E920), and the entries' ages (0x824AB680).
+// collide (F-44566), the integration after the solves (F-94789), the push applied
+// (F-32811), and the entries' ages (F-26321).
 
 const GRAVITY: f32 = f32::from_bits(0xc11c_cccd);
 
@@ -2654,7 +2671,7 @@ impl LooseState {
         (broken, moving)
     }
 
-    /// The wake of an island's inactive objects (0x82590A60 -> 0x8258D3F8): every object of every manifold `ids` - one
+    /// The wake of an island's inactive objects (F-44716 -> F-24099): every object of every manifold `ids` - one
     /// whose contacts are all disabled too - when the island has a prop or piece in it.
     fn wake_island(&mut self, world: &LooseWorld, ids: &[usize]) {
         let objs: Vec<usize> = ids.iter().flat_map(|&k| [self.manis[k].a, self.manis[k].b]).filter_map(|w| if let Who::Obj(o) = w { Some(o) } else { None }).collect();
@@ -2751,7 +2768,7 @@ impl LooseState {
         }
     }
 
-    /// The instance's matrix from the body (0x8259D1E8).
+    /// The instance's matrix from the body (F-18040).
     fn matrix_from_body(&mut self, world: &LooseWorld, o: usize) {
         let cg = self.cg_of(world, o);
         let obj = &mut self.objs[o];
@@ -2760,7 +2777,7 @@ impl LooseState {
         }
     }
 
-    /// Ahead of the collide (0x8259F300): what the push solve left is applied, the body is moved
+    /// Ahead of the collide (F-44566): what the push solve left is applied, the body is moved
     /// with the velocities the tick came in with, and gravity and the type's damping go into the
     /// tick's force sums.
     pub fn pre_collide(&mut self, world: &LooseWorld, dt: f32) {
@@ -2786,14 +2803,14 @@ impl LooseState {
                 }
             };
             b.prev = self.objs[o].matrix;
-            // (0x8259E790 - normally nothing is pending)
+            // (F-67019 - normally nothing is pending)
             b.at = b.at + b.push;
             b.push = Vec3::ZERO;
             if solver::turn_applies(b.turn) {
                 b.rows = solver::rows_pushed(&b.rows, b.turn);
                 b.turn = Vec3::ZERO;
             }
-            // (0x8259E768)
+            // (F-10928)
             b.at = b.v * dt + b.at;
             let turn = b.w * dt;
             if dot3(turn, turn) > f32::from_bits(0x2b8c_bccc) {
@@ -2802,10 +2819,10 @@ impl LooseState {
             }
             self.objs[o].body = Some(b);
             self.matrix_from_body(world, o);
-            // (gravity, 0x8259D7F0: a force)
+            // (gravity, F-37896: a force)
             let g = Vec3::new(0.0 * gravity, GRAVITY * gravity, 0.0 * gravity);
             b.force = b.force + g * b.mass;
-            // (damping, 0x8259D880: in the body's axes, of an entry's archetype - and of the file's own
+            // (damping, F-66303: in the body's axes, of an entry's archetype - and of the file's own
             // archetype for a prop that went loose whole (phArchetypeDamp, vtable[17] true: V s_rtv 11286,
             // 25.5 kg, in flight from s386 its speed 0.269 % less a tick on every axis, the type's 0.02 /
             // 0.1 / 0.02 at 2.7 m/s). Not the torn bumper's plain phArchetypePhys.)
@@ -2844,14 +2861,14 @@ impl LooseState {
         }
     }
 
-    /// After the solves: the forces and impulses into the momenta (0x8259BE30), the push solve's
-    /// answer into the pose (0x8259E920), and every entry a tick older (0x824AB680).
+    /// After the solves: the forces and impulses into the momenta (F-94789), the push solve's
+    /// answer into the pose (F-32811), and every entry a tick older (F-26321).
     pub fn end_tick(&mut self, world: &LooseWorld, dt: f32) {
         self.end_tick_with(world, dt, None)
     }
 
     /// `end_tick`, with the city an ambient car's wheels probe (slot 14, after the integration and
-    /// before the push goes into the pose: sub_826FA0F8, then the base 0x8259E920).
+    /// before the push goes into the pose: F-37370, then the base F-32811).
     pub fn end_tick_with(&mut self, world: &LooseWorld, dt: f32, city: Option<&super::collision::WorldCollider>) {
         self.pieces_sleep(dt);
         self.bodies_sleep(dt);
@@ -2880,7 +2897,7 @@ impl LooseState {
                     ambient_wheels(a, &mut b, &m, city, dt);
                 }
             }
-            // (0x8259E790, then the instance's matrix and the collide's "last" one)
+            // (F-67019, then the instance's matrix and the collide's "last" one)
             b.at = b.at + b.push;
             b.push = Vec3::ZERO;
             if solver::turn_applies(b.turn) {
@@ -2949,12 +2966,12 @@ impl LooseState {
 // Stage R (agent D): another VEHICLE as a body of the car's island (flag `MCLA_DBG_RD1` = none).
 // An ambient traffic vehicle (instance class 0x820C4314, class number 6, collider class
 // 0x820C4114) is one polyhedron bound (type 4, `resources/ambients/<name>/*.r155`) on a body of
-// 600 kg whose archetype (phArchetypeDamp, made by 0x826E3EC8) has gravity factor 1.2 and the
+// 600 kg whose archetype (phArchetypeDamp, made by F-58444) has gravity factor 1.2 and the
 // damping (C, V, V2) = (0.01, 0.01, 0.001) for moving and for turning. Its own driving (the AI,
-// its ray suspension 0x826FA0F8 that leaves its forces in the body's sums for the next step) is
+// its ray suspension F-37370 that leaves its forces in the body's sums for the next step) is
 // the session's: a replay hands the body's state before every tick (`MCLA_REPLAY_OTHERS`, written
 // by veh_diff.py from the recording's OBJ records); the move, gravity, damping, the contacts
-// with the car's hull, the car's callback 0x82332D30, the island's solve and the push are this
+// with the car's hull, the car's callback F-55998, the island's solve and the push are this
 // port's own.
 
 /// What a vehicle object is beyond a prop's `Obj`.
@@ -2974,7 +2991,7 @@ pub struct VehObj {
     pub index: u32,
     /// it is in this tick's list as an active object
     pub here: bool,
-    /// its mcCarDamage +20, the "damage inflicted" factor a car it hits takes its blow times (0x82342EA8)
+    /// its mcCarDamage +20, the "damage inflicted" factor a car it hits takes its blow times (F-61340)
     pub inflict: f32,
 }
 
@@ -3120,7 +3137,7 @@ pub fn load_others(path: &str, inject: bool, hull_of: &dyn Fn(&str) -> Option<Hu
     });
 }
 
-/// 0x8259D880's constants on a traffic vehicle's archetype (0x826E3EC8: 0x82002C60 = 0.01, 0x820022B4 = 0.001).
+/// F-66303's constants on a traffic vehicle's archetype (F-58444: 0x82002C60 = 0.01, 0x820022B4 = 0.001).
 const VEH_DAMPING: [[f32; 3]; 6] = [[0.01; 3], [0.01; 3], [0.001; 3], [0.01; 3], [0.01; 3], [0.001; 3]];
 
 /// A vector made unit as the callback does (vmsum3fp, vrsqrtefp, one step).
@@ -3131,7 +3148,7 @@ fn unit_cb(n: Vec3) -> Vec3 {
     n * ((1.0 - d * (e * e)) * (0.5 * e) + e)
 }
 
-/// The car's callback 0x82332D30 on a contact whose other instance is a vehicle (class 6 or 8):
+/// The car's callback F-55998 on a contact whose other instance is a vehicle (class 6 or 8):
 /// the normal laid flat by how upright both stand; then by where the car is on the other and
 /// how it travels - in front of it and head-on (BoundFriction / BoundElasticity, each side's
 /// normal the other's axis, both points onto the two centre planes), behind it and the same
@@ -3227,7 +3244,7 @@ fn piece_core(world: &LooseWorld, obj: &Obj, rows: &[Vec3; 3], n: Vec3) -> Optio
 }
 
 /// The corner of a polyhedron bound the push solve measures a side's thickness from
-/// (0x825DCEB8, type 4: the last scanned corner unless an earlier one lies farther along).
+/// (F-49764, type 4: the last scanned corner unless an earlier one lies farther along).
 fn veh_core(shape: &HullShape, rows: &[Vec3; 3], n: Vec3) -> Vec3 {
     let nl = Vec3::new(dot3(rows[0], n), dot3(rows[1], n), dot3(rows[2], n));
     let c = shape.scanned();
@@ -3255,7 +3272,7 @@ pub struct LiveVeh {
     pub cg: Vec3,
     /// its place among the level's indices against the stepping car's (0)
     pub level: i64,
-    /// its body moved as the tick's pre-collide moves a body (0x8259E768), its last matrix, and its forces
+    /// its body moved as the tick's pre-collide moves a body (F-10928), its last matrix, and its forces
     pub body: PBody,
     pub inflict: f32,
     /// parked: no body - immovable to the solve
@@ -3380,7 +3397,7 @@ impl LooseState {
         out
     }
 
-    /// What mcCarDamage multiplies the car's blow from `other` by (0x82342EA8): a vehicle's "damage
+    /// What mcCarDamage multiplies the car's blow from `other` by (F-61340): a vehicle's "damage
     /// inflicted" factor (its mcCarDamage +20; the car's own +16 is 1), anything else +12 = 1.
     pub fn vehicle_factor(&self, other: Option<Who>) -> f32 {
         match other {
@@ -3444,15 +3461,15 @@ impl LooseState {
 // ---------------------------------------------------------------------------------------------
 // The ambient (traffic) cars in the level (PEOPLE_TRAFFIC.md "Hitting riding traffic", "Physical
 // traffic"). Each is an mcAmbientCar whose instance (car +112) is in the level from its spawn:
-// inactive while it rides (level state 1; its matrix moved each frame, sub_826FA760, and its
-// velocity the place's change over the frame, inst +96, sub_826E9A40); activated by any contact
-// (0x8258D9F0 -> 0x8258D3F8 -> slot 28 0x826FA810 -> vfunc 18 sub_826E7340 -> sub_826E96E0); then its
-// mcAmbientCollider (car +2688) is the base phCollider with its own wheels (slot 14 sub_826FA0F8 ->
-// sub_826FBA60) until the rest rule (sub_826F9EA8) takes it out again. A semi's cab and trailer
-// are joined by three constraints while they are active (sub_826E7340, sub_82591FA0).
+// inactive while it rides (level state 1; its matrix moved each frame, F-86858, and its
+// velocity the place's change over the frame, inst +96, F-53150); activated by any contact
+// (F-27744 -> F-24099 -> slot 28 F-41833 -> vfunc 18 F-15252 -> F-35377); then its
+// mcAmbientCollider (car +2688) is the base phCollider with its own wheels (slot 14 F-37370 ->
+// F-19974) until the rest rule (F-72067) takes it out again. A semi's cab and trailer
+// are joined by three constraints while they are active (F-15252, F-82928).
 
 /// An ambient type's physics: `mcAmbientTypePhysicsTuning.xml` (mass, inertia box, gravity factor),
-/// `mcAmbientWheelTuning.xml` (sub_826E5B30's derived numbers), the `.r155` bound and the skeleton's
+/// `mcAmbientWheelTuning.xml` (F-82909's derived numbers), the `.r155` bound and the skeleton's
 /// wheel bones.
 #[derive(Clone, Debug)]
 pub struct AmbTune {
@@ -3460,7 +3477,7 @@ pub struct AmbTune {
     pub shape: &'static HullShape,
     pub shape2: Option<&'static HullShape>,
     /// fMass x fMassScale; mass / 12 x (y^2 + z^2, x^2 + z^2, x^2 + y^2) of vInertialBox x
-    /// fInertialBoxScale (sub_825A42C8), each at least a twentieth of the largest (sub_825A4088)
+    /// fInertialBoxScale (F-30573), each at least a twentieth of the largest (F-88418)
     pub mass: f32,
     pub inertia: Vec3,
     /// fGravityFactor (archetype +48)
@@ -3469,7 +3486,7 @@ pub struct AmbTune {
     pub cg: Vec3,
     /// type +240: fCogSim x centroid.y
     pub cog_sim: f32,
-    /// type +244 .. +256 (sub_826E5B30, Wq = mass x gravity factor x 9.8 / 4): spring Ts Wq / travel,
+    /// type +244 .. +256 (F-82909, Wq = mass x gravity factor x 9.8 / 4): spring Ts Wq / travel,
     /// its damping 2 Sd sqrt(Wq k), the tyre's 2 Wq Tt / St and 2 Td sqrt(Wq kt)
     pub k: f32,
     pub c: f32,
@@ -3479,10 +3496,10 @@ pub struct AmbTune {
     pub travel: f32,
     pub stretch: f32,
     pub grip: f32,
-    /// the wheels (`iWheelCount`; the `wheel_i` bones, sub_82790E68; a trailer's 2 and 3 are its
+    /// the wheels (`iWheelCount`; the `wheel_i` bones, F-19769; a trailer's 2 and 3 are its
     /// bones 0 and 1 with z turned)
     pub wheels: Vec<Vec3>,
-    /// the hitch (sub_82790A18): a cab's or a trailer's
+    /// the hitch (F-45572): a cab's or a trailer's
     pub hitch: Option<Vec3>,
 }
 
@@ -3507,7 +3524,7 @@ pub struct Amb {
     pub count: u32,
     /// inst +96: the place's change over the frame
     pub moved: Vec3,
-    /// the collider's turn (+288), kept while inactive: zero from Init (sub_8259BC48)
+    /// the collider's turn (+288), kept while inactive: zero from Init (F-50121)
     pub turn: Vec3,
     /// the semi's other car (+3604)
     pub partner: Option<u32>,
@@ -3516,16 +3533,16 @@ pub struct Amb {
     pub slept: bool,
     last_at: Option<Vec3>,
     /// level byte bit 8 for this update's collide: the instance has +140 bit 0x80 (a race path's
-    /// bPhysical, path +170 -> sub_826EAD00 -> sub_826FA588) and its matrix was moved this frame
-    /// while inactive (sub_826FA760 -> sub_825880D8: the simulator's list, at most 120); the list
-    /// is emptied after the collide (sub_8258E4D0 -> sub_82588220)
+    /// bPhysical, path +170 -> F-92604 -> F-55165) and its matrix was moved this frame
+    /// while inactive (F-86858 -> F-77745: the simulator's list, at most 120); the list
+    /// is emptied after the collide (F-96197 -> F-79250)
     pub posed: bool,
 }
 
-/// A constraint between two ambient cars (rage::phConstraint, max distance: sub_825B6D18): the
+/// A constraint between two ambient cars (rage::phConstraint, max distance: F-44049): the
 /// owner (the car that was activated, +3592 .. +3600), its two cars, a point in each one's frame
-/// (+80 / +96) and the length (+160); +164 = 0.6 (sub_825B6030), +320 = 0, +328 = -1 (never
-/// breaks), flags = 2 (sub_825B6278).
+/// (+80 / +96) and the length (+160); +164 = 0.6 (F-31401), +320 = 0, +328 = -1 (never
+/// breaks), flags = 2 (F-95940).
 #[derive(Clone, Copy, Debug)]
 pub struct Rope {
     pub owner: u32,
@@ -3545,7 +3562,7 @@ fn rope_dbg() -> bool {
 /// The first constraint's length: global 0x82909F6C, in the image's zero-filled tail and written by
 /// nothing - 0 (a point constraint, kind 1).
 const ROPE_POINT: f32 = 0.0;
-/// +164: how deep one constraint's contact stands at most; the rest moves the bodies (sub_825B6750)
+/// +164: how deep one constraint's contact stands at most; the rest moves the bodies (F-64595)
 const ROPE_DEPTH: f32 = 0.6;
 
 impl LooseState {
@@ -3590,12 +3607,12 @@ impl LooseState {
         a.last_at = Some(matrix[3]);
     }
 
-    /// A car whose instance has +140 bit 0x80 had its matrix moved this frame (sub_826FA760, after
-    /// `ambient_place`): while it is inactive (level state 1) sub_825880D8 puts it on the
+    /// A car whose instance has +140 bit 0x80 had its matrix moved this frame (F-86858, after
+    /// `ambient_place`): while it is inactive (level state 1) F-77745 puts it on the
     /// simulator's list (at most 120) and sets its level byte bit 8 until the collide; the
-    /// collision pass (sub_8258D9F0) then takes a pair of two inactive objects when either one has
+    /// collision pass (F-27744) then takes a pair of two inactive objects when either one has
     /// bit 8 - such a car meets riding / parked cars and knockable props while it is kinematic, and
-    /// a contact activates both inactive sides (0x8258E07C -> 0x8258D3F8).
+    /// a contact activates both inactive sides (A-28475 -> F-24099).
     pub fn ambient_posed(&mut self, uid: u32) {
         let Some(o) = self.amb_obj(uid) else { return };
         if self.objs[o].body.is_some() {
@@ -3628,7 +3645,7 @@ impl LooseState {
     }
 
     /// The game makes an ambient car active (its footprint probe, an explosion, slots 16 / 17: the
-    /// same 0x8258D3F8).
+    /// same F-24099).
     pub fn ambient_let_go(&mut self, uid: u32) {
         if let Some(o) = self.amb_obj(uid) {
             self.ambient_activate(o);
@@ -3663,10 +3680,10 @@ impl LooseState {
         out
     }
 
-    /// An inactive ambient car made active (0x8258D3F8 -> slot 28 0x826FA810, vfunc 41: its collider at
+    /// An inactive ambient car made active (F-24099 -> slot 28 F-41833, vfunc 41: its collider at
     /// the instance's velocity, inst +96; its turn the collider's own; the rest count from 0). A semi's
     /// cab or trailer then joins its partner by three constraints if the partner holds none, and makes
-    /// the partner active (sub_826E7340 -> sub_826EA0A8).
+    /// the partner active (F-15252 -> F-10339).
     fn ambient_activate(&mut self, o: usize) {
         if self.objs[o].body.is_some() {
             return;
@@ -3697,10 +3714,10 @@ impl LooseState {
         self.ambient_activate(q);
     }
 
-    /// After the tick (car slot 6, sub_826E5AB8): an active ambient car's velocity is its place's
-    /// change (sub_826E9A40), and the rest rule (sub_826F9EA8): from its fourth frame active, a frame
-    /// whose velocity is within 0.001 m/s on every axis resets its wheels (sub_826FBA38) and takes it
-    /// out (0x82588D90 -> slot 19 sub_826E68C0: its constraints go; the collider keeps its turn).
+    /// After the tick (car slot 6, F-43567): an active ambient car's velocity is its place's
+    /// change (F-53150), and the rest rule (F-72067): from its fourth frame active, a frame
+    /// whose velocity is within 0.001 m/s on every axis resets its wheels (F-73960) and takes it
+    /// out (F-38307 -> slot 19 F-38021: its constraints go; the collider keeps its turn).
     pub fn ambient_frame(&mut self, dt: f32) {
         for o in 0..self.objs.len() {
             let Some(b) = self.objs[o].body else { continue };
@@ -3732,10 +3749,10 @@ impl LooseState {
         }
     }
 
-    /// The constraints' contacts for this update (0x82591210 -> 0x825B6F78), before the collide: each
+    /// The constraints' contacts for this update (F-87905 -> F-83853), before the collide: each
     /// one's manifold made afresh. A side inactive is made active once the two points are more than
     /// the length and 0.01 apart, else nothing; a rope that is slack has no contact; past +164 the
-    /// rest moves the two bodies apart by their masses (sub_825B6750, into the push).
+    /// rest moves the two bodies apart by their masses (F-64595, into the push).
     fn ropes_touch(&mut self) {
         self.manis.retain(|m| !m.rope);
         let ropes = self.ropes.clone();
@@ -3759,7 +3776,7 @@ impl LooseState {
                 }
                 self.ambient_activate(ob);
             }
-            // (0x825B6470)
+            // (F-72436)
             let d = pb - pa;
             let s2 = dot3(d, d);
             let (n, l) = if s2 > f32::from_bits(0x2b8c_bccc) {
@@ -3808,8 +3825,8 @@ impl LooseState {
     }
 }
 
-/// An active ambient car's wheels (slot 14 sub_826FA0F8 -> sub_826FBA60, per wheel): a probe from the
-/// wheel's bone straight down the car to half a metre under its floor (sub_826E5540 -> sub_827974F0,
+/// An active ambient car's wheels (slot 14 F-37370 -> F-19974, per wheel): a probe from the
+/// wheel's bone straight down the car to half a metre under its floor (F-18688 -> F-57005,
 /// the ground; a polygon steeper than 45 degrees is no hit); the spring along the hit's normal with a
 /// constant quarter of the car's weight on top, its push when it is past its travel; the tyre's
 /// stretch across the normal against the slip - the front pair's whole, the others' less their rolling
@@ -3859,7 +3876,7 @@ fn ambient_wheels(a: &mut Amb, b: &mut PBody, m: &[Vec3; 4], city: &super::colli
         let rate = if d_old == 0.0 { 0.0 } else { (d - d_old) * inv_dt };
         let cosn = fma(u.x, n.x, fma(u.z, n.z, u.y * n.y));
         let mut f = n * (cosn * fma(t.k, d, t.c * rate));
-        // (sub_826E9658: a quarter of the archetype's weight, no gravity factor)
+        // (F-60791: a quarter of the archetype's weight, no gravity factor)
         let sup = (t.mass * f32::from_bits(0x411c_cccd)) * 0.25;
         f.y = sup + f.y;
         b.force = b.force + f;
@@ -3893,12 +3910,12 @@ fn ambient_wheels(a: &mut Amb, b: &mut PBody, m: &[Vec3; 4], city: &super::colli
 // ---------------------------------------------------------------------------------------------
 // A car's torn-off bumper (docs/reference/audio/DAMAGE_PARTS_RULE.md 2.4, 2.5): the anim object's
 // mcCarAnimBreakablePartInst puts its own phInst into the level when both ends have broken
-// (sub_823414C8 @823417FC -> 0x8258BE48). Its archetype and bound are made by the bumper's
-// constructor (sub_8233C988): a phArchetypePhys (0x8258F538: max speed 500, max spin 2 pi) of mass 4,
-// the angular inertia of a box 1.25 x the bound (0x825A42C8, floored by 0x825A4088), gravity factor
-// 1.5 (vt+56 = 0x8258E6B0 writes archetype +48, the factor pre_collide multiplies gravity by), type /
-// include flags 2 / 0xFFFFBFFF as a prop's; a box bound 1.8 x 0.333 x 0.5 (0x825807E0, full sizes,
-// margin 0.04 from the bound's constructor 0x82583708), centre of gravity (0, 0, 0.15) (0x825832C8:
+// (F-44446 @A-63668 -> F-10733). Its archetype and bound are made by the bumper's
+// constructor (F-48443): a phArchetypePhys (F-90982: max speed 500, max spin 2 pi) of mass 4,
+// the angular inertia of a box 1.25 x the bound (F-30573, floored by F-88418), gravity factor
+// 1.5 (vt+56 = F-18589 writes archetype +48, the factor pre_collide multiplies gravity by), type /
+// include flags 2 / 0xFFFFBFFF as a prop's; a box bound 1.8 x 0.333 x 0.5 (F-17528, full sizes,
+// margin 0.04 from the bound's constructor F-26930), centre of gravity (0, 0, 0.15) (F-83058:
 // bound +80, flag +6), material "prop" (0x82043524 through the material manager's vt+24, bound vt+52).
 // No damping (a plain phArchetypePhys). It is a pool body with the simulator's sleep object (p1
 // body_decode.md section 6), which the port's props do not have yet: its rule is kept here for the
@@ -3914,7 +3931,7 @@ pub fn piece_type() -> FragType {
     let cg = [0.0, 0.0, 0.15];
     let radius = half.length();
     let mass = 4.0f32;
-    // (0x825A42C8: ((y^2 + z^2) m) / 12 ... of the box 1.25 x the bound; 0x825A4088's floor leaves these as they are)
+    // (F-30573: ((y^2 + z^2) m) / 12 ... of the box 1.25 x the bound; F-88418's floor leaves these as they are)
     let s = size * 1.25;
     let k = f32::from_bits(0x3daa_aaab);
     let inertia = [((s.z * s.z + s.y * s.y) * mass) * k, ((s.x * s.x + s.z * s.z) * mass) * k, ((s.x * s.x + s.y * s.y) * mass) * k];
@@ -3966,13 +3983,13 @@ pub struct Sleep {
 }
 
 impl Sleep {
-    /// 0x82594E80, at every activation: A = 15 - 3, B = 20 - 3, awake.
+    /// F-81453, at every activation: A = 15 - 3, B = 20 - 3, awake.
     pub fn reset() -> Sleep {
         Sleep { state: 1, a: 12, b: 17 }
     }
 }
 
-/// The "still" test (0x82595128 -> 0x82594EC0) with the game's tolerances: v^2 and w^2 0.05.
+/// The "still" test (F-61306 -> F-66163) with the game's tolerances: v^2 and w^2 0.05.
 fn still(b: &PBody, dt: f32, f2: f32) -> bool {
     let [a, bb, c, d] = still_terms(b, dt, f2);
     let tol = f32::from_bits(0x3d4c_cccd);
@@ -3998,10 +4015,10 @@ fn still_terms(b: &PBody, dt: f32, f2: f32) -> [f32; 4] {
     [a, bb, c, d]
 }
 
-/// What the bumper's contact callback (sub_8234CF80) reads of one of its contacts this tick: every contact whose
-/// +165 bit 0x80 is set - the contact's "enabled" bit (set with 0x40 when it is made, 0x825A26B8 / 0x825A2730;
-/// cleared by a callback that takes the contact from the solver, `clrlwi ..,25` in 0x82332AC8, 0x8255D028 ...), which
-/// is the port's `Slot2::enabled`; tested at 0x8234D028.
+/// What the bumper's contact callback (F-80340) reads of one of its contacts this tick: every contact whose
+/// +165 bit 0x80 is set - the contact's "enabled" bit (set with 0x40 when it is made, F-51639 / F-34223;
+/// cleared by a callback that takes the contact from the solver, `clrlwi ..,25` in F-58598, F-50733 ...), which
+/// is the port's `Slot2::enabled`; tested at A-53896.
 #[derive(Clone, Copy, Debug)]
 pub struct PieceContact {
     /// the relative velocity at the contact (the piece less the other side), the normal as the
@@ -4017,7 +4034,7 @@ pub struct Piece {
     pub id: u64,
     pub obj: usize,
     pub sleep: Sleep,
-    /// asleep and taken out of the simulator (0x82588D90): an inactive object at its last matrix
+    /// asleep and taken out of the simulator (F-38307): an inactive object at its last matrix
     pub off: bool,
     /// its contacts as the last refresh had them
     pub contacts: Vec<PieceContact>,
@@ -4029,7 +4046,7 @@ static PIECE_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 
 impl LooseState {
     /// Put a torn bumper into the level at `matrix` (its frame: rows and place) moving at `v`, turning
-    /// at `w` (0x8258BE48, then the body's vt+164 / vt+172). None where the level has no such type.
+    /// at `w` (F-10733, then the body's vt+164 / vt+172). None where the level has no such type.
     pub fn add_piece(&mut self, world: &LooseWorld, matrix: [Vec3; 4], v: Vec3, w: Vec3) -> Option<u64> {
         let ty = world.piece_type_index()?;
         let t = &world.types[ty];
@@ -4048,7 +4065,7 @@ impl LooseState {
         Some(id)
     }
 
-    /// Take a piece out of the level (the bumper's reset, sub_8233CF78). The object stays in the
+    /// Take a piece out of the level (the bumper's reset, F-40944). The object stays in the
     /// list (other objects are known by their place in it) far below the city, without a body.
     pub fn remove_piece(&mut self, id: u64) {
         let Some(k) = self.pieces.iter().position(|p| p.id == id) else { return };
@@ -4067,7 +4084,7 @@ impl LooseState {
         Some((self.objs[p.obj].matrix, &p.contacts, p.off))
     }
 
-    /// PreCollide's sleep test (0x82588490): a settling or asleep body that is not still wakes up.
+    /// PreCollide's sleep test (F-24444): a settling or asleep body that is not still wakes up.
     fn pieces_wake(&mut self, dt: f32) {
         for p in self.pieces.iter_mut() {
             let Some(b) = self.objs[p.obj].body.as_ref() else { continue };
@@ -4083,7 +4100,7 @@ impl LooseState {
         }
     }
 
-    /// The bumper's contact callback's view of its contacts after the refresh (sub_8233C938 -> sub_8234CF80).
+    /// The bumper's contact callback's view of its contacts after the refresh (F-83112 -> F-80340).
     fn pieces_touched(&mut self, car: &CarIn) {
         for k in 0..self.pieces.len() {
             let o = self.pieces[k].obj;
@@ -4112,8 +4129,8 @@ impl LooseState {
         }
     }
 
-    /// The sleep object's update (0x825951D0, after the velocity solves, before the integration) and the
-    /// deactivation of a piece asleep in an island of its own (0x825DAB28 -> 0x82588D90; the car and the
+    /// The sleep object's update (F-43494, after the velocity solves, before the integration) and the
+    /// deactivation of a piece asleep in an island of its own (F-50834 -> F-38307; the car and the
     /// port's props have no sleep object, so an island with any of them never sleeps).
     fn pieces_sleep(&mut self, dt: f32) {
         for k in 0..self.pieces.len() {
@@ -4159,14 +4176,14 @@ impl LooseState {
 impl LooseState {
     /// Has the object a sleep object of the generic kind (a pool body that is no vehicle and no torn bumper)?
     fn sleeper(&self, o: usize) -> bool {
-        // (an ambient car's collider has its own, collider +820 - sub_826F9FB8 -> 0x825952E0: the same rule)
+        // (an ambient car's collider has its own, collider +820 - F-91199 -> F-64883: the same rule)
         (self.objs[o].veh.is_none() || self.objs[o].amb.is_some()) && !self.pieces.iter().any(|p| p.obj == o)
     }
 
-    /// Take an asleep object out of the simulator (0x82588D90): inactive at its last matrix, its entry and
+    /// Take an asleep object out of the simulator (F-38307): inactive at its last matrix, its entry and
     /// its "hit" bit kept.
     fn deactivate(&mut self, o: usize) {
-        // (an ambient car: 0x82588D90 -> inst vtable[29] sub_826FA458 -> car slot 19 sub_826E68C0 - its
+        // (an ambient car: F-38307 -> inst vtable[29] F-87090 -> car slot 19 F-38021 - its
         // constraints go; the collider keeps its turn and its sleep object; the wheels are not reset)
         let body = self.objs[o].body;
         if let (Some(a), Some(b)) = (self.objs[o].amb.as_mut(), body) {
@@ -4188,8 +4205,8 @@ impl LooseState {
         }
     }
 
-    /// 0x82590A60 -> 0x8258D3F8: an inactive object that has been hit is activated again with a new body at
-    /// rest (0x8259E648: v = w = 0) and a reset sleep object; one never hit refuses (vtable[28] 0x8248BF08).
+    /// F-44716 -> F-24099: an inactive object that has been hit is activated again with a new body at
+    /// rest (F-28128: v = w = 0) and a reset sleep object; one never hit refuses (vtable[28] F-79777).
     fn wake_obj(&mut self, world: &LooseWorld, o: usize) {
         if !self.objs[o].dormant || self.objs[o].body.is_some() || !self.objs[o].hit || !self.sleeper(o) {
             return;
@@ -4210,7 +4227,7 @@ impl LooseState {
         }
     }
 
-    /// PreCollide's sleep test (0x82588490) for every body with a sleep object.
+    /// PreCollide's sleep test (F-24444) for every body with a sleep object.
     fn bodies_wake(&mut self, dt: f32) {
         for o in 0..self.objs.len() {
             if !self.sleeper(o) {
@@ -4223,14 +4240,14 @@ impl LooseState {
         }
     }
 
-    /// The sleep object's update (0x825951D0, in 0x8258A300's loop before the integration) and deactivation A
+    /// The sleep object's update (F-43494, in F-96487's loop before the integration) and deactivation A
     /// (body_decode.md 6.2): asleep with no manifold this tick - not integrated, taken out.
     fn bodies_sleep(&mut self, dt: f32) {
         for o in 0..self.objs.len() {
             if !self.sleeper(o) {
                 continue;
             }
-            // (the Update's test runs before the push solve, and PreCollide's 0x8259E790 has left +432 / +448 zero:
+            // (the Update's test runs before the push solve, and PreCollide's F-67019 has left +432 / +448 zero:
             // no push or turn enters it - the port's are this tick's push solve's. V s_rtv 22265: not still at s385
             // by its w alone, asleep at s420 as the original, not s419)
             let Some(mut b) = self.objs[o].body else { continue };
@@ -4265,7 +4282,7 @@ impl LooseState {
         }
     }
 
-    /// Deactivation B (0x825DAB28 -> 0x825906D0 / 0x82592A00): an island whose bodies are all asleep is taken
+    /// Deactivation B (F-50834 -> F-24167 / F-56803): an island whose bodies are all asleep is taken
     /// out before its solve - no breaking, no impulses. A body without a sleep object of this kind (the car, a
     /// vehicle, a torn bumper - the port keeps the bumper's own rule) keeps its island awake.
     fn islands_asleep(&mut self) -> Vec<usize> {
@@ -4389,7 +4406,7 @@ mod piece_tests {
     use super::*;
     use crate::physics::collision::{SectorMesh, WorldCollider};
 
-    /// The bumper's type as sub_8233C988 makes it.
+    /// The bumper's type as F-48443 makes it.
     #[test]
     fn the_torn_bumper_is_the_originals_box() {
         let t = piece_type();
@@ -4457,5 +4474,35 @@ mod piece_tests {
             println!("rest {:?} up rows {:?} asleep at tick {:?}", m[3], (m[0].y, m[1].y, m[2].y), asleep);
             assert!(off && (m[3].y - height).abs() < 0.01, "{:?}", m);
         }
+    }
+
+    /// A polyhedron part (bound type 4) meets the city: before F-33272's core was used it had no contact and fell for ever. The
+    /// corners are the box's less the margin, so it rests where the box rests.
+    #[test]
+    fn a_polyhedron_part_rests_on_the_ground() {
+        let mut world = LooseWorld::new(Vec::new(), Vec::new());
+        let ty = world.piece_type_index().unwrap();
+        let b = world.types[ty].parts[0].bound.as_mut().unwrap();
+        b.kind = 4;
+        let (h, g) = (b.max, b.margin);
+        let (x, y, z) = (h[0] - g, h[1] - g, h[2] - g);
+        let corners: Vec<Vec3> = [[-x, -y, -z], [x, -y, -z], [-x, y, -z], [x, y, -z], [-x, -y, z], [x, -y, z], [-x, y, z], [x, y, z]].iter().map(|c| v(*c)).collect();
+        world.polyhedra.insert((ty, 0), corners);
+        let city = flat();
+        let hull = HullShape::new(vec![Vec3::new(-1.0, -0.5, -2.0), Vec3::new(1.0, -0.5, -2.0), Vec3::new(0.0, 0.5, -2.0), Vec3::new(0.0, -0.5, 2.0)], &[[0, 1, 2], [0, 3, 1], [1, 3, 2], [2, 3, 0]]);
+        let away = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(1000.0, 0.0, 1000.0)];
+        let car = CarIn { hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: away, last: away, speed: 0.0, bound: (hull.min, hull.max), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.5, 0.1), wiped: false };
+        let mut s = LooseState::default();
+        let id = s.add_piece(&world, [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(0.0, 0.6, 0.0)], Vec3::ZERO, Vec3::ZERO).unwrap();
+        let dt = 1.0 / 60.0;
+        for _ in 0..600 {
+            s.pre_collide(&world, dt);
+            s.collide(&world, &car, &city, false);
+            s.refresh(&world, &car);
+            s.step_rest(&world, &car, dt);
+            s.end_tick(&world, dt);
+        }
+        let (m, _, _) = s.piece(id).unwrap();
+        assert!((m[3].y - h[1]).abs() < 0.01, "{:?}", m);
     }
 }

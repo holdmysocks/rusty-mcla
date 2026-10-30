@@ -43,6 +43,8 @@ pub struct FragBound {
     pub verts: Vec<[f32; 3]>,
     pub tris: Vec<[u16; 3]>,
     pub beside: Vec<[u16; 3]>,
+    /// bound +186: how many of a polyhedron's corners the detector's scan takes
+    pub scan: u16,
     /// material number: +0x90 of a sphere, +0xd0 of a capsule
     pub material: u32,
 }
@@ -201,6 +203,7 @@ fn bound_at(rd: &Rd, o: usize) -> FragBound {
             b.material = rd.u32(o + 0xd0);
         }
         3 | 4 => {
+            b.scan = rd.u16(o + 186);
             let (nv, nt) = (rd.u32(o + 0xc8) as usize, rd.u32(o + 0xcc) as usize);
             if let (Some(verts), Some(tris)) = (rd.ptr(o + 0x80), rd.ptr(o + 0x8c)) {
                 if nv < 4096 && nt < 8192 && rd.has(verts, nv * 16) && rd.has(tris, nt * 16) {
