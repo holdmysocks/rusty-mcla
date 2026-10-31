@@ -1191,6 +1191,10 @@ impl Gpu {
             config.view_formats = vec![config.format, config.format.remove_srgb_suffix()];
             config.usage |= wgpu::TextureUsages::COPY_SRC;
             let mut surface = surface;
+            // (test hook MCLA_LOSE_DEVICE=1: the device lost here in exclusive fullscreen, as in GitHub #33)
+            if std::env::var_os("MCLA_LOSE_DEVICE").is_some() && matches!(window.fullscreen(), Some(winit::window::Fullscreen::Exclusive(_))) {
+                device.destroy();
+            }
             let mut ok = configure_checked(&device, &surface, &config).await;
             if !ok && info.backend == wgpu::Backend::Dx12 && matches!(window.fullscreen(), Some(winit::window::Fullscreen::Exclusive(_))) {
                 log::warn!("surface: no DX12 swap chain on the exclusive-fullscreen window; borderless fullscreen instead");
@@ -1201,6 +1205,13 @@ impl Gpu {
                 config.width = size.width.max(1);
                 config.height = size.height.max(1);
                 ok = configure_checked(&device, &surface, &config).await;
+            }
+            // (GitHub #33: an RX 5500 XT loses the Vulkan device here in exclusive fullscreen; a lost device cannot be used
+            // again, so borderless fullscreen starts over with a new one)
+            if !ok && matches!(window.fullscreen(), Some(winit::window::Fullscreen::Exclusive(_))) {
+                log::warn!("surface: no swap chain on the exclusive-fullscreen window on {:?}; borderless fullscreen instead, on a new device", info.backend);
+                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(window.current_monitor())));
+                continue;
             }
             if !ok {
                 if info.backend != wgpu::Backend::Vulkan && backends != wgpu::Backends::VULKAN {
