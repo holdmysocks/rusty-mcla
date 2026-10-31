@@ -619,6 +619,12 @@ impl Career {
                 let _ = std::fs::write(&cache, lines.join("\n"));
             }
         }
+        // (the scan took the blitz races named in the red light man's script for this mission's; it has
+        // none: hw_redlight_hk1 posts RED_LIGHT_GH_01_COMPLETE on the win of his own race, 0x69ea.
+        // Here too, for a cache already written.)
+        for k in ["REDLIGHT_GH_01", "RED_LIGHT_GH_01_COMPLETE"] {
+            c.events.remove(k);
+        }
         // prize cars: "Event { Name hw_tournament1 Difficulty { .. Reward { Type Car Name vp_.._DUB } } }"
         if let Ok(rd) = std::fs::read_dir(&cdir) {
             for e in rd.flatten().filter(|e| e.path().is_file()) {
@@ -971,7 +977,8 @@ impl Career {
                     // (a RACE_ mission asks for the race, not the win: FIRST IMPRESSIONS / RACE HENRY was
                     // stamped COMPLETE on second place in the recomp - `ng_mission_results`; BEAT_ and
                     // REDLIGHT_ ask for the win)
-                    (Cond::Event { event, .. }, Ev::Race { place, hookman: true, .. }) if event == "MISSION_EVENT" && racing_id && !hookman_used && (place == 1 || m.id.starts_with("RACE_")) => {
+                    // (REDLIGHT_GH_01's man posts its event on the win of his red light race only: 0x69ea)
+                    (Cond::Event { event, .. }, Ev::Race { place, hookman: true, race, .. }) if event == "MISSION_EVENT" && racing_id && !hookman_used && (place == 1 || m.id.starts_with("RACE_")) && (!m.id.starts_with("REDLIGHT_") || race.eq_ignore_ascii_case(crate::althk::REDLIGHT_RACE_ID)) => {
                         // both steps of "meet him, then race him" are done by the same race
                         if oi + 1 == m.objectives.len() {
                             hookman_used = true;
@@ -1137,7 +1144,7 @@ impl Career {
     pub fn hookman_race(&self) -> Option<String> {
         let i = *self.order.iter().find(|&&i| {
             let id = &self.missions[i].id;
-            id.starts_with("RACE_") || id.starts_with("BEAT_") || id.starts_with("REDLIGHT_")
+            id.starts_with("RACE_") || id.starts_with("BEAT_")
         })?;
         let e = self.event_of(&self.missions[i])?;
         e.races.iter().find(|r| !self.state[i].won.contains(*r)).cloned()
@@ -1288,6 +1295,9 @@ impl Career {
             if !races.iter().any(|r| l.ends_with(r.as_str())) {
                 continue;
             }
+            // (nRacesToWin: the event's +3252, set by each story script - the majority of its races)
+            let m = self.missions[i].clone();
+            let need = m.objectives[oi].conds.first().map_or(1, |c| self.target(&m, c)) as i32;
             let st = &mut self.state[i];
             let n = {
                 let e = st.pts.entry(winner.to_string()).or_default();
@@ -1295,9 +1305,9 @@ impl Career {
                 *e
             };
             if winner == "YOU" {
-                return Some(format!("{} OF 3 WINS", n.min(3)));
+                return Some(format!("{} OF {} WINS", n.min(need), need));
             }
-            if n >= 3 {
+            if n >= need {
                 st.won.clear();
                 st.pts.clear();
                 if let Some(p) = st.progress.get_mut(oi) {
@@ -1306,9 +1316,39 @@ impl Career {
                 self.story_reset(i);
                 return Some("SERIES LOST".to_string());
             }
-            return Some(format!("RIVAL HAS {} OF 3 WINS", n));
+            return Some(format!("RIVAL HAS {} OF {} WINS", n, need));
         }
         None
+    }
+
+    /// The series a story man runs when he is flashed (`<ID>_CORE` starts OrderedSeriesCore):
+    /// its races in the script's order and nRacesToWin. None while the mission is not open, for
+    /// another kind of mission, or before its hookman is met.
+    pub fn series_mission(&self, id: &str) -> Option<(Vec<String>, u32)> {
+        let &i = self.index.get(id)?;
+        if self.state[i].stage != Stage::Active || self.story_waits(i) {
+            return None;
+        }
+        let m = &self.missions[i];
+        let c = m.objectives.iter().filter_map(|r| r.conds.first()).find(|c| matches!(c, Cond::Event { event, .. } if event == "SERIES_COMPLETE"))?;
+        let races = self.event_of(m).map(|e| e.races.clone()).filter(|r| !r.is_empty())?;
+        Some((races, self.target(m, c)))
+    }
+
+    /// A story series given up (QUIT SERIES, RESTART SERIES, RACE SERIES AGAIN): its wins are the
+    /// script's (`nRacerWins_<i>`) and go with it. Nothing for a mission it completed.
+    pub fn series_drop(&mut self, id: &str) {
+        let Some(&i) = self.index.get(id) else { return };
+        if self.state[i].stage != Stage::Active {
+            return;
+        }
+        let Some(oi) = self.missions[i].objectives.iter().position(|r| matches!(r.conds.first(), Some(Cond::Event { event, .. }) if event == "SERIES_COMPLETE")) else { return };
+        let st = &mut self.state[i];
+        st.won.clear();
+        st.pts.clear();
+        if let Some(p) = st.progress.get_mut(oi) {
+            *p = 0;
+        }
     }
 
     /// The active missions whose hookman only races a certain kind of car: (mission id, the

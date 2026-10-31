@@ -14992,7 +14992,7 @@ mod tests {
         g.arcade_restore = None;
         assert_eq!(g.mc4_race_factor(), 1.0);
         // (a race of a hangout's series pays its money like any race)
-        g.series = Some(crate::game::Series { key: "hw_local_hangout1_series".into(), races: Vec::new(), at: 0, wins: Vec::new(), rivals: Vec::new(), diff: 1 });
+        g.series = Some(crate::game::Series { key: "hw_local_hangout1_series".into(), races: Vec::new(), at: 0, wins: Vec::new(), rivals: Vec::new(), story: None, diff: 1 });
         g.award_race(2, 4);
         assert!(g.last_reward.0 > 0 && g.last_reward.1 > 0);
         g.series = None;
@@ -16511,6 +16511,60 @@ mod tests {
         // (step 21: the lot - five empty slots, the counter at 0)
         same(&want["pink_slips"], &b["career"]["pink_slips"], "pink slips");
         assert_eq!(b["career"]["addon"]["present"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GitHub #34. A red light win against the mission's man completes REDLIGHT_GH_01 (its list is
+    /// not the blitz races); a story series is the man's first to nRacesToWin, its wins go with
+    /// the series, and the rival's two end it.
+    #[test]
+    fn red_light_and_story_series_complete() {
+        let Some((mut g, dir, _)) = career_game("newgame_import.json", "i34") else { return };
+        let mut s = g.career.save();
+        for id in ["REDLIGHT_GH_01", "BESTOF_GH_04"] {
+            let mut st = crate::career::MState::default();
+            st.stage = crate::career::Stage::Active;
+            s.missions.insert(id.to_string(), st);
+            s.order.push(id.to_string());
+        }
+        g.career.restore(&s);
+        let race = |g: &mut Game, id: &str, winner: &str| {
+            let place = if winner == "YOU" { 1 } else { 2 };
+            g.career.series_race(id, winner);
+            g.career.event(crate::career::Ev::Race { district: "Hollywood", place, hookman: true, class: "MUSCLE", race: id, beat_goal: false });
+        };
+        // (not by a blitz race)
+        race(&mut g, "game/race/hollywood/blitz/hw_blitz_mb_01", "YOU");
+        assert!(!g.career.mission_complete("REDLIGHT_GH_01"));
+        race(&mut g, crate::althk::REDLIGHT_RACE_ID, "RIVAL");
+        assert!(!g.career.mission_complete("REDLIGHT_GH_01"));
+        race(&mut g, crate::althk::REDLIGHT_RACE_ID, "YOU");
+        assert!(g.career.mission_complete("REDLIGHT_GH_01"));
+
+        let (races, need) = g.career.series_mission("BESTOF_GH_04").unwrap();
+        assert_eq!((races[0].as_str(), races.len(), need), ("hollywood/ordered/hw_ordered_mb_02", 3, 2));
+        let r: Vec<String> = races.iter().map(|r| format!("game/race/{}", r)).collect();
+        let progress = |g: &Game| g.career.save().missions["BESTOF_GH_04"].progress.clone();
+        // (one win, the series given up: nothing kept)
+        race(&mut g, &r[0], "YOU");
+        assert_eq!(progress(&g), vec![1]);
+        g.career.series_drop("BESTOF_GH_04");
+        assert_eq!(progress(&g), vec![0]);
+        // (the rival's second win ends it)
+        race(&mut g, &r[0], "YOU");
+        race(&mut g, &r[1], "GH_04");
+        race(&mut g, &r[2], "GH_04");
+        assert_eq!(progress(&g), vec![0]);
+        assert!(g.career.mission_active("BESTOF_GH_04"));
+        // (two wins complete it; the mission stays complete through a load)
+        race(&mut g, &r[0], "YOU");
+        race(&mut g, &r[1], "GH_04");
+        race(&mut g, &r[2], "YOU");
+        assert!(g.career.mission_complete("BESTOF_GH_04"));
+        let saved = g.career.save();
+        let mut c = crate::career::Career::load(&data_dir());
+        c.restore(&saved);
+        assert!(c.mission_complete("BESTOF_GH_04") && c.mission_complete("REDLIGHT_GH_01"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

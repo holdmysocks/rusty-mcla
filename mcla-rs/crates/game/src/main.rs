@@ -5930,6 +5930,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.current_race = Some(race);
                         // only a race against the hookman himself counts for his mission
                         self.game.hookman_race = self.roam.won_against_rival;
+                        if let Some(s) = self.roam.series_of.take() {
+                            self.game.story_series_start(&s, race);
+                        }
                         self.pending_action = MenuAction::StartRace;
                         // (a story core that warps at once - `roamers::core_warp`, RACE_GH_06_CORE 0x4e4: its
                         // greeting, then Warper_Warp('DEFAULT_WITH_CUT'): the climb, the race set up after it)
@@ -6879,6 +6882,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (step 21b: a pink slip race is the wager core's own, no event's leg)
                     // (form 49's standings are the last tournament race's: none after any other)
                     self.game.career.tour_table = None;
+                    // (RESTART SERIES / RACE SERIES AGAIN cleared the tally: the career's count goes too)
+                    if let Some((id, _)) = self.game.series.as_ref().filter(|s| s.wins.is_empty()).and_then(|s| s.story.clone()) {
+                        self.game.career.series_drop(&id);
+                    }
                     let tournament = if self.game.mc4_pink_was() { None } else { self.game.career.tournament_race(&race_id, &order).or_else(|| order.first().and_then(|w| self.game.career.series_race(&race_id, w))) };
                     // (TournamentCore's EndOfRaceSequence: the standings (form 49) after every race,
                     // before REWARDS, until CONTINUE - as a series' results)
@@ -6921,11 +6928,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             None => sr.wins.push((winner, 1)),
                         }
                         self.game.series_first = true;
-                        let over = sr.wins.iter().find(|w| w.1 >= game::SERIES_WINS).map(|w| w.0.clone());
+                        let over = sr.wins.iter().find(|w| w.1 >= sr.to_win()).map(|w| w.0.clone());
                         match over {
                             Some(w) => {
                                 self.game.next_event_race = None;
-                                if w == "YOU" {
+                                if w == "YOU" && sr.story.is_none() {
                                     // (SERIES_COMPLETE: the event of the hangout completes at the
                                     // difficulty chosen there - its reward is the panel's
                                     // COMPLETION REWARD; below, `mc4_event_complete`)
@@ -6940,7 +6947,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             None => {
                                 sr.at = (sr.at + 1) % sr.races.len().max(1);
                                 self.game.next_event_race = sr.races.get(sr.at).copied();
-                                self.game.career.stats.insert(format!("series_at:{}", sr.key.trim_end_matches("_series")), ((sr.at + 1) % sr.races.len().max(1)) as i64);
+                                if sr.story.is_none() { self.game.career.stats.insert(format!("series_at:{}", sr.key.trim_end_matches("_series")), ((sr.at + 1) % sr.races.len().max(1)) as i64); }
                                 log::info!("series {}: tally {:?}, next race {:?}", sr.key, sr.wins, self.game.next_event_race);
                             }
                         }
@@ -11088,6 +11095,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.event_diff = None;
                 // (back to the cruise leaves GOAL ATTACK: F-65087 clears the mode's +796)
                 self.game.goal_attack = false;
+                // (a story series left undecided: its wins go, the man runs it from race 1 again)
+                if let Some((id, _)) = self.game.series.as_ref().and_then(|s| s.story.clone()) {
+                    self.game.career.series_drop(&id);
+                }
                 self.game.series = None;
                 self.game.series_first = false;
                 // (leaving a tournament - RETURN TO CRUISE, QUIT, GO TO GARAGE, a race quit - ends
@@ -11243,7 +11254,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let pink = self.game.mc4_pink_rival();
                     // (a telephone challenge's race is one against one, the caller: TelephoneChallenge 0x753..0x8dd)
                     let phone_man = self.game.mc4_phone_man(self.phone_caller).filter(|m| self.game.phone_race && usable(&m.0));
-                    let field = if pink.is_some() || self.game.phone_race { 1 } else if self.game.series.is_some() { 3 } else { 7 };
+                    let field = if pink.is_some() || self.game.phone_race || self.game.story_series() { 1 } else if self.game.series.is_some() { 3 } else { 7 };
                     if let Some((car, cfg, _)) = phone_man.clone() {
                         grid.push(self.game.rivals.with_config(self.phone_caller, &car, &cfg));
                     }
@@ -11285,7 +11296,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     // (a man's values belong to his own race only)
                     let alt = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map_or(false, |d| d.id.ends_with("red_light_race") || d.id == althk::FREEWAY_RACE_ID);
-                    if !(self.game.hookman_race || self.game.mc4_local_man_race() || alt) {
+                    if !(self.game.hookman_race || self.game.mc4_local_man_race() || alt || self.game.story_series()) {
                         self.game.man_mod = None;
                         self.game.man_diff = None;
                     }
@@ -12998,7 +13009,7 @@ impl App {
         let g = &self.game;
         let usable = |car: &str| g.car_dirs.iter().any(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(car)));
         let pink = g.mc4_pink_rival();
-        let field = if pink.is_some() || g.phone_race { 1 } else if g.series.is_some() { 3 } else { 7 };
+        let field = if pink.is_some() || g.phone_race || g.story_series() { 1 } else if g.series.is_some() { 3 } else { 7 };
         let mut out: Vec<(String, String)> = Vec::new();
         let mut used: Vec<String> = Vec::new();
         if let Some((car, cfg, _)) = self.phone_man().filter(|m| usable(&m.0)) {

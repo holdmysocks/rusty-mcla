@@ -3216,6 +3216,8 @@ impl Game {
             // (step 19d: a generic local hookman's race is his and three more racers' -
             // generic_local_hookman.sco's argument 3)
             RaceKind::Race if self.mc4_local_man_race() => 4.min(def.grid.len().saturating_sub(1)).max(1),
+            // (a story series is the player and the man: its script's +3080 = 2, +3084 = 0)
+            RaceKind::Race if self.story_series() => 1,
             // (a hangout's series is four cars - `sr_results`)
             RaceKind::Race if self.series.is_some() => 3.min(def.grid.len().saturating_sub(1)),
             RaceKind::Race => def.opponents.clamp(1, 7).min(def.grid.len().saturating_sub(1)),
@@ -12797,7 +12799,7 @@ impl Game {
                 }
                 // (test hook: MCLA_SERIES_WINS=n starts the series with the player at n wins)
                 let wins = std::env::var("MCLA_SERIES_WINS").ok().and_then(|v| v.parse::<u32>().ok()).map(|n| vec![("YOU".to_string(), n)]).unwrap_or_default();
-                self.series = (!order.is_empty()).then(|| Series { key: format!("{}_series", key), races: order, at: first, wins, rivals: Vec::new(), diff: self.hangout_diff });
+                self.series = (!order.is_empty()).then(|| Series { key: format!("{}_series", key), races: order, at: first, wins, rivals: Vec::new(), diff: self.hangout_diff, story: None });
                 leave(self);
                 return Some(MenuAction::StartRace);
             }
@@ -13383,7 +13385,7 @@ impl Game {
                         };
                         let mut idx: Vec<usize> = (0..cells.len()).collect();
                         idx.sort_by(|&a, &b| wins(b).cmp(&wins(a)).then(time_of(a).partial_cmp(&time_of(b)).unwrap_or(std::cmp::Ordering::Equal)));
-                        idx.iter().enumerate().map(|(i, &k)| vec![(i + 1).to_string(), cells[k][0].clone(), cells[k][1].clone(), format!("{} / {}", wins(k), SERIES_WINS)]).collect()
+                        idx.iter().enumerate().map(|(i, &k)| vec![(i + 1).to_string(), cells[k][0].clone(), cells[k][1].clone(), format!("{} / {}", wins(k), sr.to_win())]).collect()
                     }
                     None => cells,
                 }
@@ -13483,9 +13485,38 @@ pub struct Series {
     pub wins: Vec<(String, u32)>,
     pub rivals: Vec<crate::rivals::Rival>,
     pub diff: usize,
+    /// A story mission's series: (mission, nRacesToWin). A hangout's has none.
+    pub story: Option<(String, u32)>,
+}
+
+impl Series {
+    /// nRacesToWin
+    pub fn to_win(&self) -> u32 {
+        self.story.as_ref().map_or(SERIES_WINS, |s| s.1)
+    }
 }
 
 impl Game {
+    /// A story man's series starts with this race: `Roamers::series_of` flashed, the tally at
+    /// nought (OrderedSeriesCore 0x247c).
+    pub fn story_series_start(&mut self, man: &(String, String, String, String), race: usize) {
+        let (id, name, car, config) = man;
+        let Some((races, need)) = self.career.series_mission(id) else { return };
+        let order: Vec<usize> = races.iter().filter_map(|r| self.race_defs.iter().position(|d| d.id.to_ascii_lowercase().ends_with(r.as_str()))).collect();
+        if order.first() != Some(&race) {
+            return;
+        }
+        let diff = self.man_diff.unwrap_or(1).clamp(0, 3) as usize;
+        self.event_diff = Some(diff);
+        self.career.series_drop(id);
+        let rivals = vec![self.rivals.with_config(name, car, config)];
+        self.series = Some(Series { key: id.to_string(), races: order, at: 0, wins: Vec::new(), rivals, diff, story: Some((id.to_string(), need)) });
+    }
+
+    pub fn story_series(&self) -> bool {
+        self.series.as_ref().map_or(false, |s| s.story.is_some())
+    }
+
     /// RESTART TOURNAMENT (TournamentCore `restart`, 0x571): every point of the tournament the
     /// race just run belongs to at nought, its first race next. True when that race is found.
     pub fn tournament_restart(&mut self) -> bool {
@@ -13517,7 +13548,7 @@ impl Game {
     }
 
     pub fn series_decided(&self) -> bool {
-        self.series.as_ref().map_or(false, |s| s.wins.iter().any(|w| w.1 >= SERIES_WINS))
+        self.series.as_ref().map_or(false, |s| s.wins.iter().any(|w| w.1 >= s.to_win()))
     }
 }
 

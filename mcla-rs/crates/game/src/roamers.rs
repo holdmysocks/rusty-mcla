@@ -109,6 +109,9 @@ pub struct Special {
 }
 
 pub struct Roamers {
+    /// The story mission whose series the man just flashed starts, and his (name, car, set-up):
+    /// `Game::story_series_start`
+    pub series_of: Option<(String, String, String, String)>,
     /// each set-up's model parts (`Game::mc4_dress_of`, read once a run: it reads the set-up's file), for the
     /// read-ahead and the build of the men's cars
     setup_cfg: std::collections::HashMap<String, crate::vehicle_model::CarConfig>,
@@ -351,6 +354,7 @@ pub fn rail_place(world: &World, p: Vec3) -> Option<(Vec3, Vec3, Vec3, f32)> {
 impl Roamers {
     pub fn new() -> Roamers {
         Roamers {
+            series_of: None,
             setup_cfg: Default::default(),
             wanted: 2,
             timer: 3.0,
@@ -1182,6 +1186,16 @@ impl Roamers {
         }
         // the hookman's own event, if the career names one
         let scripted = if vehicles.cars[ri].driver.is_empty() { None } else { game.career.hookman_race() }.and_then(|r| (0..game.race_defs.len()).find(|&i| game.race_defs[i].id.to_ascii_lowercase().ends_with(r.as_str()))).and_then(|i| game.race_start(i).map(|s| (i, s, s.distance(pp))));
+        // (a story man's OrderedSeriesCore: his series, from its first race)
+        self.series_of = None;
+        let scripted = scripted.or_else(|| {
+            let m = man.as_ref()?;
+            let first = game.career.series_mission(&m.mission)?.0.into_iter().next()?;
+            let i = (0..game.race_defs.len()).find(|&i| game.race_defs[i].id.to_ascii_lowercase().ends_with(first.as_str()))?;
+            let s = game.race_start(i)?;
+            self.series_of = Some((m.mission.clone(), m.name.clone(), m.car.clone(), m.config.clone()));
+            Some((i, s, s.distance(pp)))
+        });
         // a local hookman's choice (mcRaceArray_*: `mc4_local_races`)
         let (rpos, rfwd, top) = (vehicles.cars[ri].state.pos, vehicles.cars[ri].state.forward(), vehicles.cars[ri].model.params.top_speed);
         // (mcRaceArray_FindBeatMeThereRaceIndex draws from the career's generator)
