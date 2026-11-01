@@ -9195,7 +9195,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // any weather). The cars' head, tail, brake
         // and reversing lamps too (vehicles.rs `halo_lamps`); police lights are still sprites.
         // (the game's list of lamp props, one for the glow pass and the cars' map: halo::ListView)
-        let lamp_list = halo::ListView::new(glam::Mat4::from_cols_array_2d(&globals.view_proj), self.cam.pos, self.cam.forward(), self.cam.fov_y);
+        // (its near plane faces the way the frame is drawn: in a car the chase camera's direction)
+        let lamp_fwd = if self.drive && self.vehicles.player().is_some() { (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z) } else { self.cam.forward() };
+        let lamp_list = halo::ListView::new(glam::Mat4::from_cols_array_2d(&globals.view_proj), self.cam.pos, lamp_fwd, self.cam.fov_y);
         {
             let mut glows: Vec<(f32, halo::Glow)> = Vec::new();
             // (the same lamps' rectangles in the road's reflection picture: siglrefl.rs)
