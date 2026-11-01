@@ -16,6 +16,7 @@ pub mod manifest;
 pub mod overlay;
 pub mod package;
 pub mod runtime;
+pub mod sample;
 pub mod validate;
 
 use disc::DiscInfo;

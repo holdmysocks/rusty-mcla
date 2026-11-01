@@ -1726,6 +1726,7 @@ dependencies = [
  "mcla-flash",
  "mcla-formats",
  "mcla-install",
+ "mcla-mods",
  "memmap2",
  "png",
  "rayon",

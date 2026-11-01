@@ -1601,6 +1601,8 @@ impl Game {
                 self.plates = sd.plates;
                 self.race_favs = sd.race_favs;
                 self.cfgs = sd.cfgs;
+                // (MODS.md S6: the vehicle in use was a placeholder - its look is put by, the car now in use brings its own)
+                self.keep_placeholder_cfg(&sd.car);
                 self.paints = sd.paints;
                 self.finishes = sd.finishes;
                 self.rim_ids = sd.rim_ids;

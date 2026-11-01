@@ -101,6 +101,24 @@ impl Game {
         self.mod_cars = mod_cars;
     }
 
+    /// The vehicle in use of the save was a placeholder (its mod is not installed): its fitted look (`cfg`, the top-level
+    /// state of the vehicle in use) goes into `cfgs` as when a car is left in the garage (`MenuAction::ApplyCar`), and the
+    /// car now in use brings its own, so neither the look of the missing car leaks onto another (found by the S6 check:
+    /// its bumper was entered as a part the other car owns) nor is it lost when the mod returns. Called after the load
+    /// has read `cfgs` and before anything reads `cfg`.
+    pub fn keep_placeholder_cfg(&mut self, saved_car: &str) {
+        if !self.mod_missing.iter().any(|m| m.name.eq_ignore_ascii_case(saved_car)) {
+            return;
+        }
+        let taken = self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let old = self.cfg.clone();
+        self.cfg = match self.cfgs.get(&taken) {
+            Some(c) => crate::vehicle_model::CarConfig { rim: old.rim, ..c.clone() },
+            None => crate::vehicle_model::CarConfig { rim: old.rim, ..Default::default() },
+        };
+        self.cfgs.insert(saved_car.to_ascii_lowercase(), old);
+    }
+
     /// The garage order the save holds: the cars (as the save keeps them, `mc4_owned_out`) and the placeholders.
     pub fn garage_order(&self) -> Vec<String> {
         merge(&self.mc4_owned_out(), &self.mod_missing)
@@ -321,6 +339,35 @@ mod tests {
         }
         assert_eq!(back["owned"], before["owned"]);
         assert_eq!(back["mod_cars"], before["mod_cars"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    /// S6: the vehicle in use was a mod car whose mod is gone: its fitted look is kept in `cfgs` (and comes back with the
+    /// mod), the car now in use has its own, and the missing car's parts are not entered as the other car's.
+    #[test]
+    fn a_missing_current_car_keeps_its_look() {
+        let d = dir("lookkept");
+        let all = ["vp_vw_golf_83", "vp_test_mod_01"];
+        let mut g = Game::new(all.iter().map(PathBuf::from).collect(), 1);
+        g.data_dir = d.clone();
+        g.owned = all.iter().map(|s| s.to_string()).collect();
+        for c in all {
+            g.mc4_car_added(c, None);
+        }
+        g.cfg.set(crate::vehicle_model::Slot::BumperF, 1);
+        g.mod_cars.insert("vp_test_mod_01".into(), ModCarSave { mod_id: "test.mod".into(), long_name: "TEST".into(), short_name: "TEST".into() });
+        g.write_save(&d);
+        assert_eq!(file(&d)["cfg"]["bumper_f"], 1);
+        // the mod is gone: the golf is in use with its own look; the missing car's look is kept
+        let g2 = game(&["vp_vw_golf_83"], &d);
+        assert_eq!(g2.cfg.bumper_f, 0);
+        assert!(g2.parts_owned.get("vp_vw_golf_83").map_or(true, |v| v.is_empty()), "{:?}", g2.parts_owned);
+        g2.write_save(&d);
+        let back = file(&d);
+        assert_eq!(back["cfgs"]["vp_test_mod_01"]["bumper_f"], 1);
+        assert_eq!(back["cfg"]["bumper_f"], 0);
+        // the mod is back: its look is where a car left in the garage has it
+        let g3 = game(&all, &d);
+        assert_eq!(g3.cfgs.get("vp_test_mod_01").map(|c| c.bumper_f), Some(1));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -608,3 +608,97 @@ fn price_scaling_fields() {
     assert!(rs.iter().any(|r| r.contains("name a prices donor")), "{rs:?}");
     assert!(rs.iter().any(|r| r.contains("prices_level): donor vp_nope_08 is not a car")), "{rs:?}");
 }
+
+/// The sample mod "R8 (SAMPLE)" (stage S6) built from the real data folder (skipped without it): valid with no error and
+/// no warning, the car's row and names as the disc R8's, nothing named from the game but the unread animation key; the
+/// package holds no file under the disc R8's name; the update rule replaces it in place (a higher version over it), an
+/// older version asks first.
+#[test]
+fn r8_sample_is_valid_and_updates_in_place() {
+    let root = std::env::var_os("MCLA_DATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("D:/MCLA/extracted/cache"));
+    if !root.join("resources/vehicle/vp_aud_r8_08").is_dir() {
+        eprintln!("no data at {}: skipped", root.display());
+        return;
+    }
+    let disc = DiscInfo::load(&root);
+    let work = tmp("sample");
+    let zip1 = work.join("sample_r8_1.zip");
+    let w = sample::write_r8_sample(&root, &zip1, "1.0.0").unwrap();
+    assert!(w.files > 130, "{} files", w.files);
+    let mods = work.join("mods");
+    let opts = LoadOptions { reserved: vec!["vp_nsn_gtr_08".into()], ..Default::default() };
+    assert!(matches!(install_package(&mods, &zip1, false).unwrap(), InstallOutcome::Installed { .. }));
+    let set = ModSet::load_from(&mods, &disc, &opts);
+    let i = &set.mods()[0];
+    assert_eq!((i.id.as_str(), i.name.as_str(), i.state), ("sample.r8", "R8 (SAMPLE)", ModState::Loaded), "{:?}", i.reasons);
+    assert!(i.reasons.is_empty() && i.warnings.is_empty() && i.cars[0].warnings.is_empty(), "{:?} {:?} {:?}", i.reasons, i.warnings, i.cars[0].warnings);
+    let car = set.car(sample::SAMPLE_CAR).unwrap();
+    let d = &car.donors;
+    // (no donor but the animation key)
+    assert_eq!((&d.tune, &d.setup, &d.rims, &d.brake, &d.garage, &d.prices, &d.sound, &d.cameras, &d.pictures), (&None, &None, &None, &None, &None, &None, &None, &None, &None));
+    assert_eq!(car.index, DISC_VEHICLE_COUNT);
+    let block = vehicle_block(car);
+    for want in ["vp_aud_r8_08_sample", "EXOTIC", "Audi", "118000", "0.875"] {
+        assert!(block.contains(want), "{want} in {block}");
+    }
+    // every file the loader resolves for the sample is the disc R8's file, byte for byte (set-up: the same but for the
+    // car's hash and names and the rim byte 255; sound: the profile object under the sample's name)
+    let same = |rel: &str, disc: PathBuf| {
+        let m = set.find(rel).unwrap_or_else(|| panic!("{rel} not in the package")).read().unwrap();
+        assert_eq!(m, std::fs::read(&disc).unwrap(), "{rel}");
+    };
+    let mut n = 0;
+    for e in std::fs::read_dir(root.join("resources/vehicle/vp_aud_r8_08")).unwrap().filter_map(|e| e.ok()) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if [".r63", ".r83", ".r19", ".r50"].iter().any(|x| name.ends_with(x)) {
+            same(&format!("resources/vehicle/vp_aud_r8_08_sample/{name}"), e.path());
+            n += 1;
+        }
+    }
+    assert_eq!(n, 130, "126 r63 + 2 r83 + r19 + r50");
+    for e in std::fs::read_dir(root.join("resources/rims/whl_stk_aud_r8_08")).unwrap().filter_map(|e| e.ok()) {
+        same(&format!("resources/rims/whl_stk_aud_r8_08_sample/{}", e.file_name().to_string_lossy()), e.path());
+    }
+    for (sub, p) in [("managerides", "mr_"), ("showroom", "sh_"), ("mini_showroom", "msh_")] {
+        same(&format!("resources/ui/textures/garage/dyntextures/{sub}/{p}vp_aud_r8_08_sample.r9"), root.join(format!("resources/ui/textures/garage/dyntextures/{sub}/{p}vp_aud_r8_08.r9")));
+    }
+    let hashed = |dir: &str, name: &str| root.join(format!("tune/{dir}/0x{:08x}", joaat(name)));
+    for (dir, suffix) in [("garage", ".garage"), ("garage", "_parts.gtun"), ("camera", "_boom1.camboomcs"), ("camera", "_boom2.camboomcs"), ("camera", "_boom3.camboomcs"), ("camera", "_POV.camboomcs"), ("camera", "_bumper.camboomcs"), ("camera", "_reverse.camboomcs"), ("camera", "_cinematic.camtrackcs"), ("camera", "_replay.mcreplaycamera")] {
+        // (the readers' own route: the hashed name of the plain file name, disc first, then the mods)
+        let rel = format!("tune/{dir}/0x{:08x}", joaat(&format!("vp_aud_r8_08_sample{suffix}")));
+        assert_eq!(runtime::read_data(Some(&set), &root, &rel).unwrap(), std::fs::read(hashed(dir, &format!("vp_aud_r8_08{suffix}"))).unwrap(), "{suffix}");
+    }
+    // the set-up: the R8's with the sample's hash and names and rim 255, nothing else
+    let (r8x, smx) = (std::fs::read(root.join("resources/vehicle/configs/vp_aud_r8_08.xcc")).unwrap(), set.find("resources/vehicle/configs/vp_aud_r8_08_sample.xcc").unwrap().read().unwrap());
+    let diff: Vec<usize> = (0..r8x.len()).filter(|&k| r8x[k] != smx[k]).collect();
+    assert!(diff.iter().all(|&k| k == 0x844 || (0x1FA8..0x1FAC).contains(&k) || (0x1FAD..0x1FAD + 32).contains(&k) || (0x1FCD..0x1FCD + 32).contains(&k)), "{diff:x?}");
+    assert_eq!((r8x[0x844], smx[0x844], r8x[0x846], smx[0x846]), (143, 255, 14, 14));
+    // the sound profile: the sample's `_PROFILE` is the R8's object byte for byte
+    let game = mcla_formats::audcfg::Dat::load(&root.join("audio/X360/config/game.dat")).unwrap();
+    let own = set.read_each(GAME_DAT);
+    assert_eq!(own.len(), 1);
+    let own = mcla_formats::audcfg::Dat::parse(&own[0].1).unwrap();
+    assert_eq!(own.len(), 1);
+    assert_eq!(own.get_name("VP_AUD_R8_08_SAMPLE_PROFILE").unwrap(), game.get_name("VP_AUD_R8_08_PROFILE").unwrap());
+    assert!(game.get_name("VP_AUD_R8_08_SAMPLE_PROFILE").is_none());
+    assert_eq!(set.car_names(sample::SAMPLE_CAR, Donor::Cameras), [sample::SAMPLE_CAR], "no camera donor");
+    assert_eq!(set.car_names(sample::SAMPLE_CAR, Donor::Sound), [sample::SAMPLE_CAR], "no sound donor");
+    // the update rule: the same id with a higher version replaces the zip in place; an older one asks first
+    let zip2 = work.join("sample_r8_2.zip");
+    sample::write_r8_sample(&root, &zip2, "1.1.0").unwrap();
+    match install_package(&mods, &zip2, false).unwrap() {
+        InstallOutcome::Installed { id, version, path, replaced } => {
+            assert_eq!((id.as_str(), version.as_str()), ("sample.r8", "1.1.0"));
+            assert_eq!(path, mods.join("sample.r8.zip"));
+            assert!(replaced.is_empty(), "the same file is replaced in place");
+        }
+        o => panic!("{o:?}"),
+    }
+    let n = std::fs::read_dir(&mods).unwrap().filter_map(|e| e.ok()).filter(|e| !e.file_name().to_string_lossy().starts_with('.')).count();
+    assert_eq!(n, 1, "one package after the update");
+    let set = ModSet::load_from(&mods, &disc, &opts);
+    assert_eq!((set.mods().len(), set.mods()[0].version.as_str()), (1, "1.1.0"));
+    assert!(matches!(install_package(&mods, &zip1, false).unwrap(), InstallOutcome::NeedsConfirmation { .. }));
+    assert_eq!(ModSet::load_from(&mods, &disc, &opts).mods()[0].version, "1.1.0", "nothing changed by the refused install");
+    let _ = std::fs::remove_dir_all(&work);
+}

@@ -65,6 +65,24 @@ fn canon<'a>(list: &[&'a str], v: &str) -> Option<&'a str> {
     list.iter().copied().find(|x| x.eq_ignore_ascii_case(v))
 }
 
+/// The folder names a mod car's own stock rims may have under `resources/rims/` (lower case): the disc's convention
+/// drops the `vp_` / `vpd_` of the car's name (`whl_stk_aud_r8_08` for `vp_aud_r8_08`; `whld_stk_` for the download
+/// cars), the plain form keeps the whole name (`whl_stk_<car>`, the first documented form). Order: the disc's form first.
+pub fn rim_folder_names(car: &str) -> Vec<String> {
+    let car = car.to_ascii_lowercase();
+    let short = car.trim_start_matches("vpd_").trim_start_matches("vp_").to_string();
+    let mut v = Vec::new();
+    for n in [short.as_str(), car.as_str()] {
+        for p in ["whl_stk_", "whld_stk_"] {
+            let f = format!("{p}{n}");
+            if !v.contains(&f) {
+                v.push(f);
+            }
+        }
+    }
+    v
+}
+
 pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo, reserved: &[String]) -> CarCheck {
     let mut r: Vec<String> = Vec::new();
     let mut w: Vec<String> = Vec::new();
@@ -200,13 +218,13 @@ pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo
         r.push("row 7: long_name and short_name are required".into());
     }
     // row 8: stock rims
-    let own_rims = ["whl_stk_", "whld_stk_"].iter().any(|p| {
-        let d = format!("resources/rims/{p}{name}/");
+    let own_rims = rim_folder_names(name).iter().any(|leaf| {
+        let d = format!("resources/rims/{leaf}/");
         pkg.files.iter().any(|f| f.rel.to_ascii_lowercase().starts_with(&d))
     });
     if !own_rims {
         match &car.donors.rims {
-            None => r.push(format!("row 8: no stock rims resources/rims/whl_stk_{name}/ and no rims donor")),
+            None => r.push(format!("row 8: no stock rims resources/rims/{}/ and no rims donor", rim_folder_names(name)[0])),
             Some(d) if !(d.starts_with("whl_") || d.starts_with("whld_")) => r.push(format!("row 8: rims donor {d} is not a rim folder name (whl_... / whld_...)")),
             Some(_) => {}
         }

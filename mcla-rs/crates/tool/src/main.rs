@@ -30,6 +30,7 @@ fn main() -> Result<()> {
     match args[1].as_str() {
         "ls" => cmd_ls(&args[2..]),
         "registry" => registry::run(&args[2..]),
+        "mods-sample" => cmd_mods_sample(&args[2..]),
         "rpf" => cmd_rpf(&args[2..]),
         "extract" => cmd_extract(&args[2..]),
         "install" => cmd_install(&args[2..]),
@@ -1302,5 +1303,17 @@ fn cmd_mcv(a: &[String]) -> Result<()> {
     let img = mcla_formats::jpeg::decode(&d[off(i)..off(i + 1)])?;
     println!("decoded in {:.1} ms", t.elapsed().as_secs_f32() * 1000.0);
     write_png(Path::new(&a[2]), img.width as u32, img.height as u32, &img.rgba)?;
+    Ok(())
+}
+
+/// `mcla-tool mods-sample <data folder> <out.zip> [version]`: build the sample mod "R8 (SAMPLE)" (the game's own Audi R8
+/// re-packed as a mod car, docs/MODS.md S6) from the user's own data folder. The zip holds game data: never distributed.
+fn cmd_mods_sample(args: &[String]) -> Result<()> {
+    if args.len() < 2 {
+        bail!("usage: mcla-tool mods-sample <data folder> <out.zip> [version]   (drop the zip into <data folder>/mods or the launcher's Mods tab)");
+    }
+    let version = args.get(2).map(String::as_str).unwrap_or("1.0.0");
+    let w = mcla_mods::sample::write_r8_sample(std::path::Path::new(&args[0]), std::path::Path::new(&args[1]), version).map_err(|e| anyhow::anyhow!(e))?;
+    println!("wrote {} ({} files, {} MB of data)", args[1], w.files, w.bytes / 1_000_000);
     Ok(())
 }

@@ -352,8 +352,9 @@ fn car_rt(set: &mcla_mods::ModSet, c: &mcla_mods::ModCar, data_root: &Path, mods
     let files = set.list_dir(&format!("resources/vehicle/{name}"));
     let dir = files.iter().find_map(|f| f.disk_path()).and_then(|p| p.parent().map(Path::to_path_buf)).ok_or("its resource folder is not on disk")?;
     // stock rims: the mod's own folder first, else the donor's on the disc
-    let own_rims = ["whl_stk_", "whld_stk_"].iter().find_map(|p| {
-        let leaf = format!("{p}{}", name.trim_start_matches("vpd_").trim_start_matches("vp_"));
+    // (the folder is named as the disc's - without the car's vp_ / vpd_ - or after the whole name: the loader's check
+    // accepts both, `mcla_mods::validate::rim_folder_names`)
+    let own_rims = mcla_mods::validate::rim_folder_names(name).iter().find_map(|leaf| {
         set.list_dir(&format!("resources/rims/{leaf}")).iter().find_map(|f| f.disk_path()).and_then(|p| p.parent().map(Path::to_path_buf))
     });
     let rims = own_rims.or_else(|| d.rims.as_ref().map(|r| data_root.join("resources/rims").join(r))).filter(|p| p.is_dir());

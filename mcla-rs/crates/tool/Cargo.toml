@@ -12,6 +12,7 @@ path = "src/main.rs"
 mcla-formats = { path = "../formats" }
 mcla-flash = { path = "../flash" }
 mcla-install = { path = "../install" }
+mcla-mods = { path = "../mods" }
 anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
