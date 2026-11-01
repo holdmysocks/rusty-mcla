@@ -573,8 +573,10 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             push(e);
         }
     }
-    let alt = game.active_def.as_ref().map_or(false, |d| crate::althk::is_alt_race(&d.id));
-    if let Some(race) = game.race.as_ref().filter(|_| alt) {
+    // the other races' scripts list theirs with subtype 6 (RaceWrapper `race/0xc4e26a20` 0x515,
+    // TournamentCore `race/0x039dd301` 0x4b7, OrderedSeriesCore `race/0xb8b948b6` 0x455) and the
+    // original draws them: the walkthrough's tournament at 4:18:50, 4:19:44, 4:21:40, a race at 0:17:30
+    if let Some(race) = game.race.as_ref().filter(|r| r.kind == crate::game::RaceKind::Race && !game.rgh06_race()) {
         for (k, &i) in race.participants.iter().enumerate() {
             let Some(c) = vehicles.cars.get(i).filter(|c| !c.is_player) else { continue };
             let mut e = Element::at(Kind::OtherCar, c.state.pos);
