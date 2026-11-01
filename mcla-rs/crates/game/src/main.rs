@@ -7243,8 +7243,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         if let Some(a) = self.audio.as_mut() {
-            let fwd = self.cam.forward();
-            let right = Vec3::new(-fwd.z, 0.0, fwd.x).normalize_or(Vec3::X);
+            // (driving, `cam` keeps only the position: the view is `chase`'s, as the renderer takes it)
+            let fwd = if self.drive && self.vehicles.player().is_some() { (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z) } else { self.cam.forward() };
+            let up = if self.drive && self.vehicles.player().is_some() { self.chase.up } else { Vec3::Y };
+            let right = fwd.cross(up).normalize_or(Vec3::X);
             let horn = (self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::HORN, |k| self.input.down(k)) || self.pad_horn) && !self.game.in_menu();
             // Zone slows the world: sounds drop in pitch with it
             let o = self.game.opts;

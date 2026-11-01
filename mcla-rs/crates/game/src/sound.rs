@@ -405,6 +405,15 @@ impl Sound {
             });
             // the listener is the render camera's matrix (F-37562 keeps it, F-99037 hands it over every frame), pitch included
             lib.listener = (cam_pos, cam_right, cam_fwd);
+            // (test hook MCLA_LISTENER_TRACE=1: the player's car in the listener's axes and its pan, every frame)
+            if std::env::var_os("MCLA_LISTENER_TRACE").is_some() {
+                if let Some(p) = vehicles.player() {
+                    let d = p.state.pos - cam_pos;
+                    let v = Vec3::new(d.dot(cam_right), d.dot(cam_right.cross(cam_fwd)), d.dot(cam_fwd));
+                    let (l, r) = crate::sndobj::pan_gains(v);
+                    log::info!("listener: cam {:.3} {:.3} {:.3} fwd {:.4} {:.4} {:.4} car {:.3} {:.3} {:.3} rel {:.3} {:.3} {:.3} share {:.4} speed {:.2}", cam_pos.x, cam_pos.y, cam_pos.z, cam_fwd.x, cam_fwd.y, cam_fwd.z, p.state.pos.x, p.state.pos.y, p.state.pos.z, v.x, v.y, v.z, l / (l + r), p.state.speed());
+                }
+            }
             lib.set_sliders(self.sliders);
             let bike = vehicles.player().is_some_and(|p| p.model.bike);
             lib.set_camera_mode(self.cam_audio, bike);
