@@ -15,6 +15,7 @@ pub mod manage;
 pub mod manifest;
 pub mod overlay;
 pub mod package;
+pub mod rims;
 pub mod runtime;
 pub mod sample;
 pub mod validate;
@@ -63,6 +64,61 @@ pub struct CarStatus {
     pub warnings: Vec<String>,
 }
 
+/// One rim of a package, as the Mods tab shows it (MODS.md M-6).
+#[derive(Clone, Debug)]
+pub struct RimStatus {
+    pub folder: String,
+    /// the name the shop lists
+    pub label: String,
+    /// the brand as written
+    pub brand: String,
+    /// the tab it joins: a brand of the game's shop (its id) or a new one
+    pub join: Option<rims::Join>,
+    pub bike: bool,
+    /// the price the shop asks (given, or computed); 0 with `price_given` false and reasons = not known
+    pub price: i64,
+    /// the manifest gave the price (else `price` was computed from the game's shop)
+    pub price_given: bool,
+    /// the rim-table number while the mod is loaded
+    pub index: Option<i32>,
+    pub reasons: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl RimStatus {
+    /// The line the Mods tab shows for a rim: its number, the tab it joins and what it costs - the price rule lives here
+    /// and in [`rims::computed_price`], nowhere else.
+    pub fn detail(&self) -> String {
+        let tab = match &self.join {
+            Some(rims::Join::Disc(id)) => format!("joins the {} tab", id.trim_start_matches("rim_")),
+            Some(rims::Join::New(name)) => format!("new tab \"{name}\""),
+            None => "no tab".to_string(),
+        };
+        let price = if self.price_given && self.price == 0 {
+            "free".to_string()
+        } else if self.price_given {
+            format!("${}", with_commas(self.price))
+        } else {
+            format!("${} (not set: the median of the tab's paid rims)", with_commas(self.price))
+        };
+        let number = self.index.map_or(String::new(), |i| format!("rim {i}, "));
+        format!("{number}{}{tab}, {price}", if self.bike { "bike rim, " } else { "" })
+    }
+}
+
+/// 3492 -> "3,492".
+pub fn with_commas(n: i64) -> String {
+    let s = n.abs().to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    if n < 0 { format!("-{out}") } else { out }
+}
+
 /// One package found in the mods folder, as the launcher's Mods tab shows it.
 #[derive(Clone, Debug)]
 pub struct ModInfo {
@@ -79,6 +135,7 @@ pub struct ModInfo {
     pub reasons: Vec<String>,
     pub warnings: Vec<String>,
     pub cars: Vec<CarStatus>,
+    pub rims: Vec<RimStatus>,
 }
 
 /// A loaded mod car (keyed by name everywhere; its table index follows the disc cars).
@@ -119,6 +176,8 @@ pub struct ModSet {
     /// the packages of the loaded mods, by mod id order
     packages: Vec<(String, Package)>,
     cars: Vec<ModCar>,
+    /// the rims of the loaded mods, in load order (mod id, then the manifest's); the rim-table numbers are by folder name
+    rims: Vec<rims::ModRim>,
     disc_count: usize,
     /// overlay key -> (package, file)
     overlay: HashMap<String, (usize, usize)>,
@@ -163,7 +222,7 @@ pub enum Located<'a> {
 impl ModSet {
     /// An empty set (no mods folder, or mods not wanted).
     pub fn empty(mods_dir: PathBuf) -> ModSet {
-        ModSet { mods_dir, mods: Vec::new(), packages: Vec::new(), cars: Vec::new(), disc_count: DISC_VEHICLE_COUNT, overlay: HashMap::new() }
+        ModSet { mods_dir, mods: Vec::new(), packages: Vec::new(), cars: Vec::new(), rims: Vec::new(), disc_count: DISC_VEHICLE_COUNT, overlay: HashMap::new() }
     }
 
     /// Read `<data root>/mods`. Never fails: problems are in each [`ModInfo`] (and the log).
@@ -179,7 +238,7 @@ impl ModSet {
         let mut found: Vec<(ModInfo, Option<(Package, manifest::Manifest)>)> = Vec::new();
         for path in package_paths(dir) {
             let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let mut info = ModInfo { id: file_name, version: String::new(), name: String::new(), author: String::new(), description: String::new(), path: path.clone(), is_zip: !path.is_dir(), state: ModState::Invalid, reasons: Vec::new(), warnings: Vec::new(), cars: Vec::new() };
+            let mut info = ModInfo { id: file_name, version: String::new(), name: String::new(), author: String::new(), description: String::new(), path: path.clone(), is_zip: !path.is_dir(), state: ModState::Invalid, reasons: Vec::new(), warnings: Vec::new(), cars: Vec::new(), rims: Vec::new() };
             let pkg = match Package::open(&path) {
                 Ok(p) => p,
                 Err(e) => {
@@ -235,6 +294,8 @@ impl ModSet {
         let mut order: Vec<usize> = (0..found.len()).collect();
         order.sort_by(|&a, &b| found[a].0.id.cmp(&found[b].0.id).then(found[a].0.path.cmp(&found[b].0.path)));
         let mut claimed: HashMap<String, String> = HashMap::new();
+        let mut claimed_rims: HashMap<String, String> = HashMap::new();
+        let mut mod_rims: Vec<rims::ModRim> = Vec::new();
         let mut cars: Vec<ModCar> = Vec::new();
         let mut packages: Vec<(String, Package)> = Vec::new();
         for i in order {
@@ -255,6 +316,17 @@ impl ModSet {
                     ok_cars.push(mod_car(c, &info.id, k));
                 }
             }
+            // the rims (M-6): each is checked like a car; one bad rim makes the mod invalid as a whole
+            let mut ok_rims: Vec<rims::ModRim> = Vec::new();
+            for d in &m.rims {
+                let chk = validate::check_rim(d, &pkg, disc);
+                info.rims.push(RimStatus { folder: d.folder.clone(), label: chk.label.clone(), brand: d.brand.trim().to_string(), join: chk.join.clone(), bike: d.bike, price: chk.price, price_given: chk.price_given, index: None, reasons: chk.reasons.clone(), warnings: chk.warnings.clone() });
+                if !chk.reasons.is_empty() {
+                    info.reasons.push(format!("rim {}: {}", d.folder, chk.reasons.join("; ")));
+                } else if let Some(join) = chk.join {
+                    ok_rims.push(rims::ModRim { folder: d.folder.clone(), mod_id: info.id.clone(), index: 0, label: chk.label, brand: d.brand.trim().to_string(), join, price: chk.price, price_given: chk.price_given, bike: d.bike, logo: chk.logo });
+                }
+            }
             if !info.reasons.is_empty() {
                 info.state = ModState::Invalid;
                 continue;
@@ -263,7 +335,7 @@ impl ModSet {
                 info.state = ModState::Disabled;
                 continue;
             }
-            let taken: Vec<String> = ok_cars.iter().filter_map(|c| claimed.get(&c.name).map(|o| format!("car {} is already defined by mod {o}", c.name))).collect();
+            let taken: Vec<String> = ok_cars.iter().filter_map(|c| claimed.get(&c.name).map(|o| format!("car {} is already defined by mod {o}", c.name))).chain(ok_rims.iter().filter_map(|r| claimed_rims.get(&r.folder.to_ascii_lowercase()).map(|o| format!("rim {} is already defined by mod {o}", r.folder)))).collect();
             if !taken.is_empty() {
                 info.state = ModState::Conflict;
                 info.reasons.extend(taken);
@@ -272,14 +344,32 @@ impl ModSet {
             for c in &ok_cars {
                 claimed.insert(c.name.clone(), info.id.clone());
             }
+            for r in &ok_rims {
+                claimed_rims.insert(r.folder.to_ascii_lowercase(), info.id.clone());
+            }
             info.state = ModState::Loaded;
             cars.extend(ok_cars);
+            mod_rims.extend(ok_rims);
             packages.push((info.id.clone(), pkg));
         }
         // 5. the extra list: mod cars in name order after the disc cars
         cars.sort_by(|a, b| a.name.cmp(&b.name));
         for (k, c) in cars.iter_mut().enumerate() {
             c.index = set.disc_count + k;
+        }
+        // 5b. the rim numbers: the disc's table, then the mods' rims by folder name
+        let mut by_folder: Vec<usize> = (0..mod_rims.len()).collect();
+        by_folder.sort_by(|&a, &b| mod_rims[a].folder.cmp(&mod_rims[b].folder));
+        for (k, &i) in by_folder.iter().enumerate() {
+            mod_rims[i].index = rims::DISC_RIM_COUNT + k as i32;
+        }
+        for i in 0..found.len() {
+            let info = &mut found[i].0;
+            if info.state == ModState::Loaded {
+                for st in &mut info.rims {
+                    st.index = mod_rims.iter().find(|r| r.mod_id == info.id && r.folder == st.folder).map(|r| r.index);
+                }
+            }
         }
         // 6. the overlay (first loaded mod by id wins a path)
         let mut later: Vec<(String, String)> = Vec::new();
@@ -321,12 +411,23 @@ impl ModSet {
         set.mods = mods;
         set.packages = packages;
         set.cars = cars;
+        set.rims = mod_rims;
         set
     }
 
     /// Every package found, valid or not (the Mods tab's list).
     pub fn mods(&self) -> &[ModInfo] {
         &self.mods
+    }
+
+    /// The rims of the loaded mods in load order (mod id, then each manifest's order): what [`rims::merge`] takes.
+    pub fn rims(&self) -> &[rims::ModRim] {
+        &self.rims
+    }
+
+    /// The loaded rim with this folder name.
+    pub fn rim(&self, folder: &str) -> Option<&rims::ModRim> {
+        self.rims.iter().find(|r| r.folder.eq_ignore_ascii_case(folder))
     }
 
     /// The loaded mod cars, in table order.
@@ -445,13 +546,19 @@ fn header_problems(m: &manifest::Manifest) -> Vec<String> {
     if m.info.name.trim().is_empty() {
         r.push("name is empty".into());
     }
-    if m.cars.is_empty() {
-        r.push("the mod defines no car (cars are the only content type so far)".into());
+    if m.cars.is_empty() && m.rims.is_empty() {
+        r.push("the mod defines no car and no rim (cars and rims are the content types so far)".into());
     }
     let mut seen = HashSet::new();
     for c in &m.cars {
         if !seen.insert(c.name.to_ascii_lowercase()) {
             r.push(format!("car {} is defined twice", c.name));
+        }
+    }
+    let mut seen = HashSet::new();
+    for d in &m.rims {
+        if !seen.insert(d.folder.to_ascii_lowercase()) {
+            r.push(format!("rim {} is defined twice", d.folder));
         }
     }
     r

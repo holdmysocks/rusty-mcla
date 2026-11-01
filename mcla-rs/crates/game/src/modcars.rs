@@ -92,6 +92,10 @@ pub struct Registry {
     pub free_driver_cars: Vec<String>,
     /// the opponent-marked cars with `rims = "random"` (stage S4b)
     pub rims_random: Vec<String>,
+    /// the rims of the loaded rim mods whose folders are on disk, in load order (mod id, manifest): what joins the shop
+    pub rims: Vec<mcla_mods::rims::ModRim>,
+    /// those rims' folders on disk, in rim-table order (the numbers 175, 176 ... by folder name): `rim_dirs` appends them
+    pub rim_dirs: Vec<PathBuf>,
     /// the loader's full answer (the Mods tab's list, the file overlay)
     pub set: mcla_mods::ModSet,
 }
@@ -137,6 +141,16 @@ pub fn table_index(name: &str) -> Option<usize> {
 /// The resource folders of the mod cars, in table order (the garage list appends them after the disc's).
 pub fn car_dirs() -> Vec<PathBuf> {
     get().map(|r| r.cars.iter().map(|c| c.dir.clone()).collect()).unwrap_or_default()
+}
+
+/// The resource folders of the loaded mods' rims, in rim-table order (M-6): `rim_dirs` appends them after the disc's.
+pub fn rim_dirs() -> Vec<PathBuf> {
+    get().map(|r| r.rim_dirs.clone()).unwrap_or_default()
+}
+
+/// The loaded mods' rims (the shop merges them: `mcla_mods::rims::merge`).
+pub fn rims() -> &'static [mcla_mods::rims::ModRim] {
+    get().map_or(&[], |r| r.rims.as_slice())
 }
 
 /// The `Vehicle` blocks of the mod cars ("" without mods).
@@ -258,7 +272,7 @@ fn build(data_root: &Path, dir: &Path) -> Registry {
     let opts = mcla_mods::LoadOptions { disabled, reserved: vec![crate::catalog::CUT_GTR.to_string()] };
     let disc = mcla_mods::disc::DiscInfo::load(data_root);
     let mut set = if dir.is_dir() { mcla_mods::ModSet::load_from(dir, &disc, &opts) } else { mcla_mods::ModSet::empty(dir.to_path_buf()) };
-    if !set.cars().is_empty() {
+    if !set.cars().is_empty() || !set.rims().is_empty() {
         if let Err(e) = set.unpack_zips(&mcla_mods::cache_dir(dir)) {
             log::warn!("mods: cannot unpack the zip mods into {}: {e}", mcla_mods::cache_dir(dir).display());
         }
@@ -338,7 +352,23 @@ fn build(data_root: &Path, dir: &Path) -> Registry {
     if !cars.is_empty() {
         log::info!("mods: {} car(s) from {}", cars.len(), dir.display());
     }
-    Registry { data_root: data_root.to_path_buf(), mods_dir: dir.to_path_buf(), cars, extra_list, strings, opponent_extra, opponent_setups, free_driver_cars, rims_random, set }
+    // (rim mods, M-6: only the rims whose folder is on disk join the shop; the numbers are the loader's)
+    let mut rims: Vec<mcla_mods::rims::ModRim> = Vec::new();
+    let mut by_index: Vec<(i32, PathBuf)> = Vec::new();
+    for r in set.rims() {
+        let found = set.list_dir(&format!("resources/rims/{}", r.folder)).iter().find_map(|f| f.disk_path()).and_then(|p| p.parent().map(Path::to_path_buf)).filter(|p| p.is_dir());
+        match found {
+            Some(p) => {
+                log::info!("mods: rim {} (mod {}) as rim {} in {} for ${}", r.folder, r.mod_id, r.index, match &r.join { mcla_mods::rims::Join::Disc(id) => format!("the {id} tab"), mcla_mods::rims::Join::New(n) => format!("the new tab {n}") }, r.price);
+                by_index.push((r.index, p));
+                rims.push(r.clone());
+            }
+            None => log::warn!("mods: rim {} (mod {}) left out: its folder is not on disk", r.folder, r.mod_id),
+        }
+    }
+    by_index.sort_by_key(|x| x.0);
+    let rim_dirs = by_index.into_iter().map(|x| x.1).collect();
+    Registry { data_root: data_root.to_path_buf(), mods_dir: dir.to_path_buf(), cars, extra_list, strings, opponent_extra, opponent_setups, free_driver_cars, rims_random, rims, rim_dirs, set }
 }
 
 fn disk(f: Option<mcla_mods::ModFile<'_>>) -> Option<PathBuf> {

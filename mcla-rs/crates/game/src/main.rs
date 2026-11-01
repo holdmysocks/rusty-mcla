@@ -96,6 +96,7 @@ mod ambaudio;
 mod caraudio;
 mod speech;
 mod render;
+mod rimlogo;
 mod rimshop;
 mod dimensions;
 mod menu3d;
@@ -11715,8 +11716,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let taken = self.game.car_dirs.get(self.game.selected_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
                     let old = self.game.cfg.clone();
                     self.game.cfg = match self.game.cfgs.get(&taken) {
-                        Some(c) => vehicle_model::CarConfig { rim: old.rim, ..c.clone() },
-                        None => vehicle_model::CarConfig { rim: old.rim, ..Default::default() },
+                        Some(c) => vehicle_model::CarConfig { rim: old.rim, rim_name: old.rim_name.clone(), ..c.clone() },
+                        None => vehicle_model::CarConfig { rim: old.rim, rim_name: old.rim_name.clone(), ..Default::default() },
                     };
                     if !left.is_empty() {
                         self.game.cfgs.insert(left, old);
@@ -12641,11 +12642,13 @@ impl App {
         rims.sort();
         rims.retain(|p| p.file_name().map_or(true, |n| !n.to_string_lossy().contains("_stk_")));
         rims.insert(0, std::path::PathBuf::new());
+        // (the rim mods' folders after the disc's, never sorted among them, so no disc rim's position moves: MODS.md M-6 item 5)
+        rims.extend(crate::modcars::rim_dirs());
         self.game.rim_names = rims.iter().map(|p| p.file_name().map(|n| n.to_string_lossy().trim_start_matches("whld_").trim_start_matches("whl_").trim_start_matches("am_").replace('_', " ")).unwrap_or_else(|| "stock".to_string())).collect();
         self.game.rim_dirs = rims;
         // The rim shop names its rims by the resource folder under resources/rims
         // (`fs_text1`), which is not the order rim_dirs is in, so resolve by name.
-        self.game.rim_shop = rimshop::load(&self.opt.data_dir);
+        self.game.rim_shop = rimshop::merge(rimshop::load(&self.opt.data_dir), crate::modcars::rims());
         // (MCLA_RIM_BRAND=n, MCLA_RIM_PICK=n: open the rim shop at that brand and rim)
         if let Some(v) = std::env::var("MCLA_RIM_BRAND").ok().and_then(|v| v.parse::<usize>().ok()) {
             self.game.rim_brand = v;
@@ -12657,6 +12660,12 @@ impl App {
         // rim the disc spells wrongly still resolves
         let folders: std::collections::HashMap<String, usize> = self.game.rim_dirs.iter().enumerate().filter_map(|(i, p)| Some((p.file_name()?.to_string_lossy().to_string(), i))).collect();
         self.game.rim_by_name = folders.iter().filter_map(|(name, i)| Some((name.clone(), *i))).chain(self.game.rim_shop.brands.iter().flat_map(|b| &b.rims).filter_map(|r| folders.get(rimshop::folder_for(&r.resource)).map(|i| (r.resource.clone(), *i)))).collect();
+        // (a rim mod's own shop name on the garage's RIMS row)
+        for r in self.game.rim_shop.brands.iter().flat_map(|b| &b.rims).filter(|r| r.modded) {
+            if let Some(at) = folders.get(&r.resource) {
+                self.game.rim_names[*at] = r.label();
+            }
+        }
         log::info!("rim shop: {} brands, {} rims", self.game.rim_shop.brands.len(), self.game.rim_shop.brands.iter().map(|b| b.rims.len()).sum::<usize>());
         let unmatched: Vec<&str> = self.game.rim_shop.brands.iter().flat_map(|b| b.rims.iter()).filter(|r| !self.game.rim_by_name.contains_key(&r.resource)).map(|r| r.resource.as_str()).collect();
         if !unmatched.is_empty() {

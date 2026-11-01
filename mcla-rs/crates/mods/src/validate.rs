@@ -541,3 +541,136 @@ fn check_sound(name: &str, pkg: &Package, keys: &FileKeys, disc: &DiscInfo, r: &
     }
     (brings, own)
 }
+
+// ---- rims (MODS.md M-6, docs/reference/mods/manifest.md section 10) ----
+
+/// What the loader makes of one `[[rim]]`.
+pub struct RimCheck {
+    pub reasons: Vec<String>,
+    pub warnings: Vec<String>,
+    pub join: Option<crate::rims::Join>,
+    /// the price the shop asks: the manifest's, else computed from the disc's shop
+    pub price: i64,
+    pub price_given: bool,
+    pub label: String,
+    pub logo: Option<std::sync::Arc<Vec<u8>>>,
+}
+
+/// A rim folder's name: `whl_am_` or `whld_am_`, then lower-case letters, digits and `_`, at most 31 characters.
+pub fn rim_folder_problem(folder: &str) -> Option<String> {
+    let rest = folder.strip_prefix("whl_am_").or_else(|| folder.strip_prefix("whld_am_"));
+    match rest {
+        None => Some("folder must start with whl_am_ or whld_am_ (the names of the disc's buyable rims)".into()),
+        Some("") => Some("folder has nothing after its prefix".into()),
+        Some(_) if folder.len() > crate::manifest::MAX_CAR_NAME => Some(format!("folder longer than {} characters", crate::manifest::MAX_CAR_NAME)),
+        Some(r) if !r.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') => Some("folder must be lower-case letters, digits and _".into()),
+        Some(_) => None,
+    }
+}
+
+/// The shop name a rim gets without a `label`: the folder without its prefix, `_` as spaces, in capitals (the disc's rule).
+pub fn rim_default_label(folder: &str) -> String {
+    folder.strip_prefix("whld_am_").or_else(|| folder.strip_prefix("whl_am_")).unwrap_or(folder).replace('_', " ").to_uppercase()
+}
+
+/// A shop text (label, new brand's name): 1..24 printable ASCII characters.
+fn shop_text_problem(what: &str, t: &str) -> Option<String> {
+    if t.trim().is_empty() {
+        return Some(format!("{what} is empty"));
+    }
+    if t.trim().len() > 24 {
+        return Some(format!("{what} \"{t}\" is longer than 24 characters"));
+    }
+    if !t.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+        return Some(format!("{what} \"{t}\" may use printable ASCII only"));
+    }
+    None
+}
+
+pub fn check_rim(def: &crate::manifest::RimDef, pkg: &Package, disc: &DiscInfo) -> RimCheck {
+    let mut r: Vec<String> = Vec::new();
+    let mut w: Vec<String> = Vec::new();
+    let folder = def.folder.as_str();
+    let mut out = RimCheck { reasons: Vec::new(), warnings: Vec::new(), join: None, price: 0, price_given: def.price.is_some(), label: rim_default_label(folder), logo: None };
+    if let Some(p) = rim_folder_problem(folder) {
+        r.push(format!("folder: {p}"));
+    } else {
+        if disc.rim_folders.contains(&folder.to_ascii_lowercase()) {
+            r.push(format!("folder: {folder} is a rim folder of the game (two rims cannot share a folder name)"));
+        }
+        // the files: one model and one look, directly in the folder
+        let dir = format!("resources/rims/{folder}/");
+        let in_dir: Vec<&crate::package::PackFile> = pkg.files.iter().filter(|f| f.rel.to_ascii_lowercase().starts_with(&dir) && !f.rel[dir.len()..].contains('/')).collect();
+        let of = |ext: &str| in_dir.iter().copied().filter(|f| f.rel.to_ascii_lowercase().ends_with(ext)).collect::<Vec<_>>();
+        let (models, looks) = (of(".r63"), of(".r83"));
+        if models.len() != 1 {
+            r.push(format!("files: {dir} must hold one .r63 model (found {})", models.len()));
+        }
+        if looks.len() != 1 {
+            r.push(format!("files: {dir} must hold one .r83 look (shaders and textures; found {})", looks.len()));
+        }
+        if let [m] = models.as_slice() {
+            match pkg.read(m).map_err(|e| e.to_string()).and_then(|b| crate::rims::model_zones(&b)) {
+                Ok((zones, _)) if zones.is_empty() => w.push("model: no rim zones in the mesh (uv1.x 1 spoke A, 2 lip, 3 spoke B): the SPOKE A / SPOKE B / LIP paint and the brake placement will not work on it".into()),
+                Ok(_) => {}
+                Err(e) => r.push(format!("model: {} is unreadable ({e})", m.rel)),
+            }
+        }
+    }
+    if let Some(l) = &def.label {
+        match shop_text_problem("label", l) {
+            Some(p) => r.push(p),
+            None => out.label = l.trim().to_string(),
+        }
+    }
+    if def.brand.trim().is_empty() {
+        r.push("brand is empty".into());
+    } else {
+        match crate::rims::resolve_join(&disc.shop, &def.brand, def.bike) {
+            Err(e) => r.push(format!("brand: {e}")),
+            Ok(j) => {
+                if let crate::rims::Join::New(n) = &j {
+                    if let Some(p) = shop_text_problem("brand", n) {
+                        r.push(p);
+                    }
+                }
+                out.join = Some(j);
+            }
+        }
+    }
+    match def.price {
+        Some(p) if p < 0 => r.push(format!("price {p} is negative (0 = free)")),
+        Some(p) if p > 9_999_999 => r.push(format!("price {p} is over 9999999")),
+        _ => {}
+    }
+    // the logo (a new brand's picture)
+    if let Some(l) = &def.logo {
+        match read_pkg(pkg, l) {
+            None => r.push(format!("logo: {l} is not in the package")),
+            Some(Err(e)) => r.push(format!("logo: {l} cannot be read ({e})")),
+            Some(Ok(b)) => match crate::rims::png_size(&b) {
+                None => r.push(format!("logo: {l} is not a PNG picture")),
+                Some((wd, ht)) if wd == 0 || ht == 0 || wd > 1024 || ht > 1024 => r.push(format!("logo: {l} is {wd}x{ht} (1..1024 expected)")),
+                Some(_) if b.len() > 2_000_000 => r.push(format!("logo: {l} is over 2 MB")),
+                Some(_) => out.logo = Some(std::sync::Arc::new(b)),
+            },
+        }
+    }
+    match (&out.join, out.logo.is_some()) {
+        (Some(crate::rims::Join::Disc(_)), true) => w.push("logo: ignored, the rim joins a brand of the game, which keeps its own logo".into()),
+        (Some(crate::rims::Join::New(n)), false) if def.logo.is_none() => w.push(format!("no logo for the new brand \"{}\": its name is drawn as text", n.trim())),
+        _ => {}
+    }
+    // the price
+    if let (Some(p), true) = (def.price, r.is_empty()) {
+        out.price = p;
+    } else if let Some(j) = &out.join {
+        out.price = crate::rims::computed_price(&disc.shop, j, def.bike);
+        if out.price == 0 && r.is_empty() && !disc.shop.brands.is_empty() {
+            w.push("no price: the game's shop has no paid rim to take a median of; the rim is free".into());
+        }
+    }
+    out.reasons = r;
+    out.warnings = w;
+    out
+}

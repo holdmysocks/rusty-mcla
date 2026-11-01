@@ -42,6 +42,11 @@ pub struct DiscInfo {
     /// (empty when the folder was not found)
     pub setups: HashSet<String>,
     pub setup_hashes: HashSet<u32>,
+    /// the disc's rim shop (`Rim.sc.xml`, `RimBike.sc.xml`, `DLC_Rim.sc.xml`; empty when not found: every brand a rim
+    /// mod names is then a new one) - the price rule and the brand ids come from it (M-6)
+    pub shop: crate::rims::RimShop,
+    /// the folders of `resources/rims` and the shop's resource names, lower case: a rim mod's folder may not be one
+    pub rim_folders: HashSet<String>,
 }
 
 /// A data file by name: the extracted copy is named by the joaat of the name, a file added by hand may keep its own
@@ -90,6 +95,11 @@ impl DiscInfo {
                 }
             }
         }
+        d.shop = crate::rims::load(&data_root.to_string_lossy());
+        for e in std::fs::read_dir(data_root.join("resources/rims")).into_iter().flatten().flatten() {
+            d.rim_folders.insert(e.file_name().to_string_lossy().to_ascii_lowercase());
+        }
+        d.rim_folders.extend(d.shop.brands.iter().flat_map(|b| b.rims.iter().map(|r| r.resource.to_ascii_lowercase())));
         d
     }
 

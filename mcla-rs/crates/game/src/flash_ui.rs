@@ -142,6 +142,15 @@ impl FlashMovie {
         true
     }
 
+    /// Take a swap off the clip at `path` (it shows the movie's own picture again).
+    pub fn clear_swap(&mut self, path: &str) {
+        if let Some(id) = self.player.find(path) {
+            if let Some(i) = self.player.inst_mut(id) {
+                i.tex_swap = 0;
+            }
+        }
+    }
+
     /// `swap_texture` for a clip in hand.
     pub fn swap_texture_id(&mut self, ctx: &egui::Context, id: mcla_flash::value::InstId, key: u32, file: &Path) -> bool {
         use mcla_formats::rage::{Dictionary, Rd};
@@ -1871,6 +1880,66 @@ mod tests {
         menu.hide();
         settle(&mut menu, &page);
         assert_eq!(field(&menu.movie.player, "screen.menu.slotsB.slot0.slot"), "$12,345");
+    }
+
+    /// M-6: which logo frame the rim shop's `vs_brands` shows for a tab's maker id, and where it stands (reference for the
+    /// blank frame and the logo place a rim mod's own brand tab uses).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn rim_tab_logo_frames() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let mut menu = FlashMenu::load(&dir, GARAGE_MOVIE, [0.0; 2], &shared).unwrap();
+        let mut page = MenuPage {
+            layout: MenuLayout::GarageRims,
+            icon: 10,
+            title: "RIMS".into(),
+            rows: (0..4).map(|i| MenuRow { label: format!("RIM {}", i), value: String::new(), enabled: true, part: Some(PartRow { price: i * 1000, brand: 0 }) }).collect(),
+            select: 0,
+            cur_tab: 0,
+            ..MenuPage::default()
+        };
+        let mut out = String::new();
+        page.tabs = vec!["60".to_string(), "11".to_string()];
+        menu.show(&page);
+        for _ in 0..120 { menu.movie.player.tick(); }
+        {
+            let p = &menu.movie.player;
+            let mut stack = vec![(p.find("screen").unwrap(), "screen".to_string())];
+            while let Some((id, path)) = stack.pop() {
+                let Some(i) = p.inst(id) else { continue };
+                let b = mcla_flash::draw::bounds(p, id);
+                if path.matches('.').count() <= 4 {
+                    out.push_str(&format!("{path}: frame {} tint {:?} bounds {:?} text {:?}
+", i.frame, i.tint, b, i.text.as_deref().map(|t| t.chars().take(20).collect::<String>())));
+                }
+                for c in i.children.values() {
+                    if let Some(ci) = p.inst(*c) { stack.push((*c, format!("{path}.{}", ci.name))); }
+                }
+            }
+        }
+        for mfr in 0..=125 {
+            page.tabs = vec![mfr.to_string()];
+            menu.show(&page);
+            for _ in 0..120 { menu.movie.player.tick(); }
+            let p = &menu.movie.player;
+            let id = p.find("screen.menu.rimselection.vs_brands").unwrap();
+            let i = p.inst(id).unwrap();
+            let b = mcla_flash::draw::bounds(p, id);
+            let list = mcla_flash::draw::build_instance(p, id);
+            let items: Vec<String> = list.items.iter().filter_map(|it| match it {
+                Item::Triangles { tex, kind, verts } => {
+                    let uv = verts.iter().fold([9e9f32, 9e9, -9e9, -9e9], |a, v| [a[0].min(v.uv[0]), a[1].min(v.uv[1]), a[2].max(v.uv[0]), a[3].max(v.uv[1])]);
+                    let pos = verts.iter().fold([9e9f32, 9e9, -9e9, -9e9], |a, v| [a[0].min(v.pos[0]), a[1].min(v.pos[1]), a[2].max(v.pos[0]), a[3].max(v.pos[1])]);
+                    Some(format!("{:?}/{:#x}/{}v uv {:?} pos {:?}", tex, kind, verts.len(), uv, pos))
+                }
+                _ => None,
+            }).collect();
+            out.push_str(&format!("mfr {mfr}: frame {} tint {:?} bounds {:?} items {:?}
+", i.frame, i.tint, b, items));
+        }
+        std::fs::write(std::env::var("MCLA_LOGO_OUT").unwrap_or_else(|_| "rim_logo_frames.txt".into()), out).unwrap();
     }
 
     /// The showroom's strip (template 40) scrolls one slot per press and keeps the

@@ -113,8 +113,8 @@ impl Game {
         let taken = self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         let old = self.cfg.clone();
         self.cfg = match self.cfgs.get(&taken) {
-            Some(c) => crate::vehicle_model::CarConfig { rim: old.rim, ..c.clone() },
-            None => crate::vehicle_model::CarConfig { rim: old.rim, ..Default::default() },
+            Some(c) => crate::vehicle_model::CarConfig { rim: old.rim, rim_name: old.rim_name.clone(), ..c.clone() },
+            None => crate::vehicle_model::CarConfig { rim: old.rim, rim_name: old.rim_name.clone(), ..Default::default() },
         };
         self.cfgs.insert(saved_car.to_ascii_lowercase(), old);
     }
@@ -369,5 +369,112 @@ mod tests {
         let g3 = game(&all, &d);
         assert_eq!(g3.cfgs.get("vp_test_mod_01").map(|c| c.bumper_f), Some(1));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // ---- the fitted rim by folder name (MODS.md M-6 item 5) ----
+
+    /// The rim folder list as the game builds it: the stock slot, the disc's folders (sorted), then the mods' (never sorted in).
+    fn rim_list(disc: &[&str], mods: &[&str]) -> Vec<PathBuf> {
+        std::iter::once(PathBuf::new()).chain(disc.iter().chain(mods.iter()).map(|n| PathBuf::from(format!("resources/rims/{n}")))).collect()
+    }
+
+    fn game_rims(dir: &str, rims: Vec<PathBuf>) -> Game {
+        let mut g = Game::new(vec![PathBuf::from("vp_vw_golf_83"), PathBuf::from("vp_nsn_350z_06")], 0);
+        g.data_dir = dir.to_string();
+        g.rim_dirs = rims;
+        g.load_save(dir);
+        g.ensure_owned();
+        g
+    }
+
+    const DISC: [&str; 5] = ["whl_am_a", "whl_am_b", "whl_am_c", "whl_am_d", "whl_am_e"];
+
+    /// An old save (a car's rim as a position only) loads with the same rim, and is written with the name beside it.
+    #[test]
+    fn an_old_save_keeps_its_rim_and_gains_the_name() {
+        let d = dir("rimold");
+        let mut cfg = serde_json::to_value(crate::vehicle_model::CarConfig::default()).unwrap();
+        cfg["rim"] = 3.into();
+        let mut other = cfg.clone();
+        other["rim"] = 5.into();
+        let old = serde_json::json!({"car": "vp_vw_golf_83", "color": 0, "cfg": cfg, "best_time": null, "money": 1, "rep": 0,
+            "owned": ["vp_vw_golf_83", "vp_nsn_350z_06"], "cfgs": {"vp_nsn_350z_06": other}});
+        assert!(old["cfg"].get("rim_name").is_none());
+        std::fs::write(std::path::Path::new(&d).join("mcla_save.json"), old.to_string()).unwrap();
+        let g = game_rims(&d, rim_list(&DISC, &[]));
+        assert_eq!((g.cfg.rim, g.cfgs["vp_nsn_350z_06"].rim), (3, 5), "the position stays");
+        g.write_save(&d);
+        let back = file(&d);
+        assert_eq!((back["cfg"]["rim_name"].as_str(), back["cfgs"]["vp_nsn_350z_06"]["rim_name"].as_str()), (Some("whl_am_c"), Some("whl_am_e")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Adding a mod rim, or any folder before the saved one, changes no car's rim; stock wheels stay stock.
+    #[test]
+    fn adding_rim_folders_moves_no_rim() {
+        let d = dir("rimadd");
+        let mut g = game_rims(&d, rim_list(&DISC, &[]));
+        g.cfg.rim = 4; // whl_am_d
+        g.cfgs.insert("vp_nsn_350z_06".into(), crate::vehicle_model::CarConfig { rim: 1, ..Default::default() }); // whl_am_a
+        g.write_save(&d);
+        assert_eq!(file(&d)["cfg"]["rim_name"], "whl_am_d");
+        assert!(file(&d)["cfgs"]["vp_nsn_350z_06"]["rim_name"] == "whl_am_a");
+        // two mod rims after the disc's: nothing moves
+        let g2 = game_rims(&d, rim_list(&DISC, &["whl_am_mod_x", "whl_am_mod_y"]));
+        assert_eq!((g2.cfg.rim, g2.cfgs["vp_nsn_350z_06"].rim), (4, 1));
+        assert_eq!(g2.rim_folder_name(g2.cfg.rim), "whl_am_d");
+        // a folder that now sorts in before them (a changed disc): the name wins over the old position
+        let g3 = game_rims(&d, rim_list(&["whl_am_0", "whl_am_a", "whl_am_b", "whl_am_c", "whl_am_d", "whl_am_e"], &[]));
+        assert_eq!((g3.cfg.rim, g3.cfgs["vp_nsn_350z_06"].rim), (5, 2));
+        // a car on its stock wheels stays so, and is written without a name
+        let mut g4 = game_rims(&d, rim_list(&DISC, &[]));
+        g4.cfg.rim = 0;
+        g4.write_save(&d);
+        assert!(file(&d)["cfg"].get("rim_name").is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A mod rim fitted, the mod removed: the car shows its stock wheels, the save keeps the name; the mod back (even with
+    /// another rim mod before it): the rim returns. Fitting another rim while the mod is gone drops the old name.
+    #[test]
+    fn a_missing_rim_mod_keeps_the_name_and_returns() {
+        let d = dir("rimmissing");
+        let mut g = game_rims(&d, rim_list(&DISC, &["whl_am_mod_x", "whl_am_mod_y"]));
+        g.cfg.rim = 7; // whl_am_mod_y
+        g.cfgs.insert("vp_nsn_350z_06".into(), crate::vehicle_model::CarConfig { rim: 6, ..Default::default() });
+        g.write_save(&d);
+        // the mod is gone
+        let g2 = game_rims(&d, rim_list(&DISC, &[]));
+        assert_eq!((g2.cfg.rim, g2.cfgs["vp_nsn_350z_06"].rim), (0, 0), "stock wheels");
+        assert_eq!((g2.cfg.rim_name.as_str(), g2.cfgs["vp_nsn_350z_06"].rim_name.as_str()), ("whl_am_mod_y", "whl_am_mod_x"));
+        g2.write_save(&d);
+        assert_eq!(file(&d)["cfg"]["rim_name"], "whl_am_mod_y", "the name is kept");
+        assert_eq!(file(&d)["cfg"]["rim"], 0);
+        // another mod rim installed that sorts before: the numbers move, the names find them
+        let g3 = game_rims(&d, rim_list(&DISC, &["whl_am_mod_w", "whl_am_mod_x", "whl_am_mod_y"]));
+        assert_eq!((g3.cfg.rim, g3.cfgs["vp_nsn_350z_06"].rim), (8, 7));
+        // the mod gone again: the player fits a disc rim; the old name is dropped
+        let mut g4 = game_rims(&d, rim_list(&DISC, &[]));
+        g4.cfg.set(crate::vehicle_model::Slot::Wheels, 2);
+        g4.write_save(&d);
+        assert_eq!(file(&d)["cfg"]["rim_name"], "whl_am_b");
+        // the car on stock wheels (a missing rim, nothing else done) twice over: still the name
+        let g5 = game_rims(&d, rim_list(&DISC, &[]));
+        g5.write_save(&d);
+        assert_eq!(file(&d)["cfgs"]["vp_nsn_350z_06"]["rim_name"], "whl_am_mod_x");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A bought rim: a disc rim by its table number as ever, a mod's by its folder name; neither misreads the other.
+    #[test]
+    fn a_bought_mod_rim_is_remembered_by_folder() {
+        let disc = crate::rimshop::RimEntry { resource: "whl_am_volk_le28n".into(), price: 4000, index: 86, modded: false, name: None };
+        let modded = crate::rimshop::RimEntry { resource: "whl_am_sample_le28n".into(), price: 4000, index: 175, modded: true, name: None };
+        assert_eq!(crate::game::rim_tag(&disc), "rim:86");
+        assert_eq!(crate::game::rim_tag(&modded), "rim:whl_am_sample_le28n");
+        // the purchase record takes the disc's tag only; a mod rim's is the port's own (parts_owned), not an invalid category
+        let mut r = crate::mc4::VehicleRecord::default();
+        r.take_tags(&["rim:whl_am_sample_le28n".to_string()]);
+        assert!(r.owned_parts.values().all(|v| v.is_empty()), "{:?}", r.owned_parts);
     }
 }

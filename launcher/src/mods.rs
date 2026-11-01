@@ -186,6 +186,33 @@ mod tests {
         assert_eq!(paths_from(root, None, None, &settings).data_root, root.join("mydata"));
     }
 
+    /// A package of one rim and no car is listed with the rim as its content (kind "rim", its folder as the name).
+    #[test]
+    fn a_rim_only_package_lists_its_rim() {
+        let (d, p) = setup();
+        let zip = d.path().join("rim.zip");
+        let mut z = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());
+        z.start_file("mod.toml", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(b"schema = 1
+[mod]
+id = \"t.rim\"
+version = \"1.0.0\"
+name = \"Rim mod\"
+[[rim]]
+folder = \"whl_am_t_rim\"
+label = \"T RIM\"
+brand = \"volk\"
+price = 1200
+").unwrap();
+        z.finish().unwrap();
+        let InstallView::Installed { listing, .. } = install(&p, &zip, false).unwrap() else { panic!("installed") };
+        let c = &listing.rows[0].contents;
+        assert_eq!((c.len(), c[0].kind, c[0].name.as_str(), c[0].title.as_str()), (1, "rim", "whl_am_t_rim", "T RIM"));
+        // (no game data in the test folder: the rim cannot be checked, and says so rather than being taken as fine)
+        assert!(!c[0].problems.is_empty(), "{:?}", c[0]);
+        assert!(!listing.rows[0].reasons.iter().any(|r| r.contains("no car")), "{:?}", listing.rows[0].reasons);
+    }
+
     #[test]
     fn dropped_files_are_handed_over_once_and_forgotten_when_old() {
         let (_d, p) = setup();

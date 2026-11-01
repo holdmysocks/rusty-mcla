@@ -504,6 +504,8 @@ pub struct Game {
     pub rim_by_name: hashbrown::HashMap<String, usize>,
     /// which brand of the rim shop is open, and which rim is highlighted in it
     pub rim_brand: usize,
+    /// the pictures of rim mods' own brand tabs (rimlogo.rs), by brand id
+    pub rim_logos: std::collections::HashMap<String, egui::TextureHandle>,
     pub rim_pick: usize,
     pub dirty: bool,
     /// original UI art (lazily loaded on first HUD draw)
@@ -1090,6 +1092,16 @@ pub struct Game {
     pub perf_dirty: bool,
 }
 
+/// How a bought rim is remembered in `parts_owned` (MODS.md M-6 item 5): a disc rim by the game's rim-table index, as
+/// ever (`rim:57`), a mod's rim by its folder name (`rim:whl_am_x`) - a mod's number moves when mods come and go.
+pub fn rim_tag(entry: &crate::rimshop::RimEntry) -> String {
+    if entry.modded {
+        format!("rim:{}", entry.resource)
+    } else {
+        format!("rim:{}", entry.index)
+    }
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SaveData {
     // (an original save imported with no save of the port to merge into has no `color` - the swatch is the port's own:
@@ -1250,6 +1262,7 @@ impl Game {
             rim_shop: Default::default(),
             rim_by_name: Default::default(),
             rim_brand: 0,
+            rim_logos: std::collections::HashMap::new(),
             rim_pick: 0,
             dirty: false,
             art: None,
@@ -1603,6 +1616,8 @@ impl Game {
                 self.cfgs = sd.cfgs;
                 // (MODS.md S6: the vehicle in use was a placeholder - its look is put by, the car now in use brings its own)
                 self.keep_placeholder_cfg(&sd.car);
+                // (MODS.md M-6 item 5: the fitted rims by folder name, over the positions)
+                self.resolve_saved_rims();
                 self.paints = sd.paints;
                 self.finishes = sd.finishes;
                 self.rim_ids = sd.rim_ids;
@@ -1662,7 +1677,7 @@ impl Game {
         if self.no_save {
             return;
         }
-        let sd = SaveData { career: Some(self.career.save()), car: self.mc4_current_out().and_then(|c| self.owned.iter().find(|o| o.eq_ignore_ascii_case(&c)).cloned()).unwrap_or_else(|| self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default()), color: self.color_idx, cfg: self.cfg.clone(), best_time: self.best_time, money: Some(self.money), rep: self.rep, owned: self.garage_order(), perf: self.perf.clone(), user_races: self.user_races.clone(), vinyls: self.vinyls.clone(), paint_hsv: self.paint_hsv, collected: self.collected.clone(), rim_inches: self.rim_inches, hydraulics: self.hydraulics, paint_type: self.paint_type, paint_fade: self.paint_fade, paint_b: self.paint_b, tint_level: self.tint_level, tint_color: self.tint_color, neon_on: self.neon_on, neon_color: self.neon_color, music_genre: self.music_genre, opts: self.opts, perf_parts: self.perf_parts.clone(), parts_owned: self.parts_owned.clone(), adaptive: self.adaptive, liveries: self.liveries.clone(), xparts: self.xparts.clone(), race_favs: self.race_favs.clone(), cfgs: self.cfgs.clone(), paints: { let mut m = self.paints.clone(); if !self.paint_for.is_empty() { m.insert(self.paint_for.clone(), (self.paint_hsv, self.color_idx, self.paint_type, self.paint_fade)); } m }, finishes: { let mut m = self.finishes.clone(); if !self.paint_for.is_empty() { m.insert(self.paint_for.clone(), (self.slot_hsv.to_vec(), self.rim_mats)); } m }, rim_ids: self.rim_ids.clone(), rim_mats: Some(self.rim_mats), perf_brand: self.perf_brand.clone(), plates: self.plates.clone(), dims: self.dims.clone(), int_neon: self.int_neon, int_colors: Some(self.int_colors), slot_hsv: self.slot_hsv, mc4: self.mc4_save(), keyboard: self.opt_x.ctrl.kbd.binds.to_save(), mod_cars: self.mod_cars_out() };
+        let sd = SaveData { career: Some(self.career.save()), car: self.mc4_current_out().and_then(|c| self.owned.iter().find(|o| o.eq_ignore_ascii_case(&c)).cloned()).unwrap_or_else(|| self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default()), color: self.color_idx, cfg: self.rim_cfg_out(&self.cfg), best_time: self.best_time, money: Some(self.money), rep: self.rep, owned: self.garage_order(), perf: self.perf.clone(), user_races: self.user_races.clone(), vinyls: self.vinyls.clone(), paint_hsv: self.paint_hsv, collected: self.collected.clone(), rim_inches: self.rim_inches, hydraulics: self.hydraulics, paint_type: self.paint_type, paint_fade: self.paint_fade, paint_b: self.paint_b, tint_level: self.tint_level, tint_color: self.tint_color, neon_on: self.neon_on, neon_color: self.neon_color, music_genre: self.music_genre, opts: self.opts, perf_parts: self.perf_parts.clone(), parts_owned: self.parts_owned.clone(), adaptive: self.adaptive, liveries: self.liveries.clone(), xparts: self.xparts.clone(), race_favs: self.race_favs.clone(), cfgs: self.cfgs.iter().map(|(k, c)| (k.clone(), self.rim_cfg_out(c))).collect(), paints: { let mut m = self.paints.clone(); if !self.paint_for.is_empty() { m.insert(self.paint_for.clone(), (self.paint_hsv, self.color_idx, self.paint_type, self.paint_fade)); } m }, finishes: { let mut m = self.finishes.clone(); if !self.paint_for.is_empty() { m.insert(self.paint_for.clone(), (self.slot_hsv.to_vec(), self.rim_mats)); } m }, rim_ids: self.rim_ids.clone(), rim_mats: Some(self.rim_mats), perf_brand: self.perf_brand.clone(), plates: self.plates.clone(), dims: self.dims.clone(), int_neon: self.int_neon, int_colors: Some(self.int_colors), slot_hsv: self.slot_hsv, mc4: self.mc4_save(), keyboard: self.opt_x.ctrl.kbd.binds.to_save(), mod_cars: self.mod_cars_out() };
         if let Ok(t) = serde_json::to_string_pretty(&sd) {
             let path = Self::save_path(data_dir);
             if let Some(dir) = path.parent() {
@@ -2146,6 +2161,59 @@ impl Game {
         self.paint_for = name;
     }
 
+    /// The folder name of the rim in `rim_dirs` slot `v`; empty for the stock slot 0 (and a slot past the list).
+    pub fn rim_folder_name(&self, v: usize) -> String {
+        self.rim_dirs.get(v).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    }
+
+    /// The slot of `rim_dirs` holding the rim folder `name` (exact, else any case); never the stock slot 0.
+    pub fn rim_slot_of(&self, name: &str) -> Option<usize> {
+        if name.is_empty() {
+            return None;
+        }
+        let at = |f: &dyn Fn(&str) -> bool| self.rim_dirs.iter().enumerate().skip(1).find(|(_, p)| p.file_name().is_some_and(|n| f(&n.to_string_lossy()))).map(|(i, _)| i);
+        at(&|n| n == name).or_else(|| at(&|n| n.eq_ignore_ascii_case(name)))
+    }
+
+    /// MODS.md M-6 item 5, on load: a car's fitted rim is read by its saved folder name first (`CarConfig::rim_name`), so
+    /// a rim folder added or removed since (a rim mod, a disc data change) moves no car's rim. A save without the name
+    /// keeps the position as it was. A name no folder has (its mod is gone or off): the stock wheels, the name kept.
+    pub fn resolve_saved_rims(&mut self) {
+        if self.rim_dirs.len() <= 1 {
+            return;
+        }
+        let mut cfg = std::mem::take(&mut self.cfg);
+        self.resolve_rim_of(&mut cfg);
+        self.cfg = cfg;
+        let mut cfgs = std::mem::take(&mut self.cfgs);
+        for c in cfgs.values_mut() {
+            self.resolve_rim_of(c);
+        }
+        self.cfgs = cfgs;
+    }
+
+    fn resolve_rim_of(&self, c: &mut crate::vehicle_model::CarConfig) {
+        if c.rim_name.is_empty() {
+            return;
+        }
+        c.rim = self.rim_slot_of(&c.rim_name).unwrap_or(0);
+    }
+
+    /// A car's look as the save writes it: the fitted rim's folder name beside its position (M-6 item 5). Stock wheels
+    /// leave the name empty - except a name no folder has, which is kept (its mod may return).
+    pub fn rim_cfg_out(&self, c: &crate::vehicle_model::CarConfig) -> crate::vehicle_model::CarConfig {
+        let mut c = c.clone();
+        if self.rim_dirs.len() <= 1 {
+            return c;
+        }
+        if c.rim != 0 {
+            c.rim_name = self.rim_folder_name(c.rim % self.rim_dirs.len());
+        } else if self.rim_slot_of(&c.rim_name).is_some() {
+            c.rim_name.clear();
+        }
+        c
+    }
+
     /// An imported save names each car's rim by the game's rim table index: the shop's entry
     /// of that index, its resource the port's rim. Fits the current car's (once); true if
     /// the rim changed.
@@ -2154,6 +2222,10 @@ impl Game {
             return false;
         }
         let Some(id) = self.rim_ids.remove(&self.dir_name(self.current_car).to_ascii_lowercase()) else { return false };
+        // (an original save names the disc's table only; a rim mod's number is never one it can hold)
+        if id >= mcla_mods::rims::DISC_RIM_COUNT {
+            return false;
+        }
         log::info!("imported rim: car {} id {} -> {:?} at {:?}", self.dir_name(self.current_car), id, self.rim_shop.entry(id).map(|e| e.resource.clone()), self.rim_shop.entry(id).and_then(|e| self.rim_by_name.get(&e.resource)));
         match self.rim_shop.entry(id).and_then(|e| self.rim_by_name.get(&e.resource)).copied() {
             Some(at) if self.cfg.rim != at => {
@@ -2261,7 +2333,7 @@ impl Game {
         let Some((_, brand, entry)) = self.rim_entry(v) else { return true };
         entry.price == 0
             || brand.shop == crate::rimshop::Shop::Dlc
-            || self.parts_owned.get(&self.dir_name(i).to_ascii_lowercase()).map_or(false, |o| o.contains(&format!("rim:{}", entry.index)))
+            || self.parts_owned.get(&self.dir_name(i).to_ascii_lowercase()).map_or(false, |o| o.contains(&rim_tag(entry)))
     }
 
     /// The rim shop row for `rim_dirs` slot `v`, with the brand that sells it.
@@ -2285,8 +2357,8 @@ impl Game {
             // survives any change to the order the port lists them in; every other
             // part by the section of the per-car price list it comes from
             new.push(if slot == Slot::Wheels {
-                match self.rim_index(v) {
-                    Some(index) => format!("rim:{}", index),
+                match self.rim_entry(v) {
+                    Some((_, _, entry)) => rim_tag(entry),
                     None => continue,
                 }
             } else {
@@ -7784,6 +7856,24 @@ impl Game {
                             _ => None,
                         };
                         fg.movie.player.update(ctx.input(|i| i.stable_dt).min(0.1));
+                        // A rim mod's own brand has no logo frame in the movie: its tab shows frame 0 with the
+                        // logo clip's bitmap swapped for the mod's picture, or the brand's name (rimlogo.rs).
+                        {
+                            const LOGO_CLIP: &str = "screen.menu.rimselection.vs_brands";
+                            let custom = if rim_open { rim_tabs.get(self.rim_brand.min(rim_tabs.len().saturating_sub(1))).and_then(|b| b.custom.clone().map(|c| (b.id.clone(), c))) } else { None };
+                            match custom {
+                                Some((id, c)) => {
+                                    let h = self.rim_logos.entry(id).or_insert_with(|| {
+                                        let (w, h, px) = crate::rimlogo::image(&c.name, c.logo.as_ref().map(|l| l.as_slice()));
+                                        ctx.load_texture("rim_logo", egui::ColorImage::from_rgba_unmultiplied([w, h], &px), egui::TextureOptions::LINEAR)
+                                    }).clone();
+                                    if !fg.movie.swap_handle(LOGO_CLIP, 0x7100, h) {
+                                        fg.movie.clear_swap(LOGO_CLIP);
+                                    }
+                                }
+                                None => fg.movie.clear_swap(LOGO_CLIP),
+                            }
+                        }
                         // The rim shop's box is measured from its content, and what it
                         // measures - the brand logo, the price column - is a different
                         // size on every brand, so the panel jumps as the tabs are stepped.

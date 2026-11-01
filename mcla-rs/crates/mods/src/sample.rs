@@ -151,3 +151,87 @@ pub fn write_r8_sample(data: &Path, out: &Path, version: &str) -> Result<Written
     z.finish().map_err(|e| e.to_string())?;
     Ok(w)
 }
+
+// ---- the rim sample (M-6) ----
+
+/// The disc rim the rim sample is made from, and the folder it gets as a mod (joins the same brand tab).
+pub const RIM_SOURCE: &str = "whl_am_volk_le28n";
+pub const RIM_SAMPLE: &str = "whl_am_sample_le28n";
+pub const RIM_SAMPLE_ID: &str = "sample.rim";
+
+/// What a rim sample is made like (`mcla-tool mods-sample-rim`).
+#[derive(Clone, Debug)]
+pub struct RimSampleOpts {
+    pub id: String,
+    pub version: String,
+    /// the disc rim folder copied
+    pub source: String,
+    /// the folder it gets
+    pub folder: String,
+    /// `brand` of the manifest
+    pub brand: String,
+    pub price: Option<i64>,
+    pub bike: bool,
+    pub label: Option<String>,
+    /// a PNG to ship as the brand logo (its bytes)
+    pub logo: Option<Vec<u8>>,
+}
+
+impl Default for RimSampleOpts {
+    fn default() -> Self {
+        RimSampleOpts { id: RIM_SAMPLE_ID.into(), version: "1.0.0".into(), source: RIM_SOURCE.into(), folder: RIM_SAMPLE.into(), brand: "volk".into(), price: None, bike: false, label: None, logo: None }
+    }
+}
+
+/// The manifest of a rim sample.
+pub fn rim_manifest(o: &RimSampleOpts) -> String {
+    let mut s = format!(
+        "# Rim sample: the game's rim {} re-packed as a rim mod under another folder name (docs/MODS.md M-6).\n# Built from your install by `mcla-tool mods-sample-rim`; it holds game data and is never distributed.\n[mod]\nid = \"{}\"\nversion = \"{}\"\nname = \"Rim sample ({})\"\nauthor = \"Rusty MCLA\"\ndescription = \"A rim of the game as a rim mod: the loader's own test and an example of a rim mod.\"\n\n[[rim]]\nfolder = \"{}\"\nbrand = \"{}\"\n",
+        o.source, o.id, o.version, o.folder, o.folder, o.brand
+    );
+    if let Some(l) = &o.label {
+        s.push_str(&format!("label = \"{l}\"\n"));
+    }
+    if let Some(p) = o.price {
+        s.push_str(&format!("price = {p}\n"));
+    }
+    if o.bike {
+        s.push_str("bike = true\n");
+    }
+    if o.logo.is_some() {
+        s.push_str("logo = \"logo.png\"\n");
+    }
+    s
+}
+
+/// The files of a rim sample: the manifest, the disc rim's folder under the new name, the logo.
+pub fn rim_sample_files(data: &Path, o: &RimSampleOpts) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut out: Vec<(String, Vec<u8>)> = vec![("mod.toml".into(), rim_manifest(o).into_bytes())];
+    for p in list(&data.join("resources/rims").join(&o.source), |_| true)? {
+        out.push((format!("resources/rims/{}/{}", o.folder, p.file_name().unwrap().to_string_lossy()), rd(&p)?));
+    }
+    if let Some(l) = &o.logo {
+        out.push(("logo.png".into(), l.clone()));
+    }
+    Ok(out)
+}
+
+fn write_zip(files: Vec<(String, Vec<u8>)>, out: &Path) -> Result<Written, String> {
+    let f = std::fs::File::create(out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
+    let mut z = zip::ZipWriter::new(f);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let mut w = Written::default();
+    for (name, bytes) in files {
+        z.start_file(name, opts).map_err(|e| e.to_string())?;
+        z.write_all(&bytes).map_err(|e| e.to_string())?;
+        w.files += 1;
+        w.bytes += bytes.len() as u64;
+    }
+    z.finish().map_err(|e| e.to_string())?;
+    Ok(w)
+}
+
+/// Write a rim sample as a zip at `out`.
+pub fn write_rim_sample(data: &Path, out: &Path, o: &RimSampleOpts) -> Result<Written, String> {
+    write_zip(rim_sample_files(data, o)?, out)
+}

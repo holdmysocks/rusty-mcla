@@ -14,7 +14,7 @@ pub const SCHEMA: i64 = 1;
 
 /// Top-level keys this build knows; any other top-level key or table is kept out with a warning (later content
 /// types - parts, paint / vinyl packages, tune files, strings - get their own tables without changing these).
-const KNOWN_TOP: [&str; 3] = ["schema", "mod", "car"];
+const KNOWN_TOP: [&str; 4] = ["schema", "mod", "car", "rim"];
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Manifest {
@@ -24,6 +24,9 @@ pub struct Manifest {
     pub info: ModHeader,
     #[serde(default, rename = "car")]
     pub cars: Vec<CarEntry>,
+    /// the rims of the mod (`[[rim]]`, MODS.md M-6)
+    #[serde(default, rename = "rim")]
+    pub rims: Vec<RimDef>,
     /// top-level keys this build does not know (not deserialized; filled by [`parse`])
     #[serde(skip)]
     pub unknown: Vec<String>,
@@ -63,6 +66,28 @@ pub struct CarEntry {
     pub donors: Donors,
     #[serde(default)]
     pub opponent: Option<Opponent>,
+}
+
+/// One rim of a mod (`[[rim]]`, MODS.md M-6; format in docs/reference/mods/manifest.md section 10).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RimDef {
+    /// the folder under `resources/rims` (`whl_am_` or `whld_am_` + lower-case letters, digits, `_`; at most 31 characters)
+    pub folder: String,
+    /// the name the shop lists (default: the folder without its prefix, `_` as spaces, in capitals)
+    #[serde(default)]
+    pub label: Option<String>,
+    /// a brand of the disc's shop (its state id: `bbs`, `volk`, `momo` ...) the rim joins, or the name of a new brand tab
+    pub brand: String,
+    /// dollars; 0 = free; absent = the median of the paid rims of the tab (or of its kind), see `rims::computed_price`
+    #[serde(default)]
+    pub price: Option<i64>,
+    /// a motorcycle rim: listed to bikes only
+    #[serde(default)]
+    pub bike: bool,
+    /// a PNG in the package for a new brand's logo (else the brand name is drawn as text)
+    #[serde(default)]
+    pub logo: Option<String>,
 }
 
 /// The `Vehicle { }` block of the vehicle list (vehicle_inventory.md 2.7).

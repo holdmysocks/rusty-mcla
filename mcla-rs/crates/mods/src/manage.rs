@@ -140,6 +140,12 @@ pub fn describe(set: &ModSet, disabled: &HashSet<String>, data_found: bool, stam
             holder.entry(c.name.to_ascii_lowercase()).or_insert(m);
         }
     }
+    let mut rim_holder: HashMap<String, &ModInfo> = HashMap::new();
+    for m in infos.iter().filter(|m| m.state == ModState::Loaded) {
+        for r in &m.rims {
+            rim_holder.entry(r.folder.to_ascii_lowercase()).or_insert(m);
+        }
+    }
     let mut rows: Vec<Row> = Vec::new();
     for m in infos {
         let file = m.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -150,7 +156,12 @@ pub fn describe(set: &ModSet, disabled: &HashSet<String>, data_found: bool, stam
             ModState::Conflict => ("skipped", Some("clash")),
             ModState::Duplicate => ("skipped", Some("duplicate")),
         };
-        let contents: Vec<Content> = m.cars.iter().map(|c| Content { kind: "car", name: c.name.clone(), title: if c.long_name.trim().is_empty() { c.name.clone() } else { c.long_name.clone() }, problems: c.reasons.clone(), notes: c.warnings.clone() }).collect();
+        let mut contents: Vec<Content> = m.cars.iter().map(|c| Content { kind: "car", name: c.name.clone(), title: if c.long_name.trim().is_empty() { c.name.clone() } else { c.long_name.clone() }, problems: c.reasons.clone(), notes: c.warnings.clone() }).collect();
+        contents.extend(m.rims.iter().map(|r| {
+            let mut notes = vec![r.detail()];
+            notes.extend(r.warnings.iter().cloned());
+            Content { kind: "rim", name: r.folder.clone(), title: r.label.clone(), problems: r.reasons.clone(), notes }
+        }));
         let clashes: Vec<Clash> = if m.state == ModState::Conflict {
             m.cars
                 .iter()
@@ -162,6 +173,13 @@ pub fn describe(set: &ModSet, disabled: &HashSet<String>, data_found: bool, stam
         } else {
             Vec::new()
         };
+        let mut clashes = clashes;
+        if m.state == ModState::Conflict {
+            clashes.extend(m.rims.iter().filter_map(|r| {
+                let h = rim_holder.get(&r.folder.to_ascii_lowercase()).filter(|h| h.path != m.path)?;
+                Some(Clash { kind: "rim", name: r.folder.clone(), title: r.label.clone(), held_by_id: h.id.clone(), held_by_name: shown_name(h), held_by_version: h.version.clone() })
+            }));
+        }
         // the copy that is used instead of a duplicate: the other package with the same id that is not itself a duplicate
         let used_instead = (m.state == ModState::Duplicate)
             .then(|| infos.iter().find(|o| o.id == m.id && o.path != m.path && o.state != ModState::Duplicate))
@@ -169,7 +187,7 @@ pub fn describe(set: &ModSet, disabled: &HashSet<String>, data_found: bool, stam
             .map(|o| UsedInstead { version: o.version.clone(), file: o.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() });
         // the crate's own sentence for a skipped mod is replaced by the structured fields above
         // (the crate's per-car reasons are also given per content, so they are not repeated here: what stays is the package's own)
-        let own = |r: &String| !m.cars.iter().any(|c| !c.reasons.is_empty() && r.starts_with(&format!("car {}: ", c.name)));
+        let own = |r: &String| !m.cars.iter().any(|c| !c.reasons.is_empty() && r.starts_with(&format!("car {}: ", c.name))) && !m.rims.iter().any(|x| !x.reasons.is_empty() && r.starts_with(&format!("rim {}: ", x.folder)));
         let reasons = if status == "skipped" { Vec::new() } else { m.reasons.iter().filter(|r| own(r)).cloned().collect() };
         rows.push(Row {
             id: m.id.clone(),

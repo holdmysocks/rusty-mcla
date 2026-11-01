@@ -31,6 +31,7 @@ fn main() -> Result<()> {
         "ls" => cmd_ls(&args[2..]),
         "registry" => registry::run(&args[2..]),
         "mods-sample" => cmd_mods_sample(&args[2..]),
+        "mods-sample-rim" => cmd_mods_sample_rim(&args[2..]),
         "rpf" => cmd_rpf(&args[2..]),
         "extract" => cmd_extract(&args[2..]),
         "install" => cmd_install(&args[2..]),
@@ -1303,6 +1304,41 @@ fn cmd_mcv(a: &[String]) -> Result<()> {
     let img = mcla_formats::jpeg::decode(&d[off(i)..off(i + 1)])?;
     println!("decoded in {:.1} ms", t.elapsed().as_secs_f32() * 1000.0);
     write_png(Path::new(&a[2]), img.width as u32, img.height as u32, &img.rgba)?;
+    Ok(())
+}
+
+/// `mcla-tool mods-sample-rim <data folder> <out.zip> [--id ID] [--version V] [--source FOLDER] [--folder FOLDER] [--brand B] [--price N] [--bike] [--label L] [--logo FILE.png]`:
+/// a disc aftermarket rim (default `whl_am_volk_le28n`) re-packed as a rim mod under another folder name (docs/MODS.md M-6),
+/// from the user's own data folder. The zip holds game data: never distributed.
+fn cmd_mods_sample_rim(args: &[String]) -> Result<()> {
+    if args.len() < 2 {
+        bail!("usage: mcla-tool mods-sample-rim <data folder> <out.zip> [--id ID] [--version V] [--source FOLDER] [--folder FOLDER] [--brand B] [--price N] [--bike] [--label L] [--logo FILE.png]");
+    }
+    let mut o = mcla_mods::sample::RimSampleOpts::default();
+    let mut i = 2;
+    while i < args.len() {
+        let key = args[i].as_str();
+        if key == "--bike" {
+            o.bike = true;
+            i += 1;
+            continue;
+        }
+        let Some(v) = args.get(i + 1) else { bail!("{key} needs a value") };
+        match key {
+            "--id" => o.id = v.clone(),
+            "--version" => o.version = v.clone(),
+            "--source" => o.source = v.clone(),
+            "--folder" => o.folder = v.clone(),
+            "--brand" => o.brand = v.clone(),
+            "--price" => o.price = Some(v.parse()?),
+            "--label" => o.label = Some(v.clone()),
+            "--logo" => o.logo = Some(std::fs::read(v)?),
+            _ => bail!("unknown option {key}"),
+        }
+        i += 2;
+    }
+    let w = mcla_mods::sample::write_rim_sample(std::path::Path::new(&args[0]), std::path::Path::new(&args[1]), &o).map_err(|e| anyhow::anyhow!(e))?;
+    println!("wrote {} ({} files, {} KB of data)", args[1], w.files, w.bytes / 1000);
     Ok(())
 }
 

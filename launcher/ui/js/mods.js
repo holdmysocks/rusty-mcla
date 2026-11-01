@@ -22,14 +22,14 @@
   const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
   function plural(kind, n) {
     const one = 'dyn.mods.kind_' + kind + '_one', many = 'dyn.mods.kind_' + kind + '_n';
-    if (kind === 'car' && n === 1) return t(one, [n]);
+    if (n === 1 && I18N.table()[one]) return t(one, [n]);
     return t(I18N.table()[many] ? many : 'dyn.mods.kind_other_n', [n]);
   }
   // "2008 R8 (SAMPLE)" for one car, "3 cars" for several; mixed kinds are counted per kind
   function contentsText(r) {
     const by = {};
     r.contents.forEach((c) => { (by[c.kind] = by[c.kind] || []).push(c); });
-    return Object.keys(by).map((k) => (by[k].length === 1 && k === 'car' ? by[k][0].title : plural(k, by[k].length))).join(' · ');
+    return Object.keys(by).map((k) => (by[k].length === 1 && (k === 'car' || k === 'rim') ? by[k][0].title : plural(k, by[k].length))).join(' · ');
   }
   function subText(r) {
     const left = [r.author || t('dyn.mods.noauthor'), contentsText(r)].filter(Boolean).join(' · ');

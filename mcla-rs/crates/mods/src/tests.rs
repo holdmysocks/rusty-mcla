@@ -702,3 +702,342 @@ fn r8_sample_is_valid_and_updates_in_place() {
     assert_eq!(ModSet::load_from(&mods, &disc, &opts).mods()[0].version, "1.1.0", "nothing changed by the refused install");
     let _ = std::fs::remove_dir_all(&work);
 }
+
+// ---- rim mods (M-6) ----
+
+/// A rim shop in the shape of the disc's scripts: BBS (paid: 2000, 4000, 6000 -> median 4000), VOLK (1000, 1002), one
+/// bike brand (paid: 1000, 3000 -> median 2000) and a tab of free download rims.
+const RIM_SC: &str = r#"
+<state id="rim_bbs"><data name="fs_mfr" expr="78"></data><onenter expr="nav.setFlashVar('cur_tab',1)"></onenter>
+ <state><data name="fs_text1" expr="'whl_am_bbs_a'"></data><data name="fs_text2" expr="2000"></data><data name="index" expr="10"></data></state>
+ <state><data name="fs_text1" expr="'whl_am_bbs_b'"></data><data name="fs_text2" expr="4000"></data><data name="index" expr="11"></data></state>
+ <state><data name="fs_text1" expr="'whl_am_bbs_c'"></data><data name="fs_text2" expr="6000"></data><data name="index" expr="12"></data></state>
+</state>
+<state id="rim_volk"><data name="fs_mfr" expr="30"></data><onenter expr="nav.setFlashVar('cur_tab',2)"></onenter>
+ <state><data name="fs_text1" expr="'whl_am_volk_a'"></data><data name="fs_text2" expr="1000"></data><data name="index" expr="20"></data></state>
+ <state><data name="fs_text1" expr="'whl_am_volk_b'"></data><data name="fs_text2" expr="1002"></data><data name="index" expr="21"></data></state>
+</state>"#;
+const RIM_BIKE: &str = r#"
+<state id="rim_rc_bike"><data name="fs_mfr" expr="79"></data><onenter expr="nav.setFlashVar('cur_tab',1)"></onenter>
+ <state><data name="fs_text1" expr="'whl_am_rc_a'"></data><data name="fs_text2" expr="1000"></data><data name="index" expr="30"></data></state>
+ <state><data name="fs_text1" expr="'whl_am_rc_b'"></data><data name="fs_text2" expr="3000"></data><data name="index" expr="31"></data></state>
+</state>"#;
+const RIM_DLC: &str = r#"
+<state id="rim_Dayton_DLC"><data name="fs_mfr" expr="1"></data><onenter expr="nav.setFlashVar('cur_tab',1)"></onenter>
+ <state><data name="fs_text1" expr="'whld_am_dytn_a'"></data><data name="fs_text2" expr="0"></data><data name="index" expr="40"></data></state>
+</state>"#;
+
+/// `data_root()` with the three rim shop scripts and a few disc rim folders.
+fn data_root_rims() -> PathBuf {
+    let d = data_root();
+    let e = d.join("tune/ui/garage/elements");
+    std::fs::create_dir_all(&e).unwrap();
+    std::fs::write(e.join("Rim.sc.xml"), RIM_SC).unwrap();
+    std::fs::write(e.join("RimBike.sc.xml"), RIM_BIKE).unwrap();
+    std::fs::write(e.join("DLC_Rim.sc.xml"), RIM_DLC).unwrap();
+    for f in ["whl_am_bbs_a", "whl_stk_aud_r8_08"] {
+        std::fs::create_dir_all(d.join("resources/rims").join(f)).unwrap();
+    }
+    d
+}
+
+/// A rim mod's manifest: `entries` are `[[rim]]` blocks written out.
+fn rim_manifest(id: &str, version: &str, entries: &str) -> String {
+    format!("[mod]\nid = \"{id}\"\nversion = \"{version}\"\nname = \"Rims {id}\"\n{entries}")
+}
+
+fn rim_block(folder: &str, extra: &str) -> String {
+    format!("\n[[rim]]\nfolder = \"{folder}\"\n{extra}\n")
+}
+
+/// The files of a rim: a test model with zones 1, 2, 3 and a look.
+fn rim_files(folder: &str) -> Vec<(String, Vec<u8>)> {
+    vec![(format!("resources/rims/{folder}/0x00000001.r63"), b"TESTRIM\x01\x02\x03".to_vec()), (format!("resources/rims/{folder}/0x00000002.r83"), b"look".to_vec())]
+}
+
+fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+    let mut b = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
+    b.extend(w.to_be_bytes());
+    b.extend(h.to_be_bytes());
+    b.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    b
+}
+
+#[test]
+fn rim_price_rule_and_join() {
+    let shop = rims::RimShop { brands: [rims::parse(RIM_SC, rims::Shop::Car), rims::parse(RIM_BIKE, rims::Shop::Bike), rims::parse(RIM_DLC, rims::Shop::Dlc)].concat() };
+    // medians rounded to a multiple of 4, halves up
+    assert_eq!(rims::median_price(vec![2000, 4000, 6000]), 4000);
+    assert_eq!(rims::median_price(vec![1000, 1002]), 1000, "1001 -> 1000");
+    assert_eq!(rims::median_price(vec![1000, 1010]), 1004, "1005 -> 1004");
+    assert_eq!(rims::median_price(vec![1002, 1004]), 1004, "1003 -> 1004");
+    assert_eq!(rims::median_price(vec![1006, 1010]), 1008, "1008 stays");
+    assert_eq!(rims::median_price(vec![]), 0);
+    // joining a tab: its own median; a new brand or a free tab: all paid rims of the kind
+    let join = |b: &str, bike| rims::resolve_join(&shop, b, bike).unwrap();
+    assert_eq!(join("BBS", false), rims::Join::Disc("bbs".into()), "any case");
+    assert_eq!(rims::computed_price(&shop, &join("bbs", false), false), 4000);
+    assert_eq!(rims::computed_price(&shop, &join("volk", false), false), 1000);
+    // all paid car rims: 1000 1002 2000 4000 6000 -> median 2000
+    assert_eq!(rims::computed_price(&shop, &join("Acme", false), false), 2000);
+    assert_eq!(rims::computed_price(&shop, &join("dayton_dlc", false), false), 2000, "a tab of free rims");
+    // bikes: the bike tabs only (1000, 3000 -> 2000)
+    assert_eq!(rims::computed_price(&shop, &join("Acme", true), true), 2000);
+    assert_eq!(rims::computed_price(&shop, &join("rc_bike", true), true), 2000);
+    // a rim never goes into a tab of the other kind
+    assert!(rims::resolve_join(&shop, "rc_bike", false).unwrap_err().contains("bike tab"));
+    assert!(rims::resolve_join(&shop, "bbs", true).unwrap_err().contains("car tab"));
+}
+
+#[test]
+fn rim_mods_load_with_only_rims_and_join_the_shop() {
+    let data = data_root_rims();
+    let m = mods_dir(&data);
+    // mod "b": a rim into BBS (price given), a free rim into VOLK, a bike rim and two rims of a new brand "Acme"
+    let man_b = rim_manifest(
+        "b.rims",
+        "1.0",
+        &[
+            rim_block("whl_am_zz_one", "brand = \"bbs\"\nprice = 777\n"),
+            rim_block("whl_am_zz_free", "brand = \"volk\"\nprice = 0\nlabel = \"Free One\"\n"),
+            rim_block("whl_am_zz_bike", "brand = \"Acme\"\nbike = true\nlogo = \"logo.png\"\n"),
+            rim_block("whl_am_acme_two", "brand = \"Acme\"\nlogo = \"logo.png\"\n"),
+            rim_block("whl_am_acme_one", "brand = \"acme\"\n"),
+        ]
+        .concat(),
+    );
+    let mut files_b: Vec<(String, Vec<u8>)> = ["whl_am_zz_one", "whl_am_zz_free", "whl_am_zz_bike", "whl_am_acme_two", "whl_am_acme_one"].iter().flat_map(|f| rim_files(f)).collect();
+    files_b.push(("logo.png".into(), png_bytes(64, 32)));
+    write_folder(&m.join("b_mod"), &man_b, &files_b);
+    // mod "a": a rim of a brand "Zeta" (a new tab after Acme's), no price
+    write_folder(&m.join("a_mod"), &rim_manifest("a.rims", "1.0", &rim_block("whl_am_aa_zeta", "brand = \"Zeta\"\n")), &rim_files("whl_am_aa_zeta"));
+    let set = load(&data);
+    for i in set.mods() {
+        assert_eq!(i.state, ModState::Loaded, "{}: {:?}", i.id, i.reasons);
+    }
+    assert!(set.cars().is_empty(), "a mod with only rims is valid");
+    // load order: mod id (a, then b), each manifest's order
+    let order: Vec<&str> = set.rims().iter().map(|r| r.folder.as_str()).collect();
+    assert_eq!(order, ["whl_am_aa_zeta", "whl_am_zz_one", "whl_am_zz_free", "whl_am_zz_bike", "whl_am_acme_two", "whl_am_acme_one"]);
+    // rim numbers: 175 + place in folder name order over all rims
+    let num = |f: &str| set.rim(f).unwrap().index;
+    assert_eq!([num("whl_am_aa_zeta"), num("whl_am_acme_one"), num("whl_am_acme_two"), num("whl_am_zz_bike"), num("whl_am_zz_free"), num("whl_am_zz_one")], [175, 176, 177, 178, 179, 180]);
+    // prices: given as given (0 is free); absent = the median (a new brand: all paid car rims 2000; the bike rim: the bike tabs 2000)
+    let price = |f: &str| set.rim(f).unwrap().price;
+    assert_eq!((price("whl_am_zz_one"), price("whl_am_zz_free")), (777, 0));
+    assert_eq!((price("whl_am_aa_zeta"), price("whl_am_acme_one"), price("whl_am_zz_bike")), (2000, 2000, 2000));
+    // the launcher's view: final prices, whether given, the number
+    let b = set.mods().iter().find(|m| m.id == "b.rims").unwrap();
+    let st = |f: &str| b.rims.iter().find(|r| r.folder == f).unwrap();
+    assert!(st("whl_am_zz_one").price_given && !st("whl_am_acme_one").price_given);
+    assert_eq!((st("whl_am_acme_one").index, st("whl_am_acme_one").price), (Some(176), 2000));
+    assert_eq!(st("whl_am_zz_free").label, "Free One");
+    assert_eq!(st("whl_am_acme_one").label, "ACME ONE");
+    // warnings: the new brand's first rim of mod b has no logo itself (the brand is the same tab, but each rim says)
+    assert!(st("whl_am_acme_one").warnings.iter().any(|w| w.contains("no logo")), "{:?}", st("whl_am_acme_one").warnings);
+    assert!(st("whl_am_acme_two").warnings.is_empty(), "{:?}", st("whl_am_acme_two").warnings);
+    // the shop: BBS gains its rim after the disc's three, VOLK the free one; new brands after the disc's tabs, by name
+    let disc = DiscInfo::load(&data);
+    let shop = rims::merge(disc.shop.clone(), set.rims());
+    let bbs = shop.brands.iter().find(|b| b.id == "bbs").unwrap();
+    assert_eq!(bbs.rims.iter().map(|r| r.resource.as_str()).collect::<Vec<_>>(), ["whl_am_bbs_a", "whl_am_bbs_b", "whl_am_bbs_c", "whl_am_zz_one"]);
+    let ids: Vec<(&str, rims::Shop, usize)> = shop.brands.iter().map(|b| (b.id.as_str(), b.shop, b.rims.len())).collect();
+    assert_eq!(&ids[ids.len() - 3..], [("acme", rims::Shop::Car, 2), ("acme", rims::Shop::Bike, 1), ("zeta", rims::Shop::Car, 1)], "after all disc tabs, in name order");
+    assert!(shop.brands[..ids.len() - 3].iter().all(|b| b.custom.is_none()));
+    let acme = shop.brands.iter().find(|b| b.id == "acme" && b.shop == rims::Shop::Car).unwrap();
+    assert_eq!(acme.rims.iter().map(|r| r.resource.as_str()).collect::<Vec<_>>(), ["whl_am_acme_two", "whl_am_acme_one"], "the manifest's order");
+    assert!(acme.custom.as_ref().unwrap().logo.is_some(), "the logo of the tab comes from any rim that gave one");
+    assert_eq!(acme.custom.as_ref().unwrap().name, "Acme");
+    // a bike sees the bike tabs and new brands of its kind; a car does not see the bike ones
+    assert!(shop.tabs(false).iter().all(|b| b.shop != rims::Shop::Bike));
+    assert_eq!(shop.tabs(true).iter().filter(|b| b.id == "acme").count(), 2);
+    // car_rims (the opponents' random pool) holds the car and download rims with the mods' numbers, no bike rim
+    let pool: Vec<i32> = shop.car_rims().iter().map(|r| r.0).collect();
+    assert!(pool.contains(&175) && pool.contains(&177) && !pool.contains(&178), "{pool:?}");
+    // a disabled mod brings nothing
+    let mut dis = std::collections::HashSet::new();
+    dis.insert("b.rims".to_string());
+    let set2 = ModSet::load(&data, &LoadOptions { disabled: dis, ..Default::default() });
+    assert_eq!(set2.rims().len(), 1);
+    assert_eq!(set2.rim("whl_am_aa_zeta").unwrap().index, 175, "the numbers follow what is loaded");
+}
+
+#[test]
+fn rim_mod_reasons_warnings_and_clashes() {
+    let data = data_root_rims();
+    let m = mods_dir(&data);
+    let one = |dir: &str, id: &str, entries: String, files: Vec<(String, Vec<u8>)>| write_folder(&m.join(dir), &rim_manifest(id, "1.0", &entries), &files);
+    // clash with a disc rim folder (the script's or the resources folder)
+    one("m1", "m1", rim_block("whl_am_bbs_a", "brand = \"bbs\"\n"), rim_files("whl_am_bbs_a"));
+    // bad names
+    one("m2", "m2", rim_block("rim_x", "brand = \"bbs\"\n"), rim_files("rim_x"));
+    one("m3", "m3", rim_block("whl_am_Upper", "brand = \"bbs\"\n"), rim_files("whl_am_Upper"));
+    one("m4", "m4", rim_block("whl_am_a_very_long_folder_name_over_limit", "brand = \"bbs\"\n"), rim_files("whl_am_a_very_long_folder_name_over_limit"));
+    // no files / two models / unreadable model / no zones
+    one("m5", "m5", rim_block("whl_am_nofiles", "brand = \"bbs\"\n"), vec![]);
+    let mut two = rim_files("whl_am_two");
+    two.push(("resources/rims/whl_am_two/0x00000009.r63".into(), b"TESTRIM\x01".to_vec()));
+    one("m6", "m6", rim_block("whl_am_two", "brand = \"bbs\"\n"), two);
+    let mut bad = rim_files("whl_am_bad");
+    bad[0].1 = b"not a model".to_vec();
+    one("m7", "m7", rim_block("whl_am_bad", "brand = \"bbs\"\n"), bad);
+    let mut nozone = rim_files("whl_am_nozone");
+    nozone[0].1 = b"TESTRIM".to_vec();
+    one("m8", "m8", rim_block("whl_am_nozone", "brand = \"bbs\"\n"), nozone);
+    // brand of the other kind, bad price, missing / bad logo, logo on a disc brand
+    one("m9", "m9", rim_block("whl_am_kind", "brand = \"rc_bike\"\n"), rim_files("whl_am_kind"));
+    one("n1", "n1", rim_block("whl_am_neg", "brand = \"bbs\"\nprice = -5\n"), rim_files("whl_am_neg"));
+    one("n2", "n2", rim_block("whl_am_nologo", "brand = \"New\"\nlogo = \"nope.png\"\n"), rim_files("whl_am_nologo"));
+    let mut notpng = rim_files("whl_am_notpng");
+    notpng.push(("l.png".into(), b"GIF89a".to_vec()));
+    one("n3", "n3", rim_block("whl_am_notpng", "brand = \"New\"\nlogo = \"l.png\"\n"), notpng);
+    let mut ondisc = rim_files("whl_am_ondisc");
+    ondisc.push(("l.png".into(), png_bytes(8, 8)));
+    one("n4", "n4", rim_block("whl_am_ondisc", "brand = \"bbs\"\nlogo = \"l.png\"\n"), ondisc);
+    // twice in one manifest; a mod with neither car nor rim
+    one("n5", "n5", [rim_block("whl_am_dup", "brand = \"bbs\"\n"), rim_block("whl_am_dup", "brand = \"bbs\"\n")].concat(), rim_files("whl_am_dup"));
+    one("n6", "n6", String::new(), vec![]);
+    // two mods with one folder: the second (by id) is a conflict and not loaded
+    one("o1", "o1", rim_block("whl_am_same", "brand = \"bbs\"\n"), rim_files("whl_am_same"));
+    one("o2", "o2", rim_block("whl_am_same", "brand = \"volk\"\n"), rim_files("whl_am_same"));
+    let set = load(&data);
+    let get = |id: &str| set.mods().iter().find(|m| m.id == id).unwrap();
+    let why = |id: &str| get(id).reasons.join(" | ");
+    assert_eq!(get("m1").state, ModState::Invalid);
+    assert!(why("m1").contains("rim folder of the game"), "{}", why("m1"));
+    assert!(why("m2").contains("whl_am_"), "{}", why("m2"));
+    assert!(why("m3").contains("lower-case"), "{}", why("m3"));
+    assert!(why("m4").contains("longer than 31"), "{}", why("m4"));
+    assert!(why("m5").contains("one .r63") && why("m5").contains("one .r83"), "{}", why("m5"));
+    assert!(why("m6").contains("one .r63 model (found 2)"), "{}", why("m6"));
+    assert!(why("m7").contains("unreadable"), "{}", why("m7"));
+    // no rim zones: loaded, with a warning
+    assert_eq!(get("m8").state, ModState::Loaded, "{}", why("m8"));
+    assert!(get("m8").rims[0].warnings.iter().any(|w| w.contains("no rim zones")), "{:?}", get("m8").rims[0].warnings);
+    assert!(why("m9").contains("bike tab"), "{}", why("m9"));
+    assert!(why("n1").contains("negative"), "{}", why("n1"));
+    assert!(why("n2").contains("not in the package"), "{}", why("n2"));
+    assert!(why("n3").contains("not a PNG"), "{}", why("n3"));
+    assert_eq!(get("n4").state, ModState::Loaded);
+    assert!(get("n4").rims[0].warnings.iter().any(|w| w.contains("ignored")), "{:?}", get("n4").rims[0].warnings);
+    assert!(why("n5").contains("defined twice"), "{}", why("n5"));
+    assert!(why("n6").contains("no car and no rim"), "{}", why("n6"));
+    assert_eq!(get("o1").state, ModState::Loaded);
+    assert_eq!(get("o2").state, ModState::Conflict);
+    assert!(why("o2").contains("rim whl_am_same is already defined by mod o1"), "{}", why("o2"));
+    assert_eq!(set.rims().iter().filter(|r| r.folder == "whl_am_same").count(), 1);
+    assert_eq!(set.rim("whl_am_same").unwrap().mod_id, "o1");
+}
+
+#[test]
+fn rim_mod_zip_unpacks_its_folder() {
+    let data = data_root_rims();
+    let m = mods_dir(&data);
+    std::fs::create_dir_all(&m).unwrap();
+    write_zip(&m.join("z.zip"), "zipped/", &rim_manifest("z.rims", "1.2", &rim_block("whl_am_zip_a", "brand = \"volk\"\n")), &rim_files("whl_am_zip_a"));
+    let mut set = load(&data);
+    assert_eq!(set.mods()[0].state, ModState::Loaded, "{:?}", set.mods()[0].reasons);
+    set.unpack_zips(&cache_dir(&m)).unwrap();
+    let f = set.list_dir("resources/rims/whl_am_zip_a");
+    assert_eq!(f.len(), 2);
+    assert!(f.iter().all(|f| f.disk_path().is_some_and(|p| p.is_file())));
+}
+
+/// The disc's real rim shop (skipped without the data): the medians MODS.md M-6 item 2b names, every disc price a
+/// multiple of 4, the rim table numbers under 175.
+#[test]
+fn real_disc_rim_shop_prices() {
+    let root = std::env::var_os("MCLA_DATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("D:/MCLA/extracted/cache"));
+    if !root.join("tune/ui/garage/elements/Rim.sc.xml").is_file() {
+        eprintln!("no data at {}: skipped", root.display());
+        return;
+    }
+    let d = DiscInfo::load(&root);
+    let rims_all: Vec<&rims::RimEntry> = d.shop.brands.iter().flat_map(|b| &b.rims).collect();
+    assert!(rims_all.len() >= 100, "{} rims", rims_all.len());
+    assert!(rims_all.iter().all(|r| r.price % rims::PRICE_STEP == 0 && r.index < rims::DISC_RIM_COUNT && !r.modded));
+    // the raw medians of the design (2026-10-28): the rule rounds them to a multiple of 4, halves up
+    let med = |id: &str| rims::computed_price(&d.shop, &rims::Join::Disc(id.into()), false);
+    assert_eq!([med("amer"), med("bbs"), med("davin"), med("konig"), med("volk"), med("works")], [1152, 4568, 11648, 1148, 3492, 2140]);
+    // a new brand, or a free download tab: all paid car rims (87, median 3600); a bike rim: the bike tabs (10, 3612)
+    assert_eq!(rims::computed_price(&d.shop, &rims::Join::New("Acme".into()), false), 3600);
+    assert_eq!(rims::computed_price(&d.shop, &rims::Join::Disc("Dayton_DLC".into()), false), 3600);
+    assert_eq!(rims::computed_price(&d.shop, &rims::Join::New("Acme".into()), true), 3612);
+    assert_eq!(rims::computed_price(&d.shop, &rims::Join::Disc("rc_bike".into()), true), 2768);
+    // every folder of the shop is a folder of resources/rims (apart from the one typo the port corrects)
+    assert!(d.rim_folders.contains("whl_am_volk_le28n") && d.rim_folders.contains("whl_stk_aud_r8_08"));
+}
+
+/// A disc aftermarket rim packed as a rim mod under another folder name (the M-6 1:1 sample, built from the real data):
+/// valid with no warning, joins the Volk tab after the disc's seven, takes the disc rim's price when asked and the tab's
+/// median when not. Also the disc rims' zones: all of them have zone 1 (spoke A).
+#[test]
+fn rim_sample_from_the_disc_is_valid() {
+    let root = std::env::var_os("MCLA_DATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("D:/MCLA/extracted/cache"));
+    if !root.join("resources/rims").join(sample::RIM_SOURCE).is_dir() {
+        eprintln!("no data at {}: skipped", root.display());
+        return;
+    }
+    let disc = DiscInfo::load(&root);
+    let work = tmp("rimsample");
+    let mods = work.join("mods");
+    let mut o = sample::RimSampleOpts::default();
+    let w = sample::write_rim_sample(&root, &work.join("a.zip"), &o).unwrap();
+    assert_eq!(w.files, 3);
+    install_package(&mods, &work.join("a.zip"), false).unwrap();
+    let set = ModSet::load_from(&mods, &disc, &LoadOptions::default());
+    let i = &set.mods()[0];
+    assert_eq!(i.state, ModState::Loaded, "{:?}", i.reasons);
+    assert!(i.warnings.is_empty() && i.rims[0].warnings.is_empty(), "{:?} {:?}", i.warnings, i.rims[0].warnings);
+    let volk = disc.shop.brands.iter().find(|b| b.id == "volk").unwrap();
+    let le28n = volk.rims.iter().find(|r| r.resource == sample::RIM_SOURCE).unwrap();
+    // no price: the Volk tab's median; price set equal: the disc rim's
+    assert_eq!((set.rims()[0].price, i.rims[0].price_given), (3492, false));
+    o.price = Some(le28n.price);
+    o.id = "sample.rim2".into();
+    sample::write_rim_sample(&root, &work.join("b.zip"), &o).unwrap();
+    let mods2 = work.join("mods2");
+    install_package(&mods2, &work.join("b.zip"), false).unwrap();
+    let set2 = ModSet::load_from(&mods2, &disc, &LoadOptions::default());
+    assert_eq!((set2.rims()[0].price, set2.rims()[0].index), (le28n.price, 175));
+    // the Mods tab's listing: the rim as content, its number, tab and price (the computed one too)
+    let l = crate::manage::describe(&set, &Default::default(), true, 0);
+    let c = &l.rows[0].contents[0];
+    assert_eq!((c.kind, c.name.as_str(), c.problems.is_empty()), ("rim", sample::RIM_SAMPLE, true));
+    assert_eq!(c.notes[0], "rim 175, joins the volk tab, $3,492 (not set: the median of the tab's paid rims)");
+    let l2 = crate::manage::describe(&set2, &Default::default(), true, 0);
+    assert_eq!(l2.rows[0].contents[0].notes[0], format!("rim 175, joins the volk tab, ${}", crate::with_commas(le28n.price)));
+    let shop = rims::merge(disc.shop.clone(), set2.rims());
+    let volk2 = shop.brands.iter().find(|b| b.id == "volk").unwrap();
+    assert_eq!(volk2.rims.len(), volk.rims.len() + 1);
+    assert_eq!(volk2.rims.last().unwrap().resource, sample::RIM_SAMPLE);
+    assert_eq!(&volk2.rims[..volk.rims.len()].iter().map(|r| (r.resource.clone(), r.index, r.price)).collect::<Vec<_>>(), &volk.rims.iter().map(|r| (r.resource.clone(), r.index, r.price)).collect::<Vec<_>>(), "the disc's rims in the tab did not move");
+    // the zones of every rim of the shop
+    let mut none = Vec::new();
+    for r in disc.shop.brands.iter().flat_map(|b| &b.rims) {
+        let dir = root.join("resources/rims").join(rims::folder_for(&r.resource));
+        let Some(p) = std::fs::read_dir(&dir).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "r63"))) else { continue };
+        let (z, _) = rims::model_zones(&std::fs::read(p).unwrap()).unwrap();
+        if z.is_empty() {
+            none.push(r.resource.clone());
+        }
+    }
+    assert!(none.is_empty(), "disc rims without zones: {none:?}");
+}
+
+/// The line the Mods tab shows for a rim: number, tab, kind and price - given, free or computed.
+#[test]
+fn rim_detail_line_and_thousands() {
+    use crate::rims::Join;
+    assert_eq!((crate::with_commas(0), crate::with_commas(999), crate::with_commas(3492), crate::with_commas(1234567)), ("0".into(), "999".into(), "3,492".into(), "1,234,567".into()));
+    let mut r = crate::RimStatus { folder: "whl_am_x".into(), label: "X".into(), brand: "volk".into(), join: Some(Join::Disc("rim_volk".into())), bike: false, price: 3492, price_given: false, index: Some(175), reasons: vec![], warnings: vec![] };
+    assert_eq!(r.detail(), "rim 175, joins the volk tab, $3,492 (not set: the median of the tab's paid rims)");
+    r.price_given = true;
+    r.price = 0;
+    assert_eq!(r.detail(), "rim 175, joins the volk tab, free");
+    r.price = 2612;
+    r.bike = true;
+    r.join = Some(Join::New("Acme".into()));
+    r.index = None;
+    assert_eq!(r.detail(), "bike rim, new tab \"Acme\", $2,612");
+}

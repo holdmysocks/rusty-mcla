@@ -256,6 +256,12 @@ impl Slot {
 pub struct CarConfig {
     pub paint: usize,
     pub rim: usize,
+    /// The folder name of the fitted rim (`resources/rims/<name>`), saved next to `rim` (MODS.md M-6 item 5): `rim` is a
+    /// position in the game's rim folder list, which a rim mod changes; the name does not. Read first; a save without it
+    /// keeps the position. Empty = the car's stock wheels. A rim whose mod is gone shows the stock wheels (`rim` 0) and
+    /// keeps its name here until the player fits another, so it returns with the mod.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rim_name: String,
     pub hood: usize,
     pub spoiler: usize,
     pub bumper_f: usize,
