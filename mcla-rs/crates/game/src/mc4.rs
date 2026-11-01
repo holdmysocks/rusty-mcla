@@ -12836,6 +12836,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mcla_mc4_{}_{}", tag, std::process::id()));
         std::fs::create_dir_all(&dir).ok()?;
         std::fs::write(dir.join("mcla_save.json"), serde_json::to_string(&save).ok()?).ok()?;
+        // (the save's refund values take the vehicles' prices from the game's data folder: `save_gaps::download_and_price`)
+        let tune = dir.join("tune/vehicle");
+        std::fs::create_dir_all(&tune).ok()?;
+        for f in ["0xe94bde63", "0xccb5daee", "0x3cb91343"] {
+            let _ = std::fs::copy(std::path::Path::new(&data_dir()).join("tune/vehicle").join(f), tune.join(f));
+        }
         let dir = dir.to_string_lossy().to_string();
         let cars: Vec<std::path::PathBuf> = save["owned"].as_array()?.iter().filter_map(|n| n.as_str()).map(std::path::PathBuf::from).collect();
         let mut g = Game::new(cars, 0);

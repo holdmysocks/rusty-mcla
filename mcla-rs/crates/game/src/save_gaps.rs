@@ -451,9 +451,14 @@ pub fn record_ctor_bytes(rng: &mut crate::vehicles::parked::Mwc, fill: u8) -> Ve
 /// Price). The list's entries start at Price 12345, ContentFlags 1, and ContentDownloadFlags is ContentFlags when
 /// the entry has none (the list's constructor F-83010 and parser F-87336).
 pub fn download_and_price(data_dir: &str, car: &str) -> (u32, i64) {
-    static TABLE: std::sync::OnceLock<std::collections::HashMap<String, (u32, i64)>> = std::sync::OnceLock::new();
-    let t = TABLE.get_or_init(|| {
-        let mut out = std::collections::HashMap::new();
+    // (one table a data folder; a folder without the files is read again: a save written before the folder is known must
+    // not leave the game without prices)
+    type Table = std::collections::HashMap<String, (u32, i64)>;
+    static TABLES: std::sync::Mutex<Option<std::collections::HashMap<String, Table>>> = std::sync::Mutex::new(None);
+    let mut tables = TABLES.lock().unwrap_or_else(|e| e.into_inner());
+    let tables = tables.get_or_insert_with(Default::default);
+    if !tables.contains_key(data_dir) {
+        let mut out = Table::new();
         for f in ["0xe94bde63", "0xccb5daee", "0x3cb91343"] {
             let Ok(s) = std::fs::read(std::path::Path::new(data_dir).join("tune/vehicle").join(f)) else { continue };
             let s = String::from_utf8_lossy(&s);
@@ -466,9 +471,12 @@ pub fn download_and_price(data_dir: &str, car: &str) -> (u32, i64) {
                 out.insert(name.to_ascii_lowercase(), (download, price));
             }
         }
-        out
-    });
-    t.get(&car.to_ascii_lowercase()).copied().unwrap_or((1, 12345))
+        if out.is_empty() {
+            return (1, 12345);
+        }
+        tables.insert(data_dir.to_string(), out);
+    }
+    tables[data_dir].get(&car.to_ascii_lowercase()).copied().unwrap_or((1, 12345))
 }
 
 /// Before the options block is saved (F-80786): every model's refund value is its parts sum word (+82) - 1, and
