@@ -1119,6 +1119,13 @@ impl Police {
         }
     }
 
+    /// No race's zone: none running, or the next race picks its own (a series goes from race to race without `race == None`).
+    pub fn zone_clear(&mut self) {
+        self.zone = None;
+        self.zone_go = false;
+        self.zone_picked = false;
+    }
+
     /// PoliceManager_EvaluateCopZones (F-88125): of the race's zones ONE is picked, and ONE lap
     /// (`rand % laps` when the race has more than one, else lap 0); lap 0's zone is armed at once,
     /// another's when the race's lap changes to it (F-82127, "[COP ZONE] lap [%d], cop zone enabled").

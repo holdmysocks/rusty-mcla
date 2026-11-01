@@ -4944,17 +4944,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // the race's cop zone (F-88125, F-71212): one zone of the race's, on one lap; the first
             // racer in it sets it off and the pursuit starts 5.5 s later (police.rs `zone_step`)
             if self.game.race.is_none() {
-                self.police.zone = None;
-                self.police.zone_picked = false;
+                self.police.zone_clear();
             } else if self.police.enabled && !self.vehicles.frozen {
                 let race = self.game.race.as_mut().unwrap();
                 if !self.police.zone_picked {
                     self.police.zone_picked = true;
                     self.police.pick_zone(race.cop_zones.len(), race.laps);
                 }
-                if let Some(z) = self.police.zone.clone().filter(|_| race.countdown <= 0.0) {
+                if let Some((z, &(zp, zr, ..))) = self.police.zone.clone().filter(|_| race.countdown <= 0.0).and_then(|z| race.cop_zones.get(z.idx).map(|c| (z, c))) {
                     let lap = race.next.first().map_or(0, |&n| n / race.lap_len.max(1));
-                    let (zp, zr) = (race.cop_zones[z.idx].0, race.cop_zones[z.idx].1);
                     let inside = race.participants.iter().find_map(|&ci| {
                         self.vehicles.cars.get(ci).filter(|c| c.state.pos.distance_squared(zp) < zr * zr).map(|c| c.is_player)
                     });
@@ -11219,6 +11217,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.warp_view = None;
                 self.delivery_intro = None;
                 self.delivery_tail = None;
+                self.police.zone_clear();
                 // (RESTART SERIES from a race's pause: its first race again, the tally at nought)
                 if action == MenuAction::RestartRace {
                     if let Some(sr) = self.game.series.as_mut() {
