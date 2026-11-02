@@ -2301,6 +2301,28 @@ impl NavCam {
         self.vel_t = 0.0;
     }
 
+    /// VIEW RACE (`F-29182` with the transition RacePickerUp of tune/ui/transitions/Main.sc.xml): from
+    /// the camera now to 15000 m over the map's centre (NM+352), looking down, the axes over 0.7 s with
+    /// ease_in. The camera set (`F-38897`) clamps the height to the map's max (NM+1128, 9000), so it
+    /// ends where the GPS map's top view is (the original's race view is framed as that one).
+    /// (Its Rotate child turns the pitch to -90 degrees in 0.3 s; here the look point goes along
+    /// with the eye - approx.)
+    pub fn race_pick(&mut self, game_eye: Vec3, game_look: Vec3, aspect: f32) {
+        let to = Vec3::new(NAV_CENTRE.x, 15000f32.clamp(NAV_LOW, NAV_HIGH), NAV_CENTRE.z);
+        let look = Vec3::new(to.x, 0.0, to.z - nav_off(to.y));
+        self.open_rows = None;
+        self.exit = None;
+        self.mv = Some(NavMove { from: game_eye, to, from_look: game_look, to_look: look, t: 0.0, dur: 0.7, ease_in: true });
+        self.eye = to;
+        self.look = look;
+        self.cursor = NAV_CENTRE;
+        self.bounds = nav_bounds(to.y, aspect);
+        self.acc = 0.0;
+        self.vel = Vec3::ZERO;
+        self.vel_prev = Some(game_eye);
+        self.vel_t = 0.0;
+    }
+
     /// The eye clamped and the look point made from it (`F-38897`).
     fn place(&mut self, mut e: Vec3) {
         e.y = e.y.clamp(NAV_LOW, NAV_HIGH);

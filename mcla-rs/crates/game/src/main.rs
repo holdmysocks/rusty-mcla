@@ -698,6 +698,8 @@ struct App {
     nav: hudmap::NavCam,
     /// the GPS cursor was free last frame / the stick is held
     nav_free: bool,
+    /// ARCADE's VIEW RACE has the map camera (its flight started)
+    race_view_on: bool,
     /// the GPS camera of the last map frame (the exit flies from it)
     nav_rows: Option<hudmap::CamRows>,
     nav_free_moving: bool,
@@ -1215,6 +1217,7 @@ impl App {
             map_look: Vec3::ZERO,
             nav: hudmap::NavCam::default(),
             nav_free: false,
+            race_view_on: false,
             nav_rows: None,
             nav_free_moving: false,
             map_open: 0.0,
@@ -8751,6 +8754,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (ARCADE stands over the city seen from the air, near the player - `h_arc2`,
         // `call_accept_0`: the map's own view, close in)
         let arcade_view = self.game.mode == Mode::RaceSelect && self.game.flash_navsys.is_some() && self.game.hangout_key.is_none() && self.hangout_in.is_none() && !self.game.wager_here && std::env::var("MCLA_ARCADE_FLAT").is_err();
+        if !arcade_view {
+            self.game.race_view = None;
+        }
         let map3d = (self.game.show_map || arcade_view) && self.citymap.is_some() && self.drive;
         // The original's GPS map is the city itself drawn from the map camera (its far models, the
         // hour's light, rule_frame.md 4.1); MCLA_MAP_BAKED=1: the port's baked top-down picture.
@@ -8829,6 +8835,29 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // t = 1 - sin(u pi / 2), u stepped 0.02 a frame (30 a second) while a zoom trigger is held;
             // the eye stands south of the look point by (1 - (H - 850) / 4150) x 1300 m below 5000 m,
             // 10 m above; 25 degree lens. (MCLA_MAP_OLDCAM=1: the port's own view.)
+            // ARCADE's VIEW RACE: the map camera goes up over the city's middle and looks down
+            // (NavCam::race_pick); LT / RT zoom as on the GPS map. Back to ARCADE the camera is the
+            // menu's again at once (RacePickerDown, 1 s, is not ported - approx.)
+            let race_view = arcade_view && self.game.race_view.is_some() && self.game.hm.is_some();
+            if race_view {
+                let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
+                if !self.race_view_on {
+                    self.nav.race_pick(self.chase.pos, self.chase.look, aspect);
+                    self.nav.lens = hudmap::NavLens::done();
+                    self.race_view_on = true;
+                }
+                let zin = self.input.down(KeyCode::PageUp) || self.input.down(KeyCode::KeyZ) || self.input.down(KeyCode::Equal);
+                let zout = self.input.down(KeyCode::PageDown) || self.input.down(KeyCode::KeyX) || self.input.down(KeyCode::Minus);
+                self.nav.update(dt, zin, zout, glam::Vec2::ZERO, aspect);
+                let rows = self.nav.view_rows();
+                self.chase.pos = rows.eye;
+                self.chase.look = rows.look_point();
+                self.chase.up = rows.r1;
+                self.cam.pos = rows.eye;
+                self.cam.fov_y = self.nav.lens.step(dt).to_radians();
+            } else {
+                self.race_view_on = false;
+            }
             if self.game.flash_navsys.is_some() && self.game.hm.is_some() && !arcade_view && self.game.editor.is_none() && std::env::var("MCLA_MAP_OLDCAM").is_err() {
                 let fresh = self.map_open <= dt * 1.6 + 1e-4;
                 let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;

@@ -620,6 +620,9 @@ pub struct Game {
     pub arcade_x: [usize; 2],
     /// a race whose opponent count the ARCADE options changed, and its own figure
     pub arcade_restore: Option<(usize, usize)>,
+    /// VIEW RACE on ARCADE's race list and options page (F-29182: the flag byte its Y / B toggle):
+    /// the race shown on the map from straight above, the menu away
+    pub race_view: Option<usize>,
     /// GOAL ATTACK (the mode object's byte +796): the ARCADE menu entered from the pause
     /// MODES' GOAL ATTACK, and the race started from it (`mc4_goal_*`)
     pub goal_attack: bool,
@@ -1314,6 +1317,7 @@ impl Game {
             arcade_opts: ARCADE_DEFAULTS,
             arcade_x: [1, 0],
             arcade_restore: None,
+            race_view: None,
             goal_attack: false,
             race_favs: Vec::new(),
             cfgs: Default::default(),
@@ -5815,7 +5819,7 @@ impl Game {
                         action = a;
                     }
                 } else if arcade {
-                    if let Some(a) = self.arcade_ui(ctx, up, down, left, right, enter, back) {
+                    if let Some(a) = self.arcade_ui(ctx, up, down, left, right, enter, back, hud.map_vp, hud.cam_pos) {
                         action = a;
                     }
                 } else if n == 0 {
@@ -13759,7 +13763,55 @@ impl Game {
     /// The ARCADE menu of the pause menu's MODES tab (`mcUIArcade`; references `t04`..`t06`):
     /// "Choose race type:", "Choose race:" (the races of that type by their names in the
     /// string table), "Choose race options:". START RACE begins the race chosen.
-    fn arcade_ui(&mut self, ctx: &egui::Context, up: bool, down: bool, left: bool, right: bool, enter: bool, back: bool) -> Option<MenuAction> {
+    /// VIEW RACE (F-29182 from ARCADE's race list and options page): the race's checkpoints on the map
+    /// seen from straight above, as the race list's provider draws them (F-74369 arms HudMap+24 - only
+    /// they pass, the start green, the finish red, the strobe running along unless the race is
+    /// unordered - HudMap+508), the menu away and the prompt bar set 34 (F-40654: BACK, MENU, PAN, ZOOM,
+    /// MAP MODE). Y (MENU) or B takes the menu back.
+    fn race_view_ui(&mut self, ctx: &egui::Context, i: usize, map_vp: Option<glam::Mat4>, cam_pos: Vec3) {
+        use crate::flash_ui::{ICON_B, ICON_LT_RT, ICON_START, ICON_Y};
+        let st = |k: &str, d: &str| self.career.strings.get(k).map(|v| v.to_uppercase()).filter(|v| !v.contains('<')).unwrap_or_else(|| d.to_string());
+        let prompts = vec![(st("prompt_back", "BACK"), ICON_B), (st("prompt_menu", "MENU"), ICON_Y), (st("Navmap_Prompt_Pan", "PAN"), 18), (st("Navmap_Prompt_Zoom", "ZOOM"), ICON_LT_RT), (st("Navmap_Prompt_MapMode", "MAP MODE"), ICON_START)];
+        let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        // (the provider's list: entry 0 the start - on a circuit the last checkpoint, the start / finish
+        // line - then the race's checkpoints)
+        let cps: Vec<Vec3> = match self.race_defs.get(i) {
+            Some(d) => {
+                let circuit = d.race_type.eq_ignore_ascii_case("circuit");
+                let first = if circuit { d.checkpoints.last().copied() } else { self.race_start(i) };
+                first.into_iter().chain(d.checkpoints.iter().copied()).collect()
+            }
+            None => Vec::new(),
+        };
+        let (circuit, unordered) = self.race_defs.get(i).map_or((false, false), |d| (d.race_type.eq_ignore_ascii_case("circuit"), d.race_type.eq_ignore_ascii_case("unordered")));
+        if let (Some(vp), Some(hm)) = (map_vp, self.hm.as_mut()) {
+            hm.tick_once(ctx, dt, cps.len());
+            hm.gps_cam = cam_pos;
+            let mut f = hm.frame(1, vp, cam_pos, 0.0, false, 0, false, !unordered);
+            f.race_checkpoints = true;
+            let q = crate::hudmap::build(&hm.tune, &mut hm.assets, &f, &[], &cps, circuit);
+            let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gps_icons"));
+            ctx.move_to_top(layer);
+            ctx.set_sublayer(layer, egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_navsys")));
+            let ripple = crate::hudmap::Ripple::new(&hm.tune, hm.t, 9000.0);
+            if crate::hudmap_gpu::cpu_path() {
+                let hf = hm.heights.clone();
+                crate::hudmap::paint_world(ctx, &ctx.layer_painter(layer), &mut hm.assets, &q, vp, ctx.screen_rect(), Some(ripple), hf.as_ref().map(|h| (h, cam_pos)));
+            } else {
+                ctx.layer_painter(layer).add(crate::hudmap_gpu::icons(ctx.screen_rect(), &mut hm.assets, &q, vp, cam_pos, Some(ripple)));
+            }
+        }
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_navsys"));
+        ctx.move_to_top(layer);
+        let lp = ctx.layer_painter(layer);
+        if let Some(fp) = self.flash_prompt.as_mut() {
+            fp.show(&prompts, None, None);
+            fp.movie.player.update(dt);
+            fp.movie.paint(ctx, &lp);
+        }
+    }
+
+    fn arcade_ui(&mut self, ctx: &egui::Context, up: bool, down: bool, left: bool, right: bool, enter: bool, back: bool, map_vp: Option<glam::Mat4>, cam_pos: Vec3) -> Option<MenuAction> {
         use crate::flash_ui::{choice_list, MenuLayout, MenuPage, MenuRow, ICON_A, ICON_B, ICON_BACK_BUTTON, ICON_X, ICON_Y};
         // (the list of unlocked races up to date: `mc4`)
         self.mc4_races_sync();
@@ -13788,8 +13840,23 @@ impl Game {
                 d.opponents = n;
             }
         }
+        // VIEW RACE: Y on the race list or the options page shows the race under the cursor (or the one
+        // being set up) from above; there Y or B toggles it off and the menu comes back (F-29182, events
+        // 53 / 57)
+        if let Some(i) = self.race_view {
+            if self.nav_y || back {
+                self.race_view = None;
+            } else {
+                self.race_view_ui(ctx, i, map_vp, cam_pos);
+            }
+            return None;
+        }
         let (mut page_no, mut kind, mut cur) = self.arcade;
         let races = self.arcade_races(kind);
+        if self.nav_y && page_no >= 1 && !races.is_empty() {
+            self.race_view = Some(races[cur[1].min(races.len() - 1)].0);
+            return None;
+        }
         // (a type is offered when a race of it is listed: F-71344 A-30718..A-54440,
         // F-67150)
         let shown: Vec<usize> = (0..TYPES.len()).filter(|k| !self.arcade_races(*k).is_empty()).collect();
