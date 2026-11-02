@@ -4,6 +4,7 @@
 mod ability;
 mod boot;
 mod bootload;
+mod carpic;
 mod figlight;
 mod hooks;
 mod mc4;
@@ -196,6 +197,9 @@ struct ShotCfg {
     frames: u64,
 }
 
+/// The capture's name for a car picture's frame (`<tag><phase>`): taken by carpic.rs, not written as a screenshot.
+const CARPIC_TAG: &str = "\0carpic";
+
 #[derive(Default, Clone, Debug)]
 struct Options {
     data_dir: String,
@@ -233,6 +237,8 @@ struct Options {
     wot: bool,
     /// initial garage camera angle (radians)
     orbit: f32,
+    /// `--car-picture`: one car alone on a clear background, then exit (carpic.rs)
+    car_picture: Option<carpic::Cfg>,
 }
 
 struct App {
@@ -335,6 +341,8 @@ struct App {
     race_end_way: Option<f32>,
     /// the parts the car in the garage was last built with: a change shows at once
     garage_built: Option<(usize, vehicle_model::CarConfig, u8)>,
+    /// `--car-picture`: its frame over black, while the one over white is drawn
+    carpic: carpic::Shots,
     garage_up: Vec3,
     garage_spots: hashbrown::HashMap<usize, Option<(Vec3, f32)>>,
     /// where the car stands inside each garage (from the garage scenes)
@@ -736,6 +744,11 @@ const DELIVERY_EASE_IN: f32 = 0.25;
 const DELIVERY_POINT: [[f32; 3]; 2] = [[834.47, 18.07, -843.32], [-37.614, -19.674, 1316.65]];
 
 impl App {
+    /// `--car-picture`: which of its two frames this is (0 over black, 1 over white), none while warming up.
+    fn pic_phase(&self) -> Option<u8> {
+        self.opt.car_picture.as_ref().and_then(|p| p.phase(self.frame_no))
+    }
+
     /// The race's start scene from the original's picker and table (prerace.rs) and where it is staged.
     fn prerace_choose(&mut self, front: Vec3, yaw: f32, grid: &str) -> (Vec<String>, glam::Mat4) {
         let grid = grid.to_string();
@@ -1032,6 +1045,7 @@ impl App {
             race_end_from: None,
             race_end_way: None,
             garage_built: None,
+            carpic: Default::default(),
             garage_up: Vec3::Y,
             garage_spots: Default::default(),
             garage_poses: None,
@@ -7669,6 +7683,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         self.fl_stream_ms = 0.0;
         self.frame_no += 1;
+        // (a car picture's two frames are drawn with the clock stopped: the same scene over both backgrounds)
+        let dt = if self.pic_phase().is_some() { 0.0 } else { dt };
         // (start-up timing: the long frames of the first minute - docs/reference/ui/boot.md)
         if self.frame_no < 3600 && wall_dt > 0.05 {
             log::info!("startup: frame {} took {:.0} ms", self.frame_no, wall_dt * 1000.0);
@@ -9262,6 +9278,32 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.vehicles.upload_uniforms(&gpu, night);
         // --- camera / globals ---------------------------------------------------
         let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
+        // (--car-picture: --view side looks square at the car's +x side at the height of its middle; either view is
+        // pulled back along its line of sight until the car's box stands inside the frame - carpic.rs)
+        let pic = self.pic_phase();
+        if let (Some(_), Some(view), Some(c)) = (pic, self.opt.car_picture.as_ref().map(|p| p.view), self.vehicles.player()) {
+            let mid = c.state.pos + c.state.rot * ((c.model.min + c.model.max) * 0.5);
+            if view == carpic::View::Side {
+                self.chase.look = mid;
+                self.chase.pos = mid + c.state.rot * Vec3::X * 9.0;
+                self.chase.up = Vec3::Y;
+            }
+            let corners: Vec<Vec3> = (0..8).map(|k| {
+                let p = Vec3::new(if k & 1 == 0 { c.model.min.x } else { c.model.max.x }, if k & 2 == 0 { c.model.min.y } else { c.model.max.y }, if k & 4 == 0 { c.model.min.z } else { c.model.max.z });
+                c.state.pos + c.state.rot * p
+            }).collect();
+            for _ in 0..6 {
+                let vp = self.cam.proj(aspect) * self.chase.view();
+                let reach = corners.iter().map(|p| {
+                    let q = vp * p.extend(1.0);
+                    if q.w <= 0.05 { 9.0 } else { (q.x / q.w).abs().max((q.y / q.w).abs()) }
+                }).fold(0.0f32, f32::max);
+                if reach <= carpic::FILL {
+                    break;
+                }
+                self.chase.pos = self.chase.look + (self.chase.pos - self.chase.look) * (reach / carpic::FILL).min(4.0) * 1.02;
+            }
+        }
         let vp = if self.drive && self.vehicles.player().is_some() { self.cam.proj(aspect) * self.chase.view() } else { self.cam.view_proj(aspect) };
         let frustum = Frustum::from_view_proj(vp);
         self.last_frustum = Some(frustum);
@@ -9697,6 +9739,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         // (around the city map: the dark of deep water)
         let clear = if map_baked { [0.012, 0.018, 0.028, 1.0] } else { globals.fog_color };
+        // (a car picture's frames: the main view over black, then white; the environment map keeps the scene's)
+        let view_clear = pic.map_or(clear, carpic::clear);
         let t_sim = now.elapsed().as_secs_f32() * 1000.0;
 
         // (RENDER SCALE: the scene at window x scale, filtered down by the post chain - render/post.rs)
@@ -10810,7 +10854,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // a worker too, each a pass of its own that loads what the one before stored; this thread records the rest of B.
         // The halves split between sectors, and every sector sets its own object, buffers and binds: A2 and B2 start from
         // the state the pass before leaves - the globals, the identity object, the opaque pipeline, stencil reference 0)
-        let secs: Vec<&world::GpuSector> = if map_baked { Vec::new() } else { loaded.values().chain(sets.values()).collect() };
+        // (a car picture's frames draw the cars alone: no sky, sectors, ground sheet, props, people, glows)
+        let pic_on = pic.is_some();
+        let secs: Vec<&world::GpuSector> = if map_baked || pic_on { Vec::new() } else { loaded.values().chain(sets.values()).collect() };
         let half = {
             let total: usize = secs.iter().map(|s| s.batches.len()).sum();
             let mut acc = 0;
@@ -10830,12 +10876,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if let Some(p) = probe.as_deref_mut() {
                     p.stamp(pass, || "sky".into());
                 }
-                if let (false, true, Some(tb)) = (map_baked, sky_hat_on, gpu.sky_hat.tex_bg.as_ref()) {
+                if let (false, true, Some(tb)) = (map_baked || pic_on, sky_hat_on, gpu.sky_hat.tex_bg.as_ref()) {
                     pass.set_pipeline(&gpu.sky_hat.pipeline);
                     pass.set_bind_group(1, tb, &[]);
                     pass.set_bind_group(2, &gpu.sky_hat.buf_bg, &[]);
                     pass.draw(0..3, 0..1);
-                } else if let (false, Some(sb)) = (map_baked, sky_bind) {
+                } else if let (false, Some(sb)) = (map_baked || pic_on, sky_bind) {
                     pass.set_pipeline(&gpu.pipeline_sky);
                     pass.set_bind_group(1, sb.as_ref(), &[]);
                     pass.draw(0..3, 0..1);
@@ -10871,6 +10917,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (the original's ground sheet: after the opaque city and the sky, before the props; then the instanced foliage)
         let (props, frustum_r, occluded_r, cam_eye) = (&self.props, &frustum, &occluded, self.cam.pos);
         let city_b1 = |pass: &mut wgpu::RenderPass<'_>, draws: &mut usize| {
+            if pic_on {
+                return;
+            }
             let gpu = &gpu;
             ground_sheet::draw(pass, gpu, vp_px);
             pass.set_pipeline(&gpu.pipeline_inst);
@@ -10900,7 +10949,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("city sky and sectors") });
                     let mut n = 0usize;
                     {
-                        let mut pass = begin_city_pass(&mut e, gpu, clear, false);
+                        let mut pass = begin_city_pass(&mut e, gpu, view_clear, false);
                         city_a(&mut pass, &mut n, if split_secs { &secs[..half] } else { &secs[..] }, true, pr1.as_mut());
                     }
                     *o1 = Some((e.finish(), n));
@@ -10910,7 +10959,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("city sectors (2)") });
                         let mut n = 0usize;
                         {
-                            let mut pass = begin_city_pass(&mut e, gpu, clear, true);
+                            let mut pass = begin_city_pass(&mut e, gpu, view_clear, true);
                             city_a(&mut pass, &mut n, &secs[half..], false, pr2.as_mut());
                         }
                         *o2 = Some((e.finish(), n));
@@ -10920,7 +10969,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         gpuprof::write(&mut e, slot_b1);
                         let mut n = 0usize;
                         {
-                            let mut pass = begin_city_pass(&mut e, gpu, clear, true);
+                            let mut pass = begin_city_pass(&mut e, gpu, view_clear, true);
                             pass.set_bind_group(0, &gpu.globals_bg, &[]);
                             city_b1(&mut pass, &mut n);
                         }
@@ -10928,7 +10977,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     });
                 }
             }
-            let mut pass = begin_city_pass(&mut enc, &gpu, clear, split_city);
+            let mut pass = begin_city_pass(&mut enc, &gpu, view_clear, split_city);
             if split_city {
                 pass.set_bind_group(0, &gpu.globals_bg, &[]);
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
@@ -10951,22 +11000,24 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 stat_cars = draws - d1;
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B people");
                 pass.set_pipeline(&gpu.pipeline_opaque);
-                self.peds.draw(&mut pass, &gpu, false, &mut draws);
-                self.cine.draw(&mut pass, &gpu, false, &mut draws);
+                if !pic_on {
+                    self.peds.draw(&mut pass, &gpu, false, &mut draws);
+                    self.cine.draw(&mut pass, &gpu, false, &mut draws);
+                }
                 self.drivers.draw(&mut pass, &gpu, &mut draws);
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                 pass.set_pipeline(&gpu.pipeline_blend);
                 // (shop panes write depth as the original's pane draws do; MCLA_DEBUG_VIEW=330: as before, no depth writes)
                 let pane_zw = std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "330");
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B blended sectors");
-                draw_sectors(&mut pass, &sector_view, loaded.values().chain(sets.values()), 1, pane_zw, &mut draws, None);
+                draw_sectors(&mut pass, &sector_view, loaded.values().chain(sets.values()).filter(|_| !pic_on), 1, pane_zw, &mut draws, None);
                 pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
             }
             if !map3d {
                 // (lighting, 2026-10-13: the glass props' panes - door leaves, glass walls: VSPropGlass / PSPropGlass,
                 // drawn after the shop panes, blended, both sides, no depth writes; MCLA_DEBUG_VIEW=580: not drawn)
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B glass props");
-                if std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "580") {
+                if !pic_on && std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "580") {
                     pass.set_pipeline(&gpu.pipeline_inst_blend);
                     pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                     self.props.draw_glass(&mut pass, &gpu, self.cam.pos, &frustum, Some(&occluded), &mut draws);
@@ -10979,12 +11030,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 pass.set_pipeline(&gpu.pipeline_blend);
                 pass.set_stencil_reference(0);
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B glows");
-                if self.time_of_day > 18.0 || self.time_of_day < 6.0 {
+                if !pic_on && (self.time_of_day > 18.0 || self.time_of_day < 6.0) {
                     self.props.draw_glows(&mut pass, &gpu);
                 }
                 // (the signal lamps' glows are in the pass after the tone map now, halo.rs;
                 // MCLA_DEBUG_VIEW=115: the sprites of before, here)
-                if halo::old_look() {
+                if !pic_on && halo::old_look() {
                     self.props.draw_signal_glows(&mut pass, &gpu);
                 }
                 // (brake lamps glow by day too)
@@ -11044,8 +11095,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &gpu.globals_bg, &[]);
-            self.fx.draw(&mut pass, &gpu);
-            rain::draw(&mut pass);
+            if pic.is_none() {
+                self.fx.draw(&mut pass, &gpu);
+                rain::draw(&mut pass);
+            }
         }
         {
             // the original's post chain, tuned by the weather's keys; the radial blur follows the speed
@@ -11070,7 +11123,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // the lamps' glow pass: reads the scene's depth, the tone map adds its picture
             // the sun's glow quad over the finished scene (sunglow.rs), then the lamps' pass
             // the occlusion blobs under the cars (carblob.rs): over the finished scene, before the glow passes
-            if !map3d {
+            if !map3d && pic.is_none() {
                 carblob::run(&gpu, &mut enc, &self.vehicles, self.cam.pos);
             }
             // (step 19g: the effects on the cars - ice blocks, shields, stealth - pu_fx.rs)
@@ -11088,10 +11141,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the depth once more - the power-ups' passes write it - then the sun's glow, the last draw into the
             // multisampled scene, and the colour resolve: the samples averaged)
             gpu.resolve_scene_depth(&mut enc);
-            sunglow::run(&gpu, &mut enc, self.sky.sun_color.rgb(self.time_of_day).to_array());
+            if pic.is_none() {
+                sunglow::run(&gpu, &mut enc, self.sky.sun_color.rgb(self.time_of_day).to_array());
+            }
             gpu.resolve_scene_color(&mut enc);
             render::ms::set_plain();
-            halo::run(&gpu, &mut enc);
+            if pic.is_none() {
+                halo::run(&gpu, &mut enc);
+            } else {
+                halo::clear(&gpu, &mut enc);
+            }
             // the depth of field (post.rs: the far blur's buffer, lerped in by the tone map): the weather's
             // m_DoFParams at the hour; not in the garage or on the 3D map
             if !map3d && self.game.mode != Mode::Garage {
@@ -11120,12 +11179,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             tune.bloom = crate::hooks::bloom_on();
             tune.dof_on = crate::hooks::dof_on();
             tune.motion_blur = crate::hooks::motion_blur_on();
+            // (a car picture's frames: the tone map alone - no bloom, depth of field or blur, which would carry the
+            // background into the car - at the luminance the warm-up adapted to, held: dt 0)
+            if pic.is_some() {
+                tune.plain = true;
+                tune.bloom = false;
+                tune.dof_on = false;
+                tune.motion_blur = false;
+                tune.dt = 0.0;
+            }
             gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "post");
             gpu.post.run(&gpu.device, &gpu.queue, &mut enc, &view, &gpu.depth, &gpu.stencil_copy, &tune);
             gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "ui");
             gpu.depth_to_ui(&mut enc);
         }
-        {
+        // (no menus or HUD over a car picture's frames)
+        if pic.is_none() {
             if let (Some(eg), Some((jobs, desc, _, n))) = (self.egui.as_mut(), egui_jobs.as_ref().filter(|j| j.3 > 1)) {
                 let plain = gpu.config.format.remove_srgb_suffix();
                 let (w, h) = (gpu.config.width, gpu.config.height);
@@ -11172,6 +11241,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         });
         let exit_after = photo.is_none();
         let want = match (photo, self.opt.shot.clone()) {
+            // (a car picture takes its two frames itself: carpic.rs)
+            _ if self.opt.car_picture.is_some() => pic.map(|p| format!("{CARPIC_TAG}{p}")),
             (Some(p), _) => Some(p),
             (None, Some(cfg)) if self.frame_no >= cfg.frames || self.game.shot_now => Some(cfg.path.clone()),
             _ => None,
@@ -11269,7 +11340,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 drop(data);
                 buf.unmap();
-                if let Ok(f) = std::fs::File::create(&path) {
+                if let Some(phase) = path.strip_prefix(CARPIC_TAG).and_then(|p| p.parse::<u8>().ok()) {
+                    let cfg = self.opt.car_picture.clone().unwrap_or_default();
+                    if let Some(code) = self.carpic.take(&cfg, phase, rgba, w, h) {
+                        hooks::flush_log();
+                        std::process::exit(code);
+                    }
+                } else if let Ok(f) = std::fs::File::create(&path) {
                     let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
                     enc.set_color(png::ColorType::Rgba);
                     enc.set_depth(png::BitDepth::Eight);
@@ -11279,7 +11356,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     log::info!("screenshot written to {}", path);
                 }
             }
-            if exit_after {
+            if exit_after && self.opt.car_picture.is_none() {
                 hooks::flush_log();
                 std::process::exit(0);
             }
@@ -12995,7 +13072,20 @@ impl App {
             self.game.sync_car_paint();
             self.game.sync_extra_parts();
             self.game.apply_imported_rim();
-            if self.opt.shot.is_none() || test_save {
+            // (--car-picture: that car on the stand, stock - carpic.rs)
+            if let Some(p) = self.opt.car_picture.as_ref() {
+                let at = self.game.car_dirs.iter().position(|d| d.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&p.car)));
+                let (Some(at), false) = (at, p.out.is_empty()) else {
+                    log::error!("car picture: no car {:?} (or no --out)", p.car);
+                    hooks::flush_log();
+                    std::process::exit(2);
+                };
+                self.game.current_car = at;
+                self.game.selected_car = at;
+                self.game.cfg = vehicle_model::CarConfig::default();
+                self.game.rim_inches = 0;
+            }
+            if self.opt.shot.is_none() || test_save || self.opt.car_picture.is_some() {
                 let dir = self.game.car_dirs.get(self.game.current_car).cloned();
                 if let Some(dir) = dir {
                     let color = self.game.paint_color();
@@ -13674,6 +13764,22 @@ fn parse_options(args: &[String]) -> Options {
                 i += 1;
             }
             "--garage" => { o.garage = true; o.drive = true; }
+            "--car-picture" => {
+                o.car_picture.get_or_insert_with(Default::default).car = next(i);
+                i += 1;
+            }
+            "--out" => {
+                o.car_picture.get_or_insert_with(Default::default).out = next(i);
+                i += 1;
+            }
+            "--size" => {
+                o.car_picture.get_or_insert_with(Default::default).size = carpic::parse_size(&next(i));
+                i += 1;
+            }
+            "--view" => {
+                o.car_picture.get_or_insert_with(Default::default).view = carpic::View::parse(&next(i)).unwrap_or_default();
+                i += 1;
+            }
             "--wot" => { o.wot = true; o.drive = true; }
             "--auto" => {
                 o.auto = true;
@@ -13689,6 +13795,13 @@ fn parse_options(args: &[String]) -> Options {
     }
     if let Some(shot) = o.shot.as_mut() {
         shot.frames = shot_frames;
+    }
+    // (a car picture is a garage screenshot run that ends with its own two frames)
+    if let Some(p) = o.car_picture.as_mut() {
+        p.warm = shot_frames;
+        o.garage = true;
+        o.drive = true;
+        o.shot = Some(ShotCfg { path: p.out.clone(), frames: u64::MAX });
     }
     o.data_dir = hooks::init(data_flag.as_deref(), o.settings_file.as_deref(), o.shot.is_some()).data.path.to_string_lossy().into_owned();
     hooks::stick_dead_apply();
@@ -13733,6 +13846,15 @@ mod option_tests {
         assert_eq!(options(&["mcla", "--settings", "s.toml", "--screenshot", "a.png"]).settings_file.as_deref(), Some("s.toml"));
         assert_eq!(options(&["mcla", "--screenshot", "a.png", "--settings", "t.toml"]).settings_file.as_deref(), Some("t.toml"));
         assert!(options(&["mcla", "--screenshot", "a.png"]).settings_file.is_none());
+    }
+
+    #[test]
+    fn car_picture_is_a_garage_screenshot_run() {
+        let o = options(&["mcla", "--frames", "100", "--car-picture", "vp_aud_r8_08", "--out", "p.png", "--size", "512x128", "--view", "side"]);
+        let p = o.car_picture.unwrap();
+        assert_eq!((p.car.as_str(), p.out.as_str(), p.size, p.view, p.warm), ("vp_aud_r8_08", "p.png", Some((512, 128)), carpic::View::Side, 100));
+        assert!(o.garage && o.shot.is_some());
+        assert_eq!(options(&["mcla", "--car-picture", "x", "--out", "p.png"]).car_picture.unwrap().warm, 240);
     }
 
     #[test]

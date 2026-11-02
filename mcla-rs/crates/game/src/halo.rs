@@ -438,6 +438,17 @@ pub fn set(gpu: &Gpu, glows: &[Glow]) {
     }
 }
 
+/// The halo picture cleared, nothing drawn (a car picture's frames: carpic.rs).
+pub fn clear(gpu: &Gpu, enc: &mut wgpu::CommandEncoder) {
+    let _ = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("halo (cleared)"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.post.halo_view(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+}
+
 /// The pass: after the scene (its depth is read), before the tone map (which adds the
 /// picture). Always clears the halo picture.
 pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder) {
