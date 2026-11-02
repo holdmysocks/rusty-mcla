@@ -9723,13 +9723,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let proj = glam::Mat4::from_cols_array_2d(&globals.view_proj) * eye_view.inverse();
             let alpha = self.vehicles.render_alpha;
             let cars: Vec<Option<render::mb::Car>> = self
+            // (the wheels' blur pass, F-49519: not in the garage - the renderer's +393 - nor for the car in the driver's
+            // view - its +123 - F-73214)
+            let garage = self.garage_light().is_some();
                 .vehicles
                 .cars
                 .iter()
-                .map(|c| {
+                .enumerate()
+                .map(|(ci, c)| {
                     (!c.pu_stealth).then(|| {
                         let p = c.render_pose(alpha);
-                        render::mb::Car { pos: p.pos, rot: p.rot, vel: c.state.vel, bike: c.model.bike }
+                        let blur = !garage && !(c.is_player && self.vehicles.interior_glass);
+                        let wheels = if blur { self.vehicles.blur_wheels.get(ci).cloned().unwrap_or_default() } else { Vec::new() };
+                        render::mb::Car { pos: p.pos, rot: p.rot, vel: c.state.vel, bike: c.model.bike, wheels }
                     })
                 })
                 .collect();
@@ -10845,6 +10851,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B car glass");
                 self.vehicles.draw_culled(&mut pass, &gpu, true, &mut draws, Some((cam_pos, 200.0)), Some(&frustum), false);
                 pass.set_stencil_reference(0);
+                // (then the wheels' blur discs, into the stencil only - F-49519 after the cars' glass)
+                self.vehicles.draw_wheel_blur(&mut pass, &gpu, &mut draws, Some((cam_pos, 450.0)), Some(&frustum), self.garage_light().is_some());
+                pass.set_pipeline(&gpu.pipeline_blend);
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B glows");
                 if self.time_of_day > 18.0 || self.time_of_day < 6.0 {
                     self.props.draw_glows(&mut pass, &gpu);

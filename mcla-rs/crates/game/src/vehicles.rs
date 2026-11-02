@@ -132,6 +132,9 @@ pub struct WheelModel {
     /// `whl_backside` of vehicle/shared_utility (F-31291 loads it), the barrel's inside (RimMain, zone 2)
     /// and a black disc at -0.1723 (BlackMatte), scaled as the rim
     pub backside: Vec<GpuBatch>,
+    /// `blur_wheel` of vehicle/shared_utility (F-31291 loads it): the disc at x = -0.25, radius 0.5, scaled as the
+    /// rim, that F-49519 draws into the stencil only, with the wheel's own motion-blur id (`draw_wheel_blur`)
+    pub blur: Option<GpuBatch>,
 }
 
 /// How far a brake is moved in along the axle to stand behind the spokes of a rim
@@ -909,6 +912,9 @@ pub struct Vehicles {
     wheel_eye: Vec3,
     /// by the cars' index, bit i: wheel i is drawn from behind - its back in the rim's place (F-57869)
     wheel_back: Vec<u8>,
+    /// by the cars' index: the wheels F-49519 blurs this frame - each rim's matrix and its turn about the rim's own x
+    /// (radians, unwrapped; render/mb.rs takes the records from them). Empty for a car without them.
+    pub blur_wheels: Vec<Vec<(Mat4, f32)>>,
     pub models: Vec<Arc<CarModel>>,
     /// this frame's uniforms, written in one upload (`upload_uniforms`)
     uniforms: crate::render::UniformBatch,
@@ -4525,6 +4531,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let mut m = Mat4::from_rotation_translation(pose.rot, pose.pos);
             if self.hide_player && c.is_player {
                 m = m * Mat4::from_scale(Vec3::ZERO);
+        let mut blur_wheels = std::mem::take(&mut self.blur_wheels);
+        blur_wheels.resize(self.cars.len(), Vec::new());
+        blur_wheels.truncate(self.cars.len());
+        blur_wheels.iter_mut().for_each(|w| w.clear());
             }
             if c.model.bike {
                 m = m * Mat4::from_rotation_z(pose.lean);
@@ -4709,6 +4719,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         wheel_back[ci] |= 1 << i;
                     }
                 }
+                // (F-49519: every wheel of a set-up car that has its wheel_N bone - the entries +4192 / +4208, F-13644's
+                // lookups through F-59267; not a bike's here, its set was not read)
+                if !c.model.bike && c.model.own_wheels.is_none() && i < 4 && !(self.hide_player && c.is_player) {
+                    blur_wheels[ci].push((wm, if left { -pose.spin[i] } else { pose.spin[i] }));
+                }
                 // (a wheel has no dents: the first three slots carry its rim's finish)
                 let mut finish = [[0.0; 4]; 6];
                 if c.is_player {
@@ -4738,6 +4753,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// (`tune/vehicle`: head 2, tail 2 - the player's 1 - brake 2 / 0.3, reverse 0.53, third
     /// brake 0.35). A lamp glows towards where it points: head lamps ahead, the others astern.
     pub fn update_glows(&mut self, gpu: &Gpu, night: f32, cam: Vec3) {
+        self.blur_wheels = blur_wheels;
         use crate::props::Inst;
         const MAX: usize = 320;
         let mut out: Vec<Inst> = Vec::new();
@@ -5063,6 +5079,50 @@ if keep || c.state.pos.distance(center) < 450.0 {
             if c.pu_stealth {
                 continue;
             }
+    /// The wheels' blur discs (F-49519, after the cars' glass): for every wheel `blur_wheels` holds, the shared
+    /// `blur_wheel` disc in the rim's place, into the stencil alone - colour writes off, depth tested, not written,
+    /// no cull - with the wheel's motion-blur id (render/mb.rs `wheel_stencil_of`), so the streak pass moves the rim's
+    /// face with the wheel's own record. None in the garage, none for the car in the driver's view (F-73214). The
+    /// cars as `draw_culled` takes them (reach, box), the wheels' own reach aside: F-49519 has none. Into a pass of the
+    /// variant in force.
+    pub fn draw_wheel_blur<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, garage: bool) {
+        if garage || std::env::var("MCLA_WHEEL_BLUR").is_ok_and(|v| v.trim() == "0") {
+            return;
+        }
+        let mut set = false;
+        for (ci, c) in self.cars.iter().enumerate() {
+            let Some(blur) = self.blur_wheels.get(ci).filter(|w| !w.is_empty()) else { continue };
+            if c.pu_stealth || (c.is_player && self.interior_glass) {
+                continue;
+            }
+            let Some(disc) = c.wheels.as_ref().or(c.model.wheels.as_ref()).or(self.wheels.as_ref()).and_then(|w| w.blur.as_ref()) else { continue };
+            let pos = c.render_pose(self.render_alpha).pos;
+            if range.is_some_and(|(eye, max)| pos.distance(eye) > max) {
+                continue;
+            }
+            if let Some(f) = frustum {
+                let r = Vec3::splat(c.model.params.body_half.length() + 1.0);
+                if !f.intersects_aabb(pos - r, pos + r) {
+                    continue;
+                }
+            }
+            if !set {
+                pass.set_pipeline(&gpu.pipeline_stencil_only);
+                set = true;
+            }
+            pass.set_bind_group(1, disc.bind.as_ref(), &[]);
+            pass.set_bind_group(2, &gpu.mat_bgs[&(disc.mode as u32)], &[]);
+            pass.set_vertex_buffer(0, disc.vb.slice(..));
+            pass.set_index_buffer(disc.ib.slice(..), wgpu::IndexFormat::Uint32);
+            for (i, wb) in c.wheel_bindings.iter().enumerate().take(blur.len()) {
+                pass.set_bind_group(3, &wb.bg, &[]);
+                pass.set_stencil_reference(crate::render::mb::wheel_stencil_of(ci, i));
+                pass.draw_indexed(0..disc.count, 0, 0..1);
+                *draws += 1;
+            }
+        }
+    }
+
             if skip_ambient && c.is_ambient() {
                 continue;
             }
@@ -5903,7 +5963,39 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
     // (the wheel's back, with the rim's scale; only for a wheel that has a rim)
     let backside = if rim_from < batches.len() { wheel_backside(gpu, &root, Mat4::from_scale(Vec3::new(1.0, rim_ratio, rim_ratio))) } else { Vec::new() };
     let rim_from = rim_from.min(batches.len());
-    Some(WheelModel { batches, spoke_x, rim_from, backside })
+    let blur = if rim_from < batches.len() { wheel_blur_disc(gpu, &root, Mat4::from_scale(Vec3::new(1.0, rim_ratio, rim_ratio))) } else { None };
+    Some(WheelModel { batches, spoke_x, rim_from, backside, blur })
+}
+
+/// `blur_wheel` of vehicle/shared_utility (F-31291): one material (TestRimBlur), the text mesh `blur_wheel.mesh` - 80
+/// vertices, 234 indices, a disc in the plane x = -0.25 (the rim's outer face), radius 0.5. Only its places count: the
+/// original draws it with colour writes off (recorded: register 0x2104 = 0). None when the file is missing.
+fn wheel_blur_disc(gpu: &mut Gpu, root: &Path, xf: Mat4) -> Option<GpuBatch> {
+    let dir = ["shared_utility", "0xd8bee6cc"].iter().map(|top| root.join("vehicle").join(top).join("blur_wheel")).find(|d| d.is_dir())?;
+    let mesh = std::fs::read(dir.join("blur_wheel.mesh")).or_else(|_| std::fs::read(dir.join(format!("0x{:08x}", mcla_formats::hash::joaat("blur_wheel.mesh"))))).ok()?;
+    let text = String::from_utf8_lossy(&mesh);
+    let rest = &text[text.find("Idx ")? + 4..];
+    let (o, e) = (rest.find('{')?, rest.find('}')?);
+    let idx: Vec<u32> = rest[o + 1..e].split_whitespace().filter_map(|w| w.parse().ok()).collect();
+    let rest = &rest[rest.find("Verts ")? + 6..];
+    let n = rest.split_whitespace().next()?.parse::<usize>().ok()?;
+    let mut m = mcla_formats::rage::geometry::Mesh { indices: idx, ..Default::default() };
+    for line in rest.lines().skip(1).take(n) {
+        // (position / weights / normal / ...)
+        let p: Vec<f32> = line.split('/').next().unwrap_or("").split_whitespace().filter_map(|w| w.parse().ok()).collect();
+        if p.len() < 3 {
+            break;
+        }
+        m.positions.push(Vec3::new(p[0], p[1], p[2]));
+        m.normals.push(Vec3::X);
+        m.uv0.push(glam::Vec2::ZERO);
+    }
+    if m.positions.len() != n || m.indices.is_empty() || m.indices.iter().any(|&i| i as usize >= n) {
+        log::warn!("blur_wheel: mesh unreadable");
+        return None;
+    }
+    let white = gpu.white.clone();
+    Some(mesh_to_batch_xf(gpu, &m, "BlackMatte", car_mode("BlackMatte"), white.clone(), white, 0, 0, xf))
 }
 
 /// `whl_backside` of vehicle/shared_utility (F-31291): its entity's two shaders in order (RimMain, BlackMatte)

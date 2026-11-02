@@ -950,6 +950,8 @@ pub struct Gpu {
     /// a set-up car's opaque batches with back faces culled (`GpuBatch::cull`): the view as is, a mirrored view
     pub pipeline_opaque_cull: ms::MsPipe,
     pub pipeline_opaque_cull_m: ms::MsPipe,
+    /// the stencil written and nothing else (the wheels' blur discs)
+    pub pipeline_stencil_only: ms::MsPipe,
     pub pipeline_blend: ms::MsPipe,
     /// car windows: back faces, then front faces, both with depth writes
     pub pipeline_glass_back: ms::MsPipe,
@@ -1846,7 +1848,7 @@ impl Gpu {
         // (every city pipeline per ms::Variant: the scene's are multisampled and write the stencil reference)
         let city_build = {
             let (pl, shader) = (pl.clone(), shader.clone());
-            Arc::new(move |device: &wgpu::Device, v: ms::Variant, blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool| {
+            Arc::new(move |device: &wgpu::Device, v: ms::Variant, blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool, writes: wgpu::ColorWrites| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(if blend { "city blend" } else { "city opaque" }),
                 layout: Some(&pl),
@@ -1862,7 +1864,7 @@ impl Gpu {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: post::SCENE_FORMAT,
                         blend: Some(if blend { wgpu::BlendState::ALPHA_BLENDING } else { wgpu::BlendState::REPLACE }),
-                        write_mask: wgpu::ColorWrites::ALL,
+                        write_mask: writes,
                     })],
                     compilation_options: Default::default(),
                 }),
@@ -1881,7 +1883,7 @@ impl Gpu {
         };
         let make_pipeline_x = |blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool| {
             let b = city_build.clone();
-            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, blend, vs, cull, zwrite))
+            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, blend, vs, cull, zwrite, wgpu::ColorWrites::ALL))
         };
         let make_pipeline = |blend: bool, vs: &'static str| make_pipeline_x(blend, vs, None, !blend);
         // (the cars' windows as the original draws them: blended WITH depth writes, back faces first
@@ -1902,15 +1904,21 @@ impl Gpu {
         let pipeline_opaque_cull = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Front } else { wgpu::Face::Back }), true);
         let pipeline_opaque_cull_m = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Back } else { wgpu::Face::Front }), true);
         let pipeline_blend = make_pipeline(true, "vs_main");
+        // (the wheels' blur discs, F-49519: colour writes off, depth tested and not written, no cull, the stencil
+        // replaced - recorded registers 0x2104 = 0, 0x2200 = 0x00708763, 0x2205 = 0x18000)
+        let pipeline_stencil_only = {
+            let b = city_build.clone();
+            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, false, "vs_main", None, false, wgpu::ColorWrites::empty()))
+        };
         // (the cars' environment map drawn the original's way: the paraboloid warp per vertex - city.wgsl vs_env_dp)
         // (each ~4 s to compile with the driver's cache cold: built on threads of their own while the loading goes on)
         let pipeline_env_dp = {
             let b = city_build.clone();
-            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, false, "vs_env_dp", None, true))
+            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, false, "vs_env_dp", None, true, wgpu::ColorWrites::ALL))
         };
         let pipeline_env_dp_blend = {
             let b = city_build.clone();
-            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, true, "vs_env_dp", None, false))
+            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, true, "vs_env_dp", None, false, wgpu::ColorWrites::ALL))
         };
         ms::build_ahead(&[&pipeline_env_dp, &pipeline_env_dp_blend], ms::PLAIN);
         let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2460,6 +2468,7 @@ impl Gpu {
             pipeline_opaque,
             pipeline_opaque_cull,
             pipeline_opaque_cull_m,
+            pipeline_stencil_only,
             pipeline_blend,
             pipeline_glass_back,
             pipeline_glass_front,
