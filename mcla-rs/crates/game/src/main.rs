@@ -3117,8 +3117,8 @@ impl App {
                     let speed = c.state.speed();
                     let up_y = (c.state.rot * Vec3::Y).y;
                     if let Ok(v) = std::env::var("MCLA_CRASH_TEST") {
-                        // (test hook "secs,w|d|x": at that time a wipeout blow, a fatal blow, or an
-                        // exploding one)
+                        // (test hook "secs,w|d|x|h": at that time a wipeout blow, a fatal blow, an
+                        // exploding one, or a head-on)
                         let mut it = v.split(',');
                         let at = it.next().and_then(|x| x.parse::<f32>().ok()).unwrap_or(5.0);
                         static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -3132,6 +3132,7 @@ impl App {
                                     c.state.damage = 1.0;
                                     c.state.last_hit = dm.explode_threshold + 1.0;
                                 }
+                                "h" => c.state.head_on = true,
                                 _ => c.state.wipeout = 2.0,
                             }
                         }

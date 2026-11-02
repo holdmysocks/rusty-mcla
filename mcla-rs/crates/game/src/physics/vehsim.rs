@@ -1302,19 +1302,34 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     } else {
         vs.pad = super::pad::PadHeld::default();
     }
-    // (damaged out, chassis +592 bit 0x04: the update F-17997 writes the pedals over the pad's every tick - throttle 0,
-    // brake 1.0, handbrake 0 - and the steering +656, which F-30391 set as the bit came on: full lock to the side
-    // the car steered, +132 >= 0 ? 1 : -1. The pad's frame writes its own after the update, which the samples show
-    // every other tick (wa.0 s414 1 / 0 / 1 / 0, s415 the pad's 0.117 / 0 / 0 / 0) but no update uses.)
-    if input.damaged_out {
+    // (damaged out, chassis +592 bit 0x04 - set on any car by the damage-out F-70073, the car's damage at its
+    // MaxDamage until a reset: the update F-17997 writes the pedals over the pad's every tick - throttle +136 0,
+    // brake +140 1.0, handbrake 0 - and the steering +656, which F-30391 set as the bit came on: full lock to the
+    // side the car steered, +132 >= 0 ? 1 : -1. The pad's frame writes its own after the update, which the samples
+    // show every other tick (wa.0 s414 1 / 0 / 1 / 0, s415 the pad's 0.117 / 0 / 0 / 0) but no update uses. The
+    // grid hold, 0x2, and a deactivated racer, 0x1, come first. In this port's convention a pad car in reverse
+    // has +136 in `brake`.)
+    let reversed = if pad_exact { vs.pad.pedals.way < 0 } else { vs.gear < 0 };
+    if st.damage >= 0.999 && !input.deactivated && !input.hold {
         let s = *vs.out_steer.get_or_insert(if vs.steer >= 0.0 { 1.0 } else { -1.0 });
-        input.throttle = 0.0;
-        input.brake = 1.0;
+        (input.throttle, input.brake) = if reversed { (1.0, 0.0) } else { (0.0, 1.0) };
         input.handbrake = false;
         input.nitro = false;
         input.steer = s;
     } else {
         vs.out_steer = None;
+        // (wiped out, bit 0x10, a car - the motorcycle's rider-off rule is `wiped` above: the pad's pedals and
+        // steering pass, the throttle +136 times F-86323 of the car's up.y (+260) clamped to [0, 1],
+        // 1 - cos(u pi / 2): nothing on its side or roof)
+        if st.upset > 0.0 && !vt.bike && !input.deactivated && !input.hold {
+            let u = (st.rot * Vec3::Y).y.max(0.0).min(1.0);
+            let g = if u <= 0.0 { 0.0 } else if u >= 1.0 { 1.0 } else { 1.0 - (u * std::f32::consts::FRAC_PI_2).cos() };
+            if reversed {
+                input.brake *= g;
+            } else {
+                input.throttle *= g;
+            }
+        }
     }
     // ---- the race's grid hold (N-VP-1; recorded on the original 2026-10-18, work/physics2/rec a.0 /
     // a.2 / a.3): from the first tick on the grid with the engine running until GO the player's chassis
@@ -1389,7 +1404,9 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     let pedal_released = (input.throttle <= if input.ai { 0.01 } else { 0.0 }, input.brake <= if input.ai { 0.01 } else { 0.0 });
     // (not on the grid, `hold`: the gearbox is held there whenever the handbrake is off (A-13403) and
     // every recorded racer stays in first gear through its braking phases)
-    let reverse_wanted = !input.hold && input.brake > 0.1 && input.throttle < 0.1 && fwd_speed < 1.0;
+    // (nor under the engine hold, F-17997: it writes the brake and first gear over the pad's input, after the pad
+    // code that chooses reverse - the held car stands in first)
+    let reverse_wanted = !input.hold && !input.first_gear && input.brake > 0.1 && input.throttle < 0.1 && fwd_speed < 1.0;
     let old_gear = vs.gear;
     // (a replay goes the way its recording's gearbox did: choosing reverse is the pad code's)
     let replay_way = REPLAY_WAY.load(std::sync::atomic::Ordering::Relaxed);

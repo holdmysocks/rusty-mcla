@@ -3718,13 +3718,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // (free cars without a lane read no signal in the original: racers, hookmen, police and other brains never call the junction functions - docs signal_box_rule.md section 4)
             if self.cars[i].stunned > 0.0 {
                 self.cars[i].stunned -= dt;
-                // (the player's car damaged out, +592 bit 0x04: the update's own pedals and steering, CarInput::damaged_out;
-                // approx.: any other hold the port's own 0.15)
-                input = if self.cars[i].is_player && self.cars[i].state.damage >= 0.999 {
-                    CarInput { damaged_out: true, ..Default::default() }
-                } else {
-                    CarInput { brake: 0.15, ..Default::default() }
-                };
+                // (the player's car damaged out or wiped out, +592 bit 0x04 / 0x10: the pad's input goes on to the car,
+                // whose update writes its own over it - vehsim.rs `step`; approx.: any other hold the port's own 0.15)
+                let crash = self.cars[i].is_player && (self.cars[i].state.damage >= 0.999 || self.cars[i].state.upset > 0.0);
+                if !crash {
+                    input = CarInput { brake: 0.15, ..Default::default() };
+                }
             }
             // (no nitrous on the grid: a race script's boost waits for GO)
             if self.cars[i].boost > 0.0 && !self.cars[i].is_player && self.grid_hold.is_none() {
