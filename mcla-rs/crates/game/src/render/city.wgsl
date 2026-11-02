@@ -1974,7 +1974,14 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             if (g.moon_dir.w > 0.5 && !(g.params.w > 619.5 && g.params.w < 620.5)) {
                 face_n = -face_n;
             } else if (dot(face_n, g.cam_pos.xyz - in.wpos) < 0.0) { face_n = -face_n; }
-            if (dot(in.normal, face_n) < -0.3 * sl * fl) { discard; }
+            // (2026-11-02, GitHub #37: in the main view the winding itself, as the original's rasteriser culls -
+            // the face the cars' paint culls for the same 0x18002, `pipeline_opaque_cull`, is the one wgpu calls
+            // front here. The stored normal is not the winding everywhere: the ceilings of the Crenshaw Plaza mall's
+            // corridor (CityStoreInterior, which stores no normals - read as up) are wound to face down, and went
+            // missing from inside. MCLA_DEBUG_VIEW=816: the stored normal, as before)
+            if (g.moon_dir.w <= 0.5 && !(g.params.w > 815.5 && g.params.w < 816.5)) {
+                if (ff) { discard; }
+            } else if (dot(in.normal, face_n) < -0.3 * sl * fl) { discard; }
         }
     }
     // Props are drawn with back faces culled too (2026-10-15): register 0x2205 = 0x00018002 on every
