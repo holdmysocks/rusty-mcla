@@ -1,11 +1,13 @@
-//! The original's district ambience (the ambience manager, sub_821EB810 and friends): the district whose circles
+//! The original's district ambience (the ambience manager, F-80049 and friends): the district whose circles
 //! are nearest picks the bed (day / night), its distant one-shots and surround "quadshots" fire on random timers
 //! 6 km away in random directions, the two nearest location emitters play at their places, faded by distance, and
-//! a district's line emitter follows the listener along its polyline. Rules: `docs/reference/audio/AMBIENCE_RULE.md`.
+//! a district's line emitter follows the listener along its polyline. The freeway / tunnel / interior / mall
+//! districts come from the ground's material (the listener's probe), the garage's first; a district switch starts its
+//! dynamic mixer scene and second bed. Rules: `docs/reference/audio/AMBIENCE_RULE.md`.
 //!
 //! Not ported (open there): the bed duck near an emitter (a dynamic mixer, MC4_HANGOUT_DYNMIXER_APPLY), the
-//! district cross-fade, the freeway / tunnel / interior / mall districts (no circles: chosen by something else),
-//! map-placed emitters, rain / wind / thunder.
+//! district cross-fade and the switch's hold, the hangouts' districts and map-placed emitters. Rain and thunder (here too):
+//! `docs/reference/audio/WEATHER_AUDIO_RULE.md`.
 
 use crate::sndobj::{Handle, Req, SoundLib};
 use glam::Vec3;
@@ -51,6 +53,10 @@ struct Loc {
 struct District {
     name: String,
     bed: [u32; 2],
+    /// the second bed by day / night (+18 / +22: DISTRICT_MALL's and DISTRICT_GARAGE's; NULL elsewhere)
+    bed2: [u32; 2],
+    /// +26: the district's dynamic mixer scene (DYNAMIC_MIXER_FREEWAY, _GARAGE, HNG_DIS_*'s _HANGOUT; 0 in the rest)
+    scene: u32,
     line_dist: f32,
     line_sound: u32,
     circles: Vec<(f32, f32, f32)>,
@@ -111,7 +117,7 @@ fn parse_district(name: &str, o: &[u8]) -> Option<District> {
     let line = (0..ne).map(|k| Vec3::new(be_f32(o, p + 12 * k), be_f32(o, p + 12 * k + 4), be_f32(o, p + 12 * k + 8))).collect();
     let [shots, quads] = shots;
     let weather_mix = (o.get(30).copied().unwrap_or(0) & 1 != 0).then(|| (be_u16(o, 31) as i16 as f32 * 0.01, be_u16(o, 35) as i16 as f32 * 0.01));
-    Some(District { name: name.to_string(), bed: [be_u32(o, 10), be_u32(o, 14)], line_dist: be_f32(o, 39), line_sound: be_u32(o, 43), circles, shots, quads, locs, line, weather_mix })
+    Some(District { name: name.to_string(), bed: [be_u32(o, 10), be_u32(o, 14)], bed2: [be_u32(o, 18), be_u32(o, 22)], scene: be_u32(o, 26), line_dist: be_f32(o, 39), line_sound: be_u32(o, 43), circles, shots, quads, locs, line, weather_mix })
 }
 
 struct Slot {
@@ -127,6 +133,13 @@ pub struct Ambience {
     cur: Option<usize>,
     night: bool,
     bed: Option<Handle>,
+    /// the beds' sounds now (mgr +272 / +276: NULL when none started) and the second bed (slot +268)
+    bed_snd: u32,
+    bed2_snd: u32,
+    bed2: Option<Handle>,
+    /// the last district set (mgr +140, kept across `stop`) and the running district scene (slot +304)
+    last: Option<usize>,
+    scene: Option<u32>,
     timers: Vec<f32>,
     quad_timers: Vec<f32>,
     shots: Vec<Handle>,
@@ -144,7 +157,7 @@ pub struct Ambience {
     wind: Option<Handle>,
 }
 
-/// The rain and thunder of the ambience manager (sub_821E8410; `reference/audio/WEATHER_AUDIO_RULE.md`).
+/// The rain and thunder of the ambience manager (F-94235; `reference/audio/WEATHER_AUDIO_RULE.md`).
 #[derive(Default)]
 struct Rain {
     /// AMBIENCE_GLOBAL +22 RAIN_INT, +26 RAIN_EXT, +30 THUNDER, +34 / +38 thunder interval, +58 ramp time, +62 covered rain dB
@@ -193,6 +206,11 @@ impl Ambience {
             cur: None,
             night: false,
             bed: None,
+            bed_snd: joaat(NULL_SOUND),
+            bed2_snd: joaat(NULL_SOUND),
+            bed2: None,
+            last: None,
+            scene: None,
             timers: Vec::new(),
             quad_timers: Vec::new(),
             shots: Vec::new(),
@@ -214,14 +232,14 @@ impl Ambience {
                 covered_db: (be_u16(glob, 62) as i16 as f32 * 0.01, be_u16(glob, 66) as i16 as f32 * 0.01),
                 cover_target: 1.0,
                 cover: 1.0,
-                // (+824 starts at rand(0, 20), sub_821EAD98 @821EAF8C: drawn in the first update)
+                // (+824 starts at rand(0, 20), F-20021 @A-56478: drawn in the first update)
                 next_thunder: -1.0,
                 ..Default::default()
             },
         })
     }
 
-    /// The player car's cover probe (sub_82326A78, from the car audio update while wet): one wheel a frame, a line 40 m
+    /// The player car's cover probe (F-83532, from the car audio update while wet): one wheel a frame, a line 40 m
     /// straight up (or back down); after every wheel the share of hits is the cover target. `probe(from, to)`.
     pub fn cover_probe(&mut self, wet: bool, wheels: &[Vec3], probe: &dyn Fn(Vec3, Vec3) -> bool) {
         let r = &mut self.rain;
@@ -244,7 +262,7 @@ impl Ambience {
         }
     }
 
-    /// Rain and thunder (sub_821EB080 -> sub_821E8410): `wet` = the weather's wet amount is not 0, `cockpit` = audio camera
+    /// Rain and thunder (F-99455 -> F-94235): `wet` = the weather's wet amount is not 0, `cockpit` = audio camera
     /// mode 1 with a player, `covered` = the listener's probe 50 m up hit something.
     pub fn weather(&mut self, lib: &mut SoundLib, wet: bool, cockpit: bool, covered: bool, dt: f32) {
         let now = self.now;
@@ -254,7 +272,7 @@ impl Ambience {
             r.next_thunder = now + lib.rand_float(0.0, 20.0);
         }
         if level(lib, "AMBIENCE") <= -80.0 {
-            // (sub_821E9C50: the rain bed's and the thunder's slots stop with everything else)
+            // (F-79099: the rain bed's and the thunder's slots stop with everything else)
             for s in [&mut r.ext, &mut r.thunder] {
                 if let Some(h) = s.take() {
                     lib.stop(h);
@@ -324,7 +342,7 @@ impl Ambience {
         }
     }
 
-    /// The district the listener is in (sub_821EB810): the lowest squared distance over weight of all circles.
+    /// The district the listener is in (F-80049): the lowest squared distance over weight of all circles.
     fn pick(&self, l: Vec3) -> Option<usize> {
         let mut best = None;
         for (i, d) in self.districts.iter().enumerate() {
@@ -378,7 +396,9 @@ impl Ambience {
     }
 
     pub fn stop(&mut self, lib: &mut SoundLib) {
-        for h in self.bed.take().into_iter().chain(self.line.take()) {
+        self.bed_snd = self.null;
+        self.bed2_snd = self.null;
+        for h in self.bed.take().into_iter().chain(self.bed2.take()).chain(self.line.take()) {
             lib.stop(h);
         }
         for s in self.slots.drain(..) {
@@ -412,15 +432,52 @@ impl Ambience {
             return;
         };
         let changed = self.cur != Some(di);
-        if changed || night != self.night {
-            // the bed of the district for the time of day (+10 / +14)
-            if let Some(h) = self.bed.take() {
-                lib.stop(h);
+        if changed {
+            // the district's dynamic mixer scene (F-93563, slot +304): the running one stops (with its exit) when the
+            // last district's +26 differs; then, with none running, the new district's +26 starts at 1.0 (F-67134)
+            let prev = self.last.map(|l| self.districts[l].scene);
+            let want = self.districts[di].scene;
+            if let (Some(s), Some(p)) = (self.scene, prev) {
+                if p != want {
+                    if let Some(n) = lib.game.name_of(s).map(|n| n.to_string()) {
+                        lib.scene(&n, false);
+                    }
+                    self.scene = None;
+                }
             }
+            if self.scene.is_none() && want != 0 {
+                if let Some(n) = lib.game.name_of(want).map(|n| n.to_string()) {
+                    lib.scene(&n, true);
+                    self.scene = Some(want);
+                }
+            }
+            self.last = Some(di);
+        }
+        if changed || night != self.night {
+            // the beds for the time of day (F-93563): the main one (+10 / +14) started at a random 0 - 90 % of its waves
+            // (request +36 with +70 bit 0x40), the second one (+18 / +22) with a default request after a random draw of
+            // 0 - 90000 (unused); each restarts only when its sound differs from the one playing (mgr +272 / +276)
             let snd = self.districts[di].bed[night as usize];
-            if snd != self.null {
-                self.bed = lib.play_hash(snd, Req::default());
+            if snd != self.bed_snd {
+                let pct = lib.rand_int(0, 90) as f32;
+                if let Some(h) = self.bed.take() {
+                    lib.stop(h);
+                }
+                self.bed = if snd != self.null { lib.play_hash(snd, Req { start_pct: pct, ..Default::default() }) } else { None };
+                self.bed_snd = if self.bed.is_some() { snd } else { self.null };
                 log::info!("audio: ambience bed {} {}", lib.name_of(snd).unwrap_or("?"), if self.bed.is_some() { "playing" } else { "missing" });
+            }
+            let snd2 = self.districts[di].bed2[night as usize];
+            if snd2 != self.bed2_snd {
+                lib.rand_int(0, 90000);
+                if let Some(h) = self.bed2.take() {
+                    lib.stop(h);
+                }
+                self.bed2 = if snd2 != self.null { lib.play_hash(snd2, Req::default()) } else { None };
+                self.bed2_snd = if self.bed2.is_some() { snd2 } else { self.null };
+                if self.bed2.is_some() {
+                    log::info!("audio: ambience second bed {}", lib.name_of(snd2).unwrap_or("?"));
+                }
             }
         }
         if changed {
@@ -437,7 +494,7 @@ impl Ambience {
         }
         self.night = night;
         let d = self.districts[di].clone();
-        // distant one-shots and quadshots (sub_821E8B18)
+        // distant one-shots and quadshots (F-14965)
         self.shots.retain(|h| lib.playing(*h));
         for (list, timers) in [(&d.shots, 0usize), (&d.quads, 1)] {
             for (k, s) in list.iter().enumerate() {
@@ -462,7 +519,7 @@ impl Ambience {
                 }
             }
         }
-        // location emitters (sub_821EA288 -> sub_821E9390): the two nearest inside their outer radius
+        // location emitters (F-89955 -> F-80314): the two nearest inside their outer radius
         let mut cands: Vec<(f32, usize)> = Vec::new();
         for (k, l) in d.locs.iter().enumerate() {
             // (flag bit 0 takes another path, gated by manager +1028 / +1032: not decoded, none in the data)
@@ -494,12 +551,12 @@ impl Ambience {
         for (d2, k) in cands {
             let l = d.locs[k];
             let dist = d2.sqrt();
-            // (sub_821E9390 @821E9588: dist raised to the inner radius, then lowered to the outer one, both by fsel, over
+            // (F-80314 @A-54704: dist raised to the inner radius, then lowered to the outer one, both by fsel, over
             // outer - inner with no guard - an emitter with equal radii (342 of 409) gives 0 / 0 = NaN, which the
             // LANDMARK curve turns into 0, so it plays at -100 dB; one with the inner radius above the outer gives 1)
             let t = landmark_t(dist, l.inner, l.outer);
             let b = lib.curve_eval(self.landmark_curve, t).unwrap_or(1.0 - t);
-            // (@821E9644: 20 x 0.301 x log2(b) when b >= 1e-5, else -100 dB - the constants at 0x820188E0)
+            // (@A-91922: 20 x 0.301 x log2(b) when b >= 1e-5, else -100 dB - the constants at 0x820188E0)
             let vol = fsel(b - 1e-5, 20.0 * (b.log2() * 0.301), -100.0);
             let req = Req { pos: Some(l.pos), volume: vol, ..Default::default() };
             match self.slots.iter().find(|s| s.key == (di, k)) {
@@ -518,7 +575,7 @@ impl Ambience {
                 }
             }
         }
-        // the line emitter (sub_821E9068): the polyline's nearest point, within +39 m
+        // the line emitter (F-49122): the polyline's nearest point, within +39 m
         if d.line.len() >= 2 && d.line_sound != self.null {
             let mut best = (f32::MAX, Vec3::ZERO);
             for w in d.line.windows(2) {
@@ -543,7 +600,7 @@ impl Ambience {
     }
 }
 
-/// The location emitter's position between its radii (sub_821E9390 @821E9588..821E95B0), as the original computes it.
+/// The location emitter's position between its radii (F-80314 @A-54704..A-45670), as the original computes it.
 fn landmark_t(dist: f32, inner: f32, outer: f32) -> f32 {
     let x = fsel(dist - inner, dist, inner);
     let x = fsel(x - outer, outer, x);
@@ -584,6 +641,37 @@ mod tests {
         assert!(landmark_t(20.0, 50.0, 50.0).is_nan());
         assert_eq!(landmark_t(40.0, 50.0, 49.94), 1.0);
         assert_eq!(landmark_t(20.0, 50.0, 25.0), 1.0);
+    }
+
+    /// The districts' mixer scenes (+26) and second beds (+18 / +22) from the disc (F-93563): only FREEWAYS and
+    /// GARAGE carry a scene, only GARAGE and MALL a second bed.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn district_scenes_and_second_beds() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let g = &lib.game;
+        let glob = g.get_name("AMBIENCE_GLOBAL").unwrap();
+        let mut names: Vec<String> = (0..16).filter_map(|k| g.name_of(be_u32(glob, 71 + 4 * k)).map(|s| s.to_string())).collect();
+        for n in ["DISTRICT_GARAGE", "DISTRICT_FREEWAYS", "DISTRICT_INTERIOR", "DISTRICT_MALL", "DISTRICT_TUNNEL"] {
+            names.push(n.into());
+        }
+        let null = joaat(NULL_SOUND);
+        for n in names {
+            let d = parse_district(&n, g.get_name(&n).unwrap()).unwrap();
+            let scene = g.name_of(d.scene);
+            match n.as_str() {
+                "DISTRICT_FREEWAYS" => assert_eq!(scene, Some("DYNAMIC_MIXER_FREEWAY")),
+                "DISTRICT_GARAGE" => assert_eq!(scene, Some("DYNAMIC_MIXER_GARAGE")),
+                _ => assert_eq!(d.scene, 0, "{n}"),
+            }
+            match n.as_str() {
+                "DISTRICT_GARAGE" => assert_eq!(d.bed2.map(|h| lib.name_of(h)), [Some("GARAGE_MUSIC_MASTER"); 2]),
+                "DISTRICT_MALL" => assert_eq!(d.bed2, [0x444e7312; 2]),
+                _ => assert_eq!(d.bed2, [null; 2], "{n}"),
+            }
+        }
     }
 
     #[test]

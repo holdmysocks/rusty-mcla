@@ -522,7 +522,7 @@ impl Sound {
                     _ => self.speech_line = None,
                 }
             }
-            lib.scene("DYNAMIC_MIXER_GARAGE", game.mode == Mode::Garage);
+            // (DYNAMIC_MIXER_GARAGE is the garage district's +26 scene: ambaudio.rs, F-93563)
             // REPLAY_*: the replay viewer's speed (F-42247; the port's viewer plays at 1 or is paused)
             match &game.replay {
                 Some(r) if r.paused => {
