@@ -103,6 +103,8 @@ pub struct Car {
     pub vel: Vec3,
     pub bike: bool,
     pub wheels: Vec<(Mat4, f32)>,
+    /// under Stealth (its fade over 0): F-35860 moves the previous place by the previous matrix's row 2 x 0.5
+    pub stealth: bool,
 }
 
 /// F-49519's turn of a wheel's previous matrix about the rim's own x for a wheel that turned `d` radians over an
@@ -164,8 +166,13 @@ impl MotionBlur {
             };
             let world_step = match self.prev_cars[ci].filter(|_| !still) {
                 Some((pp, pr)) => {
-                    let p2 = c.pos - (c.pos - pp) * s - pull * c.vel * FRAME;
+                    let mut p2 = c.pos - (c.pos - pp) * s - pull * c.vel * FRAME;
                     let r2 = back(c.rot, pr, s);
+                    // (a car under Stealth: the previous translation less the previous matrix's row 2 - the car's
+                    // back, +z - x the type's +104, 0.5 for Stealth and MegaStealth, F-84593 - F-35860)
+                    if c.stealth {
+                        p2 -= 0.5 * (r2 * Vec3::Z);
+                    }
                     Mat4::from_rotation_translation(r2, p2) * Mat4::from_rotation_translation(c.rot, c.pos).inverse()
                 }
                 None => Mat4::IDENTITY,
@@ -243,7 +250,7 @@ mod tests {
     fn cars_get_four_k_and_drivers_one_more() {
         let mut m = MotionBlur::default();
         let proj = Mat4::perspective_infinite_reverse_rh(1.0, 16.0 / 9.0, 0.1);
-        let car = |bike| Some(Car { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(30.0, 0.0, 0.0), bike, wheels: Vec::new() });
+        let car = |bike| Some(Car { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(30.0, 0.0, 0.0), bike, wheels: Vec::new(), stealth: false });
         m.frame(Mat4::IDENTITY, proj, &[car(false), None, car(false), car(true)], 1.0 / 60.0, false, false);
         assert_eq!((ids(1, false), ids(2, false), ids(3, true)), ((4, 5), (8, 9), (12, 12)));
     }
@@ -254,7 +261,7 @@ mod tests {
     fn wheels_after_the_bodies() {
         let mut m = MotionBlur::default();
         let proj = Mat4::perspective_infinite_reverse_rh(1.0, 16.0 / 9.0, 0.1);
-        let car = |n: usize| Some(Car { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, bike: false, wheels: vec![(Mat4::IDENTITY, 0.0); n] });
+        let car = |n: usize| Some(Car { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, bike: false, wheels: vec![(Mat4::IDENTITY, 0.0); n], stealth: false });
         let st = m.records(Mat4::IDENTITY, proj, &[car(4)], 1.0 / 60.0, false, false).1;
         assert_eq!(st[0], (4, 5, [8, 12, 16, 20]));
         let st = m.records(Mat4::IDENTITY, proj, &[car(4), car(4)], 1.0 / 60.0, false, false).1;
@@ -266,6 +273,24 @@ mod tests {
     }
 
     #[test]
+    /// The ZX-14 recorded moving (work/police17/cap/bike_move.gpu.bin): the body 4 (the rider too), its two discs 8 and
+    /// 12; a Stealth car's record is its own, its previous place 0.5 m along its back axis less.
+    fn bike_has_two_discs_and_stealth_shifts() {
+        let mut m = MotionBlur::default();
+        let proj = Mat4::perspective_infinite_reverse_rh(1.0, 16.0 / 9.0, 0.1);
+        let bike = Some(Car { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, bike: true, wheels: vec![(Mat4::IDENTITY, 0.0); 2], stealth: false });
+        let st = m.records(Mat4::IDENTITY, proj, &[bike], 1.0 / 60.0, false, false).1;
+        assert_eq!(st[0], (4, 4, [8, 12, 4, 4]));
+        let car = |stealth| Some(Car { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, bike: false, wheels: Vec::new(), stealth });
+        let mut m = MotionBlur::default();
+        m.records(Mat4::IDENTITY, proj, &[car(true)], 1.0 / 60.0, true, false);
+        let r = Mat4::from_cols_array_2d(&m.records(Mat4::IDENTITY, proj, &[car(true)], 1.0 / 60.0, true, false).0[1]);
+        let want = proj * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.5));
+        let p = Vec3::new(0.3, 0.2, -5.0);
+        assert!((r.project_point3(p) - want.project_point3(p)).length() < 1e-5);
+    }
+
+    #[test]
     /// A wheel turning 2.0195954 rad over the original's frame: its record is the car's after the rim turned 0.75 rad
     /// about its own x, whichever way the wheel turns.
     fn wheel_record_turns_the_rim() {
@@ -273,7 +298,7 @@ mod tests {
         let proj = Mat4::perspective_infinite_reverse_rh(1.0, 16.0 / 9.0, 0.1);
         let view = Mat4::look_at_rh(Vec3::new(5.0, 0.0, 0.0), Vec3::ZERO, Vec3::Y);
         let w = |spin: f32| Mat4::from_rotation_x(spin);
-        let car = |spin: f32| Some(Car { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, bike: false, wheels: vec![(w(spin), spin)] });
+        let car = |spin: f32| Some(Car { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, bike: false, wheels: vec![(w(spin), spin)], stealth: false });
         for d in [2.019_595_4f32, -2.019_595_4] {
             m.frame(view, proj, &[car(0.0)], 1.0 / 30.0, false, false);
             let r = m.frame(view, proj, &[car(d)], 1.0 / 30.0, false, false);

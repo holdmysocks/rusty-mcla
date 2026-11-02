@@ -9834,7 +9834,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let proj = glam::Mat4::from_cols_array_2d(&globals.view_proj) * eye_view.inverse();
             let alpha = self.vehicles.render_alpha;
             // (the wheels' blur pass, F-49519: not in the garage - the renderer's +393 - nor for the car in the driver's
-            // view - its +123 - F-73214)
+            // view - its +123 - F-73214; a car under Stealth has its record too (F-35860) and its wheels' in the
+            // Stealth phase 0x400000 whatever the view - pu_fx.rs)
             let garage = self.garage_light().is_some();
             let cars: Vec<Option<render::mb::Car>> = self
                 .vehicles
@@ -9842,12 +9843,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 .iter()
                 .enumerate()
                 .map(|(ci, c)| {
-                    (!c.pu_stealth).then(|| {
-                        let p = c.render_pose(alpha);
-                        let blur = !garage && !(c.is_player && self.vehicles.interior_glass);
-                        let wheels = if blur { self.vehicles.blur_wheels.get(ci).cloned().unwrap_or_default() } else { Vec::new() };
-                        render::mb::Car { pos: p.pos, rot: p.rot, vel: c.state.vel, bike: c.model.bike, wheels }
-                    })
+                    let p = c.render_pose(alpha);
+                    let blur = c.pu_stealth || (!garage && !(c.is_player && self.vehicles.interior_glass));
+                    let wheels = if blur { self.vehicles.blur_wheels.get(ci).cloned().unwrap_or_default() } else { Vec::new() };
+                    Some(render::mb::Car { pos: p.pos, rot: p.rot, vel: c.state.vel, bike: c.model.bike, wheels, stealth: c.pu_stealth })
                 })
                 .collect();
             let still = sim_dt <= 0.0;
@@ -10962,7 +10961,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B car glass");
                 self.vehicles.draw_culled(&mut pass, &gpu, true, &mut draws, Some((cam_pos, 200.0)), Some(&frustum), false);
                 // (then the wheels' blur discs, into the stencil only - F-49519 after the cars' glass)
-                self.vehicles.draw_wheel_blur(&mut pass, &gpu, &mut draws, Some((cam_pos, 450.0)), Some(&frustum), self.garage_light().is_some());
+                self.vehicles.draw_wheel_blur(&mut pass, &gpu, &mut draws, Some((cam_pos, 450.0)), Some(&frustum), self.garage_light().is_some(), false);
                 pass.set_pipeline(&gpu.pipeline_blend);
                 pass.set_stencil_reference(0);
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B glows");

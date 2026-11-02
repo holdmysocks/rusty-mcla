@@ -4725,8 +4725,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // online remote-player paths do (F-62113) - 0 for every car offline, read live on four cars. The
                 // mirror flag (k < 0) and the pool draws after it run only with that byte off too: not ported, online)
                 // (F-49519: every wheel of a set-up car that has its wheel_N bone - the entries +4192 / +4208, F-13644's
-                // lookups through F-59267; not a bike's here, its set was not read)
-                if !c.model.bike && c.model.own_wheels.is_none() && i < 4 && !(self.hide_player && c.is_player) {
+                // lookups through F-59267. A bike (F-54299) has wheel_0 and wheel_2: the car's disc on its
+                // two wheels - recorded, stencil 8 and 12 after the body's 4 - and `blur_wheel_bike`, which F-31291
+                // loads, is never drawn: only its unload reads it)
+                if (!c.model.bike || i % 2 == 0) && c.model.own_wheels.is_none() && i < 4 && !(self.hide_player && c.is_player) {
                     blur_wheels[ci].push((wm, if left { -pose.spin[i] } else { pose.spin[i] }));
                 }
                 if !c.model.bike {
@@ -5096,15 +5098,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// no cull - with the wheel's motion-blur id (render/mb.rs `wheel_stencil_of`), so the streak pass moves the rim's
     /// face with the wheel's own record. None in the garage, none for the car in the driver's view (F-73214). The
     /// cars as `draw_culled` takes them (reach, box), the wheels' own reach aside: F-49519 has none. Into a pass of the
-    /// variant in force.
-    pub fn draw_wheel_blur<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, garage: bool) {
-        if garage || wheel_blur_off() {
+    /// variant in force. `stealth`: the cars under Stealth instead, whose discs F-73214 draws in their own phase
+    /// (0x400000) after their bodies, in the garage and the driver's view too (pu_fx.rs).
+    pub fn draw_wheel_blur<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, garage: bool, stealth: bool) {
+        if (garage && !stealth) || wheel_blur_off() {
             return;
         }
         let mut set = false;
         for (ci, c) in self.cars.iter().enumerate() {
             let Some(blur) = self.blur_wheels.get(ci).filter(|w| !w.is_empty()) else { continue };
-            if c.pu_stealth || (c.is_player && self.interior_glass) {
+            if c.pu_stealth != stealth || (!stealth && c.is_player && self.interior_glass) {
                 continue;
             }
             let Some(disc) = c.wheels.as_ref().or(c.model.wheels.as_ref()).or(self.wheels.as_ref()).and_then(|w| w.blur.as_ref()) else { continue };
@@ -5126,7 +5129,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             pass.set_bind_group(2, &gpu.mat_bgs[&(disc.mode as u32)], &[]);
             pass.set_vertex_buffer(0, disc.vb.slice(..));
             pass.set_index_buffer(disc.ib.slice(..), wgpu::IndexFormat::Uint32);
-            for (i, wb) in c.wheel_bindings.iter().enumerate().take(blur.len()) {
+            for i in 0..blur.len() {
+                let Some(wb) = c.wheel_bindings.get(blur_binding(c.model.bike, i)) else { continue };
                 pass.set_bind_group(3, &wb.bg, &[]);
                 pass.set_stencil_reference(crate::render::mb::wheel_stencil_of(ci, i));
                 pass.draw_indexed(0..disc.count, 0, 0..1);
@@ -5714,7 +5718,7 @@ impl Vehicles {
                 pass.set_bind_group(2, &gpu.mat_bgs[&(disc.mode as u32)], &[]);
                 pass.set_vertex_buffer(0, disc.vb.slice(..));
                 pass.set_index_buffer(disc.ib.slice(..), wgpu::IndexFormat::Uint32);
-                for wb in c.wheel_bindings.iter().take(blur.len()) {
+                for wb in (0..blur.len()).filter_map(|i| c.wheel_bindings.get(blur_binding(c.model.bike, i))) {
                     pass.set_bind_group(3, &wb.bg, &[]);
                     pass.draw_indexed(0..disc.count, 0, 0..1);
                     *draws += 1;
@@ -5722,6 +5726,11 @@ impl Vehicles {
             }
         }
     }
+}
+
+/// The wheel binding of `blur_wheels` entry `i`: a bike's entries are its wheels 0 and 2 (the odd ones are their mirrors).
+fn blur_binding(bike: bool, i: usize) -> usize {
+    if bike { 2 * i } else { i }
 }
 
 /// MCLA_WHEEL_BLUR=0: no blur discs (the blur pass, the shadow passes), as before the wheel blur was ported.

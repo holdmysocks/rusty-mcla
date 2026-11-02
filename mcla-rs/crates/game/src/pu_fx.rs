@@ -363,7 +363,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
     // vehicle pass's: taken as mode 0, source alpha / inverse source alpha)
     let over = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
     let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-    let make = |label: &'static str, pl: &wgpu::PipelineLayout, vs: &'static str, fs: &'static str, blend: wgpu::BlendComponent, zwrite: bool, buffers: &[wgpu::VertexBufferLayout]| {
+    let make = |label: &'static str, pl: &wgpu::PipelineLayout, vs: &'static str, fs: &'static str, blend: wgpu::BlendComponent, zwrite: bool, stencil: bool, buffers: &[wgpu::VertexBufferLayout]| {
         // (per sample count of the scene - render/ms.rs)
         let (pl, shader) = (pl.clone(), shader.clone());
         let bufs: Vec<(u64, wgpu::VertexStepMode, Vec<wgpu::VertexAttribute>)> = buffers.iter().map(|b| (b.array_stride, b.step_mode, b.attributes.to_vec())).collect();
@@ -381,7 +381,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
             // (the techniques' passes: ZWriteEnable 0; reversed depth, tested)
-            depth_stencil: Some(v.ds(zwrite, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
+            depth_stencil: Some(v.ds(zwrite, wgpu::CompareFunction::GreaterEqual, stencil, Default::default())),
             multisample: v.ms(),
             multiview: None,
             cache: None,
@@ -390,21 +390,22 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
     };
     let fxv = [vl.clone()];
     let carv = [crate::render::Vertex::LAYOUT];
-    let ice_in = make("pu_fx ice in", &pl, "vs_fx", "fs_ice_in", over, false, &fxv);
-    let ice_out = make("pu_fx ice out", &pl, "vs_fx", "fs_ice_out", over, false, &fxv);
-    let shield_in = make("pu_fx shield in", &pl, "vs_fx", "fs_shield_in", add, false, &fxv);
-    let shield_out = make("pu_fx shield out", &pl, "vs_fx", "fs_shield_out", add, false, &fxv);
+    let ice_in = make("pu_fx ice in", &pl, "vs_fx", "fs_ice_in", over, false, false, &fxv);
+    let ice_out = make("pu_fx ice out", &pl, "vs_fx", "fs_ice_out", over, false, false, &fxv);
+    let shield_in = make("pu_fx shield in", &pl, "vs_fx", "fs_shield_in", add, false, false, &fxv);
+    let shield_out = make("pu_fx shield out", &pl, "vs_fx", "fs_shield_out", add, false, false, &fxv);
     // (sub_8235FB78 0x823602BC..0x82360488: ZWriteEnable and ZEnable on for the body's draws,
     // then ZWriteEnable off for the rest)
-    let stealth_solid = make("pu_fx stealth", &pl_car, "vs_stealth", "fs_stealth", add, true, &carv);
-    let stealth_glass = make("pu_fx stealth glass", &pl_car, "vs_stealth", "fs_stealth", add, false, &carv);
+    // (and the stencil set to the car's motion-blur id, +6028 - states 20, 24, 25, 23 - through the phase)
+    let stealth_solid = make("pu_fx stealth", &pl_car, "vs_stealth", "fs_stealth", add, true, true, &carv);
+    let stealth_glass = make("pu_fx stealth glass", &pl_car, "vs_stealth", "fs_stealth", add, false, true, &carv);
     // (sub_822EDD80: blend mode 7, alpha blend on, ZWriteEnable 0, ZEnable 1)
     let battrs = [
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 12, shader_location: 1 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 28, shader_location: 2 },
     ];
-    let bolt = make("pu_fx lightning", &pl, "vs_bolt", "fs_bolt", add, false, &[wgpu::VertexBufferLayout { array_stride: 36, step_mode: wgpu::VertexStepMode::Vertex, attributes: &battrs }]);
+    let bolt = make("pu_fx lightning", &pl, "vs_bolt", "fs_bolt", add, false, false, &[wgpu::VertexBufferLayout { array_stride: 36, step_mode: wgpu::VertexStepMode::Vertex, attributes: &battrs }]);
     // (the laser: SrcBlend ONE, DestBlend ONE, ZWriteEnable 0, CullMode none)
     let one = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
     let lattrs = [
@@ -412,7 +413,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 24, shader_location: 2 },
     ];
-    let laser = make("pu_fx laser", &pl, "vs_laser", "fs_laser", one, false, &[wgpu::VertexBufferLayout { array_stride: 36, step_mode: wgpu::VertexStepMode::Vertex, attributes: &lattrs }]);
+    let laser = make("pu_fx laser", &pl, "vs_laser", "fs_laser", one, false, false, &[wgpu::VertexBufferLayout { array_stride: 36, step_mode: wgpu::VertexStepMode::Vertex, attributes: &lattrs }]);
     let pu_colors: [[f32; 4]; 24] = {
         let l = crate::powerups::load_looks(data_dir);
         std::array::from_fn(|i| l[i].powerup_color)
@@ -499,7 +500,7 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("power-up effects"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }) }),
         timestamp_writes: None,
         occlusion_query_set: None,
     });
@@ -508,7 +509,8 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
         pass.set_bind_group(1, &s.ice_bg, &[]);
         for glass in [false, true] {
             pass.set_pipeline(if glass { &s.stealth_glass } else { &s.stealth_solid });
-            for c in vehicles.cars.iter().filter(|c| c.pu_stealth) {
+            for (ci, c) in vehicles.cars.iter().enumerate().filter(|(_, c)| c.pu_stealth) {
+                pass.set_stencil_reference(crate::render::mb::stencil_of(ci));
                 pass.set_bind_group(2, &c.binding.bg, &[]);
                 for (bi, b) in c.model.batches.iter().enumerate() {
                     if b.mode.blended() != glass {
@@ -536,6 +538,12 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
                 }
             }
         }
+        // (then the wheels' blur discs with flag 1 - F-49519 in the same phase, the debug byte on - each with its
+        // wheel's id; the cars' reach as the main view's)
+        let mut draws = 0usize;
+        vehicles.draw_wheel_blur(&mut pass, gpu, &mut draws, Some((cam, 450.0)), None, false, true);
+        pass.set_stencil_reference(0);
+        pass.set_bind_group(0, &gpu.globals_bg, &[]);
     }
     for (mesh, bg, n, pin, pout) in [(&s.ice, &s.ice_bg, ice.len(), &s.ice_in, &s.ice_out), (&s.shield, &s.shield_bg, shield.len(), &s.shield_in, &s.shield_out)] {
         let Some(m) = mesh.as_ref() else { continue };
