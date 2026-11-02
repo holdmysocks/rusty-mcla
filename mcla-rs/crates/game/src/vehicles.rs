@@ -59,6 +59,8 @@ pub struct CarModel {
     pub params_mods: Option<CarParams>,
     /// the original's simulation tuning (base and mods), when the car has it
     pub simtunes: Option<Arc<mcla_formats::rage::simtune::SimTunes>>,
+    /// the wheels its own set-up gives it (`configs/<name>.xcc`, `CarAsset::fit`)
+    pub fit: Option<mcla_formats::rage::simtune::WheelFit>,
     /// what the computer drivers know of the car (the game's own calibration tables)
     pub aitunes: Option<Arc<mcla_formats::rage::aitune::AiTunes>>,
     /// the height the wheels' centres were modelled at (mean of front and rear)
@@ -135,6 +137,9 @@ pub struct WheelModel {
     /// `blur_wheel` of vehicle/shared_utility (F-31291 loads it): the disc at x = -0.25, radius 0.5, scaled as the
     /// rim, that F-49519 draws into the stencil only, with the wheel's own motion-blur id (`draw_wheel_blur`)
     pub blur: Option<GpuBatch>,
+    /// the bead radius the tyre's vertices were pulled to at load (0.406, the model's own, when they were not): the
+    /// car's wheel draw hands it to city.wgsl with the original's innerRadiusScale, which works from the model's radius
+    pub tyre_bead: f32,
 }
 
 /// How far a brake is moved in along the axle to stand behind the spokes of a rim
@@ -2078,7 +2083,7 @@ impl Vehicles {
         let lod_steps = if car_is_ambient { traffic::lod_steps(&world.assets.root, &car.name) } else { None }.unwrap_or([40.0, 155.0]);
         let bound_box = if car_is_ambient { traffic::bound_box(&world.assets.root, &car.name) } else { None };
         let (fx_anchors, fx_anchor_rear) = car.fx_anchors(cfg);
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -4751,6 +4756,20 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // the blur pass (render/mb.rs). city.wgsl reads the tyre's maps with it. Traffic: 0, as recorded for PSAmbientTire)
                 let tmb = if c.model.bike || i >= 4 || c.is_ambient() { 0.0 } else { 0.08 * (c.pose_history.spin_rate()[i] / 30.0 / 2.019_595_4).abs() };
                 finish[3] = [c.state.dmg.rim_scuff(i), 1.0, tmb, 0.0];
+                // (the fifth: the tyre's bead. F-11293 hands VS_ParallaxRubber2 innerRadiusScale, the car's +2368 / +2372 for
+                // its front / rear axle, which F-43091 sets from the set-up - WheelFit::bead; a bike's 0 (+2372 = -0.0525 with
+                // its byte +6481, not read). city.wgsl moves a tyre vertex at the model's radius r by sat(1 - (r - 0.406) / 0.094) k
+                // outward, from the bead the tyre was built with (WheelModel::tyre_bead). A car without a set-up: its build's
+                // bead, as before. Traffic: none - VSAmbientTire. MCLA_TYRE_BEAD_OLD=1: none)
+                if let (Some(w), false, true) = (c.wheels.as_ref().or(c.model.wheels.as_ref()).or(self.wheels.as_ref()), c.is_ambient() || i >= 4, std::env::var("MCLA_TYRE_BEAD_OLD").is_err()) {
+                    // (only where the rim drawn is the set-up's: the front axle's bead equals the one the wheel was built with. The
+                    // player's chosen rim size is not fed into a set-up yet - then the built bead, as before. city.wgsl also draws
+                    // the rim at (0.406 + k) / built of its size: the original sizes a rim from its axle's diameter alone, 1.25 x
+                    // rimR (F-43091), where the port's rim grows with the axle's tyre)
+                    let fit = c.setup.or(c.model.fit).filter(|f| !c.model.bike && (f.bead[0] + 0.406 - w.tyre_bead).abs() < 1e-4);
+                    let k = if c.model.bike { 0.0 } else { fit.map_or(w.tyre_bead - 0.406, |f| f.bead[(i >= 2) as usize]) };
+                    finish[4] = [w.tyre_bead, k, 1.0, 0.0];
+                }
                 batch.push_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: finish, fill: car_fill, ..Default::default() });
                 // the caliper: with the wheel but for its turning, on the rear of the disc on
                 // both sides (the right ones turned over instead of around)
@@ -5879,6 +5898,7 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
     }
     let mut batches = Vec::new();
     let mut rim_from = usize::MAX;
+    let mut tyre_bead = 0.406f32;
     // (where the rim's spokes stand: the mean x of its zone 1)
     let spoke_x = sources.last().filter(|_| sources.len() > 1).and_then(|m| m.meshes.iter().max_by_key(|(mesh, _)| mesh.indices.len())).map_or(-0.2, |(mesh, _)| {
         let (sum, n) = mesh.positions.iter().zip(mesh.uv1.iter()).filter(|(_, u)| u.x.round() == 1.0).fold((0.0f32, 0u32), |a, (p, _)| (a.0 + p.x, a.1 + 1));
@@ -5911,6 +5931,7 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
             let bulge = if is_rim || tyre.starts_with("tir_bike") || std::env::var("MCLA_TYRE_BULGE_OLD").is_ok() { 0.0 } else { 0.05f32 };
             let mesh = if !is_rim && ((bead - 0.406).abs() > 0.004 || turn || bulge > 0.0) {
                 morphed = mesh.clone();
+                tyre_bead = bead;
                 if bulge > 0.0 {
                     for vi in 0..morphed.positions.len() {
                         let p = morphed.positions[vi];
@@ -6046,7 +6067,7 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
     let backside = if rim_from < batches.len() { wheel_backside(gpu, &root, Mat4::from_scale(Vec3::new(1.0, rim_ratio, rim_ratio))) } else { Vec::new() };
     let rim_from = rim_from.min(batches.len());
     let blur = if rim_from < batches.len() { wheel_blur_disc(gpu, &root, Mat4::from_scale(Vec3::new(1.0, rim_ratio, rim_ratio))) } else { None };
-    Some(WheelModel { batches, spoke_x, rim_from, backside, blur })
+    Some(WheelModel { batches, spoke_x, rim_from, backside, blur, tyre_bead })
 }
 
 /// `blur_wheel` of vehicle/shared_utility (F-31291): one material (TestRimBlur), the text mesh `blur_wheel.mesh` - 80

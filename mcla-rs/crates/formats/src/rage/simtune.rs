@@ -280,6 +280,9 @@ pub struct WheelFit {
     /// the wheels' sideways place in the car (0 = as the model has them)
     pub half_track: [f32; 2],
     pub offset: [f32; 2],
+    /// the tyre's bead pull per axle, innerRadiusScale (F-43091 as the wheel draw F-11293 hands it to VS_ParallaxRubber2):
+    /// (1 - sw / Rv) x 0.5 - 0.406, sw = profile x width - 0.0254, Rv = sw + rim diameter x 0.5 - the bead at the rim's radius
+    pub bead: [f32; 2],
 }
 
 impl SimTunes {
@@ -316,6 +319,11 @@ impl SimTunes {
             fit.width[axle] = w;
             fit.radius[axle] = ((f32::from_bits(RIM[rim as usize - 12]) as f64).mul_add(0.5, t as f64)) as f32;
             fit.offset[axle] = RIDE[ride];
+            // (F-43091: f13 = fmsubs(p, w, 0.0254), f12 = f13 + D x 0.5, f9 = 2 f13 / 2 f12, fmsubs(1 - f9, 0.5, 0.406))
+            let sw = ((p as f64).mul_add(w as f64, -(0.0254f32 as f64))) as f32;
+            let rv = sw + f32::from_bits(RIM[rim as usize - 12]) * 0.5;
+            let f9 = (sw * 2.0) / (rv * 2.0);
+            fit.bead[axle] = (((1.0 - f9) as f64).mul_add(0.5, -(0.406f32 as f64))) as f32;
             let edge = self.fender_edge[axle][wide];
             fit.half_track[axle] = if edge > 0.5 { edge - fit.width[axle] * 0.5 } else { 0.0 };
         }
@@ -461,6 +469,18 @@ mod fit_tests {
         // (and nothing is touched by a record that is not one)
         cfg[2110] = 40;
         assert_eq!(tunes.fit(&cfg), None);
+    }
+
+    /// The tyre's bead pull (innerRadiusScale) of the 240SX's own set-up (15 inch rims, tyres 0.195 x 0.60): the
+    /// running original hands VS_ParallaxRubber2 c209 = -0.061359555 (0xbd7b5428) on all four tyres
+    /// (`work/police17/cap/s240_noon.gpu.bin`, draws 2169 - 2172).
+    #[test]
+    fn the_bead_pull_is_the_recorded_one() {
+        let mut tunes = SimTunes::default();
+        let mut cfg = vec![0u8; 8176];
+        cfg[2106..2114].copy_from_slice(&[3, 3, 0, 0, 15, 15, 8, 8]);
+        let fit = tunes.fit(&cfg).expect("a set-up");
+        assert_eq!(fit.bead.map(f32::to_bits), [0xbd7b_5428; 2], "{fit:?}");
     }
 }
 

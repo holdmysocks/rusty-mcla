@@ -1109,6 +1109,24 @@ fn pond_program(in: VsOut, sun: f32) -> vec4<f32> {
 fn vs_body(in: VsIn) -> VsOut {
     var o: VsOut;
     var lp = in.pos;
+    // A car's tyre (its wheel's mark dents[3].y, zones 10 / 11): the bead pulled to the rim as VS_ParallaxRubber2 does it,
+    // from the model's radius r: r + sat(1 - (r - 0.406) x 10.526315) x innerRadiusScale (dents[4].y, vehicles.rs). The port
+    // built the tyre with its bead at dents[4].x - r' = 0.5 - (0.5 - r) 0.094 / (0.5 - b) outside it, r b / 0.406 inside -
+    // so r is taken back from r' first.
+    if (obj.dents[4].z > 0.5 && obj.dents[3].y > 0.5 && in.uv1.x > 9.5) {
+        let b = obj.dents[4].x;
+        let rb = length(lp.yz);
+        if (rb > 1e-6) {
+            let r = select(rb * 0.406 / b, 0.5 - (0.5 - rb) * 0.094 / (0.5 - b), rb >= b);
+            let r_out = r + clamp(1.0 - (r - 0.406) * 10.526315, 0.0, 1.0) * obj.dents[4].y;
+            lp = vec3<f32>(lp.x, lp.yz * (r_out / rb));
+        }
+    }
+    // (and its rim, its back and its blur disc - zones below the rotor's 8 - at the size its axle's rim diameter gives,
+    // 1.25 x rimR in F-43091 whatever the tyre: (0.406 + k) / the built bead of the size the port built it at)
+    if (obj.dents[4].z > 0.5 && obj.dents[3].y > 0.5 && in.uv1.x < 7.5) {
+        lp = vec3<f32>(lp.x, lp.yz * ((0.406 + obj.dents[4].y) / obj.dents[4].x));
+    }
     // Car bodies (params.w carries 16): the vertex damage map (damagemap.rs; VS_CarPaint 22 - 49,
     // the same in every body program). The map is read at the vertex's direction from the car's
     // origin, (x, z) / |p| x 0.5 + 0.5, one texel; the vertex moves dmgParams.w (0.2) x dent x
