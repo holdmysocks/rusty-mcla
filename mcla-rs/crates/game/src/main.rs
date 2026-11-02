@@ -383,6 +383,8 @@ struct App {
     arrest_fade: Option<f32>,
     /// the station reset is done: the car gets control once the fade up has ended
     arrest_activate: bool,
+    /// CopArrest's Racer_Deactivate (0x6c9, under the full black) to its Racer_Activate: the player's car deactivated
+    arrest_deact: bool,
     /// the police's game-frame clock (brain::frame_due)
     police_acc: f32,
     /// CopPullover.sco running: (the fine, the walk's time of a bolt, the ticket scene begun)
@@ -1056,6 +1058,7 @@ impl App {
             arrest_wait: false,
             arrest_fade: None,
             arrest_activate: false,
+            arrest_deact: false,
             police_acc: 0.0,
             ticket_run: None,
             cine_events: (String::new(), Vec::new()),
@@ -2596,8 +2599,11 @@ impl App {
                 player_input.handbrake = true;
             }
         }
-        if self.police.heat == police::Heat::Busted || self.arrest_wait || self.arrest_activate {
-            player_input = CarInput { brake: 1.0, handbrake: true, ..Default::default() };
+        // (nothing holds the car from Busted until CopArrest's Racer_Deactivate after its waited fade down: StateArrest only
+        // sets the target's +592 bits 0x28 (F-14125), which the control step F-17997 never reads. From the deactivate (F-12981:
+        // +592 bit 0x1) to Racer_Activate: pedals 0, the automatic brake, the gearbox held, the steering +656 = 0)
+        if self.arrest_deact {
+            player_input = CarInput { deactivated: true, ..Default::default() };
         }
         // (the warp after START: the car is not the player's to drive until it lands - Racer_Activate)
         if self.startwarp.is_some() {
@@ -6759,6 +6765,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             if self.arrest_wait && (self.arrest_mask.full() || !self.arrest_mask.is_on()) {
                 self.arrest_wait = false;
+                // (0x6c9: Racer_Deactivate(player), the fade down done)
+                self.arrest_deact = true;
                 let goons = self.police.goons;
                 let mut started_scene = false;
                         // the arrest (CopArrest.sco): the wiped-out biker's scene first (manager +64, F-22530), then the
@@ -7316,8 +7324,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 c.deactivated = false;
             }
         }
+        // (an arrest whose script ends with no Racer_Activate of its own - the goons' walk-up: the car is given back with the
+        // black, as before)
+        if self.arrest_deact && !self.arrest_wait && self.cine.playing.is_none() && self.arrest_form.is_none() && self.arrest_station.is_none() && !self.arrest_activate && !self.arrest_mask.is_on() {
+            self.arrest_deact = false;
+        }
         if self.arrest_activate && !self.arrest_mask.is_on() {
             self.arrest_activate = false;
+            self.arrest_deact = false;
             self.sound.arrest_mix = (false, false);
             // (CopArrest.sco 0x14ee: the mixer detriggered, 0x1524 Racer_PlayIgnition - the engine sound's start, its
             // crank ends with the engine running again -, Racer_Activate, and 0x1552 after CutSceneDone:
