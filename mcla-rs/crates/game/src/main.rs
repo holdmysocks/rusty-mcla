@@ -3866,6 +3866,14 @@ impl App {
                         let w = hudmap::CineWarp::new(s, e, Vec3::ZERO, fov_from, fov);
                         log::info!("race start warp: {:?} ({:.3} s) from {:?} to {:?} ({})", w.kind(), w.total(), s.eye, e.eye, plan.0[0]);
                         self.warp = Some(w);
+                        // the next song: every race-start warp type (ARCADE, DEFAULT_WITH_CUT, EXIT_TO_CUT, BEAT_ME_THERE_*)
+                        // sets the request's +0 (F-32081), and the warper (F-31347 state 26) then takes NextSong(0)
+                        // F-51486 and resumes it F-16732 before the dive: a restart starts a new song. REPLAY's request
+                        // keeps +0 at 0 (no song change)
+                        if let (Some(a), None) = (self.audio.as_mut(), self.game.replay.as_ref()) {
+                            log::info!("race start warp: the next song");
+                            a.next_track();
+                        }
                         self.warp_t = 0.0;
                     }
                 }
