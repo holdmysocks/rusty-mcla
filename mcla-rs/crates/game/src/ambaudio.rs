@@ -171,6 +171,8 @@ pub struct Ambience {
     last: Option<usize>,
     /// mgr +828: no district switch before this time (each switch sets it 4 s on, F-93563); seconds on `now`
     hold: f32,
+    /// the garage district is in (mgr +152 set by F-71902)
+    garage_on: bool,
     scene: Option<u32>,
     timers: Vec<f32>,
     quad_timers: Vec<f32>,
@@ -255,6 +257,7 @@ impl Ambience {
             bed2: None,
             last: None,
             hold: 0.0,
+            garage_on: false,
             scene: None,
             timers: Vec::new(),
             quad_timers: Vec::new(),
@@ -523,6 +526,17 @@ impl Ambience {
         self.now += dt;
         let now = self.now;
         let forced = forced.and_then(|h| self.district_of(lib, h));
+        if in_garage && !self.garage_on {
+            // F-71902 (garage enter) calls F-10645(mgr, -1): the location slots stop with their own release, slot 11 off
+            for sl in self.slots.drain(..) {
+                lib.stop(sl.sound);
+                if let Some(c) = sl.companion {
+                    lib.stop(c);
+                }
+            }
+            self.stop_pos_music(lib);
+        }
+        self.garage_on = in_garage;
         // (+152 null: F-93563 returns at once and the district stays)
         let want = match self.hangout {
             _ if in_garage => self.garage,
@@ -552,6 +566,7 @@ impl Ambience {
                 if p != want {
                     if let Some(n) = lib.game.name_of(s).map(|n| n.to_string()) {
                         lib.scene(&n, false);
+                        log::info!("audio: district scene {n} off");
                     }
                     self.scene = None;
                 }
@@ -559,6 +574,7 @@ impl Ambience {
             if self.scene.is_none() && want != 0 {
                 if let Some(n) = lib.game.name_of(want).map(|n| n.to_string()) {
                     lib.scene(&n, true);
+                    log::info!("audio: district scene {n} on");
                     self.scene = Some(want);
                 }
             }
@@ -612,10 +628,56 @@ impl Ambience {
             }
             self.cur = Some(di);
         }
+        // F-99455 after the district: the categories' resolved volumes gate the rest (-80 dB at 0x82018A50)
+        let level = |lib: &SoundLib, n: &str| lib.category(n).map_or(0.0, |c| c.volume);
+        if level(lib, "AMBIENCE") <= -80.0 {
+            // everything stops: the location slots with a 0 ms release override and slot 11 off (F-10645(mgr, 0)), the
+            // beds (F-91693), rain and thunder (F-79099, in `weather`) and the one-shots (F-61925) with -1 = their own
+            // release; the line emitter and the location emitters are not updated (the line sound plays on)
+            for sl in self.slots.drain(..) {
+                lib.stop_release(sl.sound, 0);
+                if let Some(c) = sl.companion {
+                    lib.stop_release(c, 0);
+                }
+            }
+            self.stop_pos_music(lib);
+            for h in self.bed.take().into_iter().chain(self.bed2.take()).chain(self.shots.drain(..)) {
+                lib.stop(h);
+            }
+            return;
+        }
+        if level(lib, "AMBIENCE_BEDS") > -80.0 {
+            // an empty bed slot (stopped above, or ended) starts the district's bed for the time of day again: the
+            // main one with request flag 0x20 only (no random start), the second with a default request
+            let night = self.night;
+            let beds = self.districts[di].clone();
+            if self.bed.map_or(true, |h| !lib.playing(h)) {
+                let snd = beds.bed[night as usize];
+                self.bed = if snd != self.null { lib.play_hash(snd, Req::default()) } else { None };
+                self.bed_snd = if self.bed.is_some() { snd } else { self.null };
+            }
+            if self.bed2.map_or(true, |h| !lib.playing(h)) {
+                let snd2 = beds.bed2[night as usize];
+                self.bed2 = if snd2 != self.null { lib.play_hash(snd2, Req::default()) } else { None };
+                self.bed2_snd = if self.bed2.is_some() { snd2 } else { self.null };
+            }
+        } else {
+            // F-91693(mgr, -1): both beds stop with their own release
+            for h in self.bed.take().into_iter().chain(self.bed2.take()) {
+                lib.stop(h);
+            }
+        }
         let d = self.districts[di].clone();
-        // distant one-shots and quadshots (F-14965)
+        // distant one-shots and quadshots (F-14965), while AMBIENCE_ONESHOTS is above -80 dB; else they stop with their
+        // own release (F-61925(mgr, -1)) and the timers wait
         self.shots.retain(|h| lib.playing(*h));
-        for (list, timers) in [(&d.shots, 0usize), (&d.quads, 1)] {
+        let shots_on = level(lib, "AMBIENCE_ONESHOTS") > -80.0;
+        if !shots_on {
+            for h in self.shots.drain(..) {
+                lib.stop(h);
+            }
+        }
+        for (list, timers) in [(&d.shots, 0usize), (&d.quads, 1)].into_iter().filter(|_| shots_on) {
             for (k, s) in list.iter().enumerate() {
                 let t = if timers == 0 { &mut self.timers[k] } else { &mut self.quad_timers[k] };
                 if now < *t {
@@ -946,6 +1008,56 @@ mod tests {
             amb.update(&mut lib, skid, true, false, None, 0.0, false, 0.1);
         }
         assert_eq!(amb.bed_snd, bed[0]);
+    }
+
+    /// F-99455's category gates: AMBIENCE at or below -80 dB stops the beds, AMBIENCE_BEDS stops them too, and the
+    /// beds start again (without a random start) once the category is back above.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn category_gates_stop_and_restart_the_beds() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mut amb = Ambience::new(&lib).expect("ambience");
+        let d = amb.districts.iter().find(|d| d.name == "DISTRICT_SANTA_MONICA").unwrap();
+        let (at, bed) = (Vec3::new(d.circles[0].0, 0.0, d.circles[0].1), d.bed[0]);
+        let mut step = |amb: &mut Ambience, lib: &mut SoundLib, a: &mut crate::audio::Audio| {
+            lib.update(0.1, a);
+            amb.update(lib, at, false, false, None, 0.0, false, 0.1);
+        };
+        step(&mut amb, &mut lib, &mut a);
+        assert!(amb.bed.is_some() && amb.bed_snd == bed);
+        for cat in ["AMBIENCE", "AMBIENCE_BEDS"] {
+            lib.ramp_category(cat, -100.0, 0.0);
+            step(&mut amb, &mut lib, &mut a);
+            assert!(amb.bed.is_none(), "{cat}");
+            lib.ramp_category(cat, 0.0, 0.0);
+            step(&mut amb, &mut lib, &mut a);
+            assert!(amb.bed.is_some() && amb.bed_snd == bed, "{cat}");
+        }
+        lib.ramp_category("AMBIENCE_ONESHOTS", -100.0, 0.0);
+        for _ in 0..20 {
+            step(&mut amb, &mut lib, &mut a);
+        }
+        assert!(amb.shots.is_empty());
+    }
+
+    /// Into the garage and out: DISTRICT_GARAGE's scene and second bed start, then stop when the circles' district
+    /// (no +26, NULL second bed) takes over after the hold.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn garage_scene_stops_on_leaving() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mut amb = Ambience::new(&lib).expect("ambience");
+        let at = Vec3::new(819.6, 0.0, -808.4);
+        amb.update(&mut lib, at, false, true, None, 0.0, false, 0.1);
+        assert_eq!(amb.district_name(), Some("DISTRICT_GARAGE"));
+        assert!(lib.scene_on("DYNAMIC_MIXER_GARAGE") && amb.bed2.is_some());
+        amb.update(&mut lib, at, false, false, None, 0.0, false, 4.1);
+        assert_eq!(amb.district_name(), Some("DISTRICT_OLD_HOLLYWOOD"));
+        assert!(!lib.scene_on("DYNAMIC_MIXER_GARAGE") && amb.bed2.is_none());
     }
 
     #[test]
