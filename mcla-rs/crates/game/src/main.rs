@@ -8873,8 +8873,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let mut pan = glam::Vec2::ZERO;
                     if let Some(pad) = self.gamepad.as_ref().and_then(|g| active_pad(g, self.pad_id)) {
                         // (RT zooms in, LT out - rule_navcam.md 4.1)
-                        zin |= pad.axis(pads::Axis::RightTrigger) > 0.5;
-                        zout |= pad.axis(pads::Axis::LeftTrigger) > 0.5;
+                        zin |= pad.pressed(pads::Button::RightTrigger);
+                        zout |= pad.pressed(pads::Button::LeftTrigger);
                     }
                     if self.input.down(KeyCode::KeyA) { pan.x -= 1.0; }
                     if self.input.down(KeyCode::KeyD) { pan.x += 1.0; }
@@ -8975,8 +8975,55 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.map_free_release = true;
                 }
                 self.nav_free_moving = stick != glam::Vec2::ZERO;
-                let zin = self.input.down(KeyCode::PageUp) || self.input.down(KeyCode::KeyZ) || self.input.down(KeyCode::Equal);
-                let zout = self.input.down(KeyCode::PageDown) || self.input.down(KeyCode::KeyX) || self.input.down(KeyCode::Minus);
+                let mut zin = self.input.down(KeyCode::PageUp) || self.input.down(KeyCode::KeyZ) || self.input.down(KeyCode::Equal);
+                let mut zout = self.input.down(KeyCode::PageDown) || self.input.down(KeyCode::KeyX) || self.input.down(KeyCode::Minus);
+                let (mut rt, mut lt, mut rs) = (false, false, glam::Vec2::ZERO);
+                if let Some(pad) = self.gamepad.as_ref().and_then(|g| active_pad(g, self.pad_id)) {
+                    rt = pad.pressed(pads::Button::RightTrigger);
+                    lt = pad.pressed(pads::Button::LeftTrigger);
+                    rs = glam::Vec2::new(pad.axis(pads::Axis::RightX), pad.axis(pads::Axis::RightY));
+                }
+                // (test hook: MCLA_MAP_PAD="from:to:rt|lt|rs[:x:y],..." holds a trigger or the right stick
+                // (y up) over those frames)
+                if let Ok(v) = std::env::var("MCLA_MAP_PAD") {
+                    for step in v.split(',') {
+                        let f: Vec<&str> = step.split(':').collect();
+                        let n = |i: usize| f.get(i).and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(0.0);
+                        if f.len() >= 3 && (n(0) as u64..=n(1) as u64).contains(&self.frame_no) {
+                            match f[2].trim() {
+                                "rt" => rt = true,
+                                "lt" => lt = true,
+                                "rs" => rs = glam::Vec2::new(n(3), n(4)),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                {
+                    // RT held zooms in, LT out (rule_navcam.md 4.1: r2 / l2 held, released)
+                    zin |= rt;
+                    zout |= lt;
+                    // the right stick pans the view (F-47799, rule_navcam.md 5.1): the eye 0.5 H m/s at full
+                    // tilt, the cursor stays where it is unless it sits at the screen's edge and the view
+                    // moves past it - then it goes along (the edge limits NM+572..584 hold runtime values not
+                    // read: the inner 80 %, approx., as for the left stick)
+                    let pan = hudmap::NavCam::shape_stick(glam::Vec2::new(rs.x, -rs.y));
+                    if pan != glam::Vec2::ZERO && !fresh {
+                        let before = self.nav.view().0;
+                        self.nav.pan(pan, dt);
+                        let d = self.nav.eye - before;
+                        if let Some(q) = self.nav.ndc(self.nav.cursor, aspect) {
+                            let mut along = Vec3::ZERO;
+                            if (q.x < -0.8 && d.x > 0.0) || (q.x > 0.8 && d.x < 0.0) { along.x = d.x; }
+                            if (q.y > 0.8 && d.z > 0.0) || (q.y < -0.8 && d.z < 0.0) { along.z = d.z; }
+                            if along != Vec3::ZERO {
+                                // (moved off its icon: the selection goes - the deselect of 5.1, approx.)
+                                self.nav.cursor += along;
+                                self.game.map_free = Some(self.nav.cursor);
+                            }
+                        }
+                    }
+                }
                 self.nav.update(dt, zin, zout, glam::Vec2::ZERO, aspect);
                 let rows = self.nav.view_rows();
                 let (eye, look) = (rows.eye, rows.look_point());

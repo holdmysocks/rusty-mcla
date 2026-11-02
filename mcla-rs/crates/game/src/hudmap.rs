@@ -2387,8 +2387,8 @@ impl NavCam {
         if v == Vec2::ZERO {
             return;
         }
-        self.mv = None;
         let (eye, _) = self.view();
+        self.mv = None;
         let d = v * 0.5 * eye.y * dt;
         self.place(eye + Vec3::new(d.x, 0.0, d.y));
     }
@@ -4185,6 +4185,23 @@ mod tests {
         assert!(n.view_rows().eye.distance(e) < 1e-2, "{:?}", n.view_rows().eye);
         n.update(1.1 - t_axes - 0.002, false, false, Vec2::ZERO, 16.0 / 9.0);
         assert!((pitch(&n) + 0.579_074).abs() < 2e-3, "{}", pitch(&n));
+    }
+
+    /// The right stick's pan (F-47799, rule_navcam.md 5.1): at full tilt the eye moves 0.5 H m/s, the
+    /// look point with it; a running move stops; the bounds hold it (at 9000 m x is pinned to -327).
+    #[test]
+    fn pan_moves_half_the_height_a_second() {
+        let mut n = NavCam::default();
+        n.pan(Vec2::new(1.0, 0.0), 0.5);
+        assert_eq!(n.eye.x, NAV_CENTRE.x);
+        n.bounds = nav_bounds(3000.0, 16.0 / 9.0);
+        n.place(Vec3::new(0.0, 3000.0, 0.0));
+        n.fly_to(Vec3::new(400.0, 0.0, 0.0));
+        let at = n.view().0;
+        n.pan(NavCam::shape_stick(Vec2::new(0.0, 1.0)), 0.1);
+        assert!(!n.moving());
+        assert!((n.eye.z - (at.z + 150.0)).abs() < 1e-3 && (n.eye.x - at.x).abs() < 1e-3, "{:?} {:?}", n.eye, at);
+        assert!((n.look.z - (n.eye.z - nav_off(3000.0))).abs() < 1e-3);
     }
 
     /// The five recorded zoom steps of the original (rule_navcam.md 4.4): opened over the whole
