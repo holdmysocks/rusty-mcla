@@ -700,6 +700,9 @@ struct App {
     nav_free: bool,
     /// ARCADE's VIEW RACE has the map camera (its flight started)
     race_view_on: bool,
+    /// ...and is flying back to ARCADE's view (RacePickerDown), or has (the camera then stays where
+    /// the flight left it until ARCADE is left): 1 flying, 2 landed
+    race_back_on: u8,
     /// the GPS camera of the last map frame (the exit flies from it)
     nav_rows: Option<hudmap::CamRows>,
     nav_free_moving: bool,
@@ -1218,6 +1221,7 @@ impl App {
             nav: hudmap::NavCam::default(),
             nav_free: false,
             race_view_on: false,
+            race_back_on: 0,
             nav_rows: None,
             nav_free_moving: false,
             map_open: 0.0,
@@ -2256,7 +2260,8 @@ impl App {
             self.game.nav_enter |= p(0) || (p(7) && title);
             // (B does nothing there either: the original's start screen has no way out)
             // (on the GPS map Start is MAP MODE and backs out of nothing - #26)
-            self.game.nav_back |= ((p(1) || (p(7) && !self.game.show_map)) && !title) && !watching;
+            // (so is it in ARCADE's VIEW RACE)
+            self.game.nav_back |= ((p(1) || (p(7) && !self.game.show_map && self.game.race_view.is_none())) && !title) && !watching;
             // (Back answers a call on the phone over a menu too - the keyboard's map key does)
             self.game.nav_map |= p(6) && (self.game.show_map || self.game.phone_call_up());
             return;
@@ -8831,23 +8836,60 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.chase.up = Vec3::Y;
             self.cam.pos = eye;
             self.cam.fov_y = 40f32.to_radians();
+            // ARCADE's own view is the map camera resting over the player (NavCam::arcade_rest:
+            // 850 m up, 1300 m south, the 25 degree lens). MCLA_ARCADE_OLDCAM=1: the port's earlier view.
+            let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
+            let arcade_at = self.vehicles.player().map(|c| c.state.pos).unwrap_or(look);
+            if arcade_view && std::env::var("MCLA_ARCADE_OLDCAM").is_err() {
+                let (e, l) = hudmap::NavCam::arcade_rest(arcade_at, aspect);
+                self.chase.pos = e;
+                self.chase.look = l;
+                self.cam.pos = e;
+                self.cam.fov_y = 25f32.to_radians();
+            }
             // The original's GPS camera (NavMap, rule_frame.md 4.3): height H from 850 to 9000 on
             // t = 1 - sin(u pi / 2), u stepped 0.02 a frame (30 a second) while a zoom trigger is held;
             // the eye stands south of the look point by (1 - (H - 850) / 4150) x 1300 m below 5000 m,
             // 10 m above; 25 degree lens. (MCLA_MAP_OLDCAM=1: the port's own view.)
             // ARCADE's VIEW RACE: the map camera goes up over the city's middle and looks down
-            // (NavCam::race_pick); LT / RT zoom as on the GPS map. Back to ARCADE the camera is the
-            // menu's again at once (RacePickerDown, 1 s, is not ported - approx.)
+            // (NavCam::race_pick); LT / RT zoom and the sticks pan as on the GPS map (F-47799, the
+            // cursor off: both sticks). Back to ARCADE it flies down to ARCADE's view (NavCam::race_back).
             let race_view = arcade_view && self.game.race_view.is_some() && self.game.hm.is_some();
-            if race_view {
-                let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
-                if !self.race_view_on {
+            if race_view || (arcade_view && self.race_view_on) {
+                if race_view && (!self.race_view_on || self.race_back_on != 0) {
                     self.nav.race_pick(self.chase.pos, self.chase.look, aspect);
                     self.nav.lens = hudmap::NavLens::done();
                     self.race_view_on = true;
+                    self.race_back_on = 0;
                 }
-                let zin = self.input.down(KeyCode::PageUp) || self.input.down(KeyCode::KeyZ) || self.input.down(KeyCode::Equal);
-                let zout = self.input.down(KeyCode::PageDown) || self.input.down(KeyCode::KeyX) || self.input.down(KeyCode::Minus);
+                if !race_view && self.race_back_on == 0 {
+                    self.nav.race_back(arcade_at, aspect);
+                    self.race_back_on = 1;
+                }
+                let (mut zin, mut zout) = (false, false);
+                if race_view {
+                    zin = self.input.down(KeyCode::PageUp) || self.input.down(KeyCode::KeyZ) || self.input.down(KeyCode::Equal);
+                    zout = self.input.down(KeyCode::PageDown) || self.input.down(KeyCode::KeyX) || self.input.down(KeyCode::Minus);
+                    let mut pan = glam::Vec2::ZERO;
+                    if let Some(pad) = self.gamepad.as_ref().and_then(|g| active_pad(g, self.pad_id)) {
+                        // (RT zooms in, LT out - rule_navcam.md 4.1)
+                        zin |= pad.axis(pads::Axis::RightTrigger) > 0.5;
+                        zout |= pad.axis(pads::Axis::LeftTrigger) > 0.5;
+                    }
+                    if self.input.down(KeyCode::KeyA) { pan.x -= 1.0; }
+                    if self.input.down(KeyCode::KeyD) { pan.x += 1.0; }
+                    if self.input.down(KeyCode::KeyW) { pan.y -= 1.0; }
+                    if self.input.down(KeyCode::KeyS) { pan.y += 1.0; }
+                    if let Some(pad) = self.gamepad.as_ref().and_then(|g| active_pad(g, self.pad_id)) {
+                        for (x, y) in [(pads::Axis::RightX, pads::Axis::RightY), (pads::Axis::LeftX, pads::Axis::LeftY)] {
+                            let v = hudmap::NavCam::shape_stick(glam::Vec2::new(pad.axis(x), -pad.axis(y)));
+                            if v != glam::Vec2::ZERO {
+                                pan = v;
+                            }
+                        }
+                    }
+                    self.nav.pan(pan, dt);
+                }
                 self.nav.update(dt, zin, zout, glam::Vec2::ZERO, aspect);
                 let rows = self.nav.view_rows();
                 self.chase.pos = rows.eye;
@@ -8855,8 +8897,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.chase.up = rows.r1;
                 self.cam.pos = rows.eye;
                 self.cam.fov_y = self.nav.lens.step(dt).to_radians();
+                if self.race_back_on == 1 && !self.nav.moving() {
+                    self.race_back_on = 2;
+                }
+                if std::env::var("MCLA_NAV_LOG").is_ok() {
+                    let p = (-rows.r2.y).clamp(-1.0, 1.0).asin().to_degrees();
+                    log::info!("raceview: eye {:.1} {:.1} {:.1} pitch {:.2} back {}", rows.eye.x, rows.eye.y, rows.eye.z, p, self.race_back_on);
+                }
             } else {
                 self.race_view_on = false;
+                self.race_back_on = 0;
             }
             if self.game.flash_navsys.is_some() && self.game.hm.is_some() && !arcade_view && self.game.editor.is_none() && std::env::var("MCLA_MAP_OLDCAM").is_err() {
                 let fresh = self.map_open <= dt * 1.6 + 1e-4;
@@ -13226,7 +13276,7 @@ impl ApplicationHandler for App {
                                 KeyCode::Backspace if self.game.replay.is_some() => self.game.nav_select = true,
                                 KeyCode::KeyP if self.game.replay.is_some() => self.game.nav_start = true,
                                 // (the GPS map's MAP MODE is the pad's START; N on the keyboard)
-                                KeyCode::KeyN if self.game.show_map && self.game.hm.is_some() => self.game.nav_start = true,
+                                KeyCode::KeyN if (self.game.show_map || self.game.race_view.is_some()) && self.game.hm.is_some() => self.game.nav_start = true,
                                 // (the arrows are the menus'; one bound to an action of the keyboard's
                                 // table that is a press is that as well, outside a menu)
                                 KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight => {

@@ -2189,7 +2189,9 @@ pub fn nav_bounds(h: f32, aspect: f32) -> [f32; 4] {
 }
 
 /// The camera's moves (UITransition): the eye from `from` to `to` over `dur` seconds with the
-/// piecewise-quadratic ease (Translate_Axis, no carried speed), on an ease-in clock for the opening.
+/// piecewise-quadratic ease (Translate_Axis, no carried speed), on the Parallel's clock of `span`
+/// seconds (ease_in / ease_out, rule_exitcam.md 2.2). `rot`: a Rotate x child (rule_exitcam.md 3.2) -
+/// the start rows, the pitch distance and the child's total.
 #[derive(Clone, Copy)]
 struct NavMove {
     from: Vec3,
@@ -2199,6 +2201,27 @@ struct NavMove {
     t: f32,
     dur: f32,
     ease_in: bool,
+    ease_out: bool,
+    span: f32,
+    rot: Option<(CamRows, f32, f32)>,
+}
+
+impl NavMove {
+    fn new(from: Vec3, to: Vec3, from_look: Vec3, to_look: Vec3, dur: f32, ease_in: bool) -> NavMove {
+        NavMove { from, to, from_look, to_look, t: 0.0, dur, ease_in, ease_out: false, span: dur, rot: None }
+    }
+
+    /// the children's clock C (`F-17563`)
+    fn clock(&self) -> f32 {
+        let x = (self.t / self.span).clamp(0.0, 1.0);
+        if self.ease_in {
+            self.span * (1.0 - (x * PI * 0.5).cos())
+        } else if self.ease_out {
+            self.span * (x * PI * 0.5).sin()
+        } else {
+            self.t.min(self.span)
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -2217,6 +2240,8 @@ pub struct NavCam {
     pub exit: Option<NavExit>,
     /// the lens (NM+712)
     pub lens: NavLens,
+    /// the cursor is on (NM+496, SetCursorEnabled): off in ARCADE (ArcadeProxy.sc.xml)
+    cursor_on: bool,
     /// the render camera's velocity (playerMgr+0x51420, `F-31556`): the eye's move over the last
     /// 30 Hz frame / that frame's time (1/30 s), y = 0 - and the eye at the start of that frame, time
     /// since then
@@ -2277,7 +2302,7 @@ impl NavLens {
 
 impl Default for NavCam {
     fn default() -> NavCam {
-        NavCam { eye: Vec3::new(NAV_CENTRE.x, NAV_HIGH, NAV_CENTRE.z), look: NAV_CENTRE, cursor: NAV_CENTRE, bounds: nav_bounds(NAV_HIGH, 16.0 / 9.0), mv: None, acc: 0.0, open_rows: None, exit: None, lens: NavLens::done(), vel: Vec3::ZERO, vel_prev: None, vel_t: 0.0 }
+        NavCam { eye: Vec3::new(NAV_CENTRE.x, NAV_HIGH, NAV_CENTRE.z), look: NAV_CENTRE, cursor: NAV_CENTRE, bounds: nav_bounds(NAV_HIGH, 16.0 / 9.0), mv: None, acc: 0.0, open_rows: None, exit: None, lens: NavLens::done(), cursor_on: true, vel: Vec3::ZERO, vel_prev: None, vel_t: 0.0 }
     }
 }
 
@@ -2289,10 +2314,11 @@ impl NavCam {
         self.open_rows = Some(CamRows::look_at(game_eye, game_look, Vec3::Y));
         self.exit = None;
         let to = Vec3::new(NAV_CENTRE.x, NAV_HIGH, NAV_CENTRE.z);
-        self.mv = Some(NavMove { from: game_eye, to, from_look: game_look, to_look: Vec3::new(to.x, 0.0, to.z - nav_off(NAV_HIGH)), t: 0.0, dur: 1.5, ease_in: true });
+        self.mv = Some(NavMove::new(game_eye, to, game_look, Vec3::new(to.x, 0.0, to.z - nav_off(NAV_HIGH)), 1.5, true));
         self.eye = to;
         self.look = Vec3::new(at.x, 0.0, at.z);
         self.cursor = at;
+        self.cursor_on = true;
         self.bounds = nav_bounds(NAV_HIGH, aspect);
         self.acc = 0.0;
         // (the render camera before the map's first frame is the game camera)
@@ -2302,25 +2328,74 @@ impl NavCam {
     }
 
     /// VIEW RACE (`F-29182` with the transition RacePickerUp of tune/ui/transitions/Main.sc.xml): from
-    /// the camera now to 15000 m over the map's centre (NM+352), looking down, the axes over 0.7 s with
-    /// ease_in. The camera set (`F-38897`) clamps the height to the map's max (NM+1128, 9000), so it
-    /// ends where the GPS map's top view is (the original's race view is framed as that one).
-    /// (Its Rotate child turns the pitch to -90 degrees in 0.3 s; here the look point goes along
-    /// with the eye - approx.)
+    /// the camera now to 15000 m over the map's centre (NM+352), the axes over 0.7 s on an ease_in
+    /// clock. The camera set (`F-38897` -> `F-41226`, end clamped by `F-54564`) clamps the height to
+    /// the map's max (NM+1128, 9000), so it ends where the GPS map's top view is (the original's race
+    /// view is framed as that one). Its Rotate x child turns the start rows' pitch to -1.57079 rad
+    /// in 0.3 s of the clock (`F-41397`, applied by `F-24218`); yaw and roll stay the start's.
     pub fn race_pick(&mut self, game_eye: Vec3, game_look: Vec3, aspect: f32) {
         let to = Vec3::new(NAV_CENTRE.x, 15000f32.clamp(NAV_LOW, NAV_HIGH), NAV_CENTRE.z);
         let look = Vec3::new(to.x, 0.0, to.z - nav_off(to.y));
         self.open_rows = None;
         self.exit = None;
-        self.mv = Some(NavMove { from: game_eye, to, from_look: game_look, to_look: look, t: 0.0, dur: 0.7, ease_in: true });
+        let s = CamRows::look_at(game_eye, game_look, Vec3::Y);
+        let d = -1.570_79 - (-s.r2.y).clamp(-1.0, 1.0).asin();
+        self.mv = Some(NavMove { rot: Some((s, d, 0.3)), ..NavMove::new(game_eye, to, game_look, look, 0.7, true) });
         self.eye = to;
         self.look = look;
         self.cursor = NAV_CENTRE;
+        self.cursor_on = false;
         self.bounds = nav_bounds(to.y, aspect);
         self.acc = 0.0;
         self.vel = Vec3::ZERO;
         self.vel_prev = Some(game_eye);
         self.vel_t = 0.0;
+    }
+
+    /// Where ARCADE's map camera rests over `p` (the selection's or the player's place, `F-29483`):
+    /// the camera set (`F-41226`) puts the eye at (p.x, p.y, p.z + off(p.y)), clamped (`F-54564`) to the
+    /// 850 m floor and the bounds - 850 m up, 1300 m south - looking at (p.x, p.y, p.z). (The pitch it
+    /// gives, atan(850 / 1300) = 0.579 rad, is RacePickerDown's Rotate target.)
+    pub fn arcade_rest(p: Vec3, aspect: f32) -> (Vec3, Vec3) {
+        let b = nav_bounds(NAV_LOW, aspect);
+        let mut e = Vec3::new(p.x, p.y.clamp(NAV_LOW, NAV_HIGH), p.z + nav_off(p.y));
+        e.x = e.x.clamp(b[0], b[1]);
+        e.z = e.z.clamp(b[2], b[3]);
+        (e, Vec3::new(e.x, p.y, e.z - nav_off(p.y)))
+    }
+
+    /// Back from VIEW RACE (`F-29182` with RacePickerDown): from the camera now to ARCADE's rest over
+    /// `p` (`arcade_rest`), the axes over 1 s on an ease_out clock of 1.1 s; the Rotate x child turns the
+    /// pitch to -0.579074 rad over the whole 1.1 s, yaw and roll stay.
+    pub fn race_back(&mut self, p: Vec3, aspect: f32) {
+        let s = self.view_rows();
+        let (e, look) = NavCam::arcade_rest(p, aspect);
+        let d = -0.579_074 - (-s.r2.y).clamp(-1.0, 1.0).asin();
+        self.open_rows = None;
+        self.exit = None;
+        self.mv = Some(NavMove { ease_in: false, ease_out: true, span: 1.1, rot: Some((s, d, 1.1)), ..NavMove::new(s.eye, e, s.look_point(), look, 1.0, false) });
+        self.eye = e;
+        self.look = look;
+        self.bounds = nav_bounds(e.y, aspect);
+        self.vel_prev = Some(s.eye);
+        self.vel_t = 0.0;
+    }
+
+    /// A stick pans the view (`F-47799`, NM+1427 on; with the cursor off the left stick does as the
+    /// right): the eye moves (sx, 0, sy) 0.5 H m/s, a running move stops, the camera set clamps it.
+    pub fn pan(&mut self, v: Vec2, dt: f32) {
+        if v == Vec2::ZERO {
+            return;
+        }
+        self.mv = None;
+        let (eye, _) = self.view();
+        let d = v * 0.5 * eye.y * dt;
+        self.place(eye + Vec3::new(d.x, 0.0, d.y));
+    }
+
+    /// a move (opening, VIEW RACE's flights, CHANGE TARGET) is running
+    pub fn moving(&self) -> bool {
+        self.mv.is_some()
     }
 
     /// The eye clamped and the look point made from it (`F-38897`).
@@ -2340,7 +2415,7 @@ impl NavCam {
         e.x = e.x.clamp(self.bounds[0], self.bounds[1]);
         e.z = e.z.clamp(self.bounds[2], self.bounds[3]);
         let (from, from_look) = self.view();
-        self.mv = Some(NavMove { from, to: e, from_look, to_look: Vec3::new(e.x, 0.0, e.z - nav_off(h)), t: 0.0, dur: 1.0, ease_in: false });
+        self.mv = Some(NavMove::new(from, e, from_look, Vec3::new(e.x, 0.0, e.z - nav_off(h)), 1.0, false));
         self.eye = e;
         self.look = Vec3::new(e.x, 0.0, e.z - nav_off(h));
         self.cursor = p;
@@ -2351,7 +2426,7 @@ impl NavCam {
     pub fn update(&mut self, dt: f32, zoom_in: bool, zoom_out: bool, cursor_move: Vec2, aspect: f32) {
         if let Some(m) = self.mv.as_mut() {
             m.t += dt;
-            if m.t >= m.dur {
+            if m.t >= m.span {
                 self.mv = None;
             }
         }
@@ -2366,12 +2441,17 @@ impl NavCam {
                 self.mv = None;
             }
             if zoom_in {
-                // (F-50813: about the cursor)
+                // (F-50813: about the cursor; with the cursor off the eye keeps its x and z)
                 let u = (nav_u(hold) - 0.02).max(0.0);
                 let h = NAV_LOW + (NAV_HIGH - NAV_LOW) * nav_g(u);
                 let k = (hold - h) / h;
                 let l = self.look;
-                let e = Vec3::new(l.x + (self.cursor.x - l.x) * k, h, l.z + (self.cursor.z - l.z) * k + nav_off(h));
+                let e = if self.cursor_on {
+                    Vec3::new(l.x + (self.cursor.x - l.x) * k, h, l.z + (self.cursor.z - l.z) * k + nav_off(h))
+                } else {
+                    let (eye, _) = self.view();
+                    Vec3::new(eye.x, h, eye.z)
+                };
                 self.place(e);
             } else if zoom_out {
                 // (F-11681: toward the map's middle)
@@ -2445,6 +2525,12 @@ impl NavCam {
     pub fn view_rows(&self) -> CamRows {
         let (eye, look) = self.view();
         match (self.mv, self.open_rows) {
+            (Some(m), _) if m.rot.is_some() => {
+                let (r, d, total) = m.rot.unwrap();
+                let mut c = r.pitch(d * s_curve(m.clock() / total));
+                c.eye = eye;
+                c
+            }
             (Some(m), Some(r)) if m.ease_in => {
                 let mut c = nav_open_rows(r, m.t);
                 c.eye = eye;
@@ -2458,11 +2544,7 @@ impl NavCam {
     pub fn view(&self) -> (Vec3, Vec3) {
         match self.mv {
             Some(m) => {
-                let mut x = (m.t / m.dur).clamp(0.0, 1.0);
-                if m.ease_in {
-                    x = 1.0 - (x * PI * 0.5).cos();
-                }
-                let s = if x <= 0.5 { 2.0 * x * x } else { 1.0 - 2.0 * (1.0 - x) * (1.0 - x) };
+                let s = s_curve(m.clock() / m.dur);
                 (m.from.lerp(m.to, s), m.from_look.lerp(m.to_look, s))
             }
             // (the pose is always built from the eye - F-38897; the stored look point NM+720
@@ -4074,6 +4156,35 @@ mod tests {
         assert_eq!(delivery_intro("racestart/gen_prerace_delivery_1x1_02").map(|e| e.up), Some(5.5));
         assert_eq!(delivery_intro("racestart/gen_prerace_grid_1x1_01"), None);
         assert_eq!(delivery_intro("racestart/cut_delivery_get_keys"), None);
+    }
+
+    /// VIEW RACE's flights (F-29182): RacePickerUp from ARCADE's rest - pitch -90 degrees once the
+    /// ease_in clock reaches the Rotate's 0.3 s (0.4296 s), the eye at the clamped 9000 m at 0.7 s;
+    /// RacePickerDown - the eye back at the rest at 1 s of the ease_out clock of 1.1 s (0.7254 s), the
+    /// pitch -0.579074 rad at 1.1 s.
+    #[test]
+    fn race_view_flights() {
+        let p = Vec3::new(819.6, 19.0, -808.4);
+        let (e, l) = NavCam::arcade_rest(p, 16.0 / 9.0);
+        assert_eq!(e, Vec3::new(819.6, 850.0, -808.4 + 1300.0));
+        let pitch = |n: &NavCam| (-n.view_rows().r2.y).clamp(-1.0, 1.0).asin();
+        let mut n = NavCam::default();
+        n.race_pick(e, l, 16.0 / 9.0);
+        let t_rot = (1.0f32 - 0.3 / 0.7).acos() * 2.0 / PI * 0.7;
+        n.update(t_rot - 0.01, false, false, Vec2::ZERO, 16.0 / 9.0);
+        assert!(pitch(&n) > -1.5707 && pitch(&n) < -1.55, "{}", pitch(&n));
+        n.update(0.02, false, false, Vec2::ZERO, 16.0 / 9.0);
+        assert!((pitch(&n) + 1.57079).abs() < 1e-3, "{}", pitch(&n));
+        n.update(0.7 - t_rot - 0.01 - 0.001, false, false, Vec2::ZERO, 16.0 / 9.0);
+        assert!(n.view().0.distance(Vec3::new(NAV_CENTRE.x, 9000.0, NAV_CENTRE.z)) < 1.0);
+        n.update(0.01, false, false, Vec2::ZERO, 16.0 / 9.0);
+        assert!(!n.moving());
+        n.race_back(p, 16.0 / 9.0);
+        let t_axes = (1.0f32 / 1.1).asin() * 2.0 / PI * 1.1;
+        n.update(t_axes + 0.001, false, false, Vec2::ZERO, 16.0 / 9.0);
+        assert!(n.view_rows().eye.distance(e) < 1e-2, "{:?}", n.view_rows().eye);
+        n.update(1.1 - t_axes - 0.002, false, false, Vec2::ZERO, 16.0 / 9.0);
+        assert!((pitch(&n) + 0.579_074).abs() < 2e-3, "{}", pitch(&n));
     }
 
     /// The five recorded zoom steps of the original (rule_navcam.md 4.4): opened over the whole

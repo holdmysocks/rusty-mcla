@@ -13793,6 +13793,27 @@ impl Game {
             let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gps_icons"));
             ctx.move_to_top(layer);
             ctx.set_sublayer(layer, egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_navsys")));
+            // MAP MODE (START: event 55 with NM+377, which F-29182 sets): the road overlay and the street
+            // names, as on the GPS map
+            if std::mem::take(&mut self.nav_start) {
+                hm.map_mode = !hm.map_mode;
+            }
+            if hm.map_mode {
+                crate::hudmap::overlay_fade(&mut hm.road_fades, cam_pos.y, dt);
+                if let Some(roads) = self.road_map.as_ref() {
+                    if crate::hudmap_gpu::cpu_path() {
+                        crate::hudmap::paint_roads(&ctx.layer_painter(layer), roads, vp, ctx.screen_rect(), cam_pos, &hm.road_fades, hm.heights.as_ref());
+                    } else {
+                        ctx.layer_painter(layer).add(crate::hudmap_gpu::roads(ctx.screen_rect(), roads, vp, cam_pos, &hm.road_fades));
+                    }
+                }
+                if let Some(sn) = hm.street.as_mut() {
+                    sn.update(vp, cam_pos.y, crate::hudmap::nav_zoom_u(cam_pos.y), dt);
+                    sn.movie.paint(ctx, &ctx.layer_painter(layer));
+                }
+            } else {
+                hm.road_fades = [0.0; 5];
+            }
             let ripple = crate::hudmap::Ripple::new(&hm.tune, hm.t, 9000.0);
             if crate::hudmap_gpu::cpu_path() {
                 let hf = hm.heights.clone();
@@ -13845,7 +13866,12 @@ impl Game {
         // 53 / 57)
         if let Some(i) = self.race_view {
             if self.nav_y || back {
+                // (the way back deactivates the SimpleMap component: MAP MODE off)
                 self.race_view = None;
+                if let Some(hm) = self.hm.as_mut() {
+                    hm.map_mode = false;
+                    hm.road_fades = [0.0; 5];
+                }
             } else {
                 self.race_view_ui(ctx, i, map_vp, cam_pos);
             }
