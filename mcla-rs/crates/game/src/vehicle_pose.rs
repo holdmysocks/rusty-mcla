@@ -61,6 +61,11 @@ impl History {
         self.pair = Some((previous, now));
     }
 
+    /// Each wheel's turn per second over the last fixed tick (0 before the second tick, and after a jump).
+    pub fn spin_rate(&self) -> [f32; 4] {
+        self.pair.map_or([0.0; 4], |(a, b)| std::array::from_fn(|i| (b.spin[i] - a.spin[i]) / crate::fixed_step::DT))
+    }
+
     pub fn sample(&self, state: &CarState, lean: f32, alpha: f32) -> Pose {
         match self.pair {
             Some((a, b)) if b.pos == state.pos && b.rot == state.rot => a.interpolate(b, alpha),

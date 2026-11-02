@@ -1879,7 +1879,12 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // fetch constant has LOD bias -1 and anisotropy 4 : 1 (word 4 0x003e0dc3, word 3 0x06a80d10 of the recorded frame);
     // the other car maps have no bias. MCLA_DEBUG_VIEW=742: no bias, as before)
     let badge_px = mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && in.uv2.x < -1.5 && !(g.params.w > 741.5 && g.params.w < 742.5);
+    // (a set-up car's tyre with its set of maps - mode 18, zone 10 / 11: PS_ParallaxRubber2_false 9 - 13 sets both
+    // gradients to (tireMotionBlur, 0) and reads the normal and lettering maps with them - the top level at rest, smeared
+    // round the tyre as it turns; tireMotionBlur = the wheel's dents[3].z, vehicles.rs. MCLA_DEBUG_VIEW=811: as before)
+    let tyre_grad = mat.mode == 18u && in.uv1.x > 9.5 && obj.dents[3].y > 0.5 && !(g.params.w > 810.5 && g.params.w < 811.5);
     var albedo = textureSampleBias(t_diffuse, s_diffuse, in.uv0, select(0.0, -1.0, badge_px));
+    if (tyre_grad) { albedo = textureSampleGrad(t_diffuse, s_diffuse, in.uv0, vec2<f32>(obj.dents[3].z, 0.0), vec2<f32>(obj.dents[3].z, 0.0)); }
     // (the cars' maps: no car program's fetch constant asks for gamma - every DiffuseSampler, NormalSampler,
     // IllumMapSampler, PlateBgSampler, FontSampler of the recorded frame has word 0 bits 2 - 9 clear - so the
     // program filters the stored texels and its own rule follows (PS_Plate: ^1.6 after the filter). vehicles.rs
@@ -2173,6 +2178,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         }
     }
     var second = textureSample(t_second, s_diffuse, second_uv);
+    // (the tyre's maps: as the lettering map above, `tyre_grad`)
+    if (tyre_grad) {
+        let tg = vec2<f32>(obj.dents[3].z, 0.0);
+        second = textureSampleGrad(t_second, s_diffuse, in.uv0, tg, tg);
+    }
     if (car_raw_tex) { second = vec4<f32>(srgb_decode(second.rgb), second.a); }
     // (the story characters' maps - `char_shade`; read here, where the control flow is uniform: the
     // diffuse as stored, the detail map decoded the console's way at uv x its scales, the fourth map

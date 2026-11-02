@@ -4531,16 +4531,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let mut wheel_back = std::mem::take(&mut self.wheel_back);
         wheel_back.clear();
         wheel_back.resize(self.cars.len(), 0);
+        let mut blur_wheels = std::mem::take(&mut self.blur_wheels);
+        blur_wheels.resize(self.cars.len(), Vec::new());
+        blur_wheels.truncate(self.cars.len());
+        blur_wheels.iter_mut().for_each(|w| w.clear());
         let eye = self.wheel_eye;
         for (ci, c) in self.cars.iter_mut().enumerate() {
             let pose = c.render_pose(self.render_alpha);
             let mut m = Mat4::from_rotation_translation(pose.rot, pose.pos);
             if self.hide_player && c.is_player {
                 m = m * Mat4::from_scale(Vec3::ZERO);
-        let mut blur_wheels = std::mem::take(&mut self.blur_wheels);
-        blur_wheels.resize(self.cars.len(), Vec::new());
-        blur_wheels.truncate(self.cars.len());
-        blur_wheels.iter_mut().for_each(|w| w.clear());
             }
             if c.model.bike {
                 m = m * Mat4::from_rotation_z(pose.lean);
@@ -4719,16 +4719,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (F-11352) is off: that needs a racer who is not the local player with racer+25 set, which only the
                 // online remote-player paths do (F-62113) - 0 for every car offline, read live on four cars. The
                 // mirror flag (k < 0) and the pool draws after it run only with that byte off too: not ported, online)
+                // (F-49519: every wheel of a set-up car that has its wheel_N bone - the entries +4192 / +4208, F-13644's
+                // lookups through F-59267; not a bike's here, its set was not read)
+                if !c.model.bike && c.model.own_wheels.is_none() && i < 4 && !(self.hide_player && c.is_player) {
+                    blur_wheels[ci].push((wm, if left { -pose.spin[i] } else { pose.spin[i] }));
+                }
                 if !c.model.bike {
                     let to_hub = (wm.w_axis.truncate() - eye).normalize_or_zero();
                     if to_hub.dot(wm.x_axis.truncate().normalize_or_zero()) <= 0.0 && i < 8 {
                         wheel_back[ci] |= 1 << i;
                     }
-                }
-                // (F-49519: every wheel of a set-up car that has its wheel_N bone - the entries +4192 / +4208, F-13644's
-                // lookups through F-59267; not a bike's here, its set was not read)
-                if !c.model.bike && c.model.own_wheels.is_none() && i < 4 && !(self.hide_player && c.is_player) {
-                    blur_wheels[ci].push((wm, if left { -pose.spin[i] } else { pose.spin[i] }));
                 }
                 // (a wheel has no dents: the first three slots carry its rim's finish)
                 let mut finish = [[0.0; 4]; 6];
@@ -4739,7 +4739,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
                 // (the fourth: the tyre's dirt - TireDirtColor.w, its hub's scrape sum at most 1 - and a
                 // mark that this is a wheel)
-                finish[3] = [c.state.dmg.rim_scuff(i), 1.0, 0.0, 0.0];
+                // (the third: tireMotionBlur as the tyre draw F-11293 sets it for this wheel, 0.08 x |w|, w = the wheel's
+                // turn over an update / 2.0195954 (+440 of its block, F-47822); the update taken as a 1 / 30 s frame, as for
+                // the blur pass (render/mb.rs). city.wgsl reads the tyre's maps with it. Traffic: 0, as recorded for PSAmbientTire)
+                let tmb = if c.model.bike || i >= 4 || c.is_ambient() { 0.0 } else { 0.08 * (c.pose_history.spin_rate()[i] / 30.0 / 2.019_595_4).abs() };
+                finish[3] = [c.state.dmg.rim_scuff(i), 1.0, tmb, 0.0];
                 batch.push_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: finish, fill: car_fill, ..Default::default() });
                 // the caliper: with the wheel but for its turning, on the rear of the disc on
                 // both sides (the right ones turned over instead of around)
@@ -4756,13 +4760,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
         gpu.flush_uniforms(&mut batch);
         self.uniforms = batch;
         self.wheel_back = wheel_back;
+        self.blur_wheels = blur_wheels;
     }
 
     /// The glow of every lit lamp near the camera, as the game's glow table rates them
     /// (`tune/vehicle`: head 2, tail 2 - the player's 1 - brake 2 / 0.3, reverse 0.53, third
     /// brake 0.35). A lamp glows towards where it points: head lamps ahead, the others astern.
     pub fn update_glows(&mut self, gpu: &Gpu, night: f32, cam: Vec3) {
-        self.blur_wheels = blur_wheels;
         use crate::props::Inst;
         const MAX: usize = 320;
         let mut out: Vec<Inst> = Vec::new();
@@ -5082,12 +5086,6 @@ if keep || c.state.pos.distance(center) < 450.0 {
         self.draw_x(pass, gpu, false, draws, range, None, traffic_casts_none(), None);
     }
 
-    fn draw_x<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, skip_ambient: bool, cull: Option<bool>) {
-        for (ci, c) in self.cars.iter().enumerate() {
-            // (step 19g: a car under Stealth is not drawn in either pass of its own - pu_fx.rs)
-            if c.pu_stealth {
-                continue;
-            }
     /// The wheels' blur discs (F-49519, after the cars' glass): for every wheel `blur_wheels` holds, the shared
     /// `blur_wheel` disc in the rim's place, into the stencil alone - colour writes off, depth tested, not written,
     /// no cull - with the wheel's motion-blur id (render/mb.rs `wheel_stencil_of`), so the streak pass moves the rim's
@@ -5095,7 +5093,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// cars as `draw_culled` takes them (reach, box), the wheels' own reach aside: F-49519 has none. Into a pass of the
     /// variant in force.
     pub fn draw_wheel_blur<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, garage: bool) {
-        if garage || std::env::var("MCLA_WHEEL_BLUR").is_ok_and(|v| v.trim() == "0") {
+        if garage || wheel_blur_off() {
             return;
         }
         let mut set = false;
@@ -5132,6 +5130,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
     }
 
+    fn draw_x<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, skip_ambient: bool, cull: Option<bool>) {
+        for (ci, c) in self.cars.iter().enumerate() {
+            // (step 19g: a car under Stealth is not drawn in either pass of its own - pu_fx.rs)
+            if c.pu_stealth {
+                continue;
+            }
             if skip_ambient && c.is_ambient() {
                 continue;
             }
@@ -5695,8 +5699,29 @@ impl Vehicles {
                 pass.draw_indexed(r.0..r.1, 0, 0..1);
                 *draws += 1;
             }
+            // (the wheels' blur discs: the car's depth draw F-35555 runs the blur pass F-49519 with its flag 0 after the
+            // tyres - the disc alone in the rim's place, no motion-blur record; recorded in both of the car's shadow
+            // tiles, four 234-index VS_CarShadowDepthLocal draws each, both sides (0x19800). The wheels as the blur
+            // pass takes them, `blur_wheels`. A car under Stealth casts nothing here, as its body. MCLA_WHEEL_BLUR=0: none)
+            let disc = c.wheels.as_ref().or(c.model.wheels.as_ref()).or(self.wheels.as_ref()).and_then(|w| w.blur.as_ref());
+            if let (Some(disc), Some(blur), false) = (disc, self.blur_wheels.get(ci), c.pu_stealth || wheel_blur_off()) {
+                pass.set_bind_group(1, disc.bind.as_ref(), &[]);
+                pass.set_bind_group(2, &gpu.mat_bgs[&(disc.mode as u32)], &[]);
+                pass.set_vertex_buffer(0, disc.vb.slice(..));
+                pass.set_index_buffer(disc.ib.slice(..), wgpu::IndexFormat::Uint32);
+                for wb in c.wheel_bindings.iter().take(blur.len()) {
+                    pass.set_bind_group(3, &wb.bg, &[]);
+                    pass.draw_indexed(0..disc.count, 0, 0..1);
+                    *draws += 1;
+                }
+            }
         }
     }
+}
+
+/// MCLA_WHEEL_BLUR=0: no blur discs (the blur pass, the shadow passes), as before the wheel blur was ported.
+fn wheel_blur_off() -> bool {
+    std::env::var("MCLA_WHEEL_BLUR").is_ok_and(|v| v.trim() == "0")
 }
 
 /// Which of the windows' two passes are drawn (bit 0 back faces, bit 1 front faces; 0 = the one unculled
