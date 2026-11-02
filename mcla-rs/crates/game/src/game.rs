@@ -8831,9 +8831,15 @@ impl Game {
                     // (a new career has no GPS map before its first mission is done: Back only
                     // puts the phone away - seen in the recomp; after FIRST IMPRESSIONS it opens)
                     let lesson = self.tutorial_box.as_ref().map_or(false, |t| t.0.contains("mission_log"));
-                    if self.phone_challenge && self.tip.is_some() && !self.show_map {
+                    // (the first call's form 89 up: its Back, F-94318, closes it and opens the same list whether or not the
+                    // call is still up)
+                    let tel_box = self.tutorial_box.as_ref().is_some_and(|t| t.0 == "tutorial_telephone_challenge_title");
+                    if ((self.phone_challenge && self.tip.is_some()) || tel_box) && !self.show_map {
                         // (LET'S RACE. YOU PICK THE LOCATION. - Back: ACCEPT -> ARCADE's "Choose race
                         // type:" - `call_challenge`, `call_accept_0`)
+                        if let Some(b) = self.tutorial_box.as_mut().filter(|_| tel_box) {
+                            b.3 = 0.0;
+                        }
                         self.tip = None;
                         self.phone_challenge = false;
                         self.phone_accept = true;

@@ -9448,36 +9448,52 @@ impl Game {
     /// class but the motorcycles - as the slot system and the scripts of the hookmen call it:
     /// of the cars of the character the first that can be set up to the difficulty for the
     /// vehicle of the player; when none can, the one whose difficulty at its best mod value
-    /// is nearest. (vehicle, set-up, mod value.) The original walks the cars in the order of
-    /// a hash table; the port in the order of the file.
+    /// is nearest. (vehicle, set-up, mod value.) The cars are walked in the character's car map
+    /// order (`oppick`'s drivers, docs/reference/ai/car_pick.md 3.8); without them in the file's.
     pub fn mc4_character_car(&self, character: &str, diff: i32) -> Option<(String, String, i32)> {
-        self.mc4_character_car_of(character, diff, false)
+        self.mc4_character_car_of(character, diff, false).map(|(car, config, m, _)| (car, config, m))
     }
 
-    /// The same with the class mask 255, the motorcycles too: a telephone challenge's caller (TelephoneChallenge 0x83d).
-    pub fn mc4_phone_man(&self, caller: &str) -> Option<(String, String, i32)> {
-        self.mc4_character_car_of(caller, self.arcade_opts[1].min(3) as i32, true)
+    /// The same with the class mask 255, the motorcycles too, and the set-up drawn from the car's
+    /// (mcCarConfigData_GetRandomConfigData, one step of `rng`): a telephone challenge's caller
+    /// (TelephoneChallenge 0x83d..0x84e).
+    pub fn mc4_phone_man(&self, caller: &str, rng: &mut crate::vehicles::parked::Mwc) -> Option<(String, String, i32)> {
+        let (car, config, m, setups) = self.mc4_character_car_of(caller, self.arcade_opts[1].min(3) as i32, true)?;
+        let setup = if setups.is_empty() { config } else { setups[((rng.next() & 0x7FFF_FFFF) as usize) % setups.len()].clone() };
+        Some((car, setup, m))
     }
 
-    fn mc4_character_car_of(&self, character: &str, diff: i32, bikes: bool) -> Option<(String, String, i32)> {
+    fn mc4_character_car_of(&self, character: &str, diff: i32, bikes: bool) -> Option<(String, String, i32, Vec<String>)> {
         let perf = self.player_perf();
-        let ch = self.rivals.characters.iter().find(|c| c.id.eq_ignore_ascii_case(character))?;
+        let ch = self.rivals.characters.iter().find(|c| c.id.eq_ignore_ascii_case(character));
+        // (vehicle, the port's set-up of it, its set-ups) in the map order
+        let cars: Vec<(String, String, Vec<String>)> = match self.oppick.drivers.iter().find(|d| d.id.eq_ignore_ascii_case(character)) {
+            Some(d) => d
+                .cars
+                .iter()
+                .map(|(v, s)| {
+                    let own = ch.and_then(|c| c.cars.iter().find(|c| c.car.eq_ignore_ascii_case(v))).map(|c| c.config.clone());
+                    (v.to_ascii_lowercase(), own.or_else(|| s.first().cloned()).unwrap_or_default(), s.clone())
+                })
+                .collect(),
+            None => ch?.cars.iter().map(|c| (c.car.clone(), c.config.clone(), Vec::new())).collect(),
+        };
         let mut best: Option<(usize, i32, i32)> = None;
-        for (k, c) in ch.cars.iter().enumerate() {
-            if !bikes && (c.car.contains("_duc_") || c.car.contains("_kaw_")) {
+        for (k, (car, config, setups)) in cars.iter().enumerate() {
+            if !bikes && (car.contains("_duc_") || car.contains("_kaw_")) {
                 continue;
             }
-            let Some(s) = self.mc4_samples_of(&c.car) else { continue };
+            let Some(s) = self.mc4_samples_of(car) else { continue };
             let m = setup_mod_value(s, perf, diff);
             if setup_can_reach(s, perf, diff) {
-                return Some((c.car.clone(), c.config.clone(), m));
+                return Some((car.clone(), config.clone(), m, setups.clone()));
             }
             let off = (gap_difficulty(setup_perf(s, m) - perf) - diff).abs();
             if best.map_or(true, |b| off < b.2) {
                 best = Some((k, m, off));
             }
         }
-        best.map(|(k, m, _)| (ch.cars[k].car.clone(), ch.cars[k].config.clone(), m))
+        best.map(|(k, m, _)| (cars[k].0.clone(), cars[k].1.clone(), m, cars[k].2.clone()))
     }
 
     /// The hookman record mcSlotSystem_RequestSlot (F-25974) makes for a mission: the
@@ -15928,14 +15944,21 @@ mod tests {
         }
         assert!(g.mc4_character_car("NOBODY", 1).is_none());
         // (the five who telephone: each has a car at every difficulty)
+        // (and in the car map order of `oppick`'s drivers, the set-up one of the car's)
+        for loaded in [false, true] {
+        if loaded {
+            g.oppick = crate::oppick::OpPick::load(&data_dir(), "");
+            assert!(!g.oppick.drivers.is_empty());
+        }
         for caller in ["GH_03", "GH_07", "GH_13", "GH_16", "GH_22"] {
             for d in 0..4 {
                 g.arcade_opts[1] = d;
-                let (car, config, _) = g.mc4_phone_man(caller).unwrap();
+                let (car, config, _) = g.mc4_phone_man(caller, &mut crate::oppick::seeded(7)).unwrap();
                 assert!(config.to_ascii_lowercase().contains(&car.to_ascii_lowercase()));
             }
         }
-        assert!(g.mc4_phone_man("NOBODY").is_none());
+        }
+        assert!(g.mc4_phone_man("NOBODY", &mut crate::oppick::seeded(7)).is_none());
         // (a mission's man: his set-up's vehicle, a difficulty of 1..3)
         let row = MISSION_HOOKMEN.iter().find(|r| r.0 == "BEAT_GH_04_MUSCLE").unwrap();
         let h = g.mc4_mission_hookman(row);

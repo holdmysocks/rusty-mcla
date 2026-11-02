@@ -11463,8 +11463,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // wager_hangout_core 0x54c3..0x557d: step 21)
                     let pink = self.game.mc4_pink_rival();
                     // (a telephone challenge's race is one against one, the caller: TelephoneChallenge 0x753..0x8dd)
-                    let phone_man = self.game.mc4_phone_man(self.phone_caller).filter(|m| self.game.phone_race && usable(&m.0));
+                    let phone_man = self.game.phone_race.then(|| self.game.mc4_phone_man(self.phone_caller, &mut oppick::career_rng())).flatten().filter(|m| usable(&m.0));
                     let field = if pink.is_some() || self.game.phone_race || self.game.story_series() { 1 } else if self.game.series.is_some() { 3 } else { 7 };
+                    // (result 3: GREETING_MEET_ME_THERE_EVENT in the caller's voice, then the race - TelephoneChallenge 0x4ba..0x4fa)
+                    if self.game.phone_race {
+                        self.speech.say_as("GREETING_MEET_ME_THERE_EVENT", self.phone_caller);
+                    }
                     if let Some((car, cfg, _)) = phone_man.clone() {
                         grid.push(self.game.rivals.with_config(self.phone_caller, &car, &cfg));
                     }
@@ -13218,7 +13222,9 @@ impl App {
 
     /// The caller of the telephone challenge whose race this is: (car, set-up, mod value).
     fn phone_man(&self) -> Option<(String, String, i32)> {
-        self.game.mc4_phone_man(self.phone_caller).filter(|_| self.game.phone_race)
+        // (on a copy of the generator, as the grid's guess)
+        let mut rng = *oppick::career_rng();
+        self.game.phone_race.then(|| self.game.mc4_phone_man(self.phone_caller, &mut rng)).flatten()
     }
 
     /// The grid StartRace would draw now, as (car, set-up) - its composition in `handle_action` without its side
