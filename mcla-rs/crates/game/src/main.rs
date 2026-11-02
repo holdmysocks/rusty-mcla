@@ -5211,11 +5211,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // the control step's engine rules (F-17997): while the engine sound's start machine is below state 4 (the
             // start's wait, the crank, the stop) the engine word +46 is set to 1 and the car is held - throttle 0,
             // brake 1, handbrake 0, the gearbox to first (F-16736, `first_gear`); otherwise with +46 = 0 (a scene's
-            // car_off) the throttle is 0
-            if self.sound.engine_held() {
-                player_input.throttle = 0.0;
-                player_input.brake = 1.0;
-                player_input.handbrake = false;
+            // car_off) the throttle is 0. (Without an audio device, or in a screenshot run, the sound frame never runs and
+            // nothing would end the start: no hold then, the engine runs at once.)
+            // (the pedals and the gearbox are written in the car's update after the pad's code, as F-17997 writes them
+            // after mcPlayerInput: vehsim.rs, `first_gear`)
+            if self.audio.is_some() && self.sound.engine_held() {
                 player_input.first_gear = true;
                 if let Some(c) = self.vehicles.player_mut() {
                     c.engine_off = false;

@@ -1445,6 +1445,18 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
     }
     // (the pedals the pad's code will read after this tick's update: this tick's)
     let pad_pedals = (input.throttle, input.brake);
+    // (the control step's engine hold, F-17997, runs after mcPlayerInput: throttle 0, brake 1, handbrake 0 and the
+    // gearbox to first out of reverse or neutral (F-16736) over what the pad's code chose - the pad's own reverse
+    // choice never sees the hold's brake, the held car stands in first)
+    if input.first_gear {
+        if vs.gear <= 0 {
+            vs.gear = 1;
+            vs.shift_timer = 0.0;
+        }
+        input.throttle = 0.0;
+        input.brake = 1.0;
+        input.handbrake = false;
+    }
     let ratio_of = |g: i32| -> f32 {
         if g < 0 {
             -vt.ratios[0]
