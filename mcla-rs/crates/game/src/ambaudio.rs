@@ -390,10 +390,23 @@ impl Ambience {
         self.cur = None;
     }
 
-    pub fn update(&mut self, lib: &mut SoundLib, listener: Vec3, night: bool, in_garage: bool, dt: f32) {
+    /// `forced`: the forced district (manager +144) the listener's probe set from the ground's material (F-26357:
+    /// DISTRICT_FREEWAYS, _INTERIOR, _MALL, _TUNNEL), else the district by the circles (F-80049).
+    pub fn update(&mut self, lib: &mut SoundLib, listener: Vec3, night: bool, in_garage: bool, forced: Option<u32>, dt: f32) {
         self.now += dt;
         let now = self.now;
-        let want = if in_garage { self.garage } else { self.pick(listener) };
+        let forced = forced.and_then(|h| {
+            let name = lib.game.name_of(h)?.to_string();
+            match self.districts.iter().position(|d| d.name == name) {
+                Some(i) => Some(i),
+                None => {
+                    let d = parse_district(&name, lib.game.get(h)?)?;
+                    self.districts.push(d);
+                    Some(self.districts.len() - 1)
+                }
+            }
+        });
+        let want = if in_garage { self.garage } else { forced.or_else(|| self.pick(listener)) };
         let Some(di) = want else {
             self.stop(lib);
             return;

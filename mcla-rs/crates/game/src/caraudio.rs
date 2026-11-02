@@ -1715,6 +1715,11 @@ pub struct PlayerCtl {
 }
 
 impl Fleet {
+    /// The physics material's audio object (MATERIALS_*, from its .mtl `AudioGameObject`).
+    pub fn material_object(&self, surface: u8) -> u32 {
+        self.mats.get(surface).0
+    }
+
     /// The call signs the radio's requests name: the tactic's cop 0 (the lead, the sender of a REPORT_* call) and a
     /// second cruiser (the receiver of an officer-to-officer call); the cruisers of the last update when no tactic runs.
     pub fn radio_units(&mut self) -> (Option<String>, Option<String>) {
@@ -2327,6 +2332,53 @@ fn entry<'a>(cars: &'a mut HashMap<usize, Entry>, types: &HashMap<String, Traffi
 mod tests {
 
     /// F-46044 against the original's own code on 20000 inputs (work/audio2/verify/ref6.py)
+    /// The listener probe's material fields (F-26357, BUS_GRAPH_RULE.md 2.5) as the surfaces reach them: +230 bit 0 names
+    /// the reverb object +231 (bit 1: even under a roof), +235 bit 0 the forced district +236. MCLA_DUMP=1 prints all.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR"]
+    fn material_reverb_fields() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mats = Materials::load(Path::new(&dir));
+        let nm = |h: u32| lib.game.name_of(h).unwrap_or("?").to_string();
+        let row = |s: Surface| {
+            let o = lib.game.get(mats.get(s as u8).0).unwrap_or(&[]);
+            (o.get(230).copied().unwrap_or(0), nm(be_u32(o, 231)), o.get(235).copied().unwrap_or(0) & 1, nm(be_u32(o, 236)))
+        };
+        if std::env::var_os("MCLA_DUMP").is_some() {
+            for s in Surface::ALL {
+                println!("{:20} {:?}", s.material(), row(s));
+            }
+        }
+        assert_eq!(row(Surface::Road), (1, "REVERB_DEFAULT".into(), 0, "DISTRICT_FREEWAYS".into()));
+        assert_eq!(row(Surface::Tunnel), (3, "REVERB_TUNNEL".into(), 1, "DISTRICT_TUNNEL".into()));
+        assert_eq!(row(Surface::Sewer), (3, "REVERB_TUNNEL".into(), 1, "DISTRICT_TUNNEL".into()));
+        assert_eq!(row(Surface::Freeway).2, 1);
+        assert_eq!(row(Surface::Interior), (0, "REVERB_DEFAULT".into(), 1, "DISTRICT_INTERIOR".into()));
+        assert_eq!(row(Surface::Mall).3, "DISTRICT_MALL");
+        assert_eq!(row(Surface::Wall).0, 0);
+        let t = lib.game.get(joaat("REVERB_TUNNEL")).unwrap();
+        assert_eq!((f32::from_bits(be_u32(t, 10)), f32::from_bits(be_u32(t, 14)), f32::from_bits(be_u32(t, 18))), (0.5, 0.6, 10.0));
+    }
+
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR"]
+    fn dump_material_reverb() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mdir = Path::new(&dir).join("tune").join("physics").join("materials");
+        let list = std::fs::read_to_string(mdir.join("materials.list")).unwrap_or_default();
+        for name in list.split_whitespace() {
+            let txt = [mdir.join(format!("0x{:08x}", joaat(&format!("{name}.mtl")))), mdir.join(format!("0x{:08x}", joaat(name)))].iter().find_map(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+            let obj = txt.lines().find_map(|l| l.trim().strip_prefix("AudioGameObject:").map(|v| v.trim().to_string())).unwrap_or_else(|| "-".into());
+            let o = lib.game.get(joaat(&obj)).unwrap_or(&[]);
+            let nm = |h: u32| lib.game.name_of(h).map(|s| s.to_string()).unwrap_or(format!("{h:08x}"));
+            println!("{name:24} {obj:28} len {:3} +230 {:02x} +231 {} +235 {:02x} +236 {}", o.len(), o.get(230).copied().unwrap_or(0), nm(be_u32(o, 231)), o.get(235).copied().unwrap_or(0), nm(be_u32(o, 236)));
+        }
+    }
+
     #[test]
     fn log10_is_the_originals() {
         let mut bad = 0;

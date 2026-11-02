@@ -61,6 +61,8 @@ pub struct PropHit {
 pub struct Sound {
     /// the reverb object the probes chose (F-26357; REVERB_DEFAULT until the first choice)
     reverb_obj: Option<u32>,
+    /// the forced district it set (ambience manager +144)
+    forced_district: Option<u32>,
     /// each ambient traffic model's sound class (`szAudioType` of its mcAmbientType.xml):
     /// 0 sedan, 1 SUV, 2 pickup, 3 truck or bus
     pub amb_types: std::collections::HashMap<String, u8>,
@@ -305,6 +307,7 @@ impl Sound {
 impl Sound {
     #[allow(clippy::too_many_arguments)]
     /// `rain`: the weather's rain share (wet = not 0); `probe(from, to)`: the city's collision has something on that line.
+    /// `probe_at(from, to)`: the material (Surface) of the nearest hit on that line.
     /// The tach's rpm: the HUD's d_RPMvalue is the player's engine sound's slewed rpm (engine sound +204,
     /// F-86111 from F-10725's follower: at most its slew a second - 250 rpm a frame for most cars),
     /// not the engine's own. None while the car has no engine sound of the original's.
@@ -312,7 +315,7 @@ impl Sound {
         self.engine.as_ref().map(|(_, e)| e.smoothed_rpm())
     }
 
-    pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], cam_pos: Vec3, cam_right: Vec3, cam_fwd: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, dt: f32) {
+    pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], cam_pos: Vec3, cam_right: Vec3, cam_fwd: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, probe_at: &dyn Fn(Vec3, Vec3) -> Option<u8>, dt: f32) {
         let wet = rain > 0.0;
         a.set_listener(cam_pos, cam_right);
         if !self.lib_tried {
@@ -1209,25 +1212,38 @@ impl Sound {
         if let (Some(lib), Some(amb)) = (&mut self.lib, &mut self.amb) {
             // the original's district ambience (ambaudio.rs) at the listener; the port's rain bed stays until the
             // original's rain sounds are decoded
-            amb.update(lib, cam_pos, night, game.mode == Mode::Garage, dt);
-            // rain and thunder (WEATHER_AUDIO_RULE.md): the player's wheel cover probes, the listener's probe 50 m up
-            let wheels: Vec<Vec3> = if p.model.bike { vec![st.wheels[0].world_pos, st.wheels[2].world_pos] } else { [0, 2, 1, 3].iter().map(|&i| st.wheels[i].world_pos).collect() };
-            amb.cover_probe(wet, &wheels, probe);
-            // the reverb level and room size (F-26357, BUS_GRAPH_RULE.md 2.5): 50 m up from the listener ->
-            // REVERB_PROBE_UP; nothing 50 m below -> REVERB_PROBE_AIR; else the previous object (the hit material's own
-            // reverb object, e.g. REVERB_TUNNEL, is not ported: the materials' audio records are not decoded). Level and
-            // size move toward the object's +10 / +14 by its rate +18 a second.
+            // the reverb level and room size and the forced district (F-26357, BUS_GRAPH_RULE.md 2.5): a hit 50 m up
+            // from the listener -> REVERB_PROBE_UP; a hit 50 m down -> its material's audio object (MATERIALS_*): +230 bit 0
+            // (with no hit above, or with +230 bit 1 too) names the reverb object +231 (REVERB_DEFAULT on the outdoor
+            // grounds, REVERB_TUNNEL in tunnels and sewers), +235 bit 0 the forced district +236 (freeway, interior, mall,
+            // tunnel); no hit at all -> REVERB_PROBE_AIR; otherwise the object stays. Level and size move toward the
+            // object's +10 / +14 by its rate +18 a second.
+            let mut forced = None;
             {
-                let up = probe(cam_pos, cam_pos + Vec3::new(0.0, 50.0, 0.0));
-                let down = probe(cam_pos, cam_pos - Vec3::new(0.0, 50.0, 0.0));
-                let obj = if up {
-                    mcla_formats::hash::joaat("REVERB_PROBE_UP")
-                } else if !down {
-                    mcla_formats::hash::joaat("REVERB_PROBE_AIR")
-                } else {
-                    self.reverb_obj.unwrap_or(mcla_formats::hash::joaat("REVERB_DEFAULT"))
-                };
+                let h = mcla_formats::hash::joaat;
+                let mut obj = if probe(cam_pos, cam_pos + Vec3::new(0.0, 50.0, 0.0)) { h("REVERB_PROBE_UP") } else { 0 };
+                let mut any = obj != 0;
+                if let Some(surface) = probe_at(cam_pos, cam_pos - Vec3::new(0.0, 50.0, 0.0)) {
+                    let mat = self.fleet.as_ref().map(|f| f.material_object(surface)).and_then(|m| lib.game.get(m));
+                    if let Some(m) = mat {
+                        let word = |at: usize| m.get(at..at + 4).map_or(0, |b| u32::from_be_bytes(b.try_into().unwrap()));
+                        let flags = m.get(230).copied().unwrap_or(0);
+                        if (obj == 0 || flags & 2 != 0) && flags & 1 != 0 && lib.game.contains(word(231)) {
+                            obj = word(231);
+                        }
+                        if m.get(235).map_or(false, |b| b & 1 != 0) && lib.game.contains(word(236)) {
+                            forced = Some(word(236));
+                        }
+                    }
+                    any = true;
+                }
+                let cur = self.reverb_obj.unwrap_or(h("REVERB_DEFAULT"));
+                let obj = if obj != 0 { obj } else if !any { h("REVERB_PROBE_AIR") } else { cur };
+                if self.reverb_obj != Some(obj) || self.forced_district != forced {
+                    log::info!("audio: reverb {} district {}", lib.game.name_of(obj).unwrap_or("?"), forced.and_then(|d| lib.game.name_of(d)).unwrap_or("-"));
+                }
                 self.reverb_obj = Some(obj);
+                self.forced_district = forced;
                 if let Some(o) = lib.game.get(obj) {
                     let f = |at: usize| o.get(at..at + 4).map_or(0.0, |b| f32::from_be_bytes(b.try_into().unwrap()));
                     let (level, size, rate) = (f(10), f(14), f(18));
@@ -1244,6 +1260,10 @@ impl Sound {
                     lib.reverb_env = env;
                 }
             }
+            amb.update(lib, cam_pos, night, game.mode == Mode::Garage, forced, dt);
+            // rain and thunder (WEATHER_AUDIO_RULE.md): the player's wheel cover probes, the listener's probe 50 m up
+            let wheels: Vec<Vec3> = if p.model.bike { vec![st.wheels[0].world_pos, st.wheels[2].world_pos] } else { [0, 2, 1, 3].iter().map(|&i| st.wheels[i].world_pos).collect() };
+            amb.cover_probe(wet, &wheels, probe);
             let covered = wet && probe(cam_pos, cam_pos + Vec3::new(0.0, 50.0, 0.0));
             amb.weather(lib, wet, self.cam_audio == 1, covered, dt);
             // the speed fade: the player's speed in mph as F-99947 keeps it (chassis +224 x 2.237); held at 0 by F-99037
