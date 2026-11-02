@@ -2723,7 +2723,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // timer's share of WipeoutDelay)
     let weigh_z = vs.cg[1];
     let mut held_x: Option<f32> = None;
-    if let (true, Some((timer, _))) = (wiped && vs.by.exact && t.s.upset_cg > 0.0, vs.wipe) {
+    // (both of F-97237's UpsetCG branches want the car out of the water - !F-12574: mcCarFluid's bit, chassis +12;
+    // in it the centre of mass goes back to the tune's as in any other tick)
+    let in_fluid = vs.fluid.as_ref().is_some_and(|f| f.inside);
+    if let (true, Some((timer, _))) = (wiped && vs.by.exact && t.s.upset_cg > 0.0 && !in_fluid, vs.wipe) {
         let q = timer / t.damage.wipeout_delay;
         let q = if q >= 0.0 { q } else { 0.0 };
         let q = if q - 1.0 >= 0.0 { 1.0 } else { q };
@@ -2735,7 +2738,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     }
     let com_local = {
         let tuned = Vec3::new(held_x.unwrap_or(t.s.com_x), vs.cg[0], vs.cg[1]);
-        let k = if st.damage >= 1.0 { 1.0 } else { st.upset };
+        let k = if in_fluid { 0.0 } else if st.damage >= 1.0 { 1.0 } else { st.upset };
         tuned + (Vec3::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z) - tuned) * (t.s.upset_cg.clamp(0.0, 1.0) * k)
     };
     let com_local = vs.com_exact.take().unwrap_or(com_local);
