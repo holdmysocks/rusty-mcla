@@ -947,6 +947,9 @@ pub struct Gpu {
     pub blank_dmg: wgpu::TextureView,
     pub identity_obj: ObjectBinding,
     pub pipeline_opaque: ms::MsPipe,
+    /// a set-up car's opaque batches with back faces culled (`GpuBatch::cull`): the view as is, a mirrored view
+    pub pipeline_opaque_cull: ms::MsPipe,
+    pub pipeline_opaque_cull_m: ms::MsPipe,
     pub pipeline_blend: ms::MsPipe,
     /// car windows: back faces, then front faces, both with depth writes
     pub pipeline_glass_back: ms::MsPipe,
@@ -1895,6 +1898,9 @@ impl Gpu {
         // so the shop behind an angled entrance shows through ONE pane; back faces go in city.wgsl)
         let pipeline_pane = make_pipeline_x(true, "vs_main", None, true);
         let pipeline_opaque = make_pipeline(false, "vs_main");
+        // (render state 0 = 2, the original's 0x18002 - the face the windows' front pass culls - and in a mirrored view 1)
+        let pipeline_opaque_cull = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Front } else { wgpu::Face::Back }), true);
+        let pipeline_opaque_cull_m = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Back } else { wgpu::Face::Front }), true);
         let pipeline_blend = make_pipeline(true, "vs_main");
         // (the cars' environment map drawn the original's way: the paraboloid warp per vertex - city.wgsl vs_env_dp)
         // (each ~4 s to compile with the driver's cache cold: built on threads of their own while the loading goes on)
@@ -2452,6 +2458,8 @@ impl Gpu {
             blank_dmg,
             identity_obj,
             pipeline_opaque,
+            pipeline_opaque_cull,
+            pipeline_opaque_cull_m,
             pipeline_blend,
             pipeline_glass_back,
             pipeline_glass_front,

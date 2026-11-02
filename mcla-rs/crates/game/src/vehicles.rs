@@ -1227,7 +1227,7 @@ fn mesh_to_batch_xf(gpu: &mut Gpu, mesh: &mcla_formats::rage::geometry::Mesh, sn
     }
     let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
     let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&mesh.indices), usage: wgpu::BufferUsages::INDEX });
-    GpuBatch { shader: sname.to_string(), vb, ib, count: mesh.indices.len() as u32, bind, mode, min: mn, max: mx, bucket: 0 }
+    GpuBatch { shader: sname.to_string(), vb, ib, count: mesh.indices.len() as u32, bind, mode, min: mn, max: mx, bucket: 0, cull: 0 }
 }
 
 /// The California plate background of the disc (`resources/license_plates/backgrounds`),
@@ -1385,7 +1385,7 @@ struct MeshPrep {
     plate: bool,
     carbon: bool,
     win_cand: bool,
-    /// the batch key's third part: mode, moving group, LOD
+    /// the batch key's third part: mode, cull class (bits 12 - 14, `GpuBatch::cull`), moving group, LOD
     kbits: u32,
     /// with the glass maps (lens -1) where `win_cand`; `geo_alt` without them, where that differs
     geo: MeshGeo,
@@ -1931,7 +1931,7 @@ impl Vehicles {
         let mut keys: Vec<(u32, u32, u32)> = merged.keys().copied().collect();
         let mut batch_window: Vec<u8> = Vec::new();
         let mut lods: [(Vec<GpuBatch>, Vec<u8>); 2] = Default::default();
-        keys.sort_by_key(|k| (k.2, k.0, k.1));
+        keys.sort_by_key(|k| (k.2 & !0x7000, k.0, k.1, k.2 & 0x7000));
         if std::env::var("MCLA_WHEEL_DUMP").is_ok() {
             if let Some(h) = car.hubs {
                 // profile of the body over the front and rear wheel and at mid-car
@@ -1978,7 +1978,7 @@ impl Vehicles {
             if group != 0 {
                 log::debug!("car {}: moving group {} (1/2 windows, 3 hood, 4 trunk, 5/6 bumpers) batch shader {} tris {}", car.name, group, acc.sname, acc.indices.len() / 3);
             }
-            let b = GpuBatch { shader: acc.sname, vb, ib, count: acc.indices.len() as u32, bind, mode: acc.mode, min: acc.min, max: acc.max, bucket: (k.2 >> 31) as u8 };
+            let b = GpuBatch { shader: acc.sname, vb, ib, count: acc.indices.len() as u32, bind, mode: acc.mode, min: acc.min, max: acc.max, bucket: (k.2 >> 31) as u8, cull: ((k.2 >> 12) & 7) as u8 };
             if lod == 0 {
                 batch_window.push(group);
                 batches.push(b);
@@ -2125,6 +2125,7 @@ impl Vehicles {
             }).collect(),
             _ => Vec::new(),
         };
+        let trunk_tag = trunk_i.and_then(|i| sk.map(|s| s.bones[i].tag)).filter(|t| *t != 0);
         let trunk_tags: Vec<u16> = trunk_set.iter().filter_map(|&i| sk.map(|s| s.bones[i].tag)).filter(|t| *t != 0).collect();
         let trunk_worlds: Vec<Mat4> = trunk_set.iter().filter_map(|&i| sk.map(|s| s.bones[i].world)).collect();
         let hood_slot = bone_world(vehicle_model::slot_tag(Slot::Hood).unwrap_or(0));
@@ -2356,7 +2357,34 @@ impl Vehicles {
                 if win_side >= 3 && std::env::var("MCLA_PARTS_LOG").is_ok() {
                     log::info!("damage parts {}: {} mesh {} -> group {}", car.name, part.primary, mi, win_side);
                 }
-                let kbits = mode as u32 | win_side << 16 | lod << 24;
+                // The cull class (`GpuBatch::cull`). A set-up car's draw (F-92759) culls back faces (render state 0
+                // through F-33110: 2, or 1 in a mirrored view) but for the slots hood / hood_wide (2, 40), always; the
+                // bumpers bumper_f / bumper_r (6, 3) while an end of theirs hangs or is torn (+512 / +516 of the bumper
+                // object); trunk_swap / trunk_wide (4, 43) and the base fragment's meshes on the `trunk_0` bone itself
+                // (the second mask its constructor F-60786 builds by F-86379, drawn by F-28289) when the model tune's
+                // bDoubleSidedTrunk is set. BlackOpaqueGlass draws both sides wherever it is (cull 0x18000 on its every
+                // draw, recorded: work/police17 cap/front240). (MCLA_CARCULL_OLD=1: both sides, as before)
+                let cull = if car_is_ambient || std::env::var("MCLA_CARCULL_OLD").is_ok() {
+                    0
+                } else {
+                    let slot = part.primary.to_ascii_lowercase();
+                    let slot = slot.trim_end_matches(|c: char| c.is_ascii_digit());
+                    let ds_trunk = car.simtune.as_ref().and_then(|t| t.double_sided_trunk).unwrap_or(false);
+                    let on_trunk = part.is_base && trunk_tag.is_some_and(|t| part.mesh_tag.get(mi) == Some(&t));
+                    if sname.eq_ignore_ascii_case("BlackOpaqueGlass") || slot == "hood" || slot == "hood_wide" || ds_trunk && (on_trunk || slot == "trunk_swap" || slot == "trunk_wide") {
+                        2
+                    } else if slot == "bumper_f" {
+                        3
+                    } else if slot == "bumper_r" {
+                        4
+                    } else {
+                        1
+                    }
+                };
+                if std::env::var("MCLA_PARTS_LOG").is_ok() && cull != 1 {
+                    log::info!("cull class {} {}: {} mesh {} {} tris", cull, car.name, part.primary, mi, mesh.indices.len() / 3);
+                }
+                let kbits = mode as u32 | cull << 12 | win_side << 16 | lod << 24;
                 // The draw bucket, header byte +0x09 of the shader (`Shader::bucket`): grmModel's draw (F-73936)
                 // draws a geometry only in the pass whose bucket number equals its shader's, and the traffic car's
                 // lit draw (F-73627) asks for bucket 0 in the main opaque pass (2 at LOD 2) and bucket 1 in the main
@@ -5011,7 +5039,14 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
     /// Draw all cars. `blend_pass` selects glass-only.
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>) {
-        self.draw_x(pass, gpu, blend_pass, draws, range, frustum, false);
+        self.draw_x(pass, gpu, blend_pass, draws, range, frustum, false, None);
+    }
+
+    /// `draw` with the set-up cars' back faces culled by their batches' cull class (`GpuBatch::cull`), as the
+    /// original's car draw (F-92759) does; `mirrored`: the view is mirrored, the other face culled. Into a pass of
+    /// the variant in force (`ms::current`).
+    pub fn draw_culled<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, mirrored: bool) {
+        self.draw_x(pass, gpu, blend_pass, draws, range, frustum, false, Some(mirrored));
     }
 
     /// The cars into a sun shadow pass (the cascades, the near map). Traffic and parked cars cast none: the ambient
@@ -5019,10 +5054,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// (registry hits 0), and the recorded frames (work/traffic-detail/fix/shadowchk.py) hold no depth draw of the
     /// food truck's meshes - only its occlusion blob (PS_CalcShadowsQuad). (MCLA_TRAFFIC_CASTS=1: as before)
     pub fn draw_shadow<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize, range: Option<(Vec3, f32)>) {
-        self.draw_x(pass, gpu, false, draws, range, None, traffic_casts_none());
+        self.draw_x(pass, gpu, false, draws, range, None, traffic_casts_none(), None);
     }
 
-    fn draw_x<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, skip_ambient: bool) {
+    fn draw_x<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, skip_ambient: bool, cull: Option<bool>) {
         for (ci, c) in self.cars.iter().enumerate() {
             // (step 19g: a car under Stealth is not drawn in either pass of its own - pu_fx.rs)
             if c.pu_stealth {
@@ -5032,6 +5067,14 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 continue;
             }
             let Some((batches, groups)) = self.lod_batches(ci) else { continue };
+            // (a bumper with an end loose or torn off - +512 / +516 of its object: drawn with both sides; 0 rear, 1 front)
+            let hangs = |k: usize| c.state.parts.bumpers[k].as_ref().is_some_and(|b| b.a.state != 0 || b.b.state != 0);
+            let two_sided = |b: &GpuBatch| match b.cull {
+                1 => false,
+                3 => hangs(1),
+                4 => hangs(0),
+                _ => true,
+            };
             let mut wheels_visible = true;
             let pos = c.render_pose(self.render_alpha).pos;
             // (the main view's passes - the ones with a frustum: a traffic car is drawn by its LOD alone, which
@@ -5111,15 +5154,25 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         pass.draw_indexed(0..b.count, 0, 0..1);
                         *draws += 1;
                     }
-                    pass.set_pipeline(&gpu.pipeline_glass_front);
+                    // (a set-up car's batch of a slot drawn with both sides - the hood's BumpSpecAlpha: cull 0x18000)
+                    let both = cull.is_some() && b.cull != 0 && b.mode != MatMode::CarGlass && two_sided(b);
+                    pass.set_pipeline(if both { &gpu.pipeline_pane } else { &gpu.pipeline_glass_front });
                     pass.draw_indexed(0..b.count, 0, 0..1);
                     *draws += 1;
                 }
                 pass.set_pipeline(&gpu.pipeline_blend);
             }
+            let mut culled = false;
             for (bi, b) in batches.iter().enumerate() {
                 if b.mode.blended() != blend_pass || b.bucket == 1 {
                     continue;
+                }
+                if let (Some(m), false) = (cull, blend_pass) {
+                    let want = !two_sided(b);
+                    if want != culled {
+                        pass.set_pipeline(if !want { &gpu.pipeline_opaque } else if m { &gpu.pipeline_opaque_cull_m } else { &gpu.pipeline_opaque_cull });
+                        culled = want;
+                    }
                 }
                 if c.is_ambient() && amb_skip(&c.model.name, bi, b) {
                     continue;
@@ -5142,6 +5195,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 pass.set_index_buffer(b.ib.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..b.count, 0, 0..1);
                 *draws += 1;
+            }
+            if culled {
+                pass.set_pipeline(&gpu.pipeline_opaque);
             }
             if !blend_pass && wheels_visible && c.model.own_wheels.is_none() {
                 // garage choice, else the car's stock wheels, else the generic set

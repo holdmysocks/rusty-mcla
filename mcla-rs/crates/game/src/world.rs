@@ -194,6 +194,9 @@ pub struct GpuBatch {
     pub max: Vec3,
     /// the shader's draw bucket (`Shader::bucket`; only traffic cars' batches carry 1 - vehicles.rs `Vehicles::draw`)
     pub bucket: u8,
+    /// a set-up car's cull class (vehicles.rs `prep_car`): 0 none (both sides, every other batch), 1 back faces culled,
+    /// 2 both sides, 3 / 4 culled unless an end of the front / rear bumper hangs (`Vehicles::draw_culled`)
+    pub cull: u8,
 }
 
 /// One material range inside a sector's shared vertex / index buffers.

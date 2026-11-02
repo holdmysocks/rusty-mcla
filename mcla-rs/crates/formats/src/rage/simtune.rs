@@ -260,6 +260,9 @@ pub struct SimTunes {
     /// mcCarModelTune's fWindowClipPlaneHeight (+180): the side windows' clip plane, this high
     /// along the car's up axis from its origin (sub_82357DB8 -> ClipPlaneEq); None without a vehModel
     pub window_clip: Option<f32>,
+    /// mcCarModelTune's bDoubleSidedTrunk (+200, a byte): the car's draw (F-92759) draws the base fragment's meshes on
+    /// the `trunk_0` bone and the trunk_swap / trunk_wide slots without back-face culling; None without a vehModel
+    pub double_sided_trunk: Option<bool>,
 }
 
 /// What a car's set-up makes of its wheels (`SimTunes::fit`), front and rear.
@@ -335,6 +338,7 @@ impl SimTunes {
                 out.fender_edge = [[rd.f32(c + 88), rd.f32(c + 92)], [rd.f32(c + 96), rd.f32(c + 100)]];
                 out.part_movement = Some([rd.u32(c + 184), rd.u32(c + 188), rd.u32(c + 192), rd.u32(c + 196)]);
                 out.window_clip = Some(rd.f32(c + 180));
+                out.double_sided_trunk = Some(rd.u8(c + 200) != 0);
                 continue;
             }
             let set = if nm.ends_with("_mods") { &mut out.mods } else { &mut out.base };

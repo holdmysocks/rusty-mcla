@@ -10690,7 +10690,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B cars");
                 pass.set_pipeline(&gpu.pipeline_opaque);
                 let d1 = draws;
-                self.vehicles.draw(&mut pass, &gpu, false, &mut draws, Some((cam_pos, 450.0)), Some(&frustum));
+                self.vehicles.draw_culled(&mut pass, &gpu, false, &mut draws, Some((cam_pos, 450.0)), Some(&frustum), false);
                 pass.set_stencil_reference(0);
                 stat_cars = draws - d1;
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B people");
@@ -10717,7 +10717,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     pass.set_pipeline(&gpu.pipeline_blend);
                 }
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B car glass");
-                self.vehicles.draw(&mut pass, &gpu, true, &mut draws, Some((cam_pos, 200.0)), Some(&frustum));
+                self.vehicles.draw_culled(&mut pass, &gpu, true, &mut draws, Some((cam_pos, 200.0)), Some(&frustum), false);
                 pass.set_stencil_reference(0);
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B glows");
                 if self.time_of_day > 18.0 || self.time_of_day < 6.0 {

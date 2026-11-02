@@ -387,12 +387,12 @@ pub fn draw(enc: &mut wgpu::CommandEncoder, gpu: &Gpu, world: &crate::world::Wor
         if phase == 0 {
             // the traffic (the pass 0x01000000 of F-27833): opaque parts here, the glass after the city's blended
             pass.set_pipeline(&gpu.pipeline_opaque);
-            vehicles.draw(&mut pass, gpu, false, &mut draws, None, Some(&mv.frustum));
+            vehicles.draw_culled(&mut pass, gpu, false, &mut draws, None, Some(&mv.frustum), false);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
         }
     }
     pass.set_pipeline(&gpu.pipeline_blend);
-    vehicles.draw(&mut pass, gpu, true, &mut draws, None, Some(&mv.frustum));
+    vehicles.draw_culled(&mut pass, gpu, true, &mut draws, None, Some(&mv.frustum), false);
     draws
 }
 
