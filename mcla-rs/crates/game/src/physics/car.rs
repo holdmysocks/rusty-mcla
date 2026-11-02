@@ -219,6 +219,10 @@ pub struct CarInput {
     /// `steer` carries it), the automatic brake 1.0 on every wheel and the gearbox held (A-16188,
     /// A-30794). The pedals at 0, the stop timer runs and the body is frozen after a second standing.
     pub deactivated: bool,
+    /// damaged out (chassis +592 bit 0x04, F-30391(sim, 0x14)): the car's update F-17997 writes the throttle 0, the
+    /// brake 1, the handbrake 0 and the steering +656 - full lock to the side it was steering when the bit was
+    /// set (F-30391: +132 >= 0 ? 1 : -1) - every tick
+    pub damaged_out: bool,
     /// the gearbox to first out of reverse or neutral this tick (F-16736): the control step's engine hold (F-17997,
     /// the car's engine sound below state 4)
     pub first_gear: bool,
