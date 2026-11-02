@@ -848,6 +848,14 @@ pub struct Game {
     /// The box is of type 5 (F-48904 jump table: no option rows, the one prompt BACK (B) from the
     /// pair {2, `prompt_back`}, UI.md): A does nothing, B closes it
     pub box_back_only: bool,
+    /// ARCADE's INFORMATION is up for this race type (an index into `arcade_ui`'s TYPES): the
+    /// type 5 box of F-81761 message 59, which the recording shows in the navsys movie's own
+    /// panel (`template_confbox`), not in the popup movie
+    pub arcade_info: Option<usize>,
+    /// The map's opening move runs (set by main.rs each frame, NavCam::opening / the ARCADE
+    /// climb): the NavMap is busy and the map's state is not focused yet, so no navsys panel,
+    /// prompts, icons or menu input until it lands (recordings `work/ui2/rec/enter1`, `gps1`)
+    pub nav_busy: bool,
     /// the garage view's menu placement (rotation, offset, scale; see `garagecam::View`)
     /// and the views' frame in the world, set by the camera code each frame
     pub garage_panel: Option<(f32, Vec3, [f32; 2], glam::Mat4)>,
@@ -1434,6 +1442,8 @@ impl Game {
             flash_popup: None,
             message_box: None,
             box_back_only: false,
+            arcade_info: None,
+            nav_busy: false,
             garage_panel: None,
             pause_cam: None,
             data_dir: String::new(),
@@ -2161,8 +2171,6 @@ impl Game {
             self.mc4_leave_car();
         }
         // (its cabin's, gauges' and rims' colours and the rims' materials with it)
-        // (a save just read leaves `paint_for` empty: the car in use wears what the save kept for it)
-        let had_finish = self.paint_for.is_empty() || self.finishes.contains_key(&name);
         if let Some((slots, mats)) = self.finishes.get(&name).cloned() {
             for (k, v) in slots.into_iter().take(9).enumerate() {
                 self.slot_hsv[k] = v;
@@ -2176,11 +2184,6 @@ impl Game {
             self.paint_fade = fade;
         }
         self.mc4_take_car(&name);
-        // (a vehicle the port has no finish for yet - one just bought, a mod car - wears its record's rims, not the
-        // last car's)
-        if !had_finish {
-            self.mc4_rims_from_record(&name);
-        }
         self.paint_for = name;
     }
 
@@ -5842,6 +5845,8 @@ impl Game {
                     } else if let Some(a) = self.hangout_ui(ctx, f_up, f_down, left, right, f_enter, f_back) {
                         action = a;
                     }
+                } else if arcade && self.nav_busy {
+                    // (ARCADE's entering flight: the menu comes when it lands)
                 } else if arcade {
                     if let Some(a) = self.arcade_ui(ctx, up, down, left, right, enter, back, hud.map_vp, hud.cam_pos) {
                         action = a;
@@ -9055,6 +9060,8 @@ impl Game {
                     // (the opening is about to play)
                 } else if self.fresh_game && self.mode == Mode::FreeRoam && self.flash_prompt.is_some() {
                     self.starter_ui(ctx, left, right, enter);
+                } else if self.show_map && self.nav_busy {
+                    // (the opening move: nothing of the map's UI yet)
                 } else if self.show_map {
                     // The original's icons on the GPS map (`hudmap.rs`, mode 1): the same elements,
                     // each in the 3D scene of the map camera, sized by its distance from it
@@ -13053,7 +13060,6 @@ impl Game {
         // (and its record is the starter set-up's: `mc4`)
         self.mc4_car_added(car, Some(&format!("starter_{}", car.to_ascii_lowercase())));
         self.mc4_take_car(car);
-        self.mc4_rims_from_record(car);
     }
 
     /// VEHICLE SELECT, a new career's first screen (references `ng_vsel_0`..`3`): the three
@@ -13920,6 +13926,16 @@ impl Game {
             }
             return None;
         }
+        // (INFORMATION up: the box's BACK closes it, nothing else reaches the menu)
+        let (up, down, enter, back) = if self.arcade_info.is_some() {
+            if back {
+                self.arcade_info = None;
+            }
+            self.nav_select = false;
+            (false, false, false, false)
+        } else {
+            (up, down, enter, back)
+        };
         let (mut page_no, mut kind, mut cur) = self.arcade;
         let races = self.arcade_races(kind);
         if self.nav_y && page_no >= 1 && !races.is_empty() {
@@ -13961,16 +13977,17 @@ impl Game {
                 } else if back {
                     out = Some(MenuAction::Back);
                     // (the type list's BACK leaves GOAL ATTACK: F-81761 A-89718)
+                    self.arcade_info = None;
                     self.goal_attack = false;
                 } else if (std::mem::take(&mut self.nav_select) || ctx.input(|i| i.key_pressed(egui::Key::Tab))) && !shown.is_empty() {
                     // INFORMATION (the back button, message 59 of F-81761): UI_MENU_SELECT and the box of
                     // type 5 titled `Dlg_Title_ModeInfo` with `Dlg_Desc_` + the type under the cursor
-                    // (offline; in the online SL_Session_List state UI_MENU_ERROR and no box, F-59143)
+                    // (offline; in the online SL_Session_List state UI_MENU_ERROR and no box, F-59143).
+                    // The box takes the menu panel's place in the navsys movie with BACK alone and
+                    // nothing dimmed (recording `work/ui2/rec/i_*.png`): drawn below as that page.
                     let k = shown[cur[0].min(shown.len() - 1)];
                     self.opt_x.s23b.ui_obj = Some("UI_MENU_SELECT");
-                    let def = crate::flash_ui::MessageBoxDef { title: "Dlg_Title_ModeInfo".into(), description: format!("Dlg_Desc_{}", TYPES[k].0), options: Vec::new() };
-                    self.message_box = Some((def, 0, MenuAction::None));
-                    self.box_back_only = true;
+                    self.arcade_info = Some(k);
                 }
             }
             1 if self.goal_attack => {
@@ -14053,7 +14070,11 @@ impl Game {
             self.race_defs[i].opponents = if self.phone_race { 1 } else { self.arcade_opts[0] + 1 };
         }
         let o = self.arcade_opts;
+        let info = self.arcade_info.filter(|_| page_no == 0);
         let (description, rows, prompts): (String, Vec<MenuRow>, Vec<(String, i32)>) = match page_no {
+            // INFORMATION: the type's description, no rows, BACK alone (type 5: the pair {2,
+            // `prompt_back`} of F-48904's table)
+            0 if info.is_some() => (st(&format!("Dlg_Desc_{}", TYPES[info.unwrap_or(0)].0), ""), Vec::new(), vec![(up_st("prompt_back", "BACK"), ICON_B)]),
             0 => (
                 st("pause_choose_race_type", "Choose race type:"),
                 shown.iter().map(|i| TYPES[*i]).map(|(_, k, d)| MenuRow { label: up_st(k, d), value: String::new(), enabled: true, part: None }).collect(),
@@ -14109,7 +14130,13 @@ impl Game {
                     .collect(),
                 _ => Vec::new(),
             },
-            title: if self.goal_attack { up_st("goal_attack_title", "GOAL ATTACK") } else { up_st("pause_arcade", "ARCADE") },
+            title: if info.is_some() {
+                up_st("Dlg_Title_ModeInfo", "INFORMATION")
+            } else if self.goal_attack {
+                up_st("goal_attack_title", "GOAL ATTACK")
+            } else {
+                up_st("pause_arcade", "ARCADE")
+            },
             rows,
             select: self.arcade.2[page_no as usize],
             list_max: 11,

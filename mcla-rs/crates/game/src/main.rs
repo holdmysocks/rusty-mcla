@@ -8773,11 +8773,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let arcade_view = self.game.mode == Mode::RaceSelect && self.game.flash_navsys.is_some() && self.game.hangout_key.is_none() && self.hangout_in.is_none() && !self.game.wager_here && std::env::var("MCLA_ARCADE_FLAT").is_err();
         if !arcade_view {
             self.game.race_view = None;
+            self.game.arcade_info = None;
             self.arcade_climb = None;
         }
         let arcade_enter = arcade_view && !self.arcade_in;
         self.arcade_in = arcade_view;
         let map3d = (self.game.show_map || arcade_view) && self.citymap.is_some() && self.drive;
+        // (the map's opening move runs: no navsys panel, prompts, icons or menu input until it lands -
+        // recording `work/ui2/rec/enter1`, `gps1`; NavCam::opening)
+        self.game.nav_busy = false;
         // The original's GPS map is the city itself drawn from the map camera (its far models, the
         // hour's light, rule_frame.md 4.1); MCLA_MAP_BAKED=1: the port's baked top-down picture.
         let map_baked = map3d && std::env::var("MCLA_MAP_BAKED").is_ok();
@@ -8890,6 +8894,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         None => self.arcade_climb = None,
                     }
                 }
+                self.game.nav_busy = self.arcade_climb.is_some();
             }
             // The original's GPS camera (NavMap, rule_frame.md 4.3): height H from 850 to 9000 on
             // t = 1 - sin(u pi / 2), u stepped 0.02 a frame (30 a second) while a zoom trigger is held;
@@ -9000,7 +9005,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 self.nav_free = self.game.map_free.is_some();
-                if stick != glam::Vec2::ZERO && !fresh {
+                let busy = self.nav.opening();
+                self.game.nav_busy = busy;
+                if stick != glam::Vec2::ZERO && !fresh && !busy {
                     let before = self.nav.cursor;
                     self.nav.update(0.0, false, false, stick, aspect);
                     let step = stick * 0.5 * self.nav.eye.y * dt;
@@ -9046,14 +9053,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 {
                     // RT held zooms in, LT out (rule_navcam.md 4.1: r2 / l2 held, released)
-                    zin |= rt;
-                    zout |= lt;
+                    zin = (zin || rt) && !busy;
+                    zout = (zout || lt) && !busy;
                     // the right stick pans the view (F-47799, rule_navcam.md 5.1): the eye 0.5 H m/s at full
                     // tilt, the cursor stays where it is unless it sits at the screen's edge and the view
                     // moves past it - then it goes along (the edge limits NM+572..584 hold runtime values not
                     // read: the inner 80 %, approx., as for the left stick)
                     let pan = hudmap::NavCam::shape_stick(glam::Vec2::new(rs.x, -rs.y));
-                    if pan != glam::Vec2::ZERO && !fresh {
+                    if pan != glam::Vec2::ZERO && !fresh && !busy {
                         let before = self.nav.view().0;
                         self.nav.pan(pan, dt);
                         let d = self.nav.eye - before;

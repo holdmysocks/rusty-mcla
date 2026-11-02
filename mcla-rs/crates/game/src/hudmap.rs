@@ -2398,6 +2398,13 @@ impl NavCam {
         self.mv.is_some()
     }
 
+    /// The opening move (`open`) is running: the NavMap is busy (its vt 512, `F-63837`, true while
+    /// the transition NM+1512 runs), so the UI refuses events (`F-52891`) and the map's state is
+    /// focused only when it lands
+    pub fn opening(&self) -> bool {
+        matches!(self.mv, Some(m) if m.ease_in) && self.open_rows.is_some()
+    }
+
     /// The eye clamped and the look point made from it (`F-38897`).
     fn place(&mut self, mut e: Vec3) {
         e.y = e.y.clamp(NAV_LOW, NAV_HIGH);
