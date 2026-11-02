@@ -5891,8 +5891,21 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
         let bead = rim_ratio * 0.5;
         for (mesh, si) in &model.meshes {
             let mut morphed;
-            let mesh = if !is_rim && (bead - 0.406).abs() > 0.004 {
+            // (the tyre is drawn turned half round about the wheel's vertical against the rim: F-11293 turns the
+            // wheel's matrix by pi before the tyre draw (rows 0 and 2 negated, F-25963), so the side wall that
+            // carries the lettering - the model's +x, the rim's face being -x - faces out. Baked into the tyre's
+            // vertices here, a turn, so the spin and the side's handedness stay. MCLA_TYRE_TURN_OLD: as before)
+            let turn = !is_rim && std::env::var("MCLA_TYRE_TURN_OLD").is_err();
+            let mesh = if !is_rim && ((bead - 0.406).abs() > 0.004 || turn) {
                 morphed = mesh.clone();
+                if turn {
+                    for p in morphed.positions.iter_mut().chain(morphed.normals.iter_mut()) {
+                        *p = Vec3::new(-p.x, p.y, -p.z);
+                    }
+                    for t in morphed.tangents.iter_mut() {
+                        *t = glam::Vec4::new(-t.x, t.y, -t.z, t.w);
+                    }
+                }
                 for p in morphed.positions.iter_mut() {
                     let rad = (p.y * p.y + p.z * p.z).sqrt();
                     if rad > 1e-4 {
