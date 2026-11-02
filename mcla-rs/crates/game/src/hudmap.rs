@@ -842,7 +842,10 @@ pub struct Frame {
     pub frame_no: u32,
     /// `+153`: a race is current (Race_HasCurrentRace)
     pub race: bool,
-    /// `HudMap+24`: the race's checkpoints are being drawn (only the player and checkpoints pass)
+    /// `HudMap+24`: a race's checkpoints are being drawn (only the player and checkpoints pass). Armed by
+    /// the race list's map preview (F-74369 from F-29182 / F-55082 / F-22260), the checkpoint flight
+    /// (F-10163, cleared by F-28639), the race editor and the lobby - never by a running race, so the
+    /// port, which has none of these, leaves it off
     pub race_checkpoints: bool,
     /// `+156`: the player's police state (`F-35540(1)`)
     pub police: i32,
