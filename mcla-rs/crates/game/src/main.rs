@@ -8587,14 +8587,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.cam.fov_y = 0.7;
                 }
             }
-            let want_parked = v == "parked";
-            let from = self.cam.pos;
-            // ("cop": the nearest cruiser, from its left side - into the driver's window)
-            let cop = v == "cop";
-            if let Some(c) = self.vehicles.cars.iter().filter(|c| !c.is_player && if cop { c.cop } else { c.placed && c.parked.is_some() == want_parked && c.model.name.starts_with("va_") }).min_by(|a, b| a.state.pos.distance_squared(from).partial_cmp(&b.state.pos.distance_squared(from)).unwrap()) {
-                let render_state = c.render_state(self.vehicles.render_alpha);
-                let (f, r) = (render_state.forward(), render_state.right());
-                self.chase.pos = render_state.pos + if cop { f * 0.2 - r * 2.4 + Vec3::Y * 1.2 } else { f * 4.2 - r * 1.6 + Vec3::Y * 1.3 };
             // ("player_cabin": the player's car from its left, into the driver's window - hide_driver check)
             if v == "player_cabin" {
                 if let Some(c) = self.vehicles.player() {
@@ -8606,6 +8598,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.cam.fov_y = 0.8;
                 }
             }
+            let want_parked = v == "parked";
+            let from = self.cam.pos;
+            // ("cop": the nearest cruiser, from its left side - into the driver's window)
+            let cop = v == "cop";
+            if let Some(c) = self.vehicles.cars.iter().filter(|c| !c.is_player && if cop { c.cop } else { c.placed && c.parked.is_some() == want_parked && c.model.name.starts_with("va_") }).min_by(|a, b| a.state.pos.distance_squared(from).partial_cmp(&b.state.pos.distance_squared(from)).unwrap()) {
+                let render_state = c.render_state(self.vehicles.render_alpha);
+                let (f, r) = (render_state.forward(), render_state.right());
+                self.chase.pos = render_state.pos + if cop { f * 0.2 - r * 2.4 + Vec3::Y * 1.2 } else { f * 4.2 - r * 1.6 + Vec3::Y * 1.3 };
                 self.chase.look = render_state.pos + if cop { f * 0.2 + Vec3::Y * 0.9 } else { Vec3::Y * 0.8 };
                 self.cam.pos = self.chase.pos;
                 self.cam.fov_y = 0.7;
@@ -9774,10 +9774,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let eye_view = if self.drive && self.vehicles.player().is_some() { self.chase.view() } else { self.cam.view() };
             let proj = glam::Mat4::from_cols_array_2d(&globals.view_proj) * eye_view.inverse();
             let alpha = self.vehicles.render_alpha;
-            let cars: Vec<Option<render::mb::Car>> = self
             // (the wheels' blur pass, F-49519: not in the garage - the renderer's +393 - nor for the car in the driver's
             // view - its +123 - F-73214)
             let garage = self.garage_light().is_some();
+            let cars: Vec<Option<render::mb::Car>> = self
                 .vehicles
                 .cars
                 .iter()
@@ -10902,10 +10902,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B car glass");
                 self.vehicles.draw_culled(&mut pass, &gpu, true, &mut draws, Some((cam_pos, 200.0)), Some(&frustum), false);
-                pass.set_stencil_reference(0);
                 // (then the wheels' blur discs, into the stencil only - F-49519 after the cars' glass)
                 self.vehicles.draw_wheel_blur(&mut pass, &gpu, &mut draws, Some((cam_pos, 450.0)), Some(&frustum), self.garage_light().is_some());
                 pass.set_pipeline(&gpu.pipeline_blend);
+                pass.set_stencil_reference(0);
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B glows");
                 if self.time_of_day > 18.0 || self.time_of_day < 6.0 {
                     self.props.draw_glows(&mut pass, &gpu);
