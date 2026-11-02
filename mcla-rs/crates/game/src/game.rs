@@ -464,6 +464,9 @@ pub struct Game {
     /// LICENSE PLATES (Main.sc.xml `License_Plate`): the character under the cursor and the
     /// seven characters as places in `LP_CHARS`, while the editor is open
     pub plate_edit: Option<(usize, [usize; 7])>,
+    /// NO PLATE (Y in the editor, the port's addition, DECISIONS.md D28): the car's `CarConfig::no_plate` when the editor
+    /// opened, put back by BACK
+    pub plate_edit_no_plate: Option<bool>,
     /// DIMENSIONS: the wheel figures of a car as its record holds them (0x83a..0x842 of the
     /// 8176-byte vehicle record - a save's garage record or the car's own
     /// `resources/vehicle/configs/<car>.xcc`): ride height (3 = stock, each step up one
@@ -1251,6 +1254,7 @@ impl Game {
             dim_axle: 0,
             plates: Default::default(),
             plate_type: 0,
+            plate_edit_no_plate: None,
             xparts: Default::default(),
             vinyls: Default::default(),
             vinyl_list: Vec::new(),
@@ -2263,6 +2267,11 @@ impl Game {
         if self.cfg.extra != extra {
             self.cfg.extra = extra;
         }
+    }
+
+    /// Is no plate drawn on the vehicle in use now (`CarConfig::no_plate`, else a mod car's `hide_plate`)?
+    pub fn no_plate_now(&self) -> bool {
+        self.cfg.no_plate.unwrap_or_else(|| crate::modcars::hides_plate(&self.dir_name(self.current_car)))
     }
 
     /// The plate of the player's car, if the player wrote one: what the editor shows while
@@ -6696,6 +6705,10 @@ impl Game {
                     if tab_prev || tab_next {
                         self.plate_type = (self.plate_type + 4 + tab_next as usize - tab_prev as usize) % 4;
                     }
+                    // (Y: HIDE PLATE / SHOW PLATE, shown on the car at once)
+                    if self.y_hit(ctx) {
+                        self.cfg.no_plate = Some(!self.no_plate_now());
+                    }
                     self.plate_edit = Some((cur, idx));
                     if enter {
                         let text: String = idx.iter().map(|i| lp_plate_char(*i)).collect();
@@ -6704,6 +6717,7 @@ impl Game {
                         self.dirty = true;
                     } else if back {
                         self.plate_edit = None;
+                        self.cfg.no_plate = self.plate_edit_no_plate;
                     }
                     (false, false, false, false, false, false)
                 } else {
@@ -6935,6 +6949,7 @@ impl Game {
                                 idx[i] = lp_place(ch);
                             }
                             self.plate_edit = Some((0, idx));
+                            self.plate_edit_no_plate = self.cfg.no_plate;
                             went_in = true;
                         }
                         (true, It::RowAs(_, 9961)) if self.flash_garage.is_some() => {
@@ -7969,6 +7984,7 @@ impl Game {
                         let cart_cost: i64 = if car_changed { 0 } else { CUSTOM_SLOTS.iter().map(|slot| { let v = self.cfg.get(*slot); if self.part_is_owned(self.current_car, *slot, v) { 0 } else { self.part_price(self.current_car, *slot, v) } }).sum() };
                         // (the cart's own page carries the total)
                         let cart_cost = (cart_cost > 0 && self.cart_open.is_none()).then_some(cart_cost);
+                        let no_plate_now = self.no_plate_now();
                         if listing_page {
                             if let Some(fp) = self.flash_prompt.as_mut() {
                                 fp.hide();
@@ -8019,6 +8035,8 @@ impl Game {
                             if self.plate_edit.is_some() {
                                 // (reference `g_lp_0`: CHANGE STATE LB RB, BACK, ACCEPT)
                                 prompts = vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("prompt_back", "BACK"), ICON_B), (st("G_ChangeState", "CHANGE STATE"), crate::flash_ui::ICON_LB_RB)];
+                                // (the port's NO PLATE, DECISIONS.md D28: no string of the disc says it)
+                                prompts.push((if no_plate_now { "SHOW PLATE" } else { "HIDE PLATE" }.to_string(), crate::flash_ui::ICON_Y));
                             }
                             if self.garage_menu == 18 && self.garage_part.is_none() && self.paint_pick.is_none() {
                                 let back = (st("prompt_back", "BACK"), ICON_B);

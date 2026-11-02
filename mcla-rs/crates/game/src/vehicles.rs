@@ -2187,6 +2187,7 @@ impl Vehicles {
         }
         // (a traffic model's meshes of the blended bucket, counted per LOD: their draw order - `Vehicles::draw`)
         let mut b1_seq = [0u32; 4];
+        let hide_plate = cfg.no_plate.unwrap_or_else(|| crate::modcars::hides_plate(&car.name));
         for (part, part_xf, lod) in todo {
             if let Some(f) = only_part.as_deref() {
                 if !f.split(',').any(|n| part.primary == n) {
@@ -2238,6 +2239,11 @@ impl Vehicles {
                     if h.split(',').any(|e| e == format!("{}:{}", part.primary, mi)) {
                         continue;
                     }
+                }
+                // (NO PLATE, the user's deviation D28: the plate meshes are left out - `CarConfig::no_plate`, a mod car's
+                // `hide_plate` by default)
+                if hide_plate && sname.eq_ignore_ascii_case("LicensePlate") {
+                    continue;
                 }
                 if std::env::var("MCLA_TRIM_DUMP").is_ok() && (mode == MatMode::Interior || sname.to_ascii_lowercase().contains("carbon") || sname.to_ascii_lowercase().contains("caliper") || sname.to_ascii_lowercase().contains("brake")) {
                     let mut u1: std::collections::BTreeMap<i32, u32> = Default::default();

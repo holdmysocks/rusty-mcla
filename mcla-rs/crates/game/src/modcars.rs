@@ -48,6 +48,8 @@ pub struct ModCarRt {
     pub picture_donor: Option<String>,
     /// no driver is drawn in the car (`hide_driver`, MODS.md M-7 item 8)
     pub hide_driver: bool,
+    /// no licence plate is drawn on the car (`hide_plate`)
+    pub hide_plate: bool,
     pub long_name: String,
     pub short_name: String,
 }
@@ -147,6 +149,11 @@ pub fn car(name: &str) -> Option<&'static ModCarRt> {
 /// Is no driver drawn in this mod car (`hide_driver`)? Applies to the player and to an opponent driving it.
 pub fn hides_driver(name: &str) -> bool {
     car(name).is_some_and(|c| c.hide_driver)
+}
+
+/// Is no licence plate drawn on this mod car (`hide_plate`)? Its `LicensePlate` meshes are left out of the model.
+pub fn hides_plate(name: &str) -> bool {
+    car(name).is_some_and(|c| c.hide_plate)
 }
 
 pub fn is_mod_car(name: &str) -> bool {
@@ -449,6 +456,7 @@ fn car_rt(set: &mcla_mods::ModSet, c: &mcla_mods::ModCar, data_root: &Path, mods
         pictures,
         picture_donor: d.pictures.clone(),
         hide_driver: c.hide_driver,
+        hide_plate: c.hide_plate,
         long_name: c.long_name.clone(),
         short_name: c.short_name.clone(),
     })

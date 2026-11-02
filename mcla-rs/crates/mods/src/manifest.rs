@@ -72,6 +72,9 @@ pub struct CarEntry {
     /// no driver model is drawn in this car, for the player or an opponent (MODS.md M-7 item 8); default false
     #[serde(default)]
     pub hide_driver: bool,
+    /// no licence plate is drawn on this car (its `LicensePlate` meshes are left out), anywhere; default false
+    #[serde(default)]
+    pub hide_plate: bool,
 }
 
 /// One car maker a mod declares (`[[manufacturer]]`, MODS.md M-7; format in docs/reference/mods/manifest.md section 11):

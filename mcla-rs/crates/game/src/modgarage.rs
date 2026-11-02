@@ -409,6 +409,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// NO PLATE (D28) is kept per car through a save: on, off, and unset (the car's default) apart; an old save has none.
+    #[test]
+    fn no_plate_is_saved_per_car() {
+        let d = dir("noplate");
+        let mut g = game_rims(&d, rim_list(&DISC, &[]));
+        assert_eq!((g.cfg.no_plate, g.no_plate_now()), (None, false), "a disc car shows its plate");
+        g.cfg.no_plate = Some(true);
+        g.cfgs.insert("vp_nsn_350z_06".into(), crate::vehicle_model::CarConfig { no_plate: Some(false), ..Default::default() });
+        g.write_save(&d);
+        assert_eq!((file(&d)["cfg"]["no_plate"].as_bool(), file(&d)["cfgs"]["vp_nsn_350z_06"]["no_plate"].as_bool()), (Some(true), Some(false)));
+        let g2 = game_rims(&d, rim_list(&DISC, &[]));
+        assert_eq!((g2.cfg.no_plate, g2.cfgs["vp_nsn_350z_06"].no_plate), (Some(true), Some(false)));
+        assert!(g2.no_plate_now());
+        let mut g3 = game_rims(&d, rim_list(&DISC, &[]));
+        g3.cfg.no_plate = None;
+        g3.write_save(&d);
+        assert!(file(&d)["cfg"].get("no_plate").is_none(), "unset is not written");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// Adding a mod rim, or any folder before the saved one, changes no car's rim; stock wheels stay stock.
     #[test]
     fn adding_rim_folders_moves_no_rim() {

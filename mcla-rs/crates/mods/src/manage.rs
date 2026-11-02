@@ -159,7 +159,7 @@ pub fn describe(set: &ModSet, disabled: &HashSet<String>, data_found: bool, stam
             ModState::Conflict => ("skipped", Some("clash")),
             ModState::Duplicate => ("skipped", Some("duplicate")),
         };
-        let mut contents: Vec<Content> = m.cars.iter().map(|c| Content { kind: "car", name: c.name.clone(), title: if c.long_name.trim().is_empty() { c.name.clone() } else { c.long_name.clone() }, problems: c.reasons.clone(), notes: c.hide_driver.then(|| "no driver is drawn in this car (hide_driver)".to_string()).into_iter().chain(c.warnings.iter().cloned()).collect(), logo: None }).collect();
+        let mut contents: Vec<Content> = m.cars.iter().map(|c| Content { kind: "car", name: c.name.clone(), title: if c.long_name.trim().is_empty() { c.name.clone() } else { c.long_name.clone() }, problems: c.reasons.clone(), notes: c.hide_driver.then(|| "no driver is drawn in this car (hide_driver)".to_string()).into_iter().chain(c.hide_plate.then(|| "starts with NO PLATE: no licence plate is drawn until the player shows it in LICENSE PLATES (hide_plate)".to_string())).chain(c.warnings.iter().cloned()).collect(), logo: None }).collect();
         contents.extend(m.rims.iter().map(|r| {
             let mut notes = vec![r.detail()];
             notes.extend(r.warnings.iter().cloned());

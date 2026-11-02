@@ -262,6 +262,10 @@ pub struct CarConfig {
     /// keeps its name here until the player fits another, so it returns with the mod.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub rim_name: String,
+    /// NO PLATE, the port's addition to LICENSE PLATES (DECISIONS.md D28 "No plate"): Some(true) no plate is drawn on the
+    /// car, Some(false) it is; None = the car's default, a mod car's `hide_plate` (else the plate is drawn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_plate: Option<bool>,
     pub hood: usize,
     pub spoiler: usize,
     pub bumper_f: usize,

@@ -61,6 +61,7 @@ pub struct CarStatus {
     pub name: String,
     pub long_name: String,
     pub hide_driver: bool,
+    pub hide_plate: bool,
     pub reasons: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -205,6 +206,8 @@ pub struct ModCar {
     pub opponent: Option<Opponent>,
     /// no driver is drawn in the car (`hide_driver`)
     pub hide_driver: bool,
+    /// no licence plate is drawn on the car (`hide_plate`)
+    pub hide_plate: bool,
     /// resolved opponent samples (performance, speed) at mod 0 / 50 / 100
     pub samples: Option<([f32; 3], [f32; 3])>,
     /// the resolved opponent use when the manifest marks the car for opponents (stage S4; [`opponent_text`])
@@ -391,7 +394,7 @@ impl ModSet {
             let mut ok_cars = Vec::new();
             for c in &m.cars {
                 let chk = validate::check_car(c, &pkg, &keys, disc, &opts.reserved, &candidate_makers);
-                info.cars.push(CarStatus { hide_driver: c.hide_driver, name: c.name.clone(), long_name: c.long_name.clone(), reasons: chk.reasons.clone(), warnings: chk.warnings.clone() });
+                info.cars.push(CarStatus { hide_driver: c.hide_driver, hide_plate: c.hide_plate, name: c.name.clone(), long_name: c.long_name.clone(), reasons: chk.reasons.clone(), warnings: chk.warnings.clone() });
                 if !chk.reasons.is_empty() {
                     info.reasons.push(format!("car {}: {}", c.name, chk.reasons.join("; ")));
                 }
@@ -721,6 +724,7 @@ fn mod_car(c: &CarEntry, id: &str, k: validate::Checked) -> ModCar {
         donors: c.donors.clone(),
         opponent: c.opponent.clone(),
         hide_driver: c.hide_driver,
+        hide_plate: c.hide_plate,
         samples: k.samples,
         opponent_use: k.opponent,
     }

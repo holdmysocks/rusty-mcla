@@ -1254,3 +1254,19 @@ fn hide_driver_is_a_bool_default_false() {
     // a non-bool is refused by the manifest parser
     assert!(manifest::parse(&manifest("c", "1", "vp_hd_bad_11", "").replace("short_name = \"08 TEST\"\n", "short_name = \"08 TEST\"\nhide_driver = \"yes\"\n")).is_err());
 }
+
+#[test]
+fn hide_plate_is_a_bool_default_false() {
+    let data = data_root();
+    let (a, b) = ("vp_hp_off_11", "vp_hp_on_11");
+    write_folder(&mods_dir(&data).join("a"), &manifest("a", "1", a, ""), &car_files(a));
+    let text = manifest("b", "1", b, "").replace("short_name = \"08 TEST\"\n", "short_name = \"08 TEST\"\nhide_plate = true\n");
+    write_folder(&mods_dir(&data).join("b"), &text, &car_files(b));
+    let set = load(&data);
+    assert!(set.mods().iter().all(|m| m.state == ModState::Loaded), "{:?}", set.mods().iter().map(|m| &m.reasons).collect::<Vec<_>>());
+    assert!(!set.car(a).unwrap().hide_plate && set.car(b).unwrap().hide_plate);
+    assert!(!set.car(b).unwrap().hide_driver, "the two toggles are apart");
+    let l = crate::manage::describe(&set, &Default::default(), true, 0);
+    assert!(l.rows[1].contents[0].notes.iter().any(|n| n.contains("NO PLATE")));
+    assert!(manifest::parse(&manifest("c", "1", "vp_hp_bad_11", "").replace("short_name = \"08 TEST\"\n", "short_name = \"08 TEST\"\nhide_plate = 1\n")).is_err());
+}
