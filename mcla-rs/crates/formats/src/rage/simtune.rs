@@ -71,6 +71,11 @@ tune_struct!(
 );
 
 tune_struct!(
+    /// mcCarFluidTune (vehFluidTune's damping and current with the buoyancy range)
+    FluidTune { damp @ 4, current_scale @ 12, buoyancy_max @ 16, buoyancy_min @ 20, sink_rate @ 24 }
+);
+
+tune_struct!(
     /// mcCarTireFricTune
     TireFricTune { gear_threshold_bits @ 24, skidding_threshold @ 28, melt_rate @ 32, recover_rate @ 36, spinning_fric @ 40 }
 );
@@ -192,6 +197,7 @@ pub struct SimTune {
     pub axle_front: [f32; 2],
     pub axle_back: [f32; 2],
     pub aero: AeroTune,
+    pub fluid: FluidTune,
     pub tire_fric: TireFricTune,
     pub nitro: NitroTune,
     pub gyro: GyroTune,
@@ -229,6 +235,7 @@ impl SimTune {
             axle_front: l2(a.axle_front, b.axle_front),
             axle_back: l2(a.axle_back, b.axle_back),
             aero: AeroTune::lerp(&a.aero, &b.aero, t),
+            fluid: FluidTune::lerp(&a.fluid, &b.fluid, t),
             tire_fric: TireFricTune::lerp(&a.tire_fric, &b.tire_fric, t),
             nitro: NitroTune::lerp(&a.nitro, &b.nitro, t),
             gyro: GyroTune::lerp(&a.gyro, &b.gyro, t),
@@ -378,6 +385,9 @@ impl SimTunes {
                     }
                     if let Some(p) = sub(168) {
                         set.aero = AeroTune::read(&rd, p);
+                    }
+                    if let Some(p) = sub(172) {
+                        set.fluid = FluidTune::read(&rd, p);
                     }
                     if let Some(p) = sub(192) {
                         set.tire_fric = TireFricTune::read(&rd, p);

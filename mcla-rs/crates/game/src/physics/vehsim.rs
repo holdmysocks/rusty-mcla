@@ -738,6 +738,8 @@ pub struct VehState {
     /// step 19f: a Pulse power-up's push waiting for the next tick (F-19990): the force per
     /// unit of mass and the torque per unit of the body's own inertia, world axes
     pub pulse: Option<(Vec3, Vec3)>,
+    /// mcCarFluid (chassis +12): deep water's buoyancy and current (fluid.rs)
+    pub fluid: Option<super::fluid::Fluid>,
     pub last_gyro: Vec3,
     /// where the centre of mass is right now (height, along the car): a burnout moves it
     pub cg: [f32; 2],
@@ -784,7 +786,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, grid_reset: false, agro: Default::default() }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, grid_reset: false, agro: Default::default() }
     }
 }
 
@@ -1201,6 +1203,15 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
         input
     };
     let mut vs = st.veh.take().map(|b| *b).unwrap_or_default();
+    // (the car's own queries pass through `death`: the fluid callback takes its contacts out of the solve)
+    let _pass_death = super::collision::PassDeath::on();
+    // (F-79372: the car's fluid with its lattice over the hull's own box, +32 / +16)
+    if vs.fluid.is_none() {
+        if let Some(h) = p.hull.as_ref() {
+            let (max, min) = h.bbox.unwrap_or((h.max, h.min));
+            vs.fluid = Some(super::fluid::Fluid::new(&vt.t.fluid, min, max));
+        }
+    }
     // (P3, mcCarSim::Update A-33822: a motorcycle whose rider is off - no throttle, half the brake, no handbrake)
     let wiped = vs.wipe.is_some() && vt.bike && !bike_old(vt) && !dbg_flag("MCLA_DBG_P3");
     let input = if wiped { CarInput { throttle: 0.0, brake: 0.5, handbrake: false, ..input } } else { input };
@@ -4976,6 +4987,13 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // x its inertia (component by component, as the original multiplies them) go into the body's
     // force and torque sums, +336 / +352, through the collider's slots 31 / 33 (F-18006,
     // F-93816) - the sums the next tick integrates over its dt (F-94789) and then clears.)
+    // (mcCarFluid's update, F-84852: in the water, the lattice's points under its level held up and
+    // dragged towards the current, F-87118 - through the collider's AddForce / AddTorque into the same sums)
+    if let Some(fl) = vs.fluid.as_mut() {
+        let (ff, fq) = fl.update(&body_rows, super::exact::point_through(com_local, &body_rows), chassis_at, st.vel, st.ang_vel, mass);
+        force += ff;
+        torque += fq;
+    }
     if let Some((pf, pt)) = vs.pulse.take() {
         force += pf * mass;
         torque += pt * inertia;
@@ -5400,6 +5418,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let r3 = !dbg_flag("MCLA_DBG_R3");
             super::solver::ISLAND_OTHERS.store(if r3 { REPLAY_OTHERS.load(std::sync::atomic::Ordering::Relaxed) as usize } else { 0 }, std::sync::atomic::Ordering::Relaxed);
             super::solver::ISLAND_OTHERS_E.store(REPLAY_OTHERS_E.load(std::sync::atomic::Ordering::Relaxed), std::sync::atomic::Ordering::Relaxed);
+            // (the manifolds see `death`: F-58580 below takes those contacts out)
+            let see_death = super::collision::PassDeath::off();
             super::hull::collide(hull, bbox, &seen, &last, world, cell_ball, &mut vs.manifolds);
             // (the wheels' parts after the hull's: every contact of a wheel's shape where the
             // move has brought it. What the wheel itself is told of them the next update reads
@@ -5432,6 +5452,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     }
                 }
             }
+            drop(see_death);
             let wheel_of_part = |part: u8| -> usize { if dbg_flag("MCLA_DBG_WHEELORDER") { [0, 2, 1, 3][part as usize - 1] } else { part as usize - 1 } };
             let up_update = vs.prev_up.unwrap_or(rows0[1]);
             let car_city_pair = !vs.manifolds.is_empty();
@@ -5487,8 +5508,19 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             // (and the part of the car each is on)
             let mut city_part: Vec<u8> = Vec::new();
             let mut hull_at: Vec<usize> = Vec::new();
+            // (the fluid callback, F-58580, first of the car's callbacks (F-40568): every contact's material)
+            let mut fluid_scan = vs.fluid.as_ref().map(super::fluid::Scan::new);
             for m in vs.manifolds.iter_mut() {
                 for slot in m.slots.iter_mut() {
+                    if let Some(scan) = fluid_scan.as_mut() {
+                        if !scan.contact(slot.surface, slot.c.on_world, p.dmg[0]) {
+                            // (`death`: byte +165's top bit cleared - the solver and the callbacks after it do not have it)
+                            slot.enabled = false;
+                            city_rows.push(false);
+                            city_part.push(slot.part);
+                            continue;
+                        }
+                    }
                     city_rows.push(true);
                     city_part.push(slot.part);
                     // (F-43430: the two materials' friction and elasticity multiplied; the
@@ -5553,6 +5585,18 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     }
                     hull_at.push(contacts.len());
                     contacts.push(*c);
+                }
+            }
+            if let (Some(scan), Some(fl)) = (fluid_scan, vs.fluid.as_mut()) {
+                // (in or out of the water: out only while the chassis' vt+48, F-71660, says it drives - flags +592
+                // 0 or 0x10; approx.: taken as not damaged out)
+                scan.finish(fl, st.damage < 1.0);
+                // (the damage's vt+16, F-15289, unless the car is damaged out already, +36 >= MaxDamage)
+                if scan.damage > 0.0 && st.damage < 1.0 {
+                    st.add_damage(p, scan.damage);
+                    // (AddDamage's event leaves its exploding byte, +122, at 0 - only the impact path sets it: a car
+                    // damaged out in the water does not explode. Recorded, wa.0: +44 from DamageOutDelay, 1.0)
+                    st.last_hit = 0.0;
                 }
             }
             // (the ability hook's city contacts, F-46500: every enabled one, the normal as it pushes the car)

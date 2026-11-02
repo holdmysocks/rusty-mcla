@@ -577,6 +577,9 @@ struct App {
     crash_bits: u8,
     crash_timer: f32,
     crash_exploding: bool,
+    /// the player racer's safe matrix (racer +224, F-12529): its place and turn where it last drove
+    /// on firm ground, what QUICK FIX puts a damaged-out car back at (water_rule.md 4, 5)
+    safe_matrix: Option<(Vec3, glam::Quat)>,
     /// the wipeout camera (mcPlayerCamera +72)
     crash_cam: boomcam::CrashCam,
     /// standing still: seconds so far, the car's "Idle" view once looked up, how far it is blended in
@@ -1153,6 +1156,7 @@ impl App {
             crash_bits: 0,
             crash_timer: 0.0,
             crash_exploding: false,
+            safe_matrix: None,
             crash_cam: Default::default(),
             idle_time: 0.0,
             view_mode: 0,
@@ -2547,11 +2551,25 @@ impl App {
         if std::env::var("MCLA_COP_TEST").is_ok_and(|v| v == "bolt") && self.ticket_run.is_some() && self.cine.playing.as_ref().is_some_and(|sc| sc.t >= 2.5) {
             player_input.throttle = 1.0;
         }
-        // (test hook MCLA_TEST_THROTTLE=<0..1>[,<from tick>]: that much throttle from that tick on - a slow car for the cops)
+        // (test hook MCLA_TEST_THROTTLE=<0..1>[,<from tick>[,<to tick>]]: that much throttle from that tick on - a slow car
+        // for the cops - and none from the last)
         if let Ok(v) = std::env::var("MCLA_TEST_THROTTLE") {
             let n: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
             if self.tick_no as f32 >= n.get(1).copied().unwrap_or(0.0) {
-                player_input.throttle = n.first().copied().unwrap_or(0.0);
+                player_input.throttle = if self.tick_no as f32 >= n.get(2).copied().unwrap_or(f32::MAX) { 0.0 } else { n.first().copied().unwrap_or(0.0) };
+            }
+        }
+        // (test hook MCLA_TEST_HOLD=<m/s>,<secs>: the recorder's hold - the player's car pushed along its way at that speed for
+        // the first seconds, its fall left alone)
+        if let Ok(v) = std::env::var("MCLA_TEST_HOLD") {
+            let n: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if self.sim_time < n.get(1).copied().unwrap_or(0.0) {
+                if let Some(c) = self.vehicles.player_mut() {
+                    let f = c.state.forward();
+                    let f = Vec3::new(f.x, 0.0, f.z).normalize_or_zero() * n.first().copied().unwrap_or(0.0);
+                    c.state.vel = Vec3::new(f.x, c.state.vel.y, f.z);
+                    c.state.ang_vel = Vec3::ZERO;
+                }
             }
         }
         // (test hook: MCLA_GRID_NITRO=1 holds the nitrous button all the time)
@@ -2962,6 +2980,40 @@ impl App {
                 }
             }
         }
+        // ---- the racer's safe place (F-12529, every frame; water_rule.md 4): fallen under -75 m the car is
+        // set down at it (F-86308), else it is taken afresh from the car unless the car is damaged or wiped
+        // out (mcCarDamage +44 running), in the water, in the air (chassis +584), stuck (mcCarStuck +56),
+        // less than 10 m from the last, or with a wheel on a material deeper than 0.075 ----
+        if std::env::var_os("MCLA_DBG_WATER").is_some() {
+            // (MCLA_DBG_WATER: the player's car in and about the water, a line a tick - water_rule.md's comparison)
+            if let Some(c) = self.vehicles.player() {
+                let fl = c.state.veh.as_ref().and_then(|v| v.fluid.as_ref());
+                let max = c.model.simtunes.as_ref().map_or(400.0, |s| s.base.damage.max_damage);
+                log::info!("water t {:.3} tick {} pos {:.3} {:.3} {:.3} fwd {:.2} {:.2} gear {} in {:.2}/{:.2}/{} speed {:.2} damage {:.3} in {} level {:.4} buoyancy {:.4} flow {:.1} wheels {:?} bits {:#x} timer {:.2} safe {:?}", self.sim_time, self.tick_no, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.forward().x, c.state.forward().z, c.state.gear, c.input.throttle, c.input.brake, c.input.handbrake, c.state.speed(), c.state.damage * max,
+                    fl.map_or(false, |f| f.inside), fl.map_or(0.0, |f| f.level), fl.map_or(0.0, |f| f.buoyancy), fl.map_or(0.0, |f| f.flow.x),
+                    c.state.wheels.iter().map(|w| physics::collision::Surface::from_u8(w.surface).material()).collect::<Vec<_>>(), self.crash_bits, self.crash_timer, self.safe_matrix.map(|(p, _)| (p.x, p.y, p.z)));
+            }
+        }
+        if let Some(c) = self.vehicles.player_mut() {
+            if c.state.pos.y < f32::from_bits(0xc296_0000) {
+                if let Some((pos, rot)) = self.safe_matrix {
+                    // (approx.: F-86308 is not read through; the car is put there standing still, as the port's other set-downs)
+                    log::info!("car fell under -75 m at {:.1} {:.1} {:.1}: set down at its safe place {:.1} {:.1} {:.1}", c.state.pos.x, c.state.pos.y, c.state.pos.z, pos.x, pos.y, pos.z);
+                    c.state.relocate(pos, rot);
+                    c.state.vel = Vec3::ZERO;
+                    c.state.ang_vel = Vec3::ZERO;
+                    c.pose_history.reset();
+                }
+            } else {
+                let timer = self.crash_bits != 0 && self.crash_timer > 0.0;
+                let stuck = c.state.veh.as_ref().map_or(false, |v| v.stuck != 0);
+                let wet = c.state.wheels.iter().any(|w| physics::collision::surface_depth(physics::collision::Surface::from_u8(w.surface)) > f32::from_bits(0x3d99_999a));
+                let far = self.safe_matrix.map_or(true, |(pos, _)| (c.state.pos - pos).length_squared() >= 100.0);
+                if !timer && !c.state.in_water() && c.state.airborne_time == 0.0 && !stuck && far && !wet {
+                    self.safe_matrix = Some((c.state.pos, c.state.rot));
+                }
+            }
+        }
         // ---- crashes (crash_camera_rule.md 4): the player's car wiped out (chassis +592 bit 0x10) or
         // damaged out (0x04); a wreck is put back on the road, repaired, a moment later ----
         {
@@ -3033,10 +3085,17 @@ impl App {
                         // PauseMenu in the cruise - its QUICK FIX row, free - or ends the race into the
                         // race-over menu; the port has neither row yet, so the car is set going here,
                         // free, as that QUICK FIX would)
+                        let safe = self.safe_matrix;
                         if let Some(c) = self.vehicles.player_mut() {
                             let f = c.state.forward();
                             let gear = c.state.gear;
-                            c.state = physics::CarState::new(c.state.pos + Vec3::Y * 0.8, (-f.x).atan2(-f.z));
+                            // (QUICK FIX, F-32850: a damaged-out car from the racer's safe matrix, +224 - out of the water
+                            // it drove into - upright with that matrix's heading; approx. without one: where it stands, lifted)
+                            let (at, yaw) = match safe {
+                                Some((pos, rot)) => (pos, quick_fix_yaw(rot)),
+                                None => (c.state.pos + Vec3::Y * 0.8, (-f.x).atan2(-f.z)),
+                            };
+                            c.state = physics::CarState::new(at, yaw);
                             c.pose_history.reset();
                             c.state.gear = gear;
                             c.placed = false;
@@ -7418,6 +7477,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         // ---- the race-over menu's quick fix ----
         if std::mem::take(&mut self.game.quick_fix) {
+            let damaged_out = self.vehicles.player().map_or(false, |p| p.state.damage >= 1.0);
+            let safe = self.safe_matrix.filter(|_| damaged_out);
             if let Some(a) = self.audio.as_mut() {
                 a.obj("QUICK_FIX_MASTER");
             }
@@ -7435,13 +7496,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 p.state.damage = 0.0;
                 p.state.dmg.repair();
                 p.state.zones = [0.0; 4];
-                // (F-32850: set upright where it stands, its heading kept, then the racer's
-                // reset F-39432(0))
-                let f = p.state.forward();
-                let f = Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::NEG_Z);
-                let right = f.cross(Vec3::Y).normalize_or(Vec3::X);
-                let pos = p.state.pos;
-                p.state.relocate(pos, glam::Quat::from_mat3(&glam::Mat3::from_cols(right, Vec3::Y, -f)).normalize());
+                // (F-32850: set upright where it stands - damaged out, at the racer's safe matrix, +224 -
+                // its heading kept (atan2 of the matrix's third row), then the racer's reset F-39432(0))
+                let (pos, rot) = safe.unwrap_or((p.state.pos, p.state.rot));
+                p.state.relocate(pos, glam::Quat::from_rotation_y(quick_fix_yaw(rot)));
                 p.state.vel = Vec3::ZERO;
                 p.state.ang_vel = Vec3::ZERO;
                 // (and the flags +592 set to 0, F-30391(0): no longer damaged out, the hold off; the engine word +46 = 1)
@@ -14622,6 +14680,13 @@ fn pick_two(cand: &[(i32, f32, Vec3, Vec3, f32)]) -> (i32, f32, i32, f32) {
         }
     }
     (b0, w0, b1, w1)
+}
+
+/// QUICK FIX's heading (F-32850): atan2 of the matrix's third row, x over z - the euler (0, h, 0) the car is
+/// set upright with.
+fn quick_fix_yaw(rot: glam::Quat) -> f32 {
+    let z = rot * Vec3::Z;
+    z.x.atan2(z.z)
 }
 
 /// The slot keeping of F-99357 / F-56246: the best goes to the first slot and the second to the other,

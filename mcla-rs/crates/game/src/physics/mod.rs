@@ -6,6 +6,7 @@ pub mod car;
 pub mod collision;
 pub mod drivetrain;
 pub mod exact;
+pub mod fluid;
 pub mod gjk;
 pub mod headon;
 pub mod hull;

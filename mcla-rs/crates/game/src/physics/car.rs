@@ -419,6 +419,10 @@ impl CarState {
 
     /// Move a complete chassis pose without leaving its visual hubs behind.
     /// Ground contacts remain samples of the old world until the next physics tick.
+    /// In deep water: mcCarFluid's bit (chassis +12, F-58580 sets it).
+    pub fn in_water(&self) -> bool {
+        self.veh.as_ref().and_then(|v| v.fluid.as_ref()).map_or(false, |f| f.inside)
+    }
     pub fn relocate(&mut self, pos: Vec3, rot: Quat) {
         let inverse = self.rot.inverse();
         for wheel in &mut self.wheels {

@@ -456,6 +456,37 @@ pub fn ray_tri_front(o: Vec3, d: Vec3, tri: &[Vec3; 3], max_t: f32) -> Option<(f
     Some((t, e1.cross(e2).normalize_or_zero()))
 }
 
+thread_local! {
+    static PASS_DEATH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While it lives, this thread's queries pass through the `death` material's triangles: what a
+/// car's own suspension and checks read. The original's fluid callback (F-58580) takes every
+/// contact on `death` out of the car's solve, so a car stands on what lies below it; its
+/// contact manifolds still see them (`PassDeath::off`), for the callback to find.
+pub struct PassDeath(bool);
+
+impl PassDeath {
+    pub fn on() -> PassDeath {
+        PassDeath(PASS_DEATH.with(|c| c.replace(true)))
+    }
+    pub fn off() -> PassDeath {
+        PassDeath(PASS_DEATH.with(|c| c.replace(false)))
+    }
+}
+
+impl Drop for PassDeath {
+    fn drop(&mut self) {
+        PASS_DEATH.with(|c| c.set(self.0));
+    }
+}
+
+/// Is triangle `i` of `s` one this thread's queries see?
+#[inline]
+fn seen(s: &SectorMesh, i: usize) -> bool {
+    !(PASS_DEATH.with(|c| c.get()) && s.mats.get(i) == Some(&(Surface::Death as u8)))
+}
+
 #[derive(Default)]
 pub struct WorldCollider {
     // Stable traversal makes equal-distance contacts independent of hash seeds
@@ -486,6 +517,9 @@ impl WorldCollider {
                 for cz in cz0..=cz1 {
                     if let Some(list) = s.grid.get(&(cx, cz)) {
                         for &i in list {
+                            if !seen(s, i as usize) {
+                                continue;
+                            }
                             let tri = &s.tris[i as usize];
                             let lim = best.map_or(max_t, |h| h.t);
                             if let Some((t, n)) = ray_tri(o, d, tri, lim) {
@@ -544,6 +578,9 @@ impl WorldCollider {
             for s in self.sectors.values() {
                 if let Some(list) = s.grid.get(&c) {
                     for &ti in list {
+                        if !seen(s, ti as usize) {
+                            continue;
+                        }
                         let lim = best.map_or(max_t, |h| h.t);
                         if let Some((t, n)) = ray_tri(o, d, &s.tris[ti as usize], lim) {
                             best = Some(Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(ti as usize).copied().unwrap_or(0)) });
@@ -602,6 +639,9 @@ impl WorldCollider {
             seen.sort_unstable();
             seen.dedup();
             for &i in &seen {
+                if !self::seen(s, i as usize) {
+                    continue;
+                }
                 let tri = &s.tris[i as usize];
                 let lo = tri[0].min(tri[1]).min(tri[2]);
                 let hi = tri[0].max(tri[1]).max(tri[2]);
@@ -636,6 +676,9 @@ impl WorldCollider {
             seen.sort_unstable();
             seen.dedup();
             for &i in &seen {
+                if !self::seen(s, i as usize) {
+                    continue;
+                }
                 let tri = &s.tris[i as usize];
                 let lo = tri[0].min(tri[1]).min(tri[2]);
                 let hi = tri[0].max(tri[1]).max(tri[2]);
@@ -660,6 +703,9 @@ impl WorldCollider {
                 for cz in cz0..=cz1 {
                     if let Some(list) = s.grid.get(&(cx, cz)) {
                         for &i in list {
+                            if !seen(s, i as usize) {
+                                continue;
+                            }
                             let tri = &s.tris[i as usize];
                             let q = closest_point_tri(c, tri);
                             let dv = c - q;
