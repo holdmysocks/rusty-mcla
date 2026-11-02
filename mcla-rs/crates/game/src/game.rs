@@ -842,6 +842,9 @@ pub struct Game {
     /// the message box on screen: its definition, the highlighted choice and what
     /// its confirming choice does
     pub message_box: Option<(crate::flash_ui::MessageBoxDef, usize, MenuAction)>,
+    /// The box is of type 5 (F-48904 jump table: no option rows, the one prompt BACK (B) from the
+    /// pair {2, `prompt_back`}, UI.md): A does nothing, B closes it
+    pub box_back_only: bool,
     /// the garage view's menu placement (rotation, offset, scale; see `garagecam::View`)
     /// and the views' frame in the world, set by the camera code each frame
     pub garage_panel: Option<(f32, Vec3, [f32; 2], glam::Mat4)>,
@@ -1426,6 +1429,7 @@ impl Game {
             road_map: None,
             flash_popup: None,
             message_box: None,
+            box_back_only: false,
             garage_panel: None,
             pause_cam: None,
             data_dir: String::new(),
@@ -11363,6 +11367,7 @@ impl Game {
             }
         }
         let Some((def, mut sel, confirm)) = self.message_box.clone() else {
+            self.box_back_only = false;
             // The LOADING tag (the popup movie's `save_mc`: `savegame_text`, `savegame_anim`
             // 1 = come in, 2 = go) while the game moves between the city and the garage
             // (reference `t28`). (approx.) The original shows it for as long as it loads,
@@ -11450,10 +11455,15 @@ impl Game {
             title: st(&def.title).to_uppercase(),
             rows: def.options.iter().map(|(_, d)| MenuRow { label: st(d).to_uppercase(), value: String::new(), enabled: true, part: None }).collect(),
             select: sel,
-            // (a box that only says something closes on CONTINUE)
-            prompts: vec![(st(if def.options.is_empty() { "prompt_continue" } else { "prompt_accept" }).to_uppercase(), ICON_A)],
+            // (a box that only says something closes on CONTINUE; type 5 on BACK)
+            prompts: if self.box_back_only {
+                vec![(st("prompt_back").to_uppercase(), crate::flash_ui::ICON_B)]
+            } else {
+                vec![(st(if def.options.is_empty() { "prompt_continue" } else { "prompt_accept" }).to_uppercase(), ICON_A)]
+            },
             ..MenuPage::default()
         };
+        let enter = enter && !self.box_back_only;
         // From the pause menu the box stands on the menu's own panel, in the pause movie
         // (reference `t25`: QUIT RACE with BACK and ACCEPT), not in the popup movie.
         let in_pause = matches!(self.mode, Mode::Paused) && self.flash_menu.is_some() && !self.photo_on;
@@ -11469,6 +11479,9 @@ impl Game {
             self.message_box = None;
         } else {
             self.message_box = Some((def, sel, confirm));
+        }
+        if self.message_box.is_none() {
+            self.box_back_only = false;
         }
         if in_pause {
             self.box_page = self.message_box.is_some().then(|| MenuPage { prompts: vec![(st("prompt_accept").to_uppercase(), ICON_A), (st("prompt_back").to_uppercase(), crate::flash_ui::ICON_B)], list_max: 6, ..page.clone() });
@@ -13937,6 +13950,15 @@ impl Game {
                     out = Some(MenuAction::Back);
                     // (the type list's BACK leaves GOAL ATTACK: F-81761 A-89718)
                     self.goal_attack = false;
+                } else if (std::mem::take(&mut self.nav_select) || ctx.input(|i| i.key_pressed(egui::Key::Tab))) && !shown.is_empty() {
+                    // INFORMATION (the back button, message 59 of F-81761): UI_MENU_SELECT and the box of
+                    // type 5 titled `Dlg_Title_ModeInfo` with `Dlg_Desc_` + the type under the cursor
+                    // (offline; in the online SL_Session_List state UI_MENU_ERROR and no box, F-59143)
+                    let k = shown[cur[0].min(shown.len() - 1)];
+                    self.opt_x.s23b.ui_obj = Some("UI_MENU_SELECT");
+                    let def = crate::flash_ui::MessageBoxDef { title: "Dlg_Title_ModeInfo".into(), description: format!("Dlg_Desc_{}", TYPES[k].0), options: Vec::new() };
+                    self.message_box = Some((def, 0, MenuAction::None));
+                    self.box_back_only = true;
                 }
             }
             1 if self.goal_attack => {
@@ -14059,10 +14081,22 @@ impl Game {
             layout,
             // (the GPS movie's title icons: 1 globe, 4 pad)
             icon: std::env::var("MCLA_ARCADE_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(4),
-            // (the original marks each race with a star in a ring; that icon is not among the
-            // row icons this template knows - `property1` 3..6: padlock, crossed box - so the
-            // rows go without. MCLA_ROW_ICON tries a value.)
-            row_props: match std::env::var("MCLA_ROW_ICON").ok().and_then(|v| v.parse().ok()) { Some(v) if page_no == 1 => vec![v; rows_n], _ => Vec::new() },
+            // (each race row carries its district's icon: the movie draws `property1` 30..36 as
+            // iconlist.offline frame property1 - 20 in white (40..46: - 30, the title colour),
+            // frames 10..16 = star, palm, hills road, skyline, SC, none, LA - the race district
+            // enum's order, RACE_DISTRICTS; so 30 + the race's district (t05: Hollywood's stars).
+            // MCLA_ROW_ICON tries a value.)
+            row_props: match std::env::var("MCLA_ROW_ICON").ok().and_then(|v| v.parse().ok()) {
+                Some(v) if page_no == 1 => vec![v; rows_n],
+                _ if page_no == 1 && !self.goal_attack => races
+                    .iter()
+                    .map(|(i, _)| match crate::mc4::RACE_DISTRICTS.iter().position(|n| self.race_defs.get(*i).map_or(false, |d| n.eq_ignore_ascii_case(d.district.trim()))) {
+                        Some(k) => 30 + k as i32,
+                        None => 1,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
             title: if self.goal_attack { up_st("goal_attack_title", "GOAL ATTACK") } else { up_st("pause_arcade", "ARCADE") },
             rows,
             select: self.arcade.2[page_no as usize],

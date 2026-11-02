@@ -62,6 +62,10 @@ pub fn cmd_swf(a: &[String]) -> Result<()> {
             }
             let mut p = Player::new(movie.clone());
             let inst = p.preview(id);
+            // (an optional frame, from 0)
+            if let Some(f) = a.get(5).map(|s| s.parse::<usize>()).transpose()? {
+                p.goto(inst, f);
+            }
             let list = mcla_flash::draw::build_instance(&p, inst);
             let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
             for it in &list.items {

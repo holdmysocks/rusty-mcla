@@ -704,6 +704,10 @@ struct App {
     /// ...and is flying back to ARCADE's view (RacePickerDown), or has (the camera then stays where
     /// the flight left it until ARCADE is left): 1 flying, 2 landed
     race_back_on: u8,
+    /// ARCADE was up last frame; and the map's entering flight onto ARCADE's view (Entering_Map_*,
+    /// hudmap::CineClimb::enter) while it runs
+    arcade_in: bool,
+    arcade_climb: Option<hudmap::CineClimb>,
     /// the GPS camera of the last map frame (the exit flies from it)
     nav_rows: Option<hudmap::CamRows>,
     nav_free_moving: bool,
@@ -1223,6 +1227,8 @@ impl App {
             nav_free: false,
             race_view_on: false,
             race_back_on: 0,
+            arcade_in: false,
+            arcade_climb: None,
             nav_rows: None,
             nav_free_moving: false,
             map_open: 0.0,
@@ -8762,7 +8768,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let arcade_view = self.game.mode == Mode::RaceSelect && self.game.flash_navsys.is_some() && self.game.hangout_key.is_none() && self.hangout_in.is_none() && !self.game.wager_here && std::env::var("MCLA_ARCADE_FLAT").is_err();
         if !arcade_view {
             self.game.race_view = None;
+            self.arcade_climb = None;
         }
+        let arcade_enter = arcade_view && !self.arcade_in;
+        self.arcade_in = arcade_view;
         let map3d = (self.game.show_map || arcade_view) && self.citymap.is_some() && self.drive;
         // The original's GPS map is the city itself drawn from the map camera (its far models, the
         // hour's light, rule_frame.md 4.1); MCLA_MAP_BAKED=1: the port's baked top-down picture.
@@ -8770,6 +8779,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if map3d {
             // (the game camera the map's opening flies from)
             let (game_eye, game_look) = (self.chase.pos, self.chase.look);
+            // (the render camera, as DEFAULT_WITH_CUT's climb takes it)
+            let game_rows = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + (game_look - game_eye).normalize_or(Vec3::NEG_Z), self.chase.up);
             let game_fov = self.cam.fov_y.to_degrees();
             // (the coarse relief for the GPS map's x-ray, hudmap::Heights)
             if let (Some(hm), Some(cm)) = (self.game.hm.as_mut(), self.citymap.as_ref()) {
@@ -8842,11 +8853,38 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
             let arcade_at = self.vehicles.player().map(|c| c.state.pos).unwrap_or(look);
             if arcade_view && std::env::var("MCLA_ARCADE_OLDCAM").is_err() {
+                // (the map opens on ARCADE with the entering flight from the game camera, F-39307 with
+                // NM+378 clear: E = the car's matrix, its x / z clamped as arcade_rest's look point)
+                if arcade_enter {
+                    if let Some(p) = self.vehicles.player() {
+                        let (_, l) = hudmap::NavCam::arcade_rest(p.state.pos, aspect);
+                        let e = hudmap::CamRows { r0: p.state.rot * Vec3::X, r1: p.state.rot * Vec3::Y, r2: p.state.rot * Vec3::Z, eye: Vec3::new(l.x, p.state.pos.y, l.z) };
+                        let s = game_rows;
+                        let c = hudmap::CineClimb::enter(s, e, game_fov.to_radians(), 25f32.to_radians(), self.screen_v);
+                        log::info!("ARCADE entering flight: {:?} ({:.3} s) from {:?} over the car at {:?}", c.kind(), c.total(), s.eye, e.eye);
+                        self.arcade_climb = Some(c);
+                    }
+                }
                 let (e, l) = hudmap::NavCam::arcade_rest(arcade_at, aspect);
                 self.chase.pos = e;
                 self.chase.look = l;
                 self.cam.pos = e;
                 self.cam.fov_y = 25f32.to_radians();
+                if let Some(c) = self.arcade_climb.as_mut() {
+                    match c.step(dt) {
+                        Some((rows, fov)) => {
+                            if std::env::var("MCLA_NAV_LOG").is_ok() {
+                                log::info!("arcade enter: t {:.3} eye {:.1} {:.1} {:.1} pitch {:.2} fov {:.2}", c.t(), rows.eye.x, rows.eye.y, rows.eye.z, (-rows.r2.y).clamp(-1.0, 1.0).asin().to_degrees(), fov.to_degrees());
+                            }
+                            self.chase.pos = rows.eye;
+                            self.chase.look = rows.look_point();
+                            self.chase.up = rows.r1;
+                            self.cam.pos = rows.eye;
+                            self.cam.fov_y = fov;
+                        }
+                        None => self.arcade_climb = None,
+                    }
+                }
             }
             // The original's GPS camera (NavMap, rule_frame.md 4.3): height H from 850 to 9000 on
             // t = 1 - sin(u pi / 2), u stepped 0.02 a frame (30 a second) while a zoom trigger is held;
@@ -8859,6 +8897,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if race_view || (arcade_view && self.race_view_on) {
                 if race_view && (!self.race_view_on || self.race_back_on != 0) {
                     self.nav.race_pick(self.chase.pos, self.chase.look, aspect);
+                    self.arcade_climb = None;
                     self.nav.lens = hudmap::NavLens::done();
                     self.race_view_on = true;
                     self.race_back_on = 0;
