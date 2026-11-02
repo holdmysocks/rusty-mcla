@@ -14087,6 +14087,14 @@ impl Game {
         self.hookman_race && self.career.hookman_mission() == Some("RACE_GH_06") && id.ends_with("hw_ordered_jp_11")
     }
 
+    /// A story race whose script puts no opponent on the map: the man's element (SetVehicleElement
+    /// subtype 2) is never added (RACE_GH_06_CORE: no AddElement at all) and only the finish's element is added after Race_Create (RACE_GH_02_CORE 0x15c5, BEAT_GH_04_MUSCLE_CORE
+    /// 0xebf, BEAT_GH_05_TUNER_CORE 0xebe), and none makes a subtype-6 element. Every other story race
+    /// keeps the man's element added through the race or adds subtype-6 ones (work/ui2/sto/summary.txt)
+    pub fn story_race_hides_opponents(&self) -> bool {
+        self.hookman_race && matches!(self.career.hookman_mission(), Some("RACE_GH_06" | "RACE_GH_02" | "BEAT_GH_04_MUSCLE" | "BEAT_GH_05_TUNER"))
+    }
+
     /// GO TO GARAGE's gate (F-88974): some garage's state is 2 and the stat tGAR is not 0 - garage_core sets it the first
     /// time the player drives into a garage (0x517..0x52a). A game without a career has it.
     pub fn go_garage_gate(&self) -> bool {

@@ -558,8 +558,9 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     }
     // the red light's and the freeway's man keep their racer element through the race, which the
     // racer renderer draws as the arrow in RacerColor while a race is current - work/hookmen2
-    // `cap/rl_14`, `rl_15`, `fw_06` (the green arrow by the player's, a cop's blue one beside); the
-    // career's races show no arrow for their opponents (work/ui/ref/ng_race_044..047, RACE_GH_06)
+    // `cap/rl_14`, `rl_15`, `fw_06` (the green arrow by the player's, a cop's blue one beside); four
+    // story races show none for their opponents (`Game::story_race_hides_opponents`; RACE_GH_06 in
+    // work/ui/ref/ng_race_044..047)
     // the beat me there run: the hookman keeps his own element (SetVehicleElement subtype 3,
     // `CruisingHookmen/0x897fb23f` 0x1a8) and his icon is shown (Racer_HideIcon(him, 0), 0x1311); with
     // the run's race current the racer renderer draws him as the plain arrow in RacerColor. The port
@@ -575,8 +576,10 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     }
     // the other races' scripts list theirs with subtype 6 (RaceWrapper `race/0xc4e26a20` 0x515,
     // TournamentCore `race/0x039dd301` 0x4b7, OrderedSeriesCore `race/0xb8b948b6` 0x455) and the
-    // original draws them: the walkthrough's tournament at 4:18:50, 4:19:44, 4:21:40, a race at 0:17:30
-    if let Some(race) = game.race.as_ref().filter(|r| r.kind == crate::game::RaceKind::Race && !game.rgh06_race()) {
+    // original draws them: the walkthrough's tournament at 4:18:50, 4:19:44, 4:21:40, a race at 0:17:30.
+    // The story races list the man (subtype 2, kept added through the race) and, with more racers,
+    // subtype-6 elements - save the four whose scripts add neither
+    if let Some(race) = game.race.as_ref().filter(|r| r.kind == crate::game::RaceKind::Race && !game.story_race_hides_opponents()) {
         for (k, &i) in race.participants.iter().enumerate() {
             let Some(c) = vehicles.cars.get(i).filter(|c| !c.is_player) else { continue };
             let mut e = Element::at(Kind::OtherCar, c.state.pos);
