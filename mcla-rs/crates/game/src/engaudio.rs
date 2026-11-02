@@ -93,6 +93,8 @@ pub fn default_object<'a>(lib: &'a SoundLib, car: &str, bike: bool, player: bool
     g.get(be_u32(profile, if player { 10 } else { 14 }))
 }
 
+static NEXT_CHAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
 pub struct EngineSound {
     recs: Vec<Rec>,
     /// XF+12 cents, XF+14 mB as dB, EFFECT+10 mB as dB
@@ -181,6 +183,13 @@ pub struct EngineSound {
     blend: f32,
     wobble: (f32, f32, f32),
     racing_curve: u32,
+    /// the car's `VP_*_EFFECT_PARAMS` (entity +1232, the DEFAULT object +30) and this engine's PLAYER_WAVESHAPER
+    /// chain (entity +1280: the player's one, an opponent's from the pool of 7), its id in the mixer
+    eff: Vec<u8>,
+    chain: u32,
+    /// the waveshaper drive's input (entity +196, set with the load volume) and the drive (entity +1916)
+    ws_in: f32,
+    ws_drive: f32,
 }
 
 #[derive(Default)]
@@ -317,6 +326,10 @@ impl EngineSound {
             prev_gear: 0,
             pending_gear: None,
             backfire_armed: None,
+            eff: eff.to_vec(),
+            chain: if eff.is_empty() { 0 } else { NEXT_CHAIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) },
+            ws_in: 0.0,
+            ws_drive: 0.0,
         })
     }
 
@@ -400,31 +413,40 @@ impl EngineSound {
         let load_abs = load.abs().min(1.0);
         let reversing = e.gear == -1 && e.speed > 1.0;
         // load volume (player F-42554, opponent F-57529)
+        // (each branch also sets the waveshaper drive's input, entity +196)
         if reversing {
             approach_fma(&mut self.load_vol, self.load_rev, 0.8, dt);
+            self.ws_in = e.throttle_in;
         } else if !self.player {
             let drive = load_abs.max(e.pedal).max(self.load_floor).max(self.load_brake);
             let full = if e.racing { 1.0 } else { drive };
-            let target = if self.load_smooth > 0.0 || e.speed < self.load_slow {
-                full
+            let (target, ws) = if self.load_smooth > 0.0 {
+                (full, full)
+            } else if e.speed < self.load_slow {
+                (1.0, full)
             } else if e.pedal < 0.5 {
-                if e.racing { 1.0 } else { self.load_floor }
+                (if e.racing { 1.0 } else { self.load_floor }, if e.racing { 1.0 } else { load_abs })
             } else if e.shift != 0 {
-                self.load_brake
+                (self.load_brake, load_abs)
             } else {
-                full
+                (full, full)
             };
             approach_fma(&mut self.load_vol, target, self.load_rate, dt);
+            self.ws_in = ws;
         } else {
             let drive = load_abs.max(e.throttle_in).max(e.pedal).max(self.load_floor).max(self.load_brake);
             if self.load_smooth > 0.0 {
                 approach_fma(&mut self.load_vol, drive, self.load_rate, dt);
+                self.ws_in = drive;
             } else if e.speed < self.load_slow {
                 approach(&mut self.load_vol, 1.0, dt);
+                self.ws_in = drive;
             } else if e.throttle_in < 0.5 || e.shift != 0 {
                 approach_fma(&mut self.load_vol, self.load_brake, self.load_rate, dt);
+                self.ws_in = load_abs;
             } else {
                 approach_fma(&mut self.load_vol, drive, self.load_rate, dt);
+                self.ws_in = drive;
             }
         }
         // the kick: throttle re-applied (F-12996)
@@ -583,7 +605,9 @@ impl EngineSound {
             let vol = crate::sndobj::fmadds(self.vol_a, 0.01, crate::sndobj::fmadds(self.effect_db, 0.01, lin2db(fade * g)));
             // (F-74444: cents = trunc(offset + float(log10 ratio) * 3.321928 * 1200); recorded in the running original)
             let cents = (self.pitch_off + crate::caraudio::pitch_cents_f32(x / r.reference) + lfo_cents) as i32;
-            let req = Req { pos: Some(loop_pos), volume: vol, pitch: cents, doppler: self.doppler, player: self.player, ..Default::default() };
+            // F-74444 / F-17698: dry EFFECT_PARAMS +16, chain send +12; F-89149: record 0 pans the chain
+            let (dry, fx_send) = if self.eff.is_empty() { (1.0, 0.0) } else { (be_f32(&self.eff, 16), be_f32(&self.eff, 12)) };
+            let req = Req { pos: Some(loop_pos), volume: vol, pitch: cents, doppler: self.doppler, player: self.player, dry, fx_send, chain: self.chain, pans_chain: i == 0, ..Default::default() };
             match self.voices[i] {
                 Some(h) if lib.playing(h) => lib.set(h, req),
                 _ => self.voices[i] = lib.play_hash(r.sound, req),
@@ -591,6 +615,42 @@ impl EngineSound {
         }
         self.audio_rpm = x;
         self.end_frame(lib, e, dt);
+    }
+
+    /// The PLAYER_WAVESHAPER chain's settings this frame (F-65630, BUS_GRAPH_RULE.md 3.2), from EFFECT_PARAMS and the
+    /// audio rpm (entity +212).
+    fn step_chain(&mut self, lib: &mut SoundLib, e: &EngineIn, dt: f32) {
+        if self.chain == 0 {
+            return;
+        }
+        let o = &self.eff;
+        let f = |a: usize| be_f32(o, a);
+        let s16 = |a: usize| be_u16(o, a) as i16 as f32;
+        let map = |c: usize, lo: f32, hi: f32, x0: f32, x1: f32, x: f32| crate::caraudio::map(lib, be_u32(o, c), lo, hi, x0, x1, x);
+        let flags = be_u32(o, 5);
+        let on = |b: u32| if matches!(b & 3, 1 | 2) { 1 } else { 0 };
+        let rpm = self.audio_rpm;
+        let g = ((rpm - f(76)) / (f(80) - f(76))).max(0.0).min(1.0);
+        let (target, rate) = if e.torque >= 0.0 {
+            (g * map(60, f(36), f(40), f(28), f(32), self.ws_in), f(64))
+        } else {
+            (g * map(60, f(52), f(56), f(44), f(48), self.ws_in), f(68))
+        };
+        let mut drive = self.ws_drive;
+        approach_fma(&mut drive, target, rate, dt);
+        let curve = lib.curve(be_u32(o, 24)).map(|c| (be_u32(o, 24), c.clone()));
+        let formant = |b: usize| {
+            let freq = map(b + 17, f(b + 1), f(b + 5), f(b + 9), f(b + 13), rpm);
+            let q = map(b + 37, f(b + 21), f(b + 25), f(b + 29), f(b + 33), rpm);
+            let gain = map(b + 53, s16(b + 41), s16(b + 43), f(b + 45), f(b + 49), rpm) * 0.01;
+            (freq, gain, freq / q.clamp(0.5, 100.0), o.get(b).map_or(0, |x| x & 1))
+        };
+        let p = crate::audio::ChainParams {
+            ws: (s16(20) * 0.01, s16(22) * 0.01, drive, curve, on(flags)),
+            eq: [(f(88), s16(96) * 0.01, f(92), on(flags >> 2)), formant(98), formant(155), formant(212)],
+        };
+        self.ws_drive = drive;
+        lib.set_chain(self.chain, p);
     }
 
     /// The loops' place and Doppler factor this frame (F-96250, emitter type 1). In the bumper and driver views they
@@ -621,6 +681,7 @@ impl EngineSound {
     /// The one-shots of the frame (gear shift, backfire) and the inputs kept for the next one: their own functions in
     /// the original, run whatever the start machine's state.
     fn end_frame(&mut self, lib: &mut SoundLib, e: &EngineIn, dt: f32) {
+        self.step_chain(lib, e, dt);
         // gear-shift one-shot (F-33101 / F-40912): on the shift's start; upshift a little later
         if e.shift != 0 && self.prev_shift == 0 && e.gear != self.prev_gear {
             // original gear indices: reverse 0, neutral 1 - none into those
@@ -872,6 +933,58 @@ mod tests {
         if let Ok(p) = std::env::var("MCLA_ENGINE_WAV") {
             a.write_capture(&p);
         }
+    }
+
+    /// The bus effects on the Camaro (BUS_GRAPH_RULE.md): the REVERB_* objects as the probes read them, the engine
+    /// loops' dry 0.5 and chain send from VP_CHV_CAMARO_06's EFFECT_PARAMS, the waveshaper drive in [0, 1] and up
+    /// under throttle, and the mix with the chain and the reverb buses against the dry loops alone.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn bus_effects_camaro() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let read = |lib: &SoundLib, n: &str| {
+            let o = lib.game.get(joaat(n)).expect(n);
+            (be_f32(o, 10), be_f32(o, 14), be_f32(o, 18))
+        };
+        let run = |effects: bool| {
+            let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+            let mut lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+            assert_eq!(read(&lib, "REVERB_DEFAULT"), (0.125, 0.6, 10.0));
+            assert_eq!(read(&lib, "REVERB_PROBE_UP"), (0.5, 0.6, 10.0));
+            assert_eq!(read(&lib, "REVERB_PROBE_AIR"), (0.11, 0.7, 10.0));
+            lib.listener = (Vec3::new(0.0, 1.5, 6.0), Vec3::X, Vec3::NEG_Z);
+            let mut e = EngineSound::new(&lib, "vp_chv_camaro_06", false).expect("engine");
+            assert!(e.chain != 0);
+            println!("dry {} send {}", be_f32(&e.eff, 16), be_f32(&e.eff, 12));
+            if !effects {
+                e.chain = 0;
+            } else {
+                lib.reverb_env = (0.125, 0.6);
+            }
+            let dt = 1.0 / 60.0;
+            let mut drive = Vec::new();
+            for f in 0..240 {
+                let on = f >= 60;
+                let rpm = if on { 900.0 + (f - 60) as f32 * 25.0 } else { 900.0 };
+                let inp = EngineIn { pos: Vec3::ZERO, rpm, idle_rpm: 900.0, max_rpm: 6500.0, torque: if on { 300.0 } else { -50.0 }, full_torque: 400.0, pedal: on as u8 as f32, throttle_in: on as u8 as f32, speed: 20.0, gear: 3, ..Default::default() };
+                e.update(&mut lib, &inp, dt);
+                lib.update(dt, &mut a);
+                a.end_frame();
+                a.render(dt);
+                drive.push(e.ws_drive);
+            }
+            let c = a.captured();
+            let rms = (c.iter().map(|s| s * s).sum::<f32>() / c.len().max(1) as f32).sqrt();
+            (rms, drive, c.to_vec())
+        };
+        let (wet, drive, cw) = run(true);
+        let (dry, _, cd) = run(false);
+        println!("rms with effects {wet:.4}, dry only {dry:.4}; drive at 1 s {:.3}, at 4 s {:.3}", drive[59], drive[239]);
+        assert!(drive.iter().all(|d| (0.0..=1.0).contains(d)));
+        assert!(drive[239] > drive[59]);
+        assert!(wet > 0.0 && dry > 0.0);
+        let diff = cw.iter().zip(&cd).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(diff > 1e-3, "the effects change the mix ({diff})");
     }
 
     /// The start with ignition 0 (CopArrest's Racer_PlayIgnition) on the Camaro: the loops stop, the next update plays

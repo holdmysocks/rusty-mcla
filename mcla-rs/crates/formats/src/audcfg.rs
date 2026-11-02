@@ -487,18 +487,33 @@ impl Curve {
 
     pub fn eval(&self, x: f32) -> f32 {
         if let (4, CurveParams::Points(p)) = (self.kind, &self.params) {
-            // piecewise linear; input clamped to the first / last point (F-37998)
-            let Some(first) = p.first() else { return 0.0 };
-            let last = p[p.len() - 1];
-            let x = x.clamp(first.0, last.0.max(first.0));
-            for i in 1..p.len() {
-                if p[i].0 >= x {
-                    let (x0, y0) = p[i - 1];
-                    let (x1, y1) = p[i];
-                    return if x1 != x0 { y0 + (x - x0) / (x1 - x0) * (y1 - y0) } else { y1 };
-                }
+            // piecewise linear (F-37998); fmadds as one f64 fma, then f32
+            let fma = |a: f32, b: f32, c: f32| (a as f64).mul_add(b as f64, c as f64) as f32;
+            if p.len() <= 3 {
+                // the 3-point form set up at Init (F-39474): missing points continue the last level
+                let (x0, y0) = p.first().copied().unwrap_or((0.0, 0.0));
+                let (x1, y1) = if p.len() <= 1 { (x0 + 1.0, y0) } else { p[1] };
+                let (x2, y2) = match p.len() {
+                    3 => p[2],
+                    2 => (x1 + 2.0, y1),
+                    _ => (x0 + 2.0, y1),
+                };
+                let (i01, i12) = (1.0 / (x1 - x0), 1.0 / (x2 - x1));
+                let (d0, d1, d2) = (x - x0, x - x1, x - x2);
+                let a = fma(i01 * d0, y1 - y0, y0);
+                let b = fma(i12 * d1, y2 - y1, y1);
+                return fsel(d2, y2, fsel(d1, b, fsel(d0, a, y0)));
             }
-            return last.1;
+            // the general search: clamp to the first / last x, the first point with x_i >= x
+            let (xf, xl) = (p[0].0, p[p.len() - 1].0);
+            let x = fsel(x - xl, xl, x);
+            let x = fsel(xf - x, xf, x);
+            let mut i = 1;
+            while i < p.len() - 1 && !(p[i].0 >= x) {
+                i += 1;
+            }
+            let ((xa, ya), (xb, yb)) = (p[i - 1], p[i]);
+            return fma((x - xa) / (xb - xa), yb - ya, ya);
         }
         // (F-33490 @A-60868: fsel against the range's min, then its max - a NaN input becomes the min)
         let x = if self.flags & 3 == 1 { fsel(fsel(x - self.min, x, self.min) - self.max, self.max, fsel(x - self.min, x, self.min)) } else { x };
@@ -590,6 +605,10 @@ pub struct Category {
     pub lpf: u16,
     pub hpf: u16,
     pub rolloff_scale: f32,
+    /// the reverb send's amount and distance scale (+25 / +27 percent, products down the tree; b9 0x04 / 0x02 stop the
+    /// parent's part - F-41684 / F-52968; BUS_GRAPH_RULE.md 2.4)
+    pub reverb_amount: f32,
+    pub reverb_dist: f32,
 }
 
 /// Resolve every category (by name hash) from BASE: volume and pitch add, LPF min, HPF max, rolloff scale multiplies;
@@ -619,7 +638,7 @@ pub fn resolve_categories_rt(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &Ha
         }
         let b9 = o.get(9).copied().unwrap_or(0);
         let own_vol = lin2db(db2lin(be_i16(o, 11) as f32 * 0.01)) + runtime.get(&h).copied().unwrap_or(0.0);
-        let own = Category { volume: own_vol, pitch: be_i16(o, 15) as i32 + cents.get(&h).copied().unwrap_or(0), lpf: be_u16(o, 17), hpf: be_u16(o, 19), rolloff_scale: be_u16(o, 21) as f32 * 0.01 };
+        let own = Category { volume: own_vol, pitch: be_i16(o, 15) as i32 + cents.get(&h).copied().unwrap_or(0), lpf: be_u16(o, 17), hpf: be_u16(o, 19), rolloff_scale: be_u16(o, 21) as f32 * 0.01, reverb_amount: be_u16(o, 25) as f32 * 0.01, reverb_dist: be_u16(o, 27) as f32 * 0.01 };
         let own = match filters.get(&h) {
             Some(&(l, hp)) => Category { lpf: own.lpf.min(l), hpf: own.hpf.max(hp), ..own },
             None => own,
@@ -632,6 +651,8 @@ pub fn resolve_categories_rt(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &Ha
                 lpf: if b9 & 0x20 != 0 { own.lpf } else { own.lpf.min(p.lpf) },
                 hpf: if b9 & 0x10 != 0 { own.hpf } else { own.hpf.max(p.hpf) },
                 rolloff_scale: own.rolloff_scale * if b9 & 0x08 != 0 { 1.0 } else { p.rolloff_scale },
+                reverb_amount: own.reverb_amount * if b9 & 0x04 != 0 { 1.0 } else { p.reverb_amount },
+                reverb_dist: own.reverb_dist * if b9 & 0x02 != 0 { 1.0 } else { p.reverb_dist },
             },
         };
         out.insert(h, c);

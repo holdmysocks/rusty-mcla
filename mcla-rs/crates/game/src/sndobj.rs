@@ -44,11 +44,18 @@ pub struct Req {
     /// low-pass and high-pass cutoffs in Hz (entry+88 / +90; 23900 and 0 = open)
     pub lpf: u16,
     pub hpf: u16,
+    /// the dry level and the effect chain send (entry +76 / +72, set by F-17698: the engine loops' EFFECT_PARAMS +16 /
+    /// +12), the chain (an engine's PLAYER_WAVESHAPER, `SoundLib::set_chain`; 0 = none) and whether this voice pans
+    /// the chain's output (entry +95 bit 2, F-89149: F-74444 sets it on the first engine loop)
+    pub dry: f32,
+    pub fx_send: f32,
+    pub chain: u32,
+    pub pans_chain: bool,
 }
 
 impl Default for Req {
     fn default() -> Self {
-        Req { pos: None, volume: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0 }
+        Req { pos: None, volume: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false }
     }
 }
 
@@ -244,6 +251,11 @@ pub struct SoundLib {
     next: u64,
     next_voice: u64,
     pub listener: (Vec3, Vec3, Vec3),
+    /// the reverb level and room size (env +5100 / +5104, set every frame by the probes of F-26357 -
+    /// BUS_GRAPH_RULE.md 2.5)
+    pub reverb_env: (f32, f32),
+    /// effect chain settings set this frame, handed to the mixer by `update`
+    chain_params: Vec<(u32, crate::audio::ChainParams)>,
     /// categories.dat, and the run-time controllers on its categories (dB by category hash): the five volume
     /// sliders and the camera table (docs/reference/audio/VOLUME_RULE.md). A voice at 0 dB in all reaches full scale.
     cat_dat: Dat,
@@ -375,6 +387,8 @@ impl SoundLib {
             sliders: Default::default(),
             camera: Default::default(),
             camera_filt: Default::default(),
+            reverb_env: (0.0, 0.0),
+            chain_params: Vec::new(),
             ramps: Default::default(),
             cam_mode: None,
             scenes: HashMap::new(),
@@ -1108,8 +1122,17 @@ impl SoundLib {
         out.iter().map(|l| l.ctx.vol).collect()
     }
 
+    /// An effect chain's settings for this frame (the engine's PLAYER_WAVESHAPER, F-65630).
+    pub fn set_chain(&mut self, id: u32, p: crate::audio::ChainParams) {
+        self.chain_params.retain(|c| c.0 != id);
+        self.chain_params.push((id, p));
+    }
+
     pub fn update(&mut self, dt: f32, audio: &mut Audio) {
         self.step_scenes(dt);
+        for (id, p) in std::mem::take(&mut self.chain_params) {
+            audio.set_chain(id, &p);
+        }
         let ms = dt * 1000.0;
         let mut insts = std::mem::take(&mut self.insts);
         let (lp, lr, lf) = self.listener;
@@ -1367,21 +1390,29 @@ impl SoundLib {
     /// A playing wave to the mixer: the voice's gain chain (F-24161), the pan law (F-56973 / F-67363),
     /// pitch and Doppler.
     fn emit(&mut self, v: Leaf, inst: &Instance, listener: (Vec3, Vec3, Vec3), audio: &mut Audio) {
-        let cat = self.cats.get(&v.ctx.category).copied().unwrap_or(Category { volume: 0.0, pitch: 0, lpf: 23900, hpf: 0, rolloff_scale: 1.0 });
+        let cat = self.cats.get(&v.ctx.category).copied().unwrap_or(Category { volume: 0.0, pitch: 0, lpf: 23900, hpf: 0, rolloff_scale: 1.0, reverb_amount: 1.0, reverb_dist: 1.0 });
         let (lp, lr, lf) = listener;
         let k = std::f32::consts::FRAC_1_SQRT_2;
         let mut rolloff = 0.0;
         // positional: unset counts as positional unless a pan or speaker mask is set (A-47267)
         let positional = inst.req.pos.is_some() && if v.ctx.pan == -1 && v.ctx.mask == 0 { v.ctx.positional != 0 } else { v.ctx.positional == 1 };
+        let rolloff_at = |d: f32, s: f32| match audcfg::scaled_distance(d, s) {
+            Some(dd) => match self.curves.get(&v.ctx.curve) {
+                Some(c) => c.eval(dd),
+                None => audcfg::default_rolloff_db(dd),
+            },
+            None => 0.0,
+        };
+        // the reverb send (F-77682 / F-24640, BUS_GRAPH_RULE.md 2.4): positional voices only, w = amount x
+        // dB2lin(rolloff at the reverb distance scale - rolloff), then x REVERB_SMALL / MEDIUM / LARGE (room size) x level
+        let mut w = 0.0;
         let dir: Option<Vec3> = if positional {
             let p = inst.req.pos.unwrap() - lp;
             let d = p.length();
             let s = cat.rolloff_scale * v.ctx.curve_scale;
-            if let Some(dd) = audcfg::scaled_distance(d, s) {
-                rolloff = match self.curves.get(&v.ctx.curve) {
-                    Some(c) => c.eval(dd),
-                    None => audcfg::default_rolloff_db(dd),
-                };
+            rolloff = rolloff_at(d, s);
+            if cat.reverb_dist * s != 0.0 {
+                w = cat.reverb_amount * db2lin(rolloff_at(d, cat.reverb_dist * s) - rolloff);
             }
             Some(Vec3::new(p.dot(lr), p.dot(lr.cross(lf)), p.dot(lf)))
         } else if v.ctx.pan != -1 {
@@ -1421,7 +1452,21 @@ impl SoundLib {
         let ratio = 2f32.powf((v.ctx.pitch + cat.pitch) as f32 / 1200.0) * if positional { inst.doppler } else { 1.0 };
         // the voice's filters (F-24161): LPF = max(100, min(chain, category)), HPF = max(chain, category)
         let filt = (v.ctx.lpf.min(cat.lpf).max(100), v.ctx.hpf.max(cat.hpf));
-        audio.drive(v.voice | if inst.req.player { SLOWED } else { 0 }, &v.clip, (amp * gl, amp * gr), ratio, v.looping, v.start_frame, filt);
+        // the levels (F-88152): dry = pan x B x G30, G30 = entry +76 x dB2lin(A); reverb s = send_s x pan x B x G30;
+        // the chain send G28 = entry +72 x dB2lin(A) (no B); the chain's own output = pan x B (and its sends)
+        let (level, size) = self.reverb_env;
+        let send: [f32; 3] = ["REVERB_SMALL", "REVERB_MEDIUM", "REVERB_LARGE"].map(|n| w * self.curves.get(&joaat(n)).map_or(0.0, |c| c.eval(size)) * level);
+        let lb = db2lin(b);
+        let g30 = inst.req.dry * db2lin(a);
+        let rev_b = send.map(|x| (x * lb * gl, x * lb * gr));
+        let mix = crate::audio::Mix {
+            gains: (amp * gl * inst.req.dry, amp * gr * inst.req.dry),
+            rev: rev_b.map(|(l, r)| (l * g30, r * g30)),
+            chain: inst.req.chain,
+            send: if inst.req.chain != 0 { inst.req.fx_send * db2lin(a) } else { 0.0 },
+            pans_chain: (inst.req.chain != 0 && inst.req.pans_chain).then_some(((lb * gl, lb * gr), rev_b)),
+        };
+        audio.drive(v.voice | if inst.req.player { SLOWED } else { 0 }, &v.clip, mix, ratio, v.looping, v.start_frame, filt);
     }
 }
 

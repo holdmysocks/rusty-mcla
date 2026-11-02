@@ -118,6 +118,98 @@ struct Voice {
     /// the voice's source filter: target LPF / HPF in Hz (23900 / 0 = open) and its state
     filt: (u16, u16),
     src_filter: SourceFilter,
+    /// the reverb sends and the effect chain send
+    fx: Sends,
+}
+
+/// A voice's levels beyond its dry gains (BUS_GRAPH_RULE.md 2.2): the three reverb sends per ear and the mono send
+/// into an effect chain (an engine's PLAYER_WAVESHAPER), with the chain's id (0 = none).
+#[derive(Clone, Copy, Default)]
+struct Sends {
+    rev: [(f32, f32); 3],
+    revc: [(f32, f32); 3],
+    chain: u32,
+    send: f32,
+    sendc: f32,
+}
+
+impl Sends {
+    fn from(m: &Mix) -> Sends {
+        Sends { rev: m.rev, revc: m.rev, chain: m.chain, send: m.send, sendc: m.send }
+    }
+}
+
+/// What the sound objects ask of one voice each update (F-88152's matrices, BUS_GRAPH_RULE.md 2.2): dry gains per ear
+/// (pan x B x G30), the reverb sends SMALL / MEDIUM / LARGE per ear (send x B x G30), the chain send G28 (mono) and, for
+/// the voice that pans its chain (request +95 bit 2), the chain's own output gains (the same without G30).
+#[derive(Clone, Copy, Default)]
+pub struct Mix {
+    pub gains: (f32, f32),
+    pub rev: [(f32, f32); 3],
+    pub chain: u32,
+    pub send: f32,
+    pub pans_chain: Option<((f32, f32), [(f32, f32); 3])>,
+}
+
+/// One frame's settings of a PLAYER_WAVESHAPER chain (BUS_GRAPH_RULE.md 3.2): the waveshaper (input dB, output dB,
+/// drive, curve, bypass), then the peak and the three formant biquads, all type 10 (frequency, gain dB, bandwidth,
+/// bypass).
+#[derive(Clone)]
+pub struct ChainParams {
+    pub ws: (f32, f32, f32, Option<(u32, mcla_formats::audcfg::Curve)>, u8),
+    pub eq: [(f32, f32, f32, u8); 4],
+}
+
+/// A PLAYER_WAVESHAPER submix: mono, waveshaper -> POST_WAVESHAPE_PEAK -> FORMANT_FILTER_1..3, out to PRE_LISTENER and
+/// the reverb buses with the gains of the engine voice that pans it.
+struct FxChain {
+    id: u32,
+    ws: crate::busfx::Waveshaper,
+    eq: [crate::busfx::Biquad; 4],
+    out: ((f32, f32), [(f32, f32); 3]),
+    outc: ((f32, f32), [(f32, f32); 3]),
+    /// blocks since the game last set it (dropped after a second)
+    age: u32,
+    buf: Vec<f32>,
+}
+
+impl FxChain {
+    fn new(id: u32) -> FxChain {
+        let bq = || crate::busfx::Biquad::new(1, 1).at_rate(RATE);
+        FxChain { id, ws: crate::busfx::Waveshaper::new(1, 1), eq: [bq(), bq(), bq(), bq()], out: Default::default(), outc: Default::default(), age: 0, buf: vec![0.0; BLOCK] }
+    }
+
+    fn set(&mut self, p: &ChainParams) {
+        let (ing, outg, mix, ref curve, byp) = p.ws;
+        self.ws.set(ing, outg, mix, curve.clone(), false, byp);
+        for (b, &(f, g, bw, byp)) in self.eq.iter_mut().zip(&p.eq) {
+            b.set(f, g, bw, 0.0, 10, byp);
+        }
+        self.age = 0;
+    }
+}
+
+/// The three SOURCE_REVERB buses (BUS_GRAPH_RULE.md 1.1 / 3.1): a high-pass biquad (type 3, 120 Hz, from
+/// REVERB_BIQUAD_*) then the reverb (effects.dat SMALL / MEDIUM / LARGE, wet only), out to PRE_LISTENER. The
+/// original runs them on FL FR SL SR, each channel alone, and folds SL / SR into L / R at 0.707 at the end; the port
+/// runs them on the folded stereo, the same sum as the effects are linear.
+struct ReverbBus {
+    hp: crate::busfx::Biquad,
+    rv: crate::busfx::Reverb,
+    buf: Vec<f32>,
+}
+
+fn reverb_buses() -> Vec<ReverbBus> {
+    [(0.1, 0.8), (0.5, 0.5), (1.0, 0.2)]
+        .map(|(room, damp)| {
+            let mut hp = crate::busfx::Biquad::new(2, 3).at_rate(RATE);
+            hp.set(120.0, 0.0, 500.0, 0.0, 3, 0);
+            let mut rv = crate::busfx::Reverb::new(2, 3);
+            rv.set([room, 1.0, 0.0, damp]);
+            ReverbBus { hp, rv, buf: vec![0.0; BLOCK * 2] }
+        })
+        .into_iter()
+        .collect()
 }
 
 /// The open filter: LPF 23900 Hz, HPF 0.
@@ -255,10 +347,13 @@ struct Mixer {
     /// (step 23b) the dynamic mixer's slow-down state: (gain, pitch) of the player's vehicle
     /// and the ambience's gain, ramped linearly from `from` to `to` over `dur` seconds
     slow: Option<SlowRamp>,
+    chains: Vec<FxChain>,
+    /// made on the first block
+    reverbs: Vec<ReverbBus>,
 }
 
 /// AudioManager_SetActiveTimeSlow's mixer state (DYNAMIC_MIXER_SLOWDOWN): the categories'
-/// settings as the category controllers ramp them (sub_821EC620 / sub_821EC060 -> 0x82547908).
+/// settings as the category controllers ramp them (F-38026 / F-55770 -> F-42774).
 #[derive(Clone, Copy, Debug)]
 pub struct SlowRamp {
     /// [player vehicle gain, player vehicle pitch, ambience gain]
@@ -273,8 +368,8 @@ impl SlowRamp {
         self.at(self.start.elapsed().as_secs_f32())
     }
 
-    /// The values `t` seconds into the ramp. A category controller's ramp (sub_825484C8 /
-    /// sub_82548768, audio thread) moves at a fixed speed, not over a fixed time: rate =
+    /// The values `t` seconds into the ramp. A category controller's ramp (F-83565 /
+    /// F-44036, audio thread) moves at a fixed speed, not over a fixed time: rate =
     /// K / min(time, 10 s) per second toward the target (K = 1 for gain - linear amplitude -
     /// and pitch ratio), snapped to it when passed; a time <= 0 sets the value at once.
     pub fn at(&self, t: f32) -> [f32; 3] {
@@ -290,7 +385,7 @@ impl SlowRamp {
 }
 
 /// DYNAMIC_MIXER_SLOWDOWN's settings: PLAYER_VEHICLES -1000 mB (10^(-10/20)) at pitch 0.5,
-/// AMBIENCE -10000 mB (silent - sub_821493F8 gives 0 at -100 dB and under).
+/// AMBIENCE -10000 mB (silent - F-42985 gives 0 at -100 dB and under).
 pub const SLOWDOWN_ON: [f32; 3] = [0.316_227_77, 0.5, 0.0];
 pub const SLOWDOWN_OFF: [f32; 3] = [1.0, 1.0, 1.0];
 /// the state's fade in (+30) and out (+34), seconds
@@ -318,7 +413,17 @@ impl MixSource {
         let master = m.master;
         // (step 23b: the slow-down state on the player's vehicle - the engine's slot 0)
         let slow = m.slow.map(|r| r.now()).unwrap_or(SLOWDOWN_OFF);
-        for v in m.voices.iter_mut() {
+        if m.reverbs.is_empty() {
+            m.reverbs = reverb_buses();
+        }
+        let Mixer { voices, chains, reverbs, .. } = &mut *m;
+        for b in reverbs.iter_mut() {
+            b.buf.fill(0.0);
+        }
+        for c in chains.iter_mut() {
+            c.buf.fill(0.0);
+        }
+        for v in voices.iter_mut() {
             if v.held {
                 continue;
             }
@@ -354,15 +459,58 @@ impl MixSource {
             }
             // the voice's source filter, ahead of its gains (an XAudio source voice's effect chain)
             v.src_filter.process(&mut src, 2);
+            let chain = if v.fx.chain != 0 { chains.iter().position(|c| c.id == v.fx.chain) } else { None };
+            let fx = &mut v.fx;
             for (i, s) in src[..got].iter().enumerate() {
                 v.gl += (v.tl - v.gl) * 0.004;
                 v.gr += (v.tr - v.gr) * 0.004;
-                self.buf[i * 2] += s[0] * v.gl * master * cat_gain;
-                self.buf[i * 2 + 1] += s[1] * v.gr * master * cat_gain;
+                let k = master * cat_gain;
+                self.buf[i * 2] += s[0] * v.gl * k;
+                self.buf[i * 2 + 1] += s[1] * v.gr * k;
+                for (b, (t, c)) in reverbs.iter_mut().zip(fx.rev.iter().zip(fx.revc.iter_mut())) {
+                    c.0 += (t.0 - c.0) * 0.004;
+                    c.1 += (t.1 - c.1) * 0.004;
+                    b.buf[i] += s[0] * c.0 * k;
+                    b.buf[BLOCK + i] += s[1] * c.1 * k;
+                }
+                if let Some(ci) = chain {
+                    fx.sendc += (fx.send - fx.sendc) * 0.004;
+                    chains[ci].buf[i] += s[0] * fx.sendc * k;
+                }
+            }
+        }
+        // the chains (mono), then out to the dry mix and the reverb buses
+        for c in chains.iter_mut() {
+            c.age += 1;
+            c.ws.process(&mut c.buf);
+            for b in c.eq.iter_mut() {
+                b.process(&mut c.buf);
+            }
+            for i in 0..BLOCK {
+                let (t, o) = (c.out, &mut c.outc);
+                o.0 .0 += (t.0 .0 - o.0 .0) * 0.004;
+                o.0 .1 += (t.0 .1 - o.0 .1) * 0.004;
+                self.buf[i * 2] += c.buf[i] * o.0 .0 * master;
+                self.buf[i * 2 + 1] += c.buf[i] * o.0 .1 * master;
+                for (b, (t, o)) in reverbs.iter_mut().zip(t.1.iter().zip(o.1.iter_mut())) {
+                    o.0 += (t.0 - o.0) * 0.004;
+                    o.1 += (t.1 - o.1) * 0.004;
+                    b.buf[i] += c.buf[i] * o.0 * master;
+                    b.buf[BLOCK + i] += c.buf[i] * o.1 * master;
+                }
+            }
+        }
+        chains.retain(|c| c.age < (RATE as usize / BLOCK) as u32);
+        for b in reverbs.iter_mut() {
+            b.hp.process(&mut b.buf);
+            b.rv.process(&mut b.buf);
+            for i in 0..BLOCK {
+                self.buf[i * 2] += b.buf[i];
+                self.buf[i * 2 + 1] += b.buf[BLOCK + i];
             }
         }
         // drop finished one-shots and faded-out loops
-        m.voices.retain(|v| {
+        voices.retain(|v| {
             let n = v.clip.frames();
             let ended = !v.looping && v.pos >= n.saturating_sub(1) as f64;
             let silent = !v.held && v.id != 0 && v.tl == 0.0 && v.tr == 0.0 && v.gl.abs() < 1e-4 && v.gr.abs() < 1e-4;
@@ -629,7 +777,7 @@ impl Audio {
     }
 
     fn create(data_dir: &str, offline: bool) -> Option<Audio> {
-        let mixer = Arc::new(Mutex::new(Mixer { voices: Vec::new(), master: 0.9, slow: None }));
+        let mixer = Arc::new(Mutex::new(Mixer { voices: Vec::new(), master: 0.9, slow: None, chains: Vec::new(), reverbs: Vec::new() }));
         let pulled = Arc::new(AtomicU64::new(0));
         let src = MixSource { mixer: mixer.clone(), buf: Vec::new(), at: 0, pulled: pulled.clone() };
         let mut device = String::new();
@@ -724,6 +872,12 @@ impl Audio {
         }
     }
 
+    /// Offline mode: what was rendered so far (interleaved stereo)
+    #[cfg(test)]
+    pub fn captured(&self) -> &[f32] {
+        self.offline.as_ref().map_or(&[], |o| &o.1[..])
+    }
+
     /// Offline mode: write everything rendered so far as a 16-bit stereo WAV.
     pub fn write_capture(&self, path: &str) {
         let Some((_, out)) = self.offline.as_ref() else { return };
@@ -748,7 +902,7 @@ impl Audio {
         log::info!("audio: wrote {} ({:.1} s)", path, out.len() as f32 / (RATE as f32 * 2.0));
     }
 
-    /// Play a sounds.dat object by name (non-positional, 0 dB requested: the frontend path sub_821E6800). False when the
+    /// Play a sounds.dat object by name (non-positional, 0 dB requested: the frontend path F-42664). False when the
     /// sound objects are not loaded, so the caller can fall back.
     pub fn has_objects(&self) -> bool {
         self.objects
@@ -833,7 +987,7 @@ impl Audio {
         self.ear_right = right.normalize_or(Vec3::X);
     }
 
-    /// (step 23b) AudioManager_SetActiveTimeSlow(on) (sub_821E7470 -> sub_821E68D0): the dynamic
+    /// (step 23b) AudioManager_SetActiveTimeSlow(on) (F-39958 -> F-20047): the dynamic
     /// mixer's state 16 switched on - its enter sound, the categories ramped in over 1 s - or
     /// off (no exit sound: +18 is NULL_SOUND), ramped back over 1 s. Only a change acts.
     pub fn set_time_slow(&mut self, on: bool) {
@@ -940,7 +1094,7 @@ impl Audio {
 
     pub fn play_ex(&mut self, key: &str, vol: f32, speed: f32) {
         if let Some(clip) = self.clip(key) {
-            self.push(Voice { id: 0, clip, pos: 0.0, speed, gl: vol, gr: vol, tl: vol, tr: vol, looping: false, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN) });
+            self.push(Voice { id: 0, clip, pos: 0.0, speed, gl: vol, gr: vol, tl: vol, tr: vol, looping: false, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN), fx: Sends::default() });
         }
     }
 
@@ -949,7 +1103,7 @@ impl Audio {
         if let Some(clip) = self.clip(key) {
             let (l, r) = spatial(self.ear, self.ear_right, pos, vol, ref_dist);
             if l + r > 0.004 {
-                self.push(Voice { id: 0, clip, pos: 0.0, speed: 1.0, gl: l, gr: r, tl: l, tr: r, looping: false, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN) });
+                self.push(Voice { id: 0, clip, pos: 0.0, speed: 1.0, gl: l, gr: r, tl: l, tr: r, looping: false, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN), fx: Sends::default() });
             }
         }
     }
@@ -975,14 +1129,23 @@ impl Audio {
         }
         // start at a random phase so identical loops do not comb
         let start = (id.wrapping_mul(2654435761) % clip.frames().max(1) as u64) as f64;
-        m.voices.push(Voice { id, clip, pos: start, speed, gl: 0.0, gr: 0.0, tl: gains.0, tr: gains.1, looping: true, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN) });
+        m.voices.push(Voice { id, clip, pos: start, speed, gl: 0.0, gr: 0.0, tl: gains.0, tr: gains.1, looping: true, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN), fx: Sends::default() });
     }
 
     /// Create or update a voice that lives while it is driven every frame (the sound objects' waves): `start` is the
     /// frame a new voice starts at; a one-shot voice ends at its last frame.
-    pub fn drive(&mut self, id: u64, clip: &Arc<Clip>, gains: (f32, f32), speed: f32, looping: bool, start: f64, filt: (u16, u16)) {
+    pub fn drive(&mut self, id: u64, clip: &Arc<Clip>, mix: Mix, speed: f32, looping: bool, start: f64, filt: (u16, u16)) {
+        let gains = mix.gains;
         let Ok(mut m) = self.mixer.lock() else { return };
+        if let Some(out) = mix.pans_chain {
+            if let Some(c) = m.chains.iter_mut().find(|c| c.id == mix.chain) {
+                c.out = out;
+            }
+        }
         if let Some(v) = m.voices.iter_mut().find(|v| v.id == id) {
+            v.fx.rev = mix.rev;
+            v.fx.chain = mix.chain;
+            v.fx.send = mix.send;
             v.filt = filt;
             v.src_filter.update(filt.0, gains.0.max(gains.1) > 1e-5);
             v.tl = gains.0;
@@ -996,7 +1159,20 @@ impl Audio {
         if m.voices.len() >= 96 || (!looping && start > 0.0 && start + clip.rate as f64 * 0.05 >= clip.frames() as f64) {
             return;
         }
-        m.voices.push(Voice { id, clip: clip.clone(), pos: start, speed, gl: gains.0, gr: gains.1, tl: gains.0, tr: gains.1, looping, fresh: true, held: false, filt, src_filter: SourceFilter::new(filt) });
+        m.voices.push(Voice { id, clip: clip.clone(), pos: start, speed, gl: gains.0, gr: gains.1, tl: gains.0, tr: gains.1, looping, fresh: true, held: false, filt, src_filter: SourceFilter::new(filt), fx: Sends::from(&mix) });
+    }
+
+    /// Set an effect chain's settings for this frame (made on the first call; dropped when not set for a second).
+    pub fn set_chain(&mut self, id: u32, p: &ChainParams) {
+        let Ok(mut m) = self.mixer.lock() else { return };
+        if let Some(c) = m.chains.iter_mut().find(|c| c.id == id) {
+            c.set(p);
+        } else if m.chains.len() < 16 {
+            let mut c = FxChain::new(id);
+            c.set(p);
+            c.outc = c.out;
+            m.chains.push(c);
+        }
     }
 
     /// Hold a driven voice where it is, silent, for this frame (its sound is on a paused audio timer: F-89113 skips the
@@ -1262,7 +1438,7 @@ impl Audio {
             }
             if let Some(c) = rel.and_then(|r| crate::sndobj::decode_mp3(&self.root.join(r))) {
                 let pos = (at.max(0.0) * c.rate as f32) as f64;
-                self.push_any(Voice { id: STREAM_VOICE, clip: Arc::new(c), pos, speed: 1.0, gl: volume, gr: volume, tl: volume, tr: volume, looping: false, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN) });
+                self.push_any(Voice { id: STREAM_VOICE, clip: Arc::new(c), pos, speed: 1.0, gl: volume, gr: volume, tl: volume, tr: volume, looping: false, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN), fx: Sends::default() });
             }
             return;
         }

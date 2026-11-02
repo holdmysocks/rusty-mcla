@@ -64,7 +64,7 @@ fn approach_fma(p: &mut f32, target: f32, a: f32, b: f32) {
 }
 
 /// `map(curve, lo, hi, x0, x1, x)` = F-82373.
-fn map(lib: &SoundLib, curve: u32, lo: f32, hi: f32, x0: f32, x1: f32, x: f32) -> f32 {
+pub(crate) fn map(lib: &SoundLib, curve: u32, lo: f32, hi: f32, x0: f32, x1: f32, x: f32) -> f32 {
     let t = if x <= x0 {
         0.0
     } else if x >= x1 {

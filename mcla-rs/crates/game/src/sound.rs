@@ -59,6 +59,8 @@ pub struct PropHit {
 
 #[derive(Default)]
 pub struct Sound {
+    /// the reverb object the probes chose (F-26357; REVERB_DEFAULT until the first choice)
+    reverb_obj: Option<u32>,
     /// each ambient traffic model's sound class (`szAudioType` of its mcAmbientType.xml):
     /// 0 sedan, 1 SUV, 2 pickup, 3 truck or bus
     pub amb_types: std::collections::HashMap<String, u8>,
@@ -1211,6 +1213,37 @@ impl Sound {
             // rain and thunder (WEATHER_AUDIO_RULE.md): the player's wheel cover probes, the listener's probe 50 m up
             let wheels: Vec<Vec3> = if p.model.bike { vec![st.wheels[0].world_pos, st.wheels[2].world_pos] } else { [0, 2, 1, 3].iter().map(|&i| st.wheels[i].world_pos).collect() };
             amb.cover_probe(wet, &wheels, probe);
+            // the reverb level and room size (F-26357, BUS_GRAPH_RULE.md 2.5): 50 m up from the listener ->
+            // REVERB_PROBE_UP; nothing 50 m below -> REVERB_PROBE_AIR; else the previous object (the hit material's own
+            // reverb object, e.g. REVERB_TUNNEL, is not ported: the materials' audio records are not decoded). Level and
+            // size move toward the object's +10 / +14 by its rate +18 a second.
+            {
+                let up = probe(cam_pos, cam_pos + Vec3::new(0.0, 50.0, 0.0));
+                let down = probe(cam_pos, cam_pos - Vec3::new(0.0, 50.0, 0.0));
+                let obj = if up {
+                    mcla_formats::hash::joaat("REVERB_PROBE_UP")
+                } else if !down {
+                    mcla_formats::hash::joaat("REVERB_PROBE_AIR")
+                } else {
+                    self.reverb_obj.unwrap_or(mcla_formats::hash::joaat("REVERB_DEFAULT"))
+                };
+                self.reverb_obj = Some(obj);
+                if let Some(o) = lib.game.get(obj) {
+                    let f = |at: usize| o.get(at..at + 4).map_or(0.0, |b| f32::from_be_bytes(b.try_into().unwrap()));
+                    let (level, size, rate) = (f(10), f(14), f(18));
+                    let step = |v: &mut f32, t: f32| {
+                        if *v < t {
+                            *v = rate.mul_add(dt, *v).min(t);
+                        } else if *v > t {
+                            *v = (-rate).mul_add(dt, *v).max(t);
+                        }
+                    };
+                    let mut env = lib.reverb_env;
+                    step(&mut env.0, level);
+                    step(&mut env.1, size);
+                    lib.reverb_env = env;
+                }
+            }
             let covered = wet && probe(cam_pos, cam_pos + Vec3::new(0.0, 50.0, 0.0));
             amb.weather(lib, wet, self.cam_audio == 1, covered, dt);
             // the speed fade: the player's speed in mph as F-99947 keeps it (chassis +224 x 2.237); held at 0 by F-99037

@@ -17,6 +17,7 @@ mod ai;
 mod ambient;
 mod assets;
 mod audio;
+mod busfx;
 mod boomcam;
 mod camera;
 mod citymap;
