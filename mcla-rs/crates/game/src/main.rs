@@ -2694,6 +2694,13 @@ impl App {
                 if let Some((p, yaw)) = drv.reset_to.take() {
                     log::info!("auto driver: put back on the line");
                     car.state = physics::CarState::new(p, yaw);
+                    // (its wheels under their mounts at the suspension's rest length, as `Vehicles::pose_car` seats an
+                    // unset car: a fresh state has them at the world's origin until the physics runs, and when the race
+                    // ends on that tick the paused game draws the car without wheels, floating)
+                    let (mounts, rest, rot) = (car.params().wheel_pos, car.params().susp_rest, car.state.rot);
+                    for (w, a) in car.state.wheels.iter_mut().zip(mounts) {
+                        w.world_pos = p + rot * (a - Vec3::Y * rest);
+                    }
                     car.pose_history.reset();
                     car.placed = false;
                 }
