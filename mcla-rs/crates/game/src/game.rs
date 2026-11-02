@@ -1905,6 +1905,10 @@ impl Game {
             return true;
         }
         let (price, rep) = self.price_of(i);
+        // (not for sale - the police cruiser, the bus: never listed, F-31112)
+        if !crate::mc4b::vehicle_for_sale(&self.data_dir, &self.dir_name(i)) {
+            return false;
+        }
         // (a car the game does not offer: RMR_CANT_BUY_UNPURCHASED_DLC - F-69149)
         if !self.mc4_vehicle_available(&self.dir_name(i)) {
             let text = self.career.strings.get("RMR_CANT_BUY_UNPURCHASED_DLC").map(|s| s.to_uppercase()).unwrap_or_else(|| "LOCKED".into());
@@ -2171,6 +2175,8 @@ impl Game {
             self.mc4_leave_car();
         }
         // (its cabin's, gauges' and rims' colours and the rims' materials with it)
+        // (a save just read leaves `paint_for` empty: the car in use wears what the save kept for it)
+        let had_finish = self.paint_for.is_empty() || self.finishes.contains_key(&name);
         if let Some((slots, mats)) = self.finishes.get(&name).cloned() {
             for (k, v) in slots.into_iter().take(9).enumerate() {
                 self.slot_hsv[k] = v;
@@ -2184,6 +2190,11 @@ impl Game {
             self.paint_fade = fade;
         }
         self.mc4_take_car(&name);
+        // (a vehicle the port has no finish for yet - one just bought, a mod car - wears its record's rims, not the
+        // last car's)
+        if !had_finish {
+            self.mc4_rims_from_record(&name);
+        }
         self.paint_for = name;
     }
 
@@ -6504,8 +6515,8 @@ impl Game {
                 }
                 let list_cars: Vec<usize> = match self.garage_list {
                     // (the showroom offers what the catalogue prices and the game offers at all -
-                    // mcGarage::ListShowroomVehicles, F-31112: `mc4_vehicle_available`)
-                    Some((showroom, _)) => (0..n).filter(|i| self.is_owned(*i) != showroom && (!showroom || (self.price_of(*i).0 > 0 && self.mc4_vehicle_available(&self.dir_name(*i))))).collect(),
+                    // mcGarage::ListShowroomVehicles, F-31112: the table's for-sale byte +41, then `mc4_vehicle_available`)
+                    Some((showroom, _)) => (0..n).filter(|i| self.is_owned(*i) != showroom && (!showroom || (self.price_of(*i).0 > 0 && crate::mc4b::vehicle_for_sale(&self.data_dir, &self.dir_name(*i)) && self.mc4_vehicle_available(&self.dir_name(*i))))).collect(),
                     None => Vec::new(),
                 };
                 // (MANAGE VEHICLES lists the garage in its own order - the save's slots, reference
@@ -13060,6 +13071,7 @@ impl Game {
         // (and its record is the starter set-up's: `mc4`)
         self.mc4_car_added(car, Some(&format!("starter_{}", car.to_ascii_lowercase())));
         self.mc4_take_car(car);
+        self.mc4_rims_from_record(car);
     }
 
     /// VEHICLE SELECT, a new career's first screen (references `ng_vsel_0`..`3`): the three

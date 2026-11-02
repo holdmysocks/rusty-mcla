@@ -234,6 +234,29 @@ pub fn vehicle_content(data_dir: &str, car: &str) -> (u32, i32) {
     t.get(&car.to_ascii_lowercase()).copied().unwrap_or((0, -1))
 }
 
+/// Whether the vehicle table lets a vehicle be sold: byte +41 of its row, 1 unless the block holds `NOTFORSALE`
+/// (parser F-87336). On the disc only `vp_chv_police_96` and `vp_citybus_07` hold it. A vehicle not in the table
+/// (a mod car, the cut GT-R) is for sale.
+pub fn vehicle_for_sale(data_dir: &str, car: &str) -> bool {
+    static TABLE: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| {
+        let mut out = std::collections::HashSet::new();
+        for f in ["0xe94bde63", "0xccb5daee", "0x3cb91343"] {
+            let Ok(s) = std::fs::read(std::path::Path::new(data_dir).join("tune/vehicle").join(f)) else { continue };
+            let s = String::from_utf8_lossy(&s);
+            for block in s.split("Vehicle").skip(1) {
+                let mut words = block.lines().map(|l| l.trim());
+                let name = block.lines().map(|l| l.trim()).find_map(|l| l.strip_prefix("Name").filter(|r| r.starts_with(|c: char| c.is_whitespace())).map(|r| r.trim().to_ascii_lowercase()));
+                if let Some(name) = name.filter(|_| words.any(|l| l == "NOTFORSALE")) {
+                    out.insert(name);
+                }
+            }
+        }
+        out
+    });
+    !t.contains(&car.to_ascii_lowercase())
+}
+
 impl Game {
     /// A vehicle the game offers (F-87177): its ContentFlags in the content mask, else a
     /// portal reward the career holds - the statistic `tREW` of its index above 0 (earned on
@@ -809,6 +832,9 @@ mod tests {
             return;
         }
         assert_eq!(vehicle_content(&dir, "vp_aud_r8_08"), (2, 0));
+        // (NOTFORSALE: the police cruiser and the bus only)
+        assert!(!vehicle_for_sale(&dir, "vp_chv_police_96") && !vehicle_for_sale(&dir, "vp_citybus_07"));
+        assert!(vehicle_for_sale(&dir, "vp_chv_impala_96") && vehicle_for_sale(&dir, "vp_se_chv_plc_96") && vehicle_for_sale(&dir, crate::catalog::CUT_GTR));
         let mut g = Game::new(Vec::new(), 0);
         g.data_dir = dir;
         assert!(g.mc4_vehicle_available("vp_aud_r8_08"));
