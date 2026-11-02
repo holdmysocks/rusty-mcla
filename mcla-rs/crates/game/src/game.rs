@@ -1010,6 +1010,9 @@ pub struct Game {
     /// the race picked from a telephone challenge's list runs (event kind 15): race-over rows of the local racer's class
     /// with NEXT RACE grey (F-71666), and no nextRace in its script
     pub phone_race: bool,
+    /// the telephone list was opened from the first call's box (form 89) after the call had gone: the script is back at
+    /// its timer and waits on no result - ACCEPT only closes the menus, Back says nothing
+    pub phone_dead: bool,
     /// the race just paid out was not won (F-51353's `bFailure` for the story man's RACE AGAIN)
     pub race_lost: bool,
     /// the race just paid out was a wager (its winnings count for the wager missions)
@@ -1528,6 +1531,7 @@ impl Game {
             wager_over: None,
             wager_key: None,
             phone_race: false,
+            phone_dead: false,
             race_lost: false,
             wager_paid: false,
             hudmap: Default::default(),
@@ -8852,6 +8856,8 @@ impl Game {
                         if let Some(b) = self.tutorial_box.as_mut().filter(|_| tel_box) {
                             b.3 = 0.0;
                         }
+                        // (the phone's select and form 89's Back both end in Sidekick_Interrupt, F-67246: the call is taken only while it is up)
+                        self.phone_dead = !(self.phone_challenge && self.tip.is_some());
                         self.tip = None;
                         self.phone_challenge = false;
                         self.phone_accept = true;

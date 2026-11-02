@@ -11284,6 +11284,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
     }
 
     fn handle_action(&mut self, action: MenuAction) {
+        // (the list opened from form 89 after the call had gone: ARCADE's ACCEPT with the flag (F-15258, its flag path)
+        // writes nRaceIndex, nNumLaps, nDifficulty, result 3 and closes the menus - the race is the script's, which
+        // waits no more (it sets nTelephoneMenuResult = 0 at its next call); leaving says nothing)
+        let mut action = action;
+        if self.game.phone_race && self.game.phone_dead && matches!(action, MenuAction::StartRace | MenuAction::Back | MenuAction::StartFreeRoam | MenuAction::MainMenu) {
+            self.game.phone_race = false;
+            self.game.phone_dead = false;
+            if action == MenuAction::StartRace {
+                log::info!("telephone list: ACCEPT with no call waiting - the menus close, no race");
+                // (every form closed: back in the cruise, not on the pause menu)
+                action = MenuAction::Resume;
+            }
+        }
         // (a telephone challenge's list left without a race: the script's "not 3", HOOKMAN_PHONE_PLAYER_DECLINES, 0x32f4)
         if matches!(action, MenuAction::Back | MenuAction::StartFreeRoam | MenuAction::MainMenu) && std::mem::take(&mut self.game.phone_race) && action == MenuAction::Back {
             self.speech.say_as("HOOKMAN_PHONE_PLAYER_DECLINES", self.phone_caller);
