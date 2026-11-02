@@ -1655,6 +1655,8 @@ pub struct Fleet {
     idle: HashMap<usize, f32>,
     /// MCLA_SST_REPLAY (test hook): the recorded level / burn per original update (30 a second) and the time into it
     sst_replay: Option<(Vec<(f32, bool)>, f32)>,
+    /// the player car's siren byte (mcCar +304) as the input path last saw it
+    player_siren: bool,
     /// a player line the cars' sounds ask for this frame (the game says it if no speech plays)
     pub want_speech: Option<&'static str>,
 }
@@ -1759,6 +1761,7 @@ impl Fleet {
             sel: Vec::new(),
             idle: HashMap::new(),
             // "<recording>[;<seconds to wait first>]"
+            player_siren: false,
             sst_replay: std::env::var("MCLA_SST_REPLAY").ok().and_then(|v| {
                 let (p, wait) = v.split_once(';').map_or((v.as_str(), 0.0), |(p, w)| (p, w.parse::<f32>().unwrap_or(0.0)));
                 std::fs::read_to_string(p).ok().map(|t| (sst_replay_load(&t), -wait))
@@ -1962,6 +1965,19 @@ impl Fleet {
                 if p.cop && ctl.horn {
                     s.siren_alert(lib, c.pos);
                 }
+                // the input path F-44589: a change of the light bar flag (the pad input's 0x400, toggled on HEADLIGHTS in a
+                // police-class car, F-56064) against the car's byte +304 stores it and starts the siren
+                // on the car's audio entity (F-39258: the loop at +10 dB for the player) or stops it (F-59693)
+                if p.siren != self.player_siren {
+                    self.player_siren = p.siren;
+                    log::info!("audio: player siren {}", if p.siren { "on" } else { "off" });
+                    if p.siren {
+                        s.siren_start(0.0);
+                    } else {
+                        s.siren_stop(lib);
+                    }
+                }
+                s.siren_frame(lib, c.pos, p.state.wipeout > 0.0 || p.state.damage >= 1.0, dt);
             }
         }
         // the police's events (siren/RULE.md section 7): the tactic's cruisers in spawn order, cop 0 leads
