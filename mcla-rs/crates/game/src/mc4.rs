@@ -2017,6 +2017,22 @@ impl Game {
         }
     }
 
+    /// The rims' three colours and materials (spoke A, spoke B, lip) of the vehicle in use from its record -
+    /// `RimColorA..C` as on screen, `RimMaterial` 0 painted, 1 chrome, 2 carbon fibre, 3 brushed metal (the port's
+    /// 0, 1, 3, 2) - as the original draws them from the record; for a vehicle whose finish the port does not keep yet.
+    pub fn mc4_rims_from_record(&mut self, car: &str) {
+        let Some(c) = self.mc4.as_ref().and_then(|m| m.car(&car.to_ascii_lowercase())).cloned() else { return };
+        let v = &c.visual;
+        for (k, rgb) in [&v.RimColorA, &v.RimColorB, &v.RimColorC].into_iter().enumerate() {
+            if let Some(rgb) = rgb_of(rgb) {
+                self.slot_hsv[6 + k] = Some(rgb_hsv(rgb));
+            }
+            if let Some(m) = c.rim_material(k) {
+                self.rim_mats[k] = [0, 1, 3, 2][m.min(3) as usize];
+            }
+        }
+    }
+
     /// The vehicle in use changed (or a save was read): its record's state becomes the
     /// game's. A vehicle without a record keeps what the game has, as before.
     pub fn mc4_take_car(&mut self, car: &str) {
@@ -14493,6 +14509,39 @@ mod tests {
         assert_eq!(g.rim_mats[2], 3);
         assert_eq!(g.rim_finish()[1][3], 4.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A vehicle taken into use with no finish kept yet (one just bought) wears its record's rims, not the last car's.
+    #[test]
+    fn bought_car_rims_from_record() {
+        let Some((mut g, _dir, _)) = game_on("full_import.json", "rims") else { return };
+        let (a, b) = ("vpd_chv_impala_64", "vp_aud_r8_08");
+        let at = |g: &Game, n: &str| g.car_dirs.iter().position(|p| p.to_string_lossy() == n).unwrap();
+        let (ka, kb) = (at(&g, a), at(&g, b));
+        g.current_car = ka;
+        g.sync_car_paint();
+        // (the R8's record: brushed metal, a mid grey; the port keeps no finish for it)
+        if let Some(c) = g.mc4.as_mut().and_then(|m| m.car_mut(b)) {
+            c.visual.RimColorA = vec![F(0.5), F(0.5), F(0.5)];
+            for k in 0..3 {
+                c.set_rim_material(k, 3);
+            }
+        }
+        g.finishes.remove(b);
+        g.rim_mats = [1, 1, 1];
+        g.slot_hsv[6] = Some([0.0, 1.0, 1.0]);
+        g.current_car = kb;
+        g.sync_car_paint();
+        assert_eq!(g.rim_mats, [2, 2, 2]);
+        let h = g.slot_hsv[6].unwrap();
+        assert!(h[1].abs() < 1e-4 && (h[2] - 0.5).abs() < 1e-4, "{h:?}");
+        // (back to the first car: its own finish, kept on the way out)
+        g.rim_mats = [0, 0, 0];
+        g.current_car = ka;
+        g.sync_car_paint();
+        g.current_car = kb;
+        g.sync_car_paint();
+        assert_eq!(g.rim_mats, [0, 0, 0]);
     }
 
     /// The quick fix's primer parts: the restore's rolls, the paint drawn, the record.
