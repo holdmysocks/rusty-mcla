@@ -243,6 +243,8 @@ pub struct SoundLib {
     cat_dat: Dat,
     sliders: std::collections::HashMap<u32, f32>,
     camera: std::collections::HashMap<u32, f32>,
+    /// the ambience manager's speed fade on the AMBIENCE category (its controller +840, F-54370), dB
+    speed_fade: f32,
     /// ramped category controllers (category hash -> current dB, target dB, dB per second): the weather mix
     ramps: std::collections::HashMap<u32, (f32, f32, f32)>,
     /// (mode, bike) the camera table was last applied for
@@ -366,6 +368,7 @@ impl SoundLib {
             cam_mode: None,
             scenes: HashMap::new(),
             presence: (Vec::new(), 0.0),
+            speed_fade: 0.0,
             presence_db: 0.0,
             slow_hard: (1.0, 1.0),
             scenes_on_hint: Default::default(),
@@ -430,6 +433,14 @@ impl SoundLib {
             }
         }
         self.resolve();
+    }
+
+    /// The ambience manager's AMBIENCE controller (F-54370): set each frame, resolved only on a change.
+    pub fn set_speed_fade(&mut self, db: f32) {
+        if self.speed_fade != db {
+            self.speed_fade = db;
+            self.resolve();
+        }
     }
 
     /// Turn a dynamic mixer scene on (strength 1) or off (with its exit sound) by name, as a fixed slot: starting a
@@ -654,6 +665,9 @@ impl SoundLib {
         }
         for (h, e) in &self.ramps {
             *rt.entry(*h).or_insert(0.0) += e.0;
+        }
+        if self.speed_fade != 0.0 {
+            *rt.entry(joaat("AMBIENCE")).or_insert(0.0) += self.speed_fade;
         }
         for sc in self.scenes.values().filter(|s| s.level > 0.0) {
             for (h, db) in &sc.recs {
@@ -907,6 +921,10 @@ impl SoundLib {
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
+        // (test hook MCLA_SOUND_STARTS=1: every sound object started, by name)
+        if std::env::var_os("MCLA_SOUND_STARTS").is_some() {
+            log::info!("sound start: {} vol {:.2} pitch {}", self.snd.name_of(hash).unwrap_or("?"), req.volume, req.pitch);
+        }
         self.insts.push(Instance { id, hash, root, req, prev_dist: None, doppler: 1.0, stop: false, timer });
         Some(Handle(id))
     }

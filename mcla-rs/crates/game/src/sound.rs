@@ -1203,6 +1203,9 @@ impl Sound {
             amb.cover_probe(wet, &wheels, probe);
             let covered = wet && probe(cam_pos, cam_pos + Vec3::new(0.0, 50.0, 0.0));
             amb.weather(lib, wet, self.cam_audio == 1, covered, dt);
+            // the speed fade: the player's speed in mph as F-99947 keeps it (chassis +224 x 2.237); held at 0 by F-99037
+            // in a branch of its own taken while the game is held (taken here as the pause: which states exactly is not decoded)
+            amb.speed_fade(lib, if game.mode == Mode::Paused { 0.0 } else { speed * 2.237 });
             a.set_bed(None, 0.0);
         } else {
             let bed = self.beds.as_ref().and_then(|m| m.get(base)).cloned();

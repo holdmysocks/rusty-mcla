@@ -9,7 +9,7 @@
 
 use crate::sndobj::{Handle, Req, SoundLib};
 use glam::Vec3;
-use mcla_formats::audcfg::fsel;
+use mcla_formats::audcfg::{fsel, lin2db};
 use mcla_formats::hash::joaat;
 
 fn be_u32(o: &[u8], at: usize) -> u32 {
@@ -136,6 +136,12 @@ pub struct Ambience {
     null: u32,
     now: f32,
     rain: Rain,
+    /// the speed fade (F-54370): AMBIENCE_GLOBAL +10 / +14 the speeds (mph), +50 / +54 the curves (manager +864 / +904),
+    /// +18 WIND_COMP_MASTER and its slot (+832)
+    fade_mph: (f32, f32),
+    fade_curves: (u32, u32),
+    wind_snd: u32,
+    wind: Option<Handle>,
 }
 
 /// The rain and thunder of the ambience manager (sub_821E8410; `reference/audio/WEATHER_AUDIO_RULE.md`).
@@ -195,6 +201,10 @@ impl Ambience {
             landmark_curve: joaat("MC4_HANGOUT_LANDMARK_APPLY"),
             null: joaat(NULL_SOUND),
             now: 0.0,
+            fade_mph: (be_f32(glob, 10), be_f32(glob, 14)),
+            fade_curves: (be_u32(glob, 50), be_u32(glob, 54)),
+            wind_snd: be_u32(glob, 18),
+            wind: None,
             rain: Rain {
                 int_snd: be_u32(glob, 22),
                 ext_snd: be_u32(glob, 26),
@@ -333,6 +343,40 @@ impl Ambience {
     }
 
     /// Stop everything (out of the city: menus without the garage, cutscenes ...).
+    /// The speed fade (F-54370, last in the frame's update F-99455): the player's speed in mph (chassis +224 x 2.237, 0
+    /// while the game is held) between +10 and +14 picks the AMBIENCE category's level on the FALL curve and WIND_COMP's on
+    /// the RISE curve (F-77479: WIND_COMP_MASTER started at that level, stopped at -100 dB); below the first speed
+    /// the ambience is at 0 dB and the wind off, above the second the other way round.
+    pub fn speed_fade(&mut self, lib: &mut SoundLib, mph: f32) {
+        let Some((amb_db, wind_db)) = self.fade_db(lib, mph) else { return };
+        lib.set_speed_fade(amb_db);
+        if wind_db <= -100.0 {
+            if let Some(h) = self.wind.take() {
+                lib.stop(h);
+            }
+        } else {
+            let req = Req { volume: wind_db, ..Default::default() };
+            match self.wind {
+                Some(h) if lib.playing(h) => lib.set(h, req),
+                _ => self.wind = lib.play_hash(self.wind_snd, req),
+            }
+        }
+    }
+
+    /// The speed fade's two levels (dB): the AMBIENCE controller's and WIND_COMP's.
+    fn fade_db(&self, lib: &SoundLib, mph: f32) -> Option<(f32, f32)> {
+        let (lo, hi) = self.fade_mph;
+        let (fall, rise) = if mph <= lo {
+            (1.0, 0.0)
+        } else if mph >= hi {
+            (0.0, 1.0)
+        } else {
+            let t = (mph - lo) / (hi - lo);
+            (lib.curve_eval(self.fade_curves.0, t)?, lib.curve_eval(self.fade_curves.1, t)?)
+        };
+        Some((lin2db(fall), lin2db(rise)))
+    }
+
     pub fn stop(&mut self, lib: &mut SoundLib) {
         for h in self.bed.take().into_iter().chain(self.line.take()) {
             lib.stop(h);
@@ -496,6 +540,27 @@ fn landmark_t(dist: f32, inner: f32, outer: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The speed fade (F-54370) against the running original (work/audio2/cap/sf10.txt, recorder hooks mcla_sf_*): the
+    /// manager's speed and the two levels handed on, every distinct case above 50 mph of a full-throttle run.
+    #[test]
+    fn speed_fade_is_the_originals() {
+        let dir = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let Some(a) = crate::audio::Audio::new_offline(&dir) else { return };
+        let Some(lib) = SoundLib::load(a.root(), &a.cfg.clone()) else { return };
+        let amb = Ambience::new(&lib).expect("ambience");
+        let (mut n, mut exact, mut worst) = (0, 0, 0);
+        for line in include_str!("speed_fade_cases.txt").lines() {
+            let v: Vec<f32> = line.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let (db_a, db_w) = amb.fade_db(&lib, v[0]).expect("curves");
+            let ulp = |a: f32, b: f32| (a.to_bits() as i64 - b.to_bits() as i64).abs();
+            worst = worst.max(ulp(db_a, v[1])).max(ulp(db_w, v[2]));
+            exact += (ulp(db_a, v[1]) == 0 && ulp(db_w, v[2]) == 0) as usize;
+            n += 1;
+        }
+        eprintln!("speed fade: {exact} of {n} cases bit-equal, worst {worst} ulp");
+        assert!(n > 40 && worst <= 1);
+    }
 
     /// The data's odd radii never panic: equal radii give NaN (silent through the LANDMARK curve), an inner radius
     /// above the outer gives 1 (DISTRICT_BUSINESS_OLD 4: 50 / 49.94).
