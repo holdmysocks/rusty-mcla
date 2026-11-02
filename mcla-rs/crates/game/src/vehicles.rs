@@ -5904,8 +5904,29 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
             // carries the lettering - the model's +x, the rim's face being -x - faces out. Baked into the tyre's
             // vertices here, a turn, so the spin and the side's handedness stay. MCLA_TYRE_TURN_OLD: as before)
             let turn = !is_rim && std::env::var("MCLA_TYRE_TURN_OLD").is_err();
-            let mesh = if !is_rim && ((bead - 0.406).abs() > 0.004 || turn) {
+            // (the side wall's bulge, VS_ParallaxRubber2 with sidewallBulge = the car's +4048: 0.05 for a car, 0 for
+            // a bike, set when the car is made. From the model's own radius r: t = (r - 0.406) / 0.094,
+            // s = sat(t - 0.05) x 1.0526, x grows by 1 + b sqrt(s (1 - s)) and the normal's (y, z) gets the radial
+            // unit x 10 b (s - 1), then is normalised. Constant for every car, so baked here. MCLA_TYRE_BULGE_OLD: none)
+            let bulge = if is_rim || tyre.starts_with("tir_bike") || std::env::var("MCLA_TYRE_BULGE_OLD").is_ok() { 0.0 } else { 0.05f32 };
+            let mesh = if !is_rim && ((bead - 0.406).abs() > 0.004 || turn || bulge > 0.0) {
                 morphed = mesh.clone();
+                if bulge > 0.0 {
+                    for vi in 0..morphed.positions.len() {
+                        let p = morphed.positions[vi];
+                        let r = (p.y * p.y + p.z * p.z).sqrt();
+                        let t = (r - 0.406) * 10.526_315;
+                        let s = (t - 0.05).clamp(0.0, 1.0) * 1.052_631_6;
+                        morphed.positions[vi].x = p.x * (1.0 + bulge * (s - s * s).abs().sqrt());
+                        if let (Some(n), true) = (morphed.normals.get_mut(vi), r > 1e-6) {
+                            let k = 10.0 * bulge * (s - 1.0) / r;
+                            let len = n.length();
+                            let bent = Vec3::new(n.x, n.y + k * p.y, n.z + k * p.z);
+                            // (the normal's length carries the binormal's sign, bflip: kept)
+                            *n = bent.normalize_or_zero() * len;
+                        }
+                    }
+                }
                 if turn {
                     for p in morphed.positions.iter_mut().chain(morphed.normals.iter_mut()) {
                         *p = Vec3::new(-p.x, p.y, -p.z);
