@@ -1885,7 +1885,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // program filters the stored texels and its own rule follows (PS_Plate: ^1.6 after the filter). vehicles.rs
     // uploads them as stored (`car_tex_raw`); decoded here after the filter so that the paths below get what they
     // had, and `car_raw` gives the filtered stored value back exactly. MCLA_DEBUG_VIEW=780: the gamma upload as before)
-    let car_raw_tex = obj.params.w > 15.5 && !(g.params.w > 779.5 && g.params.w < 780.5);
+    // (the wheels and calipers too - their maps are uploaded the same way; they carry the wheel's mark dents[3].y = 1, not
+    // the body's +16. Without it the tyre's stored black, (0, 2, 0) / 255 of DXT noise, went through car_raw undecoded: a
+    // green patch on the shoulder in the garage.)
+    let car_raw_tex = (obj.params.w > 15.5 || obj.dents[3].y > 0.5) && !(g.params.w > 779.5 && g.params.w < 780.5);
     if (car_raw_tex) { albedo = vec4<f32>(srgb_decode(albedo.rgb), albedo.a); }
     // (diagnostics 542 .. 545, p2day: the upper windows' diffuse read at level 0 .. 3; 546: at one level coarser than the sampler's choice)
     if (mat.mode == 3u && g.params.w > 541.5 && g.params.w < 545.5) { albedo = textureSampleLevel(t_diffuse, s_diffuse, in.uv0, round(g.params.w) - 542.0); }

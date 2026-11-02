@@ -4746,7 +4746,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 if let (Some(cb), true) = (c.caliper_bindings.get(i), c.model.brakes.is_some() || c.brake.is_some()) {
                     let side = if left { Quat::IDENTITY } else { Quat::from_rotation_y(std::f32::consts::PI) * Quat::from_rotation_x(std::f32::consts::PI) };
                     let cm = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * side) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
-                    batch.push_object(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], fill: car_fill, ..Default::default() });
+                    // (the wheel's mark, no dirt: its maps are decoded as the wheel's, city.wgsl car_raw_tex)
+                    let mut mark = [[0.0; 4]; 6];
+                    mark[3] = [0.0, 1.0, 0.0, 0.0];
+                    batch.push_object(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, ..Default::default() });
                 }
             }
         }
