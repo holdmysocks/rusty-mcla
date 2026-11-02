@@ -169,6 +169,8 @@ pub struct Ambience {
     bed2: Option<Handle>,
     /// the last district set (mgr +140, kept across `stop`) and the running district scene (slot +304)
     last: Option<usize>,
+    /// mgr +828: no district switch before this time (each switch sets it 4 s on, F-93563); seconds on `now`
+    hold: f32,
     scene: Option<u32>,
     timers: Vec<f32>,
     quad_timers: Vec<f32>,
@@ -252,6 +254,7 @@ impl Ambience {
             bed2_snd: joaat(NULL_SOUND),
             bed2: None,
             last: None,
+            hold: 0.0,
             scene: None,
             timers: Vec::new(),
             quad_timers: Vec::new(),
@@ -530,7 +533,16 @@ impl Ambience {
             self.stop(lib);
             return;
         };
-        let changed = self.cur != Some(di);
+        // F-93563 returns at once while the same district stays (and the night flag is unchanged: byte +1073), and
+        // while the hold +828 runs: the old district then plays on and the switch is tried again next frame
+        // (the port's own stop - no player - clears the district; the next one then starts at once)
+        // byte +1072 is the night flag and +1073 its change this frame, both written every frame (F-99455), so a night
+        // change that falls in the hold is not switched later
+        let night_changed = night != self.night;
+        self.night = night;
+        let switch = (self.cur != Some(di) || night_changed) && (now >= self.hold || self.cur.is_none());
+        let di = if switch { di } else { self.cur.unwrap_or(di) };
+        let changed = switch && self.cur != Some(di);
         if changed {
             // the district's dynamic mixer scene (F-93563, slot +304): the running one stops (with its exit) when the
             // last district's +26 differs; then, with none running, the new district's +26 starts at 1.0 (F-67134)
@@ -552,15 +564,16 @@ impl Ambience {
             }
             self.last = Some(di);
         }
-        if changed || night != self.night {
+        if switch {
             // the beds for the time of day (F-93563): the main one (+10 / +14) started at a random 0 - 90 % of its waves
             // (request +36 with +70 bit 0x40), the second one (+18 / +22) with a default request after a random draw of
             // 0 - 90000 (unused); each restarts only when its sound differs from the one playing (mgr +272 / +276)
             let snd = self.districts[di].bed[night as usize];
             if snd != self.bed_snd {
                 let pct = lib.rand_int(0, 90) as f32;
+                // the old bed stops with the release override AMBIENCE_GLOBAL +58 x 1000 (fctiwz) + 1000 ms (entry +192)
                 if let Some(h) = self.bed.take() {
-                    lib.stop(h);
+                    lib.stop_release(h, (self.rain.ramp * 1000.0) as i32 + 1000);
                 }
                 self.bed = if snd != self.null { lib.play_hash(snd, Req { start_pct: pct, ..Default::default() }) } else { None };
                 self.bed_snd = if self.bed.is_some() { snd } else { self.null };
@@ -579,19 +592,26 @@ impl Ambience {
                 }
             }
         }
-        if changed {
+        if switch {
+            // the playing one-shots stop with a 750 ms release (F-61925 lists +288 / +296), the next switch waits 4 s
+            // (+828 = now + 4000 ms); then F-20727 sets every one-shot's and quadshot's timer to now + random(0, its
+            // max interval)
+            for h in self.shots.drain(..) {
+                lib.stop_release(h, 750);
+            }
+            self.hold = now + 4.0;
             let d = &self.districts[di];
-            log::info!("audio: ambience district {}", d.name);
-            // (the timers' start on entering a district is not decoded: each waits one random interval)
             let (shots, quads) = (d.shots.clone(), d.quads.clone());
-            self.timers = shots.iter().map(|s| now + lib.rand_float(s.min, s.max)).collect();
-            self.quad_timers = quads.iter().map(|s| now + lib.rand_float(s.min, s.max)).collect();
+            self.timers = shots.iter().map(|s| now + lib.rand_float(0.0, s.max)).collect();
+            self.quad_timers = quads.iter().map(|s| now + lib.rand_float(0.0, s.max)).collect();
+        }
+        if changed {
+            log::info!("audio: ambience district {}", self.districts[di].name);
             if let Some(h) = self.line.take() {
                 lib.stop(h);
             }
             self.cur = Some(di);
         }
-        self.night = night;
         let d = self.districts[di].clone();
         // distant one-shots and quadshots (F-14965)
         self.shots.retain(|h| lib.playing(*h));
@@ -890,6 +910,44 @@ mod tests {
         assert_eq!(amb.district_name().map(|s| s.to_string()), before);
         assert!(amb.sets.is_empty());
     }
+
+    /// F-93563's hold: after a switch the next one waits until 4 s have passed (+828); the old bed's release override
+    /// is AMBIENCE_GLOBAL +58 x 1000 + 1000 ms.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn district_switch_holds_four_seconds() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mut amb = Ambience::new(&lib).expect("ambience");
+        println!("AMBIENCE_GLOBAL +58 = {} -> release {} ms", amb.rain.ramp, (amb.rain.ramp * 1000.0) as i32 + 1000);
+        let at = |amb: &Ambience, name: &str| {
+            let d = amb.districts.iter().find(|d| d.name == name).unwrap();
+            Vec3::new(d.circles[0].0, 0.0, d.circles[0].1)
+        };
+        let (sm, skid) = (at(&amb, "DISTRICT_SANTA_MONICA"), at(&amb, "DISTRICT_SKID_ROW"));
+        let step = |amb: &mut Ambience, lib: &mut SoundLib, p: Vec3, t: f32| amb.update(lib, p, false, false, None, 0.0, false, t);
+        step(&mut amb, &mut lib, sm, 0.1);
+        assert_eq!(amb.district_name(), Some("DISTRICT_SANTA_MONICA"));
+        // 3.9 s after the switch: held
+        for _ in 0..38 {
+            step(&mut amb, &mut lib, skid, 0.1);
+        }
+        assert_eq!(amb.district_name(), Some("DISTRICT_SANTA_MONICA"));
+        for _ in 0..3 {
+            step(&mut amb, &mut lib, skid, 0.1);
+        }
+        assert_eq!(amb.district_name(), Some("DISTRICT_SKID_ROW"));
+        // night falls inside the hold: +1073 is set for that frame only, so the night bed never comes
+        let bed = amb.districts.iter().find(|d| d.name == "DISTRICT_SKID_ROW").unwrap().bed;
+        assert_ne!(bed[0], bed[1]);
+        assert_eq!(amb.bed_snd, bed[0]);
+        for _ in 0..50 {
+            amb.update(&mut lib, skid, true, false, None, 0.0, false, 0.1);
+        }
+        assert_eq!(amb.bed_snd, bed[0]);
+    }
+
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
     fn districts_from_disc() {

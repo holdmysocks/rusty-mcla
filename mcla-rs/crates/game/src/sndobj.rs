@@ -216,6 +216,9 @@ struct Instance {
     prev_dist: Option<f32>,
     doppler: f32,
     stop: bool,
+    /// the request's release override (the request entry +192, -1 = none): a stop takes it instead of each sound's own
+    /// ReleaseTime (F-58485)
+    stop_ms: i32,
     /// the audio timer the sound runs on (sound +65 >> 2: request +56, -1 = the root sound's category's tristate pair 1 -
     /// docs/reference/audio/SOUND_TIMER_RULE.md; F-33564): every request but the speech take's has -1, so the root's
     /// header category's (`SoundLib::cat_timer`); `set_timer` for a request that gives one
@@ -976,7 +979,7 @@ impl SoundLib {
         if std::env::var_os("MCLA_SOUND_STARTS").is_some() {
             log::info!("sound start: {} vol {:.2} pitch {}", self.snd.name_of(hash).unwrap_or("?"), req.volume, req.pitch);
         }
-        self.insts.push(Instance { id, hash, root, req, prev_dist: None, doppler: 1.0, stop: false, timer });
+        self.insts.push(Instance { id, hash, root, req, prev_dist: None, doppler: 1.0, stop: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -1010,7 +1013,7 @@ impl SoundLib {
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
-        self.insts.push(Instance { id, hash: 0, root, req, prev_dist: None, doppler: 1.0, stop: false, timer });
+        self.insts.push(Instance { id, hash: 0, root, req, prev_dist: None, doppler: 1.0, stop: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -1032,6 +1035,16 @@ impl SoundLib {
     pub fn stop(&mut self, h: Handle) {
         if let Some(i) = self.insts.iter_mut().find(|i| i.id == h.0) {
             i.stop = true;
+        }
+    }
+
+    /// Stop request with a release override of `ms` (the request entry +192 written before the stop, as the ambience's
+    /// district switch does): every sound of the tree the stop reaches fades over `ms` instead of its own ReleaseTime
+    /// (F-58485).
+    pub fn stop_release(&mut self, h: Handle, ms: i32) {
+        if let Some(i) = self.insts.iter_mut().find(|i| i.id == h.0) {
+            i.stop = true;
+            i.stop_ms = ms;
         }
     }
 
@@ -1111,7 +1124,7 @@ impl SoundLib {
         let mut inst = self.insts.remove(at);
         if inst.stop {
             inst.stop = false;
-            stop_node(&mut inst.root);
+            stop_node(&mut inst.root, inst.stop_ms);
         }
         let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, start_pct: inst.req.start_pct, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
         let mut out = Vec::new();
@@ -1157,7 +1170,7 @@ impl SoundLib {
             }
             if inst.stop {
                 inst.stop = false;
-                stop_node(&mut inst.root);
+                stop_node(&mut inst.root, inst.stop_ms);
             }
             let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, start_pct: inst.req.start_pct, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
             let mut out = Vec::new();
@@ -1277,7 +1290,7 @@ impl SoundLib {
                 }
                 // Multitrack with tristate 5: one finished child stops the others
                 if n.h.tristate(5) == 1 && n.h.kind == 13 && children.iter().any(|c| c.st == St::Done) {
-                    children.iter_mut().for_each(stop_node);
+                    children.iter_mut().for_each(|c| stop_node(c, -1));
                 }
                 children.iter().all(|c| c.st == St::Done)
             }
@@ -1560,17 +1573,19 @@ pub(crate) fn release_step(start: u32, end: u32, now: u32, vol: f32, flags: u8) 
     (vol + lin2db(ratio), !(ended && flags & 0x10 != 0))
 }
 
-/// A stop request down the tree (F-58485): the release time, or done at once without one.
-fn stop_node(n: &mut Node) {
+/// A stop request down the tree (F-58485): the release time, or done at once without one. `ovr`: the request's release
+/// override (entry +192), which replaces the sound's own ReleaseTime unless -1.
+fn stop_node(n: &mut Node, ovr: i32) {
     if n.st == St::Done || n.release.is_some() {
         return;
     }
-    if n.h.release >= 0 && n.st == St::Playing {
+    let rel = if ovr != -1 { ovr } else { n.h.release as i32 };
+    if rel >= 0 && n.st == St::Playing {
         // F-58485: a sound with a ReleaseTime only marks its own release (start = now, end = now + release) and
         // returns; its children are not stopped and play on under the fading parent until the release ends (recorded:
         // the slipstream burn SLIPSTREAM_NITROUS_MASTER, ReleaseTime 2000, kept both SST envelopes at their full value
         // for the 2 s after the stop - work/slipstream/audiorec)
-        n.release = Some((n.t, n.t + n.h.release as f32));
+        n.release = Some((n.t, n.t + rel as f32));
         return;
     } else if !matches!(n.kind, Kind::OnStop { .. } | Kind::Envelope { .. }) {
         n.st = St::Done;
@@ -1580,19 +1595,19 @@ fn stop_node(n: &mut Node) {
         n.release = Some((n.t, f32::INFINITY));
     }
     match &mut n.kind {
-        Kind::Group { children } => children.iter_mut().for_each(stop_node),
+        Kind::Group { children } => children.iter_mut().for_each(|c| stop_node(c, ovr)),
         // Envelope: its own release stage fades the child (the step above starts it)
-        Kind::Looping { child, .. } => stop_node(child),
+        Kind::Looping { child, .. } => stop_node(child, ovr),
         Kind::Sequential { cur, .. } => {
             if let Some(c) = cur {
-                stop_node(c)
+                stop_node(c, ovr)
             }
         }
         Kind::Retrig { live, count, made, .. } => {
             *count = *made as i16;
-            live.iter_mut().for_each(stop_node)
+            live.iter_mut().for_each(|c| stop_node(c, ovr))
         }
-        Kind::OnStop { child, .. } => stop_node(child),
+        Kind::OnStop { child, .. } => stop_node(child, ovr),
         _ => {}
     }
 }
