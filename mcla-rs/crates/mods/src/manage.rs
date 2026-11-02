@@ -27,6 +27,9 @@ pub struct Content {
     /// why this content cannot be used (empty when it can)
     pub problems: Vec<String>,
     pub notes: Vec<String>,
+    /// a picture to show with the item: a `data:image/png;base64,` URL (a maker's logo; MODS.md M-7)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
 }
 
 /// A content another loaded mod already holds: the reason a mod was skipped.
@@ -156,11 +159,18 @@ pub fn describe(set: &ModSet, disabled: &HashSet<String>, data_found: bool, stam
             ModState::Conflict => ("skipped", Some("clash")),
             ModState::Duplicate => ("skipped", Some("duplicate")),
         };
-        let mut contents: Vec<Content> = m.cars.iter().map(|c| Content { kind: "car", name: c.name.clone(), title: if c.long_name.trim().is_empty() { c.name.clone() } else { c.long_name.clone() }, problems: c.reasons.clone(), notes: c.warnings.clone() }).collect();
+        let mut contents: Vec<Content> = m.cars.iter().map(|c| Content { kind: "car", name: c.name.clone(), title: if c.long_name.trim().is_empty() { c.name.clone() } else { c.long_name.clone() }, problems: c.reasons.clone(), notes: c.hide_driver.then(|| "no driver is drawn in this car (hide_driver)".to_string()).into_iter().chain(c.warnings.iter().cloned()).collect(), logo: None }).collect();
         contents.extend(m.rims.iter().map(|r| {
             let mut notes = vec![r.detail()];
             notes.extend(r.warnings.iter().cloned());
-            Content { kind: "rim", name: r.folder.clone(), title: r.label.clone(), problems: r.reasons.clone(), notes }
+            Content { kind: "rim", name: r.folder.clone(), title: r.label.clone(), problems: r.reasons.clone(), notes, logo: None }
+        }));
+        // the makers (M-7): the logo shown with each, and a line saying whether it is the game's, shared or the mod's own
+        contents.extend(m.makers.iter().map(|k| {
+            let mut notes = vec![k.detail()];
+            notes.extend(k.warnings.iter().filter(|w| !w.contains("is also declared by mod")).cloned());
+            let logo = k.logo.as_ref().filter(|_| k.disc.is_none()).map(|b| format!("data:image/png;base64,{}", base64(b)));
+            Content { kind: "maker", name: k.name.clone(), title: k.name.clone(), problems: k.reasons.clone(), notes, logo }
         }));
         let clashes: Vec<Clash> = if m.state == ModState::Conflict {
             m.cars
@@ -403,7 +413,7 @@ mod tests {
         assert_eq!(l.rows.len(), 8, "{:?}", l.rows.iter().map(|r| (&r.file, r.status)).collect::<Vec<_>>());
         let a = row(&l, "alpha");
         assert_eq!((a.status, a.on, a.can_switch, a.id.as_str(), a.version.as_str(), a.author.as_str()), ("loaded", true, true, "a.first", "1.0.0", "Tester"));
-        assert_eq!(a.contents, vec![Content { kind: "car", name: "vp_test_a".into(), title: "LONG vp_test_a".into(), problems: vec![], notes: vec![] }]);
+        assert_eq!(a.contents, vec![Content { kind: "car", name: "vp_test_a".into(), title: "LONG vp_test_a".into(), problems: vec![], notes: vec![], logo: None }]);
         let b = row(&l, "bravo");
         assert_eq!((b.status, b.skipped_why), ("skipped", Some("clash")));
         assert!(b.reasons.is_empty() && b.can_switch);
@@ -518,4 +528,18 @@ mod tests {
         remove_package(&mods, Path::new(&l.rows[0].path)).unwrap();
         assert!(scan(&data, &mods, &settings).rows.is_empty());
     }
+}
+
+/// Standard base64 (RFC 4648, padded) of a picture, for the page's `data:` URL.
+fn base64(b: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        s.push(T[(n >> 18) as usize & 63] as char);
+        s.push(T[(n >> 12) as usize & 63] as char);
+        s.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        s.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    s
 }

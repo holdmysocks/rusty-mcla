@@ -18,6 +18,8 @@ pub const EXTRA_LIST_NAME: &str = "vehicle0003.lst";
 #[derive(Clone, Debug, Default)]
 pub struct DiscRow {
     pub name: String,
+    /// the row's `Manufacturer` as the list spells it (MODS.md M-7)
+    pub manufacturer: String,
     pub figures: Figures,
 }
 
@@ -183,6 +185,7 @@ fn parse_list(text: &str, d: &mut DiscInfo) {
             Kind::Manufacturer if k == "Name" => d.manufacturers.push(v.to_string()),
             Kind::Vehicle => match k {
                 "Name" => row.name = v.to_string(),
+                "Manufacturer" => row.manufacturer = v.to_string(),
                 "DEVONLY" => dev_only = true,
                 "BaseAccel" => row.figures.base_accel = f(),
                 "ModsAccel" => row.figures.mods_accel = f(),

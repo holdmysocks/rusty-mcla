@@ -7987,7 +7987,7 @@ impl Game {
     pub fn mc4_reward_picture(&self, name: &str) -> Option<std::path::PathBuf> {
         let dir = std::path::Path::new(&self.data_dir).join("resources/ui/textures/garage/dyntextures/rewardvehicles");
         let want = format!("{}.r9", name.to_ascii_lowercase());
-        std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path()).find(|p| p.file_name().map_or(false, |n| n.to_string_lossy().to_ascii_lowercase() == want))
+        std::fs::read_dir(&dir).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.file_name().map_or(false, |n| n.to_string_lossy().to_ascii_lowercase() == want))).or_else(|| crate::modcars::reward_picture(name))
     }
 
     /// The pictures of the car rows on the rewards page shown, in the rows' order.

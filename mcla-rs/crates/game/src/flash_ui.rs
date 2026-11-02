@@ -100,8 +100,14 @@ impl FlashMovie {
     /// the slot; the file is read again only when it changes. `false`: no such clip or
     /// file (the clip then keeps its bitmap).
     pub fn swap_texture(&mut self, ctx: &egui::Context, path: &str, key: u32, file: &Path) -> bool {
+        self.swap_texture_to(ctx, path, key, file, None)
+    }
+
+    /// [`FlashMovie::swap_texture`] with the size the game's own picture has: a PNG file (a mod's picture, MODS.md M-7) is
+    /// scaled to `size` when it is given another size; a `.r9` is the game's texture as it is.
+    pub fn swap_texture_to(&mut self, ctx: &egui::Context, path: &str, key: u32, file: &Path, size: Option<(u32, u32)>) -> bool {
         let Some(id) = self.player.find(path) else { return false };
-        self.swap_texture_id(ctx, id, key, file)
+        self.swap_texture_id_to(ctx, id, key, file, size)
     }
 
     /// The live clips of the name `clip`, in the display list's order, each with the first
@@ -122,7 +128,7 @@ impl FlashMovie {
         let mut n = 0;
         for (k, id) in found.into_iter().enumerate() {
             if let Some(Some(f)) = files.get(k) {
-                if self.swap_texture_id(ctx, id, key0 + k as u32, f) {
+                if self.swap_texture_id_to(ctx, id, key0 + k as u32, f, Some(crate::modcars::REWARD_PICTURE_SIZE)) {
                     n += 1;
                 }
             }
@@ -153,11 +159,22 @@ impl FlashMovie {
 
     /// `swap_texture` for a clip in hand.
     pub fn swap_texture_id(&mut self, ctx: &egui::Context, id: mcla_flash::value::InstId, key: u32, file: &Path) -> bool {
+        self.swap_texture_id_to(ctx, id, key, file, None)
+    }
+
+    pub fn swap_texture_id_to(&mut self, ctx: &egui::Context, id: mcla_flash::value::InstId, key: u32, file: &Path, size: Option<(u32, u32)>) -> bool {
         use mcla_formats::rage::{Dictionary, Rd};
         let name = file.to_string_lossy().to_string();
         if self.swap_files.get(&key) != Some(&name) {
             let mut handle = None;
-            if let Ok(res) = crate::assets::load_resource_file(file) {
+            if file.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) {
+                // (a mod's PNG picture: decoded, scaled to the disc picture's size, drawn like a `.r9` texture)
+                if let Some((w, h, px)) = std::fs::read(file).ok().and_then(|b| crate::rimlogo::picture(&b, size)) {
+                    handle = Some(ctx.load_texture(format!("swf:{}:swap{}", self.name, key), plain_image(w as u32, h as u32, &px), egui::TextureOptions::LINEAR));
+                } else {
+                    log::warn!("mods: picture {} is not a readable PNG", file.display());
+                }
+            } else if let Ok(res) = crate::assets::load_resource_file(file) {
                 let rd = Rd::new(&res);
                 if let Ok(dict) = Dictionary::parse(&rd, 0) {
                     if let Some(t) = dict.values.iter().flatten().find_map(|o| Texture::parse(&rd, *o).ok()) {
@@ -588,11 +605,40 @@ pub const ICON_LB_RB: i32 = 24;
 pub const ICON_ARROWS: i32 = 25;
 pub const ICON_BACK_BUTTON: i32 = 10;
 
-/// The garage movie's logo (`vs_brands` frame - 1, the value of a part row's `text3`)
-/// of a car's maker, from the maker part of the car's resource name
-/// (`vp_aud_r8_08`). The frames were read off a render of all 96 (`work/ui/s11/
-/// brands_sheet.png`); 0 is the game's own "custom" badge, 12 is blank.
-pub fn maker_logo(car_dir: &str) -> i32 {
+/// The garage movie's logo (`vs_brands` frame - 1, the value of a part row's `text3`) of a car maker, by the maker's name
+/// in the vehicle list (`Manufacturer` of the car's row - `catalog::CarInfo::manufacturer`; MODS.md M-7). The frames were
+/// read off a render of all 96 (`work/ui/s11/brands_sheet.png`); 0 is the game's own "custom" badge, 12 is blank (the
+/// makers without a logo: Hotmatch, MC3, Other, the downloadable ones, and a name that is not in the list).
+pub fn maker_logo(maker: &str) -> i32 {
+    match maker.to_ascii_lowercase().as_str() {
+        "audi" => 35,
+        "buick" => 36,
+        "chevy" => 37,
+        "chrysler" => 38,
+        "datsun" => 39,
+        "dodge" => 40,
+        "ducati" => 41,
+        "ford" => 42,
+        "kawasaki" => 46,
+        "lamborghini" => 47,
+        "mercedes" => 50,
+        "mitsubishi" => 51,
+        "nissan" => 52,
+        "pontiac" => 53,
+        "saleen" => 54,
+        "volkswagen" => 55,
+        "mazda" => 62,
+        "astonmartin" => 71,
+        "cadillac" => 81,
+        "landrover" => 82,
+        _ => 12,
+    }
+}
+
+/// The frame the port used before the catalogue was asked (the maker part of the resource name, `vp_aud_r8_08` -> `aud`):
+/// kept to prove [`maker_logo`] gives every disc car the same logo (`maker_logo_by_name_equals_the_old_letters`).
+#[cfg(test)]
+pub fn maker_logo_by_letters(car_dir: &str) -> i32 {
     let name = car_dir.to_ascii_lowercase();
     let maker = name.split('_').nth(1).unwrap_or("");
     match maker {

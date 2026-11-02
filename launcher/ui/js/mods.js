@@ -94,7 +94,7 @@
     return row;
   }
 
-  function fact(kind, text, subs) {
+  function fact(kind, text, subs, logo) {
     const d = el('div');
     const ic = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     ic.setAttribute('class', 'ic' + (kind === 'ok' ? '' : ' ' + kind));
@@ -102,6 +102,13 @@
     const sp = el('span');
     sp.append(document.createTextNode(text));
     (subs || []).forEach((s) => sp.append(el('div', 'note s mod-sub', s)));
+    if (logo && /^data:image\/png;base64,/.test(logo)) {
+      const im = el('img', 'mod-maker-logo');
+      im.src = logo;
+      im.alt = '';
+      im.style.cssText = 'height:24px;max-width:96px;object-fit:contain;margin-left:8px;vertical-align:middle';
+      sp.append(im);
+    }
     d.append(ic, sp);
     return d;
   }
@@ -132,7 +139,7 @@
     r.contents.forEach((c) => {
       const kind = t('dyn.mods.kind_label_' + c.kind) !== 'dyn.mods.kind_label_' + c.kind ? t('dyn.mods.kind_label_' + c.kind) : cap(c.kind);
       if (c.problems.length) facts.append(fact('bad', t('dyn.mods.f_item_bad', [kind, c.title, c.name]), c.problems));
-      else facts.append(fact(r.status === 'loaded' ? 'ok' : 'idle', t('dyn.mods.f_item', [kind, c.title, c.name]), c.notes));
+      else facts.append(fact(r.status === 'loaded' ? 'ok' : 'idle', t('dyn.mods.f_item', [kind, c.title, c.name]), c.notes, c.logo));
     });
     r.warnings.forEach((w) => facts.append(fact('warn', w)));
     facts.append(fact('idle', t(r.is_zip ? 'dyn.mods.f_file_zip' : 'dyn.mods.f_file_dir', [r.file])));

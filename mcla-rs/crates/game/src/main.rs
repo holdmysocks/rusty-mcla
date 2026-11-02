@@ -8567,6 +8567,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let render_state = c.render_state(self.vehicles.render_alpha);
                 let (f, r) = (render_state.forward(), render_state.right());
                 self.chase.pos = render_state.pos + if cop { f * 0.2 - r * 2.4 + Vec3::Y * 1.2 } else { f * 4.2 - r * 1.6 + Vec3::Y * 1.3 };
+            // ("player_cabin": the player's car from its left, into the driver's window - hide_driver check)
+            if v == "player_cabin" {
+                if let Some(c) = self.vehicles.player() {
+                    let rs = c.render_state(self.vehicles.render_alpha);
+                    let (f, r) = (rs.forward(), rs.right());
+                    self.chase.pos = rs.pos - r * 2.2 + f * 0.3 + Vec3::Y * 1.3;
+                    self.chase.look = rs.pos + Vec3::Y * 0.9 + f * 0.1;
+                    self.cam.pos = self.chase.pos;
+                    self.cam.fov_y = 0.8;
+                }
+            }
                 self.chase.look = render_state.pos + if cop { f * 0.2 + Vec3::Y * 0.9 } else { Vec3::Y * 0.8 };
                 self.cam.pos = self.chase.pos;
                 self.cam.fov_y = 0.7;
@@ -10022,7 +10033,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (VEHICLE SELECT: the three stand empty - `ng_vsel_0`)
                     // (the cruiser has no driver: mcRacer::LoadDriver, F-39898, returns before it makes one when
                     // the car is vp_chv_police_96 - its own black interior is what shows; GitHub #17)
-                    c.placed && c.parked.is_none() && !c.model.name.eq_ignore_ascii_case(police::COP_CAR) && !n.starts_with("va_") && self.game.mode != Mode::Garage && !staged && !self.vehicles.lights_off && !c.driver.starts_with("hangout:")
+                    c.placed && c.parked.is_none() && !modcars::hides_driver(&c.model.name) && !c.model.name.eq_ignore_ascii_case(police::COP_CAR) && !n.starts_with("va_") && self.game.mode != Mode::Garage && !staged && !self.vehicles.lights_off && !c.driver.starts_with("hangout:")
                 })
                 .map(|(i, c)| {
                     let pose = c.render_pose(self.vehicles.render_alpha);

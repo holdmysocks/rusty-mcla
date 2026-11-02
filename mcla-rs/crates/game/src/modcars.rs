@@ -46,6 +46,8 @@ pub struct ModCarRt {
     pub pictures: [Option<PathBuf>; 3],
     /// picture donor (`donors.pictures`)
     pub picture_donor: Option<String>,
+    /// no driver is drawn in the car (`hide_driver`, MODS.md M-7 item 8)
+    pub hide_driver: bool,
     pub long_name: String,
     pub short_name: String,
 }
@@ -105,6 +107,19 @@ static REG: OnceLock<Registry> = OnceLock::new();
 /// Picture kinds: folder under `resources/ui/textures/garage/dyntextures` and file prefix.
 pub const PICTURES: [(&str, &str); 3] = [("managerides", "mr_"), ("showroom", "sh_"), ("mini_showroom", "msh_")];
 
+/// The size of the disc pictures of those three kinds (width, height); a mod PNG of another size is scaled to it.
+pub use mcla_mods::validate::PICTURE_SIZES;
+/// The reward pictures (`rewardvehicles/<name>`) of the disc.
+pub const REWARD_PICTURE_SIZE: (u32, u32) = (512, 180);
+
+/// A mod's reward picture `rewardvehicles/<name>` (`.r9` or `.png`), when the disc has none of that name (M-7 item 4).
+pub fn reward_picture(name: &str) -> Option<PathBuf> {
+    let set = &get()?.set;
+    let base = "resources/ui/textures/garage/dyntextures/rewardvehicles";
+    let n = name.to_ascii_lowercase();
+    ["r9", "png"].iter().find_map(|e| set.find(&format!("{base}/{n}.{e}")).and_then(|f| f.disk_path()).filter(|p| p.is_file()))
+}
+
 /// The mods folder of this run: `<data root>/mods`, or the test hook `MCLA_MODS_DIR` (a folder of mods elsewhere,
 /// so a test never writes into the data folder).
 pub fn mods_dir(data_root: &Path) -> PathBuf {
@@ -127,6 +142,11 @@ pub fn get() -> Option<&'static Registry> {
 /// A loaded mod car by name (any case).
 pub fn car(name: &str) -> Option<&'static ModCarRt> {
     get()?.cars.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+}
+
+/// Is no driver drawn in this mod car (`hide_driver`)? Applies to the player and to an opponent driving it.
+pub fn hides_driver(name: &str) -> bool {
+    car(name).is_some_and(|c| c.hide_driver)
 }
 
 pub fn is_mod_car(name: &str) -> bool {
@@ -156,6 +176,12 @@ pub fn rims() -> &'static [mcla_mods::rims::ModRim] {
 /// The `Vehicle` blocks of the mod cars ("" without mods).
 pub fn extra_list() -> &'static str {
     get().map_or("", |r| r.extra_list.as_str())
+}
+
+/// A car maker a loaded mod adds (not the game's own makers), by name: its logo picture is drawn through the `vs_brands`
+/// frame-0 swap (MODS.md M-7, `Game::maker_swap`).
+pub fn maker(name: &str) -> Option<&'static mcla_mods::ModMaker> {
+    get()?.set.maker(name)
 }
 
 /// `<car>` / `<car>_shrt` names of the mod cars.
@@ -288,7 +314,7 @@ fn build(data_root: &Path, dir: &Path) -> Registry {
         }
     }
     // (only the cars that could be put together: the list, names and indices follow them)
-    let extra_list = set.cars().iter().filter(|c| cars.iter().any(|r: &ModCarRt| r.name == c.name)).map(mcla_mods::vehicle_block).collect();
+    let extra_list = set.makers().iter().map(mcla_mods::manufacturer_block).chain(set.cars().iter().filter(|c| cars.iter().any(|r: &ModCarRt| r.name == c.name)).map(mcla_mods::vehicle_block)).collect();
     let strings = set.strings().into_iter().filter(|(k, _)| cars.iter().any(|r| k == &r.name || k == &format!("{}_shrt", r.name))).collect();
     // (opponent use, stage S4: only the cars that could be put together and are marked; a driver whose set-up cannot be
     // had is left out, a car left without a driver is not given to the pick)
@@ -398,7 +424,10 @@ fn car_rt(set: &mcla_mods::ModSet, c: &mcla_mods::ModCar, data_root: &Path, mods
     };
     let pictures = PICTURES.map(|(sub, prefix)| {
         let base = format!("resources/ui/textures/garage/dyntextures/{sub}");
-        disk(set.find(&format!("{base}/{prefix}{name}.r9"))).or_else(|| disk(set.find(&format!("{base}/0x{:08x}.r9", mcla_formats::hash::joaat(&format!("{prefix}{name}.xtd"))))))
+        disk(set.find(&format!("{base}/{prefix}{name}.r9")))
+            .or_else(|| disk(set.find(&format!("{base}/0x{:08x}.r9", mcla_formats::hash::joaat(&format!("{prefix}{name}.xtd"))))))
+            // (MODS.md M-7: a PNG picture, read by `FlashMovie::swap_texture_to` and scaled to the disc picture's size)
+            .or_else(|| disk(set.find(&format!("{base}/{prefix}{name}.png"))))
     });
     let prices_text = set.find(&format!("tune/garage/{name}_parts.gtun")).and_then(|f| f.read().ok()).map(|b| String::from_utf8_lossy(&b).into_owned());
     Ok(ModCarRt {
@@ -419,6 +448,7 @@ fn car_rt(set: &mcla_mods::ModSet, c: &mcla_mods::ModCar, data_root: &Path, mods
         prices_text,
         pictures,
         picture_donor: d.pictures.clone(),
+        hide_driver: c.hide_driver,
         long_name: c.long_name.clone(),
         short_name: c.short_name.clone(),
     })
@@ -666,5 +696,36 @@ mod tests {
         assert_eq!(&b[0x1FAD..0x1FAD + car.len()], car.as_bytes());
         assert_eq!(&b[0x1FCD..0x1FCD + 31], &name.as_bytes()[..31]);
         assert_eq!((b[0x844], b[0x846], &b[0x847..0x84E]), (255, 4, &b"STOCK 1"[..]));
+    }
+
+    /// MODS.md M-7 item 4: the size of every disc picture of the three kinds a mod car brings (and of the rewards' pictures),
+    /// read from the `.r9` textures: the constants `PICTURE_SIZES` and the validator's check come from here.
+    #[test]
+    fn disc_picture_sizes() {
+        use mcla_formats::rage::{Dictionary, Rd};
+        let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let base = std::path::Path::new(&data).join("resources/ui/textures/garage/dyntextures");
+        if !base.is_dir() {
+            return;
+        }
+        let size = |p: &std::path::Path| -> (u32, u32) {
+            let res = crate::assets::load_resource_file(p).unwrap();
+            let rd = Rd::new(&res);
+            let dict = Dictionary::parse(&rd, 0).unwrap();
+            let t = dict.values.iter().flatten().find_map(|o| mcla_formats::rage::texture::Texture::parse(&rd, *o).ok()).unwrap();
+            (t.width, t.height)
+        };
+        let mut seen = Vec::new();
+        for (dir, want) in [("managerides", Some(super::PICTURE_SIZES[0])), ("showroom", Some(super::PICTURE_SIZES[1])), ("mini_showroom", Some(super::PICTURE_SIZES[2])), ("rewardvehicles", None)] {
+            let mut sizes: Vec<(u32, u32)> = std::fs::read_dir(base.join(dir)).unwrap().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "r9")).map(|e| size(&e.path())).collect();
+            sizes.sort();
+            sizes.dedup();
+            eprintln!("{dir}: {sizes:?}");
+            if let Some(w) = want {
+                assert_eq!(sizes, [w], "{dir}");
+            }
+            seen.push(sizes);
+        }
+        assert_eq!(seen[3].len(), 1, "one size for the reward pictures");
     }
 }

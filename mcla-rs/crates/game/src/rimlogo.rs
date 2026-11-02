@@ -36,6 +36,64 @@ fn decode(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     (w > 0 && h > 0 && rgba.len() == w * h * 4).then_some((w, h, rgba))
 }
 
+/// A mod's garage picture (MODS.md M-7): the PNG decoded, and scaled to `size` (the disc picture's) when it has another
+/// one - a triangle filter (bilinear when enlarging, averaging when reducing) over alpha-weighted colours, so the
+/// picture fills the quad the game's own picture fills. Straight RGBA; None when the bytes are no readable PNG.
+pub fn picture(bytes: &[u8], size: Option<(u32, u32)>) -> Option<(usize, usize, Vec<u8>)> {
+    let (w, h, px) = decode(bytes)?;
+    match size {
+        Some((tw, th)) if (tw as usize, th as usize) != (w, h) && tw > 0 && th > 0 => Some((tw as usize, th as usize, resample(&px, w, h, tw as usize, th as usize))),
+        _ => Some((w, h, px)),
+    }
+}
+
+/// Separable triangle-filter resize of straight RGBA (alpha-weighted).
+fn resample(src: &[u8], w: usize, h: usize, tw: usize, th: usize) -> Vec<u8> {
+    // premultiplied floats
+    let mut a: Vec<f32> = src.chunks_exact(4).flat_map(|p| {
+        let al = p[3] as f32 / 255.0;
+        [p[0] as f32 * al, p[1] as f32 * al, p[2] as f32 * al, al * 255.0]
+    }).collect();
+    // one axis: `n` samples of `len` lines to `m` samples
+    let pass = |data: &[f32], n: usize, m: usize, lines: usize, stride_n: usize, stride_l: usize| -> Vec<f32> {
+        let scale = n as f32 / m as f32;
+        let r = scale.max(1.0);
+        let mut out = vec![0.0f32; m * lines * 4];
+        for x in 0..m {
+            let c = (x as f32 + 0.5) * scale - 0.5;
+            let (lo, hi) = ((c - r).ceil().max(0.0) as usize, ((c + r).floor() as i64).clamp(0, n as i64 - 1) as usize);
+            let taps: Vec<(usize, f32)> = (lo..=hi).map(|i| (i, (1.0 - (i as f32 - c).abs() / r).max(0.0))).filter(|t| t.1 > 0.0).collect();
+            let total: f32 = taps.iter().map(|t| t.1).sum::<f32>().max(1e-6);
+            for l in 0..lines {
+                let mut acc = [0.0f32; 4];
+                for &(i, wt) in &taps {
+                    let o = (i * stride_n + l * stride_l) * 4;
+                    for k in 0..4 {
+                        acc[k] += data[o + k] * wt;
+                    }
+                }
+                // (output laid out with the resampled axis in the same stride role as the input's)
+                let o = if stride_n == 1 { (l * m + x) * 4 } else { (x * lines + l) * 4 };
+                for k in 0..4 {
+                    out[o + k] = acc[k] / total;
+                }
+            }
+        }
+        out
+    };
+    // horizontal: lines = rows (stride_n 1, stride_l w) ; vertical: lines = columns (stride_n tw, stride_l 1)
+    a = pass(&a, w, tw, h, 1, w);
+    a = pass(&a, h, th, tw, tw, 1);
+    a.chunks_exact(4).flat_map(|p| {
+        let al = p[3] / 255.0;
+        if al > 0.0 {
+            [(p[0] / al).round().clamp(0.0, 255.0) as u8, (p[1] / al).round().clamp(0.0, 255.0) as u8, (p[2] / al).round().clamp(0.0, 255.0) as u8, p[3].round().clamp(0.0, 255.0) as u8]
+        } else {
+            [0, 0, 0, 0]
+        }
+    }).collect()
+}
+
 /// The PNG fitted into the canvas (bilinear, alpha-weighted so a transparent edge does not darken the rim).
 fn fit_png(bytes: &[u8]) -> Option<Vec<u8>> {
     let (w, h, src) = decode(bytes)?;
@@ -184,5 +242,35 @@ mod tests {
         assert!(x0 >= 4 && x1 <= W - 4);
         // the name is not the same as another name
         assert_ne!(image("AAA", None).2, image("BBB", None).2);
+    }
+
+    /// A mod's garage picture of another size is scaled to the disc picture's; one of the right size is left as it is.
+    #[test]
+    fn a_garage_picture_is_scaled_to_the_discs_size() {
+        let (w, h, a) = picture(&png(1024, 256, [10, 200, 30, 255]), Some((512, 128))).unwrap();
+        assert_eq!((w, h, a.len()), (512, 128, 512 * 128 * 4));
+        assert!(a.chunks_exact(4).all(|p| p == [10, 200, 30, 255]), "a flat picture stays flat");
+        let (w, h, b) = picture(&png(64, 32, [255, 0, 0, 255]), Some((128, 64))).unwrap();
+        assert_eq!((w, h), (128, 64));
+        assert!(b.chunks_exact(4).all(|p| p == [255, 0, 0, 255]));
+        // the right size is not touched; no size asked: as it is
+        assert_eq!(picture(&png(8, 4, [1, 2, 3, 255]), Some((8, 4))).unwrap().2, picture(&png(8, 4, [1, 2, 3, 255]), None).unwrap().2);
+        assert!(picture(b"not a png", Some((8, 4))).is_none());
+        // a hard edge stays where it is (left half red, right half blue, 2x1 -> 8x4): left columns red, right columns blue
+        let mut e = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut e, 2, 1);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut wr = enc.write_header().unwrap();
+            wr.write_image_data(&[255, 0, 0, 255, 0, 0, 255, 255]).unwrap();
+        }
+        let (_, _, c) = picture(&e, Some((8, 4))).unwrap();
+        assert_eq!(&c[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&c[7 * 4..7 * 4 + 4], &[0, 0, 255, 255]);
+        assert!(c[3 * 4] > 100 && c[3 * 4] < 255 || c[3 * 4 + 2] > 0, "a blend across the edge");
+        // transparency survives: a transparent picture does not turn dark at its edges
+        let (_, _, d) = picture(&png(4, 4, [200, 100, 50, 0]), Some((16, 16))).unwrap();
+        assert!(d.chunks_exact(4).all(|p| p[3] == 0));
     }
 }

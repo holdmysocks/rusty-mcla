@@ -14,7 +14,7 @@ pub const SCHEMA: i64 = 1;
 
 /// Top-level keys this build knows; any other top-level key or table is kept out with a warning (later content
 /// types - parts, paint / vinyl packages, tune files, strings - get their own tables without changing these).
-const KNOWN_TOP: [&str; 4] = ["schema", "mod", "car", "rim"];
+const KNOWN_TOP: [&str; 5] = ["schema", "mod", "car", "rim", "manufacturer"];
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Manifest {
@@ -27,6 +27,9 @@ pub struct Manifest {
     /// the rims of the mod (`[[rim]]`, MODS.md M-6)
     #[serde(default, rename = "rim")]
     pub rims: Vec<RimDef>,
+    /// the car makers the mod declares (`[[manufacturer]]`, MODS.md M-7)
+    #[serde(default, rename = "manufacturer")]
+    pub manufacturers: Vec<MakerDef>,
     /// top-level keys this build does not know (not deserialized; filled by [`parse`])
     #[serde(skip)]
     pub unknown: Vec<String>,
@@ -66,6 +69,46 @@ pub struct CarEntry {
     pub donors: Donors,
     #[serde(default)]
     pub opponent: Option<Opponent>,
+    /// no driver model is drawn in this car, for the player or an opponent (MODS.md M-7 item 8); default false
+    #[serde(default)]
+    pub hide_driver: bool,
+}
+
+/// One car maker a mod declares (`[[manufacturer]]`, MODS.md M-7; format in docs/reference/mods/manifest.md section 11):
+/// a `Manufacturer { Name; CanBeOnFire }` block of the vehicle list.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MakerDef {
+    /// the maker's name (`Manufacturer` of a car row): at most [`MAX_MAKER_NAME`] characters, no white space
+    pub name: String,
+    /// a PNG in the package for the maker's logo (else the name is drawn as text)
+    #[serde(default)]
+    pub logo: Option<String>,
+    /// the list's `CanBeOnFire` (default 1, the original's default); nothing reads it yet
+    #[serde(default = "yes")]
+    pub can_be_on_fire: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// A maker's name is at most this long (the list's name field, like the car names').
+pub const MAX_MAKER_NAME: usize = 31;
+
+/// Why a maker name cannot be used, if it cannot: the lists are read word by word (a name with a space would end at it) and
+/// the name goes into the in-memory list text.
+pub fn maker_name_problem(name: &str) -> Option<String> {
+    if name.is_empty() {
+        return Some("empty name".into());
+    }
+    if name.chars().count() > MAX_MAKER_NAME {
+        return Some(format!("name longer than {MAX_MAKER_NAME} characters"));
+    }
+    if !name.chars().all(|c| c.is_ascii_graphic() && c != '"') {
+        return Some("name may hold letters, digits and punctuation only (no spaces, no quotes, no non-ASCII)".into());
+    }
+    None
 }
 
 /// One rim of a mod (`[[rim]]`, MODS.md M-6; format in docs/reference/mods/manifest.md section 10).

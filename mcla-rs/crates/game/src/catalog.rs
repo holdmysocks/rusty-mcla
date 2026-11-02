@@ -349,3 +349,39 @@ mod tests {
         assert_eq!(rows("steer_whl")[0].0, 52);
     }
 }
+
+#[cfg(test)]
+mod maker_tests {
+    use super::*;
+    use crate::flash_ui::{maker_logo, maker_logo_by_letters};
+
+    /// MODS.md M-7 item 3: the garage's maker logo now comes from the car's `Manufacturer` in the vehicle list; every car of
+    /// the game (the 69 of the table and the cut GT-R) must keep the frame the folder letters gave.
+    #[test]
+    fn maker_logo_by_name_equals_the_old_letters() {
+        let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        if !Path::new(&data).join("tune/vehicle").is_dir() {
+            return;
+        }
+        let cat = Catalog::load(&data);
+        let mut names: Vec<&str> = crate::mc4::VEHICLES.to_vec();
+        names.push(CUT_GTR);
+        assert_eq!(names.len(), 70);
+        let mut diffs = Vec::new();
+        for n in &names {
+            let maker = cat.get(n).map(|c| c.manufacturer.clone());
+            let maker = maker.unwrap_or_else(|| panic!("{n} is not in the catalogue"));
+            let (old, new) = (maker_logo_by_letters(n), maker_logo(&maker));
+            if old != new {
+                diffs.push((n.to_string(), maker, old, new));
+            }
+        }
+        eprintln!("differing: {diffs:?}");
+        // The only differences: the five police specials `vp_se_*` ("se" is no maker, the old frame was blank; their row says
+        // Chevy / Dodge). They have no resource folder on the disc, so no garage or part list ever shows them.
+        let names: Vec<&str> = diffs.iter().map(|d| d.0.as_str()).collect();
+        assert_eq!(names, ["vp_se_chv_plc_96", "vp_se_chv_chp_96", "vp_se_dge_plc_06", "vp_se_dge_ubp_06", "vp_se_dge_chp_06"]);
+        assert!(names.iter().all(|n| !Path::new(&data).join("resources/vehicle").join(n).exists()));
+        assert_eq!(70 - diffs.len(), 65, "65 of the 70 cars keep their frame");
+    }
+}

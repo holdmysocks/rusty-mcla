@@ -60,6 +60,7 @@ pub enum ModState {
 pub struct CarStatus {
     pub name: String,
     pub long_name: String,
+    pub hide_driver: bool,
     pub reasons: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -119,6 +120,51 @@ pub fn with_commas(n: i64) -> String {
     if n < 0 { format!("-{out}") } else { out }
 }
 
+/// One `[[manufacturer]]` of a package, as the Mods tab shows it (MODS.md M-7).
+#[derive(Clone, Debug)]
+pub struct MakerStatus {
+    pub name: String,
+    /// the logo picture (PNG) the manifest gave; None: the name is drawn as text
+    pub logo: Option<std::sync::Arc<Vec<u8>>>,
+    /// the name is a maker of the game's list: the game's entry and logo are used
+    pub disc: Option<String>,
+    /// another loaded mod (earlier by mod id) declares the same new maker: its entry and logo are used
+    pub shared_with: Option<String>,
+    /// later mods declaring the same maker (this mod's entry and logo are used)
+    pub shared_by: Vec<String>,
+    pub can_be_on_fire: bool,
+    pub reasons: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl MakerStatus {
+    /// The line the Mods tab shows for a maker.
+    pub fn detail(&self) -> String {
+        if let Some(d) = &self.disc {
+            return format!("the game's maker {d}: its own entry and logo are used");
+        }
+        let logo = if self.shared_with.is_some() { String::new() } else if self.logo.is_some() { "own logo".to_string() } else { "no logo, the name is drawn".to_string() };
+        let mut s = logo;
+        if let Some(o) = &self.shared_with {
+            s = format!("shared with mod {o}: that mod's entry and logo are used");
+        }
+        if !self.shared_by.is_empty() {
+            s = format!("{s}; also declared by {}", self.shared_by.join(", "));
+        }
+        s
+    }
+}
+
+/// A car maker the loaded mods add to the vehicle list (MODS.md M-7): one `Manufacturer` block.
+#[derive(Clone, Debug)]
+pub struct ModMaker {
+    pub name: String,
+    /// the mod whose declaration is used (first by mod id)
+    pub mod_id: String,
+    pub logo: Option<std::sync::Arc<Vec<u8>>>,
+    pub can_be_on_fire: bool,
+}
+
 /// One package found in the mods folder, as the launcher's Mods tab shows it.
 #[derive(Clone, Debug)]
 pub struct ModInfo {
@@ -136,6 +182,7 @@ pub struct ModInfo {
     pub warnings: Vec<String>,
     pub cars: Vec<CarStatus>,
     pub rims: Vec<RimStatus>,
+    pub makers: Vec<MakerStatus>,
 }
 
 /// A loaded mod car (keyed by name everywhere; its table index follows the disc cars).
@@ -156,6 +203,8 @@ pub struct ModCar {
     pub figures: manifest::Figures,
     pub donors: Donors,
     pub opponent: Option<Opponent>,
+    /// no driver is drawn in the car (`hide_driver`)
+    pub hide_driver: bool,
     /// resolved opponent samples (performance, speed) at mod 0 / 50 / 100
     pub samples: Option<([f32; 3], [f32; 3])>,
     /// the resolved opponent use when the manifest marks the car for opponents (stage S4; [`opponent_text`])
@@ -178,6 +227,8 @@ pub struct ModSet {
     cars: Vec<ModCar>,
     /// the rims of the loaded mods, in load order (mod id, then the manifest's); the rim-table numbers are by folder name
     rims: Vec<rims::ModRim>,
+    /// the car makers the loaded mods add, by name order
+    makers: Vec<ModMaker>,
     disc_count: usize,
     /// overlay key -> (package, file)
     overlay: HashMap<String, (usize, usize)>,
@@ -222,7 +273,7 @@ pub enum Located<'a> {
 impl ModSet {
     /// An empty set (no mods folder, or mods not wanted).
     pub fn empty(mods_dir: PathBuf) -> ModSet {
-        ModSet { mods_dir, mods: Vec::new(), packages: Vec::new(), cars: Vec::new(), rims: Vec::new(), disc_count: DISC_VEHICLE_COUNT, overlay: HashMap::new() }
+        ModSet { mods_dir, mods: Vec::new(), packages: Vec::new(), cars: Vec::new(), rims: Vec::new(), makers: Vec::new(), disc_count: DISC_VEHICLE_COUNT, overlay: HashMap::new() }
     }
 
     /// Read `<data root>/mods`. Never fails: problems are in each [`ModInfo`] (and the log).
@@ -238,7 +289,7 @@ impl ModSet {
         let mut found: Vec<(ModInfo, Option<(Package, manifest::Manifest)>)> = Vec::new();
         for path in package_paths(dir) {
             let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let mut info = ModInfo { id: file_name, version: String::new(), name: String::new(), author: String::new(), description: String::new(), path: path.clone(), is_zip: !path.is_dir(), state: ModState::Invalid, reasons: Vec::new(), warnings: Vec::new(), cars: Vec::new(), rims: Vec::new() };
+            let mut info = ModInfo { id: file_name, version: String::new(), name: String::new(), author: String::new(), description: String::new(), path: path.clone(), is_zip: !path.is_dir(), state: ModState::Invalid, reasons: Vec::new(), warnings: Vec::new(), cars: Vec::new(), rims: Vec::new(), makers: Vec::new() };
             let pkg = match Package::open(&path) {
                 Ok(p) => p,
                 Err(e) => {
@@ -293,10 +344,26 @@ impl ModSet {
         // 3. check the cars; 4. conflicts by mod id order
         let mut order: Vec<usize> = (0..found.len()).collect();
         order.sort_by(|&a, &b| found[a].0.id.cmp(&found[b].0.id).then(found[a].0.path.cmp(&found[b].0.path)));
+        // 3a. the makers the mods declare (MODS.md M-7), as the cars may name them: every readable mod's new
+        // names in mod id order (a car whose maker no mod ends up loading is dropped again below)
+        let mut candidate_makers: Vec<String> = Vec::new();
+        for &i in &order {
+            let (info, p) = &found[i];
+            let Some((_, m)) = p else { continue };
+            if info.state == ModState::Duplicate || !info.reasons.is_empty() {
+                continue;
+            }
+            for d in &m.manufacturers {
+                if manifest::maker_name_problem(&d.name).is_none() && disc.manufacturer(&d.name).is_none() && !candidate_makers.iter().any(|x| x.eq_ignore_ascii_case(&d.name)) {
+                    candidate_makers.push(d.name.clone());
+                }
+            }
+        }
         let mut claimed: HashMap<String, String> = HashMap::new();
         let mut claimed_rims: HashMap<String, String> = HashMap::new();
         let mut mod_rims: Vec<rims::ModRim> = Vec::new();
         let mut cars: Vec<ModCar> = Vec::new();
+        let mut declared_makers: Vec<ModMaker> = Vec::new();
         let mut packages: Vec<(String, Package)> = Vec::new();
         for i in order {
             let (info, p) = &mut found[i];
@@ -305,10 +372,26 @@ impl ModSet {
                 continue;
             }
             let keys = validate::FileKeys::new(&pkg);
+            // the makers (M-7)
+            let mut ok_makers: Vec<ModMaker> = Vec::new();
+            let mut seen_makers: HashSet<String> = HashSet::new();
+            for d in &m.manufacturers {
+                let chk = validate::check_maker(d, &pkg, disc);
+                let mut reasons = chk.reasons.clone();
+                if !seen_makers.insert(d.name.to_ascii_lowercase()) {
+                    reasons.push(format!("maker {} is declared twice", d.name));
+                }
+                if !reasons.is_empty() {
+                    info.reasons.push(format!("maker {}: {}", d.name, reasons.join("; ")));
+                } else if chk.disc.is_none() {
+                    ok_makers.push(ModMaker { name: d.name.clone(), mod_id: info.id.clone(), logo: chk.logo.clone(), can_be_on_fire: d.can_be_on_fire });
+                }
+                info.makers.push(MakerStatus { name: d.name.clone(), logo: chk.logo, disc: chk.disc, shared_with: None, shared_by: Vec::new(), can_be_on_fire: d.can_be_on_fire, reasons, warnings: chk.warnings });
+            }
             let mut ok_cars = Vec::new();
             for c in &m.cars {
-                let chk = validate::check_car(c, &pkg, &keys, disc, &opts.reserved);
-                info.cars.push(CarStatus { name: c.name.clone(), long_name: c.long_name.clone(), reasons: chk.reasons.clone(), warnings: chk.warnings.clone() });
+                let chk = validate::check_car(c, &pkg, &keys, disc, &opts.reserved, &candidate_makers);
+                info.cars.push(CarStatus { hide_driver: c.hide_driver, name: c.name.clone(), long_name: c.long_name.clone(), reasons: chk.reasons.clone(), warnings: chk.warnings.clone() });
                 if !chk.reasons.is_empty() {
                     info.reasons.push(format!("car {}: {}", c.name, chk.reasons.join("; ")));
                 }
@@ -349,8 +432,55 @@ impl ModSet {
             }
             info.state = ModState::Loaded;
             cars.extend(ok_cars);
+            declared_makers.extend(ok_makers);
             mod_rims.extend(ok_rims);
             packages.push((info.id.clone(), pkg));
+        }
+        // 4b. a car's maker must be one the game has or a loaded mod declares (MODS.md M-7): a mod that was only valid
+        // because of a maker that did not load (its declaring mod invalid, switched off, in conflict) is not loaded either
+        loop {
+            let has = |dm: &[ModMaker], name: &str| disc.manufacturer(name).is_some() || dm.iter().any(|m| m.name.eq_ignore_ascii_case(name));
+            let Some(bad) = cars.iter().find(|c| disc.found && !has(&declared_makers, &c.manufacturer)).map(|c| (c.mod_id.clone(), c.name.clone(), c.manufacturer.clone())) else { break };
+            let why = format!("manufacturer \"{}\" is declared by no loaded mod ([[manufacturer]])", bad.2);
+            if let Some((info, _)) = found.iter_mut().find(|(i, _)| i.id == bad.0 && i.state == ModState::Loaded) {
+                info.state = ModState::Invalid;
+                info.reasons.push(format!("car {}: {why}", bad.1));
+                if let Some(cs) = info.cars.iter_mut().find(|c| c.name == bad.1) {
+                    cs.reasons.push(why);
+                }
+            }
+            cars.retain(|c| c.mod_id != bad.0);
+            mod_rims.retain(|r| r.mod_id != bad.0);
+            declared_makers.retain(|m| m.mod_id != bad.0);
+            packages.retain(|(id, _)| *id != bad.0);
+        }
+        // 4c. one entry per new maker: the first declaration by mod id (its spelling and logo); the others share it
+        let mut makers: Vec<ModMaker> = Vec::new();
+        for dm in &declared_makers {
+            match makers.iter().find(|m| m.name.eq_ignore_ascii_case(&dm.name)) {
+                None => makers.push(dm.clone()),
+                Some(first) => {
+                    let (first_id, name) = (first.mod_id.clone(), first.name.clone());
+                    if let Some((info, _)) = found.iter_mut().find(|(i, _)| i.id == dm.mod_id && i.state == ModState::Loaded) {
+                        if let Some(st) = info.makers.iter_mut().find(|s| s.name.eq_ignore_ascii_case(&dm.name)) {
+                            st.shared_with = Some(first_id.clone());
+                            st.warnings.push(format!("maker {name} is also declared by mod {first_id}: that mod's entry and logo are used"));
+                        }
+                    }
+                    if let Some((info, _)) = found.iter_mut().find(|(i, _)| i.id == first_id && i.state == ModState::Loaded) {
+                        if let Some(st) = info.makers.iter_mut().find(|s| s.name.eq_ignore_ascii_case(&dm.name)) {
+                            st.shared_by.push(dm.mod_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+        makers.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        // (the cars spell the maker as its entry does)
+        for c in &mut cars {
+            if let Some(m) = makers.iter().find(|m| m.name.eq_ignore_ascii_case(&c.manufacturer)) {
+                c.manufacturer = m.name.clone();
+            }
         }
         // 5. the extra list: mod cars in name order after the disc cars
         cars.sort_by(|a, b| a.name.cmp(&b.name));
@@ -412,6 +542,7 @@ impl ModSet {
         set.packages = packages;
         set.cars = cars;
         set.rims = mod_rims;
+        set.makers = makers;
         set
     }
 
@@ -452,7 +583,19 @@ impl ModSet {
     /// The extra vehicle list (the `Vehicle` blocks of the mod cars in the format of `vehicle.lst`, as the
     /// original's `vehicle0003.lst` would hold them). Built in memory; never written to the data folder.
     pub fn extra_list(&self) -> String {
-        self.cars.iter().map(vehicle_block).collect()
+        // (a `Manufacturer` block per new maker first, then the cars that name them; the original's parser takes the
+        // blocks of every list file, F-34441)
+        self.makers.iter().map(manufacturer_block).chain(self.cars.iter().map(vehicle_block)).collect()
+    }
+
+    /// The car makers the loaded mods add (not the game's), in name order.
+    pub fn makers(&self) -> &[ModMaker] {
+        &self.makers
+    }
+
+    /// A maker a loaded mod adds (matched without case); None for the game's own makers.
+    pub fn maker(&self, name: &str) -> Option<&ModMaker> {
+        self.makers.iter().find(|m| m.name.eq_ignore_ascii_case(name))
     }
 
     /// String-table entries of the mod cars: `<car>` = long name, `<car>_shrt` = short name.
@@ -577,6 +720,7 @@ fn mod_car(c: &CarEntry, id: &str, k: validate::Checked) -> ModCar {
         figures: k.figures,
         donors: c.donors.clone(),
         opponent: c.opponent.clone(),
+        hide_driver: c.hide_driver,
         samples: k.samples,
         opponent_use: k.opponent,
     }
@@ -610,6 +754,11 @@ pub fn opponent_text(c: &ModCar, drivers: Option<&[(String, String)]>) -> Option
         s.push_str("}\r\n");
     }
     Some(s)
+}
+
+/// One `Manufacturer` block as the disc lists write it (`Name`, `CanBeOnFire`).
+pub fn manufacturer_block(m: &ModMaker) -> String {
+    format!("Manufacturer\r\n{{\r\n\tName\t{}\r\n\tCanBeOnFire\t{}\r\n}}\r\n", m.name, m.can_be_on_fire as u8)
 }
 
 /// One `Vehicle` block as the disc lists write it (keys and order of the R8's block in `vehicle.lst`; no content

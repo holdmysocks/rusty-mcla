@@ -7303,6 +7303,8 @@ impl Game {
                     }
                     let mut part_rows: Vec<(String, i64, bool, String, bool)> = Vec::new();
                     let mut part_brands: Vec<Option<i32>> = Vec::new();
+                    // (a list whose first row is the car's stock part: it shows the car maker's logo, MODS.md M-7)
+                    let mut maker_list = false;
                     if rim_open {
                         // the rims of the brand under the LB/RB tabs, at the game's prices
                         let brand = rim_tabs[self.rim_brand.min(rim_tabs.len() - 1)].clone();
@@ -7317,6 +7319,7 @@ impl Game {
                     } else if let Some((k, cur)) = self.garage_xpart {
                         let (_, sec, t, _) = XPARTS[k.min(XPARTS.len() - 1)];
                         title = t;
+                        maker_list = !matches!(sec, "tires" | "brakes");
                         items.clear();
                         let ent = self.xpart_rows(k);
                         for (i, r) in ent.iter().enumerate() {
@@ -7328,6 +7331,7 @@ impl Game {
                         }
                     } else if let Some(row) = self.garage_part {
                         let slot = CUSTOM_SLOTS[(row - 1).min(CUSTOM_SLOTS.len() - 1)];
+                        maker_list = true;
                         title = menus.iter().flat_map(|m| m.1.iter()).find_map(|it| match it { It::Part(l, sl) if *sl == slot => Some(*l), _ => None }).unwrap_or(title);
                         items.clear();
                         let count = rows_v.iter().find(|x| x.0 == row).map_or(0, |x| x.3).max(1);
@@ -7393,7 +7397,11 @@ impl Game {
                     let mut py = list_y;
                     // The logo under the chosen line: the car's maker for the stock part, the
                     // game's own "custom" badge for the others (reference: R8 front bumpers).
-                    let maker_logo = crate::flash_ui::maker_logo(&self.dir_name(self.current_car));
+                    // (the maker is the car's `Manufacturer` of the vehicle list: a maker of the game gives its frame, a maker a mod
+                    // adds shows frame 0 with the mod's logo swapped in - MODS.md M-7)
+                    let maker_name = self.catalog.get(&self.dir_name(self.current_car)).map(|c| c.manufacturer.clone()).unwrap_or_default();
+                    let custom_maker = crate::modcars::maker(&maker_name);
+                    let maker_logo = if custom_maker.is_some() { 0 } else { crate::flash_ui::maker_logo(&maker_name) };
                     for (label, price, chosen, name, enabled) in &part_rows {
                         if *chosen {
                             flash_sel = flash_rows.len();
@@ -7402,6 +7410,8 @@ impl Game {
                             Some(b) => b,
                             None => if flash_rows.is_empty() { maker_logo } else { 0 },
                         };
+                        // (a car of a maker a mod adds: its stock row shows that maker, whatever logo the price list carries)
+                        let brand = if maker_list && custom_maker.is_some() && flash_rows.is_empty() { 0 } else { brand };
                         flash_rows.push(crate::flash_ui::MenuRow {
                             label: label.clone(), value: format!("${}", price), enabled: *enabled,
                             part: (flash_part_template || rim_open).then_some(crate::flash_ui::PartRow { price: *price, brand }),
@@ -7825,15 +7835,15 @@ impl Game {
                         if self.garage_list.map_or(false, |l| l.0) {
                             // the showroom: the large picture (`showroom/sh_<car>`) and the six of
                             // the strip (`mini_showroom/msh_<car>`), which the movie scrolls itself
-                            fg.movie.swap_texture(ctx, "screen.menu.showroom_panel.sh_dyntexture", 2, &big_picture);
+                            fg.movie.swap_texture_to(ctx, "screen.menu.showroom_panel.sh_dyntexture", 2, &big_picture, Some(crate::modcars::PICTURE_SIZES[1]));
                             let first = fg.movie.player.get_global("ScrollOffset").map_or(0.0, |v| v.to_f32()).max(0.0) as usize;
                             for k in 0..6usize {
                                 let file = list_mods.get(first + k).cloned().flatten().unwrap_or_else(|| pictures.join("mini_showroom").join(format!("msh_{}.r9", list_dirs.get(first + k).cloned().unwrap_or_else(|| "default".into()))));
-                                fg.movie.swap_texture(ctx, &format!("screen.menu.showroom_panel.car_list_rt.slot{k}"), 10 + k as u32, &file);
+                                fg.movie.swap_texture_to(ctx, &format!("screen.menu.showroom_panel.car_list_rt.slot{k}"), 10 + k as u32, &file, Some(crate::modcars::PICTURE_SIZES[2]));
                             }
                         }
                         if self.garage_list.is_some() {
-                            let shown = fg.movie.swap_texture(ctx, "screen.menu.manageride_layer.sh_dyntexture", 1, &picture);
+                            let shown = fg.movie.swap_texture_to(ctx, "screen.menu.manageride_layer.sh_dyntexture", 1, &picture, Some(crate::modcars::PICTURE_SIZES[0]));
                             if let Some(id) = fg.movie.player.find("screen.menu.manageride_layer.sh_dyntexture") {
                                 if let Some(i) = fg.movie.player.inst_mut(id) {
                                     i.tint[3] = if shown { 255 } else { 0 };
@@ -7872,6 +7882,27 @@ impl Game {
                                     }
                                 }
                                 None => fg.movie.clear_swap(LOGO_CLIP),
+                            }
+                        }
+                        // The logo of a car maker only a mod adds (MODS.md M-7): the part list shows its logo clip at the
+                        // chosen row's brand; on the stock row of such a car that is frame 0, whose bitmap is swapped for
+                        // the mod's picture (or the maker's name as text). The clip is the part list's own
+                        // (`screen.menu.vs_brands`), the rim shop's is another (`...rimselection.vs_brands`, key 0x7100), so the
+                        // two swaps never meet; any other row or list takes the swap off again.
+                        {
+                            const PART_LOGO_CLIP: &str = "screen.menu.vs_brands";
+                            let shown = custom_maker.filter(|_| maker_list && matches!(page.layout, MenuLayout::GarageParts) && page.select == 0 && !page.rows.is_empty());
+                            match shown {
+                                Some(m) => {
+                                    let h = self.rim_logos.entry(format!("maker:{}", m.name.to_ascii_lowercase())).or_insert_with(|| {
+                                        let (w, h, px) = crate::rimlogo::image(&m.name, m.logo.as_ref().map(|l| l.as_slice()));
+                                        ctx.load_texture("maker_logo", egui::ColorImage::from_rgba_unmultiplied([w, h], &px), egui::TextureOptions::LINEAR)
+                                    }).clone();
+                                    if !fg.movie.swap_handle(PART_LOGO_CLIP, 0x7101, h) {
+                                        fg.movie.clear_swap(PART_LOGO_CLIP);
+                                    }
+                                }
+                                None => fg.movie.clear_swap(PART_LOGO_CLIP),
                             }
                         }
                         // The rim shop's box is measured from its content, and what it

@@ -15,6 +15,10 @@ pub const CLASSES: [&str; 9] = ["TUNER", "MUSCLE", "EXOTIC", "SPORTBIKE", "LUXUR
 pub const GROUPS: [&str; 4] = ["D0", "C0", "B0", "A0"];
 /// `DistrictFilter` values a car row uses on the disc (the parser also knows Unknown and All, `car_pick.md` 1.2).
 pub const DISTRICTS: [&str; 5] = ["Hollywood", "Beaches", "Hills", "Downtown", "SouthCentral"];
+/// The three garage pictures of a car under `resources/ui/textures/garage/dyntextures/` (MANAGE VEHICLES `mr_`, the
+/// showroom's large `sh_`, its strip's `msh_`) and the size of the disc's (width, height); MODS.md M-7 item 4.
+pub const PICTURES: [&str; 3] = ["managerides/mr_", "showroom/sh_", "mini_showroom/msh_"];
+pub const PICTURE_SIZES: [(u32, u32); 3] = [(512, 128), (512, 512), (128, 64)];
 /// Size of a set-up record (`CarCfg`, vehicle_inventory.md 2.6) and its TypeName field.
 pub const XCC_SIZE: usize = 8176;
 pub const XCC_TYPENAME: usize = 0x1FAD;
@@ -83,7 +87,8 @@ pub fn rim_folder_names(car: &str) -> Vec<String> {
     v
 }
 
-pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo, reserved: &[String]) -> CarCheck {
+/// `makers`: the names of the makers the mods declare (a car's `row.manufacturer` may be one of them, MODS.md M-7).
+pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo, reserved: &[String], makers: &[String]) -> CarCheck {
     let mut r: Vec<String> = Vec::new();
     let mut w: Vec<String> = Vec::new();
     let name = car.name.as_str();
@@ -156,17 +161,24 @@ pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo
     if class.is_none() {
         r.push(format!("row 6: class \"{}\" is not one of {}", row.class, CLASSES.join(" ")));
     }
-    let manufacturer = if disc.found {
-        match disc.manufacturer(&row.manufacturer) {
-            Some(m) => m.to_string(),
-            None => {
-                r.push(format!("row 6: manufacturer \"{}\" is not in vehicle.lst ({})", row.manufacturer, disc.manufacturers.join(" ")));
+    // (MODS.md M-7: a maker of the game's list - the game's spelling - or one a loaded mod declares)
+    let manufacturer = match disc.manufacturer(&row.manufacturer) {
+        Some(m) => m.to_string(),
+        None => match makers.iter().find(|m| m.eq_ignore_ascii_case(row.manufacturer.trim())) {
+            Some(m) => m.clone(),
+            None if disc.found => {
+                r.push(format!(
+                    "row 6: manufacturer \"{}\" is neither in vehicle.lst ({}) nor declared by a loaded mod ([[manufacturer]])",
+                    row.manufacturer,
+                    disc.manufacturers.join(" ")
+                ));
                 row.manufacturer.clone()
             }
-        }
-    } else {
-        w.push("row 6: vehicle.lst not found; manufacturer not checked".into());
-        row.manufacturer.clone()
+            None => {
+                w.push("row 6: vehicle.lst not found; manufacturer not checked".into());
+                row.manufacturer.clone()
+            }
+        },
     };
     for (k, v) in [("group", &row.group), ("unlocking_group", &row.unlocking_group)] {
         if canon(&GROUPS, v).is_none() {
@@ -282,10 +294,38 @@ pub fn check_car(car: &CarEntry, pkg: &Package, keys: &FileKeys, disc: &DiscInfo
     // row 18: driver animation (optional)
     let _ = &car.donors.anim;
     // row 19: pictures
-    let pics = ["managerides/mr_", "showroom/sh_", "mini_showroom/msh_"];
-    let missing: Vec<&str> = pics.iter().copied().filter(|p| !keys.has(&format!("resources/ui/textures/garage/dyntextures/{p}{name}.r9"))).collect();
+    // (MODS.md M-7: a picture is the game's `.r9` texture or a PNG; a PNG of another size than the disc's is scaled)
+    let mut missing: Vec<String> = Vec::new();
+    for (p, (wd, ht)) in PICTURES.iter().zip(PICTURE_SIZES) {
+        let base = format!("resources/ui/textures/garage/dyntextures/{p}{name}");
+        if keys.has(&format!("{base}.r9")) {
+            continue;
+        }
+        let png = format!("{base}.png");
+        if !keys.has(&png) {
+            missing.push(format!("{p}{name}.r9 or .png"));
+            continue;
+        }
+        match read_pkg(pkg, &png) {
+            Some(Ok(b)) => match crate::rims::png_size(&b) {
+                None => r.push(format!("row 19: {png} is not a PNG picture")),
+                Some((a, b)) if a == 0 || b == 0 || a > 4096 || b > 4096 => r.push(format!("row 19: {png} is {a}x{b} (1..4096 expected)")),
+                Some((a, b)) if (a, b) != (wd, ht) => w.push(format!("row 19: {p}{name}.png is {a}x{b}; the game's pictures of this kind are {wd}x{ht} and it is scaled to that")),
+                Some(_) => {}
+            },
+            Some(Err(e)) => r.push(format!("row 19: cannot read {png}: {e}")),
+            None => {}
+        }
+    }
     if !donor("row 19 (pictures)", &car.donors.pictures, &mut r) && !missing.is_empty() {
-        r.push(format!("row 19: pictures missing ({}) and no pictures donor", missing.iter().map(|p| format!("{p}{name}.r9")).collect::<Vec<_>>().join(", ")));
+        r.push(format!("row 19: pictures missing ({}) and no pictures donor", missing.join(", ")));
+    }
+    // a donor's picture shows the donor's maker (the logo is painted into it)
+    if let (Some(d), true) = (&car.donors.pictures, !missing.is_empty()) {
+        match disc.row(d).map(|x| x.manufacturer.as_str()) {
+            Some(m) if !m.eq_ignore_ascii_case(&manufacturer) => w.push(format!("row 19: the pictures from {d} show {m}'s logo, not {manufacturer}'s (bring own mr_/sh_/msh_ pictures)")),
+            _ => {}
+        }
     }
     // row 22: bikes
     if class == Some("SPORTBIKE") {
@@ -672,5 +712,43 @@ pub fn check_rim(def: &crate::manifest::RimDef, pkg: &Package, disc: &DiscInfo) 
     }
     out.reasons = r;
     out.warnings = w;
+    out
+}
+
+// ---- car makers (MODS.md M-7, docs/reference/mods/manifest.md section 11) ----
+
+/// What the loader makes of one `[[manufacturer]]`.
+pub struct MakerCheck {
+    pub reasons: Vec<String>,
+    pub warnings: Vec<String>,
+    /// the game's own entry of this name (its spelling): the mod's declaration is not used, its logo neither
+    pub disc: Option<String>,
+    pub logo: Option<std::sync::Arc<Vec<u8>>>,
+}
+
+pub fn check_maker(def: &crate::manifest::MakerDef, pkg: &Package, disc: &DiscInfo) -> MakerCheck {
+    let mut out = MakerCheck { reasons: Vec::new(), warnings: Vec::new(), disc: None, logo: None };
+    if let Some(p) = crate::manifest::maker_name_problem(&def.name) {
+        out.reasons.push(format!("name: {p}"));
+        return out;
+    }
+    out.disc = disc.manufacturer(&def.name).map(str::to_string);
+    if let Some(m) = &out.disc {
+        out.warnings.push(format!("\"{}\" is a maker of the game ({m}): the game's entry and logo are used, this declaration is ignored", def.name));
+        return out;
+    }
+    match &def.logo {
+        None => out.warnings.push(format!("no logo for the maker \"{}\": its name is drawn as text", def.name)),
+        Some(l) => match read_pkg(pkg, l) {
+            None => out.reasons.push(format!("logo: {l} is not in the package")),
+            Some(Err(e)) => out.reasons.push(format!("logo: {l} cannot be read ({e})")),
+            Some(Ok(b)) => match crate::rims::png_size(&b) {
+                None => out.reasons.push(format!("logo: {l} is not a PNG picture")),
+                Some((wd, ht)) if wd == 0 || ht == 0 || wd > 1024 || ht > 1024 => out.reasons.push(format!("logo: {l} is {wd}x{ht} (1..1024 expected)")),
+                Some(_) if b.len() > 2_000_000 => out.reasons.push(format!("logo: {l} is over 2 MB")),
+                Some(_) => out.logo = Some(std::sync::Arc::new(b)),
+            },
+        },
+    }
     out
 }

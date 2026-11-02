@@ -1041,3 +1041,216 @@ fn rim_detail_line_and_thousands() {
     r.index = None;
     assert_eq!(r.detail(), "bike rim, new tab \"Acme\", $2,612");
 }
+
+// ---- car makers (MODS.md M-7) ----
+
+/// A PNG signature and IHDR of the given size (the loader reads the size only; the game decodes the picture itself).
+fn fake_png(w: u32, h: u32) -> Vec<u8> {
+    let mut b = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+    b.extend_from_slice(b"IHDR");
+    b.extend_from_slice(&w.to_be_bytes());
+    b.extend_from_slice(&h.to_be_bytes());
+    b.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    b
+}
+
+fn maker_mod(id: &str, car: &str, maker: &str, decls: &str) -> String {
+    manifest(id, "1.0.0", car, decls).replace("manufacturer = \"audi\"", &format!("manufacturer = \"{maker}\""))
+}
+
+#[test]
+fn a_mod_declares_a_maker_and_a_car_names_it() {
+    let data = data_root();
+    let car = "vp_mcl_mp4_11";
+    let mut files = car_files(car);
+    files.push(("logos/mclaren.png".into(), fake_png(512, 128)));
+    let decl = "\n[[manufacturer]]\nname = \"McLaren\"\nlogo = \"logos/mclaren.png\"\ncan_be_on_fire = false\n";
+    write_folder(&mods_dir(&data).join("mcl"), &maker_mod("mcl", car, "mclaren", decl), &files);
+    let set = load(&data);
+    let m = &set.mods()[0];
+    assert_eq!(m.state, ModState::Loaded, "{:?}", m.reasons);
+    assert!(m.reasons.is_empty() && m.warnings.is_empty(), "{:?} {:?}", m.reasons, m.warnings);
+    // one new maker with its logo; the car carries the declared spelling
+    assert_eq!(set.makers().len(), 1);
+    let k = set.maker("MCLAREN").unwrap();
+    assert_eq!((k.name.as_str(), k.mod_id.as_str(), k.can_be_on_fire, k.logo.is_some()), ("McLaren", "mcl", false, true));
+    assert_eq!(set.car(car).unwrap().manufacturer, "McLaren");
+    // the in-memory list: the Manufacturer block comes before the Vehicle blocks that name it
+    let list = set.extra_list();
+    let (mb, vb) = (list.find("Manufacturer\r\n{\r\n\tName\tMcLaren\r\n\tCanBeOnFire\t0\r\n}\r\n").expect("maker block"), list.find("Vehicle\r\n").unwrap());
+    assert!(mb < vb, "{list}");
+    assert!(list.contains("\tManufacturer\tMcLaren\r\n"));
+    // the Mods tab: the maker with its logo
+    let l = crate::manage::describe(&set, &Default::default(), true, 0);
+    let c = l.rows[0].contents.iter().find(|c| c.kind == "maker").unwrap();
+    assert_eq!((c.name.as_str(), c.problems.is_empty()), ("McLaren", true));
+    assert!(c.logo.as_deref().unwrap().starts_with("data:image/png;base64,iVBORw0KGgo"), "{:?}", c.logo);
+    assert_eq!(c.notes, ["own logo"]);
+}
+
+#[test]
+fn a_maker_without_a_logo_is_drawn_as_text() {
+    let data = data_root();
+    let car = "vp_mcl_text_11";
+    write_folder(&mods_dir(&data).join("t"), &maker_mod("t", car, "TESTMAKER", "\n[[manufacturer]]\nname = \"TESTMAKER\"\n"), &car_files(car));
+    let set = load(&data);
+    assert_eq!(set.mods()[0].state, ModState::Loaded, "{:?}", set.mods()[0].reasons);
+    assert!(set.maker("testmaker").unwrap().logo.is_none());
+    assert!(set.maker("testmaker").unwrap().can_be_on_fire, "the original's default is 1");
+    let w = &set.mods()[0].makers[0].warnings;
+    assert!(w.len() == 1 && w[0].contains("no logo") && w[0].contains("drawn as text"), "{w:?}");
+    assert_eq!(set.extra_list().matches("CanBeOnFire\t1").count(), 1);
+}
+
+#[test]
+fn a_maker_of_the_game_means_the_games_maker() {
+    let data = data_root();
+    let car = "vp_aud_x_11";
+    let decl = "\n[[manufacturer]]\nname = \"audi\"\nlogo = \"a.png\"\n";
+    let mut files = car_files(car);
+    files.push(("a.png".into(), fake_png(64, 64)));
+    write_folder(&mods_dir(&data).join("a"), &maker_mod("a", car, "AUDI", decl), &files);
+    let set = load(&data);
+    let m = &set.mods()[0];
+    assert_eq!(m.state, ModState::Loaded, "{:?}", m.reasons);
+    // no second entry, the game's spelling, a warning that says so
+    assert!(set.makers().is_empty() && !set.extra_list().contains("Manufacturer\r\n{"));
+    assert_eq!(set.car(car).unwrap().manufacturer, "Audi");
+    assert_eq!(m.makers[0].disc.as_deref(), Some("Audi"));
+    assert!(m.makers[0].warnings[0].contains("maker of the game"), "{:?}", m.makers[0].warnings);
+    let l = crate::manage::describe(&set, &Default::default(), true, 0);
+    let c = l.rows[0].contents.iter().find(|c| c.kind == "maker").unwrap();
+    assert!(c.logo.is_none() && c.notes[0].contains("the game's maker Audi"), "{c:?}");
+}
+
+#[test]
+fn two_mods_declaring_one_maker_share_it() {
+    let data = data_root();
+    let (c1, c2) = ("vp_sh_one_11", "vp_sh_two_11");
+    let mut f1 = car_files(c1);
+    f1.push(("l.png".into(), fake_png(100, 40)));
+    let mut f2 = car_files(c2);
+    f2.push(("l.png".into(), fake_png(200, 80)));
+    let d1 = "\n[[manufacturer]]\nname = \"Shared\"\nlogo = \"l.png\"\n";
+    let d2 = "\n[[manufacturer]]\nname = \"SHARED\"\nlogo = \"l.png\"\n";
+    // (mod ids order the declarations: "aa" before "bb")
+    write_folder(&mods_dir(&data).join("p2"), &maker_mod("bb", c2, "shared", d2), &f2);
+    write_folder(&mods_dir(&data).join("p1"), &maker_mod("aa", c1, "shared", d1), &f1);
+    let set = load(&data);
+    assert!(set.mods().iter().all(|m| m.state == ModState::Loaded), "{:?}", set.mods().iter().map(|m| &m.reasons).collect::<Vec<_>>());
+    assert_eq!(set.makers().len(), 1);
+    let k = set.maker("shared").unwrap();
+    assert_eq!((k.name.as_str(), k.mod_id.as_str()), ("Shared", "aa"), "first by mod id keeps its entry");
+    assert_eq!(k.logo.as_ref().map(|l| crate::rims::png_size(l)), Some(Some((100, 40))));
+    assert_eq!(set.extra_list().matches("Manufacturer\r\n{").count(), 1);
+    assert_eq!(set.car(c2).unwrap().manufacturer, "Shared");
+    let (a, b) = (&set.mods()[0], &set.mods()[1]);
+    assert_eq!((a.id.as_str(), b.id.as_str()), ("aa", "bb"));
+    assert_eq!(a.makers[0].shared_by, ["bb"]);
+    assert_eq!(b.makers[0].shared_with.as_deref(), Some("aa"));
+    assert!(b.makers[0].detail().contains("shared with mod aa"), "{}", b.makers[0].detail());
+    assert!(a.makers[0].detail().contains("also declared by bb"), "{}", a.makers[0].detail());
+}
+
+#[test]
+fn a_car_needs_a_maker_the_game_or_a_loaded_mod_has() {
+    let data = data_root();
+    let car = "vp_nomaker_11";
+    write_folder(&mods_dir(&data).join("n"), &maker_mod("n", car, "Nobody", ""), &car_files(car));
+    let set = load(&data);
+    let m = &set.mods()[0];
+    assert_eq!(m.state, ModState::Invalid);
+    assert!(m.cars[0].reasons[0].contains("\"Nobody\" is neither in vehicle.lst") && m.cars[0].reasons[0].contains("[[manufacturer]]"), "{:?}", m.cars[0].reasons);
+    // a car in one mod, the maker in another: fine; switch the declaring mod off and the car's mod is not loaded either
+    let data = data_root();
+    let (cm, ck) = ("vp_split_car_11", "vp_split_mk_11");
+    write_folder(&mods_dir(&data).join("maker"), &maker_mod("m1", ck, "Split", "\n[[manufacturer]]\nname = \"Split\"\n"), &car_files(ck));
+    write_folder(&mods_dir(&data).join("car"), &maker_mod("m2", cm, "split", ""), &car_files(cm));
+    let set = load(&data);
+    assert!(set.mods().iter().all(|m| m.state == ModState::Loaded), "{:?}", set.mods().iter().map(|m| &m.reasons).collect::<Vec<_>>());
+    assert_eq!(set.car(cm).unwrap().manufacturer, "Split");
+    let off = ModSet::load(&data, &LoadOptions { disabled: ["m1".to_string()].into(), ..Default::default() });
+    let by = |id: &str| off.mods().iter().find(|m| m.id == id).unwrap();
+    assert_eq!(by("m1").state, ModState::Disabled);
+    assert_eq!(by("m2").state, ModState::Invalid, "{:?}", by("m2").reasons);
+    assert!(off.cars().is_empty() && off.makers().is_empty());
+}
+
+#[test]
+fn maker_names_and_logos_are_checked() {
+    let long = "x".repeat(31);
+    let too_long = "x".repeat(32);
+    for (name, ok) in [("McLaren", true), ("Land_Rover", true), ("A-B.c", true), ("", false), ("Two Words", false), ("Quo\"te", false), ("\u{160}koda", false), (long.as_str(), true), (too_long.as_str(), false)] {
+        assert_eq!(manifest::maker_name_problem(name).is_none(), ok, "{name:?}");
+    }
+    let data = data_root();
+    let car = "vp_badlogo_11";
+    let mut files = car_files(car);
+    files.push(("notpng.png".into(), b"not a png".to_vec()));
+    let decl = "\n[[manufacturer]]\nname = \"Bad\"\nlogo = \"notpng.png\"\n[[manufacturer]]\nname = \"Gone\"\nlogo = \"missing.png\"\n[[manufacturer]]\nname = \"Two Words\"\n";
+    write_folder(&mods_dir(&data).join("b"), &maker_mod("b", car, "Bad", decl), &files);
+    let set = load(&data);
+    let m = &set.mods()[0];
+    assert_eq!(m.state, ModState::Invalid);
+    let all = m.reasons.join(" | ");
+    assert!(all.contains("not a PNG picture") && all.contains("missing.png is not in the package") && all.contains("no spaces"), "{all}");
+}
+
+#[test]
+fn png_pictures_are_read_and_a_donor_warns_about_the_logo() {
+    let data = data_root();
+    let car = "vp_png_car_11";
+    // own pictures as PNG (one of the disc's size, one of another), no .r9
+    let mut files: Vec<(String, Vec<u8>)> = car_files(car).into_iter().filter(|(p, _)| !p.ends_with(".r9")).collect();
+    for (p, (w, h)) in validate::PICTURES.iter().zip([(512u32, 128u32), (512, 512), (256, 256)]) {
+        files.push((format!("resources/ui/textures/garage/dyntextures/{p}{car}.png"), fake_png(w, h)));
+    }
+    write_folder(&mods_dir(&data).join("pngs"), &maker_mod("pngs", car, "audi", ""), &files);
+    let set = load(&data);
+    let m = &set.mods()[0];
+    assert_eq!(m.state, ModState::Loaded, "{:?}", m.reasons);
+    let w = &m.cars[0].warnings;
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("msh_vp_png_car_11.png is 256x256") && w[0].contains("128x64") && w[0].contains("scaled"), "{}", w[0]);
+    assert!(set.find(&format!("resources/ui/textures/garage/dyntextures/showroom/sh_{car}.png")).is_some());
+    // a picture that is no PNG is refused
+    let data = data_root();
+    let car = "vp_png_bad_11";
+    let mut files: Vec<(String, Vec<u8>)> = car_files(car).into_iter().filter(|(p, _)| !p.contains("managerides")).collect();
+    files.push((format!("resources/ui/textures/garage/dyntextures/managerides/mr_{car}.png"), b"nope".to_vec()));
+    write_folder(&mods_dir(&data).join("bad"), &maker_mod("bad", car, "audi", ""), &files);
+    let m = load(&data).mods()[0].clone();
+    assert_eq!(m.state, ModState::Invalid);
+    assert!(m.reasons[0].contains("is not a PNG picture"), "{:?}", m.reasons);
+    // a car without own pictures borrows the donor's: a warning when the donor is another maker's (the logo is in the picture)
+    let data = data_root();
+    let car = "vp_donor_pic_11";
+    let files: Vec<(String, Vec<u8>)> = car_files(car).into_iter().filter(|(p, _)| !p.ends_with(".r9")).collect();
+    let decl = "\n[[manufacturer]]\nname = \"Zed\"\n";
+    let text = maker_mod("d", car, "Zed", decl).replace("[car.donors]\n", "[car.donors]\npictures = \"vp_aud_r8_08\"\n");
+    write_folder(&mods_dir(&data).join("d"), &text, &files);
+    let m = load(&data).mods()[0].clone();
+    assert_eq!(m.state, ModState::Loaded, "{:?}", m.reasons);
+    assert!(m.cars[0].warnings.iter().any(|w| w.contains("show Audi's logo, not Zed's")), "{:?}", m.cars[0].warnings);
+    let text = maker_mod("d", car, "audi", "").replace("[car.donors]\n", "[car.donors]\npictures = \"vp_aud_r8_08\"\n");
+    write_folder(&mods_dir(&data).join("d"), &text, &files);
+    let m = load(&data).mods()[0].clone();
+    assert!(m.cars[0].warnings.is_empty(), "{:?}", m.cars[0].warnings);
+}
+
+#[test]
+fn hide_driver_is_a_bool_default_false() {
+    let data = data_root();
+    let (a, b) = ("vp_hd_off_11", "vp_hd_on_11");
+    write_folder(&mods_dir(&data).join("a"), &manifest("a", "1", a, ""), &car_files(a));
+    let text = manifest("b", "1", b, "").replace("short_name = \"08 TEST\"\n", "short_name = \"08 TEST\"\nhide_driver = true\n");
+    write_folder(&mods_dir(&data).join("b"), &text, &car_files(b));
+    let set = load(&data);
+    assert!(set.mods().iter().all(|m| m.state == ModState::Loaded), "{:?}", set.mods().iter().map(|m| &m.reasons).collect::<Vec<_>>());
+    assert!(!set.car(a).unwrap().hide_driver && set.car(b).unwrap().hide_driver);
+    let l = crate::manage::describe(&set, &Default::default(), true, 0);
+    assert!(l.rows[1].contents[0].notes.iter().any(|n| n.contains("no driver is drawn")));
+    assert!(l.rows[0].contents[0].notes.is_empty());
+    // a non-bool is refused by the manifest parser
+    assert!(manifest::parse(&manifest("c", "1", "vp_hd_bad_11", "").replace("short_name = \"08 TEST\"\n", "short_name = \"08 TEST\"\nhide_driver = \"yes\"\n")).is_err());
+}
