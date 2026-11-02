@@ -3640,6 +3640,10 @@ impl App {
                 // place of the hangout's own entry; the hangout follows once it is over)
                 let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
                 let story = self.game.career.location_enter(hangoutin::SETUPS[si].enter).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));
+                // (right after the MISSION_EVENT the core calls AudioManager_EnterHangoutState(<location id>), F-35228:
+                // the ambience's hangout district and the speech stopped, F-60295 - before the entry scene's own lines)
+                self.game.hangout_audio = Some((si, false));
+                self.speech.stop();
                 if let Some(s) = story {
                     self.cuts.queue(s);
                 } else if self.cine.start(&mut gpu, &hangoutin::SETUPS[si].scene, glam::Mat4::IDENTITY) {
@@ -6170,6 +6174,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.roam.suspend(self.game.suspend_all_opponents(), self.game.race.is_some(), &mut self.vehicles);
             let pp = self.vehicles.player().map(|c| c.state.pos);
             self.game.update_place_holds(pp, sim_dt);
+            self.game.step_hangout_audio();
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             if std::env::var("MCLA_SIGNAL_TEST").is_ok() && self.tick_no % 600 == 0 {
                 let moving = self.vehicles.cars.iter().filter(|c| !c.is_player && c.parked.is_none() && c.state.speed() > 3.0).count();

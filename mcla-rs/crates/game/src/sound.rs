@@ -1260,7 +1260,12 @@ impl Sound {
                     lib.reverb_env = env;
                 }
             }
-            amb.update(lib, cam_pos, night, game.mode == Mode::Garage, forced, dt);
+            // the hangout cores' audio natives (AudioManager_InitHangout / _SuspendHangout / _DestroyHangout with the core,
+            // _EnterHangoutState / _ExitHangoutState with the pull-in - `Game::hangout_audio`)
+            let cores: Vec<(&str, Vec3, bool)> = crate::hangoutin::SETUPS.iter().filter(|s| game.mc4_hangout_core_running(s.key)).map(|s| (s.key, s.line[1], game.place_hold.contains_key(&s.uid))).collect();
+            amb.hangouts(lib, &cores, game.hangout_audio.map(|(si, _)| crate::hangoutin::SETUPS[si].key));
+            let mph = if game.mode == Mode::Paused { 0.0 } else { speed * 2.237 };
+            amb.update(lib, cam_pos, night, game.mode == Mode::Garage, forced, mph, game.mode == Mode::Race, dt);
             // rain and thunder (WEATHER_AUDIO_RULE.md): the player's wheel cover probes, the listener's probe 50 m up
             let wheels: Vec<Vec3> = if p.model.bike { vec![st.wheels[0].world_pos, st.wheels[2].world_pos] } else { [0, 2, 1, 3].iter().map(|&i| st.wheels[i].world_pos).collect() };
             amb.cover_probe(wet, &wheels, probe);

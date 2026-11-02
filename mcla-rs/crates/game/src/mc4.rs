@@ -10387,6 +10387,13 @@ pub fn hangout_key_of_scene(scene: &str) -> Option<&'static str> {
 }
 
 impl Game {
+    /// A hangout's core runs (by its key): its set-up runs and has not ended (its restarter does not wait for the player).
+    /// The core registers the hangout's audio landmarks at its start (`AudioManager_InitHangout`) and drops them at its
+    /// end (`AudioManager_DestroyHangout`).
+    pub fn mc4_hangout_core_running(&self, key: &str) -> bool {
+        self.mc4_setup_shown(&marker_script(0, key)) && !self.car_x.hangout_wait.iter().any(|w| w == key)
+    }
+
     /// A hangout (by its pull-in scene) is there to pull into: its set-up runs (step 20b).
     pub fn mc4_hangout_open(&self, scene: &str) -> bool {
         // (step 21b: not while its restarter waits for the player - the set-up has ended)

@@ -746,6 +746,9 @@ pub struct Game {
     /// the hangout pulled into, by its key in the string table (`hw_local_hangout1` ...),
     /// the difficulty chosen on its panel, and the difficulty an event was accepted at
     pub hangout_key: Option<String>,
+    /// the ambience's hangout state (`AudioManager_EnterHangoutState` at the pull-in, `_ExitHangoutState` when its panel
+    /// closes): the `hangoutin::SETUPS` index, and whether its panel (`hangout_key`) has come up yet (`step_hangout_audio`)
+    pub hangout_audio: Option<(usize, bool)>,
     pub hangout_diff: usize,
     /// the delivery panel's difficulty: set to MEDIUM once (mcDeliveryForm's ctor, F-87733)
     /// and kept from the last choice - its refresh, F-17823, does not reset it
@@ -1385,6 +1388,7 @@ impl Game {
             hook_icons: None,
             next_race_start: false,
             hangout_key: None,
+            hangout_audio: None,
             hangout_diff: 0,
             delivery_diff: 1,
             hangout_page: (0, 0),
@@ -14291,6 +14295,19 @@ impl Game {
         }
         self.career_loading = true;
         Some(g)
+    }
+
+    /// The hangout cores' `AudioManager_ExitHangoutState`: local_hangout_core (0xe166126d 0x133f) and wager_hangout_core
+    /// (0x16e89a34 0x19da ...) call it when the hangout's panel closes - the player drives off or a race of it begins.
+    /// Here: once the panel of the hangout entered has been up, when it is gone, or when a race is under way.
+    pub fn step_hangout_audio(&mut self) {
+        if let Some((si, seen)) = self.hangout_audio.as_mut() {
+            if self.hangout_key.as_deref() == Some(crate::hangoutin::SETUPS[*si].key) && self.race.is_none() {
+                *seen = true;
+            } else if *seen || self.race.is_some() {
+                self.hangout_audio = None;
+            }
+        }
     }
 
     pub fn update_place_holds(&mut self, player: Option<Vec3>, dt: f32) {

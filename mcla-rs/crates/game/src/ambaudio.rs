@@ -2,12 +2,12 @@
 //! are nearest picks the bed (day / night), its distant one-shots and surround "quadshots" fire on random timers
 //! 6 km away in random directions, the two nearest location emitters play at their places, faded by distance, and
 //! a district's line emitter follows the listener along its polyline. The freeway / tunnel / interior / mall
-//! districts come from the ground's material (the listener's probe), the garage's first; a district switch starts its
-//! dynamic mixer scene and second bed. Rules: `docs/reference/audio/AMBIENCE_RULE.md`.
+//! districts come from the ground's material (the listener's probe), the garage's and a hangout's first; a district switch
+//! starts its dynamic mixer scene and second bed. The hangout cores' landmark sets (HNG_LM_*) join the location emitters,
+//! and the nearest of them drives DYNAMIC_MIXER_POSITIONAL_MUSIC. Rules: `docs/reference/audio/AMBIENCE_RULE.md`.
 //!
-//! Not ported (open there): the bed duck near an emitter (a dynamic mixer, MC4_HANGOUT_DYNMIXER_APPLY), the
-//! district cross-fade and the switch's hold, the hangouts' districts and map-placed emitters. Rain and thunder (here too):
-//! `docs/reference/audio/WEATHER_AUDIO_RULE.md`.
+//! Not ported (open there): the district cross-fade and the switch's hold, the positional-music object of the records with
+//! flag 0x2 (Downtown's local hangout). Rain and thunder (here too): `docs/reference/audio/WEATHER_AUDIO_RULE.md`.
 
 use crate::sndobj::{Handle, Req, SoundLib};
 use glam::Vec3;
@@ -53,7 +53,7 @@ struct Loc {
 struct District {
     name: String,
     bed: [u32; 2],
-    /// the second bed by day / night (+18 / +22: DISTRICT_MALL's and DISTRICT_GARAGE's; NULL elsewhere)
+    /// the second bed by day / night (+18 / +22: DISTRICT_MALL's, DISTRICT_GARAGE's, the HNG_DIS_* crowd; NULL elsewhere)
     bed2: [u32; 2],
     /// +26: the district's dynamic mixer scene (DYNAMIC_MIXER_FREEWAY, _GARAGE, HNG_DIS_*'s _HANGOUT; 0 in the rest)
     scene: u32,
@@ -99,18 +99,7 @@ fn parse_district(name: &str, o: &[u8]) -> Option<District> {
     }
     let nd = *o.get(p)? as usize;
     p += 1;
-    let locs = (0..nd)
-        .map(|k| {
-            let e = p + 41 * k;
-            Loc {
-                flags: o[e],
-                pos: Vec3::new(be_f32(o, e + 1), be_f32(o, e + 5), be_f32(o, e + 9)),
-                outer: be_f32(o, e + 17),
-                inner: be_f32(o, e + 21),
-                sounds: [be_u32(o, e + 25), be_u32(o, e + 29), be_u32(o, e + 33), be_u32(o, e + 37)],
-            }
-        })
-        .collect();
+    let locs = (0..nd).map(|k| parse_loc(o, p + 41 * k)).collect();
     p += 41 * nd;
     let ne = o.get(p).copied().unwrap_or(0) as usize;
     p += 1;
@@ -120,9 +109,50 @@ fn parse_district(name: &str, o: &[u8]) -> Option<District> {
     Some(District { name: name.to_string(), bed: [be_u32(o, 10), be_u32(o, 14)], bed2: [be_u32(o, 18), be_u32(o, 22)], scene: be_u32(o, 26), line_dist: be_f32(o, 39), line_sound: be_u32(o, 43), circles, shots, quads, locs, line, weather_mix })
 }
 
+/// A location emitter's record: (district, list D record) or (landmark set by its id's hash, record).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Key {
+    Loc(usize, usize),
+    Lm(u32, usize),
+}
+
+/// A hangout's landmark set (F-24802, the script native AudioManager_InitHangout(id, state name, &entry line end)): the
+/// game.dat objects `HNG_LM_<id>` and `HNG_LM_<id>_0` .. `_9` (type 6, up to the first missing; none without the first),
+/// each a location record at +10; an object whose position (+11 / +15 / +19) is all 0 takes the argument's. Set `disabled`
+/// (+264) by AudioManager_SuspendHangout (F-27681), dropped by AudioManager_DestroyHangout (F-85547). Kept in the
+/// manager's +196 list in the order registered.
+struct LmSet {
+    id: u32,
+    recs: Vec<(Vec3, Loc)>,
+    disabled: bool,
+}
+
+fn parse_loc(o: &[u8], e: usize) -> Loc {
+    Loc {
+        flags: o[e],
+        pos: Vec3::new(be_f32(o, e + 1), be_f32(o, e + 5), be_f32(o, e + 9)),
+        outer: be_f32(o, e + 17),
+        inner: be_f32(o, e + 21),
+        sounds: [be_u32(o, e + 25), be_u32(o, e + 29), be_u32(o, e + 33), be_u32(o, e + 37)],
+    }
+}
+
+fn load_lm_set(g: &mcla_formats::audcfg::Dat, id: &str, at: Vec3) -> Option<LmSet> {
+    let rec = |o: &[u8]| {
+        let l = (o.len() >= 51).then(|| parse_loc(o, 10))?;
+        let pos = if l.pos == Vec3::ZERO { at } else { l.pos };
+        Some((pos, l))
+    };
+    let mut recs = vec![rec(g.get_name(&format!("HNG_LM_{id}"))?)?];
+    for i in 0..10 {
+        let Some(r) = g.get_name(&format!("HNG_LM_{id}_{i}")).and_then(rec) else { break };
+        recs.push(r);
+    }
+    Some(LmSet { id: joaat(id), recs, disabled: false })
+}
+
 struct Slot {
-    /// (district, location record)
-    key: (usize, usize),
+    key: Key,
     sound: Handle,
     companion: Option<Handle>,
 }
@@ -146,6 +176,15 @@ pub struct Ambience {
     slots: Vec<Slot>,
     line: Option<Handle>,
     landmark_curve: u32,
+    /// MC4_HANGOUT_DYNMIXER_APPLY (manager +944): DYNAMIC_MIXER_POSITIONAL_MUSIC's strength by the emitter's place
+    dynmixer_curve: u32,
+    /// the hangout cores' landmark sets (+196)
+    sets: Vec<LmSet>,
+    /// the hangout state (F-35228 / F-19354): byte +1077 with the id's hash, and +152 = HNG_DIS_<id> (None: neither it
+    /// nor the fallback DISTRICT_HANGOUT is in game.dat)
+    hangout: Option<(u32, Option<usize>)>,
+    /// mixer slot 11 (DYNAMIC_MIXER_POSITIONAL_MUSIC) on: mixer +1740 bit 0x800
+    pos_music: bool,
     null: u32,
     now: f32,
     rain: Rain,
@@ -186,6 +225,9 @@ struct Rain {
 /// Voices for the distant one-shots and quadshots at once (the manager's free-slot lists; size not decoded).
 const SHOT_SLOTS: usize = 4;
 
+/// MANAGER_MIXER entry 11, the slot the hangout landmarks drive
+const POS_MUSIC: &str = "DYNAMIC_MIXER_POSITIONAL_MUSIC";
+
 impl Ambience {
     pub fn new(lib: &SoundLib) -> Option<Ambience> {
         let g = &lib.game;
@@ -217,6 +259,10 @@ impl Ambience {
             slots: Vec::new(),
             line: None,
             landmark_curve: joaat("MC4_HANGOUT_LANDMARK_APPLY"),
+            dynmixer_curve: joaat("MC4_HANGOUT_DYNMIXER_APPLY"),
+            sets: Vec::new(),
+            hangout: None,
+            pos_music: false,
             null: joaat(NULL_SOUND),
             now: 0.0,
             fade_mph: (be_f32(glob, 10), be_f32(glob, 14)),
@@ -360,6 +406,51 @@ impl Ambience {
         self.cur.map(|i| self.districts[i].name.as_str())
     }
 
+    /// A district object by its name's hash, parsed the first time it is wanted.
+    fn district_of(&mut self, lib: &SoundLib, h: u32) -> Option<usize> {
+        let name = lib.game.name_of(h)?.to_string();
+        match self.districts.iter().position(|d| d.name == name) {
+            Some(i) => Some(i),
+            None => {
+                let d = parse_district(&name, lib.game.get(h)?)?;
+                self.districts.push(d);
+                Some(self.districts.len() - 1)
+            }
+        }
+    }
+
+    /// The hangout cores' audio natives, from the cores the port runs. `running`: each core's location id, its entry
+    /// line's end (block +40) and whether it holds (Script_SuspendAllOpponents): a core's start registers its landmark
+    /// set (AudioManager_InitHangout, F-24802), its end drops it (AudioManager_DestroyHangout, F-85547), its hold
+    /// disables it (AudioManager_SuspendHangout(id, 1 / 0), F-27681: the local core 0x552 / 0x737, the wager core
+    /// 0x7ff / 0x958). `hangout`: the hangout entered, AudioManager_EnterHangoutState(<location id>) (F-35228: +152 =
+    /// game.dat `HNG_DIS_<id>`, else DISTRICT_HANGOUT; +1077 = 1; +308 = F-13171), None after ExitHangoutState (F-19354:
+    /// +152 = 0, +1077 = 0, +308 = F-80049).
+    pub fn hangouts(&mut self, lib: &SoundLib, running: &[(&str, Vec3, bool)], hangout: Option<&str>) {
+        self.sets.retain(|s| running.iter().any(|r| joaat(r.0) == s.id));
+        for &(id, at, held) in running {
+            let h = joaat(id);
+            match self.sets.iter_mut().find(|s| s.id == h) {
+                Some(s) => s.disabled = held,
+                None => {
+                    if let Some(mut s) = load_lm_set(&lib.game, id, at) {
+                        log::info!("audio: hangout landmarks {id} ({} records)", s.recs.len());
+                        s.disabled = held;
+                        self.sets.push(s);
+                    }
+                }
+            }
+        }
+        let want = hangout.map(joaat);
+        if want != self.hangout.map(|x| x.0) {
+            self.hangout = hangout.map(|id| {
+                let d = self.district_of(lib, joaat(&format!("HNG_DIS_{id}"))).or_else(|| self.district_of(lib, joaat("DISTRICT_HANGOUT")));
+                log::info!("audio: hangout state {id} district {}", d.map_or("-", |d| self.districts[d].name.as_str()));
+                (joaat(id), d)
+            });
+        }
+    }
+
     /// Stop everything (out of the city: menus without the garage, cutscenes ...).
     /// The speed fade (F-54370, last in the frame's update F-99455): the player's speed in mph (chassis +224 x 2.237, 0
     /// while the game is held) between +10 and +14 picks the AMBIENCE category's level on the FALL curve and WIND_COMP's on
@@ -396,6 +487,7 @@ impl Ambience {
     }
 
     pub fn stop(&mut self, lib: &mut SoundLib) {
+        self.stop_pos_music(lib);
         self.bed_snd = self.null;
         self.bed2_snd = self.null;
         for h in self.bed.take().into_iter().chain(self.bed2.take()).chain(self.line.take()) {
@@ -410,23 +502,30 @@ impl Ambience {
         self.cur = None;
     }
 
+    /// Mixer slot 11 off with its exit (F-10645 / F-89955 / F-80314: StopSlot(11, 1) while mixer +1740 bit 0x800 is set).
+    fn stop_pos_music(&mut self, lib: &mut SoundLib) {
+        if self.pos_music {
+            lib.scene(POS_MUSIC, false);
+            self.pos_music = false;
+            log::info!("audio: positional music off");
+        }
+    }
+
     /// `forced`: the forced district (manager +144) the listener's probe set from the ground's material (F-26357:
-    /// DISTRICT_FREEWAYS, _INTERIOR, _MALL, _TUNNEL), else the district by the circles (F-80049).
-    pub fn update(&mut self, lib: &mut SoundLib, listener: Vec3, night: bool, in_garage: bool, forced: Option<u32>, dt: f32) {
+    /// DISTRICT_FREEWAYS, _INTERIOR, _MALL, _TUNNEL), else the district by the circles (F-80049); in the garage or a
+    /// hangout (`hangouts`) their district, +152 (F-13171). `mph`: the player's speed (mixer +1748, F-99947: chassis
+    /// +224 x 2.237); `racing`: DYNAMIC_MIXER_RACE runs (mixer +1740 bit 0x4000, a race under way).
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, lib: &mut SoundLib, listener: Vec3, night: bool, in_garage: bool, forced: Option<u32>, mph: f32, racing: bool, dt: f32) {
         self.now += dt;
         let now = self.now;
-        let forced = forced.and_then(|h| {
-            let name = lib.game.name_of(h)?.to_string();
-            match self.districts.iter().position(|d| d.name == name) {
-                Some(i) => Some(i),
-                None => {
-                    let d = parse_district(&name, lib.game.get(h)?)?;
-                    self.districts.push(d);
-                    Some(self.districts.len() - 1)
-                }
-            }
-        });
-        let want = if in_garage { self.garage } else { forced.or_else(|| self.pick(listener)) };
+        let forced = forced.and_then(|h| self.district_of(lib, h));
+        // (+152 null: F-93563 returns at once and the district stays)
+        let want = match self.hangout {
+            _ if in_garage => self.garage,
+            Some((_, d)) => d.or(self.cur),
+            None => forced.or_else(|| self.pick(listener)),
+        };
         let Some(di) = want else {
             self.stop(lib);
             return;
@@ -519,27 +618,52 @@ impl Ambience {
                 }
             }
         }
-        // location emitters (F-89955 -> F-80314): the two nearest inside their outer radius
-        let mut cands: Vec<(f32, usize)> = Vec::new();
-        for (k, l) in d.locs.iter().enumerate() {
-            // (flag bit 0 takes another path, gated by manager +1028 / +1032: not decoded, none in the data)
-            if l.flags & 1 != 0 {
-                continue;
+        // location emitters (F-89955 -> F-80314): the two nearest inside their outer radius (3D), first over the hangout
+        // cores' landmark sets (+196, not a disabled one; in a hangout - byte +1077 - only their records with flag 0x4),
+        // then over the district's list D; a record whose sound for the time of day is NULL counts as outside
+        let mut cands: Vec<(f32, Key, Vec3, Loc)> = Vec::new();
+        let null = self.null;
+        let silent = |l: &Loc| {
+            let s = l.sounds[if night { 2 } else { 0 }];
+            s == null || s == 0
+        };
+        for set in self.sets.iter().filter(|s| !s.disabled) {
+            for (k, (pos, l)) in set.recs.iter().enumerate() {
+                if self.hangout.is_some() && l.flags & 4 == 0 {
+                    continue;
+                }
+                // (flag bit 0, the clock tower's chimes: in no record of the data)
+                if l.flags & 1 != 0 || silent(l) {
+                    continue;
+                }
+                let d2 = pos.distance_squared(listener);
+                if d2 <= l.outer * l.outer {
+                    cands.push((d2, Key::Lm(set.id, k), *pos, *l));
+                }
             }
-            let snd = l.sounds[if night { 2 } else { 0 }];
-            if snd == self.null || snd == 0 {
+        }
+        for (k, l) in d.locs.iter().enumerate() {
+            // (flag bit 0 takes the clock tower's path, gated by manager +1028 / +1032: none in the data)
+            if l.flags & 1 != 0 || silent(l) {
                 continue;
             }
             let d2 = l.pos.distance_squared(listener);
             if d2 <= l.outer * l.outer {
-                cands.push((d2, k));
+                cands.push((d2, Key::Loc(di, k), l.pos, *l));
             }
         }
+        // (only a strictly nearer one replaces: on equal distances the earlier record - a set's - stays first)
         cands.sort_by(|a, b| a.0.total_cmp(&b.0));
         cands.truncate(2);
+        // the positional-music path (F-89955): the nearest is a landmark set's record, DYNAMIC_MIXER_RACE is off and the
+        // player is below 55 mph; otherwise slot 11 stops
+        let pm = matches!(cands.first(), Some((_, Key::Lm(..), _, _))) && !racing && mph < 55.0;
+        if !pm {
+            self.stop_pos_music(lib);
+        }
         // slots whose emitter is no longer among the two stop
         self.slots.retain(|s| {
-            let keep = s.key.0 == di && cands.iter().any(|c| c.1 == s.key.1) && lib.playing(s.sound);
+            let keep = cands.iter().any(|c| c.1 == s.key) && lib.playing(s.sound);
             if !keep {
                 lib.stop(s.sound);
                 if let Some(c) = s.companion {
@@ -548,18 +672,42 @@ impl Ambience {
             }
             keep
         });
-        for (d2, k) in cands {
-            let l = d.locs[k];
-            let dist = d2.sqrt();
-            // (F-80314 @A-54704: dist raised to the inner radius, then lowered to the outer one, both by fsel, over
-            // outer - inner with no guard - an emitter with equal radii (342 of 409) gives 0 / 0 = NaN, which the
-            // LANDMARK curve turns into 0, so it plays at -100 dB; one with the inner radius above the outer gives 1)
-            let t = landmark_t(dist, l.inner, l.outer);
-            let b = lib.curve_eval(self.landmark_curve, t).unwrap_or(1.0 - t);
-            // (@A-91922: 20 x 0.301 x log2(b) when b >= 1e-5, else -100 dB - the constants at 0x820188E0)
-            let vol = fsel(b - 1e-5, 20.0 * (b.log2() * 0.301), -100.0);
-            let req = Req { pos: Some(l.pos), volume: vol, ..Default::default() };
-            match self.slots.iter().find(|s| s.key == (di, k)) {
+        let landmarks_db = lib.category("AMBIENCE_LANDMARKS").map_or(0.0, |c| c.volume);
+        for (d2, key, pos, l) in cands {
+            // (F-80314: off the positional-music path a slot plays only while the AMBIENCE_LANDMARKS category is above
+            // -80 dB, else its sounds stop)
+            if !pm && landmarks_db <= -80.0 {
+                self.slots.retain(|s| {
+                    if s.key == key {
+                        lib.stop(s.sound);
+                        if let Some(c) = s.companion {
+                            lib.stop(c);
+                        }
+                    }
+                    s.key != key
+                });
+                continue;
+            }
+            // (F-80314: the volume is 0 dB - the sound's own distance roll-off only - except on the positional-music path:
+            // there t between the radii (raised to the inner one, lowered to the outer one, both by fsel, over outer -
+            // inner with no guard: equal radii give NaN, which the curves turn into 0), slot 11 at 1 - DYNMIXER(t), started
+            // when off, else its strength (+940) clamped to 0 .. 1 - each of the two slots sets it, the second one last -
+            // and the emitter at 20 x 0.301 x log2(LANDMARK(t)) dB when that is >= 1e-5, else -100 dB)
+            let vol = if pm {
+                let t = landmark_t(d2.sqrt(), l.inner, l.outer);
+                let a = lib.curve_eval(self.dynmixer_curve, t).unwrap_or(0.0);
+                let b = lib.curve_eval(self.landmark_curve, t).unwrap_or(1.0 - t);
+                lib.scene_at(POS_MUSIC, true, 1.0 - a);
+                if !self.pos_music {
+                    log::info!("audio: positional music on ({}, strength {:.2})", lib.name_of(l.sounds[night as usize * 2]).unwrap_or("?"), 1.0 - a);
+                }
+                self.pos_music = true;
+                fsel(b - 1e-5, 20.0 * (b.log2() * 0.301), -100.0)
+            } else {
+                0.0
+            };
+            let req = Req { pos: Some(pos), volume: vol, ..Default::default() };
+            match self.slots.iter().find(|s| s.key == key) {
                 Some(s) => {
                     lib.set(s.sound, req);
                     if let Some(c) = s.companion {
@@ -570,7 +718,7 @@ impl Ambience {
                     let n = night as usize * 2;
                     if let Some(h) = lib.play_hash(l.sounds[n], req) {
                         let companion = (l.sounds[n + 1] != self.null).then(|| lib.play_hash(l.sounds[n + 1], req)).flatten();
-                        self.slots.push(Slot { key: (di, k), sound: h, companion });
+                        self.slots.push(Slot { key, sound: h, companion });
                     }
                 }
             }
@@ -674,6 +822,74 @@ mod tests {
         }
     }
 
+    /// The hangouts from the disc: each of the 12 hangout cores' location ids has its game.dat `HNG_DIS_<id>` district
+    /// (scene DYNAMIC_MIXER_HANGOUT, beds, the crowd as second bed) and its landmark set `HNG_LM_<id>` + `_0` (the first with
+    /// flag 0x4, played in a hangout too; `_0` without it; Downtown's local pair also 0x2, the positional-music object);
+    /// EnterHangoutState picks the district over the circles, a landmark in reach starts POSITIONAL_MUSIC below 55 mph
+    /// and not in a race, and ExitHangoutState gives the circles back.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn hangouts_from_disc() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let g = &lib.game;
+        let null = joaat(NULL_SOUND);
+        for s in crate::hangoutin::SETUPS.iter() {
+            let n = format!("HNG_DIS_{}", s.key.to_ascii_uppercase());
+            let d = parse_district(&n, g.get(joaat(&format!("HNG_DIS_{}", s.key))).unwrap_or_else(|| panic!("{n}"))).unwrap();
+            assert_eq!(g.name_of(d.scene), Some("DYNAMIC_MIXER_HANGOUT"), "{n}");
+            assert!(d.bed.iter().all(|&b| b != null && b != 0), "{n}");
+            // (the second bed is the crowd's murmur, day and night)
+            assert_eq!(d.bed2.map(|h| lib.name_of(h)), [Some("HNG_CROWD_MUMOR_RAND_MASTER"); 2], "{n}");
+            let set = load_lm_set(g, s.key, s.line[1]).unwrap_or_else(|| panic!("HNG_LM_{}", s.key));
+            assert_eq!(set.recs.len(), 2, "{}", s.key);
+            let dt = s.key == "dt_local_hangout1";
+            assert_eq!(set.recs.iter().map(|r| r.1.flags).collect::<Vec<_>>(), if dt { vec![6, 2] } else { vec![4, 0] }, "{}", s.key);
+            for (pos, l) in &set.recs {
+                // (every object has its own place: the script's argument is never taken)
+                assert!(*pos == l.pos && l.pos != Vec3::ZERO && l.pos.distance(s.line[1]) < 150.0, "{} {:?}", s.key, l.pos);
+                assert!(l.outer > l.inner && l.sounds[0] != null && l.sounds[2] != null, "{} {:?}", s.key, l);
+            }
+        }
+        assert!(g.get_name("DISTRICT_HANGOUT").is_none());
+        let mut amb = Ambience::new(&lib).expect("ambience");
+        let hw = &crate::hangoutin::SETUPS[0];
+        let lm = load_lm_set(&lib.game, hw.key, hw.line[1]).unwrap().recs[0].1;
+        let cores = [(hw.key, hw.line[1], false)];
+        amb.hangouts(&lib, &cores, None);
+        assert_eq!(amb.sets.len(), 1);
+        // cruising past the hangout: the circles' district, the landmark's set the nearest emitter
+        let at = lm.pos + Vec3::new(lm.inner, 0.0, 0.0);
+        amb.update(&mut lib, at, false, false, None, 30.0, false, 0.1);
+        assert!(!amb.district_name().unwrap().starts_with("HNG_DIS"));
+        assert!(amb.slots.iter().any(|s| matches!(s.key, Key::Lm(..))));
+        assert!(amb.pos_music && lib.scene_on(POS_MUSIC));
+        // too fast, then a race: slot 11 stops
+        amb.update(&mut lib, at, false, false, None, 60.0, false, 0.1);
+        assert!(!amb.pos_music && !lib.scene_on(POS_MUSIC));
+        amb.update(&mut lib, at, false, false, None, 30.0, true, 0.1);
+        assert!(!amb.pos_music);
+        // suspended: not a candidate
+        amb.hangouts(&lib, &[(hw.key, hw.line[1], true)], None);
+        amb.update(&mut lib, at, false, false, None, 30.0, false, 0.1);
+        assert!(!amb.slots.iter().any(|s| matches!(s.key, Key::Lm(..))) && !amb.pos_music);
+        // in the hangout: its district and scene (stepping past the last switch's 4 s hold, +828)
+        amb.hangouts(&lib, &cores, Some(hw.key));
+        amb.update(&mut lib, at, false, false, None, 0.0, false, 4.1);
+        assert_eq!(amb.district_name(), Some("HNG_DIS_HW_LOCAL_HANGOUT1"));
+        assert!(lib.scene_on("DYNAMIC_MIXER_HANGOUT") && amb.pos_music);
+        // out again: the circles' district, the hangout scene stopped
+        amb.hangouts(&lib, &cores, None);
+        amb.update(&mut lib, at, false, false, None, 0.0, false, 4.1);
+        assert!(!amb.district_name().unwrap().starts_with("HNG_DIS") && !lib.scene_on("DYNAMIC_MIXER_HANGOUT"));
+        // an id with no HNG_DIS_ (and no DISTRICT_HANGOUT): the district stays
+        let before = amb.district_name().map(|s| s.to_string());
+        amb.hangouts(&lib, &[], Some("nowhere"));
+        amb.update(&mut lib, Vec3::ZERO, false, false, None, 0.0, false, 0.1);
+        assert_eq!(amb.district_name().map(|s| s.to_string()), before);
+        assert!(amb.sets.is_empty());
+    }
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
     fn districts_from_disc() {
