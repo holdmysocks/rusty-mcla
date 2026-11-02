@@ -589,8 +589,10 @@ impl CarSounds {
                 (false, true) => be_u32(&o, 150 + w),
                 (false, false) => be_u32(&o, 166 + w),
             };
-            // skid_voice (F-75975): GLOBAL_SKIDS' offsets on top; the LPF (voice +88) is not applied by the mixer
-            let req = Req { volume: lin2db(r.gain) + self.skid_db, pitch: cents(r.ratio) + self.skid_cents, start_pct: if car_level { 0.0 } else { 25.0 * i as f32 }, player, ..Req::at(pos) };
+            // skid_voice (F-75975): GLOBAL_SKIDS' offsets on top; the LPF (voice +88) = trunc(map(curve +218,
+            // +206, +210, +222, 1, t)) - 8 kHz to 20 kHz on ROAD
+            let lpf = map(lib, be_u32(&o, 218), f(206), f(210), f(222), 1.0, r.t) as u16;
+            let req = Req { volume: lin2db(r.gain) + self.skid_db, pitch: cents(r.ratio) + self.skid_cents, start_pct: if car_level { 0.0 } else { 25.0 * i as f32 }, player, lpf, ..Req::at(pos) };
             keep(lib, &mut r.skid, hash, req);
         } else {
             stop(lib, &mut r.skid);

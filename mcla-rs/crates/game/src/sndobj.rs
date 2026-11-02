@@ -41,11 +41,14 @@ pub struct Req {
     /// start offset (P+36): milliseconds, or percent of each wave's duration when `start_pct` (P+70 bit 0x40)
     pub start_ms: f32,
     pub start_pct: f32,
+    /// low-pass and high-pass cutoffs in Hz (entry+88 / +90; 23900 and 0 = open)
+    pub lpf: u16,
+    pub hpf: u16,
 }
 
 impl Default for Req {
     fn default() -> Self {
-        Req { pos: None, volume: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0 }
+        Req { pos: None, volume: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0 }
     }
 }
 
@@ -153,6 +156,9 @@ struct Ctx {
     positional: u8,
     /// the request's start offset in percent of the wave
     start_pct: f32,
+    /// the chain's filters (F-63029): LPF the minimum, HPF the maximum down the tree, Hz
+    lpf: u16,
+    hpf: u16,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -243,6 +249,8 @@ pub struct SoundLib {
     cat_dat: Dat,
     sliders: std::collections::HashMap<u32, f32>,
     camera: std::collections::HashMap<u32, f32>,
+    /// the camera table's LPF / HPF per category (Hz; 23900 / 0 = open)
+    camera_filt: std::collections::HashMap<u32, (u16, u16)>,
     /// the ambience manager's speed fade on the AMBIENCE category (its controller +840, F-54370), dB
     speed_fade: f32,
     /// ramped category controllers (category hash -> current dB, target dB, dB per second): the weather mix
@@ -278,6 +286,8 @@ struct Scene {
     time: f32,
     block: u32,
     recs: Vec<(u32, f32)>,
+    /// the records' LPF and HPF (Hz): at strength s the controller takes 23900 + (LPF - 23900) s and HPF s
+    filts: Vec<(u32, u16, u16)>,
     on: bool,
     strength: f32,
     elapsed: f32,
@@ -364,6 +374,7 @@ impl SoundLib {
             cat_dat: cat,
             sliders: Default::default(),
             camera: Default::default(),
+            camera_filt: Default::default(),
             ramps: Default::default(),
             cam_mode: None,
             scenes: HashMap::new(),
@@ -407,14 +418,15 @@ impl SoundLib {
     }
 
     /// The audio camera mode (F-33257 with game.dat MANAGER_CAMERA): 0 bumper, 1 driver, 2 near, 3 medium, 4 far,
-    /// 5 cinematic, 6 other cameras, -1 / 7 none; `bike` picks the bike groups of modes 0 / 1. Volumes only (the
-    /// table's LPF / HPF are not applied by the port's mixer).
+    /// 5 cinematic, 6 other cameras, -1 / 7 none; `bike` picks the bike groups of modes 0 / 1. Volume (F-10740), LPF and
+    /// HPF (F-27208 / F-23310) of every record.
     pub fn set_camera_mode(&mut self, mode: i32, bike: bool) {
         if self.cam_mode == Some((mode, bike)) {
             return;
         }
         self.cam_mode = Some((mode, bike));
         self.camera.clear();
+        self.camera_filt.clear();
         let group = match (mode, bike) {
             (0, false) => Some(0),
             (0, true) => Some(1),
@@ -429,6 +441,8 @@ impl SoundLib {
                 let h = u32::from_be_bytes(o[at..at + 4].try_into().unwrap());
                 let mb = i16::from_be_bytes(o[at + 4 + 6 * g..at + 6 + 6 * g].try_into().unwrap());
                 self.camera.insert(h, mb as f32 * 0.01);
+                let u = |k: usize| u16::from_be_bytes([o[at + k + 6 * g], o[at + k + 1 + 6 * g]]);
+                self.camera_filt.insert(h, (u(6), u(8)));
                 at += 58;
             }
         }
@@ -460,6 +474,8 @@ impl SoundLib {
             let u32at = |at: usize| o.get(at..at + 4).map(|b| u32::from_be_bytes(b.try_into().unwrap())).unwrap_or(0);
             let n = o.get(47).copied().unwrap_or(0) as usize;
             let recs = (0..n).map(|i| (u32at(48 + 14 * i), i16::from_be_bytes([o[52 + 14 * i], o[53 + 14 * i]]) as f32 * 0.01)).collect();
+            let u16at = |at: usize| o.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]])).unwrap_or(0);
+            let filts = (0..n).map(|i| (u32at(48 + 14 * i), u16at(58 + 14 * i), u16at(60 + 14 * i))).filter(|r| r.1 != 23900 || r.2 != 0).collect();
             let null = joaat("NULL_SOUND");
             let snd = |at: usize| Some(u32at(at)).filter(|h| *h != 0 && *h != null).unwrap_or(NONE);
             self.scenes.insert(
@@ -475,6 +491,7 @@ impl SoundLib {
                     time: f32::from_bits(u32at(39)),
                     block: u32at(43),
                     recs,
+                    filts,
                     on: false,
                     strength: 1.0,
                     elapsed: 0.0,
@@ -684,7 +701,27 @@ impl SoundLib {
         if self.slow_hard.0 != 1.0 {
             cents.insert(joaat("SFX_HARD"), (1200.0 * self.slow_hard.0.log2()) as i32);
         }
-        self.cats = audcfg::resolve_categories_rt(&self.cat_dat, &rt, &cents).into_iter().collect();
+        // the controllers' filters (F-27208 / F-23310 clamp to 20..23900 Hz; F-61464 takes the lowest LPF and the
+        // highest HPF of a category's controllers, an HPF at 20 Hz or below is none)
+        let mut filt: std::collections::HashMap<u32, (f32, f32)> = std::collections::HashMap::new();
+        let mut put = |h: u32, l: f32, hp: f32| {
+            let e = filt.entry(h).or_insert((23900.0, 20.0));
+            e.0 = e.0.min(l.clamp(20.0, 23900.0));
+            e.1 = e.1.max(hp.clamp(20.0, 23900.0));
+        };
+        for (h, (l, hp)) in &self.camera_filt {
+            put(*h, *l as f32, *hp as f32);
+        }
+        for sc in self.scenes.values().filter(|s| s.level > 0.0) {
+            let s = sc.strength * sc.level;
+            for (h, l, hp) in &sc.filts {
+                put(*h, 23900.0 + (*l as f32 - 23900.0) * s, *hp as f32 * s);
+            }
+        }
+        // (back to Hz from the log2 domain, truncated)
+        let hz = |v: f32| (23900.0 * (v / 23900.0).log2().exp2()) as u16;
+        let filt = filt.into_iter().map(|(h, (l, hp))| (h, (hz(l), if hp > 20.0 { hz(hp) } else { 0 }))).collect();
+        self.cats = audcfg::resolve_categories_rt(&self.cat_dat, &rt, &cents, &filt).into_iter().collect();
     }
 
     pub fn rand_float(&mut self, a: f32, b: f32) -> f32 {
@@ -1062,7 +1099,7 @@ impl SoundLib {
             inst.stop = false;
             stop_node(&mut inst.root);
         }
-        let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, start_pct: inst.req.start_pct };
+        let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, start_pct: inst.req.start_pct, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
         let mut out = Vec::new();
         self.step(&mut inst.root, dt * 1000.0, ctx, inst.req.start_ms, &mut out);
         if inst.root.st != St::Done {
@@ -1099,7 +1136,7 @@ impl SoundLib {
                 inst.stop = false;
                 stop_node(&mut inst.root);
             }
-            let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, start_pct: inst.req.start_pct };
+            let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, start_pct: inst.req.start_pct, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
             let mut out = Vec::new();
             self.step(&mut inst.root, ms, ctx, inst.req.start_ms, &mut out);
             for v in out {
@@ -1171,6 +1208,8 @@ impl SoundLib {
                 v => v,
             },
             start_pct: parent.start_pct,
+            lpf: parent.lpf,
+            hpf: parent.hpf,
         };
         let offset = n.play_t;
         let releasing = n.release.is_some();
@@ -1380,7 +1419,9 @@ impl SoundLib {
         let b = cat.volume + rolloff;
         let amp = db2lin(a) * db2lin(b);
         let ratio = 2f32.powf((v.ctx.pitch + cat.pitch) as f32 / 1200.0) * if positional { inst.doppler } else { 1.0 };
-        audio.drive(v.voice | if inst.req.player { SLOWED } else { 0 }, &v.clip, (amp * gl, amp * gr), ratio, v.looping, v.start_frame);
+        // the voice's filters (F-24161): LPF = max(100, min(chain, category)), HPF = max(chain, category)
+        let filt = (v.ctx.lpf.min(cat.lpf).max(100), v.ctx.hpf.max(cat.hpf));
+        audio.drive(v.voice | if inst.req.player { SLOWED } else { 0 }, &v.clip, (amp * gl, amp * gr), ratio, v.looping, v.start_frame, filt);
     }
 }
 

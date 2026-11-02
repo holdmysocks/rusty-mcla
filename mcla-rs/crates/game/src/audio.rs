@@ -115,6 +115,137 @@ struct Voice {
     fresh: bool,
     /// held by a paused audio timer (`Audio::hold`): not mixed, its position kept
     held: bool,
+    /// the voice's source filter: target LPF / HPF in Hz (23900 / 0 = open) and its state
+    filt: (u16, u16),
+    src_filter: SourceFilter,
+}
+
+/// The open filter: LPF 23900 Hz, HPF 0.
+const OPEN: (u16, u16) = (23900, 0);
+/// The coefficient design's 2 pi / rate (F-59608: 0x3909421F = 2 pi / 48000 at the original's 48 kHz; the port's
+/// mix runs at `RATE`, so the cutoffs keep their Hz; f32 2 pi / rate gives the original's word at 48 kHz)
+const W_K: f32 = std::f32::consts::TAU / RATE as f32;
+
+/// One filter section (SOURCE_FILTER_RULE.md 5): b0 b1 b2 a1 a2 and, per output channel, the two biquad stages'
+/// states (s0 s1 t0 t1).
+#[derive(Clone, Copy, Default)]
+struct Section {
+    c: [f32; 5],
+    s: [[f32; 4]; 2],
+}
+
+/// The voice's source filter, `rage::audSourceFilterEffectXenon` (one per voice, F-33219): a 4th-order low-pass
+/// (two equal biquads) then a 4th-order high-pass, transposed direct form II, run on 256-sample blocks (F-98396).
+/// SetParam F-30281 truncates the cutoff to whole Hz. The game only ever sets the LPF (the mixer F-88152, param 0);
+/// nothing sets param 1, so the HPF stays 0 (open item O1).
+struct SourceFilter {
+    /// the mixer's slewed LPF float (voice +28)
+    slewed: f32,
+    /// +80 / +76: the cutoffs set; +88 / +84: the cutoffs of the coefficients
+    lpf: u32,
+    hpf: u32,
+    lpf_set: u32,
+    hpf_set: u32,
+    /// +100 / +101: the section was off in the last call that processed
+    lp_off: bool,
+    hp_off: bool,
+    lp: Section,
+    hp: Section,
+    /// 2 pi / rate (`W_K`)
+    wk: f32,
+}
+
+impl SourceFilter {
+    /// A new voice (Init F-58594: cutoffs 23900 / 0, coefficients 0): the mixer's first update sends the target
+    /// LPF unslewed.
+    fn new(filt: (u16, u16)) -> SourceFilter {
+        let mut f = SourceFilter { slewed: 23900.0, lpf: 23900, hpf: 0, lpf_set: 23900, hpf_set: 0, lp_off: false, hp_off: false, lp: Section::default(), hp: Section::default(), wk: W_K };
+        f.set_lpf(filt.0 as f32);
+        f
+    }
+
+    fn set_lpf(&mut self, hz: f32) {
+        self.slewed = hz;
+        self.lpf = hz as u32;
+    }
+
+    /// The mixer's update (F-88152): the LPF moves toward the target by at most x1.1 / /1.1 per update while the
+    /// voice plays and is not silent, else it is sent at once.
+    fn update(&mut self, target: u16, audible: bool) {
+        let t = target as f32;
+        let p = self.slewed;
+        if !audible {
+            self.set_lpf(t);
+        } else if t - p >= 0.0 {
+            self.set_lpf(t.min(p * 1.1));
+        } else {
+            self.set_lpf(t.max(p * (1.0 / 1.1)));
+        }
+    }
+
+    fn design(hp: bool, hz: u32, wk: f32) -> [f32; 5] {
+        use crate::physics::exact::{guest_cos, guest_sin};
+        let w = hz as f32 * wk;
+        let c = guest_cos(w as f64) as f32;
+        let s = guest_sin(w as f64) as f32;
+        let alpha = s * f32::from_bits(0x3FF7_ACC9);
+        let (n0, n1) = if hp { ((c + 1.0) * 0.5, -1.0 - c) } else { ((1.0 - c) * 0.5, 1.0 - c) };
+        let inv = 1.0 / (alpha + 1.0);
+        [inv * n0, inv * n1, inv * n0, (c * -2.0) * inv, (1.0 - alpha) * inv]
+    }
+
+    /// One 256-sample block of `ch` channels, in place (F-98396); false when both sections are off (no-op).
+    fn process(&mut self, buf: &mut [[f32; 2]], ch: usize) -> bool {
+        let (lp_on, hp_on) = (self.lpf < 23900, self.hpf != 0);
+        if !lp_on && !hp_on {
+            return false;
+        }
+        if lp_on && self.lp_off {
+            self.lp.s = [[0.0; 4]; 2];
+        }
+        if hp_on && self.hp_off {
+            self.hp.s = [[0.0; 4]; 2];
+        }
+        if self.lpf_set != self.lpf {
+            self.lp.c = Self::design(false, self.lpf, self.wk);
+        }
+        if self.hpf_set != self.hpf {
+            self.hp.c = Self::design(true, self.hpf, self.wk);
+        }
+        (self.lpf_set, self.hpf_set, self.lp_off, self.hp_off) = (self.lpf, self.hpf, !lp_on, !hp_on);
+        // (the recomp's fmadds / fmsubs: one f64 fma, then f32)
+        fn fma(a: f32, b: f32, c: f32) -> f32 {
+            (a as f64).mul_add(b as f64, c as f64) as f32
+        }
+        fn cascade(x: f32, c: &[f32; 5], s: &mut [f32; 4]) -> f32 {
+            let y1 = fma(x, c[0], s[0]);
+            let y2 = fma(y1, c[0], s[2]);
+            s[0] = fma(x, c[1], -(y1 * c[3])) + s[1];
+            s[1] = fma(x, c[2], -(y1 * c[4]));
+            s[2] = fma(y1, c[1], -(y2 * c[3])) + s[3];
+            s[3] = fma(y1, c[2], -(y2 * c[4]));
+            y2
+        }
+        for k in 0..ch {
+            for f in buf.iter_mut() {
+                let mut x = f[k];
+                if lp_on {
+                    x = cascade(x, &self.lp.c, &mut self.lp.s[k]);
+                }
+                if hp_on {
+                    x = cascade(x, &self.hp.c, &mut self.hp.s[k]);
+                }
+                f[k] = x;
+            }
+        }
+        // the states are flushed to +0 once per block when zero or denormal
+        for v in self.lp.s.iter_mut().chain(self.hp.s.iter_mut()).flatten() {
+            if v.to_bits() & 0x7F80_0000 == 0 {
+                *v = 0.0;
+            }
+        }
+        true
+    }
 }
 
 #[derive(Default)]
@@ -202,9 +333,9 @@ impl MixSource {
                 continue;
             }
             let step = (v.speed * cat_pitch * v.clip.rate as f32 / RATE as f32) as f64;
-            for i in 0..BLOCK {
-                v.gl += (v.tl - v.gl) * 0.004;
-                v.gr += (v.tr - v.gr) * 0.004;
+            let mut src = [[0.0f32; 2]; BLOCK];
+            let mut got = 0;
+            for o in src.iter_mut() {
                 let mut p = v.pos;
                 if p >= (n - 1) as f64 {
                     if v.looping {
@@ -217,11 +348,17 @@ impl MixSource {
                 }
                 let i0 = p as usize;
                 let f = (p - i0 as f64) as f32;
-                let sl = v.clip.at(i0, 0) * (1.0 - f) + v.clip.at(i0 + 1, 0) * f;
-                let sr = v.clip.at(i0, 1) * (1.0 - f) + v.clip.at(i0 + 1, 1) * f;
-                self.buf[i * 2] += sl * v.gl * master * cat_gain;
-                self.buf[i * 2 + 1] += sr * v.gr * master * cat_gain;
+                *o = [v.clip.at(i0, 0) * (1.0 - f) + v.clip.at(i0 + 1, 0) * f, v.clip.at(i0, 1) * (1.0 - f) + v.clip.at(i0 + 1, 1) * f];
                 v.pos += step;
+                got += 1;
+            }
+            // the voice's source filter, ahead of its gains (an XAudio source voice's effect chain)
+            v.src_filter.process(&mut src, 2);
+            for (i, s) in src[..got].iter().enumerate() {
+                v.gl += (v.tl - v.gl) * 0.004;
+                v.gr += (v.tr - v.gr) * 0.004;
+                self.buf[i * 2] += s[0] * v.gl * master * cat_gain;
+                self.buf[i * 2 + 1] += s[1] * v.gr * master * cat_gain;
             }
         }
         // drop finished one-shots and faded-out loops
@@ -803,7 +940,7 @@ impl Audio {
 
     pub fn play_ex(&mut self, key: &str, vol: f32, speed: f32) {
         if let Some(clip) = self.clip(key) {
-            self.push(Voice { id: 0, clip, pos: 0.0, speed, gl: vol, gr: vol, tl: vol, tr: vol, looping: false, fresh: true, held: false });
+            self.push(Voice { id: 0, clip, pos: 0.0, speed, gl: vol, gr: vol, tl: vol, tr: vol, looping: false, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN) });
         }
     }
 
@@ -812,7 +949,7 @@ impl Audio {
         if let Some(clip) = self.clip(key) {
             let (l, r) = spatial(self.ear, self.ear_right, pos, vol, ref_dist);
             if l + r > 0.004 {
-                self.push(Voice { id: 0, clip, pos: 0.0, speed: 1.0, gl: l, gr: r, tl: l, tr: r, looping: false, fresh: true, held: false });
+                self.push(Voice { id: 0, clip, pos: 0.0, speed: 1.0, gl: l, gr: r, tl: l, tr: r, looping: false, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN) });
             }
         }
     }
@@ -838,14 +975,16 @@ impl Audio {
         }
         // start at a random phase so identical loops do not comb
         let start = (id.wrapping_mul(2654435761) % clip.frames().max(1) as u64) as f64;
-        m.voices.push(Voice { id, clip, pos: start, speed, gl: 0.0, gr: 0.0, tl: gains.0, tr: gains.1, looping: true, fresh: true, held: false });
+        m.voices.push(Voice { id, clip, pos: start, speed, gl: 0.0, gr: 0.0, tl: gains.0, tr: gains.1, looping: true, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN) });
     }
 
     /// Create or update a voice that lives while it is driven every frame (the sound objects' waves): `start` is the
     /// frame a new voice starts at; a one-shot voice ends at its last frame.
-    pub fn drive(&mut self, id: u64, clip: &Arc<Clip>, gains: (f32, f32), speed: f32, looping: bool, start: f64) {
+    pub fn drive(&mut self, id: u64, clip: &Arc<Clip>, gains: (f32, f32), speed: f32, looping: bool, start: f64, filt: (u16, u16)) {
         let Ok(mut m) = self.mixer.lock() else { return };
         if let Some(v) = m.voices.iter_mut().find(|v| v.id == id) {
+            v.filt = filt;
+            v.src_filter.update(filt.0, gains.0.max(gains.1) > 1e-5);
             v.tl = gains.0;
             v.tr = gains.1;
             v.speed = speed;
@@ -857,7 +996,7 @@ impl Audio {
         if m.voices.len() >= 96 || (!looping && start > 0.0 && start + clip.rate as f64 * 0.05 >= clip.frames() as f64) {
             return;
         }
-        m.voices.push(Voice { id, clip: clip.clone(), pos: start, speed, gl: gains.0, gr: gains.1, tl: gains.0, tr: gains.1, looping, fresh: true, held: false });
+        m.voices.push(Voice { id, clip: clip.clone(), pos: start, speed, gl: gains.0, gr: gains.1, tl: gains.0, tr: gains.1, looping, fresh: true, held: false, filt, src_filter: SourceFilter::new(filt) });
     }
 
     /// Hold a driven voice where it is, silent, for this frame (its sound is on a paused audio timer: F-89113 skips the
@@ -1123,7 +1262,7 @@ impl Audio {
             }
             if let Some(c) = rel.and_then(|r| crate::sndobj::decode_mp3(&self.root.join(r))) {
                 let pos = (at.max(0.0) * c.rate as f32) as f64;
-                self.push_any(Voice { id: STREAM_VOICE, clip: Arc::new(c), pos, speed: 1.0, gl: volume, gr: volume, tl: volume, tr: volume, looping: false, fresh: true, held: false });
+                self.push_any(Voice { id: STREAM_VOICE, clip: Arc::new(c), pos, speed: 1.0, gl: volume, gr: volume, tl: volume, tr: volume, looping: false, fresh: true, held: false, filt: OPEN, src_filter: SourceFilter::new(OPEN) });
             }
             return;
         }
@@ -1317,6 +1456,53 @@ impl Audio {
 
 #[cfg(test)]
 mod tests {
+    /// SOURCE_FILTER_RULE.md: the coefficients and 67 blocks of the recompiled filter (F-59608 / F-98396) run offline
+    /// at its 48 kHz constant: coefficients, every output sample (fnv-64 of the bits) and the states, bit for bit
+    #[test]
+    fn source_filter_is_the_originals() {
+        use super::{SourceFilter, BLOCK};
+        let k48 = f32::from_bits(0x3909_421F);
+        assert_eq!(std::f32::consts::TAU / 48000.0, k48);
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let mut f: Option<SourceFilter> = None;
+        let (mut nc, mut nb) = (0, 0);
+        for line in include_str!("srcfilter_cases.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<&str> = line.split(' ').collect();
+            if w[0] == "C" {
+                let c = SourceFilter::design(w[1] == "0", w[2].parse().unwrap(), k48);
+                let want: Vec<u32> = w[3..8].iter().map(|t| h(t).to_bits()).collect();
+                assert_eq!(c.map(f32::to_bits).to_vec(), want, "{line}");
+                nc += 1;
+                continue;
+            }
+            if w[2] == "0" {
+                f = Some(SourceFilter { slewed: 23900.0, lpf: 23900, hpf: 0, lpf_set: 23900, hpf_set: 0, lp_off: false, hp_off: false, lp: Default::default(), hp: Default::default(), wk: k48 });
+            }
+            let sf = f.as_mut().unwrap();
+            sf.lpf = w[3].parse().unwrap();
+            sf.hpf = w[4].parse().unwrap();
+            let mut buf = [[0.0f32; 2]; BLOCK];
+            match w[5] {
+                "imp" => buf[0][0] = 1.0,
+                "zero" => {}
+                x => x.split(',').zip(buf.iter_mut()).for_each(|(t, b)| b[0] = h(t)),
+            }
+            sf.process(&mut buf, 1);
+            let mut fnv: u64 = 0xcbf2_9ce4_8422_2325;
+            for b in &buf {
+                for byte in b[0].to_bits().to_le_bytes() {
+                    fnv = (fnv ^ byte as u64).wrapping_mul(0x100_0000_01b3);
+                }
+            }
+            assert_eq!(format!("{fnv:016x}"), w[6], "{} block {}", w[1], w[2]);
+            let st: Vec<u32> = sf.lp.s[0].iter().chain(sf.hp.s[0].iter()).map(|v| v.to_bits()).collect();
+            let want: Vec<u32> = w[7..15].iter().map(|t| h(t).to_bits()).collect();
+            assert_eq!(st, want, "{} block {} states", w[1], w[2]);
+            nb += 1;
+        }
+        assert_eq!((nc, nb), (38, 67));
+    }
+
     use super::*;
 
     /// #13: with no device at the start the game keeps its audio (silent, the mix drained) and opens the output at

@@ -150,7 +150,7 @@ pub struct Sound {
     pub prop_places: Vec<(u32, Vec3)>,
     /// the props with a distance loop (their game.dat object's +86 not NULL_SOUND): place, loop, max distance, and the
     /// loop while it plays
-    prop_loops: Option<Vec<(Vec3, u32, f32, Option<crate::sndobj::Handle>)>>,
+    prop_loops: Option<Vec<(Vec3, u32, Vec<u8>, Option<crate::sndobj::Handle>)>>,
     phone: bool,
     tutorial: bool,
     dmg_prev: f32,
@@ -464,25 +464,35 @@ impl Sound {
             // object (LA_PROP_<type>, type 43) has a loop at +86 - the parked and flying aircraft (CESSNA, CESSNA_BEACH,
             // the 737 JET, HELICOPTER) and road flares - plays it at its place while the listener is within +90 m
             // (700 / 800 / 780 / 50), and stops beyond. (The aircraft's flag +85 bit 0 keeps it while the prop moves; the
-            // port's stand. The request's +88 LPF / +90 curves are not applied by the port's mixer.)
+            // port's stand.) Every update: HPF (+90) = u16 [98] + (1 - t1) * ([104] - [98]), t1 = clamp01((d - [94]) /
+            // ([100] - [94])), LPF (+88) likewise from [110] / [116] / [106] / [112] (the CESSNA: 0 Hz within 400 m, 400 Hz
+            // at 700 m; the LPF stays 23900)
             if self.prop_loops.is_none() && !self.prop_places.is_empty() {
                 let null = mcla_formats::hash::joaat("NULL_SOUND");
                 let mut v = Vec::new();
                 for &(ty, pos) in &self.prop_places {
-                    let Some(o) = lib.game.get(ty).filter(|o| o.first() == Some(&43) && o.len() >= 94) else { continue };
+                    let Some(o) = lib.game.get(ty).filter(|o| o.first() == Some(&43) && o.len() >= 118) else { continue };
                     let h = u32::from_be_bytes(o[86..90].try_into().unwrap());
                     if h != 0 && h != null {
-                        v.push((pos, h, f32::from_bits(u32::from_be_bytes(o[90..94].try_into().unwrap())), None));
+                        v.push((pos, h, o.to_vec(), None));
                     }
                 }
                 log::info!("audio: {} props with a distance loop", v.len());
                 self.prop_loops = Some(v);
             }
-            for (pos, h, max, playing) in self.prop_loops.iter_mut().flatten() {
-                let near = pos.distance(cam_pos) <= *max;
+            for (pos, h, o, playing) in self.prop_loops.iter_mut().flatten() {
+                let f = |at: usize| f32::from_bits(u32::from_be_bytes(o[at..at + 4].try_into().unwrap()));
+                let u = |at: usize| u16::from_be_bytes([o[at], o[at + 1]]) as f32;
+                let d = pos.distance(cam_pos);
+                let near = d <= f(90);
+                let filt = |d0: usize, d1: usize, a: usize, b: usize| {
+                    let t = ((d - f(d0)) / (f(d1) - f(d0))).max(0.0).min(1.0);
+                    (1.0 - t).mul_add(u(b) - u(a), u(a)) as i64 as u16
+                };
+                let req = crate::sndobj::Req { pos: Some(*pos), hpf: filt(94, 100, 98, 104), lpf: filt(106, 112, 110, 116), ..Default::default() };
                 match (near, *playing) {
-                    (true, Some(p)) if lib.playing(p) => {}
-                    (true, _) => *playing = lib.play_hash(*h, crate::sndobj::Req { pos: Some(*pos), ..Default::default() }),
+                    (true, Some(p)) if lib.playing(p) => lib.set(p, req),
+                    (true, _) => *playing = lib.play_hash(*h, req),
                     (false, Some(p)) => {
                         lib.stop(p);
                         *playing = None;
