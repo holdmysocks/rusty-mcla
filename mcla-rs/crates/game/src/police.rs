@@ -3729,8 +3729,9 @@ pub fn arrest_gesture(scene: &str) -> Option<(crate::drivers::Gesture, f32, f32)
 pub fn station_reset(vehicles: &mut Vehicles, world: &World, n: u32) -> Option<u32> {
     let c = vehicles.player_mut()?;
     let at = Vec3::new(-604.5, 7.0, -340.5);
+    // (5 deg is the car's yaw, as every Racer_InitializeResetPosition heading: it faces (-sin h, 0, -cos h))
     let h = 5f32.to_radians();
-    let f = Vec3::new(h.sin(), 0.0, h.cos());
+    let f = Vec3::new(-h.sin(), 0.0, -h.cos());
     let q = glam::Quat::from_rotation_y((-f.x).atan2(-f.z));
     let g = world.collider.ground(at, 1.0, 3.0);
     let pos = g.map_or(at, |h| Vec3::new(at.x, h.point.y, at.z));
@@ -3768,7 +3769,9 @@ pub fn scene_frame(vehicles: &mut Vehicles, world: &World, zones: &[(Vec3, f32)]
         Some((p, h)) => {
             let h = h.to_radians();
             log::info!("police: scene place {:?} heading {:.1} (car at {:?})", p, h.to_degrees(), c.state.pos);
-            (p, Vec3::new(h.sin(), 0.0, h.cos()))
+            // (the heading is the car's yaw, euler (0, h, 0) - F-40200, F-15222: it faces (-sin h, 0, -cos h); a road
+            // point's heading is the reversed lane's angle, so the car faces along the lane's travel, on its side of the road)
+            (p, Vec3::new(-h.sin(), 0.0, -h.cos()))
         }
         None => (c.state.pos, c.state.forward()),
     };
