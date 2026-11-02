@@ -415,6 +415,15 @@ pub enum MenuAction {
     OpenEditor,
 }
 
+/// A delivery hangout script's race array (`delivery_hangout_core`, mcRaceArray_*): the used bits, the current
+/// delivery (static +3208, an index into the array) and the visit's count of unused ones (local 8)
+#[derive(Clone, Debug, Default)]
+pub struct DeliveryList {
+    pub used: Vec<bool>,
+    pub cur: usize,
+    pub left: usize,
+}
+
 pub struct Game {
     pub mode: Mode,
     pub prev_mode: Mode,
@@ -439,6 +448,8 @@ pub struct Game {
     pub tip: Option<(String, String, f32)>,
     pub best_time: Option<f32>,
     pub last_results: Vec<(String, Option<f32>)>,
+    /// The two delivery hangouts' race arrays (`delivery_hangout_core`: [the rest, South Central])
+    pub delivery_lists: [DeliveryList; 2],
     pub rng: u32,
     pub nav_up: bool,
     pub nav_down: bool,
@@ -1246,6 +1257,7 @@ impl Game {
             tip: None,
             best_time: None,
             last_results: Vec::new(),
+            delivery_lists: Default::default(),
             rng: 0xC0FFEE,
             nav_up: false,
             nav_down: false,
@@ -11063,16 +11075,43 @@ impl Game {
         }
     }
 
-    /// A YES / NO box of the pause / race-over menus (F-48904, its YES / NO layout; B cancels)
-    /// The next delivery of a district's list (South Central's or the rest's), taken in turn - *(approx.)* the delivery
-    /// core picks a random unused one of its list (0x129f..0x13bd: GET_RANDOM_INT_IN_RANGE, the used bits, the mode
-    /// restarted when none is left)
+    /// RAND_INT_RANGE(lo, hi), both ends in, on the port's generator (the original's sequence is not reproduced)
+    fn rand_int_range(&mut self, lo: usize, hi: usize) -> usize {
+        if hi <= lo {
+            return lo;
+        }
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        lo + (x as usize) % (hi - lo + 1)
+    }
+
+    /// A district's deliveries (South Central's or the rest's), the order of the hangout's race array
+    fn delivery_list(&self, south: bool) -> Vec<usize> {
+        (0..self.race_defs.len()).filter(|&i| self.race_defs[i].race_type == "Delivery" && (self.race_defs[i].district == "SouthCentral") == south).collect()
+    }
+
+    /// The visit's first delivery (`delivery_hangout_core`): the current one (static +3208) is RAND_INT_RANGE(0,
+    /// count - 1) of the whole list, drawn at the script's start (0x3d) and again when a visit ends (0x347c) - the
+    /// port draws it here; the visit's count of unused ones (local 8) starts at the list's count (0x96b), and the
+    /// set-up marks it used (0x13f2)
     fn delivery_pick(&mut self, south: bool) -> Option<usize> {
-        let list: Vec<usize> = (0..self.race_defs.len()).filter(|&i| self.race_defs[i].race_type == "Delivery" && (self.race_defs[i].district == "SouthCentral") == south).collect();
-        let n = self.career.stats.get("delivery_at").copied().unwrap_or(0).max(0) as usize;
-        let i = *list.get(n % list.len().max(1))?;
-        self.career.stats.insert("delivery_at".into(), (n + 1) as i64);
-        Some(i)
+        let list = self.delivery_list(south);
+        let n = list.len();
+        if n == 0 {
+            return None;
+        }
+        let cur = self.rand_int_range(0, n - 1);
+        let dl = &mut self.delivery_lists[south as usize];
+        if dl.used.len() != n {
+            dl.used = vec![false; n];
+        }
+        dl.cur = cur;
+        dl.left = n;
+        dl.used[cur] = true;
+        Some(list[cur])
     }
 
     /// NEXT WAGER's race: the hangout's next (`mc4_wager_race`); a wager from the port's old list has no hangout: the next of
@@ -11087,13 +11126,63 @@ impl Game {
         (1..n).map(|k| (cur + k) % n).find(|&i| self.race_defs[i].district == d.district && self.race_defs[i].race_type == d.race_type)
     }
 
-    /// NEXT DELIVERY after a delivery: the next of the same district's list, at the same difficulty (`event_diff`
-    /// stays)
+    /// NEXT DELIVERY after a delivery, at the same difficulty (`event_diff` stays). `delivery_hangout_core`
+    /// 0x1271..0x13f2: the count of unused ones goes down by one; at 0 the mode restarts (mcRaceArray_Reset, the
+    /// count back to the list's, the current one marked used and counted); then r = RAND_INT_RANGE(0, count - 1) and
+    /// the r-th unused one in the array's order is taken (none found: the mode restarts) and marked used
     fn next_delivery(&mut self) -> Option<usize> {
         let south = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| d.district == "SouthCentral");
-        self.delivery_pick(south)
+        let list = self.delivery_list(south);
+        let n = list.len();
+        if n == 0 {
+            return None;
+        }
+        {
+            let dl = &mut self.delivery_lists[south as usize];
+            if dl.used.len() != n {
+                *dl = DeliveryList { used: vec![false; n], cur: dl.cur.min(n - 1), left: n };
+                dl.used[dl.cur] = true;
+            }
+            dl.left = dl.left.saturating_sub(1);
+        }
+        // (a list of one restarts for ever in the script; the port keeps the one)
+        for _ in 0..2 {
+            let dl = &mut self.delivery_lists[south as usize];
+            if dl.left == 0 {
+                dl.used.iter_mut().for_each(|u| *u = false);
+                dl.left = n;
+                dl.used[dl.cur] = true;
+                dl.left -= 1;
+                if dl.left == 0 {
+                    break;
+                }
+            }
+            let mut r = self.rand_int_range(0, self.delivery_lists[south as usize].left - 1);
+            let dl = &mut self.delivery_lists[south as usize];
+            let mut found = None;
+            for i in 0..n {
+                if !dl.used[i] {
+                    if r == 0 {
+                        found = Some(i);
+                        break;
+                    }
+                    r -= 1;
+                }
+            }
+            match found {
+                Some(i) => {
+                    dl.cur = i;
+                    dl.used[i] = true;
+                    return Some(list[i]);
+                }
+                None => dl.left = 0,
+            }
+        }
+        let dl = &self.delivery_lists[south as usize];
+        Some(list[dl.cur])
     }
 
+    /// A YES / NO box of the pause / race-over menus (F-48904, its YES / NO layout; B cancels)
     fn open_confirm(&mut self, title: &str, description: &str, confirm: MenuAction) {
         let def = crate::flash_ui::MessageBoxDef { title: title.into(), description: description.into(), options: vec![("confirm_yes".into(), "Common_Yes".into()), ("confirm_no".into(), "Common_No".into())] };
         self.message_box = Some((def, 0, confirm));
@@ -14474,13 +14563,31 @@ mod tests {
     }
 
     #[test]
-    fn delivery_pick_in_turn() {
+    fn delivery_pick_unused() {
         let mut g = Game::new(Vec::new(), 0);
         assert_eq!(g.delivery_pick(false), None);
-        for (id, district) in [("a", "Hollywood"), ("b", "SouthCentral"), ("c", "Beaches")] {
+        for (id, district) in [("a", "Hollywood"), ("b", "SouthCentral"), ("c", "Beaches"), ("d", "Hills"), ("e", "Downtown")] {
             g.race_defs.push(crate::races::RaceDef { id: id.into(), race_type: "Delivery".into(), district: district.into(), ..Default::default() });
         }
-        assert_eq!((g.delivery_pick(false), g.delivery_pick(false), g.delivery_pick(true)), (Some(0), Some(2), Some(1)));
+        // the rest's list: a c d e (race_defs 0 2 3 4); South Central's: b
+        assert_eq!(g.delivery_pick(true), Some(1));
+        let first = g.delivery_pick(false).unwrap();
+        g.current_race = Some(first);
+        // within a visit no delivery comes twice until all four were run; then the mode restarts
+        let mut seen = vec![first];
+        for _ in 0..3 {
+            let i = g.next_delivery().unwrap();
+            assert!(!seen.contains(&i), "{:?} then {}", seen, i);
+            seen.push(i);
+            g.current_race = Some(i);
+        }
+        seen.sort();
+        assert_eq!(seen, vec![0, 2, 3, 4]);
+        let last = g.current_race.unwrap();
+        let after = g.next_delivery().unwrap();
+        assert_ne!(after, last);
+        assert_eq!(g.delivery_lists[0].used.iter().filter(|&&u| u).count(), 2);
+        // a list of one keeps its one
         g.current_race = Some(1);
         assert_eq!(g.next_delivery(), Some(1));
     }
