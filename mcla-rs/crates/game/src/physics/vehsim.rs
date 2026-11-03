@@ -531,6 +531,19 @@ const BIKE_BURN_STEER: f32 = 0.9;
 /// tyres, sums, integrator, collision) and mcBikeGyro in the original's place and operations.
 /// MCLA_DBG_Z3: the port's older, approximate bike path (its own suspension arithmetic, the gyro
 /// ahead of the wheels, four substeps).
+/// The motorcycle's wipeout (P3 / R4) is the step's own: its timer, its count and the stand-up (F-86308)
+pub fn wipe_owned(vs: &VehState, vt: &VehTune) -> bool {
+    vt.bike && !bike_old(vt) && !dbg_flag("MCLA_DBG_P3") && vs.by.exact
+}
+
+/// F-32386: the thrown rider's term, sqrt(x^2 + (10 y)^2 + z^2) of his velocity (10.0 the image's), the timer
+/// of the wipeout runs only while it is under 4.47
+pub fn rider_term(v: Vec3) -> f32 {
+    let y = v.y * 10.0;
+    use super::exact::fma;
+    fma(y, y, fma(v.z, v.z, v.x * v.x)).sqrt()
+}
+
 pub fn bike_old(vt: &VehTune) -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     vt.bike && *V.get_or_init(|| std::env::var_os("MCLA_DBG_Z3").is_some())
@@ -637,6 +650,11 @@ pub struct VehState {
     pub manifolds: Vec<super::hull::Manifold>,
     /// stage P3: the rider is off (chassis +592 bit 0x10): the damage object's timer (+44) and the ticks since
     pub wipe: Option<(f32, u32)>,
+    /// a wipeout by a blow (F-69183 from the damage, set by the game): the next step starts `wipe` as the roll does
+    pub wipe_hit: bool,
+    /// the thrown rider's velocity (the ragdoll's, character slot 11 F-62429) while he is off the seat; None = seated,
+    /// when slot 11 gives the bike's own (F-98427)
+    pub rider_vel: Option<Vec3>,
     /// R4: the direction saved as the rider came off (chassis +608), and whether the car was set down
     /// afresh in the tick before - its pairs are made again only in the step after (no wheel contact)
     pub wipe_dir: Vec3,
@@ -788,7 +806,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
     }
 }
 
@@ -2632,7 +2650,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             Some((first, from, to)) => *age >= first && (*age - first) % 2 == 0 && !(from..=to).contains(age),
             None => {
                 let wheels_down = (0..4).filter(|i| i % 2 == 0 && vs.wheels[*i].record).count();
-                *age % 2 == 0 && !(speed_in >= 4.47 && wheels_down != 2)
+                // (F-32386: the rider's term, his velocity with the vertical part tenfold, counted while his matrix
+                // (F-17180, the seated one at the bike) is between -75 and 400 m high)
+                let v = vs.rider_vel.unwrap_or(st.vel);
+                let rider = if st.pos.y > -75.0 && st.pos.y < 400.0 { rider_term(v) } else { 0.0 };
+                *age % 2 == 0 && !(speed_in >= 4.47 && wheels_down != 2) && rider < 4.47
             }
         };
         if counts && *timer > 0.0 {
@@ -5279,8 +5301,9 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let mut stood = false;
         vs.set_down = false;
         if vt.bike && !bike_old(vt) && !dbg_flag("MCLA_DBG_P3") && vs.by.exact {
+            let hit = std::mem::take(&mut vs.wipe_hit);
             match vs.wipe {
-                None if body_rows[1].y <= 0.1 && !(vs.air584 > 0.0) => {
+                None if hit || (body_rows[1].y <= 0.1 && !(vs.air584 > 0.0)) => {
                     vs.wipe = Some((t.damage.wipeout_delay, 0));
                     // (the wipeout's start F-69183: the pad's rumble 1)
                     st.rumble.play(1);

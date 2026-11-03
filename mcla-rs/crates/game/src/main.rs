@@ -3143,6 +3143,8 @@ impl App {
                     let dm = c.model.simtunes.as_ref().map(|s| s.base.damage.clone()).unwrap_or_default();
                     let speed = c.state.speed();
                     let up_y = (c.state.rot * Vec3::Y).y;
+                    // (a motorcycle in the step's own sim keeps the wipeout there - physics::vehsim::wipe_owned)
+                    let owned = c.params().veh.as_ref().zip(c.state.veh.as_deref()).map_or(false, |(vt, vs)| physics::vehsim::wipe_owned(vs, vt));
                     if let Ok(v) = std::env::var("MCLA_CRASH_TEST") {
                         // (test hook "secs,w|d|x|h": at that time a wipeout blow, a fatal blow, an
                         // exploding one, or a head-on)
@@ -3196,6 +3198,9 @@ impl App {
                             // wipes out on a hit only through the head-on rule)
                             self.crash_bits = 0x10;
                             self.crash_timer = dm.wipeout_delay;
+                            if let Some(vs) = c.state.veh.as_deref_mut().filter(|_| owned) {
+                                vs.wipe_hit = true;
+                            }
                             c.stunned = c.stunned.max(1.2);
                             c.state.upset = 1.0;
                         }
@@ -3204,7 +3209,12 @@ impl App {
                         // all its wheels touch (F-32386)
                         // (only while it is above 0: it goes below 0 once)
                         let all_down = !c.state.wheels.is_empty() && c.state.wheels.iter().all(|w| w.grounded);
-                        if self.crash_timer > 0.0 && (speed < 4.47 || all_down) {
+                        if owned && self.crash_bits & 4 == 0 {
+                            // (the step's timer, which also waits for the rider (F-32386); its end stands the
+                            // motorcycle up through F-86308 there)
+                            let vs = c.state.veh.as_deref().filter(|v| v.wipe.is_some() || v.wipe_hit);
+                            self.crash_timer = vs.map_or(0.0, |v| v.wipe.map_or(self.crash_timer, |w| w.0));
+                        } else if self.crash_timer > 0.0 && (speed < 4.47 || all_down) {
                             self.crash_timer -= dt;
                         }
                         if self.crash_bits & 4 != 0 {
@@ -3232,7 +3242,7 @@ impl App {
                             // under 0.7) is stood up where it is
                             self.crash_bits = 0;
                             c.state.upset = 0.0;
-                            if up_y < 0.7 {
+                            if up_y < 0.7 && !owned {
                                 let f = c.state.forward();
                                 let fresh = physics::CarState::new(c.state.pos + Vec3::Y * 0.8, (-f.x).atan2(-f.z));
                                 let old = std::mem::replace(&mut c.state, fresh);
