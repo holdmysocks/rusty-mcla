@@ -201,6 +201,21 @@ pub fn glam_of(m: &crate::physics::artic_pose::Mat) -> glam::Mat4 {
 }
 
 impl RiderOff {
+    /// The rider's matrix as the character answers it (slot 10, F-31677; copied to racer +704 by F-17180): the
+    /// ragdoll instance's while it is active, else the character's own (`seat`: the port's seated / eject-clip
+    /// matrix - the original's anim ring matrix F-89629 is not reproduced, see docs/reference/cameras/
+    /// bike_wipeout_camera_rule.md). Columns = the guest's rows, then the position.
+    pub fn matrix(&self, seat: glam::Mat4) -> (glam::Mat3, glam::Vec3) {
+        match self.ragdoll.as_ref() {
+            Some(rd) => {
+                let m = rd.matrix();
+                let v = |r: crate::physics::artic::V4| glam::Vec3::new(r.0[0], r.0[1], r.0[2]);
+                (glam::Mat3::from_cols(v(m[0]), v(m[1]), v(m[2])), v(m[3]))
+            }
+            None => (glam::Mat3::from_mat4(seat), seat.w_axis.truncate()),
+        }
+    }
+
     /// One game tick. `seat` the player's car (the drivers' seat id), the damage bits and timer (main.rs).
     #[allow(clippy::too_many_arguments)]
     pub fn tick(&mut self, cars: &mut [crate::vehicles::CarInstance], seat: Option<usize>, drivers: &mut crate::drivers::Drivers, city: &crate::physics::collision::WorldCollider, crash_bits: u8, crash_timer: f32, data_dir: &str, dt: f32) {
