@@ -2,12 +2,12 @@
 //!
 //! The walkers' night program (characters' VSPedNight + PSMultiLight) knows no lamp grid: its
 //! light is diffuse x (gLightAmbient + four lanes of gMultiLightDynamicLightData), a lane giving
-//! colour x sat(strength / d^2) x sat(cone) x sat(n.l). Their render routine (sub_82794358, the
-//! flag byte 0x82830641 = 1) fills the lanes with `sub_822F2C48(mgr, p, walker + 64, 1)`:
+//! colour x sat(strength / d^2) x sat(cone) x sat(n.l). Their render routine (F-68474, the
+//! flag byte 0x82830641 = 1) fills the lanes with `F-44222(mgr, p, walker + 64, 1)`:
 //! * each walker keeps four light records that EASE towards the four lamps of the lamp-grid cell
 //!   under it (lane k -> the cell's k-th lamp, an empty slot -> table lamp 0, which has no light):
 //!   every call the direction from the walker to the record turns 2.5 % of the way, distance,
-//!   colour, direction, strength and cone go 6 % of the way (sub_822F2A30);
+//!   colour, direction, strength and cone go 6 % of the way (F-79205);
 //! * then the dynamic list (the player's two head lamps, the key light) is laid over lanes 3, 2,
 //!   1 (and the fourth record, F-44222): a light takes the next lane when its score strictly beats the best so far - a head lamp
 //!   sat(500 / d^2) x its cone at the walker, the key light (list entry 2) the luminance of its
@@ -39,7 +39,7 @@ fn target(t: &LampTables, p: Vec3) -> [LampRec; 4] {
     t.cell(p).map(|i| t.recs.get(i as usize).copied().unwrap_or_default())
 }
 
-/// sub_822F2960: `from` turned towards `to` by `frac` of the angle between them (to them at
+/// F-27981: `from` turned towards `to` by `frac` of the angle between them (to them at
 /// once when they stand at right angles: |cos| < 0.001).
 pub fn turn(from: Vec3, to: Vec3, frac: f32) -> Vec3 {
     let c = from.dot(to);
@@ -54,7 +54,7 @@ pub fn turn(from: Vec3, to: Vec3, frac: f32) -> Vec3 {
 }
 
 /// The score of a light at `p` (F-60154): sat(strength / d^2) x its cone.
-fn score(l: &LampRec, p: Vec3) -> f32 {
+pub fn score(l: &LampRec, p: Vec3) -> f32 {
     light_score(true, l.pos, -l.back, l.strength, l.cone[0], l.cone[1], p)
 }
 

@@ -93,7 +93,7 @@ impl Gesture {
     }
 }
 
-/// A gesture being played (the driver graph's "gesture switch" state, sub_823B3D70).
+/// A gesture being played (the driver graph's "gesture switch" state, F-20767).
 #[derive(Clone)]
 struct Playing {
     clip: String,
@@ -158,7 +158,7 @@ const RR_TALK_RIGHT: [&str; 4] = ["drv_gest_cas_rgt_01", "drv_gest_agro_rgt_01",
 /// driving over 0.25 s (the cruising state's update requests its clip through F-85393 with 0.25 s), both linear
 const GESTURE_BLEND: f32 = 0.25;
 
-/// The clip a gesture plays (sub_823B3D70); `human`: the neutral round robin skips `_rspnd_rgt` for the human
+/// The clip a gesture plays (F-20767); `human`: the neutral round robin skips `_rspnd_rgt` for the human
 /// player and `_rspnd_lft` for the others.
 fn gesture_clip(g: Gesture, rr: &mut [usize; 5], human: bool) -> String {
     let mut next = |k: usize, list: &[&str]| -> String {
@@ -359,7 +359,7 @@ impl Drivers {
                     None
                 };
                 let steer = clip(&["drv_steer_sweep", "drv_low_lean_sweep", "drv_idle_stp_sweep"])?;
-                // the gestures the scenes ask for (case blind by name after the car prefix, sub_823B7D68)
+                // the gestures the scenes ask for (case blind by name after the car prefix, F-99427)
                 let mut gestures = HashMap::new();
                 let mut names: Vec<&(usize, String)> = entries.iter().filter(|(_, n)| { let l = n.to_ascii_lowercase(); l.contains("_drv_gest_") || l.ends_with("_drv_win") || l.ends_with("_drv_win_02") }).collect();
                 names.sort_by_key(|(_, n)| n.to_ascii_lowercase().starts_with(&key.0));
@@ -564,6 +564,12 @@ impl Drivers {
             }
         }
         self.buf.upload(gpu);
+    }
+
+    /// The lights the figures are drawn with (`CharLight`: the character programs), or none: the city's object look.
+    pub fn set_light(&mut self, l: Option<crate::skin::CharLight>) {
+        self.buf.char_light = l;
+        self.buf.light_at_root = true;
     }
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize) {

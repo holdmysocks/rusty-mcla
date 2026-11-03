@@ -123,7 +123,7 @@ impl CharMat {
 
 /// What the story scenes' characters are lit by this frame: the light manager's state (main.rs
 /// `lighting`) - the direction towards the sun (mgr + 32 negated), its colour (mgr + 64) and
-/// strength (mgr + 80), the scene's ambient (mgr + 224); night: hour > 18 or < 6 (sub_82205248).
+/// strength (mgr + 80), the scene's ambient (mgr + 224); night: hour > 18 or < 6 (F-47292).
 #[derive(Clone, Copy, Default)]
 pub struct CharLight {
     pub to_light: Vec3,
@@ -131,11 +131,76 @@ pub struct CharLight {
     pub strength: f32,
     pub amb: Vec3,
     pub night: bool,
+    /// at night the lights of path A's night branch (`night_slots`) instead of the day's - the drivers and riders;
+    /// the scenes' characters keep the day's (not ported for them)
+    pub night_path: bool,
+    /// the light manager's dynamic list at night (the player's head lamps, the key light, the fourth record)
+    pub dynamic: Option<crate::figlight::Dynamic>,
 }
 
+/// Path A at night (F-75930 with four = 0): the three slots when nothing lights the figure - place 0, colour 0,
+/// strength 1, range 10.
+const NIGHT_EMPTY: ([f32; 4], [f32; 4]) = ([0.0, 0.0, 0.0, 10.0], [0.0, 0.0, 0.0, -1.0]);
+
 impl CharLight {
-    /// The three lights a story character's draw gets by day (sub_823D1748 -> sub_822F5D98 path A,
-    /// sub_8218F210 / sub_821800A0; work/lighting-chars/cpu/LIGHT_RULE.md, every draw of the
+    /// The three lights a character's draw gets at night (F-75930 path A, four = 0; docs/reference/lighting/
+    /// character_lights_rule.md section 2, recorded on the player's rider - LIGHTING.md "Drivers and riders"):
+    /// every lamp the lamp grid lists in the cells within 4 m of `p` in x and z (both grids: the cell's four,
+    /// distinct, at most 32; F-79329), each scored sat(strength / d^2) x its cone (F-60154), the best four kept
+    /// (F-48037); all scores 0: the slots empty. Else the best three by score fill the slots: the lamp's place,
+    /// colour, strength = its score, range 1000 (a missing one empty). Then the dynamic list in order - the
+    /// head lamps and the fourth record by their score, the key light by the luminance of its colour - takes
+    /// slot 2 when it beats lum(slot 2's colour) x slot 2's strength: its place (the key light 100 km from the origin), its
+    /// colour, strength = that score, range 1e6.
+    pub fn night_slots(&self, p: Vec3, t: Option<&crate::render::LampTables>) -> [[f32; 4]; 6] {
+        use crate::render::{LampRec, LAMP_GRID};
+        let mut cand: Vec<u16> = Vec::new();
+        if let Some(t) = t {
+            let axis = |v: f32, scale: f32, bias: f32, n: u32| (((v * scale + bias) * n as f32) as i64).clamp(0, n as i64 - 1) as usize;
+            let (x0, x1) = (axis(p.x - 4.0, 1.0 / 6320.0, 0.54857594, LAMP_GRID.0), axis(p.x + 4.0, 1.0 / 6320.0, 0.54857594, LAMP_GRID.0));
+            let (z0, z1) = (axis(p.z - 4.0, 1.0 / 4463.75, 0.5282554, LAMP_GRID.1), axis(p.z + 4.0, 1.0 / 4463.75, 0.5282554, LAMP_GRID.1));
+            'cells: for z in z0..=z1 {
+                for x in x0..=x1 {
+                    for &i in t.cells.get(z * LAMP_GRID.0 as usize + x).unwrap_or(&[0; 4]) {
+                        if !cand.contains(&i) {
+                            if cand.len() == 32 {
+                                break 'cells;
+                            }
+                            cand.push(i);
+                        }
+                    }
+                }
+            }
+        }
+        let rec = |i: u16| t.and_then(|t| t.recs.get(i as usize)).copied().unwrap_or_default();
+        let mut scored: Vec<(f32, LampRec)> = cand.iter().map(|&i| (crate::figlight::score(&rec(i), p), rec(i))).collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored.truncate(4);
+        let mut slots = [NIGHT_EMPTY; 3];
+        if scored.iter().map(|s| s.0).sum::<f32>() > 0.0 {
+            for (k, (s, l)) in scored.iter().take(3).enumerate() {
+                slots[k] = ([l.pos.x, l.pos.y, l.pos.z, 1000.0], [l.color.x, l.color.y, l.color.z, -s]);
+            }
+        }
+        let lum = |c: Vec3| 0.3 * c.x + 0.59 * c.y + 0.11 * c.z;
+        if let Some(d) = self.dynamic {
+            // (the key light's record stands 100 km from the world's origin along its direction - the rider's
+            // recording: (-67559, -73716, -1287), length 1e5)
+            let key = d.key.map(|(col, dir)| LampRec { pos: dir.normalize_or(Vec3::Y) * 1.0e5, color: col, strength: 0.0, back: Vec3::ZERO, cone: [0.0, 1.0] });
+            for (j, l) in [d.heads[0], d.heads[1], key, d.rec3].into_iter().enumerate() {
+                let Some(l) = l else { continue };
+                let s = if j == 2 { lum(l.color) } else { crate::figlight::score(&l, p) };
+                let (_, c2) = slots[2];
+                if s > lum(Vec3::new(c2[0], c2[1], c2[2])) * -c2[3] {
+                    slots[2] = ([l.pos.x, l.pos.y, l.pos.z, 1.0e6], [l.color.x, l.color.y, l.color.z, -s]);
+                }
+            }
+        }
+        [slots[0].0, slots[1].0, slots[2].0, slots[0].1, slots[1].1, slots[2].1]
+    }
+
+    /// The three lights a story character's draw gets by day (F-21528 -> F-75930 path A,
+    /// F-26319 / F-96199; work/lighting-chars/cpu/LIGHT_RULE.md, every draw of the
     /// recordings to 6.3e-8): the sun 100 m from the model's origin `p` (range 1000), colour S,
     /// w = -strength; the ambient's colour 100 m on the other side, w = -0.8 x strength
     /// (0x827E2118); the third empty (range 100). Rows: place + range, colour + (-intensity).
@@ -197,7 +262,7 @@ pub struct FaceShapes {
     reset: bool,
 }
 
-/// The component's constants (`sub_8253F7E0`): every 100 updates the buffers are cleared and built
+/// The component's constants (`F-75277`): every 100 updates the buffers are cleared and built
 /// again (+36), a target is applied again only when its weight moved by more than 1 % (+32, 0x8207A4B0).
 const RESET_EVERY: u32 = 100;
 const TOLERANCE: f32 = 0.01;
@@ -210,12 +275,12 @@ impl FaceShapes {
     }
 
     /// Weight of target `i` (index into `Morph::shapes.targets`) as the frame's kind-21 track gives it
-    /// (`sub_8253EE48`).
+    /// (`F-77597`).
     pub fn set(&mut self, i: usize, w: f32) {
         self.weight[i] = w;
     }
 
-    /// `sub_8253F030` (the CPU path): add every changed weight's difference into the buffer.
+    /// `F-15194` (the CPU path): add every changed weight's difference into the buffer.
     pub fn update(&mut self, m: &Morph) {
         self.count += 1;
         if self.count >= RESET_EVERY {
@@ -223,7 +288,7 @@ impl FaceShapes {
             self.count = 0;
         }
         if self.reset {
-            // sub_82613D68 -> sub_821B4260: the buffer is set to zero, the applied weights too
+            // F-62059 -> F-90338: the buffer is set to zero, the applied weights too
             self.bufs.iter_mut().flatten().for_each(|b| b.iter_mut().for_each(|v| *v = [0.0; 4]));
             self.applied.iter_mut().for_each(|a| *a = 0.0);
             self.reset = false;
@@ -236,7 +301,7 @@ impl FaceShapes {
             if d.abs() <= big * TOLERANCE {
                 continue;
             }
-            // sub_82613FC8 -> sub_82615520 -> sub_826157B8 -> sub_82615F78 on every geometry of the target
+            // F-63618 -> F-21008 -> F-86366 -> F-61631 on every geometry of the target
             for &(mi, gi) in &t.geoms {
                 let Some(Some(blob)) = m.shapes.meshes[mi].geoms[gi].blobs.get(t.slot) else { continue };
                 blob.apply(&mut self.bufs[mi][gi], d);
@@ -391,7 +456,7 @@ impl SkinModel {
     }
 }
 
-/// The `.r3` next to a set's `.r6` (the cine spawner `sub_823D2AB0` loads it when it exists), bound to
+/// The `.r3` next to a set's `.r6` (the cine spawner `F-62204` loads it when it exists), bound to
 /// the high LOD's parts. Sets with an empty manager (231 of 247) have none.
 fn load_morph(path: &Path, c: &Character, high: &[Part]) -> Option<Morph> {
     let dir = path.parent()?;
@@ -535,12 +600,15 @@ pub struct SkinBuffer {
     /// Some: this buffer's figures are drawn with the character programs (the story scenes - cine.rs),
     /// lit as the light manager stands this frame
     pub char_light: Option<CharLight>,
-    /// the next figure is one of a scene's bystanders (an entity named "ped": sub_823A10A8 sets
+    /// the next figure is one of a scene's bystanders (an entity named "ped": F-65008 sets
     /// +149, the draw takes the manager's own lights - path B); taken by `emit`
     pub next_bystander: bool,
     /// the stencil reference the next figure draws with (a car's driver: render/mb.rs `driver_stencil_of`; 0 the
     /// world's); taken by `emit`
     pub next_stencil: u32,
+    /// the lights' origin is the matrix `emit` is given (a driver's: his car's or bike's - the draw's gWorld row 3 in the
+    /// rider's recording), not the root bone's place (the scenes' characters)
+    pub light_at_root: bool,
     /// each draw's stencil reference
     draw_stencil: Vec<u32>,
     /// this frame's figures (character programs): the model's origin, bystander
@@ -605,7 +673,8 @@ impl SkinBuffer {
         if chars {
             // (the lights' origin: the model's place, gWorld row 3 - here the root bone's, which carries
             // the scene position (cine.rs); x / z within 3 cm of the recorded draws, y up to 0.4 m higher)
-            self.figs.push((self.world.first().map_or(root.w_axis, |w| w.w_axis).truncate(), std::mem::take(&mut self.next_bystander)));
+            let at = if self.light_at_root { root.w_axis } else { self.world.first().map_or(root.w_axis, |w| w.w_axis) };
+            self.figs.push((at.truncate(), std::mem::take(&mut self.next_bystander)));
         }
         // (the night fill light at the figure's place - fillmap.rs: the figures share one buffer
         // and the identity object, so the colour rides in every vertex: color1.rgb = four times
@@ -689,16 +758,21 @@ impl SkinBuffer {
         // (effect, shadow source, double-sided, bystander) from interior[4]. The scenes' draws
         // read the full-screen collector: ShaderGlobals.z = 8.09 >= 8 in every recorded draw.)
         if let Some(cl) = self.char_light {
+            let night = cl.night && cl.night_path;
+            let tables = if night { crate::render::LAMP_TABLES.read().ok().and_then(|t| t.clone()) } else { None };
             for (i, (f, m)) in self.char_draws.iter().enumerate() {
                 let (p, by) = self.figs[*f];
                 let mut u = crate::render::ObjectUniform::default();
-                let sl = cl.day_slots(p);
+                let sl = if night { cl.night_slots(p, tables.as_deref()) } else { cl.day_slots(p) };
                 for k in 0..3 {
                     u.area_a[k] = sl[k];
                     u.area_b[k] = sl[3 + k];
                 }
-                u.area_a[3] = [cl.amb.x, cl.amb.y, cl.amb.z, m.ambient_mod];
-                // (outside a car: sub_823CFCE0 - neon and gauge light colours 0, the floor far below)
+                // (ambYPos: the scene's ambient by day; at night the ambient cube's faces are the fill map's
+                // colour, map / 255 x 0.25 with no fade - F-35455, recorded on the rider)
+                let amb = if night { crate::fillmap::cube_at(p.x, p.z) } else { cl.amb };
+                u.area_a[3] = [amb.x, amb.y, amb.z, m.ambient_mod];
+                // (outside a car: F-42959 - neon and gauge light colours 0, the floor far below)
                 u.area_b[3] = [0.0, 1.0, 0.0, -1000.0];
                 u.area_a[4] = m.k[0];
                 u.area_b[4] = m.k[1];
@@ -835,6 +909,8 @@ mod tests {
             strength: 1.0,
             amb: Vec3::new(0.10388, 0.11954, 0.14902),
             night: false,
+            night_path: false,
+            dynamic: None,
         };
         let want = [
             [-268.15, 64.034, -747.02, 1000.0],
@@ -849,6 +925,46 @@ mod tests {
                 assert!((r[k] - w[k]).abs() < 0.01, "{r:?} vs {w:?}");
             }
         }
+    }
+
+    /// Path A at night on the player's rider (work/police17/cap/rider_night.bin draws 627 - 638, 23:00, at
+    /// (819.79, 17.583, -808.43)): the two lamps the grid lists there, best first, strength = their score, and the key
+    /// light in slot 2 at 1e5 along its direction from the origin; nothing near: the empty slots.
+    #[test]
+    fn night_slots_match_the_riders_draw() {
+        use crate::render::{lamp_cell_index, LampRec, LampTables, LAMP_GRID};
+        let p = Vec3::new(819.79, 17.583, -808.43);
+        // (the recorded lamps with strengths that give the recorded scores at p, all round)
+        let lamp = |pos: Vec3, color: Vec3, score: f32| LampRec { pos, color, strength: score * (pos - p).length_squared(), back: Vec3::ZERO, cone: [0.0, 1.0] };
+        let a = lamp(Vec3::new(817.34, 26.321, -805.26), Vec3::new(1.0, 0.80566, 0.33276), 0.43313);
+        let b = lamp(Vec3::new(830.36, 27.525, -797.77), Vec3::new(1.0, 0.75, 0.5498), 0.055978);
+        let mut cells = vec![[0u16; 4]; (LAMP_GRID.0 * LAMP_GRID.1) as usize];
+        cells[lamp_cell_index(p)] = [2, 1, 0, 0];
+        let t = LampTables { cells, recs: vec![LampRec::default(), a, b] };
+        let key = Vec3::new(-67559.0, -73716.0, -1286.7);
+        let cl = CharLight {
+            night: true,
+            night_path: true,
+            dynamic: Some(crate::figlight::Dynamic { heads: [None; 2], key: Some((Vec3::splat(0.05098), key / 1.0e5)), rec3: None }),
+            ..Default::default()
+        };
+        let want = [
+            [817.34, 26.321, -805.26, 1000.0],
+            [830.36, 27.525, -797.77, 1000.0],
+            [-67559.0, -73716.0, -1286.7, 1.0e6],
+            [1.0, 0.80566, 0.33276, -0.43313],
+            [1.0, 0.75, 0.5498, -0.055978],
+            [0.05098, 0.05098, 0.05098, -0.05098],
+        ];
+        for (r, w) in cl.night_slots(p, Some(&t)).iter().zip(want.iter()) {
+            for k in 0..4 {
+                assert!((r[k] - w[k]).abs() <= 1e-4 * w[k].abs().max(1.0), "{r:?} vs {w:?}");
+            }
+        }
+        // (no lamp within 4 m and no dynamic list: place 0, colour 0, strength 1, range 10)
+        let empty = CharLight { dynamic: None, ..cl }.night_slots(Vec3::new(-3000.0, 0.0, 2000.0), Some(&t));
+        assert_eq!(empty[0], [0.0, 0.0, 0.0, 10.0]);
+        assert_eq!(empty[5], [0.0, 0.0, 0.0, -1.0]);
     }
 
     /// The player's driver sets carry the cockpit view model at root+0x18 (F-56050 draws it in the POV view):
