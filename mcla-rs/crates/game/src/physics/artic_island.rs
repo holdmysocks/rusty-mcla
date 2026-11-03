@@ -643,10 +643,7 @@ impl ContactRow {
         let rb = pb.sub(place_b);
         let arms = basis.map(|x| cross(rb, x));
         let (bcol, arm_b) = (columns(basis), columns(&arms));
-        let kt = columns(&a.point_response(link, pa));
-        let w = basis.map(|x| x.lane(2).madd(kt[2], x.lane(1).madd(kt[1], x.lane(0).mul(kt[0]))));
-        let d: [[V4; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| w[i].dot3(basis[j])));
-        let ka: [V4; 3] = std::array::from_fn(|k| V4::new(d[0][k].x(), d[1][k].x(), d[2][k].x(), 0.0));
+        let ka = in_basis(&columns(&a.point_response(link, pa)), basis);
         // (B's part, F-11306: T_i = sum_j M_ij bcol_j, L_i = sum_j (b_i)_j T_j; S_i = sum_j I_ij
         // acol_j, R_i = sum_j (a_i)_j S_j)
         let comb = |q: V4, x: &[V4; 3]| q.lane(2).madd(x[2], q.lane(1).madd(x[1], q.lane(0).mul(x[0])));
@@ -680,33 +677,169 @@ impl ContactRow {
     /// (lanes y z against mu times lane x through c), nothing where the normal part would
     /// pull; the step given out (F-67470) and taken off +0.
     pub fn visit(&mut self, a: &mut Articulated, b: &mut RigidState, sum: &mut V4) {
-        // (a constant of the kernel: 1e-8 in lanes x y z, 0 in w)
-        let t8 = f32::from_bits(0x322b_cc77);
-        let tiny = V4::new(t8, t8, t8, 0.0);
-        let ex = V4::new(1.0, 0.0, 0.0, 0.0);
         let u = row_velocity_of(self, a, b).sub(self.bias);
-        let x = V4::ZERO.sub(cols_dot(&self.kinv, u)).sub(self.neg);
-        let t = x.mul(V4::new(0.0, 1.0, 1.0, 0.0));
-        let nn = self.c.dot3(x);
-        let t2 = t.dot3(t);
-        let n1 = nn.mul(ex);
-        let e = t2.rsqrte();
-        let zero = t2.eq(V4::ZERO);
-        let pull = V4::ZERO.gt(n1.lane(0));
-        let d = x.sub(n1);
-        let y = t2.nmsub(e.mul(e), ONE).madd(HALF.mul(e), e);
-        let len = t2.mul(y).sel(V4::ZERO, zero);
-        let g = len.mul(self.mu).nmsub(ex, t);
-        let (dg, xg) = (d.dot3(g), x.dot3(g));
-        let s = dg.add(tiny);
-        let r = s.recip();
-        let r = r.madd(r.nmsub(s, ONE), r);
-        let k = V4::ZERO.sel(xg.mul(r), xg.gt(V4::ZERO));
-        let next = k.nmsub(d, x).sel(V4::ZERO, pull);
-        let step = next.add(self.neg);
+        let step = cone_step(&self.kinv, self.c, self.mu, self.neg, u);
         self.give(a, b, step, sum);
         self.neg = self.neg.sub(step);
     }
+}
+
+/// F-83464: a 3 x 3 `kt` (by columns) into the basis `basis` (rows): W_i = sum_j kt_j b_i[j],
+/// D_ij = W_i . b_j, out_k = (D_0k, D_1k, D_2k, 0).
+fn in_basis(kt: &[V4; 3], basis: &[V4; 3]) -> [V4; 3] {
+    let w = basis.map(|x| x.lane(2).madd(kt[2], x.lane(1).madd(kt[1], x.lane(0).mul(kt[0]))));
+    let d: [[V4; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| w[i].dot3(basis[j])));
+    std::array::from_fn(|k| V4::new(d[0][k].x(), d[1][k].x(), d[2][k].x(), 0.0))
+}
+
+/// The kernels' common part (F-90871 for type 7, F-33909 for type 13): from the relative
+/// velocity less the bias `u`, x = -(K^-1 u) - (+0), no relaxation; the friction cone (lanes y
+/// z against mu times lane x through c), nothing where the normal part would pull. Returns the
+/// step (what +0 loses).
+fn cone_step(kinv: &[V4; 3], c: V4, mu: V4, neg: V4, u: V4) -> V4 {
+    // (a constant of the kernel: 1e-8 in lanes x y z, 0 in w)
+    let t8 = f32::from_bits(0x322b_cc77);
+    let tiny = V4::new(t8, t8, t8, 0.0);
+    let ex = V4::new(1.0, 0.0, 0.0, 0.0);
+    let x = V4::ZERO.sub(cols_dot(kinv, u)).sub(neg);
+    let t = x.mul(V4::new(0.0, 1.0, 1.0, 0.0));
+    let nn = c.dot3(x);
+    let t2 = t.dot3(t);
+    let n1 = nn.mul(ex);
+    let e = t2.rsqrte();
+    let zero = t2.eq(V4::ZERO);
+    let pull = V4::ZERO.gt(n1.lane(0));
+    let d = x.sub(n1);
+    let y = t2.nmsub(e.mul(e), ONE).madd(HALF.mul(e), e);
+    let len = t2.mul(y).sel(V4::ZERO, zero);
+    let g = len.mul(mu).nmsub(ex, t);
+    let (dg, xg) = (d.dot3(g), x.dot3(g));
+    let s = dg.add(tiny);
+    let r = s.recip();
+    let r = r.madd(r.nmsub(s, ONE), r);
+    let k = V4::ZERO.sel(xg.mul(r), xg.gt(V4::ZERO));
+    let next = k.nmsub(d, x).sel(V4::ZERO, pull);
+    next.add(neg)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Contact rows with both sides on one articulated body (type 13: the rider against himself)
+
+impl Articulated {
+    /// F-31685 (slot 49) -> F-46941: the response at the point `pb` of link `kb` to an impulse
+    /// at the point `pa` of link `ka`, by columns: for each unit vector e_j F-45981 carries
+    /// link `ka`'s change of motion to link `kb` and reads it at `pb`; the three results are
+    /// merged as columns. Points less the collider's place; links by F-19886 (the caller's).
+    pub fn cross_response(&self, ka: usize, pa: V4, kb: usize, pb: V4) -> [V4; 3] {
+        let (ra, rb) = (pa.sub(self.place), pb.sub(self.place));
+        let e = [V4::new(1.0, 0.0, 0.0, 0.0), V4::new(0.0, 1.0, 0.0, 0.0), V4::new(0.0, 0.0, 1.0, 0.0)];
+        columns(&e.map(|e| self.carry(ka, ra, e, kb, rb)))
+    }
+
+    /// F-45981: link `a`'s change of motion from the impulse `e` at `ra` (its own inverse, the
+    /// block product with (e, ra x e)), taken up the joints from the deeper side (the higher
+    /// index: F-45440 / F-75508; a slider's F-91377) until it meets link `b`'s path, then down
+    /// that path (F-71908 / F-91578; a slider's F-51575); the velocity of link `b`'s point at
+    /// `rb`: w x rb + v.
+    fn carry(&self, a: usize, ra: V4, e: V4, b: usize, rb: V4) -> V4 {
+        let (dw, dv) = block_mul(&self.links[a].inv, e, cross(ra, e));
+        let mut m = [dw, dv];
+        let (mut a, mut b) = (a, b);
+        let mut down = Vec::new();
+        while a != b {
+            if a > b {
+                m = self.joints[a - 1].motion_up(&m).expect("the slider's maps are not ported");
+                a = self.parent[a];
+            } else {
+                down.push(b);
+                b = self.parent[b];
+            }
+        }
+        while let Some(c) = down.pop() {
+            m = self.joints[c - 1].motion_down(&m).expect("the slider's maps are not ported");
+        }
+        cross(m[0], rb).add(m[1])
+    }
+}
+
+/// A contact row with both sides on one articulated body (type 13, 320 B; F-36821's branch
+/// where both colliders are articulated, F-45220, F-30978).
+#[derive(Clone, Copy, Debug)]
+pub struct SelfRow {
+    /// +0: minus the multipliers so far
+    pub neg: V4,
+    /// +16: the velocity asked of the points along the basis
+    pub bias: V4,
+    /// +32: the basis by columns
+    pub bcol: [V4; 3],
+    /// +96: the inverse of the block
+    pub kinv: [V4; 3],
+    /// +240: the block's first row over its first element; +256 the friction
+    pub c: V4,
+    pub mu: V4,
+    /// +272 / +288: the two points less the collider's place; +304 / +308 their links
+    pub ra: V4,
+    pub rb: V4,
+    pub la: usize,
+    pub lb: usize,
+}
+
+impl SelfRow {
+    /// The block: K = slot 50 at A's point + slot 50 at B's (F-78078), less the cross term of
+    /// the one body (slot 49, F-31685) and its transpose, row by row: K_i = (K_i - C_i) -
+    /// C^T_i; into the basis (F-83464 on K's columns); c = K_0 over K_00 (a reciprocal and a
+    /// Newton step) and the inverse in place (F-30978 -> F-68939). Bias and multipliers are
+    /// the caller's.
+    pub fn new(a: &Articulated, la: usize, pa: V4, lb: usize, pb: V4, basis: &[V4; 3], friction: f32) -> SelfRow {
+        let (ka, kb) = (a.point_response(la, pa), a.point_response(lb, pb));
+        let k: [V4; 3] = std::array::from_fn(|i| ka[i].add(kb[i]));
+        let c = a.cross_response(la, pa, lb, pb);
+        let ct = columns(&c);
+        let k: [V4; 3] = std::array::from_fn(|i| k[i].sub(c[i]).sub(ct[i]));
+        let mut k = in_basis(&columns(&k), basis);
+        let k00 = k[0].lane(0);
+        let e = k00.recip();
+        let cc = k[0].mul(e.madd(e.nmsub(k00, ONE), e));
+        ldl_inverse(&mut k);
+        SelfRow { neg: V4::ZERO, bias: V4::ZERO, bcol: columns(basis), kinv: k, c: cc, mu: V4::splat(friction), ra: pa.sub(a.place), rb: pb.sub(a.place), la, lb }
+    }
+
+    /// F-85931: a step given out: its square to the sweep's sum, the impulse (basis . s) at A's
+    /// point and its opposite at B's (F-96841 each, A first).
+    pub fn give(&self, a: &mut Articulated, step: V4, sum: &mut V4) {
+        *sum = step.madd(step, *sum);
+        let push = rows_dot(&self.bcol, step);
+        a.point_impulse(self.la, self.ra, push);
+        a.point_impulse(self.lb, self.rb, V4::ZERO.sub(push));
+    }
+
+    /// F-33909: one visit, the kernel of type 7 with u = F-11968: (bcol . the velocity of A's
+    /// point) - (bcol . B's), both by F-50660 (A's first), less the bias; the step given out
+    /// (F-85931).
+    pub fn visit(&mut self, a: &mut Articulated, sum: &mut V4) {
+        let va = a.point_velocity(self.la, self.ra);
+        let vb = a.point_velocity(self.lb, self.rb);
+        let u = cols_dot(&self.bcol, va).sub(cols_dot(&self.bcol, vb)).sub(self.bias);
+        let step = cone_step(&self.kinv, self.c, self.mu, self.neg, u);
+        self.give(a, step, sum);
+        self.neg = self.neg.sub(step);
+    }
+}
+
+/// F-36821's bias of a type-13 row: the pending velocities' difference `p` along the basis
+/// rows (x0 in the rigid row's order: fma(p.z, n.z, fma(p.x, n.x, p.y n.y)); x1 x2 fused, z
+/// first), for a contact the depth's allowance over the step (max(ALLOW - depth, 0), no skin,
+/// no sign), then (0 - x) + target.
+pub fn self_bias(basis: &[V4; 3], p: V4, gap: Option<f32>, inv_dt: f32, target: V4) -> V4 {
+    let (n, b1, b2, p) = (basis[0].0, basis[1].0, basis[2].0, p.0);
+    let mut x0 = fma(p[2], n[2], fma(p[0], n[0], p[1] * n[1]));
+    if let Some(depth) = gap {
+        let short = super::super::solver::ALLOW - depth;
+        x0 = fma(fsel(-short, 0.0, short), inv_dt, x0);
+    }
+    let x1 = fma(b1[2], p[2], fma(b1[0], p[0], b1[1] * p[1]));
+    let x2 = fma(b2[2], p[2], fma(b2[0], p[0], b2[1] * p[1]));
+    V4::ZERO.sub(V4::new(x0, x1, x2, 0.0)).add(target)
 }
 
 /// F-36821's bias of a type-7 row: the pending velocities' difference `p` along the basis rows
@@ -778,7 +911,7 @@ mod tests {
     /// and a zero of the other sign or a NaN in lane w there - what the island's contact rows
     /// with a zero multiplier leave when they hand it out through slot 34 (F-19400): these
     /// tests run without the contacts (the ticks with contact rows of type 7 are checked word
-    /// for word below; 175 and 177 also hold the rider's self contacts, type 13, not ported).
+    /// for word below, with the rider's self contacts, type 13, from 175).
     fn words(a: &Articulated, want: &super::super::tests::State) -> (Vec<String>, usize, usize) {
         let (mut bad, mut nan, mut contact) = (Vec::new(), 0, 0);
         for (i, l) in a.links.iter().enumerate() {
@@ -872,16 +1005,16 @@ mod tests {
     // Islands of the recording with the rider's contacts against the city (rows of type 7)
 
     /// One contact of a tick's island (rider_island_ro0.bin): which side the rider is (0 A, 1
-    /// B, 2 neither: the bike's own), its parts, the 176-byte record's words as the tick's PAIR
-    /// record holds them (after the solve).
+    /// B, 2 neither: the bike's own, 3 both: the rider against himself), its parts, the
+    /// 176-byte record's words as the tick's PAIR record holds them (after the solve).
     struct IslContact {
         side: u32,
         parts: [i32; 2],
         w: [u32; 44],
         /// the last earlier tick whose PAIR records hold a contact at the same address (0: none),
-        /// and that record's +0 and +128
+        /// and that record's +0, +128 and +16 (A's local point)
         prev_tick: u32,
-        prev: [u32; 8],
+        prev: [u32; 12],
     }
 
     struct IslTick {
@@ -894,7 +1027,7 @@ mod tests {
 
     fn island_ticks() -> (Vec<i32>, Vec<IslTick>) {
         let b = include_bytes!("testdata/rider_island_ro0.bin");
-        assert_eq!(&b[..8], b"RGISL001");
+        assert_eq!(&b[..8], b"RGISL002");
         let w: Vec<u32> = b[8..].chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
         let (ticks, mut i) = (w[0] as usize, 1);
         let n = w[i] as usize;
@@ -908,8 +1041,8 @@ mod tests {
             let mut k = 4;
             let mut contacts = Vec::new();
             for _ in 0..t[3] {
-                contacts.push(IslContact { side: t[k], parts: [t[k + 1] as i32, t[k + 2] as i32], w: t[k + 3..k + 47].try_into().unwrap(), prev_tick: t[k + 47], prev: t[k + 48..k + 56].try_into().unwrap() });
-                k += 56;
+                contacts.push(IslContact { side: t[k], parts: [t[k + 1] as i32, t[k + 2] as i32], w: t[k + 3..k + 47].try_into().unwrap(), prev_tick: t[k + 47], prev: t[k + 48..k + 60].try_into().unwrap() });
+                k += 60;
             }
             let hinge_parts = t[k + 1..k + 1 + t[k] as usize].iter().map(|&x| x as i32).collect();
             out.push(IslTick { tick: t[0], bounce: t[1], n: t[2], contacts, hinge_parts });
@@ -919,27 +1052,38 @@ mod tests {
 
     /// The rider's contacts of a tick as the island solve takes them: the solve's inputs from the
     /// record (depth +12, friction +28, points +48 / +64 with their lanes w, normal +80, back +96,
-    /// target +144, kind +164), elasticity 0 (the rider's material against the city). Kept
-    /// multipliers (+128, the warm start): the previous tick's record of the contact at the same
-    /// address, else 0 (a contact the previous tick's pairs do not hold is new, also when the
-    /// address held one two ticks before: 172 and 174 match only so). Push multipliers (+0
-    /// xyz): 0 at every tick (the record's +0 holds the depth in lane w and comes with xyz
-    /// cleared; carrying the previous tick's breaks 170 and 172). The bike's own contact (side 2)
-    /// shares no body with these: its count and elasticity (0.1) go in as `others`.
+    /// target +144, kind +164), elasticity 0 (the rider's material against the city and
+    /// himself). Kept multipliers (+128) and push multipliers (+0 xyz), the warm starts: the
+    /// previous tick's record of the contact at the same address when it is the same contact -
+    /// the sink (F-90136) gave the fresh contact the old one's +128 and +0 because A's local
+    /// points (+16) are within 2 cm (F-74262) - else 0: a contact the previous tick's pairs do
+    /// not hold is new (also when the address held one two ticks before), and so is one that
+    /// took a freed slot's address (170: 2.6 and 48 cm, 172: 4.6 cm, 174: 7.1 and 3.2 cm, 179:
+    /// 26 cm). The bike's own contact (side 2) shares no body with these: its count and
+    /// elasticity (0.1) go in as `others`.
     fn rider_touches(map: &[i32], n_links: usize, t: &IslTick) -> (Vec<solver::Touch>, (usize, f32)) {
         let mut others = (0, 0.0f32);
         let mut out = Vec::new();
         for c in &t.contacts {
-            if c.side > 1 {
+            if c.side == 2 {
                 others = (others.0 + 1, others.1 + 0.1);
                 continue;
             }
             let f = |o: usize| f32::from_bits(c.w[o / 4]);
             let v = |o: usize| Vec3::new(f(o), f(o + 4), f(o + 8));
             let on_b = c.side == 1;
-            let jointed = solver::JointedSide { body: 0, link: part_link(map, n_links, c.parts[c.side as usize]), on_b, point_w: if on_b { f(76) } else { f(60) } };
+            let jointed = if c.side == 3 {
+                // (both sides on the rider: type 13)
+                let lb = part_link(map, n_links, c.parts[1]);
+                solver::JointedSide { body: 0, link: part_link(map, n_links, c.parts[0]), on_b: false, point_w: f(60), self_b: Some((lb, f(76))) }
+            } else {
+                solver::JointedSide { body: 0, link: part_link(map, n_links, c.parts[c.side as usize]), on_b, point_w: if on_b { f(76) } else { f(60) }, self_b: None }
+            };
             let side = |o: usize| solver::Side { point: v(o), ..Default::default() };
-            let prev = |i: usize| if c.prev_tick + 1 != t.tick { Vec3::ZERO } else { Vec3::new(f32::from_bits(c.prev[i]), f32::from_bits(c.prev[i + 1]), f32::from_bits(c.prev[i + 2])) };
+            let pw = |i: usize| f32::from_bits(c.prev[i]);
+            let d = v(16) - Vec3::new(pw(8), pw(9), pw(10));
+            let near = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)) < f32::from_bits(0x39d1_b717);
+            let prev = |i: usize| if c.prev_tick + 1 != t.tick || !near { Vec3::ZERO } else { Vec3::new(f32::from_bits(c.prev[i]), f32::from_bits(c.prev[i + 1]), f32::from_bits(c.prev[i + 2])) };
             out.push(solver::Touch {
                 depth: f(12),
                 friction: f(28),
@@ -951,6 +1095,7 @@ mod tests {
                 kind: (c.w[41] >> 24) as u8,
                 jointed: Some(jointed),
                 kept: prev(4),
+                pushed: prev(0),
                 ..Default::default()
             });
         }
@@ -976,7 +1121,7 @@ mod tests {
         let cases = island_contact_cases();
         let mut n = 0;
         for t in &ticks {
-            let c = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick).expect("the tick's velocity case");
+            let Some(c) = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick) else { continue };
             let mut a = load(&c.inp);
             for &p in &t.hinge_parts {
                 a.contact_on_part(&map, p);
@@ -986,16 +1131,22 @@ mod tests {
             }
             n += 1;
         }
-        assert_eq!(n, 6);
+        assert_eq!(n, CONTACT_TICKS);
     }
+
+    /// The ticks of rider_island_ro0.bin (169 - 181) with velocity and push cases: 169 - 177,
+    /// 179, 180 (175 on: self contacts, type 13; ragdoll_ro0_self.bin: 176, 179, 180).
+    const CONTACT_TICKS: usize = 11;
 
     fn island_contact_cases() -> Vec<Case> {
         let mut all = island_cases();
         all.extend(run_cases(include_bytes!("testdata/ragdoll_ro0_contact.bin")));
+        all.extend(run_cases(include_bytes!("testdata/ragdoll_ro0_self.bin")));
         all
     }
 
-    /// The velocity solve of ticks 169 - 174 with the rider's contacts (rows of type 7), then
+    /// The velocity solve of ticks 169 - 181 with the rider's contacts (rows of type 7, and of
+    /// type 13 from 175: the rider against himself), then
     /// the apply (F-24076: slot 34 per contact, then the joint rows): RGX0 -> RGD1 word for word,
     /// the island's elasticity factor (isl +40), each contact's kept multipliers (+128) and
     /// impulse (+112).
@@ -1017,7 +1168,7 @@ mod tests {
             bad.push(format!("bounce {:08x} want {:08x}", solved.bounce.to_bits(), t.bounce));
         }
         solver::island_impulses(&solved, &mut touches);
-        for (k, (x, rec)) in touches.iter().zip(t.contacts.iter().filter(|c| c.side <= 1)).enumerate() {
+        for (k, (x, rec)) in touches.iter().zip(t.contacts.iter().filter(|c| c.side != 2)).enumerate() {
             if !vec_words(x.kept, &rec.w[32..35]) {
                 bad.push(format!("contact {k} kept {:?} want {:08x?}", x.kept, &rec.w[32..35]));
             }
@@ -1033,8 +1184,10 @@ mod tests {
         let (map, ticks) = island_ticks();
         let cases = island_contact_cases();
         let mut report = Vec::new();
+        let mut n = 0;
         for t in &ticks {
-            let c = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick).expect("the tick's velocity case");
+            let Some(c) = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick) else { continue };
+            n += 1;
             let (a, _, touches, mut bad) = contact_velocity_solve(&map, t, c);
             let (words, nan) = strict(&a, &c.out);
             eprintln!("velocity solve with contacts, tick {}: {} contact rows, {} joint rows, {} differing words, {nan} NaN on both sides, {} contact results differ", t.tick, touches.len(), a.active, words.len(), bad.len());
@@ -1043,20 +1196,22 @@ mod tests {
                 report.push(format!("tick {}: {} words, first {:#?}", t.tick, bad.len(), &bad[..bad.len().min(16)]));
             }
         }
-        assert_eq!(ticks.len(), 6);
+        assert_eq!(n, CONTACT_TICKS);
         assert!(report.is_empty(), "{}", report.join("\n"));
     }
 
-    /// The push solve of ticks 169 - 174 (RGX1 -> RGD2, dt = f1) on the rows of the same tick's
+    /// The push solve of the same ticks (RGX1 -> RGD2, dt = f1) on the rows of the same tick's
     /// velocity solve, word for word, and each contact's push multipliers (+0).
     #[test]
     fn contact_rows_push_solve_is_the_originals() {
         let (map, ticks) = island_ticks();
         let cases = island_contact_cases();
         let mut report = Vec::new();
+        let mut n = 0;
         for t in &ticks {
-            let vc = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick).expect("the tick's velocity case");
+            let Some(vc) = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick) else { continue };
             let c = cases.iter().find(|c| c.op == b's' && c.tick == t.tick).expect("the tick's push case");
+            n += 1;
             // (the contacts keep the push multipliers they came with: pushed is the push solve's input)
             let (_, mut solved, mut touches, _) = contact_velocity_solve(&map, t, vc);
             let dt = c.f1;
@@ -1065,7 +1220,7 @@ mod tests {
             let [a] = jointed;
             let (mut bad, nan) = strict(&a, &c.out);
             let words = bad.len();
-            for (k, (x, rec)) in touches.iter().zip(t.contacts.iter().filter(|c| c.side <= 1)).enumerate() {
+            for (k, (x, rec)) in touches.iter().zip(t.contacts.iter().filter(|c| c.side != 2)).enumerate() {
                 if !vec_words(x.pushed, &rec.w[0..3]) {
                     bad.push(format!("contact {k} pushed {:?} want {:08x?}", x.pushed, &rec.w[0..3]));
                 }
@@ -1075,6 +1230,7 @@ mod tests {
                 report.push(format!("tick {}: {} words, first {:#?}", t.tick, bad.len(), &bad[..bad.len().min(16)]));
             }
         }
+        assert_eq!(n, CONTACT_TICKS);
         assert!(report.is_empty(), "{}", report.join("\n"));
     }
 }

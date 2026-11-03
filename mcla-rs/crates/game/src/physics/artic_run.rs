@@ -281,7 +281,7 @@ impl RiderRagdoll {
             }
             let link = part_link(&self.child_link, n_links, mf.part as i32);
             let mut t = s.touch;
-            t.jointed = Some(JointedSide { body: 0, link, on_b: false, point_w: POINT_W });
+            t.jointed = Some(JointedSide { body: 0, link, on_b: false, point_w: POINT_W, self_b: None });
             // (+0 xyz is 0 at every push solve's start in ro.0: island_rows.md 11)
             t.pushed = Vec3::ZERO;
             touches.push(t);
