@@ -102,6 +102,8 @@ pub struct EngineSound {
     /// the XF table's s16 +14 and the effect object's s16 +10, raw (hundredths of a dB)
     vol_a: f32,
     effect_db: f32,
+    /// XF+10 x 0.01: every loop's request +68 (F-74444 / F-51617), dB on the voice's second level
+    vol2: f32,
     /// where the loops sit in the two views from inside the car (F-96250, emitter type 1): XF +54 bumper, XF +42 driver
     /// (x, y, z in the camera's axes, z towards the viewer)
     view_place: [Vec3; 2],
@@ -266,6 +268,8 @@ impl EngineSound {
             racing_curve: joaat("RPM_RACE_OPPONENT"),
             pitch_off: s16(xf, 12),
             vol_a: s16(xf, 14),
+            // (MCLA_ENGINE_VOL2_OLD=1: without it, as before #39)
+            vol2: if std::env::var_os("MCLA_ENGINE_VOL2_OLD").is_some() { 0.0 } else { s16(xf, 10) * 0.01 },
             effect_db: if eff.is_empty() { 0.0 } else { s16(eff, 10) },
             view_place: [Vec3::new(be_f32(xf, 54), be_f32(xf, 58), be_f32(xf, 62)), Vec3::new(be_f32(xf, 42), be_f32(xf, 46), be_f32(xf, 50))],
             doppler: 1.0,
@@ -607,7 +611,7 @@ impl EngineSound {
             let cents = (self.pitch_off + crate::caraudio::pitch_cents_f32(x / r.reference) + lfo_cents) as i32;
             // F-74444 / F-17698: dry EFFECT_PARAMS +16, chain send +12; F-89149: record 0 pans the chain
             let (dry, fx_send) = if self.eff.is_empty() { (1.0, 0.0) } else { (be_f32(&self.eff, 16), be_f32(&self.eff, 12)) };
-            let req = Req { pos: Some(loop_pos), volume: vol, pitch: cents, doppler: self.doppler, player: self.player, dry, fx_send, chain: self.chain, pans_chain: i == 0, ..Default::default() };
+            let req = Req { pos: Some(loop_pos), volume: vol, vol2: self.vol2, pitch: cents, doppler: self.doppler, player: self.player, dry, fx_send, chain: self.chain, pans_chain: i == 0, ..Default::default() };
             match self.voices[i] {
                 Some(h) if lib.playing(h) => lib.set(h, req),
                 _ => self.voices[i] = lib.play_hash(r.sound, req),
@@ -891,6 +895,19 @@ mod tests {
             assert_eq!(Some(gtr), default_object(&lib, "vp_nsn_350z_06", false, player));
             assert_ne!(Some(gtr), default_object(&lib, "vp_aud_r8_08", false, player));
         }
+    }
+
+    /// Every loop asks for XF+10 x 0.01 dB on its second level (F-74444 / F-51617 -> request +68): the 240SX +8 dB, its
+    /// opponent's +8 dB, the Camaro +9 dB.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn loops_ask_for_the_xfaders_second_level() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+        assert_eq!(EngineSound::new(&lib, "vp_nsn_240sx_98", false).expect("240sx").vol2, 8.0);
+        assert_eq!(EngineSound::new_opponent(&lib, "vp_nsn_240sx_98", false).expect("240sx o").vol2, 8.0);
+        assert_eq!(EngineSound::new(&lib, "vp_chv_camaro_06", false).expect("camaro").vol2, 9.0);
     }
 
     #[test]
