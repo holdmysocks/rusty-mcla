@@ -740,7 +740,10 @@ mod tests {
     /// swing-twist bytes), bit for bit; then the whole body block and the collider fields the build sets.
     #[test]
     fn rider_build_matches_recording() {
-        let Some(t) = rider() else { return };
+        let Some(t) = rider() else {
+            eprintln!("skipped: no extracted game data with drv_mp_01_mot_set (set MCLA_DATA)");
+            return;
+        };
         let s = fixture_rgd0();
         let rl = |i: usize| -> &[u8] { &s.links[i].1 };
         // M: the root's rest rows are M transposed (F-16970); M's w lanes are not recorded
