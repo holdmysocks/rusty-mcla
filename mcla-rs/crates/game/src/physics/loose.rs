@@ -2048,7 +2048,7 @@ impl LooseState {
         let city_link = |(row, c): (usize, &solver::Contact)| {
             let a = Side { body: Some(0), point: c.on_body, local: c.local, rows: car.rows, margin: 0.04, core: Vec3::ZERO };
             let b = Side { body: None, point: c.on_world, local: c.on_world, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
-            (Link { a: Some(Who::Car), b: None, part_a: 0, part_b: 0, from: None, car_row: row }, Touch { depth: c.depth, friction: c.friction, elasticity: c.elasticity, a, b, normal: c.normal, back: Vec3::ZERO - c.normal, pushed: c.pushed, kept: c.kept, target: c.target, impulse: Vec3::ZERO, kind: 0 })
+            (Link { a: Some(Who::Car), b: None, part_a: 0, part_b: 0, from: None, car_row: row }, Touch { depth: c.depth, friction: c.friction, elasticity: c.elasticity, a, b, normal: c.normal, back: Vec3::ZERO - c.normal, pushed: c.pushed, kept: c.kept, target: c.target, impulse: Vec3::ZERO, kind: 0, jointed: None })
         };
         if old_order || city_rows.is_empty() {
             for (n, c) in city.iter().enumerate() {

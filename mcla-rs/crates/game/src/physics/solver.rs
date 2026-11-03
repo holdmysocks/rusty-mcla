@@ -9,7 +9,10 @@
 //! test `the_contact_solver_is_the_originals_bit_for_bit`). Decode notes: work/veh/solver_rule.md
 //! and work/veh/gjk_exact.md part 5.
 
-use super::artic::{island::LimitRow, Articulated, V4};
+use super::artic::{
+    island::{basis_impulse, contact_bias, ContactRow, LimitRow, RigidState},
+    Articulated, V4,
+};
 use super::exact::{cross, dot3, fma, inverse3, recip, world_inverse_inertia};
 use glam::Vec3;
 
@@ -494,6 +497,22 @@ pub struct Touch {
     /// +164: 0 a contact; a constraint's (0x825B6F78): 2 a rope (a length of 0.01 or more), 1 a
     /// point (a 256-byte row of its own, 0x825DBFA4)
     pub kind: u8,
+    /// a side on one of the island's jointed bodies (a thrown rider's part): the row is then of
+    /// type 7 (that Side has no body)
+    pub jointed: Option<JointedSide>,
+}
+
+/// A contact's side on a jointed body (row type 7 of F-36821).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JointedSide {
+    /// which of the island's jointed bodies
+    pub body: usize,
+    /// the link of the side's part (F-19886, artic::island::part_link)
+    pub link: usize,
+    /// the jointed side is the contact's B (the row is then the B side's, its sign -1)
+    pub on_b: bool,
+    /// lane w of the side's point (contact +60 / +76), which the point's arm keeps
+    pub point_w: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -508,6 +527,33 @@ struct Row2 {
 }
 
 const NO_STATE: State = State { vel: Vec3::ZERO, ang: Vec3::ZERO, mcol: [Vec3::ZERO; 3], icol: [Vec3::ZERO; 3] };
+
+/// A row of an island's contact: a rigid one (type 1 and the constraints'), or one with a
+/// jointed side (type 7) with its jointed body, B's state, and what the apply passes read: the
+/// side, whether it is a contact (kind 0: its impulse is times the island's elasticity factor)
+/// and the jointed side's point.
+#[derive(Clone, Copy, Debug)]
+enum IRow {
+    Rigid(Row2),
+    Jointed { row: ContactRow, body: usize, sb: usize, on_b: bool, contact: bool, point: V4 },
+}
+
+fn v4(v: Vec3) -> V4 {
+    V4::new(v.x, v.y, v.z, 0.0)
+}
+fn v3(v: V4) -> Vec3 {
+    Vec3::new(v.0[0], v.0[1], v.0[2])
+}
+fn rigid_state(s: &State) -> RigidState {
+    RigidState { vel: v4(s.vel), ang: v4(s.ang), m: s.mcol.map(v4), i: s.icol.map(v4) }
+}
+/// A type-7 visit or give with B's state taken out of the island's states and put back.
+fn with_b(states: &mut [State], sb: usize, f: impl FnOnce(&mut RigidState)) {
+    let mut b = rigid_state(&states[sb]);
+    f(&mut b);
+    states[sb].vel = v3(b.vel);
+    states[sb].ang = v3(b.ang);
+}
 
 impl Row2 {
     fn new(bodies: &[Body], states: &[State], c: &Touch) -> Row2 {
@@ -600,12 +646,18 @@ impl Row2 {
     }
 }
 
-/// The sweeps over an island's rows (F-67704): the contacts', then the joint-limit rows of
-/// each jointed body (the tail of the row list). First pass (F-90205): a jointed body with
-/// rows has its solve-time scratch cleared (F-80860) and its rows' multipliers zeroed (no warm
-/// start for type 11); the contacts' kept multipliers given (F-64443); then the sweeps, 8 of
-/// them with a jointed body (SWEEPS_JOINTED), until one changes nothing.
-fn sweeps2(rows: &mut [Row2], states: &mut [State], omega: f32, jointed: &mut [Articulated], limits: &mut [Vec<LimitRow>]) {
+/// The sweeps over an island's rows (F-67704): the contacts' in the island's order, then the
+/// joint-limit rows of each jointed body (the tail of the row list). First pass (F-90205): a
+/// jointed body with rows (types 7 and 11) has its solve-time scratch cleared (F-80860) and the
+/// joint rows' multipliers are zeroed (no warm start for type 11); the contacts' kept
+/// multipliers given (F-64443: types 1 and 7); then the sweeps, 8 of them with a jointed body
+/// (SWEEPS_JOINTED), until one changes nothing.
+fn sweeps2(rows: &mut [IRow], states: &mut [State], omega: f32, jointed: &mut [Articulated], limits: &mut [Vec<LimitRow>]) {
+    for row in rows.iter() {
+        if let IRow::Jointed { body, .. } = row {
+            jointed[*body].clear_scratch();
+        }
+    }
     for (a, l) in jointed.iter_mut().zip(limits.iter_mut()) {
         if !l.is_empty() {
             a.clear_scratch();
@@ -614,16 +666,28 @@ fn sweeps2(rows: &mut [Row2], states: &mut [State], omega: f32, jointed: &mut [A
             r.mult = V4::ZERO;
         }
     }
-    for i in 0..rows.len() {
-        let step = Vec3::ZERO - rows[i].row.neg;
-        let row = rows[i];
-        row.give(states, step);
+    for row in rows.iter() {
+        match row {
+            IRow::Rigid(r) => r.give(states, Vec3::ZERO - r.row.neg),
+            IRow::Jointed { row, body, sb, .. } => {
+                // (the sum this adds to is cleared by every sweep)
+                let mut sum = V4::ZERO;
+                with_b(states, *sb, |b| row.give(&mut jointed[*body], b, V4::ZERO.sub(row.neg), &mut sum));
+            }
+        }
     }
     let count = if jointed.is_empty() { sweeps_now() } else { SWEEPS_JOINTED };
     for _ in 0..count {
         let mut left = Vec3::ZERO;
         for row in rows.iter_mut() {
-            left = row.visit(states, omega) + left;
+            match row {
+                IRow::Rigid(r) => left = r.visit(states, omega) + left,
+                IRow::Jointed { row, body, sb, .. } => {
+                    let mut l4 = v4(left);
+                    with_b(states, *sb, |b| row.visit(&mut jointed[*body], b, &mut l4));
+                    left = v3(l4);
+                }
+            }
         }
         if limits.iter().any(|l| !l.is_empty()) {
             // (the same sum of squares, which the joint-limit kernel F-31194 adds to in vector form)
@@ -643,7 +707,7 @@ fn sweeps2(rows: &mut [Row2], states: &mut [State], omega: f32, jointed: &mut [A
 
 /// What an island's velocity solve leaves.
 pub struct IslandSolved {
-    rows: Vec<Row2>,
+    rows: Vec<IRow>,
     states: Vec<State>,
     pub bounce: f32,
     /// the joint-limit rows of each jointed body of the island, in its order
@@ -657,55 +721,108 @@ fn states_of(bodies: &[Body]) -> Vec<State> {
 /// An island's rows and their sweeps (0x825DAD20, 0x825DC5E8), from the bodies' velocities as
 /// they stand and the contacts' kept multipliers. Nothing is written back.
 pub fn island_solve(bodies: &[Body], touches: &[Touch], dt: f32, inv_dt: f32) -> IslandSolved {
-    island_solve_jointed(bodies, touches, &mut [], dt, inv_dt)
+    island_solve_jointed(bodies, touches, &mut [], (0, 0.0), dt, inv_dt)
 }
 
 /// The same with the island's jointed bodies (a thrown rider): their active joint limits found
 /// when the work space is made (F-73275, the hinges' contact byte +532 set before by the
-/// caller, F-18964), their rows after the contacts' (the tail of F-36821), and 8 sweeps. The
-/// jointed bodies' solve-time scratch is written; their impulses are not (island_apply_limits).
-/// Contacts with a jointed side (row types 7, 13) are not ported: `touches` are rigid only.
-pub fn island_solve_jointed(bodies: &[Body], touches: &[Touch], jointed: &mut [Articulated], dt: f32, inv_dt: f32) -> IslandSolved {
-    let mut sum = 0.0f32;
+/// caller, F-18964), the contacts with a jointed side as rows of type 7 (F-36821's branch with
+/// one jointed side, F-38941, F-11306), the joint rows after the contacts' (the tail of
+/// F-36821), and 8 sweeps. `others`: the island's enabled contacts not in `touches` (their
+/// count and the sum of their elasticities: those of a body that shares no row with these, as
+/// the thrown rider's bike lying on the street), which count in the island's elasticity factor
+/// (isl +40). The jointed bodies' solve-time scratch is written; their impulses are not
+/// (island_apply_jointed). Contacts with two jointed sides (type 13) are not ported.
+pub fn island_solve_jointed(bodies: &[Body], touches: &[Touch], jointed: &mut [Articulated], others: (usize, f32), dt: f32, inv_dt: f32) -> IslandSolved {
+    let mut sum = others.1 + 0.0f32;
     for c in touches.iter() {
         sum = c.elasticity + sum;
     }
-    let share = if touches.is_empty() { f32::MAX } else { 1.0 / touches.len() as f32 };
+    let n = touches.len() + others.0;
+    let share = if n == 0 { f32::MAX } else { 1.0 / n as f32 };
     let bounce = fma(share, sum, 1.0);
     let less = 1.0 / bounce;
     let mut states = states_of(bodies);
-    let mut rows: Vec<Row2> = touches
-        .iter()
-        .map(|c| {
-            let mut row = Row2::new(bodies, &states, c);
-            if c.kind == 1 {
-                // (0x825DC0AC: the target minus the two points' pending velocities - not over the island's
-                // elasticity - through the basis as its transpose; no warm start, 0x825E7A70)
-                let pend = |s: &Side| s.body.map_or(Vec3::ZERO, |i| pending(&bodies[i], s.point, dt));
-                let v = c.target - (pend(&c.a) - pend(&c.b));
-                let b = &row.row.basis;
-                row.row.bias = Vec3::new(dot3(v, Vec3::new(b[0].x, b[1].x, b[2].x)), dot3(v, Vec3::new(b[0].y, b[1].y, b[2].y)), dot3(v, Vec3::new(b[0].z, b[1].z, b[2].z)));
-                return row;
-            }
-            let pend = |s: &Side| s.body.map_or(Vec3::ZERO, |i| pending(&bodies[i], s.point, dt) * less);
-            let p = pend(&c.a) - pend(&c.b);
-            let g = (ALLOW - SKIN) - c.depth;
-            let gap = if -g >= 0.0 { 0.0 } else { g };
+    let mut rows: Vec<IRow> = Vec::with_capacity(touches.len());
+    for c in touches.iter() {
+        if let Some(j) = c.jointed {
+            rows.push(jointed_row(bodies, &states, jointed, c, &j, less, dt, inv_dt));
+            continue;
+        }
+        let mut row = Row2::new(bodies, &states, c);
+        if c.kind == 1 {
+            // (0x825DC0AC: the target minus the two points' pending velocities - not over the island's
+            // elasticity - through the basis as its transpose; no warm start, 0x825E7A70)
+            let pend = |s: &Side| s.body.map_or(Vec3::ZERO, |i| pending(&bodies[i], s.point, dt));
+            let v = c.target - (pend(&c.a) - pend(&c.b));
             let b = &row.row.basis;
-            let x0 = fma(gap, inv_dt, fma(p.z, b[0].z, fma(p.x, b[0].x, p.y * b[0].y)));
-            let x1 = fma(b[1].z, p.z, fma(b[1].x, p.x, b[1].y * p.y));
-            let x2 = fma(b[2].z, p.z, fma(b[2].x, p.x, b[2].y * p.y));
-            row.row.bias = (Vec3::ZERO - Vec3::new(x0, x1, x2)) + c.target;
-            row.row.neg = Vec3::ZERO - c.kept;
-            row
-        })
-        .collect();
+            row.row.bias = Vec3::new(dot3(v, Vec3::new(b[0].x, b[1].x, b[2].x)), dot3(v, Vec3::new(b[0].y, b[1].y, b[2].y)), dot3(v, Vec3::new(b[0].z, b[1].z, b[2].z)));
+            rows.push(IRow::Rigid(row));
+            continue;
+        }
+        let pend = |s: &Side| s.body.map_or(Vec3::ZERO, |i| pending(&bodies[i], s.point, dt) * less);
+        let p = pend(&c.a) - pend(&c.b);
+        let g = (ALLOW - SKIN) - c.depth;
+        let gap = if -g >= 0.0 { 0.0 } else { g };
+        let b = &row.row.basis;
+        let x0 = fma(gap, inv_dt, fma(p.z, b[0].z, fma(p.x, b[0].x, p.y * b[0].y)));
+        let x1 = fma(b[1].z, p.z, fma(b[1].x, p.x, b[1].y * p.y));
+        let x2 = fma(b[2].z, p.z, fma(b[2].x, p.x, b[2].y * p.y));
+        row.row.bias = (Vec3::ZERO - Vec3::new(x0, x1, x2)) + c.target;
+        row.row.neg = Vec3::ZERO - c.kept;
+        rows.push(IRow::Rigid(row));
+    }
     for a in jointed.iter_mut() {
         a.limit_dofs();
     }
     let mut limits: Vec<Vec<LimitRow>> = jointed.iter().map(|a| a.limit_rows(inv_dt)).collect();
     sweeps2(&mut rows, &mut states, OMEGA, jointed, &mut limits);
     IslandSolved { rows, states, bounce, limits }
+}
+
+/// F-36821's branch for a contact with one jointed side (row type 7). The row is the jointed
+/// side's: its normal (+80, or +96 when it is B), its point, its sign (+1, or -1 when it is
+/// B); the other side is the row's B (its state, F-71455; the fixed world's is the zero state).
+/// Pending velocities (F-43928, times 1 / the island's elasticity factor for a contact): the
+/// contact's A collider's at the row's point less the contact's B collider's at the row's B
+/// point - so when the jointed side is B each collider is asked at the other side's point, as
+/// the code does. Bias by contact_bias (the gap without the skin); multipliers warm-started
+/// from +128 (the warm-start switch, set).
+#[allow(clippy::too_many_arguments)]
+fn jointed_row(bodies: &[Body], states: &[State], jointed: &[Articulated], c: &Touch, j: &JointedSide, less: f32, dt: f32, inv_dt: f32) -> IRow {
+    let a = &jointed[j.body];
+    let (mine, other) = if j.on_b { (&c.b, &c.a) } else { (&c.a, &c.b) };
+    let one = V4::new(1.0, 1.0, 1.0, 0.0);
+    let sign = if j.on_b { V4::ZERO.sub(one) } else { one };
+    let normal = if j.on_b { c.back } else { c.normal };
+    let point = V4::new(mine.point.x, mine.point.y, mine.point.z, j.point_w);
+    let sb = other.body.map_or(0, |i| i + 1);
+    let place_b = other.body.map_or(V4::ZERO, |i| v4(bodies[i].at));
+    let rows = basis(normal).map(v4);
+    let mut row = ContactRow::new(a, j.link, point, v4(other.point), place_b, &rows, &rigid_state(&states[sb]), c.friction);
+    let scale = |v: V4| if c.kind == 0 { v.mul(V4::splat(less)) } else { v };
+    let rigid = |s: &Side, at: Vec3| v4(s.body.map_or(Vec3::ZERO, |i| pending(&bodies[i], at, dt)));
+    let p = if j.on_b {
+        scale(rigid(&c.a, c.b.point)).sub(scale(a.point_pending(j.link, v4(c.a.point))))
+    } else {
+        scale(a.point_pending(j.link, point)).sub(scale(rigid(&c.b, c.b.point)))
+    };
+    row.bias = contact_bias(&rows, p, if c.kind == 0 { Some(c.depth) } else { None }, sign, inv_dt, v4(c.target));
+    row.neg = V4::ZERO.sub(v4(c.kept));
+    IRow::Jointed { row, body: j.body, sb, on_b: j.on_b, contact: c.kind == 0, point }
+}
+
+/// The impulse a type-7 row hands out (F-24076 / F-64140): its multipliers through the inverse
+/// basis, turned over when the jointed side is B, times the island's elasticity factor for a
+/// contact of the velocity solve. The contact's A gets it, B its opposite.
+fn jointed_impulse(row: &ContactRow, on_b: bool, scale: Option<f32>) -> V4 {
+    let p = V4::ZERO.sub(row.neg);
+    let p = if on_b { V4::ZERO.sub(p) } else { p };
+    let j = basis_impulse(&row.bcol, p);
+    match scale {
+        Some(e) => j.mul(V4::splat(e)),
+        None => j,
+    }
 }
 
 /// The joint part of the velocity solve's apply pass (F-24076's tail): each jointed body's
@@ -718,10 +835,34 @@ pub fn island_apply_limits(solved: &IslandSolved, jointed: &mut [Articulated]) {
     }
 }
 
+/// The jointed bodies' part of the velocity solve's apply pass (F-24076): each type-7 row's
+/// impulse into its link through the collider's slot 34 (F-78198 -> F-19400) at the jointed
+/// side's point - the contact's A gets the impulse, B its opposite - in the island's order,
+/// then the joint rows (island_apply_limits).
+pub fn island_apply_jointed(solved: &IslandSolved, jointed: &mut [Articulated]) {
+    for row in &solved.rows {
+        if let IRow::Jointed { row, body, on_b, contact, point, .. } = row {
+            let j = jointed_impulse(row, *on_b, if *contact { Some(solved.bounce) } else { None });
+            let j = if *on_b { V4::ZERO.sub(j) } else { j };
+            jointed[*body].apply_at_point(row.link, j, *point);
+        }
+    }
+    island_apply_limits(solved, jointed);
+}
+
 /// The contacts' multipliers and impulses as the solve left them (0x825919F8; the same numbers
 /// 0x825DCA18 hands out): `kept` (+128) and `impulse` (+112, the vector that pushes A).
 pub fn island_impulses(solved: &IslandSolved, touches: &mut [Touch]) {
     for (row, c) in solved.rows.iter().zip(touches.iter_mut()) {
+        let row = match row {
+            IRow::Rigid(r) => r,
+            IRow::Jointed { row, on_b, contact, .. } => {
+                // (+128 keeps its lane w; the port's Vec3 has none)
+                c.kept = v3(V4::ZERO.sub(row.neg));
+                c.impulse = v3(jointed_impulse(row, *on_b, if *contact { Some(solved.bounce) } else { None }));
+                continue;
+            }
+        };
         let p = Vec3::ZERO - row.row.neg;
         c.kept = p;
         let inv = inverse3(&row.row.bcol);
@@ -768,6 +909,22 @@ pub fn island_push_jointed(bodies: &[Body], touches: &mut [Touch], solved: &mut 
         if t >= 0.0 { t } else { 0.0 }
     };
     for (row, c) in solved.rows.iter_mut().zip(touches.iter()) {
+        let row = match row {
+            IRow::Rigid(r) => r,
+            IRow::Jointed { row, body, .. } => {
+                // (F-49764: a row with a side on a jointed collider of type 1 - the rider's - skips the
+                // thickness test and the direct push: the bias is what the depth asks over the step)
+                assert!(jointed[*body].collider_type() != 3, "the push solve of a type-3 jointed collider is not ported");
+                let d = c.depth - ALLOW;
+                let half = d * 0.5;
+                let m = if half - ALLOW >= 0.0 { ALLOW } else { half };
+                let m = if -m >= 0.0 { 0.0 } else { m };
+                row.bias = V4::new((d - m) * inv_dt, 0.0, 0.0, 0.0);
+                // (+0's lane w is the contact's depth, +12)
+                row.neg = V4::ZERO.sub(V4::new(c.pushed.x, c.pushed.y, c.pushed.z, c.depth));
+                continue;
+            }
+        };
         if c.kind == 1 {
             // (a point constraint: its depth over the step, nothing taken off; no warm start)
             row.row.bias = Vec3::new(c.depth * inv_dt, 0.0, 0.0);
@@ -823,10 +980,22 @@ pub fn island_push_jointed(bodies: &[Body], touches: &mut [Touch], solved: &mut 
     }
     sweeps2(&mut solved.rows, &mut solved.states, 1.0, jointed, &mut solved.limits);
     for (row, c) in solved.rows.iter().zip(touches.iter_mut()) {
-        let q = Vec3::ZERO - row.row.neg;
-        c.pushed = q;
-        let inv = inverse3(&row.row.bcol);
-        let v = (inv[0] * q.x + inv[1] * q.y) + inv[2] * q.z;
+        let v = match row {
+            IRow::Rigid(row) => {
+                let q = Vec3::ZERO - row.row.neg;
+                c.pushed = q;
+                let inv = inverse3(&row.row.bcol);
+                (inv[0] * q.x + inv[1] * q.y) + inv[2] * q.z
+            }
+            IRow::Jointed { row, body, on_b, point, .. } => {
+                c.pushed = v3(V4::ZERO.sub(row.neg));
+                // (F-64140 -> F-93628: A's slot 36 with the impulse, B's with its opposite; a jointed
+                // collider's slot 36, F-41014, is its slot 34)
+                let j = jointed_impulse(row, *on_b, None);
+                jointed[*body].apply_at_point(row.link, if *on_b { V4::ZERO.sub(j) } else { j }, *point);
+                v3(j)
+            }
+        };
         for (s, v) in [(&c.a, v), (&c.b, Vec3::ZERO - v)] {
             if let Some(i) = s.body {
                 let icol = solved.states[i + 1].icol;
