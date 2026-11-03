@@ -266,7 +266,13 @@ impl Assets {
         let dir = Path::new(&self.data_dir).join("resources/ui/meshes");
         let plain = dir.join(format!("{name}.r102"));
         let hashed = dir.join(format!("0x{:08x}.r102", mcla_formats::hash::joaat(&format!("{name}.xdr"))));
-        let path = if plain.exists() { plain } else { hashed };
+        let path = if plain.exists() {
+            plain
+        } else if hashed.exists() {
+            hashed
+        } else {
+            dir.join(format!("{}.r102", collided(name).unwrap_or(name)))
+        };
         let mut parts = Vec::new();
         let mut radius = 0.0f32;
         if let Ok(res) = crate::assets::load_resource_file(&path) {
@@ -1191,6 +1197,17 @@ fn draw_element(tune: &Tune, _assets: &mut Assets, f: &Frame, e: &Element, q: &m
                 q.rim(f, p, colour, e.selected, e.kind.type_byte());
             }
         }
+    }
+}
+
+/// The meshes the install wrote under another name: `names.txt` holds a string whose hash is the
+/// mesh's (`0.601049.tune` and `icon_ingame5.xdr` are both 0x7165559e), so the time trial man's
+/// stopwatch went to `0.601049.r102` and his ring was drawn empty. The original draws the stopwatch
+/// (work/hookmen2 `cap/tt_01`).
+fn collided(name: &str) -> Option<&'static str> {
+    match name {
+        "icon_ingame5" => Some("0.601049"),
+        _ => None,
     }
 }
 
@@ -3909,6 +3926,19 @@ mod tests {
         }
         // (the GPS map: per icon |p - camera| * 7e-05 + 0.04; the hangout at 9104.5 m)
         assert!((139.0f32 * (9104.5 * 7e-5 + 0.04) - 94.157).abs() < 0.02);
+    }
+
+    /// Every racer icon a script sets (`Racer_SetIconType` 3, 4, 5, 7, 8) has its mesh, the time
+    /// trial's stopwatch among them (installed as `0.601049.r102`, `collided`).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the extracted disc"]
+    fn racer_icons_load() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut assets = Assets::new(&dir);
+        for n in [3u8, 4, 5, 7, 8] {
+            let m = assets.mesh(ingame(n)).unwrap_or_else(|| panic!("{} missing", ingame(n)));
+            assert_eq!(m.parts[0].tex_name.to_ascii_lowercase(), format!("{}.dds", ingame(n)));
+        }
     }
 
     /// Draw the recorded frame of `work/mm/trace_idle.md` (camera, elements and clock as recorded)
