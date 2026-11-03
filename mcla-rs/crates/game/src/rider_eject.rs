@@ -182,6 +182,11 @@ pub struct RiderOff {
     surfaces: Vec<crate::physics::collision::Surface>,
 }
 
+/// The angular inertia the rider's archetype answers at run time (BuildInput::inertia; how the game makes it is not
+/// traced - not the .r6 archetype's): the drv_mp_01_mot_set rider's from the recording ro.0 (collider +160 at GoRagdoll).
+/// (open: other character sets take this one too)
+const RIDER_INERTIA: crate::physics::artic::V4 = crate::physics::artic::V4([f32::from_bits(0x438a_c2d0), f32::from_bits(0x429b_b1a4), f32::from_bits(0x434f_a81c), f32::from_bits(0x7fc0_0001)]);
+
 /// A glam matrix as the guest's row-vector one (rows = glam's columns).
 pub fn guest_of(m: glam::Mat4) -> crate::physics::artic_pose::Mat {
     use crate::physics::artic::V4;
@@ -189,9 +194,10 @@ pub fn guest_of(m: glam::Mat4) -> crate::physics::artic_pose::Mat {
     [c(m.x_axis), c(m.y_axis), c(m.z_axis), c(m.w_axis)]
 }
 
+/// A guest matrix as glam's: its rows' lanes w are the guest's leftovers (the draw reads the 3 x 4 part, F-74033).
 pub fn glam_of(m: &crate::physics::artic_pose::Mat) -> glam::Mat4 {
-    let c = |v: crate::physics::artic::V4| glam::Vec4::new(v.0[0], v.0[1], v.0[2], v.0[3]);
-    glam::Mat4::from_cols(c(m[0]), c(m[1]), c(m[2]), c(m[3]))
+    let c = |v: crate::physics::artic::V4, w: f32| glam::Vec4::new(v.0[0], v.0[1], v.0[2], w);
+    glam::Mat4::from_cols(c(m[0], 0.0), c(m[1], 0.0), c(m[2], 0.0), c(m[3], 1.0))
 }
 
 impl RiderOff {
@@ -278,7 +284,7 @@ impl RiderOff {
                         solver_obj: 0x4600_0000,
                         type248: 0x4700_0000,
                     };
-                    match build(&ty, &BuildInput::new([character[0].0, character[1].0, character[2].0]), &addrs) {
+                    match build(&ty, &BuildInput::new([character[0].0, character[1].0, character[2].0], RIDER_INERTIA.0), &addrs) {
                         Ok(b) => {
                             let locals: Vec<_> = local.iter().map(|(q, p)| guest_of(glam::Mat4::from_rotation_translation(*q, *p))).collect();
                             let launch = e.launch(kept, c.state.vel, timing);
