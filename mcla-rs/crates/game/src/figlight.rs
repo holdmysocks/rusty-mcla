@@ -118,7 +118,9 @@ impl FigureLight {
         let mut lanes = self.cur;
         let mut best = 0.0f32;
         let mut next = 3usize;
-        let key = d.key.map(|(col, dir)| LampRec { pos: p + dir.normalize_or(Vec3::Y) * 1.0e5, color: col, strength: 1.0e10, back: Vec3::ZERO, cone: [0.0, 1.0] });
+        // (the key light's record stands 100 km from the world's origin along its direction, not from the walker: every
+        // walker of work/checkpoints2/cap/col4.bin, 01:06, has it at (69151.3, -72225.4, -1260.7) in its lane 2)
+        let key = d.key.map(|(col, dir)| LampRec { pos: dir.normalize_or(Vec3::Y) * 1.0e5, color: col, strength: 1.0e10, back: Vec3::ZERO, cone: [0.0, 1.0] });
         for (j, l) in [d.heads[0], d.heads[1], key, d.rec3].into_iter().enumerate() {
             let Some(l) = l else { continue };
             let s = if j == 2 { 0.3 * l.color.x + 0.59 * l.color.y + 0.11 * l.color.z } else { score(&l, p) };
@@ -160,6 +162,10 @@ mod tests {
         let l = f.lanes(Vec3::ZERO, &d);
         assert_eq!(l[0][3], 40.0, "lane 0 stays the grid lamp");
         assert_eq!((l[9][3], l[6][3], l[3][3]), (500.0, 500.0, 1.0e10));
+        // (the key light's place: 1e5 along its direction from the world's origin, wherever the walker stands)
+        let l = f.lanes(Vec3::new(-430.15, 17.98, -651.22), &d);
+        let k = (0..4).find(|k| l[3 * k][3] == 1.0e10).expect("the key light in a lane");
+        assert_eq!((l[3 * k][0], l[3 * k][1], l[3 * k][2]), (0.0, 1.0e5, 0.0));
         // head lamp 1 outside its cone scores 0 and cannot beat head lamp 0: the key takes lane 2,
         // lane 1 keeps its grid lamp
         let d2 = Dynamic { heads: [Some(head(39.0)), Some(head(80.0))], key: Some((Vec3::splat(0.038), Vec3::Y)), rec3: None };

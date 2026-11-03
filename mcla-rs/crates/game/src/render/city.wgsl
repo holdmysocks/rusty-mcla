@@ -1759,6 +1759,29 @@ fn ch_light(k: i32, pw: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(l, clamp(1.0 - min(d / p.w, 1.0), 0.0, 1.0) * -obj.area_b[k].w);
 }
 
+// The vertex programs' two car lights (character_programs_rule.md section 3; the driver's car: skin.rs puts them in
+// lamp_a[14..18], F-42959): gauge = colour x gain x sat(Lg . coneDir - cone) x sat(Lg . N) x (1 - sat(dg x 2/3))^gp,
+// neon = colour x sat(Ln . N) x (1 - sat(dn x 2/3))^4, screened together; cone 0.8 / gain 5 / gp 1, the skin_arm
+// programs (VS_Bump / VSSkinned_Bump) 0.9 / 10 / 2. The programs work them out per vertex; here per pixel with the
+// interpolated normal. MCLA_DEBUG_VIEW=763: none.
+fn ch_vlights(pw: vec3<f32>, n: vec3<f32>, arm: bool) -> vec3<f32> {
+    if (obj.lamp_a[14].w < 0.5 || (g.params.w > 762.5 && g.params.w < 763.5)) { return vec3<f32>(0.0); }
+    let cone = select(0.8, 0.9, arm);
+    let gain = select(5.0, 10.0, arm);
+    var lg = obj.lamp_a[14].xyz - pw;
+    let dg = length(lg);
+    lg = lg / max(dg, 1e-6);
+    var fg = 1.0 - clamp(dg * 0.6666667, 0.0, 1.0);
+    if (arm) { fg = fg * fg; }
+    let gauge = obj.lamp_a[15].rgb * gain * clamp(dot(lg, obj.lamp_a[16].xyz) - cone, 0.0, 1.0) * clamp(dot(lg, n), 0.0, 1.0) * fg;
+    var ln = obj.lamp_a[17].xyz - pw;
+    let dn = length(ln);
+    ln = ln / max(dn, 1e-6);
+    let fn1 = 1.0 - clamp(dn * 0.6666667, 0.0, 1.0);
+    let neon = obj.lamp_a[18].rgb * clamp(dot(ln, n), 0.0, 1.0) * (fn1 * fn1) * (fn1 * fn1);
+    return ch_screen(gauge, neon);
+}
+
 // The program's own normal-map rebuild: (2 a - 1) x mod and (2 b - 1) x mod along T and B, z from
 // the rest - Character family: map .y / .w; teeth: .x / .w.
 fn ch_nm(nn: vec3<f32>, t: vec3<f32>, b: vec3<f32>, x: f32, y: f32, m: f32) -> vec3<f32> {
@@ -1836,10 +1859,10 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
         return mix(cc, envc, fres);
     }
     // (the Character family and skin_arm: VS o3 = ambYPos x 0.1 x ambientMod / 0.66 x h, w = h / 0.66,
-    // h = sat(dot(Pw, floorPlaneEq.xyz) - floorPlaneEq.w); no gauge / neon light outside a car)
+    // h = sat(dot(Pw, floorPlaneEq.xyz) - floorPlaneEq.w); the gauge / neon light of a driver's car: `ch_vlights`)
     let amb = ambp.rgb * (0.1 * ambp.w / 0.66) * h;
     let ambw = h / 0.66;
-    let vl = vec3<f32>(0.0);
+    let vl = ch_vlights(pw, nn, fx == 9u);
     if (fx == 9u) {
         // PS_HighQualitySkin: its constants are literals but diffuseMod; the fast mask always
         let n = normalize(t * ((2.0 * nm.x - 1.0) + 1.5 * (m4b.x - 0.5)) + b * ((2.0 * nm.y - 1.0) + 1.5 * (m4b.y - 0.5)) + nn * (2.0 * nm.z - 1.0));

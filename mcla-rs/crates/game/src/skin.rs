@@ -609,10 +609,12 @@ pub struct SkinBuffer {
     /// the lights' origin is the matrix `emit` is given (a driver's: his car's or bike's - the draw's gWorld row 3 in the
     /// rider's recording), not the root bone's place (the scenes' characters)
     pub light_at_root: bool,
+    /// the next figure sits in a car: its gauge / neon lights and floor (drivers.rs `Cabin`); taken by `emit`
+    pub next_cabin: Option<crate::drivers::Cabin>,
     /// each draw's stencil reference
     draw_stencil: Vec<u32>,
-    /// this frame's figures (character programs): the model's origin, bystander
-    figs: Vec<(Vec3, bool)>,
+    /// this frame's figures (character programs): the model's origin, bystander, the car's lights
+    figs: Vec<(Vec3, bool, Option<crate::drivers::Cabin>)>,
     /// and each draw's figure and material
     char_draws: Vec<(usize, CharMat)>,
     char_objs: Vec<crate::render::ObjectBinding>,
@@ -674,7 +676,7 @@ impl SkinBuffer {
             // (the lights' origin: the model's place, gWorld row 3 - here the root bone's, which carries
             // the scene position (cine.rs); x / z within 3 cm of the recorded draws, y up to 0.4 m higher)
             let at = if self.light_at_root { root.w_axis } else { self.world.first().map_or(root.w_axis, |w| w.w_axis) };
-            self.figs.push((at.truncate(), std::mem::take(&mut self.next_bystander)));
+            self.figs.push((at.truncate(), std::mem::take(&mut self.next_bystander), self.next_cabin.take()));
         }
         // (the night fill light at the figure's place - fillmap.rs: the figures share one buffer
         // and the identity object, so the colour rides in every vertex: color1.rgb = four times
@@ -761,7 +763,7 @@ impl SkinBuffer {
             let night = cl.night && cl.night_path;
             let tables = if night { crate::render::LAMP_TABLES.read().ok().and_then(|t| t.clone()) } else { None };
             for (i, (f, m)) in self.char_draws.iter().enumerate() {
-                let (p, by) = self.figs[*f];
+                let (p, by, cabin) = self.figs[*f];
                 let mut u = crate::render::ObjectUniform::default();
                 let sl = if night { cl.night_slots(p, tables.as_deref()) } else { cl.day_slots(p) };
                 for k in 0..3 {
@@ -772,8 +774,18 @@ impl SkinBuffer {
                 // colour, map / 255 x 0.25 with no fade - F-35455, recorded on the rider)
                 let amb = if night { crate::fillmap::cube_at(p.x, p.z) } else { cl.amb };
                 u.area_a[3] = [amb.x, amb.y, amb.z, m.ambient_mod];
-                // (outside a car: F-42959 - neon and gauge light colours 0, the floor far below)
+                // (F-42959: outside a car the neon and gauge light colours 0 and the floor far below; a driver gets
+                // his car's - floorPlaneEq in area_b[3], gauge place / colour / cone direction and neon place / colour in
+                // lamp_a[14..18], w of [14] = 1 marking them for city.wgsl `ch_vlights`)
                 u.area_b[3] = [0.0, 1.0, 0.0, -1000.0];
+                if let Some(c) = cabin {
+                    u.area_b[3] = c.floor;
+                    u.lamp_a[14] = c.gauge_pos.extend(1.0).to_array();
+                    u.lamp_a[15] = c.gauge_col.extend(1.0).to_array();
+                    u.lamp_a[16] = c.cone_dir.extend(0.0).to_array();
+                    u.lamp_a[17] = c.neon_pos.extend(1.0).to_array();
+                    u.lamp_a[18] = c.neon_col.extend(1.0).to_array();
+                }
                 u.area_a[4] = m.k[0];
                 u.area_b[4] = m.k[1];
                 u.interior[0] = m.k[2];

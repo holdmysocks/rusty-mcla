@@ -800,6 +800,8 @@ pub struct CarLook {
     pub area_a: [[f32; 4]; 5],
     pub area_b: [[f32; 4]; 5],
     pub rim_finish: [[f32; 4]; 3],
+    /// the driver's gauge colour A and interior neon colour as the record holds them (w of the neon: IntNeonIntensity)
+    pub cabin_light: [[f32; 4]; 2],
 }
 
 /// A set-up as `Vehicles::dress_setups` puts it on a car: the model's parts, the rim's
@@ -983,6 +985,9 @@ pub struct Vehicles {
     pub player_rim_finish: [[f32; 4]; 3],
     /// the player's cabin colours A, B, C (w 1 = chosen)
     pub player_interior: [[f32; 4]; 5],
+    /// the player's gauge colour A and interior neon colour as its record holds them (w of the neon: IntNeonIntensity) -
+    /// what its driver is lit by (`Game::cabin_light_colors`)
+    pub player_cabin_light: [[f32; 4]; 2],
     /// the brakes fitted in the garage (BRAKES: a model of `resources/brakes`), else the car's own
     pub player_brake: Option<Arc<BrakeModel>>,
     /// the tires fitted in the garage (TIRES: a set of `resources/tires/textures`; empty =

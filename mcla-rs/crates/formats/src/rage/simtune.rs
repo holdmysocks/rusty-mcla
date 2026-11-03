@@ -275,6 +275,9 @@ pub struct SimTunes {
     /// mcCarModelTune's bDoubleSidedTrunk (+200, a byte): the car's draw (F-92759) draws the base fragment's meshes on
     /// the `trunk_0` bone and the trunk_swap / trunk_wide slots without back-face culling; None without a vehModel
     pub double_sided_trunk: Option<bool>,
+    /// mcCarModelTune's vDriverGaugeLightOffset / vDriverNeonLightOffset (+144, +160; the ctor F-97670's (-0.4, 1, -0.825) and
+    /// 0): the gauge and neon lights of the driver's draw, in the car's frame (F-42959); None without a vehModel
+    pub driver_lights: Option<[[f32; 3]; 2]>,
 }
 
 /// A wheel's radius and its ride's offset from the figures `d` of a set-up (ride, width, rim, profile, front then rear) for
@@ -481,6 +484,8 @@ impl SimTunes {
                 out.part_movement = Some([rd.u32(c + 184), rd.u32(c + 188), rd.u32(c + 192), rd.u32(c + 196)]);
                 out.window_clip = Some(rd.f32(c + 180));
                 out.double_sided_trunk = Some(rd.u8(c + 200) != 0);
+                let v3 = |o: usize| [rd.f32(c + o), rd.f32(c + o + 4), rd.f32(c + o + 8)];
+                out.driver_lights = Some([v3(144), v3(160)]);
                 continue;
             }
             let set = if nm.ends_with("_mods") { &mut out.mods } else { &mut out.base };
@@ -657,7 +662,7 @@ mod movement_tests {
                 };
                 if let Some(t) = super::SimTunes::parse(&res) {
                     let m = t.part_movement;
-                    println!("{} {:?} window clip {:?} damage max {} med {} (base) {} (mods)", e.file_name().to_string_lossy(), m, t.window_clip, t.base.damage.max_damage, t.base.damage.med_damage, t.mods.damage.max_damage);
+                    println!("{} {:?} window clip {:?} driver lights {:?} damage max {} med {} (base) {} (mods)", e.file_name().to_string_lossy(), m, t.window_clip, t.driver_lights, t.base.damage.max_damage, t.base.damage.med_damage, t.mods.damage.max_damage);
                     if let Some(m) = m {
                         assert!(m.iter().all(|v| *v <= 2), "{m:?}");
                     }

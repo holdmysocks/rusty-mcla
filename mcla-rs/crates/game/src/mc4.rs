@@ -4744,6 +4744,24 @@ impl Game {
         }
     }
 
+    /// The vehicle in use's colours its driver is lit by (F-42959 reads them from the vehicle's record): gauge colour A
+    /// (DashGaugeColor, +0x70) and the interior neon's colour (IntNeonColor, +0x60) as the record holds them (display
+    /// values, as the garage's row sets them: `slot_hsv` 1 / 0, else the record's), w of the neon = IntNeonIntensity (+0x174).
+    pub fn cabin_light_colors(&self) -> [[f32; 4]; 2] {
+        let cur = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
+        let rec = self.mc4.as_ref().and_then(|m| m.car(&cur));
+        let field = |k: usize, v: Option<&Vec<F>>| -> [f32; 3] {
+            match (self.slot_hsv[k], v.filter(|v| v.len() >= 3)) {
+                (Some(h), _) => hsv_rgb(h),
+                (None, Some(v)) => [v[0].0 as f32, v[1].0 as f32, v[2].0 as f32],
+                (None, None) => [0.0; 3],
+            }
+        };
+        let g = field(1, rec.map(|c| &c.visual.DashGaugeColor));
+        let n = field(0, rec.map(|c| &c.visual.IntNeonColor));
+        [[g[0], g[1], g[2], 1.0], [n[0], n[1], n[2], if self.int_neon { 1.0 } else { 0.0 }]]
+    }
+
     /// The cabin's five colour groups for the renderer (INTERIOR COLOR A..E; linear, w 1 =
     /// chosen, 0 = the stock cabin): `Vehicles::player_interior`. Which zones of the trim
     /// take which group is the vehicle's own table (`zone_groups`).
@@ -8351,6 +8369,8 @@ pub struct SetupLook {
 ///     `interior_groups`;
 ///   - the window tint at 0x160 (colour, darkness): `tint_rgba`;
 ///   - the tire set, 0x845 (`TIRES`), and the brake model, 0x846 (`BRAKES`).
+///   - the driver's light colours: gauge colour A at 0x70, the interior neon's at 0x60 and its intensity at 0x174
+///     (`cabin_light`, F-42959).
 /// Step 19e: a set-up's licence plate text (0x847, seven letters; letters, digits and spaces).
 pub fn setup_plate(b: &[u8]) -> String {
     b.get(0x847..0x84e).map_or(String::new(), |l| l.iter().take_while(|c| **c != 0).filter(|c| c.is_ascii_alphanumeric() || **c == b' ').map(|c| *c as char).collect::<String>().trim().to_string())
@@ -8373,7 +8393,11 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let body_a = rgb(0x660)?;
     let body = paint_as_drawn(area(0));
     let body_b = to_linear(body.b);
-    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3] };
+    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2] };
+    // (the driver's gauge and interior neon colours, as the record holds them, the neon's IntNeonIntensity in w - F-42959)
+    let raw = |o: usize| [f(o), f(o + 4), f(o + 8)];
+    let (g, n) = (raw(0x70), raw(0x60));
+    look.cabin_light = [[g[0], g[1], g[2], 1.0], [n[0], n[1], n[2], f(0x174)]];
     for k in 1..6 {
         // (a part's colour goes through the port's 8-bit store, as an imported record's)
         let own_a = rgb(0x660 + 0x30 * k).filter(|h| (0..3).any(|i| (h[i] - body_a[i]).abs() > 0.02)).map(|h| to_linear([(h[0] * 255.0).round() / 255.0, (h[1] * 255.0).round() / 255.0, (h[2] * 255.0).round() / 255.0]));

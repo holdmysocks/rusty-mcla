@@ -4661,6 +4661,8 @@ impl App {
             self.vehicles.player_rim_finish = self.game.rim_finish();
             // (the five colour groups, INTERIOR COLOR A..E: `mc4`)
             self.vehicles.player_interior = self.game.interior_groups();
+            // (the gauge and interior neon colours its driver is lit by: the record's - F-42959)
+            self.vehicles.player_cabin_light = self.game.cabin_light_colors();
             let tire = s19d_look.as_ref().map_or_else(|| self.game.tire_set(), |l| l.1.clone());
             self.vehicles.set_player_tire(&mut gpu, &mut world, &tire);
             let brake = match s19d_look.as_ref() {
@@ -4738,6 +4740,7 @@ impl App {
             if let Some((l, _, _)) = s19d_look.as_ref() {
                 self.vehicles.player_rim_finish = l.rim_finish;
                 self.vehicles.player_interior = l.interior;
+                self.vehicles.player_cabin_light = l.cabin_light;
                 self.vehicles.player_paint_type = l.paint_type;
                 self.vehicles.player_paint_b = l.color2;
                 self.vehicles.player_area_a = l.area_a;
@@ -10400,7 +10403,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // trucks and SUVs seat their driver higher than the shared animation does
                         mat = mat * glam::Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0));
                     }
-                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver }
+                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0] }
                 })
                 .collect();
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);

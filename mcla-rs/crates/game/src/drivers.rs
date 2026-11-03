@@ -33,6 +33,49 @@ pub struct Seat<'a> {
     pub set: &'a str,
     /// LoadDriver's hi-res set (F-39898): the local human, or a racer raised by UseRacerNativeCharacter (F-94066)
     pub hi: bool,
+    /// the car's mcCarModelTune vDriverGaugeLightOffset / vDriverNeonLightOffset (`SimTunes::driver_lights`)
+    pub lights: Option<[[f32; 3]; 2]>,
+    /// the car's record's gauge colour A and interior neon colour (w: IntNeonIntensity) - None: its own set-up's
+    pub colors: Option<[[f32; 4]; 2]>,
+    /// the car's head lamp state (lamp object +168, eased: `AmbLamps::s[0]`)
+    pub head: f32,
+}
+
+/// The car's lights on its driver's draw (F-42959, the driver in a car: the vertex programs' gaugeLightPos_ConeAng
+/// c209, gaugeLightColor_Falloff c210, gaugeLightConeDir c211, neonLightPos c212, neonLightColor_Falloff c213 and
+/// floorPlaneEq c214). Recorded: `work/checkpoints2/cap/col4.bin` (the Saleen and an R8 at 01:06),
+/// `work/intglass/cap/pov_noon.bin` (an R8 at noon), `work/police17/cap/rider_night.bin` / `rider_day.bin` (a ZX-14).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Cabin {
+    pub gauge_pos: Vec3,
+    pub gauge_col: Vec3,
+    pub cone_dir: Vec3,
+    pub neon_pos: Vec3,
+    pub neon_col: Vec3,
+    pub floor: [f32; 4],
+}
+
+impl Cabin {
+    /// From the car's matrix `m` (its body's, the vehicle's +144: the offsets are in its frame), the model tune's two
+    /// offsets, the record's colours, the head lamp state and whether it is a bike:
+    /// - gauge = m x vDriverGaugeLightOffset, colour = (c + (mean - c) x 0.5) x head x 1.0 (an image constant) with
+    ///   c = DashGaugeColor and mean = (r + g) x 0.33333298 + b x 0.33333 (by day the head state and so the light are 0);
+    /// - cone direction = minus the matrix's third row;
+    /// - neon = m x vDriverNeonLightOffset, colour = IntNeonColor x (lamp object +408 x +268) x IntNeonIntensity; +268
+    ///   is set to 1 every update and +408 = (1 + cos(IntNeonFlashRate x clock x k)) x 0.5 (F-10129, cos F-63589) - 1 at the rate 0
+    ///   every record carries, which is what is ported;
+    /// - floor = (the matrix's up row, its place . up + 0.3); a bike's w is -1e5 (F-54299).
+    pub fn of(m: Mat4, offs: [[f32; 3]; 2], colors: [[f32; 4]; 2], head: f32, bike: bool) -> Cabin {
+        let at = |o: [f32; 3]| m.transform_point3(Vec3::from(o));
+        let up = m.y_axis.truncate();
+        let p = m.w_axis.truncate();
+        let c = Vec3::new(colors[0][0], colors[0][1], colors[0][2]);
+        let mean = (c.x + c.y) * f32::from_bits(0x3eaa_aa9f) + c.z * f32::from_bits(0x3eaa_aa3b);
+        let g = (c + (Vec3::splat(mean) - c) * 0.5) * head;
+        let n = Vec3::new(colors[1][0], colors[1][1], colors[1][2]) * colors[1][3];
+        let w = if bike { -1.0e5 } else { up.z.mul_add(p.z, up.y.mul_add(p.y, up.x * p.x)) + 0.3 };
+        Cabin { gauge_pos: at(offs[0]), gauge_col: g, cone_dir: -m.z_axis.truncate(), neon_pos: at(offs[1]), neon_col: n, floor: [up.x, up.y, up.z, w] }
+    }
 }
 
 struct Rig {
@@ -145,6 +188,9 @@ pub struct Drivers {
     acting: HashMap<usize, Acting>,
     /// the character set each seat was last drawn with (its voice: CareerVoices.xml)
     pub set_of: HashMap<usize, String>,
+    /// the colours of a car's own set-up (`<car>.xcc`) for a car that wears none (`Seat::colors`)
+    own_colors: HashMap<String, [[f32; 4]; 2]>,
+    data_dir: PathBuf,
 }
 
 /// The neutral / left / right / talk round robins (tables 0x827EA5F4, 0x827EA608, 0x827EA61C, 0x827EA630,
@@ -222,6 +268,7 @@ fn hash(a: u32) -> u32 {
 impl Drivers {
     pub fn load(&mut self, data_dir: &str) {
         let root = Path::new(data_dir);
+        self.data_dir = root.to_path_buf();
         self.char_dir = root.join("resources/character");
         let mut names: Vec<String> = std::fs::read_dir(&self.char_dir).map(|d| d.flatten().filter_map(|e| e.file_name().into_string().ok()).collect()).unwrap_or_default();
         names.sort();
@@ -552,6 +599,19 @@ impl Drivers {
             }
             // (the driver's stencil id: his car's + 1, a rider's his bike's - render/mb.rs, F-10884)
             self.buf.next_stencil = crate::render::mb::driver_stencil_of(s.id);
+            // (the car's gauge and neon lights and its floor - F-42959; MCLA_DRV_CABIN_OLD=1: none, as outside a car)
+            if let Some(offs) = s.lights.filter(|_| std::env::var("MCLA_DRV_CABIN_OLD").is_err()) {
+                let colors = match s.colors {
+                    Some(c) => c,
+                    None => {
+                        let dir = self.data_dir.clone();
+                        *self.own_colors.entry(s.car.to_ascii_lowercase()).or_insert_with(|| {
+                            crate::render::car_lamps::setup_file(&dir, s.car).and_then(|f| std::fs::read(f).ok()).and_then(|b| crate::mc4::setup_look(&b)).map_or([[0.0; 4]; 2], |l| l.look.cabin_light)
+                        })
+                    }
+                };
+                self.buf.next_cabin = Some(Cabin::of(s.mat, offs, colors, s.head, s.bike));
+            }
             self.buf.emit(&rig.model, 0, &local, s.mat);
             if s.player {
                 self.player_head = rig.model.head.and_then(|h| self.buf.bone_pos(h)).map(|w| s.mat.inverse().transform_point3(w));
@@ -597,5 +657,47 @@ mod original_tests {
             n += 1;
         }
         assert_eq!(n, 144);
+    }
+}
+
+#[cfg(test)]
+mod cabin_tests {
+    use super::*;
+
+    /// The car's matrix from a recording: up = floorPlaneEq.xyz (c214), z = -gaugeLightConeDir (c211), x = up x z,
+    /// the place = the body's origin (a VS_TransformLit draw at it).
+    fn car(up: [f32; 3], cone: [f32; 3], at: [f32; 3]) -> Mat4 {
+        let (y, z) = (Vec3::from(up), -Vec3::from(cone));
+        Mat4::from_cols(y.cross(z).extend(0.0), y.extend(0.0), z.extend(0.0), Vec3::from(at).extend(1.0))
+    }
+
+    fn near(a: Vec3, b: [f32; 3], e: f32) -> bool {
+        (a - Vec3::from(b)).abs().max_element() < e
+    }
+
+    /// F-42959 against the running original: c209 / c210 / c211 / c212 / c214 of a driver's and a rider's draws.
+    #[test]
+    fn cabin_lights_match_the_recorded_draws() {
+        // (an R8 at noon, work/intglass/cap/pov_noon.bin draw 1938, the body at draw 1923; its tune's offsets): the gauge
+        // and neon places, the floor; by day the head state 0 - no gauge colour
+        let m = car([0.0183608793, 0.998237431, 0.0564348772], [-0.474544317, -0.0409810767, 0.87927711], [819.610229, 17.5722237, -808.409119]);
+        let c = Cabin::of(m, [[-0.375, 0.875, -1.325], [-0.375, 0.675, -0.85]], [[0.52941, 0.52941, 0.52941, 1.0], [0.0; 4]], 0.0, false);
+        assert!(near(c.gauge_pos, [819.327515, 18.3752842, -807.017334], 2e-4), "{c:?}");
+        assert!(near(c.neon_pos, [819.549255, 18.1951046, -807.446289], 2e-4), "{c:?}");
+        assert!(near(c.cone_dir, [-0.474544317, -0.0409810767, 0.87927711], 1e-7) && c.gauge_col == Vec3::ZERO && c.neon_col == Vec3::ZERO);
+        assert!(near(Vec3::new(c.floor[0], c.floor[1], c.floor[2]), [0.0183608793, 0.998237431, 0.0564348772], 1e-7) && (c.floor[3] + 12.7324543).abs() < 2e-4, "{c:?}");
+        // (the ZX-14 at 23:00, work/police17/cap/rider_night.bin draw 627, the body at draw 608): its record's DashGaugeColor
+        // with the head lamps on, the floor of a bike, the neon (offset 0) at the bike's origin
+        let m = car([-0.0173120443, 0.999082983, 0.0391364694], [-0.470790386, -0.0426769406, 0.881210923], [819.67041, 17.5936108, -808.20929]);
+        let c = Cabin::of(m, [[0.0, 1.05, -1.275], [0.0; 3]], [[74.0 / 255.0, 93.0 / 255.0, 130.0 / 255.0, 1.0], [0.52, 0.52, 1.0, 0.0]], 1.0, true);
+        assert!(near(c.gauge_pos, [819.051941, 18.5882359, -807.044678], 2e-4), "{c:?}");
+        assert!(near(c.gauge_col, [0.339214742, 0.376469642, 0.449018657], 6e-8), "{c:?}");
+        assert!(near(c.neon_pos, [819.67041, 17.5936108, -808.20929], 1e-5) && c.neon_col == Vec3::ZERO && c.floor[3] == -1.0e5, "{c:?}");
+        // (work/checkpoints2/cap/col4.bin at 01:06: the player's Saleen, its record's colour; a racer's R8, its set-up's)
+        let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[0.464063, 0.363281, 0.188281, 1.0], [0.0; 4]], 1.0, false);
+        assert!(near(c.gauge_col, [0.401301622, 0.350911021, 0.263410985], 2e-6), "{c:?}");
+        // (the set-up `vp_aud_r8_08.xcc`'s 0x3f078788 = 135 / 255)
+        let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), 1.0], [0.0; 4]], 1.0, false);
+        assert!(near(c.gauge_col, [0.52941072; 3], 6e-8), "{c:?}");
     }
 }
