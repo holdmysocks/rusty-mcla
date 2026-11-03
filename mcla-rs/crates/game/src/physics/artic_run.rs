@@ -26,7 +26,7 @@
 //! Open (nothing guessed): a tick where the rider is in no island (no contact at all; in ro.0 he always is: the
 //! velocity and push solves, slot 15 and the post-push are skipped here, the post-push being called from the push
 //! apply); the own-bike filter and the body fall when the rider has no contact (no run is made here); the bound's
-//! box the resting test reads (8259ADA8 per slot 14, not ported: the recorded corners are used); lane w of the
+//! box the resting test reads (F-65996 per slot 14, not ported: the recorded corners are used); lane w of the
 //! eject vector seq+144; the bound's part matrices before the activation (bound+132 from the cache entry's init,
 //! which the activation copies into +136); the type-13 self contact rows; the seventh contact of a manifold.
 
@@ -42,7 +42,7 @@ use mcla_formats::rage::ragdoll::RagdollType;
 
 /// What slot 5 reads outside the body for the rider (the recording's RGDS pages): the world's gravity (run-time
 /// (0, -9.8, 0, 0)), the rider archetype's damping (0.02 / 0.02 / 0.01, lane w as stored) and bound corners, the
-/// instance flag clear, the resting limit 0.007. The corners are those of ro.0's bound (the per-tick box, 8259ADA8,
+/// instance flag clear, the resting limit 0.007. The corners are those of ro.0's bound (the per-tick box, F-65996,
 /// is not ported).
 pub fn rider_surroundings() -> Surroundings {
     let s = |b: u32| f32::from_bits(b);
