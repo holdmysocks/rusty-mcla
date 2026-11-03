@@ -488,9 +488,10 @@ pub struct Game {
     pub dims_stock: std::cell::RefCell<std::collections::HashMap<String, Option<[u8; 8]>>>,
     /// the axle DIMENSIONS works on (0 front, 1 rear, 2 both)
     pub dim_axle: usize,
-    /// the plates the player has written, per car, and the kind of plate (CHANGE STATE)
+    /// the plates the player has written, per car
     pub plates: std::collections::HashMap<String, String>,
-    pub plate_type: usize,
+    /// the plate's background (the record's LicenseBG) as its editor opened: BACK puts it back (RestoreLicensePlate)
+    pub plate_bg_open: Option<u8>,
     /// the parts chosen in those lists: car -> section -> part index
     pub xparts: std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
     /// livery worn by each car (car name -> set-up name)
@@ -1282,7 +1283,7 @@ impl Game {
             dims_stock: Default::default(),
             dim_axle: 0,
             plates: Default::default(),
-            plate_type: 0,
+            plate_bg_open: None,
             plate_edit_no_plate: None,
             xparts: Default::default(),
             vinyls: Default::default(),
@@ -2175,6 +2176,16 @@ impl Game {
             d.get(0x83a..0x842).and_then(|b| b.try_into().ok())
         });
         stock.unwrap_or([3, 3, 4, 4, 17, 17, 6, 6])
+    }
+
+    /// The set-up of car `i` as the player has it: the car's own (its `.xcc`, `mcCarConfig`) with the wheel figures of its
+    /// record (`car_dims`: ride height, tyre width, rim size, tyre profile, +2106..+2114) - what F-43091 fits the wheels from.
+    pub fn car_setup_cfg(&self, i: usize) -> Option<Vec<u8>> {
+        let car = self.dir_name(i).to_ascii_lowercase();
+        let file = crate::modcars::setup_file(&car).unwrap_or_else(|| std::path::Path::new(&self.data_dir).join("resources/vehicle/configs").join(format!("{car}.xcc")));
+        let mut cfg = std::fs::read(file).ok()?;
+        cfg.get_mut(0x83a..0x842)?.copy_from_slice(&self.car_dims(i));
+        Some(cfg)
     }
 
     /// Each vehicle has its own paint: when the vehicle in use changes, the paint of the one
@@ -6507,6 +6518,7 @@ impl Game {
                             idx[i] = lp_place(ch);
                         }
                         self.plate_edit = Some((c.min(6), idx));
+                        self.plate_bg_open = self.mc4_plate_bg();
                     }
                     // (MCLA_GARAGE_XPART="k,row": with that list of XPARTS open)
                     let x: Vec<usize> = std::env::var("MCLA_GARAGE_XPART").ok().map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
@@ -6751,8 +6763,9 @@ impl Game {
                         }
                         idx[cur] = v as usize;
                     }
+                    // (CHANGE STATE: garage.ChangePlateType(-1 / 1), F-31343 - the next or the previous background)
                     if tab_prev || tab_next {
-                        self.plate_type = (self.plate_type + 4 + tab_next as usize - tab_prev as usize) % 4;
+                        self.mc4_change_plate_bg(tab_next as i32 - tab_prev as i32);
                     }
                     // (Y: HIDE PLATE / SHOW PLATE, shown on the car at once)
                     if self.y_hit(ctx) {
@@ -6767,6 +6780,9 @@ impl Game {
                     } else if back {
                         self.plate_edit = None;
                         self.cfg.no_plate = self.plate_edit_no_plate;
+                        if let Some(b) = self.plate_bg_open {
+                            self.mc4_set_plate_bg(b);
+                        }
                     }
                     (false, false, false, false, false, false)
                 } else {
@@ -6999,6 +7015,7 @@ impl Game {
                             }
                             self.plate_edit = Some((0, idx));
                             self.plate_edit_no_plate = self.cfg.no_plate;
+                            self.plate_bg_open = self.mc4_plate_bg();
                             went_in = true;
                         }
                         (true, It::RowAs(_, 9961)) if self.flash_garage.is_some() => {
@@ -7121,7 +7138,7 @@ impl Game {
                         } else {
                             let mut v = self.car_dims(self.current_car);
                             // (place in the record, lowest and highest value)
-                            let (at, lo, hi) = if self.garage_row == rim_row { (4, 12, 28) } else if self.garage_row == 9971 { (6, 0, 13) } else if self.garage_row == 9972 { (2, 0, 16) } else { (0, 0, 14) };
+                            let (at, lo, hi) = if self.garage_row == rim_row { (4, 12, 28) } else if self.garage_row == 9971 { (6, 0, 13) } else if self.garage_row == 9972 { (2, 0, 16) } else { (0, 0, 11) };
                             let step = if at == 0 { -d } else { d };
                             let axles: &[usize] = match self.dim_axle { 0 => &[0], 1 => &[1], _ => &[0, 1] };
                             let nv = (v[at + axles[0]] as isize + step).clamp(lo, hi) as u8;

@@ -327,6 +327,16 @@ pub const VEHICLES: [&str; 69] = [
 
 /// A vehicle's table index: its place in `VEHICLES`, a mod car's after them (69 + its place in name order,
 /// `modcars`; MODS.md M-5), else -1.
+/// F-31343's step of a plate background: `bg + d` brought into 0..n by C's remainder, n added when the sum is below 0
+/// (exact for a step of one either way, which is all the editor gives); 0 when there is a single background.
+pub fn plate_bg_step(bg: u8, d: i32, n: i32) -> u8 {
+    let v = bg as i32 + d;
+    if n == 1 {
+        return 0;
+    }
+    (v % n + if v < 0 { n } else { 0 }) as u8
+}
+
 pub fn vehicle_index(name: &str) -> i32 {
     let n = name.to_ascii_lowercase();
     VEHICLES.iter().position(|v| *v == n).map(|k| k as i32).or_else(|| crate::modcars::table_index(&n).map(|k| k as i32)).unwrap_or(-1)
@@ -5261,9 +5271,14 @@ impl Game {
 
     /// That background's name (the list is read once).
     pub fn mc4_plate_bg_name(&self) -> Option<String> {
-        static LIST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         let k = self.mc4_plate_bg()? as usize;
-        let mut list = LIST.lock().ok()?;
+        self.plate_bg_list().get(k).cloned()
+    }
+
+    /// The plate backgrounds, `backgrounds` of tune/vehicle/license_plates.list (read once).
+    fn plate_bg_list(&self) -> Vec<String> {
+        static LIST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let Ok(mut list) = LIST.lock() else { return Vec::new() };
         if list.is_empty() {
             // (not kept while it cannot be read: the game's data folder is set after the
             // first frames)
@@ -5271,7 +5286,27 @@ impl Game {
             // ("backgrounds", "{", the names, "}")
             *list = t.lines().map(|l| l.trim()).skip_while(|l| *l != "{").skip(1).take_while(|l| *l != "}").filter(|l| !l.is_empty()).map(|l| l.to_string()).collect();
         }
-        list.get(k).cloned()
+        list.clone()
+    }
+
+    /// CHANGE STATE in the plate editor (garage.ChangePlateType, F-31343): the vehicle's LicenseBG moved by `d`
+    /// round the backgrounds - (bg + d) mod n, from n - 1 again below 0; 0 when there is one background, kept when
+    /// there is none.
+    pub fn mc4_change_plate_bg(&mut self, d: i32) {
+        let n = self.plate_bg_list().len() as i32;
+        if let Some(bg) = self.mc4_plate_bg() {
+            if n > 0 {
+                self.mc4_set_plate_bg(plate_bg_step(bg, d, n));
+            }
+        }
+    }
+
+    /// The vehicle's LicenseBG set (RestoreLicensePlate puts the one the editor opened on back).
+    pub fn mc4_set_plate_bg(&mut self, bg: u8) {
+        let car = self.car_x.car.clone();
+        if let Some(c) = self.mc4.as_mut().and_then(|m| m.car_mut(&car)) {
+            c.visual.LicenseBG = bg;
+        }
     }
 
     /// What the port's own per-vehicle fields hold, into the vehicles' records, so that the
@@ -12780,6 +12815,15 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
+    /// CHANGE STATE round the 77 plate backgrounds (F-31343): on from plate_ca_00, back from the first to the last.
+    #[test]
+    fn plate_backgrounds_go_round() {
+        assert_eq!(super::plate_bg_step(4, 1, 77), 5);
+        assert_eq!(super::plate_bg_step(76, 1, 77), 0);
+        assert_eq!(super::plate_bg_step(0, -1, 77), 76);
+        assert_eq!(super::plate_bg_step(9, -1, 1), 0);
+    }
+
     /// F-47840 (the original's rgb to hsv) run offline on its own generated code
     /// (tools/map_hsv_reference.py): 4,716 inputs, every output float bit for bit.
     #[test]

@@ -341,6 +341,8 @@ struct App {
     race_end_way: Option<f32>,
     /// the parts the car in the garage was last built with: a change shows at once
     garage_built: Option<(usize, vehicle_model::CarConfig, u8)>,
+    /// the player's car (its uid) and the wheel figures its set-up was last fitted from
+    player_dims: Option<(u32, [u8; 8])>,
     /// `--car-picture`: its frame over black, while the one over white is drawn
     carpic: carpic::Shots,
     garage_up: Vec3,
@@ -1045,6 +1047,7 @@ impl App {
             race_end_from: None,
             race_end_way: None,
             garage_built: None,
+            player_dims: None,
             carpic: Default::default(),
             garage_up: Vec3::Y,
             garage_spots: Default::default(),
@@ -4692,6 +4695,17 @@ impl App {
                 }
             } else if self.game.mode != Mode::Garage {
                 self.garage_built = None;
+            }
+            // (the player's car drives and stands on its set-up as the rivals do: its own `.xcc` with the record's wheel
+            // figures - the garage's DIMENSIONS, ride height among them (`fit.offset` -> SuspensionOffset) - F-43091)
+            if !self.game.borrowed && self.game.selected_car == self.game.current_car {
+                let dims = self.game.car_dims(self.game.current_car);
+                if let Some(uid) = self.vehicles.player().map(|c| c.uid).filter(|u| self.player_dims != Some((*u, dims))) {
+                    if let (Some(cfg), Some(p)) = (self.game.car_setup_cfg(self.game.current_car), self.vehicles.player_mut()) {
+                        p.set_setup(&cfg);
+                    }
+                    self.player_dims = Some((uid, dims));
+                }
             }
             if !self.game.borrowed && self.game.selected_car == self.game.current_car {
                 let c = self.game.paint_color();
