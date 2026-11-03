@@ -19,6 +19,8 @@ use std::sync::Mutex;
 pub struct ExtractOptions {
     /// Write resources and scripts exactly as stored (`--raw`).
     pub raw: bool,
+    /// Only the entries below this folder of the archive (`resources/`), lower case, `/` ended; the others are left out.
+    pub only_below: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -74,7 +76,11 @@ pub fn extract_archive<R: ReadAt>(rpf: &Rpf3<R>, out: &Path, names: &Names, opts
     std::fs::create_dir_all(out).map_err(|e| InstallError::io(out.display(), &e))?;
     let n = rpf.entries.len();
     let paths: Vec<String> = (0..n).map(|i| rpf.path_of(i, names)).collect();
+    let wanted = |i: usize| -> bool { opts.only_below.map(|pre| paths[i].len() >= pre.len() && paths[i][..pre.len()].eq_ignore_ascii_case(pre)).unwrap_or(true) };
     let weight = |i: usize| -> u64 {
+        if !wanted(i) {
+            return 0;
+        }
         match rpf.entries[i].kind {
             Kind::File { size, .. } | Kind::Resource { size, .. } => size as u64,
             Kind::Dir { .. } => 0,
@@ -133,6 +139,9 @@ pub fn extract_archive<R: ReadAt>(rpf: &Rpf3<R>, out: &Path, names: &Names, opts
                 }
             }
         };
+        if i != 0 && !wanted(i) {
+            return Ok(());
+        }
         if !safe_rel(rel) && i != 0 {
             failed.lock().unwrap_or_else(|p| p.into_inner()).push((rel.clone(), "unsafe path".into()));
             return counter.add(weight(i));

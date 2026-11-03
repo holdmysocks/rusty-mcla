@@ -24,8 +24,8 @@ const NAMES: &str = include_str!("../../../names.txt");
 /// that did not change since the data was built are kept, so a rebuild runs only the new or changed stages (version 2 added "shaders":
 /// existing data keeps its extraction, audio and video and only translates the shader programs; version 3 joins the streams' blocks without
 /// the packet each block repeats, so the streams are converted again; version 4 adds each wave's loop start and headroom to the
-/// banks' `_index.tsv` and folds the streams by speaker mask with each channel's headroom, so the streams are converted again).
-const STAGE_SINCE: [(&str, u32); 4] = [("extract", 1), ("audio", 4), ("video", 1), ("shaders", 2)];
+/// banks' `_index.tsv` and folds the streams by speaker mask with each channel's headroom, so the streams are converted again; version 5 also extracts the `resources/` folders of the audio archive into the game data (the Police Car Pack's vehicles and driver animations), so the game data is extracted again).
+const STAGE_SINCE: [(&str, u32); 4] = [("extract", 5), ("audio", 4), ("video", 1), ("shaders", 2)];
 
 #[derive(Debug, Clone)]
 pub struct InstallOptions {
@@ -158,11 +158,28 @@ fn run_stages(opts: &InstallOptions, ctx: &Ctx, l: &Layout, disc: &mut Disc, sta
             let first: Vec<String> = rep.failed.iter().take(5).map(|(p, e)| format!("{p}: {e}")).collect();
             return Err(InstallError::new(ErrorKind::DataDamaged, format!("{} archive entries could not be extracted: {}", rep.failed.len(), first.join("; "))));
         }
+        let (mut written, mut skipped) = (rep.written, rep.skipped);
+        // the audio archive also holds the Police Car Pack's vehicle folders and driver animations (resources/), which belong to the game data
+        for a in &m.iso.audio_archives {
+            let f = match disc.iso.file(a) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let Ok(arc) = Rpf3::open(Arc::new(f), &disc.key) else { continue };
+            let opts = ExtractOptions { only_below: Some("resources/"), ..Default::default() };
+            let rep = extract::extract_archive(&arc, &l.cache(), &names, opts, Stage::Extract, ctx)?;
+            if !rep.failed.is_empty() {
+                let first: Vec<String> = rep.failed.iter().take(5).map(|(p, e)| format!("{p}: {e}")).collect();
+                return Err(InstallError::new(ErrorKind::DataDamaged, format!("{} entries of {a} could not be extracted: {}", rep.failed.len(), first.join("; "))));
+            }
+            written += rep.written;
+            skipped += rep.skipped;
+        }
         state.done.insert("extract".into(), true);
         state.save(l)?;
-        stage_done(ctx, Stage::Extract, &format!("{} files written, {} already there", rep.written, rep.skipped));
-        extract_written = rep.written;
-        extract_skipped = rep.skipped;
+        stage_done(ctx, Stage::Extract, &format!("{written} files written, {skipped} already there"));
+        extract_written = written;
+        extract_skipped = skipped;
     }
     ctx.check()?;
 
