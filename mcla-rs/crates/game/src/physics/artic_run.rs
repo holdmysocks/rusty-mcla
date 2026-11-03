@@ -130,6 +130,8 @@ pub struct RiderIsland {
     pub city_rows: usize,
     /// the shared step: every enabled row of the island in its order
     pub rows: Vec<IslRow>,
+    /// his pair with the bike holds contacts (the disabled ones too): the bike is in his island
+    pub with_bike: bool,
 }
 
 /// Where a row of the rider's island comes from.
@@ -409,16 +411,23 @@ impl RiderRagdoll {
         let mut out = TickOut::default();
         out.resting = self.pre_collide(dt);
         self.collide(city);
-        let mut isl = self.build(outside);
+        let isl = self.build(outside);
+        self.alone(isl, outside.others, dt, &mut out);
+        out
+    }
+
+    /// The rest of a tick with the rider in an island of his own (or none): the velocity solve, the post-solve
+    /// passes, the push and the post-push. `others` as [`Outside::others`].
+    pub fn alone(&mut self, mut isl: RiderIsland, others: (usize, f32), dt: f32, out: &mut TickOut) {
         out.island = isl.island;
         out.contacts = isl.city_rows;
         if !isl.island {
             self.lone_end(dt);
-            return out;
+            return;
         }
         let inv_dt = 1.0 / dt;
         let body = std::slice::from_mut(&mut self.body);
-        let mut solved = solver::island_solve_jointed(&[], &isl.touches, body, outside.others, dt, inv_dt);
+        let mut solved = solver::island_solve_jointed(&[], &isl.touches, body, others, dt, inv_dt);
         solver::island_apply_jointed(&solved, body);
         solver::island_impulses(&solved, &mut isl.touches);
         let (fall, motion) = self.after_solve(&isl, dt);
@@ -427,7 +436,6 @@ impl RiderRagdoll {
         let body = std::slice::from_mut(&mut self.body);
         solver::island_push_jointed(&[], &mut isl.touches, &mut solved, body, dt, inv_dt, &mut []);
         self.finish(&isl, dt);
-        out
     }
 
     /// 1. PreCollide: slot 5 (F-75381), with rd+16 and the part matrices of its move. Answers the resting flag.
@@ -601,7 +609,8 @@ impl RiderRagdoll {
                 self.veh.manifolds[m].slots[k].enabled = e;
             }
         }
-        let mut isl = RiderIsland { touches: Vec::new(), used: Vec::new(), runs: rider_runs, island, city_rows: 0, rows: Vec::new() };
+        let with_bike = srcs.contains(&Src::BikeRider);
+        let mut isl = RiderIsland { touches: Vec::new(), used: Vec::new(), runs: rider_runs, island, city_rows: 0, rows: Vec::new(), with_bike };
         if !island {
             return isl;
         }

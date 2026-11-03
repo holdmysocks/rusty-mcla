@@ -655,6 +655,11 @@ pub struct VehState {
     /// the thrown rider's velocity (the ragdoll's, character slot 11 F-62429) while he is off the seat; None = seated,
     /// when slot 11 gives the bike's own (F-98427)
     pub rider_vel: Option<Vec3>,
+    /// the thrown rider's ragdoll while the bike's step ticks it with its own (the shared step: his slot 5 after the
+    /// bike's move, his collide with the bike's, his rows in the bike's island when they share one, his slot 10 and
+    /// post-push after the solves), handed in and out by rider_eject.rs; and what his tick gave
+    pub rider: Option<Box<super::artic_run::RiderRagdoll>>,
+    pub rider_out: Option<super::artic_run::TickOut>,
     /// R4: the direction saved as the rider came off (chassis +608), and whether the car was set down
     /// afresh in the tick before - its pairs are made again only in the step after (no wheel contact)
     pub wipe_dir: Vec3,
@@ -806,7 +811,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
     }
 }
 
@@ -1199,6 +1204,13 @@ pub fn take_answer(st: &mut CarState, p: &CarParams, vt: &VehTune, jf: Vec3, jt:
     vs.body_now = Some([rows[0], rows[1], rows[2], origin]);
     vs.body = Some(BodyExact { rows, origin, at, p: pm, l: lm, count, snap: (st.pos, st.rot, st.vel, st.ang_vel), seen });
 }
+
+/// The thrown rider's and his bike's level indices as the shared step orders them (the cache's pair order and side A:
+/// the lower). The port allocates none: the bike's the lower, as in ro.0 (0x56d7 / 0x5703) and rs.0 (0x5714 /
+/// 0x576b); rt.0 had them the other way (0x5733 / 0x56e7) - the original's own order depends on the level's free list.
+const BIKE_LEVEL: i64 = 0;
+const RIDER_LEVEL: i64 = 1;
+const RIDER_IS_A: bool = false;
 
 pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, world: &WorldCollider, dt: f32) {
     // (chassis +224 as the tick comes in: what mcCarDamage's rumble test and mcFeedback's update read, crate::rumble)
@@ -5390,6 +5402,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let seen = [rows1[0], rows1[1], rows1[2], origin1];
         let mut solved_contacts: Option<(super::solver::Body, Vec<super::solver::Contact>, super::solver::Solved)> = None;
         let mut loose_island: Option<(super::solver::Body, Vec<super::solver::Contact>, super::loose::IslandOut)> = None;
+        // (the bike's body and contacts when the thrown rider shares its island)
+        let mut shared_contacts: Option<(super::solver::Body, Vec<super::solver::Contact>)> = None;
         // (the body as the tick's solve starts from it: a scrape reads the car's velocities before the impulses)
         let mut solve_body: Option<super::solver::Body> = None;
         let mut loose_answered = false;
@@ -5398,9 +5412,22 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let mut city_off_n = Vec3::ZERO;
         let (mut impulse, mut turning) = (Vec3::ZERO, Vec3::ZERO);
         let mut reordered: Option<Vec<usize>> = None;
+        // (the thrown rider, taken for the tick; his island's share and, in the shared step, the island's rows, the
+        // solve and the touches between the solves)
+        let mut rider_run = if exact_collide { vs.rider.take() } else { None };
+        let mut rider_tick = super::artic_run::TickOut::default();
+        let mut rider_shared: Option<(super::artic_run::RiderIsland, super::solver::IslandSolved, Vec<super::solver::Touch>, Vec<usize>)> = None;
         if exact_collide {
             let hull = p.hull.as_ref().unwrap();
             let last = vs.hull_last.unwrap_or([rows0[0], rows0[1], rows0[2], body_rows[3]]);
+            // (the thrown rider: his slot 5 after the bike's move, then his collide - the city, his self pairs and the
+            // bike's parts. The bike's wheels are not his partners here: unported, see artic_collide.rs.)
+            if let Some(rd) = rider_run.as_mut() {
+                rider_tick.resting = rd.pre_collide(dt);
+                rd.collide(world);
+                let side = super::artic_collide::VehSide { hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: seen, last, wheels: Vec::new() };
+                rd.collide_bike(&side, RIDER_IS_A);
+            }
             // (stage P: the loose bodies' move, gravity and damping, F-44566)
             if let Some(lw) = world.loose.as_ref().filter(|_| !dbg_flag("MCLA_DBG_P1")) {
                 if !vs.loose.skip_pre {
@@ -5703,7 +5730,22 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     vs.loose.wake_car_island(lw);
                 }
             }
-            if !contacts.is_empty() || loose_touch {
+            // (the rider's share of the update: his refresh, materials and the callbacks' runs with the bike's; in an
+            // island of his own - his pair with the bike holds no contact, or the bike's island has something loose in
+            // it, unported together - his solves now, else his rows go into the bike's island below)
+            let mut rider_isl: Option<super::artic_run::RiderIsland> = None;
+            if let Some(rd) = rider_run.as_mut() {
+                let bike = super::artic_run::BikeRows { level: BIKE_LEVEL, rider_level: RIDER_LEVEL, city: car_city_pair.then(|| city_rows.len()), rider: None, city_on: city_rows.clone(), touch: Some((t.s.bound_friction, t.s.bound_elasticity)), shared: !loose_touch };
+                let isl = rd.build(&super::artic_run::Outside { others: (0, 0.0), parts: Vec::new(), bike: Some(bike) });
+                if isl.with_bike && !loose_touch {
+                    rider_isl = Some(isl);
+                } else {
+                    // (his island apart from the bike's: when the bike's has something loose in it, the bike's rows
+                    // count in his elasticity factor only as the original's own island would have them - unported)
+                    rd.alone(isl, (0, 0.0), dt, &mut rider_tick);
+                }
+            }
+            if !contacts.is_empty() || loose_touch || rider_isl.is_some() {
                 let mut body = super::solver::Body { at: at1, rows: rows1, vel: if frozen { Vec3::ZERO } else { v_in }, ang: if frozen { Vec3::ZERO } else { w_in }, inv_mass: 1.0 / mass, inv_moments: inverse, force: if frozen { Vec3::ZERO } else { force }, torque: if frozen { Vec3::ZERO } else { torque } };
                 // (the move's turn of the rows, F-54600, ends by taking the turning rate from
                 // the angular momentum again through the rows as they then stand - before the
@@ -5750,6 +5792,50 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     }
                     solve_body = Some(body);
                     loose_island = Some((body, contacts, out));
+                } else if let Some(mut isl) = rider_isl.take() {
+                    // (the shared island, F-68442 / F-36821: the bike body 0, the rider the jointed body; every enabled
+                    // row in the island's order - the bike's with the city as the car's own rows, the rider's of
+                    // type 7 / 13, the bike x rider rows of type 7 with the bike as the rigid side - 8 sweeps and one
+                    // elasticity factor over all of them)
+                    let rd = rider_run.as_mut().unwrap();
+                    let mut enabled_at: Vec<usize> = Vec::with_capacity(city_rows.len());
+                    let mut n = 0;
+                    for on in &city_rows {
+                        enabled_at.push(n);
+                        n += *on as usize;
+                    }
+                    let mut all: Vec<super::solver::Touch> = isl
+                        .rows
+                        .iter()
+                        .map(|row| match *row {
+                            super::artic_run::IslRow::Bike(r) => super::loose::car_city_touch(&contacts[enabled_at[r]], body.rows),
+                            super::artic_run::IslRow::Rider(k) => isl.touches[k],
+                        })
+                        .collect();
+                    let bodies = [body];
+                    let solved = super::solver::island_solve_jointed(&bodies, &all, std::slice::from_mut(&mut rd.body), (0, 0.0), dt, 1.0 / dt);
+                    super::solver::island_apply_jointed(&solved, std::slice::from_mut(&mut rd.body));
+                    super::solver::island_impulses(&solved, &mut all);
+                    let given = super::solver::island_apply(&bodies, &all);
+                    impulse = given[0].0;
+                    turning = given[0].1;
+                    for (row, t) in isl.rows.iter().zip(all.iter()) {
+                        match *row {
+                            super::artic_run::IslRow::Bike(r) => {
+                                contacts[enabled_at[r]].kept = t.kept;
+                                contacts[enabled_at[r]].impulse = t.impulse;
+                            }
+                            super::artic_run::IslRow::Rider(k) => isl.touches[k] = *t,
+                        }
+                    }
+                    let (fall, motion) = rd.after_solve(&isl, dt);
+                    rider_tick.island = true;
+                    rider_tick.contacts = isl.city_rows;
+                    rider_tick.body_fall = fall;
+                    rider_tick.motion = motion;
+                    solve_body = Some(body);
+                    shared_contacts = Some((body, contacts));
+                    rider_shared = Some((isl, solved, all, enabled_at));
                 } else {
                 // (R3: an island of more than 16 contacts is sorted by a sort that does not keep equal keys
                 // in their order, F-98871 - with the thrown rider's contacts among them the hull's own
@@ -5798,6 +5884,9 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let own = |dv: Vec3| super::headon::Own { dv, speed: speed_in, vel: solve_body.as_ref().map_or(v_in, |b| b.vel), body_pos: solve_body.as_ref().map_or(at1, |b| b.at), back: rows1[2], wipeout_threshold: t.damage.wipeout_threshold, max_damage: t.damage.max_damage, spin_mult: t.s.head_on_spin_mult, no_damage: false, agro: st.agro };
             if let Some((body, contacts, _)) = solved_contacts.as_ref() {
                 super::headon::hull_run(contacts, reordered.as_deref(), body.inv_mass, own)
+            } else if let Some((body, contacts)) = shared_contacts.as_ref() {
+                // (unverified: the rider's rows are not in the bike's runs here)
+                super::headon::hull_run(contacts, None, body.inv_mass, own)
             } else if let Some((body, _, out)) = loose_island.as_ref() {
                 super::headon::island_runs(out, &vs.loose.objs, body.inv_mass, own)
             } else {
@@ -5930,9 +6019,28 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 }
             }
             Some((pushed, contacts))
+        } else if let Some((body, mut contacts)) = shared_contacts.take() {
+            // (the shared island's push, then the rider's post-push and slot 14)
+            let (isl, mut solved, mut all, enabled_at) = rider_shared.take().unwrap();
+            let rd = rider_run.as_mut().unwrap();
+            let mut pushes = [super::solver::Pushed { push: Vec3::ZERO, turn: turn_left, deep: false }];
+            super::solver::island_push_jointed(&[body], &mut all, &mut solved, std::slice::from_mut(&mut rd.body), dt, 1.0 / dt, &mut pushes);
+            let mut isl = isl;
+            for (row, t) in isl.rows.iter().zip(all.iter()) {
+                match *row {
+                    super::artic_run::IslRow::Bike(r) => contacts[enabled_at[r]].pushed = t.pushed,
+                    super::artic_run::IslRow::Rider(k) => isl.touches[k] = *t,
+                }
+            }
+            rd.finish(&isl, dt);
+            Some((pushes[0], contacts))
         } else {
             None
         };
+        if let Some(rd) = rider_run.take() {
+            vs.rider = Some(rd);
+            vs.rider_out = Some(rider_tick);
+        }
         if let Some((pushed, contacts)) = pushed_now {
             // (where the velocity solve's move left the body, before it is pushed out)
             let (moved_rows, moved_origin) = (rows1, origin1);

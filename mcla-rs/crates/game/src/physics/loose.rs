@@ -471,6 +471,14 @@ pub fn parts_meet(a: ((Vec3, Vec3), [Vec3; 4], [Vec3; 4]), b: ((Vec3, Vec3), [Ve
     (0..3).all(|i| ha[i] + ab[i].dot(hb) > q[i].abs()) && (0..3).all(|k| hb[k] + col(k).dot(ha) > w[k].abs())
 }
 
+/// The car's contact with the city as a row of an island with other bodies (the car body 0; as
+/// [`LooseState::solve_car_island`] lists them): A the car's point, B the city's.
+pub fn car_city_touch(c: &solver::Contact, rows: [Vec3; 3]) -> Touch {
+    let a = Side { body: Some(0), point: c.on_body, local: c.local, rows, margin: 0.04, core: Vec3::ZERO };
+    let b = Side { body: None, point: c.on_world, local: c.on_world, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
+    Touch { depth: c.depth, friction: c.friction, elasticity: c.elasticity, a, b, normal: c.normal, back: Vec3::ZERO - c.normal, pushed: c.pushed, kept: c.kept, target: c.target, impulse: Vec3::ZERO, kind: 0, jointed: None }
+}
+
 /// What the car is, for the props' side of a tick.
 pub struct CarIn<'a> {
     pub hull: &'a HullShape,
