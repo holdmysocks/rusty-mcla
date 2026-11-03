@@ -4624,6 +4624,11 @@ impl App {
             // goons' StartPursuit included; Search / Busted taken as the pursuit's tactic still running;
             // or a cop zone the player set off counting down to its pursuit)
             self.game.police_on_player = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted) || self.police.zone_on_player();
+            // (test hook MCLA_POLICE_AT_END=1: the police taken as on the player while a race runs - kept at its end, for the
+            // race-over menus' chased rows)
+            if std::env::var_os("MCLA_POLICE_AT_END").is_some() && self.game.race.is_some() {
+                self.game.police_on_player = true;
+            }
             self.game.police_fine = if self.police.goons { 0 } else { self.police.fine as i64 };
             // (step 23: the slow motion, the tutorials, the statistics and achievements)
             self.game.mc4_s23_tick(dt, mc4::S23In { heat: if self.police.goons { 0 } else { self.police.heat as u8 }, near: self.roam.near.is_some(), flashed: self.roam.accepted, kind: self.roam.near_type, station: self.at_station.is_some(), drive: mc4b::drive_of(self.vehicles.player()), sst: self.vehicles.player().filter(|c| vehicles::Vehicles::has_sst(c)).and_then(|c| c.state.veh.as_ref()).map(|v| v.sst.level) });
