@@ -3296,6 +3296,11 @@ impl App {
             {
                 let seat = self.vehicles.cars.iter().position(|c| c.is_player);
                 self.rider_off.tick(&mut self.vehicles.cars, seat, &mut self.drivers, &world.collider, self.crash_bits, self.crash_timer, &self.opt.data_dir, dt);
+                if let Some(p) = self.rider_off.body_fall.take() {
+                    if let Some(a) = self.audio.as_mut() {
+                        a.obj_at(rider_eject::BODY_FALL_SOUND, p);
+                    }
+                }
             }
             if self.crash_bits & 0x20 != 0 && self.police.heat != police::Heat::Busted && self.cine.playing.is_none() && self.game.arrest_panel.is_none() {
                 self.crash_bits &= !0x28;

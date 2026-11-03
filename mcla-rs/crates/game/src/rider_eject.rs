@@ -178,9 +178,19 @@ pub struct RiderOff {
     eject: Option<(Eject, Vec3, bool)>,
     seat: Option<usize>,
     pub ragdoll: Option<Box<crate::physics::artic_run::RiderRagdoll>>,
+    /// where BIKER_BODYFALL_MASTER plays (F-92308), set on the tick of the ragdoll's first contact batch with no
+    /// contact with its own bike (F-15373); the caller takes it and starts the sound ([`BODY_FALL_SOUND`])
+    pub body_fall: Option<Vec3>,
     types: hashbrown::HashMap<std::path::PathBuf, Option<std::sync::Arc<mcla_formats::rage::ragdoll::RagdollType>>>,
     surfaces: Vec<crate::physics::collision::Surface>,
 }
+
+/// The one-shot F-92308 starts by name through the audio-entity request (F-15373 calls it once per ragdoll): requested
+/// volume 0 dB, pitch 0, position = the ragdoll instance matrix's position (request +20 points at rd+64), LPF field 23900,
+/// request flags 36 (0x04 | 0x20), +52 = 18 - the same request block as the other entity one-shots (tyre chirps, damage
+/// parts), which the port plays through `Req::at`. The sound's tree is BIKER_BODYFALL_RAND + BIKER_BONE_CRACK_RAND +
+/// BIKER_BODYFALL_VOCAL_RAND_01 (category CAR_BANGERS), so the tree decides everything else.
+pub const BODY_FALL_SOUND: &str = "BIKER_BODYFALL_MASTER";
 
 /// The angular inertia the rider's archetype answers at run time (BuildInput::inertia; how the game makes it is not
 /// traced - not the .r6 archetype's): the drv_mp_01_mot_set rider's from the recording ro.0 (collider +160 at GoRagdoll).
@@ -305,6 +315,7 @@ impl RiderOff {
             }
             if let Some(p) = out.body_fall {
                 log::info!("rider: BIKER_BODYFALL at {:.2} {:.2} {:.2}", p.x, p.y, p.z);
+                self.body_fall = Some(p);
             }
             if let Some(v) = c.state.veh.as_deref_mut() {
                 v.rider_vel = Some(rd.velocity());
