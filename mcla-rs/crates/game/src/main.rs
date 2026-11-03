@@ -6962,7 +6962,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                 } else {
-                    let standings = self.game.standings(&self.vehicles);
+                    let mut standings = self.game.standings(&self.vehicles);
+                    self.game.estimate_finish(&self.vehicles, &mut standings);
+                    // (a series' or a tournament's results put a damaged-out player last, the others behind him
+                    // up one: F-87120 from calculateResultsSeries / the tournament's)
+                    let event = self.game.series.is_some() || self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map_or(false, |d| self.game.career.tournament_of(&d.id).is_some());
+                    if event && self.vehicles.player().map_or(false, |p| p.state.damage >= 1.0) {
+                        if let Some(k) = standings.iter().position(|e| self.vehicles.cars.get(e.0).map_or(false, |c| c.is_player)) {
+                            let me = standings.remove(k);
+                            standings.push(me);
+                        }
+                    }
                     let mut res = Vec::new();
                     for (ci, t, _) in standings {
                         let c = &self.vehicles.cars[ci];

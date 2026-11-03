@@ -4014,6 +4014,54 @@ impl Game {
         v
     }
 
+    /// The results' times of the racers that have not finished (F-23843, from every calculateResults
+    /// before the places are shown). The reference is the player if he finished, else the finisher
+    /// placed best. An AI racer placed behind it, not deactivated (car +592 == 1), gets
+    /// ref + (int)(ref x (1 - p / D)) ms: D = laps x (|ref car - cp 0| + the checkpoints' path),
+    /// p = (lap + 1) x (|grid slot 0 - cp 0| + the path to its next checkpoint k) + |car - cp k-1|;
+    /// p over D counts as 0. k = 0 adds the previous racer's (lap + 1) x path term, as the original
+    /// does (its register is not cleared). Anyone else without a time stays without (-1, DNF).
+    /// (not ported: no one finished - the race table's time and the car's performance; the online test)
+    pub fn estimate_finish(&self, vehicles: &Vehicles, st: &mut [(usize, Option<f32>, f32)]) {
+        let Some(race) = self.race.as_ref() else { return };
+        let n = race.lap_len.min(race.checkpoints.len());
+        if n == 0 {
+            return;
+        }
+        let cp = &race.checkpoints[..n];
+        let is_player = |i: usize| vehicles.cars.get(i).map_or(false, |c| c.is_player);
+        let Some(r) = st.iter().position(|e| e.1.is_some() && is_player(e.0)).or_else(|| st.iter().position(|e| e.1.is_some())) else { return };
+        let ref_ms = (st[r].1.unwrap_or(0.0) * 1000.0).round() as i32;
+        let path: f32 = (1..n).map(|j| cp[j].distance(cp[j - 1])).sum();
+        let total = race.laps.clamp(1, 100) as f32 * (vehicles.cars[st[r].0].state.pos.distance(cp[0]) + path);
+        let grid0 = self.current_race.and_then(|i| self.race_defs.get(i)).and_then(|d| d.grid.first()).map_or(cp[0], |g| g.0);
+        let mut f31 = 0.0f32;
+        for (place, e) in st.iter_mut().enumerate() {
+            if place == r || e.1.is_some() {
+                continue;
+            }
+            let Some(c) = vehicles.cars.get(e.0) else { continue };
+            if c.is_player || c.deactivated || place < r {
+                continue;
+            }
+            let next = race.next.get(e.0).copied().unwrap_or(0);
+            let (k, lap) = (next % n, next / n);
+            let mut f0 = 0.0f32;
+            if k > 0 {
+                let s = grid0.distance(cp[0]) + (1..k).map(|j| cp[j].distance(cp[j - 1])).sum::<f32>();
+                f31 = (lap + 1) as f32 * s;
+                f0 = c.state.pos.distance(cp[k - 1]);
+            }
+            if f0 + f31 > total {
+                f31 = 0.0;
+                f0 = 0.0;
+            }
+            let t = ((1.0 - (f0 + f31) / total) * ref_ms as f32) as i32 + ref_ms;
+            e.1 = Some(t as f32 / 1000.0);
+            log::info!("results: car {} not finished (next checkpoint {}), {:.0} of {:.0} m: {} ms after {} ms", e.0, next, f0 + f31, total, t, ref_ms);
+        }
+    }
+
     pub fn player_position(&self, vehicles: &Vehicles) -> (usize, usize) {
         let s = self.standings(vehicles);
         let pos = s.iter().position(|(i, _, _)| vehicles.cars.get(*i).map_or(false, |c| c.is_player)).unwrap_or(0);
