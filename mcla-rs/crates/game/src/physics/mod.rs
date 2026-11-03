@@ -1,6 +1,7 @@
 //! Physics: static world collision + arcade car model.
 
 pub mod agro;
+pub mod artic_build;
 pub mod camprobe;
 pub mod car;
 pub mod collision;
