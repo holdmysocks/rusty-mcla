@@ -1,7 +1,8 @@
 //! The thrown rider's jointed body (the original's articulated collider and body) written out
 //! operation for operation: its PreCollide (F-75381: motors, move, gravity, damping, joint
 //! limits, prediction), its velocity update (F-69485) and its step after the push solve
-//! (F-48210). The island solve between them (contacts and joint-limit rows) is not here.
+//! (F-48210). Its part of the island solve between them (the joint-limit rows and the
+//! solve-time scratch the row kernels read and write) is in artic_island.rs.
 //!
 //! The state is the guest's own: four-lane vectors, positions relative to the collider's
 //! place, every lane kept (the w lanes carry what the vector code leaves there, NaN at times).
@@ -18,6 +19,9 @@
 //! offline on recorded states (testdata/ragdoll_ro0.bin; tests below).
 
 use super::exact::{fma, fms, fnms, guest_atan2, solve3};
+
+#[path = "artic_island.rs"]
+pub mod island;
 
 // ---------------------------------------------------------------------------------------------
 // The vector unit
@@ -602,6 +606,11 @@ pub struct Articulated {
     pub joints: Vec<Joint>,
     /// body +252: parent link of each link (link 0's entry unused)
     pub parent: Vec<usize>,
+    /// body +384: per link the island solve's scratch bits (1: a change waits to go up to the
+    /// parent, 2: the link's seen motion may differ from what its children have seen)
+    pub flags: Vec<u32>,
+    /// body +512: the link the island solve's scratch is up to date at (-1: none)
+    pub pivot: i32,
     /// body +516 gravity factor, +520 angular and +524 linear damping per second
     pub gravity_factor: f32,
     pub damp_ang: f32,
@@ -627,6 +636,10 @@ pub struct Articulated {
     pub resting: u8,
     /// collider +664: ticks since the links were last orthonormalised
     pub ortho_count: u32,
+    /// collider +680: the number of active joint-limit degrees of freedom (F-73275), and the
+    /// arrays they are in (+684 joint, +692 row kind, +700 depth, +708 rate; heap, not in the block)
+    pub active: u32,
+    pub dofs: Vec<island::LimitDof>,
     /// the guest blocks as read, and the guest addresses
     pub raw_body: Vec<u8>,
     pub raw_collider: Vec<u8>,
@@ -649,6 +662,8 @@ impl Articulated {
             links: links.iter().map(|(_, b)| Link::from_guest(b)).collect(),
             joints,
             parent: (0..n).map(|i| if i == 0 { 0 } else { ru(body, 252 + 4 * i) as usize }).collect(),
+            flags: (0..n).map(|i| ru(body, 384 + 4 * i)).collect(),
+            pivot: ru(body, 512) as i32,
             gravity_factor: rf(body, 516),
             damp_ang: rf(body, 520),
             damp_lin: rf(body, 524),
@@ -665,6 +680,8 @@ impl Articulated {
             turn: rv(collider, 448),
             resting: collider[657],
             ortho_count: ru(collider, 664),
+            active: ru(collider, 680),
+            dofs: Vec::new(),
             raw_body: body.to_vec(),
             raw_collider: collider.to_vec(),
             link_addr,
@@ -675,6 +692,10 @@ impl Articulated {
         wf(&mut b, 516, self.gravity_factor);
         wf(&mut b, 520, self.damp_ang);
         wf(&mut b, 524, self.damp_lin);
+        for (i, f) in self.flags.iter().enumerate() {
+            wu(&mut b, 384 + 4 * i, *f);
+        }
+        wu(&mut b, 512, self.pivot as u32);
         b
     }
     pub fn collider_to_guest(&self) -> Vec<u8> {
@@ -692,6 +713,7 @@ impl Articulated {
         wv(&mut b, 448, self.turn);
         b[657] = self.resting;
         wu(&mut b, 664, self.ortho_count);
+        wu(&mut b, 680, self.active);
         b
     }
     pub fn joint_to_guest(&self, k: usize) -> Vec<u8> {
@@ -2175,19 +2197,19 @@ impl Articulated {
 mod tests {
     use super::*;
 
-    struct State {
-        collider: Vec<u8>,
-        body: Vec<u8>,
-        links: Vec<(u32, Vec<u8>)>,
-        joints: Vec<Vec<u8>>,
+    pub(super) struct State {
+        pub(super) collider: Vec<u8>,
+        pub(super) body: Vec<u8>,
+        pub(super) links: Vec<(u32, Vec<u8>)>,
+        pub(super) joints: Vec<Vec<u8>>,
     }
-    struct Case {
-        op: u8,
-        tick: u32,
-        f1: f32,
-        v1: f32,
-        inp: State,
-        out: State,
+    pub(super) struct Case {
+        pub(super) op: u8,
+        pub(super) tick: u32,
+        pub(super) f1: f32,
+        pub(super) v1: f32,
+        pub(super) inp: State,
+        pub(super) out: State,
     }
 
     fn le(d: &[u8], o: &mut usize) -> u32 {
@@ -2219,8 +2241,12 @@ mod tests {
         State { collider, body, links, joints }
     }
     /// testdata/ragdoll_ro0.bin (work/ragdoll/fixtures/export.py).
-    fn cases() -> Vec<Case> {
-        let d: &[u8] = include_bytes!("testdata/ragdoll_ro0.bin");
+    pub(super) fn cases() -> Vec<Case> {
+        run_cases(include_bytes!("testdata/ragdoll_ro0.bin"))
+    }
+
+    /// A fixture file of that format (b"RGF1").
+    pub(super) fn run_cases(d: &[u8]) -> Vec<Case> {
         assert_eq!(&d[..4], b"RGF1");
         let mut o = 4;
         let n = le(d, &mut o);
@@ -2239,14 +2265,14 @@ mod tests {
             .collect()
     }
 
-    fn load(s: &State) -> Articulated {
+    pub(super) fn load(s: &State) -> Articulated {
         let links: Vec<(u32, &[u8])> = s.links.iter().map(|(a, b)| (*a, b.as_slice())).collect();
         let joints: Vec<&[u8]> = s.joints.iter().map(|b| b.as_slice()).collect();
         Articulated::from_guest(&s.collider, &s.body, &links, &joints)
     }
 
     /// Words that differ (both NaN not counted, counted apart), with where.
-    fn compare(name: &str, got: &[u8], want: &[u8], bad: &mut Vec<String>, nan: &mut usize) {
+    pub(super) fn compare(name: &str, got: &[u8], want: &[u8], bad: &mut Vec<String>, nan: &mut usize) {
         for o in (0..want.len()).step_by(4) {
             let (g, w) = (ru(got, o), ru(want, o));
             if g == w {
@@ -2260,7 +2286,7 @@ mod tests {
         }
     }
 
-    fn check(a: &Articulated, want: &State, bad: &mut Vec<String>, nan: &mut usize) {
+    pub(super) fn check(a: &Articulated, want: &State, bad: &mut Vec<String>, nan: &mut usize) {
         compare("collider", &a.collider_to_guest(), &want.collider, bad, nan);
         compare("body", &a.body_to_guest(), &want.body, bad, nan);
         for i in 0..a.links.len() {

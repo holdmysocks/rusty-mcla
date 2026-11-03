@@ -9,6 +9,7 @@
 //! test `the_contact_solver_is_the_originals_bit_for_bit`). Decode notes: work/veh/solver_rule.md
 //! and work/veh/gjk_exact.md part 5.
 
+use super::artic::{island::LimitRow, Articulated, V4};
 use super::exact::{cross, dot3, fma, inverse3, recip, world_inverse_inertia};
 use glam::Vec3;
 
@@ -599,16 +600,40 @@ impl Row2 {
     }
 }
 
-fn sweeps2(rows: &mut [Row2], states: &mut [State], omega: f32) {
+/// The sweeps over an island's rows (F-67704): the contacts', then the joint-limit rows of
+/// each jointed body (the tail of the row list). First pass (F-90205): a jointed body with
+/// rows has its solve-time scratch cleared (F-80860) and its rows' multipliers zeroed (no warm
+/// start for type 11); the contacts' kept multipliers given (F-64443); then the sweeps, 8 of
+/// them with a jointed body (SWEEPS_JOINTED), until one changes nothing.
+fn sweeps2(rows: &mut [Row2], states: &mut [State], omega: f32, jointed: &mut [Articulated], limits: &mut [Vec<LimitRow>]) {
+    for (a, l) in jointed.iter_mut().zip(limits.iter_mut()) {
+        if !l.is_empty() {
+            a.clear_scratch();
+        }
+        for r in l.iter_mut() {
+            r.mult = V4::ZERO;
+        }
+    }
     for i in 0..rows.len() {
         let step = Vec3::ZERO - rows[i].row.neg;
         let row = rows[i];
         row.give(states, step);
     }
-    for _ in 0..sweeps_now() {
+    let count = if jointed.is_empty() { sweeps_now() } else { SWEEPS_JOINTED };
+    for _ in 0..count {
         let mut left = Vec3::ZERO;
         for row in rows.iter_mut() {
             left = row.visit(states, omega) + left;
+        }
+        if limits.iter().any(|l| !l.is_empty()) {
+            // (the same sum of squares, which the joint-limit kernel F-31194 adds to in vector form)
+            let mut l4 = V4::new(left.x, left.y, left.z, 0.0);
+            for (a, l) in jointed.iter_mut().zip(limits.iter_mut()) {
+                for r in l.iter_mut() {
+                    a.visit_limit_row(r, &mut l4);
+                }
+            }
+            left = Vec3::new(l4.0[0], l4.0[1], l4.0[2]);
         }
         if 0.0 >= dot3(left, left) {
             break;
@@ -621,6 +646,8 @@ pub struct IslandSolved {
     rows: Vec<Row2>,
     states: Vec<State>,
     pub bounce: f32,
+    /// the joint-limit rows of each jointed body of the island, in its order
+    pub limits: Vec<Vec<LimitRow>>,
 }
 
 fn states_of(bodies: &[Body]) -> Vec<State> {
@@ -630,6 +657,15 @@ fn states_of(bodies: &[Body]) -> Vec<State> {
 /// An island's rows and their sweeps (0x825DAD20, 0x825DC5E8), from the bodies' velocities as
 /// they stand and the contacts' kept multipliers. Nothing is written back.
 pub fn island_solve(bodies: &[Body], touches: &[Touch], dt: f32, inv_dt: f32) -> IslandSolved {
+    island_solve_jointed(bodies, touches, &mut [], dt, inv_dt)
+}
+
+/// The same with the island's jointed bodies (a thrown rider): their active joint limits found
+/// when the work space is made (F-73275, the hinges' contact byte +532 set before by the
+/// caller, F-18964), their rows after the contacts' (the tail of F-36821), and 8 sweeps. The
+/// jointed bodies' solve-time scratch is written; their impulses are not (island_apply_limits).
+/// Contacts with a jointed side (row types 7, 13) are not ported: `touches` are rigid only.
+pub fn island_solve_jointed(bodies: &[Body], touches: &[Touch], jointed: &mut [Articulated], dt: f32, inv_dt: f32) -> IslandSolved {
     let mut sum = 0.0f32;
     for c in touches.iter() {
         sum = c.elasticity + sum;
@@ -664,8 +700,22 @@ pub fn island_solve(bodies: &[Body], touches: &[Touch], dt: f32, inv_dt: f32) ->
             row
         })
         .collect();
-    sweeps2(&mut rows, &mut states, OMEGA);
-    IslandSolved { rows, states, bounce }
+    for a in jointed.iter_mut() {
+        a.limit_dofs();
+    }
+    let mut limits: Vec<Vec<LimitRow>> = jointed.iter().map(|a| a.limit_rows(inv_dt)).collect();
+    sweeps2(&mut rows, &mut states, OMEGA, jointed, &mut limits);
+    IslandSolved { rows, states, bounce, limits }
+}
+
+/// The joint part of the velocity solve's apply pass (F-24076's tail): each jointed body's
+/// rows' multipliers into its angular impulse accumulators (after the contacts').
+pub fn island_apply_limits(solved: &IslandSolved, jointed: &mut [Articulated]) {
+    for (a, l) in jointed.iter_mut().zip(solved.limits.iter()) {
+        for r in l {
+            a.apply_limit_row(r);
+        }
+    }
 }
 
 /// The contacts' multipliers and impulses as the solve left them (0x825919F8; the same numbers
@@ -703,6 +753,14 @@ pub fn island_apply(bodies: &[Body], touches: &[Touch]) -> Vec<(Vec3, Vec3)> {
 /// velocity solve. `pushes`: per body what +400 / +416 hold as it begins and end with, and
 /// whether a contact of it stood deeper than the bodies are thick there (+658).
 pub fn island_push(bodies: &[Body], touches: &mut [Touch], solved: &mut IslandSolved, dt: f32, inv_dt: f32, pushes: &mut [Pushed]) {
+    island_push_jointed(bodies, touches, solved, &mut [], dt, inv_dt, pushes)
+}
+
+/// The same with the island's jointed bodies (as in island_solve_jointed): their rows' push
+/// bias, their velocities committed, saved and cleared (F-49764's tail), the sweeps, and the
+/// rows' push multipliers into their angular impulse accumulators (F-64140's tail). Their
+/// post-push step (F-48210) is the caller's.
+pub fn island_push_jointed(bodies: &[Body], touches: &mut [Touch], solved: &mut IslandSolved, jointed: &mut [Articulated], dt: f32, inv_dt: f32, pushes: &mut [Pushed]) {
     let thick = |s: &Side, n: Vec3| {
         let nl = Vec3::new(dot3(s.rows[0], n), dot3(s.rows[1], n), dot3(s.rows[2], n));
         let q = (unit_or_x(nl) * s.margin + s.core) - s.local;
@@ -760,7 +818,10 @@ pub fn island_push(bodies: &[Body], touches: &mut [Touch], solved: &mut IslandSo
         s.vel = Vec3::ZERO;
         s.ang = Vec3::ZERO;
     }
-    sweeps2(&mut solved.rows, &mut solved.states, 1.0);
+    for (a, l) in jointed.iter_mut().zip(solved.limits.iter_mut()) {
+        a.push_start(l, inv_dt);
+    }
+    sweeps2(&mut solved.rows, &mut solved.states, 1.0, jointed, &mut solved.limits);
     for (row, c) in solved.rows.iter().zip(touches.iter_mut()) {
         let q = Vec3::ZERO - row.row.neg;
         c.pushed = q;
@@ -775,6 +836,7 @@ pub fn island_push(bodies: &[Body], touches: &mut [Touch], solved: &mut IslandSo
             }
         }
     }
+    island_apply_limits(solved, jointed);
 }
 
 #[cfg(test)]
