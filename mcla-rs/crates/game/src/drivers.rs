@@ -45,6 +45,18 @@ struct Rig {
     gestures: HashMap<String, Clip>,
     /// DRV_HIT_HRD's length (the wreck's hit, F-47123's machine: then 4 s of DRV_IDLE_START)
     hit_hard: Option<f32>,
+    /// a rider's eject clips by their name after the bike's prefix ("drv_eject_l", rider_eject.rs)
+    ejects: HashMap<String, Clip>,
+}
+
+/// A rider off his seat (GitHub #39, rider_eject.rs, bike_rider_ragdoll.md 2 / 5).
+enum Off {
+    /// "impact eject ...": the clip at its rate (F-53423), in the bike's space as the riding clips
+    Eject { clip: String, t: f32, rate: f32 },
+    /// the clip's time is up (F-41119): its last frame, and the character matrix then, wait for GoRagdoll (F-54692)
+    Ready { local: Vec<(Quat, Vec3)>, mat: Mat4 },
+    /// "impact ragdoll": the bones in the world from the ragdoll (F-46606), kept from frame to frame
+    Ragdoll { world: Vec<Mat4> },
 }
 
 /// The gesture a scene event asks of a driver (racer+684; the event ids of table 0x827EAD60).
@@ -143,6 +155,7 @@ pub struct Drivers {
     time: f32,
     frame: u32,
     acting: HashMap<usize, Acting>,
+    off: HashMap<usize, Off>,
     /// the character set each seat was last drawn with (its voice: CareerVoices.xml)
     pub set_of: HashMap<usize, String>,
 }
@@ -371,7 +384,13 @@ impl Drivers {
                     }
                 }
                 let hit_hard = clip(&["drv_hit_hrd"]).map(|c| c.anim.duration);
-                Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard })
+                let mut ejects = HashMap::new();
+                for n in ["drv_eject_l", "drv_eject_r", "drv_eject_bk", "drv_eject_over"] {
+                    if let Some(c) = clip(&[n]) {
+                        ejects.insert(n.to_string(), c);
+                    }
+                }
+                Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard, ejects })
             })();
             if rig.is_none() {
                 log::warn!("drivers: no animations for {}", car);
@@ -405,6 +424,44 @@ impl Drivers {
     /// The jaw flap while the driver's speech line plays (racer+688; `DRV_GEST_JAWFLAP` in / out over 0.25 s).
     pub fn jaw(&mut self, id: usize, on: bool) {
         self.acting.entry(id).or_default().jaw = on;
+    }
+
+    /// The rider of seat `id` leaves his seat by an eject clip (`rider_eject::Eject::clip`) at `rate`.
+    pub fn eject(&mut self, id: usize, clip: &str, rate: f32) {
+        self.off.insert(id, Off::Eject { clip: clip.to_ascii_lowercase(), t: 0.0, rate });
+    }
+
+    /// The eject clip of seat `id` has played out: its last frame's local pose (the drawn model's bones), the
+    /// character matrix it stood at and the set's `.r6` (its fragment type is the ragdoll's). Taken once.
+    pub fn take_ragdoll_start(&mut self, id: usize) -> Option<(Vec<(Quat, Vec3)>, Mat4, PathBuf)> {
+        if !matches!(self.off.get(&id), Some(Off::Ready { .. })) {
+            return None;
+        }
+        let r6 = self.set_of.get(&id).and_then(|n| {
+            let mut f: Vec<PathBuf> = std::fs::read_dir(self.char_dir.join(n)).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |e| e == "r6")).collect();
+            f.sort();
+            f.into_iter().next()
+        })?;
+        match self.off.insert(id, Off::Ragdoll { world: Vec::new() }) {
+            Some(Off::Ready { local, mat }) => Some((local, mat, r6)),
+            _ => None,
+        }
+    }
+
+    /// The thrown rider's bones in the world this frame.
+    pub fn ragdoll_world(&mut self, id: usize, world: Vec<Mat4>) {
+        self.off.insert(id, Off::Ragdoll { world });
+    }
+
+    /// The rider back on his seat (RemoveRagdoll's snap, F-98260: the skeleton goes back to the animation), or a
+    /// wipeout ended before the ragdoll.
+    pub fn seat_back(&mut self, id: usize) {
+        self.off.remove(&id);
+    }
+
+    /// Whether seat `id`'s rider is off his seat (an eject clip or the ragdoll).
+    pub fn is_off(&self, id: usize) -> bool {
+        self.off.contains_key(&id)
     }
 
     /// Scene over: no gestures, no jaw flap.
@@ -544,6 +601,38 @@ impl Drivers {
                         }
                     }
                 }
+            }
+            // (a rider off his seat: the eject clip in place of the riding pose, then the ragdoll's bones)
+            // (F-41119: the clip's time remaining at or under 0)
+            let mut next: Option<Option<Off>> = None;
+            match self.off.get_mut(&s.id) {
+                Some(Off::Eject { clip, t, rate }) => match rig.ejects.get(clip.as_str()) {
+                    Some(c) => {
+                        *t += dt * *rate;
+                        if *t >= c.anim.duration {
+                            c.local(&rig.model.bones, c.last_frame(), &mut local);
+                            next = Some(Some(Off::Ready { local: local.clone(), mat: s.mat }));
+                        } else {
+                            c.local(&rig.model.bones, c.frame(*t, false), &mut local);
+                        }
+                    }
+                    None => {
+                        log::info!("drivers: seat {} has no {}", s.id, clip);
+                        next = Some(None);
+                    }
+                },
+                Some(Off::Ready { local: l, .. }) => local.clone_from(l),
+                Some(Off::Ragdoll { world }) if !world.is_empty() => self.buf.next_world = Some(world.clone()),
+                _ => {}
+            }
+            match next {
+                Some(Some(o)) => {
+                    self.off.insert(s.id, o);
+                }
+                Some(None) => {
+                    self.off.remove(&s.id);
+                }
+                None => {}
             }
             // (the POV view draws the set's cockpit view model - arms and hands - in place of the driver; a
             // set without one draws its full model, as the original does after its warning - F-56050)

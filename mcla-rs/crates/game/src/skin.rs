@@ -541,6 +541,9 @@ pub struct SkinBuffer {
     /// the stencil reference the next figure draws with (a car's driver: render/mb.rs `driver_stencil_of`; 0 the
     /// world's); taken by `emit`
     pub next_stencil: u32,
+    /// the next figure's bones in the world as given (the thrown rider's from his ragdoll, F-46606) instead of
+    /// its local pose; taken by `emit`
+    pub next_world: Option<Vec<Mat4>>,
     /// each draw's stencil reference
     draw_stencil: Vec<u32>,
     /// this frame's figures (character programs): the model's origin, bystander
@@ -574,11 +577,12 @@ impl SkinBuffer {
     pub fn emit_shaped(&mut self, model: &SkinModel, lod: usize, local: &[(Quat, Vec3)], root: Mat4, face: Option<&FaceShapes>) {
         self.world.clear();
         self.skin.clear();
+        let given = self.next_world.take().filter(|g| g.len() >= model.bones.len());
         for (i, b) in model.bones.iter().enumerate() {
-            let m = Mat4::from_rotation_translation(local[i].0, local[i].1);
-            let w = match b.parent {
-                Some(pi) if pi < i => self.world[pi] * m,
-                _ => root * m,
+            let w = match (&given, b.parent) {
+                (Some(g), _) => g[i],
+                (None, Some(pi)) if pi < i => self.world[pi] * Mat4::from_rotation_translation(local[i].0, local[i].1),
+                _ => root * Mat4::from_rotation_translation(local[i].0, local[i].1),
             };
             self.world.push(w);
             let gone = self.hide_from == Some(i) || matches!(b.parent, Some(pi) if pi < i && self.hidden.get(pi).copied().unwrap_or(false));
