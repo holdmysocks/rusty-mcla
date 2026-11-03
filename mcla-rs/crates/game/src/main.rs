@@ -11407,6 +11407,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // writes nRaceIndex, nNumLaps, nDifficulty, result 3 and closes the menus - the race is the script's, which
         // waits no more (it sets nTelephoneMenuResult = 0 at its next call); leaving says nothing)
         let mut action = action;
+        // (BACK out of the telephone list: form 17's event 56 (F-90426) plays UI_MENU_BACK, sets the result 1 and closes the
+        // form; its leave hook F-20561 with the flag writes nTelephoneMenuResult and resumes the players and the game
+        // (F-35144, game.resume()) - back in the cruise, not on the pause menu, whether or not the call still waits)
+        let phone_back = self.game.phone_race && action == MenuAction::Back;
         if self.game.phone_race && self.game.phone_dead && matches!(action, MenuAction::StartRace | MenuAction::Back | MenuAction::StartFreeRoam | MenuAction::MainMenu) {
             self.game.phone_race = false;
             self.game.phone_dead = false;
@@ -11419,6 +11423,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (a telephone challenge's list left without a race: the script's "not 3", HOOKMAN_PHONE_PLAYER_DECLINES, 0x32f4)
         if matches!(action, MenuAction::Back | MenuAction::StartFreeRoam | MenuAction::MainMenu) && std::mem::take(&mut self.game.phone_race) && action == MenuAction::Back {
             self.speech.say_as("HOOKMAN_PHONE_PLAYER_DECLINES", self.phone_caller);
+        }
+        if phone_back {
+            log::info!("telephone list: BACK - the menus close, back in the cruise");
+            action = MenuAction::Resume;
         }
         if action == MenuAction::None {
             return;
