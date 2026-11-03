@@ -429,6 +429,10 @@ pub struct Game {
     pub prev_mode: Mode,
     pub race: Option<Race>,
     pub car_dirs: Vec<PathBuf>,
+    /// garage keys of the indices past the models' own: a second copy of a model in the garage is an
+    /// index of its own whose `car_dirs` entry is the model's folder and whose key is `<folder>#2`
+    /// (`catalog::model_of`); "" for an index whose copy has gone
+    pub dup_keys: hashbrown::HashMap<usize, String>,
     pub selected_car: usize,
     pub current_car: usize,
     pub color_idx: usize,
@@ -1250,6 +1254,7 @@ impl Game {
             prev_mode: Mode::FreeRoam,
             race: None,
             car_dirs,
+            dup_keys: Default::default(),
             selected_car: current_car,
             current_car,
             color_idx: 0,
@@ -1678,9 +1683,20 @@ impl Game {
                 }
                 self.slot_hsv = sd.slot_hsv;
                 self.mc4_load(sd.mc4);
+                // (a model in the garage more than once: each copy its key and index - `renumber_copies`)
+                if sd.car.contains('#') {
+                    if let Some(i) = self.car_index(&sd.car) {
+                        self.current_car = i;
+                        self.selected_car = i;
+                    }
+                }
+                self.renumber_copies();
+                for k in self.owned.clone() {
+                    self.car_index(&k);
+                }
                 self.opt_x.ctrl.kbd.binds = crate::keybinds::KeyBinds::from_save(sd.keyboard.as_ref());
                 // (what was on the car before parts had prices is the player's)
-                let key = self.dir_name(self.current_car).to_ascii_lowercase();
+                let key = self.model_name(self.current_car).to_ascii_lowercase();
                 for slot in CUSTOM_SLOTS {
                     if let Some(sec) = part_section(slot) {
                         let v = self.cfg.get(slot);
@@ -1724,7 +1740,7 @@ impl Game {
         if self.no_save {
             return;
         }
-        let sd = SaveData { career: Some(self.career.save()), car: self.mc4_current_out().and_then(|c| self.owned.iter().find(|o| o.eq_ignore_ascii_case(&c)).cloned()).unwrap_or_else(|| self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default()), color: self.color_idx, cfg: self.rim_cfg_out(&self.cfg), best_time: self.best_time, money: Some(self.money), rep: self.rep, owned: self.garage_order(), perf: self.perf.clone(), user_races: self.user_races.clone(), vinyls: self.vinyls.clone(), paint_hsv: self.paint_hsv, collected: self.collected.clone(), rim_inches: self.rim_inches, hydraulics: self.hydraulics, paint_type: self.paint_type, paint_fade: self.paint_fade, paint_b: self.paint_b, tint_level: self.tint_level, tint_color: self.tint_color, neon_on: self.neon_on, neon_color: self.neon_color, music_genre: self.music_genre, opts: self.opts, perf_parts: self.perf_parts.clone(), parts_owned: self.parts_owned.clone(), adaptive: self.adaptive, liveries: self.liveries.clone(), xparts: self.xparts.clone(), race_favs: self.race_favs.clone(), cfgs: self.cfgs.iter().map(|(k, c)| (k.clone(), self.rim_cfg_out(c))).collect(), paints: { let mut m = self.paints.clone(); if !self.paint_for.is_empty() { m.insert(self.paint_for.clone(), (self.paint_hsv, self.color_idx, self.paint_type, self.paint_fade)); } m }, finishes: { let mut m = self.finishes.clone(); if !self.paint_for.is_empty() { m.insert(self.paint_for.clone(), (self.slot_hsv.to_vec(), self.rim_mats)); } m }, rim_ids: self.rim_ids.clone(), rim_mats: Some(self.rim_mats), perf_brand: self.perf_brand.clone(), plates: self.plates.clone(), dims: self.dims.clone(), int_neon: self.int_neon, int_colors: Some(self.int_colors), slot_hsv: self.slot_hsv, mc4: self.mc4_save(), keyboard: self.opt_x.ctrl.kbd.binds.to_save(), mod_cars: self.mod_cars_out() };
+        let sd = SaveData { career: Some(self.career.save()), car: self.mc4_current_out().and_then(|c| self.owned.iter().find(|o| o.eq_ignore_ascii_case(&c)).cloned()).unwrap_or_else(|| self.dir_name(self.current_car)), color: self.color_idx, cfg: self.rim_cfg_out(&self.cfg), best_time: self.best_time, money: Some(self.money), rep: self.rep, owned: self.garage_order(), perf: self.perf.clone(), user_races: self.user_races.clone(), vinyls: self.vinyls.clone(), paint_hsv: self.paint_hsv, collected: self.collected.clone(), rim_inches: self.rim_inches, hydraulics: self.hydraulics, paint_type: self.paint_type, paint_fade: self.paint_fade, paint_b: self.paint_b, tint_level: self.tint_level, tint_color: self.tint_color, neon_on: self.neon_on, neon_color: self.neon_color, music_genre: self.music_genre, opts: self.opts, perf_parts: self.perf_parts.clone(), parts_owned: self.parts_owned.clone(), adaptive: self.adaptive, liveries: self.liveries.clone(), xparts: self.xparts.clone(), race_favs: self.race_favs.clone(), cfgs: self.cfgs.iter().map(|(k, c)| (k.clone(), self.rim_cfg_out(c))).collect(), paints: { let mut m = self.paints.clone(); if !self.paint_for.is_empty() { m.insert(self.paint_for.clone(), (self.paint_hsv, self.color_idx, self.paint_type, self.paint_fade)); } m }, finishes: { let mut m = self.finishes.clone(); if !self.paint_for.is_empty() { m.insert(self.paint_for.clone(), (self.slot_hsv.to_vec(), self.rim_mats)); } m }, rim_ids: self.rim_ids.clone(), rim_mats: Some(self.rim_mats), perf_brand: self.perf_brand.clone(), plates: self.plates.clone(), dims: self.dims.clone(), int_neon: self.int_neon, int_colors: Some(self.int_colors), slot_hsv: self.slot_hsv, mc4: self.mc4_save(), keyboard: self.opt_x.ctrl.kbd.binds.to_save(), mod_cars: self.mod_cars_out() };
         if let Ok(t) = serde_json::to_string_pretty(&sd) {
             let path = Self::save_path(data_dir);
             if let Some(dir) = path.parent() {
@@ -1867,8 +1883,89 @@ impl Game {
         (x % 100000) as f32 / 100000.0
     }
 
-    fn dir_name(&self, i: usize) -> String {
+    /// The garage key of index `i`: the model's folder name, `<folder>#n` for a further copy (`dup_keys`).
+    pub(crate) fn dir_name(&self, i: usize) -> String {
+        if let Some(k) = self.dup_keys.get(&i) {
+            return k.clone();
+        }
+        self.model_name(i)
+    }
+
+    /// The folder of index `i`'s model.
+    pub fn model_name(&self, i: usize) -> String {
         self.car_dirs.get(i).and_then(|p| p.file_name()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+    }
+
+    /// The index of a garage key (a further copy's index is made when it has none yet).
+    pub fn car_index(&mut self, key: &str) -> Option<usize> {
+        let (model, n) = crate::catalog::key_copy(key);
+        let base = (0..self.car_dirs.len()).find(|&i| !self.dup_keys.contains_key(&i) && self.model_name(i).eq_ignore_ascii_case(model))?;
+        if n == 1 {
+            return Some(base);
+        }
+        let key = crate::catalog::copy_key(&self.model_name(base), n);
+        if let Some((&i, _)) = self.dup_keys.iter().find(|(_, k)| k.eq_ignore_ascii_case(&key)) {
+            return Some(i);
+        }
+        let i = self.car_dirs.len();
+        self.car_dirs.push(self.car_dirs[base].clone());
+        self.dup_keys.insert(i, key);
+        Some(i)
+    }
+
+    /// The copies of each model numbered 1, 2, 3 in the garage's order, as the block's slots are
+    /// (`Mc4::car`: copy n is the model's n-th slot): after a sale, a trade or a pink slip a later copy's
+    /// key moves down, its state with it; a save's owned list with a model twice (an imported garage)
+    /// gets its `#n` keys. The car in use and the one shown follow their copy.
+    pub fn renumber_copies(&mut self) {
+        let mut seen: hashbrown::HashMap<String, usize> = Default::default();
+        let mut moves: Vec<(String, String)> = Vec::new();
+        // (the block's slots into the garage's order under the old keys first, so that copy n is the
+        // model's n-th slot under the new ones)
+        let cur_key = self.dir_name(self.current_car).to_ascii_lowercase();
+        if let Some(m) = self.mc4.as_mut() {
+            if !self.owned.is_empty() && m.garage.len() > 1 {
+                let order = crate::modgarage::merge(&self.owned, &self.mod_missing);
+                m.sync_garage(&order, &cur_key);
+            }
+        }
+        let owned = std::mem::take(&mut self.owned);
+        let mut out = Vec::with_capacity(owned.len());
+        for key in owned {
+            let model = crate::catalog::model_of(&key).to_string();
+            let n = seen.entry(model.to_ascii_lowercase()).or_default();
+            *n += 1;
+            let new = crate::catalog::copy_key(&model, *n);
+            if !new.eq_ignore_ascii_case(&key) {
+                moves.push((key.to_ascii_lowercase(), new.to_ascii_lowercase()));
+            }
+            out.push(new);
+        }
+        self.owned = out;
+        if moves.is_empty() {
+            return;
+        }
+        let (cur, sel) = (self.dir_name(self.current_car).to_ascii_lowercase(), self.dir_name(self.selected_car).to_ascii_lowercase());
+        macro_rules! rekey {
+            ($($m:ident),*) => {$(
+                let taken: Vec<_> = moves.iter().map(|(o, _)| self.$m.remove(o)).collect();
+                for ((_, new), v) in moves.iter().zip(taken) {
+                    match v {
+                        Some(v) => { self.$m.insert(new.clone(), v); }
+                        None => { self.$m.remove(new); }
+                    }
+                }
+            )*};
+        }
+        rekey!(dims, plates, xparts, vinyls, liveries, cfgs, paints, finishes, rim_ids, perf_brand, perf, perf_parts);
+        let to = |k: &str| moves.iter().find(|(o, _)| o == k).map(|(_, n)| n.clone()).unwrap_or_else(|| k.to_string());
+        let (cur, sel) = (to(&cur), to(&sel));
+        if let Some(i) = self.car_index(&cur) {
+            self.current_car = i;
+        }
+        if let Some(i) = self.car_index(&sel) {
+            self.selected_car = i;
+        }
     }
 
     /// The car the career starts with is always in the garage.
@@ -1902,6 +1999,7 @@ impl Game {
                 self.current_car = next;
             }
         }
+        self.renumber_copies();
         self.garage_list = self.garage_list.map(|(s, _)| (s, 0));
         self.dirty = true;
     }
@@ -1915,7 +2013,7 @@ impl Game {
     pub fn price_of(&self, i: usize) -> (i64, i64) {
         match self.catalog.get(&self.dir_name(i)) {
             // (the group is a level of the Unlocking system - C0, B0, A0: `mc4`)
-            Some(c) => (c.price, self.mc4_car_need(&self.dir_name(i), &c.unlock_group)),
+            Some(c) => (c.price, self.mc4_car_need(&self.model_name(i), &c.unlock_group)),
             None => (0, 0),
         }
     }
@@ -1924,6 +2022,15 @@ impl Game {
     /// stat tPAR is set (the flag the garage's entry sets from it, which F-31112 and the purchase read).
     pub fn showroom_price(&self, i: usize) -> i64 {
         if self.parts_free() { 0 } else { self.price_of(i).0 }
+    }
+
+    /// The index a purchase of the showroom's model `i` goes into: the model's own, or - a model in the
+    /// garage already is bought again into a slot of its own, F-91320 adds whatever is owned - its next
+    /// copy's (`renumber_copies`).
+    pub fn purchase_index(&mut self, i: usize) -> usize {
+        let model = self.model_name(i);
+        let have = self.owned.iter().filter(|o| crate::catalog::model_of(o).eq_ignore_ascii_case(&model)).count();
+        if have == 0 { i } else { self.car_index(&crate::catalog::copy_key(&model, have + 1)).unwrap_or(i) }
     }
 
     /// Buy car `i` if it is unlocked and affordable. Returns false (with a message) otherwise.
@@ -1937,18 +2044,19 @@ impl Game {
         }
         let (_, rep) = self.price_of(i);
         let price = self.showroom_price(i);
+        let model = self.model_name(i);
         // (not for sale - the police cruiser, the bus: never listed, F-31112)
-        if !crate::mc4b::vehicle_for_sale(&self.data_dir, &self.dir_name(i)) {
+        if !crate::mc4b::vehicle_for_sale(&self.data_dir, &model) {
             return false;
         }
         // (a car the game does not offer: RMR_CANT_BUY_UNPURCHASED_DLC - F-69149)
-        if !self.mc4_vehicle_available(&self.dir_name(i)) {
+        if !self.mc4_vehicle_available(&model) {
             let text = self.career.strings.get("RMR_CANT_BUY_UNPURCHASED_DLC").map(|s| s.to_uppercase()).unwrap_or_else(|| "LOCKED".into());
             self.show_message(&text);
             return false;
         }
         // (a DUB car comes to the showroom with its tournament's Hard completion: F-96690)
-        if self.mc4_showroom_locked(&self.dir_name(i)) {
+        if self.mc4_showroom_locked(&model) {
             let text = self.career.strings.get("RMR_CANT_BUY_LOCKED_CAR").map(|s| s.to_uppercase()).unwrap_or_else(|| "LOCKED".into());
             self.show_message(&text);
             return false;
@@ -1966,6 +2074,7 @@ impl Game {
         // (the slot's record, from the vehicle's own set-up file: `mc4`)
         self.mc4_car_added(&n, None);
         self.owned.push(n);
+        log::info!("garage: bought {} for ${} - {} vehicles, slots of the model {}", self.dir_name(i), price, self.owned.len(), self.mc4.as_ref().map_or(0, |m| m.garage.iter().filter(|c| c.vehicle.eq_ignore_ascii_case(&model)).count()));
         self.show_message(&format!("PURCHASED FOR ${}", price));
         true
     }
@@ -2146,7 +2255,7 @@ impl Game {
         let free = self.parts_free();
         let car = self.dir_name(self.current_car).to_ascii_lowercase();
         let owned = |index: usize| self.xparts.get(&car).and_then(|m| m.get(sec)).copied() == Some(index)
-            || self.parts_owned.get(&car).is_some_and(|v| v.contains(&format!("{sec}:{index}")));
+            || self.parts_owned.get(crate::catalog::model_of(&car)).is_some_and(|v| v.contains(&format!("{sec}:{index}")));
         if sec == "tires" || sec == "brakes" {
             let bike = self.catalog.get(&self.dir_name(self.current_car)).map_or(false, |c| c.class.to_ascii_lowercase().contains("bike"));
             let list = &self.wheel_lists[if sec == "brakes" { 2 } else if bike { 1 } else { 0 }];
@@ -2158,7 +2267,7 @@ impl Game {
     }
 
     pub fn part_entries_sec(&self, i: usize, sec: &str) -> Option<&Vec<(i32, i64, usize)>> {
-        let dir = self.dir_name(i).to_ascii_lowercase();
+        let dir = self.model_name(i).to_ascii_lowercase();
         // A DUB edition's own file deliberately contains only the sections it can
         // customise. Falling back to its parent offers parts absent from its model.
         [dir.clone(), dir.replace("_dub", "")].iter()
@@ -2196,7 +2305,7 @@ impl Game {
     /// The set-up of car `i` as the player has it: the car's own (its `.xcc`, `mcCarConfig`) with the wheel figures of its
     /// record (`car_dims`: ride height, tyre width, rim size, tyre profile, +2106..+2114) - what F-43091 fits the wheels from.
     pub fn car_setup_cfg(&self, i: usize) -> Option<Vec<u8>> {
-        let car = self.dir_name(i).to_ascii_lowercase();
+        let car = self.model_name(i).to_ascii_lowercase();
         let file = crate::modcars::setup_file(&car).unwrap_or_else(|| std::path::Path::new(&self.data_dir).join("resources/vehicle/configs").join(format!("{car}.xcc")));
         let mut cfg = std::fs::read(file).ok()?;
         cfg.get_mut(0x83a..0x842)?.copy_from_slice(&self.car_dims(i));
@@ -2342,7 +2451,7 @@ impl Game {
 
     /// Is no plate drawn on the vehicle in use now (`CarConfig::no_plate`, else a mod car's `hide_plate`)?
     pub fn no_plate_now(&self) -> bool {
-        self.cfg.no_plate.unwrap_or_else(|| crate::modcars::hides_plate(&self.dir_name(self.current_car)))
+        self.cfg.no_plate.unwrap_or_else(|| crate::modcars::hides_plate(&self.model_name(self.current_car)))
     }
 
     /// The plate of the player's car, if the player wrote one: what the editor shows while
@@ -2408,7 +2517,7 @@ impl Game {
             return self.rim_owned(i, v);
         }
         let Some(sec) = part_section(slot) else { return true };
-        v == 0 || self.parts_owned.get(&self.dir_name(i).to_ascii_lowercase()).map_or(false, |o| o.contains(&format!("{}:{}", sec, v)))
+        v == 0 || self.parts_owned.get(&self.model_name(i).to_ascii_lowercase()).map_or(false, |o| o.contains(&format!("{}:{}", sec, v)))
     }
 
     /// A rim the player has already paid for. The DLC rims are free, and so is
@@ -2417,7 +2526,7 @@ impl Game {
         let Some((_, brand, entry)) = self.rim_entry(v) else { return true };
         entry.price == 0
             || brand.shop == crate::rimshop::Shop::Dlc
-            || self.parts_owned.get(&self.dir_name(i).to_ascii_lowercase()).map_or(false, |o| o.contains(&rim_tag(entry)))
+            || self.parts_owned.get(&self.model_name(i).to_ascii_lowercase()).map_or(false, |o| o.contains(&rim_tag(entry)))
     }
 
     /// The rim shop row for `rim_dirs` slot `v`, with the brand that sells it.
@@ -2461,7 +2570,7 @@ impl Game {
         }
         self.money -= cost;
         self.mc4_parts_bought(&self.dir_name(i), &new, cost);
-        self.parts_owned.entry(self.dir_name(i).to_ascii_lowercase()).or_default().extend(new);
+        self.parts_owned.entry(self.model_name(i).to_ascii_lowercase()).or_default().extend(new);
         if cost > 0 {
             self.show_message(&format!("PARTS FITTED FOR ${}", cost));
         }
@@ -2482,7 +2591,7 @@ impl Game {
         self.money -= price;
         let key = format!("{sec}:{index}");
         self.mc4_parts_bought(&car, &[key.clone()], price);
-        let owned = self.parts_owned.entry(car.clone()).or_default();
+        let owned = self.parts_owned.entry(crate::catalog::model_of(&car).to_string()).or_default();
         if !owned.contains(&key) { owned.push(key); }
         self.xparts.entry(car).or_default().insert(sec.to_string(), index);
         self.dirty = true;
@@ -2675,7 +2784,7 @@ impl Game {
         }
         // The police Impala has no usable cabin part meshes. Its interior
         // camera sits inside dark body geometry, so keep that page outside.
-        if self.dir_name(self.current_car) == "vp_chv_police_96"
+        if self.model_name(self.current_car) == "vp_chv_police_96"
             && self.selected_car == self.current_car
             && (matches!(self.garage_menu, 7 | 16 | 17)
                 || self.garage_xpart.is_some_and(|(k, _)| matches!(XPARTS[k.min(XPARTS.len() - 1)].1, "steer_whl" | "post_gauge"))
@@ -2835,7 +2944,7 @@ impl Game {
         let i = self.current_car;
         // (the car's sample at its upgrade percentage as the original counts it - twelve parts,
         // a motorcycle's five: F-76051, `mc4_upgrade_share`)
-        self.samples.value(&self.dir_name(i), self.mc4_upgrade_share(i)).unwrap_or_else(|| {
+        self.samples.value(&self.model_name(i), self.mc4_upgrade_share(i)).unwrap_or_else(|| {
             // (cars without a sample: the middle of their group)
             match self.catalog.get(&self.dir_name(i)).map(|c| c.group.clone()).unwrap_or_default().chars().next() {
                 Some('A') | Some('a') => 0.7,
@@ -4763,8 +4872,9 @@ impl Game {
                     let name = self.dir_name(old);
                     self.owned.retain(|o| !o.eq_ignore_ascii_case(&name));
                     self.money += self.trade_in(old);
+                    self.renumber_copies();
                 }
-                self.selected_car = car;
+                self.selected_car = self.purchase_index(car);
                 self.buy_confirmed = true;
             }
         }
@@ -4942,7 +5052,7 @@ impl Game {
                 let found = self.collected.len();
                 // (the line under a page's title: the vehicle, race or district it is about)
                 let mut sub_title = String::new();
-                let long_name = |i: usize| self.career.strings.get(&self.dir_name(i).to_ascii_lowercase()).map(|v| v.to_uppercase()).unwrap_or_else(|| self.car_name(i).to_uppercase());
+                let long_name = |i: usize| self.career.strings.get(&self.model_name(i).to_ascii_lowercase()).map(|v| v.to_uppercase()).unwrap_or_else(|| self.car_name(i).to_uppercase());
                 const CHEATS: [(&str, &str, usize); 6] = [
                     ("cheat_Unlimited_Nitro", "UNLIMITED NITRO", 10),
                     ("cheat_Unlimited_Damage", "NEVER DAMAGE OUT", 20),
@@ -6615,9 +6725,10 @@ impl Game {
                 let list_cars: Vec<usize> = match self.garage_list {
                     // (the showroom offers what the catalogue prices and the game offers at all -
                     // mcGarage::ListShowroomVehicles, F-31112: the table's for-sale byte +41, then `mc4_vehicle_available`;
-                    // in the vehicle table's order, the police pack last)
+                    // in the vehicle table's order, the police pack last; with the models in the garage
+                    // too - F-31112 has no owned test - each model once, not its copies)
                     Some((showroom, _)) => {
-                        let mut v: Vec<usize> = (0..n).filter(|i| self.is_owned(*i) != showroom && (!showroom || (self.price_of(*i).0 > 0 && crate::mc4b::vehicle_for_sale(&self.data_dir, &self.dir_name(*i)) && self.mc4_vehicle_available(&self.dir_name(*i))))).collect();
+                        let mut v: Vec<usize> = (0..n).filter(|i| if showroom { !self.dup_keys.contains_key(i) && self.price_of(*i).0 > 0 && crate::mc4b::vehicle_for_sale(&self.data_dir, &self.dir_name(*i)) && self.mc4_vehicle_available(&self.dir_name(*i)) } else { self.is_owned(*i) }).collect();
                         if showroom {
                             v.sort_by_key(|&i| (crate::mc4::vehicle_index(&self.dir_name(i)) as u32, i));
                         }
@@ -6655,7 +6766,8 @@ impl Game {
                     self.garage_list = Some((showroom, sel));
                     // (a placeholder of a mod that is not installed is never stood in the garage, taken or sold: MODS.md S3)
                     let on_placeholder = crate::modgarage::placeholder(list_cars[sel]).is_some();
-                    if self.selected_car != list_cars[sel] && !on_placeholder {
+                    // (not over a purchase about to be taken: a further copy's index is not the strip's - `purchase_index`)
+                    if self.selected_car != list_cars[sel] && !on_placeholder && !self.buy_confirmed {
                         self.selected_car = list_cars[sel];
                         self.perf_sel = self.perf_of(self.selected_car);
                     }
@@ -6671,7 +6783,7 @@ impl Game {
                     // under the cursor
                     static TD_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                     let td_hook = showroom && std::env::var("MCLA_TEST_DRIVE").is_ok() && !TD_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed);
-                    if showroom && self.message_box.is_none() && !self.is_owned(list_cars[sel]) && (td_hook || self.x_hit(ctx)) {
+                    if showroom && self.message_box.is_none() && (td_hook || self.x_hit(ctx)) {
                         self.test_drive = Some(list_cars[sel]);
                         self.test_drive_req = true;
                         self.garage_list = None;
@@ -6683,7 +6795,7 @@ impl Game {
                     // (test hook: MCLA_BUY_TEST presses PURCHASE once)
                     static BUY_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                     let enter = enter || (showroom && std::env::var("MCLA_BUY_TEST").is_ok() && !BUY_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed));
-                    if showroom && (enter || with_trade) && self.message_box.is_none() && !self.is_owned(list_cars[sel]) {
+                    if showroom && (enter || with_trade) && self.message_box.is_none() {
                         let (_, rep) = self.price_of(list_cars[sel]);
                         let price = self.showroom_price(list_cars[sel]);
                         let trade = if with_trade { self.trade_in(self.current_car) } else { 0 };
@@ -7224,7 +7336,7 @@ impl Game {
                             let nv = (v[at + axles[0]] as isize + step).clamp(lo, hi) as u8;
                             // (garage.SetWheelDimension, F-81554: the figure set, the others moved until the wheel fits the
                             // car's fenders, or nothing changed - SimTunes::set_dimension; a car without its tuning: as set)
-                            let car = self.dir_name(self.current_car).to_ascii_lowercase();
+                            let car = self.model_name(self.current_car).to_ascii_lowercase();
                             let tunes = vehicles.player().filter(|c| c.model.name.eq_ignore_ascii_case(&car)).and_then(|c| c.model.simtunes.clone());
                             match tunes {
                                 Some(t) => {
@@ -7715,7 +7827,7 @@ impl Game {
                                     let kind = c.as_ref().map(|c| self.career.strings.get(&c.class).filter(|v| !v.contains('<')).map(|v| v.to_uppercase()).unwrap_or_else(|| c.class.to_uppercase())).unwrap_or_default();
                                     // (the port's small mark on a mod car, here only: the showroom's purchase view and
                                     // MANAGE VEHICLES - MODS.md design 7)
-                                    let kind = if crate::modcars::is_mod_car(&self.dir_name(i)) { format!("{kind} - {}", crate::modcars::MOD_MARK) } else { kind };
+                                    let kind = if crate::modcars::is_mod_car(&self.model_name(i)) { format!("{kind} - {}", crate::modcars::MOD_MARK) } else { kind };
                                     (format!("VEHICLE: {}-CLASS / GROUP {}", class, gn), kind, if showroom { self.showroom_price(i) } else { self.trade_in(i) })
                                 })
                                 .collect();
@@ -7900,7 +8012,7 @@ impl Game {
                             // (step 22: the rows of garage.CreateVinylPresetMenu, named by the string table)
                             rows = self.mc4_vinyl_rows().iter().map(|r| crate::flash_ui::MenuRow { label: self.mc4_vinyl_row_label(r), value: String::new(), enabled: true, part: None }).collect();
                             flash_sel = sel;
-                            MenuLayout::VinylPackages { vehicle: mcla_formats::hash::joaat(&self.dir_name(self.current_car).to_ascii_lowercase()) as i32 }
+                            MenuLayout::VinylPackages { vehicle: mcla_formats::hash::joaat(&self.model_name(self.current_car).to_ascii_lowercase()) as i32 }
                         });
                         let title = if pkg_layout.is_some() { "VINYL PACKAGES".to_string() } else if vinyl_menu && self.car_x.vinyl_save.is_some() { st("VE_SaveAsVinylPackage", "STORE VINYL PACKAGES") } else { title.to_string() };
                         let cart_layout = self.cart_open.map(|sel| {
@@ -8004,9 +8116,9 @@ impl Game {
                         // (the highlighted vehicle's, whether or not its model has arrived yet)
                         let shown_car = self.garage_list.and_then(|(_, sel)| list_cars.get(sel).copied()).unwrap_or(self.current_car);
                         // (a mod car's pictures: its own or its donor's - modcars.rs)
-                        let picture = crate::modcars::picture(0, &self.dir_name(shown_car)).unwrap_or_else(|| pictures.join("managerides").join(format!("mr_{}.r9", self.dir_name(shown_car))));
+                        let picture = crate::modcars::picture(0, &self.model_name(shown_car)).unwrap_or_else(|| pictures.join("managerides").join(format!("mr_{}.r9", self.model_name(shown_car))));
                         let big_picture = crate::modcars::picture(1, &self.dir_name(shown_car)).unwrap_or_else(|| pictures.join("showroom").join(format!("sh_{}.r9", crate::catalog::picture_name(&self.dir_name(shown_car)))));
-                        let list_mods: Vec<Option<std::path::PathBuf>> = list_cars.iter().map(|&i| crate::modcars::picture(2, &self.dir_name(i))).collect();
+                        let list_mods: Vec<Option<std::path::PathBuf>> = list_cars.iter().map(|&i| crate::modcars::picture(2, &self.model_name(i))).collect();
                         let list_dirs: Vec<String> = list_cars.iter().map(|&i| crate::catalog::picture_name(&self.dir_name(i))).collect();
                         let fg = self.flash_garage.as_mut().unwrap();
                         fg.show(&page);
@@ -12079,7 +12191,7 @@ impl Game {
                 ("veh_level".into(), format!("({}/{})", veh_a, veh_b)),
                 ("t_vehicle".into(), st("Navmap_Vehicle", "VEHICLE")),
                 ("gps_class_type".into(), st(&format!("vehicle_PerfClass{}_Short", class), &format!("CLASS {}", class))),
-                ("gps_vehicle".into(), self.career.strings.get(&format!("{}_shrt", self.dir_name(self.current_car).to_ascii_lowercase())).map(|v| v.to_uppercase()).unwrap_or_else(|| self.car_name(self.current_car).to_uppercase())),
+                ("gps_vehicle".into(), self.career.strings.get(&format!("{}_shrt", self.model_name(self.current_car).to_ascii_lowercase())).map(|v| v.to_uppercase()).unwrap_or_else(|| self.car_name(self.current_car).to_uppercase())),
                 ("t_bank".into(), st("G_Money", "MONEY:")),
                 ("gps_racename".into(), String::new()),
             ];
@@ -13408,7 +13520,7 @@ impl Game {
         if self.replay_rec.len() < 1.0 {
             return;
         }
-        let car = self.dir_name(self.current_car).to_ascii_lowercase();
+        let car = self.model_name(self.current_car).to_ascii_lowercase();
         let tune = crate::replay::CamTune::load(&self.data_dir, &car);
         self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
         self.replay = Some(crate::replay::Playback::new(tune, self.rng));

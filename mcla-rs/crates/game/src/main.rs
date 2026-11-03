@@ -12194,8 +12194,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if car_changed {
                     // each vehicle keeps its own parts: those of the one left are put by, the
                     // taken one's brought out (a vehicle never fitted keeps the rim on, as before)
-                    let left = self.game.car_dirs.get(self.game.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-                    let taken = self.game.car_dirs.get(self.game.selected_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                    // (by garage key: a further copy of a model keeps its own - `Game::dir_name`)
+                    let left = self.game.dir_name(self.game.current_car).to_ascii_lowercase();
+                    let taken = self.game.dir_name(self.game.selected_car).to_ascii_lowercase();
                     let old = self.game.cfg.clone();
                     self.game.cfg = match self.game.cfgs.get(&taken) {
                         Some(c) => vehicle_model::CarConfig { rim: old.rim, rim_name: old.rim_name.clone(), ..c.clone() },

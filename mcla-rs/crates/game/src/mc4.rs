@@ -338,7 +338,7 @@ pub fn plate_bg_step(bg: u8, d: i32, n: i32) -> u8 {
 /// A vehicle's table index: its place in `VEHICLES`, a mod car's after them (69 + its place in name order,
 /// `modcars`; MODS.md M-5), else -1.
 pub fn vehicle_index(name: &str) -> i32 {
-    let n = name.to_ascii_lowercase();
+    let n = crate::catalog::model_of(name).to_ascii_lowercase();
     VEHICLES.iter().position(|v| *v == n).map(|k| k as i32).or_else(|| crate::modcars::table_index(&n).map(|k| k as i32)).unwrap_or(-1)
 }
 
@@ -1503,21 +1503,37 @@ impl Mc4 {
         serde_json::to_value(self).unwrap_or(Value::Null)
     }
 
+    /// The garage slot of a garage key: copy n of a model is its n-th slot (`catalog::key_copy`).
     pub fn car(&self, vehicle: &str) -> Option<&Car> {
-        self.garage.iter().find(|c| c.vehicle.eq_ignore_ascii_case(vehicle))
+        let (model, n) = crate::catalog::key_copy(vehicle);
+        self.garage.iter().filter(|c| c.vehicle.eq_ignore_ascii_case(model)).nth(n - 1)
     }
 
     pub fn car_mut(&mut self, vehicle: &str) -> Option<&mut Car> {
-        self.garage.iter_mut().find(|c| c.vehicle.eq_ignore_ascii_case(vehicle))
+        let (model, n) = crate::catalog::key_copy(vehicle);
+        self.garage.iter_mut().filter(|c| c.vehicle.eq_ignore_ascii_case(model)).nth(n - 1)
     }
 
+    /// The garage keys of the slots in order: a model's first slot by its name, the next ones `#2`, `#3`.
+    pub fn garage_keys(&self) -> Vec<String> {
+        let mut seen: std::collections::HashMap<String, usize> = Default::default();
+        self.garage.iter().map(|c| {
+            let n = seen.entry(c.vehicle.to_ascii_lowercase()).or_default();
+            *n += 1;
+            crate::catalog::copy_key(&c.vehicle, *n)
+        }).collect()
+    }
+
+    /// A model's purchase record (one per model, whatever the copies: F-90134).
     pub fn record(&self, vehicle: &str) -> Option<&VehicleRecord> {
+        let vehicle = crate::catalog::model_of(vehicle);
         self.vehicle_records.iter().find(|r| r.vehicle.as_deref().map_or(false, |v| v.eq_ignore_ascii_case(vehicle)))
     }
 
     /// The model's purchase record, made when there is none (the original keeps one per
     /// entry of the vehicle table, sorted by its index: F-90134).
     pub fn record_mut(&mut self, vehicle: &str) -> &mut VehicleRecord {
+        let vehicle = crate::catalog::model_of(vehicle);
         if let Some(k) = self.vehicle_records.iter().position(|r| r.vehicle.as_deref().map_or(false, |v| v.eq_ignore_ascii_case(vehicle))) {
             return &mut self.vehicle_records[k];
         }
@@ -1532,23 +1548,34 @@ impl Mc4 {
     /// the slot numbers and the slot in use with them.
     pub fn sync_garage(&mut self, owned: &[String], current: &str) {
         let mut out = Vec::with_capacity(self.garage.len());
+        // (copy n of a model is its n-th slot as the block has them, `car`)
+        let keys = self.garage_keys();
+        let mut slots: Vec<Option<Car>> = self.garage.drain(..).map(Some).collect();
+        let mut out_keys = Vec::new();
         for name in owned {
-            if let Some(k) = self.garage.iter().position(|c| c.vehicle.eq_ignore_ascii_case(name)) {
-                out.push(self.garage.remove(k));
+            if let Some(k) = keys.iter().position(|o| o.eq_ignore_ascii_case(name)) {
+                if let Some(c) = slots[k].take() {
+                    out.push(c);
+                    out_keys.push(keys[k].clone());
+                }
             }
         }
         // (records of cars the port does not list as owned stay behind the others: the
         // port's `owned` may lag behind while a car is being bought)
-        let rest: Vec<Car> = self.garage.drain(..).collect();
         let keep_rest = owned.is_empty();
         if keep_rest {
-            out.extend(rest);
+            for (k, c) in slots.into_iter().enumerate() {
+                if let Some(c) = c {
+                    out.push(c);
+                    out_keys.push(keys[k].clone());
+                }
+            }
         }
         for (k, c) in out.iter_mut().enumerate() {
             if c.slot != k as u32 {
                 c.slot = k as u32;
             }
-            let cur = c.vehicle.eq_ignore_ascii_case(current);
+            let cur = out_keys[k].eq_ignore_ascii_case(current);
             if c.current != cur {
                 c.current = cur;
             }
@@ -1789,8 +1816,9 @@ fn close(a: [f32; 3], b: [f32; 3]) -> bool {
 }
 
 impl Game {
+    /// The garage key of index `i`, lower case (`Game::dir_name`: `<folder>#n` for a further copy).
     fn mc4_car_name(&self, i: usize) -> String {
-        self.car_dirs.get(i).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+        self.dir_name(i).to_ascii_lowercase()
     }
 
     /// The block of a save that was read.
@@ -1828,8 +1856,8 @@ impl Game {
                 }
                 // (the parts the port keeps in `xparts` since: from the records of a block
                 // that was imported before)
-                for c in m.garage.iter() {
-                    let have = self.xparts.entry(c.vehicle.to_ascii_lowercase()).or_default();
+                for (c, key) in m.garage.iter().zip(m.garage_keys()) {
+                    let have = self.xparts.entry(key.to_ascii_lowercase()).or_default();
                     for (key, byte) in XPART_BYTES {
                         if !have.contains_key(key) && c.part(byte) != 0 {
                             have.insert(key.to_string(), c.part(byte) as usize);
@@ -1887,6 +1915,9 @@ impl Game {
             return None;
         }
         if m.car(car).is_none() {
+            // (a further copy's slot is its model's: `catalog::model_of`)
+            let key = car;
+            let car = crate::catalog::model_of(key);
             let cfg = config.map(|s| s.to_string()).unwrap_or_else(|| car.to_string());
             let slot = m.garage.len() as u32;
             // (by the set-up's name hash where the install named the file otherwise: the S7's and the
@@ -4719,7 +4750,7 @@ impl Game {
     /// stage 1 when the level is above 0, for stage 2 when above 1). The port's tags
     /// "performance:<k * 3 + stage>" hold it, with or without the block.
     pub fn perf_owned(&self, car: &str, k: usize) -> u8 {
-        let Some(tags) = self.parts_owned.get(&car.to_ascii_lowercase()) else { return 0 };
+        let Some(tags) = self.parts_owned.get(&crate::catalog::model_of(car).to_ascii_lowercase()) else { return 0 };
         let has = |s: usize| tags.iter().any(|t| t.strip_prefix("performance:").and_then(|n| n.parse::<usize>().ok()) == Some(k * 3 + s));
         if has(2) { 2 } else if has(1) { 1 } else { 0 }
     }
@@ -4736,7 +4767,7 @@ impl Game {
             }
         }
         self.mc4_parts_bought(car, &tags, cost);
-        let have = self.parts_owned.entry(car.to_ascii_lowercase()).or_default();
+        let have = self.parts_owned.entry(crate::catalog::model_of(car).to_ascii_lowercase()).or_default();
         for t in tags {
             if !have.contains(&t) {
                 have.push(t);
@@ -5053,7 +5084,7 @@ impl Game {
         const TAGS: [&str; 2] = ["paint:0", "vinyl:0"];
         let n = n.min(1);
         let car = self.mc4_car_name(self.current_car);
-        if self.parts_free() || self.parts_owned.get(&car).map_or(false, |v| v.iter().any(|t| t == TAGS[n])) {
+        if self.parts_free() || self.parts_owned.get(crate::catalog::model_of(&car)).map_or(false, |v| v.iter().any(|t| t == TAGS[n])) {
             return true;
         }
         if self.money < MISC_PRICE {
@@ -5092,7 +5123,7 @@ impl Game {
         let car = self.mc4_car_name(self.current_car);
         self.money -= MISC_PRICE;
         self.mc4_parts_bought(&car, &[tag.clone()], MISC_PRICE);
-        let have = self.parts_owned.entry(car).or_default();
+        let have = self.parts_owned.entry(crate::catalog::model_of(&car).to_string()).or_default();
         if !have.contains(&tag) {
             have.push(tag);
         }
@@ -5337,8 +5368,10 @@ impl Game {
             let b = std::fs::read(crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), car)?).ok()?;
             b.get(0x846).copied()
         };
-        for c in m.garage.iter_mut() {
-            let name = c.vehicle.to_ascii_lowercase();
+        // (each slot by its garage key: a further copy of a model has its own state - `Mc4::garage_keys`)
+        let keys = m.garage_keys();
+        for (c, key) in m.garage.iter_mut().zip(keys) {
+            let name = key.to_ascii_lowercase();
             let is_cur = name == cur;
             // --- paint: the body's colour, type and fade; the areas painted by themselves ---
             let paint = if is_cur {
@@ -5473,7 +5506,7 @@ impl Game {
             // record that still names a menu row goes back to the set-up's)
             let want = match xp.and_then(|x| x.get("brakes")).copied() {
                 Some(b) if (1..=4).contains(&b) => Some(b as u8),
-                _ if (1..=4).contains(&c.visual.BrakeMdlIdx) && xp.is_some() => stock_brake(&name).filter(|b| !(1..=4).contains(b)),
+                _ if (1..=4).contains(&c.visual.BrakeMdlIdx) && xp.is_some() => stock_brake(crate::catalog::model_of(&name)).filter(|b| !(1..=4).contains(b)),
                 _ => None,
             };
             if let Some(b) = want {
@@ -10977,6 +11010,7 @@ impl Game {
             if let Some(k) = self.owned.iter().position(|o| o.eq_ignore_ascii_case(&run.stake_car)) {
                 let c = self.owned.remove(k);
                 self.owned.push(c);
+                self.renumber_copies();
             }
             let m = self.mc4.get_or_insert_with(|| Mc4::seeded(fresh));
             // (RemovePinkSlipProfile(location, stake), then (location, profile): 0x6026 / 0x6037 -
@@ -10990,15 +11024,20 @@ impl Game {
                 self.career.give_car(&run.profile.setup);
                 self.career.pink_slip_won(&run.key);
             } else {
+                // (a model in the garage already comes as a further copy, a slot of its own: F-91320)
                 let car = run.profile.car.to_ascii_lowercase();
+                let have = self.owned.iter().filter(|o| crate::catalog::model_of(o).eq_ignore_ascii_case(&car)).count();
+                let known = self.car_dirs.iter().any(|d| d.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case(&car)));
                 if let Some(mut rec) = run.profile.record.clone() {
-                    if m.car(&car).is_none() {
+                    if m.car(&crate::catalog::copy_key(&car, have + 1)).is_none() {
                         rec.slot = m.garage.len() as u32;
                         m.garage.push(rec);
                     }
                 }
-                if !self.owned.iter().any(|o| o.eq_ignore_ascii_case(&car)) && self.car_dirs.iter().any(|d| d.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case(&car))) {
-                    self.owned.push(car);
+                if known {
+                    let key = crate::catalog::copy_key(&car, have + 1);
+                    self.car_index(&key);
+                    self.owned.push(key);
                 }
             }
             self.dirty = true;
@@ -11015,6 +11054,7 @@ impl Game {
                 // (main stands the next vehicle in when the race is left)
                 self.borrowed = true;
             }
+            self.renumber_copies();
         }
         self.dirty = true;
         // (step 23b: logged, and the test hook's save as on a win)
@@ -13006,6 +13046,48 @@ mod tests {
             same(&save["mc4"], &saved_block(&dir), &format!("{name}, second cycle"));
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// A model bought while one is in the garage is a slot of its own (F-91320): two records of the model in the
+    /// block, each copy with its own paint and plate, through a save and a reload; selling the first moves the
+    /// second down to the model's own key with its state.
+    #[test]
+    fn a_model_bought_twice_has_two_slots() {
+        let Some((mut g, dir, _)) = game_on("full_import.json", "dup") else {
+            eprintln!("(no fixture full_import.json: skipped)");
+            return;
+        };
+        let base = g.current_car;
+        let model = g.model_name(base).to_ascii_lowercase();
+        let slots = |g: &Game| g.mc4.as_ref().unwrap().garage.iter().filter(|c| c.vehicle.eq_ignore_ascii_case(&model)).count();
+        assert_eq!(slots(&g), 1);
+        g.money = 10_000_000;
+        g.rep = 10_000_000;
+        let k = g.purchase_index(base);
+        assert_ne!(k, base);
+        assert_eq!(g.dir_name(k), format!("{model}#2"));
+        assert!(g.try_buy(k));
+        assert_eq!(g.owned.iter().filter(|o| crate::catalog::model_of(o).eq_ignore_ascii_case(&model)).count(), 2);
+        assert_eq!(slots(&g), 2);
+        g.plates.insert(model.clone(), "FIRST1".into());
+        g.plates.insert(format!("{model}#2"), "SECOND2".into());
+        g.write_save(&dir);
+        let mut g2 = Game::new(g.car_dirs[..g.car_dirs.len() - 1].to_vec(), 0);
+        g2.data_dir = dir.clone();
+        g2.load_save(&dir);
+        g2.ensure_owned();
+        assert_eq!(slots(&g2), 2);
+        let k2 = g2.car_index(&format!("{model}#2")).unwrap();
+        assert!(g2.is_owned(k2));
+        assert_eq!(g2.plates.get(&format!("{model}#2")).map(|s| s.as_str()), Some("SECOND2"));
+        let b2 = g2.car_index(&model).unwrap();
+        g2.current_car = k2;
+        g2.selected_car = k2;
+        g2.sell_car(b2);
+        assert_eq!(g2.owned.iter().filter(|o| crate::catalog::model_of(o).eq_ignore_ascii_case(&model)).count(), 1);
+        assert_eq!(g2.plates.get(&model).map(|s| s.as_str()), Some("SECOND2"));
+        assert_eq!(g2.dir_name(g2.current_car), model);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn data_dir() -> String {
