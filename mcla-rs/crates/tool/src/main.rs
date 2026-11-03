@@ -464,7 +464,7 @@ fn cmd_extract(a: &[String]) -> Result<()> {
     let out = PathBuf::from(a[2]);
     let names = load_names(a.get(3).copied())?;
     // the logic lives in mcla-install (the launcher runs the same code); finished files are skipped, so a rerun resumes
-    let opts = mcla_install::extract::ExtractOptions { raw };
+    let opts = mcla_install::extract::ExtractOptions { raw, ..Default::default() };
     let rep = mcla_install::extract::extract_archive(&rpf, &out, &names, opts, mcla_install::Stage::Extract, &cli_ctx())?;
     for (p, why) in &rep.failed {
         eprintln!("FAIL {}: {}", p, why);
