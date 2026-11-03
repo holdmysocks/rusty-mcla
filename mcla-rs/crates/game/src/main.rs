@@ -333,8 +333,6 @@ struct App {
     /// the cine scene whose lamp events run (vehicles.rs `CINE_LAMP_EVENTS`): its name, the clock already
     /// passed, every car's lamp switch as the scene found it (uid, off)
     cine_lamps: Option<(String, f32, Vec<(u32, bool)>)>,
-    /// the cars a showdriver event of the playing scene has shown (uid; cinedriver.rs)
-    cine_showdriver: Vec<u32>,
     /// the race's end: the standings form's pause camera (picked when it comes up) and the
     /// view held once the game is paused
     race_end_cam: Option<(menu3d::PauseCam, menu3d::PauseCam)>,
@@ -1046,7 +1044,6 @@ impl App {
             garage_cam: None,
             garage_tr: None,
             cine_lamps: None,
-            cine_showdriver: Vec::new(),
             race_end_cam: None,
             race_end_from: None,
             race_end_way: None,
@@ -10445,10 +10442,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (ambient cars have opaque windows: nobody to see in there)
                     let _ = big;
                     // in a cutscene the people of its cars are the scene's own characters
-                    // (in a scene a driver is drawn only with its show flag, the draw gate F-14542: cinedriver.rs; while
-                    // the scene casts the player on foot his seat stays empty until the scene's own showdriver -
-                    // docs/reference/cutscenes/scene_driver_flag.md)
-                    let staged = self.cine.playing.is_some() && (!c.show_driver || (c.is_player && self.cine.has_actor("player") && !self.cine_showdriver.contains(&c.uid)));
+                    // (in a scene a driver is drawn only with its show flag, the draw gate F-14542: cinedriver.rs; the
+                    // gate has no other scene test - a scene that casts the player on foot hides his seat by its own
+                    // hidedriver - docs/reference/cutscenes/scene_driver_flag.md)
+                    let staged = self.cine.playing.is_some() && !c.show_driver;
+                    // (a scene car its caller made without a driver - cinedriver::NO_DRIVER; the port's stand-in for the
+                    // delivery walk's car is the player's own)
+                    let no_driver = self.cine.playing.as_ref().is_some_and(|sc| {
+                        let label = if c.is_player { cinedriver::slot_label(&sc.name, 0).filter(|l| cine::is_player_car(l)) } else { c.driver.strip_prefix("cine:") };
+                        label.is_some_and(|l| cinedriver::no_driver(&sc.name, l))
+                    });
+                    let staged = staged || no_driver;
                     // (VEHICLE SELECT: the three stand empty - `ng_vsel_0`)
                     // (the cruiser has no driver: mcRacer::LoadDriver, F-39898, returns before it makes one when
                     // the car is vp_chv_police_96 - its own black interior is what shows; GitHub #17)
@@ -12727,7 +12731,6 @@ impl App {
         if self.cine_lamps.is_none() {
             let kept = self.vehicles.cars.iter().map(|c| (c.uid, c.amb_lamps.off)).collect();
             self.cine_lamps = Some((name.clone(), -1.0, kept));
-            self.cine_showdriver.clear();
             // EndDescription (F-39589): every UseRacerNativeCharacter slot's racer shows its driver (F-13669(racer, 1)),
             // and one that is damaged out is set to 0.95 of its MaxDamage (damage +36 / +40, the test F-98898 of
             // Racer_IsDamagedOut); UseRacerNativeCharacter itself (F-94066) raises slot 0 / 1's racer to the hi-res
@@ -12791,11 +12794,6 @@ impl App {
             if scene == name && at > last && at <= t {
                 if let Some(i) = self.cine_slot_car(slot) {
                     self.vehicles.cars[i].show_driver = show;
-                    let uid = self.vehicles.cars[i].uid;
-                    self.cine_showdriver.retain(|&u| u != uid);
-                    if show {
-                        self.cine_showdriver.push(uid);
-                    }
                 }
             }
         }
