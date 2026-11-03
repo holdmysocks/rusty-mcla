@@ -52,7 +52,7 @@ pub fn plant(fill: [u8; 3]) -> [u8; 4] {
     if off() { [0; 4] } else { [fill[0], fill[1], fill[2], 255] }
 }
 
-/// The same for a figure (pedestrian, driver; sub_822F51A0), as the colour its vertices carry:
+/// The same for a figure (pedestrian, driver; F-24398), as the colour its vertices carry:
 /// four times the sum as bytes (the sum is at most 0.25), alpha 255. Zero by day and without the map.
 pub fn figure_now(x: f32, z: f32) -> [u8; 4] {
     let c = body_now(x, z);
@@ -70,6 +70,15 @@ pub fn player_now(x: f32, z: f32) -> [f32; 4] {
     }
     let c = body_now(x, z);
     [c[0], c[1], c[2], 0.4]
+}
+
+/// The map's colour at this place as the ambient cube's faces take it at night (F-35455 from the
+/// characters' night path: map / 255 x 0.25, no fade - the downward face x 0.2 besides), zero without the map.
+pub fn cube_at(x: f32, z: f32) -> glam::Vec3 {
+    match MAP.get().and_then(|m| m.as_ref()) {
+        Some(m) if !off() => m.body_fill(x, z),
+        _ => glam::Vec3::ZERO,
+    }
 }
 
 /// What a traffic car (pedestrian, driver) at this place adds to its ambient now:

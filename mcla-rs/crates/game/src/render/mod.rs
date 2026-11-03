@@ -219,6 +219,12 @@ fn casc_zold() -> bool {
 }
 /// (diagnostics: the scene's cascade uniform of the last frame, for `Gpu::dump_casc`)
 static CASC_LAST: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+/// The eye of the last cascade drawn (tile 3), the frame's gViewInverse row 3 after the shadow passes: the impostor
+/// tiles' generation pass sets no view of its own, so PSGenerateImposter's specular reads this point (c15).
+static CASC_EYE3: std::sync::Mutex<[f32; 3]> = std::sync::Mutex::new([0.0; 3]);
+pub fn casc_eye3() -> Vec3 {
+    Vec3::from_array(*CASC_EYE3.lock().unwrap())
+}
 /// The cascades' depth here: 0 at 600 m up the rays from the camera, 1 at 200 m down them.
 const CASC_Z_NEAR: f32 = 600.0;
 const CASC_Z_RANGE: f32 = 800.0;
@@ -2931,6 +2937,9 @@ impl Gpu {
             let eye_d = (d0 + d1) * 0.5 - (0.5 * fz + 10.0);
             let (z_scale, z_off) = if casc_zold() { (1.0 / CASC_Z_RANGE, (CASC_Z_NEAR - ray.dot(cam)) / CASC_Z_RANGE) } else { let k = 1.0 / (fz * (fz - 5.0)); (k, -(eye_d + 5.0) * k) };
             let (tc, thh, rc, rh) = ((t0 + t1) * 0.5, (t1 - t0) * 0.5, (r0 + r1) * 0.5, (r1 - r0) * 0.5);
+            if i == 3 {
+                *CASC_EYE3.lock().unwrap() = (right * rc + top * tc + ray * eye_d).to_array();
+            }
             let m = Mat4::from_cols(
                 Vec4::new(right.x / rh, top.x / thh, ray.x * z_scale, 0.0),
                 Vec4::new(right.y / rh, top.y / thh, ray.y * z_scale, 0.0),
@@ -3690,13 +3699,18 @@ fn create_depth(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
 }
 
 pub fn create_rgba(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8], label: &str) -> GpuTexture {
+    create_rgba_as(device, queue, w, h, rgba, label, true)
+}
+
+/// `gamma` as for `upload_as`: false keeps the texels as they are on sampling (a car's map, `car_tex_raw`).
+pub fn create_rgba_as(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8], label: &str, gamma: bool) -> GpuTexture {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format: if gamma { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm },
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });

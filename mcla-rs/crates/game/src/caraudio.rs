@@ -1707,6 +1707,9 @@ impl PoliceAudio {
 #[derive(Clone, Copy, Default)]
 pub struct PlayerCtl {
     pub horn: bool,
+    /// the player's car's vehicle-table class (F-10499: the table row of F-45718, +24) is the police's, 5: the horn
+    /// button (F-83540) then chirps the siren (F-10917) and sounds no horn
+    pub police_class: bool,
     pub nitro_empty: bool,
     pub parts: [u8; 3],
     pub cam_mode: i32,
@@ -1942,7 +1945,7 @@ impl Fleet {
                 c.sst = Some(usize::try_from(k).ok().and_then(|k| v.get(k).copied()).unwrap_or((0.0, false)));
             }
             c.wet = wet;
-            c.horn = ctl.horn && !p.cop;
+            c.horn = ctl.horn && !p.cop && !ctl.police_class;
             c.high_beam = v.player_flash;
             c.nitro_empty = ctl.nitro_empty;
             c.parts = ctl.parts;
@@ -1962,7 +1965,8 @@ impl Fleet {
                 s.damage_parts(lib, &p.state.parts);
                 s.glass(lib, &p.state.dmg, p.state.pos, p.state.rot);
                 // a police car's horn button chirps the siren (F-44589)
-                if p.cop && ctl.horn {
+                if (p.cop || ctl.police_class) && ctl.horn {
+                    log::debug!("audio: the police car's horn button - the siren alert (slot free: {})", free(lib, &s.siren));
                     s.siren_alert(lib, c.pos);
                 }
                 // the input path F-44589: a change of the light bar flag (the pad input's 0x400, toggled on HEADLIGHTS in a

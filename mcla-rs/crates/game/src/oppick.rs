@@ -108,6 +108,8 @@ pub struct OpPick {
     /// one gets a free driver of the race's performance band, picked by a generator seeded from the career generator's
     /// state (which it does not advance), in the set-up `modcars::free_setup_name`
     pub free_cars: Vec<String>,
+    /// every record of the vehicle lists (name, record): the police cars have no performance samples and so no `cars` row
+    pub vehicles: Vec<(String, VehInfo)>,
 }
 
 /// rage::atMap's iteration order for keys inserted in this order: buckets 0..n-1, each chain from its
@@ -265,11 +267,16 @@ impl OpPick {
             drivers = in_map_order(raw);
         }
         log::info!("opponent pick: {} cars, {} drivers", cars.len(), drivers.len());
-        OpPick { cars, drivers, free_cars: Vec::new() }
+        OpPick { cars, drivers, free_cars: Vec::new(), vehicles }
     }
 
     pub fn car(&self, name: &str) -> Option<&PickCar> {
         self.cars.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+    }
+
+    /// The vehicle-table class of `name` (the record's Class, +24 of F-45718's row), whether or not it has samples.
+    pub fn class_of(&self, name: &str) -> Option<u32> {
+        self.vehicles.iter().find(|v| v.0.eq_ignore_ascii_case(name)).map(|v| v.1.class)
     }
 
     /// mcCarArray_Fill (F-77344 -> F-88029): indices of the cars a race can draw for a player

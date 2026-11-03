@@ -143,6 +143,7 @@ pub fn get() -> Option<&'static Registry> {
 
 /// A loaded mod car by name (any case).
 pub fn car(name: &str) -> Option<&'static ModCarRt> {
+    let name = crate::catalog::model_of(name);
     get()?.cars.iter().find(|c| c.name.eq_ignore_ascii_case(name))
 }
 

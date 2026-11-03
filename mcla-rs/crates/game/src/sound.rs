@@ -877,6 +877,7 @@ impl Sound {
             let press = p.input.nitro && !self.nitro_btn;
             let ctl = crate::caraudio::PlayerCtl {
                 horn: horn && !in_menu,
+                police_class: game.oppick.class_of(&p.model.name) == Some(crate::oppick::CLASS_COP),
                 nitro_empty: press && !st.nitro_on() && st.nitro_shots == 0,
                 parts: self.parts,
                 cam_mode: self.cam_audio,

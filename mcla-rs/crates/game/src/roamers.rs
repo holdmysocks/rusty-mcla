@@ -127,6 +127,8 @@ pub struct Roamers {
     pub accepted: bool,
     /// the roamer in reach is the hookman the career asks for
     pub near_is_rival: bool,
+    /// ... and the mission whose man he is (`Career::core_meet`)
+    pub near_mission: Option<String>,
     /// (step 23b) the type of the hookman in reach (mcHookman_GetType: 1 a slot's man, 2 red
     /// light, 3 time trial, 4 tournament, 5 freeway; 0 none or not one of the men)
     pub near_type: u8,
@@ -365,6 +367,7 @@ impl Roamers {
             near: None,
             accepted: false,
             near_is_rival: false,
+            near_mission: None,
             near_type: 0,
             won_against_rival: false,
             bmt_over: None,
@@ -771,6 +774,7 @@ impl Roamers {
 
     pub fn update(&mut self, game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mut World, flash: bool, dt: f32) -> Option<usize> {
         self.near = None;
+        self.near_mission = None;
         self.accepted = false;
         self.near_type = 0;
         if flash && std::env::var("MCLA_ALT_LOG").is_ok() {
@@ -1053,6 +1057,10 @@ impl Roamers {
                 let diff = game.mc4_hookman_diff().filter(|_| self.rival_challenged).or(ch.diff).unwrap_or_else(|| vehicles.cars.iter().find(|c| c.racer).map_or(1, |c| game.mc4_difficulty_of_setup(&c.model.name, &c.vinyl_name)).clamp(0, 3) as usize);
                 let exp = crate::rewards::beat_me_there_exp(game.rep, diff, place, field);
                 game.rep += exp;
+                // (its reward is given at once, +9 = 1 - F-90736: AddExperience posts EXPERIENCE_EVENT then)
+                if exp > 0 {
+                    game.career.event(crate::career::Ev::Rep(game.rep));
+                }
                 // (with the movie the place and the REP line are form 54's - `Game::bmt_end`)
                 if !flash {
                     let what = if place == 1 { "BEAT ME THERE" } else { "BEATEN TO THE LINE" };
@@ -1152,6 +1160,7 @@ impl Roamers {
             _ => format!("THE {}", crate::game::pretty_car_name(&vehicles.cars[ri].model.name).to_uppercase()),
         });
         self.near_is_rival = !vehicles.cars[ri].driver.is_empty();
+        self.near_mission = man.as_ref().filter(|m| self.near_is_rival && !m.mission.is_empty()).map(|m| m.mission.clone());
         self.near_type = match man.as_ref().map(|m| m.kind) {
             Some(ManKind::Slot) => 1,
             Some(ManKind::RedLight) => 2,
@@ -1217,6 +1226,7 @@ impl Roamers {
             self.warp_greeting = Some(g);
             game.man_mod = man.as_ref().map(|m| (m.name.clone(), m.mod_value));
             game.man_diff = man.as_ref().map(|m| m.difficulty);
+            game.man_mission = man.as_ref().map(|m| m.mission.clone()).filter(|m| !m.is_empty());
             // (his car stays where it is through the climb: the core keeps its opponent for the race)
             return Some(race);
         }
@@ -1256,6 +1266,7 @@ impl Roamers {
         let s19d_man = man.as_ref().map(|m| (m.name.clone(), m.car.clone(), m.config.clone()));
         game.man_mod = man.as_ref().map(|m| (m.name.clone(), m.mod_value));
         game.man_diff = man.as_ref().map(|m| m.difficulty);
+        game.man_mission = man.as_ref().map(|m| m.mission.clone()).filter(|m| !m.is_empty());
         let s19d_skip = game.mc4_meet(s19d_man, race, &kept, s19d_cops, !kept.is_empty() && !self.rival_challenged);
         if s19d_skip {
             log::info!("roamers: police within 250 m - the race starts at its grid");

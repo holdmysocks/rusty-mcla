@@ -342,6 +342,9 @@ struct App {
     race_end_way: Option<f32>,
     /// the parts the car in the garage was last built with: a change shows at once
     garage_built: Option<(usize, vehicle_model::CarConfig, u8)>,
+    /// the player's car (its uid) and the wheel figures its set-up was last fitted from (and whether it got one: a car
+    /// built again comes without it)
+    player_dims: Option<(u32, [u8; 8], bool)>,
     /// `--car-picture`: its frame over black, while the one over white is drawn
     carpic: carpic::Shots,
     garage_up: Vec3,
@@ -1048,6 +1051,7 @@ impl App {
             race_end_from: None,
             race_end_way: None,
             garage_built: None,
+            player_dims: None,
             carpic: Default::default(),
             garage_up: Vec3::Y,
             garage_spots: Default::default(),
@@ -2620,6 +2624,10 @@ impl App {
         // (nothing holds the car from Busted until CopArrest's Racer_Deactivate after its waited fade down: StateArrest only
         // sets the target's +592 bits 0x28 (F-14125), which the control step F-17997 never reads. From the deactivate (F-12981:
         // +592 bit 0x1) to Racer_Activate: pedals 0, the automatic brake, the gearbox held, the steering +656 = 0)
+        // (test hook MCLA_BUSTED_GAS=1: the throttle floored from Busted on, the car driven off through the arrest's 1.75 s)
+        if self.police.heat == police::Heat::Busted && std::env::var_os("MCLA_BUSTED_GAS").is_some() {
+            player_input = CarInput { throttle: 1.0, ..Default::default() };
+        }
         if self.arrest_deact {
             player_input = CarInput { deactivated: true, ..Default::default() };
         }
@@ -2829,7 +2837,6 @@ impl App {
                     _ => {}
                 }
                 self.game.show_message(k.name());
-                self.game.career.event(career::Ev::Ability);
                 let (system, stat) = k.system();
                 if let Some(level) = self.game.career.ability_used(system, stat) {
                     // "ZONE LEVEL 2" is the text for reaching level 1, and so on
@@ -3211,8 +3218,9 @@ impl App {
                     } else {
                         // mcCarDamage +44 runs down on real time while the car is under 4.47 m/s or
                         // all its wheels touch (F-32386)
-                        // (only while it is above 0: it goes below 0 once)
-                        let all_down = !c.state.wheels.is_empty() && c.state.wheels.iter().all(|w| w.grounded);
+                        // (only while it is above 0: it goes below 0 once). A motorcycle's wheels are its two even
+                        // slots; the odd ones are drawing mirrors, never in contact
+                        let all_down = !c.state.wheels.is_empty() && c.state.wheels.iter().enumerate().all(|(i, w)| w.grounded || (c.model.bike && i % 2 == 1));
                         if owned && self.crash_bits & 4 == 0 {
                             // (the step's timer, which also waits for the rider (F-32386); its end stands the
                             // motorcycle up through F-86308 there)
@@ -4630,8 +4638,14 @@ impl App {
             }
             self.game.mc4_clock_sync(&mut self.time_of_day, self.opt.time.is_some());
             // (F-54212: a Pull Over tactic (type 1) or a pursuit (types 2 - 4) on the player - payback
-            // goons' StartPursuit included; Search / Busted taken as the pursuit's tactic still running)
-            self.game.police_on_player = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted);
+            // goons' StartPursuit included; Search / Busted taken as the pursuit's tactic still running;
+            // or a cop zone the player set off counting down to its pursuit)
+            self.game.police_on_player = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted) || self.police.zone_on_player();
+            // (test hook MCLA_POLICE_AT_END=1: the police taken as on the player while a race runs - kept at its end, for the
+            // race-over menus' chased rows)
+            if std::env::var_os("MCLA_POLICE_AT_END").is_some() && self.game.race.is_some() {
+                self.game.police_on_player = true;
+            }
             self.game.police_fine = if self.police.goons { 0 } else { self.police.fine as i64 };
             // (step 23: the slow motion, the tutorials, the statistics and achievements)
             self.game.mc4_s23_tick(dt, mc4::S23In { heat: if self.police.goons { 0 } else { self.police.heat as u8 }, near: self.roam.near.is_some(), flashed: self.roam.accepted, kind: self.roam.near_type, station: self.at_station.is_some(), drive: mc4b::drive_of(self.vehicles.player()), sst: self.vehicles.player().filter(|c| vehicles::Vehicles::has_sst(c)).and_then(|c| c.state.veh.as_ref()).map(|v| v.sst.level) });
@@ -4669,6 +4683,8 @@ impl App {
             self.vehicles.player_rim_finish = self.game.rim_finish();
             // (the five colour groups, INTERIOR COLOR A..E: `mc4`)
             self.vehicles.player_interior = self.game.interior_groups();
+            // (the gauge and interior neon colours its driver is lit by: the record's - F-42959)
+            self.vehicles.player_cabin_light = self.game.cabin_light_colors();
             let tire = s19d_look.as_ref().map_or_else(|| self.game.tire_set(), |l| l.1.clone());
             self.vehicles.set_player_tire(&mut gpu, &mut world, &tire);
             let brake = match s19d_look.as_ref() {
@@ -4710,6 +4726,19 @@ impl App {
             } else if self.game.mode != Mode::Garage {
                 self.garage_built = None;
             }
+            // (the player's car drives and stands on its set-up as the rivals do: its own `.xcc` with the record's wheel
+            // figures - the garage's DIMENSIONS, ride height among them (`fit.offset` -> SuspensionOffset) - F-43091)
+            if !self.game.borrowed && self.game.selected_car == self.game.current_car {
+                let dims = self.game.car_dims(self.game.current_car);
+                if let Some(uid) = self.vehicles.player().filter(|c| self.player_dims != Some((c.uid, dims, c.setup.is_some()))).map(|c| c.uid) {
+                    let mut fed = false;
+                    if let (Some(cfg), Some(p)) = (self.game.car_setup_cfg(self.game.current_car), self.vehicles.player_mut()) {
+                        p.set_setup(&cfg);
+                        fed = p.setup.is_some();
+                    }
+                    self.player_dims = Some((uid, dims, fed));
+                }
+            }
             if !self.game.borrowed && self.game.selected_car == self.game.current_car {
                 let c = self.game.paint_color();
                 if let Some(p) = self.vehicles.player_mut() {
@@ -4733,6 +4762,7 @@ impl App {
             if let Some((l, _, _)) = s19d_look.as_ref() {
                 self.vehicles.player_rim_finish = l.rim_finish;
                 self.vehicles.player_interior = l.interior;
+                self.vehicles.player_cabin_light = l.cabin_light;
                 self.vehicles.player_paint_type = l.paint_type;
                 self.vehicles.player_paint_b = l.color2;
                 self.vehicles.player_area_a = l.area_a;
@@ -5391,7 +5421,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             // ("Reached neutral point": garage_core 0x517..0x52a sets the stat tGAR to 1 unless its place
                             // is element 506 - none of the three garages)
                             self.game.mc4_stat_set("tGAR", 0, 1.0);
-                            self.game.career.event(career::Ev::Garage);
+                            // (LOCATION_EVENT with the place's name: garage_core's static +4)
+                            self.game.career.event(career::Ev::Str("LOCATION_EVENT", su.key));
                             let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
                             let story = self.game.career.location_enter(su.enter).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));
                             self.place_view = None;
@@ -5994,9 +6025,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (HEADLIGHTS pressed - its edge, F-52044; `flash` - in a car whose vehicle-table class is the police's (5,
             // F-64470) toggles the input flag 0x400 (F-56064), which F-44589 copies into the car's siren byte +304,
             // starting or stopping the siren (F-39258 / F-59693): the player's cruiser's light bar. MCLA_PLAYER_SIREN_OLD=1: none)
+            // (test hook MCLA_FLASH_AT=<tick>[,<tick>..]: HEADLIGHTS pressed at those ticks)
+            if std::env::var("MCLA_FLASH_AT").is_ok_and(|v| v.split(',').any(|s| s.parse::<u64>().ok() == Some(self.tick_no as u64))) {
+                self.flash = true;
+            }
             if self.flash && self.drive && std::env::var("MCLA_PLAYER_SIREN_OLD").is_err() {
                 let name = self.vehicles.player().map(|c| c.model.name.clone()).unwrap_or_default();
-                if self.game.oppick.car(&name).is_some_and(|p| p.info.class == oppick::CLASS_COP) {
+                // (the vehicle lists' record, not the sample table's: no police car has samples)
+                if self.game.oppick.class_of(&name) == Some(oppick::CLASS_COP) {
                     if let Some(c) = self.vehicles.player_mut() {
                         c.siren = !c.siren;
                         log::info!("headlights pressed in a police car: light bar {}", if c.siren { "on" } else { "off" });
@@ -6041,6 +6077,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if climbing {
                         self.roam.near = None;
                         self.roam.near_is_rival = false;
+                        self.roam.near_mission = None;
                     } else if let Some(race) = (if self.game.bmt_end.is_some() { None } else { self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) }).filter(|&race| {
                         // (a beat me there run's end comes first: its race-over sequence or menu - `Game::bmt_end`)
                         let Some((place, rep, wrecked)) = self.roam.bmt_over.take() else { return true };
@@ -6160,8 +6197,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 let line = self.game.career.strings.get("tutorial_flash_desc").map(|s| s.trim_end_matches('.').to_uppercase()).unwrap_or_else(|| "FLASH HEADLIGHTS TO RACE".into());
                                 self.game.show_message(&line);
                             }
-                            if self.roam.near_is_rival {
-                                self.game.career.event(career::Ev::FoundHookman);
+                            // (a FIND_ core's meeting: `Career::core_meet`)
+                            if let Some(m) = self.roam.near_mission.clone() {
+                                self.game.career.core_meet(&m);
                             }
                         }
                     }
@@ -6256,8 +6294,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             (Some(t), Some(nav), Some(c)) if t.distance(c.state.pos) > 60.0 => nav.route_points(c.state.pos, Some(c.state.forward()), t).map(std::sync::Arc::new),
                             _ => None,
                         };
-                        let d = self.game.district_at(focus);
-                        self.game.career.event(career::Ev::District(&d));
                     }
                     if let Some(ch) = self.roam.challenge.as_ref() {
                         if self.tick_no % 45 == 0 {
@@ -6737,11 +6773,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         if exp > 0 {
                             // (no upper limit: F-55689)
                             self.game.rep += exp;
+                            // (COP_EVADE's reward is given at once, +9 = 1 - F-67002: AddExperience posts
+                            // EXPERIENCE_EVENT then)
+                            self.game.career.event(career::Ev::Rep(self.game.rep));
                             self.game.show_message(&format!("YOU ESCAPED   REP +{}", exp));
                         } else {
                             self.game.show_message("YOU ESCAPED");
                         }
-                        self.game.career.event(career::Ev::EscapedPolice);
+                        // (PLAYER_LOSE_POLICE's MISSION_EVENT COP_EVADE: F-22530)
+                        self.game.career.event(career::Ev::Str("MISSION_EVENT", "COP_EVADE"));
                     }
                     Some(police::Event::Ticket(f)) => {
                         // (StateTicket's enter, F-14125: the bust bits 0x28 on a car not damaged out -
@@ -6941,7 +6981,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     // (PAYBACK_COMPLETE comes with the last of the legs asked for: `mc4_mission_pay`)
                     if failed.is_none() && (kind == game::RaceKind::Delivery || std::mem::take(&mut self.game.career.payback_done)) {
-                        self.game.career.event(if kind == game::RaceKind::Delivery { career::Ev::Delivery } else { career::Ev::Payback });
+                        if kind == game::RaceKind::Delivery {
+                            self.game.career.event(career::Ev::Delivery);
+                        } else {
+                            self.game.career.event(career::Ev::Str("PAYBACK_COMPLETE", "be_payback"));
+                        }
                     }
                     match failed {
                         // (in the game's words: DELIVERY SUCCESSFUL / DELIVERY FAILURE, PAYBACK SUCCESSFUL / PAYBACK FAILED)
@@ -6957,7 +7001,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                 } else {
-                    let standings = self.game.standings(&self.vehicles);
+                    let mut standings = self.game.standings(&self.vehicles);
+                    self.game.estimate_finish(&self.vehicles, &mut standings);
+                    // (a series' or a tournament's results put a damaged-out player last, the others behind him
+                    // up one: F-87120 from calculateResultsSeries / the tournament's)
+                    let event = self.game.series.is_some() || self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map_or(false, |d| self.game.career.tournament_of(&d.id).is_some());
+                    if event && self.vehicles.player().map_or(false, |p| p.state.damage >= 1.0) {
+                        if let Some(k) = standings.iter().position(|e| self.vehicles.cars.get(e.0).map_or(false, |c| c.is_player)) {
+                            let me = standings.remove(k);
+                            standings.push(me);
+                        }
+                    }
                     let mut res = Vec::new();
                     for (ci, t, _) in standings {
                         let c = &self.vehicles.cars[ci];
@@ -7027,6 +7081,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.series_first = true;
                     }
                     self.game.career.event(career::Ev::Race { district: &district, place, hookman, class: &class, race: &race_id, beat_goal });
+                    // (the MISSION_EVENT of the man raced: his story CORE's - `Career::core_race_end` - or,
+                    // after his red light race won and not damaged out, REDLIGHT_GH_01's man's
+                    // RED_LIGHT_GH_01_COMPLETE - `<d>_redlight_hk1` 0x69a5..0x6a23)
+                    let s_man = self.game.man_mission.take();
+                    if hookman {
+                        let clean = self.vehicles.player().map_or(true, |p| p.state.damage < 1.0);
+                        if race_id.eq_ignore_ascii_case(crate::althk::REDLIGHT_RACE_ID) {
+                            if place == 1 && clean {
+                                self.game.career.event(career::Ev::Str("MISSION_EVENT", "RED_LIGHT_GH_01_COMPLETE"));
+                            }
+                        } else if let Some(m) = s_man {
+                            self.game.career.core_race_end(&m, place, clean, self.game.rep);
+                        }
+                    }
                     // (a finished race is an unlocked race: `mc4`)
                     self.game.mc4_race_finished(&race_id);
                     // (step 23: the race-end statistics, F-98556)
@@ -7055,6 +7123,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     // a hangout's series: the winner's tally; three wins end it, else the next race
                     let mut s15_series_done: Option<(String, usize)> = None;
+                    let mut s_series_won: Option<(Option<String>, String)> = None;
                     if let Some(sr) = self.game.series.as_mut() {
                         let winner = res.first().map(|r| if r.0.starts_with("YOU") { "YOU".to_string() } else { r.0.clone() }).unwrap_or_default();
                         match sr.wins.iter_mut().find(|w| w.0 == winner) {
@@ -7066,6 +7135,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         match over {
                             Some(w) => {
                                 self.game.next_event_race = None;
+                                if w == "YOU" {
+                                    s_series_won = Some((sr.story.as_ref().map(|s| s.0.clone()), sr.key.clone()));
+                                }
                                 if w == "YOU" && sr.story.is_none() {
                                     // (SERIES_COMPLETE: the event of the hangout completes at the
                                     // difficulty chosen there - its reward is the panel's
@@ -7085,6 +7157,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 log::info!("series {}: tally {:?}, next race {:?}", sr.key, sr.wins, self.game.next_event_race);
                             }
                         }
+                    }
+                    if let Some((story, key)) = s_series_won {
+                        self.game.career.series_won(story.as_deref(), &key);
                     }
                     // the events that just completed: their counters and their rewards (F-67065)
                     let mut s15_done: Vec<(String, usize)> = s15_series_done.into_iter().collect();
@@ -7236,8 +7311,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 None => self.cp_markers.light.filter(|_| std::env::var("MCLA_NO_MARKERS").is_err()).map(|(p, c)| (p, c, checkpoints::LIGHT_INTENSITY)),
             };
         }
-        // (test hook MCLA_SIREN_TRACE=1: the record, off the beat of the 100 ms flash)
-        if self.tick_no % 37 == 0 && std::env::var("MCLA_SIREN_TRACE").is_ok() {
+        // (test hook MCLA_SIREN_TRACE=1: the record, off the beat of the 100 ms flash; =all: every tick)
+        if (self.tick_no % 37 == 0 && std::env::var("MCLA_SIREN_TRACE").is_ok()) || std::env::var("MCLA_SIREN_TRACE").as_deref() == Ok("all") {
             log::info!("record3: {:?} from the camera {:?}", self.record3, self.record3.map(|r| r.0.distance(self.cam.pos)));
         }
         self.sim_time += dt;
@@ -7390,6 +7465,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let up = if self.drive && self.vehicles.player().is_some() { self.chase.up } else { Vec3::Y };
             let right = fwd.cross(up).normalize_or(Vec3::X);
             let horn = (self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::HORN, |k| self.input.down(k)) || self.pad_horn) && !self.game.in_menu();
+            // (test hook MCLA_HORN_AT=<from>,<to>: the horn held over those ticks)
+            let horn = horn || std::env::var("MCLA_HORN_AT").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.parse::<u64>().ok()?, b.parse::<u64>().ok()?)))).is_some_and(|(a, b)| (a..b).contains(&(self.tick_no as u64)));
             // Zone slows the world: sounds drop in pitch with it
             let o = self.game.opts;
             if self.sound.lib.is_some() {
@@ -10336,13 +10413,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (the story scenes' characters: their own programs, lit by the light manager's state -
         // skin.rs `CharLight`; MCLA_CHAR_OLD=1: the generic look as before)
         let hour = globals.sun_color[3];
-        self.cine.set_light(std::env::var("MCLA_CHAR_OLD").is_err().then(|| skin::CharLight {
+        let char_light = skin::CharLight {
             to_light: Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]),
             key: Vec3::new(globals.sun_color[0], globals.sun_color[1], globals.sun_color[2]),
             strength: globals.sun_dir[3],
             amb: Vec3::new(globals.ambient_sky[0], globals.ambient_sky[1], globals.ambient_sky[2]),
             night: hour > 18.0 || hour < 6.0,
-        }));
+            night_path: false,
+            dynamic: None,
+        };
+        self.cine.set_light(std::env::var("MCLA_CHAR_OLD").is_err().then_some(char_light));
+        // (the drivers and riders are mcCharacterPlus instances: path A as the scenes' cast, by day and at night -
+        // F-21528, recorded on the player's rider; MCLA_DRV_LIGHT_OLD=1: the city's object look as before)
+        self.drivers.set_light(std::env::var("MCLA_DRV_LIGHT_OLD").is_err().then(|| skin::CharLight { night_path: true, dynamic: self.peds.night_lights.as_ref().map(|d| d.0), ..char_light }));
         self.cine.prepare(&gpu);
         {
             // drivers of the player's car, the racers and the police (traffic models have their own)
@@ -10379,7 +10462,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // trucks and SUVs seat their driver higher than the shared animation does
                         mat = mat * glam::Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0));
                     }
-                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver }
+                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0] }
                 })
                 .collect();
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
@@ -11404,6 +11487,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // writes nRaceIndex, nNumLaps, nDifficulty, result 3 and closes the menus - the race is the script's, which
         // waits no more (it sets nTelephoneMenuResult = 0 at its next call); leaving says nothing)
         let mut action = action;
+        // (BACK out of the telephone list: form 17's event 56 (F-90426) plays UI_MENU_BACK, sets the result 1 and closes the
+        // form; its leave hook F-20561 with the flag writes nTelephoneMenuResult and resumes the players and the game
+        // (F-35144, game.resume()) - back in the cruise, not on the pause menu, whether or not the call still waits)
+        let phone_back = self.game.phone_race && action == MenuAction::Back;
         if self.game.phone_race && self.game.phone_dead && matches!(action, MenuAction::StartRace | MenuAction::Back | MenuAction::StartFreeRoam | MenuAction::MainMenu) {
             self.game.phone_race = false;
             self.game.phone_dead = false;
@@ -11416,6 +11503,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (a telephone challenge's list left without a race: the script's "not 3", HOOKMAN_PHONE_PLAYER_DECLINES, 0x32f4)
         if matches!(action, MenuAction::Back | MenuAction::StartFreeRoam | MenuAction::MainMenu) && std::mem::take(&mut self.game.phone_race) && action == MenuAction::Back {
             self.speech.say_as("HOOKMAN_PHONE_PLAYER_DECLINES", self.phone_caller);
+        }
+        if phone_back {
+            log::info!("telephone list: BACK - the menus close, back in the cruise");
+            action = MenuAction::Resume;
         }
         if action == MenuAction::None {
             return;
@@ -12064,7 +12155,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             MenuAction::OpenGarage => {
-                self.game.career.event(career::Ev::Garage);
                 // (the garage does not repair the car by itself: it asks, before MANAGE VEHICLES /
                 // CUSTOMIZE VEHICLE / VEHICLE SHOWROOM for a dented car and before the way out for
                 // a wreck - `Game::mc4_repair_gate`; a car goes in, stands there and is put away
@@ -12085,8 +12175,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // the showroom's vehicle as it stands there, lent like a delivery's car (it is
                 // handed back when the garage is entered again - `borrowed`)
                 if let Some(dir) = self.game.test_drive.and_then(|i| self.game.car_dirs.get(i).cloned()) {
-                    let color = vehicles::PALETTE[0];
-                    if self.vehicles.replace_player(gpu, world, &dir, color, &vehicle_model::CarConfig::default(), None).is_ok() {
+                    // (in its stock set-up `<vehicle>.xcc`, as a time trial's vehicle is put in its row's: the set-up's paints,
+                    // parts, rims, plate and layers - the original's test drives show the Scirocco's 2GFR421 and the CHP Charger's
+                    // E3CHPCA in its black and white, work/carparts2/rk/v_td2.png, v_chp1.png)
+                    let car = dir.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                    let color = self.game.mc4_borrow_look(&car).unwrap_or(vehicles::PALETTE[0]);
+                    let (cfg, rim) = match self.game.mc4_setup_dress(&car, &car) {
+                        Some((c, r, inches)) => {
+                            if inches > 0 {
+                                self.vehicles.player_rim_inches = inches as u8;
+                            }
+                            (c, r)
+                        }
+                        None => (vehicle_model::CarConfig::default(), None),
+                    };
+                    if self.vehicles.replace_player(gpu, world, &dir, color, &cfg, rim.as_deref()).is_ok() {
                         self.game.borrowed = true;
                         if let Some(p) = self.vehicles.player_mut() {
                             p.set_perf(0.0);
@@ -12109,8 +12212,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if car_changed {
                     // each vehicle keeps its own parts: those of the one left are put by, the
                     // taken one's brought out (a vehicle never fitted keeps the rim on, as before)
-                    let left = self.game.car_dirs.get(self.game.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-                    let taken = self.game.car_dirs.get(self.game.selected_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                    // (by garage key: a further copy of a model keeps its own - `Game::dir_name`)
+                    let left = self.game.dir_name(self.game.current_car).to_ascii_lowercase();
+                    let taken = self.game.dir_name(self.game.selected_car).to_ascii_lowercase();
                     let old = self.game.cfg.clone();
                     self.game.cfg = match self.game.cfgs.get(&taken) {
                         Some(c) => vehicle_model::CarConfig { rim: old.rim, rim_name: old.rim_name.clone(), ..c.clone() },
@@ -12470,8 +12574,9 @@ impl App {
         let warping = g.start_warp_on || self.warp.is_some() || self.climb.is_some() || self.garage_in.is_some() || self.garage_out.is_some() || self.hangout_entry.is_some() || self.payback_in.is_some();
         // (the race's last three seconds before GO, and the race's end - PostRace / race over)
         let race_gate = g.race.as_ref().map_or(false, |r| r.countdown > 0.0 && r.countdown <= 3.0) || g.race_end_t.is_some();
-        // (the perspective form's slow motion holds the game: the lessons' "ease to pause")
-        let form108 = g.tutorial_hold();
+        // (form 108 visible - F-38972 asks its vt+60: the lessons' "ease to pause" from its start to the "ease from
+        // pause", RACE_GH_02's MISSION LOG box, the log's lesson and box 77 among them)
+        let form108 = g.tutorial_hold() || g.opt_x.s23.slow.visible;
         // (the player's car wrecked: F-36476 - damage / its limit >= 1)
         let wrecked = self.vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
         !(opening || cinematic || warping || race_gate || form108 || g.photo_on || wrecked)

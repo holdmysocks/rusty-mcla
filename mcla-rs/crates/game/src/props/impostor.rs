@@ -54,6 +54,7 @@ struct TileUniform {
     sun_col: [f32; 4],
     ambient: [f32; 4],
     wind: [f32; 4],
+    eye: [f32; 4],
 }
 
 /// What `Props::load` hands over for a plant type with a card.
@@ -145,6 +146,7 @@ impl Impostors {
     /// Diagnostics (MCLA_IMP_DUMP=<dir>): each type's colour picture as it is now, raw RGBA8 128 x 128,
     /// `<type's model index>.raw` (with the file name logged).
     pub fn dump(&self, gpu: &Gpu, dir: &str) {
+        log::info!("impostor dump: the trunk specular's eye (last cascade) {:?}", crate::render::casc_eye3());
         for (k, t) in self.types.iter().enumerate() {
             if !t.valid {
                 continue;
@@ -382,7 +384,7 @@ impl Impostors {
             let Some(model) = models.get(ty.model) else { continue };
             // (pix_center 0, as the recorded PSGenerateImposterShadowDepth draws: half a texel - render::half_pixel)
             let ms = ty.mask.width as f32;
-            let u = TileUniform { view_proj: crate::render::half_pixel(Self::tile_camera(c, ty.width, ty.height, ty.centre_y), ms, ms).to_cols_array_2d(), sun_dir: [0.0; 4], sun_col: [0.0; 4], ambient: [0.0; 4], wind: [0.0; 4] };
+            let u = TileUniform { view_proj: crate::render::half_pixel(Self::tile_camera(c, ty.width, ty.height, ty.centre_y), ms, ms).to_cols_array_2d(), sun_dir: [0.0; 4], sun_col: [0.0; 4], ambient: [0.0; 4], wind: [0.0; 4], eye: [0.0; 4] };
             gpu.queue.write_buffer(&ty.mask_buf, 0, bytemuck::bytes_of(&u));
             let big = (ty.mask.width == MASK_BIG) as usize;
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -462,6 +464,7 @@ impl Impostors {
                 sun_col: [g.sun_color[0] * g.sun_dir[3], g.sun_color[1] * g.sun_dir[3], g.sun_color[2] * g.sun_dir[3], g.grade[3]],
                 ambient: g.ambient_sky,
                 wind: wind_vector(g.lod[3]),
+                eye: crate::render::casc_eye3().extend(1.0).to_array(),
             };
             gpu.queue.write_buffer(&ty.buf, 0, bytemuck::bytes_of(&u));
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {

@@ -260,6 +260,11 @@ pub struct SimTunes {
     /// mcCarModelTune's FenderEdgeFront / FenderEdgeRear (+88, +96): where the outer face of
     /// the tyres comes to, front and rear, each for the stock body and the wide one
     pub fender_edge: [[f32; 2]; 2],
+    /// mcCarModelTune's FenderHeight, FenderWidth and FenderFloor (+56 / +64, +72 / +80, +104 / +112), front and rear, each
+    /// for the stock body and the wide one: the garage's limits on a wheel (`fit_error`)
+    pub fender_height: [[f32; 2]; 2],
+    pub fender_width: [[f32; 2]; 2],
+    pub fender_floor: [[f32; 2]; 2],
     /// mcCarModelTune's cFrontBumperMovement, cRearBumperMovement (+184, +188: 0 NoMovement,
     /// 1 AllowLoose, 2 AllowBroken), cHoodMovement, cTrunkMovement (+192, +196: 0 NoMovement,
     /// 1 NormalMovement, 2 ReverseMovement) - sub_823404E0 @82340DB8; None without a vehModel
@@ -270,7 +275,28 @@ pub struct SimTunes {
     /// mcCarModelTune's bDoubleSidedTrunk (+200, a byte): the car's draw (F-92759) draws the base fragment's meshes on
     /// the `trunk_0` bone and the trunk_swap / trunk_wide slots without back-face culling; None without a vehModel
     pub double_sided_trunk: Option<bool>,
+    /// mcCarModelTune's vDriverGaugeLightOffset / vDriverNeonLightOffset (+144, +160; the ctor F-97670's (-0.4, 1, -0.825) and
+    /// 0): the gauge and neon lights of the driver's draw, in the car's frame (F-42959); None without a vehModel
+    pub driver_lights: Option<[[f32; 3]; 2]>,
 }
+
+/// A wheel's radius and its ride's offset from the figures `d` of a set-up (ride, width, rim, profile, front then rear) for
+/// `axle`: R = rim diameter x 0.5 + profile x width - 0.03175 in the original's fused single steps (F-82553, `fit`).
+fn wheel_radius(d: &[u8; 8], axle: usize) -> (f32, f32) {
+    const RIDE: [f32; 12] = [0.075, 0.05, 0.025, 0.0, -0.025, -0.05, -0.075, -0.1, -0.1125, -0.125, -0.1375, -0.15];
+    let (ride, width, rim, profile) = (d[axle].min(11) as usize, d[2 + axle].min(16), d[4 + axle].clamp(12, 28), d[6 + axle].min(13));
+    let w = (0.195f64 + 0.01 * width as f64) as f32;
+    let p = (0.20f64 + 0.05 * profile as f64) as f32;
+    let t = ((p as f64).mul_add(w as f64, -(f32::from_bits(0x3d02_0c4a) as f64))) as f32;
+    let r = ((f32::from_bits(RIM_DIAMETER[rim as usize - 12]) as f64).mul_add(0.5, t as f64)) as f32;
+    (r, RIDE[ride])
+}
+
+/// The rims' diameters (m) for 12..28 inches, as the executable holds them (0x827E9A50)
+const RIM_DIAMETER: [u32; 17] = [
+    0x3ea90ffa, 0x3eb61134, 0x3ec3126f, 0x3ed013a9, 0x3edd14e4, 0x3eea161f, 0x3ef71759, 0x3f020c4a, 0x3f088ce7, 0x3f0f0d84, 0x3f158e21,
+    0x3f1c0ebe, 0x3f228f5c, 0x3f290ff9, 0x3f2f9096, 0x3f361134, 0x3f3c91d1,
+];
 
 /// What a car's set-up makes of its wheels (`SimTunes::fit`), front and rear.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -337,6 +363,108 @@ impl SimTunes {
         Some(fit)
     }
 
+    /// The garage's wheel check (F-97327 -> F-82553) for one axle of a set-up's wheel figures `d` (+2106..+2114 of the
+    /// record: ride, width, rim, profile, a byte each front then rear), `wide` the record's +2203: with R the wheel's
+    /// radius as `fit` has it and h the ride's offset, 1 when R + h < FenderFloor (ride too low), 2 when R - h >
+    /// FenderHeight (hitting the wheel well), 3 when R > FenderWidth (hitting the fender; FenderHeight when FenderWidth
+    /// is not over 0), else 0.
+    pub fn fit_error(&self, d: &[u8; 8], wide: bool, axle: usize) -> u8 {
+        let (a, w) = (axle.min(1), wide as usize);
+        let (r, h) = wheel_radius(d, a);
+        let (floor, height, width) = (self.fender_floor[a][w], self.fender_height[a][w], self.fender_width[a][w]);
+        let width = if width > 0.0 { width } else { height };
+        if r + h < floor {
+            1
+        } else if r - h > height {
+            2
+        } else if r > width {
+            3
+        } else {
+            0
+        }
+    }
+
+    /// The garage setting one wheel figure (the DIMENSIONS rows, F-81554): `kind` 1 rim size, 2 tyre profile, 3 tyre
+    /// width, 4 ride height set to `value` on `axle` (0 front, 1 rear, 2 both) of `d`, then the other figures moved until
+    /// the wheel fits (F-40918); when nothing fits, the axle's four figures as they were. With both axles the front's
+    /// figures go to the rear as well - not after a ride height that fitted, as in the original.
+    pub fn set_dimension(&self, d: &mut [u8; 8], wide: bool, axle: usize, kind: u8, value: u8) {
+        let a = if axle == 2 { 0 } else { axle };
+        let old = [d[4 + a], d[2 + a], d[6 + a], d[a]];
+        let at = match kind {
+            1 => 4,
+            2 => 6,
+            3 => 2,
+            _ => 0,
+        };
+        if axle == 2 {
+            d[at] = value;
+            d[at + 1] = value;
+        } else {
+            d[at + a] = value;
+        }
+        let fits = self.adjust_to_fit(d, wide, axle, kind);
+        if !fits {
+            [d[4 + a], d[2 + a], d[6 + a], d[a]] = old;
+        }
+        if axle == 2 && !(fits && kind == 4) {
+            for k in [4, 0, 6, 2] {
+                d[k + 1] = d[k];
+            }
+        }
+    }
+
+    /// F-40918: after figure `kind` changed, the others moved one step at a time in the order the original tries them
+    /// (`step_figure`), each put back when it found no fit; false when none did.
+    fn adjust_to_fit(&self, d: &mut [u8; 8], wide: bool, axle: usize, kind: u8) -> bool {
+        let a = if axle == 2 { 0 } else { axle };
+        let (rim0, prof0, ride0) = (d[4 + a], d[6 + a], d[a]);
+        // (the figure's place and range: rim 12..28, profile 0..13, ride 0..11)
+        const RIM: (usize, u8, u8) = (4, 12, 28);
+        const PROF: (usize, u8, u8) = (6, 0, 13);
+        const RIDE: (usize, u8, u8) = (0, 0, 11);
+        let restore = |d: &mut [u8; 8], f: (usize, u8, u8)| d[f.0 + a] = match f.0 { 4 => rim0, 6 => prof0, _ => ride0 };
+        // (the tries for each error, in order)
+        let tries: &[((usize, u8, u8), i32)] = match (kind, self.fit_error(d, wide, a)) {
+            (_, 0) => return true,
+            (1, 1) => &[(PROF, 1), (RIDE, 1)],
+            (1, 2) => &[(PROF, -1), (RIDE, 1)],
+            (1, 3) => &[(PROF, -1)],
+            (2, 1) => &[(RIDE, 1), (RIM, 1)],
+            (2, 2) => &[(RIDE, 1), (RIM, -1)],
+            (2, 3) => &[(RIM, -1)],
+            (3, 1) => &[(PROF, 1), (RIDE, 1), (RIM, 1)],
+            (3, 2) => &[(PROF, -1), (RIDE, 1), (RIM, -1)],
+            (3, 3) => &[(PROF, -1), (RIM, -1), (PROF, -1)],
+            (4, 1) | (4, 2) => &[(PROF, -1), (RIM, -1)],
+            (4, 3) => return false,
+            _ => return true,
+        };
+        for &(f, step) in tries {
+            if self.step_figure(d, wide, a, f, step) {
+                return true;
+            }
+            restore(d, f);
+        }
+        false
+    }
+
+    /// F-91663 / F-39778 / F-83143 (rim, profile, ride): figure `f` (place, lowest, highest) of axle `a` moved by `step`
+    /// within its range until the wheel fits - true - or it stands at the end it moves to - false, the figure left there.
+    fn step_figure(&self, d: &mut [u8; 8], wide: bool, a: usize, f: (usize, u8, u8), step: i32) -> bool {
+        let (at, lo, hi) = f;
+        loop {
+            let v = d[at + a];
+            if (step > 0 && v >= hi) || (step <= 0 && v <= lo) {
+                return false;
+            }
+            d[at + a] = (v as i32 + step).clamp(lo as i32, hi as i32) as u8;
+            if self.fit_error(d, wide, a) == 0 {
+                return true;
+            }
+        }
+    }
+
     pub fn parse(res: &Resource) -> Option<SimTunes> {
         let rd = Rd::new(res);
         let mut out = SimTunes::default();
@@ -351,9 +479,13 @@ impl SimTunes {
             let (nm, ty) = (rd.cstr(np), rd.cstr(tp));
             if ty == "vehModel" {
                 out.fender_edge = [[rd.f32(c + 88), rd.f32(c + 92)], [rd.f32(c + 96), rd.f32(c + 100)]];
+                let pair = |o: usize| [[rd.f32(c + o), rd.f32(c + o + 4)], [rd.f32(c + o + 8), rd.f32(c + o + 12)]];
+                (out.fender_height, out.fender_width, out.fender_floor) = (pair(56), pair(72), pair(104));
                 out.part_movement = Some([rd.u32(c + 184), rd.u32(c + 188), rd.u32(c + 192), rd.u32(c + 196)]);
                 out.window_clip = Some(rd.f32(c + 180));
                 out.double_sided_trunk = Some(rd.u8(c + 200) != 0);
+                let v3 = |o: usize| [rd.f32(c + o), rd.f32(c + o + 4), rd.f32(c + o + 8)];
+                out.driver_lights = Some([v3(144), v3(160)]);
                 continue;
             }
             let set = if nm.ends_with("_mods") { &mut out.mods } else { &mut out.base };
@@ -447,6 +579,26 @@ impl SimTunes {
 mod fit_tests {
     use super::*;
 
+    /// The garage's check on the R8 (its .r50's fenders: height 0.38 / 0.39, width 0.35, floor 0.32): its own front wheel,
+    /// R 0.2953, is under the floor already, so a lower ride finds nothing that fits and is refused, a higher one fits, and
+    /// a 19 inch rim takes the next tyre profile up (R 0.32025) - F-81554 / F-40918 / F-82553 step by step.
+    #[test]
+    fn the_garage_keeps_the_wheels_in_the_fenders() {
+        let t = SimTunes { fender_height: [[0.38, 0.38], [0.39, 0.39]], fender_width: [[0.35, 0.35], [0.35, 0.35]], fender_floor: [[0.32, 0.32], [0.32, 0.32]], ..Default::default() };
+        let stock = [3u8, 3, 5, 11, 18, 18, 3, 2];
+        assert_eq!(t.fit_error(&stock, false, 0), 1);
+        let mut d = stock;
+        t.set_dimension(&mut d, false, 0, 4, 4);
+        assert_eq!(d, stock, "lowered: refused");
+        t.set_dimension(&mut d, false, 0, 4, 2);
+        assert_eq!(d[0], 2, "raised: kept");
+        let mut d = stock;
+        t.set_dimension(&mut d, false, 2, 1, 19);
+        assert_eq!((d[4], d[5], d[6], d[7]), (19, 19, 4, 4), "both axles: the front's figures to the rear");
+        // (a 23 inch rim, R 0.3588: under the wheel well, over the fender - error 3)
+        assert_eq!(t.fit_error(&[3, 3, 5, 11, 23, 18, 3, 2], false, 0), 3);
+    }
+
     /// The Audi R8's own set-up (18 inch rims, tyres 0.245 x 0.35 front and 0.305 x 0.30 rear)
     /// and its fenders (0.91 / 0.93): the wheels recorded in the running game.
     #[test]
@@ -510,7 +662,7 @@ mod movement_tests {
                 };
                 if let Some(t) = super::SimTunes::parse(&res) {
                     let m = t.part_movement;
-                    println!("{} {:?} window clip {:?} damage max {} med {} (base) {} (mods)", e.file_name().to_string_lossy(), m, t.window_clip, t.base.damage.max_damage, t.base.damage.med_damage, t.mods.damage.max_damage);
+                    println!("{} {:?} window clip {:?} driver lights {:?} damage max {} med {} (base) {} (mods)", e.file_name().to_string_lossy(), m, t.window_clip, t.driver_lights, t.base.damage.max_damage, t.base.damage.med_damage, t.mods.damage.max_damage);
                     if let Some(m) = m {
                         assert!(m.iter().all(|v| *v <= 2), "{m:?}");
                     }

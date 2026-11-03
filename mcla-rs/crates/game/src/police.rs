@@ -1182,6 +1182,13 @@ impl Police {
         say
     }
 
+    /// PoliceManager_IsRacerPursued's zone clause (F-86429): the zone's state +196 is 2 or 3
+    /// and its target +200 is the player. (The port has no state 3 and sets the target to the racer
+    /// that set the zone off: `zone_step`.)
+    pub fn zone_on_player(&self) -> bool {
+        self.zone.as_ref().map_or(false, |z| z.state == 2 && z.player)
+    }
+
     /// Test helper: start a pursuit right now with a cruiser close by.
     /// Test hook MCLA_COP_TEST=units: a zone's chase with no test cruiser - the engage takes the units.
     pub fn debug_units(&mut self) {

@@ -800,6 +800,8 @@ pub struct CarLook {
     pub area_a: [[f32; 4]; 5],
     pub area_b: [[f32; 4]; 5],
     pub rim_finish: [[f32; 4]; 3],
+    /// the driver's gauge colour A and interior neon colour as the record holds them (w of the neon: IntNeonIntensity)
+    pub cabin_light: [[f32; 4]; 2],
 }
 
 /// A set-up as `Vehicles::dress_setups` puts it on a car: the model's parts, the rim's
@@ -983,6 +985,9 @@ pub struct Vehicles {
     pub player_rim_finish: [[f32; 4]; 3],
     /// the player's cabin colours A, B, C (w 1 = chosen)
     pub player_interior: [[f32; 4]; 5],
+    /// the player's gauge colour A and interior neon colour as its record holds them (w of the neon: IntNeonIntensity) -
+    /// what its driver is lit by (`Game::cabin_light_colors`)
+    pub player_cabin_light: [[f32; 4]; 2],
     /// the brakes fitted in the garage (BRAKES: a model of `resources/brakes`), else the car's own
     pub player_brake: Option<Arc<BrakeModel>>,
     /// the tires fitted in the garage (TIRES: a set of `resources/tires/textures`; empty =
@@ -1101,13 +1106,13 @@ pub struct Vehicles {
     trace_car: Option<(usize, u32)>,
     /// plate background and font (RGBA), and the finished plates by text (the cars hold them: every traffic car
     /// has a plate of its own, a plate of a car that has gone goes with `Gpu::trim_textures`)
-    plate_art: Option<(u32, u32, Vec<u8>, Vec<u8>)>,
+    plate_art: Option<(Option<PlateBg>, Vec<u8>)>,
     plates: hashbrown::HashMap<String, std::sync::Weak<wgpu::BindGroup>>,
     plate_serial: u32,
     /// the background of the player's plate (a name of `resources/license_plates/backgrounds`:
     /// the vehicle record's LicenseBG - `mc4`; none = the California plate), and those loaded
     pub player_plate_bg: Option<String>,
-    plate_bgs: hashbrown::HashMap<String, Option<(u32, u32, Vec<u8>)>>,
+    plate_bgs: hashbrown::HashMap<String, Option<PlateBg>>,
     /// liveries of the named opponents: texture file by set-up name, loaded ones
     vinyl_index: Option<hashbrown::HashMap<String, std::path::PathBuf>>,
     vinyl_painted: hashbrown::HashSet<String>,
@@ -3293,21 +3298,18 @@ if keep || c.state.pos.distance(center) < 450.0 {
             return;
         }
         if self.plate_art.is_none() {
+            // (the plate font is the second of F-11553's four, fnt_license_plate)
             let root = &world.assets.root;
             let font = std::fs::read(root.join("vehicle/shared_font/fnt_license_plate.dds")).ok().and_then(|d| mcla_formats::dds::parse_dds("fnt_license_plate", &d).ok()).filter(|t| t.width == 256 && t.height == 256).map(|t| t.to_rgba8());
-            let dir = root.join("resources/license_plates/backgrounds/plate_ca_00");
-            let file = std::fs::read_dir(&dir).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.extension().map_or(false, |x| x == "r1")));
-            let bg = file.and_then(|f| crate::assets::load_resource_file(&f).ok()).and_then(|res| {
-                let rd = mcla_formats::rage::Rd::new(&res);
-                rd.ptr(0).and_then(|o| mcla_formats::rage::texture::Texture::parse(&rd, o).ok()).map(|t| (t.width, t.height, t.to_rgba8()))
-            });
-            self.plate_art = Some(match (bg, font) {
-                (Some((w, h, px)), Some(f)) => (w, h, px, f),
-                _ => (0, 0, Vec::new(), Vec::new()),
+            self.plate_art = Some(match font {
+                Some(f) => (load_plate_bg(root, "plate_ca_00"), f),
+                None => (None, Vec::new()),
             });
         }
-        let Some((w, h, bg, font)) = self.plate_art.clone() else { return };
-        if w == 0 {
+        let Some((Some(ca), font)) = self.plate_art.clone() else {
+            if self.plate_art.is_none() {
+                return;
+            }
             // no art: stop trying
             let white = gpu.white.clone();
             let b = gpu.texture_bind_group(&white, &white, 0, 0);
@@ -3315,7 +3317,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 c.plate = Some(b.clone());
             }
             return;
-        }
+        };
         for i in 0..self.cars.len() {
             if self.cars[i].plate.is_some() || !self.cars[i].placed {
                 continue;
@@ -3342,62 +3344,23 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let text = self.cars[i].plate_text.to_ascii_uppercase();
             // (the player's plate on its own background)
             let own_bg = self.player_plate_bg.clone().filter(|n| self.cars[i].is_player && n != "plate_ca_00").and_then(|n| {
-                let art = self.plate_bgs.entry(n.clone()).or_insert_with(|| {
-                    // (a background's folder holds two files; the texture is the one with an
-                    // object behind its root pointer - not always the first of the two)
-                    let dir = world.assets.root.join("resources/license_plates/backgrounds").join(&n);
-                    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).ok().map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "r1")).collect()).unwrap_or_default();
-                    files.sort();
-                    files.into_iter().find_map(|f| {
-                        let res = crate::assets::load_resource_file(&f).ok()?;
-                        let rd = mcla_formats::rage::Rd::new(&res);
-                        rd.ptr(0).and_then(|o| mcla_formats::rage::texture::Texture::parse(&rd, o).ok()).map(|t| (t.width, t.height, t.to_rgba8()))
-                    })
-                });
+                let art = self.plate_bgs.entry(n.clone()).or_insert_with(|| load_plate_bg(&world.assets.root, &n));
                 art.clone().map(|a| (n, a))
             });
-            let (slot, w, h, bg) = match own_bg {
-                Some((n, (bw, bh, px))) => (format!("{text}@{n}"), bw, bh, px),
-                None => (text.clone(), w, h, bg.clone()),
+            let (slot, bg) = match own_bg {
+                Some((n, a)) => (format!("{text}@{n}"), a),
+                None => (text.clone(), ca.clone()),
             };
             let made = self.plates.get(&slot).and_then(|b| b.upgrade());
             if made.is_none() {
                 self.plates.retain(|_, b| b.strong_count() > 0);
-                let (w, h) = (w as usize, h as usize);
-                let mut px = bg.clone();
-                let chars: Vec<char> = text.chars().take(8).collect();
-                // glyphs fill the middle band of the plate
-                let ch = (h as f32 * 0.50) as usize;
-                let cw = ((w as f32 * 0.86) / chars.len().max(6) as f32).min(ch as f32 * 0.72) as usize;
-                let x0 = (w - cw * chars.len()) / 2;
-                let y0 = (h as f32 * 0.30) as usize;
-                for (k, c) in chars.iter().enumerate() {
-                    let cell = match *c {
-                        '0'..='9' => *c as usize - '0' as usize,
-                        'A'..='Z' => 10 + *c as usize - 'A' as usize,
-                        '[' => 36,
-                        '\\' => 37,
-                        ']' => 38,
-                        '^' => 39,
-                        _ => continue,
-                    };
-                    let (gx, gy) = (cell % 8 * 32, cell / 8 * 32);
-                    for y in 0..ch {
-                        for x in 0..cw {
-                            let (sx, sy) = (gx + x * 32 / cw, gy + y * 32 / ch);
-                            let a = font[(sy * 256 + sx) * 4 + 3] as u32;
-                            if a == 0 {
-                                continue;
-                            }
-                            let o = ((y0 + y) * w + x0 + k * cw + x) * 4;
-                            // embossed dark blue characters (PS_Plate's letter colour, c109: 0.1412 0.1647 0.3412)
-                            for (j, ink) in [36u32, 42, 87].iter().enumerate() {
-                                px[o + j] = ((px[o + j] as u32 * (255 - a) + ink * a) / 255) as u8;
-                            }
-                        }
-                    }
-                }
-                let tex = Arc::new(crate::render::create_rgba(&gpu.device, &gpu.queue, w as u32, h as u32, &px, "plate"));
+                let (w, h) = (bg.w, bg.h);
+                let px = compose_plate(&bg, &font, &text);
+                // (as stored, like the car's other maps: city.wgsl decodes the sample once and PS_Plate's ^1.6 gets the
+                // stored value back through car_raw. A gamma upload was decoded twice - the plate dark and saturated, its
+                // blue 4, 17, 192 where the original's is 56, 100, 250. MCLA_PLATE_GAMMA_OLD=1: as before)
+                let gamma = !car_tex_raw() || std::env::var("MCLA_PLATE_GAMMA_OLD").is_ok();
+                let tex = Arc::new(crate::render::create_rgba_as(&gpu.device, &gpu.queue, w as u32, h as u32, &px, "plate", gamma));
                 let key = mcla_formats::hash::joaat(&format!("plate:{slot}")) | 1;
                 let bind = gpu.texture_bind_group(&tex, &tex, key, key);
                 self.plates.insert(slot.clone(), Arc::downgrade(&bind));
@@ -4777,11 +4740,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // outward, from the bead the tyre was built with (WheelModel::tyre_bead). A car without a set-up: its build's
                 // bead, as before. Traffic: none - VSAmbientTire. MCLA_TYRE_BEAD_OLD=1: none)
                 if let (Some(w), false, true) = (c.wheels.as_ref().or(c.model.wheels.as_ref()).or(self.wheels.as_ref()), c.is_ambient() || i >= 4, std::env::var("MCLA_TYRE_BEAD_OLD").is_err()) {
-                    // (only where the rim drawn is the set-up's: the front axle's bead equals the one the wheel was built with. The
-                    // player's chosen rim size is not fed into a set-up yet - then the built bead, as before. city.wgsl also draws
+                    // (only where the rim drawn is the set-up's: the front axle's bead equals the one the wheel was built with, or
+                    // the player's, whose set-up is its record's DIMENSIONS, the rim size chosen among them. city.wgsl also draws
                     // the rim at (0.406 + k) / built of its size: the original sizes a rim from its axle's diameter alone, 1.25 x
                     // rimR (F-43091), where the port's rim grows with the axle's tyre)
-                    let fit = c.setup.or(c.model.fit).filter(|f| !c.model.bike && (f.bead[0] + 0.406 - w.tyre_bead).abs() < 1e-4);
+                    let fit = c.setup.filter(|_| c.is_player).or(c.setup.or(c.model.fit).filter(|f| (f.bead[0] + 0.406 - w.tyre_bead).abs() < 1e-4)).filter(|_| !c.model.bike);
                     let k = if c.model.bike { 0.0 } else { fit.map_or(w.tyre_bead - 0.406, |f| f.bead[(i >= 2) as usize]) };
                     finish[4] = [w.tyre_bead, k, 1.0, 0.0];
                 }
@@ -6190,6 +6153,149 @@ fn wheel_backside(gpu: &mut Gpu, root: &Path, xf: Mat4) -> Vec<GpuBatch> {
     out
 }
 
+/// A plate background as F-34887 loads it (mcCarLicensePlateBGResource, the background folder's file whose object
+/// has a texture behind +8): the texture (RGBA), the letters' tint (+16), place (+32, +36) and size (+40, +44).
+#[derive(Clone)]
+pub struct PlateBg {
+    pub w: usize,
+    pub h: usize,
+    pub px: Vec<u8>,
+    pub tint: [f32; 3],
+    pub pos: [f32; 2],
+    pub div: [f32; 2],
+}
+
+/// The background `name` of `resources/license_plates/backgrounds` (none when its record is missing).
+pub fn load_plate_bg(root: &std::path::Path, name: &str) -> Option<PlateBg> {
+    let dir = root.join("resources/license_plates/backgrounds").join(name);
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "r1")).collect();
+    files.sort();
+    files.into_iter().find_map(|f| {
+        let res = crate::assets::load_resource_file(&f).ok()?;
+        let rd = mcla_formats::rage::Rd::new(&res);
+        // (the folder's other file is a texture alone; the plate draw uses the record's own)
+        let t = rd.ptr(8).and_then(|o| mcla_formats::rage::texture::Texture::parse(&rd, o).ok())?;
+        Some(PlateBg {
+            w: t.width as usize,
+            h: t.height as usize,
+            px: t.to_rgba8(),
+            tint: [rd.f32(16), rd.f32(20), rd.f32(24)],
+            pos: [rd.f32(32), rd.f32(36)],
+            div: [rd.f32(40), rd.f32(44)],
+        })
+    })
+}
+
+/// The plate's texture with its seven letters, as PS_Plate draws them over the background on each texel: F-64389
+/// sets licensePlateFontPos = (pos.x, -pos.y), licensePlateFontScale = (1 / div.x, 1 / div.y), the tint, and
+/// letterIdxs = the cells of the seven characters (F-79104: 0-9, A-Z, `[\]^` and `:;<=` 36..39, anything else
+/// cell 63, empty).
+/// With U = 7.4 sx sat(u - fx - 0.03) and V = 2 sy sat(v - fy - 0.37), column trunc(U) (0..6) and row trunc(V)
+/// (0) hold a letter, sampled at its cell + letterSize (1/8) x the fractions in the 8-cell atlas; the colour is
+/// lerp(background, tint, font alpha) where u, v are past the letters' corner. The program also multiplies by the
+/// font's colour, which is white in the whole atlas. A divisor of 0 (the Rockstar plates) puts every column past
+/// 6: no letters.
+pub fn compose_plate(bg: &PlateBg, font: &[u8], text: &str) -> Vec<u8> {
+    let mut px = bg.px.clone();
+    if font.len() < 256 * 256 * 4 {
+        return px;
+    }
+    let mut cells = [63usize; 7];
+    for (k, c) in text.chars().take(7).enumerate() {
+        cells[k] = match c.to_ascii_uppercase() {
+            c @ '0'..='9' => c as usize - '0' as usize,
+            c @ 'A'..='Z' => 10 + c as usize - 'A' as usize,
+            '[' | ':' => 36,
+            '\\' | ';' => 37,
+            ']' | '<' => 38,
+            '^' | '=' => 39,
+            _ => 63,
+        };
+    }
+    let (fx, fy) = (bg.pos[0] + 0.03, -bg.pos[1] + 0.37);
+    let (sx, sy) = (1.0 / bg.div[0], 1.0 / bg.div[1]);
+    // (the atlas sampled bilinearly, clamped at its edges)
+    let alpha = |u: f32, v: f32| -> f32 {
+        let (x, y) = (u * 256.0 - 0.5, v * 256.0 - 0.5);
+        let (x0, y0) = (x.floor(), y.floor());
+        let (tx, ty) = (x - x0, y - y0);
+        let at = |x: f32, y: f32| font[((y.clamp(0.0, 255.0) as usize) * 256 + x.clamp(0.0, 255.0) as usize) * 4 + 3] as f32 / 255.0;
+        let top = at(x0, y0) * (1.0 - tx) + at(x0 + 1.0, y0) * tx;
+        let bot = at(x0, y0 + 1.0) * (1.0 - tx) + at(x0 + 1.0, y0 + 1.0) * tx;
+        top * (1.0 - ty) + bot * ty
+    };
+    for y in 0..bg.h {
+        let v = (y as f32 + 0.5) / bg.h as f32;
+        if v - fy < 0.0 {
+            continue;
+        }
+        let rv = 2.0 * sy * (v - fy).min(1.0);
+        for x in 0..bg.w {
+            let u = (x as f32 + 0.5) / bg.w as f32;
+            if u - fx < 0.0 {
+                continue;
+            }
+            let ru = 7.4 * sx * (u - fx).min(1.0);
+            if !(ru.trunc() <= 6.0 && rv.trunc() <= 0.0) {
+                continue;
+            }
+            let cell = cells[ru.trunc() as usize];
+            let a = alpha((cell % 8) as f32 / 8.0 + 0.125 * ru.fract(), (cell / 8) as f32 / 8.0 + 0.125 * rv.fract());
+            if a <= 0.0 {
+                continue;
+            }
+            let o = (y * bg.w + x) * 4;
+            for j in 0..3 {
+                let b = px[o + j] as f32 / 255.0;
+                px[o + j] = ((b + a * (bg.tint[j] - b)) * 255.0).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    px
+}
+
+#[cfg(test)]
+mod plate_tests {
+    use super::*;
+
+    fn bg(pos: [f32; 2], div: [f32; 2]) -> PlateBg {
+        PlateBg { w: 64, h: 32, px: vec![255; 64 * 32 * 4], tint: [0.6706, 0.1216, 0.1216], pos, div }
+    }
+
+    /// A full atlas: every cell opaque but the empty one (63).
+    fn font() -> Vec<u8> {
+        let mut f = vec![255u8; 256 * 256 * 4];
+        for y in 224..256 {
+            for x in 224..256 {
+                f[(y * 256 + x) * 4 + 3] = 0;
+            }
+        }
+        f
+    }
+
+    /// plate_al_00's record: the tint inside the letters' box (columns from u = 0.045, the row from
+    /// v = 0.285 for 1 / (2 x 1/0.97)), the background outside it, and none on a space.
+    #[test]
+    fn letters_take_the_record_tint_and_box() {
+        let b = bg([0.015, 0.085], [0.97, 0.97]);
+        let px = compose_plate(&b, &font(), "AAAAAAA");
+        let at = |x: usize, y: usize| &px[(y * 64 + x) * 4..(y * 64 + x) * 4 + 3];
+        assert_eq!(at(10, 16), &[171, 31, 31]);
+        assert_eq!(at(1, 16), &[255, 255, 255]);
+        assert_eq!(at(10, 4), &[255, 255, 255]);
+        assert_eq!(at(10, 29), &[255, 255, 255]);
+        let sp = compose_plate(&b, &font(), " AAAAAA");
+        assert_eq!(&sp[(16 * 64 + 4) * 4..(16 * 64 + 4) * 4 + 3], &[255, 255, 255]);
+    }
+
+    /// The Rockstar plates (pos -1, 1, divisors 0): no letters at all.
+    #[test]
+    fn rockstar_plates_have_no_letters() {
+        let b = bg([-1.0, 1.0], [0.0, 0.0]);
+        assert_eq!(compose_plate(&b, &font(), "RG45ABC"), b.px);
+    }
+}
+
 #[cfg(test)]
 mod ambient_paint_tests {
     /// Traffic paint against the original (work/trafpaint): c124 recorded in the running game, o6 of
@@ -6342,7 +6448,9 @@ impl Vehicles {
                 continue;
             }
             let pose = c.render_pose(alpha);
-            let strength = ((60.0 - pose.pos.distance(eye)) / 30.0).clamp(0.0, 1.0);
+            // (F-27833: the distance from the viewport's eye to F-41581's point - the car's matrix times its bound's
+            // centroid, the LOD sphere's centre - not to the car's origin)
+            let strength = ((60.0 - (pose.pos + pose.rot * c.model.lod_centre).distance(eye)) / 30.0).clamp(0.0, 1.0);
             if strength <= 0.001 {
                 continue;
             }

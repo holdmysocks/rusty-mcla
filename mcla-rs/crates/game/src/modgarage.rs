@@ -85,7 +85,8 @@ impl Game {
     /// game has (a placeholder cannot be driven: the first car of the garage that is here).
     pub fn load_mod_garage(&mut self, order: Vec<String>, mod_cars: BTreeMap<String, ModCarSave>, current: &str) {
         let dirs: Vec<String> = self.car_dirs.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).collect();
-        let present = |n: &str| dirs.iter().any(|d| d.eq_ignore_ascii_case(n)) || crate::modcars::is_mod_car(n);
+        // (a further copy, `<folder>#2`, is here when its model is)
+        let present = |n: &str| { let n = crate::catalog::model_of(n); dirs.iter().any(|d| d.eq_ignore_ascii_case(n)) || crate::modcars::is_mod_car(n) };
         let (owned, missing) = split(order, present);
         if !missing.is_empty() {
             log::info!("garage: {} car(s) of mods that are not installed kept as placeholders: {}", missing.len(), missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", "));

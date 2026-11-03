@@ -325,10 +325,20 @@ pub const VEHICLES: [&str; 69] = [
     "vp_se_dge_ubp_06", "vp_se_dge_chp_06",
 ];
 
+/// F-31343's step of a plate background: `bg + d` brought into 0..n by C's remainder, n added when the sum is below 0
+/// (exact for a step of one either way, which is all the editor gives); 0 when there is a single background.
+pub fn plate_bg_step(bg: u8, d: i32, n: i32) -> u8 {
+    let v = bg as i32 + d;
+    if n == 1 {
+        return 0;
+    }
+    (v % n + if v < 0 { n } else { 0 }) as u8
+}
+
 /// A vehicle's table index: its place in `VEHICLES`, a mod car's after them (69 + its place in name order,
 /// `modcars`; MODS.md M-5), else -1.
 pub fn vehicle_index(name: &str) -> i32 {
-    let n = name.to_ascii_lowercase();
+    let n = crate::catalog::model_of(name).to_ascii_lowercase();
     VEHICLES.iter().position(|v| *v == n).map(|k| k as i32).or_else(|| crate::modcars::table_index(&n).map(|k| k as i32)).unwrap_or(-1)
 }
 
@@ -1493,21 +1503,37 @@ impl Mc4 {
         serde_json::to_value(self).unwrap_or(Value::Null)
     }
 
+    /// The garage slot of a garage key: copy n of a model is its n-th slot (`catalog::key_copy`).
     pub fn car(&self, vehicle: &str) -> Option<&Car> {
-        self.garage.iter().find(|c| c.vehicle.eq_ignore_ascii_case(vehicle))
+        let (model, n) = crate::catalog::key_copy(vehicle);
+        self.garage.iter().filter(|c| c.vehicle.eq_ignore_ascii_case(model)).nth(n - 1)
     }
 
     pub fn car_mut(&mut self, vehicle: &str) -> Option<&mut Car> {
-        self.garage.iter_mut().find(|c| c.vehicle.eq_ignore_ascii_case(vehicle))
+        let (model, n) = crate::catalog::key_copy(vehicle);
+        self.garage.iter_mut().filter(|c| c.vehicle.eq_ignore_ascii_case(model)).nth(n - 1)
     }
 
+    /// The garage keys of the slots in order: a model's first slot by its name, the next ones `#2`, `#3`.
+    pub fn garage_keys(&self) -> Vec<String> {
+        let mut seen: std::collections::HashMap<String, usize> = Default::default();
+        self.garage.iter().map(|c| {
+            let n = seen.entry(c.vehicle.to_ascii_lowercase()).or_default();
+            *n += 1;
+            crate::catalog::copy_key(&c.vehicle, *n)
+        }).collect()
+    }
+
+    /// A model's purchase record (one per model, whatever the copies: F-90134).
     pub fn record(&self, vehicle: &str) -> Option<&VehicleRecord> {
+        let vehicle = crate::catalog::model_of(vehicle);
         self.vehicle_records.iter().find(|r| r.vehicle.as_deref().map_or(false, |v| v.eq_ignore_ascii_case(vehicle)))
     }
 
     /// The model's purchase record, made when there is none (the original keeps one per
     /// entry of the vehicle table, sorted by its index: F-90134).
     pub fn record_mut(&mut self, vehicle: &str) -> &mut VehicleRecord {
+        let vehicle = crate::catalog::model_of(vehicle);
         if let Some(k) = self.vehicle_records.iter().position(|r| r.vehicle.as_deref().map_or(false, |v| v.eq_ignore_ascii_case(vehicle))) {
             return &mut self.vehicle_records[k];
         }
@@ -1522,23 +1548,34 @@ impl Mc4 {
     /// the slot numbers and the slot in use with them.
     pub fn sync_garage(&mut self, owned: &[String], current: &str) {
         let mut out = Vec::with_capacity(self.garage.len());
+        // (copy n of a model is its n-th slot as the block has them, `car`)
+        let keys = self.garage_keys();
+        let mut slots: Vec<Option<Car>> = self.garage.drain(..).map(Some).collect();
+        let mut out_keys = Vec::new();
         for name in owned {
-            if let Some(k) = self.garage.iter().position(|c| c.vehicle.eq_ignore_ascii_case(name)) {
-                out.push(self.garage.remove(k));
+            if let Some(k) = keys.iter().position(|o| o.eq_ignore_ascii_case(name)) {
+                if let Some(c) = slots[k].take() {
+                    out.push(c);
+                    out_keys.push(keys[k].clone());
+                }
             }
         }
         // (records of cars the port does not list as owned stay behind the others: the
         // port's `owned` may lag behind while a car is being bought)
-        let rest: Vec<Car> = self.garage.drain(..).collect();
         let keep_rest = owned.is_empty();
         if keep_rest {
-            out.extend(rest);
+            for (k, c) in slots.into_iter().enumerate() {
+                if let Some(c) = c {
+                    out.push(c);
+                    out_keys.push(keys[k].clone());
+                }
+            }
         }
         for (k, c) in out.iter_mut().enumerate() {
             if c.slot != k as u32 {
                 c.slot = k as u32;
             }
-            let cur = c.vehicle.eq_ignore_ascii_case(current);
+            let cur = out_keys[k].eq_ignore_ascii_case(current);
             if c.current != cur {
                 c.current = cur;
             }
@@ -1779,8 +1816,9 @@ fn close(a: [f32; 3], b: [f32; 3]) -> bool {
 }
 
 impl Game {
+    /// The garage key of index `i`, lower case (`Game::dir_name`: `<folder>#n` for a further copy).
     fn mc4_car_name(&self, i: usize) -> String {
-        self.car_dirs.get(i).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+        self.dir_name(i).to_ascii_lowercase()
     }
 
     /// The block of a save that was read.
@@ -1818,8 +1856,8 @@ impl Game {
                 }
                 // (the parts the port keeps in `xparts` since: from the records of a block
                 // that was imported before)
-                for c in m.garage.iter() {
-                    let have = self.xparts.entry(c.vehicle.to_ascii_lowercase()).or_default();
+                for (c, key) in m.garage.iter().zip(m.garage_keys()) {
+                    let have = self.xparts.entry(key.to_ascii_lowercase()).or_default();
                     for (key, byte) in XPART_BYTES {
                         if !have.contains_key(key) && c.part(byte) != 0 {
                             have.insert(key.to_string(), c.part(byte) as usize);
@@ -1877,6 +1915,9 @@ impl Game {
             return None;
         }
         if m.car(car).is_none() {
+            // (a further copy's slot is its model's: `catalog::model_of`)
+            let key = car;
+            let car = crate::catalog::model_of(key);
             let cfg = config.map(|s| s.to_string()).unwrap_or_else(|| car.to_string());
             let slot = m.garage.len() as u32;
             // (by the set-up's name hash where the install named the file otherwise: the S7's and the
@@ -4709,7 +4750,7 @@ impl Game {
     /// stage 1 when the level is above 0, for stage 2 when above 1). The port's tags
     /// "performance:<k * 3 + stage>" hold it, with or without the block.
     pub fn perf_owned(&self, car: &str, k: usize) -> u8 {
-        let Some(tags) = self.parts_owned.get(&car.to_ascii_lowercase()) else { return 0 };
+        let Some(tags) = self.parts_owned.get(&crate::catalog::model_of(car).to_ascii_lowercase()) else { return 0 };
         let has = |s: usize| tags.iter().any(|t| t.strip_prefix("performance:").and_then(|n| n.parse::<usize>().ok()) == Some(k * 3 + s));
         if has(2) { 2 } else if has(1) { 1 } else { 0 }
     }
@@ -4726,12 +4767,30 @@ impl Game {
             }
         }
         self.mc4_parts_bought(car, &tags, cost);
-        let have = self.parts_owned.entry(car.to_ascii_lowercase()).or_default();
+        let have = self.parts_owned.entry(crate::catalog::model_of(car).to_ascii_lowercase()).or_default();
         for t in tags {
             if !have.contains(&t) {
                 have.push(t);
             }
         }
+    }
+
+    /// The vehicle in use's colours its driver is lit by (F-42959 reads them from the vehicle's record): gauge colour A
+    /// (DashGaugeColor, +0x70) and the interior neon's colour (IntNeonColor, +0x60) as the record holds them (display
+    /// values, as the garage's row sets them: `slot_hsv` 1 / 0, else the record's), w of the neon = IntNeonIntensity (+0x174).
+    pub fn cabin_light_colors(&self) -> [[f32; 4]; 2] {
+        let cur = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
+        let rec = self.mc4.as_ref().and_then(|m| m.car(&cur));
+        let field = |k: usize, v: Option<&Vec<F>>| -> [f32; 3] {
+            match (self.slot_hsv[k], v.filter(|v| v.len() >= 3)) {
+                (Some(h), _) => hsv_rgb(h),
+                (None, Some(v)) => [v[0].0 as f32, v[1].0 as f32, v[2].0 as f32],
+                (None, None) => [0.0; 3],
+            }
+        };
+        let g = field(1, rec.map(|c| &c.visual.DashGaugeColor));
+        let n = field(0, rec.map(|c| &c.visual.IntNeonColor));
+        [[g[0], g[1], g[2], 1.0], [n[0], n[1], n[2], if self.int_neon { 1.0 } else { 0.0 }]]
     }
 
     /// The cabin's five colour groups for the renderer (INTERIOR COLOR A..E; linear, w 1 =
@@ -5025,7 +5084,7 @@ impl Game {
         const TAGS: [&str; 2] = ["paint:0", "vinyl:0"];
         let n = n.min(1);
         let car = self.mc4_car_name(self.current_car);
-        if self.parts_free() || self.parts_owned.get(&car).map_or(false, |v| v.iter().any(|t| t == TAGS[n])) {
+        if self.parts_free() || self.parts_owned.get(crate::catalog::model_of(&car)).map_or(false, |v| v.iter().any(|t| t == TAGS[n])) {
             return true;
         }
         if self.money < MISC_PRICE {
@@ -5064,7 +5123,7 @@ impl Game {
         let car = self.mc4_car_name(self.current_car);
         self.money -= MISC_PRICE;
         self.mc4_parts_bought(&car, &[tag.clone()], MISC_PRICE);
-        let have = self.parts_owned.entry(car).or_default();
+        let have = self.parts_owned.entry(crate::catalog::model_of(&car).to_string()).or_default();
         if !have.contains(&tag) {
             have.push(tag);
         }
@@ -5261,9 +5320,14 @@ impl Game {
 
     /// That background's name (the list is read once).
     pub fn mc4_plate_bg_name(&self) -> Option<String> {
-        static LIST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         let k = self.mc4_plate_bg()? as usize;
-        let mut list = LIST.lock().ok()?;
+        self.plate_bg_list().get(k).cloned()
+    }
+
+    /// The plate backgrounds, `backgrounds` of tune/vehicle/license_plates.list (read once).
+    fn plate_bg_list(&self) -> Vec<String> {
+        static LIST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let Ok(mut list) = LIST.lock() else { return Vec::new() };
         if list.is_empty() {
             // (not kept while it cannot be read: the game's data folder is set after the
             // first frames)
@@ -5271,7 +5335,27 @@ impl Game {
             // ("backgrounds", "{", the names, "}")
             *list = t.lines().map(|l| l.trim()).skip_while(|l| *l != "{").skip(1).take_while(|l| *l != "}").filter(|l| !l.is_empty()).map(|l| l.to_string()).collect();
         }
-        list.get(k).cloned()
+        list.clone()
+    }
+
+    /// CHANGE STATE in the plate editor (garage.ChangePlateType, F-31343): the vehicle's LicenseBG moved by `d`
+    /// round the backgrounds - (bg + d) mod n, from n - 1 again below 0; 0 when there is one background, kept when
+    /// there is none.
+    pub fn mc4_change_plate_bg(&mut self, d: i32) {
+        let n = self.plate_bg_list().len() as i32;
+        if let Some(bg) = self.mc4_plate_bg() {
+            if n > 0 {
+                self.mc4_set_plate_bg(plate_bg_step(bg, d, n));
+            }
+        }
+    }
+
+    /// The vehicle's LicenseBG set (RestoreLicensePlate puts the one the editor opened on back).
+    pub fn mc4_set_plate_bg(&mut self, bg: u8) {
+        let car = self.car_x.car.clone();
+        if let Some(c) = self.mc4.as_mut().and_then(|m| m.car_mut(&car)) {
+            c.visual.LicenseBG = bg;
+        }
     }
 
     /// What the port's own per-vehicle fields hold, into the vehicles' records, so that the
@@ -5284,8 +5368,10 @@ impl Game {
             let b = std::fs::read(crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), car)?).ok()?;
             b.get(0x846).copied()
         };
-        for c in m.garage.iter_mut() {
-            let name = c.vehicle.to_ascii_lowercase();
+        // (each slot by its garage key: a further copy of a model has its own state - `Mc4::garage_keys`)
+        let keys = m.garage_keys();
+        for (c, key) in m.garage.iter_mut().zip(keys) {
+            let name = key.to_ascii_lowercase();
             let is_cur = name == cur;
             // --- paint: the body's colour, type and fade; the areas painted by themselves ---
             let paint = if is_cur {
@@ -5420,7 +5506,7 @@ impl Game {
             // record that still names a menu row goes back to the set-up's)
             let want = match xp.and_then(|x| x.get("brakes")).copied() {
                 Some(b) if (1..=4).contains(&b) => Some(b as u8),
-                _ if (1..=4).contains(&c.visual.BrakeMdlIdx) && xp.is_some() => stock_brake(&name).filter(|b| !(1..=4).contains(b)),
+                _ if (1..=4).contains(&c.visual.BrakeMdlIdx) && xp.is_some() => stock_brake(crate::catalog::model_of(&name)).filter(|b| !(1..=4).contains(b)),
                 _ => None,
             };
             if let Some(b) = want {
@@ -6593,6 +6679,9 @@ impl Game {
         let panel = (format!("{}{}", TT_PANEL, st("TIME_HEADER", "TIME")), vec![line("TARGET_TIME_FORMAT", "TARGET TIME: ", tt_clock(target)), line("YOUR_TIME_FORMAT", "YOUR TIME: ", ms.map_or("--:--.--".to_string(), tt_clock))], beaten);
         self.mission_results.insert(0, panel);
         self.career.tt_last = Some(beaten);
+        if beaten {
+            self.career.event(crate::career::Ev::Str("MISSION_EVENT", TIME_TRIALS[d].key));
+        }
         // (step 19d: form 56's banner for 3.5 s first - a run that was complete or failed;
         // `mc4_banner_page`)
         if ms.is_some() {
@@ -8316,6 +8405,8 @@ pub struct SetupLook {
 ///     `interior_groups`;
 ///   - the window tint at 0x160 (colour, darkness): `tint_rgba`;
 ///   - the tire set, 0x845 (`TIRES`), and the brake model, 0x846 (`BRAKES`).
+///   - the driver's light colours: gauge colour A at 0x70, the interior neon's at 0x60 and its intensity at 0x174
+///     (`cabin_light`, F-42959).
 /// Step 19e: a set-up's licence plate text (0x847, seven letters; letters, digits and spaces).
 pub fn setup_plate(b: &[u8]) -> String {
     b.get(0x847..0x84e).map_or(String::new(), |l| l.iter().take_while(|c| **c != 0).filter(|c| c.is_ascii_alphanumeric() || **c == b' ').map(|c| *c as char).collect::<String>().trim().to_string())
@@ -8338,7 +8429,11 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let body_a = rgb(0x660)?;
     let body = paint_as_drawn(area(0));
     let body_b = to_linear(body.b);
-    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3] };
+    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2] };
+    // (the driver's gauge and interior neon colours, as the record holds them, the neon's IntNeonIntensity in w - F-42959)
+    let raw = |o: usize| [f(o), f(o + 4), f(o + 8)];
+    let (g, n) = (raw(0x70), raw(0x60));
+    look.cabin_light = [[g[0], g[1], g[2], 1.0], [n[0], n[1], n[2], f(0x174)]];
     for k in 1..6 {
         // (a part's colour goes through the port's 8-bit store, as an imported record's)
         let own_a = rgb(0x660 + 0x30 * k).filter(|h| (0..3).any(|i| (h[i] - body_a[i]).abs() > 0.02)).map(|h| to_linear([(h[0] * 255.0).round() / 255.0, (h[1] * 255.0).round() / 255.0, (h[2] * 255.0).round() / 255.0]));
@@ -10915,6 +11010,7 @@ impl Game {
             if let Some(k) = self.owned.iter().position(|o| o.eq_ignore_ascii_case(&run.stake_car)) {
                 let c = self.owned.remove(k);
                 self.owned.push(c);
+                self.renumber_copies();
             }
             let m = self.mc4.get_or_insert_with(|| Mc4::seeded(fresh));
             // (RemovePinkSlipProfile(location, stake), then (location, profile): 0x6026 / 0x6037 -
@@ -10928,15 +11024,20 @@ impl Game {
                 self.career.give_car(&run.profile.setup);
                 self.career.pink_slip_won(&run.key);
             } else {
+                // (a model in the garage already comes as a further copy, a slot of its own: F-91320)
                 let car = run.profile.car.to_ascii_lowercase();
+                let have = self.owned.iter().filter(|o| crate::catalog::model_of(o).eq_ignore_ascii_case(&car)).count();
+                let known = self.car_dirs.iter().any(|d| d.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case(&car)));
                 if let Some(mut rec) = run.profile.record.clone() {
-                    if m.car(&car).is_none() {
+                    if m.car(&crate::catalog::copy_key(&car, have + 1)).is_none() {
                         rec.slot = m.garage.len() as u32;
                         m.garage.push(rec);
                     }
                 }
-                if !self.owned.iter().any(|o| o.eq_ignore_ascii_case(&car)) && self.car_dirs.iter().any(|d| d.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case(&car))) {
-                    self.owned.push(car);
+                if known {
+                    let key = crate::catalog::copy_key(&car, have + 1);
+                    self.car_index(&key);
+                    self.owned.push(key);
                 }
             }
             self.dirty = true;
@@ -10953,6 +11054,7 @@ impl Game {
                 // (main stands the next vehicle in when the race is left)
                 self.borrowed = true;
             }
+            self.renumber_copies();
         }
         self.dirty = true;
         // (step 23b: logged, and the test hook's save as on a win)
@@ -12780,6 +12882,15 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
+    /// CHANGE STATE round the 77 plate backgrounds (F-31343): on from plate_ca_00, back from the first to the last.
+    #[test]
+    fn plate_backgrounds_go_round() {
+        assert_eq!(super::plate_bg_step(4, 1, 77), 5);
+        assert_eq!(super::plate_bg_step(76, 1, 77), 0);
+        assert_eq!(super::plate_bg_step(0, -1, 77), 76);
+        assert_eq!(super::plate_bg_step(9, -1, 1), 0);
+    }
+
     /// F-47840 (the original's rgb to hsv) run offline on its own generated code
     /// (tools/map_hsv_reference.py): 4,716 inputs, every output float bit for bit.
     #[test]
@@ -12935,6 +13046,48 @@ mod tests {
             same(&save["mc4"], &saved_block(&dir), &format!("{name}, second cycle"));
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// A model bought while one is in the garage is a slot of its own (F-91320): two records of the model in the
+    /// block, each copy with its own paint and plate, through a save and a reload; selling the first moves the
+    /// second down to the model's own key with its state.
+    #[test]
+    fn a_model_bought_twice_has_two_slots() {
+        let Some((mut g, dir, _)) = game_on("full_import.json", "dup") else {
+            eprintln!("(no fixture full_import.json: skipped)");
+            return;
+        };
+        let base = g.current_car;
+        let model = g.model_name(base).to_ascii_lowercase();
+        let slots = |g: &Game| g.mc4.as_ref().unwrap().garage.iter().filter(|c| c.vehicle.eq_ignore_ascii_case(&model)).count();
+        assert_eq!(slots(&g), 1);
+        g.money = 10_000_000;
+        g.rep = 10_000_000;
+        let k = g.purchase_index(base);
+        assert_ne!(k, base);
+        assert_eq!(g.dir_name(k), format!("{model}#2"));
+        assert!(g.try_buy(k));
+        assert_eq!(g.owned.iter().filter(|o| crate::catalog::model_of(o).eq_ignore_ascii_case(&model)).count(), 2);
+        assert_eq!(slots(&g), 2);
+        g.plates.insert(model.clone(), "FIRST1".into());
+        g.plates.insert(format!("{model}#2"), "SECOND2".into());
+        g.write_save(&dir);
+        let mut g2 = Game::new(g.car_dirs[..g.car_dirs.len() - 1].to_vec(), 0);
+        g2.data_dir = dir.clone();
+        g2.load_save(&dir);
+        g2.ensure_owned();
+        assert_eq!(slots(&g2), 2);
+        let k2 = g2.car_index(&format!("{model}#2")).unwrap();
+        assert!(g2.is_owned(k2));
+        assert_eq!(g2.plates.get(&format!("{model}#2")).map(|s| s.as_str()), Some("SECOND2"));
+        let b2 = g2.car_index(&model).unwrap();
+        g2.current_car = k2;
+        g2.selected_car = k2;
+        g2.sell_car(b2);
+        assert_eq!(g2.owned.iter().filter(|o| crate::catalog::model_of(o).eq_ignore_ascii_case(&model)).count(), 1);
+        assert_eq!(g2.plates.get(&model).map(|s| s.as_str()), Some("SECOND2"));
+        assert_eq!(g2.dir_name(g2.current_car), model);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn data_dir() -> String {
@@ -16580,6 +16733,7 @@ mod tests {
             g.career.call_delivered(call);
             assert_eq!((g.career.state_id_of(k), g.career.log_order().contains(&k)), (3, true), "{call}");
             g.career.event(Ev::Race { district: "Hollywood", place: 1, hookman: true, class: "TUNER", race, beat_goal: false });
+            g.career.core_race_end(call, 1, true, rep);
             g.rep = rep;
             g.career.event(Ev::Rep(rep));
         }
@@ -16602,6 +16756,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// R4: an ARCADE race with POWER UPS on pays nothing (F-12673 drops the race's events while
+    /// F-83812 holds); with them off it pays the ARCADE share.
+    #[test]
+    fn arcade_power_ups_pay_nothing() {
+        let mut g = Game::new(Vec::new(), 0);
+        g.arcade_restore = Some((0, 3));
+        g.arcade_opts[2] = 1;
+        g.award_race(1, 4);
+        assert_eq!(g.last_reward, (0, 0));
+        g.arcade_opts[2] = 0;
+        g.award_race(1, 4);
+        assert!(g.last_reward.0 > 0 && g.last_reward.1 > 0, "{:?}", g.last_reward);
+    }
+
     /// GitHub #34. A red light win against the mission's man completes REDLIGHT_GH_01 (its list is
     /// not the blitz races); a story series is the man's first to nRacesToWin, its wins go with
     /// the series, and the rival's two end it.
@@ -16620,6 +16788,10 @@ mod tests {
             let place = if winner == "YOU" { 1 } else { 2 };
             g.career.series_race(id, winner);
             g.career.event(crate::career::Ev::Race { district: "Hollywood", place, hookman: true, class: "MUSCLE", race: id, beat_goal: false });
+            // (the red light man's MISSION_EVENT after his race won, as main.rs posts it)
+            if place == 1 && id.eq_ignore_ascii_case(crate::althk::REDLIGHT_RACE_ID) {
+                g.career.mission_event("RED_LIGHT_GH_01_COMPLETE");
+            }
         };
         // (not by a blitz race)
         race(&mut g, "game/race/hollywood/blitz/hw_blitz_mb_01", "YOU");
@@ -16633,9 +16805,10 @@ mod tests {
         assert_eq!((races[0].as_str(), races.len(), need), ("hollywood/ordered/hw_ordered_mb_02", 3, 2));
         let r: Vec<String> = races.iter().map(|r| format!("game/race/{}", r)).collect();
         let progress = |g: &Game| g.career.save().missions["BESTOF_GH_04"].progress.clone();
-        // (one win, the series given up: nothing kept)
+        // (one win, the series given up: nothing kept - the condition is met by SERIES_COMPLETE
+        // alone, the wins are the series' own)
         race(&mut g, &r[0], "YOU");
-        assert_eq!(progress(&g), vec![1]);
+        assert_eq!(progress(&g), vec![0]);
         g.career.series_drop("BESTOF_GH_04");
         assert_eq!(progress(&g), vec![0]);
         // (the rival's second win ends it)
@@ -16648,6 +16821,8 @@ mod tests {
         race(&mut g, &r[0], "YOU");
         race(&mut g, &r[1], "GH_04");
         race(&mut g, &r[2], "YOU");
+        assert!(!g.career.mission_complete("BESTOF_GH_04"), "not before the series is won");
+        g.career.series_won(Some("BESTOF_GH_04"), "BESTOF_GH_04");
         assert!(g.career.mission_complete("BESTOF_GH_04"));
         let saved = g.career.save();
         let mut c = crate::career::Career::load(&data_dir());
@@ -17096,6 +17271,7 @@ mod tests {
         assert!(!g.mc4_gps_enabled());
         g.career.call_delivered("RACE_GH_06");
         g.career.event(Ev::Race { district: "Hollywood", place: 1, hookman: true, class: "TUNER", race: "game/Race/Hollywood/Ordered/hw_ordered_jp_11", beat_goal: false });
+        g.career.core_race_end("RACE_GH_06", 1, true, 100);
         g.rep = 100;
         g.career.event(Ev::Rep(100));
         assert!(!g.mc4_gps_enabled(), "RACE_GH_02 waits for its call");
@@ -17109,6 +17285,7 @@ mod tests {
         // RACE_GH_02 complete: GARAGE_HOLLYWOOD and REP_ON_HW_STRIP (bAutoStart) have no call;
         // RACE_GH_02_CORE plays REP_ON_STRIP_GARAGE
         g.career.event(Ev::Race { district: "Hollywood", place: 1, hookman: true, class: "TUNER", race: "game/Race/Hollywood/Ordered/hw_ordered_ds_02", beat_goal: false });
+        g.career.core_race_end("RACE_GH_02", 1, true, 260);
         g.rep = 260;
         g.career.event(Ev::Rep(260));
         assert!(g.career.mission_complete("RACE_GH_02"));
@@ -17116,7 +17293,7 @@ mod tests {
         assert_eq!(scenes(&g), vec!["REP_ON_HW_STRIP".to_string()]);
         // the garage: GARAGE_HOLLYWOOD complete puts REDLIGHT_GH_01 at READY_TO_START (not in
         // the log); its event script at the garage's door plays the intro and moves it on
-        g.career.event(Ev::Garage);
+        g.career.event(Ev::Str("LOCATION_EVENT", "hw_garage"));
         let k = g.career.mission_no("REDLIGHT_GH_01").unwrap();
         assert!(g.career.mission_complete("GARAGE_HOLLYWOOD"));
         assert_eq!((g.career.state_id_of(k), g.career.log_order().contains(&k)), (2, false));
@@ -17568,6 +17745,8 @@ mod tests {
         g.mlog_guided = true;
         g.mc4_s23_tick(0.016, S23In::default());
         assert!(g.opt_x.arcade.d.say.contains(&"TUTORIAL_MISSION_LOG_GPS".to_string()));
+        // (form 108 stays visible from the ease to pause to the ease from pause: no pause menu - F-38972)
+        assert!(g.opt_x.s23.slow.visible);
         for _ in 0..40 {
             g.mc4_s23_tick(0.016, S23In::default());
         }
@@ -17582,6 +17761,7 @@ mod tests {
             g.mc4_s23_tick(0.016, S23In::default());
         }
         assert_eq!((g.opt_x.s23.lesson, g.mc4_time_scale()), (4, 1.0));
+        assert!(!g.opt_x.s23.slow.visible);
         // (the flags and the block's list are saved)
         g.write_save(&dir);
         let b = saved_block(&dir);
@@ -17589,6 +17769,16 @@ mod tests {
             assert!(b["tutorials_shown"].as_array().unwrap().iter().any(|x| x == f), "{f}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The ARRESTED / TICKETED panel answers the pad's menu buttons in free roam (GitHub #39).
+    #[test]
+    fn arrest_panel_takes_the_pad() {
+        let mut g = Game::new(Vec::new(), 0);
+        g.mode = crate::game::Mode::FreeRoam;
+        assert!(!g.takes_menu_input());
+        g.arrest_panel = Some((0.0, 9.5, 100));
+        assert!(g.takes_menu_input(), "the panel's CONTINUE (A) must reach it outside the pause menu");
     }
 
     /// Step 22b: a vehicle the port staked is kept as the record's bytes (`car_to_xcc`): what
@@ -18130,7 +18320,7 @@ mod tests {
         g.mc4_s23_tick(0.016, S23In::default());
         assert_eq!(g.money, -PURSE_CAP);
         g.money = 12_345;
-        g.career.event(crate::career::Ev::EscapedPolice);
+        g.career.event(crate::career::Ev::Str("MISSION_EVENT", "COP_EVADE"));
         g.mc4_s23_tick(0.016, S23In::default());
         assert_eq!(g.career.stats.get("tPUR").copied(), Some(12_345), "an escape is not money");
         // (the flush: one second at 20 m/s in free roam)

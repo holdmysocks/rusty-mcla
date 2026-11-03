@@ -2,12 +2,12 @@
 //!
 //! The walkers' night program (characters' VSPedNight + PSMultiLight) knows no lamp grid: its
 //! light is diffuse x (gLightAmbient + four lanes of gMultiLightDynamicLightData), a lane giving
-//! colour x sat(strength / d^2) x sat(cone) x sat(n.l). Their render routine (sub_82794358, the
-//! flag byte 0x82830641 = 1) fills the lanes with `sub_822F2C48(mgr, p, walker + 64, 1)`:
+//! colour x sat(strength / d^2) x sat(cone) x sat(n.l). Their render routine (F-68474, the
+//! flag byte 0x82830641 = 1) fills the lanes with `F-44222(mgr, p, walker + 64, 1)`:
 //! * each walker keeps four light records that EASE towards the four lamps of the lamp-grid cell
 //!   under it (lane k -> the cell's k-th lamp, an empty slot -> table lamp 0, which has no light):
 //!   every call the direction from the walker to the record turns 2.5 % of the way, distance,
-//!   colour, direction, strength and cone go 6 % of the way (sub_822F2A30);
+//!   colour, direction, strength and cone go 6 % of the way (F-79205);
 //! * then the dynamic list (the player's two head lamps, the key light) is laid over lanes 3, 2,
 //!   1 (and the fourth record, F-44222): a light takes the next lane when its score strictly beats the best so far - a head lamp
 //!   sat(500 / d^2) x its cone at the walker, the key light (list entry 2) the luminance of its
@@ -39,7 +39,7 @@ fn target(t: &LampTables, p: Vec3) -> [LampRec; 4] {
     t.cell(p).map(|i| t.recs.get(i as usize).copied().unwrap_or_default())
 }
 
-/// sub_822F2960: `from` turned towards `to` by `frac` of the angle between them (to them at
+/// F-27981: `from` turned towards `to` by `frac` of the angle between them (to them at
 /// once when they stand at right angles: |cos| < 0.001).
 pub fn turn(from: Vec3, to: Vec3, frac: f32) -> Vec3 {
     let c = from.dot(to);
@@ -54,7 +54,7 @@ pub fn turn(from: Vec3, to: Vec3, frac: f32) -> Vec3 {
 }
 
 /// The score of a light at `p` (F-60154): sat(strength / d^2) x its cone.
-fn score(l: &LampRec, p: Vec3) -> f32 {
+pub fn score(l: &LampRec, p: Vec3) -> f32 {
     light_score(true, l.pos, -l.back, l.strength, l.cone[0], l.cone[1], p)
 }
 
@@ -118,7 +118,9 @@ impl FigureLight {
         let mut lanes = self.cur;
         let mut best = 0.0f32;
         let mut next = 3usize;
-        let key = d.key.map(|(col, dir)| LampRec { pos: p + dir.normalize_or(Vec3::Y) * 1.0e5, color: col, strength: 1.0e10, back: Vec3::ZERO, cone: [0.0, 1.0] });
+        // (the key light's record stands 100 km from the world's origin along its direction, not from the walker: every
+        // walker of work/checkpoints2/cap/col4.bin, 01:06, has it at (69151.3, -72225.4, -1260.7) in its lane 2)
+        let key = d.key.map(|(col, dir)| LampRec { pos: dir.normalize_or(Vec3::Y) * 1.0e5, color: col, strength: 1.0e10, back: Vec3::ZERO, cone: [0.0, 1.0] });
         for (j, l) in [d.heads[0], d.heads[1], key, d.rec3].into_iter().enumerate() {
             let Some(l) = l else { continue };
             let s = if j == 2 { 0.3 * l.color.x + 0.59 * l.color.y + 0.11 * l.color.z } else { score(&l, p) };
@@ -160,6 +162,10 @@ mod tests {
         let l = f.lanes(Vec3::ZERO, &d);
         assert_eq!(l[0][3], 40.0, "lane 0 stays the grid lamp");
         assert_eq!((l[9][3], l[6][3], l[3][3]), (500.0, 500.0, 1.0e10));
+        // (the key light's place: 1e5 along its direction from the world's origin, wherever the walker stands)
+        let l = f.lanes(Vec3::new(-430.15, 17.98, -651.22), &d);
+        let k = (0..4).find(|k| l[3 * k][3] == 1.0e10).expect("the key light in a lane");
+        assert_eq!((l[3 * k][0], l[3 * k][1], l[3 * k][2]), (0.0, 1.0e5, 0.0));
         // head lamp 1 outside its cone scores 0 and cannot beat head lamp 0: the key takes lane 2,
         // lane 1 keeps its grid lamp
         let d2 = Dynamic { heads: [Some(head(39.0)), Some(head(80.0))], key: Some((Vec3::splat(0.038), Vec3::Y)), rec3: None };

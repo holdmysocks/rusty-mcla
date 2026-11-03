@@ -30,6 +30,9 @@ pub struct Req {
     pub pos: Option<Vec3>,
     /// dB added at the top (entry+64)
     pub volume: f32,
+    /// dB added to the second level, after the voice's chain and with the category and rolloff (entry+68, F-63029;
+    /// set by F-95814: the engine loops' XF+10 x 0.01)
+    pub vol2: f32,
     /// cents added at the top (entry+80)
     pub pitch: i32,
     /// pan in degrees (entry+82), -1 = none
@@ -55,7 +58,7 @@ pub struct Req {
 
 impl Default for Req {
     fn default() -> Self {
-        Req { pos: None, volume: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false }
+        Req { pos: None, volume: 0.0, vol2: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false }
     }
 }
 
@@ -1458,9 +1461,9 @@ impl SoundLib {
         } else {
             (k, k)
         };
-        // A = chain - headroom, B = category + rolloff, the request's volume is in the chain's top
+        // A = chain - headroom, B = the request's vol2 + category + rolloff, the request's volume is in the chain's top
         let a = v.ctx.vol - v.headroom;
-        let b = cat.volume + rolloff;
+        let b = inst.req.vol2 + cat.volume + rolloff;
         let amp = db2lin(a) * db2lin(b);
         let ratio = 2f32.powf((v.ctx.pitch + cat.pitch) as f32 / 1200.0) * if positional { inst.doppler } else { 1.0 };
         // the voice's filters (F-24161): LPF = max(100, min(chain, category)), HPF = max(chain, category)

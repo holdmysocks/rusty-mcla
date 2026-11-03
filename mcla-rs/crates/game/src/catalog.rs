@@ -285,9 +285,30 @@ pub fn sound_car(car: &str) -> &str {
     crate::modcars::car(car).and_then(|c| c.sound.as_deref()).unwrap_or(car)
 }
 
+/// The model of a garage key: a second copy of a model in the garage is `<folder>#2`, a third `#3` (the
+/// original keeps one garage slot per purchase: the add F-91320 appends a slot whatever is owned); data of the
+/// model - its catalogue row, table index, names, pictures - is the folder's.
+pub fn model_of(key: &str) -> &str {
+    key.split('#').next().unwrap_or(key)
+}
+
+/// A garage key's model and copy number (1 for the folder's own name).
+pub fn key_copy(key: &str) -> (&str, usize) {
+    match key.split_once('#') {
+        Some((m, n)) => (m, n.parse().unwrap_or(1).max(1)),
+        None => (key, 1),
+    }
+}
+
+/// The garage key of copy `n` of a model.
+pub fn copy_key(model: &str, n: usize) -> String {
+    if n <= 1 { model.to_string() } else { format!("{model}#{n}") }
+}
+
 /// The name in a garage picture's file (`sh_`, `msh_`, rewardvehicles): the GT-R's are
 /// drawn under its downloadable name `vpd_nsn_gtr_08` (its `mr_` picture is not).
 pub fn picture_name(car: &str) -> String {
+    let car = model_of(car);
     if car.eq_ignore_ascii_case(CUT_GTR) { "vpd_nsn_gtr_08".into() } else { car.to_string() }
 }
 
@@ -309,7 +330,7 @@ impl Catalog {
 
     /// Catalogue entry for a vehicle directory name.
     pub fn get(&self, dir_name: &str) -> Option<&CarInfo> {
-        self.cars.get(&dir_name.to_ascii_lowercase())
+        self.cars.get(&model_of(dir_name).to_ascii_lowercase())
     }
 
     pub fn len(&self) -> usize {
