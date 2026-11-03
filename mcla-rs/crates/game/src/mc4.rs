@@ -17591,6 +17591,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The ARRESTED / TICKETED panel answers the pad's menu buttons in free roam (GitHub #39).
+    #[test]
+    fn arrest_panel_takes_the_pad() {
+        let mut g = Game::new(Vec::new(), 0);
+        g.mode = crate::game::Mode::FreeRoam;
+        assert!(!g.takes_menu_input());
+        g.arrest_panel = Some((0.0, 9.5, 100));
+        assert!(g.takes_menu_input(), "the panel's CONTINUE (A) must reach it outside the pause menu");
+    }
+
     /// Step 22b: a vehicle the port staked is kept as the record's bytes (`car_to_xcc`): what
     /// its opponent races in reads back as the record.
     #[test]

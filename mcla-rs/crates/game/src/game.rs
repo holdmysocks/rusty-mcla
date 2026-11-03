@@ -3053,8 +3053,10 @@ impl Game {
     /// Not forms 82 / 83 (CHALLENGE RACER / FLASH HEADLIGHTS): their one prompt is the driving action
     /// HEADLIGHTS itself, the flash that takes the hookman's challenge (CruisingHookmanCore) - read as a
     /// menu, the pad's flash lit the lamps and never reached the man (GitHub #22).
+    /// The ARRESTED / TICKETED panel (form 46, CONTINUE (A)) too: in free roam the pad's A never reached it
+    /// and the black stayed until the pause menu was opened (GitHub #39).
     pub fn takes_menu_input(&self) -> bool {
-        self.message_box.is_some() || self.start_warp_on || self.tutorial_box.as_ref().is_some_and(|t| t.0 != "tutorial_challenge_title" && t.0 != "tutorial_flash_title")
+        self.message_box.is_some() || self.start_warp_on || self.arrest_panel.is_some() || self.tutorial_box.as_ref().is_some_and(|t| t.0 != "tutorial_challenge_title" && t.0 != "tutorial_flash_title")
     }
 
     /// A call is on the phone with a prompt line (Back answers it: MISSION LOG, ACCEPT).
