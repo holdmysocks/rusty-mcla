@@ -4616,8 +4616,9 @@ impl App {
             }
             self.game.mc4_clock_sync(&mut self.time_of_day, self.opt.time.is_some());
             // (F-54212: a Pull Over tactic (type 1) or a pursuit (types 2 - 4) on the player - payback
-            // goons' StartPursuit included; Search / Busted taken as the pursuit's tactic still running)
-            self.game.police_on_player = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted);
+            // goons' StartPursuit included; Search / Busted taken as the pursuit's tactic still running;
+            // or a cop zone the player set off counting down to its pursuit)
+            self.game.police_on_player = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted) || self.police.zone_on_player();
             self.game.police_fine = if self.police.goons { 0 } else { self.police.fine as i64 };
             // (step 23: the slow motion, the tutorials, the statistics and achievements)
             self.game.mc4_s23_tick(dt, mc4::S23In { heat: if self.police.goons { 0 } else { self.police.heat as u8 }, near: self.roam.near.is_some(), flashed: self.roam.accepted, kind: self.roam.near_type, station: self.at_station.is_some(), drive: mc4b::drive_of(self.vehicles.player()), sst: self.vehicles.player().filter(|c| vehicles::Vehicles::has_sst(c)).and_then(|c| c.state.veh.as_ref()).map(|v| v.sst.level) });
