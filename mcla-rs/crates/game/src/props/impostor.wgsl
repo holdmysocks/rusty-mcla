@@ -13,6 +13,7 @@ struct Tile {
     sun_col: vec4<f32>,   // gLightColor x its strength, w = OcclusionInfo.w (the port's lift of the occlusion)
     ambient: vec4<f32>,   // gLightAmbient
     wind: vec4<f32>,      // gWindVector
+    eye: vec4<f32>,       // xyz: the last shadow cascade's eye (PSGenerateImposter's c15, the frame's gViewInverse row 3 then)
 };
 @group(0) @binding(0) var<uniform> tile: Tile;
 @group(1) @binding(0) var t_diffuse: texture_2d<f32>;
@@ -22,6 +23,7 @@ struct VsIn {
     @location(0) pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) color: vec4<f32>,
     @location(5) color1: vec4<f32>,
 };
 
@@ -31,6 +33,8 @@ struct VsOut {
     @location(1) uv0: vec2<f32>,
     @location(2) occ: f32,
     @location(3) light: vec3<f32>,   // the day leaves' light, from the vertex program
+    @location(4) wpos: vec3<f32>,    // the trunk's place (the model's world is the identity)
+    @location(5) @interpolate(flat) hl: vec3<f32>,  // the trunk material's SpecularExponent, Intensity, ColorMixer
 };
 
 fn tile_vertex(in: VsIn) -> VsOut {
@@ -40,6 +44,8 @@ fn tile_vertex(in: VsIn) -> VsOut {
     o.uv0 = in.uv0;
     o.occ = mix(in.color1.a, 1.0, tile.sun_col.w);
     o.light = vec3<f32>(0.0);
+    o.wpos = in.pos;
+    o.hl = vec3<f32>(0.0);
     return o;
 }
 
@@ -56,6 +62,10 @@ fn vs_tile_trunk(in: VsIn) -> VsOut {
     o.clip = tile.view_proj * vec4<f32>(p, 1.0);
     // (the program normalises the normal here; PSGenerateImposter takes the interpolated one as it is)
     o.normal = normalize(in.normal);
+    o.wpos = p;
+    // (props.rs `prop_hl`: exponent, hundredths, hundredths)
+    let c = round(in.color.rgb * 255.0);
+    o.hl = vec3<f32>(max(c.x, 1.0), c.y / 100.0, c.z / 100.0);
     return o;
 }
 
@@ -156,6 +166,16 @@ fn tile_pixel(in: VsOut, trunk: bool) -> FsOut {
     }
     var o: FsOut;
     o.color = vec4<f32>(t.rgb * light, 1.0);
+    // PSGenerateImposter's specular (day trunk): occ^2 sat(4 n.l) sat(V.R)^SpecularExponent SpecularIntensity
+    // SpecularTint (1) mix(gLightColor, texture, SpecularColorMixer), n the interpolated normal, R = 2 (n.l) n - l,
+    // V towards the frame's gViewInverse row 3, which is the last shadow cascade's eye when the tiles are drawn
+    if (trunk && !night_pic && !old_pic) {
+        let nl = clamp(dot(in.normal, tile.sun_dir.xyz), 0.0, 1.0);
+        let r = 2.0 * nl * in.normal - tile.sun_dir.xyz;
+        let v = normalize(tile.eye.xyz - in.wpos);
+        let sp = pow(clamp(dot(v, r), 0.0, 1.0), in.hl.x) * clamp(4.0 * nl, 0.0, 1.0) * in.hl.y * mix(tile.sun_col.rgb, t.rgb, in.hl.z);
+        o.color = vec4<f32>(o.color.rgb + in.occ * in.occ * sp, 1.0);
+    }
     // (the original's picture is an 8888 surface holding LINEAR values - by day 1 .. 4 of 255
     // on most leaves, read out of the running game: work/lighting/carddump.py - so every sample
     // is one of those steps: the dark undersides fall to 0, which is what gives the far bushes

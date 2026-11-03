@@ -219,6 +219,12 @@ fn casc_zold() -> bool {
 }
 /// (diagnostics: the scene's cascade uniform of the last frame, for `Gpu::dump_casc`)
 static CASC_LAST: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+/// The eye of the last cascade drawn (tile 3), the frame's gViewInverse row 3 after the shadow passes: the impostor
+/// tiles' generation pass sets no view of its own, so PSGenerateImposter's specular reads this point (c15).
+static CASC_EYE3: std::sync::Mutex<[f32; 3]> = std::sync::Mutex::new([0.0; 3]);
+pub fn casc_eye3() -> Vec3 {
+    Vec3::from_array(*CASC_EYE3.lock().unwrap())
+}
 /// The cascades' depth here: 0 at 600 m up the rays from the camera, 1 at 200 m down them.
 const CASC_Z_NEAR: f32 = 600.0;
 const CASC_Z_RANGE: f32 = 800.0;
@@ -2931,6 +2937,9 @@ impl Gpu {
             let eye_d = (d0 + d1) * 0.5 - (0.5 * fz + 10.0);
             let (z_scale, z_off) = if casc_zold() { (1.0 / CASC_Z_RANGE, (CASC_Z_NEAR - ray.dot(cam)) / CASC_Z_RANGE) } else { let k = 1.0 / (fz * (fz - 5.0)); (k, -(eye_d + 5.0) * k) };
             let (tc, thh, rc, rh) = ((t0 + t1) * 0.5, (t1 - t0) * 0.5, (r0 + r1) * 0.5, (r1 - r0) * 0.5);
+            if i == 3 {
+                *CASC_EYE3.lock().unwrap() = (right * rc + top * tc + ray * eye_d).to_array();
+            }
             let m = Mat4::from_cols(
                 Vec4::new(right.x / rh, top.x / thh, ray.x * z_scale, 0.0),
                 Vec4::new(right.y / rh, top.y / thh, ray.y * z_scale, 0.0),
