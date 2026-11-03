@@ -8,8 +8,8 @@
 //! 1. PreCollide, the collider's slot 5 (F-75381, [`Articulated::step`]); inside its move the re-centre ends with
 //!    rd+16 (F-18040, [`RiderRagdoll::instance`]) and the part matrices (F-15571, `moved_parts`).
 //! 2. Collide: every part against the city (F-82759, [`RiderCity::collide`]) with now = +132 x rd+16, last = +136 x
-//!    collider +96; the self pairs' gate (F-41849; their box test and narrow phase are not ported, nor the rider
-//!    against the bike and other cars: those contacts would join the manifolds here).
+//!    collider +96; the self pairs (F-41849, [`RiderSelf::collide`]) behind their gate. The rider against the bike
+//!    and other cars is not ported: those contacts would join the manifolds here.
 //! 3. Update (F-96487): the contacts refreshed (F-26862 / F-33100) and their materials (F-43430, F-22759); the island
 //!    build: the own-bike filter (F-37566, pre-solve run), the hinges' contact bytes (F-18964, every contact of the
 //!    island's manifolds with a side on the rider); the velocity solve with the joint-limit rows and the apply
@@ -19,21 +19,24 @@
 //!    (F-67019), rd+16 (F-18040), collider +32 = rd+16 and, the deep byte +658 clear, +96 = rd+16 and +660 = 1;
 //!    +659 = 0.
 //!
-//! What the rest of the island brings (the bike lying beside the rider: its contacts' count and elasticity in the
-//! island's factor isl +40; the rider's parts in contacts that are not ported - the bike's, self contacts - which
-//! set the hinge bytes too) comes in as [`Outside`].
+//! The island's contacts: the city's (rows of type 7) then the self contacts' (type 13) - ro.0's order through tick
+//! 193; at 194 the island lists the self contacts first, a rule not found (open). What the rest of the island
+//! brings (the bike lying beside the rider: its contacts' count and elasticity in the island's factor isl +40; the
+//! rider's parts in his contacts with the bike, not ported, which set the hinge bytes too) comes in as [`Outside`].
 //!
 //! Open (nothing guessed): a tick where the rider is in no island (no contact at all; in ro.0 he always is: the
 //! velocity and push solves, slot 15 and the post-push are skipped here, the post-push being called from the push
 //! apply); the own-bike filter and the body fall when the rider has no contact (no run is made here); the bound's
 //! box the resting test reads (F-65996 per slot 14, not ported: the recorded corners are used); lane w of the
 //! eject vector seq+144; the bound's part matrices before the activation (bound+132 from the cache entry's init,
-//! which the activation copies into +136); the type-13 self contact rows; the seventh contact of a manifold.
+//! which the activation copies into +136); the island's order of the city and self contacts (above); the own-bike
+//! and body-fall runs with self contacts (taken here in the run with the rider as A, after the city's: whether the
+//! run with the rider as B holds them too is not read - in ro.0 that run holds the bike's contacts every tick).
 
 use super::artic::island::part_link;
 use super::artic::{Articulated, Surroundings, V4};
 use super::artic_build::ArticBuild;
-use super::artic_collide::{moved_parts, rows3, self_pairs, shapes, world_parts, ContactGate, PartShape, RiderCity};
+use super::artic_collide::{moved_parts, rows3, self_pairs, shapes, world_parts, ContactGate, PartShape, RiderCity, RiderSelf};
 use super::artic_pose::{activate_parts, bone_globals, fk, seed_links, tick_parts, LinkFrame, Mat, Parts};
 use super::collision::{Surface, WorldCollider};
 use super::solver::{self, JointedSide, Touch};
@@ -62,6 +65,8 @@ pub fn rider_surroundings() -> Surroundings {
 /// Lane w of the rider's point (contact +60) in every contact the city's narrow phase made for him in ro.0
 /// (FLT_MAX); the arm of a type-7 row keeps it.
 const POINT_W: f32 = f32::MAX;
+/// Lane w of B's point (contact +76) in the rider's self contacts of ro.0 (a NaN, 0x7fc00001); A's is FLT_MAX.
+const POINT_W_B: f32 = f32::from_bits(0x7fc0_0001);
 
 /// The island's share that is not the rider's own contacts with the city.
 #[derive(Clone, Debug, Default)]
@@ -69,7 +74,8 @@ pub struct Outside {
     /// the island's enabled contacts that share no row with the rider (the bike lying on the street): their count
     /// and the sum of their elasticities (isl +40)
     pub others: (usize, f32),
-    /// the rider's parts in the island's other contacts (enabled or not: bike, self): F-18964 marks their hinges
+    /// the rider's parts in the island's other contacts (enabled or not: the bike's; the self contacts' are the
+    /// tick's own): F-18964 marks their hinges
     pub parts: Vec<i32>,
 }
 
@@ -107,6 +113,8 @@ pub struct RiderRagdoll {
     pub shapes: Vec<Option<PartShape>>,
     /// the rider's manifolds with the city (with their warm-start multipliers)
     pub city: RiderCity,
+    /// the rider's sub-manifolds with himself
+    pub own: RiderSelf,
     /// rd+169 / +170 / +172
     pub gate: ContactGate,
     /// rd+164: the level index of the bike he came off (-1: none)
@@ -153,6 +161,7 @@ impl RiderRagdoll {
             parts,
             shapes: shapes(ty, surfaces),
             city: RiderCity::default(),
+            own: RiderSelf::default(),
             gate,
             own_bike: -1,
             rd16,
@@ -231,13 +240,23 @@ impl RiderRagdoll {
         self.city.collide(&self.shapes, &now, &before, city);
         let raw = &mut self.body.raw_collider;
         let mut countdown = i32::from_be_bytes(raw[744..748].try_into().unwrap());
-        // (the pairs' box test and narrow phase are not ported: their contacts would join the island here)
-        let _ = self_pairs(raw[740] != 0, &mut countdown, &self.pair_a, &self.pair_b);
+        let pairs = self_pairs(raw[740] != 0, &mut countdown, &self.pair_a, &self.pair_b);
         raw[744..748].copy_from_slice(&countdown.to_be_bytes());
+        if let Some(pairs) = pairs {
+            self.own.collide(&pairs, &self.shapes, &now, &before);
+        }
 
         // 3. update: the refresh and the materials
         self.city.refresh(&now);
         self.city.materials(&self.shapes, self.ty.f320);
+        self.own.refresh(&now);
+        self.own.materials(&self.shapes, self.ty.f320);
+        let mut own: Vec<(usize, usize)> = Vec::new();
+        for (m, mf) in self.own.manifolds.iter().enumerate() {
+            for k in 0..mf.slots.len() {
+                own.push((m, k));
+            }
+        }
         let n_links = self.body.links.len();
         let mut slots: Vec<(usize, usize)> = Vec::new();
         for (m, mf) in self.city.manifolds.iter().enumerate() {
@@ -245,15 +264,21 @@ impl RiderRagdoll {
                 slots.push((m, k));
             }
         }
-        let island = !slots.is_empty() || outside.others.0 > 0 || !outside.parts.is_empty();
+        let island = !slots.is_empty() || !own.is_empty() || outside.others.0 > 0 || !outside.parts.is_empty();
         out.island = island;
-        // the own-bike filter: the run with the rider as A (the city's level index is 0)
-        if !slots.is_empty() {
-            let others = vec![0u16; slots.len()];
-            let mut enabled: Vec<bool> = slots.iter().map(|&(m, k)| self.city.manifolds[m].slots[k].enabled).collect();
+        // the own-bike filter: the run with the rider as A, city then self contacts (the city's level index is 0; a
+        // self contact's other is the rider, never the bike: 0 stands for both)
+        let run = slots.len() + own.len();
+        if run > 0 {
+            let others = vec![0u16; run];
+            let mut enabled: Vec<bool> = slots.iter().map(|&(m, k)| self.city.manifolds[m].slots[k].enabled).chain(own.iter().map(|&(m, k)| self.own.manifolds[m].slots[k].enabled)).collect();
             self.gate.own_bike_run(self.own_bike, &others, &mut enabled);
-            for (&(m, k), e) in slots.iter().zip(enabled) {
+            let (city_e, own_e) = enabled.split_at(slots.len());
+            for (&(m, k), &e) in slots.iter().zip(city_e) {
                 self.city.manifolds[m].slots[k].enabled = e;
+            }
+            for (&(m, k), &e) in own.iter().zip(own_e) {
+                self.own.manifolds[m].slots[k].enabled = e;
             }
         }
         if !island {
@@ -267,6 +292,11 @@ impl RiderRagdoll {
         for &(m, _) in &slots {
             let part = self.city.manifolds[m].part as i32;
             self.body.contact_on_part(&self.child_link, part);
+        }
+        for &(m, _) in &own {
+            let mf = &self.own.manifolds[m];
+            self.body.contact_on_part(&self.child_link, mf.a as i32);
+            self.body.contact_on_part(&self.child_link, mf.b as i32);
         }
         for &p in &outside.parts {
             self.body.contact_on_part(&self.child_link, p);
@@ -282,20 +312,33 @@ impl RiderRagdoll {
             let link = part_link(&self.child_link, n_links, mf.part as i32);
             let mut t = s.touch;
             t.jointed = Some(JointedSide { body: 0, link, on_b: false, point_w: POINT_W, self_b: None });
-            // (+0 xyz is 0 at every push solve's start in ro.0: island_rows.md 11)
-            t.pushed = Vec3::ZERO;
             touches.push(t);
             used.push((m, k));
         }
         out.contacts = touches.len();
+        // the self contacts after the city's (the island's order in ro.0 to 193; from 194 it puts them first: open)
+        let mut used_own: Vec<(usize, usize)> = Vec::new();
+        for &(m, k) in &own {
+            let mf = &self.own.manifolds[m];
+            let s = &mf.slots[k];
+            if !s.enabled {
+                continue;
+            }
+            let la = part_link(&self.child_link, n_links, mf.a as i32);
+            let lb = part_link(&self.child_link, n_links, mf.b as i32);
+            let mut t = s.touch;
+            t.jointed = Some(JointedSide { body: 0, link: la, on_b: false, point_w: POINT_W, self_b: Some((lb, POINT_W_B)) });
+            touches.push(t);
+            used_own.push((m, k));
+        }
         let inv_dt = 1.0 / dt;
         let body = std::slice::from_mut(&mut self.body);
         let mut solved = solver::island_solve_jointed(&[], &touches, body, outside.others, dt, inv_dt);
         solver::island_apply_jointed(&solved, body);
         solver::island_impulses(&solved, &mut touches);
         // the post-solve run: the body fall at rd+64
-        if !slots.is_empty() {
-            let others = vec![0u16; slots.len()];
+        if run > 0 {
+            let others = vec![0u16; run];
             out.body_fall = self.gate.body_fall_run(self.own_bike, &others, rows3(&self.rd16)[3]);
         }
         out.motion = self.body.motion_measure(dt);
@@ -306,6 +349,12 @@ impl RiderRagdoll {
         self.rd16 = self.instance();
         for (&(m, k), t) in used.iter().zip(touches.iter()) {
             let s = &mut self.city.manifolds[m].slots[k].touch;
+            s.kept = t.kept;
+            s.impulse = t.impulse;
+            s.pushed = t.pushed;
+        }
+        for (&(m, k), t) in used_own.iter().zip(touches[used.len()..].iter()) {
+            let s = &mut self.own.manifolds[m].slots[k].touch;
             s.kept = t.kept;
             s.impulse = t.impulse;
             s.pushed = t.pushed;
@@ -413,7 +462,7 @@ mod tests {
             .collect();
         State { collider, body, links, joints }
     }
-    /// testdata/ragdoll_run_ro0.bin (work/ragdoll/run/export_run.py): per tick 169 - 176, RGD0 (slot 5's entry) and
+    /// testdata/ragdoll_run_ro0.bin (work/ragdoll/run/export_run.py): per tick 169 - 186, RGD0 (slot 5's entry) and
     /// RGX2 (the post-push's exit).
     fn cases() -> Vec<Case> {
         let d: &[u8] = include_bytes!("testdata/ragdoll_run_ro0.bin");
@@ -469,7 +518,7 @@ mod tests {
     }
 
     /// The island's other share per tick (testdata/rider_island_run_ro0.bin, work/ragdoll/island/
-    /// export_island_contacts.py over 169 - 180): the bike's own contacts (side 2: count, elasticity 0.1 each) and
+    /// export_island_contacts.py over 169 - 186): the bike's own contacts (side 2: count, elasticity 0.1 each) and
     /// every rider part of the island's manifolds; also the part -> link map and each tick's contact count by side.
     fn outside() -> (Vec<i32>, HashMap<u32, (Outside, [usize; 4])>) {
         let b: &[u8] = include_bytes!("testdata/rider_island_run_ro0.bin");
@@ -592,10 +641,12 @@ mod tests {
         root.join("resources/character/drv_mp_01_mot_set/0x5eb8d142.r6").exists().then_some(root)
     }
 
-    /// Ticks 169 - 175 of ro.0, chained: the recorded state at slot 5's entry of 169, the city from the extracted
+    /// Ticks 169 - 185 of ro.0, chained: the recorded state at slot 5's entry of 169, the city from the extracted
     /// data, the island's other share (the bike's contacts) from the recording; after each tick every word of the
     /// links, joints, body and collider against the recorded state at the next tick's slot 5 entry (and the
-    /// post-push's exit of the same tick, which differs from it only in what slot 14 writes).
+    /// post-push's exit of the same tick, which differs from it only in what slot 14 writes). The self contacts are
+    /// the port's own (from 175; ro.0's self pair list). Run on 169 - 216 (export_run.py, 3 MB, not kept) the chain is
+    /// exact through 193; at 194 the island puts the self contacts before the city's (open).
     #[test]
     fn chained_ticks_match_recording() {
         let Some(root) = data_dir() else {
@@ -617,7 +668,10 @@ mod tests {
         let cases = cases();
         let (map, extra) = outside();
         let body = load(&cases[0].inp);
-        let mut rd = RiderRagdoll::assemble(&ty, body, map, vec![-1], vec![-1], parts_169(), &[], &Surface::table(&rs));
+        // (the self pair list of ro.0's collider, +724 / +732)
+        let pair_a = vec![1, 1, 8, 8, 8, 8, 12, 12, 12, 12, 15, 16, -1];
+        let pair_b = vec![7, 11, 1, 3, 5, 14, 1, 3, 5, 14, 18, 19, -1];
+        let mut rd = RiderRagdoll::assemble(&ty, body, map, pair_a, pair_b, parts_169(), &[], &Surface::table(&rs));
         rd.own_bike = 0x56d7;
         let mut exact = Vec::new();
         let mut first_bad: Option<(u32, Vec<String>)> = None;
@@ -655,6 +709,6 @@ mod tests {
             }
         }
         eprintln!("exact ticks: {exact:?}");
-        assert_eq!(exact, [169, 170, 171, 172, 173, 174], "first difference: {first_bad:?}");
+        assert_eq!(exact, (169..=185).collect::<Vec<u32>>(), "first difference: {first_bad:?}");
     }
 }

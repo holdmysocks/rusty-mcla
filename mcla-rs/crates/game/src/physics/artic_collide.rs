@@ -19,12 +19,16 @@
 //!   A "run" is one call per instance from the island's contact lists (F-97446 / F-15350): first the contacts where the
 //!   rider is instance A, then those where he is B.
 //! - Self pairs (F-41849): the collider's pair list (F-83435, +724 / +732), gated by collider +740 (set for the rider)
-//!   and the +744 count-down.
+//!   and the +744 count-down; each pair's swept boxes in B's frame (F-93803) through the fifteen-axis box test
+//!   (F-37533), the sub-manifolds merged by (part B, part A), then F-36478 (the swept test F-98094 on an empty
+//!   manifold whose parts moved far, else the detector) and the sink with the seventh contact (F-55965)
+//!   ([`RiderSelf`]; docs/reference/vehicle/ragdoll_self_contacts.md). Their rows are of type 13 (solver.rs).
 //!
-//! Open (not decoded, nothing guessed here): the self pairs' box test (F-93803 then F-37533) and their narrow phase
-//! (F-36478 with the swept start F-98094 on an empty manifold), the rider against the bike's and other cars' parts
-//! (the same per-part-pair path), the seventh contact (F-55965), the box parts' material id in the file (the recorded
-//! friction gives 1.0, the ragdoll material's; [`PartShape::surface`]), lanes w of the F-15571 part matrices.
+//! Open (not decoded, nothing guessed here): the rider against the bike's and other cars' parts (the same per-part-pair
+//! path: the bike's bound parts and matrices per tick are needed), the sink's element ids (+168 / +170: the old
+//! contact's kept when it was the deeper - not modelled, the port takes the fresh contact's polygon), the box parts'
+//! material id in the file (the recorded friction gives 1.0, the ragdoll material's; [`PartShape::surface`]), lanes w
+//! of the F-15571 part matrices.
 
 use super::artic::V4;
 use super::artic_pose::{self, LinkFrame, Mat, Parts};
@@ -168,7 +172,8 @@ const SIDE_MARGIN: f32 = 0.04;
 impl RiderCity {
     /// The collide of one tick (F-82759 for the rider's parts against the city's cells): every present part's
     /// contacts, new ones at age 0, through the sink (F-90136): the nearest kept contact (age != 0) within 2 cm by A's
-    /// local point is replaced (its multipliers stay), else appended up to six (a seventh, F-55965, is dropped: open).
+    /// local point is replaced (its multipliers stay), else appended up to six, else F-55965 picks the one it replaces
+    /// ([`sink`]; no seventh city contact in ro.0: unchecked there).
     /// A manifold that ends the collide empty is let go. Manifolds in the order (cell, part).
     pub fn collide(&mut self, shapes: &[Option<PartShape>], now: &[[Vec3; 4]], last: &[[Vec3; 4]], city: &WorldCollider) {
         let mut seen: Vec<(usize, u8)> = Vec::new();
@@ -191,23 +196,7 @@ impl RiderCity {
                 };
                 let fresh = new_touch(&h, &now[p]);
                 let slot = RiderSlot { touch: fresh, age: 0, enabled: true, polygon: h.polygon, surface: h.surface };
-                let m = &mut self.manifolds[k];
-                let mut near = (NEAR2, None);
-                for (i, o) in m.slots.iter().enumerate() {
-                    let d = o.touch.a.local - fresh.a.local;
-                    let d2 = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y));
-                    if d2 < near.0 && o.age != 0 {
-                        near = (d2, Some(i));
-                    }
-                }
-                match near.1 {
-                    Some(i) => {
-                        let old = m.slots[i].touch;
-                        m.slots[i] = RiderSlot { touch: Touch { kept: old.kept, pushed: old.pushed, ..fresh }, ..slot };
-                    }
-                    None if m.slots.len() < 6 => m.slots.push(slot),
-                    None => {}
-                }
+                sink(&mut self.manifolds[k].slots, slot);
             }
         }
         self.manifolds.retain(|m| !m.slots.is_empty());
@@ -354,8 +343,7 @@ impl ContactGate {
 }
 
 /// The self pairs of a collide (F-41849): None while collider +740 is clear or its +744 count-down runs (which it
-/// steps); else the pair list (+724 / +732, F-83435) up to the first -1. Each pair still has to pass the box test
-/// (F-93803, F-37533) before its narrow phase (F-36478) - both open.
+/// steps); else the pair list (+724 / +732, F-83435) up to the first -1, for [`RiderSelf::collide`].
 pub fn self_pairs(enabled: bool, countdown: &mut i32, pair_a: &[i32], pair_b: &[i32]) -> Option<Vec<(usize, usize)>> {
     if !enabled {
         return None;
@@ -563,8 +551,12 @@ fn sink(slots: &mut Vec<RiderSlot>, slot: RiderSlot) {
     }
     match near.1 {
         Some(i) => {
-            let old = slots[i].touch;
-            slots[i] = RiderSlot { touch: Touch { kept: old.kept, pushed: old.pushed, ..fresh }, ..slot };
+            // (the element ids +168 / +170 - B's polygon and with it its material - stay the old contact's when it
+            // was the deeper)
+            let old = slots[i];
+            let keep = old.touch.depth >= fresh.depth;
+            let (polygon, surface) = if keep { (old.polygon, old.surface) } else { (slot.polygon, slot.surface) };
+            slots[i] = RiderSlot { touch: Touch { kept: old.touch.kept, pushed: old.touch.pushed, ..fresh }, polygon, surface, ..slot };
         }
         None if slots.len() < 6 => slots.push(slot),
         None => {

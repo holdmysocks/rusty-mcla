@@ -1134,9 +1134,9 @@ mod tests {
         assert_eq!(n, CONTACT_TICKS);
     }
 
-    /// The ticks of rider_island_ro0.bin (169 - 181) with velocity and push cases: 169 - 177,
-    /// 179, 180 (175 on: self contacts, type 13; ragdoll_ro0_self.bin: 176, 179, 180).
-    const CONTACT_TICKS: usize = 11;
+    /// The ticks of rider_island_ro0.bin (169 - 184) with velocity and push cases: 169 - 177,
+    /// 179, 180, 184 (175 on: self contacts, type 13; ragdoll_ro0_self.bin: 176, 179, 180, 184).
+    const CONTACT_TICKS: usize = 12;
 
     fn island_contact_cases() -> Vec<Case> {
         let mut all = island_cases();
