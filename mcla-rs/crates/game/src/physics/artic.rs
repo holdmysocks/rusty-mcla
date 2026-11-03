@@ -981,6 +981,67 @@ impl Articulated {
 }
 
 // ---------------------------------------------------------------------------------------------
+// GoRagdoll's reset and launch (ragdoll_setup_decode.md 1.2, step 13)
+
+impl Articulated {
+    /// The collider's slot 3 (F-47797): F-50121 zeroes the mirror (+272 .. +335), its slot 4
+    /// (F-23679) the collider's accumulators +336 .. +463 (F-54596) and every link's +672 ..
+    /// +735, +880 .. +911, +976 .. +1007 and every joint's +368 .. +399 (F-63136); then F-14567:
+    /// every link's +608 .. +671 and +912 .. +975 (and again the above), every joint's +304 ..
+    /// +367 and +400 .. +431, and its rates (F-74293 / F-19130: a hinge's +628, a swing-twist's
+    /// +652 / +656 = 0.0). Positions, rows and the inertias are not touched.
+    pub fn reset(&mut self) {
+        self.mirror = [V4::ZERO; 4];
+        for o in (336..400).step_by(16) {
+            wv(&mut self.raw_collider, o, V4::ZERO);
+        }
+        self.pending_push = V4::ZERO;
+        self.pending_turn = V4::ZERO;
+        self.push = V4::ZERO;
+        self.turn = V4::ZERO;
+        for l in &mut self.links {
+            l.vel = V4::ZERO;
+            l.ang = V4::ZERO;
+            l.motion = [V4::ZERO; 2];
+            l.force = V4::ZERO;
+            l.torque = V4::ZERO;
+            l.impulse = V4::ZERO;
+            l.ang_impulse = V4::ZERO;
+            l.bias = [V4::ZERO; 2];
+            l.dmotion = [V4::ZERO; 2];
+            l.saved = [V4::ZERO; 2];
+            l.predicted = [V4::ZERO; 2];
+        }
+        for j in &mut self.joints {
+            j.up = [V4::ZERO; 2];
+            j.down = [V4::ZERO; 2];
+            j.bias = [V4::ZERO; 2];
+            j.cvel = [V4::ZERO; 2];
+            match &mut j.kind {
+                JointKind::Hinge(h) => h.rate = 0.0,
+                JointKind::Ball(b) => {
+                    b.swing_rate = 0.0;
+                    b.twist_rate = 0.0;
+                }
+                JointKind::Other => {}
+            }
+        }
+    }
+
+    /// The collider's slot 41 (F-86625): F-64271 (+272 = v, +304 = v times the mass +192), then
+    /// F-91185: d = v - the root's +608; every link +608 += d, +640 = +624, +656 = +608 + c x w.
+    pub fn set_velocity(&mut self, v: V4) {
+        self.mirror[0] = v;
+        self.mirror[2] = v.mul(V4::splat(self.mass));
+        let d = v.sub(self.links[0].vel);
+        for l in &mut self.links {
+            l.vel = l.vel.add(d);
+            l.refresh_motion();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Matrices of the rebuild
 
 /// s.x r0 + s.y r1 + s.z r2 as the code sums it: ((s.x r0) + s.y r1) + s.z r2, products and
@@ -2025,7 +2086,7 @@ impl Articulated {
     /// F-67019: the push solve's displacement into the place (+400 -> +432), its turn (+416, if
     /// |turn|^2 > 1e-12) into the collider's rows (-> +448; else +448 = 0 and the turn waits).
     /// The turn's rows (F-58201) are taken as F-38496's layout; the recording has no turn.
-    fn apply_push(&mut self) {
+    pub fn apply_push(&mut self) {
         let p = self.pending_push;
         self.place = self.place.add(p);
         self.push = p;

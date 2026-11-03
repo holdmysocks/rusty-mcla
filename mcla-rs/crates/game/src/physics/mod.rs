@@ -5,6 +5,7 @@ pub mod artic;
 pub mod artic_build;
 pub mod artic_collide;
 pub mod artic_pose;
+pub mod artic_run;
 pub mod camprobe;
 pub mod car;
 pub mod collision;
