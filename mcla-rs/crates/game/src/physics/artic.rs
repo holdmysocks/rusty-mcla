@@ -1377,7 +1377,7 @@ impl Articulated {
     /// F-97481: every link's spatial inertia (F-53726); backward each child's articulated
     /// inertia projected through its joint into the parent's; forward the rest of the tree
     /// projected into each child; every link's inverse (F-11734).
-    fn rebuild(&mut self) {
+    pub(crate) fn rebuild(&mut self) {
         for l in &mut self.links {
             l.inertia = spatial_inertia(l);
             l.artic = l.inertia;

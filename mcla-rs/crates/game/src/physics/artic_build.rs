@@ -18,35 +18,41 @@
 //!   ancestor (mass added, moments + I + m (y2+z2, x2+z2, x2+y2) of its centre in model space), or into the root
 //!   sums when the walk ended at group 0; the collider's +716 takes the child's link (F-31210 path, 0 when none).
 //! - F-16970: root link: mass splat, moments the sums, rest frame the instance rows transposed with position 0;
-//!   identity rows at +272 / +320 / +368; the body (gravity factor from the archetype), the collider and its
-//!   arrays (+716 zeroed).
+//!   identity rows at +272 / +320 / +368; the body (gravity factor from the archetype), the collider (base F-33655:
+//!   speed limits 500 / 2 pi, identity rows, zeroed vectors and bytes) and its arrays (+716 zeroed); the collider's
+//!   mass properties (F-87421): the children's mass (F-25823), its reciprocal, the archetype's inertia floored
+//!   (F-88418) and its reciprocals.
 //! - F-91939: a link's mass and moments (scaled when its smallest moment is below type+8), rest frame F-55164:
-//!   rows = child rotation x M, position = (centre - root child's centre - off) x M.
+//!   rows = child rotation x M, position = (centre - root child's centre - off) x M (lane w from M's w lanes).
 //! - F-49221: one rotation DOF: hinge (type 0) with hard limits lo + 0.03 / hi - 0.03 and inner limits from the
 //!   group's fractions (F-13018, F-97677); two or three: swing-twist (type 1), half ranges, F-88270 / F-71882;
-//!   k = min(max(G+20, min softness), 1); drives from G+40 .. G+52; AddLink (F-55902).
+//!   k = min(max(G+20, min softness), 1); drives from G+40 .. G+52; AddLink (F-55902). The anchor: the bone's pose
+//!   position - the root child's centre - off, through M. The frames (+432 .. +607): the hinge's from its axis (the
+//!   unit axis through the bone's pose rows and M) and two unit vectors across it (F-16319, F-40242); the
+//!   swing-twist joint's by F-33259 (see `make_joint`), both put in A's and B's frames by F-38962's rule.
 //! - F-83435: the part pairs, each child of group a x each child of group b, F-16298 (no duplicates either way
 //!   round, kept sorted by (a, b)).
+//! - F-97481 at the end of F-62449: the articulated inertias of the built tree (`Articulated::rebuild`), about the
+//!   current frames, which are the rest frames then.
 //!
-//! Inputs the file does not hold: the instance matrix M (the rider's pose at GoRagdoll, rows of [inst+16] with
-//! their w lanes; its position row is not used: the build passes the rows with a zero position), the archetype's
-//! gravity factor, the run-time least-softness global (0.0 in the running game) and the addresses.
+//! [`activate`]: what GoRagdoll (F-81936) does after the build: the collider's matrices, the links' frames from
+//! the pose (F-93058, artic_pose::seed_links), the reset and the start velocity.
 //!
-//! Not produced (left at [`FILL`], or as noted), and not compared by the test:
-//! - joint frames +432..+479 / +544..+591, anchors +496 / +512 and whatever else F-38962, F-16319 (the hinge's
-//!   frame) and F-33259's frame / quaternion code store: not decoded (they also set +8 / +12, which are built);
-//! - lane w of the swing-twist joint's +672 / +736 (stale stack in F-49221) and of its constructor's +672 / +688 /
-//!   +736 / +752 (stale stack in F-99002);
-//! - lane w of a non-root link's rest position +572 (and so of its current +476): M's w lanes are a run-time input,
-//!   computed here from what the caller passes;
-//! - lane w of the merged moments +508 (the parallel-axis term's lane w is stale stack; taken as 0 here);
-//! - the collider's base-class fields (F-33655), its mass / inertia (F-87421) and everything the
-//!   articulated inertias pass (F-97481, run at the end of F-62449) writes: the spatial / articulated inertia
-//!   blocks of the links (+128..+415 except the root's identity rows, +736..+879) and of the joints (+16..+303)
-//!   are left as the constructors leave them;
-//! - slider joints (translation DOF) and parked joints (G+56 = -1 or > 0): not used by the riders, not built
-//!   ([`BuildError`]).
+//! Inputs the file does not hold: the instance matrix M (rd+16 at GoRagdoll: rows of [inst+16] with their w lanes;
+//! its position row is not used by the build), the archetype's gravity factor and inertia, the run-time
+//! least-softness global (0.0 in the running game) and the addresses; for [`activate`] the matrix with its
+//! position row, the links' frames and the start velocity.
+//!
+//! Checked against ro.0's RGD0 of tick 169 (the state right after GoRagdoll): every word of the collider, body,
+//! links and joints equal (8060 of 8092) except 32 words that never reach a result, which stay [`FILL`]:
+//! - lane w of the swing-twist joint's +672 / +688 / +736 / +752 (stale stack in F-49221 and in its constructor
+//!   F-99002): the drive (F-58495, F-11804) reads lanes x y z of the gains, maxima and minima only.
+//!
+//! Not built: slider joints (translation DOF) and parked joints (G+56 = -1 or > 0), not used by the riders
+//! ([`BuildError`]); F-62449's source-entry path (F-71690) and its constraints when T+316 != 0 (0 for riders).
 
+use super::artic::{Articulated, V4 as R4};
+use super::exact::{fma, fms, guest_cos, guest_sin, rotation_about_unit};
 use mcla_formats::rage::ragdoll::RagdollType;
 
 pub const LINK_SIZE: usize = 1008;
@@ -123,6 +129,214 @@ fn splat(x: f32) -> V4 {
     [x; 4]
 }
 
+// ---------------------------------------------------------------------------------------------
+// The joint frames, in the vector unit's arithmetic ([`R4`]: denormals flushed, multiply-adds rounded twice)
+
+/// (x, y, z, x) from three splatted dot products, as the merges put them: (x, z), (y, that), (that, that).
+fn xyzx(x: R4, y: R4, z: R4) -> R4 {
+    let a = x.mergeh(z);
+    a.mergeh(y.mergeh(a))
+}
+
+/// (x, y, z, y): the merges of F-38962's anchors.
+fn xyzy(x: R4, y: R4, z: R4) -> R4 {
+    x.mergeh(z).mergeh(y)
+}
+
+/// The columns of three rows (lane w 0: the three-lane dot products below never read it).
+fn cols3(r: &[R4; 3]) -> [R4; 3] {
+    [0, 1, 2].map(|k| R4::new(r[0].0[k], r[1].0[k], r[2].0[k], 0.0))
+}
+
+/// A row vector times the rows: (v . col x, v . col y, v . col z, v . col x).
+fn times_rows(v: R4, r: &[R4; 3]) -> R4 {
+    let c = cols3(r);
+    xyzx(v.dot3(c[0]), v.dot3(c[1]), v.dot3(c[2]))
+}
+
+/// The rows times a vector: (r0 . v, r1 . v, r2 . v, r0 . v).
+fn rows_times(r: &[R4; 3], v: R4) -> R4 {
+    xyzx(r[0].dot3(v), r[1].dot3(v), r[2].dot3(v))
+}
+
+/// -(a.yzx b.zxy - a.zxy b.yzx): the cross product as F-49221 forms it (vnmsubfp), = b x a.
+fn cross_ba(a: R4, b: R4) -> R4 {
+    a.yzx().nmsub(b.zxy(), a.zxy().mul(b.yzx()))
+}
+
+/// -(a.zxy b.yzx - a.yzx b.zxy) = a x b (F-33259, F-40242).
+fn cross_ab(a: R4, b: R4) -> R4 {
+    a.zxy().nmsub(b.yzx(), a.yzx().mul(b.zxy()))
+}
+
+/// A link's frame as the build leaves it (current = rest): rows +416 / +432 / +448, position +464.
+#[derive(Clone, Copy)]
+struct Cur {
+    rows: [R4; 3],
+    pos: R4,
+}
+
+impl Cur {
+    fn of(rest: &[V4; 4]) -> Cur {
+        Cur { rows: [R4(rest[0]), R4(rest[1]), R4(rest[2])], pos: R4(rest[3]) }
+    }
+}
+
+/// F-38962 (and the tail of F-16319): a joint's frame given by three vectors whose x lanes make X, y lanes Y, z
+/// lanes Z (merges with zero), and its anchor (world, relative to the collider's place), each in A's and B's frame:
+/// row k of a frame = (R0[k] X + R1[k] Y) + R2[k] Z; anchor = the columns dotted with anchor - position, merged
+/// (x, y, z, y). Returns +432 / +448 / +464 (A's frame), +480 (A's position), +496 / +512 (the anchor in A / B),
+/// +544 / +560 / +576 (B's frame), +592 (B's position).
+fn frames(anchor: R4, c: [R4; 3], a: &Cur, b: &Cur) -> [R4; 10] {
+    let (h, l) = (c[0].mergeh(c[2]), c[0].mergel(c[2]));
+    let (h1, l1) = (c[1].mergeh(R4::ZERO), c[1].mergel(R4::ZERO));
+    let (x, y, z) = (h.mergeh(h1), h.mergel(h1), l.mergeh(l1));
+    let rows = |k: &Cur| -> [R4; 3] {
+        cols3(&k.rows).map(|col| {
+            let t = col.lane(0).mul(x);
+            let t = col.lane(1).madd(y, t);
+            col.lane(2).madd(z, t)
+        })
+    };
+    let anchor_in = |k: &Cur| {
+        let d = anchor.sub(k.pos);
+        let cl = cols3(&k.rows);
+        xyzy(cl[0].dot3(d), cl[1].dot3(d), cl[2].dot3(d))
+    };
+    let (fa, fb) = (rows(a), rows(b));
+    [fa[0], fa[1], fa[2], a.pos, anchor_in(a), anchor_in(b), fb[0], fb[1], fb[2], b.pos]
+}
+
+/// Where [`frames`] go in the joint.
+const FRAME_AT: [usize; 10] = [432, 448, 464, 480, 496, 512, 544, 560, 576, 592];
+
+/// x / sqrt(x . x) with the estimate and one Newton step (F-40242): r + (1 - l r r) (0.5 r).
+fn unit_nr(v: R4) -> R4 {
+    let l = v.dot3(v);
+    let r = l.rsqrte();
+    let e = l.nmsub(r.mul(r), R4::splat(1.0));
+    v.mul(e.madd(R4::splat(0.5).mul(r), r))
+}
+
+/// F-40242: two unit vectors across the unit axis n: u from (ny, -nx, 0) when |nx| or |ny| > 0.5, else from
+/// (0, nz, -ny); w = unit(n x u). Returns (u, w) (the callee's r3, r4).
+fn across(n: R4) -> (R4, R4) {
+    let neg = R4::ZERO.sub(n);
+    let big = n.mergeh(R4::splat(-0.5)).gt(R4::splat(0.5).mergeh(n)).iter().any(|b| *b);
+    let v = if big { n.lane(1).mergeh(R4::ZERO).mergeh(neg) } else { R4::ZERO.mergeh(neg).mergel(n.lane(2)) };
+    let u = unit_nr(v);
+    (u, unit_nr(cross_ab(n, u)))
+}
+
+/// F-28753: the rows of the rotation by the angles (x, y, z) (a zero angle: exactly 1 / 0), 3 x 3.
+fn euler_rows(a: [f32; 3]) -> [[f32; 3]; 3] {
+    let cs = |x: f32| if x == 0.0 { (1.0, 0.0) } else { (guest_cos(x as f64) as f32, guest_sin(x as f64) as f32) };
+    let ((cx, sx), (cy, sy), (cz, sz)) = (cs(a[0]), cs(a[1]), cs(a[2]));
+    [
+        [cz * cy, sz * cy, -sy],
+        [fms(cz * sy, sx, sz * cx), fma(sz * sy, sx, cz * cx), cy * sx],
+        [fma(cz * sy, cx, sz * sx), fms(sz * sy, cx, cz * sx), cy * cx],
+    ]
+}
+
+/// F-50812: the quaternion (x, y, z, w) of a rotation, from the largest of the trace and the diagonal.
+fn quat_of(m: &[[f32; 3]; 3]) -> [f32; 4] {
+    let (m00, m11, m22) = (m[0][0], m[1][1], m[2][2]);
+    let tr = (m00 + m11) + m22;
+    let y_or_z = if !(m11 < m22) { 2 } else { 3 };
+    let case = if !(tr < m00) {
+        if tr < m11 {
+            y_or_z
+        } else if tr < m22 {
+            3
+        } else {
+            0
+        }
+    } else if m00 < m11 {
+        y_or_z
+    } else if m00 < m22 {
+        3
+    } else {
+        1
+    };
+    let (half, quarter) = (0.5f32, 0.25f32);
+    let big = |d: f32| (fms(d, 2.0, tr) + 1.0).sqrt() * half;
+    match case {
+        0 => {
+            let w = (tr + 1.0).sqrt() * half;
+            let s = quarter / w;
+            [(m[1][2] - m[2][1]) * s, (m[2][0] - m[0][2]) * s, (m[0][1] - m[1][0]) * s, w]
+        }
+        1 => {
+            let x = big(m00);
+            let s = quarter / x;
+            [x, (m[1][0] + m[0][1]) * s, (m[2][0] + m[0][2]) * s, (m[1][2] - m[2][1]) * s]
+        }
+        2 => {
+            let y = big(m11);
+            let s = quarter / y;
+            [(m[1][0] + m[0][1]) * s, y, (m[2][1] + m[1][2]) * s, (m[2][0] - m[0][2]) * s]
+        }
+        _ => {
+            let z = big(m22);
+            let s = quarter / z;
+            [(m[2][0] + m[0][2]) * s, (m[2][1] + m[1][2]) * s, z, (m[0][1] - m[1][0]) * s]
+        }
+    }
+}
+
+/// F-40856: the rows of the quaternion's rotation (scaled by sqrt 2 first). It writes lanes x y z only; lane w of
+/// each row is what the caller's stack held there (`w`).
+fn quat_rows(q: [f32; 4], w: [f32; 3]) -> [R4; 3] {
+    let k = f32::from_bits(0x3fb5_04f3);
+    let (x, y, z, s) = (q[0] * k, q[1] * k, q[2] * k, q[3] * k);
+    let (xx, yy, zz) = (x * x, y * y, z * z);
+    let (yx, zx, sy, sz, zy, sx) = (y * x, z * x, s * y, s * z, z * y, s * x);
+    let (yy_xx, zz_yy, zz_xx) = (yy + xx, zz + yy, zz + xx);
+    [
+        R4::new(1.0 - zz_yy, yx + sz, zx - sy, w[0]),
+        R4::new(yx - sz, 1.0 - zz_xx, sx + zy, w[1]),
+        R4::new(sy + zx, zy - sx, 1.0 - yy_xx, w[2]),
+    ]
+}
+
+/// F-33259's turn of a frame: row i = (Q0 f_i.x + Q1 f_i.y) + Q2 f_i.z.
+fn turn_frame(q: &[R4; 3], f: [R4; 3]) -> [R4; 3] {
+    f.map(|r| {
+        let t = q[0].mul(r.lane(0));
+        let t = q[1].madd(r.lane(1), t);
+        q[2].madd(r.lane(2), t)
+    })
+}
+
+/// F-88418: no moment below 1 / 20 of the largest (found by x < y, then against z): such a lane becomes 0.05 x
+/// the largest.
+fn floor_inertia(mut i: V4) -> V4 {
+    let (x, y, z) = (i[0], i[1], i[2]);
+    let k = if !(x < y) {
+        if !(x < z) {
+            0
+        } else {
+            2
+        }
+    } else if !(y < z) {
+        1
+    } else {
+        2
+    };
+    for l in (0..3).filter(|l| *l != k) {
+        if !(i[l] * 20.0 >= i[k]) {
+            i[l] = i[k] * f32::from_bits(0x3d4c_cccd);
+        }
+    }
+    i
+}
+
+/// The low word of a float register saved as a double (what a callee's stack slot keeps of it).
+fn low_word(x: f32) -> f32 {
+    f32::from_bits((x as f64).to_bits() as u32)
+}
+
 /// Where the guest's objects are (pointers written into the blocks).
 #[derive(Debug, Clone, Default)]
 pub struct GuestAddrs {
@@ -151,12 +365,27 @@ pub struct BuildInput {
     pub gravity: f32,
     /// the run-time least-softness global: 0.0 in the running game
     pub min_softness: f32,
+    /// the angular inertia the cache entry's archetype answers (its vfunc 9, read by F-16970 for the collider's
+    /// mass properties); a run-time value: not the .r6's archetype (128.1, 6.5, 130.3), the recording's
+    /// (277.5, 77.8, 207.7, NaN)
+    pub inertia: V4,
 }
 
 impl BuildInput {
-    pub fn new(m: [V4; 3]) -> Self {
-        BuildInput { m, gravity: 1.0, min_softness: 0.0 }
+    pub fn new(m: [V4; 3], inertia: V4) -> Self {
+        BuildInput { m, gravity: 1.0, min_softness: 0.0, inertia }
     }
+}
+
+/// GoRagdoll's steps after the build (F-81936 11 - 13): what they take from outside the body.
+#[derive(Debug, Clone)]
+pub struct Activation {
+    /// rd+16: the instance matrix with its position row and w lanes (copied into collider +32 and +96)
+    pub r: [V4; 4],
+    /// the links' frames F-93058 sets (artic_pose::seed_links): rows +416 / +432 / +448, position +464
+    pub frames: Vec<([V4; 3], V4)>,
+    /// the start velocity seq+144 + (0, 1, 0, 0) (rider_eject), lane w as the guest holds it
+    pub velocity: V4,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -215,6 +444,18 @@ struct Joint {
     bv: [[f32; 3]; 6],
     /// lane w of those vectors where the build knows it (None: stale stack)
     vw: [Option<f32>; 6],
+    /// the frames, anchors and positions at [`FRAME_AT`]
+    fr: [R4; 10],
+}
+
+/// What a joint's frames are made from: the instance matrix's rows, the joint's anchor (world, about the root
+/// child's centre) and the two links' frames.
+struct FrameCtx {
+    m: [R4; 3],
+    anchor: R4,
+    pose: [R4; 3],
+    a: Cur,
+    b: Cur,
 }
 
 fn put_u32(b: &mut [u8], o: usize, v: u32) {
@@ -335,6 +576,9 @@ fn joint_block(j: &Joint, a: &GuestAddrs, child: u32) -> Vec<u8> {
             }
         }
     }
+    for (v, o) in j.fr.iter().zip(FRAME_AT) {
+        put_v(&mut b, o, v.0);
+    }
     put_f(&mut b, 4, j.k);
     put_u32(&mut b, 8, a.links[j.parent]);
     put_u32(&mut b, 12, child);
@@ -343,7 +587,7 @@ fn joint_block(j: &Joint, a: &GuestAddrs, child: u32) -> Vec<u8> {
 }
 
 /// F-49221's numbers for one joint.
-fn make_joint(t: &RagdollType, child: usize, bone: usize, dof: [bool; 6], min_softness: f32) -> Result<Joint, BuildError> {
+fn make_joint(t: &RagdollType, child: usize, bone: usize, dof: [bool; 6], min_softness: f32, fc: &FrameCtx) -> Result<Joint, BuildError> {
     let g = &t.groups[t.children[child].group as usize];
     let bn = &t.bones[bone];
     if dof[3] || dof[4] || dof[5] {
@@ -351,12 +595,21 @@ fn make_joint(t: &RagdollType, child: usize, bone: usize, dof: [bool; 6], min_so
     }
     let (rx, ry, rz) = (dof[0], dof[1], dof[2]);
     let nrot = rx as u32 + ry as u32 + rz as u32;
-    let mut j = Joint { ty: 0, parent: 0, k: 0.0, mode: 0, lim: [0.0; 6], b632: 0, b633: 0, hd: [0.0; 6], bv: [[0.0; 3]; 6], vw: [None; 6] };
+    let mut j = Joint { ty: 0, parent: 0, k: 0.0, mode: 0, lim: [0.0; 6], b632: 0, b633: 0, hd: [0.0; 6], bv: [[0.0; 3]; 6], vw: [None; 6], fr: [R4::ZERO; 10] };
     let (zero, one, half) = (0.0f32, 1.0f32, 0.5f32);
+    let unit = |k: usize| {
+        let mut e = R4::ZERO;
+        e.0[k] = 1.0;
+        e
+    };
     if nrot == 1 {
         // hinge (F-77258), F-13018, F-97677
         j.ty = 0;
         let ax = if rx { 0 } else if ry { 1 } else { 2 };
+        // the axis: the unit axis through the bone's pose rows, then M (F-49221); the frame F-16319 (F-40242)
+        let axis = times_rows(times_rows(unit(ax), &fc.pose), &fc.m);
+        let (u, w) = across(axis);
+        j.fr = frames(fc.anchor, [u, w, axis], &fc.a, &fc.b);
         let (mut lo, mut hi) = (bn.rot_min[ax], bn.rot_max[ax]);
         if lo > c(PI) || !(hi <= c(PI)) {
             lo = lo - c(TWO_PI);
@@ -433,6 +686,38 @@ fn make_joint(t: &RagdollType, child: usize, bone: usize, dof: [bool; 6], min_so
                 sb = c(C2827);
             }
         }
+        // the frame (F-49221): two unit axes (A's: z, B's: y; z and y: x, y; z and x: y, x) through the bone's pose
+        // rows, turned about their cross product by A's middle angle (F-65964), through M, back through the pose
+        // rows; F-33259 makes the frame from (b, a x b, a) (F-38962) and turns A's by the quaternion (F-50812) of
+        // the angles -0.5 |z, y, x sums| (F-28753), B's by the unit quaternion (F-40856 both)
+        let (e1, e2) = if nrot == 3 || !rz {
+            (2, 1)
+        } else if rx {
+            (1, 0)
+        } else {
+            (0, 1)
+        };
+        let a1 = times_rows(unit(e1), &fc.pose);
+        let a2 = times_rows(unit(e2), &fc.pose);
+        let mid = (bn.rot_max[a_ax] + bn.rot_min[a_ax]) * half;
+        let ax = cross_ba(a1, a2);
+        let turn = rotation_about_unit(glam::Vec3::new(ax.0[0], ax.0[1], ax.0[2]), mid);
+        let turn = turn.map(|r| R4::new(r.x, r.y, r.z, 0.0));
+        let a_w = times_rows(times_rows(a1, &turn), &fc.m);
+        let b_w = times_rows(times_rows(a2, &turn), &fc.m);
+        let a = rows_times(&fc.pose, a_w);
+        let b = rows_times(&fc.pose, b_w);
+        let sum = |k: usize| (bn.rot_max[k] + bn.rot_min[k]).abs() * -0.5;
+        let q = quat_of(&euler_rows([sum(2), sum(1), sum(0)]));
+        // lane w of F-40856's rows: the stack slots F-28753's prologue saved F-49221's f26 / f28 / f30 in (the twist
+        // range, B's lower angle, B's half range), their low words
+        let stale = [low_word(tw), low_word(bn.rot_min[b_ax]), low_word(sb)];
+        let mut fr = frames(fc.anchor, [b, cross_ab(a, b), a], &fc.a, &fc.b);
+        let fa = turn_frame(&quat_rows(q, stale), [fr[0], fr[1], fr[2]]);
+        let fb = turn_frame(&quat_rows([0.0, 0.0, 0.0, 1.0], stale), [fr[6], fr[7], fr[8]]);
+        fr[0..3].copy_from_slice(&fa);
+        fr[6..9].copy_from_slice(&fb);
+        j.fr = fr;
         // F-88270 (its +632 / +633 are overwritten by F-71882)
         j.lim[0] = max0(sa - c(C003));
         j.lim[2] = max0(sb - c(C003));
@@ -584,8 +869,14 @@ pub fn build(t: &RagdollType, input: &BuildInput, addrs: &GuestAddrs) -> Result<
             let row = |r: V4| vmadd(m[2], splat(r[2]), vmadd(m[1], splat(r[1]), vmul(m[0], splat(r[0]))));
             let (n0, n1, n2) = (row(ch.rot[0]), row(ch.rot[1]), row(ch.rot[2]));
             let rest = [[n0[0], n1[0], n2[0], pos[0]], [n0[1], n1[1], n2[1], pos[1]], [n0[2], n1[2], n2[2], pos[2]], pos];
-            let mut jt = make_joint(t, i, b as usize, dof, input.min_softness)?;
-            jt.parent = get(&map, r27) as usize;
+            // the anchor (F-49221): the bone's pose position - the root child's centre - off, through M
+            let parent = get(&map, r27) as usize;
+            let pose = t.bone_pose.get(b as usize).ok_or(BuildError::BadBone(i))?;
+            let p = R4(pose[3]).sub(R4(t.children[root_child].pos)).sub(R4(off));
+            let mr = m.map(R4);
+            let fc = FrameCtx { m: mr, anchor: times_rows(p, &mr), pose: [R4(pose[0]), R4(pose[1]), R4(pose[2])], a: Cur::of(&links[parent].rest), b: Cur::of(&rest) };
+            let mut jt = make_joint(t, i, b as usize, dof, input.min_softness, &fc)?;
+            jt.parent = parent;
             // AddLink (F-55902): the new link's index; parent index = the parent link's place in the body
             let li = links.len();
             links.push(Link { child: i, root: false, mass, moments: mo, rest });
@@ -648,6 +939,26 @@ pub fn build(t: &RagdollType, input: &BuildInput, addrs: &GuestAddrs) -> Result<
     }
     put_u32(&mut col, 744, 0);
     put_u32(&mut col, 748, addrs.type248);
+    // the base constructor (F-33655): speed limits, identity rows, place, zeroed vectors and bytes
+    put_f(&mut col, 200, f32::from_bits(0x43fa_0000));
+    put_f(&mut col, 204, c(TWO_PI));
+    for (r, row) in [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0; 4]].iter().enumerate() {
+        put_v(&mut col, 208 + 16 * r, *row);
+    }
+    for o in [272, 288, 304, 320, 400, 432] {
+        put_v(&mut col, o, [0.0; 4]);
+    }
+    col[658..661].fill(0);
+    // F-16970 -> F-87421: the mass (the children's, F-25823 adds them in order), its reciprocal, the archetype's
+    // inertia with its floor (F-88418) and reciprocals (1e8 where 0)
+    let mass = t.children.iter().fold(0.0f32, |s, ch| ch.mass + s);
+    put_f(&mut col, 192, mass);
+    put_f(&mut col, 196, if mass > f32::from_bits(0x2b8c_bccc) { 1.0 / mass } else { c(FLT_MAX) });
+    let inertia = R4(floor_inertia(input.inertia));
+    let r = inertia.recip();
+    let inv = r.madd(r.nmsub(inertia, R4::splat(1.0)), r).sel(R4::splat(c(C1E8)), inertia.eq(R4::ZERO));
+    put_v(&mut col, 160, inertia.0);
+    put_v(&mut col, 176, inv.0);
 
     // F-83435: the part pairs
     let mut pair_a = vec![-1i32; 256];
@@ -668,8 +979,69 @@ pub fn build(t: &RagdollType, input: &BuildInput, addrs: &GuestAddrs) -> Result<
     }
     col[740] = dirty;
 
+    // F-97481 at the end of F-62449: the inertias of the built tree, about the links' current (= rest) frames
+    let (link_blocks, joint_blocks) = {
+        let lk: Vec<(u32, &[u8])> = link_blocks.iter().enumerate().map(|(i, b)| (addrs.links[i], b.as_slice())).collect();
+        let jk: Vec<&[u8]> = joint_blocks.iter().map(|j| j.1.as_slice()).collect();
+        let mut art = Articulated::from_guest(&col, &body, &lk, &jk);
+        art.rebuild();
+        let jb = joint_blocks.iter().enumerate().map(|(k, j)| (j.0, art.joint_to_guest(k))).collect::<Vec<_>>();
+        (art.links.iter().map(|l| l.to_guest()).collect::<Vec<_>>(), jb)
+    };
+
     let link_child = links.iter().map(|l| l.child).collect();
     Ok(ArticBuild { body, links: link_blocks, joints: joint_blocks, collider: col, child_link, pair_a, pair_b, link_child, parents })
+}
+
+/// GoRagdoll after the build (F-81936): on a successful activation (F-24099) rd's matrix into the collider's +32
+/// and +96; the links' frames F-93058 sets (its velocities are wiped next); the reset (F-47797: F-50121 the
+/// collider's velocities and momenta, F-23679 -> F-54596 its +336 .. +463 and F-63136, F-14567 every link's
+/// motion, forces, impulses and the solver's vectors, every joint's propagation vectors, the hinge's rate, the
+/// swing-twist joint's rates); the velocity (F-86625: F-64271 +272 = v, +304 = v x mass; F-91185 every link
+/// +608 += v - link 0's, +640 = +624, +656 = v + c x w).
+pub fn activate(b: &mut ArticBuild, act: &Activation) {
+    for (r, row) in act.r.iter().enumerate() {
+        put_v(&mut b.collider, 32 + 16 * r, *row);
+        put_v(&mut b.collider, 96 + 16 * r, *row);
+    }
+    for (l, (rows, pos)) in b.links.iter_mut().zip(&act.frames) {
+        for (r, row) in rows.iter().enumerate() {
+            put_v(l, 416 + 16 * r, *row);
+        }
+        put_v(l, 464, *pos);
+    }
+    for o in (272..464).step_by(16) {
+        put_v(&mut b.collider, o, [0.0; 4]);
+    }
+    for l in b.links.iter_mut() {
+        for o in [608, 624, 640, 656, 672, 688, 704, 720, 880, 896, 912, 928, 944, 960, 976, 992] {
+            put_v(l, o, [0.0; 4]);
+        }
+    }
+    for (ty, j) in b.joints.iter_mut() {
+        for o in [304, 320, 336, 352, 368, 384, 400, 416] {
+            put_v(j, o, [0.0; 4]);
+        }
+        if *ty == 1 {
+            put_f(j, 652, 0.0);
+            put_f(j, 656, 0.0);
+        } else {
+            put_f(j, 628, 0.0);
+        }
+    }
+    let rv = |b: &[u8], o: usize| R4(std::array::from_fn(|k| f32::from_bits(u32::from_be_bytes(b[o + 4 * k..o + 4 * k + 4].try_into().unwrap()))));
+    let v = R4(act.velocity);
+    let mass = rv(&b.collider, 192).0[0];
+    put_v(&mut b.collider, 272, v.0);
+    put_v(&mut b.collider, 304, v.mul(R4::splat(mass)).0);
+    let d = v.sub(rv(&b.links[0], 608));
+    for l in b.links.iter_mut() {
+        let vel = rv(l, 608).add(d);
+        let (ang, pos) = (rv(l, 624), rv(l, 464));
+        put_v(l, 608, vel.0);
+        put_v(l, 640, ang.0);
+        put_v(l, 656, pos.zxy().nmsub(ang.yzx(), pos.yzx().madd(ang.zxy(), vel)).0);
+    }
 }
 
 #[cfg(test)]
@@ -765,7 +1137,7 @@ mod tests {
             solver_obj: ca(24),
             type248: ca(748),
         };
-        let input = BuildInput { m, gravity: f(&s.body, 516), min_softness: 0.0 };
+        let input = BuildInput { m, gravity: f(&s.body, 516), min_softness: 0.0, inertia: std::array::from_fn(|k| f(&s.col, 160 + 4 * k)) };
         let r = build(&t, &input, &addrs).unwrap();
 
         let mut total = 0;
@@ -856,5 +1228,256 @@ mod tests {
         assert_eq!(r.link_child, [0, 1, 5, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 19, 20]);
         let pairs: Vec<(i32, i32)> = r.pair_a.iter().zip(&r.pair_b).take_while(|(a, _)| **a != -1).map(|(a, b)| (*a, *b)).collect();
         assert_eq!(pairs, [(1, 7), (1, 11), (8, 1), (8, 3), (8, 5), (8, 14), (12, 1), (12, 3), (12, 5), (12, 14), (15, 18), (16, 19)]);
+    }
+
+    /// A state of the fixture: the collider, the body, the links (with their addresses) and the joints.
+    struct Blocks {
+        col: Vec<u8>,
+        body: Vec<u8>,
+        links: Vec<(u32, Vec<u8>)>,
+        joints: Vec<Vec<u8>>,
+    }
+
+    fn blocks(d: &[u8], o: &mut usize) -> Blocks {
+        let u = |o: &mut usize| {
+            let v = u32::from_le_bytes(d[*o..*o + 4].try_into().unwrap());
+            *o += 4;
+            v
+        };
+        let take = |o: &mut usize, n: usize| {
+            *o += n;
+            d[*o - n..*o].to_vec()
+        };
+        u(o);
+        let col = take(o, COLLIDER_SIZE);
+        u(o);
+        let body = take(o, BODY_SIZE);
+        let links = (0..u(o)).map(|_| (u(o), take(o, LINK_SIZE))).collect();
+        let joints = (0..u(o))
+            .map(|_| {
+                let (_, _, n) = (u(o), u(o), u(o));
+                take(o, n as usize)
+            })
+            .collect();
+        Blocks { col, body, links, joints }
+    }
+
+    /// Case 0 of the fixture: op '5' of tick 169, slot 5's dt (v1), its input RGD0 and output RGX0.
+    fn case0() -> (f32, Blocks, Blocks) {
+        let d: &[u8] = include_bytes!("testdata/ragdoll_ro0.bin");
+        assert_eq!((d[8], u32::from_le_bytes(d[12..16].try_into().unwrap())), (b'5', 169));
+        let dt = f32::from_bits(u32::from_le_bytes(d[20..24].try_into().unwrap()));
+        let mut o = 36;
+        let rgd0 = blocks(d, &mut o);
+        let rgx0 = blocks(d, &mut o);
+        (dt, rgd0, rgx0)
+    }
+
+    /// testdata/ragdoll_pose_ro0.bin (work/ragdoll/skin/export_pose.py): named sections of u32 words.
+    fn pose_fixture() -> std::collections::HashMap<String, Vec<u32>> {
+        let d: &[u8] = include_bytes!("testdata/ragdoll_pose_ro0.bin");
+        assert_eq!(&d[..8], b"RGPOSE01");
+        let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let mut o = 12;
+        let mut m = std::collections::HashMap::new();
+        for _ in 0..u(8) {
+            let name = String::from_utf8(d[o..o + 8].iter().copied().take_while(|&b| b != 0).collect()).unwrap();
+            let n = u(o + 8) as usize;
+            m.insert(name, (0..n).map(|i| u(o + 12 + 4 * i)).collect());
+            o += 12 + 4 * n;
+        }
+        m
+    }
+
+    /// What slot 5 reads outside the body (artic.rs's test values: the run-time gravity and resting limit, the
+    /// rider archetype's damping and bound, from the recording's RGDS pages).
+    fn surroundings() -> crate::physics::artic::Surroundings {
+        let s = |b: u32| f32::from_bits(b);
+        let d = |b: u32| R4::from_bits([b, b, b, 0x7f80_0001]);
+        crate::physics::artic::Surroundings {
+            gravity: R4::new(0.0, s(0xc11c_cccd), 0.0, 0.0),
+            bound: [R4::from_bits([0x3f09_804a, 0x3f4e_998e, 0x3ee0_da07, 0x3ff7_7a06]), R4::from_bits([0xbf9a_5900, 0xbf80_067f, 0xbf84_e24c, 0xbf80_067f])],
+            no_gravity: false,
+            damping: Some([d(0x3ca3_d70a), d(0x3ca3_d70a), d(0x3c23_d70a), d(0x3ca3_d70a), d(0x3ca3_d70a), d(0x3c23_d70a)]),
+            rest_limit: s(0x3be5_6042),
+        }
+    }
+
+    /// The rider built from the .r6 and activated as GoRagdoll does it, with the run-time inputs of ro.0's tick 169:
+    /// rd+16 (the pose fixture's r_act), the links' frames F-93058 gives from the eject clip's last frame
+    /// (artic_pose, from the pose fixture), the archetype's inertia, gravity factor and the start velocity (RGD0),
+    /// the guest addresses (RGD0).
+    fn built_rider(t: &RagdollType, rgd0: &Blocks) -> ArticBuild {
+        use crate::physics::artic_pose::{activate_parts, fk, seed_links, Parts};
+        let pf = pose_fixture();
+        let mat = |n: &str, i: usize| -> [R4; 4] {
+            let w = &pf[n][16 * i..16 * i + 16];
+            [0, 1, 2, 3].map(|r| R4::from_bits([w[4 * r], w[4 * r + 1], w[4 * r + 2], w[4 * r + 3]]))
+        };
+        let r = mat("r_act", 0);
+        let place = R4::from_bits(pf["cpos_act"][..4].try_into().unwrap());
+        let locals: Vec<[R4; 4]> = (0..pf["locals"].len() / 16).map(|i| mat("locals", i)).collect();
+        let f = |b: &[u8], o: usize| f32::from_bits(be(b, o));
+        let v = |b: &[u8], o: usize| -> V4 { std::array::from_fn(|k| f(b, o + 4 * k)) };
+        let ca = |o: usize| be(&rgd0.col, o);
+        let addrs = GuestAddrs {
+            body: be(&rgd0.col, 672),
+            collider: 0,
+            links: rgd0.links.iter().map(|l| l.0).collect(),
+            joints: (0..rgd0.joints.len()).map(|k| be(&rgd0.body, 132 + 4 * k)).collect(),
+            collider_arrays: [ca(684), ca(692), ca(700), ca(708), ca(716), ca(724), ca(732)],
+            inst: ca(16),
+            solver_obj: ca(24),
+            type248: ca(748),
+        };
+        let input = BuildInput { m: [r[0].0, r[1].0, r[2].0], gravity: f(&rgd0.body, 516), min_softness: 0.0, inertia: v(&rgd0.col, 160) };
+        let mut b = build(t, &input, &addrs).unwrap();
+        let g = fk(&locals, &t.bone_parent, &r);
+        let mut parts = Parts::new(t.children.len());
+        activate_parts(t, &g, &r, &[], &mut parts);
+        let frames = seed_links(t, &b.child_link, b.links.len(), &parts, &r, place, &[]);
+        let act = Activation {
+            r: r.map(|x| x.0),
+            frames: frames.iter().map(|l| l.expect("every link seeded")).map(|l| (l.rows.map(|x| x.0), l.pos.0)).collect(),
+            velocity: v(&rgd0.col, 272),
+        };
+        activate(&mut b, &act);
+        b
+    }
+
+    /// Words of RGD0 the build and activation do not reproduce, and why the tick never reads them (shown by the code
+    /// and by `unread_words_reach_nothing`): the swing-twist joint's +684 / +700 / +748 / +764, lane w of the
+    /// drive's position gains, velocity gains, maxima and minima (stale stack in F-49221 / F-99002); the drive
+    /// (F-58495, F-11804) takes lanes x y z only, and nothing else reads them.
+    fn not_read(block: &str, ty: u32, o: usize) -> bool {
+        block.starts_with('J') && ty == 1 && [684, 700, 748, 764].contains(&o)
+    }
+
+    /// Every word of the built and activated rider against RGD0 of tick 169 (collider, body, 15 links, 14 joints),
+    /// except the words [`not_read`] lists.
+    #[test]
+    fn rider_ragdoll_matches_rgd0() {
+        let Some(t) = rider() else {
+            eprintln!("skipped: no extracted game data with drv_mp_01_mot_set (set MCLA_DATA)");
+            return;
+        };
+        let (_, rgd0, _) = case0();
+        let b = built_rider(&t, &rgd0);
+        let (mut total, mut same, mut skipped) = (0, 0, 0);
+        let mut bad = Vec::new();
+        let mut cmp = |name: String, ty: u32, got: &[u8], want: &[u8]| {
+            assert_eq!(got.len(), want.len(), "{name} size");
+            for o in (0..want.len()).step_by(4) {
+                total += 1;
+                if be(got, o) == be(want, o) {
+                    same += 1;
+                } else if not_read(&name, ty, o) {
+                    skipped += 1;
+                } else {
+                    bad.push(format!("{name}+{o}: built {:08x} recorded {:08x}", be(got, o), be(want, o)));
+                }
+            }
+        };
+        cmp("collider".into(), 0, &b.collider, &rgd0.col);
+        cmp("body".into(), 0, &b.body, &rgd0.body);
+        for (i, l) in b.links.iter().enumerate() {
+            cmp(format!("L{i}"), 0, l, &rgd0.links[i].1);
+        }
+        for (k, (ty, j)) in b.joints.iter().enumerate() {
+            cmp(format!("J{k}"), *ty, j, &rgd0.joints[k]);
+        }
+        eprintln!("built rider vs RGD0: {same} / {total} words equal, {skipped} differing words never read, {} other", bad.len());
+        assert!(bad.is_empty(), "{} words differ:\n{}", bad.len(), bad.join("\n"));
+    }
+
+
+    /// The articulated body of the blocks (the links at RGD0's addresses), `ticks` times slot 5, then (when `more`)
+    /// slot 10 and the post-push after each; every word of the result (collider, body, links, joints) with its name.
+    fn run_ticks(b: &ArticBuild, addr: &[u32], dt: f32, ticks: usize, more: bool) -> Vec<(String, u32, Vec<u8>)> {
+        let links: Vec<(u32, &[u8])> = b.links.iter().zip(addr).map(|(l, a)| (*a, l.as_slice())).collect();
+        let joints: Vec<&[u8]> = b.joints.iter().map(|j| j.1.as_slice()).collect();
+        let mut a = Articulated::from_guest(&b.collider, &b.body, &links, &joints);
+        for _ in 0..ticks {
+            a.step(dt, &surroundings());
+            if more {
+                a.velocity_update(dt);
+                a.post_push(dt);
+            }
+        }
+        let mut out = vec![("collider".to_string(), 0, a.collider_to_guest()), ("body".to_string(), 0, a.body_to_guest())];
+        out.extend(a.links.iter().enumerate().map(|(i, l)| (format!("L{i}"), 0, l.to_guest())));
+        out.extend((0..a.joints.len()).map(|k| (format!("J{k}"), b.joints[k].0, a.joint_to_guest(k))));
+        out
+    }
+
+    /// Slot 5 (`Articulated::step`) from the built rider: RGX0 of tick 169 word for word, words NaN on both sides
+    /// aside and the [`not_read`] words, which slot 5 passes through as they were.
+    #[test]
+    fn tick_from_the_build_matches_rgx0() {
+        let Some(t) = rider() else {
+            eprintln!("skipped: no extracted game data with drv_mp_01_mot_set (set MCLA_DATA)");
+            return;
+        };
+        let (dt, rgd0, rgx0) = case0();
+        let b = built_rider(&t, &rgd0);
+        let addr: Vec<u32> = rgd0.links.iter().map(|l| l.0).collect();
+        let got = run_ticks(&b, &addr, dt, 1, false);
+        let mut want = vec![&rgx0.col, &rgx0.body];
+        want.extend(rgx0.links.iter().map(|l| &l.1));
+        want.extend(rgx0.joints.iter());
+        let (mut total, mut same, mut nan, mut unread) = (0, 0, 0, 0);
+        let mut bad = Vec::new();
+        for ((name, ty, g), w) in got.iter().zip(want) {
+            for o in (0..w.len()).step_by(4) {
+                total += 1;
+                let (x, y) = (be(g, o), be(w, o));
+                if x == y {
+                    same += 1;
+                } else if f32::from_bits(x).is_nan() && f32::from_bits(y).is_nan() {
+                    nan += 1;
+                } else if not_read(name, *ty, o) {
+                    unread += 1;
+                } else {
+                    bad.push(format!("{name}+{o}: {x:08x} want {y:08x}"));
+                }
+            }
+        }
+        eprintln!("slot 5 from the build vs RGX0: {same} / {total} words equal, {nan} NaN on both sides, {unread} never read, {} other", bad.len());
+        assert!(bad.is_empty(), "{} words differ:\n{}", bad.len(), bad[..bad.len().min(40)].join("\n"));
+    }
+
+    /// The [`not_read`] words reach nothing: each set to other values, two ticks of slot 5, slot 10 and the post-push
+    /// leave every other word of the body as it was.
+    #[test]
+    fn unread_words_reach_nothing() {
+        let Some(t) = rider() else {
+            eprintln!("skipped: no extracted game data with drv_mp_01_mot_set (set MCLA_DATA)");
+            return;
+        };
+        let (dt, rgd0, _) = case0();
+        let b = built_rider(&t, &rgd0);
+        let addr: Vec<u32> = rgd0.links.iter().map(|l| l.0).collect();
+        let base = run_ticks(&b, &addr, dt, 2, true);
+        let mut n = 0;
+        for k in 0..b.joints.len() {
+            for o in (0..b.joints[k].1.len()).step_by(4) {
+                if !not_read(&format!("J{k}"), b.joints[k].0, o) {
+                    continue;
+                }
+                n += 1;
+                for v in [0x0000_0000u32, 0x8000_0000, 0x3f80_0000, 0xc61c_4000, 0x7fc0_0000, 0x0000_0420] {
+                    let mut c = b.clone();
+                    put_u32(&mut c.joints[k].1, o, v);
+                    for ((name, _, x), (_, _, y)) in run_ticks(&c, &addr, dt, 2, true).iter().zip(&base) {
+                        for w in (0..y.len()).step_by(4) {
+                            let (p, q) = (be(x, w), be(y, w));
+                            let skip = *name == format!("J{k}") && w == o;
+                            assert!(skip || p == q || (f32::from_bits(p).is_nan() && f32::from_bits(q).is_nan()), "J{k}+{o} = {v:08x} reaches {name}+{w}");
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(n, 32);
     }
 }
