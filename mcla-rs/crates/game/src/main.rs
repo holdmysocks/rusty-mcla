@@ -2620,6 +2620,10 @@ impl App {
         // (nothing holds the car from Busted until CopArrest's Racer_Deactivate after its waited fade down: StateArrest only
         // sets the target's +592 bits 0x28 (F-14125), which the control step F-17997 never reads. From the deactivate (F-12981:
         // +592 bit 0x1) to Racer_Activate: pedals 0, the automatic brake, the gearbox held, the steering +656 = 0)
+        // (test hook MCLA_BUSTED_GAS=1: the throttle floored from Busted on, the car driven off through the arrest's 1.75 s)
+        if self.police.heat == police::Heat::Busted && std::env::var_os("MCLA_BUSTED_GAS").is_some() {
+            player_input = CarInput { throttle: 1.0, ..Default::default() };
+        }
         if self.arrest_deact {
             player_input = CarInput { deactivated: true, ..Default::default() };
         }
