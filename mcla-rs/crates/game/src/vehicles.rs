@@ -6342,7 +6342,9 @@ impl Vehicles {
                 continue;
             }
             let pose = c.render_pose(alpha);
-            let strength = ((60.0 - pose.pos.distance(eye)) / 30.0).clamp(0.0, 1.0);
+            // (F-27833: the distance from the viewport's eye to F-41581's point - the car's matrix times its bound's
+            // centroid, the LOD sphere's centre - not to the car's origin)
+            let strength = ((60.0 - (pose.pos + pose.rot * c.model.lod_centre).distance(eye)) / 30.0).clamp(0.0, 1.0);
             if strength <= 0.001 {
                 continue;
             }
