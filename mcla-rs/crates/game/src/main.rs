@@ -3202,8 +3202,9 @@ impl App {
                     } else {
                         // mcCarDamage +44 runs down on real time while the car is under 4.47 m/s or
                         // all its wheels touch (F-32386)
-                        // (only while it is above 0: it goes below 0 once)
-                        let all_down = !c.state.wheels.is_empty() && c.state.wheels.iter().all(|w| w.grounded);
+                        // (only while it is above 0: it goes below 0 once). A motorcycle's wheels are its two even
+                        // slots; the odd ones are drawing mirrors, never in contact
+                        let all_down = !c.state.wheels.is_empty() && c.state.wheels.iter().enumerate().all(|(i, w)| w.grounded || (c.model.bike && i % 2 == 1));
                         if self.crash_timer > 0.0 && (speed < 4.47 || all_down) {
                             self.crash_timer -= dt;
                         }
