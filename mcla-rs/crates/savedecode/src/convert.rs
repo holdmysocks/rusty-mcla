@@ -139,8 +139,18 @@ fn in_unit(c: &[f64]) -> bool {
     c.iter().all(|v| (0.0..=1.0).contains(v))
 }
 
+/// The port's garage key of a slot: a model's first slot by its name, the next ones `<name>#2`, `#3` (the
+/// game's `catalog::copy_key`; the original's garage may hold a model more than once, F-91320), so that each
+/// copy's paint, parts and plate stay its own. `seen` counts the model's slots so far.
+fn copy_key(seen: &mut std::collections::HashMap<String, usize>, name: &str) -> String {
+    let n = seen.entry(name.to_string()).or_insert(0);
+    *n += 1;
+    if *n > 1 { format!("{name}#{n}") } else { name.to_string() }
+}
+
 fn garage(d: &[u8]) -> Result<Garage> {
     let b = B(d);
+    let mut seen = std::collections::HashMap::new();
     let mut g = Garage {
         cars: vec![], perf: Map::new(), perf_raw: vec![], dims: vec![], plates: Map::new(), paint: None, wheels: vec![], mats: None, paints: vec![],
         parts: vec![], finishes: Map::new(), liveries: Map::new(),
@@ -154,7 +164,7 @@ fn garage(d: &[u8]) -> Result<Garage> {
         if !is_vehicle_name(&name_raw) {
             break;
         }
-        let name = latin1(&name_raw).to_lowercase();
+        let name = copy_key(&mut seen, &latin1(&name_raw).to_lowercase());
         let rec = f.checked_sub(NAME_AT).ok_or_else(|| Error::new("layout", "a vehicle name before the garage"))?;
         if rec + RECORD > d.len() {
             return Err(Error::new("layout", "the garage runs past the end of the file"));
@@ -323,7 +333,8 @@ pub fn convert(sav: &[u8], base: Map<String, Value>, races: &[String]) -> Result
     // (the vehicle in use: the garage's current slot, LocalOptions + 1344 - not always slot 0)
     let cur_slot = opt.current_slot;
     let cur_car: String = if cur_slot >= 0 && (cur_slot as usize) < g.cars.len() { g.cars[cur_slot as usize].clone() } else { g.cars.first().cloned().unwrap_or_default() };
-    let slots_by_name: Vec<(String, &vehicle::Slot)> = veh.iter().filter(|s| !s.empty).map(|s| (s.type_name.to_lowercase(), s)).collect();
+    let mut seen = std::collections::HashMap::new();
+    let slots_by_name: Vec<(String, &vehicle::Slot)> = veh.iter().filter(|s| !s.empty).map(|s| (copy_key(&mut seen, &s.type_name.to_lowercase()), s)).collect();
     if !g.cars.is_empty() {
         save.insert("owned".into(), json!(g.cars));
         save.insert("car".into(), json!(cur_car));
@@ -625,4 +636,15 @@ pub fn convert(sav: &[u8], base: Map<String, Value>, races: &[String]) -> Result
         favourite_races: n_favs,
     };
     Ok(Converted { save, summary })
+}
+
+#[cfg(test)]
+mod copy_key_tests {
+    /// A model twice in the garage: the second slot is `<name>#2`, as the game keys it.
+    #[test]
+    fn a_model_twice_gets_its_copy_key() {
+        let mut seen = std::collections::HashMap::new();
+        let keys: Vec<String> = ["vp_aud_r8_08", "vp_golf", "vp_aud_r8_08", "vp_aud_r8_08"].iter().map(|n| super::copy_key(&mut seen, n)).collect();
+        assert_eq!(keys, ["vp_aud_r8_08", "vp_golf", "vp_aud_r8_08#2", "vp_aud_r8_08#3"]);
+    }
 }
