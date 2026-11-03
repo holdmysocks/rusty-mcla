@@ -16670,6 +16670,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// R4: an ARCADE race with POWER UPS on pays nothing (F-12673 drops the race's events while
+    /// F-83812 holds); with them off it pays the ARCADE share.
+    #[test]
+    fn arcade_power_ups_pay_nothing() {
+        let mut g = Game::new(Vec::new(), 0);
+        g.arcade_restore = Some((0, 3));
+        g.arcade_opts[2] = 1;
+        g.award_race(1, 4);
+        assert_eq!(g.last_reward, (0, 0));
+        g.arcade_opts[2] = 0;
+        g.award_race(1, 4);
+        assert!(g.last_reward.0 > 0 && g.last_reward.1 > 0, "{:?}", g.last_reward);
+    }
+
     /// GitHub #34. A red light win against the mission's man completes REDLIGHT_GH_01 (its list is
     /// not the blitz races); a story series is the man's first to nRacesToWin, its wins go with
     /// the series, and the rival's two end it.

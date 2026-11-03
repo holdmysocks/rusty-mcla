@@ -2918,8 +2918,12 @@ impl Game {
         // TIME_TRIAL_RACE_COMPLETE, F-58178)
         let s14_id = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| d.id.clone()).unwrap_or_default();
         let s14_editor = s14_id.starts_with("user/");
-        let s14_plain = !s14_editor && !(!s14_id.is_empty() && (self.career.is_time_trial(&s14_id) || self.mc4_tt_of(&s14_id).is_some()));
-        if s14_editor {
+        // (an ARCADE race with POWER UPS on pays nothing at all: off line the career's race listener
+        // F-12673 drops the race's events while EventOptions_IsPowerUps (F-83812, the record's byte 21)
+        // holds - no money, no experience, no class or ability point, no adaptive step)
+        let s_power = self.mc4_arcade_env().is_some() && self.mc4_arcade_record()[21] != 0;
+        let s14_plain = !s14_editor && !s_power && !(!s14_id.is_empty() && (self.career.is_time_trial(&s14_id) || self.mc4_tt_of(&s14_id).is_some()));
+        if s14_editor || s_power {
             money = 0;
         }
         if !s14_plain {
@@ -2958,7 +2962,9 @@ impl Game {
         // (a race of a series pays like any race: the manager takes the money away only past
         // third place and in a pink slip race. `sr_rewards` - REP EARNED: 60, no money row -
         // is a fourth place of four: 250 x 1/4 cut to tens, and no money past third)
-        self.adaptive.result(place == 1, self.race_diff as i32);
+        if !s_power {
+            self.adaptive.result(place == 1, self.race_diff as i32);
+        }
         // (a race's place is the standings form 54: up 0.2 s after the line, closed after its
         // WAITUNWARPED(2200) - the splash's clock runs from the line)
         self.place_splash = Some((place, Self::RACE_END_MENU));
