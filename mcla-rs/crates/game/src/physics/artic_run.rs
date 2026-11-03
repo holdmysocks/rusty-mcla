@@ -9,29 +9,32 @@
 //!    rd+16 (F-18040, [`RiderRagdoll::instance`]) and the part matrices (F-15571, `moved_parts`).
 //! 2. Collide: every part against the city (F-82759, [`RiderCity::collide`]) with now = +132 x rd+16, last = +136 x
 //!    collider +96; the self pairs (F-41849, [`RiderSelf::collide`]) behind their gate. The rider against the bike
-//!    and other cars is not ported: those contacts would join the manifolds here.
+//!    and other cars is not collided here: the bike's rows come in as [`BikeRows`] (their places in the row order
+//!    and the gate's runs); an enabled contact with the bike or another car is not solved (open).
 //! 3. Update (F-96487): the contacts refreshed (F-26862 / F-33100) and their materials (F-43430, F-22759); the island
-//!    build: the own-bike filter (F-37566, pre-solve run), the hinges' contact bytes (F-18964, every contact of the
+//!    build: the own-bike filter (F-37566 over the rider's two runs, F-97446), the hinges' contact bytes (F-18964, every contact of the
 //!    island's manifolds with a side on the rider); the velocity solve with the joint-limit rows and the apply
-//!    (F-24076); the body-fall trigger (F-15373, post-solve run); slot 15 (F-32404); slot 10 (F-69485); the push
+//!    (F-24076); the body-fall trigger (F-15373, the same two runs, F-15350); slot 15 (F-32404); slot 10 (F-69485); the push
 //!    solve (F-49764) and its apply with the post-push (F-48210, whose re-centre ends with F-18040 again).
 //! 4. The collider's slot 14 (F-35284): the part matrices (F-43257), then the base F-32811: the pending push
 //!    (F-67019), rd+16 (F-18040), collider +32 = rd+16 and, the deep byte +658 clear, +96 = rd+16 and +660 = 1;
 //!    +659 = 0.
 //!
-//! The island's contacts: the city's (rows of type 7) then the self contacts' (type 13) - ro.0's order through tick
-//! 193; at 194 the island lists the self contacts first, a rule not found (open). What the rest of the island
-//! brings (the bike lying beside the rider: its contacts' count and elasticity in the island's factor isl +40; the
-//! rider's parts in his contacts with the bike, not ported, which set the hinge bytes too) comes in as [`Outside`].
+//! The island's rows (the city's of type 7, the self contacts' of type 13) in the original's list order
+//! ([`island_rows`]: the pairs' union-find walk sorted by instance A with the STLport sort, not stable above 16 rows -
+//! so the bike's rows, solved or not, move the rider's: ro.0 194). The rider's runs for the callbacks: his rows as A
+//! in that list, then his rows as B in the list sorted by B (a self contact is in both). What the rest of the island
+//! brings (the bike lying beside the rider: its contacts' count and elasticity in the island's factor isl +40, its
+//! rows' places; the rider's parts in his contacts with the bike, which set the hinge bytes too) comes in as
+//! [`Outside`].
 //!
 //! Open (nothing guessed): a tick where the rider is in no island (no contact at all; in ro.0 he always is: the
 //! velocity and push solves, slot 15 and the post-push are skipped here, the post-push being called from the push
-//! apply); the own-bike filter and the body fall when the rider has no contact (no run is made here); the bound's
+//! apply); the bound's
 //! box the resting test reads (F-65996 per slot 14, not ported: the recorded corners are used); lane w of the
 //! eject vector seq+144; the bound's part matrices before the activation (bound+132 from the cache entry's init,
-//! which the activation copies into +136); the island's order of the city and self contacts (above); the own-bike
-//! and body-fall runs with self contacts (taken here in the run with the rider as A, after the city's: whether the
-//! run with the rider as B holds them too is not read - in ro.0 that run holds the bike's contacts every tick).
+//! which the activation copies into +136); the instances' address order (city < bike < rider) is the recordings',
+//! not a decoded rule.
 
 use super::artic::island::part_link;
 use super::artic::{Articulated, Surroundings, V4};
@@ -39,6 +42,7 @@ use super::artic_build::ArticBuild;
 use super::artic_collide::{moved_parts, rows3, self_pairs, shapes, world_parts, ContactGate, PartShape, RiderCity, RiderSelf};
 use super::artic_pose::{activate_parts, bone_globals, fk, seed_links, tick_parts, LinkFrame, Mat, Parts};
 use super::collision::{Surface, WorldCollider};
+use super::loose::stl_sort;
 use super::solver::{self, JointedSide, Touch};
 use glam::Vec3;
 use mcla_formats::rage::ragdoll::RagdollType;
@@ -77,6 +81,143 @@ pub struct Outside {
     /// the rider's parts in the island's other contacts (enabled or not: the bike's; the self contacts' are the
     /// tick's own): F-18964 marks their hinges
     pub parts: Vec<i32>,
+    /// the bike's rows in the island (they take places in its row order): None, the rider's island holds only his own
+    pub bike: Option<BikeRows>,
+}
+
+/// The bike's share of the rider's island as its row order needs it.
+#[derive(Clone, Debug, Default)]
+pub struct BikeRows {
+    /// the level indices of the bike and the rider (the cache's pair order and its side A: the lower one)
+    pub level: i64,
+    pub rider_level: i64,
+    /// the bike's contacts with the city in the walk's order (sub-manifolds, contacts by number - those of the wheel
+    /// parts the update leaves in the list counted in); None: the pair held no contact at the collide's end
+    pub city: Option<usize>,
+    /// the bike x rider contacts in the walk's order: their enabled bit (+165 & 0x80), which the own-bike runs clear;
+    /// None as for `city`
+    pub rider: Option<Vec<bool>>,
+}
+
+/// Where a row of the rider's island comes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Src {
+    City,
+    Own,
+    BikeCity,
+    BikeRider,
+}
+
+/// One pair of an island for its row order: the two objects (the level index; None: the city, which joins
+/// nothing), the order of the instances' addresses of side A and B (the sort's keys) and the rows it holds in the
+/// walk's order (its sub-manifolds in their array's order, contacts by number, the disabled ones included).
+#[derive(Clone, Copy, Debug)]
+pub struct WalkPair {
+    pub a: Option<i64>,
+    pub b: Option<i64>,
+    pub key_a: i64,
+    pub key_b: i64,
+    pub rows: usize,
+}
+
+/// The row lists of the island that holds object `of` (docs/reference/vehicle/gjk_exact.md Part 10 item 4 and
+/// ragdoll_self_contacts.md 8): `pairs` in the cache's order - those that held a contact at the collide's end, the
+/// ones the update's refresh then empties too (rows 0: they still join) - each a node of a union-find forest
+/// (F-14298 at the end of the collide; FIND F-28830 hangs the nodes it passes at the tail of the root's children,
+/// UNION F-91971 by rank - as loose.rs builds a car's islands); the tree of `of` walked in pre-order, every row of
+/// each pair; that walk sorted by instance A's address and by instance B's with the STLport sort ([`stl_sort`]:
+/// not stable above 16 rows). Rows as (pair, row of the pair); None when no pair holds `of`.
+pub fn island_rows(pairs: &[WalkPair], of: i64) -> Option<(Vec<(usize, usize)>, Vec<(usize, usize)>)> {
+    let live: Vec<usize> = (0..pairs.len()).collect();
+    let np = live.len();
+    let mut parent: Vec<Option<usize>> = vec![None; np];
+    let mut kids: Vec<Vec<usize>> = vec![Vec::new(); np];
+    let mut rank = vec![0u32; np];
+    let mut roots: Vec<usize> = Vec::new();
+    let mut link: Vec<(i64, usize)> = Vec::new();
+    fn rehang(parent: &mut [Option<usize>], kids: &mut [Vec<usize>], roots: &mut Vec<usize>, nd: usize, to: usize) {
+        if parent[nd] == Some(to) {
+            return;
+        }
+        match parent[nd] {
+            Some(p) => kids[p].retain(|x| *x != nd),
+            None => roots.retain(|x| *x != nd),
+        }
+        parent[nd] = Some(to);
+        kids[to].push(nd);
+    }
+    fn find(parent: &mut [Option<usize>], kids: &mut [Vec<usize>], roots: &mut Vec<usize>, x: usize) -> usize {
+        let mut r = x;
+        while let Some(p) = parent[r] {
+            r = p;
+        }
+        let mut nd = x;
+        while nd != r {
+            let next = parent[nd].unwrap();
+            rehang(parent, kids, roots, nd, r);
+            nd = next;
+        }
+        r
+    }
+    fn union(parent: &mut [Option<usize>], kids: &mut [Vec<usize>], roots: &mut Vec<usize>, rank: &mut [u32], x: usize, y: usize) -> usize {
+        if x == y {
+            x
+        } else if rank[x] > rank[y] {
+            rehang(parent, kids, roots, y, x);
+            x
+        } else if rank[x] < rank[y] {
+            rehang(parent, kids, roots, x, y);
+            y
+        } else {
+            rehang(parent, kids, roots, y, x);
+            rank[x] += 1;
+            x
+        }
+    }
+    for k in 0..np {
+        roots.push(k);
+        let mut r = find(&mut parent, &mut kids, &mut roots, k);
+        let p = pairs[live[k]];
+        let mut ends: Vec<i64> = p.a.into_iter().collect();
+        if let Some(b) = p.b.filter(|b| Some(*b) != p.a) {
+            ends.push(b);
+        }
+        for e in &ends {
+            if let Some(&(_, l)) = link.iter().find(|x| x.0 == *e) {
+                let x = find(&mut parent, &mut kids, &mut roots, l);
+                r = union(&mut parent, &mut kids, &mut roots, &mut rank, x, r);
+            }
+            match link.iter_mut().find(|x| x.0 == *e) {
+                Some(x) => x.1 = r,
+                None => link.push((*e, r)),
+            }
+        }
+        for e in &ends {
+            link.iter_mut().find(|x| x.0 == *e).unwrap().1 = r;
+        }
+    }
+    let holds = |k: usize| pairs[live[k]].a == Some(of) || pairs[live[k]].b == Some(of);
+    let mut walk: Vec<(usize, usize)> = Vec::new();
+    for &root in roots.iter() {
+        let mut tree = Vec::new();
+        let mut stack = vec![root];
+        while let Some(nd) = stack.pop() {
+            tree.push(nd);
+            stack.extend(kids[nd].iter().rev());
+        }
+        if tree.iter().any(|&k| holds(k)) {
+            walk = tree.iter().flat_map(|&k| (0..pairs[live[k]].rows).map(move |r| (k, r))).map(|(k, r)| (live[k], r)).collect();
+            break;
+        }
+    }
+    if walk.is_empty() {
+        return None;
+    }
+    let mut by_a = walk.clone();
+    stl_sort(&mut by_a, |x| pairs[x.0].key_a);
+    let mut by_b = walk;
+    stl_sort(&mut by_b, |x| pairs[x.0].key_b);
+    Some((by_a, by_b))
 }
 
 /// What one tick gives the game.
@@ -246,7 +387,10 @@ impl RiderRagdoll {
             self.own.collide(&pairs, &self.shapes, &now, &before);
         }
 
-        // 3. update: the refresh and the materials
+        // 3. update: the refresh and the materials (the pairs that hold a contact now join the island, F-14298 at the
+        // collide's end: one the refresh empties too)
+        let city_joins = self.city.manifolds.iter().any(|m| !m.slots.is_empty());
+        let own_joins = self.own.manifolds.iter().any(|m| !m.slots.is_empty());
         self.city.refresh(&now);
         self.city.materials(&self.shapes, self.ty.f320);
         self.own.refresh(&now);
@@ -264,21 +408,66 @@ impl RiderRagdoll {
                 slots.push((m, k));
             }
         }
-        let island = !slots.is_empty() || !own.is_empty() || outside.others.0 > 0 || !outside.parts.is_empty();
-        out.island = island;
-        // the own-bike filter: the run with the rider as A, city then self contacts (the city's level index is 0; a
-        // self contact's other is the rider, never the bike: 0 stands for both)
-        let run = slots.len() + own.len();
-        if run > 0 {
-            let others = vec![0u16; run];
-            let mut enabled: Vec<bool> = slots.iter().map(|&(m, k)| self.city.manifolds[m].slots[k].enabled).chain(own.iter().map(|&(m, k)| self.own.manifolds[m].slots[k].enabled)).collect();
-            self.gate.own_bike_run(self.own_bike, &others, &mut enabled);
-            let (city_e, own_e) = enabled.split_at(slots.len());
-            for (&(m, k), &e) in slots.iter().zip(city_e) {
-                self.city.manifolds[m].slots[k].enabled = e;
+        // the island's pairs in the cache's order and its row lists ([`island_rows`]): the city's pairs by the
+        // object's level (the object is A), then the others by (lower, higher) level (the lower is A). The sort's keys
+        // are the instances' addresses: the city's below the bike's below the rider's in ro.0, rm.0, rh.0 and rf.0.
+        let bike = outside.bike.as_ref();
+        let rider = bike.map_or(0, |b| b.rider_level);
+        let (city_key, bike_key, rider_key) = (0i64, 1i64, 2i64);
+        let mut pairs: Vec<(WalkPair, Src)> = Vec::new();
+        if city_joins {
+            pairs.push((WalkPair { a: Some(rider), b: None, key_a: rider_key, key_b: city_key, rows: slots.len() }, Src::City));
+        }
+        if let Some(b) = bike {
+            if let Some(n) = b.city {
+                pairs.push((WalkPair { a: Some(b.level), b: None, key_a: bike_key, key_b: city_key, rows: n }, Src::BikeCity));
             }
-            for (&(m, k), &e) in own.iter().zip(own_e) {
-                self.own.manifolds[m].slots[k].enabled = e;
+            if let Some(r) = &b.rider {
+                let (lo, hi) = if b.level < rider { ((b.level, bike_key), (rider, rider_key)) } else { ((rider, rider_key), (b.level, bike_key)) };
+                pairs.push((WalkPair { a: Some(lo.0), b: Some(hi.0), key_a: lo.1, key_b: hi.1, rows: r.len() }, Src::BikeRider));
+            }
+        }
+        if own_joins {
+            pairs.push((WalkPair { a: Some(rider), b: Some(rider), key_a: rider_key, key_b: rider_key, rows: own.len() }, Src::Own));
+        }
+        pairs.sort_by_key(|(p, _)| match p.b {
+            None => (0, p.a.unwrap_or(0)),
+            Some(b) => (1 + p.a.unwrap_or(0).min(b), p.a.unwrap_or(0).max(b)),
+        });
+        let (walk, srcs): (Vec<WalkPair>, Vec<Src>) = pairs.into_iter().unzip();
+        let (by_a, by_b) = island_rows(&walk, rider).unwrap_or_default();
+        let island = !by_a.is_empty() || outside.others.0 > 0 || !outside.parts.is_empty();
+        out.island = island;
+        // the own-bike filter (F-37566) over the rider's two runs, as F-97446 hands them: his rows
+        // as A in the list sorted by A, then his rows as B in the list sorted by B (a self contact is in both); the
+        // other instance of a row is its other side (F-78981: the city 0, the rider himself in a self contact)
+        let run_a: Vec<(usize, usize)> = by_a.iter().filter(|x| walk[x.0].a == Some(rider)).copied().collect();
+        let run_b: Vec<(usize, usize)> = by_b.iter().filter(|x| walk[x.0].b == Some(rider)).copied().collect();
+        let other_a = |x: &(usize, usize)| walk[x.0].b.unwrap_or(0) as u16;
+        let other_b = |x: &(usize, usize)| walk[x.0].a.unwrap_or(0) as u16;
+        let mut bike_rider: Vec<bool> = bike.and_then(|b| b.rider.clone()).unwrap_or_default();
+        for (run, other) in [(&run_a, &other_a as &dyn Fn(&(usize, usize)) -> u16), (&run_b, &other_b)] {
+            if run.is_empty() {
+                continue;
+            }
+            let others: Vec<u16> = run.iter().map(other).collect();
+            let mut enabled: Vec<bool> = run
+                .iter()
+                .map(|&(p, r)| match srcs[p] {
+                    Src::City => self.city.manifolds[slots[r].0].slots[slots[r].1].enabled,
+                    Src::Own => self.own.manifolds[own[r].0].slots[own[r].1].enabled,
+                    Src::BikeRider => bike_rider[r],
+                    Src::BikeCity => true,
+                })
+                .collect();
+            self.gate.own_bike_run(self.own_bike, &others, &mut enabled);
+            for (&(p, r), e) in run.iter().zip(enabled) {
+                match srcs[p] {
+                    Src::City => self.city.manifolds[slots[r].0].slots[slots[r].1].enabled = e,
+                    Src::Own => self.own.manifolds[own[r].0].slots[own[r].1].enabled = e,
+                    Src::BikeRider => bike_rider[r] = e,
+                    Src::BikeCity => {}
+                }
             }
         }
         if !island {
@@ -301,45 +490,55 @@ impl RiderRagdoll {
         for &p in &outside.parts {
             self.body.contact_on_part(&self.child_link, p);
         }
-        let mut used: Vec<(usize, usize)> = Vec::new();
+        // the rows in the list's order (sorted by instance A), the enabled ones: the city's of type 7, the self
+        // contacts' of type 13 (the bike's own rows are not the rider's: they come in as `outside.others`)
+        let mut used: Vec<(Src, usize, usize)> = Vec::new();
         let mut touches: Vec<Touch> = Vec::new();
-        for &(m, k) in &slots {
-            let mf = &self.city.manifolds[m];
-            let s = &mf.slots[k];
-            if !s.enabled {
-                continue;
+        for &(p, r) in &by_a {
+            match srcs[p] {
+                Src::City => {
+                    let (m, k) = slots[r];
+                    let mf = &self.city.manifolds[m];
+                    if !mf.slots[k].enabled {
+                        continue;
+                    }
+                    let link = part_link(&self.child_link, n_links, mf.part as i32);
+                    let mut t = mf.slots[k].touch;
+                    t.jointed = Some(JointedSide { body: 0, link, on_b: false, point_w: POINT_W, self_b: None });
+                    touches.push(t);
+                    used.push((Src::City, m, k));
+                    out.contacts += 1;
+                }
+                Src::Own => {
+                    let (m, k) = own[r];
+                    let mf = &self.own.manifolds[m];
+                    if !mf.slots[k].enabled {
+                        continue;
+                    }
+                    let la = part_link(&self.child_link, n_links, mf.a as i32);
+                    let lb = part_link(&self.child_link, n_links, mf.b as i32);
+                    let mut t = mf.slots[k].touch;
+                    t.jointed = Some(JointedSide { body: 0, link: la, on_b: false, point_w: POINT_W, self_b: Some((lb, POINT_W_B)) });
+                    touches.push(t);
+                    used.push((Src::Own, m, k));
+                }
+                Src::BikeCity | Src::BikeRider => {}
             }
-            let link = part_link(&self.child_link, n_links, mf.part as i32);
-            let mut t = s.touch;
-            t.jointed = Some(JointedSide { body: 0, link, on_b: false, point_w: POINT_W, self_b: None });
-            touches.push(t);
-            used.push((m, k));
-        }
-        out.contacts = touches.len();
-        // the self contacts after the city's (the island's order in ro.0 to 193; from 194 it puts them first: open)
-        let mut used_own: Vec<(usize, usize)> = Vec::new();
-        for &(m, k) in &own {
-            let mf = &self.own.manifolds[m];
-            let s = &mf.slots[k];
-            if !s.enabled {
-                continue;
-            }
-            let la = part_link(&self.child_link, n_links, mf.a as i32);
-            let lb = part_link(&self.child_link, n_links, mf.b as i32);
-            let mut t = s.touch;
-            t.jointed = Some(JointedSide { body: 0, link: la, on_b: false, point_w: POINT_W, self_b: Some((lb, POINT_W_B)) });
-            touches.push(t);
-            used_own.push((m, k));
         }
         let inv_dt = 1.0 / dt;
         let body = std::slice::from_mut(&mut self.body);
         let mut solved = solver::island_solve_jointed(&[], &touches, body, outside.others, dt, inv_dt);
         solver::island_apply_jointed(&solved, body);
         solver::island_impulses(&solved, &mut touches);
-        // the post-solve run: the body fall at rd+64
-        if run > 0 {
-            let others = vec![0u16; run];
-            out.body_fall = self.gate.body_fall_run(self.own_bike, &others, rows3(&self.rd16)[3]);
+        // the post-solve runs (F-15350, the same two): the body fall at rd+64 (F-15373)
+        for (run, other) in [(&run_a, &other_a as &dyn Fn(&(usize, usize)) -> u16), (&run_b, &other_b)] {
+            if run.is_empty() {
+                continue;
+            }
+            let others: Vec<u16> = run.iter().map(other).collect();
+            if let Some(at) = self.gate.body_fall_run(self.own_bike, &others, rows3(&self.rd16)[3]) {
+                out.body_fall = Some(at);
+            }
         }
         out.motion = self.body.motion_measure(dt);
         self.body.velocity_update(dt);
@@ -347,14 +546,11 @@ impl RiderRagdoll {
         solver::island_push_jointed(&[], &mut touches, &mut solved, body, dt, inv_dt, &mut []);
         self.body.post_push(dt);
         self.rd16 = self.instance();
-        for (&(m, k), t) in used.iter().zip(touches.iter()) {
-            let s = &mut self.city.manifolds[m].slots[k].touch;
-            s.kept = t.kept;
-            s.impulse = t.impulse;
-            s.pushed = t.pushed;
-        }
-        for (&(m, k), t) in used_own.iter().zip(touches[used.len()..].iter()) {
-            let s = &mut self.own.manifolds[m].slots[k].touch;
+        for (&(src, m, k), t) in used.iter().zip(touches.iter()) {
+            let s = match src {
+                Src::City => &mut self.city.manifolds[m].slots[k].touch,
+                _ => &mut self.own.manifolds[m].slots[k].touch,
+            };
             s.kept = t.kept;
             s.impulse = t.impulse;
             s.pushed = t.pushed;
@@ -549,6 +745,62 @@ mod tests {
         (map, out)
     }
 
+    /// The rider's island as the original listed it (testdata/rider_island_order.txt, work/ragdoll/contacts2/
+    /// export_order.py: PAIR / ISLE records of ro.0 and rm.0 169 - 216, rh.0 169 - 212, 140 ticks): per tick the
+    /// pairs in the cache's order and the lists sorted by instance A and by instance B.
+    fn order_cases() -> Vec<(String, i64, Vec<WalkPair>, Vec<(usize, usize)>, Vec<(usize, usize)>)> {
+        let text = include_str!("testdata/rider_island_order.txt");
+        let mut out: Vec<(String, i64, Vec<WalkPair>, Vec<(usize, usize)>, Vec<(usize, usize)>)> = Vec::new();
+        let rows = |w: &[&str]| -> Vec<(usize, usize)> {
+            w.iter()
+                .map(|x| {
+                    let (p, r) = x.split_once('.').unwrap();
+                    (p.parse().unwrap(), r.parse().unwrap())
+                })
+                .collect()
+        };
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            match w.first() {
+                Some(&"T") => out.push((format!("{} {}", w[1], w[2]), w[3].parse().unwrap(), Vec::new(), Vec::new(), Vec::new())),
+                Some(&"P") => {
+                    let n: Vec<i64> = w[1..].iter().map(|x| x.parse().unwrap()).collect();
+                    let side = |l: i64| (l >= 0).then_some(l);
+                    out.last_mut().unwrap().2.push(WalkPair { a: side(n[0]), b: side(n[1]), key_a: n[2], key_b: n[3], rows: n[4] as usize });
+                }
+                Some(&"A") => out.last_mut().unwrap().3 = rows(&w[1..]),
+                Some(&"B") => out.last_mut().unwrap().4 = rows(&w[1..]),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The row order rule ([`island_rows`]) rebuilds both lists of every recorded tick, the unstable sort's moves
+    /// above 16 rows included (ro.0 194: the self contacts ahead of the city's). The recorded cache order is the
+    /// one tick_with makes: the city's pairs by the object's level, then the others by (lower, higher) level; the
+    /// instance A of a pair with the city is the object, of two objects the lower level's.
+    #[test]
+    fn island_row_order_matches_recordings() {
+        let cases = order_cases();
+        assert_eq!(cases.len(), 140);
+        let mut over16 = 0;
+        for (name, rider, pairs, want_a, want_b) in &cases {
+            let key = |p: &WalkPair| match p.b {
+                None => (0, p.a.unwrap()),
+                Some(b) => (1 + p.a.unwrap().min(b), p.a.unwrap().max(b)),
+            };
+            assert!(pairs.windows(2).all(|w| key(&w[0]) < key(&w[1])), "{name}: cache order");
+            assert!(pairs.iter().all(|p| p.b.is_none() || p.a <= p.b), "{name}: side A");
+            let (a, b) = island_rows(pairs, *rider).expect("the rider's island");
+            assert_eq!(&a, want_a, "{name}: list by instance A");
+            assert_eq!(&b, want_b, "{name}: list by instance B");
+            over16 += (a.len() > 16) as usize;
+        }
+        eprintln!("{} ticks, {over16} of them above 16 rows", cases.len());
+        assert!(over16 > 40);
+    }
+
     /// A fixture of named sections of u32 words (rider_contacts_ro0.bin, ragdoll_pose_ro0.bin).
     fn sections(d: &[u8], magic: &[u8]) -> HashMap<String, Vec<u32>> {
         assert_eq!(&d[..8], magic);
@@ -645,8 +897,9 @@ mod tests {
     /// data, the island's other share (the bike's contacts) from the recording; after each tick every word of the
     /// links, joints, body and collider against the recorded state at the next tick's slot 5 entry (and the
     /// post-push's exit of the same tick, which differs from it only in what slot 14 writes). The self contacts are
-    /// the port's own (from 175; ro.0's self pair list). Run on 169 - 216 (export_run.py, 3 MB, not kept) the chain is
-    /// exact through 193; at 194 the island puts the self contacts before the city's (open).
+    /// the port's own (from 175; ro.0's self pair list); the bike's rows from the order fixture. Run on 169 - 216
+    /// (export_run.py and island/export_island_contacts.py to 216, 3 MB, not kept) the chain is exact on every tick,
+    /// 169 - 215 against RGD0 170 - 216 (the end of the ragdoll).
     #[test]
     fn chained_ticks_match_recording() {
         let Some(root) = data_dir() else {
@@ -667,6 +920,20 @@ mod tests {
         let ty = rider_type(&root);
         let cases = cases();
         let (map, extra) = outside();
+        // (the bike's rows in the island: its pairs with the city and with the rider, the latter disabled by the gate)
+        let mut bikes: HashMap<u32, BikeRows> = HashMap::new();
+        for (name, rider, pairs, _, _) in order_cases() {
+            let Some(t) = name.strip_prefix("ro.0 ") else { continue };
+            let mut b = BikeRows { level: 0x56d7, rider_level: rider, city: None, rider: None };
+            for p in &pairs {
+                match (p.a, p.b) {
+                    (Some(0x56d7), None) => b.city = Some(p.rows),
+                    (Some(0x56d7), Some(r)) if r == rider => b.rider = Some(vec![false; p.rows]),
+                    _ => {}
+                }
+            }
+            bikes.insert(t.parse().unwrap(), b);
+        }
         let body = load(&cases[0].inp);
         // (the self pair list of ro.0's collider, +724 / +732)
         let pair_a = vec![1, 1, 8, 8, 8, 8, 12, 12, 12, 12, 15, 16, -1];
@@ -677,7 +944,8 @@ mod tests {
         let mut first_bad: Option<(u32, Vec<String>)> = None;
         for i in 0..cases.len() - 1 {
             let c = &cases[i];
-            let (o, sides) = extra.get(&c.tick).cloned().unwrap_or_default();
+            let (mut o, sides) = extra.get(&c.tick).cloned().unwrap_or_default();
+            o.bike = bikes.get(&c.tick).cloned();
             let got = rd.tick_with(c.v1, &city, &o);
             let (post, _) = compare(&rd.body, &c.out);
             let (bad, nan) = compare(&rd.body, &cases[i + 1].inp);
