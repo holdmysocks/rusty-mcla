@@ -5735,7 +5735,12 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             // it, unported together - his solves now, else his rows go into the bike's island below)
             let mut rider_isl: Option<super::artic_run::RiderIsland> = None;
             if let Some(rd) = rider_run.as_mut() {
-                let bike = super::artic_run::BikeRows { level: BIKE_LEVEL, rider_level: RIDER_LEVEL, city: car_city_pair.then(|| city_rows.len()), rider: None, city_on: city_rows.clone(), touch: Some((t.s.bound_friction, t.s.bound_elasticity)), shared: !loose_touch };
+                let bike = super::artic_run::BikeRows { level: BIKE_LEVEL, rider_level: RIDER_LEVEL, city: car_city_pair.then(|| city_rows.len()), rider: None, city_on: city_rows.clone(), touch: vs.wipe.is_some().then_some((t.s.bound_friction, t.s.bound_elasticity)), shared: !loose_touch };
+                // (F-55998 on a rider contact - partner class 11, not 8 / 6 / 4 / 13 - takes its driver branch: the
+                // car's driver record (the 104 B table indexed by [[car +80] +76] +76) has +24 = 3 for the player
+                // (read live: the player's bike 3, an AI car 1), and then chassis +592 bits 0x10 / 0x04 (wiped out)
+                // write BoundFriction / BoundElasticity into the enabled contacts; otherwise only a fixed partner
+                // (level state 2) is touched - never the rider)
                 let isl = rd.build(&super::artic_run::Outside { others: (0, 0.0), parts: Vec::new(), bike: Some(bike) });
                 log::debug!("rider: with the bike {}, loose {}, rows {}, bike x rider manifolds {}", isl.with_bike, loose_touch, isl.rows.len(), rd.veh.manifolds.len());
                 if isl.with_bike && !loose_touch {

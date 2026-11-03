@@ -101,7 +101,7 @@ pub struct BikeRows {
     /// the bike's city rows' enabled bits (empty: all enabled)
     pub city_on: Vec<bool>,
     /// the bike's callback on its enabled contacts with the rider (F-55998 in its runs): BoundFriction,
-    /// BoundElasticity
+    /// BoundElasticity while the bike is wiped out (chassis +592 bits 0x10 / 0x04), None otherwise (nothing written)
     pub touch: Option<(f32, f32)>,
     /// the shared step: the bike is body 0 of the island's solve, its city rows and the bike x rider rows are rows of
     /// it ([`RiderIsland::rows`])
