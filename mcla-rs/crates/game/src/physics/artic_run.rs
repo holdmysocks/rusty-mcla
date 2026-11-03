@@ -257,6 +257,9 @@ impl RiderRagdoll {
             }
         }
         if !island {
+            // (no island: no solve, no push and so no post-push; slot 10 still runs, as on every active collider
+            // after the islands - ragdoll_solver_decode.md 1.1)
+            self.body.velocity_update(dt);
             self.end_tick();
             return out;
         }

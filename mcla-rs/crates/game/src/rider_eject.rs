@@ -163,6 +163,151 @@ impl Eject {
     }
 }
 
+/// The player's rider off a motorcycle, as the game runs it each tick: the anim context once a frame (every other
+/// tick), the impact switch at the wipeout's first frame (F-28290's rising edge 0x8000), the eject clip (drivers.rs),
+/// GoRagdoll when the clip is over (F-54692 -> F-81936), the ragdoll's ticks (physics::artic_run), its velocity for
+/// the wipeout's timer (F-32386 through slot 11, F-62429) and its bones for the draw (F-46606), and RemoveRagdoll when
+/// the wipeout ends (the recovery states' exits, F-29164 / F-98260).
+#[derive(Default)]
+pub struct RiderOff {
+    pub ctx: ImpactCtx,
+    /// a tick of the frame's pair has run the context
+    second: bool,
+    wiped: bool,
+    /// the eject taken, the velocity kept at the wipeout's start (chassis +800, F-69183) and DamageoutTiming then
+    eject: Option<(Eject, Vec3, bool)>,
+    seat: Option<usize>,
+    pub ragdoll: Option<Box<crate::physics::artic_run::RiderRagdoll>>,
+    types: hashbrown::HashMap<std::path::PathBuf, Option<std::sync::Arc<mcla_formats::rage::ragdoll::RagdollType>>>,
+    surfaces: Vec<crate::physics::collision::Surface>,
+}
+
+/// A glam matrix as the guest's row-vector one (rows = glam's columns).
+pub fn guest_of(m: glam::Mat4) -> crate::physics::artic_pose::Mat {
+    use crate::physics::artic::V4;
+    let c = |v: glam::Vec4| V4::new(v.x, v.y, v.z, v.w);
+    [c(m.x_axis), c(m.y_axis), c(m.z_axis), c(m.w_axis)]
+}
+
+pub fn glam_of(m: &crate::physics::artic_pose::Mat) -> glam::Mat4 {
+    let c = |v: crate::physics::artic::V4| glam::Vec4::new(v.0[0], v.0[1], v.0[2], v.0[3]);
+    glam::Mat4::from_cols(c(m[0]), c(m[1]), c(m[2]), c(m[3]))
+}
+
+impl RiderOff {
+    /// One game tick. `seat` the player's car (the drivers' seat id), the damage bits and timer (main.rs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick(&mut self, cars: &mut [crate::vehicles::CarInstance], seat: Option<usize>, drivers: &mut crate::drivers::Drivers, city: &crate::physics::collision::WorldCollider, crash_bits: u8, crash_timer: f32, data_dir: &str, dt: f32) {
+        let Some(i) = seat.filter(|&i| cars.get(i).map_or(false, |c| c.model.bike)) else {
+            if let Some(s) = self.seat.take() {
+                drivers.seat_back(s);
+            }
+            self.ragdoll = None;
+            self.eject = None;
+            self.wiped = false;
+            return;
+        };
+        if let Some(s) = self.seat.filter(|&s| s != i) {
+            drivers.seat_back(s);
+            self.ragdoll = None;
+            self.eject = None;
+        }
+        self.seat = Some(i);
+        let c = &mut cars[i];
+        if std::env::var_os("MCLA_DBG_RIDER").is_some() {
+            eprintln!("RIDER seat {i} bits {crash_bits:#x} wipe {:?} ctx {:#x}", c.state.veh.as_ref().map(|v| v.wipe), self.ctx.bits);
+        }
+        let wiped = crash_bits & 0x10 != 0 || c.state.veh.as_ref().map_or(false, |v| v.wipe.is_some());
+        let rm = glam::Mat3::from_quat(c.state.rot);
+        let rows = [rm.x_axis, rm.y_axis, rm.z_axis];
+        // (F-28290 -> F-71604 once a frame, with the frame's dt)
+        self.second = !self.second;
+        if self.second {
+            let throttle = c.state.veh.as_ref().map_or(c.input.throttle, |v| v.rev.left);
+            self.ctx.update(body_velocity(rows, c.state.vel, throttle), dt + dt, &ImpactTune::default());
+        }
+        if wiped && !self.wiped && self.eject.is_none() {
+            // (the impact switch on ImpactDriveable's rising edge; DamageoutTiming = the timer +44 above 0)
+            let kept = c.state.vel;
+            let timing = crash_timer > 0.0;
+            if let Some(e) = choose(self.ctx.bits, nose_up(rows[2].y), c.state.in_water()) {
+                let u = if e == Eject::Over && !timing { c.state.vel * 5.0 } else { kept };
+                let uz = crate::physics::exact::fma(rows[2].x, u.x, crate::physics::exact::fma(rows[2].z, u.z, rows[2].y * u.y));
+                log::info!("rider: {:?} (impact bits {:#x}), clip rate {:.3}", e, self.ctx.bits & 0xF, e.rate(uz));
+                drivers.eject(i, e.clip(), e.rate(uz));
+                self.eject = Some((e, kept, timing));
+            }
+        }
+        self.wiped = wiped;
+        if !wiped {
+            if self.eject.take().is_some() | self.ragdoll.take().is_some() {
+                // (the recovery's exit: RemoveRagdoll, the rider back to the animation)
+                log::info!("rider: back on the seat");
+                drivers.seat_back(i);
+            }
+            if let Some(v) = c.state.veh.as_deref_mut() {
+                v.rider_vel = None;
+            }
+            return;
+        }
+        // GoRagdoll when the clip is over
+        if let Some((local, mat, r6)) = drivers.take_ragdoll_start(i) {
+            let ty = self
+                .types
+                .entry(r6.clone())
+                .or_insert_with(|| {
+                    let res = crate::assets::load_resource_file(&r6).ok()?;
+                    mcla_formats::rage::ragdoll::parse_character_ragdoll(&res).map(std::sync::Arc::new)
+                })
+                .clone();
+            if self.surfaces.is_empty() {
+                self.surfaces = crate::physics::collision::Surface::table(data_dir);
+            }
+            match (ty, self.eject) {
+                (Some(ty), Some((e, kept, timing))) if ty.bone_parent.len() == local.len() => {
+                    use crate::physics::artic_build::{build, BuildInput, GuestAddrs};
+                    let character = guest_of(mat);
+                    // (the guest's addresses only tie the blocks together: any distinct values)
+                    let addrs = GuestAddrs {
+                        body: 0x4000_0000,
+                        collider: 0x4100_0000,
+                        links: (0..64).map(|k| 0x4200_0000 + 0x400 * k).collect(),
+                        joints: (0..64).map(|k| 0x4300_0000 + 0x600 * k).collect(),
+                        collider_arrays: [0x4400_0000, 0x4401_0000, 0x4402_0000, 0x4403_0000, 0x4404_0000, 0x4405_0000, 0x4406_0000],
+                        inst: 0x4500_0000,
+                        solver_obj: 0x4600_0000,
+                        type248: 0x4700_0000,
+                    };
+                    match build(&ty, &BuildInput::new([character[0].0, character[1].0, character[2].0]), &addrs) {
+                        Ok(b) => {
+                            let locals: Vec<_> = local.iter().map(|(q, p)| guest_of(glam::Mat4::from_rotation_translation(*q, *p))).collect();
+                            let launch = e.launch(kept, c.state.vel, timing);
+                            log::info!("rider: GoRagdoll, {} links, launch {:.2} {:.2} {:.2}", b.links.len(), launch.x, launch.y, launch.z);
+                            self.ragdoll = Some(Box::new(crate::physics::artic_run::RiderRagdoll::go(&ty, b, &locals, character, launch, &self.surfaces)));
+                        }
+                        Err(err) => log::warn!("rider: the ragdoll's build failed: {err:?}"),
+                    }
+                }
+                (ty, _) => log::warn!("rider: no ragdoll (type {}, {} bones posed)", ty.map_or(0, |t| t.bone_parent.len()), local.len()),
+            }
+        }
+        if let Some(rd) = self.ragdoll.as_mut() {
+            let out = rd.tick(dt, city);
+            if std::env::var_os("MCLA_DBG_RIDER").is_some() {
+                let m = rd.matrix();
+                eprintln!("RIDER pos {:?} v {:?} contacts {} island {}", m[3].0, rd.velocity(), out.contacts, out.island);
+            }
+            if let Some(p) = out.body_fall {
+                log::info!("rider: BIKER_BODYFALL at {:.2} {:.2} {:.2}", p.x, p.y, p.z);
+            }
+            if let Some(v) = c.state.veh.as_deref_mut() {
+                v.rider_vel = Some(rd.velocity());
+            }
+            drivers.ragdoll_world(i, rd.bones().iter().map(glam_of).collect());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

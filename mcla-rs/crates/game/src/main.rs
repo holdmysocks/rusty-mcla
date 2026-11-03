@@ -728,6 +728,8 @@ struct App {
     map_open: f32,
     map_vp: Option<glam::Mat4>,
     drivers: drivers::Drivers,
+    /// the player's rider off a motorcycle: eject clip and ragdoll (GitHub #39)
+    rider_off: rider_eject::RiderOff,
     fx_impact: f32,
     /// the last drawn frame's view frustum (the glass break plays only for a car in view)
     last_frustum: Option<Frustum>,
@@ -1256,6 +1258,7 @@ impl App {
             map_open: 0.0,
             map_vp: None,
             drivers: drivers::Drivers::default(),
+            rider_off: Default::default(),
             fx_impact: 0.0,
             last_frustum: None,
             ability: ability::Abilities::new(),
@@ -3282,6 +3285,10 @@ impl App {
             // the bust (0x20, with 0x08: no damage hits) is cleared by the original's flag reset after the
             // arrest or the ticket [?: which one]; here when the arrest's hold, its scene and the
             // ticket / arrest panel are all over (approx.)
+            {
+                let seat = self.vehicles.cars.iter().position(|c| c.is_player);
+                self.rider_off.tick(&mut self.vehicles.cars, seat, &mut self.drivers, &world.collider, self.crash_bits, self.crash_timer, &self.opt.data_dir, dt);
+            }
             if self.crash_bits & 0x20 != 0 && self.police.heat != police::Heat::Busted && self.cine.playing.is_none() && self.game.arrest_panel.is_none() {
                 self.crash_bits &= !0x28;
             }
