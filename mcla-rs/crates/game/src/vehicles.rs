@@ -3356,7 +3356,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 self.plates.retain(|_, b| b.strong_count() > 0);
                 let (w, h) = (bg.w, bg.h);
                 let px = compose_plate(&bg, &font, &text);
-                let tex = Arc::new(crate::render::create_rgba(&gpu.device, &gpu.queue, w as u32, h as u32, &px, "plate"));
+                // (as stored, like the car's other maps: city.wgsl decodes the sample once and PS_Plate's ^1.6 gets the
+                // stored value back through car_raw. A gamma upload was decoded twice - the plate dark and saturated, its
+                // blue 4, 17, 192 where the original's is 56, 100, 250. MCLA_PLATE_GAMMA_OLD=1: as before)
+                let gamma = !car_tex_raw() || std::env::var("MCLA_PLATE_GAMMA_OLD").is_ok();
+                let tex = Arc::new(crate::render::create_rgba_as(&gpu.device, &gpu.queue, w as u32, h as u32, &px, "plate", gamma));
                 let key = mcla_formats::hash::joaat(&format!("plate:{slot}")) | 1;
                 let bind = gpu.texture_bind_group(&tex, &tex, key, key);
                 self.plates.insert(slot.clone(), Arc::downgrade(&bind));
