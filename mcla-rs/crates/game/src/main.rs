@@ -7262,8 +7262,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 None => self.cp_markers.light.filter(|_| std::env::var("MCLA_NO_MARKERS").is_err()).map(|(p, c)| (p, c, checkpoints::LIGHT_INTENSITY)),
             };
         }
-        // (test hook MCLA_SIREN_TRACE=1: the record, off the beat of the 100 ms flash)
-        if self.tick_no % 37 == 0 && std::env::var("MCLA_SIREN_TRACE").is_ok() {
+        // (test hook MCLA_SIREN_TRACE=1: the record, off the beat of the 100 ms flash; =all: every tick)
+        if (self.tick_no % 37 == 0 && std::env::var("MCLA_SIREN_TRACE").is_ok()) || std::env::var("MCLA_SIREN_TRACE").as_deref() == Ok("all") {
             log::info!("record3: {:?} from the camera {:?}", self.record3, self.record3.map(|r| r.0.distance(self.cam.pos)));
         }
         self.sim_time += dt;
