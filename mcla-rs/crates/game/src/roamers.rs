@@ -1053,6 +1053,10 @@ impl Roamers {
                 let diff = game.mc4_hookman_diff().filter(|_| self.rival_challenged).or(ch.diff).unwrap_or_else(|| vehicles.cars.iter().find(|c| c.racer).map_or(1, |c| game.mc4_difficulty_of_setup(&c.model.name, &c.vinyl_name)).clamp(0, 3) as usize);
                 let exp = crate::rewards::beat_me_there_exp(game.rep, diff, place, field);
                 game.rep += exp;
+                // (its reward is given at once, +9 = 1 - F-90736: AddExperience posts EXPERIENCE_EVENT then)
+                if exp > 0 {
+                    game.career.event(crate::career::Ev::Rep(game.rep));
+                }
                 // (with the movie the place and the REP line are form 54's - `Game::bmt_end`)
                 if !flash {
                     let what = if place == 1 { "BEAT ME THERE" } else { "BEATEN TO THE LINE" };

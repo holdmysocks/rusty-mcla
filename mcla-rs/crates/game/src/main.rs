@@ -6750,6 +6750,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.game.show_message("YOU ESCAPED");
                         }
                         self.game.career.event(career::Ev::EscapedPolice);
+                            // (COP_EVADE's reward is given at once, +9 = 1 - F-67002: AddExperience posts
+                            // EXPERIENCE_EVENT then)
+                            self.game.career.event(career::Ev::Rep(self.game.rep));
                     }
                     Some(police::Event::Ticket(f)) => {
                         // (StateTicket's enter, F-14125: the bust bits 0x28 on a car not damaged out -
