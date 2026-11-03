@@ -325,8 +325,6 @@ pub const VEHICLES: [&str; 69] = [
     "vp_se_dge_ubp_06", "vp_se_dge_chp_06",
 ];
 
-/// A vehicle's table index: its place in `VEHICLES`, a mod car's after them (69 + its place in name order,
-/// `modcars`; MODS.md M-5), else -1.
 /// F-31343's step of a plate background: `bg + d` brought into 0..n by C's remainder, n added when the sum is below 0
 /// (exact for a step of one either way, which is all the editor gives); 0 when there is a single background.
 pub fn plate_bg_step(bg: u8, d: i32, n: i32) -> u8 {
@@ -337,6 +335,8 @@ pub fn plate_bg_step(bg: u8, d: i32, n: i32) -> u8 {
     (v % n + if v < 0 { n } else { 0 }) as u8
 }
 
+/// A vehicle's table index: its place in `VEHICLES`, a mod car's after them (69 + its place in name order,
+/// `modcars`; MODS.md M-5), else -1.
 pub fn vehicle_index(name: &str) -> i32 {
     let n = name.to_ascii_lowercase();
     VEHICLES.iter().position(|v| *v == n).map(|k| k as i32).or_else(|| crate::modcars::table_index(&n).map(|k| k as i32)).unwrap_or(-1)

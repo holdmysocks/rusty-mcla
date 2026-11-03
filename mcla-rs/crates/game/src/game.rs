@@ -1920,12 +1920,23 @@ impl Game {
         }
     }
 
+    /// What the showroom asks for car `i` (fs_price, F-31112): the catalogue's price, nothing once the career
+    /// stat tPAR is set (the flag the garage's entry sets from it, which F-31112 and the purchase read).
+    pub fn showroom_price(&self, i: usize) -> i64 {
+        if self.parts_free() { 0 } else { self.price_of(i).0 }
+    }
+
     /// Buy car `i` if it is unlocked and affordable. Returns false (with a message) otherwise.
     pub fn try_buy(&mut self, i: usize) -> bool {
         if self.is_owned(i) {
             return true;
         }
-        let (price, rep) = self.price_of(i);
+        // (a full garage takes no purchase: thirty vehicles, the purchase's own test)
+        if self.owned.len() >= 30 {
+            return false;
+        }
+        let (_, rep) = self.price_of(i);
+        let price = self.showroom_price(i);
         // (not for sale - the police cruiser, the bus: never listed, F-31112)
         if !crate::mc4b::vehicle_for_sale(&self.data_dir, &self.dir_name(i)) {
             return false;
@@ -6603,8 +6614,15 @@ impl Game {
                 }
                 let list_cars: Vec<usize> = match self.garage_list {
                     // (the showroom offers what the catalogue prices and the game offers at all -
-                    // mcGarage::ListShowroomVehicles, F-31112: the table's for-sale byte +41, then `mc4_vehicle_available`)
-                    Some((showroom, _)) => (0..n).filter(|i| self.is_owned(*i) != showroom && (!showroom || (self.price_of(*i).0 > 0 && crate::mc4b::vehicle_for_sale(&self.data_dir, &self.dir_name(*i)) && self.mc4_vehicle_available(&self.dir_name(*i))))).collect(),
+                    // mcGarage::ListShowroomVehicles, F-31112: the table's for-sale byte +41, then `mc4_vehicle_available`;
+                    // in the vehicle table's order, the police pack last)
+                    Some((showroom, _)) => {
+                        let mut v: Vec<usize> = (0..n).filter(|i| self.is_owned(*i) != showroom && (!showroom || (self.price_of(*i).0 > 0 && crate::mc4b::vehicle_for_sale(&self.data_dir, &self.dir_name(*i)) && self.mc4_vehicle_available(&self.dir_name(*i))))).collect();
+                        if showroom {
+                            v.sort_by_key(|&i| (crate::mc4::vehicle_index(&self.dir_name(i)) as u32, i));
+                        }
+                        v
+                    }
                     None => Vec::new(),
                 };
                 // (MANAGE VEHICLES lists the garage in its own order - the save's slots, reference
@@ -6666,7 +6684,8 @@ impl Game {
                     static BUY_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                     let enter = enter || (showroom && std::env::var("MCLA_BUY_TEST").is_ok() && !BUY_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed));
                     if showroom && (enter || with_trade) && self.message_box.is_none() && !self.is_owned(list_cars[sel]) {
-                        let (price, rep) = self.price_of(list_cars[sel]);
+                        let (_, rep) = self.price_of(list_cars[sel]);
+                        let price = self.showroom_price(list_cars[sel]);
                         let trade = if with_trade { self.trade_in(self.current_car) } else { 0 };
                         if self.rep < rep && std::env::var("MCLA_UNLOCK_ALL").is_err() {
                             list_swallow = self.flash_popup.is_some();
@@ -7691,13 +7710,13 @@ impl Game {
                                     // save is A-CLASS where the catalogue has it in B (reference `g_mv0`). The game's
                                     // rule was not read: a car with every part at its last stage counts one class up.
                                     let class = if !showroom && self.perf_frac(i) > 0.999 { match class { 'D' => 'C', 'C' => 'B', _ => 'A' } } else { class };
-                                    let kind = c.as_ref().map(|c| c.class.to_uppercase()).unwrap_or_default();
-                                    // (the catalogue's SPORTBIKE reads SPORTS BIKE: reference `g_mv1`)
-                                    let kind = if kind == "SPORTBIKE" { self.career.strings.get("SportBike").filter(|v| !v.contains('<')).map(|v| v.to_uppercase()).unwrap_or_else(|| "SPORTS BIKE".into()) } else { kind };
+                                    // (fs_text3 is the class's identifier, F-31112, shown through the string tables:
+                                    // SportBike reads SPORTS BIKE (reference `g_mv1`), Cop POLICE (the police pack))
+                                    let kind = c.as_ref().map(|c| self.career.strings.get(&c.class).filter(|v| !v.contains('<')).map(|v| v.to_uppercase()).unwrap_or_else(|| c.class.to_uppercase())).unwrap_or_default();
                                     // (the port's small mark on a mod car, here only: the showroom's purchase view and
                                     // MANAGE VEHICLES - MODS.md design 7)
                                     let kind = if crate::modcars::is_mod_car(&self.dir_name(i)) { format!("{kind} - {}", crate::modcars::MOD_MARK) } else { kind };
-                                    (format!("VEHICLE: {}-CLASS / GROUP {}", class, gn), kind, if showroom { self.price_of(i).0 } else { self.trade_in(i) })
+                                    (format!("VEHICLE: {}-CLASS / GROUP {}", class, gn), kind, if showroom { self.showroom_price(i) } else { self.trade_in(i) })
                                 })
                                 .collect();
                             let c = info(list_cars[sel.min(list_cars.len() - 1)]);
