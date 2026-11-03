@@ -12510,8 +12510,9 @@ impl App {
         let warping = g.start_warp_on || self.warp.is_some() || self.climb.is_some() || self.garage_in.is_some() || self.garage_out.is_some() || self.hangout_entry.is_some() || self.payback_in.is_some();
         // (the race's last three seconds before GO, and the race's end - PostRace / race over)
         let race_gate = g.race.as_ref().map_or(false, |r| r.countdown > 0.0 && r.countdown <= 3.0) || g.race_end_t.is_some();
-        // (the perspective form's slow motion holds the game: the lessons' "ease to pause")
-        let form108 = g.tutorial_hold();
+        // (form 108 visible - F-38972 asks its vt+60: the lessons' "ease to pause" from its start to the "ease from
+        // pause", RACE_GH_02's MISSION LOG box, the log's lesson and box 77 among them)
+        let form108 = g.tutorial_hold() || g.opt_x.s23.slow.visible;
         // (the player's car wrecked: F-36476 - damage / its limit >= 1)
         let wrecked = self.vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
         !(opening || cinematic || warping || race_gate || form108 || g.photo_on || wrecked)

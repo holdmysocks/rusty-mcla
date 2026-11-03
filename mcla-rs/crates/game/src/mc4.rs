@@ -17650,6 +17650,8 @@ mod tests {
         g.mlog_guided = true;
         g.mc4_s23_tick(0.016, S23In::default());
         assert!(g.opt_x.arcade.d.say.contains(&"TUTORIAL_MISSION_LOG_GPS".to_string()));
+        // (form 108 stays visible from the ease to pause to the ease from pause: no pause menu - F-38972)
+        assert!(g.opt_x.s23.slow.visible);
         for _ in 0..40 {
             g.mc4_s23_tick(0.016, S23In::default());
         }
@@ -17664,6 +17666,7 @@ mod tests {
             g.mc4_s23_tick(0.016, S23In::default());
         }
         assert_eq!((g.opt_x.s23.lesson, g.mc4_time_scale()), (4, 1.0));
+        assert!(!g.opt_x.s23.slow.visible);
         // (the flags and the block's list are saved)
         g.write_save(&dir);
         let b = saved_block(&dir);
