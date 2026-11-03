@@ -75,6 +75,9 @@ pub struct CarModel {
     pub rim_ratio: f32,
     /// motorcycle: one front and one rear wheel on the centre line, leans into corners
     pub bike: bool,
+    /// a bike's front and rear tyre and rim are twice this wide: the span of the wheel_0 / wheel_2
+    /// bones' translation limits (F-74884)
+    pub bike_wheel_width: [f32; 2],
     pub min: Vec3,
     pub max: Vec3,
     pub cfg: CarConfig,
@@ -2031,7 +2034,8 @@ impl Vehicles {
             base_name.strip_prefix("vp_").and_then(|n| n.rsplit_once('_').map(|(a, _)| format!("whl_stk_{a}"))),
         ];
         let tyre = if car.bike { "tir_bike" } else { "tir_car" };
-        let rim_ratio = if car.bike { 0.812 } else { stock_rim_ratio(&world.assets.root, &car.name, params.wheel_radius) };
+        // (a bike's rim: 0.82 of its tyre's diameter, the constructor F-60786's +4084 / +4088, F-43091)
+        let rim_ratio = if car.bike { 0.82 } else { stock_rim_ratio(&world.assets.root, &car.name, params.wheel_radius) };
         let mut wheels = None;
         let mut rim_dir = None;
         // (a mod car's stock rims: its own folder or its manifest's `donors.rims` - modcars.rs)
@@ -2083,7 +2087,10 @@ impl Vehicles {
         let lod_steps = if car_is_ambient { traffic::lod_steps(&world.assets.root, &car.name) } else { None }.unwrap_or([40.0, 155.0]);
         let bound_box = if car_is_ambient { traffic::bound_box(&world.assets.root, &car.name) } else { None };
         let (fx_anchors, fx_anchor_rear) = car.fx_anchors(cfg);
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
+        // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
+        // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
+        let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -4720,8 +4727,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
                 let flip = if c.model.bike { Quat::IDENTITY } else { flip };
                 let spin = if c.model.bike { Quat::from_rotation_x(-pose.spin[i]) } else { spin };
-                // (the original draws each axle's own tyre: as wide as fitted, 6.35 mm larger than its physics radius)
-                let (tyre_w, tyre_r) = c.params().veh.as_ref().filter(|v| v.tyre_width[0] > 0.0 && !c.model.bike).map(|v| if i < 2 { (v.tyre_width[0], v.t.wheel_front.radius + 0.00635) } else { (v.tyre_width[1], v.t.wheel_back.radius + 0.00635) }).unwrap_or((c.model.params.wheel_width, c.model.params.wheel_radius));
+                // (the original draws each axle's own tyre: as wide as fitted, 6.35 mm larger than its physics radius.
+                // A bike's (F-43091 with F-54299): x twice its axle's bone width, y / z its physics radius doubled, the
+                // radius the wheel had at the set-up, F-74884 - the rim then 0.82 of that)
+                let (tyre_w, tyre_r) = if c.model.bike {
+                    let a = (i >= 2) as usize;
+                    let r = c.params().veh.as_ref().map(|v| if a == 0 { v.t.wheel_front.radius } else { v.t.wheel_back.radius }).filter(|r| *r > 0.1).unwrap_or(c.model.params.wheel_radius);
+                    (c.model.bike_wheel_width[a], r)
+                } else {
+                    c.params().veh.as_ref().filter(|v| v.tyre_width[0] > 0.0).map(|v| if i < 2 { (v.tyre_width[0], v.t.wheel_front.radius + 0.00635) } else { (v.tyre_width[1], v.t.wheel_back.radius + 0.00635) }).unwrap_or((c.model.params.wheel_width, c.model.params.wheel_radius))
+                };
                 let wm = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * flip * spin) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
                 // (F-57869: the rim is drawn only while the camera is outside the wheel - the way from the eye to the
                 // hub against the wheel's x axis, which points in on every wheel, over 0; at 0 or below the
@@ -5916,7 +5931,8 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
             rim_from = batches.len();
         }
         let xf = if is_rim { Mat4::from_scale(Vec3::new(1.0, rim_ratio, rim_ratio)) } else { Mat4::IDENTITY };
-        let bead = rim_ratio * 0.5;
+        // (a bike's tyre keeps its bead: F-43091 gives it innerRadiusScale 0, recorded so on the ZX-14)
+        let bead = if tyre == "tir_bike" { 0.406 } else { rim_ratio * 0.5 };
         for (mesh, si) in &model.meshes {
             let mut morphed;
             // (the tyre is drawn turned half round about the wheel's vertical against the rim: F-11293 turns the

@@ -18,6 +18,9 @@ pub struct Bone {
     pub tag: u16,
     /// parent bone index (usize::MAX for roots)
     pub parent: usize,
+    /// the bone record's translation limits (crBoneData +144 / +160; lod+0x00 -> 224-byte
+    /// records): a bike's tyre and rim are twice as wide as the distance between them (F-74884)
+    pub trans_limits: (Vec3, Vec3),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -84,6 +87,12 @@ impl Skeleton {
             }
         }
         let locals: Vec<Mat4> = (0..count).map(|i| read_mat(&rd, mats + i * 64)).collect();
+        // bone records: lod+0x00 -> count x 224 bytes
+        let vec3 = |o: usize| Vec3::new(rd.f32(o), rd.f32(o + 4), rd.f32(o + 8));
+        let limits: Vec<(Vec3, Vec3)> = match rd.ptr(lod).filter(|&r| rd.has(r, count * 224)) {
+            Some(r) => (0..count).map(|i| (vec3(r + i * 224 + 144), vec3(r + i * 224 + 160))).collect(),
+            None => vec![(Vec3::ZERO, Vec3::ZERO); count],
+        };
         // world (bind) matrices are not stored; accumulate up the parent chain
         let mut world = vec![None::<Mat4>; count];
         fn resolve(i: usize, locals: &[Mat4], parents: &[usize], world: &mut [Option<Mat4>], depth: usize) -> Mat4 {
@@ -101,7 +110,7 @@ impl Skeleton {
         let mut bones = Vec::with_capacity(count);
         for i in 0..count {
             let w = resolve(i, &locals, &parents, &mut world, 0);
-            bones.push(Bone { local: locals[i], world: w, name: names[i].clone(), tag: tags[i], parent: parents[i] });
+            bones.push(Bone { local: locals[i], world: w, name: names[i].clone(), tag: tags[i], parent: parents[i], trans_limits: limits[i] });
         }
         Ok(Some(Skeleton { bones }))
     }
@@ -169,5 +178,25 @@ impl Skeleton {
             best
         };
         Some([pick(&front, true), pick(&front, false), pick(&rear, true), pick(&rear, false)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The ZX-14's base fragment: wheel_0's translation limits are +-0.06396 on x, wheel_2's +-0.11 - the bike's
+    /// front and rear widths (F-74884), recorded as the rims' x scale 0.25584 / 0.44000 (CAR_PARTS.md).
+    #[test]
+    fn zx14_wheel_limits() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/vehicle/vp_kaw_ninja_zx14_06/0xf9785b04.r63")) else { return };
+        let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u(12) as usize).min(data.len());
+        let res = crate::rsc::Resource { rtype: u(4), flags: u(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let sk = super::Skeleton::parse(&res).unwrap().unwrap();
+        let span = |n: &str| sk.bones.iter().find(|b| b.name == n).map(|b| (b.trans_limits.1 - b.trans_limits.0).length()).unwrap();
+        assert!((span("wheel_0") - 0.12792).abs() < 1e-5, "{}", span("wheel_0"));
+        assert!((span("wheel_2") - 0.22).abs() < 1e-5, "{}", span("wheel_2"));
+        assert_eq!(span("hub_0"), 0.0);
     }
 }
