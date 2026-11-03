@@ -7142,8 +7142,21 @@ impl Game {
                             let step = if at == 0 { -d } else { d };
                             let axles: &[usize] = match self.dim_axle { 0 => &[0], 1 => &[1], _ => &[0, 1] };
                             let nv = (v[at + axles[0]] as isize + step).clamp(lo, hi) as u8;
-                            for a in axles {
-                                v[at + a] = nv;
+                            // (garage.SetWheelDimension, F-81554: the figure set, the others moved until the wheel fits the
+                            // car's fenders, or nothing changed - SimTunes::set_dimension; a car without its tuning: as set)
+                            let car = self.dir_name(self.current_car).to_ascii_lowercase();
+                            let tunes = vehicles.player().filter(|c| c.model.name.eq_ignore_ascii_case(&car)).and_then(|c| c.model.simtunes.clone());
+                            match tunes {
+                                Some(t) => {
+                                    let wide = self.car_setup_cfg(self.current_car).and_then(|c| c.get(2203).copied()).unwrap_or(0) != 0;
+                                    let kind = match at { 4 => 1, 6 => 2, 2 => 3, _ => 4 };
+                                    t.set_dimension(&mut v, wide, self.dim_axle.min(2), kind, nv);
+                                }
+                                None => {
+                                    for a in axles {
+                                        v[at + a] = nv;
+                                    }
+                                }
                             }
                             self.dims.insert(self.dir_name(self.current_car).to_ascii_lowercase(), v);
                             // (the rims on the car follow the front's size)
