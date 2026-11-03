@@ -6007,9 +6007,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (HEADLIGHTS pressed - its edge, F-52044; `flash` - in a car whose vehicle-table class is the police's (5,
             // F-64470) toggles the input flag 0x400 (F-56064), which F-44589 copies into the car's siren byte +304,
             // starting or stopping the siren (F-39258 / F-59693): the player's cruiser's light bar. MCLA_PLAYER_SIREN_OLD=1: none)
+            // (test hook MCLA_FLASH_AT=<tick>[,<tick>..]: HEADLIGHTS pressed at those ticks)
+            if std::env::var("MCLA_FLASH_AT").is_ok_and(|v| v.split(',').any(|s| s.parse::<u64>().ok() == Some(self.tick_no as u64))) {
+                self.flash = true;
+            }
             if self.flash && self.drive && std::env::var("MCLA_PLAYER_SIREN_OLD").is_err() {
                 let name = self.vehicles.player().map(|c| c.model.name.clone()).unwrap_or_default();
-                if self.game.oppick.car(&name).is_some_and(|p| p.info.class == oppick::CLASS_COP) {
+                // (the vehicle lists' record, not the sample table's: no police car has samples)
+                if self.game.oppick.class_of(&name) == Some(oppick::CLASS_COP) {
                     if let Some(c) = self.vehicles.player_mut() {
                         c.siren = !c.siren;
                         log::info!("headlights pressed in a police car: light bar {}", if c.siren { "on" } else { "off" });
@@ -7442,6 +7447,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let up = if self.drive && self.vehicles.player().is_some() { self.chase.up } else { Vec3::Y };
             let right = fwd.cross(up).normalize_or(Vec3::X);
             let horn = (self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::HORN, |k| self.input.down(k)) || self.pad_horn) && !self.game.in_menu();
+            // (test hook MCLA_HORN_AT=<from>,<to>: the horn held over those ticks)
+            let horn = horn || std::env::var("MCLA_HORN_AT").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.parse::<u64>().ok()?, b.parse::<u64>().ok()?)))).is_some_and(|(a, b)| (a..b).contains(&(self.tick_no as u64)));
             // Zone slows the world: sounds drop in pitch with it
             let o = self.game.opts;
             if self.sound.lib.is_some() {
