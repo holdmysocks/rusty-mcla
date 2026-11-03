@@ -7802,12 +7802,16 @@ impl Game {
                             let row = |label: String, value: String| crate::flash_ui::MenuRow { label, value, enabled: true, part: None };
                             let one = |text: String| choice_list(0, &[text]);
                             let ride = v[ax] as i32;
+                            // (the ride height's text: the string of its name in F-73445's table, `rh+300` .. `rh_0` ..
+                            // `rh_800` - "+3", "STOCK", "-8")
+                            let ride_key = match 3 - ride { u if u > 0 => format!("rh+{u}00"), 0 => "rh_0".to_string(), u => format!("rh_{}00", -u) };
+                            let ride_text = match 3 - ride { u if u > 0 => format!("+{u}"), 0 => "STOCK".to_string(), u => format!("{u}") };
                             rows = vec![
                                 row(st("Axle", "AXLE"), choice_list(self.dim_axle.min(2), &[st("G_FrontAxle", "FRONT"), st("G_RearAxle", "REAR"), st("G_BothAxle", "BOTH")])),
                                 row(st("G_RimSize", "RIMS SIZE"), one(format!("{}", v[4 + ax]))),
                                 row(st("G_TireProfile", "TIRE PROFILE"), one(format!("{}", 20 + 5 * v[6 + ax] as i32))),
                                 row(st("G_TireWidth", "TIRE WIDTH"), one(format!("{}", 195 + 10 * v[2 + ax] as i32))),
-                                row(st("G_RideHeight", "RIDE HEIGHT"), one(if ride == 3 { st("G_Stock", "STOCK") } else { format!("{}", 3 - ride) })),
+                                row(st("G_RideHeight", "RIDE HEIGHT"), one(st(&ride_key, &ride_text))),
                             ];
                         }
                         // INTERIOR COLORS (ColorsInt.sc.xml, the paint shop's flat template 42; references
