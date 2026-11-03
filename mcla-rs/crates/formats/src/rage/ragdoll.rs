@@ -60,6 +60,12 @@ pub struct RagChild {
     pub rot: [[f32; 4]; 3],
     /// +128: its centre in model space (4 lanes)
     pub pos: [f32; 4],
+    /// +16: the 4 x 4 matrix H of the pose exchange (F-93058)
+    pub h: [[f32; 4]; 4],
+    /// [+144] + 128: C, the part's place in its bone's frame (F-36901, F-46606; the bind of the bone)
+    pub c: [[f32; 4]; 4],
+    /// [T+248] + 64 i: O, the part's fixed place in its link's frame (F-43257)
+    pub o: [[f32; 4]; 4],
 }
 
 /// A bone record of the skeleton (224 B).
@@ -110,6 +116,11 @@ pub struct RagdollType {
     /// +240: principal moments per child (4 lanes, lane w as stored)
     pub inertia: Vec<[f32; 4]>,
     pub bones: Vec<RagBone>,
+    /// skeleton data +4: the parent bone of each bone (bone 0's entry unused)
+    pub bone_parent: Vec<i32>,
+    /// skeleton data +16: the default pose, 64 B per bone (RemoveRagdoll's snap, F-98260; bone 0's is the entry's
+    /// E+288, F-46606)
+    pub bone_default: Vec<[[f32; 4]; 4]>,
     /// [[+280]+20]: the skeleton's pose, 64 B per bone (rows and position; the joint anchors start from row 3)
     pub bone_pose: Vec<[[f32; 4]; 4]>,
     /// +256 / +260 (+300 entries): the group pairs F-83435 turns into child pairs
@@ -124,6 +135,10 @@ pub struct RagdollType {
 
 fn v4(rd: &Rd, o: usize) -> [f32; 4] {
     [rd.f32(o), rd.f32(o + 4), rd.f32(o + 8), rd.f32(o + 12)]
+}
+
+fn m4(rd: &Rd, o: usize) -> [[f32; 4]; 4] {
+    [v4(rd, o), v4(rd, o + 16), v4(rd, o + 32), v4(rd, o + 48)]
 }
 
 fn v3(rd: &Rd, o: usize) -> [f32; 3] {
@@ -175,10 +190,25 @@ pub fn parse_ragdoll_type(res: &Resource, t: usize) -> Option<RagdollType> {
             bone: rd.u16(o + 14) as i16,
             rot: [v4(&rd, o + 80), v4(&rd, o + 96), v4(&rd, o + 112)],
             pos: v4(&rd, o + 128),
+            h: m4(&rd, o + 16),
+            c: rd.ptr(o + 144).map_or([[0.0; 4]; 4], |c| m4(&rd, c + 128)),
+            o: rd.ptr(t + 248).map_or([[0.0; 4]; 4], |p| m4(&rd, p + 64 * i)),
         });
         out.inertia.push(v4(&rd, inertia + 16 * i));
     }
     if let Some(skel) = rd.ptr(t + 180).and_then(|d| rd.ptr(d + 12)) {
+        if let Some(pa) = rd.ptr(skel + 4) {
+            let n = rd.u16(skel + 20) as usize;
+            if rd.has(pa, 4 * n) {
+                out.bone_parent = (0..n).map(|k| rd.u32(pa + 4 * k) as i32).collect();
+            }
+        }
+        if let Some(dm) = rd.ptr(skel + 16) {
+            let n = rd.u16(skel + 20) as usize;
+            if rd.has(dm, 64 * n) {
+                out.bone_default = (0..n).map(|k| m4(&rd, dm + 64 * k)).collect();
+            }
+        }
         if let Some(bones) = rd.ptr(skel) {
             let n = rd.u16(skel + 20) as usize;
             for k in 0..n {
