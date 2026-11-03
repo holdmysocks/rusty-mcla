@@ -5088,6 +5088,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // the race's cop zone (F-88125, F-71212): one zone of the race's, on one lap; the first
             // racer in it sets it off and the pursuit starts 5.5 s later (police.rs `zone_step`)
+            // (F-96166 / F-71212: the player's car's vehicle-table class, police or not - `Police::player_police`)
+            self.police.player_police = self.player_police();
             if self.game.race.is_none() {
                 self.police.zone_clear();
             } else if self.police.enabled && !self.vehicles.frozen {
@@ -6611,7 +6613,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // ("park": a cruiser waiting at the kerb ahead of the player, no pursuit - to look at it)
                     // ("pull": the same cruiser, free to drive, and the score at 260 - the pull-over starts when it sees the car)
                     let pull = v == "pull" || v == "bolt";
-                    if (v == "park" || pull) && self.tick_no >= 150 && !self.vehicles.cars.iter().any(|c| c.cop) && self.tick_no % 30 == 0 {
+                    if (v == "park" || pull) && self.tick_no >= if std::env::var_os("MCLA_TEST_DRIVE_CAR").is_some() { 400 } else { 150 } && !self.vehicles.player().is_some_and(|p| self.vehicles.cars.iter().any(|c| c.cop && !c.is_player && c.state.pos.distance(p.state.pos) < 80.0)) && self.tick_no % 30 == 0 {
                         if let Some(c) = self.vehicles.player().map(|c| c.state.pos + c.state.forward() * 14.0) {
                             let ok = self.police.station(&gpu, &world, &mut self.vehicles, c, 0);
                             log::info!("police: test cruiser parked: {}", ok);
@@ -6658,6 +6660,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let ev = if brain::frame_due(&mut self.police_acc, sim_dt) {
                     self.police.peds = self.peds.capsule_feet();
                     self.police.untimed_race = self.game.race.as_ref().is_some_and(|r| r.time_limit <= 0.0);
+                    self.police.player_police = self.player_police();
                     let ev = self.police.update(&gpu, &world, &mut self.vehicles, brain::FRAME);
                     chat = self.police.chatter(&world, &self.vehicles, self.radio.busy(), brain::FRAME);
                     ev
@@ -12404,6 +12407,15 @@ impl App {
     /// Play one of the converted disc movies ("intro", "attract") with its sound track.
     /// The phone's MISSION LOG (Back) line under a mission's call. A new career has none
     /// until the mission log has been explained (`ng_c4`: the first call's strip is bare).
+    /// F-96166 / F-71212: the player's car's vehicle-table class is the police's (Police::player_police).
+    fn player_police(&self) -> bool {
+        let pp = self.vehicles.player().is_some_and(|c| self.game.oppick.class_of(&c.model.name) == Some(oppick::CLASS_COP));
+        if pp != self.police.player_police {
+            log::info!("police: the player's car is {}a police car", if pp { "" } else { "not " });
+        }
+        pp
+    }
+
     fn mission_log_prompt(&self) -> String {
         let st = &self.game.career.stats;
         if st.contains_key("tut:sidekick") && !st.contains_key("tut:mission_log") {

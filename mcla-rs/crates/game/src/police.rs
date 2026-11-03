@@ -613,6 +613,10 @@ pub struct Police {
     /// a tactic of kind 1 - 4 started (StartTactic F-33550 calls the phone's interrupt F-51256: the call on the
     /// phone is put away and dropped); the main loop takes it
     pub phone_cut: bool,
+    /// the player's car's vehicle-table class is the police's (F-96166: the camera target's car, F-10499 = 5): the law
+    /// score step F-52240 does not run (no offences, no score, no score ladder) and an armed cop zone is not set off
+    /// (F-71212's state 1). Set by the main loop each frame.
+    pub player_police: bool,
 }
 
 const LAW_SPEED: u32 = 1;
@@ -718,6 +722,7 @@ impl Police {
             last_junction: None,
             goons: false,
             phone_cut: false,
+            player_police: false,
             units: Vec::new(),
         }
     }
@@ -1158,6 +1163,8 @@ impl Police {
                 z.state = 1;
                 log::info!("police: lap {}, cop zone enabled", lap);
             }
+            // (F-71212: no racer sets it off while the player drives a police car)
+            1 if self.player_police => {}
             1 => {
                 if let Some(player) = inside {
                     z.state = 2;
@@ -1992,7 +1999,8 @@ impl Police {
         // (F-52240: with a tactic on the player that has a cop, offences count with no sight test; else only a
         // detecting cop counts them - and nothing is scored in the 5 s after a tactic on the player ended)
         let in_tactic = n_cops > 0 && !matches!(self.heat, Heat::None);
-        let scoring = self.grace <= 0.0;
+        // (F-54211 runs F-52240 only when F-96166 allows it: not while the player drives a police car)
+        let scoring = self.grace <= 0.0 && !self.player_police;
         self.grace = (self.grace - dt).max(0.0);
         let watching = scoring && (in_tactic || detected);
 
@@ -2249,6 +2257,8 @@ impl Police {
                 // the score to the tactic's floor - the zone's scripted chase too, its cop the nearest)
                 let zone = std::mem::take(&mut self.zone_go);
                 let first = detector.map(|d| d.1);
+                // (the ladder is F-52240's: none for a player in a police car)
+                let detected = detected && !self.player_police;
                 let tt = t("fTrackTgtTime", 25.0);
                 let kind = if detected && self.score >= max_score {
                     TacKind::ArrowTrap
