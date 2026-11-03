@@ -17,7 +17,7 @@
 //! ragdoll_swing_twist.md (the type 1 joint). Checked word for word against the original run
 //! offline on recorded states (testdata/ragdoll_ro0.bin; tests below).
 
-use super::exact::{fma, fms, fnms};
+use super::exact::{fma, fms, fnms, guest_atan2, solve3};
 
 // ---------------------------------------------------------------------------------------------
 // The vector unit
@@ -617,8 +617,14 @@ pub struct Articulated {
     pub place: V4,
     /// collider +272 / +288 / +304 / +320: velocity, angular velocity, momentum, angular momentum
     pub mirror: [V4; 4],
-    /// collider +432: the last push's displacement
+    /// collider +400 / +416: the push solve's pending displacement and turn; +432 / +448 the last
+    /// ones applied
+    pub pending_push: V4,
+    pub pending_turn: V4,
     pub push: V4,
+    pub turn: V4,
+    /// collider +657 byte: the resting test of slot 5 (slow enough to sleep)
+    pub resting: u8,
     /// collider +664: ticks since the links were last orthonormalised
     pub ortho_count: u32,
     /// the guest blocks as read, and the guest addresses
@@ -653,7 +659,11 @@ impl Articulated {
             rows: rvs(collider, 208),
             place: rv(collider, 256),
             mirror: rvs(collider, 272),
+            pending_push: rv(collider, 400),
+            pending_turn: rv(collider, 416),
             push: rv(collider, 432),
+            turn: rv(collider, 448),
+            resting: collider[657],
             ortho_count: ru(collider, 664),
             raw_body: body.to_vec(),
             raw_collider: collider.to_vec(),
@@ -676,7 +686,11 @@ impl Articulated {
         wvs(&mut b, 208, &self.rows);
         wv(&mut b, 256, self.place);
         wvs(&mut b, 272, &self.mirror);
+        wv(&mut b, 400, self.pending_push);
+        wv(&mut b, 416, self.pending_turn);
         wv(&mut b, 432, self.push);
+        wv(&mut b, 448, self.turn);
+        b[657] = self.resting;
         wu(&mut b, 664, self.ortho_count);
         b
     }
@@ -736,6 +750,18 @@ impl Joint {
             JointKind::Other => None,
         }
     }
+    /// The parent's change of motion taken down and added into `out` (F-23856: the hinge's map
+    /// on base out + x; F-34850: out + the swing-twist's map).
+    fn motion_down_into(&self, x: &[V4; 2], out: [V4; 2]) -> [V4; 2] {
+        match &self.kind {
+            JointKind::Hinge(h) => hinge_map(&h.u, h.inv_d, &h.axis, x, [out[0].add(x[0]), out[1].add(x[1])]),
+            JointKind::Ball(b) => {
+                let m = ball_motion_map(b.p, &b.g, &b.h, x);
+                [out[0].add(m[0]), out[1].add(m[1])]
+            }
+            JointKind::Other => panic!("the slider's maps are not ported"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -752,7 +778,7 @@ fn clamp_length(x: V4, max: f32) -> V4 {
     x.sel(V4::ZERO.mul(unit), below).sel(V4::splat(max).mul(unit), above)
 }
 
-/// R diag(inv) R^T of the collider's rows (F-? 8259D348 in the decode; the plain body's world
+/// R diag(inv) R^T of the collider's rows (F-24854; the plain body's world
 /// inverse inertia): row i = sum_k (col_i inv)_k R_k.
 fn world_rows(rows: &[V4; 3], inv: V4) -> [V4; 3] {
     columns(rows).map(|c| {
@@ -1377,6 +1403,772 @@ fn ball_project_or_hard(b: &Ball, mode: u32, k: f32, s: &[V4; 9], g: &[V4; 3], h
 }
 
 // ---------------------------------------------------------------------------------------------
+// Slot 5: motors, the move, gravity, damping, joint limits, the prediction
+
+/// What slot 5 reads outside the body: run-time values of the game and the instance's archetype.
+#[derive(Clone, Copy, Debug)]
+pub struct Surroundings {
+    /// the world's gravity (run-time vector at 0x82812800; (0, -9.8, 0, 0) in the recording)
+    pub gravity: V4,
+    /// the archetype's bound corners (bound +16, +32), for the resting test
+    pub bound: [V4; 2],
+    /// the instance's flag 0x10 at +10: gravity off
+    pub no_gravity: bool,
+    /// the archetype's damping (+96 .. +176: linear constant, linear, quadratic; the same
+    /// three angular) when its vfunc 17 answers true (the rider's: 0.02 / 0.02 / 0.01)
+    pub damping: Option<[V4; 6]>,
+    /// the resting test's limit (run-time 0.007 at 0x828FF840)
+    pub rest_limit: f32,
+}
+
+/// Bits of a vector.
+#[inline]
+fn bits_map(a: V4, b: V4, f: impl Fn(u32, u32) -> u32) -> V4 {
+    let (x, y) = (a.bits(), b.bits());
+    V4::from_bits([0, 1, 2, 3].map(|i| f(x[i], y[i])))
+}
+
+/// 1 / x with one Newton step: r + r (1 - r x).
+#[inline]
+fn rcp_nr(x: V4) -> V4 {
+    let r = x.recip();
+    r.madd(r.nmsub(x, ONE), r)
+}
+
+const SIGN: u32 = 0x8000_0000;
+
+/// F-24452: atan2(y, x) of the vector unit, every lane: y / x by a reciprocal and a Newton step,
+/// folded into [-1, 1] (pi/2 - atan(1/t)), an odd polynomial, the quadrant from the signs.
+fn atan2_v(y: V4, x: V4) -> V4 {
+    let k = |b: u32| V4::splat(f32::from_bits(b));
+    let table = V4::from_bits([0x3fc9_0fdb, 0x4049_0fdb, 0xbfc9_0fdb, 0xc049_0fdb]);
+    let (y_neg, y_pos, x_neg, x_zero) = (V4::ZERO.gt(y), y.gt(V4::ZERO), V4::ZERO.gt(x), x.eq(V4::ZERO));
+    let half_turn = table.lane(1).sel(table.lane(3), y_neg);
+    let quarter = table.lane(2).sel(table.lane(0), y_pos);
+    let t = y.mul(rcp_nr(x));
+    let big = bits_map(t, t, |a, _| a & !SIGN).gt(ONE);
+    let side = bits_map(bits_map(t, k(0x3fc9_0fdb), |a, b| (a & SIGN) | b), V4::ZERO, |a, _| a);
+    let off = V4::from_bits([0, 1, 2, 3].map(|i| if big[i] { side.bits()[i] } else { 0 }));
+    let inv = rcp_nr(t);
+    let u = t.sel(bits_map(inv, inv, |a, _| a ^ SIGN), big);
+    let z = u.mul(u);
+    let base = off.add(u);
+    let p1 = k(0x3b3b_d74a).madd(z, k(0xbc84_6e02));
+    let p2 = k(0xbe11_7fc7).madd(z, k(0x3e4c_bbe5));
+    let z2 = z.mul(z);
+    let zu = z.mul(u);
+    let p1 = p1.madd(z, k(0x3d2f_c1fe));
+    let p2 = p2.madd(z, k(0xbeaa_aa6c));
+    let z4 = z2.mul(z2);
+    let p1 = p1.madd(z, k(0xbd9a_3174));
+    let lo = p2.madd(zu, base);
+    let z4u = z4.mul(u);
+    let p1 = p1.madd(z, k(0x3dda_3d83));
+    let r = p1.madd(z4u, lo);
+    let turned = r.add(half_turn);
+    r.sel(turned, x_neg).sel(quarter, x_zero)
+}
+
+/// The sine and cosine of the vector unit (F-40848's, the same polynomials as F-38496 and
+/// solver::sin_cos), on a splat.
+fn sin_cos_v(x: f32) -> (f32, f32) {
+    let k = |b: u32| V4::splat(f32::from_bits(b));
+    let xv = V4::splat(x);
+    let turns = xv.mul(k(0x3f22_f983));
+    let half = bits_map(V4::splat(0.5), turns, |a, b| (a & !SIGN) | (b & SIGN));
+    let q = turns.add(half).0[0] as i32;
+    let qf = V4::splat(q as f32);
+    let r = qf.nmsub(k(0x33a2_2169), qf.nmsub(k(0x3fc9_0fda), xv));
+    let r2 = r.mul(r);
+    let c1 = k(0xbab2_4993).madd(r2, k(0x3d2a_a036));
+    let s1 = k(0xb94c_8c6e).madd(r2, k(0x3c08_8342));
+    let r3 = r2.mul(r);
+    let c2 = c1.madd(r2, k(0xbeff_ffdf));
+    let s2 = s1.madd(r2, k(0xbe2a_aaa1));
+    let cos = c2.madd(r2, ONE).x();
+    let sin = s2.madd(r3, r).x();
+    let (q0, q1) = (q & 3, (q & 3) + 1);
+    let s = if q0 & 1 == 0 { sin } else { cos };
+    let c = if q1 & 1 == 0 { sin } else { cos };
+    let neg = |v: f32| f32::from_bits(v.to_bits() ^ SIGN);
+    (if q0 & 2 == 0 { s } else { neg(s) }, if q1 & 2 == 0 { c } else { neg(c) })
+}
+
+/// The x column of a joint frame as the code gathers it: (f0.x, f1.x, f2.x, f1.x).
+fn frame_x(f: &[V4; 3]) -> V4 {
+    three(f[0].lane(0), f[1].lane(0), f[2].lane(0))
+}
+
+/// F-51707: a unit vector across u: (uy, -ux, 0) if |ux| or |uy| > 0.5, else (0, uz, -uy).
+fn across(u: V4) -> V4 {
+    let (z, uy, uz) = (V4::ZERO, u.lane(1), u.lane(2));
+    let neg = z.sub(u);
+    let a = uy.mergeh(z).mergeh(neg);
+    let b = z.mergeh(neg).mergel(uz);
+    let test = u.mergeh(V4::splat(-0.5)).gt(V4::splat(0.5).mergeh(u));
+    let v = b.sel(a, [test.iter().any(|t| *t); 4]);
+    let l2 = v.dot3(v);
+    v.mul(rsqrt_nr(l2))
+}
+
+fn to_vec3(v: V4) -> glam::Vec3 {
+    glam::Vec3::new(v.0[0], v.0[1], v.0[2])
+}
+
+/// The scalar dot n . w in the order the code sums it: ((ny wy) + nz wz) + nx wx.
+#[inline]
+fn dot_yzx(n: V4, w: V4) -> f32 {
+    fma(n.0[0], w.0[0], fma(n.0[2], w.0[2], n.0[1] * w.0[1]))
+}
+
+/// ((nz wz) + ny wy) + nx wx.
+#[inline]
+fn dot_zyx(n: V4, w: V4) -> f32 {
+    fma(n.0[0], w.0[0], fma(n.0[1], w.0[1], n.0[2] * w.0[2]))
+}
+
+/// ((nx wx) + nz wz) + ny wy.
+#[inline]
+fn dot_xzy(n: V4, w: V4) -> f32 {
+    fma(n.0[1], w.0[1], fma(n.0[2], w.0[2], n.0[0] * w.0[0]))
+}
+
+/// ((ny wy) + nx wx) + nz wz.
+#[inline]
+fn dot_yxz(n: V4, w: V4) -> f32 {
+    fma(n.0[2], w.0[2], fma(n.0[0], w.0[0], n.0[1] * w.0[1]))
+}
+
+/// 4.0, the limits' stiffness (run-time value at 0x82812BD0)
+const LIMIT_GAIN: f32 = 4.0;
+/// 1e-6, the motors' dead band
+const DEAD: f32 = 1.0e-6;
+
+impl Articulated {
+    fn ball(&self, k: usize) -> &Ball {
+        match &self.joints[k].kind {
+            JointKind::Ball(b) => b,
+            _ => unreachable!(),
+        }
+    }
+    fn ball_mut(&mut self, k: usize) -> &mut Ball {
+        match &mut self.joints[k].kind {
+            JointKind::Ball(b) => b,
+            _ => unreachable!(),
+        }
+    }
+    fn hinge_mut(&mut self, k: usize) -> &mut Hinge {
+        match &mut self.joints[k].kind {
+            JointKind::Hinge(h) => h,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Torque `t` on the joint's child and its opposite on the parent (B first, as the code).
+    fn torque_pair(&mut self, k: usize, t: V4) {
+        let (a, b) = (self.joints[k].a, self.joints[k].b);
+        self.links[b].torque = self.links[b].torque.add(t);
+        self.links[a].torque = self.links[a].torque.add(V4::ZERO.sub(t));
+    }
+
+    /// F-15465: the change of relative turning rate across joint k for a unit angular impulse
+    /// pair along `a` (child +a, parent -a), each link's own inverse, through the joint up and down.
+    fn response(&self, k: usize, a: V4) -> V4 {
+        let j = &self.joints[k];
+        let (la, lb) = (&self.links[j.a], &self.links[j.b]);
+        let xb = [rows_dot(&lb.inv[0..3], a), rows_dot(&lb.inv[3..6], a)];
+        let xa = [rows_dot(&la.inv[0..3], a), rows_dot(&la.inv[3..6], a)];
+        let up = j.motion_up(&xb).expect("the slider's maps are not ported");
+        let na = [V4::ZERO.sub(xa[0]), V4::ZERO.sub(xa[1])];
+        let down = j.motion_down_into(&na, xb);
+        down[0].sub(na[0].add(up[0]))
+    }
+
+    /// F-58091: a . response(a), the joint's inverse inertia about `a`.
+    fn axis_inertia(&self, k: usize, a: V4) -> f32 {
+        a.dot3(self.response(k, a)).x()
+    }
+
+    /// F-80293: the hinge's angle, the x axes of both joint frames in the world about S
+    /// (VMX atan2 of (xB . (s x xA), xB . xA)), into +624.
+    fn hinge_angle(&mut self, k: usize) -> f32 {
+        let j = &self.joints[k];
+        let s = match &j.kind {
+            JointKind::Hinge(h) => h.axis[0],
+            _ => unreachable!(),
+        };
+        let xa = rows_dot(&self.links[j.a].rows, frame_x(&j.frame_a));
+        let xb = rows_dot(&self.links[j.b].rows, frame_x(&j.frame_b));
+        let c = cross(s, xa);
+        let angle = atan2_v(xb.dot3(c), xb.dot3(xa)).x();
+        self.hinge_mut(k).angle = angle;
+        angle
+    }
+
+    /// The hinge's rate s . wB - s . wA, into +628.
+    fn hinge_rate(&mut self, k: usize) -> f32 {
+        let j = &self.joints[k];
+        let s = match &j.kind {
+            JointKind::Hinge(h) => h.axis[0],
+            _ => unreachable!(),
+        };
+        let rate = s.dot3(self.links[j.b].ang).sub(s.dot3(self.links[j.a].ang)).x();
+        self.hinge_mut(k).rate = rate;
+        rate
+    }
+
+    /// F-31389: the hinge's drive (mode 2 / 3 angle, 1 / 3 rate), no overshoot within the tick,
+    /// over the axis inertia (> 1e-12), clamped to [min +692, max +688].
+    fn hinge_motor(&mut self, k: usize, dt: f32) {
+        let mode = self.joints[k].mode;
+        let mut pos = 0.0f32;
+        if mode == 2 || mode == 3 {
+            let angle = self.hinge_angle(k);
+            let d = self.hinge_mut(k).drive;
+            pos = (d[2] - angle) * d[0];
+        }
+        let mut vel = 0.0f32;
+        if mode == 1 || mode == 3 {
+            let rate = self.hinge_rate(k);
+            let d = self.hinge_mut(k).drive;
+            vel = (d[3] - rate) * d[1];
+        }
+        let mut acc = vel + pos;
+        let h = self.hinge_mut(k).clone();
+        if acc.abs() > DEAD {
+            let ahead = fma(fma(acc, dt, h.rate), dt, h.angle) - h.drive[2];
+            if !(ahead * (h.angle - h.drive[2]) >= 0.0) {
+                acc = 0.0;
+            }
+        }
+        let s = h.axis[0];
+        let m = self.axis_inertia(k, s);
+        if m > f32::from_bits(0x2b8c_bccc) {
+            let x = acc / m;
+            let x = fsel(x - h.drive[5], x, h.drive[5]);
+            let x = fsel(x - h.drive[4], h.drive[4], x);
+            self.torque_pair(k, s.mul(V4::splat(x)));
+        }
+    }
+
+    /// F-14413: the hinge's soft limit: past the inner limits (+616 / +620), or getting there
+    /// within the tick, an impulse -(4 / K) depth along S (K = 0: 1e8). Clears byte +532.
+    fn hinge_limit(&mut self, k: usize, dt: f32) {
+        self.joints[k].contact = 0;
+        let angle = self.hinge_angle(k);
+        let inner = self.hinge_mut(k).inner;
+        let (over, under) = (angle - inner[1], angle - inner[0]);
+        if !(over > 0.0) && under >= 0.0 {
+            return;
+        }
+        let mut depth = fsel(over, over, under);
+        let rate = self.hinge_rate(k);
+        if !(rate * depth >= 0.0) {
+            // leaving: nothing if the tick's step takes it out of the limit
+            let step = rate * dt;
+            depth = step + depth;
+            if step * depth >= 0.0 {
+                return;
+            }
+        }
+        let s = self.hinge_mut(k).axis[0];
+        let m = self.axis_inertia(k, s);
+        let inv = if m == 0.0 { BIG } else { 1.0 / m };
+        let x = -((inv * LIMIT_GAIN) * depth);
+        self.torque_pair(k, s.mul(V4::splat(x)));
+    }
+
+    /// F-84394: the swing-twist joint's measure: W = R_A F_A, swing axis n, swing angle theta
+    /// (VMX atan2), m = unit(aZ + bZ), e2 = n x m, s = 2 / |aZ + bZ|, the twist (libm atan2 of
+    /// bX turned by F-40848, against aX, aY). The stale m of the last measure is read by F-40848.
+    fn ball_measure(&mut self, k: usize) {
+        let j = &self.joints[k];
+        let (la, lb) = (&self.links[j.a], &self.links[j.b]);
+        let w: [V4; 3] = std::array::from_fn(|i| combo(la.rows[i], &j.frame_a));
+        let bz = rows_dot(&lb.rows, frame_z(&j.frame_b));
+        let az = three(w[0].lane(2), w[1].lane(2), w[2].lane(2));
+        let c = cross(az, bz);
+        let l2 = c.dot3(c);
+        let tiny = V4::splat(f32::from_bits(0x2b8c_bccc));
+        let rb = lb.rows;
+        let fb = j.frame_b;
+        let ca = la.pos;
+        let b = self.ball_mut(k);
+        b.w = w;
+        b.ca = ca;
+        if tiny.gt(l2).iter().all(|t| *t) {
+            b.theta = 0.0;
+            b.m = az;
+            let n = across(az);
+            b.e2 = cross(n, az);
+            b.s = 1.0;
+            let xb = V4::new(fb[0].0[0], fb[1].0[0], fb[2].0[0], n.0[3]);
+            let bx = rows_dot(&rb, xb);
+            let x = fma(bx.0[0], w[0].0[0], fma(bx.0[2], w[2].0[0], bx.0[1] * w[1].0[0]));
+            let y = fma(bx.0[0], w[0].0[1], fma(bx.0[2], w[2].0[1], bx.0[1] * w[1].0[1]));
+            b.twist = guest_atan2(y as f64, x as f64) as f32;
+            b.n = n;
+            return;
+        }
+        let s = l2.mul(rsqrt_nr(l2)).sel(V4::ZERO, l2.eq(V4::ZERO));
+        let n = c.mul(rcp_nr(s));
+        b.theta = atan2_v(s, az.dot3(bz)).x();
+        let h = az.add(bz);
+        let hl2 = h.dot3(h);
+        let hl = hl2.mul(rsqrt_nr(hl2)).sel(V4::ZERO, hl2.eq(V4::ZERO));
+        if tiny.gt(hl).iter().all(|t| *t) {
+            b.e2 = cross(n, az);
+            b.s = 1.0;
+            b.twist = 0.0;
+            b.m = az;
+        } else {
+            let bx = rows_dot(&rb, frame_x(&fb));
+            let inv2 = V4::splat(2.0).mul(rcp_nr(hl));
+            let m = h.mul(HALF.mul(inv2));
+            let e2 = cross(n, m);
+            b.e2 = e2;
+            // F-40848: only bX's part along e2 turned by theta about n (m as the last measure left it)
+            let (sn, cs) = sin_cos_v(b.theta);
+            let (d2, d1) = (e2.dot3(bx), b.m.dot3(bx));
+            let turned = V4::splat(cs).mul(d2);
+            let k2 = d1.nmsub(V4::splat(sn), turned).sub(d2);
+            let bx = e2.madd(k2, bx);
+            let cols = columns(&w);
+            let (x, y) = (cols[0].dot3(bx).x(), cols[1].dot3(bx).x());
+            b.twist = if x == 0.0 && y == 0.0 { 0.0 } else { guest_atan2(y as f64, x as f64) as f32 };
+            b.s = inv2.x();
+            b.m = m;
+        }
+        b.n = n;
+    }
+
+    /// F-58495: the swing-twist joint's drive (the rider: angle, mode 2): the error in swing
+    /// (theta along n split on A's x and y) and twist, gains, no overshoot within the tick,
+    /// turned into a torque through the joint's 3 x 3 response (F-11804).
+    fn ball_motor(&mut self, k: usize, dt: f32) {
+        self.ball_measure(k);
+        let (mode, wa, wb) = {
+            let j = &self.joints[k];
+            (j.mode, self.links[j.a].ang, self.links[j.b].ang)
+        };
+        let b = self.ball_mut(k);
+        let (n, e2, m, w, s) = (b.n, b.e2, b.m, b.w, b.s);
+        let sr = dot_zyx(n, wb) - dot_zyx(n, wa);
+        b.swing_rate = sr;
+        let er = dot_zyx(e2, wb) - dot_zyx(e2, wa);
+        let c = fma(n.0[0], w[0].0[1], fma(n.0[2], w[2].0[1], n.0[1] * w[1].0[1]));
+        let neg = |v: f32| -v;
+        let d = fma(n.0[0], neg(w[0].0[0]), fma(n.0[2], neg(w[2].0[0]), n.0[1] * neg(w[1].0[0])));
+        let q = er / s;
+        let (qc, qd) = (q * c, q * d);
+        let tr = (dot_zyx(m, wb) - dot_zyx(m, wa)) * s;
+        let (theta, tw) = (b.theta, b.twist);
+        let (a0, a1) = (theta * c, theta * d);
+        let r0 = fma(sr, c, qd);
+        let r1 = fms(sr, d, qc);
+        b.twist_rate = tr;
+        let zero = V4::ZERO;
+        let mut pos = zero;
+        let target = b.gains[2];
+        if mode == 2 || mode == 3 {
+            let mut e = target;
+            e.0[0] = target.0[0] - a0;
+            e.0[1] = target.0[1] - a1;
+            let mut ez = target.0[2] - tw;
+            if b.flags[1] == 0 {
+                let (pi, two_pi) = (f32::from_bits(0x4049_0fdb), f32::from_bits(0x40c9_0fdb));
+                let f = fsel(-(ez - pi), ez, ez - two_pi);
+                ez = fsel(f + pi, f, f + two_pi);
+            }
+            e.0[2] = ez;
+            pos = e.mul(b.gains[0]);
+        }
+        let mut vel = zero;
+        if mode == 1 || mode == 3 {
+            let mut e = b.gains[3];
+            e.0[0] = b.gains[3].0[0] - r0;
+            e.0[1] = b.gains[3].0[1] - r1;
+            e.0[2] = b.gains[3].0[2] - tr;
+            vel = e.mul(b.gains[1]);
+        }
+        let mut acc = pos.add(vel);
+        let lane = |x: f32, r: f32, a: f32, t: f32| {
+            if x.abs() > DEAD {
+                let ahead = fma(fma(x, dt, r), dt, a) - t;
+                if !(ahead * (a - t) >= 0.0) {
+                    return 0.0;
+                }
+            }
+            x
+        };
+        acc.0[0] = lane(acc.0[0], r0, a0, target.0[0]);
+        acc.0[1] = lane(acc.0[1], r1, a1, target.0[1]);
+        acc.0[2] = lane(acc.0[2], tr, tw, target.0[2]);
+        let tau = self.ball_drive_torque(k, acc, c, d);
+        self.torque_pair(k, tau);
+    }
+
+    /// F-11804: the drive's angular accelerations (swing on A's x / y split by c, d; twist)
+    /// as alpha on the axes n, e2, m; the torque x = M^-1 alpha with M's rows the joint's
+    /// responses to the unit axes (F-15465, solved by F-12385); x back on the axes, clamped
+    /// per lane to [+752, +736], and turned into the torque.
+    fn ball_drive_torque(&self, k: usize, acc: V4, c: f32, d: f32) -> V4 {
+        let b = self.ball(k);
+        let (n, e2, m, s) = (b.n, b.e2, b.m, b.s);
+        let z = acc.0[2] / s;
+        let p = fma(acc.0[0], c, acc.0[1] * d);
+        let q = fms(acc.0[0], d, acc.0[1] * c) * s;
+        let alpha = m.madd(V4::splat(z), e2.madd(V4::splat(q), n.mul(V4::splat(p))));
+        let rows = [EX, EY, EZ].map(|a| to_vec3(self.response(k, a)));
+        // the solve's failure leaves the coefficients in its out buffer (F-12385's other ways
+        // are not read; taken from exact.rs::solve3)
+        let x = solve3(&rows, to_vec3(alpha)).map(|v| [v.x, v.y, v.z]).unwrap_or([p, q, z]);
+        let x4 = V4::new(x[0], x[1], x[2], 0.0);
+        let e = dot_zyx(e2, x4);
+        let nn = dot_zyx(n, x4);
+        let zz = dot_zyx(m, x4);
+        let xx = fma(nn, c, e * d);
+        let yy = fms(nn, d, e * c);
+        let (max, min) = (b.gains[4], b.gains[5]);
+        let clamp = |v: f32, i: usize| {
+            let v = fsel(v - min.0[i], v, min.0[i]);
+            fsel(v - max.0[i], max.0[i], v)
+        };
+        let (xc, yc, zc) = (clamp(xx, 0), clamp(yy, 1), clamp(zz, 2));
+        let t1 = fma(xc, c, yc * d);
+        let t2 = fms(xc, d, yc * c);
+        m.madd(V4::splat(zc), e2.madd(V4::splat(t2), n.mul(V4::splat(t1))))
+    }
+
+    /// F-84868: the soft swing cone test (+612 / +620): theta past the cone (an ellipse when
+    /// byte 632) -> +640 the limit along n, +652 the swing rate; 1 when active.
+    fn ball_cone_soft(&mut self, k: usize) -> bool {
+        let (wa, wb) = {
+            let j = &self.joints[k];
+            (self.links[j.a].ang, self.links[j.b].ang)
+        };
+        let b = self.ball_mut(k);
+        let n = b.n;
+        if b.flags[0] == 0 {
+            if b.theta - b.limits[1] < 0.0 {
+                return false;
+            }
+            b.swing_limit[1] = b.limits[1];
+        } else {
+            let w = b.w;
+            let ay = fma(w[2].0[1], n.0[2], fma(w[0].0[1], n.0[0], w[1].0[1] * n.0[1]));
+            let ax = fma(w[2].0[0], n.0[2], fma(w[0].0[0], n.0[0], w[1].0[0] * n.0[1]));
+            let (x, y) = (ay / b.limits[1], ax / b.limits[3]);
+            let q = (fma(y, y, x * x) * b.theta) * b.theta;
+            if q < 1.0 {
+                return false;
+            }
+            b.swing_limit[1] = b.theta / q.sqrt();
+        }
+        b.swing_rate = dot_yzx(n, wb) - dot_yzx(n, wa);
+        true
+    }
+
+    /// F-62163: the soft limits' evaluation (measure, cone, twist against +628): bytes 634 /
+    /// 635, +656 the twist rate, +648 the signed twist limit; the number of limit rows.
+    fn ball_soft_limits(&mut self, k: usize) -> u32 {
+        let (mode, wa, wb) = {
+            let j = &self.joints[k];
+            (j.mode, self.links[j.a].ang, self.links[j.b].ang)
+        };
+        let limited = self.ball(k).flags[1] != 0;
+        assert!(limited || mode != 0, "the swing-only measure (F-37900) is not ported");
+        self.ball_measure(k);
+        let active = self.ball_cone_soft(k);
+        let b = self.ball_mut(k);
+        b.flags[2] = active as u8;
+        let (m, s) = (b.m, b.s);
+        let mut rows = if active { 2 } else { 0 };
+        if !limited {
+            b.twist_rate = (dot_yzx(m, wb) - dot_yzx(m, wa)) * s;
+            b.flags[3] = 0;
+            return rows;
+        }
+        b.twist_rate = (dot_yzx(m, wb) - dot_yzx(m, wa)) * s;
+        let (t, l) = (b.twist, b.limits[5]);
+        let on = if !(t - l < 0.0) {
+            b.twist_limit[1] = l;
+            true
+        } else if !(l + t > 0.0) {
+            b.twist_limit[1] = -l;
+            true
+        } else {
+            false
+        };
+        if on {
+            rows += 1;
+        }
+        b.flags[3] = on as u8;
+        rows
+    }
+
+    /// F-28305: the swing-twist joint's soft limits (F-38864's rows): depth + rate dt pushed
+    /// back with gain 4, swing on (n, e2 = n x m), twist on m, solved together through the
+    /// joint's response (1, 2 or 3 rows).
+    fn ball_limit(&mut self, k: usize, dt: f32) {
+        let count = self.ball_soft_limits(k);
+        if count == 0 {
+            return;
+        }
+        let (wa, wb) = {
+            let j = &self.joints[k];
+            (self.links[j.a].ang, self.links[j.b].ang)
+        };
+        let b = self.ball(k).clone();
+        let (swing, twist) = (b.flags[2] != 0, b.flags[3] != 0);
+        let mut mask = if swing { 2 } else { 0 } + twist as u32;
+        if mask == 0 {
+            return;
+        }
+        let n = b.n;
+        let mut m = b.m;
+        let (sdepth, srate) = if swing { (b.theta - b.swing_limit[1], b.swing_rate) } else { (0.0, 0.0) };
+        let (mut tdepth, mut trate, sign) = if twist {
+            (b.twist - b.twist_limit[1], b.twist_rate, if b.twist_limit[1] < 0.0 { -1 } else { 1 })
+        } else {
+            (0.0, 0.0, 0)
+        };
+        let (mut er, mut bs) = (0.0f32, 0.0f32);
+        let mut e2 = V4::ZERO;
+        if mask & 2 != 0 {
+            let es = fma(fsel(srate, 0.0, srate), dt, sdepth);
+            e2 = cross(n, m);
+            er = dot_zyx(e2, wb) - dot_zyx(e2, wa);
+            bs = -(LIMIT_GAIN * es);
+            if !(es > 0.0) && !(srate > 0.0) {
+                mask &= 1;
+            }
+        }
+        let mut bt = 0.0f32;
+        if mask & 1 != 0 {
+            if sign == -1 {
+                m = V4::ZERO.sub(m);
+                tdepth = -tdepth;
+                trate = -trate;
+            }
+            let et = fma(fsel(trate, 0.0, trate), dt, fsel(tdepth, tdepth, 0.0));
+            let g = -(LIMIT_GAIN * et);
+            let inv = if b.s == 0.0 { BIG } else { 1.0 / b.s };
+            bt = inv * g;
+            if !(et > 0.0) && !(trate >= 0.0) {
+                mask &= 2;
+            }
+        }
+        let tau = match mask {
+            0 => V4::ZERO,
+            1 => {
+                let kk = self.axis_inertia(k, m);
+                let inv = if kk == 0.0 { BIG } else { 1.0 / kk };
+                m.mul(V4::splat(inv * bt))
+            }
+            2 => {
+                let r = self.response(k, n);
+                let ken = dot_xzy(r, e2);
+                let knn = dot_yxz(r, n);
+                let r = self.response(k, e2);
+                let kne = dot_yxz(r, n);
+                let kee = dot_xzy(r, e2);
+                let det = fms(kee, knn, kne * ken);
+                let inv = if det == 0.0 { BIG } else { 1.0 / det };
+                let ne = -er;
+                let xe = fms(ne, knn, ken * bs) * inv;
+                let xn = fms(kee, bs, ne * kne) * inv;
+                e2.madd(V4::splat(xe), n.mul(V4::splat(xn)))
+            }
+            _ => {
+                let mut rows = [glam::Vec3::ZERO; 3];
+                for (jx, axis) in [n, e2, m].into_iter().enumerate() {
+                    let r = self.response(k, axis);
+                    rows[0][jx] = dot_yxz(r, n);
+                    rows[1][jx] = dot_xzy(r, e2);
+                    rows[2][jx] = dot_yxz(r, m);
+                }
+                let rhs = glam::Vec3::new(bs, -er, bt);
+                // on failure the out buffer still holds n (F-12385's other ways not read)
+                let x = solve3(&rows, rhs).map(|v| [v.x, v.y, v.z]).unwrap_or([n.0[0], n.0[1], n.0[2]]);
+                m.madd(V4::splat(x[2]), e2.madd(V4::splat(x[1]), n.mul(V4::splat(x[0]))))
+            }
+        };
+        let masked = V4::from_bits([0, 1, 2, 3].map(|i| tau.bits()[i] & XYZ[i]));
+        if !masked.eq(V4::ZERO).iter().all(|t| *t) {
+            self.torque_pair(k, tau);
+        }
+    }
+
+    /// F-67019: the push solve's displacement into the place (+400 -> +432), its turn (+416, if
+    /// |turn|^2 > 1e-12) into the collider's rows (-> +448; else +448 = 0 and the turn waits).
+    /// The turn's rows (F-58201) are taken as F-38496's layout; the recording has no turn.
+    fn apply_push(&mut self) {
+        let p = self.pending_push;
+        self.place = self.place.add(p);
+        self.push = p;
+        self.pending_push = V4::ZERO;
+        let t = self.pending_turn;
+        let l2 = t.dot3(t);
+        if !l2.gt(V4::splat(f32::from_bits(0x2b8c_bccc))).iter().all(|x| *x) {
+            self.turn = V4::ZERO;
+            return;
+        }
+        self.turn = t;
+        let a = l2.mul(rsqrt_nr(l2)).sel(V4::ZERO, l2.eq(V4::ZERO));
+        let q = turn_rows(t.mul(rcp_nr(a)), a.x());
+        let old = self.rows;
+        self.rows = std::array::from_fn(|i| combo(old[i], &q));
+        self.pending_turn = V4::ZERO;
+    }
+
+    /// F-66266: every joint's drive where it has one (+528 != 0).
+    fn motors(&mut self, dt: f32) {
+        for k in 0..self.n().saturating_sub(1) {
+            if self.joints[k].mode == 0 {
+                continue;
+            }
+            match self.joints[k].kind_id {
+                0 => self.hinge_motor(k, dt),
+                1 => self.ball_motor(k, dt),
+                2 => panic!("the slider's drive (F-98567) is not ported"),
+                _ => {}
+            }
+        }
+    }
+
+    /// F-94582: every joint's limits.
+    fn limits(&mut self, dt: f32) {
+        for k in 0..self.n().saturating_sub(1) {
+            match self.joints[k].kind_id {
+                0 => self.hinge_limit(k, dt),
+                1 => self.ball_limit(k, dt),
+                2 => panic!("the slider's limit (F-95487) is not ported"),
+                _ => {}
+            }
+        }
+    }
+
+    /// F-69646 (from F-21563): gravity times the body's factor (+516) on every link's mass, at
+    /// its centre (torque about the common origin c x f).
+    fn gravity(&mut self, g: V4) {
+        let g = g.mul(V4::splat(self.gravity_factor));
+        for l in &mut self.links {
+            let f = g.mul(l.mass);
+            l.torque = cross_add(l.pos, f, l.torque);
+            l.force = l.force.add(f);
+        }
+    }
+
+    /// F-99800: the archetype's damping per link, last link first: in the link's frame
+    /// v' = -(c0 unit(v) + c1 v + c2 v |v|), or -v / dt where the step would overshoot; times
+    /// the mass (moments), back to the world, as force and torque.
+    fn damping(&mut self, dt: f32, d: &[V4; 6]) {
+        let dtv = V4::splat(dt);
+        let inv = rcp_nr(dtv).sel(V4::splat(f32::MAX), dtv.eq(V4::ZERO));
+        let small = V4::splat(f32::from_bits(0x3727_c5ac));
+        let one = |x: V4, c: &[V4]| {
+            let l2 = x.dot3(x);
+            let lin = x.mul(c[1]);
+            let stop = inv.nmsub(x, V4::ZERO);
+            let y = rsqrt_nr(l2);
+            let len = l2.mul(y).sel(V4::ZERO, l2.eq(V4::ZERO));
+            let unit = V4::ZERO.sel(x.mul(y), l2.gt(small));
+            let dv = V4::ZERO.sub(unit.madd(c[0], x.mul(len).madd(c[2], lin)));
+            let after = dv.madd(dtv, x);
+            dv.sel(stop, V4::ZERO.ge(after.dot3(x)))
+        };
+        for l in self.links.iter_mut().rev() {
+            let cols = columns(&l.rows);
+            let f = one(rows_dot(&cols, l.vel), &d[0..3]).mul(l.mass);
+            let fw = rows_dot(&l.rows, f);
+            l.torque = cross_add(l.pos, fw, l.torque);
+            l.force = l.force.add(fw);
+            let t = one(rows_dot(&cols, l.ang), &d[3..6]).mul(l.moments);
+            l.torque = l.torque.add(rows_dot(&l.rows, t));
+        }
+    }
+
+    /// F-61076: what the tick's forces (and with `with_impulses` the pending impulses) will do:
+    /// each link's own response (+976 / +992), then up and down through the joints.
+    fn predict(&mut self, dt: f32, with_impulses: bool) {
+        for l in &mut self.links {
+            let (mut jl, mut ja) = if with_impulses { (l.impulse, l.ang_impulse) } else { (V4::ZERO, V4::ZERO) };
+            for i in 0..3 {
+                jl.0[i] = fma(l.force.0[i], dt, jl.0[i]);
+                ja.0[i] = fma(l.torque.0[i], dt, ja.0[i]);
+            }
+            let (dw, dv) = block_mul(&l.inv, jl, ja);
+            l.predicted = [dw, dv];
+        }
+        let n = self.n();
+        let mut up = vec![[V4::ZERO; 2]; n.saturating_sub(1)];
+        for k in (0..n.saturating_sub(1)).rev() {
+            let (c, p) = (k + 1, self.parent[k + 1]);
+            up[k] = self.joints[k].motion_up(&self.links[c].predicted).expect("the slider's maps are not ported");
+            let pl = &mut self.links[p];
+            pl.predicted = [pl.predicted[0].add(up[k][0]), pl.predicted[1].add(up[k][1])];
+        }
+        for k in 0..n.saturating_sub(1) {
+            let (c, p) = (k + 1, self.parent[k + 1]);
+            let pp = self.links[p].predicted;
+            let x = [pp[0].sub(up[k][0]), pp[1].sub(up[k][1])];
+            let down = self.joints[k].motion_down(&x).expect("the slider's maps are not ported");
+            let cl = &mut self.links[c];
+            cl.predicted = [cl.predicted[0].add(down[0]), cl.predicted[1].add(down[1])];
+        }
+    }
+
+    /// Slot 5 (F-75381 over the base F-44566), dt as v1 splats it: the push applied (F-67019),
+    /// the drives (F-49742), the move (F-84152: integrate, re-seat, re-centre, rebuild), the
+    /// resting test (+657), gravity (F-21563) unless the instance has it off, the archetype's
+    /// damping (F-99800), the tick counter (+664), the joint limits (F-94582) and the prediction
+    /// of the forces (F-61076).
+    /// Not here: the instance matrix (F-18040), the part matrices and the level's notice in the
+    /// move (F-15571, F-36770), vfunc 48 (F-41715) when +664 passes 32, the level stub F-89371.
+    /// Read from the code, not met by the recording: the push's turn, the degenerate measures
+    /// (F-51707), a failed 3 x 3 solve (F-12385's other ways; out buffer as exact.rs::solve3 has it).
+    pub fn step(&mut self, dt: f32, world: &Surroundings) {
+        let entry_push = self.pending_push;
+        self.apply_push();
+        self.motors(dt);
+        self.integrate(dt);
+        self.reseat();
+        self.recentre();
+        self.rebuild();
+        self.resting = self.rest_test(entry_push, dt, world) as u8;
+        if !world.no_gravity {
+            self.gravity(world.gravity);
+        }
+        if let Some(d) = &world.damping {
+            self.damping(dt, d);
+        }
+        self.ortho_count = self.ortho_count.wrapping_add(1);
+        self.limits(dt);
+        self.predict(dt, false);
+    }
+
+    /// The base's resting test: ((ext sums) |w| + |v + push / dt|) dt < the limit in every lane,
+    /// with v, w the collider's mirror, ext the larger of the bound's corners per axis.
+    fn rest_test(&self, push: V4, dt: f32, world: &Surroundings) -> bool {
+        let dtv = V4::splat(dt);
+        let inv = rcp_nr(dtv).sel(V4::splat(BIG), dtv.eq(V4::ZERO));
+        let v = push.madd(inv, self.mirror[0]);
+        let neg = V4::ZERO.sub(world.bound[1]);
+        let ext = V4([0, 1, 2, 3].map(|i| {
+            let (a, b) = (ftz(world.bound[0].0[i]), ftz(neg.0[i]));
+            if a > b { a } else { b }
+        }));
+        let sums = ext.permwi(131).add(ext.permwi(103));
+        let l2 = v.dot3(v);
+        let len = l2.mul(rsqrt_nr(l2)).sel(V4::ZERO, l2.eq(V4::ZERO));
+        let w = bits_map(self.mirror[1], V4::ZERO, |a, _| a & !SIGN);
+        let x = sums.madd(w, len).mul(dtv).permwi(24);
+        V4::splat(world.rest_limit).gt(x).iter().all(|t| *t)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Tests: the recorded states (ro.0, six ticks) through each routine, word for word
 
 #[cfg(test)]
@@ -1509,6 +2301,30 @@ mod tests {
         eprintln!("op {}: {n} cases, {total} differing words, {nan_total} words NaN on both sides", op as char);
         assert!(n > 0);
         assert!(report.is_empty(), "{}", report.join("\n"));
+    }
+
+    /// What the recording's slot 5 reads outside the body (from its RGDS pages: the run-time
+    /// gravity and resting limit, the rider archetype's damping and bound; the instance flag 0).
+    fn rider_surroundings() -> Surroundings {
+        let s = |b: u32| f32::from_bits(b);
+        let d = |b: u32| V4::from_bits([b, b, b, 0x7f80_0001]);
+        Surroundings {
+            gravity: V4::new(0.0, s(0xc11c_cccd), 0.0, 0.0),
+            bound: [
+                V4::from_bits([0x3f09_804a, 0x3f4e_998e, 0x3ee0_da07, 0x3ff7_7a06]),
+                V4::from_bits([0xbf9a_5900, 0xbf80_067f, 0xbf84_e24c, 0xbf80_067f]),
+            ],
+            no_gravity: false,
+            damping: Some([d(0x3ca3_d70a), d(0x3ca3_d70a), d(0x3c23_d70a), d(0x3ca3_d70a), d(0x3ca3_d70a), d(0x3c23_d70a)]),
+            rest_limit: s(0x3be5_6042),
+        }
+    }
+
+    /// Slot 5 (F-75381) on the six recorded ticks (dt from v1).
+    #[test]
+    fn slot5_is_the_originals() {
+        let w = rider_surroundings();
+        run(b'5', |a, c| a.step(c.v1, &w));
     }
 
     /// Slot 10 (F-69485) on the six recorded ticks: 0 differing words.
