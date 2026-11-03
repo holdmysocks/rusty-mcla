@@ -438,7 +438,18 @@ struct Shape<'a> {
 /// The two parts' boxes, each grown to hold itself at its last matrix too, tested along their
 /// six face axes (F-82759's cull; a decision only, written plainly).
 fn boxes_meet(a: &Shape, b: &Shape) -> bool {
-    let swept = |s: &Shape| {
+    parts_meet((a.bbox, a.now, a.last), (b.bbox, b.now, b.last))
+}
+
+/// [`boxes_meet`] on two parts given as (box, now, last): the thrown rider's parts against a vehicle's.
+pub fn parts_meet(a: ((Vec3, Vec3), [Vec3; 4], [Vec3; 4]), b: ((Vec3, Vec3), [Vec3; 4], [Vec3; 4])) -> bool {
+    struct S {
+        bbox: (Vec3, Vec3),
+        now: [Vec3; 4],
+        last: [Vec3; 4],
+    }
+    let (a, b) = (S { bbox: a.0, now: a.1, last: a.2 }, S { bbox: b.0, now: b.1, last: b.2 });
+    let swept = |s: &S| {
         let (c, h) = ((s.bbox.1 + s.bbox.0) * 0.5, (s.bbox.1 - s.bbox.0) * 0.5);
         let (m, l) = (&s.now, &s.last);
         let r: [Vec3; 3] = std::array::from_fn(|i| inv(m, l[i]));
@@ -449,7 +460,7 @@ fn boxes_meet(a: &Shape, b: &Shape) -> bool {
         let mid = (hi + lo) * 0.5;
         (xf(m, mid), hi - mid)
     };
-    let ((wa, ha), (wb, hb)) = (swept(a), swept(b));
+    let ((wa, ha), (wb, hb)) = (swept(&a), swept(&b));
     let eps = Vec3::splat(1e-6);
     let r: [Vec3; 3] = std::array::from_fn(|i| inv(&b.now, a.now[i]));
     let ab: [Vec3; 3] = std::array::from_fn(|i| r[i].abs() + eps);
