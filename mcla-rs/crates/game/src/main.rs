@@ -12150,8 +12150,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // the showroom's vehicle as it stands there, lent like a delivery's car (it is
                 // handed back when the garage is entered again - `borrowed`)
                 if let Some(dir) = self.game.test_drive.and_then(|i| self.game.car_dirs.get(i).cloned()) {
-                    let color = vehicles::PALETTE[0];
-                    if self.vehicles.replace_player(gpu, world, &dir, color, &vehicle_model::CarConfig::default(), None).is_ok() {
+                    // (in its stock set-up `<vehicle>.xcc`, as a time trial's vehicle is put in its row's: the set-up's paints,
+                    // parts, rims, plate and layers - the original's test drives show the Scirocco's 2GFR421 and the CHP Charger's
+                    // E3CHPCA in its black and white, work/carparts2/rk/v_td2.png, v_chp1.png)
+                    let car = dir.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                    let color = self.game.mc4_borrow_look(&car).unwrap_or(vehicles::PALETTE[0]);
+                    let (cfg, rim) = match self.game.mc4_setup_dress(&car, &car) {
+                        Some((c, r, inches)) => {
+                            if inches > 0 {
+                                self.vehicles.player_rim_inches = inches as u8;
+                            }
+                            (c, r)
+                        }
+                        None => (vehicle_model::CarConfig::default(), None),
+                    };
+                    if self.vehicles.replace_player(gpu, world, &dir, color, &cfg, rim.as_deref()).is_ok() {
                         self.game.borrowed = true;
                         if let Some(p) = self.vehicles.player_mut() {
                             p.set_perf(0.0);
