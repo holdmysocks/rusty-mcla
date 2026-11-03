@@ -47,6 +47,23 @@ struct Rec {
     reference: f32,
 }
 
+/// Record `i`'s cross-fade at audio rpm `x`: full between the previous record's end and the next one's start, a
+/// quarter sine in from its start, a quarter cosine out to its end.
+fn xfade(recs: &[Rec], i: usize, x: f32) -> f32 {
+    let r = recs[i];
+    let prev_end = if i == 0 { 1.0 } else { recs[i - 1].end };
+    let next_start = if i + 1 == recs.len() { 100_000.0 } else { recs[i + 1].start };
+    if x >= prev_end && x <= next_start {
+        1.0
+    } else if x > r.start && x <= r.end && x < prev_end {
+        ((x - r.start) / (prev_end - r.start) * std::f32::consts::FRAC_PI_2).sin()
+    } else if x <= r.end && x > next_start {
+        ((x - next_start) / (r.end - next_start) * std::f32::consts::FRAC_PI_2).cos()
+    } else {
+        0.0
+    }
+}
+
 /// What the engine sound reads from the car each frame.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EngineIn {
@@ -580,17 +597,7 @@ impl EngineSound {
         let n = self.recs.len();
         for i in 0..n {
             let r = self.recs[i];
-            let prev_end = if i == 0 { 1.0 } else { self.recs[i - 1].end };
-            let next_start = if i + 1 == n { 100_000.0 } else { self.recs[i + 1].start };
-            let fade = if x >= prev_end && x <= next_start {
-                1.0
-            } else if x > r.start && x <= r.end && x < prev_end {
-                ((x - r.start) / (prev_end - r.start) * std::f32::consts::FRAC_PI_2).sin()
-            } else if x <= r.end && x > next_start {
-                ((x - next_start) / (r.end - next_start) * std::f32::consts::FRAC_PI_2).cos()
-            } else {
-                0.0
-            };
+            let fade = xfade(&self.recs, i, x);
             self.gains[i] = fade * g;
             if !self.player {
                 // opponents (F-51617): record 0 and the sounding records live, and the neighbour the revs are
@@ -910,6 +917,166 @@ mod tests {
         assert_eq!(EngineSound::new(&lib, "vp_nsn_240sx_98", false).expect("240sx").vol2, 8.0);
         assert_eq!(EngineSound::new_opponent(&lib, "vp_nsn_240sx_98", false).expect("240sx o").vol2, 8.0);
         assert_eq!(EngineSound::new(&lib, "vp_chv_camaro_06", false).expect("camaro").vol2, 9.0);
+    }
+
+    /// The per-record gain F-10725 hands to F-74444 (`gains`: cross-fade x gain curve x load) against the running
+    /// original's (work/audio2/cap/eng1.txt ENG lines: R8 player, the audio rpm this+212, the load this+2144 and each
+    /// record's gain argument). `MCLA_ENG_CAP` = the capture.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR and a recording (MCLA_ENG_CAP, default work/audio2/cap)"]
+    fn player_record_gains_recorded() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let cap = std::env::var("MCLA_ENG_CAP").unwrap_or_else(|_| "../../../work/audio2/cap/eng1.txt".to_string());
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+        let e = EngineSound::new(&lib, "vp_aud_r8_08", false).expect("r8");
+        let (first, last) = (e.recs[0], e.recs[e.recs.len() - 1]);
+        if std::env::var_os("MCLA_ENG_CAP_PRINT").is_some() {
+            println!("gain curve {:?}; recs {:?}", lib.curve(e.gain_curve), e.recs.iter().map(|r| (r.start, r.end, r.reference)).collect::<Vec<_>>());
+        }
+        let field =|l: &str, k: &str| -> f32 { l.split(' ').find_map(|w| w.strip_prefix(k)).unwrap().parse().unwrap() };
+        let text = std::fs::read_to_string(&cap).unwrap();
+        let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("ENG ")).collect();
+        let (mut ups, mut same, mut zero_same, mut worst) = (0, 0, 0, 0.0f32);
+        let mut ratios: std::collections::BTreeMap<i32, usize> = Default::default();
+        for g in lines.chunks(e.recs.len()) {
+            if g.len() != e.recs.len() || field(g[0], "i=") != 0.0 {
+                continue;
+            }
+            ups += 1;
+            // (the audio rpm as logged, 6 digits; the pitch carries the kick chirp's cents too)
+            let x = field(g[0], "rpm212=");
+            // (half a unit of the last printed digit: a fade is accepted anywhere in that window)
+            let digits = g[0].split(' ').find_map(|w| w.strip_prefix("rpm212=")).unwrap().split('.').nth(1).map_or(0, |d| d.len());
+            let dx = 0.5 * 10f32.powi(-(digits as i32));
+            let norm = ((x - first.start) / (last.end - first.start)).min(1.0);
+            // (the load volume this+148, the start boost +152 and the amp-mod bump are not in the capture: their
+            // product, one scalar per update, is the recorded gain over fade x curve, the same for every record)
+            let gg = lib.curve_eval(e.gain_curve, norm).unwrap_or(1.0);
+            let mut ok = true;
+            // (the scale from the record with the largest fade, the least sensitive to the rpm's rounding)
+            let top = (0..g.len()).max_by(|&a, &b| xfade(&e.recs, a, x).total_cmp(&xfade(&e.recs, b, x))).unwrap();
+            let scale = (xfade(&e.recs, top, x) > 0.0).then(|| field(g[top], "gain=") / (xfade(&e.recs, top, x) * gg));
+            for (i, l) in g.iter().enumerate() {
+                let (want, got) = (field(l, "gain="), xfade(&e.recs, i, x) * gg);
+                if (want == 0.0) != (got == 0.0) {
+                    ok = false;
+                } else if let (true, Some(s)) = (want != 0.0, scale) {
+                    let (a, b) = (xfade(&e.recs, i, x - dx) * gg * s, xfade(&e.recs, i, x + dx) * gg * s);
+                    let (lo, hi) = (a.min(b) * (1.0 - 1e-4), a.max(b) * (1.0 + 1e-4));
+                    if want < lo || want > hi {
+                        ok = false;
+                    } else {
+                        worst = worst.max((want / (got * s) - 1.0).abs());
+                    }
+                }
+            }
+            if let Some(s) = scale {
+                *ratios.entry((s * 100.0).round() as i32).or_default() += 1;
+            }
+            if !ok && std::env::var_os("MCLA_ENG_CAP_PRINT").is_some() {
+                println!("differs: x {x} | rec {:?} | port {:?}", g.iter().map(|l| field(l, "gain=")).collect::<Vec<_>>(), (0..g.len()).map(|i| xfade(&e.recs, i, x) * gg).collect::<Vec<_>>());
+            }
+            zero_same += g.iter().enumerate().all(|(i, l)| (field(l, "gain=") == 0.0) == (xfade(&e.recs, i, x) == 0.0)) as usize;
+            same += ok as usize;
+        }
+        println!("updates {ups}: one scalar over fade x curve (rel 1e-4) {same}, same sounding records {zero_same}, worst rel {worst:e}");
+        println!("that scalar (load volume x boost + bump, x100): {ratios:?}");
+        assert!(ups > 200 && same == ups && zero_same == ups);
+    }
+
+    /// F-51617's records for the computer racers' engines against the running original (work/audio2/cap/eng2.txt OEN
+    /// lines: per update and record the `active` flag F-10725 passes, the gain argument, the pitch ratio, the audio rpm
+    /// this+212). A racer object is reused for other cars, so each update's car is found by its record count, record
+    /// table and XF+12. Checked: the gains are one scalar over fade x curve, as for the player, and `active` is set for
+    /// every sounding record and otherwise only for the neighbour the revs move towards (the rpm rate itself is not in
+    /// the capture). Record 0's "always lives" is inside F-51617 and not seen here.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR and a recording (MCLA_ENG_CAP, default work/audio2/cap)"]
+    fn opponent_records_recorded() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let cap = std::env::var("MCLA_ENG_CAP").unwrap_or_else(|_| "../../../work/audio2/cap/eng2.txt".to_string());
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+        let word = |l: &str, k: &str| -> String { l.split(' ').find_map(|w| w.strip_prefix(k)).unwrap().to_string() };
+        let field = |l: &str, k: &str| -> f32 { word(l, k).parse().unwrap() };
+        let text = std::fs::read_to_string(&cap).unwrap();
+        // (an update = one racer's lines from an i=0 to its next; only the complete ones, records 0 .. n-1 in order)
+        let mut open: std::collections::HashMap<String, Vec<&str>> = Default::default();
+        let mut groups: Vec<Vec<&str>> = Vec::new();
+        for l in text.lines().filter(|l| l.starts_with("OEN ")) {
+            let g = open.entry(word(l, "this=")).or_default();
+            if field(l, "i=") == 0.0 && !g.is_empty() {
+                groups.push(std::mem::take(g));
+            }
+            g.push(l);
+        }
+        groups.extend(open.into_values());
+        let complete = |g: &Vec<&str>| g.len() > 1 && g.iter().enumerate().all(|(i, l)| field(l, "i=") == i as f32);
+        let names: Vec<String> = std::fs::read_dir(std::path::Path::new(&dir).join("resources/vehicle")).unwrap().filter_map(|d| d.ok()?.file_name().into_string().ok()).collect();
+        let cars: Vec<(String, EngineSound)> = names.into_iter().filter_map(|c| Some((c.clone(), EngineSound::new_opponent(&lib, &c, false)?))).collect();
+        let shape = |e: &EngineSound| (e.gain_curve, e.recs.iter().map(|r| (r.start.to_bits(), r.end.to_bits())).collect::<Vec<_>>());
+        let mut seen: std::collections::BTreeMap<(usize, i32), Vec<String>> = Default::default();
+        let (mut ups, mut ambiguous, mut unknown, mut same, mut want_ok, mut neighbour) = (0, 0, 0, 0, 0, 0);
+        let mut shown = 0;
+        for g in groups.iter().filter(|g| complete(g)) {
+            let n = g.len();
+            let xf12 = field(g[0], "xf12=");
+            let refs: Vec<f32> = g.iter().map(|l| (field(l, "rpm212=") / field(l, "pitch=")).round()).collect();
+            let found: Vec<&(String, EngineSound)> = cars.iter().filter(|(_, e)| e.recs.len() == n && e.pitch_off == xf12 && e.recs.iter().zip(&refs).all(|(r, q)| r.reference == *q)).collect();
+            let Some((_, e)) = found.first() else {
+                unknown += 1;
+                continue;
+            };
+            if found.iter().any(|(_, o)| shape(o) != shape(e)) {
+                ambiguous += 1;
+                continue;
+            }
+            seen.entry((n, xf12 as i32)).or_insert_with(|| found.iter().map(|f| f.0.clone()).collect());
+            ups += 1;
+            let (first, last) = (e.recs[0], e.recs[n - 1]);
+            let x = field(g[0], "rpm212=");
+            let digits = word(g[0], "rpm212=").split('.').nth(1).map_or(0, |d| d.len());
+            let dx = 0.5 * 10f32.powi(-(digits as i32));
+            let norm = ((x - first.start) / (last.end - first.start)).min(1.0);
+            let gg = lib.curve_eval(e.gain_curve, norm).unwrap_or(1.0);
+            let top = (0..n).max_by(|&a, &b| xfade(&e.recs, a, x).total_cmp(&xfade(&e.recs, b, x))).unwrap();
+            let scale = (xfade(&e.recs, top, x) > 0.0).then(|| field(g[top], "gain=") / (xfade(&e.recs, top, x) * gg));
+            let (mut ok, mut wok) = (true, true);
+            for (i, l) in g.iter().enumerate() {
+                let (want, got) = (field(l, "gain="), xfade(&e.recs, i, x) * gg);
+                if (want == 0.0) != (got == 0.0) {
+                    ok = false;
+                } else if let (true, Some(s)) = (want != 0.0, scale) {
+                    let (a, b) = (xfade(&e.recs, i, x - dx) * gg * s, xfade(&e.recs, i, x + dx) * gg * s);
+                    if want < a.min(b) * (1.0 - 1e-4) || want > a.max(b) * (1.0 + 1e-4) {
+                        ok = false;
+                    }
+                }
+                // (F-10725 @A: falling fast, prevStart < x < start; rising fast, end < x < nextEnd)
+                let r = e.recs[i];
+                let prev_start = if i == 0 { 1.0 } else { e.recs[i - 1].start };
+                let next_end = if i + 1 == n { 100_000.0 } else { e.recs[i + 1].end };
+                let towards = (prev_start < x && x < r.start) || (r.end < x && x < next_end);
+                let (wanted, sounding) = (field(l, "wanted=") != 0.0, xfade(&e.recs, i, x) > 0.0);
+                if wanted && !sounding && towards {
+                    neighbour += 1;
+                } else if wanted != sounding {
+                    wok = false;
+                }
+            }
+            same += ok as usize;
+            want_ok += wok as usize;
+            if (!ok || !wok) && std::env::var_os("MCLA_ENG_CAP_PRINT").is_some() && shown < 12 {
+                shown += 1;
+                println!("  x {x} ok {ok} wok {wok} | wanted {:?} | rec {:?} | port {:?}", g.iter().map(|l| field(l, "wanted=") as u8).collect::<Vec<_>>(), g.iter().map(|l| field(l, "gain=")).collect::<Vec<_>>(), (0..n).map(|i| xfade(&e.recs, i, x) * gg).collect::<Vec<_>>());
+            }
+        }
+        for (k, v) in &seen {
+            println!("cars with {} records, XF+12 {}: {v:?}", k.0, k.1);
+        }
+        println!("updates {ups} (car unknown {unknown}, cars of different tables {ambiguous}): gains one scalar over fade x curve {same}, active as the rule {want_ok} (a neighbour active {neighbour} times)");
+        assert!(ups > 200 && same == ups && want_ok == ups);
     }
 
     #[test]

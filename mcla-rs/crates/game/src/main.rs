@@ -3754,6 +3754,8 @@ impl App {
                 // (step 21b: <HANGOUT>_ENTER - a mission's event script plays its story scene in
                 // place of the hangout's own entry; the hangout follows once it is over)
                 let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
+                // (LOCATION_EVENT with the place's name: the hangout core's static +4, before <KEY>_ENTER)
+                self.game.career.event(career::Ev::Str("LOCATION_EVENT", hangoutin::SETUPS[si].key));
                 let story = self.game.career.location_enter(hangoutin::SETUPS[si].enter).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));
                 // (right after the MISSION_EVENT the core calls AudioManager_EnterHangoutState(<location id>), F-35228:
                 // the ambience's hangout district and the speech stopped, F-60295 - before the entry scene's own lines)
