@@ -1099,7 +1099,8 @@ impl Police {
             }
             Some(_) => {}
         }
-        log::info!("police: unit {} on patrol path {} from point {} ({:.0} m from the player{})", self.units[ui].id, g, k, path[k].distance(pp), if start.is_some() { ", moved out of sight" } else { "" });
+        let rail = railed.map_or(String::new(), |(q, _, _, s)| format!(", on the rail {:.1} m from the point at {:.1} m/s", q.distance(path[k]), s));
+        log::info!("police: unit {} on patrol path {} from point {} ({:.0} m from the player{}{})", self.units[ui].id, g, k, path[k].distance(pp), if start.is_some() { ", moved out of sight" } else { "" }, rail);
         0
     }
 
@@ -1957,13 +1958,17 @@ impl Police {
         }
         let mut detected = detector.is_some();
         // (the tactic's seen test, F-16046: a target at fMovingSpeed or slower is seen; a moving one only when a probe
-        // from half its height 7 m straight back hits something - F-74492 then grows +124 and zeroes +132, or the other
+        // from half its height 7 m along its axis hits something - F-74492 then grows +124 and zeroes +132, or the other
         // way round, +128 keeping last frame's +124)
+        // (the axis is the car's backward row, negated when the input's +44 is non-zero; the player's pad update F-56064
+        // (and the base readers F-39316 / F-97149 / F-74067) copies the gearbox's gear (0 reverse, 1 neutral, 2.. forward) there: the probe looks back
+        // only in reverse)
         // (the probe, F-20855: one-sided, every level object - no instance excluded, include and type flags -1, states 7;
         // any hit counts: the city, the other cars, the props and the pedestrians' capsules - `level_probe_front`)
         let probe_hit = {
             let o = ppos + Vec3::Y * (0.5 * (p.model.max.y - p.model.min.y));
-            level_probe_front(world, vehicles, &self.peds, p.uid, o, -pfwd, 7.0)
+            let d = if p.state.gear < 0 { -pfwd } else { pfwd };
+            level_probe_front(world, vehicles, &self.peds, p.uid, o, d, 7.0)
         };
         let bike_down = p.model.bike && p.state.wipeout > 0.0;
         let seen_now = pvel.length() * MPH <= tun.get("fMovingSpeed", 1.0) || probe_hit;
