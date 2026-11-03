@@ -438,7 +438,18 @@ struct Shape<'a> {
 /// The two parts' boxes, each grown to hold itself at its last matrix too, tested along their
 /// six face axes (F-82759's cull; a decision only, written plainly).
 fn boxes_meet(a: &Shape, b: &Shape) -> bool {
-    let swept = |s: &Shape| {
+    parts_meet((a.bbox, a.now, a.last), (b.bbox, b.now, b.last))
+}
+
+/// [`boxes_meet`] on two parts given as (box, now, last): the thrown rider's parts against a vehicle's.
+pub fn parts_meet(a: ((Vec3, Vec3), [Vec3; 4], [Vec3; 4]), b: ((Vec3, Vec3), [Vec3; 4], [Vec3; 4])) -> bool {
+    struct S {
+        bbox: (Vec3, Vec3),
+        now: [Vec3; 4],
+        last: [Vec3; 4],
+    }
+    let (a, b) = (S { bbox: a.0, now: a.1, last: a.2 }, S { bbox: b.0, now: b.1, last: b.2 });
+    let swept = |s: &S| {
         let (c, h) = ((s.bbox.1 + s.bbox.0) * 0.5, (s.bbox.1 - s.bbox.0) * 0.5);
         let (m, l) = (&s.now, &s.last);
         let r: [Vec3; 3] = std::array::from_fn(|i| inv(m, l[i]));
@@ -449,7 +460,7 @@ fn boxes_meet(a: &Shape, b: &Shape) -> bool {
         let mid = (hi + lo) * 0.5;
         (xf(m, mid), hi - mid)
     };
-    let ((wa, ha), (wb, hb)) = (swept(a), swept(b));
+    let ((wa, ha), (wb, hb)) = (swept(&a), swept(&b));
     let eps = Vec3::splat(1e-6);
     let r: [Vec3; 3] = std::array::from_fn(|i| inv(&b.now, a.now[i]));
     let ab: [Vec3; 3] = std::array::from_fn(|i| r[i].abs() + eps);
@@ -458,6 +469,14 @@ fn boxes_meet(a: &Shape, b: &Shape) -> bool {
     let w = r[0] * q.x + r[1] * q.y + r[2] * q.z;
     let col = |k: usize| Vec3::new(ab[0][k], ab[1][k], ab[2][k]);
     (0..3).all(|i| ha[i] + ab[i].dot(hb) > q[i].abs()) && (0..3).all(|k| hb[k] + col(k).dot(ha) > w[k].abs())
+}
+
+/// The car's contact with the city as a row of an island with other bodies (the car body 0; as
+/// [`LooseState::solve_car_island`] lists them): A the car's point, B the city's.
+pub fn car_city_touch(c: &solver::Contact, rows: [Vec3; 3]) -> Touch {
+    let a = Side { body: Some(0), point: c.on_body, local: c.local, rows, margin: 0.04, core: Vec3::ZERO };
+    let b = Side { body: None, point: c.on_world, local: c.on_world, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
+    Touch { depth: c.depth, friction: c.friction, elasticity: c.elasticity, a, b, normal: c.normal, back: Vec3::ZERO - c.normal, pushed: c.pushed, kept: c.kept, target: c.target, impulse: Vec3::ZERO, kind: 0, jointed: None }
 }
 
 /// What the car is, for the props' side of a tick.

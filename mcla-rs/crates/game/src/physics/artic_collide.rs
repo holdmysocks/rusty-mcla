@@ -513,6 +513,155 @@ impl RiderSelf {
     }
 }
 
+/// A vehicle's parts as the rider's pair with it takes them: part 0 its hull, parts 1.. its wheels.
+pub struct VehSide<'a> {
+    pub hull: &'a super::hull::HullShape,
+    /// the hull bound's centre of gravity and margin (+0x70)
+    pub hull_cg: Vec3,
+    pub hull_margin: f32,
+    /// the vehicle's matrix now and last: both instances of the pair have a collider record, so each side's last is
+    /// its collider's +32, the matrix it had as the tick began (F-65617, as loose.rs takes two bodies)
+    pub now: [Vec3; 4],
+    pub last: [Vec3; 4],
+    /// the wheels' parts (their now / last already in the world)
+    pub wheels: Vec<Option<super::loose::WheelIn>>,
+}
+
+impl VehSide<'_> {
+    /// Part `p`'s core, margin, centre, box, now and last.
+    fn part(&self, p: usize) -> Option<(super::loose::Core<'_>, f32, Vec3, (Vec3, Vec3), [Vec3; 4], [Vec3; 4])> {
+        use super::gjk::HullCore;
+        use super::loose::Core;
+        if p == 0 {
+            let n = self.now;
+            let core = Core::Hull(HullCore { corners: self.hull.scanned(), rows: [n[0], n[1], n[2]], at: n[3] });
+            // (the hull's box as loose.rs takes it for the part cull)
+            let bbox = (self.hull.min - Vec3::splat(0.041), self.hull.max + Vec3::splat(0.041));
+            return Some((core, self.hull_margin, self.hull_cg, bbox, n, self.last));
+        }
+        let w = self.wheels.get(p - 1).copied().flatten()?;
+        Some((Core::Wheel(w.core), super::gjk::WHEEL_MARGIN, Vec3::ZERO, (Vec3::ZERO - w.half, w.half), w.now, w.last))
+    }
+
+    fn parts(&self) -> usize {
+        1 + self.wheels.len()
+    }
+}
+
+/// The contacts of one vehicle part with one rider part (a sub-manifold of the rider's pair with the vehicle).
+#[derive(Clone, Debug)]
+pub struct VehManifold {
+    /// the vehicle's part (0 the hull) and the rider's
+    pub veh: u8,
+    pub part: u8,
+    /// the vehicle's element (+168 or +170: the hull's polygon) and its material ride in each slot's `polygon` /
+    /// `surface`
+    pub slots: Vec<RiderSlot>,
+}
+
+/// The rider's sub-manifolds with a vehicle (his own bike), kept from one tick to the next. `rider_is_a`: the pair's
+/// A is the instance of the lower level index (the rider's above the bike's in every recording: the bike is A).
+#[derive(Clone, Debug, Default)]
+pub struct RiderVeh {
+    pub manifolds: Vec<VehManifold>,
+    pub rider_is_a: bool,
+}
+
+impl RiderVeh {
+    /// The collide of the rider's parts against a vehicle's (F-82759, composite against composite): per (B's part,
+    /// A's part) the parts' swept boxes ([`super::loose::parts_meet`]); a pair that passes keeps its sub-manifold
+    /// (an old one the cull passes by is let go), then the narrow phase of the self pairs' collision object (manifold
+    /// +1252 = the same object): the detector (F-47540, see [`veh_pair_contact`] for why never the swept test here),
+    /// nothing farther than 2 cm, the sink ([`sink`]); a sub-manifold that ends the collide empty is let go. The
+    /// hull's element is the polygon the detector's corners and the contact's direction pick (as loose.rs's pairs
+    /// with the car). Checked: rs.0 154 - 155 and rt.0 156 - 175, both sides as A, 70 / 70 new contacts and the
+    /// polygons word for word (`tests::bike_contacts_match_recording`).
+    pub fn collide(&mut self, shapes: &[Option<PartShape>], now: &[[Vec3; 4]], last: &[[Vec3; 4]], veh: &VehSide) {
+        let old = std::mem::take(&mut self.manifolds);
+        let (n_a, n_b) = if self.rider_is_a { (shapes.len(), veh.parts()) } else { (veh.parts(), shapes.len()) };
+        for pb in 0..n_b {
+            for pa in 0..n_a {
+                let (rp, vp) = if self.rider_is_a { (pa, pb) } else { (pb, pa) };
+                let Some(rs) = shapes.get(rp).copied().flatten() else { continue };
+                let Some((vcore, vmargin, vcg, vbox, vnow, vlast)) = veh.part(vp) else { continue };
+                if !super::loose::parts_meet((rs.bbox, now[rp], last[rp]), (vbox, vnow, vlast)) {
+                    continue;
+                }
+                let mut m = match old.iter().find(|m| m.veh as usize == vp && m.part as usize == rp) {
+                    Some(m) => m.clone(),
+                    None => VehManifold { veh: vp as u8, part: rp as u8, slots: Vec::new() },
+                };
+                let rcore = super::loose::Core::Part(rs.core(&now[rp]));
+                let r_side = (rcore, rs.margin, rs.centroid, rs.bbox, now[rp], last[rp]);
+                let v_side = (vcore, vmargin, vcg, vbox, vnow, vlast);
+                let (a, b) = if self.rider_is_a { (&r_side, &v_side) } else { (&v_side, &r_side) };
+                veh_pair_contact(&mut m, a, b, !self.rider_is_a, veh, vp);
+                self.manifolds.push(m);
+            }
+        }
+        // (a sub-manifold that ends the collide empty is let go, as the city's: rs.0 154 - 156)
+        self.manifolds.retain(|m| !m.slots.is_empty());
+    }
+
+    /// The update's refresh (F-26862 / F-33100), A's and B's points from their parts now. `veh_now`: the vehicle's
+    /// part matrices now (0 the hull).
+    pub fn refresh(&mut self, now: &[[Vec3; 4]], veh_now: &[[Vec3; 4]]) {
+        for m in self.manifolds.iter_mut() {
+            let (r, v) = (now[m.part as usize], veh_now[m.veh as usize]);
+            let (ma, mb) = if self.rider_is_a { (r, v) } else { (v, r) };
+            refresh_slots(&mut m.slots, &ma, &mb);
+        }
+    }
+
+    /// The materials (F-43430: the rider part's and the vehicle element's) and the rider's callback (F-22759: the
+    /// type's +320 on every contact handed to it).
+    pub fn materials(&mut self, shapes: &[Option<PartShape>], type_elasticity: f32) {
+        for m in self.manifolds.iter_mut() {
+            let sr = shapes.get(m.part as usize).copied().flatten().map_or(Surface::Ragdoll, |s| s.surface);
+            let (fr, er) = surface_touch(sr);
+            for s in m.slots.iter_mut() {
+                let (fv, ev) = surface_touch(s.surface);
+                s.touch.friction = (fr * fv).max(0.0);
+                s.touch.elasticity = (er * ev).min(1.0);
+                s.touch.elasticity = type_elasticity;
+                s.touch.impulse = Vec3::ZERO;
+            }
+        }
+    }
+}
+
+type PairSide<'a> = (super::loose::Core<'a>, f32, Vec3, (Vec3, Vec3), [Vec3; 4], [Vec3; 4]);
+
+/// F-36478 for one rider x vehicle part pair, then the sink. `veh_is_a`: which side the vehicle is. The detector
+/// (F-47540) always: the motion test's global (0x828127D6) is 0 at run time (the RGDS snapshots of ro.0, rs.0 and
+/// rt.0), so the swept test (F-98094) is reached only by the collision context's byte +280, which is not set for this
+/// pair (every new contact of rs.0 154 and rt.0 156 - 175 is the detector's, 11 of them where the parts moved far).
+fn veh_pair_contact(m: &mut VehManifold, a: &PairSide, b: &PairSide, veh_is_a: bool, veh: &VehSide, vp: usize) {
+    use super::gjk::convex_contact;
+    use super::loose::inv;
+    let (ca, ma_, _, _, a_now, _) = a;
+    let (cb, mb_, _, _, b_now, _) = b;
+    let mut dir = Vec3::Z;
+    let found = convex_contact(ca, *ma_, cb, *mb_, &mut dir, true).map(|r| (r.normal, r.on_a, r.on_b, r.distance, r));
+    let Some((normal, qa, qb, dist, r)) = found else { return };
+    if !(f32::from_bits(0x3ca3_d70a) > dist) {
+        return;
+    }
+    // (the hull's polygon: the corners the detector ended on and the contact's direction in the hull's frame, away
+    // from the other part; a wheel's element 0)
+    let element = match (vp, veh_is_a) {
+        (0, true) => veh.hull.element(&r.corners.0[..r.corners.1], inv(&veh.now, Vec3::ZERO - normal)),
+        (0, false) => veh.hull.element(&r.corners_b.0[..r.corners_b.1], inv(&veh.now, normal)),
+        _ => 0,
+    };
+    // (a wheel's material: the hull's first polygon's - unverified, the recordings' wheel contacts carry the hull's
+    // friction)
+    let surface = veh.hull.surface_of(element);
+    let side = |now: &[Vec3; 4], q: Vec3| Side { body: None, point: q, local: inv(now, q - now[3]), rows: [now[0], now[1], now[2]], margin: SIDE_MARGIN, core: Vec3::ZERO };
+    let fresh = Touch { depth: 0.0 - dist, a: side(a_now, qa), b: side(b_now, qb), normal, back: Vec3::ZERO - normal, ..Default::default() };
+    sink(&mut m.slots, RiderSlot { touch: fresh, age: 0, enabled: true, polygon: element as u32, surface });
+}
+
 /// F-36478 for one self pair, then the sink.
 fn self_pair_contact(m: &mut SelfManifold, sa: &PartShape, sb: &PartShape, a_now: &[Vec3; 4], a_last: &[Vec3; 4], b_now: &[Vec3; 4], b_last: &[Vec3; 4]) {
     use super::gjk::convex_contact;
@@ -980,6 +1129,145 @@ mod tests {
         assert_eq!(subs_ok, ticks_n);
         assert_eq!(matched, recorded);
         assert_eq!(extra, 0);
+    }
+
+    /// testdata/rider_bike_<rec>.bin (work/ragdoll/contacts2/export_bike.py over the RGDS snapshots at slot 10's
+    /// entry): the rider's and the bike's part matrices of each snapshot tick and the pair's recorded contacts.
+    fn bike_fix(d: &[u8]) -> Fix {
+        assert_eq!(&d[..8], b"RGBIKE01");
+        let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let mut o = 12;
+        let mut m = HashMap::new();
+        for _ in 0..u(8) {
+            let name = String::from_utf8(d[o..o + 8].iter().copied().take_while(|&b| b != 0).collect()).unwrap();
+            let n = u(o + 8) as usize;
+            m.insert(name, (0..n).map(|i| u(o + 12 + 4 * i)).collect());
+            o += 12 + 4 * n;
+        }
+        Fix(m)
+    }
+
+    /// The rider's parts against his bike's hull in the thrown rider's first ticks (the ZX-14 into the wall at the
+    /// spawn): rs.0 154 - 155 (the bike A, the lower level index) and rt.0 156 - 175 (the rider A): the sub-manifolds
+    /// holding contacts after the refresh and every contact the collide made in the tick (age 1 in the record), word
+    /// for word - depth, both local points, both world points, the normal - and the hull's polygon. The bike's wheels
+    /// (parts 1, 2) are not ported for this pair: their contacts are counted apart.
+    #[test]
+    fn bike_contacts_match_recording() {
+        let Some(root) = data_dir() else {
+            eprintln!("skipped: the extracted data (MCLA_DATA_DIR) is missing");
+            return;
+        };
+        let rs = root.to_string_lossy().to_string();
+        super::super::collision::load_surfaces(&rs);
+        let ty = rider_type(&root).expect("rider type");
+        let sh = shapes(&ty, &Surface::table(&rs));
+        let assets = crate::assets::Assets::new(&root);
+        let car = crate::vehicle_model::load_car(&assets, &root.join("resources/vehicle/vp_kaw_ninja_zx14_06")).expect("the ZX-14");
+        let st = car.simtune.as_ref().unwrap();
+        let hull = super::super::hull::shaped(car.hull.as_ref().unwrap(), &st.base, 0.3, true);
+        let (mut matched, mut recorded, mut extra, mut wheel, mut subs_ok, mut ticks_n) = (0, 0, 0, 0, 0, 0);
+        let (mut elements, mut kept_ok, mut kept_all) = (0, 0, 0);
+        let (mut mat_ok, mut mat_all) = (0, 0);
+        for (name, d) in [("rs.0", &include_bytes!("testdata/rider_bike_rs0.bin")[..]), ("rt.0", &include_bytes!("testdata/rider_bike_rt0.bin")[..])] {
+        let f = bike_fix(d);
+        eprintln!("{name}");
+        let lv = f.w("lv");
+        let rider_is_a = lv[0] < lv[1];
+        let mut pair = RiderVeh { manifolds: Vec::new(), rider_is_a };
+        // (a recorded (part A, part B) as (the bike's part, the rider's))
+        let vr = |a: u32, b: u32| if rider_is_a { (b, a) } else { (a, b) };
+        for &tick in f.w("ticks") {
+            let mats = |n: &str| f.mats(&format!("{n}_{tick}")).iter().map(rows3).collect::<Vec<_>>();
+            let (r16, r32) = (rows3(&f.mat(&format!("r16_{tick}"), 0)), rows3(&f.mat(&format!("r32_{tick}"), 0)));
+            let (b16, b32) = (rows3(&f.mat(&format!("b16_{tick}"), 0)), rows3(&f.mat(&format!("b32_{tick}"), 0)));
+            let now: Vec<[Vec3; 4]> = mats("rcu").iter().map(|p| world_matrix(p, &r16)).collect();
+            let last: Vec<[Vec3; 4]> = mats("rpv").iter().map(|p| world_matrix(p, &r32)).collect();
+            let bnow: Vec<[Vec3; 4]> = mats("bcu").iter().map(|p| world_matrix(p, &b16)).collect();
+            let blast: Vec<[Vec3; 4]> = mats("bpv").iter().map(|p| world_matrix(p, &b32)).collect();
+            let veh = VehSide { hull: &hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: bnow[0], last: blast[0], wheels: vec![None; bnow.len() - 1] };
+            pair.collide(&sh, &now, &last, &veh);
+            ticks_n += 1;
+            let mut fresh: Vec<(u8, u8, RiderSlot)> = pair.manifolds.iter().flat_map(|m| m.slots.iter().filter(|s| s.age == 0).map(move |s| (m.veh, m.part, *s))).collect();
+            for c in f.w(&format!("bct{tick}")).chunks(52).filter(|c| c[2] == 1) {
+                let (h, r) = (&c[..8], &c[8..]);
+                let (hv, hr) = vr(c[0], c[1]);
+                let h = [hv, hr, h[2], h[3], if rider_is_a { h[5] } else { h[4] }];
+                if h[0] != 0 {
+                    wheel += 1;
+                    continue;
+                }
+                recorded += 1;
+                let want = (r[3], rec3(r, 16), rec3(r, 32), rec3(r, 48), rec3(r, 64), rec3(r, 80));
+                let k = fresh.iter().position(|(v, p, s)| (*v as u32, *p as u32) == (h[0], h[1]) && (s.touch.depth.to_bits(), bits3(s.touch.a.local), bits3(s.touch.b.local), bits3(s.touch.a.point), bits3(s.touch.b.point), bits3(s.touch.normal)) == want);
+                match k {
+                    Some(k) => {
+                        if fresh[k].2.polygon == h[4] {
+                            elements += 1;
+                        } else {
+                            eprintln!("tick {tick} parts {} / {}: element {} recorded {}", h[0], h[1], fresh[k].2.polygon, h[4]);
+                        }
+                        fresh.remove(k);
+                        matched += 1;
+                    }
+                    None => {
+                        let near = fresh.iter().find(|(v, p, _)| (*v as u32, *p as u32) == (h[0], h[1]));
+                        eprintln!("tick {tick} parts {} / {}: recorded depth {} n {:?} la {:?}, port {:?}", h[0], h[1], f32::from_bits(r[3]), [r[20], r[21], r[22]].map(f32::from_bits), [r[4], r[5], r[6]].map(f32::from_bits), near.map(|(_, _, s)| (s.touch.depth, s.touch.normal, s.touch.a.local)));
+                    }
+                }
+            }
+            for (v, p, s) in &fresh {
+                eprintln!("tick {tick} parts {v} / {p}: the port's contact, not a recorded new one (depth {})", s.touch.depth);
+            }
+            extra += fresh.len();
+            pair.refresh(&now, &bnow);
+            // (every recorded contact after the refresh: its age, depth and both world points)
+            for c in f.w(&format!("bct{tick}")).chunks(52) {
+                let (hv, hr) = vr(c[0], c[1]);
+                if hv != 0 {
+                    continue;
+                }
+                let r = &c[8..];
+                kept_all += 1;
+                let ok = pair.manifolds.iter().filter(|m| (m.veh as u32, m.part as u32) == (hv, hr)).flat_map(|m| m.slots.iter()).any(|s| {
+                    s.age as u32 == c[2] && bits3(s.touch.a.local) == rec3(r, 16) && s.touch.depth.to_bits() == r[3] && bits3(s.touch.a.point) == rec3(r, 48) && bits3(s.touch.b.point) == rec3(r, 64)
+                });
+                if ok {
+                    kept_ok += 1;
+                } else {
+                    eprintln!("tick {tick} parts {hv} / {hr}: the refreshed contact (age {}, depth {}) is not the port's", c[2], f32::from_bits(r[3]));
+                }
+            }
+            let mine: Vec<(u32, u32)> = pair.manifolds.iter().filter(|m| !m.slots.is_empty()).map(|m| (m.veh as u32, m.part as u32)).collect();
+            let want: Vec<(u32, u32)> = f.w(&format!("bsb{tick}")).chunks(3).filter(|c| c[2] > 0).map(|c| vr(c[0], c[1])).filter(|s| s.0 == 0).collect();
+            if mine == want {
+                subs_ok += 1;
+            } else {
+                eprintln!("tick {tick}: hull sub-manifolds {mine:?}, recorded {want:?}");
+            }
+            pair.materials(&sh, ty.f320);
+            // (the materials: friction +28, elasticity +44 as the record holds them at the tick's end)
+            for c in f.w(&format!("bct{tick}")).chunks(52) {
+                let (hv, hr) = vr(c[0], c[1]);
+                let r = &c[8..];
+                if let Some(sl) = pair.manifolds.iter().filter(|m| (m.veh as u32, m.part as u32) == (hv, hr)).flat_map(|m| m.slots.iter()).find(|s| bits3(s.touch.a.local) == rec3(r, 16)) {
+                    mat_all += 1;
+                    if (sl.touch.friction.to_bits(), sl.touch.elasticity.to_bits()) == (r[7], r[11]) {
+                        mat_ok += 1;
+                    } else if mat_all - mat_ok < 4 {
+                        eprintln!("{name} tick {tick}: friction / elasticity {} / {}, recorded {} / {}", sl.touch.friction, sl.touch.elasticity, f32::from_bits(r[7]), f32::from_bits(r[11]));
+                    }
+                }
+            }
+        }
+        }
+        eprintln!("rider x bike: hull sub-manifolds equal in {subs_ok} / {ticks_n} ticks; contacts {matched} / {recorded} word for word ({elements} with the recorded polygon), {extra} of the port's not among them; {wheel} wheel contacts not compared; after the refresh {kept_ok} / {kept_all} hull contacts equal (age, depth, points); materials {mat_ok} / {mat_all}");
+        assert_eq!(kept_ok, kept_all);
+        assert!(recorded > 0);
+        assert_eq!(matched, recorded);
+        assert_eq!(elements, matched);
+        assert_eq!(extra, 0);
+        assert_eq!(subs_ok, ticks_n);
     }
 
     /// The bound: 21 parts, capsules with the ragdoll material, the self-pair gate (collider +740 = 1, +744 = 0 in ro.0).

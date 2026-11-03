@@ -1233,4 +1233,192 @@ mod tests {
         assert_eq!(n, CONTACT_TICKS);
         assert!(report.is_empty(), "{}", report.join("\n"));
     }
+
+    // -----------------------------------------------------------------------------------------
+    // The shared island: the thrown rider and his bike in one solve (rider_bike_shared.bin)
+
+    /// One tick of rider_bike_shared.bin (export_shared.py over rv.0): the island's enabled contacts in
+    /// the A list's order with which side is the rider and which the bike, the hinge parts, the bike's
+    /// collider at slot 5's entry and at slot 10's entry (the RGD0 / RGD1 snapshots), and its instance's
+    /// matrix at slot 10's entry (the file also holds the one at slot 5's entry, unused).
+    struct SharedTick {
+        tick: u32,
+        bounce: u32,
+        n: u32,
+        contacts: Vec<(u32, IslContact)>,
+        hinge_parts: Vec<i32>,
+        bike0: Vec<u32>,
+        bike1: Vec<u32>,
+        matrix1: Vec<u32>,
+    }
+
+    fn shared_ticks() -> (Vec<i32>, Vec<SharedTick>) {
+        let b = include_bytes!("testdata/rider_bike_shared.bin");
+        assert_eq!(&b[..8], b"RGSHR001");
+        let w: Vec<u32> = b[8..].chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+        let (ticks, mut i) = (w[0] as usize, 1);
+        let n = w[i] as usize;
+        let map: Vec<i32> = w[i + 1..i + 1 + n].iter().map(|&x| x as i32).collect();
+        i += 1 + n;
+        let mut out = Vec::new();
+        for _ in 0..ticks {
+            let len = w[i] as usize;
+            let t = &w[i + 1..i + 1 + len];
+            i += 1 + len;
+            let mut k = 4;
+            let mut contacts = Vec::new();
+            for _ in 0..t[3] {
+                let c = IslContact { side: t[k], parts: [t[k + 2] as i32, t[k + 3] as i32], w: t[k + 4..k + 48].try_into().unwrap(), prev_tick: t[k + 48], prev: t[k + 49..k + 61].try_into().unwrap() };
+                contacts.push((t[k + 1], c));
+                k += 61;
+            }
+            let hinge_parts = t[k + 1..k + 1 + t[k] as usize].iter().map(|&x| x as i32).collect();
+            k += 1 + t[k] as usize;
+            let bike0 = t[k..k + 176].to_vec();
+            let bike1 = t[k + 176..k + 352].to_vec();
+            let matrix1 = t[k + 368..k + 384].to_vec();
+            out.push(SharedTick { tick: t[0], bounce: t[1], n: t[2], contacts, hinge_parts, bike0, bike1, matrix1 });
+        }
+        (map, out)
+    }
+
+    fn wf(w: &[u32], o: usize) -> f32 {
+        f32::from_bits(w[o / 4])
+    }
+    fn wv(w: &[u32], o: usize) -> Vec3 {
+        Vec3::new(wf(w, o), wf(w, o + 4), wf(w, o + 8))
+    }
+
+    /// The bike's body as the island takes it, from its collider at slot 5's entry: place +256, velocity +272,
+    /// angular velocity +288, inverse mass +196, inverse moments +176, the sums +336 / +352; its rows the instance's.
+    /// (its collider at slot 10's entry - the solve writes none of these - and its instance's rows there)
+    fn shared_bike(t: &SharedTick) -> solver::Body {
+        let (w, m) = (&t.bike1, &t.matrix1);
+        solver::Body {
+            at: wv(w, 256),
+            rows: [wv(m, 0), wv(m, 16), wv(m, 32)],
+            vel: wv(w, 272),
+            ang: wv(w, 288),
+            inv_mass: wf(w, 196),
+            inv_moments: wv(w, 176),
+            force: wv(w, 336),
+            torque: wv(w, 352),
+        }
+    }
+
+    /// The island's rows as the shared step makes them: the rider's (type 7 / 13) with the bike, where it is the
+    /// other side, as the island's body 0; the bike's with the city as its own rows. Every row's elasticity as
+    /// recorded (the rider's 0, the bike's on the rider 0.1, F-55998).
+    fn shared_touches(map: &[i32], n_links: usize, t: &SharedTick) -> Vec<solver::Touch> {
+        let mut out = Vec::new();
+        for (bside, c) in &t.contacts {
+            let f = |o: usize| f32::from_bits(c.w[o / 4]);
+            let v = |o: usize| Vec3::new(f(o), f(o + 4), f(o + 8));
+            let on = |s: u32| if *bside == s { Some(0) } else { None };
+            let side = |o: usize, s: u32| solver::Side { body: on(s), point: v(o), ..Default::default() };
+            let jointed = match c.side {
+                3 => Some(solver::JointedSide { body: 0, link: part_link(map, n_links, c.parts[0]), on_b: false, point_w: f(60), self_b: Some((part_link(map, n_links, c.parts[1]), f(76))) }),
+                0 | 1 => {
+                    let on_b = c.side == 1;
+                    Some(solver::JointedSide { body: 0, link: part_link(map, n_links, c.parts[c.side as usize]), on_b, point_w: if on_b { f(76) } else { f(60) }, self_b: None })
+                }
+                _ => None,
+            };
+            let pw = |i: usize| f32::from_bits(c.prev[i]);
+            let d = v(16) - Vec3::new(pw(8), pw(9), pw(10));
+            let near = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)) < f32::from_bits(0x39d1_b717);
+            let prev = |i: usize| if c.prev_tick + 1 != t.tick || !near { Vec3::ZERO } else { Vec3::new(pw(i), pw(i + 1), pw(i + 2)) };
+            out.push(solver::Touch {
+                depth: f(12),
+                friction: f(28),
+                elasticity: f(44),
+                a: side(48, 0),
+                b: side(64, 1),
+                normal: v(80),
+                back: v(96),
+                target: v(144),
+                kind: (c.w[41] >> 24) as u8,
+                jointed,
+                kept: prev(4),
+                pushed: prev(0),
+                ..Default::default()
+            });
+        }
+        out
+    }
+
+    /// The shared island's velocity solve (F-68442 / F-36821 with the bike as a rigid body and the rider as the
+    /// jointed one) over rv.0 156 - 167, the gate open, the rider A and the bike B: the rider RGX0 -> RGD1 word for
+    /// word, the elasticity factor (isl +40), every row's kept multipliers (+128) and impulse (+112), and the bike's
+    /// share - what the island's apply adds to its accumulators +368 / +384 between the two snapshots - bit for bit.
+    /// The bike's body is its collider at slot 10's entry (the move between the snapshots is its own: place +256,
+    /// rows, angular velocity +288 from the turned momentum; velocity +272 and the sums +336 / +352 unchanged).
+    #[test]
+    fn shared_island_velocity_solve_is_the_originals() {
+        let (map, ticks) = shared_ticks();
+        let cases = run_cases(include_bytes!("testdata/rider_bike_shared_run.bin"));
+        let mut report = Vec::new();
+        let mut n = 0;
+        for t in &ticks {
+            let Some(c) = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick) else { continue };
+            n += 1;
+            let mut a = load(&c.inp);
+            for &p in &t.hinge_parts {
+                a.contact_on_part(&map, p);
+            }
+            let mut touches = shared_touches(&map, a.n(), t);
+            assert_eq!(touches.len(), t.n as usize);
+            let bike = shared_bike(t);
+            let dt = c.v1;
+            let mut jointed = [a];
+            let solved = solver::island_solve_jointed(&[bike], &touches, &mut jointed, (0, 0.0), dt, 1.0 / dt);
+            solver::island_apply_jointed(&solved, &mut jointed);
+            let [mut a] = jointed;
+            a.motion_measure(dt);
+            let mut bad = Vec::new();
+            if solved.bounce.to_bits() != t.bounce {
+                bad.push(format!("bounce {:08x} want {:08x}", solved.bounce.to_bits(), t.bounce));
+            }
+            solver::island_impulses(&solved, &mut touches);
+            for (k, (x, (_, rec))) in touches.iter().zip(t.contacts.iter()).enumerate() {
+                if !vec_words(x.kept, &rec.w[32..35]) {
+                    bad.push(format!("row {k} (side {}) kept {:?} want {:08x?}", rec.side, x.kept, &rec.w[32..35]));
+                }
+                if !vec_words(x.impulse, &rec.w[28..31]) {
+                    bad.push(format!("row {k} (side {}) impulse {:?} want {:08x?}", rec.side, x.impulse, &rec.w[28..31]));
+                }
+            }
+            // (the bike's share: the island's apply into its accumulators +368 / +384, empty at slot 5's entry;
+            // its velocities +272 / +288 are not written by the solve)
+            let given = solver::island_apply(&[bike], &touches);
+            let (b0, b1) = (&t.bike0, &t.bike1);
+            for (name, o, got) in [("impulse +368", 368, given[0].0), ("turning +384", 384, given[0].1)] {
+                if wv(b0, o) != Vec3::ZERO || !vec_words(got, &b1[o / 4..o / 4 + 3]) {
+                    bad.push(format!("bike {name}: island {got:?}, recorded {:?} -> {:?}", wv(b0, o), wv(b1, o)));
+                }
+            }
+            let (words, nan) = strict(&a, &c.out);
+            eprintln!("shared velocity solve, tick {}: {} rows ({} with the bike), {} differing words, {nan} NaN on both sides, {} row results differ", t.tick, touches.len(), t.contacts.iter().filter(|(b, _)| *b != 2).count(), words.len(), bad.len());
+            bad.extend(words);
+            if OPEN.contains(&t.tick) {
+                // (open: see OPEN)
+                if bad.is_empty() {
+                    report.push(format!("tick {}: exact now - take it off OPEN", t.tick));
+                }
+            } else if !bad.is_empty() {
+                report.push(format!("tick {}: {} differences, first {:#?}", t.tick, bad.len(), &bad[..bad.len().min(16)]));
+            }
+        }
+        assert_eq!(n, 12);
+        assert!(report.is_empty(), "{}", report.join("\n"));
+    }
+
+    /// The ticks of rv.0 whose shared solve is not yet the original's word for word (unverified, open): 156, 158 and
+    /// 159. The rows that differ there are exactly the tick's rows on the friction cone (their multipliers within
+    /// about 1e-5 of the recorded ones, the bike's share within 1e-6), while the cone rows of the other nine ticks are
+    /// exact. Ruled out: the warm starts (every choice of the earlier records' +0 / +128), the hinge bytes (each part
+    /// added or taken away), the bike's body (place, rows, angular velocity and sums from either snapshot), the rows'
+    /// inputs (the RGD1 snapshot's records equal the PAIR records but for +0), the row order (A list), the sweep
+    /// count (island +20 = 1: 8) and the elasticity factor (equal on every tick).
+    const OPEN: [u32; 3] = [156, 158, 159];
 }

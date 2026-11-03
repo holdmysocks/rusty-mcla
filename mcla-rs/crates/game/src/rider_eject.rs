@@ -224,6 +224,18 @@ impl RiderOff {
     /// One game tick. `seat` the player's car (the drivers' seat id), the damage bits and timer (main.rs).
     #[allow(clippy::too_many_arguments)]
     pub fn tick(&mut self, cars: &mut [crate::vehicles::CarInstance], seat: Option<usize>, drivers: &mut crate::drivers::Drivers, city: &crate::physics::collision::WorldCollider, crash_bits: u8, crash_timer: f32, data_dir: &str, dt: f32) {
+        // (the ragdoll the bike's step ticked with its own since the last call - the shared step, physics/vehsim.rs -
+        // back from the bike, with what the tick gave; every car's copy is taken, so no other ticks it)
+        let mut handed = None;
+        for (k, c) in cars.iter_mut().enumerate() {
+            if let Some(v) = c.state.veh.as_deref_mut() {
+                if let (Some(rd), Some(out)) = (v.rider.take(), v.rider_out.take()) {
+                    if Some(k) == seat {
+                        handed = Some((rd, out));
+                    }
+                }
+            }
+        }
         let Some(i) = seat.filter(|&i| cars.get(i).map_or(false, |c| c.model.bike)) else {
             if let Some(s) = self.seat.take() {
                 drivers.seat_back(s);
@@ -317,6 +329,7 @@ impl RiderOff {
                             let launch = e.launch(kept, c.state.vel, timing);
                             log::info!("rider: GoRagdoll, {} links, launch {:.2} {:.2} {:.2}", b.links.len(), launch.x, launch.y, launch.z);
                             self.ragdoll = Some(Box::new(crate::physics::artic_run::RiderRagdoll::go(&ty, b, &locals, character, launch, &self.surfaces)));
+                            handed = None;
                         }
                         Some(Err(err)) => log::warn!("rider: the ragdoll's build failed: {err:?}"),
                     }
@@ -325,7 +338,14 @@ impl RiderOff {
             }
         }
         if let Some(rd) = self.ragdoll.as_mut() {
-            let out = rd.tick(dt, city);
+            // (ticked by the bike's step, else - his first tick, a step without the bike's collide - alone here)
+            let out = match handed.take() {
+                Some((ticked, out)) => {
+                    *rd = ticked;
+                    out
+                }
+                None => rd.tick(dt, city),
+            };
             if std::env::var_os("MCLA_DBG_RIDER").is_some() {
                 let m = rd.matrix();
                 eprintln!("RIDER pos {:?} v {:?} contacts {} island {}", m[3].0, rd.velocity(), out.contacts, out.island);
@@ -336,6 +356,10 @@ impl RiderOff {
             }
             if let Some(v) = c.state.veh.as_deref_mut() {
                 v.rider_vel = Some(rd.velocity());
+                // (the next tick in the bike's step; MCLA_DBG_RIDER_ALONE: here, alone, as before the shared step)
+                if std::env::var_os("MCLA_DBG_RIDER_ALONE").is_none() {
+                    v.rider = Some(rd.clone());
+                }
             }
             drivers.ragdoll_world(i, rd.bones().iter().map(glam_of).collect());
         }
