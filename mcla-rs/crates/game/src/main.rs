@@ -2833,7 +2833,6 @@ impl App {
                     _ => {}
                 }
                 self.game.show_message(k.name());
-                self.game.career.event(career::Ev::Ability);
                 let (system, stat) = k.system();
                 if let Some(level) = self.game.career.ability_used(system, stat) {
                     // "ZONE LEVEL 2" is the text for reaching level 1, and so on
@@ -5404,7 +5403,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             // ("Reached neutral point": garage_core 0x517..0x52a sets the stat tGAR to 1 unless its place
                             // is element 506 - none of the three garages)
                             self.game.mc4_stat_set("tGAR", 0, 1.0);
-                            self.game.career.event(career::Ev::Garage);
+                            // (LOCATION_EVENT with the place's name: garage_core's static +4)
+                            self.game.career.event(career::Ev::Str("LOCATION_EVENT", su.key));
                             let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
                             let story = self.game.career.location_enter(su.enter).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));
                             self.place_view = None;
@@ -6054,6 +6054,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if climbing {
                         self.roam.near = None;
                         self.roam.near_is_rival = false;
+                        self.roam.near_mission = None;
                     } else if let Some(race) = (if self.game.bmt_end.is_some() { None } else { self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) }).filter(|&race| {
                         // (a beat me there run's end comes first: its race-over sequence or menu - `Game::bmt_end`)
                         let Some((place, rep, wrecked)) = self.roam.bmt_over.take() else { return true };
@@ -6173,8 +6174,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 let line = self.game.career.strings.get("tutorial_flash_desc").map(|s| s.trim_end_matches('.').to_uppercase()).unwrap_or_else(|| "FLASH HEADLIGHTS TO RACE".into());
                                 self.game.show_message(&line);
                             }
-                            if self.roam.near_is_rival {
-                                self.game.career.event(career::Ev::FoundHookman);
+                            // (a FIND_ core's meeting: `Career::core_meet`)
+                            if let Some(m) = self.roam.near_mission.clone() {
+                                self.game.career.core_meet(&m);
                             }
                         }
                     }
@@ -6269,8 +6271,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             (Some(t), Some(nav), Some(c)) if t.distance(c.state.pos) > 60.0 => nav.route_points(c.state.pos, Some(c.state.forward()), t).map(std::sync::Arc::new),
                             _ => None,
                         };
-                        let d = self.game.district_at(focus);
-                        self.game.career.event(career::Ev::District(&d));
                     }
                     if let Some(ch) = self.roam.challenge.as_ref() {
                         if self.tick_no % 45 == 0 {
@@ -6750,14 +6750,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         if exp > 0 {
                             // (no upper limit: F-55689)
                             self.game.rep += exp;
+                            // (COP_EVADE's reward is given at once, +9 = 1 - F-67002: AddExperience posts
+                            // EXPERIENCE_EVENT then)
+                            self.game.career.event(career::Ev::Rep(self.game.rep));
                             self.game.show_message(&format!("YOU ESCAPED   REP +{}", exp));
                         } else {
                             self.game.show_message("YOU ESCAPED");
                         }
-                        self.game.career.event(career::Ev::EscapedPolice);
-                            // (COP_EVADE's reward is given at once, +9 = 1 - F-67002: AddExperience posts
-                            // EXPERIENCE_EVENT then)
-                            self.game.career.event(career::Ev::Rep(self.game.rep));
+                        // (PLAYER_LOSE_POLICE's MISSION_EVENT COP_EVADE: F-22530)
+                        self.game.career.event(career::Ev::Str("MISSION_EVENT", "COP_EVADE"));
                     }
                     Some(police::Event::Ticket(f)) => {
                         // (StateTicket's enter, F-14125: the bust bits 0x28 on a car not damaged out -
@@ -6957,7 +6958,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     // (PAYBACK_COMPLETE comes with the last of the legs asked for: `mc4_mission_pay`)
                     if failed.is_none() && (kind == game::RaceKind::Delivery || std::mem::take(&mut self.game.career.payback_done)) {
-                        self.game.career.event(if kind == game::RaceKind::Delivery { career::Ev::Delivery } else { career::Ev::Payback });
+                        if kind == game::RaceKind::Delivery {
+                            self.game.career.event(career::Ev::Delivery);
+                        } else {
+                            self.game.career.event(career::Ev::Str("PAYBACK_COMPLETE", "be_payback"));
+                        }
                     }
                     match failed {
                         // (in the game's words: DELIVERY SUCCESSFUL / DELIVERY FAILURE, PAYBACK SUCCESSFUL / PAYBACK FAILED)
@@ -7053,6 +7058,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.series_first = true;
                     }
                     self.game.career.event(career::Ev::Race { district: &district, place, hookman, class: &class, race: &race_id, beat_goal });
+                    // (the MISSION_EVENT of the man raced: his story CORE's - `Career::core_race_end` - or,
+                    // after his red light race won and not damaged out, REDLIGHT_GH_01's man's
+                    // RED_LIGHT_GH_01_COMPLETE - `<d>_redlight_hk1` 0x69a5..0x6a23)
+                    let s_man = self.game.man_mission.take();
+                    if hookman {
+                        let clean = self.vehicles.player().map_or(true, |p| p.state.damage < 1.0);
+                        if race_id.eq_ignore_ascii_case(crate::althk::REDLIGHT_RACE_ID) {
+                            if place == 1 && clean {
+                                self.game.career.event(career::Ev::Str("MISSION_EVENT", "RED_LIGHT_GH_01_COMPLETE"));
+                            }
+                        } else if let Some(m) = s_man {
+                            self.game.career.core_race_end(&m, place, clean, self.game.rep);
+                        }
+                    }
                     // (a finished race is an unlocked race: `mc4`)
                     self.game.mc4_race_finished(&race_id);
                     // (step 23: the race-end statistics, F-98556)
@@ -7081,6 +7100,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     // a hangout's series: the winner's tally; three wins end it, else the next race
                     let mut s15_series_done: Option<(String, usize)> = None;
+                    let mut s_series_won: Option<(Option<String>, String)> = None;
                     if let Some(sr) = self.game.series.as_mut() {
                         let winner = res.first().map(|r| if r.0.starts_with("YOU") { "YOU".to_string() } else { r.0.clone() }).unwrap_or_default();
                         match sr.wins.iter_mut().find(|w| w.0 == winner) {
@@ -7092,6 +7112,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         match over {
                             Some(w) => {
                                 self.game.next_event_race = None;
+                                if w == "YOU" {
+                                    s_series_won = Some((sr.story.as_ref().map(|s| s.0.clone()), sr.key.clone()));
+                                }
                                 if w == "YOU" && sr.story.is_none() {
                                     // (SERIES_COMPLETE: the event of the hangout completes at the
                                     // difficulty chosen there - its reward is the panel's
@@ -7111,6 +7134,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 log::info!("series {}: tally {:?}, next race {:?}", sr.key, sr.wins, self.game.next_event_race);
                             }
                         }
+                    }
+                    if let Some((story, key)) = s_series_won {
+                        self.game.career.series_won(story.as_deref(), &key);
                     }
                     // the events that just completed: their counters and their rewards (F-67065)
                     let mut s15_done: Vec<(String, usize)> = s15_series_done.into_iter().collect();
@@ -12104,7 +12130,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             MenuAction::OpenGarage => {
-                self.game.career.event(career::Ev::Garage);
                 // (the garage does not repair the car by itself: it asks, before MANAGE VEHICLES /
                 // CUSTOMIZE VEHICLE / VEHICLE SHOWROOM for a dented car and before the way out for
                 // a wreck - `Game::mc4_repair_gate`; a car goes in, stands there and is put away

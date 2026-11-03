@@ -6646,6 +6646,9 @@ impl Game {
         let panel = (format!("{}{}", TT_PANEL, st("TIME_HEADER", "TIME")), vec![line("TARGET_TIME_FORMAT", "TARGET TIME: ", tt_clock(target)), line("YOUR_TIME_FORMAT", "YOUR TIME: ", ms.map_or("--:--.--".to_string(), tt_clock))], beaten);
         self.mission_results.insert(0, panel);
         self.career.tt_last = Some(beaten);
+        if beaten {
+            self.career.event(crate::career::Ev::Str("MISSION_EVENT", TIME_TRIALS[d].key));
+        }
         // (step 19d: form 56's banner for 3.5 s first - a run that was complete or failed;
         // `mc4_banner_page`)
         if ms.is_some() {
@@ -16648,6 +16651,7 @@ mod tests {
             g.career.call_delivered(call);
             assert_eq!((g.career.state_id_of(k), g.career.log_order().contains(&k)), (3, true), "{call}");
             g.career.event(Ev::Race { district: "Hollywood", place: 1, hookman: true, class: "TUNER", race, beat_goal: false });
+            g.career.core_race_end(call, 1, true, rep);
             g.rep = rep;
             g.career.event(Ev::Rep(rep));
         }
@@ -16702,6 +16706,10 @@ mod tests {
             let place = if winner == "YOU" { 1 } else { 2 };
             g.career.series_race(id, winner);
             g.career.event(crate::career::Ev::Race { district: "Hollywood", place, hookman: true, class: "MUSCLE", race: id, beat_goal: false });
+            // (the red light man's MISSION_EVENT after his race won, as main.rs posts it)
+            if place == 1 && id.eq_ignore_ascii_case(crate::althk::REDLIGHT_RACE_ID) {
+                g.career.mission_event("RED_LIGHT_GH_01_COMPLETE");
+            }
         };
         // (not by a blitz race)
         race(&mut g, "game/race/hollywood/blitz/hw_blitz_mb_01", "YOU");
@@ -16715,9 +16723,10 @@ mod tests {
         assert_eq!((races[0].as_str(), races.len(), need), ("hollywood/ordered/hw_ordered_mb_02", 3, 2));
         let r: Vec<String> = races.iter().map(|r| format!("game/race/{}", r)).collect();
         let progress = |g: &Game| g.career.save().missions["BESTOF_GH_04"].progress.clone();
-        // (one win, the series given up: nothing kept)
+        // (one win, the series given up: nothing kept - the condition is met by SERIES_COMPLETE
+        // alone, the wins are the series' own)
         race(&mut g, &r[0], "YOU");
-        assert_eq!(progress(&g), vec![1]);
+        assert_eq!(progress(&g), vec![0]);
         g.career.series_drop("BESTOF_GH_04");
         assert_eq!(progress(&g), vec![0]);
         // (the rival's second win ends it)
@@ -16730,6 +16739,8 @@ mod tests {
         race(&mut g, &r[0], "YOU");
         race(&mut g, &r[1], "GH_04");
         race(&mut g, &r[2], "YOU");
+        assert!(!g.career.mission_complete("BESTOF_GH_04"), "not before the series is won");
+        g.career.series_won(Some("BESTOF_GH_04"), "BESTOF_GH_04");
         assert!(g.career.mission_complete("BESTOF_GH_04"));
         let saved = g.career.save();
         let mut c = crate::career::Career::load(&data_dir());
@@ -17178,6 +17189,7 @@ mod tests {
         assert!(!g.mc4_gps_enabled());
         g.career.call_delivered("RACE_GH_06");
         g.career.event(Ev::Race { district: "Hollywood", place: 1, hookman: true, class: "TUNER", race: "game/Race/Hollywood/Ordered/hw_ordered_jp_11", beat_goal: false });
+        g.career.core_race_end("RACE_GH_06", 1, true, 100);
         g.rep = 100;
         g.career.event(Ev::Rep(100));
         assert!(!g.mc4_gps_enabled(), "RACE_GH_02 waits for its call");
@@ -17191,6 +17203,7 @@ mod tests {
         // RACE_GH_02 complete: GARAGE_HOLLYWOOD and REP_ON_HW_STRIP (bAutoStart) have no call;
         // RACE_GH_02_CORE plays REP_ON_STRIP_GARAGE
         g.career.event(Ev::Race { district: "Hollywood", place: 1, hookman: true, class: "TUNER", race: "game/Race/Hollywood/Ordered/hw_ordered_ds_02", beat_goal: false });
+        g.career.core_race_end("RACE_GH_02", 1, true, 260);
         g.rep = 260;
         g.career.event(Ev::Rep(260));
         assert!(g.career.mission_complete("RACE_GH_02"));
@@ -17198,7 +17211,7 @@ mod tests {
         assert_eq!(scenes(&g), vec!["REP_ON_HW_STRIP".to_string()]);
         // the garage: GARAGE_HOLLYWOOD complete puts REDLIGHT_GH_01 at READY_TO_START (not in
         // the log); its event script at the garage's door plays the intro and moves it on
-        g.career.event(Ev::Garage);
+        g.career.event(Ev::Str("LOCATION_EVENT", "hw_garage"));
         let k = g.career.mission_no("REDLIGHT_GH_01").unwrap();
         assert!(g.career.mission_complete("GARAGE_HOLLYWOOD"));
         assert_eq!((g.career.state_id_of(k), g.career.log_order().contains(&k)), (2, false));
@@ -18225,7 +18238,7 @@ mod tests {
         g.mc4_s23_tick(0.016, S23In::default());
         assert_eq!(g.money, -PURSE_CAP);
         g.money = 12_345;
-        g.career.event(crate::career::Ev::EscapedPolice);
+        g.career.event(crate::career::Ev::Str("MISSION_EVENT", "COP_EVADE"));
         g.mc4_s23_tick(0.016, S23In::default());
         assert_eq!(g.career.stats.get("tPUR").copied(), Some(12_345), "an escape is not money");
         // (the flush: one second at 20 m/s in free roam)

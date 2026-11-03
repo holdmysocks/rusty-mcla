@@ -906,6 +906,9 @@ pub struct Game {
     /// ... and his difficulty (mcHookman_GetDifficulty: a slot man's Easy / Medium / Hard from
     /// districtSlots.lst, a red light / freeway man's draw) - generic_local_hookman's +3100
     pub man_diff: Option<i32>,
+    /// ... and the mission whose man he is (his core posts its MISSION_EVENT after the race:
+    /// `Career::core_race_end`)
+    pub man_mission: Option<String>,
     /// the race scripts' opponent pick (cars, drivers, set-ups - oppick.rs; its draws come from the
     /// career's generator, `oppick::career_rng`)
     pub oppick: crate::oppick::OpPick,
@@ -1485,6 +1488,7 @@ impl Game {
             grid_rivals: Vec::new(),
             man_mod: None,
             man_diff: None,
+            man_mission: None,
             oppick: Default::default(),
             grid_diff: None,
             mission_races: Vec::new(),
@@ -7160,6 +7164,8 @@ impl Game {
                         self.ability_pick = Some(self.ability_sel);
                         self.car_x.ability = Some(self.ability_sel);
                         self.dirty = true;
+                        // (the garage's ability select posts ABILITY_EVENT ABILITY_EQUIPPED: F-73337)
+                        self.career.event(crate::career::Ev::Str("ABILITY_EVENT", "ABILITY_EQUIPPED"));
                         if let Some((m, c)) = self.garage_stack.pop() {
                             self.garage_menu = m;
                             self.garage_cur = c;

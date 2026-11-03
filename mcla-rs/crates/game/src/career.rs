@@ -171,15 +171,11 @@ pub enum Ev<'a> {
     /// a race ended; `hookman`: it was started by challenging a roaming racer
     /// `race`: the definition's id; `beat_goal`: finished inside the event's target time
     Race { district: &'a str, place: usize, hookman: bool, class: &'a str, race: &'a str, beat_goal: bool },
-    Payback,
     Delivery,
-    Garage,
-    Ability,
-    EscapedPolice,
-    /// pulled up behind a roaming racer
-    FoundHookman,
-    /// the player is driving around in this district
-    District(&'a str),
+    /// mcEvent_PostEventStr(event, identifier): every open mcConditionString that waits for
+    /// this event with this identifier is met - Updated and Complete (F-77134: a byte for byte
+    /// compare of the identifier, case counts)
+    Str(&'a str, &'a str),
     Rep(i64),
     Money(i64),
 }
@@ -325,6 +321,9 @@ pub struct Career {
     pub car_configs: HashMap<String, String>,
     /// (step 22b) Downtown's pink slip: its event script has played its scene, its race follows
     pub dt_pink_due: bool,
+    /// HANGOUT_SERIES_DOWNTOWN's event script ran at the hangout: its series is named
+    /// HANGOUT_SERIES_DT_COMPLETE (`series_won`)
+    pub dt_series_story: bool,
     /// the location events posted this visit (cleared when the place is left or a race starts)
     pub visit_events: HashSet<String>,
 }
@@ -914,8 +913,6 @@ impl Career {
                 }
             }
             Ev::Delivery => *self.stats.entry("xCDL".into()).or_default() += 1,
-            // (`tPUR` is the purse statistic, mirrored from the money at every change - F-71075 / F-38145: never a count of escapes)
-            Ev::EscapedPolice => {}
             Ev::Money(m) => *self.stats.entry("k$WA".into()).or_default() += m.max(0),
             Ev::Rep(r) => {
                 self.rep = r;
@@ -923,9 +920,6 @@ impl Career {
             }
             _ => {}
         }
-        // a hookman win counts for one mission only: the oldest one waiting for it
-        let mut hookman_used = false;
-        let mut found_used = false;
         let active: Vec<usize> = self.order.clone();
         for i in active {
             if self.state[i].stage != Stage::Active {
@@ -940,7 +934,7 @@ impl Career {
             let ev_races: Vec<String> = self.event_of(&m).map(|e| e.races.clone()).unwrap_or_default();
             let mut ev = ev;
             let mut event_win: Option<String> = None;
-            if let Ev::Race { race, place, beat_goal, district, hookman, class } = ev {
+            if let Ev::Race { race, place, beat_goal, district, hookman: _, class } = ev {
                 if !ev_races.is_empty() {
                     let hit = ev_races.iter().find(|r| race.to_ascii_lowercase().ends_with(r.as_str())).cloned();
                     // (a time trial counts when its target time is beaten, not for being
@@ -972,31 +966,11 @@ impl Career {
                 if cur >= target {
                     continue;
                 }
-                let racing_id = m.id.starts_with("RACE_") || m.id.starts_with("BEAT_") || m.id.starts_with("REDLIGHT_");
                 let new = match (c, ev) {
-                    // (a RACE_ mission asks for the race, not the win: FIRST IMPRESSIONS / RACE HENRY was
-                    // stamped COMPLETE on second place in the recomp - `ng_mission_results`; BEAT_ and
-                    // REDLIGHT_ ask for the win)
-                    // (REDLIGHT_GH_01's man posts its event on the win of his red light race only: 0x69ea)
-                    (Cond::Event { event, .. }, Ev::Race { place, hookman: true, race, .. }) if event == "MISSION_EVENT" && racing_id && !hookman_used && (place == 1 || m.id.starts_with("RACE_")) && (!m.id.starts_with("REDLIGHT_") || race.eq_ignore_ascii_case(crate::althk::REDLIGHT_RACE_ID)) => {
-                        // both steps of "meet him, then race him" are done by the same race
-                        if oi + 1 == m.objectives.len() {
-                            hookman_used = true;
-                        }
-                        cur + 1
-                    }
-                    (Cond::Event { event, .. }, Ev::FoundHookman) if event == "MISSION_EVENT" && m.id.starts_with("FIND_") && m.id != "FIND_SH_02C" && !found_used => {
-                        found_used = true;
-                        cur + 1
-                    }
-                    (Cond::Event { event, .. }, Ev::EscapedPolice) if event == "MISSION_EVENT" && m.id.contains("POLICE") => cur + 1,
-                    (Cond::Event { event, .. }, Ev::Race { place: 1, district, .. }) if event == "MISSION_EVENT" && !racing_id && !m.id.starts_with("FIND_") && !m.id.contains("POLICE") && (!ev_races.is_empty() || same_district(&m.district, district)) => cur + 1,
-                    // (a tournament with races is completed by tournament_race on the points, not per race)
-                    (Cond::Event { event, .. }, Ev::Race { place: 1, district, .. }) if matches!(event.as_str(), "SERIES_COMPLETE" | "TOURNAMENT_COMPLETE" | "TOURNAMENT_COMPLETE_HARD" | "WAGER_RACE_COMPLETE") && !(event.starts_with("TOURNAMENT_COMPLETE") && !ev_races.is_empty()) && (!ev_races.is_empty() || same_district(&m.district, district)) => cur + 1,
-                    (Cond::Event { event, .. }, Ev::Payback) if event == "PAYBACK_COMPLETE" => cur + 1,
-                    (Cond::Event { event, .. }, Ev::Garage) if event == "LOCATION_EVENT" && m.id.starts_with("GARAGE") => cur + 1,
-                    (Cond::Event { event, .. }, Ev::District(d)) if event == "LOCATION_EVENT" && !m.id.starts_with("GARAGE") && same_district(&m.district, d) => cur + 1,
-                    (Cond::Event { event, .. }, Ev::Ability) if event == "ABILITY_EVENT" => cur + 1,
+                    // (mcConditionString, F-77134: the posted event with its identifier, nothing else - the
+                    // story cores, hangouts, tournaments, the police and the garage post the original's
+                    // strings: `CORE_POSTS`, `MEET_POSTS`, `SERIES_NAMES`, `tournament_race`)
+                    (Cond::Event { event, ident }, Ev::Str(e, id)) if event == e && ident == id => target,
                     (Cond::TallyRace { district, min_place, .. }, Ev::Race { place, district: d, .. }) if (*min_place == 0 || place as u32 <= *min_place) && same_district(district, d) => cur + 1,
                     // (from the baseline armed with the mission: step 20)
                     (Cond::Stat { stat, .. }, _) => self.ext_stat_progress(i, oi, stat, target),
@@ -1219,26 +1193,26 @@ impl Career {
                 return Some(format!("{} POINTS   BEST RIVAL {}", mine, rival));
             }
             if mine >= rival {
-                set(st, 1);
                 st.pts.clear();
-                // (TOURNAMENT_COMPLETE with the event's name, and TOURNAMENT_COMPLETE_HARD only
+                // (TOURNAMENT_COMPLETE with the event's name, and TOURNAMENT_COMPLETE_HARD as well
                 // when the tournament was entered on Hard: F-66541 A-25857..A-17203)
-                let done = self.missions[i].objectives[oi].conds.first().and_then(|c| match c {
-                    Cond::Event { event, ident } => Some((ident.clone(), event.ends_with("_HARD"))),
-                    _ => None,
-                });
-                if let Some((ident, hard)) = done {
-                    let diff = self.stats.get(&format!("tour_diff:{}", ident.to_ascii_lowercase())).copied().map_or(if hard { 2 } else { 1 }, |d| d.clamp(0, 3) as usize);
-                    self.completed_events.push((ident, diff));
-                    if hard && diff != 2 {
-                        // (won, but not the tournament this mission waits for)
-                        st.won.clear();
-                        set(st, 0);
-                    }
-                }
+                let (ident, hard) = match self.missions[i].objectives[oi].conds.first() {
+                    Some(Cond::Event { event, ident }) => (ident.clone(), event.ends_with("_HARD")),
+                    _ => (String::new(), false),
+                };
+                let diff = self.stats.get(&format!("tour_diff:{}", ident.to_ascii_lowercase())).copied().map_or(if hard { 2 } else { 1 }, |d| d.clamp(0, 3) as usize);
+                self.completed_events.push((ident.clone(), diff));
                 self.tour_decided = Some(true);
                 if let Some(t) = self.tour_table.as_mut() {
                     t.decided = Some(true);
+                }
+                self.event(Ev::Str("TOURNAMENT_COMPLETE", &ident));
+                if diff == 2 {
+                    self.event(Ev::Str("TOURNAMENT_COMPLETE_HARD", &ident));
+                }
+                // (won, but not the tournament this mission waits for: it is run again)
+                if self.state[i].stage != Stage::Complete {
+                    self.state[i].won.clear();
                 }
                 return Some(format!("TOURNAMENT WON   {} POINTS TO {}", mine, rival));
             }
@@ -1608,7 +1582,6 @@ impl Career {
         for step in 0..400 {
             let before = self.completed();
             let d = districts[step % districts.len()];
-            self.event(Ev::FoundHookman);
             // win whatever the missions ask for, plus an ordinary race
             for (r, _) in self.mission_races() {
                 let full = format!("game/race/{}", r);
@@ -1616,12 +1589,15 @@ impl Career {
             }
             self.event(Ev::Race { district: d, place: 1, hookman: true, class: classes[step % classes.len()], race: "", beat_goal: false });
             self.event(Ev::Race { district: "Freeway", place: 1, hookman: false, class: "TUNER", race: "", beat_goal: false });
-            self.event(Ev::District(d));
-            self.event(Ev::Garage);
-            self.event(Ev::Ability);
-            self.event(Ev::Payback);
+            // (and post every string an open mission waits for)
+            let want: Vec<(String, String)> = self.order.iter().flat_map(|&i| self.missions[i].objectives.iter().filter_map(|r| match r.conds.first() {
+                Some(Cond::Event { event, ident }) => Some((event.clone(), ident.clone())),
+                _ => None,
+            })).collect();
+            for (e, id) in &want {
+                self.event(Ev::Str(e, id));
+            }
             self.event(Ev::Delivery);
-            self.event(Ev::EscapedPolice);
             self.event(Ev::Money(20_000));
             rep = (rep + 300).min(crate::catalog::MAX_REP);
             self.event(Ev::Rep(rep));
@@ -1882,41 +1858,53 @@ impl Career {
     /// mcEvent_PostEventStr("MISSION_EVENT", ident) from a script (step 23: FIND_SH_02C_CORE
     /// 0x1361): the objectives of the open missions that wait for it are met.
     pub fn mission_event(&mut self, ident: &str) {
-        for k in 0..self.order.len() {
-            let i = self.order[k];
-            let m = self.missions[i].clone();
-            for (oi, r) in m.objectives.iter().enumerate() {
-                if let Some(c @ Cond::Event { event, ident: id }) = r.conds.first() {
-                    if event == "MISSION_EVENT" && id.eq_ignore_ascii_case(ident) {
-                        let t = self.target(&m, c);
-                        if let Some(p) = self.state[i].progress.get_mut(oi) {
-                            *p = (*p).max(t);
-                        }
-                    }
-                }
-            }
-        }
+        self.event(Ev::Str("MISSION_EVENT", ident));
         let rep = self.rep;
         self.event(Ev::Rep(rep));
     }
 
     pub fn pink_slip_won(&mut self, ident: &str) {
-        for k in 0..self.order.len() {
-            let i = self.order[k];
-            let m = self.missions[i].clone();
-            for (oi, r) in m.objectives.iter().enumerate() {
-                if let Some(c @ Cond::Event { event, ident: id }) = r.conds.first() {
-                    if event == "PINK_SLIP_COMPLETE" && id.eq_ignore_ascii_case(ident) {
-                        let t = self.target(&m, c);
-                        if let Some(p) = self.state[i].progress.get_mut(oi) {
-                            *p = (*p).max(t);
-                        }
-                    }
-                }
-            }
-        }
+        self.event(Ev::Str("PINK_SLIP_COMPLETE", ident));
         let rep = self.rep;
         self.event(Ev::Rep(rep));
+    }
+
+    /// The story CORE's MISSION_EVENT after the race against its man (`CORE_POSTS`): `place`
+    /// the player's, `clean` the race finished neither damaged out nor arrested, `rep` the
+    /// reputation with the race's paid: the race is paid (GENERIC_RACE_COMPLETE) before the core
+    /// posts, so a mission it starts takes its Experience baseline from it.
+    pub fn core_race_end(&mut self, mission: &str, place: usize, clean: bool, rep: i64) {
+        let Some(&(_, ident, win)) = CORE_POSTS.iter().find(|c| c.0.eq_ignore_ascii_case(mission)) else { return };
+        if clean && (!win || place == 1) {
+            log::info!("career: {} posts MISSION_EVENT {}", mission, ident);
+            // (the Rep event itself follows with the results)
+            self.rep = rep;
+            self.event(Ev::Str("MISSION_EVENT", ident));
+        }
+    }
+
+    /// The story CORE's MISSION_EVENT at the meeting with its man (`MEET_POSTS`).
+    pub fn core_meet(&mut self, mission: &str) {
+        if let Some(&(_, ident)) = MEET_POSTS.iter().find(|c| c.0.eq_ignore_ascii_case(mission)) {
+            self.mission_event(ident);
+        }
+    }
+
+    /// A series won by the player: SERIES_COMPLETE with its name (OrderedSeriesCore's +3208) -
+    /// a story mission's from its script (`SERIES_NAMES`), a hangout's `<hangout>_series`
+    /// (local_hangout_core), Downtown's under HANGOUT_SERIES_DOWNTOWN's event script
+    /// HANGOUT_SERIES_DT_COMPLETE (HANGOUT_SERIES_DOWNTOWN_HANGOUT_ON_ENTER sets +3208 so).
+    pub fn series_won(&mut self, story: Option<&str>, key: &str) {
+        let name = match story {
+            Some(id) => match SERIES_NAMES.iter().find(|c| c.0.eq_ignore_ascii_case(id)) {
+                Some(&(_, n)) => n.to_string(),
+                None => return,
+            },
+            None if key == "dt_local_hangout1_series" && std::mem::take(&mut self.dt_series_story) => "HANGOUT_SERIES_DT_COMPLETE".to_string(),
+            None => key.to_string(),
+        };
+        log::info!("career: SERIES_COMPLETE {}", name);
+        self.event(Ev::Str("SERIES_COMPLETE", &name));
     }
 
     /// A Mission reward (`state` as the tables write it without '_': READYTOSTART ...).
@@ -1997,6 +1985,80 @@ pub struct TourTable {
     pub decided: Option<bool>,
     pub last: bool,
 }
+
+/// The story CORE scripts' MISSION_EVENT after the race against their man
+/// (`Game/Career/Story/<ID>_CORE.sco`, South Central's `sc/Career/Story/`): (mission, identifier,
+/// only on a win). Missions on no list (BEAT_GH_04_MUSCLE, RACE_SH_01, ...) keep their row. Every core posts
+/// after a finished race - not damaged out (Race_IsDamagedOut), not arrested
+/// (Race_HasBeenArrested), the results' +3144 nought. The generic core (BEAT_SH_03_CORE
+/// 0x3d6f..0x3dc7, and the fourteen built on it, which pass their identifier as an argument)
+/// and BEAT_GH_04_MUSCLE (0x2f6a..0x2fb2), BEAT_GH_05_TUNER, BEAT_SH_02_DCLASS and
+/// BEAT_SH_04_BCLASS ask for the player's place (results +164) 1 as well; RACE_GH_02,
+/// RACE_SH_01 (its identifier RACE_SH_02_RACE_COMPLETE), BEAT_SH_04B and RACE_GH_06 post after
+/// any finished race.
+pub const CORE_POSTS: [(&str, &str, bool); 23] = [
+    ("BEAT_GH_04_MUSCLE", "BEAT_GH_04_MUSCLE_RACE_COMPLETE", true),
+    ("BEAT_GH_05_TUNER", "BEAT_TUNER_GH_05_RACE_COMPLETE", true),
+    ("BEAT_GH_26_SUV", "BEAT_GH_26_SUV_RACE_COMPLETE", true),
+    ("BEAT_SH_02_BCLASS", "BEAT_SH_02_BCLASS_RACE_COMPLETE", true),
+    ("BEAT_SH_02_CCLASS", "BEAT_SH_02_CCLASS_RACE_COMPLETE", true),
+    ("BEAT_SH_02_DCLASS", "BEAT_SH_02_DCLASS_RACE_COMPLETE", true),
+    ("BEAT_SH_03", "BEAT_SH_03_RACE_COMPLETE", true),
+    ("BEAT_SH_03_ACLASS", "BEAT_SH_03_ACLASS_RACE_COMPLETE", true),
+    ("BEAT_SH_03_CCLASS", "BEAT_SH_03_CCLASS_RACE_COMPLETE", true),
+    ("BEAT_SH_04", "BEAT_SH_04_RACE_COMPLETE", true),
+    ("BEAT_SH_04B", "BEAT_SH_04B_RACE_COMPLETE", false),
+    ("BEAT_SH_04_BCLASS", "BEAT_SH_04_BCLASS_RACE_COMPLETE", true),
+    ("BEAT_SH_04_MOTORCYCLE", "BEAT_SH_04_MOTORCYCLE_COMPLETE", true),
+    ("BEAT_SH_05_ACLASS", "BEAT_SH_05_ACLASS_COMPLETE", true),
+    ("EXOTIC_CHAMP", "EXOTIC_CHAMP_OBJ_01_COMPLETE", true),
+    ("LUXURY_CHAMP", "LUXURY_CHAMP_OBJ_01_COMPLETE", true),
+    ("MOTORCYCLE_CHAMP", "MOTO_CHAMP_OBJ_01_COMPLETE", true),
+    ("MUSCLE_CHAMP", "MUSCLE_CHAMP_OBJ_01_COMPLETE", true),
+    ("TUNER_CHAMP", "TUNER_CHAMP_OBJ_01_COMPLETE", true),
+    ("RACE_GH_02", "RACE_GH_02_RACE_COMPLETE", false),
+    ("RACE_GH_06", "RACE_GH_06_COMPLETE", false),
+    ("RACE_SH_01", "RACE_SH_02_RACE_COMPLETE", false),
+    ("RACE_SH_04_MOTORCYCLE", "RACE_SH_04_MOTORCYCLE_COMPLETE", true),
+];
+
+/// The story CORE scripts that post their MISSION_EVENT at the meeting with their man, after
+/// its scene (mcHookman_SetState, Racer_Activate, then the event): the FIND_ cores and
+/// BEAT_SH_05_CORE. (FIND_SH_02C's is posted at its place: `mc4_find02c_meet`.)
+pub const MEET_POSTS: [(&str, &str); 7] = [
+    ("FIND_SH_01", "FIND_SH_01_OBJ_01_COMPLETE"),
+    ("FIND_SH_01B", "FIND_SH_01B_OBJ_01_COMPLETE"),
+    ("FIND_SH_02", "FIND_SH_02_OBJ_01_COMPLETE"),
+    ("FIND_SH_02B", "FIND_SH_02B_OBJ_01_COMPLETE"),
+    ("FIND_SH_03", "FIND_SH_03_OBJ_01_COMPLETE"),
+    ("FIND_SH_03B", "FIND_SH_03B_OBJ_01_COMPLETE"),
+    ("BEAT_SH_05", "BEAT_SH_05_COMPLETE"),
+];
+
+/// The series name each story script gives OrderedSeriesCore (+3208), posted with
+/// SERIES_COMPLETE when the player wins it. DISTRICT_CHAMPS waits for three of them.
+pub const SERIES_NAMES: [(&str, &str); 20] = [
+    ("BEAT_SH_02_EXOTIC", "BEAT_SH_02_EXOTIC_SERIES"),
+    ("BESTOF_GH_04", "BESTOF_GH_04_SERIES"),
+    ("BESTOF_GH_05", "BESTOF_GH_05_SERIES"),
+    ("BESTOF_GH_22", "BESTOF_GH_22_SERIES"),
+    ("BESTOF_GH_26", "BESTOF_GH_26_SERIES"),
+    ("BESTOF_GH_27", "BESTOF_GH_27_SERIES"),
+    ("BESTOF_GH_31", "BESTOF_GH_31_SERIES"),
+    ("BESTOF_SH_02", "BESTOF_SH_02_SERIES"),
+    ("BESTOF_SH_03", "BESTOF_SH_03_SERIES"),
+    ("BESTOF_SH_03_LUXURY", "BESTOF_SH_03_LUXURY_SERIES"),
+    ("BESTOF_SH_05", "BESTOF_SH_05_SERIES"),
+    ("CITY_CHAMP", "CITY_CHAMP_SERIES"),
+    ("DISTRICT_CHAMPS_BEACHES", "DISTRICT_CHAMPS_BEACHES_SERIES"),
+    ("DISTRICT_CHAMPS_DOWNTOWN", "DISTRICT_CHAMPS_DOWNTOWN_SERIES"),
+    ("DISTRICT_CHAMPS_HILLS", "DISTRICT_CHAMPS_HILLS_SERIES"),
+    ("REPEAT_BESTOF_BEACHES", "REPEAT_BESTOF_BE_SERIES"),
+    ("REPEAT_BESTOF_DOWNTOWN", "REPEAT_BESTOF_DT_SERIES"),
+    ("REPEAT_BESTOF_HILLS", "REPEAT_BESTOF_HL_SERIES"),
+    ("REPEAT_BESTOF_HOLLYWOOD", "REPEAT_BESTOF_HW_SERIES"),
+    ("REPEAT_BESTOF_SC", "REPEAT_BESTOF_SC_SERIES"),
+];
 
 pub const STORY_SECOND_OBJECTIVE: [&str; 4] = ["BEAT_SH_02_EXOTIC", "BESTOF_SH_05", "CITY_CHAMP", "RACE_SH_01"];
 
@@ -2543,10 +2605,18 @@ impl Career {
             if id == "HANGOUT_PINKSLIP_DOWNTOWN" {
                 self.dt_pink_due = true;
             }
+            if id == "HANGOUT_SERIES_DOWNTOWN" {
+                self.dt_series_story = true;
+            }
             if to == 3 && st == 2 {
                 self.enter_checking(i);
             }
             log::info!("career: {} at {} plays {}", id, ev, scene);
+            // (GARAGE_BEACHES_PAYBACK_ON_ENTER posts its objective once the payback's intro is
+            // over - 0x6a0; here as the scene is started)
+            if id == "GARAGE_BEACHES" {
+                self.mission_event("GARAGE_BEACHES_OBJ_01_COMPLETE");
+            }
             return Some(scene.to_string());
         }
         None
@@ -2566,6 +2636,103 @@ impl Career {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every mcConditionString of the missions is met by a string the port posts as the original
+    /// does: the cores' (`CORE_POSTS`, `MEET_POSTS`, `SERIES_NAMES`), the places' LOCATION_EVENT,
+    /// the hangouts' series and pink slips, the tournaments' and time trials' keys, and the few
+    /// fixed ones; the objectives the CORE scripts satisfy themselves (`STORY_SECOND_OBJECTIVE`)
+    /// aside. (The 135 mission files hold 102 such conditions; 101 are on the mission lists and
+    /// South Central's. Of the others, BESTOF_SH_01_MUSCLE and BESTOF_SH_01_TUNER wait for series
+    /// no script names.)
+    /// The story cores' rules: the generic core asks for the win (BEAT_SH_04 on second place:
+    /// nothing), BEAT_SH_04B's own core for a finished race only; a damaged-out race posts
+    /// nothing; the identifier is compared byte for byte (F-77134).
+    #[test]
+    fn story_cores_post_by_their_rules() {
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        if !std::path::Path::new(&dir).join("tune/career").is_dir() {
+            return;
+        }
+        let mut c = Career::load(&dir);
+        c.new_game();
+        let mut s = c.save();
+        for id in ["BEAT_SH_04", "BEAT_SH_04B", "BEAT_SH_05_ACLASS"] {
+            let mut st = MState::default();
+            st.stage = Stage::Active;
+            s.missions.insert(id.to_string(), st);
+            s.order.push(id.to_string());
+        }
+        c.restore(&s);
+        c.core_race_end("BEAT_SH_04", 2, true, 0);
+        c.core_race_end("BEAT_SH_04B", 2, true, 0);
+        c.core_race_end("BEAT_SH_05_ACLASS", 1, false, 0);
+        assert!(c.mission_active("BEAT_SH_04") && c.mission_complete("BEAT_SH_04B") && c.mission_active("BEAT_SH_05_ACLASS"));
+        c.mission_event("beat_sh_04_race_complete");
+        assert!(c.mission_active("BEAT_SH_04"), "case counts");
+        c.core_race_end("BEAT_SH_04", 1, true, 0);
+        assert!(c.mission_complete("BEAT_SH_04"));
+    }
+
+    #[test]
+    fn every_string_condition_has_its_poster() {
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        if !std::path::Path::new(&dir).join("tune/career").is_dir() {
+            return;
+        }
+        let c = Career::load(&dir);
+        let mut posted: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut add = |e: &str, i: &str| {
+            posted.insert((e.to_string(), i.to_string()));
+        };
+        for (_, i, _) in CORE_POSTS {
+            add("MISSION_EVENT", i);
+        }
+        for (_, i) in MEET_POSTS {
+            add("MISSION_EVENT", i);
+        }
+        for (_, i) in SERIES_NAMES {
+            add("SERIES_COMPLETE", i);
+        }
+        for t in &crate::mc4::TIME_TRIALS {
+            add("MISSION_EVENT", t.key);
+        }
+        for su in &crate::hangoutin::SETUPS {
+            add("LOCATION_EVENT", su.key);
+            add("SERIES_COMPLETE", &format!("{}_series", su.key));
+            add("PINK_SLIP_COMPLETE", su.key);
+        }
+        for su in &crate::garagein::SETUPS {
+            add("LOCATION_EVENT", su.key);
+        }
+        for i in ["COP_EVADE", "RED_LIGHT_GH_01_COMPLETE", "FIND_SH_02C_OBJ_01_COMPLETE", "HANGOUT_PINK_DT_OBJ_01_COMPLETE", "GARAGE_BEACHES_OBJ_01_COMPLETE"] {
+            add("MISSION_EVENT", i);
+        }
+        add("SERIES_COMPLETE", "HANGOUT_SERIES_DT_COMPLETE");
+        add("ABILITY_EVENT", "ABILITY_EQUIPPED");
+        add("PAYBACK_COMPLETE", "be_payback");
+        let (mut n, mut open) = (0, Vec::new());
+        for m in &c.missions {
+            for (k, r) in m.objectives.iter().enumerate() {
+                for cond in &r.conds {
+                    let Cond::Event { event, ident } = cond else { continue };
+                    n += 1;
+                    // (a tournament posts its own condition's identifier: `tournament_race`)
+                    if event.starts_with("TOURNAMENT_COMPLETE") && ident.ends_with("_tournament1") {
+                        continue;
+                    }
+                    if k == 0 && STORY_SECOND_OBJECTIVE.iter().any(|s| s.eq_ignore_ascii_case(&m.id)) && ident.ends_with("_OBJ_01_COMPLETE") {
+                        continue;
+                    }
+                    if !posted.contains(&(event.clone(), ident.clone())) {
+                        open.push(format!("{} {} {}", m.id, event, ident));
+                    }
+                }
+            }
+        }
+        open.sort();
+        assert_eq!(n, 101);
+        assert_eq!(open, Vec::<String>::new());
+    }
 
     /// Money text as the original writes it, F-36073 (language, currency flag) with its separator
     /// inserter F-33429, run unchanged offline (`mcla-rs/tools/career_reference/money_fx.py`, CSV in
