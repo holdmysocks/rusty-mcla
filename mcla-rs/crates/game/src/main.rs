@@ -8335,6 +8335,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 let i = crate::physics::vehsim::moments(car.params(), &vt.t);
                                 render_state.rot * (i * (render_state.rot.inverse() * render_state.ang_vel))
                             }),
+                            follow: None,
+                            bike_wiped: car.model.bike && self.crash_bits & 0x14 != 0,
                         };
                         let charge = render_state.veh.as_ref().map_or(0.0, |v| v.burn);
                         // the chooser's inputs (F-24075; boomcam::EventIn)
@@ -8397,7 +8399,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 if queued {
                                     how.blend = 0.0;
                                 }
-                                self.crash_cam.start(model_offset, &track_car, how);
+                                // (F-37740: a bike not exploding nor in water (F-12574) points the camera at the
+                                // rider's matrix copy, racer +704 (F-17180); else at the body's matrix)
+                                let rider = (car.model.bike && !self.crash_exploding && !car.state.in_water()).then(|| self.rider_off.matrix(seat_matrix(car, self.vehicles.render_alpha)));
+                                self.crash_cam.start(model_offset, &track_car, how, rider);
                                 // (F-37740's tail: the look-back slow motion released)
                                 let now = self.wipe_scale.min(self.ability.time_scale());
                                 self.warp_look.release(now);
@@ -8419,6 +8424,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             let now = self.wipe_scale.min(self.ability.time_scale());
                             self.warp_look.release(now);
                             lookback_scene(&mut self.look_scene, self.audio.as_mut(), false);
+                        }
+                        // (F-32386 refreshes the copy at racer +704 every frame while the wipeout timer runs)
+                        if self.crash_cam.follows_rider() && self.crash_timer > 0.0 {
+                            self.crash_cam.set_rider(self.rider_off.matrix(seat_matrix(car, self.vehicles.render_alpha)));
                         }
                         let out = if self.crash_cam.active() {
                             self.crash_cam.frame(&track_car, out, dt, sim_dt, &cam_level, gpu.config.width as f32 / gpu.config.height.max(1) as f32)
@@ -14190,6 +14199,17 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
 /// game.dat's DYNAMIC_MIXER_LOOKBACK (the mixer's fixed slot 5, F-50037 / F-84487): asked for every
 /// frame the look-back start passes (a refused start is tried again), stopped with its exit only
 /// when it was asked for.
+/// The matrix a car's driver sits at (the drivers' seat: the drawn pose, a bike's lean about its z).
+fn seat_matrix(c: &vehicles::CarInstance, alpha: f32) -> glam::Mat4 {
+    let pose = c.render_pose(alpha);
+    let m = glam::Mat4::from_rotation_translation(pose.rot, pose.pos);
+    if c.model.bike {
+        m * glam::Mat4::from_rotation_z(pose.lean)
+    } else {
+        m
+    }
+}
+
 fn lookback_scene(asked: &mut bool, audio: Option<&mut audio::Audio>, on: bool) {
     if !on && !*asked {
         return;

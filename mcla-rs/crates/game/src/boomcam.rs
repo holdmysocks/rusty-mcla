@@ -1372,6 +1372,12 @@ pub struct CrashCam {
     time: f32,
     /// the place's XZ rate has its load value (5, vt+16) until the first wipeout of a car
     used: bool,
+    /// F-37740 pointed the camera's matrix (+144) at the rider's copy (racer +704): a bike that
+    /// is not exploding nor in water (F-12574), with a rider; else the body's matrix (chassis +304)
+    rider: bool,
+    /// the copy at racer +704, refreshed by F-17180 at the start and by F-32386 every frame while
+    /// the wipeout timer runs (the ragdoll's matrix, else the character's, F-31677)
+    rider_mat: Option<(Mat3, Vec3)>,
 }
 
 /// Where F-37740 puts the wipeout camera and how it comes in.
@@ -1406,6 +1412,12 @@ impl CrashCam {
     pub fn active(&self) -> bool {
         self.phase != 0
     }
+    fn with_rider(&self, car: &TrackCar) -> TrackCar {
+        match (self.rider, self.rider_mat) {
+            (true, Some(m)) => TrackCar { follow: Some(m), ..*car },
+            _ => *car,
+        }
+    }
     /// The drive view comes back (a cut, F-53309), or the Damageout view has taken over.
     pub fn stop(&mut self) {
         self.phase = 0;
@@ -1414,7 +1426,22 @@ impl CrashCam {
     pub fn new_car(&mut self) {
         self.used = false;
     }
-    pub fn start(&mut self, model_offset: Vec3, car: &TrackCar, how: CrashStart) {
+    /// Whether the camera follows the rider's matrix (F-37740's bike branch).
+    pub fn follows_rider(&self) -> bool {
+        self.active() && self.rider
+    }
+    /// The rider's matrix copy (racer +704) refreshed (F-17180).
+    pub fn set_rider(&mut self, m: (Mat3, Vec3)) {
+        self.rider_mat = Some(m);
+    }
+    /// `rider`: F-37740's bike branch holds and F-17180 has a matrix (refreshed into racer +704
+    /// now); None: the body's matrix.
+    pub fn start(&mut self, model_offset: Vec3, car: &TrackCar, how: CrashStart, rider: Option<(Mat3, Vec3)>) {
+        self.rider = rider.is_some();
+        if rider.is_some() {
+            self.rider_mat = rider;
+        }
+        let car = &self.with_rider(car);
         let mut t = TrackTune::wipeout(model_offset);
         t.offset = how.offset;
         if !self.used {
@@ -1436,7 +1463,7 @@ impl CrashCam {
         if self.phase == 0 {
             return drive;
         }
-        let out = self.cam.update(&t, car, dt, dt_game, test, aspect);
+        let out = self.cam.update(&t, &self.with_rider(car), dt, dt_game, test, aspect);
         if self.phase == 1 {
             self.left -= dt;
             if self.left <= 0.0 {
@@ -1585,6 +1612,12 @@ pub struct TrackCar {
     pub grounded: usize,
     pub wheels: usize,
     pub ang_mom: Vec3,
+    /// the matrix the camera follows (+144) when it is not the car's own (rows as columns, then the
+    /// position): the thrown rider's copy, racer +704 (F-17180), for the wipeout camera of a bike
+    pub follow: Option<(Mat3, Vec3)>,
+    /// a motorcycle with chassis +592 & 0x14 (wiped out / damaged out): F-10185 sets the place
+    /// behind unit_xz(M.Z - the body's velocity)
+    pub bike_wiped: bool,
 }
 
 impl TrackCar {
@@ -1701,11 +1734,31 @@ impl TrackCam {
         *self = TrackCam { snap: true, track, offset, speed: if car.reverse_gear { 0.0 } else { car.speed }, app_xz, hill, t_off, t_on, off_ground, ..Default::default() };
     }
 
+    /// The point it tracks (F-10185): TrackTo through the followed matrix (the car's, or the
+    /// thrown rider's), its height capped at the tune's ModelOffset.y and the rest added along the
+    /// world's up, + VertOffset (`vert`, 0 after every event reset).
+    fn track_point(&self, car: &TrackCar, vert: f32) -> Vec3 {
+        let (m, origin) = car.follow.unwrap_or_else(|| (Mat3::from_quat(car.rot), car.pos));
+        let ty = if car.model_offset_y > self.track.y { self.track.y } else { car.model_offset_y };
+        let mut at = origin + m * Vec3::new(self.track.x, ty, self.track.z);
+        at.y += self.track.y - ty + vert;
+        at
+    }
+
     /// Where the camera wants to stand (F-10185): the Offset in the car's level heading
     /// (behind the motion after half a second in the air above 10 m/s), its y along the world's up.
     fn place(&self, car: &TrackCar, at: Vec3) -> Vec3 {
-        let m = Mat3::from_quat(car.rot);
-        let back = if car.air_time > 0.5 && car.speed > 10.0 && car.vel.length_squared() > 1e-4 { -car.vel.normalize() } else { m.z_axis };
+        let m = car.follow.map_or_else(|| Mat3::from_quat(car.rot), |f| f.0);
+        // (F-10185: a wiped-out bike first - M.Z less the body's velocity, laid flat; then the
+        // air rule; else M.Z)
+        let back = if car.bike_wiped {
+            let d = m.z_axis - car.vel;
+            Vec3::new(d.x, 0.0, d.z).normalize_or(m.z_axis)
+        } else if car.air_time > 0.5 && car.speed > 10.0 && car.vel.length_squared() > 1e-4 {
+            -car.vel.normalize()
+        } else {
+            m.z_axis
+        };
         let x = Vec3::Y.cross(back).normalize_or(m.x_axis);
         let zh = x.cross(Vec3::Y);
         at + x * self.offset.x + zh * self.offset.z + Vec3::Y * self.offset.y
@@ -1750,10 +1803,8 @@ impl TrackCam {
         // the point it tracks (F-10185): TrackTo through the whole car matrix, its height capped
         // at the tune's ModelOffset.y and the rest added along the world's up (+ VertOffset, 0
         // after every event reset)
-        let m = Mat3::from_quat(car.rot);
-        let ty = if car.model_offset_y > self.track.y { self.track.y } else { car.model_offset_y };
-        let mut at = car.pos + m * Vec3::new(self.track.x, ty, self.track.z);
-        at.y += self.track.y - ty;
+        let m = car.follow.map_or_else(|| Mat3::from_quat(car.rot), |f| f.0);
+        let at = self.track_point(car, 0.0);
         // the hill angle (F-66356): the slope under the wheels (its sign turned for a
         // camera ahead of the car), eased per frame by HillLerp into asin(s * HillMax) up or
         // asin(s * HillMin) down; none without ApproachOn. (HillLerp per 30 Hz
@@ -2697,7 +2748,7 @@ mod tests {
         let Some(t) = TrackTune::load(&data, "vp_aud_r8_08", "SSTurbo") else { return };
         assert!(!t.approach_on && t.base_app_xz == 12.0, "{t:?}");
         let none: SphereTest = &NO_WORLD;
-        let car0 = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 30.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (10.0, 1.2), nitro_view: 5.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO };
+        let car0 = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 30.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (10.0, 1.2), nitro_view: 5.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let mut c = TrackCam::default();
         c.set(&t, &car0, EV_SSTURBO, 0.0);
         let o = c.update(&t, &car0, 1.0 / 30.0, 1.0 / 30.0, none, 16.0 / 9.0);
@@ -2775,7 +2826,7 @@ mod tests {
         assert!(!burnout_ends(&fx, 1.0, 0.6, 0.8) && burnout_ends(&fx, 1.0, 0.6, 0.7) && burnout_ends(&fx, 0.0, 1.0, 2.0));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 25.0 };
-        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO };
+        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let o = d.frame(&data, "vp_aud_r8_08", &ein(1.0, 1.0, 2.0, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert!(d.running());
         // (blending in: between the chase view and the event view)
@@ -2824,7 +2875,7 @@ mod tests {
             return;
         }
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(0.0, 0.0, -15.0), speed: 15.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(0.0, 0.0, -15.0), speed: 15.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let dt = 1.0 / 60.0;
         let run = |i: EventIn, ray: bool| {
             let mut d = EventDirector::default();
@@ -2851,6 +2902,53 @@ mod tests {
     /// on the R8 snaps 6 m to the side the car slides toward at T = 0.75 x ModelOffset, lens 40,
     /// comes in over 0.25 s and keeps 6..10 m from T while the car slides away; the wipeout warper
     /// is at 0.1 after 0.2 s, held to 1.25 s, back to 1 by 1.35 s.
+    /// The wipeout camera of a thrown rider against the original (recording rf.0, ZX-14 wheelie into a wall,
+    /// 36 frames from the start to the stand-up): the matrix it follows is the rider's copy (F-37740 / F-17180),
+    /// the track point (+320) and the place before the hill (+688) of F-10185 with the bike's rule
+    /// back = unit_xz(M.Z - body velocity), per frame from the recorded inputs.
+    #[test]
+    fn bike_wipeout_camera_follows_the_rider() {
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        let mut worst = (0.0f32, 0.0f32);
+        for line in include_str!("testdata/bike_wipeout_cam_rf0.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let v = |i: usize| Vec3::new(h(w[i]), h(w[i + 1]), h(w[i + 2]));
+            let m = Mat3::from_cols(v(1), v(4), v(7));
+            let (pos, vel, mo_y, track, vert, offset) = (v(10), v(13), h(w[16]), v(17), h(w[20]), v(21));
+            let flags = u32::from_str_radix(w[24], 16).unwrap();
+            let (t_rec, p_rec) = (v(25), v(28));
+            let car = TrackCar {
+                pos: Vec3::ZERO,
+                rot: Quat::IDENTITY,
+                vel,
+                speed: 0.0,
+                reverse_gear: false,
+                steer: 0.0,
+                front_z: 0.0,
+                slope: None,
+                air_time: 0.0,
+                aero: 1.0,
+                model_offset_y: mo_y,
+                sst: (0.0, 1.0),
+                nitro_view: 0.0,
+                grounded: 0,
+                wheels: 2,
+                ang_mom: Vec3::ZERO,
+                follow: Some((m, pos)),
+                bike_wiped: flags & 0x14 != 0,
+            };
+            let c = TrackCam { track, offset, ..Default::default() };
+            let t = c.track_point(&car, vert);
+            let p = c.place(&car, t);
+            worst = (worst.0.max((t - t_rec).abs().max_element()), worst.1.max((p - p_rec).abs().max_element()));
+            n += 1;
+        }
+        assert_eq!(n, 36);
+        // (world coordinates near 800 m: one f32 step is 6e-5 m)
+        assert!(worst.0 < 2e-4 && worst.1 < 2e-4, "track point / place off by {worst:?}");
+    }
+
     #[test]
     fn crash_cameras() {
         let right = Vec3::X;
@@ -2861,10 +2959,10 @@ mod tests {
         assert_eq!(CrashStart::choose(1, false, false, 1.0, right, slide).blend, 0.0);
         assert_eq!(CrashStart::choose(4, true, false, 1.0, right, slide).blend, 0.0);
         let mo = Vec3::new(0.0, 0.708, 0.0);
-        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: slide, speed: slide.length(), reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 0.3, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO };
+        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: slide, speed: slide.length(), reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 0.3, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let drive = BoomOut { pos: Vec3::new(0.0, 2.0, 6.0), look: Vec3::ZERO, up: Vec3::Y, fov: 60.0 };
         let mut c = CrashCam::default();
-        c.start(mo, &car, CrashStart::choose(3, false, false, 1.0, right, slide));
+        c.start(mo, &car, CrashStart::choose(3, false, false, 1.0, right, slide), None);
         let dt = 1.0 / 60.0;
         let o = c.frame(&car, BoomOut { ..drive }, dt, dt, &NO_WORLD, 16.0 / 9.0);
         assert!(o.pos.distance(drive.pos) < 1.0, "blending in: {:?}", o.pos);
@@ -2942,7 +3040,7 @@ mod tests {
         let wall = |c: Vec3, r: f32| (c.z - r < -5.0).then(|| (-5.0 - (c.z - r), Vec3::Z));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let mut o = BoomOut { ..chase };
         let mut free = BoomOut { ..chase };
         let mut e = EventDirector::default();
@@ -3026,7 +3124,7 @@ mod tests {
         assert_eq!((t.offset, t.blend, t.dist, t.app_xz), (Vec3::new(-2.525, 0.0, -9.0), 1.5, (5.0, 10.0), (4.0, 9.0)));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let o = d.frame(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 59.9), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert!(!d.idle() && o.pos == chase.pos);
         let mut held = Vec::new();
