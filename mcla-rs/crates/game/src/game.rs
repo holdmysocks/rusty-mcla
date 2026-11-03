@@ -7139,7 +7139,8 @@ impl Game {
                             let mut v = self.car_dims(self.current_car);
                             // (place in the record, lowest and highest value)
                             let (at, lo, hi) = if self.garage_row == rim_row { (4, 12, 28) } else if self.garage_row == 9971 { (6, 0, 13) } else if self.garage_row == 9972 { (2, 0, 16) } else { (0, 0, 11) };
-                            let step = if at == 0 { -d } else { d };
+                            // (left lowers every figure's place, the ride height's too: up, as +3 is place 0)
+                            let step = d;
                             let axles: &[usize] = match self.dim_axle { 0 => &[0], 1 => &[1], _ => &[0, 1] };
                             let nv = (v[at + axles[0]] as isize + step).clamp(lo, hi) as u8;
                             // (garage.SetWheelDimension, F-81554: the figure set, the others moved until the wheel fits the

@@ -4777,11 +4777,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // outward, from the bead the tyre was built with (WheelModel::tyre_bead). A car without a set-up: its build's
                 // bead, as before. Traffic: none - VSAmbientTire. MCLA_TYRE_BEAD_OLD=1: none)
                 if let (Some(w), false, true) = (c.wheels.as_ref().or(c.model.wheels.as_ref()).or(self.wheels.as_ref()), c.is_ambient() || i >= 4, std::env::var("MCLA_TYRE_BEAD_OLD").is_err()) {
-                    // (only where the rim drawn is the set-up's: the front axle's bead equals the one the wheel was built with. The
-                    // player's chosen rim size is not fed into a set-up yet - then the built bead, as before. city.wgsl also draws
+                    // (only where the rim drawn is the set-up's: the front axle's bead equals the one the wheel was built with, or
+                    // the player's, whose set-up is its record's DIMENSIONS, the rim size chosen among them. city.wgsl also draws
                     // the rim at (0.406 + k) / built of its size: the original sizes a rim from its axle's diameter alone, 1.25 x
                     // rimR (F-43091), where the port's rim grows with the axle's tyre)
-                    let fit = c.setup.or(c.model.fit).filter(|f| !c.model.bike && (f.bead[0] + 0.406 - w.tyre_bead).abs() < 1e-4);
+                    let fit = c.setup.filter(|_| c.is_player).or(c.setup.or(c.model.fit).filter(|f| (f.bead[0] + 0.406 - w.tyre_bead).abs() < 1e-4)).filter(|_| !c.model.bike);
                     let k = if c.model.bike { 0.0 } else { fit.map_or(w.tyre_bead - 0.406, |f| f.bead[(i >= 2) as usize]) };
                     finish[4] = [w.tyre_bead, k, 1.0, 0.0];
                 }

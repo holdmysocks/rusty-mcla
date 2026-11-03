@@ -341,8 +341,9 @@ struct App {
     race_end_way: Option<f32>,
     /// the parts the car in the garage was last built with: a change shows at once
     garage_built: Option<(usize, vehicle_model::CarConfig, u8)>,
-    /// the player's car (its uid) and the wheel figures its set-up was last fitted from
-    player_dims: Option<(u32, [u8; 8])>,
+    /// the player's car (its uid) and the wheel figures its set-up was last fitted from (and whether it got one: a car
+    /// built again comes without it)
+    player_dims: Option<(u32, [u8; 8], bool)>,
     /// `--car-picture`: its frame over black, while the one over white is drawn
     carpic: carpic::Shots,
     garage_up: Vec3,
@@ -4701,11 +4702,13 @@ impl App {
             // figures - the garage's DIMENSIONS, ride height among them (`fit.offset` -> SuspensionOffset) - F-43091)
             if !self.game.borrowed && self.game.selected_car == self.game.current_car {
                 let dims = self.game.car_dims(self.game.current_car);
-                if let Some(uid) = self.vehicles.player().map(|c| c.uid).filter(|u| self.player_dims != Some((*u, dims))) {
+                if let Some(uid) = self.vehicles.player().filter(|c| self.player_dims != Some((c.uid, dims, c.setup.is_some()))).map(|c| c.uid) {
+                    let mut fed = false;
                     if let (Some(cfg), Some(p)) = (self.game.car_setup_cfg(self.game.current_car), self.vehicles.player_mut()) {
                         p.set_setup(&cfg);
+                        fed = p.setup.is_some();
                     }
-                    self.player_dims = Some((uid, dims));
+                    self.player_dims = Some((uid, dims, fed));
                 }
             }
             if !self.game.borrowed && self.game.selected_car == self.game.current_car {
