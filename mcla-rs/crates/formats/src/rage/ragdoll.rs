@@ -9,7 +9,8 @@
 //!    +180 -> drawable (+12 -> skeleton: +0 -> bones of 224 B, u16 count +20), +208 -> groups, +212 -> children,
 //!    +240 -> per-child principal moments (16 B each), +248 the pointer the collider keeps at +748,
 //!    +256 / +260 -> the two byte tables of part pairs (F-83435), +280 -> pose (+20 -> 64 B per bone),
-//!    +300 pair count, +302 groups, +303 children, +316 float (constraints when != 0)
+//!    +300 pair count, +302 groups, +303 children, +316 float (constraints when != 0), +320 the contacts' elasticity,
+//!    +0xec -> composite bound (one part per child: capsules and boxes for the rider)
 //! group G: +20 softness k, +24 / +28 / +32 / +36 limit fractions, +40 target rate, +44 velocity gain,
 //!    +48 position gain, +52 most torque, +56 -1 or > 0: the joint is parked, +60 mass,
 //!    +69 parent group (255 none), +70 first child, +71 children
@@ -99,6 +100,32 @@ impl RagBone {
     }
 }
 
+/// One part of the type's composite bound (T+0xec, type 12: +0x80 -> part bounds, +0x84 -> part matrices, u16 +0x92
+/// count), what the narrow phase reads of it (docs: work/ragdoll/contact/rider_contacts.md). Every number as the file
+/// has it.
+#[derive(Debug, Clone, Default)]
+pub struct RagPart {
+    /// bound +4: 0 sphere, 1 capsule, 3 box, 4 polyhedron
+    pub kind: u8,
+    /// +8: the bounding sphere's radius
+    pub radius: f32,
+    /// +0x10 / +0x20: the part's box (margin included)
+    pub max: [f32; 3],
+    pub min: [f32; 3],
+    /// +0x30
+    pub centroid: [f32; 3],
+    /// +0x70
+    pub margin: f32,
+    /// a sphere's or capsule's +0x80 (its radius) and a capsule's +0x90 (the length between the two centres)
+    pub round: f32,
+    pub length: f32,
+    /// material id (low byte: the game's material table, 0 default): a sphere's +0x90, a capsule's +0xd0; None for
+    /// a box or polyhedron (its id is not read here)
+    pub material: Option<u32>,
+    /// the file's part matrix (+0x84, 64 B; the run time rewrites its copy every tick)
+    pub matrix: [[f32; 4]; 4],
+}
+
 /// The fragment type of a character set, as the ragdoll build reads it.
 #[derive(Debug, Clone, Default)]
 pub struct RagdollType {
@@ -131,6 +158,10 @@ pub struct RagdollType {
     pub f316: f32,
     /// +307
     pub flags: u8,
+    /// +320: the elasticity the instance's contact callback writes into its contacts (F-22759)
+    pub f320: f32,
+    /// +0xec: the composite bound's parts, one per child (empty when the bound is missing or not a composite)
+    pub parts: Vec<RagPart>,
 }
 
 fn v4(rd: &Rd, o: usize) -> [f32; 4] {
@@ -241,7 +272,48 @@ pub fn parse_ragdoll_type(res: &Resource, t: usize) -> Option<RagdollType> {
             out.pairs.push((rd.u8(a + p), rd.u8(b + p)));
         }
     }
+    out.f320 = rd.f32(t + 320);
+    out.parts = composite_parts(&rd, t);
     Some(out)
+}
+
+/// The composite bound's parts (T+0xec).
+fn composite_parts(rd: &Rd, t: usize) -> Vec<RagPart> {
+    let mut out = Vec::new();
+    let Some(b) = rd.ptr(t + 0xec) else { return out };
+    if !rd.has(b, 0x94) || rd.u8(b + 4) != 12 {
+        return out;
+    }
+    let (Some(arr), Some(mats)) = (rd.ptr(b + 0x80), rd.ptr(b + 0x84)) else { return out };
+    let n = rd.u16(b + 0x92) as usize;
+    for k in 0..n {
+        let Some(p) = rd.ptr(arr + 4 * k) else {
+            out.push(RagPart::default());
+            continue;
+        };
+        if !rd.has(p, 0xd4) {
+            out.push(RagPart::default());
+            continue;
+        }
+        let kind = rd.u8(p + 4);
+        out.push(RagPart {
+            kind,
+            radius: rd.f32(p + 8),
+            max: v3(rd, p + 0x10),
+            min: v3(rd, p + 0x20),
+            centroid: v3(rd, p + 0x30),
+            margin: rd.f32(p + 0x70),
+            round: if kind <= 1 { rd.f32(p + 0x80) } else { 0.0 },
+            length: if kind == 1 { rd.f32(p + 0x90) } else { 0.0 },
+            material: match kind {
+                0 => Some(rd.u32(p + 0x90)),
+                1 => Some(rd.u32(p + 0xd0)),
+                _ => None,
+            },
+            matrix: if rd.has(mats + 64 * k, 64) { m4(rd, mats + 64 * k) } else { [[0.0; 4]; 4] },
+        });
+    }
+    out
 }
 
 /// The fragment type of a character set (`.r6`): root+20.
@@ -286,5 +358,39 @@ mod tests {
         assert!(t.bones.iter().all(|b| !b.dofs()[3..].iter().any(|&d| d)));
         assert_eq!(t.pairs, [(10, 4), (10, 2), (10, 1), (13, 4), (13, 2), (13, 1), (17, 19), (15, 16), (10, 8), (13, 8), (2, 9), (2, 12)]);
         assert_eq!(t.f316, 0.0);
+    }
+
+    /// The rider's composite bound (work/ragdoll/contact/rider_contacts.md, the bound table): 17 capsules and four
+    /// boxes (wrists, feet), the capsules of the "ragdoll" material (id 31), margins 0.04 / 0.01 / 0.015.
+    #[test]
+    fn rider_bound_table() {
+        let Some(res) = rider() else {
+            eprintln!("skipped: the rider's .r6 is not in the extracted data");
+            return;
+        };
+        let t = parse_character_ragdoll(&res).unwrap();
+        assert_eq!(t.parts.len(), 21);
+        let kinds: Vec<u8> = t.parts.iter().map(|p| p.kind).collect();
+        assert_eq!(kinds, [1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 1, 1, 1, 3, 1, 1, 1, 3, 1, 1, 3]);
+        assert_eq!(t.f320, 0.0);
+        for p in &t.parts {
+            match p.kind {
+                1 => {
+                    assert_eq!(p.material, Some(31));
+                    assert_eq!(p.margin.to_bits(), 0x3d23_d70a);
+                    // (the box: the radius across, half the length plus the radius along y)
+                    assert_eq!(p.max[0], p.round);
+                    assert!((p.max[1] - (p.round + 0.5 * p.length)).abs() < 1e-6);
+                }
+                _ => assert_eq!(p.material, None),
+            }
+        }
+        // spine00 (0.11787 / 0.06739), the thighs (0.07 / 0.4), a wrist box 0.04 x 0.15 x 0.08 with margin 0.01
+        assert_eq!((t.parts[0].round.to_bits(), t.parts[0].length.to_bits()), (0x3df1_66e0, 0x3d8a_0557));
+        assert_eq!((t.parts[15].round, t.parts[15].length), (0.07, 0.4));
+        assert_eq!((t.parts[9].max, t.parts[9].min, t.parts[9].margin), ([0.02, 0.075, 0.04], [-0.02, -0.075, -0.04], 0.01));
+        assert_eq!((t.parts[17].max, t.parts[17].margin), ([0.05, 0.03, 0.135], 0.015));
+        // (the file's part matrix of spine00: the capsule's axis along the model's x)
+        assert_eq!(t.parts[0].matrix[1][..3], [-1.0, 0.0, 0.0]);
     }
 }

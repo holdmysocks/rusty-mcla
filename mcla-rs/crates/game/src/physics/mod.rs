@@ -3,6 +3,7 @@
 pub mod agro;
 pub mod artic;
 pub mod artic_build;
+pub mod artic_collide;
 pub mod artic_pose;
 pub mod camprobe;
 pub mod car;
