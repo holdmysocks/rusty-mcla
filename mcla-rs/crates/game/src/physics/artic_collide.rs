@@ -160,7 +160,7 @@ pub struct RiderCity {
 /// F-74262's reach (4e-4 = 2 cm squared) and the refresh's drop depth (F-26862: -0.04).
 const NEAR2: f32 = f32::from_bits(0x39d1_b717);
 const DROP_DEPTH: f32 = f32::from_bits(0xbd23_d70a);
-/// The refresh's least age for the drift test (*0x828127F0 as the game's simulator stores it: 1).
+/// The refresh's least age for the drift test (a global of the game's simulator, read as 1 in ro.0).
 const DRIFT_AGE: u16 = 1;
 /// The composite's margin (+0x70) and the city grid's as the island's sides carry them (as loose.rs gives them).
 const SIDE_MARGIN: f32 = 0.04;
