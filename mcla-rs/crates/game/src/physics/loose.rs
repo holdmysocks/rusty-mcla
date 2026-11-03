@@ -718,18 +718,18 @@ fn part_core(b: &FragBound, m: &[Vec3; 4]) -> (PartCore, f32) {
 
 /// What the swept test gives (F-98094): the touch's normal, the two points in the parts'
 /// frames, how far through the tick it is, and the corners the hull's side ended on.
-struct Swept {
-    normal: Vec3,
-    local_a: Vec3,
-    local_b: Vec3,
-    lambda: f32,
-    last: Nearest,
+pub(super) struct Swept {
+    pub(super) normal: Vec3,
+    pub(super) local_a: Vec3,
+    pub(super) local_b: Vec3,
+    pub(super) lambda: f32,
+    pub(super) last: Nearest,
 }
 
 /// The swept test of two convex parts (F-98094; p1/swept_decode.md): each is carried from
 /// where its centre of gravity was to where it is, with the rows it has now; the detector is
 /// asked again and again until the parts are 2 cm apart.
-fn sweep(a: &Core, ma: f32, cga: Vec3, a_now: &[Vec3; 4], a_last: &[Vec3; 4], b: &Core, mb: f32, cgb: Vec3, b_now: &[Vec3; 4], b_last: &[Vec3; 4]) -> Option<Swept> {
+pub(super) fn sweep(a: &Core, ma: f32, cga: Vec3, a_now: &[Vec3; 4], a_last: &[Vec3; 4], b: &Core, mb: f32, cgb: Vec3, b_now: &[Vec3; 4], b_last: &[Vec3; 4]) -> Option<Swept> {
     let da = xf(a_now, cga) - xf(a_last, cga);
     let db = xf(b_now, cgb) - xf(b_last, cgb);
     let rel = db - da;
