@@ -5737,6 +5737,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             if let Some(rd) = rider_run.as_mut() {
                 let bike = super::artic_run::BikeRows { level: BIKE_LEVEL, rider_level: RIDER_LEVEL, city: car_city_pair.then(|| city_rows.len()), rider: None, city_on: city_rows.clone(), touch: Some((t.s.bound_friction, t.s.bound_elasticity)), shared: !loose_touch };
                 let isl = rd.build(&super::artic_run::Outside { others: (0, 0.0), parts: Vec::new(), bike: Some(bike) });
+                log::debug!("rider: with the bike {}, loose {}, rows {}, bike x rider manifolds {}", isl.with_bike, loose_touch, isl.rows.len(), rd.veh.manifolds.len());
                 if isl.with_bike && !loose_touch {
                     rider_isl = Some(isl);
                 } else {
