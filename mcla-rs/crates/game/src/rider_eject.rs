@@ -221,7 +221,7 @@ impl RiderOff {
         self.seat = Some(i);
         let c = &mut cars[i];
         if std::env::var_os("MCLA_DBG_RIDER").is_some() {
-            eprintln!("RIDER seat {i} bits {crash_bits:#x} wipe {:?} ctx {:#x}", c.state.veh.as_ref().map(|v| v.wipe), self.ctx.bits);
+            eprintln!("RIDER seat {i} bits {crash_bits:#x} wipe {:?} ctx {:#x} pos {:?} vel {:?}", c.state.veh.as_ref().map(|v| v.wipe), self.ctx.bits, c.state.pos, c.state.vel);
         }
         let wiped = crash_bits & 0x10 != 0 || c.state.veh.as_ref().map_or(false, |v| v.wipe.is_some());
         let rm = glam::Mat3::from_quat(c.state.rot);
