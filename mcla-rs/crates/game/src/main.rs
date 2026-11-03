@@ -49,6 +49,7 @@ mod video;
 mod cine;
 mod cinecar;
 mod cinedriver;
+mod rider_eject;
 mod damageparts;
 mod damagemap;
 mod cutscene;
