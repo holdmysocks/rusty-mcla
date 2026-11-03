@@ -332,6 +332,57 @@ fn floor_inertia(mut i: V4) -> V4 {
     i
 }
 
+/// The angular inertia of a fresh cache entry's archetype (entry+32, what F-16970 reads through its vfunc 9 =
+/// entry+96): made when GoRagdoll gets the rider a cache entry (F-95132 -> F-71690 -> F-59990 -> F-13409), from the
+/// composite bound's part matrices at that moment. F-11525 has just set them from the skeleton (F-36901 through the
+/// instance's vtable +188: the eject clip's last frame in rd+16's frame, what [`super::artic_pose::activate_parts`]
+/// makes), so the inertia follows the rider's pose at the throw; the .r6's own archetype (128.1, 6.5, 130.3) is not
+/// used.
+///
+/// F-13409, the articulated branch (F-36601: at least two whole children whose bone has a free DOF, F-41462): the
+/// bound's centre-of-gravity offset is the type bound's (F-83058), plus T+64 while the entry is younger than 0.25
+/// (always, a new entry has age 0). Then F-23677 -> F-68804 over the parts (a missing part skipped; a whole child's
+/// mass +4 and moments T+240[i]): `I_i + m (dy^2 + dz^2, dx^2 + dz^2, dx^2 + dy^2)` (fused, single rounding) with
+/// `d = (part position + part cg) - bound cg`, summed in vector adds from 0 (lane w the moments' own), and set by
+/// F-58768 with the floor F-88418. Not taken: the volume rule of a type without free bones (F-13409's other branch)
+/// and the damaged moments (T+244, child +8) of a group at no health: `None` for the first, the second never
+/// happens on a new entry.
+///
+/// `parts`: the part matrices (bound +132), one per child.
+pub fn archetype_inertia(t: &RagdollType, parts: &[[R4; 4]]) -> Option<V4> {
+    let free = t
+        .children
+        .iter()
+        .filter(|c| c.bone >= 0 && t.bones.get(c.bone as usize).map_or(false, |b| b.dofs().iter().any(|&d| d)))
+        .count();
+    if free < 2 {
+        return None;
+    }
+    let cg = R4(t.bound_cg).add(R4(t.cg_shift));
+    let mut acc = R4::ZERO;
+    let mut total = 0.0f32;
+    for (i, part) in t.parts.iter().enumerate() {
+        if !part.present {
+            continue;
+        }
+        let (Some(c), Some(own), Some(m4)) = (t.children.get(i), t.inertia.get(i), parts.get(i)) else { continue };
+        let m = c.mass;
+        let d = m4[3].add(R4(part.cg_offset)).sub(cg);
+        let (xx, yy, zz) = (d.0[0] * d.0[0], d.0[1] * d.0[1], d.0[2] * d.0[2]);
+        let mut own = *own;
+        own[0] = fma(yy + zz, m, own[0]);
+        own[1] = fma(xx + zz, m, own[1]);
+        own[2] = fma(xx + yy, m, own[2]);
+        total = m + total;
+        acc = acc.add(R4(own));
+    }
+    // (F-13409 sets the moments only over a positive mass: 1.1754944e-38)
+    if !(total > f32::from_bits(0x0080_0000)) {
+        return None;
+    }
+    Some(floor_inertia(acc.0))
+}
+
 /// The low word of a float register saved as a double (what a callee's stack slot keeps of it).
 fn low_word(x: f32) -> f32 {
     f32::from_bits((x as f64).to_bits() as u32)
@@ -366,8 +417,7 @@ pub struct BuildInput {
     /// the run-time least-softness global: 0.0 in the running game
     pub min_softness: f32,
     /// the angular inertia the cache entry's archetype answers (its vfunc 9, read by F-16970 for the collider's
-    /// mass properties); a run-time value: not the .r6's archetype (128.1, 6.5, 130.3), the recording's
-    /// (277.5, 77.8, 207.7, NaN)
+    /// mass properties): [`archetype_inertia`] of the throw's pose, not the .r6's archetype (128.1, 6.5, 130.3)
     pub inertia: V4,
 }
 
@@ -1101,10 +1151,54 @@ mod tests {
     }
 
     fn rider() -> Option<RagdollType> {
+        rider_set("drv_mp_01_mot_set/0x5eb8d142.r6")
+    }
+
+    fn rider_set(file: &str) -> Option<RagdollType> {
         let root = std::env::var_os("MCLA_DATA").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("D:/MCLA/extracted/cache"));
-        let p = root.join("resources/character/drv_mp_01_mot_set/0x5eb8d142.r6");
+        let p = root.join("resources/character").join(file);
         let res = crate::assets::load_resource_file(&p).ok()?;
         parse_character_ragdoll(&res)
+    }
+
+    /// The part matrices GoRagdoll's cache entry sees (F-11525 -> F-36901): the eject clip's last frame of ro.0
+    /// (the pose fixture's locals) under rd+16 (r_act).
+    fn activation_parts(t: &RagdollType) -> crate::physics::artic_pose::Parts {
+        use crate::physics::artic_pose::{activate_parts, fk, Parts};
+        let pf = pose_fixture();
+        let mat = |n: &str, i: usize| -> [R4; 4] {
+            let w = &pf[n][16 * i..16 * i + 16];
+            [0, 1, 2, 3].map(|r| R4::from_bits([w[4 * r], w[4 * r + 1], w[4 * r + 2], w[4 * r + 3]]))
+        };
+        let r = mat("r_act", 0);
+        let locals: Vec<[R4; 4]> = (0..pf["locals"].len() / 16).map(|i| mat("locals", i)).collect();
+        let g = fk(&locals, &t.bone_parent, &r);
+        let mut parts = Parts::new(t.children.len());
+        activate_parts(t, &g, &r, &[], &mut parts);
+        parts
+    }
+
+    /// The archetype's run-time inertia (F-13409 / F-68804 / F-58768) from the throw's pose: collider +160 of ro.0's
+    /// RGD0 (tick 169) bit for bit, lane w (NaN) too: (277.52197, 77.846954, 207.65668). The player's rider is
+    /// drv_mp_01_mot_set_h (its .r6 is the resource the recording's parts lie in); mot_set's ragdoll tables give the
+    /// same.
+    #[test]
+    fn archetype_inertia_matches_recording() {
+        let (_, rgd0, _) = case0();
+        let want: Vec<u32> = (0..4).map(|k| be(&rgd0.col, 160 + 4 * k)).collect();
+        assert_eq!(want, [0x438a_c2d0, 0x429b_b1a4, 0x434f_a81c, 0x7fc0_0001]);
+        let mut n = 0;
+        for file in ["drv_mp_01_mot_set_h/0x9afc7d46.r6", "drv_mp_01_mot_set/0x5eb8d142.r6"] {
+            let Some(t) = rider_set(file) else { continue };
+            let parts = activation_parts(&t);
+            let got = archetype_inertia(&t, &parts.cur).expect("an articulated type");
+            assert_eq!(got.map(f32::to_bits).to_vec(), want, "{file}");
+            eprintln!("archetype inertia of {file}: bit for bit");
+            n += 1;
+        }
+        if n == 0 {
+            eprintln!("skipped: no extracted game data with drv_mp_01_mot_set(_h) (set MCLA_DATA)");
+        }
     }
 
     /// The build against the recording (rm.0 / ro.0 tick 169, RGD0): the 675 build-time fields build_model.py
@@ -1305,7 +1399,8 @@ mod tests {
 
     /// The rider built from the .r6 and activated as GoRagdoll does it, with the run-time inputs of ro.0's tick 169:
     /// rd+16 (the pose fixture's r_act), the links' frames F-93058 gives from the eject clip's last frame
-    /// (artic_pose, from the pose fixture), the archetype's inertia, gravity factor and the start velocity (RGD0),
+    /// (artic_pose, from the pose fixture), the archetype's inertia from that pose ([`archetype_inertia`]), the gravity
+    /// factor and the start velocity (RGD0),
     /// the guest addresses (RGD0).
     fn built_rider(t: &RagdollType, rgd0: &Blocks) -> ArticBuild {
         use crate::physics::artic_pose::{activate_parts, fk, seed_links, Parts};
@@ -1330,11 +1425,12 @@ mod tests {
             solver_obj: ca(24),
             type248: ca(748),
         };
-        let input = BuildInput { m: [r[0].0, r[1].0, r[2].0], gravity: f(&rgd0.body, 516), min_softness: 0.0, inertia: v(&rgd0.col, 160) };
-        let mut b = build(t, &input, &addrs).unwrap();
         let g = fk(&locals, &t.bone_parent, &r);
         let mut parts = Parts::new(t.children.len());
         activate_parts(t, &g, &r, &[], &mut parts);
+        let inertia = archetype_inertia(t, &parts.cur).unwrap();
+        let input = BuildInput { m: [r[0].0, r[1].0, r[2].0], gravity: f(&rgd0.body, 516), min_softness: 0.0, inertia };
+        let mut b = build(t, &input, &addrs).unwrap();
         let frames = seed_links(t, &b.child_link, b.links.len(), &parts, &r, place, &[]);
         let act = Activation {
             r: r.map(|x| x.0),

@@ -192,11 +192,6 @@ pub struct RiderOff {
 /// BIKER_BODYFALL_VOCAL_RAND_01 (category CAR_BANGERS), so the tree decides everything else.
 pub const BODY_FALL_SOUND: &str = "BIKER_BODYFALL_MASTER";
 
-/// The angular inertia the rider's archetype answers at run time (BuildInput::inertia; how the game makes it is not
-/// traced - not the .r6 archetype's): the drv_mp_01_mot_set rider's from the recording ro.0 (collider +160 at GoRagdoll).
-/// (open: other character sets take this one too)
-const RIDER_INERTIA: crate::physics::artic::V4 = crate::physics::artic::V4([f32::from_bits(0x438a_c2d0), f32::from_bits(0x429b_b1a4), f32::from_bits(0x434f_a81c), f32::from_bits(0x7fc0_0001)]);
-
 /// A glam matrix as the guest's row-vector one (rows = glam's columns).
 pub fn guest_of(m: glam::Mat4) -> crate::physics::artic_pose::Mat {
     use crate::physics::artic::V4;
@@ -281,8 +276,15 @@ impl RiderOff {
             }
             match (ty, self.eject) {
                 (Some(ty), Some((e, kept, timing))) if ty.bone_parent.len() == local.len() => {
-                    use crate::physics::artic_build::{build, BuildInput, GuestAddrs};
+                    use crate::physics::artic_build::{archetype_inertia, build, BuildInput, GuestAddrs};
+                    use crate::physics::artic_pose::{activate_parts, fk, Parts};
                     let character = guest_of(mat);
+                    let locals: Vec<_> = local.iter().map(|(q, p)| guest_of(glam::Mat4::from_rotation_translation(*q, *p))).collect();
+                    // the cache entry's archetype inertia, from the part matrices of the throw's pose (F-13409 via
+                    // F-11525 / F-36901; each set and each throw its own)
+                    let mut parts = Parts::new(ty.children.len());
+                    activate_parts(&ty, &fk(&locals, &ty.bone_parent, &character), &character, &[], &mut parts);
+                    let inertia = archetype_inertia(&ty, &parts.cur);
                     // (the guest's addresses only tie the blocks together: any distinct values)
                     let addrs = GuestAddrs {
                         body: 0x4000_0000,
@@ -294,14 +296,14 @@ impl RiderOff {
                         solver_obj: 0x4600_0000,
                         type248: 0x4700_0000,
                     };
-                    match build(&ty, &BuildInput::new([character[0].0, character[1].0, character[2].0], RIDER_INERTIA.0), &addrs) {
-                        Ok(b) => {
-                            let locals: Vec<_> = local.iter().map(|(q, p)| guest_of(glam::Mat4::from_rotation_translation(*q, *p))).collect();
+                    match inertia.map(|inertia| build(&ty, &BuildInput::new([character[0].0, character[1].0, character[2].0], inertia), &addrs)) {
+                        None => log::warn!("rider: no ragdoll (the type's bones have no free axes: F-13409's other branch)"),
+                        Some(Ok(b)) => {
                             let launch = e.launch(kept, c.state.vel, timing);
                             log::info!("rider: GoRagdoll, {} links, launch {:.2} {:.2} {:.2}", b.links.len(), launch.x, launch.y, launch.z);
                             self.ragdoll = Some(Box::new(crate::physics::artic_run::RiderRagdoll::go(&ty, b, &locals, character, launch, &self.surfaces)));
                         }
-                        Err(err) => log::warn!("rider: the ragdoll's build failed: {err:?}"),
+                        Some(Err(err)) => log::warn!("rider: the ragdoll's build failed: {err:?}"),
                     }
                 }
                 (ty, _) => log::warn!("rider: no ragdoll (type {}, {} bones posed)", ty.map_or(0, |t| t.bone_parent.len()), local.len()),

@@ -6,11 +6,13 @@
 //! ```text
 //! set root +20 -> fragType T
 //! T: +8 least principal moment of a link (F-91939), +12 most, +32 / +48 the two centre vectors (off = +32 - +48),
+//!    +64 the centre shift of a young cache entry (F-13409),
 //!    +180 -> drawable (+12 -> skeleton: +0 -> bones of 224 B, u16 count +20), +208 -> groups, +212 -> children,
 //!    +240 -> per-child principal moments (16 B each), +248 the pointer the collider keeps at +748,
 //!    +256 / +260 -> the two byte tables of part pairs (F-83435), +280 -> pose (+20 -> 64 B per bone),
 //!    +300 pair count, +302 groups, +303 children, +316 float (constraints when != 0), +320 the contacts' elasticity,
-//!    +0xec -> composite bound (one part per child: capsules and boxes for the rider)
+//!    +0xec -> composite bound (one part per child: capsules and boxes for the rider; +0x50 its centre-of-gravity
+//!    offset, a part's +0x50 its own)
 //! group G: +20 softness k, +24 / +28 / +32 / +36 limit fractions, +40 target rate, +44 velocity gain,
 //!    +48 position gain, +52 most torque, +56 -1 or > 0: the joint is parked, +60 mass,
 //!    +69 parent group (255 none), +70 first child, +71 children
@@ -124,6 +126,10 @@ pub struct RagPart {
     pub material: Option<u32>,
     /// the file's part matrix (+0x84, 64 B; the run time rewrites its copy every tick)
     pub matrix: [[f32; 4]; 4],
+    /// +0x50: the part's centre-of-gravity offset (4 lanes; F-68804 adds it to the part matrix's position)
+    pub cg_offset: [f32; 4],
+    /// the composite's part pointer is set (F-68804 skips a missing part)
+    pub present: bool,
 }
 
 /// The fragment type of a character set, as the ragdoll build reads it.
@@ -162,6 +168,11 @@ pub struct RagdollType {
     pub f320: f32,
     /// +0xec: the composite bound's parts, one per child (empty when the bound is missing or not a composite)
     pub parts: Vec<RagPart>,
+    /// the composite bound's +0x50: its centre-of-gravity offset (4 lanes), what F-13409 sets the cache entry's
+    /// bound to on an articulated type (F-83058)
+    pub bound_cg: [f32; 4],
+    /// +64 (4 lanes): F-13409 adds it to the bound's centre-of-gravity offset while the entry is young (< 0.25)
+    pub cg_shift: [f32; 4],
 }
 
 fn v4(rd: &Rd, o: usize) -> [f32; 4] {
@@ -189,6 +200,7 @@ pub fn parse_ragdoll_type(res: &Resource, t: usize) -> Option<RagdollType> {
         max_moment: rd.f32(t + 12),
         cg: v4(&rd, t + 32),
         cg_ref: v4(&rd, t + 48),
+        cg_shift: v4(&rd, t + 64),
         ptr248: rd.u32(t + 248),
         f316: rd.f32(t + 316),
         flags: rd.u8(t + 307),
@@ -274,6 +286,9 @@ pub fn parse_ragdoll_type(res: &Resource, t: usize) -> Option<RagdollType> {
     }
     out.f320 = rd.f32(t + 320);
     out.parts = composite_parts(&rd, t);
+    if let Some(b) = rd.ptr(t + 0xec).filter(|&b| rd.has(b, 0x60)) {
+        out.bound_cg = v4(&rd, b + 0x50);
+    }
     Some(out)
 }
 
@@ -311,6 +326,8 @@ fn composite_parts(rd: &Rd, t: usize) -> Vec<RagPart> {
                 _ => None,
             },
             matrix: if rd.has(mats + 64 * k, 64) { m4(rd, mats + 64 * k) } else { [[0.0; 4]; 4] },
+            cg_offset: v4(rd, p + 0x50),
+            present: true,
         });
     }
     out
@@ -392,5 +409,10 @@ mod tests {
         assert_eq!((t.parts[17].max, t.parts[17].margin), ([0.05, 0.03, 0.135], 0.015));
         // (the file's part matrix of spine00: the capsule's axis along the model's x)
         assert_eq!(t.parts[0].matrix[1][..3], [-1.0, 0.0, 0.0]);
+        // the centre-of-gravity offsets the archetype's inertia is taken about (F-68804): the bound's (0, 0.0039,
+        // -0.029), the parts' none, no shift
+        assert_eq!(t.bound_cg[..3].iter().map(|x| x.to_bits()).collect::<Vec<_>>(), [0, 0x3b7f_9724, 0xbced_9168]);
+        assert!(t.parts.iter().all(|p| p.present && p.cg_offset[..3] == [0.0; 3]));
+        assert_eq!(t.cg_shift[..3], [0.0; 3]);
     }
 }
