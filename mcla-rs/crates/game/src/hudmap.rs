@@ -665,6 +665,8 @@ pub struct State {
     pub tex: Option<egui::TextureHandle>,
     pub t: f32,
     pub frame_no: u32,
+    /// time not yet counted into `frame_no` (the original counts its 30 Hz frames; the port draws faster)
+    frame_acc: f32,
     pub strobe: f32,
     pub pulse: f32,
     /// the GPS map's camera (for the cursor's size)
@@ -685,7 +687,7 @@ pub struct State {
 
 impl State {
     pub fn new(data_dir: &str) -> State {
-        State { tune: Tune::load(data_dir), assets: Assets::new(data_dir), target: Target::new(220), tex: None, t: 0.0, frame_no: 0, strobe: 0.0, pulse: 0.0, gps_cam: Vec3::new(0.0, 9000.0, 0.0), heights: None, street: None, map_mode: std::env::var("MCLA_MAP_MODE").is_ok(), road_fades: [0.0; 5], last_pass: u64::MAX, over: None, over_tex: None }
+        State { tune: Tune::load(data_dir), assets: Assets::new(data_dir), target: Target::new(220), tex: None, t: 0.0, frame_no: 0, frame_acc: 0.0, strobe: 0.0, pulse: 0.0, gps_cam: Vec3::new(0.0, 9000.0, 0.0), heights: None, street: None, map_mode: std::env::var("MCLA_MAP_MODE").is_ok(), road_fades: [0.0; 5], last_pass: u64::MAX, over: None, over_tex: None }
     }
 
     /// The map's tick; `checkpoints` = how many checkpoint elements there are (the strobe runs
@@ -696,7 +698,13 @@ impl State {
         if self.strobe > (checkpoints as f32 + 1.0) * self.tune.f("StrobePeriod", 1.2) {
             self.strobe = 0.0;
         }
-        self.frame_no = self.frame_no.wrapping_add(1);
+        // (`HudMap+452` += 1 once per frame of the original, whose UI runs at 30 frames a second - the dt it
+        // hands the map measured 0.033 s; counted here by time so the cop flash, 6 of these frames, keeps 0.2 s)
+        self.frame_acc = (self.frame_acc + dt).min(0.25);
+        while self.frame_acc >= 1.0 / 30.0 {
+            self.frame_acc -= 1.0 / 30.0;
+            self.frame_no = self.frame_no.wrapping_add(1);
+        }
         self.pulse = (self.pulse + self.tune.f("PulseSpeed", 4.0) * dt) % PI;
     }
 
@@ -3909,6 +3917,18 @@ pub fn nav_open_rows(s: CamRows, t: f32) -> CamRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The frame count (the cop flash's clock) goes at the original's 30 frames a second whatever the port draws at.
+    #[test]
+    fn frame_count_at_30_hz() {
+        for hz in [30.0f32, 60.0, 144.0] {
+            let mut s = State::new("");
+            for _ in 0..(hz as usize * 2) {
+                s.tick(1.0 / hz, 0);
+            }
+            assert!((59..=60).contains(&s.frame_no), "{} Hz: {}", hz, s.frame_no);
+        }
+    }
 
     /// The recorded frame (`work/mm/trace_idle.md`): the icon bases at camera height 1891 and
     /// the scales they give each kind.

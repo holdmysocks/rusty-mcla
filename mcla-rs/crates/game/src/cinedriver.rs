@@ -8,6 +8,9 @@
 //! - the cine events showdriver (11) / hidedriver (12) on the event's car slot (F-91263).
 //! FinishScene clears the slot flags but never racer +676, so the flag outlives the scene; ResetWithDamageIntact
 //! (F-39106) and Racer Reset (F-89258) clear it (+676 = 0 and the instance reset). `CarInstance::show_driver`.
+//! The gate tests nothing else of the scene (a scene that casts the player on foot hides his seat by its own
+//! hidedriver); slot n's racer is the one the caller gave slot n (Cars_AssignIdToSlot, the manager's ids that
+//! EndDescription reads), and a scene car its caller made with no driver (`NO_DRIVER`) has none to draw.
 //!
 //! Read from every cine script (work/cutscenes2/driver/drvscan.py, the hash-named ones decrypted first): the
 //! `push n` before each UseRacerNativeCharacter call (all constant) and the showdriver / hidedriver records (+12 car
@@ -608,6 +611,36 @@ pub const DRIVER_MAPS: &[(&str, &str, &str, &str, &str)] = &[
 /// The garages' leaving scenes: garage_core (0x3487df6f) runs Racer_Reset on the player after them (0x1486).
 pub const GARAGE_EXIT: [&str; 3] = ["cut_la_hw_oh_garage_01x_ext", "cut_la_be_smb_garage_01x_ext", "sc_cut_garage_01_ext"];
 
+/// The scene cars that have no driver at all: the scene's caller makes the opponent for that slot with
+/// Racer_SetVehicleDriverEnable(racer, 0) (F-85468: racer +176 = 0), and mcRacer::LoadDriver (F-39898) makes no driver
+/// for a racer whose +176 is 0 - the slot's show flag has nothing to draw. (scene, mover label) from the 13 callers
+/// (work/cutscenes-driver/vde.txt, the slot each opponent takes from its Cars_AssignIdToSlot call): the story
+/// scripts' hookman (slot 1), HANGOUT_SERIES_DOWNTOWN's and the payback garages' loop over every opponent, the loss
+/// hangout 0x16e89a34's hookman, delivery_hangout_core's delivery car (+3340, the race's CarConfigName).
+pub const NO_DRIVER: &[(&str, &str)] = &[
+    ("story/cut_story_beat_sh_02_exotic", "karol"),
+    ("story/cut_story_bestof_sh_05", "hugo"),
+    ("story/cut_story_hangout_pinkslip_hills", "karol"),
+    ("story/cut_story_hangout_series_downtown", "hugo"),
+    ("story/cut_story_hangout_series_downtown", "miguel"),
+    ("story/cut_story_hollywood_garage_intro", "repair"),
+    ("story/cut_story_payback_intro", "paint"),
+    ("story/cut_story_payback_intro", "shop1"),
+    ("story/cut_story_payback_intro", "shop2"),
+    ("story/cut_story_races_in_beach", "annie"),
+    ("cut_loss_chung_hee", "hookmans"),
+    ("cut_loss_jin", "hookmans"),
+    ("cut_loss_lester", "hookmans"),
+    ("cut_loss_pete", "hookmans"),
+    ("racestart/cut_delivery_get_keys", "delivery"),
+    ("racestart/sc_cut_delivery_get_keys", "delivery"),
+];
+
+/// True if the scene's car `label` (its mover) carries no driver (`NO_DRIVER`).
+pub fn no_driver(scene: &str, label: &str) -> bool {
+    NO_DRIVER.iter().any(|&(s, l)| s == scene && l == label)
+}
+
 /// The career script 0x1529a945's mcCareer_RegisterHookmanCharacterSet calls (41): hookman -> character set, what
 /// mcCareer_GetHookmanCharacterSet answers and the scripts give their racers (Racer_SetCharacterName).
 pub const HOOKMAN_SETS: &[(&str, &str)] = &[
@@ -700,5 +733,9 @@ mod tests {
         let mut names: Vec<&str> = NATIVE_SLOTS.iter().map(|r| r.0).collect();
         names.dedup();
         assert_eq!(names.len(), NATIVE_SLOTS.len());
+        // every driverless scene car is a mover of its scene; GH_06's Henry keeps his driver
+        assert!(NO_DRIVER.iter().all(|&(s, l)| SLOT_MOVERS.iter().any(|m| m.0 == s && m.2 == l)));
+        assert!(no_driver("racestart/cut_delivery_get_keys", "delivery"));
+        assert!(!no_driver("story/cut_story_race_gh_06", "henry"));
     }
 }

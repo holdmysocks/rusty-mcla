@@ -803,11 +803,6 @@ impl Cine {
         Some((sc.origin.transform_point3(p), (or * r).normalize()))
     }
 
-    /// True if the scene shows the player's character on foot.
-    pub fn has_actor(&self, prefix: &str) -> bool {
-        self.playing.as_ref().map_or(false, |s| s.actors.iter().any(|a| a.label.starts_with(prefix)))
-    }
-
     /// The light manager's state for the character programs this frame (main.rs); None: the
     /// figures keep the generic look (MCLA_CHAR_OLD=1).
     pub fn set_light(&mut self, l: Option<crate::skin::CharLight>) {

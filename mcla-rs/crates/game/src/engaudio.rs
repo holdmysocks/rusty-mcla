@@ -485,9 +485,11 @@ impl EngineSound {
                     self.ign = lib.play_hash(self.ign_sound, Req { pos: Some(e.pos), player: self.player, ..Default::default() });
                     self.state = 1;
                     self.timer = lib.rand_int(self.crank.0, self.crank.1) as f32 * 0.001;
+                    log::info!("engine: ignition at {:.3} s (one-shot {}), crank {:.3} s", self.clock, self.ign.is_some(), self.timer);
                 } else {
                     self.state = 5;
                     self.started = true;
+                    log::info!("engine: crank over at {:.3} s", self.clock);
                 }
             }
             self.end_frame(lib, e, dt);
