@@ -367,6 +367,253 @@ pub fn self_pairs(enabled: bool, countdown: &mut i32, pair_a: &[i32], pair_b: &[
     Some(pair_a.iter().zip(pair_b).take_while(|(a, _)| **a != -1).map(|(a, b)| (*a as usize, *b as usize)).collect())
 }
 
+// ---------------------------------------------------------------------------------------------
+// Self pairs: the rider's parts against each other (F-41849 -> F-93803, F-37533 -> F-36478)
+
+/// The 1e-6 F-37533 adds to every |R| (0x827D8510).
+const OBB_EPS: f32 = f32::from_bits(0x3586_37bd);
+
+/// F-37533: do two boxes overlap - B's frame the reference, `rel` = A's three axes in B's frame (rows) and the
+/// centre of A less that of B in B's frame (row 3), as F-93803 forms them; `ha`, `hb` the half sizes. The fifteen
+/// separating axes: A's three faces and B's three (both in one go, then out if any is apart), then the nine edge
+/// pairs; every |R| term carries the 1e-6. Lane by lane as the vector code orders its sums (decode:
+/// docs/reference/vehicle/ragdoll_self_contacts.md 2).
+pub fn boxes_overlap(rel: &[Vec3; 4], ha: Vec3, hb: Vec3) -> bool {
+    let (r, t) = ([rel[0], rel[1], rel[2]], rel[3]);
+    let a: [Vec3; 3] = r.map(|x| x.abs() + Vec3::splat(OBB_EPS));
+    // d = minus the centre offset along A's axes (0 - vmsum3)
+    let d = Vec3::new(0.0 - dot3(r[0], t), 0.0 - dot3(r[1], t), 0.0 - dot3(r[2], t));
+    let col = |m: &[Vec3; 3], k: usize| Vec3::new(m[0][k], m[1][k], m[2][k]);
+    // A's faces and B's faces
+    let face_a = (0..3).all(|i| dot3(a[i], hb) + ha[i] > d[i].abs());
+    let face_b = (0..3).all(|k| dot3(col(&a, k), ha) + hb[k] > dot3(col(&r, k), d).abs());
+    if !(face_a && face_b) {
+        return false;
+    }
+    // The edges A_i x B_k, lane k: B's part (hB_k1 a_i[k2] + hB_k2 a_i[k1], the three-term chain the code runs with
+    // the lane's own term 0 x a_i[k]) plus A's (column k of a with A's other two half sizes), against column k of R
+    // with d's other two lanes, signed.
+    let hb_w = Vec3::new(0.0, hb.z, hb.y); // vpermwi 231 (lane w of hB is 0)
+    let hb_z = Vec3::new(hb.z, 0.0, hb.x); // vpermwi 179
+    let hb_y = Vec3::new(hb.y, hb.x, 0.0); // vpermwi 79
+    let chain = |ai: Vec3| {
+        let t1 = hb_w * ai.x;
+        let t2 = hb_z * ai.y + t1;
+        hb_y * ai.z + t2
+    };
+    // A axis 0: (0, hA.z, hA.y) and (0, d.z, -d.y); axis 1: (hA.z, 0, hA.x) and (-d.z, 0, d.x); axis 2: (hA.y, hA.x,
+    // 0) and (d.y, -d.x, 0)
+    let sides = [
+        (Vec3::new(0.0, ha.z, ha.y), Vec3::new(0.0, d.z, -d.y)),
+        (Vec3::new(ha.z, 0.0, ha.x), Vec3::new(-d.z, 0.0, d.x)),
+        (Vec3::new(ha.y, ha.x, 0.0), Vec3::new(d.y, -d.x, 0.0)),
+    ];
+    sides.iter().enumerate().all(|(i, (h, e))| {
+        let b_part = chain(a[i]);
+        (0..3).all(|k| b_part[k] + dot3(col(&a, k), *h) > dot3(col(&r, k), *e).abs())
+    })
+}
+
+/// F-93803: B's frame (rows, the point `pb`) the reference for A's (rows, `pa`): A's rows and pa - pb in B's frame.
+pub fn relative_frame(b: &[Vec3; 4], pb: Vec3, a: &[Vec3; 4], pa: Vec3) -> [Vec3; 4] {
+    let inb = |v: Vec3| Vec3::new(dot3(b[0], v), dot3(b[1], v), dot3(b[2], v));
+    [inb(a[0]), inb(a[1]), inb(a[2]), inb(pa - pb)]
+}
+
+/// F-41849's box of one part: the part's own box (bound +140 = the part's min / max) grown to hold itself at its last
+/// matrix too, in the part's frame now. Gives the box's middle in the world and its half sizes. `now` / `last` the
+/// part's world matrices (+132 x rd+16, +136 x collider +32).
+pub fn swept_part_box(now: &[Vec3; 4], last: &[Vec3; 4], min: Vec3, max: Vec3) -> (Vec3, Vec3) {
+    let c = (max + min) * 0.5;
+    let h = (max - min) * 0.5;
+    let q = last[3] - now[3];
+    let (mut hi, mut lo) = (Vec3::ZERO, Vec3::ZERO);
+    for i in 0..3 {
+        // the last box's centre and reach along now's axis i (vmsum4 with lane w the offset, vmsum3)
+        let r = [dot3(now[i], last[0]), dot3(now[i], last[1]), dot3(now[i], last[2])];
+        let p = [r[0] * c.x, r[1] * c.y, r[2] * c.z, dot3(now[i], q)];
+        let c2 = (p[3] + p[2]) + (p[1] + p[0]);
+        let e2 = dot3(Vec3::new(r[0].abs(), r[1].abs(), r[2].abs()), h);
+        hi[i] = (c[i] + h[i]).max(c2 + e2);
+        lo[i] = (c[i] - h[i]).min(c2 - e2);
+    }
+    let mid = (hi + lo) * 0.5;
+    let half = hi - mid;
+    let w = |k: usize| {
+        let p = [now[0][k] * mid.x, now[1][k] * mid.y, now[2][k] * mid.z, now[3][k]];
+        (p[3] + p[2]) + (p[1] + p[0])
+    };
+    (Vec3::new(w(0), w(1), w(2)), half)
+}
+
+/// The contacts of one self pair (a sub-manifold of the rider's pair with himself).
+#[derive(Clone, Debug)]
+pub struct SelfManifold {
+    pub a: u8,
+    pub b: u8,
+    pub slots: Vec<RiderSlot>,
+}
+
+/// The rider's sub-manifolds with himself, kept from one tick to the next (the manifold's lists +192 / +712, in the
+/// order the pair list passed them).
+#[derive(Clone, Debug, Default)]
+pub struct RiderSelf {
+    pub manifolds: Vec<SelfManifold>,
+}
+
+/// F-36478's motion test (byte 0x828127D6 is set in the game): the two parts' moves since last (their matrices'
+/// points) differ along one of either part's axes by more than that part's half box: the pair takes the swept test.
+fn moved_far(a_now: &[Vec3; 4], a_last: &[Vec3; 4], a_box: (Vec3, Vec3), b_now: &[Vec3; 4], b_last: &[Vec3; 4], b_box: (Vec3, Vec3)) -> bool {
+    let m = (a_now[3] - a_last[3]) - (b_now[3] - b_last[3]);
+    let ha = (a_box.1 - a_box.0) * 0.5;
+    let hb = (b_box.1 - b_box.0) * 0.5;
+    (0..3).any(|i| dot3(a_now[i], m).abs() > ha[i] || dot3(b_now[i], m).abs() > hb[i])
+}
+
+impl RiderSelf {
+    /// The self pairs of one collide (F-41849, after the gate [`self_pairs`]): per pair of the list the two parts'
+    /// swept boxes ([`swept_part_box`]) in B's frame (F-93803) through the box test (F-37533). A pair that passes
+    /// keeps its sub-manifold when the old list holds it at the merge's place, else gets a new one; an old
+    /// sub-manifold the merge passes by is let go (the merge runs by (part B, part A) as the original's does, so a
+    /// pair list in another order can let a kept one go). Then F-36478: with no contact yet and the parts moved far
+    /// ([`moved_far`]) the swept test (F-98094), else the detector (F-47540); the sink ([`sink`]).
+    pub fn collide(&mut self, pairs: &[(usize, usize)], shapes: &[Option<PartShape>], now: &[[Vec3; 4]], last: &[[Vec3; 4]]) {
+        let old = std::mem::take(&mut self.manifolds);
+        let mut k = 0usize;
+        let less = |m: &SelfManifold, a: usize, b: usize| (m.b as usize) < b || (m.b as usize == b && (m.a as usize) < a);
+        for &(pa, pb) in pairs {
+            let (Some(sa), Some(sb)) = (shapes.get(pa).copied().flatten(), shapes.get(pb).copied().flatten()) else { continue };
+            let (ma, ha) = swept_part_box(&now[pa], &last[pa], sa.bbox.0, sa.bbox.1);
+            let (mb, hb) = swept_part_box(&now[pb], &last[pb], sb.bbox.0, sb.bbox.1);
+            let rel = relative_frame(&now[pb], mb, &now[pa], ma);
+            if !boxes_overlap(&rel, ha, hb) {
+                continue;
+            }
+            while k < old.len() && less(&old[k], pa, pb) {
+                k += 1;
+            }
+            let mut m = if k < old.len() && old[k].a as usize == pa && old[k].b as usize == pb {
+                k += 1;
+                old[k - 1].clone()
+            } else {
+                SelfManifold { a: pa as u8, b: pb as u8, slots: Vec::new() }
+            };
+            self_pair_contact(&mut m, &sa, &sb, &now[pa], &last[pa], &now[pb], &last[pb]);
+            self.manifolds.push(m);
+        }
+    }
+
+    /// The update's refresh (F-26862 / F-33100) as for the city, B's point from B's part now.
+    pub fn refresh(&mut self, now: &[[Vec3; 4]]) {
+        for m in self.manifolds.iter_mut() {
+            refresh_slots(&mut m.slots, &now[m.a as usize], &now[m.b as usize]);
+        }
+    }
+
+    /// The materials (F-43430, both parts' own) and the rider's callback (F-22759: elasticity = the type's +320).
+    pub fn materials(&mut self, shapes: &[Option<PartShape>], type_elasticity: f32) {
+        let sur = |p: u8| shapes.get(p as usize).copied().flatten().map_or(Surface::Ragdoll, |s| s.surface);
+        for m in self.manifolds.iter_mut() {
+            let ((fa, ea), (fb, eb)) = (surface_touch(sur(m.a)), surface_touch(sur(m.b)));
+            for s in m.slots.iter_mut() {
+                s.touch.friction = (fa * fb).max(0.0);
+                s.touch.elasticity = (ea * eb).min(1.0);
+                s.touch.elasticity = type_elasticity;
+                s.touch.impulse = Vec3::ZERO;
+            }
+        }
+    }
+}
+
+/// F-36478 for one self pair, then the sink.
+fn self_pair_contact(m: &mut SelfManifold, sa: &PartShape, sb: &PartShape, a_now: &[Vec3; 4], a_last: &[Vec3; 4], b_now: &[Vec3; 4], b_last: &[Vec3; 4]) {
+    use super::gjk::convex_contact;
+    use super::loose::{inv, sweep, Core};
+    let (ca, cb) = (sa.core(a_now), sb.core(b_now));
+    let found = if m.slots.is_empty() && moved_far(a_now, a_last, sa.bbox, b_now, b_last, sb.bbox) {
+        sweep(&Core::Part(ca), sa.margin, sa.centroid, a_now, a_last, &Core::Part(cb), sb.margin, sb.centroid, b_now, b_last).filter(|s| !(s.lambda >= 1.0)).map(|s| {
+            let (qa, qb) = (xf(a_now, s.local_a), xf(b_now, s.local_b));
+            (s.normal, qa, qb, 0.0 - dot3(s.normal, qb - qa))
+        })
+    } else {
+        let mut dir = Vec3::Z;
+        convex_contact(&ca, sa.margin, &cb, sb.margin, &mut dir, true).map(|r| (r.normal, r.on_a, r.on_b, r.distance))
+    };
+    let Some((normal, qa, qb, dist)) = found else { return };
+    // (the sink takes nothing farther than 2 cm)
+    if !(f32::from_bits(0x3ca3_d70a) > dist) {
+        return;
+    }
+    let side = |now: &[Vec3; 4], q: Vec3| Side { body: None, point: q, local: inv(now, q - now[3]), rows: [now[0], now[1], now[2]], margin: SIDE_MARGIN, core: Vec3::ZERO };
+    let fresh = Touch { depth: 0.0 - dist, a: side(a_now, qa), b: side(b_now, qb), normal, back: Vec3::ZERO - normal, ..Default::default() };
+    sink(&mut m.slots, RiderSlot { touch: fresh, age: 0, enabled: true, polygon: 0, surface: sb.surface });
+}
+
+/// The sink (F-90136): the nearest kept contact (age != 0) within 2 cm by A's local point takes the new one's place
+/// (its multipliers stay), else the new one is appended up to six, else F-55965 picks the one it replaces (or none).
+fn sink(slots: &mut Vec<RiderSlot>, slot: RiderSlot) {
+    let fresh = slot.touch;
+    let mut near = (NEAR2, None);
+    for (i, o) in slots.iter().enumerate() {
+        let d = o.touch.a.local - fresh.a.local;
+        let d2 = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y));
+        if d2 < near.0 && o.age != 0 {
+            near = (d2, Some(i));
+        }
+    }
+    match near.1 {
+        Some(i) => {
+            let old = slots[i].touch;
+            slots[i] = RiderSlot { touch: Touch { kept: old.kept, pushed: old.pushed, ..fresh }, ..slot };
+        }
+        None if slots.len() < 6 => slots.push(slot),
+        None => {
+            let k = super::hull::seventh_contact(std::array::from_fn(|i| slots[i].touch.a.local), fresh.a.local);
+            if k < 6 {
+                slots[k] = slot;
+            }
+        }
+    }
+}
+
+/// The refresh of one manifold's contacts (F-26862 / F-33100): kept contacts get their world points again (A by
+/// `ma`, B by `mb`) and the depth along the stored minus normal; every contact ages by one; those with depth not
+/// above -0.04 go, and of the older ones the one drifted farthest past 2 cm goes.
+fn refresh_slots(slots: &mut Vec<RiderSlot>, ma: &[Vec3; 4], mb: &[Vec3; 4]) {
+    for s in slots.iter_mut().rev() {
+        let t = &mut s.touch;
+        if s.age != 0 {
+            t.a.point = xf(ma, t.a.local);
+            t.b.point = xf(mb, t.b.local);
+            t.depth = dot3(t.a.point - t.b.point, t.back);
+        }
+        t.target = Vec3::ZERO;
+        s.age += 1;
+    }
+    let (mut worst, mut k_worst) = (0.0f32, None);
+    let mut i = 0;
+    while i < slots.len() {
+        let t = slots[i].touch;
+        if !(t.depth > DROP_DEPTH) {
+            slots.swap_remove(i);
+            continue;
+        }
+        if slots[i].age > DRIFT_AGE {
+            let q = Vec3::ZERO - (t.back * t.depth - t.a.point);
+            let s = t.b.point - q;
+            let d2 = dot3(s, s);
+            if !(worst >= d2) && !(NEAR2 >= d2) {
+                worst = d2;
+                k_worst = Some(i);
+            }
+        }
+        i += 1;
+    }
+    if let Some(k) = k_worst {
+        slots.swap_remove(k);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,6 +913,81 @@ mod tests {
         assert_eq!(ok, all);
         assert_eq!(played, [169]);
         assert!(!g.stopped);
+    }
+
+    /// The self pairs against ro.0, ticks 169 - 216, chained (each tick's sub-manifolds carried to the next, refreshed
+    /// as the update does): the sub-manifolds of the tick (the pairs that passed the box test, in the list's order) are
+    /// the recorded ones, and every contact made in the tick (age 1) is the port's, word for word (depth, both local
+    /// points, both world points, normal), with friction 1 and elasticity 0. Parts as for the city; last = +136 x
+    /// collider +32.
+    #[test]
+    fn self_contacts_match_recording() {
+        let Some(root) = data_dir() else {
+            eprintln!("skipped: the extracted data (MCLA_DATA_DIR) is missing");
+            return;
+        };
+        let rs = root.to_string_lossy().to_string();
+        super::super::collision::load_surfaces(&rs);
+        let ty = rider_type(&root).expect("rider type");
+        let sh = shapes(&ty, &Surface::table(&rs));
+        let f = Fix::load();
+        let t = f.ty();
+        let pairs = [(1, 7), (1, 11), (8, 1), (8, 3), (8, 5), (8, 14), (12, 1), (12, 3), (12, 5), (12, 14), (15, 18), (16, 19)];
+        let mut parts = Parts { cur: f.mats("cu1_169"), prev: f.mats("pv1_169") };
+        let mut me = RiderSelf::default();
+        let (mut subs_ok, mut ticks_n, mut matched, mut recorded, mut extra) = (0, 0, 0, 0, 0);
+        for &tick in f.w("ticks") {
+            let inst = f.inst(tick);
+            if tick > 169 {
+                parts.prev = parts.cur.clone();
+                let c = f.mat(&format!("crw{tick}"), 0);
+                let r: Mat = [0, 1, 2, 3].map(|k| V4::new(inst[k].x, inst[k].y, inst[k].z, 0.0));
+                moved_parts(&t, &f.links(tick), &f.clink(), c[3], &r, &[], &mut parts).unwrap();
+            }
+            let last = rows3(&f.mat(&format!("c32_{tick}"), 0));
+            let (now, before) = world_parts(&parts, &inst, &last);
+            me.collide(&pairs, &sh, &now, &before);
+            let mine: Vec<(u32, u32)> = me.manifolds.iter().map(|m| (m.a as u32, m.b as u32)).collect();
+            let want: Vec<(u32, u32)> = f.w(&format!("sb{tick}")).chunks(4).map(|c| (c[0], c[1])).collect();
+            ticks_n += 1;
+            if mine == want {
+                subs_ok += 1;
+            } else {
+                eprintln!("tick {tick}: sub-manifolds {mine:?}, recorded {want:?}");
+            }
+            let mut fresh: Vec<(u8, u8, RiderSlot)> = me.manifolds.iter().flat_map(|m| m.slots.iter().filter(|s| s.age == 0).map(move |s| (m.a, m.b, *s))).collect();
+            for (h, r) in f.contacts(tick).into_iter().filter(|(h, _)| h[0] == 2 && h[3] == 1) {
+                recorded += 1;
+                let want = (r[3], rec3(&r, 16), rec3(&r, 32), rec3(&r, 48), rec3(&r, 64), rec3(&r, 80));
+                let k = fresh.iter().position(|(a, b, s)| (*a as u32, *b as u32) == (h[1], h[2]) && (s.touch.depth.to_bits(), bits3(s.touch.a.local), bits3(s.touch.b.local), bits3(s.touch.a.point), bits3(s.touch.b.point), bits3(s.touch.normal)) == want);
+                match k {
+                    Some(k) => {
+                        fresh.remove(k);
+                        matched += 1;
+                    }
+                    None => {
+                        let near = fresh.iter().find(|(a, b, _)| (*a as u32, *b as u32) == (h[1], h[2]));
+                        eprintln!("tick {tick} parts {} / {}: recorded depth {} n {:?}, port {:?}", h[1], h[2], f32::from_bits(r[3]), [r[20], r[21], r[22]].map(f32::from_bits), near.map(|(_, _, s)| (s.touch.depth, s.touch.normal, s.touch.a.local, f32::from_bits(r[4]))));
+                    }
+                }
+            }
+            for (a, b, s) in &fresh {
+                eprintln!("tick {tick} parts {a} / {b}: the port's contact, not a recorded new one (depth {})", s.touch.depth);
+            }
+            extra += fresh.len();
+            me.refresh(&now);
+            me.materials(&sh, ty.f320);
+            for m in &me.manifolds {
+                for s in &m.slots {
+                    assert_eq!((s.touch.friction, s.touch.elasticity), (1.0, 0.0));
+                }
+            }
+        }
+        eprintln!("self pairs: sub-manifolds equal in {subs_ok} / {ticks_n} ticks; contacts {matched} / {recorded} recorded new ones word for word, {extra} of the port's not among them");
+        assert!(recorded > 0);
+        assert_eq!(subs_ok, ticks_n);
+        assert_eq!(matched, recorded);
+        assert_eq!(extra, 0);
     }
 
     /// The bound: 21 parts, capsules with the ragdoll material, the self-pair gate (collider +740 = 1, +744 = 0 in ro.0).
