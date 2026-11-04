@@ -147,6 +147,7 @@ mod brain;
 mod brainpath;
 mod cruising;
 mod railroute;
+mod ghostroute;
 mod brainturn;
 mod vehicle_model;
 mod vehicles;

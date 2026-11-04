@@ -6,9 +6,8 @@
 //! table) and the port's lane curves.
 
 use crate::physics::exact::fma;
-use crate::vehicles::traffic::{curve_nearest, snap_to_lane};
 use glam::Vec3;
-use mcla_formats::rage::navsys::NavSys;
+use mcla_formats::rage::navsys::{LaneCurve, NavSys};
 use mcla_formats::rsc::Resource;
 
 /// The closed list's size (F-39378: 200 nodes, then no route).
@@ -47,6 +46,11 @@ pub struct LaneNode {
     /// the vertex indices of its first and last control point (curve +32)
     pub v0: u32,
     pub v1: u32,
+    /// the lane's own +4 flags (bit 0: it answers point queries), +0xc length and +0x10 / +0x20 box
+    pub flags: u32,
+    pub len: f32,
+    pub bmin: Vec3,
+    pub bmax: Vec3,
 }
 
 /// The railnet as the route search reads it.
@@ -160,7 +164,7 @@ impl RailNet {
             let n = h16(lo + 0x4c);
             let vi = ptr(lo + 0x50);
             let v = |k: usize| vi.map_or(0, |a| h16(a + 2 * k) as u32);
-            lanes.push(LaneNode { rec: r.map(id), owner_flags: ow.map_or(0, |w| be(w + 4)), owner_last: ow.is_some_and(|w| be(w + 16) == 0), v0: v(0), v1: v(n) });
+            lanes.push(LaneNode { rec: r.map(id), owner_flags: ow.map_or(0, |w| be(w + 4)), owner_last: ow.is_some_and(|w| be(w + 16) == 0), v0: v(0), v1: v(n), flags: be(lo + 4), len: fl(lo + 0xc), bmin: Vec3::new(fl(lo + 0x10), fl(lo + 0x14), fl(lo + 0x18)), bmax: Vec3::new(fl(lo + 0x20), fl(lo + 0x24), fl(lo + 0x28)) });
         }
         if let Some(c) = conn {
             for i in 0..conn_n {
@@ -336,11 +340,11 @@ impl<'a> Search<'a> {
             if o == lane {
                 continue;
             }
-            let (ph, _, q) = curve_nearest(&self.nav.curves[o as usize], p, 4, 10);
+            let (ph, _, q) = nearest(&self.nav.curves[o as usize], p, 4, 10);
             if !(ph > 0.0) || !(ph < 1.0) {
                 continue;
             }
-            out.push((o, ph, q, pt_dir(self.nav, o, ph).1));
+            out.push((o, ph, q, deriv(&self.nav.curves[o as usize], ph)));
         }
         out
     }
@@ -639,14 +643,295 @@ pub fn search(net: &RailNet, nav: &NavSys, start: u32, start_t: f32, dest: u32, 
     Search { net, nav, start, start_t, dest, dest_t }.run()
 }
 
+/// A lane's answer to a point (lane slot 3, F-15621: point, derivative there, lane, squared distance, phase).
+#[derive(Clone, Copy, Debug)]
+pub struct Snap {
+    pub lane: u32,
+    pub t: f32,
+    pub d2: f32,
+    pub point: Vec3,
+    pub dir: Vec3,
+}
+
+/// F-59579 without a heading: of the lanes answering point queries (+4 bit 0) whose box comes within r of p (F-56243: the
+/// outside offset o = max(min - p, p - max, 0), r^2 > o.z^2 + (o.y^2 + o.x^2)), the nearest point (`nearest`, 8 chords
+/// on lanes of 450 m and more, else 4; 10 halvings) nearer than r; the least squared distance wins, the first on ties.
+/// The direction is the derivative there (lane slot 10, not normalised).
+pub fn snap(net: &RailNet, nav: &NavSys, p: Vec3, r: f32) -> Option<Snap> {
+    let r2 = r * r;
+    let mut best: Option<Snap> = None;
+    for (lane, ln) in net.lanes.iter().enumerate() {
+        if ln.flags & 1 == 0 {
+            continue;
+        }
+        let o = (ln.bmin - p).max(p - ln.bmax).max(Vec3::ZERO);
+        if !(r2 > o.z * o.z + (o.y * o.y + o.x * o.x)) {
+            continue;
+        }
+        let c = &nav.curves[lane];
+        let n = if ln.len >= 450.0 { 8 } else { 4 };
+        let (t, d2, point) = nearest(c, p, n, 10);
+        if !(d2 < r2) || best.as_ref().is_some_and(|b| !(d2 < b.d2)) {
+            continue;
+        }
+        best = Some(Snap { lane: lane as u32, t, d2, point, dir: deriv(c, t) });
+    }
+    best
+}
+
 /// F-94883: the route from a start lane at t to a point - the point snapped onto the nearest lane within 5 m (F-59579
 /// without a heading), its direction normalised, then the search.
 pub fn route(net: &RailNet, nav: &NavSys, start: u32, start_t: f32, dest: Vec3) -> Route {
-    let (hit, _) = snap_to_lane(nav, dest, SNAP_RADIUS);
-    let Some(h) = hit else { return Route::default() };
-    let lane = h.lane as u32;
-    let (nodes, closed) = search(net, nav, start, start_t, lane, h.t);
-    Route { dest_lane: Some(lane), dest_t: h.t, dest_point: h.point, dest_dir: vnorm(pt_dir(nav, lane, h.t).1), nodes: nodes.unwrap_or_default(), closed }
+    let Some(h) = snap(net, nav, dest, SNAP_RADIUS) else { return Route::default() };
+    let (nodes, closed) = search(net, nav, start, start_t, h.lane, h.t);
+    Route { dest_lane: Some(h.lane), dest_t: h.t, dest_point: h.point, dest_dir: vnorm(h.dir), nodes: nodes.unwrap_or_default(), closed }
+}
+
+// ---- the original's point, derivative and nearest point (exact) ----
+
+/// The vector unit's reciprocal as the recompiled code takes it: 1 / x, then one Newton step r + r (1 - r x), not fused.
+fn rcp(x: f32) -> f32 {
+    let r = 1.0 / x;
+    let e = -(r * x - 1.0);
+    r * e + r
+}
+
+/// num / den as the vector basis code forms it (num times the refined reciprocal), 0 when den is 0.
+fn quo(num: f32, den: f32) -> f32 {
+    if den != 0.0 {
+        num * rcp(den)
+    } else {
+        0.0
+    }
+}
+
+/// The order-2 basis of span i in the vector form: its two halves, each kept only inside its knot span.
+fn order2(kn: &[f32], i: usize, u: f32) -> f32 {
+    let (k0, k1, k2) = (kn[i], kn[i + 1], kn[i + 2]);
+    let a = if k0 <= u && u < k1 { quo(u - k0, k1 - k0) } else { 0.0 };
+    let b = if k1 <= u && u < k2 { quo(u - k2, k1 - k2) } else { 0.0 };
+    a + b
+}
+
+/// F-44250: the B-spline basis N(i, k) at u as the point evaluator calls it: k 1 the span test, k 2 scalar with
+/// divisions (F-34776), k 3 (F-97076) and k 4 (F-79184) vectorised with refined reciprocals, each multiply and add separate. Higher orders do not occur on the
+/// city lanes (degree <= 3).
+pub fn basis_n(kn: &[f32], i: usize, k: usize, u: f32) -> f32 {
+    let ind = |j: usize| if kn[j] <= u && u < kn[j + 1] { 1.0f32 } else { 0.0 };
+    match k {
+        1 => ind(i),
+        2 => {
+            let (f11, f10) = (kn[i + 1] - kn[i], kn[i + 2] - kn[i + 1]);
+            let (f9, f8) = (u - kn[i], kn[i + 2] - u);
+            let (n0, n1) = (ind(i), ind(i + 1));
+            if f11 == 0.0 {
+                if f10 == 0.0 {
+                    0.0
+                } else {
+                    (f8 / f10) * n1
+                }
+            } else if f10 == 0.0 {
+                (f9 / f11) * n0
+            } else {
+                fma(f8 / f10, n1, (f9 / f11) * n0)
+            }
+        }
+        3 => {
+            let k = &kn[i..];
+            let a = quo(u - k[0], k[2] - k[0]);
+            let b = quo(u - k[3], k[1] - k[3]);
+            let n0 = order2(kn, i, u);
+            let n1 = order2(kn, i + 1, u);
+            b * n1 + a * n0
+        }
+        _ => {
+            let k = &kn[i..];
+            let (n0, n1, n2) = (order2(kn, i, u), order2(kn, i + 1, u), order2(kn, i + 2, u));
+            let a0 = quo(u - k[0], k[2] - k[0]);
+            let a3 = quo(u - k[3], k[1] - k[3]);
+            let a2 = quo(u - k[1], k[3] - k[1]);
+            let b1 = quo(u - k[4], k[2] - k[4]);
+            let m0 = n0 * a0 + n1 * a3;
+            let m1 = n1 * a2 + n2 * b1;
+            let c0 = quo(u - k[0], k[3] - k[0]);
+            let c1 = quo(u - k[4], k[1] - k[4]);
+            c1 * m1 + c0 * m0
+        }
+    }
+}
+
+/// t clamped to 0 .. 1 by the two selects (a NaN gives 0).
+fn clamp01(t: f32) -> f32 {
+    let t = if t >= 0.0 { t } else { 0.0 };
+    if t - 1.0 >= 0.0 {
+        1.0
+    } else {
+        t
+    }
+}
+
+/// The knot parameter u = t x TRange capped at TMax and the first control point of the span holding it.
+fn span(c: &LaneCurve, t: f32) -> (f32, usize) {
+    let prod = c.t_range * t;
+    let u = if prod - c.t_max >= 0.0 { c.t_max } else { prod };
+    let d = c.degree as usize;
+    let kn = &c.knots;
+    let mut j = 0;
+    while j + 2 < kn.len() && !(kn[j] <= u && u < kn[j + 1]) {
+        j += 1;
+    }
+    (u, j.saturating_sub(d).min(c.pts.len().saturating_sub(d + 1)))
+}
+
+/// F-40353: the lane's point at phase t as the nearest search evaluates it: degree 1 the control polygon (t = 1 read as
+/// 0.9999), otherwise the degree + 1 control points weighted by `basis_n`, multiplied and added in turn.
+pub fn point(c: &LaneCurve, t: f32) -> Vec3 {
+    let t = clamp01(t);
+    let n = c.pts.len();
+    if c.degree == 1 {
+        let t = if t == 1.0 { f32::from_bits(0x3F7F_F972) } else { t };
+        let f = (n - 1) as f32 * t;
+        let i = (f as usize).min(n.saturating_sub(2));
+        let fr = f - i as f32;
+        let (a, b) = (c.pts[i], c.pts[i + 1]);
+        let d = b - a;
+        return Vec3::new(d.x * fr + a.x, d.y * fr + a.y, d.z * fr + a.z);
+    }
+    let (u, s) = span(c, t);
+    let d = c.degree as usize;
+    let mut p = Vec3::ZERO;
+    for i in s..=s + d {
+        let w = basis_n(&c.knots, i, d + 1, u);
+        let q = c.pts[i];
+        p = Vec3::new(q.x * w + p.x, q.y * w + p.y, q.z * w + p.z);
+    }
+    p
+}
+
+/// F-94373: dN(i, k)/du from the lower order's pair (`LaneCurve::basis_pair`), the reciprocal widths multiplied in.
+fn basis_d(c: &LaneCurve, i: usize, k: usize, u: f32) -> f32 {
+    if k == 1 {
+        return 0.0;
+    }
+    let kn = &c.knots;
+    let (f28, f30) = (u - kn[i], kn[i + k - 1] - kn[i]);
+    let (f27, f29) = (kn[i + k] - u, kn[i + k] - kn[i + 1]);
+    match (f30 != 0.0, f29 != 0.0) {
+        (true, true) => {
+            let (n0, d0) = c.basis_pair(i, k - 1, u);
+            let (n1, d1) = c.basis_pair(i + 1, k - 1, u);
+            let (f11, f10) = (1.0 / f30, 1.0 / f29);
+            let (f9, f8, f7) = (f11 * f28, f11 * n0, f10 * f27);
+            let f6 = fma(f9, d0, f8);
+            let f5 = fma(-f10, n1, f6);
+            fma(f7, d1, f5)
+        }
+        (false, true) => {
+            let (n1, d1) = c.basis_pair(i + 1, k - 1, u);
+            let f12 = 1.0 / f29;
+            fma(f12 * f27, d1, -(f12 * n1))
+        }
+        (true, false) => {
+            let (n0, d0) = c.basis_pair(i, k - 1, u);
+            let f12 = 1.0 / f30;
+            fma(f12 * f28, d0, f12 * n0)
+        }
+        _ => 0.0,
+    }
+}
+
+/// F-26180 (lane slot 10, F-26650): the derivative dP/du at phase t (not scaled by TRange), every degree through the knots.
+pub fn deriv(c: &LaneCurve, t: f32) -> Vec3 {
+    let t = clamp01(t);
+    let (u, s) = span(c, t);
+    let d = c.degree as usize;
+    let mut p = Vec3::ZERO;
+    for i in s..=s + d {
+        let w = basis_d(c, i, d + 1, u);
+        let q = c.pts[i];
+        p = Vec3::new(q.x * w + p.x, q.y * w + p.y, q.z * w + p.z);
+    }
+    p
+}
+
+/// Squared length in the nearest search's order: y^2, z fused, x fused.
+fn len2(v: Vec3) -> f32 {
+    fma(v.x, v.x, fma(v.z, v.z, v.y * v.y))
+}
+
+/// F-53741 (lane slot 14, F-24415, calls it with 4 chords and 10 halvings): the nearest point of the curve to p: the chord of `n` equal phase steps whose foot is nearest (first on ties),
+/// then `iters` halvings of its phase interval, the side taken by the two third points first, then by the nearer
+/// end so far. Returns (phase, squared distance, point) of the end the last step kept.
+pub fn nearest(c: &LaneCurve, p: Vec3, n: u32, iters: u32) -> (f32, f32, Vec3) {
+    let mut prev = point(c, 0.0);
+    let (mut tp, mut ta, mut tb) = (0.0f32, 0.0f32, 1.0f32);
+    let (mut a, mut b) = (prev, prev);
+    let mut best = f32::MAX;
+    let step = 1.0 / n as f32;
+    for k in 1..=n {
+        let t = k as f32 * step;
+        let q = point(c, t);
+        let d = q - prev;
+        let l2 = fma(d.y, d.y, fma(d.z, d.z, d.x * d.x));
+        let u = if l2 == 0.0 {
+            0.0
+        } else {
+            let w = p - prev;
+            let dot = fma(w.x, d.x, fma(w.z, d.z, w.y * d.y));
+            let u = dot / l2;
+            let u = if u >= 0.0 { u } else { 0.0 };
+            if u - 1.0 >= 0.0 {
+                1.0
+            } else {
+                u
+            }
+        };
+        let foot = Vec3::new(d.x * u + prev.x, d.y * u + prev.y, d.z * u + prev.z);
+        let e2 = len2(p - foot);
+        if e2 < best {
+            a = prev;
+            b = q;
+            ta = tp;
+            tb = t;
+            best = e2;
+        }
+        prev = q;
+        tp = t;
+    }
+    let h = (tb - ta) * f32::from_bits(0x3EAA_AAAB);
+    let (mut fa, mut fb) = (len2(a - p), len2(b - p));
+    let p1 = point(c, ta + h);
+    let p2 = point(c, tb - h);
+    let mut side = len2(p - p1) < len2(p - p2);
+    let mut least = f32::MAX;
+    let (mut ot, mut od, mut op) = (0.0f32, f32::MAX, Vec3::ZERO);
+    for _ in 0..iters {
+        let mid = (tb + ta) * 0.5;
+        if side {
+            ot = ta;
+            od = fa;
+            op = a;
+            tb = mid;
+            b = point(c, mid);
+            fb = len2(b - p);
+        } else {
+            ot = tb;
+            od = fb;
+            op = b;
+            ta = mid;
+            a = point(c, mid);
+            fa = len2(a - p);
+        }
+        if fa <= least {
+            least = fa;
+            side = true;
+        }
+        if fb <= least {
+            least = fb;
+            side = false;
+        }
+    }
+    (ot, od, op)
 }
 
 #[cfg(test)]
@@ -807,5 +1092,58 @@ mod tests {
             println!("{b}");
         }
         assert_eq!(equal, searched, "search");
+    }
+
+    /// `point`, `deriv` and `nearest` against the original's code run offline on the real lanes (work/racerai/route
+    /// nearest.cpp: per lane the phases 0, 1, below 0, above 1 and random, points on and off the curve up to 60 m, 4 and 8
+    /// chords, 10 halvings): every 80th line of near_ref.txt here, all 120,372 when the file is there; bit-equal counts.
+    #[test]
+    fn nearest_matches_the_original() {
+        let Some((nav, _)) = load() else { return };
+        let mut texts = vec![include_str!("testdata/railroute_nearest.txt").to_string()];
+        let p = std::env::var("MCLA_RAILNEAR_REF").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/racerai/route/near_ref.txt"));
+        if let Ok(t) = std::fs::read_to_string(p) {
+            texts.push(t);
+        }
+        for text in &texts {
+            let (ok, n) = nearest_check(&nav, text);
+            println!("railroute nearest: point {} / {}, deriv {} / {}, nearest {} / {}", ok[0], n[0], ok[1], n[0], ok[2], n[1]);
+            assert_eq!((ok[0], ok[1], ok[2]), (n[0], n[0], n[1]));
+        }
+    }
+
+    fn nearest_check(nav: &NavSys, text: &str) -> ([usize; 3], [usize; 2]) {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let bits = |v: Vec3| v.to_array().map(f32::to_bits);
+        let (mut ok, mut n) = ([0usize; 3], [0usize; 2]);
+        let mut shown = 0;
+        for line in text.lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            let c = &nav.curves[w[1].parse::<usize>().unwrap()];
+            if w[0] == "P" {
+                let t = f(w[2]);
+                let (pp, dd) = (Vec3::new(f(w[3]), f(w[4]), f(w[5])), Vec3::new(f(w[6]), f(w[7]), f(w[8])));
+                n[0] += 1;
+                let (gp, gd) = (point(c, t), deriv(c, t));
+                ok[0] += (bits(gp) == bits(pp)) as usize;
+                ok[1] += (bits(gd) == bits(dd)) as usize;
+                if (bits(gp) != bits(pp) || bits(gd) != bits(dd)) && shown < 6 {
+                    shown += 1;
+                    println!("{line}: deg {} port {gp:?} {gd:?} orig {pp:?} {dd:?}", c.degree);
+                }
+            } else {
+                let ch: u32 = w[2].parse().unwrap();
+                let pt = Vec3::new(f(w[3]), f(w[4]), f(w[5]));
+                let (t, d2, q) = nearest(c, pt, ch, 10);
+                n[1] += 1;
+                let good = t.to_bits() == f(w[6]).to_bits() && d2.to_bits() == f(w[7]).to_bits() && bits(q) == bits(Vec3::new(f(w[8]), f(w[9]), f(w[10])));
+                ok[2] += good as usize;
+                if !good && shown < 12 {
+                    shown += 1;
+                    println!("{line}: deg {} port {t} {d2} {q:?}", c.degree);
+                }
+            }
+        }
+        (ok, n)
     }
 }
