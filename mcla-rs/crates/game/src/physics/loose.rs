@@ -3747,7 +3747,7 @@ impl LooseState {
     /// The thrown rider's partner among the other vehicles (artic_run.rs `RiderRagdoll::collide_other`): the ambient
     /// car - one polyhedron at its instance, as ov.0's - or an mcCar of this step's list (class 8, an AI racer: its
     /// body as `set_vehicles` hands it in, moved) whose place is nearest `at` within `reach` m. The rider's pair with it
-    /// is the only one the port collides (two at once: the nearer). A semi's two-part bound is not taken; an mcCar that
+    /// is the only one the port collides (two at once: the nearer). A semi trailer's two-part bound is taken with both parts; an mcCar that
     /// stepped before the bike is not in the bike's level (its pairs were in its own step).
     pub fn rider_partner(&self, at: Vec3, reach: f32) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
@@ -3758,7 +3758,7 @@ impl LooseState {
                 8 => obj.amb.is_none() && vh.here && obj.body.is_some(),
                 _ => false,
             };
-            if !ok || vh.parts() != 1 || vh.index == u32::MAX {
+            if !ok || vh.index == u32::MAX {
                 continue;
             }
             let d = (obj.matrix[3] - at).length();
@@ -3771,12 +3771,12 @@ impl LooseState {
 
     /// A vehicle object's bound as the rider's collide takes it: its hull, its centre, its matrix now (as this tick's
     /// move left it) and last (collider +32: the matrix before the move; an inactive car's own).
-    pub fn rider_side(&self, o: usize) -> Option<(&'static HullShape, Vec3, [Vec3; 4], [Vec3; 4])> {
+    pub fn rider_side(&self, o: usize) -> Option<(&'static HullShape, Option<&'static HullShape>, Vec3, [Vec3; 4], [Vec3; 4])> {
         let obj = self.objs.get(o)?;
         let vh = obj.veh?;
         // (an mcCar's `cg` is its body's pivot; the collide takes the hull bound's own centre, +80)
         let cg = if vh.class == 8 { vh.shape.cg } else { vh.cg };
-        Some((vh.shape, cg, obj.matrix, obj.body.map_or(obj.matrix, |b| b.prev)))
+        Some((vh.shape, vh.shape2, cg, obj.matrix, obj.body.map_or(obj.matrix, |b| b.prev)))
     }
 
     /// The object is in a pair of the loose world this tick (a manifold with contacts).

@@ -5438,7 +5438,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             if let Some(rd) = rider_run.as_mut() {
                 rider_tick.resting = rd.pre_collide(dt);
                 rd.collide(world);
-                let side = super::artic_collide::VehSide { hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: seen, last, wheels: Vec::new() };
+                let side = super::artic_collide::VehSide { hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: seen, last, hull2: None, wheels: Vec::new() };
                 rd.collide_bike(&side, RIDER_IS_A);
             }
             // (stage P: the loose bodies' move, gravity and damping, F-44566)
@@ -5764,8 +5764,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     let at = super::artic_collide::rows3(&rd.rd16)[3];
                     other_obj = vs.loose.rider_partner(at, RIDER_PARTNER_REACH);
                     match other_obj.and_then(|o| vs.loose.rider_side(o)) {
-                        Some((shape, cg, now, last)) => {
-                            let side = super::artic_collide::VehSide { hull: shape, hull_cg: cg, hull_margin: f32::from_bits(0x3d23_d70a), now, last, wheels: Vec::new() };
+                        Some((shape, shape2, cg, now, last)) => {
+                            let side = super::artic_collide::VehSide { hull: shape, hull_cg: cg, hull_margin: f32::from_bits(0x3d23_d70a), now, last, hull2: shape2, wheels: Vec::new() };
                             rd.collide_other(Some((&side, RIDER_LEVEL < OTHER_LEVEL)));
                         }
                         None => rd.collide_other(None),

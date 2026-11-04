@@ -523,7 +523,10 @@ pub struct VehSide<'a> {
     /// its collider's +32, the matrix it had as the tick began (F-65617, as loose.rs takes two bodies)
     pub now: [Vec3; 4],
     pub last: [Vec3; 4],
-    /// the wheels' parts (their now / last already in the world)
+    /// a two-part bound's second polyhedron (a semi trailer's composite: part 1, its part matrix the identity as part
+    /// 0's), its centre and margin taken as the first's are; None for one hull
+    pub hull2: Option<&'a super::hull::HullShape>,
+    /// the wheels' parts (their now / last already in the world), after the hulls
     pub wheels: Vec<Option<super::loose::WheelIn>>,
 }
 
@@ -532,19 +535,33 @@ impl VehSide<'_> {
     fn part(&self, p: usize) -> Option<(super::loose::Core<'_>, f32, Vec3, (Vec3, Vec3), [Vec3; 4], [Vec3; 4])> {
         use super::gjk::HullCore;
         use super::loose::Core;
-        if p == 0 {
+        if let Some(h) = self.hull_at(p) {
             let n = self.now;
-            let core = Core::Hull(HullCore { corners: self.hull.scanned(), rows: [n[0], n[1], n[2]], at: n[3] });
+            let core = Core::Hull(HullCore { corners: h.scanned(), rows: [n[0], n[1], n[2]], at: n[3] });
             // (the hull's box as loose.rs takes it for the part cull)
-            let bbox = (self.hull.min - Vec3::splat(0.041), self.hull.max + Vec3::splat(0.041));
-            return Some((core, self.hull_margin, self.hull_cg, bbox, n, self.last));
+            let bbox = (h.min - Vec3::splat(0.041), h.max + Vec3::splat(0.041));
+            let cg = if p == 0 { self.hull_cg } else { h.cg };
+            return Some((core, self.hull_margin, cg, bbox, n, self.last));
         }
-        let w = self.wheels.get(p - 1).copied().flatten()?;
+        let w = self.wheels.get(p - self.hulls()).copied().flatten()?;
         Some((Core::Wheel(w.core), super::gjk::WHEEL_MARGIN, Vec3::ZERO, (Vec3::ZERO - w.half, w.half), w.now, w.last))
     }
 
     fn parts(&self) -> usize {
-        1 + self.wheels.len()
+        self.hulls() + self.wheels.len()
+    }
+
+    fn hulls(&self) -> usize {
+        1 + self.hull2.is_some() as usize
+    }
+
+    /// Part `p`'s polyhedron when it is one of the hulls.
+    fn hull_at(&self, p: usize) -> Option<&super::hull::HullShape> {
+        match p {
+            0 => Some(self.hull),
+            1 => self.hull2,
+            _ => None,
+        }
     }
 }
 
@@ -649,14 +666,15 @@ fn veh_pair_contact(m: &mut VehManifold, a: &PairSide, b: &PairSide, veh_is_a: b
     }
     // (the hull's polygon: the corners the detector ended on and the contact's direction in the hull's frame, away
     // from the other part; a wheel's element 0)
-    let element = match (vp, veh_is_a) {
-        (0, true) => veh.hull.element(&r.corners.0[..r.corners.1], inv(&veh.now, Vec3::ZERO - normal)),
-        (0, false) => veh.hull.element(&r.corners_b.0[..r.corners_b.1], inv(&veh.now, normal)),
+    let hull = veh.hull_at(vp);
+    let element = match (hull, veh_is_a) {
+        (Some(h), true) => h.element(&r.corners.0[..r.corners.1], inv(&veh.now, Vec3::ZERO - normal)),
+        (Some(h), false) => h.element(&r.corners_b.0[..r.corners_b.1], inv(&veh.now, normal)),
         _ => 0,
     };
     // (a wheel's material: the hull's first polygon's - unverified, the recordings' wheel contacts carry the hull's
     // friction)
-    let surface = veh.hull.surface_of(element);
+    let surface = hull.unwrap_or(veh.hull).surface_of(element);
     let side = |now: &[Vec3; 4], q: Vec3| Side { body: None, point: q, local: inv(now, q - now[3]), rows: [now[0], now[1], now[2]], margin: SIDE_MARGIN, core: Vec3::ZERO };
     let fresh = Touch { depth: 0.0 - dist, a: side(a_now, qa), b: side(b_now, qb), normal, back: Vec3::ZERO - normal, ..Default::default() };
     sink(&mut m.slots, RiderSlot { touch: fresh, age: 0, enabled: true, polygon: element as u32, surface });
@@ -1185,7 +1203,7 @@ mod tests {
             let last: Vec<[Vec3; 4]> = mats("rpv").iter().map(|p| world_matrix(p, &r32)).collect();
             let bnow: Vec<[Vec3; 4]> = mats("bcu").iter().map(|p| world_matrix(p, &b16)).collect();
             let blast: Vec<[Vec3; 4]> = mats("bpv").iter().map(|p| world_matrix(p, &b32)).collect();
-            let veh = VehSide { hull: &hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: bnow[0], last: blast[0], wheels: vec![None; bnow.len() - 1] };
+            let veh = VehSide { hull: &hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: bnow[0], last: blast[0], hull2: None, wheels: vec![None; bnow.len() - 1] };
             pair.collide(&sh, &now, &last, &veh);
             ticks_n += 1;
             let mut fresh: Vec<(u8, u8, RiderSlot)> = pair.manifolds.iter().flat_map(|m| m.slots.iter().filter(|s| s.age == 0).map(move |s| (m.veh, m.part, *s))).collect();
@@ -1295,6 +1313,18 @@ mod tests {
         car_contacts(include_bytes!("testdata/rider_car_xi0_col.bin"), u32::MAX, Some(()));
     }
 
+    /// The rider against a semi trailer's two-part bound: xk.0 5286 - 5291 (an ambient trailer 0x56e5 on the 101 freeway,
+    /// active after the bike struck it; level below the rider's 0x572a: the trailer is A). Its bound a composite of two
+    /// polyhedra (part 0: 8 vertices, 10 triangles; part 1: 8 vertices, 12 triangles), both part matrices the identity,
+    /// by testdata/rider_semi_xk0_col.bin (export_carcol.py with every polyhedron part). The same collide with
+    /// [`VehSide::hull2`] as part 1: sub-manifolds, new contacts with their polygons, refresh and materials word for
+    /// word. (The fixture's ticks 5209 / 5210 are snapshots of the rider with his bike: the trailer far, no
+    /// sub-manifold.)
+    #[test]
+    fn semi_contacts_match_recording() {
+        car_contacts(include_bytes!("testdata/rider_semi_xk0_col.bin"), u32::MAX, None);
+    }
+
     fn car_contacts(fixture: &[u8], end: u32, racer: Option<()>) {
         let Some(root) = data_dir() else {
             eprintln!("skipped: the extracted data (MCLA_DATA_DIR) is missing");
@@ -1314,6 +1344,18 @@ mod tests {
         hull.cg = Vec3::new(f32::from_bits(hx[0]), f32::from_bits(hx[1]), f32::from_bits(hx[2]));
         hull.scan = (hx[4] as usize).min(hull.verts.len());
         let margin = f32::from_bits(hx[3]);
+        // (a two-part bound's second polyhedron: sections hv2 / ht2 / hm2 / hx2)
+        let hull2 = f.0.contains_key("hv2").then(|| {
+            let verts: Vec<Vec3> = f.w("hv2").chunks(3).map(|c| Vec3::new(f32::from_bits(c[0]), f32::from_bits(c[1]), f32::from_bits(c[2]))).collect();
+            let tris: Vec<[u16; 3]> = f.w("ht2").chunks(3).map(|c| [c[0] as u16, c[1] as u16, c[2] as u16]).collect();
+            let hx2 = f.w("hx2");
+            let mut h = super::super::hull::HullShape::new(verts, &tris);
+            h.mats = f.w("hm2").to_vec();
+            h.cg = Vec3::new(f32::from_bits(hx2[0]), f32::from_bits(hx2[1]), f32::from_bits(hx2[2]));
+            h.scan = (hx2[4] as usize).min(h.verts.len());
+            assert_eq!(hx2[3], hx[3]);
+            h
+        });
         let lv = f.w("lv");
         let rider_is_a = lv[0] < lv[1];
         assert!(!rider_is_a);
@@ -1329,7 +1371,7 @@ mod tests {
             let last: Vec<[Vec3; 4]> = mats("rpv").iter().map(|p| world_matrix(p, &r32)).collect();
             let bnow: Vec<[Vec3; 4]> = mats("bcu").iter().map(|p| world_matrix(p, &b16)).collect();
             let blast: Vec<[Vec3; 4]> = mats("bpv").iter().map(|p| world_matrix(p, &b32)).collect();
-            let veh = VehSide { hull: &hull, hull_cg: hull.cg, hull_margin: margin, now: bnow[0], last: blast[0], wheels: Vec::new() };
+            let veh = VehSide { hull: &hull, hull_cg: hull.cg, hull_margin: margin, now: bnow[0], last: blast[0], hull2: hull2.as_ref(), wheels: Vec::new() };
             pair.collide(&sh, &now, &last, &veh);
             ticks_n += 1;
             let mut fresh: Vec<(u8, u8, RiderSlot)> = pair.manifolds.iter().flat_map(|m| m.slots.iter().filter(|s| s.age == 0).map(move |s| (m.veh, m.part, *s))).collect();

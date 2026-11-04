@@ -525,7 +525,8 @@ impl RiderRagdoll {
         let (_, last) = world_parts(&self.parts, &rows3(&self.rd16), &rows3(&mat_at(&self.body.raw_collider, 32)));
         self.other.rider_is_a = rider_is_a;
         self.other.collide(&self.shapes, &now, &last, veh);
-        self.other_now = vec![veh.now];
+        // (every hull part of the vehicle at its instance: a two-part bound's part matrices are the identity)
+        self.other_now = vec![veh.now; 1 + veh.hull2.is_some() as usize];
     }
 
     /// The rest of a tick with the rider and another vehicle in one island (no bike, no other row): the vehicle body 0
