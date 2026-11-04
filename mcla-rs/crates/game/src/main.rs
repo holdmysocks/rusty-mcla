@@ -46,6 +46,7 @@ mod flags;
 mod fixed_step;
 mod vehicle_pose;
 mod wheel_pose;
+mod steer_parts;
 mod video;
 mod cine;
 mod cinecast;

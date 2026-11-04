@@ -380,6 +380,8 @@ pub struct CarInstance {
     pub siren: bool,
     /// the light bar clip's time (`CopLights`): from the car's making, looped
     pub light_t: f32,
+    /// the car-parts object's eased steering (steer_parts.rs): a motorcycle's front wheel is drawn turned by it
+    pub steer_parts: crate::steer_parts::SteerParts,
     /// a traffic or parked car's two light slot ids (render instance + 612 / + 660, F-99357; -1 = empty,
     /// 65545 = the hour's light) - main.rs `traffic_light_slots`
     pub amb_slot: [i32; 2],
@@ -1649,11 +1651,11 @@ pub fn car_params_mods(car: &CarAsset, base: &CarParams) -> Option<CarParams> {
 }
 
 /// A set-up car's wheel `i` as F-47822 draws it, from the sim's last update: the turn (rows axle, up, way of the posed
-/// matrix) and how far the pose moved the wheel's place. None for a bike, a car the sim does not run or without its
-/// `.r50`, and with MCLA_WHEEL_POSE_OLD.
+/// matrix) and how far the pose moved the wheel's place. None for a car the sim does not run or without its `.r50`,
+/// and with MCLA_WHEEL_POSE_OLD.
 fn drawn_wheel_pose(c: &CarInstance, i: usize) -> Option<(Quat, Vec3)> {
     static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *OLD.get_or_init(|| std::env::var_os("MCLA_WHEEL_POSE_OLD").is_some()) || c.model.bike {
+    if *OLD.get_or_init(|| std::env::var_os("MCLA_WHEEL_POSE_OLD").is_some()) {
         return None;
     }
     let tunes = c.model.simtunes.as_ref()?;
@@ -1666,8 +1668,8 @@ fn drawn_wheel_pose(c: &CarInstance, i: usize) -> Option<(Quat, Vec3)> {
     let m = crate::wheel_pose::local(&body, &world);
     let wide = c.setup.or(c.model.fit).is_some_and(|f| f.wide) as usize;
     let car = crate::wheel_pose::CarTerms {
-        bike: false,
-        bike_turn: 0.0,
+        bike: c.model.bike,
+        bike_turn: c.steer_parts.out,
         ceiling: [tunes.fender_ceiling[0][wide], tunes.fender_ceiling[1][wide]],
         steer_limit: tunes.tire_steer[0],
         steer_offset: tunes.tire_steer[1],
@@ -1692,7 +1694,8 @@ fn drawn_wheel_pose(c: &CarInstance, i: usize) -> Option<(Quat, Vec3)> {
         travel_limit: wt.travel_limit,
         offset,
     };
-    let posed = crate::wheel_pose::pose(m, &car, &w, false);
+    // (a motorcycle's front wheel, F-54299's wheel 0: the port's two front wheels, drawn on the centre line together)
+    let posed = crate::wheel_pose::pose(m, &car, &w, front);
     let rot = Quat::from_mat3(&glam::Mat3::from_cols(posed[0], posed[1], posed[2])).normalize();
     Some((rot, posed[3] - m[3]))
 }
@@ -2888,7 +2891,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -4127,6 +4130,38 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
         }
 
+        // ---- a motorcycle's eased steering, every frame (F-98654 -> F-69494, steer_parts.rs): the racer's values as
+        // F-80793 copies them in (a player: its pad's +36, +24 and +88 - F-13138, F-54401, F-51971; a computer driver:
+        // its input's +36 and +24 and 1 - F-73863, F-72992, F-35724), the rider's rates (F-28290) ----
+        for c in self.cars.iter_mut() {
+            if !c.model.bike {
+                continue;
+            }
+            let Some(vs) = c.state.veh.as_deref() else { continue };
+            let Some(vt) = c.tuned.as_deref().unwrap_or(&c.model.params).veh.as_ref() else { continue };
+            let d = &mut c.steer_parts;
+            d.rider_rates();
+            if c.input.ai {
+                // (approximate: the opponent input's +36 is the frame's steering out of its brain, F-17058's local
+                // +100, which the port does not keep apart from +24)
+                (d.gate, d.value, d.divisor) = (c.input.steer, c.input.steer, 1.0);
+            } else {
+                // (+36: the steering axis through its dead zones, towards which it goes at 8 a second while the weight
+                // button was down the frame before, else 0 - A-60035 .. A-28077 of mcPlayerInput::Update (F-56064); its
+                // flag 0x80 case, set at once, is not ported)
+                d.pad_x = if vs.pad.button {
+                    let v = crate::physics::pad::dead_zone(crate::physics::pad::stick_axis(crate::physics::pad::stick_byte(c.input.steer)), 0.1);
+                    let mut x = d.pad_x;
+                    crate::physics::exact::approach(&mut x, v, 8.0, dt);
+                    x
+                } else {
+                    0.0
+                };
+                (d.gate, d.value, d.divisor) = (d.pad_x, vs.pad_steer, crate::physics::pad::speed_factor(&vt.t.input, vs.last_speed));
+            }
+            d.step(vs.last_speed, false, dt);
+        }
+
         // ---- the moving damage parts (F-24651: every car, every frame, after its impacts are queued) ----
         let ground = |p: Vec3| world.collider.ground(p, 1.0, 3.0).map(|h| (h.point.y, h.normal));
         for c in self.cars.iter_mut() {
@@ -4763,7 +4798,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 let mut steer = Quat::from_rotation_y(-pose.steer[i]);
                 // (F-47822: a car's wheel is drawn from its matrix among the car's parts, kept under the fender, its
                 // turn cut by TireSteerLimit and shifted by TireSteerOffset - see wheel_pose.rs; the shift is added to
-                // the drawn hub. A bike's two wheels: not yet. MCLA_WHEEL_POSE_OLD=1: the steer alone, as before)
+                // the drawn hub. A bike's front wheel is turned by the eased steering, steer_parts.rs, instead of its
+                // own. MCLA_WHEEL_POSE_OLD=1: the steer alone, as before)
                 let mut shift = Vec3::ZERO;
                 if let Some((rot, d)) = drawn_wheel_pose(c, i) {
                     steer = rot;
