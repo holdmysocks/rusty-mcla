@@ -423,6 +423,8 @@ mod tests {
         let mut n = 0;
         for case in text.split("= ").skip(1) {
             let (head, want) = case.split_once('\n').unwrap();
+            // (a checkout with autocrlf has the file in CRLF)
+            let want = want.replace('\r', "");
             let mut it = head.split_whitespace();
             let op = it.next().unwrap();
             let w: Vec<u32> = it.map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
