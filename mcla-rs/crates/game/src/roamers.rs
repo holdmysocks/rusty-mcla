@@ -996,8 +996,11 @@ impl Roamers {
             if std::env::var("MCLA_ROAM_TEST").is_ok() && (ch.time % 10.0) < dt {
                 log::info!("roamers: t {:.0} rival {:.0} m, player {:.0} m from the line", ch.time, rival.map_or(-1.0, |r| r.distance(ch.goal)), pp.distance(ch.goal));
             }
-            // (flashing the headlights again skips the run: straight to the race, no reputation)
-            if flash && ch.time > 0.5 {
+            // (flashing the headlights again skips the run: straight to the race, no reputation - only while the
+            // player is not damaged out: the meet-me-there include tests Racer_IsDamagedOut first, F-36475 - e.g.
+            // BEAT_GH_05_TUNER_CORE 0x10b2. Its Racer_SetInvincible(player, 1), F-87901, stands until the race core's
+            // start clears it for every racer; the port starts the race from here at once - no invincible flag kept)
+            if flash && ch.time > 0.5 && vehicles.player().map_or(true, |c| c.state.damage < 1.0) {
                 log::info!("headlights flashed on the run to the line: straight to the race");
                 game.opt_x.arcade.bmt_left.set(None);
                 let race = ch.race;
