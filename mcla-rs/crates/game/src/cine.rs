@@ -1197,6 +1197,12 @@ impl Cine {
         self.buf.upload(gpu);
     }
 
+    /// What the shadow passes draw of the characters (`draw` with `shadow`), apart from them (main.rs: `prepare` runs beside
+    /// those passes).
+    pub fn shadow_part(&self) -> Option<crate::skin::ShadowSkin> {
+        (self.playing.is_some() || !self.ambient.is_empty()).then(|| self.buf.shadow_part()).flatten()
+    }
+
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, shadow: bool, draws: &mut usize) {
         if self.playing.is_some() || !self.ambient.is_empty() {
             self.buf.draw(pass, gpu, shadow, draws);

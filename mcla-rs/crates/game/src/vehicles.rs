@@ -5296,6 +5296,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
     }
 
     fn draw_x<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, skip_ambient: bool, cull: Option<bool>) {
+        // (the opaque pass of `draw_culled`: each batch with its material's own pipeline once it is built - `car_pipe`)
+        let own = cull.is_some() && !blend_pass;
+        let mut pick = (0u8, u32::MAX, false);
         for (ci, c) in self.cars.iter().enumerate() {
             // (step 19g: a car under Stealth is not drawn in either pass of its own - pu_fx.rs)
             if c.pu_stealth {
@@ -5400,17 +5403,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
                 pass.set_pipeline(&gpu.pipeline_blend);
             }
-            let mut culled = false;
             for (bi, b) in batches.iter().enumerate() {
                 if b.mode.blended() != blend_pass || b.bucket == 1 {
                     continue;
                 }
                 if let (Some(m), false) = (cull, blend_pass) {
                     let want = !two_sided(b);
-                    if want != culled {
-                        pass.set_pipeline(if !want { &gpu.pipeline_opaque } else if m { &gpu.pipeline_opaque_cull_m } else { &gpu.pipeline_opaque_cull });
-                        culled = want;
-                    }
+                    car_pipe(pass, gpu, &mut pick, if !want { 0 } else if m { 2 } else { 1 }, b.mode);
                 }
                 if c.is_ambient() && amb_skip(&c.model.name, bi, b) {
                     continue;
@@ -5434,9 +5433,6 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 pass.draw_indexed(0..b.count, 0, 0..1);
                 *draws += 1;
             }
-            if culled {
-                pass.set_pipeline(&gpu.pipeline_opaque);
-            }
             if !blend_pass && wheels_visible && c.model.own_wheels.is_none() {
                 // garage choice, else the car's stock wheels, else the generic set
                 if let Some(w) = c.wheels.as_ref().or(c.model.wheels.as_ref()).or(self.wheels.as_ref()) {
@@ -5449,6 +5445,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         let back = !w.backside.is_empty() && self.wheel_back.get(ci).is_some_and(|m| wi < 8 && m & (1 << wi) != 0);
                         let rim_from = if back { w.rim_from.min(w.batches.len()) } else { w.batches.len() };
                         for b in w.batches[..rim_from].iter().chain(if back { &w.backside[..] } else { &w.batches[rim_from..] }) {
+                            if own {
+                                car_pipe(pass, gpu, &mut pick, 0, b.mode);
+                            }
                             pass.set_bind_group(1, b.bind.as_ref(), &[]);
                             pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                             pass.set_vertex_buffer(0, b.vb.slice(..));
@@ -5462,6 +5461,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                                 let Some(bg) = bg else { continue };
                                 pass.set_bind_group(3, bg, &[]);
                                 for b in list {
+                                    if own {
+                                        car_pipe(pass, gpu, &mut pick, 0, b.mode);
+                                    }
                                     pass.set_bind_group(1, b.bind.as_ref(), &[]);
                                     pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                                     pass.set_vertex_buffer(0, b.vb.slice(..));
@@ -5474,6 +5476,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                 }
             }
+        }
+        if pick.0 != 0 || pick.2 {
+            pass.set_pipeline(&gpu.pipeline_opaque);
         }
     }
 }
@@ -6756,4 +6761,28 @@ mod siren_tests {
         assert_eq!(siren_flash(350), ([1.0, 0.0, 0.0], 200.0));
         assert_eq!(siren_flash(599), ([1.0, 0.0, 0.0], 0.0));
     }
+}
+
+/// A batch of `draw_x`'s opaque pass: `cull` 0 none, 1 the set-up car's, 2 the same mirrored; its material's own pipeline
+/// once it is built (`Gpu::pipeline_opaque_mode` / `pipeline_opaque_cull_mode`; none for 2), else the pass's as before.
+/// `pick` = (the cull, the material, its own pipeline set) of the pipeline set last.
+fn car_pipe(pass: &mut wgpu::RenderPass<'_>, gpu: &Gpu, pick: &mut (u8, u32, bool), cull: u8, mode: MatMode) {
+    if pick.0 == cull && pick.1 == mode as u32 {
+        return;
+    }
+    let table = match cull {
+        0 => Some(&gpu.pipeline_opaque_mode),
+        1 => Some(&gpu.pipeline_opaque_cull_mode),
+        _ => None,
+    };
+    let own = table.and_then(|t| t[mode as usize].as_ref()).and_then(|p| p.ready(crate::render::ms::current()));
+    if own.is_some() || pick.2 || cull != pick.0 {
+        let base: &wgpu::RenderPipeline = match cull {
+            0 => &gpu.pipeline_opaque,
+            1 => &gpu.pipeline_opaque_cull,
+            _ => &gpu.pipeline_opaque_cull_m,
+        };
+        pass.set_pipeline(own.unwrap_or(base));
+    }
+    *pick = (cull, mode as u32, own.is_some());
 }

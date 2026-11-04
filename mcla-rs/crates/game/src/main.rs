@@ -10186,6 +10186,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "shadows");
         early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
+        // (the story scenes' characters: their own programs, lit by the light manager's state -
+        // skin.rs `CharLight`; MCLA_CHAR_OLD=1: the generic look as before)
+        let hour = globals.sun_color[3];
+        let char_light = skin::CharLight {
+            to_light: Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]),
+            key: Vec3::new(globals.sun_color[0], globals.sun_color[1], globals.sun_color[2]),
+            strength: globals.sun_dir[3],
+            amb: Vec3::new(globals.ambient_sky[0], globals.ambient_sky[1], globals.ambient_sky[2]),
+            night: hour > 18.0 || hour < 6.0,
+            night_path: false,
+            dynamic: None,
+            cine: self.cine.playing.is_some(),
+        };
+        // (at night the scenes' cast takes path A's night lights - the cutscene light list while a scene plays,
+        // cutlights.rs; MCLA_CHAR_NIGHT_OLD=1: the day's lights at night as before)
+        let night_cast = std::env::var("MCLA_CHAR_NIGHT_OLD").is_err();
+        self.cine.set_light(std::env::var("MCLA_CHAR_OLD").is_err().then_some(skin::CharLight { night_path: night_cast, dynamic: self.peds.night_lights.as_ref().map(|d| d.0).filter(|_| night_cast), ..char_light }));
         {
             let gpu = &gpu;
             // (of the world only its sectors: the rest of it is not shared between threads)
@@ -10201,6 +10218,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the walkers as the shadow passes have drawn them: last frame's draw over the vertices this frame's
             // `peds.prepare` writes before the submit - prepare now runs beside these passes, below)
             let peds_shadow = self.peds.shadow_part();
+            // (the scenes' cast and the hangouts' people the same: `cine.prepare` runs beside the passes too)
+            let cine_shadow = self.cine.shadow_part();
             let shadow_job = || -> (wgpu::CommandBuffer, usize, usize) {
                 let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shadow") });
                 let mut n = 0usize;
@@ -10264,7 +10283,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(s) = &peds_shadow {
                         s.draw(&mut sp, gpu, &mut n);
                     }
-                    self.cine.draw(&mut sp, &gpu, true, &mut n);
+                    if let Some(s) = &cine_shadow {
+                        s.draw(&mut sp, gpu, &mut n);
+                    }
                     sp.set_pipeline(&gpu.pipeline_shadow_inst);
                     sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                     self.props.draw(&mut sp, &gpu, self.cam.pos, &lf, None, &mut n);
@@ -10466,7 +10487,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(s) = &peds_shadow {
                         s.draw(&mut sp, gpu, &mut n);
                     }
-                    self.cine.draw(&mut sp, &gpu, true, &mut n);
+                    if let Some(s) = &cine_shadow {
+                        s.draw(&mut sp, gpu, &mut n);
+                    }
                     sp.set_pipeline(if gpu.casc_cull_kinds & render::CASC_CULL_PROP != 0 { &gpu.pipeline_casc_inst_cull } else { &gpu.pipeline_casc_inst });
                     sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                     self.props.draw(&mut sp, &gpu, self.cam.pos, &lf, None, &mut n);
@@ -10511,6 +10534,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the walkers' skinning for this frame, docs/PERFORMANCE.md 2026-10-27 (4): beside the shadow passes)
             let (peds, ped_eye, ped_frustum) = (&mut self.peds, self.cam.pos, &frustum);
             let ped_hidden = self.arrest_on_screen;
+            // (the scenes' cast and the hangouts' people: skinned beside the passes too; MCLA_CINE_PREP_OLD=1: after them as before)
+            let cine_old = std::env::var_os("MCLA_CINE_PREP_OLD").is_some();
+            let cine_prep = (!cine_old).then_some(&mut self.cine);
             let (mut parts, ()): (Vec<(usize, wgpu::CommandBuffer, usize, usize)>, ()) = mcla_flash::raster::pool().install(|| rayon::join(|| {
                 // (0 the shadow map, 1 - 4 the cascade tiles, 5 the collector, 6 the reflection)
                 (0..7usize)
@@ -10533,7 +10559,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         _ => (j, reflection_job(), 0, 0),
                     })
                     .collect()
-            }, || peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden)));
+            }, || rayon::join(|| peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden), || if let Some(c) = cine_prep { c.prepare(gpu) }).0));
+            if cine_old {
+                self.cine.prepare(&gpu);
+            }
             parts.sort_by_key(|p| p.0);
             for (j, cb, n, sec_n) in parts {
                 if j == 0 {
@@ -10569,27 +10598,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.fx.prepare(&gpu, self.cam.pos);
         // (the rain and the lamps' cones in it, as the original draws them - rain.rs)
         rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, next: self.sky_next.as_ref().map(|(_, w, f)| (match w { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, *f)), hour: self.time_of_day, collider: Some(&world.collider) });
-        // (the story scenes' characters: their own programs, lit by the light manager's state -
-        // skin.rs `CharLight`; MCLA_CHAR_OLD=1: the generic look as before)
-        let hour = globals.sun_color[3];
-        let char_light = skin::CharLight {
-            to_light: Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]),
-            key: Vec3::new(globals.sun_color[0], globals.sun_color[1], globals.sun_color[2]),
-            strength: globals.sun_dir[3],
-            amb: Vec3::new(globals.ambient_sky[0], globals.ambient_sky[1], globals.ambient_sky[2]),
-            night: hour > 18.0 || hour < 6.0,
-            night_path: false,
-            dynamic: None,
-            cine: self.cine.playing.is_some(),
-        };
-        // (at night the scenes' cast takes path A's night lights - the cutscene light list while a scene plays,
-        // cutlights.rs; MCLA_CHAR_NIGHT_OLD=1: the day's lights at night as before)
-        let night_cast = std::env::var("MCLA_CHAR_NIGHT_OLD").is_err();
-        self.cine.set_light(std::env::var("MCLA_CHAR_OLD").is_err().then_some(skin::CharLight { night_path: night_cast, dynamic: self.peds.night_lights.as_ref().map(|d| d.0).filter(|_| night_cast), ..char_light }));
         // (the drivers and riders are mcCharacterPlus instances: path A as the scenes' cast, by day and at night -
         // F-21528, recorded on the player's rider; MCLA_DRV_LIGHT_OLD=1: the city's object look as before)
         self.drivers.set_light(std::env::var("MCLA_DRV_LIGHT_OLD").is_err().then(|| skin::CharLight { night_path: true, dynamic: self.peds.night_lights.as_ref().map(|d| d.0), ..char_light }));
-        self.cine.prepare(&gpu);
         {
             // drivers of the player's car, the racers and the police (traffic models have their own)
             let force = std::env::var("MCLA_DRV_STEER").ok().and_then(|v| v.parse::<f32>().ok());
@@ -13654,7 +13665,7 @@ impl App {
             // own - render/ms.rs; the city's plain ones for the environment map too)
             render::ms::warm(vec![render::ms::scene(aamode::scene_samples(false)), render::ms::PLAIN, render::ms::scene(aamode::scene_samples(true))]);
             // (the city's per-material pipelines behind them, which nothing waits for - render/mod.rs `mode_constant`)
-            render::ms::build_behind(gpu.pipeline_opaque_mode.iter().flatten().cloned().collect(), vec![render::ms::scene(aamode::scene_samples(false)), render::ms::scene(aamode::scene_samples(true))]);
+            render::ms::build_behind(gpu.pipeline_opaque_mode.iter().chain(&gpu.pipeline_inst_mode).chain(&gpu.pipeline_opaque_cull_mode).flatten().cloned().collect(), vec![render::ms::scene(aamode::scene_samples(false)), render::ms::scene(aamode::scene_samples(true))]);
             if std::env::var("MCLA_NO_PEDS").is_err() {
                 self.peds.load(&self.opt.data_dir);
                 self.drivers.load(&self.opt.data_dir);

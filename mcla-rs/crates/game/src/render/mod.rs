@@ -142,6 +142,26 @@ pub const MODE_PIPES: [MatMode; 13] = [
     MatMode::OceanWaterLod,
 ];
 
+/// The materials of the cars' opaque batches (bodies, wheels, brakes) with a pipeline of their own, without a cull
+/// (`Gpu::pipeline_opaque_mode`) and with the set-up car's cull (`Gpu::pipeline_opaque_cull_mode`).
+pub const CAR_MODE_PIPES: [MatMode; 12] = [
+    MatMode::Opaque,
+    MatMode::AlphaTest,
+    MatMode::Decal,
+    MatMode::Paint,
+    MatMode::Chrome,
+    MatMode::Light,
+    MatMode::Object,
+    MatMode::Rubber,
+    MatMode::BlackGloss,
+    MatMode::Interior,
+    MatMode::Rim,
+    MatMode::DarkGlass,
+];
+
+/// The materials of the props' opaque batches with a pipeline of their own (`Gpu::pipeline_inst_mode`).
+pub const PROP_MODE_PIPES: [MatMode; 6] = [MatMode::Object, MatMode::Foliage, MatMode::AlphaTest, MatMode::Signal, MatMode::BlackGloss, MatMode::StoreSign];
+
 /// `MCLA_MODE_PIPES=0`: every opaque sector batch with the one city pipeline, as before.
 pub fn mode_pipes_on() -> bool {
     std::env::var("MCLA_MODE_PIPES").map_or(true, |v| v.trim() != "0")
@@ -1010,6 +1030,8 @@ pub struct Gpu {
     /// a set-up car's opaque batches with back faces culled (`GpuBatch::cull`): the view as is, a mirrored view
     pub pipeline_opaque_cull: ms::MsPipe,
     pub pipeline_opaque_cull_m: ms::MsPipe,
+    /// `pipeline_opaque_cull` for one material (`CAR_MODE_PIPES`), as `pipeline_opaque_mode`
+    pub pipeline_opaque_cull_mode: Vec<Option<ms::MsPipe>>,
     /// the stencil written and nothing else (the wheels' blur discs)
     pub pipeline_stencil_only: ms::MsPipe,
     pub pipeline_blend: ms::MsPipe,
@@ -1025,6 +1047,8 @@ pub struct Gpu {
     pub sky_hat: skyhat::SkyHat,
     /// opaque / alpha-tested geometry drawn with per-instance transforms (props)
     pub pipeline_inst: ms::MsPipe,
+    /// the same for one material (`PROP_MODE_PIPES`; None, or not `ready` yet: `pipeline_inst`), by MatMode
+    pub pipeline_inst_mode: Vec<Option<ms::MsPipe>>,
     /// the glass props: instanced, blended, both sides, depth tested but not written (the original's draws: blend
     /// control 0x07060706, cull register 0x18000, depth control 0x00708763)
     pub pipeline_inst_blend: ms::MsPipe,
@@ -1968,7 +1992,7 @@ impl Gpu {
         // built behind the loading - main.rs `ms::build_behind`; until then `pipeline_opaque` draws the same)
         let pipeline_opaque_mode: Vec<Option<ms::MsPipe>> = (0..MatMode::COUNT)
             .map(|m| {
-                (mode_pipes_on() && MODE_PIPES.iter().any(|k| *k as u32 == m)).then(|| {
+                (mode_pipes_on() && MODE_PIPES.iter().chain(&CAR_MODE_PIPES).any(|k| *k as u32 == m)).then(|| {
                     let b = city_build.clone();
                     ms::MsPipe::new_behind(&device, move |d, v| b(d, v, false, "vs_main", None, true, wgpu::ColorWrites::ALL, Some(m)))
                 })
@@ -1976,6 +2000,15 @@ impl Gpu {
             .collect();
         // (render state 0 = 2, the original's 0x18002 - the face the windows' front pass culls - and in a mirrored view 1)
         let pipeline_opaque_cull = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Front } else { wgpu::Face::Back }), true);
+        let pipeline_opaque_cull_mode: Vec<Option<ms::MsPipe>> = (0..MatMode::COUNT)
+            .map(|m| {
+                (mode_pipes_on() && CAR_MODE_PIPES.iter().any(|k| *k as u32 == m)).then(|| {
+                    let b = city_build.clone();
+                    let face = if glass_flip { wgpu::Face::Front } else { wgpu::Face::Back };
+                    ms::MsPipe::new_behind(&device, move |d, v| b(d, v, false, "vs_main", Some(face), true, wgpu::ColorWrites::ALL, Some(m)))
+                })
+            })
+            .collect();
         let pipeline_opaque_cull_m = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Back } else { wgpu::Face::Front }), true);
         let pipeline_blend = make_pipeline(true, "vs_main");
         // (the wheels' blur discs, F-49519: colour writes off, depth tested and not written, no cull, the stencil
@@ -2168,9 +2201,11 @@ impl Gpu {
             multiview: None,
             cache: None,
         });
-        let pipeline_inst = {
+        let inst_build = {
             let (pl, shader) = (pl.clone(), shader.clone());
-            ms::MsPipe::new(&device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            std::sync::Arc::new(move |device: &wgpu::Device, v: ms::Variant, mode: Option<u32>| {
+            let constants: std::collections::HashMap<String, f64> = mode.map(|m| ("MODE_K".to_string(), m as f64)).into_iter().collect();
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("city instanced"),
             layout: Some(&pl),
             vertex: wgpu::VertexState {
@@ -2183,15 +2218,29 @@ impl Gpu {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState { format: post::SCENE_FORMAT, blend: Some(wgpu::BlendState::REPLACE), write_mask: wgpu::ColorWrites::ALL })],
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, front_face: wgpu::FrontFace::Cw, ..Default::default() },
             depth_stencil: Some(v.ds(true, wgpu::CompareFunction::GreaterEqual, true, Default::default())),
             multisample: v.ms(),
             multiview: None,
             cache: None,
-        }))
+        })
+            })
         };
+        let pipeline_inst = {
+            let b = inst_build.clone();
+            ms::MsPipe::new(&device, move |d, v| b(d, v, None))
+        };
+        // (the props' opaque batches with a pipeline per material, as `pipeline_opaque_mode`)
+        let pipeline_inst_mode: Vec<Option<ms::MsPipe>> = (0..MatMode::COUNT)
+            .map(|m| {
+                (mode_pipes_on() && PROP_MODE_PIPES.iter().any(|k| *k as u32 == m)).then(|| {
+                    let b = inst_build.clone();
+                    ms::MsPipe::new_behind(&device, move |d, v| b(d, v, Some(m)))
+                })
+            })
+            .collect();
         let pipeline_inst_blend = {
             let (pl, shader) = (pl.clone(), shader.clone());
             ms::MsPipe::new(&device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2541,6 +2590,7 @@ impl Gpu {
             identity_obj,
             pipeline_opaque,
             pipeline_opaque_mode,
+            pipeline_opaque_cull_mode,
             pipeline_opaque_cull,
             pipeline_opaque_cull_m,
             pipeline_stencil_only,
@@ -2552,6 +2602,7 @@ impl Gpu {
             pipeline_sky,
             sky_hat,
             pipeline_inst,
+            pipeline_inst_mode,
             pipeline_inst_blend,
             pipeline_glow,
             pipeline_env_glow,
