@@ -560,6 +560,9 @@ pub struct Brain {
     pub rubber: Option<crate::rubber::RubberBand>,
     /// +408: obstacle kinds to ignore (bit k = kind k)
     pub ignore: u32,
+    /// +404 the throttle cap has been written: only the normal-driving branch of F-17058 writes it, before that it holds
+    /// the brain's fill 0xCDCDCDCD (recorded on the grid; the engine audio's blend reads it, F-98304)
+    pub cap_written: bool,
     dbg_t: f32,
 }
 
@@ -603,6 +606,7 @@ impl Brain {
             stage: 0,
             rubber: None,
             ignore: 0,
+            cap_written: false,
             dbg_t: 0.0,
         };
         let u = rng().float();
@@ -865,6 +869,7 @@ impl Brain {
             }
             if !self.man.reverse && self.man.turn == 0 {
                 let cap = rb.map_or(1.0, |(_, s)| s.cap);
+                self.cap_written = true;
                 t.throttle = a.throttle.min(cap);
                 // nitrous / slingshot
                 let gates = rb.map_or(true, |(r, s)| s.from_start > r.nitro_min_dist_from_start && s.to_finish > r.nitro_min_dist_from_finish && s.gap < -r.nitro_min_dist_behind_player);

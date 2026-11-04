@@ -799,7 +799,10 @@ impl Sound {
                 if let Some((_, e)) = &mut self.engine {
                     e.stop(lib);
                 }
-                self.engine = crate::engaudio::EngineSound::new(lib, &name, p.model.bike).map(|e| (name.clone(), e));
+                self.engine = crate::engaudio::EngineSound::new(lib, &name, p.model.bike).map(|mut e| {
+                    e.start_at(crate::caraudio::engine_rpm(p));
+                    (name.clone(), e)
+                });
             }
             if self.ignition == 1 {
                 if let Some((_, e)) = &mut self.engine {
@@ -849,6 +852,7 @@ impl Sound {
                 idle_only: in_menu,
                 racing: false,
                 speed_ratio: 0.0,
+                rubber_hold: 0.0,
             };
             eng.update(lib, &inp, dt);
             if eng.take_running() {
