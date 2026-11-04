@@ -684,8 +684,9 @@ pub struct Game {
     pub stat_idx: [usize; 2],
     /// the song that has just begun, for the HUD's info line, and how long it has shown
     pub song_line: Option<(String, f32)>,
-    /// the vinyl editor's clipboard (COPY / CUT LAYER)
-    pub vinyl_clip: Option<crate::vinyl::Layer>,
+    /// the vinyl editor's clipboard (COPY / CUT LAYER) and the zone it was copied from (the original's +380 records,
+    /// +1664 zone; F-33351 copies the layer under the cursor)
+    pub vinyl_clip: Option<(usize, crate::vinyl::Layer)>,
     /// after a race: the RACE RESULTS table is up (over the race-over menu)
     pub results_table: bool,
     /// the ARCADE menu: page (0 race type, 1 race, 2 options), the type, and the cursor of
@@ -12801,9 +12802,9 @@ impl Game {
                 if enter {
                     match ed.tab {
                         // COPY / CUT / DELETE / PASTE / INSERT work on the layer under the cursor
-                        // (the original's marks are not kept: approx.)
+                        // (the original's marks are not kept - its COPY LAYER(S), F-60961, copies every marked layer: approx.)
                         0 | 1 => {
-                            self.vinyl_clip = livery.zones[zone].get(ed.layer).cloned();
+                            self.vinyl_clip = livery.zones[zone].get(ed.layer).cloned().map(|l| (zone, l));
                             if ed.tab == 1 && ed.layer < count {
                                 livery.zones[zone].remove(ed.layer);
                             }
@@ -12812,9 +12813,10 @@ impl Game {
                             livery.zones[zone].remove(ed.layer);
                         }
                         3 | 4 => {
-                            if let (Some(l), true) = (self.vinyl_clip.clone(), livery.zones[zone].len() < cap) {
+                            // (F-64893: mirrored by the pair of zones, nothing when the zone has no room)
+                            if let Some((from, l)) = self.vinyl_clip.clone() {
                                 let at = if ed.tab == 4 { ed.layer.min(livery.zones[zone].len()) } else { livery.zones[zone].len() };
-                                livery.zones[zone].insert(at, l);
+                                crate::vinyl::paste(&mut livery.zones[zone], zone, cap, std::slice::from_ref(&l), from, at);
                             }
                         }
                         _ => {}
