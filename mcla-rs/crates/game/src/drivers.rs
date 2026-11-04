@@ -805,11 +805,11 @@ struct Pose {
 #[derive(Default)]
 pub struct Drivers {
     char_dir: PathBuf,
-    /// driver sets: (name, bike rider, police)
-    sets: Vec<(String, bool, bool)>,
+    /// driver sets: (name, bike rider, police, one the port picks for an unnamed driver)
+    sets: Vec<(String, bool, bool, bool)>,
     models: HashMap<usize, Option<Arc<SkinModel>>>,
-    /// (car key, the local human's pack, driver set)
-    rigs: HashMap<(String, bool, usize), Option<Rig>>,
+    /// (car key, the local human's pack, the female pack, driver set)
+    rigs: HashMap<(String, bool, bool, usize), Option<Rig>>,
     poses: HashMap<usize, Pose>,
     buf: SkinBuffer,
     /// the player's head in car space (for the cockpit camera)
@@ -988,10 +988,29 @@ fn overlay(a: &mut [(Quat, Vec3)], b: &[(Quat, Vec3)], clip: &Clip, k: f32) {
 /// "Player" for the local human (the racer's vt+40: F-49619 true for mcPlayer, F-74264 false for mcOpponent; while the debug tune bool
 /// `animplayerasopponent` is off) and "Opponent" for everyone else, the driver's sex, and the car's name with
 /// its first three letters dropped unless it starts with "vpd", upper-cased and cut before a `_DUB` (F-51581); the
-/// archive names the file by the hash of `<name>.xapk` (hashed lower-case). The packs are male only here (as the driver sets are).
-fn pack_path(root: &Path, player: bool, key: &str) -> PathBuf {
+/// archive names the file by the hash of `<name>.xapk` (hashed lower-case). "Female" for a female driver (racer+177, `is_female`).
+fn pack_path(root: &Path, player: bool, female: bool, key: &str) -> PathBuf {
     let h = mcla_formats::hash::joaat(&format!("{key}.xapk"));
-    root.join(format!("resources/animation/0x{:08x}/{}/male/0x{h:08x}.r2", mcla_formats::hash::joaat("drv"), if player { "player" } else { "opponent" }))
+    let (who, sex) = (if player { "player" } else { "opponent" }, if female { "female" } else { "male" });
+    root.join(format!("resources/animation/0x{:08x}/{who}/{sex}/0x{h:08x}.r2", mcla_formats::hash::joaat("drv")))
+}
+
+/// The racer's character name as SetCharName (F-22036) keeps it: the two misnamed sets (the first 13 letters compared) become
+/// the ones that exist.
+fn char_name(name: &str) -> &str {
+    if name.starts_with("drv_mc_04_set") {
+        "drv_mp_01_set"
+    } else if name.starts_with("drv_fh_01_set") {
+        "drv_fh_001_set"
+    } else {
+        name
+    }
+}
+
+/// Racer+177, the driver is a woman: SetCharName (F-22036) sets it when the kept name holds "_f" (case kept). An unnamed driver
+/// is LoadDriver's default `drv_mp_01_set` (F-39898), a man.
+fn is_female(name: &str) -> bool {
+    char_name(name).contains("_f")
 }
 
 /// The pack name of a car: "vp_frd_mustang_06_dub" -> "frd_mustang_06"; DLC cars keep their "vpd_" prefix (F-62204 /
@@ -1035,12 +1054,13 @@ impl Drivers {
         names.sort();
         for n in names {
             let l = n.to_ascii_lowercase();
-            // the in-car versions (`_lod02`, and LoadDriver's hi-res `_set_h`, cinedriver::DRIVER_MAPS); male ones (the
-            // packs used here are the male set)
-            if !(l.ends_with("lod02_set") || l.ends_with("lod2_set") || l.ends_with("_set_h")) || !(l.starts_with("drv_m") || l.starts_with("pol_")) {
+            // every driver set a racer can be named (Racer_SetCharacterName, its in-car versions through
+            // cinedriver::DRIVER_MAPS); an unnamed driver is one of the male in-car versions (`_lod02`, LoadDriver's hi-res `_set_h`)
+            if !(l.starts_with("drv_") || l.starts_with("pol_")) {
                 continue;
             }
-            self.sets.push((n, l.contains("_mot_"), l.starts_with("pol_")));
+            let pick = (l.ends_with("lod02_set") || l.ends_with("lod2_set") || l.ends_with("_set_h")) && (l.starts_with("drv_m") || l.starts_with("pol_"));
+            self.sets.push((n, l.contains("_mot_"), l.starts_with("pol_"), pick));
         }
         log::info!("drivers: {} character sets", self.sets.len());
     }
@@ -1075,21 +1095,22 @@ impl Drivers {
         // (step 19d: a driver who was named - Racer_SetCharacterName - is that character; a key goes through
         // Boot.sco's `_lod02` maps)
         if !s.set.is_empty() {
-            let want = crate::cinedriver::driver_set(s.set, false, s.bike).unwrap_or(s.set);
+            let set = char_name(s.set);
+            let want = crate::cinedriver::driver_set(set, false, s.bike).unwrap_or(set);
             if let Some(i) = self.sets.iter().position(|n| n.0.eq_ignore_ascii_case(want)) {
                 return Some(i);
             }
         }
-        let want = |n: &(String, bool, bool)| n.1 == s.bike && n.2 == (s.cop && !s.bike) && !n.0.ends_with("_set_h");
+        let want = |n: &(String, bool, bool, bool)| n.3 && n.1 == s.bike && n.2 == (s.cop && !s.bike) && !n.0.ends_with("_set_h");
         if s.player {
             // "mp" is the player character
-            if let Some(i) = self.sets.iter().position(|n| n.0.to_ascii_lowercase().starts_with("drv_mp_") && n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h")) {
+            if let Some(i) = self.sets.iter().position(|n| n.3 && n.0.to_ascii_lowercase().starts_with("drv_mp_") && n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h")) {
                 return Some(i);
             }
         }
         let c: Vec<usize> = (0..self.sets.len()).filter(|&i| want(&self.sets[i]) && !self.sets[i].0.to_ascii_lowercase().starts_with("drv_mp_")).collect();
         if c.is_empty() {
-            return self.sets.iter().position(|n| n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h"));
+            return self.sets.iter().position(|n| n.3 && n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h"));
         }
         // (by the car's own number: the place in the list moved when cars went, and the driver - his
         // face - changed with it; GitHub #17)
@@ -1099,16 +1120,16 @@ impl Drivers {
     /// The length of a car's DRV_HIT_HRD clip, once its driver is loaded.
     pub fn hit_hard_secs(&self, car: &str) -> Option<f32> {
         let k = car_key(car);
-        self.rigs.iter().filter(|((c, _, _), _)| *c == k).find_map(|(_, r)| r.as_ref()?.hit_hard)
+        self.rigs.iter().filter(|((c, _, _, _), _)| *c == k).find_map(|(_, r)| r.as_ref()?.hit_hard)
     }
 
-    fn rig(&mut self, gpu: &mut Gpu, car: &str, bike: bool, player: bool, si: usize) -> bool {
-        let key = (car_key(car), player, si);
+    fn rig(&mut self, gpu: &mut Gpu, car: &str, bike: bool, player: bool, female: bool, si: usize) -> bool {
+        let key = (car_key(car), player, female, si);
         if !self.rigs.contains_key(&key) {
             let rig = (|| -> Option<Rig> {
                 let model = self.model(gpu, si)?;
                 // (the car's own pack, else the shared one of its kind - F-39898 / F-62204)
-                let path = |k: &str| Some(pack_path(&self.data_dir, player, k)).filter(|p| p.is_file());
+                let path = |k: &str| Some(pack_path(&self.data_dir, player, female, k)).filter(|p| p.is_file());
                 let pack = path(&key.0).or_else(|| path(if bike { "kaw_ninja_zx14_06" } else { "dge_challenger_70" }))?;
                 let res = load_resource_file(&pack).ok()?;
                 let rd = Rd::new(&res);
@@ -1251,7 +1272,8 @@ impl Drivers {
             }
             let Some(si) = self.pick_set(s) else { continue };
             self.set_of.insert(s.id, self.sets[si].0.clone());
-            if !self.rig(gpu, s.car, s.bike, s.player, si) {
+            let female = is_female(s.set);
+            if !self.rig(gpu, s.car, s.bike, s.player, female, si) {
                 continue;
             }
             let frame = self.frame;
@@ -1269,7 +1291,7 @@ impl Drivers {
             p.stopped += ((if s.speed.abs() < 0.6 { 1.0 } else { 0.0 }) - p.stopped) * (dt * 3.0).min(1.0);
             p.reverse += ((if s.reversing && s.speed.abs() > 0.3 { 1.0 } else { 0.0 }) - p.reverse) * (dt * 4.0).min(1.0);
             let p = *p;
-            let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), s.player, si)) else { continue };
+            let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), s.player, female, si)) else { continue };
             if let (true, Some(b)) = (s.bike, rig.bike.as_ref()) {
                 let ride = self.rides.entry(s.id).or_default();
                 let i = RideIn { ck: s.player && self.ckpt_view, ..s.ride };
@@ -1459,7 +1481,7 @@ mod original_tests {
     fn a_car_finds_its_own_driver_pack() {
         // (the archive's names: the Police Car Pack's five, the Impala's, the shared Challenger's)
         let r = Path::new("d");
-        let f = |car: &str, player: bool| pack_path(r, player, &car_key(car)).to_string_lossy().replace('\\', "/");
+        let f = |car: &str, player: bool| pack_path(r, player, false, &car_key(car)).to_string_lossy().replace('\\', "/");
         assert_eq!(f("vp_se_chv_plc_96", true), "d/resources/animation/0xe4f29864/player/male/0x8b348a1a.r2");
         assert_eq!(f("vp_se_chv_chp_96", false), "d/resources/animation/0xe4f29864/opponent/male/0xa7db038c.r2");
         assert_eq!(f("vp_se_dge_plc_06", true), "d/resources/animation/0xe4f29864/player/male/0xdaddd4cd.r2");
@@ -1470,6 +1492,20 @@ mod original_tests {
         assert_eq!(f("vp_dge_challenger_70", false), "d/resources/animation/0xe4f29864/opponent/male/0x953f13ee.r2");
         assert_eq!(car_key("vp_chv_camaro_06_DUB"), "chv_camaro_06");
         assert_eq!(car_key("vp_chv_police_96"), "chv_police_96");
+        // a woman's: the same name in the Female folder (the disc has every car's pack in both)
+        assert!(pack_path(r, false, true, "dge_challenger_70").ends_with("resources/animation/0xe4f29864/opponent/female/0x953f13ee.r2"));
+    }
+
+    /// SetCharName's (F-22036) renames and its "_f" test, on the names the scripts give (the hookmen's sets).
+    #[test]
+    fn a_driver_named_a_woman_is_one() {
+        assert_eq!(char_name("drv_mc_04_set"), "drv_mp_01_set");
+        assert_eq!(char_name("drv_fh_01_set"), "drv_fh_001_set");
+        assert_eq!(char_name("drv_fh_001_set"), "drv_fh_001_set");
+        for (gh, f) in [("GH_29", true), ("GH_34", true), ("GH_35", true), ("GH_06", false), ("GH_36", false)] {
+            assert_eq!(is_female(crate::cinedriver::hookman_set(gh).unwrap()), f, "{gh}");
+        }
+        assert!(is_female("drv_fh_01_set") && is_female("drv_fa_001_set") && !is_female("drv_mp_01_set") && !is_female(""));
     }
 
     /// The bike machine's pickers (F-24572, F-99511, F-51244: the counter's old value modulo the table, then counter + 1).
