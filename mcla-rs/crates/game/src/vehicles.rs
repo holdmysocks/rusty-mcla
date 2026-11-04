@@ -385,6 +385,8 @@ pub struct CarInstance {
     pub amb_slot: [i32; 2],
     /// ... and the lights in them, eased (F-99357; all 0 at the start, F-19499)
     pub amb_light: AmbSlotLights,
+    /// the draw object's drawn-steer ring (traffic.rs `SteerRing`), kept by the pooled instance
+    pub amb_steer: traffic::SteerRing,
 }
 
 /// A traffic or parked car's two slot lights (render instance +576 / +624, F-99357): each slot's point
@@ -398,9 +400,9 @@ pub struct CarInstance {
 pub struct AmbPool {
     built: bool,
     /// the free list of each pool; None = an instance never used (ids -1, F-19499)
-    free: [std::collections::VecDeque<Option<([i32; 2], AmbSlotLights)>>; 2],
+    free: [std::collections::VecDeque<Option<([i32; 2], AmbSlotLights, traffic::SteerRing)>>; 2],
     /// the cars out, in the order they were taken: uid, pool, what the instance holds
-    live: Vec<(u32, usize, [i32; 2], AmbSlotLights)>,
+    live: Vec<(u32, usize, [i32; 2], AmbSlotLights, traffic::SteerRing)>,
 }
 
 impl AmbPool {
@@ -411,18 +413,18 @@ impl AmbPool {
         }
     }
     /// The gone go back to the tail, then the new take the head. Returns what each new car inherits.
-    fn step(&mut self, now: &[(u32, usize)]) -> Vec<(u32, [i32; 2], AmbSlotLights)> {
+    fn step(&mut self, now: &[(u32, usize)]) -> Vec<(u32, [i32; 2], AmbSlotLights, traffic::SteerRing)> {
         self.build();
         let mut back = Vec::new();
         self.live.retain(|l| {
             let keep = now.iter().any(|n| n.0 == l.0);
             if !keep {
-                back.push((l.1, l.2, l.3));
+                back.push((l.1, l.2, l.3, l.4));
             }
             keep
         });
-        for (g, ids, light) in back {
-            self.free[g].push_back(Some((ids, light)));
+        for (g, ids, light, ring) in back {
+            self.free[g].push_back(Some((ids, light, ring)));
         }
         let mut got = Vec::new();
         for &(uid, g) in now {
@@ -431,11 +433,11 @@ impl AmbPool {
             }
             // (an empty pool: the spawner counts its cars, so the port should not get here; a fresh instance then)
             let old = self.free[g].pop_front().flatten();
-            let (ids, light) = old.unwrap_or(([-1, -1], AmbSlotLights::default()));
+            let (ids, light, ring) = old.unwrap_or(([-1, -1], AmbSlotLights::default(), Default::default()));
             if old.is_some() {
-                got.push((uid, ids, light));
+                got.push((uid, ids, light, ring));
             }
-            self.live.push((uid, g, ids, light));
+            self.live.push((uid, g, ids, light, ring));
         }
         got
     }
@@ -2829,7 +2831,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default() });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default() });
         self.cars.len() - 1
     }
 
@@ -4368,7 +4370,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let turn = if near && !locked { rate * moved.dot(rot * Vec3::NEG_Z) / wr * dt } else { 0.0 };
             for (i, wh) in c.state.wheels.iter_mut().enumerate() {
                 wh.spin = traffic::wrap_spin(wh.spin + turn);
-                wh.steer = if c.park_held && i <= 1 { c.park_steer } else { 0.0 };
+                // (a riding car's front wheels: its drawn steer, traffic.rs `Rider::steer`)
+                wh.steer = if i > 1 { 0.0 } else if c.park_held { c.park_steer } else { c.rail.as_ref().map_or(0.0, |r| r.steer) };
             }
             c.state.relocate(m[3], rot);
             c.state.vel = v;
@@ -6513,9 +6516,10 @@ impl Vehicles {
             .filter(|c| c.is_ambient())
             .map(|c| (c.uid, self.amb_types.get(&c.model.name).map_or(0, |t| t.proxy as usize)))
             .collect();
-        for (uid, ids, light) in self.amb_pool.step(&now) {
+        for (uid, ids, light, ring) in self.amb_pool.step(&now) {
             if let Some(c) = self.cars.iter_mut().find(|c| c.uid == uid) {
                 c.amb_slot = ids;
+                c.amb_steer = ring;
                 c.amb_light = AmbSlotLights { seen: false, drawn_before: false, ..light };
             }
         }
@@ -6527,6 +6531,7 @@ impl Vehicles {
             if let Some(c) = self.cars.iter().find(|c| c.uid == l.0) {
                 l.2 = c.amb_slot;
                 l.3 = c.amb_light;
+                l.4 = c.amb_steer;
             }
         }
     }

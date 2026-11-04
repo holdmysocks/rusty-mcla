@@ -230,6 +230,73 @@ pub fn parked_steer(u1: f32, u2: f32) -> f32 {
     (g * std::f32::consts::FRAC_PI_8).clamp(-0.706858, 0.706858)
 }
 
+/// The drawn steer's ring (F-17429, the car's draw object +88: count, next, sum, 8 values). The draw objects are made
+/// once with the pool's render instances (F-62509 zeroes it, title only), so a new car carries on its instance's ring
+/// (vehicles.rs `AmbPool`).
+#[derive(Clone, Copy, Default, Debug)]
+pub struct SteerRing {
+    n: i32,
+    next: i32,
+    sum: f32,
+    v: [f32; 8],
+}
+
+impl SteerRing {
+    pub fn push(&mut self, x: f32) {
+        if self.n == 0 {
+            (self.sum, self.v[0], self.next, self.n) = (x, x, 1, 1);
+        } else if self.n < 8 {
+            self.v[self.next as usize] = x;
+            self.sum += x;
+            self.n += 1;
+            self.next += 1;
+        } else {
+            if self.next == 8 {
+                self.next = 0;
+            }
+            let k = self.next as usize;
+            self.sum -= self.v[k];
+            self.v[k] = x;
+            self.sum += x;
+            self.next += 1;
+        }
+    }
+
+    /// The drawn steer (F-37033): sum / count, 0 while empty.
+    pub fn mean(&self) -> f32 {
+        if self.n > 0 { self.sum / self.n as f32 } else { 0.0 }
+    }
+}
+
+/// Where on the lane the drawn steer looks (F-37033): the phase 0.4 x |wheel_0's hub z| on at the curve speed (rail
+/// slot 6, F-77217), at most 1.
+pub fn steer_look(t: f32, ds: f32, hub_z: f32) -> f32 {
+    steer_clamp(mcla_formats::rage::navsys::LaneCurve::advance(t, hub_z.abs() * 0.4, ds))
+}
+
+fn steer_clamp(p: f32) -> f32 {
+    let p = if 1.0 - p >= 0.0 { p } else { 1.0 };
+    if p - 1.0 >= 0.0 { 1.0 } else { p }
+}
+
+/// The drawn steer's sample (F-37033) from the car's forward and the lane's derivative there (rail slot 10): the
+/// derivative with y = 0, normalised as the code does (1 / sqrt, one Newton step; a zero length gives 0), then
+/// -1.25 x (F.x N.z - F.z N.x). 0 when the flattened derivative is zero.
+pub fn steer_of(fwd: Vec3, d: Vec3) -> f32 {
+    if d.x == 0.0 && d.z == 0.0 {
+        return 0.0;
+    }
+    // (the dot product as the vector unit adds it, z^2 + (y^2 + x^2) with y = 0; under the smallest normal it is flushed)
+    let dd = d.z * d.z + d.x * d.x;
+    let dd = if dd < f32::MIN_POSITIVE { 0.0 } else { dd };
+    let mut y = 1.0 / dd.sqrt();
+    if y == f32::INFINITY {
+        y = 0.0;
+    }
+    let k = -(dd * (y * y) - 1.0) * (0.5 * y) + y;
+    (fwd.x * (d.z * k) - fwd.z * (d.x * k)) * -1.25
+}
+
 /// A traffic car's instance matrix (inst +16): its rotation, and the seat's place - the pose before
 /// the drawn 0.025 m drop - while it rides; rows X, up, Z, place.
 pub fn instance_matrix(c: &super::CarInstance) -> [Vec3; 4] {
@@ -677,6 +744,8 @@ pub struct Rider {
     /// the car ahead the speed controller's entry 0 found (behaviour +432, the same obstacle as the
     /// entry's id +456): the length of its car's velocity (its slot 2, F-59415: car +208); None: no obstacle
     pub obst_v: Option<f32>,
+    /// the front wheels' drawn steer (F-37033: the mean of the draw object's ring, `SteerRing`, within 45 m; else 0)
+    pub steer: f32,
     /// its place in its rail's car list (`RAIL_SEQ` when it took the rail: at its spawn, or when
     /// the rail it holds changed, `Vehicles::stamp_rails`), the rail it was stamped on, and
     /// whether it is still on the rail it was made on
@@ -732,7 +801,7 @@ impl Rider {
             route: None,
             phys_pair: false,
             quiet: false,
-            obst_v: None,
+            obst_v: None, steer: 0.0,
             rail_seq: next_rail_seq(),
             rail_key: None,
             rail_fresh: true,
@@ -2393,9 +2462,25 @@ impl Vehicles {
         // the drawn bodies' pitch and roll (every traffic car, trailers too)
         for c in self.cars.iter_mut() {
             let (pos, fwd, right) = (c.state.pos, c.state.forward(), c.state.right());
+            let m = instance_matrix(c);
+            let hub_z = c.model.own_wheels.and_then(|h| h[0]).map_or(0.0, |h| h.z);
             let Some(r) = c.rail.as_mut() else { continue };
             let dist2 = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length_squared();
             r.tilt.update(pos, fwd, right, dist2, dt);
+            // (the drawn steer, F-37033 with dt != 0: one sample a frame into the draw object's ring - within 45 m of the
+            // focus and on a lane, the lane's heading a little ahead against the car's; 0 otherwise (states 4 / 5 have no
+            // rail, F-78813; a trailer has no behaviour). The front wheels turn by the ring's mean within 45 m.)
+            if dt != 0.0 {
+                let (dx, dz) = (focus.x - m[3].x, focus.z - m[3].z);
+                let near = dz.mul_add(dz, dx * dx) < 2025.0;
+                let cv = if r.state == 1 && near { nav.links.get(r.link).and_then(|l| nav.curves.get(l.lane)) } else { None };
+                let x = cv.filter(|cv| cv.pts.len() >= 2).map_or(0.0, |cv| steer_of(-m[2], cv.eval(steer_look(r.t, r.ds, hub_z)).1));
+                c.amb_steer.push(x);
+                r.steer = if near { c.amb_steer.mean() } else { 0.0 };
+            }
+            for (i, w) in c.state.wheels.iter_mut().enumerate() {
+                w.steer = if i <= 1 { r.steer } else { 0.0 };
+            }
             // (the lock's window: car +408 pushed every update, in every state - frozen while the
             // physics has the car, 0 resting (state 5) or in state 4 without its collider; a
             // trailer never works its bit out)
@@ -2958,7 +3043,7 @@ mod tests {
     }
 
     fn vrider(ty: AmbType) -> Rider {
-        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, rail_seq: 0, rail_key: None, rail_fresh: true }
+        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true }
     }
 
     /// The brake lamp's flag (F-56024 with F-86955, F-17857 and F-59415) against the original's code run offline on 4,000
@@ -2992,6 +3077,49 @@ mod tests {
     /// testdata/turn_signal_ref.txt): the blink at and around its offset + 0.375, the current lane's owner (none, its
     /// flags, its +0x10 word), the phase about 0.5, the next lane (none, its owner and flags), the car's place about
     /// 100 m from the lane's end.
+    #[test]
+    fn drawn_steer_matches_the_original() {
+        // (tools/drawn_steer_reference.py: F-37033 run whole with the rail's slots 6 / 10 stubbed; one frame a line, a
+        // sequence's ring kept from frame to frame. A parked car's +3584 is added to its sample: the port keeps a
+        // parked car's steer as it is, so that part is the reference's, not a port path)
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let mut ring = SteerRing::default();
+        let (mut n, mut sampled) = (0, 0);
+        for line in include_str!("testdata/drawn_steer_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let o: Vec<&str> = o.split_whitespace().collect();
+            let flag = |k: usize| w[k] == "1";
+            if flag(0) {
+                ring = SteerRing::default();
+            }
+            let (pos, focus) = (Vec3::new(h(w[9]), h(w[10]), h(w[11])), (h(w[7]), h(w[8])));
+            let (dx, dz) = (focus.0 - pos.x, focus.1 - pos.z);
+            let near = dz.mul_add(dz, dx * dx) < 2025.0;
+            let looks = flag(1) && flag(2) && near;
+            let mut k = 0;
+            let mut x = 0.0;
+            if looks {
+                sampled += 1;
+                assert_eq!([o[0], o[1], o[2]], [w[15], &format!("{:08x}", (h(w[6]).abs() * 0.4).to_bits()), w[16]], "{line}");
+                assert_eq!(o[3], format!("{:08x}", steer_clamp(h(w[17])).to_bits()), "{line}");
+                x = steer_of(Vec3::new(h(w[12]), h(w[13]), h(w[14])), Vec3::new(h(w[18]), h(w[19]), h(w[20])));
+                k = 4;
+            } else {
+                assert_eq!((o[0], o[1]), ("-", "-"), "{line}");
+                k += 2;
+            }
+            if !flag(1) && w[3] == "0" {
+                x += h(w[5]);
+            }
+            ring.push(x);
+            let got = format!("{} {} {:08x} {} {:08x}", ring.n, ring.next, ring.sum.to_bits(), ring.v.map(|v| format!("{:08x}", v.to_bits())).join(" "), ring.mean().to_bits());
+            assert_eq!(got, o[k..].join(" "), "{line}");
+            n += 1;
+        }
+        assert_eq!((n, sampled), (2381, 1160));
+    }
+
     #[test]
     fn turn_signals_match_the_original() {
         use mcla_formats::rage::navsys::Link;
@@ -3298,7 +3426,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
@@ -3312,7 +3440,7 @@ mod tests {
     #[test]
     fn a_physical_or_resting_car_is_not_put_back_on_its_seat() {
         // (a seat from before the hit: physical or at rest the instance stays where the collider left it)
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
         r.seat = Some(Seat::new(Vec3::ZERO, Vec3::Y, Vec3::NEG_Z));
         assert!(seat_poses(&r));
         for (state, active) in [(4, false), (4, true), (5, false), (5, true), (1, true)] {
@@ -3340,7 +3468,7 @@ mod tests {
     /// its rail (slot 20 / F-86858: the follower has a rail).
     #[test]
     fn a_physical_path_car_pairs_only_while_on_a_rail() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
         assert!(!r.pairs_inactive());
         r.phys_pair = true;
         for (state, yes) in [(1u8, true), (9, true), (10, false), (0, false), (4, false), (5, false), (6, false)] {
