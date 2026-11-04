@@ -209,7 +209,7 @@ fn squad_may_go(arrow: bool, from: u8, to: i32) -> bool {
 /// are the caller's).
 #[allow(clippy::too_many_arguments)]
 fn squad_machine<C>(sq: &mut Squad, cx: &mut C, arrow: bool, any_safe: bool, t_moving: bool, fast: bool, dt: f32,
-                    formation: &mut dyn FnMut(&mut Squad, &mut C, f32) -> bool, swipes: &mut dyn FnMut(&mut Squad, &mut C)) -> bool {
+                    formation: &mut dyn FnMut(&mut Squad, &mut C, f32, bool) -> bool, swipes: &mut dyn FnMut(&mut Squad, &mut C)) -> bool {
     if let Some(h) = sq.next.take() {
         sq.halt = h;
         if !h {
@@ -225,11 +225,11 @@ fn squad_machine<C>(sq: &mut Squad, cx: &mut C, arrow: bool, any_safe: bool, t_m
     if !sq.begun {
         let next = sq.next;
         *sq = Squad { begun: true, hyst: 2.0, next, ..Default::default() };
-        formation(sq, cx, 0.0);
+        formation(sq, cx, 0.0, true);
         sq.lock = 5.0;
     }
     sq.lock -= dt;
-    if sq.lock < 0.0 && formation(sq, cx, dt) {
+    if sq.lock < 0.0 && formation(sq, cx, dt, false) {
         sq.lock = 5.0;
     }
     swipes(sq, cx);
@@ -237,6 +237,77 @@ fn squad_machine<C>(sq: &mut Squad, cx: &mut C, arrow: bool, any_safe: bool, t_m
         sq.next = Some(true);
     }
     false
+}
+
+/// fmadds: a x b + c in double, rounded once to single
+fn fmas(a: f32, b: f32, c: f32) -> f32 {
+    (a as f64).mul_add(b as f64, c as f64) as f32
+}
+
+/// The squad formation, one call (the Arrow Trap's F-80532, the Double Pursuit's F-21534), on cop indices. The slots: the
+/// right flank's (`slots[0]`) route point (F-32694, -1000 all round for a brain with none) when it is on the target's right
+/// (F-41266), else `along` to the right (`right`: the target matrix's first row); the left flank's when it is not, else
+/// `along` to the left; the Arrow Trap's third `along` along the matrix's third row (`back`). The cops go to the slots of the
+/// smallest sum of squared distances (slot to cop, in the original's order; the first of equal sums). A cop whose brain
+/// (`brains[k]`: its state, the side byte +708) is not the one wanted - AlongSide 5 on side 1 / 0, the Arrow Trap's third
+/// Pursue 4 - is sent it (F-24671, which sets it at once) when the hysteresis was over 1 s before this call; the hysteresis
+/// grows by dt while one is wanting, else 0, and 0 after a send. After a send the slots: the Arrow Trap's from the third
+/// cop and the flank after it in turn (F-13075), the Double Pursuit's from the brains when both are AlongSide, else none
+/// (as at its AlongSide's enter, F-80770: `enter`). Returns whether it sent.
+#[allow(clippy::too_many_arguments)]
+fn squad_formation(hyst: &mut f32, slots: &mut [Option<usize>; 3], arrow: bool, brains: &mut [(u8, bool)], pos: &[Vec3],
+                   route: &[Option<Vec3>], tpos: Vec3, right: Vec3, back: Vec3, along: f32, dt: f32, enter: bool) -> bool {
+    let both_along = |b: &[(u8, bool)]| (b[0].0 == 5 && b[1].0 == 5).then(|| if b[0].1 { [Some(0), Some(1), None] } else { [Some(1), Some(0), None] });
+    if enter && !arrow {
+        *slots = both_along(brains).unwrap_or([None; 3]);
+    }
+    let point = |k: Option<usize>| k.map(|k| route[k].unwrap_or(Vec3::splat(-1000.0)));
+    let right_of = |q: Vec3| {
+        let d = q - tpos;
+        fmas(right.x, d.x, fmas(right.z, d.z, right.y * d.y)) > 0.0
+    };
+    let s = [
+        point(slots[0]).filter(|&q| right_of(q)).unwrap_or(tpos + right * along),
+        point(slots[1]).filter(|&q| !right_of(q)).unwrap_or(tpos - right * along),
+        tpos + back * along,
+    ];
+    let perms: &[[usize; 3]] = if arrow { &[[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] } else { &[[0, 1, 2], [1, 0, 2]] };
+    let n = if arrow { 3 } else { 2 };
+    let sum = |p: &[usize; 3]| (0..n).fold(0.0f32, |acc, j| {
+        let d = s[j] - pos[p[j]];
+        acc + fmas(d.x, d.x, fmas(d.z, d.z, d.y * d.y))
+    });
+    let mut best = (sum(&perms[0]), perms[0]);
+    for p in &perms[1..] {
+        let v = sum(p);
+        if v < best.0 {
+            best = (v, *p);
+        }
+    }
+    let (mut want, mut sent) = (false, false);
+    for j in 0..n {
+        let k = best.1[j];
+        let wanted = if j < 2 { (5, j == 0) } else { (4, brains[k].1) };
+        if brains[k] != wanted {
+            want = true;
+            if *hyst > 1.0 {
+                brains[k] = wanted;
+                sent = true;
+            }
+        }
+    }
+    *hyst = if want { *hyst + dt } else { 0.0 };
+    if sent {
+        *slots = if arrow {
+            let t = best.1[2];
+            let (a, b) = ((t + 1) % 3, (t + 2) % 3);
+            if brains[a].1 { [Some(a), Some(b), Some(t)] } else { [Some(b), Some(a), Some(t)] }
+        } else {
+            both_along(brains).unwrap_or([None; 3])
+        };
+        *hyst = 0.0;
+    }
+    sent
 }
 
 /// Dispatch to Location's transition test (F-40040): WaitToDispatch only to Dispatch, Dispatch only to Respond, Respond only
@@ -2831,57 +2902,29 @@ impl Police {
                 (r == 0.0 || to.length() < r) && cs > moving_v && cs > speed && to.normalize_or_zero().dot(cv / cs.max(1e-6)) > 0.9
             };
             let any_safe = vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| c.state.pos.distance(ppos) < safe);
-            // (the formation, F-80532 / F-21534: the right slot cop A's route point when it is on the target's right,
-            // else 5 m to the right; the left cop B's when it is not, else 5 m to the left; the Arrow Trap's third 5 m
-            // behind. The cops go to the slots of the smallest sum of squared distances, the flanks AlongSide (side 1 /
-            // side 0), the third Pursue - sent once a change has been wanted over 1 s)
-            let formation = |sq: &mut Squad, tacs: &mut HashMap<u32, CopTac>, vehicles: &Vehicles, dt: f32| -> bool {
-                let route = |u: Option<u32>| {
-                    let c = vehicles.cars.iter().find(|c| Some(c.uid) == u)?;
-                    Some(c.ai.as_ref().and_then(|a| a.brain.0.as_ref()).and_then(|b| b.heading_for().1).unwrap_or(c.state.pos))
+            // (the formation, F-80532 / F-21534 in squad_formation: the cops' brains as their CopTac - AlongSide 5 with its
+            // side, CatchUp the Pursue 4 - and the brains' route points; the target matrix's third row is -forward)
+            let formation = |sq: &mut Squad, tacs: &mut HashMap<u32, CopTac>, vehicles: &Vehicles, dt: f32, enter: bool| -> bool {
+                let car = |u: u32| vehicles.cars.iter().find(|c| c.uid == u);
+                let pos: Vec<Vec3> = members.iter().map(|&u| car(u).map_or(Vec3::ZERO, |c| c.state.pos)).collect();
+                let route: Vec<Option<Vec3>> = members.iter()
+                    .map(|&u| car(u).and_then(|c| c.ai.as_ref()).and_then(|a| a.brain.0.as_ref()).and_then(|b| b.heading_for().1)).collect();
+                let code = |st: Tac| match st {
+                    Tac::AlongSide => 5,
+                    Tac::CatchUp => 4,
+                    _ => 0,
                 };
-                let right_of = |q: Vec3| pright.dot(q - ppos) > 0.0;
-                let r = route(sq.slots[0]).filter(|&q| right_of(q)).unwrap_or(ppos + pright * along);
-                let l = route(sq.slots[1]).filter(|&q| !right_of(q)).unwrap_or(ppos - pright * along);
-                let slots = [r, l, ppos - pfwd * along];
-                let pos: Vec<Vec3> = members.iter().map(|u| vehicles.cars.iter().find(|c| c.uid == *u).map_or(Vec3::ZERO, |c| c.state.pos)).collect();
-                let perms: &[[usize; 3]] = if arrow { &[[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] } else { &[[0, 1, 2], [1, 0, 2]] };
-                let mut best = (f32::INFINITY, perms[0]);
-                for pm in perms {
-                    let sum: f32 = (0..pos.len()).map(|k| pos[k].distance_squared(slots[pm[k]])).sum();
-                    if sum < best.0 {
-                        best = (sum, *pm);
-                    }
+                let mut brains: Vec<(u8, bool)> = members.iter().map(|u| tacs.get(u).map_or((0, false), |tc| (code(tc.st), tc.side))).collect();
+                let was = brains.clone();
+                let index = |u: Option<u32>| u.and_then(|u| members.iter().position(|&m| m == u));
+                let mut slots = sq.slots.map(index);
+                let sent = squad_formation(&mut sq.hyst, &mut slots, arrow, &mut brains, &pos, &route, ppos, pright, -pfwd, along, dt, enter);
+                for k in (0..members.len()).filter(|&k| brains[k] != was[k]) {
+                    let st = if brains[k].0 == 5 { Tac::AlongSide } else { Tac::CatchUp };
+                    *tacs.entry(members[k]).or_default() = CopTac { st, side: brains[k].1, ..Default::default() };
                 }
-                let want = |k: usize| match best.1[k] {
-                    0 => (Tac::AlongSide, true),
-                    1 => (Tac::AlongSide, false),
-                    _ => (Tac::CatchUp, false),
-                };
-                let changed: Vec<usize> = (0..pos.len()).filter(|&k| {
-                    let (st, side) = want(k);
-                    tacs.get(&members[k]).map_or(true, |tc| tc.st != st || (st == Tac::AlongSide && tc.side != side))
-                }).collect();
-                if changed.is_empty() {
-                    sq.hyst = 0.0;
-                    return false;
-                }
-                sq.hyst += dt;
-                if sq.hyst <= 1.0 {
-                    return false;
-                }
-                sq.hyst = 0.0;
-                for k in changed {
-                    let (st, side) = want(k);
-                    let tc = tacs.entry(members[k]).or_default();
-                    *tc = CopTac { st, side, ..Default::default() };
-                }
-                // (F-80532's tail: +172 the trailing cop, +164 the side-1 cop, +168 the other)
-                sq.slots = [None; 3];
-                for k in 0..pos.len() {
-                    sq.slots[best.1[k]] = Some(members[k]);
-                }
-                true
+                sq.slots = slots.map(|k| k.map(|k| members[k]));
+                sent
             };
             let mut sq = std::mem::take(&mut self.sq);
             let mut tacs = std::mem::take(&mut self.tacs);
@@ -2899,7 +2942,7 @@ impl Police {
             let mut cues: Vec<String> = Vec::new();
             let mut cx = (tacs, swipes, &mut cues);
             type Cx<'a> = (HashMap<u32, CopTac>, HashMap<u32, crate::ai::Overrides>, &'a mut Vec<String>);
-            let halted = squad_machine(&mut sq, &mut cx, arrow, any_safe, t_moving, fast, dt, &mut |sq: &mut Squad, cx: &mut Cx, dt| formation(sq, &mut cx.0, vehicles, dt), &mut |sq: &mut Squad, cx: &mut Cx| {
+            let halted = squad_machine(&mut sq, &mut cx, arrow, any_safe, t_moving, fast, dt, &mut |sq: &mut Squad, cx: &mut Cx, dt, enter| formation(sq, &mut cx.0, vehicles, dt, enter), &mut |sq: &mut Squad, cx: &mut Cx| {
                 if !ed78 {
                     return;
                 }
@@ -2907,13 +2950,16 @@ impl Police {
                 if let Some((d, ahead, on_right, same_dir, bearing)) = geo(sq.slots[0]) {
                     if d < near && same_dir && !(arrow && ahead) && !on_right && bearing > a_win.0 && bearing < a_win.1 {
                         a_in = true;
+                        // (the latch's update: the line, and the Arrow Trap's wait of 0.5 s, F-47983 - the Double
+                        // Pursuit's AlongSide, F-41674, sets none and swipes in the same update)
                         if !sq.latch {
                             sq.latch = true;
-                            sq.swipe_t = 0.5;
+                            sq.swipe_t = if arrow { 0.5 } else { 0.0 };
                             if !goons {
                                 cx.2.push("REPORT_MANEUVER_CLOSE".into());
                             }
-                        } else if sq.swipe_t <= 0.0 {
+                        }
+                        if sq.swipe_t <= 0.0 {
                             cx.1.insert(sq.slots[0].unwrap_or_default(), crate::ai::Overrides { steer: Some(-1.0), brake: Some(1.0), ..Default::default() });
                         }
                     }
@@ -3746,7 +3792,7 @@ mod tests {
             while k <= want {
                 let f = |b: u32| flags[k] & b != 0;
                 let send = f(8);
-                squad_machine(&mut sq, &mut (), true, f(4), f(2), f(1), 1.0 / 60.0, &mut |sq: &mut Squad, _: &mut (), d: f32| {
+                squad_machine(&mut sq, &mut (), true, f(4), f(2), f(1), 1.0 / 60.0, &mut |sq: &mut Squad, _: &mut (), d: f32, _| {
                     if send || d == 0.0 {
                         sq.slots = [Some(0), Some(1), Some(2)];
                     }
@@ -3761,6 +3807,89 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 100, "{checked}");
+    }
+
+    /// The squad formations against the original's (the Arrow Trap's F-80532, the Double Pursuit's F-21534, with the
+    /// enters F-81752 / F-86874) run offline by tools/formation_reference.py: the same inputs from the same xorshift, every
+    /// call's send, hysteresis bits, slots and brains equal.
+    #[test]
+    fn squad_formation_matches_the_original() {
+        struct X(u32);
+        impl X {
+            fn next(&mut self) -> u32 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 17;
+                self.0 ^= self.0 << 5;
+                self.0
+            }
+            fn r(&mut self, a: i32, b: i32) -> i32 {
+                a + (self.next() % (b - a + 1) as u32) as i32
+            }
+        }
+        let reference = include_str!("testdata/formation_ref.txt");
+        let mut lines = reference.lines();
+        let rows: Vec<f32> = lines.next().unwrap().split_whitespace().skip(1).map(|h| f32::from_bits(u32::from_str_radix(h, 16).unwrap())).collect();
+        let e = |v: i32| v as f32 * 0.125;
+        let (mut checked, mut sends) = (0, 0);
+        while let Some(head) = lines.next() {
+            let seed: u32 = head.strip_prefix("CASE ").unwrap().parse().unwrap();
+            let mut g = X(seed);
+            let arrow = seed % 2 == 0;
+            let n = if arrow { 3 } else { 2 };
+            let mut t = [g.r(-800, 800), g.r(0, 80), g.r(-800, 800)];
+            let mut yaw = g.r(0, 15) as usize;
+            let mut cops: Vec<[i32; 3]> = (0..n).map(|_| [t[0] + g.r(-320, 320), t[1] + g.r(-8, 8), t[2] + g.r(-320, 320)]).collect();
+            let mut brains: Vec<(u8, bool)> = (0..n).map(|_| ([0, 4, 5][g.r(0, 2) as usize], g.r(0, 1) != 0)).collect();
+            let (mut hyst, mut slots) = (0.0f32, [None; 3]);
+            for k in 0..150 {
+                let enter = k == 0 || g.next() % 128 == 0;
+                let dt = if g.next() % 8 == 0 { (1.0f64 / 30.0) as f32 } else { (1.0f64 / 60.0) as f32 };
+                for v in &mut t {
+                    *v += g.r(-4, 4);
+                }
+                if g.next() % 32 == 0 {
+                    yaw = g.r(0, 15) as usize;
+                }
+                let mut route = vec![None; n];
+                for c in 0..n {
+                    for v in &mut cops[c] {
+                        *v += g.r(-6, 6);
+                    }
+                    if g.next() % 5 != 0 {
+                        let q = [cops[c][0] + g.r(-40, 40), cops[c][1] + g.r(-40, 40), cops[c][2] + g.r(-40, 40)];
+                        route[c] = Some(Vec3::new(e(q[0]), e(q[1]), e(q[2])));
+                    }
+                    if g.next() % 64 == 0 {
+                        let b = ([0, 4, 5][g.r(0, 2) as usize], g.r(0, 1) != 0);
+                        if k > 0 {
+                            brains[c] = b;
+                        }
+                    }
+                }
+                let pos: Vec<Vec3> = cops.iter().map(|c| Vec3::new(e(c[0]), e(c[1]), e(c[2]))).collect();
+                let w = &rows[yaw * 4..yaw * 4 + 4];
+                let (right, back, tpos) = (Vec3::new(w[0], 0.0, w[1]), Vec3::new(w[2], 0.0, w[3]), Vec3::new(e(t[0]), e(t[1]), e(t[2])));
+                let sent = if enter {
+                    hyst = 2.0;
+                    slots = [None; 3];
+                    squad_formation(&mut hyst, &mut slots, arrow, &mut brains, &pos, &route, tpos, right, back, 3.5, 0.0, true);
+                    2
+                } else {
+                    squad_formation(&mut hyst, &mut slots, arrow, &mut brains, &pos, &route, tpos, right, back, 3.5, dt, false) as i32
+                };
+                let mut got = format!("{} {:08x}", sent, hyst.to_bits());
+                for s in slots {
+                    got += &format!(" {}", s.map_or(-1, |s| s as i32));
+                }
+                for b in &brains {
+                    got += &format!(" {} {}", b.0, b.1 as u8);
+                }
+                assert_eq!(got, lines.next().unwrap(), "case {seed} call {k}");
+                checked += 1;
+                sends += (sent == 1) as u32;
+            }
+        }
+        assert!(checked == 6000 && sends > 20, "{checked} {sends}");
     }
 
     /// F-83946: the sum over the offences, the pursuit's seconds, the flee fine, the career cut

@@ -66,7 +66,7 @@ PORT_MAIN = r'''
 fn main() { let t = std::fs::read_to_string(std::env::args().nth(1).unwrap()).unwrap(); let dt = 1.0f32 / 60.0;
   for l in t.lines() { let mut sq = Squad::default();
     for c in l.chars() { let h = c.to_digit(16).unwrap(); let f = |b: u32| h & b != 0; let send = f(8);
-      squad_machine(&mut sq, &mut (), true, f(4), f(2), f(1), dt, &mut |sq: &mut Squad, _: &mut (), d: f32| { if send || d == 0.0 { sq.slots = [Some(0), Some(1), Some(2)]; } send }, &mut |_: &mut Squad, _: &mut ()| {});
+      squad_machine(&mut sq, &mut (), true, f(4), f(2), f(1), dt, &mut |sq: &mut Squad, _: &mut (), d: f32, _: bool| { if send || d == 0.0 { sq.slots = [Some(0), Some(1), Some(2)]; } send }, &mut |_: &mut Squad, _: &mut ()| {});
       let st = if sq.halt { 2 } else { 0 };
       println!("{} {} {:08x}", st, sq.next.map_or(-1, |h| if h { 2 } else { 0 }), if st == 0 { sq.lock.to_bits() } else { 0 });
     }
