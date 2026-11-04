@@ -4835,10 +4835,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
     /// Each frame before the cars' uniforms: the traffic cars' lamp states and glow levels
     /// (`AmbLamps`) - for the cars drawn now: in the view and within the lamps' reach along the
-    /// camera's axis `axis` from `eye`. The flags as F-46062 sets them, from what the port's
-    /// traffic has: lights on at night, braking when the pedal is down or the car stands,
-    /// reversing; the turn signals are not driven (the port's traffic does not signal; the
-    /// original's rule is in the doc). Parked cars have every flag off, as recorded.
+    /// camera's axis `axis` from `eye`. The flags as F-46062 sets them: lights on at night, the
+    /// brake lamp by the original's rule (`traffic::brake_lamp`, F-56024), reversing; the turn
+    /// signals are not driven yet (the original's rule is in the doc). Parked cars have every
+    /// flag off, as recorded.
     pub fn traffic_lamps(&mut self, eye: Vec3, axis: Vec3, frustum: &crate::render::Frustum, night: f32, dt: f32) {
         let alpha = self.render_alpha;
         let lights_off = self.lights_off;
@@ -4862,7 +4862,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // (the hour window of F-75961; `night` over 0.5 inside 6 .. 18 h is the weather's own term)
             let wet = night > 0.5 && (6.0..=18.0).contains(&hour);
             let due = traffic_lights_due(hour, c.amb_lamps.hour_offset, wet) && c.removing.map_or(true, |f| f >= 0.1);
-            let flags = [driven && !lights_off && due, driven && (c.input.brake > 0.0 || c.state.speed() < 0.1), false, false, driven && c.state.gear < 0];
+            let flags = [driven && !lights_off && due, driven && c.rail.as_ref().is_some_and(traffic::brake_lamp), false, false, driven && c.state.gear < 0];
             let a = &mut c.amb_lamps;
             for (v, on) in a.s.iter_mut().zip(flags) {
                 *v = traffic_ease(*v, on, dt);

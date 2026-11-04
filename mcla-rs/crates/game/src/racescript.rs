@@ -59,7 +59,7 @@ pub struct Trigger {
     pub line_h: f32,
 }
 
-/// A path of the race's `mcAmbientPathArray` (parser sub_82739570). (bHazard, bFire, bSmoke and
+/// A path of the race's `mcAmbientPathArray` (parser F-26012). (bHazard, bFire, bSmoke and
 /// bDamage have no reader in the executable - only the parser's default and the unload's clear.)
 #[derive(Clone, Debug, Default)]
 pub struct AmbPath {
@@ -849,6 +849,9 @@ impl Runtime {
             let mut pr = traffic::path_rails(nav, &p.verts, &p.snap, p.parked, ty.map(|t| t.min_turn), p.pos, p.row2, p.speed[1]);
             // bPhysical (path +170): instance +140 bit 0x80 for the car's life (sub_826FA588)
             pr.physical = p.physical;
+            // bParked (path +164): the car's behaviour slot 18 (F-86955) reads it, and the brake lamp is
+            // off while it is set (F-56024)
+            pr.quiet = p.parked;
             most = most.max(pr.hits);
             let mut referenced = false;
             let mut chosen = false;

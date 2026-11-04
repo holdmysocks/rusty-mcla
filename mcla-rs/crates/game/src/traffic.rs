@@ -665,6 +665,12 @@ pub struct Rider {
     /// a race path's bPhysical (path +170): the instance's +140 bit 0x80 (sub_826EAD00 ->
     /// sub_826FA588), for the car's life
     pub phys_pair: bool,
+    /// the race path it was started on (behaviour +468, kept for the car's life - F-28180 is its only
+    /// writer after the ctor) has bParked (+164, `PathRails::quiet`): behaviour slot 18, F-86955
+    pub quiet: bool,
+    /// the car ahead the speed controller's entry 0 found (behaviour +432, the same obstacle as the
+    /// entry's id +456): the length of its car's velocity (its slot 2, F-59415: car +208); None: no obstacle
+    pub obst_v: Option<f32>,
     /// its place in its rail's car list (`RAIL_SEQ` when it took the rail: at its spawn, or when
     /// the rail it holds changed, `Vehicles::stamp_rails`), the rail it was stamped on, and
     /// whether it is still on the rail it was made on
@@ -719,6 +725,8 @@ impl Rider {
             life: 8.0,
             route: None,
             phys_pair: false,
+            quiet: false,
+            obst_v: None,
             rail_seq: next_rail_seq(),
             rail_key: None,
             rail_fresh: true,
@@ -1499,6 +1507,25 @@ fn passing_rail(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, obst:
     None
 }
 
+/// The car ahead's speed as F-56024 takes its velocity's length: y^2, then x and z fused on, in
+/// single precision.
+fn obst_speed(u: Vec3) -> f32 {
+    u.z.mul_add(u.z, u.x.mul_add(u.x, u.y * u.y)).sqrt()
+}
+
+/// The brake lamp's flag 0x40 (F-56024; F-46062 writes the flags each frame): off for a car
+/// without a behaviour (a trailer) or whose race path has bParked (+164; behaviour slot 18,
+/// F-86955); on when the speed +412 is 0; when the entry in charge is the stop line (+420 == 1 -
+/// its speed is always 0, so +416 is, F-30960) and the speed is under 6.7056 m/s; when the physics
+/// has the car active (F-17857); or when it is faster than 1.5 x the car ahead's speed (behaviour
+/// +432, F-59415); else off.
+pub fn brake_lamp(r: &Rider) -> bool {
+    if r.state == 0 || r.quiet {
+        return false;
+    }
+    r.v == 0.0 || (r.slot == Some(1) && r.v < 6.7056) || r.active || r.obst_v.is_some_and(|o| r.v > o * 1.5)
+}
+
 /// The speed controller (sub_827A3708 -> sub_826EA420): the constraint entries (car ahead,
 /// stop line, slower next lane), each with its hysteresis; the most negative wins, else the
 /// positive one with the smallest gap, else free driving towards `want`. Returns the
@@ -1517,6 +1544,7 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
         r.on[0] = false;
         r.obst_id = obst;
     }
+    r.obst_v = obst.map(|j| obst_speed(others[j].vel));
     if let Some(j) = obst {
         let o = &others[j];
         let margin = half_len + o.half_len + r.gap * (1.0 + 2.0 * (mph / 70.0).min(1.0));
@@ -2893,7 +2921,33 @@ mod tests {
     }
 
     fn vrider(ty: AmbType) -> Rider {
-        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, rail_seq: 0, rail_key: None, rail_fresh: true }
+        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, rail_seq: 0, rail_key: None, rail_fresh: true }
+    }
+
+    /// The brake lamp's flag (F-56024 with F-86955, F-17857 and F-59415) against the original's code run offline on 4,000
+    /// states the game can reach (tools/brake_lamp_reference.py -> testdata/brake_lamp_ref.txt): no behaviour (a trailer:
+    /// state 0), the race path's bParked byte, the speed, the entry in charge, the physics instance's id and flags, the car
+    /// ahead and its velocity.
+    #[test]
+    fn brake_lamp_matches_the_original() {
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/brake_lamp_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let mut r = vrider(AmbType::default());
+            r.state = if w[0] == "1" { 1 } else { 0 };
+            r.quiet = w[1] == "1" && w[2] != "0";
+            r.v = h(w[3]);
+            let slot: i32 = w[5].parse().unwrap();
+            r.slot = (slot >= 0).then_some(slot as usize);
+            let (id, flags): (u32, u32) = (w[6].parse().unwrap(), w[7].parse().unwrap());
+            r.active = id != 0xFFFF && flags & 3 == 0;
+            r.obst_v = (w[8] == "1").then(|| obst_speed(Vec3::new(h(w[9]), h(w[10]), h(w[11]))));
+            assert_eq!(brake_lamp(&r), o == "1", "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 
     /// The needed acceleration (F-20809) on 800 cases.
@@ -3175,7 +3229,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, rail_seq: 0, rail_key: None, rail_fresh: true };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
@@ -3189,7 +3243,7 @@ mod tests {
     #[test]
     fn a_physical_or_resting_car_is_not_put_back_on_its_seat() {
         // (a seat from before the hit: physical or at rest the instance stays where the collider left it)
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, rail_seq: 0, rail_key: None, rail_fresh: true };
         r.seat = Some(Seat::new(Vec3::ZERO, Vec3::Y, Vec3::NEG_Z));
         assert!(seat_poses(&r));
         for (state, active) in [(4, false), (4, true), (5, false), (5, true), (1, true)] {
@@ -3217,7 +3271,7 @@ mod tests {
     /// its rail (slot 20 / sub_826FA760: the follower has a rail).
     #[test]
     fn a_physical_path_car_pairs_only_while_on_a_rail() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, rail_seq: 0, rail_key: None, rail_fresh: true };
         assert!(!r.pairs_inactive());
         r.phys_pair = true;
         for (state, yes) in [(1u8, true), (9, true), (10, false), (0, false), (4, false), (5, false), (6, false)] {
@@ -4650,6 +4704,8 @@ pub struct PathRails {
     pub hits: usize,
     /// +170 bPhysical: the car's instance +140 bit 0x80 (`Rider::phys_pair`)
     pub physical: bool,
+    /// +164 bParked, as behaviour slot 18 reads it (`Rider::quiet`)
+    pub quiet: bool,
 }
 
 /// Path init (sub_827393B8). `snap`: bSnapToRails per vertex (a single-vertex path that is not
@@ -5523,6 +5579,7 @@ impl Vehicles {
             r.state = 9;
         }
         r.phys_pair = pr.physical;
+        r.quiet = pr.quiet;
         Some(r)
     }
 
@@ -5631,6 +5688,7 @@ impl Vehicles {
                             r.choose_next(nav);
                         }
                         r.path = None;
+                        r.quiet = pr.quiet;
                         if rt.rails.is_empty() {
                             r.route = None;
                             r.state = 1;
