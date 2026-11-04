@@ -34,6 +34,9 @@ pub struct Tune {
     pub bloom: [f32; 4],
     /// StarSize
     pub star: [[f32; 2]; 4],
+    /// sm_fPropTrailIntensitys / sm_fCarTrailIntensitys (the light trails' strength: trail.rs)
+    pub prop_trail: [f32; 4],
+    pub car_trail: [f32; 4],
     /// MaxGlowDist, MaxGlowBias, MaxCarGlowBias, MinGlowBias
     pub max_dist: f32,
     pub max_bias: f32,
@@ -54,6 +57,8 @@ impl Default for Tune {
             streak: [0.15; 4],
             bloom: [1.0, 1.0, 1.0, 2.0],
             star: [[6.6, 3.85], [6.6, 3.85], [6.6, 3.85], [6.6, 3.2]],
+            prop_trail: [0.5, 0.5, 0.55, 0.5],
+            car_trail: [0.5; 4],
             max_dist: 0.6,
             max_bias: 0.05,
             max_car_bias: 0.02,
@@ -100,6 +105,8 @@ impl Tune {
         t.streak = four("sm_fStreakIntensitys", t.streak);
         t.bloom = four("sm_fBloomIntensitys", t.bloom);
         t.star = pairs("StarSize", t.star);
+        t.prop_trail = four("sm_fPropTrailIntensitys", t.prop_trail);
+        t.car_trail = four("sm_fCarTrailIntensitys", t.car_trail);
         t.max_dist = one("MaxGlowDist", t.max_dist);
         t.max_bias = one("MaxGlowBias", t.max_bias);
         t.max_car_bias = one("MaxCarGlowBias", t.max_car_bias);
@@ -420,6 +427,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
     });
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("halo glows"), size: (MAX * std::mem::size_of::<Glow>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     *STATE.lock().unwrap() = Some(Halo { tune, pipeline, layout, sampler, star, buf, count: 0 });
+    crate::trail::load(gpu);
 }
 
 /// The tuning (None until `load`).
@@ -478,6 +486,8 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder) {
         pass.set_vertex_buffer(0, h.buf.slice(..));
         pass.draw(0..24, 0..h.count);
     }
+    // (the light trails: drawn by the original after the glows, into the same picture)
+    crate::trail::draw(gpu, &mut pass);
 }
 
 #[cfg(test)]

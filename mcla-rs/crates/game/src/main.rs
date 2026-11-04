@@ -78,6 +78,7 @@ mod carfx;
 mod part_audit;
 mod rain;
 mod halo;
+mod trail;
 mod siglrefl;
 mod sunglow;
 mod ticktimes;
@@ -9641,8 +9642,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (its near plane faces the way the frame is drawn: in a car the chase camera's direction)
         let lamp_fwd = if self.drive && self.vehicles.player().is_some() { (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z) } else { self.cam.forward() };
         let lamp_list = halo::ListView::new(glam::Mat4::from_cols_array_2d(&globals.view_proj), self.cam.pos, lamp_fwd, self.cam.fov_y);
+        // (the light trails: the original's frame turns every 1/30 s - trail.rs; their view is the frame's)
+        let trail_tick = trail::begin(dt);
+        let trail_view = if self.drive && self.vehicles.player().is_some() { self.chase.view() } else { self.cam.view() };
+        let mut trail_on = false;
         {
-            let mut glows: Vec<(f32, halo::Glow)> = Vec::new();
+            // (the order, the glow, the light's id for its trail - u64::MAX: none - and the trail's strength)
+            let mut glows: Vec<(f32, halo::Glow, u64, f32)> = Vec::new();
             // (the same lamps' rectangles in the road's reflection picture: siglrefl.rs)
             let mut sig_refl: Vec<siglrefl::Rect> = Vec::new();
             if let (Some(mut tune), false, false) = (halo::tune(), map_baked || matches!(self.game.mode, Mode::Garage), halo::old_look()) {
@@ -9665,14 +9671,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let hour = self.time_of_day;
                 if hour > 17.6 || hour < 6.4 {
                     let no_occ = globals.params[3] == 118.0;
-                    for (((p, c, _), bx), (bc, bw, br, org)) in self.props.glow_lamps.iter().zip(self.props.glow_boxes.iter()).zip(self.props.glow_cull.iter()) {
+                    for (li, (((p, c, _), bx), (bc, bw, br, org))) in self.props.glow_lamps.iter().zip(self.props.glow_boxes.iter()).zip(self.props.glow_cull.iter()).enumerate() {
                         // (the occlusion test belongs to the rule's second branch alone - large
                         // props 200 .. 250 m off; MCLA_DEBUG_VIEW=118: without it)
                         if !halo::lamp_lit(*org, hour) || !lamp_list.holds(*bc, *bw, *br, || !no_occ && occluded.hides_aabb(bx.0, bx.1)) {
                             continue;
                         }
                         if let Some(g) = tune.prop(w, *p, *c, cam) {
-                            glows.push((lamp_list.order(*org) as f32, g));
+                            // (its trail: sm_fPropTrailIntensitys, the prop's own id - F-92524's r8)
+                            glows.push((lamp_list.order(*org) as f32, g, (1u64 << 60) | li as u64, tune.prop_trail[w]));
                         }
                     }
                 }
@@ -9691,7 +9698,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         continue;
                     }
                     if let Some(g) = tune.signal(w, *p, *z, *c, cam, tan) {
-                        glows.push((lamp_list.order(*p) as f32, g));
+                        // (slot -3: no trail)
+                        glows.push((lamp_list.order(*p) as f32, g, u64::MAX, 0.0));
                     }
                     if let (true, Some((rp, ri, rs))) = (sig_refl.len() < siglrefl::MAX, tune.signal_reflection(w, *p, *z, cam)) {
                         let oy = self.props.signal_head_cull(*h).0.y;
@@ -9704,19 +9712,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 // (the cars' lamps: lights on as the sprites had them)
                 let lamp_night = if self.time_of_day > 18.0 || self.time_of_day < 6.0 { 1.0 } else { 0.0 };
-                for (p, f, c, k) in self.vehicles.halo_lamps(lamp_night, cam) {
+                for (p, f, c, k, lid) in self.vehicles.halo_lamps(lamp_night, cam) {
                     if (self.frame_no == 60 || self.frame_no == 280) && std::env::var("MCLA_GLOW_DUMP").is_ok() { eprintln!("carlamp {:.3} {:.3} {:.3} facing {:.3} {:.3} {:.3} col {:.3} {:.3} {:.3} k {:.3}", p.x, p.y, p.z, f.x, f.y, f.z, c[0], c[1], c[2], k); }
                     if let Some(g) = tune.car(w, p, f, c, k, cam, tan) {
                         // (ahead of the props for the cut at 96: the port's prop list is longer than the
                         // game's - 74 props at the gate at 23:30, the car's four lamps at 74 .. 77 of 80 -
                         // and a list of over 96 props dropped every car lamp)
-                        glows.push((-1.0e6 + p.distance(cam), g));
+                        // (its trail: the lamp's level x sm_fCarTrailIntensitys)
+                        glows.push((-1.0e6 + p.distance(cam), g, (2u64 << 60) | lid, k * tune.car_trail[w]));
                     }
                 }
                 // (the police lamps: their own AddGlow calls - vehicles.rs `police_glows`, halo.rs `Tune::police`)
                 for (p, f, c, k) in self.vehicles.police_glows(cam) {
                     if let Some(g) = tune.police(w, p, f, c, k, cam) {
-                        glows.push((-1.0e6 + p.distance(cam), g));
+                        // (slot -2: no trail)
+                        glows.push((-1.0e6 + p.distance(cam), g, u64::MAX, 0.0));
                     }
                 }
                 // (the list in the game's order - the grid's spiral from the camera's cell, cars
@@ -9724,13 +9734,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 glows.sort_by(|a, b| a.0.total_cmp(&b.0));
                 if (self.frame_no == 60 || self.frame_no == 280) && std::env::var("MCLA_GLOW_DUMP").is_ok() { eprintln!("halo list before the cut: {}", glows.len()); }
                 glows.truncate(halo::MAX);
+                // (AddGlow keeps the trail before its quads' screen test: every listed light, on the screen or not)
+                if trail_tick {
+                    for (_, g, id, f2) in glows.iter().filter(|g| g.2 != u64::MAX) {
+                        trail::add(*id, Vec3::new(g.pos_a[0], g.pos_a[1], g.pos_a[2]), [g.col_s[0], g.col_s[1], g.col_s[2]], g.size[0] * 10.0, *f2, &trail_view);
+                    }
+                }
+                trail_on = true;
                 glows.retain(|g| on_screen(&g.1));
                 if (self.frame_no == 60 || self.frame_no == 280) && std::env::var("MCLA_GLOW_DUMP").is_ok() {
-                    for (d, g) in &glows { eprintln!("halo {:.2} {:.2} {:.2} d {:.1} seed {:.3} star {:.3} col {:.2} {:.2} {:.2} size {:.2} {:.2}", g.pos_a[0], g.pos_a[1], g.pos_a[2], d, g.pos_a[3], g.col_s[3], g.col_s[0], g.col_s[1], g.col_s[2], g.size[0] * 10.0, g.size[1] * 10.0); }
+                    for (d, g, _, _) in &glows { eprintln!("halo {:.2} {:.2} {:.2} d {:.1} seed {:.3} star {:.3} col {:.2} {:.2} {:.2} size {:.2} {:.2}", g.pos_a[0], g.pos_a[1], g.pos_a[2], d, g.pos_a[3], g.col_s[3], g.col_s[0], g.col_s[1], g.col_s[2], g.size[0] * 10.0, g.size[1] * 10.0); }
                 }
             }
             halo::set(&gpu, &glows.iter().map(|g| g.1).collect::<Vec<_>>());
             siglrefl::set(&gpu, &sig_refl);
+            let inv = trail_view.inverse();
+            trail::finish(&gpu, trail_view, self.cam.proj(aspect), (inv.w_axis.truncate(), inv.z_axis.truncate()), self.game.mode == Mode::Paused, trail_on);
         }
         {
             // local lights: headlights of the cars around the camera + nearest street lamps (night only)

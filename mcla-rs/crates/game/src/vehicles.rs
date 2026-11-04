@@ -5050,7 +5050,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// level x the kind's factor of the executable's two tables (0x827E7688 other cars: brake 2,
     /// tail 2, head 2, reversing 0.528, third brake 0.346; 0x827E76D8 the player's: brake 0.3,
     /// tail 1.004, head 2, the others 1).
-    pub fn halo_lamps(&self, night: f32, cam: Vec3) -> Vec<(Vec3, Vec3, [f32; 3], f32)> {
+    /// (place, facing, colour, level, the lamp's id for its light trail: the car's uid and the lamp's number)
+    pub fn halo_lamps(&self, night: f32, cam: Vec3) -> Vec<(Vec3, Vec3, [f32; 3], f32, u64)> {
         let mut out = Vec::new();
         let old_rule = std::env::var("MCLA_GLOW_OLD").is_ok();
         for (ci, c) in self.cars.iter().enumerate() {
@@ -5111,14 +5112,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             };
             let has_bone = |id: u8| !old_rule && c.model.glow_bones.iter().any(|(k, _, _)| *k == id);
-            for (id, local, facing) in &c.model.glow_bones {
+            let lamp = |n: usize| ((c.uid as u64) << 12) | n as u64;
+            for (n, (id, local, facing)) in c.model.glow_bones.iter().enumerate() {
                 let k = level(*id);
                 if k <= 0.0 || old_rule {
                     continue;
                 }
-                out.push((pose.pos + pose.rot * *local, pose.rot * *facing, colour(*id, dflt(*id)), k));
+                out.push((pose.pos + pose.rot * *local, pose.rot * *facing, colour(*id, dflt(*id)), k, lamp(n)));
             }
-            for (id, local) in &c.model.lamps {
+            for (n, (id, local)) in c.model.lamps.iter().enumerate() {
                 if has_bone(*id) || !matches!(*id, 0 | 1 | 3 | 6 | 12) {
                     continue;
                 }
@@ -5130,11 +5132,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (MCLA_GLOW_OLD: the R8's four brake glows from the recorded table, as until 2026-10-15)
                 if old_rule && *id == 0 && c.model.name == "vp_aud_r8_08" {
                     let sx = if local.x < 0.0 { -1.0 } else { 1.0 };
-                    out.push((pose.pos + pose.rot * Vec3::new(0.701 * sx, 0.747, 1.803), out_dir, colour(*id, dflt(*id)), k));
-                    out.push((pose.pos + pose.rot * Vec3::new(0.526 * sx, 0.773, 1.902), out_dir, colour(*id, dflt(*id)), k));
+                    out.push((pose.pos + pose.rot * Vec3::new(0.701 * sx, 0.747, 1.803), out_dir, colour(*id, dflt(*id)), k, lamp(2048 + 2 * n)));
+                    out.push((pose.pos + pose.rot * Vec3::new(0.526 * sx, 0.773, 1.902), out_dir, colour(*id, dflt(*id)), k, lamp(2049 + 2 * n)));
                     continue;
                 }
-                out.push((pose.pos + pose.rot * *local, out_dir, colour(*id, dflt(*id)), k));
+                out.push((pose.pos + pose.rot * *local, out_dir, colour(*id, dflt(*id)), k, lamp(1024 + n)));
             }
         }
         out
