@@ -2874,6 +2874,112 @@ mod tests {
         assert!(tested >= 20 && j_ok >= tested - 2 && k_ok >= tested - 2);
     }
 
+    /// The original's pedal output (F-41825 command + F-28541 mapping) against its recorded steer target (mcOpponentInput +24, written by the
+    /// brain each frame), on the post-update snapshots of `work/ai-record/fixture/r7_r8_inp.bin` (`work/ai-record/mkfix2.py`: the R8 of work/ai-record r7 with its
+    /// input and brain). Per snapshot k, with H turned back by the output's own step: the line samples of snapshot k (`own`), or those of
+    /// snapshot k - 1 with the car of k (`prev`: the asynchronous job's samples of the previous frame). Prints the counts (`--nocapture`);
+    /// returns at once without the fixture.
+    #[test]
+    fn recorded_pedal_output() {
+        let (Ok(fix), Ok(tb)) = (std::fs::read("D:/MCLA/work/ai-record/fixture/r7_r8_inp.bin"), std::fs::read("D:/MCLA/work/ai-record/fixture/aivtune_r8.bin")) else { return };
+        let floats: Vec<f32> = tb.chunks_exact(4).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&floats).unwrap());
+        let n = u32::from_le_bytes(fix[8..12].try_into().unwrap()) as usize;
+        let rec = 8 + 31232 + 1024 + 192 + 576;
+        let be = |b: &[u8], o: usize| f32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+        let snap = |k: usize| {
+            let o = 12 + k * rec;
+            let t = f64::from_le_bytes(fix[o..o + 8].try_into().unwrap());
+            let (al, inp, br) = (&fix[o + 8..o + 8 + 31232], &fix[o + 8 + 31232 + 1024..o + 8 + 31232 + 1024 + 192], &fix[o + 8 + 31232 + 1024 + 192..o + rec]);
+            (t, al, inp, br)
+        };
+        let unturn = |a: &mut Aiv| {
+            let kk0 = a.ln.s[(a.ln.f + 1) as usize].kappa;
+            let lim = 1.0 / a.veh.steer_scalar(a.v_fwd);
+            let kk = kk0.max(-lim).min(lim);
+            let vh = a.vel.z * a.h.z + a.vel.x * a.h.x;
+            a.h = norm0(rot_y(a.h, -(kk * a.dt * vh)));
+        };
+        let steer_of = |a: &mut Aiv, coll: bool| {
+            let (kc, ac) = a.command(coll);
+            let (s, t, b) = a.pedals(kc, ac, 2, 0.0);
+            (s, t, b, kc, ac)
+        };
+        let (mut tested, mut own_ok, mut prev_ok, mut either, mut clamped) = (0, 0, 0, 0, 0);
+        let mut worst = (0.0f32, 0usize);
+        let mut hist = [0; 5];
+        let mut xt = [[0; 2]; 2];
+        for k in 1..n {
+            let (t, al, inp, br) = snap(k);
+            let (tp, alp, _, _) = snap(k - 1);
+            let (want, coll) = (be(inp, 24), be(br, 296) > 0.0);
+            let mut a = Aiv::new(tune.clone());
+            a.import_original(al);
+            if a.ln.n - a.ln.f <= 1 {
+                continue;
+            }
+            let car = (a.pos, a.h, a.f, a.vel, a.ang_vel, a.v_fwd, a.dt);
+            unturn(&mut a);
+            let (so, ..) = steer_of(&mut a, coll);
+            let mut ok_prev = false;
+            if t - tp < 0.06 {
+                let mut p = Aiv::new(tune.clone());
+                p.import_original(alp);
+                (p.pos, p.h, p.f, p.vel, p.ang_vel, p.v_fwd, p.dt) = car;
+                if p.ln.n - p.ln.f > 1 {
+                    unturn(&mut p);
+                    let (sp, ..) = steer_of(&mut p, coll);
+                    ok_prev = (sp - want).abs() < 1e-5;
+                }
+            }
+            // (the recorded steer is mcOpponentInput's slewed one: from the previous frame's value at 4/s back towards 0, 6/s out, x dt)
+            let (_, _, pinp, _) = snap(k - 1);
+            let frames = ((t - tp) * 30.0).round() as f32;
+            let so = if frames >= 1.0 && frames <= 3.0 {
+                let cur = be(pinp, 24);
+                let rate = if (cur - so) * cur >= 0.0 { 4.0 } else { 6.0 } * a.dt * frames;
+                cur + (so - cur).max(-rate).min(rate)
+            } else {
+                so
+            };
+            let ok_own = (so - want).abs() < 1e-5;
+            // is the snapshot's line the one its own car state gives (re-evaluated as in reevaluate_recorded_state)? else it was read mid-job
+            let consistent = {
+                let mut r = Aiv::new(tune.clone());
+                r.import_original(al);
+                let i = (r.ln.f + 1) as usize;
+                let (k0, a0, d0) = (r.ln.s[i].kappa, r.ln.s[i].allowed, r.ln.s[i].ds);
+                unturn(&mut r);
+                r.sc.dirty = [u32::MAX; 2];
+                r.ln.j = 0.0;
+                r.planes();
+                r.spline();
+                r.samples();
+                let d = r.backward();
+                r.forward(d);
+                (r.ln.s[i].kappa - k0).abs() < 1e-5 && (r.ln.s[i].allowed - a0).abs() < 1e-3 && (r.ln.s[i].ds - d0).abs() < 1e-4
+            };
+            xt[consistent as usize][ok_own as usize] += 1;
+            tested += 1;
+            own_ok += ok_own as i32;
+            prev_ok += ok_prev as i32;
+            either += (ok_own || ok_prev) as i32;
+            clamped += (want.abs() >= 1.0) as i32;
+            let e = (so - want).abs();
+            hist[if e < 1e-5 { 0 } else if e < 1e-4 { 1 } else if e < 1e-3 { 2 } else if e < 1e-2 { 3 } else { 4 }] += 1;
+            if !ok_own && (so - want).abs() > worst.0 {
+                worst = ((so - want).abs(), k);
+            }
+            if !ok_own && !ok_prev && std::env::var("MCLA_PEDAL_DIFF").is_ok() {
+                println!("k {k:3} t {t:.3} steer port {so:.6} original {want:.6} coll {coll} f {} n {}", a.ln.f, a.ln.n);
+            }
+        }
+        println!("pedal output, {tested} snapshots: steer within 1e-5 with the own samples {own_ok}, with the previous frame's {prev_ok}, either {either}; clamped {clamped}; worst own {:.6} at {}; |err| <1e-5 / <1e-4 / <1e-3 / <1e-2 / more: {hist:?}; [line not / is the car's own][steer off / exact]: {xt:?}", worst.0, worst.1);
+        // (2026-11-03, 464 snapshots: 189 within 1e-5, 136 more within 1e-4, 97 within 1e-3, 42 beyond; the misses are not only the snapshots
+        // read mid-job: docs/reference/ai/verify_pedal_output.md)
+        assert!(tested >= 400 && hist[0] * 100 >= tested * 35 && (hist[0] + hist[1] + hist[2]) * 100 >= tested * 85);
+    }
+
     /// 12,000 cases of the original's scalar geometry helpers (F-41334 norm_or, F-88594 ang3, F-32060 ang_xz,
     /// F-52074 ang_xz_unit, F-57591 rot_y, F-17888 ease, F-91226 seg_portal), run offline on their
     /// generated code with the callee acos / sin / cos (work/ai-verify/scalar/cases.py): per case, bit for bit.
