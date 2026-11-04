@@ -31,7 +31,7 @@ pub fn load(gpu: &mut Gpu) {
             count: None,
         }],
     });
-    let consts = device.create_buffer(&wgpu::BufferDescriptor { label: Some("sun glow consts"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+    let consts = device.create_buffer(&wgpu::BufferDescriptor { label: Some("sun glow consts"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     // (the frame's globals: the particles' pipeline has their layout)
     let globals_layout = gpu.pipeline_particle.get_bind_group_layout(0);
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sun glow"), source: wgpu::ShaderSource::Wgsl(include_str!("render/sun_glow.wgsl").into()) });
@@ -60,16 +60,18 @@ pub fn load(gpu: &mut Gpu) {
     *STATE.lock().unwrap() = Some(SunGlow { pipeline, layout, consts });
 }
 
-/// The share of the sun the game's occlusion query reports: its pixel count / 1250, and the
-/// count reads 1000 in the reference whatever stands before the sun (0x827E1048 + 0 / + 24).
-pub const VISIBLE: f32 = 0.8;
+/// The pixel count the game's occlusion query reports: 1000 in the reference whatever stands before the sun
+/// (0x827E1048 + 0); the share is it / cloudspeed.xml's pixel word (+24, 1250: 0.8), clamped to 0 .. 1 (F-63954).
+pub const QUERY_COUNT: f32 = 1000.0;
 
 /// The pass: after the scene (its depth is read), before the tone map's chain. `sun_color`
 /// is the sky file's SunColorKF at the hour, as stored (no decoding).
 pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, sun_color: [f32; 3]) {
     let guard = STATE.lock().unwrap();
     let Some(s) = guard.as_ref() else { return };
-    gpu.queue.write_buffer(&s.consts, 0, bytemuck::cast_slice(&[sun_color[0], sun_color[1], sun_color[2], VISIBLE]));
+    let cs = crate::sky::cloud_speed();
+    let visible = (QUERY_COUNT / cs.glow_pixels as f32).clamp(0.0, 1.0);
+    gpu.queue.write_buffer(&s.consts, 0, bytemuck::cast_slice(&[sun_color[0], sun_color[1], sun_color[2], visible, cs.glow_distance, cs.glow_half_size, cs.glow_intensity, 0.0]));
     let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("sun glow"),
         layout: &s.layout,

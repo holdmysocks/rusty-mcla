@@ -2490,14 +2490,14 @@ impl App {
         if self.input.down(KeyCode::BracketLeft) {
             self.time_of_day = (self.time_of_day - dt * 2.0 + 24.0) % 24.0;
         }
-        // the clock runs while driving: one game hour per minute (a day in 24 minutes),
-        // unless a time was fixed on the command line
+        // the clock runs while driving: cloudspeed.xml's hours per second (1/60: one game hour per minute, a day in 24
+        // minutes; F-74970 at sky +828), unless a time was fixed on the command line
         // (CarSelection holds the clock - Graphics_GetAndSetAutoUpdateTimeOfDay(0) at its start, (1) once ACCEPT's
         // black is up - and the parked cars, AmbientMgr_SetParkedCarsEnable 0 / 1)
         let car_selection = (1..=3).contains(&self.intro_stage) || self.game.starter_pick.is_some();
         self.vehicles.parked_held = car_selection;
         if self.opt.time.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !car_selection {
-            let dh = dt / 60.0;
+            let dh = dt * sky::cloud_speed().hour_rate;
             self.time_of_day = (self.time_of_day + dh) % 24.0;
         }
         self.weather_tick(dt);
@@ -13641,6 +13641,7 @@ impl App {
             rain::load(&mut gpu, &self.opt.data_dir);
             halo::load(&mut gpu, &self.opt.data_dir);
             cutlights::init(&self.opt.data_dir);
+            sky::init_cloud_speed(&self.opt.data_dir);
             siglrefl::load(&gpu, &self.opt.data_dir);
             sunglow::load(&mut gpu);
             pu_draw::load(&mut gpu, &self.opt.data_dir);

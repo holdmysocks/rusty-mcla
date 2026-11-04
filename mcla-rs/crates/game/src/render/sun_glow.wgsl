@@ -41,12 +41,10 @@ struct Globals {
 @group(1) @binding(0) var depth: texture_depth_2d;
 struct Consts {
     sun: vec4<f32>,          // rgb = SunColor of the hour, w = visible
+    glow: vec4<f32>,         // cloudspeed.xml: distance (700), half size (200), intensity (45)
 };
 @group(1) @binding(1) var<uniform> k: Consts;
 
-const DISTANCE: f32 = 700.0;
-const HALF_SIZE: f32 = 200.0;
-const INTENSITY: f32 = 45.0;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -78,15 +76,16 @@ fn fs_sun_glow(in: VsOut) -> @location(0) vec4<f32> {
     // (only under the weather's keys, not in the garage; 128: off)
     if (g.dome.w < 0.5 || g.ambient_ground.w < -0.5 || (g.params.w > 127.5 && g.params.w < 128.5)) { discard; }
     let d = normalize(g.true_sun.xyz);
+    let DISTANCE = k.glow.x;
     let depth_c = DISTANCE * dot(d, in.fwd);
     if (depth_c <= 0.1) { discard; }
     let ray = normalize(unproject(in.ndc, 0.5) - g.cam_pos.xyz);
     let t = depth_c / max(dot(ray, in.fwd), 1e-4);
     let off = ray * t - d * DISTANCE;
-    let uv = vec2<f32>(dot(off, in.right), dot(off, in.up)) / HALF_SIZE;
+    let uv = vec2<f32>(dot(off, in.right), dot(off, in.up)) / k.glow.y;
     if (abs(uv.x) > 1.0 || abs(uv.y) > 1.0) { discard; }
     let fall = 1.0 - clamp(length(uv), 0.0, 1.0);
-    let a = floor(INTENSITY * k.sun.w * 2.55) / 255.0;
+    let a = floor(k.glow.z * k.sun.w * 2.55) / 255.0;
     let col = floor(clamp(k.sun.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) * 255.0) / 255.0;
     var glow = col * (10.0 * fall * fall * a * a * a);
     // the fog pass over it (city.wgsl's rule; the sky's cleared depth takes none)
