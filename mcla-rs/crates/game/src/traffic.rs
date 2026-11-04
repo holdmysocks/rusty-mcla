@@ -3446,6 +3446,42 @@ mod verify_lanes_tests {
         let _ = d178;
     }
 
+    /// `snap_to_lane` is the original's F-59579 without a heading: on the city's lanes (as parsed and as `rail_nav`
+    /// curves them) it answers as `railroute::snap`, which equals the original's code run offline (20,000 of 20,000,
+    /// railroute's tests): 20,000 points round control points, 5 / 30 / 50 m, lane, phase, squared distance, point and
+    /// direction bit for bit.
+    #[test]
+    fn lane_snap_is_the_originals() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return };
+        let nav = NavSys::parse(&res).unwrap();
+        let net = crate::railroute::RailNet::parse(&res);
+        let curved = nav.curved(2f32.to_radians());
+        let mut seed = 0x2545_F491u32;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+        let (mut n, mut hits) = (0, 0);
+        for k in 0..20000 {
+            let c = &nav.curves[(rnd() * nav.curves.len() as f32) as usize % nav.curves.len()];
+            let q = c.pts[(rnd() * c.pts.len() as f32) as usize % c.pts.len()];
+            let p = q + Vec3::new(rnd() * 80.0 - 40.0, rnd() * 10.0 - 5.0, rnd() * 80.0 - 40.0);
+            let r = [5.0, 30.0, 50.0][k % 3];
+            let want = crate::railroute::snap(&net, &nav, p, r).map(|h| (h.lane as usize, h.t.to_bits(), h.d2.to_bits(), h.point.to_array().map(f32::to_bits), h.dir.to_array().map(f32::to_bits)));
+            for nv in [&nav, &curved] {
+                let got = snap_to_lane(nv, p, r).0.map(|h| (h.lane, h.t.to_bits(), h.d2.to_bits(), h.point.to_array().map(f32::to_bits), h.dir.to_array().map(f32::to_bits)));
+                assert_eq!(got, want, "case {k} at {p:?} r {r}");
+            }
+            n += 1;
+            hits += want.is_some() as usize;
+        }
+        println!("lane snap: {n} cases equal, {hits} with a lane");
+        assert!(hits > 5000);
+    }
+
     /// F-24415 (the 4-chord call) and F-53741 (n chords): `curve_nearest` against the original's
     /// nearest-point search on all 10,031 lanes, 3 positions each (0.5 - 30 m round a control
     /// point), 4 or 8 chords, 10 refinements. Bit-for-bit counts per output, by lane degree.
@@ -5938,67 +5974,13 @@ pub fn crossing_unspawn(grid: &CrossGrid, focus: Vec3, vel: Vec3, view: Vec3, ca
 /// A path vertex looks for a lane within 30 m (F-46970: the vertex's w, [0x82006BF0]).
 pub const SNAP_RADIUS: f32 = 30.0;
 
-/// The nearest point of a curve to `p` (F-53741): `n` chords at t = k / n, the one whose
-/// own nearest point is nearest gives the phase bracket [ta, tb]; the side whose third point
-/// (ta + h or tb - h, h = (tb - ta) / 3) is nearer is taken first, then `iters` halvings, each
-/// keeping the end that has come nearest so far (ties: the lower end first, then the upper).
+/// The nearest point of a curve to `p` (F-53741): the original's search, `railroute::nearest` (bit-exact).
 /// Returns (phase, squared distance, point) as the last halving wrote them.
 pub fn curve_nearest(c: &LaneCurve, p: Vec3, n: usize, iters: usize) -> (f32, f32, Vec3) {
-    let pt = |t: f32| c.eval(t).0;
-    let d2 = |q: Vec3| (p - q).length_squared();
-    let mut prev = pt(0.0);
-    let mut tprev = 0.0f32;
-    let step = 1.0 / n.max(1) as f32;
-    let (mut best, mut a, mut b, mut ta, mut tb) = (f32::MAX, prev, prev, 0.0f32, 1.0f32);
-    for k in 1..=n {
-        let t = k as f32 * step;
-        let q = pt(t);
-        let d = q - prev;
-        let len2 = d.length_squared();
-        let u = if len2 == 0.0 { 0.0 } else { ((p - prev).dot(d) / len2).clamp(0.0, 1.0) };
-        let e = d2(prev + d * u);
-        if e < best {
-            best = e;
-            a = prev;
-            b = q;
-            ta = tprev;
-            tb = t;
-        }
-        prev = q;
-        tprev = t;
-    }
-    let h = (tb - ta) * 0.333_333_34;
-    let (mut fa, mut fb) = (d2(a), d2(b));
-    let mut side = d2(pt(ta + h)) < d2(pt(tb - h));
-    let mut least = f32::MAX;
-    let mut out = (0.0f32, 0.0f32, Vec3::ZERO);
-    for _ in 0..iters {
-        let mid = (tb + ta) * 0.5;
-        if side {
-            out = (ta, fa, a);
-            tb = mid;
-            b = pt(mid);
-            fb = d2(b);
-        } else {
-            out = (tb, fb, b);
-            ta = mid;
-            a = pt(mid);
-            fa = d2(a);
-        }
-        if fa <= least {
-            least = fa;
-            side = true;
-        }
-        if fb <= least {
-            least = fb;
-            side = false;
-        }
-    }
-    out
+    crate::railroute::nearest(c, p, n as u32, iters as u32)
 }
 
-/// A lane's box (lane +16 / +32: here the box of its control points, which holds its curve),
-/// its stored length (+0c, the curve's: F-50105) and its flags (+4).
+/// A lane's box (lane +16 / +32), its stored length (+0c) and its flags (+4), as the file holds them.
 struct LaneBox {
     min: Vec3,
     max: Vec3,
@@ -6010,22 +5992,10 @@ struct LaneBox {
 fn lane_boxes(nav: &NavSys) -> &'static [LaneBox] {
     static B: std::sync::OnceLock<Vec<LaneBox>> = std::sync::OnceLock::new();
     B.get_or_init(|| {
-        let mut flags = vec![0u32; nav.curves.len()];
-        for l in &nav.links {
-            if let Some(f) = flags.get_mut(l.lane) {
-                *f = l.flags;
-            }
-        }
-        nav.curves
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let (mut mn, mut mx) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-                for p in &c.pts {
-                    mn = mn.min(*p);
-                    mx = mx.max(*p);
-                }
-                LaneBox { min: mn, max: mx, len: c.length(), flags: flags[i] }
+        (0..nav.curves.len())
+            .map(|i| {
+                let (flags, len, min, max) = nav.lane_stored(i);
+                LaneBox { min, max, len, flags }
             })
             .collect()
     })
@@ -6058,7 +6028,7 @@ pub fn snap_to_lane(nav: &NavSys, p: Vec3, r: f32) -> (Option<LaneHit>, usize) {
             continue;
         }
         let o = (b.min - p).max(p - b.max).max(Vec3::ZERO);
-        if !(r * r > o.length_squared()) {
+        if !(r * r > o.z * o.z + (o.y * o.y + o.x * o.x)) {
             continue;
         }
         let c = &nav.curves[lane];
@@ -6069,7 +6039,7 @@ pub fn snap_to_lane(nav: &NavSys, p: Vec3, r: f32) -> (Option<LaneHit>, usize) {
         }
         hits += 1;
         if best.as_ref().map_or(true, |x| d2 < x.d2) {
-            best = Some(LaneHit { lane, t, d2, point, dir: c.eval(t).1 });
+            best = Some(LaneHit { lane, t, d2, point, dir: crate::railroute::deriv(c, t) });
         }
     }
     (best, hits)

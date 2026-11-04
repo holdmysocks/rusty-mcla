@@ -560,6 +560,11 @@ struct RawLane {
 }
 
 impl NavSys {
+    /// A lane's +4 flags, +0xc length and +0x10 / +0x20 box, as the file holds them.
+    pub fn lane_stored(&self, lane: usize) -> (u32, f32, Vec3, Vec3) {
+        self.raw.get(lane).map_or((0, 0.0, Vec3::ZERO, Vec3::ZERO), |l| (l.flags, l.len, l.min, l.max))
+    }
+
     /// The roads next to junction `j` (the police's junction prediction, F-67303): its connection list, in
     /// the file's order.
     pub fn junction_roads(&self, j: usize) -> Vec<usize> {
