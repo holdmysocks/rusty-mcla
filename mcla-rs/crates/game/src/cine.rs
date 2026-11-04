@@ -101,6 +101,8 @@ pub struct Scene {
     pub origin: Mat4,
     /// CineScript_Camera_Kill: the game camera shows the rest
     camera_killed: bool,
+    /// the camera's cut test state and the last (scene time, snapped time) it gave
+    cam_cut: std::sync::Mutex<(CamCut, Option<(f32, f32)>)>,
 }
 
 impl Scene {
@@ -119,6 +121,67 @@ impl Scene {
         let racestart = n.contains("racestart") && !n.contains("red") && !n.contains("payback");
         (!self.actors.is_empty() || !self.movers.is_empty()) && !racestart
     }
+}
+
+/// The scene camera's cut test limits (F-25555 passes the tune globals, 2 m and 20 degrees in the image).
+const CAM_CUT_METRES: f32 = 2.0;
+const CAM_CUT_DEGREES: f32 = 20.0;
+
+/// The camera cut test's state (F-34419's globals): the previous grid time (-1: none), the last time it gave and the
+/// one before, and whether the last test cut. A camera launch (F-22373 / F-62736) sets them to its start time, not cut.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CamCut {
+    prev: f32,
+    last: f32,
+    last2: f32,
+    cut: bool,
+}
+
+impl Default for CamCut {
+    fn default() -> Self {
+        CamCut { prev: 0.0, last: 0.0, last2: 0.0, cut: false }
+    }
+}
+
+/// `F-34419`: the camera cut test. t0 = t on the 1/30 s grid; from where the last test stood plus 1/30 if it skipped more
+/// than 0.05 s (`at`), else t0. Between `at` and the next grid step t1 the camera's move d and, unless the last test cut,
+/// the change of its step (the step before `at` minus d, times 900) give a cut when |d|^2 x |change|^2 x 900 > metres^2
+/// (after a cut the distance never cuts); a turn over `degrees` cuts too. A cut gives `at`, else t. With `on` (the scene
+/// camera's update) the state moves on: prev = t0, last = the result. Test: `cam_cut_matches_the_original`.
+fn cam_cut_rule(s: &mut CamCut, on: bool, t: f32, metres: f32, degrees: f32, pos: impl Fn(f32) -> Option<Vec3>, rot: impl Fn(f32) -> Option<Quat>) -> f32 {
+    if !(s.prev > -1.0) {
+        s.prev = t;
+    }
+    let step = 1.0f32 / 30.0;
+    let t0 = t - (t as f64 % (1.0f32 / 30.0) as f64) as f32;
+    // (the image's 0.05 is 0x3D4CCCCE, one step above 0.05f)
+    let at = if t0 - s.prev > f32::from_bits(0x3d4c_ccce) { s.prev + step } else { t0 };
+    let (before, t1) = (at - step, t0 + step);
+    let len2 = |v: Vec3| (v.x as f64).mul_add(v.x as f64, (v.y as f64).mul_add(v.y as f64, (v.z * v.z) as f64) as f32 as f64) as f32;
+    let p_at = pos(at);
+    let mut d = p_at.unwrap_or(Vec3::ZERO);
+    if let Some(p) = pos(t1) {
+        d -= p;
+    }
+    let mut k = 0.0f32;
+    if !s.cut {
+        let mut b = pos(before).unwrap_or(Vec3::ZERO);
+        if let Some(p) = p_at {
+            b -= p;
+        }
+        k = len2(b - d) * f32::from_bits(0x4460_fffe);
+    }
+    let q0 = rot(at).unwrap_or(Quat::IDENTITY);
+    let turn = rot(t1).map_or(0.0, |q1| crate::cinecar::quat_angle(q0, q1));
+    let cut = len2(d) * k > metres * metres || turn > degrees * 0.017_453_292;
+    let out = if cut { at } else { t };
+    if on {
+        s.cut = cut;
+        s.last2 = s.last;
+        s.prev = t0;
+        s.last = out;
+    }
+    out
 }
 
 /// The character sets of the hangouts' people (`Cine::set_ambient`).
@@ -503,7 +566,7 @@ impl Cine {
         if !self.index.contains_key(&key) {
             return false;
         }
-        let mut sc = Scene { name: key.clone(), camera: None, actors: Vec::new(), movers: Vec::new(), duration: 0.0, t: 0.0, origin, camera_killed: false };
+        let mut sc = Scene { name: key.clone(), camera: None, actors: Vec::new(), movers: Vec::new(), duration: 0.0, t: 0.0, origin, camera_killed: false, cam_cut: Default::default() };
         // the scene itself, its bystanders, then the faces
         let short = key.rsplit('/').next().unwrap_or("").to_string();
         let parts = [(key.clone(), false), (format!("hangout/{short}_peds"), false), (format!("{key}_im"), true)];
@@ -781,7 +844,7 @@ impl Cine {
                     continue;
                 }
                 let anim = animation_named(&rd, o)?;
-                let sc = Scene { name: key.clone(), camera: Some(Arc::new(anim)), actors: Vec::new(), movers: Vec::new(), duration: 0.0, t, origin, camera_killed: false };
+                let sc = Scene { name: key.clone(), camera: Some(Arc::new(anim)), actors: Vec::new(), movers: Vec::new(), duration: 0.0, t, origin, camera_killed: false, cam_cut: Default::default() };
                 return Self::scene_camera(&sc);
             }
         }
@@ -803,7 +866,20 @@ impl Cine {
 
     fn scene_camera(sc: &Scene) -> Option<(Vec3, Vec3, Vec3, f32)> {
         let cam = sc.camera.as_ref()?;
-        let f = cam.frame_at(sc.t);
+        // (the scene camera update F-40303 runs the cut test once per update, its enable byte set around the call)
+        let mut state = sc.cam_cut.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut cut, memo) = *state;
+        let t = match memo {
+            Some((at, snapped)) if at == sc.t => snapped,
+            _ => {
+                let pos = |s: f32| cam.track(KIND_TRANSLATION, 0).map(|t| t.data.vec(cam.frame_at(s)));
+                let rot = |s: f32| cam.track(KIND_ROTATION, 0).map(|t| t.data.rot(cam.frame_at(s)));
+                let snapped = cam_cut_rule(&mut cut, true, sc.t, CAM_CUT_METRES, CAM_CUT_DEGREES, pos, rot);
+                *state = (cut, Some((sc.t, snapped)));
+                snapped
+            }
+        };
+        let f = cam.frame_at(t);
         let pos = cam.track(KIND_TRANSLATION, 0)?.data.vec(f);
         let rot = cam.track(KIND_ROTATION, 0).map(|t| t.data.rot(f)).unwrap_or(Quat::IDENTITY);
         // (the lens track is a focal length in mm on a 35 mm gate: cam+104 = 2 atan(0.7085 in /
@@ -993,6 +1069,40 @@ mod tests {
         assert_eq!(named, SCENE_AUDIO.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(scene_audio("cut_cop_arrest").as_deref(), Some("CUT_COP_ARREST"));
         assert_eq!(scene_audio("cut_cop_arrest_05"), None);
+    }
+}
+
+#[cfg(test)]
+mod cam_cut_tests {
+    use super::*;
+
+    fn fl(h: &str) -> f32 {
+        f32::from_bits(u32::from_str_radix(h, 16).unwrap())
+    }
+
+    #[test]
+    fn cam_cut_matches_the_original() {
+        let text = include_str!("testdata/cam_cut_ref.txt");
+        let (mut n, mut cuts, mut bad) = (0, 0, Vec::new());
+        for l in text.lines().filter(|l| l.starts_with("CAM")) {
+            let p: Vec<&str> = l.split(' ').skip(1).collect();
+            let (t, m, deg) = (fl(p[0]), fl(p[1]), fl(p[2]));
+            let mut s = CamCut { prev: fl(p[3]), last: fl(p[4]), last2: f32::from_bits(0x0bad_f00d), cut: p[5] == "00000001" };
+            let (on, found) = (p[6] == "00000001", u32::from_str_radix(p[7], 16).unwrap());
+            let k: Vec<f32> = (0..14).map(|i| fl(p[8 + i])).collect();
+            let pos = |s: f32| (found & 1 != 0).then(|| Vec3::new(k[0] + k[1] * s, k[2] + k[3] * s, k[4] + k[5] * s * s));
+            let rot = |s: f32| (found & 2 != 0).then(|| Quat::from_xyzw(k[6] + k[7] * s, k[8] + k[9] * s, k[10] + k[11] * s, k[12] + k[13] * s));
+            let out = cam_cut_rule(&mut s, on, t, m, deg, pos, rot);
+            let want = (p[22], p[23], p[24], p[25], p[26] == "1");
+            let got = (format!("{:08x}", out.to_bits()), format!("{:08x}", s.prev.to_bits()), format!("{:08x}", s.last.to_bits()), format!("{:08x}", s.last2.to_bits()), s.cut);
+            n += 1;
+            cuts += (out.to_bits() != t.to_bits()) as usize;
+            if (got.0.as_str(), got.1.as_str(), got.2.as_str(), got.3.as_str(), got.4) != want {
+                bad.push(format!("{l} -> {got:?}"));
+            }
+        }
+        assert!(n == 4000 && cuts > 1000, "{n} cases, {cuts} snapped");
+        assert!(bad.is_empty(), "{} of {n} differ, first: {}", bad.len(), bad[0]);
     }
 }
 

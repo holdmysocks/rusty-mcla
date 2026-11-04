@@ -58,7 +58,7 @@ fn sangle(a: Vec3, b: Vec3) -> f32 {
 }
 
 /// `F-94425`: the angle between two rotations, 2 acos |q0 . q1| (0 outside (-1, 1)).
-fn quat_angle(a: Quat, b: Quat) -> f32 {
+pub(crate) fn quat_angle(a: Quat, b: Quat) -> f32 {
     // (fmadds chain of the original: z first, then w, y, x; each a fused multiply-add)
     let d = b.x.mul_add(a.x, b.y.mul_add(a.y, b.w.mul_add(a.w, b.z * a.z)));
     if d > -1.0 && d < 1.0 {
@@ -98,7 +98,8 @@ fn cut_test(prev: &mut f32, a: &Animation, t: f32) -> (f32, bool) {
 fn cut_rule(prev: &mut f32, t: f32, metres: f32, degrees: f32, pos: impl Fn(f32) -> Option<Vec3>, rot: impl Fn(f32) -> Option<Quat>) -> (f32, bool) {
     let step = 1.0f32 / 30.0;
     let t0 = t - (t as f64 % (1.0f32 / 30.0) as f64) as f32;
-    let at = if t0 - *prev > 0.05 { *prev + step } else { t0 };
+    // (the image's 0.05 is 0x3D4CCCCE, one step above 0.05f)
+    let at = if t0 - *prev > f32::from_bits(0x3d4c_ccce) { *prev + step } else { t0 };
     let t1 = t0 + step;
     let mut d = pos(at).unwrap_or(Vec3::ZERO);
     if let Some(p1) = pos(t1) {
