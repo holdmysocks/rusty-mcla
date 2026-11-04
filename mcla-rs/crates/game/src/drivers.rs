@@ -1,6 +1,6 @@
 //! Drivers and riders: the `drv_*_lod02_set` characters posed with each car's own driver
-//! animations (`resources/animation/<hash>/opponent/male/*.r2`: one pack per car with
-//! `<CAR>_Drv_steer_sweep`, `_Drv_Idle_stp`, `_Drv_Idle_Low`, `_Drv_rev`, ...). The
+//! animations (`$/resources/animation/Drv/<Player|Opponent>/Male/<car>.xapk`: one pack per car with
+//! `<CAR>_Drv_steer_sweep`, `_Drv_Idle_stp`, `_Drv_Idle_Low`, `_Drv_rev`, ...; `pack_path`). The
 //! animations are authored in car space, so the root track seats the driver.
 
 use crate::assets::load_resource_file;
@@ -346,12 +346,11 @@ struct Pose {
 #[derive(Default)]
 pub struct Drivers {
     char_dir: PathBuf,
-    /// car key ("frd_mustang_06", "vpd_chv_impala_64") -> animation pack
-    packs: HashMap<String, PathBuf>,
     /// driver sets: (name, bike rider, police)
     sets: Vec<(String, bool, bool)>,
     models: HashMap<usize, Option<Arc<SkinModel>>>,
-    rigs: HashMap<(String, usize), Option<Rig>>,
+    /// (car key, the local human's pack, driver set)
+    rigs: HashMap<(String, bool, usize), Option<Rig>>,
     poses: HashMap<usize, Pose>,
     buf: SkinBuffer,
     /// the player's head in car space (for the cockpit camera)
@@ -493,11 +492,22 @@ fn overlay(a: &mut [(Quat, Vec3)], b: &[(Quat, Vec3)], clip: &Clip, k: f32) {
     }
 }
 
-/// "vp_frd_mustang_06_dub" -> "frd_mustang_06"; DLC cars keep their "vpd_" prefix.
+/// A driver pack's file: LoadDriver (F-39898) asks for `$/resources/animation/Drv/%s/%s/%s` (F-62204) with
+/// "Player" for the local human (the racer's vt+40: F-49619 true for mcPlayer, F-74264 false for mcOpponent; while the debug tune bool
+/// `animplayerasopponent` is off) and "Opponent" for everyone else, the driver's sex, and the car's name with
+/// its first three letters dropped unless it starts with "vpd", upper-cased and cut before a `_DUB` (F-51581); the
+/// archive names the file by the hash of `<name>.xapk` (hashed lower-case). The packs are male only here (as the driver sets are).
+fn pack_path(root: &Path, player: bool, key: &str) -> PathBuf {
+    let h = mcla_formats::hash::joaat(&format!("{key}.xapk"));
+    root.join(format!("resources/animation/0x{:08x}/{}/male/0x{h:08x}.r2", mcla_formats::hash::joaat("drv"), if player { "player" } else { "opponent" }))
+}
+
+/// The pack name of a car: "vp_frd_mustang_06_dub" -> "frd_mustang_06"; DLC cars keep their "vpd_" prefix (F-62204 /
+/// F-51581; the records spell every `_DUB` in capitals, so the cut is the name's end).
 fn car_key(name: &str) -> String {
     let n = name.to_ascii_lowercase();
     let n = n.trim_end_matches("_dub");
-    n.strip_prefix("vp_").unwrap_or(n).to_string()
+    if n.starts_with("vpd") { n.to_string() } else { n.get(3..).unwrap_or("").to_string() }
 }
 
 fn hash(a: u32) -> u32 {
@@ -540,51 +550,7 @@ impl Drivers {
             }
             self.sets.push((n, l.contains("_mot_"), l.starts_with("pol_")));
         }
-        // which pack belongs to which car: read once, then kept in a small index file
-        let index = root.join("driver_packs.tsv");
-        if let Ok(t) = std::fs::read_to_string(&index) {
-            for line in t.lines() {
-                if let Some((k, f)) = line.split_once('\t') {
-                    self.packs.insert(k.to_string(), PathBuf::from(f));
-                }
-            }
-        }
-        // (the index holds full paths: after the game folder was moved, or the data rebuilt elsewhere, they
-        // point nowhere and no driver loads - every car seen empty, GitHub #24; then it is made again)
-        if self.packs.values().any(|f| !f.is_file()) {
-            log::warn!("drivers: {} names packs that are not there - indexing again", index.display());
-            self.packs.clear();
-        }
-        if self.packs.is_empty() {
-            let mut dirs: Vec<PathBuf> = std::fs::read_dir(root.join("resources/animation")).map(|d| d.flatten().map(|e| e.path().join("opponent/male")).filter(|p| p.is_dir()).collect()).unwrap_or_default();
-            dirs.sort();
-            let mut out = String::new();
-            for dir in dirs {
-                let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-                files.sort();
-                for f in files {
-                    let Ok(res) = load_resource_file(&f) else { continue };
-                    let mut count: HashMap<String, u32> = HashMap::new();
-                    for (_, name) in pack_entries(&res) {
-                        let l = name.to_ascii_lowercase();
-                        let Some(i) = l.find("_fdrv_").or_else(|| l.find("_drv_")) else { continue };
-                        *count.entry(l[..i].to_string()).or_default() += 1;
-                    }
-                    // every pack also carries the shared Challenger gestures
-                    let mut v: Vec<(String, u32)> = count.into_iter().collect();
-                    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-                    let key = v.iter().find(|(k, n)| k != "dge_challenger_70" && *n >= 10).or(v.first()).map(|(k, _)| k.clone());
-                    if let Some(k) = key {
-                        if !self.packs.contains_key(&k) {
-                            out.push_str(&format!("{}\t{}\n", k, f.display()));
-                            self.packs.insert(k, f);
-                        }
-                    }
-                }
-            }
-            let _ = std::fs::write(&index, out);
-        }
-        log::info!("drivers: {} character sets, {} animation packs", self.sets.len(), self.packs.len());
+        log::info!("drivers: {} character sets", self.sets.len());
     }
 
     fn model(&mut self, gpu: &mut Gpu, si: usize) -> Option<Arc<SkinModel>> {
@@ -641,15 +607,17 @@ impl Drivers {
     /// The length of a car's DRV_HIT_HRD clip, once its driver is loaded.
     pub fn hit_hard_secs(&self, car: &str) -> Option<f32> {
         let k = car_key(car);
-        self.rigs.iter().filter(|((c, _), _)| *c == k).find_map(|(_, r)| r.as_ref()?.hit_hard)
+        self.rigs.iter().filter(|((c, _, _), _)| *c == k).find_map(|(_, r)| r.as_ref()?.hit_hard)
     }
 
-    fn rig(&mut self, gpu: &mut Gpu, car: &str, si: usize) -> bool {
-        let key = (car_key(car), si);
+    fn rig(&mut self, gpu: &mut Gpu, car: &str, bike: bool, player: bool, si: usize) -> bool {
+        let key = (car_key(car), player, si);
         if !self.rigs.contains_key(&key) {
             let rig = (|| -> Option<Rig> {
                 let model = self.model(gpu, si)?;
-                let pack = self.packs.get(&key.0).or_else(|| self.packs.get("dge_challenger_70"))?.clone();
+                // (the car's own pack, else the shared one of its kind - F-39898 / F-62204)
+                let path = |k: &str| Some(pack_path(&self.data_dir, player, k)).filter(|p| p.is_file());
+                let pack = path(&key.0).or_else(|| path(if bike { "kaw_ninja_zx14_06" } else { "dge_challenger_70" }))?;
                 let res = load_resource_file(&pack).ok()?;
                 let rd = Rd::new(&res);
                 let entries = pack_entries(&res);
@@ -802,7 +770,7 @@ impl Drivers {
             }
             let Some(si) = self.pick_set(s) else { continue };
             self.set_of.insert(s.id, self.sets[si].0.clone());
-            if !self.rig(gpu, s.car, si) {
+            if !self.rig(gpu, s.car, s.bike, s.player, si) {
                 continue;
             }
             let frame = self.frame;
@@ -820,7 +788,7 @@ impl Drivers {
             p.stopped += ((if s.speed.abs() < 0.6 { 1.0 } else { 0.0 }) - p.stopped) * (dt * 3.0).min(1.0);
             p.reverse += ((if s.reversing && s.speed.abs() > 0.3 { 1.0 } else { 0.0 }) - p.reverse) * (dt * 4.0).min(1.0);
             let p = *p;
-            let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), si)) else { continue };
+            let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), s.player, si)) else { continue };
             if let (true, Some(b)) = (s.bike, rig.bike.as_ref()) {
                 let ride = self.rides.entry(s.id).or_default();
                 ride_pose(ride, b, &rig.model.bones, s.player && self.ckpt_view, s.speed, p.steer.clamp(-1.0, 1.0), self.time, dt, &mut local, &mut other);
@@ -1004,6 +972,23 @@ impl Drivers {
 #[cfg(test)]
 mod original_tests {
     use super::*;
+
+    #[test]
+    fn a_car_finds_its_own_driver_pack() {
+        // (the archive's names: the Police Car Pack's five, the Impala's, the shared Challenger's)
+        let r = Path::new("d");
+        let f = |car: &str, player: bool| pack_path(r, player, &car_key(car)).to_string_lossy().replace('\\', "/");
+        assert_eq!(f("vp_se_chv_plc_96", true), "d/resources/animation/0xe4f29864/player/male/0x8b348a1a.r2");
+        assert_eq!(f("vp_se_chv_chp_96", false), "d/resources/animation/0xe4f29864/opponent/male/0xa7db038c.r2");
+        assert_eq!(f("vp_se_dge_plc_06", true), "d/resources/animation/0xe4f29864/player/male/0xdaddd4cd.r2");
+        assert_eq!(f("vp_se_dge_ubp_06", true), "d/resources/animation/0xe4f29864/player/male/0xf8dec655.r2");
+        assert_eq!(f("vp_se_dge_chp_06", true), "d/resources/animation/0xe4f29864/player/male/0x39620546.r2");
+        assert_eq!(f("vp_chv_impala_96", true), "d/resources/animation/0xe4f29864/player/male/0x394cb4ed.r2");
+        assert_eq!(f("vpd_chv_impala_64", false), "d/resources/animation/0xe4f29864/opponent/male/0x0db60427.r2");
+        assert_eq!(f("vp_dge_challenger_70", false), "d/resources/animation/0xe4f29864/opponent/male/0x953f13ee.r2");
+        assert_eq!(car_key("vp_chv_camaro_06_DUB"), "chv_camaro_06");
+        assert_eq!(car_key("vp_chv_police_96"), "chv_police_96");
+    }
 
     #[test]
     fn gesture_round_robins_match_the_original() {
