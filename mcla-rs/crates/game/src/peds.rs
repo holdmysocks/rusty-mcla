@@ -1079,6 +1079,8 @@ pub struct Peds {
     /// at night: the lights the walkers' picker lays over their grid lamps, and the 30 Hz frames
     /// since the last frame (main.rs sets them each frame; None by day - figlight.rs)
     pub night_lights: Option<(crate::figlight::Dynamic, f32)>,
+    /// the scene ambient (mgr + 224) the walkers' ambient eases towards with the fill map's colour (main.rs)
+    pub amb_base: Vec3,
     /// each lit walker's eased records (the original's walker + 64)
     fig_lights: HashMap<(usize, u32), crate::figlight::FigureLight>,
     /// each walker's LOD of this frame by the main view (`pick_lods`; -1 not drawn)
@@ -1160,6 +1162,7 @@ impl Peds {
             voices_scan: None,
             buf: SkinBuffer::default(),
             night_lights: None,
+            amb_base: Vec3::ZERO,
             fig_lights: HashMap::new(),
             lod_pick: HashMap::new(),
             enabled: true,
@@ -2365,9 +2368,16 @@ impl Peds {
             // (at night the four lights of its program, picked and eased as the original's
             // F-44222 does at the walker's place - only while it is drawn, as there)
             if let (Some((dynamic, frames)), Some(t)) = (&self.night_lights, &tables) {
-                let fl = self.fig_lights.entry(p.key).or_insert_with(|| crate::figlight::FigureLight::new(t, p.pos));
+                let f = crate::fillmap::body_now(p.pos.x, p.pos.z);
+                let amb = self.amb_base + Vec3::new(f[0], f[1], f[2]);
+                let fl = self.fig_lights.entry(p.key).or_insert_with(|| crate::figlight::FigureLight::new(t, p.pos, amb));
                 fl.step(t, p.pos, *frames);
+                fl.step_amb(amb, *frames);
                 self.buf.next_lanes = Some(fl.lanes(p.pos, dynamic));
+                // (MCLA_PED_AMB_OLD=1: the ambient as before, the scene's plus the fill map at once, unpacked)
+                if std::env::var("MCLA_PED_AMB_OLD").is_err() {
+                    self.buf.next_amb = Some(fl.amb_bytes());
+                }
             }
             self.buf.emit(&ty.model, lod, &local, Mat4::from_rotation_translation(p.rot, p.pos));
         }

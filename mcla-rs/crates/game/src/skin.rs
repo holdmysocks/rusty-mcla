@@ -645,6 +645,9 @@ pub struct SkinBuffer {
     hidden: Vec<bool>,
     /// the next figure is lit by these four lanes (a walker at night - figlight.rs); taken by `emit`
     pub next_lanes: Option<[[f32; 4]; 12]>,
+    /// the next figure's whole ambient as the original packs it (a walker at night: its eased ambient, bytes); taken by
+    /// `emit` into color1 with alpha 0, which city.wgsl reads as the ambient instead of the scene's plus the fill
+    pub next_amb: Option<[u8; 3]>,
     /// this frame's lit figures' lanes, the figure of each draw (usize::MAX: none) and the
     /// object uniforms that carry them (one per lit figure, kept from frame to frame)
     lanes: Vec<[[f32; 4]; 12]>,
@@ -742,7 +745,10 @@ impl SkinBuffer {
         // (the night fill light at the figure's place - fillmap.rs: the figures share one buffer
         // and the identity object, so the colour rides in every vertex: color1.rgb = four times
         // map / 255 x 0.25 x m_NFLFade, uv1.y = 77 the mark city.wgsl knows a figure by)
-        let fill = crate::fillmap::figure_now(root.w_axis.x, root.w_axis.z);
+        let fill = match self.next_amb.take() {
+            Some(a) => [a[0], a[1], a[2], 0],
+            None => crate::fillmap::figure_now(root.w_axis.x, root.w_axis.z),
+        };
         for (pi, part) in parts.iter().enumerate() {
             let base = self.verts.len() as u32;
             let shape = match (face, model.morph.as_ref()) {

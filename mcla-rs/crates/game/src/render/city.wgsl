@@ -2473,8 +2473,14 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // (pass 9: figures - skin.rs, the generic object mode with uv1.y = 77 - carry theirs in the
     // second colour: rgb = four times the sum; the player's car shows 0.4 of the whole ambient
     // at night, a recorded factor of unknown origin, in obj.fill.w - 0 = none)
-    let fig_fill = select(vec3<f32>(0.0), in.color1.rgb * 0.25, mat.mode == 9u && in.uv1.y > 76.5 && in.uv1.y < 77.5);
+    let is_fig = mat.mode == 9u && in.uv1.y > 76.5 && in.uv1.y < 77.5;
+    let fig_fill = select(vec3<f32>(0.0), in.color1.rgb * 0.25, is_fig);
     var hemi = (g.ambient_sky.rgb + obj.fill.rgb + fig_fill) * select(1.0, obj.fill.w, obj.fill.w > 0.0);
+    // (a walker at night: color1 alpha 0 holds its whole ambient as the original packs it - its eased ambient, F-79205,
+    // in bytes; skin.rs `next_amb`)
+    if (is_fig && in.color1.a < 0.5) {
+        hemi = in.color1.rgb;
+    }
     // (the garage: the car's programs get their own ambient there - c57 ambYPos = sm_vGarageAmbientLighting,
     // a grey of 0.196, where the room's programs hold TODGarage's (0.035, 0.051, 0.027); the player's car is
     // the object with the night factor in obj.fill.w. Diagnostics 711: the room's ambient on the car.)

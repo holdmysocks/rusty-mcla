@@ -29,10 +29,11 @@ pub struct Dynamic {
     pub rec3: Option<LampRec>,
 }
 
-/// One walker's four eased records (the original's walker + 64).
+/// One walker's four eased records and its eased ambient (the original's walker + 64, + 384).
 #[derive(Clone, Copy)]
 pub struct FigureLight {
     cur: [LampRec; 4],
+    amb: Vec3,
 }
 
 fn target(t: &LampTables, p: Vec3) -> [LampRec; 4] {
@@ -88,10 +89,23 @@ fn lane(l: &LampRec) -> [[f32; 4]; 3] {
 }
 
 impl FigureLight {
-    /// A walker first lit: its records start at their targets (who sets the original's state
-    /// when a walker is made is not known - see the doc).
-    pub fn new(t: &LampTables, p: Vec3) -> FigureLight {
-        FigureLight { cur: target(t, p) }
+    /// A walker first lit: its records and ambient start at their targets. (The original's state is zeroed once when
+    /// its 256 walkers are built at load - F-37241 -> the light context's ctor - and then carries over from the walker
+    /// object's last life; the port has no such pool: approximate.)
+    pub fn new(t: &LampTables, p: Vec3, amb: Vec3) -> FigureLight {
+        FigureLight { cur: target(t, p), amb }
+    }
+
+    /// F-79205's last step: the ambient eased 3 % (f32 0.03) a call towards `target` (F-44222's: the fill map at the
+    /// walker, map / 255 x 0.25 x m_NFLFade, plus the scene ambient); `frames` as in `step`.
+    pub fn step_amb(&mut self, target: Vec3, frames: f32) {
+        let k = if frames == 1.0 { 0.03 } else { 1.0 - 0.97f32.powf(frames) };
+        self.amb += (target - self.amb) * k;
+    }
+
+    /// The ambient as the light context packs it for the draw (F-59032): each channel clamped to 0..1, x 255, truncated.
+    pub fn amb_bytes(&self) -> [u8; 3] {
+        self.amb.to_array().map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8)
     }
 
     /// One call of the original's picker at the walker's point `p`; `frames` = 30 Hz frames
@@ -154,7 +168,7 @@ mod tests {
     #[test]
     fn dynamic_lanes_by_running_best() {
         let t = tables();
-        let f = FigureLight::new(&t, Vec3::ZERO);
+        let f = FigureLight::new(&t, Vec3::ZERO, Vec3::ZERO);
         let head = |z: f32| LampRec { pos: Vec3::new(-140.8, 0.0, z), color: Vec3::new(2.1647, 2.0565, 1.858), strength: 500.0, back: Vec3::new(-0.724, 0.690, 0.004), cone: [4.4696, -2.872] };
         // (146 m: sat(500 / d^2) = 0.023, cone 0.25 - a score of 0.006; head lamp 1 a little nearer
         // scores higher and takes lane 2, the key light's 0.038 beats both and takes lane 1)
@@ -178,11 +192,64 @@ mod tests {
         assert_eq!((l3[9][3], l3[6][3], l3[3][3]), (500.0, 1.0e10, 200.0));
     }
 
+    /// The walkers of the original's title street at 23:00, 40 consecutive frames (testdata/walker_ambient_ref.txt): each
+    /// walker's c26 bytes follow from one start value inside its first byte, eased 3 % a frame towards the scene ambient
+    /// (9, 13, 15) / 255 plus the fill map at the walker's recorded place (m_NFLFade 1), packed by truncation.
+    #[test]
+    fn walkers_ambient_eases_as_recorded() {
+        let dir = "D:/MCLA/extracted/cache";
+        if !std::path::Path::new(dir).join("tune/city/sc").exists() {
+            return;
+        }
+        crate::fillmap::init(dir);
+        crate::fillmap::set_fade(1.0);
+        let base = Vec3::new(9.0, 13.0, 15.0) / 255.0;
+        let text = include_str!("../testdata/walker_ambient_ref.txt");
+        let text = text.replace('\r', "");
+        let walkers: Vec<Vec<(f32, f32, [u8; 3])>> = text
+            .split("\n--\n")
+            .skip(1)
+            .map(|w| {
+                w.lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .map(|l| {
+                        let v: Vec<f32> = l.split_whitespace().map(|x| x.parse().unwrap()).collect();
+                        (v[0], v[1], [v[2] as u8, v[3] as u8, v[4] as u8])
+                    })
+                    .collect()
+            })
+            .collect();
+        // series of a walker that stays in one cell of the map (one target) / of those reproduced; the same for the walkers
+        // crossing a cell edge, where the original's sample point (F-58860: a bone or the instance matrix) and the draw's
+        // place may lie on different sides
+        let (mut steady, mut steady_fit, mut cross, mut cross_fit, mut changing) = (0, 0, 0, 0, 0);
+        for w in &walkers {
+            let tgt: Vec<Vec3> = w.iter().map(|&(x, z, _)| { let c = crate::fillmap::body_now(x, z); base + Vec3::new(c[0], c[1], c[2]) }).collect();
+            let one_cell = tgt.iter().all(|t| *t == tgt[0]);
+            for ch in 0..3 {
+                changing += (w.iter().any(|f| f.2[ch] != w[0].2[ch])) as usize;
+                let ok = (0..400).any(|i| {
+                    let mut f = FigureLight { cur: [LampRec::default(); 4], amb: Vec3::splat((w[0].2[ch] as f32 + i as f32 / 400.0) / 255.0) };
+                    w.iter().enumerate().all(|(n, &(_, _, b))| {
+                        if n > 0 {
+                            f.step_amb(tgt[n], 1.0);
+                        }
+                        f.amb_bytes()[ch] == b[ch]
+                    })
+                });
+                if one_cell { steady += 1; steady_fit += ok as usize } else { cross += 1; cross_fit += ok as usize }
+            }
+        }
+        eprintln!("walkers {} changing series {changing}; in one cell {steady_fit} of {steady}; crossing a cell edge {cross_fit} of {cross}", walkers.len());
+        assert_eq!(walkers.len(), 51);
+        assert_eq!(steady_fit, steady, "series in one cell not reproduced");
+    }
+
     /// The records ease: 6 % of the distance and colour per 30 Hz call.
     #[test]
     fn records_ease_towards_the_cell() {
         let t = tables();
-        let mut f = FigureLight { cur: [LampRec { pos: Vec3::new(10.0, 25.0, 0.0), color: Vec3::ZERO, strength: 0.0, back: Vec3::ZERO, cone: [0.0, 1.0] }; 4] };
+        let mut f = FigureLight { cur: [LampRec { pos: Vec3::new(10.0, 25.0, 0.0), color: Vec3::ZERO, strength: 0.0, back: Vec3::ZERO, cone: [0.0, 1.0] }; 4], amb: Vec3::ZERO };
         f.step(&t, Vec3::ZERO, 1.0);
         assert!((f.cur[0].color.x - 0.06).abs() < 1e-6);
         assert!((f.cur[0].strength - 2.4).abs() < 1e-4);
