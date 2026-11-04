@@ -360,9 +360,11 @@ impl Rain {
             if len <= 0.0 {
                 continue;
             }
-            // (LightMatrix: 38.21 m wide at the end of 16 m - the edge of the light, cos x 2.8058 -
-            // 1.0837 = 0; LightColor.w = 50 x m_LampGlows.w, LightFallOff 1.4)
-            cones.push((d, ConeInst { apex_h: [l.pos.x, l.pos.y, l.pos.z, len], dir_tan: [dir.x, dir.y, dir.z, 38.21 / 16.0], color_fade: [l.color.x, l.color.y, l.color.z, fade], lamp: [50.0 * colw, 2.8058, -1.0837, density] }));
+            // (LightMatrix: the lamp's own width, props.rs `cone_tan` - 38.21 m at the end of 16 m for the street lamps; the
+            // edge of the light, cos x 2.8058 - 1.0837 = 0; LightColor.w = 50 x m_LampGlows.w, LightFallOff 1.4;
+            // MCLA_DEBUG_VIEW=116: 2.388 for every lamp, as before)
+            let tan = if old { 38.21 / 16.0 } else { l.cone_tan };
+            cones.push((d, ConeInst { apex_h: [l.pos.x, l.pos.y, l.pos.z, len], dir_tan: [dir.x, dir.y, dir.z, tan], color_fade: [l.color.x, l.color.y, l.color.z, fade], lamp: [50.0 * colw, 2.8058, -1.0837, density] }));
         }
         cones.sort_by(|a, b| b.0.total_cmp(&a.0));
         let skip = cones.len().saturating_sub(CONES);

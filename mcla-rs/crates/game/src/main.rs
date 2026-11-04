@@ -1849,33 +1849,19 @@ impl App {
     fn slot_candidates(&self, at: Vec3, nfl: f32, hour_light: (Vec3, Vec3), dynamic: Option<&figlight::Dynamic>) -> Vec<(i32, f32, Vec3, Vec3, f32)> {
         const HOUR: i32 = 65545;
         let mut cand: Vec<(i32, f32, Vec3, Vec3, f32)> = Vec::new();
+        // (the lamps: the lamp grid's best four within 4 m of the car (render::LampTables::best_four - F-24398 asks the
+        // grid as the figures' picker does), none when their scores add up to 0 - as F-16230; the id is the table's index. Recorded
+        // at the Selma / Highland crossing, car at (735.91, 20.77, -850.46): colour (1, 0.75, 0.55), strength 0.3847 -
+        // the lamp at (740.6, 31.6, -852.8), Intensity 55, 11.96 m off; at 02:00 the second slot a second one,
+        // (0.9, 0.8, 0.65) x 0.0983, Intensity 80 at 28.5 m.)
         if nfl > 0.0 {
-            for (i, l) in self.props.lights.iter().enumerate() {
-                let d = l.pos - at;
-                let d2 = d.length_squared();
-                if d2 > 6400.0 || d2 < 1e-4 {
-                    continue;
-                }
-                // (the weight takes the record's cone as the prop lamps' below - F-60154)
-                let cone = l.table_cone();
-                let s = if l.on() { (l.range / d2).clamp(0.0, 1.0) * ((d / d2.sqrt()).dot(-l.dir) * cone[0] + cone[1]).clamp(0.0, 1.0) } else { 0.0 };
-                cand.push((i as i32, s, d / d2.sqrt(), l.color.max(Vec3::ZERO), s));
-            }
-            // (the lamps the props carry - the street lights. Recorded at the Selma / Highland
-            // crossing, car at (735.91, 20.77, -850.46): colour (1, 0.75, 0.55), strength 0.3847,
-            // direction (0.382, 0.903, -0.196) - the lamp at (740.6, 31.6, -852.8), Intensity 55,
-            // 11.96 m off; at 02:00 the second slot holds a second one, (0.9, 0.8, 0.65) x 0.0983,
-            // Intensity 80 at 28.5 m. MCLA_CAR_LAMP_CITY=1: the baked lights only.)
-            if std::env::var("MCLA_CAR_LAMP_CITY").is_err() {
-                for (i, l) in self.props.prop_lamps.iter().enumerate() {
-                    let d = l.pos - at;
-                    let d2 = d.length_squared();
-                    if d2 > 6400.0 || d2 < 1e-4 || l.intensity <= 0.0 {
-                        continue;
+            if let Some(t) = crate::render::LAMP_TABLES.read().ok().and_then(|t| t.clone()) {
+                let best = t.best_four(at);
+                if best.iter().map(|b| b.1).sum::<f32>() > 0.0 {
+                    for (i, s) in best {
+                        let l = t.recs.get(i as usize).copied().unwrap_or_default();
+                        cand.push((i as i32, s, (l.pos - at).normalize_or(Vec3::Y), l.color.max(Vec3::ZERO), s));
                     }
-                    let dir = d / d2.sqrt();
-                    let s = (l.intensity / d2).clamp(0.0, 1.0) * (dir.dot(l.back) * l.cone[0] + l.cone[1]).clamp(0.0, 1.0);
-                    cand.push((30000 + i as i32, s, dir, l.color.max(Vec3::ZERO), s));
                 }
             }
         }

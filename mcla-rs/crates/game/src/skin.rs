@@ -184,35 +184,15 @@ impl CharLight {
     /// colour, strength = that score, range 1e6. With the cine probe the candidates are the cutscene light list's
     /// best four (`cutlights::best`) and the grid only when none of them scores.
     pub fn night_slots(&self, p: Vec3, t: Option<&crate::render::LampTables>) -> [[f32; 4]; 6] {
-        use crate::render::{LampRec, LAMP_GRID};
-        let mut cand: Vec<u16> = Vec::new();
-        if let Some(t) = t {
-            let axis = |v: f32, scale: f32, bias: f32, n: u32| (((v * scale + bias) * n as f32) as i64).clamp(0, n as i64 - 1) as usize;
-            let (x0, x1) = (axis(p.x - 4.0, 1.0 / 6320.0, 0.54857594, LAMP_GRID.0), axis(p.x + 4.0, 1.0 / 6320.0, 0.54857594, LAMP_GRID.0));
-            let (z0, z1) = (axis(p.z - 4.0, 1.0 / 4463.75, 0.5282554, LAMP_GRID.1), axis(p.z + 4.0, 1.0 / 4463.75, 0.5282554, LAMP_GRID.1));
-            'cells: for z in z0..=z1 {
-                for x in x0..=x1 {
-                    for &i in t.cells.get(z * LAMP_GRID.0 as usize + x).unwrap_or(&[0; 4]) {
-                        if !cand.contains(&i) {
-                            if cand.len() == 32 {
-                                break 'cells;
-                            }
-                            cand.push(i);
-                        }
-                    }
-                }
-            }
-        }
-        let rec = |i: u16| t.and_then(|t| t.recs.get(i as usize)).copied().unwrap_or_default();
+        use crate::render::LampRec;
         // (with the cine probe the cutscene list's best four above 1e-6 - F-65001; none: the grid as without it)
         let cut = if self.cine { crate::cutlights::LIST.get().map(|l| crate::cutlights::best(l, p)).unwrap_or_default() } else { Vec::new() };
         let scored = if !cut.is_empty() {
             cut
         } else {
-            let mut scored: Vec<(f32, LampRec)> = cand.iter().map(|&i| (crate::figlight::score(&rec(i), p), rec(i))).collect();
-            scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-            scored.truncate(4);
-            scored
+            // (the grid's best four within 4 m - render::LampTables::best_four)
+            let rec = |t: &crate::render::LampTables, i: u16| t.recs.get(i as usize).copied().unwrap_or_default();
+            t.map(|t| t.best_four(p).into_iter().map(|(i, s)| (s, rec(t, i))).collect::<Vec<(f32, LampRec)>>()).unwrap_or_default()
         };
         let mut slots = [NIGHT_EMPTY; 3];
         if scored.iter().map(|s| s.0).sum::<f32>() > 0.0 {

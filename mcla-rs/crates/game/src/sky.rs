@@ -1033,7 +1033,7 @@ pub fn garage_tod(data_dir: &str, weather: Weather, at: Vec3) -> Option<Tod> {
         Set {
             skies: Vec::new(),
             filters: area_locators(&x, "mcLocatorColorFilter", &["KeyColorCorrect"]),
-            fogs: area_locators(&x, "mcLocatorFogGround", &["KeyMaxFogColor", "KeyFogNearZ", "KeyFogFarZ"]),
+            fogs: area_locators(&x, "mcLocatorFogGround", &["KeyMaxFogColor", "KeyMinFogColor", "KeyFogHeight", "KeyFogNearZ", "KeyFogFarZ"]),
         }
     });
     if !set.skies.iter().any(|s| s.0 == weather) {
@@ -1071,6 +1071,13 @@ pub fn garage_tod(data_dir: &str, weather: Weather, at: Vec3) -> Option<Tod> {
         }
         if let Some(c) = l.key("KeyFogFarZ", w, rig.hour) {
             t.fog_far = c[0];
+        }
+        // (the locator's +96 and +112: the particles' fog colour and height, F-34609's apply moves those globals too)
+        if let Some(c) = l.key("KeyMinFogColor", w, rig.hour) {
+            t.fog_min = c;
+        }
+        if let Some(c) = l.key("KeyFogHeight", w, rig.hour) {
+            t.fog_height = c[0];
         }
     }
     Some(t)
