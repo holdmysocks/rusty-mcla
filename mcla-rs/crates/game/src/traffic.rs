@@ -1131,6 +1131,116 @@ pub fn lane_into_junction(nav: &NavSys, lane: usize) -> Option<usize> {
     })
 }
 
+/// F-91078 with its direction forward (a lane's end to the next lane's start) and the given depth: does `lane` lead to
+/// the record `target`? The lane's record (F-17030) is `target`: yes; `stay` (the railnet's byte +69: 1 from its ctor,
+/// no other writer found) and the record is not `road`: no; past depth 5: no; else any other lane listed at its last
+/// control point's vertex (root +0x38) that starts where it ends (xyz equal) and leads there one level deeper.
+pub fn reaches_record(nav: &NavSys, lane: usize, road: mcla_formats::rage::navsys::NavNode, target: mcla_formats::rage::navsys::NavNode, stay: bool, depth: i32) -> bool {
+    let rec = &nav.records;
+    let r = rec.lane_record.get(lane).copied().flatten();
+    if r == Some(target) {
+        return true;
+    }
+    if stay && r != Some(road) {
+        return false;
+    }
+    if depth > 5 {
+        return false;
+    }
+    let (Some(&v), Some(end)) = (rec.last_vertex.get(lane), nav.curves.get(lane).and_then(|c| c.pts.last())) else { return false };
+    let Some(list) = rec.vertex_lanes.get(v as usize) else { return false };
+    list.iter().any(|&c| {
+        c != lane
+            && nav.curves.get(c).and_then(|x| x.pts.first()).is_some_and(|s| s.x == end.x && s.y == end.y && s.z == end.z)
+            && reaches_record(nav, c, road, target, stay, depth + 1)
+    })
+}
+
+/// The race traffic clearing's cut-off (the image's word 0.643, F-20685): a road whose arm's |dot| with the record's direction is
+/// at most this is a cross road.
+pub const CLEAR_DOT: f32 = f32::from_bits(0x3F24_9BA6);
+
+/// The tracker's race traffic clearing (F-20685, docs/reference/people/race_traffic_clearing_rule.md): the cleared
+/// roads (+2064, count +2080) and the lanes whose byte +104 it set (mcRailAmbient slot 19 F-88133 writes it, slot 18
+/// F-73172 reads it: the road's spawn weight F-72428 and the spawner's lane pick F-10273 give such a lane weight 0).
+#[derive(Debug, Clone, Default)]
+pub struct RaceClearing {
+    pub roads: Vec<usize>,
+    pub off: hashbrown::HashSet<usize>,
+}
+
+impl RaceClearing {
+    /// One run of F-20685 (every manager frame the manager runs). `on`: the -notrafficclearing switch off and (+2107,
+    /// 0 from the ctor, or the race byte S+0x64251 with +2108, 1 from the ctor) - a race of type 0..4 is on.
+    /// `recs`: the tracker's two junction records (+5888 / +5920 with their directions +5872 / +5904; F-95137 never
+    /// sets the second). When `on`, collects from each record's junction the roads of its connection list (root +0x3c)
+    /// with an arm (entry +8 >= 0) whose |dot| with the direction is <= 0.643, in that order. Then roads of the set not
+    /// collected leave it (swapped with the last; the one swapped in is not looked at again this run), collected roads
+    /// not in the set join it (until it holds 4); every lane of a road that left gets 0, and every lane of a road that
+    /// joined that leads to one of the records' junctions (F-91078, forward, depth 0) gets 1 - in the order the roads
+    /// left / joined, each road's lanes in F-61293's order. Returns those writes in order.
+    pub fn step(&mut self, nav: &NavSys, on: bool, stay: bool, recs: &[Option<(usize, [f32; 3])>; 2]) -> Vec<(usize, bool)> {
+        use mcla_formats::rage::navsys::NavNode;
+        let rec = &nav.records;
+        let mut new: Vec<usize> = Vec::new();
+        if on {
+            for &(j, d) in recs.iter().flatten() {
+                let (Some(items), Some(dirs)) = (rec.junction_arms.get(j), rec.arm_dirs.get(j)) else { continue };
+                for &(n, arm) in items {
+                    // (the item's flags +4 bit 0x2: a road)
+                    let NavNode::Road(r) = n else { continue };
+                    let Some(a) = usize::try_from(arm).ok().and_then(|k| dirs.get(k)) else { continue };
+                    let dot = d[0].mul_add(a[0], d[2].mul_add(a[2], a[1] * d[1]));
+                    if dot.abs() > CLEAR_DOT {
+                        continue;
+                    }
+                    new.push(r);
+                }
+            }
+        }
+        let mut left = Vec::new();
+        let mut k = 0;
+        while k < self.roads.len() {
+            if !new.contains(&self.roads[k]) {
+                left.push(self.roads.swap_remove(k));
+            }
+            k += 1;
+        }
+        let mut joined = Vec::new();
+        for &r in &new {
+            if self.roads.contains(&r) {
+                continue;
+            }
+            joined.push(r);
+            self.roads.push(r);
+            if self.roads.len() >= 4 {
+                break;
+            }
+        }
+        let mut out = Vec::new();
+        for &r in &left {
+            for &l in rec.road_lanes.get(r).map_or(&[][..], |v| v.as_slice()) {
+                out.push((l, false));
+            }
+        }
+        for &r in &joined {
+            for &l in rec.road_lanes.get(r).map_or(&[][..], |v| v.as_slice()) {
+                if recs.iter().flatten().any(|&(j, _)| reaches_record(nav, l, NavNode::Road(r), NavNode::Junction(j), stay, 0)) {
+                    out.push((l, true));
+                }
+            }
+        }
+        for &(l, v) in &out {
+            if v {
+                self.off.insert(l);
+            } else {
+                self.off.remove(&l);
+            }
+        }
+        out
+    }
+}
+
 /// What holds a junction's box for F-50959 (`Vehicles::junction_blockers`).
 #[derive(Default, Clone, Debug)]
 pub struct Blockers {
@@ -1155,7 +1265,12 @@ impl Blockers {
 /// and the first one whose owner has no flag 0x30 / 0x40 is the next round's lane. (The
 /// original goes on to a second junction for a record nothing reads.) The node order of the
 /// lanes at a vertex is the port's (`lane_ends`, curve order), not checked against the file.
-pub fn player_junction_ahead(nav: &NavSys, lane: usize, reverse: bool) -> Option<usize> {
+///
+/// Returned with the tracker's first junction record (+5872, F-95137): the unit
+/// direction of the junction lane it was found on, its first span CV1 - CV0 (`reverse`: its last, CV[n-1] - CV[n-2]),
+/// made unit through the vector unit's dot product z^2 + (y^2 + x^2), its reciprocal square root and one Newton step
+/// (as `flat_forward`; not compared with the original here).
+pub fn player_junction_record(nav: &NavSys, lane: usize, reverse: bool) -> Option<(usize, [f32; 3])> {
     let lanes = lanes(nav);
     let owner = |l: usize| lanes.links.get(l).and_then(|v| v.first()).map(|&k| &nav.links[k]);
     let l0 = owner(lane)?;
@@ -1182,7 +1297,20 @@ pub fn player_junction_ahead(nav: &NavSys, lane: usize, reverse: bool) -> Option
             let Some(l) = owner(o) else { continue };
             if junction_lane(l) {
                 if let Some(j) = lane_junction(nav, o) {
-                    return Some(j);
+                    let p = &oc.pts;
+                    let d = match p.len() {
+                        0 | 1 => Vec3::ZERO,
+                        n if reverse => p[n - 1] - p[n - 2],
+                        _ => p[1] - p[0],
+                    };
+                    let dd = d.z * d.z + (d.y * d.y + d.x * d.x);
+                    let dd = if dd < f32::MIN_POSITIVE { 0.0 } else { dd };
+                    let mut y = 1.0 / dd.sqrt();
+                    if y == f32::INFINITY {
+                        y = 0.0;
+                    }
+                    let k = -(dd * (y * y) - 1.0) * (0.5 * y) + y;
+                    return Some((j, [d.x * k, d.y * k, d.z * k]));
                 }
             }
             if l.owner_flags & 0x70 != 0 {
@@ -3619,6 +3747,56 @@ mod tests {
         }
     }
 
+    /// The race traffic clearing (F-20685 with F-95725 / F-61293 / F-12622, F-91078 and F-17030) against the original's
+    /// code run whole offline on the real city navsys (tools/race_clearing_reference.py -> testdata/race_clearing_ref.txt):
+    /// 4,000 runs - the switch, the bytes +2107 / +2108, the race byte, the railnet's +69, one or two junction records
+    /// (directions along the junction's lanes and arms, at the 0.643 cut-off to the float, random, zero and NaN), 0 - 4
+    /// roads already cleared. Every slot 19 write (lane, value, in order) and the set after the run must be equal.
+    #[test]
+    fn race_clearing_matches_the_original() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let nav = NavSys::parse(&res).unwrap();
+        let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let (mut n, mut writes, mut set, mut edge) = (0, 0, 0, 0);
+        for l in include_str!("testdata/race_clearing_ref.txt").lines().filter(|l| !l.is_empty()) {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = c.split(' ').map(h).collect();
+            let rec = |k: usize| (c[k + 3] != u32::MAX).then(|| (c[k + 3] as usize, [f32::from_bits(c[k]), f32::from_bits(c[k + 1]), f32::from_bits(c[k + 2])]));
+            let recs = [rec(5), rec(9)];
+            let prev: Vec<usize> = c[14..14 + c[13] as usize].iter().map(|&r| r as usize).collect();
+            let mut rc = RaceClearing { roads: prev.clone(), off: Default::default() };
+            let got = if c[0] != 0 {
+                Vec::new()
+            } else {
+                let on = (c[1] & 0xFF) != 0 || ((c[2] & 0xFF) != 0 && (c[3] & 0xFF) != 0);
+                rc.step(&nav, on, c[4] & 0xFF != 0, &recs)
+            };
+            let mut want = Vec::new();
+            let (w, s) = o.split_once("N ").unwrap();
+            let t: Vec<&str> = w.split_whitespace().collect();
+            for k in t.chunks(3) {
+                assert_eq!(k[0], "T");
+                want.push((k[1].parse::<usize>().unwrap(), k[2] == "1"));
+            }
+            let s: Vec<usize> = s.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            assert_eq!(got, want, "case {n}: {l}");
+            assert_eq!((s[0], &s[1..]), (rc.roads.len(), &rc.roads[..]), "case {n}: {l}");
+            writes += want.len();
+            set += want.iter().any(|x| x.1) as usize;
+            for (j, d) in recs.iter().flatten() {
+                for &(_, arm) in &nav.records.junction_arms[*j] {
+                    if let Some(a) = usize::try_from(arm).ok().and_then(|k| nav.records.arm_dirs[*j].get(k)) {
+                        edge += (d[0].mul_add(a[0], d[2].mul_add(a[2], a[1] * d[1])).abs() == CLEAR_DOT) as usize;
+                    }
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+        eprintln!("race clearing: {n} runs, {writes} slot 19 writes, {set} runs setting lanes, {edge} arms at |dot| = 0.643 exactly");
+    }
+
     /// The race holds and the wanted speeds (F-70324 with F-73512, F-15116, F-50269 and F-85925 by the case) against the
     /// original's code run offline on 6,000 cases (tools/race_hold_reference.py -> testdata/race_hold_ref.txt): the gate
     /// (the event byte, a remote car, a proxy, the route's lane, the path), the two lanes' owners, parents and flags, the
@@ -4350,6 +4528,22 @@ pub struct Road {
     pub no_box: bool,
     /// the rectangle the front-end mode's sphere and frustum tests take (F-46547, F-49549)
     pub rect: RegionRect,
+}
+
+impl Road {
+    /// A lane's share of the road's spawn weight (F-72428, F-10273): its length, 0 while the race traffic clearing
+    /// holds it (its byte +104, mcRailAmbient slot 18 F-73172).
+    fn lane_weight(nav: &NavSys, off: &hashbrown::HashSet<usize>, lane: (usize, f32)) -> f32 {
+        if off.contains(&nav.links[lane.0].lane) { 0.0 } else { lane.1 }
+    }
+
+    /// The road's lane length for its spawn weight (F-72428: the lanes the clearing does not hold).
+    fn open_len(&self, nav: &NavSys, off: &hashbrown::HashSet<usize>) -> f32 {
+        if off.is_empty() {
+            return self.lane_len;
+        }
+        self.lanes.iter().map(|&l| Road::lane_weight(nav, off, l)).sum()
+    }
 }
 
 /// `density_tuning.xml`.
@@ -5136,12 +5330,9 @@ impl Vehicles {
                 if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() && sp.frame % 30 == 1 {
                     log::info!("traffic regions {} target {:.2} current {} enabled {} mph {:.0} turned down (type, pool, junction, freeway, one way, room, seen, no ground) {:?}", sp.list.len(), sp.target, sp.current, enabled, mph, sp.why);
                 }
-            } else {
+            } else if !wiped {
                 // F-93348 (traffic, people, then the parked cars) and F-75661 (the
                 // unspawners, only while the region list has roads); none while wiped out
-                if wiped {
-                    continue;
-                }
                 if enabled {
                     self.spawn_frame(&mut sp, gpu, world, nav, center, view, mph, player_link);
                 }
@@ -5163,6 +5354,11 @@ impl Vehicles {
                     }
                 }
             }
+            // F-20685 after either half of F-47889's frame (the wipeout does not stop it): the race traffic clearing at
+            // the tracker's junction record (none in the cutscene or front-end mode: no player record), on while a race
+            // of type 0..4 is on (the -notrafficclearing switch is off; +2107 / +2108 are 0 / 1 from the ctor)
+            let rec = if cut.is_none() && fe.is_none() { self.player_record } else { None };
+            self.race_clearing.step(nav, self.race_event, true, &[rec, None]);
         }
         self.spawner = Some(sp);
     }
@@ -5221,7 +5417,7 @@ impl Vehicles {
             if !accept {
                 continue;
             }
-            let w = r.lane_len * 0.01 * sp.value(ri as u32, free_fast) * speed_factor;
+            let w = r.open_len(nav, &self.race_clearing.off) * 0.01 * sp.value(ri as u32, free_fast) * speed_factor;
             sp.list.push((ri as u32, w));
             sp.listed[ri] = true;
             target += w;
@@ -5326,15 +5522,18 @@ impl Vehicles {
             if road.lanes.is_empty() {
                 continue;
             }
-            // a lane by length, a point along it
-            let mut x = self.rand() * road.lane_len;
+            // a lane by length (one the race traffic clearing holds weighs 0, F-10273), a point along it
+            let u = self.rand();
+            let off = &self.race_clearing.off;
+            let mut x = u * road.open_len(nav, off);
             let mut lane = road.lanes[0];
             for &l in &road.lanes {
                 lane = l;
-                if x < l.1 {
+                let w = Road::lane_weight(nav, off, l);
+                if x < w {
                     break;
                 }
-                x -= l.1;
+                x -= w;
             }
             let mut s = self.rand() * lane.1;
             let mut link = lane.0;
@@ -6610,7 +6809,7 @@ impl Vehicles {
 
     /// One step of the junctions' lights (F-86376 for all, F-96156's player demand):
     /// `blocked` = F-50959(J, 0) for the junctions whose timer passes 10 s this step, and
-    /// the player's demand at the junction ahead of its lane (`player_junction_ahead`; none in
+    /// the player's demand at the junction ahead of its lane (`player_junction_record`; none in
     /// the cutscene mode). Priority (F-42082): a race exists and the player is over 10 mph.
     /// Approximate: evaluated once after the riders moved (the original's order against the
     /// ambient manager update is not traced).
@@ -6632,6 +6831,7 @@ impl Vehicles {
         let mut demand = None;
         let mut player = None;
         let mut player_j = None;
+        let mut player_rec = None;
         if let Some(c) = self.cars.iter().find(|c| c.is_player) {
             player = Some((c.state.pos, c.state.vel));
             if self.amb_cutscene.is_none() {
@@ -6640,7 +6840,8 @@ impl Vehicles {
                         let t = dl.list.iter().find(|e| e.0 == lane).map_or(0.0, |e| e.1);
                         let tangent = nav.curves[lane].eval(t).1;
                         let reverse = !(c.state.forward().dot(tangent) > 0.0);
-                        player_j = player_junction_ahead(nav, lane, reverse);
+                        player_rec = player_junction_record(nav, lane, reverse);
+                        player_j = player_rec.map(|r| r.0);
                         if let Some(ji) = player_j.and_then(|nj| signals_junction(&self.signals, nav, nj)) {
                             let mph = c.state.vel.length() * 2.236_936_3;
                             demand = Some((ji, c.state.pos, race.is_some() && mph > 10.0));
@@ -6650,6 +6851,7 @@ impl Vehicles {
             }
         }
         self.player_junction = player_j;
+        self.player_record = player_rec;
         self.signals.step(dt, &blocked, demand, player, race);
     }
 

@@ -987,6 +987,10 @@ pub struct Vehicles {
     pub race_event: bool,
     /// the navsys junction ahead of the player's lane (F-94775 + F-95137, the tracker +5888), as `step_signals` found it
     pub player_junction: Option<usize>,
+    /// the same record with its direction (+5888 junction, +5872 the junction lane's unit direction; F-95137)
+    pub player_record: Option<(usize, [f32; 3])>,
+    /// the race traffic clearing's roads and the lanes it took out of the spawner's choice (F-20685)
+    pub race_clearing: traffic::RaceClearing,
     /// the race's grid hold (N-VP-1): seconds to GO. The cars simulate, held by their brakes - the
     /// player's chassis brake forced and his front wheels locked (`CarInput::hold`), the computer
     /// drivers at their pre-race antics (`AiDriver::grid_input`) - so revving and burnouts happen as
