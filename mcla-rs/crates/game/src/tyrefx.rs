@@ -48,6 +48,23 @@ fn rule(fx: &Particles, name: &str) -> Option<u32> {
     (!name.eq_ignore_ascii_case("none") && fx.has_effect(h)).then_some(h)
 }
 
+/// Each ground material's ptxindex[0], [1] and ptxthreshold[0], [1] (material record +44 .. +52), by surface - what
+/// the tyres' effects and the skid marks (skidmarks.rs) read.
+pub fn materials(data_dir: &Path) -> HashMap<u8, ([i16; 2], [f32; 2])> {
+    let mut mats = HashMap::new();
+    let dir = data_dir.join("tune/physics/materials");
+    for s in Surface::ALL {
+        let name = s.material();
+        let txt = [dir.join(format!("0x{:08x}", joaat(&format!("{name}.mtl")))), dir.join(format!("0x{:08x}", joaat(name)))].iter().find_map(|p| std::fs::read_to_string(p).ok());
+        let Some(txt) = txt else { continue };
+        let field = |k: &str| -> Vec<f32> { txt.lines().find_map(|l| l.trim().strip_prefix(k).map(|v| v.split_whitespace().filter_map(|x| x.parse().ok()).collect())).unwrap_or_default() };
+        let (ix, th) = (field("ptxindex:"), field("ptxthreshold:"));
+        let g = |v: &[f32], i: usize, d: f32| v.get(i).copied().unwrap_or(d);
+        mats.insert(s as u8, ([g(&ix, 0, -1.0) as i16, g(&ix, 1, -1.0) as i16], [g(&th, 0, 0.0), g(&th, 1, 0.0)]));
+    }
+    mats
+}
+
 impl TyreFx {
     pub fn load(data_dir: &Path, fx: &Particles) -> TyreFx {
         let txt = std::fs::read_to_string(data_dir.join("tune/rmptfx/0x09af926c")).unwrap_or_default();
@@ -58,17 +75,7 @@ impl TyreFx {
                 table.push([rule(fx, t[0]), rule(fx, t[1]), rule(fx, t[2]), rule(fx, t[3])]);
             }
         }
-        let mut mats = HashMap::new();
-        let dir = data_dir.join("tune/physics/materials");
-        for s in Surface::ALL {
-            let name = s.material();
-            let txt = [dir.join(format!("0x{:08x}", joaat(&format!("{name}.mtl")))), dir.join(format!("0x{:08x}", joaat(name)))].iter().find_map(|p| std::fs::read_to_string(p).ok());
-            let Some(txt) = txt else { continue };
-            let field = |k: &str| -> Vec<f32> { txt.lines().find_map(|l| l.trim().strip_prefix(k).map(|v| v.split_whitespace().filter_map(|x| x.parse().ok()).collect())).unwrap_or_default() };
-            let (ix, th) = (field("ptxindex:"), field("ptxthreshold:"));
-            let g = |v: &[f32], i: usize, d: f32| v.get(i).copied().unwrap_or(d);
-            mats.insert(s as u8, ([g(&ix, 0, -1.0) as i16, g(&ix, 1, -1.0) as i16], [g(&th, 0, 0.0), g(&th, 1, 0.0)]));
-        }
+        let mats = materials(data_dir);
         log::info!("tyre effects: {} rows, {} materials", table.len(), mats.len());
         TyreFx { table, mats, cars: HashMap::new(), wet: 0.0 }
     }

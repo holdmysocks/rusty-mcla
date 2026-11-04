@@ -38,6 +38,7 @@ mod checkpoints;
 mod powerups;
 mod pu_draw;
 mod pu_fx;
+mod skidmarks;
 mod sst_trail;
 mod pu_bolt;
 mod redlight;
@@ -6686,6 +6687,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     t.step(&mut self.fx, &self.vehicles.cars, wet, sim_dt * 2.0, self.tick_no % 2 == 0, self.cam.pos);
                 }
+                // (the skid marks: once a game frame, as the tyres' effects - skidmarks.rs)
+                if self.tick_no % 2 == 0 {
+                    skidmarks::step(&self.vehicles.cars);
+                }
                 carfx::step(&mut self.fx, &self.vehicles.cars, self.cam.pos, self.hide_player);
                 self.fx.hour = self.time_of_day;
                 self.fx.update(sim_dt);
@@ -11467,6 +11472,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // the blobs)
         gpu.resolve_scene_depth(&mut enc);
         if !map3d {
+            // (the skid marks, before the people and the trails in the original - skidmarks.rs)
+            skidmarks::run(&gpu, &mut enc);
             // (the slipstream trails: drawn by the original last of the cars' alpha draws - sst_trail.rs; they write
             // no depth or stencil, so the resolve before them holds for what follows)
             sst_trail::run(&gpu, &mut enc, &self.vehicles, globals.view_proj);
@@ -13725,6 +13732,7 @@ impl App {
             pu_draw::load(&mut gpu, &self.opt.data_dir);
             pu_fx::load(&mut gpu, &self.opt.data_dir);
             sst_trail::load(&mut gpu, &self.opt.data_dir);
+            skidmarks::load(&mut gpu, &self.opt.data_dir);
             carblob::load(&mut gpu);
             // (the scene's pipelines at the driving and the menus' sample counts, built ahead on a thread of their
             // own - render/ms.rs; the city's plain ones for the environment map too)
