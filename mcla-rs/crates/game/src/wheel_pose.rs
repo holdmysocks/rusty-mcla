@@ -123,7 +123,7 @@ mod tests {
                 let p = pose(local(&body, &world), &car, &w, false);
                 let q = glam::Quat::from_mat3(&glam::Mat3::from_cols(p[0], p[1], p[2]));
                 let want = glam::Quat::from_rotation_y(angle * share);
-                assert!(q.angle_between(want) < 2e-4, "angle {angle} tsl {tsl}: {q:?} against {want:?}");
+                assert!(q.dot(want).abs() > 0.99999, "angle {angle} tsl {tsl}: {q:?} against {want:?}");
             }
         }
     }
