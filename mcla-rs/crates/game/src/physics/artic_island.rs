@@ -1699,4 +1699,148 @@ mod tests {
 
     /// yc.0 ticks not yet word for word (open).
     const OPEN_SEMI: [u32; 0] = [];
+
+    /// The live path of the rider in his bike's island with loose objects (loose.rs `LooseState::solve_island` with a
+    /// `RiderMerge`, as vehsim.rs calls it): yc.0 813 - 817 fed into the port's own structures - the bike the island's car
+    /// (its contacts with the city as the car's own rows), the trailer and the body touching it loose objects with their
+    /// bodies, their contacts and the hitch as the loose world's manifolds (the trailer x bike pair with the car as B), the
+    /// rider's rows his share, every row in the recorded A list's order. The solve, the breaking pass (nothing breaks:
+    /// vehicles), the apply to the car, to the objects' accumulators and to the rider: the rider RGX0 -> RGD1, isl +40,
+    /// every row's +128 / +112, the bike's +368 / +384 (the island's answer for the car) and each object's (its jf / jt)
+    /// word for word.
+    #[test]
+    fn rider_bike_semi_live_island_is_the_originals() {
+        use crate::physics::loose::{CarDyn, CarIn, LooseState, LooseWorld, Mani, Obj, PBody, RiderMerge, Slot2, VehObj, Who};
+        use crate::physics::artic_run::{IslRow, RiderIsland};
+        let (map, ticks) = isl2_ticks(include_bytes!("testdata/rider_semi_yc0.bin"));
+        let cases = run_cases(include_bytes!("testdata/rider_semi_yc0_run.bin"));
+        let shape: &'static crate::physics::hull::HullShape = Box::leak(Box::new(crate::physics::hull::HullShape::new(vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z], &[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])));
+        // (yc.0's levels: the trailer, the body at its hitch, the bike)
+        const TRAILER: u32 = 0x56e3;
+        const BIKE: u32 = 0x5732;
+        let mut report = Vec::new();
+        let mut n = 0;
+        for t in &ticks {
+            let Some(c) = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick) else { continue };
+            n += 1;
+            let mut a = load(&c.inp);
+            for &p in &t.hinge_parts {
+                a.contact_on_part(&map, p);
+            }
+            let touches = isl2_touches(&map, a.n(), t);
+            let dt = c.v1;
+            // (the bodies: the bike the car, the others objects in the fixture's order)
+            let mut ls = LooseState::default();
+            let mut obj_of: Vec<Option<usize>> = Vec::new();
+            let mut car = solver::Body { at: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z], vel: Vec3::ZERO, ang: Vec3::ZERO, inv_mass: 0.0, inv_moments: Vec3::ZERO, force: Vec3::ZERO, torque: Vec3::ZERO };
+            let mut bike_at = None;
+            for (bi, b) in t.bodies.iter().enumerate() {
+                let sb = isl2_body(b);
+                if b.level == BIKE {
+                    car = sb;
+                    bike_at = Some(bi);
+                    obj_of.push(None);
+                    continue;
+                }
+                let m = &b.matrix1;
+                let matrix = [wv(m, 0), wv(m, 16), wv(m, 32), wv(m, 48)];
+                let body = PBody { at: sb.at, rows: sb.rows, v: sb.vel, w: sb.ang, p: Vec3::ZERO, l: Vec3::ZERO, force: sb.force, torque: sb.torque, jf: Vec3::ZERO, jt: Vec3::ZERO, push: Vec3::ZERO, turn: Vec3::ZERO, last: matrix, prev: matrix, last_set: true, deep: false, deep_count: 0, mass: 0.0, inv_mass: sb.inv_mass, inertia: Vec3::ZERO, inv_inertia: sb.inv_moments, max_speed: f32::MAX, max_spin: f32::MAX, moves: 0 };
+                let veh = VehObj { shape, shape2: (b.level == TRAILER).then_some(shape), class: 6, gravity: 1.0, cg: Vec3::ZERO, index: b.level, here: true, inflict: 1.0, rider_touch: None };
+                obj_of.push(Some(ls.objs.len()));
+                ls.objs.push(Obj { ty: 0, inst: None, matrix, entry: None, hit: false, body: Some(body), level: b.level as i64, addr: b.level as i64, veh: Some(veh), sleep: crate::physics::loose::Sleep::reset(), dormant: false, amb: None });
+            }
+            let who = |b: Option<usize>| match b {
+                None => None,
+                Some(k) => Some(obj_of[k].map_or(Who::Car, Who::Obj)),
+            };
+            // (the rows: the bike's with the city the car's own, two objects' a manifold per pair and kind (a constraint's
+            // its own), the rider's his share)
+            let mut city: Vec<solver::Contact> = Vec::new();
+            let mut rows: Vec<IslRow> = Vec::new();
+            let mut rider_touches = Vec::new();
+            let mut partners = Vec::new();
+            let mut slots: Vec<Vec<(usize, usize)>> = Vec::new();
+            let mut other = usize::MAX;
+            for (r, x) in t.rows.iter().zip(touches.iter()) {
+                if r.c.side != 2 {
+                    let veh = r.bodies.iter().flatten().next().copied();
+                    if let Some(Some(o)) = veh.map(|k| obj_of[k]) {
+                        other = o;
+                    }
+                    partners.push(veh.map(|k| obj_of[k].is_none()));
+                    rows.push(IslRow::Rider(rider_touches.len()));
+                    rider_touches.push(*x);
+                    continue;
+                }
+                let (wa, wb) = (who(r.bodies[0]), who(r.bodies[1]));
+                if wa == Some(Who::Car) && wb.is_none() {
+                    rows.push(IslRow::Bike(city.len()));
+                    city.push(solver::Contact { depth: x.depth, friction: x.friction, elasticity: x.elasticity, local: Vec3::ZERO, on_body: x.a.point, on_world: x.b.point, normal: x.normal, pushed: x.pushed, kept: x.kept, target: x.target, impulse: Vec3::ZERO });
+                    continue;
+                }
+                let (wa, wb) = (wa.unwrap(), wb.unwrap_or(Who::City));
+                let rope = x.kind != 0;
+                let k = match ls.manis.iter().position(|m| m.a == wa && m.b == wb && m.rope == rope) {
+                    Some(k) => k,
+                    None => {
+                        ls.manis.push(Mani { a: wa, b: wb, part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 1, order: 0, slots: Vec::new(), rope });
+                        slots.push(Vec::new());
+                        ls.manis.len() - 1
+                    }
+                };
+                let surface = crate::physics::collision::Surface::Road;
+                ls.manis[k].slots.push(Slot2 { t: *x, age: 1, enabled: true, element: 0, surface, surface_a: surface });
+                slots[k].push((k, ls.manis[k].slots.len() - 1));
+                rows.push(IslRow::Loose(k, slots[k].len() - 1));
+            }
+            let isl = RiderIsland::recorded(rider_touches, rows, &partners);
+            let ids: Vec<usize> = (0..ls.manis.len()).collect();
+            let world = LooseWorld::default();
+            let m4 = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
+            let car_in = CarIn { hull: shape, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m4, last: m4, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
+            let (mut p, mut l) = (Vec3::ZERO, Vec3::ZERO);
+            let mut dynm = CarDyn { p: &mut p, l: &mut l, mass: 0.0, inverse: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z] };
+            let city_rows = vec![true; city.len()];
+            let city_part = vec![0u8; city.len()];
+            let mut mg = RiderMerge { body: &mut a, isl, slots, other, rider_key: crate::physics::loose::RIDER_LOOSE_KEY };
+            let out = ls.solve_island(&world, &car_in, &mut car, &mut dynm, &city, &city_rows, &city_part, &ids, dt, Some(&mut mg));
+            drop(mg);
+            a.motion_measure(dt);
+            let mut bad = Vec::new();
+            if out.solved.bounce.to_bits() != t.bounce {
+                bad.push(format!("bounce {:08x} want {:08x}", out.solved.bounce.to_bits(), t.bounce));
+            }
+            assert_eq!(out.touches.len(), t.rows.len());
+            for (k, (x, r)) in out.touches.iter().zip(t.rows.iter()).enumerate() {
+                if !vec_words(x.kept, &r.c.w[32..35]) {
+                    bad.push(format!("row {k} (side {}, kind {}) kept {:?} want {:08x?}", r.c.side, x.kind, x.kept, &r.c.w[32..35]));
+                }
+                if !vec_words(x.impulse, &r.c.w[28..31]) {
+                    bad.push(format!("row {k} (side {}, kind {}) impulse {:?} want {:08x?}", r.c.side, x.kind, x.impulse, &r.c.w[28..31]));
+                }
+            }
+            for (bi, b) in t.bodies.iter().enumerate() {
+                let got = match obj_of[bi] {
+                    None => (out.impulse, out.turning),
+                    Some(o) => {
+                        let pb = ls.objs[o].body.unwrap();
+                        (pb.jf, pb.jt)
+                    }
+                };
+                for (name, o, g) in [("impulse +368", 368, got.0), ("turning +384", 384, got.1)] {
+                    if wv(&b.col0, o) != Vec3::ZERO || !vec_words(g, &b.col1[o / 4..o / 4 + 3]) {
+                        bad.push(format!("body {bi} (level {:#x}) {name}: island {g:?}, recorded {:?} -> {:?}", b.level, wv(&b.col0, o), wv(&b.col1, o)));
+                    }
+                }
+            }
+            let (words, nan) = strict(&a, &c.out);
+            eprintln!("live island, tick {}: {} rows, the bike {}, {} objects, {} differing words, {nan} NaN on both sides, {} row / body results differ", t.tick, out.touches.len(), if bike_at.is_some() { "a body" } else { "no body" }, ls.objs.len(), words.len(), bad.len());
+            bad.extend(words);
+            if !bad.is_empty() {
+                report.push(format!("tick {}: {} differences, first {:#?}", t.tick, bad.len(), &bad[..bad.len().min(16)]));
+            }
+        }
+        assert_eq!(n, 5);
+        assert!(report.is_empty(), "{}", report.join("\n"));
+    }
 }

@@ -562,6 +562,9 @@ pub struct LooseState {
     pub amb_dmg: Vec<(u32, usize, f32)>,
     /// the effects the props' events start (propfx.rs, `prop_hit_fx_rule.md`): taken by the game after the steps
     pub fx_events: Vec<FxPlay>,
+    /// objects whose island a car's step solved this tick with the thrown rider and his bike (vehsim.rs): the islands no
+    /// car is in that hold one are not solved again (`step_rest_rider`, which empties it)
+    pub merged: Vec<usize>,
 }
 
 /// An effect a prop's event starts: its name and where it is played.
@@ -1969,6 +1972,8 @@ pub struct Link {
     /// they were handed in - the sort can move it among the car's other rows, and what the solve leaves
     /// is the contact's own
     pub car_row: usize,
+    /// a row of the thrown rider's ([`RiderMerge`]): his side is the island's jointed body, not a side here
+    pub rider: bool,
 }
 
 /// Where a row of a car's island comes from.
@@ -1987,7 +1992,7 @@ enum RowSrc {
 /// island's order), where each loose row is kept (per node of [`super::artic_run::LooseRows`], its manifold and slot) and
 /// the vehicle his rows meet (their vehicle side).
 pub struct RiderMerge<'a> {
-    pub rd: &'a mut super::artic_run::RiderRagdoll,
+    pub body: &'a mut super::artic::Articulated,
     pub isl: super::artic_run::RiderIsland,
     pub slots: Vec<Vec<(usize, usize)>>,
     pub other: usize,
@@ -2108,7 +2113,7 @@ impl LooseState {
         let city_link = |(row, c): (usize, &solver::Contact)| {
             let a = Side { body: Some(0), point: c.on_body, local: c.local, rows: car.rows, margin: 0.04, core: Vec3::ZERO };
             let b = Side { body: None, point: c.on_world, local: c.on_world, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
-            (Link { a: Some(Who::Car), b: None, part_a: 0, part_b: 0, from: None, car_row: row }, Touch { depth: c.depth, friction: c.friction, elasticity: c.elasticity, a, b, normal: c.normal, back: Vec3::ZERO - c.normal, pushed: c.pushed, kept: c.kept, target: c.target, impulse: Vec3::ZERO, kind: 0, jointed: None })
+            (Link { a: Some(Who::Car), b: None, part_a: 0, part_b: 0, from: None, car_row: row, rider: false }, Touch { depth: c.depth, friction: c.friction, elasticity: c.elasticity, a, b, normal: c.normal, back: Vec3::ZERO - c.normal, pushed: c.pushed, kept: c.kept, target: c.target, impulse: Vec3::ZERO, kind: 0, jointed: None })
         };
         if old_order || city_rows.is_empty() {
             for (n, c) in city.iter().enumerate() {
@@ -2193,7 +2198,7 @@ impl LooseState {
                         t.b.core = c;
                     }
                 }
-                list.push((pair, key, key_b, Some((Link { a: Some(m.a), b: Some(m.b), part_a: m.part_a, part_b: m.part_b, car_row: 0, from: Some((k, i)) }, t))));
+                list.push((pair, key, key_b, Some((Link { a: Some(m.a), b: Some(m.b), part_a: m.part_a, part_b: m.part_b, car_row: 0, from: Some((k, i)), rider: false }, t))));
                 src.push(RowSrc::Mani(k));
                 slot_of.push(Some((k, i)));
             }
@@ -2202,8 +2207,13 @@ impl LooseState {
         // himself has none)
         if let Some(mg) = merge.as_ref() {
             for (j, t) in mg.isl.touches.iter().enumerate() {
-                let veh = |b: Option<usize>| if b.is_some() { Some(Who::Obj(mg.other)) } else { None };
-                let link = Link { a: veh(t.a.body), b: veh(t.b.body), part_a: 0, part_b: 0, from: None, car_row: 0 };
+                // (his vehicle side: the bike - the island's car, body 0 - or the other vehicle's object)
+                let who = match mg.isl.partner(j) {
+                    Some(true) => Who::Car,
+                    _ => Who::Obj(mg.other),
+                };
+                let veh = |b: Option<usize>| if b.is_some() { Some(who) } else { None };
+                let link = Link { a: veh(t.a.body), b: veh(t.b.body), part_a: 0, part_b: 0, from: None, car_row: 0, rider: true };
                 list.push(((i64::MAX, 0, 0, j as u64), mg.rider_key, mg.rider_key, Some((link, *t))));
                 src.push(RowSrc::Rider(j));
                 slot_of.push(None);
@@ -2230,21 +2240,32 @@ impl LooseState {
             // B-sorted list is his build's too - here only the A list is walked)
             let at: HashMap<(usize, usize), usize> = slot_of.iter().enumerate().filter_map(|(n, s)| s.map(|s| (s, n))).collect();
             let rider_at: HashMap<usize, usize> = src.iter().enumerate().filter_map(|(n, s)| if let RowSrc::Rider(j) = s { Some((*j, n)) } else { None }).collect();
+            let city_at: HashMap<usize, usize> = src.iter().enumerate().filter_map(|(n, s)| if let RowSrc::City(r) = s { Some((*r, n)) } else { None }).collect();
+            let place = |row: &super::artic_run::IslRow| match *row {
+                super::artic_run::IslRow::Loose(p, r) => mg.slots.get(p).and_then(|v| v.get(r)).and_then(|s| at.get(s)).copied(),
+                super::artic_run::IslRow::Rider(j) => rider_at.get(&j).copied(),
+                // (the bike's contact with the city of that number: the island's car is the bike)
+                super::artic_run::IslRow::Bike(r) => city_at.get(&r).copied(),
+            };
             let mut taken: Vec<Option<(i64, usize, Option<(Link, Touch)>)>> = tagged.into_iter().map(Some).collect();
             let mut ordered = Vec::with_capacity(taken.len());
-            for row in &mg.isl.rows {
-                let n = match *row {
-                    super::artic_run::IslRow::Loose(p, r) => mg.slots.get(p).and_then(|v| v.get(r)).and_then(|s| at.get(s)).copied(),
-                    super::artic_run::IslRow::Rider(j) => rider_at.get(&j).copied(),
-                    super::artic_run::IslRow::Bike(_) => None,
-                };
-                if let Some(x) = n.and_then(|n| taken[n].take()) {
+            // (the build's whole A list where it made one - the disabled rows in their places - else its enabled rows)
+            let list_a = if mg.isl.list_a.is_empty() { &mg.isl.rows } else { &mg.isl.list_a };
+            for row in list_a {
+                if let Some(x) = place(row).and_then(|n| taken[n].take()) {
                     ordered.push(x);
                 }
             }
             // (a row the build did not name - none is expected - goes last, in the walk's order)
             ordered.extend(taken.into_iter().flatten());
             tagged = ordered;
+            // (the B list: the build's)
+            if !mg.isl.list_b.is_empty() {
+                let mut b: Vec<(i64, usize)> = mg.isl.list_b.iter().filter_map(|row| place(row).map(|n| (0, n))).collect();
+                let named: std::collections::HashSet<usize> = b.iter().map(|x| x.1).collect();
+                b.extend(walk_b.iter().filter(|x| !named.contains(&x.1)).map(|x| (0, x.1)));
+                walk_b = b;
+            }
         } else if old_order {
             tagged.sort_by_key(|x| x.0);
             walk_b.sort_by_key(|x| x.0);
@@ -2254,7 +2275,18 @@ impl LooseState {
         }
         // (the car's two runs - its rows of the A-sorted list, where it is A, then of the B-sorted one - as the
         // callbacks are handed them, F-15350: every row of the run, the disabled ones too)
-        let car_runs_at: [Vec<usize>; 2] = if merge.is_some() {
+        let car_runs_at: [Vec<usize>; 2] = if let Some(mg) = merge.as_ref().filter(|m| !m.isl.list_a.is_empty()) {
+            // (the bike in his island: its rows the car is A of - its contacts with the city, the loose pairs it is A in -
+            // then those it is B of, in the build's two lists. His rows with the bike are left out of its runs, as in the
+            // shared island of the bike alone (vehsim.rs: unverified))
+            let car_side = |n: usize, as_a: bool| match src[n] {
+                RowSrc::City(_) => as_a,
+                RowSrc::Mani(k) => if as_a { self.manis[k].a == Who::Car } else { self.manis[k].b == Who::Car },
+                RowSrc::Rider(_) => false,
+            };
+            let _ = mg;
+            [tagged.iter().map(|x| x.1).filter(|&n| car_side(n, true)).collect(), walk_b.iter().map(|x| x.1).filter(|&n| car_side(n, false)).collect()]
+        } else if merge.is_some() {
             [Vec::new(), Vec::new()]
         } else {
             [tagged.iter().filter(|x| x.0 == car_addr).map(|x| x.1).collect(), walk_b.iter().filter(|x| x.0 == car_addr).map(|x| x.1).collect()]
@@ -2282,7 +2314,7 @@ impl LooseState {
         loop {
             let (bodies, owners) = self.bodies_of(car, &links, &mut touches);
             let solved = match merge.as_mut() {
-                Some(mg) => solver::island_solve_jointed(&bodies, &touches, std::slice::from_mut(&mut mg.rd.body), (0, 0.0), dt, inv_dt),
+                Some(mg) => solver::island_solve_jointed(&bodies, &touches, std::slice::from_mut(&mut *mg.body), (0, 0.0), dt, inv_dt),
                 None => solver::island_solve(&bodies, &touches, dt, inv_dt),
             };
             solver::island_impulses(&solved, &mut touches);
@@ -2458,7 +2490,7 @@ impl LooseState {
                 .collect();
             // (the rider's impulses into his links, F-24076, and his rows' results back to his share)
             if let Some(mg) = merge.as_mut() {
-                solver::island_apply_jointed(&solved, std::slice::from_mut(&mut mg.rd.body));
+                solver::island_apply_jointed(&solved, std::slice::from_mut(&mut *mg.body));
                 for &(r, j) in &rider_rows {
                     mg.isl.touches[j] = touches[r];
                 }
@@ -2685,7 +2717,7 @@ impl LooseState {
         }
         match merge {
             Some(mg) => {
-                solver::island_push_jointed(&bodies, &mut out.touches, &mut out.solved, std::slice::from_mut(&mut mg.rd.body), dt, 1.0 / dt, &mut pushes);
+                solver::island_push_jointed(&bodies, &mut out.touches, &mut out.solved, std::slice::from_mut(&mut *mg.body), dt, 1.0 / dt, &mut pushes);
                 for &(r, j) in &out.rider_rows {
                     mg.isl.touches[j] = out.touches[r];
                 }
@@ -2836,6 +2868,17 @@ impl LooseState {
         self.islands().0
     }
 
+    /// The manifolds of the island no car is in that holds object `o` (empty: none). Whether it sleeps is not asked
+    /// (deactivation B runs with the islands' step, `step_rest_rider`).
+    pub fn island_with(&self, o: usize) -> Vec<usize> {
+        self.islands().1.into_iter().find(|ids| ids.iter().any(|&k| self.manis[k].a == Who::Obj(o) || self.manis[k].b == Who::Obj(o))).unwrap_or_default()
+    }
+
+    /// The city instance's key in this world's numbering (as the island's sort takes it).
+    pub fn city_key(&self) -> i64 {
+        self.city_addr()
+    }
+
     /// Every island the car is not in: its solve, its breaking pass, and its push solve.
     pub fn step_rest(&mut self, world: &LooseWorld, car_in: &CarIn, dt: f32) {
         self.step_rest_rider(world, car_in, dt, None);
@@ -2849,8 +2892,13 @@ impl LooseState {
     /// then) leaves him in his own island without the vehicle's rows.
     pub fn step_rest_rider(&mut self, world: &LooseWorld, car_in: &CarIn, dt: f32, mut rider: Option<(&mut super::artic_run::RiderRagdoll, RiderJob, &mut super::artic_run::TickOut)>) {
         let asleep = self.islands_asleep();
+        let merged = std::mem::take(&mut self.merged);
         for ids in self.islands().1 {
             if ids.iter().any(|k| asleep.contains(&self.manis[*k].island)) {
+                continue;
+            }
+            // (solved already, in the bike's island with the rider)
+            if ids.iter().any(|&k| [self.manis[k].a, self.manis[k].b].iter().any(|w| matches!(w, Who::Obj(o) if merged.contains(o)))) {
                 continue;
             }
             let mut none = Body { at: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z], vel: Vec3::ZERO, ang: Vec3::ZERO, inv_mass: 0.0, inv_moments: Vec3::ZERO, force: Vec3::ZERO, torque: Vec3::ZERO };
@@ -2874,17 +2922,20 @@ impl LooseState {
             if let Some(b) = outside.bike.as_mut() {
                 b.rider_level = RIDER_LOOSE_LEVEL;
             }
-            outside.loose = Some(super::artic_run::LooseRows { nodes, rider_level: RIDER_LOOSE_LEVEL, rider_key: RIDER_LOOSE_KEY, city_key: self.city_addr(), other_key: self.objs[o].addr });
+            outside.loose = Some(super::artic_run::LooseRows { nodes, rider_level: RIDER_LOOSE_LEVEL, rider_key: RIDER_LOOSE_KEY, city_key: self.city_addr(), other_key: self.objs[o].addr, bike_key: self.car_place().1 });
             let isl = rd.build(&outside);
             tick.island = true;
             tick.contacts = isl.city_rows;
-            let mut mg = RiderMerge { rd, isl, slots, other: o, rider_key: RIDER_LOOSE_KEY };
+            let mut mg = RiderMerge { body: &mut rd.body, isl, slots, other: o, rider_key: RIDER_LOOSE_KEY };
             let mut out = self.solve_island(world, car_in, &mut none, &mut dynm, &[], &[], &[], &ids, dt, Some(&mut mg));
-            let (fall, motion) = mg.rd.after_solve(&mg.isl, dt);
+            let RiderMerge { isl, slots, .. } = mg;
+            let (fall, motion) = rd.after_solve(&isl, dt);
             tick.body_fall = fall;
             tick.motion = motion;
+            let mut mg = RiderMerge { body: &mut rd.body, isl, slots, other: o, rider_key: RIDER_LOOSE_KEY };
             self.push_island(&mut out, &none, Pushed::default(), dt, Some(&mut mg));
-            mg.rd.finish(&mg.isl, dt);
+            let isl = mg.isl;
+            rd.finish(&isl, dt);
         }
         // (his partner's island not found: his own, the vehicle's rows not in it)
         if let Some((rd, job, tick)) = rider {

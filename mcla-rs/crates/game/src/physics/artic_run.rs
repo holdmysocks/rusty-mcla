@@ -102,6 +102,9 @@ pub struct LooseRows {
     pub rider_key: i64,
     pub city_key: i64,
     pub other_key: i64,
+    /// the bike's instance key in that world (the car's own, `LooseState::car_place`): its rows with the city and the
+    /// rider sort by it when the bike is in the island (the step with his bike and loose objects together)
+    pub bike_key: i64,
 }
 
 /// A pair of objects as the merged island walk takes it ([`merged_rows`]): the two objects' level indices (None: the city,
@@ -215,6 +218,38 @@ pub struct RiderIsland {
     pub with_bike: bool,
     /// his pair with another vehicle holds contacts: that vehicle is in his island
     pub with_other: bool,
+    /// the island's two lists (by instance A, by instance B: F-97446 / F-15350 walk them) as the merged build made them:
+    /// every row of the bike's with the city and of the loose world's share, the disabled ones too, and the rider's
+    /// enabled rows; empty outside a merged build ([`Outside::loose`])
+    pub list_a: Vec<IslRow>,
+    pub list_b: Vec<IslRow>,
+}
+
+impl RiderIsland {
+    /// The vehicle side of his row `k` (an index into `touches`): Some(true) the bike, Some(false) the other vehicle,
+    /// None a row with the city or a self contact.
+    pub fn partner(&self, k: usize) -> Option<bool> {
+        match self.used.get(k).map(|u| u.0) {
+            Some(Src::BikeRider) => Some(true),
+            Some(Src::OtherRider) => Some(false),
+            _ => None,
+        }
+    }
+
+    /// (tests) His share as a recording gives it: his rows, every enabled row of the island in its order, and each of his
+    /// rows' vehicle side as [`Self::partner`] answers it.
+    #[cfg(test)]
+    pub fn recorded(touches: Vec<Touch>, rows: Vec<IslRow>, partners: &[Option<bool>]) -> RiderIsland {
+        let used = partners
+            .iter()
+            .map(|p| match p {
+                Some(true) => (Src::BikeRider, 0, 0),
+                Some(false) => (Src::OtherRider, 0, 0),
+                None => (Src::City, 0, 0),
+            })
+            .collect();
+        RiderIsland { touches, used, island: true, rows, ..Default::default() }
+    }
 }
 
 /// Where a row of the rider's island comes from.
@@ -689,7 +724,7 @@ impl RiderRagdoll {
         // (the other vehicle's instance below the rider's too: ov.0's car at 0xA931B220, the rider at 0xBF5322D0; in one
         // island with the loose world, that world's own keys)
         let (city_key, bike_key, rider_key, other_key) = match loose {
-            Some(l) => (l.city_key, 1i64, l.rider_key, l.other_key),
+            Some(l) => (l.city_key, l.bike_key, l.rider_key, l.other_key),
             None => (0i64, 1i64, 2i64, 1i64),
         };
         let shared = bike.map_or(false, |b| b.shared);
@@ -826,7 +861,7 @@ impl RiderRagdoll {
         }
         let with_bike = srcs.contains(&Src::BikeRider);
         let with_other = srcs.contains(&Src::OtherRider);
-        let mut isl = RiderIsland { touches: Vec::new(), used: Vec::new(), runs: rider_runs, island, city_rows: 0, rows: Vec::new(), with_bike, with_other };
+        let mut isl = RiderIsland { touches: Vec::new(), used: Vec::new(), runs: rider_runs, island, city_rows: 0, rows: Vec::new(), with_bike, with_other, list_a: Vec::new(), list_b: Vec::new() };
         if !island {
             return isl;
         }
@@ -859,7 +894,9 @@ impl RiderRagdoll {
         // contacts' of type 13, the bike's own and the bike x rider rows in the shared step (outside it the bike's rows
         // are not the rider's: they come in as `outside.others`)
         let city_on = |r: usize| bike.map_or(true, |b| b.city_on.get(r).copied().unwrap_or(true));
+        let mut named: Vec<((usize, usize), IslRow)> = Vec::new();
         for &(p, r) in &by_a {
+            let before = isl.touches.len();
             match srcs[p] {
                 Src::City => {
                     let (m, k) = slots[r];
@@ -934,6 +971,20 @@ impl RiderRagdoll {
                     isl.used.push((Src::OtherRider, m, k));
                 }
             }
+            if isl.touches.len() > before {
+                named.push(((p, r), IslRow::Rider(before)));
+            }
+        }
+        // (the merged build: both lists as the callbacks walk them - the bike's and the loose world's rows all, his enabled
+        // ones - for the vehicle's runs over the island, loose.rs `solve_island`)
+        if loose.is_some() {
+            let row_of = |&(p, r): &(usize, usize)| match srcs[p] {
+                Src::BikeCity => Some(IslRow::Bike(r)),
+                Src::Loose(i) => Some(IslRow::Loose(i, r)),
+                _ => named.iter().find(|x| x.0 == (p, r)).map(|x| x.1),
+            };
+            isl.list_a = by_a.iter().filter_map(row_of).collect();
+            isl.list_b = by_b.iter().filter_map(row_of).collect();
         }
         isl
     }

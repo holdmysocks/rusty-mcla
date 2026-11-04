@@ -1,4 +1,4 @@
-//! The head-on wipeout (sub_82333CE8, mcCarInstance vtable slot 25, after mcCarDamage's contact call):
+//! The head-on wipeout (F-43509, mcCarInstance vtable slot 25, after mcCarDamage's contact call):
 //! a car that drives into the nose of an ambient (traffic or parked) car, or straight into something
 //! fixed, above 22.35 m/s with a run of contacts that changed its velocity by at least its
 //! WipeoutThreshold is wiped out. Rule: docs/reference/cameras/carhit_wipeout_rule.md.
@@ -35,7 +35,7 @@ pub struct Touch {
 /// The own car as the rule reads it.
 #[derive(Clone, Copy, Debug)]
 pub struct Own {
-    /// the run's velocity change (sub_82567A08: the impulses over the mass, 0.4 of those against
+    /// the run's velocity change (F-19931: the impulses over the mass, 0.4 of those against
     /// fixed things)
     pub dv: Vec3,
     /// chassis +224
@@ -59,9 +59,9 @@ pub struct Own {
 pub struct HeadOn {
     /// the angular impulse for the collider (+384, phCollider slot 38), summed over the contacts
     pub spin: Vec3,
-    /// damage points added (MaxDamage x 0.1 per qualifying contact, sub_82343178)
+    /// damage points added (MaxDamage x 0.1 per qualifying contact, F-15289)
     pub damage: f32,
-    /// a contact qualified: the wipeout (sub_823429B0), the slow motion (sub_82332A00); from an
+    /// a contact qualified: the wipeout (F-69183), the slow motion (F-46437); from an
     /// ambient car also the tyres' melt = 1
     pub hit: bool,
     pub melt: bool,
@@ -86,7 +86,7 @@ fn draw2() -> (u32, u32) {
     (x1, x2)
 }
 
-/// sgn(v) |v|^0.33 per axis, the power in double (sub_823DC480).
+/// sgn(v) |v|^0.33 per axis, the power in double (F-21955).
 fn soft(r: Vec3) -> Vec3 {
     let f = |v: f32| {
         let m = (v.abs() as f64).powf(0.330_000_013_113_021_85) as f32;
@@ -188,8 +188,9 @@ pub fn hull_run(contacts: &[super::solver::Contact], reordered: Option<&[usize]>
 /// that object's instance matrix (row 2, P+48).
 pub fn island_runs(out: &super::loose::IslandOut, objs: &[super::loose::Obj], inv_mass: f32, own: impl Fn(Vec3) -> Own) -> Vec<HeadOn> {
     use super::loose::Who;
-    let a_rows: Vec<usize> = (0..out.links.len()).filter(|&i| out.links[i].a == Some(Who::Car)).collect();
-    let b_rows: Vec<usize> = out.by_b.iter().copied().filter(|&i| out.links[i].b == Some(Who::Car)).collect();
+    // (the thrown rider's rows with the bike are not in its runs here: unverified, as the bike's shared island)
+    let a_rows: Vec<usize> = (0..out.links.len()).filter(|&i| out.links[i].a == Some(Who::Car) && !out.links[i].rider).collect();
+    let b_rows: Vec<usize> = out.by_b.iter().copied().filter(|&i| out.links[i].b == Some(Who::Car) && !out.links[i].rider).collect();
     let mut hits = Vec::new();
     for rows in [a_rows, b_rows] {
         if rows.is_empty() {
@@ -220,7 +221,7 @@ pub fn island_runs(out: &super::loose::IslandOut, objs: &[super::loose::Obj], in
 }
 
 /// What the rule's result does to the car besides its spin (which the caller adds to the tick's
-/// +384 before the integrate): each qualifying contact adds 0.1 of MaxDamage (sub_82343178), the
+/// +384 before the integrate): each qualifying contact adds 0.1 of MaxDamage (F-15289), the
 /// tyres melt (mcCarTireFric +24 = 1), the CG drops for a fixed partner, and the game is told of
 /// the wipeout.
 pub fn apply(st: &mut super::car::CarState, p: &super::car::CarParams, h: &HeadOn, melt: &mut f32, cg: &mut [f32; 2], model_offset_y: f32) {
