@@ -256,6 +256,56 @@ pub struct CarIn {
     pub throttle: f32,
     pub pedal: f32,
     pub shift: i8,
+    /// engine torque (engine +16), the full-throttle torque at the engine's speed (F-71482 at engine +8), the rev
+    /// limiter cutting (chassis +744) and the transmission's gear index (trans +20: reverse 0, neutral 1, first 2)
+    pub torque: f32,
+    pub full_torque: f32,
+    pub limiter: bool,
+    pub gear_idx: i32,
+}
+
+/// What the air-intake one-shot (F-26427) does this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Intake {
+    pub stop: bool,
+    pub play: bool,
+}
+
+/// F-26427's rule: torque `now` (this+160) above 0 with `prev` (this+176) not arms it (byte 1948); armed, with a wheel
+/// on the ground (chassis vt+44, F-33415), the clock (+156) at least 1 s past the limiter's last cut (+240) and
+/// `ratio` = torque / full-throttle torque at least 0.75 it fires and disarms; torque falling to 0 or under from
+/// above stops the slot's sound (F-31667 clears the slot) and disarms. It plays only into an empty slot. The
+/// comparisons are the original's (a NaN passes each test the way its branches let it).
+pub(crate) fn intake_step(armed: &mut bool, now: f32, prev: f32, contact: bool, clock: f32, cut_at: f32, ratio: f32, live: bool) -> Intake {
+    if !(now <= 0.0) && !(prev > 0.0) {
+        *armed = true;
+    }
+    let mut fire = false;
+    if *armed && contact && !(clock < cut_at + 1.0) && !(ratio < 0.75) {
+        fire = true;
+        *armed = false;
+    }
+    let mut out = Intake::default();
+    if !(now > 0.0) && !(prev <= 0.0) {
+        out.stop = live;
+        *armed = false;
+    }
+    out.play = fire && (!live || out.stop);
+    out
+}
+
+/// The air-intake one-shot's level (F-26427): 1 - clamp((gear - 2) x ONESHOT+60, 0, 0.5) from first gear up, 0 in
+/// reverse and neutral; in dB as 20 x (log2 x 0.301), -100 under 1e-5.
+pub(crate) fn intake_db(gear_idx: i32, step: f32) -> f32 {
+    let k = gear_idx - 2;
+    let lin = if k < 0 {
+        0.0
+    } else {
+        let x = step * k as f32;
+        let x = if x >= 0.0 { x } else { 0.0 };
+        1.0 - if x - 0.5 >= 0.0 { 0.5 } else { x }
+    };
+    if lin - f32::from_bits(0x3727_C5AC) >= 0.0 { (lin.log2() * f32::from_bits(0x3E9A_1CAC)) * 20.0 } else { -100.0 }
 }
 
 #[derive(Default)]
@@ -313,6 +363,14 @@ pub struct CarSounds {
     boost: f32,
     spool: f32,
     prev_throttle: f32,
+    /// the air-intake one-shot: slot 1384, armed (byte 1948), ONESHOT+60, torque now / before (+160 / +176), the
+    /// clock when the limiter last cut (+240)
+    intake_v: Option<Handle>,
+    intake_armed: bool,
+    intake_gear_step: f32,
+    torque_now: f32,
+    torque_prev: f32,
+    cut_at: f32,
     nitro: Option<(Option<Handle>, Option<Handle>)>,
     /// the player's emitter type 1 place and Doppler factor (`PlayerCtl`)
     pub loop_place: Option<(Vec3, f32)>,
@@ -390,6 +448,12 @@ impl CarSounds {
             boost: 0.0,
             spool: 0.0,
             prev_throttle: 0.0,
+            intake_v: None,
+            intake_armed: false,
+            intake_gear_step: be_f32(&oneshot, 60),
+            torque_now: 0.0,
+            torque_prev: 0.0,
+            cut_at: 0.0,
             nitro: None,
             loop_place: None,
             nitro_empty: None,
@@ -428,7 +492,7 @@ impl CarSounds {
         if let Some((h, _)) = self.hyd_loop.take() {
             lib.stop(h);
         }
-        for s in [&mut self.two_loop, &mut self.horn, &mut self.siren, &mut self.turbo_v, &mut self.nitro_empty, &mut self.pings, &mut self.sst_burn, &mut self.sst_loop, &mut self.sst_full] {
+        for s in [&mut self.two_loop, &mut self.horn, &mut self.siren, &mut self.turbo_v, &mut self.intake_v, &mut self.nitro_empty, &mut self.pings, &mut self.sst_burn, &mut self.sst_loop, &mut self.sst_full] {
             stop(lib, s);
         }
         if self.player {
@@ -454,6 +518,13 @@ impl CarSounds {
             // the upshift's start (this+260, F-33101 @A-66878)
             self.upshift_at = self.clock;
         }
+        // the base update's inputs (F-36837): the torque history, and the clock while the limiter cuts
+        self.torque_prev = self.torque_now;
+        self.torque_now = c.torque;
+        if c.limiter {
+            self.cut_at = self.clock;
+        }
+        self.intake(lib, c);
         self.turbo(lib, c, dt);
         self.tyres(lib, mats, c, dt);
         self.suspension(lib, c);
@@ -862,6 +933,27 @@ impl CarSounds {
         if free(lib, &self.siren) {
             self.siren = lib.play_hash(be_u32(&self.police, 18), Req { volume: base, ..req });
         } else if let Some(h) = self.siren {
+            lib.set(h, req);
+        }
+    }
+
+    /// The air-intake one-shot VEH_AUX_AIR_INTAKE_MASTER (TURBO+10) of a car with an intake part (F-26427), at the
+    /// entity; while its sound lives it follows the car and the gear's level every frame.
+    fn intake(&mut self, lib: &mut SoundLib, c: &CarIn) {
+        if c.parts[0] == 0 {
+            return;
+        }
+        let contact = c.wheels.iter().take(c.n_wheels).any(|w| w.contact);
+        let live = !free(lib, &self.intake_v);
+        let s = intake_step(&mut self.intake_armed, self.torque_now, self.torque_prev, contact, self.clock, self.cut_at, c.torque / c.full_torque, live);
+        if s.stop {
+            stop(lib, &mut self.intake_v);
+        }
+        let req = Req { volume: intake_db(c.gear_idx, self.intake_gear_step), ..self.req(c.pos) };
+        if s.play {
+            let h = if self.turbo.len() >= 14 { be_u32(&self.turbo, 10) } else { 0 };
+            self.intake_v = if is_null(h) { None } else { lib.play_hash(h, req) };
+        } else if let Some(h) = self.intake_v.filter(|&h| lib.playing(h)) {
             lib.set(h, req);
         }
     }
@@ -1327,6 +1419,13 @@ pub fn car_in(c: &CarInstance) -> CarIn {
         pedal: vs.map_or(c.input.throttle, |v| v.engine_pedal),
         shift: vs.map_or(0, |v| if v.gear_change.active { v.gear_change.direction } else { 0 }),
         max_rpm: tune.map_or(7000.0, |t| t.t.engine.s.max_rpm),
+        torque: vs.map_or(0.0, |v| v.engine_torque),
+        full_torque: match (vs, tune) {
+            (Some(v), Some(t)) => t.torque_at(v.engine_w),
+            _ => 1.0,
+        },
+        limiter: vs.is_some_and(|v| v.rev.on),
+        gear_idx: vs.map_or(st.gear, |v| v.gear) + 1,
         ..Default::default()
     }
 }
@@ -2793,5 +2892,56 @@ mod tests {
         s.clock += 0.1;
         s.damage_parts(&mut lib, &parts);
         assert!(s.scrape[1].0.is_none());
+    }
+
+    /// The air-intake one-shot against the original's F-26427 run offline (tools/intake_oneshot_reference.py): 250 cars,
+    /// 17,492 frames of random torque, clock, limiter cut, wheels on the ground, full-throttle torque, gear, the sound
+    /// ending and the make failing; every stop, play and its level, every per-frame level and the armed byte equal.
+    #[test]
+    fn intake_matches_the_original() {
+        let txt = include_str!("testdata/intake_ref.txt");
+        let hx = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+        let num = |t: &str| t[1..].parse::<u32>().unwrap();
+        let (mut part, mut step, mut armed, mut live, mut n) = (0, 0.0f32, false, false, 0);
+        for l in txt.lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            match w.first() {
+                Some(&"C") => {
+                    part = num(w[1]);
+                    step = f32::from_bits(hx(w[2]));
+                    armed = false;
+                    live = false;
+                }
+                Some(&"F") => {
+                    let f = |i: usize| f32::from_bits(hx(w[i]));
+                    let (now, prev, clock, cut, full) = (f(1), f(2), f(3), f(4), f(6));
+                    let (touch, gear, ended, made) = (num(w[5]) != 0, num(w[7]) as i32, num(w[8]) != 0, num(w[9]) != 0);
+                    if ended {
+                        live = false;
+                    }
+                    let (mut stop, mut play, mut set) = (false, false, false);
+                    let db = intake_db(gear, step);
+                    if part != 0 {
+                        let s = intake_step(&mut armed, now, prev, touch, clock, cut, now / full, live);
+                        stop = s.stop;
+                        if s.stop {
+                            live = false;
+                        }
+                        play = s.play;
+                        if s.play {
+                            live = made;
+                        }
+                        set = live;
+                    }
+                    let got = format!("k{} p{} h{} v{:08x} o{} w{} r{} l{:08x} a{} s{}", if stop { 2 } else { 0 }, play as u8, play as u8,
+                        if play { db.to_bits() } else { 0 }, set as u8, set as u8, set as u8, if set { db.to_bits() } else { 0 }, armed as u8, live as u8);
+                    let want = l.split(" -> ").nth(1).unwrap();
+                    assert_eq!(got, want, "{l}");
+                    n += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(n, 17492);
     }
 }
