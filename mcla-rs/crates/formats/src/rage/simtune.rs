@@ -348,6 +348,12 @@ pub struct SimTunes {
     pub fender_height: [[f32; 2]; 2],
     pub fender_width: [[f32; 2]; 2],
     pub fender_floor: [[f32; 2]; 2],
+    /// mcCarModelTune's FenderCeilingFront / FenderCeilingRear (+40 / +48), each for the stock body and the wide one: how
+    /// high a drawn wheel's top may stand (F-47822); 0 = no ceiling, as the ctor F-97670 leaves it
+    pub fender_ceiling: [[f32; 2]; 2],
+    /// mcCarModelTune's TireSteerLimit and TireSteerOffset (+136, +140; the ctor's 0, 0): the share of its turn a drawn
+    /// steered wheel gives back, and the shift sideways with it (F-47822)
+    pub tire_steer: [f32; 2],
     /// mcCarModelTune's cFrontBumperMovement, cRearBumperMovement (+184, +188: 0 NoMovement,
     /// 1 AllowLoose, 2 AllowBroken), cHoodMovement, cTrunkMovement (+192, +196: 0 NoMovement,
     /// 1 NormalMovement, 2 ReverseMovement) - sub_823404E0 @82340DB8; None without a vehModel
@@ -392,6 +398,8 @@ pub struct WheelFit {
     /// the tyre's bead pull per axle, innerRadiusScale (F-43091 as the wheel draw F-11293 hands it to VS_ParallaxRubber2):
     /// (1 - sw / Rv) x 0.5 - 0.406, sw = profile x width - 0.0254, Rv = sw + rim diameter x 0.5 - the bead at the rim's radius
     pub bead: [f32; 2],
+    /// the set-up's wide body (its byte +2203): which of mcCarModelTune's stock / wide pairs the car takes
+    pub wide: bool,
 }
 
 impl SimTunes {
@@ -409,7 +417,7 @@ impl SimTunes {
             return None;
         }
         let wide = (cfg[2203] != 0) as usize;
-        let mut fit = WheelFit::default();
+        let mut fit = WheelFit { wide: wide != 0, ..Default::default() };
         for axle in 0..2 {
             let (ride, width, rim, profile) = (cfg[2106 + axle] as usize, cfg[2108 + axle] as usize, cfg[2110 + axle] as f32, cfg[2112 + axle] as usize);
             if ride > 11 || width > 16 || profile > 13 || !(12.0..=28.0).contains(&rim) {
@@ -564,6 +572,8 @@ impl SimTunes {
                 out.fender_edge = [[rd.f32(c + 88), rd.f32(c + 92)], [rd.f32(c + 96), rd.f32(c + 100)]];
                 let pair = |o: usize| [[rd.f32(c + o), rd.f32(c + o + 4)], [rd.f32(c + o + 8), rd.f32(c + o + 12)]];
                 (out.fender_height, out.fender_width, out.fender_floor) = (pair(56), pair(72), pair(104));
+                out.fender_ceiling = pair(40);
+                out.tire_steer = [rd.f32(c + 136), rd.f32(c + 140)];
                 out.part_movement = Some([rd.u32(c + 184), rd.u32(c + 188), rd.u32(c + 192), rd.u32(c + 196)]);
                 out.window_clip = Some(rd.f32(c + 180));
                 out.double_sided_trunk = Some(rd.u8(c + 200) != 0);

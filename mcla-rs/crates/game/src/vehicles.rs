@@ -1648,6 +1648,55 @@ pub fn car_params_mods(car: &CarAsset, base: &CarParams) -> Option<CarParams> {
     Some(p)
 }
 
+/// A set-up car's wheel `i` as F-47822 draws it, from the sim's last update: the turn (rows axle, up, way of the posed
+/// matrix) and how far the pose moved the wheel's place. None for a bike, a car the sim does not run or without its
+/// `.r50`, and with MCLA_WHEEL_POSE_OLD.
+fn drawn_wheel_pose(c: &CarInstance, i: usize) -> Option<(Quat, Vec3)> {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OLD.get_or_init(|| std::env::var_os("MCLA_WHEEL_POSE_OLD").is_some()) || c.model.bike {
+        return None;
+    }
+    let tunes = c.model.simtunes.as_ref()?;
+    let vs = c.state.veh.as_ref()?;
+    let world = vs.wheels[i].world?;
+    let p = c.params();
+    let vt = p.veh.as_ref()?;
+    let st = &c.state;
+    let body = vs.body_now.unwrap_or_else(|| [st.rot * Vec3::X, st.rot * Vec3::Y, st.rot * Vec3::Z, st.pos]);
+    let m = crate::wheel_pose::local(&body, &world);
+    let wide = c.setup.or(c.model.fit).is_some_and(|f| f.wide) as usize;
+    let car = crate::wheel_pose::CarTerms {
+        bike: false,
+        bike_turn: 0.0,
+        ceiling: [tunes.fender_ceiling[0][wide], tunes.fender_ceiling[1][wide]],
+        steer_limit: tunes.tire_steer[0],
+        steer_offset: tunes.tire_steer[1],
+    };
+    let front = i < 2;
+    let wt = if front { &vt.t.wheel_front } else { &vt.t.wheel_back };
+    let hyd = if c.input.hyd & crate::physics::car::HYD_FITTED != 0 { vs.hyd.height[i] } else { 0.0 };
+    let (rest, offset) = match vs.rest_exact {
+        Some(r) => (Vec3::new(r[i][0], r[i][1], r[i][2]), r[i][4]),
+        None => (Vec3::new(p.wheel_pos[i].x, p.wheel_pos[i].y - p.susp_rest, p.wheel_pos[i].z), hyd + wt.suspension_offset),
+    };
+    let w = crate::wheel_pose::WheelTerms {
+        rest,
+        axis: vt.t.steer_axis.filter(|_| front).map_or(Vec3::Y, Vec3::from),
+        radius: wt.radius,
+        width: vt.tyre_width[!front as usize],
+        steering_limit: wt.steering_limit,
+        camber_limit: wt.camber_limit,
+        lean: crate::physics::exact::sign(p.wheel_pos[i].x) * vs.wheels[i].camber,
+        comp: vs.wheels[i].comp,
+        travel_extent: wt.travel_extent,
+        travel_limit: wt.travel_limit,
+        offset,
+    };
+    let posed = crate::wheel_pose::pose(m, &car, &w, false);
+    let rot = Quat::from_mat3(&glam::Mat3::from_cols(posed[0], posed[1], posed[2])).normalize();
+    Some((rot, posed[3] - m[3]))
+}
+
 impl CarInstance {
     /// The parameters this car drives with (stock, or blended towards the upgrades).
     pub fn params(&self) -> &CarParams {
@@ -4705,12 +4754,20 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             for (i, b) in c.wheel_bindings.iter().enumerate() {
                 let left = i % 2 == 0;
-                let steer = Quat::from_rotation_y(-pose.steer[i]);
+                let mut steer = Quat::from_rotation_y(-pose.steer[i]);
+                // (F-47822: a car's wheel is drawn from its matrix among the car's parts, kept under the fender, its
+                // turn cut by TireSteerLimit and shifted by TireSteerOffset - see wheel_pose.rs; the shift is added to
+                // the drawn hub. A bike's two wheels: not yet. MCLA_WHEEL_POSE_OLD=1: the steer alone, as before)
+                let mut shift = Vec3::ZERO;
+                if let Some((rot, d)) = drawn_wheel_pose(c, i) {
+                    steer = rot;
+                    shift = d;
+                }
                 // the rim models face -x (hub cap at x = -0.24): left wheels as modelled, right
                 // wheels turned around; rolling forward (-z) is a negative rotation about x
                 let spin = Quat::from_rotation_x(if left { -pose.spin[i] } else { pose.spin[i] });
                 let flip = if left { Quat::IDENTITY } else { Quat::from_rotation_y(std::f32::consts::PI) };
-                let mut local = pose.hubs[i];
+                let mut local = pose.hubs[i] + shift;
                 if c.model.bike {
                     // Bike physical wheels and their visual mirrors share the center line.
                     let lo = pose.hubs[i ^ 1];

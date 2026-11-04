@@ -186,6 +186,18 @@ struct CopSearch {
     angle: f32,
 }
 
+/// Dispatch to Location's transition test (F-40040): WaitToDispatch only to Dispatch, Dispatch only to Respond, Respond only
+/// to WaitAtLocation, nothing out of WaitAtLocation (its end is the tactic's result). The machine starts in WaitToDispatch: the
+/// tactic's begin starts it with its enter flag set (F-26187).
+fn dispatch_may_go(from: u8, to: i32) -> bool {
+    match from {
+        0 => to == 1,
+        1 => to == 2,
+        2 => to == 3,
+        _ => false,
+    }
+}
+
 /// "Moving" (F-43975 for the target, F-36212 for the cop's own car): the speed over fMovingSpeed x 0.447.
 fn moving(speed: f32, moving_speed: f32) -> bool {
     speed > moving_speed * 0.447
@@ -2662,16 +2674,17 @@ impl Police {
                 }
             }
             if result == 0 {
-                match d.st {
+                let st = d.st;
+                match st {
                     // WaitToDispatch (F-64066): fDispatchRdoDelayTime and no radio line playing
-                    0 if d.t > t("fDispatchRdoDelayTime", 3.0) && !self.radio_busy => {
+                    0 if d.t > t("fDispatchRdoDelayTime", 3.0) && !self.radio_busy && dispatch_may_go(st, 1) => {
                         d.st = 1;
                         d.t = 0.0;
                         // (Dispatch F-44635: the DISPATCH line of the trigger's sound record)
                         self.radio_cue.push(d.call.clone());
                     }
                     // (F-52633: on to Respond when the line has played)
-                    1 if d.t > 0.0 && !self.radio_busy => {
+                    1 if d.t > 0.0 && !self.radio_busy && dispatch_may_go(st, 2) => {
                         d.st = 2;
                         d.t = 0.0;
                         d.routed = false;
@@ -2679,7 +2692,7 @@ impl Police {
                         // (Respond F-81858: REPORT_ACCEPT_CALL, GoToPosition to the place, siren on)
                         self.radio_cue.push("REPORT_ACCEPT_CALL".into());
                     }
-                    2 if d.arrived => {
+                    2 if d.arrived && dispatch_may_go(st, 3) => {
                         // (WaitAtLocation F-52732: along the player's trail, else a search at once, +-pi/2 at random)
                         d.st = 3;
                         d.t = 0.0;

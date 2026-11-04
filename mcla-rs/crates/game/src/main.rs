@@ -45,6 +45,7 @@ mod althk;
 mod flags;
 mod fixed_step;
 mod vehicle_pose;
+mod wheel_pose;
 mod video;
 mod cine;
 mod cinecar;
