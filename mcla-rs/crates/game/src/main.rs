@@ -7227,6 +7227,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.game.career.event(career::Ev::Str("MISSION_EVENT", "RED_LIGHT_GH_01_COMPLETE"));
                             }
                         } else if let Some(m) = s_man {
+                            // (the story CORE's race-over command: kHOK + 1 for the player's place 1 - 19 scripts alike,
+                            // e.g. 0x156c2b36 0x3f8a..0x3fab)
+                            if place == 1 {
+                                self.game.mc4_stat_add("kHOK", 0, 1.0);
+                            }
                             self.game.career.core_race_end(&m, place, clean, self.game.rep);
                         }
                     }

@@ -1075,6 +1075,8 @@ impl Career {
                     }
                     if district.eq_ignore_ascii_case("Freeway") {
                         *self.stats.entry("kFWN".into()).or_default() += 1;
+                        // (the freeway hookmen's scripts count him beaten after kFWN: kHOK)
+                        *self.stats.entry("kHOK".into()).or_default() += 1;
                     }
                 }
             }

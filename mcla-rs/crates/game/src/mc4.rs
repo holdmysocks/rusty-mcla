@@ -11970,6 +11970,8 @@ impl Game {
             let red = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| d.sub_type == "RedLight" || d.id.ends_with("red_light_race"));
             if red {
                 self.mc4_stat_add("kRLW", 0, 1.0);
+                // (and a hookman beaten: the red light scripts' kHOK after kRLW, `<d>_redlight_hk1`)
+                self.mc4_stat_add("kHOK", 0, 1.0);
             }
         } else {
             // (GOAL ATTACK's branch, A-77758..A-58950, counts no second or third place)
@@ -17643,6 +17645,19 @@ mod tests {
         assert_eq!(b["editor"]["races"][0]["city"], 1);
         assert_eq!(b["editor"]["races"][0]["checkpoints"][1]["activation_radius"], 12);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A red light race won counts kRLW and a hookman beaten, kHOK (the red light scripts, `<d>_redlight_hk1`)
+    #[test]
+    fn red_light_win_counts_a_hookman_beaten() {
+        let mut g = Game::new(Vec::new(), 0);
+        g.fresh_game = false;
+        g.race_defs.push(crate::races::RaceDef { id: "x/red_light_race".into(), sub_type: "RedLight".into(), ..Default::default() });
+        g.current_race = Some(0);
+        g.mc4_race_stats(2, "Tuner", None);
+        assert_eq!(g.mc4_stat("kHOK", 0), 0.0);
+        g.mc4_race_stats(1, "Tuner", None);
+        assert_eq!((g.mc4_stat("kRLW", 0), g.mc4_stat("kHOK", 0)), (1.0, 1.0));
     }
 
     /// Step 23: the achievements' rules (F-56238, F-98556, the purse, the tournaments,
