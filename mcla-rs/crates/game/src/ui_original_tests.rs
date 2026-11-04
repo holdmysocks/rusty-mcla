@@ -163,3 +163,15 @@ fn element_colour_matches_the_original() {
     }
     assert_eq!(n, 1024);
 }
+
+/// F-68183, the seconds format of the arrest panel's PURSUIT DURATION, against the original run offline (tools/save_hms_reference.py).
+#[test]
+fn hms_matches_the_original() {
+    let mut n = 0;
+    for l in include_str!("testdata/save_hms_ref.txt").lines() {
+        let (b, want) = l.split_once(" -> ").unwrap();
+        assert_eq!(crate::game::hms_text(f32::from_bits(b.parse().unwrap())), want, "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 1016);
+}

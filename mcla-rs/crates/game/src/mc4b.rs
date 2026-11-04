@@ -464,19 +464,15 @@ impl Game {
         let miles = |v: f32| (v * MPH * sim * PER_HOUR) as f64;
         self.mc4_stat_add("gkDS", 0, miles(d.vel_xz));
         // (the flush F-15445 adds the same distance to the vehicle's own `vkDT` - the sub id is the vehicle table's index, kept
-        // here under the vehicle's name like the importer's keys - sets the top speed `gvTS` (operation 2, the larger) once
-        // the speed is over 10 mph, and adds the hours: `ghTP` always, `khTC` and `ghTC` while the game is in "Cruising"
+        // here under the vehicle's name like the importer's keys - and adds the hours: `ghTP` always, `khTC` and `ghTC` while the game is in "Cruising"
         // (free roam). The hours' clock is taken as the game's own, stopped in the pause and slowed by slow motion
         // (the clock object's +20: not checked); the first flush's hours are not decoded.)
         let car = self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase());
         if let Some(car) = car {
             *self.career.ostats.entry(format!("vkDT/{car}")).or_insert(0.0) += miles(d.vel_xz);
         }
-        let mph = (d.speed * MPH) as f64;
-        if mph > 10.0 {
-            let was = self.mc4_stat("gvTS", 0);
-            self.mc4_stat_set("gvTS", 0, was.max(mph));
-        }
+        // (no top speed `gvTS`: the flush's write of it (operation 2 when the tracker's +48 > 10) reads +48 after the
+        // tracker's reset F-92167 has zeroed it, so the original never records one - and no save has the record)
         let hours = (sim * PER_HOUR) as f64;
         self.mc4_stat_add("ghTP", 0, hours);
         if self.mode == Mode::FreeRoam {

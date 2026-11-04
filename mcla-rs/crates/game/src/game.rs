@@ -703,6 +703,10 @@ pub struct Game {
     /// the ARCADE menu's two rows of a circuit: NUMBER OF LAPS (the choice, laps - 1) and
     /// LAST MAN OUT (`mc4_arcade_rows`)
     pub arcade_x: [usize; 2],
+    /// the options page's NoEarnRep warning shown (the form's +8540, F-10007) and POWER UPS' choice before the
+    /// last change the box answers (+8544)
+    pub arcade_rep_warned: bool,
+    pub arcade_power_prev: usize,
     /// a race whose opponent count the ARCADE options changed, and its own figure
     pub arcade_restore: Option<(usize, usize)>,
     /// VIEW RACE on ARCADE's race list and options page (F-29182: the flag byte its Y / B toggle):
@@ -777,9 +781,6 @@ pub struct Game {
     pub hangout_slow: crate::mc4::SlowMo,
     /// real seconds since the player crossed the line (the race-end panels, `RACE_END_*`)
     pub race_end_t: Option<f32>,
-    /// how many times a race's end sequence has run (RaceOver.sch's EndOfRaceSequence: its splash cleanup and the
-    /// player's line, `end_race_speech`)
-    pub end_seq_n: u32,
     /// the player wrecked in this race: Race_IsDamagedOut (race +3774), set at the wreck tick while the race
     /// is not over and the police are not on him (race_damaged_out.md)
     pub race_dmg_out: bool,
@@ -1442,6 +1443,8 @@ impl Game {
             arcade: (0, 0, [0; 3]),
             arcade_opts: ARCADE_DEFAULTS,
             arcade_x: [1, 0],
+            arcade_rep_warned: false,
+            arcade_power_prev: 0,
             arcade_restore: None,
             race_view: None,
             goal_attack: false,
@@ -1478,7 +1481,6 @@ impl Game {
             race_slow_wait: None,
             hangout_slow: crate::mc4::SlowMo::default(),
             race_end_t: None,
-            end_seq_n: 0,
             race_dmg_out: false,
             race_wreck_over: false,
             career_over: false,
@@ -3190,14 +3192,11 @@ impl Game {
     /// call it, always with its speech argument 1): a time trial, a delivery or a payback (event kinds 2, 6, 7) WIN, or
     /// LOSE with bFailure; any other race WIN in first place, CLOSE in second within 300 ms of the winner's time
     /// (Race_GetWinningTime), else LOSE. WIN and CLOSE say nothing in a delivery race (the current race's type 4:
-    /// F-64589, F-88148); LOSE has no gate (F-77215). None: nothing is said. A delivery or a payback that failed has
-    /// no finish time (the port's failures are all before the line), and the sequence skips its line then ("did not
-    /// finish": the racer's +32 INT_MAX outside a series or tournament).
+    /// F-64589, F-88148); LOSE has no gate (F-77215). None: nothing is said.
     pub fn end_race_speech(&self) -> Option<&'static str> {
         let kind = self.race.as_ref().map(|r| r.kind);
         let failure = match kind {
-            Some(RaceKind::Delivery) | Some(RaceKind::Payback) if self.race.as_ref().map_or(false, |r| r.failed.is_some()) => return None,
-            Some(RaceKind::Delivery) | Some(RaceKind::Payback) => Some(false),
+            Some(RaceKind::Delivery) | Some(RaceKind::Payback) => Some(self.race.as_ref().map_or(false, |r| r.failed.is_some())),
             _ => self.career.tt_last.map(|beaten| !beaten),
         };
         let g = match failure {
@@ -5081,6 +5080,8 @@ impl Game {
                 10 => self.pause_do = Some(241),
                 // (AUTO SAVE's WARNING answered OK: it stays off - F-77184, result 3)
                 11 => {}
+                // (the NoEarnRep WARNING answered OK, result 3: POWER UPS keeps the new choice - F-44384)
+                14 => self.arcade_power_prev = self.arcade_opts[2],
                 // (QUIT RACE on a beat me there's damaged-out menu: the quit question's YES repairs, raceOverCommand
                 // `quit`, back to the game; JUMP TO RACE START's repair form - F-77942: raceOverCommand empty, the
                 // warp SKIP_BEAT_ME_THERE_WITH_CUT)
@@ -5135,6 +5136,11 @@ impl Game {
             // (AUTO SAVE's WARNING closed without OK: the row back on, index 1 - F-77184)
             if self.menu_confirm == 11 {
                 self.no_save = false;
+            }
+            // (the NoEarnRep WARNING closed without OK: POWER UPS back to the choice before - F-44384)
+            if self.menu_confirm == 14 {
+                let v = self.arcade_power_prev;
+                crate::mc4::arcade_set(&mut self.arcade_opts, &mut self.arcade_x, &mut self.opt_x, 2, v);
             }
             self.menu_confirm = 0;
             self.mc4_misc_idle();
@@ -11990,7 +11996,6 @@ impl Game {
                 self.arrest_panel = Some((wait - dt, secs, fine));
             } else {
                 let st = |k: &str, d: &str| self.career.strings.get(k).filter(|v| !v.contains('<')).map(|v| v.to_string()).unwrap_or_else(|| d.to_string());
-                let t = secs.max(0.0) as i64;
                 // TICKETED (reference `y_ticketed`): "You've been ticketed.", INFRACTION: with a
                 // line for each kind, FINE:, CONTINUE (A) - the same box
                 let ticket_rows: Option<Vec<MenuRow>> = self.ticket_for.map(|f| {
@@ -12011,7 +12016,7 @@ impl Game {
                     icon: std::env::var("MCLA_ARREST_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(1),
                     title: if ticket { st("ticket_title", "TICKETED").to_uppercase() } else { st("arrest_title", "ARRESTED").to_uppercase() },
                     rows: if let Some(r) = ticket_rows { r } else { vec![
-                        MenuRow { label: st("arrest_duration_header", "PURSUIT DURATION:").to_uppercase(), value: format!("{:02}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60), enabled: true, part: None },
+                        MenuRow { label: st("arrest_duration_header", "PURSUIT DURATION:").to_uppercase(), value: hms_text(secs), enabled: true, part: None },
                         MenuRow { label: st("cop_fine_header", "FINE:").to_uppercase(), value: format!("${}", fine), enabled: true, part: None },
                     ] },
                     // (no row is under a cursor: the rows are figures)
@@ -14711,6 +14716,9 @@ impl Game {
                 if enter && !races.is_empty() {
                     page_no = 2;
                     cur[2] = 0;
+                    // (the page's NoEarnRep warning once again: the form's init F-62951 clears +8540)
+                    self.arcade_rep_warned = false;
+                    self.arcade_power_prev = self.arcade_opts[2];
                     // (the race's own laps; no more opponents than it allows: F-84256)
                     for r in self.mc4_arcade_rows(races.get(cur[1]).map(|r| r.0)) {
                         if r.slot == 6 {
@@ -14730,6 +14738,19 @@ impl Game {
                     let n = r.choices.len().max(1);
                     let v = (self.mc4_arcade_value(r.slot).min(n - 1) + if right { 1 } else { n - 1 }) % n;
                     crate::mc4::arcade_set(&mut self.arcade_opts, &mut self.arcade_x, &mut self.opt_x, r.slot, v);
+                    // POWER UPS changed (F-10007): to on or Custom the first time on the page, the WARNING box of type 2,
+                    // OK alone, `Dlg_Title_NoEarnRep` / `Dlg_Desc_NoEarnRep` (its answer: F-44384); else the choice is
+                    // the one a later box goes back to
+                    if r.slot == 2 {
+                        if v != 0 && !self.arcade_rep_warned && self.flash_popup.is_some() {
+                            self.arcade_rep_warned = true;
+                            let def = crate::flash_ui::MessageBoxDef { title: "Dlg_Title_NoEarnRep".into(), description: "Dlg_Desc_NoEarnRep".into(), options: vec![("ok_yes".into(), "messagebox_ok".into())] };
+                            self.message_box = Some((def, 0, MenuAction::None));
+                            self.menu_confirm = 14;
+                        } else {
+                            self.arcade_power_prev = v;
+                        }
+                    }
                 }
                 if self.x_hit(ctx) {
                     for r in &orows {
@@ -14858,6 +14879,13 @@ impl Game {
         }
         out
     }
+}
+
+/// F-68183: seconds as "%02d:%02d:%02d" - rounded half away from zero (truncating the sum), the hours clamped to 99,
+/// the minutes and seconds from the unclamped count.
+pub fn hms_text(secs: f32) -> String {
+    let i = if secs >= 0.0 { (secs + 0.5) as i32 } else { (secs - 0.5) as i32 };
+    format!("{:02}:{:02}:{:02}", (i / 3600).min(99), (i - i / 3600 * 3600) / 60, i - i / 60 * 60)
 }
 
 /// The ranks' string keys (the table F-71884 indexes by the rank, as REWARDS' step 86)
@@ -15211,16 +15239,16 @@ mod tests {
         g.career.tt_last = Some(true);
         assert_eq!(g.end_race_speech(), Some("WIN"));
         g.career.tt_last = None;
-        // (a delivery: WIN is not said in a delivery race; a failed delivery or payback did not finish: nothing)
+        // (a delivery: WIN is not said in a delivery race, LOSE is; a payback says both)
         let mut race = super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Delivery, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() };
         g.race = Some(race.clone());
         assert_eq!(g.end_race_speech(), None);
         race.failed = Some("TIME");
         g.race = Some(race.clone());
-        assert_eq!(g.end_race_speech(), None);
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
         race.kind = super::RaceKind::Payback;
         g.race = Some(race.clone());
-        assert_eq!(g.end_race_speech(), None);
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
         race.failed = None;
         g.race = Some(race);
         assert_eq!(g.end_race_speech(), Some("WIN"));

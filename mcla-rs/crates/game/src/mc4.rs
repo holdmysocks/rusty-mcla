@@ -18505,7 +18505,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
     /// The purse is held within +-2,140,000,000 and mirrored into the statistic `tPUR` (F-71075, F-38145); an escape
-    /// from the police does not touch it; the driving flush (F-15445) counts `vkDT` / `gvTS` / `ghTP` / `khTC` / `ghTC`.
+    /// from the police does not touch it; the driving flush (F-15445) counts `vkDT` / `ghTP` / `khTC` / `ghTC` (never `gvTS`).
     #[test]
     fn purse_cap_and_driving_flush() {
         let root = std::env::var("MCLA_ROUNDTRIP_FIXTURES").unwrap_or_else(|_| "D:/MCLA/work/save-audit".to_string());
@@ -18529,7 +18529,7 @@ mod tests {
         g.mc4b_tick(1.0, d);
         let hours = 1.0 / 3600.0;
         assert!((g.mc4_stat("ghTP", 0) - p0 - hours).abs() < 1e-6 && (g.mc4_stat("khTC", 0) - c0 - hours).abs() < 1e-6);
-        assert!((g.mc4_stat("gvTS", 0) - 20.0 * 2.237).abs() < 1e-3 || g.mc4_stat("gvTS", 0) > 20.0 * 2.237);
+        assert!(!g.mc4_stat_present("gvTS", 0));
         let car = g.car_dirs.get(g.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap();
         assert!(g.career.ostats.get(&format!("vkDT/{car}")).copied().unwrap_or(0.0) > 0.0);
         let _ = std::fs::remove_dir_all(&dir);
