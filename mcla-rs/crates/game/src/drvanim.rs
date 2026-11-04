@@ -239,9 +239,234 @@ impl Seq {
     }
 }
 
+/// A clip of the driver's packs, by the index the caller gives it.
+pub type ClipId = u32;
+
+/// The driver's bone filters: +92 the spine00 subtree, +96 the neck subtree, +100 all but the Facial_root subtree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Filter {
+    Spine,
+    Neck,
+    NoFace,
+}
+
+/// A motion-tree request as the builders hand it to the motion tree (crmtRequest*); `hold` lists the sequencer holders
+/// (+20 .. +84) that get the node it becomes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Req {
+    pub kind: Kind,
+    pub hold: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Kind {
+    /// crmtRequestAnimation (F-29648): the clip from time `t` at `rate`, +32 set by every builder, +33 loop
+    Anim { clip: ClipId, t: f32, rate: f32, looping: bool },
+    /// crmtRequestAddSubtract (F-75019): `b` added onto `a` by weight `w` on the filter's bones
+    Add { w: f32, filter: Option<Filter>, a: Box<Req>, b: Box<Req> },
+    /// crmtRequestBlend (F-63623): `b` over `a` by `w`, the weight moving at `rate` a second; no `a` blends from the tree in place (a
+    /// crossfade)
+    Blend { w: f32, rate: f32, filter: Option<Filter>, a: Option<Box<Req>>, b: Box<Req> },
+    /// crmtRequestIdentity (F-79659): the rest pose
+    Identity,
+}
+
+impl Req {
+    fn new(kind: Kind) -> Req {
+        Req { kind, hold: Vec::new() }
+    }
+
+    fn held(mut self, h: u8) -> Req {
+        self.hold.push(h);
+        self
+    }
+
+    /// An animation request as the builders make it (F-29648: time 0, rate 1; +32 = 1, +33 = loop).
+    fn anim(clip: ClipId, looping: bool) -> Req {
+        Req::new(Kind::Anim { clip, t: 0.0, rate: 1.0, looping })
+    }
+
+    /// A blend request (its ctor clamps the weight into 0 .. 1).
+    fn blend(w: f32, rate: f32, filter: Option<Filter>, a: Option<Req>, b: Req) -> Req {
+        let c = fsel(w, w, 0.0);
+        let w = fsel(c - 1.0, 1.0, c);
+        Req::new(Kind::Blend { w, rate, filter, a: a.map(Box::new), b: Box::new(b) })
+    }
+
+    fn add(filter: Option<Filter>, a: Req, b: Req) -> Req {
+        Req::new(Kind::Add { w: 1.0, filter, a: Box::new(a), b: Box::new(b) })
+    }
+
+    /// The crossfade onto `b` over `blend` seconds (rate 1 / blend), unless `noblend` or no blend time.
+    fn crossfade(self, blend: f32, noblend: bool) -> Req {
+        if noblend || blend == 0.0 {
+            self
+        } else {
+            Req::blend(0.0, 1.0 / blend, None, None, self)
+        }
+    }
+}
+
+/// What the tree builder reads of the driver (the sequencer's owner): +104 the face clip (the human's, F-52181), +108 an
+/// extra pan clip (filtered from the spine down; no car sets it), +112 the pan clip (from the neck down, F-56423), and whether
+/// the filters exist (+100; a driver without them gets the bare tree).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Look {
+    pub face: Option<ClipId>,
+    pub pan_spine: Option<ClipId>,
+    pub pan: Option<ClipId>,
+    pub filters: bool,
+}
+
+/// The tree builder F-18940: the face (or the rest pose) under the body clip `d` with the face filter, the pan clip added at
+/// half its length and rate 0 (holder +76), then the crossfade; the root goes to +84.
+pub fn build(look: &Look, dur: &dyn Fn(ClipId) -> f32, d: Req, blend: f32, noblend: bool) -> Req {
+    let root = if !look.filters {
+        d
+    } else {
+        let pan = |c: ClipId| Req::new(Kind::Anim { clip: c, t: dur(c) * 0.5, rate: 0.0, looping: false }).held(76);
+        let face = || look.face.map_or(Req::new(Kind::Identity), |c| Req::anim(c, true));
+        let nf = Some(Filter::NoFace);
+        match (look.pan_spine, look.face, look.pan) {
+            (Some(p), Some(_), _) => Req::blend(1.0, 0.0, nf, Some(face()), Req::add(None, d, pan(p))),
+            (Some(p), None, _) => Req::add(Some(Filter::Spine), Req::blend(1.0, 0.0, nf, Some(face()), d), pan(p)),
+            (None, _, Some(p)) => Req::add(Some(Filter::Neck), Req::blend(1.0, 0.0, nf, Some(face()), d), pan(p)),
+            (None, _, None) => Req::blend(1.0, 0.0, nf, Some(face()), d),
+        }
+    };
+    root.crossfade(blend, noblend).held(84)
+}
+
+/// Play F-24441: the clip (holder +44) through the tree builder.
+pub fn play(look: &Look, dur: &dyn Fn(ClipId) -> f32, clip: ClipId, blend: f32, looping: bool, noblend: bool) -> Req {
+    build(look, dur, Req::anim(clip, looping).held(44), blend, noblend)
+}
+
+/// Play without the builder F-73665: the clip alone (no face, no pan, no filter), then the crossfade.
+pub fn play_cut(clip: ClipId, blend: f32, looping: bool, noblend: bool) -> Req {
+    Req::anim(clip, looping).held(44).crossfade(blend, noblend).held(84)
+}
+
+/// Pair F-85393: two clips (+44, +48) in a blend of weight 0 (+20), through the tree builder.
+pub fn pair(look: &Look, dur: &dyn Fn(ClipId) -> f32, a: ClipId, b: ClipId, looping: bool, blend: f32) -> Req {
+    let p = Req::blend(0.0, 0.0, None, Some(Req::anim(a, looping).held(44)), Req::anim(b, looping).held(48)).held(20);
+    build(look, dur, p, blend, false)
+}
+
+/// Five F-45908: five clips (+44 .. +60, only +44 / +48 held) in nested blends of weight 0, P1 = (A0, A1) .. P4 = (P3, A4)
+/// (+20 .. +32), through the tree builder.
+pub fn five(look: &Look, dur: &dyn Fn(ClipId) -> f32, c: [ClipId; 5], blend: f32, looping: bool) -> Req {
+    let mut p = Req::anim(c[0], looping).held(44);
+    for (i, &x) in c[1..].iter().enumerate() {
+        let b = Req::anim(x, looping);
+        p = Req::blend(0.0, 0.0, None, Some(p), if i == 0 { b.held(48) } else { b }).held(20 + 4 * i as u8);
+    }
+    build(look, dur, p, blend, false)
+}
+
+/// Overlay F-19950: stops the body clip (+44 rate 0), then crossfades (always, at 1 / blend) onto the overlay clip blended
+/// fully over a copy of the body clip at its time (rate 1, once) with the face filter; the copy goes to +44, the overlay to
+/// +48. Nothing without the filters or without a body clip.
+pub fn overlay(s: &mut Seq, look: &Look, body: Option<ClipId>, clip: ClipId, blend: f32, looping: bool) -> Option<Req> {
+    if !look.filters {
+        return None;
+    }
+    s.set_rate(0.0);
+    let t = s.player(0)?.t;
+    let b = Req::new(Kind::Anim { clip: body?, t, rate: 1.0, looping: false }).held(44);
+    let p = Req::blend(1.0, 0.0, Some(Filter::NoFace), Some(Req::anim(clip, looping).held(48)), b);
+    Some(Req::blend(0.0, 1.0 / blend, None, None, p).held(84))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The request tree in the offline harness's words (preorder ids) and the holders in the builders' order.
+    fn dump(r: &Req, ids: &mut u32, holds: &mut Vec<(u8, u32)>, o: &mut String) {
+        let b = |x: f32| format!("{:08x}", x.to_bits());
+        let fl = |f: &Option<Filter>| match f {
+            None => "-",
+            Some(Filter::Spine) => "F92",
+            Some(Filter::Neck) => "F96",
+            Some(Filter::NoFace) => "F100",
+        };
+        let id = *ids;
+        *ids += 1;
+        holds.extend(r.hold.iter().map(|&h| (h, id)));
+        match &r.kind {
+            Kind::Anim { clip, t, rate, looping } => *o += &format!(" #{id} anim(c{clip} {} {} 1 {} 0)", b(*t), b(*rate), *looping as u8),
+            Kind::Add { w, filter, a, b: x } => {
+                *o += &format!(" #{id} add({} {}", b(*w), fl(filter));
+                dump(a, ids, holds, o);
+                dump(x, ids, holds, o);
+                *o += ")";
+            }
+            Kind::Blend { w, rate, filter, a, b: x } => {
+                *o += &format!(" #{id} blend({} {} {} {} 00000000", b(*w), b(*rate), (*rate != 0.0) as u8, fl(filter));
+                match a {
+                    Some(a) => dump(a, ids, holds, o),
+                    None => *o += " null",
+                }
+                dump(x, ids, holds, o);
+                *o += ")";
+            }
+            Kind::Identity => *o += &format!(" #{id} identity"),
+        }
+    }
+
+    /// The tree builders against the original's run offline (`work/drvmachine/tree_ref.py`): every request, its fields and
+    /// the holders equal, over the face / pan / filter / blend / loop combinations.
+    #[test]
+    fn the_trees_match_the_original() {
+        let text = include_str!("testdata/drvanim_tree_ref.txt");
+        let mut n = 0;
+        for case in text.split("= ").skip(1) {
+            let (head, want) = case.split_once('\n').unwrap();
+            let mut it = head.split_whitespace();
+            let op = it.next().unwrap();
+            let w: Vec<u32> = it.map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let look = Look {
+                face: (w[0] != 0).then_some(14),
+                pan_spine: (w[1] != 0).then_some(13),
+                pan: (w[2] != 0).then_some(15),
+                filters: w[14] == 0,
+            };
+            let dur = |c: ClipId| if c == 13 || c == 15 || c == 12 { f(13) } else { f32::from_bits(0x3f80_0000 + 0x0010_0000 * c) };
+            let clip = |i: usize| w[6 + i];
+            let mut s = Seq::default();
+            s.anim[0] = Some(0);
+            s.nodes.push(Node::Anim(Player { t: f(11), rate: f(12), clip: Some(Clip { dur: f(13), flags: 0 }), ..Player::default() }));
+            let req = match op {
+                "play" => Some(play(&look, &dur, clip(0), f(3), w[4] != 0, w[5] != 0)),
+                "play2" => Some(play_cut(clip(0), f(3), w[4] != 0, w[5] != 0)),
+                "pair" => Some(pair(&look, &dur, clip(0), clip(1), w[4] != 0, f(3))),
+                "five" => Some(five(&look, &dur, [clip(0), clip(1), clip(2), clip(3), clip(4)], f(3), w[4] != 0)),
+                "overlay" => overlay(&mut s, &look, Some(12), clip(0), f(3), w[4] != 0),
+                _ => panic!("{op}"),
+            };
+            let mut got = format!("{op}\n");
+            if let Some(r) = &req {
+                let (mut ids, mut holds, mut o) = (0, Vec::new(), String::new());
+                dump(r, &mut ids, &mut holds, &mut o);
+                got += &format!("submit 0{o}\n");
+                let order = [84u8, 76, 44, 48, 20, 24, 28, 32];
+                holds.sort_by_key(|(h, _)| order.iter().position(|x| x == h));
+                for (h, id) in holds {
+                    got += &format!("hold {h} {id}\n");
+                }
+            }
+            if op == "overlay" {
+                if let Some(Node::Anim(p)) = s.nodes.first() {
+                    got += &format!("rate44 {:08x}\n", p.rate.to_bits());
+                }
+            }
+            assert_eq!(got, want, "case {n}: {head}");
+            n += 1;
+        }
+        assert!(n >= 2000, "{n} cases");
+    }
 
     /// The setters, readers and the clip clock against the original's code run on fake nodes
     /// (`work/drvmachine/player_ref.py`): every output word equal.
