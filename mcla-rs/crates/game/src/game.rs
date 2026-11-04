@@ -755,6 +755,9 @@ pub struct Game {
     /// MISSION RESULTS after an event: the missions it finished (title, objectives)
     /// (title, objectives, done: false for a mission the event did not finish - stamped FAIL)
     pub mission_results: Vec<(String, Vec<String>, bool)>,
+    /// an event's results are up and MISSION RESULTS has not been filled yet: it is filled when
+    /// its turn comes, after REWARDS (`Career::take_mission_updates`, F-66221)
+    pub mu_pending: bool,
     /// the race's end in slow motion (EndOfRaceSequence of RaceOver.sch: PerspectiveForm_SetSlowMotion
     /// on form 60, 0.2 s of real time after the end-of-race speech) and the wait before it
     pub race_slow: crate::mc4::SlowMo,
@@ -1446,6 +1449,7 @@ impl Game {
             place_goto: None,
             pink_over: None,
             mission_results: Vec::new(),
+            mu_pending: false,
             race_slow: crate::mc4::SlowMo::default(),
             race_slow_wait: None,
             hangout_slow: crate::mc4::SlowMo::default(),
@@ -3070,6 +3074,8 @@ impl Game {
     /// Pay out a finished mission (delivery / payback).
     /// `delivered`: the damage (0..1) of the car handed over, for a delivery.
     pub fn award_mission(&mut self, success: bool, delivered: Option<f32>) {
+        // (the event's results: MISSION RESULTS has its turn after REWARDS)
+        self.mu_pending = true;
         if !success {
             // (a payback that is lost starts again from its first leg)
             if delivered.is_none() {
@@ -3094,6 +3100,8 @@ impl Game {
 
     /// Pay out a finished race: `place` is 1-based.
     pub fn award_race(&mut self, place: usize, field: usize) {
+        // (the event's results: MISSION RESULTS has its turn after REWARDS)
+        self.mu_pending = true;
         // (x 0.6 for a race from the ARCADE menu, x 0.35 for a network game's: `mc4_race_factor`)
         let (mut money, mut rep) = crate::rewards::race_reward(self.rep, self.player_perf(), self.race_diff, place, field, self.mc4_race_factor());
         // (a race of the race editor gives nothing: EditorRace.sco sets the results' word
@@ -8589,6 +8597,14 @@ impl Game {
                 let rows = self.last_results.len().max(1);
                 let w = 820.0 * sc;
                 let row_h = 40.0 * sc;
+                // (MISSION RESULTS' turn, after REWARDS: the missions updated since the form was
+                // last up - F-44151 brings it when there is one, F-66221 fills it)
+                if self.mu_pending && self.flash_menu.is_some() && self.series_ask.is_none() && !self.series_first && !self.reward_panel && !self.mc4_tt_panel_first() {
+                    self.mu_pending = false;
+                    let v = self.career.take_mission_updates();
+                    log::info!("mission results: {:?}", v.iter().map(|m| (&m.0, m.2)).collect::<Vec<_>>());
+                    self.mission_results.extend(v);
+                }
                 // the race-over entries of the original (`RO_*` in PauseMenu.sc.xml), in its words
                 let s = |key: &str, fallback: &str| -> String { self.career.strings.get(key).filter(|v| !v.contains('<')).map(|v| v.to_string()).unwrap_or_else(|| fallback.to_string()).to_uppercase() };
                 let mut ro: Vec<(String, u8)> = Vec::new();
@@ -8919,7 +8935,11 @@ impl Game {
                 } else if !self.mission_results.is_empty() && movie {
                     // (then MISSION RESULTS, a panel for each mission the event finished)
                     if enter {
-                        // (the missions share one panel: F-66221)
+                        // (the missions share one panel: F-66221; the form's hide clears the
+                        // complete ones' "updated" bytes too - F-40042 -> F-75010)
+                        if self.plain_missions() > 0 {
+                            self.career.clear_mission_updates();
+                        }
                         let n = self.plain_missions().max(1);
                         self.mission_results.drain(..n);
                     }
@@ -8929,7 +8949,7 @@ impl Game {
                 };
                 // After a career race on the road the game goes straight back to the cruise
                 // (`ng_after_0`): the race-over menu is ARCADE's and the events'.
-                if movie && !arcade_over && self.next_event_race.is_none() && self.career_over && !self.reward_panel && self.mission_results.is_empty() && self.replay.is_none() {
+                if movie && !arcade_over && self.next_event_race.is_none() && self.career_over && !self.reward_panel && !self.mu_pending && self.mission_results.is_empty() && self.replay.is_none() {
                     self.career_over = false;
                     self.menu_sel = 0;
                     action = MenuAction::StartFreeRoam;
@@ -9001,7 +9021,7 @@ impl Game {
                     picked = Some(ro[ro_sel].1);
                 }
                 // (test hook MCLA_NEXT_RACE=<n>: `mc4_next_race_hook`)
-                if picked.is_none() && !self.reward_panel && self.mission_results.is_empty() && !self.results_table && ro.iter().any(|r| r.1 == 20) && !self.ro_grey(20) && self.mc4_next_race_hook() {
+                if picked.is_none() && !self.reward_panel && !self.mu_pending && self.mission_results.is_empty() && !self.results_table && ro.iter().any(|r| r.1 == 20) && !self.ro_grey(20) && self.mc4_next_race_hook() {
                     picked = Some(20);
                 }
                 if !self.event_line.is_empty() {

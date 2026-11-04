@@ -5725,11 +5725,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         if self.game.mission_target.as_deref() == Some(id.as_str()) {
                             self.game.mission_target = None;
                         }
-                        // (after an event the game says so on its MISSION RESULTS panel)
+                        // (after an event the game says so on its MISSION RESULTS panel - filled
+                        // from the missions' "updated" bytes when its turn comes: `mu_pending`)
                         if self.game.mode == Mode::Results && self.game.flash_menu.is_some() {
-                            let objectives: Vec<String> = self.game.career.objective_texts(&id);
-                            log::info!("mission results: {} {:?} (completed views {})", title, objectives, self.game.career.completed_views().len());
-                            self.game.mission_results.push((title, objectives, true));
+                            log::info!("mission complete in the results: {} (completed views {})", title, self.game.career.completed_views().len());
                             self.game.career_over = true;
                         } else {
                             self.news.push_back((format!("MISSION COMPLETE   {}", title), None));
@@ -7045,14 +7044,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         log::info!("alt hookman: {} after the race", sp);
                         self.speech.say_as(sp, &self.game.althk.voice);
                     }
-                    // (a hookman who had to be beaten was not: his mission's panel, stamped FAIL -
-                    // the rewards movie's own look; approx., the original's was not captured)
+                    // (a hookman who had to be beaten was not: back to the cruise after the panels. His
+                    // mission is on MISSION RESULTS only when one of its conditions was updated -
+                    // F-66221 lists the updated missions, `mu_pending`)
                     if self.game.hookman_race && place > 1 && self.game.flash_menu.is_some() {
-                        if let Some(id) = self.game.career.hookman_mission().filter(|id| id.starts_with("BEAT_") || id.starts_with("REDLIGHT_")).map(|s| s.to_string()) {
-                            if let Some(title) = self.game.career.title_of(&id) {
-                                self.game.mission_results.push((title, self.game.career.objective_texts(&id), false));
-                                self.game.career_over = true;
-                            }
+                        if self.game.career.hookman_mission().filter(|id| id.starts_with("BEAT_") || id.starts_with("REDLIGHT_")).is_some() {
+                            self.game.career_over = true;
                         }
                     }
                     // (no scene after a race: the original's reward scenes - cut_reward_gen_01,
