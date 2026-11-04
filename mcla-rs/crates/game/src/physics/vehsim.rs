@@ -4938,9 +4938,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // Two wheels (A-68612): the rider's stick, input +32, under -0.5 with an air time under 0.5 -
         // the stoppie's lean; the ZX-14's DragMin is 3 against DragMax 2. MCLA_DBG_A1: cars' rule for all.)
         let other = if vt.bike && !dbg_flag("MCLA_DBG_A1") { input.lean < -0.5 && vs.air584_before < 0.5 } else { input.draft || draft_then };
-        // (R2: vehAero's drag, A-57982, asks only for a speed above 1 m/s - nothing about the wheels: V se.0
-        // 168.., a quarter second after the last wheel left the ground. MCLA_DBG_R2: none in the air, as before.)
-        let drag = if st.airborne_time > 0.25 && dbg_flag("MCLA_DBG_R2") { 0.0 } else if other { t.aero.drag_min * over } else { t.aero.drag_max * over };
+        // (mcCarAero's update F-14825 zeroes the drag while the chassis's vfunc 13, the air time +584 of this
+        // tick's chassis update, is above 0.25 - not the port's airborne counter: se.0's +584 never passes 0.05,
+        // wa.0's flight keeps its 12 m/s to the bit. MCLA_DBG_R2: the drag in the air, as before.)
+        let drag = if vs.air584 > 0.25 && !dbg_flag("MCLA_DBG_R2") { 0.0 } else if other { t.aero.drag_min * over } else { t.aero.drag_max * over };
         // (A-76310: the force along the car's up is given whether or not a wheel is down, less
         // the share of the wheels the last collision handed to the solver - bottomed out, byte
         // +530, F-31583. MCLA_DBG_OLDDOWN: none with no wheel down, as before.)
