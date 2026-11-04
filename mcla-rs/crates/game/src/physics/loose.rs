@@ -2932,7 +2932,7 @@ impl LooseState {
                 (if m.b == Who::City { m.cell as u64 } else { m.part_b as u64 }, m.part_a as u64)
             });
             let m0 = &self.manis[ms[0]];
-            let mut n = super::artic_run::WalkNode { a: lvl(m0.a), b: lvl(m0.b), keys: Vec::new(), first: rope };
+            let mut n = super::artic_run::WalkNode { a: lvl(m0.a), b: lvl(m0.b), keys: Vec::new(), constraint: rope };
             let mut sl = Vec::new();
             for &k in &ms {
                 let m = &self.manis[k];

@@ -1520,7 +1520,6 @@ mod tests {
 
     /// A rigid body of an RGISL001 tick: its level index, its collider at slot 5's and at slot 10's entry of the rider (the
     /// RGD0 / RGD1 snapshots) and its instance's matrix at both.
-    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
     struct IslBody {
         level: u32,
         col0: Vec<u32>,
@@ -1530,14 +1529,12 @@ mod tests {
 
     /// A row of an RGISL001 tick: the rider's side, the rigid body of each side (None: the city, a fixed object, the
     /// rider), whether the record is the RGD1 snapshot's (a row in no PAIR record: a constraint's), and the record.
-    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
     struct IslRow2 {
         bodies: [Option<usize>; 2],
         snap: bool,
         c: IslContact,
     }
 
-    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
     struct IslTick2 {
         tick: u32,
         bounce: u32,
@@ -1547,7 +1544,6 @@ mod tests {
         bodies: Vec<IslBody>,
     }
 
-    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
     fn isl2_ticks(b: &[u8]) -> (Vec<i32>, Vec<IslTick2>) {
         assert_eq!(&b[..8], b"RGISL001");
         let w: Vec<u32> = b[8..].chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
@@ -1583,7 +1579,6 @@ mod tests {
     }
 
     /// A rigid body as the island takes it (as [`shared_bike`]): its collider at slot 10's entry and its instance's rows.
-    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
     fn isl2_body(b: &IslBody) -> solver::Body {
         let (w, m) = (&b.col1, &b.matrix1);
         solver::Body { at: wv(w, 256), rows: [wv(m, 0), wv(m, 16), wv(m, 32)], vel: wv(w, 272), ang: wv(w, 288), inv_mass: wf(w, 196), inv_moments: wv(w, 176), force: wv(w, 336), torque: wv(w, 352) }
@@ -1593,7 +1588,6 @@ mod tests {
     /// between their bodies (a constraint's of its kind). The warm start of a PAIR row as [`shared_touches`]; of a row in no
     /// PAIR record (a constraint's, or a sub-manifold the record did not carry) its record at the RGD0 snapshot (export_isl.py
     /// writes it as the tick before's).
-    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
     fn isl2_touches(map: &[i32], n_links: usize, t: &IslTick2) -> Vec<solver::Touch> {
         let mut out = Vec::new();
         for r in &t.rows {
@@ -1635,7 +1629,6 @@ mod tests {
     /// The island of `fixture` (RGISL001) with `run` (ops 'i'): the rider RGX0 -> RGD1 word for word, the elasticity factor
     /// (isl +40), every row's kept multipliers (+128) and impulse (+112), and every rigid body's share - what the island's
     /// apply adds to its accumulators +368 / +384 between the snapshots - bit for bit. Answers the report and the count.
-    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
     fn many_island(fixture: &[u8], run: &[u8], open: &[u32]) -> (Vec<String>, usize) {
         let (map, ticks) = isl2_ticks(fixture);
         let cases = run_cases(run);
@@ -1691,4 +1684,19 @@ mod tests {
         }
         (report, n)
     }
+
+    /// The rider thrown onto a moving semi from behind: yc.0 813 - 817 (recomp recorder, command `R`: trailer 0x56e3, the
+    /// body 0x571d touching it, the bike 0x5732, the rider 0x5770). One island of three rigid bodies and the rider, rows
+    /// of every pair (the bike's with the city and the trailer, the trailer's with 0x571d, the rider's with all), two of
+    /// them in no PAIR record (read from slot 10's snapshot). The island's velocity solve with every body: the rider
+    /// RGX0 -> RGD1 word for word, isl +40, every row's +128 / +112 and every body's +368 / +384.
+    #[test]
+    fn rider_semi_island_velocity_solve_is_the_originals() {
+        let (report, n) = many_island(include_bytes!("testdata/rider_semi_yc0.bin"), include_bytes!("testdata/rider_semi_yc0_run.bin"), &OPEN_SEMI);
+        assert_eq!(n, 5);
+        assert!(report.is_empty(), "{}", report.join("\n"));
+    }
+
+    /// yc.0 ticks not yet word for word (open).
+    const OPEN_SEMI: [u32; 0] = [];
 }

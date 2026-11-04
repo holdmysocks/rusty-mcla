@@ -96,7 +96,7 @@ pub struct Outside {
 /// level indices for the union-find and the cache order, the instances' addresses for the sort).
 #[derive(Clone, Debug, Default)]
 pub struct LooseRows {
-    /// the island's pairs that are not the rider's ([`WalkNode`]: a constraint's pair joins first, F-87905)
+    /// the island's pairs that are not the rider's ([`WalkNode`]: a constraint's pair is walked last, F-87905)
     pub nodes: Vec<WalkNode>,
     pub rider_level: i64,
     pub rider_key: i64,
@@ -113,22 +113,22 @@ pub struct WalkNode {
     pub a: Option<i64>,
     pub b: Option<i64>,
     pub keys: Vec<(i64, i64)>,
-    pub first: bool,
+    pub constraint: bool,
 }
 
-/// The cache's order of `nodes` as the loose world's collide takes them (loose.rs `collide`, F-14298): the constraints'
-/// pairs first in their order (F-87905 joins its pair before the collide), then the others by (lower, higher) level - the
-/// city lowest - in a stable sort. Answers the nodes' numbers in that order.
+/// The cache's order of `nodes` as the island build walks them (F-14298): the pairs by (lower, higher) level - the city
+/// lowest - in a stable sort, then the constraints' pairs in their order (F-87905's contacts are made after the collide).
+/// The constraints last is yc.0's (813 - 817: of every place for the hitch's node only the last rebuilds both recorded
+/// lists of all five ticks). Answers the nodes' numbers in that order.
 pub fn cache_order(nodes: &[WalkNode]) -> Vec<usize> {
     let key = |n: &WalkNode| {
         let (a, b) = (n.a.unwrap_or(i64::MIN), n.b.unwrap_or(i64::MIN));
         (a.min(b), a.max(b))
     };
-    let mut first: Vec<usize> = (0..nodes.len()).filter(|&k| nodes[k].first).collect();
-    let mut rest: Vec<usize> = (0..nodes.len()).filter(|&k| !nodes[k].first).collect();
-    rest.sort_by_key(|&k| key(&nodes[k]));
-    first.extend(rest);
-    first
+    let mut order: Vec<usize> = (0..nodes.len()).filter(|&k| !nodes[k].constraint).collect();
+    order.sort_by_key(|&k| key(&nodes[k]));
+    order.extend((0..nodes.len()).filter(|&k| nodes[k].constraint));
+    order
 }
 
 /// The row lists of the island that holds `of` over nodes already in the cache's order: the union-find walk of
@@ -729,7 +729,7 @@ impl RiderRagdoll {
             Some(l) => {
                 // (one island with the loose world's: its pairs and his in the cache's order, every row with its own
                 // instances' keys; `walk` keeps each node's ends for the runs)
-                let mut nodes: Vec<(WalkNode, Src)> = pairs.into_iter().map(|(p, s)| (WalkNode { a: p.a, b: p.b, keys: vec![(p.key_a, p.key_b); p.rows], first: false }, s)).collect();
+                let mut nodes: Vec<(WalkNode, Src)> = pairs.into_iter().map(|(p, s)| (WalkNode { a: p.a, b: p.b, keys: vec![(p.key_a, p.key_b); p.rows], constraint: false }, s)).collect();
                 nodes.extend(l.nodes.iter().cloned().enumerate().map(|(i, n)| (n, Src::Loose(i))));
                 let order = cache_order(&nodes.iter().map(|x| x.0.clone()).collect::<Vec<_>>());
                 let nodes: Vec<(WalkNode, Src)> = order.into_iter().map(|k| nodes[k].clone()).collect();
@@ -1400,8 +1400,7 @@ mod tests {
     /// The merged island's lists (the rider in a loose island: [`cache_order`], [`merged_rows`]) against a recording's
     /// (testdata/rider_semi_yb0_order.txt, export_isl.py): per tick 'T name tick rider-level', its pairs in the cache's
     /// order as 'N a b first rows keyA,keyB ...' (-1: the city or an object that is not active) and the recorded lists
-    /// as node.row. Answers (ticks, ticks whose cache order is the port's rule, differences).
-    #[allow(dead_code)] // (no recorded order file yet: see ragdoll_self_contacts.md section 15)
+    /// as node.row. Answers (ticks, ticks whose PAIR records' slot order is the port's rule, differences).
     fn merged_order_check(text: &str) -> (usize, usize, Vec<String>) {
         let mut ticks: Vec<(String, i64, Vec<WalkNode>, Vec<(usize, usize)>, Vec<(usize, usize)>)> = Vec::new();
         let rows = |w: &[&str]| -> Vec<(usize, usize)> {
@@ -1425,7 +1424,7 @@ mod tests {
                             (a.parse().unwrap(), b.parse().unwrap())
                         })
                         .collect();
-                    ticks.last_mut().unwrap().2.push(WalkNode { a: side(w[1]), b: side(w[2]), keys, first: w[3] == "1" });
+                    ticks.last_mut().unwrap().2.push(WalkNode { a: side(w[1]), b: side(w[2]), keys, constraint: w[3] == "1" });
                 }
                 Some(&"A") => ticks.last_mut().unwrap().3 = rows(&w[1..]),
                 Some(&"B") => ticks.last_mut().unwrap().4 = rows(&w[1..]),
@@ -1435,8 +1434,13 @@ mod tests {
         let mut bad = Vec::new();
         let mut same_cache = 0;
         for (name, rider, nodes, want_a, want_b) in &ticks {
-            same_cache += (cache_order(nodes) == (0..nodes.len()).collect::<Vec<_>>()) as usize;
-            match merged_rows(nodes, *rider) {
+            // (the file's nodes: constraints first, then the PAIR records by cache slot)
+            let order = cache_order(nodes);
+            let pairs_kept = order.iter().filter(|&&k| !nodes[k].constraint).copied().collect::<Vec<_>>() == (0..nodes.len()).filter(|&k| !nodes[k].constraint).collect::<Vec<_>>();
+            same_cache += pairs_kept as usize;
+            let sorted: Vec<WalkNode> = order.iter().map(|&k| nodes[k].clone()).collect();
+            let back = |l: Vec<(usize, usize)>| l.into_iter().map(|(i, r)| (order[i], r)).collect::<Vec<_>>();
+            match merged_rows(&sorted, *rider).map(|(a, b)| (back(a), back(b))) {
                 Some((a, b)) => {
                     if &a != want_a {
                         bad.push(format!("{name}: list by instance A {a:?}, recorded {want_a:?}"));
@@ -1449,5 +1453,17 @@ mod tests {
             }
         }
         (ticks.len(), same_cache, bad)
+    }
+
+    /// The merged island's lists against yc.0 813 - 817 (the rider, his bike, a semi trailer and the body touching it):
+    /// both lists of every tick (the hitch's constraint walked last, [`cache_order`]), and the PAIR records' slots in the
+    /// port's (lower, higher) level order.
+    #[test]
+    fn merged_island_order_matches_recording() {
+        let (ticks, same, bad) = merged_order_check(include_str!("testdata/rider_semi_yc0_order.txt"));
+        eprintln!("{ticks} ticks, {same} in the port's cache order");
+        assert_eq!(ticks, 5);
+        assert_eq!(same, ticks);
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 }
