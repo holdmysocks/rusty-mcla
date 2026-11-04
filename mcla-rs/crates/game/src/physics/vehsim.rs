@@ -746,6 +746,10 @@ pub struct VehState {
     nitro_left: bool,
     /// scale of the aerodynamic angular damping (less in the air, more just after landing)
     pub aero_damp: f32,
+    /// mcCarTireFric +20, set by mcCarSim::Update: the air's damping factor is above one
+    fric_boost: bool,
+    /// wheel +524 for a car that is not wiped out (mcCarSim::Update): what the surface's grip is divided by
+    grip_h: f32,
     air_time: f32,
     /// burnout: 0 none, 1 charging on the handbrake, 2 full, 3 launching; and its charge (0..1)
     pub burn_state: u8,
@@ -814,7 +818,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
     }
 }
 
@@ -871,7 +875,7 @@ pub(super) fn slip(v: f32, reference: f32) -> f32 {
 
 /// Friction against slip: rises to the static value at the optimum slip, then falls
 /// back to the sliding value. Also returns how far into sliding the tyre is.
-pub(super) fn friction(wt: &WheelTune, sliding_fric: f32, surf: f32, s: f32) -> (f32, f32) {
+pub(super) fn friction(wt: &WheelTune, static_fric: f32, sliding_fric: f32, surf: f32, s: f32) -> (f32, f32) {
     let opt = wt.optimum_slip.max(0.01);
     let mut s = s.abs();
     if sliding_fric == 0.0 && s > opt {
@@ -880,7 +884,7 @@ pub(super) fn friction(wt: &WheelTune, sliding_fric: f32, surf: f32, s: f32) -> 
     // F-84621 multiplies the cached inverse optimum-slip square before
     // multiplying slip. Reordering this expression changes tyre-force bits.
     let inverse_opt_squared = 1.0 / (opt * opt);
-    let x = ((wt.static_fric * surf * opt.mul_add(2.0, -s)) * inverse_opt_squared) * s;
+    let x = ((static_fric * surf * opt.mul_add(2.0, -s)) * inverse_opt_squared) * s;
     if s <= opt {
         (x, 0.5 * s / opt)
     } else {
@@ -1032,6 +1036,20 @@ pub fn sss_factor(s: &mcla_formats::rage::simtune::SimScalars, speed: f32) -> f3
 /// mcCarTireFric::Update (F-67816): the driven tyres' melt and, with it, an all-wheel-drive
 /// car's switch to two driven wheels and back. `gear`: the gear the transmission's update of
 /// this tick finds (the routine runs ahead of the engine and the transmission).
+/// A wheel's static and sliding friction (+468, +472) while mcCarTireFric's flag +20 is set (F-67816, constants 1.1,
+/// 0.001 and 0.9 from its constructor and the image): StaticFric x 1.1, and SlidingFric 0.9 of the way to that less 0.001.
+fn landing_frictions(static_fric: f32, sliding_fric: f32) -> (f32, f32) {
+    let st = static_fric * 1.1;
+    (st, fma32((st - 0.001) - sliding_fric, 0.9, sliding_fric))
+}
+
+/// mcCarTireFric::Update (F-67816) does anything at all only for a tune with SpinningFric, MeltRate and a
+/// SkiddingThreshold under one; otherwise the wheels keep the tune's frictions.
+fn tire_fric_runs(t: &SimTune) -> bool {
+    let tf = &t.tire_fric;
+    tf.spinning_fric != 0.0 && tf.melt_rate != 0.0 && tf.skidding_threshold < 1.0
+}
+
 fn tire_fric_update(vs: &mut VehState, t: &SimTune, input: CarInput, gear: i32, dt: f32) {
     // ---- tyre melt (mcCarTireFric): in the low gears, at speed, a floored throttle on sliding
     // driven tyres melts them (MeltRate per second); they recover at RecoverRate ----
@@ -1898,6 +1916,22 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     let input = if exact_nitro && vs.nitro_burning {
         if vs.gear < 0 { CarInput { brake: 1.0, ..input } } else { CarInput { throttle: 1.0, ..input } }
     } else if !exact_nitro && vs.nitro_level > 0.0 && vs.gear > 0 { CarInput { throttle: 1.0, ..input } } else { input };
+    // (mcCarSim::Update F-97237, before the chassis's update moves the factor: A = the air's damping factor,
+    // the melt's when the tyres are melted; mcCarTireFric's flag +20 = A > 1; every wheel's +524 = the tune's
+    // CarFrictionHandlingStandard when A >= 1 or the tyres are melted, else Wipeout + (Standard - Wipeout) x A.
+    // A wiped-out or damaged-out car's +524 is not this: see `wiped`, and the car's case is not ported)
+    {
+        let a = if !vt.bike && t.s.tire_melt_damp_factor < 1.0 && melt_before > 0.01 { fma32(t.s.tire_melt_damp_factor - 1.0, melt_before, 1.0) } else { vs.aero_damp };
+        vs.fric_boost = a > 1.0 && !dbg_flag("MCLA_DBG_OLDFRIC");
+        let flagged = !vt.bike && (st.damage >= 0.999 || st.upset > 0.0);
+        vs.grip_h = if flagged || dbg_flag("MCLA_DBG_OLDFRIC") {
+            1.0
+        } else if a >= 1.0 || melt_before > 0.01 {
+            t.s.friction_handling_standard
+        } else {
+            fma32(t.s.friction_handling_standard - t.s.friction_handling_wipeout, a, t.s.friction_handling_wipeout)
+        };
+    }
     // angular damping: AeroDampFactor after AeroDampDelay in the air, LandingDampFactor on
     // touching down after a quarter second of flight, back to 1 over a second
     // (A-55250: "in the air" is no wheel with a contact record, F-33415)
@@ -2635,6 +2669,8 @@ struct TyreFrame {
     surf_sink: f32,
     mass: f32,
     sliding_fric: f32,
+    /// the wheel's static friction as mcCarTireFric left it (+468: the tune's, or x 1.1 after a landing)
+    static_fric: f32,
     /// the contact record's normal and point
     normal: Vec3,
     point: Vec3,
@@ -3458,6 +3494,12 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         if steep {
             surf_grip = 0.01;
         }
+        // (F-56921: a car that is not wiped out has its grip divided by +524 too - by more than one while the air's
+        // damping factor is under one, as just after a short flight - or, under one, brought that share of the way to one)
+        if !wiped && !input.ice && vs.grip_h != 1.0 && surf_grip > 0.0 {
+            let h = vs.grip_h;
+            surf_grip = if h < 1.0 { fma32(1.0 - h, 1.0 - surf_grip, surf_grip) } else { surf_grip / h };
+        }
         // (replays of a recording stand on the recording's surfaces)
         {
             let replay_grip = f32::from_bits(REPLAY_SURFACE[i.min(3)].load(std::sync::atomic::Ordering::Relaxed));
@@ -3624,7 +3666,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                         radius, spin: 0.0, velocity_lat: v_lat, velocity_long: v_fwd,
                         load: second, surface: surf_grip, spring_lat: k_lat, spring_long: k_long,
                         damper_lat: 2.0 * wt.damp_coef_lat * (k_lat * m_w).sqrt(), damper_long: 2.0 * wt.damp_coef_long * (k_long * m_w).sqrt(), dt,
-                    }, arm, forward: wheel_fwd, lateral: wheel_lat, surf_drag: 0.0, surf_sink: 0.0, mass: m_w, sliding_fric: wt.sliding_fric, normal: n, point: hit.point, damp: None,
+                    }, arm, forward: wheel_fwd, lateral: wheel_lat, surf_drag: 0.0, surf_sink: 0.0, mass: m_w, sliding_fric: wt.sliding_fric, static_fric: wt.static_fric, normal: n, point: hit.point, damp: None,
                 });
                 if let (true, Some(m), Some(c)) = (second != 0.0, rebuilt[i], contacts[i].as_mut()) {
                     c.forward = Vec3::ZERO - m[2];
@@ -3677,7 +3719,12 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let _ = burning;
         // melted driven tyres slide on SpinningFric
         // (F-67816 at A-64726: the difference times the melt plus the sliding friction, fused)
-        let sliding_fric = if vs_melt > 0.0 && powered(i) { fma32(t.tire_fric.spinning_fric - wt.sliding_fric, vs_melt, wt.sliding_fric) } else { wt.sliding_fric };
+        // (mcCarTireFric F-67816: while its flag +20 is set - the air's damping factor above one as mcCarSim::Update
+        // left it, after a landing - every wheel's static friction +468 is the tune's x 1.1 and its sliding +472
+        // 0.9 of the way from the tune's to that less 0.001; then the driven wheels' sliding goes from the tune's
+        // to SpinningFric by the melt)
+        let (static_fric, boosted_sliding) = if vs.fric_boost && tire_fric_runs(t) { landing_frictions(wt.static_fric, wt.sliding_fric) } else { (wt.static_fric, wt.sliding_fric) };
+        let sliding_fric = if vs_melt > 0.0 && powered(i) { fma32(t.tire_fric.spinning_fric - wt.sliding_fric, vs_melt, wt.sliding_fric) } else { boosted_sliding };
         let k_lat = 2.0 * w_static / wt.disp_limit_lat.max(0.005);
         let k_long = 2.0 * w_static / wt.disp_limit_long.max(0.005);
         let c_lat = 2.0 * wt.damp_coef_lat * (k_lat * m_w).sqrt();
@@ -3698,7 +3745,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 radius, spin: 0.0, velocity_lat: v_lat, velocity_long: v_fwd,
                 load, surface: surf_grip, spring_lat: k_lat, spring_long: k_long,
                 damper_lat: c_lat, damper_long: c_long, dt,
-            }, arm, forward: wheel_fwd, lateral: wheel_lat, surf_drag, surf_sink: super::collision::surface_depth(hit.surface), mass: m_w, sliding_fric, normal: n, point: hit.point, damp: damp_call,
+            }, arm, forward: wheel_fwd, lateral: wheel_lat, surf_drag, surf_sink: super::collision::surface_depth(hit.surface), mass: m_w, sliding_fric, static_fric, normal: n, point: hit.point, damp: damp_call,
         });
         w.load = load;
         vs.wheel_grip[i.min(3)] = surf_grip;
@@ -3850,7 +3897,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             None => if i < 2 { &t.wheel_front } else { &t.wheel_back },
         };
         frame.contact.spin = -ws.spin_rate;
-        let tyre = super::tyre::update(wt, frame.sliding_fric, frame.contact, &mut ws.disp_lat, &mut ws.disp_long);
+        let tyre = super::tyre::update(wt, (frame.static_fric, frame.sliding_fric), frame.contact, &mut ws.disp_lat, &mut ws.disp_long);
         ws.tyre_torque = frame.contact.radius * tyre.longitudinal;
         ws.velocity_long = frame.contact.velocity_long;
         ws.slip_lat = tyre.slip_lat;
@@ -7151,7 +7198,7 @@ mod primitive_reference_tests {
         assert_eq!(synchronize_engine(905.476318, 193.574249, 376.0, 0.01, 1.0 / 30.0).to_bits(),
             193.574249f32.to_bits());
         let wheel = WheelTune { optimum_slip: 0.07, static_fric: 1.85, ..Default::default() };
-        assert_eq!(friction(&wheel, 0.0, 0.01, 0.035).0.to_bits(), 0.013875002f32.to_bits());
+        assert_eq!(friction(&wheel, wheel.static_fric, 0.0, 0.01, 0.035).0.to_bits(), 0.013875002f32.to_bits());
     }
 
     #[test]
@@ -7169,7 +7216,7 @@ mod primitive_reference_tests {
                 "slip" => ([slip(p[0], p[1]), 0.0, 0.0], false),
                 "friction" => {
                     let wt = WheelTune { optimum_slip: p[0], static_fric: p[1], ..Default::default() };
-                    let (mu, slide) = friction(&wt, p[2], p[3], p[4]);
+                    let (mu, slide) = friction(&wt, wt.static_fric, p[2], p[3], p[4]);
                     ([mu, slide, 0.0], false)
                 }
                 "displace" => {
@@ -7266,3 +7313,22 @@ mod suspension_target_tests {
         assert_eq!(n, 4000);
     }
 }
+
+#[cfg(test)]
+mod landing_friction_tests {
+    use super::*;
+
+    /// Every distinct boosted pair the recordings hold (rc.3, rg.0, wa.0: wheel +468 / +472 before and while the flag
+    /// is set; three cars, front and rear), to the bit.
+    #[test]
+    fn the_landing_frictions_match_the_recordings() {
+        let h = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
+        for l in ["40500000 40400000 4064cccd 40610ffa", "4049999a 403ccccd 405dc290 405a680b", "40766666 40566666 4087851f 4084a8c2",
+                  "4081999a 40733333 408e8f5d 408c6f6a", "4039999a 40333333 404c28f6 40499b3d", "40300000 40266666 4041999a 403ed289"] {
+            let v: Vec<f32> = l.split(' ').map(h).collect();
+            let (st, sl) = landing_frictions(v[0], v[1]);
+            assert_eq!((st.to_bits(), sl.to_bits()), (v[2].to_bits(), v[3].to_bits()), "{l}");
+        }
+    }
+}
+
