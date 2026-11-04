@@ -3920,6 +3920,16 @@ pub fn upload_as(device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture, bc: 
     GpuTexture { texture, view, width: w, height: h }
 }
 
+/// What the original's frustum builder F-53768 scales a plane by, from its normal's squared length: the reciprocal square
+/// root estimate (vrsqrtefp; the recomp's exact 1 / sqrt, used here) with one Newton-Raphson step (1.0, 0.5), an infinite
+/// estimate (a zero normal) taken as 0. Bit for bit as the original's code run offline (tools/frustum_reference.py, test
+/// `frustum_planes_match_the_original`); within an ulp of dividing by the length, as the port did before.
+pub fn plane_scale(x: f32) -> f32 {
+    let e = 1.0 / x.sqrt();
+    let e = if e == f32::INFINITY { 0.0 } else { e };
+    (1.0 - x * (e * e)) * (0.5 * e) + e
+}
+
 /// Simple frustum from a view-projection matrix (reverse-Z friendly: uses clip planes).
 #[derive(Clone, Copy)]
 pub struct Frustum {
@@ -3934,10 +3944,7 @@ impl Frustum {
         let r3 = m.row(3);
         let mut planes = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2];
         for p in planes.iter_mut() {
-            let l = p.truncate().length();
-            if l > 0.0 {
-                *p /= l;
-            }
+            *p *= plane_scale(p.truncate().length_squared());
         }
         Frustum { planes }
     }
@@ -3980,5 +3987,35 @@ async fn configure_checked(device: &wgpu::Device, surface: &wgpu::Surface<'_>, c
             log::warn!("surface: configuration failed: {e}");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod frustum_reference_tests {
+    use super::Frustum;
+
+    /// The planes as F-53768 stores them (near, left, right, far, top, bottom) against `Frustum::from_view_proj` of the
+    /// same product (its columns are the port's rows): every bit. CSV from tools/frustum_reference.py, path in
+    /// MCLA_FRUSTUM_REFERENCE.
+    #[test]
+    #[ignore]
+    fn frustum_planes_match_the_original() {
+        let path = std::env::var("MCLA_FRUSTUM_REFERENCE").expect("MCLA_FRUSTUM_REFERENCE");
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut n = 0;
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split(',').collect();
+            let w: Vec<u32> = f[1..].iter().map(|v| u32::from_str_radix(v, 16).unwrap()).collect();
+            assert_eq!(w.len(), 40, "{}", f[0]);
+            let m = glam::Mat4::from_cols_array(&std::array::from_fn(|i| f32::from_bits(w[i])));
+            let fr = Frustum::from_view_proj(m);
+            for (k, port) in [4usize, 0, 1, 5, 3, 2].into_iter().enumerate() {
+                let got = fr.planes[port].to_array().map(f32::to_bits);
+                let want: [u32; 4] = std::array::from_fn(|i| w[16 + 4 * k + i]);
+                assert_eq!(got, want, "{} plane {}", f[0], k);
+            }
+            n += 1;
+        }
+        assert!(n > 0);
     }
 }
