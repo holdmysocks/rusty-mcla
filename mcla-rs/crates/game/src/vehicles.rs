@@ -5118,7 +5118,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 if k <= 0.0 || old_rule {
                     continue;
                 }
-                out.push((pose.pos + pose.rot * *local, pose.rot * *facing, colour(*id, dflt(*id)), k, lamp(n)));
+                // (F-96521 takes the record's bone from the car's posed skeleton (F-25478): a light bar's lamp is on its
+                // turning matrix, as in F-73214's own glows - `police_glows`)
+                let (local, facing) = match (*id, c.model.cop_lights.as_ref()) {
+                    (13 | 14, Some(cl)) => cl.lamps.iter().position(|l| l.4.distance(*local) < 0.01)
+                        .map(|li| cl.lamp_at(li, c.light_t))
+                        .map_or((*local, *facing), |m| (m.w_axis.truncate(), -m.z_axis.truncate().normalize_or_zero())),
+                    _ => (*local, *facing),
+                };
+                out.push((pose.pos + pose.rot * local, pose.rot * facing, colour(*id, dflt(*id)), k, lamp(n)));
             }
             for (n, (id, local)) in c.model.lamps.iter().enumerate() {
                 if has_bone(*id) || !matches!(*id, 0 | 1 | 3 | 6 | 12) {
