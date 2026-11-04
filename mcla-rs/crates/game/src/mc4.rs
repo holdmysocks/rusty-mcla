@@ -17185,6 +17185,30 @@ mod tests {
         assert!(g.career.mission_complete("REPEAT_BESTOF_DOWNTOWN"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// VINYL PACKAGES' name list against the original's builder F-95994 (with its loader F-67075 and the own-preset test F-30784) run offline
+    /// on the disc's name files (work/d34-save-engine/vgp.py): 5 vehicles x content word 0x13D / 0x139 x customiser byte 0 / 1, the lists in
+    /// vinyl_pkg_original.tsv. The port has no customiser byte (the +21670 case with the content bit clear is not reachable: its word is always 0x13D).
+    #[test]
+    fn vinyl_package_names_as_the_original() {
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        if !std::path::Path::new(&dir).join("tune/garage").is_dir() {
+            return;
+        }
+        let presets = crate::vinyl::Presets::load(&dir);
+        let mut n = 0;
+        for l in include_str!("vinyl_pkg_original.tsv").lines() {
+            let f: Vec<&str> = l.split(char::from(9)).collect();
+            let (car, bike, mask, flag) = (f[0], f[1] == "1", u32::from_str_radix(f[2], 16).unwrap(), f[3] == "1");
+            if flag && mask & CONTENT_SC_PRESETS == 0 {
+                continue;
+            }
+            let list = if bike { &presets.bike_names } else { &presets.names };
+            let got: Vec<String> = vinyl_package_rows(car, list, &[false; 3], mask).into_iter().map(|r| match r { PkgRow::Preset(p) => p, PkgRow::User(k) => format!("Package{k}") }).collect();
+            assert_eq!(got.join(","), f[4], "{car} bike {bike} mask {mask:x}");
+            n += 1;
+        }
+        assert_eq!(n, 15);
+    }
     /// Step 22: VINYL PACKAGES' rows (the vehicle's own preset, the disc's, the stored slots),
     /// the boxes' YES, STORE VINYL PACKAGES written to the block and read back.
     #[test]
