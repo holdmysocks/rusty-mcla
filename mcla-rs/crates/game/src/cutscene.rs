@@ -20,12 +20,21 @@ pub struct SceneDef {
 pub struct Playing {
     pub def: SceneDef,
     pub t: f32,
+    /// the clock at the last update (the music events passed since)
+    last: f32,
 }
+
+/// The story scenes' music events, from their generated scripts' event records (CineScript_Events_LaunchEvent; the
+/// cine event dispatcher F-91263): racer_enablemusic (38: the music manager's suspend F-64824) and musicplay (42:
+/// Play(0), F-33831) at the scene's seconds. No other scene has one.
+pub const STORY_MUSIC: &[(&str, &[(u8, f32)])] = &[("CUT_STORY_RACE_GH_06", &[(38, 57.6333), (42, 63.1)])];
 
 #[derive(Default)]
 pub struct Cutscenes {
     pub scenes: Vec<SceneDef>,
     pub playing: Option<Playing>,
+    /// the music events the playing scene passed, taken by the game for the music manager
+    pub music: Vec<u8>,
     pending: std::collections::VecDeque<usize>,
 }
 
@@ -145,7 +154,7 @@ impl Cutscenes {
         let def = self.scenes.get(i)?.clone();
         log::info!("cutscene: {} ({:.0} s, {} lines)", def.name, def.length, def.subs.len());
         let stream = def.stream.clone();
-        self.playing = Some(Playing { def, t: 0.0 });
+        self.playing = Some(Playing { def, t: 0.0, last: 0.0 });
         Some(stream)
     }
 
@@ -153,6 +162,11 @@ impl Cutscenes {
     pub fn update(&mut self, dt: f32, skip: bool) -> bool {
         let Some(p) = self.playing.as_mut() else { return true };
         p.t += dt;
+        // (an event the clock passed since the last update, a jump to the bookmark too)
+        for (_, evs) in STORY_MUSIC.iter().filter(|m| m.0.eq_ignore_ascii_case(&p.def.name)) {
+            self.music.extend(evs.iter().filter(|e| p.last < e.1 && e.1 <= p.t).map(|e| e.0));
+        }
+        p.last = p.t;
         if skip || p.t >= p.def.length {
             self.playing = None;
             return false;

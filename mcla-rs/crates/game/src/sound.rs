@@ -57,6 +57,55 @@ pub struct PropHit {
     pub knocked: bool,
 }
 
+const MUSIC_SUSPEND: &str = "DYNAMIC_MIXER_MUSIC_SUSPEND";
+
+/// The music manager's calls (audio.rs `MusicEnv`) on the port's mixer, sounds and radio: the song is the radio's
+/// sink (token 1), the jingle a sounds.dat voice, the suspend scene by name; no console player, no change callback.
+struct MusicHere<'a> {
+    lib: &'a mut crate::sndobj::SoundLib,
+    a: &'a mut Audio,
+    jingle: &'a mut Option<crate::sndobj::Handle>,
+}
+
+impl crate::audio::MusicEnv for MusicHere<'_> {
+    fn music_user_db(&self) -> f32 {
+        self.lib.category("MUSIC_USER").map_or(0.0, |c| c.volume)
+    }
+    fn scene_start(&mut self) -> Option<u32> {
+        self.lib.scene_at(MUSIC_SUSPEND, true, 1.0);
+        self.lib.scene_on(MUSIC_SUSPEND).then_some(1)
+    }
+    fn scene_stop(&mut self, _h: u32) {
+        self.lib.scene(MUSIC_SUSPEND, false);
+    }
+    fn sound_stop(&mut self, _h: u32) {
+        if let Some(h) = self.jingle.take() {
+            self.lib.stop(h);
+        }
+    }
+    fn jingle(&mut self, hash: u32) -> Option<u32> {
+        *self.jingle = self.lib.play_hash(hash, crate::sndobj::Req::default());
+        log::info!("music: Play's jingle {} ({})", self.lib.name_of(hash).unwrap_or("?"), if self.jingle.is_some() { "playing" } else { "not made" });
+        self.jingle.map(|_| 1)
+    }
+    fn release(&mut self, _h: u32) {
+        self.a.stop_song();
+    }
+    fn pick(&mut self) -> u32 {
+        0
+    }
+    fn song_start(&mut self, _hash: u32, offset: u32, predelay: u32, _arg: u32) -> Option<u32> {
+        self.a.start_song(predelay, offset).then_some(1)
+    }
+    fn place(&mut self, _a: u32, _b: u32) {}
+    fn console_ready(&mut self) -> bool {
+        false
+    }
+    fn console_start(&mut self, _entry: u32) {}
+    fn console_stop(&mut self) {}
+    fn changed(&mut self) {}
+}
+
 #[derive(Default)]
 pub struct Sound {
     /// the reverb object the probes chose (F-26357; REVERB_DEFAULT until the first choice)
@@ -157,6 +206,8 @@ pub struct Sound {
     /// loop while it plays
     prop_loops: Option<Vec<(Vec3, u32, Vec<u8>, Option<crate::sndobj::Handle>)>>,
     phone: bool,
+    /// the music manager's jingle (its +500)
+    music_jingle: Option<crate::sndobj::Handle>,
     tutorial: bool,
     dmg_prev: f32,
     dmg_armed: bool,
@@ -326,8 +377,37 @@ impl Sound {
         if let Some(lib) = &mut self.lib {
             // what the rest of the game asked for this frame (Audio::obj ...)
             let mut loops_now: Vec<String> = Vec::new();
+            // (the music manager's slots: a jingle that ended, a suspend scene whose fade-out is over and a song that
+            // ended empty theirs)
+            if self.music_jingle.is_some_and(|h| !lib.playing(h)) {
+                self.music_jingle = None;
+            }
+            a.mgr.jingle = self.music_jingle.map(|_| 1);
+            if !lib.scene_on(MUSIC_SUSPEND) {
+                a.mgr.suspend = None;
+            }
+            a.mgr.song = a.song_live().then_some(1);
             for c in std::mem::take(&mut a.obj_cmds) {
                 match c {
+                    crate::audio::ObjCmd::MusicPlay { arg } => {
+                        let tune = lib.game.get_name("MUSIC_0_MANAGER").and_then(crate::audio::MusicTune::read);
+                        if let Some(t) = tune {
+                            let mut m = std::mem::take(&mut a.mgr);
+                            m.play(&t, arg, &mut MusicHere { lib, a, jingle: &mut self.music_jingle });
+                            a.mgr = m;
+                        } else {
+                            // (no manager object: the radio starts as it did)
+                            a.mgr.handler = crate::audio::Handler::Playing;
+                        }
+                    }
+                    crate::audio::ObjCmd::MusicSuspend => {
+                        let tune = lib.game.get_name("MUSIC_0_MANAGER").and_then(crate::audio::MusicTune::read);
+                        if let Some(t) = tune {
+                            let mut m = std::mem::take(&mut a.mgr);
+                            m.suspend(&t, &mut MusicHere { lib, a, jingle: &mut self.music_jingle });
+                            a.mgr = m;
+                        }
+                    }
                     crate::audio::ObjCmd::Loop { name } => {
                         let alive = self.obj_loops.get(&name).is_some_and(|h| lib.playing(*h));
                         if !alive {

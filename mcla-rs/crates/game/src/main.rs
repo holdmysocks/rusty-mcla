@@ -3605,6 +3605,13 @@ impl App {
                     a.play_stream(None, 0.0);
                 }
             }
+            // (the scene's music events, cutscene::STORY_MUSIC: racer_enablemusic the music manager's suspend, musicplay
+            // its Play(0))
+            for ev in std::mem::take(&mut self.cuts.music) {
+                if let Some(a) = self.audio.as_mut() {
+                    a.obj_cmds.push(if ev == 38 { audio::ObjCmd::MusicSuspend } else { audio::ObjCmd::MusicPlay { arg: 0 } });
+                }
+            }
         }
         self.opening_tick(dt, world.streaming());
         // ---- hangouts: the people there, pulling in, leaving ----
