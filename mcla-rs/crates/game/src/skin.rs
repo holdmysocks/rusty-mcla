@@ -596,12 +596,334 @@ impl Clip {
     }
 }
 
-/// Blend pose `b` into `a` with weight `k` (0 keeps `a`).
+/// Blend pose `b` into `a` with weight `k` (0 keeps `a`): the original's frame blend `frame_blend` (crFrame::Blend,
+/// F-27951 -> F-56920) on the bones' two DOFs, the rotation a Quaternion DOF and the translation a Vector3 DOF, both
+/// holding a value.
 pub fn blend_pose(a: &mut [(Quat, Vec3)], b: &[(Quat, Vec3)], k: f32) {
+    let w = frame_weight(k);
     for (l, f) in a.iter_mut().zip(b.iter()) {
-        let fr = if l.0.dot(f.0) < 0.0 { -f.0 } else { f.0 };
-        l.0 = l.0.lerp(fr, k).normalize();
-        l.1 = l.1.lerp(f.1, k);
+        let mut q = FrameDof { flags: DOF_QUATERNION, v: l.0.to_array() };
+        frame_dof_blend(&mut q, &FrameDof { flags: DOF_QUATERNION, v: f.0.to_array() }, w);
+        let mut t = FrameDof { flags: DOF_VECTOR3, v: [l.1.x, l.1.y, l.1.z, 0.0] };
+        frame_dof_blend(&mut t, &FrameDof { flags: DOF_VECTOR3, v: [f.1.x, f.1.y, f.1.z, 0.0] }, w);
+        l.0 = Quat::from_array(q.v);
+        l.1 = Vec3::new(t.v[0], t.v[1], t.v[2]);
+    }
+}
+
+// ---- the animation frame's DOFs (crFrameDofVector3 / Quaternion / Float) and their blends, as the original's code
+// runs them (rule: docs/reference/people/frame_blend_rule.md; checked by `frame_blend_matches_the_original`). The
+// vector unit's steps run with denormals flushed (inputs and results); its multiply-add is not fused, the scalar
+// unit's is (`fma`).
+
+/// The DOF types (the low nibble of the flag byte); 0x10 = the DOF holds no value.
+pub const DOF_VECTOR3: u8 = 0;
+pub const DOF_QUATERNION: u8 = 1;
+pub const DOF_FLOAT: u8 = 2;
+pub const DOF_NO_VALUE: u8 = 0x10;
+/// the blends' thresholds (image constants 0.001 and 0.999)
+const W_LO: f32 = f32::from_bits(0x3A83_126F);
+const W_HI: f32 = f32::from_bits(0x3F7F_BE77);
+
+/// One DOF of an animation frame: the flag byte (+4: the type in the low nibble, `DOF_NO_VALUE`) and the 16-byte value
+/// (+16; a float DOF uses the first word, an integer DOF the first word's bits).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameDof {
+    pub flags: u8,
+    pub v: [f32; 4],
+}
+
+/// A denormal in or out of the vector unit becomes a zero of its sign.
+#[inline]
+fn flush(x: f32) -> f32 {
+    if x.is_subnormal() { 0.0f32.copysign(x) } else { x }
+}
+
+/// The vector unit's lane steps: a - b, a * b, a + b.
+#[inline]
+fn vsub(a: f32, b: f32) -> f32 {
+    flush(flush(a) - flush(b))
+}
+#[inline]
+fn vmul(a: f32, b: f32) -> f32 {
+    flush(flush(a) * flush(b))
+}
+#[inline]
+fn vadd(a: f32, b: f32) -> f32 {
+    flush(flush(a) + flush(b))
+}
+
+/// x * -1 by the scalar unit (a NaN keeps its sign).
+#[inline]
+fn negated(x: f32) -> f32 {
+    x * std::hint::black_box(-1.0f32)
+}
+
+/// The vector lerp a + (b - a) w of all four lanes (vsubfp, then vmaddfp unfused).
+fn vlerp(a: [f32; 4], b: [f32; 4], w: f32) -> [f32; 4] {
+    std::array::from_fn(|i| vadd(vmul(vsub(b[i], a[i]), w), a[i]))
+}
+
+/// The scalar normalisation's scale: the estimate 1 / sqrt in single, two Newton steps in double, 0 when the
+/// squared length is not above 0.
+fn rsqrt_newton2(n2: f32) -> f32 {
+    if -(n2 as f64) >= 0.0 {
+        return 0.0;
+    }
+    let n = n2 as f64;
+    let mut y = (1.0 / n.sqrt()) as f32 as f64;
+    for _ in 0..2 {
+        let e = -(y * y).mul_add(n, -1.0);
+        y = e.mul_add(y * 0.5, y);
+    }
+    y as f32
+}
+
+/// q / |q| with `rsqrt_newton2` of y y + x x + z z + w w (one rounding each).
+fn quat_normalised(q: [f32; 4]) -> [f32; 4] {
+    use crate::physics::exact::fma;
+    let n2 = fma(q[3], q[3], fma(q[2], q[2], fma(q[0], q[0], q[1] * q[1])));
+    let k = rsqrt_newton2(n2);
+    q.map(|x| x * k)
+}
+
+/// crFrame::Blend's weight (F-27951): clamped to [0, 1], a NaN taken as 0.
+pub fn frame_weight(w: f32) -> f32 {
+    let lo = if w >= 0.0 { w } else { 0.0 };
+    if lo - 1.0 >= 0.0 { 1.0 } else { lo }
+}
+
+/// The frame blend of two frames of one layout, DOF by DOF (crFrame::Blend F-27951 with no filter: the dispatcher
+/// F-63377 -> F-56920): `src` into `dst` by `w`.
+pub fn frame_blend(dst: &mut [FrameDof], src: &[FrameDof], w: f32) {
+    let w = frame_weight(w);
+    for (d, s) in dst.iter_mut().zip(src.iter()) {
+        frame_dof_blend(d, s, w);
+    }
+}
+
+/// One DOF of F-56920 (w already clamped). A source without a value leaves the destination; by the destination's type:
+/// a Quaternion without a value takes the source's, else (x w y z dot < 0: the destination negated) the destination
+/// becomes d (1 - w) + s w normalised, with no thresholds; a Vector3 is kept for w <= 0.001, takes the source's from
+/// 0.999 or without a value, else the vector lerp; a Float lerps below 0.999 (fused, no lower threshold) and takes the
+/// source's from 0.999 or without a value when w > 0.001; any other type takes the source's word when w >= 0.5. A
+/// written DOF holds a value afterwards.
+pub fn frame_dof_blend(d: &mut FrameDof, s: &FrameDof, w: f32) {
+    use crate::physics::exact::fma;
+    if s.flags & DOF_NO_VALUE != 0 {
+        return;
+    }
+    let empty = d.flags & DOF_NO_VALUE != 0;
+    match d.flags & 0xF {
+        DOF_QUATERNION => {
+            if empty {
+                d.v = s.v;
+                d.flags &= !DOF_NO_VALUE;
+                return;
+            }
+            let (a, b) = (d.v, s.v);
+            let dot = fma(a[2], b[2], fma(a[1], b[1], fma(b[3], a[3], a[0] * b[0])));
+            if dot < 0.0 {
+                d.v = d.v.map(|x| -x);
+            }
+            let a = d.v;
+            let k = 1.0 - w;
+            let q = [fma(a[0], k, w * b[0]), fma(a[1], k, b[1] * w), fma(b[2], w, k * a[2]), fma(b[3], w, a[3] * k)];
+            d.v = quat_normalised(q);
+        }
+        DOF_VECTOR3 => {
+            if !(w > W_LO) {
+                return;
+            }
+            d.v = if w < W_HI && !empty { vlerp(d.v, s.v, w) } else { s.v };
+            d.flags &= !DOF_NO_VALUE;
+        }
+        DOF_FLOAT => {
+            if w < W_HI && !empty {
+                d.v[0] = fma(s.v[0] - d.v[0], w, d.v[0]);
+            } else if w > W_LO {
+                d.v[0] = s.v[0];
+            } else {
+                return;
+            }
+            d.flags &= !DOF_NO_VALUE;
+        }
+        _ => {
+            if w < 0.5 {
+                return;
+            }
+            d.v[0] = s.v[0];
+            d.flags &= !DOF_NO_VALUE;
+        }
+    }
+}
+
+impl FrameDof {
+    /// crFrameDofVector3 Blend (vt#4, F-97455) after its track sample `tmp`: nothing for w <= 0.001; the vector lerp
+    /// below 0.999 when it holds a value, else `tmp`; it holds a value afterwards.
+    pub fn blend_vector3(&mut self, tmp: [f32; 4], w: f32) {
+        if !(w > W_LO) {
+            return;
+        }
+        self.v = if w < W_HI && self.flags & DOF_NO_VALUE == 0 { vlerp(self.v, tmp, w) } else { tmp };
+        self.flags &= !DOF_NO_VALUE;
+    }
+
+    /// crFrameDofQuaternion Blend (vt#4, F-53163) after its sample `tmp`: nothing for w <= 0.001; below 0.999 when it
+    /// holds a value the nlerp (w z x y dot < 0: this negated; each lane this (1 - w) + tmp w, then normalised), else
+    /// `tmp`; it holds a value afterwards.
+    pub fn blend_quaternion(&mut self, tmp: [f32; 4], w: f32) {
+        use crate::physics::exact::fma;
+        if !(w > W_LO) {
+            return;
+        }
+        if w < W_HI && self.flags & DOF_NO_VALUE == 0 {
+            let (a, b) = (self.v, tmp);
+            let dot = fma(a[1], b[1], fma(a[0], b[0], fma(a[2], b[2], a[3] * b[3])));
+            if dot < 0.0 {
+                self.v = self.v.map(|x| -x);
+            }
+            let a = self.v;
+            let k = 1.0 - w;
+            self.v = quat_normalised(std::array::from_fn(|i| fma(a[i], k, b[i] * w)));
+        } else {
+            self.v = tmp;
+        }
+        self.flags &= !DOF_NO_VALUE;
+    }
+
+    /// crFrameDofFloat Blend (vt#4, F-50451) after its sample `tmp`: below 0.999 when it holds a value
+    /// v + (tmp - v) w (fused; no lower threshold), else `tmp` when w > 0.001; it holds a value when written.
+    pub fn blend_float(&mut self, tmp: f32, w: f32) {
+        if w < W_HI && self.flags & DOF_NO_VALUE == 0 {
+            self.v[0] = crate::physics::exact::fma(tmp - self.v[0], w, self.v[0]);
+        } else if w > W_LO {
+            self.v[0] = tmp;
+        } else {
+            return;
+        }
+        self.flags &= !DOF_NO_VALUE;
+    }
+
+    /// The take-over (vt#6): `o`'s value and its no-value bit when `amount` squared is above r squared.
+    fn take_if(&mut self, amount2: f32, r: f32, o: &FrameDof, v: [f32; 4]) {
+        if amount2 > r * r {
+            self.v = v;
+            if o.flags & DOF_NO_VALUE != 0 {
+                self.flags |= DOF_NO_VALUE;
+            } else {
+                self.flags &= !DOF_NO_VALUE;
+            }
+        }
+    }
+
+    /// crFrameDofVector3 vt#6 (F-45588): `o` taken when this one's x y z length is above `r`.
+    pub fn take_vector3(&mut self, o: &FrameDof, r: f32) {
+        use crate::physics::exact::fma;
+        let l2 = fma(self.v[2], self.v[2], fma(self.v[0], self.v[0], self.v[1] * self.v[1]));
+        self.take_if(l2, r, o, o.v);
+    }
+
+    /// crFrameDofQuaternion vt#6 (F-77946): `o` taken when this one's rotation angle (F-88592) is above `r`.
+    pub fn take_quaternion(&mut self, o: &FrameDof, r: f32) {
+        let a = quat_angle(self.v[3]);
+        self.take_if(a * a, r, o, o.v);
+    }
+
+    /// crFrameDofFloat vt#6 (F-75044): `o` taken when its value's size is above `r`.
+    pub fn take_float(&mut self, o: &FrameDof, r: f32) {
+        let x = o.v[0];
+        let mut v = self.v;
+        v[0] = x;
+        self.take_if(x * x, r, o, v);
+    }
+
+    /// crFrameDofVector3 Scale (vt#7, F-19412): all four lanes times `k` (vector unit).
+    pub fn scale_vector3(&mut self, k: f32) {
+        self.v = self.v.map(|x| vmul(x, k));
+    }
+
+    /// crFrameDofFloat Scale (vt#7, F-96406).
+    pub fn scale_float(&mut self, k: f32) {
+        self.v[0] = k * self.v[0];
+    }
+
+    /// crFrameDofVector3 Mirror (vt#8, F-23634): lane `axis` (0..2) times -1; another axis leaves it.
+    pub fn mirror_vector3(&mut self, axis: u32) {
+        if axis < 3 {
+            self.v[axis as usize] = negated(self.v[axis as usize]);
+        }
+    }
+
+    /// crFrameDofQuaternion Mirror (vt#8, F-19630): lane `axis` (0..2) and w times -1.
+    pub fn mirror_quaternion(&mut self, axis: u32) {
+        if axis < 3 {
+            self.v[axis as usize] = negated(self.v[axis as usize]);
+            self.v[3] = negated(self.v[3]);
+        }
+    }
+
+    /// crFrameDofVector3 Reset (vt#10, F-12453): the zero vector, holding a value.
+    pub fn reset_vector3(&mut self) {
+        self.v = [0.0; 4];
+        self.flags &= !DOF_NO_VALUE;
+    }
+
+    /// crFrameDofQuaternion Reset (vt#10, F-87045): the identity, holding a value.
+    pub fn reset_quaternion(&mut self) {
+        self.v = [0.0, 0.0, 0.0, 1.0];
+        self.flags &= !DOF_NO_VALUE;
+    }
+
+    /// crFrameDofFloat Reset (vt#10, F-89552): 0, holding a value.
+    pub fn reset_float(&mut self) {
+        self.v[0] = 0.0;
+        self.flags &= !DOF_NO_VALUE;
+    }
+
+    /// crFrameDofVector3 / Quaternion Set (F-80553 / F-10930): the 16 bytes, holding a value.
+    pub fn set(&mut self, v: [f32; 4]) {
+        self.v = v;
+        self.flags &= !DOF_NO_VALUE;
+    }
+
+    /// crFrameDofFloat Set (F-58690): the value, holding a value.
+    pub fn set_float(&mut self, x: f32) {
+        self.v[0] = x;
+        self.flags &= !DOF_NO_VALUE;
+    }
+
+    /// The Vector3 / Quaternion Swap (vt#9, F-94553): the values swapped; this one takes `o`'s flag byte with the
+    /// no-value bit cleared, `o` this one's.
+    pub fn swap(&mut self, o: &mut FrameDof) {
+        std::mem::swap(&mut self.v, &mut o.v);
+        let f = self.flags;
+        self.flags = o.flags & !DOF_NO_VALUE;
+        o.flags = f;
+    }
+
+    /// crFrameDofFloat Swap (vt#9, F-81105): the values swapped (by the scalar unit), the flag bytes as `swap`.
+    pub fn swap_float(&mut self, o: &mut FrameDof) {
+        let (a, b) = (self.v[0], o.v[0]);
+        self.v[0] = b;
+        o.v[0] = a;
+        let f = self.flags;
+        self.flags = o.flags & !DOF_NO_VALUE;
+        o.flags = f;
+    }
+}
+
+/// A quaternion's rotation angle from its w (F-88592): pi at w <= -1, 0 at w >= 1, else 2 acos(w) (the C library's
+/// acos F-68873).
+pub fn quat_angle(w: f32) -> f32 {
+    if w > -1.0 {
+        if w < 1.0 {
+            (crate::physics::exact::guest_acos(w as f64) as f32) * 2.0
+        } else {
+            0.0
+        }
+    } else {
+        std::f32::consts::PI
     }
 }
 
@@ -962,6 +1284,88 @@ fn oct(v: Vec3) -> [f32; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The frame blend and the DOFs' own blends and small methods against the original's code run whole offline
+    /// (tools/frame_blend_reference.py -> testdata/frame_blend_ref.txt): 2,000 frames of 1..6 DOFs of every type, with
+    /// and without values, through crFrame::Blend (F-27951 -> F-63377 -> F-56920), the weight at 0, 0.001, 0.5, 0.999,
+    /// 1 a float step or two either side, negative, above 1, NaN, denormal; quaternions about perpendicular (the dot a
+    /// tiny amount either side of 0), about opposite, unnormalised, zero; values with denormals, infinities and NaNs.
+    /// Then 1,000 each of the DOFs' Blend (F-97455, F-53163, F-50451, the track sample as the case's input), 400 each of
+    /// the take-overs (F-45588, F-77946 with the rotation angle F-88592, F-75044) and 200 each of Scale, Mirror, Reset,
+    /// Set and Swap. Every flag byte and value word must be equal bit for bit.
+    #[test]
+    fn frame_blend_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(&t.replace('_', ""), 16).unwrap();
+        let fl = |t: &str| f32::from_bits(h(t));
+        let dof = |w: &[&str]| FrameDof { flags: h(w[0]) as u8, v: [fl(w[1]), fl(w[2]), fl(w[3]), fl(w[4])] };
+        let words = |d: &FrameDof| std::iter::once(d.flags as u32).chain(d.v.iter().map(|x| x.to_bits())).collect::<Vec<u32>>();
+        let mut n = std::collections::BTreeMap::new();
+        let mut nans = 0;
+        for l in include_str!("testdata/frame_blend_ref.txt").lines() {
+            let (c, o) = l.split_once(" ->").unwrap();
+            let c: Vec<&str> = c.split(' ').collect();
+            let want: Vec<u32> = o.split_whitespace().map(h).collect();
+            let m = c[0];
+            let got: Vec<u32> = match m {
+                "B" => {
+                    let k = h(c[2]) as usize;
+                    let mut d: Vec<FrameDof> = (0..k).map(|i| dof(&c[3 + 10 * i..])).collect();
+                    let s: Vec<FrameDof> = (0..k).map(|i| dof(&c[8 + 10 * i..])).collect();
+                    frame_blend(&mut d, &s, fl(c[1]));
+                    d.iter().flat_map(|x| words(x)).collect()
+                }
+                "V" | "Q" | "F" => {
+                    let mut d = dof(&c[3..]);
+                    let tmp = [fl(c[8]), fl(c[9]), fl(c[10]), fl(c[11])];
+                    match m {
+                        "V" => d.blend_vector3(tmp, fl(c[1])),
+                        "Q" => d.blend_quaternion(tmp, fl(c[1])),
+                        _ => d.blend_float(tmp[0], fl(c[1])),
+                    }
+                    words(&d)
+                }
+                _ => {
+                    let (mut d, mut o) = (dof(&c[2..]), dof(&c[7..]));
+                    let x = fl(c[1]);
+                    match m {
+                        "v" => d.take_vector3(&o, x),
+                        "q" => d.take_quaternion(&o, x),
+                        "f" => d.take_float(&o, x),
+                        "s" => d.scale_vector3(x),
+                        "k" => d.scale_float(x),
+                        "m" => d.mirror_vector3(h(c[1])),
+                        "M" => d.mirror_quaternion(h(c[1])),
+                        "r" => d.reset_vector3(),
+                        "R" => d.reset_quaternion(),
+                        "z" => d.reset_float(),
+                        "e" | "E" => d.set(o.v),
+                        "g" => d.set_float(x),
+                        "w" => d.swap(&mut o),
+                        "W" => d.swap_float(&mut o),
+                        _ => panic!("{m}"),
+                    }
+                    words(&d).into_iter().chain(words(&o)).collect()
+                }
+            };
+            // (the sign and payload of a NaN out of a quaternion nlerp are the host's, not the game's: the harness's
+            // `-fma` Newton steps give either sign by how g++ schedules them, and a NaN made from inf - inf is x86's
+            // negative default where the Xenon's is positive - rule file, "NaNs"; there a NaN must stay a NaN,
+            // every other word is compared whole: 76 such words)
+            assert_eq!(got.len(), want.len(), "{l}");
+            for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+                let nan = |x: u32| f32::from_bits(x).is_nan();
+                let quat = m == "Q" || (m == "B" && h(c[3 + 10 * (i / 5)]) & 0xF == DOF_QUATERNION as u32);
+                if i % 5 != 0 && quat && nan(*g) && nan(*w) {
+                    nans += (g != w) as usize;
+                    continue;
+                }
+                assert_eq!(g, w, "word {i}: {l}");
+            }
+            *n.entry(m).or_insert(0) += 1;
+        }
+        assert_eq!(n.values().sum::<i32>(), 8600, "{n:?}");
+        assert_eq!(nans, 76);
+    }
 
     /// g.28.bin draw 1457 (GH_06, 17:00): the model at c3, the lights c16..c18 / c39..c41.
     #[test]

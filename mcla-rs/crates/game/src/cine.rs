@@ -46,21 +46,17 @@ struct Actor {
     face_in: Option<Vec<(Quat, Vec3)>>,
 }
 
-/// The crmtNodeBlend step from `old` into `local` at weight `w` (clamped): rotations nlerp with the sign fix,
-/// translations kept below 0.001 and copied from 0.999 (F-56920).
+/// The crmtNodeBlend step from `old` into `local` at weight `w` (clamped, F-27951): the frame blend with `old` the
+/// destination and `local` the source (F-56920, skin.rs `blend_pose`), the result into `local`. At 1 the node is gone.
 fn blend_in(local: &mut [(Quat, Vec3)], old: &[(Quat, Vec3)], w: f32) {
-    let w = w.clamp(0.0, 1.0);
+    let w = crate::skin::frame_weight(w);
     if w >= 1.0 {
         return;
     }
-    for (l, o) in local.iter_mut().zip(old.iter()) {
-        let qo = if o.0.dot(l.0) < 0.0 { -o.0 } else { o.0 };
-        l.0 = (qo * (1.0 - w) + l.0 * w).normalize();
-        if w <= 0.001 {
-            l.1 = o.1;
-        } else if w < 0.999 {
-            l.1 = o.1 + (l.1 - o.1) * w;
-        }
+    let mut out = old.to_vec();
+    crate::skin::blend_pose(&mut out, local, w);
+    for (l, o) in local.iter_mut().zip(out) {
+        *l = o;
     }
 }
 
