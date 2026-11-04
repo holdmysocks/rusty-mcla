@@ -946,8 +946,15 @@ impl App {
                         self.speech.play_taunt();
                     }
                 }
-                // (the stream player's four slots: the starter scenes' own dialogue stream)
-                "stopaudiostreams" => {}
+                // (F-75531 -> F-86536: the stream player's four slots stopped and released - the starter scene's own
+                // stream, CUTSCENES_GEN_PRERACE_STARTER_*, 1 s after the cut; the scene audio's sync keeps the name, so it
+                // does not start it again before the scene ends)
+                "stopaudiostreams" => {
+                    if let (Some(n), Some(au)) = (&self.cine_audio, self.audio.as_mut()) {
+                        log::info!("prerace scene: stopaudiostreams at {:.2} s ({n} stopped)", a.t);
+                        au.obj_cutscene(n, false, false);
+                    }
+                }
                 "window_down_left" | "window_down_right" | "window_up_left" | "window_up_right" => {
                     if let Ok(slot) = usize::try_from(e.slot) {
                         windows.push((slot, e.event.ends_with("right"), e.event.contains("down")));
@@ -3607,7 +3614,9 @@ impl App {
         // an in-game scene's audio (core_rolling_prototype): its stream prepared by the name its script gives
         // (F-27055), played as the scene plays (F-16075 -> F-58551: the speech and the police radio stop, flags 0x3
         // on every one of them), stopped with the scene (F-19749)
-        let want = self.cine.playing.as_ref().and_then(|s| cine::scene_audio(&s.name));
+        // (a race-start scene's script runs on past its cut to the clip's end, FinishScene, and its stream with it - until
+        // its `stopaudiostreams` event, 1 s after the cut in the starter scenes)
+        let want = self.cine.playing.as_ref().and_then(|s| cine::scene_audio(&s.name)).or_else(|| self.prerace_acts.as_ref().and_then(|a| cine::scene_audio(&a.scene)));
         if want != self.cine_audio && self.cuts.playing.is_none() {
             if let Some(a) = self.audio.as_mut() {
                 if let Some(old) = self.cine_audio.take() {

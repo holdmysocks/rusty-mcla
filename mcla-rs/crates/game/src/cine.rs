@@ -404,11 +404,17 @@ pub struct Cine {
 /// The in-game scenes whose generated scripts name an audio stream (their static block's upper-case scene name,
 /// handed to core_rolling_prototype: CineScript_Audio_PrepareStream, F-27055 -> F-16992 looks up `CUTSCENES_<name>`).
 /// The other generated scenes (cut_cop_arrest_04 - _06, the reward scenes, cut_cop_alert_02 ...) name none; CUT_INTRO
-/// is left out, its audio is the story scene path's (`start_scene_audio`). cut_cop_fidget has no object: no sound.
+/// is left out, its audio is the story scene path's (`start_scene_audio`). cut_cop_fidget and cut_cop_walk_plyr_bike
+/// have no object: no sound. The `racestart/` ones are named without their folder: the eleven starter scenes (stopped
+/// early by their `stopaudiostreams` event) and the delivery / payback key hand-overs.
 pub const SCENE_AUDIO: &[&str] = &[
     "cut_cop_alert", "cut_cop_arrest", "cut_cop_arrest_02", "cut_cop_arrest_03", "cut_cop_arrest_07", "cut_cop_arrest_08",
-    "cut_cop_fidget", "cut_cop_fidget_02", "cut_cop_fidget_bike", "cut_cop_walk", "cut_cop_walk_02", "cut_cop_walk_plyr_02",
-    "cut_loss_chung_hee", "cut_loss_lester", "cut_loss_pete",
+    "cut_cop_arrest_bikestand", "cut_cop_fidget", "cut_cop_fidget_02", "cut_cop_fidget_bike", "cut_cop_walk", "cut_cop_walk_02",
+    "cut_cop_walk_plyr_02", "cut_cop_walk_plyr_bike", "cut_delivery_get_keys", "cut_loss_chung_hee", "cut_loss_lester",
+    "cut_loss_pete", "cut_payback_get_keys", "gen_prerace_starter_2x4_01", "gen_prerace_starter_2x4_02",
+    "gen_prerace_starter_2x4_03", "gen_prerace_starter_2x4_04", "gen_prerace_starter_2x4_05", "gen_prerace_starter_2x4_06",
+    "gen_prerace_starter_2x4_07", "gen_prerace_starter_2x4_08", "gen_prerace_starter_2x4_09", "gen_prerace_starter_2x4_10",
+    "gen_prerace_starter_2x4_11",
 ];
 
 /// The audio stream an in-game scene plays (`SCENE_AUDIO`), upper case as its script names it.
@@ -1242,20 +1248,26 @@ mod tests {
         assert_eq!(skip_to("story/cut_story_motorcycle_rep_A", 1.0, 40.0), None);
     }
 
-    /// `SCENE_AUDIO` is every generated scene script that names its audio stream (besides CUT_INTRO), read from
-    /// the scripts themselves; scene_audio gives the arrest's CUT_COP_ARREST.
+    /// `SCENE_AUDIO` is every generated scene script that names its audio stream (besides CUT_INTRO and the story
+    /// scenes), read from the scripts themselves in `generated/` and `generated/racestart/`; scene_audio gives the
+    /// arrest's CUT_COP_ARREST.
     #[test]
     #[ignore]
     fn scene_audio_from_the_scripts() {
         let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "../extracted/cache".into());
         let dir = Path::new(&data).join("script_obj/game/CineScripts/generated");
         let mut named: Vec<String> = Vec::new();
-        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+        let files = std::fs::read_dir(&dir).unwrap().chain(std::fs::read_dir(dir.join("racestart")).unwrap()).flatten();
+        for e in files {
             let Ok(b) = std::fs::read(e.path()) else { continue };
             let Ok(sco) = mcla_formats::sco::decode(&b) else { continue };
             let strs = sco.strings(3);
-            let Some(scene) = strs.iter().filter_map(|s| s.trim().strip_prefix("cutscene/")).find(|s| !s.contains('/')).map(str::to_string) else { continue };
-            if strs.iter().any(|s| s.trim() == scene.to_ascii_uppercase()) && scene != "cut_intro" {
+            // (the raw string scan keeps the bytes before a string when they are printable: the script's header and
+            // the push's length byte for 33 - 126 characters)
+            let scene = strs.iter().filter_map(|s| s.find("cutscene/").map(|i| &s[i + 9..])).find(|s| !s.contains('/') || (s.starts_with("racestart/") && s.matches('/').count() == 1));
+            let Some(scene) = scene.map(|s| s.rsplit('/').next().unwrap().to_string()) else { continue };
+            let up = scene.to_ascii_uppercase();
+            if strs.iter().any(|s| s.ends_with(&up) && s.len() <= up.len() + 1) && scene != "cut_intro" {
                 named.push(scene);
             }
         }
