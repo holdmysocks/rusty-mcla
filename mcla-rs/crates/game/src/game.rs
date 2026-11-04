@@ -3168,6 +3168,33 @@ impl Game {
         self.reward_panel = money > 0 || rep > 0 || self.mc4_rewards_listed();
     }
 
+    /// The player's line at the race's end (the include RaceOver.sch's EndOfRaceSequence, alike in all 50 scripts that
+    /// call it, always with its speech argument 1): a time trial, a delivery or a payback (event kinds 2, 6, 7) WIN, or
+    /// LOSE with bFailure; any other race WIN in first place, CLOSE in second within 300 ms of the winner's time
+    /// (Race_GetWinningTime), else LOSE. WIN and CLOSE say nothing in a delivery race (the current race's type 4:
+    /// F-64589, F-88148); LOSE has no gate (F-77215). None: nothing is said.
+    pub fn end_race_speech(&self) -> Option<&'static str> {
+        let kind = self.race.as_ref().map(|r| r.kind);
+        let failure = match kind {
+            Some(RaceKind::Delivery) | Some(RaceKind::Payback) => Some(self.race.as_ref().map_or(false, |r| r.failed.is_some())),
+            _ => self.career.tt_last.map(|beaten| !beaten),
+        };
+        let g = match failure {
+            Some(true) => "LOSE",
+            Some(false) => "WIN",
+            None => {
+                let res = &self.last_results;
+                let ms = |t: Option<f32>| t.map(|t| (t as f64 * 1000.0).round() as i64);
+                match res.iter().position(|r| r.0.starts_with("YOU")) {
+                    Some(0) => "WIN",
+                    Some(1) if matches!((ms(res[0].1), ms(res[1].1)), (Some(a), Some(b)) if b - a <= 300) => "CLOSE",
+                    _ => "LOSE",
+                }
+            }
+        };
+        (g == "LOSE" || kind != Some(RaceKind::Delivery)).then_some(g)
+    }
+
     /// Pay out a finished race: `place` is 1-based.
     pub fn award_race(&mut self, place: usize, field: usize) {
         // (the event's results: MISSION RESULTS has its turn after REWARDS)
@@ -15137,6 +15164,41 @@ mod tests {
         g.goal_attack = true;
         g.race = Some(super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() });
         assert!(g.ro_grey(9) && g.ro_grey(13) && g.ro_grey(0) && !g.ro_grey(2) && !g.ro_grey(12) && !g.ro_grey(24));
+    }
+
+    /// RaceOver.sch's EndOfRaceSequence (50 scripts alike) with F-64589 / F-88148 / F-77215
+    #[test]
+    fn end_race_speech_is_the_originals() {
+        let mut g = Game::new(Vec::new(), 0);
+        let r = |n: &str, t: Option<f32>| (n.to_string(), t);
+        g.last_results = vec![r("YOU (X)", Some(60.0)), r("B", Some(61.0))];
+        assert_eq!(g.end_race_speech(), Some("WIN"));
+        g.last_results = vec![r("A", Some(60.0)), r("YOU (X)", Some(60.3))];
+        assert_eq!(g.end_race_speech(), Some("CLOSE"));
+        g.last_results = vec![r("A", Some(60.0)), r("YOU (X)", Some(60.301))];
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        g.last_results = vec![r("A", Some(60.0)), r("B", Some(60.1)), r("YOU (X)", Some(60.2))];
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        // (a time trial: its target beaten or not, whatever the place)
+        g.last_results = vec![r("YOU (X)", Some(90.0))];
+        g.career.tt_last = Some(false);
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        g.career.tt_last = Some(true);
+        assert_eq!(g.end_race_speech(), Some("WIN"));
+        g.career.tt_last = None;
+        // (a delivery: WIN is not said in a delivery race, LOSE is; a payback says both)
+        let mut race = super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Delivery, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() };
+        g.race = Some(race.clone());
+        assert_eq!(g.end_race_speech(), None);
+        race.failed = Some("TIME");
+        g.race = Some(race.clone());
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        race.kind = super::RaceKind::Payback;
+        g.race = Some(race.clone());
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        race.failed = None;
+        g.race = Some(race);
+        assert_eq!(g.end_race_speech(), Some("WIN"));
     }
 
     #[test]

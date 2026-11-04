@@ -711,20 +711,14 @@ impl Sound {
             self.count_tick = 0;
             self.count_stage = -1;
         }
-        // the race's end: the player's voice (race core 0x422e62e2: 1st win, 2nd within 0.3 s close, else lose), then
-        // the ENDRACE mixer, whose own sound is the sting (AudioManager_SetActiveEndRace)
+        // the race's end: the player's voice (`Game::end_race_speech`), then the ENDRACE mixer, whose own sound is
+        // the sting (AudioManager_SetActiveEndRace)
         let ended = game.race_end_t.is_some();
         if let Some(lib) = &mut self.lib {
             if ended && !self.end_race {
-                let res = &game.last_results;
-                let place = res.iter().position(|r| r.0.starts_with("YOU"));
-                let close = place == Some(1) && matches!((res.first().and_then(|r| r.1), res.get(1).and_then(|r| r.1)), (Some(a), Some(b)) if b - a <= 0.3);
-                let g = match place {
-                    Some(0) => "WIN",
-                    _ if close => "CLOSE",
-                    _ => "LOSE",
-                };
-                lib.play(&format!("PLAYER_ENDRACE_GESTURE_{g}_MASTER"), crate::sndobj::Req::default());
+                if let Some(g) = game.end_race_speech() {
+                    lib.play(&format!("PLAYER_ENDRACE_GESTURE_{g}_MASTER"), crate::sndobj::Req::default());
+                }
             }
             lib.scene("DYNAMIC_MIXER_ENDRACE", game.race_end_t.is_some_and(|t| t >= 0.2));
         }
