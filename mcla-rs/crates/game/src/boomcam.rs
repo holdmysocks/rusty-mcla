@@ -1173,21 +1173,30 @@ impl TrackTune {
         let car = crate::catalog::camera_car(car);
         // (a mod car: its own file, then its manifest's camera donor - modfs.rs)
         let text = crate::modfs::car_camera_text(data_dir, car, "_cinematic.camtrackcs", crate::modfs::Donor::Cameras)?;
-        let (b, e) = (track_block(&text, None), track_block(&text, Some(event)));
-        if e.is_empty() {
-            return None;
-        }
+        Some(Self::from_text(&text, event))
+    }
+
+    /// One event of a `<car>_cinematic.camtrackcs` text (its base block and the event's own block).
+    pub fn from_text(text: &str, event: &str) -> TrackTune {
+        // The 18 event records are always there (F-87722 builds them; F-91063, the record's constructor,
+        // gives each its values); F-68099 registers the 16 keys of an event block, so a key or a whole block
+        // the file leaves out keeps the constructor's value: BlendTime 0.7, ReturnTime 0, TrackTo (0, 1, 0.5),
+        // Offset (0, 0, 2), ApproachOn 1, AppXRot 10, RevAppXZPos 10, Min/MaxAppXZPos 4 / 9, Min/MaxAppYPos
+        // 10 / 10, Min/MaxFOV 40 / 60, DistScale 0.8, DistMin / DistMax 2 / 5 (dumped from the original's code
+        // run offline, docs/reference/cameras/verify_cameras_offline.md). On the disc 8 cars' files have no
+        // Damageout block and the police Caprice's none for TwoWheelSide / TwoWheelUp: those run on these values.
+        let (b, e) = (track_block(text, None), track_block(text, Some(event)));
         let f = |m: &HashMap<String, Vec<f32>>, k: &str, d: f32| m.get(k).and_then(|v| v.first()).copied().unwrap_or(d);
-        let v = |m: &HashMap<String, Vec<f32>>, k: &str| m.get(k).filter(|v| v.len() >= 3).map_or(Vec3::ZERO, |v| Vec3::new(v[0], v[1], v[2]));
-        let x_rot = f(&e, "AppXRot", 0.0);
-        Some(TrackTune {
-            blend: f(&e, "BlendTime", f(&b, "BlendTime", 0.7)),
+        let v = |m: &HashMap<String, Vec<f32>>, k: &str, d: Vec3| m.get(k).filter(|v| v.len() >= 3).map_or(d, |v| Vec3::new(v[0], v[1], v[2]));
+        let x_rot = f(&e, "AppXRot", 10.0);
+        TrackTune {
+            blend: f(&e, "BlendTime", 0.7),
             ret: f(&e, "ReturnTime", 0.0),
-            track: v(&e, "TrackTo"),
-            offset: v(&e, "Offset"),
-            dist: (f(&e, "DistMin", 0.0), f(&e, "DistMax", 0.0)),
-            dist_scale: f(&e, "DistScale", 1.0),
-            fov: (f(&e, "MinFOV", 50.0), f(&e, "MaxFOV", 50.0)),
+            track: v(&e, "TrackTo", Vec3::new(0.0, 1.0, 0.5)),
+            offset: v(&e, "Offset", Vec3::new(0.0, 0.0, 2.0)),
+            dist: (f(&e, "DistMin", 2.0), f(&e, "DistMax", 5.0)),
+            dist_scale: f(&e, "DistScale", 0.8),
+            fov: (f(&e, "MinFOV", 40.0), f(&e, "MaxFOV", 60.0)),
             app_rot: f(&b, "AppRot", 60.0),
             app_x_rot: if x_rot != 0.0 { x_rot } else { f(&b, "AppRot", 60.0) },
             app_app: f(&b, "AppApp", 0.7),
@@ -1195,9 +1204,9 @@ impl TrackTune {
             look_at: f(&b, "LookAt", 1.0),
             ss_speed: (f(&b, "SSSpeedMin", 0.0), f(&b, "SSSpeedMax", 50.0)),
             ss_filter: f(&b, "SSFilter", 0.1),
-            app_xz: (f(&e, "MinAppXZPos", 0.0), f(&e, "MaxAppXZPos", 0.0)),
-            app_y: (f(&e, "MinAppYPos", 0.0), f(&e, "MaxAppYPos", 0.0)),
-            rev_app_xz: f(&e, "RevAppXZPos", 0.0),
+            app_xz: (f(&e, "MinAppXZPos", 4.0), f(&e, "MaxAppXZPos", 9.0)),
+            app_y: (f(&e, "MinAppYPos", 10.0), f(&e, "MaxAppYPos", 10.0)),
+            rev_app_xz: f(&e, "RevAppXZPos", 10.0),
             app_speed: if event == "Hydraulics" { (2.0, 10.0) } else { (10.0, 25.0) },
             app_inc: f(&b, "AppInc", 3.0),
             app_dec: f(&b, "AppDec", 8.0),
@@ -1209,7 +1218,7 @@ impl TrackTune {
             collide_type: f(&b, "CollideType", 1.0) as i32,
             collide_min: f(&b, "CollideMinDist", 2.0),
             near: { let n = f(&b, "CameraNear", 0.2); if n > 0.0 { n } else { 0.2 } },
-        })
+        }
     }
 }
 
@@ -2654,6 +2663,49 @@ mod tests {
     }
 
     use super::*;
+
+    /// The event record's values where a file leaves a key or the whole block out: the original's record
+    /// constructor F-91063 and the key table of F-68099, both run offline (work/cameras2/close/ev_fields.py;
+    /// words as decimal). A block-less event and an empty block give the constructor's words bit for bit.
+    #[test]
+    fn missing_event_keys_take_the_record_constructor() {
+        let text = "camTrackCS {
+  AppRot 60
+  Tuck {
+  }
+}
+";
+        for ev in ["Damageout", "Tuck"] {
+            let t = TrackTune::from_text(text, ev);
+            let mut n = 0;
+            for line in include_str!("testdata/cam_event_record_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+                let w: Vec<&str> = line.split_whitespace().collect();
+                let want: Vec<u32> = w[3..].iter().map(|s| s.parse().unwrap()).collect();
+                let got: Vec<u32> = match w[0] {
+                    "BlendTime" => vec![t.blend.to_bits()],
+                    "ReturnTime" => vec![t.ret.to_bits()],
+                    "TrackTo" => [t.track.x, t.track.y, t.track.z].map(f32::to_bits).to_vec(),
+                    "Offset" => [t.offset.x, t.offset.y, t.offset.z].map(f32::to_bits).to_vec(),
+                    "ApproachOn" => vec![t.approach_on as u32],
+                    "DistMin" => vec![t.dist.0.to_bits()],
+                    "DistMax" => vec![t.dist.1.to_bits()],
+                    "AppXRot" => vec![t.app_x_rot.to_bits()],
+                    "RevAppXZPos" => vec![t.rev_app_xz.to_bits()],
+                    "MinAppXZPos" => vec![t.app_xz.0.to_bits()],
+                    "MaxAppXZPos" => vec![t.app_xz.1.to_bits()],
+                    "MinAppYPos" => vec![t.app_y.0.to_bits()],
+                    "MaxAppYPos" => vec![t.app_y.1.to_bits()],
+                    "MinFOV" => vec![t.fov.0.to_bits()],
+                    "MaxFOV" => vec![t.fov.1.to_bits()],
+                    "DistScale" => vec![t.dist_scale.to_bits()],
+                    k => panic!("key {k} not mapped"),
+                };
+                assert_eq!(got, want, "{ev} {line}");
+                n += 1;
+            }
+            assert_eq!(n, 16);
+        }
+    }
 
     /// Lines of `<name>` rows of the original's reference run (`work/triage-cameras/verify/b1.py`
     /// runs the recompiled functions on `ref/b1_cases.txt`; `MCLA_CAMERA_REF_DIR` = its `ref` folder).
