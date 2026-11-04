@@ -678,6 +678,10 @@ impl Aiv {
     pub fn line_used_up(&self) -> bool {
         self.progress >= self.ln.pts.end()
     }
+    /// the line's progress (+30784), the point ring's base (+26480) and count (+26472)
+    pub fn line_ring(&self) -> (i32, i32, i32) {
+        (self.progress, self.ln.pts.base, self.ln.pts.count)
+    }
     /// F-28749: the first control point ahead of the car
     pub fn next_point(&self) -> Vec3 {
         self.ln.pts.get(self.progress)
