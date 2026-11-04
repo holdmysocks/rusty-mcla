@@ -687,9 +687,22 @@ pub const HOOKMAN_SETS: &[(&str, &str)] = &[
     ("GH_36", "drv_sc_mh_007_set"),
 ];
 
+/// The third argument of the same 41 calls, in HOOKMAN_SETS' order: the hookman's flash id (the phone's portrait,
+/// Sidekick_AppendData). 30, 31 (the gamer pictures) and 40 are skipped.
+pub const HOOKMAN_FLASH_IDS: &[i32] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 32, 33, 34,
+    35, 36, 37, 38, 39, 41, 42, 43,
+];
+
 /// mcCareer_GetHookmanCharacterSet(`id`).
 pub fn hookman_set(id: &str) -> Option<&'static str> {
     HOOKMAN_SETS.iter().find(|r| r.0.eq_ignore_ascii_case(id)).map(|r| r.1)
+}
+
+/// mcCareer_GetHookmanFlashId(`id`) (F-10700 -> F-59535: the record of the name's hash in the career's map, its id;
+/// 0 for a name never registered).
+pub fn hookman_flash_id(id: &str) -> i32 {
+    HOOKMAN_SETS.iter().position(|r| r.0.eq_ignore_ascii_case(id)).map_or(0, |i| HOOKMAN_FLASH_IDS[i])
 }
 
 /// The mover label of `scene`'s car slot `slot`.
@@ -726,6 +739,11 @@ mod tests {
         assert!(DRIVER_EVENTS.contains(&("cut_cop_walk_plyr_02", true, 0, 4.66667)));
         assert_eq!(slot_label("story/cut_story_race_gh_06", 1), Some("henry"));
         assert_eq!(hookman_set("GH_06"), Some("drv_mb_02_set"));
+        // the script's pushes (0x1529a945): GH_25 29, GH_26 32, GH_33 39, GH_34 41, GH_36 43; never registered 0
+        assert_eq!(HOOKMAN_FLASH_IDS.len(), HOOKMAN_SETS.len());
+        for (k, v) in [("SH_01", 0), ("sh_05", 4), ("GH_13", 17), ("GH_25", 29), ("GH_26", 32), ("GH_33", 39), ("GH_34", 41), ("GH_36", 43), ("GH_37", 0), ("", 0)] {
+            assert_eq!(hookman_flash_id(k), v, "{k}");
+        }
         assert_eq!(slot_label("racestart/cut_delivery_get_keys", 0), Some("delivery"));
         assert_eq!(driver_set("drv_mp_01_lod02_set", true, false), Some("drv_mp_01_set_h"));
         assert_eq!(driver_set("drv_mb_001_set", false, true), Some("drv_mb_001_mot_lod02_set"));

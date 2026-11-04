@@ -5167,14 +5167,15 @@ impl Game {
                 self.tip = if left > dt && !matches!(self.mode, Mode::MainMenu) { Some((title, body, left - dt)) } else { None };
             }
             if msg.is_some() || fp.is_active() {
-                // The caller's portrait. The frames run in the order of the career's hookman
-                // ids - SH_01..05 (Booke, Karol, Annie, Andrew, Hugo) = 0..4, GH_01..25 = 5..29,
-                // 30 and 31 the gamer pictures, GH_26.. = 32.. - checked on the reference capture
-                // (CHUNG HEE, GH_13, shows frame 17). A tip without a caller is the garage's
-                // Karol (approx.).
+                // The caller's portrait: the hookman's flash id (mcCareer_GetHookmanFlashId,
+                // the ids the career script registers - SH_01..05 (Booke, Karol, Annie, Andrew,
+                // Hugo) = 0..4, GH_01..25 = 5..29, GH_26..33 = 32..39, GH_34..36 = 41..43; 30 and
+                // 31 the gamer pictures) - checked on the reference capture (CHUNG HEE, GH_13,
+                // shows frame 17). The caller is found by his shown name; a tip without a caller
+                // is the garage's Karol (approx.).
                 let caller = msg.as_ref().map(|m| m.0.clone()).unwrap_or_default();
-                let by_name = (1..=5).map(|n| (format!("SH_{:02}", n), n - 1)).chain((1..=38).map(|n| (format!("GH_{:02}", n), if n <= 25 { n + 4 } else { n + 6 }))).find(|(k, _)| self.career.strings.get(k).map_or(false, |v| v.eq_ignore_ascii_case(&caller)));
-                let icon = std::env::var("MCLA_PHONE_ICON").ok().and_then(|v| v.parse().ok()).or(by_name.map(|x| x.1)).unwrap_or(1);
+                let by_name = crate::cinedriver::HOOKMAN_SETS.iter().find(|r| self.career.strings.get(r.0).map_or(false, |v| v.eq_ignore_ascii_case(&caller))).map(|r| crate::cinedriver::hookman_flash_id(r.0));
+                let icon = std::env::var("MCLA_PHONE_ICON").ok().and_then(|v| v.parse().ok()).or(by_name).unwrap_or(1);
                 let prompt = if msg.is_some() { self.phone_prompt.clone() } else { String::new() };
                 fp.drive(msg.as_ref().map(|(t, b)| (t.as_str(), b.as_str(), icon)), &prompt, hud.night, dt);
                 if let Some(scene) = crate::menu3d::read_scene(&mut fp.movie.player) {
