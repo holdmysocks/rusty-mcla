@@ -2140,9 +2140,12 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         }
     };
     r.kept = (v == 0.0 && ahead.j != usize::MAX).then(|| (ahead.j, env.others[ahead.j].pos));
-    // F-16850: go = green for the lane and the junction's box not held by anything but this car
-    // (`Blockers`); a refused car stops at the line as at red (and `waits` counts its demand)
-    let stop = signal_stop(env, r, pos).filter(|x| !(x.2 == 2 && !env.blockers.get(&x.3).is_some_and(|b| b.blocks(me)))).map(|x| (x.0, x.1));
+    // F-16850: go = green for the lane (or a car of the bIsProxy pool while the red light race byte is set) and the
+    // junction's box not held by anything but this car (`Blockers`); a refused car stops at the line as at red (and
+    // `waits` counts its demand)
+    let stop = signal_stop(env, r, pos)
+        .filter(|x| !crate::signals::light_go(x.2 == 2, r.ty.proxy, env.signals.red_light_race, || env.blockers.get(&x.3).is_some_and(|b| b.blocks(me))))
+        .map(|x| (x.0, x.1));
     // (entry 2: held where it is, its distance 0)
     let slower = (next_want <= v).then(|| {
         let end = nav.links[r.lane_end(nav)].b;
@@ -6398,7 +6401,8 @@ impl Vehicles {
         for nj in 0..nav.junction_centers.len() {
             let Some(ji) = signals_junction(&self.signals, nav, nj) else { continue };
             let j = &self.signals.junctions[ji];
-            if j.forced != -1 || j.timer + dt <= crate::signals::PHASE {
+            // (F-50959 is asked only past 10 s, and not while forced or the red light race byte holds the timer)
+            if j.forced != -1 || self.signals.red_light_race || j.timer + dt <= crate::signals::PHASE {
                 continue;
             }
             let lists = lists.get_or_insert_with(|| self.rail_lists(nav));

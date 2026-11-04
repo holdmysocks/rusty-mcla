@@ -751,6 +751,12 @@ impl Game {
             self.althk.rolling = None;
             return;
         }
+        // the red light race script, right after its warp to the start (Warper_TransitionTo 'REDLIGHT', WAIT(150)):
+        // RnIntersectionAmbient_SetRedLightRace(1), then Race_SetTimer(-7000) (Hollywood 0x51cd..0x520d; the same in
+        // all five `<district>_redlight_hk1`) - cleared at the go (`Game::update_race`)
+        if self.active_def.as_ref().map_or(false, |d| d.id == REDLIGHT_RACE_ID) {
+            vehicles.signals.red_light_race = true;
+        }
         let radius = self.althk.radius.max(1.0);
         if let Some(r) = self.race.as_mut() {
             r.cp_specs = r.checkpoints.iter().map(|c| crate::checkpoints::CpSpec::with_radius(*c, radius)).collect();

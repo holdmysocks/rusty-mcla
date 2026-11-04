@@ -76,19 +76,27 @@ fn level(v: Vec3) -> Vec3 {
 
 impl Junction {
     /// The arm a point (or, for `dir`, a direction from the centre) lies on.
+    /// F-97162: the largest dot product, the first of equals (strict `>` from -FLT_MAX); 0 when there is no arm (the
+    /// original gives -1 and its callers skip it).
     pub fn arm_towards(&self, dir: Vec3) -> usize {
         let d = level(dir);
-        (0..self.arms.len()).max_by(|a, b| self.arms[*a].dot(d).total_cmp(&self.arms[*b].dot(d))).unwrap_or(0)
+        let (mut best, mut at) = (f32::MIN, 0);
+        for (k, a) in self.arms.iter().enumerate() {
+            let x = a.dot(d);
+            if x > best {
+                best = x;
+                at = k;
+            }
+        }
+        at
     }
 
     /// State of an arm: 0 red, 1 yellow, 2 green. (`_t` is not used any more: the state is the
-    /// junction's own.)
+    /// junction's own.) Only the current arm and the timer count, as in the original's tests (F-23734 / F-23525 /
+    /// F-59460, the lane tests F-78185 / F-16432 and the lamp's F-83493 read J +160 / +164 only): a forced arm is green because `step` makes it current
+    /// with the timer at 0 every update, and is red all round while `step` holds the timer at 10 (a race's countdown,
+    /// the red light race flag).
     pub fn arm_state(&self, arm: usize, _t: f32) -> u8 {
-        match self.forced {
-            -2 => return 0,
-            f if f >= 0 => return if arm == f as usize { 2 } else { 0 },
-            _ => {}
-        }
         let (current, timer) = (self.current as usize, self.timer);
         if arm != current || timer >= GREEN + YELLOW {
             0
@@ -106,12 +114,9 @@ impl Junction {
     /// The car's own heading does not count: on a street that bends into the junction it can
     /// be far off the arm while the lane's first span still runs along it. 2 green, 1 yellow
     /// (the arm's yellow; traffic stops for it too), 0 red.
+    /// (Like `arm_state`, J +160 / +164 only: a forced arm through `step`.)
     pub fn lane_state(&self, entry: Vec3) -> u8 {
-        let (current, timer) = match self.forced {
-            -2 => return 0,
-            f if f >= 0 => (f as usize, 0.0),
-            _ => (self.current as usize, self.timer),
-        };
+        let (current, timer) = (self.current as usize, self.timer);
         match self.arms.get(current) {
             Some(a) if a.dot(level(entry)) > 0.9063 && timer < GREEN + YELLOW => {
                 if timer < GREEN {
@@ -137,6 +142,20 @@ pub struct Signals {
     grid: HashMap<(i32, i32), Vec<u32>>,
     /// (junction, arm) of every traffic car the light refused since the last step (`wait`)
     waiting: Vec<(u32, u8)>,
+    /// The red light race byte (F-12073 reads it): `RnIntersectionAmbient_SetRedLightRace(b)` (F-15914) stores
+    /// `b != 0`, `..._GetRedLightRace()` (F-71155) returns it; nothing else writes it (the reset F-35280 leaves it).
+    /// While set, `step` holds every junction red all round (before a forced arm) and a car of the bIsProxy pool
+    /// is let through a red light (`light_go`). The five `<district>_redlight_hk1` scripts set it to 1 right after
+    /// the warp to the start ('REDLIGHT', WAIT(150), then Race_SetTimer(-7000)) and to 0 once Race_GetTimer >= 0
+    /// (the go). Port: `Game::alt_after_start` and `Game::update_race`.
+    pub red_light_race: bool,
+}
+
+/// The riders' light (F-16850): may a car enter the junction lane? `green` = the lane's green test (F-78185, `lane_state`
+/// 2); a car of the bIsProxy pool (car +500 bit 0x20) goes on red too while the red light race byte is set (F-12073);
+/// then the box must not be held by anyone but itself (F-50959 with the car, asked only when it would go).
+pub fn light_go(green: bool, proxy: bool, red_light_race: bool, blocked: impl FnOnce() -> bool) -> bool {
+    (green || (proxy && red_light_race)) && !blocked()
 }
 
 const CELL: f32 = 96.0;
@@ -190,12 +209,14 @@ impl Signals {
             j.current = o.current;
             j.timer = o.timer;
         }
+        self.red_light_race = other.red_light_race;
     }
 
     /// One tick of every junction. `cars`: position and velocity of the cars on the road;
     /// `player`: the player's car; `race`: (countdown left, race clock) while there is a race.
     ///
-    /// Order as sub_8273ABC0: countdown -> red all round; forced red; forced arm (held green);
+    /// Order as F-86376: countdown -> red all round; forced red; the red light race byte -> red all round; forced
+    /// arm (held green);
     /// else the timer runs, and past 10 s the junction switches once its box is clear or 15 s
     /// are up - in the first 1.5 s of a race to the player's arm, otherwise to the arm with the
     /// largest demand, arm 0 if there is none.
@@ -214,8 +235,9 @@ impl Signals {
         if let Some((ji, pos, prio)) = demand {
             self.player_demand(ji, pos, prio);
         }
+        let red_light_race = self.red_light_race;
         for (ji, j) in self.junctions.iter_mut().enumerate() {
-            if race.map_or(false, |r| r.0 > 0.0) || j.forced == -2 {
+            if race.map_or(false, |r| r.0 > 0.0) || j.forced == -2 || red_light_race {
                 j.timer = PHASE;
                 continue;
             }
@@ -231,7 +253,17 @@ impl Signals {
             j.timer = 0.0;
             let next = match (race, player) {
                 (Some((_, clock)), Some((pos, _))) if clock < 1.5 => j.arm_towards(pos - j.center),
-                _ => (0..j.demand.len()).filter(|a| j.demand[*a] > 0).max_by_key(|a| j.demand[*a]).unwrap_or(0),
+                // (the first of the largest counters above 0, compared as signed words; 0 if none)
+                _ => {
+                    let (mut best, mut at) = (0i32, 0);
+                    for (k, &d) in j.demand.iter().enumerate() {
+                        if d as i32 > best {
+                            best = d as i32;
+                            at = k;
+                        }
+                    }
+                    at
+                }
             };
             j.current = next as u8;
             if let Some(c) = j.demand.get_mut(next) {
@@ -293,7 +325,7 @@ impl Signals {
         for (i, j) in out.iter().enumerate() {
             grid.entry(cell(j.center)).or_default().push(i as u32);
         }
-        (Signals { junctions: out, grid, waiting: Vec::new() }, of_head)
+        (Signals { junctions: out, grid, waiting: Vec::new(), red_light_race: false }, of_head)
     }
 
     /// sub_8273A540(J, pos, vel, 1, prio, hold = prio): the player adds demand to junction `ji`
@@ -339,7 +371,9 @@ impl Signals {
     pub fn wait(&mut self, ji: usize, pos: Vec3) {
         let Some(j) = self.junctions.get(ji) else { return };
         let off = Vec3::new(pos.x - j.center.x, 0.0, pos.z - j.center.z);
-        if off.length_squared() < j.reach * j.reach && !j.arms.is_empty() {
+        // (F-16850: dz * dz + dx * dx fused, against the reach squared)
+        let (dx, dz) = (j.center.x - pos.x, j.center.z - pos.z);
+        if dz.mul_add(dz, dx * dx) < j.reach * j.reach && !j.arms.is_empty() {
             self.waiting.push((ji as u32, j.arm_towards(off) as u8));
         }
     }
@@ -527,7 +561,8 @@ mod tests {
         assert!((0..4).all(|a| s.junctions[0].arm_state(a, 0.0) == 0));
     }
 
-    /// A car is on the arm behind it; a forced arm is held, forced red stops all.
+    /// A car is on the arm behind it; a forced arm is held (from the next step), forced red stops all, and so does
+    /// the red light race byte, before a forced arm.
     #[test]
     fn approach_arm_and_forcing() {
         let mut j = cross();
@@ -535,10 +570,71 @@ mod tests {
         // driving along -x towards the centre = coming in on the +x arm (arm 0)
         assert_eq!(j.state_for(-Vec3::X, 2.0), 2);
         assert_eq!(j.state_for(Vec3::X, 2.0), 0);
-        j.forced = 2;
+        let mut s = one();
+        s.junctions[0].forced = 2;
+        s.step(1.0 / 60.0, &[], None, None, None);
+        let j = &s.junctions[0];
         assert_eq!((j.state_for(Vec3::X, 2.0), j.state_for(-Vec3::X, 2.0)), (2, 0));
-        j.forced = -2;
-        assert!((0..4).all(|a| j.arm_state(a, 2.0) == 0));
+        s.red_light_race = true;
+        s.step(1.0 / 60.0, &[], None, None, None);
+        assert!((0..4).all(|a| s.junctions[0].arm_state(a, 2.0) == 0), "the red light race byte: red all round");
+        s.red_light_race = false;
+        s.step(1.0 / 60.0, &[], None, None, None);
+        assert_eq!(s.junctions[0].arm_state(2, 2.0), 2, "the forced arm again");
+        s.junctions[0].forced = -2;
+        s.step(1.0 / 60.0, &[], None, None, None);
+        assert!((0..4).all(|a| s.junctions[0].arm_state(a, 2.0) == 0));
+    }
+
+    /// F-86376 and F-16850 run whole on the original's generated code with the red light race byte set by its native
+    /// F-15914 (`tools/red_light_race_reference.py`): the junction update - current arm, timer and demand words - and
+    /// the riders' light - go and the demand words - equal for every case, the byte on and off.
+    #[test]
+    fn red_light_race_matches_the_original() {
+        let text = include_str!("testdata/red_light_race_ref.txt");
+        let h = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let f = |w: &str| f32::from_bits(h(w));
+        let mut n = [0usize; 4];
+        for l in text.lines() {
+            let (case, out) = l.split_once(" -> ").unwrap();
+            let c: Vec<&str> = case.split(' ').collect();
+            let o: Vec<u32> = out.split(' ').map(h).collect();
+            let k = h(c[1]) as usize;
+            let w = &c[1..];
+            let arms: Vec<Vec3> = (0..k).map(|a| Vec3::new(f(w[1 + 2 * a]), 0.0, f(w[2 + 2 * a]))).collect();
+            let center = Vec3::new(f(w[9]), f(w[10]), f(w[11]));
+            let junction = |reach: f32, demand: Vec<u32>| Junction { center, arms: arms.clone(), radius: 12.0, reach, forced: -1, current: 0, timer: 0.0, demand };
+            if c[0] == "s" {
+                let mut j = junction(12.0, (0..k).map(|a| h(w[21 + a])).collect());
+                j.current = h(w[12]) as u8;
+                j.timer = f(w[13]);
+                j.forced = if h(w[15]) != 0 { -2 } else { h(w[14]) as i32 as i8 };
+                let flag = h(w[16]) != 0;
+                let clock = h(w[18]) as i32;
+                let race = (h(w[17]) != 0).then(|| if clock < 0 { (-clock as f32 / 1000.0, 0.0) } else { (0.0, clock as f32 / 1000.0) });
+                let mut s = Signals { junctions: vec![j], red_light_race: flag, ..Default::default() };
+                let player = Vec3::new(f(w[25]), f(w[26]), f(w[27]));
+                s.step(f(w[20]), &[h(w[19]) != 0], None, Some((player, Vec3::ZERO)), race);
+                let j = &s.junctions[0];
+                let mut got = vec![j.current as u32, j.timer.to_bits()];
+                got.extend((0..4).map(|a| j.demand.get(a).copied().unwrap_or(0)));
+                assert_eq!(got, o, "{l}");
+                n[flag as usize] += 1;
+            } else {
+                let mut s = Signals { junctions: vec![junction(f(w[12]), (0..k).map(|a| h(w[17 + a])).collect())], ..Default::default() };
+                let flag = h(w[15]) != 0;
+                let go = light_go(h(w[13]) != 0, h(w[14]) & 0x20 != 0, flag, || h(w[16]) != 0);
+                if !go {
+                    s.wait(0, Vec3::new(f(w[21]), f(w[22]), f(w[23])));
+                    s.step(0.0, &[], None, None, None);
+                }
+                let mut got = vec![go as u32];
+                got.extend((0..4).map(|a| s.junctions[0].demand.get(a).copied().unwrap_or(0)));
+                assert_eq!(got, o, "{l}");
+                n[2 + flag as usize] += 1;
+            }
+        }
+        assert!(n.iter().all(|&k| k >= 900), "{n:?}");
     }
 
     /// The original's lane test (sub_8273A178): the lane's first span (P0 - P1) within 25
@@ -556,7 +652,9 @@ mod tests {
         assert_eq!(j.lane_state(at(0.0)), 1);
         j.timer = 8.6;
         assert_eq!(j.lane_state(at(0.0)), 0);
-        j.forced = 1;
+        // (a forced arm: `step` makes it current with the timer at 0)
+        j.current = 1;
+        j.timer = 0.0;
         assert_eq!((j.lane_state(Vec3::Z), j.lane_state(Vec3::X)), (2, 0));
     }
 

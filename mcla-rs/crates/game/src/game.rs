@@ -4017,6 +4017,9 @@ impl Game {
         }
         let Some(race) = self.race.as_mut() else {
             vehicles.grid_hold = None;
+            // (no race: the red light race byte goes too - the port's choice for a race left before its go; the
+            // script's own way out of its wait for the go was not traced)
+            vehicles.signals.red_light_race = false;
             return false;
         };
         if race.countdown > 0.0 {
@@ -4025,6 +4028,9 @@ impl Game {
                 // the go: the race core's Racer_Activate on every racer (OrderedCheckpointCore 0x15ee, after
                 // BrainRacing_BeginRace) - F-76651(racer, 0) -> F-30391(0): a racestart scene's engine_off ends here
                 if race.countdown <= 0.0 {
+                    // the red light race script's RnIntersectionAmbient_SetRedLightRace(0) once Race_GetTimer >= 0
+                    // (`<district>_redlight_hk1`, Hollywood 0x5e93; only that script sets the byte)
+                    vehicles.signals.red_light_race = false;
                     if let Some(c) = vehicles.player_mut() {
                         c.engine_off = false;
                         c.deactivated = false;
