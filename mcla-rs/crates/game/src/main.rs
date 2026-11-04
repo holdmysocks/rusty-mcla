@@ -144,6 +144,7 @@ mod aiv;
 mod tcp_rail;
 mod brain;
 mod brainpath;
+mod cruising;
 mod brainturn;
 mod vehicle_model;
 mod vehicles;

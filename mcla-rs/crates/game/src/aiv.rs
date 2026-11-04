@@ -403,7 +403,7 @@ fn norm0(v: Vec3) -> Vec3 {
 }
 
 /// F-52074: signed XZ angle between two unit vectors.
-fn ang_xz_unit(a: Vec3, b: Vec3) -> f32 {
+pub(crate) fn ang_xz_unit(a: Vec3, b: Vec3) -> f32 {
     let dot = fma(a.x, b.x, b.z * a.z);
     let s = fms(b.x, a.z, a.x * b.z);
     acos32(dot) * if s >= 0.0 { 1.0 } else { -1.0 }
