@@ -1096,9 +1096,10 @@ impl Gpu {
         xs::load(&crate::hooks::get().map(|r| r.data.path.clone()).unwrap_or_else(|| std::path::PathBuf::from(".")));
         // Vulkan when the driver has it, else DX12; settings.toml display.backend = "vulkan" / "dx12" takes that one (issue
         // #12: to compare the two on a card where the game is slow); WGPU_BACKEND=dx12 etc.: a test hook over both.
-        // On DX12 the instance is made again with InstanceFlags::DEBUG, which is what makes wgpu compile with FXC's
-        // optimiser off (/Od): that optimiser recurses without end on city.wgsl's fs_main and overflows any stack
-        // (docs/LIGHTING.md, 2026-10-24). The driver still optimises the program; Vulkan is untouched.
+        // On DX12 the programs go through DXC, linked into the exe: FXC (wgpu's default) needed its optimiser off (/Od)
+        // not to recurse without end on city.wgsl's fs_main (docs/LIGHTING.md, 2026-10-24), and even so took 86 s and
+        // more a city pipeline, the start-up movie's LOADING waiting minutes for them (GitHub #33). With
+        // WGPU_DX12_COMPILER=fxc (a test hook) the instance is still made again with InstanceFlags::DEBUG for that /Od.
         let mut backends = wgpu::Backends::from_env().unwrap_or(match crate::hooks::display().backend {
             mcla_config::Backend::Auto => wgpu::Backends::PRIMARY,
             mcla_config::Backend::Vulkan => wgpu::Backends::VULKAN,
@@ -1113,10 +1114,12 @@ impl Gpu {
                 if dx12_od {
                     flags |= wgpu::InstanceFlags::DEBUG;
                 }
+                let shader_compiler = wgpu::Dx12Compiler::StaticDxc.with_env();
+                let fxc = matches!(shader_compiler, wgpu::Dx12Compiler::Fxc);
                 let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
                     backends: if dx12_od { wgpu::Backends::DX12 } else { backends },
                     flags,
-                    ..Default::default()
+                    backend_options: wgpu::BackendOptions { dx12: wgpu::Dx12BackendOptions { shader_compiler }, ..Default::default() },
                 });
                 let surface = instance.create_surface(window.clone()).context("create surface")?;
                 // (test hook MCLA_ADAPTER=<part of a name>: that GPU instead of the high-performance one - a second card or
@@ -1145,7 +1148,7 @@ impl Gpu {
                         .await
                         .context("no suitable GPU adapter")?,
                 };
-                if adapter.get_info().backend == wgpu::Backend::Dx12 && !dx12_od && !flags.contains(wgpu::InstanceFlags::DEBUG) {
+                if fxc && adapter.get_info().backend == wgpu::Backend::Dx12 && !dx12_od && !flags.contains(wgpu::InstanceFlags::DEBUG) {
                     dx12_od = true;
                     continue;
                 }
@@ -1844,7 +1847,7 @@ impl Gpu {
         let identity_obj = make_object_binding(&device, &obj_layout, &ObjectUniform::default(), &blank_dmg);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("city"),
-            source: wgpu::ShaderSource::Wgsl(paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat()).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
+            source: wgpu::ShaderSource::Wgsl(xs::split_consts(&paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat())).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("city pl"),
@@ -2285,7 +2288,7 @@ impl Gpu {
         // the wet road's planar reflection: the far models mirrored, the dome mirrored behind
         let refl_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("road reflection"),
-            source: wgpu::ShaderSource::Wgsl([include_str!("refl.wgsl"), xs::text("xs_sky.wgsl"), xs::text("xs_sky_cheap.wgsl")].concat().into()),
+            source: wgpu::ShaderSource::Wgsl(xs::split_consts(&[include_str!("refl.wgsl"), xs::text("xs_sky.wgsl"), xs::text("xs_sky_cheap.wgsl")].concat()).into()),
         });
         let refl_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("road reflection"),

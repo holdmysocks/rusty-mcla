@@ -7,6 +7,7 @@
 //! Vector-unit steps flush denormals in and out (the SDK's flush mode), their multiply-add is two
 //! roundings and the three-lane dot is (0 + z z) + (y y + x x); scalar `fmadds` is fused.
 //! Decode and evidence: docs/reference/people/tcp_rail_rule.md (tools/tcp_rail_reference.py).
+#![allow(dead_code)] // (the traffic rails move onto it next)
 use crate::physics::exact::{fma, fms, guest_asin, guest_cos, guest_sin};
 use glam::Vec3;
 
@@ -50,37 +51,6 @@ fn rsq(x: f32) -> f32 {
     let y = if y0 == f32::INFINITY { 0.0 } else { y0 };
     let e = -ftz(ftz(x * ftz(y * y)) - 1.0);
     ftz(ftz(e * ftz(0.5 * y)) + y)
-}
-
-/// The vector unit's normalisation (the rails' builders, F-26466, F-45519 and the follower): v x k, k from the
-/// three-lane dot as `rsq` has it.
-pub(crate) fn vnorm(v: Vec3) -> Vec3 {
-    vmap(v, Vec3::splat(rsq(vdot(v))), |x, y| x * y)
-}
-
-/// vmaddfp a x splat(k) + c (the product rounded, then the sum).
-pub(crate) fn vmadd3(a: Vec3, k: f32, c: Vec3) -> Vec3 {
-    vmadd(a, k, c)
-}
-
-/// The vector unit's sum.
-pub(crate) fn vadd3(a: Vec3, b: Vec3) -> Vec3 {
-    vadd(a, b)
-}
-
-/// The vector unit's a x splat(k).
-pub(crate) fn vmul3(a: Vec3, k: f32) -> Vec3 {
-    vmap(a, Vec3::splat(k), |x, y| x * y)
-}
-
-/// The y of a x b as the vector unit has it (vpermwi / vnmsubfp): a.x b.z - a.z b.x, each product rounded.
-pub(crate) fn cross_y(a: Vec3, b: Vec3) -> f32 {
-    ftz(ftz(ftz(a.x) * ftz(b.z)) - ftz(ftz(a.z) * ftz(b.x)))
-}
-
-/// The vector unit's difference (denormals flushed).
-pub(crate) fn vdiff(a: Vec3, b: Vec3) -> Vec3 {
-    vsub(a, b)
 }
 
 /// F-57591: rotation about y.
@@ -234,7 +204,6 @@ impl TcpRail {
     }
 
     /// F-65534: |a1| + |a2|.
-    #[allow(dead_code)]
     pub(crate) fn total_turn(&self) -> f32 {
         self.a1.abs() + self.a2.abs()
     }

@@ -95,7 +95,7 @@ impl SkyHat {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky hat"),
-            source: wgpu::ShaderSource::Wgsl([include_str!("sky_hat.wgsl"), super::xs::text("xs_sky.wgsl"), super::xs::text("xs_sky_env.wgsl")].concat().into()),
+            source: wgpu::ShaderSource::Wgsl(super::xs::split_consts(&[include_str!("sky_hat.wgsl"), super::xs::text("xs_sky.wgsl"), super::xs::text("xs_sky_env.wgsl")].concat()).into()),
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sky hat"),
@@ -144,7 +144,7 @@ impl SkyHat {
         let pipeline_env = make_v(device, super::ms::PLAIN, "fs_hat_env");
         let perlin_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky perlin"),
-            source: wgpu::ShaderSource::Wgsl([include_str!("sky_perlin.wgsl"), super::xs::text("xs_perlin.wgsl")].concat().into()),
+            source: wgpu::ShaderSource::Wgsl(super::xs::split_consts(&[include_str!("sky_perlin.wgsl"), super::xs::text("xs_perlin.wgsl")].concat()).into()),
         });
         let perlin_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sky perlin"),
@@ -169,7 +169,7 @@ impl SkyHat {
         });
         let mini_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky mini"),
-            source: wgpu::ShaderSource::Wgsl([include_str!("sky_mini.wgsl"), super::xs::text("xs_minisky.wgsl")].concat().into()),
+            source: wgpu::ShaderSource::Wgsl(super::xs::split_consts(&[include_str!("sky_mini.wgsl"), super::xs::text("xs_minisky.wgsl")].concat()).into()),
         });
         let pipeline_mini = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sky mini"),

@@ -11,7 +11,6 @@
 use super::Vehicles;
 use crate::physics::collision::WorldCollider;
 use glam::{Quat, Vec2, Vec3};
-use crate::tcp_rail::TcpRail;
 use mcla_formats::rage::navsys::{LaneCurve, NavSys, RegionRect, DEFAULT_ROAD_SPEED};
 
 const MPH: f32 = 0.44704;
@@ -22,9 +21,9 @@ const STOP_SPEED: f32 = 0.22352;
 /// Occluders are taken within 400 m of the focus, as the pedestrian spawner's (peds.rs
 /// `OCC_RANGE_SCALE`).
 pub(super) const OCC_RANGE: f32 = crate::occluder::RANGE * 10.0;
-/// The recovery and rejoin rails' largest single turn (140 degrees, the image's 2.44346 word) and the passing rail's (130 degrees).
-const RAIL_TURN: f32 = f32::from_bits(0x401C_61AA);
-const PASS_TURN: f32 = f32::from_bits(0x4011_361E);
+/// The recovery rail's largest turn (2.44346 rad) and the passing rail's (130 degrees).
+const RAIL_TURN: f32 = 2.44346;
+const PASS_TURN: f32 = 2.26893;
 /// The semi trailers (0x8282BDDC); a cab draws one of them.
 pub const TRAILERS: [&str; 5] = ["va_semitruck_00_trailer", "va_semitruck_00_tanker", "va_semitruck_00_flatbed", "va_semitruck_00_flatloaded", "va_semitruck_dub1_00_trailer"];
 /// The "hitch" bones (F-19769): the cab's and every trailer's; the model's front is -z.
@@ -444,6 +443,22 @@ impl Lanes {
         Lanes { links, len }
     }
 
+    /// The point and direction `s` metres along a lane, and the link and metres along it.
+    fn at(&self, nav: &NavSys, lane: usize, mut s: f32) -> (Vec3, Vec3, usize, f32) {
+        let ls = &self.links[lane];
+        for (i, &k) in ls.iter().enumerate() {
+            let l = &nav.links[k];
+            if s <= l.len || i + 1 == ls.len() {
+                let s = s.clamp(0.0, l.len);
+                let t = s / l.len.max(1e-3);
+                return (l.a + (l.b - l.a) * t, l.tangent_at(t), k, s);
+            }
+            s -= l.len;
+        }
+        (Vec3::ZERO, Vec3::NEG_Z, 0, 0.0)
+    }
+
+    /// Metres along the lane of the point nearest to `p`.
     fn project(&self, nav: &NavSys, lane: usize, p: Vec3) -> f32 {
         let (mut best, mut s0, mut at) = (f32::MAX, 0.0, 0.0);
         for &k in &self.links[lane] {
@@ -487,217 +502,152 @@ pub fn lanes(nav: &NavSys) -> &'static Lanes {
     L.get_or_init(|| Lanes::build(nav))
 }
 
-/// A rail off the lanes (recovery, passing, rejoin, backing up, a race path's join rail): one of the
-/// original's dynamic rail classes, ridden by phase as the follower rides them (F-50894: slot 6 with the step
-/// speed x dt, negated on a reverse rail), posed by the class's point and derivative (slot 9).
-#[derive(Clone, Debug)]
-pub enum Geom {
-    /// mcRailAmbientTCP, the arc-line-arc rail (`tcp_rail.rs`): slot 6 F-70353 (the curve speed not used), slot 9
-    /// F-31489 (its lateral output 0 goes to the follower's curve speed +180), slot 10 F-28568
-    Tcp(TcpRail),
-    /// mcRailAmbientDynamic, a B-spline with the lane curve's functions: slot 6 F-77217 (`LaneCurve::advance`),
-    /// slot 9 F-42884, slot 10 F-26650 (`LaneCurve::eval(p).1`)
-    Curve(LaneCurve),
-}
-
+/// A rail off the lanes (recovery, passing, backing up): points every half metre, the
+/// distance to each, the rail's speed and the lane it ends on.
 #[derive(Clone, Debug)]
 pub struct Path {
-    pub geom: Geom,
-    /// the rail's speed (slot 17, rail +304: set by the pool's slot 23 when the builder takes the rail)
+    pts: Vec<Vec3>,
+    cum: Vec<f32>,
     pub speed: f32,
-    /// the lane and phase the car goes on along at the rail's end (the attach F-70405's holder +12 / +24)
+    /// the link and metres along it where the car goes on along its lane
     end: Option<(usize, f32)>,
-    /// ridden backwards (the attach's reverse bit: the step negated; the car faces against the rail)
+    /// ridden backwards (the car faces against the rail)
     reverse: bool,
-    /// the follower's phase (+176) and curve speed (+180; 0: taken anew from the curve at the phase)
-    pub t: f32,
-    ds: f32,
+    pub s: f32,
 }
 
 impl Path {
-    fn tcp(rail: TcpRail, speed: f32, end: Option<(usize, f32)>) -> Path {
-        Path { geom: Geom::Tcp(rail), speed, end, reverse: false, t: 0.0, ds: 0.0 }
+    fn new(pts: Vec<Vec3>, speed: f32, end: Option<(usize, f32)>) -> Path {
+        let mut cum = Vec::with_capacity(pts.len());
+        let mut d = 0.0;
+        for (i, p) in pts.iter().enumerate() {
+            if i > 0 {
+                d += p.distance(pts[i - 1]);
+            }
+            cum.push(d);
+        }
+        Path { pts, cum, speed, end, reverse: false, s: 0.0 }
     }
-
-    /// The rail's length (slot 20: F-62306 for the arc-line-arc rail; the curve's chord length otherwise).
     pub fn len(&self) -> f32 {
-        match &self.geom {
-            Geom::Tcp(q) => q.len(),
-            Geom::Curve(c) => c.length(),
+        self.cum.last().copied().unwrap_or(0.0)
+    }
+    /// The point and direction of travel `s` metres along.
+    fn at(&self, s: f32) -> (Vec3, Vec3) {
+        let n = self.pts.len();
+        if n < 2 {
+            return (self.pts.first().copied().unwrap_or(Vec3::ZERO), Vec3::NEG_Z);
         }
-    }
-
-    /// What is left of it: len - len x phase (the recovery's replace test F-99509, fused).
-    fn left(&self) -> f32 {
-        crate::physics::exact::fma(-self.len(), self.t, self.len())
-    }
-
-    /// The point and the derivative (slot 10) at phase `t`.
-    fn eval(&self, t: f32) -> (Vec3, Vec3) {
-        match &self.geom {
-            Geom::Tcp(q) => (q.point(t), q.tangent(t)),
-            Geom::Curve(c) => c.eval(t),
-        }
-    }
-
-    /// The point at phase `t` and the unit direction along the rail there.
-    fn at(&self, t: f32) -> (Vec3, Vec3) {
-        let (p, d) = self.eval(t);
-        (p, d.normalize_or(Vec3::NEG_Z))
-    }
-
-    /// Slot 6: the phase `d` metres on from `t` (the curve speed taken anew when unset).
-    fn advance(&self, t: f32, d: f32) -> f32 {
-        match &self.geom {
-            Geom::Tcp(q) => q.advance(t, d),
-            Geom::Curve(c) => LaneCurve::advance(t, d, if self.ds > 0.0 { self.ds } else { c.speed(t) }),
-        }
-    }
-
-    /// The pose the follower stores (F-74567 -> slot 9): the point and the unit derivative; the curve speed +180 is
-    /// the arc-line-arc rail's lateral output (0), or on a curve the mean of |dP/dt| here and the last value.
-    fn pose(&mut self) -> (Vec3, Vec3) {
-        let (p, d) = self.eval(self.t);
-        self.ds = match self.geom {
-            Geom::Tcp(_) => 0.0,
-            Geom::Curve(_) => {
-                let sp = d.length();
-                if self.ds > 0.0 { (sp + self.ds) * 0.5 } else { sp }
-            }
-        };
-        (p, d.normalize_or(Vec3::NEG_Z))
-    }
-
-    /// The follower's step (F-50894): the phase `d` metres on (back on a reverse rail); past 1 the metres left over,
-    /// (phase - 1) x d / max(phase - old, 1e-6).
-    fn step(&mut self, d: f32) -> Option<f32> {
-        if d > 0.0 {
-            let t0 = self.t;
-            self.t = self.advance(t0, if self.reverse { -d } else { d });
-            if self.t > 1.0 {
-                let moved = self.t - t0;
-                let k = if moved - 1e-6 >= 0.0 { moved } else { 1e-6 };
-                return Some(((self.t - 1.0) * d) / k);
-            }
-        }
-        None
-    }
-
-    /// The drawn steer's look (F-37033): slot 6 from the phase 0.4 x |hub z| on at the curve speed (+180), clamped
-    /// to 1; slot 10 there.
-    pub fn look(&self, hub_z: f32) -> Vec3 {
-        let p = match &self.geom {
-            Geom::Tcp(q) => q.advance(self.t, hub_z.abs() * 0.4),
-            Geom::Curve(_) => LaneCurve::advance(self.t, hub_z.abs() * 0.4, self.ds),
-        };
-        self.eval(steer_clamp(p)).1
-    }
-
-    /// Points along the rail about every half metre from phase `from` (the sweep and the car-ahead search).
-    fn pts(&self, from: f32) -> Vec<Vec3> {
-        let n = ((self.len() * (1.0 - from).max(0.0)) / 0.5).ceil().clamp(1.0, 4000.0) as usize;
-        (0..=n).map(|k| self.eval(from + (1.0 - from) * k as f32 / n as f32).0).collect()
-    }
-
-    /// The rail as segments from where the car is (the car-ahead search).
-    fn segs(&self) -> Vec<(Vec3, Vec3)> {
-        let p = self.pts(self.t.clamp(0.0, 1.0));
-        p.windows(2).map(|w| (w[0], w[1])).collect()
+        let i = self.cum.partition_point(|&c| c <= s).clamp(1, n - 1);
+        let (a, b) = (self.pts[i - 1], self.pts[i]);
+        let seg = (self.cum[i] - self.cum[i - 1]).max(1e-4);
+        let t = ((s - self.cum[i - 1]) / seg).clamp(0.0, 1.0);
+        (a.lerp(b, t), (b - a).normalize_or(Vec3::NEG_Z))
     }
 }
 
-/// The turning radius of the recovery, rejoin and passing rails (F-36195): the pivot radius when the car has stood
-/// 2 s, else fMinTurningRadius x (1 + 6 clamp((v - 4.4704) x 0.149129, 0, 1)) (the products rounded, 1 + 6 x fused).
+fn wrap_2pi(a: f32) -> f32 {
+    let t = std::f32::consts::TAU;
+    let r = a.rem_euclid(t);
+    if r >= t - 1e-5 { 0.0 } else { r }
+}
+
+/// Points along an arc, a line and an arc (F-85722; `s` +1 turns towards the heading's
+/// left normal (-sin, cos) in x/z, -1 the other way), every half metre; y runs from the
+/// start's to the end's.
+#[allow(clippy::too_many_arguments)]
+fn sample_csc(p0: Vec3, p1: Vec3, c0: Vec2, s0: f32, phi0: f32, th0: f32, c1: Vec2, s1: f32, psi: f32, th1: f32, rr: f32) -> Vec<Vec3> {
+    let on = |c: Vec2, s: f32, phi: f32| c + Vec2::new(phi.sin(), -phi.cos()) * (s * rr);
+    let mut flat: Vec<Vec2> = Vec::new();
+    let n0 = ((th0 * rr) / 0.5).ceil().max(1.0) as usize;
+    for k in 0..=n0 {
+        flat.push(on(c0, s0, phi0 + s0 * th0 * k as f32 / n0 as f32));
+    }
+    let (t0, t1) = (on(c0, s0, psi), on(c1, s1, psi));
+    let nl = (t0.distance(t1) / 0.5).ceil() as usize;
+    for k in 1..nl {
+        flat.push(t0.lerp(t1, k as f32 / nl as f32));
+    }
+    let n1 = ((th1 * rr) / 0.5).ceil().max(1.0) as usize;
+    for k in 0..=n1 {
+        flat.push(on(c1, s1, psi + s1 * th1 * k as f32 / n1 as f32));
+    }
+    let mut total = 0.0;
+    let mut cum = vec![0.0];
+    for i in 1..flat.len() {
+        total += flat[i].distance(flat[i - 1]);
+        cum.push(total);
+    }
+    flat.iter().zip(cum).map(|(q, c)| Vec3::new(q.x, p0.y + (p1.y - p0.y) * if total > 0.0 { c / total } else { 1.0 }, q.y)).collect()
+}
+
+/// The four arc-line-arc ways from `p0` heading `h0` to `p1` heading `h1` at turning radius
+/// `rr` that turn no more than `max_turn` in all: (length, points).
+fn csc(p0: Vec3, h0: Vec3, p1: Vec3, h1: Vec3, rr: f32, max_turn: f32) -> Vec<(f32, Vec<Vec3>)> {
+    let (a, b) = (Vec2::new(p0.x, p0.z), Vec2::new(p1.x, p1.z));
+    let (phi0, phi1) = (h0.z.atan2(h0.x), h1.z.atan2(h1.x));
+    let nrm = |phi: f32| Vec2::new(-phi.sin(), phi.cos());
+    let mut out = Vec::new();
+    for s0 in [1.0f32, -1.0] {
+        for s1 in [1.0f32, -1.0] {
+            let c0 = a + nrm(phi0) * (s0 * rr);
+            let c1 = b + nrm(phi1) * (s1 * rr);
+            // (F-13911: no way when the target lies inside the start circle)
+            if (c0 - b).length_squared() < rr * rr {
+                continue;
+            }
+            let w = c1 - c0;
+            let dd = w.length();
+            let alpha = w.y.atan2(w.x);
+            let (psi, line) = if s0 == s1 {
+                (if dd < 1e-4 { phi0 } else { alpha }, dd)
+            } else {
+                if dd < 2.0 * rr {
+                    continue;
+                }
+                let l = (dd * dd - 4.0 * rr * rr).sqrt();
+                (alpha + (2.0 * s0 * rr).atan2(l), l)
+            };
+            let th0 = wrap_2pi(s0 * (psi - phi0));
+            let th1 = wrap_2pi(s1 * (phi1 - psi));
+            if th0 + th1 > max_turn {
+                continue;
+            }
+            // (its length, F-62306: the arcs and the line between the tangent points, which
+            // take the start's and the end's heights)
+            out.push((rr * (th0 + th1) + (line * line + (p1.y - p0.y) * (p1.y - p0.y)).sqrt(), sample_csc(p0, p1, c0, s0, phi0, th0, c1, s1, psi, th1, rr)));
+        }
+    }
+    out
+}
+
+/// An arc then a line to `p1` (the passing rail, F-92334): both turning senses.
+fn cs(p0: Vec3, h0: Vec3, p1: Vec3, rr: f32, max_turn: f32) -> Vec<(f32, Vec<Vec3>)> {
+    let (a, b) = (Vec2::new(p0.x, p0.z), Vec2::new(p1.x, p1.z));
+    let phi0 = h0.z.atan2(h0.x);
+    let mut out = Vec::new();
+    for s in [1.0f32, -1.0] {
+        let c = a + Vec2::new(-phi0.sin(), phi0.cos()) * (s * rr);
+        let w = b - c;
+        let dd = w.length();
+        if dd < rr {
+            continue;
+        }
+        let l = (dd * dd - rr * rr).sqrt();
+        let psi = w.y.atan2(w.x) + (s * rr).atan2(l);
+        let th = wrap_2pi(s * (psi - phi0));
+        if th > max_turn {
+            continue;
+        }
+        // (an arc to the line's heading and none at the end)
+        out.push((rr * th + l, sample_csc(p0, p1, c, s, phi0, th, b - Vec2::new(psi.sin(), -psi.cos()) * (s * rr), s, psi, 0.0, rr)));
+    }
+    out
+}
+
+/// The turning radius of the recovery and passing rails (F-36195): the pivot radius when
+/// the car has stood 2 s, else the smallest radius growing with speed above 10 mph.
 fn turn_radius(ty: &AmbType, v: f32, ready: bool) -> f32 {
-    if ready { ty.pivot_turn } else { radius_at(v, ty.min_turn) }
-}
-
-fn radius_at(v: f32, min_turn: f32) -> f32 {
-    let f9 = (v - 4.4704) * f32::from_bits(0x3E18_B54C);
-    let f8 = if f9 >= 0.0 { f9 } else { 0.0 };
-    let f5 = if f8 - 1.0 >= 0.0 { 1.0 } else { f8 };
-    crate::physics::exact::fma(f5, 6.0, 1.0) * min_turn
-}
-
-/// A request for a rail onto a lane (the builder F-26466's request: +16 start, +32 heading, +48 speed, +52 the largest
-/// single turn, +72 bit 0x80 ready).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RailReq {
-    pub p: Vec3,
-    pub h0: Vec3,
-    pub v: f32,
-    pub limit: f32,
-    pub ready: bool,
-}
-
-/// The builder's pick: the rail, the lane and phase it ends on, its speed.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RailPick {
-    pub rail: TcpRail,
-    pub lane: usize,
-    pub phase: f32,
-    pub speed: f32,
-}
-
-/// The rail onto a lane (F-26466, the recovery and the rejoin rails): `cands` the lanes the query found (lane, the
-/// phase nearest the start t0, the entry's valid byte); ten tries with the car's draws (`draw`: the MWC's new low
-/// word): an entry by (x & 0x7FFFFFFF) mod n, skipped when not valid; a phase t0 + U (1 - t0) (U the low 23 bits,
-/// fma(U (1 - t0), 2^-23, t0)); the lane's point and derivative there (`target`, lane slot 8); skipped when the heights
-/// differ by more than 4 m or when the target heads our way (its unit derivative . H0 > 0) and lies behind
-/// ((T - P) . H0 < 0); four arc-line-arc rails P, H0 -> T, unit derivative at the radius (senses 00, 01, 10, 11): a
-/// valid one strictly shorter than the best, whose largest single turn is within the limit and which `clear` passes,
-/// is the best. Speed: 1.1176 m/s when ready, else max(v, 4).
-#[allow(clippy::type_complexity)]
-pub(crate) fn rail_to_lane(req: &RailReq, min_turn: f32, pivot: f32, cands: &[(usize, f32, bool)], draw: &mut dyn FnMut() -> u32, target: &mut dyn FnMut(usize, f32) -> (Vec3, Vec3), clear: &mut dyn FnMut(&TcpRail) -> bool) -> Option<RailPick> {
-    use crate::physics::exact::fma;
-    let n = cands.len() as i32;
-    if n == 0 {
-        return None;
-    }
-    let rr = if req.ready { pivot } else { radius_at(req.v, min_turn) };
-    let (p, h0) = (req.p, req.h0);
-    let mut best_len = f32::MAX;
-    let mut best: Option<(TcpRail, usize, f32)> = None;
-    for _ in 0..10 {
-        let (lane, t0, valid) = cands[((draw() & 0x7FFF_FFFF) as i32 % n) as usize];
-        if !valid {
-            continue;
-        }
-        let u = (draw() & 0x7F_FFFF) as f32;
-        let ph = fma(u * (1.0 - t0), 1.0 / 8_388_608.0, t0);
-        let (t, d) = target(lane, ph);
-        if (p.y - t.y).abs() > 4.0 {
-            continue;
-        }
-        let h1 = crate::tcp_rail::vnorm(d);
-        let dot = |a: Vec3| fma(h0.x, a.x, fma(h0.y, a.y, h0.z * a.z));
-        if dot(h1) > 0.0 && dot(crate::tcp_rail::vdiff(t, p)) < 0.0 {
-            continue;
-        }
-        for (s0, s1) in [(false, false), (false, true), (true, false), (true, true)] {
-            let q = crate::tcp_rail::build(p, h0, t, h1, rr, s0, s1);
-            if !q.valid() {
-                continue;
-            }
-            let len = q.len();
-            if !(len < best_len) || q.max_turn().abs() > req.limit || !clear(&q) {
-                continue;
-            }
-            best_len = len;
-            best = Some((q, lane, ph));
-        }
-    }
-    let (rail, lane, phase) = best?;
-    let speed = if req.ready { 1.1176 } else if req.v - 4.0 >= 0.0 { req.v } else { 4.0 };
-    Some(RailPick { rail, lane, phase, speed })
-}
-
-/// The port's stand-in for the car's own MWC (car +384): a 32-bit draw.
-fn xorshift(x: &mut u32) -> u32 {
-    *x ^= *x << 13;
-    *x ^= *x >> 17;
-    *x ^= *x << 5;
-    *x
+    if ready { ty.pivot_turn } else { ty.min_turn * (1.0 + 6.0 * ((v - 4.4704) * 0.149129).clamp(0.0, 1.0)) }
 }
 
 /// A traffic car on its lane.
@@ -891,7 +841,12 @@ impl Rider {
 
     pub fn rand(&mut self) -> f32 {
         // (the car's own MWC is not reproduced: any uniform draw)
-        (xorshift(&mut self.rng) >> 8) as f32 / 16777216.0
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        (x >> 8) as f32 / 16777216.0
     }
 
     /// F-58614: every 3 + 3U s a new offset, -6, +6 or 0 m/s by thirds.
@@ -1603,42 +1558,54 @@ fn probe_hit(env: &Env, me: usize, pos: Vec3, fwd: Vec3, hl: f32, hw: f32) -> bo
     env.others.iter().enumerate().any(|(j, o)| j != me && (o.pos.y - pos.y).abs() < 2.0 && o.pos.distance_squared(pos) < (hl + o.half_len + o.half_wid + 2.0).powi(2) && (0..=n).any(|k| o.box_dist(a.lerp(b, k as f32 / n as f32)) < 0.01))
 }
 
-/// Points every half metre along an arc-line-arc rail (the port's sweep).
-fn tcp_pts(q: &TcpRail) -> Vec<Vec3> {
-    Path::tcp(*q, 0.0, None).pts(0.0)
-}
-
-/// The rail onto a lane (F-26466) for a request: the lanes within 25 m (the port's search, at most 48; the entry's
-/// phase t0 the lane's point nearest the start), the lane's curve as the target (slot 8), the port's sweep.
-fn recovery_rail(r: &mut Rider, env: &Env, me: usize, req: &RailReq) -> Option<Path> {
+/// The recovery rail (F-26466): ten tries at a random point of a random lane within 25 m
+/// (at or after the point nearest to us), four arc-line-arc ways to each that turn no more
+/// than `max_turn` and sweep clear; the shortest.
+#[allow(clippy::too_many_arguments)]
+fn recovery_rail(r: &mut Rider, env: &Env, me: usize, start: Vec3, dir: Vec3, rr: f32, max_turn: f32, speed: f32) -> Option<Path> {
     let (nav, lanes) = (env.nav, env.lanes);
-    let start = req.p;
-    let mut cand: Vec<(usize, f32, bool)> = Vec::new();
+    let mut cand: Vec<usize> = Vec::new();
     for k in nav.links_near(start, 25.0) {
         let l = &nav.links[k];
-        let has_curve = nav.curves.get(l.lane).is_some_and(|c| c.pts.len() >= 2);
-        if has_curve && l.point_at(l.project(start)).distance(start) <= 25.0 && !cand.iter().any(|c| c.0 == l.lane) && lanes.len.get(l.lane).is_some_and(|&x| x > 0.5) {
-            cand.push((l.lane, lanes.project(nav, l.lane, start) / lanes.len[l.lane], true));
+        if l.point_at(l.project(start)).distance(start) <= 25.0 && !cand.contains(&l.lane) && lanes.len.get(l.lane).is_some_and(|&x| x > 0.5) {
+            cand.push(l.lane);
             if cand.len() == 48 {
                 break;
             }
         }
     }
+    if cand.is_empty() {
+        return None;
+    }
     let hw = r.ty.width.max(1.8) * 0.5;
-    let (min_turn, pivot) = (r.ty.min_turn, r.ty.pivot_turn);
-    let mut rng = r.rng;
-    let pick = rail_to_lane(req, min_turn, pivot, &cand, &mut || xorshift(&mut rng), &mut |lane, ph| nav.curves[lane].eval(ph), &mut |q| sweep_clear(env, me, &tcp_pts(q), hw));
-    r.rng = rng;
-    let pick = pick?;
-    Some(Path::tcp(pick.rail, pick.speed, Some((pick.lane, pick.phase))))
+    let mut best: Option<(f32, Vec<Vec3>, usize, f32)> = None;
+    for _ in 0..10 {
+        let lane = cand[(r.rand() * cand.len() as f32) as usize % cand.len()];
+        let total = lanes.len[lane];
+        let t0 = lanes.project(nav, lane, start) / total;
+        let t = t0 + r.rand() * (1.0 - t0);
+        let (p, tan, link, s) = lanes.at(nav, lane, t * total);
+        if (p.y - start.y).abs() > 4.0 {
+            continue;
+        }
+        if tan.dot(dir) > 0.0 && dir.dot(p - start) < 0.0 {
+            continue;
+        }
+        for (len, pts) in csc(start, dir, p, tan, rr, max_turn) {
+            if best.as_ref().is_some_and(|b| len >= b.0) {
+                continue;
+            }
+            if sweep_clear(env, me, &pts, hw) {
+                best = Some((len, pts, link, s));
+            }
+        }
+    }
+    best.map(|(_, pts, link, s)| Path::new(pts, speed, Some((link, s))))
 }
 
-/// The recovery try (F-15490), in state 5 and every frame in state 6: not online, not a semi, not upside down; the
-/// standing timer (ready past 2 s); a try when the car's draw is at most 1/30. The request (F-26749): from the
-/// follower's rail at its phase (slot 8: the point, the derivative with y = 0 made unit), else the car's place and
-/// forward (F-58860 and 0 - row 2, F-50349), plus the offset argument (the zero vector: a -0 turns +0); the car's speed,
-/// 140 degrees (the image's 0x401C61AA). A new rail replaces one being ridden only when it is shorter by a metre
-/// where more than 10 m are left (F-99509: len + 1 < len - len x phase). A rail taken zeroes the standing timer.
+/// The recovery try (F-15490), in state 5 and every frame in state 6: not online, not a
+/// semi, not upside down; about once a second; a new rail replaces one being ridden only when
+/// it is shorter by a metre where more than 10 m are left.
 fn try_recovery(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, upright: bool, dt: f32) -> bool {
     if env.event || r.ty.trailer || (r.ty.cab && r.partner.is_some()) || !upright {
         return false;
@@ -1652,138 +1619,67 @@ fn try_recovery(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, uprig
     if r.rand() > 1.0 / 30.0 {
         return false;
     }
-    let req = recovery_req(r.path.as_ref(), pos, fwd, r.v, ready);
-    let Some(p) = recovery_rail(r, env, me, &req) else { return false };
+    let (start, dir) = match r.path.as_ref() {
+        Some(p) => {
+            let (q, d) = p.at(p.s);
+            (q, if p.reverse { -d } else { d })
+        }
+        None => (pos, fwd),
+    };
+    let rr = turn_radius(&r.ty, r.v, ready);
+    let speed = if ready { 1.1176 } else { r.v.max(4.0) };
+    let Some(p) = recovery_rail(r, env, me, start, Vec3::new(dir.x, 0.0, dir.z).normalize_or(fwd), rr, RAIL_TURN, speed) else { return false };
     if let Some(cur) = r.path.as_ref() {
-        let left = cur.left();
-        if left > 10.0 && !(p.len() + 1.0 < left) {
+        let left = cur.len() - cur.s;
+        if left > 10.0 && p.len() >= left - 1.0 {
             return false;
         }
     }
     r.take_path(p, 6);
     r.then = None;
-    r.stand = 0.0;
     true
 }
 
-/// The recovery request (F-26749): from the rail at its phase (slot 8: the point and the derivative, y = 0, made unit)
-/// or the car's place and `fwd` (0 - row 2), the place plus the zero offset.
-fn recovery_req(path: Option<&Path>, pos: Vec3, fwd: Vec3, v: f32, ready: bool) -> RailReq {
-    let (p, h0) = match path {
-        Some(pp) => {
-            let (q, d) = pp.eval(pp.t);
-            (q, crate::tcp_rail::vnorm(Vec3::new(d.x, 0.0, d.z)))
-        }
-        None => (pos, fwd),
-    };
-    RailReq { p: crate::tcp_rail::vadd3(p, Vec3::ZERO), h0, v, limit: RAIL_TURN, ready }
-}
-
-/// The rejoin request (F-89026): from the passing rail's end T (slot 13) along its unit derivative at phase 1 (slot 10,
-/// not flattened), 0.7 x its speed (slot 17) at least 4.4704 m/s (fsel), never ready, 140 degrees.
-fn rejoin_req(q: &TcpRail, speed: f32) -> RailReq {
-    let f13 = speed * 0.7;
-    let v = if f13 - 4.4704 >= 0.0 { f13 } else { 4.4704 };
-    RailReq { p: q.t, h0: crate::tcp_rail::vnorm(q.tangent(1.0)), v, limit: RAIL_TURN, ready: false }
-}
-
-/// The obstacle's four corners as the passing rail's geometry (F-92334) makes them: its place + row 0 x (sx x width
-/// x 0.5) + row 2 x (sz x length x 0.5), (sx, sz) = (1, 1), (-1, 1), (-1, -1), (1, -1) (its sign table).
-fn pass_corners(o: &Other) -> [Vec3; 4] {
-    let (x, z) = (o.right, o.back);
-    [(1.0f32, 1.0f32), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)].map(|(sx, sz)| {
-        let c = crate::tcp_rail::vmadd3(x, sx * o.half_wid, o.pos);
-        crate::tcp_rail::vmadd3(z, sz * o.half_len, c)
-    })
-}
-
-/// The passing rail (F-28706 -> F-10687 -> F-92334) at clearance `c`, then the rejoin (F-89026 -> F-26466). The start
-/// and heading as the recovery request's (the follower's lane at its phase). The obstacle's leftmost and rightmost
-/// corners seen from the start (the y of (unit(O - P) with y = O.y) x unit(corner - P): the least strictly below
-/// f32::MAX, the largest strictly above 1.56e-36, each the first found; corner 0 when none); each pushed out across
-/// the line from the start by fma(width, 0.5, c) (left: (d.z, 0, -d.x), right: (-d.z, 0, d.x), made unit); the end
-/// heading the flat direction from the start; four arc-line-arc rails a corner (senses 00, 01, 10, 11) at the radius
-/// (F-36195 at the car's speed; the pivot radius when ready); a valid one whose largest turn is at most 130 degrees,
-/// swept clear and not longer than the best (a tie replaces) is the best. Speed max(0.7 v, 4.4704), 1.1176 when ready.
-#[allow(clippy::too_many_arguments)]
-fn passing_rail(r: &mut Rider, env: &Env, me: usize, p: Vec3, h0: Vec3, obst: usize, c: f32, ready: bool) -> Option<(Path, Path)> {
-    use crate::tcp_rail::{vdiff, vmadd3, vnorm};
+/// The passing rail (F-28706 -> F-10687 -> F-92334): to beside the obstacle's
+/// leftmost or rightmost corner, pushed out by half our width and `c` (1.1, 1.5, 0.8 m), on an
+/// arc and a line of at most 130 degrees, swept clear; then a rail back onto a lane at 0.7 of
+/// the lane's speed (F-89026).
+fn passing_rail(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, obst: usize, lane_speed: f32, ready: bool) -> Option<(Path, Path)> {
     let o = &env.others[obst];
-    let corners = pass_corners(o);
-    let mut d0 = vdiff(o.pos, p);
-    d0.y = o.pos.y;
-    let d0 = vnorm(d0);
-    let (mut lo, mut hi) = (f32::MAX, f32::from_bits(0x0405_0506));
-    let (mut li, mut ri) = (0usize, 0usize);
-    for (k, &q) in corners.iter().enumerate() {
-        let u = vnorm(vdiff(q, p));
-        let y = crate::tcp_rail::cross_y(d0, u);
-        if y < lo {
-            lo = y;
-            li = k;
-        }
-        if y > hi {
-            hi = y;
-            ri = k;
-        }
-    }
-    let hw = r.ty.width.max(1.8);
-    let off = crate::physics::exact::fma(hw, 0.5, c);
-    let push = |q: Vec3, left: bool| {
-        let d = vdiff(q, p);
-        let n = if left { Vec3::new(d.z, 0.0, -d.x) } else { Vec3::new(-d.z, 0.0, d.x) };
-        vmadd3(vnorm(n), off, q)
+    let corners = o.corners();
+    let d0 = Vec3::new(o.pos.x - pos.x, 0.0, o.pos.z - pos.z);
+    let side = |c: Vec3| {
+        let c = Vec3::new(c.x - pos.x, 0.0, c.z - pos.z).normalize_or_zero();
+        d0.x * c.z - d0.z * c.x
     };
-    let targets = [push(corners[li], true), push(corners[ri], false)];
+    let left = corners.iter().copied().min_by(|a, b| side(*a).total_cmp(&side(*b)))?;
+    let right = corners.iter().copied().max_by(|a, b| side(*a).total_cmp(&side(*b)))?;
+    let hw = r.ty.width.max(1.8) * 0.5;
     let rr = turn_radius(&r.ty, r.v, ready);
-    let mut best_len = f32::MAX;
-    let mut best: Option<TcpRail> = None;
-    for t in targets {
-        let mut dir = vdiff(t, p);
-        dir.y = 0.0;
-        let h1 = vnorm(dir);
-        for (s0, s1) in [(false, false), (false, true), (true, false), (true, true)] {
-            let q = crate::tcp_rail::build(p, h0, t, h1, rr, s0, s1);
-            if !q.valid() || q.max_turn() > PASS_TURN {
-                continue;
+    let flat_fwd = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
+    for c in [1.1f32, 1.5, 0.8] {
+        let mut best: Option<(f32, Vec<Vec3>)> = None;
+        for (corner, sgn) in [(left, 1.0f32), (right, -1.0)] {
+            let v = Vec3::new(corner.x - pos.x, 0.0, corner.z - pos.z);
+            let t = corner + Vec3::new(v.z, 0.0, -v.x).normalize_or_zero() * (sgn * (hw + c));
+            let t = Vec3::new(t.x, pos.y, t.z);
+            for (len, pts) in cs(pos, flat_fwd, t, rr, PASS_TURN) {
+                if best.as_ref().is_some_and(|b| len >= b.0) {
+                    continue;
+                }
+                if sweep_clear(env, me, &pts, hw) {
+                    best = Some((len, pts));
+                }
             }
-            let len = q.len();
-            if len > best_len || !sweep_clear(env, me, &tcp_pts(&q), hw * 0.5) {
-                continue;
-            }
-            best_len = len;
-            best = Some(q);
         }
+        let Some((_, pts)) = best else { continue };
+        let n = pts.len();
+        let end_dir = if n >= 2 { (pts[n - 1] - pts[n - 2]).normalize_or(flat_fwd) } else { flat_fwd };
+        let speed = (0.7 * lane_speed).max(MIN_WANT);
+        let back = recovery_rail(r, env, me, pts[n - 1], end_dir, rr, RAIL_TURN, speed)?;
+        return Some((Path::new(pts, r.v.max(4.0), None), back));
     }
-    let rail = best?;
-    let speed = if ready {
-        1.1176
-    } else {
-        let f12 = r.v * 0.7;
-        if f12 - 4.4704 >= 0.0 { f12 } else { 4.4704 }
-    };
-    let pass = Path::tcp(rail, speed, None);
-    let back = rejoin_rail(r, env, me, &pass)?;
-    Some((pass, back))
-}
-
-/// The rejoin rail's request (F-89026): from the passing rail's end T (slot 13, record +112) along its unit derivative
-/// at phase 1, at max(0.7 x its speed, 4.4704) - the radius at that speed, never the pivot one -, 140 degrees.
-fn rejoin_rail(r: &mut Rider, env: &Env, me: usize, pass: &Path) -> Option<Path> {
-    let Geom::Tcp(q) = &pass.geom else { return None };
-    let req = rejoin_req(q, pass.speed);
-    recovery_rail(r, env, me, &req)
-}
-
-/// The backing-up rail (F-56052 -> F-54867): a pool curve (index 0, four control points, knots 0 0 0 1 1 1) from
-/// E = row 2 x 2 + the car's place to the car: E, (M + E) / 2, (M + P) / 2, P with M = (E + P) / 2 (the vector
-/// unit's products and sums), 4 m/s, attached at phase 1 ridden back.
-pub(crate) fn backing_rail(place: Vec3, row2: Vec3) -> Path {
-    use crate::tcp_rail::{vadd3, vmadd3, vmul3};
-    let e = vmadd3(row2, 2.0, place);
-    let m = vmul3(vadd3(e, place), 0.5);
-    let cps = [e, vmul3(vadd3(m, e), 0.5), vmul3(vadd3(m, place), 0.5), place];
-    Path { geom: Geom::Curve(path_curve(&cps)), speed: 4.0, end: None, reverse: true, t: 1.0, ds: 0.0 }
+    None
 }
 
 /// The turn signals: the render flags' bits 0x20 (F-41231, the lamp state `s[2]`) and 0x10 (F-81289, `s[3]`), for
@@ -2049,11 +1945,6 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
     (p, f)
 }
 
-/// The lane curve the car rides (state 1).
-fn nav_curve<'a>(nav: &'a NavSys, r: &Rider) -> Option<&'a LaneCurve> {
-    nav.links.get(r.link).and_then(|l| nav.curves.get(l.lane)).filter(|c| c.pts.len() >= 2)
-}
-
 /// The tests after the state switch (free roam only): stuck behind a blocker (state 8),
 /// passing it (state 7).
 #[allow(clippy::too_many_arguments)]
@@ -2070,9 +1961,12 @@ fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, ahead
             r.stuck.2 += 1;
             r.stuck.0 = 0.0;
             r.stuck.1 = 0.0;
-            // (F-54867: from the instance matrix as the frame began)
-            let o = &env.others[me];
-            r.take_path(backing_rail(o.pos, o.back), 8);
+            let back = pos - fwd * 2.0;
+            let n = 5;
+            let pts: Vec<Vec3> = (0..=n).map(|k| pos.lerp(back, k as f32 / n as f32)).collect();
+            let mut p = Path::new(pts, 4.0, None);
+            p.reverse = true;
+            r.take_path(p, 8);
             return;
         }
     } else if !can_stuck {
@@ -2101,22 +1995,10 @@ fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, ahead
     if o.ambient && r.rand() > 1.0 / 60.0 {
         return;
     }
-    // (the start: the follower's lane at its phase, the derivative flattened and made unit - F-92334 as F-26749)
-    let (p, h0) = match nav_curve(env.nav, r) {
-        Some(c) => {
-            let (q, d) = c.eval(r.t);
-            (q, crate::tcp_rail::vnorm(Vec3::new(d.x, 0.0, d.z)))
-        }
-        None => (pos, fwd),
-    };
-    // (F-28706: the clearances 1.1, 1.5, 0.8 m in turn, the first that gives a passing rail and its rejoin)
-    for c in [1.1f32, 1.5, 0.8] {
-        if let Some((pass, back)) = passing_rail(r, env, me, p, h0, b, c, ready) {
-            r.take_path(pass, 7);
-            r.then = Some(back);
-            r.passing = Some((b, env.others[b].pos));
-            return;
-        }
+    if let Some((pass, back)) = passing_rail(r, env, me, pos, fwd, b, lane_speed, ready) {
+        r.take_path(pass, 7);
+        r.then = Some(back);
+        r.passing = Some((b, env.others[b].pos));
     }
 }
 
@@ -2142,13 +2024,14 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         r.v = 0.0;
         return Some((pos, fwd));
     };
-    let (q, d) = path.at(path.t);
+    let (q, d) = path.at(path.s);
     let dir = if path.reverse { -d } else { d };
     // the speed: the rail's, with the car ahead along the rail
     let ahead = if path.reverse {
         Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: None, player_across: false }
     } else {
-        find_ahead(env.nav, me, q, dir, r.ty.width.max(1.6), &[path.segs()], (None, None), None, env.others)
+        let segs: Vec<(Vec3, Vec3)> = path.pts.windows(2).zip(path.cum.iter().skip(1)).filter(|(_, &c)| c > path.s).map(|(w, _)| (w[0], w[1])).collect();
+        find_ahead(env.nav, me, q, dir, r.ty.width.max(1.6), &[segs], (None, None), None, env.others)
     };
     let want = path.speed;
     let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, dt);
@@ -2157,12 +2040,11 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         a = -r.ty.max_decel;
     }
     integrate(r, a, dt);
-    // the follower's step (F-50894): the phase on by the distance; past the end the rest carries onto the next rail
-    let d = r.v * dt;
     let path = r.path.as_mut().unwrap();
-    let over = path.step(d);
-    let (p, dd) = path.pose();
-    let f = if path.reverse { -dd } else { dd };
+    path.s += r.v * dt;
+    let (p, d) = path.at(path.s);
+    let f = if path.reverse { -d } else { d };
+    let done = path.s >= path.len();
     // the footprint probe
     if !semi && probe_hit(env, me, p, f, half_len, hw) {
         if r.state == 8 {
@@ -2174,55 +2056,37 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         return None;
     }
     if r.state == 8 {
-        // (F-82779: the backing timer; past 4 s the car waits for a recovery rail)
         r.stuck.1 += dt;
-        if r.stuck.1 > 4.0 {
+        if r.stuck.1 > 4.0 || done {
             r.path = None;
             r.state = 6;
             r.stuck.1 = 0.0;
         }
         return Some((p, f));
     }
-    let Some(rest) = over else { return Some((p, f)) };
-    if r.state == 7 {
-        // on to the rail back onto the lane, at its start and the rest on
-        match r.then.take() {
-            Some(mut next) => {
-                next.t = 0.0;
-                if rest > 0.0 {
-                    next.t = next.advance(0.0, rest).clamp(0.0, 1.0);
+    if done {
+        if r.state == 7 {
+            // on to the rail back onto the lane
+            match r.then.take() {
+                Some(next) => r.take_path(next, 6),
+                None => {
+                    r.path = None;
+                    r.state = 6;
                 }
-                r.take_path(next, 6);
             }
-            None => {
-                r.path = None;
-                r.state = 6;
-            }
+            r.passing = None;
+        } else if let Some((link, s)) = r.path.as_ref().and_then(|p| p.end) {
+            r.path = None;
+            r.state = 1;
+            // (a rail set anew: its curve speed is taken anew, F-48384)
+            r.place(env.nav, link, s);
+            r.on = [false; 3];
+            r.choose_next(env.nav);
+            return Some((r.pos(env.nav), f));
+        } else {
+            r.path = None;
         }
-        r.passing = None;
-        return Some(r.path.as_mut().map_or((p, f), |q| q.pose()));
     }
-    if let Some((lane, t)) = r.path.as_ref().and_then(|p| p.end) {
-        r.path = None;
-        r.state = 1;
-        // onto the lane at the rail's end phase (a rail set anew: its curve speed taken at the phase), the rest on
-        if let Some(&k) = env.lanes.links.get(lane).and_then(|ls| ls.first()) {
-            r.link = k;
-            r.set_phase(env.nav, env.lanes, t);
-            let c = &env.nav.curves[lane];
-            r.ds = c.speed(t);
-            r.ds_lane = lane;
-            if rest > 0.0 {
-                let t1 = LaneCurve::advance(t, rest, r.ds).clamp(0.0, 1.0);
-                r.set_phase(env.nav, env.lanes, t1);
-            }
-        }
-        r.on = [false; 3];
-        r.choose_next(env.nav);
-        let (p, f) = r.pose(env.nav);
-        return Some((p, f));
-    }
-    r.path = None;
     Some((p, f))
 }
 
@@ -2671,7 +2535,8 @@ impl Vehicles {
                         continue;
                     }
                     // back on a rail: kinematic from here
-                    r.path.as_mut().unwrap().pose()
+                    let p = r.path.as_ref().unwrap();
+                    p.at(0.0)
                 }
                 6..=8 => {
                     let (pos, fwd) = (c.state.pos, c.state.forward());
@@ -2752,23 +2617,13 @@ impl Vehicles {
             let dist2 = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length_squared();
             r.tilt.update(pos, fwd, right, dist2, dt);
             // (the drawn steer, F-37033 with dt != 0: one sample a frame into the draw object's ring - within 45 m of the
-            // focus and on a rail, the rail's derivative a little ahead (its slot 6 and slot 10: the lane, the arc-line-arc
-            // rail or the curve of the backing and race path rails) against the car's heading; 0 otherwise (states 4 / 5
-            // have no rail, F-78813; a trailer has no behaviour). The front wheels turn by the ring's mean within 45 m.)
+            // focus and on a lane, the lane's heading a little ahead against the car's; 0 otherwise (states 4 / 5 have no
+            // rail, F-78813; a trailer has no behaviour). The front wheels turn by the ring's mean within 45 m.)
             if dt != 0.0 {
                 let (dx, dz) = (focus.x - m[3].x, focus.z - m[3].z);
                 let near = dz.mul_add(dz, dx * dx) < 2025.0;
-                let d = if !near {
-                    None
-                } else {
-                    match r.state {
-                        1 => nav.links.get(r.link).and_then(|l| nav.curves.get(l.lane)).filter(|cv| cv.pts.len() >= 2).map(|cv| cv.eval(steer_look(r.t, r.ds, hub_z)).1),
-                        6..=8 => r.path.as_ref().map(|p| p.look(hub_z)),
-                        9 => r.route.as_ref().map(|rt| rt.look(hub_z)),
-                        _ => None,
-                    }
-                };
-                let x = d.map_or(0.0, |d| steer_of(-m[2], d));
+                let cv = if r.state == 1 && near { nav.links.get(r.link).and_then(|l| nav.curves.get(l.lane)) } else { None };
+                let x = cv.filter(|cv| cv.pts.len() >= 2).map_or(0.0, |cv| steer_of(-m[2], cv.eval(steer_look(r.t, r.ds, hub_z)).1));
                 c.amb_steer.push(x);
                 r.steer = if near { c.amb_steer.mean() } else { 0.0 };
             }
@@ -3862,176 +3717,23 @@ mod tests {
         }
     }
 
-    /// The rail onto a lane (F-26466, the recovery and rejoin rails) against the original's builder run whole offline
-    /// (tools/traffic_rails_reference.py --mode recovery -> testdata/traffic_rails_recovery_ref.txt): the car's own MWC,
-    /// the lane picks and phases, every target asked for (lane, phase), every rail swept (turns, radius, flags) in order,
-    /// the pick (the whole arc-line-arc record, the lane, the end phase), the speed and the MWC after.
     #[test]
-    fn rail_to_lane_matches_the_original() {
-        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
-        let u = |t: &str| u32::from_str_radix(t, 16).unwrap();
-        let x = |f: f32| format!("{:08x}", f.to_bits());
-        let xv = |v: Vec3| format!("{} {} {}", x(v.x), x(v.y), x(v.z));
-        let (mut n, mut built, mut swept, mut asked) = (0, 0, 0, 0);
-        for line in include_str!("testdata/traffic_rails_recovery_ref.txt").lines() {
-            let (i, o) = line.split_once(" ->").unwrap();
-            let w: Vec<&str> = i.split_whitespace().collect();
-            let o: Vec<&str> = o.split_whitespace().collect();
-            let v3 = |k: usize| Vec3::new(h(w[k]), h(w[k + 1]), h(w[k + 2]));
-            let req = RailReq { p: v3(0), h0: v3(3), v: h(w[6]), limit: h(w[7]), ready: u(w[11]) != 0 };
-            let nl = u(w[16]) as usize;
-            let cands: Vec<(usize, f32, bool)> = (0..nl).map(|k| (k, h(w[17 + 8 * k + 6]), u(w[17 + 8 * k + 7]) != 0)).collect();
-            // the original's calls in order
-            let mut targets = std::collections::VecDeque::new();
-            let mut sweeps = std::collections::VecDeque::new();
-            let mut k = 0;
-            let mut end = None;
-            while k < o.len() {
-                match o[k] {
-                    "Q" => k += 6,
-                    "T" => {
-                        targets.push_back((o[k + 1].parse::<usize>().unwrap(), o[k + 2].to_string(), Vec3::new(h(o[k + 3]), h(o[k + 4]), h(o[k + 5])), Vec3::new(h(o[k + 6]), h(o[k + 7]), h(o[k + 8]))));
-                        k += 9;
-                    }
-                    "S" => {
-                        sweeps.push_back((o[k + 1..k + 5].join(" "), o[k + 5] == "1"));
-                        k += 11;
-                    }
-                    "A" => {
-                        end = Some(o[k + 2].to_string());
-                        k += 4;
-                    }
-                    "R" => {
-                        if o[k + 1] == "1" {
-                            built += 1;
-                            let m = o.iter().position(|&t| t == "M").unwrap();
-                            let rest = o[k + 2..m].join(" ");
-                            end = Some(format!("{} {}", end.take().unwrap(), rest));
-                        }
-                        break;
-                    }
-                    t => panic!("token {t}"),
-                }
-            }
-            let m = o.iter().position(|&t| t == "M").unwrap();
-            let mut mwc = super::super::parked::Mwc { lo: w[12].parse().unwrap(), carry: w[13].parse().unwrap() };
-            let (nt, ns) = (targets.len(), sweeps.len());
-            let pick = rail_to_lane(&req, h(w[8]), h(w[9]), &cands, &mut || mwc.next(), &mut |lane, ph| {
-                let (l, p, a, d) = targets.pop_front().expect("a target the original did not ask for");
-                assert_eq!((lane, x(ph)), (l, p), "{line}");
-                (a, d)
-            }, &mut |q| {
-                let (s, hit) = sweeps.pop_front().expect("a sweep the original did not run");
-                assert_eq!(format!("{} {} {} {:02x}", x(q.a1), x(q.a2), x(q.r), q.flags), s, "{line}");
-                !hit
-            });
-            assert!(targets.is_empty() && sweeps.is_empty(), "{line}");
-            asked += nt;
-            swept += ns;
-            assert_eq!(format!("{} {}", mwc.lo, mwc.carry), o[m + 1..m + 3].join(" "), "{line}");
-            match pick {
-                None => assert!(end.is_none(), "{line}"),
-                Some(pk) => {
-                    let q = pk.rail;
-                    let got = format!(
-                        "{} 00001580 {} 00000000 {} 80 {} {} {} {} {} {} {} {} {} {} {} {:02x}",
-                        x(pk.speed), pk.lane, x(pk.phase), xv(q.a), xv(q.b), xv(q.c1), xv(q.c2), xv(q.p), xv(q.t), xv(q.h0), xv(q.h1), x(q.a1), x(q.a2), x(q.r), q.flags
-                    );
-                    assert_eq!(Some(got), end, "{line}");
-                }
-            }
-            n += 1;
+    fn arc_line_arc_reaches_the_target() {
+        // a quarter turn left onto a lane 20 m ahead and 10 m across
+        let (p0, h0) = (Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0));
+        let (p1, h1) = (Vec3::new(-10.0, 0.0, -20.0), Vec3::new(-1.0, 0.0, 0.0));
+        let ways = csc(p0, h0, p1, h1, 5.0, RAIL_TURN);
+        assert!(!ways.is_empty());
+        for (len, pts) in &ways {
+            assert!(pts.first().unwrap().distance(p0) < 1e-3);
+            assert!(pts.last().unwrap().distance(p1) < 1e-2, "{:?}", pts.last());
+            let walked: f32 = pts.windows(2).map(|w| w[0].distance(w[1])).sum();
+            assert!((walked - len).abs() < 0.2, "{walked} {len}");
+            // no jumps
+            assert!(pts.windows(2).all(|w| w[0].distance(w[1]) < 0.6));
         }
-        assert_eq!((n, built, asked, swept), (1497, 873, 12413, 3222));
-    }
-
-    /// A race path's join rail (F-45519) against the original's builder run whole offline (tools/traffic_rails_reference.py
-    /// --mode join -> testdata/traffic_rails_join_ref.txt): the start heading from the file's vertices or the spawn
-    /// matrix, the four arc-line-arc rails and the strictly shortest valid one, every word of its record.
-    #[test]
-    fn join_rail_matches_the_original() {
-        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
-        let x = |f: f32| format!("{:08x}", f.to_bits());
-        let xv = |v: Vec3| format!("{} {} {}", x(v.x), x(v.y), x(v.z));
-        let (mut n, mut built) = (0, 0);
-        for line in include_str!("testdata/traffic_rails_join_ref.txt").lines() {
-            let (i, o) = line.split_once(" -> ").unwrap();
-            let w: Vec<&str> = i.split_whitespace().collect();
-            let v3 = |k: usize| Vec3::new(h(w[k]), h(w[k + 1]), h(w[k + 2]));
-            let nv = usize::from_str_radix(w[0], 16).unwrap();
-            let verts: Vec<Vec3> = (0..nv).map(|k| v3(8 + 3 * k)).collect();
-            let snap: Vec<Vec3> = (0..nv).map(|k| v3(32 + 3 * k)).collect();
-            let h0 = join_heading(&verts, v3(5));
-            let got = match join_rail(snap[nv - 2], h0, snap[nv - 1], v3(2), h(w[1])) {
-                None => "R 0".to_string(),
-                Some(q) => {
-                    built += 1;
-                    format!(
-                        "R 1 {} {} {} {} {} {} {} {} {} {} {} {:02x}",
-                        xv(q.a), xv(q.b), xv(q.c1), xv(q.c2), xv(q.p), xv(q.t), xv(q.h0), xv(q.h1), x(q.a1), x(q.a2), x(q.r), q.flags
-                    )
-                }
-            };
-            assert_eq!(got, o, "{line}");
-            n += 1;
-        }
-        assert_eq!((n, built), (2000, 1795));
-    }
-
-    /// The backing-up rail (F-54867) against the original's builder run whole offline (tools/traffic_rails_reference.py
-    /// --mode backing -> testdata/traffic_rails_backing_ref.txt): the four control points from the car's place and row 2,
-    /// the pool (index 0, speed 4) and the attach (start phase 1, reversed).
-    #[test]
-    fn backing_rail_matches_the_original() {
-        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
-        let x = |f: f32| format!("{:08x}", f.to_bits());
-        let xv = |v: Vec3| format!("{} {} {}", x(v.x), x(v.y), x(v.z));
-        let mut n = 0;
-        for line in include_str!("testdata/traffic_rails_backing_ref.txt").lines() {
-            let (i, o) = line.split_once(" -> ").unwrap();
-            let w: Vec<&str> = i.split_whitespace().collect();
-            let v3 = |k: usize| Vec3::new(h(w[k]), h(w[k + 1]), h(w[k + 2]));
-            let p = backing_rail(v3(0), v3(3));
-            let Geom::Curve(cv) = &p.geom else { panic!("{line}") };
-            assert!(p.end.is_none(), "{line}");
-            let cps: Vec<String> = cv.pts.iter().map(|&q| xv(q)).collect();
-            let got = format!("A 0 {} X 1 1 0 {} 0 {} 00000000 R 1 {}", x(p.speed), p.reverse as u8, x(p.t), cps.join(" "));
-            assert_eq!(got, o, "{line}");
-            n += 1;
-        }
-        assert_eq!(n, 2000);
-    }
-
-    /// The recovery request (F-26749) and the rejoin request (F-89026) against the original's builders run whole offline
-    /// (tools/traffic_rails_reference.py --mode request -> testdata/traffic_rails_request_ref.txt): the rail a real
-    /// arc-line-arc record, F-26466 a stub printing the request.
-    #[test]
-    fn rail_requests_match_the_original() {
-        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
-        let u = |t: &str| u32::from_str_radix(t, 16).unwrap();
-        let x = |f: f32| format!("{:08x}", f.to_bits());
-        let xv = |v: Vec3| format!("{} {} {}", x(v.x), x(v.y), x(v.z));
-        let mut kinds = [0; 3];
-        for line in include_str!("testdata/traffic_rails_request_ref.txt").lines() {
-            let (i, o) = line.split_once(" -> ").unwrap();
-            let w: Vec<&str> = i.split_whitespace().collect();
-            let v3 = |k: usize| Vec3::new(h(w[k]), h(w[k + 1]), h(w[k + 2]));
-            let q = crate::tcp_rail::build(v3(0), v3(3), v3(6), v3(9), h(w[12]), u(w[13]) != 0, u(w[14]) != 0);
-            let kind = u(w[17]) as usize;
-            let req = match kind {
-                0 => rejoin_req(&q, h(w[15])),
-                k => {
-                    let mut pp = Path::tcp(q, h(w[15]), None);
-                    pp.t = h(w[16]);
-                    let fwd = crate::tcp_rail::vdiff(Vec3::ZERO, v3(21));
-                    recovery_req(if k == 1 { Some(&pp) } else { None }, v3(18), fwd, h(w[24]), u(w[25]) != 0)
-                }
-            };
-            let got = format!("K {} {} {} {} {} {:02x}", kind, xv(req.p), xv(req.h0), x(req.v), x(req.limit), if req.ready { 0x80 } else { 0 });
-            assert_eq!(got, o, "{line}");
-            kinds[kind] += 1;
-        }
-        assert_eq!(kinds, [1032, 1002, 966]);
+        let ways = cs(p0, h0, Vec3::new(3.0, 0.0, -8.0), 5.0, PASS_TURN);
+        assert!(ways.iter().all(|(_, pts)| pts.last().unwrap().distance(Vec3::new(3.0, 0.0, -8.0)) < 1e-2));
     }
 
     #[test]
@@ -5429,8 +5131,9 @@ pub struct PathRails {
     pub lane_dir: Vec3,
     /// +176: the curve rail
     pub curve: Option<LaneCurve>,
-    /// +180: the join rail onto the lane (an arc-line-arc rail, F-45519) and its heading at the start
-    pub join: Option<TcpRail>,
+    /// +180: the join rail onto the lane (arc - line - arc, points every half metre) and its
+    /// heading at the start
+    pub join: Option<Vec<Vec3>>,
     pub join_dir: Vec3,
     /// the spawn matrix after init (F-94337): its place and z row
     pub spawn: Vec3,
@@ -5478,9 +5181,11 @@ pub fn path_rails(nav: &NavSys, verts: &[Vec3], snap: &[bool], parked: bool, min
     // (With no lane found the lane's direction is unset: no rail is made here.)
     if n >= 2 && flags[n - 1] && !flags[n - 2] {
         if let (Some(rr), Some(_)) = (min_turn, out.lane) {
-            let h0 = join_heading(&verts[..n], row2);
-            if let Some(q) = join_rail(out.snapped[n - 2], h0, out.snapped[n - 1], out.lane_dir, rr) {
-                out.join = Some(q);
+            let d = if n > 2 { verts[n - 2] - verts[n - 3] } else { -row2 };
+            let h0 = Vec3::new(d.x, 0.0, d.z).normalize_or_zero();
+            let (p0, p1) = (out.snapped[n - 2], out.snapped[n - 1]);
+            if let Some((_, pts)) = csc(p0, h0, p1, out.lane_dir, rr, f32::INFINITY).into_iter().min_by(|a, b| a.0.total_cmp(&b.0)) {
+                out.join = Some(pts);
                 out.join_dir = h0;
             }
         }
@@ -5509,30 +5214,6 @@ pub fn path_rails(nav: &NavSys, verts: &[Vec3], snap: &[bool], parked: bool, min
         }
     }
     out
-}
-
-/// The join rail's start heading (F-45519): the file's last step before the last vertex (more than two vertices:
-/// vertex n - 2 - vertex n - 3), else -row 2 of the spawn matrix (0 - row 2), y = 0, made unit by the vector unit.
-pub(crate) fn join_heading(verts: &[Vec3], row2: Vec3) -> Vec3 {
-    let n = verts.len();
-    let mut d = if n > 2 { crate::tcp_rail::vdiff(verts[n - 2], verts[n - 3]) } else { crate::tcp_rail::vdiff(Vec3::ZERO, row2) };
-    d.y = 0.0;
-    crate::tcp_rail::vnorm(d)
-}
-
-/// The join rail (F-45519): the four arc-line-arc rails P, H0 -> T, H1 at the radius (senses 00, 01, 10, 11), the
-/// valid one strictly shortest (F-62306); None when none is valid.
-pub(crate) fn join_rail(p: Vec3, h0: Vec3, t: Vec3, h1: Vec3, rr: f32) -> Option<TcpRail> {
-    let mut best: Option<TcpRail> = None;
-    let mut best_len = f32::MAX;
-    for (s0, s1) in [(false, false), (false, true), (true, false), (true, true)] {
-        let q = crate::tcp_rail::build(p, h0, t, h1, rr, s0, s1);
-        if q.valid() && q.len() < best_len {
-            best_len = q.len();
-            best = Some(q);
-        }
-    }
-    best
 }
 
 /// F-10286: the heading of a matrix row (x, z): the guest C runtime's atan2 (F-65975, in double) rounded to single,
@@ -5571,7 +5252,7 @@ impl PathRails {
                 rails.push(RouteRail::Curve(c.clone(), pts));
             }
             if let Some(j) = &self.join {
-                rails.push(RouteRail::Turn(Path::tcp(*j, self.speed, None)));
+                rails.push(RouteRail::Turn(Path::new(j.clone(), self.speed, None)));
             }
         }
         Some(Route { path, rails, i: 0, t: 0.0, ds: 0.0, speed: self.speed, lane, lane_t })
@@ -5608,7 +5289,7 @@ impl Route {
     fn at(&self) -> (usize, f32) {
         let f = match &self.rails[self.i] {
             RouteRail::Curve(..) => self.t,
-            RouteRail::Turn(p) => p.t,
+            RouteRail::Turn(p) => p.s / p.len().max(1e-3),
         };
         (self.i, f)
     }
@@ -5620,20 +5301,20 @@ impl Route {
                 let (p, d) = c.eval(self.t);
                 (p, d.normalize_or(Vec3::NEG_Z))
             }
-            RouteRail::Turn(p) => p.at(p.t),
+            RouteRail::Turn(p) => p.at(p.s),
         }
     }
 
     /// The pose the follower stores (F-74567 on a curve rail: the curve speed +180 the mean
     /// of |dP/dt| here and the last value).
     fn pose(&mut self) -> (Vec3, Vec3) {
-        let (p, d, sp) = match &mut self.rails[self.i] {
+        let (p, d, sp) = match &self.rails[self.i] {
             RouteRail::Curve(c, _) => {
                 let (p, d) = c.eval(self.t);
                 (p, d.normalize_or(Vec3::NEG_Z), Some(d.length()))
             }
             RouteRail::Turn(p) => {
-                let (q, d) = p.pose();
+                let (q, d) = p.at(p.s);
                 (q, d, None)
             }
         };
@@ -5643,23 +5324,12 @@ impl Route {
         (p, d)
     }
 
-    /// The drawn steer's look on the rail the car is on (F-37033: slot 6 then slot 10).
-    fn look(&self, hub_z: f32) -> Vec3 {
-        match &self.rails[self.i] {
-            RouteRail::Curve(c, _) => c.eval(steer_look(self.t, self.ds, hub_z)).1,
-            RouteRail::Turn(p) => p.look(hub_z),
-        }
-    }
-
     /// Rail `k` as segments (from where the car is when `k` is its rail).
     fn segs(&self, k: usize) -> Vec<(Vec3, Vec3)> {
         let here = k == self.i;
         match &self.rails[k] {
             RouteRail::Curve(_, pts) => pts.windows(2).filter(|w| !here || w[1].1 > self.t).map(|w| (w[0].0, w[1].0)).collect(),
-            RouteRail::Turn(p) => {
-                let q = p.pts(if here { p.t.clamp(0.0, 1.0) } else { 0.0 });
-                q.windows(2).map(|w| (w[0], w[1])).collect()
-            }
+            RouteRail::Turn(p) => p.pts.windows(2).zip(p.cum.iter().skip(1)).filter(|(_, &c)| !here || c > p.s).map(|(w, _)| (w[0], w[1])).collect(),
         }
     }
 }
@@ -5728,10 +5398,14 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
                     }
                     d = (t1 - 1.0) * d / (t1 - t0).max(1e-6);
                 }
-                RouteRail::Turn(p) => match p.step(d) {
-                    None => break,
-                    Some(rest) => d = rest,
-                },
+                RouteRail::Turn(p) => {
+                    p.s += d;
+                    if p.s <= p.len() {
+                        break;
+                    }
+                    d = p.s - p.len();
+                    p.s = p.len();
+                }
             }
             if rt.i + 1 < rt.rails.len() {
                 // the next rail, from its start (its curve speed taken anew)
@@ -5739,7 +5413,7 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
                 rt.t = 0.0;
                 rt.ds = 0.0;
                 if let RouteRail::Turn(p) = &mut rt.rails[rt.i] {
-                    p.t = 0.0;
+                    p.s = 0.0;
                 }
                 continue;
             }

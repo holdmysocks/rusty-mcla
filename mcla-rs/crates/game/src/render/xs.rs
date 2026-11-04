@@ -66,7 +66,7 @@ pub fn load(data: &Path) {
         for name in mcla_shaders::OUTPUTS {
             match std::fs::read_to_string(dir.join(name)) {
                 Ok(t) if t.contains("fn xs_") => {
-                    text.insert(name, unroll_copy(&t));
+                    text.insert(name, split_regs(&unroll_copy(&t)));
                 }
                 Ok(_) | Err(_) => {
                     bad.push(name);
@@ -104,6 +104,73 @@ fn unroll_copy(t: &str) -> String {
     t.replace(LOOP, &(0..16).map(|i| format!("r[{i}] = rin[{i}];")).collect::<Vec<_>>().join(" "))
 }
 
+/// The programs' register arrays as one variable per register: the constants `xs_c` (`var<private> xs_c: array<vec4<f32>,
+/// 256>` in city.wgsl, refl.wgsl and the sky files) and each program's own registers (`var r: array<vec4<f32>, 64>`),
+/// `xs_c[26]` -> `xs_c_26`, `r[5]` -> `r_5`. Every index is a literal (after [`unroll_copy`]) and an unset variable is zero
+/// as the array's element was, so this is the same program; but an array that size stays in memory on the compilers
+/// that do not split it - and the city's one pixel program then pays for it in every draw of the city, props and cars
+/// (DX12 with DXC on a 3090: city A 26 ms, props 33; the same shape on an RX 5500 XT's Vulkan; GitHub #33).
+/// MCLA_XS_ARRAY=1: the arrays as before.
+pub fn split_consts(src: &str) -> String {
+    const DECL: &str = "var<private> xs_c: array<vec4<f32>, 256>;";
+    if std::env::var("MCLA_XS_ARRAY").is_ok() || src.matches(DECL).count() != 1 {
+        return src.to_string();
+    }
+    let Some((out, used)) = split_index(src, "xs_c") else { return src.to_string() };
+    let decls: String = used.iter().map(|k| format!("var<private> xs_c_{k}: vec4<f32>;\n")).collect();
+    out.replacen(DECL, &decls, 1)
+}
+
+/// [`split_consts`]'s split of each program's `r` (a translated file: its functions start at a line `fn `).
+fn split_regs(t: &str) -> String {
+    const DECL: &str = "    var r: array<vec4<f32>, 64>;\n";
+    if std::env::var("MCLA_XS_ARRAY").is_ok() {
+        return t.to_string();
+    }
+    let mut out = String::with_capacity(t.len() + 4096);
+    for (n, f) in t.split("\nfn ").enumerate() {
+        if n > 0 {
+            out.push_str("\nfn ");
+        }
+        match (f.matches(DECL).count() == 1).then(|| split_index(f, "r")).flatten() {
+            Some((g, used)) => {
+                let decls: String = used.iter().map(|k| format!("    var r_{k}: vec4<f32>;\n")).collect();
+                out.push_str(&g.replacen(DECL, &decls, 1));
+            }
+            None => out.push_str(f),
+        }
+    }
+    out
+}
+
+/// `name[N]` -> `name_N` wherever `name` stands as a word, and the registers met; None at an index that is not a literal.
+fn split_index(src: &str, name: &str) -> Option<(String, std::collections::BTreeSet<u32>)> {
+    let pat = format!("{name}[");
+    let mut out = String::with_capacity(src.len() + 4096);
+    let mut used = std::collections::BTreeSet::new();
+    let mut rest = src;
+    while let Some(i) = rest.find(&pat) {
+        let word = rest[..i].chars().next_back().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+        let tail = &rest[i + pat.len()..];
+        if !word {
+            out.push_str(&rest[..i + pat.len()]);
+            rest = tail;
+            continue;
+        }
+        let n = tail.bytes().take_while(|b| b.is_ascii_digit()).count();
+        if n == 0 || !tail[n..].starts_with(']') {
+            return None;
+        }
+        let k: u32 = tail[..n].parse().ok()?;
+        used.insert(k);
+        out.push_str(&rest[..i]);
+        out.push_str(&format!("{name}_{k}"));
+        rest = &tail[n + 1..];
+    }
+    out.push_str(rest);
+    Some((out, used))
+}
+
 /// The text of one translated file (or its stub). Empty before [`load`].
 pub fn text(name: &str) -> &'static str {
     PROGRAMS.get().and_then(|p| p.text.get(name)).map(|s| s.as_str()).unwrap_or("")
@@ -124,5 +191,17 @@ mod tests {
             let s = stub(name);
             assert!(s.contains("fn xs_"), "{name}");
         }
+    }
+
+    #[test]
+    fn register_arrays_split_by_literal_index() {
+        let t = "fn xs_a(rin: array<vec4<f32>, 16>) -> vec4<f32> {\n    var r: array<vec4<f32>, 64>;\n    r[0] = rin[0]; r[12] = xs_c[3] + r[0]; hr[1] = r[12];\n    return r[12];\n}\nfn xs_b() {\n    var q = 1;\n}\n";
+        let r = split_regs(t);
+        assert_eq!(r, "fn xs_a(rin: array<vec4<f32>, 16>) -> vec4<f32> {\n    var r_0: vec4<f32>;\n    var r_12: vec4<f32>;\n    r_0 = rin[0]; r_12 = xs_c[3] + r_0; hr[1] = r_12;\n    return r_12;\n}\nfn xs_b() {\n    var q = 1;\n}\n");
+        let c = split_consts(&format!("var<private> xs_c: array<vec4<f32>, 256>;\n{r}"));
+        assert!(c.starts_with("var<private> xs_c_3: vec4<f32>;\n\nfn xs_a") && c.contains("r_12 = xs_c_3 + r_0;"), "{c}");
+        // (an index that is not a literal: the text as it was)
+        let d = "fn xs_c(i: i32) {\n    var r: array<vec4<f32>, 64>;\n    r[i] = vec4<f32>(0.0);\n}\n";
+        assert_eq!(split_regs(d), d);
     }
 }
