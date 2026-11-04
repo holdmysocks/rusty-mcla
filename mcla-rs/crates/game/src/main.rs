@@ -7168,15 +7168,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             None => {
                                 sr.at = (sr.at + 1) % sr.races.len().max(1);
                                 self.game.next_event_race = sr.races.get(sr.at).copied();
-                                if sr.story.is_none() { self.game.career.stats.insert(format!("series_at:{}", sr.key.trim_end_matches("_series")), ((sr.at + 1) % sr.races.len().max(1)) as i64); }
                                 log::info!("series {}: tally {:?}, next race {:?}", sr.key, sr.wins, self.game.next_event_race);
                             }
                         }
                     }
-                    // (a story series' next race: FindNextRaceIndex over its array, OrderedSeriesCore 0x24fe)
+                    // (a series' next race: FindNextRaceIndex over its array, OrderedSeriesCore 0x24fe)
                     if self.game.next_event_race.is_some() {
-                        if let Some(i) = self.game.story_series_next() {
+                        if let Some(i) = self.game.series_next() {
                             self.game.next_event_race = Some(i);
+                            if let Some(sr) = self.game.series.as_mut() {
+                                sr.at = sr.races.iter().position(|&r| r == i).unwrap_or(sr.at);
+                            }
                         }
                     }
                     if let Some((story, key)) = s_series_won {
@@ -11799,9 +11801,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.current_race = sr.races.first().copied().or(self.game.current_race);
                         self.game.next_event_race = None;
                     }
-                    // (a story series': the history's pick, OrderedSeriesCore 0x247c -> 0x24fe)
-                    if let Some(i) = self.game.story_series_next() {
+                    // (the history's pick, OrderedSeriesCore 0x247c -> 0x24fe)
+                    if let Some(i) = self.game.series_next() {
                         self.game.current_race = Some(i);
+                        if let Some(sr) = self.game.series.as_mut() {
+                            sr.at = sr.races.iter().position(|&r| r == i).unwrap_or(0);
+                        }
                     }
                 }
                 if action == MenuAction::RestartRace {

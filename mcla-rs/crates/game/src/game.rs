@@ -8921,8 +8921,8 @@ impl Game {
                                 }
                             }
                             // RESTART SERIES / RACE SERIES AGAIN: from its first race, every tally at
-                            // nought (OrderedSeriesCore `restart`, 0x247c); a story series' race is the history's
-                            // pick (`story_series_next`)
+                            // nought (OrderedSeriesCore `restart`, 0x247c); the race is the history's
+                            // pick (`series_next`)
                             2 | 5 => {
                                 if let Some(sr) = self.series.as_mut() {
                                     sr.at = 0;
@@ -8932,8 +8932,11 @@ impl Game {
                                     action = MenuAction::StartRace;
                                     self.warp_with_cut = true;
                                 }
-                                if let Some(i) = self.story_series_next() {
+                                if let Some(i) = self.series_next() {
                                     self.current_race = Some(i);
+                                    if let Some(sr) = self.series.as_mut() {
+                                        sr.at = sr.races.iter().position(|&r| r == i).unwrap_or(0);
+                                    }
                                 }
                             }
                             _ => {
@@ -13462,26 +13465,23 @@ impl Game {
                 leave(self);
                 return Some(MenuAction::StartRace);
             }
-        } else if enter && !wager {
-            // the series' next race, at the difficulty chosen
+        } else if (enter || std::env::var("MCLA_EVENT_ACCEPT").is_ok()) && !wager {
+            // the series' next race, at the difficulty chosen (test hook: MCLA_EVENT_ACCEPT, as above)
             let races = self.career.event_races(&format!("{}_series", key));
             let won = self.career.done_races();
             let pick = races.iter().find(|r| !won.iter().any(|w| w.eq_ignore_ascii_case(r))).or(races.first()).cloned();
             let at = pick.and_then(|r| { let r = r.to_ascii_lowercase(); self.race_defs.iter().position(|d| { let id = d.id.to_ascii_lowercase(); id.ends_with(&r) || r.ends_with(&id) }) });
-            log::info!("hangout: {} accepted at difficulty {}: {} races, race {:?}", key, self.hangout_diff, races.len(), at);
-            // (a series is run from its first race, the tally at nought)
-            let order: Vec<usize> = races.iter().filter_map(|r| { let r = r.to_ascii_lowercase(); self.race_defs.iter().position(|d| { let id = d.id.to_ascii_lowercase(); id.ends_with(&r) || r.ends_with(&id) }) }).collect();
-            // (the tally starts at nought each time, but the series goes on with the race after
-            // the last one started: the recomp ran race 1, began race 2, and on the next visit
-            // opened with race 3 - `sr_results_race3`)
-            let first = self.career.stats.get(&format!("series_at:{}", key)).copied().unwrap_or(0).max(0) as usize % order.len().max(1);
-            let at = if order.is_empty() { at } else { Some(order[first]) };
+            let order = self.series_array(&races);
+            // (the tally starts at nought each time; the hangout core starts OrderedSeriesCore with +3256
+            // clear, so every race, the first too, is FindNextRaceIndex (F-18968) over the array: the first
+            // not in the history, else the oldest - the recomp ran race 1, began race 2, and on the next
+            // visit opened with race 3, `sr_results_race3`)
+            let at = if order.is_empty() { at } else { self.series_next_of(&order).or(Some(order[0])) };
+            let first = at.and_then(|i| order.iter().position(|&o| o == i)).unwrap_or(0);
+            log::info!("hangout: {} accepted at difficulty {}: {} races, race {:?}", key, self.hangout_diff, races.len(), at.map(|i| &self.race_defs[i].id));
             if let Some(i) = at {
                 self.current_race = Some(i);
                 self.event_diff = Some(self.hangout_diff);
-                if !order.is_empty() {
-                    self.career.stats.insert(format!("series_at:{}", key), ((first + 1) % order.len()) as i64);
-                }
                 // (test hook: MCLA_SERIES_WINS=n starts the series with the player at n wins)
                 let wins = std::env::var("MCLA_SERIES_WINS").ok().and_then(|v| v.parse::<u32>().ok()).map(|n| vec![("YOU".to_string(), n)]).unwrap_or_default();
                 self.series = (!order.is_empty()).then(|| Series { key: format!("{}_series", key), races: order, at: first, wins, rivals: Vec::new(), diff: self.hangout_diff, story: None });
@@ -14188,15 +14188,22 @@ impl Game {
     /// table lacks is left out (BESTOF_SH_03's `Ordered/_circuit_mb_04a`), a second one of a race too.
     pub(crate) fn story_series_array(&self, id: &str) -> Option<(Vec<usize>, u32)> {
         let (races, need) = self.career.series_mission(id)?;
+        Some((self.series_array(&races), need))
+    }
+
+    /// A series' array (mcRaceArray_AddRace, F-32239): each name's race in turn, a name the race table
+    /// lacks or one already in the array left out.
+    pub(crate) fn series_array(&self, races: &[String]) -> Vec<usize> {
         let mut order: Vec<usize> = Vec::new();
-        for r in &races {
+        for r in races {
+            let r = r.to_ascii_lowercase();
             if let Some(i) = self.race_defs.iter().position(|d| d.id.to_ascii_lowercase().ends_with(r.as_str())) {
                 if !order.contains(&i) {
                     order.push(i);
                 }
             }
         }
-        Some((order, need))
+        order
     }
 
     /// The first race of a story series (OrderedSeriesCore 0x581..0x5cb, taken when the story launcher's +3256
@@ -14212,10 +14219,14 @@ impl Game {
 
     /// The race of a story series after one is run and after RESTART SERIES / RACE SERIES AGAIN (OrderedSeriesCore
     /// 0x24fe with +3256 cleared by the first pass): mcRaceArray_FindNextRaceIndex (F-18968) over its array - the
-    /// first not in the history of the last twelve, else the one run longest ago. None for a hangout's series.
-    pub fn story_series_next(&self) -> Option<usize> {
-        let sr = self.series.as_ref().filter(|s| s.story.is_some())?;
-        let arr: Vec<i64> = sr.races.iter().filter_map(|&i| self.mc4_race_index(&self.race_defs[i].id).map(|t| t as i64)).collect();
+    /// first not in the history of the last twelve, else the one run longest ago. A hangout's series takes
+    /// every race, its first too, this way (its core starts OrderedSeriesCore with +3256 clear).
+    pub fn series_next(&self) -> Option<usize> {
+        self.series_next_of(&self.series.as_ref()?.races)
+    }
+
+    pub(crate) fn series_next_of(&self, races: &[usize]) -> Option<usize> {
+        let arr: Vec<i64> = races.iter().filter_map(|&i| self.mc4_race_index(&self.race_defs[i].id).map(|t| t as i64)).collect();
         let t = match self.mc4.as_ref() {
             Some(m) => m.career.next_race_of(&arr)?,
             None => *arr.first()?,
