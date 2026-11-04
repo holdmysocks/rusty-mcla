@@ -186,6 +186,22 @@ struct CopSearch {
     angle: f32,
 }
 
+/// "Moving" (F-43975 for the target, F-36212 for the cop's own car): the speed over fMovingSpeed x 0.447.
+fn moving(speed: f32, moving_speed: f32) -> bool {
+    speed > moving_speed * 0.447
+}
+
+/// F-43223: two frames face the same way - their forward rows dotted y, z, x (the y product rounded, the sums fused)
+/// over 0 (the port's forward is the row negated, which leaves the product's bits).
+fn same_facing(a: Vec3, b: Vec3) -> bool {
+    crate::physics::exact::dot_xzy(a, b) > 0.0
+}
+
+/// F-57435: the point `p` on the +x side of the frame at `pos` - its row 0 dotted with p - pos as F-43223 dots.
+fn on_side(row0: Vec3, pos: Vec3, p: Vec3) -> bool {
+    crate::physics::exact::dot_xzy(row0, p - pos) > 0.0
+}
+
 /// The original's 2-D unit vector (F-98766): `or` when x x + y y (the y product rounded, the sum fused) is under 1e-12,
 /// else both times the reciprocal square root's estimate and two Newton steps in double, rounded once to single.
 fn unit2(v: glam::Vec2, or: glam::Vec2) -> glam::Vec2 {
@@ -2718,7 +2734,7 @@ impl Police {
         let safe = t("fSafeDist", 30.0);
         let along = t("fAlongSideDist", 5.0);
         let moving_v = t("fMovingSpeed", 1.0) * 0.447;
-        let t_moving = speed > moving_v;
+        let t_moving = moving(speed, t("fMovingSpeed", 1.0));
         // (F-42951: false only for a group cop - not a goon - while a race runs: then the brains plan the plain way and
         // the squad never swipes)
         let ed78 = !(self.in_race && !goons);
@@ -3019,9 +3035,9 @@ impl Police {
                 // facing the same way, the angle off the cop's right axis, and "closing in": the cop moving, faster
                 // than the target and heading at it within 25.8 deg)
                 let ahead = cfwd.dot(to) > 0.0;
-                let on_right = cright.dot(to) > 0.0;
+                let on_right = on_side(cright, cpos, ppos);
                 let same_dir = pvel.dot(cvel) > 0.0;
-                let same_facing = pfwd.dot(cfwd) > 0.0;
+                let same_facing = same_facing(pfwd, cfwd);
                 let bearing = crate::aiv::ang3(cright, to).to_degrees();
                 let closing = |r: f32| (r == 0.0 || d < r) && cspeed > moving_v && cspeed > speed && to.normalize_or_zero().dot(cvel / cspeed.max(1e-6)) > 0.9;
                 // (head-on, +774: in front, coming the other way, seen, travel directions more than fHeadOnAngle apart)
