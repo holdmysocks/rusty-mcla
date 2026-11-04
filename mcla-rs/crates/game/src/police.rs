@@ -161,6 +161,120 @@ struct CopTac {
     head_on: bool,
     /// Block's steer, taken at its enter (F-56982, +700): full lock towards the side the target was on
     block_steer: f32,
+    /// pursuit: the machine started (its Delay asks CatchUp), the state asked for (entered at the next update), Halt's
+    /// steer away (+16, taken once the cop closes in), and the brain's command state (+568) and handbrake mode (+688)
+    begun: bool,
+    next: Option<Tac>,
+    halt_steer: f32,
+    cmd: u8,
+    hb: bool,
+}
+
+/// What the pursuit's ticks read in one update: the brain's predicates (F-74140's helpers) - within fSafeDist, within 1.5 x
+/// fAlongSideDist, within 5 m, the target moving, going the same way, ahead, on the cop's right, facing the same way, every
+/// cop within half fSafeDist, closing in -, the side F-14848 picks, the AlongSide's re-pick gate (tactic +36 none or its
+/// +56 zero), the bearing off the cop's right axis and the target's speed (m/s).
+#[derive(Clone, Copy, Debug, Default)]
+struct PursuitSees {
+    near_safe: bool,
+    near_along: bool,
+    near5: bool,
+    moving: bool,
+    same_dir: bool,
+    ahead: bool,
+    on_right: bool,
+    same_facing: bool,
+    all_block: bool,
+    closing: bool,
+    pick: bool,
+    gate: bool,
+    bearing: f32,
+    speed: f32,
+}
+
+/// The Pursuit's machine for its cop, one update (F-68032's CatchUp, AlongSide, Block, Halt; Delay, Search and Arrest are
+/// the port's `flee_hold` and heat). The tactic's update first asks Halt when the target lost over 4 m/s since the last
+/// update within 5 m (not in Halt or Block, none asked yet; `last_speed`: the speed the base update kept, +64); then the
+/// FSM (F-95322): the asked state entered (F-43677; every ask here passes the table F-64295), the state's tick, its time
+/// + dt (F-88920). Enters (F-13059, F-97171, F-56982, F-29519): CatchUp Pursue (4); AlongSide the side picked, its timers 0 / 1 s, AlongSide (5); Block Stop
+/// in handbrake mode, full lock to the target's side; Halt Stop when within fSafeDist, its steer 0. Ticks: CatchUp
+/// (F-88702) - within fSafeDist: Halt if the target stands, AlongSide after 3 s going the same way, ahead, 75 - 105 deg;
+/// AlongSide (F-85137) - out of reach 10 s: CatchUp (and nothing else); within: the side timer down, at < 0 with the gate
+/// the side again (AlongSide resent if it changed) and 1 s, then Block when facing the same way, the target on the other
+/// hand and not ahead; Block (F-85039) - CatchUp unless every cop within half fSafeDist; Halt (F-84018) - its steer away
+/// once closing in, within fSafeDist and under fArrestTgtThresholdSpd (`thresh`, mph x 2.237) the Stop kept (resent
+/// unless in it without handbrake), else CatchUp.
+fn pursuit_machine(tac: &mut CopTac, s: &PursuitSees, thresh: f32, last_speed: f32, dt: f32) {
+    if !tac.begun {
+        tac.begun = true;
+        tac.next = Some(Tac::CatchUp);
+    } else if tac.next.is_none() && matches!(tac.st, Tac::CatchUp | Tac::AlongSide) && last_speed - s.speed > 4.0 && s.near5 {
+        tac.next = Some(Tac::Halt);
+    }
+    if let Some(st) = tac.next.take() {
+        tac.st = st;
+        tac.t = 0.0;
+        match st {
+            Tac::CatchUp => tac.cmd = 4,
+            Tac::AlongSide => {
+                (tac.far_t, tac.side_t, tac.side, tac.cmd) = (0.0, 1.0, s.pick, 5);
+            }
+            Tac::Block => {
+                (tac.cmd, tac.hb, tac.block_steer) = (1, true, if s.on_right { 1.0 } else { -1.0 });
+            }
+            Tac::Halt => {
+                if s.near_safe {
+                    (tac.cmd, tac.hb) = (1, false);
+                }
+                tac.halt_steer = 0.0;
+            }
+            Tac::Avoid => {}
+        }
+    }
+    match tac.st {
+        Tac::CatchUp if s.near_safe => {
+            if !s.moving {
+                tac.next = Some(Tac::Halt);
+            } else if tac.t > 3.0 && s.same_dir && s.ahead && s.bearing > 75.0 && s.bearing < 105.0 {
+                tac.next = Some(Tac::AlongSide);
+            }
+        }
+        Tac::AlongSide => {
+            if !s.near_along {
+                tac.far_t += dt;
+                if tac.far_t > 10.0 {
+                    tac.next = Some(Tac::CatchUp);
+                }
+            } else {
+                tac.side_t -= dt;
+                tac.far_t = 0.0;
+                if tac.side_t < 0.0 && s.gate {
+                    if s.pick != tac.side {
+                        (tac.side, tac.cmd) = (s.pick, 5);
+                    }
+                    tac.side_t = 1.0;
+                }
+                if s.same_facing && tac.side != s.on_right && !s.ahead {
+                    tac.next = Some(Tac::Block);
+                }
+            }
+        }
+        Tac::Block if !s.all_block => tac.next = Some(Tac::CatchUp),
+        Tac::Halt => {
+            if tac.halt_steer == 0.0 && s.closing {
+                tac.halt_steer = if s.on_right { -1.0 } else { 1.0 };
+            }
+            if s.near_safe && s.speed * 2.237 < thresh {
+                if !(tac.cmd == 1 && !tac.hb) {
+                    (tac.cmd, tac.hb) = (1, false);
+                }
+            } else {
+                tac.next = Some(Tac::CatchUp);
+            }
+        }
+        _ => {}
+    }
+    tac.t += dt;
 }
 
 /// The searching cop's brain state 7, STATE_SEARCH (enter F-57507, tick F-15801; docs/reference/hookmen/search_and_connections.md 2):
@@ -3018,7 +3132,7 @@ impl Police {
         let squad = self.kind.squad();
         let pull = self.heat == Heat::PullOver;
         let period = t("fMinSetGoalTime", 1.0);
-        let dropped = self.last_tspeed - speed;
+        let last_tspeed = self.last_tspeed;
         self.last_tspeed = speed;
         // (every cop of the tactic within r of the target: F-90575, F-36876)
         let within = |r: f32| vehicles.cars.iter().filter(|c| pursuer(c)).all(|c| c.state.pos.distance(ppos) < r);
@@ -3167,11 +3281,12 @@ impl Police {
                     tac.grow_t = 0.0;
                     tac.replan = 0.0;
                 };
-                tac.t += dt;
                 let st = tac.st;
                 if searching || squad {
                     // (no tactic state changes during the Search; a squad's commands come from its FSM)
+                    tac.t += dt;
                 } else if pull {
+                    tac.t += dt;
                     // pull-over (F-36876; CatchUp F-91234, AvoidCollision F-18622 / F-69591, Halt F-82776)
                     if st != Tac::Halt && all_halt && !t_moving && (cspeed < 4.47 || !closing(0.0)) {
                         enter(tac, Tac::Halt);
@@ -3207,45 +3322,24 @@ impl Police {
                         c.state.vel *= 0.5;
                     }
                 } else {
-                    // pursuit (F-68032; CatchUp F-88702, AlongSide F-85137, Block F-85039, Halt F-84018)
-                    if !matches!(st, Tac::Halt | Tac::Block) && dropped > 4.0 && d < 5.0 {
-                        // (the target just stopped hard beside it)
-                        enter(tac, Tac::Halt);
-                    } else {
-                        match st {
-                            Tac::CatchUp if d < safe => {
-                                if !t_moving {
-                                    enter(tac, Tac::Halt);
-                                } else if tac.t > 3.0 && same_dir && ahead && bearing > 75.0 && bearing < 105.0 {
-                                    enter(tac, Tac::AlongSide);
-                                    tac.side = pick_side();
-                                }
-                            }
-                            Tac::AlongSide => {
-                                if d >= 1.5 * along {
-                                    tac.far_t += dt;
-                                    if tac.far_t > 10.0 {
-                                        enter(tac, Tac::CatchUp);
-                                    }
-                                } else {
-                                    tac.far_t = 0.0;
-                                    tac.side_t += dt;
-                                    if tac.side_t >= 1.0 {
-                                        tac.side_t = 0.0;
-                                        tac.side = pick_side();
-                                    }
-                                }
-                                // (on its side - the target on the cop's other hand -, level or ahead, facing the same way)
-                                if tac.st == Tac::AlongSide && same_facing && on_right != tac.side && !ahead {
-                                    enter(tac, Tac::Block);
-                                    tac.block_steer = if on_right { 1.0 } else { -1.0 };
-                                }
-                            }
-                            Tac::Block if !all_block => enter(tac, Tac::CatchUp),
-                            Tac::Halt if !(d < safe && speed * MPH < t("fArrestTgtThresholdSpd", 10.0)) => enter(tac, Tac::CatchUp),
-                            _ => {}
-                        }
-                    }
+                    // pursuit (F-68032, pursuit_machine; the re-pick gate's tactic +36 is not ported: open)
+                    let sees = PursuitSees {
+                        near_safe: d < safe,
+                        near_along: d < 1.5 * along,
+                        near5: d < 5.0,
+                        moving: t_moving,
+                        same_dir,
+                        ahead,
+                        on_right,
+                        same_facing,
+                        all_block,
+                        closing: closing(safe),
+                        pick: pick_side(),
+                        gate: true,
+                        bearing,
+                        speed,
+                    };
+                    pursuit_machine(tac, &sees, t("fArrestTgtThresholdSpd", 10.0), last_tspeed, dt);
                 }
                 if tac.st != st {
                     log::info!("police: cruiser {} {:?} -> {:?} ({:.0} m)", c.uid, st, tac.st, d);
@@ -3415,7 +3509,8 @@ impl Police {
                     // Block (F-56982): handbrake, no throttle, full lock towards the target
                     (Tac::Block, _) => Some(crate::ai::Overrides { handbrake: Some(true), throttle: Some(0.0), steer: Some(tac.block_steer), brake: None }),
                     // Halt (F-29519): stopped beside the target; steering away while closing in
-                    (Tac::Halt, false) => Some(crate::ai::Overrides { brake: (d < safe).then_some(1.0), steer: if closing(safe) { away } else { None }, ..Default::default() }),
+                    // (Halt's steer away is taken once the cop closes in and kept, F-84018)
+                    (Tac::Halt, false) => Some(crate::ai::Overrides { brake: (d < safe).then_some(1.0), steer: (tac.halt_steer != 0.0).then_some(tac.halt_steer), ..Default::default() }),
                     (Tac::Halt, true) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
                     _ => None,
                 };
@@ -3890,6 +3985,92 @@ mod tests {
             }
         }
         assert!(checked == 6000 && sends > 20, "{checked} {sends}");
+    }
+
+    /// The Pursuit's machine against the original's tactic object (ctor F-55508, begin F-89627, update F-68032 with its
+    /// FSM and states) run offline by tools/pursuit_fsm_reference.py: the same inputs from the same xorshift; at every
+    /// recorded update the state, the asked state, the state's time, its timers and the brain's command fields equal.
+    #[test]
+    fn pursuit_machine_matches_the_original() {
+        struct X(u32);
+        impl X {
+            fn next(&mut self) -> u32 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 17;
+                self.0 ^= self.0 << 5;
+                self.0
+            }
+            fn r(&mut self, a: i32, b: i32) -> i32 {
+                a + (self.next() % (b - a + 1) as u32) as i32
+            }
+        }
+        const ODDS: [u32; 12] = [300, 150, 60, 300, 300, 300, 30, 30, 40, 40, 30, 60];
+        let reference = include_str!("testdata/pursuit_fsm_ref.txt");
+        let mut lines = reference.lines().peekable();
+        let (mut checked, mut blocks) = (0, 0);
+        while let Some(head) = lines.next() {
+            let seed: u32 = head.strip_prefix("CASE ").unwrap().parse().unwrap();
+            let mut g = X(seed);
+            let mut f: Vec<bool> = (0..12).map(|_| g.r(0, 1) != 0).collect();
+            let (mut bearing, mut speed) = (g.r(60, 120), g.r(0, 80));
+            let (mut tac, mut last) = (CopTac::default(), 0.0f32);
+            let mut k = 0usize;
+            while let Some(line) = lines.peek().filter(|l| !l.starts_with("CASE")) {
+                let v: Vec<&str> = line.split_whitespace().collect();
+                let want: usize = v[0].parse().unwrap();
+                while k <= want {
+                    for (i, b) in f.iter_mut().enumerate() {
+                        if g.next() % ODDS[i] == 0 {
+                            *b = !*b;
+                        }
+                    }
+                    bearing = (bearing + g.r(-3, 3)).clamp(50, 130);
+                    speed = (speed + g.r(-2, 2)).clamp(0, 120);
+                    if g.next() % 97 == 0 {
+                        speed = (speed - g.r(10, 40)).max(0);
+                    }
+                    let s = PursuitSees {
+                        near_safe: f[0],
+                        near_along: f[1],
+                        near5: f[2],
+                        moving: f[3],
+                        same_dir: f[4],
+                        ahead: f[5],
+                        on_right: f[6],
+                        same_facing: f[7],
+                        all_block: f[8],
+                        closing: f[9],
+                        pick: f[10],
+                        gate: f[11],
+                        bearing: bearing as f32,
+                        speed: speed as f32 * 0.25,
+                    };
+                    pursuit_machine(&mut tac, &s, 10.0, last, 1.0f32 / 60.0);
+                    last = s.speed;
+                    k += 1;
+                }
+                let code = |t: Tac| match t {
+                    Tac::CatchUp => 1,
+                    Tac::AlongSide => 2,
+                    Tac::Block => 3,
+                    Tac::Halt => 5,
+                    Tac::Avoid => 9,
+                };
+                let a = match tac.st {
+                    Tac::AlongSide => tac.far_t.to_bits(),
+                    Tac::Halt => tac.halt_steer.to_bits(),
+                    _ => 0,
+                };
+                let z = if tac.st == Tac::AlongSide { tac.side_t.to_bits() } else { 0 };
+                let got = format!("{} {} {} {:08x} {:08x} {:08x} {} {} {}", want, code(tac.st), tac.next.map_or(-1, code), tac.t.to_bits(), a, z, tac.cmd,
+                                  tac.side as u8, tac.hb as u8);
+                assert_eq!(got, *line, "case {seed}");
+                checked += 1;
+                blocks += (tac.st == Tac::Block) as u32;
+                lines.next();
+            }
+        }
+        assert!(checked > 1000 && blocks > 0, "{checked} {blocks}");
     }
 
     /// F-83946: the sum over the offences, the pursuit's seconds, the flee fine, the career cut
