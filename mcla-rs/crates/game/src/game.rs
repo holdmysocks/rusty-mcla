@@ -44,6 +44,8 @@ pub struct BmtEnd {
 
 /// GAME OPTIONS' AUTO SAVE row
 const PAGE_AUTOSAVE: u8 = 39;
+/// the cruise wreck menu's QUICK FIX row (RO_FullFix)
+const PAGE_QUICK_FIX: u8 = 239;
 /// The mark of a satisfied objective in a mission's panel (`Career::objective_texts`)
 pub const OBJ_DONE: char = '\u{3}';
 
@@ -5250,6 +5252,10 @@ impl Game {
                 }
                 let s = |key: &str, fallback: &str| -> String { self.career.strings.get(key).filter(|v| !v.contains('<')).map(|v| v.to_string()).unwrap_or_else(|| fallback.to_string()).to_uppercase() };
                 let racing = self.race.is_some() || self.flag.is_some();
+                // (the car wrecked in the cruise - F-48456: damage over MaxDamage at 1, offline: F-43165 builds the
+                // menu as a race over, and with no race that is the cruise menu's (F-76337): its RaceOverTab in
+                // place of PAUSE, titled Dialog_Title_DamagedOut - F-48085)
+                let wreck_menu = !racing && self.test_drive.is_none() && vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
                 let kind = self.race.as_ref().map(|r| r.kind);
                 let found = self.collected.len();
                 // (the line under a page's title: the vehicle, race or district it is about)
@@ -5647,6 +5653,18 @@ impl Game {
                             items.push((s("TD_Continue", "CONTINUE"), String::new(), Go::Act(MenuAction::Resume)));
                             items.push((s("TD_Return_To_Garage", "RETURN TO GARAGE"), String::new(), Go::Act(MenuAction::OpenGarage)));
                         }
+                        0 if wreck_menu => {
+                            // (the rows the cruise menu leaves on when wrecked - F-72415, F-46990: RO_FullFix "QUICK
+                            // FIX" while vt+56 (F-58132, off when the police have the player) and no race; RO_Garage
+                            // through F-98337 / F-88974, greyed (0x10) with the police on the player. RETURN TO
+                            // CRUISE, RESTART and the replay are off when wrecked, RESULTS only on line)
+                            if !self.police_on_player {
+                                items.push((s("quick_fix", "QUICK FIX"), String::new(), Go::Page(PAGE_QUICK_FIX)));
+                            }
+                            if self.go_garage_gate() {
+                                items.push((s("pause_go_to_garage", "GO TO GARAGE"), String::new(), if self.police_on_player { Go::Off } else { Go::Act(MenuAction::GoToGarage) }));
+                            }
+                        }
                         0 => {
                             // (chased: CONTINUE reads RETURN TO CHASE, and the rows that would leave the
                             // chase - PM_Restart, PM_AbortRace, PM_ViewReplay, PM_NextRace - are greyed:
@@ -5804,6 +5822,8 @@ impl Game {
                         3 if crate::mc4::music_shuffle(&self.opt_x) == Some(false) => vec![crate::glyphs::with_key("V", (s("playlist_prompt_view", "VIEW SONGS"), ICON_A)), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_shuffle", "TURN SHUFFLE ON"), crate::flash_ui::ICON_X)],
                         68 => vec![(s("playlist_prompt_play", "PLAY"), ICON_A), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_add", "ADD TO PLAYLIST"), crate::flash_ui::ICON_Y)],
                         3 => vec![crate::glyphs::with_key("V", (s("playlist_prompt_view", "VIEW SONGS"), ICON_A)), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_unshuffle", "TURN SHUFFLE OFF"), crate::flash_ui::ICON_X)],
+                        // (wrecked B does nothing: no BACK - approx., as the race-over menu's capture `sr_raceover`)
+                        0 if wreck_menu && self.pause_tab == 0 => vec![(s("prompt_accept", "ACCEPT"), ICON_A)],
                         _ => vec![(s("prompt_accept", "ACCEPT"), ICON_A), (s("prompt_back", "BACK"), ICON_B)],
                     };
                     // (GPS stands on every tab, in a race too: references `p01`, `t03`, `y01`)
@@ -5833,7 +5853,7 @@ impl Game {
                         // (the original's playlist icon is a globe that none of the movies' icon frames
                         // carry; the empty ring, frame 18, stands in)
                         icon: if genres { std::env::var("MCLA_GENRE_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(18) } else { self.pause_tab as i32 + 1 },
-                        tabs: if on_tabs { vec![s("pause_tab_mainmenu", "PAUSE"), s("pause_tab_gamemodes", "MODES"), s("pause_tab_settings", "SETTINGS")] } else { Vec::new() },
+                        tabs: if on_tabs { vec![if wreck_menu { s("Dialog_Title_DamagedOut", "DAMAGED OUT") } else { s("pause_tab_mainmenu", "PAUSE") }, s("pause_tab_gamemodes", "MODES"), s("pause_tab_settings", "SETTINGS")] } else { Vec::new() },
                         cur_tab: self.pause_tab,
                         title: title.clone(),
                         rows: items.iter().enumerate().map(|(k, (l, v, g))| MenuRow { label: l.clone(), value: v.replace('|', "I"), enabled: (*g != Go::Off || !(on_tabs || self.pause_page == 2)) && !(self.pause_page == 6 && v.is_empty()) && !(self.pause_page == PAGE_DISPLAY && *g == Go::Off) && !(ctrl_page.is_some() && *g == Go::Off && k < usize::MAX), part: None }).collect(),
@@ -5982,6 +6002,12 @@ impl Game {
                             }
                         }
                         Some(Go::Page(PAGE_AUTOSAVE)) => self.pause_do = Some(PAGE_AUTOSAVE),
+                        // (QUICK FIX, F-51369: QUICK_FIX_MASTER and the free repair F-32850 - main's `quick_fix` -, then
+                        // the UI to `Cruising`: the game goes on)
+                        Some(Go::Page(PAGE_QUICK_FIX)) => {
+                            self.quick_fix = true;
+                            action = MenuAction::Resume;
+                        }
                         // (the music lists, `mc4`: PLAY on a song; VIEW SONGS on a list)
                         Some(Go::Page(240)) => {
                             if let Some(g) = crate::mc4::music_play(&self.opt_x, self.stat_idx[0], self.menu_sel) {
@@ -6096,7 +6122,8 @@ impl Game {
                         } else if self.pause_page != 0 {
                             self.menu_sel = if self.pause_page == 2 { 1 } else { 0 };
                             self.pause_page = 0;
-                        } else {
+                        } else if !wreck_menu {
+                            // (wrecked offline B does nothing: F-33773 takes it, no sound)
                             action = MenuAction::Resume;
                         }
                     }
@@ -6119,7 +6146,7 @@ impl Game {
                 let mut chosen: Option<Go> = None;
                 if on_tabs {
                     // the tab strip
-                    let tabs = [s("pause_tab_mainmenu", "PAUSE"), s("pause_tab_gamemodes", "MODES"), s("pause_tab_settings", "SETTINGS")];
+                    let tabs = [if wreck_menu { s("Dialog_Title_DamagedOut", "DAMAGED OUT") } else { s("pause_tab_mainmenu", "PAUSE") }, s("pause_tab_gamemodes", "MODES"), s("pause_tab_settings", "SETTINGS")];
                     let mut x = tx;
                     for (i, t) in tabs.iter().enumerate() {
                         let size = if i == self.pause_tab { 28.0 } else { 17.0 } * sc;
@@ -6168,6 +6195,10 @@ impl Game {
                     chosen = items.get(sel).map(|i| i.2);
                 }
                 match chosen {
+                    Some(Go::Page(PAGE_QUICK_FIX)) => {
+                        self.quick_fix = true;
+                        action = MenuAction::Resume;
+                    }
                     // (CONTROL STYLE, `mc4`: SET)
                     Some(Go::Page(p)) if (220..=228).contains(&p) => {
                         if crate::mc4::control_set(&mut self.mc4, (p - 220) as i32, self.fresh_game) {
@@ -6227,7 +6258,7 @@ impl Game {
                     if self.pause_page != 0 {
                         self.menu_sel = if self.pause_page == 2 { 1 } else { 0 };
                         self.pause_page = 0;
-                    } else {
+                    } else if !wreck_menu {
                         action = MenuAction::Resume;
                     }
                 }
