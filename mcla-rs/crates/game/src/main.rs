@@ -7166,6 +7166,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                     }
+                    // (a story series' next race: FindNextRaceIndex over its array, OrderedSeriesCore 0x24fe)
+                    if self.game.next_event_race.is_some() {
+                        if let Some(i) = self.game.story_series_next() {
+                            self.game.next_event_race = Some(i);
+                        }
+                    }
                     if let Some((story, key)) = s_series_won {
                         self.game.career.series_won(story.as_deref(), &key);
                     }
@@ -11757,6 +11763,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         sr.wins.clear();
                         self.game.current_race = sr.races.first().copied().or(self.game.current_race);
                         self.game.next_event_race = None;
+                    }
+                    // (a story series': the history's pick, OrderedSeriesCore 0x247c -> 0x24fe)
+                    if let Some(i) = self.game.story_series_next() {
+                        self.game.current_race = Some(i);
                     }
                 }
                 if action == MenuAction::RestartRace {

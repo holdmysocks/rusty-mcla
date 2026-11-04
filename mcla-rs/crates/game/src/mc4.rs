@@ -16857,6 +16857,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// GitHub #34: a story series' races as OrderedSeriesCore takes them - the array by mcRaceArray_AddRace (a name
+    /// the race table lacks left out), the first race the beat-me-there pick from the player, every later one and a
+    /// restart's FindNextRaceIndex (the first not run lately, else the oldest), not the script's order.
+    #[test]
+    fn story_series_races_as_the_original() {
+        let Some((mut g, dir, _)) = race_game("newgame_import.json", "i34b") else { return };
+        let mut s = g.career.save();
+        for id in ["BESTOF_GH_04", "BESTOF_SH_03"] {
+            let mut st = crate::career::MState::default();
+            st.stage = crate::career::Stage::Active;
+            s.missions.insert(id.to_string(), st);
+            s.order.push(id.to_string());
+        }
+        g.career.restore(&s);
+        // (BESTOF_SH_03's second name is `Ordered/_circuit_mb_04a`, in no race table: two races, 2 to win)
+        if let Some((names, _)) = g.career.series_mission("BESTOF_SH_03") {
+            let (arr, need) = g.story_series_array("BESTOF_SH_03").unwrap();
+            assert_eq!((names.len(), arr.len(), need), (3, 2, 2));
+        }
+        let (arr, _) = g.story_series_array("BESTOF_GH_04").unwrap();
+        assert_eq!(arr.len(), 3);
+        let table: Vec<usize> = arr.iter().map(|&i| g.mc4_race_index(&g.race_defs[i].id).unwrap()).collect();
+        // (the first: F-73402 over the array from the player, 400 m)
+        let (pos, fwd) = (glam::Vec3::new(824.3, 16.75, -791.7), glam::Vec3::new(0.0, 0.0, -1.0));
+        let first = g.story_series_first("BESTOF_GH_04", pos, fwd, 7).unwrap();
+        let want = g.mc4_bmt_race(&table, district_of_place(&data_dir(), pos).unwrap() as i32, pos, fwd, 400.0, 7).unwrap();
+        assert_eq!(g.mc4_table_race(want).unwrap().0, first);
+        g.man_diff = Some(2);
+        g.story_series_start(&("BESTOF_GH_04".to_string(), "NIKOLAI".to_string(), String::new(), String::new()), first);
+        assert!(g.story_series());
+        // (each race run joins the history; the next is the array's first not in it)
+        let mut run = vec![first];
+        g.mc4_race_started(first);
+        for _ in 0..2 {
+            let n = g.story_series_next().unwrap();
+            assert!(!run.contains(&n), "a race not run lately first");
+            assert_eq!(n, *arr.iter().find(|i| !run.contains(i)).unwrap());
+            run.push(n);
+            g.mc4_race_started(n);
+        }
+        // (all three run: the one run longest ago - the series goes on until a racer has his wins)
+        assert_eq!(g.story_series_next(), Some(run[0]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Step 20: the hidden bytes. A story mission's second objective comes out once the
     /// hookman is met and goes back when the series is lost; after a load the always-hidden
     /// byte is the XML's again. The scripts a mission's script starts, once each.

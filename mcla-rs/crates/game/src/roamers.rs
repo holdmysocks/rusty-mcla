@@ -1195,20 +1195,20 @@ impl Roamers {
         }
         // the hookman's own event, if the career names one
         let scripted = if vehicles.cars[ri].driver.is_empty() { None } else { game.career.hookman_race() }.and_then(|r| (0..game.race_defs.len()).find(|&i| game.race_defs[i].id.to_ascii_lowercase().ends_with(r.as_str()))).and_then(|i| game.race_start(i).map(|s| (i, s, s.distance(pp))));
-        // (a story man's OrderedSeriesCore: his series, from its first race)
+        // (mcRaceArray_FindBeatMeThereRaceIndex draws from the career's generator)
+        let rnd = crate::oppick::career_rng().next() & 0x7FFF_FFFF;
+        // (a story man's OrderedSeriesCore: his series, its first race the beat-me-there pick from the
+        // player - `Game::story_series_first`)
         self.series_of = None;
         let scripted = scripted.or_else(|| {
             let m = man.as_ref()?;
-            let first = game.career.series_mission(&m.mission)?.0.into_iter().next()?;
-            let i = (0..game.race_defs.len()).find(|&i| game.race_defs[i].id.to_ascii_lowercase().ends_with(first.as_str()))?;
+            let i = game.story_series_first(&m.mission, pp, pf, rnd)?;
             let s = game.race_start(i)?;
             self.series_of = Some((m.mission.clone(), m.name.clone(), m.car.clone(), m.config.clone()));
             Some((i, s, s.distance(pp)))
         });
         // a local hookman's choice (mcRaceArray_*: `mc4_local_races`)
         let (rpos, rfwd, top) = (vehicles.cars[ri].state.pos, vehicles.cars[ri].state.forward(), vehicles.cars[ri].model.params.top_speed);
-        // (mcRaceArray_FindBeatMeThereRaceIndex draws from the career's generator)
-        let rnd = crate::oppick::career_rng().next() & 0x7FFF_FFFF;
         let kept = if scripted.is_some() { Vec::new() } else { game.mc4_local_races(rpos, rfwd, man.as_ref().map_or(6, |m| m.district as i32), rnd) };
         let pick = scripted.or_else(|| kept.first().and_then(|&t| game.mc4_table_race(t)).map(|(i, s)| (i, s, s.distance(pp))));
         let Some((race, goal, dist)) = pick else {

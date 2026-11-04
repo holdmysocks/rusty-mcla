@@ -8885,7 +8885,8 @@ impl Game {
                                 }
                             }
                             // RESTART SERIES / RACE SERIES AGAIN: from its first race, every tally at
-                            // nought (OrderedSeriesCore `restart`, 0x247c)
+                            // nought (OrderedSeriesCore `restart`, 0x247c); a story series' race is the history's
+                            // pick (`story_series_next`)
                             2 | 5 => {
                                 if let Some(sr) = self.series.as_mut() {
                                     sr.at = 0;
@@ -8894,6 +8895,9 @@ impl Game {
                                     self.next_event_race = None;
                                     action = MenuAction::StartRace;
                                     self.warp_with_cut = true;
+                                }
+                                if let Some(i) = self.story_series_next() {
+                                    self.current_race = Some(i);
                                 }
                             }
                             _ => {
@@ -14141,20 +14145,57 @@ impl Series {
 }
 
 impl Game {
+    /// A story series' race array (OrderedSeriesCore 0x16d..0x1a5: mcRaceArray_AddRace, F-32440 -> F-32239 (F-79929 the lookup), for
+    /// each of the script's +3212 names at +3216): the race definitions in the script's order; a name the race
+    /// table lacks is left out (BESTOF_SH_03's `Ordered/_circuit_mb_04a`), a second one of a race too.
+    pub(crate) fn story_series_array(&self, id: &str) -> Option<(Vec<usize>, u32)> {
+        let (races, need) = self.career.series_mission(id)?;
+        let mut order: Vec<usize> = Vec::new();
+        for r in &races {
+            if let Some(i) = self.race_defs.iter().position(|d| d.id.to_ascii_lowercase().ends_with(r.as_str())) {
+                if !order.contains(&i) {
+                    order.push(i);
+                }
+            }
+        }
+        Some((order, need))
+    }
+
+    /// The first race of a story series (OrderedSeriesCore 0x581..0x5cb, taken when the story launcher's +3256
+    /// is 1): mcRaceArray_FindBeatMeThereRaceIndex (F-73402) over the series' array from the race data's racer 0,
+    /// the player - his district (Racer_GetCurrentDistrict), place and heading -, 400 m.
+    pub fn story_series_first(&self, id: &str, pos: Vec3, forward: Vec3, rnd: u32) -> Option<usize> {
+        let (order, _) = self.story_series_array(id)?;
+        let arr: Vec<usize> = order.iter().filter_map(|&i| self.mc4_race_index(&self.race_defs[i].id)).collect();
+        let district = crate::mc4::district_of_place(&self.data_dir, pos).unwrap_or(0) as i32;
+        let t = self.mc4_bmt_race(&arr, district, pos, forward, 400.0, rnd)?;
+        self.mc4_table_race(t).map(|(i, _)| i)
+    }
+
+    /// The race of a story series after one is run and after RESTART SERIES / RACE SERIES AGAIN (OrderedSeriesCore
+    /// 0x24fe with +3256 cleared by the first pass): mcRaceArray_FindNextRaceIndex (F-18968) over its array - the
+    /// first not in the history of the last twelve, else the one run longest ago. None for a hangout's series.
+    pub fn story_series_next(&self) -> Option<usize> {
+        let sr = self.series.as_ref().filter(|s| s.story.is_some())?;
+        let arr: Vec<i64> = sr.races.iter().filter_map(|&i| self.mc4_race_index(&self.race_defs[i].id).map(|t| t as i64)).collect();
+        let t = match self.mc4.as_ref() {
+            Some(m) => m.career.next_race_of(&arr)?,
+            None => *arr.first()?,
+        };
+        self.mc4_table_race(t as usize).map(|(i, _)| i)
+    }
+
     /// A story man's series starts with this race: `Roamers::series_of` flashed, the tally at
     /// nought (OrderedSeriesCore 0x247c).
     pub fn story_series_start(&mut self, man: &(String, String, String, String), race: usize) {
         let (id, name, car, config) = man;
-        let Some((races, need)) = self.career.series_mission(id) else { return };
-        let order: Vec<usize> = races.iter().filter_map(|r| self.race_defs.iter().position(|d| d.id.to_ascii_lowercase().ends_with(r.as_str()))).collect();
-        if order.first() != Some(&race) {
-            return;
-        }
+        let Some((order, need)) = self.story_series_array(id) else { return };
+        let Some(at) = order.iter().position(|&i| i == race) else { return };
         let diff = self.man_diff.unwrap_or(1).clamp(0, 3) as usize;
         self.event_diff = Some(diff);
         self.career.series_drop(id);
         let rivals = vec![self.rivals.with_config(name, car, config)];
-        self.series = Some(Series { key: id.to_string(), races: order, at: 0, wins: Vec::new(), rivals, diff, story: Some((id.to_string(), need)) });
+        self.series = Some(Series { key: id.to_string(), races: order, at, wins: Vec::new(), rivals, diff, story: Some((id.to_string(), need)) });
     }
 
     pub fn story_series(&self) -> bool {
