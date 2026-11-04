@@ -173,6 +173,68 @@ mod tests {
         assert_eq!(bad, 0, "records differ");
     }
 
+    /// GH_06 recorded at 23:00 (work/lighting-trails/night/cap/g.24 .. g.43, 1,430 cast draws, all within 1.3e-7 of the
+    /// rule - check.py there): two draws' three lights from the cutscene list and the key light, and ambYPos (c57) =
+    /// the fill map's cube at the draw's place for every distinct place of the recordings.
+    #[test]
+    fn the_night_scene_draws_match() {
+        let dir = "D:/MCLA/extracted/cache";
+        if !Path::new(dir).join("tune/lighting").exists() || !Path::new(dir).join("tune/city/sc").exists() {
+            return;
+        }
+        init(dir);
+        crate::fillmap::init(dir);
+        let key = Vec3::new(-67559.0, -73716.5, -1286.73);
+        let cl = crate::skin::CharLight {
+            night: true,
+            night_path: true,
+            cine: true,
+            dynamic: Some(crate::figlight::Dynamic { heads: [None; 2], key: Some((Vec3::splat(0.05098), key / 1.0e5)), rec3: None }),
+            ..Default::default()
+        };
+        let draws: [(Vec3, [[f32; 4]; 6]); 2] = [
+            (
+                Vec3::new(-179.411, 18.178, -751.707),
+                [
+                    [-180.261, 19.6579, -753.99, 1000.0],
+                    [-176.271, 20.6403, -749.831, 1000.0],
+                    [-176.244, 20.713, -752.164, 1000.0],
+                    [0.23076, 0.22192, 0.17007, -1.0],
+                    [1.0, 0.95076, 0.721, -1.0],
+                    [1.0, 0.93664, 0.641, -1.0],
+                ],
+            ),
+            (
+                Vec3::new(-175.82, 18.216, -756.775),
+                [
+                    [-176.271, 20.6403, -749.831, 1000.0],
+                    [-180.261, 19.6579, -753.99, 1000.0],
+                    [-67559.0, -73716.5, -1286.73, 1.0e6],
+                    [1.0, 0.95076, 0.721, -0.36833],
+                    [0.23076, 0.22192, 0.17007, -0.33833],
+                    [0.05098, 0.05098, 0.05098, -0.05098],
+                ],
+            ),
+        ];
+        for (p, want) in draws {
+            for (r, w) in cl.night_slots(p, None).iter().zip(want.iter()) {
+                for k in 0..4 {
+                    assert!((r[k] - w[k]).abs() <= 2e-4 * w[k].abs().max(1.0), "{p}: {r:?} vs {w:?}");
+                }
+            }
+        }
+        // (c57 of the recordings, rounded to 6 digits: map / 255 x 0.25)
+        for (x, z, c57) in [
+            (-179.411, -751.707, [0.07451, 0.07451, 0.058824]),
+            (-175.82, -756.775, [0.058824, 0.05098, 0.043137]),
+            (-195.376, -748.058, [0.117647, 0.098039, 0.069608]),
+            (-176.197, -751.846, [0.043137, 0.043137, 0.035294]),
+        ] {
+            let c = crate::fillmap::cube_at(x, z);
+            assert!((c - Vec3::from_array(c57)).abs().max_element() < 2e-6, "({x}, {z}): {c} vs {c57:?}");
+        }
+    }
+
     /// F-65001's order and cut: the best four by score, a later equal score after the earlier, nothing at or under 1e-6.
     #[test]
     fn best_four_in_the_original_order() {

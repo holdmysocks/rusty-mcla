@@ -166,9 +166,6 @@ pub struct CharLight {
     pub dynamic: Option<crate::figlight::Dynamic>,
     /// the cine probe (F-22850: a scene plays): at night the cutscene light list comes before the lamp grid
     pub cine: bool,
-    /// at night ambYPos stays the scene's ambient instead of the fill map's cube (the scenes' cast: whether the
-    /// draw hook's +24 is set for them, which chooses the cube in F-75930, was never recorded in a scene)
-    pub scene_amb: bool,
 }
 
 /// Path A at night (F-75930 with four = 0): the three slots when nothing lights the figure - place 0, colour 0,
@@ -826,7 +823,7 @@ impl SkinBuffer {
                 }
                 // (ambYPos: the scene's ambient by day; at night the ambient cube's faces are the fill map's
                 // colour, map / 255 x 0.25 with no fade - F-35455, recorded on the rider)
-                let amb = if night && !cl.scene_amb { crate::fillmap::cube_at(p.x, p.z) } else { cl.amb };
+                let amb = if night { crate::fillmap::cube_at(p.x, p.z) } else { cl.amb };
                 u.area_a[3] = [amb.x, amb.y, amb.z, m.ambient_mod];
                 // (F-42959: outside a car the neon and gauge light colours 0 and the floor far below; a driver gets
                 // his car's - floorPlaneEq in area_b[3], gauge place / colour / cone direction and neon place / colour in
@@ -978,7 +975,6 @@ mod tests {
             night_path: false,
             dynamic: None,
             cine: false,
-            scene_amb: false,
         };
         let want = [
             [-268.15, 64.034, -747.02, 1000.0],
