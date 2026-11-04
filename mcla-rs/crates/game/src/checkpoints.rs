@@ -296,6 +296,66 @@ pub fn ahead_point(pos: Vec3, vel: Vec3) -> Vec3 {
     pos + vel.normalize_or_zero() * 2.0
 }
 
+/// fmadds as the generated code does it: the product and the sum in double, then to single.
+fn fmadds(a: f32, b: f32, c: f32) -> f32 {
+    (a as f64).mul_add(b as f64, c as f64) as f32
+}
+
+/// |a - p| as the original adds it up: x, then z, then y (F-78389 / F-76392).
+fn point_dist(a: Vec3, p: Vec3) -> f32 {
+    let (dx, dz, dy) = (a.x - p.x, a.z - p.z, a.y - p.y);
+    ((fmadds(dy, dy, fmadds(dz, dz, dx * dx))) as f64).sqrt() as f32
+}
+
+/// `F-27331`: from p to the segment a -> a + d: t = d.(p - a) / d.d, the ends below 1e-12
+/// (the reciprocal with one Newton step, as `vrefp` + `vnmsubfp` / `vmaddfp`).
+fn seg_dist(a: Vec3, d: Vec3, p: Vec3) -> f32 {
+    const E: f32 = 1e-12;
+    // (vmsum3fp: z + (y + x))
+    let dot = |u: Vec3, v: Vec3| u.z * v.z + (u.y * v.y + u.x * v.x);
+    let mut v = a - p;
+    let num = 0.0 - dot(d, v);
+    if !(E >= num) {
+        let rest = dot(d, d) - num;
+        if E >= rest {
+            v += d;
+        } else {
+            let x = num + rest;
+            let r = 1.0 / x;
+            let r = r * -(r * x - 1.0) + r;
+            v = d * (num * r) + v;
+        }
+    }
+    let v = (v + p) - p;
+    ((fmadds(v.z, v.z, fmadds(v.y, v.y, v.x * v.x))) as f64).sqrt() as f32
+}
+
+impl CpSpec {
+    /// Checkpoint::Distance (`F-78389`): a line checkpoint (+330) to its segment +64 -> +80,
+    /// else to +64.
+    pub fn distance(&self, p: Vec3) -> f32 {
+        match self.second {
+            Some(b) => seg_dist(self.pos, b - self.pos, p),
+            None => point_dist(self.pos, p),
+        }
+    }
+}
+
+/// `F-76392`: the nearest of the checkpoints (their +64) open to the racer (its state word
+/// +200 + 4 x racer is 0); 25000 when none is.
+pub fn nearest_open(cps: impl IntoIterator<Item = (Vec3, bool)>, p: Vec3) -> f32 {
+    let mut m = 25000.0f32;
+    for (c, open) in cps {
+        if open {
+            let d = point_dist(c, p);
+            if m > d {
+                m = d;
+            }
+        }
+    }
+    m
+}
+
 /// `F-66886` on the ground plane (x, z): where the line a0 -> a1 meets b0 -> b1, as the
 /// fractions (t along a, u along b); None when they are parallel.
 pub fn cross_xz(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> Option<(f32, f32)> {
@@ -720,6 +780,37 @@ impl Markers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-78389 (with F-27331) and F-76392 run as the original's generated code off line
+    /// (work/career2/rank_verify.py) on 3,000 checkpoints and 1,500 open sets: the same bits.
+    #[test]
+    fn rank_distances_as_the_original() {
+        let text = include_str!("testdata/rank_dist_ref.txt");
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let (mut n, mut bad) = (0, Vec::new());
+        for l in text.lines().filter(|l| !l.starts_with('#')) {
+            let (case, want) = l.split_once(" = ").unwrap();
+            let w: Vec<&str> = case.split_whitespace().collect();
+            let v3 = |i: usize| Vec3::new(f(w[i]), f(w[i + 1]), f(w[i + 2]));
+            let got = if w[0] == "D" {
+                let mut c = CpSpec::at(v3(2));
+                if w[1] == "1" {
+                    c.second = Some(v3(5));
+                }
+                c.distance(v3(8))
+            } else {
+                let k = usize::from_str_radix(w[1], 16).unwrap();
+                let cps: Vec<(Vec3, bool)> = (0..k).map(|j| (v3(4 + 4 * j), w[3 + 4 * j] == "0")).collect();
+                nearest_open(cps, v3(3 + 4 * k))
+            };
+            n += 1;
+            if got.to_bits() != u32::from_str_radix(want, 16).unwrap() {
+                bad.push(format!("{l} -> {:08x}", got.to_bits()));
+            }
+        }
+        assert_eq!(n, 4500);
+        assert!(bad.is_empty(), "{} of {n} differ, first: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+    }
 
     const DATA: &str = "D:/MCLA/extracted/cache";
 

@@ -49,6 +49,23 @@ struct Rec {
 
 /// Record `i`'s cross-fade at audio rpm `x`: full between the previous record's end and the next one's start, a
 /// quarter sine in from its start, a quarter cosine out to its end.
+/// F-98304: how far the rubber band holds the racer's throttle down, 1 - min((cap - MinThrottle) / (1 - MinThrottle), 1)
+/// (brain +404, +428).
+pub(crate) fn rubber_hold(cap: f32, min_throttle: f32) -> f32 {
+    let f = (cap - min_throttle) / (1.0 - min_throttle);
+    1.0 - if 1.0 - f >= 0.0 { f } else { 1.0 }
+}
+
+/// F-98304's blend target: the rubber band's hold, at most 3 x the speed ratio (this+232; on a tie the speed term).
+fn blend_target(hold: f32, speed_ratio: f32) -> f32 {
+    let r = speed_ratio * 3.0;
+    if hold - r >= 0.0 {
+        r
+    } else {
+        hold
+    }
+}
+
 fn xfade(recs: &[Rec], i: usize, x: f32) -> f32 {
     let r = recs[i];
     let prev_end = if i == 0 { 1.0 } else { recs[i - 1].end };
@@ -92,6 +109,9 @@ pub struct EngineIn {
     /// opponents: the car's driver is racing (byte 1951) and its speed over the gearbox's top-gear speed (this+232)
     pub racing: bool,
     pub speed_ratio: f32,
+    /// opponents: how far the rubber band holds the throttle down, 1 - min((cap - MinThrottle) / (1 - MinThrottle), 1)
+    /// (brain +404 the cap, +428 the brain's tuning copy's MinThrottle); 0 with the rubber band off (brain +380)
+    pub rubber_hold: f32,
 }
 
 /// The car's audio DEFAULT object: `<CAR>_PROFILE` +10 for the player, +14 for an opponent; VPD_ cars fall back to their
@@ -163,9 +183,10 @@ pub struct EngineSound {
     lfo_hold: f32,
     lfo_release: f32,
     lfo_delay: f32,
+    /// AMPMOD +10 the bump's curve, +14 its length, +22 its amount, +26 the random spread of both (F-75866)
     amp_curve: u32,
     amp_time: (f32, f32),
-    amp_amount: f32,
+    amp_base: f32,
     /// the player's car (true) or a computer racer's (`_O_` objects, section 6 of VEHICLE_EXTRA_AUDIO_RULE.md)
     player: bool,
     /// opponents: AMPMOD +30/+34 wobble target range, +38/+42 its rate range
@@ -192,8 +213,10 @@ pub struct EngineSound {
     clock: f32,
     kick_at: f32,
     lfo: Lfo,
+    /// the bump: time left (this+1204), its length (+1200) and this kick's amount (+1208)
     amp_left: f32,
     amp_len: f32,
+    amp_amount: f32,
     prev_shift: i8,
     prev_gear: i32,
     pending_gear: Option<(f32, u32)>,
@@ -323,7 +346,7 @@ impl EngineSound {
             lfo_delay: be_f32(lfo, 62) + be_f32(lfo, 66),
             amp_curve: be_u32(amp, 10),
             amp_time: (be_f32(amp, 14), be_f32(amp, 26)),
-            amp_amount: be_f32(amp, 22) - be_f32(amp, 26),
+            amp_base: be_f32(amp, 22),
             audio_rpm: 0.0,
             gains: vec![0.0; n],
             voices: vec![None; n],
@@ -343,6 +366,7 @@ impl EngineSound {
             lfo: Lfo::default(),
             amp_left: 0.0,
             amp_len: 0.0,
+            amp_amount: 0.0,
             prev_shift: 0,
             prev_gear: 0,
             pending_gear: None,
@@ -352,6 +376,13 @@ impl EngineSound {
             ws_in: 0.0,
             ws_drive: 0.0,
         })
+    }
+
+    /// The entity's constructor (F-43725) sets the rpm +200, the slewed rpm +204 and the previous rpm +208 to the car's
+    /// engine rpm (F-12794) when it is made: a racer handed another car starts at its engine's rpm, not at 0.
+    pub fn start_at(&mut self, rpm: f32) {
+        self.s = rpm;
+        self.prev_rpm = rpm;
     }
 
     /// The smoothed engine speed (this+204) and the load volume (this+148): the turbo whine reads both.
@@ -432,9 +463,31 @@ impl EngineSound {
         let load = if e.full_torque > 0.0 { e.torque / e.full_torque } else { 0.0 };
         approach_fma(&mut self.load_smooth, load, 6.0, dt);
         let load_abs = load.abs().min(1.0);
+        self.step_load_vol(e, load_abs, dt);
+        // the kick: throttle re-applied (F-12996)
+        let first = self.recs[0];
+        let last = self.recs[self.recs.len() - 1];
+        let audio_rpm_prev = {
+            let norm = ((self.s - e.idle_rpm) / (e.max_rpm - e.idle_rpm).max(1.0)).min(1.0);
+            norm * (last.end - first.start) + first.start
+        };
+        if e.torque > 0.0 && self.prev_torque <= 0.0 && e.throttle_in >= self.kick_throttle && audio_rpm_prev >= self.kick_rpm && e.speed >= 10.0 {
+            if self.clock >= self.kick_at + 1.0 {
+                self.kick(lib);
+            }
+            self.kick_at = self.clock;
+        }
+        if e.torque < 0.0 {
+            self.lfo.running = false;
+        }
+        let lfo_cents = self.step_lfo(dt);
+        self.step_loops(lib, e, dt, lfo_cents);
+    }
+
+    /// The load volume (entity +148; player F-42554, opponent F-57529) and the waveshaper drive's input (+196) set by
+    /// each branch. `load_abs` is |torque / full torque| clamped to 1 (entity +168).
+    fn step_load_vol(&mut self, e: &EngineIn, load_abs: f32, dt: f32) {
         let reversing = e.gear == -1 && e.speed > 1.0;
-        // load volume (player F-42554, opponent F-57529)
-        // (each branch also sets the waveshaper drive's input, entity +196)
         if reversing {
             approach_fma(&mut self.load_vol, self.load_rev, 0.8, dt);
             self.ws_in = e.throttle_in;
@@ -462,7 +515,11 @@ impl EngineSound {
             } else if e.speed < self.load_slow {
                 approach(&mut self.load_vol, 1.0, dt);
                 self.ws_in = drive;
-            } else if e.throttle_in < 0.5 || e.shift != 0 {
+            } else if e.throttle_in < 0.5 {
+                // (lifted: toward XF+22, the shift toward XF+18; recorded, work/audio2/cap2/eng6.txt)
+                approach_fma(&mut self.load_vol, self.load_floor, self.load_rate, dt);
+                self.ws_in = load_abs;
+            } else if e.shift != 0 {
                 approach_fma(&mut self.load_vol, self.load_brake, self.load_rate, dt);
                 self.ws_in = load_abs;
             } else {
@@ -470,23 +527,12 @@ impl EngineSound {
                 self.ws_in = drive;
             }
         }
-        // the kick: throttle re-applied (F-12996)
+    }
+
+    /// The rest of the update: the rpm slew, the start machine and the loops (F-10725).
+    fn step_loops(&mut self, lib: &mut SoundLib, e: &EngineIn, dt: f32, lfo_cents: f32) {
         let first = self.recs[0];
         let last = self.recs[self.recs.len() - 1];
-        let audio_rpm_prev = {
-            let norm = ((self.s - e.idle_rpm) / (e.max_rpm - e.idle_rpm).max(1.0)).min(1.0);
-            norm * (last.end - first.start) + first.start
-        };
-        if e.torque > 0.0 && self.prev_torque <= 0.0 && e.throttle_in >= self.kick_throttle && audio_rpm_prev >= self.kick_rpm && e.speed >= 10.0 {
-            if self.clock >= self.kick_at + 1.0 {
-                self.kick(lib);
-            }
-            self.kick_at = self.clock;
-        }
-        if e.torque < 0.0 {
-            self.lfo.running = false;
-        }
-        let lfo_cents = self.step_lfo(dt);
         // rpm slew and the start machine (F-10725)
         let target = if e.idle_only { e.idle_rpm } else { e.rpm };
         let rpm_rate = (target - self.s) / dt.max(1e-6);
@@ -566,11 +612,16 @@ impl EngineSound {
         // normalised rpm, audio rpm, master gain
         let mut norm = ((self.s - e.idle_rpm) / (e.max_rpm - e.idle_rpm).max(1.0)).min(1.0);
         if !self.player {
-            // the RPM_RACE_OPPONENT blend (F-98304; the brain's share, brain +380 / +404 / +428, is not decoded:
-            // the speed term alone) and the wobble (F-10725 @A-74853)
-            let want = if e.racing { (e.speed_ratio * 3.0).min(1.0) } else { 0.0 };
-            let rate = if want < self.blend { 0.125 } else { 0.25 } * dt;
-            approach(&mut self.blend, want, rate);
+            // the RPM_RACE_OPPONENT blend (F-98304: the rubber band's hold, at most 3 x the speed ratio) and the wobble
+            // (F-10725 @A-74853)
+            // (not racing: 0 at once)
+            if e.racing {
+                let want = blend_target(e.rubber_hold, e.speed_ratio);
+                let rate = if want < self.blend { 0.125 } else { 0.25 };
+                approach_fma(&mut self.blend, want, rate, dt);
+            } else {
+                self.blend = 0.0;
+            }
             if e.racing {
                 let c = lib.curve_eval(self.racing_curve, norm).unwrap_or(norm);
                 norm += (c - norm) * self.blend;
@@ -737,9 +788,11 @@ impl EngineSound {
 
     /// The kick event (F-75866): restart LFO 1 with randomised rates and depth, and the amp-mod bump.
     fn kick(&mut self, lib: &mut SoundLib) {
+        // (one draw for the three rates)
+        let v = self.lfo_freq_var;
+        let r = lib.rand_float(-v, v);
         for k in 0..3 {
-            let v = self.lfo_freq_var;
-            self.lfo.freq[k] = (self.lfo_freq[k] + lib.rand_float(-v, v)).max(0.0);
+            self.lfo.freq[k] = (self.lfo_freq[k] + r).max(0.0);
             self.lfo.phase[k] = self.lfo_phase[k];
         }
         self.lfo.amp = (self.lfo_amp.0 + lib.rand_int(-self.lfo_amp.1, self.lfo_amp.1)).max(0) as f32;
@@ -747,10 +800,14 @@ impl EngineSound {
         self.lfo.hold = 0.0;
         self.lfo.release = 0.0;
         self.lfo.running = true;
+        // (the amount AMPMOD +22 +- 26 drawn first; a bump only when it is above 0, its length +14 +- 26)
+        let v = self.amp_time.1;
+        self.amp_amount = self.amp_base + lib.rand_float(-v, v);
         if self.amp_amount > 0.0 {
-            let v = self.amp_time.1;
             self.amp_len = (self.amp_time.0 + lib.rand_float(-v, v)).max(0.0);
             self.amp_left = self.amp_len;
+        } else {
+            self.amp_left = 0.0;
         }
     }
 
@@ -921,7 +978,7 @@ mod tests {
 
     /// The per-record gain F-10725 hands to F-74444 (`gains`: cross-fade x gain curve x load) against the running
     /// original's (work/audio2/cap/eng1.txt ENG lines: R8 player, the audio rpm this+212, the load this+2144 and each
-    /// record's gain argument). `MCLA_ENG_CAP` = the capture.
+    /// record's gain argument). `MCLA_ENG_CAP` = the capture, `MCLA_ENG_CAR` = the player's car (default the R8).
     #[test]
     #[ignore = "requires MCLA_DATA_DIR and a recording (MCLA_ENG_CAP, default work/audio2/cap)"]
     fn player_record_gains_recorded() {
@@ -929,7 +986,8 @@ mod tests {
         let cap = std::env::var("MCLA_ENG_CAP").unwrap_or_else(|_| "../../../work/audio2/cap/eng1.txt".to_string());
         let a = crate::audio::Audio::new_offline(&dir).expect("audio");
         let lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
-        let e = EngineSound::new(&lib, "vp_aud_r8_08", false).expect("r8");
+        let car = std::env::var("MCLA_ENG_CAR").unwrap_or_else(|_| "vp_aud_r8_08".to_string());
+        let e = EngineSound::new(&lib, &car, false).expect("engine");
         let (first, last) = (e.recs[0], e.recs[e.recs.len() - 1]);
         if std::env::var_os("MCLA_ENG_CAP_PRINT").is_some() {
             println!("gain curve {:?}; recs {:?}", lib.curve(e.gain_curve), e.recs.iter().map(|r| (r.start, r.end, r.reference)).collect::<Vec<_>>());
@@ -1004,7 +1062,21 @@ mod tests {
         // (an update = one racer's lines from an i=0 to its next; only the complete ones, records 0 .. n-1 in order)
         let mut open: std::collections::HashMap<String, Vec<&str>> = Default::default();
         let mut groups: Vec<Vec<&str>> = Vec::new();
-        for l in text.lines().filter(|l| l.starts_with("OEN ")) {
+        // (updates of an entity in the revs mode, byte +1950 on its last ES line: F-74751 fades +152 to 0 - not ported, left out)
+        let mut revs_mode: std::collections::HashMap<String, bool> = Default::default();
+        let mut revs = 0;
+        for l in text.lines() {
+            if l.starts_with("ES ") {
+                revs_mode.insert(word(l, "this="), field(l, "b1950=") != 0.0);
+                continue;
+            }
+            if !l.starts_with("OEN ") {
+                continue;
+            }
+            if revs_mode.get(&word(l, "this=")).copied().unwrap_or(false) {
+                revs += (field(l, "i=") == 0.0) as usize;
+                continue;
+            }
             let g = open.entry(word(l, "this=")).or_default();
             if field(l, "i=") == 0.0 && !g.is_empty() {
                 groups.push(std::mem::take(g));
@@ -1075,8 +1147,205 @@ mod tests {
         for (k, v) in &seen {
             println!("cars with {} records, XF+12 {}: {v:?}", k.0, k.1);
         }
-        println!("updates {ups} (car unknown {unknown}, cars of different tables {ambiguous}): gains one scalar over fade x curve {same}, active as the rule {want_ok} (a neighbour active {neighbour} times)");
+        println!("updates {ups} (car unknown {unknown}, cars of different tables {ambiguous}): gains one scalar over fade x curve {same}, active as the rule {want_ok} (a neighbour active {neighbour} times); revs-mode updates left out {revs}");
         assert!(ups > 200 && same == ups && want_ok == ups);
+    }
+
+    /// The player's load volume F-42554 against the running original (work/audio2/cap2 LV / LVX lines: the routine's
+    /// inputs at its entry - reverse byte +1946, +148, +172, +188, +168, the engine's pedal, the car's speed, the
+    /// transmission's shift word, XF+18 .. +34 - and +148 / +196 at its exit; the tick from the ES line before it).
+    /// `MCLA_ENG_CAR` = the player's car (default the R8; cap2/s240a.txt is the 240SX).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR and a recording (MCLA_ENG_CAP)"]
+    fn player_load_volume_recorded() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let cap = std::env::var("MCLA_ENG_CAP").expect("MCLA_ENG_CAP");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+        let car = std::env::var("MCLA_ENG_CAR").unwrap_or_else(|_| "vp_aud_r8_08".to_string());
+        let mut e = EngineSound::new(&lib, &car, false).expect("engine");
+        let word = |l: &str, k: &str| -> String { l.split(' ').find_map(|w| w.strip_prefix(k)).unwrap().to_string() };
+        let field = |l: &str, k: &str| -> f32 { word(l, k).parse().unwrap() };
+        let text = std::fs::read_to_string(&cap).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut dt = 0.0f32;
+        let (mut n, mut same, mut ws_same, mut xf_ok, mut shown) = (0, 0, 0, true, 0);
+        let mut branches: std::collections::BTreeMap<&str, (u32, u32)> = Default::default();
+        for (k, l) in lines.iter().enumerate() {
+            if l.starts_with("ES ") {
+                dt = field(l, "dt=");
+                continue;
+            }
+            if !l.starts_with("LV ") {
+                continue;
+            }
+            let Some(x) = lines[k + 1..].iter().find(|x| x.starts_with("LVX ") && word(x, "this=") == word(l, "this=")) else { continue };
+            xf_ok &= [(e.load_brake, "xf18="), (e.load_floor, "xf22="), (e.load_rate, "xf26="), (e.load_slow, "xf30="), (e.load_rev, "xf34=")].iter().all(|(v, f)| *v == field(l, f));
+            e.load_vol = field(l, "load=");
+            e.load_smooth = field(l, "sm172=");
+            let rev = field(l, "rev=") != 0.0;
+            let inp = EngineIn { throttle_in: field(l, "th188="), pedal: field(l, "pedal="), speed: field(l, "speed="), shift: field(l, "shift=") as i8, gear: if rev { -1 } else { 1 }, ..Default::default() };
+            let load_abs = field(l, "d168=");
+            let branch = if rev { "reverse" } else if e.load_smooth > 0.0 { "load" } else if inp.speed < e.load_slow { "slow" } else if inp.throttle_in < 0.5 { "lifted" } else if inp.shift != 0 { "shift" } else { "drive" };
+            e.step_load_vol(&inp, load_abs, dt);
+            n += 1;
+            let ok = e.load_vol.to_bits() == field(x, "load=").to_bits();
+            let wok = e.ws_in.to_bits() == field(x, "ws=").to_bits();
+            same += ok as usize;
+            ws_same += wok as usize;
+            let b = branches.entry(branch).or_default();
+            b.0 += 1;
+            b.1 += (ok && wok) as u32;
+            if !(ok && wok) && shown < 12 && std::env::var_os("MCLA_ENG_CAP_PRINT").is_some() {
+                shown += 1;
+                println!("  {branch}: {l}\n    -> {x} | port load {} ws {}", e.load_vol, e.ws_in);
+            }
+        }
+        println!("load-volume steps {n}: load bit-equal {same}, waveshaper input bit-equal {ws_same}, XF fields as the port's {xf_ok}; per branch (steps, equal) {branches:?}");
+        assert!(n > 200 && same == n && ws_same == n && xf_ok);
+    }
+
+    /// F-10725's rpm slew and start boost against the running original (cap2 ES lines, one per entity update: state +1928,
+    /// slewed rpm +204, target +200 or the idle rpm with byte +1950, boost +152, the tick dt, XF+38): in state 4 the next
+    /// update's +204 / +152 are the port's step from this one's. Also the rpm rate the opponents' `active` test reads
+    /// ((target - s) x the rate factor 0x827D750C) against the port's (target - s) / dt, at the +-2000 threshold.
+    #[test]
+    #[ignore = "requires a recording (MCLA_ENG_CAP)"]
+    fn rpm_slew_recorded() {
+        let cap = std::env::var("MCLA_ENG_CAP").expect("MCLA_ENG_CAP");
+        let word = |l: &str, k: &str| -> String { l.split(' ').find_map(|w| w.strip_prefix(k)).unwrap().to_string() };
+        let field = |l: &str, k: &str| -> f32 { word(l, k).parse().unwrap() };
+        let text = std::fs::read_to_string(&cap).unwrap();
+        let mut last: std::collections::HashMap<String, &str> = Default::default();
+        let (mut n, mut s_same, mut b_same, mut rates, mut rate_same, mut shown) = (0, 0, 0, 0, 0, 0);
+        let (mut swaps, mut swap_idle, mut revs) = (0, 0, 0);
+        let mut recovering: std::collections::HashSet<String> = Default::default();
+        for l in text.lines().filter(|l| l.starts_with("ES ")) {
+            let this = word(l, "this=");
+            if let Some(p) = last.insert(this, l) {
+                let target = if field(p, "b1950=") != 0.0 { field(p, "f31=") } else { field(p, "tgt=") };
+                let (s, dt) = (field(p, "s="), field(p, "dt="));
+                let rate_orig = (target - s) * field(p, "k=");
+                let rate_port = (target - s) / dt.max(1e-6);
+                rates += 1;
+                rate_same += ((rate_orig > 2000.0) == (rate_port > 2000.0) && (rate_orig < -2000.0) == (rate_port < -2000.0)) as usize;
+                if field(p, "st=") != 4.0 || field(l, "st=") != 4.0 {
+                    continue;
+                }
+                // (a racer object handed another car: a new entity, whose constructor F-43725 set +204 to the engine's rpm -
+                // `start_at` - with the engine at idle then; +200 is this frame's rpm already, written by F-36837 first)
+                if field(p, "f30=") != field(l, "f30=") {
+                    swaps += 1;
+                    swap_idle += (field(l, "s=") == field(l, "f31=")) as usize;
+                    continue;
+                }
+                let slew = (100.0 - field(p, "xf38=")) * 100.0;
+                let mut s2 = s;
+                approach_fma(&mut s2, target, slew, dt);
+                let mut b2 = field(p, "boost=");
+                if field(p, "b1950=") == 0.0 {
+                    approach_fma(&mut b2, 1.0, 1.0, dt);
+                }
+                n += 1;
+                s_same += (s2.to_bits() == field(l, "s=").to_bits()) as usize;
+                // (with byte +1950, and after it until +152 is back at 1, the revs machine F-74751 drives +152 at the real frame
+                // time instead - not ported, counted apart)
+                let this = word(l, "this=");
+                if field(p, "b1950=") != 0.0 || field(l, "b1950=") != 0.0 {
+                    recovering.insert(this.clone());
+                }
+                if recovering.contains(&this) && field(p, "b1950=") == 0.0 && field(p, "boost=") >= 1.0 {
+                    recovering.remove(&this);
+                }
+                if recovering.contains(&this) {
+                    revs += 1;
+                    b2 = field(l, "boost=");
+                }
+                b_same += (b2.to_bits() == field(l, "boost=").to_bits()) as usize;
+                if (s2.to_bits() != field(l, "s=").to_bits() || b2.to_bits() != field(l, "boost=").to_bits()) && shown < 12 && std::env::var_os("MCLA_ENG_CAP_PRINT").is_some() {
+                    shown += 1;
+                    println!("  {p}\n  {l}\n    port s {s2} boost {b2}");
+                }
+            }
+        }
+        println!("state-4 steps {n}: rpm bit-equal {s_same}, boost bit-equal {b_same}; rate past +-2000 the same {rate_same} of {rates}; car swaps {swaps} (rpm = the engine's idle rpm {swap_idle}); boost not compared in {revs} revs-mode steps");
+        assert!(n > 1000 && s_same == n && b_same == n && rate_same == rates && swap_idle == swaps);
+    }
+
+    /// F-98304's RPM_RACE_OPPONENT blend step against the running original in a race (cap2 OB lines: brain +8 / +380 / +404 /
+    /// +428, this+216 before the step, this+232 and the tick, logged after the racing brain is found; the next ES line of
+    /// that entity holds +216 after it).
+    #[test]
+    #[ignore = "requires a recording (MCLA_ENG_CAP)"]
+    fn opponent_blend_recorded() {
+        let cap = std::env::var("MCLA_ENG_CAP").expect("MCLA_ENG_CAP");
+        let word = |l: &str, k: &str| -> String { l.split(' ').find_map(|w| w.strip_prefix(k)).unwrap().to_string() };
+        let field = |l: &str, k: &str| -> f32 { word(l, k).parse().unwrap() };
+        let text = std::fs::read_to_string(&cap).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let (mut n, mut same, mut moving, mut shown) = (0, 0, 0, 0);
+        for (k, l) in lines.iter().enumerate() {
+            if !l.starts_with("OB ") || field(l, "b8=") == 0.0 {
+                continue;
+            }
+            let this = word(l, "this=");
+            let Some(x) = lines[k + 1..].iter().find(|x| x.starts_with("ES ") && word(x, "this=") == this) else { continue };
+            let want = if field(l, "b380=") != 0.0 { blend_target(rubber_hold(field(l, "b404="), field(l, "b428=")), field(l, "r232=")) } else { 0.0 };
+            let mut b = field(l, "bl216=");
+            let rate = if want < b { 0.125 } else { 0.25 };
+            approach_fma(&mut b, want, rate, field(l, "dt="));
+            n += 1;
+            moving += (b != field(l, "bl216=")) as usize;
+            let ok = b.to_bits() == field(x, "bl216=").to_bits();
+            same += ok as usize;
+            if !ok && shown < 12 && std::env::var_os("MCLA_ENG_CAP_PRINT").is_some() {
+                shown += 1;
+                println!("  {l}
+  -> {x}
+    port {b} (target {want})");
+            }
+        }
+        println!("blend steps {n} ({moving} moving): bit-equal {same}");
+        assert!(n > 200 && moving > 20 && same == n);
+    }
+
+    /// The loops' start parameters against the running original (cap2 SPS / SPV / SPP lines at the setter calls F-17698,
+    /// F-95814, F-89149 in F-74444 (player) and F-51617 (opponents), with the entity's own fields): the chain send and dry
+    /// are EFFECT_PARAMS +12 / +16 of entity +1232, the second level s16 XF+10 x 0.01f, the chain pan bit set for record 0
+    /// only - the values the port's loop request takes (`dry`, `fx_send`, `vol2`, `pans_chain`).
+    #[test]
+    #[ignore = "requires a recording (MCLA_ENG_CAP)"]
+    fn loop_start_params_recorded() {
+        let cap = std::env::var("MCLA_ENG_CAP").expect("MCLA_ENG_CAP");
+        let word = |l: &str, k: &str| -> String { l.split(' ').find_map(|w| w.strip_prefix(k)).unwrap().to_string() };
+        let field = |l: &str, k: &str| -> f32 { word(l, k).parse().unwrap() };
+        let text = std::fs::read_to_string(&cap).unwrap();
+        let (mut sends, mut send_ok, mut vols, mut vol_ok, mut pans, mut pan_ok) = (0, 0, 0, 0, 0, 0);
+        let mut who: std::collections::BTreeMap<String, usize> = Default::default();
+        for l in text.lines() {
+            let kind = l.split(' ').next().unwrap_or("");
+            if matches!(kind, "SPS" | "SPV" | "SPP") {
+                *who.entry(format!("{kind} {}", l.split(' ').nth(1).unwrap_or(""))).or_default() += 1;
+            }
+            match kind {
+                "SPS" => {
+                    sends += 1;
+                    send_ok += (field(l, "send=").to_bits() == field(l, "fx12=").to_bits() && field(l, "dry=").to_bits() == field(l, "fx16=").to_bits()) as usize;
+                }
+                "SPV" => {
+                    vols += 1;
+                    let port = field(l, "xf10=") * 0.01;
+                    vol_ok += (u32::from_str_radix(&word(l, "vol2="), 16).unwrap() == port.to_bits()) as usize;
+                }
+                "SPP" => {
+                    pans += 1;
+                    pan_ok += ((field(l, "bit=") != 0.0) == (field(l, "rec=") == 0.0)) as usize;
+                }
+                _ => {}
+            }
+        }
+        println!("send / dry {send_ok} of {sends}, second level {vol_ok} of {vols}, chain pan {pan_ok} of {pans}; lines {who:?}");
+        assert!(sends > 20 && vols > 20 && pans > 20 && send_ok == sends && vol_ok == vols && pan_ok == pans);
     }
 
     #[test]

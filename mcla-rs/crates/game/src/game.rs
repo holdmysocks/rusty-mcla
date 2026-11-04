@@ -95,6 +95,65 @@ impl Default for Options {
     }
 }
 
+/// One racer as CalculateRankOrdered / Unordered read it: the racer record's +32 (the
+/// checkpoint of the lap it heads for), +36 (the lap), +40 (the finish time in ms; -1 or
+/// 0x7FFFFFFF: none), its distance, and whether it has a car (+8 -> +48).
+#[derive(Debug, Clone, Copy)]
+pub struct RankRacer {
+    pub cp: i32,
+    pub lap: i32,
+    pub fin: i32,
+    pub dist: f32,
+    pub present: bool,
+}
+
+/// F-37138 (`ordered`) / F-90700: 1 + the racers ahead of racer `me`. Finished (+32 = the lap's
+/// count): the others with a finish time below its own. Else, at q = lap x count + checkpoint,
+/// another is ahead with a greater q, or - level - nearer its checkpoint (`dist`, not `>=`, so a
+/// NaN counts); ordered, one with a finish time is ahead too. Racers without a car are passed
+/// over (unordered: the count stops there); a racer without a car itself is 1. (The race's end,
+/// `raceOverTrigger`: 0 - the caller's; on line, a racer whose player has left - not ported.)
+pub fn rank_rule(ordered: bool, ncp: i32, r: &[RankRacer], me: usize) -> i32 {
+    let none = |f: i32| f == i32::MAX || f == -1;
+    let s = r[me];
+    let mut rank = 1;
+    if s.cp == ncp {
+        for (j, o) in r.iter().enumerate() {
+            if j != me && !none(o.fin) && o.fin < s.fin {
+                rank += 1;
+            }
+        }
+        return rank;
+    }
+    if !s.present {
+        return 1;
+    }
+    let p = s.lap.wrapping_mul(ncp).wrapping_add(s.cp);
+    for (j, o) in r.iter().enumerate() {
+        if j == me {
+            continue;
+        }
+        if !o.present {
+            if ordered {
+                continue;
+            }
+            break;
+        }
+        let q = ncp.wrapping_mul(o.lap).wrapping_add(o.cp);
+        let ahead = if q > p {
+            true
+        } else if ordered && !none(o.fin) {
+            true
+        } else {
+            q == p && !(o.dist >= s.dist)
+        };
+        if ahead {
+            rank += 1;
+        }
+    }
+    rank
+}
+
 #[derive(Debug, Clone)]
 pub struct Race {
     pub route: Vec<usize>,        // link indices
@@ -4196,6 +4255,54 @@ impl Game {
         let s = self.standings(vehicles);
         let pos = s.iter().position(|(i, _, _)| vehicles.cars.get(*i).map_or(false, |c| c.is_player)).unwrap_or(0);
         (pos + 1, s.len())
+    }
+
+    /// A racer's rank as the race scripts ask for it (CheckpointManager_CalculateRankOrdered /
+    /// Unordered, F-37138 / F-90700; `rank_rule`): the port's racers as the original's records -
+    /// +32 / +36 from the next checkpoint (a finished racer: the lap's count on the last lap),
+    /// +40 the finish time in ms, the distance to the checkpoint's +64 / line (`CpSpec::distance`)
+    /// or, unordered, to the nearest one still open (`checkpoints::nearest_open`: the ones not
+    /// taken, the finish once it is the last one left).
+    pub fn race_rank(&self, vehicles: &Vehicles, me: usize) -> i32 {
+        let Some(race) = self.race.as_ref() else { return 0 };
+        let n = race.checkpoints.len();
+        let ncp = race.lap_len.max(1);
+        let laps = race.laps.max(1);
+        let ordered = race.rivals_checkpoints.is_none();
+        let pos_of = |m: Vec3| crate::checkpoints::spec_at(&race.cp_specs, m).map_or(m, |s| s.pos);
+        let mut rs = Vec::new();
+        let mut at = 0;
+        let mine = race.next.get(me).copied().unwrap_or(0).min(n);
+        for &j in &race.participants {
+            let Some(car) = vehicles.cars.get(j) else { continue };
+            if j == me {
+                at = rs.len();
+            }
+            let k = race.next.get(j).copied().unwrap_or(0).min(n);
+            let fin = race.finish_time.get(j).copied().flatten();
+            let (cp, lap) = if fin.is_some() || k >= n { (ncp, laps - 1) } else { (k % ncp, k / ncp) };
+            let p = car.state.pos;
+            let dist = if ordered {
+                // (to the checkpoint the asking racer heads for: the others count only when level with it)
+                match race.checkpoints.get(mine) {
+                    Some(&m) => crate::checkpoints::spec_at(&race.cp_specs, m).map_or_else(|| crate::checkpoints::CpSpec::at(m).distance(p), |s| s.distance(p)),
+                    None => 0.0,
+                }
+            } else {
+                let list: &[Vec3] = match race.rivals_checkpoints.as_ref() {
+                    Some(l) if !car.is_player => l,
+                    _ => &race.checkpoints,
+                };
+                let last = list.len().saturating_sub(1);
+                crate::checkpoints::nearest_open(list.iter().enumerate().map(|(i, &c)| (pos_of(c), i >= k && (i < last || k >= last))), p)
+            };
+            let fin = fin.map_or(-1, |t| (t * 1000.0).round() as i32);
+            rs.push(RankRacer { cp: cp as i32, lap: lap as i32, fin, dist, present: true });
+        }
+        if rs.is_empty() {
+            return 1;
+        }
+        rank_rule(ordered, ncp as i32, &rs, at)
     }
 
     /// Text in the game's own typeface (falls back to the UI default when the art is missing).

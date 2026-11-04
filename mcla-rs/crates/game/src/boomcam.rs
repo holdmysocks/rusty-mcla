@@ -951,12 +951,7 @@ impl CamShake {
             }
             // Rot and Tran in the camera's own frame (EulerXYZ, F-28753)
             d += tr.x * a + tr.y * b + tr.z * c;
-            let (sx, cx) = rt.x.sin_cos();
-            let (sy, cy) = rt.y.sin_cos();
-            let (sz, cz) = rt.z.sin_cos();
-            let s0 = Vec3::new(cz * cy, sz * cy, -sy);
-            let s1 = Vec3::new(cz * sy * sx - sz * cx, sz * sy * sx + cz * cx, cy * sx);
-            let s2 = Vec3::new(cz * sy * cx + sz * sx, sz * sy * cx - cz * sx, cy * cx);
+            let [s0, s1, s2] = euler_xyz(rt);
             let (na, nb, nc) = (s0.x * a + s0.y * b + s0.z * c, s1.x * a + s1.y * b + s1.z * c, s2.x * a + s2.y * b + s2.z * c);
             a = na;
             b = nb;
@@ -966,6 +961,11 @@ impl CamShake {
         *look = d - c * reach;
         *up = b;
     }
+}
+
+/// The rows of the rotation from the angles x, y, z (F-28753).
+pub fn euler_xyz(r: Vec3) -> [Vec3; 3] {
+    crate::physics::artic_build::euler_rows(r.to_array()).map(Vec3::from_array)
 }
 
 /// The original's dead zone with rescale (F-93983).
@@ -2636,6 +2636,23 @@ impl EventCam {
 
 #[cfg(test)]
 mod tests {
+    /// F-28753 run offline on 4,128 angle triples (work/cameras2/euler/euler_ref.py; the bits as decimal words): every stored word equal.
+    #[test]
+    fn euler_xyz_matches_the_original() {
+        let text = include_str!("testdata/euler_xyz_ref.txt");
+        let h = |s: &str| s.parse::<u32>().unwrap();
+        let mut n = 0;
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let r = euler_xyz(Vec3::new(f32::from_bits(h(w[0])), f32::from_bits(h(w[1])), f32::from_bits(h(w[2]))));
+            let got: Vec<u32> = r.iter().flat_map(|v| [v.x, v.y, v.z]).map(f32::to_bits).collect();
+            let want: Vec<u32> = w[4..13].iter().map(|s| h(s)).collect();
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4128);
+    }
+
     use super::*;
 
     /// Lines of `<name>` rows of the original's reference run (`work/triage-cameras/verify/b1.py`

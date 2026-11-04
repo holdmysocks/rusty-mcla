@@ -729,6 +729,34 @@ mod tests {
         assert_eq!(posts, 1311);
     }
 
+    /// The rank itself: `game::rank_rule` on the same 1,413 states returns the original's rank in
+    /// every case the original ranked (all but the race's end, `raceOverTrigger`: 0); the distances
+    /// are the cases' own (the original's distance functions: checkpoints::rank_distances_as_the_original).
+    #[test]
+    fn rank_as_the_original() {
+        let text = include_str!("testdata/save_stats_led_ref.txt");
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let (mut n, mut bad) = (0, Vec::new());
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let rank: i32 = w.last().unwrap().trim_start_matches('R').parse().unwrap();
+            if h(w[4]) != 0 {
+                assert_eq!(rank, 0, "{line}");
+                continue;
+            }
+            let (ncp, k) = (h(w[2]) as i32, h(w[3]) as usize);
+            let rs: Vec<crate::game::RankRacer> = (0..k)
+                .map(|j| crate::game::RankRacer { cp: h(w[6 + 4 * j]) as i32, lap: h(w[7 + 4 * j]) as i32, fin: h(w[8 + 4 * j]) as i32, dist: f32::from_bits(h(w[9 + 4 * j])), present: true })
+                .collect();
+            n += 1;
+            if crate::game::rank_rule(w[0] == "O", ncp, &rs, 0) != rank {
+                bad.push(line.to_string());
+            }
+        }
+        assert!(n > 1300, "{n}");
+        assert!(bad.is_empty(), "{} of {n} differ: {:?}", bad.len(), &bad[..bad.len().min(3)]);
+    }
+
     /// The race-end statistics: the original F-98556 (generated code, off line, out of GOAL ATTACK; the stats
     /// manager a store with the submit's rules - work/save-stats/raceend_verify.py, 1,500 random races) against
     /// `mc4_race_stats` after the career's class win (`Ev::Race`): every record the same (the on-line `n...`

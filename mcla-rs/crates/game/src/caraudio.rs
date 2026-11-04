@@ -1332,6 +1332,11 @@ pub fn car_in(c: &CarInstance) -> CarIn {
 }
 
 /// The engine's inputs for a computer racer's engine sound.
+/// The engine rpm the audio reads (F-12794: engine +8 x 9.549296).
+pub(crate) fn engine_rpm(c: &CarInstance) -> f32 {
+    c.state.veh.as_deref().map_or(c.state.rpm, |v| v.engine_w * 9.549_296)
+}
+
 fn engine_in(c: &CarInstance, racing: bool) -> EngineIn {
     let st = &c.state;
     let vs = st.veh.as_deref();
@@ -1340,7 +1345,7 @@ fn engine_in(c: &CarInstance, racing: bool) -> EngineIn {
     EngineIn {
         pos: st.pos,
         view: None,
-        rpm: vs.map_or(st.rpm, |v| v.engine_w * 9.549_296),
+        rpm: engine_rpm(c),
         idle_rpm: e.map_or(800.0, |e| e.idle_rpm),
         max_rpm: e.map_or(7000.0, |e| e.max_rpm),
         torque: vs.map_or(0.0, |v| v.engine_torque),
@@ -1353,6 +1358,21 @@ fn engine_in(c: &CarInstance, racing: bool) -> EngineIn {
         idle_only: false,
         racing,
         speed_ratio: speed / c.model.params.veh.as_ref().map_or(c.model.params.top_speed, |t| t.top_speed).max(1.0),
+        rubber_hold: rubber_hold(c),
+    }
+}
+
+/// F-98304's rubber band term with the rubber band on (brain +380), else 0; the cap +404 as the brain last wrote it (1 when
+/// its driver had no rubber band state then), the brain's fill before its first write.
+fn rubber_hold(c: &CarInstance) -> f32 {
+    let Some(ai) = &c.ai else { return 0.0 };
+    let Some(b) = ai.brain.0.as_deref() else { return 0.0 };
+    match &b.rubber {
+        Some(t) if b.plan.rubber => {
+            let cap = if b.cap_written { ai.rb.map_or(1.0, |r| r.cap) } else { f32::from_bits(0xCDCD_CDCD) };
+            crate::engaudio::rubber_hold(cap, t.min_throttle)
+        }
+        _ => 0.0,
     }
 }
 
@@ -2087,6 +2107,9 @@ impl Fleet {
             if rank < 7 {
                 if e.engine.is_none() {
                     e.engine = EngineSound::new_opponent(lib, &c.model.name, c.model.bike);
+                    if let Some(en) = &mut e.engine {
+                        en.start_at(engine_rpm(c));
+                    }
                 }
                 if let Some(en) = &mut e.engine {
                     let inp = engine_in(c, racing && !c.cop && c.ai.is_some());

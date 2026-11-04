@@ -294,3 +294,34 @@ fn to_string_matches_the_original() {
     }
     assert_eq!(n, 773, "{n}");
 }
+
+/// F-28198: the button draw - which records a state draws, and the matrix / colour transform / alpha each
+/// record's character is handed (testdata/ui_button_ref.txt from tools/ui_button_reference.py)
+#[test]
+fn button_records_match_the_original() {
+    use crate::draw::{button_record_xform, button_state_mask};
+    use mcla_formats::rage::swf::ButtonRecord;
+    let mut cases = 0;
+    for l in include_str!("testdata/ui_button_ref.txt").lines() {
+        let (a, b) = l[3..].split_once(" -> ").unwrap();
+        let p = |s: &str| s.split_whitespace().map(|w| u32::from_str_radix(w, 16).unwrap()).collect::<Vec<_>>();
+        let (v, out) = (p(a), p(b));
+        let m = |w: &[u32]| Matrix { a: f(w[0]), b: f(w[1]), c: f(w[2]), d: f(w[3]), tx: f(w[4]), ty: f(w[5]) };
+        let (state, parent, pcx, n) = (v[0], m(&v[1..7]), cx(&v[7..15]), v[15] as usize);
+        let mut got = Vec::new();
+        for k in 0..n {
+            let r = &v[16 + 15 * k..];
+            let rec = ButtonRecord { states: r[0] as u8, matrix: m(&r[1..7]), cxform: cx(&r[7..15]), character: None };
+            if rec.states & button_state_mask(state) == 0 {
+                continue;
+            }
+            let (w, c) = button_record_xform(&parent, &pcx, &rec);
+            got.extend([w.a, w.b, w.c, w.d, w.tx, w.ty].map(f32::to_bits));
+            got.extend(c.mult.iter().chain(&c.add).map(|&x| x as u8 as u32));
+            got.extend([255, state]);
+        }
+        assert_eq!(got, out, "{}", l);
+        cases += 1;
+    }
+    assert!(cases >= 400);
+}
