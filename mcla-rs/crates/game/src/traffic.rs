@@ -19,6 +19,9 @@ const MPH: f32 = 0.44704;
 const MIN_WANT: f32 = 4.4704;
 /// Braking below this stops the car (F-58614: 0.5 mph).
 const STOP_SPEED: f32 = 0.22352;
+/// A freeway road's speed (F-31543 and the region list: road speed >= the image's word 0x41E81A69, 29.012896 m/s =
+/// 65 mph; the literal 29.0129 rounds to the next float but one)
+pub(super) const FREEWAY_SPEED: f32 = f32::from_bits(0x41E8_1A69);
 /// Occluders are taken within 400 m of the focus, as the pedestrian spawner's (peds.rs
 /// `OCC_RANGE_SCALE`).
 pub(super) const OCC_RANGE: f32 = crate::occluder::RANGE * 10.0;
@@ -795,6 +798,8 @@ pub struct Rider {
     /// the race path it was started on (behaviour +468, kept for the car's life - F-28180 is its only
     /// writer after the ctor) has bParked (+164, `PathRails::quiet`): behaviour slot 18, F-86955
     pub quiet: bool,
+    /// that path has byte +188 (an "Ambient" trigger points at it, `ItemPath::referenced`): behaviour slot 22, F-90466
+    pub path_referenced: bool,
     /// the car ahead the speed controller's entry 0 found (behaviour +432, the same obstacle as the
     /// entry's id +456): the length of its car's velocity (its slot 2, F-59415: car +208); None: no obstacle
     pub obst_v: Option<f32>,
@@ -856,6 +861,7 @@ impl Rider {
             race_lane: None,
             phys_pair: false,
             quiet: false,
+            path_referenced: false,
             obst_v: None, steer: 0.0,
             rail_seq: next_rail_seq(),
             rail_key: None,
@@ -3491,7 +3497,7 @@ mod tests {
     }
 
     fn vrider(ty: AmbType) -> Rider {
-        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true }
+        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true }
     }
 
     /// The brake lamp's flag (F-56024 with F-86955, F-17857 and F-59415) against the original's code run offline on 4,000
@@ -3965,7 +3971,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
@@ -3979,7 +3985,7 @@ mod tests {
     #[test]
     fn a_physical_or_resting_car_is_not_put_back_on_its_seat() {
         // (a seat from before the hit: physical or at rest the instance stays where the collider left it)
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
         r.seat = Some(Seat::new(Vec3::ZERO, Vec3::Y, Vec3::NEG_Z));
         assert!(seat_poses(&r));
         for (state, active) in [(4, false), (4, true), (5, false), (5, true), (1, true)] {
@@ -4007,7 +4013,7 @@ mod tests {
     /// its rail (slot 20 / F-86858: the follower has a rail).
     #[test]
     fn a_physical_path_car_pairs_only_while_on_a_rail() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
         assert!(!r.pairs_inactive());
         r.phys_pair = true;
         for (state, yes) in [(1u8, true), (9, true), (10, false), (0, false), (4, false), (5, false), (6, false)] {
@@ -5144,11 +5150,17 @@ impl Vehicles {
                 if parked && !self.parked_held {
                     self.parked_spawn(gpu, &sp, center, view, mph);
                 }
-                if enabled {
-                    self.unspawn_frame(&sp, nav, center, view, mph);
-                }
-                if parked && !sp.list.is_empty() {
-                    self.parked_unspawn(&sp, center);
+                // (F-75661: the four unspawners only while the region list has roads, M +1792 != 0 - its byte
+                // +2086 is 1 from the ctor F-10264, its only writer -: the crossing unspawner F-54093, the
+                // traffic's F-65438, the people's F-39594 (peds.rs, `Peds::traffic_regions`), the parked cars' F-53207)
+                if !sp.list.is_empty() {
+                    if enabled {
+                        self.crossing_frame(&sp, world, nav, center, view, mph);
+                        self.unspawn_frame(&sp, nav, center, view, mph);
+                    }
+                    if parked {
+                        self.parked_unspawn(&sp, center);
+                    }
                 }
             }
         }
@@ -5173,7 +5185,7 @@ impl Vehicles {
         let bc = fx + vx * off;
         let bh = glam::Vec2::new(len * 0.5, width * 0.5);
         sp.region_box = (bc, vx, len, width);
-        let on_freeway = player_road.is_some_and(|r| sp.roads[r as usize].speed >= 29.0129);
+        let on_freeway = player_road.is_some_and(|r| sp.roads[r as usize].speed >= FREEWAY_SPEED);
         // hidden: behind an occluder of the spawner's view only (F-45295 with flags 2 - no
         // frustum test): the eye 1.75 m above the focus, occluders within 400 m
         let occ = crate::occluder::city(&sp.data_dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE));
@@ -5189,7 +5201,7 @@ impl Vehicles {
             }
             let ru = glam::Vec2::new(r.dir.x, r.dir.z).normalize_or(glam::Vec2::X);
             let overlap = rects_meet(bc, vx, bh, rc, ru, r.half);
-            let fw = r.speed >= 29.0129;
+            let fw = r.speed >= FREEWAY_SPEED;
             let hidden = || !r.no_box && occ.as_ref().is_some_and(|o| o.hides_aabb(r.bmin, r.bmax));
             let accept = if on_freeway && fw {
                 true
@@ -5344,7 +5356,7 @@ impl Vehicles {
             let l = &nav.links[link];
             let pos = l.a + (l.b - l.a) * (s / l.len.max(1e-3));
             let dir = l.tangent_at(s / l.len.max(1e-3));
-            let fw = road.speed >= 29.0129;
+            let fw = road.speed >= FREEWAY_SPEED;
             if ty.freeway_only && !fw {
                 sp.why[3] += 1;
                 continue;
@@ -5438,6 +5450,65 @@ impl Vehicles {
         }
     }
 
+    /// The traffic region list's count (M +1792; None before the spawner exists): the unspawners' dispatcher
+    /// F-75661 runs none of its four unspawners, the people's F-39594 among them, while it is 0.
+    pub fn traffic_regions(&self) -> Option<usize> {
+        self.spawner.as_ref().map(|s| s.list.len())
+    }
+
+    /// The crossing unspawner (F-54093, first of the dispatcher F-75661): an unseen car whose next 5 s cross
+    /// the player's next 2 s is removed (reason 6), at most one a run (`crossing_unspawn`). Not run in the
+    /// cutscene (F-97032) or front-end (F-95688) modes, nor networked (F-24338, offline false); its enable byte
+    /// M +2109 is 1 from the ctor F-10264, its only writer.
+    fn crossing_frame(&mut self, sp: &Spawner, world: &crate::world::World, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32) {
+        if sp.cutscene || sp.frontend.is_some() {
+            return;
+        }
+        // the velocity M +208: the player's (F-83397, the player's obstacle slot 2), none without a player
+        let vel = self.cars.iter().find(|c| c.is_player).map_or(Vec3::ZERO, |c| c.state.vel);
+        let cars: Vec<CrossCar> = self.cars.iter().map(|c| {
+            // (kind 2: the obstacles of the mcAmbientCars - riding and parked; the player, cops and racers are other kinds)
+            let kind2 = !c.is_player && !c.cop && !c.racer && !c.pinned && (c.rail.is_some() || c.parked.is_some());
+            let r = c.rail.as_ref().filter(|r| r.state != 0);
+            CrossCar {
+                kind2,
+                pos: c.state.pos,
+                vel: c.state.vel,
+                // (car +500 bit 0x20: set by F-53584 for the bIsProxy pool's cars)
+                proxy: r.is_some_and(|r| r.ty.proxy),
+                // (F-23063 offline: F-92604 makes a car's id with F-78245's peer in its low 5 bits - the same value
+                // F-23063 compares with - or takes the params' id or -1: never remote)
+                remote: false,
+                // (car +452: a trailer and a parked car have no behaviour)
+                behaviour: r.is_some(),
+                group2: r.is_some_and(|r| r.ty.bound_group == 2),
+                item: c.item.is_some(),
+                slot18: r.is_some_and(|r| r.quiet),
+                slot19: r.is_some_and(|r| r.state == 9),
+                slot22: r.is_some_and(|r| r.path_referenced),
+                // (F-31543 on the follower's rail, behaviour +188: a navsys lane's road; a dynamic rail's owner +8 is 0
+                // from its ctor F-33069 / F-36658, and a physical or let-go car has none)
+                freeway: r.is_some_and(|r| r.state == 1 && sp.road_of(nav, r.link).is_some_and(|x| sp.roads[x as usize].speed >= FREEWAY_SPEED)),
+                fwd: c.state.forward(),
+                radius: c.model.lod_radius,
+            }
+        }).collect();
+        let occ = crate::occluder::city(&sp.data_dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE));
+        let col = &world.collider;
+        let run = crossing_unspawn(&CrossGrid::UNBOUNDED, focus, vel, view, &cars, |_, p| seen(&sp.tune, focus, view, mph, p, occ.as_ref()), |_, eye, end| {
+            let d = end - eye;
+            let len = d.length();
+            len > 0.0 && col.probe_front(eye, d / len, len).is_some()
+        });
+        if let Some(i) = run.remove {
+            if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
+                let c = &self.cars[i];
+                log::info!("traffic crossing unspawn {} dist {:.1} (of {} looked at)", c.model.name, Vec3::new(c.state.pos.x - focus.x, 0.0, c.state.pos.z - focus.z).length(), run.tested.len());
+            }
+            self.cars.remove(i);
+        }
+    }
+
     /// F-65438: 30 cars looked at, at most one removed.
     fn unspawn_frame(&mut self, sp: &Spawner, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32) {
         let amb: Vec<usize> = (0..self.cars.len()).filter(|&i| self.ambient_car(i)).collect();
@@ -5506,6 +5577,155 @@ impl Vehicles {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------------
+// The crossing unspawner (F-54093; docs/reference/people/crossing_unspawn_rule.md)
+
+/// The object grid as the crossing unspawner reads it ([0x8286F1B4]; F-88455 -> F-59709 for a point's cell, F-99153 for
+/// the 3 x 3 cells round it): 40 m cells, a point's cell ((x - min) x 0.025 truncated, the same for z) with the cell
+/// number iz w + ix kept in 16 bits; off the grid (x < min or x >= max, max = min + 40 n) or a number of 0xFFFF or w h
+/// and above: no cells at all. Unbounded: the port has no level bounds (brainturn.rs `ObjectGrid::unbounded`), the
+/// cells are floor(x / 40).
+#[derive(Clone, Copy, Debug)]
+pub struct CrossGrid {
+    pub min: [f32; 2],
+    pub n: [i32; 2],
+    pub bounded: bool,
+}
+
+impl CrossGrid {
+    pub const UNBOUNDED: CrossGrid = CrossGrid { min: [0.0; 2], n: [0; 2], bounded: false };
+
+    /// The cell (ix, iz) of a point (F-59709 and the cell number's checks of F-99153).
+    pub fn cell(&self, x: f32, z: f32) -> Option<(i32, i32)> {
+        if !self.bounded {
+            return Some(((x * 0.025).floor() as i32, (z * 0.025).floor() as i32));
+        }
+        let max = [self.min[0] + 40.0 * self.n[0] as f32, self.min[1] + 40.0 * self.n[1] as f32];
+        if x < self.min[0] || x >= max[0] || z < self.min[1] || z >= max[1] {
+            return None;
+        }
+        let (ix, iz) = (((x - self.min[0]) * 0.025) as i32, ((z - self.min[1]) * 0.025) as i32);
+        let id = (iz.wrapping_mul(self.n[0]).wrapping_add(ix) as u32 & 0xFFFF) as i32;
+        if id == 0xFFFF || id >= self.n[0] * self.n[1] {
+            return None;
+        }
+        Some((id % self.n[0], id / self.n[0]))
+    }
+
+    /// Whether cell (ix, iz) is one of the grid's (F-99153: a row or column outside gives an empty list).
+    fn holds(&self, ix: i32, iz: i32) -> bool {
+        !self.bounded || (ix >= 0 && ix < self.n[0] && iz >= 0 && iz < self.n[1])
+    }
+}
+
+/// What the crossing unspawner reads of one object of the grid's cells (an ambient car's obstacle and its car).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CrossCar {
+    /// obstacle +6 == 2: an mcAmbientCar's obstacle
+    pub kind2: bool,
+    /// the obstacle's matrix row 3 (its slot 1, +48) - the car's place F-58860 is the same point
+    pub pos: Vec3,
+    /// the obstacle's slot 2: the car's velocity (+208)
+    pub vel: Vec3,
+    /// car +500 bit 0x20
+    pub proxy: bool,
+    /// F-23063
+    pub remote: bool,
+    /// car +452 set
+    pub behaviour: bool,
+    /// type +116 (iBoundGroup) == 2
+    pub group2: bool,
+    /// car +40 set (a layout item's car)
+    pub item: bool,
+    /// the behaviour's slots 18 (F-86955), 19 (F-74598 -> F-35476), 22 (F-90466)
+    pub slot18: bool,
+    pub slot19: bool,
+    pub slot22: bool,
+    /// F-31543 on the behaviour's rail (+188): a freeway lane
+    pub freeway: bool,
+    /// F-50349: -row 2 of the car's matrix
+    pub fwd: Vec3,
+    /// car +492: 0.5 sqrt 2 x the larger of the bound's width and length (`CarModel::lod_radius`)
+    pub radius: f32,
+}
+
+/// One run of the crossing unspawner: the player's segment, the cars looked at (index, their segment's ends, crossed)
+/// and the car removed.
+#[derive(Clone, Debug, Default)]
+pub struct CrossRun {
+    /// M +400 / +408: the player's place and its place 2 s on (x, z)
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    /// the point whose cells are looked at: 3/4 along that segment, at the focus height
+    pub p: Vec3,
+    /// M +416 + 8 i / +672 + 8 i / +928 + i (32 at most)
+    pub tested: Vec<(usize, [f32; 2], [f32; 2], bool)>,
+    pub remove: Option<usize>,
+}
+
+/// F-54093 after its exits: the player's next 2 s (focus + velocity x 2, flat) and, for each ambient car of the 3 x 3
+/// grid cells round the point 3/4 along it (rows, then columns, then the cell's own order), unless 32 were already
+/// looked at (then the run ends): kept when more than 3 m above or below the focus, a proxy, remote, without a
+/// behaviour, of bound group 2 and more than 2 m above or below, an item's car, on a race path (slots 18 / 19 / 22) or
+/// on a freeway lane; else its next 5 s (place + velocity x 5, flat) is tested against the player's (F-95591 -> F-66886,
+/// both phases in [0, 1]); a crossing car is removed when not seen (`seen`, F-92805 at 1.5 m) or when both lines
+/// from the eye (the focus 1.75 m up, plus the view x 1) to its ends 1.75 m up (place +- forward x radius) are blocked
+/// (`blocked`, F-13384 -> F-57005); the first such car ends the run.
+pub fn crossing_unspawn(grid: &CrossGrid, focus: Vec3, vel: Vec3, view: Vec3, cars: &[CrossCar], mut seen: impl FnMut(usize, Vec3) -> bool, mut blocked: impl FnMut(usize, Vec3, Vec3) -> bool) -> CrossRun {
+    let a = [focus.x, focus.z];
+    let b = [a[0] + vel.x * 2.0, a[1] + vel.z * 2.0];
+    let p = Vec3::new((b[0] - a[0]) * 0.75 + a[0], focus.y, (b[1] - a[1]) * 0.75 + a[1]);
+    let mut run = CrossRun { a, b, p, ..Default::default() };
+    let Some((cx, cz)) = grid.cell(p.x, p.z) else { return run };
+    let cells: Vec<Option<(i32, i32)>> = cars.iter().map(|c| grid.cell(c.pos.x, c.pos.z)).collect();
+    let flat = |v: [f32; 2]| Vec3::new(v[0], 0.0, v[1]);
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let (ix, iz) = (cx + dx, cz + dz);
+            if !grid.holds(ix, iz) {
+                continue;
+            }
+            for (i, c) in cars.iter().enumerate() {
+                if cells[i] != Some((ix, iz)) || !c.kind2 {
+                    continue;
+                }
+                if run.tested.len() == 32 {
+                    return run;
+                }
+                if (c.pos.y - p.y).abs() > 3.0 || c.proxy || c.remote || !c.behaviour {
+                    continue;
+                }
+                if c.group2 && (c.pos.y - focus.y).abs() > 2.0 {
+                    continue;
+                }
+                if c.slot18 || c.item || c.slot19 || c.slot22 || c.freeway {
+                    continue;
+                }
+                let s = [c.pos.x, c.pos.z];
+                let e = [s[0] + c.vel.x * 5.0, s[1] + c.vel.z * 5.0];
+                // (F-95591: both phases within [0, 1]; a NaN compares as within)
+                let hit = crate::checkpoints::cross_xz(flat(a), flat(b), flat(s), flat(e)).is_some_and(|(t, u)| !(t < 0.0 || t > 1.0 || u < 0.0 || u > 1.0));
+                run.tested.push((i, s, e, hit));
+                if !hit {
+                    continue;
+                }
+                if !seen(i, c.pos) {
+                    run.remove = Some(i);
+                    return run;
+                }
+                let eye = Vec3::new(view.x + focus.x, view.y + (focus.y + 1.75), view.z + focus.z);
+                let q = Vec3::new(c.pos.x, c.pos.y + 1.75, c.pos.z);
+                let ends = [c.fwd * c.radius + q, c.fwd * -c.radius + q];
+                if ends.iter().all(|&end| blocked(i, eye, end)) {
+                    run.remove = Some(i);
+                    return run;
+                }
+            }
+        }
+    }
+    run
 }
 
 // ---------------------------------------------------------------------------------
@@ -6645,6 +6865,7 @@ impl Vehicles {
         let mname = self.models[mi].name.clone();
         let ty = *self.amb_types.entry(mname.clone()).or_insert_with(|| AmbType::load(&world.assets.root, &mname));
         let Some(mut rider) = self.path_rider(nav, ty, pr, path) else { return PathSpawn::Removed };
+        rider.path_referenced = item.path.is_some_and(|p| p.referenced);
         let model = self.models[mi].clone();
         let size = (if ty.width > 0.0 { ty.width } else { model.max.x - model.min.x }, if ty.length > 0.0 { ty.length } else { model.max.z - model.min.z });
         let v = if standing { 0.0 } else { start_mph * MPH };
@@ -6779,6 +7000,8 @@ impl Vehicles {
                 w.steer = 0.0;
             }
             if std::env::var_os("MCLA_RACEPATH_LOG").is_some() { log::info!("race path {path}: item {h} {} fired, drives off at {:.1} m/s", c.model.name, rider.v); }
+            // (a trigger fired it: its path is referenced, byte +188)
+            rider.path_referenced = true;
             c.rail = Some(rider);
             return Some((0, PathSpawn::Done));
         }
@@ -7096,4 +7319,111 @@ mod original_curve_tests {
 /// spawned while it is set - to match a recording of the original)
 pub(crate) fn test_shade(shade: usize) -> usize {
     std::env::var("MCLA_TRAFFIC_PLACE").ok().and_then(|v| v.split(',').nth(6).and_then(|x| x.trim().parse::<usize>().ok())).map_or(shade, |s| s.min(19))
+}
+
+#[cfg(test)]
+mod crossing_tests {
+    use super::*;
+
+    /// The crossing unspawner against the original's code run offline (tools/crossing_unspawn_reference.py ->
+    /// testdata/crossing_unspawn_ref.txt): F-54093 whole on a fake object grid with the grid's cell code, the crossing
+    /// test, the freeway test and the probe helper F-13384 as they are; per case the view tests and probes asked (their
+    /// arguments), the removal and the words the run leaves in the manager (the 3 x 3 cells' first objects and numbers,
+    /// the player's segment, each car's segment and crossing) - all equal.
+    #[test]
+    fn crossing_unspawn_matches_the_original() {
+        let mut n = 0;
+        let mut removals = 0;
+        for line in include_str!("testdata/crossing_unspawn_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let v3 = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let (focus, vel, view) = (v3(4), v3(7), v3(10));
+            let (gw, gh) = (w[13] as i32, w[14] as i32);
+            let grid = CrossGrid { min: [f(15), f(16)], n: [gw, gh], bounded: true };
+            let nc = w[17] as usize;
+            let cars: Vec<CrossCar> = (0..nc).map(|k| {
+                let o = 18 + 14 * k;
+                let bits = w[o + 7];
+                let (mode, speed) = (w[o + 8], f(o + 9));
+                let lane = bits & 4 == 0 && bits & 256 == 0;
+                CrossCar {
+                    kind2: w[o] == 2,
+                    pos: v3(o + 1),
+                    vel: v3(o + 4),
+                    proxy: bits & 1 != 0,
+                    remote: bits & 2 != 0,
+                    behaviour: bits & 4 == 0,
+                    group2: bits & 8 != 0,
+                    item: bits & 16 != 0,
+                    slot18: bits & 32 != 0,
+                    slot19: bits & 64 != 0,
+                    slot22: bits & 128 != 0,
+                    // (F-31543: the owner a road, or its parent; the road's speed >= FREEWAY_SPEED)
+                    freeway: lane && (mode == 0 || mode == 1) && speed >= FREEWAY_SPEED,
+                    fwd: v3(o + 10),
+                    radius: f(o + 13),
+                }
+            }).collect();
+            let mut got = String::new();
+            if w[0] != 0 || w[1] != 0 || w[2] != 0 {
+                got.push('X');
+            } else {
+                let mut idx = [-1i32; 9];
+                let mut heads = [0u32; 9];
+                let mut run = CrossRun::default();
+                if w[3] != 0 {
+                    let calls = std::cell::RefCell::new(String::new());
+                    let mut rays = vec![0u32; nc];
+                    run = crossing_unspawn(&grid, focus, vel, view, &cars, |k, p| {
+                        *calls.borrow_mut() += &format!(" S {k} {:08x} {:08x} {:08x} 3fc00000 0 1", p.x.to_bits(), p.y.to_bits(), p.z.to_bits());
+                        w[18 + 14 * k + 7] & 512 != 0
+                    }, |k, eye, end| {
+                        *calls.borrow_mut() += &format!(" Q {k} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} 00000280 00000800 04 1", eye.x.to_bits(), eye.y.to_bits(), eye.z.to_bits(), end.x.to_bits(), end.y.to_bits(), end.z.to_bits());
+                        let b = if rays[k] == 0 { 1024 } else { 2048 };
+                        rays[k] += 1;
+                        w[18 + 14 * k + 7] & b != 0
+                    });
+                    let mut calls = calls.into_inner();
+                    if let Some(k) = run.remove {
+                        calls += &format!(" D {k} 6 1");
+                        removals += 1;
+                    }
+                    got.push_str(calls.trim_start());
+                    if !got.is_empty() {
+                        got.push(' ');
+                    }
+                    // (F-99153 / F-49551: the 3 x 3 cells' first objects - inserted in car order - and numbers)
+                    if let Some((cx, cz)) = grid.cell(run.p.x, run.p.z) {
+                        for (j, (dz, dx)) in (-1..=1).flat_map(|dz| (-1..=1).map(move |dx| (dz, dx))).enumerate() {
+                            let (ix, iz) = (cx + dx, cz + dz);
+                            if grid.holds(ix, iz) {
+                                idx[j] = iz * gw + ix;
+                                heads[j] = cars.iter().position(|c| grid.cell(c.pos.x, c.pos.z) == Some((ix, iz))).map_or(0, |k| 0x2000 + 0x40 * k as u32);
+                            }
+                        }
+                    }
+                }
+                got.push('M');
+                for h in heads {
+                    got += &format!(" {h:08x}");
+                }
+                for i in idx {
+                    got += &format!(" {:08x}", i as u32);
+                }
+                for x in [run.a[0], run.a[1], run.b[0], run.b[1]] {
+                    got += &format!(" {:08x}", x.to_bits());
+                }
+                let last = run.tested.iter().rposition(|t| t.1[0].to_bits() | t.1[1].to_bits() | t.2[0].to_bits() | t.2[1].to_bits() != 0 || t.3).map_or(0, |i| i + 1);
+                got += &format!(" {last}");
+                for t in &run.tested[..last] {
+                    got += &format!(" {:08x} {:08x} {:08x} {:08x} {}", t.1[0].to_bits(), t.1[1].to_bits(), t.2[0].to_bits(), t.2[1].to_bits(), t.3 as u8);
+                }
+            }
+            assert_eq!(got, want, "case {n}: {input}");
+            n += 1;
+        }
+        assert!(n >= 2900 && removals > 300, "{n} cases, {removals} removals");
+    }
 }

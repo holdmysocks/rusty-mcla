@@ -1044,6 +1044,9 @@ pub struct Peds {
     /// the ambient manager's front-end mode (F-95688, the start screen): the spawner has no
     /// visibility test (F-33044, A-29552); the focus and view are the camera's
     pub frontend: bool,
+    /// the traffic region list's count (traffic.rs `Vehicles::traffic_regions`, M +1792; None: no traffic spawner):
+    /// the unspawners' dispatcher F-75661 runs the people's unspawner F-39594 only while it is not 0
+    pub traffic_regions: Option<usize>,
     /// spawner frames still to run at once (the front-end mode's loading wait, traffic.rs
     /// `FRONT_END_PREROLL`)
     preroll: u32,
@@ -1138,6 +1141,7 @@ impl Peds {
         Peds {
             frontend: false,
             preroll: 0,
+            traffic_regions: None,
             districts: Distribution::default(),
             hour: 12.0,
             dirs: Vec::new(),
@@ -1511,8 +1515,8 @@ impl Peds {
     /// One run of the original's pedestrian spawner (F-33044) and unspawner
     /// (F-39594, from F-75661) on the navigation mesh: every other 30 Hz frame.
     fn spawn_frame(&mut self, gpu: &mut Gpu, mesh: &NavMesh, col: &WorldCollider, focus: Vec3) {
-        // unspawn: 30 random checks a frame
-        for _ in 0..30 {
+        // unspawn: 30 random checks a frame, while the traffic's region list has roads (F-75661)
+        for _ in 0..if self.traffic_regions == Some(0) { 0 } else { 30 } {
             if self.list.is_empty() {
                 break;
             }

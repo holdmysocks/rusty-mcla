@@ -6483,6 +6483,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         None => self.peds.set_view(frontend.map_or(self.cam.forward(), |f| f.dir), 0.0),
                     }
                     self.peds.read_ahead_also(frontend.and(self.vehicles.player().map(|c| c.state.pos)).map(|p| (p, self.titlecam.saved_hour().unwrap_or(self.time_of_day))));
+                    // (the people's unspawner runs only while the traffic's region list has roads, F-75661)
+                    self.peds.traffic_regions = self.vehicles.traffic_regions();
                     self.peds.update(&mut gpu, nav, &world.collider, &|p, r, out| props.obstacle_boxes_near(p, r, out), focus, &threats, signals, self.time_of_day, sim_dt);
                     // (the layout items' people: placed, removed, and what the spawners see next)
                     if frontend.is_none() {
