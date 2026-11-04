@@ -3021,6 +3021,40 @@ pub struct VehObj {
     pub here: bool,
     /// its mcCarDamage +20, the "damage inflicted" factor a car it hits takes its blow times (F-61340)
     pub inflict: f32,
+    /// an mcCar's callback (F-55998) on a contact with the thrown rider (a partner of class 11), as this tick finds the
+    /// car: (friction, elasticity, how far its own contact point goes down) when it writes them, None when it leaves
+    /// the contact alone (an ambient car's callbacks never write: F-65962 / F-13089). See [`rider_touch`].
+    pub rider_touch: Option<RiderTouch>,
+}
+
+/// F-55998 (an mcCarInstance's contact callback) on a contact with the thrown rider - his class 11 is none of the
+/// vehicles' or props' - decoded 2026-11-04 (0x82333940 .. 0x82333AB0 .. 0x82333C6C):
+/// - the driver record's +24 (the 104 B table at [[car +80] +76] +76): 3 the player, else an AI driver;
+/// - an AI driver: unless its mcCarGyro's halfword +18 (the two-wheel state, F-81388's cast) is set or its matrix's
+///   up.y (M +20; M = car +272 or [car +28] +16 by a thread byte) is at least 0x3f3504e6 (cos 45 degrees), the
+///   contact takes friction = BoundFriction (sim tune +116) and elasticity = BoundElasticity (+120), and with up.y
+///   below 0 the car's own world point (F-83617: contact +48 when the car is A, +64 when B) goes down by
+///   HeadOnCGOffset (+280) x |up.y|; that ends it;
+/// - otherwise (the player, or an AI car upright or on two wheels): chassis +592 bit 0x10 or 0x04 (wiped out) gives
+///   BoundFriction / BoundElasticity, else only a fixed partner (level state 2) is touched - never the rider.
+/// Only the enabled contacts (+165 bit 0x80) are walked. `up_y` the car's matrix up.y, `two` its two-wheel state,
+/// `wiped` its +592 bits, `player` its driver; (bound friction, bound elasticity, head-on CG offset) from its tune.
+/// Answers (friction, elasticity, (HeadOnCGOffset, |up.y|) when the point goes down: y = fnmsubs(offset, |up.y|, y)).
+pub fn rider_touch(player: bool, two: bool, up_y: f32, wiped: bool, tune: (f32, f32, f32)) -> Option<RiderTouch> {
+    let (friction, elasticity, cg_offset) = tune;
+    if !player && !two && up_y < f32::from_bits(0x3f35_04e6) {
+        let drop = (up_y < 0.0).then_some((cg_offset, up_y.abs()));
+        return Some((friction, elasticity, drop));
+    }
+    wiped.then_some((friction, elasticity, None))
+}
+
+/// What [`rider_touch`] writes: friction, elasticity, and (offset, |up.y|) for the car's own point.
+pub type RiderTouch = (f32, f32, Option<(f32, f32)>);
+
+/// The car's own world point after [`rider_touch`]'s drop (fnmsubs: one rounding).
+pub fn rider_touch_point(y: f32, drop: Option<(f32, f32)>) -> f32 {
+    drop.map_or(y, |(k, a)| (-k).mul_add(a, y))
 }
 
 impl VehObj {
@@ -3305,6 +3339,8 @@ pub struct LiveVeh {
     pub inflict: f32,
     /// parked: no body - immovable to the solve
     pub parked: bool,
+    /// its callback on a contact with the thrown rider ([`rider_touch`])
+    pub rider_touch: Option<RiderTouch>,
 }
 
 /// A car hull shape kept for the level's whole life (the vehicle objects hold a plain reference).
@@ -3399,7 +3435,7 @@ impl LooseState {
             obj.addr = v.level;
             obj.matrix = [v.body.rows[0], v.body.rows[1], v.body.rows[2], ex::origin_of(v.body.at, &v.body.rows, v.cg)];
             obj.body = if v.parked { None } else { Some(v.body) };
-            obj.veh = Some(VehObj { shape: v.shape, shape2: None, class: v.class, gravity: v.gravity, cg: v.cg, index: v.id, here: true, inflict: v.inflict });
+            obj.veh = Some(VehObj { shape: v.shape, shape2: None, class: v.class, gravity: v.gravity, cg: v.cg, index: v.id, here: true, inflict: v.inflict, rider_touch: v.rider_touch });
         }
         let objs = &self.objs;
         self.manis.retain(|m| ![m.a, m.b].iter().any(|w| matches!(w, Who::Obj(o) if objs[*o].veh.map_or(false, |x| !x.here))));
@@ -3465,7 +3501,7 @@ impl LooseState {
             obj.addr = v.addr as i64 - ot.car_addr as i64 + car_addr;
             obj.matrix = v.matrix;
             obj.body = Some(v.body);
-            obj.veh = Some(VehObj { shape, shape2: None, class: v.class, gravity: v.gravity, cg: v.cg, index: v.index, here: true, inflict: 1.0 });
+            obj.veh = Some(VehObj { shape, shape2: None, class: v.class, gravity: v.gravity, cg: v.cg, index: v.index, here: true, inflict: 1.0, rider_touch: None });
         }
         let gone = |w: Who, objs: &Vec<Obj>| matches!(w, Who::Obj(o) if objs[o].veh.map_or(false, |x| !x.here || ot.inject));
         let objs = &self.objs;
@@ -3604,7 +3640,7 @@ impl LooseState {
         let o = match self.amb_obj(uid) {
             Some(o) => o,
             None => {
-                let veh = VehObj { shape: tune.shape, shape2: tune.shape2, class: 6, gravity: tune.gravity, cg: tune.cg, index: uid, here: true, inflict };
+                let veh = VehObj { shape: tune.shape, shape2: tune.shape2, class: 6, gravity: tune.gravity, cg: tune.cg, index: uid, here: true, inflict, rider_touch: None };
                 let amb = Amb { uid, tune: tune.clone(), wheels: [AmbWheel::default(); 6], count: 0, moved: Vec3::ZERO, turn: Vec3::ZERO, partner, woke: false, slept: false, last_at: None, posed: false };
                 // (its level index: above the stepping cars' 0 - the car is A against it)
                 let level = 1_000_000 + uid as i64;
@@ -3709,14 +3745,20 @@ impl LooseState {
     }
 
     /// The thrown rider's partner among the other vehicles (artic_run.rs `RiderRagdoll::collide_other`): the ambient
-    /// car - one polyhedron at its instance, as ov.0's - whose place is nearest `at` within `reach` m. The rider's pair
-    /// with it is the only one the port collides (two at once: the nearer). A live mcCar (class 8: its body is its own
-    /// step's) and a semi's two-part bound are not taken.
+    /// car - one polyhedron at its instance, as ov.0's - or an mcCar of this step's list (class 8, an AI racer: its
+    /// body as `set_vehicles` hands it in, moved) whose place is nearest `at` within `reach` m. The rider's pair with it
+    /// is the only one the port collides (two at once: the nearer). A semi's two-part bound is not taken; an mcCar that
+    /// stepped before the bike is not in the bike's level (its pairs were in its own step).
     pub fn rider_partner(&self, at: Vec3, reach: f32) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for (o, obj) in self.objs.iter().enumerate() {
-            let (Some(vh), Some(_)) = (obj.veh, obj.amb.as_ref()) else { continue };
-            if vh.class != 6 || vh.parts() != 1 || vh.index == u32::MAX {
+            let Some(vh) = obj.veh else { continue };
+            let ok = match vh.class {
+                6 => obj.amb.is_some(),
+                8 => obj.amb.is_none() && vh.here && obj.body.is_some(),
+                _ => false,
+            };
+            if !ok || vh.parts() != 1 || vh.index == u32::MAX {
                 continue;
             }
             let d = (obj.matrix[3] - at).length();
@@ -3732,7 +3774,9 @@ impl LooseState {
     pub fn rider_side(&self, o: usize) -> Option<(&'static HullShape, Vec3, [Vec3; 4], [Vec3; 4])> {
         let obj = self.objs.get(o)?;
         let vh = obj.veh?;
-        Some((vh.shape, vh.cg, obj.matrix, obj.body.map_or(obj.matrix, |b| b.prev)))
+        // (an mcCar's `cg` is its body's pivot; the collide takes the hull bound's own centre, +80)
+        let cg = if vh.class == 8 { vh.shape.cg } else { vh.cg };
+        Some((vh.shape, cg, obj.matrix, obj.body.map_or(obj.matrix, |b| b.prev)))
     }
 
     /// The object is in a pair of the loose world this tick (a manifold with contacts).

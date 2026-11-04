@@ -1280,6 +1280,22 @@ mod tests {
     /// rider fails), its post-solve F-13089 casts it to mcCarInstance - nor anything else writes them).
     #[test]
     fn car_contacts_match_recording() {
+        car_contacts(include_bytes!("testdata/rider_car_ov0_col.bin"), 736, None);
+    }
+
+    /// The rider against an AI racer's car (class 8, an mcCar): xi.0 1383 - 1406 (racer 58's car held still side on,
+    /// level 0x572e below the rider's 0x5762: the car is A), its bound a composite of 5 parts - the hull polyhedron
+    /// (part 0 at the identity: 18 vertices, 32 triangles) and four wheels the rider does not reach - by
+    /// testdata/rider_car_xi0_col.bin (export_carcol.py taking the composite's part 0). The same collide as the ambient
+    /// car's; the materials as the rider's F-22759 leaves them, and the car's callback F-55998 writes nothing: its
+    /// driver is an AI one, but the car stands upright (up.y at least cos 45 degrees) and is not wiped out
+    /// (loose.rs `rider_touch` answers None for it).
+    #[test]
+    fn racer_car_contacts_match_recording() {
+        car_contacts(include_bytes!("testdata/rider_car_xi0_col.bin"), u32::MAX, Some(()));
+    }
+
+    fn car_contacts(fixture: &[u8], end: u32, racer: Option<()>) {
         let Some(root) = data_dir() else {
             eprintln!("skipped: the extracted data (MCLA_DATA_DIR) is missing");
             return;
@@ -1288,7 +1304,7 @@ mod tests {
         super::super::collision::load_surfaces(&rs);
         let ty = rider_type(&root).expect("rider type");
         let sh = shapes(&ty, &Surface::table(&rs));
-        let f = bike_fix(include_bytes!("testdata/rider_car_ov0_col.bin"));
+        let f = bike_fix(fixture);
         let hv = f.w("hv");
         let verts: Vec<Vec3> = hv.chunks(3).map(|c| Vec3::new(f32::from_bits(c[0]), f32::from_bits(c[1]), f32::from_bits(c[2]))).collect();
         let tris: Vec<[u16; 3]> = f.w("ht").chunks(3).map(|c| [c[0] as u16, c[1] as u16, c[2] as u16]).collect();
@@ -1304,8 +1320,8 @@ mod tests {
         let mut pair = RiderVeh { manifolds: Vec::new(), rider_is_a };
         let (mut matched, mut recorded, mut extra, mut subs_ok, mut ticks_n, mut elements) = (0, 0, 0, 0, 0, 0);
         let (mut kept_ok, mut kept_all, mut mat_ok, mut mat_all) = (0, 0, 0, 0);
-        // (736, the recording's last tick, has its RGD1 snapshot but no tick-end PAIR records: the run ended in it)
-        for &tick in f.w("ticks").iter().filter(|&&t| t < 736) {
+        // (ov.0's 736, the recording's last tick, has its RGD1 snapshot but no tick-end PAIR records: the run ended in it)
+        for &tick in f.w("ticks").iter().filter(|&&t| t < end) {
             let mats = |n: &str| f.mats(&format!("{n}_{tick}")).iter().map(rows3).collect::<Vec<_>>();
             let (r16, r32) = (rows3(&f.mat(&format!("r16_{tick}"), 0)), rows3(&f.mat(&format!("r32_{tick}"), 0)));
             let (b16, b32) = (rows3(&f.mat(&format!("b16_{tick}"), 0)), rows3(&f.mat(&format!("b32_{tick}"), 0)));
@@ -1364,6 +1380,12 @@ mod tests {
                 eprintln!("tick {tick}: car sub-manifolds {mine:?}, recorded {want:?}");
             }
             pair.materials(&sh, ty.f320);
+            if racer.is_some() {
+                // (F-55998 for the AI car as the snapshot has it: upright, so its branch writes nothing)
+                let up_y = b16[1].y;
+                assert!(up_y >= f32::from_bits(0x3f35_04e6), "tick {tick}: up.y {up_y}");
+                assert_eq!(super::super::loose::rider_touch(false, false, up_y, false, (0.85, 0.1, 0.5)), None);
+            }
             for c in f.w(&format!("bct{tick}")).chunks(52) {
                 let r = &c[8..];
                 if let Some(sl) = pair.manifolds.iter().filter(|m| (m.veh as u32, m.part as u32) == (c[0], c[1])).flat_map(|m| m.slots.iter()).find(|s| bits3(s.touch.a.local) == rec3(r, 16)) {

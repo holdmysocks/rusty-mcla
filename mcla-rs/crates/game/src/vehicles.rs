@@ -4210,7 +4210,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let p = o.tuned.as_deref().unwrap_or(&o.model.params);
             let (Some(vt), Some(hull)) = (p.veh.as_ref(), p.hull.as_ref()) else { continue };
             let Some((body, cg)) = crate::physics::vehsim::island_body(&o.state, p, vt, dt) else { continue };
-            list.push(LiveVeh { id: o.uid, shape: static_shape(hull), class: if o.rail.is_some() || o.parked.is_some() { 6 } else { 8 }, gravity: 1.0, cg, level: o.uid as i64 - me as i64, body, inflict: o.inflict, parked: o.parked.is_some() });
+            let class = if o.rail.is_some() || o.parked.is_some() { 6 } else { 8 };
+            // (an mcCar's callback on the thrown rider, F-55998, as the moved body stands: its up.y, its two-wheel state,
+            // its wipe-out bits, its driver)
+            let rider_touch = o.state.veh.as_ref().filter(|_| class == 8).and_then(|ws| {
+                crate::physics::loose::rider_touch(o.is_player, ws.two != 0, body.rows[1].y, ws.wipe.is_some(), (vt.t.s.bound_friction, vt.t.s.bound_elasticity, vt.t.s.head_on_cg_offset))
+            });
+            list.push(LiveVeh { id: o.uid, shape: static_shape(hull), class, gravity: 1.0, cg, level: o.uid as i64 - me as i64, body, inflict: o.inflict, parked: o.parked.is_some(), rider_touch });
         }
         let vs = self.cars[k].state.veh.as_deref_mut().unwrap();
         let part = vs.loose.take_car();

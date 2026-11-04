@@ -1435,8 +1435,23 @@ mod tests {
     /// the car as the "bike") and rider_car_ov0_run.bin (export_island.py, ops 'i').
     #[test]
     fn rider_car_island_velocity_solve_is_the_originals() {
-        let (map, ticks) = shared_ticks_of(include_bytes!("testdata/rider_car_ov0.bin"));
-        let cases = run_cases(include_bytes!("testdata/rider_car_ov0_run.bin"));
+        car_island(include_bytes!("testdata/rider_car_ov0.bin"), include_bytes!("testdata/rider_car_ov0_run.bin"), &OPEN_CAR, 12);
+    }
+
+    /// The thrown rider against an AI racer's car (class 8, an mcCar): xi.0 1387 - 1392 (recomp recorder: racer 58's car
+    /// 0x572e held side on, the rider 0x5762 thrown onto it off an ambient car). Island = the car (rigid body 0, side A)
+    /// and the rider; 1387 also holds the car's own hull row with the city (side A only), 1390 none of the car's (his
+    /// self rows only, the car still a body of the island). The same check as ov.0's; the rows' friction / elasticity
+    /// as the rider's F-22759 leaves them (the car's F-55998 writes nothing: upright, not wiped out). Fixtures
+    /// rider_car_xi0.bin (export_car.py) and rider_car_xi0_run.bin (export_island.py, ops 'i').
+    #[test]
+    fn rider_racer_island_velocity_solve_is_the_originals() {
+        car_island(include_bytes!("testdata/rider_car_xi0.bin"), include_bytes!("testdata/rider_car_xi0_run.bin"), &OPEN_RACER, 6);
+    }
+
+    fn car_island(fixture: &[u8], run: &[u8], open: &[u32], count: usize) {
+        let (map, ticks) = shared_ticks_of(fixture);
+        let cases = run_cases(run);
         let mut report = Vec::new();
         let mut n = 0;
         for t in &ticks {
@@ -1478,17 +1493,20 @@ mod tests {
             let (words, nan) = strict(&a, &c.out);
             eprintln!("rider x car velocity solve, tick {}: {} rows ({} with the car), {} differing words, {nan} NaN on both sides, {} row results differ", t.tick, touches.len(), t.contacts.iter().filter(|(b, _)| *b != 2).count(), words.len(), bad.len());
             bad.extend(words);
-            if OPEN_CAR.contains(&t.tick) {
+            if open.contains(&t.tick) {
                 if bad.is_empty() {
-                    report.push(format!("tick {}: exact now - take it off OPEN_CAR", t.tick));
+                    report.push(format!("tick {}: exact now - take it off the open list", t.tick));
                 }
             } else if !bad.is_empty() {
                 report.push(format!("tick {}: {} differences, first {:#?}", t.tick, bad.len(), &bad[..bad.len().min(16)]));
             }
         }
-        assert_eq!(n, 12);
+        assert_eq!(n, count);
         assert!(report.is_empty(), "{}", report.join("\n"));
     }
+
+    /// xi.0's racer ticks not yet word for word (unverified, open).
+    const OPEN_RACER: [u32; 0] = [];
 
     /// The tick of ov.0 whose rider x car solve is not yet the original's word for word (unverified, open): 730, the
     /// first tick of six rows all with the car (no self row), four of them new sub-manifolds. One row (rider part 17)

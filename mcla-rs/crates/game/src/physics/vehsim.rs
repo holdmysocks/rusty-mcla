@@ -1206,14 +1206,20 @@ pub fn take_answer(st: &mut CarState, p: &CarParams, vt: &VehTune, jf: Vec3, jt:
 }
 
 /// The thrown rider's and his bike's level indices as the shared step orders them (the cache's pair order and side A:
-/// the lower). The port allocates none: the bike's the lower, as in ro.0 (0x56d7 / 0x5703) and rs.0 (0x5714 /
-/// 0x576b); rt.0 had them the other way (0x5733 / 0x56e7) - the original's own order depends on the level's free list.
+/// the lower). The original's rule (decoded 2026-11-04): one level, its free index list a stack at level +116 with
+/// the count in use at +42; an insert (F-72385) takes list[count] and counts up, a delete (F-97735, F-34261; F-53632 for
+/// a batch) counts down and puts the freed index at list[count] - so an object gets the index freed last. The rider is
+/// inserted at GoRagdoll and takes the head the tick shows: ov.0 tick 640 head 22356 = his 0x5754, xg.0 tick 1242 head 22271 = his 0x56ff. Every object of the
+/// level moves the list (props, peds, pieces and traffic come and go every few ticks: ov.0's head changes dozens of
+/// times in its first 300 ticks), so the order of two objects follows the whole level's history, which the port does not keep.
+/// The port allocates none: the bike's the lower, as in ro.0 (0x56d7 / 0x5703) and rs.0 (0x5714 / 0x576b); rt.0 had
+/// them the other way (0x5733 / 0x56e7).
 const BIKE_LEVEL: i64 = 0;
 const RIDER_LEVEL: i64 = 1;
 const RIDER_IS_A: bool = false;
 /// Another vehicle's level in the rider's pair with it: below the rider's, as ov.0's ambient car (0x5745 / 0x5754) -
 /// the car is A and its pair's rows come before his self rows (the order in general follows the level's free index
-/// list: unverified)
+/// list, see BIKE_LEVEL: not kept by the port, so this order is unverified in general)
 const OTHER_LEVEL: i64 = -1;
 /// How near (m, the car's place to the rider's instance) a vehicle is looked at for the rider's collide; the parts'
 /// box cull decides
@@ -5746,9 +5752,11 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 // (the rider against another vehicle - an ambient car, after this tick's move of what is loose: his
                 // collide with its hull (F-82759, as with the bike); an inactive car his contact meets is made active
                 // (A-28475 -> F-24099). The car's callbacks leave his contacts alone (class 6: its pre-solve F-65962 /
-                // its post-solve F-13089 take partners of class 4 / 5 and mcCarInstance only). An AI mcCar (class 8,
-                // F-55998's AI branch: friction / elasticity from its tune when tilted) is not taken - its body is its
-                // own step's (decoded, not ported). Rider and car solve as one island when
+                // its post-solve F-13089 take partners of class 4 / 5 and mcCarInstance only). An AI mcCar of this
+                // step's list (class 8) is taken with its moved body; its callback F-55998 writes his contacts as
+                // loose.rs `rider_touch` decodes (OtherRows::touch); its own rows with the city are its own step's,
+                // after the bike's, and do not join his island here (xi.0 1387 has one in the original's: unported). An
+                // mcCar that stepped before the bike is not in the bike's level. Rider and car solve as one island when
                 // the bike is not in it and the car is in no other pair of the loose world; otherwise the car's rows
                 // only join (unported: the three-body island, and the car's other rows with his))
                 let mut other_obj: Option<usize> = None;
@@ -5771,14 +5779,14 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 }
                 let bike_joins = !rd.veh_now.is_empty() && rd.veh.manifolds.iter().any(|m| !m.slots.is_empty());
                 let car_body = other_obj.filter(|&o| other_joins && !bike_joins && !vs.loose.in_pairs(o)).and_then(|o| vs.loose.objs[o].body.map(|b| (o, b)));
-                let other = other_joins.then(|| super::artic_run::OtherRows { level: OTHER_LEVEL, rider_level: RIDER_LEVEL, shared: car_body.is_some() });
+                let other = other_joins.then(|| super::artic_run::OtherRows { level: OTHER_LEVEL, rider_level: RIDER_LEVEL, shared: car_body.is_some(), touch: other_obj.and_then(|o| vs.loose.objs[o].veh).and_then(|v| v.rider_touch) });
                 // (F-55998 on a rider contact - partner class 11, not 8 / 6 / 4 / 13 - takes its driver branch: the
                 // car's driver record (the 104 B table indexed by [[car +80] +76] +76) has +24 = 3 for the player
                 // (read live: the player's bike 3, an AI car 1), and then chassis +592 bits 0x10 / 0x04 (wiped out)
                 // write BoundFriction / BoundElasticity into the enabled contacts; otherwise only a fixed partner
                 // (level state 2) is touched - never the rider)
                 let isl = rd.build(&super::artic_run::Outside { others: (0, 0.0), parts: Vec::new(), bike: Some(bike), other });
-                log::debug!("rider: with the bike {}, loose {}, rows {}, bike x rider manifolds {}, other vehicle {:?} ({})", isl.with_bike, loose_touch, isl.rows.len(), rd.veh.manifolds.len(), other_obj, isl.with_other);
+                log::debug!("rider: with the bike {}, loose {}, rows {}, bike x rider manifolds {}, other vehicle {:?} class {:?} shared {} ({})", isl.with_bike, loose_touch, isl.rows.len(), rd.veh.manifolds.len(), other_obj, other_obj.and_then(|o| vs.loose.objs[o].veh).map(|v| v.class), car_body.is_some(), isl.with_other);
                 if let (Some((o, b)), true, false) = (car_body, isl.with_other, isl.with_bike) {
                     // (the rider x car island: the car's share into its accumulators, its push into +400 / +416)
                     let (j, jt, pushed) = rd.with_car(isl, b.as_solver(), super::solver::Pushed { push: b.push, turn: b.turn, deep: false }, dt, &mut rider_tick);
