@@ -3,8 +3,8 @@
 //! pitch, pan, predelay, start offset, attack and release, the category's volume, the rolloff curve, the stereo pan
 //! law and Doppler). Rules and sources: `docs/reference/audio/SOUND_FORMAT.md`.
 //!
-//! Approximate (written down there): TwinLoop and Crossfade play their first child; MathOperation / variables are not
-//! evaluated; the "requested settings" the game passes are the subset in [`Req`].
+//! Approximate (written down there): Crossfade plays its near child; MathOperation / variables are not evaluated; the
+//! "requested settings" the game passes are the subset in [`Req`].
 
 use crate::audio::{Audio, Clip};
 use glam::Vec3;
@@ -202,7 +202,132 @@ enum Kind {
     Retrig { child_hash: u32, count: i16, delay_ms: f32, next_ms: f32, made: i32, live: Vec<Node> },
     Envelope { a: f32, d: f32, s: f32, hold: f32, r: f32, curves: [u32; 3], child: Box<Node>, rel_from: Option<f32> },
     OnStop { child: Box<Node>, on_stop: u32, stopped: Option<Box<Node>> },
+    /// TwinLoop: its two children cross-faded by `fade`; `clock` the ms it has been stepped (the update's time)
+    Twin { fade: Twin, children: Vec<Node>, clock: f64, played: bool },
     Empty,
+}
+
+/// The rate limiter TwinLoop fades with (+208; reset F-96619, range F-94657, rates F-46548, step F-94292): moves `v`
+/// toward a target by `up` / `down` per ms of the tick, clamped to [`lo`, `hi`]; flags 0x80 on, 0x40 snap, 0x20 clamp.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Fader {
+    pub up: f32,
+    pub down: f32,
+    pub hi: f32,
+    pub lo: f32,
+    pub v: f32,
+    pub last: u32,
+    pub flags: u8,
+}
+
+impl Fader {
+    /// F-94292: one step toward `target` at the tick `now` (ms)
+    pub fn step(&mut self, target: f32, now: u32) -> f32 {
+        if self.flags & 0x80 == 0 {
+            return 0.0;
+        }
+        if self.flags & 0x40 != 0 {
+            self.v = target;
+            self.last = now;
+            self.flags &= !0x40;
+            return target;
+        }
+        let dt = now.wrapping_sub(self.last) as f64 as f32;
+        let up = dt.mul_add(self.up, self.v);
+        // fnmsubs: -(down x dt - v)
+        let down = -self.down.mul_add(dt, -self.v);
+        let mut f = if target - self.v >= 0.0 {
+            if target - up >= 0.0 { up } else { target }
+        } else if target - down >= 0.0 {
+            target
+        } else {
+            down
+        };
+        if self.flags & 0x20 != 0 {
+            f = if f - self.hi >= 0.0 { self.hi } else { f };
+            f = if f - self.lo >= 0.0 { f } else { self.lo };
+        }
+        self.last = now;
+        self.v = f;
+        f
+    }
+}
+
+/// A TwinLoop's cross-fade (Init F-73377, Play F-38194, Update F-52106, StartCrossfade F-27729): the fader goes to 1 or 0
+/// and back, a new direction at each swap time, each fade lasting a random MinCrossfade..MaxCrossfade ms (F-46637), the
+/// swaps a random MinSwap..MaxSwap ms apart (F-63616); child 0 gets the curve of the fader, child 1 of its complement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Twin {
+    pub swap: (u32, u32),
+    pub xfade: (u32, u32),
+    /// +204: 0 EQUAL_POWER_RISE, 1 LINEAR_FALL
+    pub linear: bool,
+    /// +164: the next swap time
+    pub next_swap: u32,
+    /// +200: the fader's target
+    pub target: f32,
+    pub fader: Fader,
+}
+
+impl Twin {
+    /// Init's part (F-73377): the fader reset (flags 0x40) and given its range (rates 1, clamp 0..1), then the first rate
+    pub fn new(swap: (u32, u32), xfade: (u32, u32), linear: bool, mut draw: impl FnMut() -> u32) -> Twin {
+        let fader = Fader { up: 1.0, down: 1.0, hi: 1.0, lo: 0.0, flags: 0x40 | 0xE0, ..Default::default() };
+        let mut t = Twin { swap, xfade, linear, next_swap: 0, target: 0.0, fader };
+        let r = t.rate(&mut draw);
+        (t.fader.up, t.fader.down) = (r, r);
+        t
+    }
+
+    /// F-46637: 1 / a random fade length in ms (F-60851), 1 when it is at most 1 ms
+    fn rate(&self, draw: &mut impl FnMut() -> u32) -> f32 {
+        let (a, b) = (self.xfade.0 as f32, self.xfade.1 as f32);
+        let d = ((b - a) * (draw() & 0x7F_FFFF) as f32).mul_add(1.0 / 8_388_608.0, a);
+        if d > 1.0 { 1.0 / d } else { 1.0 }
+    }
+
+    /// F-63616: `now` + a random whole ms in MinSwap..MaxSwap (F-62480: signed remainder by max - min + 1)
+    fn swap_at(&self, now: u32, draw: &mut impl FnMut() -> u32) -> u32 {
+        let (a, b) = (self.swap.0 as i32, self.swap.1 as i32);
+        let v = (draw() & 0x7FFF_FFFF) as i32;
+        (v.wrapping_rem((b - a).wrapping_add(1)) + a) as u32 + now
+    }
+
+    /// The children's levels (dB) at the fader's value (Play / Update): EQUAL_POWER_RISE sin(f pi/2) and
+    /// sin((1 - f) pi/2), LINEAR_FALL f and 1 - f; 20 log10 as 20 x (log2 x 0.301), -100 dB under 1e-5.
+    fn levels(&self, f: f32) -> (f32, f32) {
+        use crate::physics::exact::guest_sin;
+        let half_pi = f32::from_bits(0x3FC9_0FDB);
+        let (g0, g1) = if self.linear {
+            (f, 1.0 - f)
+        } else {
+            (guest_sin((f * half_pi) as f64) as f32, guest_sin(((1.0 - f) * half_pi) as f64) as f32)
+        };
+        let db = |g: f32| if g - f32::from_bits(0x3727_C5AC) >= 0.0 { (g.log2() * f32::from_bits(0x3E9A_1CAC)) * 20.0 } else { -100.0 };
+        (db(g0), db(g1))
+    }
+
+    /// Play (F-38194) at `now`: the fader snaps to 1 (child 0 full, child 1 silent), the first swap time is drawn
+    pub fn play(&mut self, now: u32, mut draw: impl FnMut() -> u32) -> (f32, f32) {
+        self.target = 1.0;
+        let f = self.fader.step(1.0, now);
+        let l = self.levels(f);
+        self.next_swap = self.swap_at(now, &mut draw);
+        l
+    }
+
+    /// Update (F-52106) at `now`, while a child plays: past the swap time a new fade starts the other way (F-27729: a
+    /// new rate, the target flipped, the next swap drawn); the fader steps and gives the children's levels
+    pub fn update(&mut self, now: u32, mut draw: impl FnMut() -> u32) -> (f32, f32) {
+        if now > self.next_swap {
+            let r = self.rate(&mut draw);
+            (self.fader.up, self.fader.down) = (r, r);
+            self.target = 1.0 - self.target;
+            self.next_swap = self.swap_at(now, &mut draw);
+        }
+        let f = self.fader.step(self.target, now);
+        self.levels(f)
+    }
 }
 
 struct Node {
@@ -939,8 +1064,24 @@ impl SoundLib {
             }
             Payload::Wrapper { child } => Kind::Group { children: self.make(child, depth + 1).into_iter().collect() },
             Payload::Multitrack { children } => Kind::Group { children: children.iter().filter_map(|&c| self.make(c, depth + 1)).collect() },
-            // approximations: the first child (TwinLoop cross-fades two instances of it; Crossfade picks by distance)
-            Payload::TwinLoop { children, .. } => Kind::Group { children: children.first().and_then(|&c| self.make(c, depth + 1)).into_iter().collect() },
+            // TwinLoop (F-73377): both children and a curve named EQUAL_POWER_RISE or LINEAR_FALL, else it is not made
+            Payload::TwinLoop { swap, xfade, curve, children } => {
+                let linear = match curve {
+                    c if c == joaat("EQUAL_POWER_RISE") => Some(false),
+                    c if c == joaat("LINEAR_FALL") => Some(true),
+                    _ => None,
+                };
+                let a = children.first().and_then(|&c| self.make(c, depth + 1));
+                let b = children.get(1).and_then(|&c| self.make(c, depth + 1));
+                match (a, b, linear) {
+                    (Some(a), Some(b), Some(linear)) => {
+                        let fade = Twin::new((swap.0 as u32, swap.1 as u32), (xfade.0 as u32, xfade.1 as u32), linear, || self.rng.with(|m| m.next()));
+                        Kind::Twin { fade, children: vec![a, b], clock: 0.0, played: false }
+                    }
+                    _ => Kind::Empty,
+                }
+            }
+            // approximation: Crossfade picks by distance
             Payload::Crossfade { near, .. } => Kind::Group { children: self.make(near, depth + 1).into_iter().collect() },
             Payload::VariableBlock { child, .. } | Payload::MathOperation { child, .. } => Kind::Group { children: self.make(child, depth + 1).into_iter().collect() },
             Payload::Randomized { history_len, children, .. } => {
@@ -1139,7 +1280,7 @@ impl SoundLib {
                     *pos_ms = ms.min(*dur_ms);
                     *voice = ids();
                 }
-                Kind::Group { children } => children.iter_mut().for_each(|c| walk(c, ms, ids)),
+                Kind::Group { children } | Kind::Twin { children, .. } => children.iter_mut().for_each(|c| walk(c, ms, ids)),
                 Kind::Looping { child, .. } | Kind::Envelope { child, .. } | Kind::OnStop { child, .. } => walk(child, ms, ids),
                 Kind::Sequential { cur: Some(c), .. } => walk(c, ms, ids),
                 _ => {}
@@ -1411,6 +1552,24 @@ impl SoundLib {
                 }
                 children.iter().all(|c| c.st == St::Done)
             }
+            Kind::Twin { fade, children, clock, played } => {
+                // Play (F-38194) when it starts, then Update (F-52106) at the update's ms: each child plays on at its level
+                if !*played {
+                    *played = true;
+                    fade.play(*clock as u32, || self.rng.with(|m| m.next()));
+                } else {
+                    *clock += ms as f64;
+                }
+                let lv = fade.update(*clock as u32, || self.rng.with(|m| m.next()));
+                for (c, db) in children.iter_mut().zip([lv.0, lv.1]) {
+                    if c.st != St::Done {
+                        let mut c2 = ctx;
+                        c2.vol += db;
+                        self.step(c, ms, c2, child_po, out);
+                    }
+                }
+                children.iter().all(|c| c.st == St::Done)
+            }
             Kind::Looping { child, child_hash, count, restart_ms, plays, child_off } => {
                 // played (F-39812): with a count, the start offset is split by the child's duration into the plays done
                 // and the offset into the next one (no split for an endless loop, an unknown or endless child)
@@ -1647,7 +1806,7 @@ struct Drive {
 fn hold_voices(n: &Node, f: &mut dyn FnMut(u64)) {
     match &n.kind {
         Kind::Wave { voice, .. } | Kind::Stream { voice, .. } => f(*voice),
-        Kind::Group { children } => children.iter().for_each(|c| hold_voices(c, f)),
+        Kind::Group { children } | Kind::Twin { children, .. } => children.iter().for_each(|c| hold_voices(c, f)),
         Kind::Looping { child, .. } | Kind::Envelope { child, .. } => hold_voices(child, f),
         Kind::Sequential { cur, .. } => {
             if let Some(c) = cur {
@@ -1686,7 +1845,7 @@ fn dur_type(n: &Node) -> (i32, bool) {
             8 => (n.ty_ms, n.h.tristate(6) == 1),
             // Multitrack (F-80575), Crossfade (F-57182): the longest child, from 0
             13 | 10 => max_of(children, (0, false)),
-            // TwinLoop (F-81098): the longer of its two (the port makes the first)
+            // TwinLoop (F-81098): the longer of its two (also `Kind::Twin` below)
             3 => match children.split_first() {
                 Some((c, rest)) => max_of(rest, dur_total(c)),
                 None => (0, false),
@@ -1695,6 +1854,11 @@ fn dur_type(n: &Node) -> (i32, bool) {
             25 => first(children, (-1, false)),
             // Wrapper (F-52913), Randomized / VariableBlock (F-67475)
             _ => first(children, (0, false)),
+        },
+        // TwinLoop (F-81098): the longer of its two
+        Kind::Twin { children, .. } => match children.split_first() {
+            Some((c, rest)) => max_of(rest, dur_total(c)),
+            None => (0, false),
         },
         // Looping (F-53436): the child's times the count; endless with no count or an endless child
         Kind::Looping { child, count, .. } => {
@@ -2107,7 +2271,7 @@ fn stop_node(n: &mut Node, ovr: i32) {
         n.release = Some((n.t, f32::INFINITY));
     }
     match &mut n.kind {
-        Kind::Group { children } => children.iter_mut().for_each(|c| stop_node(c, ovr)),
+        Kind::Group { children } | Kind::Twin { children, .. } => children.iter_mut().for_each(|c| stop_node(c, ovr)),
         // Envelope: its own release stage fades the child (the step above starts it)
         Kind::Looping { child, .. } => stop_node(child, ovr),
         Kind::Sequential { cur, .. } => {
@@ -2135,6 +2299,10 @@ fn reset_node(n: &mut Node) {
     match &mut n.kind {
         Kind::Wave { pos_ms, .. } | Kind::Stream { pos_ms, .. } => *pos_ms = 0.0,
         Kind::Group { children } => children.iter_mut().for_each(reset_node),
+        Kind::Twin { children, clock, played, .. } => {
+            (*clock, *played) = (0.0, false);
+            children.iter_mut().for_each(reset_node)
+        }
         Kind::Looping { child, plays, child_off, .. } => {
             *plays = 0;
             *child_off = None;
@@ -2265,6 +2433,41 @@ mod tests {
     /// The durations of the sound tree (F-53189 with each type's method), the play offsets (F-90115), the Looping split
     /// (F-39812) and the Sequential start (F-71973) against the original's code run offline on random trees
     /// (tools/sound_duration_reference.py; a case the original faults on is left out)
+    #[test]
+    fn twinloop_fade_matches_the_original() {
+        // tools/twinloop_reference.py: the original's TwinLoop Init, Play and Update on random TwinLoops and times; every
+        // call's two child levels, next swap time, target, fader value and the generator's state, bit for bit
+        use super::*;
+        let mut twin = None;
+        let mut m = Mwc { lo: 0, carry: 0 };
+        let mut n = 0;
+        for l in include_str!("testdata/twinloop_ref.txt").lines() {
+            // (each number is led by a letter)
+            let w: Vec<&str> = l.split_whitespace().map(|x| if x.len() > 1 { &x[1..] } else { x }).collect();
+            match w.first().copied() {
+                // the original's hashes of the two curve names, as make() compares them
+                Some("H") => assert_eq!((joaat("EQUAL_POWER_RISE"), joaat("LINEAR_FALL")), (w[1].parse().unwrap(), w[2].parse().unwrap())),
+                Some("T") => {
+                    let v: Vec<u32> = w[1..].iter().map(|x| x.parse().unwrap()).collect();
+                    m = Mwc { lo: v[5], carry: v[6] };
+                    twin = Some(Twin::new((v[0], v[1]), (v[2], v[3]), v[4] == 1, || m.next()));
+                }
+                Some(k @ ("P" | "U")) => {
+                    let t = twin.as_mut().unwrap();
+                    let now: u32 = w[1].parse().unwrap();
+                    let (a, b) = if k == "P" { t.play(now, || m.next()) } else { t.update(now, || m.next()) };
+                    let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+                    let got = (a.to_bits(), b.to_bits(), t.next_swap, t.target.to_bits(), t.fader.v.to_bits(), m.lo, m.carry);
+                    let want = (hex(w[3]), hex(w[4]), w[5].parse().unwrap(), hex(w[6]), hex(w[7]), w[8].parse().unwrap(), w[9].parse().unwrap());
+                    assert_eq!(got, want, "{l}");
+                    n += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(n, 26_198);
+    }
+
     #[test]
     fn looping_remake_matches_the_original() {
         // tools/looping_remake_reference.py: the original's Looping update and deferred remake on 1 - 14 Loopings; whether a
@@ -2556,7 +2759,7 @@ mod tests {
         fn streams(n: &Node, out: &mut Vec<f32>) {
             match &n.kind {
                 Kind::Stream { clip: Some(_), dur_ms, .. } => out.push(*dur_ms),
-                Kind::Group { children } => children.iter().for_each(|c| streams(c, out)),
+                Kind::Group { children } | Kind::Twin { children, .. } => children.iter().for_each(|c| streams(c, out)),
                 Kind::Looping { child, .. } | Kind::Envelope { child, .. } | Kind::OnStop { child, .. } => streams(child, out),
                 Kind::Sequential { cur: Some(c), .. } => streams(c, out),
                 _ => {}

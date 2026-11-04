@@ -4014,7 +4014,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
         self.sst_trails(step_dt);
         if let Some(lw) = shared.as_deref() {
             self.level_swap(&mut level_car, None, step_dt, false, true);
-            self.level.step_rest_alone(lw, step_dt);
+            // (the thrown rider whose island is one with the level's: his bike's step left it here - his build, solve,
+            // push and post-push with that island's, his tick's answers back to the bike's state)
+            let job = self.cars.iter_mut().find_map(|c| c.state.veh.as_deref_mut().and_then(|v| v.rider_job.take().map(|j| (j, v))));
+            match job {
+                Some((j, v)) if v.rider.is_some() => {
+                    let rd = v.rider.as_deref_mut().unwrap();
+                    let tick = v.rider_out.get_or_insert_with(Default::default);
+                    self.level.step_rest_alone_rider(lw, step_dt, Some((rd, j, tick)));
+                }
+                _ => self.level.step_rest_alone(lw, step_dt),
+            }
             self.level.end_tick_with(lw, step_dt, Some(&world.collider));
             self.ambient_out_of_level(step_dt, world);
         }

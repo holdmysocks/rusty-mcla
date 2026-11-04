@@ -339,8 +339,14 @@ pub struct Career {
     /// each mission's "updated" byte (+690: F-30196 sets it, F-92621 clears it; not saved)
     /// and what it is found from (`scan_updates`)
     updated: std::cell::RefCell<Vec<bool>>,
-    /// the reward manager's pending list (F-64223): (mission, reward) not given yet
-    pub pending: Vec<(usize, usize)>,
+    /// the reward manager's pending list (F-64223): the rewards not given yet
+    pub pending: Vec<Pend>,
+    /// the amounts of the experience manager's own race rewards (F-48818): money (+428, amount +60), Progression
+    /// (+236, amount +92) and Unlocking (+332): one object each, so a race queued again before the page overwrites the amount
+    pub pend_money: i64,
+    pub pend_exp: [i64; 2],
+    /// a give-all is running (`Game::give_pending`): a walk's deferred rewards join the list
+    pub in_give: bool,
     /// completions held back in the journal behind their pending rewards
     done_wait: Vec<usize>,
     upd: Vec<UpdSnap>,
@@ -859,31 +865,101 @@ impl Career {
     /// AddReward F-64223: a reward already pending is ignored; bGiveImmediately gives it now,
     /// else it waits in the list for the REWARDS page (`give_pending`).
     fn add_reward(&mut self, i: usize, k: usize, m: &Mission) {
-        if reward_add(&mut self.pending, (i, k), m.reward_flags.get(k).map_or(true, |f| f.1)) {
+        if reward_add(&mut self.pending, Pend::Mission(i, k), m.reward_flags.get(k).map_or(true, |f| f.1)) {
             self.give(&m.rewards[k]);
         }
     }
 
     /// The REWARDS getter F-22948: a pending reward with bHidden clear makes the page show.
     pub fn pending_shown(&self) -> bool {
-        reward_shown(&self.pending, |&(i, k)| self.missions[i].reward_flags[k].0)
+        reward_shown(&self.pending, |p| self.pend_hidden(p))
     }
 
-    /// The REWARDS page's init gives every pending reward, the count read again each step
-    /// (F-40930 -> F-73125); the list stays until the page hides (`pending_hidden`), so a reward
-    /// added again meanwhile is ignored.
-    pub fn give_pending(&mut self) {
-        let mut n = 0;
-        while n < self.pending.len() {
-            let (i, k) = self.pending[n];
-            let r = self.missions[i].rewards[k].clone();
-            self.give(&r);
-            n += 1;
+    /// An entry's bHidden (+8).
+    pub fn pend_hidden(&self, p: &Pend) -> bool {
+        match *p {
+            Pend::Mission(i, k) => self.missions[i].reward_flags[k].0,
+            // (the race's money and Progression experience - built clear by F-69550 / F-78705 - and the PartUnlock rewards
+            // are listed; the Unlocking experience is Hidden (F-48818 sets +340); the thresholds' Mission / Script rewards
+            // are all Hidden 1)
+            Pend::Money | Pend::Exp(false) | Pend::Part(..) => false,
+            Pend::Exp(true) | Pend::Threshold(_) => true,
         }
+    }
+
+    /// The race listener F-48818: the money (above 1) and the experience (above 1) to the list - money, then Progression,
+    /// then Unlocking (`exp`: (Progression, Unlocking), 0 = not given). The objects are the manager's own: queued again
+    /// before the page, only the amount changes.
+    pub fn queue_race(&mut self, money: i64, exp: (i64, i64)) {
+        if money > 1 {
+            self.pend_money = money;
+            reward_add(&mut self.pending, Pend::Money, false);
+        }
+        for (k, e) in [exp.0, exp.1].into_iter().enumerate() {
+            if e > 1 {
+                self.pend_exp[k] = e;
+                reward_add(&mut self.pending, Pend::Exp(k == 1), false);
+            }
+        }
+    }
+
+    /// AddReward of a PartUnlock reward of a class threshold (F-61974 from the class point of F-48818): listed, deferred.
+    pub fn queue_part(&mut self, class: &str, part: &str) {
+        reward_add(&mut self.pending, Pend::Part(class.to_string(), part.to_string()), false);
+    }
+
+    /// The give of a mission's reward or of a threshold's (the others are the game's: `Game::give_pending`).
+    pub fn give_entry(&mut self, p: &Pend) {
+        let r = match *p {
+            Pend::Mission(i, k) => self.missions[i].rewards[k].clone(),
+            Pend::Threshold(k) => self.thresholds[k].1.clone(),
+            _ => return,
+        };
+        self.give(&r);
+    }
+
+    /// After a give-all: what the rewards started settles (`give_pending`).
+    pub fn after_give(&mut self) {
         // (a mission handed to CHECKING_PREREQUISITES steps on at once when they are met, as in `event`)
         self.activate_met();
         self.flush_done_wait();
         self.scan_updates();
+    }
+
+    /// The Unlocking experience given (F-55689 on the system named at the reward's +60): its thresholds walked.
+    pub fn unlocking_given(&mut self) {
+        self.walk(true);
+        self.activate_met();
+        self.scan_updates();
+    }
+
+    /// One system's walk F-61830 -> F-61974: its thresholds due, in file order, each marked reached and each of its
+    /// rewards handed to AddReward F-64223 - GiveImmediately given at once, the others appended to the pending list
+    /// (given after the entries already there by the same give-all F-73125).
+    fn walk(&mut self, unlocking: bool) {
+        let have = if unlocking { self.unlocking.unwrap_or(self.rep) } else { self.rep };
+        let unl = |c: &Career, k: usize| c.threshold_ids.get(k).map_or(false, |id| id.starts_with("Unlocking_"));
+        let due: Vec<usize> = (0..self.thresholds.len()).filter(|&k| unl(self, k) == unlocking && self.thresholds[k].0 as i64 <= have && !self.threshold_ids.get(k).map_or(false, |id| !id.is_empty() && self.reached_ids.contains(id))).collect();
+        for &k in &due {
+            if let Some(id) = self.threshold_ids.get(k).filter(|id| !id.is_empty()).cloned() {
+                self.reached_ids.insert(id);
+            }
+        }
+        let mut later: Vec<usize> = Vec::new();
+        for k in due {
+            let gi = self.threshold_gi.get(k).copied().unwrap_or(true);
+            let added = if self.in_give { reward_add(&mut self.pending, Pend::Threshold(k), gi) } else { reward_add(&mut later, k, gi) };
+            if added {
+                let r = self.thresholds[k].1.clone();
+                self.give(&r);
+            }
+        }
+        // (outside a give-all - the port's Unlocking following the reputation, `unlocking` unset - the deferred ones are
+        // given after the walk: the original walks Unlocking only from its experience reward, inside a give-all)
+        for k in later {
+            let r = self.thresholds[k].1.clone();
+            self.give(&r);
+        }
     }
 
     /// The completions held behind their pending rewards go to the journal (the rewards given,
@@ -1110,39 +1186,20 @@ impl Career {
             }
         }
         // reputation hands out missions
-        if let Ev::Rep(rep) = ev {
+        if let Ev::Rep(_) = ev {
             // (a threshold of the tables whose rewards were handed out is not handed out again)
             // (the Unlocking system's thresholds go by its own amount)
-            let unl = self.unlocking.unwrap_or(rep);
-            let unlocking = |k: usize| self.threshold_ids.get(k).map_or(false, |id| id.starts_with("Unlocking_"));
-            let mut due: Vec<(usize, Reward)> = self.thresholds.iter().enumerate().filter(|(k, (p, _))| *p as i64 <= if unlocking(*k) { unl } else { rep } && !self.threshold_ids.get(*k).map_or(false, |id| !id.is_empty() && self.reached_ids.contains(id))).map(|(k, (_, r))| (k, r.clone())).collect();
             // (the race's Progression experience is given before its Unlocking one - F-48818 adds them to the list in that
-            // order -, and each walk F-61830 -> F-61974 hands a threshold's rewards to AddReward F-64223 in file order:
-            // GiveImmediately given at once, the others appended and given after them by the same give-all F-73125)
-            due.sort_by_key(|&(k, _)| unlocking(k));
-            for &(k, _) in &due {
-                if let Some(id) = self.threshold_ids.get(k).filter(|id| !id.is_empty()).cloned() {
-                    self.reached_ids.insert(id);
-                }
-            }
-            // (each entry is a reward object of its own: the list holds entries, not values)
-            let mut later: Vec<usize> = Vec::new();
-            for (k, r) in &due {
-                if reward_add(&mut later, *k, self.threshold_gi.get(*k).copied().unwrap_or(true)) {
-                    self.give(r);
-                }
-            }
-            for k in later {
-                let r = self.thresholds[k].1.clone();
-                self.give(&r);
-            }
+            // order: `Game::give_pending`; here, outside a give-all, the two walks follow each other)
+            self.walk(false);
+            self.walk(true);
         }
         self.activate_met();
         // (step 20: completions after what they handed out; Experience baselines take the
         // reputation in hand - not after a race or its money, whose reputation follows)
         for i in std::mem::take(&mut self.done_now) {
             // (a completion whose rewards wait in the pending list follows them: `give_pending`)
-            if self.pending.iter().any(|&(j, _)| j == i) {
+            if self.pending.iter().any(|p| matches!(*p, Pend::Mission(j, _) if j == i)) {
                 self.done_wait.push(i);
             } else {
                 self.journal.push((false, i));
@@ -2894,6 +2951,21 @@ impl Career {
 
 /// AddReward F-64223 on the pending list: a reward already in it is ignored; with
 /// bGiveImmediately it is to be given now (true), else it is appended.
+/// An entry of the reward manager's pending list.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pend {
+    /// a mission's reward (mission, reward)
+    Mission(usize, usize),
+    /// the race's money (`Career::pend_money`)
+    Money,
+    /// the race's experience: Progression (false) / Unlocking (true) (`Career::pend_exp`)
+    Exp(bool),
+    /// a class threshold's PartUnlock: (class, body part type)
+    Part(String, String),
+    /// a Progression / Unlocking threshold's reward (entry of `Career::thresholds`)
+    Threshold(usize),
+}
+
 pub fn reward_add<T: PartialEq>(list: &mut Vec<T>, r: T, give_now: bool) -> bool {
     if list.contains(&r) {
         return false;
@@ -2958,6 +3030,44 @@ mod tests {
             }
         }
         eprintln!("reward list: {cases} cases, {differ} differ");
+        assert!(cases >= 600 && differ == 0);
+    }
+
+    /// What the race listener F-48818 hands to the pending list (`rewards::race_split` + `Career::queue_race`): the
+    /// entries, their amounts and flags, also when a second race is queued before the page.
+    #[test]
+    fn race_rewards_match_the_original() {
+        let text = include_str!("testdata/ui_race_rewards_ref.txt");
+        let (mut cases, mut differ) = (0, 0);
+        for line in text.lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let v: Vec<u32> = input.split(" ; ").nth(1).unwrap().split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let mut c = Career::default();
+            for k in v.chunks(8) {
+                let (exp, money, racers, place, arcade, net, kind, editor) = (f32::from_bits(k[0]), f32::from_bits(k[1]), k[2] as usize, k[3] as usize, k[4] != 0, k[5] != 0, k[6], k[7] != 0);
+                // (a race of the race editor: nothing; x 0.6 from ARCADE, else x 0.35 in a network game)
+                if editor {
+                    continue;
+                }
+                let factor = if arcade { 0.6 } else if net { 0.35 } else { 1.0 };
+                let (m, e) = crate::rewards::race_split(exp, money, place, racers, factor, kind == 10);
+                // (in a network game the experience goes to Unlocking alone)
+                c.queue_race(m, (if net { 0 } else { e }, e));
+            }
+            // (all three wait: GiveImmediately 0 - `queue_race` appends them)
+            let out: Vec<String> = c.pending.iter().map(|p| match p {
+                Pend::Money => format!("M {:x} {} 0", c.pend_money as u32, c.pend_hidden(p) as u8),
+                Pend::Exp(false) => format!("P {:x} {} 0", c.pend_exp[0] as u32, c.pend_hidden(p) as u8),
+                Pend::Exp(true) => format!("U {:x} {} 0", c.pend_exp[1] as u32, c.pend_hidden(p) as u8),
+                _ => "?".into(),
+            }).collect();
+            cases += 1;
+            if out.join(" ") != want.trim() {
+                differ += 1;
+                eprintln!("{input}: want {want} got {}", out.join(" "));
+            }
+        }
+        eprintln!("race rewards: {cases} cases, {differ} differ");
         assert!(cases >= 600 && differ == 0);
     }
 

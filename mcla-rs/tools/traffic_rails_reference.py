@@ -15,7 +15,11 @@ Modes (--mode, default all):
 - backing: the backing-up rail F-54867 (the four control points from the car's place and row 2, the pool index 0,
   speed 4, the attach at phase 1 reversed).
 - join: a race path's join rail F-45519 (four rails, the shortest).
-(The passing rail F-92334 is not run here yet: see the doc's open list.)
+- pass: the passing rail F-92334 whole (with the lane test F-50817 and the arc-line-arc class). Stubs: the obstacle's
+  slots 1 / 4 / 6 (matrix, width, length) and the own obstacle's slot 4 (width) answer from the case; the sweep
+  F-23371, the lane query F-56141 (the 48-byte entries: +16 tangent, +32 lane -> +8 owner -> +4 flags / +8 parent,
+  +36 d2), the pavement test F-50927 and the probe F-57005 answer from a per-case generator and print what they were
+  asked and what they answered; the pool F-88792 and the attach F-70405 record their arguments.
 Writes <out-dir>/traffic_rails_<mode>_ref.txt. Floats as hex bits."""
 import argparse
 import math
@@ -318,6 +322,120 @@ def request(a, idx, tool):
     return [' '.join('%08x' % x for x in r) + ' -> ' + o for r, o in zip(rows, out)]
 
 
+def passing(a, idx, tool):
+    """F-92334 whole. Guest memory: holder 0x1000, request 0x1100 (+0 the offset vector 0, +16 car 0x3000, +20 the
+    obstacle 0x1300, +24 the graph word 0x1580, +28 clearance, +32 the sweep's extra word, +36 the turn gate, +40 the mask
+    word, +44 flags: 0x80 left, 0x40 right, 0x20 lane test, 0x10 ready). Car 0x3000: +412 v, +448 type 0x1400 (+160 / +164
+    the radii), +452 the follower 0x1700 (+188 a real arc-line-arc rail 0x2000, built first by F-85722, its slot 8 the
+    class's F-53036; +208 the phase) or 0 (the car's place F-58860 and 0 - row 2 F-50349: the matrix at car +128, thread
+    block r13 0x5000), +496 its own obstacle 0x1600 (slot 4 = its width). The obstacle 0x1300: slot 1 the matrix 0x1340
+    (row 0, row 2 +32, place +48), slots 4 / 6 its width / length."""
+    nm = {k: addr(tool, k) for k in ('F-92334', 'F-85722', 'F-53036', 'F-23371', 'F-56141', 'F-50927', 'F-57005', 'F-88792',
+                                     'F-70405', 'F-86691', 'F-75805')}
+    rnd = random.Random(92334)
+    PASS = struct.unpack('>f', bytes.fromhex('4011361e'))[0]
+    rows = []
+    for _ in range(4000):
+        yaw = rnd.uniform(-math.pi, math.pi)
+        h = [math.sin(yaw), 0.0, -math.cos(yaw)]
+        rt = [math.cos(yaw), 0.0, math.sin(yaw)]
+        p = [rnd.uniform(-3000, 3000), rnd.uniform(-20, 60), rnd.uniform(-3000, 3000)]
+        u = rnd.random()
+        if u < 0.85:
+            dist, side = rnd.uniform(2, 20), rnd.choice((0.0, rnd.uniform(-1, 1), rnd.uniform(-4, 4)))
+            o = [p[k] + h[k] * dist + rt[k] * side for k in range(3)]
+            o[1] = p[1] + rnd.choice((0.0, 0.0, rnd.uniform(-1.5, 1.5)))
+            oy = yaw + rnd.choice((0.0, rnd.uniform(-0.3, 0.3), rnd.uniform(-math.pi, math.pi)))
+        elif u < 0.95:
+            o = [p[0] + rnd.uniform(-30, 30), p[1] + rnd.uniform(-5, 5), p[2] + rnd.uniform(-30, 30)]
+            oy = rnd.uniform(-math.pi, math.pi)
+        else:
+            o = list(p) if rnd.random() < 0.5 else [p[0], p[1] + 1.0, p[2]]
+            oy = rnd.uniform(-math.pi, math.pi)
+        r0 = [math.cos(oy), 0.0, math.sin(oy)]
+        r2 = [-math.sin(oy), 0.0, math.cos(oy)]
+        if rnd.random() < 0.1:
+            r0[1], r2[1] = rnd.uniform(-0.2, 0.2), rnd.uniform(-0.2, 0.2)
+        w, ln = rnd.choice((rnd.uniform(1.5, 2.6), rnd.uniform(1.5, 2.6), 3.0, 0.0)), rnd.choice((rnd.uniform(3.5, 6), rnd.uniform(3.5, 6), 6.0, rnd.uniform(6, 16)))
+        if rnd.random() < 0.08:
+            # (a point obstacle: the four corners on the line, picked by rounding or by the start values)
+            w, ln = rnd.choice(((0.0, 0.0), (1e-3, 1e-3), (0.0, 1e-4)))
+        wown = rnd.choice((rnd.uniform(1.5, 2.6), rnd.uniform(1.5, 2.6), 3.0, rnd.uniform(0.5, 1.0)))
+        c = rnd.choice((1.1, 1.5, 0.8, rnd.uniform(0, 3)))
+        extra = rnd.choice((0.0, 0.0, 0.0, rnd.uniform(0, 1)))
+        gate = rnd.choice((PASS, PASS, PASS, rnd.uniform(0.3, 6.3)))
+        g = rnd.random()
+        fl = 0xE0 if g < 0.75 else 0xC0 if g < 0.9 else rnd.choice((0x80, 0x40, 0xA0, 0x60, 0x20, 0x00))
+        fl |= (rnd.random() < 0.3) << 4 | rnd.getrandbits(4)
+        v = rnd.choice((0.0, rnd.uniform(0, 4), rnd.uniform(4, 30), 4.4704, 4.4704 / 0.7))
+        mint, piv = rnd.uniform(3, 9), rnd.uniform(2, 6)
+        kind = int(rnd.random() < 0.5)
+        ry = yaw + rnd.choice((0.0, rnd.uniform(-0.2, 0.2)))
+        cr2 = [-math.sin(ry), rnd.choice((0.0, rnd.uniform(-0.1, 0.1))), math.cos(ry)]
+        rp = [p[k] - h[k] * rnd.uniform(0, 10) for k in range(3)]
+        rtg = [p[k] + h[k] * rnd.uniform(0, 10) + rt[k] * rnd.uniform(-2, 2) for k in range(3)]
+        rh1 = [math.sin(ry), 0.0, -math.cos(ry)]
+        rr = rnd.uniform(2, 12)
+        ph = rnd.choice((0.0, 1.0, rnd.random(), rnd.random()))
+        probs = [rnd.choice((0, 100, 300, 600)), rnd.getrandbits(31), rnd.choice((0, 200, 500)), rnd.choice((1000, 800, 300, 0))]
+        wd = [fb(f32(x)) for x in o + r0 + r2 + [w, ln, wown, c, extra, gate]] + [fl] + [fb(f32(x)) for x in [v, mint, piv]] + [kind]
+        wd += [fb(f32(x)) for x in p + cr2 + rp + h + rtg + rh1 + [rr]] + [rnd.getrandbits(1), rnd.getrandbits(1), fb(f32(ph))]
+        wd += probs
+        assert len(wd) == 46
+        rows.append(wd)
+    data = ','.join('0x%08x' % x for r in rows for x in r)
+    disp = ('static void dispatch(Context&ctx,const uint8_t*base,uint32_t a){'
+            'if(a==0x82FF0100){ctx.f1.f64=bf(cur[11]);return;}'
+            'if(a==0x82FF0201){ctx.r3.u64=0x1340;return;}'
+            'if(a==0x82FF0204){ctx.f1.f64=bf(cur[9]);return;}'
+            'if(a==0x82FF0206){ctx.f1.f64=bf(cur[10]);return;}'
+            'if(a==0x82FF0508){sub_' + nm['F-53036'] + '(ctx,base);return;}'
+            'throw std::runtime_error("unexpected indirect call");}' + nl)
+    lcg = 'hs=hs*1103515245u+12345u;'
+    stubs = {
+        'sub_' + nm['F-23371']: (lcg + 'int hit=((hs>>8)%1000)<cur[42];uint32_t q=ctx.r3.u32,s=ctx.r4.u32;'
+                                 'printf(" S %08x %08x %08x %02x %d",load(q+32),load(q+36),load(q+80),*pointer(q+160),hit);'
+                                 'for(int k=0;k<9;k++)printf(" %08x",load(s+4*k));ctx.r3.u64=hit;'),
+        'sub_' + nm['F-56141']: (lcg + 'static const int NS[]={0,0,1,1,2,3,4,5,6,9};int n=NS[(hs>>8)%10];uint32_t s=ctx.r4.u32;'
+                                 'printf(" Q %08x %08x %08x %08x %d %d %d",load(s),load(s+4),load(s+8),load(s+12),int(ctx.r6.u32),ctx.r3.u32==0x1580,n);'
+                                 'for(int k=0;k<n;k++){uint32_t e=ctx.r5.u32+48*k,l=0x2400+16*k,ow=0x2800+32*k,pa=0x2810+32*k;float t[3];'
+                                 'for(int j=0;j<3;j++){' + lcg + 't[j]=((hs>>8)%5==0)?0.0f:float(int((hs>>12)%2001)-1000)/250.0f;}'
+                                 + lcg + 'float d2=float((hs>>8)%40)*0.25f;' + lcg + 'int code=(hs>>8)%5;' + lcg + 'uint32_t f=(hs>>4)&0xFFFFFFFBu;'
+                                 'putf(e+16,t[0]);putf(e+20,t[1]);putf(e+24,t[2]);store(e+32,l);putf(e+36,d2);'
+                                 'store(l+8,code?ow:0);store(ow+4,code==2?(f|4):f);store(ow+8,code>=3?pa:0);store(pa+4,code==3?(f|4):f);'
+                                 'printf(" %08x %08x %08x %08x %d",load(e+16),load(e+20),load(e+24),load(e+36),code);}ctx.r3.u64=n;'),
+        'sub_' + nm['F-50927']: (lcg + 'int on=((hs>>8)%1000)<cur[44];printf(" N %08x %08x %08x %08x %08x %d",load(ctx.r3.u32),'
+                                 'load(ctx.r3.u32+4),load(ctx.r3.u32+8),fbits(ctx.f1.f64),fbits(ctx.f2.f64),on);ctx.r3.u64=on;'),
+        'sub_' + nm['F-57005']: (lcg + 'int g=((hs>>8)%1000)<cur[45];uint32_t q=ctx.r3.u32;printf(" G");pv(q+32);pv(q+48);'
+                                 'printf(" %08x %02x %d %d",load(q+20),*pointer(q+24),int(ctx.r4.u32),g);store(q+96,g?0x10:0);'),
+        'sub_' + nm['F-88792']: ('printf(" A %d %08x %d",int(ctx.r4.u32),fbits(ctx.f1.f64),ctx.r3.u32==0x1580);memset(objects+0xA00,0,0x200);'
+                                 'store(0x1A00,0x1B80);ctx.r3.u64=0x1A00;'),
+        'sub_' + nm['F-70405']: ('printf(" X %d %d %d %08x %08x %d %d",ctx.r3.u32==0x1000,ctx.r4.u32==0x1A00,ctx.r9.u32==0x2000,fbits(ctx.f1.f64),'
+                                 'fbits(ctx.f2.f64),int(ctx.r6.u32),int(ctx.r8.u32));'),
+        'sub_' + nm['F-86691']: '', 'sub_' + nm['F-75805']: '',
+    }
+    body = ('static const uint32_t D[]={' + data + '};' + nl + 'consts();' +
+            'for(size_t i=0;i<sizeof(D)/4;i+=46){const uint32_t*c=D+i;cur=c;memset(objects,0,0xE000);hs=c[43];'
+            'uint32_t car=0x3000,req=0x1100;'
+            'if(c[19]){vec(0x6000,c+26);vec(0x6010,c+29);vec(0x6020,c+32);vec(0x6030,c+35);'
+            'Context b{};b.r1.u32=0xF000;b.r3.u32=0x2080;b.r4.u32=0x6000;b.r5.u32=0x6010;b.r6.u32=c[39];b.r7.u32=0x6020;'
+            'b.r8.u32=0x6030;b.r9.u32=c[40];b.f1.f64=bf(c[38]);sub_' + nm['F-85722'] + '(b,nullptr);'
+            'store(0x2000,0x2300);store(0x2300+32,0x82FF0508);store(0x1700+188,0x2000);store(0x1700+208,c[41]);store(car+452,0x1700);}'
+            'store(0x5000,0x5100);vec(car+176,c+20);store(car+188,0x3F800000);vec(car+160,c+23);store(car+412,c[16]);'
+            'store(car+448,0x1400);store(0x1400+160,c[17]);store(0x1400+164,c[18]);store(car+496,0x1600);store(0x1600,0x1620);store(0x1620+16,0x82FF0100);'
+            'store(0x1300,0x1320);store(0x1320+4,0x82FF0201);store(0x1320+16,0x82FF0204);store(0x1320+24,0x82FF0206);'
+            'vec(0x1340,c+3);vec(0x1340+32,c+6);vec(0x1340+48,c);store(0x1340+60,0x3F800000);'
+            'store(req+16,car);store(req+20,0x1300);store(req+24,0x1580);store(req+28,c[12]);store(req+32,c[13]);store(req+36,c[14]);'
+            'store(req+40,0xFFFFFFFF);*pointer(req+44)=uint8_t(c[15]);'
+            'Context ctx{};ctx.r1.u32=0xF000;ctx.r13.u32=0x5000;ctx.r3.u32=0x1000;ctx.r4.u32=req;sub_' + nm['F-92334'] + '(ctx,nullptr);'
+            'printf(" R %d",int(ctx.r3.u32&0xFF));if(ctx.r3.u32&0xFF)rec(0x1A80);printf("' + NL + '");}' + nl)
+    main_src = disp + 'int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});' + nl + body + '}' + nl
+    exe = build(idx, ['sub_' + nm[k] for k in ('F-92334', 'F-85722', 'F-53036')], main_src, a.out_dir, 'rails_pass', stubs=stubs, vector=True)
+    out = [x.strip() for x in run(exe, a.image).split(nl) if x.strip()]
+    assert len(out) == len(rows), (len(out), len(rows))
+    return [' '.join('%08x' % x for x in r) + ' -> ' + o for r, o in zip(rows, out)]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--recomp', type=Path, required=True)
@@ -327,7 +445,7 @@ def main():
     ap.add_argument('--mode', default='all')
     a = ap.parse_args()
     idx = index(a.recomp)
-    modes = {'recovery': recovery, 'join': join, 'backing': backing, 'request': request}
+    modes = {'recovery': recovery, 'join': join, 'backing': backing, 'request': request, 'pass': passing}
     for m, f in modes.items():
         if a.mode not in ('all', m):
             continue

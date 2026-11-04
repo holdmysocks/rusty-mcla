@@ -5918,56 +5918,74 @@ impl Game {
                     }
                 }
             }
-            self.mc4_class_thresholds(m, sys, sys);
+            for part in self.mc4_class_thresholds(m, sys) {
+                Self::mc4_part_unlock(m, sys, &part);
+            }
         }
     }
 
     /// The thresholds of a class system after an addition (F-61830): each one not yet
-    /// reached that the share has come to is marked and gives its rewards - PartUnlock
-    /// (F-70978): the body part type is unlocked, and marked new, for the class of the
-    /// vehicle the player is in (`class`).
-    fn mc4_class_thresholds(&self, m: &mut Mc4, system: &str, class: &str) -> Vec<String> {
-        let mut given = Vec::new();
-        let Some(def) = self.career.exp_tables.system(system) else { return given };
-        let c = &mut m.career;
-        let s = c.experience.classes.entry(system.to_string()).or_default();
+    /// reached that the share has come to is marked (F-61974); returns their PartUnlock
+    /// rewards in order (each handed to AddReward: listed, deferred - `Career::queue_part`).
+    fn mc4_class_thresholds(&self, m: &mut Mc4, system: &str) -> Vec<String> {
+        let mut parts = Vec::new();
+        let Some(def) = self.career.exp_tables.system(system) else { return parts };
+        let s = m.career.experience.classes.entry(system.to_string()).or_default();
         let f = def.fraction(s.amount);
         for th in &def.thresholds {
             if s.reached(&th.id) == Some(true) || !(f >= th.percent) {
                 continue;
             }
             s.set_reached(&th.id);
-            for part in &th.parts {
-                let have = c.body_parts_unlocked.entry(class.to_string()).or_default();
-                if !have.iter().any(|p| p.eq_ignore_ascii_case(part)) {
-                    have.push(part.clone());
-                    given.push(part.clone());
-                }
-                let new = c.body_parts_new.entry(class.to_string()).or_default();
-                if !new.iter().any(|p| p.eq_ignore_ascii_case(part)) {
-                    new.push(part.clone());
-                }
-            }
+            parts.extend(th.parts.iter().cloned());
         }
-        given
+        parts
     }
 
-    /// The experience of a finished race, beside the reputation the game has added
-    /// (GENERIC_RACE_COMPLETE / FREEWAY_RACE_COMPLETE: F-48818; WAGER_RACE_COMPLETE:
-    /// F-51495): `exp` to the Unlocking system too, one point to the system of the
-    /// class of the vehicle driven (whatever the place) and one to the system of the
-    /// ability fitted. `rep_before`: the reputation before that of the race was added.
-    /// Returns the body part types this unlocked.
-    pub fn mc4_race_experience(&mut self, rep_before: i64, exp: i64) -> Vec<String> {
+    /// The give of a PartUnlock (F-70978): the body part type is unlocked, and marked new,
+    /// for `class`. Whether it was locked before.
+    fn mc4_part_unlock(m: &mut Mc4, class: &str, part: &str) -> bool {
+        let c = &mut m.career;
+        let have = c.body_parts_unlocked.entry(class.to_string()).or_default();
+        let fresh = !have.iter().any(|p| p.eq_ignore_ascii_case(part));
+        if fresh {
+            have.push(part.to_string());
+        }
+        let new = c.body_parts_new.entry(class.to_string()).or_default();
+        if !new.iter().any(|p| p.eq_ignore_ascii_case(part)) {
+            new.push(part.to_string());
+        }
+        fresh
+    }
+
+    /// A pending PartUnlock given by the REWARDS page (`Game::give_pending`).
+    pub fn mc4_part_give(&mut self, class: &str, part: &str) {
+        let mut m = self.mc4.take().unwrap_or_else(|| Mc4::seeded(self.fresh_game));
+        Self::mc4_part_unlock(&mut m, class, part);
+        self.mc4 = Some(m);
+    }
+
+    /// The points of a finished race given at once (GENERIC_RACE_COMPLETE /
+    /// FREEWAY_RACE_COMPLETE: F-48818; WAGER_RACE_COMPLETE: F-51495): one point to the
+    /// system of the class of the vehicle driven (whatever the place) and one to the
+    /// system of the ability fitted (the money and the experience wait in the pending list:
+    /// `Career::queue_race`). The class thresholds' PartUnlock rewards go to the list;
+    /// returns the body part types they will unlock (the REWARDS page's UNLOCKED rows).
+    pub fn mc4_race_experience(&mut self) -> Vec<String> {
         self.mc4_rewards_begin();
-        self.mc4_unlocking_add(rep_before, exp);
         let mut given = Vec::new();
         let class = self.catalog.get(&self.mc4_car_name(self.current_car)).map(|c| c.class.clone()).unwrap_or_default();
         if let Some(sys) = Game::mc4_class_system(&class) {
             let mut m = self.mc4.take().unwrap_or_else(|| Mc4::seeded(self.fresh_game));
             self.mc4_exp_seed(&mut m);
             m.career.experience.classes.entry(sys.to_string()).or_default().amount += 1;
-            given = self.mc4_class_thresholds(&mut m, sys, sys);
+            for part in self.mc4_class_thresholds(&mut m, sys) {
+                let have = m.career.body_parts_unlocked.get(sys).map_or(false, |v| v.iter().any(|p| p.eq_ignore_ascii_case(&part)));
+                if !have && !given.iter().any(|p: &String| p.eq_ignore_ascii_case(&part)) {
+                    given.push(part.clone());
+                }
+                self.career.queue_part(sys, &part);
+            }
             self.mc4 = Some(m);
         }
         // (the ability fitted to the vehicle: byte 8108 of its record, 255 = none)
@@ -14984,6 +15002,8 @@ mod tests {
         for k in 0..7 {
             // (last of four still counts for the class: F-48818 adds the point whatever the place)
             g.award_race(if k == 0 { 4 } else { 1 }, 4);
+            g.rewards_ask();
+            g.career.pending_hidden();
             earned += g.last_reward.1;
         }
         assert!(earned > 590, "{earned}");
@@ -15038,6 +15058,8 @@ mod tests {
         same(&save["mc4"], &saved_block(&dir), "step 14, read only");
         // (the R8 is an Exotic: 71, and the Unlocking amount moves with the reputation)
         g.award_race(1, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         let exp = g.last_reward.1;
         assert_eq!((g.mc4_class_amount("Exotic"), g.mc4_unlocking()), (71, 121460 + exp));
         assert_eq!(g.mc4_class_rank("Exotic"), (5, 9, 9));
@@ -15068,6 +15090,8 @@ mod tests {
         assert_eq!(g.mc4_part_lock(&class, "FRONTBUMPER").is_some(), wins < need);
         let r0 = g.rep;
         g.award_race(2, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         let exp = g.last_reward.1;
         assert_eq!(g.mc4_class_amount(sys), wins + 1);
         if exp > 1 {
@@ -15105,6 +15129,8 @@ mod tests {
         g.current_race = Some(own);
         let (m1, t1) = (g.money, g.mc4_class_amount("Tuner"));
         g.award_race(1, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert_eq!((g.rep, g.money, g.mc4_unlocking(), g.mc4_class_amount("Tuner"), g.last_reward), (r0, m1, u0, t1, (0, 0)));
         // (an ordinary race just below the top of the table goes past it, the Unlocking
         // amount with it; the share stays at 1)
@@ -15112,10 +15138,14 @@ mod tests {
         g.rep = 33_490;
         g.career.unlocking = Some(33_440);
         g.award_race(1, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         let exp = g.last_reward.1;
         assert!(exp >= 100, "{exp}");
         assert_eq!((g.rep, g.mc4_unlocking()), (33_490 + exp, 33_440 + exp));
         g.award_race(1, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert_eq!(g.rep, 33_490 + exp + g.last_reward.1);
         assert_eq!(crate::rewards::progress(g.rep), (12, 1.0));
         g.write_save(&dir);
@@ -15245,6 +15275,8 @@ mod tests {
         g.arcade_restore = Some((0, 3));
         assert_eq!(g.mc4_race_factor(), 0.6);
         g.award_race(1, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert_eq!(g.last_reward, crate::rewards::race_reward(r0, g.player_perf(), g.race_diff, 1, 4, 0.6));
         assert!(g.last_reward.0 < full.0 && g.last_reward.1 < full.1);
         assert_eq!(g.mc4_class_amount("Tuner"), t0 + 1);
@@ -15253,6 +15285,8 @@ mod tests {
         // (a race of a hangout's series pays its money like any race)
         g.series = Some(crate::game::Series { key: "hw_local_hangout1_series".into(), races: Vec::new(), at: 0, wins: Vec::new(), rivals: Vec::new(), story: None, diff: 1 });
         g.award_race(2, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert!(g.last_reward.0 > 0 && g.last_reward.1 > 0);
         g.series = None;
         // (a delivery on Hard with a third of the damage: the manager's two thirds and the
@@ -15431,11 +15465,15 @@ mod tests {
         assert_eq!(g.mc4_ability_panel(0), (1, 0));
         for _ in 0..6 {
             g.award_race(1, 4);
+            g.rewards_ask();
+            g.career.pending_hidden();
             assert!(g.career.unlocked_now.is_empty());
         }
         // (the ninth race of the class: FrontBumper and Skirts - listed for the rewards screen,
         // unlocked, marked new)
         g.award_race(4, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert_eq!(g.career.unlocked_now, vec!["FrontBumper".to_string(), "Skirts".to_string()]);
         assert!(g.reward_panel);
         assert!(!g.mc4_part_type_locked(Some("FrontBumper")) && g.mc4_part_row_open(Some("frontbumper"), 5, 6) && g.mc4_part_type_locked(Some("Spoiler")));
@@ -15445,6 +15483,8 @@ mod tests {
         g.mc4_part_list_opened(Some("FrontBumper"));
         assert!(!g.mc4_part_new(Some("FrontBumper")) && g.mc4_part_new(Some("Skirts")));
         g.award_race(1, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert!(g.career.unlocked_now.is_empty());
         g.write_save(&dir);
         let b = saved_block(&dir);
@@ -15706,6 +15746,8 @@ mod tests {
         assert_eq!((p.len(), p[0][0].1.as_str(), p[0][0].2.as_str(), p[0][1].1.as_str()), (2, "REWARDED", "1", "ZONE LEVEL 2"));
         // (the next race starts the lists again; a race that crosses nothing lists nothing)
         g.award_race(1, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert!(g.career.perf_now.is_empty() && g.career.rewarded_now.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -15729,6 +15771,8 @@ mod tests {
             g.career.ability_amounts.insert(sys.to_string(), a);
             let shown = g.message.clone();
             g.award_race(1, 4);
+            g.rewards_ask();
+            g.career.pending_hidden();
             let key = format!("{}_LEVEL_{}", sys.to_ascii_uppercase(), level);
             assert_eq!(g.career.rewarded_now, vec![g.career.strings.get(&key).map(|s| s.to_uppercase()).unwrap()]);
             assert_eq!(g.message, shown);
@@ -15875,11 +15919,15 @@ mod tests {
         assert_eq!(g.mc4_tt_end(id, Some(131.0)), Some(false));
         assert_eq!(g.mission_results[0], (format!("{}TIME", TT_PANEL), vec!["TARGET TIME: 02:10.29".to_string(), "YOUR TIME: 02:11.00".to_string()], false));
         g.award_race(1, 1);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert_eq!((g.money, g.mc4_tt_best(0, 0), g.last_reward), (money, Some(130287), (0, 0)));
         // (a beaten time: the best time, the money of the event at Medium, no reputation)
         let rep = g.rep;
         assert_eq!(g.mc4_tt_end(id, Some(129.5)), Some(true));
         g.award_race(1, 1);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert_eq!((g.mc4_tt_best(0, 0), g.rep, g.career.tt_last), (Some(129500), rep, Some(true)));
         assert!(g.last_reward.0 > 0 && g.last_reward.1 == 0, "{:?}", g.last_reward);
         assert_eq!(g.mc4_tt_end("game/Race/Hollywood/Ordered/hw_ordered_jp_11", Some(100.0)), None);
@@ -16762,11 +16810,10 @@ mod tests {
             assert_eq!((g.career.state_id_of(k), g.career.log_order().contains(&k)), (3, true), "{call}");
             g.career.event(Ev::Race { district: "Hollywood", place: 1, hookman: true, class: "TUNER", race, beat_goal: false });
             g.career.core_race_end(call, 1, true, rep);
-            // (the REWARDS page gives the pending list - RACE_GH_02's hidden REP_ON_HW_STRIP,
-            // F-73125 - ahead of the race's reputation: `Game::rewards_ask`)
-            g.career.give_pending();
-            g.rep = rep;
-            g.career.event(Ev::Rep(rep));
+            // (the race's experience joins the pending list behind RACE_GH_02's hidden REP_ON_HW_STRIP; the REWARDS
+            // page gives them in that order, the experience posting the reputation - F-48818, F-73125: `Game::give_pending`)
+            g.career.queue_race(0, (rep - g.rep, 0));
+            g.give_pending();
         }
         let ids = |v: &[usize]| v.iter().map(|&i| g.career.mission_id(i).to_string()).collect::<Vec<_>>();
         assert_eq!(ids(&g.career.done), vec!["RACE_GH_06", "RACE_GH_02"]);
@@ -16795,9 +16842,13 @@ mod tests {
         g.arcade_restore = Some((0, 3));
         g.arcade_opts[2] = 1;
         g.award_race(1, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert_eq!(g.last_reward, (0, 0));
         g.arcade_opts[2] = 0;
         g.award_race(1, 4);
+        g.rewards_ask();
+        g.career.pending_hidden();
         assert!(g.last_reward.0 > 0 && g.last_reward.1 > 0, "{:?}", g.last_reward);
     }
 
