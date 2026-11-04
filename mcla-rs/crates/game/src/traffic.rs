@@ -1687,37 +1687,94 @@ fn rejoin_req(q: &TcpRail, speed: f32) -> RailReq {
     RailReq { p: q.t, h0: crate::tcp_rail::vnorm(q.tangent(1.0)), v, limit: RAIL_TURN, ready: false }
 }
 
-/// The obstacle's four corners as the passing rail's geometry (F-92334) makes them: its place + row 0 x (sx x width
-/// x 0.5) + row 2 x (sz x length x 0.5), (sx, sz) = (1, 1), (-1, 1), (-1, -1), (1, -1) (its sign table).
-fn pass_corners(o: &Other) -> [Vec3; 4] {
-    let (x, z) = (o.right, o.back);
+/// The obstacle's four corners as the passing rail's builder (F-92334) makes them: its place (slot 1's matrix +48)
+/// + row 0 x ((width x s) x 0.5) + row 2 x ((length x s) x 0.5), width and length its slots 4 and 6, the signs
+/// (1, 1), (-1, 1), (-1, -1), (1, -1) (its table; s through the pair of fsel: 1, 0 or -1), each a vmaddfp.
+pub(crate) fn pass_corners(place: Vec3, row0: Vec3, row2: Vec3, w: f32, l: f32) -> [Vec3; 4] {
     [(1.0f32, 1.0f32), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)].map(|(sx, sz)| {
-        let c = crate::tcp_rail::vmadd3(x, sx * o.half_wid, o.pos);
-        crate::tcp_rail::vmadd3(z, sz * o.half_len, c)
+        let c = crate::tcp_rail::vmadd3(row0, (w * sx) * 0.5, place);
+        crate::tcp_rail::vmadd3(row2, (l * sz) * 0.5, c)
     })
 }
 
-/// The passing rail (F-28706 -> F-10687 -> F-92334) at clearance `c`, then the rejoin (F-89026 -> F-26466). The start
-/// and heading as the recovery request's (the follower's lane at its phase). The obstacle's leftmost and rightmost
-/// corners seen from the start (the y of (unit(O - P) with y = O.y) x unit(corner - P): the least strictly below
-/// f32::MAX, the largest strictly above 1.56e-36, each the first found; corner 0 when none); each pushed out across
-/// the line from the start by fma(width, 0.5, c) (left: (d.z, 0, -d.x), right: (-d.z, 0, d.x), made unit); the end
-/// heading the flat direction from the start; four arc-line-arc rails a corner (senses 00, 01, 10, 11) at the radius
-/// (F-36195 at the car's speed; the pivot radius when ready); a valid one whose largest turn is at most 130 degrees,
-/// swept clear and not longer than the best (a tie replaces) is the best. Speed max(0.7 v, 4.4704), 1.1176 when ready.
+/// The passing rail's request (F-10687 -> F-92334): the start and heading (the follower's rail at its phase as the
+/// recovery request F-26749 makes them, plus the request's offset, the zero vector), the obstacle's matrix (row 0, row 2,
+/// place) and its bound's width and length, the car's own width (its obstacle's slot 4, F-88657 -> F-46284), the
+/// clearance (+28), the radius (F-36195 at the car's speed; the pivot radius when ready, +44 bit 0x10), the largest turn
+/// (+36: 0x4011361E) and the flags (+44): 0x80 the left rails, 0x40 the right ones, 0x20 the lane test. Traffic's
+/// F-10687 sets 0x80, 0x40 and 0x20; the walkers' F-79428 leaves 0x20 clear.
+pub(crate) struct PassReq {
+    pub p: Vec3,
+    pub h0: Vec3,
+    pub row0: Vec3,
+    pub row2: Vec3,
+    pub place: Vec3,
+    pub w: f32,
+    pub l: f32,
+    pub w_own: f32,
+    pub c: f32,
+    pub radius: f32,
+    pub gate: f32,
+    pub flags: u8,
+}
+
+/// A lane the lane query F-56141 reports near a point (its 48-byte entry: +16 the lane's unit tangent there, +36 the
+/// squared distance), `skip` when the lane's owner (+8) or the owner's parent (owner +8) has flag 0x4 (word +4).
+pub(crate) struct LaneNear {
+    pub tangent: Vec3,
+    pub d2: f32,
+    pub skip: bool,
+}
+
+/// F-50817: which way the lanes run at a rail's phase `ph`: the lanes within `radius` of the rail's point there
+/// (F-56929; the query F-56141, 64 at most), of those not skipped the first of the least squared distance (strictly
+/// below from f32::MAX); none: -1; else its tangent dotted with the rail's tangent there (F-28568; x, then y and z
+/// fused on) above 0: 0 (the same way), else 1.
+pub(crate) fn lane_side(q: &TcpRail, ph: f32, radius: f32, lanes: &mut dyn FnMut(Vec3, f32) -> Vec<LaneNear>) -> i32 {
+    use crate::physics::exact::fma;
+    let at = q.point(ph);
+    let d = q.tangent(ph);
+    let mut best = f32::MAX;
+    let mut dir = None;
+    for e in lanes(at, radius).iter().take(64) {
+        if !e.skip && e.d2 < best {
+            best = e.d2;
+            dir = Some(e.tangent);
+        }
+    }
+    let Some(t) = dir else { return -1 };
+    if fma(d.z, t.z, fma(d.y, t.y, d.x * t.x)) > 0.0 { 0 } else { 1 }
+}
+
+/// F-92334, the passing rail's geometry and pick. The obstacle's corners (`pass_corners`); d0 = unit(O - P with y = O.y);
+/// the corner of least and of greatest cross-y (d0 x unit(corner - P)) - the least strictly below f32::MAX, the greatest
+/// strictly above -f32::MAX, each the first found, corner 0 when none; the targets `unit((d.z, 0, -d.x)) x fma(W_own,
+/// 0.5, c) + corner` (left, d = corner - P) and `(-d.z, 0, d.x)` (right); H1 = unit(T - P with y = 0); four rails a
+/// target (senses 00, 01, 10, 11; the left four when flag 0x80, the right four when 0x40). Of these in turn a valid rail
+/// whose largest turn is not above the gate, not longer than both bests and f32::MAX, swept clear (`sweep`: true when it
+/// hits; F-23371 with the own width): with the lane test (0x20) F-50817 at phase 1 within 2 x W_own: no lane (-1) - not
+/// over the pavement at T (`pavement`, F-50927), not longer than best A, and the probe from T + 1 m to T - 1 m in y hits
+/// (`ground`, F-57005) - is best A; a lane the same way (0) and not longer than best B is best B; the other way (1) is
+/// no pick. Without the lane test a rail not longer than best A is best A. Ties replace. The pick: A, else B.
 #[allow(clippy::too_many_arguments)]
-fn passing_rail(r: &mut Rider, env: &Env, me: usize, p: Vec3, h0: Vec3, obst: usize, c: f32, ready: bool) -> Option<(Path, Path)> {
-    use crate::tcp_rail::{vdiff, vmadd3, vnorm};
-    let o = &env.others[obst];
-    let corners = pass_corners(o);
-    let mut d0 = vdiff(o.pos, p);
-    d0.y = o.pos.y;
+pub(crate) fn pass_pick(
+    q: &PassReq,
+    sweep: &mut dyn FnMut(&TcpRail) -> bool,
+    lanes: &mut dyn FnMut(Vec3, f32) -> Vec<LaneNear>,
+    pavement: &mut dyn FnMut(Vec3) -> bool,
+    ground: &mut dyn FnMut(Vec3, Vec3) -> bool,
+) -> Option<TcpRail> {
+    use crate::physics::exact::fma;
+    use crate::tcp_rail::{build, cross_y, vdiff, vmadd3, vnorm};
+    let p = q.p;
+    let corners = pass_corners(q.place, q.row0, q.row2, q.w, q.l);
+    let mut d0 = vdiff(q.place, p);
+    d0.y = q.place.y;
     let d0 = vnorm(d0);
-    let (mut lo, mut hi) = (f32::MAX, f32::from_bits(0x0405_0506));
+    let (mut lo, mut hi) = (f32::MAX, -f32::MAX);
     let (mut li, mut ri) = (0usize, 0usize);
-    for (k, &q) in corners.iter().enumerate() {
-        let u = vnorm(vdiff(q, p));
-        let y = crate::tcp_rail::cross_y(d0, u);
+    for (k, &c) in corners.iter().enumerate() {
+        let y = cross_y(d0, vnorm(vdiff(c, p)));
         if y < lo {
             lo = y;
             li = k;
@@ -1727,35 +1784,129 @@ fn passing_rail(r: &mut Rider, env: &Env, me: usize, p: Vec3, h0: Vec3, obst: us
             ri = k;
         }
     }
-    let hw = r.ty.width.max(1.8);
-    let off = crate::physics::exact::fma(hw, 0.5, c);
-    let push = |q: Vec3, left: bool| {
-        let d = vdiff(q, p);
+    let off = fma(q.w_own, 0.5, q.c);
+    let push = |c: Vec3, left: bool| {
+        let d = vdiff(c, p);
         let n = if left { Vec3::new(d.z, 0.0, -d.x) } else { Vec3::new(-d.z, 0.0, d.x) };
-        vmadd3(vnorm(n), off, q)
+        vmadd3(vnorm(n), off, c)
     };
-    let targets = [push(corners[li], true), push(corners[ri], false)];
-    let rr = turn_radius(&r.ty, r.v, ready);
-    let mut best_len = f32::MAX;
-    let mut best: Option<TcpRail> = None;
-    for t in targets {
+    let mut rails: Vec<TcpRail> = Vec::with_capacity(8);
+    for (bit, t) in [(0x80u8, push(corners[li], true)), (0x40, push(corners[ri], false))] {
+        if q.flags & bit == 0 {
+            continue;
+        }
         let mut dir = vdiff(t, p);
         dir.y = 0.0;
         let h1 = vnorm(dir);
         for (s0, s1) in [(false, false), (false, true), (true, false), (true, true)] {
-            let q = crate::tcp_rail::build(p, h0, t, h1, rr, s0, s1);
-            if !q.valid() || q.max_turn() > PASS_TURN {
-                continue;
-            }
-            let len = q.len();
-            if len > best_len || !sweep_clear(env, me, &tcp_pts(&q), hw * 0.5) {
-                continue;
-            }
-            best_len = len;
-            best = Some(q);
+            rails.push(build(p, q.h0, t, h1, q.radius, s0, s1));
         }
     }
-    let rail = best?;
+    let (mut a_len, mut b_len) = (f32::MAX, f32::MAX);
+    let (mut a, mut b): (Option<TcpRail>, Option<TcpRail>) = (None, None);
+    for r in rails {
+        if !r.valid() || r.max_turn() > q.gate {
+            continue;
+        }
+        let len = r.len();
+        if len > a_len && len > b_len && len > f32::MAX {
+            continue;
+        }
+        if sweep(&r) {
+            continue;
+        }
+        if q.flags & 0x20 == 0 {
+            if len > a_len {
+                continue;
+            }
+            a_len = len;
+            a = Some(r);
+            continue;
+        }
+        match lane_side(&r, 1.0, q.w_own * 2.0, lanes) {
+            -1 => {
+                if pavement(r.t) || len > a_len {
+                    continue;
+                }
+                let (top, bottom) = (Vec3::new(r.t.x, r.t.y + 1.0, r.t.z), Vec3::new(r.t.x, r.t.y - 1.0, r.t.z));
+                if !ground(top, bottom) {
+                    continue;
+                }
+                a_len = len;
+                a = Some(r);
+            }
+            0 => {
+                if len > b_len {
+                    continue;
+                }
+                b_len = len;
+                b = Some(r);
+            }
+            _ => {}
+        }
+    }
+    a.or(b)
+}
+
+/// The car's own width as its obstacle's slot 4 gives it (F-88657 -> F-46284): its bound's box width, 3 m when it has
+/// no bound.
+fn own_width(ty: &AmbType) -> f32 {
+    if ty.width > 0.0 { ty.width } else { 3.0 }
+}
+
+/// The lanes the lane query F-56141 reports within `radius` of `at` (the port's search, as the recovery rail's: the
+/// lanes' segments near the point, each lane once by its nearest point; the tangent the lane's there, made unit).
+fn lanes_near(env: &Env, at: Vec3, radius: f32) -> Vec<LaneNear> {
+    let nav = env.nav;
+    let mut out: Vec<(usize, LaneNear)> = Vec::new();
+    for k in nav.links_near(at, radius) {
+        let l = &nav.links[k];
+        let t = l.project(at);
+        let d2 = l.point_at(t).distance_squared(at);
+        if d2 > radius * radius {
+            continue;
+        }
+        let e = LaneNear { tangent: l.tangent_at(t), d2, skip: (l.owner_flags | l.parent_flags) & 0x4 != 0 };
+        match out.iter_mut().find(|x| x.0 == l.lane) {
+            Some(x) if x.1.d2 > d2 => x.1 = e,
+            Some(_) => {}
+            None => out.push((l.lane, e)),
+        }
+    }
+    out.into_iter().map(|x| x.1).collect()
+}
+
+/// The passing rail (F-28706 -> F-10687 -> F-92334) at clearance `c`, then the rejoin (F-89026 -> F-26466). The start
+/// and heading as the recovery request's (the follower's lane at its phase); the request as traffic's F-10687 makes it
+/// (left and right rails, the lane test, 130 degrees); the pick `pass_pick` with the port's world: the sweep its
+/// footprint test with half the own width, the lanes `lanes_near`, the pavement the navigation mesh's ai_sidewalk
+/// polygons (F-50927's filter at the ambient manager +0x617F0 (F-24607), its slot 1 F-27305: material bit 0x1), the probe the
+/// city's bound. Speed `max(0.7 v, 4.4704)` (fsel), 1.1176 when ready.
+#[allow(clippy::too_many_arguments)]
+fn passing_rail(r: &mut Rider, env: &Env, me: usize, p: Vec3, h0: Vec3, obst: usize, c: f32, ready: bool) -> Option<(Path, Path)> {
+    let o = &env.others[obst];
+    let w_own = own_width(&r.ty);
+    let req = PassReq {
+        p: crate::tcp_rail::vadd3(p, Vec3::ZERO),
+        h0,
+        row0: o.right,
+        row2: o.back,
+        place: o.pos,
+        w: o.half_wid * 2.0,
+        l: o.half_len * 2.0,
+        w_own,
+        c,
+        radius: turn_radius(&r.ty, r.v, ready),
+        gate: PASS_TURN,
+        flags: 0xE0 | (ready as u8) << 4,
+    };
+    let rail = pass_pick(
+        &req,
+        &mut |q| !sweep_clear(env, me, &tcp_pts(q), w_own * 0.5),
+        &mut |at, rad| lanes_near(env, at, rad),
+        &mut |t| crate::offroad::mesh().is_some_and(|m| m.on_flag(t, 0x1)),
+        &mut |top, bottom| env.col.probe_front(top, Vec3::NEG_Y, top.y - bottom.y).is_some(),
+    )?;
     let speed = if ready {
         1.1176
     } else {
@@ -4032,6 +4183,129 @@ mod tests {
             kinds[kind] += 1;
         }
         assert_eq!(kinds, [1032, 1002, 966]);
+    }
+
+    /// The passing rail (F-92334 with the lane test F-50817) against the original's builder run whole offline
+    /// (tools/traffic_rails_reference.py --mode pass -> testdata/traffic_rails_pass_ref.txt): the start from the follower's
+    /// rail or the car's matrix, the obstacle's corners, the picks, the targets, the eight rails; every sweep (the rail
+    /// and the request words), lane query (point, radius and the entries answered), pavement test and probe in order;
+    /// the pick (every word of its record), the pool's speed and the attach.
+    #[test]
+    fn passing_rail_matches_the_original() {
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let u = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let x = |f: f32| format!("{:08x}", f.to_bits());
+        let xv = |v: Vec3| format!("{} {} {}", x(v.x), x(v.y), x(v.z));
+        let (mut n, mut built) = (0, 0);
+        let calls = std::cell::RefCell::new([0usize; 4]);
+        let mut tiers = [0usize; 2];
+        for line in include_str!("testdata/traffic_rails_pass_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let o: Vec<&str> = o.split_whitespace().collect();
+            let v3 = |k: usize| Vec3::new(h(w[k]), h(w[k + 1]), h(w[k + 2]));
+            let flags = u(w[15]) as u8;
+            let ready = flags & 0x10 != 0;
+            let kind = u(w[19]);
+            let rq = if kind == 1 {
+                let q = crate::tcp_rail::build(v3(26), v3(29), v3(32), v3(35), h(w[38]), u(w[39]) != 0, u(w[40]) != 0);
+                let mut pp = Path::tcp(q, 0.0, None);
+                pp.t = h(w[41]);
+                recovery_req(Some(&pp), Vec3::ZERO, Vec3::ZERO, 0.0, false)
+            } else {
+                recovery_req(None, v3(20), crate::tcp_rail::vdiff(Vec3::ZERO, v3(23)), 0.0, false)
+            };
+            let ty = AmbType { min_turn: h(w[17]), pivot_turn: h(w[18]), ..Default::default() };
+            let req = PassReq {
+                p: rq.p,
+                h0: rq.h0,
+                row0: v3(3),
+                row2: v3(6),
+                place: v3(0),
+                w: h(w[9]),
+                l: h(w[10]),
+                w_own: h(w[11]),
+                c: h(w[12]),
+                radius: turn_radius(&ty, h(w[16]), ready),
+                gate: h(w[14]),
+                flags,
+            };
+            // the original's calls in order
+            let mut seq: std::collections::VecDeque<(char, Vec<&str>)> = std::collections::VecDeque::new();
+            let mut k = 0;
+            let mut tail = None;
+            while k < o.len() {
+                let len = match o[k] {
+                    "S" => 15,
+                    "Q" => 8 + 5 * o[k + 7].parse::<usize>().unwrap(),
+                    "N" => 7,
+                    "G" => 11,
+                    "A" | "R" => {
+                        tail = Some(o[k..].join(" "));
+                        break;
+                    }
+                    t => panic!("token {t}"),
+                };
+                seq.push_back((o[k].chars().next().unwrap(), o[k + 1..k + len].to_vec()));
+                k += len;
+            }
+            let seq = std::cell::RefCell::new(seq);
+            let next = |c: char| {
+                let (t, a) = seq.borrow_mut().pop_front().unwrap_or_else(|| panic!("a call {c} the original did not make: {line}"));
+                assert_eq!(t, c, "{line}");
+                calls.borrow_mut()["SQNG".find(c).unwrap()] += 1;
+                a
+            };
+            let pick = pass_pick(
+                &req,
+                &mut |q| {
+                    let a = next('S');
+                    // (the record's flag byte below 0x20 is a stack leftover in the original)
+                    assert_eq!(format!("{} {:02x}", a[..3].join(" "), u(a[3]) & 0xE0), format!("{} {} {} {:02x}", x(q.a1), x(q.a2), x(q.r), q.flags), "{line}");
+                    assert_eq!(a[5..].join(" "), format!("{} 00000001 00003070 00000000 ffffffff 00000000 00000000 bf800000 {}", w[11], w[13]), "{line}");
+                    a[4] == "1"
+                },
+                &mut |at, rad| {
+                    let a = next('Q');
+                    assert_eq!(a[..6].join(" "), format!("{} {} 64 1", xv(at), x(rad)), "{line}");
+                    let m: usize = a[6].parse().unwrap();
+                    (0..m)
+                        .map(|e| LaneNear { tangent: Vec3::new(h(a[7 + 5 * e]), h(a[8 + 5 * e]), h(a[9 + 5 * e])), d2: h(a[10 + 5 * e]), skip: matches!(a[11 + 5 * e], "2" | "3") })
+                        .collect()
+                },
+                &mut |t| {
+                    let a = next('N');
+                    assert_eq!(a[..5].join(" "), format!("{} 41200000 42c80000", xv(t)), "{line}");
+                    a[5] == "1"
+                },
+                &mut |top, bottom| {
+                    let a = next('G');
+                    assert_eq!(a[..9].join(" "), format!("{} {} 00000800 07 1", xv(top), xv(bottom)), "{line}");
+                    a[9] == "1"
+                },
+            );
+            assert!(seq.borrow().is_empty(), "{line}");
+            let got = match pick {
+                None => "R 0".to_string(),
+                Some(q) => {
+                    built += 1;
+                    let speed = if ready {
+                        1.1176f32
+                    } else {
+                        let f12 = h(w[16]) * 0.7;
+                        if f12 - 4.4704 >= 0.0 { f12 } else { 4.4704 }
+                    };
+                    format!(
+                        "A 1 {} 1 X 1 1 {} 00000000 00000000 0 0 R 1 {} {} {} {} {} {} {} {} {} {} {} {:02x}",
+                        x(speed), kind, xv(q.a), xv(q.b), xv(q.c1), xv(q.c2), xv(q.p), xv(q.t), xv(q.h0), xv(q.h1), x(q.a1), x(q.a2), x(q.r), q.flags
+                    )
+                }
+            };
+            assert_eq!(Some(got), tail, "{line}");
+            tiers[(flags & 0x20 == 0) as usize] += 1;
+            n += 1;
+        }
+        assert_eq!((n, built, *calls.borrow(), tiers), (4000, 1394, [4323, 2625, 807, 589], [3194, 806]));
     }
 
     #[test]
