@@ -774,19 +774,25 @@ impl WindowCtl {
         }
     }
 
-    /// (the original holds the time while the window motor's sound is being prepared, +72;
-    /// the port has no such wait)
+    /// At rest the time is held at its end (0 closed, the clip's length open); moving, it runs by rate x dt in the
+    /// original's fused operations and is set to the end it reaches. (The original holds the time while a motor
+    /// sound flagged to be prepared is loading, +72; neither window's object has such a flag.)
     pub fn update(&mut self, dt: f32, duration: f32) {
         match self.state {
+            1 => self.time = 0.0,
+            2 => self.time = duration,
             3 => {
-                self.time += Self::RATE * dt;
+                self.time = crate::sndobj::fmadds(Self::RATE, dt, self.time);
                 if self.time >= duration {
+                    self.time = duration;
                     self.state = 2;
                 }
             }
             4 => {
-                self.time -= Self::RATE * dt;
+                // (fnmsubs: -(rate x dt - time), so an exact end is -0, not yet below 0)
+                self.time = -crate::sndobj::fmadds(Self::RATE, dt, -self.time);
                 if self.time < 0.0 {
+                    self.time = 0.0;
                     self.state = 1;
                 }
             }
@@ -795,8 +801,10 @@ impl WindowCtl {
     }
 
     /// The clip time the player is set to.
+    /// (two fsel, as F-27851: 0 when below 0, the length when (time - length) >= 0)
     pub fn clip_time(&self, duration: f32) -> f32 {
-        self.time.clamp(0.0, duration)
+        let t = if self.time >= 0.0 { self.time } else { 0.0 };
+        if t - duration >= 0.0 { duration } else { t }
     }
 }
 
