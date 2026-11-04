@@ -694,6 +694,8 @@ struct App {
     /// CAM_PAN_LEFT held -1, CAM_PAN_RIGHT +1 (Hydraulics' look yaw, F-38892)
     pad_pan_side: f32,
     pad_cam_ud: bool,
+    /// a button that ends the AirRide view is held (boomcam::air_ride_buttons)
+    pad_air: bool,
     /// the player's own handbrake this frame (mcPlayerInput +20), before the port's parked hold
     own_handbrake: bool,
     /// mcCarSSTurbo +20: the turbo's lens ramp (F-60935)
@@ -1267,6 +1269,7 @@ impl App {
             pad_pan: (false, false),
             pad_pan_side: 0.0,
             pad_cam_ud: false,
+            pad_air: false,
             own_handbrake: false,
             sst_view: 0.0,
             cam_fx: None,
@@ -2356,6 +2359,7 @@ impl App {
             self.pad_pan = (pan && !self.pad_pan.1, pan);
             self.pad_pan_side = if pl { -1.0 } else if pr { 1.0 } else { 0.0 };
             self.pad_cam_ud = a(10) || a(11);
+            self.pad_air = boomcam::air_ride_buttons(&st, &live);
             self.pad_horn = down >> 18 & 1 != 0;
             self.pad_flash = down >> 9 & 1 != 0;
             self.pad_pending |= acted & 127;
@@ -8517,6 +8521,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             pan_pressed: self.pad_pan.0,
                             pan_side: self.pad_pan_side,
                             cam_pressed: self.pad_cam_ud,
+                            // (mcCarAirRide on: not in the port's sim yet - the Physics session ports
+                            // the air ride's on / off and the lowering; this reads its state then)
+                            air_on: false,
+                            air_held: self.pad_air,
                             reverse_gear: render_state.gear < 0,
                             air_time,
                             idle: self.idle_time,

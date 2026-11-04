@@ -2328,6 +2328,11 @@ pub struct EventIn {
     /// CAM_PAN_LEFT held -1, CAM_PAN_RIGHT held +1 (left first), else 0
     pub pan_side: f32,
     pub cam_pressed: bool,
+    /// mcCarAirRide (chassis +672): fitted (+12) and on (+13); `air_held`: any of MUSIC_DOWN,
+    /// MUSIC_UP, MUSIC_PAUSE, MAP, CAM_UP, CAM_DOWN, LOOKBACK held or CAMERA_LEFT / RIGHT / UP
+    /// above 0.2 (the AirRide end test's buttons)
+    pub air_on: bool,
+    pub air_held: bool,
     /// the gearbox in reverse (transmission +20 == 0)
     pub reverse_gear: bool,
     /// the chassis' air time (vt+52 = chassis +584)
@@ -2340,6 +2345,14 @@ pub struct EventIn {
     pub crash: bool,
     pub damage_out: bool,
     pub destroyed: bool,
+}
+
+/// The AirRide end test's buttons (F-24075): MUSIC_DOWN, MUSIC_UP, MUSIC_PAUSE, MAP, CAM_UP,
+/// CAM_DOWN, LOOKBACK held, or CAMERA_LEFT / RIGHT / UP above 0.2 - the Idle view's set
+/// without HYDRAULICS.
+pub fn air_ride_buttons(p: &crate::mc4::PadState, slots: &crate::mc4::ControlSlots) -> bool {
+    ["MUSIC_DOWN", "MUSIC_UP", "MUSIC_PAUSE", "MAP", "CAM_UP", "CAM_DOWN", "LOOKBACK"].iter().any(|a| crate::mc4::pad_down(p, slots, a))
+        || ["CAMERA_LEFT", "CAMERA_RIGHT", "CAMERA_UP"].iter().any(|a| crate::mc4::pad_analog(p, slots, a) > 0.2)
 }
 
 /// A segment probe of the world (F-20855, one result): something lies between the points.
@@ -2381,6 +2394,7 @@ pub const EV_AIR: usize = 8;
 pub const EV_TURN: usize = 9;
 pub const EV_REVERSE: usize = 10;
 pub const EV_HYDRAULICS: usize = 11;
+pub const EV_AIR_RIDE: usize = 12;
 pub const EV_DAMAGEOUT: usize = 17;
 
 impl EventDirector {
@@ -2467,7 +2481,9 @@ impl EventDirector {
         if i.hyd_on && i.pan_pressed {
             return Some(EV_HYDRAULICS);
         }
-        // (12 AirRide: the air ride's on/off is not in the port's sim)
+        if i.air_on {
+            return Some(EV_AIR_RIDE);
+        }
         if !i.bike && i.g18 != 0 {
             return Some(if i.view == 4 { EV_TWO_SIDE } else { EV_TWO_UP });
         }
@@ -2541,6 +2557,8 @@ impl EventDirector {
             EV_TURN => end(i.g18 == 0 || i.stick_x.abs() < 0.75 || i.stick_y.abs() > 0.75 || i.charge > 0.5 || i.tuck, -1.0),
             EV_REVERSE => end(i.hb_sim < 0.01, -1.0),
             EV_HYDRAULICS => end(!i.hyd_on || i.cam_pressed, -1.0),
+            // (the buttons' second test is in `frame`: it also turns the event's byte off)
+            EV_AIR_RIDE => end(!i.air_on, -1.0),
             // (the pad's buttons zero the idle time - main.rs)
             EV_IDLE => end(i.idle == 0.0, 0.7),
             EV_DAMAGEOUT => end(!i.destroyed, -1.0),
@@ -2653,14 +2671,29 @@ impl EventDirector {
                     }
                     self.off_bytes[EV_NITROUS] = true;
                 }
+                // AirRide: whether or not the air ride went off, a held camera / music button
+                // ends it and keeps it off until the air ride is switched off (F-24075)
+                if self.ev == EV_AIR_RIDE && i.air_held {
+                    if self.running() {
+                        self.off(&t, -1.0);
+                    }
+                    self.off_bytes[EV_AIR_RIDE] = true;
+                }
             }
-            // part 5: the Nitrous byte comes back when the shot ends
+            // part 5: the AirRide byte comes back when the air ride is off, the Nitrous byte
+            // when the shot ends
+            if !i.air_on {
+                self.off_bytes[EV_AIR_RIDE] = false;
+            }
             if !i.nitro_on {
                 self.off_bytes[EV_NITROUS] = false;
             }
             if self.phase != 0 {
                 return self.show(&t, car, chase, dt, test, aspect);
             }
+        }
+        if !i.air_on {
+            self.off_bytes[EV_AIR_RIDE] = false;
         }
         if !i.nitro_on {
             self.off_bytes[EV_NITROUS] = false;
@@ -3139,6 +3172,57 @@ mod tests {
         assert_eq!(d.event(), Some(EV_WHEELIE));
         d.frame(&data, "vp_aud_r8_08", &EventIn { nitro_on: true, ..w }, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert_eq!(d.event(), None);
+    }
+
+    /// AirRide (F-24075): it starts while the air ride is on (after Hydraulics, before the two-wheel
+    /// views), ends over the record's 0.7 s when it goes off; a held camera / music button ends it
+    /// and keeps it off while the air ride stays on; switched off, it may come again.
+    #[test]
+    fn air_ride_view() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let Some(t) = TrackTune::load(&data, "vp_aud_r8_08", "AirRide") else { return };
+        assert_eq!((t.blend, t.ret), (0.7, 0.0));
+        let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let dt = 1.0 / 60.0;
+        let mut d = EventDirector::default();
+        let step = |d: &mut EventDirector, i: EventIn| {
+            d.frame(&data, "vp_aud_r8_08", &i, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+        };
+        let on = EventIn { air_on: true, ..ein(0.0, 0.0, 0.0, 0.0) };
+        // (Hydraulics comes first, two wheels after)
+        step(&mut d, EventIn { hyd_on: true, pan_pressed: true, g18: 1, ..on });
+        assert_eq!(d.event(), Some(EV_HYDRAULICS));
+        let mut d = EventDirector::default();
+        step(&mut d, EventIn { g18: 1, ..on });
+        assert_eq!(d.event(), Some(EV_AIR_RIDE));
+        assert_eq!(d.time, 0.7);
+        // (not in the bumper / cockpit views)
+        let mut e = EventDirector::default();
+        step(&mut e, EventIn { view: 1, ..on });
+        assert_eq!(e.event(), None);
+        // the air ride off: back over the BlendTime (ReturnTime 0)
+        for _ in 0..60 {
+            step(&mut d, on);
+        }
+        assert!(d.shown());
+        step(&mut d, EventIn { air_on: false, ..on });
+        assert!(d.leaving() && d.time == 0.7);
+        // a held button: off, and not again while the air ride stays on
+        let mut d = EventDirector::default();
+        for _ in 0..60 {
+            step(&mut d, on);
+        }
+        step(&mut d, EventIn { air_held: true, ..on });
+        assert!(d.leaving());
+        for _ in 0..60 {
+            step(&mut d, on);
+        }
+        assert_eq!((d.phase, d.event()), (0, None));
+        // switched off once, it starts again
+        step(&mut d, EventIn { air_on: false, ..on });
+        step(&mut d, on);
+        assert_eq!(d.event(), Some(EV_AIR_RIDE));
     }
 
     /// The crash cameras (crash_camera_rule.md): F-37740's choice of start; the wipeout camera
