@@ -99,6 +99,9 @@ pub struct OtherRows {
     /// ([`RiderRagdoll::with_car`]); false: the rows only join and count in the callbacks' runs (an island the port does
     /// not solve together - the bike in it too, or the vehicle in other pairs of the loose world)
     pub shared: bool,
+    /// an mcCar's callback on the rider's contacts (F-55998, loose.rs `rider_touch`): friction, elasticity and the
+    /// drop of the car's own point; None for an ambient car (its callbacks leave them) or a car the branch passes over
+    pub touch: Option<super::loose::RiderTouch>,
 }
 
 /// A vehicle's level as the rider's runs (F-37566 / F-15373) see it: never the own bike's.
@@ -522,7 +525,8 @@ impl RiderRagdoll {
         let (_, last) = world_parts(&self.parts, &rows3(&self.rd16), &rows3(&mat_at(&self.body.raw_collider, 32)));
         self.other.rider_is_a = rider_is_a;
         self.other.collide(&self.shapes, &now, &last, veh);
-        self.other_now = vec![veh.now];
+        // (every hull part of the vehicle at its instance: a two-part bound's part matrices are the identity)
+        self.other_now = vec![veh.now; 1 + veh.hull2.is_some() as usize];
     }
 
     /// The rest of a tick with the rider and another vehicle in one island (no bike, no other row): the vehicle body 0
@@ -665,6 +669,21 @@ impl RiderRagdoll {
                         let t = &mut self.veh.manifolds[m].slots[k].touch;
                         t.friction = touch.0;
                         t.elasticity = touch.1;
+                    }
+                }
+            }
+            // (an mcCar's run, F-55998, on its enabled contacts with the rider - before his in each list as the bike's is;
+            // the two instances' address order is not kept by the port (vehsim.rs BIKE_LEVEL), so unverified in general)
+            if let (Some(o), Some(touch)) = (other.filter(|_| other_joins), other.and_then(|o| o.touch)) {
+                for &(p, r) in &run(list, o.level, as_a) {
+                    if srcs[p] == Src::OtherRider && other_rider[r] {
+                        let (m, k) = orows[r];
+                        let car_a = !self.other.rider_is_a;
+                        let t = &mut self.other.manifolds[m].slots[k].touch;
+                        t.friction = touch.0;
+                        t.elasticity = touch.1;
+                        let side = if car_a { &mut t.a } else { &mut t.b };
+                        side.point.y = super::loose::rider_touch_point(side.point.y, touch.2);
                     }
                 }
             }

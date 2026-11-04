@@ -48,7 +48,7 @@ pub struct Trigger {
     pub lap: i32,
     pub randomness: f32,
     /// how many of its events are chosen at its reset (nMinTriggered / nMaxTriggered; the
-    /// trigger's ctor sub_82686340 sets -1, -1 = all, and fRandomness 1)
+    /// trigger's ctor F-11162 sets -1, -1 = all, and fRandomness 1)
     pub n_min: i32,
     pub n_max: i32,
     pub player_can: bool,
@@ -59,7 +59,7 @@ pub struct Trigger {
     pub line_h: f32,
 }
 
-/// A path of the race's `mcAmbientPathArray` (parser sub_82739570). (bHazard, bFire, bSmoke and
+/// A path of the race's `mcAmbientPathArray` (parser F-26012). (bHazard, bFire, bSmoke and
 /// bDamage have no reader in the executable - only the parser's default and the unload's clear.)
 #[derive(Clone, Debug, Default)]
 pub struct AmbPath {
@@ -73,7 +73,7 @@ pub struct AmbPath {
     /// fPathStartSpeed, fPathMaxSpeed, fPathEndSpeed (mph)
     pub speed: [f32; 3],
     pub parked: bool,
-    /// bPhysical: the car's instance bit 0x80 (sub_826FA588 from sub_826EAD00) - a riding or
+    /// bPhysical: the car's instance bit 0x80 (F-55165 from F-92604) - a riding or
     /// parked car that meets the other inactive ambient cars (not ported: the physics level's pair
     /// test has no such flag yet)
     pub physical: bool,
@@ -719,7 +719,7 @@ use crate::vehicles::Vehicles;
 /// car carries it now (the paths' cars are layout items, `CarInstance::item`).
 pub const TAG: &str = "amb:";
 
-/// A trigger's events chosen at its reset (trigger vfunc 13 sub_82685B30, from Reset sub_826854B8
+/// A trigger's events chosen at its reset (trigger vfunc 13 F-35087, from Reset F-57723
 /// for every trigger, TriggerManager_ResetTriggers): the bounds clamped (min >= count -> 0;
 /// max >= count -> count; min < 0 with max >= 0 -> min 0; max < 0 with min >= 0 -> max count);
 /// one draw of the shared MWC, u = (lo & 0x7FFFFF) / 2^23, u >= fRandomness disarms it (None);
@@ -780,12 +780,12 @@ pub struct Runtime {
     chosen: Vec<Option<Vec<usize>>>,
     prev: Vec<(usize, Vec3)>,
     /// the ambient updates since the race's FullReset (S +0x6423C): the triggers are reset at
-    /// the first, the paths become layout items at the second (sub_826D60A0)
+    /// the first, the paths become layout items at the second (F-51417)
     count: u32,
     /// each path after its init, and its layout item (+184)
     rails: Vec<Option<PathRails>>,
     items: Vec<Option<u32>>,
-    /// followers asked for and waiting for the ground (the record's 3 s, sub_826E0438): item,
+    /// followers asked for and waiting for the ground (the record's 3 s, F-29339): item,
     /// colour, age
     pending: Vec<(u32, usize, f32)>,
     /// counters for the log
@@ -834,7 +834,7 @@ impl Runtime {
         }
     }
 
-    /// sub_826D60A0 (once, at the second ambient update): each path's init (its vertices onto
+    /// F-51417 (once, at the second ambient update): each path's init (its vertices onto
     /// the lanes, its rails), then its layout item unless an "Ambient" event points at it and
     /// none of those events' triggers chose it - type bRandomSmallAmbient: a draw of bound group
     /// 0, taxis too; bRandomLargeAmbient: group 1, no taxis; else TypeName; at the first snapped
@@ -847,8 +847,11 @@ impl Runtime {
             let p = self.d.paths[i].clone();
             let ty = (!p.type_name.is_empty()).then(|| traffic::AmbType::load(&root, &p.type_name));
             let mut pr = traffic::path_rails(nav, &p.verts, &p.snap, p.parked, ty.map(|t| t.min_turn), p.pos, p.row2, p.speed[1]);
-            // bPhysical (path +170): instance +140 bit 0x80 for the car's life (sub_826FA588)
+            // bPhysical (path +170): instance +140 bit 0x80 for the car's life (F-55165)
             pr.physical = p.physical;
+            // bParked (path +164): the car's behaviour slot 18 (F-86955) reads it, and the brake lamp is
+            // off while it is set (F-56024)
+            pr.quiet = p.parked;
             most = most.max(pr.hits);
             let mut referenced = false;
             let mut chosen = false;
@@ -898,7 +901,7 @@ impl Runtime {
     fn followers(&mut self, vehicles: &mut Vehicles, gpu: &Gpu, world: &crate::world::World, dt: f32) {
         for (h, shade) in std::mem::take(&mut vehicles.item_followers_due) {
             let Some(i) = self.path_of(h) else { continue };
-            // (the spawner's item branch, sub_826F23A0, passes over an item whose path a trigger
+            // (the spawner's item branch, F-74446, passes over an item whose path a trigger
             // points at once that has fired, or always with bSpawnWhenTriggered: such a path's car
             // comes only from its trigger - the guard here until parked.rs reads it)
             let ip = vehicles.layout.get(h as usize).and_then(|x| x.as_ref()).and_then(|x| x.path);
@@ -925,7 +928,7 @@ impl Runtime {
         vehicles.item_pending = self.pending.iter().map(|p| p.0).collect();
     }
 
-    /// A trigger's "Ambient" event (sub_82687F58).
+    /// A trigger's "Ambient" event (F-53279).
     fn fire_path(&mut self, vehicles: &mut Vehicles, gpu: &Gpu, world: &crate::world::World, i: usize) {
         let (Some(Some(h)), Some(Some(pr))) = (self.items.get(i).copied(), self.rails.get(i).cloned()) else { return };
         self.started += 1;
@@ -1037,7 +1040,7 @@ impl Runtime {
 mod tests {
     use super::*;
 
-    /// sub_82685B30: the bounds, the disarming draw, the count draw and the picks.
+    /// F-35087: the bounds, the disarming draw, the count draw and the picks.
     #[test]
     fn trigger_selection_rule() {
         // fRandomness 1.0 never disarms; 0.0 always does (u >= 0)
@@ -1157,7 +1160,7 @@ mod tests {
         assert_eq!(bad, 0);
     }
 
-    /// The curve rail (sub_827383B8 / sub_825867F8 / sub_82587A78): clamped uniform knots, degree
+    /// The curve rail (F-86418 / F-80887 / F-42351): clamped uniform knots, degree
     /// min(3, k - 1), through the first and last control points.
     #[test]
     fn path_curve_rail() {
@@ -1188,7 +1191,7 @@ mod tests {
         assert_eq!(c2.degree, 1);
         assert_eq!(c2.knots, vec![0.0, 0.0, 1.0, 1.0]);
         assert!(c2.eval(0.25).0.distance(Vec3::new(2.5, 0.0, 0.0)) < 1e-4);
-        // the nearest point (sub_825875F0) on the cubic finds a point placed on it
+        // the nearest point (F-53741) on the cubic finds a point placed on it
         let q = c.eval(0.37).0 + Vec3::new(0.0, 2.0, 0.0);
         let (t, d2, p) = traffic::curve_nearest(&c, q, 4, 10);
         assert!((t - 0.37).abs() < 0.02, "t {t}");

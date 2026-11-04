@@ -30,6 +30,9 @@ struct Requirement {
     conds: Vec<Cond>,
     /// per condition: a Stat condition's szStatType (Tally, Money, Purse), else empty
     stat_types: Vec<String>,
+    /// bAllowUpdate (+120, the constructor's 1 when the file has none): a condition's
+    /// Condition_Updated marks the requirement updated and is passed on (F-64780)
+    allow_update: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +64,9 @@ struct Mission {
     on_enter_career: Option<String>,
     /// bRepeatable (+693)
     repeatable: bool,
+    /// bShouldUpdate (+691, the constructor's 1 when the file has none): MISSION RESULTS may
+    /// list the mission once it is updated (F-78851 kind 4)
+    should_update: bool,
     /// (step 21b) the mission's other event scripts (aEvents, mcMissionEventScript): the
     /// event's name (HW_GARAGE_ENTER, DT_LOCAL_HANGOUT1_ENTER ...) and the state it is
     /// listened to in (2 READY_TO_START, 3 CHECKING_OBJECTIVES)
@@ -326,6 +332,24 @@ pub struct Career {
     pub dt_series_story: bool,
     /// the location events posted this visit (cleared when the place is left or a race starts)
     pub visit_events: HashSet<String>,
+    /// each mission's "updated" byte (+690: F-30196 sets it, F-92621 clears it; not saved)
+    /// and what it is found from (`scan_updates`)
+    updated: std::cell::RefCell<Vec<bool>>,
+    upd: Vec<UpdSnap>,
+}
+
+/// What `Career::scan_updates` compares from one call to the next for a mission: its state,
+/// each objective's progress and met, each prerequisite's conditions' measures and met, and
+/// whether its prerequisites (CHECKING_PREREQUISITES' enter, F-89508) and its objectives
+/// (CHECKING_OBJECTIVES' enter, F-73549) have been armed - F-39071 subscribes them, and a
+/// requirement never unsubscribes.
+#[derive(Clone, Default)]
+struct UpdSnap {
+    state: u32,
+    obj: Vec<(i64, bool)>,
+    pre: Vec<(Vec<i64>, bool)>,
+    pre_armed: bool,
+    obj_armed: bool,
 }
 
 fn tag<'a>(text: &'a str, name: &str) -> Option<&'a str> {
@@ -371,7 +395,7 @@ fn requirements(text: &str) -> Vec<Requirement> {
                 _ => Cond::Event { event: up(tag(c, "szEventId")), ident: tag(c, "szIdentifier").unwrap_or("").to_string() },
             });
         }
-        out.push(Requirement { desc: tag(chunk, "szDescriptionId").unwrap_or("").to_string(), hidden: val(chunk, "bAlwaysHidden") == Some("true"), conds, stat_types });
+        out.push(Requirement { desc: tag(chunk, "szDescriptionId").unwrap_or("").to_string(), hidden: val(chunk, "bAlwaysHidden") == Some("true"), conds, stat_types, allow_update: val(chunk, "bAllowUpdate") != Some("false") });
     }
     out
 }
@@ -489,6 +513,7 @@ impl Career {
                 on_enter: t.contains("_READY_TO_START_ON_ENTER</szEventDescription>"),
                 on_enter_career: t.split("<Item type=\"mcMissionEventScript\">").skip(1).find(|e| e.contains("_READY_TO_START_ON_ENTER</szEventDescription>")).filter(|e| e.contains("<bCareerScript value=\"true\"/>")).and_then(|e| e.split("<Item content=\"ascii\">").nth(1)).and_then(|s| s.split('<').next()).map(|s| s.trim().to_string()),
                 repeatable: val(&t, "bRepeatable") == Some("true"),
+                should_update: val(&t, "bShouldUpdate") != Some("false"),
                 events_at: t
                     .split("<Item type=\"mcMissionEventScript\">")
                     .skip(1)
@@ -744,6 +769,7 @@ impl Career {
         self.journal.clear();
         self.journal_complete = true;
         self.ext_init();
+        self.upd.clear();
         if let Some(&i) = self.index.get("RACE_GH_06") {
             self.activate(i);
         }
@@ -777,6 +803,7 @@ impl Career {
         self.journal.clear();
         self.journal_complete = false;
         self.ext_init();
+        self.upd.clear();
         self.set_done_order(&[]);
         if !self.state.iter().any(|s| s.stage != Stage::Locked) {
             self.new_game();
@@ -1061,6 +1088,7 @@ impl Career {
         if !matches!(ev, Ev::Race { .. } | Ev::Money(_)) {
             self.resolve_pending();
         }
+        self.scan_updates();
     }
 
     /// The races of the missions already done (race path lower case): they stay on the map
@@ -2366,6 +2394,152 @@ impl Career {
         }
     }
 
+    // ---- MISSION RESULTS: the missions' "updated" bytes (docs/reference/ui/mission_updates_and_pending_rewards.md) ----
+
+    /// A Condition_Updated reaching requirement R (F-64780) and, passed on as
+    /// Requirement_Updated, R's mission (F-30196): (R's +140 set, the mission's +690 set).
+    /// `updated_msg`: the message is Condition_Updated (R's handle +108); `cond_in_req`: its
+    /// condition is one of R's (+124); `satisfied`: R's +116; `mission_msg`: the mission hears
+    /// it (its handle +660 - listeners on in states 1 to 4); `member`: R is one of the mission's
+    /// prerequisites or objectives (F-88090).
+    pub fn mu_update(updated_msg: bool, cond_in_req: bool, satisfied: bool, allow_update: bool, mission_msg: bool, member: bool) -> (bool, bool) {
+        let req = updated_msg && cond_in_req && !satisfied && allow_update;
+        (req, req && mission_msg && member)
+    }
+
+    /// MISSION RESULTS takes the mission: the collector F-65871 with mask 60 (states 2 to 5, a
+    /// state's mask being 1 << its number - F-33894) and the filter F-78851 of kind 4.
+    pub fn mu_listed(state: u32, always_hidden: bool, should_update: bool, updated: bool) -> bool {
+        (2..=5).contains(&state) && !always_hidden && should_update && updated
+    }
+
+    /// What makes a prerequisite's condition post Condition_Updated when it changes: a Mission
+    /// condition its mission completing (F-88673), a TallyMission one without LessThan each
+    /// completion in its district (F-12302; with LessThan it posts no update), an Experience
+    /// one the experience (F-79261), a Stat one its statistic (F-16469). (The one TallyRace
+    /// prerequisite of the files the port does not count: 0.)
+    fn upd_measure(&self, c: &Cond) -> i64 {
+        match c {
+            Cond::Mission(id) => self.index.get(id).map_or(0, |&j| (self.state[j].stage == Stage::Complete) as i64),
+            Cond::TallyMission { less_than: false, district, .. } => self.missions.iter().zip(self.state.iter()).filter(|(m, s)| s.stage == Stage::Complete && same_district(district, &m.district)).count() as i64,
+            Cond::Experience { .. } => self.rep,
+            Cond::Stat { stat, .. } => self.stats.get(stat).copied().unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    fn upd_snap(&self, i: usize, prev: Option<&UpdSnap>) -> UpdSnap {
+        let m = &self.missions[i];
+        let state = self.state_id_of(i);
+        let obj = m
+            .objectives
+            .iter()
+            .enumerate()
+            .map(|(k, r)| {
+                let cur = self.state[i].progress.get(k).copied().unwrap_or(0);
+                let met = self.state[i].stage == Stage::Complete || r.conds.first().map_or(true, |c| cur >= self.target(m, c));
+                (cur as i64, met)
+            })
+            .collect();
+        let pre = m.prereq.iter().enumerate().map(|(k, r)| (r.conds.iter().map(|c| self.upd_measure(c)).collect(), self.state[i].stage != Stage::Locked && self.prereq_req_met(i, k))).collect();
+        // (armed by the enter of state 1 - the prerequisites - and of state 3 - the objectives; a
+        // load enters the saved state)
+        let (pa, oa) = prev.map_or((false, false), |p| (p.pre_armed, p.obj_armed));
+        UpdSnap { state, obj, pre, pre_armed: pa || state == 1, obj_armed: oa || matches!(state, 3 | 4) }
+    }
+
+    /// The missions' "updated" bytes: since the last call, a condition of a requirement that is
+    /// armed, not met (+116), with bAllowUpdate, posted Condition_Updated - in the port: an
+    /// objective's progress or a prerequisite's measure changed - so the requirement passed
+    /// Requirement_Updated on (F-64780) to its mission, which, with its listeners on (states 1 to
+    /// 4: F-39892, off in 0 and 5: F-28093), is updated (+690 = 1, F-30196). Called after every
+    /// career event and before MISSION RESULTS reads the bytes; the first call after a load or a
+    /// new game only takes the snapshot.
+    pub fn scan_updates(&mut self) {
+        let n = self.missions.len();
+        if self.state.len() != n {
+            return;
+        }
+        if self.upd.len() != n {
+            self.upd = (0..n).map(|i| self.upd_snap(i, None)).collect();
+            *self.updated.borrow_mut() = vec![false; n];
+            return;
+        }
+        for i in 0..n {
+            let now = self.upd_snap(i, Some(&self.upd[i]));
+            let prev = &self.upd[i];
+            let hears = (1..=4).contains(&prev.state);
+            let m = &self.missions[i];
+            // (an armed requirement's condition posted Condition_Updated: its measure moved)
+            let posted = |p: Option<&(i64, bool)>, q: Option<&(i64, bool)>| p.zip(q).map_or(false, |(p, q)| p.0 != q.0);
+            let obj = prev.obj_armed && m.objectives.iter().enumerate().any(|(k, r)| posted(prev.obj.get(k), now.obj.get(k)) && Self::mu_update(true, true, prev.obj[k].1, r.allow_update, hears, true).1);
+            let pre = prev.pre_armed && m.prereq.iter().enumerate().any(|(k, r)| prev.pre.get(k).zip(now.pre.get(k)).map_or(false, |(p, q)| p.0 != q.0) && Self::mu_update(true, true, prev.pre[k].1, r.allow_update, hears, true).1);
+            if obj || pre {
+                self.updated.borrow_mut()[i] = true;
+            }
+            self.upd[i] = now;
+        }
+    }
+
+    /// The missions MISSION RESULTS lists, in the manager's order (its list of every mission:
+    /// the lists' order, `index`): the collector F-65871 with the states 2 to 5 (mask 60; each
+    /// state's mask is 1 << its number, F-33894) and the filter F-78851 of kind 4 - not
+    /// bAlwaysHidden, bShouldUpdate and updated. The form comes up when there is one (F-44151;
+    /// in a network game never).
+    pub fn mission_updates(&mut self) -> Vec<usize> {
+        self.scan_updates();
+        let upd = self.updated.borrow();
+        let mut v: Vec<usize> = (0..self.missions.len().min(upd.len()))
+            .filter(|&i| Self::mu_listed(self.state_id_of(i), self.missions[i].hidden, self.missions[i].should_update, upd[i]))
+            .collect();
+        v.sort_by_key(|&i| self.missions[i].index);
+        v
+    }
+
+    /// The form filled (F-66221): per mission its title, every objective's line - the
+    /// description and, for the conditions that show one, the count (F-26170) - ticked by
+    /// its +116, and whether it is complete (state 5: the header's stamp); a mission that is not
+    /// complete loses its "updated" byte now (F-92621), a complete one when the form goes
+    /// (`clear_mission_updates`).
+    pub fn take_mission_updates(&mut self) -> Vec<(String, Vec<String>, bool)> {
+        let list = self.mission_updates();
+        let mut out = Vec::new();
+        for i in list {
+            let complete = self.state_id_of(i) == 5;
+            if !complete {
+                self.updated.borrow_mut()[i] = false;
+            }
+            let m = &self.missions[i];
+            let lines = m
+                .objectives
+                .iter()
+                .enumerate()
+                .map(|(k, r)| {
+                    let target = r.conds.first().map_or(1, |c| self.target(m, c));
+                    let cur = self.state[i].progress.get(k).copied().unwrap_or(0);
+                    let met = complete || cur >= target;
+                    let text = match self.objective_count(i, k, cur.min(target), target) {
+                        Some(c) => format!("{} {}", self.text(&r.desc), c),
+                        None => self.text(&r.desc),
+                    };
+                    if met { format!("{}{}", crate::game::OBJ_DONE, text) } else { text }
+                })
+                .collect();
+            out.push((self.title(i), lines, complete));
+        }
+        out
+    }
+
+    /// The MISSION RESULTS form hidden (F-40042 -> F-75010): every mission with bShouldUpdate
+    /// and the byte loses it.
+    pub fn clear_mission_updates(&self) {
+        for (i, u) in self.updated.borrow_mut().iter_mut().enumerate() {
+            if self.missions.get(i).map_or(false, |m| m.should_update) {
+                *u = false;
+            }
+        }
+    }
+
     // ---- what `mc4` reads and writes ----
 
     pub fn mission_count(&self) -> usize {
@@ -2636,6 +2810,67 @@ impl Career {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MISSION RESULTS' rules against the original's code run offline
+    /// (`mcla-rs/tools/ui_mission_update_reference.py`): the collector F-65871 with the filter F-78851 of kind 4 over a
+    /// manager of random missions, and the form's hide F-75010 (only the missions with bShouldUpdate and the byte lose it,
+    /// with their requirements' +140 and conditions' +84); a requirement's listener F-64780 and the mission's F-30196 for every
+    /// combination of message, condition, +116, bAllowUpdate, the mission's handle and membership.
+    #[test]
+    fn mission_updates_match_the_original() {
+        let (mut n, mut bad) = ([0usize; 2], 0usize);
+        for line in include_str!("testdata/ui_mission_update_ref.txt").lines() {
+            let (case, out) = line.split_once(" -> ").unwrap();
+            let v: Vec<u32> = case.split_whitespace().skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let ok = if case.starts_with('L') {
+                n[0] += 1;
+                let ms: Vec<&[u32]> = v[1..].chunks(7).collect();
+                let listed: Vec<String> = (0..ms.len()).filter(|&k| Career::mu_listed(ms[k][0], ms[k][1] != 0, ms[k][2] != 0, ms[k][3] != 0)).map(|k| format!("{:x}", k)).collect();
+                // (F-75010: a mission with +691 and +690 loses its byte and its requirements' and conditions' marks)
+                let after: Vec<String> = ms.iter().map(|m| if m[2] != 0 && m[3] != 0 { "0 0 0".to_string() } else { format!("{:x} {:x} {:x}", m[3], m[5], m[6]) }).collect();
+                let want = format!("{} ; {}", listed.join(" "), after.join(" "));
+                out.split_whitespace().collect::<Vec<_>>() == want.split_whitespace().collect::<Vec<_>>()
+            } else {
+                n[1] += 1;
+                let b = |k: usize| v[k] != 0;
+                let (r, m) = Career::mu_update(b(0), b(1), b(2), b(3), b(4), b(5));
+                out == format!("{} {}", r as u8, m as u8)
+            };
+            if !ok {
+                bad += 1;
+                if bad <= 10 {
+                    eprintln!("differs: {line}");
+                }
+            }
+        }
+        eprintln!("compared {n:?}, {bad} differ");
+        assert!(n[0] > 0 && n[1] > 0);
+        assert_eq!(bad, 0);
+    }
+
+    /// A won race in the Beaches moves RACES_IN_BEACHES' tally (its TallyRace posts Condition_Updated): the mission is on
+    /// MISSION RESULTS once, with its line counted (1/6) and not ticked; the fill clears its byte (not complete), so the next
+    /// form has nothing; a race elsewhere updates nothing.
+    #[test]
+    fn a_tally_moved_lists_its_mission_once() {
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        if !std::path::Path::new(&dir).join("tune/career").is_dir() {
+            return;
+        }
+        let mut c = Career::load(&dir);
+        c.new_game();
+        let mut s = c.save();
+        s.missions.insert("RACES_IN_BEACHES".into(), MState { stage: Stage::Active, ..Default::default() });
+        c.restore(&s);
+        let race = |d| Ev::Race { district: d, place: 1, hookman: false, class: "", race: "x", beat_goal: false };
+        c.event(race("Hills"));
+        assert!(c.mission_updates().is_empty());
+        c.event(race("Beaches"));
+        let v = c.take_mission_updates();
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(!v[0].2 && v[0].1.len() == 1 && v[0].1[0].ends_with("(1/6)") && !v[0].1[0].starts_with(crate::game::OBJ_DONE), "{v:?}");
+        assert!(c.take_mission_updates().is_empty());
+    }
 
     /// Every mcConditionString of the missions is met by a string the port posts as the original
     /// does: the cores' (`CORE_POSTS`, `MEET_POSTS`, `SERIES_NAMES`), the places' LOCATION_EVENT,

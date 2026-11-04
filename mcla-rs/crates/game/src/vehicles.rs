@@ -385,6 +385,8 @@ pub struct CarInstance {
     pub amb_slot: [i32; 2],
     /// ... and the lights in them, eased (F-99357; all 0 at the start, F-19499)
     pub amb_light: AmbSlotLights,
+    /// the draw object's drawn-steer ring (traffic.rs `SteerRing`), kept by the pooled instance
+    pub amb_steer: traffic::SteerRing,
 }
 
 /// A traffic or parked car's two slot lights (render instance +576 / +624, F-99357): each slot's point
@@ -398,9 +400,9 @@ pub struct CarInstance {
 pub struct AmbPool {
     built: bool,
     /// the free list of each pool; None = an instance never used (ids -1, F-19499)
-    free: [std::collections::VecDeque<Option<([i32; 2], AmbSlotLights)>>; 2],
+    free: [std::collections::VecDeque<Option<([i32; 2], AmbSlotLights, traffic::SteerRing)>>; 2],
     /// the cars out, in the order they were taken: uid, pool, what the instance holds
-    live: Vec<(u32, usize, [i32; 2], AmbSlotLights)>,
+    live: Vec<(u32, usize, [i32; 2], AmbSlotLights, traffic::SteerRing)>,
 }
 
 impl AmbPool {
@@ -411,18 +413,18 @@ impl AmbPool {
         }
     }
     /// The gone go back to the tail, then the new take the head. Returns what each new car inherits.
-    fn step(&mut self, now: &[(u32, usize)]) -> Vec<(u32, [i32; 2], AmbSlotLights)> {
+    fn step(&mut self, now: &[(u32, usize)]) -> Vec<(u32, [i32; 2], AmbSlotLights, traffic::SteerRing)> {
         self.build();
         let mut back = Vec::new();
         self.live.retain(|l| {
             let keep = now.iter().any(|n| n.0 == l.0);
             if !keep {
-                back.push((l.1, l.2, l.3));
+                back.push((l.1, l.2, l.3, l.4));
             }
             keep
         });
-        for (g, ids, light) in back {
-            self.free[g].push_back(Some((ids, light)));
+        for (g, ids, light, ring) in back {
+            self.free[g].push_back(Some((ids, light, ring)));
         }
         let mut got = Vec::new();
         for &(uid, g) in now {
@@ -431,11 +433,11 @@ impl AmbPool {
             }
             // (an empty pool: the spawner counts its cars, so the port should not get here; a fresh instance then)
             let old = self.free[g].pop_front().flatten();
-            let (ids, light) = old.unwrap_or(([-1, -1], AmbSlotLights::default()));
+            let (ids, light, ring) = old.unwrap_or(([-1, -1], AmbSlotLights::default(), Default::default()));
             if old.is_some() {
-                got.push((uid, ids, light));
+                got.push((uid, ids, light, ring));
             }
-            self.live.push((uid, g, ids, light));
+            self.live.push((uid, g, ids, light, ring));
         }
         got
     }
@@ -490,6 +492,12 @@ pub struct AmbLamps {
     /// an ambient car's own hour offset for its lights (car +3568: the global MWC's 23 bits x 2^-25,
     /// 0 .. 0.25 h, drawn by the spawn slot F-77422; 0 for the others, F-20039)
     pub hour_offset: f32,
+    /// an ambient car's signal blink (car +3572: seconds, + dt each update, back to 0 past 0.75 + `blink_wrap`;
+    /// F-46062) and its two offsets drawn after the hour offset by F-77422 (+3576, +3580: 0.2 U - 0.1 s each);
+    /// the signals are lit while `blink` <= `blink_on` + 0.375 (F-41231, F-81289)
+    pub blink: f32,
+    pub blink_wrap: f32,
+    pub blink_on: f32,
 }
 
 /// An ambient car's lights (F-75961, bit 2 of the render flags): on when the hour is past the
@@ -961,6 +969,11 @@ pub struct Vehicles {
     pub driver_lanes: hashbrown::HashMap<u32, traffic::DriverLanes>,
     /// a scene or the vehicle pick: physics and AI are held
     pub frozen: bool,
+    /// a race is on as the ambient manager's byte +0x64251 has it (F-86550): the current race (F-27863), not a payback
+    /// (race type 0 - 4, race +3096), not over (+3773, `$IsRaceFinish`) - set by the game each frame
+    pub race_event: bool,
+    /// the navsys junction ahead of the player's lane (F-94775 + F-95137, the tracker +5888), as `step_signals` found it
+    pub player_junction: Option<usize>,
     /// the race's grid hold (N-VP-1): seconds to GO. The cars simulate, held by their brakes - the
     /// player's chassis brake forced and his front wheels locked (`CarInput::hold`), the computer
     /// drivers at their pre-race antics (`AiDriver::grid_input`) - so revving and burnouts happen as
@@ -2823,7 +2836,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default() });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default() });
         self.cars.len() - 1
     }
 
@@ -4197,7 +4210,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let p = o.tuned.as_deref().unwrap_or(&o.model.params);
             let (Some(vt), Some(hull)) = (p.veh.as_ref(), p.hull.as_ref()) else { continue };
             let Some((body, cg)) = crate::physics::vehsim::island_body(&o.state, p, vt, dt) else { continue };
-            list.push(LiveVeh { id: o.uid, shape: static_shape(hull), class: if o.rail.is_some() || o.parked.is_some() { 6 } else { 8 }, gravity: 1.0, cg, level: o.uid as i64 - me as i64, body, inflict: o.inflict, parked: o.parked.is_some() });
+            let class = if o.rail.is_some() || o.parked.is_some() { 6 } else { 8 };
+            // (an mcCar's callback on the thrown rider, F-55998, as the moved body stands: its up.y, its two-wheel state,
+            // its wipe-out bits, its driver)
+            let rider_touch = o.state.veh.as_ref().filter(|_| class == 8).and_then(|ws| {
+                crate::physics::loose::rider_touch(o.is_player, ws.two != 0, body.rows[1].y, ws.wipe.is_some(), (vt.t.s.bound_friction, vt.t.s.bound_elasticity, vt.t.s.head_on_cg_offset))
+            });
+            list.push(LiveVeh { id: o.uid, shape: static_shape(hull), class, gravity: 1.0, cg, level: o.uid as i64 - me as i64, body, inflict: o.inflict, parked: o.parked.is_some(), rider_touch });
         }
         let vs = self.cars[k].state.veh.as_deref_mut().unwrap();
         let part = vs.loose.take_car();
@@ -4362,7 +4381,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let turn = if near && !locked { rate * moved.dot(rot * Vec3::NEG_Z) / wr * dt } else { 0.0 };
             for (i, wh) in c.state.wheels.iter_mut().enumerate() {
                 wh.spin = traffic::wrap_spin(wh.spin + turn);
-                wh.steer = if c.park_held && i <= 1 { c.park_steer } else { 0.0 };
+                // (a riding car's front wheels: its drawn steer, traffic.rs `Rider::steer`)
+                wh.steer = if i > 1 { 0.0 } else if c.park_held { c.park_steer } else { c.rail.as_ref().map_or(0.0, |r| r.steer) };
             }
             c.state.relocate(m[3], rot);
             c.state.vel = v;
@@ -4835,15 +4855,43 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
     /// Each frame before the cars' uniforms: the traffic cars' lamp states and glow levels
     /// (`AmbLamps`) - for the cars drawn now: in the view and within the lamps' reach along the
-    /// camera's axis `axis` from `eye`. The flags as F-46062 sets them, from what the port's
-    /// traffic has: lights on at night, braking when the pedal is down or the car stands,
-    /// reversing; the turn signals are not driven (the port's traffic does not signal; the
-    /// original's rule is in the doc). Parked cars have every flag off, as recorded.
+    /// camera's axis `axis` from `eye`. The flags as F-46062 sets them, for every traffic car each
+    /// frame: lights on at night, the brake lamp (`traffic::brake_lamp`, F-56024), the turn signals
+    /// with the car's blink (`traffic::signals`, F-41231 / F-81289), reversing; a trailer with its cab
+    /// takes the cab's five flags instead (F-46062 copies 0x40, 0x20, 0x10, 0x8 and 0x4 from the cab's
+    /// record). Parked cars have every flag off, as recorded.
     pub fn traffic_lamps(&mut self, eye: Vec3, axis: Vec3, frustum: &crate::render::Frustum, night: f32, dt: f32) {
         let alpha = self.render_alpha;
         let lights_off = self.lights_off;
         let hour = self.hour;
+        let nav = traffic::rail_nav_made();
+        // (the hour window of F-75961; `night` over 0.5 inside 6 .. 18 h is the weather's own term)
+        let wet = night > 0.5 && (6.0..=18.0).contains(&hour);
+        let mut flags: Vec<[bool; 5]> = Vec::with_capacity(self.cars.len());
         for c in self.cars.iter_mut() {
+            // (the blink: + dt each update, back to 0 past 0.75 + the car's +3576 - F-46062)
+            let a = &mut c.amb_lamps;
+            a.blink += dt;
+            if a.blink > a.blink_wrap + 0.75 {
+                a.blink = 0.0;
+            }
+            let driven = c.parked.is_none();
+            let due = traffic_lights_due(hour, c.amb_lamps.hour_offset, wet) && c.removing.map_or(true, |f| f >= 0.1);
+            let (sa, sb) = match (nav, c.rail.as_ref()) {
+                (Some(nav), Some(r)) if driven => traffic::signals(nav, r, c.state.pos, c.amb_lamps.blink, c.amb_lamps.blink_on),
+                _ => (false, false),
+            };
+            flags.push([driven && !lights_off && due, driven && c.rail.as_ref().is_some_and(traffic::brake_lamp), sa, sb, driven && c.state.gear < 0]);
+        }
+        // a trailer with its cab: the cab's flags
+        for i in 0..self.cars.len() {
+            let Some(r) = self.cars[i].rail.as_ref().filter(|r| r.ty.trailer) else { continue };
+            let Some(id) = r.partner else { continue };
+            if let Some(k) = self.cars.iter().position(|c| c.rail.as_ref().is_some_and(|x| x.rng_id() == id && x.state != 0)) {
+                flags[i] = flags[k];
+            }
+        }
+        for (c, flags) in self.cars.iter_mut().zip(flags) {
             if c.is_player {
                 continue;
             }
@@ -4851,18 +4899,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let pos = c.render_pose(alpha).pos;
             c.amb_lamps.tint = 0.25 + 1.5 * ((pos.distance(eye) / 30.0).min(1.0) - 0.5).clamp(0.0, 1.0);
             // (the flag is the car's, whether or not the car is in the view)
-            let wet_now = night > 0.5 && (6.0..=18.0).contains(&hour);
-            c.amb_lamps.head_on = c.parked.is_none() && !lights_off && traffic_lights_due(hour, c.amb_lamps.hour_offset, wet_now) && c.removing.map_or(true, |f| f >= 0.1);
+            c.amb_lamps.head_on = flags[0];
             let d = (pos - eye).dot(axis);
             let r = Vec3::splat(c.model.params.body_half.length() + 1.0);
             if d > TRAFFIC_LAMP_REACH || !frustum.intersects_aabb(pos - r, pos + r) {
                 continue;
             }
-            let driven = c.parked.is_none();
-            // (the hour window of F-75961; `night` over 0.5 inside 6 .. 18 h is the weather's own term)
-            let wet = night > 0.5 && (6.0..=18.0).contains(&hour);
-            let due = traffic_lights_due(hour, c.amb_lamps.hour_offset, wet) && c.removing.map_or(true, |f| f >= 0.1);
-            let flags = [driven && !lights_off && due, driven && (c.input.brake > 0.0 || c.state.speed() < 0.1), false, false, driven && c.state.gear < 0];
             let a = &mut c.amb_lamps;
             for (v, on) in a.s.iter_mut().zip(flags) {
                 *v = traffic_ease(*v, on, dt);
@@ -6485,9 +6527,10 @@ impl Vehicles {
             .filter(|c| c.is_ambient())
             .map(|c| (c.uid, self.amb_types.get(&c.model.name).map_or(0, |t| t.proxy as usize)))
             .collect();
-        for (uid, ids, light) in self.amb_pool.step(&now) {
+        for (uid, ids, light, ring) in self.amb_pool.step(&now) {
             if let Some(c) = self.cars.iter_mut().find(|c| c.uid == uid) {
                 c.amb_slot = ids;
+                c.amb_steer = ring;
                 c.amb_light = AmbSlotLights { seen: false, drawn_before: false, ..light };
             }
         }
@@ -6499,6 +6542,7 @@ impl Vehicles {
             if let Some(c) = self.cars.iter().find(|c| c.uid == l.0) {
                 l.2 = c.amb_slot;
                 l.3 = c.amb_light;
+                l.4 = c.amb_steer;
             }
         }
     }

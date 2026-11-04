@@ -16,6 +16,15 @@ pub fn xml_value(text: &str, tag: &str) -> Option<f32> {
     rest[v..v + e].trim().parse().ok()
 }
 
+/// A `<tag value="true|false"/>` of a tune file.
+pub fn xml_bool(text: &str, tag: &str) -> Option<bool> {
+    let i = text.find(&format!("<{tag} "))?;
+    let rest = &text[i..];
+    let v = rest.find("value=\"")? + 7;
+    let e = rest[v..].find('"')?;
+    rest[v..v + e].trim().parse().ok()
+}
+
 /// Weight of something over the day: (start, end, weight) rows of a `TodArray`, times as
 /// written (HHMM).
 #[derive(Default, Clone, Debug)]
@@ -36,9 +45,9 @@ impl Tod {
         self.0.is_empty()
     }
 
-    /// The original's lookup (sub_826DA510): the clock as HHMM, the first row with
+    /// The original's lookup (F-90692): the clock as HHMM, the first row with
     /// start <= t <= end (an end of 0000 is 2400), 0 when no row covers it. A table
-    /// without rows weighs 1 (the tree's starting value, sub_826DAB80).
+    /// without rows weighs 1 (the tree's starting value, F-83932).
     pub fn at(&self, hour: f32) -> f32 {
         if self.0.is_empty() {
             return 1.0;
@@ -56,7 +65,7 @@ pub struct Distribution {
     pub types: HashMap<u8, Vec<(String, Tod)>>,
     pub density: Tod,
     /// per district colour: its density over the day - its own `TodDensityArray`, else
-    /// the nearest ancestor's (sub_826DAB80 walks the district's nodes for the first table)
+    /// the nearest ancestor's (F-83932 walks the district's nodes for the first table)
     pub district_density: HashMap<u8, Tod>,
 }
 
