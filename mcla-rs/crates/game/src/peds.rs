@@ -1081,6 +1081,9 @@ pub struct Peds {
     pub night_lights: Option<(crate::figlight::Dynamic, f32)>,
     /// the scene ambient (mgr + 224) the walkers' ambient eases towards with the fill map's colour (main.rs)
     pub amb_base: Vec3,
+    /// the cops' arrest scene is on screen (police manager +60 = 3, F-36139): F-68474 returns before the walkers'
+    /// light step, so their records and ambient hold where they are (main.rs)
+    pub hidden: bool,
     /// each lit walker's eased records (the original's walker + 64)
     fig_lights: HashMap<(usize, u32), crate::figlight::FigureLight>,
     /// each walker's LOD of this frame by the main view (`pick_lods`; -1 not drawn)
@@ -1163,6 +1166,7 @@ impl Peds {
             buf: SkinBuffer::default(),
             night_lights: None,
             amb_base: Vec3::ZERO,
+            hidden: false,
             fig_lights: HashMap::new(),
             lod_pick: HashMap::new(),
             enabled: true,
@@ -2367,7 +2371,7 @@ impl Peds {
             let lod = lod as usize;
             // (at night the four lights of its program, picked and eased as the original's
             // F-44222 does at the walker's place - only while it is drawn, as there)
-            if let (Some((dynamic, frames)), Some(t)) = (&self.night_lights, &tables) {
+            if let (Some((dynamic, frames)), Some(t), false) = (&self.night_lights, &tables, self.hidden) {
                 let f = crate::fillmap::body_now(p.pos.x, p.pos.z);
                 let amb = self.amb_base + Vec3::new(f[0], f[1], f[2]);
                 let fl = self.fig_lights.entry(p.key).or_insert_with(|| crate::figlight::FigureLight::new(t, p.pos, amb));

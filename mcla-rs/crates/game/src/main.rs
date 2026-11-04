@@ -9970,6 +9970,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // and the key light; by day, in the garage and without the weather's keys none)
             let hour = globals.sun_color[3];
             self.peds.amb_base = Vec3::new(globals.ambient_sky[0], globals.ambient_sky[1], globals.ambient_sky[2]);
+            self.peds.hidden = self.arrest_on_screen;
             self.peds.night_lights = ((hour > 18.0 || hour < 6.0) && globals.tone[3] > 0.5 && globals.car_amb[3] < 0.5).then(|| {
                 let mut heads = [None; 2];
                 for (h, i) in (0..k).filter(|&i| ls.color[i][3] > 1.5 && ls.color[i][3] < 2.5).take(2).enumerate() {
