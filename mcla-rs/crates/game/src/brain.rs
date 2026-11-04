@@ -666,6 +666,21 @@ impl Brain {
         self.final_heading = Vec3::ZERO;
     }
 
+    /// The cruising brain's rail goals (F-90991 / F-12584): the racing reset (F-69438), AppendGoal for each (point,
+    /// radius), MaxSpeed (+292), FinalHeading (+192, kept when none) and FinalSpeed (+208). AllowNitro stays as it is.
+    pub fn rail_goals(&mut self, goals: &[(Vec3, f32)], max_speed: f32, final_heading: Option<Vec3>, final_speed: f32) {
+        self.plan.goals.clear();
+        self.replan(0);
+        for &(p, r) in goals {
+            self.plan.append(p, r);
+        }
+        self.max_speed = max_speed;
+        if let Some(h) = final_heading {
+            self.final_heading = h;
+        }
+        self.final_speed = final_speed;
+    }
+
     /// The search route (F-55529: GoToPosition F-19329 for the first point, AppendGoal F-13831 for the others): the
     /// goals with a 5 m radius each, the final speed and the final heading (normalised; (1, 0, 0) when its
     /// length^2 is 1e-5 or less - the search passes none).
@@ -677,6 +692,11 @@ impl Brain {
     /// The index of the goal the car heads for (F-68139) and that goal's place.
     pub fn heading_for(&self) -> (usize, Option<Vec3>) {
         (self.cur, self.goal_at(self.cur).map(|g| g.pos))
+    }
+
+    /// The last goal's place (+176 / +180: the vector of the goal count - 1), None without goals.
+    pub fn last_goal(&self) -> Option<Vec3> {
+        self.plan.goals.last().map(|g| g.pos)
     }
 
     /// The goals the brain has (none: plan at once, F-67303's empty-route case).
