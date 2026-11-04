@@ -146,3 +146,11 @@ fn fs_shadow_casc_cull(in: VsOut, @builtin(front_facing) ff: bool) -> CascOut {
     o.depth = clamp(in.z + sg.bias.x * slope + sg.bias.y, 0.0, 1.0);
     return o;
 }
+
+// The night fast collector's casters (render/mod.rs `night_collector_begin`): PS_ShadowNight writes ShaderGlobals.z
+// (1 - m_ShadowFade at night, sg.bias.x here) and nothing else - no texture, no alpha test (the recorded draws'
+// colour control 0xaa000004), all four channels.
+@fragment
+fn fs_shadow_night(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(sg.bias.x);
+}

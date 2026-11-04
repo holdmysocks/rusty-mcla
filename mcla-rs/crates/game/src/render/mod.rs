@@ -318,6 +318,51 @@ pub struct CascPass {
 }
 /// The fast shadow collector's map: 256 x 256 texels of 1 m round the camera.
 pub const FC_SIZE: u32 = 256;
+/// The night fast collector's map (F-28445's FastCollectorNight: 512 x 512, one 8-bit channel), whatever the
+/// SHADOW RESOLUTION.
+pub const NFC_SIZE: u32 = 512;
+/// Its half reach in metres and its eye's lead: 16 (F-55997's night branch, `*0x82023A98`).
+pub const NFC_REACH: f32 = 16.0;
+
+/// The night fast collector's view-projection (F-55997, state 4 at night; LIGHTING.md "The night fast collector"):
+/// an ortho box 32 m square and 600 m deep (F-11735's +-16, +-300) seen from straight above, its eye 100 m over
+/// the camera and 16 m ahead of it along the camera's forward in the plan (the camera matrix's row 2 x -16 in x and z,
+/// not set to unit length), not snapped. `px` = the half texel the console's pixel centres put on it (1 / NFC_SIZE
+/// with `half_pixel_on`, else 0): the map is drawn that much along +x and +z. Read with the day's rule, uv =
+/// (p.xz - trunc(camera.xz)) / 256 + 0.5 - so a point reads the map at eye + (p - trunc(camera)) / 8.
+pub fn night_collector_vp(cam: Vec3, forward: Vec3, px: f32) -> Mat4 {
+    let e = Vec3::new(cam.x + forward.x * NFC_REACH, cam.y + 100.0, cam.z + forward.z * NFC_REACH);
+    let (h, d) = (NFC_REACH, 600.0);
+    Mat4::from_cols(Vec4::new(1.0 / h, 0.0, 0.0, 0.0), Vec4::new(0.0, 0.0, -1.0 / d, 0.0), Vec4::new(0.0, -1.0 / h, 0.0, 0.0), Vec4::new(px - e.x / h, e.z / h - px, e.y / d + 0.5, 1.0))
+}
+
+#[cfg(test)]
+mod night_collector_tests {
+    use super::*;
+
+    /// The night pass's view-projection of 20 frames of the running original at 23:00 (tools/night_collector_reference.py:
+    /// World^-1 x gWorldViewProj of its first VS_ShadowNight draw) against `night_collector_vp` of the frame's camera
+    /// (gViewInverse: place, forward = -row 2), without the half texel (the recorded matrix has none: the console puts
+    /// it in its pixel centres); and the value its PS_ShadowNight writes, c63.z = 1 - m_ShadowFade (0.8 at 23:00, Nice).
+    #[test]
+    fn the_view_is_the_originals() {
+        let mut n = 0;
+        for l in include_str!("../testdata/night_collector_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let v: Vec<f32> = l.split_whitespace().skip(1).map(|x| x.parse().unwrap()).collect();
+            let (cam, row2) = (Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5]));
+            let m = night_collector_vp(cam, -row2, 0.0);
+            for i in 0..4 {
+                for k in 0..4 {
+                    let (ours, theirs) = (m.col(i)[k], v[6 + 4 * i + k]);
+                    assert!((ours - theirs).abs() <= 2e-5 * theirs.abs().max(1.0), "{} VP[{}][{}]: {} against {}", l.split_whitespace().next().unwrap(), i, k, ours, theirs);
+                }
+            }
+            assert_eq!(v[22 + 2], 1.0 - 0.8f32);
+            n += 1;
+        }
+        assert_eq!(n, 20);
+    }
+}
 /// The wet road's planar reflection picture (refl.wgsl): 256 x 256, as the game's.
 pub const REFL_SIZE: u32 = 256;
 /// edge of the mini sky (the original's target: 128 x 128, 8:8:8:8 with the console's gamma)
@@ -1118,6 +1163,24 @@ pub struct Gpu {
     pub fc_blur_bg: wgpu::BindGroup,
     pub pipeline_fc: wgpu::RenderPipeline,
     pub pipeline_fc_blur: wgpu::RenderPipeline,
+    /// The night fast collector (`night_collector_begin`): the casters' map, the blurred map bound where the collector
+    /// is at night (`globals_bg_night`), the casters' constants and bind group (the shadow passes' layout), the
+    /// pipelines (plain, instanced, blur) and the blur's bind group.
+    pub nfc_tex: wgpu::Texture,
+    pub nfc_work_view: wgpu::TextureView,
+    pub nfc_view: wgpu::TextureView,
+    pub nfc_buf: wgpu::Buffer,
+    pub nfc_bg: wgpu::BindGroup,
+    pub pipeline_nfc: wgpu::RenderPipeline,
+    pub pipeline_nfc_inst: wgpu::RenderPipeline,
+    pub pipeline_nfc_blur: wgpu::RenderPipeline,
+    pub nfc_blur_bg: wgpu::BindGroup,
+    /// The globals' bind groups with the night map in the collector's slot (binding 10) - `set_night_collector` swaps
+    /// them with `globals_bg` / `globals_bg_alt` / `mirror_bg`, as the original binds FastCollectorNight to s13 at night.
+    pub globals_bg_night: wgpu::BindGroup,
+    pub globals_bg_alt_night: wgpu::BindGroup,
+    pub mirror_bg_night: wgpu::BindGroup,
+    pub night_fc: bool,
     /// The wet road's planar reflection (refl.wgsl, `Gpu::reflection_pass`): the picture the
     /// road programs read (`t_refl` of the globals), its depth buffer, the pass's own globals
     /// bind group (the main globals without the picture itself), its uniform (the plane's
@@ -1565,6 +1628,34 @@ impl Gpu {
         let fc_prev_view = fc_prev.create_view(&Default::default());
         let (fc_work_view, fc_view) = (fc_work.create_view(&Default::default()), fc_tex.create_view(&Default::default()));
         let fc_depth = create_depth(&device, fc_size(), fc_size());
+        // the night fast collector's two maps (the casters', the blurred one the scene reads), white to start with
+        let nfc_map = |label: &str| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: NFC_SIZE, height: NFC_SIZE, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let nfc_tex = nfc_map("night fast collector");
+        let (nfc_work_view, nfc_view) = (nfc_map("night fast collector, casters").create_view(&Default::default()), nfc_tex.create_view(&Default::default()));
+        {
+            let mut enc = device.create_command_encoder(&Default::default());
+            for view in [&nfc_work_view, &nfc_view] {
+                enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("night fast collector, start"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store } })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            }
+            queue.submit([enc.finish()]);
+        }
         {
             // the maps start lit (the game's too: its map's corners, where the goal is always 255, read 255 and
             // not the 251 a rise from below ends at). MCLA_FC_START=<0..255>: another start level (diagnostics).
@@ -1683,7 +1774,7 @@ impl Gpu {
         });
         let city_samp4 = city_sampler(4);
         let city_samp16 = city_sampler(16);
-        let make_globals_bg_s = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView, samp: &wgpu::Sampler| {
+        let make_globals_bg_sf = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView, samp: &wgpu::Sampler, fc: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("globals bg"),
                 layout: &globals_layout,
@@ -1698,7 +1789,7 @@ impl Gpu {
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&lamp_grid_view) },
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&lamp_data_view) },
                     wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(soft) },
-                    wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&fc_view) },
+                    wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(fc) },
                     wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(refl) },
                     wgpu::BindGroupEntry { binding: 12, resource: casc_buf.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(&casc_view) },
@@ -1708,6 +1799,7 @@ impl Gpu {
                 ],
             })
         };
+        let make_globals_bg_s = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView, samp: &wgpu::Sampler| make_globals_bg_sf(buf, cube, soft, refl, samp, &fc_view);
         let make_globals_bg = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView| make_globals_bg_s(buf, cube, soft, refl, &city_samp4);
         let globals_bg = make_globals_bg(&globals_buf, &env_cube, &env_soft_cube, &refl_view);
         let globals_bg_alt = make_globals_bg_s(&globals_buf, &env_cube, &env_soft_cube, &refl_view, &city_samp16);
@@ -1849,6 +1941,10 @@ impl Gpu {
         let mirror_bg = make_globals_bg(&mirror_globals, &env_cube, &env_soft_cube, &refl_view);
         let floor_globals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("garage floor mirror globals"), contents: bytemuck::bytes_of(&Globals::default()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
         let floor_bg = make_globals_bg(&floor_globals, &env_cube, &env_soft_cube, &fc_view);
+        // (the same three with the night map where the collector is)
+        let globals_bg_night = make_globals_bg_sf(&globals_buf, &env_cube, &env_soft_cube, &refl_view, &city_samp4, &nfc_view);
+        let globals_bg_alt_night = make_globals_bg_sf(&globals_buf, &env_cube, &env_soft_cube, &refl_view, &city_samp16, &nfc_view);
+        let mirror_bg_night = make_globals_bg_sf(&mirror_globals, &env_cube, &env_soft_cube, &refl_view, &city_samp4, &nfc_view);
         let tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tex layout"),
             entries: &[
@@ -2195,6 +2291,47 @@ impl Gpu {
             layout: Some(&fc_pl),
             vertex: wgpu::VertexState { module: &fc_shader, entry_point: Some("vs_blur"), buffers: &[], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState { module: &fc_shader, entry_point: Some("fs_blur"), targets: &fc_target, compilation_options: Default::default() }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+        // The night fast collector (F-55997's night branch): the casters drawn with the shadow passes' vertex programs
+        // and PS_ShadowNight's constant, back faces culled as the recorded draws (0x18002: those turned to its eye
+        // stay, as in the main view), no depth (the colour is one constant); then PSBlur into the map the scene reads.
+        let nfc_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("night fast collector"), size: std::mem::size_of::<CascPass>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let nfc_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("night fast collector"), layout: &shadow_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: nfc_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }] });
+        let nfc_target = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+        let make_nfc = |inst: bool| {
+            let bufs_plain = [Vertex::LAYOUT];
+            let bufs_inst = [Vertex::LAYOUT, crate::props::Inst::LAYOUT];
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("night fast collector"),
+                layout: Some(&shadow_pl),
+                vertex: wgpu::VertexState { module: &shadow_shader, entry_point: Some(if inst { "vs_shadow_inst" } else { "vs_shadow" }), buffers: if inst { &bufs_inst } else { &bufs_plain }, compilation_options: Default::default() },
+                fragment: Some(wgpu::FragmentState { module: &shadow_shader, entry_point: Some("fs_shadow_night"), targets: &nfc_target, compilation_options: Default::default() }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: Some(wgpu::Face::Back), front_face: wgpu::FrontFace::Cw, ..Default::default() },
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let pipeline_nfc = make_nfc(false);
+        let pipeline_nfc_inst = make_nfc(true);
+        let nfc_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("night fast collector"), source: wgpu::ShaderSource::Wgsl(include_str!("night_collector.wgsl").into()) });
+        let nfc_blur_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("night fast collector blur"),
+            entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None }],
+        });
+        let nfc_blur_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("night fast collector blur"), layout: &nfc_blur_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&nfc_work_view) }] });
+        let nfc_blur_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("night fast collector blur"), bind_group_layouts: &[&nfc_blur_layout], push_constant_ranges: &[] });
+        let pipeline_nfc_blur = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("night fast collector blur"),
+            layout: Some(&nfc_blur_pl),
+            vertex: wgpu::VertexState { module: &nfc_shader, entry_point: Some("vs_blur"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState { module: &nfc_shader, entry_point: Some("fs_blur"), targets: &nfc_target, compilation_options: Default::default() }),
             primitive: Default::default(),
             depth_stencil: None,
             multisample: Default::default(),
@@ -2650,6 +2787,19 @@ impl Gpu {
             fc_blur_bg,
             pipeline_fc,
             pipeline_fc_blur,
+            nfc_tex,
+            nfc_work_view,
+            nfc_view,
+            nfc_buf,
+            nfc_bg,
+            pipeline_nfc,
+            pipeline_nfc_inst,
+            pipeline_nfc_blur,
+            nfc_blur_bg,
+            globals_bg_night,
+            globals_bg_alt_night,
+            mirror_bg_night,
+            night_fc: false,
             refl_tex,
             refl_view,
             minisky_tex,
@@ -2801,8 +2951,52 @@ impl Gpu {
     pub fn set_aniso16(&mut self, on: bool) {
         if on != self.aniso16 {
             std::mem::swap(&mut self.globals_bg, &mut self.globals_bg_alt);
+            std::mem::swap(&mut self.globals_bg_night, &mut self.globals_bg_alt_night);
             self.aniso16 = on;
         }
+    }
+
+    /// At night the night fast collector's map stands where the collector is (the original binds FastCollectorNight
+    /// to s13 then): the globals' bind groups with it in binding 10 change places with the day's.
+    pub fn set_night_collector(&mut self, on: bool) {
+        if on != self.night_fc {
+            std::mem::swap(&mut self.globals_bg, &mut self.globals_bg_night);
+            std::mem::swap(&mut self.globals_bg_alt, &mut self.globals_bg_alt_night);
+            std::mem::swap(&mut self.mirror_bg, &mut self.mirror_bg_night);
+            self.night_fc = on;
+        }
+    }
+
+    /// The night fast collector's pass (F-55997, state 4 at night): its constants (the view-projection and
+    /// PS_ShadowNight's value, ShaderGlobals.z = 1 - m_ShadowFade), then the casters' map cleared to white (r26 = -1),
+    /// with `pipeline_nfc` and the group 0 set: the caller draws the casters into it (`pipeline_nfc_inst` for the
+    /// props), ends the pass and calls `night_collector_blur`.
+    pub fn night_collector_begin<'e>(&self, enc: &'e mut wgpu::CommandEncoder, vp: Mat4, value: f32) -> wgpu::RenderPass<'e> {
+        self.queue.write_buffer(&self.nfc_buf, 0, bytemuck::bytes_of(&CascPass { light_vp: vp.to_cols_array_2d(), bias: [value, 0.0, 0.0, 0.0] }));
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("night fast collector"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &self.nfc_work_view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        rp.set_pipeline(&self.pipeline_nfc);
+        rp.set_bind_group(0, &self.nfc_bg, &[]);
+        rp
+    }
+
+    /// ... and its PSBlur into the map the scene reads.
+    pub fn night_collector_blur(&self, enc: &mut wgpu::CommandEncoder) {
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("night fast collector blur"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &self.nfc_view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        rp.set_pipeline(&self.pipeline_nfc_blur);
+        rp.set_bind_group(0, &self.nfc_blur_bg, &[]);
+        rp.draw(0..3, 0..1);
     }
 
 
@@ -3346,6 +3540,34 @@ impl Gpu {
         buf.unmap();
         if let Err(e) = std::fs::write(path, &out) {
             log::warn!("fc dump {}: {}", path, e);
+        }
+    }
+
+    /// Diagnostics (MCLA_NFC_DUMP=<file>): the night fast collector's map as it is now, a PGM picture (512 x 512 bytes,
+    /// rows along +z, texels along +x, the eye at the middle).
+    pub fn dump_nfc(&self, path: &str) {
+        let n = NFC_SIZE;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("nfc dump"), size: (n * n) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &self.nfc_tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(n), rows_per_image: Some(n) } },
+            wgpu::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        let mut out = format!("P5\n{} {}\n255\n", n, n).into_bytes();
+        if let Ok(Ok(())) = rx.recv() {
+            out.extend_from_slice(&slice.get_mapped_range());
+        }
+        buf.unmap();
+        if let Err(e) = std::fs::write(path, &out) {
+            log::warn!("nfc dump {}: {}", path, e);
         }
     }
 

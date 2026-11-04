@@ -379,7 +379,8 @@ fn sun_tap(wpos: vec3<f32>) -> f32 {
 // red for the ground and green for 8 m above it. `p.y` is not looked at; `high` picks the layer. Lit outside the map.
 // (Diagnostics 51, or no map: the stand-in before it - four taps of the shadow map at p.)
 fn fast_collector_at(p: vec3<f32>, high: bool) -> f32 {
-    if ((g.params.w > 50.5 && g.params.w < 51.5) || g.collector.z < 0.5) {
+    // (collector.z 2: the night map stands in the slot - only the car programs read it, `night_collector`)
+    if ((g.params.w > 50.5 && g.params.w < 51.5) || g.collector.z < 0.5 || g.collector.z > 1.5) {
         return 0.25 * (sun_tap(p + vec3<f32>(-1.5, 0.0, -1.5)) + sun_tap(p + vec3<f32>(-1.5, 0.0, 0.5)) + sun_tap(p + vec3<f32>(0.5, 0.0, -1.5)) + sun_tap(p + vec3<f32>(0.5, 0.0, 0.5)));
     }
     let uv = (p.xz - g.collector.xy) * (1.0 / 256.0) + vec2<f32>(0.5);
@@ -388,6 +389,21 @@ fn fast_collector_at(p: vec3<f32>, high: bool) -> f32 {
     }
     let c = textureSampleLevel(t_fc, s_env, uv, 0.0);
     return select(c.r, c.g, high);
+}
+
+// The night fast collector (render/mod.rs `night_collector_begin`), bound where the collector is while
+// collector.z is 2: the car programs read it at night with the day's rule - uv = (p.xz - trunc(camera.xz)) / 256 +
+// 0.5, the map's one channel (PS_CarPaint 31 - 42) -, which lands on the 32 m map at eye + (p - trunc(camera)) / 8.
+// 1 where it is not drawn (MCLA_NIGHT_FC_OFF, the garage) or outside it. MCLA_DEBUG_VIEW=775: 1 as until 2026-11-04.
+fn night_collector(p: vec3<f32>) -> f32 {
+    if (g.collector.z < 1.5 || (g.params.w > 774.5 && g.params.w < 775.5)) {
+        return 1.0;
+    }
+    let uv = (p.xz - g.collector.xy) * (1.0 / 256.0) + vec2<f32>(0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return 1.0;
+    }
+    return textureSampleLevel(t_fc, s_env, uv, 0.0).r;
 }
 
 // ... at the ground (for callers that ask less than 4 m up)
@@ -3664,7 +3680,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
                 fc18 = car_collector(in.wpos);
             } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
-                fc18 = 1.0;
+                fc18 = night_collector(in.wpos);
             }
             let s18 = clamp(fc18 * FC_LIT - 0.25, 0.0, 1.0);
             let soft18 = env_soft(r);
@@ -3718,7 +3734,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
                 fct = car_collector(in.wpos);
             } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
-                fct = 1.0;
+                fct = night_collector(in.wpos);
             }
             let st_ = clamp(fct * FC_LIT - 0.25, 0.0, 1.0) * 1.33333;
             let nlst = max(dot(n, g.sun_dir.xyz), 0.0);
@@ -3757,7 +3773,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
                 fcp = car_collector(in.wpos);
             } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
-                fcp = 1.0;
+                fcp = night_collector(in.wpos);
             }
             let sp_ = clamp(fcp * FC_LIT - 0.25, 0.0, 1.0) * 1.33333;
             let nlsp = max(dot(n, g.sun_dir.xyz), 0.0);
@@ -3862,7 +3878,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
                 fc_a = car_collector(in.wpos);
             } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
-                fc_a = 1.0;
+                fc_a = night_collector(in.wpos);
             }
             let sh_a = clamp((fc_a * FC_LIT - 0.25) * 1.33333, 0.0, 1.0);
             let nls_a = clamp(dot(n, g.sun_dir.xyz), 0.0, 1.0);
@@ -3940,7 +3956,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
                 fc9 = car_collector(in.wpos);
             } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
-                fc9 = 1.0;
+                fc9 = night_collector(in.wpos);
             }
             let q9 = clamp((fc9 * FC_LIT - 0.25) * 1.33333, 0.0, 1.0) * occ9;
             let nls9 = max(dot(n, g.sun_dir.xyz), 0.0);
@@ -3985,7 +4001,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
                 fc_c = car_collector(in.wpos);
             } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
-                fc_c = 1.0;
+                fc_c = night_collector(in.wpos);
             }
             // (a badge drawn in the blended bucket - PS_BumpedChrome of cars/0x1d68d869 - has no fade on tight curves:
             // the mirror along its bump-mapped normal x the same collector term x occlusion. The normal: VS_BumpedChrome
@@ -4077,11 +4093,12 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                     fc = car_collector(in.wpos);
                 } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
                     // (at night the game binds another map where the collector was - 512 x 512,
-                    // one 8-bit channel, the cars' shadows under the street lamps (PS_ShadowNight):
-                    // 255 round the car, nowhere below 210 in a frame read out of the running
-                    // game at 23:30 with its real layout. An earlier reading of it as four
+                    // one 8-bit channel: the props, walkers and characters 32 m round a point 16 m
+                    // ahead of the camera seen from above at 1 - m_ShadowFade on white, blurred
+                    // (PS_ShadowNight; `night_collector`). Mostly 255 round the car - 210 and up in
+                    // a frame read out of the running game at 23:30. An earlier reading of it as four
                     // channels gave "0.14" and a night car without its lamp light: wrong.)
-                    fc = 1.0;
+                    fc = night_collector(in.wpos);
                 }
                 let sk = clamp((fc * FC_LIT - 0.25) * 1.33333, 0.0, 1.0);
                 let kk = 0.5 + 0.66667 * clamp(fc * FC_LIT - 0.25, 0.0, 1.0);
@@ -4402,7 +4419,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
                     fci = car_collector(in.wpos);
                 } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
-                    fci = 1.0;
+                    fci = night_collector(in.wpos);
                 }
                 let shi = 4.0 / 3.0 * clamp(fci * FC_LIT - 0.25, 0.0, 1.0);
                 let ai = 12.0 * lh12;
@@ -4460,7 +4477,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
                 if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
                     fc12 = car_collector(in.wpos);
                 } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
-                    fc12 = 1.0;
+                    fc12 = night_collector(in.wpos);
                 }
                 let sh12 = 0.25 + clamp(fc12 * FC_LIT - 0.25, 0.0, 1.0);
                 let ss12 = env_soft(reflect(-v, cn)) * sh12;

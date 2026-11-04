@@ -1560,6 +1560,75 @@ impl Props {
         self.draw_with(pass, gpu, cam, frustum, occluded, draws, true, true)
     }
 
+    /// The night fast collector's props (render/mod.rs `night_collector_begin`; the instanced night pipeline set by the
+    /// caller): every prop effect but the foliage's leaves and impostors has VS_ShadowNight (xPropDefault, BumpSpec,
+    /// BumpSpecTint, Metal, Glass, LampGlassTint, NeonTint, TrafficSignal, FoliageTrunk), so every batch but the
+    /// Foliage ones is drawn, the glass and the cut-outs whole (PS_ShadowNight has no texture); a plant is its mesh's
+    /// trunk where its model is drawn and nothing where its card is. The cells and reaches are the scene's, from the
+    /// camera; `frustum` is the map's box.
+    pub fn draw_night<'a>(&'a self, pass: &mut wgpu::RenderPass<'_>, gpu: &'a Gpu, cam: Vec3, frustum: &Frustum, draws: &mut usize) {
+        let Some(ibuf) = self.inst_buf.as_ref() else { return };
+        pass.set_vertex_buffer(1, ibuf.slice(..));
+        let put = |pass: &mut wgpu::RenderPass<'_>, m: usize, first: u32, count: u32, draws: &mut usize| {
+            for b in &self.models[m].batches {
+                if b.mode == MatMode::Foliage {
+                    continue;
+                }
+                pass.set_bind_group(1, b.bind.as_ref(), &[]);
+                pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
+                pass.set_vertex_buffer(0, b.vb.slice(..));
+                pass.set_index_buffer(b.ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..b.count, 0, first..first + count);
+                *draws += 1;
+            }
+        };
+        let lens = lens();
+        let k = Lod::now();
+        for (cell, size, reach) in [(cell_of(cam), CELL, NEAR_DIST * k.draw), (far_cell_of(cam), FAR_CELL, FAR_DIST * k.draw)] {
+            let r = (reach / size).ceil() as i32;
+            for dx in -r..=r {
+                for dz in -r..=r {
+                    let Some(runs) = self.cells.get(&(cell.0 + dx, cell.1 + dz)) else { continue };
+                    for run in runs {
+                        let model = &self.models[run.model];
+                        let d = dist_to_box(cam, run.min, run.max);
+                        let (near, far) = model.reach(run.scale, lens, k);
+                        if d > far || !frustum.intersects_aabb(run.min, run.max) {
+                            continue;
+                        }
+                        match run.card {
+                            Some(_) if d > near + 1.0 => {}
+                            Some(_) => {
+                                for sub in &run.subs {
+                                    let ds = dist_to_box(cam, sub.min, sub.max);
+                                    let (near, far) = model.reach(sub.scale, lens, k);
+                                    if ds <= near && ds <= far && frustum.intersects_aabb(sub.min, sub.max) {
+                                        put(pass, run.model, sub.start, sub.count, draws);
+                                    }
+                                }
+                            }
+                            None => put(pass, run.model, run.start, run.count, draws),
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(rb) = self.race_buf.as_ref() {
+            pass.set_vertex_buffer(1, rb.slice(..));
+            for (mi, inst) in &self.race_runs {
+                put(pass, *mi, *inst, 1, draws);
+            }
+        }
+        if let (Some(bb), true) = (self.barrier_buf.as_ref(), self.barrier_on != 0) {
+            pass.set_vertex_buffer(1, bb.slice(..));
+            for (k, bar) in self.barriers.iter().enumerate() {
+                if self.barrier_on >> k & 1 != 0 {
+                    put(pass, bar.model, k as u32, 1, draws);
+                }
+            }
+        }
+    }
+
     /// Once a frame, before the shadow pass: the shadow impostors' masks that are due.
     pub fn update_shadow_impostors(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, light_vp: glam::Mat4, hour: f32) {
         if let Some(imp) = self.impostors.as_mut() {

@@ -9694,6 +9694,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if shadow_on {
             globals.collector = [fc_cam.x.trunc(), fc_cam.z.trunc(), 1.0, 0.0];
         }
+        // At night the night fast collector's map stands in the collector's slot (F-55997's night branch, F-28445's
+        // FastCollectorNight; render/mod.rs `night_collector_begin`): the car programs read it round the camera's whole
+        // metres with the day's rule (collector.z 2, city.wgsl `night_collector`). Its casters are drawn at
+        // ShaderGlobals.z, 1 - m_ShadowFade at night. MCLA_NIGHT_FC_OFF=1: not drawn, the cars read 1 as until 2026-11-04.
+        let night_fc_on = !shadow_on && globals.tone[3] > 0.5 && globals.car_amb[3] < 0.5 && !map3d && !self.opt.no_shadows && std::env::var_os("MCLA_NIGHT_FC_OFF").is_none();
+        let nfc_value = self.sky_now().tod.map_or(1.0, |t| 1.0 - t.shadow_fade.clamp(0.0, 1.0));
+        if night_fc_on {
+            globals.collector = [fc_cam.x.trunc(), fc_cam.z.trunc(), 2.0, 0.0];
+        }
         if let Ok(v) = std::env::var("MCLA_DEBUG_VIEW") {
             globals.params[3] = v.parse().unwrap_or(0.0);
         }
@@ -10168,6 +10177,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let scene_n = aamode::scene_samples(menu4);
         gpu.set_scene_samples(scene_n);
         gpu.set_aniso16(menu4 || crate::hooks::aniso_16x());
+        gpu.set_night_collector(night_fc_on);
         render::ms::set_plain();
         // PSStreakMotionBlur's matrices and the cars' stencil ids for this frame (render/mb.rs)
         let mb_mtx = {
@@ -10552,6 +10562,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 e.finish()
             };
+            // --- the night fast collector (the props, walkers and characters round a point 16 m ahead, from above) ---
+            let nfc_vp = render::night_collector_vp(fc_cam, fc_dir.normalize_or(Vec3::Z), if render::half_pixel_on() { 1.0 / render::NFC_SIZE as f32 } else { 0.0 });
+            let night_job = || -> wgpu::CommandBuffer {
+                let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("night collector") });
+                {
+                    let mut rp = gpu.night_collector_begin(&mut e, nfc_vp, nfc_value);
+                    let mut n = 0usize;
+                    if let Some(s) = &peds_shadow {
+                        s.draw(&mut rp, gpu, &mut n);
+                    }
+                    if let Some(s) = &cine_shadow {
+                        s.draw(&mut rp, gpu, &mut n);
+                    }
+                    rp.set_pipeline(&gpu.pipeline_nfc_inst);
+                    rp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+                    props.draw_night(&mut rp, gpu, cam_pos, &Frustum::from_view_proj(nfc_vp), &mut n);
+                }
+                gpu.night_collector_blur(&mut e);
+                e.finish()
+            };
             let tiles = if casc.is_some() { 4 } else { 0 };
             use rayon::prelude::*;
             // (the walkers' skinning for this frame, docs/PERFORMANCE.md 2026-10-27 (4): beside the shadow passes)
@@ -10561,13 +10591,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let cine_old = std::env::var_os("MCLA_CINE_PREP_OLD").is_some();
             let cine_prep = (!cine_old).then_some(&mut self.cine);
             let (mut parts, ()): (Vec<(usize, wgpu::CommandBuffer, usize, usize)>, ()) = mcla_flash::raster::pool().install(|| rayon::join(|| {
-                // (0 the shadow map, 1 - 4 the cascade tiles, 5 the collector, 6 the reflection)
-                (0..7usize)
+                // (0 the shadow map, 1 - 4 the cascade tiles, 5 the collector, 6 the reflection, 7 the night collector)
+                (0..8usize)
                     .into_par_iter()
                     .filter(|&j| match j {
                         0 | 5 => shadow_on,
                         1..=4 => j <= tiles,
-                        _ => refl_on,
+                        6 => refl_on,
+                        _ => night_fc_on,
                     })
                     .map(|j| match j {
                         0 => {
@@ -10579,7 +10610,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             (j, c, n, 0)
                         }
                         5 => (j, collector_job(), 0, 0),
-                        _ => (j, reflection_job(), 0, 0),
+                        6 => (j, reflection_job(), 0, 0),
+                        _ => (j, night_job(), 0, 0),
                     })
                     .collect()
             }, || rayon::join(|| peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden), || if let Some(c) = cine_prep { c.prepare(gpu) }).0));
@@ -11649,6 +11681,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (MCLA_CASC_DUMP=<file>: the sun's shadow cascades' depth atlas)
             if let Ok(p) = std::env::var("MCLA_CASC_DUMP") {
                 gpu.dump_casc(&p);
+            }
+            // (MCLA_NFC_DUMP=<file.pgm>: the night fast collector's map)
+            if let Ok(p) = std::env::var("MCLA_NFC_DUMP") {
+                gpu.dump_nfc(&p);
             }
             // (MCLA_FC_DUMP=<file>: the fast shadow collector's map)
             if let Ok(p) = std::env::var("MCLA_FC_DUMP") {
