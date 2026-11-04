@@ -2679,7 +2679,12 @@ impl Game {
         self.mc4_parts_bought(&car, &[key.clone()], price);
         let owned = self.parts_owned.entry(crate::catalog::model_of(&car).to_string()).or_default();
         if !owned.contains(&key) { owned.push(key); }
-        self.xparts.entry(car).or_default().insert(sec.to_string(), index);
+        let was = self.xparts.entry(car).or_default().insert(sec.to_string(), index).unwrap_or(0);
+        // (the DOORS part's slot 16 applied, F-59896 -> F-67605: DOOR_SCISSOR_OPEN_MASTER for a fitted part, else
+        // DOOR_OPEN_MASTER, as a frontend sound; the part already fitted is not applied again, F-45854)
+        if sec == "scissor_door" && index != was {
+            self.opt_x.s23b.ui_obj = Some(crate::caraudio::door_sound(index as u32));
+        }
         self.dirty = true;
         true
     }
