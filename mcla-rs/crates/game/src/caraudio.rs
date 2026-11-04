@@ -1355,11 +1355,18 @@ fn engine_in(c: &CarInstance, racing: bool) -> EngineIn {
         speed,
         gear: vs.map_or(st.gear, |v| v.gear),
         shift: vs.map_or(0, |v| if v.gear_change.active { v.gear_change.direction } else { 0 }),
-        idle_only: false,
+        // the revs mode (byte 1950) is the brain's revving (F-58174 -> F-17772): the loops follow idle, the revs machine runs
+        idle_only: revving(c),
+        revs: revving(c),
         racing,
         speed_ratio: speed / c.model.params.veh.as_ref().map_or(c.model.params.top_speed, |t| t.top_speed).max(1.0),
         rubber_hold: rubber_hold(c),
     }
+}
+
+/// The brain's revving switch (brain +254), as F-58174 hands it to the car's audio.
+fn revving(c: &CarInstance) -> bool {
+    c.ai.as_ref().and_then(|ai| ai.brain.0.as_deref()).is_some_and(|b| b.rev.enabled)
 }
 
 /// F-98304's rubber band term with the rubber band on (brain +380), else 0; the cap +404 as the brain last wrote it (1 when

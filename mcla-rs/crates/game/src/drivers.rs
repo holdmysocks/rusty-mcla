@@ -1,6 +1,6 @@
 //! Drivers and riders: the `drv_*_lod02_set` characters posed with each car's own driver
-//! animations (`resources/animation/<hash>/opponent/male/*.r2`: one pack per car with
-//! `<CAR>_Drv_steer_sweep`, `_Drv_Idle_stp`, `_Drv_Idle_Low`, `_Drv_rev`, ...). The
+//! animations (`$/resources/animation/Drv/<Player|Opponent>/Male/<car>.xapk`: one pack per car with
+//! `<CAR>_Drv_steer_sweep`, `_Drv_Idle_stp`, `_Drv_Idle_Low`, `_Drv_rev`, ...; `pack_path`). The
 //! animations are authored in car space, so the root track seats the driver.
 
 use crate::assets::load_resource_file;
@@ -39,6 +39,58 @@ pub struct Seat<'a> {
     pub colors: Option<[[f32; 4]; 2]>,
     /// the car's head lamp state (lamp object +168, eased: `AmbLamps::s[0]`)
     pub head: f32,
+    /// the car body's velocity (body +272; its length is the chassis' +224 speed): the wind on a rider (`Wind::step`)
+    pub vel: Vec3,
+    /// a rider's: what the bike pose machine reads of the bike (its `ck` and `x` are set here)
+    pub ride: RideIn,
+}
+
+/// The wind on a rider's clothes (VSSkinned_Wind's windParams / windEmitterPlaneEq): what the draw hook keeps at +112 (the
+/// phase), +116 (the strength) and +128 (the bike's velocity); the constructor (F-92182) sets all three to 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Wind {
+    pub phase: f32,
+    pub speed: f32,
+    pub vel: Vec3,
+}
+
+impl Wind {
+    /// F-31704, each frame for every live driver in a vehicle (the hooks' update): on a bike the strength is
+    /// clamp(speed x 2.237 x 0.0111111, 0, 1) - mph / 90 - (0 in a car, or with the debug bool "nowind" set: never in
+    /// play); the phase gains dt x 1.5 x strength (fused), the velocity is kept as it is. Nothing moves while the game is
+    /// paused (the game's pause byte: the hook is skipped; and the pause manager's +4 / +10 would zero the step). Not mapped:
+    /// the instance's +129 byte and F-78526, which skip it too - taken as a drawn driver's.
+    pub fn step(&mut self, speed: f32, vel: Vec3, bike: bool, dt: f32, paused: bool) {
+        if paused {
+            return;
+        }
+        let s = if bike {
+            let k = speed * f32::from_bits(0x400f_2b02) * f32::from_bits(0x3c36_0b61);
+            let k = if k >= 0.0 { k } else { 0.0 };
+            if k - 1.0 >= 0.0 { 1.0 } else { k }
+        } else {
+            0.0
+        };
+        self.phase = dt.mul_add(s * 1.5, self.phase);
+        self.speed = s;
+        self.vel = vel;
+    }
+
+    /// F-42959's windEmitterPlaneEq: the velocity made unit by the vector unit (vmsum3fp as x + (y + z), vrsqrtefp - infinity to 0 - and
+    /// one Newton step) when its square is over 1e-5, else (0, 0, -1); w = that . the car matrix's place (fused as
+    /// x (z (y))).
+    pub fn plane(&self, at: Vec3) -> [f32; 4] {
+        let v = self.vel;
+        let d = v.x * v.x + (v.y * v.y + v.z * v.z);
+        let n = if d > f32::from_bits(0x3727_c5ac) {
+            let e = 1.0 / d.sqrt();
+            let e = if e == f32::INFINITY { 0.0 } else { e };
+            v * ((1.0 - d * (e * e)) * (0.5 * e) + e)
+        } else {
+            Vec3::new(0.0, 0.0, -1.0)
+        };
+        [n.x, n.y, n.z, at.x.mul_add(n.x, at.z.mul_add(n.z, at.y * n.y))]
+    }
 }
 
 /// The car's lights on its driver's draw (F-42959, the driver in a car: the vertex programs' gaugeLightPos_ConeAng
@@ -53,28 +105,40 @@ pub struct Cabin {
     pub neon_pos: Vec3,
     pub neon_col: Vec3,
     pub floor: [f32; 4],
+    /// windEmitterPlaneEq c215 and windParams c216 (phase, strength): `Wind::plane`, the hook's +112 / +116
+    pub wind_eq: [f32; 4],
+    pub wind: [f32; 2],
+}
+
+/// The lamp object's +408, the interior neon's flash (F-10129, every frame): (cos(rate x clock x 10) + 1) x 0.5 with the
+/// record's IntNeonFlashRate (a signed byte) and the unpaused clock (0x827D7518: `App::wind_clock`), cos the guest
+/// runtime's (F-63589) in double, rounded once. 1 at the rate 0.
+pub fn neon_flash(rate: f32, clock: f32) -> f32 {
+    (crate::physics::exact::guest_cos((rate * clock * 10.0) as f64) as f32 + 1.0) * 0.5
 }
 
 impl Cabin {
     /// From the car's matrix `m` (its body's, the vehicle's +144: the offsets are in its frame), the model tune's two
-    /// offsets, the record's colours, the head lamp state and whether it is a bike:
+    /// offsets, the record's colours (w of the second: IntNeonIntensity), the head lamp state, whether it is a bike, the
+    /// neon's flash (`neon_flash`) and the hook's wind:
     /// - gauge = m x vDriverGaugeLightOffset, colour = (c + (mean - c) x 0.5) x head x 1.0 (an image constant) with
     ///   c = DashGaugeColor and mean = (r + g) x 0.33333298 + b x 0.33333 (by day the head state and so the light are 0);
     /// - cone direction = minus the matrix's third row;
-    /// - neon = m x vDriverNeonLightOffset, colour = IntNeonColor x (lamp object +408 x +268) x IntNeonIntensity; +268
-    ///   is set to 1 every update and +408 = (1 + cos(IntNeonFlashRate x clock x k)) x 0.5 (F-10129, cos F-63589) - 1 at the rate 0
-    ///   every record carries, which is what is ported;
-    /// - floor = (the matrix's up row, its place . up + 0.3); a bike's w is -1e5 (F-54299).
-    pub fn of(m: Mat4, offs: [[f32; 3]; 2], colors: [[f32; 4]; 2], head: f32, bike: bool) -> Cabin {
-        let at = |o: [f32; 3]| m.transform_point3(Vec3::from(o));
+    /// - neon = m x vDriverNeonLightOffset, colour = IntNeonColor x ((lamp object +408 x +268) x IntNeonIntensity); +268
+    ///   is set to 1 every update (F-10129), +408 is `flash`;
+    /// - floor = (the matrix's up row, its place . up + 0.3); a bike's w is -1e5 (F-54299);
+    /// - windEmitterPlaneEq = `Wind::plane` at the matrix's place, windParams = (phase, strength).
+    pub fn of(m: Mat4, offs: [[f32; 3]; 2], colors: [[f32; 4]; 2], head: f32, bike: bool, flash: f32, wind: &Wind) -> Cabin {
+        // (in the vector unit's order: the place, then x, y and z of the offset, each a product then a sum)
+        let at = |o: [f32; 3]| m.z_axis.truncate() * o[2] + (m.y_axis.truncate() * o[1] + (m.x_axis.truncate() * o[0] + m.w_axis.truncate()));
         let up = m.y_axis.truncate();
         let p = m.w_axis.truncate();
         let c = Vec3::new(colors[0][0], colors[0][1], colors[0][2]);
-        let mean = (c.x + c.y) * f32::from_bits(0x3eaa_aa9f) + c.z * f32::from_bits(0x3eaa_aa3b);
+        let mean = (c.x + c.y).mul_add(f32::from_bits(0x3eaa_aa9f), c.z * f32::from_bits(0x3eaa_aa3b));
         let g = (c + (Vec3::splat(mean) - c) * 0.5) * head;
-        let n = Vec3::new(colors[1][0], colors[1][1], colors[1][2]) * colors[1][3];
-        let w = if bike { -1.0e5 } else { up.z.mul_add(p.z, up.y.mul_add(p.y, up.x * p.x)) + 0.3 };
-        Cabin { gauge_pos: at(offs[0]), gauge_col: g, cone_dir: -m.z_axis.truncate(), neon_pos: at(offs[1]), neon_col: n, floor: [up.x, up.y, up.z, w] }
+        let n = Vec3::new(colors[1][0], colors[1][1], colors[1][2]) * (flash * 1.0 * colors[1][3]);
+        let w = if bike { -1.0e5 } else { up.x.mul_add(p.x, p.y.mul_add(up.y, p.z * up.z)) + 0.3 };
+        Cabin { gauge_pos: at(offs[0]), gauge_col: g, cone_dir: -m.z_axis.truncate(), neon_pos: at(offs[1]), neon_col: n, floor: [up.x, up.y, up.z, w], wind_eq: wind.plane(p), wind: [wind.phase, wind.speed] }
     }
 }
 
@@ -90,6 +154,449 @@ struct Rig {
     hit_hard: Option<f32>,
     /// a rider's eject clips by their name after the bike's prefix ("drv_eject_l", rider_eject.rs)
     ejects: HashMap<String, Clip>,
+    /// a rider's clips of the bike pose machine's riding states (`BikeClips`)
+    bike: Option<BikeClips>,
+}
+
+/// The clips of mcMotorcycleAnimMachine's riding states (`BikeClips::load` names them; `_ck`: the cockpit camera's
+/// `_ckpt` variant): start (F-88016), cruise (F-27733), stopped idle and burnout centre (F-73617), tuck (F-14953), wheelie
+/// (F-33885), endo (F-23193), burnout left / right (F-13481 / F-26376), nos boost (F-22152), shift (F-54589), reverse
+/// (F-93384) and fidget (F-87252).
+struct BikeClips {
+    idle_low: Option<Clip>,
+    low: Clip,
+    fst: Clip,
+    low_ck: Option<Clip>,
+    fst_ck: Option<Clip>,
+    stp: Option<Clip>,
+    stp_ck: Option<Clip>,
+    low_fwd: Option<Clip>,
+    fst_fwd: Option<Clip>,
+    wheelie: Option<Clip>,
+    wheelie_ck: Option<Clip>,
+    endo: Option<Clip>,
+    endo_ck: Option<Clip>,
+    burn_l: Option<Clip>,
+    burn_r: Option<Clip>,
+    nos: Option<Clip>,
+    nos_ck: Option<Clip>,
+    shft_low: Option<Clip>,
+    shft_low_ck: Option<Clip>,
+    rev: Option<Clip>,
+    rev_ck: Option<Clip>,
+    rev_over: Option<Clip>,
+    /// the fidget's two clips (the picker's table: `drv_gest_look_lft`, `drv_gest_look_rgt`)
+    look: [Option<Clip>; 2],
+}
+
+impl BikeClips {
+    fn load(clip: impl Fn(&[&str]) -> Option<Clip>) -> Option<BikeClips> {
+        Some(BikeClips {
+            idle_low: clip(&["drv_idle_low"]),
+            low: clip(&["drv_low_lean_sweep"])?,
+            fst: clip(&["drv_fst_lean_sweep"])?,
+            low_ck: clip(&["drv_low_lean_sweep_ckpt"]),
+            fst_ck: clip(&["drv_fst_lean_sweep_ckpt"]),
+            stp: clip(&["drv_idle_stp_sweep"]),
+            stp_ck: clip(&["drv_idle_stp_sweep_ckpt"]),
+            low_fwd: clip(&["drv_low_leanfwd_sweep"]),
+            fst_fwd: clip(&["drv_fst_leanfwd_sweep"]),
+            wheelie: clip(&["drv_wheelie"]),
+            wheelie_ck: clip(&["drv_wheelie_ckpt"]),
+            endo: clip(&["drv_endo"]),
+            endo_ck: clip(&["drv_endo_ckpt"]),
+            burn_l: clip(&["drv_burnout_l"]),
+            burn_r: clip(&["drv_burnout_r"]),
+            nos: clip(&["drv_nos_lean_sweep"]),
+            nos_ck: clip(&["drv_nos_lean_sweep_ckpt"]),
+            shft_low: clip(&["drv_shft_low_overlay"]),
+            shft_low_ck: clip(&["drv_shft_low_ckpt_overlay"]),
+            rev: clip(&["drv_rev_sweep"]),
+            rev_ck: clip(&["drv_rev_sweep_ckpt"]),
+            rev_over: clip(&["drv_rev_overlay"]),
+            look: [clip(&["drv_gest_look_lft"]), clip(&["drv_gest_look_rgt"])],
+        })
+    }
+}
+
+/// What the rider machine's gatherer (F-28290, through F-71604) hands its states each frame, mapped onto the port's car (main.rs).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RideIn {
+    /// CockpitCamActive (bit 21): the local human's drive view is the cockpit one
+    pub ck: bool,
+    /// ReadSpeed, ctx+96: the body's velocity along its forward axis (m/s)
+    pub speed: f32,
+    /// ReadSmoothedSteeringParam, ctx+28 (= ctx+44, the phase input)
+    pub x: f32,
+    /// ctx+92: the throttle (chassis +136), negated while reversing
+    pub throttle: f32,
+    /// ReadGoalSteering, ctx+20 (the racer's vfunc +172)
+    pub goal_steer: f32,
+    /// IsTuck (bit 23): the aero's byte +40 (a bike's DragMin lean), forward speed over 0.5 and no brake (chassis +140)
+    pub tuck: bool,
+    /// IsWheelie (bit 5) / IsEndo (bit 6): the body's back axis y below -sin 20 deg / above it, with the rider's stick
+    /// (input +32) over 0.5 / under -0.5
+    pub wheelie: bool,
+    pub endo: bool,
+    /// IsBurnout (bit 8): the handbrake (chassis +144) on and the burnout charge (chassis +580) at 1 or more
+    pub burnout: bool,
+    /// IsNitroBurn (bit 4): mcCarNitro +32
+    pub nitro: bool,
+    /// IsReversing (bit 7): the gearbox in reverse and forward speed under -0.5
+    pub reversing: bool,
+    /// AreAllWheelsOnGround (bit 30)
+    pub all_down: bool,
+    /// ctx+124: the gearbox's shift direction (transmission +24), +1 up, -1 down
+    pub shift: i8,
+    /// IsCutscenePlaying
+    pub cutscene: bool,
+    /// IsOpponentDefined, ctx byte +49: the driver's record byte 0 is clear (taken as: not the local human)
+    pub opponent: bool,
+}
+
+impl RideIn {
+    /// The gatherer's flags (F-28290) from the port's car: the body's axes and velocity, the pedals the car was handed, the
+    /// gearbox, the burnout charge, the nitrous and the wheel records. Approximate (docs/PEOPLE_TRAFFIC.md): the aero's byte
+    /// +40 from the stick and the car's air time (the chassis +584 of the tick before), the goal steering from the steering
+    /// input (the racer's vfunc +172 is not decoded for the human) and IsOpponentDefined from "not the local human".
+    pub fn of(st: &crate::physics::CarState, input: &crate::physics::CarInput, player: bool, cutscene: bool) -> RideIn {
+        // (sin of the double 0.34906587 through the guest's sin, rounded to float: 20 degrees)
+        let sin20 = crate::physics::exact::guest_sin(f64::from_bits(0x3fd6_5718_6000_0000)) as f32;
+        let back = st.rot * Vec3::Z;
+        let speed = -back.dot(st.vel);
+        let vs = st.veh.as_deref();
+        let stick = vs.filter(|v| v.pad.live).map_or(input.lean, |v| v.pad.stick_y);
+        let reversing = st.gear < 0 && speed < -0.5;
+        RideIn {
+            ck: false,
+            speed,
+            x: 0.0,
+            throttle: if reversing { -input.throttle } else { input.throttle },
+            goal_steer: input.steer,
+            tuck: stick < -0.5 && st.airborne_time < 0.5 && speed > 0.5 && input.brake <= 0.0,
+            wheelie: back.y < -sin20 && stick > 0.5,
+            endo: back.y > sin20 && stick < -0.5,
+            burnout: input.handbrake && vs.map_or(false, |v| v.burn >= 1.0),
+            nitro: vs.map_or(false, |v| v.nitro_burning),
+            reversing,
+            all_down: vs.map_or(st.wheels[0].grounded && st.wheels[2].grounded, |v| v.wheels[0].record && v.wheels[2].record),
+            shift: vs.map_or(0, |v| v.gear_change.direction),
+            cutscene,
+            opponent: !player,
+        }
+    }
+}
+
+/// The states of the riding part of the graph (F-71745).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum St {
+    #[default]
+    Start,
+    Stopped,
+    Cruise,
+    Tuck,
+    Wheelie,
+    Endo,
+    BurnC,
+    BurnL,
+    BurnR,
+    Nos,
+    Shift,
+    Reverse,
+    Fidget,
+}
+
+/// A rider in the bike pose machine: its state, the cockpit flag of the last frame (its change is the edge the enters and the
+/// self-transitions test), the crossfade of the last state change and the pose it fades from, the machine's timers A / B
+/// (ctx+148 / +152), the time in the state (for the clips that play), the fidget counter (state +96) and the shift's clips.
+#[derive(Default)]
+struct Ride {
+    state: St,
+    ck: bool,
+    fade: f32,
+    rate: f32,
+    /// the reverse enter's second request (its overlay) and its crossfade, over the tree the first request left
+    fade2: Option<(f32, f32)>,
+    /// the old tree under the crossfade: the start action's looping `drv_idle_low` (its time) or the frozen pose
+    from_idle: Option<f32>,
+    from: Vec<(Quat, Vec3)>,
+    last: Vec<(Quat, Vec3)>,
+    timer_a: f32,
+    timer_b: f32,
+    t: f32,
+    fidgets: i32,
+    /// the shift's base pair (the cruise pair's clips left in slots +44 / +48: their cockpit flag) and its overlay's flag
+    shift_base_ck: bool,
+    shift_ck: bool,
+}
+
+/// The cruise state's steering to sweep phase (F-25740): slope 0.75 within |x| <= 0.5, 0.25 outside.
+fn ride_remap(x: f32) -> f32 {
+    if x.abs() <= 0.5 {
+        (x * 1.5 + 1.0) * 0.5
+    } else {
+        let side = if x >= 0.0 { 1.0 } else { -1.0 };
+        (side * crate::physics::exact::fma(x.abs() - 0.5, 0.5, 0.75) + 1.0) * 0.5
+    }
+}
+
+/// The weight of the fast sweep (the cruise, tuck and shift updates): clamp((speed - 17.8816) x 0.2236936, 0, 1).
+fn ride_speed_weight(speed: f32) -> f32 {
+    let k = (speed - 17.881_6) * 0.223_693_64;
+    let k = if k >= 0.0 { k } else { 0.0 };
+    if k - 1.0 >= 0.0 { 1.0 } else { k }
+}
+
+/// Add `ov` onto `base` on the bones `clip` animates (crmtRequestAddSubtract at weight 1, reanimate_slot.md: rotation
+/// `ov * base`, translation summed).
+fn add_pose(base: &mut [(Quat, Vec3)], ov: &[(Quat, Vec3)], clip: &Clip) {
+    for i in 0..base.len().min(ov.len()) {
+        if clip.rot.get(i).map_or(false, |r| r.is_some()) {
+            base[i].0 = ov[i].0 * base[i].0;
+        }
+        if clip.pos.get(i).map_or(false, |p| p.is_some()) {
+            base[i].1 += ov[i].1;
+        }
+    }
+}
+
+/// One frame of the bike pose machine's riding states for a rider (`Ride`), the pose into `out`. The timers gain dt first
+/// (the gatherer's context step), then the current state's transitions are tested in the graph's order (F-71745; impact,
+/// damageout, gesture switch and suspended are left to rider_eject.rs, the scene gestures over the pose and the far freeze);
+/// the first that holds runs its exit and the new state's enter; then the state's update poses:
+/// - start: to cruise at once, its action playing `drv_idle_low` looped with no blend (F-88016); the cruise enter fades from it.
+/// - cruise (enter F-27733: timer A = 0, 0.45 s; update F-61324): the low / fast lean sweeps as a pair at the fast weight, both
+///   at the remapped steering phase; timer B = 0 while IsBurnout.
+/// - stopped idle and burnout centre (enter F-73617: timers A and B = 0, 0.35 s): `drv_idle_stp_sweep` at clamp(x, -0.5, 0.5)
+///   + 0.5 (F-63745) / at the remapped phase (burnout centre runs the cruise update).
+/// - tuck (F-14953 / F-77590, 0.25 s): the leanFwd sweeps (cockpit: the lean sweeps) as a pair at the fast weight.
+/// - wheelie (F-33885 / F-56690, 0.25 s, timer A = 0): `drv_wheelie` and the low sweep, B's weight timer A - 1 (0 under 1).
+/// - endo (F-23193 / F-14383), burnouts left / right (F-13481 / F-26376; cockpit: the stopped sweep), nos boost (F-22152 /
+///   F-23398): one clip at the remapped phase, 0.25 s.
+/// - shift (F-54589 / F-32007, 0.25 s; the pair and overlay F-42342): the pair the cruise left, plus `drv_shft_low_overlay` (cockpit: `_ckpt_overlay`) added
+///   over it, playing from 0 at rate 1 (its pair's weight stays 0, so the fast overlay never shows); leaves when less than
+///   0.25 s of it is left (F-38907, F-70114).
+/// - reverse (F-93384 / F-30945): `drv_rev_sweep` at (x + 1) x 0.5 over 0.35 s, then at once `drv_rev_overlay` added over it,
+///   looped at rate 1.5, over 0.25 s on top of the first request (F-85022).
+/// - fidget (F-87252, exit F-53813: timer A = 0): `drv_gest_look_rgt`, then `_lft`, alternating (F-61316), from 0 at rate 1, 0.25 s.
+/// An enter's blend is 0.01 s when the cockpit flag changed this frame (all but the shift's and the reverse overlay's). A state
+/// change fades linearly (rate 1 / blend time, the first frame at rate x dt) from the old tree, which stays frozen (the start's
+/// idle keeps looping). The pan-sweep overlay is not ported (docs/PEOPLE_TRAFFIC.md).
+#[allow(clippy::too_many_arguments)]
+fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], i: &RideIn, time: f32, dt: f32, out: &mut Vec<(Quat, Vec3)>, tmp: &mut Vec<(Quat, Vec3)>) {
+    const STOPPED: f32 = 0.15 * 0.44704;
+    let ck = i.ck;
+    let ck_before = r.ck;
+    let edge = ck != r.ck && r.state != St::Start;
+    r.ck = ck;
+    r.timer_a += dt;
+    r.timer_b += dt;
+    r.t += dt;
+    let pick = |c: &'a Option<Clip>, d: &'a Option<Clip>| if ck { c.as_ref().or(d.as_ref()) } else { d.as_ref() };
+    // what is left of the fidget's clip / the shift's overlay (ReadTimeRemaining / ReadTimeRemainingOverlay: -1 with none)
+    let left = |c: Option<&Clip>, t: f32| c.map_or(-1.0, |c| (c.anim.duration - t).max(0.0));
+    let look = |r: &Ride| b.look[(r.fidgets % 2) as usize].as_ref();
+    let shift_over = |r: &Ride| if r.shift_ck { b.shft_low_ck.as_ref().or(b.shft_low.as_ref()) } else { b.shft_low.as_ref() };
+    let rolling = i.speed > STOPPED + 0.5 && !i.burnout;
+    let burn_side = |i: &RideIn| if i.burnout && i.goal_steer < -0.5 { Some(St::BurnL) } else if i.burnout && i.goal_steer > 0.5 { Some(St::BurnR) } else { None };
+    let next = match r.state {
+        St::Start => Some(St::Cruise),
+        St::Stopped => {
+            if let Some(s) = burn_side(i) {
+                Some(s)
+            } else if i.burnout {
+                Some(St::BurnC)
+            } else if i.reversing {
+                Some(St::Reverse)
+            } else if rolling {
+                Some(St::Cruise)
+            } else if r.timer_a > 15.0 && i.x.abs() < 0.1 && !i.cutscene && !i.opponent && !ck {
+                Some(St::Fidget)
+            } else if edge {
+                Some(St::Stopped)
+            } else {
+                None
+            }
+        }
+        St::Cruise => {
+            if i.nitro && r.timer_a > 0.25 && !i.opponent {
+                Some(St::Nos)
+            } else if i.wheelie {
+                Some(St::Wheelie)
+            } else if i.endo {
+                Some(St::Endo)
+            } else if i.tuck && r.timer_a > 1.5 {
+                Some(St::Tuck)
+            } else if let Some(s) = burn_side(i) {
+                Some(s)
+            } else if i.burnout {
+                Some(St::BurnC)
+            } else if i.shift != 0 && !ck {
+                Some(St::Shift)
+            } else if i.speed <= STOPPED {
+                Some(St::Stopped)
+            } else if edge {
+                Some(St::Cruise)
+            } else {
+                None
+            }
+        }
+        St::Tuck => if !i.tuck { Some(St::Cruise) } else if edge { Some(St::Tuck) } else { None },
+        St::Wheelie => if i.all_down { Some(St::Cruise) } else if edge { Some(St::Wheelie) } else { None },
+        St::Endo => if !i.endo { Some(St::Cruise) } else if edge { Some(St::Endo) } else { None },
+        St::BurnC => {
+            if i.burnout && i.goal_steer < -0.5 && r.timer_a > 0.75 {
+                Some(St::BurnL)
+            } else if i.burnout && i.goal_steer > 0.5 && r.timer_a > 0.75 {
+                Some(St::BurnR)
+            } else if !i.burnout && r.timer_b > 0.5 {
+                Some(St::Cruise)
+            } else if edge {
+                Some(St::BurnC)
+            } else {
+                None
+            }
+        }
+        St::BurnL => if i.burnout && i.goal_steer > -0.5 { Some(St::BurnC) } else if !i.burnout { Some(St::Cruise) } else if edge { Some(St::BurnL) } else { None },
+        St::BurnR => if i.burnout && i.goal_steer < 0.5 { Some(St::BurnC) } else if !i.burnout { Some(St::Cruise) } else if edge { Some(St::BurnR) } else { None },
+        St::Nos => if !i.nitro { Some(St::Cruise) } else if edge { Some(St::Nos) } else { None },
+        St::Shift => if left(shift_over(r), r.t) < 0.25 || edge { Some(St::Cruise) } else { None },
+        St::Reverse => {
+            if i.throttle > 0.0 && i.speed > 0.0 {
+                Some(St::Cruise)
+            } else if !i.reversing && i.speed.abs() < 0.02 && i.x.abs() < 0.1 {
+                Some(St::Stopped)
+            } else if edge {
+                Some(St::Reverse)
+            } else {
+                None
+            }
+        }
+        St::Fidget => {
+            if i.reversing {
+                Some(St::Reverse)
+            } else if left(look(r), r.t) < 0.033 || i.x.abs() > 0.1 || i.cutscene {
+                Some(St::Stopped)
+            } else if rolling || edge {
+                Some(St::Cruise)
+            } else {
+                None
+            }
+        }
+    };
+    if let Some(n) = next {
+        // (the fidget's exit: timer A = 0)
+        if r.state == St::Fidget {
+            r.timer_a = 0.0;
+        }
+        let blend = match n {
+            St::Cruise => 0.45,
+            St::Stopped | St::BurnC | St::Reverse => 0.35,
+            _ => 0.25,
+        };
+        r.from_idle = if r.state == St::Start { Some(time) } else { None };
+        r.from = r.last.clone();
+        r.fade = 0.0;
+        r.rate = 1.0 / if edge && n != St::Shift { 0.01 } else { blend };
+        r.fade2 = if n == St::Reverse { Some((0.0, 1.0 / 0.25)) } else { None };
+        r.t = 0.0;
+        match n {
+            St::Cruise | St::Wheelie => r.timer_a = 0.0,
+            St::Stopped | St::BurnC => (r.timer_a, r.timer_b) = (0.0, 0.0),
+            St::Fidget => r.fidgets += 1,
+            // (the shift rebuilds the pair from the clips the cruise enter put in the slots - its cockpit flag then)
+            St::Shift => {
+                if r.state != St::Shift {
+                    r.shift_base_ck = ck_before;
+                }
+                r.shift_ck = ck;
+            }
+            _ => {}
+        }
+        r.state = n;
+    }
+    if r.state == St::Cruise && i.burnout {
+        r.timer_b = 0.0;
+    }
+    r.fade = (r.fade + r.rate * dt).min(1.0);
+    if let Some((f, k)) = r.fade2.as_mut() {
+        *f = (*f + *k * dt).min(1.0);
+    }
+    let ph = ride_remap(i.x);
+    let w = ride_speed_weight(i.speed);
+    let pair = |a: &Clip, c: &Clip, w: f32, out: &mut Vec<(Quat, Vec3)>, tmp: &mut Vec<(Quat, Vec3)>| {
+        a.local(bones, ph * a.last_frame(), out);
+        c.local(bones, ph * c.last_frame(), tmp);
+        blend_pose(out, tmp, w);
+    };
+    let one = |c: &Clip, ph: f32, out: &mut Vec<(Quat, Vec3)>| c.local(bones, ph * c.last_frame(), out);
+    let cruise_pair = |ck: bool| if ck { (b.low_ck.as_ref().unwrap_or(&b.low), b.fst_ck.as_ref().unwrap_or(&b.fst)) } else { (&b.low, &b.fst) };
+    let stp = pick(&b.stp_ck, &b.stp).unwrap_or(&b.low);
+    let mut under: Option<Vec<(Quat, Vec3)>> = None;
+    match r.state {
+        St::Start | St::Cruise => {
+            let (lo, fs) = cruise_pair(ck);
+            pair(lo, fs, w, out, tmp);
+        }
+        St::Stopped => one(stp, i.x.clamp(-0.5, 0.5) + 0.5, out),
+        St::BurnC => one(stp, ph, out),
+        St::Tuck => {
+            let (lo, fs) = if ck { cruise_pair(true) } else { (b.low_fwd.as_ref().unwrap_or(&b.low), b.fst_fwd.as_ref().unwrap_or(&b.fst)) };
+            pair(lo, fs, w, out, tmp);
+        }
+        St::Wheelie => {
+            let (a, c) = if ck {
+                let c = b.wheelie_ck.as_ref().unwrap_or(&b.low);
+                (c, c)
+            } else {
+                (b.wheelie.as_ref().unwrap_or(&b.low), &b.low)
+            };
+            let k = r.timer_a - 1.0;
+            pair(a, c, if k > 0.0 { k.min(1.0) } else { 0.0 }, out, tmp);
+        }
+        St::Endo => one(pick(&b.endo_ck, &b.endo).unwrap_or(&b.low), ph, out),
+        St::BurnL => one(if ck { stp } else { b.burn_l.as_ref().unwrap_or(&b.low) }, ph, out),
+        St::BurnR => one(if ck { stp } else { b.burn_r.as_ref().unwrap_or(&b.low) }, ph, out),
+        St::Nos => one(pick(&b.nos_ck, &b.nos).unwrap_or(&b.low), ph, out),
+        St::Shift => {
+            let (lo, fs) = cruise_pair(r.shift_base_ck);
+            pair(lo, fs, w, out, tmp);
+            if let Some(o) = shift_over(r) {
+                o.local(bones, o.frame(r.t, false), tmp);
+                add_pose(out, tmp, o);
+            }
+        }
+        St::Reverse => {
+            one(pick(&b.rev_ck, &b.rev).unwrap_or(&b.low), (i.x + 1.0) * 0.5, out);
+            under = Some(out.clone());
+            if let Some(o) = b.rev_over.as_ref() {
+                o.local(bones, o.frame(r.t * 1.5, true), tmp);
+                add_pose(out, tmp, o);
+            }
+        }
+        St::Fidget => match look(r) {
+            Some(c) => c.local(bones, c.frame(r.t, false), out),
+            None => one(stp, 0.5, out),
+        },
+    }
+    // the crossfades: from the frozen old tree (or the start's looping idle) into the new one; the reverse's first request
+    // (its sweep alone) fades in under its second
+    if r.fade < 1.0 || r.fade2.map_or(false, |(f, _)| f < 1.0) {
+        match (r.from_idle, b.idle_low.as_ref()) {
+            (Some(t0), Some(idle)) => idle.local(bones, idle.frame(time - t0, true), tmp),
+            _ => tmp.clone_from(&r.from),
+        }
+        if tmp.len() == out.len() {
+            if let (Some((f2, _)), Some(u)) = (r.fade2, under) {
+                blend_pose(tmp, &u, r.fade);
+                blend_pose(tmp, out, f2);
+            } else {
+                blend_pose(tmp, out, r.fade);
+            }
+            out.clone_from(tmp);
+        }
+    }
+    r.last.clone_from(out);
 }
 
 /// A rider off his seat (GitHub #39, rider_eject.rs, bike_rider_ragdoll.md 2 / 5).
@@ -182,12 +689,11 @@ struct Pose {
 #[derive(Default)]
 pub struct Drivers {
     char_dir: PathBuf,
-    /// car key ("frd_mustang_06", "vpd_chv_impala_64") -> animation pack
-    packs: HashMap<String, PathBuf>,
     /// driver sets: (name, bike rider, police)
     sets: Vec<(String, bool, bool)>,
     models: HashMap<usize, Option<Arc<SkinModel>>>,
-    rigs: HashMap<(String, usize), Option<Rig>>,
+    /// (car key, the local human's pack, driver set)
+    rigs: HashMap<(String, bool, usize), Option<Rig>>,
     poses: HashMap<usize, Pose>,
     buf: SkinBuffer,
     /// the player's head in car space (for the cockpit camera)
@@ -195,6 +701,9 @@ pub struct Drivers {
     /// the player's driver as the view draws him (the draw mode, F-60712): 0 the full model, 1 the set's
     /// cockpit view model (F-56050), 2 none (looking back from the POV view, the bumper view - F-14542)
     pub cockpit: u8,
+    /// the human's drive view is the cockpit one (the camera manager's view +80 == 1): the rider machine's CockpitCamActive
+    pub ckpt_view: bool,
+    rides: HashMap<usize, Ride>,
     time: f32,
     frame: u32,
     acting: HashMap<usize, Acting>,
@@ -204,6 +713,66 @@ pub struct Drivers {
     /// the colours of a car's own set-up (`<car>.xcc`) for a car that wears none (`Seat::colors`)
     own_colors: HashMap<String, [[f32; 4]; 2]>,
     data_dir: PathBuf,
+    /// per car (`Seat::uid`): the distance LOD's freeze byte (input context +48, `freeze_step`)
+    frozen: HashMap<u32, bool>,
+    /// per car (`Seat::uid`): its driver's draw hook's wind (`Wind`), from the hook's creation on
+    wind: HashMap<u32, Wind>,
+    /// the unpaused clock (0x827D7518, `App::wind_clock`) and whether the game is paused - set before `prepare`
+    pub clock: f32,
+    pub paused: bool,
+}
+
+/// What the drivers' distance LOD (F-12028) reads of one racer's driver.
+#[derive(Clone, Copy, Default)]
+pub struct FreezeIn {
+    /// racer +421: the car's instance is up (set by the input gatherer F-28290)
+    pub active: bool,
+    /// the scene-playing byte (a story scene from its start to FinishScene)
+    pub scene: bool,
+    /// racer +145 / +147: the draw gate's show flags (F-14542)
+    pub show: bool,
+    pub show_scene: bool,
+    /// the no-damage mode byte and racer +370 (the draw gate's other test)
+    pub no_damage: bool,
+    pub b370: bool,
+    /// racer +96: the racer has a car
+    pub car: bool,
+    /// a cine script running (F-52539)
+    pub cine: bool,
+    /// the car is the player's (F-65988)
+    pub player: bool,
+    /// the car's state +592 has 0x10 (wiped out) or 0x04 (damaged out)
+    pub wrecked: bool,
+    /// the player's car's place (x, z), None without one: then the camera's
+    pub reference: Option<[f32; 2]>,
+    pub camera: [f32; 2],
+    pub pos: [f32; 2],
+}
+
+/// F-12028: the freeze byte after one update and whether it reset the inputs (F-55405, once on freezing). The gates above
+/// leave the byte as it is; no car freezes; a cine script or a wreck thaws; the player's car is never touched; otherwise
+/// frozen while the car is more than 20 m from the reference (x / z, d^2 > 400: dz^2 fused onto dx^2 in double, rounded
+/// to single - the fmadds).
+pub fn freeze_step(frozen: bool, f: &FreezeIn) -> (bool, bool) {
+    if !f.active || f.scene || !(f.show || f.show_scene) || (f.no_damage && !f.show_scene && f.b370) {
+        return (frozen, false);
+    }
+    if !f.car {
+        return (true, false);
+    }
+    if f.cine {
+        return (false, false);
+    }
+    if f.player {
+        return (frozen, false);
+    }
+    let r = f.reference.unwrap_or(f.camera);
+    let (dx, dz) = (f.pos[0] - r[0], f.pos[1] - r[1]);
+    let d2 = (dz as f64 * dz as f64 + (dx * dx) as f64) as f32;
+    if !f.wrecked && d2 > 400.0 {
+        return (true, !frozen);
+    }
+    (false, false)
 }
 
 /// The neutral / left / right / talk round robins (tables 0x827EA5F4, 0x827EA608, 0x827EA61C, 0x827EA630,
@@ -266,11 +835,22 @@ fn overlay(a: &mut [(Quat, Vec3)], b: &[(Quat, Vec3)], clip: &Clip, k: f32) {
     }
 }
 
-/// "vp_frd_mustang_06_dub" -> "frd_mustang_06"; DLC cars keep their "vpd_" prefix.
+/// A driver pack's file: LoadDriver (F-39898) asks for `$/resources/animation/Drv/%s/%s/%s` (F-62204) with
+/// "Player" for the local human (the racer's vt+40: F-49619 true for mcPlayer, F-74264 false for mcOpponent; while the debug tune bool
+/// `animplayerasopponent` is off) and "Opponent" for everyone else, the driver's sex, and the car's name with
+/// its first three letters dropped unless it starts with "vpd", upper-cased and cut before a `_DUB` (F-51581); the
+/// archive names the file by the hash of `<name>.xapk` (hashed lower-case). The packs are male only here (as the driver sets are).
+fn pack_path(root: &Path, player: bool, key: &str) -> PathBuf {
+    let h = mcla_formats::hash::joaat(&format!("{key}.xapk"));
+    root.join(format!("resources/animation/0x{:08x}/{}/male/0x{h:08x}.r2", mcla_formats::hash::joaat("drv"), if player { "player" } else { "opponent" }))
+}
+
+/// The pack name of a car: "vp_frd_mustang_06_dub" -> "frd_mustang_06"; DLC cars keep their "vpd_" prefix (F-62204 /
+/// F-51581; the records spell every `_DUB` in capitals, so the cut is the name's end).
 fn car_key(name: &str) -> String {
     let n = name.to_ascii_lowercase();
     let n = n.trim_end_matches("_dub");
-    n.strip_prefix("vp_").unwrap_or(n).to_string()
+    if n.starts_with("vpd") { n.to_string() } else { n.get(3..).unwrap_or("").to_string() }
 }
 
 fn hash(a: u32) -> u32 {
@@ -281,6 +861,23 @@ fn hash(a: u32) -> u32 {
 }
 
 impl Drivers {
+    /// The distance LOD on this frame's seats (F-12028 per drawn driver): a frozen driver's input context keeps what the
+    /// reset (F-55405) gave it - no steer, no speed, not reversing - and its machine runs on those (F-28290 skips the
+    /// gathering while the byte is set).
+    pub fn freeze_far(&mut self, seats: &mut [Seat], f: impl Fn(&Seat) -> FreezeIn) {
+        let mut next = HashMap::new();
+        for s in seats.iter_mut() {
+            let (on, _) = freeze_step(self.frozen.get(&s.uid).copied().unwrap_or(false), &f(s));
+            if on {
+                s.steer = 0.0;
+                s.speed = 0.0;
+                s.reversing = false;
+            }
+            next.insert(s.uid, on);
+        }
+        self.frozen = next;
+    }
+
     pub fn load(&mut self, data_dir: &str) {
         let root = Path::new(data_dir);
         self.data_dir = root.to_path_buf();
@@ -296,51 +893,7 @@ impl Drivers {
             }
             self.sets.push((n, l.contains("_mot_"), l.starts_with("pol_")));
         }
-        // which pack belongs to which car: read once, then kept in a small index file
-        let index = root.join("driver_packs.tsv");
-        if let Ok(t) = std::fs::read_to_string(&index) {
-            for line in t.lines() {
-                if let Some((k, f)) = line.split_once('\t') {
-                    self.packs.insert(k.to_string(), PathBuf::from(f));
-                }
-            }
-        }
-        // (the index holds full paths: after the game folder was moved, or the data rebuilt elsewhere, they
-        // point nowhere and no driver loads - every car seen empty, GitHub #24; then it is made again)
-        if self.packs.values().any(|f| !f.is_file()) {
-            log::warn!("drivers: {} names packs that are not there - indexing again", index.display());
-            self.packs.clear();
-        }
-        if self.packs.is_empty() {
-            let mut dirs: Vec<PathBuf> = std::fs::read_dir(root.join("resources/animation")).map(|d| d.flatten().map(|e| e.path().join("opponent/male")).filter(|p| p.is_dir()).collect()).unwrap_or_default();
-            dirs.sort();
-            let mut out = String::new();
-            for dir in dirs {
-                let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-                files.sort();
-                for f in files {
-                    let Ok(res) = load_resource_file(&f) else { continue };
-                    let mut count: HashMap<String, u32> = HashMap::new();
-                    for (_, name) in pack_entries(&res) {
-                        let l = name.to_ascii_lowercase();
-                        let Some(i) = l.find("_fdrv_").or_else(|| l.find("_drv_")) else { continue };
-                        *count.entry(l[..i].to_string()).or_default() += 1;
-                    }
-                    // every pack also carries the shared Challenger gestures
-                    let mut v: Vec<(String, u32)> = count.into_iter().collect();
-                    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-                    let key = v.iter().find(|(k, n)| k != "dge_challenger_70" && *n >= 10).or(v.first()).map(|(k, _)| k.clone());
-                    if let Some(k) = key {
-                        if !self.packs.contains_key(&k) {
-                            out.push_str(&format!("{}\t{}\n", k, f.display()));
-                            self.packs.insert(k, f);
-                        }
-                    }
-                }
-            }
-            let _ = std::fs::write(&index, out);
-        }
-        log::info!("drivers: {} character sets, {} animation packs", self.sets.len(), self.packs.len());
+        log::info!("drivers: {} character sets", self.sets.len());
     }
 
     fn model(&mut self, gpu: &mut Gpu, si: usize) -> Option<Arc<SkinModel>> {
@@ -397,15 +950,17 @@ impl Drivers {
     /// The length of a car's DRV_HIT_HRD clip, once its driver is loaded.
     pub fn hit_hard_secs(&self, car: &str) -> Option<f32> {
         let k = car_key(car);
-        self.rigs.iter().filter(|((c, _), _)| *c == k).find_map(|(_, r)| r.as_ref()?.hit_hard)
+        self.rigs.iter().filter(|((c, _, _), _)| *c == k).find_map(|(_, r)| r.as_ref()?.hit_hard)
     }
 
-    fn rig(&mut self, gpu: &mut Gpu, car: &str, si: usize) -> bool {
-        let key = (car_key(car), si);
+    fn rig(&mut self, gpu: &mut Gpu, car: &str, bike: bool, player: bool, si: usize) -> bool {
+        let key = (car_key(car), player, si);
         if !self.rigs.contains_key(&key) {
             let rig = (|| -> Option<Rig> {
                 let model = self.model(gpu, si)?;
-                let pack = self.packs.get(&key.0).or_else(|| self.packs.get("dge_challenger_70"))?.clone();
+                // (the car's own pack, else the shared one of its kind - F-39898 / F-62204)
+                let path = |k: &str| Some(pack_path(&self.data_dir, player, k)).filter(|p| p.is_file());
+                let pack = path(&key.0).or_else(|| path(if bike { "kaw_ninja_zx14_06" } else { "dge_challenger_70" }))?;
                 let res = load_resource_file(&pack).ok()?;
                 let rd = Rd::new(&res);
                 let entries = pack_entries(&res);
@@ -439,7 +994,8 @@ impl Drivers {
                         ejects.insert(n.to_string(), c);
                     }
                 }
-                Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard, ejects })
+                let bike = BikeClips::load(&clip);
+                Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard, ejects, bike })
             })();
             if rig.is_none() {
                 log::warn!("drivers: no animations for {}", car);
@@ -527,6 +1083,11 @@ impl Drivers {
         self.buf.clear();
         self.time += dt;
         self.frame += 1;
+        // (the hooks' update, F-31704: every driver in a vehicle, drawn or not; a car gone takes its hook with it)
+        self.wind.retain(|u, _| seats.iter().any(|s| s.uid == *u));
+        for s in seats {
+            self.wind.entry(s.uid).or_default().step(s.vel.length(), s.vel, s.bike, dt, self.paused);
+        }
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
         let mut other: Vec<(Quat, Vec3)> = Vec::new();
         for s in seats {
@@ -541,10 +1102,14 @@ impl Drivers {
             }
             let Some(si) = self.pick_set(s) else { continue };
             self.set_of.insert(s.id, self.sets[si].0.clone());
-            if !self.rig(gpu, s.car, si) {
+            if !self.rig(gpu, s.car, s.bike, s.player, si) {
                 continue;
             }
             let frame = self.frame;
+            if self.poses.get(&s.id).map_or(true, |q| q.seen + 1 != frame) {
+                // (a rider not drawn last frame starts over in "start here")
+                self.rides.remove(&s.id);
+            }
             let p = self.poses.entry(s.id).or_default();
             if p.seen + 1 != frame {
                 *p = Pose { steer: s.steer, ..Default::default() };
@@ -555,7 +1120,12 @@ impl Drivers {
             p.stopped += ((if s.speed.abs() < 0.6 { 1.0 } else { 0.0 }) - p.stopped) * (dt * 3.0).min(1.0);
             p.reverse += ((if s.reversing && s.speed.abs() > 0.3 { 1.0 } else { 0.0 }) - p.reverse) * (dt * 4.0).min(1.0);
             let p = *p;
-            let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), si)) else { continue };
+            let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), s.player, si)) else { continue };
+            if let (true, Some(b)) = (s.bike, rig.bike.as_ref()) {
+                let ride = self.rides.entry(s.id).or_default();
+                let i = RideIn { ck: s.player && self.ckpt_view, x: p.steer.clamp(-1.0, 1.0), ..s.ride };
+                ride_pose(ride, b, &rig.model.bones, &i, self.time, dt, &mut local, &mut other);
+            } else {
             // the sweep runs from full left lock to full right lock
             let last = rig.steer.last_frame();
             rig.steer.local(&rig.model.bones, (0.5 + 0.5 * p.steer.clamp(-1.0, 1.0)) * last, &mut local);
@@ -570,6 +1140,7 @@ impl Drivers {
                     rev.local(&rig.model.bones, rev.last_frame(), &mut other);
                     blend_pose(&mut local, &other, p.reverse);
                 }
+            }
             }
             // a scene's gesture over the driving pose, and the jaw flap over that
             if let Some(a) = self.acting.get_mut(&s.id) {
@@ -701,7 +1272,8 @@ impl Drivers {
                         })
                     }
                 };
-                self.buf.next_cabin = Some(Cabin::of(s.mat, offs, colors, s.head, s.bike));
+                let wind = self.wind.get(&s.uid).copied().unwrap_or_default();
+                self.buf.next_cabin = Some(Cabin::of(s.mat, offs, colors, s.head, s.bike, neon_flash(colors[0][3], self.clock), &wind));
             }
             self.buf.emit(&rig.model, 0, &local, s.mat);
             if s.player {
@@ -735,6 +1307,23 @@ mod original_tests {
     use super::*;
 
     #[test]
+    fn a_car_finds_its_own_driver_pack() {
+        // (the archive's names: the Police Car Pack's five, the Impala's, the shared Challenger's)
+        let r = Path::new("d");
+        let f = |car: &str, player: bool| pack_path(r, player, &car_key(car)).to_string_lossy().replace('\\', "/");
+        assert_eq!(f("vp_se_chv_plc_96", true), "d/resources/animation/0xe4f29864/player/male/0x8b348a1a.r2");
+        assert_eq!(f("vp_se_chv_chp_96", false), "d/resources/animation/0xe4f29864/opponent/male/0xa7db038c.r2");
+        assert_eq!(f("vp_se_dge_plc_06", true), "d/resources/animation/0xe4f29864/player/male/0xdaddd4cd.r2");
+        assert_eq!(f("vp_se_dge_ubp_06", true), "d/resources/animation/0xe4f29864/player/male/0xf8dec655.r2");
+        assert_eq!(f("vp_se_dge_chp_06", true), "d/resources/animation/0xe4f29864/player/male/0x39620546.r2");
+        assert_eq!(f("vp_chv_impala_96", true), "d/resources/animation/0xe4f29864/player/male/0x394cb4ed.r2");
+        assert_eq!(f("vpd_chv_impala_64", false), "d/resources/animation/0xe4f29864/opponent/male/0x0db60427.r2");
+        assert_eq!(f("vp_dge_challenger_70", false), "d/resources/animation/0xe4f29864/opponent/male/0x953f13ee.r2");
+        assert_eq!(car_key("vp_chv_camaro_06_DUB"), "chv_camaro_06");
+        assert_eq!(car_key("vp_chv_police_96"), "chv_police_96");
+    }
+
+    #[test]
     fn gesture_round_robins_match_the_original() {
         let mut n = 0;
         for line in include_str!("testdata/people_gesture_ref.txt").lines() {
@@ -748,6 +1337,36 @@ mod original_tests {
             n += 1;
         }
         assert_eq!(n, 192);
+    }
+
+    #[test]
+    fn driver_freeze_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/driver_freeze_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            let b = |i: usize| w[i] != "0";
+            let x = |i: usize| f32::from_bits(u32::from_str_radix(w[i], 16).unwrap());
+            let fl: u32 = w[11].parse().unwrap();
+            let f = FreezeIn {
+                active: b(2),
+                scene: b(3),
+                show: b(4),
+                show_scene: b(5),
+                no_damage: b(6),
+                b370: b(7),
+                car: b(8),
+                cine: b(9),
+                player: b(10),
+                wrecked: fl & 0x14 != 0,
+                reference: (w[12] == "1").then(|| [x(13), x(14)]),
+                camera: [x(15), x(16)],
+                pos: [x(17), x(18)],
+            };
+            let got = freeze_step(b(1), &f);
+            assert_eq!((got.0 as u8, got.1 as u8), (w[20].parse::<u8>().unwrap(), w[21].parse::<u8>().unwrap()), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4048);
     }
 }
 
@@ -766,29 +1385,181 @@ mod cabin_tests {
         (a - Vec3::from(b)).abs().max_element() < e
     }
 
+    /// F-31704 then F-42959 on the same hook, run offline on the original's code (tools/driver_wind_reference.py, 6,000
+    /// cases): the hook's wind and the eight values the driver's draw is given, bit for bit.
+    #[test]
+    fn wind_and_cabin_match_the_original() {
+        let text = include_str!("testdata/driver_wind_ref.txt");
+        let mut bad = [0usize; 12];
+        let mut first: Option<String> = None;
+        let mut n = 0;
+        for line in text.lines() {
+            let (i, o) = line.strip_prefix("DW ").unwrap().split_once(" -> ").unwrap();
+            let x: Vec<u32> = i.split(' ').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            let y: Vec<u32> = o.split(' ').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            let f = |k: usize| f32::from_bits(x[k]);
+            let v3 = |k: usize| Vec3::new(f(k), f(k + 1), f(k + 2));
+            let m = Mat4::from_cols_array(&std::array::from_fn(|k| f(k)));
+            let offs = [v3(16).to_array(), v3(19).to_array()];
+            let colors = [[f(22), f(23), f(24), 0.0], [f(25), f(26), f(27), f(28)]];
+            assert_eq!(f(30), 1.0);
+            let mut w = Wind { phase: f(33), ..Default::default() };
+            w.step(f(34), v3(35), x[32] != 0, f(40), x[39] != 0);
+            let c = Cabin::of(m, offs, colors, f(31), x[32] != 0, f(29), &w);
+            let b3 = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            let got: [&[u32]; 12] = [
+                &[w.phase.to_bits()],
+                &[w.speed.to_bits()],
+                &b3(w.vel),
+                &b3(c.neon_pos),
+                &b3(c.neon_col),
+                &b3(c.gauge_pos),
+                &b3(c.gauge_col),
+                &b3(c.cone_dir),
+                &c.floor.map(f32::to_bits),
+                &c.wind_eq.map(f32::to_bits),
+                &c.wind.map(f32::to_bits),
+                &[],
+            ];
+            let want: [&[u32]; 12] = [&y[0..1], &y[1..2], &y[2..5], &y[6..9], &y[10..13], &y[14..17], &y[18..21], &y[22..25], &y[26..30], &y[30..34], &y[34..36], &[]];
+            for k in 0..11 {
+                if got[k] != want[k] {
+                    bad[k] += 1;
+                    first.get_or_insert_with(|| format!("field {k}: {:08x?} against {:08x?} in {line}", got[k], want[k]));
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+        assert!(bad.iter().all(|&b| b == 0), "mismatches by field {bad:?}; first {}", first.unwrap_or_default());
+    }
+
     /// F-42959 against the running original: c209 / c210 / c211 / c212 / c214 of a driver's and a rider's draws.
     #[test]
     fn cabin_lights_match_the_recorded_draws() {
         // (an R8 at noon, work/intglass/cap/pov_noon.bin draw 1938, the body at draw 1923; its tune's offsets): the gauge
         // and neon places, the floor; by day the head state 0 - no gauge colour
         let m = car([0.0183608793, 0.998237431, 0.0564348772], [-0.474544317, -0.0409810767, 0.87927711], [819.610229, 17.5722237, -808.409119]);
-        let c = Cabin::of(m, [[-0.375, 0.875, -1.325], [-0.375, 0.675, -0.85]], [[0.52941, 0.52941, 0.52941, 1.0], [0.0; 4]], 0.0, false);
+        let c = Cabin::of(m, [[-0.375, 0.875, -1.325], [-0.375, 0.675, -0.85]], [[0.52941, 0.52941, 0.52941, 1.0], [0.0; 4]], 0.0, false, 1.0, &Wind::default());
         assert!(near(c.gauge_pos, [819.327515, 18.3752842, -807.017334], 2e-4), "{c:?}");
         assert!(near(c.neon_pos, [819.549255, 18.1951046, -807.446289], 2e-4), "{c:?}");
         assert!(near(c.cone_dir, [-0.474544317, -0.0409810767, 0.87927711], 1e-7) && c.gauge_col == Vec3::ZERO && c.neon_col == Vec3::ZERO);
         assert!(near(Vec3::new(c.floor[0], c.floor[1], c.floor[2]), [0.0183608793, 0.998237431, 0.0564348772], 1e-7) && (c.floor[3] + 12.7324543).abs() < 2e-4, "{c:?}");
+        // (parked: no velocity - the plane (0, 0, -1) through the body, c215 (0 0 -1 808.409119); a car's windParams 0)
+        assert!(c.wind_eq == [0.0, 0.0, -1.0, 808.409119] && c.wind == [0.0, 0.0], "{c:?}");
         // (the ZX-14 at 23:00, work/police17/cap/rider_night.bin draw 627, the body at draw 608): its record's DashGaugeColor
         // with the head lamps on, the floor of a bike, the neon (offset 0) at the bike's origin
         let m = car([-0.0173120443, 0.999082983, 0.0391364694], [-0.470790386, -0.0426769406, 0.881210923], [819.67041, 17.5936108, -808.20929]);
-        let c = Cabin::of(m, [[0.0, 1.05, -1.275], [0.0; 3]], [[74.0 / 255.0, 93.0 / 255.0, 130.0 / 255.0, 1.0], [0.52, 0.52, 1.0, 0.0]], 1.0, true);
+        let c = Cabin::of(m, [[0.0, 1.05, -1.275], [0.0; 3]], [[74.0 / 255.0, 93.0 / 255.0, 130.0 / 255.0, 1.0], [0.52, 0.52, 1.0, 0.0]], 1.0, true, 1.0, &Wind::default());
         assert!(near(c.gauge_pos, [819.051941, 18.5882359, -807.044678], 2e-4), "{c:?}");
         assert!(near(c.gauge_col, [0.339214742, 0.376469642, 0.449018657], 6e-8), "{c:?}");
         assert!(near(c.neon_pos, [819.67041, 17.5936108, -808.20929], 1e-5) && c.neon_col == Vec3::ZERO && c.floor[3] == -1.0e5, "{c:?}");
+        // (its wind, c215 (0.880322516 -0.044405967 0.472292662 339.081726), c216 (0.246283069 0.00220525498): the bike
+        // creeping at 0.0887 m/s - the strength is mph / 90; the plane along the velocity, w through the body's place)
+        let n = Vec3::new(0.880322516, -0.044405967, 0.472292662);
+        let mut w = Wind { phase: 0.246283069, ..Default::default() };
+        w.step(0.00220525498 * 90.0 / 2.237, n * 0.0887, true, 0.0, false);
+        let c = Cabin::of(m, [[0.0; 3]; 2], [[0.0; 4]; 2], 1.0, true, 1.0, &w);
+        assert!(near(Vec3::new(c.wind_eq[0], c.wind_eq[1], c.wind_eq[2]), n.to_array(), 1e-7) && (c.wind_eq[3] - 339.081726).abs() < 2e-4, "{c:?}");
+        assert!(c.wind[0] == 0.246283069 && (c.wind[1] - 0.00220525498).abs() < 1e-9, "{c:?}");
+        // (the same in a car: no strength)
+        w.step(10.0, n, false, 1.0 / 60.0, false);
+        assert!(w.speed == 0.0 && w.phase == 0.246283069);
         // (work/checkpoints2/cap/col4.bin at 01:06: the player's Saleen, its record's colour; a racer's R8, its set-up's)
-        let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[0.464063, 0.363281, 0.188281, 1.0], [0.0; 4]], 1.0, false);
+        let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[0.464063, 0.363281, 0.188281, 1.0], [0.0; 4]], 1.0, false, 1.0, &Wind::default());
         assert!(near(c.gauge_col, [0.401301622, 0.350911021, 0.263410985], 2e-6), "{c:?}");
         // (the set-up `vp_aud_r8_08.xcc`'s 0x3f078788 = 135 / 255)
-        let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), 1.0], [0.0; 4]], 1.0, false);
+        let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), 1.0], [0.0; 4]], 1.0, false, 1.0, &Wind::default());
         assert!(near(c.gauge_col, [0.52941072; 3], 6e-8), "{c:?}");
+    }
+}
+
+#[cfg(test)]
+mod ride_tests {
+    use super::*;
+
+    /// F-25740 run offline on 3,012 steering values (work/cameras2/bikegraph/remap_ref.py; the bits as decimal words): equal.
+    #[test]
+    fn ride_remap_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/bike_ride_remap_ref.txt").lines() {
+            let w: Vec<u32> = line.split(' ').map(|s| s.parse().unwrap()).collect();
+            assert_eq!(ride_remap(f32::from_bits(w[0])).to_bits(), w[1], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3012);
+    }
+
+    /// The riding states' transitions (F-71745), in the graph's order: start -> cruise at once; cruise -> stopped idle at
+    /// <= 0.15 mph; back only above 0.15 mph + 0.5 m/s; a cockpit flag change re-enters with the 0.01 s blend; wheelie before
+    /// tuck; tuck after 1.5 s; burnout centre -> left after 0.75 s; the shift leaves when its overlay is missing; fidget after
+    /// 15 s still, look right first.
+    #[test]
+    fn ride_states() {
+        let bones = vec![crate::skin::Bone { parent: None, pos: Vec3::ZERO, rot: Quat::IDENTITY, bind: Vec3::ZERO }];
+        let anim = Arc::new(mcla_formats::rage::anim::Animation::default());
+        let ids = vec![0u16];
+        let b = BikeClips::load(|_| Some(Clip::bind(&anim, &ids, false, false))).unwrap();
+        let (mut out, mut tmp) = (Vec::new(), Vec::new());
+        let mut r = Ride::default();
+        let dt = 1.0 / 30.0;
+        let mut step = |r: &mut Ride, i: RideIn| ride_pose(r, &b, &bones, &i, 0.0, dt, &mut out, &mut tmp);
+        let go = |v: f32| RideIn { speed: v, ..Default::default() };
+        step(&mut r, go(0.0));
+        assert_eq!((r.state, r.rate), (St::Cruise, 1.0 / 0.45));
+        step(&mut r, go(0.0));
+        assert_eq!((r.state, r.rate), (St::Stopped, 1.0 / 0.35));
+        step(&mut r, go(0.5));
+        assert_eq!(r.state, St::Stopped);
+        step(&mut r, go(0.6));
+        assert_eq!((r.state, r.rate), (St::Cruise, 1.0 / 0.45));
+        step(&mut r, RideIn { ck: true, ..go(10.0) });
+        assert_eq!((r.state, r.rate), (St::Cruise, 1.0 / 0.01));
+        step(&mut r, RideIn { ck: true, ..go(0.05) });
+        assert_eq!((r.state, r.rate), (St::Stopped, 1.0 / 0.35));
+        // (the rolling rule comes before the self-transition: out to cruise, with the edge's blend)
+        step(&mut r, go(10.0));
+        assert_eq!((r.state, r.rate), (St::Cruise, 1.0 / 0.01));
+        step(&mut r, go(10.0));
+        assert_eq!(r.state, St::Cruise);
+        step(&mut r, RideIn { wheelie: true, tuck: true, ..go(10.0) });
+        assert_eq!((r.state, r.timer_a), (St::Wheelie, 0.0));
+        step(&mut r, RideIn { all_down: true, ..go(10.0) });
+        assert_eq!(r.state, St::Cruise);
+        for _ in 0..50 {
+            step(&mut r, RideIn { tuck: true, ..go(10.0) });
+        }
+        assert_eq!(r.state, St::Tuck);
+        step(&mut r, go(10.0));
+        step(&mut r, RideIn { burnout: true, ..go(0.0) });
+        assert_eq!(r.state, St::BurnC);
+        step(&mut r, RideIn { burnout: true, goal_steer: -0.6, ..go(0.0) });
+        assert_eq!(r.state, St::BurnC);
+        for _ in 0..30 {
+            step(&mut r, RideIn { burnout: true, goal_steer: -0.6, ..go(0.0) });
+        }
+        assert_eq!(r.state, St::BurnL);
+        step(&mut r, go(10.0));
+        assert_eq!(r.state, St::Cruise);
+        // (an empty clip: no overlay time left, the shift goes back at once)
+        step(&mut r, RideIn { shift: 1, ..go(10.0) });
+        assert_eq!(r.state, St::Shift);
+        step(&mut r, go(10.0));
+        assert_eq!(r.state, St::Cruise);
+        step(&mut r, go(0.0));
+        assert_eq!(r.state, St::Stopped);
+        let mut n = 0;
+        while r.fidgets == 0 {
+            step(&mut r, go(0.0));
+            n += 1;
+        }
+        // (after 15 s still: timer A over 15 - 450 frames of a float 1/30 s)
+        assert_eq!((r.state, n), (St::Fidget, 450));
+        step(&mut r, go(0.0));
+        assert_eq!((r.state, r.timer_a), (St::Stopped, 0.0));
+        step(&mut r, RideIn { reversing: true, ..go(-1.0) });
+        assert_eq!((r.state, r.rate, r.fade2.map(|f| f.1)), (St::Reverse, 1.0 / 0.35, Some(4.0)));
+        step(&mut r, RideIn { throttle: 1.0, ..go(0.5) });
+        assert_eq!(r.state, St::Cruise);
     }
 }

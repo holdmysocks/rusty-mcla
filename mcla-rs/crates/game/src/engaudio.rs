@@ -33,10 +33,54 @@ fn approach(p: &mut f32, target: f32, step: f32) {
 /// (the original's fmadds / fnmsubs), clamped at the target. Verified bit for bit against the original (b1 evidence).
 fn approach_fma(p: &mut f32, target: f32, a: f32, b: f32) {
     if *p < target {
-        *p = a.mul_add(b, *p).min(target);
+        let v = a.mul_add(b, *p);
+        *p = if v > target { target } else { v };
     } else if *p > target {
-        *p = (-a).mul_add(b, *p).max(target);
+        // fnmsubs: -(a * b - p), so a step landing on zero gives -0, which the clamp keeps
+        let v = -a.mul_add(b, -*p);
+        *p = if v < target { target } else { v };
     }
+}
+
+/// What one update of the revs machine (F-74751) does besides moving the start boost: make the revs one-shot (F-60794),
+/// play it (F-87666), stop it (the slot's release F-63886), or end the machine (+120 to the empty one).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct RevsAct {
+    pub make: bool,
+    pub play: bool,
+    pub stop: bool,
+    pub done: bool,
+}
+
+/// One update of the revs machine (F-74751) on the start boost +152: `mode` byte 1950, `slot` the one-shot slot's state
+/// (0 empty, 1 made, 5 playing, else another), `elapsed` the audio clock since it was played and `dur` its Duration (ms),
+/// `dt` the real frame time (s). In the mode the boost moves at 1 a second (F-90102: the fused step, clamped):
+/// to 1 when the slot is empty (the one-shot is made) or in another state, not at all when made (it is played), to 0 while
+/// it plays and `elapsed < dur - 2000` (unsigned), else to 1. Out of the mode a one-shot in the slot is stopped and the
+/// boost steps to 1 (a plain add, clamped); the machine ends when it is 1.
+pub(crate) fn revs_machine(boost: &mut f32, mode: bool, slot: u8, elapsed: u32, dur: i32, dt: f32) -> RevsAct {
+    let mut a = RevsAct::default();
+    if !mode {
+        a.stop = slot != 0;
+        let v = *boost;
+        if v < 1.0 {
+            *boost = (v + dt).min(1.0);
+        } else if v > 1.0 {
+            *boost = (v - dt).max(1.0);
+        }
+        a.done = *boost == 1.0;
+        return a;
+    }
+    match slot {
+        0 => {
+            a.make = true;
+            approach_fma(boost, 1.0, 1.0, dt);
+        }
+        1 => a.play = true,
+        5 => approach_fma(boost, if elapsed < (dur as u32).wrapping_sub(2000) { 0.0 } else { 1.0 }, 1.0, dt),
+        _ => approach_fma(boost, 1.0, 1.0, dt),
+    }
+    a
 }
 
 #[derive(Clone, Copy)]
@@ -106,6 +150,9 @@ pub struct EngineIn {
     pub shift: i8,
     /// the garage / cutscene rev mode (byte 1950): the loops follow idle
     pub idle_only: bool,
+    /// the revs mode as the original sets byte 1950 (F-17772 from the brain's SetRevvingEnabled, F-58174): runs the revs
+    /// machine (`idle_only` should be set with it)
+    pub revs: bool,
     /// opponents: the car's driver is racing (byte 1951) and its speed over the gearbox's top-gear speed (this+232)
     pub racing: bool,
     pub speed_ratio: f32,
@@ -165,6 +212,13 @@ pub struct EngineSound {
     /// the stop (F-29108): XF +113 the one-shot after the stop's wait (IGNITION_KAPUT_MASTER), +117 that wait in ms
     kaput_sound: u32,
     kaput_delay: f32,
+    /// the revs machine (F-74751): the revs one-shot ONESHOT +88, its slot (+1464, emptied when it ends: F-30709), its
+    /// time since played and Duration in ms (+1468 / +1472; None until it is played), and whether the machine runs (+120)
+    revs_sound: u32,
+    revs: Option<Handle>,
+    revs_t: Option<(f32, i32)>,
+    revs_made: bool,
+    revs_on: bool,
     // one-shots (ONESHOT_PARAMS)
     gear_sound: u32,
     gear_special: u32,
@@ -328,6 +382,11 @@ impl EngineSound {
             settle: be_u16(xf, 111) as f32,
             kaput_sound: be_u32(xf, 113),
             kaput_delay: be_u16(xf, 117) as f32 * 0.001,
+            revs_sound: be_u32(one, 88),
+            revs: None,
+            revs_t: None,
+            revs_made: false,
+            revs_on: false,
             gear_sound: be_u32(one, 10),
             gear_special: be_u32(one, 14),
             gear_vol: s16(one, 18) * 0.01,
@@ -481,6 +540,7 @@ impl EngineSound {
             self.lfo.running = false;
         }
         let lfo_cents = self.step_lfo(dt);
+        self.step_revs(lib, e, dt);
         self.step_loops(lib, e, dt, lfo_cents);
     }
 
@@ -526,6 +586,52 @@ impl EngineSound {
                 approach_fma(&mut self.load_vol, drive, self.load_rate, dt);
                 self.ws_in = drive;
             }
+        }
+    }
+
+    /// The revs machine (F-74751), set going by the revs mode (F-17772). In the mode: with its slot empty the revs one-shot
+    /// is made (F-60794) and the start boost +152 goes to 1; once made it is played (F-87666) with its start time and
+    /// Duration taken; while it plays the boost goes to 0, back to 1 in its last 2 s (time < Duration - 2000, unsigned);
+    /// otherwise to 1. Its slot empties when it ends, so it is made again. Out of the mode: the one-shot is stopped and the
+    /// boost goes back to 1, then the machine ends. Steps of 1 a second.
+    fn step_revs(&mut self, lib: &mut SoundLib, e: &EngineIn, dt: f32) {
+        if e.revs {
+            self.revs_on = true;
+        }
+        if !self.revs_on {
+            return;
+        }
+        // the slot empties when the one-shot ends (F-30709)
+        if self.revs.is_some_and(|h| !lib.playing(h)) {
+            self.revs = None;
+            self.revs_t = None;
+        }
+        let slot = match (self.revs, self.revs_made) {
+            (Some(_), _) => 5,
+            (None, true) => 1,
+            (None, false) => 0,
+        };
+        let (elapsed, dur) = self.revs_t.map_or((0, -1), |(t, d)| ((t + dt * 1000.0) as u32, d));
+        let a = revs_machine(&mut self.boost, e.revs, slot, elapsed, dur, dt);
+        if a.stop {
+            if let Some(h) = self.revs.take() {
+                lib.stop(h);
+            }
+            self.revs_t = None;
+            self.revs_made = false;
+        }
+        if a.done {
+            self.revs_on = false;
+        }
+        if a.make {
+            self.revs_made = true;
+        } else if a.play {
+            // its Duration taken before its first step (the total with +80 / +84 still 0)
+            self.revs_made = false;
+            self.revs = lib.play_hash(self.revs_sound, Req { pos: Some(e.pos), player: self.player, ..Default::default() });
+            self.revs_t = self.revs.map(|h| (0.0, lib.duration_ms(h)));
+        } else if let Some((t, d)) = self.revs_t {
+            self.revs_t = Some((t + dt * 1000.0, d));
         }
     }
 
@@ -853,6 +959,22 @@ impl EngineSound {
 
 #[cfg(test)]
 mod tests {
+
+    /// The revs machine F-74751 against the original's code run offline on random update sequences
+    /// (tools/revs_machine_reference.py): every update's boost bits and its make / play / stop / end
+    #[test]
+    fn revs_machine_matches_the_original() {
+        use super::*;
+        let mut n = 0;
+        for line in include_str!("testdata/revs_machine_ref.txt").lines().filter(|l| l.contains("->")) {
+            let v: Vec<u64> = line.split_whitespace().filter(|w| *w != "->").map(|w| w.parse::<i64>().unwrap() as u64).collect();
+            let mut b = f32::from_bits(v[5] as u32);
+            let a = revs_machine(&mut b, v[0] != 0, v[1] as u8, v[2] as u32, v[3] as i32, f32::from_bits(v[4] as u32));
+            assert_eq!((b.to_bits(), a), (v[6] as u32, RevsAct { make: v[7] != 0, play: v[8] != 0, stop: v[9] != 0, done: v[10] != 0 }), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 13070);
+    }
 
     /// F-96250's emitter type 1: in the two inside views the loops are straight ahead of the listener at XF +54 / +42
     /// wherever the car is, in the others at the car; the Doppler factor 0 inside, back at 2 a second outside.

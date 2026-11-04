@@ -8,6 +8,9 @@ license.workspace = true
 name = "mcla"
 path = "src/main.rs"
 
+[build-dependencies]
+cc = "1"
+
 [dependencies]
 mcla-formats = { path = "../formats" }
 mcla-flash = { path = "../flash" }
@@ -25,7 +28,7 @@ bytemuck.workspace = true
 hashbrown.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-wgpu = "24"
+wgpu = { version = "24", features = ["static-dxc"] }
 winit = "0.30"
 pollster = "0.4"
 egui = "0.31"

@@ -236,6 +236,7 @@ pub fn run(data_dir: &str, spec: &str) -> anyhow::Result<()> {
     // (the gearbox's way as the tick AFTER has it: the pad code runs between a tick's vehicle update and its
     // physics step, so the contact callbacks of this tick already find the gear the next update drives in)
     let ways: Vec<i32> = ticks.iter().map(|v| v[12] as i32).collect();
+    let pedals: Vec<(f32, f32)> = ticks.iter().map(|v| (v[0], v[1])).collect();
     for (n, v) in ticks.into_iter().enumerate() {
         // (MCLA_DBG_STAMPS: the tick before the damage map stamps it queues, damagemap.rs)
         if let Some(p) = std::env::var_os("MCLA_DBG_STAMPS") {
@@ -398,6 +399,18 @@ for i in 0..4 {
                         vs.boost_timer = q[157];
                         vs.torque_mult = q[158];
                         vs.engine_pedal = q[159];
+                    }
+                    // (and the pedal the stomp test compares with, input +12 as the tick before left it: a
+                    // car seeded on the move has held its pedal, where `pedal_was` 0 would be a stomp that
+                    // restarts the boost - wa.0 from s200: 1.98 s of boost the original's engine no longer had)
+                    if seeded && n > 0 {
+                        let (t, b) = pedals[n - 1];
+                        vs.pedal_was = if vs.gear < 0 { b } else { t };
+                    }
+                    // (the transmission held, byte +32: the port's car stood, held, through the ticks before
+                    // the seed, and a hold let go restarts the boost - wa.0 from s200: the original's was off)
+                    if q.len() >= 203 {
+                        vs.trans_inhibited = q[202] != 0.0;
                     }
                     // (the centre of mass as it stands, chassis +112; and, where
                     // MCLA_REPLAY_GYROSUMS asks for it, the recorded sums after the gyro)

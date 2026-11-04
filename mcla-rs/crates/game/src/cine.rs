@@ -129,6 +129,8 @@ const AMBIENT_DRIVERS: [&str; 4] = ["drv_mb_02_set", "drv_mc_02_set", "drv_ma_02
 #[derive(Default)]
 pub struct Cine {
     char_dir: PathBuf,
+    /// the character sets the active racers wear (racer +144: the generic cast's in-use test F-68164), kept by `main`
+    pub racer_sets: Vec<String>,
     /// scene ("story/cut_intro") -> (entry name, pack file)
     index: HashMap<String, Vec<(String, PathBuf)>>,
     models: HashMap<String, Option<Arc<SkinModel>>>,
@@ -263,6 +265,50 @@ const COPS: [&str; 5] = ["pol_mb_01_set", "pol_mc_01_set", "pol_mc_02_set", "pol
 static COP_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Character set of a scene entity that does not name one.
+/// The generic cast's lists (AssignBoyToSlot F-40835: tables 0x827EA804 / 0x827EA820; AssignGirlToSlot F-49041: 0x827EA848 /
+/// 0x827EA854): slot 0 takes a driver set, any other slot a pedestrian set.
+const CAST_BOY_DRV: [&str; 7] = ["drv_mb_009_set", "drv_mb_02_set", "drv_mb_05_set", "drv_mh_01_set", "drv_mb_010_set", "drv_mh_04_set", "drv_ma_02_set"];
+const CAST_BOY_PED: [&str; 10] = ["ped_ma_004_set", "ped_mh_002_set", "ped_mh_003_set", "ped_mb_004_set", "ped_mc_004_set", "ped_mc_001_set", "ped_mb_001_set", "ped_mb_002_set", "ped_mh_001_set", "ped_mh_004_set"];
+const CAST_GIRL_DRV: [&str; 3] = ["drv_fb_01_set", "drv_fa_001_set", "drv_fc_003_set"];
+const CAST_GIRL_PED: [&str; 6] = ["ped_fb_002_set", "ped_fb_005_set", "ped_fa_002_set", "ped_fh_001_set", "ped_fc_002_set", "ped_fa_001_set"];
+/// The four counters of the generic cast (boy driver, girl driver, boy pedestrian, girl pedestrian): the session's, from 0
+static CAST_COUNTERS: std::sync::Mutex<[i32; 4]> = std::sync::Mutex::new([0; 4]);
+
+/// One AssignBoyToSlot / AssignGirlToSlot (F-40835 / F-49041): the counter is pre-incremented and picks from its list; on
+/// slot 0 a set an active racer already wears (F-68164, `in_use`) moves it on, at most twice (the third pick is not tested).
+/// (the counters never go negative in a session; `rem_euclid` stands for the guest's signed remainder on the positive side)
+fn cast_pick(girl: bool, slot: i32, ctr: &mut [i32; 4], in_use: impl Fn(&str) -> bool) -> &'static str {
+    if slot == 0 {
+        let (list, i): (&[&'static str], usize) = if girl { (&CAST_GIRL_DRV, 1) } else { (&CAST_BOY_DRV, 0) };
+        let n = list.len() as i32;
+        let mut c = ctr[i].wrapping_add(1);
+        let mut set = list[c.rem_euclid(n) as usize];
+        let mut tries = 0;
+        while in_use(set) {
+            c = c.wrapping_add(1);
+            tries += 1;
+            set = list[c.rem_euclid(n) as usize];
+            if tries >= 2 {
+                break;
+            }
+        }
+        ctr[i] = c;
+        set
+    } else {
+        let (list, i): (&[&'static str], usize) = if girl { (&CAST_GIRL_PED, 3) } else { (&CAST_BOY_PED, 2) };
+        let c = ctr[i].wrapping_add(1);
+        ctr[i] = c;
+        list[c.rem_euclid(list.len() as i32) as usize]
+    }
+}
+
+/// A scene script's generic cast in its order (`cinecast::CASTS`): the set each named entity gets, with the session's counters.
+pub fn cast_scene(scene: &str, in_use: impl Fn(&str) -> bool) -> Vec<(&'static str, &'static str)> {
+    let Some((_, calls)) = crate::cinecast::CASTS.iter().find(|(s, _)| s.eq_ignore_ascii_case(scene)) else { return Vec::new() };
+    let mut ctr = CAST_COUNTERS.lock().unwrap();
+    calls.iter().map(|&(girl, slot, entity)| (entity, cast_pick(girl, slot, &mut ctr, &in_use))).collect()
+}
+
 fn default_set(scene: &str, entity: &str, n: usize) -> &'static str {
     const RACERS: [&str; 4] = ["drv_mb_02_set", "drv_mc_02_set", "drv_ma_02_set", "drv_mh_02_set"];
     let player = entity.starts_with("player") || entity == "cut_drv00";
@@ -464,6 +510,8 @@ impl Cine {
         let mut got: HashMap<PathBuf, Arc<mcla_formats::rsc::Resource>> = HashMap::new();
         // (each character's slot name, the set before its cutscene copy: the face fallback matches it)
         let mut slot_sets: Vec<(String, String)> = Vec::new();
+        // (the scene script's AssignBoyToSlot / AssignGirlToSlot calls, run once at its start in their order)
+        let cast = cast_scene(&key, |set| self.racer_sets.iter().any(|r| r == set));
         for (part, faces) in parts {
             let Some(entries) = self.index.get(&part).cloned() else { continue };
             let mut by_file: HashMap<PathBuf, Vec<String>> = HashMap::new();
@@ -522,7 +570,7 @@ impl Cine {
                     }
                     let (label, set) = match ent.split_once("_name_") {
                         Some((l, s)) => (l, s.to_string()),
-                        None => (ent.as_str(), default_set(&key, &ent, sc.actors.len()).to_string()),
+                        None => (ent.as_str(), cast.iter().find(|c| c.0.eq_ignore_ascii_case(&ent)).map_or_else(|| default_set(&key, &ent, sc.actors.len()), |c| c.1).to_string()),
                     };
                     // (props - the arrests' pistols and shotguns, prp_handgun_001_set / prp_shotgun_001_set - are
                     // characters of the scene like the others, with their own root path next to their officer: the
@@ -945,5 +993,31 @@ mod tests {
         assert_eq!(named, SCENE_AUDIO.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(scene_audio("cut_cop_arrest").as_deref(), Some("CUT_COP_ARREST"));
         assert_eq!(scene_audio("cut_cop_arrest_05"), None);
+    }
+}
+
+#[cfg(test)]
+mod cast_tests {
+    use super::*;
+
+    #[test]
+    fn generic_cast_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/cine_cast_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            let (girl, slot): (bool, i32) = (w[1] == "1", w[2].parse().unwrap());
+            let mut ctr: [i32; 4] = [w[3].parse().unwrap(), w[4].parse().unwrap(), w[5].parse().unwrap(), w[6].parse().unwrap()];
+            let mask: u32 = w[7].parse().unwrap();
+            let calls = std::cell::Cell::new(0u32);
+            let set = cast_pick(girl, slot, &mut ctr, |_| {
+                let k = calls.get();
+                calls.set(k + 1);
+                (mask >> k) & 1 != 0
+            });
+            let want: Vec<i32> = w[11..15].iter().map(|v| v.parse().unwrap()).collect();
+            assert_eq!((set, w[10].parse::<i32>().unwrap(), ctr.to_vec()), (w[9], slot, want), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3472);
     }
 }

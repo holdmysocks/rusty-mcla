@@ -4799,7 +4799,8 @@ impl Game {
         };
         let g = field(1, rec.map(|c| &c.visual.DashGaugeColor));
         let n = field(0, rec.map(|c| &c.visual.IntNeonColor));
-        [[g[0], g[1], g[2], 1.0], [n[0], n[1], n[2], if self.int_neon { 1.0 } else { 0.0 }]]
+        let rate = rec.map_or(0, |c| c.visual.IntNeonFlashRate) as i8 as f32;
+        [[g[0], g[1], g[2], rate], [n[0], n[1], n[2], if self.int_neon { 1.0 } else { 0.0 }]]
     }
 
     /// The cabin's five colour groups for the renderer (INTERIOR COLOR A..E; linear, w 1 =
@@ -8191,7 +8192,7 @@ impl Game {
                 // (test hook MCLA_PB_TIMEOUT=<seconds>: the client counts as reached at once
                 // and the leg's time is that many seconds)
                 let hook = std::env::var("MCLA_PB_TIMEOUT").ok().and_then(|v| v.parse::<f32>().ok());
-                if p.distance(t) < 50.0 || hook.is_some() {
+                if crate::brain::racer_distance(Some(p), Some(t)) < 50.0 || hook.is_some() {
                     leg.phase = 1;
                     reached = true;
                     if let Some(s) = hook {
@@ -8199,10 +8200,27 @@ impl Game {
                     }
                 }
             }
-            if let Some(ai) = race.target.and_then(|t| vehicles.cars.get_mut(t)).and_then(|c| c.ai.as_mut()) {
-                // (a cruising brain that was given no speed drives at its rail's - `RAIL_SPEED`;
-                // BrainRacing_SetMaxSpeed(32) once he runs)
-                ai.target_speed = if reached { 32.0 } else { RAIL_SPEED };
+            let cps = race.checkpoints.clone();
+            if let Some(c) = race.target.and_then(|t| vehicles.cars.get_mut(t)) {
+                let tune = c.model.aitunes.as_ref().map(|tu| std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&tu.base, &tu.mods, c.perf)));
+                if let Some(ai) = c.ai.as_mut() {
+                    // (a cruising brain that was given no speed drives at its rail's - `RAIL_SPEED`;
+                    // BrainRacing_SetMaxSpeed(32) once he runs)
+                    ai.target_speed = if reached { 32.0 } else { RAIL_SPEED };
+                    // (START CHASE AI: his racing brain, `Brain::payback`, its goals the checkpoints from
+                    // BrainCruising_GetCurrentDestinationIndex on. Approx.: the cruising brain is not ported,
+                    // its destination is the first checkpoint ahead of him on the route he cruises)
+                    if let (true, Some(tune), false) = (reached, tune, cps.is_empty()) {
+                        let dest = ai.path.as_ref().map_or(0, |p| {
+                            let near = |q: glam::Vec3| (0..p.len()).min_by(|&a, &b| p[a].distance_squared(q).total_cmp(&p[b].distance_squared(q))).unwrap_or(0);
+                            (0..cps.len()).find(|&j| near(cps[j]) >= ai.path_i).unwrap_or(0)
+                        });
+                        let goals: Vec<glam::Vec3> = (0..cps.len()).map(|k| cps[(dest + k) % cps.len()]).collect();
+                        log::info!("payback: chase AI, {} goals from checkpoint {}", goals.len(), dest);
+                        ai.tune = Some(tune.clone());
+                        ai.brain.0 = Some(Box::new(crate::brain::Brain::payback(tune, &goals)));
+                    }
+                }
             }
         }
         self.opt_x.arcade.pb = Some(leg);
@@ -8414,8 +8432,8 @@ pub struct SetupLook {
 ///     `interior_groups`;
 ///   - the window tint at 0x160 (colour, darkness): `tint_rgba`;
 ///   - the tire set, 0x845 (`TIRES`), and the brake model, 0x846 (`BRAKES`).
-///   - the driver's light colours: gauge colour A at 0x70, the interior neon's at 0x60 and its intensity at 0x174
-///     (`cabin_light`, F-42959).
+///   - the driver's light colours: gauge colour A at 0x70, the interior neon's at 0x60, its intensity at 0x174 and
+///     its flash rate at 0x18D (a signed byte) (`cabin_light`, F-42959).
 /// Step 19e: a set-up's licence plate text (0x847, seven letters; letters, digits and spaces).
 pub fn setup_plate(b: &[u8]) -> String {
     b.get(0x847..0x84e).map_or(String::new(), |l| l.iter().take_while(|c| **c != 0).filter(|c| c.is_ascii_alphanumeric() || **c == b' ').map(|c| *c as char).collect::<String>().trim().to_string())
@@ -8439,10 +8457,11 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let body = paint_as_drawn(area(0));
     let body_b = to_linear(body.b);
     let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2] };
-    // (the driver's gauge and interior neon colours, as the record holds them, the neon's IntNeonIntensity in w - F-42959)
+    // (the driver's gauge and interior neon colours, as the record holds them, IntNeonFlashRate and IntNeonIntensity in
+    // w - F-42959)
     let raw = |o: usize| [f(o), f(o + 4), f(o + 8)];
     let (g, n) = (raw(0x70), raw(0x60));
-    look.cabin_light = [[g[0], g[1], g[2], 1.0], [n[0], n[1], n[2], f(0x174)]];
+    look.cabin_light = [[g[0], g[1], g[2], b[0x18d] as i8 as f32], [n[0], n[1], n[2], f(0x174)]];
     for k in 1..6 {
         // (a part's colour goes through the port's 8-bit store, as an imported record's)
         let own_a = rgb(0x660 + 0x30 * k).filter(|h| (0..3).any(|i| (h[i] - body_a[i]).abs() > 0.02)).map(|h| to_linear([(h[0] * 255.0).round() / 255.0, (h[1] * 255.0).round() / 255.0, (h[2] * 255.0).round() / 255.0]));
@@ -10610,7 +10629,7 @@ impl Game {
         let waiting = self.car_x.hangout_wait.clone();
         for key in waiting {
             let Some(r) = HANGOUT_RESTARTERS.iter().find(|r| r.0 == key) else { continue };
-            let d = ((p[0] - r.2[0]).powi(2) + (p[1] - r.2[1]).powi(2) + (p[2] - r.2[2]).powi(2)).sqrt();
+            let d = crate::brain::racer_distance_to_point(Some(glam::Vec3::from(p)), glam::Vec3::from(r.2));
             if d < r.3 {
                 self.car_x.hangout_wait.retain(|w| *w != key);
                 self.mc4_restart_setup(r.1, r.4);
@@ -16743,6 +16762,9 @@ mod tests {
             assert_eq!((g.career.state_id_of(k), g.career.log_order().contains(&k)), (3, true), "{call}");
             g.career.event(Ev::Race { district: "Hollywood", place: 1, hookman: true, class: "TUNER", race, beat_goal: false });
             g.career.core_race_end(call, 1, true, rep);
+            // (the REWARDS page gives the pending list - RACE_GH_02's hidden REP_ON_HW_STRIP,
+            // F-73125 - ahead of the race's reputation: `Game::rewards_ask`)
+            g.career.give_pending();
             g.rep = rep;
             g.career.event(Ev::Rep(rep));
         }
@@ -16837,6 +16859,51 @@ mod tests {
         let mut c = crate::career::Career::load(&data_dir());
         c.restore(&saved);
         assert!(c.mission_complete("BESTOF_GH_04") && c.mission_complete("REDLIGHT_GH_01"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GitHub #34: a story series' races as OrderedSeriesCore takes them - the array by mcRaceArray_AddRace (a name
+    /// the race table lacks left out), the first race the beat-me-there pick from the player, every later one and a
+    /// restart's FindNextRaceIndex (the first not run lately, else the oldest), not the script's order.
+    #[test]
+    fn story_series_races_as_the_original() {
+        let Some((mut g, dir, _)) = race_game("newgame_import.json", "i34b") else { return };
+        let mut s = g.career.save();
+        for id in ["BESTOF_GH_04", "BESTOF_SH_03"] {
+            let mut st = crate::career::MState::default();
+            st.stage = crate::career::Stage::Active;
+            s.missions.insert(id.to_string(), st);
+            s.order.push(id.to_string());
+        }
+        g.career.restore(&s);
+        // (BESTOF_SH_03's second name is `Ordered/_circuit_mb_04a`, in no race table: two races, 2 to win)
+        if let Some((names, _)) = g.career.series_mission("BESTOF_SH_03") {
+            let (arr, need) = g.story_series_array("BESTOF_SH_03").unwrap();
+            assert_eq!((names.len(), arr.len(), need), (3, 2, 2));
+        }
+        let (arr, _) = g.story_series_array("BESTOF_GH_04").unwrap();
+        assert_eq!(arr.len(), 3);
+        let table: Vec<usize> = arr.iter().map(|&i| g.mc4_race_index(&g.race_defs[i].id).unwrap()).collect();
+        // (the first: F-73402 over the array from the player, 400 m)
+        let (pos, fwd) = (glam::Vec3::new(824.3, 16.75, -791.7), glam::Vec3::new(0.0, 0.0, -1.0));
+        let first = g.story_series_first("BESTOF_GH_04", pos, fwd, 7).unwrap();
+        let want = g.mc4_bmt_race(&table, district_of_place(&data_dir(), pos).unwrap() as i32, pos, fwd, 400.0, 7).unwrap();
+        assert_eq!(g.mc4_table_race(want).unwrap().0, first);
+        g.man_diff = Some(2);
+        g.story_series_start(&("BESTOF_GH_04".to_string(), "NIKOLAI".to_string(), String::new(), String::new()), first);
+        assert!(g.story_series());
+        // (each race run joins the history; the next is the array's first not in it)
+        let mut run = vec![first];
+        g.mc4_race_started(first);
+        for _ in 0..2 {
+            let n = g.story_series_next().unwrap();
+            assert!(!run.contains(&n), "a race not run lately first");
+            assert_eq!(n, *arr.iter().find(|i| !run.contains(i)).unwrap());
+            run.push(n);
+            g.mc4_race_started(n);
+        }
+        // (all three run: the one run longest ago - the series goes on until a racer has his wins)
+        assert_eq!(g.story_series_next(), Some(run[0]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

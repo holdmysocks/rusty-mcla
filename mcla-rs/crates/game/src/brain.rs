@@ -634,6 +634,25 @@ impl Brain {
         b
     }
 
+    /// The payback's client once he runs (PaybackLegCore `game/0x3ae26fc8/0xb3f9732f` 0x986..0xb8e, START CHASE AI):
+    /// CreateBrainRacing, SetAllowNitro(0) (F-19364), AppendGoal(checkpoint, 25.0) for each checkpoint from his cruising
+    /// brain's destination on, wrapping to the first (`goals`, in that order), SetLooping(1) (F-78488), SetMaxSpeed(32.0)
+    /// (F-47189). No SetupRace or BeginRace: no course, no rubber band; the constructor's final speed -1 and heading 0.
+    pub fn payback(tune: Arc<AiTune>, goals: &[Vec3]) -> Brain {
+        let mut b = Brain::police(tune);
+        b.plan.goals.clear();
+        b.replan(0);
+        for g in goals {
+            b.plan.append(*g, 25.0);
+        }
+        b.final_speed = -1.0;
+        b.final_heading = Vec3::ZERO;
+        b.allow_nitro = false;
+        b.looping = true;
+        b.max_speed = 32.0;
+        b
+    }
+
     /// The police brain's goal plan (F-67303): BrainRacing Reset (F-68035; the goal count 0), AppendGoal (F-84673)
     /// for each goal with a 5 m radius, SetFinalSpeed (+208) and SetFinalHeading (the zero vector). The middle
     /// goal's speed (+28) is never written: the allocator's fill, below 0 (`GoalPlan::append`).
@@ -960,6 +979,28 @@ pub fn frame_due(acc: &mut f32, dt: f32) -> bool {
     true
 }
 
+/// Racer_DistanceBetween (F-51005): the distance of two racers' matrix positions, d = a - b,
+/// sqrt(dx dx + (dz dz + dy dy)) fused as the original; 100000 when either racer is missing.
+pub fn racer_distance(a: Option<Vec3>, b: Option<Vec3>) -> f32 {
+    let (Some(a), Some(b)) = (a, b) else { return 100000.0 };
+    racer_distance_to_point(Some(a), b)
+}
+
+/// Racer_DistanceToPoint (F-53914): racer `a` to point `p`, as `racer_distance`; 100000 without the racer.
+pub fn racer_distance_to_point(a: Option<Vec3>, p: Vec3) -> f32 {
+    let Some(a) = a else { return 100000.0 };
+    let d = a - p;
+    crate::physics::exact::fma(d.x, d.x, crate::physics::exact::fma(d.z, d.z, d.y * d.y)).sqrt()
+}
+
+/// Racer_AngleBetweenInDegrees (F-92161): v = b - a (vector unit), atan2(v.x, v.z) (the guest C runtime's, in double,
+/// rounded to single) x 57.29578; 180 when either racer is missing.
+pub fn racer_angle_deg(a: Option<Vec3>, b: Option<Vec3>) -> f32 {
+    let (Some(a), Some(b)) = (a, b) else { return 180.0 };
+    let v = b - a;
+    crate::physics::exact::guest_atan2(v.x as f64, v.z as f64) as f32 * f32::from_bits(0x4265_2ee0)
+}
+
 /// One frame of car `i`'s brain (vehicles.rs): its view of the car, the obstacles, the update, and
 /// what it does to the car besides the pedals (nitrous, the off-mesh drop). `to_go`: seconds to GO
 /// while the grid holds the racers.
@@ -1161,6 +1202,44 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Racer_DistanceBetween, Racer_DistanceToPoint and Racer_AngleBetweenInDegrees against the original's code run offline
+    /// (`work/racerai/rdist`: 6,000 position pairs at 3 scales, equal and vertical-only pairs, missing racers), word for word.
+    #[test]
+    fn racer_distance_natives_are_the_originals() {
+        let Ok(b) = std::fs::read("D:/MCLA/work/racerai/rdist/cases.bin") else { return };
+        let w = |r: &[u8], i: usize| u32::from_le_bytes(r[4 * i..4 * i + 4].try_into().unwrap());
+        let mut bad = 0;
+        for r in b.chunks_exact(44) {
+            let v = |i: usize| Vec3::new(f32::from_bits(w(r, i)), f32::from_bits(w(r, i + 1)), f32::from_bits(w(r, i + 2)));
+            let (a, p) = (v(0), v(3));
+            let (oa, ob) = (Some(a).filter(|_| w(r, 6) != 0), Some(p).filter(|_| w(r, 7) != 0));
+            let got = [racer_distance(oa, ob).to_bits(), racer_distance_to_point(oa, p).to_bits(), racer_angle_deg(oa, ob).to_bits()];
+            if got != [w(r, 8), w(r, 9), w(r, 10)] {
+                if bad < 5 {
+                    println!("a {a} b {p}: port {got:08x?} original {:08x} {:08x} {:08x}", w(r, 8), w(r, 9), w(r, 10));
+                }
+                bad += 1;
+            }
+        }
+        assert!(b.len() / 44 >= 6000 && bad == 0, "{bad} differ");
+    }
+
+    /// PaybackLegCore's START CHASE AI (0x986..0xb8e): goals radius 25 in the order given, no nitro, looping, 32 m/s cap,
+    /// final speed -1 and heading 0. Returns at once without the tune fixture.
+    #[test]
+    fn payback_brain_as_the_script_sets_it() {
+        let Ok(tb) = std::fs::read("D:/MCLA/work/ai-record/fixture/aivtune_r8.bin") else { return };
+        let floats: Vec<f32> = tb.chunks_exact(4).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let tune = Arc::new(AiTune::from_floats(&floats).unwrap());
+        let goals: Vec<Vec3> = (0..4).map(|k| Vec3::new(k as f32 * 50.0, 0.0, 10.0)).collect();
+        let b = Brain::payback(tune, &goals);
+        assert_eq!(b.plan.goals.len(), 4);
+        for (g, want) in b.plan.goals.iter().zip(&goals) {
+            assert_eq!((g.centre(), g.w), (*want, 25.0));
+        }
+        assert!(!b.allow_nitro && b.looping && b.max_speed == 32.0 && b.final_speed == -1.0 && b.final_heading == Vec3::ZERO);
+    }
 
     /// hw_ordered_jp_11's alt paths (work/racerai/altpaths.md): two ways through checkpoint 10 (the
     /// second a shortcut that skips it), and one finishing route per opponent after the last checkpoint.

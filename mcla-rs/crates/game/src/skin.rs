@@ -72,6 +72,8 @@ pub mod fx {
 #[derive(Clone, Copy, Default)]
 pub struct CharMat {
     pub fx: u32,
+    /// Character / Character_normalmap: skinned, drawn by VSSkinned_Wind (the others' VSSkinned has no wind)
+    pub wind: bool,
     pub double: bool,
     pub ambient_mod: f32,
     pub k: [[f32; 4]; 6],
@@ -83,7 +85,8 @@ impl CharMat {
         use mcla_formats::rage::drawable::ShaderParam;
         let n = sh.name.to_ascii_lowercase();
         let nm = n.ends_with("_normalmap") || n.contains("_normalmap_");
-        let fx = match n.trim_end_matches("_doublesided").trim_end_matches("_normalmap") {
+        let base = n.trim_end_matches("_doublesided").trim_end_matches("_normalmap");
+        let fx = match base {
             _ if n == "ped" => fx::PED,
             "character" | "character_skin" | "character_skin_blendshape" => if nm && has_normal { fx::NM } else { fx::PLAIN },
             "character_alpha" => if nm && has_normal { fx::ALPHA_NM } else { fx::ALPHA },
@@ -107,6 +110,7 @@ impl CharMat {
         });
         CharMat {
             fx,
+            wind: base == "character",
             double: n.ends_with("_doublesided"),
             ambient_mod: f("ambientMod"),
             k: [
@@ -121,6 +125,30 @@ impl CharMat {
     }
 }
 
+/// VSSkinned_Wind's bend of one skinned vertex (character_programs_rule.md section 3): with the plane P and the params W,
+/// sp the position in the draw's object space (here the world's less `at`, the place of its translation-only gWorld),
+/// d = sp . P.xyz - P.w, ph_k = d x (30, 60, 90, 15)_k + W.x x 25 wrapped to -pi..pi, nn = norm(skinned normal),
+/// a = (1 - sat(nn . P.xyz)) x W.y x the vertex colour's r: the position gains nn x a x sum sin(ph_k) (0.005, 0.0025,
+/// 0.00125, 0.01)_k, the normal becomes norm(nn + P.xyz x a x sum cos(ph_k) (0.06, 0.03, 0.015, 0.12)_k). The program
+/// works in its own sine / cosine; here the host's (single precision).
+pub fn wind_bend(pos: Vec3, nrm: Vec3, r: u8, eq: [f32; 4], wp: [f32; 2], at: Vec3) -> (Vec3, Vec3) {
+    const K: [f32; 4] = [30.0, 60.0, 90.0, 15.0];
+    const S: [f32; 4] = [0.005, 0.0025, 0.00125, 0.01];
+    const C: [f32; 4] = [0.06, 0.03, 0.015, 0.12];
+    let pl = Vec3::new(eq[0], eq[1], eq[2]);
+    let d = (pos - at).dot(pl) - eq[3];
+    let nn = nrm.normalize_or(Vec3::Y);
+    let a = (1.0 - nn.dot(pl).clamp(0.0, 1.0)) * wp[1] * (r as f32 / 255.0);
+    let (mut s, mut c) = (0.0f32, 0.0f32);
+    for k in 0..4 {
+        let ph = d * K[k] + wp[0] * 25.0;
+        let ph = ph - (ph / std::f32::consts::TAU).round() * std::f32::consts::TAU;
+        s += ph.sin() * S[k];
+        c += ph.cos() * C[k];
+    }
+    (pos + nn * (a * s), (nn + pl * (a * c)).normalize_or(nn))
+}
+
 /// What the story scenes' characters are lit by this frame: the light manager's state (main.rs
 /// `lighting`) - the direction towards the sun (mgr + 32 negated), its colour (mgr + 64) and
 /// strength (mgr + 80), the scene's ambient (mgr + 224); night: hour > 18 or < 6 (F-47292).
@@ -131,11 +159,13 @@ pub struct CharLight {
     pub strength: f32,
     pub amb: Vec3,
     pub night: bool,
-    /// at night the lights of path A's night branch (`night_slots`) instead of the day's - the drivers and riders;
-    /// the scenes' characters keep the day's (not ported for them)
+    /// at night the lights of path A's night branch (`night_slots`) instead of the day's - the drivers, the riders
+    /// and the scenes' cast
     pub night_path: bool,
     /// the light manager's dynamic list at night (the player's head lamps, the key light, the fourth record)
     pub dynamic: Option<crate::figlight::Dynamic>,
+    /// the cine probe (F-22850: a scene plays): at night the cutscene light list comes before the lamp grid
+    pub cine: bool,
 }
 
 /// Path A at night (F-75930 with four = 0): the three slots when nothing lights the figure - place 0, colour 0,
@@ -151,7 +181,8 @@ impl CharLight {
     /// colour, strength = its score, range 1000 (a missing one empty). Then the dynamic list in order - the
     /// head lamps and the fourth record by their score, the key light by the luminance of its colour - takes
     /// slot 2 when it beats lum(slot 2's colour) x slot 2's strength: its place (the key light 100 km from the origin), its
-    /// colour, strength = that score, range 1e6.
+    /// colour, strength = that score, range 1e6. With the cine probe the candidates are the cutscene light list's
+    /// best four (`cutlights::best`) and the grid only when none of them scores.
     pub fn night_slots(&self, p: Vec3, t: Option<&crate::render::LampTables>) -> [[f32; 4]; 6] {
         use crate::render::{LampRec, LAMP_GRID};
         let mut cand: Vec<u16> = Vec::new();
@@ -173,9 +204,16 @@ impl CharLight {
             }
         }
         let rec = |i: u16| t.and_then(|t| t.recs.get(i as usize)).copied().unwrap_or_default();
-        let mut scored: Vec<(f32, LampRec)> = cand.iter().map(|&i| (crate::figlight::score(&rec(i), p), rec(i))).collect();
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-        scored.truncate(4);
+        // (with the cine probe the cutscene list's best four above 1e-6 - F-65001; none: the grid as without it)
+        let cut = if self.cine { crate::cutlights::LIST.get().map(|l| crate::cutlights::best(l, p)).unwrap_or_default() } else { Vec::new() };
+        let scored = if !cut.is_empty() {
+            cut
+        } else {
+            let mut scored: Vec<(f32, LampRec)> = cand.iter().map(|&i| (crate::figlight::score(&rec(i), p), rec(i))).collect();
+            scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+            scored.truncate(4);
+            scored
+        };
         let mut slots = [NIGHT_EMPTY; 3];
         if scored.iter().map(|s| s.0).sum::<f32>() > 0.0 {
             for (k, (s, l)) in scored.iter().take(3).enumerate() {
@@ -676,12 +714,16 @@ impl SkinBuffer {
         let parts = if std::mem::take(&mut self.next_cockpit) && !model.cockpit.is_empty() { &model.cockpit } else { &model.lods[first] };
         let chars = self.char_light.is_some();
         let cfig = self.figs.len();
+        let cabin = self.next_cabin.take();
         if chars {
             // (the lights' origin: the model's place, gWorld row 3 - here the root bone's, which carries
             // the scene position (cine.rs); x / z within 3 cm of the recorded draws, y up to 0.4 m higher)
             let at = if self.light_at_root { root.w_axis } else { self.world.first().map_or(root.w_axis, |w| w.w_axis) };
-            self.figs.push((at.truncate(), std::mem::take(&mut self.next_bystander), self.next_cabin.take()));
+            self.figs.push((at.truncate(), std::mem::take(&mut self.next_bystander), cabin));
         }
+        // (a driver's wind: windEmitterPlaneEq, windParams and the draw's place - its gWorld is a translation alone, so
+        // the program's object space is the world's less that place; MCLA_DRV_WIND_OLD=1: none)
+        let wind = cabin.filter(|c| c.wind[1] != 0.0 && std::env::var("MCLA_DRV_WIND_OLD").is_err()).map(|c| (c.wind_eq, c.wind, root.w_axis.truncate()));
         // (the night fill light at the figure's place - fillmap.rs: the figures share one buffer
         // and the identity object, so the colour rides in every vertex: color1.rgb = four times
         // map / 255 x 0.25 x m_NFLFade, uv1.y = 77 the mark city.wgsl knows a figure by)
@@ -708,6 +750,11 @@ impl SkinBuffer {
                         nrm += m.transform_vector3(v.nrm) * v.w[k];
                         tan += m.transform_vector3(t) * v.w[k];
                     }
+                }
+                if let (true, Some((eq, wp, at))) = (chars && part.mat.wind, wind) {
+                    let (p2, n2) = wind_bend(pos, nrm, v.col[0], eq, wp, at);
+                    pos = p2;
+                    nrm = n2;
                 }
                 if chars {
                     // (the character programs: the skinned tangent - normalised after the world
@@ -927,6 +974,7 @@ mod tests {
             night: false,
             night_path: false,
             dynamic: None,
+            cine: false,
         };
         let want = [
             [-268.15, 64.034, -747.02, 1000.0],

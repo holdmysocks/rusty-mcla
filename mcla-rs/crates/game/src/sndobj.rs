@@ -49,7 +49,8 @@ pub struct Req {
     pub doppler: f32,
     /// one of the player vehicle's sounds (the mixer's time-slow applies)
     pub player: bool,
-    /// start offset (P+36): milliseconds, or percent of each wave's duration when `start_pct` (P+70 bit 0x40)
+    /// start offset (P+36): milliseconds, or, when `start_pct` is set (P+70 bit 0x40), percent of the root sound's duration
+    /// (F-90115)
     pub start_ms: f32,
     pub start_pct: f32,
     /// low-pass and high-pass cutoffs in Hz (entry+88 / +90; 23900 and 0 = open)
@@ -81,6 +82,10 @@ impl Req {
     pub fn pitch(mut self, cents: i32) -> Req {
         self.pitch = cents;
         self
+    }
+    /// the root sound's parent offset (+108 = P+36, the percent flag from P+70; F-99744)
+    fn offset(&self) -> (u32, bool) {
+        if self.start_pct > 0.0 { (self.start_pct as u32, true) } else { (self.start_ms as u32, false) }
     }
 }
 
@@ -172,8 +177,6 @@ struct Ctx {
     mask: u8,
     /// tristate 1 (positional) as inherited: 0 off, 1 on, 2 unset
     positional: u8,
-    /// the request's start offset in percent of the wave
-    start_pct: f32,
     /// the chain's filters (F-63029): LPF the minimum, HPF the maximum down the tree, Hz
     lpf: u16,
     hpf: u16,
@@ -191,8 +194,11 @@ enum Kind {
     Stream { clip: Option<Arc<Clip>>, headroom: f32, voice: u64, pos_ms: f32, dur_ms: f32, looping: bool },
     /// Wrapper, Multitrack, Streaming fallback, OnStop's child, approximations
     Group { children: Vec<Node> },
-    Looping { child: Box<Node>, child_hash: u32, count: i16, restart_ms: u16, plays: i32 },
-    Sequential { list: Vec<u32>, at: usize, cur: Option<Box<Node>> },
+    /// `child_off`: the parent offset the child is played with (the start split of F-39812, or the restart offset)
+    Looping { child: Box<Node>, child_hash: u32, count: i16, restart_ms: u16, plays: i32, child_off: Option<u32> },
+    /// `ahead`: the children made at Init (all of them unless on demand, F-75822), in order; on demand (more than 8, or
+    /// tristate 5) each is made when it is reached from `list[at]`. `cur_off`: the parent offset of the current child
+    Sequential { list: Vec<u32>, at: usize, cur: Option<Box<Node>>, ahead: std::collections::VecDeque<Node>, on_demand: bool, cur_off: u32 },
     Retrig { child_hash: u32, count: i16, delay_ms: f32, next_ms: f32, made: i32, live: Vec<Node> },
     Envelope { a: f32, d: f32, s: f32, hold: f32, r: f32, curves: [u32; 3], child: Box<Node>, rel_from: Option<f32> },
     OnStop { child: Box<Node>, on_stop: u32, stopped: Option<Box<Node>> },
@@ -215,6 +221,10 @@ struct Node {
     wait: Option<(f32, f32, f32)>,
     /// release: (start, end) in `t` ms
     release: Option<(f32, f32)>,
+    /// the total predelay and start offset of the node's play (+80 / +84, F-90115; 0 until it plays)
+    tot: (u32, u32),
+    /// Streaming: its type duration (+200 when set, else the bank's longest wave, else -1; F-96939)
+    ty_ms: i32,
     kind: Kind,
 }
 
@@ -249,7 +259,8 @@ pub struct SoundLib {
     mod_banks: HashMap<u32, PathBuf>,
     waves: HashMap<u32, Arc<HashMap<u32, WaveInfo>>>,
     /// stream channel hash -> (converted .mp3, the stream's lowest channel headroom)
-    stream_of: Option<HashMap<u32, (PathBuf, i16)>>,
+    /// a stream channel: its file, headroom and its bank's longest wave in whole ms (F-46175)
+    stream_of: Option<HashMap<u32, (PathBuf, i16, i32)>>,
     /// (with the count of `clip_of` at its last use)
     clips: HashMap<PathBuf, (Option<Arc<Clip>>, u64)>,
     clip_uses: u64,
@@ -264,6 +275,8 @@ pub struct SoundLib {
     insts: Vec<Instance>,
     next: u64,
     next_voice: u64,
+    /// each wave voice's slot state for the voice manager (1 playing, 2 stopping; waiting when absent)
+    voice_state: HashMap<u64, u8>,
     pub listener: (Vec3, Vec3, Vec3),
     /// the reverb level and room size (env +5100 / +5104, set every frame by the probes of F-26357 -
     /// BUS_GRAPH_RULE.md 2.5)
@@ -396,6 +409,7 @@ impl SoundLib {
             insts: Vec::new(),
             next: 1,
             next_voice: 0,
+            voice_state: HashMap::new(),
             listener: (Vec3::ZERO, Vec3::X, Vec3::NEG_Z),
             cat_dat: cat,
             sliders: Default::default(),
@@ -794,10 +808,10 @@ impl SoundLib {
         self.stream_index();
     }
 
-    fn stream_index(&mut self) -> &HashMap<u32, (PathBuf, i16)> {
+    fn stream_index(&mut self) -> &HashMap<u32, (PathBuf, i16, i32)> {
         if self.stream_of.is_none() {
             let mut m = HashMap::new();
-            fn walk(dir: &Path, m: &mut HashMap<u32, (PathBuf, i16)>) {
+            fn walk(dir: &Path, m: &mut HashMap<u32, (PathBuf, i16, i32)>) {
                 let Ok(rd) = std::fs::read_dir(dir) else { return };
                 for e in rd.flatten() {
                     let p = e.path();
@@ -805,13 +819,20 @@ impl SoundLib {
                         walk(&p, m);
                     } else if let Some(mp3) = p.to_str().and_then(|s| s.strip_suffix(".txt")).filter(|s| s.ends_with(".mp3")) {
                         let Ok(t) = std::fs::read_to_string(&p) else { continue };
-                        let rows: Vec<(u32, i16)> = t.lines().filter_map(|l| {
+                        let rows: Vec<(u32, i16, i32)> = t.lines().filter_map(|l| {
                             let c: Vec<&str> = l.split('\t').collect();
-                            Some((u32::from_str_radix(c.get(1)?, 16).ok()?, c.get(5).and_then(|v| v.parse().ok()).unwrap_or(0)))
+                            let n = |k: usize| c.get(k).and_then(|v| v.parse::<u32>().ok());
+                            let ms = match (n(3), n(4)) {
+                                (Some(s), Some(r)) if r > 0 => wave_ms(s, r) as i32,
+                                _ => -1,
+                            };
+                            Some((u32::from_str_radix(c.get(1)?, 16).ok()?, c.get(5).and_then(|v| v.parse().ok()).unwrap_or(0), ms))
                         }).collect();
                         let h0 = rows.iter().map(|r| r.1).min().unwrap_or(0);
-                        for (h, _) in rows {
-                            m.insert(h, (PathBuf::from(mp3), h0));
+                        // the bank's longest wave (F-46175: the maximum, from -1, of each entry's whole ms)
+                        let longest = rows.iter().map(|r| r.2).fold(-1, i32::max);
+                        for (h, _, _) in rows {
+                            m.insert(h, (PathBuf::from(mp3), h0, longest));
                         }
                     }
                 }
@@ -879,6 +900,7 @@ impl SoundLib {
         let pan = if h.pan == -1 { -1 } else { ((h.pan as i32 + self.rng.int(-(h.pan_var as i32), h.pan_var as i32) + 360).rem_euclid(360)) as i16 };
         let predelay_ms = (h.predelay as i32 + self.rng.int(-(h.predelay_var as i32), h.predelay_var as i32)).max(0) as f32;
         let start_ms = (h.start_offset as i64 + self.rng.int(-(h.start_offset_var.min(i32::MAX as u32) as i32), h.start_offset_var.min(i32::MAX as u32) as i32) as i64).max(0) as f32;
+        let mut ty_ms = 0;
         let kind = match s.payload {
             Payload::Simple { bank, wave } => {
                 let w = self.bank_waves(bank).and_then(|m| m.get(&wave).cloned());
@@ -886,7 +908,7 @@ impl SoundLib {
                     let clip = self.clip_of(&w.file.clone(), w.loop_start);
                     let dur_ms = w.dur_ms.filter(|_| clip.is_some()).or_else(|| clip.as_ref().map(|c| c.frames() as f32 * 1000.0 / c.rate as f32)).unwrap_or(0.0);
                     Kind::Wave { looping: w.loop_start >= 0, wave: Some(w), clip, voice: self.voice_id(), pos_ms: 0.0, dur_ms }
-                } else if let Some((mp3, h0)) = self.stream_index().get(&wave).cloned() {
+                } else if let Some((mp3, h0, _)) = self.stream_index().get(&wave).cloned() {
                     // a stream channel: the converted file holds every channel folded to stereo
                     let clip = self.clip_of(&mp3, -1);
                     let dur_ms = clip.as_ref().map(|c| c.frames() as f32 * 1000.0 / c.rate as f32).unwrap_or(0.0);
@@ -895,11 +917,18 @@ impl SoundLib {
                     Kind::Wave { wave: None, clip: None, voice: 0, pos_ms: 0.0, dur_ms: 0.0, looping: false }
                 }
             }
-            Payload::Streaming { children, .. } => {
+            Payload::Streaming { duration_ms, children } => {
                 // all channels are in one folded file: play the first channel's stream once
                 let looped = h.tristate(6) == 1;
-                match children.iter().find_map(|&c| self.make(c, depth + 1)) {
-                    Some(mut n) => {
+                match children.iter().find_map(|&c| self.make(c, depth + 1).map(|n| (c, n))) {
+                    Some((c, mut n)) => {
+                        // the type duration (F-96939): the authored one, else the loaded bank's longest wave (F-46175)
+                        let loaded = matches!(&n.kind, Kind::Stream { clip: Some(_), .. });
+                        let longest = match self.snd.get(c).map(|o| audcfg::parse_sound(o).payload) {
+                            Some(Payload::Simple { wave, .. }) => self.stream_index().get(&wave).map(|e| e.2),
+                            _ => None,
+                        };
+                        ty_ms = stream_ms(duration_ms, longest.filter(|_| loaded));
                         if let Kind::Stream { looping, .. } = &mut n.kind {
                             *looping = looped;
                         }
@@ -919,10 +948,35 @@ impl SoundLib {
                 Kind::Group { children: pick.and_then(|c| self.make(c, depth + 1)).into_iter().collect() }
             }
             Payload::Looping { count, restart_ms, child } => match self.make(child, depth + 1) {
-                Some(c) => Kind::Looping { child: Box::new(c), child_hash: child, count, restart_ms, plays: 0 },
+                Some(c) => Kind::Looping { child: Box::new(c), child_hash: child, count, restart_ms, plays: 0, child_off: None },
                 None => Kind::Empty,
             },
-            Payload::Sequential { children } => Kind::Sequential { list: children, at: 0, cur: None },
+            Payload::Sequential { children } => {
+                // F-75822: on demand when it has more than 8 children or tristate 5 is on; otherwise every child is made
+                // now, in order, and one that cannot be made fails the sound
+                let on_demand = children.len() > 8 || h.tristate(5) == 1;
+                if on_demand {
+                    Kind::Sequential { list: children, at: 0, cur: None, ahead: Default::default(), on_demand, cur_off: 0 }
+                } else {
+                    let mut ahead = std::collections::VecDeque::new();
+                    let mut ok = true;
+                    for &c in &children {
+                        match self.make(c, depth + 1) {
+                            Some(n) => ahead.push_back(n),
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if ok {
+                        let at = children.len();
+                        Kind::Sequential { list: children, at, cur: None, ahead, on_demand, cur_off: 0 }
+                    } else {
+                        Kind::Empty
+                    }
+                }
+            }
             Payload::Retriggered { count, delay_ms, child } => Kind::Retrig { child_hash: child, count, delay_ms: delay_ms as f32, next_ms: 0.0, made: 0, live: Vec::new() },
             Payload::Envelope { attack, decay, sustain, hold, release, curves, child } => match self.make(child, depth + 1) {
                 Some(c) => Kind::Envelope { a: attack as f32, d: decay as f32, s: sustain as f32 * 0.01, hold: hold as f32, r: release as f32, curves, child: Box::new(c), rel_from: None },
@@ -934,7 +988,7 @@ impl SoundLib {
             },
             Payload::Speech | Payload::Other(_) => Kind::Empty,
         };
-        Some(Node { h, vol, pitch, pan, predelay_ms, start_ms, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, kind })
+        Some(Node { h, vol, pitch, pan, predelay_ms, start_ms, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, tot: (0, 0), ty_ms, kind })
     }
 
     fn voice_id(&mut self) -> u64 {
@@ -1023,7 +1077,7 @@ impl SoundLib {
         let (vol, pitch) = (h.volume as f32 * 0.01, h.pitch as i32);
         let dur_ms = clip.frames() as f32 * 1000.0 / clip.rate as f32;
         let voice = self.voice_id();
-        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
+        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, tot: (0, 0), ty_ms: 0, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
@@ -1105,6 +1159,11 @@ impl SoundLib {
         self.insts.iter().any(|i| i.id == h.0)
     }
 
+    /// A playing sound's Duration in ms (F-53189 on its root through F-73664; -1 unknown or endless).
+    pub fn duration_ms(&self, h: Handle) -> i32 {
+        self.insts.iter().find(|i| i.id == h.0).map_or(-1, |i| dur_total(&i.root).0)
+    }
+
     pub fn count(&self) -> usize {
         self.insts.len()
     }
@@ -1140,9 +1199,9 @@ impl SoundLib {
             inst.stop = false;
             stop_node(&mut inst.root, inst.stop_ms);
         }
-        let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, start_pct: inst.req.start_pct, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
+        let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
         let mut out = Vec::new();
-        self.step(&mut inst.root, dt * 1000.0, ctx, inst.req.start_ms, &mut out);
+        self.step(&mut inst.root, dt * 1000.0, ctx, inst.req.offset(), &mut out);
         if inst.root.st != St::Done {
             self.insts.insert(at, inst);
         }
@@ -1163,12 +1222,19 @@ impl SoundLib {
         let ms = dt * 1000.0;
         let mut insts = std::mem::take(&mut self.insts);
         let (lp, lr, lf) = self.listener;
+        let mut drives = Vec::new();
+        let mut states = HashMap::new();
         for inst in insts.iter_mut() {
             // a sound on a paused timer is not updated (F-89113): its voices hold where they are, silent, and go on from
             // there when the timer runs again
             if inst.timer.is_some_and(|t| self.timer_paused[t as usize]) {
                 let slowed = if inst.req.player { SLOWED } else { 0 };
-                hold_voices(&inst.root, &mut |v| audio.hold(v | slowed));
+                hold_voices(&inst.root, &mut |v| {
+                    audio.hold(v | slowed);
+                    if let Some(s) = self.voice_state.get(&(v | slowed)) {
+                        states.insert(v | slowed, *s);
+                    }
+                });
                 continue;
             }
             // Doppler (F-42745): radial speed from the distance change, ratio c / (c + v), smoothed 50/50
@@ -1186,13 +1252,46 @@ impl SoundLib {
                 inst.stop = false;
                 stop_node(&mut inst.root, inst.stop_ms);
             }
-            let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, start_pct: inst.req.start_pct, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
+            let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
             let mut out = Vec::new();
-            self.step(&mut inst.root, ms, ctx, inst.req.start_ms, &mut out);
+            self.step(&mut inst.root, ms, ctx, inst.req.offset(), &mut out);
             for v in out {
-                self.emit(v, inst, (lp, lr, lf), audio);
+                drives.push(self.emit(v, inst, (lp, lr, lf)));
             }
         }
+        // the voice manager (F-46122): the waves ranked by their levels, 96 a bucket; the first 76 (the config's 96 voices
+        // less 20, F-68447 / F-11111) are heard: a waiting one starts while physical voices are free, past them the
+        // playing ones stop. A wave not playing goes on (its position runs) and starts from there when picked again.
+        let slots: Vec<VoiceSlot> = drives
+            .iter()
+            .map(|d| VoiceSlot { active: true, ended: false, state: self.voice_state.get(&d.id).copied().unwrap_or(0), group: 0, flags: d.flags, h: d.h })
+            .collect();
+        let banks: Vec<&[VoiceSlot]> = slots.chunks(96).collect();
+        let picked = rank_pick(&banks, 76, 96u32.saturating_sub(audio.voices() as u32));
+        let at = |id: u16| (id >> 8) as usize * 96 + (id & 0xff) as usize;
+        let mut go = vec![false; drives.len()];
+        for &id in &picked.start {
+            go[at(id)] = true;
+        }
+        let mut halt = vec![false; drives.len()];
+        for &id in &picked.stop {
+            halt[at(id)] = true;
+        }
+        for (k, d) in drives.into_iter().enumerate() {
+            match (slots[k].state, go[k], halt[k]) {
+                // a stopped voice waits again once its physical voice has stopped (F-44224: the next update)
+                (2, ..) => {}
+                (1, _, true) => {
+                    states.insert(d.id, 2);
+                }
+                (1, ..) | (0, true, _) => {
+                    states.insert(d.id, 1);
+                    audio.drive(d.id, &d.clip, d.mix, d.ratio, d.looping, d.start, d.filt);
+                }
+                _ => {}
+            }
+        }
+        self.voice_state = states;
         insts.retain(|i| i.root.st != St::Done);
         // sounds started while updating (none today) stay
         insts.append(&mut self.insts);
@@ -1200,7 +1299,9 @@ impl SoundLib {
     }
 
     /// One node: timing, its type's rule, the settings handed down; playing waves are collected in `out`.
-    fn step(&mut self, n: &mut Node, ms: f32, parent: Ctx, parent_offset: f32, out: &mut Vec<Leaf>) {
+    /// `po`: the parent offset the node is played with and whether it is in percent (+108 and +57 bit 0x08): the parent's
+    /// start offset, or the request's.
+    fn step(&mut self, n: &mut Node, ms: f32, parent: Ctx, po: (u32, bool), out: &mut Vec<Leaf>) {
         if n.st == St::Done {
             return;
         }
@@ -1209,10 +1310,12 @@ impl SoundLib {
             // predelay and start offset (F-90115): the parent's elapsed offset first eats the predelay - worked out
             // once, when the sound is played (the wait then runs on the sound's own clock; recorded: SST_ENV_TAIL's 250 ms
             // predelay under SST_MULTI starts its envelope 250 ms after the burn's start, work/slipstream/audiorec)
-            let (pd, so, _) = *n.wait.get_or_insert_with(|| {
-                let (pd, so) = if parent_offset >= n.predelay_ms { (0.0, parent_offset - n.predelay_ms + n.start_ms) } else { (n.predelay_ms - parent_offset, n.start_ms) };
-                (pd, so, n.predelay_ms - parent_offset)
-            });
+            if n.wait.is_none() {
+                let (pd, so) = play_offsets(n, po);
+                n.tot = (pd, so);
+                n.wait = Some((pd as f32, so as f32, n.predelay_ms - po.0 as f32));
+            }
+            let (pd, so, _) = n.wait.unwrap();
             if n.t < pd {
                 return;
             }
@@ -1257,17 +1360,17 @@ impl SoundLib {
                 2 => parent.positional,
                 v => v,
             },
-            start_pct: parent.start_pct,
             lpf: parent.lpf,
             hpf: parent.hpf,
         };
         let offset = n.play_t;
+        // what the node's children are played with: its start offset (+84, F-90115)
+        let child_po = (n.tot.1, false);
         let releasing = n.release.is_some();
         let done = match &mut n.kind {
             Kind::Wave { clip, wave, voice, pos_ms, dur_ms, looping } => {
                 let Some(c) = clip.clone() else { n.st = St::Done; return };
                 if *pos_ms == 0.0 {
-                    let offset = offset + *dur_ms * ctx.start_pct * 0.01;
                     *pos_ms = if *looping { offset % dur_ms.max(1.0) } else { offset };
                 }
                 if !*looping && *pos_ms >= *dur_ms {
@@ -1300,7 +1403,7 @@ impl SoundLib {
             }
             Kind::Group { children } => {
                 for c in children.iter_mut() {
-                    self.step(c, ms, ctx, offset, out);
+                    self.step(c, ms, ctx, child_po, out);
                 }
                 // Multitrack with tristate 5: one finished child stops the others
                 if n.h.tristate(5) == 1 && n.h.kind == 13 && children.iter().any(|c| c.st == St::Done) {
@@ -1308,29 +1411,53 @@ impl SoundLib {
                 }
                 children.iter().all(|c| c.st == St::Done)
             }
-            Kind::Looping { child, child_hash, count, restart_ms, plays } => {
-                self.step(child, ms, ctx, offset, out);
-                if child.st == St::Done {
-                    *plays += 1;
-                    if *count != -1 && *plays >= *count as i32 {
-                        true
-                    } else {
-                        // made again from its reference and played from the restart offset (F-87646)
-                        let restart = *restart_ms as f32;
-                        match self.make(*child_hash, 1) {
-                            Some(c) => **child = c,
-                            None => reset_node(child),
+            Kind::Looping { child, child_hash, count, restart_ms, plays, child_off } => {
+                // played (F-39812): with a count, the start offset is split by the child's duration into the plays done
+                // and the offset into the next one (no split for an endless loop, an unknown or endless child)
+                let off = *child_off.get_or_insert_with(|| {
+                    let (p, off) = looping_split(*count, child, child_po.0);
+                    if let Some(p) = p {
+                        *plays = p;
+                    }
+                    off
+                });
+                // a child still dead at the update is a remake that made nothing: it is not stepped
+                let r = (child.st != St::Done).then(|| {
+                    self.step(child, ms, ctx, (off, false), out);
+                    child.st != St::Done
+                });
+                match looping_update(r, *count, plays) {
+                    LoopStep::Done => true,
+                    LoopStep::Run => false,
+                    LoopStep::Remake => {
+                        // made again from its reference (deferred to after the tree update, F-70509 / F-21229, so it
+                        // first runs in the next update as here) and played with the restart offset as its parent
+                        // offset (F-87646); none made leaves the dead child, and the Looping ends in the next update
+                        if let Some(c) = self.make(*child_hash, 1) {
+                            **child = c;
                         }
-                        child.start_ms = restart;
+                        *child_off = Some(*restart_ms as u32);
                         false
                     }
-                } else {
-                    false
                 }
             }
-            Kind::Sequential { list, at, cur } => {
+            Kind::Sequential { list, at, cur, ahead, on_demand, cur_off } => 'seq: {
+                if !*on_demand && cur.is_none() && ahead.len() == list.len() {
+                    // played (F-66779): the child that holds the start offset plays from the offset into it; the ones
+                    // before it are dropped, and nothing plays when the offset is past the end (F-71973)
+                    let Some((i, off)) = seq_start(ahead, child_po.0) else { break 'seq true };
+                    ahead.drain(..i);
+                    *cur = ahead.pop_front().map(Box::new);
+                    *cur_off = off;
+                }
                 loop {
                     if cur.is_none() {
+                        // the next child is played without a parent offset (F-35671)
+                        *cur_off = 0;
+                        if let Some(c) = ahead.pop_front() {
+                            *cur = Some(Box::new(c));
+                            continue;
+                        }
                         if *at >= list.len() {
                             break;
                         }
@@ -1340,14 +1467,14 @@ impl SoundLib {
                         continue;
                     }
                     let c = cur.as_mut().unwrap();
-                    self.step(c, ms, ctx, 0.0, out);
+                    self.step(c, ms, ctx, (*cur_off, false), out);
                     if c.st == St::Done {
                         *cur = None;
                         continue;
                     }
                     break;
                 }
-                cur.is_none() && *at >= list.len()
+                cur.is_none() && ahead.is_empty() && *at >= list.len()
             }
             Kind::Retrig { child_hash, count, delay_ms, next_ms, made, live } => {
                 while offset >= *next_ms && (*count == -1 || *made < *count as i32) {
@@ -1358,7 +1485,7 @@ impl SoundLib {
                     *next_ms += delay_ms.max(1.0);
                 }
                 for c in live.iter_mut() {
-                    self.step(c, ms, ctx, 0.0, out);
+                    self.step(c, ms, ctx, (0, false), out);
                 }
                 live.retain(|c| c.st != St::Done);
                 live.is_empty() && *count != -1 && *made >= *count as i32
@@ -1392,16 +1519,16 @@ impl SoundLib {
                 };
                 let mut c2 = ctx;
                 c2.vol += lin2db(att * dec * rel);
-                self.step(child, ms, c2, offset, out);
+                self.step(child, ms, c2, child_po, out);
                 child.st == St::Done || (rel_from.is_some() && rel <= 0.0)
             }
             Kind::OnStop { child, on_stop, stopped } => {
                 if n.release.is_some() && stopped.is_none() {
                     *stopped = self.make(*on_stop, 1).map(Box::new);
                 }
-                self.step(child, ms, ctx, offset, out);
+                self.step(child, ms, ctx, child_po, out);
                 if let Some(s) = stopped {
-                    self.step(s, ms, ctx, 0.0, out);
+                    self.step(s, ms, ctx, (0, false), out);
                     s.st == St::Done
                 } else {
                     child.st == St::Done
@@ -1416,7 +1543,7 @@ impl SoundLib {
 
     /// A playing wave to the mixer: the voice's gain chain (F-24161), the pan law (F-56973 / F-67363),
     /// pitch and Doppler.
-    fn emit(&mut self, v: Leaf, inst: &Instance, listener: (Vec3, Vec3, Vec3), audio: &mut Audio) {
+    fn emit(&mut self, v: Leaf, inst: &Instance, listener: (Vec3, Vec3, Vec3)) -> Drive {
         let cat = self.cats.get(&v.ctx.category).copied().unwrap_or(Category { volume: 0.0, pitch: 0, lpf: 23900, hpf: 0, rolloff_scale: 1.0, reverb_amount: 1.0, reverb_dist: 1.0 });
         let (lp, lr, lf) = listener;
         let k = std::f32::consts::FRAC_1_SQRT_2;
@@ -1493,8 +1620,27 @@ impl SoundLib {
             send: if inst.req.chain != 0 { inst.req.fx_send * db2lin(a) } else { 0.0 },
             pans_chain: (inst.req.chain != 0 && inst.req.pans_chain).then_some(((lb * gl, lb * gr), rev_b)),
         };
-        audio.drive(v.voice | if inst.req.player { SLOWED } else { 0 }, &v.clip, mix, ratio, v.looping, v.start_frame, filt);
+        // the record's levels as the voice manager ranks them (F-24161): +26 = dB2lin(B), +28 / +30 = entry +72 / +76 x
+        // dB2lin(A), +32 = dB2lin(C) with C the request's volume (here in the chain's top, so taken out of A); flag 0x80 =
+        // entry +95 bit 2
+        let la = db2lin(a - inst.req.volume);
+        let h = [level_half(lb), level_half(inst.req.fx_send * la), level_half(inst.req.dry * la), level_half(db2lin(inst.req.volume))];
+        let id = v.voice | if inst.req.player { SLOWED } else { 0 };
+        Drive { id, clip: v.clip, mix, ratio, looping: v.looping, start: v.start_frame, filt, h, flags: if inst.req.pans_chain { 0x80 } else { 0 } }
     }
+}
+
+/// A wave's settings for the mixer this update, and its record's levels and flags for the voice manager.
+struct Drive {
+    id: u64,
+    clip: Arc<Clip>,
+    mix: crate::audio::Mix,
+    ratio: f32,
+    looping: bool,
+    start: f64,
+    filt: (u16, u16),
+    h: [u16; 4],
+    flags: u8,
 }
 
 /// Every wave / stream voice of a sound's tree.
@@ -1517,6 +1663,208 @@ fn hold_voices(n: &Node, f: &mut dyn FnMut(u64)) {
         }
         Kind::Empty => {}
     }
+}
+
+/// `fctidz` of a single, low word: what the original stores of a truncated 64-bit conversion.
+fn fctidz_lo(x: f32) -> u32 {
+    if x.is_nan() { 0 } else { x as i64 as u32 }
+}
+
+/// A sound's own duration in whole ms (-1 = unknown) and whether it is endless or loops: its type's method from the
+/// table of F-25376. Children count with their totals (`dur_total`).
+fn dur_type(n: &Node) -> (i32, bool) {
+    let first = |v: &[Node], none: (i32, bool)| v.first().map(dur_total).unwrap_or(none);
+    let max_of = |v: &[Node], start: (i32, bool)| v.iter().fold(start, |(m, f), c| {
+        let (d, cf) = dur_total(c);
+        (m.max(d), f | cf)
+    });
+    match &n.kind {
+        // Simple (F-51499): the voice's length, looping when the wave loops
+        Kind::Wave { dur_ms, looping, .. } | Kind::Stream { dur_ms, looping, .. } => (*dur_ms as i32, *looping),
+        Kind::Group { children } => match n.h.kind {
+            // Streaming (F-96939): its loop tristate
+            8 => (n.ty_ms, n.h.tristate(6) == 1),
+            // Multitrack (F-80575), Crossfade (F-57182): the longest child, from 0
+            13 | 10 => max_of(children, (0, false)),
+            // TwinLoop (F-81098): the longer of its two (the port makes the first)
+            3 => match children.split_first() {
+                Some((c, rest)) => max_of(rest, dur_total(c)),
+                None => (0, false),
+            },
+            // MathOperation (F-87138): -1 without a child
+            25 => first(children, (-1, false)),
+            // Wrapper (F-52913), Randomized / VariableBlock (F-67475)
+            _ => first(children, (0, false)),
+        },
+        // Looping (F-53436): the child's times the count; endless with no count or an endless child
+        Kind::Looping { child, count, .. } => {
+            let (d, f) = dur_total(child);
+            if *count == -1 || f {
+                (d, true)
+            } else if d == -1 {
+                (-1, false)
+            } else {
+                (d.wrapping_mul(*count as i32), false)
+            }
+        }
+        // Sequential (F-88072): the sum of the children it holds, from -1; unknown on demand or with an unknown child
+        Kind::Sequential { cur, ahead, on_demand, .. } => {
+            if *on_demand {
+                return (-1, false);
+            }
+            let mut sum = -1i32;
+            let mut f = false;
+            for c in cur.iter().map(|c| &**c).chain(ahead.iter()) {
+                let (d, cf) = dur_total(c);
+                f |= cf;
+                if d == -1 {
+                    return (-1, f);
+                }
+                sum = sum.wrapping_add(d);
+            }
+            (sum, f)
+        }
+        // RetriggeredOverlapped (F-38643): (count - 1) x delay plus its child (the port's first live instance); endless
+        // with no count
+        Kind::Retrig { count, delay_ms, live, .. } => {
+            let c = *count as i32;
+            let base = if c == -1 { 0 } else { (c - 1).wrapping_mul(*delay_ms as i32) };
+            let d = live.first().map_or(-1, |l| dur_total(l).0);
+            (if d == -1 { base } else { base.wrapping_add(d) }, c == -1)
+        }
+        // Envelope (F-79791, times from F-57506): attack + decay + hold (+ release) when it holds, cut to a shorter finite
+        // child
+        Kind::Envelope { a, d, hold, r, child, .. } => {
+            let (c, cf) = dur_total(child);
+            let hold = *hold as i32;
+            if hold < 0 {
+                return (c, cf);
+            }
+            let mut t = (*a as i32).wrapping_add(*d as i32).wrapping_add(hold);
+            if *r as i32 >= 0 {
+                t = t.wrapping_add(*r as i32);
+            }
+            if !cf && c >= 0 && c < t {
+                t = c;
+            }
+            if t < 0 { (c, cf) } else { (t, false) }
+        }
+        // OnStop (F-23434): its main child
+        Kind::OnStop { child, .. } => dur_total(child),
+        Kind::Empty => (0, false),
+    }
+}
+
+/// F-53189: a sound's total duration, its own type's with its play's predelay and start offset (+80 / +84; 0 before it
+/// plays): the start offset in percent of the duration with tristate 0, else what is left after it; -1 stays.
+fn dur_total(n: &Node) -> (i32, bool) {
+    let (d, f) = dur_type(n);
+    if d == -1 {
+        return (-1, f);
+    }
+    let (pd, so) = n.tot;
+    let t = if n.h.tristate(0) == 1 {
+        let x = fmadds(so as f32 * 0.01, d as f32, pd as f32);
+        if x.is_nan() { i32::MIN } else { x as i32 }
+    } else if d as u32 <= so {
+        pd as i32
+    } else {
+        (d as u32).wrapping_sub(so).wrapping_add(pd) as i32
+    };
+    (t, f)
+}
+
+/// F-90115: the total predelay and start offset a sound plays with (+80 / +84), from its own (drawn) ones and the parent
+/// offset `po` (+108, in percent of the sound's total when `po.1`, +57 bit 0x08): the parent's offset first eats the
+/// predelay. Tristate 0 makes the own start offset a percent of the type's duration (an unknown one: the own predelay, no
+/// offset); do-not-inherit 0x10 keeps the own predelay, 0x08 the own start offset (taken in percent once more with
+/// tristate 0, as the original does).
+fn play_offsets(n: &Node, po: (u32, bool)) -> (u32, u32) {
+    let pd = n.predelay_ms as u32;
+    let mut so = n.start_ms as u32;
+    let pct = n.h.tristate(0) == 1;
+    let scaled = |so: u32| match dur_type(n).0 {
+        -1 => None,
+        d => Some(fctidz_lo(so as f32 * d as f32 * 0.01)),
+    };
+    if pct {
+        match scaled(so) {
+            Some(v) => so = v,
+            None => return (pd, 0),
+        }
+    }
+    let p = if po.1 { fctidz_lo(dur_total(n).0 as f32 * po.0 as f32 * 0.01) } else { po.0 };
+    let (mut a, mut b) = if p >= pd { (0, p.wrapping_sub(pd).wrapping_add(so)) } else { (pd.wrapping_sub(p), so) };
+    if n.h.no_inherit & 0x10 != 0 {
+        a = pd;
+    }
+    if n.h.no_inherit & 0x08 != 0 {
+        if pct {
+            match scaled(so) {
+                Some(v) => so = v,
+                None => return (pd, 0),
+            }
+        }
+        b = so;
+    }
+    (a, b)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LoopStep {
+    Done,
+    Run,
+    Remake,
+}
+
+/// One update of a Looping (F-67073): `child` its child's update (`None`: it holds no child, a remake that made nothing),
+/// `ends` the plays ended (the original counts the plays begun, +196, in its +32 F-87646 - the same at every test).
+/// No child ends it; a child that ended is remade unless the LoopCount is reached.
+fn looping_update(child: Option<bool>, count: i16, ends: &mut i32) -> LoopStep {
+    match child {
+        None => LoopStep::Done,
+        Some(true) => LoopStep::Run,
+        Some(false) => {
+            *ends += 1;
+            if count != -1 && *ends >= count as i32 { LoopStep::Done } else { LoopStep::Remake }
+        }
+    }
+}
+
+/// F-39812: a Looping's start offset `so` split by its child's total into the plays done (`None`: left as they are) and
+/// the child's parent offset; no split for an endless loop or an unknown or endless child, none at all for a child of 0 ms.
+fn looping_split(count: i16, child: &Node, so: u32) -> (Option<i32>, u32) {
+    if count == -1 {
+        return (None, so);
+    }
+    match dur_total(child) {
+        (-1, _) | (_, true) => (None, so),
+        (0, _) => (None, 0),
+        (d, _) => (Some((so as i32).wrapping_div(d)), (so as i32).wrapping_rem(d) as u32),
+    }
+}
+
+/// F-96939: a Streaming sound's own duration, the authored one (+200) when set, else the longest wave of its bank when the
+/// bank is loaded (F-46175), else -1.
+fn stream_ms(duration_ms: u32, longest: Option<i32>) -> i32 {
+    if duration_ms != 0 { duration_ms as i32 } else { longest.unwrap_or(-1) }
+}
+
+/// F-71973: the child of a Sequential that holds `so` and the offset into it, summing the children's totals; the first
+/// with no offset when a child's is unknown, `None` past the end.
+fn seq_start(children: &std::collections::VecDeque<Node>, so: u32) -> Option<(usize, u32)> {
+    let mut cum = 0u32;
+    for (i, c) in children.iter().enumerate() {
+        let (d, f) = dur_total(c);
+        if d == -1 {
+            return Some((0, 0));
+        }
+        cum = cum.wrapping_add(d as u32);
+        if cum >= so || f {
+            return Some((i, (d as u32).wrapping_sub(cum).wrapping_add(so)));
+        }
+    }
+    None
 }
 
 /// `fmadds`: the fused multiply-add in double, rounded once to single (how the recompiled code and the console do it).
@@ -1577,6 +1925,156 @@ struct Leaf {
     stereo: bool,
 }
 
+/// One wave voice as the voice manager ranks it (F-91203): its slot is in use and has not ended (position field -8), the
+/// slot's state (+16 top bits: 0 waiting, 1 playing, 2 stopping, F-60799 / F-71842 / F-44224), the voice group +4 (F-61065;
+/// 0 = none, and no sound of the data sets the group tristate), the record's flag byte +24 and its levels +26 / +28 / +30 /
+/// +32 as stored ([`level_half`]).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct VoiceSlot {
+    pub active: bool,
+    pub ended: bool,
+    pub state: u8,
+    pub group: u32,
+    pub flags: u8,
+    pub h: [u16; 4],
+}
+
+/// What the voice manager does this update (F-46122): the counts of the ranking (voices, groups, forced to the front,
+/// voices in no group), the voices to start and the playing voices to stop, as (bank << 8 | slot).
+#[derive(Debug, PartialEq)]
+pub(crate) struct Picked {
+    pub counts: [u16; 4],
+    pub start: Vec<u16>,
+    pub stop: Vec<u16>,
+}
+
+/// The voice update's store of a level (F-24161): negative and NaN as 0, under 6.1e-5 as 0, at most 65504, the half float
+/// cut off (not rounded).
+pub(crate) fn level_half(x: f32) -> u16 {
+    let x = if x >= 0.0 { x } else { 0.0 };
+    if !(x >= 6.103_515_6e-5) {
+        return 0;
+    }
+    let b = x.min(65504.0).to_bits();
+    ((((b >> 23) & 0x1ff) + 16) << 10 | (b >> 13) & 0x3ff | (b >> 16) & 0x8000) as u16
+}
+
+/// The voice manager's ranking and pick (F-91203, F-96767). Every slot in use is ranked by its loudness: key = !(trunc
+/// ((h28 + h30) x h26 x h32 x 2^32)), the smallest first, and 0 (the front) for a voice that pans an effect chain (+24 bit
+/// 0x80), one with bit 0x08, or one with bit 0x20 that is not silent; the voices of a group go together, ranked by their
+/// loudest. Down the ranking the first `budget` voices are kept: a waiting one starts while `free` physical voices last
+/// (a group only whole); past the budget the playing ones stop. Ties keep the slots' order backwards, as the original's
+/// lists do (each new voice at the front, then a stable radix sort).
+pub(crate) fn rank_pick(banks: &[&[VoiceSlot]], budget: u32, free: u32) -> Picked {
+    let half = |h: u16| {
+        let h = h as u32;
+        if h == 0 {
+            0.0
+        } else {
+            f32::from_bits((h & 0x8000) << 16 | (h & 0x3ff) << 13 | (((h >> 10) & 31) + 112) << 23)
+        }
+    };
+    // (key, id, state); `lone` in list order, each group's members newest first
+    let mut recs: Vec<(u64, u16, u8)> = Vec::new();
+    let mut lone: Vec<usize> = Vec::new();
+    let mut groups: Vec<(u32, u64, Vec<usize>)> = Vec::new();
+    let mut forced = 0u16;
+    for (b, bank) in banks.iter().enumerate() {
+        for (i, s) in bank.iter().enumerate().take(96) {
+            if !s.active || s.ended {
+                continue;
+            }
+            let [h26, h28, h30, h32] = s.h.map(half);
+            let p = (h28 + h30) * h26 * h32;
+            let x = p * 4_294_967_296.0;
+            let t = if x.is_nan() { i64::MIN } else { x as i64 };
+            let mut key = !(t as u64);
+            if (s.flags & 0x20 != 0 && p > 0.0) || s.flags & 0x08 != 0 || s.flags & 0x80 != 0 {
+                key = 0;
+                forced += 1;
+            }
+            recs.push((key, (i as u16) | ((b as u16) & 0xff) << 8, s.state));
+            let r = recs.len() - 1;
+            if s.group == 0 {
+                lone.insert(0, r);
+            } else {
+                let g = match groups.iter().position(|g| g.0 == s.group) {
+                    Some(g) => g,
+                    None => {
+                        groups.push((s.group, key, Vec::new()));
+                        groups.len() - 1
+                    }
+                };
+                let g = &mut groups[g];
+                if g.2.is_empty() || g.1 > key {
+                    g.1 = key;
+                }
+                g.2.insert(0, r);
+            }
+        }
+    }
+    let counts = [recs.len() as u16, groups.len() as u16, forced, lone.len() as u16];
+    lone.sort_by_key(|&r| recs[r].0);
+    let mut order: Vec<usize> = Vec::new();
+    for g in 0..groups.len() {
+        if order.is_empty() || groups[g].1 <= groups[order[0]].1 {
+            order.insert(0, g);
+        } else {
+            let mut p = 0;
+            while p + 1 < order.len() && groups[order[p + 1]].1 < groups[g].1 {
+                p += 1;
+            }
+            order.insert(p + 1, g);
+        }
+    }
+    let (mut budget, mut free) = (budget, free);
+    let (mut r, mut gi) = (0, 0);
+    let (mut start, mut stop) = (Vec::new(), Vec::new());
+    while r < lone.len() || gi < order.len() {
+        if budget != 0 {
+            if r < lone.len() && (gi >= order.len() || recs[lone[r]].0 < groups[order[gi]].1) {
+                let (_, id, st) = recs[lone[r]];
+                if st == 0 && free != 0 {
+                    free -= 1;
+                    start.push(id);
+                }
+                r += 1;
+                budget -= 1;
+            } else {
+                let m = &groups[order[gi]].2;
+                let mut left = m.len() as u32;
+                if budget >= left {
+                    for &x in m {
+                        let (_, id, st) = recs[x];
+                        if st == 0 {
+                            if free < left {
+                                break;
+                            }
+                            free -= 1;
+                            left -= 1;
+                            start.push(id);
+                        }
+                        budget -= 1;
+                    }
+                }
+                gi += 1;
+            }
+        } else {
+            if r < lone.len() {
+                if recs[lone[r]].2 == 1 {
+                    stop.push(recs[lone[r]].1);
+                }
+                r += 1;
+            }
+            if gi < order.len() {
+                stop.extend(groups[order[gi]].2.iter().filter(|&&x| recs[x].2 == 1).map(|&x| recs[x].1));
+                gi += 1;
+            }
+        }
+    }
+    Picked { counts, start, stop }
+}
+
 /// The release ramp of F-31923 on the original's integer clock: `ratio = (end - now) / (end - start)` (0.0 when `end <= start`
 /// or `now >= end`, which also marks the sound ended: -100 dB), `vol += 20 * log2(ratio) * 0.301` in dB (-100 below 1e-5). Returns the
 /// new volume and whether the sound goes on (an ended sound stops only when `flags & 0x10` is clear in the original's +58).
@@ -1633,20 +2131,24 @@ fn reset_node(n: &mut Node) {
     n.play_t = 0.0;
     n.wait = None;
     n.release = None;
+    n.tot = (0, 0);
     match &mut n.kind {
         Kind::Wave { pos_ms, .. } | Kind::Stream { pos_ms, .. } => *pos_ms = 0.0,
         Kind::Group { children } => children.iter_mut().for_each(reset_node),
-        Kind::Looping { child, plays, .. } => {
+        Kind::Looping { child, plays, child_off, .. } => {
             *plays = 0;
+            *child_off = None;
             reset_node(child)
         }
         Kind::Envelope { child, rel_from, .. } => {
             *rel_from = None;
             reset_node(child)
         }
-        Kind::Sequential { at, cur, .. } => {
+        Kind::Sequential { at, cur, ahead, .. } => {
+            // (made again from the list as it goes)
             *at = 0;
             *cur = None;
+            ahead.clear();
         }
         Kind::Retrig { next_ms, made, live, .. } => {
             *next_ms = 0.0;
@@ -1727,9 +2229,149 @@ fn decode_mp3_whole_from(dec: rodio::Decoder<std::io::BufReader<std::fs::File>>,
 #[cfg(test)]
 mod tests {
 
-    /// F-13862: the wave's whole ms against the original's own sequence (constants 0x820022B4 = 0.001,
-    /// 0x820022AC / B0 = +-2^23, 0x82001D14 = 1.0 read from the image): fcfid + frsp of the count and the rate, fmuls,
-    /// fdivs, the fsel round to nearest, then -1 when it rounded up
+    /// The voice manager's ranking and pick (F-91203, F-96767) against the original's code run offline on random voice
+    /// slots (tools/voice_rank_reference.py): the counts, the voices to start and to stop, in order
+    #[test]
+    fn voice_pick_matches_the_original() {
+        use super::*;
+        let mut n = 0;
+        for line in include_str!("testdata/voice_rank_ref.txt").lines() {
+            let (case, out) = line.split_once(" -> ").unwrap();
+            let (head, slots) = case.split_once(" | ").unwrap();
+            let h: Vec<u32> = head.split(' ').map(|x| x.parse().unwrap()).collect();
+            let mut banks = vec![vec![VoiceSlot::default(); 96]; h[0] as usize];
+            for s in slots.split(' ').filter(|s| !s.is_empty()) {
+                let v: Vec<u32> = s.split(',').map(|x| x.parse().unwrap()).collect();
+                banks[v[0] as usize][v[1] as usize] = VoiceSlot {
+                    active: true,
+                    ended: v[2] != 0,
+                    state: v[3] as u8,
+                    group: v[4],
+                    flags: v[5] as u8,
+                    h: [v[6] as u16, v[7] as u16, v[8] as u16, v[9] as u16],
+                };
+            }
+            let refs: Vec<&[VoiceSlot]> = banks.iter().map(|b| b.as_slice()).collect();
+            let mut part = out.split('|');
+            let nums = |s: &str| -> Vec<u16> { s.split_whitespace().map(|x| x.parse().unwrap()).collect() };
+            let c = nums(part.next().unwrap());
+            let want = Picked { counts: [c[0], c[1], c[2], c[3]], start: nums(part.next().unwrap()), stop: nums(part.next().unwrap()) };
+            assert_eq!(rank_pick(&refs, h[1], h[2]), want, "{head}");
+            n += 1;
+        }
+        assert_eq!(n, 600);
+    }
+
+    /// The durations of the sound tree (F-53189 with each type's method), the play offsets (F-90115), the Looping split
+    /// (F-39812) and the Sequential start (F-71973) against the original's code run offline on random trees
+    /// (tools/sound_duration_reference.py; a case the original faults on is left out)
+    #[test]
+    fn looping_remake_matches_the_original() {
+        // tools/looping_remake_reference.py: the original's Looping update and deferred remake on 1 - 14 Loopings; whether a
+        // remake made a child (the make's result, or the 13th request of an update dropped) is read from the reference
+        use super::*;
+        let (mut ends, mut holds, mut alive) = (Vec::new(), Vec::new(), Vec::new());
+        let mut counts: Vec<i16> = Vec::new();
+        let mut n = 0;
+        for l in include_str!("testdata/looping_remake_ref.txt").lines() {
+            if let Some(c) = l.strip_prefix('c') {
+                counts = c.split_whitespace().map(|v| v.parse().unwrap()).collect();
+                (ends, holds, alive) = (vec![0; counts.len()], vec![true; counts.len()], vec![true; counts.len()]);
+                continue;
+            }
+            let Some((i, o)) = l.split_once(" -> ") else { continue };
+            let (i, o): (Vec<&str>, Vec<&str>) = (i.split_whitespace().collect(), o.split_whitespace().collect());
+            for j in 0..counts.len() {
+                if !alive[j] {
+                    assert_eq!((i[j], o[j]), ("x", "x"), "{l}");
+                    continue;
+                }
+                assert_eq!(i[j] == "-", !holds[j], "{l}");
+                let r = (i[j] != "-").then(|| i[j] == "1");
+                let e: Vec<i32> = o[j].split('/').map(|v| v.parse().unwrap()).collect();
+                let step = looping_update(r, counts[j], &mut ends[j]);
+                if step == LoopStep::Remake {
+                    holds[j] = e[2] == 1;
+                }
+                let run = step != LoopStep::Done;
+                assert_eq!((run as i32, e[1]), (e[0], ends[j] + (run && holds[j]) as i32), "{l} #{j}");
+                alive[j] = run;
+                n += 1;
+            }
+        }
+        assert_eq!(n, 39_240);
+    }
+
+    #[test]
+    fn durations_match_the_original() {
+        use super::*;
+        type Spec = (Vec<i64>, Vec<usize>);
+        fn build(i: usize, specs: &[Spec], lw: i64) -> Node {
+            let (f, kids) = &specs[i];
+            let (t, p) = (f[0] as u8, &f[6..11]);
+            let mut b = vec![t, 0, 0, 0, 0];
+            b.extend_from_slice(&((f[3] as u32) | (f[5] as u32) << 12).to_be_bytes());
+            b.extend_from_slice(&[f[4] as u8, 0, 0, 0, 0, 0]);
+            let (h, _) = audcfg::parse_header(&b);
+            let mut ch: Vec<Node> = kids.iter().map(|&k| build(k, specs, lw)).collect();
+            let mut one = || Box::new(ch.remove(0));
+            let mut ty_ms = 0;
+            let kind = match t {
+                12 => Kind::Wave { wave: None, clip: None, voice: 0, pos_ms: 0.0, dur_ms: p[0] as u32 as i32 as f32, looping: p[1] != 0 },
+                1 => Kind::Looping { child: one(), child_hash: 0, count: p[0] as i16, restart_ms: 0, plays: 0, child_off: None },
+                2 => Kind::Envelope { a: p[0] as f32, d: p[1] as f32, s: p[4] as f32 * 0.01, hold: p[2] as f32, r: p[3] as f32, curves: [0; 3], child: one(), rel_from: None },
+                5 => Kind::OnStop { child: one(), on_stop: 0, stopped: None },
+                7 => Kind::Sequential { list: vec![0; ch.len()], at: ch.len(), cur: None, ahead: ch.drain(..).collect(), on_demand: p[0] != 0, cur_off: 0 },
+                8 => {
+                    ty_ms = stream_ms(p[0] as u32, (p[2] != 0 && p[3] & 1 != 0).then_some(lw as i32));
+                    Kind::Group { children: Vec::new() }
+                }
+                9 => Kind::Retrig { child_hash: 0, count: p[0] as i16, delay_ms: p[1] as f32, next_ms: 0.0, made: 0, live: ch.drain(..).collect() },
+                _ => Kind::Group { children: ch.drain(..).collect() },
+            };
+            Node { h, vol: 0.0, pitch: 0, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, tot: (f[1] as u32, f[2] as u32), ty_ms, kind }
+        }
+        let mut n = 0;
+        for l in include_str!("testdata/sound_duration_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            if o == "fault" {
+                continue;
+            }
+            let (tree, root) = c.split_once(" | ").unwrap();
+            let nums = |s: &str| -> Vec<i64> { s.split(',').filter(|v| !v.is_empty()).map(|v| v.parse().unwrap()).collect() };
+            let specs: Vec<Spec> = tree.split(' ').map(|s| {
+                let (f, k) = s.split_once('/').unwrap();
+                (nums(f), nums(k).into_iter().map(|v| v as usize).collect())
+            }).collect();
+            let lw = specs.iter().find(|s| s.0[0] == 8).map_or(0, |s| s.0[10]);
+            let r: Vec<i64> = root.split(' ').map(|v| v.parse().unwrap()).collect();
+            let mut node = build(0, &specs, lw);
+            node.predelay_ms = r[0] as f32;
+            node.start_ms = r[1] as f32;
+            let o: Vec<&str> = o.split(' ').collect();
+            let (t, f) = dur_total(&node);
+            assert_eq!(format!("{t} {}", f as u8), format!("{} {}", o[0], o[1]), "total: {l}");
+            if let Kind::Looping { child, count, .. } = &node.kind {
+                let (p, off) = looping_split(*count, child, node.tot.1);
+                assert_eq!(format!("{} {off}", p.unwrap_or(0x77)), format!("{} {}", o[2], o[3]), "Looping split: {l}");
+            }
+            if let Kind::Sequential { ahead, on_demand: false, .. } = &node.kind {
+                let got = match seq_start(ahead, node.tot.1) {
+                    Some((i, off)) => format!("{i} {off}"),
+                    None => "-1".into(),
+                };
+                let want = if o[4] == "-1" { "-1".to_string() } else { format!("{} {}", o[4], o[5]) };
+                assert_eq!(got, want, "Sequential start: {l}");
+            }
+            let (pd, so) = play_offsets(&node, (r[2] as u32, r[3] != 0));
+            assert_eq!(format!("{pd} {so}"), format!("{} {}", o[6], o[7]), "play offsets: {l}");
+            n += 1;
+        }
+        assert!(n > 3800, "{n}");
+    }
+
+    /// F-13862: the wave's whole ms against the original's own sequence (its constants 0.001, +-2^23 and 1.0 read from the
+    /// image): fcfid + frsp of the count and the rate, fmuls, fdivs, the fsel round to nearest, then -1 when it rounded up
     #[test]
     fn wave_ms_is_the_originals() {
         fn orig(n: u32, rate: u32) -> f32 {

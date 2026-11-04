@@ -758,6 +758,10 @@ pub struct Game {
     /// an event's results are up and MISSION RESULTS has not been filled yet: it is filled when
     /// its turn comes, after REWARDS (`Career::take_mission_updates`, F-66221)
     pub mu_pending: bool,
+    /// the results flow has still to ask the REWARDS getter (F-22948) and give the pending list
+    pub rp_pending: bool,
+    /// the REWARDS page was hidden: its pending list to be emptied (F-72397)
+    pub rp_hide: bool,
     /// the race's end in slow motion (EndOfRaceSequence of RaceOver.sch: PerspectiveForm_SetSlowMotion
     /// on form 60, 0.2 s of real time after the end-of-race speech) and the wait before it
     pub race_slow: crate::mc4::SlowMo,
@@ -1450,6 +1454,8 @@ impl Game {
             pink_over: None,
             mission_results: Vec::new(),
             mu_pending: false,
+            rp_pending: false,
+            rp_hide: false,
             race_slow: crate::mc4::SlowMo::default(),
             race_slow_wait: None,
             hangout_slow: crate::mc4::SlowMo::default(),
@@ -3073,9 +3079,30 @@ impl Game {
 
     /// Pay out a finished mission (delivery / payback).
     /// `delivered`: the damage (0..1) of the car handed over, for a delivery.
+    /// The results flow asks the REWARDS getter once (F-22948: a pending reward with bHidden
+    /// clear shows the page) and, when REWARDS shows, its init gives the pending list (F-40930 ->
+    /// F-73125). Done before the race's reputation reaches the career: in the original the
+    /// race's experience is itself a pending reward behind the missions' (the new game's script
+    /// order: the freeway hookmen of REP_ON_HW_STRIP before the 260 threshold's TelephoneChallenge).
+    pub fn rewards_ask(&mut self) {
+        if !std::mem::take(&mut self.rp_pending) {
+            return;
+        }
+        if self.career.pending_shown() {
+            self.reward_panel = true;
+        }
+        if self.reward_panel {
+            log::info!("rewards: {} pending given", self.career.pending.len());
+            self.career.give_pending();
+        } else {
+            self.career.flush_done_wait();
+        }
+    }
+
     pub fn award_mission(&mut self, success: bool, delivered: Option<f32>) {
         // (the event's results: MISSION RESULTS has its turn after REWARDS)
         self.mu_pending = true;
+        self.rp_pending = true;
         if !success {
             // (a payback that is lost starts again from its first leg)
             if delivered.is_none() {
@@ -3102,6 +3129,7 @@ impl Game {
     pub fn award_race(&mut self, place: usize, field: usize) {
         // (the event's results: MISSION RESULTS has its turn after REWARDS)
         self.mu_pending = true;
+        self.rp_pending = true;
         // (x 0.6 for a race from the ARCADE menu, x 0.35 for a network game's: `mc4_race_factor`)
         let (mut money, mut rep) = crate::rewards::race_reward(self.rep, self.player_perf(), self.race_diff, place, field, self.mc4_race_factor());
         // (a race of the race editor gives nothing: EditorRace.sco sets the results' word
@@ -8599,6 +8627,14 @@ impl Game {
                 let row_h = 40.0 * sc;
                 // (MISSION RESULTS' turn, after REWARDS: the missions updated since the form was
                 // last up - F-44151 brings it when there is one, F-66221 fills it)
+                // (REWARDS shows when a pending reward is not hidden - F-22948 -, and its page gives
+                // the whole pending list - F-40930 / F-73125, emptied by its hide F-77851)
+                if std::mem::take(&mut self.rp_hide) {
+                    self.career.pending_hidden();
+                }
+                if self.flash_menu.is_some() {
+                    self.rewards_ask();
+                }
                 if self.mu_pending && self.flash_menu.is_some() && self.series_ask.is_none() && !self.series_first && !self.reward_panel && !self.mc4_tt_panel_first() {
                     self.mu_pending = false;
                     let v = self.career.take_mission_updates();
@@ -8885,7 +8921,8 @@ impl Game {
                                 }
                             }
                             // RESTART SERIES / RACE SERIES AGAIN: from its first race, every tally at
-                            // nought (OrderedSeriesCore `restart`, 0x247c)
+                            // nought (OrderedSeriesCore `restart`, 0x247c); a story series' race is the history's
+                            // pick (`story_series_next`)
                             2 | 5 => {
                                 if let Some(sr) = self.series.as_mut() {
                                     sr.at = 0;
@@ -8894,6 +8931,9 @@ impl Game {
                                     self.next_event_race = None;
                                     action = MenuAction::StartRace;
                                     self.warp_with_cut = true;
+                                }
+                                if let Some(i) = self.story_series_next() {
+                                    self.current_race = Some(i);
                                 }
                             }
                             _ => {
@@ -8929,6 +8969,8 @@ impl Game {
                         } else {
                             self.career.reward_page = 0;
                             self.reward_panel = false;
+                            // (the page's hide empties the pending list: F-72397)
+                            self.rp_hide = true;
                         }
                     }
                     (false, false, false, false)
@@ -14141,20 +14183,57 @@ impl Series {
 }
 
 impl Game {
+    /// A story series' race array (OrderedSeriesCore 0x16d..0x1a5: mcRaceArray_AddRace, F-32440 -> F-32239 (F-79929 the lookup), for
+    /// each of the script's +3212 names at +3216): the race definitions in the script's order; a name the race
+    /// table lacks is left out (BESTOF_SH_03's `Ordered/_circuit_mb_04a`), a second one of a race too.
+    pub(crate) fn story_series_array(&self, id: &str) -> Option<(Vec<usize>, u32)> {
+        let (races, need) = self.career.series_mission(id)?;
+        let mut order: Vec<usize> = Vec::new();
+        for r in &races {
+            if let Some(i) = self.race_defs.iter().position(|d| d.id.to_ascii_lowercase().ends_with(r.as_str())) {
+                if !order.contains(&i) {
+                    order.push(i);
+                }
+            }
+        }
+        Some((order, need))
+    }
+
+    /// The first race of a story series (OrderedSeriesCore 0x581..0x5cb, taken when the story launcher's +3256
+    /// is 1): mcRaceArray_FindBeatMeThereRaceIndex (F-73402) over the series' array from the race data's racer 0,
+    /// the player - his district (Racer_GetCurrentDistrict), place and heading -, 400 m.
+    pub fn story_series_first(&self, id: &str, pos: Vec3, forward: Vec3, rnd: u32) -> Option<usize> {
+        let (order, _) = self.story_series_array(id)?;
+        let arr: Vec<usize> = order.iter().filter_map(|&i| self.mc4_race_index(&self.race_defs[i].id)).collect();
+        let district = crate::mc4::district_of_place(&self.data_dir, pos).unwrap_or(0) as i32;
+        let t = self.mc4_bmt_race(&arr, district, pos, forward, 400.0, rnd)?;
+        self.mc4_table_race(t).map(|(i, _)| i)
+    }
+
+    /// The race of a story series after one is run and after RESTART SERIES / RACE SERIES AGAIN (OrderedSeriesCore
+    /// 0x24fe with +3256 cleared by the first pass): mcRaceArray_FindNextRaceIndex (F-18968) over its array - the
+    /// first not in the history of the last twelve, else the one run longest ago. None for a hangout's series.
+    pub fn story_series_next(&self) -> Option<usize> {
+        let sr = self.series.as_ref().filter(|s| s.story.is_some())?;
+        let arr: Vec<i64> = sr.races.iter().filter_map(|&i| self.mc4_race_index(&self.race_defs[i].id).map(|t| t as i64)).collect();
+        let t = match self.mc4.as_ref() {
+            Some(m) => m.career.next_race_of(&arr)?,
+            None => *arr.first()?,
+        };
+        self.mc4_table_race(t as usize).map(|(i, _)| i)
+    }
+
     /// A story man's series starts with this race: `Roamers::series_of` flashed, the tally at
     /// nought (OrderedSeriesCore 0x247c).
     pub fn story_series_start(&mut self, man: &(String, String, String, String), race: usize) {
         let (id, name, car, config) = man;
-        let Some((races, need)) = self.career.series_mission(id) else { return };
-        let order: Vec<usize> = races.iter().filter_map(|r| self.race_defs.iter().position(|d| d.id.to_ascii_lowercase().ends_with(r.as_str()))).collect();
-        if order.first() != Some(&race) {
-            return;
-        }
+        let Some((order, need)) = self.story_series_array(id) else { return };
+        let Some(at) = order.iter().position(|&i| i == race) else { return };
         let diff = self.man_diff.unwrap_or(1).clamp(0, 3) as usize;
         self.event_diff = Some(diff);
         self.career.series_drop(id);
         let rivals = vec![self.rivals.with_config(name, car, config)];
-        self.series = Some(Series { key: id.to_string(), races: order, at: 0, wins: Vec::new(), rivals, diff, story: Some((id.to_string(), need)) });
+        self.series = Some(Series { key: id.to_string(), races: order, at, wins: Vec::new(), rivals, diff, story: Some((id.to_string(), need)) });
     }
 
     pub fn story_series(&self) -> bool {
@@ -14842,7 +14921,7 @@ impl Game {
             let Some((_, kind, p)) = PLACES.iter().find(|x| x.0 == *uid) else { return false };
             let p = Vec3::from(*p);
             let (far, poll) = match kind {
-                Kind::Garage => (crate::garagein::SETUPS[crate::garagein::nearest(p)].door.distance(pp) >= crate::garagein::RADIUS, 0.1),
+                Kind::Garage => (crate::brain::racer_distance_to_point(Some(pp), crate::garagein::SETUPS[crate::garagein::nearest(p)].door) >= crate::garagein::RADIUS, 0.1),
                 Kind::Series | Kind::Wager => match place_hangout(p) {
                     Some(h) => (glam::Vec2::new(pp.x - h.centre[0], pp.z - h.centre[2]).length() >= h.radius, 0.5),
                     None => (true, 0.0),

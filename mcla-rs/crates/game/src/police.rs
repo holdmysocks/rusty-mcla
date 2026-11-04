@@ -186,6 +186,64 @@ struct CopSearch {
     angle: f32,
 }
 
+/// The squad tactics' transition tests (slot 12 of their machines): the Arrow Trap's F-69937 (0 CatchUp, 1 Arrest, 2 Halt,
+/// 3 Search) - CatchUp to any other, nothing out of Arrest, Halt to anything, Search to the first three; the Double
+/// Pursuit's F-46230 (0 AlongSide, 1 Arrest, 2 Search) - AlongSide to Arrest or Search, Search to AlongSide or Arrest.
+fn squad_may_go(arrow: bool, from: u8, to: i32) -> bool {
+    match (arrow, from) {
+        (true, 0) => (1..=3).contains(&to),
+        (true, 2) => true,
+        (true, 3) => (0..=2).contains(&to),
+        (false, 0) => (1..=2).contains(&to),
+        (false, 2) => (0..=1).contains(&to),
+        _ => false,
+    }
+}
+
+/// Dispatch to Location's transition test (F-40040): WaitToDispatch only to Dispatch, Dispatch only to Respond, Respond only
+/// to WaitAtLocation, nothing out of WaitAtLocation (its end is the tactic's result). The machine starts in WaitToDispatch: the
+/// tactic's begin starts it with its enter flag set (F-26187).
+fn dispatch_may_go(from: u8, to: i32) -> bool {
+    match from {
+        0 => to == 1,
+        1 => to == 2,
+        2 => to == 3,
+        _ => false,
+    }
+}
+
+/// "Moving" (F-43975 for the target, F-36212 for the cop's own car): the speed over fMovingSpeed x 0.447.
+fn moving(speed: f32, moving_speed: f32) -> bool {
+    speed > moving_speed * 0.447
+}
+
+/// F-43223: two frames face the same way - their forward rows dotted y, z, x (the y product rounded, the sums fused)
+/// over 0 (the port's forward is the row negated, which leaves the product's bits).
+fn same_facing(a: Vec3, b: Vec3) -> bool {
+    crate::physics::exact::dot_xzy(a, b) > 0.0
+}
+
+/// F-57435: the point `p` on the +x side of the frame at `pos` - its row 0 dotted with p - pos as F-43223 dots.
+fn on_side(row0: Vec3, pos: Vec3, p: Vec3) -> bool {
+    crate::physics::exact::dot_xzy(row0, p - pos) > 0.0
+}
+
+/// The original's 2-D unit vector (F-98766): `or` when x x + y y (the y product rounded, the sum fused) is under 1e-12,
+/// else both times the reciprocal square root's estimate and two Newton steps in double, rounded once to single.
+fn unit2(v: glam::Vec2, or: glam::Vec2) -> glam::Vec2 {
+    let l = crate::physics::exact::fma(v.x, v.x, v.y * v.y);
+    if l < 1e-12 {
+        return or;
+    }
+    let l = l as f64;
+    let mut r = (1.0 / l.sqrt()) as f32 as f64;
+    for _ in 0..2 {
+        r = (-(r * r).mul_add(l, -1.0)).mul_add(r * 0.5, r);
+    }
+    let r = r as f32;
+    glam::Vec2::new(v.x * r, v.y * r)
+}
+
 /// The search's points (F-52110): from `start` along the target's last known velocity `v` (at least 22.35 m/s)
 /// x fMinSetGoalTime `per` until a point lies on a road or junction (within 3 m), then along the connection list
 /// to the neighbour best in line with that direction, each next point the middle of the node's lane; 10 at most.
@@ -251,8 +309,7 @@ fn search_points(nav: &NavSys, world: &World, start: Vec3, v: Vec3, per: f32, fi
     }
     // phase 2: the connection list
     if !pts.is_empty() && pts.len() < 10 && pts.last().is_some_and(|q| q.1.is_some()) {
-        let mut dir = glam::Vec2::new(s.x, s.z);
-        dir = if dir.length_squared() < 1e-12 { glam::Vec2::ZERO } else { dir.normalize() };
+        let mut dir = unit2(glam::Vec2::new(s.x, s.z), glam::Vec2::ZERO);
         let mut turn = first || random;
         loop {
             let Some(r) = pts.last().and_then(|q| q.1) else { break };
@@ -277,9 +334,10 @@ fn search_points(nav: &NavSys, world: &World, start: Vec3, v: Vec3, per: f32, fi
             let Some(n) = n else { break };
             if matches!(n, NavNode::Junction(_)) {
                 if turn {
-                    let (sn, cs) = angle.sin_cos();
-                    let t = glam::Vec2::new(dir.x * cs + dir.y * sn, dir.y * cs - dir.x * sn);
-                    dir = if t.length_squared() < 1e-12 { glam::Vec2::ZERO } else { t.normalize() };
+                    // (the guest runtime's sine and cosine of the turn, the products of x rounded, the sums fused)
+                    let (sn, cs) = (crate::physics::exact::guest_sin(angle as f64) as f32, crate::physics::exact::guest_cos(angle as f64) as f32);
+                    let t = glam::Vec2::new(crate::physics::exact::fma(dir.y, sn, dir.x * cs), crate::physics::exact::fms(dir.y, cs, dir.x * sn));
+                    dir = unit2(t, glam::Vec2::ZERO);
                 }
                 turn = random && rnd() < 0.5;
             }
@@ -2630,16 +2688,17 @@ impl Police {
                 }
             }
             if result == 0 {
-                match d.st {
+                let st = d.st;
+                match st {
                     // WaitToDispatch (F-64066): fDispatchRdoDelayTime and no radio line playing
-                    0 if d.t > t("fDispatchRdoDelayTime", 3.0) && !self.radio_busy => {
+                    0 if d.t > t("fDispatchRdoDelayTime", 3.0) && !self.radio_busy && dispatch_may_go(st, 1) => {
                         d.st = 1;
                         d.t = 0.0;
                         // (Dispatch F-44635: the DISPATCH line of the trigger's sound record)
                         self.radio_cue.push(d.call.clone());
                     }
                     // (F-52633: on to Respond when the line has played)
-                    1 if d.t > 0.0 && !self.radio_busy => {
+                    1 if d.t > 0.0 && !self.radio_busy && dispatch_may_go(st, 2) => {
                         d.st = 2;
                         d.t = 0.0;
                         d.routed = false;
@@ -2647,7 +2706,7 @@ impl Police {
                         // (Respond F-81858: REPORT_ACCEPT_CALL, GoToPosition to the place, siren on)
                         self.radio_cue.push("REPORT_ACCEPT_CALL".into());
                     }
-                    2 if d.arrived => {
+                    2 if d.arrived && dispatch_may_go(st, 3) => {
                         // (WaitAtLocation F-52732: along the player's trail, else a search at once, +-pi/2 at random)
                         d.st = 3;
                         d.t = 0.0;
@@ -2702,7 +2761,7 @@ impl Police {
         let safe = t("fSafeDist", 30.0);
         let along = t("fAlongSideDist", 5.0);
         let moving_v = t("fMovingSpeed", 1.0) * 0.447;
-        let t_moving = speed > moving_v;
+        let t_moving = moving(speed, t("fMovingSpeed", 1.0));
         // (F-42951: false only for a group cop - not a goon - while a race runs: then the brains plan the plain way and
         // the squad never swipes)
         let ed78 = !(self.in_race && !goons);
@@ -2773,7 +2832,7 @@ impl Police {
             if sq.halt {
                 // Halt (F-58305 / F-16041): the cops within fSafeDist Stop again, x 0.5 when closing; none within it, or
                 // the target over fArrestTgtThresholdSpd -> CatchUp
-                if !any_safe || mph > t("fArrestTgtThresholdSpd", 10.0) {
+                if (!any_safe || mph > t("fArrestTgtThresholdSpd", 10.0)) && squad_may_go(arrow, 2, 0) {
                     sq.halt = false;
                     sq.begun = false;
                 } else {
@@ -2850,7 +2909,7 @@ impl Police {
                 }
                 // (the Arrow Trap: a cop within fSafeDist of a target that has stopped -> Halt: those within it Stop,
                 // x 0.5 when closing)
-                if arrow && any_safe && !t_moving {
+                if arrow && any_safe && !t_moving && squad_may_go(arrow, 0, 2) {
                     log::info!("police: arrow trap halts");
                     sq.halt = true;
                     for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
@@ -3003,9 +3062,9 @@ impl Police {
                 // facing the same way, the angle off the cop's right axis, and "closing in": the cop moving, faster
                 // than the target and heading at it within 25.8 deg)
                 let ahead = cfwd.dot(to) > 0.0;
-                let on_right = cright.dot(to) > 0.0;
+                let on_right = on_side(cright, cpos, ppos);
                 let same_dir = pvel.dot(cvel) > 0.0;
-                let same_facing = pfwd.dot(cfwd) > 0.0;
+                let same_facing = same_facing(pfwd, cfwd);
                 let bearing = crate::aiv::ang3(cright, to).to_degrees();
                 let closing = |r: f32| (r == 0.0 || d < r) && cspeed > moving_v && cspeed > speed && to.normalize_or_zero().dot(cvel / cspeed.max(1e-6)) > 0.9;
                 // (head-on, +774: in front, coming the other way, seen, travel directions more than fHeadOnAngle apart)
@@ -3572,6 +3631,22 @@ mod tests {
         p.tun.v.insert("iPerSecPursuitFine".into(), 10.0);
         p.tun.v.insert("iPullOverFleeFine".into(), 300.0);
         p
+    }
+
+    /// F-98766 run offline (work/hookmen2/b2/unit2.py: 22,856 of 22,856 cases with a finite length equal): a sample of
+    /// its answers, bits in and out, the fallback (1, -1) under 1e-12.
+    #[test]
+    fn unit2_matches_the_original() {
+        let f = |x: u32| f32::from_bits(x);
+        for (x, y, ox, oy) in [
+            (0u32, 0u32, 0x3f800000u32, 0xbf800000u32), (0x33d6bf95, 0, 0x3f800000, 0xbf800000), (0x353be7a2, 0x353be7a2, 0x3f800000, 0xbf800000),
+            (0x358637bd, 0, 0x3f800000, 0), (0xb58637bd, 0x358637bd, 0xbf3504f4, 0x3f3504f4), (0x40400000, 0x40800000, 0x3f19999a, 0x3f4ccccd),
+            (0xc25f8000, 0x4151999a, 0xbf793dd3, 0x3e69bd97), (0x45848de2, 0x4215fde2, 0x3f7ffd70, 0x3c10d52e), (0x454121fa, 0xc5cb505d, 0x3edba9a6, 0xbf673e11),
+            (0xc509d30a, 0xb6c91ed3, 0xbf800000, 0xb13ac8c0), (0x34f0487b, 0xb7175852, 0x3d4af841, 0xbf7faf7d), (0x3f088083, 0xc2521c56, 0x3c264e64, 0xbf7ffca0),
+        ] {
+            let o = super::unit2(glam::Vec2::new(f(x), f(y)), glam::Vec2::new(1.0, -1.0));
+            assert_eq!((o.x.to_bits(), o.y.to_bits()), (ox, oy), "{x:08x} {y:08x}");
+        }
     }
 
     /// F-83946: the sum over the offences, the pursuit's seconds, the flee fine, the career cut
