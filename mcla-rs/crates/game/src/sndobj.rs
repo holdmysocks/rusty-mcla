@@ -1421,22 +1421,24 @@ impl SoundLib {
                     }
                     off
                 });
-                self.step(child, ms, ctx, (off, false), out);
-                if child.st == St::Done {
-                    *plays += 1;
-                    if *count != -1 && *plays >= *count as i32 {
-                        true
-                    } else {
-                        // made again from its reference and played with the restart offset as its parent offset (F-87646)
-                        match self.make(*child_hash, 1) {
-                            Some(c) => **child = c,
-                            None => reset_node(child),
+                // a child still dead at the update is a remake that made nothing: it is not stepped
+                let r = (child.st != St::Done).then(|| {
+                    self.step(child, ms, ctx, (off, false), out);
+                    child.st != St::Done
+                });
+                match looping_update(r, *count, plays) {
+                    LoopStep::Done => true,
+                    LoopStep::Run => false,
+                    LoopStep::Remake => {
+                        // made again from its reference (deferred to after the tree update, F-70509 / F-21229, so it
+                        // first runs in the next update as here) and played with the restart offset as its parent
+                        // offset (F-87646); none made leaves the dead child, and the Looping ends in the next update
+                        if let Some(c) = self.make(*child_hash, 1) {
+                            **child = c;
                         }
                         *child_off = Some(*restart_ms as u32);
                         false
                     }
-                } else {
-                    false
                 }
             }
             Kind::Sequential { list, at, cur, ahead, on_demand, cur_off } => 'seq: {
@@ -1806,6 +1808,27 @@ fn play_offsets(n: &Node, po: (u32, bool)) -> (u32, u32) {
         b = so;
     }
     (a, b)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LoopStep {
+    Done,
+    Run,
+    Remake,
+}
+
+/// One update of a Looping (F-67073): `child` its child's update (`None`: it holds no child, a remake that made nothing),
+/// `ends` the plays ended (the original counts the plays begun, +196, in its +32 F-87646 - the same at every test).
+/// No child ends it; a child that ended is remade unless the LoopCount is reached.
+fn looping_update(child: Option<bool>, count: i16, ends: &mut i32) -> LoopStep {
+    match child {
+        None => LoopStep::Done,
+        Some(true) => LoopStep::Run,
+        Some(false) => {
+            *ends += 1;
+            if count != -1 && *ends >= count as i32 { LoopStep::Done } else { LoopStep::Remake }
+        }
+    }
 }
 
 /// F-39812: a Looping's start offset `so` split by its child's total into the plays done (`None`: left as they are) and
@@ -2242,6 +2265,43 @@ mod tests {
     /// The durations of the sound tree (F-53189 with each type's method), the play offsets (F-90115), the Looping split
     /// (F-39812) and the Sequential start (F-71973) against the original's code run offline on random trees
     /// (tools/sound_duration_reference.py; a case the original faults on is left out)
+    #[test]
+    fn looping_remake_matches_the_original() {
+        // tools/looping_remake_reference.py: the original's Looping update and deferred remake on 1 - 14 Loopings; whether a
+        // remake made a child (the make's result, or the 13th request of an update dropped) is read from the reference
+        use super::*;
+        let (mut ends, mut holds, mut alive) = (Vec::new(), Vec::new(), Vec::new());
+        let mut counts: Vec<i16> = Vec::new();
+        let mut n = 0;
+        for l in include_str!("testdata/looping_remake_ref.txt").lines() {
+            if let Some(c) = l.strip_prefix('c') {
+                counts = c.split_whitespace().map(|v| v.parse().unwrap()).collect();
+                (ends, holds, alive) = (vec![0; counts.len()], vec![true; counts.len()], vec![true; counts.len()]);
+                continue;
+            }
+            let Some((i, o)) = l.split_once(" -> ") else { continue };
+            let (i, o): (Vec<&str>, Vec<&str>) = (i.split_whitespace().collect(), o.split_whitespace().collect());
+            for j in 0..counts.len() {
+                if !alive[j] {
+                    assert_eq!((i[j], o[j]), ("x", "x"), "{l}");
+                    continue;
+                }
+                assert_eq!(i[j] == "-", !holds[j], "{l}");
+                let r = (i[j] != "-").then(|| i[j] == "1");
+                let e: Vec<i32> = o[j].split('/').map(|v| v.parse().unwrap()).collect();
+                let step = looping_update(r, counts[j], &mut ends[j]);
+                if step == LoopStep::Remake {
+                    holds[j] = e[2] == 1;
+                }
+                let run = step != LoopStep::Done;
+                assert_eq!((run as i32, e[1]), (e[0], ends[j] + (run && holds[j]) as i32), "{l} #{j}");
+                alive[j] = run;
+                n += 1;
+            }
+        }
+        assert_eq!(n, 39_240);
+    }
+
     #[test]
     fn durations_match_the_original() {
         use super::*;
