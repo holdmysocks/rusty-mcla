@@ -15,7 +15,7 @@
 //! (damage cleared / a jump of the car) rather than called by the game's code.
 
 use crate::physics::loose::{LooseState, LooseWorld, PieceContact};
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Quat, Vec3, Vec4};
 
 /// mcCarModelTune +184..+196 defaults when a car has no vehModel (the instance's constructor: bumper max state 2;
 /// flaps not locked, not reversed)
@@ -358,8 +358,23 @@ impl Bumper {
     /// The bumper's place in the drawn car: the rest of the car space maps the slot's mesh by
     /// M_slot' = M_slot * A with A = M_rest^-1 * F_local, its axes scaled by 0.9995 (0x827E6344).
     pub fn draw_delta(&self) -> Mat4 {
+        self.draw_delta_on(&self.m_rest)
+    }
+
+    /// The same about the bone M_b the slot's part hangs on (its matrix index, F-14987): M_b' = M_b * A', drawn
+    /// on the car-space mesh as M_b A' M_b^-1.
+    pub fn draw_delta_on(&self, mb: &Mat4) -> Mat4 {
         let a = if self.a.state == 0 && self.b.state == 0 && self.detached.is_none() { Mat4::IDENTITY } else { self.m_rest.inverse() * self.pose };
-        self.m_rest * scale_axes(a, 0.9995) * self.m_rest.inverse()
+        slot_move(mb, &a, BUMPER_SCALE) * mb.inverse()
+    }
+
+    /// The slot's part in the drawn car (car matrix `m`), hung on its bone `mb`; a fallen piece (its body's matrix
+    /// `fallen`) has A = M_rest^-1 m^-1 B, so that it is drawn where its body is.
+    pub fn slot_draw(&self, m: &Mat4, mb: &Mat4, fallen: Option<Mat4>) -> Mat4 {
+        match fallen {
+            Some(b) => *m * slot_move(mb, &(self.m_rest.inverse() * m.inverse() * b), BUMPER_SCALE) * mb.inverse(),
+            None => *m * self.draw_delta_on(mb),
+        }
     }
 
     /// `sub_8233D208`: the fastest moving end relative to the car (m/s) and where it is; None when both are gone.
@@ -382,6 +397,20 @@ impl Bumper {
 
 fn scale_axes(m: Mat4, s: f32) -> Mat4 {
     Mat4::from_cols(m.x_axis * s, m.y_axis * s, m.z_axis * s, m.w_axis)
+}
+
+/// The slot pass's scales of the damage matrix's axes: the bumpers and the intercooler (0x827E6344), the hoods (0x827E6348).
+pub const BUMPER_SCALE: f32 = 0.9995;
+pub const HOOD_SCALE: f32 = 1.0005;
+
+/// The slot pass's move of the bone a moved slot's part hangs on (F-14987): M_b' = A' . M_b in the original's row
+/// order, A' the damage matrix with its axes scaled by `s` - the column form M_b * A', summed as the game does
+/// (vmulfp / vmaddfp, not fused): axis i = r0 a'i.x + r1 a'i.y + r2 a'i.z, the place (r0 a3.x + r3) + r1 a3.y + r2 a3.z.
+pub fn slot_move(mb: &Mat4, a: &Mat4, s: f32) -> Mat4 {
+    let a = scale_axes(*a, s);
+    let axis = |c: Vec4| mb.x_axis * c.x + mb.y_axis * c.y + mb.z_axis * c.z;
+    let w = a.w_axis;
+    Mat4::from_cols(axis(a.x_axis), axis(a.y_axis), axis(a.z_axis), mb.x_axis * w.x + mb.w_axis + mb.y_axis * w.y + mb.z_axis * w.z)
 }
 
 /// The fallen-off piece: a box (half extents 0.9 x 0.1665 x 0.25) under gravity, its eight corners against the
@@ -724,7 +753,7 @@ impl DamageParts {
     /// with the axes scaled by 1.0005 (0x827E6348), as a delta on the car-space drawing.
     pub fn hood_delta(&self, slot: &Mat4) -> Mat4 {
         let a = Mat4::from_rotation_x(-self.hood.drawn());
-        *slot * scale_axes(a, 1.0005) * slot.inverse()
+        slot_move(slot, &a, HOOD_SCALE) * slot.inverse()
     }
 
     /// The trunk bone turned in place by RotX(s*ang) (sub_82227DE0), as a delta on the car-space drawing.
@@ -742,6 +771,46 @@ pub fn hit_counts(local: Vec3) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// tools/slot_pass_reference.py: F-14987 run whole offline on 400 random cars; each bone a moved slot's part
+    /// hangs on, moved by the slots in the original's order (756 moves), is bit-equal to `slot_move` applied in that order.
+    #[test]
+    fn slot_pass_matches_the_original() {
+        let words = |s: &str| s.split_whitespace().map(|w| u32::from_str_radix(w, 16).unwrap()).collect::<Vec<u32>>();
+        let mat = |w: &[u32]| Mat4::from_cols_array(&std::array::from_fn(|i| f32::from_bits(w[i])));
+        let (mut n, mut moves) = (0, 0);
+        for line in include_str!("testdata/slot_pass_ref.txt").lines().filter(|l| !l.is_empty()) {
+            let f: Vec<&str> = line.split('|').collect();
+            let a = words(f[1]);
+            let am = [mat(&a[0..16]), mat(&a[16..32]), mat(&a[32..48])];
+            let bones: Vec<&str> = f[3].split_whitespace().collect();
+            let mut g: std::collections::HashMap<u32, (Mat4, Mat4)> = std::collections::HashMap::new();
+            for c in bones.chunks(33) {
+                let w = words(&c[1..].join(" "));
+                g.insert(c[0].parse().unwrap(), (mat(&w[0..16]), mat(&w[16..32])));
+            }
+            for e in f[2].split_whitespace().filter(|e| !e.starts_with('B')) {
+                let (k, b) = e.split_once(':').unwrap();
+                let (k, Ok(b)) = (k.parse::<u32>().unwrap(), b.parse::<u32>()) else { continue };
+                let (ai, s) = match k {
+                    3 => (0, BUMPER_SCALE),
+                    5 | 6 => (1, BUMPER_SCALE),
+                    2 | 40 => (2, HOOD_SCALE),
+                    _ => continue,
+                };
+                let Some(m) = g.get_mut(&b) else { continue };
+                m.0 = slot_move(&m.0, &am[ai], s);
+                moves += 1;
+            }
+            for (b, (port, orig)) in &g {
+                let (p, o) = (port.to_cols_array().map(f32::to_bits), orig.to_cols_array().map(f32::to_bits));
+                assert_eq!(p, o, "case {n} bone {b}: {line}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 400);
+        assert_eq!(moves, 756);
+    }
 
     fn flat(_: Vec3) -> Option<(f32, Vec3)> {
         Some((0.0, Vec3::Y))

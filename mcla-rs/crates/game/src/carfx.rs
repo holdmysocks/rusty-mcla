@@ -49,7 +49,7 @@ pub fn step(fx: &mut Particles, cars: &[CarInstance], cam: Vec3, player_hidden: 
         // the port has here)
         // (a bone of the rear bumper stands where the bumper hangs: its global follows the part's pose, F-14987 -
         // the same move as the bumper's draw, `Bumper::draw_delta`)
-        let rear_m = car_m * c.state.parts.bumpers[0].as_ref().filter(|b| b.detached.is_none()).map_or(Mat4::IDENTITY, |b| b.draw_delta());
+        let rear_m = car_m * c.state.parts.bumpers[0].as_ref().filter(|b| b.detached.is_none()).map_or(Mat4::IDENTITY, |b| b.draw_delta_on(c.model.slot_bones[0].as_ref().unwrap_or(&b.m_rest)));
         for (k, (a, on_rear)) in c.model.fx_anchors.iter().take(2).enumerate() {
             let w = if *on_rear { rear_m } else { car_m } * *a;
             let pos = w.w_axis.truncate();

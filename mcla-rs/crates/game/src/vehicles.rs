@@ -89,7 +89,7 @@ pub struct CarModel {
     pub extra_variants: std::collections::HashSet<(String, usize)>,
     /// per batch: 0, or 1 / 2 for the left / right side window's glass (drawn with the car's
     /// window object, `CarInstance::window_bindings`), 3 hood, 4 trunk lid, 5 rear bumper, 6 front
-    /// bumper and intercooler (drawn with the car's part objects, `CarInstance::part_bindings`)
+    /// bumper, 20 intercooler (drawn with the car's part objects, `CarInstance::part_bindings`)
     pub batch_window: Vec<u8>,
     /// the side windows' clips (left, right), where the base fragment has them
     pub windows: [Option<vehicle_model::WindowClip>; 2],
@@ -98,10 +98,12 @@ pub struct CarModel {
     /// the damage map's layout texture (`<car>_maxdamage`: width, height, RGBA8), when the car has it
     pub damage_layout: Option<Arc<(u32, u32, Vec<u8>)>>,
     /// the moving damage parts (`damageparts.rs`): the car's movement settings and bumper slot bones, and the bones
-    /// the hood (slot "hood", tag 33332) and the trunk lid (`trunk_0`) turn about, in car space
+    /// the fitted hood (its matrix index; else the slot's tag 33332) and the trunk lid (`trunk_0`) turn about, in car space
     pub part_rig: crate::damageparts::PartRig,
     pub hood_slot: Option<Mat4>,
     pub trunk_bone: Option<Mat4>,
+    /// the bones the fitted rear bumper, front bumper and intercooler hang on (their matrix index, F-14987), in car space
+    pub slot_bones: [Option<Mat4>; 3],
     /// where the exhaust and nitrous effects come out (car space, at most two, each with whether it moves with the
     /// rear bumper) and whether the first is a
     /// bone of the rear bumper (`CarAsset::fx_anchors`, `carfx.rs`)
@@ -1454,6 +1456,7 @@ struct CarPrep {
     part_rig: crate::damageparts::PartRig,
     hood_slot: Option<Mat4>,
     trunk_bone: Option<Mat4>,
+    slot_bones: [Option<Mat4>; 3],
 }
 
 impl MeshGeo {
@@ -1978,7 +1981,7 @@ impl Vehicles {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
-        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone } = match self.take_prep(dir, cfg) {
+        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
@@ -2175,7 +2178,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -2231,12 +2234,21 @@ impl Vehicles {
         let trunk_tag = trunk_i.and_then(|i| sk.map(|s| s.bones[i].tag)).filter(|t| *t != 0);
         let trunk_tags: Vec<u16> = trunk_set.iter().filter_map(|&i| sk.map(|s| s.bones[i].tag)).filter(|t| *t != 0).collect();
         let trunk_worlds: Vec<Mat4> = trunk_set.iter().filter_map(|&i| sk.map(|s| s.bones[i].world)).collect();
-        let hood_slot = bone_world(vehicle_model::slot_tag(Slot::Hood).unwrap_or(0));
+        // (each moved slot's part is moved about the bone it hangs on, its matrix index - F-14987; a part without
+        // one keeps the port's slot bone)
+        let fitted = car.placed_parts_for(cfg);
+        let own_bone = |f: &dyn Fn(&str) -> bool| fitted.iter().find(|(p, _)| !p.is_base && f(&p.primary.to_ascii_lowercase()) && sk.map_or(false, |s| (p.matrix_index as usize) < s.bones.len())).map(|(_, x)| *x);
+        let hood_slot = own_bone(&|p| p.starts_with("hood") && !p.contains("scoop")).or_else(|| bone_world(vehicle_model::slot_tag(Slot::Hood).unwrap_or(0)));
         let trunk_bone = trunk_i.and_then(|i| sk.map(|s| s.bones[i].world));
         let part_rig = crate::damageparts::PartRig {
             movement: car.simtune.as_ref().and_then(|s| s.part_movement).unwrap_or(crate::damageparts::DEFAULT_MOVEMENT),
             bumper_rest: [bone_world(13699), bone_world(13687)],
         };
+        let slot_bones = [
+            own_bone(&|p| p.starts_with("bumper_r")).or(part_rig.bumper_rest[0]),
+            own_bone(&|p| p.starts_with("bumper_f")).or(part_rig.bumper_rest[1]),
+            own_bone(&|p| p.starts_with("intercooler")).or(part_rig.bumper_rest[1]),
+        ];
         // (the exhaust tips are drawn at the outlet bones of the part that holds them, as those bones stand:
         // they move with that part - a hanging rear bumper takes them along)
         let outlet_src = car.outlet_part(cfg).map(|o| (o.primary.to_ascii_lowercase(), o.is_base, o.transform));
@@ -2260,8 +2272,10 @@ impl Vehicles {
                 3
             } else if p.starts_with("bumper_r") && part_rig.bumper_rest[0].is_some() {
                 5
-            } else if (p.starts_with("bumper_f") || p.starts_with("intercooler")) && part_rig.bumper_rest[1].is_some() {
+            } else if p.starts_with("bumper_f") && part_rig.bumper_rest[1].is_some() {
                 6
+            } else if p.starts_with("intercooler") && part_rig.bumper_rest[1].is_some() {
+                20
             } else if *part_xf != Mat4::IDENTITY && trunk_worlds.iter().any(|w| w.w_axis.distance(part_xf.w_axis) < 1e-3) {
                 4
             } else {
@@ -2737,7 +2751,7 @@ impl Vehicles {
                 meshes.push(MeshPrep { sname: sname.to_string(), mode, dn, sn, plate, carbon, win_cand, kbits, geo, geo_alt });
             }
         }
-        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone }
+        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones }
     }
 
     /// Tyre + rim model for a rim directory, loaded once.
@@ -2888,6 +2902,7 @@ impl Vehicles {
         let caliper_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
         let window_bindings = if model.windows.iter().any(|w| w.is_some()) { (0..2).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect() } else { Vec::new() };
         let part_bindings = match model.batch_window.iter().copied().max().unwrap_or(0) {
+            g if g >= 20 => (0..18).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
             g if g >= 13 => (0..17).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
             g if g >= 7 => (0..10).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
             g if g >= 3 => (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
@@ -4773,6 +4788,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             for (k, pb) in c.part_bindings.iter().enumerate() {
                 let parts = &c.state.parts;
                 let pm = match k {
+                    // (the intercooler: the front bumper's pose, on its own bone)
+                    17 => parts.bumpers[1].as_ref().map_or(m, |b| b.slot_draw(&m, c.model.slot_bones[2].as_ref().unwrap_or(&b.m_rest), b.detached.filter(|_| !(self.hide_player && c.is_player)).map(|l| Mat4::from_rotation_translation(l.rot, l.pos)))),
                     // (a light bar lens, on its turning pivot)
                     l if l >= 10 => c.model.cop_lights.as_ref().filter(|cl| l - 10 < cl.lamps.len()).map_or(m, |cl| m * cl.lens_delta(l - 10, c.light_t)),
                     0 => c.model.hood_slot.map_or(m, |s| m * parts.hood_delta(&s)),
@@ -4794,15 +4811,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         }
                         None => m,
                     },
-                    _ => match parts.bumpers[k - 2].as_ref() {
-                        // (the fallen piece is drawn where its body is: M_slot' = B * M_rest^-1 of the slot's mesh)
-                        Some(b) if b.detached.is_some() && !(self.hide_player && c.is_player) => {
-                            let l = b.detached.unwrap();
-                            Mat4::from_rotation_translation(l.rot, l.pos) * b.m_rest.inverse()
-                        }
-                        Some(b) => m * b.draw_delta(),
-                        None => m,
-                    },
+                    // (the fallen piece is drawn where its body is)
+                    _ => parts.bumpers[k - 2].as_ref().map_or(m, |b| b.slot_draw(&m, c.model.slot_bones[k - 2].as_ref().unwrap_or(&b.m_rest), b.detached.filter(|_| !(self.hide_player && c.is_player)).map(|l| Mat4::from_rotation_translation(l.rot, l.pos)))),
                 };
                 let mut pu = ObjectUniform { model: pm.to_cols_array_2d(), ..body_u };
                 // (a traffic model's own wheel: its rim's and matte's programs dent it too, the vertex taken in its

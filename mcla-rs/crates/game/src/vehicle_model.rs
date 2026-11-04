@@ -48,6 +48,9 @@ pub struct CarPart {
     /// the part file's own skeleton, as parsed here (the glow places - vehicles.rs `load_model_cfg`, which had parsed
     /// the file again at every build: docs/PERFORMANCE.md 2026-10-27 (14))
     pub skeleton: Option<std::sync::Arc<Skeleton>>,
+    /// the part's matrix index (word +52 of the fragment's root): the bone of the car's skeleton whose global
+    /// the part's instance hangs on (F-14987); -1 or out of range = none
+    pub matrix_index: u32,
 }
 
 pub struct CarAsset {
@@ -854,7 +857,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
             let is_base = BASE_FRAGMENTS.contains(&fname.as_str());
             let stock = (!is_anim || is_base) && (is_base || names.iter().any(|n| n.ends_with("_stk") || n.to_ascii_lowercase().ends_with("_dub")) || BASE_PARTS.contains(&primary.as_str()));
             let sockets: Vec<(String, Mat4)> = frag_sk.as_ref().map(|s| s.bones.iter().filter(|b| { let n = b.name.to_ascii_lowercase(); n.starts_with("exh_primary") || n.starts_with("exh_secondary") }).map(|b| (b.name.to_ascii_lowercase(), b.world)).collect()).unwrap_or_default();
-            Some(CarPart { file: p.clone(), names, primary: if is_base { format!("body_{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) } else { primary }, stock, meshes, mesh_bone, mesh_tag, mesh_wheel, tris, min: mn, max: mx, transform: Mat4::IDENTITY, placed: true, is_base, bones: nbones, from_parent: parent_files.contains(p), sockets, skeleton: frag_sk.map(std::sync::Arc::new) })
+            Some(CarPart { file: p.clone(), names, primary: if is_base { format!("body_{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) } else { primary }, stock, meshes, mesh_bone, mesh_tag, mesh_wheel, tris, min: mn, max: mx, transform: Mat4::IDENTITY, placed: true, is_base, bones: nbones, from_parent: parent_files.contains(p), sockets, skeleton: frag_sk.map(std::sync::Arc::new), matrix_index: Rd::new(&res).u32(52) })
         })
         .collect();
     // skeleton: the LOD0 base fragment; otherwise the part file with the most bone matrices
@@ -1017,7 +1020,14 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
         }
         let mut t = Mat4::IDENTITY;
         let mut placed = in_car_space || slot == Slot::CarSpace;
-        if !in_car_space {
+        // (the original's binding: the part's instance takes the global of the car skeleton's bone `matrix_index`
+        // as its parent, F-14987 - docs/reference/carparts/slot_pass_rule.md; the exhaust pipes are drawn at the
+        // outlets instead, their slot 23 is not enabled; the port's slot rules below stay for a part without one)
+        let bound = skeleton.as_ref().filter(|_| !part.is_base && !part.primary.to_ascii_lowercase().starts_with("exh_pipe")).and_then(|sk| sk.bones.get(part.matrix_index as usize));
+        if let Some(b) = bound {
+            t = b.world;
+            placed = true;
+        } else if !in_car_space {
             if let Some(sk) = skeleton.as_ref() {
                 // exact: the slot's global bone id
                 // (the add-on gauge - `post_gauge<n>`, a tachometer on a foot - stands on the bone
