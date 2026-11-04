@@ -430,8 +430,6 @@ pub struct CarSounds {
     steam: [Option<Handle>; 2],
     /// the last window event heard (damagemap::CarDamage::glass)
     glass_seen: Option<u64>,
-    /// the side windows' motors (left, right): the car's ANIM_PACKAGE +26 / +30
-    window_snd: [AnimSound<Handle>; 2],
 }
 
 impl CarSounds {
@@ -505,7 +503,6 @@ impl CarSounds {
             steam_hash: g.get_name("GLOBAL_CAR_PARTICLES").map_or(0, |o| be_u32(o, 22)),
             steam: [None; 2],
             glass_seen: None,
-            window_snd: window_objects(lib, &def).map(AnimSound::new),
         }
     }
 
@@ -539,9 +536,6 @@ impl CarSounds {
         }
         for (s, _) in self.scrape.iter_mut() {
             stop(lib, s);
-        }
-        for w in self.window_snd.iter_mut() {
-            w.silence(&mut Voices { lib: &mut *lib, req: Req::default() });
         }
         if let Some((a, b)) = self.nitro.take() {
             for mut s in [a, b] {
@@ -1274,19 +1268,6 @@ impl CarSounds {
     /// A window's hit sum passing 1 or 2 (F-66214 -> `F-45199` on the car's sound entity): the
     /// entity's GLOBAL_CAR_PARTICLES (+1256) +18 - CAR_BANGERS_GLASS_LARGE - once at the window's place,
     /// 0 dB, LPF field 23900, flags 4; heard whether or not the car is drawn.
-    pub fn windows(&mut self, lib: &mut SoundLib, ctl: &[crate::vehicles::WindowCtl; 2], pos: Vec3, rot: glam::Quat) {
-        for (w, c) in self.window_snd.iter_mut().zip(ctl) {
-            // (the request's place is a pointer to the tracker's +48, the part's place under the car's matrix this frame)
-            let Some(at) = w.obj.map(|o| o.at) else { continue };
-            let req = Req { player: self.player, ..Req::at(pos + rot * at) };
-            let mut v = Voices { lib: &mut *lib, req };
-            w.follow(&mut v, c.state);
-            if let Some(h) = w.looping() {
-                lib.set(h, req);
-            }
-        }
-    }
-
     pub fn glass(&mut self, lib: &mut SoundLib, dmg: &crate::damagemap::CarDamage, pos: Vec3, rot: glam::Quat) {
         // (events from before this car's sounds were made are not heard)
         let seen = *self.glass_seen.get_or_insert(dmg.glass_serial);
@@ -2163,7 +2144,6 @@ impl Fleet {
                 }
                 s.damage_parts(lib, &p.state.parts);
                 s.glass(lib, &p.state.dmg, p.state.pos, p.state.rot);
-                s.windows(lib, &p.windows, p.state.pos, p.state.rot);
                 // a police car's horn button chirps the siren (F-44589)
                 if (p.cop || ctl.police_class) && ctl.horn {
                     log::debug!("audio: the police car's horn button - the siren alert (slot free: {})", free(lib, &s.siren));
@@ -2306,7 +2286,6 @@ impl Fleet {
                 s.update(lib, &self.mats, &ci, -1, dt);
                 s.damage_parts(lib, &c.state.parts);
                 s.glass(lib, &c.state.dmg, c.state.pos, c.state.rot);
-                s.windows(lib, &c.windows, c.state.pos, c.state.rot);
                 if c.cop && !c.goon {
                     if stop_all {
                         s.siren_stop(lib);
@@ -2551,145 +2530,6 @@ fn entry<'a>(cars: &'a mut HashMap<usize, Entry>, types: &HashMap<String, Traffi
             }
         })
     }
-
-/// The garage's doors change (F-67605, ChangeDoors): the frontend sound for the DOORS part's value - any fitted
-/// part the scissor doors' opening, the stock doors' (0) the plain one.
-pub fn door_sound(value: u32) -> &'static str {
-    if value != 0 { "DOOR_SCISSOR_OPEN_MASTER" } else { "DOOR_OPEN_MASTER" }
-}
-
-// ---- the sounds of a car's animated parts (VEH_ANIM_* game objects; docs/reference/carparts/door_sounds_rule.md) ----
-
-/// A VEH_ANIM game object as the part's controller reads it (bound by F-53023 from the car's ANIM_PACKAGE): per way
-/// (0 forward - open, lower, down; 1 back) the flags byte (+10 / +23) and the start, loop and end sounds
-/// (+11 +15 +19 / +24 +28 +32), and the sound's place on the car (+49 +53 +57).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct AnimObj {
-    pub ways: [(u8, [u32; 3]); 2],
-    pub at: Vec3,
-}
-
-impl AnimObj {
-    pub fn read(o: &[u8]) -> Option<AnimObj> {
-        if o.len() < 61 {
-            return None;
-        }
-        let way = |f: usize| (o[f], [be_u32(o, f + 1), be_u32(o, f + 5), be_u32(o, f + 9)]);
-        let f = |at: usize| f32::from_bits(be_u32(o, at));
-        Some(AnimObj { ways: [way(10), way(23)], at: Vec3::new(f(49), f(53), f(57)) })
-    }
-}
-
-/// The side windows' objects of a car: its VP_ object's +58 is its ANIM_PACKAGE, whose +26 / +30 are
-/// VEH_ANIM_WINDOW_LEFT / RIGHT (F-53023; every car's package names the _DEFAULT ones).
-fn window_objects(lib: &SoundLib, def: &[u8]) -> [Option<AnimObj>; 2] {
-    let pkg = lib.game.get(be_u32(def, 58));
-    [26, 30].map(|at| pkg.and_then(|p| lib.game.get(be_u32(p, at))).and_then(AnimObj::read))
-}
-
-/// What a part's sound player asks of the voices: a one-shot (F-55796), a loop into the part's handle (F-30971),
-/// a stop (F-31667, which empties the handle).
-pub trait AnimVoices {
-    type H: Copy;
-    fn one_shot(&mut self, hash: u32);
-    fn start_loop(&mut self, hash: u32) -> Option<Self::H>;
-    fn stop(&mut self, h: Self::H);
-}
-
-struct Voices<'a> {
-    lib: &'a mut SoundLib,
-    req: Req,
-}
-
-impl AnimVoices for Voices<'_> {
-    type H = Handle;
-    fn one_shot(&mut self, hash: u32) {
-        if !is_null(hash) {
-            self.lib.play_hash(hash, self.req);
-        }
-    }
-    fn start_loop(&mut self, hash: u32) -> Option<Handle> {
-        if is_null(hash) { None } else { self.lib.play_hash(hash, self.req) }
-    }
-    fn stop(&mut self, h: Handle) {
-        self.lib.stop(h);
-    }
-}
-
-/// The sound side of an animated part's controller (the tracker's loop handle +20), following the controller's
-/// state (1 closed, 2 open, 3 opening, 4 closing): a way's start (open F-85820 -> F-35283, close F-82826 -> F-45082)
-/// stops the loop, plays the start sound once and starts the loop; its end (the update F-27851 -> F-78633 /
-/// F-56861) stops the loop and plays the end sound once. A flags bit has the original prepare a sound first and
-/// play it once it is loaded (bit 0 the start, 1 the loop, 2 the end; the controller waits meanwhile): the port's
-/// sounds are loaded, so they play at once.
-pub struct AnimSound<H> {
-    pub obj: Option<AnimObj>,
-    lp: Option<H>,
-    state: u8,
-}
-
-impl<H: Copy> AnimSound<H> {
-    pub fn new(obj: Option<AnimObj>) -> AnimSound<H> {
-        AnimSound { obj, lp: None, state: 1 }
-    }
-
-    pub fn looping(&self) -> Option<H> {
-        self.lp
-    }
-
-    fn start<V: AnimVoices<H = H>>(&mut self, v: &mut V, way: usize) {
-        let Some(o) = self.obj else { return };
-        if let Some(h) = self.lp.take() {
-            v.stop(h);
-        }
-        let s = o.ways[way].1;
-        v.one_shot(s[0]);
-        self.lp = v.start_loop(s[1]);
-    }
-
-    fn end<V: AnimVoices<H = H>>(&mut self, v: &mut V, way: usize) {
-        let Some(o) = self.obj else { return };
-        if let Some(h) = self.lp.take() {
-            v.stop(h);
-        }
-        v.one_shot(o.ways[way].1[2]);
-    }
-
-    /// The controller's state now: the starts and ends it went through since the last call, in order.
-    pub fn follow<V: AnimVoices<H = H>>(&mut self, v: &mut V, state: u8) {
-        let prev = std::mem::replace(&mut self.state, state);
-        match (prev, state) {
-            (1, 3) => self.start(v, 0),
-            (3, 2) => self.end(v, 0),
-            (2, 4) => self.start(v, 1),
-            (4, 1) => self.end(v, 1),
-            (3, 4) => {
-                self.end(v, 0);
-                self.start(v, 1);
-            }
-            (4, 3) => {
-                self.end(v, 1);
-                self.start(v, 0);
-            }
-            (1, 2) => {
-                self.start(v, 0);
-                self.end(v, 0);
-            }
-            (2, 1) => {
-                self.start(v, 1);
-                self.end(v, 1);
-            }
-            _ => {}
-        }
-    }
-
-    /// The car's sounds are released: the loop stops.
-    pub fn silence<V: AnimVoices<H = H>>(&mut self, v: &mut V) {
-        if let Some(h) = self.lp.take() {
-            v.stop(h);
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -3202,111 +3042,5 @@ mod tests {
             }
         }
         assert_eq!(n, 9941);
-    }
-}
-
-#[cfg(test)]
-mod door_sound_tests {
-    /// F-67605 run whole offline on 16 part values (tools/door_sound_reference.py): the sound it names.
-    #[test]
-    fn door_sound_is_the_originals() {
-        let mut n = 0;
-        for line in include_str!("testdata/door_sound_ref.txt").lines().filter(|l| !l.is_empty()) {
-            let (v, rest) = line.split_once(" -> ").unwrap();
-            let name = rest.split_whitespace().next().unwrap();
-            assert_eq!(super::door_sound(u32::from_str_radix(v, 16).unwrap()), name, "{line}");
-            n += 1;
-        }
-        assert_eq!(n, 16);
-    }
-}
-
-#[cfg(test)]
-mod window_sound_tests {
-    use super::{AnimObj, AnimSound, AnimVoices};
-    use crate::vehicles::WindowCtl;
-    use glam::{Mat4, Vec3};
-
-    /// The voices as the reference's stubs print them: O one-shot, L loop (a new handle), S stop.
-    struct Log(Vec<String>, u32);
-
-    impl AnimVoices for Log {
-        type H = u32;
-        fn one_shot(&mut self, hash: u32) {
-            self.0.push(format!("O{hash:08x}"));
-        }
-        fn start_loop(&mut self, hash: u32) -> Option<u32> {
-            self.1 += 1;
-            self.0.push(format!("L{hash:08x}"));
-            Some(0x5000_0000 + self.1)
-        }
-        fn stop(&mut self, h: u32) {
-            self.0.push(format!("S{h:08x}"));
-        }
-    }
-
-    /// A side window's controller and motor sounds (WindowCtl + AnimSound) against the original's open F-85820, close
-    /// F-82826 and update F-27851 with their sound players, run whole offline (tools/window_sound_reference.py):
-    /// 1,500 runs of 40 requests and frames on both window objects; per step the voice calls, the state, the time, the
-    /// clip player's time bit-equal and the sound's place.
-    #[test]
-    fn window_sounds_match_the_original() {
-        let hex = |t: &str| u32::from_str_radix(t, 16).unwrap();
-        let mut lines = include_str!("testdata/window_sound_ref.txt").lines();
-        let objs: Vec<AnimObj> = lines
-            .next()
-            .unwrap()
-            .split_whitespace()
-            .skip(1)
-            .map(|h| AnimObj::read(&(0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>()).unwrap())
-            .collect();
-        assert_eq!(objs.len(), 2);
-        let (mut cases, mut steps, mut calls) = (0, 0, 0);
-        for line in lines.filter(|l| !l.is_empty()) {
-            let (head, run) = line.split_once(" -> ").unwrap();
-            let w: Vec<u32> = head.split_whitespace().map(hex).collect();
-            let dur = f32::from_bits(w[1]);
-            let r = |k: usize| Vec3::from_array([0, 1, 2].map(|j| f32::from_bits(w[2 + 3 * k + j])));
-            let m = Mat4::from_cols(r(0).extend(0.0), r(1).extend(0.0), r(2).extend(0.0), r(3).extend(1.0));
-            let obj = objs[w[0] as usize];
-            let (mut ctl, mut snd, mut log) = (WindowCtl::default(), AnimSound::new(Some(obj)), Log(Vec::new(), 0));
-            let mut updated = false;
-            let toks: Vec<&str> = run.split_whitespace().collect();
-            let mut i = 0;
-            while i < toks.len() {
-                let op = toks[i];
-                i += 1;
-                let mut want = Vec::new();
-                while toks[i] != "=" {
-                    want.push(toks[i].to_string());
-                    i += 1;
-                }
-                let st: Vec<u32> = toks[i + 1..i + 7].iter().map(|t| hex(t)).collect();
-                i += 7;
-                log.0.clear();
-                match op {
-                    "o" => ctl.request(true, dur),
-                    "c" => ctl.request(false, dur),
-                    u => {
-                        ctl.update(f32::from_bits(hex(&u[1..])), dur);
-                        updated = true;
-                    }
-                }
-                snd.follow(&mut log, ctl.state);
-                let at = format!("case {cases} step {op}: {line}");
-                assert_eq!(log.0, want, "{at}");
-                assert_eq!([ctl.state as u32, ctl.time.to_bits(), ctl.clip_time(dur).to_bits()], [st[0], st[1], st[2]], "{at}");
-                if updated {
-                    let p = m.transform_point3(obj.at);
-                    let o = Vec3::from_array([3, 4, 5].map(|k| f32::from_bits(st[k])));
-                    assert!((p - o).abs().max_element() <= 1e-4 * (1.0 + o.abs().max_element()), "{at}: place {p} vs {o}");
-                }
-                steps += 1;
-                calls += want.len();
-            }
-            cases += 1;
-        }
-        assert_eq!((cases, steps), (1500, 60000));
-        assert!(calls > 10000, "{calls}");
     }
 }

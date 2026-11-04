@@ -658,6 +658,12 @@ pub struct Game {
     /// on no place, and the stick's release (the icon under it is then selected)
     pub map_free: Option<Vec3>,
     pub map_free_release: bool,
+    /// the cursor moved off the selected icon but still within half the reach (`F-62325`): the selection holds
+    pub map_drift: Option<Vec3>,
+    /// the selected icon's place while the cursor drifts
+    pub map_sel_pos: Option<Vec3>,
+    /// the selection's reach `NM+568` at the stick's release (`F-30942`)
+    pub map_reach: f32,
     /// where the dyno graph goes (from the car's garage file)
     pub dyno_rect: Option<[f32; 4]>,
     /// the garage's CART page is up: its cursor
@@ -1411,6 +1417,9 @@ impl Game {
             map_cursor_pos: None,
             map_free: None,
             map_free_release: false,
+            map_drift: None,
+            map_sel_pos: None,
+            map_reach: 90.0,
             dyno_rect: None,
             cart_open: None,
             loading_tag: 0.0,
@@ -2670,12 +2679,7 @@ impl Game {
         self.mc4_parts_bought(&car, &[key.clone()], price);
         let owned = self.parts_owned.entry(crate::catalog::model_of(&car).to_string()).or_default();
         if !owned.contains(&key) { owned.push(key); }
-        let was = self.xparts.entry(car).or_default().insert(sec.to_string(), index).unwrap_or(0);
-        // (the DOORS part's slot 16 applied, F-59896 -> F-67605: DOOR_SCISSOR_OPEN_MASTER for a fitted part, else
-        // DOOR_OPEN_MASTER, as a frontend sound; the part already fitted is not applied again, F-45854)
-        if sec == "scissor_door" && index != was {
-            self.opt_x.s23b.ui_obj = Some(crate::caraudio::door_sound(index as u32));
-        }
+        self.xparts.entry(car).or_default().insert(sec.to_string(), index);
         self.dirty = true;
         true
     }
@@ -12406,10 +12410,11 @@ impl Game {
                 // the original's rule (`F-99017`): the nearest place in 3D within 1 rad of the
                 // way pressed, from the cursor, in the world (up = north)
                 let pts: Vec<Vec3> = places.iter().map(|p| p.0).collect();
-                let from = self.map_free.unwrap_or(places[self.map_cursor].0);
+                let from = self.map_free.or(self.map_drift).unwrap_or(places[self.map_cursor].0);
                 if let Some(i) = crate::hudmap::pick_in_direction(from, Vec3::new(dir.x, 0.0, dir.y), &pts) {
                     self.map_cursor = i;
                     self.map_free = None;
+                    (self.map_drift, self.map_sel_pos) = (None, None);
                 }
             } else if let (Some(h), true) = (here, dir != egui::Vec2::ZERO) {
                 // the nearest place within a quarter turn of the way pressed
@@ -12425,15 +12430,14 @@ impl Game {
                     self.map_cursor = i;
                 }
             }
-            // (stick released: the icon under the cursor is selected - `F-63282`; reach = the
-            // ring's radius at the cursor's distance from the camera)
-            if let (true, Some(fp)) = (std::mem::take(&mut self.map_free_release), self.map_free) {
-                let cam = self.hm.as_ref().map_or(Vec3::new(0.0, 9000.0, 0.0), |h| h.gps_cam);
-                let reach = 1.3424 * 139.0 * ((fp - cam).length() * 7e-5 + 0.04);
-                let best = (0..places.len()).map(|i| (i, glam::Vec2::new(places[i].0.x - fp.x, places[i].0.z - fp.z).length())).filter(|x| x.1 < reach).min_by(|a, b| a.1.total_cmp(&b.1));
-                if let Some((i, _)) = best {
+            // (stick released: the element nearest the cursor within the reach `NM+568` is selected - `F-63282`
+            // -> `F-97746` with its force flag; none: the cursor stays as it is)
+            if let (true, Some(fp)) = (std::mem::take(&mut self.map_free_release), self.map_free.or(self.map_drift)) {
+                let pts: Vec<Vec3> = places.iter().map(|p| p.0).collect();
+                if let Some(i) = crate::hudmap::pick_nearest(fp, self.map_reach, &pts) {
                     self.map_cursor = i;
                     self.map_free = None;
+                    (self.map_drift, self.map_sel_pos) = (None, None);
                 }
             }
             // MAP MODE (START, `F-74616` event 55): the road overlay with the street names
@@ -12454,9 +12458,11 @@ impl Game {
                 (self.gps_pick, self.mission_target) = (Some(places[self.map_cursor].0), None);
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             }
-            let (w, name, kind) = match self.map_free {
-                Some(fp) => (fp, String::new(), String::new()),
-                None => places[self.map_cursor].clone(),
+            let (w, name, kind) = match (self.map_free, self.map_drift) {
+                (Some(fp), _) => (fp, String::new(), String::new()),
+                // (drifting: the cursor where it is, the selected icon's name)
+                (None, Some(dp)) => (dp, places[self.map_cursor].1.clone(), places[self.map_cursor].2.clone()),
+                (None, None) => places[self.map_cursor].clone(),
             };
             self.map_cursor_pos = Some(w);
             cursor_at = to_screen(w).map(|q| (q, name, kind));

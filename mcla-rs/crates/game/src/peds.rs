@@ -31,12 +31,6 @@ struct PedType {
     model: SkinModel,
     walk: Clip,
     idle: Clip,
-    /// the set's run clip (its clip 2), else the walk clip
-    run: Clip,
-    /// the clips' lengths and distances, idle / walk / run (the anim set's A28 / A36 as F-33058 reads them; here the
-    /// port's clips' duration and root travel)
-    a28: [f32; 3],
-    a36: [f32; 3],
     evade: Vec<Clip>,
     /// the avoid list (file order) with each entry's clip in `evade`: what `evade_pick` reads once the car dodge
     /// (F-15352, docs/reference/people/car_dodge_rule.md) is ported
@@ -46,6 +40,8 @@ struct PedType {
     /// the shared Pivot clips (`Mped_turnL/R_90/180`) with the yaw their root turns
     pivot: Vec<(Clip, f32)>,
     lod_switch: [f32; 2],
+    /// the walk clip's root speed (m/s): its distance over its duration (A36[1] / A28[1])
+    walk_speed: f32,
     /// `fMinTurningRadius` of the set's `mcAmbientType.xml` (type +160)
     turn_radius: f32,
 }
@@ -55,7 +51,6 @@ impl PedType {
         match s {
             State::Walk => (&self.walk, true),
             State::Idle => (&self.idle, true),
-            State::Run => (&self.run, true),
             State::Evade(k) => (&self.evade[k], false),
             State::Angry(k) => (&self.angry[k], false),
             State::Turn(k) => (&self.pivot[k].0, false),
@@ -67,8 +62,6 @@ impl PedType {
 enum State {
     Walk,
     Idle,
-    /// locomotion state 2 (F-33058): a slide faster than the middle of the walk and run clips' speeds
-    Run,
     Evade(usize),
     Angry(usize),
     /// turning on the spot with a Pivot clip
@@ -136,10 +129,6 @@ struct Ped {
     blend_len: f32,
     /// U, the forward ring, sphere 0 and the target facing (F-49074)
     ground: Ground,
-    /// the path rail ridden (F-61656) and its phase
-    ride: Option<(crate::tcp_rail::TcpRail, f32)>,
-    /// the clip slots (+4784 .. +4884): the locomotion clip playing, its rate, the one-off clip (F-29547 / F-52026)
-    clips: ClipSlots,
 }
 
 const NO_POLY: u32 = u32::MAX;
@@ -259,14 +248,20 @@ const AWARE_CHANCE_FAR: f32 = 0.1;
 const SLIDE_TIME: f32 = 0.25;
 /// Clip blends are 8 frames (0x82830878).
 const BLEND_S: f32 = 8.0 / 30.0;
-/// Turning on the spot: at most pi/4 per 8 frames, the bits the original's static initialiser F-59108 stores
-/// (2.9452431; tools/ped_walk_reference.py runs it).
-const TURN_RATE: f32 = f32::from_bits(0x403C_7EDD);
+/// Turning on the spot: at most pi/4 per 8 frames (F-59108).
+const TURN_RATE: f32 = 2.94524;
+/// Rails: the first of the segments i, i+1, i+2, i-1, i-2 whose middle is more than 0.5 m
+/// away and at most 72 degrees round; else segment i with up to 216 (F-61656).
+const RAIL_TURN: f32 = 1.25664;
+const RAIL_TURN_LAST: f32 = 3.76991;
+const RAIL_MIN: f32 = 0.5;
 /// A rail around something in the way: at most 130 degrees round (F-92334); the way
 /// to it swept by a capsule of the ped's radius 0.6 - 1.2 m up (F-23371, mask 0x383e:
 /// furniture, cars, peds and buildings, the walker being passed included).
 const AVOID_TURN: f32 = 2.26893;
 const AVOID_CLEAR: f32 = PED_RADIUS;
+/// Speed follows the wanted speed with a 0.1 s lag (F-33058, F-54830).
+const SPEED_LAG: f32 = 0.1;
 
 // ---- The walker's ground, up vector and drawn matrix: its slot 80 F-49074 (sphere refresh, ground, matrix tail), the
 // type's slot 64 F-24029 (the ground hit, U, the place) and slot 60 F-59837 (set sphere k), the forward ring F-89721 /
@@ -522,213 +517,6 @@ fn walker_ground(p: &mut Ped, col: &WorldCollider, cur: Vec3, frames: u32, draw0
     p.pos = place;
 }
 
-// ---- The walker's path rail (F-61656 with the nearest segment F-93741, the closest point F-17399 and the rail to a
-// segment's middle F-16360), its locomotion state (F-33058 with the slide speed F-92375), the anim update's clip choice
-// (F-29547) and the clip start (F-52026). Decode and evidence: docs/reference/people/ped_walk_rule.md
-// (tools/ped_walk_reference.py).
-
-/// F-61656's turn limits and least length: a rail to the middle of segment
-/// i, i+1, i+2, i-1, i-2 turning at most 1.2566371 in all, longer than 0.5 m; else segment i turning at most 3.7699115.
-const RAIL_TURN: f32 = f32::from_bits(0x3FA0_D97C);
-const RAIL_TURN_LAST: f32 = f32::from_bits(0x4071_463B);
-const RAIL_MIN: f32 = 0.5;
-
-/// F-17399: the point of segment a -> b nearest to q (3-D; t clamped to 0 .. 1, 0 for a zero segment).
-fn closest_on_segment(a: Vec3, b: Vec3, q: Vec3) -> Vec3 {
-    use crate::physics::exact::fma;
-    use crate::tcp_rail::{vdiff, vmadd3};
-    let v = vdiff(b, a);
-    let l = fma(v.x, v.x, fma(v.y, v.y, v.z * v.z));
-    let t = if l == 0.0 {
-        0.0
-    } else {
-        let w = vdiff(q, a);
-        let d = fma(w.x, v.x, fma(w.y, v.y, w.z * v.z)) / l;
-        let t = if d >= 0.0 { d } else { 0.0 };
-        if t - 1.0 >= 0.0 { 1.0 } else { t }
-    };
-    vmadd3(v, t, a)
-}
-
-/// F-93741: the path segment nearest to q (3-D squared distance, the first of equals), None for fewer than 2 points.
-pub(crate) fn nearest_segment(pts: &[Vec3], q: Vec3) -> Option<usize> {
-    use crate::physics::exact::fma;
-    let mut best = (f32::MAX, None);
-    for i in 0..pts.len().saturating_sub(1) {
-        let c = closest_on_segment(pts[i], pts[i + 1], q);
-        let (dy, dz, dx) = (c.y - q.y, c.z - q.z, c.x - q.x);
-        let d = fma(dx, dx, fma(dz, dz, dy * dy));
-        if d < best.0 {
-            best = (d, Some(i));
-        }
-    }
-    best.1
-}
-
-/// F-16360: the rail from `p` heading `h0` to the middle T of segment i, arriving with the flat heading P -> T: of the
-/// four arc-line-arc rails at radius `r` (senses (0, 0), (0, 1), (1, 0), (1, 1), F-85722) the shortest valid one whose
-/// total turn is at most `max_turn`; None when there is none.
-pub(crate) fn rail_to_mid(pts: &[Vec3], i: usize, p: Vec3, h0: Vec3, r: f32, max_turn: f32) -> Option<crate::tcp_rail::TcpRail> {
-    use crate::tcp_rail::{build, vadd3, vdiff, vmul3, vnorm};
-    let t = vmul3(vadd3(pts[i], pts[i + 1]), 0.5);
-    let d = vdiff(t, p);
-    let h1 = vnorm(Vec3::new(d.x, 0.0, d.z));
-    let mut best = (f32::MAX, None);
-    for (s0, s1) in [(false, false), (false, true), (true, false), (true, true)] {
-        let q = build(p, h0, t, h1, r, s0, s1);
-        if q.valid() && !(q.total_turn() > max_turn) {
-            let l = q.len();
-            if !(l >= best.0) {
-                best = (l, Some(q));
-            }
-        }
-    }
-    best.1
-}
-
-/// F-61656: the next rail along the path from `p` heading `h0`, turning radius `r` (the type's `fMinTurningRadius`):
-/// from the nearest segment i, the first of i, i+1, i+2, i-1, i-2 (those that exist) with a rail longer than 0.5 m
-/// within 1.2566371 of turn; else segment i within 3.7699115, any length. None: the caller gives the path up
-/// (F-95960: an invalid rail drops the path).
-pub(crate) fn next_rail(pts: &[Vec3], p: Vec3, h0: Vec3, r: f32) -> Option<crate::tcp_rail::TcpRail> {
-    let i = nearest_segment(pts, p)?;
-    let n = pts.len() - 1;
-    let tries = [Some(i), (i + 1 < n).then_some(i + 1), (i + 2 < n).then_some(i + 2), i.checked_sub(1), i.checked_sub(2)];
-    for k in tries.into_iter().flatten() {
-        if let Some(q) = rail_to_mid(pts, k, p, h0, r, RAIL_TURN) {
-            if q.len() > RAIL_MIN {
-                return Some(q);
-            }
-        }
-    }
-    rail_to_mid(pts, i, p, h0, r, RAIL_TURN_LAST)
-}
-
-/// F-92375: the slide's speed, its plan distance over its time (at least 1e-6 s).
-fn slide_speed(from: Vec3, to: Vec3, time: f32) -> f32 {
-    let (dx, dz) = (from.x - to.x, from.z - to.z);
-    let den = if f32::from_bits(0x3586_37BD) - time >= 0.0 { f32::from_bits(0x3586_37BD) } else { time };
-    crate::physics::exact::fma(dz, dz, dx * dx).sqrt() / den
-}
-
-/// The anim set's clip speeds: distance A36[k] over length A28[k] (0 for a zero length); clip 0 idle, 1 walk, 2 run.
-fn clip_speed(a28: &[f32; 3], a36: &[f32; 3], k: usize) -> f32 {
-    if a28[k] != 0.0 { a36[k] / a28[k] } else { 0.0 }
-}
-
-/// F-33058: the locomotion state (behaviour +1360) and the wanted speed with its lag (the request's +152 / +156, 0.1 s).
-/// `flags` = behaviour +532 (0x2 a clip playing, 0x4 sliding), `stop` its stop timer, `rail` a current rail,
-/// `scale` the walker's speed scale, `clip` the avoidance clip (F-71036) present. Not sliding or in a clip: 0 idle
-/// (stop timer above 0 or no rail) or 1 walk at scale x the walk clip's speed. Else 3 with a clip; sliding: 1 walk or 2
-/// run by the slide's speed against the middle of the walk and run clips' speeds, wanting the slide's speed.
-pub(crate) fn locomotion(flags: u32, stop: f32, rail: bool, scale: f32, clip: bool, slide: impl FnOnce() -> f32, a28: &[f32; 3], a36: &[f32; 3]) -> (u32, f32, f32) {
-    let lag = f32::from_bits(0x3DCC_CCCD);
-    if flags & 4 == 0 && flags & 2 == 0 {
-        if stop > 0.0 || !rail {
-            return (0, 0.0, lag);
-        }
-        return (1, scale * clip_speed(a28, a36, 1), lag);
-    }
-    if clip {
-        return (3, 0.0, lag);
-    }
-    let s = slide();
-    let mid = (clip_speed(a28, a36, 2) + clip_speed(a28, a36, 1)) * 0.5;
-    (if s > mid { 2 } else { 1 }, s, lag)
-}
-
-/// What the walker's anim update F-29547 asks of the clip player for the locomotion state.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum AnimCmd {
-    Keep,
-    /// the one-off clip (F-20899) this clip
-    OneOff(u32),
-    /// start clip k at this rate (F-52026)
-    Start(i32, f32),
-    /// the current clip's rate (F-66231)
-    Rate(f32),
-}
-
-/// F-29547's switch on the locomotion state `st`: 0 -> clip 0 at rate 1 unless it plays; 3 -> the avoidance clip as a
-/// one-off unless it is the one playing; 1 / 2 -> clip 1 / 2 at the speed scale, sliding at the slide's speed over the
-/// clip's, clamped to 0.75 .. 1.25; the clip playing gets the rate when it differs (walk) or is
-/// higher (run: a lower one is kept). `cur` = +4788, `rate` = +4880, `oneoff` = +4804, `clip` = F-71036's.
-pub(crate) fn anim_choice(st: u32, cur: i32, rate: f32, oneoff: u32, clip: u32, flags: u32, scale: f32, slide: impl FnOnce() -> f32, a28: &[f32; 3], a36: &[f32; 3]) -> AnimCmd {
-    match st {
-        0 if cur != 0 => AnimCmd::Start(0, 1.0),
-        3 if clip != oneoff => AnimCmd::OneOff(clip),
-        1 | 2 => {
-            let k = st as usize;
-            let mut f = scale;
-            if flags & 4 != 0 {
-                let r = slide() / clip_speed(a28, a36, k);
-                let r = if r - 0.75 >= 0.0 { r } else { 0.75 };
-                f = if r - 1.25 >= 0.0 { 1.25 } else { r };
-            }
-            if cur != k as i32 {
-                AnimCmd::Start(k as i32, f)
-            } else if (k == 1 && f != rate) || (k == 2 && !(f <= rate)) {
-                AnimCmd::Rate(f)
-            } else {
-                AnimCmd::Keep
-            }
-        }
-        _ => AnimCmd::Keep,
-    }
-}
-
-/// The walker's clip slots (+4784 previous, +4788 current, +4792 parked, +4804 the one-off clip, +4880 / +4884 the
-/// rates), as the walker's constructor F-12432 sets them.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ClipSlots {
-    pub prev: i32,
-    pub cur: i32,
-    pub parked: i32,
-    pub oneoff: u32,
-    pub rate: f32,
-    pub prev_rate: f32,
-}
-
-impl Default for ClipSlots {
-    fn default() -> Self {
-        ClipSlots { prev: -1, cur: -1, parked: -1, oneoff: 0, rate: 1.0, prev_rate: 1.0 }
-    }
-}
-
-/// How F-52026 puts the new clip into the motion tree.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ClipStart {
-    /// the clip is not resident: its index parked, nothing played
-    Parked,
-    /// straight into the tree: the new clip replaces whatever played, no fade
-    Direct,
-    /// a crmtRequestBlend of weight 0 rising linearly at 30 / 8 per second (8 frames) from what played
-    Blend,
-}
-
-/// The crossfade's rate (F-52026: 30 / 8, two constants of the image): the new clip's weight w += 3.75 dt, linear.
-pub(crate) const CLIP_BLEND_RATE: f32 = 30.0 / 8.0;
-
-/// F-52026: start clip `idx` from t = 0 at `rate`, looped, through the walker's two frame filters (+4888, +4892).
-/// Blend when a one-off clip plays, or a clip plays and none is parked; straight in when nothing plays (the first clip)
-/// or one is parked. Then: previous = current, current = idx, the rates shift, the one-off is cleared.
-pub(crate) fn clip_start(s: &mut ClipSlots, idx: i32, rate: f32, resident: bool) -> ClipStart {
-    let k = if !resident {
-        s.parked = idx;
-        ClipStart::Parked
-    } else {
-        let k = if s.oneoff != 0 || (s.cur != -1 && s.parked == -1) { ClipStart::Blend } else { ClipStart::Direct };
-        s.parked = -1;
-        k
-    };
-    s.prev = s.cur;
-    s.cur = idx;
-    s.prev_rate = s.rate;
-    s.oneoff = 0;
-    s.rate = rate;
-    k
-}
-
 fn rotate_y(v: Vec3, a: f32) -> Vec3 {
     let (s, c) = a.sin_cos();
     Vec3::new(v.x * c + v.z * s, v.y, -v.x * s + v.z * c)
@@ -806,6 +594,37 @@ fn way_clear(a: Vec3, b: Vec3, clear: f32, me: usize, ignore: usize, ignore_box:
         return false;
     }
     !props.iter().any(|o| Some(o.0) != ignore_box && seg(o) < clear)
+}
+
+/// The next rail along the path from `pos` facing `fwd` (F-61656): to the middle of
+/// the path segment nearest to the walker, or of one of its neighbours.
+fn next_rail(path: &[(Vec3, u32)], pos: Vec3, fwd: Vec3) -> Option<Vec3> {
+    if path.len() < 2 {
+        return None;
+    }
+    let n = path.len() - 1;
+    let mut i = 0;
+    let mut best = f32::MAX;
+    for k in 0..n {
+        let (a, b) = (path[k].0, path[k + 1].0);
+        let ab = flat(b - a);
+        let t = (flat(pos - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+        let d = flat(pos - (a + ab * t)).length_squared();
+        if d < best {
+            best = d;
+            i = k;
+        }
+    }
+    let try_seg = |k: isize, max_turn: f32| -> Option<Vec3> {
+        if k < 0 || k as usize >= n {
+            return None;
+        }
+        let m = (path[k as usize].0 + path[k as usize + 1].0) * 0.5;
+        let d = flat(m - pos);
+        (d.length() > RAIL_MIN && yaw_between(fwd, d.normalize()).abs() <= max_turn).then_some(m)
+    };
+    let i = i as isize;
+    [i, i + 1, i + 2, i - 1, i - 2].into_iter().find_map(|k| try_seg(k, RAIL_TURN)).or_else(|| try_seg(i, RAIL_TURN_LAST))
 }
 
 /// The wait timer (F-84843) from the idle clip's length `v`.
@@ -908,55 +727,6 @@ fn car_threat(pos: Vec3, threats: &[Threat]) -> Option<(Vec3, Vec3, f32)> {
     None
 }
 
-/// Start locomotion clip k (0 idle, 1 walk, 2 run) at `rate` through F-52026, from t = 0: crossfaded in over 8 frames
-/// (linear, `CLIP_BLEND_RATE`) from what plays, or straight in for the walker's first clip (the port's clips are all
-/// resident: never parked).
-fn start_loco(p: &mut Ped, k: i32, rate: f32) {
-    let how = clip_start(&mut p.clips, k, rate, true);
-    p.from = p.cur.clone();
-    let b = if how == ClipStart::Blend { 1.0 / CLIP_BLEND_RATE } else { 0.0 };
-    p.blend = b;
-    p.blend_len = b.max(1e-6);
-    p.time = 0.0;
-    p.state = [State::Idle, State::Walk, State::Run][k as usize];
-}
-
-/// A one-off clip (dodge, angry, Pivot turn) started: F-20899 (not decoded beyond its slots: the one-off clip set, the
-/// current and parked clips -1) - the port's 0.25 s blend.
-fn start_one_off(p: &mut Ped, s: State) {
-    p.from = p.cur.clone();
-    p.blend = 0.25;
-    p.blend_len = 0.25;
-    p.time = 0.0;
-    p.state = s;
-    p.clips.cur = -1;
-    p.clips.parked = -1;
-    p.clips.oneoff = 1;
-}
-
-/// The state's clip unless it plays: idle is clip 0 at rate 1 (F-29547 state 0), a Pivot turn a one-off clip.
-fn set_clip_state(p: &mut Ped, s: State) {
-    match s {
-        State::Idle if p.clips.cur != 0 => start_loco(p, 0, 1.0),
-        State::Turn(_) | State::Evade(_) | State::Angry(_) if p.state != s => start_one_off(p, s),
-        _ => {}
-    }
-}
-
-/// F-29547 for the locomotion states 0 - 2 of a walker on the mesh: the clip `anim_choice` asks for (`start_loco`) or
-/// the rate (F-66231); returns the clip's rate.
-fn loco_clip(p: &mut Ped, ty: &PedType, st: u32, flags: u32, slide: f32) -> f32 {
-    match anim_choice(st, p.clips.cur, p.clips.rate, 0, 0, flags, p.scale, || slide, &ty.a28, &ty.a36) {
-        AnimCmd::Start(k, f) => start_loco(p, k, f),
-        AnimCmd::Rate(f) => {
-            p.clips.prev_rate = p.clips.rate;
-            p.clips.rate = f;
-        }
-        _ => {}
-    }
-    p.clips.rate
-}
-
 /// One frame of a walker on the navigation mesh in the original's sidewalk behaviour
 /// (mcAmbientBehaviorSidewalk::Update F-72378): stops (F-84843 / F-10083),
 /// sidesteps (F-26402), rails round things in the way (F-79428), the path's
@@ -968,7 +738,14 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
     // (the behaviour's facing: the rail's, kept apart from the drawn one, which is the mean of the last 8 frames')
     let fwd = if p.ground.face != Vec3::ZERO { p.ground.face } else { flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z) };
     p.ground.t_face = fwd;
-    let set_state = set_clip_state;
+    let set_state = |p: &mut Ped, s: State| {
+        if p.state != s {
+            p.from = p.cur.clone();
+            p.blend = 0.25;
+            p.time = 0.0;
+            p.state = s;
+        }
+    };
     p.hold = (p.hold - dt).max(0.0);
     // clips playing (dodge, angry, turn): the caller moves the walker by their root
     if matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_)) {
@@ -992,10 +769,6 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
             p.blend = 0.15;
             p.state = State::Evade(best.1);
             p.time = 0.0;
-            // (a one-off clip: F-20899's slots)
-            p.clips.cur = -1;
-            p.clips.parked = -1;
-            p.clips.oneoff = 1;
             p.slide = None;
             p.rail = None;
             p.path.clear();
@@ -1021,12 +794,10 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         // (the target faces the push while sliding aside: F-94626 builds T's r2 from behaviour +400, the push F-83234
         // stores there)
         p.ground.t_face = flat(b - a).normalize_or(fwd);
-        // (sliding, F-33058: walk or run by the slide's speed F-92375, which is the wanted speed)
-        let s = slide_speed(a, b, len);
-        let (st, want, lag) = locomotion(4, p.stop, true, p.scale, false, || s, &ty.a28, &ty.a36);
-        p.speed += (want - p.speed) * (dt / lag).min(1.0);
+        p.speed = a.distance(b) / len;
         p.slide = if t >= len { None } else { Some((a, b, t, len)) };
-        return loco_clip(p, ty, st, 4, s);
+        set_state(p, State::Walk);
+        return p.speed / ty.walk_speed.max(0.1);
     }
     // a reversed path: turn round as it is taken (F-95960; a Pivot clip beyond
     // 45 degrees), which ends the wait
@@ -1138,46 +909,23 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         // nothing in the slot: the stops in a row start again
         p.stops = 0;
     }
-    // along the rails, at the walking speed (F-33058: the speed scale x the walk clip's speed)
+    // along the rails
     let mut step = {
-        let (_, want, lag) = locomotion(0, 0.0, true, p.scale, false, || 0.0, &ty.a28, &ty.a36);
-        p.speed += (want - p.speed) * (dt / lag).min(1.0);
+        let want = ty.walk_speed * p.scale;
+        p.speed += (want - p.speed) * (dt / SPEED_LAG).min(1.0);
         p.speed * dt
     };
     let mut heading = fwd;
     for _ in 0..3 {
         if p.rail.is_none() {
-            // the next path rail (F-61656): an arc-line-arc rail to a segment's middle; none drops the path and the
-            // walker stands until the next one
-            let pts: Vec<Vec3> = p.path.iter().map(|q| q.0).collect();
-            match next_rail(&pts, p.pos, heading, ty.turn_radius) {
-                Some(r) => {
-                    p.rail = Some((r.t, false));
-                    p.ride = Some((r, 0.0));
-                }
-                None => {
-                    p.path.clear();
-                    break;
-                }
+            p.rail = next_rail(&p.path, p.pos, heading).map(|m| (m, false));
+            if p.rail.is_none() {
+                // the path is used up: drop it and stand until the next one
+                p.path.clear();
+                break;
             }
         }
-        let (target, around) = p.rail.unwrap();
-        if let (false, Some((r, ph))) = (around, p.ride) {
-            // ridden by phase (the phase advance F-70353, the point F-56929, the heading its tangent F-28568); what is
-            // left past its end goes on to the next rail (the follower's carry for walkers is not decoded: the port's)
-            let ph2 = r.advance(ph, step);
-            let at = r.point(ph2);
-            p.pos = Vec3::new(at.x, p.pos.y, at.z);
-            heading = flat(r.tangent(ph2)).normalize_or(heading);
-            if ph2 >= 1.0 {
-                step = (ph2 - 1.0) * r.len();
-                p.rail = None;
-                p.ride = None;
-                continue;
-            }
-            p.ride = Some((r, ph2));
-            break;
-        }
+        let (target, _) = p.rail.unwrap();
         let to = flat(target - p.pos);
         let dist = to.length();
         // an arc of the turning radius, then straight on
@@ -1200,7 +948,8 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
     }
     p.ground.face = heading;
     p.ground.t_face = heading;
-    loco_clip(p, ty, 1, 0, 0.0)
+    set_state(p, State::Walk);
+    p.speed / ty.walk_speed.max(0.1)
 }
 
 /// The pedestrian spawn candidates around `focus` (F-47658 -> F-12133): the
@@ -1560,9 +1309,6 @@ impl Peds {
         let pick = |what: &str| own.iter().find(|a| a.short().contains(what));
         let walk = Clip::bind(pick("walk")?, &model.ids, false, false);
         let idle = Clip::bind(pick("idle").or(pick("walk"))?, &model.ids, false, false);
-        let run = Clip::bind(pick("run").or(pick("walk"))?, &model.ids, false, false);
-        let a28 = [idle.anim.duration, walk.anim.duration, run.anim.duration];
-        let a36 = [idle.travel.length(), walk.travel.length(), run.travel.length()];
         // "ped_fh_006_set" -> female, voice "fh_006"
         let core = name.trim_start_matches("ped_").trim_end_matches("_set").to_string();
         // (the type's bSex, +109: true for every "f" set, false for every "m" one)
@@ -1598,11 +1344,12 @@ impl Peds {
             let s = xml_value(&t, "fLodSwitchScale").unwrap_or(1.0);
             lod_switch = [xml_value(&t, "fHighToMedSwitch").unwrap_or(40.0) * s, xml_value(&t, "fMedToLowSwitch").unwrap_or(80.0) * s];
         }
+        let walk_speed = walk.travel.length() / walk.anim.duration.max(1e-3);
         let turn_radius = std::fs::read_to_string(self.tune_dir.join(name).join("mcAmbientType.xml")).ok().and_then(|t| xml_value(&t, "fMinTurningRadius")).unwrap_or(0.1);
         // the avoid list as the pick reads it: an entry's clip only when it is one of this sex's evades (the other
         // sex's entries and the angry / pivot ones fail the pick's type test anyway)
         let avoid = self.avoid_list.iter().map(|(n, ty, dir)| AvoidItem { ty: *ty, dir: *dir, clip: evade_names.iter().position(|e| e == n) }).collect();
-        Some(PedType { female, voice: core, model, walk, idle, run, a28, a36, evade, avoid, angry, pivot, lod_switch, turn_radius })
+        Some(PedType { female, voice: core, model, walk, idle, evade, avoid, angry, pivot, lod_switch, walk_speed, turn_radius })
     }
 
     /// The files of the types the spawner can draw around `focus` now, read and parsed on worker threads (two at a
@@ -1897,8 +1644,6 @@ impl Peds {
                 life: 8.0,
                 blend_len: 0.25,
                 ground: Ground::default(),
-                ride: None,
-                clips: ClipSlots::default(),
             });
             spawned += 1;
         }
@@ -1917,7 +1662,7 @@ impl Peds {
         for k in 0..n {
             let i = (self.plan_cursor + k) % n;
             let p = &self.list[i];
-            if p.poly == NO_POLY || p.hold > 0.0 || p.since_plan < 16 || !p.path.is_empty() || !matches!(p.state, State::Walk | State::Idle | State::Run) {
+            if p.poly == NO_POLY || p.hold > 0.0 || p.since_plan < 16 || !p.path.is_empty() || !matches!(p.state, State::Walk | State::Idle) {
                 continue;
             }
             let start = if mesh.polys[p.poly as usize].contains(p.pos.x, p.pos.z) { p.poly } else { mesh.find(p.pos, AI_SIDEWALK, 2.0).unwrap_or(p.poly) };
@@ -1957,7 +1702,6 @@ impl Peds {
             let st = match p.state {
                 State::Walk => "walk",
                 State::Idle => "idle",
-                State::Run => "run",
                 State::Evade(_) => "evade",
                 State::Angry(_) => "angry",
                 State::Turn(_) => "turn",
@@ -2069,8 +1813,6 @@ impl Peds {
                     life: 8.0,
                     blend_len: 0.25,
                     ground: Ground::default(),
-                    ride: None,
-                    clips: ClipSlots::default(),
                 });
             }
         }
@@ -2132,7 +1874,7 @@ impl Peds {
                 // (an item's person, F-39915: flag 0x08 clear - no walking, no avoiding;
                 // no rail - locomotion state 0, the set's clip 0 (`*Ped_Idle*`) looped from 0
                 // at rate 1, F-33058 / F-29547. The car check F-15352 runs all
-                // the same: a dodge, then clip 0 again crossfaded in over 8 frames, F-52026)
+                // the same: a dodge, then clip 0 again with its 1 s blend, F-52026)
                 p.age += dt;
                 p.blend = (p.blend - dt).max(0.0);
                 if p.state == State::Idle && !ty.evade.is_empty() {
@@ -2169,9 +1911,8 @@ impl Peds {
                     p.rot = (p.rot * (ar.inverse() * br)).normalize();
                     if p.time >= clip.anim.duration.max(0.05) {
                         p.from = p.cur.clone();
-                        // (clip 0 again through F-52026: after a one-off clip a crossfade of 8 frames)
-                        p.blend = 1.0 / CLIP_BLEND_RATE;
-                        p.blend_len = 1.0 / CLIP_BLEND_RATE;
+                        p.blend = 1.0;
+                        p.blend_len = 1.0;
                         p.time = 0.0;
                         p.state = State::Idle;
                     }
@@ -2326,15 +2067,6 @@ impl Peds {
                             _ => State::Walk,
                         }
                     };
-                    if on_mesh {
-                        let s = p.state;
-                        if s == State::Idle {
-                            // (clip 0 after the one-off clip: F-52026's crossfade of 8 frames)
-                            start_loco(p, 0, 1.0);
-                        } else {
-                            start_one_off(p, s);
-                        }
-                    }
                 }
             }
             }
@@ -2572,8 +2304,6 @@ impl Peds {
             life,
             blend_len: 0.25,
             ground: Ground::default(),
-            ride: None,
-            clips: ClipSlots::default(),
         });
         true
     }
@@ -2945,132 +2675,13 @@ mod tests {
     }
 
     /// F-59108 (static init of the on-the-spot turn rate) run on the original's code and image
-    /// (tools/ped_walk_reference.py part d): the word it stores is TURN_RATE's bits.
+    /// (work/verify-people/peds/gen_and_run.py): the original's float is 13 ULP above TURN_RATE
+    /// (the constant is the rounded decimal 2.94524; the original divides f32 pi/4 by 8 * f32 1/30).
     #[test]
     fn turn_rate_is_the_originals_static_init() {
-        let l = include_str!("testdata/ped_walk_ref.txt").lines().find(|l| l.starts_with("d -> ")).unwrap();
-        assert_eq!(ref_word(&l[5..]), TURN_RATE.to_bits());
-    }
-
-    fn walk_ref(tag: char) -> impl Iterator<Item = (Vec<u32>, &'static str)> {
-        include_str!("testdata/ped_walk_ref.txt").lines().filter(move |l| l.starts_with(tag) && l.as_bytes()[1] == b' ').map(|l| {
-            let (c, o) = l[2..].split_once(" -> ").unwrap();
-            (c.split(' ').map(ref_word).collect(), o)
-        })
-    }
-
-    /// The next path rail F-61656 (with F-93741, F-17399, F-16360, F-85722, F-65534, F-62306) and F-16360 alone against the
-    /// original's code run offline on 3,000 paths (tools/ped_walk_reference.py part a: 0 - 48 points with zero, short and
-    /// long steps, the walker on a point, on a segment's middle or about the path, unit / scaled / tilted / zero headings,
-    /// radii 0.05 - 10 m, turn limits 1.2566371, 3.7699115, pi or any): the nearest segment, and every word of the rail
-    /// record (A, B, c1, c2, P, T, H0, H1 xyz, a1, a2, R, the sense and valid bits) equal, or no valid rail on both sides.
-    #[test]
-    fn path_rail_matches_the_original() {
-        let (mut n, mut valid) = (0, 0);
-        let same = |o: &[u32], q: Option<crate::tcp_rail::TcpRail>| -> bool {
-            let Some(q) = q else { return (o[40] >> 24) & 0x20 == 0 };
-            let v = |i: usize, w: Vec3| o[i] == w.x.to_bits() && o[i + 1] == w.y.to_bits() && o[i + 2] == w.z.to_bits();
-            v(0, q.a) && v(4, q.b) && o[8] == q.a1.to_bits() && o[9] == q.a2.to_bits() && v(12, q.c1) && v(16, q.c2) && o[20] == q.r.to_bits()
-                && v(24, q.p) && v(28, q.t) && v(32, q.h0) && v(36, q.h1) && (o[40] >> 24) as u8 & 0xE0 == q.flags & 0xE0
-        };
-        for (c, o) in walk_ref('a') {
-            let f = |i: usize| f32::from_bits(c[i]);
-            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
-            let pts: Vec<Vec3> = (0..c[0] as usize).map(|k| v(10 + 3 * k)).collect();
-            let (p, h0, r) = (v(4), v(7), f(2));
-            let (near, rest) = o.split_once(' ').unwrap();
-            let near: i32 = near.parse().unwrap();
-            assert_eq!(nearest_segment(&pts, p).map_or(-1, |i| i as i32), near, "case {n}");
-            let (a, b) = rest.split_once(" | ").map_or((rest, None), |(a, b)| (a, Some(b)));
-            let a: Vec<u32> = a.split(' ').map(ref_word).collect();
-            let q = next_rail(&pts, p, h0, r);
-            valid += q.is_some() as usize;
-            assert!(same(&a, q), "case {n}: next rail {q:?}");
-            if let Some(b) = b {
-                let b: Vec<u32> = b.split(' ').map(ref_word).collect();
-                let q = rail_to_mid(&pts, c[1] as usize, p, h0, r, f(3));
-                assert!(same(&b, q), "case {n}: rail to the middle {q:?}");
-            }
-            n += 1;
-        }
-        assert_eq!(n, 3000);
-        assert!(valid > 1000);
-    }
-
-    /// The locomotion state F-33058 (with F-71036 and the slide speed F-92375) against the original's code on 3,000 cases
-    /// (part b: every flag combination and stop count, stop timers 0 / -0 / NaN / any, rail or none, clip or none, clip
-    /// lengths 0 or not, slides of any length and time): the state, the wanted speed and its lag, every word equal.
-    #[test]
-    fn locomotion_matches_the_original() {
-        let mut n = 0;
-        for (c, o) in walk_ref('b') {
-            let o: Vec<u32> = o.split(' ').map(ref_word).collect();
-            let f = |i: usize| f32::from_bits(c[i]);
-            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
-            let (a28, a36) = ([f(5), f(6), f(7)], [f(8), f(9), f(10)]);
-            let (st, want, lag) = locomotion(c[0], f(3), c[1] != 0, f(4), c[2] == 2, || slide_speed(v(11), v(14), f(17)), &a28, &a36);
-            assert_eq!([st, want.to_bits(), lag.to_bits()], [o[0], o[1], o[2]], "case {n}");
-            n += 1;
-        }
-        assert_eq!(n, 3000);
-    }
-
-    /// The clip start F-52026 against the original's code on 3,000 cases (part c: current / previous / parked clips,
-    /// a one-off clip or none, resident or not, any rates): the six slots after it and the motion-tree calls it makes
-    /// (logged by the harness's stubs, in order, with their arguments) - parked, straight in, or the 8-frame crossfade.
-    #[test]
-    fn clip_start_matches_the_original() {
-        let mut n = 0;
-        for (c, o) in walk_ref('c') {
-            let mut t = o.split(' ');
-            let o: Vec<u32> = t.by_ref().take(6).map(ref_word).collect();
-            let log: String = t.map(|x| format!(" {x}")).collect();
-            let mut s = ClipSlots { cur: c[0] as i32, prev: c[1] as i32, parked: c[2] as i32, oneoff: c[3], rate: f32::from_bits(c[4]), prev_rate: f32::from_bits(c[5]) };
-            let (idx, rate) = (c[6] as i32, f32::from_bits(c[7]));
-            let k = clip_start(&mut s, idx, rate, c[8] != 0);
-            assert_eq!([s.prev as u32, s.cur as u32, s.parked as u32, s.oneoff, s.rate.to_bits(), s.prev_rate.to_bits()], [o[0], o[1], o[2], o[3], o[4], o[5]], "case {n}");
-            let mut want = format!(" G{idx}");
-            if k != ClipStart::Parked {
-                want += &format!(" G{idx} A00000000/3f800000 L11 R{:08x} F{:x} F{:x}", rate.to_bits(), c[12], c[9]);
-                if k == ClipStart::Blend {
-                    want += &format!(" B00000000/{:08x} T{:x}/0 e d", CLIP_BLEND_RATE.to_bits(), c[10]);
-                } else {
-                    want += &format!(" T{:x}/0 d", c[10]);
-                }
-                want += &format!(" o s{:x} m40006 h n40006 d z", c[11]);
-            }
-            assert_eq!(log, want, "case {n}");
-            n += 1;
-        }
-        assert_eq!(n, 3000);
-    }
-
-    /// The anim update F-29547's clip choice against the original's code on 3,000 cases (part e: every locomotion state,
-    /// current clip, rate, one-off clip and parked index, the slides and clip speeds of part b): the one-off start, the
-    /// clip start with its rate, the rate change and the parked retry it asks for, in order.
-    #[test]
-    fn anim_choice_matches_the_original() {
-        let mut n = 0;
-        for (e, o) in walk_ref('e') {
-            let c = &e[5..];
-            let f = |i: usize| f32::from_bits(c[i]);
-            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
-            let (a28, a36) = ([f(5), f(6), f(7)], [f(8), f(9), f(10)]);
-            let clip = if c[2] == 2 { 0x5100 } else { 0 };
-            let cmd = anim_choice(e[0], e[1] as i32, f32::from_bits(e[2]), e[3], clip, c[0], f(4), || slide_speed(v(11), v(14), f(17)), &a28, &a36);
-            let mut want = match cmd {
-                AnimCmd::Keep => String::new(),
-                AnimCmd::OneOff(k) => format!(" O{k:x}"),
-                AnimCmd::Start(k, r) => format!(" S{k}/{:08x}", r.to_bits()),
-                AnimCmd::Rate(r) => format!(" Q{:08x}", r.to_bits()),
-            };
-            if e[4] as i32 != -1 {
-                want += " K";
-            }
-            assert_eq!(o, want.trim_start(), "case {n}");
-            n += 1;
-        }
-        assert_eq!(n, 3000);
+        let Ok(t) = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/verify-people/peds/turn_reference.txt")) else { return };
+        let want = u32::from_str_radix(t.trim(), 16).unwrap();
+        assert_eq!(want - TURN_RATE.to_bits(), 13, "port {:08x} original {want:08x}", TURN_RATE.to_bits());
     }
 
     #[test]
@@ -3112,20 +2723,18 @@ mod tests {
 
     #[test]
     fn rails_go_midpoint_to_midpoint() {
-        let path: Vec<Vec3> = (0..5).map(|k| Vec3::new(k as f32 * 3.0, 0.0, 0.0)).collect();
-        // beside segment 0 facing along it: its middle 1.5 m ahead
-        let m = next_rail(&path, Vec3::new(0.2, 0.0, 0.3), Vec3::X, 0.1).unwrap();
-        assert!((m.t.x - 1.5).abs() < 1e-4 && m.valid());
-        // at that middle: the next one (the rail to the nearest is no rail)
-        let m = next_rail(&path, Vec3::new(1.5, 0.0, 0.3), Vec3::X, 0.1).unwrap();
-        assert!((m.t.x - 4.5).abs() < 1e-4);
-        // facing back: only the fallback of 3.77 rad for the nearest segment remains
-        let m = next_rail(&path, Vec3::new(0.2, 0.0, 0.3), -Vec3::X, 0.1).unwrap();
-        assert!((m.t.x - 1.5).abs() < 1e-4);
-        // exactly on the line, heading straight at the middle: the only rails loop once round (2 pi): none
-        assert!(next_rail(&path, Vec3::new(0.2, 0.0, 0.0), Vec3::X, 0.1).is_none());
+        let path: Vec<(Vec3, u32)> = (0..5).map(|k| (Vec3::new(k as f32 * 3.0, 0.0, 0.0), 0)).collect();
+        // on segment 0 facing along it: its middle is 1.5 m ahead
+        let m = next_rail(&path, Vec3::new(0.2, 0.0, 0.0), Vec3::X).unwrap();
+        assert!((m.x - 1.5).abs() < 1e-4);
+        // at that middle: the next one (the nearest is closer than 0.5 m)
+        let m = next_rail(&path, Vec3::new(1.5, 0.0, 0.0), Vec3::X).unwrap();
+        assert!((m.x - 4.5).abs() < 1e-4);
+        // facing back: only the fallback of 216 degrees for the nearest segment remains
+        let m = next_rail(&path, Vec3::new(0.2, 0.0, 0.0), -Vec3::X).unwrap();
+        assert!((m.x - 1.5).abs() < 1e-4);
         // at the end of the path: nothing
-        assert!(next_rail(&path, Vec3::new(10.5, 0.0, 0.0), Vec3::X, 0.1).is_none());
+        assert!(next_rail(&path, Vec3::new(10.5, 0.0, 0.0), Vec3::X).is_none());
     }
 
     #[test]

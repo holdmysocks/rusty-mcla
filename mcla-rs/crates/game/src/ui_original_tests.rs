@@ -99,3 +99,67 @@ fn gps_panel_matches_the_original() {
     }
     assert_eq!((np, nv), (450, 150));
 }
+
+/// F-90999, F-66209 (with F-37810, F-37290, F-36590, F-56767, F-66886, F-95591): the GPS map's outline test and pull-back
+/// against the original's code run offline on the "sc" outline (tools/ui_nav_outline_reference.py ->
+/// testdata/ui_nav_outline_ref.txt)
+#[test]
+fn nav_outline_matches_the_original() {
+    let (mut ni, mut np) = (0, 0);
+    for l in include_str!("testdata/ui_nav_outline_ref.txt").lines() {
+        let (case, out) = l.split_once(" ->").unwrap();
+        let h: Vec<f32> = case.split(' ').skip(1).map(|w| f32::from_bits(u32::from_str_radix(w, 16).unwrap())).collect();
+        let o: Vec<u32> = out.split(' ').skip(1).map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+        if case.starts_with('I') {
+            assert_eq!(crate::hudmap::in_outline(h[0], h[1]), o[0] == 1, "{l}");
+            ni += 1;
+            continue;
+        }
+        let r = crate::hudmap::outline_pull_back(glam::Vec3::new(h[0], h[1], h[2]), glam::Vec3::new(h[3], h[4], h[5]));
+        assert_eq!([r.x.to_bits(), r.y.to_bits(), r.z.to_bits()], [o[0], o[1], o[2]], "{l}");
+        np += 1;
+    }
+    assert_eq!((ni, np), (1000, 3000));
+}
+
+/// F-97746 with its force flag (the GPS map's stick released, F-63282): the element taken against the original's code run
+/// offline on random element lists (tools/ui_nav_pick_reference.py -> testdata/ui_nav_pick_ref.txt); elements hidden
+/// (+8 set) or not shown (+9 clear) are not candidates, as the port's place list holds none
+#[test]
+fn nav_pick_matches_the_original() {
+    let mut n = 0;
+    for l in include_str!("testdata/ui_nav_pick_ref.txt").lines() {
+        let (case, out) = l.split_once(" ->").unwrap();
+        let (head, order) = case.split_once(" |").unwrap();
+        let w: Vec<u32> = head.split(' ').skip(1).map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+        let f = |i: usize| f32::from_bits(w[i]);
+        let els: Vec<(glam::Vec3, bool)> = (0..w[3] as usize).map(|k| (glam::Vec3::new(f(4 + 5 * k), f(5 + 5 * k), f(6 + 5 * k)), w[7 + 5 * k] == 0 && w[8 + 5 * k] != 0)).collect();
+        let order: Vec<usize> = order.split_whitespace().map(|s| s.parse().unwrap()).collect();
+        let cand: Vec<usize> = order.into_iter().filter(|&i| els[i].1).collect();
+        let pts: Vec<glam::Vec3> = cand.iter().map(|&i| els[i].0).collect();
+        let got = crate::hudmap::pick_nearest(glam::Vec3::new(f(1), 0.0, f(2)), f(0), &pts).map_or(-1, |j| cand[j] as i32);
+        let o: Vec<i32> = out.split_whitespace().map(|s| s.parse().unwrap()).collect();
+        assert_eq!((got >= 0, got), (o[0] == 1, o[1]), "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 3000);
+}
+
+/// F-70194: the ring colour of the GPS map's types 7 / 8 / 9 from the element's colour word, alpha kept, against the
+/// original's code run offline on every byte value and random words (tools/ui_element_colour_reference.py ->
+/// testdata/ui_element_colour_ref.txt)
+#[test]
+fn element_colour_matches_the_original() {
+    let mut n = 0;
+    for l in include_str!("testdata/ui_element_colour_ref.txt").lines() {
+        let (w, out) = l.split_once(" -> ").unwrap();
+        let w: u32 = w.parse().unwrap();
+        let want: Vec<u32> = out.split(' ').map(|v| u32::from_str_radix(v, 16).unwrap()).collect();
+        let b = [(w >> 16) & 255, (w >> 8) & 255, w & 255, w >> 24].map(|v| v as i32);
+        assert_eq!(crate::hudmap::word_bytes(b).map(f32::to_bits).to_vec(), want, "{l}");
+        // (a colour given as floats reaches the word by truncation: the bytes' own values come back)
+        assert_eq!(crate::hudmap::element_colour(crate::hudmap::word_bytes(b)).map(f32::to_bits).to_vec(), want, "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 1024);
+}

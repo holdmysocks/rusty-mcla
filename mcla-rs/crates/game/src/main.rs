@@ -9341,14 +9341,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         stick = v;
                     }
                 }
-                self.nav_free = self.game.map_free.is_some();
+                self.nav_free = self.game.map_free.is_some() || self.game.map_drift.is_some();
                 let busy = self.nav.opening();
                 self.game.nav_busy = busy;
                 if stick != glam::Vec2::ZERO && !fresh && !busy {
                     let before = self.nav.cursor;
                     self.nav.update(0.0, false, false, stick, aspect);
                     let step = stick * 0.5 * self.nav.eye.y * dt;
-                    self.nav.cursor = before + Vec3::new(step.x, 0.0, step.y);
+                    self.nav.cursor = before;
+                    self.nav.move_cursor(before + Vec3::new(step.x, 0.0, step.y));
                     // (at the screen's edge the view goes along - approx.: the inner 80 %; the
                     // game's limits NM+572..584 hold runtime values not read)
                     if let Some(q) = self.nav.ndc(self.nav.cursor, aspect) {
@@ -9359,9 +9360,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.nav.push(push);
                         }
                     }
-                    self.game.map_free = Some(self.nav.cursor);
-                } else if self.game.map_free.is_some() && self.nav_free_moving {
+                    // (`F-62325`: a selected icon stays selected until the cursor is more than half the reach
+                    // `NM+568` from it on the ground plane - `F-88834`, then `F-29215` deselects)
+                    let held = self.game.map_free.is_none() && self.game.map_cursor > 0;
+                    match (held, self.game.map_sel_pos.or(self.game.map_cursor_pos)) {
+                        (true, Some(sel)) if hudmap::within_xz(self.nav.cursor, sel, self.nav.select_radius() * 0.5) => {
+                            (self.game.map_sel_pos, self.game.map_drift) = (Some(sel), Some(self.nav.cursor));
+                        }
+                        _ => {
+                            self.game.map_free = Some(self.nav.cursor);
+                            (self.game.map_drift, self.game.map_sel_pos) = (None, None);
+                        }
+                    }
+                } else if (self.game.map_free.is_some() || self.game.map_drift.is_some()) && self.nav_free_moving {
                     self.game.map_free_release = true;
+                    self.game.map_reach = self.nav.select_radius();
                 }
                 self.nav_free_moving = stick != glam::Vec2::ZERO;
                 let mut zin = self.input.down(KeyCode::PageUp) || self.input.down(KeyCode::KeyZ) || self.input.down(KeyCode::Equal);
