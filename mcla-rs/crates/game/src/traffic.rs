@@ -2374,7 +2374,46 @@ fn half_size(c: &super::CarInstance) -> (f32, f32) {
     (if l.is_finite() && l > 0.5 { l } else { c.model.params.body_half.z.max(1.0) }, if w.is_finite() && w > 0.3 { w } else { c.model.params.body_half.x.max(0.5) })
 }
 
+/// A parked car's render update's drawn steer (F-37033 with no behaviour, no trailer): car +3584 + 0 pushed into the
+/// ring; the ring's mean while within 45 m of the focus ((dx, dz) the focus less the instance's place) or in the first
+/// three updates, else 0.
+pub fn parked_drawn_steer(ring: &mut SteerRing, park: f32, frames: u8, dx: f32, dz: f32) -> f32 {
+    let near = dz.mul_add(dz, dx * dx) < 2025.0 || frames < 3;
+    ring.push(park + 0.0);
+    if near { ring.mean() } else { 0.0 }
+}
+
+/// Whether a car's render update runs this frame (F-37359, car slot 6's last step): always for a car with a behaviour,
+/// one once physical (+500 bit 0x10, a parked car hit: `CarInstance::amb_hit`) or a trailer; a parked car only while its draw
+/// object's update count +32 is under 3 (`CarInstance::amb_frames`): its first three updates after it took the instance,
+/// then its wheels stay as drawn.
+pub fn parked_render_runs(behaviour: bool, held: bool, frames: u8, trailer: bool) -> bool {
+    behaviour || held || frames < 3 || trailer
+}
+
 impl Vehicles {
+    /// The parked cars' render updates (F-37033 for a car with no behaviour that is no trailer, gated by
+    /// `parked_render_runs`): dt != 0, the sample is car +3584 (+ 0, no rail), pushed into the draw object's ring; the
+    /// front wheels turn by the ring's mean while the "near" byte holds: within 45 m of the focus, or the update count
+    /// under 3; then the count goes up (F-14577). A held car's steer reaches +3584 within 8 updates and is 0 beyond 45 m.
+    pub(super) fn parked_render(&mut self, dt: f32) {
+        if dt == 0.0 {
+            return;
+        }
+        let focus = self.amb_focus();
+        for c in self.cars.iter_mut() {
+            if c.rail.is_some() || (c.parked.is_none() && !c.park_held) || !parked_render_runs(false, c.amb_hit, c.amb_frames, false) {
+                continue;
+            }
+            let m = instance_matrix(c);
+            let s = parked_drawn_steer(&mut c.amb_steer, c.park_steer, c.amb_frames, focus.x - m[3].x, focus.z - m[3].z);
+            for (i, w) in c.state.wheels.iter_mut().enumerate() {
+                w.steer = if i <= 1 { s } else { 0.0 };
+            }
+            c.amb_frames = (c.amb_frames + 1).min(3);
+        }
+    }
+
     /// Move the traffic cars: along their lanes, on their rails, back from physics; the
     /// trailers behind their cabs.
     pub(super) fn ride_traffic(&mut self, nav: &NavSys, col: &WorldCollider, dt: f32) {
@@ -3185,11 +3224,11 @@ mod tests {
     #[test]
     fn drawn_steer_matches_the_original() {
         // (tools/drawn_steer_reference.py: F-37033 run whole with the rail's slots 6 / 10 stubbed; one frame a line, a
-        // sequence's ring kept from frame to frame. A parked car's +3584 is added to its sample: the port keeps a
-        // parked car's steer as it is, so that part is the reference's, not a port path)
+        // sequence's ring kept from frame to frame. A parked car - no behaviour, type byte +112 0 - goes through the
+        // port's `parked_drawn_steer` with the draw object's +32 as its update count)
         let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
         let mut ring = SteerRing::default();
-        let (mut n, mut sampled) = (0, 0);
+        let (mut n, mut sampled, mut parked) = (0, 0, 0);
         for line in include_str!("testdata/drawn_steer_ref.txt").lines() {
             let (i, o) = line.split_once(" -> ").unwrap();
             let w: Vec<&str> = i.split_whitespace().collect();
@@ -3215,14 +3254,43 @@ mod tests {
                 k += 2;
             }
             if !flag(1) && w[3] == "0" {
-                x += h(w[5]);
+                parked_drawn_steer(&mut ring, h(w[5]), w[4].parse::<i32>().unwrap().clamp(0, 3) as u8, focus.0 - pos.x, focus.1 - pos.z);
+                parked += 1;
+            } else {
+                ring.push(x);
             }
-            ring.push(x);
             let got = format!("{} {} {:08x} {} {:08x}", ring.n, ring.next, ring.sum.to_bits(), ring.v.map(|v| format!("{:08x}", v.to_bits())).join(" "), ring.mean().to_bits());
             assert_eq!(got, o[k..].join(" "), "{line}");
             n += 1;
         }
-        assert_eq!((n, sampled), (2381, 1160));
+        assert_eq!((n, sampled, parked), (2381, 1160, 290));
+    }
+
+    /// F-37359 (does the render update run) and F-14577 (the draw object's update count) against the original's code
+    /// run offline (tools/parked_render_reference.py -> testdata/parked_render_ref.txt): the gate for every case with an
+    /// instance and a count the game can hold (0 - 3), the count after the tick for those.
+    #[test]
+    fn parked_render_gate_matches_the_original() {
+        let (mut n, mut runs) = (0, 0);
+        for line in include_str!("testdata/parked_render_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let o: Vec<&str> = o.split_whitespace().collect();
+            if w[1] == 0 {
+                assert_eq!(o[0], "0", "{line}");
+                continue;
+            }
+            if w[3] > 3 {
+                continue;
+            }
+            let frames = w[3] as u8;
+            let run = parked_render_runs(w[0] != 0, w[2] & 0x10 != 0, frames, w[4] != 0);
+            assert_eq!(o[0], if run { "1" } else { "0" }, "{line}");
+            assert_eq!(o[1], format!("{:x}", (frames + 1).min(3)), "{line}");
+            n += 1;
+            runs += run as usize;
+        }
+        assert_eq!((n, runs), (1489, 1397));
     }
 
     /// F-85925 (the junction a lane leads into) against the original's code run offline on every city lane with the
@@ -6101,6 +6169,7 @@ impl Vehicles {
             let c = &mut self.cars[k];
             c.parked = None;
             c.park_held = false;
+            c.amb_hit = false;
             c.park_steer = 0.0;
             for w in c.state.wheels.iter_mut() {
                 w.steer = 0.0;
