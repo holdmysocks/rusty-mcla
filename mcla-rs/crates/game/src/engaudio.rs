@@ -432,9 +432,31 @@ impl EngineSound {
         let load = if e.full_torque > 0.0 { e.torque / e.full_torque } else { 0.0 };
         approach_fma(&mut self.load_smooth, load, 6.0, dt);
         let load_abs = load.abs().min(1.0);
+        self.step_load_vol(e, load_abs, dt);
+        // the kick: throttle re-applied (F-12996)
+        let first = self.recs[0];
+        let last = self.recs[self.recs.len() - 1];
+        let audio_rpm_prev = {
+            let norm = ((self.s - e.idle_rpm) / (e.max_rpm - e.idle_rpm).max(1.0)).min(1.0);
+            norm * (last.end - first.start) + first.start
+        };
+        if e.torque > 0.0 && self.prev_torque <= 0.0 && e.throttle_in >= self.kick_throttle && audio_rpm_prev >= self.kick_rpm && e.speed >= 10.0 {
+            if self.clock >= self.kick_at + 1.0 {
+                self.kick(lib);
+            }
+            self.kick_at = self.clock;
+        }
+        if e.torque < 0.0 {
+            self.lfo.running = false;
+        }
+        let lfo_cents = self.step_lfo(dt);
+        self.step_loops(lib, e, dt, lfo_cents);
+    }
+
+    /// The load volume (entity +148; player F-42554, opponent F-57529) and the waveshaper drive's input (+196) set by
+    /// each branch. `load_abs` is |torque / full torque| clamped to 1 (entity +168).
+    fn step_load_vol(&mut self, e: &EngineIn, load_abs: f32, dt: f32) {
         let reversing = e.gear == -1 && e.speed > 1.0;
-        // load volume (player F-42554, opponent F-57529)
-        // (each branch also sets the waveshaper drive's input, entity +196)
         if reversing {
             approach_fma(&mut self.load_vol, self.load_rev, 0.8, dt);
             self.ws_in = e.throttle_in;
@@ -462,7 +484,11 @@ impl EngineSound {
             } else if e.speed < self.load_slow {
                 approach(&mut self.load_vol, 1.0, dt);
                 self.ws_in = drive;
-            } else if e.throttle_in < 0.5 || e.shift != 0 {
+            } else if e.throttle_in < 0.5 {
+                // (lifted: toward XF+22, the shift toward XF+18; recorded, work/audio2/cap2/eng6.txt)
+                approach_fma(&mut self.load_vol, self.load_floor, self.load_rate, dt);
+                self.ws_in = load_abs;
+            } else if e.shift != 0 {
                 approach_fma(&mut self.load_vol, self.load_brake, self.load_rate, dt);
                 self.ws_in = load_abs;
             } else {
@@ -470,23 +496,12 @@ impl EngineSound {
                 self.ws_in = drive;
             }
         }
-        // the kick: throttle re-applied (F-12996)
+    }
+
+    /// The rest of the update: the rpm slew, the start machine and the loops (F-10725).
+    fn step_loops(&mut self, lib: &mut SoundLib, e: &EngineIn, dt: f32, lfo_cents: f32) {
         let first = self.recs[0];
         let last = self.recs[self.recs.len() - 1];
-        let audio_rpm_prev = {
-            let norm = ((self.s - e.idle_rpm) / (e.max_rpm - e.idle_rpm).max(1.0)).min(1.0);
-            norm * (last.end - first.start) + first.start
-        };
-        if e.torque > 0.0 && self.prev_torque <= 0.0 && e.throttle_in >= self.kick_throttle && audio_rpm_prev >= self.kick_rpm && e.speed >= 10.0 {
-            if self.clock >= self.kick_at + 1.0 {
-                self.kick(lib);
-            }
-            self.kick_at = self.clock;
-        }
-        if e.torque < 0.0 {
-            self.lfo.running = false;
-        }
-        let lfo_cents = self.step_lfo(dt);
         // rpm slew and the start machine (F-10725)
         let target = if e.idle_only { e.idle_rpm } else { e.rpm };
         let rpm_rate = (target - self.s) / dt.max(1e-6);
@@ -1077,6 +1092,110 @@ mod tests {
         }
         println!("updates {ups} (car unknown {unknown}, cars of different tables {ambiguous}): gains one scalar over fade x curve {same}, active as the rule {want_ok} (a neighbour active {neighbour} times)");
         assert!(ups > 200 && same == ups && want_ok == ups);
+    }
+
+    /// The player's load volume F-42554 against the running original (work/audio2/cap2 LV / LVX lines: the routine's
+    /// inputs at its entry - reverse byte +1946, +148, +172, +188, +168, the engine's pedal, the car's speed, the
+    /// transmission's shift word, XF+18 .. +34 - and +148 / +196 at its exit; the tick from the ES line before it).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR and a recording (MCLA_ENG_CAP)"]
+    fn player_load_volume_recorded() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let cap = std::env::var("MCLA_ENG_CAP").expect("MCLA_ENG_CAP");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+        let mut e = EngineSound::new(&lib, "vp_aud_r8_08", false).expect("engine");
+        let word = |l: &str, k: &str| -> String { l.split(' ').find_map(|w| w.strip_prefix(k)).unwrap().to_string() };
+        let field = |l: &str, k: &str| -> f32 { word(l, k).parse().unwrap() };
+        let text = std::fs::read_to_string(&cap).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut dt = 0.0f32;
+        let (mut n, mut same, mut ws_same, mut xf_ok, mut shown) = (0, 0, 0, true, 0);
+        let mut branches: std::collections::BTreeMap<&str, (u32, u32)> = Default::default();
+        for (k, l) in lines.iter().enumerate() {
+            if l.starts_with("ES ") {
+                dt = field(l, "dt=");
+                continue;
+            }
+            if !l.starts_with("LV ") {
+                continue;
+            }
+            let Some(x) = lines[k + 1..].iter().find(|x| x.starts_with("LVX ") && word(x, "this=") == word(l, "this=")) else { continue };
+            xf_ok &= [(e.load_brake, "xf18="), (e.load_floor, "xf22="), (e.load_rate, "xf26="), (e.load_slow, "xf30="), (e.load_rev, "xf34=")].iter().all(|(v, f)| *v == field(l, f));
+            e.load_vol = field(l, "load=");
+            e.load_smooth = field(l, "sm172=");
+            let rev = field(l, "rev=") != 0.0;
+            let inp = EngineIn { throttle_in: field(l, "th188="), pedal: field(l, "pedal="), speed: field(l, "speed="), shift: field(l, "shift=") as i8, gear: if rev { -1 } else { 1 }, ..Default::default() };
+            let load_abs = field(l, "d168=");
+            let branch = if rev { "reverse" } else if e.load_smooth > 0.0 { "load" } else if inp.speed < e.load_slow { "slow" } else if inp.throttle_in < 0.5 { "lifted" } else if inp.shift != 0 { "shift" } else { "drive" };
+            e.step_load_vol(&inp, load_abs, dt);
+            n += 1;
+            let ok = e.load_vol.to_bits() == field(x, "load=").to_bits();
+            let wok = e.ws_in.to_bits() == field(x, "ws=").to_bits();
+            same += ok as usize;
+            ws_same += wok as usize;
+            let b = branches.entry(branch).or_default();
+            b.0 += 1;
+            b.1 += (ok && wok) as u32;
+            if !(ok && wok) && shown < 12 && std::env::var_os("MCLA_ENG_CAP_PRINT").is_some() {
+                shown += 1;
+                println!("  {branch}: {l}\n    -> {x} | port load {} ws {}", e.load_vol, e.ws_in);
+            }
+        }
+        println!("load-volume steps {n}: load bit-equal {same}, waveshaper input bit-equal {ws_same}, XF fields as the port's {xf_ok}; per branch (steps, equal) {branches:?}");
+        assert!(n > 200 && same == n && ws_same == n && xf_ok);
+    }
+
+    /// F-10725's rpm slew and start boost against the running original (cap2 ES lines, one per entity update: state +1928,
+    /// slewed rpm +204, target +200 or the idle rpm with byte +1950, boost +152, the tick dt, XF+38): in state 4 the next
+    /// update's +204 / +152 are the port's step from this one's. Also the rpm rate the opponents' `active` test reads
+    /// ((target - s) x the rate factor 0x827D750C) against the port's (target - s) / dt, at the +-2000 threshold.
+    #[test]
+    #[ignore = "requires a recording (MCLA_ENG_CAP)"]
+    fn rpm_slew_recorded() {
+        let cap = std::env::var("MCLA_ENG_CAP").expect("MCLA_ENG_CAP");
+        let word = |l: &str, k: &str| -> String { l.split(' ').find_map(|w| w.strip_prefix(k)).unwrap().to_string() };
+        let field = |l: &str, k: &str| -> f32 { word(l, k).parse().unwrap() };
+        let text = std::fs::read_to_string(&cap).unwrap();
+        let mut last: std::collections::HashMap<String, &str> = Default::default();
+        let (mut n, mut s_same, mut b_same, mut rates, mut rate_same, mut shown) = (0, 0, 0, 0, 0, 0);
+        let (mut swaps, mut swap_idle) = (0, 0);
+        for l in text.lines().filter(|l| l.starts_with("ES ")) {
+            let this = word(l, "this=");
+            if let Some(p) = last.insert(this, l) {
+                let target = if field(p, "b1950=") != 0.0 { field(p, "f31=") } else { field(p, "tgt=") };
+                let (s, dt) = (field(p, "s="), field(p, "dt="));
+                let rate_orig = (target - s) * field(p, "k=");
+                let rate_port = (target - s) / dt.max(1e-6);
+                rates += 1;
+                rate_same += ((rate_orig > 2000.0) == (rate_port > 2000.0) && (rate_orig < -2000.0) == (rate_port < -2000.0)) as usize;
+                if field(p, "st=") != 4.0 || field(l, "st=") != 4.0 {
+                    continue;
+                }
+                // (a racer object handed another car: its max rpm changes and +204 is set to the idle rpm, not stepped)
+                if field(p, "f30=") != field(l, "f30=") {
+                    swaps += 1;
+                    swap_idle += (field(l, "s=") == field(l, "f31=")) as usize;
+                    continue;
+                }
+                let slew = (100.0 - field(p, "xf38=")) * 100.0;
+                let mut s2 = s;
+                approach_fma(&mut s2, target, slew, dt);
+                let mut b2 = field(p, "boost=");
+                if field(p, "b1950=") == 0.0 {
+                    approach_fma(&mut b2, 1.0, 1.0, dt);
+                }
+                n += 1;
+                s_same += (s2.to_bits() == field(l, "s=").to_bits()) as usize;
+                b_same += (b2.to_bits() == field(l, "boost=").to_bits()) as usize;
+                if (s2.to_bits() != field(l, "s=").to_bits() || b2.to_bits() != field(l, "boost=").to_bits()) && shown < 12 && std::env::var_os("MCLA_ENG_CAP_PRINT").is_some() {
+                    shown += 1;
+                    println!("  {p}\n  {l}\n    port s {s2} boost {b2}");
+                }
+            }
+        }
+        println!("state-4 steps {n}: rpm bit-equal {s_same}, boost bit-equal {b_same}; rate past +-2000 the same {rate_same} of {rates}; car swaps {swaps} (rpm set to idle {swap_idle})");
+        assert!(n > 1000 && s_same == n && b_same == n && rate_same == rates);
     }
 
     #[test]
