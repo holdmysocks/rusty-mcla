@@ -771,6 +771,11 @@ pub struct Game {
     pub hangout_slow: crate::mc4::SlowMo,
     /// real seconds since the player crossed the line (the race-end panels, `RACE_END_*`)
     pub race_end_t: Option<f32>,
+    /// the player wrecked in this race: Race_IsDamagedOut (race +3774), set at the wreck tick while the race
+    /// is not over and the police are not on him (race_damaged_out.md)
+    pub race_dmg_out: bool,
+    /// the wreck's "what next" (F-89773) set the race over: Race_IsFinished (race +3773)
+    pub race_wreck_over: bool,
     /// the results on show are a career race's (panels, then the cruise - no menu)
     pub career_over: bool,
     /// a new career's save boxes (SaveGame.sc.xml): 0 not shown yet, 1 the ALERT is up, 2 done
@@ -1461,6 +1466,8 @@ impl Game {
             race_slow_wait: None,
             hangout_slow: crate::mc4::SlowMo::default(),
             race_end_t: None,
+            race_dmg_out: false,
+            race_wreck_over: false,
             career_over: false,
             save_box: 0,
             radar_pulse: false,
@@ -3744,6 +3751,9 @@ impl Game {
         }
         let target = if kind == RaceKind::Payback { participants.get(1).copied() } else { None };
         let n = vehicles.cars.len();
+        // (a new race object: +3773 / +3774 clear, the ctor F-61221)
+        self.race_dmg_out = false;
+        self.race_wreck_over = false;
         self.race = Some(Race {
             path: Some(path.clone()),
             route,
@@ -3881,6 +3891,8 @@ impl Game {
         }
         let n = vehicles.cars.len();
         let lap_len = checkpoints.len();
+        self.race_dmg_out = false;
+        self.race_wreck_over = false;
         self.race = Some(Race { path: None, route, checkpoints, next: vec![0; n], finish_time: vec![None; n], time: 0.0, countdown: 3.5, total_len: total, participants, lap_len, laps: 1, name: "Street race".into(), goal_time: 0.0, kind: RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() });
         vehicles.fragile = None;
         self.mode = Mode::Race;

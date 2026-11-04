@@ -3127,6 +3127,16 @@ impl App {
                             self.wreck_engine = 3;
                             self.wreck_done = 0.0;
                         }
+                    } else if self.wreck_timer <= 0.0 && self.game.mode == Mode::Race && self.game.race.is_some() {
+                        // in a race the wreck's "what next" (F-89773) sets Race_IsFinished (+3773): the race ends -
+                        // with Race_IsDamagedOut, no results posts and no end sequence (race_damaged_out.md). The car
+                        // stays wrecked for the race-over menu's repair rows; $IsRaceFinish takes the driver to
+                        // cruising with no start, so a stopped engine sound stays stopped
+                        if self.wreck_engine == 2 {
+                            self.wreck_engine = 4;
+                        }
+                        self.game.race_wreck_over = true;
+                        log::info!("wreck over in a race: the race is over (damaged out {})", self.game.race_dmg_out);
                     } else if self.wreck_timer <= 0.0 {
                         if std::mem::take(&mut self.wreck_engine) == 2 {
                             self.sound.play_ignition();
@@ -3257,6 +3267,11 @@ impl App {
                                 let m = self.game.career.strings.get("splash_damaged_out").map(|s| s.to_uppercase()).unwrap_or_else(|| "DAMAGED OUT".into());
                                 self.game.show_message(&m);
                                 self.game.message_timer = 2.0;
+                                // (in a race not over and with the player not pursued: Race_IsDamagedOut, race +3774 = 1
+                                // - F-89773's partner listener, bust_gas_wreck_rule.md 3.2)
+                                if self.game.mode == Mode::Race && self.game.race.is_some() && self.game.race_end_t.is_none() && !self.game.race_wreck_over && !self.game.police_on_player {
+                                    self.game.race_dmg_out = true;
+                                }
                                 // (approx.: a driver not loaded leaves the hit clip at 0)
                                 self.wreck_timer = self.drivers.hit_hard_secs(&c.model.name).unwrap_or(0.0) + 4.0;
                                 // the driver goes to "impact damageout" only right side up (IsUpsideDown, the
@@ -5052,6 +5067,8 @@ impl App {
         if self.game.mode == Mode::Race {
             let ready = self.vehicles.player().map_or(true, |c| world.ready_at(c.state.pos));
             race_finished = self.game.update_race(&mut self.vehicles, sim_dt, ready);
+            // (Race_IsFinished set by the wreck: the race script ends and the core goes to its race over)
+            race_finished |= self.game.race_wreck_over;
             // (the race scripts' CalculateRankOrdered / Unordered for racer 0 while the player has not finished and the
             // race is not over: the lead-change count kLED - F-37138, F-90700)
             if let Some(r) = self.game.race.as_ref() {
@@ -7000,6 +7017,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if self.game.mode == Mode::Race {
             if race_finished {
                 // player finished: gather results
+                // (or the race was ended by his wreck: Race_IsDamagedOut - no results posts, no end sequence)
+                self.game.race_wreck_over = false;
+                let dmg_out = self.game.race_dmg_out;
                 let mission = self.game.race.as_ref().map(|r| (r.kind, r.failed, r.time)).filter(|m| m.0 != game::RaceKind::Race);
                 let res = if let Some((kind, failed, time)) = mission {
                     let what = if kind == game::RaceKind::Delivery { "DELIVERY" } else { "PAYBACK" };
@@ -7042,7 +7062,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (a series' or a tournament's results put a damaged-out player last, the others behind him
                     // up one: F-87120 from calculateResultsSeries / the tournament's)
                     let event = self.game.series.is_some() || self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map_or(false, |d| self.game.career.tournament_of(&d.id).is_some());
-                    if event && self.vehicles.player().map_or(false, |p| p.state.damage >= 1.0) {
+                    // (approx.: a damaged-out player is put last in any race too - the ordinary core's calculateResults
+                    // is not read; there the place only reaches the hookmen's branches below)
+                    if (event || dmg_out) && self.vehicles.player().map_or(false, |p| p.state.damage >= 1.0) {
                         if let Some(k) = standings.iter().position(|e| self.vehicles.cars.get(e.0).map_or(false, |c| c.is_player)) {
                             let me = standings.remove(k);
                             standings.push(me);
@@ -7068,7 +7090,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (a time trial: the best time, the target beaten or not, the result's panel - `mc4`)
                     let s18_id = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map(|d| d.id.clone()).unwrap_or_default();
                     self.game.mc4_tt_end(&s18_id, mine);
-                    self.game.award_race(place, field);
+                    // (the race reward listens to RACE_EVENT, which a damaged-out race does not post - F-12673)
+                    if !dmg_out {
+                        self.game.award_race(place, field);
+                    }
                     if let Some(sp) = self.game.alt_finished(place) {
                         log::info!("alt hookman: {} after the race", sp);
                         self.speech.say_as(sp, &self.game.althk.voice);
@@ -7076,7 +7101,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (a hookman who had to be beaten was not: back to the cruise after the panels. His
                     // mission is on MISSION RESULTS only when one of its conditions was updated -
                     // F-66221 lists the updated missions, `mu_pending`)
-                    if self.game.hookman_race && place > 1 && self.game.flash_menu.is_some() {
+                    if self.game.hookman_race && (place > 1 || dmg_out) && self.game.flash_menu.is_some() {
                         if self.game.career.hookman_mission().filter(|id| id.starts_with("BEAT_") || id.starts_with("REDLIGHT_")).is_some() {
                             self.game.career_over = true;
                         }
@@ -7114,7 +7139,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if self.game.career.tour_table.is_some() {
                         self.game.series_first = true;
                     }
-                    self.game.career.event(career::Ev::Race { district: &district, place, hookman, class: &class, race: &race_id, beat_goal });
+                    if !dmg_out {
+                        self.game.career.event(career::Ev::Race { district: &district, place, hookman, class: &class, race: &race_id, beat_goal });
+                    }
                     // (the MISSION_EVENT of the man raced: his story CORE's - `Career::core_race_end` - or,
                     // after his red light race won and not damaged out, REDLIGHT_GH_01's man's
                     // RED_LIGHT_GH_01_COMPLETE - `<d>_redlight_hk1` 0x69a5..0x6a23)
@@ -7129,13 +7156,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.game.career.core_race_end(&m, place, clean, self.game.rep);
                         }
                     }
-                    // (a finished race is an unlocked race: `mc4`)
-                    self.game.mc4_race_finished(&race_id);
-                    // (step 23: the race-end statistics, F-98556)
-                    self.game.mc4_race_stats(place, &class, my_time);
-                    // (step 23b: the race's goals - F-96807 from F-98556)
-                    let s23b_dmg = self.vehicles.player().map_or(0.0, |c| c.state.damage);
-                    self.game.mc4_race_goals(place, my_time, s23b_dmg);
+                    // (damaged out: no race-results event, so no unlock (the career's message handler's race-complete
+                    // arm -> F-81609); the statistics handler F-98556 returns at once on the race's +3774, and the
+                    // goals F-96807 are called from it)
+                    if !dmg_out {
+                        // (a finished race is an unlocked race: `mc4`)
+                        self.game.mc4_race_finished(&race_id);
+                        // (step 23: the race-end statistics, F-98556)
+                        self.game.mc4_race_stats(place, &class, my_time);
+                        // (step 23b: the race's goals - F-96807 from F-98556)
+                        let s23b_dmg = self.vehicles.player().map_or(0.0, |c| c.state.damage);
+                        self.game.mc4_race_goals(place, my_time, s23b_dmg);
+                    }
                     // (GOAL ATTACK: the race's end hook F-84893 - SetAllPoliceUnderground(0, 1))
                     if self.game.goal_attack {
                         self.police.units_up();
@@ -7157,6 +7189,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     // a hangout's series: the winner's tally; three wins end it, else the next race
                     let mut s15_series_done: Option<(String, usize)> = None;
+                    // (a series / tournament decided by this race: bComplete / bFailure)
+                    let mut s_decided = false;
                     let mut s_series_won: Option<(Option<String>, String)> = None;
                     if let Some(sr) = self.game.series.as_mut() {
                         let winner = res.first().map(|r| if r.0.starts_with("YOU") { "YOU".to_string() } else { r.0.clone() }).unwrap_or_default();
@@ -7169,6 +7203,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         match over {
                             Some(w) => {
                                 self.game.next_event_race = None;
+                                s_decided = true;
                                 if w == "YOU" {
                                     s_series_won = Some((sr.story.as_ref().map(|s| s.0.clone()), sr.key.clone()));
                                 }
@@ -7226,6 +7261,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(won) = self.game.career.tour_decided.take() {
                         self.game.opt_x.arcade.d.banner = Some((3.5, won));
                         self.game.opt_x.arcade.d.banner_kind = 4;
+                        s_decided = true;
+                    }
+                    // (EndOfRaceSequence is skipped when the player did not finish - finish time INT_MAX - unless the race
+                    // is a series' / tournament's and decided it (0x15c9): straight to raceEnd, the race-over menu)
+                    if dmg_out && !s_decided {
+                        self.game.race_slow_wait = None;
+                        self.game.race_end_t = None;
+                        // (the standings, form 49, are among the sequence's forms - OrderedSeriesCore 0x16df, the
+                        // tournament core the same: not shown)
+                        self.game.series_first = false;
                     }
                     if let Some(line) = tournament {
                         // (the points decide: the career hears of it with the next event)
@@ -7238,7 +7283,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 // (the REWARDS page gives the pending list: the missions' rewards, then the race's money and experience -
                 // its Progression experience posts the reputation: `give_pending`)
-                if !self.game.rewards_ask() {
+                if !self.game.rewards_ask() && !dmg_out {
                     self.game.career.event(career::Ev::Rep(self.game.rep));
                 }
                 self.game.last_results = res;
