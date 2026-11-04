@@ -186,6 +186,20 @@ struct CopSearch {
     angle: f32,
 }
 
+/// The squad tactics' transition tests (slot 12 of their machines): the Arrow Trap's F-69937 (0 CatchUp, 1 Arrest, 2 Halt,
+/// 3 Search) - CatchUp to any other, nothing out of Arrest, Halt to anything, Search to the first three; the Double
+/// Pursuit's F-46230 (0 AlongSide, 1 Arrest, 2 Search) - AlongSide to Arrest or Search, Search to AlongSide or Arrest.
+fn squad_may_go(arrow: bool, from: u8, to: i32) -> bool {
+    match (arrow, from) {
+        (true, 0) => (1..=3).contains(&to),
+        (true, 2) => true,
+        (true, 3) => (0..=2).contains(&to),
+        (false, 0) => (1..=2).contains(&to),
+        (false, 2) => (0..=1).contains(&to),
+        _ => false,
+    }
+}
+
 /// Dispatch to Location's transition test (F-40040): WaitToDispatch only to Dispatch, Dispatch only to Respond, Respond only
 /// to WaitAtLocation, nothing out of WaitAtLocation (its end is the tactic's result). The machine starts in WaitToDispatch: the
 /// tactic's begin starts it with its enter flag set (F-26187).
@@ -2818,7 +2832,7 @@ impl Police {
             if sq.halt {
                 // Halt (F-58305 / F-16041): the cops within fSafeDist Stop again, x 0.5 when closing; none within it, or
                 // the target over fArrestTgtThresholdSpd -> CatchUp
-                if !any_safe || mph > t("fArrestTgtThresholdSpd", 10.0) {
+                if (!any_safe || mph > t("fArrestTgtThresholdSpd", 10.0)) && squad_may_go(arrow, 2, 0) {
                     sq.halt = false;
                     sq.begun = false;
                 } else {
@@ -2895,7 +2909,7 @@ impl Police {
                 }
                 // (the Arrow Trap: a cop within fSafeDist of a target that has stopped -> Halt: those within it Stop,
                 // x 0.5 when closing)
-                if arrow && any_safe && !t_moving {
+                if arrow && any_safe && !t_moving && squad_may_go(arrow, 0, 2) {
                     log::info!("police: arrow trap halts");
                     sq.halt = true;
                     for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
