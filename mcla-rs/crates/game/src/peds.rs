@@ -127,6 +127,8 @@ struct Ped {
     life: f32,
     /// the length of the blend running (`blend` counts it down)
     blend_len: f32,
+    /// U, the forward ring, sphere 0 and the target facing (F-49074)
+    ground: Ground,
 }
 
 const NO_POLY: u32 = u32::MAX;
@@ -260,6 +262,260 @@ const AVOID_TURN: f32 = 2.26893;
 const AVOID_CLEAR: f32 = PED_RADIUS;
 /// Speed follows the wanted speed with a 0.1 s lag (F-33058, F-54830).
 const SPEED_LAG: f32 = 0.1;
+
+// ---- The walker's ground, up vector and drawn matrix: its slot 80 F-49074 (sphere refresh, ground, matrix tail), the
+// type's slot 64 F-24029 (the ground hit, U, the place) and slot 60 F-59837 (set sphere k), the forward ring F-89721 /
+// F-22858. Vector-unit steps flush denormals in and out, their multiply-add is two roundings, the three-lane dot is
+// (0 + z z') + (y y' + x x'); scalar `fmadds` is fused. Decode and evidence: docs/reference/people/ped_ground_rule.md
+// (tools/ped_ground_reference.py).
+
+/// The ground sphere (sphere 0): radius 2.0, drawn on the frames whose counter points at it (F-49074).
+const GROUND_RADIUS: f32 = 2.0;
+/// A ground contact counts with normal.y above this (0x3F3504F3).
+const GROUND_MIN_NY: f32 = 0.70710677;
+/// Contacts this close in plan (squared, m^2) to the best so far are a tie: the higher wins.
+const GROUND_TIE: f32 = 0.25;
+/// The city bound's type bit (the other instance's archetype flags).
+const GROUND_TYPE: u32 = 0x800;
+
+#[inline]
+fn vftz(x: f32) -> f32 {
+    if x != 0.0 && x.is_subnormal() { 0.0f32.copysign(x) } else { x }
+}
+
+fn vlanes(a: Vec3, b: Vec3, f: impl Fn(f32, f32) -> f32) -> Vec3 {
+    Vec3::new(vftz(f(vftz(a.x), vftz(b.x))), vftz(f(vftz(a.y), vftz(b.y))), vftz(f(vftz(a.z), vftz(b.z))))
+}
+
+/// vmsum3fp a . b: (0 + z z') + (y y' + x x'), each step flushed.
+fn vdot3(a: Vec3, b: Vec3) -> f32 {
+    let p = vlanes(a, b, |x, y| x * y);
+    vftz(vftz(0.0 + p.z) + vftz(p.y + p.x))
+}
+
+/// vsubfp 0 - v.
+fn vneg(v: Vec3) -> Vec3 {
+    vlanes(Vec3::ZERO, v, |x, y| x - y)
+}
+
+/// vnmsubfp -(a x splat(k) - c).
+fn vnmsub(a: Vec3, k: f32, c: Vec3) -> Vec3 {
+    -vlanes(vlanes(a, Vec3::splat(k), |x, y| x * y), c, |x, y| x - y)
+}
+
+/// One contact of sphere 0 as a hit slot holds it: the other instance's archetype type flags, the contact point
+/// (slot +16) and the normal (slot +48).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GroundContact {
+    pub kind: u32,
+    pub point: Vec3,
+    pub normal: Vec3,
+}
+
+/// F-24029: of sphere 0's hit slots (None: empty) the one of type 0x800 with normal.y > 0.70710677 nearest in plan to
+/// the sphere's centre, where one within 0.25 m^2 of the best so far wins only by being higher (so the order counts).
+/// Nothing when slot 0 is empty. Gives (slot, N, D) with D = N (N . (contact - centre)): the place is T + D and U = N.
+pub(crate) fn ground_pick(slots: &[Option<GroundContact>], centre: Vec3) -> Option<(usize, Vec3, Vec3)> {
+    slots.first()?.as_ref()?;
+    let (mut best, mut besty, mut n, mut k) = (f32::MAX, -f32::MAX, Vec3::ZERO, None);
+    for (j, s) in slots.iter().enumerate() {
+        let Some(s) = s else { continue };
+        if s.kind & GROUND_TYPE == 0 || !(s.normal.y > GROUND_MIN_NY) {
+            continue;
+        }
+        let dx = s.point.x - centre.x;
+        let dz = s.point.z - centre.z;
+        let d = crate::physics::exact::fma(dz, dz, dx * dx);
+        let take = if best == f32::MAX {
+            d < best
+        } else if (d - best).abs() < GROUND_TIE {
+            s.point.y > besty
+        } else {
+            d < best
+        };
+        if take {
+            besty = s.point.y;
+            best = d;
+            n = s.normal;
+            k = Some(j);
+        }
+    }
+    let k = k?;
+    let v = crate::tcp_rail::vdiff(slots[k].unwrap().point, centre);
+    let q = crate::physics::exact::fma(v.y, n.y, crate::physics::exact::fma(v.z, n.z, v.x * n.x));
+    Some((k, n, crate::tcp_rail::vmul3(n, q)))
+}
+
+/// F-49074 after the pick: the out place and facing row r2 from the target T (its r2 and place), the drawn place `cur`,
+/// the walker's speed (ped +412) and the frame's dt. `up` is U (ped +4768): a pick sets it to the ground normal.
+/// In a one-off clip (behaviour state 3) only y comes from the ground (T + D with a hit, else `cur`), x and z from T;
+/// otherwise a hit places the walker at T + D; without one it goes on from `cur` along T's facing with its part along U
+/// taken out, made unit, at speed x dt, and faces that way.
+pub(crate) fn ground_place(t_r2: Vec3, t_place: Vec3, cur: Vec3, up: &mut Vec3, pick: Option<(usize, Vec3, Vec3)>, speed: f32, dt: f32, clip: bool) -> (Vec3, Vec3) {
+    if let Some((_, n, _)) = pick {
+        *up = n;
+    }
+    match (clip, pick) {
+        (true, p) => {
+            let y = p.map_or(cur.y, |(_, _, d)| crate::tcp_rail::vadd3(t_place, d).y);
+            (Vec3::new(t_place.x, y, t_place.z), t_r2)
+        }
+        (false, Some((_, _, d))) => (crate::tcp_rail::vadd3(t_place, d), t_r2),
+        (false, None) => {
+            let a = vneg(t_r2);
+            let w = vnmsub(*up, vdot3(*up, a), a);
+            let f = crate::tcp_rail::vnorm(w);
+            (crate::tcp_rail::vmadd3(f, speed * dt, cur), vneg(f))
+        }
+    }
+}
+
+/// The walker's forward ring (ped +4608): the last 8 frames' facing rows r2, their count, the next slot and the
+/// running sum. Pushed every frame (F-22858); reset to the current row while a one-off clip runs (ped +4804, F-89721).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct FwdRing {
+    pub count: i32,
+    pub index: i32,
+    pub sum: Vec3,
+    pub e: [Vec3; 8],
+}
+
+impl FwdRing {
+    /// F-89721: count 8, next 0, sum v x 8, every entry v.
+    pub(crate) fn reset(&mut self, v: Vec3) {
+        self.count = 8;
+        self.index = 0;
+        self.sum = crate::tcp_rail::vmul3(v, 8.0);
+        self.e = [v; 8];
+    }
+
+    /// F-22858: the first entry starts the sum; up to 8 are added; then the oldest is taken out of the sum and replaced.
+    pub(crate) fn push(&mut self, v: Vec3) {
+        if self.count == 0 {
+            self.sum = v;
+            self.e[0] = v;
+            self.index = 1;
+            self.count = 1;
+        } else if self.count < 8 {
+            self.e[(self.index & 7) as usize] = v;
+            self.sum = crate::tcp_rail::vadd3(self.sum, v);
+            self.count += 1;
+            self.index += 1;
+        } else {
+            if self.index == 8 {
+                self.index = 0;
+            }
+            let i = (self.index & 7) as usize;
+            self.sum = crate::tcp_rail::vdiff(self.sum, self.e[i]);
+            self.e[i] = v;
+            self.sum = crate::tcp_rail::vadd3(self.sum, v);
+            self.index += 1;
+        }
+    }
+
+    /// F-49074's tail: the drawn rows r0, r2 (r1 is world up): the mean (sum x the refined reciprocal of the count)
+    /// with y set to 0, made unit; r0 = r1 x r2 as the vector unit has it.
+    pub(crate) fn rows(&self) -> (Vec3, Vec3) {
+        let m = if self.count > 0 {
+            let c = self.count as f32;
+            let r = vftz(1.0 / c);
+            let e = -vftz(vftz(r * c) - 1.0);
+            crate::tcp_rail::vmul3(self.sum, vftz(vftz(r * e) + r))
+        } else {
+            Vec3::ZERO
+        };
+        let r2 = crate::tcp_rail::vnorm(Vec3::new(m.x, 0.0, m.z));
+        let r1 = Vec3::Y;
+        // -(r2.yzx r1.zxy - r2.zxy r1.yzx)
+        let p = vlanes(Vec3::new(r2.z, r2.x, r2.y), Vec3::new(r1.y, r1.z, r1.x), |x, y| x * y);
+        let q = vlanes(Vec3::new(r2.y, r2.z, r2.x), Vec3::new(r1.z, r1.x, r1.y), |x, y| x * y);
+        (-vlanes(q, p, |x, y| x - y), r2)
+    }
+}
+
+/// Sphere 0's contacts as the port finds them: every city-bound triangle (the collider's sectors: the city bound and
+/// roads, type 0x800) whose closest point to the centre lies within the radius, in the collider's order; the contact is
+/// that closest point, the normal the face's own (front side). (The original's sphere test keeps 12 slots, filled in an
+/// order not decoded; see the doc.)
+fn ground_contacts(col: &WorldCollider, c: Vec3, r: f32) -> Vec<Option<GroundContact>> {
+    let mut out = Vec::new();
+    col.triangles_of(c - Vec3::splat(r), c + Vec3::splat(r), |s, i| {
+        let t = &s.tris[i];
+        let q = crate::physics::collision::closest_point_tri(c, t);
+        if (q - c).length_squared() <= r * r {
+            let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+            out.push(Some(GroundContact { kind: GROUND_TYPE, point: q, normal: n }));
+        }
+    });
+    out
+}
+
+/// The walker's ground state (F-49074): U, the forward ring, sphere 0 (its centre +48, pending +20, the hits of its last
+/// test), the one-off clip flag (ped +4804) as it was at the frame's start, and the facing of the rail (the port's: the
+/// behaviour's target facing, kept apart from the drawn one).
+#[derive(Clone, Debug, Default)]
+struct Ground {
+    up: Vec3,
+    ring: FwdRing,
+    centre: Vec3,
+    pending: bool,
+    hits: Vec<Option<GroundContact>>,
+    one_off: bool,
+    face: Vec3,
+    /// this frame's target facing (the rail's, or the push's while sliding aside)
+    t_face: Vec3,
+}
+
+/// F-49074 for a walker on the mesh, once per update of the port, after its behaviour step (`p.pos`, `p.ground.t_face`:
+/// the target T) and a one-off clip's root motion (T is then where the clip took it). `cur`: where it was drawn before;
+/// `frames`: the 30 Hz manager frames this update covers; `draw0`: sphere 0 drawn in them. The order is the original's
+/// manager frame (F-96156): at the frame's start every sphere's slots are cleared and a pending sphere is tested
+/// (F-12278 -> F-78763: F-96720 clears, F-66549 queues, F-34785 clears the pending flag); the queued tests run on
+/// the 8 worker jobs (F-77931) and are waited for (F-29302) before the walkers' updates, where slot 80 draws (F-59837:
+/// the centre is T's place) and reads sphere 0. So a draw is read once, in the next frame, against the centre of the
+/// draw. The port's update may cover no manager frame (no test, no ring step) or several (one test; the ring stepped
+/// once a frame).
+fn walker_ground(p: &mut Ped, col: &WorldCollider, cur: Vec3, frames: u32, draw0: bool, dt: f32) {
+    let clip = matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_));
+    let g = &mut p.ground;
+    if clip {
+        // (a one-off clip's T is the drawn matrix moved by the clip: F-94626 for state 3)
+        g.face = flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z);
+        g.t_face = g.face;
+    }
+    let face = if g.t_face != Vec3::ZERO { g.t_face } else { flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z) };
+    // (the port's rails are flat: T's height is where the walker was drawn; the original's is the rail's, F-74567)
+    let t_place = if clip { p.pos } else { Vec3::new(p.pos.x, cur.y, p.pos.z) };
+    if frames > 0 {
+        g.hits.clear();
+        if g.pending {
+            g.hits = ground_contacts(col, g.centre, GROUND_RADIUS);
+            g.pending = false;
+        }
+    }
+    if draw0 {
+        g.centre = t_place;
+        g.pending = true;
+    }
+    let pick = ground_pick(&g.hits, g.centre);
+    g.hits.clear();
+    let (place, r2) = ground_place(-face, t_place, cur, &mut g.up, pick, p.speed, dt, clip);
+    let steps = if g.ring.count == 0 { frames.max(1) } else { frames }.min(8);
+    for _ in 0..steps {
+        if g.one_off {
+            g.ring.reset(r2);
+        } else {
+            g.ring.push(r2);
+        }
+    }
+    let (r0, r2) = g.ring.rows();
+    if r2 != Vec3::ZERO {
+        p.rot = Quat::from_mat3(&glam::Mat3::from_cols(r0, Vec3::Y, r2));
+    }
+    // (ped +4804 for the next frame: set by F-20899 after slot 80 when a clip starts, cleared by F-52026)
+    g.one_off = clip;
+    p.pos = place;
+}
 
 fn rotate_y(v: Vec3, a: f32) -> Vec3 {
     let (s, c) = a.sin_cos();
@@ -479,7 +735,9 @@ fn car_threat(pos: Vec3, threats: &[Threat]) -> Option<(Vec3, Vec3, f32)> {
 /// playback rate.
 #[allow(clippy::too_many_arguments)]
 fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, threats: &[Threat], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, evades: &mut u32, speech: &mut Vec<Speech>) -> f32 {
-    let fwd = flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z);
+    // (the behaviour's facing: the rail's, kept apart from the drawn one, which is the mean of the last 8 frames')
+    let fwd = if p.ground.face != Vec3::ZERO { p.ground.face } else { flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z) };
+    p.ground.t_face = fwd;
     let set_state = |p: &mut Ped, s: State| {
         if p.state != s {
             p.from = p.cur.clone();
@@ -533,6 +791,9 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
     if let Some((a, b, t, len)) = p.slide {
         let t = t + dt;
         p.pos = a.lerp(b, (t / len).min(1.0));
+        // (the target faces the push while sliding aside: F-94626 builds T's r2 from behaviour +400, the push F-83234
+        // stores there)
+        p.ground.t_face = flat(b - a).normalize_or(fwd);
         p.speed = a.distance(b) / len;
         p.slide = if t >= len { None } else { Some((a, b, t, len)) };
         set_state(p, State::Walk);
@@ -685,7 +946,8 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         p.speed = 0.0;
         return 1.0;
     }
-    p.rot = Quat::from_rotation_y((-heading.x).atan2(-heading.z));
+    p.ground.face = heading;
+    p.ground.t_face = heading;
     set_state(p, State::Walk);
     p.speed / ty.walk_speed.max(0.1)
 }
@@ -1374,6 +1636,7 @@ impl Peds {
                 age: 0.0,
                 life: 8.0,
                 blend_len: 0.25,
+                ground: Ground::default(),
             });
             spawned += 1;
         }
@@ -1542,6 +1805,7 @@ impl Peds {
                     age: 0.0,
                     life: 8.0,
                     blend_len: 0.25,
+                    ground: Ground::default(),
                 });
             }
         }
@@ -1658,18 +1922,23 @@ impl Peds {
             let on_mesh = has_mesh && p.poly != NO_POLY;
             // on the mesh: the original's sidewalk behaviour
             let mut rate = 1.0;
+            // (where the walker is drawn before this update: F-49074's `cur`)
+            let cur = p.pos;
+            let mut due = 0u8;
+            let frames = self.frame_no.wrapping_sub(frame0);
             if on_mesh {
                 boxes.clear();
                 obstacles(p.pos, 4.0, &mut boxes);
-                // the spheres due in the 30 Hz frames run now
+                // the spheres due in the 30 Hz frames run now: the one the counter points at, counter % 3, or
+                // counter & 1 while a one-off clip plays (F-49074)
                 let d = p.pos.distance(center);
                 let chance = AWARE_CHANCE.iter().find(|c| d < c.0).map_or(AWARE_CHANCE_FAR, |c| c.1);
-                let mut due = 0u8;
+                let clip = matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_));
                 let mut n = frame0;
                 while n != self.frame_no {
                     n = n.wrapping_add(1);
                     if rand() < chance {
-                        due |= 1 << (n % 3);
+                        due |= 1 << (if clip { n & 1 } else { n % 3 });
                     }
                 }
                 rate = sidewalk_step(p, ty, i, &peds_pos, &boxes, Some(col), threats, due, dt, &mut rand, &mut self.evades, &mut self.speech);
@@ -1958,23 +2227,18 @@ impl Peds {
                 yaw += d.clamp(-1.8 * dt, 1.8 * dt);
             }
             p.rot = Quat::from_rotation_y(yaw);
-            // on the mesh: the polygon's height, refined by the collision where the two agree
-            let floor = mesh.and_then(|m| {
+            if let Some(m) = mesh {
+                // the polygon walked on
                 if !m.polys[p.poly as usize].contains(p.pos.x, p.pos.z) {
                     if let Some(k) = m.find(p.pos, !0, 2.0) {
                         p.poly = k;
                     }
                 }
-                let q = &m.polys[p.poly as usize];
-                q.contains(p.pos.x, p.pos.z).then(|| q.height(p.pos.x, p.pos.z))
-            });
-            let y = match (col.ground(p.pos, 0.7, 1.5), floor) {
-                (Some(g), Some(m)) => Some(if (g.point.y - m).abs() < 0.5 { g.point.y } else { m }),
-                (Some(g), None) => Some(g.point.y),
-                (None, m) => m,
-            };
-            if let Some(y) = y {
-                p.pos.y += (y - p.pos.y) * (dt * 12.0).min(1.0);
+                // the ground, U and the drawn matrix (F-49074)
+                walker_ground(p, col, cur, frames, due & 1 != 0, dt);
+            } else if let Some(g) = col.ground(p.pos, 0.7, 1.5) {
+                // (kerb walkers, the port's own: eased onto the collision)
+                p.pos.y += (g.point.y - p.pos.y) * (dt * 12.0).min(1.0);
             }
         }
         self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223 + self.list.len() as u32);
@@ -2032,6 +2296,7 @@ impl Peds {
             age: 0.0,
             life,
             blend_len: 0.25,
+            ground: Ground::default(),
         });
         true
     }
@@ -2180,6 +2445,149 @@ fn scan_voice_banks(audio_root: &Path) -> HashMap<String, String> {
 mod tests {
     use super::*;
     use crate::ambient::Tod;
+
+    fn ref_word(t: &str) -> u32 {
+        u32::from_str_radix(&t.replace('_', ""), 16).unwrap()
+    }
+
+    /// The walker's slot 80 (F-49074) whole against the original's code run offline on 3,000 cases
+    /// (tools/ped_ground_reference.py -> testdata/ped_ground_ref.txt, with F-24029, F-59837, F-89721 and F-22858 in it):
+    /// the sphere draw (chance by the distance to the focus, the walker's MWC, k by the counter, clip or not) and the
+    /// spheres it sets, the 12 hit slots of sphere 0 (empty, of other types, normals about y = 0.70710677, plan distances
+    /// about the 0.25 m^2 tie in any order), U zero / a normal / any, the clip, hit and no-hit tails and the forward ring in
+    /// every state. The draw is reproduced here from the decode (the port draws by its own chance loop); the pick, U,
+    /// the place, the facing, the ring and the drawn rows are the port's. Every xyz word must be equal (w lanes are not
+    /// the port's).
+    #[test]
+    fn ped_ground_matches_the_original() {
+        let (mut n, mut hits, mut clips, mut slides) = (0, 0, 0, 0);
+        for l in include_str!("testdata/ped_ground_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = c.split(' ').map(ref_word).collect();
+            let o: Vec<u32> = o.split(' ').map(ref_word).collect();
+            let f = |i: usize| f32::from_bits(c[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let ov = |i: usize| Vec3::new(f32::from_bits(o[i]), f32::from_bits(o[i + 1]), f32::from_bits(o[i + 2]));
+            let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            let clip = c[0] != 0 && c[1] == 3;
+            let (t_r2, t_place, cur) = (v(15), v(18), v(21));
+            // the draw (F-49074 step 1, F-59837), as decoded
+            let mut mwc = crate::vehicles::parked::Mwc { lo: c[5], carry: c[6] };
+            let step = |m: &mut crate::vehicles::parked::Mwc| {
+                let x = m.lo as u64 * 0x5CDC_FAA7 + m.carry as u64;
+                m.lo = x as u32;
+                m.carry = (x >> 32) as u32;
+                (m.lo & 0x7F_FFFF) as f32
+            };
+            let p = if c[2] == 0 {
+                0.4f32
+            } else {
+                let (dx, dz) = (f(27) - f(24), f(29) - f(26));
+                let d = crate::physics::exact::fma(dz, dz, dx * dx);
+                if d < 625.0 { 0.4 } else if d < 7225.0 { 0.15 } else { 0.1 }
+            };
+            let mut spheres = [(0u32, 0u32, [0u32; 3]); 3];
+            let mut centre = v(33);
+            if step(&mut mwc) * f32::from_bits(0x3400_0000) < p {
+                // (no manager: the counter read is the empty page's 0)
+                let cnt = if c[2] != 0 { c[4] } else { 0 };
+                let k = if clip { cnt & 1 } else { cnt % 3 } as usize;
+                let r = if k == 0 { GROUND_RADIUS } else { f32::from_bits(0x3F2A_C083) };
+                let mut at = t_place;
+                if k == 2 {
+                    let s = step(&mut mwc) * f32::from_bits(0x34A0_0000);
+                    at = crate::tcp_rail::vmadd3(vneg(t_r2), s, t_place);
+                }
+                if k == 0 {
+                    centre = at;
+                }
+                spheres[k] = (1, r.to_bits(), bits(at));
+            }
+            // the pick (F-24029) and the tail
+            let slots: Vec<Option<GroundContact>> = (0..12)
+                .map(|j| {
+                    let s = 66 + 8 * j;
+                    (c[s] != 0).then(|| GroundContact { kind: c[s + 1], point: v(s + 2), normal: v(s + 5) })
+                })
+                .collect();
+            let pick = ground_pick(&slots, centre);
+            let mut up = v(30);
+            let (place, r2) = ground_place(t_r2, t_place, cur, &mut up, pick, f(7), f(8), clip);
+            let mut ring = FwdRing { count: c[36] as i32, index: c[37] as i32, sum: v(38), e: [Vec3::ZERO; 8] };
+            for (k, e) in ring.e.iter_mut().enumerate() {
+                *e = v(41 + 3 * k);
+            }
+            if c[65] != 0 {
+                ring.reset(r2);
+            } else {
+                ring.push(r2);
+            }
+            let (r0, r2d) = ring.rows();
+            let got = (bits(r0), bits(Vec3::Y), bits(r2d), bits(place), bits(up), ring.count as u32, ring.index as u32, bits(ring.sum));
+            let want = (bits(ov(1)), bits(ov(5)), bits(ov(9)), bits(ov(13)), bits(ov(17)), o[21], o[22], bits(ov(23)));
+            assert_eq!(got, want, "{l}");
+            for k in 0..8 {
+                assert_eq!(bits(ring.e[k]), bits(ov(27 + 4 * k)), "{l}");
+            }
+            for (k, s) in spheres.iter().enumerate() {
+                let b = 59 + 5 * k;
+                if s.0 != 0 {
+                    assert_eq!((s.0, s.1, s.2), (o[b], o[b + 1], [o[b + 2], o[b + 3], o[b + 4]]), "{l}");
+                } else {
+                    assert_eq!(o[b], 0, "{l}");
+                }
+            }
+            assert_eq!((mwc.lo, mwc.carry), (o[74], o[75]), "{l}");
+            n += 1;
+            hits += pick.is_some() as usize;
+            clips += clip as usize;
+            slides += (!clip && pick.is_none()) as usize;
+        }
+        assert_eq!(n, 3000);
+        // (1,932 with a ground hit, 1,065 in a clip, 690 sliding without a hit)
+        assert_eq!((hits, clips, slides), (1932, 1065, 690));
+    }
+
+    /// The forward ring alone (F-22858 push, F-89721 reset) against the original's code run offline: 600 sequences of up
+    /// to 24 pushes / resets from an empty ring (testdata/ped_ring_ref.txt), the ring after every step equal bit for bit;
+    /// and what it does to the drawn heading: a turn reaches the body over 8 frames, a one-off clip shows at once.
+    #[test]
+    fn forward_ring_matches_the_original() {
+        let mut steps = 0;
+        for l in include_str!("testdata/ped_ring_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = c.split(' ').map(ref_word).collect();
+            let mut ring = FwdRing::default();
+            for (i, after) in o.split(" | ").enumerate() {
+                let a: Vec<u32> = after.split(' ').map(ref_word).collect();
+                let v = Vec3::new(f32::from_bits(c[4 * i + 1]), f32::from_bits(c[4 * i + 2]), f32::from_bits(c[4 * i + 3]));
+                if c[4 * i] == 2 {
+                    ring.reset(v);
+                } else {
+                    ring.push(v);
+                }
+                let mut got = vec![ring.count as u32, ring.index as u32];
+                for w in std::iter::once(ring.sum).chain(ring.e) {
+                    got.extend([w.x.to_bits(), w.y.to_bits(), w.z.to_bits(), a[got.len() + 3]]);
+                }
+                assert_eq!(got, a, "{l}");
+                steps += 1;
+            }
+        }
+        assert_eq!(steps, 7319);
+        // a quarter turn: the drawn facing moves an eighth of the way per frame and is there after 8 frames
+        let mut ring = FwdRing::default();
+        ring.reset(Vec3::Z);
+        let mut yaw = Vec::new();
+        for _ in 0..8 {
+            ring.push(Vec3::X);
+            let (_, r2) = ring.rows();
+            yaw.push(r2.x.atan2(r2.z));
+        }
+        assert!(yaw.windows(2).all(|w| w[1] > w[0]) && (yaw[7] - std::f32::consts::FRAC_PI_2).abs() < 1e-6 && yaw[0] < 0.2, "{yaw:?}");
+        ring.reset(Vec3::NEG_X);
+        assert_eq!(ring.rows().1, Vec3::NEG_X);
+    }
 
     /// The evade clip pick (F-37443 with the xz angle F-32060) against the original's code run offline on 4,000 cases
     /// (tools/evade_pick_reference.py -> testdata/evade_pick_ref.txt): lists of up to 10 entries of every AvoidType and
