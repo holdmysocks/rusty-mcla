@@ -5059,6 +5059,21 @@ impl App {
         if self.game.mode == Mode::Race {
             let ready = self.vehicles.player().map_or(true, |c| world.ready_at(c.state.pos));
             race_finished = self.game.update_race(&mut self.vehicles, sim_dt, ready);
+            // (the checkpoint cores' racer-finished handler for racer 0, offline: over the line damaged out
+            // (Racer_IsDamagedOut, F-36475: damage >= MaxDamage) -> Race_ToggleDamagedOut(race, 0) and
+            // Racer_SetDamagePercent(0.95) - F-73522 -> F-92305: 95 % of MaxDamage, the damaged-out bit 0x04 off - so the race
+            // counts. The finish is $IsRaceFinish for the driver: its impact states go to cruising without the
+            // wreck's "what next", and a stopped engine sound stays stopped)
+            if race_finished && !self.game.race_wreck_over && self.game.race.as_ref().is_some_and(|r| r.kind == game::RaceKind::Race) {
+                if let Some(p) = self.vehicles.player_mut().filter(|p| p.state.damage >= 1.0) {
+                    p.state.damage = 0.95;
+                    self.game.race_dmg_out = false;
+                    self.crash_bits &= !0x04;
+                    self.wreck_timer = 0.0;
+                    self.wreck_engine = if self.wreck_engine == 2 { 4 } else { 0 };
+                    log::info!("finished damaged out: Race_IsDamagedOut off, damage 0.95");
+                }
+            }
             // (Race_IsFinished set by the wreck: the race script ends and the core goes to its race over)
             race_finished |= self.game.race_wreck_over;
             // (the race scripts' CalculateRankOrdered / Unordered for racer 0 while the player has not finished and the
