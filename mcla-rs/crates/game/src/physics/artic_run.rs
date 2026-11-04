@@ -86,6 +86,63 @@ pub struct Outside {
     /// another vehicle the rider's collide met this tick ([`RiderRagdoll::collide_other`]): its rows' places in the
     /// island's order; None, no other vehicle
     pub other: Option<OtherRows>,
+    /// the loose world's island that vehicle is in (its other pairs: a semi's hitch, its contacts with the city or the
+    /// props): one island with the rider's ([`LooseRows`]); None, the rider's pairs alone
+    pub loose: Option<LooseRows>,
+}
+
+/// The loose world's share of the rider's island (one island build per tick, F-96487 / F-14298): the other pairs of the
+/// island his partner vehicle is in, in the loose world's cache order, and the keys his own pairs take in that world (the
+/// level indices for the union-find and the cache order, the instances' addresses for the sort).
+#[derive(Clone, Debug, Default)]
+pub struct LooseRows {
+    /// the island's pairs that are not the rider's ([`WalkNode`]: a constraint's pair joins first, F-87905)
+    pub nodes: Vec<WalkNode>,
+    pub rider_level: i64,
+    pub rider_key: i64,
+    pub city_key: i64,
+    pub other_key: i64,
+}
+
+/// A pair of objects as the merged island walk takes it ([`merged_rows`]): the two objects' level indices (None: the city,
+/// which joins nothing), the instance addresses of side A and B of each of its rows in the walk's order (the sub-manifolds
+/// in their order, contacts by number, the disabled ones included; a pair whose rows do not all name the same side A - a
+/// semi's hitch beside the cab x trailer contacts - keeps each row's own), and whether it is a constraint's pair.
+#[derive(Clone, Debug, Default)]
+pub struct WalkNode {
+    pub a: Option<i64>,
+    pub b: Option<i64>,
+    pub keys: Vec<(i64, i64)>,
+    pub first: bool,
+}
+
+/// The cache's order of `nodes` as the loose world's collide takes them (loose.rs `collide`, F-14298): the constraints'
+/// pairs first in their order (F-87905 joins its pair before the collide), then the others by (lower, higher) level - the
+/// city lowest - in a stable sort. Answers the nodes' numbers in that order.
+pub fn cache_order(nodes: &[WalkNode]) -> Vec<usize> {
+    let key = |n: &WalkNode| {
+        let (a, b) = (n.a.unwrap_or(i64::MIN), n.b.unwrap_or(i64::MIN));
+        (a.min(b), a.max(b))
+    };
+    let mut first: Vec<usize> = (0..nodes.len()).filter(|&k| nodes[k].first).collect();
+    let mut rest: Vec<usize> = (0..nodes.len()).filter(|&k| !nodes[k].first).collect();
+    rest.sort_by_key(|&k| key(&nodes[k]));
+    first.extend(rest);
+    first
+}
+
+/// The row lists of the island that holds `of` over nodes already in the cache's order: the union-find walk of
+/// [`island_walk`], sorted by each row's instance A address and, apart, by its instance B address with the STLport sort
+/// (as [`island_rows`]). Rows as (node, row of the node).
+pub fn merged_rows(nodes: &[WalkNode], of: i64) -> Option<(Vec<(usize, usize)>, Vec<(usize, usize)>)> {
+    let ends: Vec<(Option<i64>, Option<i64>)> = nodes.iter().map(|n| (n.a, n.b)).collect();
+    let rows: Vec<usize> = nodes.iter().map(|n| n.keys.len()).collect();
+    let walk = island_walk(&ends, &rows, of)?;
+    let mut by_a = walk.clone();
+    stl_sort(&mut by_a, |x| nodes[x.0].keys[x.1].0);
+    let mut by_b = walk;
+    stl_sort(&mut by_b, |x| nodes[x.0].keys[x.1].1);
+    Some((by_a, by_b))
 }
 
 /// Another vehicle's share of the rider's island (an ambient car: ov.0 724 - 735).
@@ -136,6 +193,8 @@ pub struct BikeRows {
 pub enum IslRow {
     Bike(usize),
     Rider(usize),
+    /// a row of the loose world's share ([`LooseRows`]): its node and its row there, enabled or not
+    Loose(usize, usize),
 }
 
 /// The rider's share of his island between the update's passes ([`RiderRagdoll::build`] .. [`RiderRagdoll::finish`]).
@@ -166,6 +225,7 @@ enum Src {
     BikeCity,
     BikeRider,
     OtherRider,
+    Loose(usize),
 }
 
 /// One pair of an island for its row order: the two objects (the level index; None: the city, which joins
@@ -188,7 +248,21 @@ pub struct WalkPair {
 /// each pair; that walk sorted by instance A's address and by instance B's with the STLport sort ([`stl_sort`]:
 /// not stable above 16 rows). Rows as (pair, row of the pair); None when no pair holds `of`.
 pub fn island_rows(pairs: &[WalkPair], of: i64) -> Option<(Vec<(usize, usize)>, Vec<(usize, usize)>)> {
-    let live: Vec<usize> = (0..pairs.len()).collect();
+    let ends: Vec<(Option<i64>, Option<i64>)> = pairs.iter().map(|p| (p.a, p.b)).collect();
+    let rows: Vec<usize> = pairs.iter().map(|p| p.rows).collect();
+    let walk = island_walk(&ends, &rows, of)?;
+    let mut by_a = walk.clone();
+    stl_sort(&mut by_a, |x| pairs[x.0].key_a);
+    let mut by_b = walk;
+    stl_sort(&mut by_b, |x| pairs[x.0].key_b);
+    Some((by_a, by_b))
+}
+
+/// The union-find walk of [`island_rows`] alone: `ends` the pairs' two objects in the cache's order (None: the city),
+/// `rows` how many rows each holds; the tree of `of` in pre-order, every row of each pair, as (pair, row). None when
+/// no pair holds `of`.
+pub fn island_walk(ends: &[(Option<i64>, Option<i64>)], rows: &[usize], of: i64) -> Option<Vec<(usize, usize)>> {
+    let live: Vec<usize> = (0..ends.len()).collect();
     let np = live.len();
     let mut parent: Vec<Option<usize>> = vec![None; np];
     let mut kids: Vec<Vec<usize>> = vec![Vec::new(); np];
@@ -237,9 +311,9 @@ pub fn island_rows(pairs: &[WalkPair], of: i64) -> Option<(Vec<(usize, usize)>, 
     for k in 0..np {
         roots.push(k);
         let mut r = find(&mut parent, &mut kids, &mut roots, k);
-        let p = pairs[live[k]];
-        let mut ends: Vec<i64> = p.a.into_iter().collect();
-        if let Some(b) = p.b.filter(|b| Some(*b) != p.a) {
+        let p = ends[live[k]];
+        let mut ends: Vec<i64> = p.0.into_iter().collect();
+        if let Some(b) = p.1.filter(|b| Some(*b) != p.0) {
             ends.push(b);
         }
         for e in &ends {
@@ -256,7 +330,7 @@ pub fn island_rows(pairs: &[WalkPair], of: i64) -> Option<(Vec<(usize, usize)>, 
             link.iter_mut().find(|x| x.0 == *e).unwrap().1 = r;
         }
     }
-    let holds = |k: usize| pairs[live[k]].a == Some(of) || pairs[live[k]].b == Some(of);
+    let holds = |k: usize| ends[live[k]].0 == Some(of) || ends[live[k]].1 == Some(of);
     let mut walk: Vec<(usize, usize)> = Vec::new();
     for &root in roots.iter() {
         let mut tree = Vec::new();
@@ -266,18 +340,14 @@ pub fn island_rows(pairs: &[WalkPair], of: i64) -> Option<(Vec<(usize, usize)>, 
             stack.extend(kids[nd].iter().rev());
         }
         if tree.iter().any(|&k| holds(k)) {
-            walk = tree.iter().flat_map(|&k| (0..pairs[live[k]].rows).map(move |r| (k, r))).map(|(k, r)| (live[k], r)).collect();
+            walk = tree.iter().flat_map(|&k| (0..rows[live[k]]).map(move |r| (k, r))).map(|(k, r)| (live[k], r)).collect();
             break;
         }
     }
     if walk.is_empty() {
         return None;
     }
-    let mut by_a = walk.clone();
-    stl_sort(&mut by_a, |x| pairs[x.0].key_a);
-    let mut by_b = walk;
-    stl_sort(&mut by_b, |x| pairs[x.0].key_b);
-    Some((by_a, by_b))
+    Some(walk)
 }
 
 /// What one tick gives the game.
@@ -614,9 +684,14 @@ impl RiderRagdoll {
         // object's level (the object is A), then the others by (lower, higher) level (the lower is A). The sort's keys
         // are the instances' addresses: the city's below the bike's below the rider's in ro.0, rm.0, rh.0 and rf.0.
         let bike = outside.bike.as_ref();
-        let rider = bike.map(|b| b.rider_level).or(other.map(|o| o.rider_level)).unwrap_or(0);
-        // (the other vehicle's instance below the rider's too: ov.0's car at 0xA931B220, the rider at 0xBF5322D0)
-        let (city_key, bike_key, rider_key, other_key) = (0i64, 1i64, 2i64, 1i64);
+        let loose = outside.loose.as_ref();
+        let rider = loose.map(|l| l.rider_level).or(bike.map(|b| b.rider_level)).or(other.map(|o| o.rider_level)).unwrap_or(0);
+        // (the other vehicle's instance below the rider's too: ov.0's car at 0xA931B220, the rider at 0xBF5322D0; in one
+        // island with the loose world, that world's own keys)
+        let (city_key, bike_key, rider_key, other_key) = match loose {
+            Some(l) => (l.city_key, 1i64, l.rider_key, l.other_key),
+            None => (0i64, 1i64, 2i64, 1i64),
+        };
         let shared = bike.map_or(false, |b| b.shared);
         let other_shared = other.map_or(false, |o| o.shared);
         let mut pairs: Vec<(WalkPair, Src)> = Vec::new();
@@ -641,12 +716,29 @@ impl RiderRagdoll {
         if own_joins {
             pairs.push((WalkPair { a: Some(rider), b: Some(rider), key_a: rider_key, key_b: rider_key, rows: own.len() }, Src::Own));
         }
-        pairs.sort_by_key(|(p, _)| match p.b {
-            None => (0, p.a.unwrap_or(0)),
-            Some(b) => (1 + p.a.unwrap_or(0).min(b), p.a.unwrap_or(0).max(b)),
-        });
-        let (walk, srcs): (Vec<WalkPair>, Vec<Src>) = pairs.into_iter().unzip();
-        let (by_a, by_b) = island_rows(&walk, rider).unwrap_or_default();
+        let (walk, srcs, by_a, by_b) = match loose {
+            None => {
+                pairs.sort_by_key(|(p, _)| match p.b {
+                    None => (0, p.a.unwrap_or(0)),
+                    Some(b) => (1 + p.a.unwrap_or(0).min(b), p.a.unwrap_or(0).max(b)),
+                });
+                let (walk, srcs): (Vec<WalkPair>, Vec<Src>) = pairs.into_iter().unzip();
+                let (by_a, by_b) = island_rows(&walk, rider).unwrap_or_default();
+                (walk, srcs, by_a, by_b)
+            }
+            Some(l) => {
+                // (one island with the loose world's: its pairs and his in the cache's order, every row with its own
+                // instances' keys; `walk` keeps each node's ends for the runs)
+                let mut nodes: Vec<(WalkNode, Src)> = pairs.into_iter().map(|(p, s)| (WalkNode { a: p.a, b: p.b, keys: vec![(p.key_a, p.key_b); p.rows], first: false }, s)).collect();
+                nodes.extend(l.nodes.iter().cloned().enumerate().map(|(i, n)| (n, Src::Loose(i))));
+                let order = cache_order(&nodes.iter().map(|x| x.0.clone()).collect::<Vec<_>>());
+                let nodes: Vec<(WalkNode, Src)> = order.into_iter().map(|k| nodes[k].clone()).collect();
+                let (ns, srcs): (Vec<WalkNode>, Vec<Src>) = nodes.into_iter().unzip();
+                let (by_a, by_b) = merged_rows(&ns, rider).unwrap_or_default();
+                let walk = ns.iter().map(|n| WalkPair { a: n.a, b: n.b, key_a: n.keys.first().map_or(0, |k| k.0), key_b: n.keys.first().map_or(0, |k| k.1), rows: n.keys.len() }).collect();
+                (walk, srcs, by_a, by_b)
+            }
+        };
         let island = !by_a.is_empty() || outside.others.0 > 0 || !outside.parts.is_empty();
         // the callbacks' runs (F-97446): the list sorted by A walked by instance in the addresses' order, then the list
         // sorted by B - so the bike's run as A, the rider's as A, the bike's as B, the rider's as B. The rider's (F-37566)
@@ -699,7 +791,7 @@ impl RiderRagdoll {
                     Src::Own => self.own.manifolds[own[r].0].slots[own[r].1].enabled,
                     Src::BikeRider => bike_rider[r],
                     Src::OtherRider => other_rider[r],
-                    Src::BikeCity => true,
+                    Src::BikeCity | Src::Loose(_) => true,
                 })
                 .collect();
             for &(p, r) in &mine {
@@ -719,7 +811,7 @@ impl RiderRagdoll {
                     Src::Own => self.own.manifolds[own[r].0].slots[own[r].1].enabled = e,
                     Src::BikeRider => bike_rider[r] = e,
                     Src::OtherRider => other_rider[r] = e,
-                    Src::BikeCity => {}
+                    Src::BikeCity | Src::Loose(_) => {}
                 }
             }
             rider_runs.push(others);
@@ -802,6 +894,7 @@ impl RiderRagdoll {
                         isl.rows.push(IslRow::Bike(r));
                     }
                 }
+                Src::Loose(i) => isl.rows.push(IslRow::Loose(i, r)),
                 Src::BikeRider => {
                     if !(shared && veh_real && bike_rider[r]) {
                         continue;
@@ -1302,5 +1395,59 @@ mod tests {
         }
         eprintln!("exact ticks: {exact:?}");
         assert_eq!(exact, (169..=185).collect::<Vec<u32>>(), "first difference: {first_bad:?}");
+    }
+
+    /// The merged island's lists (the rider in a loose island: [`cache_order`], [`merged_rows`]) against a recording's
+    /// (testdata/rider_semi_yb0_order.txt, export_isl.py): per tick 'T name tick rider-level', its pairs in the cache's
+    /// order as 'N a b first rows keyA,keyB ...' (-1: the city or an object that is not active) and the recorded lists
+    /// as node.row. Answers (ticks, ticks whose cache order is the port's rule, differences).
+    #[allow(dead_code)] // (no recorded order file yet: see ragdoll_self_contacts.md section 15)
+    fn merged_order_check(text: &str) -> (usize, usize, Vec<String>) {
+        let mut ticks: Vec<(String, i64, Vec<WalkNode>, Vec<(usize, usize)>, Vec<(usize, usize)>)> = Vec::new();
+        let rows = |w: &[&str]| -> Vec<(usize, usize)> {
+            w.iter()
+                .map(|x| {
+                    let (p, r) = x.split_once('.').unwrap();
+                    (p.parse().unwrap(), r.parse().unwrap())
+                })
+                .collect()
+        };
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            match w.first() {
+                Some(&"T") => ticks.push((format!("{} {}", w[1], w[2]), w[3].parse().unwrap(), Vec::new(), Vec::new(), Vec::new())),
+                Some(&"N") => {
+                    let side = |s: &str| Some(s.parse::<i64>().unwrap()).filter(|&l| l >= 0);
+                    let keys = w[5..]
+                        .iter()
+                        .map(|k| {
+                            let (a, b) = k.split_once(',').unwrap();
+                            (a.parse().unwrap(), b.parse().unwrap())
+                        })
+                        .collect();
+                    ticks.last_mut().unwrap().2.push(WalkNode { a: side(w[1]), b: side(w[2]), keys, first: w[3] == "1" });
+                }
+                Some(&"A") => ticks.last_mut().unwrap().3 = rows(&w[1..]),
+                Some(&"B") => ticks.last_mut().unwrap().4 = rows(&w[1..]),
+                _ => {}
+            }
+        }
+        let mut bad = Vec::new();
+        let mut same_cache = 0;
+        for (name, rider, nodes, want_a, want_b) in &ticks {
+            same_cache += (cache_order(nodes) == (0..nodes.len()).collect::<Vec<_>>()) as usize;
+            match merged_rows(nodes, *rider) {
+                Some((a, b)) => {
+                    if &a != want_a {
+                        bad.push(format!("{name}: list by instance A {a:?}, recorded {want_a:?}"));
+                    }
+                    if &b != want_b {
+                        bad.push(format!("{name}: list by instance B {b:?}, recorded {want_b:?}"));
+                    }
+                }
+                None => bad.push(format!("{name}: no island holds the rider")),
+            }
+        }
+        (ticks.len(), same_cache, bad)
     }
 }

@@ -1513,4 +1513,182 @@ mod tests {
     /// ends about 1e-5 from the recorded multipliers and impulse, and the rider's links by an ulp or two - the same kind
     /// of difference as rv.0 156 / 158 / 159 ([`OPEN`]). The car's share and the other eleven ticks are exact.
     const OPEN_CAR: [u32; 1] = [730];
+
+    // -----------------------------------------------------------------------------------------
+    // One island of several rigid bodies and the rider (RGISL001, export_isl.py): the rider thrown onto a vehicle that
+    // is in other pairs of the loose world (a semi trailer with its hitch to the cab), one solve for all
+
+    /// A rigid body of an RGISL001 tick: its level index, its collider at slot 5's and at slot 10's entry of the rider (the
+    /// RGD0 / RGD1 snapshots) and its instance's matrix at both.
+    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
+    struct IslBody {
+        level: u32,
+        col0: Vec<u32>,
+        col1: Vec<u32>,
+        matrix1: Vec<u32>,
+    }
+
+    /// A row of an RGISL001 tick: the rider's side, the rigid body of each side (None: the city, a fixed object, the
+    /// rider), whether the record is the RGD1 snapshot's (a row in no PAIR record: a constraint's), and the record.
+    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
+    struct IslRow2 {
+        bodies: [Option<usize>; 2],
+        snap: bool,
+        c: IslContact,
+    }
+
+    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
+    struct IslTick2 {
+        tick: u32,
+        bounce: u32,
+        n: u32,
+        rows: Vec<IslRow2>,
+        hinge_parts: Vec<i32>,
+        bodies: Vec<IslBody>,
+    }
+
+    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
+    fn isl2_ticks(b: &[u8]) -> (Vec<i32>, Vec<IslTick2>) {
+        assert_eq!(&b[..8], b"RGISL001");
+        let w: Vec<u32> = b[8..].chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+        let (ticks, mut i) = (w[0] as usize, 1);
+        let n = w[i] as usize;
+        let map: Vec<i32> = w[i + 1..i + 1 + n].iter().map(|&x| x as i32).collect();
+        i += 1 + n;
+        let mut out = Vec::new();
+        for _ in 0..ticks {
+            let len = w[i] as usize;
+            let t = &w[i + 1..i + 1 + len];
+            i += 1 + len;
+            let mut k = 4;
+            let mut rows = Vec::new();
+            let body = |x: u32| if x == u32::MAX { None } else { Some(x as usize) };
+            for _ in 0..t[3] {
+                let c = IslContact { side: t[k], parts: [t[k + 3] as i32, t[k + 4] as i32], w: t[k + 6..k + 50].try_into().unwrap(), prev_tick: t[k + 50], prev: t[k + 51..k + 63].try_into().unwrap() };
+                rows.push(IslRow2 { bodies: [body(t[k + 1]), body(t[k + 2])], snap: t[k + 5] != 0, c });
+                k += 63;
+            }
+            let hinge_parts = t[k + 1..k + 1 + t[k] as usize].iter().map(|&x| x as i32).collect();
+            k += 1 + t[k] as usize;
+            let nb = t[k] as usize;
+            k += 1;
+            let mut bodies = Vec::new();
+            for _ in 0..nb {
+                bodies.push(IslBody { level: t[k], col0: t[k + 1..k + 177].to_vec(), col1: t[k + 177..k + 353].to_vec(), matrix1: t[k + 369..k + 385].to_vec() });
+                k += 385;
+            }
+            out.push(IslTick2 { tick: t[0], bounce: t[1], n: t[2], rows, hinge_parts, bodies });
+        }
+        (map, out)
+    }
+
+    /// A rigid body as the island takes it (as [`shared_bike`]): its collider at slot 10's entry and its instance's rows.
+    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
+    fn isl2_body(b: &IslBody) -> solver::Body {
+        let (w, m) = (&b.col1, &b.matrix1);
+        solver::Body { at: wv(w, 256), rows: [wv(m, 0), wv(m, 16), wv(m, 32)], vel: wv(w, 272), ang: wv(w, 288), inv_mass: wf(w, 196), inv_moments: wv(w, 176), force: wv(w, 336), torque: wv(w, 352) }
+    }
+
+    /// The island's rows: the rider's of type 7 / 13 with the other side's body where it has one; the others rigid rows
+    /// between their bodies (a constraint's of its kind). The warm start of a PAIR row as [`shared_touches`]; of a row in no
+    /// PAIR record (a constraint's, or a sub-manifold the record did not carry) its record at the RGD0 snapshot (export_isl.py
+    /// writes it as the tick before's).
+    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
+    fn isl2_touches(map: &[i32], n_links: usize, t: &IslTick2) -> Vec<solver::Touch> {
+        let mut out = Vec::new();
+        for r in &t.rows {
+            let c = &r.c;
+            let f = |o: usize| f32::from_bits(c.w[o / 4]);
+            let v = |o: usize| Vec3::new(f(o), f(o + 4), f(o + 8));
+            let side = |o: usize, s: usize| solver::Side { body: r.bodies[s], point: v(o), ..Default::default() };
+            let jointed = match c.side {
+                3 => Some(solver::JointedSide { body: 0, link: part_link(map, n_links, c.parts[0]), on_b: false, point_w: f(60), self_b: Some((part_link(map, n_links, c.parts[1]), f(76))) }),
+                0 | 1 => {
+                    let on_b = c.side == 1;
+                    Some(solver::JointedSide { body: 0, link: part_link(map, n_links, c.parts[c.side as usize]), on_b, point_w: if on_b { f(76) } else { f(60) }, self_b: None })
+                }
+                _ => None,
+            };
+            let pw = |i: usize| f32::from_bits(c.prev[i]);
+            let d = v(16) - Vec3::new(pw(8), pw(9), pw(10));
+            let near = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)) < f32::from_bits(0x39d1_b717);
+            let prev = |i: usize| if c.prev_tick + 1 != t.tick || !near { Vec3::ZERO } else { Vec3::new(pw(i), pw(i + 1), pw(i + 2)) };
+            out.push(solver::Touch {
+                depth: f(12),
+                friction: f(28),
+                elasticity: f(44),
+                a: side(48, 0),
+                b: side(64, 1),
+                normal: v(80),
+                back: v(96),
+                target: v(144),
+                kind: (c.w[41] >> 24) as u8,
+                jointed,
+                kept: prev(4),
+                pushed: prev(0),
+                ..Default::default()
+            });
+        }
+        out
+    }
+
+    /// The island of `fixture` (RGISL001) with `run` (ops 'i'): the rider RGX0 -> RGD1 word for word, the elasticity factor
+    /// (isl +40), every row's kept multipliers (+128) and impulse (+112), and every rigid body's share - what the island's
+    /// apply adds to its accumulators +368 / +384 between the snapshots - bit for bit. Answers the report and the count.
+    #[allow(dead_code)] // (no RGISL001 fixture yet: see ragdoll_self_contacts.md section 15)
+    fn many_island(fixture: &[u8], run: &[u8], open: &[u32]) -> (Vec<String>, usize) {
+        let (map, ticks) = isl2_ticks(fixture);
+        let cases = run_cases(run);
+        let mut report = Vec::new();
+        let mut n = 0;
+        for t in &ticks {
+            let Some(c) = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick) else { continue };
+            n += 1;
+            let mut a = load(&c.inp);
+            for &p in &t.hinge_parts {
+                a.contact_on_part(&map, p);
+            }
+            let mut touches = isl2_touches(&map, a.n(), t);
+            assert_eq!(touches.len(), t.n as usize);
+            let bodies: Vec<solver::Body> = t.bodies.iter().map(isl2_body).collect();
+            let dt = c.v1;
+            let mut jointed = [a];
+            let solved = solver::island_solve_jointed(&bodies, &touches, &mut jointed, (0, 0.0), dt, 1.0 / dt);
+            solver::island_apply_jointed(&solved, &mut jointed);
+            let [mut a] = jointed;
+            a.motion_measure(dt);
+            let mut bad = Vec::new();
+            if solved.bounce.to_bits() != t.bounce {
+                bad.push(format!("bounce {:08x} want {:08x}", solved.bounce.to_bits(), t.bounce));
+            }
+            solver::island_impulses(&solved, &mut touches);
+            for (k, (x, r)) in touches.iter().zip(t.rows.iter()).enumerate() {
+                if !vec_words(x.kept, &r.c.w[32..35]) {
+                    bad.push(format!("row {k} (side {}, kind {}) kept {:?} want {:08x?}", r.c.side, x.kind, x.kept, &r.c.w[32..35]));
+                }
+                if !vec_words(x.impulse, &r.c.w[28..31]) {
+                    bad.push(format!("row {k} (side {}, kind {}) impulse {:?} want {:08x?}", r.c.side, x.kind, x.impulse, &r.c.w[28..31]));
+                }
+            }
+            let given = solver::island_apply(&bodies, &touches);
+            for (bi, b) in t.bodies.iter().enumerate() {
+                for (name, o, got) in [("impulse +368", 368, given[bi].0), ("turning +384", 384, given[bi].1)] {
+                    if wv(&b.col0, o) != Vec3::ZERO || !vec_words(got, &b.col1[o / 4..o / 4 + 3]) {
+                        bad.push(format!("body {bi} (level {:#x}) {name}: island {got:?}, recorded {:?} -> {:?}", b.level, wv(&b.col0, o), wv(&b.col1, o)));
+                    }
+                }
+            }
+            let (words, nan) = strict(&a, &c.out);
+            eprintln!("island of {} bodies and the rider, tick {}: {} rows ({} of the rider, {} from the snapshot), {} differing words, {nan} NaN on both sides, {} row / body results differ", t.bodies.len(), t.tick, touches.len(), t.rows.iter().filter(|r| r.c.side != 2).count(), t.rows.iter().filter(|r| r.snap).count(), words.len(), bad.len());
+            bad.extend(words);
+            if open.contains(&t.tick) {
+                if bad.is_empty() {
+                    report.push(format!("tick {}: exact now - take it off the open list", t.tick));
+                }
+            } else if !bad.is_empty() {
+                report.push(format!("tick {}: {} differences, first {:#?}", t.tick, bad.len(), &bad[..bad.len().min(16)]));
+            }
+        }
+        (report, n)
+    }
 }
