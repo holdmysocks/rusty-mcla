@@ -12392,34 +12392,19 @@ impl Game {
         // The map itself (references `z00`, `z07`): the GPS MAP panel - rank and
         // reputation, the vehicle's rank and class, the money - with the legend on X.
         let (page, prompts) = if hidden {
-            // (the thirteen ranks are the reputation curve's levels, as on REWARDS - step 86;
-            // `ng_gps_3`: BACKSEAT DRIVER - 50 REP, NEXT RANK AT 800)
-            const RANKS: [&str; 13] = ["Rank_1_Backseat_Driver", "Rank_2_Navigator", "Rank_3_Student_Driver", "Rank_4_Rookie", "Rank_5_Driver", "Rank_6_Racer", "Rank_7_Veteran", "Rank_8_Elite_Racer", "Rank_8_5_Champion", "Rank_9_Legend", "Rank_10_Savant", "Rank_10_5_Hero", "Rank_11_Idol"];
+            // The panel as F-71884 fills it (`gps_panel_vars`): the rank (F-62421) and the
+            // manager's thresholds - the reputation curve's levels, as on REWARDS (step 86) - the
+            // class F-69503 of the vehicle's performance, its kind's class system.
             let rank = crate::rewards::progress(self.rep).0.min(12);
             let rank_step = |l: usize| crate::rewards::rep_curve(crate::rewards::LEVEL_FRAC[l.min(12)]);
             let info = self.catalog.get(&self.dir_name(self.current_car)).cloned();
-            let kind = info.as_ref().map(|c| c.class.to_uppercase()).unwrap_or_default();
-            // (the class as MANAGE VEHICLES has it: the catalogue's, one up when fully upgraded)
-            let base = info.as_ref().and_then(|c| c.group.chars().next()).unwrap_or('D').to_ascii_uppercase();
-            let base = if self.perf_frac(self.current_car) > 0.999 { match base { 'D' => 'C', 'C' => 'B', _ => 'A' } } else { base };
-            let class = match base { 'A' => "A", 'B' => "B", 'C' => "C", _ => "D" };
-            // the vehicle kind's rank: the step its class system stands on + 1, and the points on
-            // that step out of its length (F-71884: `veh_level` "(%d/%d)", `veh_meter`; `mc4`)
-            let (veh_rank, veh_a, veh_b) = self.mc4_class_rank(&kind);
-            let next = if rank >= 12 { "N/A".to_string() } else { format!("{:.0}", rank_step(rank + 1)) };
-            let mut globals: Vec<(String, String)> = vec![
-                ("experience".into(), format!("{} - {} {}", st(RANKS[rank], "RANK"), self.rep, st("Navmap_Rep", "REP"))),
-                ("gps_rank".into(), String::new()),
-                ("next_rank".into(), format!("{} {}", st("Next_Rank", "NEXT RANK AT"), next)),
-                ("gps_veh_type".into(), String::new()),
-                ("gps_veh_level".into(), format!("{} {} {}", kind, st("Car_Type_Rank", "RANK"), veh_rank)),
-                ("veh_level".into(), format!("({}/{})", veh_a, veh_b)),
-                ("t_vehicle".into(), st("Navmap_Vehicle", "VEHICLE")),
-                ("gps_class_type".into(), st(&format!("vehicle_PerfClass{}_Short", class), &format!("CLASS {}", class))),
-                ("gps_vehicle".into(), self.career.strings.get(&format!("{}_shrt", self.model_name(self.current_car).to_ascii_lowercase())).map(|v| v.to_uppercase()).unwrap_or_else(|| self.car_name(self.current_car).to_uppercase())),
-                ("t_bank".into(), st("G_Money", "MONEY:")),
-                ("gps_racename".into(), String::new()),
-            ];
+            let kind = info.as_ref().map(|c| crate::mc4::CLASS_SYSTEMS.iter().find(|s| s.eq_ignore_ascii_case(&c.class)).map_or(c.class.clone(), |s| s.to_string())).unwrap_or_default();
+            let vehicle = self.career.strings.get(&format!("{}_shrt", self.model_name(self.current_car).to_ascii_lowercase())).map(|v| v.to_uppercase()).unwrap_or_else(|| self.car_name(self.current_car).to_uppercase());
+            // (the page's texts in capitals, as the rest of it: after the money's `<D>` is filled)
+            let key = |k: &str| self.career.strings.get(k).map(|v| v.to_string()).unwrap_or_else(|| k.replace('_', " "));
+            let (globals, meters) = gps_panel_vars(rank, crate::rewards::perf_class(self.player_perf()), self.rep, self.money, self.career.strings.lang, &kind, self.mc4_class_parts(&kind), rank_step(rank), rank_step(rank + 1), &vehicle, &key);
+            let mut globals: Vec<(String, String)> = globals.into_iter().map(|(k, v)| (k, v.to_uppercase())).collect();
+            globals.extend([("t_vehicle".to_string(), st("Navmap_Vehicle", "VEHICLE")), ("t_bank".into(), st("G_Money", "MONEY:")), ("gps_racename".into(), String::new())]);
             for (var, key, fb) in [
                 ("t_you", "Navmap_Player", "PLAYER"), ("t_mission", "Navmap_Mission", "MISSION"), ("t_wager", "Navmap_Wager", "WAGER"), ("t_localrace", "Navmap_LocalRace", "CRUISING RACER"),
                 ("t_timetrial", "Navmap_TimeTrial", "TIME TRIAL"), ("t_redlight", "Navmap_redlight", "RED LIGHT"), ("t_delivery", "Navmap_Delivery", "DELIVERY"), ("t_police", "Navmap_Police", "POLICE"),
@@ -12432,7 +12417,7 @@ impl Game {
             }
             (
                 MenuPage {
-                    layout: MenuLayout::GpsMap { legend: self.map_legend, globals, meters: [if rank >= 12 { 1.0 } else { ((self.rep as f32 - rank_step(rank)) / (rank_step(rank + 1) - rank_step(rank)).max(1.0)).clamp(0.0, 1.0) }, if veh_b > 0 { (veh_a as f32 / veh_b as f32).clamp(0.0, 1.0) } else { 1.0 }] },
+                    layout: MenuLayout::GpsMap { legend: self.map_legend, globals, meters },
                     icon: 1,
                     title: st("Navmap_GPSMap", "GPS MAP"),
                     rows: vec![MenuRow { label: cursor_at.as_ref().map(|c| c.1.clone()).unwrap_or_default(), value: cursor_at.as_ref().map(|c| c.2.clone()).unwrap_or_default(), enabled: true, part: None }],
@@ -12462,7 +12447,7 @@ impl Game {
             // no turn, size (|place - camera| * 7e-05 + 0.04) * 4000; the movie's `target` clip
             // puts them on its `cursor_mesh` (navsys_cursor, the movie as its texture) and shows
             // the ring (ring_BG, or ring_circle + ring_Anim on a selected icon).
-            if let (Some(hm), Some(_), Some(w), true) = (self.hm.as_ref(), map_vp, self.map_cursor_pos, hidden) {
+            if let (Some(hm), Some(vp), Some(w), true) = (self.hm.as_ref(), map_vp, self.map_cursor_pos, hidden) {
                 use mcla_flash::value::Value;
                 let t = ((hm.gps_cam.y - 850.0) / (9000.0 - 850.0)).clamp(0.0, 1.0);
                 let at = w + Vec3::new(-7.0, -1.0, -4.0).lerp(Vec3::new(-33.0, 0.0, -9.0), t);
@@ -12475,6 +12460,10 @@ impl Game {
                 }
                 p.set_global("cursor_visibility", Value::Int(1));
                 p.set_global("iconisselected", Value::Int((self.map_cursor > 0 && self.map_free.is_none()) as i32));
+                // (the panel's test, F-57096: the cursor in the 720p frame's viewport pixels)
+                let c = vp * w.extend(1.0);
+                let (x, y) = ((c.x / c.w * 0.5 + 0.5) * 1280.0, (0.5 - c.y / c.w * 0.5) * 720.0);
+                p.set_global("panelisvisible", Value::Int(gps_panel_visible(x, y, 1280, 1.0) as i32));
             }
             fm.movie.player.update(dt);
             // The box that names the place under the cursor. In the game it lies on a
@@ -14777,6 +14766,49 @@ impl Game {
         }
         out
     }
+}
+
+/// The ranks' string keys (the table F-71884 indexes by the rank, as REWARDS' step 86)
+pub const RANK_KEYS: [&str; 13] = ["Rank_1_Backseat_Driver", "Rank_2_Navigator", "Rank_3_Student_Driver", "Rank_4_Rookie", "Rank_5_Driver", "Rank_6_Racer", "Rank_7_Veteran", "Rank_8_Elite_Racer", "Rank_8_5_Champion", "Rank_9_Legend", "Rank_10_Savant", "Rank_10_5_Hero", "Rank_11_Idol"];
+
+/// What the GPS map's bank and experience panel (F-71884, the bank F-43310 first) hands to
+/// the movie, in its order; the meters are the floats `rank_meter` and `veh_meter`.
+/// `rank` = F-62421 of the experience `rep`; `lo` / `hi` = the manager's thresholds of the rank
+/// and of the next (rank 12: itself); `perf` = F-69503 (0 = A .. 3 = D; else no class line);
+/// `kind` = the vehicle class's key; `sys` = the class system's amount, max, step end, step
+/// start and index (`mc4_class_parts`); `st` = the string table.
+pub fn gps_panel_vars(rank: usize, perf: usize, rep: i64, money: i64, lang: usize, kind: &str, sys: (i64, i64, i64, i64, usize), lo: f32, hi: f32, vehicle: &str, st: &dyn Fn(&str) -> String) -> (Vec<(String, String)>, [f32; 2]) {
+    let mut out = vec![("bank".to_string(), st("Navmap_Bank_Desc").replace("<D>Navmap_Bank_Amount</D>", &crate::career::money_digits_in(money, lang)))];
+    if perf < 4 {
+        out.push(("gps_class_type".into(), st(["vehicle_PerfClassA_Short", "vehicle_PerfClassB_Short", "vehicle_PerfClassC_Short", "vehicle_PerfClassD_Short"][perf])));
+    }
+    let rank = rank.min(12);
+    out.push(("gps_rank".into(), format!("{} -", st(RANK_KEYS[rank]))));
+    out.push(("gps_vehicle".into(), vehicle.to_string()));
+    let rep = rep as i32;
+    let rank_meter = if rank == 12 {
+        out.push(("next_rank".into(), format!("{} {}", st("Next_Rank"), st("LB_NA"))));
+        1.0
+    } else {
+        out.push(("next_rank".into(), format!("{} {}", st("Next_Rank"), hi as i32)));
+        ((rep as f32 - lo) as i32) as f32 / ((hi - lo) as i32) as f32
+    };
+    out.push(("experience".into(), format!("{} REP", rep)));
+    let (amount, max, end, start, index) = sys;
+    let (a, b) = ((amount.min(max) as i32).wrapping_sub(start as i32), (end as i32).wrapping_sub(start as i32));
+    out.push(("veh_level".into(), format!("({}/{})", a, b)));
+    out.push(("gps_veh_type".into(), st(kind)));
+    out.push(("gps_veh_level".into(), format!("{} {}", st("Car_Type_Rank"), index as i32 + 1)));
+    (out, [rank_meter, a as f32 / b as f32])
+}
+
+/// The bank and experience panel's rectangle (F-51730): at (20, 20), 400 x 250 when the main
+/// viewport's width x scale (cut to an integer) is 1000 or more, else 200 x 150; F-57096 hides
+/// the panel (`panelisvisible` 0) while the cursor, projected to viewport pixels (F-25309), is
+/// left of its right edge and above its bottom edge.
+pub fn gps_panel_visible(x: f32, y: f32, width: i32, scale: f32) -> bool {
+    let (w, h) = if (width as f32 * scale) as i32 >= 1000 { (400.0f32, 250.0f32) } else { (200.0, 150.0) };
+    !(x < w + 20.0 && y < h + 20.0)
 }
 
 /// A colour (RGB 0..1) as hue, saturation, brightness (each 0..1).

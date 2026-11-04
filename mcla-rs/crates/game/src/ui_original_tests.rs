@@ -71,3 +71,31 @@ fn one_gps_target() {
     g.set_gps_target(None, None);
     assert_eq!(g.gps_target_pos(), None);
 }
+
+/// F-71884 (with F-43310), F-51730, F-57096: the GPS map's bank and experience panel - every variable
+/// in order, both meters' bits, and `panelisvisible` against the original's code run offline
+/// (tools/ui_gps_panel_reference.py -> testdata/ui_gps_panel_ref.txt; the string table a stub giving "{key}")
+#[test]
+fn gps_panel_matches_the_original() {
+    const KINDS: [&str; 10] = ["Tuner", "Muscle", "Exotic", "SportBike", "Luxury", "Cop", "SUV", "LowRider", "Misc1", "D0"];
+    let st = |k: &str| if k == "Navmap_Bank_Desc" { "$<D>Navmap_Bank_Amount</D>".to_string() } else { format!("{{{k}}}") };
+    let (mut np, mut nv) = (0, 0);
+    for l in include_str!("testdata/ui_gps_panel_ref.txt").lines() {
+        let (case, out) = l.split_once(" ->").unwrap();
+        let h: Vec<u32> = case.split(' ').skip(1).map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+        let sets: Vec<(&str, &str)> = out.split('\t').skip(1).filter_map(|s| s.split_once('=')).collect();
+        if case.starts_with('V') {
+            let want = sets.iter().find(|s| s.0 == "I:panelisvisible").unwrap().1 == "1";
+            assert_eq!(gps_panel_visible(f32::from_bits(h[2]), f32::from_bits(h[3]), h[0] as i32, f32::from_bits(h[1])), want, "{l}");
+            nv += 1;
+            continue;
+        }
+        let (vars, meters) = gps_panel_vars(h[0] as usize, h[1] as usize, h[2] as i64, h[3] as i64, h[4] as usize, KINDS[h[5] as usize], (h[6] as i64, h[7] as i64, h[8] as i64, h[9] as i64, h[10] as usize), f32::from_bits(h[11]), f32::from_bits(h[12]), &st("VEHNAME"), &st);
+        let strs: Vec<(String, String)> = sets.iter().filter_map(|(k, v)| k.strip_prefix("S:").map(|k| (k.to_string(), v.to_string()))).collect();
+        assert_eq!(vars, strs, "{l}");
+        let fl = |n: &str| u32::from_str_radix(sets.iter().find(|s| s.0 == n).unwrap().1, 16).unwrap();
+        assert_eq!([meters[0].to_bits(), meters[1].to_bits()], [fl("F:rank_meter"), fl("F:veh_meter")], "{l}");
+        np += 1;
+    }
+    assert_eq!((np, nv), (450, 150));
+}
