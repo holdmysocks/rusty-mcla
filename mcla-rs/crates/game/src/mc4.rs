@@ -8199,10 +8199,27 @@ impl Game {
                     }
                 }
             }
-            if let Some(ai) = race.target.and_then(|t| vehicles.cars.get_mut(t)).and_then(|c| c.ai.as_mut()) {
-                // (a cruising brain that was given no speed drives at its rail's - `RAIL_SPEED`;
-                // BrainRacing_SetMaxSpeed(32) once he runs)
-                ai.target_speed = if reached { 32.0 } else { RAIL_SPEED };
+            let cps = race.checkpoints.clone();
+            if let Some(c) = race.target.and_then(|t| vehicles.cars.get_mut(t)) {
+                let tune = c.model.aitunes.as_ref().map(|tu| std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&tu.base, &tu.mods, c.perf)));
+                if let Some(ai) = c.ai.as_mut() {
+                    // (a cruising brain that was given no speed drives at its rail's - `RAIL_SPEED`;
+                    // BrainRacing_SetMaxSpeed(32) once he runs)
+                    ai.target_speed = if reached { 32.0 } else { RAIL_SPEED };
+                    // (START CHASE AI: his racing brain, `Brain::payback`, its goals the checkpoints from
+                    // BrainCruising_GetCurrentDestinationIndex on. Approx.: the cruising brain is not ported,
+                    // its destination is the first checkpoint ahead of him on the route he cruises)
+                    if let (true, Some(tune), false) = (reached, tune, cps.is_empty()) {
+                        let dest = ai.path.as_ref().map_or(0, |p| {
+                            let near = |q: glam::Vec3| (0..p.len()).min_by(|&a, &b| p[a].distance_squared(q).total_cmp(&p[b].distance_squared(q))).unwrap_or(0);
+                            (0..cps.len()).find(|&j| near(cps[j]) >= ai.path_i).unwrap_or(0)
+                        });
+                        let goals: Vec<glam::Vec3> = (0..cps.len()).map(|k| cps[(dest + k) % cps.len()]).collect();
+                        log::info!("payback: chase AI, {} goals from checkpoint {}", goals.len(), dest);
+                        ai.tune = Some(tune.clone());
+                        ai.brain.0 = Some(Box::new(crate::brain::Brain::payback(tune, &goals)));
+                    }
+                }
             }
         }
         self.opt_x.arcade.pb = Some(leg);

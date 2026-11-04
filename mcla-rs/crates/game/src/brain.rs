@@ -634,6 +634,25 @@ impl Brain {
         b
     }
 
+    /// The payback's client once he runs (PaybackLegCore `game/0x3ae26fc8/0xb3f9732f` 0x986..0xb8e, START CHASE AI):
+    /// CreateBrainRacing, SetAllowNitro(0) (F-19364), AppendGoal(checkpoint, 25.0) for each checkpoint from his cruising
+    /// brain's destination on, wrapping to the first (`goals`, in that order), SetLooping(1) (F-78488), SetMaxSpeed(32.0)
+    /// (F-47189). No SetupRace or BeginRace: no course, no rubber band; the constructor's final speed -1 and heading 0.
+    pub fn payback(tune: Arc<AiTune>, goals: &[Vec3]) -> Brain {
+        let mut b = Brain::police(tune);
+        b.plan.goals.clear();
+        b.replan(0);
+        for g in goals {
+            b.plan.append(*g, 25.0);
+        }
+        b.final_speed = -1.0;
+        b.final_heading = Vec3::ZERO;
+        b.allow_nitro = false;
+        b.looping = true;
+        b.max_speed = 32.0;
+        b
+    }
+
     /// The police brain's goal plan (F-67303): BrainRacing Reset (F-68035; the goal count 0), AppendGoal (F-84673)
     /// for each goal with a 5 m radius, SetFinalSpeed (+208) and SetFinalHeading (the zero vector). The middle
     /// goal's speed (+28) is never written: the allocator's fill, below 0 (`GoalPlan::append`).
@@ -1161,6 +1180,22 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PaybackLegCore's START CHASE AI (0x986..0xb8e): goals radius 25 in the order given, no nitro, looping, 32 m/s cap,
+    /// final speed -1 and heading 0. Returns at once without the tune fixture.
+    #[test]
+    fn payback_brain_as_the_script_sets_it() {
+        let Ok(tb) = std::fs::read("D:/MCLA/work/ai-record/fixture/aivtune_r8.bin") else { return };
+        let floats: Vec<f32> = tb.chunks_exact(4).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let tune = Arc::new(AiTune::from_floats(&floats).unwrap());
+        let goals: Vec<Vec3> = (0..4).map(|k| Vec3::new(k as f32 * 50.0, 0.0, 10.0)).collect();
+        let b = Brain::payback(tune, &goals);
+        assert_eq!(b.plan.goals.len(), 4);
+        for (g, want) in b.plan.goals.iter().zip(&goals) {
+            assert_eq!((g.centre(), g.w), (*want, 25.0));
+        }
+        assert!(!b.allow_nitro && b.looping && b.max_speed == 32.0 && b.final_speed == -1.0 && b.final_heading == Vec3::ZERO);
+    }
 
     /// hw_ordered_jp_11's alt paths (work/racerai/altpaths.md): two ways through checkpoint 10 (the
     /// second a shortcut that skips it), and one finishing route per opponent after the last checkpoint.
