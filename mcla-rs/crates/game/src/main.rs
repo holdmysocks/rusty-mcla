@@ -6672,7 +6672,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.police.enabled {
                     self.police.update_units(&gpu, &world, &mut self.vehicles);
                 }
-                self.police.progress = rewards::progress(self.game.rep).1;
+                // (F-83946 takes system 0 of the experience tables, Progression, through F-68013 / F-14176)
+                self.police.progress = self.game.career.exp_tables.system("Progression").map_or(rewards::progress(self.game.rep).1, |d| d.fraction(self.game.rep));
                 self.police.radio_busy = self.radio.busy();
                 self.police.in_race = self.game.race.is_some();
                 // (the police manager and its tactics run once a game frame, 1/30 s - the chassis ticks twice in
@@ -7725,10 +7726,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if c[2] {
                 self.ability.meter = 1.0;
             }
-            if c[5] {
-                self.police.fine = 0.0;
-            }
         }
+        // (NO FINES: the fine routine itself returns 0, F-83946)
+        self.police.no_charges = self.game.cheats[5];
         // (and none before the career has unlocked them: `mc4`, flags.police_unlocked)
         // (and none in a red light race: its script destroys them all - althk.rs)
         let police_on = !self.game.cheats[4] && self.game.mc4_police_unlocked() && !self.game.alt_police_off();

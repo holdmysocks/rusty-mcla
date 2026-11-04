@@ -1723,6 +1723,7 @@ PartArea.sc.xml
 PartAreaMenu.sc.xml
 PartType.sc.xml
 patrolpath.xml
+sc_patrolpath.xml
 pause
 pause_blackBG.xdr
 PauseMenu.sc.xml

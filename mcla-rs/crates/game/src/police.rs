@@ -2,7 +2,7 @@
 //!
 //! All numbers come from the game's own `tune/police/globals.xml`
 //! (`mcPoliceTuningGlobals`); patrol cars start on the routes of
-//! `tune/police/patrolpath.xml`. The cruiser is `vp_chv_police_96`.
+//! `tune/police/sc_patrolpath.xml`. The cruiser is `vp_chv_police_96`.
 
 use crate::props::Inst;
 use crate::render::Gpu;
@@ -53,6 +53,13 @@ impl Tuning {
                 if let Ok(f) = val[..end].parse::<f32>() {
                     v.insert(name.to_string(), f);
                 }
+            }
+        }
+        // (iLawFines is 15 words inside the globals block, all 100 from the constructor F-78390; the file fills the
+        // first 14, so entry 14 - block traffic's - stays 100)
+        if let Some(a) = arrays.get_mut("iLawFines") {
+            while a.len() < 15 {
+                a.push(100);
             }
         }
         Tuning { v, arrays }
@@ -617,6 +624,9 @@ pub struct Police {
     /// score step F-52240 does not run (no offences, no score, no score ladder) and an armed cop zone is not set off
     /// (F-71212's state 1). Set by the main loop each frame.
     pub player_police: bool,
+    /// the NO FINES cheat (the byte F-60274 toggles, cleared by F-72804): the fine routine F-83946 returns 0 at once.
+    /// Set by the main loop each frame.
+    pub no_charges: bool,
 }
 
 const LAW_SPEED: u32 = 1;
@@ -630,6 +640,9 @@ const LAW_ROOF_JUMP: u32 = 128;
 const LAW_TWO_WHEEL: u32 = 256;
 const LAW_OFF_ROAD: u32 = 512;
 const LAW_BLOCK_TRAFFIC: u32 = 1024;
+/// the hard hit on a police car (the original's 0x20, set only with 0x40 = `LAW_POLICE_VEHICLE`: F-93844, a cop value
+/// of the contact table over 22.35)
+const LAW_POLICE_HARD: u32 = 2048;
 const MAX_GLOWS: usize = 16;
 
 impl Police {
@@ -723,6 +736,7 @@ impl Police {
             goons: false,
             phone_cut: false,
             player_police: false,
+            no_charges: false,
             units: Vec::new(),
         }
     }
@@ -731,7 +745,9 @@ impl Police {
         let dir = Path::new(data_dir).join("tune/police");
         self.tun = Tuning::load(&dir.join("globals.xml"));
         self.safe_zones = load_safe_zones(Path::new(data_dir));
-        self.paths = load_patrol_paths(&dir.join("patrolpath.xml"));
+        // (the manager's constructor loads `<city prefix>_patrolpath` - "sc", 15 paths - and `patrolpath` only when that fails;
+        // an older install has the first under its name hash)
+        self.paths = ["sc_patrolpath.xml", "0x4f283eb3", "patrolpath.xml"].iter().map(|n| dir.join(n)).find(|p| p.is_file()).map_or(Vec::new(), |p| load_patrol_paths(&p));
         log::info!("police: {} tuning values, {} patrol paths", self.tun.v.len(), self.paths.len());
     }
 
@@ -2197,6 +2213,7 @@ impl Police {
             let tab = vehicles.player().and_then(|c| c.state.veh.as_deref()).map_or(Vec::new(), |v| v.agro.law_tab.iter().filter(|e| e.0 >> 32 == 2 && e.1 > now).map(|e| (e.0 as u32, e.2)).collect());
             if tab.iter().any(|e: &(u32, f32)| e.1 > 22.35) {
                 self.hard_cop = tab.iter().filter(|e| self.cops.contains(&e.0)).max_by(|a, b| a.1.total_cmp(&b.1)).map(|e| e.0);
+                self.offences |= LAW_POLICE_HARD;
             }
             breaking = true;
             self.offences |= LAW_POLICE_VEHICLE;
@@ -3379,7 +3396,8 @@ impl Police {
 
     /// The fine (F-83946, the routine that fills the arrest form): the highest speed band's
     /// `iLawFines` entry, plus the entry of every other offence (bit n of the original's word
-    /// = entry n; a hit on a cruiser sets 0x20 and 0x40, the second one is taken back off),
+    /// = entry n; a hard hit on a cruiser sets 0x20 and 0x40, the second one is taken back off;
+    /// bit 8, the stop sign, is never set); 0 with the NO FINES cheat;
     /// plus for a pursuit `iPerSecPursuitFine` x its length (rounded half away from zero) and
     /// `iPullOverFleeFine` after running from a pull-over; cut to 1/4, 1/3, 1/2 below 25 %,
     /// 50 %, 75 % of the career, at least 100, at most `iMaxFine`.
@@ -3396,12 +3414,21 @@ impl Police {
     }
 
     fn law_fines(&self) -> f32 {
+        if self.no_charges {
+            return 0.0;
+        }
         let t = |i: usize| self.tun.array_at("iLawFines", i);
         let mut f = 0i32;
         if self.speed_top > 0 {
             f += t(self.speed_top as usize - 1);
         }
-        for (flag, entry) in [(LAW_PROP, 4), (LAW_VEHICLE, 7), (LAW_POLICE_VEHICLE, 5) /* (0x20 + 0x40 - entry 6) */, (LAW_RED_LIGHT, 9), (LAW_BURNOUT, 11), (LAW_WRONG_WAY, 13), (LAW_BLOCK_TRAFFIC, 14), (LAW_ROOF_JUMP, 12), (LAW_TWO_WHEEL, 10), (LAW_OFF_ROAD, 3)] {
+        // (a police car: a soft hit is entry 6; a hard one has 0x20 and 0x40, entry 5 + entry 6 with entry 6 taken back)
+        if self.offences & LAW_POLICE_HARD != 0 {
+            f += t(5);
+        } else if self.offences & LAW_POLICE_VEHICLE != 0 {
+            f += t(6);
+        }
+        for (flag, entry) in [(LAW_PROP, 4), (LAW_VEHICLE, 7), (LAW_RED_LIGHT, 9), (LAW_BURNOUT, 11), (LAW_WRONG_WAY, 13), (LAW_BLOCK_TRAFFIC, 14), (LAW_ROOF_JUMP, 12), (LAW_TWO_WHEEL, 10), (LAW_OFF_ROAD, 3)] {
             if self.offences & flag != 0 {
                 f += t(entry);
             }
@@ -3556,8 +3583,11 @@ mod tests {
         p.offences = LAW_SPEED;
         p.speed_top = 3;
         assert_eq!(p.law_fines(), 120.0);
-        // plus a cruiser hit (entry 5, the 0x40 entry cancels) and a prop (entry 4)
+        // plus a soft cruiser hit (0x40, entry 6) and a prop (entry 4)
         p.offences |= LAW_POLICE_VEHICLE | LAW_PROP;
+        assert_eq!(p.law_fines(), 120.0 + 160.0 + 140.0);
+        // a hard one (0x20 + 0x40: entry 5, the 0x40 entry cancels)
+        p.offences |= LAW_POLICE_HARD;
         assert_eq!(p.law_fines(), 120.0 + 150.0 + 140.0);
         // a 20.04 s pursuit adds round(200.4) = 200, running from the pull-over 300
         p.heat = Heat::Pursuit;
@@ -3581,6 +3611,9 @@ mod tests {
         q.heat = Heat::Pursuit;
         q.chase_time = 1000.0;
         assert_eq!(q.law_fines(), 5000.0);
+        // the NO FINES cheat: 0, not the floor
+        q.no_charges = true;
+        assert_eq!(q.law_fines(), 0.0);
     }
 }
 
