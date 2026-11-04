@@ -186,6 +186,22 @@ struct CopSearch {
     angle: f32,
 }
 
+/// The original's 2-D unit vector (F-98766): `or` when x x + y y (the y product rounded, the sum fused) is under 1e-12,
+/// else both times the reciprocal square root's estimate and two Newton steps in double, rounded once to single.
+fn unit2(v: glam::Vec2, or: glam::Vec2) -> glam::Vec2 {
+    let l = crate::physics::exact::fma(v.x, v.x, v.y * v.y);
+    if l < 1e-12 {
+        return or;
+    }
+    let l = l as f64;
+    let mut r = (1.0 / l.sqrt()) as f32 as f64;
+    for _ in 0..2 {
+        r = (-(r * r).mul_add(l, -1.0)).mul_add(r * 0.5, r);
+    }
+    let r = r as f32;
+    glam::Vec2::new(v.x * r, v.y * r)
+}
+
 /// The search's points (F-52110): from `start` along the target's last known velocity `v` (at least 22.35 m/s)
 /// x fMinSetGoalTime `per` until a point lies on a road or junction (within 3 m), then along the connection list
 /// to the neighbour best in line with that direction, each next point the middle of the node's lane; 10 at most.
@@ -251,8 +267,7 @@ fn search_points(nav: &NavSys, world: &World, start: Vec3, v: Vec3, per: f32, fi
     }
     // phase 2: the connection list
     if !pts.is_empty() && pts.len() < 10 && pts.last().is_some_and(|q| q.1.is_some()) {
-        let mut dir = glam::Vec2::new(s.x, s.z);
-        dir = if dir.length_squared() < 1e-12 { glam::Vec2::ZERO } else { dir.normalize() };
+        let mut dir = unit2(glam::Vec2::new(s.x, s.z), glam::Vec2::ZERO);
         let mut turn = first || random;
         loop {
             let Some(r) = pts.last().and_then(|q| q.1) else { break };
@@ -277,9 +292,10 @@ fn search_points(nav: &NavSys, world: &World, start: Vec3, v: Vec3, per: f32, fi
             let Some(n) = n else { break };
             if matches!(n, NavNode::Junction(_)) {
                 if turn {
-                    let (sn, cs) = angle.sin_cos();
-                    let t = glam::Vec2::new(dir.x * cs + dir.y * sn, dir.y * cs - dir.x * sn);
-                    dir = if t.length_squared() < 1e-12 { glam::Vec2::ZERO } else { t.normalize() };
+                    // (the guest runtime's sine and cosine of the turn, the products of x rounded, the sums fused)
+                    let (sn, cs) = (crate::physics::exact::guest_sin(angle as f64) as f32, crate::physics::exact::guest_cos(angle as f64) as f32);
+                    let t = glam::Vec2::new(crate::physics::exact::fma(dir.y, sn, dir.x * cs), crate::physics::exact::fms(dir.y, cs, dir.x * sn));
+                    dir = unit2(t, glam::Vec2::ZERO);
                 }
                 turn = random && rnd() < 0.5;
             }
@@ -3572,6 +3588,22 @@ mod tests {
         p.tun.v.insert("iPerSecPursuitFine".into(), 10.0);
         p.tun.v.insert("iPullOverFleeFine".into(), 300.0);
         p
+    }
+
+    /// F-98766 run offline (work/hookmen2/b2/unit2.py: 22,856 of 22,856 cases with a finite length equal): a sample of
+    /// its answers, bits in and out, the fallback (1, -1) under 1e-12.
+    #[test]
+    fn unit2_matches_the_original() {
+        let f = |x: u32| f32::from_bits(x);
+        for (x, y, ox, oy) in [
+            (0u32, 0u32, 0x3f800000u32, 0xbf800000u32), (0x33d6bf95, 0, 0x3f800000, 0xbf800000), (0x353be7a2, 0x353be7a2, 0x3f800000, 0xbf800000),
+            (0x358637bd, 0, 0x3f800000, 0), (0xb58637bd, 0x358637bd, 0xbf3504f4, 0x3f3504f4), (0x40400000, 0x40800000, 0x3f19999a, 0x3f4ccccd),
+            (0xc25f8000, 0x4151999a, 0xbf793dd3, 0x3e69bd97), (0x45848de2, 0x4215fde2, 0x3f7ffd70, 0x3c10d52e), (0x454121fa, 0xc5cb505d, 0x3edba9a6, 0xbf673e11),
+            (0xc509d30a, 0xb6c91ed3, 0xbf800000, 0xb13ac8c0), (0x34f0487b, 0xb7175852, 0x3d4af841, 0xbf7faf7d), (0x3f088083, 0xc2521c56, 0x3c264e64, 0xbf7ffca0),
+        ] {
+            let o = super::unit2(glam::Vec2::new(f(x), f(y)), glam::Vec2::new(1.0, -1.0));
+            assert_eq!((o.x.to_bits(), o.y.to_bits()), (ox, oy), "{x:08x} {y:08x}");
+        }
     }
 
     /// F-83946: the sum over the offences, the pursuit's seconds, the flee fine, the career cut
