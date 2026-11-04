@@ -7,6 +7,28 @@
 use super::Rd;
 use crate::rsc::Resource;
 
+/// One word of a blend as the original's lerps do it: (b - a) rounded, then fused with t and a (F-94542 and the
+/// sub-tunes' lerps).
+fn lerp1(a: f32, b: f32, t: f32) -> f32 {
+    (((b - a) as f64).mul_add(t as f64, a as f64)) as f32
+}
+
+/// An integer word blended as the original does it: the difference and a converted to float, fused with t, truncated.
+fn lerp_i(a: i32, b: i32, t: f32) -> i32 {
+    (b.wrapping_sub(a) as f32 as f64).mul_add(t as f64, a as f32 as f64) as f32 as i32
+}
+
+/// The same rounded to the nearest integer (half away from zero), mcCarTireFricTune's +24.
+fn lerp_round(a: i32, b: i32, t: f32) -> i32 {
+    let v = (((b as f32 - a as f32) as f64).mul_add(t as f64, a as f32 as f64)) as f32;
+    (if v >= 0.0 { v + 0.5 } else { v - 0.5 }) as i32
+}
+
+/// The same with the vector unit (vsubfp, vmaddfp: the product rounded before the sum), mcCarSimTune's vectors +32..+108.
+fn lerp_v(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
 macro_rules! tune_struct {
     ($(#[$m:meta])* $name:ident { $($field:ident @ $off:expr),* $(,)? }) => {
         $(#[$m])*
@@ -17,7 +39,7 @@ macro_rules! tune_struct {
                 Self { $($field: rd.f32(base + $off),)* }
             }
             pub fn lerp(a: &Self, b: &Self, t: f32) -> Self {
-                Self { $($field: a.$field + (b.$field - a.$field) * t,)* }
+                Self { $($field: lerp1(a.$field, b.$field, t),)* }
             }
         }
     };
@@ -63,10 +85,11 @@ tune_struct!(
 );
 
 tune_struct!(
-    /// mcCarAeroTune (vehAeroTune with the drag range)
+    /// mcCarAeroTune (vehAeroTune with the drag range; vehAeroTune's own Drag, +64, is not blended - the live tune keeps
+    /// its constructor's 0.4 - and nothing reads it)
     AeroTune {
         ang_c_damp_x @ 16, ang_c_damp_y @ 20, ang_c_damp_z @ 24, ang_vel_damp_x @ 32, ang_vel_damp_y @ 36, ang_vel_damp_z @ 40,
-        ang_vel2_damp_x @ 48, ang_vel2_damp_y @ 52, ang_vel2_damp_z @ 56, drag @ 64, down @ 68, drag_min @ 88, drag_max @ 92,
+        ang_vel2_damp_x @ 48, ang_vel2_damp_y @ 52, ang_vel2_damp_z @ 56, down @ 68, drag_min @ 88, drag_max @ 92,
     }
 );
 
@@ -171,6 +194,18 @@ pub struct EngineTune {
     pub torque: Vec<f32>,
     /// torque off the throttle, same spacing (positive at idle, engine braking above)
     pub idle: Vec<f32>,
+    /// the tune's own words: the node count (+52) and all eleven words of each table (+56, +100), which the blend
+    /// takes whatever the count
+    pub count: u32,
+    pub words: [[i32; 11]; 2],
+}
+
+impl EngineTune {
+    fn with_words(s: EngineScalars, count: u32, words: [[i32; 11]; 2]) -> Self {
+        let n = (count as usize).min(11);
+        let table = |k: usize| words[k][..n].iter().map(|&v| v as f32).collect();
+        EngineTune { s, torque: table(0), idle: table(1), count, words }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -221,22 +256,69 @@ pub struct SimTune {
 impl SimTune {
     /// Blend two sets (`t` = share of the upgrades fitted).
     pub fn lerp(a: &SimTune, b: &SimTune, t: f32) -> SimTune {
-        let lv = |x: &Vec<f32>, y: &Vec<f32>| -> Vec<f32> { x.iter().enumerate().map(|(i, v)| v + (y.get(i).copied().unwrap_or(*v) - v) * t).collect() };
-        let l2 = |x: [f32; 2], y: [f32; 2]| [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t];
+        let l2 = |x: [f32; 2], y: [f32; 2]| [lerp1(x[0], y[0], t), lerp1(x[1], y[1], t)];
         SimTune {
-            s: SimScalars::lerp(&a.s, &b.s, t),
-            drivetrain_type: a.drivetrain_type,
+            // (the vectors with the vector unit, the bound's five words +320..+336 copied from a)
+            s: SimScalars {
+                model_offset_x: lerp_v(a.s.model_offset_x, b.s.model_offset_x, t),
+                model_offset_y: lerp_v(a.s.model_offset_y, b.s.model_offset_y, t),
+                model_offset_z: lerp_v(a.s.model_offset_z, b.s.model_offset_z, t),
+                com_x: lerp_v(a.s.com_x, b.s.com_x, t),
+                com_y: lerp_v(a.s.com_y, b.s.com_y, t),
+                com_z: lerp_v(a.s.com_z, b.s.com_z, t),
+                size_x: lerp_v(a.s.size_x, b.s.size_x, t),
+                size_y: lerp_v(a.s.size_y, b.s.size_y, t),
+                size_z: lerp_v(a.s.size_z, b.s.size_z, t),
+                inertia_x: lerp_v(a.s.inertia_x, b.s.inertia_x, t),
+                inertia_y: lerp_v(a.s.inertia_y, b.s.inertia_y, t),
+                inertia_z: lerp_v(a.s.inertia_z, b.s.inertia_z, t),
+                bound_clearance: a.s.bound_clearance,
+                bound_angle: a.s.bound_angle,
+                bound_bumper: a.s.bound_bumper,
+                bound_widebody: a.s.bound_widebody,
+                bound_bumper_width: a.s.bound_bumper_width,
+                ..SimScalars::lerp(&a.s, &b.s, t)
+            },
+            drivetrain_type: lerp_i(a.drivetrain_type as i32, b.drivetrain_type as i32, t) as u32,
             wheel_front: WheelTune::lerp(&a.wheel_front, &b.wheel_front, t),
             wheel_back: WheelTune::lerp(&a.wheel_back, &b.wheel_back, t),
-            engine: EngineTune { s: EngineScalars::lerp(&a.engine.s, &b.engine.s, t), torque: lv(&a.engine.torque, &b.engine.torque), idle: lv(&a.engine.idle, &b.engine.idle) },
-            trans: TransTune { gears: if t > 0.5 { b.trans.gears } else { a.trans.gears }, max_downshifts: a.trans.max_downshifts, s: TransScalars::lerp(&a.trans.s, &b.trans.s, t) },
+            // (the node count is the larger one; every word of both tables is blended)
+            engine: EngineTune::with_words(
+                EngineScalars::lerp(&a.engine.s, &b.engine.s, t),
+                (a.engine.count as i32).max(b.engine.count as i32) as u32,
+                std::array::from_fn(|k| std::array::from_fn(|i| lerp_i(a.engine.words[k][i], b.engine.words[k][i], t))),
+            ),
+            trans: TransTune {
+                gears: lerp_i(a.trans.gears as i32, b.trans.gears as i32, t) as u32,
+                max_downshifts: lerp_i(a.trans.max_downshifts as i32, b.trans.max_downshifts as i32, t) as u32,
+                s: TransScalars::lerp(&a.trans.s, &b.trans.s, t),
+            },
             powertrain: DrivetrainTune::lerp(&a.powertrain, &b.powertrain, t),
             freetrain: DrivetrainTune::lerp(&a.freetrain, &b.freetrain, t),
             axle_front: l2(a.axle_front, b.axle_front),
             axle_back: l2(a.axle_back, b.axle_back),
-            aero: AeroTune::lerp(&a.aero, &b.aero, t),
+            // (the three damping vectors +16..+60 with the vector unit)
+            aero: {
+                let v = |f: fn(&AeroTune) -> f32| lerp_v(f(&a.aero), f(&b.aero), t);
+                AeroTune {
+                    ang_c_damp_x: v(|x| x.ang_c_damp_x),
+                    ang_c_damp_y: v(|x| x.ang_c_damp_y),
+                    ang_c_damp_z: v(|x| x.ang_c_damp_z),
+                    ang_vel_damp_x: v(|x| x.ang_vel_damp_x),
+                    ang_vel_damp_y: v(|x| x.ang_vel_damp_y),
+                    ang_vel_damp_z: v(|x| x.ang_vel_damp_z),
+                    ang_vel2_damp_x: v(|x| x.ang_vel2_damp_x),
+                    ang_vel2_damp_y: v(|x| x.ang_vel2_damp_y),
+                    ang_vel2_damp_z: v(|x| x.ang_vel2_damp_z),
+                    ..AeroTune::lerp(&a.aero, &b.aero, t)
+                }
+            },
             fluid: FluidTune::lerp(&a.fluid, &b.fluid, t),
-            tire_fric: TireFricTune::lerp(&a.tire_fric, &b.tire_fric, t),
+            // (+24 is an integer, rounded)
+            tire_fric: TireFricTune {
+                gear_threshold_bits: f32::from_bits(lerp_round(a.tire_fric.gear_threshold_bits.to_bits() as i32, b.tire_fric.gear_threshold_bits.to_bits() as i32, t) as u32),
+                ..TireFricTune::lerp(&a.tire_fric, &b.tire_fric, t)
+            },
             nitro: NitroTune::lerp(&a.nitro, &b.nitro, t),
             gyro: GyroTune::lerp(&a.gyro, &b.gyro, t),
             input: InputTune::lerp(&a.input, &b.input, t),
@@ -244,7 +326,8 @@ impl SimTune {
             damage: a.damage.clone(),
             ss_turbo: SsTurboTune::lerp(&a.ss_turbo, &b.ss_turbo, t),
             hydraulics: HydraulicsTune::lerp(&a.hydraulics, &b.hydraulics, t),
-            nitro_shots: a.nitro_shots + (b.nitro_shots - a.nitro_shots) * t,
+            // (a signed 16 bit word blended as an integer; its low half stored)
+            nitro_shots: lerp_i(a.nitro_shots as u16 as i16 as i32, b.nitro_shots as u16 as i16 as i32, t) as u16 as f32,
             axle_bone_z: a.axle_bone_z,
             axle_bone: a.axle_bone,
             steer_axis: a.steer_axis,
@@ -491,57 +574,7 @@ impl SimTunes {
             let set = if nm.ends_with("_mods") { &mut out.mods } else { &mut out.base };
             match ty.as_str() {
                 "vehSim" => {
-                    set.s = SimScalars::read(&rd, c);
-                    set.drivetrain_type = rd.u32(c + 132);
-                    let sub = |off: usize| rd.ptr(c + off);
-                    if let Some(p) = sub(136) {
-                        set.wheel_front = WheelTune::read(&rd, p);
-                    }
-                    if let Some(p) = sub(140) {
-                        set.wheel_back = WheelTune::read(&rd, p);
-                    }
-                    if let Some(p) = sub(144) {
-                        let n = (rd.u32(p + 52) as usize).min(11);
-                        set.engine = EngineTune {
-                            s: EngineScalars::read(&rd, p),
-                            torque: (0..n).map(|i| rd.u32(p + 56 + i * 4) as i32 as f32).collect(),
-                            idle: (0..n).map(|i| rd.u32(p + 100 + i * 4) as i32 as f32).collect(),
-                        };
-                    }
-                    if let Some(p) = sub(148) {
-                        set.trans = TransTune { gears: rd.u32(p), max_downshifts: rd.u32(p + 32), s: TransScalars::read(&rd, p) };
-                    }
-                    if let Some(p) = sub(152) {
-                        set.powertrain = DrivetrainTune::read(&rd, p);
-                    }
-                    if let Some(p) = sub(156) {
-                        set.freetrain = DrivetrainTune::read(&rd, p);
-                    }
-                    if let Some(p) = sub(160) {
-                        set.axle_front = [rd.f32(p), rd.f32(p + 4)];
-                    }
-                    if let Some(p) = sub(164) {
-                        set.axle_back = [rd.f32(p), rd.f32(p + 4)];
-                    }
-                    if let Some(p) = sub(168) {
-                        set.aero = AeroTune::read(&rd, p);
-                    }
-                    if let Some(p) = sub(172) {
-                        set.fluid = FluidTune::read(&rd, p);
-                    }
-                    if let Some(p) = sub(192) {
-                        set.tire_fric = TireFricTune::read(&rd, p);
-                    }
-                    if let Some(p) = sub(196) {
-                        set.nitro = NitroTune::read(&rd, p);
-                        set.nitro_shots = rd.u16(p) as f32;
-                    }
-                    if let Some(p) = sub(200) {
-                        set.ss_turbo = SsTurboTune::read(&rd, p);
-                    }
-                    if let Some(p) = sub(208) {
-                        set.hydraulics = HydraulicsTune::read(&rd, p);
-                    }
+                    set.read_sim(&rd, c, &|off| rd.ptr(c + off));
                     if !nm.ends_with("_mods") {
                         have_sim = true;
                     }
@@ -572,6 +605,59 @@ impl SimTunes {
             out.mods = out.base.clone();
         }
         Some(out)
+    }
+}
+
+impl SimTune {
+    /// mcCarSimTune at `c` and the sub-tunes its pointers lead to (`sub(off)`: the object the pointer at `c + off` names).
+    fn read_sim(&mut self, rd: &Rd, c: usize, sub: &dyn Fn(usize) -> Option<usize>) {
+        let set = self;
+        set.s = SimScalars::read(rd, c);
+        set.drivetrain_type = rd.u32(c + 132);
+        if let Some(p) = sub(136) {
+            set.wheel_front = WheelTune::read(rd, p);
+        }
+        if let Some(p) = sub(140) {
+            set.wheel_back = WheelTune::read(rd, p);
+        }
+        if let Some(p) = sub(144) {
+            let table = |at: usize| std::array::from_fn(|i| rd.u32(at + i * 4) as i32);
+            set.engine = EngineTune::with_words(EngineScalars::read(rd, p), rd.u32(p + 52), [table(p + 56), table(p + 100)]);
+        }
+        if let Some(p) = sub(148) {
+            set.trans = TransTune { gears: rd.u32(p), max_downshifts: rd.u32(p + 32), s: TransScalars::read(rd, p) };
+        }
+        if let Some(p) = sub(152) {
+            set.powertrain = DrivetrainTune::read(rd, p);
+        }
+        if let Some(p) = sub(156) {
+            set.freetrain = DrivetrainTune::read(rd, p);
+        }
+        if let Some(p) = sub(160) {
+            set.axle_front = [rd.f32(p), rd.f32(p + 4)];
+        }
+        if let Some(p) = sub(164) {
+            set.axle_back = [rd.f32(p), rd.f32(p + 4)];
+        }
+        if let Some(p) = sub(168) {
+            set.aero = AeroTune::read(rd, p);
+        }
+        if let Some(p) = sub(172) {
+            set.fluid = FluidTune::read(rd, p);
+        }
+        if let Some(p) = sub(192) {
+            set.tire_fric = TireFricTune::read(rd, p);
+        }
+        if let Some(p) = sub(196) {
+            set.nitro = NitroTune::read(rd, p);
+            set.nitro_shots = rd.u16(p) as f32;
+        }
+        if let Some(p) = sub(200) {
+            set.ss_turbo = SsTurboTune::read(rd, p);
+        }
+        if let Some(p) = sub(208) {
+            set.hydraulics = HydraulicsTune::read(rd, p);
+        }
     }
 }
 
@@ -669,5 +755,71 @@ mod movement_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod blend_tests {
+    use super::*;
+
+    /// A base and a mods set blended by the upgrade share as the original's blend F-94542 does it, run offline on its own
+    /// code (`work/physics2/d34/blend_cases.py`: both sets of the live tune filled with random words, t = 0, 1, 0.5 and
+    /// random): every field the port reads, bit for bit.
+    #[test]
+    fn the_blend_is_the_originals() {
+        let words = |l: &str| l.split_whitespace().skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect::<Vec<u32>>();
+        let set = |w: &[u32], base: u32| {
+            let data: Vec<u8> = w.iter().flat_map(|v| v.to_be_bytes()).collect();
+            let len = data.len() as u32;
+            let res = Resource { rtype: 0, flags: 0, virtual_size: data.len(), physical_size: 0, data };
+            let rd = Rd::new(&res);
+            let mut s = SimTune::default();
+            s.read_sim(&rd, 0, &|off| {
+                let v = rd.u32(off);
+                (v >= base && v < base + len).then(|| (v - base) as usize)
+            });
+            s
+        };
+        let lines: Vec<&str> = include_str!("simtune_blend_cases.txt").lines().collect();
+        let (mut cases, mut bad) = (0, Vec::new());
+        for c in lines.chunks(4) {
+            let h = words(c[0]);
+            let t = f32::from_bits(h[0]);
+            let (a, b, mut d) = (set(&words(c[1]), h[2]), set(&words(c[2]), h[3]), set(&words(c[3]), h[1]));
+            let port = SimTune::lerp(&a, &b, t);
+            // (the wheel lerp leaves radius, width and suspension offset: the car's set-up writes them, SimTunes::fit)
+            for (w, p) in [(&mut d.wheel_front, &port.wheel_front), (&mut d.wheel_back, &port.wheel_back)] {
+                (w.radius, w.width, w.suspension_offset) = (p.radius, p.width, p.suspension_offset);
+            }
+            let (port, orig) = (format!("{port:?}"), format!("{d:?}"));
+            cases += 1;
+            if port != orig {
+                let at = port.split(", ").zip(orig.split(", ")).find(|(p, o)| p != o);
+                bad.push(format!("t {t}: {at:?}"));
+            }
+        }
+        assert!(cases >= 12 && bad.is_empty(), "{} of {cases} differ:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    /// The gyro and input tunes the same way, by their own blends F-22878 (with F-56676) and F-41440.
+    #[test]
+    fn the_gyro_and_input_blends_are_the_originals() {
+        fn check<T: std::fmt::Debug>(cases: &str, read: fn(&Rd, usize) -> T, lerp: fn(&T, &T, f32) -> T) {
+            let words = |l: &str| l.split_whitespace().skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect::<Vec<u32>>();
+            let set = |l: &str| {
+                let data: Vec<u8> = words(l).iter().flat_map(|v| v.to_be_bytes()).collect();
+                let res = Resource { rtype: 0, flags: 0, virtual_size: data.len(), physical_size: 0, data };
+                read(&Rd::new(&res), 0)
+            };
+            let lines: Vec<&str> = cases.lines().collect();
+            assert!(lines.len() >= 64);
+            for c in lines.chunks(4) {
+                let t = f32::from_bits(words(c[0])[0]);
+                let (port, orig) = (format!("{:?}", lerp(&set(c[1]), &set(c[2]), t)), format!("{:?}", set(c[3])));
+                assert_eq!(port, orig, "t {t}");
+            }
+        }
+        check(include_str!("simtune_gyro_blend_cases.txt"), GyroTune::read, GyroTune::lerp);
+        check(include_str!("simtune_input_blend_cases.txt"), InputTune::read, InputTune::lerp);
     }
 }
