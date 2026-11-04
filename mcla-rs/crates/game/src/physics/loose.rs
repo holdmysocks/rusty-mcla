@@ -3028,7 +3028,7 @@ pub struct VehObj {
 }
 
 /// F-55998 (an mcCarInstance's contact callback) on a contact with the thrown rider - his class 11 is none of the
-/// vehicles' or props' - decoded 2026-11-04 (0x82333940 .. 0x82333AB0 .. 0x82333C6C):
+/// vehicles' or props' - decoded 2026-11-04 (A-31611 .. A-85558 .. A-95434):
 /// - the driver record's +24 (the 104 B table at [[car +80] +76] +76): 3 the player, else an AI driver;
 /// - an AI driver: unless its mcCarGyro's halfword +18 (the two-wheel state, F-81388's cast) is set or its matrix's
 ///   up.y (M +20; M = car +272 or [car +28] +16 by a thread byte) is at least 0x3f3504e6 (cos 45 degrees), the
