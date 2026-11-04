@@ -229,7 +229,7 @@ fn across(n: R4) -> (R4, R4) {
 }
 
 /// F-28753: the rows of the rotation by the angles (x, y, z) (a zero angle: exactly 1 / 0), 3 x 3.
-fn euler_rows(a: [f32; 3]) -> [[f32; 3]; 3] {
+pub(crate) fn euler_rows(a: [f32; 3]) -> [[f32; 3]; 3] {
     let cs = |x: f32| if x == 0.0 { (1.0, 0.0) } else { (guest_cos(x as f64) as f32, guest_sin(x as f64) as f32) };
     let ((cx, sx), (cy, sy), (cz, sz)) = (cs(a[0]), cs(a[1]), cs(a[2]));
     [
