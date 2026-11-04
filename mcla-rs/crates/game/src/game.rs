@@ -3084,19 +3084,54 @@ impl Game {
     /// F-73125). Done before the race's reputation reaches the career: in the original the
     /// race's experience is itself a pending reward behind the missions' (the new game's script
     /// order: the freeway hookmen of REP_ON_HW_STRIP before the 260 threshold's TelephoneChallenge).
-    pub fn rewards_ask(&mut self) {
+    /// Returns whether the give posted the reputation to the career (the Progression experience: Ev::Rep).
+    pub fn rewards_ask(&mut self) -> bool {
         if !std::mem::take(&mut self.rp_pending) {
-            return;
+            return false;
         }
         if self.career.pending_shown() {
             self.reward_panel = true;
         }
         if self.reward_panel {
             log::info!("rewards: {} pending given", self.career.pending.len());
-            self.career.give_pending();
+            self.give_pending()
         } else {
             self.career.flush_done_wait();
+            false
         }
+    }
+
+    /// The REWARDS page's init F-40930 -> F-73125: every pending reward given in list order, the count read again each
+    /// step (a reward added while giving - a threshold's deferred one - is given too); the list stays until the page hides.
+    /// The race's money gives F-71075 (the manager's money + the amount, at most 2,140,000,000); its experience F-88785:
+    /// AddExperience F-55689 on Progression / Unlocking, which walks that system's thresholds. Returns whether the
+    /// Progression experience posted the reputation.
+    pub fn give_pending(&mut self) -> bool {
+        let mut rep_posted = false;
+        self.career.in_give = true;
+        let mut n = 0;
+        while n < self.career.pending.len() {
+            let p = self.career.pending[n].clone();
+            match &p {
+                crate::career::Pend::Money => self.money = (self.money + self.career.pend_money).min(crate::mc4::PURSE_CAP),
+                crate::career::Pend::Exp(false) => {
+                    // (the reputation has no upper limit: F-55689)
+                    self.rep += self.career.pend_exp[0];
+                    self.career.event(crate::career::Ev::Rep(self.rep));
+                    rep_posted = true;
+                }
+                crate::career::Pend::Exp(true) => {
+                    self.mc4_unlocking_add(self.rep, self.career.pend_exp[1]);
+                    self.career.unlocking_given();
+                }
+                crate::career::Pend::Part(class, part) => self.mc4_part_give(class, part),
+                _ => self.career.give_entry(&p),
+            }
+            n += 1;
+        }
+        self.career.in_give = false;
+        self.career.after_give();
+        rep_posted
     }
 
     pub fn award_mission(&mut self, success: bool, delivered: Option<f32>) {
@@ -3190,15 +3225,20 @@ impl Game {
         self.race_place = place;
         self.rb_step = None;
         log::info!("reward: place {}/{} difficulty {} class {} -> ${} rep {} (race time {:.1} s)", place, field, self.race_diff, crate::rewards::perf_class(self.player_perf()), money, rep, self.race.as_ref().map_or(0.0, |r| r.time));
-        self.money += money;
-        // (past the career's top the reputation still counts up: 119170 -> 119230 after a
-        // series race on the 100 % save - `rk95_map`, `sr_rewards`)
-        let s14_rep0 = self.rep;
-        // (the reputation has no upper limit: F-55689)
-        self.rep += rep;
-        // (the same experience to the Unlocking system, a point of class reputation for the
-        // vehicle driven and one for the ability fitted: F-48818 / F-51495, `mc4`)
-        let s14_parts = if s14_plain { self.mc4_race_experience(s14_rep0, s15_exp) } else { Vec::new() };
+        // (a wager won: the script's AddMoney(stake) at once - 0x2bc3 -, the reward of WAGER_RACE_COMPLETE - the stake
+        // again - to the list)
+        let s_now = if self.wager_paid { money / 2 } else { 0 };
+        self.money += s_now;
+        // (the money, the Progression experience and the same experience for Unlocking wait in the pending list until the
+        // REWARDS page gives them - F-48818 / F-51495, `give_pending`; past the career's top the reputation still counts
+        // up: 119170 -> 119230 after a series race on the 100 % save - `rk95_map`, `sr_rewards`)
+        if s14_plain && s15_exp > 1 && self.career.unlocking.is_none() {
+            // (the Unlocking amount the port takes as the reputation until a race splits them)
+            self.career.unlocking = Some(self.rep);
+        }
+        self.career.queue_race(money - s_now, (rep, if s14_plain { s15_exp } else { 0 }));
+        // (a point of class reputation for the vehicle driven and one for the ability fitted, at once: `mc4`)
+        let s14_parts = if s14_plain { self.mc4_race_experience() } else { Vec::new() };
         // (what the class point unlocked is listed on the rewards screen: `unlocked_now`)
         self.career.unlocked_now = s14_parts.clone();
         if !s14_parts.is_empty() {

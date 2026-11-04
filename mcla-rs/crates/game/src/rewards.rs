@@ -83,10 +83,17 @@ pub fn race_money(rep: i64, class: usize, diff: usize, round: f32) -> f32 {
 /// What finishing a race in `place` (1-based) of `field` pays: (money, reputation).
 /// `factor` is 1 for a new event and 0.6 for one that was already won.
 pub fn race_reward(rep: i64, perf: f32, diff: usize, place: usize, field: usize, factor: f32) -> (i64, i64) {
+    race_split(dynamic_exp(rep, diff), race_money(rep, perf_class(perf), diff, 10.0), place, field, factor, false)
+}
+
+/// The race listener's sums (F-48818): the factor on the base money and experience, x (field - place + 1) / field,
+/// no money past third place nor in a pink slip race (`pink`), cut to tens; each given when above 1 (else 0).
+pub fn race_split(base_exp: f32, base_money: f32, place: usize, field: usize, factor: f32, pink: bool) -> (i64, i64) {
     let field = field.max(1);
     let share = (field + 1).saturating_sub(place.max(1)) as f32 / field as f32;
-    let exp = floor10(share * factor * dynamic_exp(rep, diff));
-    let money = if place > 3 { 0.0 } else { floor10(share * factor * race_money(rep, perf_class(perf), diff, 10.0)) };
+    let money = if pink { 0.0 } else { factor * base_money };
+    let exp = floor10(share * (factor * base_exp));
+    let money = if place > 3 { 0.0 } else { floor10(share * money) };
     (if money > 1.0 { money as i64 } else { 0 }, if exp > 1.0 { exp as i64 } else { 0 })
 }
 
