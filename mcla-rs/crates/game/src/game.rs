@@ -356,8 +356,6 @@ pub const SAVE_WRITE_T: f32 = 0.93;
 /// the median over the picture outside the box; brighter pixels keep a little more, 0.18 - 0.25). The popup
 /// movie's box leaves 0.335 of it in the port; this black (0.567 kept) makes up the rest
 pub const SAVE_BOX_DIM: u8 = 110;
-pub const METER_ACCEL: f32 = 1.3;
-pub const METER_SPEED: f32 = 0.006;
 
 /// The plate editor's characters, in the movie's order (`LP_chars` of the garage movie:
 /// digits, four signs, a blank, two unused places, the letters).
@@ -8070,8 +8068,11 @@ impl Game {
                                 Some(c) => {
                                     // (teal: the stock car; yellow up to what is fitted; the dark bar is what
                                     // the car can reach)
-                                    let row = |base: f32, mods: f32| [(base + (mods - base) * f) * 100.0, base * 100.0, mods * 100.0];
-                                    [row(c.base_accel * METER_ACCEL, c.mods_accel * METER_ACCEL), row((c.base_speed - 100.0) * METER_SPEED, (c.mods_speed - 100.0) * METER_SPEED), row(c.base_handling, c.mods_handling)]
+                                    // (stock and upgraded as the original's panel, F-13938; the fitted share between them
+                                    // is the port's own - the original's F-17130 reads the live car: approx.)
+                                    let m = c.meters();
+                                    let row = |k: usize| { let (b, x) = (m[k][0] as f32, m[k][1] as f32); [b + (x - b) * f, b, x] };
+                                    [row(0), row(1), row(2)]
                                 }
                                 // (a placeholder of a mod that is not installed: no figures - MODS.md S3)
                                 None if crate::modgarage::placeholder(list_cars[sel.min(list_cars.len() - 1)]).is_some() => [[0.0; 3]; 3],
@@ -12155,8 +12156,10 @@ impl Game {
         let f = self.perf_frac(i);
         let meters = match self.catalog.get(&self.dir_name(i)) {
             Some(c) => {
-                let row = |base: f32, mods: f32| [(base + (mods - base) * f) * 100.0, base * 100.0, mods * 100.0];
-                [row(c.base_accel * METER_ACCEL, c.mods_accel * METER_ACCEL), row((c.base_speed - 100.0) * METER_SPEED, (c.mods_speed - 100.0) * METER_SPEED), row(c.base_handling, c.mods_handling)]
+                // (stock and upgraded as F-13938; the fitted share is the port's own, approx.: F-17130 is not ported)
+                let m = c.meters();
+                let row = |k: usize| { let (b, x) = (m[k][0] as f32, m[k][1] as f32); [b + (x - b) * f, b, x] };
+                [row(0), row(1), row(2)]
             }
             None => [[0.0, 0.0, 100.0]; 3],
         };
