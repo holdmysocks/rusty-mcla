@@ -125,6 +125,37 @@ pub static DATA_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// 2 Gloss, 3 Metallic, 4 Pearl, 5 Sparkle; 0 = the executable's "DirtyMatte").
 pub const PAINT_TYPES: [&str; 6] = ["DIRTY MATTE", "MATTE", "GLOSS", "METALLIC", "PEARLESCENT", "SPARKLE"];
 
+/// The materials of the city's sectors whose opaque batches draw with a pipeline of their own (`Gpu::pipeline_opaque_mode`).
+pub const MODE_PIPES: [MatMode; 13] = [
+    MatMode::Opaque,
+    MatMode::AlphaTest,
+    MatMode::Window,
+    MatMode::Road,
+    MatMode::Neon,
+    MatMode::Decal,
+    MatMode::Ground,
+    MatMode::Terrain,
+    MatMode::StoreInterior,
+    MatMode::StoreSign,
+    MatMode::NeonTint,
+    MatMode::OceanWater,
+    MatMode::OceanWaterLod,
+];
+
+/// `MCLA_MODE_PIPES=0`: every opaque sector batch with the one city pipeline, as before.
+pub fn mode_pipes_on() -> bool {
+    std::env::var("MCLA_MODE_PIPES").map_or(true, |v| v.trim() != "0")
+}
+
+/// The city program reads its material's mode from the constant `MODE_K` when a pipeline sets it, else from the material
+/// uniform as before. The program is one for every material (city, props, cars, people) and branches on the mode; a
+/// pipeline built for one mode is drawn only with that mode's material bound (`mat_bgs`, whose `mode` is the same
+/// number), so it computes the same, and the driver compiles it without the other materials' paths. RTX 3090, 1440p:
+/// city pass A 2 - 3.5 ms -> 0.9 - 1.3 ms on Vulkan, 4.6 -> 1.2 ms on DX12, the same picture (docs/PERFORMANCE.md 2026-11-04 (2)).
+fn mode_constant(src: &str) -> String {
+    format!("override MODE_K: u32 = 4294967295u;\nfn mmode() -> u32 {{ if (MODE_K != 4294967295u) {{ return MODE_K; }} return mat.mode; }}\n{}", src.replace("mat.mode", "mmode()"))
+}
+
 /// The shader with the disc's paint tuning written into its table: the six
 /// `tune/vehicle/globalGfxTuning/<type>_PaintType` files (mcCarPaintTypeTuning; their names
 /// survive only as hashes - which file is which type is told from its values: no reflection
@@ -953,6 +984,9 @@ pub struct Gpu {
     pub blank_dmg: wgpu::TextureView,
     pub identity_obj: ObjectBinding,
     pub pipeline_opaque: ms::MsPipe,
+    /// the same for one material (`mode_constant`, `MODE_PIPES`; None, or not `ready` yet: that material draws with
+    /// `pipeline_opaque`), by MatMode
+    pub pipeline_opaque_mode: Vec<Option<ms::MsPipe>>,
     /// a set-up car's opaque batches with back faces culled (`GpuBatch::cull`): the view as is, a mirrored view
     pub pipeline_opaque_cull: ms::MsPipe,
     pub pipeline_opaque_cull_m: ms::MsPipe,
@@ -1847,7 +1881,7 @@ impl Gpu {
         let identity_obj = make_object_binding(&device, &obj_layout, &ObjectUniform::default(), &blank_dmg);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("city"),
-            source: wgpu::ShaderSource::Wgsl(xs::split_consts(&paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat())).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
+            source: wgpu::ShaderSource::Wgsl(mode_constant(&xs::split_consts(&paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat()))).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("city pl"),
@@ -1857,7 +1891,8 @@ impl Gpu {
         // (every city pipeline per ms::Variant: the scene's are multisampled and write the stencil reference)
         let city_build = {
             let (pl, shader) = (pl.clone(), shader.clone());
-            Arc::new(move |device: &wgpu::Device, v: ms::Variant, blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool, writes: wgpu::ColorWrites| {
+            Arc::new(move |device: &wgpu::Device, v: ms::Variant, blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool, writes: wgpu::ColorWrites, mode: Option<u32>| {
+            let constants: std::collections::HashMap<String, f64> = mode.map(|m| ("MODE_K".to_string(), m as f64)).into_iter().collect();
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(if blend { "city blend" } else { "city opaque" }),
                 layout: Some(&pl),
@@ -1875,7 +1910,7 @@ impl Gpu {
                         blend: Some(if blend { wgpu::BlendState::ALPHA_BLENDING } else { wgpu::BlendState::REPLACE }),
                         write_mask: writes,
                     })],
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
@@ -1892,7 +1927,7 @@ impl Gpu {
         };
         let make_pipeline_x = |blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool| {
             let b = city_build.clone();
-            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, blend, vs, cull, zwrite, wgpu::ColorWrites::ALL))
+            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, blend, vs, cull, zwrite, wgpu::ColorWrites::ALL, None))
         };
         let make_pipeline = |blend: bool, vs: &'static str| make_pipeline_x(blend, vs, None, !blend);
         // (the cars' windows as the original draws them: blended WITH depth writes, back faces first
@@ -1909,6 +1944,16 @@ impl Gpu {
         // so the shop behind an angled entrance shows through ONE pane; back faces go in city.wgsl)
         let pipeline_pane = make_pipeline_x(true, "vs_main", None, true);
         let pipeline_opaque = make_pipeline(false, "vs_main");
+        // (the opaque phase of the city's sectors with a pipeline per material: `mode_constant`; drawn only in the scene pass,
+        // built behind the loading - main.rs `ms::build_behind`; until then `pipeline_opaque` draws the same)
+        let pipeline_opaque_mode: Vec<Option<ms::MsPipe>> = (0..MatMode::COUNT)
+            .map(|m| {
+                (mode_pipes_on() && MODE_PIPES.iter().any(|k| *k as u32 == m)).then(|| {
+                    let b = city_build.clone();
+                    ms::MsPipe::new_behind(&device, move |d, v| b(d, v, false, "vs_main", None, true, wgpu::ColorWrites::ALL, Some(m)))
+                })
+            })
+            .collect();
         // (render state 0 = 2, the original's 0x18002 - the face the windows' front pass culls - and in a mirrored view 1)
         let pipeline_opaque_cull = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Front } else { wgpu::Face::Back }), true);
         let pipeline_opaque_cull_m = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Back } else { wgpu::Face::Front }), true);
@@ -1917,17 +1962,17 @@ impl Gpu {
         // replaced - recorded registers 0x2104 = 0, 0x2200 = 0x00708763, 0x2205 = 0x18000)
         let pipeline_stencil_only = {
             let b = city_build.clone();
-            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, false, "vs_main", None, false, wgpu::ColorWrites::empty()))
+            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, false, "vs_main", None, false, wgpu::ColorWrites::empty(), None))
         };
         // (the cars' environment map drawn the original's way: the paraboloid warp per vertex - city.wgsl vs_env_dp)
         // (each ~4 s to compile with the driver's cache cold: built on threads of their own while the loading goes on)
         let pipeline_env_dp = {
             let b = city_build.clone();
-            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, false, "vs_env_dp", None, true, wgpu::ColorWrites::ALL))
+            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, false, "vs_env_dp", None, true, wgpu::ColorWrites::ALL, None))
         };
         let pipeline_env_dp_blend = {
             let b = city_build.clone();
-            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, true, "vs_env_dp", None, false, wgpu::ColorWrites::ALL))
+            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, true, "vs_env_dp", None, false, wgpu::ColorWrites::ALL, None))
         };
         ms::build_ahead(&[&pipeline_env_dp, &pipeline_env_dp_blend], ms::PLAIN);
         let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2475,6 +2520,7 @@ impl Gpu {
             blank_dmg,
             identity_obj,
             pipeline_opaque,
+            pipeline_opaque_mode,
             pipeline_opaque_cull,
             pipeline_opaque_cull_m,
             pipeline_stencil_only,

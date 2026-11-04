@@ -13640,6 +13640,8 @@ impl App {
             // (the scene's pipelines at the driving and the menus' sample counts, built ahead on a thread of their
             // own - render/ms.rs; the city's plain ones for the environment map too)
             render::ms::warm(vec![render::ms::scene(aamode::scene_samples(false)), render::ms::PLAIN, render::ms::scene(aamode::scene_samples(true))]);
+            // (the city's per-material pipelines behind them, which nothing waits for - render/mod.rs `mode_constant`)
+            render::ms::build_behind(gpu.pipeline_opaque_mode.iter().flatten().cloned().collect(), vec![render::ms::scene(aamode::scene_samples(false)), render::ms::scene(aamode::scene_samples(true))]);
             if std::env::var("MCLA_NO_PEDS").is_err() {
                 self.peds.load(&self.opt.data_dir);
                 self.drivers.load(&self.opt.data_dir);
@@ -14302,6 +14304,8 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
     let gpu = v.gpu;
     let mut last_mode = u32::MAX;
     let mut pane_pipe = false;
+    // (a material's own pipeline is in force: `pipeline_opaque` is put back after the sectors)
+    let mut mode_pipe = false;
     for sec in secs {
         let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
         if v.occluded.hides_all(sec.batches.iter().map(|b| (b.min, b.max))) {
@@ -14356,6 +14360,14 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
             if b.mode as u32 != last_mode {
                 pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                 last_mode = b.mode as u32;
+                // (the opaque phase: the material's own pipeline where it has one - render/mod.rs `mode_constant`)
+                if phase == 0 {
+                    let own = gpu.pipeline_opaque_mode[b.mode as usize].as_ref().and_then(|p| p.ready(render::ms::current()));
+                    if own.is_some() || mode_pipe {
+                        pass.set_pipeline(own.unwrap_or(&*gpu.pipeline_opaque));
+                        mode_pipe = own.is_some();
+                    }
+                }
             }
             if pane_zw {
                 let want_pane = matches!(b.mode, MatMode::StoreGlass);
@@ -14373,6 +14385,9 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
     }
     if pane_pipe {
         pass.set_pipeline(&gpu.pipeline_blend);
+    }
+    if mode_pipe {
+        pass.set_pipeline(&gpu.pipeline_opaque);
     }
 }
 

@@ -174,6 +174,34 @@ impl MsPipe {
     pub fn at(&self, v: Variant) -> &wgpu::RenderPipeline {
         self.inner.at(v)
     }
+
+    /// One that only [`build_behind`] builds (not `warm`, not a draw): [`ready`](Self::ready) gives it once it is built.
+    /// For a pipeline that is a faster stand-in for another that draws the same (the city's per-material ones).
+    pub fn new_behind(device: &wgpu::Device, build: impl Fn(&wgpu::Device, Variant) -> wgpu::RenderPipeline + Send + Sync + 'static) -> MsPipe {
+        MsPipe { inner: Arc::new(Inner { device: device.clone(), build: Box::new(build), slots: Default::default(), plain_too: false, plain_only: false }) }
+    }
+
+    /// `v`, when it has been built; never waits.
+    pub fn ready(&self, v: Variant) -> Option<&wgpu::RenderPipeline> {
+        self.inner.slots[v.slot()].get()
+    }
+}
+
+/// `pipes` in each of `variants` (in that order) on one thread of its own that nothing waits for - not counted in
+/// [`warming`]: the loading does not wait for them, and a draw takes the stand-in until one is [`ready`](MsPipe::ready).
+pub fn build_behind(pipes: Vec<MsPipe>, variants: Vec<Variant>) {
+    if pipes.is_empty() {
+        return;
+    }
+    let t = std::time::Instant::now();
+    let _ = std::thread::Builder::new().name("msaa behind".into()).spawn(move || {
+        for v in &variants {
+            for p in &pipes {
+                p.inner.at(*v);
+            }
+        }
+        log::info!("pipeline: {} built behind the loading in {} ms", pipes.len() * variants.len(), t.elapsed().as_millis());
+    });
 }
 
 impl std::ops::Deref for MsPipe {
