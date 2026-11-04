@@ -247,6 +247,8 @@ pub struct Career {
     /// `Unlocking_3`; empty for the port's own), and the ids whose rewards were handed out:
     /// the original gives a threshold's rewards once and keeps a "reached" flag (`mc4`)
     threshold_ids: Vec<String>,
+    /// each entry's GiveImmediately (+9): given while its threshold is walked, else appended to the pending list
+    threshold_gi: Vec<bool>,
     pub reached_ids: HashSet<String>,
     /// the ability systems' amounts (uses counted by the system itself: `mc4`,
     /// experience.abilities), by system name; a system not here counts by its statistic
@@ -590,6 +592,7 @@ impl Career {
                             "Script" if kind == "Unlocking" && field("ScriptName").to_ascii_lowercase().contains("tip") => {
                                 c.thresholds.push((crate::mc4::main_amount_at(pct) as f32, Reward::Tip(tip_key(&field("ScriptName")))));
                                 c.threshold_ids.push(th.split_whitespace().skip_while(|w| *w != "Id").nth(1).unwrap_or("").to_string());
+                                c.threshold_gi.push(field("GiveImmediately") == "1");
                             }
                             _ => {}
                         }
@@ -609,9 +612,11 @@ impl Career {
                         }
                         c.thresholds.push((crate::mc4::main_amount_at(pct) as f32, Reward::Mission { id, state: field("TransitionState").to_ascii_uppercase().replace('_', "") }));
                         c.threshold_ids.push(th.split_whitespace().skip_while(|w| *w != "Id").nth(1).unwrap_or("").to_string());
+                        c.threshold_gi.push(field("GiveImmediately") == "1");
                     } else if field("Type") == "Script" && field("ScriptName").to_ascii_lowercase().contains("tip") {
                         c.thresholds.push((crate::mc4::main_amount_at(pct) as f32, Reward::Tip(tip_key(&field("ScriptName")))));
                         c.threshold_ids.push(th.split_whitespace().skip_while(|w| *w != "Id").nth(1).unwrap_or("").to_string());
+                        c.threshold_gi.push(field("GiveImmediately") == "1");
                     }
                 }
             }
@@ -1109,14 +1114,27 @@ impl Career {
             // (a threshold of the tables whose rewards were handed out is not handed out again)
             // (the Unlocking system's thresholds go by its own amount)
             let unl = self.unlocking.unwrap_or(rep);
-            let due: Vec<(usize, Reward)> = self.thresholds.iter().enumerate().filter(|(k, (p, _))| *p as i64 <= if self.threshold_ids.get(*k).map_or(false, |id| id.starts_with("Unlocking_")) { unl } else { rep } && !self.threshold_ids.get(*k).map_or(false, |id| !id.is_empty() && self.reached_ids.contains(id))).map(|(k, (_, r))| (k, r.clone())).collect();
-            for (_, r) in &due {
-                self.give(r);
-            }
-            for (k, _) in due {
+            let unlocking = |k: usize| self.threshold_ids.get(k).map_or(false, |id| id.starts_with("Unlocking_"));
+            let mut due: Vec<(usize, Reward)> = self.thresholds.iter().enumerate().filter(|(k, (p, _))| *p as i64 <= if unlocking(*k) { unl } else { rep } && !self.threshold_ids.get(*k).map_or(false, |id| !id.is_empty() && self.reached_ids.contains(id))).map(|(k, (_, r))| (k, r.clone())).collect();
+            // (the race's Progression experience is given before its Unlocking one - F-48818 adds them to the list in that
+            // order -, and each walk F-61830 -> F-61974 hands a threshold's rewards to AddReward F-64223 in file order:
+            // GiveImmediately given at once, the others appended and given after them by the same give-all F-73125)
+            due.sort_by_key(|&(k, _)| unlocking(k));
+            for &(k, _) in &due {
                 if let Some(id) = self.threshold_ids.get(k).filter(|id| !id.is_empty()).cloned() {
                     self.reached_ids.insert(id);
                 }
+            }
+            // (each entry is a reward object of its own: the list holds entries, not values)
+            let mut later: Vec<usize> = Vec::new();
+            for (k, r) in &due {
+                if reward_add(&mut later, *k, self.threshold_gi.get(*k).copied().unwrap_or(true)) {
+                    self.give(r);
+                }
+            }
+            for k in later {
+                let r = self.thresholds[k].1.clone();
+                self.give(&r);
             }
         }
         self.activate_met();
@@ -2940,6 +2958,85 @@ mod tests {
             }
         }
         eprintln!("reward list: {cases} cases, {differ} differ");
+        assert!(cases >= 600 && differ == 0);
+    }
+
+    /// The threshold walk inside the pending list (F-61830 -> F-61974 -> F-64223, give-all F-73125), as `event`'s
+    /// Ev::Rep gives a race's thresholds: in order, GiveImmediately at once, the others after.
+    #[test]
+    fn reward_thresholds_match_the_original() {
+        let text = include_str!("testdata/ui_reward_threshold_ref.txt");
+        let (mut cases, mut differ) = (0, 0);
+        for line in text.lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let mut part = input.split(" ; ");
+            let h: Vec<u32> = part.next().unwrap().split_whitespace().skip(1).map(|v| u32::from_str_radix(v, 16).unwrap()).collect();
+            let flags: Vec<(bool, u32)> = (0..h[0] as usize).map(|k| (h[2 + 3 * k] != 0, h[3 + 3 * k])).collect();
+            // (each system: its share, then each threshold's Percent and rewards)
+            let mut t = part.next().unwrap().split_whitespace();
+            let ns = usize::from_str_radix(t.next().unwrap(), 16).unwrap();
+            let mut systems: Vec<(f32, Vec<(f32, Vec<usize>)>)> = Vec::new();
+            for _ in 0..ns {
+                let share: f32 = t.next().unwrap().parse().unwrap();
+                let m = usize::from_str_radix(t.next().unwrap(), 16).unwrap();
+                let mut ths = Vec::new();
+                for _ in 0..m {
+                    let pct: f32 = t.next().unwrap().parse().unwrap();
+                    let r = usize::from_str_radix(t.next().unwrap(), 16).unwrap();
+                    ths.push((pct, (0..r).map(|_| usize::from_str_radix(t.next().unwrap(), 16).unwrap()).collect()));
+                }
+                systems.push((share, ths));
+            }
+            let ops = part.next().unwrap();
+            let mut reached: Vec<Vec<bool>> = systems.iter().map(|s| vec![false; s.1.len()]).collect();
+            let mut list: Vec<usize> = Vec::new();
+            let mut given: Vec<usize> = Vec::new();
+            fn walk(s: usize, systems: &[(f32, Vec<(f32, Vec<usize>)>)], reached: &mut [Vec<bool>], list: &mut Vec<usize>, given: &mut Vec<usize>, flags: &[(bool, u32)]) {
+                for t in 0..systems[s].1.len() {
+                    let (pct, ref rs) = systems[s].1[t];
+                    if reached[s][t] || systems[s].0 < pct {
+                        continue;
+                    }
+                    reached[s][t] = true;
+                    for &k in rs {
+                        if reward_add(list, k, flags[k].0) {
+                            give(k, systems, reached, list, given, flags);
+                        }
+                    }
+                }
+            }
+            fn give(k: usize, systems: &[(f32, Vec<(f32, Vec<usize>)>)], reached: &mut [Vec<bool>], list: &mut Vec<usize>, given: &mut Vec<usize>, flags: &[(bool, u32)]) {
+                given.push(k);
+                if flags[k].1 > 0 {
+                    walk(flags[k].1 as usize - 1, systems, reached, list, given, flags);
+                }
+            }
+            for op in ops.split_whitespace() {
+                match op.as_bytes()[0] {
+                    b'a' => {
+                        let k = usize::from_str_radix(&op[1..], 16).unwrap();
+                        if reward_add(&mut list, k, flags[k].0) {
+                            give(k, &systems, &mut reached, &mut list, &mut given, &flags);
+                        }
+                    }
+                    b'w' => walk(usize::from_str_radix(&op[1..], 16).unwrap(), &systems, &mut reached, &mut list, &mut given, &flags),
+                    _ => {
+                        let mut n = 0;
+                        while n < list.len() {
+                            give(list[n], &systems, &mut reached, &mut list, &mut given, &flags);
+                            n += 1;
+                        }
+                    }
+                }
+            }
+            let out = format!("{} | {}", given.iter().map(|k| format!("{k:x}")).collect::<Vec<_>>().join(" "), reached.iter().flatten().map(|&r| (r as u8).to_string()).collect::<Vec<_>>().join(" "));
+            cases += 1;
+            if out.split_whitespace().collect::<Vec<_>>() != want.split_whitespace().collect::<Vec<_>>() {
+                differ += 1;
+                eprintln!("{input}: want {want} got {out}");
+            }
+        }
+        eprintln!("reward thresholds: {cases} cases, {differ} differ");
         assert!(cases >= 600 && differ == 0);
     }
 
