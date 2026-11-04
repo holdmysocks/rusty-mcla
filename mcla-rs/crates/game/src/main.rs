@@ -469,6 +469,9 @@ struct App {
     warp: Option<hudmap::CineWarp>,
     warp_t: f32,
     warp_view: Option<(Vec3, Vec3, Vec3, f32)>,
+    /// the cine-to-game camera blend, and the scene camera last shown (with whether its scene blends)
+    cam_blend: cine::CamBlend,
+    cine_last_cam: Option<((Vec3, Vec3, Vec3, f32), bool)>,
     /// Warper_Warp('DEFAULT_WITH_CUT')'s climb (hudmap::CineClimb) and the action it holds until
     /// it is over (IsReadyToLoadStuff); its view (eye, look, up, fov radians), kept at its end until
     /// the dive takes over; the climb's last camera and lens (the dive's start); frames held
@@ -1123,6 +1126,8 @@ impl App {
             warp: None,
             warp_t: 0.0,
             warp_view: None,
+            cam_blend: cine::CamBlend::default(),
+            cine_last_cam: None,
             climb: None,
             climb_view: None,
             climb_end: None,
@@ -8855,7 +8860,30 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.chase.up = self.boom_up.unwrap_or(Vec3::Y);
         // (the race-start warp keeps the picture until it lands on the scene's camera, though the scene
         // already runs for its last second - mcWarper state 19 / 29)
-        if let Some((eye, fwd, up, fov)) = self.cine.camera().filter(|_| self.warp_view.is_none() && !self.garage_in.as_ref().map_or(false, |g| g.dive.is_some())) {
+        let scene_cam = self.cine.camera().filter(|_| self.warp_view.is_none() && !self.garage_in.as_ref().map_or(false, |g| g.dive.is_some()));
+        // (cam_to_game: the viewport blends from the scene camera's last view to the game camera over 1 s - cine::CamBlend,
+        // F-82215; a cut hand-off starts it at its end, so nothing shows)
+        match scene_cam {
+            Some(c) => self.cine_last_cam = Some((c, self.cine.playing.as_ref().map_or(false, |sc| cine::blends_to_game(&sc.name)))),
+            None => {
+                if let Some(((eye, fwd, up, fov), blend)) = self.cine_last_cam.take() {
+                    self.cam_blend.start(cine::cam_rows(eye, fwd, up), fov, !blend);
+                }
+            }
+        }
+        if scene_cam.is_none() && self.cam_blend.active() {
+            let fwd = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
+            let target = cine::cam_rows(self.chase.pos, fwd, self.chase.up);
+            let mut out = target;
+            let fov = self.cam_blend.step(dt, &mut out, &target, self.cam.fov_y);
+            let eye = Vec3::new(out[12], out[13], out[14]);
+            self.chase.pos = eye;
+            self.chase.look = eye - Vec3::new(out[8], out[9], out[10]);
+            self.chase.up = Vec3::new(out[4], out[5], out[6]);
+            self.cam.pos = eye;
+            self.cam.fov_y = fov;
+        }
+        if let Some((eye, fwd, up, fov)) = scene_cam {
             self.chase.pos = eye;
             self.chase.look = eye + fwd;
             self.chase.up = up;
