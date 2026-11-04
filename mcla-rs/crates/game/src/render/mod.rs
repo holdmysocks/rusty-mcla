@@ -156,14 +156,19 @@ fn mode_constant(src: &str) -> String {
     format!("override MODE_K: u32 = 4294967295u;\nfn mmode() -> u32 {{ if (MODE_K != 4294967295u) {{ return MODE_K; }} return mat.mode; }}\n{}", src.replace("mat.mode", "mmode()"))
 }
 
+/// The six mcCarPaintTypeTuning files in the paint type's order (F-60347 names them `CarPaint%s` with DirtyMatte, Matte,
+/// Gloss, Metallic, Pearl, Sparkle, and the loader adds the class's extension `.parFileIO`; the archive keeps their names'
+/// hashes only).
+const PAINT_FILES: [&str; 6] = ["0xcec1263b", "0xcc0ab1c3", "0xa91a37a8", "0x3c752d39", "0x7c619591", "0x3547dd17"];
+/// Their fields in the order of the struct (F-44499 registers them at +12 .. +56); every file sets all twelve, so the
+/// constructor's defaults (F-85434) never show.
+const PAINT_FIELDS: [&str; 12] = ["m_fDiffuseIntensity", "m_fSpecIntensity", "m_fAmbientIntensity", "m_fSpecExp", "m_fFresnelExp", "m_fFresnelMin", "m_fFresnelMax", "m_fPaintFalloff", "m_fPearlescence", "m_fNoiseScale", "m_fNoiseStrength", "m_fNoiseExponent"];
+
 /// The shader with the disc's paint tuning written into its table: the six
-/// `tune/vehicle/globalGfxTuning/<type>_PaintType` files (mcCarPaintTypeTuning; their names
-/// survive only as hashes - which file is which type is told from its values: no reflection
-/// at all for the mattes, blotchy noise for the dirty one, no flakes in gloss, fine ones in
-/// metallic and pearl, coarse strong ones in sparkle).
+/// `tune/vehicle/globalGfxTuning/CarPaint<type>.parFileIO` files (`PAINT_FILES`).
 fn paint_tuned(src: &str) -> String {
-    const FILES: [&str; 6] = ["0xcec1263b", "0xcc0ab1c3", "0xa91a37a8", "0x3c752d39", "0x7c619591", "0x3547dd17"];
-    const FIELDS: [&str; 12] = ["m_fDiffuseIntensity", "m_fSpecIntensity", "m_fAmbientIntensity", "m_fSpecExp", "m_fFresnelExp", "m_fFresnelMin", "m_fFresnelMax", "m_fPaintFalloff", "m_fPearlescence", "m_fNoiseScale", "m_fNoiseStrength", "m_fNoiseExponent"];
+    const FILES: [&str; 6] = PAINT_FILES;
+    const FIELDS: [&str; 12] = PAINT_FIELDS;
     let Some(dir) = DATA_DIR.get() else { return src.to_string() };
     let mut rows = Vec::new();
     for f in FILES {
@@ -358,6 +363,21 @@ pub fn lamp_cell_index(p: Vec3) -> usize {
     let cx = ((u * LAMP_GRID.0 as f32) as i64).clamp(0, LAMP_GRID.0 as i64 - 1) as usize;
     let cz = ((v * LAMP_GRID.1 as f32) as i64).clamp(0, LAMP_GRID.1 as i64 - 1) as usize;
     cz * LAMP_GRID.0 as usize + cx
+}
+
+#[cfg(test)]
+mod paint_file_tests {
+    use super::*;
+
+    /// The paint type files are the ones the original loads for each type: `CarPaint<type>.parFileIO` (F-60347, the
+    /// class's extension from its vtable) hashed as the archive hashes names, and the field names as F-44499 registers them.
+    #[test]
+    fn paint_files_are_the_originals() {
+        for (i, ty) in ["DirtyMatte", "Matte", "Gloss", "Metallic", "Pearl", "Sparkle"].iter().enumerate() {
+            assert_eq!(format!("{:#010x}", mcla_formats::hash::joaat(&format!("CarPaint{ty}.parFileIO"))), PAINT_FILES[i], "{ty}");
+        }
+        assert_eq!(PAINT_FIELDS.len(), 12);
+    }
 }
 
 #[cfg(test)]
