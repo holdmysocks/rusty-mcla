@@ -443,7 +443,7 @@ impl HangoutScene {
     fn payback(&mut self, game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mut World, scene: Option<&str>, dt: f32) {
         let Some(p) = vehicles.player().map(|c| c.state.pos) else { return };
         let at = Vec3::from(PAYBACK_AT);
-        let d = p.distance(at);
+        let d = crate::brain::racer_distance_to_point(Some(p), at);
         let open = game.mc4_place_open("be_payback");
         let tag = format!("{TAG}be_payback");
         let here = vehicles.cars.iter().any(|c| c.driver == tag);

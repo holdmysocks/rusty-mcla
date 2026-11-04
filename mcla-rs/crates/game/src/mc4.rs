@@ -8191,7 +8191,7 @@ impl Game {
                 // (test hook MCLA_PB_TIMEOUT=<seconds>: the client counts as reached at once
                 // and the leg's time is that many seconds)
                 let hook = std::env::var("MCLA_PB_TIMEOUT").ok().and_then(|v| v.parse::<f32>().ok());
-                if p.distance(t) < 50.0 || hook.is_some() {
+                if crate::brain::racer_distance(Some(p), Some(t)) < 50.0 || hook.is_some() {
                     leg.phase = 1;
                     reached = true;
                     if let Some(s) = hook {
@@ -10627,7 +10627,7 @@ impl Game {
         let waiting = self.car_x.hangout_wait.clone();
         for key in waiting {
             let Some(r) = HANGOUT_RESTARTERS.iter().find(|r| r.0 == key) else { continue };
-            let d = ((p[0] - r.2[0]).powi(2) + (p[1] - r.2[1]).powi(2) + (p[2] - r.2[2]).powi(2)).sqrt();
+            let d = crate::brain::racer_distance_to_point(Some(glam::Vec3::from(p)), glam::Vec3::from(r.2));
             if d < r.3 {
                 self.car_x.hangout_wait.retain(|w| *w != key);
                 self.mc4_restart_setup(r.1, r.4);

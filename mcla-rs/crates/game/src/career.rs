@@ -1811,7 +1811,7 @@ impl Career {
             if !self.story_waits(i) {
                 continue;
             }
-            let d = ((p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2) + (p[2] - at[2]).powi(2)).sqrt();
+            let d = crate::brain::racer_distance_to_point(Some(glam::Vec3::from(p)), glam::Vec3::from(*at));
             if d >= *r {
                 continue;
             }

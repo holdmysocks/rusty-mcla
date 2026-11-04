@@ -14883,7 +14883,7 @@ impl Game {
             let Some((_, kind, p)) = PLACES.iter().find(|x| x.0 == *uid) else { return false };
             let p = Vec3::from(*p);
             let (far, poll) = match kind {
-                Kind::Garage => (crate::garagein::SETUPS[crate::garagein::nearest(p)].door.distance(pp) >= crate::garagein::RADIUS, 0.1),
+                Kind::Garage => (crate::brain::racer_distance_to_point(Some(pp), crate::garagein::SETUPS[crate::garagein::nearest(p)].door) >= crate::garagein::RADIUS, 0.1),
                 Kind::Series | Kind::Wager => match place_hangout(p) {
                     Some(h) => (glam::Vec2::new(pp.x - h.centre[0], pp.z - h.centre[2]).length() >= h.radius, 0.5),
                     None => (true, 0.0),

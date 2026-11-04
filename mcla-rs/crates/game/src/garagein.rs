@@ -102,7 +102,7 @@ pub const EXIT_WAIT: f32 = 20.0 / 30.0 + 0.1;
 
 /// The garage whose door point the player is within `RADIUS` of.
 pub fn at_door(p: Vec3) -> Option<usize> {
-    SETUPS.iter().position(|s| s.door.distance(p) < RADIUS)
+    SETUPS.iter().position(|s| crate::brain::racer_distance_to_point(Some(p), s.door) < RADIUS)
 }
 
 /// The garage nearest to `p` (its door point).
