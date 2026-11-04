@@ -187,6 +187,8 @@ struct BikeClips {
     rev_over: Option<Clip>,
     /// the fidget's two clips (the picker's table: `drv_gest_look_lft`, `drv_gest_look_rgt`)
     look: [Option<Clip>; 2],
+    /// `DRV_PAN_SWEEP_OVERLAY`, the head's pan (F-56423 looks it up for the local human only)
+    pan: Option<Clip>,
 }
 
 impl BikeClips {
@@ -215,6 +217,7 @@ impl BikeClips {
             rev_ck: clip(&["drv_rev_sweep_ckpt"]),
             rev_over: clip(&["drv_rev_overlay"]),
             look: [clip(&["drv_gest_look_lft"]), clip(&["drv_gest_look_rgt"])],
+            pan: clip(&["drv_pan_sweep_overlay"]),
         })
     }
 }
@@ -226,11 +229,12 @@ pub struct RideIn {
     pub ck: bool,
     /// ReadSpeed, ctx+96: the body's velocity along its forward axis (m/s)
     pub speed: f32,
-    /// ReadSmoothedSteeringParam, ctx+28 (= ctx+44, the phase input)
+    /// ReadSmoothedSteeringParam, ctx+28 (= ctx+44, the phase input): the car-parts object's eased steering over its
+    /// scale, D +1164 / D +1136 (steer_parts.rs)
     pub x: f32,
     /// ctx+92: the throttle (chassis +136), negated while reversing
     pub throttle: f32,
-    /// ReadGoalSteering, ctx+20 (the racer's vfunc +172)
+    /// ReadGoalSteering, ctx+20: the racer's virtual +172 (a player: its pad's steering target, input +84, F-91694)
     pub goal_steer: f32,
     /// IsTuck (bit 23): the aero's byte +40 (a bike's DragMin lean), forward speed over 0.5 and no brake (chassis +140)
     pub tuck: bool,
@@ -252,14 +256,17 @@ pub struct RideIn {
     pub cutscene: bool,
     /// IsOpponentDefined, ctx byte +49: the driver's record byte 0 is clear (taken as: not the local human)
     pub opponent: bool,
+    /// ctx+120, the look the pan-sweep overlay turns the head to (-1 .. 1; main.rs `rider_look` for the local human)
+    pub look: f32,
 }
 
 impl RideIn {
     /// The gatherer's flags (F-28290) from the port's car: the body's axes and velocity, the pedals the car was handed, the
-    /// gearbox, the burnout charge, the nitrous and the wheel records. Approximate (docs/PEOPLE_TRAFFIC.md): the aero's byte
-    /// +40 from the stick and the car's air time (the chassis +584 of the tick before), the goal steering from the steering
-    /// input (the racer's vfunc +172 is not decoded for the human) and IsOpponentDefined from "not the local human".
-    pub fn of(st: &crate::physics::CarState, input: &crate::physics::CarInput, player: bool, cutscene: bool) -> RideIn {
+    /// gearbox, the burnout charge, the nitrous and the wheel records, and the steering of the car-parts object (`sp`: D +1164 /
+    /// +1136, the bike branch of F-28290). Approximate (docs/PEOPLE_TRAFFIC.md): the aero's byte +40 from the stick and the
+    /// car's air time (the chassis +584 of the tick before), a computer rider's goal steering from its steering (its input's
+    /// +152 is not kept apart) and IsOpponentDefined from "not the local human".
+    pub fn of(st: &crate::physics::CarState, input: &crate::physics::CarInput, sp: &crate::steer_parts::SteerParts, player: bool, cutscene: bool) -> RideIn {
         // (sin of the double 0.34906587 through the guest's sin, rounded to float: 20 degrees)
         let sin20 = crate::physics::exact::guest_sin(f64::from_bits(0x3fd6_5718_6000_0000)) as f32;
         let back = st.rot * Vec3::Z;
@@ -270,9 +277,9 @@ impl RideIn {
         RideIn {
             ck: false,
             speed,
-            x: 0.0,
+            x: sp.out / sp.scale,
             throttle: if reversing { -input.throttle } else { input.throttle },
-            goal_steer: input.steer,
+            goal_steer: vs.filter(|v| player && v.pad.live).map_or(input.steer, |v| v.pad.goal),
             tuck: stick < -0.5 && st.airborne_time < 0.5 && speed > 0.5 && input.brake <= 0.0,
             wheelie: back.y < -sin20 && stick > 0.5,
             endo: back.y > sin20 && stick < -0.5,
@@ -283,6 +290,7 @@ impl RideIn {
             shift: vs.map_or(0, |v| v.gear_change.direction),
             cutscene,
             opponent: !player,
+            look: 0.0,
         }
     }
 }
@@ -328,6 +336,70 @@ struct Ride {
     /// the shift's base pair (the cruise pair's clips left in slots +44 / +48: their cockpit flag) and its overlay's flag
     shift_base_ck: bool,
     shift_ck: bool,
+    /// the sequencer's +112: the pan-sweep overlay is part of the tree the last enter requested
+    pan: bool,
+    /// the driver's +48 smoother (F-45732: centre 0.5, rate 5, hold 0.5 s): its value +12 and hold timer +16, made on first use
+    pan_p: Option<(f32, f32)>,
+}
+
+/// The human rider's look at a racer beside him (the driver's +380 state; F-70536 with the test F-48336), which the gatherer
+/// (F-28290) makes ctx+120 from: the driver constructor's range 20 m, angle 45 degrees, look 1 s and hold 5 s.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct RivalLook {
+    /// +0: the racer looked at (an index of the race's cars), +4 the look to it, +8 the hold timer
+    rival: Option<usize>,
+    look: f32,
+    timer: f32,
+}
+
+impl RivalLook {
+    /// F-70536: with no racer held, the nearest other racer (by plan distance) within 20 m that lies more to a side than
+    /// ahead or behind (|atan2(|back|, |right|)| under 45 degrees: F-48336, left side tested first) is held for 5 s and the
+    /// look is +1 for one on the left, -1 on the right; else `look` (the camera's). Holding, the timer runs down by `dt`: the
+    /// held look for its first second, then `look`, and the racer is let go when it is below 0. `me`: the car's place and
+    /// rotation; `others`: the race's other racers that drive (state +656 == 3, F-90764), in the race's order.
+    pub fn step(&mut self, look: f32, dt: f32, me: (Vec3, Quat), others: impl Iterator<Item = (usize, Vec3)>) -> f32 {
+        if self.rival.is_none() {
+            let (right, back) = (me.1 * Vec3::X, me.1 * Vec3::Z);
+            let near = |p: Vec3, side: f32| -> f32 {
+                let v = p - me.0;
+                let (x, z) = (right.dot(v), back.dot(v));
+                if x * side < 0.0 {
+                    return -1.0;
+                }
+                let d2 = crate::physics::exact::fma(v.z, v.z, v.x * v.x);
+                if d2 >= 20.0 * 20.0 {
+                    return -1.0;
+                }
+                let a = crate::physics::exact::guest_atan2(z.abs() as f64, x.abs() as f64) as f32;
+                if a.abs() >= f32::from_bits(0x3f49_0fdb) {
+                    return -1.0;
+                }
+                d2
+            };
+            let (mut best, mut pick, mut out) = (f32::MAX, None, look);
+            for (k, p) in others {
+                for (side, l) in [(-1.0, 1.0), (1.0, -1.0)] {
+                    let d = near(p, side);
+                    if d > -1.0 && d < best {
+                        (best, pick, out) = (d, Some(k), l);
+                    }
+                }
+            }
+            if best < f32::MAX {
+                (self.rival, self.look, self.timer) = (pick, out, 5.0);
+            }
+            return out;
+        }
+        self.timer -= dt;
+        if self.timer > 5.0 - 1.0 {
+            return self.look;
+        }
+        if self.timer < 0.0 {
+            self.rival = None;
+        }
+        look
+    }
 }
 
 /// The cruise state's steering to sweep phase (F-25740): slope 0.75 within |x| <= 0.5, 0.25 outside.
@@ -381,9 +453,14 @@ fn add_pose(base: &mut [(Quat, Vec3)], ov: &[(Quat, Vec3)], clip: &Clip) {
 /// - fidget (F-87252, exit F-53813: timer A = 0): `drv_gest_look_rgt`, then `_lft`, alternating (F-61316), from 0 at rate 1, 0.25 s.
 /// An enter's blend is 0.01 s when the cockpit flag changed this frame (all but the shift's and the reverse overlay's). A state
 /// change fades linearly (rate 1 / blend time, the first frame at rate x dt) from the old tree, which stays frozen (the start's
-/// idle keeps looping). The pan-sweep overlay is not ported (docs/PEOPLE_TRAFFIC.md).
+/// idle keeps looping).
+/// The pan-sweep overlay (F-18940's branch with +112): the cruise, stopped idle and burnout centre enters put it in the local
+/// human's tree outside the cockpit (F-63058 with F-56423; the start action and the stopped idle and fidget exits arm it too,
+/// but the next enter decides), every other enter takes it out. In the tree it is added (AddSubtract at weight 1) on the neck
+/// and its children (filter +96) at a phase the driver's smoother sets each frame (F-32205: F-36491 towards F-66750's
+/// 0.5 - ctx+120 x 0.5, then F-47264: time = clamp(p x duration, 0, duration)); the smoother runs only while it is armed.
 #[allow(clippy::too_many_arguments)]
-fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], i: &RideIn, time: f32, dt: f32, out: &mut Vec<(Quat, Vec3)>, tmp: &mut Vec<(Quat, Vec3)>) {
+fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], neck: &[bool], i: &RideIn, time: f32, dt: f32, out: &mut Vec<(Quat, Vec3)>, tmp: &mut Vec<(Quat, Vec3)>) {
     const STOPPED: f32 = 0.15 * 0.44704;
     let ck = i.ck;
     let ck_before = r.ck;
@@ -514,7 +591,32 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], i:
             _ => {}
         }
         r.state = n;
+        r.pan = matches!(n, St::Cruise | St::Stopped | St::BurnC) && !ck && !i.opponent && b.pan.is_some();
     }
+    // the pan's smoother (F-36491 on the driver's +48: centre 0.5, rate 5, hold 0.5): back at the centre with the target there
+    // the hold restarts; while it runs nothing moves
+    let pan_t = if r.pan {
+        let (p, hold) = r.pan_p.get_or_insert((0.5, -1.0));
+        let target = crate::physics::exact::fma(-i.look, 0.5, 0.5);
+        let eps = f32::from_bits(0x3ba3_d70a);
+        if (target - 0.5).abs() < eps && (*p - 0.5).abs() < eps {
+            *hold = 0.5;
+        }
+        if *hold >= 0.0 {
+            *hold -= dt;
+        }
+        if *hold < 0.0 {
+            *p = crate::physics::exact::fma((target - *p) * 5.0, dt, *p);
+        }
+        b.pan.as_ref().map(|c| {
+            let d = c.anim.duration;
+            let t = d * *p;
+            let t = if t >= 0.0 { t } else { 0.0 };
+            (c, if t - d >= 0.0 { d } else { t })
+        })
+    } else {
+        None
+    };
     if r.state == St::Cruise && i.burnout {
         r.timer_b = 0.0;
     }
@@ -578,6 +680,20 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], i:
             Some(c) => c.local(bones, c.frame(r.t, false), out),
             None => one(stp, 0.5, out),
         },
+    }
+    if let Some((c, t)) = pan_t {
+        c.local(bones, c.frame(t, false), tmp);
+        for k in 0..out.len().min(tmp.len()).min(neck.len()) {
+            if !neck[k] {
+                continue;
+            }
+            if c.rot.get(k).map_or(false, |x| x.is_some()) {
+                out[k].0 = tmp[k].0 * out[k].0;
+            }
+            if c.pos.get(k).map_or(false, |x| x.is_some()) {
+                out[k].1 += tmp[k].1;
+            }
+        }
     }
     // the crossfades: from the frozen old tree (or the start's looping idle) into the new one; the reverse's first request
     // (its sweep alone) fades in under its second
@@ -689,11 +805,11 @@ struct Pose {
 #[derive(Default)]
 pub struct Drivers {
     char_dir: PathBuf,
-    /// driver sets: (name, bike rider, police)
-    sets: Vec<(String, bool, bool)>,
+    /// driver sets: (name, bike rider, police, one the port picks for an unnamed driver)
+    sets: Vec<(String, bool, bool, bool)>,
     models: HashMap<usize, Option<Arc<SkinModel>>>,
-    /// (car key, the local human's pack, driver set)
-    rigs: HashMap<(String, bool, usize), Option<Rig>>,
+    /// (car key, the local human's pack, the female pack, driver set)
+    rigs: HashMap<(String, bool, bool, usize), Option<Rig>>,
     poses: HashMap<usize, Pose>,
     buf: SkinBuffer,
     /// the player's head in car space (for the cockpit camera)
@@ -822,6 +938,39 @@ fn gesture_clip(g: Gesture, rr: &mut [usize; 7], human: bool) -> String {
     }
 }
 
+/// The bike machine's left / right pickers' five-clip tables (F-24572 with ctx+72, F-99511 with ctx+76) and its mild
+/// picker's two (F-51244 with ctx+88).
+const BIKE_LEFT: [&str; 5] = ["drv_gest_agro_lft", "drv_gest_thm_dwn_lft", "drv_gest_thm_up_lft", "drv_gest_look_lft", "drv_gest_cas_lft"];
+const BIKE_RIGHT: [&str; 5] = ["drv_gest_agro_rgt", "drv_gest_thm_dwn_rgt", "drv_gest_thm_up_rgt", "drv_gest_look_rgt", "drv_gest_cas_rgt"];
+const BIKE_MILD: [&str; 2] = ["drv_gest_agro_lft", "drv_gest_agro_rgt"];
+
+/// The clip a gesture plays on a motorcycle (the bike machine's gesture switch enter F-32265 and its pickers): neutral
+/// `drv_gest_disapnt` (F-38624: a one-clip table, its `_rspnd` tests never hold), left / right / mild round robins, talk
+/// left / right `drv_gest_look_lft` / `_rgt` (F-44243 / F-57458), win `drv_win` (F-49380), the listen and thumb-down clips
+/// by name, the ticket fidget `drv_gest_disapnt` (F-80672) and hands up `drv_gest_arrest`. Each picker steps its counter.
+fn bike_gesture_clip(g: Gesture, rr: &mut [usize; 7]) -> String {
+    let mut next = |k: usize, list: &[&str]| -> String {
+        let c = list[rr[k] % list.len()];
+        rr[k] += 1;
+        c.to_string()
+    };
+    match g {
+        Gesture::Neutral => next(0, &["drv_gest_disapnt"]),
+        Gesture::Left => next(1, &BIKE_LEFT),
+        Gesture::Right => next(2, &BIKE_RIGHT),
+        Gesture::TalkLeft => next(3, &["drv_gest_look_lft"]),
+        Gesture::TalkRight => next(4, &["drv_gest_look_rgt"]),
+        Gesture::Mild => next(5, &BIKE_MILD),
+        Gesture::Win => next(6, &["drv_win"]),
+        Gesture::ListenLeft => "drv_gest_listen_lft".into(),
+        Gesture::ListenRight => "drv_gest_listen_rgt".into(),
+        Gesture::ThumbDownLeft => "drv_gest_thm_dwn_lft".into(),
+        Gesture::ThumbDownRight => "drv_gest_thm_dwn_rgt".into(),
+        Gesture::CopHandsUp => "drv_gest_arrest".into(),
+        Gesture::CopFidget => "drv_gest_disapnt".into(),
+    }
+}
+
 /// Blend `b` over `a` only on the bones `clip` animates (an overlay such as the jaw flap).
 fn overlay(a: &mut [(Quat, Vec3)], b: &[(Quat, Vec3)], clip: &Clip, k: f32) {
     for i in 0..a.len().min(b.len()) {
@@ -839,10 +988,29 @@ fn overlay(a: &mut [(Quat, Vec3)], b: &[(Quat, Vec3)], clip: &Clip, k: f32) {
 /// "Player" for the local human (the racer's vt+40: F-49619 true for mcPlayer, F-74264 false for mcOpponent; while the debug tune bool
 /// `animplayerasopponent` is off) and "Opponent" for everyone else, the driver's sex, and the car's name with
 /// its first three letters dropped unless it starts with "vpd", upper-cased and cut before a `_DUB` (F-51581); the
-/// archive names the file by the hash of `<name>.xapk` (hashed lower-case). The packs are male only here (as the driver sets are).
-fn pack_path(root: &Path, player: bool, key: &str) -> PathBuf {
+/// archive names the file by the hash of `<name>.xapk` (hashed lower-case). "Female" for a female driver (racer+177, `is_female`).
+fn pack_path(root: &Path, player: bool, female: bool, key: &str) -> PathBuf {
     let h = mcla_formats::hash::joaat(&format!("{key}.xapk"));
-    root.join(format!("resources/animation/0x{:08x}/{}/male/0x{h:08x}.r2", mcla_formats::hash::joaat("drv"), if player { "player" } else { "opponent" }))
+    let (who, sex) = (if player { "player" } else { "opponent" }, if female { "female" } else { "male" });
+    root.join(format!("resources/animation/0x{:08x}/{who}/{sex}/0x{h:08x}.r2", mcla_formats::hash::joaat("drv")))
+}
+
+/// The racer's character name as SetCharName (F-22036) keeps it: the two misnamed sets (the first 13 letters compared) become
+/// the ones that exist.
+fn char_name(name: &str) -> &str {
+    if name.starts_with("drv_mc_04_set") {
+        "drv_mp_01_set"
+    } else if name.starts_with("drv_fh_01_set") {
+        "drv_fh_001_set"
+    } else {
+        name
+    }
+}
+
+/// Racer+177, the driver is a woman: SetCharName (F-22036) sets it when the kept name holds "_f" (case kept). An unnamed driver
+/// is LoadDriver's default `drv_mp_01_set` (F-39898), a man.
+fn is_female(name: &str) -> bool {
+    char_name(name).contains("_f")
 }
 
 /// The pack name of a car: "vp_frd_mustang_06_dub" -> "frd_mustang_06"; DLC cars keep their "vpd_" prefix (F-62204 /
@@ -886,12 +1054,13 @@ impl Drivers {
         names.sort();
         for n in names {
             let l = n.to_ascii_lowercase();
-            // the in-car versions (`_lod02`, and LoadDriver's hi-res `_set_h`, cinedriver::DRIVER_MAPS); male ones (the
-            // packs used here are the male set)
-            if !(l.ends_with("lod02_set") || l.ends_with("lod2_set") || l.ends_with("_set_h")) || !(l.starts_with("drv_m") || l.starts_with("pol_")) {
+            // every driver set a racer can be named (Racer_SetCharacterName, its in-car versions through
+            // cinedriver::DRIVER_MAPS); an unnamed driver is one of the male in-car versions (`_lod02`, LoadDriver's hi-res `_set_h`)
+            if !(l.starts_with("drv_") || l.starts_with("pol_")) {
                 continue;
             }
-            self.sets.push((n, l.contains("_mot_"), l.starts_with("pol_")));
+            let pick = (l.ends_with("lod02_set") || l.ends_with("lod2_set") || l.ends_with("_set_h")) && (l.starts_with("drv_m") || l.starts_with("pol_"));
+            self.sets.push((n, l.contains("_mot_"), l.starts_with("pol_"), pick));
         }
         log::info!("drivers: {} character sets", self.sets.len());
     }
@@ -926,21 +1095,22 @@ impl Drivers {
         // (step 19d: a driver who was named - Racer_SetCharacterName - is that character; a key goes through
         // Boot.sco's `_lod02` maps)
         if !s.set.is_empty() {
-            let want = crate::cinedriver::driver_set(s.set, false, s.bike).unwrap_or(s.set);
+            let set = char_name(s.set);
+            let want = crate::cinedriver::driver_set(set, false, s.bike).unwrap_or(set);
             if let Some(i) = self.sets.iter().position(|n| n.0.eq_ignore_ascii_case(want)) {
                 return Some(i);
             }
         }
-        let want = |n: &(String, bool, bool)| n.1 == s.bike && n.2 == (s.cop && !s.bike) && !n.0.ends_with("_set_h");
+        let want = |n: &(String, bool, bool, bool)| n.3 && n.1 == s.bike && n.2 == (s.cop && !s.bike) && !n.0.ends_with("_set_h");
         if s.player {
             // "mp" is the player character
-            if let Some(i) = self.sets.iter().position(|n| n.0.to_ascii_lowercase().starts_with("drv_mp_") && n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h")) {
+            if let Some(i) = self.sets.iter().position(|n| n.3 && n.0.to_ascii_lowercase().starts_with("drv_mp_") && n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h")) {
                 return Some(i);
             }
         }
         let c: Vec<usize> = (0..self.sets.len()).filter(|&i| want(&self.sets[i]) && !self.sets[i].0.to_ascii_lowercase().starts_with("drv_mp_")).collect();
         if c.is_empty() {
-            return self.sets.iter().position(|n| n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h"));
+            return self.sets.iter().position(|n| n.3 && n.1 == s.bike && !n.0.to_ascii_lowercase().ends_with("_set_h"));
         }
         // (by the car's own number: the place in the list moved when cars went, and the driver - his
         // face - changed with it; GitHub #17)
@@ -950,16 +1120,16 @@ impl Drivers {
     /// The length of a car's DRV_HIT_HRD clip, once its driver is loaded.
     pub fn hit_hard_secs(&self, car: &str) -> Option<f32> {
         let k = car_key(car);
-        self.rigs.iter().filter(|((c, _, _), _)| *c == k).find_map(|(_, r)| r.as_ref()?.hit_hard)
+        self.rigs.iter().filter(|((c, _, _, _), _)| *c == k).find_map(|(_, r)| r.as_ref()?.hit_hard)
     }
 
-    fn rig(&mut self, gpu: &mut Gpu, car: &str, bike: bool, player: bool, si: usize) -> bool {
-        let key = (car_key(car), player, si);
+    fn rig(&mut self, gpu: &mut Gpu, car: &str, bike: bool, player: bool, female: bool, si: usize) -> bool {
+        let key = (car_key(car), player, female, si);
         if !self.rigs.contains_key(&key) {
             let rig = (|| -> Option<Rig> {
                 let model = self.model(gpu, si)?;
                 // (the car's own pack, else the shared one of its kind - F-39898 / F-62204)
-                let path = |k: &str| Some(pack_path(&self.data_dir, player, k)).filter(|p| p.is_file());
+                let path = |k: &str| Some(pack_path(&self.data_dir, player, female, k)).filter(|p| p.is_file());
                 let pack = path(&key.0).or_else(|| path(if bike { "kaw_ninja_zx14_06" } else { "dge_challenger_70" }))?;
                 let res = load_resource_file(&pack).ok()?;
                 let rd = Rd::new(&res);
@@ -1102,7 +1272,8 @@ impl Drivers {
             }
             let Some(si) = self.pick_set(s) else { continue };
             self.set_of.insert(s.id, self.sets[si].0.clone());
-            if !self.rig(gpu, s.car, s.bike, s.player, si) {
+            let female = is_female(s.set);
+            if !self.rig(gpu, s.car, s.bike, s.player, female, si) {
                 continue;
             }
             let frame = self.frame;
@@ -1120,11 +1291,11 @@ impl Drivers {
             p.stopped += ((if s.speed.abs() < 0.6 { 1.0 } else { 0.0 }) - p.stopped) * (dt * 3.0).min(1.0);
             p.reverse += ((if s.reversing && s.speed.abs() > 0.3 { 1.0 } else { 0.0 }) - p.reverse) * (dt * 4.0).min(1.0);
             let p = *p;
-            let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), s.player, si)) else { continue };
+            let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), s.player, female, si)) else { continue };
             if let (true, Some(b)) = (s.bike, rig.bike.as_ref()) {
                 let ride = self.rides.entry(s.id).or_default();
-                let i = RideIn { ck: s.player && self.ckpt_view, x: p.steer.clamp(-1.0, 1.0), ..s.ride };
-                ride_pose(ride, b, &rig.model.bones, &i, self.time, dt, &mut local, &mut other);
+                let i = RideIn { ck: s.player && self.ckpt_view, ..s.ride };
+                ride_pose(ride, b, &rig.model.bones, &rig.model.neck_bones, &i, self.time, dt, &mut local, &mut other);
             } else {
             // the sweep runs from full left lock to full right lock
             let last = rig.steer.last_frame();
@@ -1145,7 +1316,7 @@ impl Drivers {
             // a scene's gesture over the driving pose, and the jaw flap over that
             if let Some(a) = self.acting.get_mut(&s.id) {
                 if let Some((g, left, human)) = a.asked.take() {
-                    let name = gesture_clip(g, &mut a.rr, human);
+                    let name = if s.bike { bike_gesture_clip(g, &mut a.rr) } else { gesture_clip(g, &mut a.rr, human) };
                     if rig.gestures.contains_key(&name) {
                         log::info!("drivers: seat {} plays {}", s.id, name);
                         // (a stopped gesture still on: it blends out under the new one, `end_gesture`)
@@ -1310,7 +1481,7 @@ mod original_tests {
     fn a_car_finds_its_own_driver_pack() {
         // (the archive's names: the Police Car Pack's five, the Impala's, the shared Challenger's)
         let r = Path::new("d");
-        let f = |car: &str, player: bool| pack_path(r, player, &car_key(car)).to_string_lossy().replace('\\', "/");
+        let f = |car: &str, player: bool| pack_path(r, player, false, &car_key(car)).to_string_lossy().replace('\\', "/");
         assert_eq!(f("vp_se_chv_plc_96", true), "d/resources/animation/0xe4f29864/player/male/0x8b348a1a.r2");
         assert_eq!(f("vp_se_chv_chp_96", false), "d/resources/animation/0xe4f29864/opponent/male/0xa7db038c.r2");
         assert_eq!(f("vp_se_dge_plc_06", true), "d/resources/animation/0xe4f29864/player/male/0xdaddd4cd.r2");
@@ -1321,6 +1492,32 @@ mod original_tests {
         assert_eq!(f("vp_dge_challenger_70", false), "d/resources/animation/0xe4f29864/opponent/male/0x953f13ee.r2");
         assert_eq!(car_key("vp_chv_camaro_06_DUB"), "chv_camaro_06");
         assert_eq!(car_key("vp_chv_police_96"), "chv_police_96");
+        // a woman's: the same name in the Female folder (the disc has every car's pack in both)
+        assert!(pack_path(r, false, true, "dge_challenger_70").ends_with("resources/animation/0xe4f29864/opponent/female/0x953f13ee.r2"));
+    }
+
+    /// SetCharName's (F-22036) renames and its "_f" test, on the names the scripts give (the hookmen's sets).
+    #[test]
+    fn a_driver_named_a_woman_is_one() {
+        assert_eq!(char_name("drv_mc_04_set"), "drv_mp_01_set");
+        assert_eq!(char_name("drv_fh_01_set"), "drv_fh_001_set");
+        assert_eq!(char_name("drv_fh_001_set"), "drv_fh_001_set");
+        for (gh, f) in [("GH_29", true), ("GH_34", true), ("GH_35", true), ("GH_06", false), ("GH_36", false)] {
+            assert_eq!(is_female(crate::cinedriver::hookman_set(gh).unwrap()), f, "{gh}");
+        }
+        assert!(is_female("drv_fh_01_set") && is_female("drv_fa_001_set") && !is_female("drv_mp_01_set") && !is_female(""));
+    }
+
+    /// The bike machine's pickers (F-24572, F-99511, F-51244: the counter's old value modulo the table, then counter + 1).
+    #[test]
+    fn bike_gestures() {
+        let mut rr = [0usize; 7];
+        let left: Vec<String> = (0..6).map(|_| bike_gesture_clip(Gesture::Left, &mut rr)).collect();
+        assert_eq!(left, ["drv_gest_agro_lft", "drv_gest_thm_dwn_lft", "drv_gest_thm_up_lft", "drv_gest_look_lft", "drv_gest_cas_lft", "drv_gest_agro_lft"]);
+        assert_eq!((bike_gesture_clip(Gesture::Mild, &mut rr), bike_gesture_clip(Gesture::Mild, &mut rr)), ("drv_gest_agro_lft".into(), "drv_gest_agro_rgt".into()));
+        assert_eq!(bike_gesture_clip(Gesture::Neutral, &mut rr), "drv_gest_disapnt");
+        assert_eq!(bike_gesture_clip(Gesture::CopHandsUp, &mut rr), "drv_gest_arrest");
+        assert_eq!(rr, [1, 6, 0, 0, 0, 2, 0]);
     }
 
     #[test]
@@ -1494,6 +1691,69 @@ mod ride_tests {
     /// <= 0.15 mph; back only above 0.15 mph + 0.5 m/s; a cockpit flag change re-enters with the 0.01 s blend; wheelie before
     /// tuck; tuck after 1.5 s; burnout centre -> left after 0.75 s; the shift leaves when its overlay is missing; fidget after
     /// 15 s still, look right first.
+    /// The pan overlay (F-63058 at the enters): in the human's cruise / stopped idle / burnout centre tree outside the cockpit
+    /// only; its smoother waits 0.5 s at the centre, then moves at 5 x dt towards 0.5 - look x 0.5.
+    #[test]
+    fn ride_pan() {
+        let bones = vec![crate::skin::Bone { parent: None, pos: Vec3::ZERO, rot: Quat::IDENTITY, bind: Vec3::ZERO }];
+        let anim = Arc::new(mcla_formats::rage::anim::Animation::default());
+        let ids = vec![0u16];
+        let b = BikeClips::load(|_| Some(Clip::bind(&anim, &ids, false, false))).unwrap();
+        let (mut out, mut tmp) = (Vec::new(), Vec::new());
+        let dt = 1.0 / 30.0;
+        let mut step = |r: &mut Ride, i: RideIn| ride_pose(r, &b, &bones, &[true], &i, 0.0, dt, &mut out, &mut tmp);
+        let go = |v: f32| RideIn { speed: v, ..Default::default() };
+        let mut r = Ride::default();
+        step(&mut r, go(10.0));
+        assert!(r.pan);
+        // (at the centre with the look there: the hold starts and nothing moves)
+        step(&mut r, go(10.0));
+        assert_eq!(r.pan_p, Some((0.5, 0.5 - dt)));
+        for _ in 0..13 {
+            step(&mut r, RideIn { look: 1.0, ..go(10.0) });
+        }
+        assert_eq!(r.pan_p.unwrap().0, 0.5);
+        for _ in 0..3 {
+            step(&mut r, RideIn { look: 1.0, ..go(10.0) });
+        }
+        assert!(r.pan_p.unwrap().0 < 0.5);
+        step(&mut r, RideIn { wheelie: true, look: 1.0, ..go(10.0) });
+        assert_eq!(r.state, St::Wheelie);
+        assert!(!r.pan);
+        let held = r.pan_p;
+        step(&mut r, RideIn { look: 1.0, ..go(10.0) });
+        assert_eq!(r.pan_p, held);
+        let mut o = Ride::default();
+        step(&mut o, RideIn { opponent: true, ..go(10.0) });
+        assert!(!o.pan);
+        let mut c = Ride::default();
+        step(&mut c, RideIn { ck: true, ..go(10.0) });
+        assert!(!c.pan);
+    }
+
+    /// F-70536: a racer 5 m to the left is looked at (+1) for 1 s, then the camera's look until 5 s, then it is let go; one
+    /// ahead is not looked at.
+    #[test]
+    fn rival_look() {
+        let me = (Vec3::ZERO, Quat::IDENTITY);
+        let mut l = RivalLook::default();
+        assert_eq!(l.step(0.25, 0.25, me, [(3, Vec3::new(0.0, 0.0, -6.0))].into_iter()), 0.25);
+        assert_eq!(l.rival, None);
+        assert_eq!(l.step(0.25, 0.25, me, [(3, Vec3::new(0.0, 0.0, -6.0)), (4, Vec3::new(-5.0, 0.0, -1.0))].into_iter()), 1.0);
+        assert_eq!(l.rival, Some(4));
+        for _ in 0..3 {
+            assert_eq!(l.step(0.25, 0.25, me, std::iter::empty()), 1.0);
+        }
+        assert_eq!(l.step(0.25, 0.25, me, std::iter::empty()), 0.25);
+        for _ in 0..16 {
+            l.step(0.25, 0.25, me, std::iter::empty());
+        }
+        assert_eq!(l.rival, Some(4));
+        l.step(0.25, 0.25, me, std::iter::empty());
+        assert_eq!(l.rival, None);
+        assert_eq!(l.step(0.0, 0.25, me, [(5, Vec3::new(4.0, 0.0, 0.0))].into_iter()), -1.0);
+    }
+
     #[test]
     fn ride_states() {
         let bones = vec![crate::skin::Bone { parent: None, pos: Vec3::ZERO, rot: Quat::IDENTITY, bind: Vec3::ZERO }];
@@ -1503,7 +1763,7 @@ mod ride_tests {
         let (mut out, mut tmp) = (Vec::new(), Vec::new());
         let mut r = Ride::default();
         let dt = 1.0 / 30.0;
-        let mut step = |r: &mut Ride, i: RideIn| ride_pose(r, &b, &bones, &i, 0.0, dt, &mut out, &mut tmp);
+        let mut step = |r: &mut Ride, i: RideIn| ride_pose(r, &b, &bones, &[false], &i, 0.0, dt, &mut out, &mut tmp);
         let go = |v: f32| RideIn { speed: v, ..Default::default() };
         step(&mut r, go(0.0));
         assert_eq!((r.state, r.rate), (St::Cruise, 1.0 / 0.45));

@@ -44,6 +44,8 @@ pub struct BmtEnd {
 
 /// GAME OPTIONS' AUTO SAVE row
 const PAGE_AUTOSAVE: u8 = 39;
+/// the cruise wreck menu's QUICK FIX row (RO_FullFix)
+const PAGE_QUICK_FIX: u8 = 239;
 /// The mark of a satisfied objective in a mission's panel (`Career::objective_texts`)
 pub const OBJ_DONE: char = '\u{3}';
 
@@ -354,8 +356,6 @@ pub const SAVE_WRITE_T: f32 = 0.93;
 /// the median over the picture outside the box; brighter pixels keep a little more, 0.18 - 0.25). The popup
 /// movie's box leaves 0.335 of it in the port; this black (0.567 kept) makes up the rest
 pub const SAVE_BOX_DIM: u8 = 110;
-pub const METER_ACCEL: f32 = 1.3;
-pub const METER_SPEED: f32 = 0.006;
 
 /// The plate editor's characters, in the movie's order (`LP_chars` of the garage movie:
 /// digits, four signs, a blank, two unused places, the letters).
@@ -658,6 +658,12 @@ pub struct Game {
     /// on no place, and the stick's release (the icon under it is then selected)
     pub map_free: Option<Vec3>,
     pub map_free_release: bool,
+    /// the cursor moved off the selected icon but still within half the reach (`F-62325`): the selection holds
+    pub map_drift: Option<Vec3>,
+    /// the selected icon's place while the cursor drifts
+    pub map_sel_pos: Option<Vec3>,
+    /// the selection's reach `NM+568` at the stick's release (`F-30942`)
+    pub map_reach: f32,
     /// where the dyno graph goes (from the car's garage file)
     pub dyno_rect: Option<[f32; 4]>,
     /// the garage's CART page is up: its cursor
@@ -684,8 +690,9 @@ pub struct Game {
     pub stat_idx: [usize; 2],
     /// the song that has just begun, for the HUD's info line, and how long it has shown
     pub song_line: Option<(String, f32)>,
-    /// the vinyl editor's clipboard (COPY / CUT LAYER)
-    pub vinyl_clip: Option<crate::vinyl::Layer>,
+    /// the vinyl editor's clipboard (COPY / CUT LAYER) and the zone it was copied from (the original's +380 records,
+    /// +1664 zone; F-33351 copies the layer under the cursor)
+    pub vinyl_clip: Option<(usize, crate::vinyl::Layer)>,
     /// after a race: the RACE RESULTS table is up (over the race-over menu)
     pub results_table: bool,
     /// the ARCADE menu: page (0 race type, 1 race, 2 options), the type, and the cursor of
@@ -770,6 +777,11 @@ pub struct Game {
     pub hangout_slow: crate::mc4::SlowMo,
     /// real seconds since the player crossed the line (the race-end panels, `RACE_END_*`)
     pub race_end_t: Option<f32>,
+    /// the player wrecked in this race: Race_IsDamagedOut (race +3774), set at the wreck tick while the race
+    /// is not over and the police are not on him (race_damaged_out.md)
+    pub race_dmg_out: bool,
+    /// the wreck's "what next" (F-89773) set the race over: Race_IsFinished (race +3773)
+    pub race_wreck_over: bool,
     /// the results on show are a career race's (panels, then the cruise - no menu)
     pub career_over: bool,
     /// a new career's save boxes (SaveGame.sc.xml): 0 not shown yet, 1 the ALERT is up, 2 done
@@ -1405,6 +1417,9 @@ impl Game {
             map_cursor_pos: None,
             map_free: None,
             map_free_release: false,
+            map_drift: None,
+            map_sel_pos: None,
+            map_reach: 90.0,
             dyno_rect: None,
             cart_open: None,
             loading_tag: 0.0,
@@ -1460,6 +1475,8 @@ impl Game {
             race_slow_wait: None,
             hangout_slow: crate::mc4::SlowMo::default(),
             race_end_t: None,
+            race_dmg_out: false,
+            race_wreck_over: false,
             career_over: false,
             save_box: 0,
             radar_pulse: false,
@@ -3160,6 +3177,33 @@ impl Game {
         self.reward_panel = money > 0 || rep > 0 || self.mc4_rewards_listed();
     }
 
+    /// The player's line at the race's end (the include RaceOver.sch's EndOfRaceSequence, alike in all 50 scripts that
+    /// call it, always with its speech argument 1): a time trial, a delivery or a payback (event kinds 2, 6, 7) WIN, or
+    /// LOSE with bFailure; any other race WIN in first place, CLOSE in second within 300 ms of the winner's time
+    /// (Race_GetWinningTime), else LOSE. WIN and CLOSE say nothing in a delivery race (the current race's type 4:
+    /// F-64589, F-88148); LOSE has no gate (F-77215). None: nothing is said.
+    pub fn end_race_speech(&self) -> Option<&'static str> {
+        let kind = self.race.as_ref().map(|r| r.kind);
+        let failure = match kind {
+            Some(RaceKind::Delivery) | Some(RaceKind::Payback) => Some(self.race.as_ref().map_or(false, |r| r.failed.is_some())),
+            _ => self.career.tt_last.map(|beaten| !beaten),
+        };
+        let g = match failure {
+            Some(true) => "LOSE",
+            Some(false) => "WIN",
+            None => {
+                let res = &self.last_results;
+                let ms = |t: Option<f32>| t.map(|t| (t as f64 * 1000.0).round() as i64);
+                match res.iter().position(|r| r.0.starts_with("YOU")) {
+                    Some(0) => "WIN",
+                    Some(1) if matches!((ms(res[0].1), ms(res[1].1)), (Some(a), Some(b)) if b - a <= 300) => "CLOSE",
+                    _ => "LOSE",
+                }
+            }
+        };
+        (g == "LOSE" || kind != Some(RaceKind::Delivery)).then_some(g)
+    }
+
     /// Pay out a finished race: `place` is 1-based.
     pub fn award_race(&mut self, place: usize, field: usize) {
         // (the event's results: MISSION RESULTS has its turn after REWARDS)
@@ -3743,6 +3787,9 @@ impl Game {
         }
         let target = if kind == RaceKind::Payback { participants.get(1).copied() } else { None };
         let n = vehicles.cars.len();
+        // (a new race object: +3773 / +3774 clear, the ctor F-61221)
+        self.race_dmg_out = false;
+        self.race_wreck_over = false;
         self.race = Some(Race {
             path: Some(path.clone()),
             route,
@@ -3880,6 +3927,8 @@ impl Game {
         }
         let n = vehicles.cars.len();
         let lap_len = checkpoints.len();
+        self.race_dmg_out = false;
+        self.race_wreck_over = false;
         self.race = Some(Race { path: None, route, checkpoints, next: vec![0; n], finish_time: vec![None; n], time: 0.0, countdown: 3.5, total_len: total, participants, lap_len, laps: 1, name: "Street race".into(), goal_time: 0.0, kind: RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() });
         vehicles.fragile = None;
         self.mode = Mode::Race;
@@ -4004,6 +4053,9 @@ impl Game {
         }
         let Some(race) = self.race.as_mut() else {
             vehicles.grid_hold = None;
+            // (no race: the red light race byte goes too - the port's choice for a race left before its go; the
+            // script's own way out of its wait for the go was not traced)
+            vehicles.signals.red_light_race = false;
             return false;
         };
         if race.countdown > 0.0 {
@@ -4012,6 +4064,9 @@ impl Game {
                 // the go: the race core's Racer_Activate on every racer (OrderedCheckpointCore 0x15ee, after
                 // BrainRacing_BeginRace) - F-76651(racer, 0) -> F-30391(0): a racestart scene's engine_off ends here
                 if race.countdown <= 0.0 {
+                    // the red light race script's RnIntersectionAmbient_SetRedLightRace(0) once Race_GetTimer >= 0
+                    // (`<district>_redlight_hk1`, Hollywood 0x5e93; only that script sets the byte)
+                    vehicles.signals.red_light_race = false;
                     if let Some(c) = vehicles.player_mut() {
                         c.engine_off = false;
                         c.deactivated = false;
@@ -5231,6 +5286,10 @@ impl Game {
                 }
                 let s = |key: &str, fallback: &str| -> String { self.career.strings.get(key).filter(|v| !v.contains('<')).map(|v| v.to_string()).unwrap_or_else(|| fallback.to_string()).to_uppercase() };
                 let racing = self.race.is_some() || self.flag.is_some();
+                // (the car wrecked in the cruise - F-48456: damage over MaxDamage at 1, offline: F-43165 builds the
+                // menu as a race over, and with no race that is the cruise menu's (F-76337): its RaceOverTab in
+                // place of PAUSE, titled Dialog_Title_DamagedOut - F-48085)
+                let wreck_menu = !racing && self.test_drive.is_none() && vehicles.player().map_or(false, |c| c.state.damage >= 1.0);
                 let kind = self.race.as_ref().map(|r| r.kind);
                 let found = self.collected.len();
                 // (the line under a page's title: the vehicle, race or district it is about)
@@ -5628,6 +5687,18 @@ impl Game {
                             items.push((s("TD_Continue", "CONTINUE"), String::new(), Go::Act(MenuAction::Resume)));
                             items.push((s("TD_Return_To_Garage", "RETURN TO GARAGE"), String::new(), Go::Act(MenuAction::OpenGarage)));
                         }
+                        0 if wreck_menu => {
+                            // (the rows the cruise menu leaves on when wrecked - F-72415, F-46990: RO_FullFix "QUICK
+                            // FIX" while vt+56 (F-58132, off when the police have the player) and no race; RO_Garage
+                            // through F-98337 / F-88974, greyed (0x10) with the police on the player. RETURN TO
+                            // CRUISE, RESTART and the replay are off when wrecked, RESULTS only on line)
+                            if !self.police_on_player {
+                                items.push((s("quick_fix", "QUICK FIX"), String::new(), Go::Page(PAGE_QUICK_FIX)));
+                            }
+                            if self.go_garage_gate() {
+                                items.push((s("pause_go_to_garage", "GO TO GARAGE"), String::new(), if self.police_on_player { Go::Off } else { Go::Act(MenuAction::GoToGarage) }));
+                            }
+                        }
                         0 => {
                             // (chased: CONTINUE reads RETURN TO CHASE, and the rows that would leave the
                             // chase - PM_Restart, PM_AbortRace, PM_ViewReplay, PM_NextRace - are greyed:
@@ -5785,6 +5856,8 @@ impl Game {
                         3 if crate::mc4::music_shuffle(&self.opt_x) == Some(false) => vec![crate::glyphs::with_key("V", (s("playlist_prompt_view", "VIEW SONGS"), ICON_A)), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_shuffle", "TURN SHUFFLE ON"), crate::flash_ui::ICON_X)],
                         68 => vec![(s("playlist_prompt_play", "PLAY"), ICON_A), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_add", "ADD TO PLAYLIST"), crate::flash_ui::ICON_Y)],
                         3 => vec![crate::glyphs::with_key("V", (s("playlist_prompt_view", "VIEW SONGS"), ICON_A)), (s("prompt_back", "BACK"), ICON_B), (s("playlist_prompt_unshuffle", "TURN SHUFFLE OFF"), crate::flash_ui::ICON_X)],
+                        // (wrecked B does nothing: no BACK - approx., as the race-over menu's capture `sr_raceover`)
+                        0 if wreck_menu && self.pause_tab == 0 => vec![(s("prompt_accept", "ACCEPT"), ICON_A)],
                         _ => vec![(s("prompt_accept", "ACCEPT"), ICON_A), (s("prompt_back", "BACK"), ICON_B)],
                     };
                     // (GPS stands on every tab, in a race too: references `p01`, `t03`, `y01`)
@@ -5814,7 +5887,7 @@ impl Game {
                         // (the original's playlist icon is a globe that none of the movies' icon frames
                         // carry; the empty ring, frame 18, stands in)
                         icon: if genres { std::env::var("MCLA_GENRE_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(18) } else { self.pause_tab as i32 + 1 },
-                        tabs: if on_tabs { vec![s("pause_tab_mainmenu", "PAUSE"), s("pause_tab_gamemodes", "MODES"), s("pause_tab_settings", "SETTINGS")] } else { Vec::new() },
+                        tabs: if on_tabs { vec![if wreck_menu { s("Dialog_Title_DamagedOut", "DAMAGED OUT") } else { s("pause_tab_mainmenu", "PAUSE") }, s("pause_tab_gamemodes", "MODES"), s("pause_tab_settings", "SETTINGS")] } else { Vec::new() },
                         cur_tab: self.pause_tab,
                         title: title.clone(),
                         rows: items.iter().enumerate().map(|(k, (l, v, g))| MenuRow { label: l.clone(), value: v.replace('|', "I"), enabled: (*g != Go::Off || !(on_tabs || self.pause_page == 2)) && !(self.pause_page == 6 && v.is_empty()) && !(self.pause_page == PAGE_DISPLAY && *g == Go::Off) && !(ctrl_page.is_some() && *g == Go::Off && k < usize::MAX), part: None }).collect(),
@@ -5963,6 +6036,12 @@ impl Game {
                             }
                         }
                         Some(Go::Page(PAGE_AUTOSAVE)) => self.pause_do = Some(PAGE_AUTOSAVE),
+                        // (QUICK FIX, F-51369: QUICK_FIX_MASTER and the free repair F-32850 - main's `quick_fix` -, then
+                        // the UI to `Cruising`: the game goes on)
+                        Some(Go::Page(PAGE_QUICK_FIX)) => {
+                            self.quick_fix = true;
+                            action = MenuAction::Resume;
+                        }
                         // (the music lists, `mc4`: PLAY on a song; VIEW SONGS on a list)
                         Some(Go::Page(240)) => {
                             if let Some(g) = crate::mc4::music_play(&self.opt_x, self.stat_idx[0], self.menu_sel) {
@@ -6077,7 +6156,8 @@ impl Game {
                         } else if self.pause_page != 0 {
                             self.menu_sel = if self.pause_page == 2 { 1 } else { 0 };
                             self.pause_page = 0;
-                        } else {
+                        } else if !wreck_menu {
+                            // (wrecked offline B does nothing: F-33773 takes it, no sound)
                             action = MenuAction::Resume;
                         }
                     }
@@ -6100,7 +6180,7 @@ impl Game {
                 let mut chosen: Option<Go> = None;
                 if on_tabs {
                     // the tab strip
-                    let tabs = [s("pause_tab_mainmenu", "PAUSE"), s("pause_tab_gamemodes", "MODES"), s("pause_tab_settings", "SETTINGS")];
+                    let tabs = [if wreck_menu { s("Dialog_Title_DamagedOut", "DAMAGED OUT") } else { s("pause_tab_mainmenu", "PAUSE") }, s("pause_tab_gamemodes", "MODES"), s("pause_tab_settings", "SETTINGS")];
                     let mut x = tx;
                     for (i, t) in tabs.iter().enumerate() {
                         let size = if i == self.pause_tab { 28.0 } else { 17.0 } * sc;
@@ -6149,6 +6229,10 @@ impl Game {
                     chosen = items.get(sel).map(|i| i.2);
                 }
                 match chosen {
+                    Some(Go::Page(PAGE_QUICK_FIX)) => {
+                        self.quick_fix = true;
+                        action = MenuAction::Resume;
+                    }
                     // (CONTROL STYLE, `mc4`: SET)
                     Some(Go::Page(p)) if (220..=228).contains(&p) => {
                         if crate::mc4::control_set(&mut self.mc4, (p - 220) as i32, self.fresh_game) {
@@ -6208,7 +6292,7 @@ impl Game {
                     if self.pause_page != 0 {
                         self.menu_sel = if self.pause_page == 2 { 1 } else { 0 };
                         self.pause_page = 0;
-                    } else {
+                    } else if !wreck_menu {
                         action = MenuAction::Resume;
                     }
                 }
@@ -8020,8 +8104,11 @@ impl Game {
                                 Some(c) => {
                                     // (teal: the stock car; yellow up to what is fitted; the dark bar is what
                                     // the car can reach)
-                                    let row = |base: f32, mods: f32| [(base + (mods - base) * f) * 100.0, base * 100.0, mods * 100.0];
-                                    [row(c.base_accel * METER_ACCEL, c.mods_accel * METER_ACCEL), row((c.base_speed - 100.0) * METER_SPEED, (c.mods_speed - 100.0) * METER_SPEED), row(c.base_handling, c.mods_handling)]
+                                    // (stock and upgraded as the original's panel, F-13938; the fitted share between them
+                                    // is the port's own - the original's F-17130 reads the live car: approx.)
+                                    let m = c.meters();
+                                    let row = |k: usize| { let (b, x) = (m[k][0] as f32, m[k][1] as f32); [b + (x - b) * f, b, x] };
+                                    [row(0), row(1), row(2)]
                                 }
                                 // (a placeholder of a mod that is not installed: no figures - MODS.md S3)
                                 None if crate::modgarage::placeholder(list_cars[sel.min(list_cars.len() - 1)]).is_some() => [[0.0; 3]; 3],
@@ -12105,8 +12192,10 @@ impl Game {
         let f = self.perf_frac(i);
         let meters = match self.catalog.get(&self.dir_name(i)) {
             Some(c) => {
-                let row = |base: f32, mods: f32| [(base + (mods - base) * f) * 100.0, base * 100.0, mods * 100.0];
-                [row(c.base_accel * METER_ACCEL, c.mods_accel * METER_ACCEL), row((c.base_speed - 100.0) * METER_SPEED, (c.mods_speed - 100.0) * METER_SPEED), row(c.base_handling, c.mods_handling)]
+                // (stock and upgraded as F-13938; the fitted share is the port's own, approx.: F-17130 is not ported)
+                let m = c.meters();
+                let row = |k: usize| { let (b, x) = (m[k][0] as f32, m[k][1] as f32); [b + (x - b) * f, b, x] };
+                [row(0), row(1), row(2)]
             }
             None => [[0.0, 0.0, 100.0]; 3],
         };
@@ -12321,10 +12410,11 @@ impl Game {
                 // the original's rule (`F-99017`): the nearest place in 3D within 1 rad of the
                 // way pressed, from the cursor, in the world (up = north)
                 let pts: Vec<Vec3> = places.iter().map(|p| p.0).collect();
-                let from = self.map_free.unwrap_or(places[self.map_cursor].0);
+                let from = self.map_free.or(self.map_drift).unwrap_or(places[self.map_cursor].0);
                 if let Some(i) = crate::hudmap::pick_in_direction(from, Vec3::new(dir.x, 0.0, dir.y), &pts) {
                     self.map_cursor = i;
                     self.map_free = None;
+                    (self.map_drift, self.map_sel_pos) = (None, None);
                 }
             } else if let (Some(h), true) = (here, dir != egui::Vec2::ZERO) {
                 // the nearest place within a quarter turn of the way pressed
@@ -12340,15 +12430,14 @@ impl Game {
                     self.map_cursor = i;
                 }
             }
-            // (stick released: the icon under the cursor is selected - `F-63282`; reach = the
-            // ring's radius at the cursor's distance from the camera)
-            if let (true, Some(fp)) = (std::mem::take(&mut self.map_free_release), self.map_free) {
-                let cam = self.hm.as_ref().map_or(Vec3::new(0.0, 9000.0, 0.0), |h| h.gps_cam);
-                let reach = 1.3424 * 139.0 * ((fp - cam).length() * 7e-5 + 0.04);
-                let best = (0..places.len()).map(|i| (i, glam::Vec2::new(places[i].0.x - fp.x, places[i].0.z - fp.z).length())).filter(|x| x.1 < reach).min_by(|a, b| a.1.total_cmp(&b.1));
-                if let Some((i, _)) = best {
+            // (stick released: the element nearest the cursor within the reach `NM+568` is selected - `F-63282`
+            // -> `F-97746` with its force flag; none: the cursor stays as it is)
+            if let (true, Some(fp)) = (std::mem::take(&mut self.map_free_release), self.map_free.or(self.map_drift)) {
+                let pts: Vec<Vec3> = places.iter().map(|p| p.0).collect();
+                if let Some(i) = crate::hudmap::pick_nearest(fp, self.map_reach, &pts) {
                     self.map_cursor = i;
                     self.map_free = None;
+                    (self.map_drift, self.map_sel_pos) = (None, None);
                 }
             }
             // MAP MODE (START, `F-74616` event 55): the road overlay with the street names
@@ -12369,9 +12458,11 @@ impl Game {
                 (self.gps_pick, self.mission_target) = (Some(places[self.map_cursor].0), None);
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             }
-            let (w, name, kind) = match self.map_free {
-                Some(fp) => (fp, String::new(), String::new()),
-                None => places[self.map_cursor].clone(),
+            let (w, name, kind) = match (self.map_free, self.map_drift) {
+                (Some(fp), _) => (fp, String::new(), String::new()),
+                // (drifting: the cursor where it is, the selected icon's name)
+                (None, Some(dp)) => (dp, places[self.map_cursor].1.clone(), places[self.map_cursor].2.clone()),
+                (None, None) => places[self.map_cursor].clone(),
             };
             self.map_cursor_pos = Some(w);
             cursor_at = to_screen(w).map(|q| (q, name, kind));
@@ -12379,34 +12470,19 @@ impl Game {
         // The map itself (references `z00`, `z07`): the GPS MAP panel - rank and
         // reputation, the vehicle's rank and class, the money - with the legend on X.
         let (page, prompts) = if hidden {
-            // (the thirteen ranks are the reputation curve's levels, as on REWARDS - step 86;
-            // `ng_gps_3`: BACKSEAT DRIVER - 50 REP, NEXT RANK AT 800)
-            const RANKS: [&str; 13] = ["Rank_1_Backseat_Driver", "Rank_2_Navigator", "Rank_3_Student_Driver", "Rank_4_Rookie", "Rank_5_Driver", "Rank_6_Racer", "Rank_7_Veteran", "Rank_8_Elite_Racer", "Rank_8_5_Champion", "Rank_9_Legend", "Rank_10_Savant", "Rank_10_5_Hero", "Rank_11_Idol"];
+            // The panel as F-71884 fills it (`gps_panel_vars`): the rank (F-62421) and the
+            // manager's thresholds - the reputation curve's levels, as on REWARDS (step 86) - the
+            // class F-69503 of the vehicle's performance, its kind's class system.
             let rank = crate::rewards::progress(self.rep).0.min(12);
             let rank_step = |l: usize| crate::rewards::rep_curve(crate::rewards::LEVEL_FRAC[l.min(12)]);
             let info = self.catalog.get(&self.dir_name(self.current_car)).cloned();
-            let kind = info.as_ref().map(|c| c.class.to_uppercase()).unwrap_or_default();
-            // (the class as MANAGE VEHICLES has it: the catalogue's, one up when fully upgraded)
-            let base = info.as_ref().and_then(|c| c.group.chars().next()).unwrap_or('D').to_ascii_uppercase();
-            let base = if self.perf_frac(self.current_car) > 0.999 { match base { 'D' => 'C', 'C' => 'B', _ => 'A' } } else { base };
-            let class = match base { 'A' => "A", 'B' => "B", 'C' => "C", _ => "D" };
-            // the vehicle kind's rank: the step its class system stands on + 1, and the points on
-            // that step out of its length (F-71884: `veh_level` "(%d/%d)", `veh_meter`; `mc4`)
-            let (veh_rank, veh_a, veh_b) = self.mc4_class_rank(&kind);
-            let next = if rank >= 12 { "N/A".to_string() } else { format!("{:.0}", rank_step(rank + 1)) };
-            let mut globals: Vec<(String, String)> = vec![
-                ("experience".into(), format!("{} - {} {}", st(RANKS[rank], "RANK"), self.rep, st("Navmap_Rep", "REP"))),
-                ("gps_rank".into(), String::new()),
-                ("next_rank".into(), format!("{} {}", st("Next_Rank", "NEXT RANK AT"), next)),
-                ("gps_veh_type".into(), String::new()),
-                ("gps_veh_level".into(), format!("{} {} {}", kind, st("Car_Type_Rank", "RANK"), veh_rank)),
-                ("veh_level".into(), format!("({}/{})", veh_a, veh_b)),
-                ("t_vehicle".into(), st("Navmap_Vehicle", "VEHICLE")),
-                ("gps_class_type".into(), st(&format!("vehicle_PerfClass{}_Short", class), &format!("CLASS {}", class))),
-                ("gps_vehicle".into(), self.career.strings.get(&format!("{}_shrt", self.model_name(self.current_car).to_ascii_lowercase())).map(|v| v.to_uppercase()).unwrap_or_else(|| self.car_name(self.current_car).to_uppercase())),
-                ("t_bank".into(), st("G_Money", "MONEY:")),
-                ("gps_racename".into(), String::new()),
-            ];
+            let kind = info.as_ref().map(|c| crate::mc4::CLASS_SYSTEMS.iter().find(|s| s.eq_ignore_ascii_case(&c.class)).map_or(c.class.clone(), |s| s.to_string())).unwrap_or_default();
+            let vehicle = self.career.strings.get(&format!("{}_shrt", self.model_name(self.current_car).to_ascii_lowercase())).map(|v| v.to_uppercase()).unwrap_or_else(|| self.car_name(self.current_car).to_uppercase());
+            // (the page's texts in capitals, as the rest of it: after the money's `<D>` is filled)
+            let key = |k: &str| self.career.strings.get(k).map(|v| v.to_string()).unwrap_or_else(|| k.replace('_', " "));
+            let (globals, meters) = gps_panel_vars(rank, crate::rewards::perf_class(self.player_perf()), self.rep, self.money, self.career.strings.lang, &kind, self.mc4_class_parts(&kind), rank_step(rank), rank_step(rank + 1), &vehicle, &key);
+            let mut globals: Vec<(String, String)> = globals.into_iter().map(|(k, v)| (k, v.to_uppercase())).collect();
+            globals.extend([("t_vehicle".to_string(), st("Navmap_Vehicle", "VEHICLE")), ("t_bank".into(), st("G_Money", "MONEY:")), ("gps_racename".into(), String::new())]);
             for (var, key, fb) in [
                 ("t_you", "Navmap_Player", "PLAYER"), ("t_mission", "Navmap_Mission", "MISSION"), ("t_wager", "Navmap_Wager", "WAGER"), ("t_localrace", "Navmap_LocalRace", "CRUISING RACER"),
                 ("t_timetrial", "Navmap_TimeTrial", "TIME TRIAL"), ("t_redlight", "Navmap_redlight", "RED LIGHT"), ("t_delivery", "Navmap_Delivery", "DELIVERY"), ("t_police", "Navmap_Police", "POLICE"),
@@ -12419,7 +12495,7 @@ impl Game {
             }
             (
                 MenuPage {
-                    layout: MenuLayout::GpsMap { legend: self.map_legend, globals, meters: [if rank >= 12 { 1.0 } else { ((self.rep as f32 - rank_step(rank)) / (rank_step(rank + 1) - rank_step(rank)).max(1.0)).clamp(0.0, 1.0) }, if veh_b > 0 { (veh_a as f32 / veh_b as f32).clamp(0.0, 1.0) } else { 1.0 }] },
+                    layout: MenuLayout::GpsMap { legend: self.map_legend, globals, meters },
                     icon: 1,
                     title: st("Navmap_GPSMap", "GPS MAP"),
                     rows: vec![MenuRow { label: cursor_at.as_ref().map(|c| c.1.clone()).unwrap_or_default(), value: cursor_at.as_ref().map(|c| c.2.clone()).unwrap_or_default(), enabled: true, part: None }],
@@ -12449,7 +12525,7 @@ impl Game {
             // no turn, size (|place - camera| * 7e-05 + 0.04) * 4000; the movie's `target` clip
             // puts them on its `cursor_mesh` (navsys_cursor, the movie as its texture) and shows
             // the ring (ring_BG, or ring_circle + ring_Anim on a selected icon).
-            if let (Some(hm), Some(_), Some(w), true) = (self.hm.as_ref(), map_vp, self.map_cursor_pos, hidden) {
+            if let (Some(hm), Some(vp), Some(w), true) = (self.hm.as_ref(), map_vp, self.map_cursor_pos, hidden) {
                 use mcla_flash::value::Value;
                 let t = ((hm.gps_cam.y - 850.0) / (9000.0 - 850.0)).clamp(0.0, 1.0);
                 let at = w + Vec3::new(-7.0, -1.0, -4.0).lerp(Vec3::new(-33.0, 0.0, -9.0), t);
@@ -12462,6 +12538,10 @@ impl Game {
                 }
                 p.set_global("cursor_visibility", Value::Int(1));
                 p.set_global("iconisselected", Value::Int((self.map_cursor > 0 && self.map_free.is_none()) as i32));
+                // (the panel's test, F-57096: the cursor in the 720p frame's viewport pixels)
+                let c = vp * w.extend(1.0);
+                let (x, y) = ((c.x / c.w * 0.5 + 0.5) * 1280.0, (0.5 - c.y / c.w * 0.5) * 720.0);
+                p.set_global("panelisvisible", Value::Int(gps_panel_visible(x, y, 1280, 1.0) as i32));
             }
             fm.movie.player.update(dt);
             // The box that names the place under the cursor. In the game it lies on a
@@ -12801,9 +12881,9 @@ impl Game {
                 if enter {
                     match ed.tab {
                         // COPY / CUT / DELETE / PASTE / INSERT work on the layer under the cursor
-                        // (the original's marks are not kept: approx.)
+                        // (the original's marks are not kept - its COPY LAYER(S), F-60961, copies every marked layer: approx.)
                         0 | 1 => {
-                            self.vinyl_clip = livery.zones[zone].get(ed.layer).cloned();
+                            self.vinyl_clip = livery.zones[zone].get(ed.layer).cloned().map(|l| (zone, l));
                             if ed.tab == 1 && ed.layer < count {
                                 livery.zones[zone].remove(ed.layer);
                             }
@@ -12812,9 +12892,10 @@ impl Game {
                             livery.zones[zone].remove(ed.layer);
                         }
                         3 | 4 => {
-                            if let (Some(l), true) = (self.vinyl_clip.clone(), livery.zones[zone].len() < cap) {
+                            // (F-64893: mirrored by the pair of zones, nothing when the zone has no room)
+                            if let Some((from, l)) = self.vinyl_clip.clone() {
                                 let at = if ed.tab == 4 { ed.layer.min(livery.zones[zone].len()) } else { livery.zones[zone].len() };
-                                livery.zones[zone].insert(at, l);
+                                crate::vinyl::paste(&mut livery.zones[zone], zone, cap, std::slice::from_ref(&l), from, at);
                             }
                         }
                         _ => {}
@@ -14765,6 +14846,49 @@ impl Game {
     }
 }
 
+/// The ranks' string keys (the table F-71884 indexes by the rank, as REWARDS' step 86)
+pub const RANK_KEYS: [&str; 13] = ["Rank_1_Backseat_Driver", "Rank_2_Navigator", "Rank_3_Student_Driver", "Rank_4_Rookie", "Rank_5_Driver", "Rank_6_Racer", "Rank_7_Veteran", "Rank_8_Elite_Racer", "Rank_8_5_Champion", "Rank_9_Legend", "Rank_10_Savant", "Rank_10_5_Hero", "Rank_11_Idol"];
+
+/// What the GPS map's bank and experience panel (F-71884, the bank F-43310 first) hands to
+/// the movie, in its order; the meters are the floats `rank_meter` and `veh_meter`.
+/// `rank` = F-62421 of the experience `rep`; `lo` / `hi` = the manager's thresholds of the rank
+/// and of the next (rank 12: itself); `perf` = F-69503 (0 = A .. 3 = D; else no class line);
+/// `kind` = the vehicle class's key; `sys` = the class system's amount, max, step end, step
+/// start and index (`mc4_class_parts`); `st` = the string table.
+pub fn gps_panel_vars(rank: usize, perf: usize, rep: i64, money: i64, lang: usize, kind: &str, sys: (i64, i64, i64, i64, usize), lo: f32, hi: f32, vehicle: &str, st: &dyn Fn(&str) -> String) -> (Vec<(String, String)>, [f32; 2]) {
+    let mut out = vec![("bank".to_string(), st("Navmap_Bank_Desc").replace("<D>Navmap_Bank_Amount</D>", &crate::career::money_digits_in(money, lang)))];
+    if perf < 4 {
+        out.push(("gps_class_type".into(), st(["vehicle_PerfClassA_Short", "vehicle_PerfClassB_Short", "vehicle_PerfClassC_Short", "vehicle_PerfClassD_Short"][perf])));
+    }
+    let rank = rank.min(12);
+    out.push(("gps_rank".into(), format!("{} -", st(RANK_KEYS[rank]))));
+    out.push(("gps_vehicle".into(), vehicle.to_string()));
+    let rep = rep as i32;
+    let rank_meter = if rank == 12 {
+        out.push(("next_rank".into(), format!("{} {}", st("Next_Rank"), st("LB_NA"))));
+        1.0
+    } else {
+        out.push(("next_rank".into(), format!("{} {}", st("Next_Rank"), hi as i32)));
+        ((rep as f32 - lo) as i32) as f32 / ((hi - lo) as i32) as f32
+    };
+    out.push(("experience".into(), format!("{} REP", rep)));
+    let (amount, max, end, start, index) = sys;
+    let (a, b) = ((amount.min(max) as i32).wrapping_sub(start as i32), (end as i32).wrapping_sub(start as i32));
+    out.push(("veh_level".into(), format!("({}/{})", a, b)));
+    out.push(("gps_veh_type".into(), st(kind)));
+    out.push(("gps_veh_level".into(), format!("{} {}", st("Car_Type_Rank"), index as i32 + 1)));
+    (out, [rank_meter, a as f32 / b as f32])
+}
+
+/// The bank and experience panel's rectangle (F-51730): at (20, 20), 400 x 250 when the main
+/// viewport's width x scale (cut to an integer) is 1000 or more, else 200 x 150; F-57096 hides
+/// the panel (`panelisvisible` 0) while the cursor, projected to viewport pixels (F-25309), is
+/// left of its right edge and above its bottom edge.
+pub fn gps_panel_visible(x: f32, y: f32, width: i32, scale: f32) -> bool {
+    let (w, h) = if (width as f32 * scale) as i32 >= 1000 { (400.0f32, 250.0f32) } else { (200.0, 150.0) };
+    !(x < w + 20.0 && y < h + 20.0)
+}
+
 /// A colour (RGB 0..1) as hue, saturation, brightness (each 0..1).
 fn paint_rgb_to_hsv(c: [f32; 4]) -> [f32; 3] {
     let (mx, mn) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
@@ -15051,6 +15175,41 @@ mod tests {
         g.goal_attack = true;
         g.race = Some(super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() });
         assert!(g.ro_grey(9) && g.ro_grey(13) && g.ro_grey(0) && !g.ro_grey(2) && !g.ro_grey(12) && !g.ro_grey(24));
+    }
+
+    /// RaceOver.sch's EndOfRaceSequence (50 scripts alike) with F-64589 / F-88148 / F-77215
+    #[test]
+    fn end_race_speech_is_the_originals() {
+        let mut g = Game::new(Vec::new(), 0);
+        let r = |n: &str, t: Option<f32>| (n.to_string(), t);
+        g.last_results = vec![r("YOU (X)", Some(60.0)), r("B", Some(61.0))];
+        assert_eq!(g.end_race_speech(), Some("WIN"));
+        g.last_results = vec![r("A", Some(60.0)), r("YOU (X)", Some(60.3))];
+        assert_eq!(g.end_race_speech(), Some("CLOSE"));
+        g.last_results = vec![r("A", Some(60.0)), r("YOU (X)", Some(60.301))];
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        g.last_results = vec![r("A", Some(60.0)), r("B", Some(60.1)), r("YOU (X)", Some(60.2))];
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        // (a time trial: its target beaten or not, whatever the place)
+        g.last_results = vec![r("YOU (X)", Some(90.0))];
+        g.career.tt_last = Some(false);
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        g.career.tt_last = Some(true);
+        assert_eq!(g.end_race_speech(), Some("WIN"));
+        g.career.tt_last = None;
+        // (a delivery: WIN is not said in a delivery race, LOSE is; a payback says both)
+        let mut race = super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Delivery, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() };
+        g.race = Some(race.clone());
+        assert_eq!(g.end_race_speech(), None);
+        race.failed = Some("TIME");
+        g.race = Some(race.clone());
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        race.kind = super::RaceKind::Payback;
+        g.race = Some(race.clone());
+        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        race.failed = None;
+        g.race = Some(race);
+        assert_eq!(g.end_race_speech(), Some("WIN"));
     }
 
     #[test]

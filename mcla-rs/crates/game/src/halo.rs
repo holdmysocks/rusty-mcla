@@ -150,7 +150,7 @@ impl ListView {
         let r = |i: usize| view_proj.row(i);
         let mut planes = [r(3) + r(0), r(3) - r(0), r(3) + r(1), r(3) - r(1), glam::Vec4::ZERO];
         for p in planes.iter_mut().take(4) {
-            *p /= p.truncate().length().max(1e-9);
+            *p *= crate::render::plane_scale(p.truncate().length_squared());
         }
         // (the near plane, 0.2 m in front)
         planes[4] = forward.extend(-forward.dot(cam) - 0.2);

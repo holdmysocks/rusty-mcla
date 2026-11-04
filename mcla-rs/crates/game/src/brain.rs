@@ -684,10 +684,9 @@ impl Brain {
         self.plan.goals.len()
     }
 
-    /// The last goal reached and the line used up (F-43234 with the current goal the last).
+    /// F-43234 HasReachedGoal: no route waiting (+128 == 0) and the line used up.
     pub fn route_done(&self) -> bool {
-        let n = self.plan.goals.len();
-        n > 0 && self.cur + 1 >= n && self.nav_state == 0 && self.path.is_none() && self.aiv.line_used_up()
+        has_reached_goal(self.nav_state as u32, Some(self.aiv.line_ring()))
     }
 
     fn goal_at(&self, i: usize) -> Option<Goal> {
@@ -1001,6 +1000,24 @@ pub fn racer_angle_deg(a: Option<Vec3>, b: Option<Vec3>) -> f32 {
     crate::physics::exact::guest_atan2(v.x as f64, v.z as f64) as f32 * f32::from_bits(0x4265_2ee0)
 }
 
+/// Racer_GetAngleY (F-95363): the heading in degrees of a racer's car matrix (rows a, b, c): row c made unit by the vector
+/// unit as the matrix normalise does (vmsum3fp, vrsqrtefp with infinity to 0, one Newton step), the guest atan2(c.x, c.z)
+/// rounded to single, x 57.29578; 0 without a car. The car faces (-sin h, 0, -cos h).
+pub fn racer_angle_y(rows: Option<[Vec3; 3]>) -> f32 {
+    let Some([_, _, c]) = rows else { return 0.0 };
+    let d = crate::physics::exact::dot3(c, c);
+    let e = 1.0 / d.sqrt();
+    let e = if e == f32::INFINITY { 0.0 } else { e };
+    let c = c * ((1.0 - d * (e * e)) * (0.5 * e) + e);
+    crate::physics::exact::guest_atan2(c.x as f64, c.z as f64) as f32 * f32::from_bits(0x4265_2ee0)
+}
+
+/// F-43234 on the brain's nav state (+128) and its aiv's line (progress, ring base, ring count; None: no aiv, +300 null):
+/// true when the state is 0 and the progress has reached the ring's end (F-65527, the add wraps as the guest's).
+pub fn has_reached_goal(nav_state: u32, line: Option<(i32, i32, i32)>) -> bool {
+    nav_state == 0 && line.is_some_and(|(p, b, n)| p >= b.wrapping_add(n))
+}
+
 /// One frame of car `i`'s brain (vehicles.rs): its view of the car, the obstacles, the update, and
 /// what it does to the car besides the pedals (nitrous, the off-mesh drop). `to_go`: seconds to GO
 /// while the grid holds the racers.
@@ -1223,6 +1240,41 @@ mod tests {
             }
         }
         assert!(b.len() / 44 >= 6000 && bad == 0, "{bad} differ");
+    }
+
+    /// Racer_GetAngleY against the original's code run offline (`work/racerai/angy`: 8,000 car matrices - any yaw, small and
+    /// large pitch / roll, rows scaled and skewed a little, both matrix sources, missing racer / car), word for word.
+    #[test]
+    fn racer_angle_y_is_the_originals() {
+        let Ok(b) = std::fs::read("D:/MCLA/work/racerai/angy/cases.bin") else { return };
+        let w = |r: &[u8], i: usize| u32::from_le_bytes(r[4 * i..4 * i + 4].try_into().unwrap());
+        let mut bad = 0;
+        for r in b.chunks_exact(56) {
+            let v = |i: usize| Vec3::new(f32::from_bits(w(r, 3 * i)), f32::from_bits(w(r, 3 * i + 1)), f32::from_bits(w(r, 3 * i + 2)));
+            let rows = (w(r, 12) == 0).then(|| [v(0), v(1), v(2)]);
+            let got = racer_angle_y(rows).to_bits();
+            if got != w(r, 13) {
+                if bad < 5 {
+                    println!("rows {rows:?}: port {got:08x} original {:08x}", w(r, 13));
+                }
+                bad += 1;
+            }
+        }
+        assert!(b.len() / 56 >= 8000 && bad == 0, "{bad} differ");
+    }
+
+    /// F-43234 run offline on 20,000 brains (work/racerai/reach): nav state 0..4 and 0x100, the aiv there or not,
+    /// progress at, one before, one past the ring's end or anywhere, and the end wrapping past i32::MAX.
+    #[test]
+    fn has_reached_goal_is_the_originals() {
+        let Ok(b) = std::fs::read("D:/MCLA/work/racerai/reach/cases.bin") else { return };
+        let w = |r: &[u8], i: usize| u32::from_le_bytes(r[4 * i..4 * i + 4].try_into().unwrap());
+        let mut bad = 0;
+        for r in b.chunks_exact(24) {
+            let line = (w(r, 1) != 0).then(|| (w(r, 2) as i32, w(r, 3) as i32, w(r, 4) as i32));
+            bad += (has_reached_goal(w(r, 0), line) as u32 != w(r, 5)) as u32;
+        }
+        assert!(b.len() / 24 >= 20000 && bad == 0, "{bad} differ");
     }
 
     /// PaybackLegCore's START CHASE AI (0x986..0xb8e): goals radius 25 in the order given, no nitro, looping, 32 m/s cap,

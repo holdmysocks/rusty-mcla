@@ -115,24 +115,31 @@ const ORDER: [[usize; 4]; 4] = [[0, 1, 2, 3], [1, 3, 0, 2], [2, 0, 3, 1], [3, 2,
 /// The most lists kept (M+1804, 64 entries).
 pub const MAX_LISTS: usize = 64;
 
+/// F-80185: the squared distance of (x, z) from the box against r^2 - x's part a rounded product, z's fused onto it
+/// (fmadds), r^2 rounded; true when not greater.
+pub fn box_meets_circle(min: Vec2, max: Vec2, c: Vec2, r: f32) -> bool {
+    let mut d2 = 0.0f32;
+    if c.x < min.x {
+        d2 = (c.x - min.x) * (c.x - min.x);
+    } else if c.x > max.x {
+        d2 = (c.x - max.x) * (c.x - max.x);
+    }
+    if c.y < min.y {
+        let d = c.y - min.y;
+        d2 = crate::physics::exact::fma(d, d, d2);
+    } else if c.y > max.y {
+        let d = c.y - max.y;
+        d2 = crate::physics::exact::fma(d, d, d2);
+    }
+    d2 <= r * r
+}
+
 /// sub_826E0F00: the nodes whose box meets the circle (x, z), children first in the quadrant's
 /// order, a node given when one of its own entries has `flags & 3` - a spot by its flags, a
 /// layout item always (its +4 is 2); at most `cap`.
 pub fn query(tree: &ParkingTree, items: &[Vec<u32>], ni: u32, c: Vec2, r: f32, cap: usize, out: &mut Vec<u32>) {
     let n = &tree.nodes[ni as usize];
-    // sub_82246B78: squared distance from the box, against r^2
-    let mut d2 = 0.0;
-    if c.x < n.min.x {
-        d2 = (c.x - n.min.x) * (c.x - n.min.x);
-    } else if c.x > n.max.x {
-        d2 = (c.x - n.max.x) * (c.x - n.max.x);
-    }
-    if c.y < n.min.y {
-        d2 += (c.y - n.min.y) * (c.y - n.min.y);
-    } else if c.y > n.max.y {
-        d2 += (c.y - n.max.y) * (c.y - n.max.y);
-    }
-    if !(d2 <= r * r) {
+    if !box_meets_circle(n.min, n.max, c, r) {
         return;
     }
     let q = (if c.x - n.centre.x > -1e-6 { 2 } else { 0 }) | (if c.y - n.centre.y > -1e-6 { 1 } else { 0 });
@@ -794,6 +801,21 @@ mod tests {
 mod original_tests {
     use super::*;
     use mcla_formats::rage::parking::ParkNode;
+
+    #[test]
+    fn box_test_matches_the_original() {
+        // tools/box_circle_reference.py: F-80185 run offline, 20,000 cases (most at the rounding boundary)
+        let f = |h: &str| f32::from_bits(u32::from_str_radix(h, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/box_circle_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let v: Vec<f32> = a.split(' ').map(f).collect();
+            let got = box_meets_circle(Vec2::new(v[0], v[1]), Vec2::new(v[2], v[3]), Vec2::new(v[4], v[5]), v[6]);
+            assert_eq!(got, b == "1", "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 20000);
+    }
 
     #[test]
     fn item_node_matches_the_original() {

@@ -467,3 +467,139 @@ impl Presets {
         out
     }
 }
+
+/// The half float behind a layer's value: the exact one when the value is one `half` gives (a layer read from a
+/// record), else the cut the game writes (F-70220).
+fn half_bits(v: f32) -> u16 {
+    if v.to_bits() == 0 {
+        return 0;
+    }
+    let b = v.to_bits();
+    let e = (b >> 23) & 0xff;
+    if (112..144).contains(&e) && b & 0x1fff == 0 {
+        return ((b >> 16) & 0x8000 | (e - 112) << 10 | (b >> 13) & 0x3ff) as u16;
+    }
+    crate::render::half_cut(v)
+}
+
+impl Layer {
+    /// A layer from its 20-byte record (as `Livery::from_xcc` reads them; the hidden byte is not kept).
+    pub fn from_record(r: &[u8; 20]) -> Layer {
+        Layer {
+            shape: u16::from_be_bytes([r[16], r[17]]),
+            scale: [half(&r[0..]), half(&r[2..])],
+            pos: [half(&r[4..]), half(&r[6..])],
+            color: [r[9], r[10], r[11], r[8]],
+            skew: half(&r[12..]),
+            rot: half(&r[14..]),
+            blend: match r[18] {
+                1 => Blend::AlphaCutout,
+                2 => Blend::NegativeCutout,
+                _ => Blend::Normal,
+            },
+        }
+    }
+
+    /// The layer's 20-byte record (the inverse of `from_record` for a layer read from one).
+    pub fn record(&self) -> [u8; 20] {
+        let mut r = [0u8; 20];
+        for (o, v) in [(0, self.scale[0]), (2, self.scale[1]), (4, self.pos[0]), (6, self.pos[1]), (12, self.skew), (14, self.rot)] {
+            r[o..o + 2].copy_from_slice(&half_bits(v).to_be_bytes());
+        }
+        r[8] = self.color[3];
+        r[9..12].copy_from_slice(&self.color[..3]);
+        r[16..18].copy_from_slice(&self.shape.to_be_bytes());
+        r[18] = match self.blend {
+            Blend::AlphaCutout => 1,
+            Blend::NegativeCutout => 2,
+            _ => 0,
+        };
+        r
+    }
+
+    /// F-64893's mirror of a pasted layer by the zone it was copied from and the one it goes to, on the record's
+    /// halves: from 1 to 2, 2 to 0 or 1, 0 to 2: position x, scale x and rotation negated (unpacked as `half`, times
+    /// -1, written back cut, F-70220); 1 to 3 or 4, 3 or 4 to 0 or 1: position x = position y with its sign bit
+    /// flipped, position y = -(position x), scale y negated (F-50377); 2 to 3 or 4, 3 or 4 to 2: the same without the
+    /// scale; 0 to 4: position x = position y with its sign bit flipped, position y = position x (rewritten),
+    /// scale x negated. Any other pair: as it is. Only the fields it writes are changed.
+    pub fn pasted(&self, from: usize, to: usize) -> Layer {
+        let cut = crate::render::half_cut;
+        let un = |h: u16| half(&h.to_be_bytes());
+        let mirror = matches!((from, to), (1, 2) | (2, 0) | (2, 1) | (0, 2));
+        let quarter = matches!((from, to), (1, 3) | (1, 4) | (3, 0) | (3, 1) | (4, 0) | (4, 1));
+        let quarter_only = matches!((from, to), (2, 3) | (2, 4) | (3, 2) | (4, 2));
+        let (px, py) = (half_bits(self.pos[0]), half_bits(self.pos[1]));
+        let mut l = self.clone();
+        if mirror {
+            l.pos[0] = un(cut(un(px) * -1.0));
+            l.scale[0] = un(cut(un(half_bits(self.scale[0])) * -1.0));
+            l.rot = un(cut(un(half_bits(self.rot)) * -1.0));
+        } else if quarter || quarter_only {
+            l.pos[0] = un(py ^ 0x8000);
+            l.pos[1] = un(cut(-un(px)));
+            if quarter {
+                l.scale[1] = un(cut(un(half_bits(self.scale[1])) * -1.0));
+            }
+        } else if (from, to) == (0, 4) {
+            l.pos[0] = un(py ^ 0x8000);
+            l.pos[1] = un(cut(un(px)));
+            l.scale[0] = un(cut(un(half_bits(self.scale[0])) * -1.0));
+        }
+        l
+    }
+}
+
+/// F-64893: the clipboard (copied from zone `from`) pasted into zone `to` at `at`, each layer mirrored (`pasted`) and
+/// inserted in turn (F-16364: the later ones move up, past the zone's capacity they are lost). Nothing is pasted when
+/// the clipboard holds more layers than `room` (the editor's figure for the zone, its capacity) less the zone's
+/// used layers (F-48156). Returns whether it pasted.
+pub fn paste(zone: &mut Vec<Layer>, to: usize, room: usize, clip: &[Layer], from: usize, at: usize) -> bool {
+    if clip.len() as i64 > room as i64 - zone.len() as i64 {
+        return false;
+    }
+    for (k, l) in clip.iter().enumerate() {
+        zone.insert((at + k).min(zone.len()), l.pasted(from, to));
+        zone.truncate(ZONE_CAPACITY[to]);
+    }
+    true
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+
+    #[test]
+    fn vinyl_paste_matches_the_original() {
+        // (tools/vinyl_paste_reference.py: F-64893 run offline on 1,500 pastes; the clip and the target zone's
+        // records before, the zone's records after)
+        let rec = |s: &str| -> [u8; 20] { std::array::from_fn(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()) };
+        let (mut n, mut bad, mut mirrored) = (0, 0, 0);
+        for line in include_str!("testdata/vinyl_paste_ref.txt").lines() {
+            let (inp, out) = line.split_once(" ->").unwrap();
+            let (head, before) = inp.split_once(" |").unwrap();
+            let h: Vec<&str> = head.split(' ').collect();
+            let p = |k: usize| h[k].parse::<usize>().unwrap();
+            let (from, to, at, room, count) = (p(0), p(1), p(2), p(3), p(4));
+            let clip: Vec<Layer> = h[5..5 + count].iter().map(|s| Layer::from_record(&rec(s))).collect();
+            let mut zone: Vec<Layer> = before.split_whitespace().map(|s| Layer::from_record(&rec(s))).collect();
+            let used = zone.len();
+            let ok = paste(&mut zone, to, room, &clip, from, at);
+            let mut got: Vec<[u8; 20]> = zone.iter().map(Layer::record).collect();
+            let want: Vec<[u8; 20]> = out.split_whitespace().map(rec).collect();
+            got.resize(want.len(), [0xff; 20]);
+            if ok && clip.iter().any(|l| l.pasted(from, to) != *l) {
+                mirrored += 1;
+            }
+            if got != want {
+                if bad < 5 {
+                    eprintln!("paste {n} ({from} -> {to} at {at}, room {room}, {count} of used {used}, ok {ok}): got {:02x?} want {:02x?}", got.first(), want.first());
+                }
+                bad += 1;
+            }
+            n += 1;
+        }
+        assert!(n >= 1500 && mirrored > 300, "{n} pastes, {mirrored} mirrored");
+        assert_eq!(bad, 0, "{bad} of {n} pastes differ");
+    }
+}

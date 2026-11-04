@@ -96,6 +96,19 @@ pub fn word(c: [f32; 4]) -> [f32; 4] {
     [b(c[0]), b(c[1]), b(c[2]), b(c[3])]
 }
 
+/// `F-70194` (the ring colour of types 7 / 8 / 9): the element's colour word `E+128` back as (R, G, B, A), each byte
+/// times 1/255 - the alpha kept.
+pub fn element_colour(c: [f32; 4]) -> [f32; 4] {
+    let byte = |x: f32| ((x * 255.0) as i32).clamp(0, 255);
+    word_bytes([byte(c[0]), byte(c[1]), byte(c[2]), byte(c[3])])
+}
+
+/// `F-70194` on the bytes (R, G, B, A): each converted and multiplied by the constant 1/255 (0x3B808081).
+pub fn word_bytes(b: [i32; 4]) -> [f32; 4] {
+    let k = f32::from_bits(0x3B80_8081);
+    b.map(|v| v as f32 * k)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Pictures and meshes
 
@@ -1143,7 +1156,7 @@ fn draw_element(tune: &Tune, _assets: &mut Assets, f: &Frame, e: &Element, q: &m
             }
             let p = lift(flat(e.pos));
             let garage_colour = matches!(e.kind, Kind::Garage | Kind::Delivery | Kind::Payback);
-            let mut colour = if garage_colour { tune.c("GarageColor", [1.0; 4]) } else { [e.colour[0], e.colour[1], e.colour[2], 1.0] };
+            let mut colour = if garage_colour { tune.c("GarageColor", [1.0; 4]) } else { element_colour(e.colour) };
             let speed = match e.kind {
                 Kind::Garage => tune.f("GarageCrossFadeSpeed", 5.0),
                 Kind::Series => tune.f("SeriesCrossFadeSpeed", 5.0),
@@ -2163,6 +2176,209 @@ const NAV_MAX: [f32; 2] = [2973.0, 2386.5];
 const NAV_LOW: f32 = 850.0;
 const NAV_HIGH: f32 = 9000.0;
 
+/// The map's outline for the "sc" city (`F-93744`: the five common points, the three of sc, the last), y 0.
+pub const NAV_OUTLINE: [Vec3; 9] = [
+    Vec3::new(-3100.0, 0.0, -1200.0),
+    Vec3::new(-1900.0, 0.0, -2400.0),
+    Vec3::new(590.0, 0.0, -2400.0),
+    Vec3::new(2740.0, 0.0, -1079.0),
+    Vec3::new(2830.0, 0.0, 217.0),
+    Vec3::new(1312.0, 0.0, 2173.0),
+    Vec3::new(-1235.0, 0.0, 2173.0),
+    Vec3::new(-3368.0, 0.0, 1073.0),
+    Vec3::new(-3484.0, 0.0, 558.0),
+];
+
+/// `F-90999`: (x, z) inside the outline - the edges crossed by the ray towards +z, counted odd.
+pub fn in_outline(x: f32, z: f32) -> bool {
+    let p = &NAV_OUTLINE;
+    let mut n = 0;
+    for i in 0..p.len() {
+        let (a, b) = (p[i], p[(i + 1) % p.len()]);
+        if (a.x < x && b.x < x) || (a.x > x && b.x > x) || (a.z < z && b.z < z) || a.x == b.x {
+            continue;
+        }
+        if (a.z > z && b.z > z) || z < (b.z - a.z) * (x - a.x) / (b.x - a.x) + a.z {
+            n += 1;
+        }
+    }
+    n & 1 == 1
+}
+
+/// `F-66886` with its flag 0 on the ground plane: the move a -> b against the line v -> n; writes (along the
+/// move, along the line) into `t` / `u` as the original does (`f32::MAX` into both when parallel, nothing
+/// when both are degenerate).
+fn outline_meet(a: Vec3, b: Vec3, v: Vec3, n: Vec3, t: &mut f32, u: &mut f32) -> bool {
+    const E: f32 = 1e-5;
+    let (dbx, day, dax, dby) = (n.x - v.x, b.z - a.z, b.x - a.x, n.z - v.z);
+    let den = dby.mul_add(dax, -(dbx * day));
+    if den.abs() < E {
+        (*t, *u) = (f32::MAX, f32::MAX);
+        return false;
+    }
+    if dbx.abs() < E {
+        if dax.abs() < E {
+            return false;
+        }
+        *t = (v.x - a.x) / dax;
+        *u = (t.mul_add(day, a.z) - v.z) / dby;
+    } else if dby.abs() < E {
+        if day.abs() < E {
+            return false;
+        }
+        *t = (v.z - a.z) / day;
+        *u = (t.mul_add(dax, a.x) - v.x) / dbx;
+    } else {
+        *t = (a.z - v.z).mul_add(dbx, (v.x - a.x) * dby) / den;
+        *u = (t.mul_add(dax, a.x) - v.x) / dbx;
+    }
+    true
+}
+
+/// `F-95591` (flag 0): `outline_meet` and both fractions within [0, 1].
+fn outline_cross(a: Vec3, b: Vec3, v: Vec3, n: Vec3, t: &mut f32, u: &mut f32) -> bool {
+    outline_meet(a, b, v, n, t, u) && (0.0..=1.0).contains(t) && (0.0..=1.0).contains(u)
+}
+
+/// `F-36590`: `a` near the segment v -> n - within `r` of its line (squared) and within the segment's
+/// squared length plus `r` of both ends.
+fn outline_near(v: Vec3, n: Vec3, a: Vec3, r: f32) -> bool {
+    let (d, w) = (n - v, a - v);
+    let l2 = d.y.mul_add(d.y, d.z.mul_add(d.z, d.x * d.x));
+    if l2.abs() > 1e-12 {
+        // (the vector unit's cross product: products rounded, no fused steps)
+        let c = Vec3::new(-((w.y * d.z) - (w.z * d.y)), -((w.z * d.x) - (w.x * d.z)), -((w.x * d.y) - (w.y * d.x)));
+        if c.x.mul_add(c.x, c.y.mul_add(c.y, c.z * c.z)) / l2 > r * r {
+            return false;
+        }
+    }
+    let lim = l2 + r;
+    if w.x.mul_add(w.x, w.y.mul_add(w.y, w.z * w.z)) > lim {
+        return false;
+    }
+    let e = a - n;
+    e.x.mul_add(e.x, e.z.mul_add(e.z, e.y * e.y)) <= lim
+}
+
+/// `F-56767`: the edge (e0, e1) turned to run along the move a -> b (more than 90 degrees off: swapped, t = 1 - t).
+fn outline_orient(a: Vec3, b: Vec3, e0: usize, e1: usize, t: f32) -> (usize, usize, f32) {
+    let p = &NAV_OUTLINE;
+    if crate::aiv::ang3(b - a, p[e1] - p[e0]) > std::f32::consts::FRAC_PI_2 {
+        (e1, e0, 1.0 - t)
+    } else {
+        (e0, e1, t)
+    }
+}
+
+/// `F-37810`: the outline's edge the move a -> b leaves through, from the vertex nearest `a` (`F-37290`) and its
+/// two edges, with the fraction along it. None where the original leaves the edge's end unset.
+fn outline_edge(a: Vec3, b: Vec3) -> Option<(usize, usize, f32)> {
+    let p = &NAV_OUTLINE;
+    let len = p.len();
+    let dist = |q: Vec3| {
+        let (y, z, x) = (a.y - q.y, a.z - q.z, a.x - q.x);
+        x.mul_add(x, z.mul_add(z, y * y)).sqrt()
+    };
+    let (mut i, mut best) = (0, dist(p[0]));
+    for k in 1..len {
+        let d = dist(p[k]);
+        if d < best {
+            (i, best) = (k, d);
+        }
+    }
+    let (v, nx, pv) = (i, if i < len - 1 { i + 1 } else { 0 }, if i != 0 { i - 1 } else { len - 1 });
+    let flat = |q: Vec3| Vec3::new(q.x, 0.0, q.z);
+    let (dx, dz) = (b.x - a.x, b.z - a.z);
+    let move_len = dz.mul_add(dz, dx * dx).sqrt();
+    let edge_len = |q: Vec3| {
+        let (ex, ez) = (q.x - p[v].x, q.z - p[v].z);
+        ez.mul_add(ez, ex * ex).sqrt()
+    };
+    for &o in &[nx, pv] {
+        let (ex, ez) = (p[o].x - p[v].x, p[o].z - p[v].z);
+        // (parallel to the move: the fraction is the move's length over the edge's)
+        if ez.mul_add(dx, -(ex * dz)).abs() < 1e-5 {
+            return Some(outline_orient(a, b, v, o, move_len / edge_len(p[o])));
+        }
+    }
+    let (mut t, mut u) = (0.0, 0.0);
+    let (fa, fb, fv) = (flat(a), flat(b), flat(p[v]));
+    if p[v].x == a.x && p[v].y == a.y && p[v].z == a.z {
+        let o = if crate::aiv::ang3(b - a, p[nx] - p[v]) < crate::aiv::ang3(b - a, p[pv] - p[v]) { nx } else { pv };
+        outline_cross(fa, fb, fv, flat(p[o]), &mut t, &mut u);
+        return Some((v, o, u));
+    }
+    for &o in &[nx, pv] {
+        if outline_cross(fa, fb, fv, flat(p[o]), &mut t, &mut u) {
+            return Some(outline_orient(a, b, v, o, u));
+        }
+    }
+    for &o in &[nx, pv] {
+        if outline_near(fv, flat(p[o]), fa, 1.0) {
+            outline_meet(fa, fb, fv, flat(p[o]), &mut t, &mut u);
+            return Some(outline_orient(a, b, v, o, u));
+        }
+    }
+    None
+}
+
+/// `F-97746` with its force flag (the stick let go, `F-63282`): the element nearest `at` on the ground plane - the first
+/// strictly nearer one in list order - taken when it is nearer than `radius` and not at distance 0.
+pub fn pick_nearest(at: Vec3, radius: f32, pts: &[Vec3]) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, p) in pts.iter().enumerate() {
+        let (dx, dz) = (at.x - p.x, at.z - p.z);
+        let d = dz.mul_add(dz, dx * dx).sqrt();
+        // (the start value is -1: the first element is always taken)
+        if best.map_or(true, |b| d < b.1 || b.1 < 0.0) {
+            best = Some((i, d));
+        }
+    }
+    best.filter(|b| b.1 < radius && b.1 > 0.0).map(|b| b.0)
+}
+
+/// `F-88834`: `a` within `r` of `b` on the ground plane.
+pub fn within_xz(a: Vec3, b: Vec3, r: f32) -> bool {
+    let (dx, dz) = (a.x - b.x, a.z - b.z);
+    dz.mul_add(dz, dx * dx).sqrt() <= r
+}
+
+/// `F-66209`: `g` (outside the outline) pulled back to it along the move from `prev` - the point where the move
+/// leaves through the edge found by `F-37810`, slid along that edge by the move's remaining length times the cosine
+/// of its angle to the edge; at 0.99 of the edge or more it starts again from the edge's end (twice at most, then
+/// `prev`).
+pub fn outline_pull_back(prev: Vec3, g: Vec3) -> Vec3 {
+    outline_pull(prev, g, 0)
+}
+
+fn outline_pull(prev: Vec3, g: Vec3, depth: u32) -> Vec3 {
+    if depth >= 2 {
+        return prev;
+    }
+    if g == prev {
+        return g;
+    }
+    // (no edge found: the original reads the edge's end through a null pointer; the static recomp's guard takes `g`
+    // as it came, and so does the port)
+    let Some((e0, e1, t)) = outline_edge(prev, g) else { return g };
+    let (p0, p1) = (NAV_OUTLINE[e0], NAV_OUTLINE[e1]);
+    let c = crate::physics::exact::guest_cos(crate::aiv::ang3(p1 - p0, g - prev) as f64) as f32;
+    // (vector unit steps: products and sums rounded separately)
+    let at = (p1 - p0) * t + p0;
+    let (r, e) = (g - at, p1 - at);
+    let len = |v: Vec3| v.x.mul_add(v.x, v.y.mul_add(v.y, v.z * v.z)).sqrt();
+    let s = c * len(r) / e.x.mul_add(e.x, e.z.mul_add(e.z, e.y * e.y)).sqrt();
+    if s as f64 >= 0.99 {
+        outline_pull(p1, g, depth + 1)
+    } else if s == 0.0 {
+        g
+    } else if s < 0.0 {
+        prev
+    } else {
+        (p1 - at) * s + at
+    }
+}
+
 /// How far south of its look point the eye stands (`F-84102`).
 pub fn nav_off(h: f32) -> f32 {
     let f = (h - NAV_LOW) / (5000.0 - NAV_LOW);
@@ -2435,8 +2651,32 @@ impl NavCam {
         e.y = e.y.clamp(NAV_LOW, NAV_HIGH);
         e.x = e.x.clamp(self.bounds[0], self.bounds[1]);
         e.z = e.z.clamp(self.bounds[2], self.bounds[3]);
+        let off = nav_off(e.y);
+        let look = self.outline_look(&mut e, off);
         self.eye = e;
-        self.look = Vec3::new(e.x, 0.0, e.z - nav_off(e.y));
+        self.look = look;
+    }
+
+    /// The cursor moved to `p` (`F-31695`): outside the outline it is pulled back from where it was.
+    pub fn move_cursor(&mut self, p: Vec3) {
+        self.cursor = if in_outline(p.x, p.z) { p } else { outline_pull_back(self.cursor, p) };
+    }
+
+    /// `NM+568` (`F-30942`): the selection's reach, 90 m at the floor to 500 m at the top - (500 - 90) * g(u) + 90.
+    pub fn select_radius(&self) -> f32 {
+        (500.0f32 - 90.0).mul_add(nav_g(nav_u(self.eye.y)), 90.0)
+    }
+
+    /// The look point of eye `e` (`F-38897` step 4): (e.x, 0, e.z - off); outside the outline it is pulled back
+    /// from the stored look point (`F-66209`) and the eye moved with it.
+    fn outline_look(&self, e: &mut Vec3, off: f32) -> Vec3 {
+        let mut g = Vec3::new(e.x, 0.0, e.z - off);
+        if !in_outline(g.x, g.z) {
+            g = outline_pull_back(self.look, g);
+            e.x = g.x;
+            e.z = g.z + off;
+        }
+        g
     }
 
     /// Fly to an element (Change_Target, `F-79270`): eye over it at the same height, 10 m
@@ -2446,10 +2686,11 @@ impl NavCam {
         let mut e = Vec3::new(p.x, h, p.z + nav_off(h) + 10.0);
         e.x = e.x.clamp(self.bounds[0], self.bounds[1]);
         e.z = e.z.clamp(self.bounds[2], self.bounds[3]);
+        let look = self.outline_look(&mut e, nav_off(h));
         let (from, from_look) = self.view();
-        self.mv = Some(NavMove::new(from, e, from_look, Vec3::new(e.x, 0.0, e.z - nav_off(h)), 1.0, false));
+        self.mv = Some(NavMove::new(from, e, from_look, look, 1.0, false));
         self.eye = e;
-        self.look = Vec3::new(e.x, 0.0, e.z - nav_off(h));
+        self.look = look;
         self.cursor = p;
     }
 
@@ -2498,7 +2739,7 @@ impl NavCam {
         // the left stick moves the cursor at 0.5 H m/s at full tilt (F-62325)
         if cursor_move != Vec2::ZERO {
             let d = cursor_move * 0.5 * self.eye.y * dt;
-            self.cursor += Vec3::new(d.x, 0.0, d.y);
+            self.move_cursor(self.cursor + Vec3::new(d.x, 0.0, d.y));
         }
         // (the bounds of this frame's height, used by the next frame - F-51113)
         self.bounds = nav_bounds(self.eye.y, aspect);

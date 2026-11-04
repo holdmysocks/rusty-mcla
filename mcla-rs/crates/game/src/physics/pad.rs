@@ -389,6 +389,9 @@ pub struct PadHeld {
     pub button: bool,
     /// the handbrake as the frame wrote it to the chassis (+144): the button is read once a frame, like the pedals
     pub handbrake: bool,
+    /// input +84: the steering target T of the frame (the stick through its dead zone and exponent, the pull added,
+    /// clamped to -1..1), which the human racer's virtual +172 (F-91694) hands the rider machine as its goal steering
+    pub goal: f32,
 }
 
 #[cfg(test)]

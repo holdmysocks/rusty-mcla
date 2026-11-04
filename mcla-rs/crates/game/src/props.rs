@@ -1560,6 +1560,75 @@ impl Props {
         self.draw_with(pass, gpu, cam, frustum, occluded, draws, true, true)
     }
 
+    /// The night fast collector's props (render/mod.rs `night_collector_begin`; the instanced night pipeline set by the
+    /// caller): every prop effect but the foliage's leaves and impostors has VS_ShadowNight (xPropDefault, BumpSpec,
+    /// BumpSpecTint, Metal, Glass, LampGlassTint, NeonTint, TrafficSignal, FoliageTrunk), so every batch but the
+    /// Foliage ones is drawn, the glass and the cut-outs whole (PS_ShadowNight has no texture); a plant is its mesh's
+    /// trunk where its model is drawn and nothing where its card is. The cells and reaches are the scene's, from the
+    /// camera; `frustum` is the map's box.
+    pub fn draw_night<'a>(&'a self, pass: &mut wgpu::RenderPass<'_>, gpu: &'a Gpu, cam: Vec3, frustum: &Frustum, draws: &mut usize) {
+        let Some(ibuf) = self.inst_buf.as_ref() else { return };
+        pass.set_vertex_buffer(1, ibuf.slice(..));
+        let put = |pass: &mut wgpu::RenderPass<'_>, m: usize, first: u32, count: u32, draws: &mut usize| {
+            for b in &self.models[m].batches {
+                if b.mode == MatMode::Foliage {
+                    continue;
+                }
+                pass.set_bind_group(1, b.bind.as_ref(), &[]);
+                pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
+                pass.set_vertex_buffer(0, b.vb.slice(..));
+                pass.set_index_buffer(b.ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..b.count, 0, first..first + count);
+                *draws += 1;
+            }
+        };
+        let lens = lens();
+        let k = Lod::now();
+        for (cell, size, reach) in [(cell_of(cam), CELL, NEAR_DIST * k.draw), (far_cell_of(cam), FAR_CELL, FAR_DIST * k.draw)] {
+            let r = (reach / size).ceil() as i32;
+            for dx in -r..=r {
+                for dz in -r..=r {
+                    let Some(runs) = self.cells.get(&(cell.0 + dx, cell.1 + dz)) else { continue };
+                    for run in runs {
+                        let model = &self.models[run.model];
+                        let d = dist_to_box(cam, run.min, run.max);
+                        let (near, far) = model.reach(run.scale, lens, k);
+                        if d > far || !frustum.intersects_aabb(run.min, run.max) {
+                            continue;
+                        }
+                        match run.card {
+                            Some(_) if d > near + 1.0 => {}
+                            Some(_) => {
+                                for sub in &run.subs {
+                                    let ds = dist_to_box(cam, sub.min, sub.max);
+                                    let (near, far) = model.reach(sub.scale, lens, k);
+                                    if ds <= near && ds <= far && frustum.intersects_aabb(sub.min, sub.max) {
+                                        put(pass, run.model, sub.start, sub.count, draws);
+                                    }
+                                }
+                            }
+                            None => put(pass, run.model, run.start, run.count, draws),
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(rb) = self.race_buf.as_ref() {
+            pass.set_vertex_buffer(1, rb.slice(..));
+            for (mi, inst) in &self.race_runs {
+                put(pass, *mi, *inst, 1, draws);
+            }
+        }
+        if let (Some(bb), true) = (self.barrier_buf.as_ref(), self.barrier_on != 0) {
+            pass.set_vertex_buffer(1, bb.slice(..));
+            for (k, bar) in self.barriers.iter().enumerate() {
+                if self.barrier_on >> k & 1 != 0 {
+                    put(pass, bar.model, k as u32, 1, draws);
+                }
+            }
+        }
+    }
+
     /// Once a frame, before the shadow pass: the shadow impostors' masks that are due.
     pub fn update_shadow_impostors(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, light_vp: glam::Mat4, hour: f32) {
         if let Some(imp) = self.impostors.as_mut() {
@@ -1588,6 +1657,9 @@ impl Props {
         let imp = self.impostors.as_ref();
         let card_model = |card: usize| imp.map_or(card, |i| if scene { i.card(card) } else { i.shadow_card(card) });
         pass.set_vertex_buffer(1, ibuf.slice(..));
+        // (the scene's opaque batches: the pipeline of the batch's material once it is built, `Gpu::pipeline_inst_mode`)
+        let own = scene && !glass;
+        let mut pick = (u32::MAX, false);
         let lens = lens();
         let k = Lod::now();
         // fine cells: what is only seen close by; coarse cells: lamps, masts, trees (both as far
@@ -1607,6 +1679,7 @@ impl Props {
                         let mut put = |m: usize, r: &Run| {
                             for b in &self.models[m].batches {
                                 if (b.mode == MatMode::PropGlass) != glass { continue; }
+                                if own { mode_pipe(pass, gpu, b.mode, &mut pick); }
                                 pass.set_bind_group(1, b.bind.as_ref(), &[]);
                                 pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                                 pass.set_vertex_buffer(0, b.vb.slice(..));
@@ -1674,6 +1747,7 @@ impl Props {
             for (mi, inst) in &self.race_runs {
                 for b in &self.models[*mi].batches {
                     if (b.mode == MatMode::PropGlass) != glass { continue; }
+                    if own { mode_pipe(pass, gpu, b.mode, &mut pick); }
                     pass.set_bind_group(1, b.bind.as_ref(), &[]);
                     pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                     pass.set_vertex_buffer(0, b.vb.slice(..));
@@ -1692,6 +1766,7 @@ impl Props {
                 }
                 for b in &self.models[bar.model].batches {
                     if (b.mode == MatMode::PropGlass) != glass { continue; }
+                    if own { mode_pipe(pass, gpu, b.mode, &mut pick); }
                     pass.set_bind_group(1, b.bind.as_ref(), &[]);
                     pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                     pass.set_vertex_buffer(0, b.vb.slice(..));
@@ -1700,6 +1775,9 @@ impl Props {
                     *draws += 1;
                 }
             }
+        }
+        if pick.1 {
+            pass.set_pipeline(&gpu.pipeline_inst);
         }
     }
 
@@ -2493,5 +2571,19 @@ mod lod_option_tests {
         // the cards end at the main view's far clip, 6000 m (0x82037480)
         let big = PropModel { batches: Vec::new(), radius: 20.0, sphere: 20.0, kind: 1 };
         assert_eq!(big.reach(2.0, fov, Lod::ORIGINAL).1, 6000.0);
+    }
+}
+
+/// On a change of material in the scene's opaque props: that material's own pipeline once it is built, else (again)
+/// `pipeline_inst`. `pick` = (the material last seen, its own pipeline set).
+fn mode_pipe(pass: &mut wgpu::RenderPass<'_>, gpu: &Gpu, mode: MatMode, pick: &mut (u32, bool)) {
+    if mode as u32 == pick.0 {
+        return;
+    }
+    pick.0 = mode as u32;
+    let own = gpu.pipeline_inst_mode[mode as usize].as_ref().and_then(|p| p.ready(crate::render::ms::current()));
+    if own.is_some() || pick.1 {
+        pass.set_pipeline(own.unwrap_or(&*gpu.pipeline_inst));
+        pick.1 = own.is_some();
     }
 }

@@ -1044,6 +1044,9 @@ pub struct Peds {
     /// the ambient manager's front-end mode (F-95688, the start screen): the spawner has no
     /// visibility test (F-33044, A-29552); the focus and view are the camera's
     pub frontend: bool,
+    /// the traffic region list's count (traffic.rs `Vehicles::traffic_regions`, M +1792; None: no traffic spawner):
+    /// the unspawners' dispatcher F-75661 runs the people's unspawner F-39594 only while it is not 0
+    pub traffic_regions: Option<usize>,
     /// spawner frames still to run at once (the front-end mode's loading wait, traffic.rs
     /// `FRONT_END_PREROLL`)
     preroll: u32,
@@ -1079,6 +1082,8 @@ pub struct Peds {
     /// at night: the lights the walkers' picker lays over their grid lamps, and the 30 Hz frames
     /// since the last frame (main.rs sets them each frame; None by day - figlight.rs)
     pub night_lights: Option<(crate::figlight::Dynamic, f32)>,
+    /// the scene ambient (mgr + 224) the walkers' ambient eases towards with the fill map's colour (main.rs)
+    pub amb_base: Vec3,
     /// each lit walker's eased records (the original's walker + 64)
     fig_lights: HashMap<(usize, u32), crate::figlight::FigureLight>,
     /// each walker's LOD of this frame by the main view (`pick_lods`; -1 not drawn)
@@ -1136,6 +1141,7 @@ impl Peds {
         Peds {
             frontend: false,
             preroll: 0,
+            traffic_regions: None,
             districts: Distribution::default(),
             hour: 12.0,
             dirs: Vec::new(),
@@ -1160,6 +1166,7 @@ impl Peds {
             voices_scan: None,
             buf: SkinBuffer::default(),
             night_lights: None,
+            amb_base: Vec3::ZERO,
             fig_lights: HashMap::new(),
             lod_pick: HashMap::new(),
             enabled: true,
@@ -1508,8 +1515,8 @@ impl Peds {
     /// One run of the original's pedestrian spawner (F-33044) and unspawner
     /// (F-39594, from F-75661) on the navigation mesh: every other 30 Hz frame.
     fn spawn_frame(&mut self, gpu: &mut Gpu, mesh: &NavMesh, col: &WorldCollider, focus: Vec3) {
-        // unspawn: 30 random checks a frame
-        for _ in 0..30 {
+        // unspawn: 30 random checks a frame, while the traffic's region list has roads (F-75661)
+        for _ in 0..if self.traffic_regions == Some(0) { 0 } else { 30 } {
             if self.list.is_empty() {
                 break;
             }
@@ -2339,8 +2346,10 @@ impl Peds {
         }
     }
 
-    /// Skin everything in view into this frame's vertex buffer.
-    pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, frustum: &Frustum) {
+    /// Skin everything in view into this frame's vertex buffer. `hidden`: the cops' arrest scene is on screen (F-36139) -
+    /// the walker render F-68474 returns before its light step and its draw, so nothing is emitted and the lights stay as
+    /// they were.
+    pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, frustum: &Frustum, hidden: bool) {
         self.buf.clear();
         let tables = self.night_lights.as_ref().and_then(|_| crate::render::LAMP_TABLES.read().ok()?.clone());
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
@@ -2358,16 +2367,23 @@ impl Peds {
                 blend_pose(&mut local, &p.from, (p.blend / p.blend_len).clamp(0.0, 1.0));
             }
             p.cur.clone_from(&local);
-            if !visible {
+            if !visible || hidden {
                 continue;
             }
             let lod = lod as usize;
             // (at night the four lights of its program, picked and eased as the original's
             // F-44222 does at the walker's place - only while it is drawn, as there)
             if let (Some((dynamic, frames)), Some(t)) = (&self.night_lights, &tables) {
-                let fl = self.fig_lights.entry(p.key).or_insert_with(|| crate::figlight::FigureLight::new(t, p.pos));
+                let f = crate::fillmap::body_now(p.pos.x, p.pos.z);
+                let amb = self.amb_base + Vec3::new(f[0], f[1], f[2]);
+                let fl = self.fig_lights.entry(p.key).or_insert_with(|| crate::figlight::FigureLight::new(t, p.pos, amb));
                 fl.step(t, p.pos, *frames);
+                fl.step_amb(amb, *frames);
                 self.buf.next_lanes = Some(fl.lanes(p.pos, dynamic));
+                // (MCLA_PED_AMB_OLD=1: the ambient as before, the scene's plus the fill map at once, unpacked)
+                if std::env::var("MCLA_PED_AMB_OLD").is_err() {
+                    self.buf.next_amb = Some(fl.amb_bytes());
+                }
             }
             self.buf.emit(&ty.model, lod, &local, Mat4::from_rotation_translation(p.rot, p.pos));
         }

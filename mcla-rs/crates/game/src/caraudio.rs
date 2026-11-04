@@ -237,7 +237,11 @@ pub struct CarIn {
     pub hyd_on: bool,
     pub ang_vel: Vec3,
     pub air_time: f32,
-    pub wipeout: bool,
+    /// the car matrix's third row (M2: the car's back, the port's rot x Z)
+    pub back: Vec3,
+    /// wiped out, chassis +592 & 0x10 (a car's `upset` over WipeoutDelay, a bike's wipe), and damaged out (& 0x04)
+    pub wiped: bool,
+    pub damaged_out: bool,
     pub two_wheels: bool,
     pub horn: bool,
     /// the high beams (the flash target, HEADLIGHTS held)
@@ -256,6 +260,77 @@ pub struct CarIn {
     pub throttle: f32,
     pub pedal: f32,
     pub shift: i8,
+    /// engine torque (engine +16), the full-throttle torque at the engine's speed (F-71482 at engine +8), the rev
+    /// limiter cutting (chassis +744) and the transmission's gear index (trans +20: reverse 0, neutral 1, first 2)
+    pub torque: f32,
+    pub full_torque: f32,
+    pub limiter: bool,
+    pub gear_idx: i32,
+}
+
+/// What the air-intake one-shot (F-26427) does this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Intake {
+    pub stop: bool,
+    pub play: bool,
+}
+
+/// F-26427's rule: torque `now` (this+160) above 0 with `prev` (this+176) not arms it (byte 1948); armed, with a wheel
+/// on the ground (chassis vt+44, F-33415), the clock (+156) at least 1 s past the limiter's last cut (+240) and
+/// `ratio` = torque / full-throttle torque at least 0.75 it fires and disarms; torque falling to 0 or under from
+/// above stops the slot's sound (F-31667 clears the slot) and disarms. It plays only into an empty slot. The
+/// comparisons are the original's (a NaN passes each test the way its branches let it).
+pub(crate) fn intake_step(armed: &mut bool, now: f32, prev: f32, contact: bool, clock: f32, cut_at: f32, ratio: f32, live: bool) -> Intake {
+    if !(now <= 0.0) && !(prev > 0.0) {
+        *armed = true;
+    }
+    let mut fire = false;
+    if *armed && contact && !(clock < cut_at + 1.0) && !(ratio < 0.75) {
+        fire = true;
+        *armed = false;
+    }
+    let mut out = Intake::default();
+    if !(now > 0.0) && !(prev <= 0.0) {
+        out.stop = live;
+        *armed = false;
+    }
+    out.play = fire && (!live || out.stop);
+    out
+}
+
+/// The air-intake one-shot's level (F-26427): 1 - clamp((gear - 2) x ONESHOT+60, 0, 0.5) from first gear up, 0 in
+/// reverse and neutral; in dB as 20 x (log2 x 0.301), -100 under 1e-5.
+pub(crate) fn intake_db(gear_idx: i32, step: f32) -> f32 {
+    let k = gear_idx - 2;
+    let lin = if k < 0 {
+        0.0
+    } else {
+        let x = step * k as f32;
+        let x = if x >= 0.0 { x } else { 0.0 };
+        1.0 - if x - 0.5 >= 0.0 { 0.5 } else { x }
+    };
+    if lin - f32::from_bits(0x3727_C5AC) >= 0.0 { (lin.log2() * f32::from_bits(0x3E9A_1CAC)) * 20.0 } else { -100.0 }
+}
+
+/// What a steam loop's slot does this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Steam {
+    None,
+    Play,
+    Move,
+    Stop,
+}
+
+/// The steam loops' rule (F-89706 / F-87058 and the slot functions F-26850 / F-96861 / F-73124): wiped out, a slot whose
+/// record has its matrix plays into an empty slot and moves a live one; a record without one stops its slot; not wiped
+/// out, both live slots stop.
+pub(crate) fn steam_step(wipeout: bool, matrix: [bool; 2], live: [bool; 2]) -> [Steam; 2] {
+    std::array::from_fn(|k| match (wipeout && matrix[k], live[k]) {
+        (true, false) => Steam::Play,
+        (true, true) => Steam::Move,
+        (false, true) => Steam::Stop,
+        (false, false) => Steam::None,
+    })
 }
 
 #[derive(Default)]
@@ -313,6 +388,14 @@ pub struct CarSounds {
     boost: f32,
     spool: f32,
     prev_throttle: f32,
+    /// the air-intake one-shot: slot 1384, armed (byte 1948), ONESHOT+60, torque now / before (+160 / +176), the
+    /// clock when the limiter last cut (+240)
+    intake_v: Option<Handle>,
+    intake_armed: bool,
+    intake_gear_step: f32,
+    torque_now: f32,
+    torque_prev: f32,
+    cut_at: f32,
     nitro: Option<(Option<Handle>, Option<Handle>)>,
     /// the player's emitter type 1 place and Doppler factor (`PlayerCtl`)
     pub loop_place: Option<(Vec3, f32)>,
@@ -342,6 +425,9 @@ pub struct CarSounds {
     parts_seen: Option<u64>,
     /// GLOBAL_CAR_PARTICLES +18 (CAR_BANGERS_GLASS_LARGE): a window cracking or breaking
     glass_hash: u32,
+    /// GLOBAL_CAR_PARTICLES +22 (RADIATOR_STEAM_MASTER) and slots 1428 / 1432: the wipeout's two steam loops
+    steam_hash: u32,
+    steam: [Option<Handle>; 2],
     /// the last window event heard (damagemap::CarDamage::glass)
     glass_seen: Option<u64>,
 }
@@ -390,6 +476,12 @@ impl CarSounds {
             boost: 0.0,
             spool: 0.0,
             prev_throttle: 0.0,
+            intake_v: None,
+            intake_armed: false,
+            intake_gear_step: be_f32(&oneshot, 60),
+            torque_now: 0.0,
+            torque_prev: 0.0,
+            cut_at: 0.0,
             nitro: None,
             loop_place: None,
             nitro_empty: None,
@@ -408,6 +500,8 @@ impl CarSounds {
             scrape: [(None, 0.0); 2],
             parts_seen: None,
             glass_hash: g.get_name("GLOBAL_CAR_PARTICLES").map_or(0, |o| be_u32(o, 18)),
+            steam_hash: g.get_name("GLOBAL_CAR_PARTICLES").map_or(0, |o| be_u32(o, 22)),
+            steam: [None; 2],
             glass_seen: None,
         }
     }
@@ -428,7 +522,10 @@ impl CarSounds {
         if let Some((h, _)) = self.hyd_loop.take() {
             lib.stop(h);
         }
-        for s in [&mut self.two_loop, &mut self.horn, &mut self.siren, &mut self.turbo_v, &mut self.nitro_empty, &mut self.pings, &mut self.sst_burn, &mut self.sst_loop, &mut self.sst_full] {
+        for s in self.steam.iter_mut() {
+            stop(lib, s);
+        }
+        for s in [&mut self.two_loop, &mut self.horn, &mut self.siren, &mut self.turbo_v, &mut self.intake_v, &mut self.nitro_empty, &mut self.pings, &mut self.sst_burn, &mut self.sst_loop, &mut self.sst_full] {
             stop(lib, s);
         }
         if self.player {
@@ -454,6 +551,13 @@ impl CarSounds {
             // the upshift's start (this+260, F-33101 @A-66878)
             self.upshift_at = self.clock;
         }
+        // the base update's inputs (F-36837): the torque history, and the clock while the limiter cuts
+        self.torque_prev = self.torque_now;
+        self.torque_now = c.torque;
+        if c.limiter {
+            self.cut_at = self.clock;
+        }
+        self.intake(lib, c);
         self.turbo(lib, c, dt);
         self.tyres(lib, mats, c, dt);
         self.suspension(lib, c);
@@ -464,6 +568,7 @@ impl CarSounds {
         self.high_beams(lib, c);
         self.nitrous(lib, mats, c, cam_mode);
         self.damage(lib, c, cam_mode);
+        self.steam(lib, c);
         self.prev_shift = c.shift;
     }
 
@@ -665,7 +770,7 @@ impl CarSounds {
         let wxz = w.x * w.x + w.z * w.z;
         let sq = |at: usize| be_f32(&s, at) * be_f32(&s, at);
         // (sound offset, state, gate time offset) or None = stop; Some(None) = leave as is
-        let want: Option<Option<(usize, u8, Option<usize>)>> = if c.wipeout {
+        let want: Option<Option<(usize, u8, Option<usize>)>> = if c.wiped || c.damaged_out {
             if c.air_time > 0.25 {
                 Some((w.length_squared() >= sq(121)).then_some((117, 4, None)))
             } else if wxz >= sq(113) {
@@ -862,6 +967,45 @@ impl CarSounds {
         if free(lib, &self.siren) {
             self.siren = lib.play_hash(be_u32(&self.police, 18), Req { volume: base, ..req });
         } else if let Some(h) = self.siren {
+            lib.set(h, req);
+        }
+    }
+
+    /// The wipeout's steam loops: every frame of the wipeout flag (chassis +592 & 0x10) the car effects update F-21480
+    /// starts the two damage smoke trails (F-89706) and hands their matrices to F-26850 / F-96861, which play
+    /// RADIATOR_STEAM_MASTER into an empty slot at the matrix and else move the slot's sound there; the first frame
+    /// without the flag F-87058 stops both (F-73124). The matrices are the car's with the place moved 0.75 m along M2 and
+    /// -0.75 m (back and front).
+    fn steam(&mut self, lib: &mut SoundLib, c: &CarIn) {
+        let live = [!free(lib, &self.steam[0]), !free(lib, &self.steam[1])];
+        for (k, act) in steam_step(c.wiped, [true; 2], live).into_iter().enumerate() {
+            let at = c.pos + c.back * if k == 0 { 0.75 } else { -0.75 };
+            match act {
+                Steam::Play if !is_null(self.steam_hash) => self.steam[k] = lib.play_hash(self.steam_hash, self.req(at)),
+                Steam::Move => lib.set(self.steam[k].unwrap(), self.req(at)),
+                Steam::Stop => stop(lib, &mut self.steam[k]),
+                _ => {}
+            }
+        }
+    }
+
+    /// The air-intake one-shot VEH_AUX_AIR_INTAKE_MASTER (TURBO+10) of a car with an intake part (F-26427), at the
+    /// entity; while its sound lives it follows the car and the gear's level every frame.
+    fn intake(&mut self, lib: &mut SoundLib, c: &CarIn) {
+        if c.parts[0] == 0 {
+            return;
+        }
+        let contact = c.wheels.iter().take(c.n_wheels).any(|w| w.contact);
+        let live = !free(lib, &self.intake_v);
+        let s = intake_step(&mut self.intake_armed, self.torque_now, self.torque_prev, contact, self.clock, self.cut_at, c.torque / c.full_torque, live);
+        if s.stop {
+            stop(lib, &mut self.intake_v);
+        }
+        let req = Req { volume: intake_db(c.gear_idx, self.intake_gear_step), ..self.req(c.pos) };
+        if s.play {
+            let h = if self.turbo.len() >= 14 { be_u32(&self.turbo, 10) } else { 0 };
+            self.intake_v = if is_null(h) { None } else { lib.play_hash(h, req) };
+        } else if let Some(h) = self.intake_v.filter(|&h| lib.playing(h)) {
             lib.set(h, req);
         }
     }
@@ -1319,7 +1463,9 @@ pub fn car_in(c: &CarInstance) -> CarIn {
         hyd_on: vs.is_some_and(|v| v.hyd.on),
         ang_vel: st.ang_vel,
         air_time: st.airborne_time,
-        wipeout: st.wipeout > 0.0,
+        damaged_out: st.damage >= 0.999,
+        back: st.rot * Vec3::Z,
+        wiped: st.upset > 0.0 || vs.is_some_and(|v| v.wipe.is_some()),
         two_wheels: vs.is_some_and(|v| v.two != 0) && !c.model.bike,
         nitro_firing: st.nitro_on(),
         sst: vs.map(|v| (v.sst.level, v.sst.burning)),
@@ -1327,6 +1473,13 @@ pub fn car_in(c: &CarInstance) -> CarIn {
         pedal: vs.map_or(c.input.throttle, |v| v.engine_pedal),
         shift: vs.map_or(0, |v| if v.gear_change.active { v.gear_change.direction } else { 0 }),
         max_rpm: tune.map_or(7000.0, |t| t.t.engine.s.max_rpm),
+        torque: vs.map_or(0.0, |v| v.engine_torque),
+        full_torque: match (vs, tune) {
+            (Some(v), Some(t)) => t.torque_at(v.engine_w),
+            _ => 1.0,
+        },
+        limiter: vs.is_some_and(|v| v.rev.on),
+        gear_idx: vs.map_or(st.gear, |v| v.gear) + 1,
         ..Default::default()
     }
 }
@@ -2793,5 +2946,101 @@ mod tests {
         s.clock += 0.1;
         s.damage_parts(&mut lib, &parts);
         assert!(s.scrape[1].0.is_none());
+    }
+
+    /// The air-intake one-shot against the original's F-26427 run offline (tools/intake_oneshot_reference.py): 250 cars,
+    /// 17,492 frames of random torque, clock, limiter cut, wheels on the ground, full-throttle torque, gear, the sound
+    /// ending and the make failing; every stop, play and its level, every per-frame level and the armed byte equal.
+    #[test]
+    fn intake_matches_the_original() {
+        let txt = include_str!("testdata/intake_ref.txt");
+        let hx = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+        let num = |t: &str| t[1..].parse::<u32>().unwrap();
+        let (mut part, mut step, mut armed, mut live, mut n) = (0, 0.0f32, false, false, 0);
+        for l in txt.lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            match w.first() {
+                Some(&"C") => {
+                    part = num(w[1]);
+                    step = f32::from_bits(hx(w[2]));
+                    armed = false;
+                    live = false;
+                }
+                Some(&"F") => {
+                    let f = |i: usize| f32::from_bits(hx(w[i]));
+                    let (now, prev, clock, cut, full) = (f(1), f(2), f(3), f(4), f(6));
+                    let (touch, gear, ended, made) = (num(w[5]) != 0, num(w[7]) as i32, num(w[8]) != 0, num(w[9]) != 0);
+                    if ended {
+                        live = false;
+                    }
+                    let (mut stop, mut play, mut set) = (false, false, false);
+                    let db = intake_db(gear, step);
+                    if part != 0 {
+                        let s = intake_step(&mut armed, now, prev, touch, clock, cut, now / full, live);
+                        stop = s.stop;
+                        if s.stop {
+                            live = false;
+                        }
+                        play = s.play;
+                        if s.play {
+                            live = made;
+                        }
+                        set = live;
+                    }
+                    let got = format!("k{} p{} h{} v{:08x} o{} w{} r{} l{:08x} a{} s{}", if stop { 2 } else { 0 }, play as u8, play as u8,
+                        if play { db.to_bits() } else { 0 }, set as u8, set as u8, set as u8, if set { db.to_bits() } else { 0 }, armed as u8, live as u8);
+                    let want = l.split(" -> ").nth(1).unwrap();
+                    assert_eq!(got, want, "{l}");
+                    n += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(n, 17492);
+    }
+
+    /// The wipeout's steam loops against the original's smoke trail start / stop and slot functions run offline
+    /// (tools/steam_loops_reference.py): 300 runs, 9,941 frames of the wipeout flag going on and off, records with or
+    /// without their matrix, sounds ending and makes failing; every play (RADIATOR_STEAM_MASTER at the record's matrix,
+    /// P+52 0, flags 4), move, stop and slot equal.
+    #[test]
+    fn steam_loops_match_the_original() {
+        let txt = include_str!("testdata/steam_ref.txt");
+        let num = |t: &str| t[1..].parse::<u32>().unwrap() != 0;
+        let (mut matrix, mut live, mut n) = ([false; 2], [false; 2], 0);
+        for l in txt.lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            match w.first() {
+                Some(&"R") => {
+                    matrix = [num(w[1]), num(w[2])];
+                    live = [false; 2];
+                }
+                Some(&"F") => {
+                    let (wipeout, ended, made) = (num(w[1]), [num(w[4]), num(w[5])], num(w[6]));
+                    for k in 0..2 {
+                        if ended[k] {
+                            live[k] = false;
+                        }
+                    }
+                    let acts = steam_step(wipeout, matrix, live);
+                    let mut got = String::new();
+                    for k in 0..2 {
+                        let play = acts[k] == Steam::Play;
+                        match acts[k] {
+                            Steam::Play => live[k] = made,
+                            Steam::Stop => live[k] = false,
+                            _ => {}
+                        }
+                        let (p, g) = (play as u8, if play { 4 } else { 0 });
+                        got += &format!(" p{p} h{p} q{p} e0 g{g} o{} k{} s{}", (acts[k] == Steam::Move) as u8, (acts[k] == Steam::Stop) as u8, live[k] as u8);
+                    }
+                    let want = l.split(" ->").nth(1).unwrap();
+                    assert_eq!(got.trim(), want.split(" a").next().unwrap().trim(), "{l}");
+                    n += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(n, 9941);
     }
 }

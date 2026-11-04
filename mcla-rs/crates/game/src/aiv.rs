@@ -403,7 +403,7 @@ fn norm0(v: Vec3) -> Vec3 {
 }
 
 /// F-52074: signed XZ angle between two unit vectors.
-fn ang_xz_unit(a: Vec3, b: Vec3) -> f32 {
+pub(crate) fn ang_xz_unit(a: Vec3, b: Vec3) -> f32 {
     let dot = fma(a.x, b.x, b.z * a.z);
     let s = fms(b.x, a.z, a.x * b.z);
     acos32(dot) * if s >= 0.0 { 1.0 } else { -1.0 }
@@ -677,6 +677,10 @@ impl Aiv {
     /// F-65527
     pub fn line_used_up(&self) -> bool {
         self.progress >= self.ln.pts.end()
+    }
+    /// the line's progress (+30784), the point ring's base (+26480) and count (+26472)
+    pub fn line_ring(&self) -> (i32, i32, i32) {
+        (self.progress, self.ln.pts.base, self.ln.pts.count)
     }
     /// F-28749: the first control point ahead of the car
     pub fn next_point(&self) -> Vec3 {

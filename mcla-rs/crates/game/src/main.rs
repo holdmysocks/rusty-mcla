@@ -57,6 +57,8 @@ mod damageparts;
 mod damagemap;
 mod cutscene;
 mod drivers;
+mod drvanim;
+mod drvmachine;
 mod game;
 mod glyphs;
 mod keybinds;
@@ -142,6 +144,8 @@ mod aiv;
 mod tcp_rail;
 mod brain;
 mod brainpath;
+mod cruising;
+mod railroute;
 mod brainturn;
 mod vehicle_model;
 mod vehicles;
@@ -390,6 +394,9 @@ struct App {
     arrest_station: Option<u32>,
     /// CopArrest.sco 0x6e4 AmbientMgr_SetTrafficEnable(0) for the scene: the traffic target to give back after it
     arrest_traffic: Option<usize>,
+    /// the police manager's state 3 (+60): from CopArrest.sco 0xa1f PoliceManager_SetArrestCutSceneOnScreen (F-79053) to
+    /// its PoliceManager_CutSceneDone (F-30655) - the walkers are not drawn meanwhile (F-68474 returns when F-36139 says so)
+    arrest_on_screen: bool,
     /// CopArrest.sco's TRANSITIONMOVIE black: 1 s down before the scene (waited), up 1 s at its start, the scene's
     /// fade_to_black, held over the form, up 1 s after the station reset (waited)
     arrest_mask: boomcam::CutMask,
@@ -466,6 +473,9 @@ struct App {
     warp: Option<hudmap::CineWarp>,
     warp_t: f32,
     warp_view: Option<(Vec3, Vec3, Vec3, f32)>,
+    /// the cine-to-game camera blend, and the scene camera last shown (with whether its scene blends)
+    cam_blend: cine::CamBlend,
+    cine_last_cam: Option<((Vec3, Vec3, Vec3, f32), bool)>,
     /// Warper_Warp('DEFAULT_WITH_CUT')'s climb (hudmap::CineClimb) and the action it holds until
     /// it is over (IsReadyToLoadStuff); its view (eye, look, up, fov radians), kept at its end until
     /// the dive takes over; the climb's last camera and lens (the dive's start); frames held
@@ -671,6 +681,8 @@ struct App {
     cruise_hold: bool,
     /// the driving camera's look-around (boomcam::LookAround) and CAMERA_UP from the pad
     look: boomcam::LookAround,
+    /// the local human rider's look at a racer beside him (drivers::RivalLook, the driver's +380)
+    rider_look: drivers::RivalLook,
     pad_look_up: f32,
     /// the event camera's pad edges this frame: CAM_PAN_LEFT / RIGHT and CAM_UP / CAM_DOWN pressed
     pad_pan: (bool, bool),
@@ -848,6 +860,14 @@ impl App {
                     self.cine.reanimate("cut_drv01", "cut_cop_alert_02", "cut_drv01");
                     let at = self.vehicles.player().map(|c| c.state.pos).unwrap_or_default();
                     self.police.suspect_fled(t, at);
+                    // (StopStreamPrimary, PlayStreamSecondary: the walk's stream stops and CUT_COP_ALERT, prepared before the
+                    // walk (F-11568 -> F-56810), plays (F-85444 -> F-16885 -> F-58551, which stops the speech and the police
+                    // radio by the object's flags); the walk's end stops it (StopStreamSecondary F-45468, the bail's 0xb6c) -
+                    // the scene audio's sync below turns the one cutscene slot off there)
+                    if self.audio.as_mut().is_some_and(|a| a.obj_cutscene("CUT_COP_ALERT", true, true)) {
+                        self.speech.stop();
+                        self.radio.stop();
+                    }
                     if !self.speech.busy() {
                         self.speech.say("PLAYER_COPS_ESCAPE_TICKET");
                     }
@@ -927,8 +947,15 @@ impl App {
                         self.speech.play_taunt();
                     }
                 }
-                // (the stream player's four slots: the starter scenes' own dialogue stream)
-                "stopaudiostreams" => {}
+                // (F-75531 -> F-86536: the stream player's four slots stopped and released - the starter scene's own
+                // stream, CUTSCENES_GEN_PRERACE_STARTER_*, 1 s after the cut; the scene audio's sync keeps the name, so it
+                // does not start it again before the scene ends)
+                "stopaudiostreams" => {
+                    if let (Some(n), Some(au)) = (&self.cine_audio, self.audio.as_mut()) {
+                        log::info!("prerace scene: stopaudiostreams at {:.2} s ({n} stopped)", a.t);
+                        au.obj_cutscene(n, false, false);
+                    }
+                }
                 "window_down_left" | "window_down_right" | "window_up_left" | "window_up_right" => {
                     if let Ok(slot) = usize::try_from(e.slot) {
                         windows.push((slot, e.event.ends_with("right"), e.event.contains("down")));
@@ -1078,6 +1105,7 @@ impl App {
             arrest_form: None,
             arrest_station: None,
             arrest_traffic: None,
+            arrest_on_screen: false,
             arrest_mask: Default::default(),
             arrest_wait: false,
             arrest_fade: None,
@@ -1117,6 +1145,8 @@ impl App {
             warp: None,
             warp_t: 0.0,
             warp_view: None,
+            cam_blend: cine::CamBlend::default(),
+            cine_last_cam: None,
             climb: None,
             climb_view: None,
             climb_end: None,
@@ -1226,6 +1256,7 @@ impl App {
             cruise_on: false,
             cruise_hold: false,
             look: Default::default(),
+            rider_look: Default::default(),
             pad_look_up: 0.0,
             pad_pan: (false, false),
             pad_pan_side: 0.0,
@@ -2467,14 +2498,14 @@ impl App {
         if self.input.down(KeyCode::BracketLeft) {
             self.time_of_day = (self.time_of_day - dt * 2.0 + 24.0) % 24.0;
         }
-        // the clock runs while driving: one game hour per minute (a day in 24 minutes),
-        // unless a time was fixed on the command line
+        // the clock runs while driving: cloudspeed.xml's hours per second (1/60: one game hour per minute, a day in 24
+        // minutes; F-74970 at sky +828), unless a time was fixed on the command line
         // (CarSelection holds the clock - Graphics_GetAndSetAutoUpdateTimeOfDay(0) at its start, (1) once ACCEPT's
         // black is up - and the parked cars, AmbientMgr_SetParkedCarsEnable 0 / 1)
         let car_selection = (1..=3).contains(&self.intro_stage) || self.game.starter_pick.is_some();
         self.vehicles.parked_held = car_selection;
         if self.opt.time.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !car_selection {
-            let dh = dt / 60.0;
+            let dh = dt * sky::cloud_speed().hour_rate;
             self.time_of_day = (self.time_of_day + dh) % 24.0;
         }
         self.weather_tick(dt);
@@ -3107,7 +3138,7 @@ impl App {
                     // manager's target (+68) is the player (F-79134). "impact start car done" then ends at its first
                     // update with the game paused (F-38554: the flags' 0x20000000, F-28290 = the cine layer's +320,
                     // set while the pause manager pauses, F-94276), else after 5 s in it (+156 += dt, F-71604); its
-                    // exit (F-85478) is the engine sound's start with 0 (vt+52). The reset below stands for that
+                    // exit (F-85478) is the engine sound's start with 0 (vt+52). The pause menu opened below is that
                     // pause, so the start goes with it; with the police on the player there is neither and the car
                     // stays damaged out
                     if self.wreck_timer <= 0.0 && self.game.police_on_player {
@@ -3115,43 +3146,35 @@ impl App {
                             self.wreck_engine = 3;
                             self.wreck_done = 0.0;
                         }
+                    } else if self.wreck_timer <= 0.0 && self.game.mode == Mode::Race && self.game.race.is_some() {
+                        // in a race the wreck's "what next" (F-89773) sets Race_IsFinished (+3773): the race ends -
+                        // with Race_IsDamagedOut, no results posts and no end sequence (race_damaged_out.md). The car
+                        // stays wrecked for the race-over menu's repair rows; $IsRaceFinish takes the driver to
+                        // cruising with no start, so a stopped engine sound stays stopped
+                        if self.wreck_engine == 2 {
+                            self.wreck_engine = 4;
+                        }
+                        self.game.race_wreck_over = true;
+                        log::info!("wreck over in a race: the race is over (damaged out {})", self.game.race_dmg_out);
                     } else if self.wreck_timer <= 0.0 {
+                        // the wreck's end in the cruise (F-79134 -> F-89773): unless it is up already, UI_MENU_SELECT and
+                        // the PauseMenu opened - the game paused, the menu the cruise menu's DAMAGED OUT tab with its
+                        // QUICK FIX row (Game::ui, F-43165). No repair and no money here: the car stays wrecked until
+                        // QUICK FIX (`quick_fix`, free) or the garage. The pause ends "impact start car done" at once
+                        // (F-38554), its exit starting the engine sound with 0 (F-85478)
                         if std::mem::take(&mut self.wreck_engine) == 2 {
                             self.sound.play_ignition();
-                        } else if self.sound.engine_stopped() {
-                            // (the reset stands for the menu's QUICK FIX: F-39432 sets a stopped sound running, vt+48)
-                            self.sound.engine_set_running();
                         }
-                        // the wreck event's end (F-79134 -> F-89773). (approx.: the original then opens the
-                        // PauseMenu in the cruise - its QUICK FIX row, free - or ends the race into the
-                        // race-over menu; the port has neither row yet, so the car is set going here,
-                        // free, as that QUICK FIX would)
-                        let safe = self.safe_matrix;
-                        if let Some(c) = self.vehicles.player_mut() {
-                            let f = c.state.forward();
-                            let gear = c.state.gear;
-                            // (QUICK FIX, F-32850: a damaged-out car from the racer's safe matrix, +224 - out of the water
-                            // it drove into - upright with that matrix's heading; approx. without one: where it stands, lifted)
-                            let (at, yaw) = match safe {
-                                Some((pos, rot)) => (pos, quick_fix_yaw(rot)),
-                                None => (c.state.pos + Vec3::Y * 0.8, (-f.x).atan2(-f.z)),
-                            };
-                            c.state = physics::CarState::new(at, yaw);
-                            c.pose_history.reset();
-                            c.state.gear = gear;
-                            c.placed = false;
-                            // (the reset's F-30391(0): the flags +592 to 0, so the damaged-out hold ends; the
-                            // engine word +46 = 1)
-                            c.stunned = 0.0;
-                            c.engine_off = false;
-                            c.deactivated = false;
+                        if self.game.mode != Mode::Paused {
+                            if let Some(a) = self.audio.as_mut() {
+                                a.obj("UI_MENU_SELECT");
+                            }
+                            self.game.mode = Mode::Paused;
+                            self.game.pause_page = 0;
+                            self.game.pause_tab = 0;
+                            self.game.menu_sel = 0;
+                            log::info!("wreck over in the cruise: the pause menu (DAMAGED OUT)");
                         }
-                        self.crash_bits = 0;
-                        self.crash_exploding = false;
-                        // (the player's reset puts the warpers back, F-86999)
-                        self.warp_wipe.reset();
-                        self.warp_expl.reset();
-                        self.warp_look.reset();
                     }
                 } else if let Some(c) = self.vehicles.player_mut() {
                     let dm = c.model.simtunes.as_ref().map(|s| s.base.damage.clone()).unwrap_or_default();
@@ -3245,6 +3268,11 @@ impl App {
                                 let m = self.game.career.strings.get("splash_damaged_out").map(|s| s.to_uppercase()).unwrap_or_else(|| "DAMAGED OUT".into());
                                 self.game.show_message(&m);
                                 self.game.message_timer = 2.0;
+                                // (in a race not over and with the player not pursued: Race_IsDamagedOut, race +3774 = 1
+                                // - F-89773's partner listener, bust_gas_wreck_rule.md 3.2)
+                                if self.game.mode == Mode::Race && self.game.race.is_some() && self.game.race_end_t.is_none() && !self.game.race_wreck_over && !self.game.police_on_player {
+                                    self.game.race_dmg_out = true;
+                                }
                                 // (approx.: a driver not loaded leaves the hit clip at 0)
                                 self.wreck_timer = self.drivers.hit_hard_secs(&c.model.name).unwrap_or(0.0) + 4.0;
                                 // the driver goes to "impact damageout" only right side up (IsUpsideDown, the
@@ -3587,7 +3615,9 @@ impl App {
         // an in-game scene's audio (core_rolling_prototype): its stream prepared by the name its script gives
         // (F-27055), played as the scene plays (F-16075 -> F-58551: the speech and the police radio stop, flags 0x3
         // on every one of them), stopped with the scene (F-19749)
-        let want = self.cine.playing.as_ref().and_then(|s| cine::scene_audio(&s.name));
+        // (a race-start scene's script runs on past its cut to the clip's end, FinishScene, and its stream with it - until
+        // its `stopaudiostreams` event, 1 s after the cut in the starter scenes)
+        let want = self.cine.playing.as_ref().and_then(|s| cine::scene_audio(&s.name)).or_else(|| self.prerace_acts.as_ref().and_then(|a| cine::scene_audio(&a.scene)));
         if want != self.cine_audio && self.cuts.playing.is_none() {
             if let Some(a) = self.audio.as_mut() {
                 if let Some(old) = self.cine_audio.take() {
@@ -5040,6 +5070,23 @@ impl App {
         if self.game.mode == Mode::Race {
             let ready = self.vehicles.player().map_or(true, |c| world.ready_at(c.state.pos));
             race_finished = self.game.update_race(&mut self.vehicles, sim_dt, ready);
+            // (the checkpoint cores' racer-finished handler for racer 0, offline: over the line damaged out
+            // (Racer_IsDamagedOut, F-36475: damage >= MaxDamage) -> Race_ToggleDamagedOut(race, 0) and
+            // Racer_SetDamagePercent(0.95) - F-73522 -> F-92305: 95 % of MaxDamage, the damaged-out bit 0x04 off - so the race
+            // counts. The finish is $IsRaceFinish for the driver: its impact states go to cruising without the
+            // wreck's "what next", and a stopped engine sound stays stopped)
+            if race_finished && !self.game.race_wreck_over && self.game.race.as_ref().is_some_and(|r| r.kind == game::RaceKind::Race) {
+                if let Some(p) = self.vehicles.player_mut().filter(|p| p.state.damage >= 1.0) {
+                    p.state.damage = 0.95;
+                    self.game.race_dmg_out = false;
+                    self.crash_bits &= !0x04;
+                    self.wreck_timer = 0.0;
+                    self.wreck_engine = if self.wreck_engine == 2 { 4 } else { 0 };
+                    log::info!("finished damaged out: Race_IsDamagedOut off, damage 0.95");
+                }
+            }
+            // (Race_IsFinished set by the wreck: the race script ends and the core goes to its race over)
+            race_finished |= self.game.race_wreck_over;
             // (the race scripts' CalculateRankOrdered / Unordered for racer 0 while the player has not finished and the
             // race is not over: the lead-change count kLED - F-37138, F-90700)
             if let Some(r) = self.game.race.as_ref() {
@@ -6446,6 +6493,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         None => self.peds.set_view(frontend.map_or(self.cam.forward(), |f| f.dir), 0.0),
                     }
                     self.peds.read_ahead_also(frontend.and(self.vehicles.player().map(|c| c.state.pos)).map(|p| (p, self.titlecam.saved_hour().unwrap_or(self.time_of_day))));
+                    // (the people's unspawner runs only while the traffic's region list has roads, F-75661)
+                    self.peds.traffic_regions = self.vehicles.traffic_regions();
                     self.peds.update(&mut gpu, nav, &world.collider, &|p, r, out| props.obstacle_boxes_near(p, r, out), focus, &threats, signals, self.time_of_day, sim_dt);
                     // (the layout items' people: placed, removed, and what the spawners see next)
                     if frontend.is_none() {
@@ -6687,6 +6736,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (F-83946 takes system 0 of the experience tables, Progression, through F-68013 / F-14176)
                 self.police.progress = self.game.career.exp_tables.system("Progression").map_or(rewards::progress(self.game.rep).1, |d| d.fraction(self.game.rep));
                 self.police.radio_busy = self.radio.busy();
+                self.police.speech_busy = self.speech.busy();
                 self.police.in_race = self.game.race.is_some();
                 // (the police manager and its tactics run once a game frame, 1/30 s - the chassis ticks twice in
                 // between; their timers and per-frame tests (the +144 "still" step) take that dt. The level probe
@@ -6868,6 +6918,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.arrest_deact = true;
                 let goons = self.police.goons;
                 let mut started_scene = false;
+                // (0xa1f, a cops' arrest only - the payback's goons take 0x940: SetArrestCutSceneOnScreen, before the scene pick)
+                if !goons {
+                    self.arrest_on_screen = true;
+                }
                         // the arrest (CopArrest.sco): the wiped-out biker's scene first (manager +64, F-22530), then the
                         // payback's (race type 5), else the scene by the number of cops in the chase
                         // (PoliceManager_GetNumCopsInLatestTactic)
@@ -6984,6 +7038,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if self.game.mode == Mode::Race {
             if race_finished {
                 // player finished: gather results
+                // (or the race was ended by his wreck: Race_IsDamagedOut - no results posts, no end sequence)
+                self.game.race_wreck_over = false;
+                let dmg_out = self.game.race_dmg_out;
                 let mission = self.game.race.as_ref().map(|r| (r.kind, r.failed, r.time)).filter(|m| m.0 != game::RaceKind::Race);
                 let res = if let Some((kind, failed, time)) = mission {
                     let what = if kind == game::RaceKind::Delivery { "DELIVERY" } else { "PAYBACK" };
@@ -7026,7 +7083,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (a series' or a tournament's results put a damaged-out player last, the others behind him
                     // up one: F-87120 from calculateResultsSeries / the tournament's)
                     let event = self.game.series.is_some() || self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map_or(false, |d| self.game.career.tournament_of(&d.id).is_some());
-                    if event && self.vehicles.player().map_or(false, |p| p.state.damage >= 1.0) {
+                    // (approx.: a damaged-out player is put last in any race too - the ordinary core's calculateResults
+                    // is not read; there the place only reaches the hookmen's branches below)
+                    if (event || dmg_out) && self.vehicles.player().map_or(false, |p| p.state.damage >= 1.0) {
                         if let Some(k) = standings.iter().position(|e| self.vehicles.cars.get(e.0).map_or(false, |c| c.is_player)) {
                             let me = standings.remove(k);
                             standings.push(me);
@@ -7052,7 +7111,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (a time trial: the best time, the target beaten or not, the result's panel - `mc4`)
                     let s18_id = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).map(|d| d.id.clone()).unwrap_or_default();
                     self.game.mc4_tt_end(&s18_id, mine);
-                    self.game.award_race(place, field);
+                    // (the race reward listens to RACE_EVENT, which a damaged-out race does not post - F-12673)
+                    if !dmg_out {
+                        self.game.award_race(place, field);
+                    }
                     if let Some(sp) = self.game.alt_finished(place) {
                         log::info!("alt hookman: {} after the race", sp);
                         self.speech.say_as(sp, &self.game.althk.voice);
@@ -7060,7 +7122,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (a hookman who had to be beaten was not: back to the cruise after the panels. His
                     // mission is on MISSION RESULTS only when one of its conditions was updated -
                     // F-66221 lists the updated missions, `mu_pending`)
-                    if self.game.hookman_race && place > 1 && self.game.flash_menu.is_some() {
+                    if self.game.hookman_race && (place > 1 || dmg_out) && self.game.flash_menu.is_some() {
                         if self.game.career.hookman_mission().filter(|id| id.starts_with("BEAT_") || id.starts_with("REDLIGHT_")).is_some() {
                             self.game.career_over = true;
                         }
@@ -7098,7 +7160,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if self.game.career.tour_table.is_some() {
                         self.game.series_first = true;
                     }
-                    self.game.career.event(career::Ev::Race { district: &district, place, hookman, class: &class, race: &race_id, beat_goal });
+                    if !dmg_out {
+                        self.game.career.event(career::Ev::Race { district: &district, place, hookman, class: &class, race: &race_id, beat_goal });
+                    }
                     // (the MISSION_EVENT of the man raced: his story CORE's - `Career::core_race_end` - or,
                     // after his red light race won and not damaged out, REDLIGHT_GH_01's man's
                     // RED_LIGHT_GH_01_COMPLETE - `<d>_redlight_hk1` 0x69a5..0x6a23)
@@ -7113,13 +7177,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.game.career.core_race_end(&m, place, clean, self.game.rep);
                         }
                     }
-                    // (a finished race is an unlocked race: `mc4`)
-                    self.game.mc4_race_finished(&race_id);
-                    // (step 23: the race-end statistics, F-98556)
-                    self.game.mc4_race_stats(place, &class, my_time);
-                    // (step 23b: the race's goals - F-96807 from F-98556)
-                    let s23b_dmg = self.vehicles.player().map_or(0.0, |c| c.state.damage);
-                    self.game.mc4_race_goals(place, my_time, s23b_dmg);
+                    // (damaged out: no race-results event, so no unlock (the career's message handler's race-complete
+                    // arm -> F-81609); the statistics handler F-98556 returns at once on the race's +3774, and the
+                    // goals F-96807 are called from it)
+                    if !dmg_out {
+                        // (a finished race is an unlocked race: `mc4`)
+                        self.game.mc4_race_finished(&race_id);
+                        // (step 23: the race-end statistics, F-98556)
+                        self.game.mc4_race_stats(place, &class, my_time);
+                        // (step 23b: the race's goals - F-96807 from F-98556)
+                        let s23b_dmg = self.vehicles.player().map_or(0.0, |c| c.state.damage);
+                        self.game.mc4_race_goals(place, my_time, s23b_dmg);
+                    }
                     // (GOAL ATTACK: the race's end hook F-84893 - SetAllPoliceUnderground(0, 1))
                     if self.game.goal_attack {
                         self.police.units_up();
@@ -7141,6 +7210,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     // a hangout's series: the winner's tally; three wins end it, else the next race
                     let mut s15_series_done: Option<(String, usize)> = None;
+                    // (a series / tournament decided by this race: bComplete / bFailure)
+                    let mut s_decided = false;
                     let mut s_series_won: Option<(Option<String>, String)> = None;
                     if let Some(sr) = self.game.series.as_mut() {
                         let winner = res.first().map(|r| if r.0.starts_with("YOU") { "YOU".to_string() } else { r.0.clone() }).unwrap_or_default();
@@ -7153,6 +7224,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         match over {
                             Some(w) => {
                                 self.game.next_event_race = None;
+                                s_decided = true;
                                 if w == "YOU" {
                                     s_series_won = Some((sr.story.as_ref().map(|s| s.0.clone()), sr.key.clone()));
                                 }
@@ -7210,6 +7282,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(won) = self.game.career.tour_decided.take() {
                         self.game.opt_x.arcade.d.banner = Some((3.5, won));
                         self.game.opt_x.arcade.d.banner_kind = 4;
+                        s_decided = true;
+                    }
+                    // (EndOfRaceSequence is skipped when the player did not finish - finish time INT_MAX - unless the race
+                    // is a series' / tournament's and decided it (0x15c9): straight to raceEnd, the race-over menu)
+                    if dmg_out && !s_decided {
+                        self.game.race_slow_wait = None;
+                        self.game.race_end_t = None;
+                        // (the standings, form 49, are among the sequence's forms - OrderedSeriesCore 0x16df, the
+                        // tournament core the same: not shown)
+                        self.game.series_first = false;
                     }
                     if let Some(line) = tournament {
                         // (the points decide: the career hears of it with the next event)
@@ -7222,7 +7304,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 // (the REWARDS page gives the pending list: the missions' rewards, then the race's money and experience -
                 // its Progression experience posts the reputation: `give_pending`)
-                if !self.game.rewards_ask() {
+                if !self.game.rewards_ask() && !dmg_out {
                     self.game.career.event(career::Ev::Rep(self.game.rep));
                 }
                 self.game.last_results = res;
@@ -7482,6 +7564,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // SetAllPoliceUnderground(0, 1))
             self.sound.play_ignition();
             self.police.units_up();
+            self.arrest_on_screen = false;
         }
         // (F-10725: the crank's end sets the engine running again, chassis engine +46 = 1)
         if self.sound.take_engine_running() {
@@ -7668,6 +7751,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 p.engine_off = false;
                 p.deactivated = false;
                 self.crash_bits = 0;
+                self.crash_exploding = false;
             }
             // (F-39432 also sets the engine sound running at once, vt+48 F-79364: state 4, no crank)
             self.sound.engine_set_running();
@@ -8071,7 +8155,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // is left to the boom cameras below)
                 let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                 let car_view = replay::CarView::of(&render_state, car.model.max.y);
-                let mut probe = ReplayProbe(&cam_level);
+                // (and the watched car's own hull, for the polar camera's push-out)
+                let own_hull = car.tuned.as_deref().unwrap_or(&car.model.params).hull.as_ref().map(|h| physics::camprobe::CamObj::of_hull(h, render_state.pos, render_state.rot));
+                let mut probe = ReplayProbe(&cam_level, own_hull);
                 if let Some(p) = self.game.replay.as_mut() {
                     // (the right stick turns the polar camera, F-79918; the triggers' zoom is not wired)
                     p.stick(self.pad_look.0, self.pad_look.1, 0.0, dt);
@@ -8843,7 +8929,30 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.chase.up = self.boom_up.unwrap_or(Vec3::Y);
         // (the race-start warp keeps the picture until it lands on the scene's camera, though the scene
         // already runs for its last second - mcWarper state 19 / 29)
-        if let Some((eye, fwd, up, fov)) = self.cine.camera().filter(|_| self.warp_view.is_none() && !self.garage_in.as_ref().map_or(false, |g| g.dive.is_some())) {
+        let scene_cam = self.cine.camera().filter(|_| self.warp_view.is_none() && !self.garage_in.as_ref().map_or(false, |g| g.dive.is_some()));
+        // (cam_to_game: the viewport blends from the scene camera's last view to the game camera over 1 s - cine::CamBlend,
+        // F-82215; a cut hand-off starts it at its end, so nothing shows)
+        match scene_cam {
+            Some(c) => self.cine_last_cam = Some((c, self.cine.playing.as_ref().map_or(false, |sc| cine::blends_to_game(&sc.name)))),
+            None => {
+                if let Some(((eye, fwd, up, fov), blend)) = self.cine_last_cam.take() {
+                    self.cam_blend.start(cine::cam_rows(eye, fwd, up), fov, !blend);
+                }
+            }
+        }
+        if scene_cam.is_none() && self.cam_blend.active() {
+            let fwd = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
+            let target = cine::cam_rows(self.chase.pos, fwd, self.chase.up);
+            let mut out = target;
+            let fov = self.cam_blend.step(dt, &mut out, &target, self.cam.fov_y);
+            let eye = Vec3::new(out[12], out[13], out[14]);
+            self.chase.pos = eye;
+            self.chase.look = eye - Vec3::new(out[8], out[9], out[10]);
+            self.chase.up = Vec3::new(out[4], out[5], out[6]);
+            self.cam.pos = eye;
+            self.cam.fov_y = fov;
+        }
+        if let Some((eye, fwd, up, fov)) = scene_cam {
             self.chase.pos = eye;
             self.chase.look = eye + fwd;
             self.chase.up = up;
@@ -9233,14 +9342,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         stick = v;
                     }
                 }
-                self.nav_free = self.game.map_free.is_some();
+                self.nav_free = self.game.map_free.is_some() || self.game.map_drift.is_some();
                 let busy = self.nav.opening();
                 self.game.nav_busy = busy;
                 if stick != glam::Vec2::ZERO && !fresh && !busy {
                     let before = self.nav.cursor;
                     self.nav.update(0.0, false, false, stick, aspect);
                     let step = stick * 0.5 * self.nav.eye.y * dt;
-                    self.nav.cursor = before + Vec3::new(step.x, 0.0, step.y);
+                    self.nav.cursor = before;
+                    self.nav.move_cursor(before + Vec3::new(step.x, 0.0, step.y));
                     // (at the screen's edge the view goes along - approx.: the inner 80 %; the
                     // game's limits NM+572..584 hold runtime values not read)
                     if let Some(q) = self.nav.ndc(self.nav.cursor, aspect) {
@@ -9251,9 +9361,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.nav.push(push);
                         }
                     }
-                    self.game.map_free = Some(self.nav.cursor);
-                } else if self.game.map_free.is_some() && self.nav_free_moving {
+                    // (`F-62325`: a selected icon stays selected until the cursor is more than half the reach
+                    // `NM+568` from it on the ground plane - `F-88834`, then `F-29215` deselects)
+                    let held = self.game.map_free.is_none() && self.game.map_cursor > 0;
+                    match (held, self.game.map_sel_pos.or(self.game.map_cursor_pos)) {
+                        (true, Some(sel)) if hudmap::within_xz(self.nav.cursor, sel, self.nav.select_radius() * 0.5) => {
+                            (self.game.map_sel_pos, self.game.map_drift) = (Some(sel), Some(self.nav.cursor));
+                        }
+                        _ => {
+                            self.game.map_free = Some(self.nav.cursor);
+                            (self.game.map_drift, self.game.map_sel_pos) = (None, None);
+                        }
+                    }
+                } else if (self.game.map_free.is_some() || self.game.map_drift.is_some()) && self.nav_free_moving {
                     self.game.map_free_release = true;
+                    self.game.map_reach = self.nav.select_radius();
                 }
                 self.nav_free_moving = stick != glam::Vec2::ZERO;
                 let mut zin = self.input.down(KeyCode::PageUp) || self.input.down(KeyCode::KeyZ) || self.input.down(KeyCode::Equal);
@@ -9572,6 +9694,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if shadow_on {
             globals.collector = [fc_cam.x.trunc(), fc_cam.z.trunc(), 1.0, 0.0];
         }
+        // At night the night fast collector's map stands in the collector's slot (F-55997's night branch, F-28445's
+        // FastCollectorNight; render/mod.rs `night_collector_begin`): the car programs read it round the camera's whole
+        // metres with the day's rule (collector.z 2, city.wgsl `night_collector`). Its casters are drawn at
+        // ShaderGlobals.z, 1 - m_ShadowFade at night. MCLA_NIGHT_FC_OFF=1: not drawn, the cars read 1 as until 2026-11-04.
+        let night_fc_on = !shadow_on && globals.tone[3] > 0.5 && globals.car_amb[3] < 0.5 && !map3d && !self.opt.no_shadows && std::env::var_os("MCLA_NIGHT_FC_OFF").is_none();
+        let nfc_value = self.sky_now().tod.map_or(1.0, |t| 1.0 - t.shadow_fade.clamp(0.0, 1.0));
+        if night_fc_on {
+            globals.collector = [fc_cam.x.trunc(), fc_cam.z.trunc(), 2.0, 0.0];
+        }
         if let Ok(v) = std::env::var("MCLA_DEBUG_VIEW") {
             globals.params[3] = v.parse().unwrap_or(0.0);
         }
@@ -9884,6 +10015,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the walkers' picker at night - figlight.rs: the head lamps as the light set has them
             // and the key light; by day, in the garage and without the weather's keys none)
             let hour = globals.sun_color[3];
+            self.peds.amb_base = Vec3::new(globals.ambient_sky[0], globals.ambient_sky[1], globals.ambient_sky[2]);
             self.peds.night_lights = ((hour > 18.0 || hour < 6.0) && globals.tone[3] > 0.5 && globals.car_amb[3] < 0.5).then(|| {
                 let mut heads = [None; 2];
                 for (h, i) in (0..k).filter(|&i| ls.color[i][3] > 1.5 && ls.color[i][3] < 2.5).take(2).enumerate() {
@@ -10045,6 +10177,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let scene_n = aamode::scene_samples(menu4);
         gpu.set_scene_samples(scene_n);
         gpu.set_aniso16(menu4 || crate::hooks::aniso_16x());
+        gpu.set_night_collector(night_fc_on);
         render::ms::set_plain();
         // PSStreakMotionBlur's matrices and the cars' stencil ids for this frame (render/mb.rs)
         let mb_mtx = {
@@ -10086,6 +10219,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "shadows");
         early_cbs.push(std::mem::replace(&mut enc, gpu.device.create_command_encoder(&Default::default())).finish());
+        // (the story scenes' characters: their own programs, lit by the light manager's state -
+        // skin.rs `CharLight`; MCLA_CHAR_OLD=1: the generic look as before)
+        let hour = globals.sun_color[3];
+        let char_light = skin::CharLight {
+            to_light: Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]),
+            key: Vec3::new(globals.sun_color[0], globals.sun_color[1], globals.sun_color[2]),
+            strength: globals.sun_dir[3],
+            amb: Vec3::new(globals.ambient_sky[0], globals.ambient_sky[1], globals.ambient_sky[2]),
+            night: hour > 18.0 || hour < 6.0,
+            night_path: false,
+            dynamic: None,
+            cine: self.cine.playing.is_some(),
+        };
+        // (at night the scenes' cast takes path A's night lights - the cutscene light list while a scene plays,
+        // cutlights.rs; MCLA_CHAR_NIGHT_OLD=1: the day's lights at night as before)
+        let night_cast = std::env::var("MCLA_CHAR_NIGHT_OLD").is_err();
+        self.cine.set_light(std::env::var("MCLA_CHAR_OLD").is_err().then_some(skin::CharLight { night_path: night_cast, dynamic: self.peds.night_lights.as_ref().map(|d| d.0).filter(|_| night_cast), ..char_light }));
         {
             let gpu = &gpu;
             // (of the world only its sectors: the rest of it is not shared between threads)
@@ -10101,6 +10251,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the walkers as the shadow passes have drawn them: last frame's draw over the vertices this frame's
             // `peds.prepare` writes before the submit - prepare now runs beside these passes, below)
             let peds_shadow = self.peds.shadow_part();
+            // (the scenes' cast and the hangouts' people the same: `cine.prepare` runs beside the passes too)
+            let cine_shadow = self.cine.shadow_part();
             let shadow_job = || -> (wgpu::CommandBuffer, usize, usize) {
                 let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shadow") });
                 let mut n = 0usize;
@@ -10164,7 +10316,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(s) = &peds_shadow {
                         s.draw(&mut sp, gpu, &mut n);
                     }
-                    self.cine.draw(&mut sp, &gpu, true, &mut n);
+                    if let Some(s) = &cine_shadow {
+                        s.draw(&mut sp, gpu, &mut n);
+                    }
                     sp.set_pipeline(&gpu.pipeline_shadow_inst);
                     sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                     self.props.draw(&mut sp, &gpu, self.cam.pos, &lf, None, &mut n);
@@ -10366,7 +10520,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(s) = &peds_shadow {
                         s.draw(&mut sp, gpu, &mut n);
                     }
-                    self.cine.draw(&mut sp, &gpu, true, &mut n);
+                    if let Some(s) = &cine_shadow {
+                        s.draw(&mut sp, gpu, &mut n);
+                    }
                     sp.set_pipeline(if gpu.casc_cull_kinds & render::CASC_CULL_PROP != 0 { &gpu.pipeline_casc_inst_cull } else { &gpu.pipeline_casc_inst });
                     sp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
                     self.props.draw(&mut sp, &gpu, self.cam.pos, &lf, None, &mut n);
@@ -10406,18 +10562,43 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 e.finish()
             };
+            // --- the night fast collector (the props, walkers and characters round a point 16 m ahead, from above) ---
+            let nfc_vp = render::night_collector_vp(fc_cam, fc_dir.normalize_or(Vec3::Z), if render::half_pixel_on() { 1.0 / render::NFC_SIZE as f32 } else { 0.0 });
+            let night_job = || -> wgpu::CommandBuffer {
+                let mut e = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("night collector") });
+                {
+                    let mut rp = gpu.night_collector_begin(&mut e, nfc_vp, nfc_value);
+                    let mut n = 0usize;
+                    if let Some(s) = &peds_shadow {
+                        s.draw(&mut rp, gpu, &mut n);
+                    }
+                    if let Some(s) = &cine_shadow {
+                        s.draw(&mut rp, gpu, &mut n);
+                    }
+                    rp.set_pipeline(&gpu.pipeline_nfc_inst);
+                    rp.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+                    props.draw_night(&mut rp, gpu, cam_pos, &Frustum::from_view_proj(nfc_vp), &mut n);
+                }
+                gpu.night_collector_blur(&mut e);
+                e.finish()
+            };
             let tiles = if casc.is_some() { 4 } else { 0 };
             use rayon::prelude::*;
             // (the walkers' skinning for this frame, docs/PERFORMANCE.md 2026-10-27 (4): beside the shadow passes)
             let (peds, ped_eye, ped_frustum) = (&mut self.peds, self.cam.pos, &frustum);
+            let ped_hidden = self.arrest_on_screen;
+            // (the scenes' cast and the hangouts' people: skinned beside the passes too; MCLA_CINE_PREP_OLD=1: after them as before)
+            let cine_old = std::env::var_os("MCLA_CINE_PREP_OLD").is_some();
+            let cine_prep = (!cine_old).then_some(&mut self.cine);
             let (mut parts, ()): (Vec<(usize, wgpu::CommandBuffer, usize, usize)>, ()) = mcla_flash::raster::pool().install(|| rayon::join(|| {
-                // (0 the shadow map, 1 - 4 the cascade tiles, 5 the collector, 6 the reflection)
-                (0..7usize)
+                // (0 the shadow map, 1 - 4 the cascade tiles, 5 the collector, 6 the reflection, 7 the night collector)
+                (0..8usize)
                     .into_par_iter()
                     .filter(|&j| match j {
                         0 | 5 => shadow_on,
                         1..=4 => j <= tiles,
-                        _ => refl_on,
+                        6 => refl_on,
+                        _ => night_fc_on,
                     })
                     .map(|j| match j {
                         0 => {
@@ -10429,10 +10610,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             (j, c, n, 0)
                         }
                         5 => (j, collector_job(), 0, 0),
-                        _ => (j, reflection_job(), 0, 0),
+                        6 => (j, reflection_job(), 0, 0),
+                        _ => (j, night_job(), 0, 0),
                     })
                     .collect()
-            }, || peds.prepare(gpu, ped_eye, ped_frustum)));
+            }, || rayon::join(|| peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden), || if let Some(c) = cine_prep { c.prepare(gpu) }).0));
+            if cine_old {
+                self.cine.prepare(&gpu);
+            }
             parts.sort_by_key(|p| p.0);
             for (j, cb, n, sec_n) in parts {
                 if j == 0 {
@@ -10468,30 +10653,27 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.fx.prepare(&gpu, self.cam.pos);
         // (the rain and the lamps' cones in it, as the original draws them - rain.rs)
         rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, next: self.sky_next.as_ref().map(|(_, w, f)| (match w { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, *f)), hour: self.time_of_day, collider: Some(&world.collider) });
-        // (the story scenes' characters: their own programs, lit by the light manager's state -
-        // skin.rs `CharLight`; MCLA_CHAR_OLD=1: the generic look as before)
-        let hour = globals.sun_color[3];
-        let char_light = skin::CharLight {
-            to_light: Vec3::new(globals.sun_dir[0], globals.sun_dir[1], globals.sun_dir[2]),
-            key: Vec3::new(globals.sun_color[0], globals.sun_color[1], globals.sun_color[2]),
-            strength: globals.sun_dir[3],
-            amb: Vec3::new(globals.ambient_sky[0], globals.ambient_sky[1], globals.ambient_sky[2]),
-            night: hour > 18.0 || hour < 6.0,
-            night_path: false,
-            dynamic: None,
-            cine: self.cine.playing.is_some(),
-        };
-        // (at night the scenes' cast takes path A's night lights - the cutscene light list while a scene plays,
-        // cutlights.rs; MCLA_CHAR_NIGHT_OLD=1: the day's lights at night as before)
-        let night_cast = std::env::var("MCLA_CHAR_NIGHT_OLD").is_err();
-        self.cine.set_light(std::env::var("MCLA_CHAR_OLD").is_err().then_some(skin::CharLight { night_path: night_cast, dynamic: self.peds.night_lights.as_ref().map(|d| d.0).filter(|_| night_cast), ..char_light }));
         // (the drivers and riders are mcCharacterPlus instances: path A as the scenes' cast, by day and at night -
         // F-21528, recorded on the player's rider; MCLA_DRV_LIGHT_OLD=1: the city's object look as before)
         self.drivers.set_light(std::env::var("MCLA_DRV_LIGHT_OLD").is_err().then(|| skin::CharLight { night_path: true, dynamic: self.peds.night_lights.as_ref().map(|d| d.0), ..char_light }));
-        self.cine.prepare(&gpu);
         {
             // drivers of the player's car, the racers and the police (traffic models have their own)
             let force = std::env::var("MCLA_DRV_STEER").ok().and_then(|v| v.parse::<f32>().ok());
+            // ctx+120 of the local human's rider (F-28290): the camera's applied look yaw (mcPlayerCamera +112) x 0.8, in a race
+            // the look at a racer beside him (F-70536), -1 while the camera looks back (F-35489; the flag at +76 of the global
+            // F-28290 also tests is taken as clear)
+            let rider_look = {
+                let mut look = self.look.yaw * 0.8;
+                let cars = &self.vehicles.cars;
+                if let (Some(race), Some(me)) = (self.game.race.as_ref(), cars.iter().position(|c| c.is_player && c.model.bike)) {
+                    let others = race.participants.iter().copied().filter(|&k| k != me && cars.get(k).is_some_and(|c| !c.deactivated)).map(|k| (k, cars[k].state.pos));
+                    look = self.rider_look.step(look, dt, (cars[me].state.pos, cars[me].state.rot), others);
+                }
+                if self.look_back {
+                    look = -1.0;
+                }
+                look
+            };
             let mut seats: Vec<drivers::Seat> = self
                 .vehicles
                 .cars
@@ -10531,7 +10713,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // trucks and SUVs seat their driver higher than the shared animation does
                         mat = mat * glam::Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0));
                     }
-                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0], vel: c.state.vel, ride: if c.model.bike { drivers::RideIn::of(&c.state, &c.input, c.is_player, self.cine.playing.is_some()) } else { Default::default() } }
+                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0], vel: c.state.vel, ride: if c.model.bike { drivers::RideIn { look: if c.is_player { rider_look } else { 0.0 }, ..drivers::RideIn::of(&c.state, &c.input, &c.steer_parts, c.is_player, self.cine.playing.is_some()) } } else { Default::default() } }
                 })
                 .collect();
             // the distance LOD (F-12028): every seat here is drawn, so its draw-gate tests pass; the scene byte is a story
@@ -11199,6 +11381,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B people");
                 pass.set_pipeline(&gpu.pipeline_opaque);
                 if !pic_on {
+                    // (F-68474: no walker drawn while the arrest's scene is on screen, F-36139 - `prepare` emitted none)
                     self.peds.draw(&mut pass, &gpu, false, &mut draws);
                     self.cine.draw(&mut pass, &gpu, false, &mut draws);
                 }
@@ -11498,6 +11681,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (MCLA_CASC_DUMP=<file>: the sun's shadow cascades' depth atlas)
             if let Ok(p) = std::env::var("MCLA_CASC_DUMP") {
                 gpu.dump_casc(&p);
+            }
+            // (MCLA_NFC_DUMP=<file.pgm>: the night fast collector's map)
+            if let Ok(p) = std::env::var("MCLA_NFC_DUMP") {
+                gpu.dump_nfc(&p);
             }
             // (MCLA_FC_DUMP=<file>: the fast shadow collector's map)
             if let Ok(p) = std::env::var("MCLA_FC_DUMP") {
@@ -13526,6 +13713,7 @@ impl App {
             rain::load(&mut gpu, &self.opt.data_dir);
             halo::load(&mut gpu, &self.opt.data_dir);
             cutlights::init(&self.opt.data_dir);
+            sky::init_cloud_speed(&self.opt.data_dir);
             siglrefl::load(&gpu, &self.opt.data_dir);
             sunglow::load(&mut gpu);
             pu_draw::load(&mut gpu, &self.opt.data_dir);
@@ -13535,6 +13723,8 @@ impl App {
             // (the scene's pipelines at the driving and the menus' sample counts, built ahead on a thread of their
             // own - render/ms.rs; the city's plain ones for the environment map too)
             render::ms::warm(vec![render::ms::scene(aamode::scene_samples(false)), render::ms::PLAIN, render::ms::scene(aamode::scene_samples(true))]);
+            // (the city's per-material pipelines behind them, which nothing waits for - render/mod.rs `mode_constant`)
+            render::ms::build_behind(gpu.pipeline_opaque_mode.iter().chain(&gpu.pipeline_inst_mode).chain(&gpu.pipeline_opaque_cull_mode).flatten().cloned().collect(), vec![render::ms::scene(aamode::scene_samples(false)), render::ms::scene(aamode::scene_samples(true))]);
             if std::env::var("MCLA_NO_PEDS").is_err() {
                 self.peds.load(&self.opt.data_dir);
                 self.drivers.load(&self.opt.data_dir);
@@ -13570,7 +13760,7 @@ impl App {
                     let c: Vec<f32> = q.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                     if c.len() == 3 {
                         let p = Vec3::new(c[0], c[1], c[2]);
-                        eprintln!("figlight {} {} {} lanes {:?}", c[0], c[1], c[2], figlight::FigureLight::new(&t, p).lanes(p, &figlight::Dynamic::default()));
+                        eprintln!("figlight {} {} {} lanes {:?}", c[0], c[1], c[2], figlight::FigureLight::new(&t, p, Vec3::ZERO).lanes(p, &figlight::Dynamic::default()));
                     }
                 }
             }
@@ -14197,6 +14387,8 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
     let gpu = v.gpu;
     let mut last_mode = u32::MAX;
     let mut pane_pipe = false;
+    // (a material's own pipeline is in force: `pipeline_opaque` is put back after the sectors)
+    let mut mode_pipe = false;
     for sec in secs {
         let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
         if v.occluded.hides_all(sec.batches.iter().map(|b| (b.min, b.max))) {
@@ -14251,6 +14443,14 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
             if b.mode as u32 != last_mode {
                 pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
                 last_mode = b.mode as u32;
+                // (the opaque phase: the material's own pipeline where it has one - render/mod.rs `mode_constant`)
+                if phase == 0 {
+                    let own = gpu.pipeline_opaque_mode[b.mode as usize].as_ref().and_then(|p| p.ready(render::ms::current()));
+                    if own.is_some() || mode_pipe {
+                        pass.set_pipeline(own.unwrap_or(&*gpu.pipeline_opaque));
+                        mode_pipe = own.is_some();
+                    }
+                }
             }
             if pane_zw {
                 let want_pane = matches!(b.mode, MatMode::StoreGlass);
@@ -14268,6 +14468,9 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
     }
     if pane_pipe {
         pass.set_pipeline(&gpu.pipeline_blend);
+    }
+    if mode_pipe {
+        pass.set_pipeline(&gpu.pipeline_opaque);
     }
 }
 
@@ -14300,7 +14503,7 @@ fn lookback_scene(asked: &mut bool, audio: Option<&mut audio::Audio>, on: bool) 
 /// the place where it first touches; the heli's look at the car: city only, both ways
 /// (approx.: the original's undirected sweep F-80278 - the ball at both ends and the sweep in
 /// both directions).
-struct ReplayProbe<'a>(&'a physics::camprobe::CamLevel<'a>);
+struct ReplayProbe<'a>(&'a physics::camprobe::CamLevel<'a>, Option<physics::camprobe::CamObj>);
 
 impl replay::Probe for ReplayProbe<'_> {
     fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
@@ -14315,6 +14518,9 @@ impl replay::Probe for ReplayProbe<'_> {
             return Some(a);
         }
         l.sweep(a, b, r, false).or_else(|| l.sweep(b, a, r, false).map(|(t, n)| (1.0 - t, n))).map(|(t, _)| a + (b - a) * t)
+    }
+    fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+        self.1.as_ref()?.sweep(a, b, r).map(|(t, _)| a + (b - a) * t)
     }
 }
 

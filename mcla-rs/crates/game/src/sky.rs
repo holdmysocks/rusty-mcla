@@ -81,6 +81,48 @@ fn tracks(xml: &str, name: &str) -> Vec<Track> {
     out
 }
 
+/// `tune/sky/cloudspeed.xml` despite its name: seven little-endian words (F-86043 reads two into the sky, F-49975 five
+/// into the sun glow object): the clock's hours per second (sky +832, F-74970: the hour at +828 += it x the update's
+/// step of 1/30 s, wrapped at 24 with a day count at +836), an offset (sky +840, 0 in the file: F-74970 subtracts it from a
+/// value it stores at +236, not followed, not applied), and the glow's query pixel count
+/// (+24, the occlusion count is divided by it), query size (+28) and distance (+36), quad half size (+40) and intensity (+44).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CloudSpeed {
+    pub hour_rate: f32,
+    pub hour_offset: f32,
+    pub glow_pixels: i32,
+    pub glow_query_size: f32,
+    pub glow_distance: f32,
+    pub glow_half_size: f32,
+    pub glow_intensity: f32,
+}
+
+impl CloudSpeed {
+    /// The words as the shipped file has them (used when the file is missing).
+    pub const SHIPPED: CloudSpeed = CloudSpeed { hour_rate: f32::from_bits(0x3C88_888A), hour_offset: 0.0, glow_pixels: 1250, glow_query_size: 20.0, glow_distance: 700.0, glow_half_size: 200.0, glow_intensity: 45.0 };
+
+    pub fn parse(b: &[u8]) -> Option<CloudSpeed> {
+        let w = |i: usize| b.get(4 * i..4 * i + 4).map(|x| [x[0], x[1], x[2], x[3]]);
+        let f = |i: usize| w(i).map(f32::from_le_bytes);
+        Some(CloudSpeed { hour_rate: f(0)?, hour_offset: f(1)?, glow_distance: f(2)?, glow_half_size: f(3)?, glow_intensity: f(4)?, glow_query_size: f(5)?, glow_pixels: i32::from_le_bytes(w(6)?) })
+    }
+}
+
+static CLOUD_SPEED: std::sync::OnceLock<CloudSpeed> = std::sync::OnceLock::new();
+
+/// Read `tune/sky/cloudspeed.xml` once (the shipped words without it).
+pub fn init_cloud_speed(data_dir: &str) {
+    let c = std::fs::read(std::path::Path::new(data_dir).join("tune/sky/cloudspeed.xml")).ok().and_then(|b| CloudSpeed::parse(&b));
+    if c.is_none() {
+        log::info!("cloudspeed.xml: none, the shipped values");
+    }
+    let _ = CLOUD_SPEED.set(c.unwrap_or(CloudSpeed::SHIPPED));
+}
+
+pub fn cloud_speed() -> CloudSpeed {
+    CLOUD_SPEED.get().copied().unwrap_or(CloudSpeed::SHIPPED)
+}
+
 /// The weather sets on the disc: a sky dome file in `tune/sky` plus a keyed sun light
 /// (`TODSun*` in `tune/lighting`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,6 +429,23 @@ impl SkyState {
                 (a, b) => a.or(b),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod cloud_speed_tests {
+    use super::*;
+
+    /// The shipped file's seven words against what the running original holds after F-86043 / F-49975
+    /// (docs/reference/lighting/cloudspeed_evidence_2026-11-04.md): sky +832 0x3C88888A, +840 0; glow +24 1250, +28 20,
+    /// +36 700, +40 200, +44 45. Skipped without the data.
+    #[test]
+    fn the_file_reads_as_the_original_holds_it() {
+        let Ok(b) = std::fs::read("D:/MCLA/extracted/cache/tune/sky/cloudspeed.xml") else { return };
+        let c = CloudSpeed::parse(&b).unwrap();
+        assert_eq!(c, CloudSpeed::SHIPPED);
+        assert_eq!((c.hour_rate.to_bits(), c.hour_offset.to_bits()), (0x3C88_888A, 0));
+        assert_eq!((c.glow_pixels, c.glow_query_size, c.glow_distance, c.glow_half_size, c.glow_intensity), (1250, 20.0, 700.0, 200.0, 45.0));
     }
 }
 

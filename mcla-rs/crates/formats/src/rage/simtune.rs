@@ -177,6 +177,15 @@ tune_struct!(
 );
 
 tune_struct!(
+    /// mcCarStuckTune (component `vehStuck`): vehStuckTune's six (ctor F-93439: 0.3, 2.5, 3.0, 1.05, 0, 0.3), then
+    /// TimeFlipThresh and MinDropRetriggerTime (mcCarStuckTune's ctor F-82704: 0.3, 3.5, 5.0, .., 0.3, 1.0, 5.0)
+    StuckTune {
+        time_thresh @ 24, pos_thresh @ 28, move_thresh @ 32, turn_amount @ 36, rot_amount @ 40, trans_amount @ 44,
+        time_flip_thresh @ 48, min_drop_retrigger_time @ 52,
+    }
+);
+
+tune_struct!(
     /// mcPlayerInputTune
     InputTune {
         sss_threshold @ 24, sss_value @ 28, auto_reverse_speed @ 32, auto_reverse_input @ 36, countersteer_factor @ 72,
@@ -364,6 +373,8 @@ pub struct SimTunes {
     /// mcCarModelTune's bDoubleSidedTrunk (+200, a byte): the car's draw (F-92759) draws the base fragment's meshes on
     /// the `trunk_0` bone and the trunk_swap / trunk_wide slots without back-face culling; None without a vehModel
     pub double_sided_trunk: Option<bool>,
+    /// mcCarStuckTune, component `vehStuck` (None without one)
+    pub stuck: Option<StuckTune>,
     /// mcCarModelTune's vDriverGaugeLightOffset / vDriverNeonLightOffset (+144, +160; the ctor F-97670's (-0.4, 1, -0.825) and
     /// 0): the gauge and neon lights of the driver's draw, in the car's frame (F-42959); None without a vehModel
     pub driver_lights: Option<[[f32; 3]; 2]>,
@@ -598,6 +609,7 @@ impl SimTunes {
                     out.base.damage = DamageTune::read(&rd, c);
                     out.mods.damage = out.base.damage.clone();
                 }
+                "vehStuck" => out.stuck = Some(StuckTune::read(&rd, c)),
                 "vehCamShake" => {
                     out.base.cam_shake = CamShakeTune::read(&rd, c);
                     out.mods.cam_shake = out.base.cam_shake.clone();
@@ -758,6 +770,11 @@ mod movement_tests {
                 };
                 if let Some(t) = super::SimTunes::parse(&res) {
                     let m = t.part_movement;
+                    // (the port's mcCarStuck takes these as constants: every car carries them)
+                    if let Some(k) = &t.stuck {
+                        let v = [k.time_thresh, k.pos_thresh, k.move_thresh, k.turn_amount, k.rot_amount, k.trans_amount, k.time_flip_thresh, k.min_drop_retrigger_time];
+                        assert_eq!(v, [0.3, 3.5, 5.0, 1.05, 0.0, 0.3, 1.0, 5.0], "{:?}", e.file_name());
+                    }
                     println!("{} {:?} window clip {:?} driver lights {:?} damage max {} med {} (base) {} (mods)", e.file_name().to_string_lossy(), m, t.window_clip, t.driver_lights, t.base.damage.max_damage, t.base.damage.med_damage, t.mods.damage.max_damage);
                     if let Some(m) = m {
                         assert!(m.iter().all(|v| *v <= 2), "{m:?}");

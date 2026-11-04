@@ -125,14 +125,70 @@ pub static DATA_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// 2 Gloss, 3 Metallic, 4 Pearl, 5 Sparkle; 0 = the executable's "DirtyMatte").
 pub const PAINT_TYPES: [&str; 6] = ["DIRTY MATTE", "MATTE", "GLOSS", "METALLIC", "PEARLESCENT", "SPARKLE"];
 
+/// The materials of the city's sectors whose opaque batches draw with a pipeline of their own (`Gpu::pipeline_opaque_mode`).
+pub const MODE_PIPES: [MatMode; 13] = [
+    MatMode::Opaque,
+    MatMode::AlphaTest,
+    MatMode::Window,
+    MatMode::Road,
+    MatMode::Neon,
+    MatMode::Decal,
+    MatMode::Ground,
+    MatMode::Terrain,
+    MatMode::StoreInterior,
+    MatMode::StoreSign,
+    MatMode::NeonTint,
+    MatMode::OceanWater,
+    MatMode::OceanWaterLod,
+];
+
+/// The materials of the cars' opaque batches (bodies, wheels, brakes) with a pipeline of their own, without a cull
+/// (`Gpu::pipeline_opaque_mode`) and with the set-up car's cull (`Gpu::pipeline_opaque_cull_mode`).
+pub const CAR_MODE_PIPES: [MatMode; 12] = [
+    MatMode::Opaque,
+    MatMode::AlphaTest,
+    MatMode::Decal,
+    MatMode::Paint,
+    MatMode::Chrome,
+    MatMode::Light,
+    MatMode::Object,
+    MatMode::Rubber,
+    MatMode::BlackGloss,
+    MatMode::Interior,
+    MatMode::Rim,
+    MatMode::DarkGlass,
+];
+
+/// The materials of the props' opaque batches with a pipeline of their own (`Gpu::pipeline_inst_mode`).
+pub const PROP_MODE_PIPES: [MatMode; 6] = [MatMode::Object, MatMode::Foliage, MatMode::AlphaTest, MatMode::Signal, MatMode::BlackGloss, MatMode::StoreSign];
+
+/// `MCLA_MODE_PIPES=0`: every opaque sector batch with the one city pipeline, as before.
+pub fn mode_pipes_on() -> bool {
+    std::env::var("MCLA_MODE_PIPES").map_or(true, |v| v.trim() != "0")
+}
+
+/// The city program reads its material's mode from the constant `MODE_K` when a pipeline sets it, else from the material
+/// uniform as before. The program is one for every material (city, props, cars, people) and branches on the mode; a
+/// pipeline built for one mode is drawn only with that mode's material bound (`mat_bgs`, whose `mode` is the same
+/// number), so it computes the same, and the driver compiles it without the other materials' paths. RTX 3090, 1440p:
+/// city pass A 2 - 3.5 ms -> 0.9 - 1.3 ms on Vulkan, 4.6 -> 1.2 ms on DX12, the same picture (docs/PERFORMANCE.md 2026-11-04 (2)).
+fn mode_constant(src: &str) -> String {
+    format!("override MODE_K: u32 = 4294967295u;\nfn mmode() -> u32 {{ if (MODE_K != 4294967295u) {{ return MODE_K; }} return mat.mode; }}\n{}", src.replace("mat.mode", "mmode()"))
+}
+
+/// The six mcCarPaintTypeTuning files in the paint type's order (F-60347 names them `CarPaint%s` with DirtyMatte, Matte,
+/// Gloss, Metallic, Pearl, Sparkle, and the loader adds the class's extension `.parFileIO`; the archive keeps their names'
+/// hashes only).
+const PAINT_FILES: [&str; 6] = ["0xcec1263b", "0xcc0ab1c3", "0xa91a37a8", "0x3c752d39", "0x7c619591", "0x3547dd17"];
+/// Their fields in the order of the struct (F-44499 registers them at +12 .. +56); every file sets all twelve, so the
+/// constructor's defaults (F-85434) never show.
+const PAINT_FIELDS: [&str; 12] = ["m_fDiffuseIntensity", "m_fSpecIntensity", "m_fAmbientIntensity", "m_fSpecExp", "m_fFresnelExp", "m_fFresnelMin", "m_fFresnelMax", "m_fPaintFalloff", "m_fPearlescence", "m_fNoiseScale", "m_fNoiseStrength", "m_fNoiseExponent"];
+
 /// The shader with the disc's paint tuning written into its table: the six
-/// `tune/vehicle/globalGfxTuning/<type>_PaintType` files (mcCarPaintTypeTuning; their names
-/// survive only as hashes - which file is which type is told from its values: no reflection
-/// at all for the mattes, blotchy noise for the dirty one, no flakes in gloss, fine ones in
-/// metallic and pearl, coarse strong ones in sparkle).
+/// `tune/vehicle/globalGfxTuning/CarPaint<type>.parFileIO` files (`PAINT_FILES`).
 fn paint_tuned(src: &str) -> String {
-    const FILES: [&str; 6] = ["0xcec1263b", "0xcc0ab1c3", "0xa91a37a8", "0x3c752d39", "0x7c619591", "0x3547dd17"];
-    const FIELDS: [&str; 12] = ["m_fDiffuseIntensity", "m_fSpecIntensity", "m_fAmbientIntensity", "m_fSpecExp", "m_fFresnelExp", "m_fFresnelMin", "m_fFresnelMax", "m_fPaintFalloff", "m_fPearlescence", "m_fNoiseScale", "m_fNoiseStrength", "m_fNoiseExponent"];
+    const FILES: [&str; 6] = PAINT_FILES;
+    const FIELDS: [&str; 12] = PAINT_FIELDS;
     let Some(dir) = DATA_DIR.get() else { return src.to_string() };
     let mut rows = Vec::new();
     for f in FILES {
@@ -262,6 +318,51 @@ pub struct CascPass {
 }
 /// The fast shadow collector's map: 256 x 256 texels of 1 m round the camera.
 pub const FC_SIZE: u32 = 256;
+/// The night fast collector's map (F-28445's FastCollectorNight: 512 x 512, one 8-bit channel), whatever the
+/// SHADOW RESOLUTION.
+pub const NFC_SIZE: u32 = 512;
+/// Its half reach in metres and its eye's lead: 16 (F-55997's night branch, `*0x82023A98`).
+pub const NFC_REACH: f32 = 16.0;
+
+/// The night fast collector's view-projection (F-55997, state 4 at night; LIGHTING.md "The night fast collector"):
+/// an ortho box 32 m square and 600 m deep (F-11735's +-16, +-300) seen from straight above, its eye 100 m over
+/// the camera and 16 m ahead of it along the camera's forward in the plan (the camera matrix's row 2 x -16 in x and z,
+/// not set to unit length), not snapped. `px` = the half texel the console's pixel centres put on it (1 / NFC_SIZE
+/// with `half_pixel_on`, else 0): the map is drawn that much along +x and +z. Read with the day's rule, uv =
+/// (p.xz - trunc(camera.xz)) / 256 + 0.5 - so a point reads the map at eye + (p - trunc(camera)) / 8.
+pub fn night_collector_vp(cam: Vec3, forward: Vec3, px: f32) -> Mat4 {
+    let e = Vec3::new(cam.x + forward.x * NFC_REACH, cam.y + 100.0, cam.z + forward.z * NFC_REACH);
+    let (h, d) = (NFC_REACH, 600.0);
+    Mat4::from_cols(Vec4::new(1.0 / h, 0.0, 0.0, 0.0), Vec4::new(0.0, 0.0, -1.0 / d, 0.0), Vec4::new(0.0, -1.0 / h, 0.0, 0.0), Vec4::new(px - e.x / h, e.z / h - px, e.y / d + 0.5, 1.0))
+}
+
+#[cfg(test)]
+mod night_collector_tests {
+    use super::*;
+
+    /// The night pass's view-projection of 20 frames of the running original at 23:00 (tools/night_collector_reference.py:
+    /// World^-1 x gWorldViewProj of its first VS_ShadowNight draw) against `night_collector_vp` of the frame's camera
+    /// (gViewInverse: place, forward = -row 2), without the half texel (the recorded matrix has none: the console puts
+    /// it in its pixel centres); and the value its PS_ShadowNight writes, c63.z = 1 - m_ShadowFade (0.8 at 23:00, Nice).
+    #[test]
+    fn the_view_is_the_originals() {
+        let mut n = 0;
+        for l in include_str!("../testdata/night_collector_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let v: Vec<f32> = l.split_whitespace().skip(1).map(|x| x.parse().unwrap()).collect();
+            let (cam, row2) = (Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5]));
+            let m = night_collector_vp(cam, -row2, 0.0);
+            for i in 0..4 {
+                for k in 0..4 {
+                    let (ours, theirs) = (m.col(i)[k], v[6 + 4 * i + k]);
+                    assert!((ours - theirs).abs() <= 2e-5 * theirs.abs().max(1.0), "{} VP[{}][{}]: {} against {}", l.split_whitespace().next().unwrap(), i, k, ours, theirs);
+                }
+            }
+            assert_eq!(v[22 + 2], 1.0 - 0.8f32);
+            n += 1;
+        }
+        assert_eq!(n, 20);
+    }
+}
 /// The wet road's planar reflection picture (refl.wgsl): 256 x 256, as the game's.
 pub const REFL_SIZE: u32 = 256;
 /// edge of the mini sky (the original's target: 128 x 128, 8:8:8:8 with the console's gamma)
@@ -327,6 +428,21 @@ pub fn lamp_cell_index(p: Vec3) -> usize {
     let cx = ((u * LAMP_GRID.0 as f32) as i64).clamp(0, LAMP_GRID.0 as i64 - 1) as usize;
     let cz = ((v * LAMP_GRID.1 as f32) as i64).clamp(0, LAMP_GRID.1 as i64 - 1) as usize;
     cz * LAMP_GRID.0 as usize + cx
+}
+
+#[cfg(test)]
+mod paint_file_tests {
+    use super::*;
+
+    /// The paint type files are the ones the original loads for each type: `CarPaint<type>.parFileIO` (F-60347, the
+    /// class's extension from its vtable) hashed as the archive hashes names, and the field names as F-44499 registers them.
+    #[test]
+    fn paint_files_are_the_originals() {
+        for (i, ty) in ["DirtyMatte", "Matte", "Gloss", "Metallic", "Pearl", "Sparkle"].iter().enumerate() {
+            assert_eq!(format!("{:#010x}", mcla_formats::hash::joaat(&format!("CarPaint{ty}.parFileIO"))), PAINT_FILES[i], "{ty}");
+        }
+        assert_eq!(PAINT_FIELDS.len(), 12);
+    }
 }
 
 #[cfg(test)]
@@ -953,9 +1069,14 @@ pub struct Gpu {
     pub blank_dmg: wgpu::TextureView,
     pub identity_obj: ObjectBinding,
     pub pipeline_opaque: ms::MsPipe,
+    /// the same for one material (`mode_constant`, `MODE_PIPES`; None, or not `ready` yet: that material draws with
+    /// `pipeline_opaque`), by MatMode
+    pub pipeline_opaque_mode: Vec<Option<ms::MsPipe>>,
     /// a set-up car's opaque batches with back faces culled (`GpuBatch::cull`): the view as is, a mirrored view
     pub pipeline_opaque_cull: ms::MsPipe,
     pub pipeline_opaque_cull_m: ms::MsPipe,
+    /// `pipeline_opaque_cull` for one material (`CAR_MODE_PIPES`), as `pipeline_opaque_mode`
+    pub pipeline_opaque_cull_mode: Vec<Option<ms::MsPipe>>,
     /// the stencil written and nothing else (the wheels' blur discs)
     pub pipeline_stencil_only: ms::MsPipe,
     pub pipeline_blend: ms::MsPipe,
@@ -971,6 +1092,8 @@ pub struct Gpu {
     pub sky_hat: skyhat::SkyHat,
     /// opaque / alpha-tested geometry drawn with per-instance transforms (props)
     pub pipeline_inst: ms::MsPipe,
+    /// the same for one material (`PROP_MODE_PIPES`; None, or not `ready` yet: `pipeline_inst`), by MatMode
+    pub pipeline_inst_mode: Vec<Option<ms::MsPipe>>,
     /// the glass props: instanced, blended, both sides, depth tested but not written (the original's draws: blend
     /// control 0x07060706, cull register 0x18000, depth control 0x00708763)
     pub pipeline_inst_blend: ms::MsPipe,
@@ -1040,6 +1163,24 @@ pub struct Gpu {
     pub fc_blur_bg: wgpu::BindGroup,
     pub pipeline_fc: wgpu::RenderPipeline,
     pub pipeline_fc_blur: wgpu::RenderPipeline,
+    /// The night fast collector (`night_collector_begin`): the casters' map, the blurred map bound where the collector
+    /// is at night (`globals_bg_night`), the casters' constants and bind group (the shadow passes' layout), the
+    /// pipelines (plain, instanced, blur) and the blur's bind group.
+    pub nfc_tex: wgpu::Texture,
+    pub nfc_work_view: wgpu::TextureView,
+    pub nfc_view: wgpu::TextureView,
+    pub nfc_buf: wgpu::Buffer,
+    pub nfc_bg: wgpu::BindGroup,
+    pub pipeline_nfc: wgpu::RenderPipeline,
+    pub pipeline_nfc_inst: wgpu::RenderPipeline,
+    pub pipeline_nfc_blur: wgpu::RenderPipeline,
+    pub nfc_blur_bg: wgpu::BindGroup,
+    /// The globals' bind groups with the night map in the collector's slot (binding 10) - `set_night_collector` swaps
+    /// them with `globals_bg` / `globals_bg_alt` / `mirror_bg`, as the original binds FastCollectorNight to s13 at night.
+    pub globals_bg_night: wgpu::BindGroup,
+    pub globals_bg_alt_night: wgpu::BindGroup,
+    pub mirror_bg_night: wgpu::BindGroup,
+    pub night_fc: bool,
     /// The wet road's planar reflection (refl.wgsl, `Gpu::reflection_pass`): the picture the
     /// road programs read (`t_refl` of the globals), its depth buffer, the pass's own globals
     /// bind group (the main globals without the picture itself), its uniform (the plane's
@@ -1487,6 +1628,34 @@ impl Gpu {
         let fc_prev_view = fc_prev.create_view(&Default::default());
         let (fc_work_view, fc_view) = (fc_work.create_view(&Default::default()), fc_tex.create_view(&Default::default()));
         let fc_depth = create_depth(&device, fc_size(), fc_size());
+        // the night fast collector's two maps (the casters', the blurred one the scene reads), white to start with
+        let nfc_map = |label: &str| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: NFC_SIZE, height: NFC_SIZE, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let nfc_tex = nfc_map("night fast collector");
+        let (nfc_work_view, nfc_view) = (nfc_map("night fast collector, casters").create_view(&Default::default()), nfc_tex.create_view(&Default::default()));
+        {
+            let mut enc = device.create_command_encoder(&Default::default());
+            for view in [&nfc_work_view, &nfc_view] {
+                enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("night fast collector, start"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store } })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            }
+            queue.submit([enc.finish()]);
+        }
         {
             // the maps start lit (the game's too: its map's corners, where the goal is always 255, read 255 and
             // not the 251 a rise from below ends at). MCLA_FC_START=<0..255>: another start level (diagnostics).
@@ -1605,7 +1774,7 @@ impl Gpu {
         });
         let city_samp4 = city_sampler(4);
         let city_samp16 = city_sampler(16);
-        let make_globals_bg_s = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView, samp: &wgpu::Sampler| {
+        let make_globals_bg_sf = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView, samp: &wgpu::Sampler, fc: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("globals bg"),
                 layout: &globals_layout,
@@ -1620,7 +1789,7 @@ impl Gpu {
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&lamp_grid_view) },
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&lamp_data_view) },
                     wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(soft) },
-                    wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&fc_view) },
+                    wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(fc) },
                     wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(refl) },
                     wgpu::BindGroupEntry { binding: 12, resource: casc_buf.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(&casc_view) },
@@ -1630,6 +1799,7 @@ impl Gpu {
                 ],
             })
         };
+        let make_globals_bg_s = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView, samp: &wgpu::Sampler| make_globals_bg_sf(buf, cube, soft, refl, samp, &fc_view);
         let make_globals_bg = |buf: &wgpu::Buffer, cube: &wgpu::TextureView, soft: &wgpu::TextureView, refl: &wgpu::TextureView| make_globals_bg_s(buf, cube, soft, refl, &city_samp4);
         let globals_bg = make_globals_bg(&globals_buf, &env_cube, &env_soft_cube, &refl_view);
         let globals_bg_alt = make_globals_bg_s(&globals_buf, &env_cube, &env_soft_cube, &refl_view, &city_samp16);
@@ -1771,6 +1941,10 @@ impl Gpu {
         let mirror_bg = make_globals_bg(&mirror_globals, &env_cube, &env_soft_cube, &refl_view);
         let floor_globals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("garage floor mirror globals"), contents: bytemuck::bytes_of(&Globals::default()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
         let floor_bg = make_globals_bg(&floor_globals, &env_cube, &env_soft_cube, &fc_view);
+        // (the same three with the night map where the collector is)
+        let globals_bg_night = make_globals_bg_sf(&globals_buf, &env_cube, &env_soft_cube, &refl_view, &city_samp4, &nfc_view);
+        let globals_bg_alt_night = make_globals_bg_sf(&globals_buf, &env_cube, &env_soft_cube, &refl_view, &city_samp16, &nfc_view);
+        let mirror_bg_night = make_globals_bg_sf(&mirror_globals, &env_cube, &env_soft_cube, &refl_view, &city_samp4, &nfc_view);
         let tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tex layout"),
             entries: &[
@@ -1847,7 +2021,7 @@ impl Gpu {
         let identity_obj = make_object_binding(&device, &obj_layout, &ObjectUniform::default(), &blank_dmg);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("city"),
-            source: wgpu::ShaderSource::Wgsl(xs::split_consts(&paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat())).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
+            source: wgpu::ShaderSource::Wgsl(mode_constant(&xs::split_consts(&paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat()))).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("city pl"),
@@ -1857,7 +2031,8 @@ impl Gpu {
         // (every city pipeline per ms::Variant: the scene's are multisampled and write the stencil reference)
         let city_build = {
             let (pl, shader) = (pl.clone(), shader.clone());
-            Arc::new(move |device: &wgpu::Device, v: ms::Variant, blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool, writes: wgpu::ColorWrites| {
+            Arc::new(move |device: &wgpu::Device, v: ms::Variant, blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool, writes: wgpu::ColorWrites, mode: Option<u32>| {
+            let constants: std::collections::HashMap<String, f64> = mode.map(|m| ("MODE_K".to_string(), m as f64)).into_iter().collect();
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(if blend { "city blend" } else { "city opaque" }),
                 layout: Some(&pl),
@@ -1875,7 +2050,7 @@ impl Gpu {
                         blend: Some(if blend { wgpu::BlendState::ALPHA_BLENDING } else { wgpu::BlendState::REPLACE }),
                         write_mask: writes,
                     })],
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
@@ -1892,7 +2067,7 @@ impl Gpu {
         };
         let make_pipeline_x = |blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool| {
             let b = city_build.clone();
-            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, blend, vs, cull, zwrite, wgpu::ColorWrites::ALL))
+            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, blend, vs, cull, zwrite, wgpu::ColorWrites::ALL, None))
         };
         let make_pipeline = |blend: bool, vs: &'static str| make_pipeline_x(blend, vs, None, !blend);
         // (the cars' windows as the original draws them: blended WITH depth writes, back faces first
@@ -1909,25 +2084,44 @@ impl Gpu {
         // so the shop behind an angled entrance shows through ONE pane; back faces go in city.wgsl)
         let pipeline_pane = make_pipeline_x(true, "vs_main", None, true);
         let pipeline_opaque = make_pipeline(false, "vs_main");
+        // (the opaque phase of the city's sectors with a pipeline per material: `mode_constant`; drawn only in the scene pass,
+        // built behind the loading - main.rs `ms::build_behind`; until then `pipeline_opaque` draws the same)
+        let pipeline_opaque_mode: Vec<Option<ms::MsPipe>> = (0..MatMode::COUNT)
+            .map(|m| {
+                (mode_pipes_on() && MODE_PIPES.iter().chain(&CAR_MODE_PIPES).any(|k| *k as u32 == m)).then(|| {
+                    let b = city_build.clone();
+                    ms::MsPipe::new_behind(&device, move |d, v| b(d, v, false, "vs_main", None, true, wgpu::ColorWrites::ALL, Some(m)))
+                })
+            })
+            .collect();
         // (render state 0 = 2, the original's 0x18002 - the face the windows' front pass culls - and in a mirrored view 1)
         let pipeline_opaque_cull = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Front } else { wgpu::Face::Back }), true);
+        let pipeline_opaque_cull_mode: Vec<Option<ms::MsPipe>> = (0..MatMode::COUNT)
+            .map(|m| {
+                (mode_pipes_on() && CAR_MODE_PIPES.iter().any(|k| *k as u32 == m)).then(|| {
+                    let b = city_build.clone();
+                    let face = if glass_flip { wgpu::Face::Front } else { wgpu::Face::Back };
+                    ms::MsPipe::new_behind(&device, move |d, v| b(d, v, false, "vs_main", Some(face), true, wgpu::ColorWrites::ALL, Some(m)))
+                })
+            })
+            .collect();
         let pipeline_opaque_cull_m = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Back } else { wgpu::Face::Front }), true);
         let pipeline_blend = make_pipeline(true, "vs_main");
         // (the wheels' blur discs, F-49519: colour writes off, depth tested and not written, no cull, the stencil
         // replaced - recorded registers 0x2104 = 0, 0x2200 = 0x00708763, 0x2205 = 0x18000)
         let pipeline_stencil_only = {
             let b = city_build.clone();
-            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, false, "vs_main", None, false, wgpu::ColorWrites::empty()))
+            ms::MsPipe::new_shared(&device, move |d, v| b(d, v, false, "vs_main", None, false, wgpu::ColorWrites::empty(), None))
         };
         // (the cars' environment map drawn the original's way: the paraboloid warp per vertex - city.wgsl vs_env_dp)
         // (each ~4 s to compile with the driver's cache cold: built on threads of their own while the loading goes on)
         let pipeline_env_dp = {
             let b = city_build.clone();
-            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, false, "vs_env_dp", None, true, wgpu::ColorWrites::ALL))
+            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, false, "vs_env_dp", None, true, wgpu::ColorWrites::ALL, None))
         };
         let pipeline_env_dp_blend = {
             let b = city_build.clone();
-            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, true, "vs_env_dp", None, false, wgpu::ColorWrites::ALL))
+            ms::MsPipe::new_plain(&device, move |d, _| b(d, ms::PLAIN, true, "vs_env_dp", None, false, wgpu::ColorWrites::ALL, None))
         };
         ms::build_ahead(&[&pipeline_env_dp, &pipeline_env_dp_blend], ms::PLAIN);
         let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2103,9 +2297,52 @@ impl Gpu {
             multiview: None,
             cache: None,
         });
-        let pipeline_inst = {
+        // The night fast collector (F-55997's night branch): the casters drawn with the shadow passes' vertex programs
+        // and PS_ShadowNight's constant, back faces culled as the recorded draws (0x18002: those turned to its eye
+        // stay, as in the main view), no depth (the colour is one constant); then PSBlur into the map the scene reads.
+        let nfc_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("night fast collector"), size: std::mem::size_of::<CascPass>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let nfc_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("night fast collector"), layout: &shadow_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: nfc_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }] });
+        let nfc_target = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+        let make_nfc = |inst: bool| {
+            let bufs_plain = [Vertex::LAYOUT];
+            let bufs_inst = [Vertex::LAYOUT, crate::props::Inst::LAYOUT];
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("night fast collector"),
+                layout: Some(&shadow_pl),
+                vertex: wgpu::VertexState { module: &shadow_shader, entry_point: Some(if inst { "vs_shadow_inst" } else { "vs_shadow" }), buffers: if inst { &bufs_inst } else { &bufs_plain }, compilation_options: Default::default() },
+                fragment: Some(wgpu::FragmentState { module: &shadow_shader, entry_point: Some("fs_shadow_night"), targets: &nfc_target, compilation_options: Default::default() }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: Some(wgpu::Face::Back), front_face: wgpu::FrontFace::Cw, ..Default::default() },
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let pipeline_nfc = make_nfc(false);
+        let pipeline_nfc_inst = make_nfc(true);
+        let nfc_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("night fast collector"), source: wgpu::ShaderSource::Wgsl(include_str!("night_collector.wgsl").into()) });
+        let nfc_blur_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("night fast collector blur"),
+            entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None }],
+        });
+        let nfc_blur_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("night fast collector blur"), layout: &nfc_blur_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&nfc_work_view) }] });
+        let nfc_blur_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("night fast collector blur"), bind_group_layouts: &[&nfc_blur_layout], push_constant_ranges: &[] });
+        let pipeline_nfc_blur = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("night fast collector blur"),
+            layout: Some(&nfc_blur_pl),
+            vertex: wgpu::VertexState { module: &nfc_shader, entry_point: Some("vs_blur"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState { module: &nfc_shader, entry_point: Some("fs_blur"), targets: &nfc_target, compilation_options: Default::default() }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+        let inst_build = {
             let (pl, shader) = (pl.clone(), shader.clone());
-            ms::MsPipe::new(&device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            std::sync::Arc::new(move |device: &wgpu::Device, v: ms::Variant, mode: Option<u32>| {
+            let constants: std::collections::HashMap<String, f64> = mode.map(|m| ("MODE_K".to_string(), m as f64)).into_iter().collect();
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("city instanced"),
             layout: Some(&pl),
             vertex: wgpu::VertexState {
@@ -2118,15 +2355,29 @@ impl Gpu {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState { format: post::SCENE_FORMAT, blend: Some(wgpu::BlendState::REPLACE), write_mask: wgpu::ColorWrites::ALL })],
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, front_face: wgpu::FrontFace::Cw, ..Default::default() },
             depth_stencil: Some(v.ds(true, wgpu::CompareFunction::GreaterEqual, true, Default::default())),
             multisample: v.ms(),
             multiview: None,
             cache: None,
-        }))
+        })
+            })
         };
+        let pipeline_inst = {
+            let b = inst_build.clone();
+            ms::MsPipe::new(&device, move |d, v| b(d, v, None))
+        };
+        // (the props' opaque batches with a pipeline per material, as `pipeline_opaque_mode`)
+        let pipeline_inst_mode: Vec<Option<ms::MsPipe>> = (0..MatMode::COUNT)
+            .map(|m| {
+                (mode_pipes_on() && PROP_MODE_PIPES.iter().any(|k| *k as u32 == m)).then(|| {
+                    let b = inst_build.clone();
+                    ms::MsPipe::new_behind(&device, move |d, v| b(d, v, Some(m)))
+                })
+            })
+            .collect();
         let pipeline_inst_blend = {
             let (pl, shader) = (pl.clone(), shader.clone());
             ms::MsPipe::new(&device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2475,6 +2726,8 @@ impl Gpu {
             blank_dmg,
             identity_obj,
             pipeline_opaque,
+            pipeline_opaque_mode,
+            pipeline_opaque_cull_mode,
             pipeline_opaque_cull,
             pipeline_opaque_cull_m,
             pipeline_stencil_only,
@@ -2486,6 +2739,7 @@ impl Gpu {
             pipeline_sky,
             sky_hat,
             pipeline_inst,
+            pipeline_inst_mode,
             pipeline_inst_blend,
             pipeline_glow,
             pipeline_env_glow,
@@ -2533,6 +2787,19 @@ impl Gpu {
             fc_blur_bg,
             pipeline_fc,
             pipeline_fc_blur,
+            nfc_tex,
+            nfc_work_view,
+            nfc_view,
+            nfc_buf,
+            nfc_bg,
+            pipeline_nfc,
+            pipeline_nfc_inst,
+            pipeline_nfc_blur,
+            nfc_blur_bg,
+            globals_bg_night,
+            globals_bg_alt_night,
+            mirror_bg_night,
+            night_fc: false,
             refl_tex,
             refl_view,
             minisky_tex,
@@ -2684,8 +2951,52 @@ impl Gpu {
     pub fn set_aniso16(&mut self, on: bool) {
         if on != self.aniso16 {
             std::mem::swap(&mut self.globals_bg, &mut self.globals_bg_alt);
+            std::mem::swap(&mut self.globals_bg_night, &mut self.globals_bg_alt_night);
             self.aniso16 = on;
         }
+    }
+
+    /// At night the night fast collector's map stands where the collector is (the original binds FastCollectorNight
+    /// to s13 then): the globals' bind groups with it in binding 10 change places with the day's.
+    pub fn set_night_collector(&mut self, on: bool) {
+        if on != self.night_fc {
+            std::mem::swap(&mut self.globals_bg, &mut self.globals_bg_night);
+            std::mem::swap(&mut self.globals_bg_alt, &mut self.globals_bg_alt_night);
+            std::mem::swap(&mut self.mirror_bg, &mut self.mirror_bg_night);
+            self.night_fc = on;
+        }
+    }
+
+    /// The night fast collector's pass (F-55997, state 4 at night): its constants (the view-projection and
+    /// PS_ShadowNight's value, ShaderGlobals.z = 1 - m_ShadowFade), then the casters' map cleared to white (r26 = -1),
+    /// with `pipeline_nfc` and the group 0 set: the caller draws the casters into it (`pipeline_nfc_inst` for the
+    /// props), ends the pass and calls `night_collector_blur`.
+    pub fn night_collector_begin<'e>(&self, enc: &'e mut wgpu::CommandEncoder, vp: Mat4, value: f32) -> wgpu::RenderPass<'e> {
+        self.queue.write_buffer(&self.nfc_buf, 0, bytemuck::bytes_of(&CascPass { light_vp: vp.to_cols_array_2d(), bias: [value, 0.0, 0.0, 0.0] }));
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("night fast collector"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &self.nfc_work_view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        rp.set_pipeline(&self.pipeline_nfc);
+        rp.set_bind_group(0, &self.nfc_bg, &[]);
+        rp
+    }
+
+    /// ... and its PSBlur into the map the scene reads.
+    pub fn night_collector_blur(&self, enc: &mut wgpu::CommandEncoder) {
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("night fast collector blur"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &self.nfc_view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        rp.set_pipeline(&self.pipeline_nfc_blur);
+        rp.set_bind_group(0, &self.nfc_blur_bg, &[]);
+        rp.draw(0..3, 0..1);
     }
 
 
@@ -3229,6 +3540,34 @@ impl Gpu {
         buf.unmap();
         if let Err(e) = std::fs::write(path, &out) {
             log::warn!("fc dump {}: {}", path, e);
+        }
+    }
+
+    /// Diagnostics (MCLA_NFC_DUMP=<file>): the night fast collector's map as it is now, a PGM picture (512 x 512 bytes,
+    /// rows along +z, texels along +x, the eye at the middle).
+    pub fn dump_nfc(&self, path: &str) {
+        let n = NFC_SIZE;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("nfc dump"), size: (n * n) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &self.nfc_tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(n), rows_per_image: Some(n) } },
+            wgpu::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        let mut out = format!("P5\n{} {}\n255\n", n, n).into_bytes();
+        if let Ok(Ok(())) = rx.recv() {
+            out.extend_from_slice(&slice.get_mapped_range());
+        }
+        buf.unmap();
+        if let Err(e) = std::fs::write(path, &out) {
+            log::warn!("nfc dump {}: {}", path, e);
         }
     }
 
@@ -3803,6 +4142,16 @@ pub fn upload_as(device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture, bc: 
     GpuTexture { texture, view, width: w, height: h }
 }
 
+/// What the original's frustum builder F-53768 scales a plane by, from its normal's squared length: the reciprocal square
+/// root estimate (vrsqrtefp; the recomp's exact 1 / sqrt, used here) with one Newton-Raphson step (1.0, 0.5), an infinite
+/// estimate (a zero normal) taken as 0. Bit for bit as the original's code run offline (tools/frustum_reference.py, test
+/// `frustum_planes_match_the_original`); within an ulp of dividing by the length, as the port did before.
+pub fn plane_scale(x: f32) -> f32 {
+    let e = 1.0 / x.sqrt();
+    let e = if e == f32::INFINITY { 0.0 } else { e };
+    (1.0 - x * (e * e)) * (0.5 * e) + e
+}
+
 /// Simple frustum from a view-projection matrix (reverse-Z friendly: uses clip planes).
 #[derive(Clone, Copy)]
 pub struct Frustum {
@@ -3817,10 +4166,7 @@ impl Frustum {
         let r3 = m.row(3);
         let mut planes = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2];
         for p in planes.iter_mut() {
-            let l = p.truncate().length();
-            if l > 0.0 {
-                *p /= l;
-            }
+            *p *= plane_scale(p.truncate().length_squared());
         }
         Frustum { planes }
     }
@@ -3863,5 +4209,35 @@ async fn configure_checked(device: &wgpu::Device, surface: &wgpu::Surface<'_>, c
             log::warn!("surface: configuration failed: {e}");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod frustum_reference_tests {
+    use super::Frustum;
+
+    /// The planes as F-53768 stores them (near, left, right, far, top, bottom) against `Frustum::from_view_proj` of the
+    /// same product (its columns are the port's rows): every bit. CSV from tools/frustum_reference.py, path in
+    /// MCLA_FRUSTUM_REFERENCE.
+    #[test]
+    #[ignore]
+    fn frustum_planes_match_the_original() {
+        let path = std::env::var("MCLA_FRUSTUM_REFERENCE").expect("MCLA_FRUSTUM_REFERENCE");
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut n = 0;
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split(',').collect();
+            let w: Vec<u32> = f[1..].iter().map(|v| u32::from_str_radix(v, 16).unwrap()).collect();
+            assert_eq!(w.len(), 40, "{}", f[0]);
+            let m = glam::Mat4::from_cols_array(&std::array::from_fn(|i| f32::from_bits(w[i])));
+            let fr = Frustum::from_view_proj(m);
+            for (k, port) in [4usize, 0, 1, 5, 3, 2].into_iter().enumerate() {
+                let got = fr.planes[port].to_array().map(f32::to_bits);
+                let want: [u32; 4] = std::array::from_fn(|i| w[16 + 4 * k + i]);
+                assert_eq!(got, want, "{} plane {}", f[0], k);
+            }
+            n += 1;
+        }
+        assert!(n > 0);
     }
 }

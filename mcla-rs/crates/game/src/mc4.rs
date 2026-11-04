@@ -6054,14 +6054,21 @@ impl Game {
     /// the step of the system of the class + 1; "(a/b)" = the points on that step and its
     /// length.
     pub fn mc4_class_rank(&self, class: &str) -> (usize, i64, i64) {
-        let Some(sys) = Game::mc4_class_system(class) else { return (1, 0, 100) };
+        let (amount, max, hi, lo, index) = self.mc4_class_parts(class);
+        (index + 1, amount.min(max) - lo, hi - lo)
+    }
+
+    /// What the GPS panel (F-71884) reads of the vehicle kind's class system: its amount
+    /// (+8), max (+12), the step's end (F-53104) and start (F-57870) and its index (F-96803).
+    pub fn mc4_class_parts(&self, class: &str) -> (i64, i64, i64, i64, usize) {
+        let Some(sys) = Game::mc4_class_system(class) else { return (0, i64::MAX, 100, 0, 0) };
         let amount = self.mc4_class_amount(sys);
         match self.career.exp_tables.system(sys) {
             Some(def) => {
                 let (lo, hi) = def.span(amount);
-                (def.index(amount) + 1, amount.min(def.max) - lo, hi - lo)
+                (amount, def.max, hi, lo, def.index(amount))
             }
-            None => (1, amount, 100),
+            None => (amount, i64::MAX, 100, 0, 0),
         }
     }
 }

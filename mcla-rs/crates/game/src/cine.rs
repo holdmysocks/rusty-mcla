@@ -184,6 +184,194 @@ fn cam_cut_rule(s: &mut CamCut, on: bool, t: f32, metres: f32, degrees: f32, pos
     out
 }
 
+/// The cine-to-game camera blend (the viewport's blend object, made at boot by F-20115: time +0 = -1 idle, the
+/// stored camera +16 / fov +80, rate +84 = 1 per second). `start` is F-98908: it stores the camera the viewport last
+/// showed and sets the time to 0, or straight to 1 (no blend) when the hand-off is a cut.
+#[derive(Clone, Copy, Debug)]
+pub struct CamBlend {
+    pub t: f32,
+    pub rate: f32,
+    pub from: [f32; 16],
+    pub from_fov: f32,
+}
+
+impl Default for CamBlend {
+    fn default() -> Self {
+        CamBlend { t: -1.0, rate: 1.0, from: [0.0; 16], from_fov: -1.0 }
+    }
+}
+
+impl CamBlend {
+    pub fn start(&mut self, cam: [f32; 16], fov: f32, cut: bool) {
+        self.t = if cut { 1.0 } else { 0.0 };
+        self.from = cam;
+        self.from_fov = fov;
+    }
+
+    pub fn active(&self) -> bool {
+        self.t > -1.0
+    }
+
+    /// `F-82215`: one update of `dt` toward the target camera (rows of 4: rotation rows, translation row 3). While the
+    /// blend runs the result is F-45235 from the stored camera by (1 - ease(t)) / 2 and the fov's lerp, else the target.
+    /// `out` keeps its rotation rows' fourth entries (the original writes only the 3x3 and row 3). Test:
+    /// `cam_blend_matches_the_original`.
+    pub fn step(&mut self, dt: f32, out: &mut [f32; 16], target: &[f32; 16], target_fov: f32) -> f32 {
+        if self.t > -1.0 {
+            self.t = (self.rate as f64).mul_add(dt as f64, self.t as f64) as f32;
+        }
+        let blending = if self.t >= 1.0 {
+            self.t = -1.0;
+            false
+        } else {
+            self.t > -1.0
+        };
+        if !blending {
+            *out = *target;
+            return target_fov;
+        }
+        let w = (1.0 - ease(self.t)) * 0.5;
+        matrix_blend(out, &self.from, target, w);
+        ((target_fov - self.from_fov) as f64).mul_add(w as f64, self.from_fov as f64) as f32
+    }
+}
+
+/// `F-39265`: 1 at or below 0, -1 at or above 1, else cos(pi t).
+fn ease(t: f32) -> f32 {
+    if !(t > 0.0) {
+        1.0
+    } else if !(t < 1.0) {
+        -1.0
+    } else {
+        ((t * std::f32::consts::PI) as f64).cos() as f32
+    }
+}
+
+/// `F-50812`: a rotation (rows 0..2 of a 4x4) as a quaternion (x, y, z, w), from the largest of the trace and the diagonal.
+fn mat_quat(m: &[f32; 16]) -> [f32; 4] {
+    let (m00, m11, m22) = (m[0], m[5], m[10]);
+    let tr = m00 + m11 + m22;
+    let case = if tr < m00 {
+        if m00 < m11 {
+            if m11 < m22 { 3 } else { 2 }
+        } else if m00 < m22 {
+            3
+        } else {
+            1
+        }
+    } else if tr < m11 {
+        if m11 < m22 { 3 } else { 2 }
+    } else if tr < m22 {
+        3
+    } else {
+        0
+    };
+    let big = |d: f32| (((d as f64).mul_add(2.0, -(tr as f64)) as f32 + 1.0) as f64).sqrt() as f32 * 0.5;
+    match case {
+        0 => {
+            let w = ((tr + 1.0) as f64).sqrt() as f32 * 0.5;
+            let s = 0.25 / w;
+            [(m[6] - m[9]) * s, (m[8] - m[2]) * s, (m[1] - m[4]) * s, w]
+        }
+        1 => {
+            let x = big(m00);
+            let s = 0.25 / x;
+            [x, (m[4] + m[1]) * s, (m[8] + m[2]) * s, (m[6] - m[9]) * s]
+        }
+        2 => {
+            let y = big(m11);
+            let s = 0.25 / y;
+            [(m[4] + m[1]) * s, y, (m[9] + m[6]) * s, (m[8] - m[2]) * s]
+        }
+        _ => {
+            let z = big(m22);
+            let s = 0.25 / z;
+            [(m[8] + m[2]) * s, (m[9] + m[6]) * s, z, (m[1] - m[4]) * s]
+        }
+    }
+}
+
+/// `F-40856`: a quaternion as the rotation rows of `m` (each part scaled by sqrt 2 first; the fourth entries stay).
+fn quat_mat(m: &mut [f32; 16], q: [f32; 4]) {
+    let k = f32::from_bits(0x3fb5_04f3);
+    let (x, y, z, w) = (q[0] * k, q[1] * k, q[2] * k, q[3] * k);
+    let (xx, yy, zz) = (x * x, y * y, z * z);
+    let (xy, xz, yz) = (y * x, z * x, z * y);
+    let (wx, wy, wz) = (w * x, w * y, w * z);
+    m[2] = xz - wy;
+    m[1] = xy + wz;
+    m[4] = xy - wz;
+    m[8] = wy + xz;
+    m[6] = wx + yz;
+    m[9] = yz - wx;
+    m[10] = 1.0 - (yy + xx);
+    m[0] = 1.0 - (zz + yy);
+    m[5] = 1.0 - (zz + xx);
+}
+
+/// `F-20340`: spherical interpolation of two quaternions by `u` (the angle by F-94425), normalised by a reciprocal
+/// square root with two Newton steps (0 for a zero length); `a` itself when the angle's sine is 0.
+fn slerp(a: [f32; 4], b: [f32; 4], u: f32) -> [f32; 4] {
+    let qa = Quat::from_array(a);
+    let qb = Quat::from_array(b);
+    let th = crate::cinecar::quat_angle(qa, qb) * 0.5;
+    let s = (th as f64).sin() as f32;
+    if s == 0.0 {
+        return a;
+    }
+    let tu = th * u;
+    let inv = 1.0 / s;
+    let c0 = ((th - tu) as f64).sin() as f32 * inv;
+    let c1 = (tu as f64).sin() as f32 * inv;
+    let fm = |p: f32, q: f32, r: f32| (p as f64).mul_add(q as f64, r as f64) as f32;
+    let x = fm(a[0], c0, b[0] * c1);
+    let y = fm(b[1], c1, a[1] * c0);
+    let z = fm(b[2], c1, a[2] * c0);
+    let w = fm(b[3], c1, a[3] * c0);
+    let n = fm(w, w, fm(z, z, fm(x, x, y * y)));
+    let nd = n as f64;
+    let y0 = (1.0 / nd.sqrt()) as f32 as f64;
+    let y1 = (-(y0 * y0).mul_add(nd, -1.0)).mul_add(y0 * 0.5, y0);
+    let y2 = (-(y1 * y1).mul_add(nd, -1.0)).mul_add(y1 * 0.5, y1);
+    let k = if -nd >= 0.0 { 0.0 } else { y2 as f32 };
+    [x * k, y * k, z * k, w * k]
+}
+
+/// `F-45235`: two 4x4s blended by `u`: their rotations as quaternions (the first flipped when the dot is negative),
+/// slerped, back to rows 0..2; row 3 lerped.
+fn matrix_blend(out: &mut [f32; 16], a: &[f32; 16], b: &[f32; 16], u: f32) {
+    let mut qa = mat_quat(a);
+    let qb = mat_quat(b);
+    let fm = |p: f32, q: f32, r: f32| (p as f64).mul_add(q as f64, r as f64) as f32;
+    let d = fm(qb[3], qa[3], fm(qb[0], qa[0], fm(qa[1], qb[1], qa[2] * qb[2])));
+    if d < 0.0 {
+        qa = [-qa[0], -qa[1], -qa[2], -qa[3]];
+    }
+    quat_mat(out, slerp(qa, qb, u));
+    for i in 12..16 {
+        out[i] = (b[i] - a[i]) * u + a[i];
+    }
+}
+
+/// The race-start scenes that hand the picture back with `cam_to_game` (event 78: F-91263 calls F-45212 with no cut,
+/// so the viewport blends, `CamBlend`); the others' `bookmark_cut_to_game` cuts. From their generated scripts
+/// (`work/career2/events2.txt`: `bookmark` and `cam_to_game` at the scene's cut time).
+const BLEND_TO_GAME: [&str; 7] = ["gen_prerace_grid_4x2_01", "gen_prerace_starter_1x1_01", "gen_prerace_taunt_01", "gen_prerace_taunt_02", "gen_prerace_taunt_03", "gen_prerace_taunt_07", "gen_prerace_taunt_09"];
+
+/// Whether a scene hands the picture to the game camera by the 1 s blend (`BLEND_TO_GAME`).
+pub fn blends_to_game(scene: &str) -> bool {
+    let n = scene.rsplit('/').next().unwrap_or(scene).to_ascii_lowercase();
+    BLEND_TO_GAME.contains(&n.as_str())
+}
+
+/// A camera (eye, forward, up) as the original's rows: right, up, back (x cross y = z), the eye in row 3.
+pub fn cam_rows(eye: Vec3, fwd: Vec3, up: Vec3) -> [f32; 16] {
+    let z = (-fwd).normalize_or(Vec3::Z);
+    let x = up.cross(z).normalize_or(Vec3::X);
+    let y = z.cross(x);
+    [x.x, x.y, x.z, 0.0, y.x, y.y, y.z, 0.0, z.x, z.y, z.z, 0.0, eye.x, eye.y, eye.z, 1.0]
+}
+
 /// The character sets of the hangouts' people (`Cine::set_ambient`).
 const AMBIENT_FEMALE: [&str; 4] = ["ped_fa_001_set", "ped_fb_002_set", "ped_fc_001_set", "ped_fh_001_set"];
 const AMBIENT_MALE: [&str; 5] = ["ped_ma_001_set", "ped_mb_001_set", "ped_mc_001_set", "ped_mh_001_set", "ped_ma_003_set"];
@@ -216,11 +404,17 @@ pub struct Cine {
 /// The in-game scenes whose generated scripts name an audio stream (their static block's upper-case scene name,
 /// handed to core_rolling_prototype: CineScript_Audio_PrepareStream, F-27055 -> F-16992 looks up `CUTSCENES_<name>`).
 /// The other generated scenes (cut_cop_arrest_04 - _06, the reward scenes, cut_cop_alert_02 ...) name none; CUT_INTRO
-/// is left out, its audio is the story scene path's (`start_scene_audio`). cut_cop_fidget has no object: no sound.
+/// is left out, its audio is the story scene path's (`start_scene_audio`). cut_cop_fidget and cut_cop_walk_plyr_bike
+/// have no object: no sound. The `racestart/` ones are named without their folder: the eleven starter scenes (stopped
+/// early by their `stopaudiostreams` event) and the delivery / payback key hand-overs.
 pub const SCENE_AUDIO: &[&str] = &[
     "cut_cop_alert", "cut_cop_arrest", "cut_cop_arrest_02", "cut_cop_arrest_03", "cut_cop_arrest_07", "cut_cop_arrest_08",
-    "cut_cop_fidget", "cut_cop_fidget_02", "cut_cop_fidget_bike", "cut_cop_walk", "cut_cop_walk_02", "cut_cop_walk_plyr_02",
-    "cut_loss_chung_hee", "cut_loss_lester", "cut_loss_pete",
+    "cut_cop_arrest_bikestand", "cut_cop_fidget", "cut_cop_fidget_02", "cut_cop_fidget_bike", "cut_cop_walk", "cut_cop_walk_02",
+    "cut_cop_walk_plyr_02", "cut_cop_walk_plyr_bike", "cut_delivery_get_keys", "cut_loss_chung_hee", "cut_loss_lester",
+    "cut_loss_pete", "cut_payback_get_keys", "gen_prerace_starter_2x4_01", "gen_prerace_starter_2x4_02",
+    "gen_prerace_starter_2x4_03", "gen_prerace_starter_2x4_04", "gen_prerace_starter_2x4_05", "gen_prerace_starter_2x4_06",
+    "gen_prerace_starter_2x4_07", "gen_prerace_starter_2x4_08", "gen_prerace_starter_2x4_09", "gen_prerace_starter_2x4_10",
+    "gen_prerace_starter_2x4_11",
 ];
 
 /// The audio stream an in-game scene plays (`SCENE_AUDIO`), upper case as its script names it.
@@ -1009,6 +1203,12 @@ impl Cine {
         self.buf.upload(gpu);
     }
 
+    /// What the shadow passes draw of the characters (`draw` with `shadow`), apart from them (main.rs: `prepare` runs beside
+    /// those passes).
+    pub fn shadow_part(&self) -> Option<crate::skin::ShadowSkin> {
+        (self.playing.is_some() || !self.ambient.is_empty()).then(|| self.buf.shadow_part()).flatten()
+    }
+
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, shadow: bool, draws: &mut usize) {
         if self.playing.is_some() || !self.ambient.is_empty() {
             self.buf.draw(pass, gpu, shadow, draws);
@@ -1048,20 +1248,26 @@ mod tests {
         assert_eq!(skip_to("story/cut_story_motorcycle_rep_A", 1.0, 40.0), None);
     }
 
-    /// `SCENE_AUDIO` is every generated scene script that names its audio stream (besides CUT_INTRO), read from
-    /// the scripts themselves; scene_audio gives the arrest's CUT_COP_ARREST.
+    /// `SCENE_AUDIO` is every generated scene script that names its audio stream (besides CUT_INTRO and the story
+    /// scenes), read from the scripts themselves in `generated/` and `generated/racestart/`; scene_audio gives the
+    /// arrest's CUT_COP_ARREST.
     #[test]
     #[ignore]
     fn scene_audio_from_the_scripts() {
         let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "../extracted/cache".into());
         let dir = Path::new(&data).join("script_obj/game/CineScripts/generated");
         let mut named: Vec<String> = Vec::new();
-        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+        let files = std::fs::read_dir(&dir).unwrap().chain(std::fs::read_dir(dir.join("racestart")).unwrap()).flatten();
+        for e in files {
             let Ok(b) = std::fs::read(e.path()) else { continue };
             let Ok(sco) = mcla_formats::sco::decode(&b) else { continue };
             let strs = sco.strings(3);
-            let Some(scene) = strs.iter().filter_map(|s| s.trim().strip_prefix("cutscene/")).find(|s| !s.contains('/')).map(str::to_string) else { continue };
-            if strs.iter().any(|s| s.trim() == scene.to_ascii_uppercase()) && scene != "cut_intro" {
+            // (the raw string scan keeps the bytes before a string when they are printable: the script's header and
+            // the push's length byte for 33 - 126 characters)
+            let scene = strs.iter().filter_map(|s| s.find("cutscene/").map(|i| &s[i + 9..])).find(|s| !s.contains('/') || (s.starts_with("racestart/") && s.matches('/').count() == 1));
+            let Some(scene) = scene.map(|s| s.rsplit('/').next().unwrap().to_string()) else { continue };
+            let up = scene.to_ascii_uppercase();
+            if strs.iter().any(|s| s.ends_with(&up) && s.len() <= up.len() + 1) && scene != "cut_intro" {
                 named.push(scene);
             }
         }
@@ -1069,6 +1275,44 @@ mod tests {
         assert_eq!(named, SCENE_AUDIO.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(scene_audio("cut_cop_arrest").as_deref(), Some("CUT_COP_ARREST"));
         assert_eq!(scene_audio("cut_cop_arrest_05"), None);
+    }
+}
+
+#[cfg(test)]
+mod cam_blend_tests {
+    use super::*;
+
+    fn fl(h: &str) -> f32 {
+        f32::from_bits(u32::from_str_radix(h, 16).unwrap())
+    }
+
+    #[test]
+    fn cam_blend_matches_the_original() {
+        let text = include_str!("testdata/cam_blend_ref.txt");
+        let (mut n, mut runs, mut worst, mut exact) = (0, 0, 0u32, 0);
+        let mut first = String::new();
+        for l in text.lines().filter(|l| l.starts_with("BLEND")) {
+            let v: Vec<f32> = l.split(' ').skip(1).map(fl).collect();
+            let mut b = CamBlend { t: v[0], rate: v[1], from: v[3..19].try_into().unwrap(), from_fov: v[19] };
+            let target: [f32; 16] = v[20..36].try_into().unwrap();
+            let mut out = [0.0f32; 16];
+            let fov = b.step(v[2], &mut out, &target, v[36]);
+            n += 1;
+            assert_eq!(b.t.to_bits(), v[37].to_bits(), "{l}");
+            let want = &v[38..54];
+            let mut d = (fov.to_bits() as i64 - v[54].to_bits() as i64).unsigned_abs() as u32;
+            for i in (0..16).filter(|i| !matches!(i, 3 | 7 | 11)) {
+                d = d.max((out[i].to_bits() as i64 - want[i].to_bits() as i64).unsigned_abs() as u32);
+            }
+            runs += b.active() as usize;
+            exact += (d == 0) as usize;
+            if d > worst {
+                first = format!("{l} -> {out:?} {fov}");
+            }
+            worst = worst.max(d);
+        }
+        assert!(n == 3000 && runs > 1000, "{n} cases, {runs} blending");
+        assert!(exact == n, "{exact} of {n} bit-exact, worst {worst} ulp: {first}");
     }
 }
 

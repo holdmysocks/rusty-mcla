@@ -693,6 +693,8 @@ pub struct VehState {
     pub stuck: u8,
     pub stuck_at: Vec3,
     pub stuck_timer: f32,
+    /// mcCarStuck +68: the time before it may right the car again (MinDropRetriggerTime from the last time)
+    pub stuck_cool: f32,
     pub still_timer: f32,
     pub last_speed: f32,
     /// the drift thrust's level (gyro +56)
@@ -749,6 +751,10 @@ pub struct VehState {
     nitro_left: bool,
     /// scale of the aerodynamic angular damping (less in the air, more just after landing)
     pub aero_damp: f32,
+    /// mcCarTireFric +20, set by mcCarSim::Update: the air's damping factor is above one
+    fric_boost: bool,
+    /// wheel +524 for a car that is not wiped out (mcCarSim::Update): what the surface's grip is divided by
+    grip_h: f32,
     air_time: f32,
     /// burnout: 0 none, 1 charging on the handbrake, 2 full, 3 launching; and its charge (0..1)
     pub burn_state: u8,
@@ -817,7 +823,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
     }
 }
 
@@ -874,7 +880,7 @@ pub(super) fn slip(v: f32, reference: f32) -> f32 {
 
 /// Friction against slip: rises to the static value at the optimum slip, then falls
 /// back to the sliding value. Also returns how far into sliding the tyre is.
-pub(super) fn friction(wt: &WheelTune, sliding_fric: f32, surf: f32, s: f32) -> (f32, f32) {
+pub(super) fn friction(wt: &WheelTune, static_fric: f32, sliding_fric: f32, surf: f32, s: f32) -> (f32, f32) {
     let opt = wt.optimum_slip.max(0.01);
     let mut s = s.abs();
     if sliding_fric == 0.0 && s > opt {
@@ -883,7 +889,7 @@ pub(super) fn friction(wt: &WheelTune, sliding_fric: f32, surf: f32, s: f32) -> 
     // F-84621 multiplies the cached inverse optimum-slip square before
     // multiplying slip. Reordering this expression changes tyre-force bits.
     let inverse_opt_squared = 1.0 / (opt * opt);
-    let x = ((wt.static_fric * surf * opt.mul_add(2.0, -s)) * inverse_opt_squared) * s;
+    let x = ((static_fric * surf * opt.mul_add(2.0, -s)) * inverse_opt_squared) * s;
     if s <= opt {
         (x, 0.5 * s / opt)
     } else {
@@ -1035,6 +1041,20 @@ pub fn sss_factor(s: &mcla_formats::rage::simtune::SimScalars, speed: f32) -> f3
 /// mcCarTireFric::Update (F-67816): the driven tyres' melt and, with it, an all-wheel-drive
 /// car's switch to two driven wheels and back. `gear`: the gear the transmission's update of
 /// this tick finds (the routine runs ahead of the engine and the transmission).
+/// A wheel's static and sliding friction (+468, +472) while mcCarTireFric's flag +20 is set (F-67816, constants 1.1,
+/// 0.001 and 0.9 from its constructor and the image): StaticFric x 1.1, and SlidingFric 0.9 of the way to that less 0.001.
+fn landing_frictions(static_fric: f32, sliding_fric: f32) -> (f32, f32) {
+    let st = static_fric * 1.1;
+    (st, fma32((st - 0.001) - sliding_fric, 0.9, sliding_fric))
+}
+
+/// mcCarTireFric::Update (F-67816) does anything at all only for a tune with SpinningFric, MeltRate and a
+/// SkiddingThreshold under one; otherwise the wheels keep the tune's frictions.
+fn tire_fric_runs(t: &SimTune) -> bool {
+    let tf = &t.tire_fric;
+    tf.spinning_fric != 0.0 && tf.melt_rate != 0.0 && tf.skidding_threshold < 1.0
+}
+
 fn tire_fric_update(vs: &mut VehState, t: &SimTune, input: CarInput, gear: i32, dt: f32) {
     // ---- tyre melt (mcCarTireFric): in the low gears, at speed, a floored throttle on sliding
     // driven tyres melts them (MeltRate per second); they recover at RecoverRate ----
@@ -1901,6 +1921,22 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     let input = if exact_nitro && vs.nitro_burning {
         if vs.gear < 0 { CarInput { brake: 1.0, ..input } } else { CarInput { throttle: 1.0, ..input } }
     } else if !exact_nitro && vs.nitro_level > 0.0 && vs.gear > 0 { CarInput { throttle: 1.0, ..input } } else { input };
+    // (mcCarSim::Update F-97237, before the chassis's update moves the factor: A = the air's damping factor,
+    // the melt's when the tyres are melted; mcCarTireFric's flag +20 = A > 1; every wheel's +524 = the tune's
+    // CarFrictionHandlingStandard when A >= 1 or the tyres are melted, else Wipeout + (Standard - Wipeout) x A.
+    // A wiped-out or damaged-out car's +524 is not this: see `wiped`, and the car's case is not ported)
+    {
+        let a = if !vt.bike && t.s.tire_melt_damp_factor < 1.0 && melt_before > 0.01 { fma32(t.s.tire_melt_damp_factor - 1.0, melt_before, 1.0) } else { vs.aero_damp };
+        vs.fric_boost = a > 1.0 && !dbg_flag("MCLA_DBG_OLDFRIC");
+        let flagged = !vt.bike && (st.damage >= 0.999 || st.upset > 0.0);
+        vs.grip_h = if flagged || dbg_flag("MCLA_DBG_OLDFRIC") {
+            1.0
+        } else if a >= 1.0 || melt_before > 0.01 {
+            t.s.friction_handling_standard
+        } else {
+            fma32(t.s.friction_handling_standard - t.s.friction_handling_wipeout, a, t.s.friction_handling_wipeout)
+        };
+    }
     // angular damping: AeroDampFactor after AeroDampDelay in the air, LandingDampFactor on
     // touching down after a quarter second of flight, back to 1 over a second
     // (A-55250: "in the air" is no wheel with a contact record, F-33415)
@@ -2525,6 +2561,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
             // (the steering, A-58585.. and F-63605, after the pedals: it reads the brake just made)
             let sens = ((f32::from_bits(STEER_SENS.load(std::sync::atomic::Ordering::Relaxed)) - 1.0) / 0.5).clamp(-1.0, 1.0);
             let target = (super::pad::steer_target(stick_x, sens, &t.input) + pad_pull).clamp(-1.0, 1.0);
+            vs.pad.goal = target;
             let sideways = super::exact::fma(rows[0].x, v.x, super::exact::fma(rows[0].z, v.z, rows[0].y * v.y));
             vs.pad.steer_next = super::pad::steer_step(vs.pad_steer, target, &t.input, &super::pad::SteerIn {
                 speed: speed224, sideways, chassis_factor: vs.sss_chassis_exact, steering_limit: t.wheel_front.steering_limit,
@@ -2637,6 +2674,8 @@ struct TyreFrame {
     surf_sink: f32,
     mass: f32,
     sliding_fric: f32,
+    /// the wheel's static friction as mcCarTireFric left it (+468: the tune's, or x 1.1 after a landing)
+    static_fric: f32,
     /// the contact record's normal and point
     normal: Vec3,
     point: Vec3,
@@ -3460,6 +3499,12 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         if steep {
             surf_grip = 0.01;
         }
+        // (F-56921: a car that is not wiped out has its grip divided by +524 too - by more than one while the air's
+        // damping factor is under one, as just after a short flight - or, under one, brought that share of the way to one)
+        if !wiped && !input.ice && vs.grip_h != 1.0 && surf_grip > 0.0 {
+            let h = vs.grip_h;
+            surf_grip = if h < 1.0 { fma32(1.0 - h, 1.0 - surf_grip, surf_grip) } else { surf_grip / h };
+        }
         // (replays of a recording stand on the recording's surfaces)
         {
             let replay_grip = f32::from_bits(REPLAY_SURFACE[i.min(3)].load(std::sync::atomic::Ordering::Relaxed));
@@ -3626,7 +3671,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                         radius, spin: 0.0, velocity_lat: v_lat, velocity_long: v_fwd,
                         load: second, surface: surf_grip, spring_lat: k_lat, spring_long: k_long,
                         damper_lat: 2.0 * wt.damp_coef_lat * (k_lat * m_w).sqrt(), damper_long: 2.0 * wt.damp_coef_long * (k_long * m_w).sqrt(), dt,
-                    }, arm, forward: wheel_fwd, lateral: wheel_lat, surf_drag: 0.0, surf_sink: 0.0, mass: m_w, sliding_fric: wt.sliding_fric, normal: n, point: hit.point, damp: None,
+                    }, arm, forward: wheel_fwd, lateral: wheel_lat, surf_drag: 0.0, surf_sink: 0.0, mass: m_w, sliding_fric: wt.sliding_fric, static_fric: wt.static_fric, normal: n, point: hit.point, damp: None,
                 });
                 if let (true, Some(m), Some(c)) = (second != 0.0, rebuilt[i], contacts[i].as_mut()) {
                     c.forward = Vec3::ZERO - m[2];
@@ -3679,7 +3724,12 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let _ = burning;
         // melted driven tyres slide on SpinningFric
         // (F-67816 at A-64726: the difference times the melt plus the sliding friction, fused)
-        let sliding_fric = if vs_melt > 0.0 && powered(i) { fma32(t.tire_fric.spinning_fric - wt.sliding_fric, vs_melt, wt.sliding_fric) } else { wt.sliding_fric };
+        // (mcCarTireFric F-67816: while its flag +20 is set - the air's damping factor above one as mcCarSim::Update
+        // left it, after a landing - every wheel's static friction +468 is the tune's x 1.1 and its sliding +472
+        // 0.9 of the way from the tune's to that less 0.001; then the driven wheels' sliding goes from the tune's
+        // to SpinningFric by the melt)
+        let (static_fric, boosted_sliding) = if vs.fric_boost && tire_fric_runs(t) { landing_frictions(wt.static_fric, wt.sliding_fric) } else { (wt.static_fric, wt.sliding_fric) };
+        let sliding_fric = if vs_melt > 0.0 && powered(i) { fma32(t.tire_fric.spinning_fric - wt.sliding_fric, vs_melt, wt.sliding_fric) } else { boosted_sliding };
         let k_lat = 2.0 * w_static / wt.disp_limit_lat.max(0.005);
         let k_long = 2.0 * w_static / wt.disp_limit_long.max(0.005);
         let c_lat = 2.0 * wt.damp_coef_lat * (k_lat * m_w).sqrt();
@@ -3700,7 +3750,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 radius, spin: 0.0, velocity_lat: v_lat, velocity_long: v_fwd,
                 load, surface: surf_grip, spring_lat: k_lat, spring_long: k_long,
                 damper_lat: c_lat, damper_long: c_long, dt,
-            }, arm, forward: wheel_fwd, lateral: wheel_lat, surf_drag, surf_sink: super::collision::surface_depth(hit.surface), mass: m_w, sliding_fric, normal: n, point: hit.point, damp: damp_call,
+            }, arm, forward: wheel_fwd, lateral: wheel_lat, surf_drag, surf_sink: super::collision::surface_depth(hit.surface), mass: m_w, sliding_fric, static_fric, normal: n, point: hit.point, damp: damp_call,
         });
         w.load = load;
         vs.wheel_grip[i.min(3)] = surf_grip;
@@ -3852,7 +3902,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             None => if i < 2 { &t.wheel_front } else { &t.wheel_back },
         };
         frame.contact.spin = -ws.spin_rate;
-        let tyre = super::tyre::update(wt, frame.sliding_fric, frame.contact, &mut ws.disp_lat, &mut ws.disp_long);
+        let tyre = super::tyre::update(wt, (frame.static_fric, frame.sliding_fric), frame.contact, &mut ws.disp_lat, &mut ws.disp_long);
         ws.tyre_torque = frame.contact.radius * tyre.longitudinal;
         ws.velocity_long = frame.contact.velocity_long;
         ws.slip_lat = tyre.slip_lat;
@@ -4893,9 +4943,10 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // Two wheels (A-68612): the rider's stick, input +32, under -0.5 with an air time under 0.5 -
         // the stoppie's lean; the ZX-14's DragMin is 3 against DragMax 2. MCLA_DBG_A1: cars' rule for all.)
         let other = if vt.bike && !dbg_flag("MCLA_DBG_A1") { input.lean < -0.5 && vs.air584_before < 0.5 } else { input.draft || draft_then };
-        // (R2: vehAero's drag, A-57982, asks only for a speed above 1 m/s - nothing about the wheels: V se.0
-        // 168.., a quarter second after the last wheel left the ground. MCLA_DBG_R2: none in the air, as before.)
-        let drag = if st.airborne_time > 0.25 && dbg_flag("MCLA_DBG_R2") { 0.0 } else if other { t.aero.drag_min * over } else { t.aero.drag_max * over };
+        // (mcCarAero's update F-14825 zeroes the drag while the chassis's vfunc 13, the air time +584 of this
+        // tick's chassis update, is above 0.25 - not the port's airborne counter: se.0's +584 never passes 0.05,
+        // wa.0's flight keeps its 12 m/s to the bit. MCLA_DBG_R2: the drag in the air, as before.)
+        let drag = if vs.air584 > 0.25 && !dbg_flag("MCLA_DBG_R2") { 0.0 } else if other { t.aero.drag_min * over } else { t.aero.drag_max * over };
         // (A-76310: the force along the car's up is given whether or not a wheel is down, less
         // the share of the wheels the last collision handed to the solver - bottomed out, byte
         // +530, F-31583. MCLA_DBG_OLDDOWN: none with no wheel down, as before.)
@@ -5181,28 +5232,40 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // (the turn as an angle about the world's up, for the body's rows in the original's own
     // operations below; where the body is not kept so, the car's quaternion is turned)
     let mut stuck_turn: Option<f32> = None;
-    if vs.stuck != 0 && !dbg_flag("MCLA_DBG_NOSTUCK") {
+    // (state 4, the righting: the car's new matrix - rows and the model's origin)
+    let mut righted: Option<[Vec3; 4]> = None;
+    if !dbg_flag("MCLA_DBG_NOSTUCK") {
         let pedal = if vs.gear < 0 { input.brake } else { input.throttle };
         let far2 = {
             let d = vs.stuck_at - body_at;
             super::exact::fma(d.x, d.x, super::exact::fma(d.z, d.z, d.y * d.y))
         };
-        if far2 > 25.0 && vs.stuck != 2 {
-            vs.stuck = 0;
-            vs.stuck_timer = 0.0;
-        } else if vs.stuck == 1 {
-            vs.stuck_timer += dt;
-            if far2 <= 3.5 * 3.5 && vs.stuck_timer >= 0.3 && pedal > 0.0 && vs.gear >= 1 && st.wheels.iter().any(|w| w.grounded) {
-                // (the turning begins with the next tick)
-                vs.stuck = 2;
-            } else if vs.stuck_timer >= 1.0 {
-                vs.stuck = 0;
-                vs.stuck_timer = 0.0;
+        // (the port's own test for the turning: under throttle in a driving gear with a wheel on the ground)
+        let turns = pedal > 0.0 && vs.gear >= 1 && st.wheels.iter().any(|w| w.grounded);
+        // (only with no wipeout or bust bit on the chassis, +592 & 0x30; the bust bit is not the port's car's)
+        let gate = vs.wipe.is_none();
+        let flips = !dbg_flag("MCLA_DBG_NOFLIP");
+        let was = vs.stuck;
+        let (state, timer, cool, right) = stuck_step(was, vs.stuck_timer, vs.stuck_cool, far2, body_rows[1].y, gate, flips, dt, turns);
+        (vs.stuck, vs.stuck_timer, vs.stuck_cool) = (state, timer, cool);
+        if right {
+            let city = super::camprobe::CamLevel::city(world);
+            let place = stuck_push_out(body_at, |c, r| if r == 1.0 { city.contacts(c, r, false, 1).first().map(|k| (k.normal, k.depth)) } else { None });
+            righted = Some(stuck_righted(body_rows[2], place));
+            // (F-59013: a forward gear past the first goes to the first)
+            if vs.gear >= 2 {
+                let was = vs.gear;
+                vs.gear = 1;
+                vs.shift_timer = 0.0;
+                vs.gear_change.start(was, 1, e.gcl);
             }
-        } else if vs.stuck == 2 {
+        } else if was == 2 {
+            // (the turning begins with the tick after the one that found it)
             if far2 > 25.0 || vs.gear == 0 || pedal <= 0.0 || input.handbrake {
+                // (through the reset F-80245, which clears the time to the next righting too)
                 vs.stuck = 0;
                 vs.stuck_timer = 0.0;
+                vs.stuck_cool = 0.0;
             } else {
                 // (the steering of the input object, +24 - the pad's value of the frame, not the
                 // chassis's product with the speed factor: A-26582, V s_rtv s256 - s270)
@@ -5215,7 +5278,15 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     if dbg_flag("MCLA_DBG_STUCK") {
         eprintln!("STUCK state {} timer {:.3} far {:.2} steer {:e} turn {:?} cg {:.4} walls {} tick {}", vs.stuck, vs.stuck_timer, (vs.stuck_at - (st.pos + rm * pivot_local)).length(), vs.steer, stuck_turn, vs.cg[0], super::hull::WALLS.with(|t| t.get()), super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed));
     }
-    let frozen = vs.still_timer > 1.0;
+    // (the righting: the collider's freeze F-50121 - velocities, momenta, the tick's sums and pushes nothing, as
+    // the still car's - and its reset F-25840 from the instance's new matrix: the body's place through the bound's
+    // offset, the last matrix this one, the squaring count 0. For the port's older step the car itself.)
+    if let Some(m) = righted {
+        st.pos = m[3];
+        st.rot = Quat::from_mat3(&Mat3::from_cols(m[0], m[1], m[2])).normalize();
+        vs.hull_last = Some(m);
+    }
+    let frozen = vs.still_timer > 1.0 || righted.is_some();
     // (R4: and the sums a frozen tick leaves are nothing - what the recorder's hook at the integration reads)
     if frozen && exact_sums && !dbg_flag("MCLA_DBG_R4") {
         vs.last_force = Vec3::ZERO;
@@ -5272,6 +5343,13 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 let iw = ex::world_inertia(&rows0, inertia);
                 (v_in * mass, Vec3::new(ex::dot3(Vec3::new(iw[0].x, iw[1].x, iw[2].x), w_in), ex::dot3(Vec3::new(iw[0].y, iw[1].y, iw[2].y), w_in), ex::dot3(Vec3::new(iw[0].z, iw[1].z, iw[2].z), w_in)), 0)
             }
+        };
+        let (rows0, body_at, count) = match righted {
+            Some(m) => {
+                (pm, lm) = (Vec3::ZERO, Vec3::ZERO);
+                ([m[0], m[1], m[2]], super::loose::xf(&m, pivot_local), 0)
+            }
+            None => (rows0, body_at, count),
         };
         let exact_collide = !dbg_flag("MCLA_DBG_OLDCOLLIDE") && p.hull.is_some();
         let _ = momentum_carried;
@@ -6614,6 +6692,75 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
     vs.engine_w = (ratio * power).min(peak).max(e.idle_rpm * RPM);
 }
 
+/// mcCarStuck's righting (F-72170, state 4): the car's forwards kept, its up the world's - right = unit(up x
+/// back) as the vector unit makes it (vrsqrtefp, one step; no length gives 0), back = right x up - at
+/// `place` lifted by TransAmount (0.3 on every car). Rows and the model's origin: the matrix is written to the
+/// instance as it stands, so the body's place comes out a centre-of-mass offset above where it was.
+pub fn stuck_righted(back: Vec3, place: Vec3) -> [Vec3; 4] {
+    use super::artic::V4;
+    let v = |a: Vec3| V4::new(a.x, a.y, a.z, 0.0);
+    let up = V4::new(0.0, 1.0, 0.0, 0.0);
+    let f = v(back);
+    let x = f.yzx().nmsub(up.zxy(), f.zxy().mul(up.yzx()));
+    let s = x.dot3(x);
+    let y = s.rsqrte();
+    let y = V4(y.0.map(|e| if e == f32::INFINITY { 0.0 } else { e }));
+    let k = s.nmsub(y.mul(y), V4::splat(1.0)).madd(V4::splat(0.5).mul(y), y);
+    let right = x.mul(k);
+    let back = up.yzx().nmsub(right.zxy(), up.zxy().mul(right.yzx()));
+    let p = |a: V4| Vec3::new(a.0[0], a.0[1], a.0[2]);
+    [p(right), Vec3::Y, p(back), Vec3::new(place.x, place.y + 0.3, place.z)]
+}
+
+/// mcCarStuck's update F-72170 save the turning of state 2 (the port's own code): its time to the next righting run
+/// down (+68); a car more than MoveThresh (5 m) from where it was armed is let go; armed (1), its time counted and,
+/// within PosThresh (3.5 m), past TimeThresh (0.3 s) with `turns` it is to be turned (2), else past TimeFlipThresh
+/// (1 s) with its up under half way to the world's (row 1's y < 0.5), TransAmount (0.3) or RotAmount not zero and its
+/// time to the next righting run out, it is to be righted (4), else past both it is let go; to be righted with the
+/// `gate` open (no wipeout or bust bit), it is (the last: true), through its reset F-80245 and MinDropRetriggerTime
+/// (5 s). (state, timer, time to the next righting, righted now). The tune is the vehStuck defaults every car carries.
+pub fn stuck_step(state: u8, timer: f32, cool: f32, far2: f32, up_y: f32, gate: bool, flips: bool, dt: f32, turns: bool) -> (u8, f32, f32, bool) {
+    let cool = if cool > 0.0 { cool - dt } else { cool };
+    if far2 > 25.0 && state != 2 {
+        return (0, 0.0, cool, false);
+    }
+    match state {
+        1 => {
+            let timer = timer + dt;
+            if far2 <= 12.25 && timer >= 0.3 && turns {
+                // (the turning begins with the next tick)
+                (2, timer, cool, false)
+            } else if far2 <= 12.25 && timer >= 1.0 && up_y < 0.5 && cool <= 0.0 && flips {
+                (4, timer, cool, false)
+            } else if timer >= 1.0 {
+                (0, 0.0, cool, false)
+            } else {
+                (1, timer, cool, false)
+            }
+        }
+        4 if gate => (0, 0.0, 5.0, true),
+        _ => (state, timer, cool, false),
+    }
+}
+
+/// mcCarStuck's push-out F-51211 before a righting: three ball probes F-87651 at the place, one record
+/// each - the ambient traffic (radius 2), type 0x10 (radius 2), the city (radius 1); a hit (`probe`: normal and
+/// depth) moves the place out along its normal by its depth, a normal pointing down laid flat first (F-41334 with
+/// 1e-5, else +x). The port's car asks only the city: it has no traffic or type 0x10 bounds to probe (open).
+pub fn stuck_push_out(place: Vec3, mut probe: impl FnMut(Vec3, f32) -> Option<(Vec3, f32)>) -> Vec3 {
+    let mut place = place;
+    for r in [2.0, 2.0, 1.0] {
+        if let Some((mut n, depth)) = probe(place, r) {
+            if n.y < 0.0 {
+                n.y = 0.0;
+                n = crate::aiv::norm_or(n, f32::from_bits(0x3727_c5ac), Vec3::X);
+            }
+            place = n * depth + place;
+        }
+    }
+    place
+}
+
 /// R4: the level's probe as the stand-up asks it (F-20855), plainly written: the first polygon of the city
 /// a segment meets - the point, and the polygon's normal as the collision forms it.
 fn level_probe(world: &WorldCollider, from: Vec3, to: Vec3) -> Option<(Vec3, Vec3)> {
@@ -7172,7 +7319,7 @@ mod primitive_reference_tests {
         assert_eq!(synchronize_engine(905.476318, 193.574249, 376.0, 0.01, 1.0 / 30.0).to_bits(),
             193.574249f32.to_bits());
         let wheel = WheelTune { optimum_slip: 0.07, static_fric: 1.85, ..Default::default() };
-        assert_eq!(friction(&wheel, 0.0, 0.01, 0.035).0.to_bits(), 0.013875002f32.to_bits());
+        assert_eq!(friction(&wheel, wheel.static_fric, 0.0, 0.01, 0.035).0.to_bits(), 0.013875002f32.to_bits());
     }
 
     #[test]
@@ -7190,7 +7337,7 @@ mod primitive_reference_tests {
                 "slip" => ([slip(p[0], p[1]), 0.0, 0.0], false),
                 "friction" => {
                     let wt = WheelTune { optimum_slip: p[0], static_fric: p[1], ..Default::default() };
-                    let (mu, slide) = friction(&wt, p[2], p[3], p[4]);
+                    let (mu, slide) = friction(&wt, wt.static_fric, p[2], p[3], p[4]);
                     ([mu, slide, 0.0], false)
                 }
                 "displace" => {
@@ -7285,5 +7432,71 @@ mod suspension_target_tests {
         }
         assert!(bad.is_empty(), "{} of {n} differ, first: {:?}", bad.len(), &bad[..bad.len().min(3)]);
         assert_eq!(n, 4000);
+    }
+}
+
+#[cfg(test)]
+mod landing_friction_tests {
+    use super::*;
+
+    /// Every distinct boosted pair the recordings hold (rc.3, rg.0, wa.0: wheel +468 / +472 before and while the flag
+    /// is set; three cars, front and rear), to the bit.
+    #[test]
+    fn the_landing_frictions_match_the_recordings() {
+        let h = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
+        for l in ["40500000 40400000 4064cccd 40610ffa", "4049999a 403ccccd 405dc290 405a680b", "40766666 40566666 4087851f 4084a8c2",
+                  "4081999a 40733333 408e8f5d 408c6f6a", "4039999a 40333333 404c28f6 40499b3d", "40300000 40266666 4041999a 403ed289"] {
+            let v: Vec<f32> = l.split(' ').map(h).collect();
+            let (st, sl) = landing_frictions(v[0], v[1]);
+            assert_eq!((st.to_bits(), sl.to_bits()), (v[2].to_bits(), v[3].to_bits()), "{l}");
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod stuck_flip_tests {
+    use super::*;
+
+    /// mcCarStuck F-72170 run offline (tools/stuck_flip_reference.py): armed and righting cases - the state, its
+    /// time and the time to the next righting, and on a righting the push-out's probes, the instance's new matrix
+    /// and the gear set - against stuck_step, stuck_push_out and stuck_righted, to the bit.
+    #[test]
+    fn stuck_flip_matches_the_original() {
+        let text = include_str!("../testdata/stuck_flip_ref.txt");
+        let (mut n, mut flips) = (0, 0);
+        for line in text.lines() {
+            let (c, o) = line.split_once(" -> ").unwrap();
+            let c: Vec<u32> = c.split(' ').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            let o: Vec<u32> = o.split(' ').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(c[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let (saved, pos) = (v(3), v(18));
+            let d = saved - pos;
+            let far2 = super::super::exact::fma(d.x, d.x, super::super::exact::fma(d.z, d.z, d.y * d.y));
+            let turns = c[23] != 0 && c[24] != 0 && c[25] >= 2;
+            let (state, timer, cool, right) = stuck_step(c[0] as u8, f(1), f(2), far2, f(11), c[22] & 0x30 == 0, true, f(26), turns);
+            assert_eq!((state as u32, timer.to_bits(), cool.to_bits()), (o[0], o[1], o[2]), "{line}");
+            assert_eq!(o[16], if right { 3 } else { 0 }, "{line}");
+            if right {
+                let mut k = 0;
+                let place = stuck_push_out(pos, |at, r| {
+                    let rec = &o[17 + 6 * k..];
+                    assert_eq!([at.x.to_bits(), at.y.to_bits(), at.z.to_bits(), r.to_bits()], [rec[0], rec[1], rec[2], rec[3]], "probe {k}: {line}");
+                    let p = 27 + 5 * k;
+                    k += 1;
+                    (c[p] != 0).then(|| (v(p + 1), f(p + 4)))
+                });
+                assert_eq!(k, 3);
+                let m = stuck_righted(v(14), place);
+                for (r, row) in m.iter().enumerate() {
+                    assert_eq!([row.x.to_bits(), row.y.to_bits(), row.z.to_bits()], [o[3 + 3 * r], o[4 + 3 * r], o[5 + 3 * r]], "row {r}: {line}");
+                }
+                assert_eq!(o[15], if c[25] >= 2 { 2 } else { u32::MAX }, "{line}");
+                flips += 1;
+            }
+            n += 1;
+        }
+        assert!(n == 4000 && flips > 500, "{n} {flips}");
     }
 }

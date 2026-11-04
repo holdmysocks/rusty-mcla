@@ -25,6 +25,21 @@ pub struct CarInfo {
     pub mods_handling: f32,
 }
 
+impl CarInfo {
+    /// The garage stat panel's figures (F-13938, the GARAGEMOVIE globals base_ / max_ acceleration, speed and
+    /// handling): [acceleration, speed, handling] x [stock, fully upgraded], each truncated to an int in the original's
+    /// single-precision steps - acceleration x 130, (top speed - 100) x 0.60606 (that is, 100 to 265 mph over the bar),
+    /// handling x 100. The catalogue's Base* / Mods* fields are the record's +64 .. +84 (F-87336).
+    pub fn meters(&self) -> [[i32; 2]; 3] {
+        let speed = |v: f32| ((v - 100.0) * f32::from_bits(0x3f1b26ca)) as i32;
+        [
+            [(self.base_accel * 130.0) as i32, (self.mods_accel * 130.0) as i32],
+            [speed(self.base_speed), speed(self.mods_speed)],
+            [(self.base_handling * 100.0) as i32, (self.mods_handling * 100.0) as i32],
+        ]
+    }
+}
+
 #[derive(Default)]
 pub struct Catalog {
     cars: HashMap<String, CarInfo>,
@@ -404,5 +419,29 @@ mod maker_tests {
         assert_eq!(names, ["vp_se_chv_plc_96", "vp_se_chv_chp_96", "vp_se_dge_plc_06", "vp_se_dge_ubp_06", "vp_se_dge_chp_06"]);
         assert!(names.iter().all(|n| !Path::new(&data).join("resources/vehicle").join(n).exists()));
         assert_eq!(70 - diffs.len(), 65, "65 of the 70 cars keep their frame");
+    }
+}
+
+#[cfg(test)]
+mod meter_tests {
+    use super::*;
+
+    #[test]
+    fn garage_meters_match_the_original() {
+        // (tools/garage_meters_reference.py: F-13938 run offline on catalogue records; each line the record's six fields,
+        // then the six ints it hands the movie in its order: speed, acceleration, handling, each stock then upgraded)
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/garage_meters_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let v: Vec<f32> = i.split(' ').map(f).collect();
+            let c = CarInfo { base_accel: v[0], mods_accel: v[1], base_speed: v[2], mods_speed: v[3], base_handling: v[4], mods_handling: v[5], ..Default::default() };
+            let m = c.meters();
+            let got = [m[1][0], m[1][1], m[0][0], m[0][1], m[2][0], m[2][1]];
+            let want: Vec<i32> = o.split(' ').map(|x| x.parse().unwrap()).collect();
+            assert_eq!(got[..], want[..], "{line}");
+            n += 1;
+        }
+        assert!(n >= 4000);
     }
 }

@@ -412,6 +412,11 @@ for i in 0..4 {
                     if q.len() >= 203 {
                         vs.trans_inhibited = q[202] != 0.0;
                     }
+                    // (the air's damping factor, mcCarAero +4, which the recorder does not keep: MCLA_REPLAY_AERO
+                    // gives it - wa.0 from s200, 20 updates after the landing that set LandingDampFactor 1.7: 1.36667)
+                    if let Some(a) = std::env::var("MCLA_REPLAY_AERO").ok().and_then(|x| x.parse::<f32>().ok()) {
+                        vs.aero_damp = a;
+                    }
                     // (the centre of mass as it stands, chassis +112; and, where
                     // MCLA_REPLAY_GYROSUMS asks for it, the recorded sums after the gyro)
                     if q.len() >= 169 {

@@ -2268,6 +2268,16 @@ fn cond_kind(c: &Cond) -> &'static str {
 /// (F-33429) with ',' (0 and others), '.' (1, 3, 4) or '|' (2); "$" before (0, 3 and
 /// others) or after (1, 2, 4).
 pub fn money_text_in(v: i64, lang: usize) -> String {
+    let g = money_digits_in(v, lang);
+    match lang {
+        1 | 2 | 4 => format!("{g}$"),
+        _ => format!("${g}"),
+    }
+}
+
+/// The digits alone, as F-36073 writes them with its sign flag clear (the GPS panel's
+/// `Navmap_Bank_Amount`, F-27560).
+pub fn money_digits_in(v: i64, lang: usize) -> String {
     let d = v.abs().to_string();
     let sep = match lang {
         1 | 3 | 4 => '.',
@@ -2281,11 +2291,7 @@ pub fn money_text_in(v: i64, lang: usize) -> String {
         }
         g.push(c);
     }
-    let g = if v < 0 { format!("-{g}") } else { g };
-    match lang {
-        1 | 2 | 4 => format!("{g}$"),
-        _ => format!("${g}"),
-    }
+    if v < 0 { format!("-{g}") } else { g }
 }
 
 fn money_text(v: i64) -> String {

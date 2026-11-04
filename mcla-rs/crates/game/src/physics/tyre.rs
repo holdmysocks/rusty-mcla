@@ -47,7 +47,7 @@ fn within(disp: f32, limit: f32, step: f32) -> bool {
 }
 
 /// Update displacement springs and apply the original 2D friction circle.
-pub fn update(tune: &WheelTune, sliding: f32, c: Contact,
+pub fn update(tune: &WheelTune, (wheel_static, sliding): (f32, f32), c: Contact,
               displacement_lat: &mut f32, displacement_long: &mut f32) -> Forces {
     let rolling = c.spin * c.radius;
     let patch = c.velocity_long + rolling;
@@ -62,11 +62,11 @@ pub fn update(tune: &WheelTune, sliding: f32, c: Contact,
     let (mu_long, slide_long) = if slip_long.abs() > opt &&
         within(*displacement_long, static_mu * unit_long, step_long) {
         (static_mu, 0.0)
-    } else { friction(tune, sliding, c.surface, slip_long) };
+    } else { friction(tune, wheel_static, sliding, c.surface, slip_long) };
     let (mu_lat, slide_lat) = if slip_lat.abs() > opt &&
         within(*displacement_lat, static_mu * unit_lat, step_lat) {
         (static_mu, 0.0)
-    } else { friction(tune, sliding, c.surface, slip_lat) };
+    } else { friction(tune, wheel_static, sliding, c.surface, slip_lat) };
     let mut limit_lat = mu_lat * unit_lat;
     let mut limit_long = mu_long * unit_long;
     let mut mu = static_mu;
@@ -123,7 +123,7 @@ mod tests {
             radius: p[4], surface: p[8], load: p[9], velocity_lat: p[10], velocity_long: p[11],
             spin: p[12], dt: p[15] };
         let (mut dl, mut df) = (p[13], p[14]);
-        let result = update(&tune, p[6], c, &mut dl, &mut df);
+        let result = update(&tune, (p[5], p[6]), c, &mut dl, &mut df);
         for (a, e) in [dl, df, result.lateral, result.longitudinal, result.slip_lat, result.slip_long]
             .into_iter().zip(p[16..].iter().copied()) {
             assert_eq!(a.to_bits(), e.to_bits(), "{line}: {result:?}, displacement {dl}, {df}");

@@ -1362,18 +1362,9 @@ impl FlashMenu {
             Some((label, amount)) => {
                 p.set_global("showmoney", Value::Int(1));
                 p.set_global("t_banktxt", Value::str(label));
-                p.set_global("bank", Value::Int((*amount).clamp(i32::MIN as i64, i32::MAX as i64) as i32));
-                // (the GPS panel prints `bank` as it is: give it the text)
-                if matches!(page.layout, MenuLayout::GpsMap { .. }) {
-                    let d = amount.abs().to_string();
-                    let mut out = String::from("$");
-                    for (i, c) in d.chars().enumerate() {
-                        if i > 0 && (d.len() - i) % 3 == 0 {
-                            out.push(',');
-                        }
-                        out.push(c);
-                    }
-                    p.set_global("bank", Value::str(&out));
+                // (the GPS panel's `bank` is its text, F-43310 - set with the page's globals)
+                if !matches!(page.layout, MenuLayout::GpsMap { .. }) {
+                    p.set_global("bank", Value::Int((*amount).clamp(i32::MIN as i64, i32::MAX as i64) as i32));
                 }
             }
             None => p.set_global("showmoney", Value::Int(0)),
