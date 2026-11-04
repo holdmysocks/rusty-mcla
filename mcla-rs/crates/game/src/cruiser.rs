@@ -54,6 +54,12 @@ pub trait CruiseCar {
     fn probe(&mut self, from: Vec3, to: Vec3) -> Option<(Vec3, Vec3)>;
     /// the reset position (racer +192)
     fn reset_pos(&self) -> Vec3;
+    /// the live engine tune's idle rpm (+8) and engage rpm (+20), [[car+92]+144]
+    fn idle_rpm(&self) -> f32;
+    fn engage_rpm(&self) -> f32;
+    fn set_engage_rpm(&mut self, rpm: f32);
+    /// the car sim's computer-driven bytes +816 / +817
+    fn set_computer_driven(&mut self, on: bool);
 }
 
 /// What drives the car this frame.
@@ -72,6 +78,8 @@ pub struct Cruiser {
     pub racing: Brain,
     /// the frame time the follow divides by (the image's word at the follow, 1/60)
     pub k: f32,
+    /// the car's engage rpm saved by the enable (+1692; 1000 from the constructor)
+    pub saved_engage: f32,
 }
 
 /// The world for one update of one cruiser.
@@ -276,9 +284,30 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, T, C> {
     }
 }
 
+/// Slot 11 (F-95280) with a physical car outside states 1 / 2: the clutch engages at the idle rpm (engine tune +20 =
+/// +8) before the vehicle controller runs.
+pub fn slot11_engine<C: CruiseCar>(state: u32, physical: bool, car: &mut C) {
+    if physical && state != 1 && state != 2 {
+        let idle = car.idle_rpm();
+        car.set_engage_rpm(idle);
+    }
+}
+
+/// Slot 9's own part (F-22477): the engage rpm saved (+1692), the car computer-driven.
+pub fn enable_car<C: CruiseCar>(saved: &mut f32, car: &mut C) {
+    *saved = car.engage_rpm();
+    car.set_computer_driven(true);
+}
+
+/// Slot 10's own part (F-35041): the saved engage rpm back, the car no longer computer-driven.
+pub fn disable_car<C: CruiseCar>(saved: f32, car: &mut C) {
+    car.set_engage_rpm(saved);
+    car.set_computer_driven(false);
+}
+
 impl Cruiser {
     pub fn new(owner: u32, racing: Brain) -> Cruiser {
-        Cruiser { owner, brain: Cruising::default(), racing, k: 1.0 / 60.0 }
+        Cruiser { owner, brain: Cruising::default(), racing, k: 1.0 / 60.0, saved_engage: 1000.0 }
     }
 
     /// One update (F-64718) and what drives the car after it (slot 11: the racing brain in states 1 / 2, else the
@@ -288,8 +317,23 @@ impl Cruiser {
         self.brain.update(&mut w);
         match self.brain.state {
             1 | 2 => Pedals::Racing,
-            _ => Pedals::Demand { steer: self.brain.follow.steer, speed: self.brain.follow.demand },
+            _ => {
+                slot11_engine(self.brain.state, true, car);
+                Pedals::Demand { steer: self.brain.follow.steer, speed: self.brain.follow.demand }
+            }
         }
+    }
+
+    /// The brain enabled (slot 9, F-22477): after the racing brain's own enable, the car's engage rpm is saved and
+    /// the car is computer-driven.
+    pub fn enable<C: CruiseCar>(&mut self, car: &mut C) {
+        enable_car(&mut self.saved_engage, car);
+    }
+
+    /// The brain disabled (slot 10, F-35041): the engage rpm back, the car no longer computer-driven, then the racing
+    /// brain's own disable.
+    pub fn disable<C: CruiseCar>(&mut self, car: &mut C) {
+        disable_car(self.saved_engage, car);
     }
 
     /// The ambient system's answer to the request: the ghost made (status 0) or not.
@@ -305,5 +349,84 @@ impl Cruiser {
         let rail = rail.map_or(0, |l| l + 1);
         let mut w = World { rails, traffic, car, racing: &mut self.racing, owner: self.owner, k: self.k, racer_ran: false };
         self.brain.event(&mut w, reason, rail, ghost);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Car {
+        idle: f32,
+        engage: f32,
+        driven: [bool; 2],
+    }
+
+    impl CruiseCar for Car {
+        fn matrix(&self) -> Frame {
+            unreachable!()
+        }
+        fn vel(&self) -> Vec3 {
+            unreachable!()
+        }
+        fn yaw_rate(&self) -> f32 {
+            unreachable!()
+        }
+        fn tune48(&self) -> f32 {
+            unreachable!()
+        }
+        fn speed(&self) -> f32 {
+            unreachable!()
+        }
+        fn set_pose(&mut self, _: &Frame, _: Vec3) {
+            unreachable!()
+        }
+        fn on_mesh(&self, _: Vec3) -> bool {
+            unreachable!()
+        }
+        fn probe(&mut self, _: Vec3, _: Vec3) -> Option<(Vec3, Vec3)> {
+            unreachable!()
+        }
+        fn reset_pos(&self) -> Vec3 {
+            unreachable!()
+        }
+        fn idle_rpm(&self) -> f32 {
+            self.idle
+        }
+        fn engage_rpm(&self) -> f32 {
+            self.engage
+        }
+        fn set_engage_rpm(&mut self, rpm: f32) {
+            self.engage = rpm;
+        }
+        fn set_computer_driven(&mut self, on: bool) {
+            self.driven = [on; 2];
+        }
+    }
+
+    /// The original's slot 9 / 10 / 11 run offline (work/racerai/cenable): each line is the op (0 enable, 1 disable,
+    /// 2 controller), the state, physical, idle, engage, saved, the two bytes before, then engage, saved and the bytes
+    /// after.
+    #[test]
+    fn cruise_enable_matches_the_original() {
+        let text = include_str!("testdata/cruise_enable_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let u = |i: usize| w[i].parse::<u32>().unwrap();
+            let f = |i: usize| f32::from_bits(u32::from_str_radix(w[i], 16).unwrap());
+            let mut car = Car { idle: f(3), engage: f(4), driven: [u(6) != 0, u(7) != 0] };
+            let mut saved = f(5);
+            match u(0) {
+                0 => enable_car(&mut saved, &mut car),
+                1 => disable_car(saved, &mut car),
+                _ => slot11_engine(u(1), u(2) != 0, &mut car),
+            }
+            assert_eq!(car.engage.to_bits(), u32::from_str_radix(w[8], 16).unwrap(), "{line}");
+            assert_eq!(saved.to_bits(), u32::from_str_radix(w[9], 16).unwrap(), "{line}");
+            assert_eq!(car.driven, [u(10) != 0, u(11) != 0], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 300);
     }
 }
