@@ -277,6 +277,10 @@ impl SourceFilter {
 
     fn design(hp: bool, hz: u32, wk: f32) -> [f32; 5] {
         use crate::physics::exact::{guest_cos, guest_sin};
+        // (the original's cutoffs, up to 23900 Hz, stay under its 48 kHz Nyquist; the port's 44.1 kHz mix holds them at
+        // 22000 Hz, as a cutoff past its own Nyquist gives an unstable section that turns the whole mix to NaN - issue #40;
+        // closer to 22050 the f32 cosine rounds to -1 and puts a pole on the unit circle)
+        let hz = if wk == W_K { hz.min(22000) } else { hz };
         let w = hz as f32 * wk;
         let c = guest_cos(w as f64) as f32;
         let s = guest_sin(w as f64) as f32;
@@ -1632,6 +1636,17 @@ impl Audio {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #40: every cutoff the mixer can send (0..23900 Hz) gives a stable section at the port's 44.1 kHz
+    /// (|a2| < 1, |a1| < 1 + a2), so a slewed LPF near the top no longer turns the mix to NaN
+    #[test]
+    fn source_filter_stable_at_the_mix_rate() {
+        use super::{SourceFilter, W_K};
+        for hz in (20..=23900).step_by(7).chain(22040..22100) {
+            let c = SourceFilter::design(false, hz, W_K);
+            assert!(c.iter().all(|v| v.is_finite()) && c[4].abs() < 1.0 && c[3].abs() < 1.0 + c[4], "{hz} Hz: {c:?}");
+        }
+    }
+
     /// SOURCE_FILTER_RULE.md: the coefficients and 67 blocks of the recompiled filter (F-59608 / F-98396) run offline
     /// at its 48 kHz constant: coefficients, every output sample (fnv-64 of the bits) and the states, bit for bit
     #[test]
