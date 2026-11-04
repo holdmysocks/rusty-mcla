@@ -511,24 +511,25 @@ impl BoomTune {
     }
 }
 
-/// The blend from one view to the next (the camera manager's MCCAMERATRANSITION, F-18583):
-/// both cameras keep running; the share of the new one is s = 1 - goal * left / time, eased
-/// (1 - cos(pi s)) / 2 (type 3), and position, aim and lens go from the old to the new by it.
+/// The blend from one view to the next: the director's blend camera (camTransitionCS,
+/// `DirBlend`): both cameras keep running and the blend's matrix is mixed from theirs each
+/// frame (F-18583), as an orbit about the followed car; the weight runs 0 -> the source's
+/// BlendGoal over the push's time, eased by the transition type (3 for a view change).
 #[derive(Default)]
 pub struct ViewBlend {
     from: Option<(BoomTune, BoomCam)>,
-    left: f32,
+    blend: DirBlend,
     time: f32,
-    goal: f32,
 }
 
 impl ViewBlend {
+    /// `goal`: the SOURCE view's BlendGoal (F-41709 reads the blend's +192); `time`: the
+    /// push's time.
     pub fn start(&mut self, tune: BoomTune, cam: BoomCam, time: f32, goal: f32) {
         if time > 0.0 {
             self.from = Some((tune, cam));
-            self.left = time;
+            self.blend = DirBlend { weight: 0.0, goal, left: time, ..Default::default() };
             self.time = time;
-            self.goal = goal;
         } else {
             self.stop();
         }
@@ -539,24 +540,197 @@ impl ViewBlend {
     pub fn active(&self) -> bool {
         self.from.is_some()
     }
-    /// Run the old view for this frame and mix it into `out` (the new view's output).
+    /// Run the old view for this frame and mix it with `out` (the new view's output).
     pub fn apply(&mut self, car: &BoomTarget, out: BoomOut, dt: f32) -> BoomOut {
         let Some((tune, cam)) = self.from.as_mut() else { return out };
         let old = cam.update(tune, car, dt);
-        self.left -= dt;
-        if self.left <= 0.0 && self.goal == 1.0 {
+        // (the cameras' matrices from the port's eye, aim and up: x right, y up, z back)
+        let dir_cam = |o: &BoomOut| {
+            let z = (o.pos - o.look).normalize_or(Vec3::Z);
+            let x = o.up.cross(z).normalize_or(Vec3::X);
+            DirCam { rows: [x, z.cross(x), z], pos: o.pos, target: Some(car.pos), lens: [o.fov, 0.0, 0.0, 0.0], blend_goal: 1.0 }
+        };
+        let (a, b) = (dir_cam(&old), dir_cam(&out));
+        if !self.blend.step(&a, &b, 3, self.time, dt) {
             self.from = None;
             return out;
         }
-        let s = (1.0 - self.goal * (self.left.max(0.0) / self.time.max(1e-4))).clamp(0.0, 1.0);
-        let w = (1.0 - (std::f32::consts::PI * s).cos()) * 0.5;
-        BoomOut {
-            pos: old.pos.lerp(out.pos, w),
-            look: old.look.lerp(out.look, w),
-            up: old.up.lerp(out.up, w).normalize_or(out.up),
-            fov: old.fov + (out.fov - old.fov) * w,
-        }
+        let m = &self.blend;
+        BoomOut { pos: m.pos, look: m.pos - m.rows[2] * (out.look - out.pos).length().max(1.0), up: m.rows[1], fov: m.lens[0] }
     }
+}
+
+/// One camera as the director's blend camera reads it: its matrix (the corrected one when
+/// it has one), the place of the object it follows (+144's matrix, +48), its lens (+168 FOV,
+/// +172 near, +176 far, +180) and its BlendGoal (+164).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DirCam {
+    pub rows: [Vec3; 3],
+    pub pos: Vec3,
+    pub target: Option<Vec3>,
+    pub lens: [f32; 4],
+    pub blend_goal: f32,
+}
+
+/// The director's blend camera (camTransitionCS): its matrix, lens, weight (+204), goal
+/// (+208) and time left (+212).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DirBlend {
+    pub rows: [Vec3; 3],
+    pub pos: Vec3,
+    pub lens: [f32; 4],
+    pub weight: f32,
+    pub goal: f32,
+    pub left: f32,
+}
+
+impl DirBlend {
+    /// Start (F-41709): weight 0, the goal the SOURCE camera's BlendGoal, the push's time;
+    /// the source's matrix.
+    pub fn start(from: &DirCam, t: f32) -> DirBlend {
+        DirBlend { rows: from.rows, pos: from.pos, lens: from.lens, weight: 0.0, goal: from.blend_goal, left: t }
+    }
+
+    /// The step (F-18583): `mode` is the director's transition type (+16), `t` its time (+20).
+    /// False when the blend is over (time up with goal 1: F-70013 hands over to the target).
+    pub fn step(&mut self, from: &DirCam, to: &DirCam, mode: u16, t: f32, dt: f32) -> bool {
+        use crate::physics::exact::{fma, fnms};
+        self.left -= dt;
+        if !(self.left > 0.0) && self.goal == 1.0 {
+            return false;
+        }
+        if self.weight < self.goal {
+            let s = if !(self.left > 0.0) {
+                0.0
+            } else if self.left < t {
+                self.left / t
+            } else {
+                1.0
+            };
+            let w = fnms(self.goal, s, 1.0);
+            self.weight = match mode {
+                1 => ease_cos_quarter(w),
+                2 => ease_sin_quarter(w),
+                3 => (1.0 - cos_pi(w)) * 0.5,
+                _ => w,
+            };
+            // (the lens only while the weight is short of the goal)
+            for i in 0..4 {
+                self.lens[i] = fma(to.lens[i] - from.lens[i], self.weight, from.lens[i]);
+            }
+        }
+        let w = self.weight;
+        // the pivot: the followed objects' places, mixed
+        let pivot = match (from.target, to.target) {
+            (Some(a), Some(b)) => (b - a) * w + a,
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => Vec3::ZERO,
+        };
+        let dist = |c: &DirCam| {
+            let d = c.pos - pivot;
+            fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt()
+        };
+        let (da, db) = (dist(from), dist(to));
+        let fa = from.pos - from.rows[2] * da;
+        let fb = to.pos - to.rows[2] * db;
+        let ea = euler_zxy(&from.rows);
+        let mut eb = euler_zxy(&to.rows);
+        const PI: f32 = std::f32::consts::PI;
+        for k in 0..3 {
+            let d = ea[k] - eb[k];
+            if d > PI {
+                eb[k] += 2.0 * PI;
+            } else if d < -PI {
+                eb[k] -= 2.0 * PI;
+            }
+        }
+        let x = -fma(-eb[0] - -ea[0], w, -ea[0]);
+        let y = fma(eb[1] - ea[1], w, ea[1]);
+        let z = fma(eb[2] - ea[2], w, ea[2]);
+        let d = fma(db - da, w, da);
+        self.rows = rows_of_zxy([x, y, z]);
+        self.pos = self.rows[2] * d + ((fb - fa) * w + fa);
+        true
+    }
+}
+
+/// F-86323: 1 - cos(x pi / 2) in 0..1.
+fn ease_cos_quarter(x: f32) -> f32 {
+    use crate::physics::exact::guest_cos;
+    if x <= 0.0 {
+        0.0
+    } else if x >= 1.0 {
+        1.0
+    } else {
+        1.0 - guest_cos((x * std::f32::consts::FRAC_PI_2) as f64) as f32
+    }
+}
+
+/// F-17888: sin(x pi / 2) in 0..1.
+fn ease_sin_quarter(x: f32) -> f32 {
+    use crate::physics::exact::guest_sin;
+    if x <= 0.0 {
+        0.0
+    } else if x >= 1.0 {
+        1.0
+    } else {
+        guest_sin((x * std::f32::consts::FRAC_PI_2) as f64) as f32
+    }
+}
+
+/// F-39265: cos(x pi) in 0..1 (1 below, -1 above).
+fn cos_pi(x: f32) -> f32 {
+    use crate::physics::exact::guest_cos;
+    if x <= 0.0 {
+        1.0
+    } else if x >= 1.0 {
+        -1.0
+    } else {
+        guest_cos((x * std::f32::consts::PI) as f64) as f32
+    }
+}
+
+/// F-49999: the rows made orthonormal: row 2 kept and normalised, row 0 = row 1 x row 2
+/// normalised, row 1 = row 2 x row 0 (the vector unit's products, each rounded).
+fn orthonormal(r: &[Vec3; 3]) -> [Vec3; 3] {
+    use crate::physics::exact::dot3;
+    let unit = |v: Vec3| {
+        let l2 = dot3(v, v);
+        let e = 1.0 / l2.sqrt();
+        // (an estimate of 0 - a length of infinity - is replaced by 0)
+        let e = if e == 0.0 { 0.0 } else { e };
+        v * ((1.0 - l2 * (e * e)) * (0.5 * e) + e)
+    };
+    let cross = |a: Vec3, b: Vec3| Vec3::new(a.z * b.y - a.y * b.z, a.x * b.z - a.z * b.x, a.y * b.x - a.x * b.y);
+    let r2 = unit(r[2]);
+    let r0 = unit(cross(r2, r[1]));
+    let r1 = cross(r0, r2);
+    [r0, r1, r2]
+}
+
+/// F-33934 for the order "zxy": the matrix orthonormalised (F-49999), then x = asin(-m21),
+/// y = atan2(m20, m22), z = atan2(m01, m11).
+pub fn euler_zxy(r: &[Vec3; 3]) -> [f32; 3] {
+    use crate::physics::exact::{guest_asin, guest_atan2};
+    let m = orthonormal(r);
+    let z = guest_atan2(m[0].y as f64, m[1].y as f64) as f32;
+    let y = guest_atan2(m[2].x as f64, m[2].z as f64) as f32;
+    let x = guest_asin((-m[2].y) as f64) as f32;
+    [x, y, z]
+}
+
+/// F-62659: the rows of the angles (order zxy); an angle of 0 takes sin 0, cos 1.
+pub fn rows_of_zxy(e: [f32; 3]) -> [Vec3; 3] {
+    use crate::physics::exact::{fma, fms, guest_cos, guest_sin};
+    let sc = |a: f32| if a == 0.0 { (0.0, 1.0) } else { (guest_sin(a as f64) as f32, guest_cos(a as f64) as f32) };
+    let ((sx, cx), (sy, cy), (sz, cz)) = (sc(e[0]), sc(e[1]), sc(e[2]));
+    let (a, b, c, d) = (sz * sy, cz * cy, sz * cy, cz * sy);
+    [
+        Vec3::new(fma(a, sx, b), sz * cx, fms(c, sx, d)),
+        Vec3::new(fms(d, sx, c), cz * cx, fma(b, sx, a)),
+        Vec3::new(sy * cx, -sx, cy * cx),
+    ]
 }
 
 /// The black mask of a cut (TRANSITIONMOVIE as F-28091 starts it: mask_color 0,
@@ -713,7 +887,7 @@ impl Switch {
             } else {
                 let (old, _) = tune_for(set, was_view, false);
                 let (new, _) = tune_for(set, view, false);
-                self.blend.start(old.clone(), cam.clone(), new.blend_time(), new.blend_goal());
+                self.blend.start(old.clone(), cam.clone(), new.blend_time(), old.blend_goal());
             }
             cam.reset();
         }
@@ -3420,3 +3594,49 @@ mod original_osc_tests {
     }
 }
 
+
+/// The director's blend step (F-18583, `DirBlend::step`) against the original's own code run offline
+/// (tools/director_blend_reference.py -> testdata/director_blend_ref.txt, 5,000 random blends).
+#[cfg(test)]
+mod director_blend_tests {
+    use super::*;
+
+    #[test]
+    fn director_blend_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = |x: &str| f32::from_bits(h(x));
+        let cam = |w: &[&str]| DirCam {
+            rows: [0, 1, 2].map(|r| Vec3::new(f(w[5 + 3 * r]), f(w[6 + 3 * r]), f(w[7 + 3 * r]))),
+            pos: Vec3::new(f(w[14]), f(w[15]), f(w[16])),
+            target: (h(w[1]) != 0).then(|| Vec3::new(f(w[2]), f(w[3]), f(w[4]))),
+            lens: [f(w[17]), f(w[18]), f(w[19]), f(w[20])],
+            blend_goal: 1.0,
+        };
+        let mut n = 0;
+        for line in include_str!("testdata/director_blend_ref.txt").lines() {
+            let (a, b) = line.strip_prefix("DB ").unwrap().split_once(" -> ").unwrap();
+            let i: Vec<&str> = a.split(' ').collect();
+            let o: Vec<&str> = b.split(' ').collect();
+            let (from, to) = (cam(&i[6..27]), cam(&i[27..48]));
+            let mut bl = DirBlend { weight: f(i[3]), goal: f(i[4]), left: f(i[5]), ..Default::default() };
+            let on = bl.step(&from, &to, h(i[0]) as u16, f(i[1]), f(i[2]));
+            assert_eq!(!on, o[0] == "1", "done, {line}");
+            assert_eq!((bl.weight.to_bits(), bl.left.to_bits()), (h(o[1]), h(o[2])), "weight / left, {line}");
+            if on {
+                for k in 0..4 {
+                    assert_eq!(bl.lens[k].to_bits(), h(o[3 + k]), "lens {k}, {line}");
+                }
+                for r in 0..3 {
+                    for k in 0..3 {
+                        assert_eq!(bl.rows[r][k].to_bits(), h(o[7 + 3 * r + k]), "row {r}.{k}, {line}");
+                    }
+                }
+                for k in 0..3 {
+                    assert_eq!(bl.pos[k].to_bits(), h(o[16 + k]), "pos {k}, {line}");
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 5000);
+    }
+}
