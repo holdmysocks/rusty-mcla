@@ -6158,7 +6158,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let Some((place, rep, wrecked)) = self.roam.bmt_over.take() else { return true };
                         self.game.bmt_end = Some(game::BmtEnd { race, hookman: self.roam.won_against_rival, place, rep, wrecked, t: 0.0, sel: 0 });
                         log::info!("beat me there: the run is over - place {}, {} REP, wrecked {} (frame {})", place, rep, wrecked, self.tick_no);
+                        // (generic_local_hookman runs EndOfRaceSequence after either end, 0x24ff / 0x255a: its splash
+                        // cleanup, F-53934; the damaged-out run did not finish, so no line)
+                        if let Some(fh) = self.game.flash_hud.as_mut() {
+                            fh.splash_cleanup();
+                        }
                         if !wrecked {
+                            self.game.end_seq_n += 1;
                             self.game.race_slow_wait = Some(game::Game::RACE_END_PANEL);
                             self.game.race_end_t = Some(0.0);
                         }
@@ -7071,7 +7077,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.delivery_panel(failed.is_none().then_some(time), limit, d);
                     }
                     // (PAYBACK_COMPLETE comes with the last of the legs asked for: `mc4_mission_pay`)
-                    if failed.is_none() && (kind == game::RaceKind::Delivery || std::mem::take(&mut self.game.career.payback_done)) {
+                    let run_done = failed.is_none() && (kind == game::RaceKind::Delivery || std::mem::take(&mut self.game.career.payback_done));
+                    // (EndOfRaceSequence, its splash cleanup first (F-53934): the delivery core runs it at every end
+                    // (Hangouts 0x37c63b19 0x18f1..0x19a0), PaybackCore once the run is complete, the player caught or
+                    // damaged out (0x422e62e2 0xd20..0xd58) - not after a leg that leaves the run going)
+                    if kind == game::RaceKind::Delivery || run_done || failed.is_some() {
+                        self.game.end_seq_n += 1;
+                        if let Some(fh) = self.game.flash_hud.as_mut() {
+                            fh.splash_cleanup();
+                        }
+                    }
+                    if run_done {
                         if kind == game::RaceKind::Delivery {
                             self.game.career.event(career::Ev::Delivery);
                         } else {
@@ -7309,6 +7325,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     // (EndOfRaceSequence, where it runs, starts with SplashManager_Cleanup: F-53934)
                     if self.game.race_end_t.is_some() {
+                        self.game.end_seq_n += 1;
                         if let Some(fh) = self.game.flash_hud.as_mut() {
                             fh.splash_cleanup();
                         }

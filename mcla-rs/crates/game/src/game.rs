@@ -777,6 +777,9 @@ pub struct Game {
     pub hangout_slow: crate::mc4::SlowMo,
     /// real seconds since the player crossed the line (the race-end panels, `RACE_END_*`)
     pub race_end_t: Option<f32>,
+    /// how many times a race's end sequence has run (RaceOver.sch's EndOfRaceSequence: its splash cleanup and the
+    /// player's line, `end_race_speech`)
+    pub end_seq_n: u32,
     /// the player wrecked in this race: Race_IsDamagedOut (race +3774), set at the wreck tick while the race
     /// is not over and the police are not on him (race_damaged_out.md)
     pub race_dmg_out: bool,
@@ -1475,6 +1478,7 @@ impl Game {
             race_slow_wait: None,
             hangout_slow: crate::mc4::SlowMo::default(),
             race_end_t: None,
+            end_seq_n: 0,
             race_dmg_out: false,
             race_wreck_over: false,
             career_over: false,
@@ -3186,11 +3190,14 @@ impl Game {
     /// call it, always with its speech argument 1): a time trial, a delivery or a payback (event kinds 2, 6, 7) WIN, or
     /// LOSE with bFailure; any other race WIN in first place, CLOSE in second within 300 ms of the winner's time
     /// (Race_GetWinningTime), else LOSE. WIN and CLOSE say nothing in a delivery race (the current race's type 4:
-    /// F-64589, F-88148); LOSE has no gate (F-77215). None: nothing is said.
+    /// F-64589, F-88148); LOSE has no gate (F-77215). None: nothing is said. A delivery or a payback that failed has
+    /// no finish time (the port's failures are all before the line), and the sequence skips its line then ("did not
+    /// finish": the racer's +32 INT_MAX outside a series or tournament).
     pub fn end_race_speech(&self) -> Option<&'static str> {
         let kind = self.race.as_ref().map(|r| r.kind);
         let failure = match kind {
-            Some(RaceKind::Delivery) | Some(RaceKind::Payback) => Some(self.race.as_ref().map_or(false, |r| r.failed.is_some())),
+            Some(RaceKind::Delivery) | Some(RaceKind::Payback) if self.race.as_ref().map_or(false, |r| r.failed.is_some()) => return None,
+            Some(RaceKind::Delivery) | Some(RaceKind::Payback) => Some(false),
             _ => self.career.tt_last.map(|beaten| !beaten),
         };
         let g = match failure {
@@ -15204,16 +15211,16 @@ mod tests {
         g.career.tt_last = Some(true);
         assert_eq!(g.end_race_speech(), Some("WIN"));
         g.career.tt_last = None;
-        // (a delivery: WIN is not said in a delivery race, LOSE is; a payback says both)
+        // (a delivery: WIN is not said in a delivery race; a failed delivery or payback did not finish: nothing)
         let mut race = super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Delivery, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() };
         g.race = Some(race.clone());
         assert_eq!(g.end_race_speech(), None);
         race.failed = Some("TIME");
         g.race = Some(race.clone());
-        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        assert_eq!(g.end_race_speech(), None);
         race.kind = super::RaceKind::Payback;
         g.race = Some(race.clone());
-        assert_eq!(g.end_race_speech(), Some("LOSE"));
+        assert_eq!(g.end_race_speech(), None);
         race.failed = None;
         g.race = Some(race);
         assert_eq!(g.end_race_speech(), Some("WIN"));

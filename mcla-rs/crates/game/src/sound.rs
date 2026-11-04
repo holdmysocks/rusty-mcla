@@ -124,7 +124,8 @@ pub struct Sound {
     pub parts: [u8; 3],
     /// the countdown's last sounded step (3, 2, 1, 0 = GO; 4 = before it; -1 = no race)
     count_stage: i32,
-    end_race: bool,
+    /// the end sequences seen (`Game::end_seq_n`)
+    end_race: u32,
     /// the reward screen's rep bar sound waits 20 movie frames
     rep_fill: Option<f32>,
     ability_snd: Option<crate::sndobj::Handle>,
@@ -711,18 +712,18 @@ impl Sound {
             self.count_tick = 0;
             self.count_stage = -1;
         }
-        // the race's end: the player's voice (`Game::end_race_speech`), then the ENDRACE mixer, whose own sound is
-        // the sting (AudioManager_SetActiveEndRace)
-        let ended = game.race_end_t.is_some();
+        // the race's end: the player's voice when its end sequence runs (`Game::end_race_speech`), then the ENDRACE
+        // mixer, whose own sound is the sting (AudioManager_SetActiveEndRace)
+        let ended = game.end_seq_n != self.end_race;
         if let Some(lib) = &mut self.lib {
-            if ended && !self.end_race {
+            if ended {
                 if let Some(g) = game.end_race_speech() {
                     lib.play(&format!("PLAYER_ENDRACE_GESTURE_{g}_MASTER"), crate::sndobj::Req::default());
                 }
             }
             lib.scene("DYNAMIC_MIXER_ENDRACE", game.race_end_t.is_some_and(|t| t >= 0.2));
         }
-        self.end_race = ended;
+        self.end_race = game.end_seq_n;
 
         // ---- the player's car -----------------------------------------------------
         let Some(p) = vehicles.player() else {
