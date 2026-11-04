@@ -2362,11 +2362,11 @@ impl Aiv {
         let fv = norm_or(Vec3::new(self.f.x, 0.0, self.f.z), 1e-5, Vec3::ZERO);
         let vv = norm_or(Vec3::new(self.vel.x, 0.0, self.vel.z), 1.0, Vec3::ZERO);
         let hv = norm_or(Vec3::new(self.h.x, 0.0, self.h.z), 1e-5, Vec3::ZERO);
-        let speed = self.vel.length();
-        let vh = self.vel.z * self.h.z + self.vel.x * self.h.x;
+        let speed = fma(self.vel.z, self.vel.z, fma(self.vel.x, self.vel.x, self.vel.y * self.vel.y)).sqrt();
+        let vh = fma(self.h.z, self.vel.z, self.vel.x * self.h.x);
         let mut a1 = ang_xz_unit(fv, hv);
-        let fdv = fv.dot(vv);
-        let a2 = ang_xz_unit(vv, hv) * if fdv > 0.0 { fdv } else { 0.0 };
+        let fdv = fma(vv.x, fv.x, fma(vv.z, fv.z, vv.y * fv.y));
+        let a2 = ang_xz_unit(vv, hv) * if -fdv >= 0.0 { 0.0 } else { fdv };
         if f == 2 * self.tun.samples_per_segment - 1 && speed < 10.0 {
             let d = self.ln.pts.get(self.progress) - self.pos;
             let d = norm_or(Vec3::new(d.x, 0.0, d.z), 1e-5, Vec3::ZERO);
@@ -2376,10 +2376,15 @@ impl Aiv {
         if !collision {
             kc += r.kappa - self.ang_vel.y / speed.max(5.0);
         }
-        let ac = (r.allowed * r.allowed - self.v_fwd * self.v_fwd) / (r.ds.max(1.0) * 2.0);
+        let ac = fms(r.allowed, r.allowed, self.v_fwd * self.v_fwd) / (r.ds.max(1.0) * 2.0);
         let lim = 1.0 / self.veh.steer_scalar(self.v_fwd);
         let kk = r.kappa.max(-lim).min(lim);
-        self.h = norm0(rot_y(self.h, kk * self.dt * vh));
+        // (made unit by the vector unit: vmsum3fp, vrsqrtefp with infinity to 0, one Newton step)
+        let h = rot_y(self.h, kk * self.dt * vh);
+        let d = dot3(h, h);
+        let e = 1.0 / d.sqrt();
+        let e = if e == f32::INFINITY { 0.0 } else { e };
+        self.h = h * ((1.0 - d * (e * e)) * (0.5 * e) + e);
         (kc, ac)
     }
 
@@ -2460,30 +2465,42 @@ fn cr(w: &[Vec3; 4]) -> [Vec3; 4] {
 /// F-28541: steer, throttle, brake from the commanded curvature and acceleration.
 #[allow(clippy::too_many_arguments)]
 fn pedal_map(veh: &Veh, kappa: f32, a_cmd: f32, f3: f32, t1: f32, c1: f32, t2: f32, c2: f32, g: f32, gear: i32, vel: Vec3, fwd: Vec3, right: Vec3) -> (f32, f32, f32) {
-    let vf = vel.x * fwd.x + vel.y * fwd.y + vel.z * fwd.z;
+    let vf = fma(fwd.x, vel.x, fma(vel.z, fwd.z, vel.y * fwd.y));
     let ss = veh.steer_scalar(vf);
-    let steer = (-(ss * kappa)).max(-1.0).min(1.0);
+    let steer = fsel(-(ss * kappa) - -1.0, -(ss * kappa), -1.0);
+    let steer = fsel(steer - 1.0, 1.0, steer);
     let mut ae = veh.accel(gear, vf);
     let ad = veh.decel(gear, vf);
     let t = &veh.t;
     let keff = (steer / ss).abs();
-    let drag = ((keff * t.drag[2] + t.drag[1]) * vf + t.drag[0]).max(0.0);
-    let areq = drag * drag * drag * drag + a_cmd - g * fwd.y;
-    let (b1, b2) = (t1.max(0.0), t2.max(0.0));
-    let ab = b2 * b2 * b2 * c2 + b1 * b1 * c1;
+    let drag = fma(fma(keff, t.drag[2], t.drag[1]), vf, t.drag[0]);
+    let drag = fsel(-drag, 0.0, drag);
+    let areq = fnms(g, fwd.y, fma(drag * drag * drag, drag, a_cmd));
+    let (b1, b2) = (fsel(-t1, 0.0, t1), fsel(-t2, 0.0, t2));
+    let ab = fma(b2 * b2 * b2, c2, b1 * b1 * c1);
     if f3 != 0.0 && vf > 1.0 {
-        let vh = norm0(vel);
-        let x = right.dot(vh).abs().max(0.0).min(1.0);
-        ae *= sin_ramp(x).max(steer.abs()) * f3 + 1.0;
+        // (made unit by the vector unit, as in F-41825)
+        let d = dot3(vel, vel);
+        let e = 1.0 / d.sqrt();
+        let e = if e == f32::INFINITY { 0.0 } else { e };
+        let vh = vel * ((1.0 - d * (e * e)) * (0.5 * e) + e);
+        let x = fma(right.x, vh.x, fma(right.y, vh.y, right.z * vh.z)).abs();
+        let x = fsel(x, x, 0.0);
+        let x = fsel(x - 1.0, 1.0, x);
+        let s = sin_ramp(x);
+        ae *= fma(fsel(s - steer.abs(), s, steer.abs()), f3, 1.0);
     }
-    let (thr, brk) = if areq >= ab * 0.5 {
-        ((ae + areq) / (ae * 2.0 + ab), 0.0)
-    } else if areq >= -ad {
-        ((ad + areq) / (ad * 2.0 + ab), 0.0)
+    let (thr, brk) = if !(areq < ab * 0.5) {
+        ((ae + areq) / fma(ae, 2.0, ab), 0.0)
+    } else if !(areq < -ad) {
+        ((ad + areq) / fma(ad, 2.0, ab), 0.0)
     } else {
         (0.0, -((ad + areq) / t.max_brake_decel))
     };
-    let c = |x: f32| if x >= 0.0 { x.min(1.0) } else { 0.0 };
+    let c = |x: f32| {
+        let x = fsel(x, x, 0.0);
+        fsel(x - 1.0, 1.0, x)
+    };
     (steer, c(thr), c(brk))
 }
 
@@ -2975,9 +2992,60 @@ mod tests {
             }
         }
         println!("pedal output, {tested} snapshots: steer within 1e-5 with the own samples {own_ok}, with the previous frame's {prev_ok}, either {either}; clamped {clamped}; worst own {:.6} at {}; |err| <1e-5 / <1e-4 / <1e-3 / <1e-2 / more: {hist:?}; [line not / is the car's own][steer off / exact]: {xt:?}", worst.0, worst.1);
-        // (2026-11-03, 464 snapshots: 189 within 1e-5, 136 more within 1e-4, 97 within 1e-3, 42 beyond; the misses are not only the snapshots
-        // read mid-job: docs/reference/ai/verify_pedal_output.md)
+        // (2026-11-03, 464 snapshots: 189 within 1e-5, 136 more within 1e-4, 97 within 1e-3, 42 beyond. The output is the original's code word for word
+        // (output_is_the_originals), so the misses are the recording's timing, not the rule: docs/reference/ai/verify_pedal_output.md)
         assert!(tested >= 400 && hist[0] * 100 >= tested * 35 && (hist[0] + hist[1] + hist[2]) * 100 >= tested * 85);
+    }
+
+    /// The original's follower output (F-65301 with F-41825 and F-28541), run offline on each of the 465 recorded aiv states of
+    /// `work/ai-record/fixture/r7_r8_inp.bin` in 4 variants of gear / rpm term / collision (`work/racerai/pedal`, written to orig_out.bin):
+    /// steer, throttle, brake, handbrake and the turned H, word for word. Returns at once without the files.
+    #[test]
+    fn output_is_the_originals() {
+        let (Ok(fix), Ok(tb), Ok(orig)) = (
+            std::fs::read("D:/MCLA/work/ai-record/fixture/r7_r8_inp.bin"),
+            std::fs::read("D:/MCLA/work/ai-record/fixture/aivtune_r8.bin"),
+            std::fs::read("D:/MCLA/work/racerai/pedal/orig_out.bin"),
+        ) else { return };
+        let floats: Vec<f32> = tb.chunks_exact(4).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&floats).unwrap());
+        let n = u32::from_le_bytes(fix[8..12].try_into().unwrap()) as usize;
+        let rec = 8 + 31232 + 1024 + 192 + 576;
+        let (gears, rpms) = ([2, 0, 3, 1], [0.0f32, 0.5, 1.0, 0.25]);
+        let (mut cases, mut bad, mut bad_cmd) = (0, 0, 0);
+        for k in 0..n {
+            let al = &fix[12 + k * rec + 8..12 + k * rec + 8 + 31232];
+            for v in 0..4 {
+                let o = (k * 4 + v) * 44;
+                let w = |i: usize| u32::from_le_bytes(orig[o + 4 * i..o + 4 * i + 4].try_into().unwrap());
+                let mut a = Aiv::new(tune.clone());
+                a.import_original(al);
+                if a.ln.n - a.ln.f > 1 {
+                    // (F-41825 alone: the commanded curvature and acceleration)
+                    let mut c = Aiv::new(tune.clone());
+                    c.import_original(al);
+                    let (kc, ac) = c.command(w(8) != 0);
+                    if (kc.to_bits(), ac.to_bits()) != (w(9), w(10)) {
+                        if bad_cmd < 10 {
+                            println!("k {k} v {v}: command port {:08x} {:08x} original {:08x} {:08x}", kc.to_bits(), ac.to_bits(), w(9), w(10));
+                        }
+                        bad_cmd += 1;
+                    }
+                }
+                let out = a.output(gears[v], 0.0, rpms[v], w(8) != 0);
+                let got = [out.valid as u32, out.steer.to_bits(), out.throttle.to_bits(), out.brake.to_bits(), out.handbrake.to_bits(), a.h.x.to_bits(), a.h.y.to_bits(), a.h.z.to_bits()];
+                let want: Vec<u32> = (0..8).map(w).collect();
+                cases += 1;
+                if got[..] != want[..] {
+                    if bad < 10 {
+                        println!("k {k} v {v}: port {got:08x?} original {want:08x?}");
+                    }
+                    bad += 1;
+                }
+            }
+        }
+        println!("follower output vs the original's code: {cases} cases, {bad} differ ({bad_cmd} in the command alone)");
+        assert!(cases >= 1800 && bad == 0 && bad_cmd == 0);
     }
 
     /// 12,000 cases of the original's scalar geometry helpers (F-41334 norm_or, F-88594 ang3, F-32060 ang_xz,
