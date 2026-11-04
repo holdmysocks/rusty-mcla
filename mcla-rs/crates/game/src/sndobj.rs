@@ -21,6 +21,14 @@ struct WaveInfo {
     loop_start: i32,
     /// 0.01 dB
     headroom: i16,
+    /// the wave's duration and loop start in whole ms from its header's sample count and rate (F-13862)
+    dur_ms: Option<f32>,
+    loop_ms: Option<f32>,
+}
+
+/// F-13862: a header sample count to whole ms, floor(n / (rate x 0.001)) in f32 (the fsel floor of the original)
+fn wave_ms(samples: u32, rate: u32) -> f32 {
+    (samples as f32 / (rate as f32 * 0.001)).floor()
 }
 
 /// What the game asks of a playing sound (the original's requested-settings slot, the part the port uses).
@@ -770,7 +778,10 @@ impl SoundLib {
                 let (Some(name), Some(h)) = (c.first(), c.get(1).and_then(|h| u32::from_str_radix(h, 16).ok())) else { continue };
                 let loop_start = c.get(5).and_then(|v| v.parse().ok()).unwrap_or(-1);
                 let headroom = c.get(6).and_then(|v| v.parse().ok()).unwrap_or(0);
-                m.insert(h, WaveInfo { file: dir.join(format!("{name}.wav")), loop_start, headroom });
+                let (samples, rate) = (c.get(2).and_then(|v| v.parse::<u32>().ok()), c.get(3).and_then(|v| v.parse::<u32>().ok()).filter(|r| *r > 0));
+                let ms = |n: Option<u32>| Some(wave_ms(n?, rate?));
+                let loop_ms = if loop_start >= 0 { ms(Some(loop_start as u32)) } else { None };
+                m.insert(h, WaveInfo { file: dir.join(format!("{name}.wav")), loop_start, headroom, dur_ms: ms(samples), loop_ms });
             }
         }
         let a = Arc::new(m);
@@ -873,7 +884,7 @@ impl SoundLib {
                 let w = self.bank_waves(bank).and_then(|m| m.get(&wave).cloned());
                 if let Some(w) = w {
                     let clip = self.clip_of(&w.file.clone(), w.loop_start);
-                    let dur_ms = clip.as_ref().map(|c| c.frames() as f32 * 1000.0 / c.rate as f32).unwrap_or(0.0);
+                    let dur_ms = w.dur_ms.filter(|_| clip.is_some()).or_else(|| clip.as_ref().map(|c| c.frames() as f32 * 1000.0 / c.rate as f32)).unwrap_or(0.0);
                     Kind::Wave { looping: w.loop_start >= 0, wave: Some(w), clip, voice: self.voice_id(), pos_ms: 0.0, dur_ms }
                 } else if let Some((mp3, h0)) = self.stream_index().get(&wave).cloned() {
                     // a stream channel: the converted file holds every channel folded to stereo
@@ -1267,7 +1278,7 @@ impl SoundLib {
                     out.push(Leaf { voice: *voice, clip: c.clone(), ctx, headroom, start_frame: (*pos_ms * 0.001 * c.rate as f32) as f64, looping: *looping, stereo: false });
                     *pos_ms += ms * ratio;
                     if *looping && *pos_ms >= *dur_ms {
-                        let ls = c.loop_start as f32 * 1000.0 / c.rate as f32;
+                        let ls = wave.as_ref().and_then(|w| w.loop_ms).unwrap_or(c.loop_start as f32 * 1000.0 / c.rate as f32);
                         *pos_ms = ls + (*pos_ms - *dur_ms) % (*dur_ms - ls).max(1.0);
                     }
                     false
@@ -1715,6 +1726,31 @@ fn decode_mp3_whole_from(dec: rodio::Decoder<std::io::BufReader<std::fs::File>>,
 
 #[cfg(test)]
 mod tests {
+
+    /// F-13862: the wave's whole ms against the original's own sequence (constants 0x820022B4 = 0.001,
+    /// 0x820022AC / B0 = +-2^23, 0x82001D14 = 1.0 read from the image): fcfid + frsp of the count and the rate, fmuls,
+    /// fdivs, the fsel round to nearest, then -1 when it rounded up
+    #[test]
+    fn wave_ms_is_the_originals() {
+        fn orig(n: u32, rate: u32) -> f32 {
+            let q = (n as f64) as f32 / ((rate as f64) as f32 * f32::from_bits(0x3A83_126F));
+            let m = if q >= 0.0 { -8_388_608.0f32 } else { 8_388_608.0 };
+            let r = (q - m) + m;
+            if q - r >= 0.0 { r } else { r - 1.0 }
+        }
+        assert_eq!(f32::from_bits(0x3A83_126F), 0.001);
+        let mut x = 0x1234_5678u32;
+        for i in 0..200_000u32 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let n = if i < 1000 { i * 48 } else { x % 40_000_000 };
+            for rate in [48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 11_025] {
+                assert_eq!(super::wave_ms(n, rate).to_bits(), orig(n, rate).to_bits(), "{n} {rate}");
+            }
+        }
+        assert_eq!(super::wave_ms(78_329, 48_000), 1631.0);
+    }
 
     /// F-56973 (pan of a direction, stereo fold) against the original's own code on 4000 cases
     /// (work/audio2/verify/ref5.py, vector shim; the voice's +176 factor unset)
