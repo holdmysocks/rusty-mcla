@@ -157,10 +157,10 @@ struct Playing {
     left: f32,
 }
 
-/// Per driver: the gesture's round-robin counters (ctx+68..+84), what plays, the jaw flap.
+/// Per driver: the gesture's round-robin counters (ctx+68..+92), what plays, the jaw flap.
 #[derive(Default, Clone)]
 struct Acting {
-    rr: [usize; 5],
+    rr: [usize; 7],
     playing: Option<Playing>,
     /// a gesture asked for, its clip chosen when the driver is next posed
     asked: Option<(Gesture, f32, bool)>,
@@ -213,13 +213,16 @@ const RR_LEFT: [&str; 5] = ["drv_gest_mild_lft_01", "drv_gest_agro_lft_01", "drv
 const RR_RIGHT: [&str; 5] = ["drv_gest_mild_rgt_01", "drv_gest_agro_rgt_01", "drv_gest_thm_dwn_rgt", "drv_gest_thm_up_rgt", "drv_gest_cas_rgt_01"];
 const RR_TALK_LEFT: [&str; 4] = ["drv_gest_cas_lft_01", "drv_gest_agro_lft_01", "drv_gest_mild_lft_01", "drv_gest_rspnd_lft"];
 const RR_TALK_RIGHT: [&str; 4] = ["drv_gest_cas_rgt_01", "drv_gest_agro_rgt_01", "drv_gest_mild_rgt_01", "drv_gest_rspnd_rgt"];
+/// The mild and win pickers' two-clip tables (F-36583 with ctx+88, F-89025 with ctx+92).
+const RR_MILD: [&str; 2] = ["drv_gest_mild_lft_01", "drv_gest_mild_rgt_01"];
+const RR_WIN: [&str; 2] = ["drv_win", "drv_win_02"];
 /// a gesture blends in over 0.25 s (the gesture state's enter plays it through F-24441 with 0.25 s) and back to
 /// driving over 0.25 s (the cruising state's update requests its clip through F-85393 with 0.25 s), both linear
 const GESTURE_BLEND: f32 = 0.25;
 
 /// The clip a gesture plays (F-20767); `human`: the neutral round robin skips `_rspnd_rgt` for the human
 /// player and `_rspnd_lft` for the others.
-fn gesture_clip(g: Gesture, rr: &mut [usize; 5], human: bool) -> String {
+fn gesture_clip(g: Gesture, rr: &mut [usize; 7], human: bool) -> String {
     let mut next = |k: usize, list: &[&str]| -> String {
         let c = list[rr[k] % list.len()];
         rr[k] += 1;
@@ -237,9 +240,8 @@ fn gesture_clip(g: Gesture, rr: &mut [usize; 5], human: bool) -> String {
         Gesture::Right => next(2, &RR_RIGHT),
         Gesture::TalkLeft => next(3, &RR_TALK_LEFT),
         Gesture::TalkRight => next(4, &RR_TALK_RIGHT),
-        // (mild and win pick between two; the selector is not read - the first)
-        Gesture::Mild => "drv_gest_mild_lft_01".into(),
-        Gesture::Win => "drv_win".into(),
+        Gesture::Mild => next(5, &RR_MILD),
+        Gesture::Win => next(6, &RR_WIN),
         Gesture::ListenLeft => "drv_gest_listen_lft".into(),
         Gesture::ListenRight => "drv_gest_listen_rgt".into(),
         Gesture::ThumbDownLeft => "drv_gest_thm_dwn_lft".into(),
@@ -726,7 +728,7 @@ impl Drivers {
     }
 }
 
-/// F-80898, F-40322, F-82819, F-95452, F-59643 (the gestures' round-robin pickers) against the original's code run offline
+/// F-80898, F-40322, F-82819, F-95452, F-59643, F-36583, F-89025 (the gestures' round-robin pickers) against the original's code run offline
 /// (tools/people_gesture_reference.py -> testdata/people_gesture_ref.txt): the clip name picked and the counter afterwards.
 #[cfg(test)]
 mod original_tests {
@@ -738,14 +740,14 @@ mod original_tests {
         for line in include_str!("testdata/people_gesture_ref.txt").lines() {
             let w: Vec<&str> = line.split(' ').collect();
             let (kind, human, ctr): (usize, bool, usize) = (w[1].parse().unwrap(), w[2] == "1", w[3].parse().unwrap());
-            let g = [Gesture::Neutral, Gesture::Left, Gesture::Right, Gesture::TalkLeft, Gesture::TalkRight][kind];
-            let mut rr = [0usize; 5];
+            let g = [Gesture::Neutral, Gesture::Left, Gesture::Right, Gesture::TalkLeft, Gesture::TalkRight, Gesture::Mild, Gesture::Win][kind];
+            let mut rr = [0usize; 7];
             rr[kind] = ctr;
             let name = gesture_clip(g, &mut rr, human);
             assert_eq!((name.as_str(), rr[kind]), (w[5], w[6].parse::<usize>().unwrap()), "{line}");
             n += 1;
         }
-        assert_eq!(n, 144);
+        assert_eq!(n, 192);
     }
 }
 

@@ -1,7 +1,7 @@
-"""The driver gestures' round-robin pickers (F-80898 neutral, F-40322 left, F-82819 right, F-95452 talk left, F-59643 talk right) run
+"""The driver gestures' round-robin pickers (F-80898 neutral, F-40322 left, F-82819 right, F-95452 talk left, F-59643 talk right, F-36583 mild, F-89025 win) run
 offline on the original's code: the clip lookup they end in (F-99427, which would search the animation pack) is an empty stub, so the
 name pointer it was given is read back from r4. The tables and their strings come from the executable image.
-Lines: `GN kind human counter -> name new_counter`   kind 0 neutral (human 0/1), 1 left, 2 right, 3 talk left, 4 talk right
+Lines: `GN kind human counter -> name new_counter`   kind 0 neutral (human 0/1), 1 left, 2 right, 3 talk left, 4 talk right, 5 mild, 6 win
 Usage: people_gesture_reference.py --recomp D:/MCLA-static --image IMG --work DIR --out FILE [--tool mcla-tool]"""
 import argparse
 import random
@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 import recomp_dispatch as rd
 
-IDS = ['F-80898', 'F-40322', 'F-82819', 'F-95452', 'F-59643']
+IDS = ['F-80898', 'F-40322', 'F-82819', 'F-95452', 'F-59643', 'F-36583', 'F-89025']
 LOOKUP = 'F-99427'
 
 MAIN = r'''
@@ -18,7 +18,7 @@ int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.
  std::ifstream in(argv[2]);int kind,human;uint32_t counter;
  while(in>>kind>>human>>counter){rt_reset();
   store(0x1000,counter);Context c=fresh();c.r3.u32=0x2000;c.r4.u32=0x1000;c.r5.u32=human;c.r4.u32=0x1000;
-  switch(kind){case 0:sub_G0(c,nullptr);break;case 1:sub_G1(c,nullptr);break;case 2:sub_G2(c,nullptr);break;case 3:sub_G3(c,nullptr);break;default:sub_G4(c,nullptr);}
+  switch(kind){case 0:sub_G0(c,nullptr);break;case 1:sub_G1(c,nullptr);break;case 2:sub_G2(c,nullptr);break;case 3:sub_G3(c,nullptr);break;case 4:sub_G4(c,nullptr);break;case 5:sub_G5(c,nullptr);break;default:sub_G6(c,nullptr);}
   printf("%s %u\n",cstr(c.r4.u32).c_str(),load(0x1000));}
 }
 '''
@@ -46,7 +46,7 @@ def main():
     exe = rd.build(idx, fns, src, a.work, 'people_gesture', image=img, stubs=[lookup])
     rnd = random.Random(20261029)
     cases = []
-    for kind in range(5):
+    for kind in range(7):
         for human in ((0, 1) if kind == 0 else (0,)):
             for ctr in list(range(12)) + [rnd.randrange(0, 5000) for _ in range(10)] + [2**20 + 3, 2**31 - 2]:
                 cases.append((kind, human, ctr))
