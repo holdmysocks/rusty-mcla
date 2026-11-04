@@ -66,6 +66,17 @@ fn arr8(v: Vec<f32>) -> [f32; 8] {
     a
 }
 
+/// The mcRubberBandTuning defaults a file's missing key keeps (F-36408), by offset +0 .. +72: the scalars in file order
+/// (+32 / +36 OutsideTrafficBubble*, no reader). The offset arrays +76 / +108 get 0.0 in [0..7]; [7] is not written.
+/// (All eleven shipped files set every key.)
+const DEFAULTS: [(&str, f32); 19] = [
+    ("MaxThrottle", 1.0), ("MinSpeed", 100.0), ("MinDist", 10000.0), ("MaxDist", 11000.0), ("MinThrottle", 0.7),
+    ("BehindMinDist", 10000.0), ("BehindMaxDist", 11000.0), ("BehindMaxThrottle", 1.0), ("OutsideTrafficBubbleThresholdSpeed", 1.0),
+    ("OutsideTrafficBubbleThrottlePenalty", 1.0), ("DistBehindBeforeTakingShortcuts", 100.0), ("UseNitroMinDistFromStart", 100.0),
+    ("UseNitroMinDistFromFinish", 100.0), ("UseNitroMinDistBehindPlayer", 0.0), ("UnlimitedNitroMinDistBehindPlayer", 200.0),
+    ("HomeStretchBehindMaxThrottle", 0.8), ("HomeStretchDistance", 200.0), ("PlayerCloseMaxThrottle", 1.0), ("PlayerCloseDistance", 0.0),
+];
+
 impl RubberBand {
     fn from_file(p: &Path) -> Option<RubberBand> {
         let text = std::fs::read_to_string(p).ok()?;
@@ -73,7 +84,7 @@ impl RubberBand {
             return None;
         }
         let t = Tuning::load(p);
-        let g = |k: &str| t.get(k, 0.0);
+        let g = |k: &str| t.get(k, DEFAULTS.iter().find(|d| d.0 == k).map_or(0.0, |d| d.1));
         let mut behind = arr8(float_array(&text, "BehindDistOffsets"));
         // (LoadTuning: Behind[1..6] = Behind[2..7]; [0] and [7] kept)
         for i in 1..7 {
@@ -191,6 +202,21 @@ impl Chain<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The defaults against the original's F-36408 run offline (`work/racerai/rbdef/defaults.bin`: the 140-byte tuning after
+    /// it, memory filled with 0xAB before): +0 .. +72 word for word, +76 .. +100 and +108 .. +132 zero, +104 / +136 untouched.
+    #[test]
+    fn defaults_are_the_originals() {
+        let Ok(b) = std::fs::read("D:/MCLA/work/racerai/rbdef/defaults.bin") else { return };
+        let w = |i: usize| u32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap());
+        for (i, d) in DEFAULTS.iter().enumerate() {
+            assert_eq!(w(i), d.1.to_bits(), "{} at +{}", d.0, 4 * i);
+        }
+        for i in (19..26).chain(27..34) {
+            assert_eq!(w(i), 0, "+{}", 4 * i);
+        }
+        assert_eq!((w(26), w(34)), (0xABAB_ABAB, 0xABAB_ABAB));
+    }
 
     fn tune(step: usize) -> Option<RubberBand> {
         let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
